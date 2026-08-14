@@ -2,57 +2,10 @@
 // a wasm module cannot do for itself. It owns the device, the pipeline and
 // the frame loop; Rill owns what happens inside a frame. The two meet at the
 // imports `gpu_clear` and `gpu_triangle`, and at the exports `rill_init` and
-// `frame`.
+// `frame`. The plumbing between them — WASI shim, instantiation, init — is
+// `triangle.js`, which `rill build` generates beside the module.
 
-// Just enough WASI for a reactor built against wasi-libc: `println` arrives
-// here as `fd_write`, and the rest only has to exist. Browsers ship no WASI,
-// so this is the whole dependency.
-function wasiShim(getMemory) {
-  const text = new TextDecoder();
-  let carry = "";
-  return {
-    fd_write(fd, iovs, iovcnt, nwritten) {
-      const mem = getMemory();
-      const view = new DataView(mem.buffer);
-      let written = 0;
-      let out = "";
-      for (let i = 0; i < iovcnt; i++) {
-        const ptr = view.getUint32(iovs + i * 8, true);
-        const len = view.getUint32(iovs + i * 8 + 4, true);
-        out += text.decode(new Uint8Array(mem.buffer, ptr, len));
-        written += len;
-      }
-      // Lines go to the console whole; a trailing fragment waits for its \n.
-      carry += out;
-      const lines = carry.split("\n");
-      carry = lines.pop();
-      for (const line of lines) console.log(`[rill] ${line}`);
-      view.setUint32(nwritten, written, true);
-      return 0;
-    },
-    fd_close: () => 0,
-    fd_seek: () => 0,
-    fd_prestat_get: () => 8, // EBADF: no preopened directories
-    fd_prestat_dir_name: () => 8,
-    args_sizes_get(argc, argvBufSize) {
-      const view = new DataView(getMemory().buffer);
-      view.setUint32(argc, 0, true);
-      view.setUint32(argvBufSize, 0, true);
-      return 0;
-    },
-    args_get: () => 0,
-    environ_sizes_get(count, bufSize) {
-      const view = new DataView(getMemory().buffer);
-      view.setUint32(count, 0, true);
-      view.setUint32(bufSize, 0, true);
-      return 0;
-    },
-    environ_get: () => 0,
-    proc_exit(code) {
-      throw new Error(`wasm exited with code ${code}`);
-    },
-  };
-}
+import { load } from "./triangle.js";
 
 const WGSL = `
   @vertex fn vs(@location(0) pos: vec2f) -> @builtin(position) vec4f {
@@ -118,14 +71,8 @@ export async function run(canvas, wasmURL) {
     },
   };
 
-  const bytes = await (await fetch(wasmURL)).arrayBuffer();
-  const wasm = await WebAssembly.compile(bytes);
-  instance = await WebAssembly.instantiate(wasm, {
-    env,
-    wasi_snapshot_preview1: wasiShim(() => instance.exports.memory),
-  });
-  instance.exports._initialize(); // libc setup
-  instance.exports.rill_init();   // Rill's main, once
+  const rill = await load(wasmURL, env);
+  instance = { exports: rill };   // the imports above read its memory
 
   const t0 = performance.now();
   function tick() {

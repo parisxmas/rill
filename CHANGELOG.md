@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **`rill build` generates the embedding, not just the module.** A wasm
+  reactor is made to be hosted, so the toolchain now writes the host's
+  plumbing beside it: `rill build app.rill --target wasm32-wasip1 -o app`
+  produces `app.wasm` and `app.js` — a generated loader carrying the WASI
+  shim browsers do not have, instantiation, and the init calls. A page that
+  embeds a Rill module now writes only its own code: both WebGPU demos
+  dropped their hand-written copies of exactly that plumbing and import the
+  generated file instead.
+
 - **A world you can walk through, in `examples/webgpu/world/`.** The proof
   that the wasm target and `export fn` carry real weight: a low-poly valley
   at dusk — terrain from three octaves of value noise with a lake carved out

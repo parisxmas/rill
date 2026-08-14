@@ -19,9 +19,12 @@ re-asking cheap. When the adapter offers `timestamp-query`, the HUD shows
 what a frame actually costs the GPU.
 
 ```sh
-rill build world.rill -o world --target wasm32-wasip1
+rill build world.rill -o world --target wasm32-wasip1   # writes world.wasm + world.js
 python3 -m http.server 8000        # from this directory
 # open http://localhost:8000 in a browser with WebGPU
 ```
+
+`world.js` is the generated loader — the WASI shim, instantiation and init —
+so `host.js` here is nothing but the scene: shaders, passes, tiers.
 
 Click to capture the mouse; WASD to walk, space to jump, shift to sprint.

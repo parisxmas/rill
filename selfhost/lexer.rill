@@ -1,0 +1,227 @@
+# The Rill lexer, in Rill. A byte-for-byte port of the Rust one: the same
+# layout algorithm (an indent stack emitting Indent, Dedent and Newline at
+# the first token of each line, silent inside parentheses), the same comment
+# capture, the same escapes. State threads through one constructor —
+# `Lx(i, line, col, indents, parens, last_tok_line, toks, comments)` — and
+# every loop is a tail call, because that is what a loop is here.
+#
+# Columns are counted in bytes where the Rust lexer counts characters, which
+# agrees everywhere it matters: layout only ever reads the column of the
+# first token on a line, and indentation is spaces.
+
+import "token"
+
+type Lx
+  Lx(Int, Int, Int, List(Int), Int, Int, List(Token), List(Cm))
+
+fn is_digit(c) = c >= 48 && c <= 57
+
+fn is_alpha_u(c) = c >= 97 && c <= 122 || c >= 65 && c <= 90 || c == 95
+
+fn is_alnum_u(c) = is_alpha_u(c) || is_digit(c)
+
+fn lx_die(msg, ln) =
+  println("lex error at line " + int_to_str(ln) + ": " + msg)
+  exit(1)
+  Lx(0, 0, 0, Nil, 0, 0, Nil, Nil)
+
+# ---- whitespace and comments ------------------------------------------------
+
+fn lx_skip(src, st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    if i >= str_len(src) then st else lx_skip_c(src, st, str_get(src, i))
+
+fn lx_skip_c(src, st, c) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    if c == 32 then lx_skip(src, Lx(i + 1, ln, col + 1, ind, pd, ltl, ts, cs))
+    else if c == 13 then lx_skip(src, Lx(i + 1, ln, col + 1, ind, pd, ltl, ts, cs))
+    else if c == 10 then lx_skip(src, Lx(i + 1, ln + 1, 0, ind, pd, ltl, ts, cs))
+    else if c == 9 then lx_die("tabs are not allowed; use spaces", ln)
+    else if c == 35 then lx_skip(src, lx_comment(src, st))
+    else st
+
+# A `#` comment runs to the end of the line; trailing whitespace is dropped,
+# and it is an own-line comment when no token came earlier on its line.
+fn lx_comment(src, st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    j = comment_end(src, i)
+    text = trim(str_sub(src, i, j - i))
+    own = ltl != ln
+    Lx(j, ln, col + (j - i), ind, pd, ltl, ts, Cons(Cm(ln, text, own), cs))
+
+fn comment_end(src, j) =
+  if j >= str_len(src) then j else if str_get(src, j) == 10 then j else comment_end(src, j + 1)
+
+# ---- layout -----------------------------------------------------------------
+
+fn top_of(ind) = match ind
+  Cons(h, _) -> h
+  Nil -> 0
+
+fn lx_layout(st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    if pd > 0 then Lx(i, ln, col, ind, pd, ln, ts, cs)
+    else if ln == ltl then st
+    else if ltl == 0 then lx_first_line(st)
+    else if col > top_of(ind) then
+      Lx(i, ln, col, Cons(col, ind), pd, ln, Cons(Tk(TkIndent, ln), ts), cs)
+    else lx_dedents(st)
+
+fn lx_first_line(st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    if col == 0 then Lx(i, ln, col, ind, pd, ln, ts, cs)
+    else lx_die("first line must not be indented", ln)
+
+# Dedents come before the Newline, exactly as in the Rust lexer: a block
+# closing here consumes only its Dedent, leaving the Newline for the block
+# that contains it.
+fn lx_dedents(st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    if col < top_of(ind) then
+      lx_dedents(Lx(i, ln, col, tail_of(ind), pd, ltl, Cons(Tk(TkDedent, ln), ts), cs))
+    else if col == top_of(ind) then
+      Lx(i, ln, col, ind, pd, ln, Cons(Tk(TkNewline, ln), ts), cs)
+    else lx_die("indentation does not match any enclosing block", ln)
+
+fn tail_of(l) = match l
+  Cons(_, t) -> t
+  Nil -> Nil
+
+# ---- one token --------------------------------------------------------------
+
+fn ident_end(src, j) =
+  if j >= str_len(src) then j
+  else if is_alnum_u(str_get(src, j)) then ident_end(src, j + 1)
+  else if str_get(src, j) == 46 && j + 1 < str_len(src) && is_alpha_u(str_get(src, j + 1)) then
+    ident_end(src, j + 1)
+  else j
+
+fn digits_end(src, j) =
+  if j >= str_len(src) then j
+  else if is_digit(str_get(src, j)) then digits_end(src, j + 1)
+  else j
+
+fn str_end(src, j, ln) =
+  if j >= str_len(src) then die_int("unterminated string literal", ln)
+  else if str_get(src, j) == 10 then die_int("unterminated string literal", ln)
+  else if str_get(src, j) == 34 then j
+  else if str_get(src, j) == 92 then str_end(src, j + 2, ln)
+  else str_end(src, j + 1, ln)
+
+fn die_int(msg, ln) =
+  println("lex error at line " + int_to_str(ln) + ": " + msg)
+  exit(1)
+  0
+
+fn keyword(text) =
+  if str_cmp(text, "fn") == 0 then TkFn
+  else if str_cmp(text, "if") == 0 then TkIf
+  else if str_cmp(text, "then") == 0 then TkThen
+  else if str_cmp(text, "else") == 0 then TkElse
+  else if str_cmp(text, "type") == 0 then TkType
+  else if str_cmp(text, "match") == 0 then TkMatch
+  else if str_cmp(text, "spawn") == 0 then TkSpawn
+  else if str_cmp(text, "select") == 0 then TkSelect
+  else if str_cmp(text, "import") == 0 then TkImport
+  else if str_cmp(text, "trait") == 0 then TkTrait
+  else if str_cmp(text, "impl") == 0 then TkImpl
+  else if str_cmp(text, "extern") == 0 then TkExtern
+  else if str_cmp(text, "export") == 0 then TkExport
+  else if str_cmp(text, "true") == 0 then TkTrue
+  else if str_cmp(text, "false") == 0 then TkFalse
+  else TkIdent(text)
+
+# Scans the token starting at `i` and returns the state past it.
+fn lx_token(src, st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) -> lx_token_c(src, st, str_get(src, i))
+
+fn push_tok(st, tok, w) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    Lx(i + w, ln, col + w, ind, pd, ltl, Cons(Tk(tok, ln), ts), cs)
+
+fn lx_token_c(src, st, c) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    if is_digit(c) then lx_number(src, st)
+    else if is_alpha_u(c) then lx_ident(src, st)
+    else if c == 34 then lx_string(src, st)
+    else if c == 43 then push_tok(st, TkPlus, 1)
+    else if c == 45 then
+      if peek2_is(src, i, 62) then push_tok(st, TkArrow, 2) else push_tok(st, TkMinus, 1)
+    else if c == 42 then push_tok(st, TkStar, 1)
+    else if c == 47 then push_tok(st, TkSlash, 1)
+    else if c == 37 then push_tok(st, TkPercent, 1)
+    else if c == 44 then push_tok(st, TkComma, 1)
+    else if c == 58 then push_tok(st, TkColon, 1)
+    else if c == 92 then push_tok(st, TkBackslash, 1)
+    else if c == 40 then paren_tok(st, TkLParen, 1)
+    else if c == 41 then paren_tok(st, TkRParen, 0 - 1)
+    else if c == 61 then
+      if peek2_is(src, i, 61) then push_tok(st, TkEqEq, 2) else push_tok(st, TkEq, 1)
+    else if c == 33 then
+      if peek2_is(src, i, 61) then push_tok(st, TkNe, 2) else push_tok(st, TkBang, 1)
+    else if c == 38 then
+      if peek2_is(src, i, 38) then push_tok(st, TkAmpAmp, 2)
+      else lx_die("unexpected `&`; did you mean `&&`?", ln)
+    else if c == 60 then
+      if peek2_is(src, i, 61) then push_tok(st, TkLe, 2) else push_tok(st, TkLt, 1)
+    else if c == 62 then
+      if peek2_is(src, i, 61) then push_tok(st, TkGe, 2) else push_tok(st, TkGt, 1)
+    else if c == 124 then
+      if peek2_is(src, i, 62) then push_tok(st, TkPipeGt, 2)
+      else if peek2_is(src, i, 124) then push_tok(st, TkPipePipe, 2)
+      else lx_die("unexpected `|`", ln)
+    else lx_die("unexpected character", ln)
+
+fn peek2_is(src, i, want) = i + 1 < str_len(src) && str_get(src, i + 1) == want
+
+fn paren_tok(st, tok, delta) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    Lx(i + 1, ln, col + 1, ind, max(pd + delta, 0), ltl, Cons(Tk(tok, ln), ts), cs)
+
+fn lx_number(src, st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    j = digits_end(src, i)
+    k = if j < str_len(src) && str_get(src, j) == 46 && j + 1 < str_len(src) && is_digit(str_get(src, j + 1)) then digits_end(src, j + 2) else j
+    text = str_sub(src, i, k - i)
+    tok = if k > j then TkFloat(text) else TkInt(text)
+    Lx(k, ln, col + (k - i), ind, pd, ltl, Cons(Tk(tok, ln), ts), cs)
+
+fn lx_ident(src, st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    j = ident_end(src, i)
+    tok = keyword(str_sub(src, i, j - i))
+    Lx(j, ln, col + (j - i), ind, pd, ltl, Cons(Tk(tok, ln), ts), cs)
+
+# The token keeps the raw text between the quotes, escapes and all: the
+# formatter's job is to put the same bytes back.
+fn lx_string(src, st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) ->
+    j = str_end(src, i + 1, ln)
+    inner = str_sub(src, i + 1, j - i - 1)
+    Lx(j + 1, ln, col + (j + 1 - i), ind, pd, ltl, Cons(Tk(TkStr(inner), ln), ts), cs)
+
+# ---- the loop ---------------------------------------------------------------
+
+fn lx_run(src, st) =
+  st1 = lx_skip(src, st)
+  if lx_done(src, st1) then lx_finish(st1) else lx_run(src, lx_token(src, lx_layout(st1)))
+
+fn lx_done(src, st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) -> i >= str_len(src)
+
+# Close every open block, end the last line, and reverse the accumulators
+# back into source order.
+fn lx_finish(st) = match st
+  Lx(i, ln, col, ind, pd, ltl, ts, cs) -> lx_close(ln, ind, ltl, ts, cs)
+
+fn lx_close(ln, ind, ltl, ts, cs) = match ind
+  Cons(h, t) ->
+    if h > 0 then lx_close(ln, t, ltl, Cons(Tk(TkDedent, ln), ts), cs)
+    else lx_eof(ln, ltl, ts, cs)
+  Nil -> lx_eof(ln, ltl, ts, cs)
+
+fn lx_eof(ln, ltl, ts, cs) =
+  ts1 = if ltl != 0 then Cons(Tk(TkNewline, ln), ts) else ts
+  LO(reverse(Cons(Tk(TkEof, ln), ts1)), reverse(cs))
+
+fn lex_src(src) = lx_run(src, Lx(0, 1, 0, Cons(0, Nil), 0, 0, Nil, Nil))

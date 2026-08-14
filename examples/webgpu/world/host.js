@@ -11,6 +11,11 @@
 // are measured, and the world is regenerated denser or sparser until the
 // budget is spent. Rill rebuilds the whole valley in tens of milliseconds,
 // which is what makes re-asking cheap.
+//
+// The plumbing — WASI shim, instantiation, init — is `world.js`, which
+// `rill build` generates beside the module.
+
+import { load } from "./world.js";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -28,38 +33,6 @@ function guessTier(info) {
   if (/apple|nvidia|geforce|rtx|radeon rx/.test(desc)) return 2;
   if (/intel|mali|adreno|powervr/.test(desc)) return 1;
   return 1;
-}
-
-// ---- just enough WASI for a reactor (browsers ship none) -------------------
-
-function wasiShim(getMemory) {
-  const text = new TextDecoder();
-  let carry = "";
-  return {
-    fd_write(fd, iovs, iovcnt, nwritten) {
-      const view = new DataView(getMemory().buffer);
-      let written = 0, out = "";
-      for (let i = 0; i < iovcnt; i++) {
-        const ptr = view.getUint32(iovs + i * 8, true);
-        const len = view.getUint32(iovs + i * 8 + 4, true);
-        out += text.decode(new Uint8Array(getMemory().buffer, ptr, len));
-        written += len;
-      }
-      carry += out;
-      const lines = carry.split("\n");
-      carry = lines.pop();
-      for (const line of lines) console.log(`[rill] ${line}`);
-      view.setUint32(nwritten, written, true);
-      return 0;
-    },
-    fd_close: () => 0, fd_seek: () => 0,
-    fd_prestat_get: () => 8, fd_prestat_dir_name: () => 8,
-    args_sizes_get(a, b) { const v = new DataView(getMemory().buffer); v.setUint32(a, 0, true); v.setUint32(b, 0, true); return 0; },
-    args_get: () => 0,
-    environ_sizes_get(a, b) { const v = new DataView(getMemory().buffer); v.setUint32(a, 0, true); v.setUint32(b, 0, true); return 0; },
-    environ_get: () => 0,
-    proc_exit(code) { throw new Error(`wasm exited with code ${code}`); },
-  };
 }
 
 // ---- shaders ---------------------------------------------------------------
@@ -574,17 +547,8 @@ export async function run(canvas, wasmURL, hud) {
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
 
-  // The world, from Rill.
-  let inst;
-  const bytes = await (await fetch(wasmURL, { cache: "no-store" })).arrayBuffer();
-  const wasm = await WebAssembly.compile(bytes);
-  inst = await WebAssembly.instantiate(wasm, {
-    env: {},
-    wasi_snapshot_preview1: wasiShim(() => inst.exports.memory),
-  });
-  inst.exports._initialize();
-  inst.exports.rill_init();
-  const E = inst.exports;
+  // The world, from Rill; the generated loader does the ceremony.
+  const E = await load(wasmURL);
 
   const gpuBuf = (data) => {
     const b = device.createBuffer({ size: (data.byteLength + 3) & ~3, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });

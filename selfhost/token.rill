@@ -1,0 +1,64 @@
+# The token set of Rill, as data — the first file of a Rill front end
+# written in Rill. Numbers and strings carry their raw source text rather
+# than parsed values: the formatter's job is to reproduce bytes, and the
+# original spelling of `43758.5453` is already the canonical one.
+
+type Tok
+  TkFn
+  TkIf
+  TkThen
+  TkElse
+  TkType
+  TkMatch
+  TkSpawn
+  TkSelect
+  TkImport
+  TkTrait
+  TkImpl
+  TkExtern
+  TkExport
+  TkTrue
+  TkFalse
+  TkIdent(Str)
+  TkInt(Str)
+  TkFloat(Str)
+  TkStr(Str)
+  TkPlus
+  TkMinus
+  TkStar
+  TkSlash
+  TkPercent
+  TkEqEq
+  TkNe
+  TkLt
+  TkLe
+  TkGt
+  TkGe
+  TkEq
+  TkPipeGt
+  TkPipePipe
+  TkAmpAmp
+  TkBang
+  TkArrow
+  TkColon
+  TkBackslash
+  TkComma
+  TkLParen
+  TkRParen
+  TkNewline
+  TkIndent
+  TkDedent
+  TkEof
+
+# A token and the source line it began on.
+type Token
+  Tk(Tok, Int)
+
+# A comment: line, text (with the leading `#`), and whether nothing but
+# whitespace preceded it on its line.
+type Cm
+  Cm(Int, Str, Bool)
+
+# What the lexer hands back: tokens and comments, in source order.
+type LexOut
+  LO(List(Token), List(Cm))
