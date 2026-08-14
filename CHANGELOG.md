@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A Rill user needs no Rust.** `tools/dist.sh` packages the toolchain the
+  way compilers ship: `bin/rill` with its native runtime beside it, and
+  `lib/rill/wasm32-wasip1/` carrying the wasm runtime and the wasi sysroot.
+  The compiler looks in its own bundle before falling back to cargo's and
+  rustup's paths, so the development tree keeps working unchanged. Proven
+  with an environment where `rustc` and `cargo` do not exist: the packaged
+  binary built the whole WebGPU valley and a native hello-world. Rust builds
+  the toolchain once, the way C builds a C compiler — after that it is not
+  the user's concern.
+
 - **The valley got weather, and the trees got in the way.** One wind for the
   whole world — a direction that wanders, a moderate strength that gusts —
   computed by Rill each frame like everything else the world knows about

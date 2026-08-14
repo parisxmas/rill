@@ -1,0 +1,354 @@
+# The canonical printer, in Rill — the other half of `rill fmt`. The output
+# is defined by the tree, not the input text; comments ride across by line
+# anchoring exactly as in the Rust formatter: own-line comments attach to the
+# construct that follows them, trailing comments stay on their line, and one
+# authored blank line between items is preserved.
+#
+# Printer state is one constructor: `FS(out, own, trailing, last_line)` —
+# the growing output, the own-line comments not yet placed, the trailing
+# comments not yet claimed, and the highest source line already printed.
+
+import "token"
+import "ast"
+
+type FS
+  FS(Str, List(Cm), List(Cm), Int)
+
+type RR
+  RR(FS, Str)
+
+type OB
+  OB(List(Cm), FS)
+
+type TO
+  TO(Option(Str), FS)
+
+fn pad(n) = repeat("  ", n)
+
+fn fs_out(fs) = match fs
+  FS(o, _, _, _) -> o
+
+fn fs_last(fs) = match fs
+  FS(_, _, _, l) -> l
+
+fn fs_push(fs, ind, text) = match fs
+  FS(o, own, tr, l) -> FS(o + pad(ind) + text + "\n", own, tr, l)
+
+fn fs_blank(fs) = match fs
+  FS(o, own, tr, l) -> FS(o + "\n", own, tr, l)
+
+fn fs_mark(fs, ln) = match fs
+  FS(o, own, tr, l) -> FS(o, own, tr, max(l, ln))
+
+fn fs_set_last(fs, ln) = match fs
+  FS(o, own, tr, l) -> FS(o, own, tr, max(l, ln))
+
+fn had_gap(fs, ln) = fs_last(fs) > 0 && ln > fs_last(fs) + 1
+
+# Own-line comments strictly before `line`, in order.
+fn own_before(fs, line) = match fs
+  FS(o, own, tr, l) -> ob_take(o, own, tr, l, line, Nil)
+
+fn ob_take(o, own, tr, l, line, acc) = match own
+  Cons(Cm(cl, text, ol), rest) -> if cl < line then ob_take(o, rest, tr, l, line, Cons(Cm(cl, text, ol), acc)) else OB(reverse(acc), FS(o, own, tr, l))
+  Nil -> OB(reverse(acc), FS(o, Nil, tr, l))
+
+# The line of the next unplaced own-line comment, or a line beyond any file.
+fn own_peek(fs) = match fs
+  FS(_, own, _, _) -> own_peek2(own)
+
+fn own_peek2(own) = match own
+  Cons(Cm(cl, _, _), _) -> cl
+  Nil -> 999999999
+
+fn own_rest(fs) = match fs
+  FS(o, own, tr, l) -> own_rest2(o, own)
+
+fn own_rest2(o, own) = match own
+  Cons(Cm(_, text, _), rest) -> own_rest2(o + "\n" + text + "\n", rest)
+  Nil -> o
+
+# Claims the trailing comment sitting on `line`, if any.
+fn tr_on(fs, line) = match fs
+  FS(o, own, tr, l) -> tr_take(o, own, tr, l, line, Nil)
+
+fn tr_take(o, own, tr, l, line, seen) = match tr
+  Cons(Cm(cl, text, ol), rest) -> tr_hit(o, own, tr, l, line, seen, cl, text, ol, rest)
+  Nil -> TO(None, FS(o, own, reverse(seen), l))
+
+fn tr_hit(o, own, tr, l, line, seen, cl, text, ol, rest) = if cl == line then TO(Some(text), FS(o, own, append(reverse(seen), rest), l)) else tr_take(o, own, rest, l, line, Cons(Cm(cl, text, ol), seen))
+
+fn push_at(fs, ind, text, ln) = push_at2(tr_on(fs_mark(fs, ln), ln), ind, text)
+
+fn push_at2(to, ind, text) = match to
+  TO(Some(c), fs) -> fs_push(fs, ind, text + "  " + c)
+  TO(None, fs) -> fs_push(fs, ind, text)
+
+# Everything that precedes the construct at `line`: one blank line wherever
+# the author left one, plus the own-line comments attached to it.
+fn lead(fs, line, ind) = lead2(own_before(fs, line), line, ind)
+
+fn lead2(ob, line, ind) = match ob
+  OB(cs, fs) -> lead3(lead_cs(fs, cs, ind), line)
+
+fn lead_cs(fs, cs, ind) = match cs
+  Cons(Cm(cl, text, _), rest) -> lead_cs(fs_push(fs_mark(if had_gap(fs, cl) then fs_blank(fs) else fs, cl), ind, text), rest, ind)
+  Nil -> fs
+
+fn lead3(fs, line) = fs_set_last(if had_gap(fs, line) then fs_blank(fs) else fs, if line > 0 then line - 1 else 0)
+
+# ---- lines of things --------------------------------------------------------
+
+fn expr_line(e) = match e
+  EVar(_, ln) -> ln
+  ECall(_, _, ln, _) -> ln
+  EBin(_, _, _, ln) -> ln
+  EMatch(_, _, ln) -> ln
+  ELambda(_, _, ln) -> ln
+  ESpawn(_, ln) -> ln
+  ESelect(_, _, ln) -> ln
+  ENeg(x) -> expr_line(x)
+  EIf(c, _, _) -> expr_line(c)
+  EBlock(ss) -> block_line(ss)
+  _ -> 0
+
+fn block_line(ss) = match ss
+  Cons(s, _) -> stmt_line(s)
+  Nil -> 0
+
+fn stmt_line(s) = match s
+  SBind(_, _, ln) -> ln
+  SExpr(e) -> expr_line(e)
+
+# ---- inline expressions -----------------------------------------------------
+
+fn wrapp(need, s) = if need then "(" + s + ")" else s
+
+fn bin_sym(op) = if op == 0 then "+" else if op == 1 then "-" else if op == 2 then "*" else if op == 3 then "/" else if op == 4 then "%" else if op == 5 then "==" else if op == 6 then "!=" else if op == 7 then "<" else if op == 8 then "<=" else if op == 9 then ">" else ">="
+
+fn bin_prec(op) = if op <= 1 then 5 else if op <= 4 then 6 else 4
+
+fn is_true(e) = match e
+  EBool(b) -> b
+  _ -> false
+
+fn is_false(e) = match e
+  EBool(b) -> !b
+  _ -> false
+
+fn inline(e, prec) = match e
+  EInt(v) -> v
+  EFloat(v) -> v
+  EStr(v) -> "\"" + v + "\""
+  EBool(b) -> if b then "true" else "false"
+  EVar(n, _) -> n
+  ECall(n, args, _, piped) -> inline_call(n, args, piped, prec)
+  ENeg(x) -> wrapp(prec > 7, "-" + inline(x, 7))
+  EBin(op, l, r, _) -> inline_bin(op, l, r, prec)
+  EIf(c, t, els) -> inline_if(c, t, els, prec)
+  ELambda(ps, b, _) -> wrapp(prec > 0, "\\" + join(ps, ", ") + " -> " + inline(b, 0))
+  ESpawn(b, _) -> wrapp(prec > 0, "spawn " + inline(b, 0))
+  EMatch(sc, arms, _) -> wrapp(prec > 0, "match " + inline(sc, 0) + " " + join(map(arms, \a -> inline_arm(a)), " "))
+  ESelect(arms, def, _) -> inline_select(arms, def, prec)
+  EBlock(_) -> "..."
+
+fn inline_call(n, args, piped, prec) = if piped then inline_pipe(n, args, prec) else n + "(" + join(map(args, \a -> inline(a, 0)), ", ") + ")"
+
+fn inline_pipe(n, args, prec) = match args
+  Cons(h, rest) -> wrapp(prec > 1, inline(h, 1) + " |> " + pipe_callee(n, rest))
+  Nil -> n
+
+fn pipe_callee(n, rest) = match rest
+  Nil -> n
+  Cons(_, _) -> n + "(" + join(map(rest, \a -> inline(a, 0)), ", ") + ")"
+
+fn inline_bin(op, l, r, prec) =
+  p = bin_prec(op)
+  rp = if p == 4 then 4 else p + 1
+  wrapp(prec > p, inline(l, p) + " " + bin_sym(op) + " " + inline(r, rp))
+
+# The shapes `&&`, `||` and `!` desugar to come back as the operators.
+fn inline_if(c, t, els, prec) = if is_false(t) && is_true(els) then wrapp(prec > 7, "!" + inline(c, 7)) else if is_true(t) then wrapp(prec > 2, inline(c, 2) + " || " + inline(els, 3)) else if is_false(els) then wrapp(prec > 3, inline(c, 3) + " && " + inline(t, 4)) else wrapp(prec > 0, "if " + inline(c, 0) + " then " + inline(t, 0) + " else " + inline(els, 0))
+
+fn inline_arm(a) = match a
+  Arm(p, b, _) -> pat_str(p) + " -> " + inline(b, 0)
+
+fn sel_op_str(op) = match op
+  SRecv(ch, bind) -> sel_recv_str(ch, bind)
+  SSend(ch, v) -> "send(" + inline(ch, 0) + ", " + inline(v, 0) + ")"
+
+fn sel_recv_str(ch, bind) = match bind
+  Some(n) -> n + " = recv(" + inline(ch, 0) + ")"
+  None -> "recv(" + inline(ch, 0) + ")"
+
+fn inline_select(arms, def, prec) =
+  parts = map(arms, \a -> inline_sel_arm(a))
+  all_parts = match def
+    Some(d) -> append(parts, Cons("default -> " + inline(d, 0), Nil))
+    None -> parts
+  wrapp(prec > 0, "select " + join(all_parts, " "))
+
+fn inline_sel_arm(a) = match a
+  SArm(op, b, _) -> sel_op_str(op) + " -> " + inline(b, 0)
+
+fn pat_str(p) = match p
+  PWild -> "_"
+  PVar(n) -> n
+  PIntL(v) -> v
+  PCtor(n, args) -> pat_ctor_str(n, args)
+
+fn pat_ctor_str(n, args) = match args
+  Nil -> n
+  Cons(_, _) -> n + "(" + join(map(args, \a -> pat_str(a)), ", ") + ")"
+
+fn tr_str(t) = match t
+  TR(n, args, ret, _) -> tr_str2(n, args, ret)
+
+fn tr_str2(n, args, ret) = tr_ret_str(if len(args) == 0 && str_cmp(n, "Fn") != 0 then n else n + "(" + join(map(args, \a -> tr_str(a)), ", ") + ")", ret)
+
+fn tr_ret_str(s, ret) = match ret
+  Some(r) -> s + " -> " + tr_str(r)
+  None -> s
+
+# ---- rendered expressions ---------------------------------------------------
+#
+# `render` is `inline` with layout: match arms, blocks and select arms go on
+# their own lines at the continuation indent, and consume the comments
+# anchored to them.
+
+fn render(fs, e, cont) = match e
+  EMatch(sc, arms, _) -> render_match(fs, sc, arms, cont)
+  EBlock(ss) -> render_block(fs, ss, cont)
+  EIf(c, t, els) -> render_if(fs, c, t, els, cont)
+  ELambda(ps, b, _) -> render_lambda(fs, ps, b, cont)
+  ESpawn(b, _) -> render_spawn(fs, b, cont)
+  ESelect(arms, def, _) -> render_select(fs, arms, def, cont)
+  _ -> RR(fs, inline(e, 0))
+
+fn render_match(fs, sc, arms, cont) = rm2(render(fs, sc, cont), arms, cont)
+
+fn rm2(rr, arms, cont) = match rr
+  RR(fs, sctext) -> rm_arms(fs, arms, cont, "match " + sctext)
+
+fn rm_arms(fs, arms, cont, s) = match arms
+  Cons(a, rest) -> rm_arms2(rm_arm(fs, a, cont, s), rest, cont)
+  Nil -> RR(fs, s)
+
+fn rm_arms2(rr, rest, cont) = match rr
+  RR(fs, s) -> rm_arms(fs, rest, cont, s)
+
+fn rm_arm(fs, a, cont, s) = match a
+  Arm(p, b, ln) -> rm_arm2(own_before(fs, ln), p, b, ln, cont, s)
+
+fn rm_arm2(ob, p, b, ln, cont, s) = match ob
+  OB(cs, fs) -> rm_arm3(fs_mark(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), ln), p, b, ln, cont)
+
+type RRS
+  RRS(FS, Str)
+
+fn weave(acc, c, cont) = match acc
+  RRS(fs, s) -> weave2(fs, s, c, cont)
+
+fn weave2(fs, s, c, cont) = match c
+  Cm(cl, text, _) -> RRS(fs_mark(fs, cl), s + "\n" + pad(cont) + text)
+
+fn rm_arm3(acc, p, b, ln, cont) = match acc
+  RRS(fs, s) -> rm_arm4(render(fs, b, cont + 1), p, ln, cont, s)
+
+fn rm_arm4(rr, p, ln, cont, s) = match rr
+  RR(fs, body) -> rm_arm5(tr_on(fs, ln), s + "\n" + pad(cont) + pat_str(p) + " -> " + body)
+
+fn rm_arm5(to, s) = match to
+  TO(Some(c), fs) -> RR(fs, s + "  " + c)
+  TO(None, fs) -> RR(fs, s)
+
+fn render_block(fs, ss, cont) = rb_loop(fs, ss, cont, "", true)
+
+fn rb_loop(fs, ss, cont, s, first) = match ss
+  Cons(st, rest) -> rb_one(rb_text(fs, st, cont), rest, cont, s, first)
+  Nil -> RR(fs, s)
+
+fn rb_one(rr, rest, cont, s, first) = match rr
+  RR(fs, text) -> rb_loop(fs, rest, cont, if first then text else s + "\n" + pad(cont) + text, false)
+
+fn rb_text(fs, st, cont) = match st
+  SBind(n, v, _) -> rb_bind(render(fs, v, cont + 1), n)
+  SExpr(e) -> render(fs, e, cont + 1)
+
+fn rb_bind(rr, n) = match rr
+  RR(fs, text) -> RR(fs, n + " = " + text)
+
+fn render_if(fs, c, t, els, cont) = ri2(render(fs, t, cont), fs, c, t, els, cont)
+
+fn ri2(rr, fs0, c, t, els, cont) = match rr
+  RR(fs, tt) -> ri3(render(fs, els, cont), tt, c, t, els)
+
+fn ri3(rr, tt, c, t, els) = match rr
+  RR(fs, ee) -> RR(fs, if contains(tt, "\n") || contains(ee, "\n") then "if " + inline(c, 0) + " then " + tt + " else " + ee else inline(EIf(c, t, els), 0))
+
+fn render_lambda(fs, ps, b, cont) = rl2(render(fs, b, cont), ps, b)
+
+fn rl2(rr, ps, b) = match rr
+  RR(fs, bt) -> RR(fs, if contains(bt, "\n") then "\\" + join(ps, ", ") + " -> " + bt else inline(ELambda(ps, b, 0), 0))
+
+fn render_spawn(fs, b, cont) = rs2(render(fs, b, cont), b)
+
+fn rs2(rr, b) = match rr
+  RR(fs, bt) -> RR(fs, if contains(bt, "\n") then "spawn " + bt else inline(ESpawn(b, 0), 0))
+
+fn render_select(fs, arms, def, cont) = rsel_arms(fs, arms, cont, "select", 0)
+
+fn rsel_arms(fs, arms, cont, s, lastln) = match arms
+  Cons(a, rest) -> rsel_arm(fs, a, rest, cont, s)
+  Nil -> rsel_def(fs, s, cont, lastln)
+
+fn rsel_arm(fs, a, rest, cont, s) = match a
+  SArm(op, b, ln) -> rsel_arm2(own_before(fs, ln), op, b, ln, rest, cont, s)
+
+fn rsel_arm2(ob, op, b, ln, rest, cont, s) = match ob
+  OB(cs, fs) -> rsel_arm3(fs_mark(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), ln), op, b, ln, rest, cont)
+
+fn rsel_arm3(acc, op, b, ln, rest, cont) = match acc
+  RRS(fs, s) -> rsel_arm4(render(fs, b, cont + 1), op, ln, rest, cont, s)
+
+fn rsel_arm4(rr, op, ln, rest, cont, s) = match rr
+  RR(fs, body) -> rsel_cont(fs, rest, cont, s + "\n" + pad(cont) + sel_op_str(op) + " -> " + body, ln)
+
+fn rsel_cont(fs, rest, cont, s, ln) = rsel_arms(fs, rest, cont, s, ln)
+
+fn rsel_def(fs, s, cont, lastln) = RR(fs, s)
+
+# `render_select` above handles the arms; the default needs the state too, so
+# the entry point threads it through.
+fn render_select_full(fs, arms, def, cont) = rsf(rsel_collect(fs, arms, cont, "select", 0), def, cont)
+
+fn rsel_collect(fs, arms, cont, s, lastln) = match arms
+  Cons(a, rest) -> rsel_c1(fs, a, rest, cont, s)
+  Nil -> RSL(fs, s, lastln)
+
+type RSL
+  RSL(FS, Str, Int)
+
+fn rsel_c1(fs, a, rest, cont, s) = match a
+  SArm(op, b, ln) -> rsel_c2(own_before(fs, ln), op, b, ln, rest, cont, s)
+
+fn rsel_c2(ob, op, b, ln, rest, cont, s) = match ob
+  OB(cs, fs) -> rsel_c3(fs_mark(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), ln), op, b, ln, rest, cont)
+
+fn rsel_c3(acc, op, b, ln, rest, cont) = match acc
+  RRS(fs, s) -> rsel_c4(render(fs, b, cont + 1), op, ln, rest, cont, s)
+
+fn rsel_c4(rr, op, ln, rest, cont, s) = match rr
+  RR(fs, body) -> rsel_collect(fs, rest, cont, s + "\n" + pad(cont) + sel_op_str(op) + " -> " + body, ln)
+
+fn rsf(rsl, def, cont) = match rsl
+  RSL(fs, s, lastln) -> rsf2(fs, s, lastln, def, cont)
+
+fn rsf2(fs, s, lastln, def, cont) = match def
+  Some(d) -> rsf3(fs_mark(fs, if expr_line(d) == 0 then lastln + 1 else expr_line(d)), s, d, cont)
+  None -> RR(fs, s)
+
+fn rsf3(fs, s, d, cont) = rsf4(render(fs, d, cont + 1), s, cont)
+
+fn rsf4(rr, s, cont) = match rr
+  RR(fs, body) -> RR(fs, s + "\n" + pad(cont) + "default -> " + body)

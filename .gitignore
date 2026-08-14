@@ -18,6 +18,9 @@ node_modules/
 # and not ours to redistribute.
 /.xwin-cache/
 
+# The packaged toolchain; `tools/dist.sh` rebuilds it.
+/dist/
+
 # Local, per-machine settings.
 /.claude/
 

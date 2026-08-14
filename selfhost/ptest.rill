@@ -1,0 +1,9 @@
+import "parser"
+import "lexer"
+
+fn count_decls(ds) = len(ds)
+
+fn go(lo) = match lo
+  LO(ts, cs) -> println("decls: " + int_to_str(count_decls(p_module(ts))) + "  comments: " + int_to_str(len(cs)))
+
+fn main() = go(lex_src(read_file_raw(arg(1))))

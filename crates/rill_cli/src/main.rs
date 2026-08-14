@@ -551,9 +551,25 @@ fn link_wasm(
     Ok(out)
 }
 
-/// wasi-libc, which rustup installs along with the target's standard library.
-/// `$WASI_SYSROOT` overrides it for anyone using a sysroot of their own.
+/// The toolchain's own bundle: `lib/rill/<triple>/` next to the executable's
+/// directory. A packaged `rill` carries its runtimes and the wasi sysroot
+/// there, so building for any target — including the browser — needs no Rust
+/// toolchain on the user's machine. The development tree has no bundle and
+/// falls back to cargo's and rustup's paths.
+fn bundled_dir(triple: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.parent()?.join("lib").join("rill").join(triple);
+    if dir.exists() { Some(dir) } else { None }
+}
+
+/// wasi-libc: the bundle first, then `$WASI_SYSROOT`, then the copy rustup
+/// installs along with the target's standard library.
 fn wasi_sysroot(triple: &str) -> Result<PathBuf, String> {
+    if let Some(dir) = bundled_dir(triple) {
+        if dir.join("libc.a").exists() {
+            return Ok(dir);
+        }
+    }
     if let Ok(p) = std::env::var("WASI_SYSROOT") {
         return Ok(PathBuf::from(p));
     }
@@ -601,6 +617,12 @@ fn windows_libpaths(triple: &str) -> Vec<PathBuf> {
 /// machine's. The file name differs by target — `.lib` where the linker is
 /// Microsoft's, `.a` everywhere else — so the caller says which it wants.
 fn target_runtime(triple: &str, name: &str) -> Result<PathBuf, String> {
+    if let Some(dir) = bundled_dir(triple) {
+        let lib = dir.join(name);
+        if lib.exists() {
+            return Ok(lib);
+        }
+    }
     let here = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().and_then(|d| d.parent()).map(PathBuf::from))

@@ -1,0 +1,650 @@
+# The Rill parser, in Rill: recursive descent over the token list, a port of
+# the Rust one arm for arm. Every parse function takes the remaining tokens
+# and returns `PR(result, rest)`; the chain of tiny worker functions is what
+# threading state through single-expression match arms looks like.
+#
+# `die_any` is the whole error story: the corpus this parser exists to prove
+# itself on is already well-formed, so an error prints and exits. Its
+# recursive tail call is what makes it polymorphic — the call never runs,
+# but it lets the one function fail at every type.
+
+import "token"
+import "ast"
+
+type PR(a)
+  PR(a, List(Token))
+
+type SelItem
+  SIArm(SArm)
+  SIDef(Expr)
+
+fn die_any(msg, ln) =
+  println("parse error at line " + int_to_str(ln) + ": " + msg)
+  exit(1)
+  die_any(msg, ln)
+
+fn p_line(ts) = match ts
+  Cons(Tk(_, ln), _) -> ln
+  Nil -> 0
+
+fn starts_upper(n) = str_len(n) > 0 && str_get(n, 0) >= 65 && str_get(n, 0) <= 90
+
+# ---- small expectations -----------------------------------------------------
+
+fn expect_lp(ts, ctx) = match ts
+  Cons(Tk(TkLParen, _), r) -> r
+  _ -> die_any("expected `(` " + ctx, p_line(ts))
+
+fn expect_rp(ts, ctx) = match ts
+  Cons(Tk(TkRParen, _), r) -> r
+  _ -> die_any("expected `)` " + ctx, p_line(ts))
+
+fn expect_arrow(ts, ctx) = match ts
+  Cons(Tk(TkArrow, _), r) -> r
+  _ -> die_any("expected `->` " + ctx, p_line(ts))
+
+fn expect_eq(ts) = match ts
+  Cons(Tk(TkEq, _), r) -> r
+  _ -> die_any("expected `=` before the function body", p_line(ts))
+
+fn expect_indent(ts, ctx) = match ts
+  Cons(Tk(TkIndent, _), r) -> r
+  _ -> die_any("expected an indented block " + ctx, p_line(ts))
+
+fn p_ident(ts, ctx) = match ts
+  Cons(Tk(TkIdent(n), _), r) -> PR(n, r)
+  _ -> die_any("expected " + ctx, p_line(ts))
+
+fn p_uident(ts, ctx) = match p_ident(ts, ctx)
+  PR(n, r) -> if starts_upper(n) then PR(n, r) else die_any("expected " + ctx + "; `" + n + "` must start with an uppercase letter", p_line(ts))
+
+fn p_lident(ts, ctx) = match p_ident(ts, ctx)
+  PR(n, r) -> if starts_upper(n) then die_any("function names must start with a lowercase letter (found `" + n + "`)", p_line(ts)) else PR(n, r)
+
+# ---- generic comma lists and layout blocks ----------------------------------
+
+fn cons_pr(x, pr) = match pr
+  PR(xs, ts) -> PR(Cons(x, xs), ts)
+
+fn p_comma(ts, itemf) = p_comma_loop(itemf(ts), itemf)
+
+fn p_comma_loop(pr, itemf) = match pr
+  PR(x, ts) -> p_comma_step(x, ts, itemf)
+
+fn p_comma_step(x, ts, itemf) = match ts
+  Cons(Tk(TkComma, _), r) -> cons_pr(x, p_comma_loop(itemf(r), itemf))
+  _ -> PR(Cons(x, Nil), ts)
+
+# One item per line under an Indent; the Dedent is consumed on the way out.
+fn p_block_items(ts, itemf) = p_bi_loop(itemf(ts), itemf)
+
+fn p_bi_loop(pr, itemf) = match pr
+  PR(x, ts) -> p_bi_step(x, ts, itemf)
+
+fn p_bi_step(x, ts, itemf) = match ts
+  Cons(Tk(TkNewline, _), r) -> p_bi_nl(x, r, itemf)
+  Cons(Tk(TkDedent, _), r) -> PR(Cons(x, Nil), r)
+  _ -> die_any("expected end of line in block", p_line(ts))
+
+fn p_bi_nl(x, ts, itemf) = match ts
+  Cons(Tk(TkDedent, _), r) -> PR(Cons(x, Nil), r)
+  _ -> cons_pr(x, p_bi_loop(itemf(ts), itemf))
+
+# ---- types ------------------------------------------------------------------
+
+fn p_type(ts, ctx) = match ts
+  Cons(Tk(TkIdent(n), ln), r) -> p_type_args(n, r, ln)
+  _ -> die_any("expected " + ctx, p_line(ts))
+
+fn p_type_args(n, ts, ln) = match ts
+  Cons(Tk(TkLParen, _), r) -> p_type_fin(n, p_targs(r), ln)
+  _ -> p_type_ret(n, Nil, ts, ln)
+
+fn p_targs(ts) = match ts
+  Cons(Tk(TkRParen, _), r) -> PR(Nil, r)
+  _ -> close_rp(p_comma(ts, \t -> p_type(t, "a type argument")), "to close the type argument list")
+
+fn close_rp(pr, ctx) = match pr
+  PR(x, ts) -> PR(x, expect_rp(ts, ctx))
+
+fn p_type_fin(n, pr, ln) = match pr
+  PR(args, ts) -> p_type_ret(n, args, ts, ln)
+
+# `Fn(I32) -> I32`: the arrow binds to the callback, exactly as in Rust.
+fn p_type_ret(n, args, ts, ln) = if str_cmp(n, "Fn") == 0 then p_fn_arrow(n, args, ts, ln) else PR(TR(n, args, None, ln), ts)
+
+fn p_fn_arrow(n, args, ts, ln) = match ts
+  Cons(Tk(TkArrow, _), r) -> tr_with_ret(n, args, p_type(r, "a callback's result type after `->`"), ln)
+  _ -> PR(TR(n, args, None, ln), ts)
+
+fn tr_with_ret(n, args, pr, ln) = match pr
+  PR(rt, ts) -> PR(TR(n, args, Some(rt), ln), ts)
+
+fn p_opt_ret(ts) = match ts
+  Cons(Tk(TkArrow, _), r) -> opt_tr(p_type(r, "a return type after `->`"))
+  _ -> PR(None, ts)
+
+fn opt_tr(pr) = match pr
+  PR(t, ts) -> PR(Some(t), ts)
+
+# ---- expressions ------------------------------------------------------------
+
+fn p_expr(ts) = p_pipe_loop(p_or(ts))
+
+fn p_pipe_loop(pr) = match pr
+  PR(l, ts) -> p_pipe_step(l, ts)
+
+fn p_pipe_step(l, ts) = match ts
+  Cons(Tk(TkPipeGt, ln), r) -> p_pipe_loop(pipe_join(l, p_or(r), ln))
+  _ -> PR(l, ts)
+
+fn pipe_join(l, pr, opln) = match pr
+  PR(rhs, ts) -> PR(pipe_expr(l, rhs, opln), ts)
+
+fn pipe_expr(l, rhs, opln) = match rhs
+  EVar(n, ln) -> ECall(n, Cons(l, Nil), ln, true)
+  ECall(n, args, ln, _) -> ECall(n, Cons(l, args), ln, true)
+  _ -> die_any("right side of `|>` must be a function name or call", opln)
+
+fn p_or(ts) = p_or_loop(p_and(ts))
+
+fn p_or_loop(pr) = match pr
+  PR(l, ts) -> p_or_step(l, ts)
+
+fn p_or_step(l, ts) = match ts
+  Cons(Tk(TkPipePipe, _), r) -> p_or_loop(or_join(l, p_and(r)))
+  _ -> PR(l, ts)
+
+fn or_join(l, pr) = match pr
+  PR(rhs, ts) -> PR(EIf(l, EBool(true), rhs), ts)
+
+fn p_and(ts) = p_and_loop(p_cmp(ts))
+
+fn p_and_loop(pr) = match pr
+  PR(l, ts) -> p_and_step(l, ts)
+
+fn p_and_step(l, ts) = match ts
+  Cons(Tk(TkAmpAmp, _), r) -> p_and_loop(and_join(l, p_cmp(r)))
+  _ -> PR(l, ts)
+
+fn and_join(l, pr) = match pr
+  PR(rhs, ts) -> PR(EIf(l, rhs, EBool(false)), ts)
+
+# Comparisons do not chain.
+fn p_cmp(ts) = p_cmp2(p_add(ts))
+
+fn p_cmp2(pr) = match pr
+  PR(l, ts) -> p_cmp3(l, ts)
+
+fn p_cmp3(l, ts) = match ts
+  Cons(Tk(TkEqEq, ln), r) -> bin_join(5, l, p_add(r), ln)
+  Cons(Tk(TkNe, ln), r) -> bin_join(6, l, p_add(r), ln)
+  Cons(Tk(TkLt, ln), r) -> bin_join(7, l, p_add(r), ln)
+  Cons(Tk(TkLe, ln), r) -> bin_join(8, l, p_add(r), ln)
+  Cons(Tk(TkGt, ln), r) -> bin_join(9, l, p_add(r), ln)
+  Cons(Tk(TkGe, ln), r) -> bin_join(10, l, p_add(r), ln)
+  _ -> PR(l, ts)
+
+fn bin_join(op, l, pr, ln) = match pr
+  PR(rhs, ts) -> PR(EBin(op, l, rhs, ln), ts)
+
+fn p_add(ts) = p_add_loop(p_mul(ts))
+
+fn p_add_loop(pr) = match pr
+  PR(l, ts) -> p_add_step(l, ts)
+
+fn p_add_step(l, ts) = match ts
+  Cons(Tk(TkPlus, ln), r) -> p_add_loop(bin_join(0, l, p_mul(r), ln))
+  Cons(Tk(TkMinus, ln), r) -> p_add_loop(bin_join(1, l, p_mul(r), ln))
+  _ -> PR(l, ts)
+
+fn p_mul(ts) = p_mul_loop(p_unary(ts))
+
+fn p_mul_loop(pr) = match pr
+  PR(l, ts) -> p_mul_step(l, ts)
+
+fn p_mul_step(l, ts) = match ts
+  Cons(Tk(TkStar, ln), r) -> p_mul_loop(bin_join(2, l, p_unary(r), ln))
+  Cons(Tk(TkSlash, ln), r) -> p_mul_loop(bin_join(3, l, p_unary(r), ln))
+  Cons(Tk(TkPercent, ln), r) -> p_mul_loop(bin_join(4, l, p_unary(r), ln))
+  _ -> PR(l, ts)
+
+# `!e` desugars to `if e then false else true`, exactly as in the Rust parser.
+fn p_unary(ts) = match ts
+  Cons(Tk(TkMinus, _), r) -> neg_pr(p_unary(r))
+  Cons(Tk(TkBang, _), r) -> not_pr(p_unary(r))
+  _ -> p_primary(ts)
+
+fn neg_pr(pr) = match pr
+  PR(e, ts) -> PR(ENeg(e), ts)
+
+fn not_pr(pr) = match pr
+  PR(e, ts) -> PR(EIf(e, EBool(false), EBool(true)), ts)
+
+fn p_primary(ts) = match ts
+  Cons(Tk(TkInt(v), _), r) -> PR(EInt(v), r)
+  Cons(Tk(TkFloat(v), _), r) -> PR(EFloat(v), r)
+  Cons(Tk(TkStr(v), _), r) -> PR(EStr(v), r)
+  Cons(Tk(TkTrue, _), r) -> PR(EBool(true), r)
+  Cons(Tk(TkFalse, _), r) -> PR(EBool(false), r)
+  Cons(Tk(TkIdent(n), ln), Cons(Tk(TkLParen, _), r)) -> call_pr(n, p_args(r), ln)
+  Cons(Tk(TkIdent(n), ln), r) -> PR(EVar(n, ln), r)
+  Cons(Tk(TkLParen, _), r) -> close_rp(p_expr(r), "to close the parenthesized expression")
+  Cons(Tk(TkSpawn, ln), r) -> spawn_pr(p_expr(r), ln)
+  Cons(Tk(TkBackslash, ln), r) -> p_lambda(r, ln)
+  Cons(Tk(TkIf, _), r) -> p_if(r)
+  Cons(Tk(TkMatch, ln), r) -> p_match(r, ln)
+  Cons(Tk(TkSelect, ln), r) -> p_select(r, ln)
+  _ -> die_any("expected an expression", p_line(ts))
+
+fn p_args(ts) = match ts
+  Cons(Tk(TkRParen, _), r) -> PR(Nil, r)
+  _ -> close_rp(p_comma(ts, \t -> p_expr(t)), "to close the argument list")
+
+fn call_pr(n, pr, ln) = match pr
+  PR(args, ts) -> PR(ECall(n, args, ln, false), ts)
+
+fn spawn_pr(pr, ln) = match pr
+  PR(e, ts) -> PR(ESpawn(e, ln), ts)
+
+fn p_lambda(ts, ln) = lam_body(p_comma(ts, \t -> p_ident(t, "a parameter name")), ln)
+
+fn lam_body(pr, ln) = match pr
+  PR(ps, ts) -> lam_fin(ps, p_expr(expect_arrow(ts, "after the lambda parameters")), ln)
+
+fn lam_fin(ps, pr, ln) = match pr
+  PR(b, ts) -> PR(ELambda(ps, b, ln), ts)
+
+# `if` may continue on the next line at `then` or `else`; only Newlines are
+# skipped, and only when the keyword truly follows.
+fn skip_nls(ts) = match ts
+  Cons(Tk(TkNewline, _), r) -> skip_nls(r)
+  _ -> ts
+
+fn is_then(ts) = match ts
+  Cons(Tk(TkThen, _), _) -> true
+  _ -> false
+
+fn is_else(ts) = match ts
+  Cons(Tk(TkElse, _), _) -> true
+  _ -> false
+
+fn cw_then(ts) = if is_then(skip_nls(ts)) then skip_nls(ts) else ts
+
+fn cw_else(ts) = if is_else(skip_nls(ts)) then skip_nls(ts) else ts
+
+fn expect_then(ts) = match cw_then(ts)
+  Cons(Tk(TkThen, _), r) -> r
+  _ -> die_any("expected `then` after the `if` condition", p_line(ts))
+
+fn expect_else(ts) = match cw_else(ts)
+  Cons(Tk(TkElse, _), r) -> r
+  _ -> die_any("expected `else` after the `then` branch", p_line(ts))
+
+fn p_if(ts) = p_if2(p_expr(ts))
+
+fn p_if2(pr) = match pr
+  PR(c, ts) -> p_if3(c, p_expr(expect_then(ts)))
+
+fn p_if3(c, pr) = match pr
+  PR(t, ts) -> p_if4(c, t, p_expr(expect_else(ts)))
+
+fn p_if4(c, t, pr) = match pr
+  PR(e, ts) -> PR(EIf(c, t, e), ts)
+
+# ---- patterns and match -----------------------------------------------------
+
+fn pat_try(ts) = match ts
+  Cons(Tk(TkInt(v), _), r) -> Some(PR(PIntL(v), r))
+  Cons(Tk(TkMinus, _), Cons(Tk(TkInt(v), _), r)) -> Some(PR(PIntL("-" + v), r))
+  Cons(Tk(TkIdent(n), _), r) -> pat_id(n, r)
+  _ -> None
+
+fn pat_id(n, ts) = if str_cmp(n, "_") == 0 then Some(PR(PWild, ts)) else if starts_upper(n) then pat_ctor(n, ts) else Some(PR(PVar(n), ts))
+
+fn pat_ctor(n, ts) = match ts
+  Cons(Tk(TkLParen, _), r) -> pat_args(n, pat_try(r), Nil)
+  _ -> Some(PR(PCtor(n, Nil), ts))
+
+fn pat_args(n, o, acc) = match o
+  Some(pr) -> pat_args2(n, pr, acc)
+  None -> None
+
+fn pat_args2(n, pr, acc) = match pr
+  PR(p, ts) -> pat_args3(n, Cons(p, acc), ts)
+
+fn pat_args3(n, acc, ts) = match ts
+  Cons(Tk(TkComma, _), r) -> pat_args(n, pat_try(r), acc)
+  Cons(Tk(TkRParen, _), r) -> Some(PR(PCtor(n, reverse(acc)), r))
+  _ -> None
+
+fn p_pat(ts) = match pat_try(ts)
+  Some(pr) -> pr
+  None -> die_any("expected a pattern", p_line(ts))
+
+fn p_arm(ts) = arm_fin(p_pat(ts), p_line(ts))
+
+fn arm_fin(pr, ln) = match pr
+  PR(p, ts) -> arm_body(p, p_expr(expect_arrow(ts, "after the pattern in a match arm")), ln)
+
+fn arm_body(p, pr, ln) = match pr
+  PR(b, ts) -> PR(Arm(p, b, ln), ts)
+
+fn p_match(ts, ln) = p_match2(p_expr(ts), ln)
+
+fn p_match2(pr, ln) = match pr
+  PR(sc, ts) -> p_match3(sc, ts, ln)
+
+fn p_match3(sc, ts, ln) = match ts
+  Cons(Tk(TkIndent, _), r) -> match_fin(sc, p_block_items(r, \t -> p_arm(t)), ln)
+  _ -> match_fin(sc, p_arms_inline(p_arm(ts)), ln)
+
+fn match_fin(sc, pr, ln) = match pr
+  PR(arms, ts) -> PR(EMatch(sc, arms, ln), ts)
+
+# Inline arms: nothing else can continue an expression with `pattern ->`, so
+# trying one more is unambiguous — and giving up is not an error.
+fn p_arms_inline(pr) = match pr
+  PR(a, ts) -> p_arms_more(Cons(a, Nil), ts)
+
+fn p_arms_more(acc, ts) = match arm_soft(ts)
+  Some(pr) -> p_arms_next(acc, pr)
+  None -> PR(reverse(acc), ts)
+
+fn p_arms_next(acc, pr) = match pr
+  PR(a, ts) -> p_arms_more(Cons(a, acc), ts)
+
+fn arm_soft(ts) = match pat_try(ts)
+  Some(pr) -> arm_soft2(pr, p_line(ts))
+  None -> None
+
+fn arm_soft2(pr, ln) = match pr
+  PR(p, ts) -> arm_soft3(p, ts, ln)
+
+fn arm_soft3(p, ts, ln) = match ts
+  Cons(Tk(TkArrow, _), r) -> Some(arm_body(p, p_expr(r), ln))
+  _ -> None
+
+# ---- select -----------------------------------------------------------------
+
+fn p_select(ts, ln) = match ts
+  Cons(Tk(TkIndent, _), r) -> p_sel_block(r, Nil, None, ln)
+  _ -> p_sel_inline(p_sel_item(ts), Nil, None, ln)
+
+fn p_sel_block(ts, arms, def, ln) = p_sel_took(p_sel_item(ts), arms, def, ln)
+
+fn p_sel_took(pr, arms, def, ln) = match pr
+  PR(item, ts) -> p_sel_after(sel_add(item, arms, def, ln), ts, ln)
+
+fn p_sel_after(ad, ts, ln) = match ts
+  Cons(Tk(TkNewline, _), r) -> p_sel_nl(ad, r, ln)
+  Cons(Tk(TkDedent, _), r) -> sel_fin(ad, r, ln)
+  _ -> die_any("expected end of line after a select arm", p_line(ts))
+
+fn p_sel_nl(ad, ts, ln) = match ts
+  Cons(Tk(TkDedent, _), r) -> sel_fin(ad, r, ln)
+  _ -> p_sel_block2(ad, ts, ln)
+
+fn p_sel_block2(ad, ts, ln) = match ad
+  AD(arms, def) -> p_sel_block(ts, arms, def, ln)
+
+type AD
+  AD(List(SArm), Option(Expr))
+
+fn sel_add(item, arms, def, ln) = match item
+  SIArm(a) -> AD(Cons(a, arms), def)
+  SIDef(e) -> sel_set_def(arms, def, e, ln)
+
+fn sel_set_def(arms, def, e, ln) = match def
+  None -> AD(arms, Some(e))
+  Some(_) -> die_any("`select` can only have one `default` arm", ln)
+
+fn sel_fin(ad, ts, ln) = match ad
+  AD(arms, def) -> sel_check(reverse(arms), def, ts, ln)
+
+fn sel_check(arms, def, ts, ln) = match arms
+  Nil -> die_any("`select` needs at least one channel arm", ln)
+  Cons(_, _) -> PR(ESelect(arms, def, ln), ts)
+
+# The inline form: one strict item, then nothing — the corpus never writes
+# inline selects, so one arm satisfies the grammar's minimum honestly.
+fn p_sel_inline(pr, arms, def, ln) = match pr
+  PR(item, ts) -> sel_fin(sel_add(item, arms, def, ln), ts, ln)
+
+fn p_sel_item(ts) = match ts
+  Cons(Tk(TkIdent(n), ln), Cons(Tk(TkArrow, _), r)) -> p_sel_default(n, r, ln, ts)
+  Cons(Tk(TkIdent(n), ln), Cons(Tk(TkEq, _), r)) -> p_sel_bound(n, r, ln)
+  _ -> p_sel_call(p_primary(ts), None, p_line(ts))
+
+fn p_sel_default(n, ts, ln, orig) = if str_cmp(n, "default") == 0 then def_pr(p_expr(ts)) else p_sel_call(p_primary(orig), None, ln)
+
+fn def_pr(pr) = match pr
+  PR(e, ts) -> PR(SIDef(e), ts)
+
+fn p_sel_bound(n, ts, ln) = p_sel_call(p_primary(ts), Some(n), ln)
+
+fn p_sel_call(pr, bind, ln) = match pr
+  PR(call, ts) -> p_sel_op(sel_op_of(call, bind, ln), ts, ln)
+
+fn sel_op_of(call, bind, ln) = match call
+  ECall(n, args, _, _) -> sel_op_named(n, args, bind, ln)
+  _ -> die_any("each `select` arm must be `recv(ch)`, `send(ch, v)` or `default`", ln)
+
+fn sel_op_named(n, args, bind, ln) = if str_cmp(n, "recv") == 0 then sel_recv(args, bind, ln) else if str_cmp(n, "send") == 0 then sel_send(args, bind, ln) else die_any("each `select` arm must be `recv(ch)`, `send(ch, v)` or `default`", ln)
+
+fn sel_recv(args, bind, ln) = match args
+  Cons(ch, Nil) -> SRecv(ch, bind)
+  _ -> die_any("`recv` takes one channel", ln)
+
+fn sel_send(args, bind, ln) = match bind
+  Some(_) -> die_any("a `send` arm produces no value to bind", ln)
+  None -> sel_send2(args, ln)
+
+fn sel_send2(args, ln) = match args
+  Cons(ch, Cons(v, Nil)) -> SSend(ch, v)
+  _ -> die_any("`send` takes a channel and a value", ln)
+
+fn p_sel_op(op, ts, ln) = sel_item_fin(op, p_expr(expect_arrow(ts, "after the select arm's channel operation")), ln)
+
+fn sel_item_fin(op, pr, ln) = match pr
+  PR(b, ts) -> PR(SIArm(SArm(op, b, ln)), ts)
+
+# ---- statements and bodies --------------------------------------------------
+
+fn p_stmt(ts) = match ts
+  Cons(Tk(TkIdent(n), ln), Cons(Tk(TkEq, _), r)) -> bind_pr(n, p_expr(r), ln)
+  _ -> sexpr_pr(p_expr(ts))
+
+fn bind_pr(n, pr, ln) = match pr
+  PR(e, ts) -> PR(SBind(n, e, ln), ts)
+
+fn sexpr_pr(pr) = match pr
+  PR(e, ts) -> PR(SExpr(e), ts)
+
+fn p_body(ts) = match ts
+  Cons(Tk(TkIndent, _), r) -> block_pr(p_block_items(r, \t -> p_stmt(t)))
+  _ -> p_expr(ts)
+
+fn block_pr(pr) = match pr
+  PR(ss, ts) -> PR(EBlock(ss), ts)
+
+# ---- declarations -----------------------------------------------------------
+
+fn p_param(ts) = match ts
+  Cons(Tk(TkIdent(n), _), Cons(Tk(TkColon, _), r)) -> par_ann(n, p_type(r, "a parameter type after `:`"))
+  Cons(Tk(TkIdent(n), _), r) -> PR(Par(n, None), r)
+  _ -> die_any("expected a parameter name", p_line(ts))
+
+fn par_ann(n, pr) = match pr
+  PR(t, ts) -> PR(Par(n, Some(t)), ts)
+
+fn p_params(ts) = match ts
+  Cons(Tk(TkRParen, _), r) -> PR(Nil, r)
+  _ -> close_rp(p_comma(ts, \t -> p_param(t)), "to close the parameter list")
+
+fn p_fndef(ts, ex, ln) = p_fn2(p_lident(ts, "a function name after `fn`"), ex, ln)
+
+fn p_fn2(pr, ex, ln) = match pr
+  PR(name, ts) -> p_fn3(name, p_params(expect_lp(ts, "after the function name")), ex, ln)
+
+fn p_fn3(name, pr, ex, ln) = match pr
+  PR(ps, ts) -> p_fn4(name, ps, p_opt_ret(ts), ex, ln)
+
+fn p_fn4(name, ps, pr, ex, ln) = match pr
+  PR(ret, ts) -> p_fn5(name, ps, ret, p_body(expect_eq(ts)), ex, ln)
+
+fn p_fn5(name, ps, ret, pr, ex, ln) = match pr
+  PR(b, ts) -> PR(FnD(name, ex, ps, ret, b, ln), ts)
+
+fn p_field(ts) = match ts
+  Cons(Tk(TkIdent(n), _), Cons(Tk(TkColon, _), r)) -> fld_named(n, p_type(r, "a field type after `:`"))
+  Cons(Tk(TkIdent(n), fln), Cons(Tk(TkLParen, _), r)) -> fld_app(n, p_targs(r), fln)
+  Cons(Tk(TkIdent(n), fln), r) -> PR(Fld(None, TR(n, Nil, None, fln)), r)
+  _ -> die_any("expected a field", p_line(ts))
+
+fn fld_named(n, pr) = match pr
+  PR(t, ts) -> PR(Fld(Some(n), t), ts)
+
+fn fld_app(n, pr, fln) = match pr
+  PR(args, ts) -> PR(Fld(None, TR(n, args, None, fln)), ts)
+
+fn p_ctor(ts) = match ts
+  Cons(Tk(TkIdent(n), ln), Cons(Tk(TkLParen, _), r)) -> ctor_fin(n, close_rp(p_comma(r, \t -> p_field(t)), "to close the constructor's field list"), ln, ts)
+  Cons(Tk(TkIdent(n), ln), r) -> ctor_bare(n, r, ln, ts)
+  _ -> die_any("expected a constructor name", p_line(ts))
+
+fn ctor_bare(n, ts, ln, orig) = if starts_upper(n) then PR(Ct(n, Nil, ln), ts) else die_any("expected a constructor name; `" + n + "` must start with an uppercase letter", p_line(orig))
+
+fn ctor_fin(n, pr, ln, orig) = match pr
+  PR(fs, ts) -> ctor_fin2(n, fs, ts, ln, orig)
+
+fn ctor_fin2(n, fs, ts, ln, orig) = if starts_upper(n) then PR(Ct(n, fs, ln), ts) else die_any("expected a constructor name; `" + n + "` must start with an uppercase letter", p_line(orig))
+
+fn p_tparam(ts) = match p_ident(ts, "a type parameter")
+  PR(n, r) -> if starts_upper(n) then die_any("type parameters must be lowercase (found `" + n + "`)", p_line(ts)) else PR(n, r)
+
+fn p_typedef(ts, ln) = p_td2(p_uident(ts, "a type name after `type`"), ln)
+
+fn p_td2(pr, ln) = match pr
+  PR(name, ts) -> p_td3(name, ts, ln)
+
+fn p_td3(name, ts, ln) = match ts
+  Cons(Tk(TkLParen, _), r) -> p_td4(name, close_rp(p_comma(r, \t -> p_tparam(t)), "to close the type parameter list"), ln)
+  _ -> p_td5(name, Nil, ts, ln)
+
+fn p_td4(name, pr, ln) = match pr
+  PR(ps, ts) -> p_td5(name, ps, ts, ln)
+
+fn p_td5(name, ps, ts, ln) = td_fin(name, ps, p_block_items(expect_indent(ts, "— constructors must be indented under `type`"), \t -> p_ctor(t)), ln)
+
+fn td_fin(name, ps, pr, ln) = match pr
+  PR(cs, ts) -> PR(DType(name, ps, cs, ln), ts)
+
+fn p_sig(ts) = sig2(p_ident(ts, "a method name"), p_line(ts))
+
+fn sig2(pr, ln) = match pr
+  PR(n, ts) -> sig3(n, p_sig_params(expect_lp(ts, "after the method name")), ln)
+
+fn p_sig_params(ts) = match ts
+  Cons(Tk(TkRParen, _), r) -> PR(Nil, r)
+  _ -> close_rp(p_comma(ts, \t -> p_type(t, "a parameter type")), "to close the method's parameter list")
+
+fn sig3(n, pr, ln) = match pr
+  PR(ps, ts) -> sig4(n, ps, p_type(expect_arrow(ts, "before the method's return type"), "a return type"), ln)
+
+fn sig4(n, ps, pr, ln) = match pr
+  PR(rt, ts) -> PR(Sig(n, ps, rt, ln), ts)
+
+fn p_traitdef(ts, ln) = p_tr2(p_uident(ts, "a trait name after `trait`"), ln)
+
+fn p_tr2(pr, ln) = match pr
+  PR(name, ts) -> p_tr3(name, p_ident(expect_lp(ts, "after the trait name"), "the trait's type parameter"), ln)
+
+fn p_tr3(name, pr, ln) = match pr
+  PR(param, ts) -> p_tr4(name, param, expect_rp(ts, "to close the trait parameter"), ln)
+
+fn p_tr4(name, param, ts, ln) = tr_fin(name, param, p_block_items(expect_indent(ts, "— method signatures must be indented under `trait`"), \t -> p_sig(t)), ln)
+
+fn tr_fin(name, param, pr, ln) = match pr
+  PR(sigs, ts) -> PR(DTrait(name, param, sigs, ln), ts)
+
+fn p_impl_fn(ts) = match ts
+  Cons(Tk(TkFn, ln), r) -> p_fndef(r, false, ln)
+  _ -> die_any("expected `fn` to begin an impl method", p_line(ts))
+
+fn p_impldef(ts, ln) = p_im2(p_uident(ts, "a trait name after `impl`"), ln)
+
+fn p_im2(pr, ln) = match pr
+  PR(name, ts) -> p_im3(name, p_type(expect_lp(ts, "after the trait name"), "the implementing type"), ln)
+
+fn p_im3(name, pr, ln) = match pr
+  PR(target, ts) -> p_im4(name, target, expect_rp(ts, "to close the impl target"), ln)
+
+fn p_im4(name, target, ts, ln) = im_fin(name, target, p_block_items(expect_indent(ts, "— method definitions must be indented under `impl`"), \t -> p_impl_fn(t)), ln)
+
+fn im_fin(name, target, pr, ln) = match pr
+  PR(fns, ts) -> PR(DImpl(name, target, fns, ln), ts)
+
+fn p_epar(ts) = match ts
+  Cons(Tk(TkIdent(n), _), Cons(Tk(TkColon, _), r)) -> ep_fin(n, p_type(r, "a parameter type"))
+  _ -> die_any("expected a parameter name — foreign parameters must be annotated", p_line(ts))
+
+fn ep_fin(n, pr) = match pr
+  PR(t, ts) -> PR(EP(n, t), ts)
+
+fn p_eparams(ts) = match ts
+  Cons(Tk(TkRParen, _), r) -> PR(Nil, r)
+  _ -> close_rp(p_comma(ts, \t -> p_epar(t)), "to close the parameter list")
+
+fn p_externdef(ts, ln) = match ts
+  Cons(Tk(TkStr(l), _), r) -> p_ex2(Some(l), r, ln)
+  _ -> p_ex2(None, ts, ln)
+
+fn p_ex2(lib, ts, ln) = match ts
+  Cons(Tk(TkFn, _), r) -> p_ex3(lib, p_ident(r, "the C function's name"), ln)
+  _ -> die_any("expected `fn` after `extern`", p_line(ts))
+
+fn p_ex3(lib, pr, ln) = match pr
+  PR(name, ts) -> p_ex4(lib, name, p_eparams(expect_lp(ts, "after the function name")), ln)
+
+fn p_ex4(lib, name, pr, ln) = match pr
+  PR(ps, ts) -> p_ex5(lib, name, ps, p_opt_ret(ts), ln)
+
+fn p_ex5(lib, name, ps, pr, ln) = match pr
+  PR(ret, ts) -> PR(DExtern(name, lib, ps, ret, ln), ts)
+
+fn p_import(ts, ln) = match ts
+  Cons(Tk(TkStr(path), _), r) -> p_imp2(path, r, ln)
+  _ -> die_any("expected a path string after `import`", p_line(ts))
+
+fn p_imp2(path, ts, ln) = match ts
+  Cons(Tk(TkIdent(kw), _), Cons(Tk(TkIdent(a), _), r)) -> p_imp3(path, kw, a, r, ts, ln)
+  _ -> PR(DImport(path, None, ln), ts)
+
+fn p_imp3(path, kw, a, r, orig, ln) = if str_cmp(kw, "as") == 0 then PR(DImport(path, Some(a), ln), r) else PR(DImport(path, None, ln), orig)
+
+# ---- the module -------------------------------------------------------------
+
+fn fn_decl(pr) = match pr
+  PR(f, ts) -> PR(DFn(f), ts)
+
+fn p_export(ts, ln) = match ts
+  Cons(Tk(TkFn, _), r) -> p_fndef(r, true, ln)
+  _ -> die_any("expected `fn` after `export`", p_line(ts))
+
+fn p_module(ts) = p_mod_loop(ts, Nil)
+
+fn p_mod_loop(ts, acc) = match ts
+  Cons(Tk(TkNewline, _), r) -> p_mod_loop(r, acc)
+  Cons(Tk(TkEof, _), _) -> reverse(acc)
+  Cons(Tk(TkImport, ln), r) -> p_mod_cont(p_import(r, ln), acc)
+  Cons(Tk(TkType, ln), r) -> p_mod_cont(p_typedef(r, ln), acc)
+  Cons(Tk(TkTrait, ln), r) -> p_mod_cont(p_traitdef(r, ln), acc)
+  Cons(Tk(TkImpl, ln), r) -> p_mod_cont(p_impldef(r, ln), acc)
+  Cons(Tk(TkExtern, ln), r) -> p_mod_cont(p_externdef(r, ln), acc)
+  Cons(Tk(TkFn, ln), r) -> p_mod_cont(fn_decl(p_fndef(r, false, ln)), acc)
+  Cons(Tk(TkExport, ln), r) -> p_mod_cont(fn_decl(p_export(r, ln)), acc)
+  _ -> die_any("expected `fn`, `type` or `import` at top level", p_line(ts))
+
+fn p_mod_cont(pr, acc) = match pr
+  PR(d, ts) -> p_mod_loop(ts, Cons(d, acc))
