@@ -1,0 +1,349 @@
+# A walkable valley, computed in Rill and rendered through WebGPU.
+#
+# Everything that decides what the world *is* happens here: the terrain and
+# its mesh, where the pines and the crystals stand, how the camera walks,
+# falls and jumps, and the matrices the GPU consumes. The host (`host.js`)
+# owns what wasm cannot: the promise-based device setup, the shaders, and the
+# render passes. The two halves meet at a block of raw memory whose layout is
+# written down below.
+#
+# Exports are pure functions, so the world's state lives in memory Rill
+# allocates once with `alloc_bytes` — deliberately uncounted — and the host
+# carries the pointer back in on every call.
+#
+# State layout, in 4-byte slots from the base pointer:
+#   f32  0..15   view-projection matrix, column-major
+#   f32 16..18   eye position (for lighting and fog)
+#   f32 19, 20   yaw, pitch
+#   f32 21..23   camera foot position
+#   f32 24       vertical velocity   25  grounded flag
+#   f32 32..47   the sun's shadow matrix, column-major (static)
+#   f32 56..58   terrain vertex count, pine count, crystal count
+#   ptr 64..66   terrain mesh, pine instances, crystal instances
+
+extern fn sin(x: Float) -> Float
+
+extern fn cos(x: Float) -> Float
+
+extern fn tan(x: Float) -> Float
+
+extern fn floor(x: Float) -> Float
+
+extern fn sqrt(x: Float) -> Float
+
+extern fn exp(x: Float) -> Float
+
+# ---- the shape of the land -------------------------------------------------
+
+fn fract(x) = x - floor(x)
+
+fn clampf(x, lo, hi) = if x < lo then lo else if x > hi then hi else x
+
+# One pseudo-random number per lattice point; the classic sine hash.
+fn hash2(ix, iz) = fract(sin(ix * 127.1 + iz * 311.7) * 43758.5453)
+
+# Value noise: hashes at the cell corners, blended with a smoothstep.
+fn vnoise(x, z) =
+  ix = floor(x)
+  iz = floor(z)
+  fx = x - ix
+  fz = z - iz
+  ux = fx * fx * (3.0 - 2.0 * fx)
+  uz = fz * fz * (3.0 - 2.0 * fz)
+  a = hash2(ix, iz)
+  b = hash2(ix + 1.0, iz)
+  c = hash2(ix, iz + 1.0)
+  d = hash2(ix + 1.0, iz + 1.0)
+  a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz
+
+# The valley: three octaves of noise, a lake carved from the middle, and a
+# rim that rises toward the edges so the world has a horizon of its own.
+fn height(x, z) =
+  n1 = vnoise(x * 0.035, z * 0.035) * 9.0
+  n2 = vnoise(x * 0.09 + 40.0, z * 0.09) * 4.0
+  n3 = vnoise(x * 0.22, z * 0.22 + 40.0) * 1.4
+  n = n1 + n2 + n3
+  d2 = (x * x + z * z) / 7225.0
+  clampf(n + d2 * d2 * 26.0 - 10.5 * exp(0.0 - (x * x + z * z) / 1400.0), 0.0 - 9.0, 34.0)
+
+# ---- building the mesh -----------------------------------------------------
+#
+# 96 x 96 cells, two triangles each, flat-shaded: every triangle carries its
+# own normal and colour, which is what gives low-poly terrain its facets.
+# A vertex is nine floats — position, normal, colour.
+#
+# The loops here are written as self-recursion whose body is a helper that
+# returns how far to advance: `gen_cells(m, i + cell_done(m, i))`. The call
+# that comes back around must be a tail call and nothing else — the optimizer
+# turns self-tail-recursion into a genuine loop, and a wasm stack is not deep
+# enough to survive it being anything less.
+
+fn grid_n() = 96
+
+fn world_w() = 170.0
+
+fn cell_step() = world_w() / to_float(grid_n())
+
+fn cell_x(i) = to_float(i % grid_n()) * cell_step() - world_w() * 0.5
+
+fn cell_z(i) = to_float(i / grid_n()) * cell_step() - world_w() * 0.5
+
+# The colour of one face, from the height and steepness at its centre:
+# sand, cliff, snow, or two-tone grass. `ny` is the normal's upward
+# component; low means steep.
+fn face_r(h, ny, j) =
+  if h < 0.4 then 0.72 * j else if ny < 0.74 then 0.38 * j else if h > 10.5 then 0.8 * j else 0.16 * j
+
+fn face_g(h, ny, j) =
+  if h < 0.4 then 0.63 * j else if ny < 0.74 then 0.38 * j else if h > 10.5 then 0.8 * j else 0.38 * j
+
+fn face_b(h, ny, j) =
+  if h < 0.4 then 0.45 * j else if ny < 0.74 then 0.46 * j else if h > 10.5 then 0.86 * j else 0.26 * j
+
+fn emit_vert(m, at, x, y, z, nx, ny, nz, h, j) =
+  poke_f32(m, at, x)
+  poke_f32(m, at + 1, y)
+  poke_f32(m, at + 2, z)
+  poke_f32(m, at + 3, nx)
+  poke_f32(m, at + 4, ny)
+  poke_f32(m, at + 5, nz)
+  poke_f32(m, at + 6, face_r(h, ny, j))
+  poke_f32(m, at + 7, face_g(h, ny, j))
+  poke_f32(m, at + 8, face_b(h, ny, j))
+
+# One triangle — 27 floats — from its three corners; the normal is the face's
+# own, which is what "flat-shaded" means.
+fn emit_tri(m, at, x0, y0, z0, x1, y1, z1, x2, y2, z2) =
+  ax = x1 - x0
+  ay = y1 - y0
+  az = z1 - z0
+  bx = x2 - x0
+  by = y2 - y0
+  bz = z2 - z0
+  nx = ay * bz - az * by
+  ny = az * bx - ax * bz
+  nz = ax * by - ay * bx
+  il = 1.0 / sqrt(nx * nx + ny * ny + nz * nz + 0.0000001)
+  h = (y0 + y1 + y2) / 3.0
+  j = 0.93 + 0.14 * hash2(floor(x0 * 3.1), floor(z0 * 3.1))
+  emit_vert(m, at, x0, y0, z0, nx * il, ny * il, nz * il, h, j)
+  emit_vert(m, at + 9, x1, y1, z1, nx * il, ny * il, nz * il, h, j)
+  emit_vert(m, at + 18, x2, y2, z2, nx * il, ny * il, nz * il, h, j)
+
+# Both triangles of one cell; returns 1, which is what advances the loop.
+fn cell_done(m, i) =
+  x = cell_x(i)
+  z = cell_z(i)
+  s = cell_step()
+  y00 = height(x, z)
+  y10 = height(x + s, z)
+  y01 = height(x, z + s)
+  y11 = height(x + s, z + s)
+  at = i * 54
+  emit_tri(m, at, x, y00, z, x, y01, z + s, x + s, y11, z + s)
+  emit_tri(m, at + 27, x, y00, z, x + s, y11, z + s, x + s, y10, z)
+  1
+
+fn gen_cells(m, i) =
+  if i >= grid_n() * grid_n() then 0 else gen_cells(m, i + cell_done(m, i))
+
+# ---- placing the pines and the crystals ------------------------------------
+#
+# Candidate spots come from the same hash as the terrain; each is kept or
+# rejected by where it landed: pines on the grass slopes, crystals near the
+# waterline with a few strays up in the rocks. An instance is eight floats —
+# position, scale, rotation, colour.
+
+fn near_spawn(x, z) = (x + 14.0) * (x + 14.0) + (z + 34.0) * (z + 34.0) < 81.0
+
+fn keep_pine(h, seed) = if h < 1.0 then false else if h > 9.5 then false else seed < 0.22
+
+fn keep_crystal(h, seed) = if h < 0.7 then false else if h > 3.5 then seed < 0.012 else seed < 0.11
+
+fn inst_r(c, kind) =
+  if kind == 0 then 0.1 + c * 0.05 else if c < 0.6 then 1.0 else if c < 0.85 then 0.25 else 0.75
+
+fn inst_g(c, kind) =
+  if kind == 0 then 0.3 + c * 0.1 else if c < 0.6 then 0.72 else if c < 0.85 then 0.95 else 0.45
+
+fn inst_b(c, kind) =
+  if kind == 0 then 0.2 + c * 0.06 else if c < 0.6 then 0.18 else if c < 0.85 then 0.85 else 1.0
+
+fn emit_inst(buf, at, x, y, z, i, kind) =
+  s = hash2(to_float(i), 500.0)
+  c = hash2(to_float(i), 900.0)
+  poke_f32(buf, at, x)
+  poke_f32(buf, at + 1, y)
+  poke_f32(buf, at + 2, z)
+  poke_f32(buf, at + 3, if kind == 0 then 0.85 + s * 0.9 else 0.5 + s * 1.1)
+  poke_f32(buf, at + 4, s * 6.28)
+  poke_f32(buf, at + 5, inst_r(c, kind))
+  poke_f32(buf, at + 6, inst_g(c, kind))
+  poke_f32(buf, at + 7, inst_b(c, kind))
+  1
+
+# Tries candidate `i`; returns 1 if something now stands there.
+fn placed(buf, count, i, kind) =
+  x = (hash2(to_float(i), 7.0 + to_float(kind)) - 0.5) * 152.0
+  z = (hash2(to_float(i), 113.0 + to_float(kind)) - 0.5) * 152.0
+  h = height(x, z)
+  seed = hash2(to_float(i), 311.0 + to_float(kind))
+  keep = if kind == 0 then keep_pine(h, seed) else keep_crystal(h, seed)
+  if near_spawn(x, z) then 0 else if keep then emit_inst(buf, count * 8, x, h, z, i, kind) else 0
+
+fn place(buf, i, count, cap, kind) =
+  if i >= 4200 then count else if count >= cap then count else place(buf, i + 1, count + placed(buf, count, i, kind), cap, kind)
+
+# ---- the sun's matrix ------------------------------------------------------
+#
+# A fixed golden-hour sun. Orthographic view-projection over the whole
+# valley for the shadow pass, column-major like everything the GPU reads.
+# `d` is the direction the light travels; the shader's "toward the sun"
+# is its negation, and `host.js` hard-codes the same three numbers.
+
+fn light_vp(s) =
+  il = 1.0 / sqrt(0.58 * 0.58 + 0.62 * 0.62 + 0.52 * 0.52)
+  dx = 0.58 * il
+  dy = (0.0 - 0.62) * il
+  dz = (0.0 - 0.52) * il
+  hl = sqrt(dx * dx + dz * dz)
+  rx = 0.0 - dz / hl
+  rz = dx / hl
+  ux = 0.0 - rz * dy
+  uy = rz * dx - rx * dz
+  uz = rx * dy
+  inv = 1.0 / 320.0
+  poke_f32(s, 32, rx / 115.0)
+  poke_f32(s, 33, ux / 115.0)
+  poke_f32(s, 34, dx * inv)
+  poke_f32(s, 35, 0.0)
+  poke_f32(s, 36, 0.0)
+  poke_f32(s, 37, uy / 115.0)
+  poke_f32(s, 38, dy * inv)
+  poke_f32(s, 39, 0.0)
+  poke_f32(s, 40, rz / 115.0)
+  poke_f32(s, 41, uz / 115.0)
+  poke_f32(s, 42, dz * inv)
+  poke_f32(s, 43, 0.0)
+  poke_f32(s, 44, 0.0)
+  poke_f32(s, 45, 0.0)
+  poke_f32(s, 46, 149.0 * inv)
+  poke_f32(s, 47, 1.0)
+
+# ---- building the world ----------------------------------------------------
+
+export fn init() -> Ptr =
+  s = alloc_bytes(512)
+  m = alloc_bytes(grid_n() * grid_n() * 54 * 4)
+  pine_buf = alloc_bytes(420 * 32)
+  crystal_buf = alloc_bytes(200 * 32)
+  gen_cells(m, 0)
+  np = place(pine_buf, 0, 0, 420, 0)
+  nc = place(crystal_buf, 0, 0, 200, 1)
+  poke_ptr(s, 64, m)
+  poke_ptr(s, 65, pine_buf)
+  poke_ptr(s, 66, crystal_buf)
+  poke_f32(s, 56, to_float(grid_n() * grid_n() * 6))
+  poke_f32(s, 57, to_float(np))
+  poke_f32(s, 58, to_float(nc))
+  poke_f32(s, 19, 2.75)
+  poke_f32(s, 20, 0.0 - 0.1)
+  poke_f32(s, 21, 0.0 - 14.0)
+  poke_f32(s, 22, height(0.0 - 14.0, 0.0 - 34.0))
+  poke_f32(s, 23, 0.0 - 34.0)
+  light_vp(s)
+  s
+
+export fn terrain(s: Ptr) -> Ptr = peek_ptr(s, 64)
+
+export fn terrain_verts(s: Ptr) -> Int = to_int(peek_f32(s, 56))
+
+export fn pines(s: Ptr) -> Ptr = peek_ptr(s, 65)
+
+export fn pine_count(s: Ptr) -> Int = to_int(peek_f32(s, 57))
+
+export fn crystals(s: Ptr) -> Ptr = peek_ptr(s, 66)
+
+export fn crystal_count(s: Ptr) -> Int = to_int(peek_f32(s, 58))
+
+# ---- one step of the walk --------------------------------------------------
+#
+# `keys` is a bitmask: 1 forward, 2 back, 4 left, 8 right, 16 jump,
+# 32 sprint. Mouse movement arrives in pixels and leaves as radians.
+
+fn walk_axis(keys, plus, minus) =
+  a = if bit_and(keys, plus) == plus then 1.0 else 0.0
+  b = if bit_and(keys, minus) == minus then 1.0 else 0.0
+  a - b
+
+fn jump_vel(keys, grounded, vy) =
+  if bit_and(keys, 16) == 16 then if grounded > 0.5 then 9.5 else vy else vy
+
+export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Float) =
+  yaw = peek_f32(s, 19) + mdx * 0.0026
+  pitch = clampf(peek_f32(s, 20) - mdy * 0.0026, 0.0 - 1.45, 1.45)
+  fx = sin(yaw)
+  fz = 0.0 - cos(yaw)
+  wx = walk_axis(keys, 1, 2) * fx + walk_axis(keys, 8, 4) * (0.0 - fz)
+  wz = walk_axis(keys, 1, 2) * fz + walk_axis(keys, 8, 4) * fx
+  wl = sqrt(wx * wx + wz * wz)
+  step = (if bit_and(keys, 32) == 32 then 16.0 else 7.5) * dt
+  px = clampf(peek_f32(s, 21) + (if wl > 0.01 then wx / wl * step else 0.0), 0.0 - 80.0, 80.0)
+  pz = clampf(peek_f32(s, 23) + (if wl > 0.01 then wz / wl * step else 0.0), 0.0 - 80.0, 80.0)
+  ground = height(px, pz)
+  vy = jump_vel(keys, peek_f32(s, 25), peek_f32(s, 24)) - 26.0 * dt
+  py0 = peek_f32(s, 22) + vy * dt
+  py = if py0 < ground then ground else py0
+  poke_f32(s, 19, yaw)
+  poke_f32(s, 20, pitch)
+  poke_f32(s, 21, px)
+  poke_f32(s, 22, py)
+  poke_f32(s, 23, pz)
+  poke_f32(s, 24, if py0 < ground then 0.0 else vy)
+  poke_f32(s, 25, if py0 < ground then 1.0 else 0.0)
+  camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
+
+# The view-projection matrix, written straight into the state.
+#
+# The basis: forward from yaw and pitch, right flat on the ground, up their
+# cross product. The projection is WebGPU's zero-to-one depth, near 0.1, far
+# 420, and the product with the view collapses because the projection is
+# almost diagonal — each column below is `P * V` worked out by hand.
+fn camera(s, ex, ey, ez, yaw, pitch, aspect) =
+  cp = cos(pitch)
+  dx = sin(yaw) * cp
+  dy = sin(pitch)
+  dz = (0.0 - cos(yaw)) * cp
+  rx = cos(yaw)
+  rz = sin(yaw)
+  ux = 0.0 - rz * dy
+  uy = rz * dx - rx * dz
+  uz = rx * dy
+  bx = 0.0 - dx
+  by = 0.0 - dy
+  bz = 0.0 - dz
+  pb = 1.0 / tan(0.53)
+  pa = pb / aspect
+  pc = 420.0 / (0.1 - 420.0)
+  pd = 0.1 * 420.0 / (0.1 - 420.0)
+  poke_f32(s, 0, pa * rx)
+  poke_f32(s, 1, pb * ux)
+  poke_f32(s, 2, pc * bx)
+  poke_f32(s, 3, 0.0 - bx)
+  poke_f32(s, 4, 0.0)
+  poke_f32(s, 5, pb * uy)
+  poke_f32(s, 6, pc * by)
+  poke_f32(s, 7, 0.0 - by)
+  poke_f32(s, 8, pa * rz)
+  poke_f32(s, 9, pb * uz)
+  poke_f32(s, 10, pc * bz)
+  poke_f32(s, 11, 0.0 - bz)
+  poke_f32(s, 12, pa * (0.0 - (rx * ex + rz * ez)))
+  poke_f32(s, 13, pb * (0.0 - (ux * ex + uy * ey + uz * ez)))
+  poke_f32(s, 14, pc * (0.0 - (bx * ex + by * ey + bz * ez)) + pd)
+  poke_f32(s, 15, bx * ex + by * ey + bz * ez)
+  poke_f32(s, 16, ex)
+  poke_f32(s, 17, ey)
+  poke_f32(s, 18, ez)
+
+fn main() = println("world ready")

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **A world you can walk through, in `examples/webgpu/world/`.** The proof
+  that the wasm target and `export fn` carry real weight: a low-poly valley
+  at dusk — terrain from three octaves of value noise with a lake carved out
+  of the middle, two hundred and sixty pines and a scatter of glowing
+  crystals placed by the same hash, a first-person camera that walks, falls
+  and jumps against the terrain, and every matrix the GPU consumes — all
+  computed in Rill. The mesh is fifty-five thousand flat-shaded vertices
+  written straight into linear memory in seven milliseconds, through loops
+  whose bodies return how far to advance, because on wasm the call that comes
+  back around must be a tail call and nothing else.
+
+  The renderer half exercises most of what WebGPU has: a shadow pass under a
+  fixed golden-hour sun with PCF sampling, a 4x MSAA forward pass, instanced
+  drawing fed directly from the buffers Rill wrote, alpha-blended animated
+  water, additive crystal halos, a compute-shader swarm of twelve hundred
+  fireflies, and a procedural sky with the sun and stars in it. Two lessons
+  the debugging left behind: a texture cannot be sampled in the pass that
+  renders into it, which poisons every frame silently unless an error scope
+  is listening — and `textureSampleCompare` must be reached in uniform
+  control flow, so the shadow lookup samples first and selects after.
+
 - **`export fn`, and a triangle drawn through WebGPU.** The wasm target could
   run a program; now it can *be* a program the host keeps calling. `export fn
   frame(t: Float)` makes `frame` a wasm export, and a module with any export
@@ -29,8 +50,6 @@
   Five million frames leave the module's memory byte-for-byte the same size:
   each frame's buffer recycles through the pool, and the 16 MB the pool maps
   up front is all it ever maps.
-
-
 
 - **A strand that only computes no longer holds its worker to the end of the
   program.** It could before, and everything else on that worker waited for

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Rill · Valley</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #05060c; }
+    canvas { width: 100vw; height: 100vh; display: block; cursor: crosshair; }
+    .hud {
+      position: fixed; left: 20px; top: 18px; color: #e8e4da;
+      font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      user-select: none; pointer-events: none;
+    }
+    .hud h1 { margin: 0; font-size: 15px; letter-spacing: 0.28em; color: #f6c02e; }
+    .hud .sub { color: #9a94b8; }
+    .hud .keys { margin-top: 8px; color: #6f6a8c; }
+    .hud .keys b { color: #c9c3e4; font-weight: 600; }
+    .stat {
+      position: fixed; right: 20px; top: 18px; text-align: right; color: #6f6a8c;
+      font: 12px/1.6 ui-monospace, monospace; pointer-events: none;
+    }
+    .stat b { color: #f6c02e; }
+    .err { position: fixed; inset: 0; display: grid; place-items: center;
+           color: #c9c3e4; font: 14px ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="hud">
+    <h1>RILL &nbsp;VALLEY</h1>
+    <div class="sub">the world below is computed by a functional language</div>
+    <div class="keys"><b>click</b> to look &nbsp;·&nbsp; <b>WASD</b> walk &nbsp;·&nbsp;
+      <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint</div>
+  </div>
+  <div class="stat" id="stat"></div>
+  <script type="module">
+    import { run } from "./host.js";
+    const stat = document.getElementById("stat");
+    let tris = 0;
+    run(document.getElementById("c"), "./world.wasm", fps => {
+      stat.innerHTML = `<b>${fps}</b> fps · ${Math.round(tris / 1000)}k triangles<br>` +
+        `terrain, placement, physics, matrices: <b>world.rill</b> → wasm<br>` +
+        `shadows · MSAA 4x · instancing · compute particles`;
+    }).then(r => { tris = r.tris; }).catch(e => {
+      console.error('SETUP FAILED', e.stack || e);
+      document.body.insertAdjacentHTML("beforeend", `<div class="err">${e.message}</div>`);
+    });
+  </script>
+</body>
+</html>

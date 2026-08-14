@@ -138,6 +138,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `loops.rill` | how repetition is written: tail recursion and folds |
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
+| `webgpu/world/` | a walkable low-poly valley — terrain, physics and matrices in Rill; shadows, MSAA and compute particles on the GPU |
 
 ## How it is built
 
