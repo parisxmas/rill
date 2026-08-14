@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **The valley got weather, and the trees got in the way.** One wind for the
+  whole world — a direction that wanders, a moderate strength that gusts —
+  computed by Rill each frame like everything else the world knows about
+  itself. The lake reads it: its ocean swell became what a lake actually has,
+  short frequent chop clustered around the wind's direction, amplitude
+  following the gusts, foam breaking on the windward shore. The pines read
+  it: crowns lean with the square of the height while trunks stand, and the
+  flutter quickens as the wind does. The grass reads it too. Three effects
+  agreeing about their cause is what makes it weather rather than animation.
+
+  And the player now collides with what stands in the world: trunks and
+  crystals are circles, overlap pushes back to the boundary, and pressing
+  into a tree slides you around it the way a shoulder would. Measured in the
+  harness: three hundred frames of walking straight at a pine, closest
+  approach exactly the trunk radius, to the millimetre.
+
 - **`rill build` generates the embedding, not just the module.** A wasm
   reactor is made to be hosted, so the toolchain now writes the host's
   plumbing beside it: `rill build app.rill --target wasm32-wasip1 -o app`

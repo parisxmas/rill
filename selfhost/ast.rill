@@ -1,0 +1,70 @@
+# Rill's syntax tree, as Rill data. The mirror of the Rust `ast.rs`, with two
+# deliberate differences: numbers keep their source spelling, and `&&`, `||`
+# and `!` arrive here already desugared to `if` — exactly as in the Rust
+# parser — so the printer recognizes the shapes and restores the operators.
+
+# Binary operators, by code: 0 + 1 - 2 * 3 / 4 % 5 == 6 != 7 < 8 <= 9 > 10 >=
+type Expr
+  EInt(Str)
+  EFloat(Str)
+  EStr(Str)
+  EBool(Bool)
+  EVar(Str, Int)
+  ECall(Str, List(Expr), Int, Bool)
+  ENeg(Expr)
+  EBin(Int, Expr, Expr, Int)
+  EIf(Expr, Expr, Expr)
+  EMatch(Expr, List(Arm), Int)
+  ELambda(List(Str), Expr, Int)
+  ESpawn(Expr, Int)
+  ESelect(List(SArm), Option(Expr), Int)
+  EBlock(List(Stmt))
+
+type Stmt
+  SBind(Str, Expr, Int)
+  SExpr(Expr)
+
+type Pat
+  PWild
+  PVar(Str)
+  PIntL(Str)
+  PCtor(Str, List(Pat))
+
+type Arm
+  Arm(Pat, Expr, Int)
+
+type SOp
+  SRecv(Expr, Option(Str))
+  SSend(Expr, Expr)
+
+type SArm
+  SArm(SOp, Expr, Int)
+
+type TypeRef
+  TR(Str, List(TypeRef), Option(TypeRef), Int)
+
+type Par
+  Par(Str, Option(TypeRef))
+
+type Ctor
+  Ct(Str, List(Field), Int)
+
+type Field
+  Fld(Option(Str), TypeRef)
+
+type Sig
+  Sig(Str, List(TypeRef), TypeRef, Int)
+
+type FnD
+  FnD(Str, Bool, List(Par), Option(TypeRef), Expr, Int)
+
+type EPar
+  EP(Str, TypeRef)
+
+type Decl
+  DImport(Str, Option(Str), Int)
+  DType(Str, List(Str), List(Ctor), Int)
+  DTrait(Str, Str, List(Sig), Int)
+  DImpl(Str, TypeRef, List(FnD), Int)
+  DExtern(Str, Option(Str), List(EPar), Option(TypeRef), Int)
+  DFn(FnD)

@@ -28,3 +28,6 @@ python3 -m http.server 8000        # from this directory
 so `host.js` here is nothing but the scene: shaders, passes, tiers.
 
 Click to capture the mouse; WASD to walk, space to jump, shift to sprint.
+Trees and crystals are solid — you slide around them, not through them — and
+the wind that moves the water moves the pines and the grass, because all
+three read the same two numbers Rill computes.

@@ -47,7 +47,7 @@ const UNI = /* wgsl */`
     lvp:  mat4x4f,
     eye:  vec4f,   // xyz eye, w time
     sun:  vec4f,   // xyz light direction, w aspect
-    cam:  vec4f,   // yaw, pitch, unused, unused
+    cam:  vec4f,   // yaw, pitch, wind angle, wind strength
   }
   @group(0) @binding(0) var<uniform> u: U;
 `;
@@ -129,8 +129,7 @@ const TERRAIN = COMMON + /* wgsl */`
   }
 `;
 
-// Pines and crystals share one instanced shader; the `emissive` constant is
-// what tells them apart. Grass gets its own vertex stage for the wind.
+// Crystals: instanced, rigid, emissive.
 const INSTANCED = COMMON + /* wgsl */`
   override emissive: f32 = 0.0;
   struct VOut {
@@ -162,6 +161,39 @@ const INSTANCED = COMMON + /* wgsl */`
   }
 `;
 
+// Pines bend to the wind Rill computes: the offset grows with the square of
+// the height up the tree — trunks stand, crowns lean — plus a flutter whose
+// tempo rises with the gusts.
+const PINE = COMMON + /* wgsl */`
+  struct VOut {
+    @builtin(position) clip: vec4f,
+    @location(0) world: vec3f,
+    @location(1) normal: vec3f,
+    @location(2) color: vec3f,
+  }
+  @vertex fn vs(
+    @location(0) pos: vec3f, @location(1) n: vec3f,
+    @location(2) ipos: vec3f, @location(3) scale: f32,
+    @location(4) rot: f32, @location(5) icol: vec3f,
+  ) -> VOut {
+    let c = cos(rot); let s = sin(rot);
+    var p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
+    let hgt = max(pos.y, 0.0) / 3.6;
+    let dirn = vec2f(cos(u.cam.z), sin(u.cam.z));
+    let flutter = sin(u.eye.w * (1.6 + 2.4 * u.cam.w) + ipos.x * 1.31 + ipos.z * 0.97);
+    let sway = (u.cam.w * hgt * hgt * 0.45 + flutter * 0.09 * u.cam.w * hgt) * scale;
+    p = vec3f(p.x + dirn.x * sway, p.y, p.z + dirn.y * sway);
+    let nr = vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c);
+    var o: VOut;
+    o.clip = u.vp * vec4f(p, 1.0);
+    o.world = p; o.normal = nr; o.color = icol;
+    return o;
+  }
+  @fragment fn fs(v: VOut) -> @location(0) vec4f {
+    return vec4f(lit(v.color, normalize(v.normal), v.world), 1.0);
+  }
+`;
+
 // Grass: normals point up so a blade is lit like the ground it stands on,
 // and the top of each blade leans with a slow wind.
 const GRASS = COMMON + /* wgsl */`
@@ -178,8 +210,10 @@ const GRASS = COMMON + /* wgsl */`
     let c = cos(rot); let s = sin(rot);
     var p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
     let t = u.eye.w;
-    let sway = sin(t * 1.7 + ipos.x * 0.9 + ipos.z * 0.7) * 0.16 * pos.y * scale;
-    p.x += sway; p.z += sway * 0.6;
+    let dirn = vec2f(cos(u.cam.z), sin(u.cam.z));
+    let osc = sin(t * (1.5 + 3.0 * u.cam.w) + ipos.x * 0.9 + ipos.z * 0.7);
+    let sway = (u.cam.w * 0.20 + osc * (0.05 + 0.16 * u.cam.w)) * pos.y * scale;
+    p.x += dirn.x * sway; p.z += dirn.y * sway;
     var o: VOut;
     o.clip = u.vp * vec4f(p, 1.0);
     o.world = p; o.color = icol;
@@ -229,47 +263,46 @@ const SKY = COMMON + /* wgsl */`
   }
 `;
 
-// The water. Gerstner waves — trochoids, not sine sheets: each wave moves
-// vertices horizontally toward its own crests, which is what sharpens them,
-// and its phase speed comes from the gravity relation c = sqrt(g/k). Every
-// vertex carries the exact terrain depth beneath it, computed by Rill, so
-// waves die out in the shallows the way real ones do, the water darkens with
-// depth, and the foam sits on the actual shoreline. The fragment stage adds
-// ripple octaves on top of the geometric normal — detail the mesh never had —
-// then Schlick fresnel against the procedural sky, the sun's glitter, and
-// crest foam where the trochoids pinch.
+// The water. A lake, not an ocean: short, frequent Gerstner waves whose
+// directions cluster around the wind and whose amplitude follows its
+// strength — Rill computes the wind, the shader obeys it. Each wave is still
+// a trochoid with its phase speed from the gravity relation, every vertex
+// still carries the exact terrain depth beneath it (so waves die in the
+// shallows and foam sits on the real shoreline), and ripple octaves on top
+// supply the sun's glitter.
 const WATER = COMMON + /* wgsl */`
   override WAVES: i32 = 5;
   override RIPPLES: i32 = 3;
 
-  fn wdir(i: i32) -> vec2f {
+  // Directions as offsets from the wind's own angle.
+  fn woff(i: i32) -> f32 {
     switch i {
-      case 0:  { return vec2f( 0.96,  0.28); }
-      case 1:  { return vec2f( 0.60, -0.80); }
-      case 2:  { return vec2f(-0.35,  0.94); }
-      case 3:  { return vec2f( 0.05,  1.00); }
-      case 4:  { return vec2f(-0.87, -0.49); }
-      default: { return vec2f( 0.71,  0.71); }
+      case 0:  { return -0.38; }
+      case 1:  { return  0.26; }
+      case 2:  { return -0.12; }
+      case 3:  { return  0.47; }
+      case 4:  { return  0.05; }
+      default: { return -0.55; }
     }
   }
   fn wlen(i: i32) -> f32 {
     switch i {
-      case 0:  { return 31.0; }
-      case 1:  { return 17.0; }
-      case 2:  { return 10.0; }
-      case 3:  { return  5.9; }
-      case 4:  { return  3.6; }
-      default: { return  2.3; }
+      case 0:  { return 6.5; }
+      case 1:  { return 4.0; }
+      case 2:  { return 2.6; }
+      case 3:  { return 1.7; }
+      case 4:  { return 1.1; }
+      default: { return 0.75; }
     }
   }
   fn wamp(i: i32) -> f32 {
     switch i {
-      case 0:  { return 0.34; }
-      case 1:  { return 0.21; }
-      case 2:  { return 0.13; }
-      case 3:  { return 0.07; }
-      case 4:  { return 0.045; }
-      default: { return 0.028; }
+      case 0:  { return 0.050; }
+      case 1:  { return 0.036; }
+      case 2:  { return 0.026; }
+      case 3:  { return 0.018; }
+      case 4:  { return 0.012; }
+      default: { return 0.008; }
     }
   }
 
@@ -285,14 +318,16 @@ const WATER = COMMON + /* wgsl */`
     let p0 = xzd.xy;
     let depth = xzd.z;
     let t = u.eye.w;
-    // Waves feel the bottom: amplitude fades as the water shallows.
-    let ampScale = clamp(depth * 0.55, 0.12, 1.0);
+    // Waves feel the bottom, and the wind: amplitude fades in the shallows
+    // and follows the gusts.
+    let ampScale = clamp(depth * 0.55, 0.12, 1.0) * (0.35 + 0.75 * u.cam.w);
     var p = vec3f(p0.x, 0.0, p0.y);
     var n = vec3f(0.0, 1.0, 0.0);
     var crest = 0.0;
     var norm = 0.0;
     for (var i = 0; i < WAVES; i++) {
-      let d = wdir(i);
+      let ang = u.cam.z + woff(i);
+      let d = vec2f(cos(ang), sin(ang));
       let a = wamp(i) * ampScale;
       let k = 6.28318 / wlen(i);
       let c = sqrt(9.8 / k);
@@ -321,12 +356,13 @@ const WATER = COMMON + /* wgsl */`
   // into the normal. This is where the sun's glitter comes from.
   fn ripple(p: vec2f, t: f32) -> vec3f {
     var n = vec3f(0.0, 0.0, 0.0);
-    var freq = 0.9;
-    var amp = 0.22;
+    var freq = 1.4;
+    var amp = 0.20;
+    let wd = vec2f(cos(u.cam.z), sin(u.cam.z));
     for (var i = 0; i < RIPPLES; i++) {
       let fi = f32(i);
-      let d = normalize(vec2f(sin(fi * 2.4 + 1.2), cos(fi * 1.7 - 0.4)));
-      let ph = dot(d, p) * freq + t * (1.1 + fi * 0.6);
+      let d = normalize(mix(vec2f(sin(fi * 2.4 + 1.2), cos(fi * 1.7 - 0.4)), wd, 0.6));
+      let ph = dot(d, p) * freq + t * (0.7 + fi * 0.5) * (0.5 + u.cam.w);
       n.x -= d.x * amp * cos(ph);
       n.z -= d.y * amp * cos(ph);
       freq *= 2.3;
@@ -363,7 +399,7 @@ const WATER = COMMON + /* wgsl */`
     let speck = fract(sin(dot(floor(v.world.xz * 7.0), vec2f(12.9898, 78.233))) * 43758.5453);
     let shore = (1.0 - smoothstep(0.0, 1.0, v.depth))
               * (0.55 + 0.45 * sin(v.depth * 9.0 - t * 2.1));
-    let crests = smoothstep(0.80, 0.99, v.crest) * 0.55 * (0.5 + 0.5 * speck);
+    let crests = smoothstep(0.84, 0.99, v.crest) * 0.45 * (0.25 + 0.75 * u.cam.w) * (0.5 + 0.5 * speck);
     let foam = clamp(shore + crests, 0.0, 1.0) * (0.55 + 0.45 * speck);
     col = mix(col, vec3f(0.90, 0.94, 0.93) * (0.6 + 0.4 * sh), clamp(foam, 0.0, 0.85));
 
@@ -606,7 +642,7 @@ export async function run(canvas, wasmURL, hud) {
 
   const skyPipe = pipe("sky", SKY, [], { depth: { depthWriteEnabled: false, depthCompare: "less-equal" }, cull: "none" });
   const terrainPipe = pipe("terrain", TERRAIN, terrainLayout);
-  const pinePipe = pipe("pine", INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.0 } });
+  const pinePipe = pipe("pine", PINE, [meshLayout, instLayout]);
   const crystalPipe = pipe("crystal", INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.72 } });
   const grassPipe = pipe("grass", GRASS, [meshLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
@@ -812,6 +848,7 @@ export async function run(canvas, wasmURL, hud) {
     uf[36] = 0.58; uf[37] = -0.62; uf[38] = -0.52;
     uf[39] = canvas.width / canvas.height;
     uf[40] = st[19]; uf[41] = st[20];     // yaw, pitch
+    uf[42] = st[26]; uf[43] = st[27];     // wind angle, wind strength
     device.queue.writeBuffer(uni, 0, uf);
     device.queue.writeBuffer(flyTime, 0, new Float32Array([t, dt, 0, 0]));
 

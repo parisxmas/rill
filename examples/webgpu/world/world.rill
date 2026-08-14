@@ -17,6 +17,7 @@
 #   f32 19, 20   yaw, pitch
 #   f32 21..23   camera foot position
 #   f32 24       vertical velocity   25  grounded flag
+#   f32 26..28   wind: angle, strength, accumulated time
 #   f32 32..47   the sun's shadow matrix, column-major (static)
 #   f32 56..59   terrain vertex count, pine count, crystal count, grass count
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
@@ -295,6 +296,43 @@ export fn free_world(s: Ptr) =
   free_ptr(peek_ptr(s, 67))
   free_ptr(s)
 
+# ---- wind -------------------------------------------------------------------
+#
+# One wind for the whole valley: a direction that wanders and a moderate
+# strength that gusts. The water's ripples, the pines and the grass all read
+# these two numbers — movement agreeing about its cause is what makes it
+# read as weather rather than as three separate effects.
+
+fn wind_angle(t) = 2.1 + 0.5 * sin(t * 0.05) + 0.17 * sin(t * 0.13)
+
+fn wind_strength(t) =
+  g = 0.55 + 0.22 * sin(t * 0.31) + 0.13 * sin(t * 0.83 + 1.7) + 0.06 * sin(t * 2.3)
+  clampf(g, 0.15, 1.0)
+
+# ---- collision --------------------------------------------------------------
+#
+# The player is a circle; a trunk or a crystal is a circle of its own scale.
+# Overlap pushes the player back to the boundary. The camera's position lives
+# in the state, so the loop reads it, resolves one instance, writes it back
+# and moves on — the state block doubling as the accumulator.
+
+fn collide_all(s, buf, n, i, factor) =
+  if i >= n then 0 else collide_all(s, buf, n, i + collide_one(s, buf, i, factor), factor)
+
+fn collide_one(s, buf, i, factor) =
+  ix = peek_f32(buf, i * 8)
+  iz = peek_f32(buf, i * 8 + 2)
+  r = factor * peek_f32(buf, i * 8 + 3) + 0.35
+  dx = peek_f32(s, 21) - ix
+  dz = peek_f32(s, 23) - iz
+  d2 = dx * dx + dz * dz
+  if d2 < r * r && d2 > 0.0001 then push_out(s, ix, iz, dx, dz, sqrt(d2), r) else 1
+
+fn push_out(s, ix, iz, dx, dz, d, r) =
+  poke_f32(s, 21, ix + dx / d * r)
+  poke_f32(s, 23, iz + dz / d * r)
+  1
+
 # ---- one step of the walk --------------------------------------------------
 #
 # `keys` is a bitmask: 1 forward, 2 back, 4 left, 8 right, 16 jump,
@@ -317,19 +355,27 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   wz = walk_axis(keys, 1, 2) * fz + walk_axis(keys, 8, 4) * fx
   wl = sqrt(wx * wx + wz * wz)
   step = (if bit_and(keys, 32) == 32 then 16.0 else 7.5) * dt
-  px = clampf(peek_f32(s, 21) + (if wl > 0.01 then wx / wl * step else 0.0), 0.0 - 80.0, 80.0)
-  pz = clampf(peek_f32(s, 23) + (if wl > 0.01 then wz / wl * step else 0.0), 0.0 - 80.0, 80.0)
+  t = peek_f32(s, 28) + dt
+  px0 = clampf(peek_f32(s, 21) + (if wl > 0.01 then wx / wl * step else 0.0), 0.0 - 80.0, 80.0)
+  pz0 = clampf(peek_f32(s, 23) + (if wl > 0.01 then wz / wl * step else 0.0), 0.0 - 80.0, 80.0)
+  poke_f32(s, 21, px0)
+  poke_f32(s, 23, pz0)
+  collide_all(s, peek_ptr(s, 65), to_int(peek_f32(s, 57)), 0, 0.3)
+  collide_all(s, peek_ptr(s, 66), to_int(peek_f32(s, 58)), 0, 0.55)
+  px = peek_f32(s, 21)
+  pz = peek_f32(s, 23)
   ground = height(px, pz)
   vy = jump_vel(keys, peek_f32(s, 25), peek_f32(s, 24)) - 26.0 * dt
   py0 = peek_f32(s, 22) + vy * dt
   py = if py0 < ground then ground else py0
   poke_f32(s, 19, yaw)
   poke_f32(s, 20, pitch)
-  poke_f32(s, 21, px)
   poke_f32(s, 22, py)
-  poke_f32(s, 23, pz)
   poke_f32(s, 24, if py0 < ground then 0.0 else vy)
   poke_f32(s, 25, if py0 < ground then 1.0 else 0.0)
+  poke_f32(s, 26, wind_angle(t))
+  poke_f32(s, 27, wind_strength(t))
+  poke_f32(s, 28, t)
   camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
 
 # The view-projection matrix, written straight into the state.

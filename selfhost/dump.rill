@@ -1,0 +1,29 @@
+# Token dump, for eyeballing the self-hosted lexer against a source file.
+import "lexer"
+
+fn tok_name(t) = match t
+  Tk(TkEof, _) -> "EOF"
+  Tk(TkNewline, _) -> "NL"
+  Tk(TkIndent, _) -> ">>"
+  Tk(TkDedent, _) -> "<<"
+  Tk(TkIdent(s), _) -> s
+  Tk(TkInt(s), _) -> s
+  Tk(TkFloat(s), _) -> s
+  Tk(TkStr(s), _) -> "\"" + s + "\""
+  Tk(TkFn, _) -> "fn"
+  Tk(TkEq, _) -> "="
+  Tk(TkLParen, _) -> "("
+  Tk(TkRParen, _) -> ")"
+  Tk(_, _) -> "·"
+
+fn show_cm(c) = match c
+  Cm(ln, text, own) -> int_to_str(ln) + (if own then " own " else " trail ") + text
+
+fn report(ts, cs) =
+  println(join(map(ts, \t -> tok_name(t)), " "))
+  println(join(map(cs, \c -> show_cm(c)), "\n"))
+
+fn go(lo) = match lo
+  LO(ts, cs) -> report(ts, cs)
+
+fn main() = go(lex_src(read_file_raw(arg(1))))
