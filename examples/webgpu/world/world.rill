@@ -18,8 +18,8 @@
 #   f32 21..23   camera foot position
 #   f32 24       vertical velocity   25  grounded flag
 #   f32 32..47   the sun's shadow matrix, column-major (static)
-#   f32 56..58   terrain vertex count, pine count, crystal count
-#   ptr 64..66   terrain mesh, pine instances, crystal instances
+#   f32 56..59   terrain vertex count, pine count, crystal count, grass count
+#   ptr 64..67   terrain mesh, pine, crystal and grass instances
 
 extern fn sin(x: Float) -> Float
 
@@ -78,15 +78,13 @@ fn height(x, z) =
 # turns self-tail-recursion into a genuine loop, and a wasm stack is not deep
 # enough to survive it being anything less.
 
-fn grid_n() = 96
-
 fn world_w() = 170.0
 
-fn cell_step() = world_w() / to_float(grid_n())
+fn cell_step(n) = world_w() / to_float(n)
 
-fn cell_x(i) = to_float(i % grid_n()) * cell_step() - world_w() * 0.5
+fn cell_x(i, n) = to_float(i % n) * cell_step(n) - world_w() * 0.5
 
-fn cell_z(i) = to_float(i / grid_n()) * cell_step() - world_w() * 0.5
+fn cell_z(i, n) = to_float(i / n) * cell_step(n) - world_w() * 0.5
 
 # The colour of one face, from the height and steepness at its centre:
 # sand, cliff, snow, or two-tone grass. `ny` is the normal's upward
@@ -131,10 +129,10 @@ fn emit_tri(m, at, x0, y0, z0, x1, y1, z1, x2, y2, z2) =
   emit_vert(m, at + 18, x2, y2, z2, nx * il, ny * il, nz * il, h, j)
 
 # Both triangles of one cell; returns 1, which is what advances the loop.
-fn cell_done(m, i) =
-  x = cell_x(i)
-  z = cell_z(i)
-  s = cell_step()
+fn cell_done(m, i, n) =
+  x = cell_x(i, n)
+  z = cell_z(i, n)
+  s = cell_step(n)
   y00 = height(x, z)
   y10 = height(x + s, z)
   y01 = height(x, z + s)
@@ -144,8 +142,8 @@ fn cell_done(m, i) =
   emit_tri(m, at + 27, x, y00, z, x + s, y11, z + s, x + s, y10, z)
   1
 
-fn gen_cells(m, i) =
-  if i >= grid_n() * grid_n() then 0 else gen_cells(m, i + cell_done(m, i))
+fn gen_cells(m, i, n) =
+  if i >= n * n then 0 else gen_cells(m, i + cell_done(m, i, n), n)
 
 # ---- placing the pines and the crystals ------------------------------------
 #
@@ -160,14 +158,19 @@ fn keep_pine(h, seed) = if h < 1.0 then false else if h > 9.5 then false else se
 
 fn keep_crystal(h, seed) = if h < 0.7 then false else if h > 3.5 then seed < 0.012 else seed < 0.11
 
+fn keep_grass(h, seed) = if h < 0.9 then false else if h > 8.5 then false else seed < 0.85
+
 fn inst_r(c, kind) =
-  if kind == 0 then 0.1 + c * 0.05 else if c < 0.6 then 1.0 else if c < 0.85 then 0.25 else 0.75
+  if kind == 0 then 0.1 + c * 0.05 else if kind == 2 then 0.11 + c * 0.07 else if c < 0.6 then 1.0 else if c < 0.85 then 0.25 else 0.75
 
 fn inst_g(c, kind) =
-  if kind == 0 then 0.3 + c * 0.1 else if c < 0.6 then 0.72 else if c < 0.85 then 0.95 else 0.45
+  if kind == 0 then 0.3 + c * 0.1 else if kind == 2 then 0.3 + c * 0.16 else if c < 0.6 then 0.72 else if c < 0.85 then 0.95 else 0.45
 
 fn inst_b(c, kind) =
-  if kind == 0 then 0.2 + c * 0.06 else if c < 0.6 then 0.18 else if c < 0.85 then 0.85 else 1.0
+  if kind == 0 then 0.2 + c * 0.06 else if kind == 2 then 0.13 + c * 0.09 else if c < 0.6 then 0.18 else if c < 0.85 then 0.85 else 1.0
+
+fn inst_scale(sd, kind) =
+  if kind == 0 then 0.85 + sd * 0.9 else if kind == 2 then 0.55 + sd * 0.8 else 0.5 + sd * 1.1
 
 fn emit_inst(buf, at, x, y, z, i, kind) =
   s = hash2(to_float(i), 500.0)
@@ -175,7 +178,7 @@ fn emit_inst(buf, at, x, y, z, i, kind) =
   poke_f32(buf, at, x)
   poke_f32(buf, at + 1, y)
   poke_f32(buf, at + 2, z)
-  poke_f32(buf, at + 3, if kind == 0 then 0.85 + s * 0.9 else 0.5 + s * 1.1)
+  poke_f32(buf, at + 3, inst_scale(s, kind))
   poke_f32(buf, at + 4, s * 6.28)
   poke_f32(buf, at + 5, inst_r(c, kind))
   poke_f32(buf, at + 6, inst_g(c, kind))
@@ -188,11 +191,11 @@ fn placed(buf, count, i, kind) =
   z = (hash2(to_float(i), 113.0 + to_float(kind)) - 0.5) * 152.0
   h = height(x, z)
   seed = hash2(to_float(i), 311.0 + to_float(kind))
-  keep = if kind == 0 then keep_pine(h, seed) else keep_crystal(h, seed)
+  keep = if kind == 0 then keep_pine(h, seed) else if kind == 2 then keep_grass(h, seed) else keep_crystal(h, seed)
   if near_spawn(x, z) then 0 else if keep then emit_inst(buf, count * 8, x, h, z, i, kind) else 0
 
-fn place(buf, i, count, cap, kind) =
-  if i >= 4200 then count else if count >= cap then count else place(buf, i + 1, count + placed(buf, count, i, kind), cap, kind)
+fn place(buf, i, count, cap, lim, kind) =
+  if i >= lim then count else if count >= cap then count else place(buf, i + 1, count + placed(buf, count, i, kind), cap, lim, kind)
 
 # ---- the sun's matrix ------------------------------------------------------
 #
@@ -232,20 +235,28 @@ fn light_vp(s) =
 
 # ---- building the world ----------------------------------------------------
 
-export fn init() -> Ptr =
+# The world at whatever resolution the machine can afford: the host measures
+# what the GPU keeps up with and asks again. The terrain function is the same
+# at every grid size, so a denser mesh is the same valley drawn finer, and
+# the physics — which sample the function, not the mesh — never notice.
+export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   s = alloc_bytes(512)
-  m = alloc_bytes(grid_n() * grid_n() * 54 * 4)
-  pine_buf = alloc_bytes(420 * 32)
-  crystal_buf = alloc_bytes(200 * 32)
-  gen_cells(m, 0)
-  np = place(pine_buf, 0, 0, 420, 0)
-  nc = place(crystal_buf, 0, 0, 200, 1)
+  m = alloc_bytes(grid * grid * 54 * 4)
+  pine_buf = alloc_bytes(npine * 32)
+  crystal_buf = alloc_bytes(ncrys * 32)
+  grass_buf = alloc_bytes(ngrass * 32)
+  gen_cells(m, 0, grid)
+  np = place(pine_buf, 0, 0, npine, 20000, 0)
+  nc = place(crystal_buf, 0, 0, ncrys, 20000, 1)
+  ng = place(grass_buf, 0, 0, ngrass, 20000, 2)
   poke_ptr(s, 64, m)
   poke_ptr(s, 65, pine_buf)
   poke_ptr(s, 66, crystal_buf)
-  poke_f32(s, 56, to_float(grid_n() * grid_n() * 6))
+  poke_ptr(s, 67, grass_buf)
+  poke_f32(s, 56, to_float(grid * grid * 6))
   poke_f32(s, 57, to_float(np))
   poke_f32(s, 58, to_float(nc))
+  poke_f32(s, 59, to_float(ng))
   poke_f32(s, 19, 2.75)
   poke_f32(s, 20, 0.0 - 0.1)
   poke_f32(s, 21, 0.0 - 14.0)
@@ -265,6 +276,24 @@ export fn pine_count(s: Ptr) -> Int = to_int(peek_f32(s, 57))
 export fn crystals(s: Ptr) -> Ptr = peek_ptr(s, 66)
 
 export fn crystal_count(s: Ptr) -> Int = to_int(peek_f32(s, 58))
+
+export fn grass(s: Ptr) -> Ptr = peek_ptr(s, 67)
+
+export fn grass_count(s: Ptr) -> Int = to_int(peek_f32(s, 59))
+
+# The terrain function itself, for the host to sample: the water mesh carries
+# the exact depth under every vertex, so the shore foam sits where the shore
+# is rather than where a 32-bit re-derivation guesses it might be.
+export fn ground(x: Float, z: Float) -> Float = height(x, z)
+
+# Hands a world back. `alloc_bytes` is malloc, so `free_ptr` is its pair;
+# the host calls this before asking for the valley at another resolution.
+export fn free_world(s: Ptr) =
+  free_ptr(peek_ptr(s, 64))
+  free_ptr(peek_ptr(s, 65))
+  free_ptr(peek_ptr(s, 66))
+  free_ptr(peek_ptr(s, 67))
+  free_ptr(s)
 
 # ---- one step of the walk --------------------------------------------------
 #

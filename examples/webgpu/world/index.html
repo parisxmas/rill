@@ -36,13 +36,16 @@
   <script type="module">
     import { run } from "./host.js";
     const stat = document.getElementById("stat");
-    let tris = 0;
-    run(document.getElementById("c"), "./world.wasm", fps => {
-      stat.innerHTML = `<b>${fps}</b> fps · ${Math.round(tris / 1000)}k triangles<br>` +
+    run(document.getElementById("c"), "./world.wasm", (h) => {
+      const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
+      const lock = h.locked ? "" : " (measuring…)";
+      stat.innerHTML =
+        `<b>${h.gpuName}</b> · quality <b>${h.tier}</b>${lock}<br>` +
+        `<b>${h.fps}</b> fps${gpu} · ${Math.round(h.tris / 1000)}k triangles<br>` +
         `terrain, placement, physics, matrices: <b>world.rill</b> → wasm<br>` +
-        `shadows · MSAA 4x · instancing · compute particles`;
-    }).then(r => { tris = r.tris; }).catch(e => {
-      console.error('SETUP FAILED', e.stack || e);
+        `shadows · MSAA 4x · instancing · gerstner water · compute particles`;
+    }).catch(e => {
+      console.error("SETUP FAILED", e.stack || e);
       document.body.insertAdjacentHTML("beforeend", `<div class="err">${e.message}</div>`);
     });
   </script>

@@ -23,6 +23,26 @@
   is listening — and `textureSampleCompare` must be reached in uniform
   control flow, so the shadow lookup samples first and selects after.
 
+  The demo sizes itself to whatever machine opens it. There is no API that
+  says how fast a GPU is, so it is not asked: the adapter's description picks
+  a starting tier, and measured frame times do the rest — the world is
+  regenerated denser or sparser until the display's own frame budget is
+  spent, which `init` taking the grid and the forest densities as arguments
+  makes cheap enough to do live. The camera survives the world being rebuilt
+  around it. On an Apple M4 the loop settles at 160x160 cells, nine hundred
+  pines, five thousand grass tufts and four thousand fireflies, with the
+  GPU reporting under three milliseconds a frame through `timestamp-query`.
+
+  The water became water. Gerstner trochoids rather than summed sines — the
+  horizontal displacement is what sharpens crests — with phase speed from
+  the gravity relation, amplitude that dies in the shallows, ripple octaves
+  in the fragment stage for the sun's glitter, Schlick fresnel against the
+  same procedural sky the sky pass draws, absorption with depth, and foam
+  where the depth runs out and where the trochoids pinch. Every water vertex
+  carries the exact terrain depth beneath it, asked of Rill's own height
+  function point by point — a 32-bit re-derivation in the shader would have
+  put the shoreline foam where f32 thought the shore was.
+
 - **`export fn`, and a triangle drawn through WebGPU.** The wasm target could
   run a program; now it can *be* a program the host keeps calling. `export fn
   frame(t: Float)` makes `frame` a wasm export, and a module with any export

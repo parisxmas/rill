@@ -1,11 +1,34 @@
 // The renderer half of the valley. Rill (world.wasm) computes the world —
-// mesh, placement, camera, matrices — and this file spends the GPU on it:
-// a shadow pass under a fixed golden-hour sun, a 4x MSAA forward pass with
-// procedural sky, flat-shaded terrain, instanced pines and crystals, animated
-// water, additive crystal glow, and a compute-shader swarm of fireflies.
+// mesh, placement, camera, physics, matrices — and this file spends the GPU
+// on it: a shadow pass under a fixed golden-hour sun, a 4x MSAA forward pass
+// with procedural sky, flat-shaded terrain, instanced pines, crystals and
+// swaying grass, Gerstner-wave water with foam, additive crystal glow, and a
+// compute-shader swarm of fireflies.
 //
-// The two halves meet at one block of wasm memory whose layout world.rill
-// writes down at the top of the file.
+// Nobody's GPU is asked to take anyone's word for what it can do. The
+// adapter's own description picks a starting tier, and then the only honest
+// benchmark there is — this scene, on this machine — decides: frame times
+// are measured, and the world is regenerated denser or sparser until the
+// budget is spent. Rill rebuilds the whole valley in tens of milliseconds,
+// which is what makes re-asking cheap.
+
+// ---- what the machine can afford -------------------------------------------
+
+const TIERS = [
+  { name: "low",    grid:  72, pines: 300, crystals: 120, grass:  800, flies:  500, shadow: 1024, water:  48, dpr: 1.0, waves: 4, ripples: 2 },
+  { name: "medium", grid:  96, pines: 420, crystals: 200, grass: 1500, flies: 1200, shadow: 2048, water:  72, dpr: 1.5, waves: 5, ripples: 3 },
+  { name: "high",   grid: 128, pines: 650, crystals: 300, grass: 3000, flies: 2500, shadow: 2048, water:  96, dpr: 2.0, waves: 6, ripples: 3 },
+  { name: "ultra",  grid: 160, pines: 900, crystals: 380, grass: 5000, flies: 4000, shadow: 4096, water: 128, dpr: 3.0, waves: 6, ripples: 4 },
+];
+
+// A guess to start from, no more: the measurements take over immediately.
+function guessTier(info) {
+  const desc = `${info?.vendor ?? ""} ${info?.architecture ?? ""} ${info?.device ?? ""} ${info?.description ?? ""}`.toLowerCase();
+  if (/swiftshader|llvmpipe|software/.test(desc)) return 0;
+  if (/apple|nvidia|geforce|rtx|radeon rx/.test(desc)) return 2;
+  if (/intel|mali|adreno|powervr/.test(desc)) return 1;
+  return 1;
+}
 
 // ---- just enough WASI for a reactor (browsers ship none) -------------------
 
@@ -41,8 +64,9 @@ function wasiShim(getMemory) {
 
 // ---- shaders ---------------------------------------------------------------
 //
-// One uniform block for everything. `sun` points the way the light travels —
-// the same three numbers world.rill builds its shadow matrix from.
+// `UNI` is the uniform block alone, for the shadow pass — which writes the
+// shadow map and therefore must not be able to see it. Everything else
+// builds on `COMMON`, which adds the map and the lighting helpers.
 
 const UNI = /* wgsl */`
   struct U {
@@ -55,9 +79,6 @@ const UNI = /* wgsl */`
   @group(0) @binding(0) var<uniform> u: U;
 `;
 
-// The shadow pass cannot see these bindings: it *writes* the shadow map, and
-// a texture cannot be sampled in the pass that renders into it. So the depth
-// only shaders build on UNI, everything else on COMMON.
 const COMMON = UNI + /* wgsl */`
   @group(0) @binding(1) var shadowMap: texture_depth_2d;
   @group(0) @binding(2) var shadowSamp: sampler_comparison;
@@ -135,8 +156,8 @@ const TERRAIN = COMMON + /* wgsl */`
   }
 `;
 
-// Pines and crystals share one instanced shader; `emissive` in the instance
-// colour's use is what tells them apart, chosen per pipeline by a constant.
+// Pines and crystals share one instanced shader; the `emissive` constant is
+// what tells them apart. Grass gets its own vertex stage for the wind.
 const INSTANCED = COMMON + /* wgsl */`
   override emissive: f32 = 0.0;
   struct VOut {
@@ -165,6 +186,34 @@ const INSTANCED = COMMON + /* wgsl */`
     let view = v.world - u.eye.xyz;
     let glowFogged = mix(glow, fogColor(view), fogAmount(length(view)));
     return vec4f(mix(base, glowFogged, emissive), 1.0);
+  }
+`;
+
+// Grass: normals point up so a blade is lit like the ground it stands on,
+// and the top of each blade leans with a slow wind.
+const GRASS = COMMON + /* wgsl */`
+  struct VOut {
+    @builtin(position) clip: vec4f,
+    @location(0) world: vec3f,
+    @location(1) color: vec3f,
+  }
+  @vertex fn vs(
+    @location(0) pos: vec3f, @location(1) n: vec3f,
+    @location(2) ipos: vec3f, @location(3) scale: f32,
+    @location(4) rot: f32, @location(5) icol: vec3f,
+  ) -> VOut {
+    let c = cos(rot); let s = sin(rot);
+    var p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
+    let t = u.eye.w;
+    let sway = sin(t * 1.7 + ipos.x * 0.9 + ipos.z * 0.7) * 0.16 * pos.y * scale;
+    p.x += sway; p.z += sway * 0.6;
+    var o: VOut;
+    o.clip = u.vp * vec4f(p, 1.0);
+    o.world = p; o.color = icol;
+    return o;
+  }
+  @fragment fn fs(v: VOut) -> @location(0) vec4f {
+    return vec4f(lit(v.color, vec3f(0.0, 1.0, 0.0), v.world), 1.0);
   }
 `;
 
@@ -207,40 +256,147 @@ const SKY = COMMON + /* wgsl */`
   }
 `;
 
+// The water. Gerstner waves — trochoids, not sine sheets: each wave moves
+// vertices horizontally toward its own crests, which is what sharpens them,
+// and its phase speed comes from the gravity relation c = sqrt(g/k). Every
+// vertex carries the exact terrain depth beneath it, computed by Rill, so
+// waves die out in the shallows the way real ones do, the water darkens with
+// depth, and the foam sits on the actual shoreline. The fragment stage adds
+// ripple octaves on top of the geometric normal — detail the mesh never had —
+// then Schlick fresnel against the procedural sky, the sun's glitter, and
+// crest foam where the trochoids pinch.
 const WATER = COMMON + /* wgsl */`
+  override WAVES: i32 = 5;
+  override RIPPLES: i32 = 3;
+
+  fn wdir(i: i32) -> vec2f {
+    switch i {
+      case 0:  { return vec2f( 0.96,  0.28); }
+      case 1:  { return vec2f( 0.60, -0.80); }
+      case 2:  { return vec2f(-0.35,  0.94); }
+      case 3:  { return vec2f( 0.05,  1.00); }
+      case 4:  { return vec2f(-0.87, -0.49); }
+      default: { return vec2f( 0.71,  0.71); }
+    }
+  }
+  fn wlen(i: i32) -> f32 {
+    switch i {
+      case 0:  { return 31.0; }
+      case 1:  { return 17.0; }
+      case 2:  { return 10.0; }
+      case 3:  { return  5.9; }
+      case 4:  { return  3.6; }
+      default: { return  2.3; }
+    }
+  }
+  fn wamp(i: i32) -> f32 {
+    switch i {
+      case 0:  { return 0.34; }
+      case 1:  { return 0.21; }
+      case 2:  { return 0.13; }
+      case 3:  { return 0.07; }
+      case 4:  { return 0.045; }
+      default: { return 0.028; }
+    }
+  }
+
   struct VOut {
     @builtin(position) clip: vec4f,
     @location(0) world: vec3f,
     @location(1) normal: vec3f,
+    @location(2) depth: f32,
+    @location(3) crest: f32,
   }
-  @vertex fn vs(@location(0) xz: vec2f) -> VOut {
+
+  @vertex fn vs(@location(0) xzd: vec3f) -> VOut {
+    let p0 = xzd.xy;
+    let depth = xzd.z;
     let t = u.eye.w;
-    let y = 0.20 * sin(xz.x * 0.50 + t * 1.3)
-          + 0.16 * sin(xz.y * 0.63 + t * 1.7)
-          + 0.09 * sin((xz.x + xz.y) * 0.35 + t * 2.3);
-    let dx = 0.20 * 0.50 * cos(xz.x * 0.50 + t * 1.3) + 0.09 * 0.35 * cos((xz.x + xz.y) * 0.35 + t * 2.3);
-    let dz = 0.16 * 0.63 * cos(xz.y * 0.63 + t * 1.7) + 0.09 * 0.35 * cos((xz.x + xz.y) * 0.35 + t * 2.3);
+    // Waves feel the bottom: amplitude fades as the water shallows.
+    let ampScale = clamp(depth * 0.55, 0.12, 1.0);
+    var p = vec3f(p0.x, 0.0, p0.y);
+    var n = vec3f(0.0, 1.0, 0.0);
+    var crest = 0.0;
+    var norm = 0.0;
+    for (var i = 0; i < WAVES; i++) {
+      let d = wdir(i);
+      let a = wamp(i) * ampScale;
+      let k = 6.28318 / wlen(i);
+      let c = sqrt(9.8 / k);
+      let f = k * (dot(d, p0) - c * t);
+      let q = min(0.65 / (k * a * f32(WAVES) + 0.001), 1.0 / (k * a * f32(WAVES) + 0.001));
+      p.x += q * a * d.x * cos(f);
+      p.z += q * a * d.y * cos(f);
+      p.y += a * sin(f);
+      let wa = k * a;
+      n.x -= d.x * wa * cos(f);
+      n.z -= d.y * wa * cos(f);
+      n.y -= q * wa * sin(f);
+      crest += (sin(f) * 0.5 + 0.5) * a;
+      norm += a;
+    }
     var o: VOut;
-    o.world = vec3f(xz.x, y, xz.y);
-    o.clip = u.vp * vec4f(o.world, 1.0);
-    o.normal = normalize(vec3f(-dx, 1.0, -dz));
+    o.world = p;
+    o.clip = u.vp * vec4f(p, 1.0);
+    o.normal = normalize(n);
+    o.depth = depth;
+    o.crest = crest / max(norm, 0.001);
     return o;
   }
+
+  // Ripple octaves: directional wavelets far below mesh resolution, summed
+  // into the normal. This is where the sun's glitter comes from.
+  fn ripple(p: vec2f, t: f32) -> vec3f {
+    var n = vec3f(0.0, 0.0, 0.0);
+    var freq = 0.9;
+    var amp = 0.22;
+    for (var i = 0; i < RIPPLES; i++) {
+      let fi = f32(i);
+      let d = normalize(vec2f(sin(fi * 2.4 + 1.2), cos(fi * 1.7 - 0.4)));
+      let ph = dot(d, p) * freq + t * (1.1 + fi * 0.6);
+      n.x -= d.x * amp * cos(ph);
+      n.z -= d.y * amp * cos(ph);
+      freq *= 2.3;
+      amp *= 0.55;
+    }
+    return n;
+  }
+
   @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    let n = normalize(v.normal);
+    let t = u.eye.w;
+    let n = normalize(v.normal + ripple(v.world.xz, t));
     let view = v.world - u.eye.xyz;
     let vdir = normalize(view);
     let L = -normalize(u.sun.xyz);
-    let fresnel = pow(1.0 - max(dot(-vdir, n), 0.0), 3.5);
+
+    // Schlick's fresnel against the same sky the sky pass draws.
+    let cosv = max(dot(-vdir, n), 0.0);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - cosv, 5.0);
     let reflDir = reflect(vdir, n);
-    let refl = skyColor(vec3f(reflDir.x, abs(reflDir.y), reflDir.z), u.eye.w);
-    let deep = vec3f(0.035, 0.13, 0.16);
+    let refl = skyColor(vec3f(reflDir.x, abs(reflDir.y), reflDir.z), t);
+
+    // The body of the water: absorption with depth.
+    let body = mix(vec3f(0.11, 0.37, 0.40), vec3f(0.012, 0.10, 0.13), smoothstep(0.0, 5.5, v.depth));
+
     let sh = shadow(v.world, max(dot(n, L), 0.0));
-    var col = mix(deep, refl, 0.25 + 0.65 * fresnel);
-    let spec = pow(max(dot(reflDir, L), 0.0), 90.0) * sh;
-    col += SUN_COL * spec * 1.4;
+    var col = mix(body, refl, clamp(fresnel * 1.6 + 0.06, 0.0, 1.0));
+
+    // Sun glitter: a tight Blinn lobe on the rippled normal.
+    let hv = normalize(L - vdir);
+    col += SUN_COL * pow(max(dot(n, hv), 0.0), 240.0) * 2.4 * sh;
+
+    // Foam: at the shoreline, where the depth runs out, and on the crests,
+    // where the trochoids pinch. Speckled so it reads as froth, not paint.
+    let speck = fract(sin(dot(floor(v.world.xz * 7.0), vec2f(12.9898, 78.233))) * 43758.5453);
+    let shore = (1.0 - smoothstep(0.0, 1.0, v.depth))
+              * (0.55 + 0.45 * sin(v.depth * 9.0 - t * 2.1));
+    let crests = smoothstep(0.80, 0.99, v.crest) * 0.55 * (0.5 + 0.5 * speck);
+    let foam = clamp(shore + crests, 0.0, 1.0) * (0.55 + 0.45 * speck);
+    col = mix(col, vec3f(0.90, 0.94, 0.93) * (0.6 + 0.4 * sh), clamp(foam, 0.0, 0.85));
+
     col = mix(col, fogColor(view), fogAmount(length(view)));
-    return vec4f(col, 0.88);
+    let alpha = mix(0.78, 0.95, smoothstep(0.0, 4.0, v.depth));
+    return vec4f(col, alpha);
   }
 `;
 
@@ -381,14 +537,19 @@ function crystalMesh() {
   return flatMesh(tris);
 }
 
-function waterMesh(half, seg) {
-  const verts = [];
-  const step = (half * 2) / seg;
-  for (let i = 0; i < seg; i++) for (let j = 0; j < seg; j++) {
-    const x0 = -half + i * step, z0 = -half + j * step, x1 = x0 + step, z1 = z0 + step;
-    verts.push(x0, z0, x0, z1, x1, z1, x0, z0, x1, z1, x1, z0);
+// Three crossed blades, normals up so a tuft is lit like the ground.
+function grassMesh() {
+  const out = [];
+  for (let b = 0; b < 3; b++) {
+    const a = b * Math.PI / 3;
+    const dx = Math.cos(a) * 0.09, dz = Math.sin(a) * 0.09;
+    out.push(
+      -dx, 0, -dz, 0, 1, 0,
+       dx, 0,  dz, 0, 1, 0,
+      dz * 0.3, 0.9, -dx * 0.3, 0, 1, 0,
+    );
   }
-  return new Float32Array(verts);
+  return new Float32Array(out);
 }
 
 // ---- the program -----------------------------------------------------------
@@ -397,8 +558,18 @@ export async function run(canvas, wasmURL, hud) {
   if (!navigator.gpu) throw new Error("this browser has no WebGPU");
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("no GPU adapter");
-  const device = await adapter.requestDevice();
+
+  // The one feature worth asking for: GPU timestamps, so the HUD can show
+  // what a frame costs the GPU rather than what rAF implies.
+  const canTime = adapter.features.has("timestamp-query");
+  const device = await adapter.requestDevice({
+    requiredFeatures: canTime ? ["timestamp-query"] : [],
+  });
   device.addEventListener("uncapturederror", e => console.error("WEBGPU:", e.error.message));
+  const gpuInfo = adapter.info ?? {};
+  const gpuName = [gpuInfo.vendor, gpuInfo.architecture].filter(Boolean).join(" ") || "gpu";
+  const maxTex = adapter.limits.maxTextureDimension2D;
+
   const context = canvas.getContext("webgpu");
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: "opaque" });
@@ -414,50 +585,17 @@ export async function run(canvas, wasmURL, hud) {
   inst.exports._initialize();
   inst.exports.rill_init();
   const E = inst.exports;
-  const state = E.init();
-  const stateF32 = () => new Float32Array(E.memory.buffer, Number(state), 64);
 
-  const terrainVerts = Number(E.terrain_verts(state));
-  const nPines = Number(E.pine_count(state));
-  const nCrystals = Number(E.crystal_count(state));
-
-  const gpuBuf = (data, usage) => {
-    const b = device.createBuffer({ size: (data.byteLength + 3) & ~3, usage: usage | GPUBufferUsage.COPY_DST });
+  const gpuBuf = (data) => {
+    const b = device.createBuffer({ size: (data.byteLength + 3) & ~3, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(b, 0, data);
     return b;
   };
-  const V = GPUBufferUsage.VERTEX;
-  const terrainBuf = gpuBuf(new Float32Array(E.memory.buffer, Number(E.terrain(state)), terrainVerts * 9), V);
-  const pineInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.pines(state)), nPines * 8), V);
-  const crystalInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.crystals(state)), nCrystals * 8), V);
-  const pineBuf = gpuBuf(pineMesh(), V);
-  const crystalBuf = gpuBuf(crystalMesh(), V);
-  const waterBuf = gpuBuf(waterMesh(86, 56), V);
-  const pineVerts = pineMesh().length / 6, crystalVerts = crystalMesh().length / 6;
-  const waterVerts = waterMesh(86, 56).length / 2;
 
-  // Fireflies: anchors scattered over the lower valley, positions computed
-  // on the GPU every frame.
-  const N_FLY = 1200;
-  const flyData = new Float32Array(N_FLY * 8);
-  for (let i = 0; i < N_FLY; i++) {
-    const a = Math.random() * Math.PI * 2, r = 12 + Math.random() * 32;
-    flyData[i * 8] = Math.cos(a) * r;
-    flyData[i * 8 + 1] = 1.0 + Math.random() * 3.5;
-    flyData[i * 8 + 2] = Math.sin(a) * r;
-    flyData[i * 8 + 3] = Math.random();
-  }
-  const flyBuf = device.createBuffer({ size: flyData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(flyBuf, 0, flyData);
+  // Static GPU objects: uniforms, sampler, small meshes, layouts, and every
+  // pipeline that does not depend on the tier.
+  const uni = device.createBuffer({ size: 52 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-
-  // Uniforms and the shadow map.
-  const uni = device.createBuffer({ size: 48 * 4 + 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  const shadowTex = device.createTexture({
-    size: [2048, 2048], format: "depth32float",
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  const shadowView = shadowTex.createView();
   const shadowSamp = device.createSampler({ compare: "less" });
 
   const bglMain = device.createBindGroupLayout({ entries: [
@@ -465,12 +603,6 @@ export async function run(canvas, wasmURL, hud) {
     { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
     { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "comparison" } },
   ]});
-  const bgMain = device.createBindGroup({ layout: bglMain, entries: [
-    { binding: 0, resource: { buffer: uni } },
-    { binding: 1, resource: shadowView },
-    { binding: 2, resource: shadowSamp },
-  ]});
-
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
   ]});
@@ -478,7 +610,6 @@ export async function run(canvas, wasmURL, hud) {
     { binding: 0, resource: { buffer: uni } },
   ]});
 
-  // Layouts.
   const terrainLayout = [{ arrayStride: 36, attributes: [
     { shaderLocation: 0, offset: 0, format: "float32x3" },
     { shaderLocation: 1, offset: 12, format: "float32x3" },
@@ -500,26 +631,21 @@ export async function run(canvas, wasmURL, hud) {
   const depth = { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" };
   const additive = { color: { srcFactor: "one", dstFactor: "one" }, alpha: { srcFactor: "one", dstFactor: "one" } };
 
-  const pipe = (code, buffers, opts = {}) => device.createRenderPipeline({
-    label: opts.label ?? "unnamed",
-    layout,
-    vertex: { module: device.createShaderModule({ code }), buffers },
-    fragment: { module: device.createShaderModule({ code }), targets: [{ format, blend: opts.blend }] },
+  const pipe = (label, code, buffers, opts = {}) => device.createRenderPipeline({
+    label, layout,
+    vertex: { module: device.createShaderModule({ code }), buffers, constants: opts.constants },
+    fragment: { module: device.createShaderModule({ code }), targets: [{ format, blend: opts.blend }], constants: opts.constants },
     primitive: { cullMode: opts.cull ?? "back" },
     depthStencil: { ...depth, ...opts.depth },
     multisample: MS,
-    ...(opts.constants ? { vertex: { module: device.createShaderModule({ code }), buffers, constants: opts.constants },
-                           fragment: { module: device.createShaderModule({ code }), targets: [{ format, blend: opts.blend }], constants: opts.constants } } : {}),
   });
 
-  const skyPipe = pipe(SKY, [], { label: "sky", depth: { depthWriteEnabled: false, depthCompare: "less-equal" }, cull: "none" });
-  const terrainPipe = pipe(TERRAIN, terrainLayout, { label: "terrain" });
-  const pinePipe = pipe(INSTANCED, [meshLayout, instLayout], { label: "pine", constants: { emissive: 0.0 } });
-  const crystalPipe = pipe(INSTANCED, [meshLayout, instLayout], { label: "crystal", constants: { emissive: 0.72 } });
-  const waterPipe = pipe(WATER, [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }] }],
-    { label: "water", blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: {} }, cull: "none",
-      depth: { depthWriteEnabled: false } });
-  const glowPipe = pipe(GLOW, [instLayout], { label: "glow", blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  const skyPipe = pipe("sky", SKY, [], { depth: { depthWriteEnabled: false, depthCompare: "less-equal" }, cull: "none" });
+  const terrainPipe = pipe("terrain", TERRAIN, terrainLayout);
+  const pinePipe = pipe("pine", INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.0 } });
+  const crystalPipe = pipe("crystal", INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.72 } });
+  const grassPipe = pipe("grass", GRASS, [meshLayout, instLayout], { cull: "none" });
+  const glowPipe = pipe("glow", GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
 
   const flyBgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
@@ -533,8 +659,6 @@ export async function run(canvas, wasmURL, hud) {
     depthStencil: { ...depth, depthWriteEnabled: false },
     multisample: MS,
   });
-  const flyDrawBg = device.createBindGroup({ layout: flyBgl, entries: [{ binding: 0, resource: { buffer: flyBuf } }] });
-
   const simBgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
     { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {} },
@@ -544,36 +668,132 @@ export async function run(canvas, wasmURL, hud) {
     layout: device.createPipelineLayout({ bindGroupLayouts: [simBgl] }),
     compute: { module: device.createShaderModule({ code: FIREFLY_SIM }) },
   });
-  const simBg = device.createBindGroup({ layout: simBgl, entries: [
-    { binding: 0, resource: { buffer: flyBuf } },
-    { binding: 1, resource: { buffer: flyTime } },
-  ]});
 
-  // Shadow pipelines: depth only, front faces are enough.
   const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bglShadow] });
-  const shadowPipe = (code, buffers) => device.createRenderPipeline({
-    label: "shadow",
-    layout: shadowLayout,
+  const shadowPipe = (label, code, buffers) => device.createRenderPipeline({
+    label, layout: shadowLayout,
     vertex: { module: device.createShaderModule({ code }), buffers },
     primitive: { cullMode: "none" },
     depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
   });
-  const shTerrain = shadowPipe(SHADOW_TERRAIN, terrainLayout);
-  const shInst = shadowPipe(SHADOW_INST, [meshLayout, instLayout]);
+  const shTerrain = shadowPipe("shadow-terrain", SHADOW_TERRAIN, terrainLayout);
+  const shInst = shadowPipe("shadow-inst", SHADOW_INST, [meshLayout, instLayout]);
 
-  // MSAA targets, remade when the canvas resizes.
+  const pineData = pineMesh(), crystalData = crystalMesh(), grassData = grassMesh();
+  const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
+  const pineVerts = pineData.length / 6, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 6;
+
+  // GPU frame timing, when the adapter offers it.
+  let qs = null, qResolve = null, qStage = null, qPending = false, gpuMs = 0;
+  if (canTime) {
+    qs = device.createQuerySet({ type: "timestamp", count: 2 });
+    qResolve = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+    qStage = device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  }
+
+  // ---- everything the tier decides, rebuilt when the tier changes ----------
+
+  let tierIdx = guessTier(gpuInfo);
+  let T = null;       // the active tier
+  let state = 0;      // the world, as a pointer into wasm memory
+  let W = null;       // tier-dependent GPU resources
+  const stateF32 = () => new Float32Array(E.memory.buffer, Number(state), 64);
+
+  // The water grid: x, z, and the exact depth of the terrain below each
+  // vertex — Rill's own height function, asked point by point.
+  function waterMesh(half, seg) {
+    const verts = new Float32Array(seg * seg * 6 * 3);
+    const step = (half * 2) / seg;
+    const d = (x, z) => Math.max(-E.ground(x, z), 0.0);
+    let o = 0;
+    for (let i = 0; i < seg; i++) for (let j = 0; j < seg; j++) {
+      const x0 = -half + i * step, z0 = -half + j * step, x1 = x0 + step, z1 = z0 + step;
+      for (const [x, z] of [[x0, z0], [x0, z1], [x1, z1], [x0, z0], [x1, z1], [x1, z0]]) {
+        verts[o++] = x; verts[o++] = z; verts[o++] = d(x, z);
+      }
+    }
+    return verts;
+  }
+
+  function buildWorld(idx) {
+    T = TIERS[idx];
+    // The camera survives the world being rebuilt around it.
+    let cam = null;
+    if (state) { cam = stateF32().slice(19, 26); E.free_world(state); }
+    state = E.init(BigInt(T.grid), BigInt(T.pines), BigInt(T.crystals), BigInt(T.grass));
+    if (cam) stateF32().set(cam, 19);
+
+    if (W) for (const k of ["terrainBuf", "pineInst", "crystalInst", "grassInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
+    const counts = {
+      terrain: Number(E.terrain_verts(state)),
+      pines: Number(E.pine_count(state)),
+      crystals: Number(E.crystal_count(state)),
+      grass: Number(E.grass_count(state)),
+    };
+    W = { counts };
+    W.terrainBuf = gpuBuf(new Float32Array(E.memory.buffer, Number(E.terrain(state)), counts.terrain * 9));
+    W.pineInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.pines(state)), counts.pines * 8));
+    W.crystalInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.crystals(state)), counts.crystals * 8));
+    W.grassInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.grass(state)), counts.grass * 8));
+    W.waterBuf = gpuBuf(waterMesh(86, T.water));
+    W.waterVerts = T.water * T.water * 6;
+
+    // Fireflies at this tier's density.
+    const flyData = new Float32Array(T.flies * 8);
+    for (let i = 0; i < T.flies; i++) {
+      const a = Math.random() * Math.PI * 2, r = 12 + Math.random() * 32;
+      flyData[i * 8] = Math.cos(a) * r;
+      flyData[i * 8 + 1] = 1.0 + Math.random() * 3.5;
+      flyData[i * 8 + 2] = Math.sin(a) * r;
+      flyData[i * 8 + 3] = Math.random();
+    }
+    W.flyBuf = device.createBuffer({ size: flyData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(W.flyBuf, 0, flyData);
+    W.flyDrawBg = device.createBindGroup({ layout: flyBgl, entries: [{ binding: 0, resource: { buffer: W.flyBuf } }] });
+    W.simBg = device.createBindGroup({ layout: simBgl, entries: [
+      { binding: 0, resource: { buffer: W.flyBuf } },
+      { binding: 1, resource: { buffer: flyTime } },
+    ]});
+
+    // The shadow map at this tier's size, within what the adapter allows,
+    // and the bind group that samples it.
+    const shSize = Math.min(T.shadow, maxTex);
+    W.shadowTex = device.createTexture({
+      size: [shSize, shSize], format: "depth32float",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    W.shadowView = W.shadowTex.createView();
+    W.bgMain = device.createBindGroup({ layout: bglMain, entries: [
+      { binding: 0, resource: { buffer: uni } },
+      { binding: 1, resource: W.shadowView },
+      { binding: 2, resource: shadowSamp },
+    ]});
+
+    // The water pipeline carries this tier's wave and ripple counts.
+    W.waterPipe = pipe("water", WATER,
+      [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }],
+      { blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: {} },
+        cull: "none", depth: { depthWriteEnabled: false },
+        constants: { WAVES: T.waves, RIPPLES: T.ripples } });
+
+    W.tris = Math.round((counts.terrain + pineVerts * counts.pines + crystalVerts * counts.crystals + grassVerts * counts.grass) / 3);
+  }
+  buildWorld(tierIdx);
+
+  // MSAA targets, remade when the canvas resizes or the tier's pixel ratio
+  // changes.
   let msaaTex, depthTex;
-  function makeTargets() {
-    msaaTex?.destroy(); depthTex?.destroy();
-    msaaTex = device.createTexture({ size: [canvas.width, canvas.height], sampleCount: 4, format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
-    depthTex = device.createTexture({ size: [canvas.width, canvas.height], sampleCount: 4, format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
-  }
   function resize() {
-    const dpr = Math.min(devicePixelRatio, 2);
+    const dpr = Math.min(devicePixelRatio, T.dpr);
     const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
-    if (w !== canvas.width || h !== canvas.height) { canvas.width = w; canvas.height = h; makeTargets(); }
+    if (w !== canvas.width || h !== canvas.height) {
+      canvas.width = w; canvas.height = h;
+      msaaTex?.destroy(); depthTex?.destroy();
+      msaaTex = device.createTexture({ size: [w, h], sampleCount: 4, format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      depthTex = device.createTexture({ size: [w, h], sampleCount: 4, format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
+    }
   }
-  makeTargets(); resize();
+  resize();
   addEventListener("resize", resize);
 
   // Input.
@@ -586,14 +806,36 @@ export async function run(canvas, wasmURL, hud) {
     if (document.pointerLockElement === canvas) { mdx += e.movementX; mdy += e.movementY; }
   });
 
-  // The frame loop: Rill steps the world, the GPU draws what it says.
+  // The adaptive loop's bookkeeping. The display's own frame interval is the
+  // budget — measured, not assumed, so a 120 Hz screen asks for more.
+  const dts = [];
+  let refresh = 1000 / 60, warm = 0, changes = 0, stable = 0, locked = false;
+  const median = a => [...a].sort((x, y) => x - y)[a.length >> 1];
+
   const uf = new Float32Array(52);
   let last = performance.now(), fps = 0, frames = 0, fpsT = last;
+
   function tick(now) {
     resize();
     const dt = Math.min((now - last) / 1000, 0.05);
+    const dtMs = now - last;
     last = now;
     const t = now / 1000;
+
+    // Settle the tier: warm up, measure, step, lock.
+    warm++;
+    if (warm > 20) {
+      dts.push(dtMs);
+      refresh = Math.min(refresh, Math.max(dtMs, 4));
+      if (!locked && dts.length >= 48) {
+        const med = median(dts);
+        dts.length = 0;
+        if (med < refresh * 1.25 && tierIdx < TIERS.length - 1) { tierIdx++; changes++; buildWorld(tierIdx); }
+        else if (med > refresh * 1.6 && tierIdx > 0) { tierIdx--; changes++; buildWorld(tierIdx); }
+        else stable++;
+        if (changes >= 3 || stable >= 2) locked = true;
+      }
+    }
 
     E.frame(state, dt, mdx, mdy, BigInt(keys), canvas.width / canvas.height);
     mdx = 0; mdy = 0;
@@ -612,19 +854,20 @@ export async function run(canvas, wasmURL, hud) {
     const enc = device.createCommandEncoder();
 
     const sim = enc.beginComputePass();
-    sim.setPipeline(simPipe); sim.setBindGroup(0, simBg);
-    sim.dispatchWorkgroups(Math.ceil(N_FLY / 64));
+    sim.setPipeline(simPipe); sim.setBindGroup(0, W.simBg);
+    sim.dispatchWorkgroups(Math.ceil(T.flies / 64));
     sim.end();
 
     const sh = enc.beginRenderPass({
       colorAttachments: [],
-      depthStencilAttachment: { view: shadowView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
+      depthStencilAttachment: { view: W.shadowView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
+      ...(qs ? { timestampWrites: { querySet: qs, beginningOfPassWriteIndex: 0 } } : {}),
     });
     sh.setBindGroup(0, bgShadow);
-    sh.setPipeline(shTerrain); sh.setVertexBuffer(0, terrainBuf); sh.draw(terrainVerts);
+    sh.setPipeline(shTerrain); sh.setVertexBuffer(0, W.terrainBuf); sh.draw(W.counts.terrain);
     sh.setPipeline(shInst);
-    sh.setVertexBuffer(0, pineBuf); sh.setVertexBuffer(1, pineInst); sh.draw(pineVerts, nPines);
-    sh.setVertexBuffer(0, crystalBuf); sh.setVertexBuffer(1, crystalInst); sh.draw(crystalVerts, nCrystals);
+    sh.setVertexBuffer(0, pineBuf); sh.setVertexBuffer(1, W.pineInst); sh.draw(pineVerts, W.counts.pines);
+    sh.setVertexBuffer(0, crystalBuf); sh.setVertexBuffer(1, W.crystalInst); sh.draw(crystalVerts, W.counts.crystals);
     sh.end();
 
     const pass = enc.beginRenderPass({
@@ -635,26 +878,46 @@ export async function run(canvas, wasmURL, hud) {
       depthStencilAttachment: {
         view: depthTex.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "discard",
       },
+      ...(qs ? { timestampWrites: { querySet: qs, endOfPassWriteIndex: 1 } } : {}),
     });
-    pass.setBindGroup(0, bgMain);
-    pass.setPipeline(terrainPipe); pass.setVertexBuffer(0, terrainBuf); pass.draw(terrainVerts);
+    pass.setBindGroup(0, W.bgMain);
+    pass.setPipeline(terrainPipe); pass.setVertexBuffer(0, W.terrainBuf); pass.draw(W.counts.terrain);
     pass.setPipeline(pinePipe);
-    pass.setVertexBuffer(0, pineBuf); pass.setVertexBuffer(1, pineInst); pass.draw(pineVerts, nPines);
+    pass.setVertexBuffer(0, pineBuf); pass.setVertexBuffer(1, W.pineInst); pass.draw(pineVerts, W.counts.pines);
     pass.setPipeline(crystalPipe);
-    pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, crystalInst); pass.draw(crystalVerts, nCrystals);
+    pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
+    pass.setPipeline(grassPipe);
+    pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.grassInst); pass.draw(grassVerts, W.counts.grass);
     pass.setPipeline(skyPipe); pass.draw(3);
-    pass.setPipeline(waterPipe); pass.setVertexBuffer(0, waterBuf); pass.draw(waterVerts);
-    pass.setPipeline(glowPipe); pass.setVertexBuffer(0, crystalInst); pass.draw(6, nCrystals);
-    pass.setPipeline(flyDrawPipe); pass.setBindGroup(1, flyDrawBg); pass.draw(6, N_FLY);
+    pass.setPipeline(W.waterPipe); pass.setVertexBuffer(0, W.waterBuf); pass.draw(W.waterVerts);
+    pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);
+    pass.setPipeline(flyDrawPipe); pass.setBindGroup(1, W.flyDrawBg); pass.draw(6, T.flies);
     pass.end();
 
+    if (qs) {
+      enc.resolveQuerySet(qs, 0, 2, qResolve, 0);
+      if (!qPending) enc.copyBufferToBuffer(qResolve, 0, qStage, 0, 16);
+    }
     device.queue.submit([enc.finish()]);
 
+    if (qs && !qPending) {
+      qPending = true;
+      qStage.mapAsync(GPUMapMode.READ).then(() => {
+        const [a, b] = new BigInt64Array(qStage.getMappedRange());
+        qStage.unmap();
+        const ms = Number(b - a) / 1e6;
+        if (ms > 0 && ms < 100) gpuMs = gpuMs * 0.9 + ms * 0.1;
+        qPending = false;
+      }).catch(() => { qPending = false; });
+    }
+
     frames++;
-    if (now - fpsT > 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; hud(fps); }
+    if (now - fpsT > 500) {
+      fps = Math.round(frames * 1000 / (now - fpsT));
+      frames = 0; fpsT = now;
+      hud({ fps, gpuMs: qs ? gpuMs : null, tier: T.name, gpuName, tris: W.tris, locked });
+    }
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
-
-  return { tris: terrainVerts / 3 + (pineVerts * nPines + crystalVerts * nCrystals) / 3 };
 }
