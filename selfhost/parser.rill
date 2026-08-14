@@ -111,7 +111,8 @@ fn p_type_fin(n, pr, ln) = match pr
   PR(args, ts) -> p_type_ret(n, args, ts, ln)
 
 # `Fn(I32) -> I32`: the arrow binds to the callback, exactly as in Rust.
-fn p_type_ret(n, args, ts, ln) = if str_cmp(n, "Fn") == 0 then p_fn_arrow(n, args, ts, ln) else PR(TR(n, args, None, ln), ts)
+fn p_type_ret(n, args, ts, ln) =
+  if str_cmp(n, "Fn") == 0 then p_fn_arrow(n, args, ts, ln) else PR(TR(n, args, None, ln), ts)
 
 fn p_fn_arrow(n, args, ts, ln) = match ts
   Cons(Tk(TkArrow, _), r) -> tr_with_ret(n, args, p_type(r, "a callback's result type after `->`"), ln)
@@ -300,7 +301,8 @@ fn pat_try(ts) = match ts
   Cons(Tk(TkIdent(n), _), r) -> pat_id(n, r)
   _ -> None
 
-fn pat_id(n, ts) = if str_cmp(n, "_") == 0 then Some(PR(PWild, ts)) else if starts_upper(n) then pat_ctor(n, ts) else Some(PR(PVar(n), ts))
+fn pat_id(n, ts) =
+  if str_cmp(n, "_") == 0 then Some(PR(PWild, ts)) else if starts_upper(n) then pat_ctor(n, ts) else Some(PR(PVar(n), ts))
 
 fn pat_ctor(n, ts) = match ts
   Cons(Tk(TkLParen, _), r) -> pat_args(n, pat_try(r), Nil)
@@ -416,7 +418,8 @@ fn p_sel_item(ts) = match ts
   Cons(Tk(TkIdent(n), ln), Cons(Tk(TkEq, _), r)) -> p_sel_bound(n, r, ln)
   _ -> p_sel_call(p_primary(ts), None, p_line(ts))
 
-fn p_sel_default(n, ts, ln, orig) = if str_cmp(n, "default") == 0 then def_pr(p_expr(ts)) else p_sel_call(p_primary(orig), None, ln)
+fn p_sel_default(n, ts, ln, orig) =
+  if str_cmp(n, "default") == 0 then def_pr(p_expr(ts)) else p_sel_call(p_primary(orig), None, ln)
 
 fn def_pr(pr) = match pr
   PR(e, ts) -> PR(SIDef(e), ts)
@@ -430,7 +433,8 @@ fn sel_op_of(call, bind, ln) = match call
   ECall(n, args, _, _) -> sel_op_named(n, args, bind, ln)
   _ -> die_any("each `select` arm must be `recv(ch)`, `send(ch, v)` or `default`", ln)
 
-fn sel_op_named(n, args, bind, ln) = if str_cmp(n, "recv") == 0 then sel_recv(args, bind, ln) else if str_cmp(n, "send") == 0 then sel_send(args, bind, ln) else die_any("each `select` arm must be `recv(ch)`, `send(ch, v)` or `default`", ln)
+fn sel_op_named(n, args, bind, ln) =
+  if str_cmp(n, "recv") == 0 then sel_recv(args, bind, ln) else if str_cmp(n, "send") == 0 then sel_send(args, bind, ln) else die_any("each `select` arm must be `recv(ch)`, `send(ch, v)` or `default`", ln)
 
 fn sel_recv(args, bind, ln) = match args
   Cons(ch, Nil) -> SRecv(ch, bind)
@@ -444,7 +448,8 @@ fn sel_send2(args, ln) = match args
   Cons(ch, Cons(v, Nil)) -> SSend(ch, v)
   _ -> die_any("`send` takes a channel and a value", ln)
 
-fn p_sel_op(op, ts, ln) = sel_item_fin(op, p_expr(expect_arrow(ts, "after the select arm's channel operation")), ln)
+fn p_sel_op(op, ts, ln) =
+  sel_item_fin(op, p_expr(expect_arrow(ts, "after the select arm's channel operation")), ln)
 
 fn sel_item_fin(op, pr, ln) = match pr
   PR(b, ts) -> PR(SIArm(SArm(op, b, ln)), ts)
@@ -513,12 +518,14 @@ fn p_ctor(ts) = match ts
   Cons(Tk(TkIdent(n), ln), r) -> ctor_bare(n, r, ln, ts)
   _ -> die_any("expected a constructor name", p_line(ts))
 
-fn ctor_bare(n, ts, ln, orig) = if starts_upper(n) then PR(Ct(n, Nil, ln), ts) else die_any("expected a constructor name; `" + n + "` must start with an uppercase letter", p_line(orig))
+fn ctor_bare(n, ts, ln, orig) =
+  if starts_upper(n) then PR(Ct(n, Nil, ln), ts) else die_any("expected a constructor name; `" + n + "` must start with an uppercase letter", p_line(orig))
 
 fn ctor_fin(n, pr, ln, orig) = match pr
   PR(fs, ts) -> ctor_fin2(n, fs, ts, ln, orig)
 
-fn ctor_fin2(n, fs, ts, ln, orig) = if starts_upper(n) then PR(Ct(n, fs, ln), ts) else die_any("expected a constructor name; `" + n + "` must start with an uppercase letter", p_line(orig))
+fn ctor_fin2(n, fs, ts, ln, orig) =
+  if starts_upper(n) then PR(Ct(n, fs, ln), ts) else die_any("expected a constructor name; `" + n + "` must start with an uppercase letter", p_line(orig))
 
 fn p_tparam(ts) = match p_ident(ts, "a type parameter")
   PR(n, r) -> if starts_upper(n) then die_any("type parameters must be lowercase (found `" + n + "`)", p_line(ts)) else PR(n, r)
@@ -535,7 +542,8 @@ fn p_td3(name, ts, ln) = match ts
 fn p_td4(name, pr, ln) = match pr
   PR(ps, ts) -> p_td5(name, ps, ts, ln)
 
-fn p_td5(name, ps, ts, ln) = td_fin(name, ps, p_block_items(expect_indent(ts, "— constructors must be indented under `type`"), \t -> p_ctor(t)), ln)
+fn p_td5(name, ps, ts, ln) =
+  td_fin(name, ps, p_block_items(expect_indent(ts, "— constructors must be indented under `type`"), \t -> p_ctor(t)), ln)
 
 fn td_fin(name, ps, pr, ln) = match pr
   PR(cs, ts) -> PR(DType(name, ps, cs, ln), ts)
@@ -563,7 +571,8 @@ fn p_tr2(pr, ln) = match pr
 fn p_tr3(name, pr, ln) = match pr
   PR(param, ts) -> p_tr4(name, param, expect_rp(ts, "to close the trait parameter"), ln)
 
-fn p_tr4(name, param, ts, ln) = tr_fin(name, param, p_block_items(expect_indent(ts, "— method signatures must be indented under `trait`"), \t -> p_sig(t)), ln)
+fn p_tr4(name, param, ts, ln) =
+  tr_fin(name, param, p_block_items(expect_indent(ts, "— method signatures must be indented under `trait`"), \t -> p_sig(t)), ln)
 
 fn tr_fin(name, param, pr, ln) = match pr
   PR(sigs, ts) -> PR(DTrait(name, param, sigs, ln), ts)
@@ -580,7 +589,8 @@ fn p_im2(pr, ln) = match pr
 fn p_im3(name, pr, ln) = match pr
   PR(target, ts) -> p_im4(name, target, expect_rp(ts, "to close the impl target"), ln)
 
-fn p_im4(name, target, ts, ln) = im_fin(name, target, p_block_items(expect_indent(ts, "— method definitions must be indented under `impl`"), \t -> p_impl_fn(t)), ln)
+fn p_im4(name, target, ts, ln) =
+  im_fin(name, target, p_block_items(expect_indent(ts, "— method definitions must be indented under `impl`"), \t -> p_impl_fn(t)), ln)
 
 fn im_fin(name, target, pr, ln) = match pr
   PR(fns, ts) -> PR(DImpl(name, target, fns, ln), ts)
@@ -621,7 +631,8 @@ fn p_imp2(path, ts, ln) = match ts
   Cons(Tk(TkIdent(kw), _), Cons(Tk(TkIdent(a), _), r)) -> p_imp3(path, kw, a, r, ts, ln)
   _ -> PR(DImport(path, None, ln), ts)
 
-fn p_imp3(path, kw, a, r, orig, ln) = if str_cmp(kw, "as") == 0 then PR(DImport(path, Some(a), ln), r) else PR(DImport(path, None, ln), orig)
+fn p_imp3(path, kw, a, r, orig, ln) =
+  if str_cmp(kw, "as") == 0 then PR(DImport(path, Some(a), ln), r) else PR(DImport(path, None, ln), orig)
 
 # ---- the module -------------------------------------------------------------
 

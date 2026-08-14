@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **The front end, self-hosted: Rill's lexer, parser and formatter, in Rill.**
+  `selfhost/` holds a complete port of `rill fmt` — the layout-sensitive
+  lexer with its indent stack, the recursive-descent parser, and the
+  canonical printer with comment anchoring and blank-line preservation. The
+  proof is not a test suite but an oracle: `selfhost/check.sh` formats every
+  `.rill` file in the repository with both implementations and diffs each
+  pair. One hundred and twenty files, byte-identical, including the prelude,
+  every example and book chapter, and the self-hosted source itself — which
+  it formats exactly as the Rust formatter does, parenthesization choices
+  and all.
+
+  The port shaped itself around what the language is. State threads through
+  single constructors because there is no mutation; every loop is a
+  self-tail call because that is what a loop is; numbers and strings keep
+  their raw source text, which is both the honest way to reproduce bytes and
+  the reason no float printer had to be written. One `die_any` carries every
+  parse error — its recursive tail call, never reached past `exit`, is what
+  makes one function polymorphic enough to fail at every type. This is the
+  first stage of a compiler that does not need Rust; the type checker is the
+  natural next piece.
+
 - **A Rill user needs no Rust.** `tools/dist.sh` packages the toolchain the
   way compilers ship: `bin/rill` with its native runtime beside it, and
   `lib/rill/wasm32-wasip1/` carrying the wasm runtime and the wasi sysroot.

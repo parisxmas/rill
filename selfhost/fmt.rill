@@ -1,0 +1,22 @@
+# `rill fmt`, self-hosted: lex, parse and print a Rill source file in its one
+# canonical form — the same bytes the Rust formatter produces, which is how
+# this front end proves itself against the original, file by file.
+
+import "lexer"
+import "parser"
+import "printer"
+
+type SC
+  SC(List(Cm), List(Cm))
+
+fn split_cm(cs, own, tr) = match cs
+  Cons(Cm(l, t, o), rest) -> if o then split_cm(rest, Cons(Cm(l, t, o), own), tr) else split_cm(rest, own, Cons(Cm(l, t, o), tr))
+  Nil -> SC(reverse(own), reverse(tr))
+
+fn go(lo) = match lo
+  LO(ts, cs) -> go2(ts, split_cm(cs, Nil, Nil))
+
+fn go2(ts, sc) = match sc
+  SC(own, tr) -> print(print_module(FS("", own, tr, 0), p_module(ts)))
+
+fn main() = go(lex_src(read_file_raw(arg(1))))

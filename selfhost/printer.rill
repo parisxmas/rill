@@ -76,7 +76,8 @@ fn tr_take(o, own, tr, l, line, seen) = match tr
   Cons(Cm(cl, text, ol), rest) -> tr_hit(o, own, tr, l, line, seen, cl, text, ol, rest)
   Nil -> TO(None, FS(o, own, reverse(seen), l))
 
-fn tr_hit(o, own, tr, l, line, seen, cl, text, ol, rest) = if cl == line then TO(Some(text), FS(o, own, append(reverse(seen), rest), l)) else tr_take(o, own, rest, l, line, Cons(Cm(cl, text, ol), seen))
+fn tr_hit(o, own, tr, l, line, seen, cl, text, ol, rest) =
+  if cl == line then TO(Some(text), FS(o, own, append(reverse(seen), rest), l)) else tr_take(o, own, rest, l, line, Cons(Cm(cl, text, ol), seen))
 
 fn push_at(fs, ind, text, ln) = push_at2(tr_on(fs_mark(fs, ln), ln), ind, text)
 
@@ -95,7 +96,8 @@ fn lead_cs(fs, cs, ind) = match cs
   Cons(Cm(cl, text, _), rest) -> lead_cs(fs_push(fs_mark(if had_gap(fs, cl) then fs_blank(fs) else fs, cl), ind, text), rest, ind)
   Nil -> fs
 
-fn lead3(fs, line) = fs_set_last(if had_gap(fs, line) then fs_blank(fs) else fs, if line > 0 then line - 1 else 0)
+fn lead3(fs, line) =
+  fs_set_last(if had_gap(fs, line) then fs_blank(fs) else fs, if line > 0 then line - 1 else 0)
 
 # ---- lines of things --------------------------------------------------------
 
@@ -124,7 +126,8 @@ fn stmt_line(s) = match s
 
 fn wrapp(need, s) = if need then "(" + s + ")" else s
 
-fn bin_sym(op) = if op == 0 then "+" else if op == 1 then "-" else if op == 2 then "*" else if op == 3 then "/" else if op == 4 then "%" else if op == 5 then "==" else if op == 6 then "!=" else if op == 7 then "<" else if op == 8 then "<=" else if op == 9 then ">" else ">="
+fn bin_sym(op) =
+  if op == 0 then "+" else if op == 1 then "-" else if op == 2 then "*" else if op == 3 then "/" else if op == 4 then "%" else if op == 5 then "==" else if op == 6 then "!=" else if op == 7 then "<" else if op == 8 then "<=" else if op == 9 then ">" else ">="
 
 fn bin_prec(op) = if op <= 1 then 5 else if op <= 4 then 6 else 4
 
@@ -152,7 +155,8 @@ fn inline(e, prec) = match e
   ESelect(arms, def, _) -> inline_select(arms, def, prec)
   EBlock(_) -> "..."
 
-fn inline_call(n, args, piped, prec) = if piped then inline_pipe(n, args, prec) else n + "(" + join(map(args, \a -> inline(a, 0)), ", ") + ")"
+fn inline_call(n, args, piped, prec) =
+  if piped then inline_pipe(n, args, prec) else n + "(" + join(map(args, \a -> inline(a, 0)), ", ") + ")"
 
 fn inline_pipe(n, args, prec) = match args
   Cons(h, rest) -> wrapp(prec > 1, inline(h, 1) + " |> " + pipe_callee(n, rest))
@@ -168,7 +172,8 @@ fn inline_bin(op, l, r, prec) =
   wrapp(prec > p, inline(l, p) + " " + bin_sym(op) + " " + inline(r, rp))
 
 # The shapes `&&`, `||` and `!` desugar to come back as the operators.
-fn inline_if(c, t, els, prec) = if is_false(t) && is_true(els) then wrapp(prec > 7, "!" + inline(c, 7)) else if is_true(t) then wrapp(prec > 2, inline(c, 2) + " || " + inline(els, 3)) else if is_false(els) then wrapp(prec > 3, inline(c, 3) + " && " + inline(t, 4)) else wrapp(prec > 0, "if " + inline(c, 0) + " then " + inline(t, 0) + " else " + inline(els, 0))
+fn inline_if(c, t, els, prec) =
+  if is_false(t) && is_true(els) then wrapp(prec > 7, "!" + inline(c, 7)) else if is_true(t) then wrapp(prec > 2, inline(c, 2) + " || " + inline(els, 3)) else if is_false(els) then wrapp(prec > 3, inline(c, 3) + " && " + inline(t, 4)) else wrapp(prec > 0, "if " + inline(c, 0) + " then " + inline(t, 0) + " else " + inline(els, 0))
 
 fn inline_arm(a) = match a
   Arm(p, b, _) -> pat_str(p) + " -> " + inline(b, 0)
@@ -204,7 +209,8 @@ fn pat_ctor_str(n, args) = match args
 fn tr_str(t) = match t
   TR(n, args, ret, _) -> tr_str2(n, args, ret)
 
-fn tr_str2(n, args, ret) = tr_ret_str(if len(args) == 0 && str_cmp(n, "Fn") != 0 then n else n + "(" + join(map(args, \a -> tr_str(a)), ", ") + ")", ret)
+fn tr_str2(n, args, ret) =
+  tr_ret_str(if len(args) == 0 && str_cmp(n, "Fn") != 0 then n else n + "(" + join(map(args, \a -> tr_str(a)), ", ") + ")", ret)
 
 fn tr_ret_str(s, ret) = match ret
   Some(r) -> s + " -> " + tr_str(r)
@@ -222,7 +228,7 @@ fn render(fs, e, cont) = match e
   EIf(c, t, els) -> render_if(fs, c, t, els, cont)
   ELambda(ps, b, _) -> render_lambda(fs, ps, b, cont)
   ESpawn(b, _) -> render_spawn(fs, b, cont)
-  ESelect(arms, def, _) -> render_select(fs, arms, def, cont)
+  ESelect(arms, def, _) -> render_select_full(fs, arms, def, cont)
   _ -> RR(fs, inline(e, 0))
 
 fn render_match(fs, sc, arms, cont) = rm2(render(fs, sc, cont), arms, cont)
@@ -241,7 +247,7 @@ fn rm_arm(fs, a, cont, s) = match a
   Arm(p, b, ln) -> rm_arm2(own_before(fs, ln), p, b, ln, cont, s)
 
 fn rm_arm2(ob, p, b, ln, cont, s) = match ob
-  OB(cs, fs) -> rm_arm3(fs_mark(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), ln), p, b, ln, cont)
+  OB(cs, fs) -> rm_arm3(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), p, b, ln, cont)
 
 type RRS
   RRS(FS, Str)
@@ -253,7 +259,7 @@ fn weave2(fs, s, c, cont) = match c
   Cm(cl, text, _) -> RRS(fs_mark(fs, cl), s + "\n" + pad(cont) + text)
 
 fn rm_arm3(acc, p, b, ln, cont) = match acc
-  RRS(fs, s) -> rm_arm4(render(fs, b, cont + 1), p, ln, cont, s)
+  RRS(fs, s) -> rm_arm4(render(fs_mark(fs, ln), b, cont + 1), p, ln, cont, s)
 
 fn rm_arm4(rr, p, ln, cont, s) = match rr
   RR(fs, body) -> rm_arm5(tr_on(fs, ln), s + "\n" + pad(cont) + pat_str(p) + " -> " + body)
@@ -296,31 +302,10 @@ fn render_spawn(fs, b, cont) = rs2(render(fs, b, cont), b)
 fn rs2(rr, b) = match rr
   RR(fs, bt) -> RR(fs, if contains(bt, "\n") then "spawn " + bt else inline(ESpawn(b, 0), 0))
 
-fn render_select(fs, arms, def, cont) = rsel_arms(fs, arms, cont, "select", 0)
-
-fn rsel_arms(fs, arms, cont, s, lastln) = match arms
-  Cons(a, rest) -> rsel_arm(fs, a, rest, cont, s)
-  Nil -> rsel_def(fs, s, cont, lastln)
-
-fn rsel_arm(fs, a, rest, cont, s) = match a
-  SArm(op, b, ln) -> rsel_arm2(own_before(fs, ln), op, b, ln, rest, cont, s)
-
-fn rsel_arm2(ob, op, b, ln, rest, cont, s) = match ob
-  OB(cs, fs) -> rsel_arm3(fs_mark(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), ln), op, b, ln, rest, cont)
-
-fn rsel_arm3(acc, op, b, ln, rest, cont) = match acc
-  RRS(fs, s) -> rsel_arm4(render(fs, b, cont + 1), op, ln, rest, cont, s)
-
-fn rsel_arm4(rr, op, ln, rest, cont, s) = match rr
-  RR(fs, body) -> rsel_cont(fs, rest, cont, s + "\n" + pad(cont) + sel_op_str(op) + " -> " + body, ln)
-
-fn rsel_cont(fs, rest, cont, s, ln) = rsel_arms(fs, rest, cont, s, ln)
-
-fn rsel_def(fs, s, cont, lastln) = RR(fs, s)
-
-# `render_select` above handles the arms; the default needs the state too, so
-# the entry point threads it through.
-fn render_select_full(fs, arms, def, cont) = rsf(rsel_collect(fs, arms, cont, "select", 0), def, cont)
+# Select arms render like match arms; the default is anchored to its own
+# line, or to the line after the last arm when it has none.
+fn render_select_full(fs, arms, def, cont) =
+  rsf(rsel_collect(fs, arms, cont, "select", 0), def, cont)
 
 fn rsel_collect(fs, arms, cont, s, lastln) = match arms
   Cons(a, rest) -> rsel_c1(fs, a, rest, cont, s)
@@ -333,10 +318,10 @@ fn rsel_c1(fs, a, rest, cont, s) = match a
   SArm(op, b, ln) -> rsel_c2(own_before(fs, ln), op, b, ln, rest, cont, s)
 
 fn rsel_c2(ob, op, b, ln, rest, cont, s) = match ob
-  OB(cs, fs) -> rsel_c3(fs_mark(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), ln), op, b, ln, rest, cont)
+  OB(cs, fs) -> rsel_c3(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), op, b, ln, rest, cont)
 
 fn rsel_c3(acc, op, b, ln, rest, cont) = match acc
-  RRS(fs, s) -> rsel_c4(render(fs, b, cont + 1), op, ln, rest, cont, s)
+  RRS(fs, s) -> rsel_c4(render(fs_mark(fs, ln), b, cont + 1), op, ln, rest, cont, s)
 
 fn rsel_c4(rr, op, ln, rest, cont, s) = match rr
   RR(fs, body) -> rsel_collect(fs, rest, cont, s + "\n" + pad(cont) + sel_op_str(op) + " -> " + body, ln)
@@ -352,3 +337,129 @@ fn rsf3(fs, s, d, cont) = rsf4(render(fs, d, cont + 1), s, cont)
 
 fn rsf4(rr, s, cont) = match rr
   RR(fs, body) -> RR(fs, s + "\n" + pad(cont) + "default -> " + body)
+
+# ---- declarations -----------------------------------------------------------
+
+fn ret_str(r) = match r
+  Some(t) -> " -> " + tr_str(t)
+  None -> ""
+
+fn par_str(p) = match p
+  Par(n, Some(t)) -> n + ": " + tr_str(t)
+  Par(n, None) -> n
+
+fn ep_str(p) = match p
+  EP(n, t) -> n + ": " + tr_str(t)
+
+fn field_str(f) = match f
+  Fld(Some(n), t) -> n + ": " + tr_str(t)
+  Fld(None, t) -> tr_str(t)
+
+fn lib_str(l) = match l
+  Some(x) -> " \"" + x + "\""
+  None -> ""
+
+fn type_params(ps) = match ps
+  Nil -> ""
+  Cons(_, _) -> "(" + join(ps, ", ") + ")"
+
+fn decl_line(d) = match d
+  DImport(_, _, ln) -> ln
+  DType(_, _, _, ln) -> ln
+  DTrait(_, _, _, ln) -> ln
+  DImpl(_, _, _, ln) -> ln
+  DExtern(_, _, _, _, ln) -> ln
+  DFn(f) -> fnd_line(f)
+
+fn fnd_line(f) = match f
+  FnD(_, _, _, _, _, ln) -> ln
+
+fn is_import(d) = match d
+  DImport(_, _, _) -> true
+  _ -> false
+
+fn pr_stmts(fs, ss, ind) = match ss
+  Cons(st, rest) -> pr_stmts(pr_stmt(fs, st, ind), rest, ind)
+  Nil -> fs
+
+fn pr_stmt(fs, st, ind) =
+  pr_stmt2(rb_text(lead(fs, stmt_line(st), ind), st, ind), stmt_line(st), ind)
+
+fn pr_stmt2(rr, ln, ind) = match rr
+  RR(fs, text) -> push_at(fs, ind, text, ln)
+
+fn pr_fndef(fs, f, ind) = match f
+  FnD(name, ex, ps, ret, body, ln) -> pf2(lead(fs, ln, ind), name, ex, ps, ret, body, ln, ind)
+
+fn pf2(fs, name, ex, ps, ret, body, ln, ind) =
+  pf3(fs, (if ex then "export fn " else "fn ") + name + "(" + join(map(ps, \p -> par_str(p)), ", ") + ")" + ret_str(ret) + " =", body, ln, ind)
+
+fn pf3(fs, header, body, ln, ind) = match body
+  EBlock(ss) -> pr_stmts(push_at(fs, ind, header, ln), ss, ind + 1)
+  _ -> pf4(render(fs, body, ind + 1), header, body, ln, ind)
+
+# A one-line body stays on the header when it fits in a hundred columns; a
+# multi-line rendering always rides along, its own lines already padded.
+fn pf4(rr, header, body, ln, ind) = match rr
+  RR(fs, rendered) -> pf5(fs, rendered, header, body, ln, ind)
+
+fn pf5(fs, rendered, header, body, ln, ind) =
+  if contains(rendered, "\n") || ind * 2 + str_len(header) + 1 + str_len(rendered) <= 100 then push_at(fs, ind, header + " " + rendered, ln) else pf6(push_at(fs, ind, header, ln), body, ind)
+
+fn pf6(fs, body, ind) = pf7(render(fs, body, ind + 2), ind)
+
+fn pf7(rr, ind) = match rr
+  RR(fs, rendered) -> fs_push(fs, ind + 1, rendered)
+
+fn pr_ctor(fs, c) = match c
+  Ct(n, fields, ln) -> push_at(lead(fs, ln, 1), 1, ctor_text(n, fields), ln)
+
+fn ctor_text(n, fields) = match fields
+  Nil -> n
+  Cons(_, _) -> n + "(" + join(map(fields, \f -> field_str(f)), ", ") + ")"
+
+fn pr_ctors(fs, cs) = match cs
+  Cons(c, rest) -> pr_ctors(pr_ctor(fs, c), rest)
+  Nil -> fs
+
+fn pr_sig(fs, m) = match m
+  Sig(n, ps, rt, ln) -> push_at(lead(fs, ln, 1), 1, n + "(" + join(map(ps, \t -> tr_str(t)), ", ") + ") -> " + tr_str(rt), ln)
+
+fn pr_sigs(fs, ms) = match ms
+  Cons(m, rest) -> pr_sigs(pr_sig(fs, m), rest)
+  Nil -> fs
+
+fn pr_impl_fns(fs, fns) = match fns
+  Cons(f, rest) -> pr_impl_fns(pr_fndef(fs, f, 1), rest)
+  Nil -> fs
+
+fn import_text(path, a) = match a
+  Some(x) -> "import \"" + path + "\" as " + x
+  None -> "import \"" + path + "\""
+
+fn print_decl(fs, d) = match d
+  DImport(path, a, ln) -> push_at(fs, 0, import_text(path, a), ln)
+  DType(name, ps, cs, ln) -> pr_ctors(push_at(fs, 0, "type " + name + type_params(ps), ln), cs)
+  DTrait(name, param, sigs, ln) -> pr_sigs(push_at(fs, 0, "trait " + name + "(" + param + ")", ln), sigs)
+  DImpl(name, target, fns, ln) -> pr_impl_fns(push_at(fs, 0, "impl " + name + "(" + tr_str(target) + ")", ln), fns)
+  DExtern(name, lib, ps, ret, ln) -> push_at(fs, 0, "extern" + lib_str(lib) + " fn " + name + "(" + join(map(ps, \p -> ep_str(p)), ", ") + ")" + ret_str(ret), ln)
+  DFn(f) -> pr_fndef(fs, f, 0)
+
+# ---- the module -------------------------------------------------------------
+#
+# One blank line between declarations; consecutive imports the author kept
+# together stay together; a declaration's text starts at its first attached
+# comment, which is what the separator logic has to measure against.
+
+fn pm_one(fs, d, i, prev_imp) =
+  dl = decl_line(d)
+  start = if own_peek(fs) < dl then own_peek(fs) else dl
+  keep = prev_imp && is_import(d) && !(start < dl) && !had_gap(fs, dl)
+  fs1 = if i > 0 && !keep then fs_set_last(fs_blank(fs), if start > 0 then start - 1 else 0) else fs
+  print_decl(lead(fs1, dl, 0), d)
+
+fn pm_loop(fs, ds, i, prev_imp) = match ds
+  Cons(d, rest) -> pm_loop(pm_one(fs, d, i, prev_imp), rest, i + 1, is_import(d))
+  Nil -> fs
+
+fn print_module(fs, ds) = own_rest(pm_loop(fs, ds, 0, false))
