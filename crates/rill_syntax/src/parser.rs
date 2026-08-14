@@ -119,7 +119,11 @@ impl Parser {
             self.skip_newlines();
             match self.peek() {
                 Tok::Eof => break,
-                Tok::Fn => functions.push(self.fndef()?),
+                Tok::Fn => functions.push(self.fndef(false)?),
+                Tok::Export => {
+                    self.bump();
+                    functions.push(self.fndef(true)?);
+                }
                 Tok::Type => types.push(self.typedef()?),
                 Tok::Trait => traits.push(self.traitdef()?),
                 Tok::Impl => impls.push(self.impldef()?),
@@ -267,7 +271,7 @@ impl Parser {
         let target = self.type_ref("the implementing type")?;
         self.expect(&Tok::RParen, "to close the impl target")?;
         self.expect(&Tok::Indent, "— method definitions must be indented under `impl`")?;
-        let mut fns = vec![self.fndef()?];
+        let mut fns = vec![self.fndef(false)?];
         loop {
             match self.peek() {
                 Tok::Newline => {
@@ -276,7 +280,7 @@ impl Parser {
                         self.bump();
                         break;
                     }
-                    fns.push(self.fndef()?);
+                    fns.push(self.fndef(false)?);
                 }
                 Tok::Dedent => {
                     self.bump();
@@ -447,7 +451,7 @@ impl Parser {
         Ok(CtorDef { name, fields, line })
     }
 
-    fn fndef(&mut self) -> Result<FnDef, SyntaxError> {
+    fn fndef(&mut self, exported: bool) -> Result<FnDef, SyntaxError> {
         let (line, col) = self.here();
         self.expect(&Tok::Fn, "to begin a function definition")?;
         let name = self.ident("a function name after `fn`")?;
@@ -486,7 +490,7 @@ impl Parser {
         };
         self.expect(&Tok::Eq, "before the function body")?;
         let body = self.body()?;
-        Ok(FnDef { name, params, ret_ann, body, line })
+        Ok(FnDef { name, exported, params, ret_ann, body, line })
     }
 
     /// Function body: inline expression, or an indented block of statements.

@@ -50,7 +50,7 @@ use inkwell::{FloatPredicate, IntPredicate, OptimizationLevel};
 
 use rill_syntax::{BinOp, Pattern};
 use rill_types::{
-    CTy, Constraint, TArm, TExpr, TK, TModule, TSelectArm, TSelectOp, TStmt, Ty,
+    CTy, Constraint, TArm, TExpr, TFn, TK, TModule, TSelectArm, TSelectOp, TStmt, Ty,
 };
 
 #[derive(Debug, Clone)]
@@ -91,11 +91,80 @@ pub fn compile_to_object(
     target: Option<&str>,
 ) -> Result<(), CodegenError> {
     let context = Context::create();
+    check_exports(tmod, target)?;
     let cg = Codegen::build_module(&context, tmod, parallel, debug.then_some(source), target)?;
     if cg.wasm {
         cg.check_wasm_supported()?;
     }
     cg.write_object(out_path, !debug, target)
+}
+
+/// What `export fn` promises: a name the host can call, with arguments it can
+/// produce. That constrains the signature to the types that cross the wasm
+/// boundary as plain values — Int, Float, Bool, Ptr — and rules out type
+/// parameters, because an export is one function, not a family waiting for a
+/// call site to pick the types. And it is a wasm idea: on a native target
+/// nothing calls in, so the word is refused rather than silently meaning
+/// nothing.
+fn check_exports(tmod: &TModule, target: Option<&str>) -> Result<(), CodegenError> {
+    let exports: Vec<&TFn> = tmod.fns.iter().filter(|f| f.exported).collect();
+    if exports.is_empty() {
+        return Ok(());
+    }
+    if !target.is_some_and(|t| t.starts_with("wasm")) {
+        return Err(CodegenError::new(
+            exports[0].line,
+            format!(
+                "`export fn {}` needs a wasm target: exports are functions the \
+                 embedding host calls, and a native executable has no host. \
+                 Build with `--target wasm32-wasip1`.",
+                exports[0].name
+            ),
+        ));
+    }
+    let scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Ptr);
+    for f in exports {
+        if f.ngen > 0 {
+            return Err(CodegenError::new(
+                f.line,
+                format!(
+                    "`export fn {}` is generic: an export is a single entry point, \
+                     so every parameter type must be concrete",
+                    f.name
+                ),
+            ));
+        }
+        for (pname, pty) in &f.params {
+            if !scalar(pty) {
+                return Err(CodegenError::new(
+                    f.line,
+                    format!(
+                        "`export fn {}`: parameter `{pname}` is {} — only Int, Float, \
+                         Bool and Ptr cross the wasm boundary",
+                        f.name,
+                        type_label(pty, &tmod.adts)
+                    ),
+                ));
+            }
+        }
+        if !(scalar(&f.ret) || f.ret == Ty::Unit) {
+            return Err(CodegenError::new(
+                f.line,
+                format!(
+                    "`export fn {}` returns {} — only Int, Float, Bool, Ptr and Unit \
+                     cross the wasm boundary",
+                    f.name,
+                    type_label(&f.ret, &tmod.adts)
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The type's name as the author would write it, for a diagnostic.
+fn type_label(t: &Ty, adts: &[rill_types::AdtDef]) -> String {
+    mangle_friendly(t, adts)
 }
 
 /// The socket builtins, by the runtime symbol each becomes.
@@ -719,6 +788,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
         let main_idx = tmod.fn_index["main"];
         cg.request_instance(main_idx, vec![], vec![]);
+        // Exports are entry points in their own right: emitted whether or not
+        // anything in `main` reaches them.
+        for (i, f) in tmod.fns.iter().enumerate() {
+            if f.exported {
+                cg.request_instance(i, vec![], vec![]);
+            }
+        }
         while let Some(key) = cg.queue.pop_front() {
             cg.gen_instance(&key)?;
         }
@@ -2478,6 +2554,24 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// The real C `main`: runs `rill_main` as the main strand under the
     /// scheduler, then reports allocations and returns 0.
     fn gen_main_wrapper(&mut self) {
+        // A module with exports is a reactor: it stays instantiated and the
+        // host calls in, so there is no `_start`, no argv, and no moment at
+        // which an allocation report would mean anything. `main` becomes the
+        // module's `init` — the host calls it once before anything else, and
+        // what it sets up stays live for the exports to use.
+        if self.wasm && self.tmod.fns.iter().any(|f| f.exported) {
+            let void = self.ctx.void_type();
+            let init = self.module.add_function("rill_init", void.fn_type(&[], false), None);
+            let entry = self.ctx.append_basic_block(init, "entry");
+            self.builder.position_at_end(entry);
+            let user_main = self.instances[&(self.tmod.fn_index["main"], vec![], vec![])];
+            let rt_run = self.module.get_function("rill_rt_run_direct").unwrap();
+            self.builder
+                .build_call(rt_run, &[user_main.as_global_value().as_pointer_value().into()], "")
+                .expect("LLVM builder error");
+            self.builder.build_return(None).expect("LLVM builder error");
+            return;
+        }
         let i32t = self.ctx.i32_type();
         let ptrt = self.ctx.ptr_type(Default::default());
         // What wasi-libc's startup code calls. Its `_start` calls `__main_void`,
@@ -4155,6 +4249,27 @@ mod tests {
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
         compile_to_ir(&tmod).unwrap()
+    }
+
+    #[test]
+    fn export_needs_wasm_and_scalars() {
+        let check = |src: &str, target| {
+            let m = rill_syntax::parse(src).unwrap();
+            let tmod = rill_types::check(&m).unwrap();
+            check_exports(&tmod, target)
+        };
+        let e = check("export fn f(x: Int) -> Int = x\nfn main() = 0\n", None).unwrap_err();
+        assert!(e.msg.contains("needs a wasm target"), "{e}");
+        let e = check("export fn id(x) = x\nfn main() = 0\n", Some("wasm32-wasip1")).unwrap_err();
+        assert!(e.msg.contains("generic"), "{e}");
+        let e = check(
+            "export fn shout(s: Str) -> Str = s\nfn main() = 0\n",
+            Some("wasm32-wasip1"),
+        )
+        .unwrap_err();
+        assert!(e.msg.contains("Str"), "{e}");
+        check("export fn f(x: Int) -> Float = to_float(x)\nfn main() = 0\n", Some("wasm32-wasip1"))
+            .unwrap();
     }
 
     #[test]

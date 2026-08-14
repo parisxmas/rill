@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Rill · WebGPU</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0a0a14; display: grid; place-items: center; }
+    canvas { width: min(90vmin, 640px); aspect-ratio: 1; border-radius: 8px; }
+    p { position: fixed; bottom: 12px; width: 100%; text-align: center;
+        color: #8888aa; font: 13px ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <canvas id="c" width="640" height="640"></canvas>
+  <p>a triangle, computed each frame by <code>triangle.rill</code> compiled to wasm</p>
+  <script type="module">
+    import { run } from "./host.js";
+    run(document.getElementById("c"), "./triangle.wasm").catch(e => {
+      document.querySelector("p").textContent = e.message;
+    });
+  </script>
+</body>
+</html>

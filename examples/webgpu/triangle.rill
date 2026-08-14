@@ -1,0 +1,44 @@
+# A spinning triangle on WebGPU, computed in Rill.
+#
+# The division of labour: WebGPU's setup is promise-based — adapter, device,
+# pipeline all arrive asynchronously — and a wasm module cannot await, so the
+# host does the ceremony once and keeps the handles. What Rill owns is the
+# frame: each tick the browser calls `frame(t)`, Rill computes where the
+# triangle's corners are and what colour the sky is, and hands both to the two
+# imports the host supplies. The host's half is `host.js`.
+#
+# Compile with `rill build triangle.rill -o triangle --target wasm32-wasip1`,
+# serve this directory, and open it in a browser with WebGPU.
+
+# Supplied by the host, not by any library: an extern that resolves against
+# nothing at link time becomes a wasm import for the embedder to fill in.
+extern fn gpu_clear(r: F32, g: F32, b: F32)
+
+extern fn gpu_triangle(verts: Ptr, count: Int)
+
+# These two resolve against wasi-libc, the same as any C call.
+extern fn sinf(x: F32) -> F32
+
+extern fn cosf(x: F32) -> F32
+
+fn tau() = 6.2831853
+
+# One corner of the triangle: the angle walks round the circle with time.
+fn corner(v: Buf(F32), i, t) =
+  a = t + to_float(i) * tau() / 3.0
+  buf_set(v, i * 2, cosf(a) * 0.6)
+  buf_set(v, i * 2 + 1, sinf(a) * 0.6)
+
+# The sky breathes between deep blue and violet.
+fn sky(t) =
+  gpu_clear(0.08 + 0.05 * sinf(t * 0.7), 0.07, 0.18 + 0.08 * sinf(t * 0.4))
+
+export fn frame(t: Float) =
+  sky(t)
+  v = buf_f32(6)
+  corner(v, 0, t)
+  corner(v, 1, t)
+  corner(v, 2, t)
+  gpu_triangle(buf_data(v), 3)
+
+fn main() = println("rill webgpu demo ready")

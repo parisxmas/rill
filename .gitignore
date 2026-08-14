@@ -23,6 +23,7 @@ node_modules/
 
 # Build output that does have an extension.
 *.o
+*.wasm
 *.vsix
 .DS_Store
 

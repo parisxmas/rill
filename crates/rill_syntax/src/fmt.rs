@@ -300,7 +300,8 @@ impl Fmt {
             Some(t) => format!(" -> {}", type_ref(t)),
             None => String::new(),
         };
-        let header = format!("fn {}({}){} =", f.name, params.join(", "), ret);
+        let kw = if f.exported { "export fn" } else { "fn" };
+        let header = format!("{kw} {}({}){} =", f.name, params.join(", "), ret);
 
         match &f.body {
             Expr::Block(stmts) => {

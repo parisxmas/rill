@@ -1,6 +1,36 @@
 # Changelog
 
-## 0.2.12 — WebAssembly, and strands that yield
+## Unreleased
+
+- **`export fn`, and a triangle drawn through WebGPU.** The wasm target could
+  run a program; now it can *be* a program the host keeps calling. `export fn
+  frame(t: Float)` makes `frame` a wasm export, and a module with any export
+  links as a reactor — no `_start`, no exit, the host drives it. `main`
+  becomes `rill_init`, called once by the host before anything else, which is
+  what `main` already meant with the process boundary taken away.
+
+  The signature rules are the boundary's own: parameters `Int`, `Float`,
+  `Bool` or `Ptr`, returns those or `Unit`, no generics — an export is one
+  entry point, not a family waiting for a call site to pick its types. Wider
+  data crosses through a `Buf` and `buf_data`, which the host reads straight
+  out of linear memory. Each rule is refused with the reason, at the export's
+  own line, and `export` on a native target is refused too: exports are
+  functions the embedding host calls, and a native executable has no host.
+
+  In a reactor, an `extern fn` that no library satisfies becomes a wasm
+  import for the host to fill in — which turns out to be the entire browser
+  FFI. `examples/webgpu/` draws a spinning triangle: WebGPU's setup is
+  promise-based and a wasm module cannot await, so the JavaScript host does
+  the ceremony once and supplies two imports, and Rill computes the frame —
+  corners from `cosf`/`sinf` (resolved against wasi-libc, like any C call)
+  into a `Buf(F32)`, handed over as a pointer. The host file is also the
+  needed WASI shim, all sixty lines of it, because browsers ship none —
+  `println` in a canvas tab arrives in the console by way of `fd_write`.
+  Five million frames leave the module's memory byte-for-byte the same size:
+  each frame's buffer recycles through the pool, and the 16 MB the pool maps
+  up front is all it ever maps.
+
+
 
 - **A strand that only computes no longer holds its worker to the end of the
   program.** It could before, and everything else on that worker waited for

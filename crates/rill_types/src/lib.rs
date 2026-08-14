@@ -210,6 +210,8 @@ pub struct TModule {
 #[derive(Debug)]
 pub struct TFn {
     pub name: String,
+    /// `export fn` — kept as a host-callable entry point on wasm.
+    pub exported: bool,
     pub params: Vec<(String, Ty)>,
     pub ret: Ty,
     /// Number of quantified type parameters (`Ty::Gen(0..ngen)`).
@@ -1136,7 +1138,7 @@ impl Checker {
         };
 
         // The body is zonked in phase 2, once every signature is generalized.
-        Ok(TFn { name: f.name.clone(), params, ret, ngen, constraints, body, line: f.line })
+        Ok(TFn { name: f.name.clone(), exported: f.exported, params, ret, ngen, constraints, body, line: f.line })
     }
 
     /// Resolves a type; unresolved vars get fresh `Gen` indices.

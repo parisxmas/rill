@@ -614,6 +614,36 @@ Two things to keep in mind: a wrong signature is a crash, not a type error —
 the compiler believes what you declare; and a C call that blocks freezes the
 worker thread running it, since the scheduler cannot preempt foreign code.
 
+### Being called: `export` and WebAssembly
+
+`extern` is Rill calling out. `export` is the other direction — a function the
+embedding host may call in:
+
+```
+export fn frame(t: Float) =
+  ...
+```
+
+It only means something on a wasm target (`--target wasm32-wasip1`), because
+only there is a host present; a native build refuses the word. A module with
+any export links as a *reactor*: it has no `_start`, it stays instantiated,
+and the host drives it. `main` still runs — exported as `rill_init`, which the
+host calls once before anything else — and each `export fn` is a wasm export
+under its own name.
+
+The boundary takes what wasm can pass: parameters must be `Int`, `Float`,
+`Bool` or `Ptr`, the return those or `Unit`, and the function must be
+concrete — an export is one entry point, not a generic family. Data wider than
+a scalar crosses through a `Buf`: build one, hand `buf_data` to an import, and
+the host reads it straight out of the module's linear memory.
+
+On wasm an `extern fn` that no library satisfies becomes an *import* — a hole
+the host fills at instantiation. That is the whole FFI story in a browser:
+declare `extern fn gpu_draw(v: Ptr, n: Int)`, supply `env.gpu_draw` from
+JavaScript. `examples/webgpu/` renders through WebGPU exactly this way — the
+host owns the asynchronous device setup that a wasm module cannot await, Rill
+owns the frame.
+
 ## 11. Built-in functions
 
 | | |

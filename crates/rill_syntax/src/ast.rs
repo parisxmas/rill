@@ -101,6 +101,9 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDef {
     pub name: String,
+    /// `export fn` — kept when compiling to wasm as a function the host may
+    /// call. Meaningless (and refused) elsewhere.
+    pub exported: bool,
     pub params: Vec<Param>,
     pub ret_ann: Option<TypeRef>,
     pub body: Expr,

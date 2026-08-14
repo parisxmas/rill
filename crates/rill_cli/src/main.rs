@@ -308,7 +308,7 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
             return link_windows(opts, &obj_path, triple);
         }
         if triple.starts_with("wasm") {
-            return link_wasm(opts, &obj_path, triple);
+            return link_wasm(opts, &obj_path, triple, &tmod);
         }
         println!("{} written for {triple}", obj_path.display());
         return Ok(obj_path);
@@ -423,13 +423,39 @@ fn link_windows(opts: &BuildOpts, obj: &Path, triple: &str) -> Result<PathBuf, S
 /// imports from its host rather than linking against a shared object, so there
 /// is nothing here that `-lfoo` could mean; a program that names one gets an
 /// undefined symbol from the linker, naming the function it could not find.
-fn link_wasm(opts: &BuildOpts, obj: &Path, triple: &str) -> Result<PathBuf, String> {
+fn link_wasm(
+    opts: &BuildOpts,
+    obj: &Path,
+    triple: &str,
+    tmod: &rill_types::TModule,
+) -> Result<PathBuf, String> {
     let runtime = target_runtime(triple, "librill_runtime.a")?;
     let sysroot = wasi_sysroot(triple)?;
     let out = opts.output.with_extension("wasm");
+    let exports: Vec<&str> =
+        tmod.fns.iter().filter(|f| f.exported).map(|f| f.name.as_str()).collect();
     let mut cmd = Command::new("wasm-ld");
-    cmd.arg(sysroot.join("crt1-command.o"))
-        .arg(obj)
+    // A module with exports is a reactor — it has no `_start` and stays
+    // instantiated for the host to call into — so it gets the reactor's
+    // startup object and no entry point. `rill_init` is the program's `main`,
+    // renamed to what it now is: something the host calls once.
+    if exports.is_empty() {
+        cmd.arg(sysroot.join("crt1-command.o"));
+    } else {
+        cmd.arg(sysroot.join("crt1-reactor.o"));
+        cmd.arg("--no-entry");
+        cmd.arg("--export=_initialize");
+        cmd.arg("--export=rill_init");
+        for name in &exports {
+            cmd.arg(format!("--export={name}"));
+        }
+        // A reactor's imports are the host's to supply, so a C name that
+        // resolves against nothing becomes an `env` import rather than an
+        // error. A command keeps the strict behaviour: it runs with nobody
+        // there to supply anything.
+        cmd.arg("--allow-undefined");
+    }
+    cmd.arg(obj)
         .arg(&runtime)
         .arg(sysroot.join("libc.a"))
         .arg("-o")
