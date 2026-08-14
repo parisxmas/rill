@@ -1,0 +1,12 @@
+fn digits_of(n) = if n < 10 then Cons(n, Nil) else append(digits_of(n / 10), Cons(n % 10, Nil))
+
+fn is_palindrome(n) =
+  d = digits_of(n)
+  d == reverse(d)
+
+fn main() =
+  println(digits_of(9021))
+  println(sum(digits_of(9021)))
+  println(is_palindrome(12321))
+  println(is_palindrome(12320))
+  println(filter(range(100, 140), is_palindrome))

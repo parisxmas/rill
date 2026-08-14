@@ -1,0 +1,23 @@
+type Expr
+  Num(Int)
+  Add(Expr, Expr)
+  Sub(Expr, Expr)
+  Mul(Expr, Expr)
+
+impl Show(Expr)
+  fn show(e) = match e
+    Num(n) -> int_to_str(n)
+    Add(a, b) -> "(" + show(a) + " + " + show(b) + ")"
+    Sub(a, b) -> "(" + show(a) + " - " + show(b) + ")"
+    Mul(a, b) -> "(" + show(a) + " * " + show(b) + ")"
+
+fn eval(e) = match e
+  Num(n) -> n
+  Add(a, b) -> eval(a) + eval(b)
+  Sub(a, b) -> eval(a) - eval(b)
+  Mul(a, b) -> eval(a) * eval(b)
+
+fn main() =
+  e = Add(Mul(Num(2), Num(3)), Sub(Num(10), Num(4)))
+  println(e)
+  println(eval(e))

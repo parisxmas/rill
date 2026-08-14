@@ -1,0 +1,18 @@
+# Memory churn: builds and drops 100 lists of 100 nodes plus a capturing
+# closure per round. With RILL_DEBUG_ALLOC=1 the runtime reports live
+# allocations at exit — it must be 0.
+type List(a)
+  Nil
+  Cons(head: a, tail: List(a))
+
+fn range(a, b) = if a > b then Nil else Cons(a, range(a + 1, b))
+
+fn fold(l, acc, f) = match l
+  Nil -> acc
+  Cons(x, rest) -> fold(rest, f(acc, x), f)
+
+fn sumsq(n, m) = range(1, n) |> fold(0, \a, x -> a + x * x * m)
+
+fn iter(k, acc) = if k == 0 then acc else iter(k - 1, acc + sumsq(100, 1))
+
+fn main() = println(iter(100, 0))

@@ -1,0 +1,16 @@
+# Option(a): generic ADTs with pipelines and closures.
+type Option(a)
+  None
+  Some(a)
+
+fn omap(o, f) = match o
+  None -> None
+  Some(x) -> Some(f(x))
+
+fn unwrap_or(o, d) = match o
+  None -> d
+  Some(x) -> x
+
+fn main() =
+  println(Some(20) |> omap(\x -> x * 2) |> unwrap_or(0))
+  println(None |> unwrap_or(42))

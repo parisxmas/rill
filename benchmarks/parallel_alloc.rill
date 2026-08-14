@@ -1,0 +1,24 @@
+# Allocation-heavy work on several strands at once: every worker stays in
+# the allocator for the whole run. `parallel.rill` is the compute side of the
+# same question — this is the memory side, where a scheduler or allocator bug
+# shows up as a crash rather than as a wrong answer.
+
+fn churn(n, acc) =
+  if n == 0 then acc else churn(n - 1, acc + sum(map(range(1, 100), \x -> x)))
+
+fn worker(out, n) = send(out, churn(n, 0))
+
+fn spawn_all(out, left, n) =
+  if left == 0 then 0 else spawn_one(out, left, n)
+
+fn spawn_one(out, left, n) =
+  spawn worker(out, n)
+  spawn_all(out, left - 1, n)
+
+fn collect(ch, left, acc) =
+  if left == 0 then acc else collect(ch, left - 1, acc + recv(ch))
+
+fn main() =
+  results = channel()
+  spawn_all(results, 8, 2000)
+  println(collect(results, 8, 0))

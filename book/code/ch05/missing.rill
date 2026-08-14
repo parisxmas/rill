@@ -1,0 +1,10 @@
+type Colour
+  Red
+  Green
+  Blue
+
+fn name(c) = match c
+  Red -> "red"
+  Green -> "green"
+
+fn main() = println(name(Red))

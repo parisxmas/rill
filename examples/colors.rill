@@ -1,0 +1,14 @@
+# Nullary constructors, functions returning Str, string equality.
+type Color
+  Red
+  Green
+  Blue
+
+fn name(c) = match c
+  Red -> "red"
+  Green -> "green"
+  Blue -> "blue"
+
+fn main() =
+  println(name(Green))
+  println(name(Blue) == "blue")

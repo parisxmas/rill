@@ -1,0 +1,21 @@
+type Money
+  Money(Int)
+
+impl Show(Money)
+  fn show(m) = match m
+    Money(c) -> "$" + int_to_str(c / 100) + "." + pad(c % 100)
+
+fn pad(n) = if n < 10 then "0" + int_to_str(n) else int_to_str(n)
+
+impl Ord(Money)
+  fn compare(a, b) = match a
+    Money(x) -> match b
+      Money(y) -> x - y
+
+fn main() =
+  println(Money(1250))
+  println(Money(305))
+  println(max(Money(1250), Money(305)))
+  println(Money(500) < Money(750))
+  prices = Cons(Money(1250), Cons(Money(305), Cons(Money(999), Nil)))
+  println(prices)

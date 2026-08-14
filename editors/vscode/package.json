@@ -1,0 +1,64 @@
+{
+  "name": "rill",
+  "displayName": "Rill",
+  "description": "Syntax highlighting and editing support for the Rill language.",
+  "version": "0.2.10",
+  "publisher": "rill-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "rill",
+    "functional",
+    "syntax"
+  ],
+  "scripts": {
+    "test": "node test/tokenize.js"
+  },
+  "devDependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.0.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "rill",
+        "aliases": [
+          "Rill",
+          "rill"
+        ],
+        "extensions": [
+          ".rill"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rill",
+        "scopeName": "source.rill",
+        "path": "./syntaxes/rill.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "rill",
+        "path": "./snippets/rill.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[rill]": {
+        "editor.insertSpaces": true,
+        "editor.tabSize": 2,
+        "editor.detectIndentation": false,
+        "editor.trimAutoWhitespace": true,
+        "files.trimTrailingWhitespace": true,
+        "files.insertFinalNewline": true
+      }
+    }
+  }
+}

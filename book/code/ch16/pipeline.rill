@@ -1,0 +1,22 @@
+fn source(out, i, n) =
+  send(out, i)
+  if i >= n then send(out, 0 - 1) else source(out, i + 1, n)
+
+fn square(inp, out) =
+  v = recv(inp)
+  if v < 0 then send(out, 0 - 1) else pass_on(inp, out, v)
+
+fn pass_on(inp, out, v) =
+  send(out, v * v)
+  square(inp, out)
+
+fn drain(inp, acc) =
+  v = recv(inp)
+  if v < 0 then acc else drain(inp, acc + v)
+
+fn main() =
+  a = channel()
+  b = channel()
+  spawn source(a, 1, 10)
+  spawn square(a, b)
+  println(drain(b, 0))

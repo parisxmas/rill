@@ -1,0 +1,13 @@
+fn find_even(l) = match l
+  Nil -> None
+  Cons(x, rest) -> if x % 2 == 0 then Some(x) else find_even(rest)
+
+fn describe(o) = match o
+  None -> "none found"
+  Some(n) -> "found " + int_to_str(n)
+
+fn main() =
+  println(describe(find_even(Cons(1, Cons(3, Cons(8, Cons(5, Nil)))))))
+  println(describe(find_even(Cons(1, Cons(3, Nil)))))
+  println(unwrap_or(find_even(Cons(1, Nil)), 0 - 1))
+  println(opt_map(Some(21), \x -> x * 2))

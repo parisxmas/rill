@@ -1,0 +1,9 @@
+# A multi-file program: `import "name"` loads name.rill relative to this
+# file (transitively — report imports geometry). All files share one flat
+# namespace; the prelude is still available everywhere.
+import "report"
+
+fn main() =
+  shapes = Cons(Circle(1.0), Cons(Rect(2.0, 3.0), Cons(Circle(0.5), Nil)))
+  print_all(shapes)
+  println("total: " + float_to_str(total_area(shapes)))

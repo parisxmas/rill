@@ -1,0 +1,7 @@
+# The HTTP server from examples/, serving one fixed route.
+import "../../examples/http/http"
+
+fn route(req) = match req
+  Request(method, path, body) -> Response(200, "Hello, World!")
+
+fn main() = serve(8100, \req -> route(req))

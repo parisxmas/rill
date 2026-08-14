@@ -1,0 +1,126 @@
+# A client for OxiDB's document engine, written in Rill.
+#
+# The wire is the server's native one: a 4-byte little-endian length in front
+# of a JSON payload, one frame out and one frame back, over a plain TCP socket.
+# Requests and replies are `Json` values from the JSON module, so a document is
+# the same thing here as it is anywhere else in a Rill program.
+#
+# A reply is always `{"ok": true, "data": ...}` or `{"ok": false, "error": ...}`,
+# and every call below returns that envelope as a `Result`: `Ok(data)` or
+# `Err(message)`. The connection is a plain socket, so a strand waiting on a
+# reply parks and costs nothing.
+import "../json/json"
+
+# -- framing ------------------------------------------------------------------
+
+fn le32(n) =
+  chr(bit_and(n, 255)) + chr(bit_and(shr(n, 8), 255)) + chr(bit_and(shr(n, 16), 255)) + chr(bit_and(shr(n, 24), 255))
+
+fn le32_at(s, i) =
+  str_get(s, i) + shl(str_get(s, i + 1), 8) + shl(str_get(s, i + 2), 16) + shl(str_get(s, i + 3), 24)
+
+fn send_frame(fd, payload) = sock_write(fd, le32(str_len(payload)) + payload)
+
+# The reply arrives in whatever pieces the network chose, so read until the
+# length says the frame is whole.
+fn read_frame(fd) = frame_of(fd, take_at_least(fd, "", 4))
+
+fn frame_of(fd, head) =
+  if str_len(head) < 4 then "" else body_of(fd, head, le32_at(head, 0))
+
+fn body_of(fd, head, n) = str_sub(take_at_least(fd, head, 4 + n), 4, n)
+
+fn take_at_least(fd, buf, want) =
+  if str_len(buf) >= want then buf else take_more(fd, buf, want)
+
+fn take_more(fd, buf, want) =
+  chunk = sock_read(fd)
+  if str_len(chunk) == 0 then buf else take_at_least(fd, buf + chunk, want)
+
+# -- calling ------------------------------------------------------------------
+
+fn connect(host, port) = connect_to(host, port)
+
+fn close(fd) = sock_close(fd)
+
+# One request, one reply, unwrapped into a `Result`.
+fn call(fd, request) =
+  send_frame(fd, to_string(request))
+  unwrap_reply(parse(read_frame(fd)))
+
+fn unwrap_reply(reply) =
+  if as_bool(unwrap_or(get(reply, "ok"), JBool(false))) then Ok(unwrap_or(get(reply, "data"), JNull)) else Err(reply_error(reply))
+
+fn reply_error(reply) =
+  msg = as_str(unwrap_or(get(reply, "error"), JStr("")))
+  if str_len(msg) == 0 then "oxidb: malformed or empty reply" else msg
+
+# -- building requests --------------------------------------------------------
+
+# `command("find", Cons(field("collection", JStr(c)), Nil))` — the `cmd` field
+# is added here so no caller has to remember its name.
+fn command(name, fields) = JObj(Cons(Field("cmd", JStr(name)), fields))
+
+fn field(key, value) = Field(key, value)
+
+fn text(s) = JStr(s)
+
+fn int(n) = JInt(n)
+
+fn on(collection, fields) = Cons(Field("collection", JStr(collection)), fields)
+
+# -- commands -----------------------------------------------------------------
+
+fn ping(fd) = call(fd, command("ping", Nil))
+
+fn hello(fd) = call(fd, command("hello", Cons(Field("wire_versions", JArr(Cons(JInt(1), Nil))), Nil)))
+
+fn list_collections(fd) = call(fd, command("list_collections", Nil))
+
+fn insert(fd, collection, doc) = call(fd, command("insert", on(collection, Cons(Field("doc", doc), Nil))))
+
+fn insert_many(fd, collection, docs) =
+  call(fd, command("insert_many", on(collection, Cons(Field("docs", JArr(docs)), Nil))))
+
+fn find(fd, collection, query) = call(fd, command("find", on(collection, Cons(Field("query", query), Nil))))
+
+# `sort` is a document like `{"age": -1}`; a limit of 0 asks for no limit.
+fn find_sorted(fd, collection, query, sort, limit) =
+  call(fd, command("find", on(collection, Cons(Field("query", query), Cons(Field("sort", sort), limit_field(limit))))))
+
+fn limit_field(limit) = if limit <= 0 then Nil else Cons(Field("limit", JInt(limit)), Nil)
+
+fn count(fd, collection) = call(fd, command("count", on(collection, Nil)))
+
+fn update(fd, collection, query, changes) =
+  call(fd, command("update", on(collection, Cons(Field("query", query), Cons(Field("update", changes), Nil)))))
+
+fn delete(fd, collection, query) =
+  call(fd, command("delete", on(collection, Cons(Field("query", query), Nil))))
+
+fn create_index(fd, collection, field_name) =
+  call(fd, command("create_index", on(collection, Cons(Field("field", JStr(field_name)), Nil))))
+
+# `$set` is the update operator the server expects for a partial change.
+fn set(fields) = JObj(Cons(Field("$set", JObj(fields)), Nil))
+
+# -- reading results ----------------------------------------------------------
+
+# `find` answers with an array; `insert` with `{"id": n}`; `count` with
+# `{"count": n}`. These name those shapes so callers do not repeat them.
+fn docs(data) = items(data)
+
+fn inserted_id(data) = as_int(unwrap_or(get(data, "id"), JNull))
+
+fn inserted_ids(data) = map(items(data), \d -> as_int(d))
+
+fn counted(data) = as_int(unwrap_or(get(data, "count"), JNull))
+
+fn modified(data) = as_int(unwrap_or(get(data, "modified"), JNull))
+
+fn deleted(data) = as_int(unwrap_or(get(data, "deleted"), JNull))
+
+# A field of one document, as text — `field_str(doc, "name")`.
+fn field_str(doc, key) = as_str(unwrap_or(get(doc, key), JNull))
+
+fn field_int(doc, key) = as_int(unwrap_or(get(doc, key), JNull))

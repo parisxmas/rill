@@ -1,0 +1,330 @@
+# OpenGL, called straight from Rill: no C shim, no generated bindings. The
+# declarations below are the C prototypes written out, at C's own widths —
+# `U32` for a `GLenum`, `I32` for a `GLint`, `F32` for a `GLfloat` — and the
+# raw-buffer builtins supply the arrays and out-parameters GL expects.
+#
+# This file is the header: declarations, constants, and the small bridges the
+# declarations need. `scene.rill` builds the triangle on top of it,
+# `triangle.rill` shows it in a GLFW window and `offscreen.rill` renders it
+# without one.
+
+# `framework:Name` links a macOS framework. Naming it once here covers every
+# OpenGL symbol in the program.
+extern "framework:OpenGL" fn glGetString(name: U32) -> Ptr
+
+extern fn glGetError() -> U32
+
+extern fn glViewport(x: I32, y: I32, w: I32, h: I32)
+
+# Every colour channel is a 32-bit float. Declared `Float`, this would receive
+# a double and read back the wrong half of the register.
+extern fn glClearColor(r: F32, g: F32, b: F32, a: F32)
+
+extern fn glClear(mask: U32)
+
+extern fn glCreateShader(kind: U32) -> U32
+
+extern fn glDeleteShader(shader: U32)
+
+extern fn glDetachShader(prog: U32, shader: U32)
+
+extern fn glGetAttachedShaders(prog: U32, most: I32, count: Ptr, out: Ptr)
+
+extern fn glShaderSource(shader: U32, count: I32, strings: Ptr, lengths: Ptr)
+
+extern fn glCompileShader(shader: U32)
+
+extern fn glGetShaderiv(shader: U32, pname: U32, params: Ptr)
+
+extern fn glGetShaderInfoLog(shader: U32, cap: I32, written: Ptr, log: Ptr)
+
+extern fn glCreateProgram() -> U32
+
+extern fn glDeleteProgram(prog: U32)
+
+extern fn glAttachShader(program: U32, shader: U32)
+
+extern fn glBindAttribLocation(program: U32, index: U32, name: Ptr)
+
+extern fn glLinkProgram(program: U32)
+
+extern fn glGetProgramiv(program: U32, pname: U32, params: Ptr)
+
+extern fn glGetProgramInfoLog(program: U32, cap: I32, written: Ptr, log: Ptr)
+
+extern fn glUseProgram(program: U32)
+
+extern fn glGetUniformLocation(program: U32, name: Ptr) -> I32
+
+extern fn glUniform1f(location: I32, v: F32)
+
+extern fn glGenVertexArrays(n: I32, arrays: Ptr)
+
+extern fn glDeleteVertexArrays(n: I32, arrays: Ptr)
+
+extern fn glBindVertexArray(array: U32)
+
+extern fn glGenBuffers(n: I32, buffers: Ptr)
+
+extern fn glDeleteBuffers(n: I32, buffers: Ptr)
+
+extern fn glBindBuffer(target: U32, buffer: U32)
+
+extern fn glBufferData(target: U32, size: I64, data: Ptr, usage: U32)
+
+extern fn glVertexAttribPointer(index: U32, size: I32, kind: U32, normalized: U8, stride: I32, offset: Ptr)
+
+extern fn glEnableVertexAttribArray(index: U32)
+
+extern fn glDrawArrays(mode: U32, first: I32, count: I32)
+
+extern fn glGenFramebuffers(n: I32, out: Ptr)
+
+extern fn glBindFramebuffer(target: U32, fb: U32)
+
+extern fn glGenRenderbuffers(n: I32, out: Ptr)
+
+extern fn glBindRenderbuffer(target: U32, rb: U32)
+
+extern fn glRenderbufferStorage(target: U32, format: U32, w: I32, h: I32)
+
+extern fn glFramebufferRenderbuffer(target: U32, attachment: U32, rbtarget: U32, rb: U32)
+
+extern fn glReadPixels(x: I32, y: I32, w: I32, h: I32, format: U32, kind: U32, data: Ptr)
+
+extern fn glEnable(cap: U32)
+
+extern fn glDisable(cap: U32)
+
+extern fn glCullFace(mode: U32)
+
+extern fn glFrontFace(mode: U32)
+
+extern fn glUniform1i(location: I32, v: I32)
+
+extern fn glUniform3f(location: I32, x: F32, y: F32, z: F32)
+
+extern fn glUniform4f(location: I32, x: F32, y: F32, z: F32, w: F32)
+
+# The matrix is sixteen 32-bit floats in a raw buffer, column by column.
+extern fn glUniformMatrix4fv(location: I32, count: I32, transpose: U8, value: Ptr)
+
+# Uniform arrays: `count` elements read out of the buffer.
+extern fn glUniform3fv(location: I32, count: I32, value: Ptr)
+
+extern fn glUniform1fv(location: I32, count: I32, value: Ptr)
+
+extern fn glGenTextures(n: I32, out: Ptr)
+
+extern fn glDeleteTextures(n: I32, out: Ptr)
+
+extern fn glBindTexture(target: U32, texture: U32)
+
+extern fn glActiveTexture(unit: U32)
+
+extern fn glTexImage2D(target: U32, level: I32, internal: I32, w: I32, h: I32, border: I32, format: U32, kind: U32, data: Ptr)
+
+extern fn glTexParameteri(target: U32, pname: U32, param: I32)
+
+extern fn glGenerateMipmap(target: U32)
+
+extern fn glBlendFunc(src: U32, dst: U32)
+
+extern fn glDepthMask(on: U8)
+
+# The constants a C program would get from a header.
+fn gl_color_buffer_bit() = 16384
+
+fn gl_triangles() = 4
+
+fn gl_float() = 5126
+
+fn gl_array_buffer() = 34962
+
+fn gl_static_draw() = 35044
+
+fn gl_vertex_shader() = 35633
+
+fn gl_fragment_shader() = 35632
+
+fn gl_compile_status() = 35713
+
+fn gl_link_status() = 35714
+
+fn gl_version() = 7938
+
+fn gl_framebuffer() = 36160
+
+fn gl_renderbuffer() = 36161
+
+fn gl_rgba8() = 32856
+
+fn gl_color_attachment0() = 36064
+
+fn gl_rgba() = 6408
+
+fn gl_unsigned_byte() = 5121
+
+fn gl_depth_test() = 2929
+
+fn gl_depth_buffer_bit() = 256
+
+fn gl_cull_face() = 2884
+
+fn gl_back() = 1029
+
+fn gl_ccw() = 2305
+
+fn gl_multisample() = 32925
+
+fn gl_texture_2d() = 3553
+
+fn gl_texture0() = 33984
+
+fn gl_texture_min_filter() = 10241
+
+fn gl_texture_mag_filter() = 10240
+
+fn gl_texture_wrap_s() = 10242
+
+fn gl_texture_wrap_t() = 10243
+
+fn gl_linear() = 9729
+
+fn gl_linear_mipmap_linear() = 9987
+
+fn gl_repeat() = 10497
+
+fn gl_clamp_to_edge() = 33071
+
+fn gl_blend() = 3042
+
+fn gl_src_alpha() = 770
+
+fn gl_one_minus_src_alpha() = 771
+
+fn gl_one() = 1
+
+# ---- bridges ---------------------------------------------------------------
+
+# C wants an array of string pointers, so the string is copied out and its
+# address stored in a one-element buffer.
+fn source_array(src) =
+  arr = buf_ptr(1)
+  buf_set(arr, 0, to_cstr(src))
+  arr
+
+# The array frees itself; the string inside it came from `to_cstr`, which is
+# plain C memory, so that one is still handed back by name.
+fn free_source_array(arr: Buf(Ptr)) = free_ptr(buf_get(arr, 0))
+
+# `glGen*` reports the new name through an out-parameter. A foreign function
+# is a symbol rather than a value, so each one gets its own reader.
+fn gen_vertex_array() =
+  out = buf_u32(1)
+  glGenVertexArrays(1, buf_data(out))
+  buf_get(out, 0)
+
+fn gen_texture() =
+  out = buf_u32(1)
+  glGenTextures(1, buf_data(out))
+  buf_get(out, 0)
+
+fn gen_buffer() =
+  out = buf_u32(1)
+  glGenBuffers(1, buf_data(out))
+  buf_get(out, 0)
+
+fn with_cstr(s, use_it) =
+  p = to_cstr(s)
+  r = use_it(p)
+  free_ptr(p)
+  r
+
+fn shader_log(sh) =
+  buf = buf_u8(1024)
+  glGetShaderInfoLog(sh, 1024, null_ptr(), buf_data(buf))
+  from_cstr(buf_data(buf))
+
+fn program_log(prog) =
+  buf = buf_u8(1024)
+  glGetProgramInfoLog(prog, 1024, null_ptr(), buf_data(buf))
+  from_cstr(buf_data(buf))
+
+# Rill has no bottom type, so a function that never returns still has to
+# return something: `fallback` is that value, and naming it at the call site
+# is what lets this be used where a handle, a name or a pointer is expected.
+fn fail(what, detail, fallback) =
+  println(what + " failed: " + detail)
+  exit(1)
+  fallback
+
+# ---- shader plumbing -------------------------------------------------------
+
+fn compile_shader(kind, src) =
+  sh = glCreateShader(kind)
+  arr = source_array(src)
+  glShaderSource(sh, 1, buf_data(arr), null_ptr())
+  glCompileShader(sh)
+  free_source_array(arr)
+  status = buf_i32(1)
+  glGetShaderiv(sh, gl_compile_status(), buf_data(status))
+  ok = buf_get(status, 0)
+  if ok == 1 then sh else fail("shader", shader_log(sh), 0)
+
+# Checks a linked program and hands it back, so the two programs in a demo do
+# not each repeat the error path. Attribute locations are bound by the caller,
+# which is the part that differs.
+fn link_checked(prog, what) =
+  glLinkProgram(prog)
+  status = buf_i32(1)
+  glGetProgramiv(prog, gl_link_status(), buf_data(status))
+  ok = buf_get(status, 0)
+  # The two shaders have done their work by now: linking copies what it needs
+  # out of them. Detached and deleted here, the program owns nothing but
+  # itself, and deleting the program later is the whole of freeing it — left
+  # attached they outlive it, which is a small leak repeated every time a world
+  # is built.
+  shed_shaders(prog)
+  if ok == 1 then prog else fail(what, program_log(prog), 0)
+
+fn shed_shaders(prog) =
+  got = buf_i32(1)
+  names = buf_u32(8)
+  glGetAttachedShaders(prog, 8, buf_data(got), buf_data(names))
+  shed_each(prog, names, buf_get(got, 0), 0)
+
+fn shed_each(prog, names: Buf(U32), n, i) =
+  if i >= n then 0 else shed_one(prog, names, n, i)
+
+fn shed_one(prog, names: Buf(U32), n, i) =
+  glDetachShader(prog, buf_get(names, i))
+  glDeleteShader(buf_get(names, i))
+  shed_each(prog, names, n, i + 1)
+
+# ---- handing things back ---------------------------------------------------
+#
+# A name generated here belongs to the driver, not to the language: nothing
+# that counts references will ever free one, so anything built for a world that
+# is being thrown away has to be given back by hand.
+fn drop_vao(v) =
+  one = buf_u32(1)
+  buf_set(one, 0, v)
+  glDeleteVertexArrays(1, buf_data(one))
+  0
+
+fn drop_vbo(v) =
+  one = buf_u32(1)
+  buf_set(one, 0, v)
+  glDeleteBuffers(1, buf_data(one))
+  0
+
+fn drop_tex(v) =
+  one = buf_u32(1)
+  buf_set(one, 0, v)
+  glDeleteTextures(1, buf_data(one))
+  0
+
+fn drop_prog(v) =
+  glDeleteProgram(v)
+  0

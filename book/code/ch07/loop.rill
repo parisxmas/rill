@@ -1,0 +1,15 @@
+fn count_up(i, n) =
+  if i > n then 0 else count_on(i, n)
+
+fn count_on(i, n) =
+  println(i)
+  count_up(i + 1, n)
+
+fn sum_to(n) = go(n, 0)
+
+fn go(i, acc) = if i == 0 then acc else go(i - 1, acc + i)
+
+fn main() =
+  count_up(1, 3)
+  println(sum_to(10))
+  println(sum_to(10000000))

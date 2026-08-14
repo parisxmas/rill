@@ -1,0 +1,15 @@
+type Money
+  Money(Int)
+
+fn parse_amount(s) =
+  n = str_to_int(s)
+  if str_len(s) == 0 then Err("empty") else if n < 0 then Err("negative: " + s) else Ok(Money(n))
+
+fn show_result(r) = match r
+  Ok(Money(c)) -> "ok: " + int_to_str(c)
+  Err(msg) -> "error: " + msg
+
+fn main() =
+  println(show_result(parse_amount("1250")))
+  println(show_result(parse_amount("")))
+  println(show_result(parse_amount("-5")))

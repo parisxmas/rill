@@ -1,0 +1,14 @@
+[package]
+name = "rill_cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rill"
+path = "src/main.rs"
+
+[dependencies]
+rill_syntax = { path = "../rill_syntax" }
+rill_types = { path = "../rill_types" }
+rill_codegen = { path = "../rill_codegen" }

@@ -1,0 +1,145 @@
+# The Rill prelude — compiled into every program.
+# User definitions shadow these by name; redefining a prelude type (or any of
+# its constructors) also removes every prelude function that depends on it.
+
+type Option(a)
+  None
+  Some(a)
+
+type Result(a, e)
+  Ok(a)
+  Err(e)
+
+type List(a)
+  Nil
+  Cons(head: a, tail: List(a))
+
+# -- lists -------------------------------------------------------------------
+
+fn map(l, f) = match l
+  Nil -> Nil
+  Cons(x, rest) -> Cons(f(x), map(rest, f))
+
+fn filter(l, p) = match l
+  Nil -> Nil
+  Cons(x, rest) -> if p(x) then Cons(x, filter(rest, p)) else filter(rest, p)
+
+fn fold(l, acc, f) = match l
+  Nil -> acc
+  Cons(x, rest) -> fold(rest, f(acc, x), f)
+
+fn len(l) = match l
+  Nil -> 0
+  Cons(_, rest) -> 1 + len(rest)
+
+fn sum(l) = fold(l, 0, \a, x -> a + x)
+
+fn range(a, b) = if a > b then Nil else Cons(a, range(a + 1, b))
+
+fn rev_onto(l, acc) = match l
+  Nil -> acc
+  Cons(x, rest) -> rev_onto(rest, Cons(x, acc))
+
+fn reverse(l) = rev_onto(l, Nil)
+
+fn append(a, b) = match a
+  Nil -> b
+  Cons(x, rest) -> Cons(x, append(rest, b))
+
+fn take(l, n) = if n <= 0 then Nil else match l
+  Nil -> Nil
+  Cons(x, rest) -> Cons(x, take(rest, n - 1))
+
+fn drop(l, n) = if n <= 0 then l else match l
+  Nil -> Nil
+  Cons(_, rest) -> drop(rest, n - 1)
+
+fn nth(l, n) = match l
+  Nil -> None
+  Cons(x, rest) -> if n == 0 then Some(x) else nth(rest, n - 1)
+
+fn any(l, p) = match l
+  Nil -> false
+  Cons(x, rest) -> p(x) || any(rest, p)
+
+fn all(l, p) = match l
+  Nil -> true
+  Cons(x, rest) -> p(x) && all(rest, p)
+
+# -- options and results -----------------------------------------------------
+
+fn unwrap_or(o, d) = match o
+  None -> d
+  Some(x) -> x
+
+fn opt_map(o, f) = match o
+  None -> None
+  Some(x) -> Some(f(x))
+
+fn res_map(r, f) = match r
+  Ok(x) -> Ok(f(x))
+  Err(e) -> Err(e)
+
+# -- numbers -----------------------------------------------------------------
+
+fn max(a, b) = if a > b then a else b
+
+fn min(a, b) = if a < b then a else b
+
+fn abs(n) = if n < 0 then -n else n
+
+# -- strings -----------------------------------------------------------------
+
+fn join(l, sep) = match l
+  Nil -> ""
+  Cons(x, rest) -> match rest
+    Nil -> x
+    Cons(_, _) -> x + sep + join(rest, sep)
+
+fn repeat(s, n) = if n <= 0 then "" else s + repeat(s, n - 1)
+
+fn contains(s, p) = str_find(s, p) >= 0
+
+fn starts_with(s, p) = str_find(s, p) == 0
+
+fn split(s, sep) =
+  i = str_find(s, sep)
+  if str_len(sep) == 0 || i < 0 then Cons(s, Nil) else Cons(str_sub(s, 0, i), split(str_sub(s, i + str_len(sep), str_len(s)), sep))
+
+fn lines(s) = split(s, "\n")
+
+fn is_space(c) = c == 32 || c == 9 || c == 10 || c == 13
+
+fn trim_from(s, i) = if i < str_len(s) && is_space(str_get(s, i)) then trim_from(s, i + 1) else i
+
+fn trim_to(s, j) = if j > 0 && is_space(str_get(s, j - 1)) then trim_to(s, j - 1) else j
+
+fn trim(s) =
+  a = trim_from(s, 0)
+  b = trim_to(s, str_len(s))
+  if a < b then str_sub(s, a, b - a) else ""
+
+# -- process and file IO (shaping the raw builtins) --------------------------
+
+fn args_from(i, acc) = if i < 0 then acc else args_from(i - 1, Cons(arg(i), acc))
+
+# Command-line arguments, program name included (like Go's os.Args).
+fn args() = args_from(arg_count() - 1, Nil)
+
+fn read_file(path) =
+  s = read_file_raw(path)
+  if io_ok() then Ok(s) else Err("cannot read " + path)
+
+# -- sockets -----------------------------------------------------------------
+
+fn listen_on(port) =
+  fd = tcp_listen(port)
+  if fd < 0 then Err("cannot listen on port " + int_to_str(port)) else Ok(fd)
+
+fn accept_on(server) =
+  fd = tcp_accept(server)
+  if fd < 0 then Err("accept failed") else Ok(fd)
+
+fn connect_to(host, port) =
+  fd = tcp_connect(host, port)
+  if fd < 0 then Err("cannot connect to " + host + ":" + int_to_str(port)) else Ok(fd)

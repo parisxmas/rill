@@ -1,0 +1,19 @@
+# Generic lists, higher-order functions, lambdas — monomorphized, no boxing.
+type List(a)
+  Nil
+  Cons(head: a, tail: List(a))
+
+fn map(l, f) = match l
+  Nil -> Nil
+  Cons(x, rest) -> Cons(f(x), map(rest, f))
+
+fn fold(l, acc, f) = match l
+  Nil -> acc
+  Cons(x, rest) -> fold(rest, f(acc, x), f)
+
+fn range(a, b) = if a > b then Nil else Cons(a, range(a + 1, b))
+
+fn sum(l) = fold(l, 0, \a, x -> a + x)
+
+fn main() =
+  range(1, 10) |> map(\x -> x * x) |> sum |> println

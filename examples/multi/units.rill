@@ -1,0 +1,11 @@
+# Two modules that both define `Unit`, `label` and `scale`. Importing them
+# under aliases keeps their names apart: `m.label` and `i.label` are different
+# functions, and `m.Unit` and `i.Unit` are different types.
+import "metric" as m
+import "imperial" as i
+
+fn main() =
+  println(m.label(m.Meters(1.5)))
+  println(i.label(i.Feet(2.0)))
+  println(m.scale(10.0))
+  println(i.scale(10.0))

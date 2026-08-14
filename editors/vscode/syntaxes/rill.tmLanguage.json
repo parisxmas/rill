@@ -1,0 +1,376 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Rill",
+  "scopeName": "source.rill",
+  "fileTypes": ["rill"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#import" },
+    { "include": "#extern" },
+    { "include": "#declaration" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#pipeline-call" },
+    { "include": "#builtin-type" },
+    { "include": "#builtin-function" },
+    { "include": "#prelude-function" },
+    { "include": "#constructor" },
+    { "include": "#call" },
+    { "include": "#lambda" },
+    { "include": "#operator" },
+    { "include": "#punctuation" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.rill",
+      "begin": "#",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.comment.rill" }
+      },
+      "end": "$"
+    },
+
+    "string": {
+      "name": "string.quoted.double.rill",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.rill" }
+      },
+      "end": "(\")|$",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.string.end.rill" }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.rill",
+          "match": "\\\\[nrt\\\\\"]"
+        },
+        {
+          "name": "invalid.illegal.unknown-escape.rill",
+          "match": "\\\\."
+        }
+      ]
+    },
+
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.rill",
+          "match": "\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.rill",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+
+    "import": {
+      "match": "^\\s*(import)\\s+(\"[^\"]*\")(?:\\s+(as)\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+      "captures": {
+        "1": { "name": "keyword.control.import.rill" },
+        "2": { "name": "string.quoted.double.rill" },
+        "3": { "name": "keyword.control.import.rill" },
+        "4": { "name": "entity.name.namespace.rill" }
+      }
+    },
+
+    "extern": {
+      "begin": "\\b(extern)\\b(?:\\s+(\"[^\"]*\"))?(?:\\s+(fn)\\s+([A-Za-z_][A-Za-z0-9_]*))?\\s*(\\()?",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.extern.rill" },
+        "2": { "name": "string.quoted.double.rill" },
+        "3": { "name": "storage.type.function.rill" },
+        "4": { "name": "entity.name.function.rill" },
+        "5": { "name": "punctuation.section.parens.begin.rill" }
+      },
+      "end": "(\\))|$",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.parens.end.rill" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#type-name" },
+        {
+          "name": "variable.parameter.rill",
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b"
+        },
+        { "include": "#punctuation" }
+      ]
+    },
+
+    "declaration": {
+      "patterns": [
+        { "include": "#function-declaration" },
+        { "include": "#type-declaration" },
+        { "include": "#trait-declaration" },
+        { "include": "#impl-declaration" }
+      ]
+    },
+
+    "function-declaration": {
+      "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+      "beginCaptures": {
+        "1": { "name": "storage.type.function.rill" },
+        "2": { "name": "entity.name.function.rill" },
+        "3": { "name": "punctuation.section.parens.begin.rill" }
+      },
+      "end": "\\)",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.parens.end.rill" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#type-name" },
+        {
+          "name": "variable.parameter.rill",
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b"
+        },
+        { "include": "#punctuation" }
+      ]
+    },
+
+    "type-declaration": {
+      "match": "\\b(type)\\s+([A-Z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.rill" },
+        "2": { "name": "entity.name.type.rill" }
+      }
+    },
+
+    "trait-declaration": {
+      "match": "\\b(trait)\\s+([A-Z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.trait.rill" },
+        "2": { "name": "entity.name.type.trait.rill" }
+      }
+    },
+
+    "impl-declaration": {
+      "match": "\\b(impl)\\s+([A-Z][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.impl.rill" },
+        "2": { "name": "entity.name.type.trait.rill" }
+      }
+    },
+
+    "type-name": {
+      "comment": "A type in annotation position: built-in names keep their own scope, anything else is a user type.",
+      "patterns": [
+        { "include": "#builtin-type" },
+        {
+          "name": "entity.name.type.rill",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.conditional.rill",
+          "match": "\\b(if|then|else|match)\\b"
+        },
+        {
+          "name": "keyword.control.concurrency.rill",
+          "match": "\\b(spawn|select)\\b"
+        },
+        {
+          "name": "keyword.control.default.rill",
+          "match": "\\b(default)\\b(?=\\s*->)"
+        },
+        {
+          "name": "storage.type.function.rill",
+          "match": "\\b(fn)\\b"
+        },
+        {
+          "name": "storage.type.rill",
+          "match": "\\b(type|trait|impl|extern)\\b"
+        },
+        {
+          "name": "constant.language.boolean.rill",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "variable.language.wildcard.rill",
+          "match": "(?<![A-Za-z0-9_])_(?![A-Za-z0-9_])"
+        }
+      ]
+    },
+
+    "builtin-type": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.rill",
+          "match": "\\b(Int|Float|Bool|Str|Unit|Ptr|Chan|Buf|I8|U8|I16|U16|I32|U32|I64|U64|F32|F64|Fn)\\b"
+        },
+        {
+          "name": "support.class.prelude.rill",
+          "match": "\\b(Option|Result|List)\\b"
+        },
+        {
+          "name": "support.type.trait.rill",
+          "match": "\\b(Show|Ord)\\b"
+        }
+      ]
+    },
+
+    "builtin-function": {
+      "name": "support.function.builtin.rill",
+      "match": "\\b(println|print|show|channel|send|recv|str_len|str_get|str_sub|str_find|str_cmp|str_to_int|str_to_float|int_to_str|float_to_str|bool_to_str|chr|bit_and|bit_or|bit_xor|bit_not|shl|shr|arg_count|arg|read_file_raw|io_ok|write_file|read_line|exit|to_cstr|from_cstr|free_ptr|null_ptr|is_null|tcp_listen|tcp_accept|tcp_connect|sock_read|sock_write|sock_close|alloc_bytes|ptr_offset|poke_i8|poke_i16|poke_i32|poke_i64|poke_f32|poke_f64|peek_i8|peek_u8|peek_i16|peek_u16|peek_i32|peek_u32|peek_i64|peek_f32|peek_f64|poke_ptr|peek_ptr|to_float|to_int|buf_i8|buf_u8|buf_i16|buf_u16|buf_i32|buf_u32|buf_int|buf_f32|buf_float|buf_ptr|buf_get|buf_set|buf_len|buf_data)\\b(?=\\s*\\()"
+    },
+
+    "prelude-function": {
+      "name": "support.function.prelude.rill",
+      "match": "\\b(map|filter|fold|len|sum|range|reverse|rev_onto|append|take|drop|nth|any|all|unwrap_or|opt_map|res_map|max|min|abs|join|repeat|contains|starts_with|split|lines|is_space|trim|trim_from|trim_to|args|args_from|read_file|listen_on|accept_on|connect_to|compare)\\b(?=\\s*\\()"
+    },
+
+    "pipeline-call": {
+      "comment": "A pipeline stage may name a function without calling it: `xs |> map(f) |> sum`. The call form is left to #builtin-function and #prelude-function.",
+      "patterns": [
+        {
+          "match": "(\\|>)\\s*\\b(println|print|show|str_len|str_to_int|str_to_float|int_to_str|float_to_str|bool_to_str|chr|bit_not|io_ok|read_line|exit)\\b(?!\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.operator.pipeline.rill" },
+            "2": { "name": "support.function.builtin.rill" }
+          }
+        },
+        {
+          "match": "(\\|>)\\s*\\b(map|filter|fold|len|sum|range|reverse|rev_onto|append|take|drop|nth|any|all|unwrap_or|opt_map|res_map|max|min|abs|join|repeat|contains|starts_with|split|lines|is_space|trim|args|read_file)\\b(?!\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.operator.pipeline.rill" },
+            "2": { "name": "support.function.prelude.rill" }
+          }
+        }
+      ]
+    },
+
+    "constructor": {
+      "patterns": [
+        {
+          "name": "support.constant.prelude.rill",
+          "match": "\\b(None|Some|Ok|Err|Nil|Cons)\\b"
+        },
+        {
+          "comment": "A constructor reached through a module alias: `m.Meters(1.5)`.",
+          "match": "\\b([a-z_][A-Za-z0-9_]*)(\\.)([A-Z][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "entity.name.namespace.rill" },
+            "2": { "name": "punctuation.accessor.rill" },
+            "3": { "name": "entity.name.type.constructor.rill" }
+          }
+        },
+        {
+          "name": "entity.name.type.constructor.rill",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+
+    "call": {
+      "patterns": [
+        {
+          "match": "\\b([a-z_][A-Za-z0-9_]*)(\\.)([a-z_][A-Za-z0-9_]*)\\b(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "entity.name.namespace.rill" },
+            "2": { "name": "punctuation.accessor.rill" },
+            "3": { "name": "entity.name.function.call.rill" }
+          }
+        },
+        {
+          "name": "entity.name.function.call.rill",
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b(?=\\s*\\()"
+        }
+      ]
+    },
+
+    "lambda": {
+      "begin": "(\\\\)",
+      "beginCaptures": {
+        "1": { "name": "storage.type.function.lambda.rill" }
+      },
+      "end": "(->)|$",
+      "endCaptures": {
+        "1": { "name": "keyword.operator.arrow.rill" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#type-name" },
+        {
+          "name": "variable.parameter.rill",
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b"
+        },
+        { "include": "#punctuation" }
+      ]
+    },
+
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.pipeline.rill",
+          "match": "\\|>"
+        },
+        {
+          "name": "keyword.operator.arrow.rill",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.comparison.rill",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.rill",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.arithmetic.rill",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.assignment.rill",
+          "match": "="
+        }
+      ]
+    },
+
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "keyword.operator.type.rill",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.separator.comma.rill",
+          "match": ","
+        },
+        {
+          "name": "punctuation.section.parens.begin.rill",
+          "match": "\\("
+        },
+        {
+          "name": "punctuation.section.parens.end.rill",
+          "match": "\\)"
+        }
+      ]
+    },
+
+    "identifier": {
+      "patterns": [
+        {
+          "match": "\\b([a-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "entity.name.namespace.rill" },
+            "2": { "name": "punctuation.accessor.rill" },
+            "3": { "name": "variable.other.rill" }
+          }
+        },
+        {
+          "name": "variable.other.rill",
+          "match": "\\b[a-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

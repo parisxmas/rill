@@ -1,0 +1,47 @@
+# Patterns nest freely and compile to a decision tree: each value is tested
+# once, arms are never duplicated, and the checker proves the match covers
+# every case (it names a missing one otherwise).
+
+# Classify the first two elements of a list of options.
+fn classify(l) = match l
+  Nil -> "empty"
+  Cons(None, Nil) -> "one hole"
+  Cons(Some(0), _) -> "starts with zero"
+  Cons(Some(n), Cons(Some(m), _)) -> "two values: " + int_to_str(n + m)
+  Cons(Some(n), _) -> "one value: " + int_to_str(n)
+  Cons(None, _) -> "starts with a hole"
+
+# Nested literals and wildcards mix freely.
+fn step(pair) = match pair
+  Pair(0, 0) -> "origin"
+  Pair(0, y) -> "on the y axis at " + int_to_str(y)
+  Pair(x, 0) -> "on the x axis at " + int_to_str(x)
+  Pair(x, y) -> "at " + int_to_str(x) + "," + int_to_str(y)
+
+type Pair
+  Pair(x: Int, y: Int)
+
+# Deeply nested: three levels down.
+fn deep(t) = match t
+  Wrap(Some(Cons(x, Nil))) -> "single " + int_to_str(x)
+  Wrap(Some(Cons(_, _))) -> "many"
+  Wrap(Some(Nil)) -> "empty list"
+  Wrap(None) -> "nothing"
+
+type Wrapper
+  Wrap(inner: Option(List(Int)))
+
+fn main() =
+  println(classify(Nil))
+  println(classify(Cons(None, Nil)))
+  println(classify(Cons(Some(0), Cons(Some(9), Nil))))
+  println(classify(Cons(Some(3), Cons(Some(4), Nil))))
+  println(classify(Cons(Some(7), Nil)))
+  println(classify(Cons(None, Cons(Some(1), Nil))))
+  println(step(Pair(0, 0)))
+  println(step(Pair(0, 5)))
+  println(step(Pair(2, 3)))
+  println(deep(Wrap(Some(Cons(42, Nil)))))
+  println(deep(Wrap(Some(Cons(1, Cons(2, Nil))))))
+  println(deep(Wrap(Some(Nil))))
+  println(deep(Wrap(None)))

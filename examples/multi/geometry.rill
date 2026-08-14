@@ -1,0 +1,10 @@
+# Geometry library module.
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+
+fn area(s) = match s
+  Circle(r) -> 3.14159 * r * r
+  Rect(w, h) -> w * h
+
+fn total_area(shapes) = fold(shapes, 0.0, \acc, s -> acc + area(s))

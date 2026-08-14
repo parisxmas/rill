@@ -1,0 +1,66 @@
+# Calling C at C's own widths, and handing C memory to read.
+#
+# Rill's `Int` is 64-bit and its `Float` is a double, but most C libraries are
+# full of 32-bit `int`s and `float`s. A foreign signature names the width the
+# symbol was actually compiled with — I8/U8/I16/U16/I32/U32/F32 — and the call
+# narrows on the way in and widens on the way out. `Int` and `Float` still mean
+# the 64-bit forms.
+
+extern "m" fn sqrtf(x: F32) -> F32
+
+extern "m" fn powf(base: F32, exponent: F32) -> F32
+
+# C's `abs` takes an `int`, which is not Rill's `Int`.
+extern fn abs(n: I32) -> I32
+
+# Reads a buffer this program filled in, and stops at the NUL.
+extern fn strlen(s: Ptr) -> Int
+
+# Bytes of a Rill string, copied into raw memory one at a time: `str_get`
+# hands back a byte and `poke_i8` stores one. The pair recurses until the
+# string runs out, then writes C's terminator.
+fn write_byte(p, s, i) =
+  poke_i8(p, i, str_get(s, i))
+  write_cstr(p, s, i + 1)
+
+fn write_cstr(p, s, i) =
+  if i >= str_len(s) then poke_i8(p, i, 0) else write_byte(p, s, i)
+
+fn main() =
+  # A `float` parameter really is 32 bits wide: handed a double, sqrtf would
+  # read the wrong half of the register and answer 0.
+  println(sqrtf(2.0))
+  println(powf(2.0, 10.0))
+  println(abs(-7))
+
+  # `alloc_bytes` is plain C memory, outside the reference counter, so it is
+  # released with `free_ptr` — exactly like the result of `to_cstr`.
+  buf = alloc_bytes(16)
+  write_cstr(buf, "merhaba", 0)
+  println(strlen(buf))
+  println(peek_u8(buf, 0))
+  free_ptr(buf)
+
+  # Signedness belongs to the read, not the write: the byte is the same one.
+  b = alloc_bytes(1)
+  poke_i8(b, 0, 200)
+  println(peek_u8(b, 0))
+  println(peek_i8(b, 0))
+  free_ptr(b)
+
+  # An array of floats, laid out the way a C library expects. The index is in
+  # elements, so this writes bytes 0..12.
+  v = alloc_bytes(12)
+  poke_f32(v, 0, 1.5)
+  poke_f32(v, 1, 2.5)
+  poke_f32(v, 2, 3.5)
+  println(peek_f32(v, 0) + peek_f32(v, 1) + peek_f32(v, 2))
+  free_ptr(v)
+
+  # And 32-bit storage is lossy, visibly: 2^24 + 1 has no `float` form, so it
+  # comes back one short of what the double keeps.
+  w = alloc_bytes(16)
+  poke_f32(w, 0, 16777217.0)
+  poke_f64(w, 1, 16777217.0)
+  println(peek_f64(w, 1) - peek_f32(w, 0))
+  free_ptr(w)

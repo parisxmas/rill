@@ -1,0 +1,16 @@
+type Box(a)
+  Box(a)
+
+impl Show(Box(a))
+  fn show(b) = match b
+    Box(x) -> "[" + show(x) + "]"
+
+impl Show(List(a))
+  fn show(l) = "{" + join(map(l, \x -> show(x)), " ") + "}"
+
+fn main() =
+  println(Box(42))
+  println(Box("hi"))
+  println(Cons(1, Cons(2, Cons(3, Nil))))
+  println(Box(Cons(1, Cons(2, Nil))))
+  println(Cons(Box(1), Cons(Box(2), Nil)))

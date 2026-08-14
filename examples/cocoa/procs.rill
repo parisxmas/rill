@@ -1,0 +1,202 @@
+# Reading the process table, through libproc.
+#
+# `proc_listpids` fills a buffer with every pid on the machine, and
+# `proc_pid_rusage` answers with a `rusage_info_v0` for one of them — 96 bytes
+# holding the CPU time the process has accumulated and its memory footprint.
+# Neither call has a Rill shape: both write into memory the caller owns, which
+# is what `Buf` is for.
+#
+# The memory figure is `ri_phys_footprint`, not the resident size. Those are
+# different numbers and the resident one is the wrong one to show: it counts
+# file-backed and shared pages the process did not really cost the machine,
+# and it misses what has been compressed. Activity Monitor's "Memory" column
+# is the footprint, and reading `ri_resident_size` instead puts Chrome at
+# 481 MB where the system says 339. `ps -o rss` does report the resident size,
+# so the two disagreeing is expected rather than a sign of a bad reading.
+#
+# libproc is part of libSystem, so none of this needs a library named.
+
+extern fn proc_listpids(t: U32, typeinfo: U32, buffer: Ptr, buffersize: I32) -> I32
+
+extern fn proc_name(pid: I32, buffer: Ptr, buffersize: U32) -> I32
+
+extern fn proc_pid_rusage(pid: I32, flavor: I32, buffer: Ptr) -> I32
+
+extern fn kill(pid: I32, sig: I32) -> I32
+
+# Both the CPU counters below and this clock are in mach absolute time units
+# — on Apple Silicon a tick is 125/3 nanoseconds, not one. Measuring elapsed
+# time with the same clock the kernel charges CPU in means the ratio of the
+# two needs no conversion at all, and cannot be wrong about the timebase.
+extern fn mach_absolute_time() -> U64
+
+extern fn mach_timebase_info(info: Ptr) -> I32
+
+fn all_pids() = 1
+
+fn rusage_v0() = 0
+
+# `sizeof(struct rusage_info_v0)`: a 16-byte uuid and ten 64-bit counters.
+fn rusage_size() = 96
+
+# Room for the pid list. The machine runs about a thousand.
+fn pid_cap() = 8192
+
+fn sigterm() = 15
+
+fn now_ticks() = mach_absolute_time()
+
+# Asked of the machine rather than assumed: the timebase is 125/3 on Apple
+# silicon and 1/1 on Intel, so the tick is not a nanosecond on either.
+fn ticks_per_second() =
+  b = buf_u32(2)
+  mach_timebase_info(buf_data(b))
+  1000000000 * buf_get(b, 1) / buf_get(b, 0)
+
+# One process as the kernel describes it. `cpu` is the CPU time burned since
+# it started, in the clock's own ticks, which only means something next to an
+# earlier reading.
+type Proc
+  Proc(pid: Int, name: Str, cpu: Int, footprint: Int)
+
+# One process next to what it had burned at the previous reading.
+type Sample
+  Sample(now: Proc, before: Int)
+
+# What a row shows: the same process with the CPU turned into a rate. Tenths
+# of a percent, so it sorts and prints without floating point.
+type Row
+  Row(pid: Int, name: Str, tenths: Int, footprint: Int)
+
+# ---- reading ---------------------------------------------------------------
+
+fn snapshot() =
+  pids = buf_i32(pid_cap())
+  bytes = proc_listpids(all_pids(), 0, buf_data(pids), pid_cap() * 4)
+  gather(pids, buf_u8(64), buf_u8(rusage_size()), bytes / 4 - 1, Nil)
+
+# Every process there is, readable or not, so the ones left out can be counted.
+fn pid_count() =
+  pids = buf_i32(pid_cap())
+  proc_listpids(all_pids(), 0, buf_data(pids), pid_cap() * 4) / 4
+
+# Walked backwards so the list comes out in the order the kernel gave.
+fn gather(pids: Buf(I32), name: Buf(U8), ru: Buf(U8), i, acc) =
+  if i < 0 then acc else gather(pids, name, ru, i - 1, prepend(pids, name, ru, i, acc))
+
+fn prepend(pids: Buf(I32), name: Buf(U8), ru: Buf(U8), i, acc) =
+  pid = buf_get(pids, i)
+  # A process belonging to another user cannot be read without privileges —
+  # not even its name — and the call leaves the buffer holding whatever the
+  # last one wrote. So a refusal means leave it out, not read zeroes. Activity
+  # Monitor shows those because it asks through a helper running as root;
+  # about a third of the machine's processes are missing here for want of one.
+  if proc_pid_rusage(pid, rusage_v0(), buf_data(ru)) == 0 then Cons(read_proc(pid, name, ru), acc) else acc
+
+# Offsets into `rusage_info_v0`, counted in 64-bit words: a 16-byte uuid,
+# then user and system time, and — nine words in — the memory footprint.
+fn read_proc(pid, name: Buf(U8), ru: Buf(U8)) =
+  Proc(pid, read_name(pid, name), peek_i64(buf_data(ru), 2) + peek_i64(buf_data(ru), 3), peek_i64(buf_data(ru), 9))
+
+fn read_name(pid, name: Buf(U8)) =
+  # Emptied first, so a call that writes nothing reads back as nothing rather
+  # than as the previous process's name.
+  buf_set(name, 0, 0)
+  proc_name(pid, buf_data(name), 63)
+  named(from_cstr(buf_data(name)), pid)
+
+fn named(s, pid) = if str_len(s) == 0 then "(" + int_to_str(pid) + ")" else s
+
+# ---- rates -----------------------------------------------------------------
+
+# CPU time gained between two readings, against the wall time that passed.
+# A process not in the earlier reading has no rate yet and shows none.
+fn rate(l, elapsed) = match l
+  Nil -> Nil
+  Cons(p, rest) -> Cons(rate_one(p, elapsed), rate(rest, elapsed))
+
+fn rate_one(p, elapsed) = match p
+  Sample(now, before) -> rated(now, before, elapsed)
+
+fn rated(now, before, elapsed) = match now
+  Proc(pid, name, cpu, footprint) -> Row(pid, name, tenths(cpu - before, elapsed), footprint)
+
+fn tenths(gained, elapsed) = if elapsed <= 0 || gained < 0 then 0 else gained * 1000 / elapsed
+
+# Each process paired with what it had burned last time, or with its own
+# reading when it is new — which reads as no CPU at all rather than as a spike
+# of everything it has ever used.
+fn against(l, prev) = match l
+  Nil -> Nil
+  Cons(p, rest) -> Cons(Sample(p, earlier(prev, pid_of(p), cpu_of(p))), against(rest, prev))
+
+fn pid_of(p) = match p
+  Proc(pid, name, cpu, footprint) -> pid
+
+fn cpu_of(p) = match p
+  Proc(pid, name, cpu, footprint) -> cpu
+
+fn earlier(prev, pid, fallback) = match prev
+  Nil -> fallback
+  Cons(q, rest) -> if pid_of(q) == pid then cpu_of(q) else earlier(rest, pid, fallback)
+
+# ---- ordering --------------------------------------------------------------
+
+# Merge sort. Insertion sort is the shorter program but this list is eight
+# hundred long and gets rebuilt every refresh. `ahead` decides the order and
+# is an ordinary closure — a callback into C it is not, so it may be anything.
+fn sorted(l, ahead) =
+  n = len(l)
+  if n <= 1 then l else merge(sorted(take(l, n / 2), ahead), sorted(drop(l, n / 2), ahead), ahead)
+
+fn merge(a, b, ahead) = match a
+  Nil -> b
+  Cons(x, xs) -> merge_on(x, xs, b, ahead)
+
+# Takes from the left unless the right is strictly ahead, which is what keeps
+# equal rows in the order they came and stops the table twitching.
+fn merge_on(x, xs, b, ahead) = match b
+  Nil -> Cons(x, xs)
+  Cons(y, ys) -> if ahead(y, x) then Cons(y, merge(Cons(x, xs), ys, ahead)) else Cons(x, merge(xs, b, ahead))
+
+# By the named column, largest first when `down`. Names compare as text; the
+# rest are numbers.
+fn ordered(rows, col, down) = sorted(rows, \a, b -> comes_first(a, b, col, down))
+
+fn comes_first(a, b, col, down) =
+  if col == "name" then before(str_cmp(row_name(a), row_name(b)), down) else before(rank(a, col) - rank(b, col), down)
+
+# `sign` is how `a` compares to `b`; negative means `a` is the smaller one.
+fn before(sign, down) = if down then sign > 0 else sign < 0
+
+fn rank(r, col) =
+  if col == "pid" then row_pid(r) else if col == "mem" then row_foot(r) else key(r)
+
+# CPU decides, and memory breaks the tie so the order does not shuffle around
+# while everything sits idle at zero.
+fn key(r) = match r
+  Row(pid, name, tenths, footprint) -> tenths * 1000000 + footprint / 1024
+
+# ---- presenting ------------------------------------------------------------
+
+fn pct(r) = match r
+  Row(pid, name, tenths, footprint) -> int_to_str(tenths / 10) + "." + int_to_str(tenths % 10)
+
+fn mem(r) = match r
+  Row(pid, name, tenths, footprint) -> human(footprint)
+
+# 1024-based and to one decimal, which is how Activity Monitor writes the same
+# numbers — worth matching, because the whole point is being able to check.
+fn human(bytes) =
+  if bytes >= 1073741824 then scaled(bytes * 10 / 1073741824) + " GB" else if bytes >= 1048576 then scaled(bytes * 10 / 1048576) + " MB" else int_to_str(bytes / 1024) + " KB"
+
+fn scaled(t) = int_to_str(t / 10) + "." + int_to_str(t % 10)
+
+fn row_pid(r) = match r
+  Row(pid, name, tenths, footprint) -> pid
+
+fn row_name(r) = match r
+  Row(pid, name, tenths, footprint) -> name
+
+fn row_foot(r) = match r
+  Row(pid, name, tenths, footprint) -> footprint

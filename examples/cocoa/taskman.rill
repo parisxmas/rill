@@ -1,0 +1,492 @@
+# A process monitor, in Rill, with a real AppKit window.
+#
+#   rill run examples/cocoa/taskman.rill
+#
+# `procs.rill` reads the kernel's process table through libproc, `machine.rill`
+# reads what the whole machine is doing, and `cocoa.rill` is the AppKit
+# binding. What joins them is a table whose contents come from a data source
+# written here: AppKit asks how many rows there are and what is in each cell,
+# and both of those are Rill functions reached through a C function pointer.
+#
+# There are no globals in Rill and a C callback is handed no context, so what
+# a callback needs is hung on the object it will be called with — the table's
+# rows on the table, a strip's history on the strip. The callbacks are then a
+# lookup and nothing else, which is the point: they run on AppKit's stack and
+# should not be doing work.
+import "cocoa"
+import "procs"
+import "machine"
+
+fn table_tag() = 1
+
+fn status_tag() = 2
+
+# How often the process table is read again.
+fn every() = 2
+
+# How many processes the table shows. The machine has hundreds; the ones that
+# matter are at the top once they are sorted.
+fn shown() = 120
+
+# ---- the data source -------------------------------------------------------
+
+fn row_count(this, cmd, tv) = count(kept(tv, "pid"))
+
+fn row_value(this, cmd, tv, col, row) = at(kept(tv, column_name(col)), row)
+
+fn column_name(col) = nsread(objc_msgSend(col, sel("identifier")))
+
+# ---- the order -------------------------------------------------------------
+
+fn sort_col(tv) = nsread(kept(tv, "sort"))
+
+fn sort_down(tv) = nsread(kept(tv, "down")) == "1"
+
+fn in_order(tv, rows) = ordered(rows, sort_col(tv), sort_down(tv))
+
+# A click on a header. Clicking the column already in force turns it around;
+# any other column starts the way that column is usually wanted — biggest
+# first for a number, A to Z for a name.
+#
+# The reading itself belongs to the loop, which holds the rows and the
+# previous sample the CPU figures are measured against, so this leaves a note
+# the same way the refresh button does. Re-sorting is not re-reading: the
+# numbers on screen stay the ones they were.
+fn header_clicked(this, cmd, tv, col) =
+  ident = column_name(col)
+  keep(tv, "down", nsstr(next_down(tv, ident)))
+  keep(tv, "sort", nsstr(ident))
+  sort_arrow(tv, col, sort_down(tv))
+  keep(objc_msgSend(tv, sel("window")), "resort", nsstr("1"))
+  # Ends on a message that returns nothing, because the method must.
+  send_none(objc_msgSend(tv, sel("window")), sel("displayIfNeeded"))
+
+fn next_down(tv, ident) = if sort_col(tv) == ident then turned(sort_down(tv)) else usual(ident)
+
+fn turned(down) = if down then "" else "1"
+
+fn usual(ident) = if ident == "name" then "" else "1"
+
+fn heading(tv) = titled(sort_col(tv)) + (if sort_down(tv) then " ↓" else " ↑")
+
+fn titled(col) =
+  if col == "pid" then "PID" else if col == "name" then "name" else if col == "mem" then "memory" else "CPU"
+
+# One array of strings per column, under the identifier the column will ask
+# with. Built here, on Rill's own stack, so the callbacks stay trivial.
+fn fill(tv, rows) =
+  keep(tv, "pid", strings(rows, \r -> int_to_str(row_pid(r))))
+  keep(tv, "name", strings(rows, \r -> row_name(r)))
+  keep(tv, "cpu", strings(rows, \r -> pct(r) + "%"))
+  keep(tv, "mem", strings(rows, \r -> mem(r)))
+  reload(tv)
+  tv
+
+fn strings(rows, f) = push_all(array(), rows, f)
+
+fn push_all(a, rows, f) = match rows
+  Nil -> a
+  Cons(r, rest) -> push_all(push(a, nsstr(f(r))), rest, f)
+
+# ---- the strips ------------------------------------------------------------
+
+# How much history a strip holds, and how often a reading is taken. Sixty-four
+# samples twice a second is half a minute of it.
+fn samples() = 64
+
+# Once a second. Twice was smooth but every reading marks eleven strips,
+# eleven labels and the bar as needing display, and each of those is a
+# separate pass for the window server — measured at fourteen points of its
+# CPU, against one for the same loop drawing nothing.
+fn per_second() = 1
+
+# A strip's history: a write count, then a main and a secondary reading per
+# slot, used as a ring. It is an NSMutableData because it has to be two things
+# at once — memory Rill can poke numbers into, and an object that can be hung
+# on the view, since `drawRect:` is handed nothing but the view and a
+# rectangle.
+fn hist_new() = mutable_data(4 * (1 + 2 * samples()))
+
+fn push_sample(d, main, second) =
+  p = bytes_of(d)
+  c = peek_i32(p, 0)
+  poke_i32(p, 1 + 2 * (c % samples()), main)
+  poke_i32(p, 2 + 2 * (c % samples()), second)
+  poke_i32(p, 0, c + 1)
+  d
+
+# The rectangle `drawRect:` is handed is the part that needs repainting, which
+# can be larger than the view — so the strip asks itself how big it is
+# instead. Doing it here rather than remembering a size is what keeps the
+# drawing right *during* a resize: AppKit runs its own loop while a corner is
+# being dragged, and nothing of ours gets to run until it lets go.
+fn plot_draw(this, cmd, x, y, w, h) =
+  # The buffer is bound rather than built in the call: `frame_of` answers with
+  # a pointer into it, and a temporary would already have been released.
+  b = buf_u8(32)
+  f = frame_of(this, b)
+  strip(bytes_of(kept(this, "hist")), peek_f64(f, 2), peek_f64(f, 3))
+
+fn strip(p, w, h) =
+  # The system's own colours, so the strips follow the light and dark
+  # appearances rather than insisting on one of them.
+  ink_of("controlBackgroundColor")
+  fill_rect(0.0, 0.0, w, h)
+  bars(p, peek_i32(p, 0), 0, w, h)
+  ink_of("separatorColor")
+  fill_rect(0.0, 0.0, w, 1.0)
+  fill_rect(0.0, h - 1.0, w, 1.0)
+
+fn bars(p, c, j, w, h) = if j >= samples() then 0 else bar_at(p, c, j, w, h)
+
+# Newest at the right, so a strip fills from that side and scrolls left as it
+# runs. A slot older than anything written yet is simply not drawn.
+fn bar_at(p, c, j, w, h) =
+  age = samples() - 1 - j
+  if age < c then bar(p, (c - 1 - age) % samples(), j, w, h) else 0
+  bars(p, c, j + 1, w, h)
+
+fn bar(p, slot, j, w, h) =
+  step = w / to_float(samples())
+  left = to_float(j) * step
+  ink_of("systemBlueColor")
+  fill_rect(left, 0.0, step, h * to_float(peek_i32(p, 1 + 2 * slot)) / 1000.0)
+  # The secondary reading over the top of it, from the bottom: system time on
+  # a core, compressed pages on the memory strip.
+  ink_of("systemRedColor")
+  fill_rect(left, 0.0, step, h * to_float(peek_i32(p, 2 + 2 * slot)) / 1000.0)
+  0
+
+# ---- the column ------------------------------------------------------------
+
+# The strips live in a view of their own, which is what makes them grow with
+# the window: it is told its new size and lays its children out from it.
+# Springs alone could not do this — AppKit would resize each strip, and then
+# nothing would know how big to draw.
+fn head_h() = 17.0
+
+fn bar_h() = 16.0
+
+fn label_h() = 15.0
+
+fn gap() = 3.0
+
+# Everything above the strips: two labels, the progress bar, and the heading
+# the cores sit under.
+fn fixed_h() = 2.0 * head_h() + label_h() + bar_h() + 4.0 * gap()
+
+# Posted continuously while a corner is being dragged, so the two panes and
+# the strips inside them keep up rather than snapping into place when the
+# mouse is let go.
+fn window_resized(this, cmd, note) =
+  share_evenly(objc_msgSend(note, sel("object")))
+  fit(kept(objc_msgSend(note, sel("object")), "column"))
+  send_none(objc_msgSend(note, sel("object")), sel("displayIfNeeded"))
+
+# Left on its own a split view hands a wider window to its panes in the
+# proportion they are already at, which gives the table most of it. Half each
+# is what is wanted, so the divider is put back where that would have left it.
+#
+# The width and the divider from before the drag are what it is worked out
+# from — the loop, which records them, does not get to run while AppKit is
+# dragging, so they stay put until the mouse is let go and every step of the
+# drag is measured from the same place.
+fn share_evenly(win) =
+  b = buf_u8(32)
+  now = peek_f64(frame_of(content(win), b), 2)
+  d = bytes_of(kept(win, "ticks"))
+  was = peek_i64(d, 400)
+  if was <= 0 then win else recentre(win, d, now, to_float(was))
+
+fn recentre(win, d, now, was) =
+  divider_at(kept(win, "panes"), to_float(peek_i64(d, 401)) + (now - was) / 2.0)
+  win
+
+# What the loop records between resizes, so a divider the user has dragged is
+# the one the next resize grows from.
+fn note_split(win) =
+  b = buf_u8(32)
+  poke_i64(bytes_of(kept(win, "ticks")), 400, to_int(peek_f64(frame_of(content(win), b), 2)))
+  poke_i64(bytes_of(kept(win, "ticks")), 401, to_int(peek_f64(frame_of(kept(win, "table"), b), 2)))
+  win
+
+fn fit(col) =
+  b = buf_u8(32)
+  p = frame_of(col, b)
+  refit(col, peek_f64(p, 2), peek_f64(p, 3))
+
+fn refit(col, w, h) =
+  p = bytes_of(kept(col, "size"))
+  if to_int(w) == peek_i32(p, 0) && to_int(h) == peek_i32(p, 1) then col else grew(col, p, w, h)
+
+fn grew(col, p, w, h) =
+  poke_i32(p, 0, to_int(w))
+  poke_i32(p, 1, to_int(h))
+  relayout(col, w, h)
+
+# Top down, in the order the sections read: the memory heading, what it
+# amounts to, the bar, the memory strip, then the cores under their own
+# heading. Every row is one label above one strip, and they all share out
+# whatever height is left.
+fn relayout(col, w, h) =
+  n = count(kept(col, "plots"))
+  row = (h - fixed_h() + label_h() - gap()) / to_float(n + 1)
+  head = h - head_h()
+  amount = head - gap() - label_h()
+  bar = amount - gap() - bar_h()
+  memstrip = bar - gap() - (row - label_h())
+  cpuhead = memstrip - gap() - head_h()
+  set_frame(kept(col, "memhead"), 0.0, head, w, head_h())
+  set_frame(kept(col, "memlabel"), 0.0, amount, w, label_h())
+  set_frame(kept(col, "membar"), 0.0, bar, w, bar_h())
+  set_frame(kept(col, "memplot"), 0.0, memstrip, w, row - label_h())
+  set_frame(kept(col, "cpuhead"), 0.0, cpuhead, w, head_h())
+  rows(col, w, cpuhead - gap(), row, 0, n)
+
+fn rows(col, w, top, row, i, n) = if i >= n then col else row_at(col, w, top, row, i, n)
+
+fn row_at(col, w, top, row, i, n) =
+  y = top - to_float(i + 1) * row
+  set_frame(at(kept(col, "meters"), i), 0.0, y + row - label_h(), w, label_h())
+  set_frame(at(kept(col, "plots"), i), 0.0, y, w, row - label_h())
+  rows(col, w, top, row, i + 1, n)
+
+# ---- readings --------------------------------------------------------------
+
+# The readings keep their own clock, in the same block of memory as the
+# previous counters, so the loop does not have to carry either of them.
+fn machine_tick(win) =
+  p = bytes_of(kept(win, "ticks"))
+  if now_ticks() >= peek_i64(p, 0) then machine_read(win, p) else 0
+
+fn machine_read(win, p) =
+  poke_i64(p, 0, now_ticks() + ticks_per_second() / per_second())
+  col = kept(win, "column")
+  before = buf_int(max_cores() * states())
+  load_ticks(p, before, 0, max_cores() * states())
+  now = buf_int(max_cores() * states())
+  n = sample_cores(now)
+  feed(col, before, now, n, 0)
+  feed_memory(col)
+  save_ticks(p, now, 0, n * states())
+
+fn load_ticks(p, out: Buf(Int), i, n) = if i >= n then out else load_one(p, out, i, n)
+
+fn load_one(p, out: Buf(Int), i, n) =
+  buf_set(out, i, peek_i64(p, 1 + i))
+  load_ticks(p, out, i + 1, n)
+
+fn save_ticks(p, src: Buf(Int), i, n) = if i >= n then 0 else save_one(p, src, i, n)
+
+fn save_one(p, src: Buf(Int), i, n) =
+  poke_i64(p, 1 + i, buf_get(src, i))
+  save_ticks(p, src, i + 1, n)
+
+fn feed(col, before: Buf(Int), now: Buf(Int), n, i) =
+  if i >= n then 0 else feed_one(col, before, now, n, i)
+
+fn feed_one(col, before: Buf(Int), now: Buf(Int), n, i) =
+  busy = busy_tenths(before, now, i)
+  v = at(kept(col, "plots"), i)
+  push_sample(kept(v, "hist"), busy, system_tenths(before, now, i))
+  needs_display(v)
+  text(at(kept(col, "meters"), i), "cpu" + int_to_str(i) + " · " + scaled(busy) + "%")
+  feed(col, before, now, n, i + 1)
+
+# The same strip drawing as a core's, fed a different number: how much of the
+# machine's memory is in use, with the compressed part picked out in red the
+# way system time is on a core.
+fn feed_memory(col) =
+  v = buf_u32(vm_info_words())
+  vm_sample(v)
+  total = total_ram()
+  used = used_bytes(v)
+  part = share(used, total)
+  push_sample(kept(kept(col, "memplot"), "hist"), part, share(compressed_bytes(v), total))
+  needs_display(kept(col, "memplot"))
+  set_progress(kept(col, "membar"), to_float(part))
+  text(kept(col, "memlabel"), human(used) + " of " + human(total) + " · " + scaled(part) + "%")
+
+# ---- the buttons -----------------------------------------------------------
+
+# Marked as needing display rather than displayed: the next pass of the loop
+# paints it, where asking for one here would flush the whole window for a line
+# of text.
+fn say(win, msg) =
+  text(tagged(content(win), status_tag()), msg)
+  send_none(tagged(content(win), status_tag()), sel("setNeedsDisplay"))
+
+fn table_in(win) = tagged(content(win), table_tag())
+
+# Both buttons are target/action, so neither hands anything back. The refresh
+# one cannot do the reading itself — that belongs to the loop, which owns the
+# previous reading the CPU figures are measured against — so it leaves a note
+# on the window and the loop picks it up.
+fn refresh(this, cmd, sender) =
+  win = objc_msgSend(sender, sel("window"))
+  keep(win, "wake", nsstr("1"))
+  say(win, "refreshing…")
+
+fn terminate(this, cmd, sender) =
+  win = objc_msgSend(sender, sel("window"))
+  tv = table_in(win)
+  end_row(win, tv, selected_row(tv))
+
+fn end_row(win, tv, row) =
+  if row < 0 then say(win, "Select a process from the list first.") else end_pid(win, tv, row)
+
+fn end_pid(win, tv, row) =
+  pid = str_to_int(nsread(at(kept(tv, "pid"), row)))
+  name = nsread(at(kept(tv, "name"), row))
+  say(win, ended(kill(pid, sigterm()), pid, name))
+
+fn ended(rc, pid, name) =
+  if rc == 0 then "Sent SIGTERM to " + name + " (" + int_to_str(pid) + ")" else "Could not end " + name + " (" + int_to_str(pid) + ") — not permitted"
+
+# ---- the loop --------------------------------------------------------------
+
+# The event loop is Rill's: pump AppKit for a moment, then decide whether it
+# is time to read the process table again. The previous reading is carried
+# along as an ordinary argument, which is what makes a CPU percentage possible
+# at all — it is the difference between two readings over the time between.
+fn run(win, tv, prev, at, due, rows) =
+  pump(4)
+  # Dragging the divider resizes the column without resizing the window, so
+  # the strips are refitted from the loop as well as from the delegate.
+  fit(kept(win, "column"))
+  note_split(win)
+  machine_tick(win)
+  if visible(win) then step(win, tv, prev, at, due, rows) else 0
+
+fn step(win, tv, prev, at, due, rows) =
+  now = now_ticks()
+  if now >= due || woken(win) then again(win, tv, prev, at, now) else if resorting(win) then resort(win, tv, prev, at, due, rows) else run(win, tv, prev, at, due, rows)
+
+fn woken(win) = nsread(kept(win, "wake")) == "1"
+
+fn resorting(win) = nsread(kept(win, "resort")) == "1"
+
+# Every process is sorted, not just the ones on screen — ordering by pid has
+# to be able to reach past the busiest hundred and twenty.
+fn resort(win, tv, prev, at, due, rows) =
+  keep(win, "resort", nsstr(""))
+  present_rows(win, tv, rows, len(rows))
+  run(win, tv, prev, at, due, rows)
+
+fn again(win, tv, prev, at, now) =
+  keep(win, "wake", nsstr(""))
+  keep(win, "resort", nsstr(""))
+  cur = snapshot()
+  rows = rate(against(cur, prev), now - at)
+  present_rows(win, tv, rows, len(cur))
+  run(win, tv, cur, now, now + every() * ticks_per_second(), rows)
+
+fn present_rows(win, tv, rows, total) =
+  fill(tv, take(in_order(tv, rows), shown()))
+  say(win, int_to_str(total) + " processes" + missing(total) + " · by " + heading(tv) + " · every " + int_to_str(every()) + "s")
+
+# Said out loud, because a list that quietly leaves out a third of the machine
+# — including WindowServer, which is usually the largest thing on it — would
+# be worse than a list that admits it. Running as root reads them all.
+fn missing(total) = counted(pid_count() - total)
+
+fn counted(n) = if n <= 0 then "" else " · " + int_to_str(n) + " unreadable (needs root)"
+
+# ---- putting it together ---------------------------------------------------
+
+fn main() =
+  win = window(160.0, 100.0, 980.0, 660.0, "Rill · Task Manager")
+  v = content(win)
+
+  # One class carrying all three: the two the table pulls its contents with,
+  # and the one it reports a header click through.
+  src = responder_class("RillProcRows")
+  counts(src, "numberOfRowsInTableView:", row_count)
+  supplies(src, "tableView:objectValueForTableColumn:row:", row_value)
+  hears(src, "tableView:didClickTableColumn:", header_clicked)
+  source = ready(src)
+
+  # The two panes go inside a split view, which gives the divider between them
+  # and decides how a wider window is shared out.
+  panes = springs(add(v, split_view(16.0, 60.0, 948.0, 584.0)), give_width() + give_height())
+  keep(win, "panes", panes)
+  sv = add(panes, table(0.0, 0.0, 724.0, 584.0, source))
+  keep(win, "table", sv)
+  no_focus_ring(sv)
+  tv = no_focus_ring(table_of(sv))
+  # 0 is NSTableViewNoColumnAutoresizing: the columns stay as they were set.
+  send_i(tv, sel("setColumnAutoresizingStyle:"), 0)
+  delegated(tv, source)
+  column(tv, "pid", "PID", 70.0)
+  column(tv, "name", "Name", 376.0)
+  column(tv, "cpu", "CPU", 90.0)
+  column(tv, "mem", "Memory", 130.0)
+  tag(tv, table_tag())
+
+  # One view class of our own, which draws a strip. The column holding them
+  # is an ordinary view: it needs no behaviour, only a coordinate system.
+  pc = subclass("NSView", "RillPlot")
+  draws(pc, "drawRect:", plot_draw)
+  objc_registerClassPair(pc)
+
+  col = add(panes, view("NSView", 0.0, 0.0, 208.0, 584.0))
+  keep(win, "column", col)
+  keep(col, "size", mutable_data(8))
+  keep(col, "plots", array())
+  keep(col, "meters", array())
+  keep(col, "memhead", small(add(col, label(0.0, 0.0, 10.0, 10.0, "Memory")), 11.0))
+  keep(col, "memlabel", small(add(col, label(0.0, 0.0, 10.0, 10.0, "…")), 10.0))
+  keep(col, "membar", add(col, progress_bar(0.0, 0.0, 10.0, 10.0)))
+  keep(col, "memplot", strip_view(col))
+  keep(col, "cpuhead", small(add(col, label(0.0, 0.0, 10.0, 10.0, "CPU cores")), 11.0))
+  strips(col, 0, core_count())
+
+  r = springs(add(v, button(16.0, 16.0, 100.0, 32.0, "Refresh")), pinned_bottom_left())
+  on_click(r, responder("RillRefresh", "refresh:", refresh), "refresh:")
+
+  k = springs(add(v, button(124.0, 16.0, 130.0, 32.0, "End Process")), pinned_bottom_left())
+  on_click(k, responder("RillKill", "terminate:", terminate), "terminate:")
+
+  s = springs(add(v, label(268.0, 22.0, 690.0, 20.0, "reading…")), give_width() + give_above())
+  tag(s, status_tag())
+
+  delegated(win, ready(does(responder_class("RillWindow"), "windowDidResize:", window_resized)))
+  keep(win, "ticks", mutable_data(8 * (1 + max_cores() * states())))
+
+  # The first reading has nothing to compare against, so every process would
+  # show the CPU of its whole lifetime. Seeded with itself instead, which
+  # reads as nothing until the second reading arrives.
+  first = snapshot()
+  keep(win, "wake", nsstr(""))
+  keep(win, "resort", nsstr(""))
+  keep(tv, "sort", nsstr("cpu"))
+  keep(tv, "down", nsstr("1"))
+  sort_arrow(tv, at(table_columns(tv), 2), true)
+  rows = rate(against(first, first), 1)
+  present_rows(win, tv, rows, len(first))
+
+  min_size(win, 760.0, 480.0)
+  present(win)
+  # The divider is placed once the window is on screen: asked before that, a
+  # split view has not worked out its own geometry and clamps the position to
+  # nearly nothing.
+  pump(3)
+  divider_at(panes, 724.0)
+  fit(col)
+  println("window open — click a column header to sort; closing it exits")
+  run(win, tv, first, now_ticks(), now_ticks(), rows)
+  println("closed")
+
+fn strips(col, i, n) = if i >= n then col else one_strip(col, i, n)
+
+fn one_strip(col, i, n) =
+  push(kept(col, "meters"), small(add(col, label(0.0, 0.0, 10.0, 10.0, "cpu" + int_to_str(i))), 10.0))
+  push(kept(col, "plots"), strip_view(col))
+  strips(col, i + 1, n)
+
+fn strip_view(col) =
+  p = add(col, view("RillPlot", 0.0, 0.0, 10.0, 10.0))
+  keep(p, "hist", hist_new())
+  p
+
+fn pinned_bottom_left() = give_right() + give_above()

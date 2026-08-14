@@ -1,0 +1,6 @@
+fn word(n) =
+  by3 = n % 3 == 0
+  by5 = n % 5 == 0
+  if by3 && by5 then "FizzBuzz" else if by3 then "Fizz" else if by5 then "Buzz" else int_to_str(n)
+
+fn main() = println(join(map(range(1, 20), word), " "))

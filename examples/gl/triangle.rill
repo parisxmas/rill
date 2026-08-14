@@ -1,0 +1,90 @@
+# A spinning triangle in a real window, with a frame counter in the corner.
+# Everything foreign lives in the binding files next door, so what is left
+# here is the program: open a window, draw a frame, decide whether to draw
+# another.
+#
+#   brew install glfw
+#   rill run examples/gl/triangle.rill
+#
+# It closes itself after a few seconds, or on Escape.
+
+import "glfw"
+
+import "scene"
+
+import "hud"
+
+# What each frame needs to draw, kept in one value rather than in nine
+# parameters. Nothing here is mutated: the loop threads it through.
+type Gfx
+  Gfx(Int, Int, Int, Int, Int, Int, Int)
+
+# How long the window stays up.
+fn run_seconds() = 20.0
+
+# ---- callbacks -------------------------------------------------------------
+#
+# GLFW calls these; they are ordinary Rill functions, passed as C function
+# pointers. Nothing is captured, because C has nowhere to keep an environment
+# — everything they need arrives as an argument, which is exactly how these
+# particular callbacks were designed.
+
+fn on_key(win, key, scancode, action, mods) =
+  hit = key == glfw_key_escape() && action == glfw_press()
+  glfwSetWindowShouldClose(win, if hit then 1 else glfwWindowShouldClose(win))
+
+fn on_resize(win, w, h) = glViewport(0, 0, w, h)
+
+fn on_error(code, description) =
+  println("glfw error " + int_to_str(code) + ": " + from_cstr(description))
+
+fn render(prog, vao, angle_at, hud_prog, hud_vao, rect_at, ink_at, fps) =
+  draw_triangle(prog, vao, angle_at, glfwGetTime())
+  draw_fps(hud_prog, hud_vao, rect_at, ink_at, fps)
+
+fn draw_frame(win, gfx, fps) =
+  match gfx
+    Gfx(prog, vao, angle_at, hud_prog, hud_vao, rect_at, ink_at) -> render(prog, vao, angle_at, hud_prog, hud_vao, rect_at, ink_at, fps)
+  glfwSwapBuffers(win)
+  glfwPollEvents()
+
+# Escape is no longer polled — `on_key` sets the flag the moment it is
+# pressed, so this only asks whether the window is done.
+fn closing(win, until) =
+  expired = if glfwGetTime() > until then 1 else 0
+  max(glfwWindowShouldClose(win), expired)
+
+# Repetition is tail recursion: every frame decides whether there is another,
+# and carries the frame counter forward. Counting over a whole second is what
+# makes the reading a rate without ever dividing.
+fn loop(win, gfx, until, frames, since, fps) =
+  draw_frame(win, gfx, fps)
+  now = glfwGetTime()
+  sampled = now - since >= 1.0
+  shown = if sampled then frames + 1 else fps
+  counted = if sampled then 0 else frames + 1
+  started = if sampled then now else since
+  if closing(win, until) == 1 then glfwTerminate() else loop(win, gfx, until, counted, started, shown)
+
+fn build_gfx() =
+  prog = triangle_program()
+  vao = upload_triangle()
+  angle_at = with_cstr("angle", \n -> glGetUniformLocation(prog, n))
+  hud_prog = hud_program()
+  hud_vao = hud_quad()
+  rect_at = with_cstr("rect", \n -> glGetUniformLocation(hud_prog, n))
+  ink_at = with_cstr("ink", \n -> glGetUniformLocation(hud_prog, n))
+  Gfx(prog, vao, angle_at, hud_prog, hud_vao, rect_at, ink_at)
+
+fn main() =
+  glfwSetErrorCallback(on_error)
+  if glfwInit() == 1 then 0 else fail("glfwInit", "no display", 0)
+  win = glfw_open_core_window(640, 480, "Rill · OpenGL")
+  if is_null(win) then fail("window", "no OpenGL 3.2 context", 0) else 0
+  glfwMakeContextCurrent(win)
+  glfwSwapInterval(1)
+  glfwSetKeyCallback(win, on_key)
+  glfwSetFramebufferSizeCallback(win, on_resize)
+  glfw_fit_viewport(win)
+  println("GL " + from_cstr(glGetString(gl_version())))
+  loop(win, build_gfx(), glfwGetTime() + run_seconds(), 0, glfwGetTime(), 0)

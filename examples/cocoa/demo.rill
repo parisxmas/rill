@@ -1,0 +1,83 @@
+# A native macOS window with real AppKit controls, in Rill.
+#
+#   rill run examples/cocoa/demo.rill
+import "cocoa"
+
+fn label_tag() = 99
+
+fn count_tag() = 98
+
+# Cocoa hands a method (self, _cmd, sender) and no context of its own, and
+# Rill has no globals — so the state lives where Cocoa keeps it, in a view
+# found by tag from the window the sender belongs to. Nothing is stored on the
+# Rill side at all, and every callback below reads it the same way.
+fn counter(win) = tagged(content(win), count_tag())
+
+fn clicks(win) = str_to_int(nsread(objc_msgSend(counter(win), sel("stringValue"))))
+
+# target/action: wants nothing back.
+fn clicked(this, cmd, sender) =
+  win = objc_msgSend(sender, sel("window"))
+  n = clicks(win) + 1
+  text(counter(win), int_to_str(n))
+  out = tagged(content(win), label_tag())
+  text(out, "Clicked " + int_to_str(n) + (if n == 1 then " time." else " times."))
+  # Ends on a message that returns nothing, because the method must.
+  send_none(win, sel("displayIfNeeded"))
+
+# A veto: AppKit closes the window only if this answers true, so the window
+# will not go away until the button has been pressed. A callback that handed
+# nothing back could not refuse.
+fn should_close(this, cmd, win) = if clicks(win) == 0 then refuse(win) else true
+
+fn refuse(win) =
+  text(tagged(content(win), label_tag()), "Not yet — press the button once and I will say yes.")
+  send_none(win, sel("displayIfNeeded"))
+  false
+
+# A table pulls its contents from a data source rather than being handed them,
+# so both of these have to answer: one with a count, one with an object.
+fn row_count(this, cmd, tv) = 4
+
+fn row_value(this, cmd, tv, col, row) = nsstr(row_text(row))
+
+fn row_text(row) = match row
+  0 -> "Fn(I32) — a callback that hands nothing back"
+  1 -> "Fn(Ptr, Ptr) -> I32 — one that answers"
+  2 -> "…and it can travel as an ordinary parameter"
+  _ -> "…so this table's own source is written in Rill"
+
+fn main() =
+  win = window(320.0, 220.0, 520.0, 430.0, "Rill · native AppKit controls")
+  v = content(win)
+
+  add(v, label(28.0, 376.0, 460.0, 24.0, "Every control here is a real NSView."))
+  out = add(v, label(28.0, 344.0, 460.0, 24.0, "Nothing clicked yet."))
+  tag(out, label_tag())
+
+  # Storage rather than interface, so it is hidden.
+  keep = add(v, label(28.0, 0.0, 40.0, 20.0, "0"))
+  tag(keep, count_tag())
+  send_b(keep, sel("setHidden:"), true)
+
+  add(v, label(28.0, 306.0, 460.0, 20.0, "A text field, with the system's own editing:"))
+  add(v, field(28.0, 272.0, 320.0, 26.0, "type here — IME, spelling, undo"))
+
+  b = add(v, button(28.0, 220.0, 150.0, 34.0, "Press me"))
+  on_click(b, responder("RillTarget", "clicked:", clicked), "clicked:")
+
+  # Two methods on one class, so the table can ask both of its questions.
+  src = responder_class("RillRows")
+  counts(src, "numberOfRowsInTableView:", row_count)
+  supplies(src, "tableView:objectValueForTableColumn:row:", row_value)
+  sv = add(v, table(28.0, 28.0, 460.0, 176.0, ready(src)))
+  column(table_of(sv), "c", "What crosses to C", 440.0)
+
+  # The delegate answers with a BOOL, so its method goes on with `answers`.
+  guard = ready(answers(responder_class("RillDelegate"), "windowShouldClose:", should_close))
+  on_close(win, guard)
+
+  present(win)
+  println("pencere acik — kapatmayi deneyin, sonra dugmeye basip tekrar deneyin")
+  pump(600)
+  println("kapandi")

@@ -1,0 +1,12 @@
+# Report-formatting module; depends on the geometry module.
+import "geometry"
+
+fn describe(s) = show(s) + " -> " + float_to_str(area(s))
+
+fn print_all(shapes) = match shapes
+  Nil -> println(repeat("-", 20))
+  Cons(x, rest) -> print_one(x, rest)
+
+fn print_one(x, rest) =
+  println(describe(x))
+  print_all(rest)

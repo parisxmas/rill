@@ -1,0 +1,32 @@
+# User-defined traits: declare an interface, implement it per type, and call
+# methods from generic functions. Dispatch is resolved statically at
+# monomorphization — no dictionaries, no vtables.
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+
+trait Describe(a)
+  describe(a) -> Str
+  priority(a) -> Int
+
+impl Describe(Shape)
+  fn describe(s) = "shape " + show(s)
+  fn priority(s) = 2
+
+impl Describe(Int)
+  fn describe(n) = "int " + int_to_str(n)
+  fn priority(n) = 1
+
+impl Describe(Str)
+  fn describe(s) = "str '" + s + "'"
+  fn priority(s) = str_len(s)
+
+# Generic over any a with Describe(a) — the constraint rides along and each
+# call site gets its own specialized instance.
+fn announce(x) = println(describe(x) + " [p" + int_to_str(priority(x)) + "]")
+
+fn main() =
+  announce(Circle(1.0))
+  announce(42)
+  announce("merhaba")
+  println(sum(map(Cons(Circle(2.0), Cons(Rect(1.0, 1.0), Nil)), \s -> priority(s))))

@@ -1,0 +1,445 @@
+# Cocoa from Rill, with no Objective-C and no C.
+#
+# Two things make this possible and both are worth knowing before reading on.
+#
+# `objc_msgSend` has to be called at one signature per message shape — the ABI
+# puts arguments in different registers depending on their types — but Rill
+# binds one signature per symbol name. So each shape gets a *linker alias* of
+# the same symbol: Rill hands any extern string starting with `-` to the linker
+# untouched, and macOS ld will mint a second name for an existing one.
+#
+# `NSRect` is a struct passed by value and Rill's FFI has no struct type. On
+# arm64 a four-double struct is a homogeneous float aggregate carried in v0-v3,
+# which is exactly where four separate doubles go — so `send_rect` below is the
+# same call the compiler would make. This part is arm64-only.
+
+extern "framework:AppKit" fn objc_getClass(name: Ptr) -> Ptr
+
+extern "objc" fn sel_registerName(name: Ptr) -> Ptr
+
+extern "objc" fn objc_msgSend(self: Ptr, op: Ptr) -> Ptr
+
+extern "-Wl,-alias,_objc_msgSend,_send_p" fn send_p(self: Ptr, op: Ptr, a: Ptr) -> Ptr
+
+extern "-Wl,-alias,_objc_msgSend,_send_pp" fn send_pp(self: Ptr, op: Ptr, a: Ptr, b: Ptr) -> Ptr
+
+extern "-Wl,-alias,_objc_msgSend,_send_i" fn send_i(self: Ptr, op: Ptr, a: I64) -> Ptr
+
+extern "-Wl,-alias,_objc_msgSend,_send_b" fn send_b(self: Ptr, op: Ptr, a: Bool) -> Ptr
+
+extern "-Wl,-alias,_objc_msgSend,_send_d" fn send_d(self: Ptr, op: Ptr, a: F64) -> Ptr
+
+extern "-Wl,-alias,_objc_msgSend,_send_rect" fn send_rect(self: Ptr, op: Ptr, x: F64, y: F64, w: F64, h: F64, a: U64, b: U64, c: Bool) -> Ptr
+
+# A message that returns nothing, for the last statement of a method that must
+# not return anything either.
+extern "-Wl,-alias,_objc_msgSend,_send_none" fn send_none(self: Ptr, op: Ptr)
+
+extern "-Wl,-alias,_objc_msgSend,_ret_i" fn ret_i(self: Ptr, op: Ptr) -> I64
+
+extern "-Wl,-alias,_objc_msgSend,_ret_b" fn ret_b(self: Ptr, op: Ptr) -> Bool
+
+# Hanging a value on an object, which is how a callback finds anything at all:
+# Rill has no globals and C hands a method no context of its own, so what a
+# data source needs is kept on the very object it will be called with. The key
+# is a selector, because a selector is a pointer the runtime already promises
+# to keep unique per name.
+extern "objc" fn objc_setAssociatedObject(o: Ptr, key: Ptr, value: Ptr, policy: U64)
+
+extern "objc" fn objc_getAssociatedObject(o: Ptr, key: Ptr) -> Ptr
+
+extern "-Wl,-alias,_objc_msgSend,_send_evt" fn send_evt(self: Ptr, op: Ptr, mask: U64, until: Ptr, mode: Ptr, deq: Bool) -> Ptr
+
+# Making a class at run time is how a Rill function becomes a method: the
+# button's target has to be an object, and its action a selector on that
+# object's class. `class_addMethod` takes the function pointer directly, and
+# Rill wraps a top-level function in a C-ABI trampoline for exactly this.
+extern "objc" fn objc_allocateClassPair(sup: Ptr, name: Ptr, extra: U64) -> Ptr
+
+extern "objc" fn objc_registerClassPair(c: Ptr)
+
+# One declaration per method shape, aliased the same way `objc_msgSend` is:
+# the callback's own signature is part of this one's type, so a method that
+# answers needs a declaration that says what it answers with.
+extern "objc" fn class_addMethod(c: Ptr, name: Ptr, imp: Fn(Ptr, Ptr, Ptr), types: Ptr) -> Bool
+
+extern "-Wl,-alias,_class_addMethod,_add_bool" fn add_bool(c: Ptr, name: Ptr, imp: Fn(Ptr, Ptr, Ptr) -> Bool, types: Ptr) -> Bool
+
+extern "-Wl,-alias,_class_addMethod,_add_count" fn add_count(c: Ptr, name: Ptr, imp: Fn(Ptr, Ptr, Ptr) -> I64, types: Ptr) -> Bool
+
+extern "-Wl,-alias,_class_addMethod,_add_value" fn add_value(c: Ptr, name: Ptr, imp: Fn(Ptr, Ptr, Ptr, Ptr, I64) -> Ptr, types: Ptr) -> Bool
+
+extern "-Wl,-alias,_class_addMethod,_add_two" fn add_two(c: Ptr, name: Ptr, imp: Fn(Ptr, Ptr, Ptr, Ptr), types: Ptr) -> Bool
+
+# `drawRect:` is handed an NSRect by value. On arm64 a four-double struct is a
+# homogeneous float aggregate carried in v0-v3, which is exactly where four
+# separate doubles arrive — the same reasoning `send_rect` uses at the top of
+# this file, in the other direction.
+extern "-Wl,-alias,_class_addMethod,_add_draw" fn add_draw(c: Ptr, name: Ptr, imp: Fn(Ptr, Ptr, F64, F64, F64, F64), types: Ptr) -> Bool
+
+# Filling a rectangle is a plain C function rather than a message, and takes
+# its NSRect by value the same way.
+extern "framework:AppKit" fn NSRectFill(x: F64, y: F64, w: F64, h: F64)
+
+extern "-Wl,-alias,_objc_msgSend,_send_4d" fn send_4d(self: Ptr, op: Ptr, a: F64, b: F64, c: F64, d: F64) -> Ptr
+
+# Reading a rectangle back out of AppKit. Rill cannot receive a struct as a
+# result, and `drawRect:` is handed the dirty rectangle rather than the
+# bounds, so a view could not otherwise be asked how big it is. KVC answers
+# with an `NSValue` — an object, which Rill can hold — and `getValue:size:`
+# writes the struct inside it into memory the caller owns.
+extern "-Wl,-alias,_objc_msgSend,_send_pi" fn send_pi(self: Ptr, op: Ptr, a: Ptr, b: I64) -> Ptr
+
+extern "-Wl,-alias,_objc_msgSend,_send_di" fn send_di(self: Ptr, op: Ptr, a: F64, b: I64) -> Ptr
+
+# ---- the small comforts ----------------------------------------------------
+
+fn cls(n) =
+  p = to_cstr(n)
+  c = objc_getClass(p)
+  free_ptr(p)
+  c
+
+fn sel(n) =
+  p = to_cstr(n)
+  s = sel_registerName(p)
+  free_ptr(p)
+  s
+
+fn nsstr(s) =
+  p = to_cstr(s)
+  o = send_p(cls("NSString"), sel("stringWithUTF8String:"), p)
+  free_ptr(p)
+  o
+
+fn nsread(o) = from_cstr(objc_msgSend(o, sel("UTF8String")))
+
+fn alloc(n) = objc_msgSend(cls(n), sel("alloc"))
+
+fn app() = objc_msgSend(cls("NSApplication"), sel("sharedApplication"))
+
+# A view of any class, framed. Every AppKit view initialises this way.
+fn view(name, x, y, w, h) =
+  v = send_rect(alloc(name), sel("initWithFrame:"), x, y, w, h, 0, 0, false)
+  v
+
+fn title(o, s) =
+  send_p(o, sel("setTitle:"), nsstr(s))
+  o
+
+fn text(o, s) =
+  send_p(o, sel("setStringValue:"), nsstr(s))
+  o
+
+fn add(parent, child) =
+  send_p(parent, sel("addSubview:"), child)
+  child
+
+# A label is a text field that has been talked out of being editable.
+fn label(x, y, w, h, s) =
+  l = view("NSTextField", x, y, w, h)
+  text(l, s)
+  send_b(l, sel("setEditable:"), false)
+  send_b(l, sel("setBezeled:"), false)
+  send_b(l, sel("setDrawsBackground:"), false)
+  l
+
+fn field(x, y, w, h, s) =
+  f = view("NSTextField", x, y, w, h)
+  text(f, s)
+  f
+
+# A Rill function becomes a method on a class made at run time, and the object
+# is handed to AppKit as a target, a delegate or a data source. Buttons, menu
+# items, sliders, window delegates and table sources all work this way, so most
+# of an app is reachable through these four shapes.
+#
+# Every callback travels as an ordinary parameter here. It still has to be a
+# function named by whoever calls, since C is handed a bare code pointer — so
+# each of these helpers is compiled once per callback given to it.
+#
+# The class comes back unregistered so more than one method can go on it: a
+# data source needs two, and both have to be there before `ready`.
+fn subclass(super_name, class_name) =
+  n = to_cstr(class_name)
+  c = objc_allocateClassPair(cls(super_name), n, 0)
+  free_ptr(n)
+  c
+
+fn responder_class(class_name) = subclass("NSObject", class_name)
+
+fn ready(c) =
+  objc_registerClassPair(c)
+  objc_msgSend(objc_msgSend(c, sel("alloc")), sel("init"))
+
+# The type encoding says what C sees: `v` nothing, `c` a BOOL, `q` a long, `@`
+# an object, and `@:` the receiver and selector every method is handed.
+fn does(c, name, imp) =
+  s = to_cstr("v@:@")
+  class_addMethod(c, sel(name), imp, s)
+  free_ptr(s)
+  c
+
+fn answers(c, name, imp) =
+  s = to_cstr("c@:@")
+  add_bool(c, sel(name), imp, s)
+  free_ptr(s)
+  c
+
+fn counts(c, name, imp) =
+  s = to_cstr("q@:@")
+  add_count(c, sel(name), imp, s)
+  free_ptr(s)
+  c
+
+fn supplies(c, name, imp) =
+  s = to_cstr("@@:@@q")
+  add_value(c, sel(name), imp, s)
+  free_ptr(s)
+  c
+
+# Two objects and no answer: what most delegate notifications look like.
+fn hears(c, name, imp) =
+  s = to_cstr("v@:@@")
+  add_two(c, sel(name), imp, s)
+  free_ptr(s)
+  c
+
+# A rectangle by value and no answer: how a view is asked to draw itself.
+fn draws(c, name, imp) =
+  s = to_cstr("v@:{CGRect={CGPoint=dd}{CGSize=dd}}")
+  add_draw(c, sel(name), imp, s)
+  free_ptr(s)
+  c
+
+# The common case: a class with one method, ready to use.
+fn responder(class_name, action, imp) = ready(does(responder_class(class_name), action, imp))
+
+fn tag(o, n) =
+  send_i(o, sel("setTag:"), n)
+  o
+
+fn tagged(root, n) = send_i(root, sel("viewWithTag:"), n)
+
+fn tag_of(o) = ret_i(o, sel("tag"))
+
+fn on_click(b, target, method) =
+  send_p(b, sel("setTarget:"), target)
+  send_p(b, sel("setAction:"), sel(method))
+  b
+
+fn button(x, y, w, h, s) =
+  b = view("NSButton", x, y, w, h)
+  title(b, s)
+  send_i(b, sel("setBezelStyle:"), 1)
+  b
+
+# A table inside a scroll view, which is how AppKit expects to find one. The
+# source is an object whose class carries `numberOfRowsInTableView:` and
+# `tableView:objectValueForTableColumn:row:` — the table pulls its contents
+# from those rather than being handed them, which is why both have to answer.
+fn table(x, y, w, h, source) =
+  sv = view("NSScrollView", x, y, w, h)
+  tv = view("NSTableView", 0.0, 0.0, w, h)
+  send_p(tv, sel("setDataSource:"), source)
+  send_p(sv, sel("setDocumentView:"), tv)
+  send_b(sv, sel("setHasVerticalScroller:"), true)
+  sv
+
+# The identifier is what the source is handed to say which column is being
+# asked about, so it is worth choosing a name the source can act on.
+fn column(tv, ident, header, w) =
+  col = send_p(alloc("NSTableColumn"), sel("initWithIdentifier:"), nsstr(ident))
+  send_d(col, sel("setWidth:"), w)
+  text(objc_msgSend(col, sel("headerCell")), header)
+  send_p(tv, sel("addTableColumn:"), col)
+  tv
+
+fn table_of(sv) = objc_msgSend(sv, sel("documentView"))
+
+# AppKit rings a focused control in the accent colour. Around a whole table it
+# reads as a border rather than as focus, so it is turned off: 1 is
+# NSFocusRingTypeNone.
+# Two panes with a divider the user can drag. What makes it worth having over
+# a fixed split is that it also decides the resizing: a split view hands a
+# gain to its panes in the proportion they are already at, so wherever the
+# divider has been left is the proportion the window keeps.
+fn split_view(x, y, w, h) =
+  s = view("NSSplitView", x, y, w, h)
+  send_b(s, sel("setVertical:"), true)
+  send_i(s, sel("setDividerStyle:"), 2)
+  s
+
+fn divider_at(s, pos) =
+  send_di(s, sel("setPosition:ofDividerAtIndex:"), pos, 0)
+  s
+
+fn no_focus_ring(v) =
+  send_i(v, sel("setFocusRingType:"), 1)
+  v
+
+fn reload(tv) = send_none(tv, sel("reloadData"))
+
+# -1 when nothing is selected.
+fn selected_row(tv) = ret_i(tv, sel("selectedRow"))
+
+fn delegated(o, d) =
+  send_p(o, sel("setDelegate:"), d)
+  o
+
+fn on_close(win, delegate) = delegated(win, delegate)
+
+fn table_columns(tv) = objc_msgSend(tv, sel("tableColumns"))
+
+# The arrow AppKit draws in a header to say which column the order follows.
+# Passing nil clears it, which is how the other columns are put back.
+fn sort_arrow(tv, col, down) =
+  send_p(tv, sel("setHighlightedTableColumn:"), col)
+  clear_arrows(tv, table_columns(tv), 0)
+  send_pp(tv, sel("setIndicatorImage:inTableColumn:"), arrow(down), col)
+  tv
+
+fn clear_arrows(tv, cols, i) =
+  if i >= count(cols) then tv else clear_arrow(tv, cols, i)
+
+fn clear_arrow(tv, cols, i) =
+  send_pp(tv, sel("setIndicatorImage:inTableColumn:"), null_ptr(), at(cols, i))
+  clear_arrows(tv, cols, i + 1)
+
+fn arrow(down) =
+  send_p(cls("NSImage"), sel("imageNamed:"), nsstr(if down then "NSDescendingSortIndicator" else "NSAscendingSortIndicator"))
+
+fn visible(win) = ret_b(win, sel("isVisible"))
+
+# ---- keeping things where a callback can reach them ------------------------
+
+# 1 is retain, released when the object it hangs on goes.
+fn keep(o, name, value) =
+  objc_setAssociatedObject(o, sel(name), value, 1)
+  o
+
+fn kept(o, name) = objc_getAssociatedObject(o, sel(name))
+
+fn array() = objc_msgSend(cls("NSMutableArray"), sel("array"))
+
+fn push(a, o) =
+  send_p(a, sel("addObject:"), o)
+  a
+
+# Answers 0 for nil, which is what an empty table wants before its first fill.
+fn count(a) = ret_i(a, sel("count"))
+
+fn at(a, i) = send_i(a, sel("objectAtIndex:"), i)
+
+# A block of bytes that is also an object, so Rill can poke numbers into it
+# and a callback can still find it hung on a view. The association retains it,
+# which is what keeps an autoreleased one alive.
+fn mutable_data(n) = send_i(cls("NSMutableData"), sel("dataWithLength:"), n)
+
+fn bytes_of(d) = objc_msgSend(d, sel("mutableBytes"))
+
+# ---- drawing ---------------------------------------------------------------
+
+# One of the system's own colours, by name, which is what makes a drawing
+# follow the light and dark appearances without being told about them.
+fn ink_of(name) =
+  send_none(objc_msgSend(cls("NSColor"), sel(name)), sel("set"))
+  0
+
+# The colour every fill after this one uses, until the next call.
+fn ink(r, g, b) =
+  send_none(send_4d(cls("NSColor"), sel("colorWithSRGBRed:green:blue:alpha:"), r, g, b, 1.0), sel("set"))
+  0
+
+fn fill_rect(x, y, w, h) = NSRectFill(x, y, w, h)
+
+fn needs_display(v) =
+  send_b(v, sel("setNeedsDisplay:"), true)
+  v
+
+# What gives when the window is resized. A view with no springs keeps its
+# frame exactly, which is why an untouched layout sits still in a growing
+# window: the space all appears on one side.
+# A real NSProgressIndicator rather than something drawn: it is a control the
+# system already has, and it animates its own changes.
+fn progress_bar(x, y, w, h) =
+  p = view("NSProgressIndicator", x, y, w, h)
+  send_i(p, sel("setStyle:"), 0)
+  send_b(p, sel("setIndeterminate:"), false)
+  send_i(p, sel("setControlSize:"), 1)
+  send_d(p, sel("setMinValue:"), 0.0)
+  send_d(p, sel("setMaxValue:"), 1000.0)
+  p
+
+# x, y, width, height — four doubles, in that order. The result points into
+# `out`, so `out` has to be a binding that outlives the reading: handing this
+# a buffer built in the argument itself leaves the pointer dangling, because
+# the buffer is released when this returns.
+fn frame_of(v, out: Buf(U8)) =
+  send_pi(send_p(v, sel("valueForKey:"), nsstr("frame")), sel("getValue:size:"), buf_data(out), 32)
+  buf_data(out)
+
+fn set_frame(v, x, y, w, h) =
+  send_4d(v, sel("setFrame:"), x, y, w, h)
+  v
+
+fn set_progress(p, v) =
+  send_d(p, sel("setDoubleValue:"), v)
+  p
+
+fn springs(v, mask) =
+  send_i(v, sel("setAutoresizingMask:"), mask)
+  v
+
+# The view itself stretches...
+fn give_width() = 2
+
+fn give_height() = 16
+
+# ...or the margin does, which pins the view to the opposite side.
+fn give_left() = 1
+
+fn give_right() = 4
+
+fn give_below() = 8
+
+fn give_above() = 32
+
+extern "-Wl,-alias,_objc_msgSend,_send_2d" fn send_2d(self: Ptr, op: Ptr, a: F64, b: F64) -> Ptr
+
+fn min_size(win, w, h) =
+  send_2d(win, sel("setContentMinSize:"), w, h)
+  win
+
+fn small(o, pt) =
+  send_p(o, sel("setFont:"), send_d(cls("NSFont"), sel("systemFontOfSize:"), pt))
+  o
+
+# ---- window and loop -------------------------------------------------------
+
+fn window(x, y, w, h, name) =
+  # titled | closable | miniaturisable | resizable
+  win = send_rect(alloc("NSWindow"), sel("initWithContentRect:styleMask:backing:defer:"), x, y, w, h, 15, 2, false)
+  title(win, name)
+  win
+
+fn content(win) = objc_msgSend(win, sel("contentView"))
+
+fn present(win) =
+  send_i(app(), sel("setActivationPolicy:"), 0)
+  send_p(win, sel("makeKeyAndOrderFront:"), null_ptr())
+  send_b(app(), sel("activateIgnoringOtherApps:"), true)
+  win
+
+# The event loop is pumped rather than surrendered to `[NSApp run]`, because a
+# language with its own scheduler should keep the outer loop. `n` frames at
+# roughly 30 ms; pass a negative number to run until the window closes.
+fn pump(n) =
+  d = send_d(cls("NSDate"), sel("dateWithTimeIntervalSinceNow:"), 0.03)
+  e = send_evt(app(), sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), 0 - 1, d, nsstr("kCFRunLoopDefaultMode"), true)
+  if is_null(e) then 0 else deliver(e)
+  if n == 1 then 0 else pump(n - 1)
+
+fn deliver(e) =
+  send_p(app(), sel("sendEvent:"), e)
+  0

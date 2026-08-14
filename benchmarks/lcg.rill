@@ -1,0 +1,6 @@
+# 100M iterations of a linear congruential generator: tight tail-recursive
+# loop (compiled to a real loop by LLVM's tail-call elimination).
+fn run(seed, k, acc) =
+  if k == 0 then acc else run((seed * 1103515245 + 12345) % 2147483648, k - 1, acc + seed % 100)
+
+fn main() = println(run(42, 100000000, 0))

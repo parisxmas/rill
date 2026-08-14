@@ -1,0 +1,13 @@
+fn classify(l) = match l
+  Nil -> "empty"
+  Cons(Some(0), _) -> "starts with zero"
+  Cons(Some(n), Cons(Some(m), _)) -> "two: " + int_to_str(n + m)
+  Cons(Some(n), _) -> "one: " + int_to_str(n)
+  Cons(None, _) -> "starts with nothing"
+
+fn main() =
+  println(classify(Nil))
+  println(classify(Cons(Some(0), Nil)))
+  println(classify(Cons(Some(3), Cons(Some(4), Nil))))
+  println(classify(Cons(Some(9), Nil)))
+  println(classify(Cons(None, Nil)))

@@ -1,0 +1,23 @@
+# File IO, command-line arguments, and text processing with the prelude:
+# write a file, read it back as a Result, and slice it up with
+# lines/split/trim/str_to_int. Logical operators short-circuit.
+fn report(text) =
+  ls = lines(text)
+  println("lines: " + int_to_str(len(ls) - 1))
+  println(trim(unwrap_or(nth(ls, 0), "")))
+  println(show(split(unwrap_or(nth(ls, 1), ""), ",")))
+  println(str_to_int(unwrap_or(nth(ls, 2), "")) * 2)
+  println(contains(text, "gamma") && !contains(text, "zeta"))
+
+fn check_missing() = match read_file("/no/such/rill/file")
+  Ok(_) -> println("unexpected")
+  Err(e) -> println(e)
+
+fn main() =
+  println("args >= 1: " + bool_to_str(arg_count() >= 1))
+  path = "/tmp/rill_io_demo.txt"
+  println("written: " + bool_to_str(write_file(path, "  alpha  \nbeta,gamma,delta\n42\n")))
+  check_missing()
+  match read_file(path)
+    Err(e) -> println(e)
+    Ok(text) -> report(text)

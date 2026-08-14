@@ -1,0 +1,9 @@
+type Point
+  Point(x: Int, y: Int)
+
+fn make(n, acc) = if n == 0 then acc else make(n - 1, Cons(Point(n, n * 2), acc))
+
+fn main() =
+  pts = make(100000, Nil)
+  println(len(pts))
+  println(nth(pts, 0))

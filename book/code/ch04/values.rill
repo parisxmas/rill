@@ -1,0 +1,12 @@
+fn double(x) = x * 2
+
+fn apply_twice(f, x) = f(f(x))
+
+fn multiplier(k) = \x -> x * k
+
+fn main() =
+  println(apply_twice(double, 5))
+  triple = multiplier(3)
+  println(triple(7))
+  println(apply_twice(triple, 2))
+  println(apply_twice(\s -> s + "!", "hi"))

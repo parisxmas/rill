@@ -1,0 +1,73 @@
+# A grid maze, and the distance from one cell to every other, by flood fill.
+# The grid and the distances live in buffers rather than lists: this is the
+# shape where an array genuinely wins, and Rill can say it.
+
+fn gw() = 15
+
+fn gh() = 9
+
+fn wall() = 1
+
+fn cell_at(g: Buf(U8), x, y) = buf_get(g, y * gw() + x)
+
+fn open_at(g: Buf(U8), x, y) =
+  if x < 0 || y < 0 || x >= gw() || y >= gh() then false else cell_at(g, x, y) == 0
+
+fn dx_of(k) = if k == 0 then 1 else if k == 1 then 0 - 1 else 0
+
+fn dy_of(k) = if k == 2 then 1 else if k == 3 then 0 - 1 else 0
+
+# ---- the flood -------------------------------------------------------------
+
+fn clear(d: Buf(Int), i) =
+  buf_set(d, i, 0 - 1)
+  if i + 1 >= buf_len(d) then 0 else clear(d, i + 1)
+
+fn flood(g: Buf(U8), d: Buf(Int), q: Buf(Int), from) =
+  clear(d, 0)
+  buf_set(d, from, 0)
+  buf_set(q, 0, from)
+  walk(g, d, q, 0, 1)
+
+fn walk(g: Buf(U8), d: Buf(Int), q: Buf(Int), head, tail) =
+  cell = buf_get(q, head)
+  after = side(g, d, q, cell % gw(), cell / gw(), buf_get(d, cell), 0, tail)
+  if head + 1 >= after then 0 else walk(g, d, q, head + 1, after)
+
+fn side(g: Buf(U8), d: Buf(Int), q: Buf(Int), x, y, far, k, tail) =
+  nx = x + dx_of(k)
+  ny = y + dy_of(k)
+  next = if fresh(g, d, nx, ny) then push(d, q, ny * gw() + nx, far + 1, tail) else tail
+  if k >= 3 then next else side(g, d, q, x, y, far, k + 1, next)
+
+fn fresh(g: Buf(U8), d: Buf(Int), x, y) =
+  open_at(g, x, y) && buf_get(d, y * gw() + x) < 0
+
+fn push(d: Buf(Int), q: Buf(Int), cell, far, tail) =
+  buf_set(d, cell, far)
+  buf_set(q, tail, cell)
+  tail + 1
+
+# ---- building and printing -------------------------------------------------
+
+fn carve(g: Buf(U8), s, i) =
+  buf_set(g, i, if str_get(s, i) == 35 then wall() else 0)
+  if i + 1 >= gw() * gh() then 0 else carve(g, s, i + 1)
+
+fn pad(n) = if n < 0 then " ##" else if n < 10 then "  " + int_to_str(n) else " " + int_to_str(n)
+
+fn row(d: Buf(Int), y, x, acc) =
+  if x >= gw() then acc else row(d, y, x + 1, acc + pad(buf_get(d, y * gw() + x)))
+
+fn dump(d: Buf(Int), y) =
+  println(row(d, y, 0, ""))
+  if y + 1 >= gh() then 0 else dump(d, y + 1)
+
+fn main() =
+  plan = "###############" + "#.....#.......#" + "#.###.#.#####.#" + "#.#...#.#...#.#" + "#.#.###.#.#.#.#" + "#.#.....#.#...#" + "#.#######.###.#" + "#.........#.#.#" + "###############"
+  g = buf_u8(gw() * gh())
+  carve(g, plan, 0)
+  d = buf_int(gw() * gh())
+  q = buf_int(gw() * gh())
+  flood(g, d, q, 1 * gw() + 1)
+  dump(d, 0)

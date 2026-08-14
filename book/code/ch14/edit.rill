@@ -1,0 +1,40 @@
+# Levenshtein distance in a Buf: one row of the table at a time.
+
+fn cost(a, b) = if a == b then 0 else 1
+
+fn min3(a, b, c) = min(a, min(b, c))
+
+fn first_row(row: Buf(Int), j, n) =
+  buf_set(row, j, j)
+  if j >= n then 0 else first_row(row, j + 1, n)
+
+fn next_row(a, b, prev: Buf(Int), cur: Buf(Int), i, j, n) =
+  # substitution from the diagonal, deletion from above, insertion from the left
+  d = min3(buf_get(prev, j - 1) + cost(str_get(a, i - 1), str_get(b, j - 1)), buf_get(prev, j) + 1, buf_get(cur, j - 1) + 1)
+  buf_set(cur, j, d)
+  if j >= n then 0 else next_row(a, b, prev, cur, i, j + 1, n)
+
+fn rows(a, b, prev: Buf(Int), cur: Buf(Int), i, m, n) =
+  buf_set(cur, 0, i)
+  next_row(a, b, prev, cur, i, 1, n)
+  copy_row(cur, prev, 0, n)
+  if i >= m then buf_get(prev, n) else rows(a, b, prev, cur, i + 1, m, n)
+
+fn copy_row(from: Buf(Int), to: Buf(Int), j, n) =
+  buf_set(to, j, buf_get(from, j))
+  if j >= n then 0 else copy_row(from, to, j + 1, n)
+
+fn distance(a, b) =
+  m = str_len(a)
+  n = str_len(b)
+  prev = buf_int(n + 1)
+  cur = buf_int(n + 1)
+  first_row(prev, 0, n)
+  if m == 0 then n else rows(a, b, prev, cur, 1, m, n)
+
+fn main() =
+  println(distance("kitten", "sitting"))
+  println(distance("flaw", "lawn"))
+  println(distance("", "abc"))
+  println(distance("same", "same"))
+  println(distance("intention", "execution"))

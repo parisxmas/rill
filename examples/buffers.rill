@@ -1,0 +1,48 @@
+# `Buf(w)` — the language's mutable memory, with a type on it.
+#
+# A buffer holds elements of one C width, knows how many it has, and is
+# reference counted like a string: nothing frees it by hand. Indexing is
+# checked, and `buf_data` hands the first element's address to C.
+#
+# The width is part of the type rather than something inferred, so each one
+# has its own constructor — `buf_f32`, `buf_i32`, `buf_u8`, `buf_int`,
+# `buf_float`, `buf_ptr` and the rest — and a function taking a buffer says
+# which it takes.
+
+# The widths C cares about are the point: a vertex array is `Buf(F32)`, not an
+# array of Rill's 64-bit floats.
+fn fill_ramp(v: Buf(F32), i) =
+  buf_set(v, i, to_float(i) * 0.5)
+  if i + 1 >= buf_len(v) then 0 else fill_ramp(v, i + 1)
+
+fn sum_of(v: Buf(F32), i, acc) =
+  if i >= buf_len(v) then acc else sum_of(v, i + 1, acc + buf_get(v, i))
+
+# Reading is where a width's signedness shows: the same byte comes back as
+# 200 out of a `Buf(U8)` and as -56 out of a `Buf(I8)`.
+fn byte_pair(u: Buf(U8), s: Buf(I8)) =
+  buf_set(u, 0, 200)
+  buf_set(s, 0, 200)
+  int_to_str(buf_get(u, 0)) + " " + int_to_str(buf_get(s, 0))
+
+extern fn strlen(s: Ptr) -> Int
+
+# A buffer is C's kind of memory, so a C function can read it directly.
+fn c_sees(b: Buf(U8)) =
+  buf_set(b, 0, 82)
+  buf_set(b, 1, 105)
+  buf_set(b, 2, 108)
+  buf_set(b, 3, 108)
+  buf_set(b, 4, 0)
+  strlen(buf_data(b))
+
+fn main() =
+  v = buf_f32(6)
+  fill_ramp(v, 0)
+  println(sum_of(v, 0, 0.0))
+  println(buf_len(v))
+  println(byte_pair(buf_u8(1), buf_i8(1)))
+  println(c_sees(buf_u8(8)))
+  # Nothing above is freed by hand, and nothing above leaks: the counts run
+  # out at the end of `main` exactly as they do for a string.
+  println("done")

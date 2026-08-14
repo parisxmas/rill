@@ -1,0 +1,41 @@
+# An HTTP server and the requests that exercise it, in one program: the
+# server runs on a strand while main plays the client.
+import "http"
+
+fn route(req) = match req
+  Request(method, path, body) -> respond(method, path, body)
+
+fn respond(method, path, body) =
+  if path == "/" then Response(200, "hello from rill") else if path == "/echo" then Response(200, method + " " + path) else if starts_with(path, "/add/") then add_route(path) else Response(404, "no route for " + path)
+
+# /add/2/3 -> 5
+fn add_route(path) =
+  parts = split(path, "/")
+  a = str_to_int(unwrap_or(nth(parts, 2), "0"))
+  b = str_to_int(unwrap_or(nth(parts, 3), "0"))
+  Response(200, int_to_str(a + b))
+
+fn report(raw) = println(int_to_str(status_of(raw)) + " " + response_body(raw))
+
+fn report_all(raws) = match raws
+  Nil -> 0
+  Cons(r, rest) -> report_rest(r, rest)
+
+fn report_rest(r, rest) =
+  report(r)
+  report_all(rest)
+
+# Listening happens here, before any client runs; only the accept loop is
+# spawned. Opening the socket inside the strand would race with the first
+# request.
+fn main() = match listen_on(8080)
+  Err(e) -> println(e)
+  Ok(server) -> run(server)
+
+fn run(server) =
+  spawn accept_n(server, \req -> route(req), 5)
+  report(get("127.0.0.1", 8080, "/"))
+  report(get("127.0.0.1", 8080, "/echo"))
+  report(get("127.0.0.1", 8080, "/add/2/40"))
+  report_all(get_all("127.0.0.1", 8080, Cons("/", Cons("/add/1/1", Nil))))
+  report(get("127.0.0.1", 8080, "/nope"))

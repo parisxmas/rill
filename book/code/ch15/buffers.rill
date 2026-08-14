@@ -1,0 +1,16 @@
+fn fill(v: Buf(F32), i) =
+  buf_set(v, i, to_float(i) * 1.5)
+  if i + 1 >= buf_len(v) then 0 else fill(v, i + 1)
+
+fn main() =
+  v = buf_f32(5)
+  fill(v, 0)
+  println(buf_get(v, 3))
+  println(buf_len(v))
+  w = buf_u8(2)
+  buf_set(w, 0, 200)
+  println(buf_get(w, 0))
+  s = buf_i8(2)
+  buf_set(s, 0, 200)
+  println(buf_get(s, 0))
+  println(buf_get(v, 99))

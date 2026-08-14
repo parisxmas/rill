@@ -1,0 +1,14 @@
+# Reads a configuration file and prints it as JSON: the two modules share the
+# same value type, so nothing has to be converted.
+import "yaml"
+
+fn config() =
+  "# a service definition\nname: gateway\nport: 8080\ndebug: false\nlimits:\n  memory: 512\n  cpu: 1.5\ntags:\n  - fast\n  - \"small\"\nservers:\n  - name: alpha\n    port: 1000\n  - name: beta\n    port: 2000\n"
+
+fn main() =
+  doc = parse_yaml(config())
+  println(to_string(doc))
+  println(as_str(unwrap_or(get(doc, "name"), JNull)))
+  println(as_float(unwrap_or(path(doc, Cons("limits", Cons("cpu", Nil))), JNull)))
+  println(join(map(items(unwrap_or(get(doc, "tags"), JNull)), \t -> as_str(t)), "+"))
+  println(as_float(unwrap_or(path(unwrap_or(nth(items(unwrap_or(get(doc, "servers"), JNull)), 1), JNull), Cons("port", Nil)), JNull)))

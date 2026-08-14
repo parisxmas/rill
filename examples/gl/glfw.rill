@@ -1,0 +1,165 @@
+# GLFW bindings — the C header, written out in Rill.
+#
+# Each declaration is the C prototype at C's own widths: `I32` where GLFW says
+# `int`, `F64` where it says `double`, `Ptr` for an opaque handle. Nothing in
+# here does any work; importing it is what makes the symbols callable.
+#
+#   brew install glfw
+
+# For `with_cstr` and the viewport call the two helpers at the bottom need.
+import "gl"
+
+# A library string is more than a name: one starting with `-` goes to the
+# linker as written, which is how Homebrew's prefix gets searched. On an Intel
+# Mac that directory is /usr/local/lib.
+extern "-L/opt/homebrew/lib" fn glfwInit() -> I32
+
+extern "glfw" fn glfwTerminate()
+
+extern "glfw" fn glfwWindowHint(hint: I32, value: I32)
+
+extern "glfw" fn glfwCreateWindow(w: I32, h: I32, title: Ptr, monitor: Ptr, share: Ptr) -> Ptr
+
+extern "glfw" fn glfwDestroyWindow(win: Ptr)
+
+extern "glfw" fn glfwMakeContextCurrent(win: Ptr)
+
+extern "glfw" fn glfwSwapInterval(interval: I32)
+
+extern "glfw" fn glfwWindowShouldClose(win: Ptr) -> I32
+
+extern "glfw" fn glfwSetWindowShouldClose(win: Ptr, value: I32)
+
+extern "glfw" fn glfwGetKey(win: Ptr, key: I32) -> I32
+
+extern "glfw" fn glfwGetFramebufferSize(win: Ptr, w: Ptr, h: Ptr)
+
+extern "glfw" fn glfwGetPrimaryMonitor() -> Ptr
+
+extern "glfw" fn glfwGetVideoMode(monitor: Ptr) -> Ptr
+
+extern "glfw" fn glfwSetWindowPos(win: Ptr, x: I32, y: I32)
+
+extern "glfw" fn glfwGetWindowMonitor(win: Ptr) -> Ptr
+
+extern "glfw" fn glfwSetWindowMonitor(win: Ptr, monitor: Ptr, x: I32, y: I32, w: I32, h: I32, rate: I32)
+
+extern "glfw" fn glfwGetTime() -> F64
+
+extern "glfw" fn glfwSetInputMode(win: Ptr, mode: I32, value: I32)
+
+# Two out-parameters, each a C double.
+extern "glfw" fn glfwGetCursorPos(win: Ptr, x: Ptr, y: Ptr)
+
+extern "glfw" fn glfwSwapBuffers(win: Ptr)
+
+extern "glfw" fn glfwPollEvents()
+
+# Callbacks. `Fn(...)` is a C function pointer: a top-level Rill function goes
+# in as one, wrapped in a C-ABI trampoline. The setters hand back whatever was
+# installed before, which is a function pointer this program has no use for —
+# hence `Ptr`.
+extern "glfw" fn glfwSetKeyCallback(win: Ptr, cb: Fn(Ptr, I32, I32, I32, I32)) -> Ptr
+
+extern "glfw" fn glfwSetFramebufferSizeCallback(win: Ptr, cb: Fn(Ptr, I32, I32)) -> Ptr
+
+extern "glfw" fn glfwSetErrorCallback(cb: Fn(I32, Ptr)) -> Ptr
+
+# Constants, as a C program would get them from the header.
+fn glfw_context_version_major() = 139266
+
+fn glfw_context_version_minor() = 139267
+
+fn glfw_opengl_forward_compat() = 139270
+
+fn glfw_opengl_profile() = 139272
+
+fn glfw_opengl_core_profile() = 204801
+
+fn glfw_key_escape() = 256
+
+fn glfw_key_q() = 81
+
+fn glfw_key_space() = 32
+
+fn glfw_key_f() = 70
+
+fn glfw_key_r() = 82
+
+fn glfw_press() = 1
+
+fn glfw_cursor() = 208897
+
+fn glfw_cursor_disabled() = 212995
+
+fn glfw_samples() = 135181
+
+fn glfw_key_w() = 87
+
+fn glfw_key_a() = 65
+
+fn glfw_key_s() = 83
+
+fn glfw_key_d() = 68
+
+fn glfw_key_left() = 263
+
+fn glfw_key_right() = 262
+
+fn glfw_key_up() = 265
+
+fn glfw_key_down() = 264
+
+fn glfw_key_shift() = 340
+
+# Asking for a core profile is not optional on macOS: it is the only way to
+# get anything newer than OpenGL 2.1.
+fn glfw_open_core_window(w, h, title) =
+  glfwWindowHint(glfw_context_version_major(), 3)
+  glfwWindowHint(glfw_context_version_minor(), 2)
+  glfwWindowHint(glfw_opengl_profile(), glfw_opengl_core_profile())
+  glfwWindowHint(glfw_opengl_forward_compat(), 1)
+  win = with_cstr(title, \t -> glfwCreateWindow(w, h, t, null_ptr(), null_ptr()))
+  if is_null(win) then win else glfw_center(win, w, h)
+
+# In the middle of the screen, which is where a window this small should
+# open — GLFW leaves the placement to the window manager otherwise, and on
+# macOS that means wherever the last one happened to be.
+#
+# A `GLFWvidmode` is six ints and the first two are the size of the screen, in
+# the same coordinates a window is positioned in.
+fn glfw_center(win, w, h) =
+  mode = glfwGetVideoMode(glfwGetPrimaryMonitor())
+  if is_null(mode) then win else glfw_place(win, mode, w, h)
+
+fn glfw_place(win, mode, w, h) =
+  glfwSetWindowPos(win, (peek_i32(mode, 0) - w) / 2, (peek_i32(mode, 1) - h) / 2)
+  win
+
+# The framebuffer's size is asked for rather than tracked, so a resized window
+# or a move to a different display both just work.
+fn glfw_fit_viewport(win) =
+  wh = buf_i32(2)
+  glfwGetFramebufferSize(win, buf_data(wh), ptr_offset(buf_data(wh), 4))
+  glViewport(0, 0, buf_get(wh, 0), buf_get(wh, 1))
+
+# ---- filling the screen, and giving it back --------------------------------
+#
+# Which of the two the window is in is not tracked here: GLFW already knows,
+# and asks the window rather than a flag that could drift out of step with it.
+# A window with no monitor is a window; one with a monitor is the screen.
+fn glfw_toggle_fullscreen(win, w, h) =
+  if is_null(glfwGetWindowMonitor(win)) then glfw_go_full(win) else glfw_go_windowed(win, w, h)
+
+fn glfw_go_full(win) =
+  monitor = glfwGetPrimaryMonitor()
+  mode = glfwGetVideoMode(monitor)
+  # The screen's own size and its own refresh rate, so nothing is scaled and
+  # nothing tears.
+  glfwSetWindowMonitor(win, monitor, 0, 0, peek_i32(mode, 0), peek_i32(mode, 1), peek_i32(mode, 5))
+  0
+
+fn glfw_go_windowed(win, w, h) =
+  mode = glfwGetVideoMode(glfwGetPrimaryMonitor())
+  glfwSetWindowMonitor(win, null_ptr(), (peek_i32(mode, 0) - w) / 2, (peek_i32(mode, 1) - h) / 2, w, h, 0)
+  0

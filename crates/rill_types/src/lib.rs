@@ -1,0 +1,3114 @@
+//! rill_types: type checking and inference for Rill.
+//!
+//! M2 scope: Hindley–Milner style inference with let-polymorphism at the
+//! top-level function granularity, generic ADTs, first-class functions and
+//! lambdas. The checker produces a fully typed AST (`TModule`) that codegen
+//! monomorphizes — generic functions are instantiated per concrete type, so
+//! nothing is boxed.
+//!
+//! Design notes:
+//! - `Ty::Var` is an inference variable; none survive in the output.
+//! - `Ty::Gen(i)` is a quantified type parameter: of the enclosing function's
+//!   scheme inside `TFn` bodies, or of the ADT inside `CtorSig::fields`.
+//! - Functions are generalized in definition order; a function used before
+//!   its definition is pinned to the types of that earlier use (no
+//!   polymorphic recursion), like OCaml.
+//! - Unconstrained numeric/printable types default to Int.
+
+use std::collections::{HashMap, HashSet};
+
+use rill_syntax::{
+    Arm, BinOp, Expr, FnDef, Module, Param, Pattern, SelectOp, Stmt, TypeRef, UnOp,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Ty {
+    Int,
+    Float,
+    Bool,
+    Str,
+    Unit,
+    /// An opaque C pointer. Not reference counted: whatever produced it owns
+    /// it, which is why the FFI is the only place it appears.
+    Ptr,
+    /// ADT index into `TModule::adts`, plus type arguments.
+    Adt(usize, Vec<Ty>),
+    /// A function value: parameter types and return type.
+    Fn(Vec<Ty>, Box<Ty>),
+    /// A typed channel (`channel()`, `send`, `recv`).
+    Chan(Box<Ty>),
+    /// A counted block of memory holding elements of one C width. The only
+    /// mutable thing in the language, and the only one C can be handed a
+    /// pointer into: `Buf(F32)` is what a vertex array is.
+    Buf(CTy),
+    /// Inference variable; never present in checker output.
+    Var(u32),
+    /// Quantified type parameter (of the enclosing function or ADT).
+    Gen(u32),
+}
+
+/// A type as C sees it, in a foreign signature. Rill's own numbers are 64-bit
+/// while C is full of 32-bit ones, so an `extern` declaration names the exact
+/// width the symbol was compiled with and the call boundary converts. Widths
+/// are only spellable in an `extern`; the Rill side of the call still deals in
+/// plain `Int` and `Float`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CTy {
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
+    F32,
+    F64,
+    Bool,
+    Ptr,
+    Unit,
+    /// A C function pointer, taking these types and returning that one
+    /// (`Unit` when the callback answers with nothing). Only a top-level Rill
+    /// function can be passed for one: codegen wraps it in a C-ABI trampoline,
+    /// and a closure has an environment C has nowhere to put.
+    Fn(Vec<CTy>, Box<CTy>),
+}
+
+impl CTy {
+    /// The Rill-visible type of an argument or result at this position.
+    pub fn rill_ty(&self) -> Ty {
+        match self {
+            CTy::I8 | CTy::U8 | CTy::I16 | CTy::U16 | CTy::I32 | CTy::U32 | CTy::I64
+            | CTy::U64 => Ty::Int,
+            CTy::F32 | CTy::F64 => Ty::Float,
+            CTy::Bool => Ty::Bool,
+            CTy::Ptr => Ty::Ptr,
+            CTy::Unit => Ty::Unit,
+            CTy::Fn(ps, r) => {
+                Ty::Fn(ps.iter().map(|p| p.rill_ty()).collect(), Box::new(r.rill_ty()))
+            }
+        }
+    }
+
+    /// Width in bits of the integer forms; `None` for everything else.
+    pub fn int_bits(&self) -> Option<u32> {
+        match self {
+            CTy::I8 | CTy::U8 => Some(8),
+            CTy::I16 | CTy::U16 => Some(16),
+            CTy::I32 | CTy::U32 => Some(32),
+            CTy::I64 | CTy::U64 => Some(64),
+            _ => None,
+        }
+    }
+
+    /// How much memory one of these takes, which is what a buffer of them
+    /// indexes by.
+    pub fn size_bytes(&self) -> u64 {
+        match self {
+            CTy::I8 | CTy::U8 | CTy::Bool => 1,
+            CTy::I16 | CTy::U16 => 2,
+            CTy::I32 | CTy::U32 | CTy::F32 => 4,
+            CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Fn(..) => 8,
+            CTy::Unit => 0,
+        }
+    }
+
+    /// Whether a narrower result sign-extends back to Rill's `Int`.
+    pub fn is_signed(&self) -> bool {
+        matches!(self, CTy::I8 | CTy::I16 | CTy::I32 | CTy::I64)
+    }
+
+    /// The name this type is written with in a signature.
+    pub fn name(&self) -> &'static str {
+        match self {
+            CTy::I8 => "I8",
+            CTy::U8 => "U8",
+            CTy::I16 => "I16",
+            CTy::U16 => "U16",
+            CTy::I32 => "I32",
+            CTy::U32 => "U32",
+            CTy::I64 => "Int",
+            CTy::U64 => "U64",
+            CTy::F32 => "F32",
+            CTy::F64 => "Float",
+            CTy::Bool => "Bool",
+            CTy::Ptr => "Ptr",
+            CTy::Unit => "Unit",
+            CTy::Fn(..) => "Fn",
+        }
+    }
+}
+
+/// A foreign function's signature, in C's own types.
+#[derive(Debug, Clone)]
+pub struct ExternSig {
+    pub params: Vec<CTy>,
+    pub ret: CTy,
+}
+
+#[derive(Debug, Clone)]
+pub struct CtorSig {
+    pub name: String,
+    /// Field types; `Ty::Gen(i)` refers to the ADT's i-th type parameter.
+    pub fields: Vec<Ty>,
+    pub tag: u64,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdtDef {
+    pub name: String,
+    pub nparams: usize,
+    pub ctors: Vec<CtorSig>,
+}
+
+// ---- typed AST ------------------------------------------------------------
+
+/// Trait metadata for error messages and dispatch.
+#[derive(Debug, Clone)]
+pub struct TraitInfo {
+    pub name: String,
+    pub methods: Vec<String>,
+}
+
+/// Index of the built-in `Show` trait: implementing it overrides a type's
+/// derived printing.
+pub const SHOW_TRAIT: usize = 0;
+/// Index of the built-in `Ord` trait, which powers `<`, `<=`, `>` and `>=`.
+pub const ORD_TRAIT: usize = 1;
+
+/// What a trait is implemented for (v1: builtins and non-generic ADTs).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ImplKey {
+    Int,
+    Float,
+    Bool,
+    Str,
+    Adt(usize),
+}
+
+#[derive(Debug)]
+pub struct TModule {
+    pub adts: Vec<AdtDef>,
+    /// Constructor name -> (ADT index, constructor index).
+    pub ctors: HashMap<String, (usize, usize)>,
+    pub fns: Vec<TFn>,
+    pub fn_index: HashMap<String, usize>,
+    pub traits: Vec<TraitInfo>,
+    /// (trait, method, implementing type) -> function index.
+    pub impl_methods: HashMap<(usize, usize, ImplKey), usize>,
+    /// C functions the program calls, by symbol name.
+    pub externs: HashMap<String, ExternSig>,
+    /// Libraries those symbols come from, for the linker.
+    pub libs: Vec<String>,
+    /// How many leading entries of `fns` came from the prelude. Trait impl
+    /// methods are appended after the module's own functions, so everything
+    /// from here on is code the program's author wrote.
+    pub prelude_fns: usize,
+}
+
+#[derive(Debug)]
+pub struct TFn {
+    pub name: String,
+    pub params: Vec<(String, Ty)>,
+    pub ret: Ty,
+    /// Number of quantified type parameters (`Ty::Gen(0..ngen)`).
+    pub ngen: usize,
+    /// Requirements on those type parameters, checked when the function is
+    /// instantiated at a concrete type. The line is the use inside the body
+    /// that imposed the requirement.
+    pub constraints: Vec<(u32, Constraint, usize)>,
+    pub body: TExpr,
+    pub line: usize,
+}
+
+#[derive(Debug)]
+pub struct TExpr {
+    pub ty: Ty,
+    pub line: usize,
+    pub kind: TK,
+}
+
+#[derive(Debug)]
+pub enum TK {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    /// A direct runtime-function builtin (`str_len`, `int_to_str`, ...).
+    Builtin { rt: &'static str, args: Vec<TExpr> },
+    /// A local (parameter, binding, pattern binding, or capture).
+    Local(String),
+    /// A top-level function used as a value, at the given instantiation.
+    FnRef { fn_idx: usize, subst: Vec<Ty> },
+    CallFn { fn_idx: usize, subst: Vec<Ty>, args: Vec<TExpr> },
+    /// A trait method call; the receiver type picks the implementation at
+    /// monomorphization time (fully static dispatch).
+    MethodCall { trait_id: usize, method: usize, recv: Ty, args: Vec<TExpr> },
+    /// A call straight into a C function declared with `extern`.
+    CallExtern { name: String, args: Vec<TExpr> },
+    CallCtor { adt: usize, ctor: usize, targs: Vec<Ty>, args: Vec<TExpr> },
+    /// Calling a closure held in an expression (always a Local in M2 syntax).
+    CallClosure { callee: Box<TExpr>, args: Vec<TExpr> },
+    Println(Box<TExpr>),
+    /// `print(x)` — like `println` without the trailing newline.
+    Print(Box<TExpr>),
+    /// `show(x)` — structural rendering of any value to Str (resolved per
+    /// concrete type during monomorphization).
+    Show(Box<TExpr>),
+    /// `channel()` or `channel(capacity)` — a new channel of the
+    /// expression's `Chan(elem)` type.
+    ChanNew(Option<Box<TExpr>>),
+    /// `send(ch, v)` — transfers ownership of `v` into the channel.
+    ChanSend { ch: Box<TExpr>, val: Box<TExpr> },
+    /// `recv(ch)` — receives an owned value.
+    ChanRecv { ch: Box<TExpr> },
+    /// `buf_f32(n)` and friends: a counted buffer of `n` elements.
+    BufNew { width: CTy, count: Box<TExpr> },
+    /// Reading and writing one element, bounds-checked.
+    BufGet { buf: Box<TExpr>, idx: Box<TExpr> },
+    BufSet { buf: Box<TExpr>, idx: Box<TExpr>, val: Box<TExpr> },
+    BufLen { buf: Box<TExpr> },
+    /// The address of the first element, for handing to C.
+    BufPtr { buf: Box<TExpr> },
+    /// `spawn body` — runs `body` on a new green thread; like a zero-param
+    /// closure, capturing its free variables by value.
+    Spawn { captures: Vec<(String, Ty)>, body: Box<TExpr> },
+    /// `select` — the runtime picks a ready arm; `default` runs when none is.
+    Select { arms: Vec<TSelectArm>, default: Option<Box<TExpr>> },
+    Neg(Box<TExpr>),
+    Binary { op: BinOp, lhs: Box<TExpr>, rhs: Box<TExpr> },
+    If { cond: Box<TExpr>, then: Box<TExpr>, els: Box<TExpr> },
+    Match { scrutinee: Box<TExpr>, arms: Vec<TArm> },
+    Block(Vec<TStmt>),
+    Lambda { params: Vec<(String, Ty)>, captures: Vec<(String, Ty)>, body: Box<TExpr> },
+}
+
+#[derive(Debug)]
+pub struct TSelectArm {
+    pub op: TSelectOp,
+    /// Name and type the received value is bound to, for a receive arm.
+    pub bind: Option<(String, Ty)>,
+    pub body: TExpr,
+}
+
+#[derive(Debug)]
+pub enum TSelectOp {
+    Recv { chan: TExpr, elem: Ty },
+    Send { chan: TExpr, value: TExpr },
+}
+
+#[derive(Debug)]
+pub struct TArm {
+    pub pattern: Pattern,
+    pub body: TExpr,
+    pub line: usize,
+}
+
+#[derive(Debug)]
+pub enum TStmt {
+    Bind { name: String, value: TExpr },
+    Expr(TExpr),
+}
+
+// ---- errors ---------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeError {
+    pub line: usize,
+    pub msg: String,
+}
+
+impl TypeError {
+    fn new(line: usize, msg: impl Into<String>) -> Self {
+        TypeError { line, msg: msg.into() }
+    }
+}
+
+impl std::fmt::Display for TypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.line > 0 {
+            write!(f, "type error at line {}: {}", self.line, self.msg)
+        } else {
+            write!(f, "type error: {}", self.msg)
+        }
+    }
+}
+
+impl std::error::Error for TypeError {}
+
+/// A requirement on a type that inference cannot settle on the spot. When
+/// the type turns out to be a function's type parameter the requirement rides
+/// along in its scheme and is checked once the type is known, so generic code
+/// like `fn sort(l)` can use `<` without being pinned to one type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Constraint {
+    /// Int or Float (arithmetic, ordering, negation).
+    Numeric,
+    /// Int, Float or Str (`+` — addition or string concatenation).
+    Addable,
+    /// Something `<` can compare: a number, a string, or a type with an
+    /// `Ord` implementation.
+    Ordered,
+    /// Anything with structural equality: everything except functions and
+    /// channels.
+    Basic,
+}
+
+// ---- checker --------------------------------------------------------------
+
+pub fn check(module: &Module) -> Result<TModule, TypeError> {
+    Checker::new(module)?.run(module)
+}
+
+#[derive(Clone)]
+enum SigState {
+    /// Still var-based; uses before the definition pin these vars.
+    Provisional { params: Vec<Ty>, ret: Ty },
+    /// Generalized: `Gen(0..ngen)` may appear in params/ret.
+    Generalized { params: Vec<Ty>, ret: Ty, ngen: usize },
+}
+
+/// A checked trait method: parameter/return types with `Gen(0)` standing for
+/// the trait parameter.
+#[derive(Clone)]
+struct MethodInfo {
+    name: String,
+    params: Vec<Ty>,
+    ret: Ty,
+}
+
+struct Checker {
+    adts: Vec<AdtDef>,
+    ctors: HashMap<String, (usize, usize)>,
+    fn_index: HashMap<String, usize>,
+    sigs: Vec<SigState>,
+    subst: Vec<Option<Ty>>,
+    pending: Vec<(u32, Constraint, usize, &'static str)>,
+    traits: Vec<(String, Vec<MethodInfo>)>,
+    externs: HashMap<String, ExternSig>,
+    libs: Vec<String>,
+    /// Method name -> (trait index, method index). Methods are global.
+    method_index: HashMap<String, (usize, usize)>,
+    impl_methods: HashMap<(usize, usize, ImplKey), usize>,
+    /// Impl functions get their signature from the trait, not inference:
+    /// parameter types, return type, and how many type parameters the target
+    /// type constructor has (zero for a plain type).
+    forced_sigs: HashMap<String, (Vec<Ty>, Ty, usize)>,
+    /// All functions to check: user functions plus mangled impl methods.
+    expanded_fns: Vec<FnDef>,
+    /// Carried through to `TModule`; see the field there.
+    prelude_fns: usize,
+    /// Per function: the inference-var id behind each `Gen` index, recorded at
+    /// generalization time. Used to rebuild substitutions for calls that were
+    /// made while the callee's signature was still provisional (recursion and
+    /// forward references).
+    gen_vars: Vec<Vec<u32>>,
+}
+
+impl Checker {
+    fn new(module: &Module) -> Result<Checker, TypeError> {
+        let mut c = Checker {
+            adts: Vec::new(),
+            ctors: HashMap::new(),
+            fn_index: HashMap::new(),
+            sigs: Vec::new(),
+            subst: Vec::new(),
+            pending: Vec::new(),
+            traits: Vec::new(),
+            externs: HashMap::new(),
+            libs: Vec::new(),
+            method_index: HashMap::new(),
+            impl_methods: HashMap::new(),
+            forced_sigs: HashMap::new(),
+            expanded_fns: Vec::new(),
+            prelude_fns: 0,
+            gen_vars: Vec::new(),
+        };
+
+        // ADT names first so fields can reference any ADT (incl. recursive).
+        let mut adt_index: HashMap<String, usize> = HashMap::new();
+        for td in &module.types {
+            if is_builtin_type(&td.name) {
+                return Err(TypeError::new(
+                    td.line,
+                    format!("`{}` is a builtin type and cannot be redefined", td.name),
+                ));
+            }
+            if adt_index.insert(td.name.clone(), c.adts.len()).is_some() {
+                return Err(TypeError::new(
+                    td.line,
+                    format!("type `{}` is defined more than once", td.name),
+                ));
+            }
+            c.adts.push(AdtDef {
+                name: td.name.clone(),
+                nparams: td.params.len(),
+                ctors: Vec::new(),
+            });
+        }
+        for (i, td) in module.types.iter().enumerate() {
+            let mut param_scope: HashMap<&str, u32> = HashMap::new();
+            for (k, p) in td.params.iter().enumerate() {
+                if param_scope.insert(p, k as u32).is_some() {
+                    return Err(TypeError::new(
+                        td.line,
+                        format!("duplicate type parameter `{p}`"),
+                    ));
+                }
+            }
+            for (tag, ctor) in td.ctors.iter().enumerate() {
+                if c.ctors.insert(ctor.name.clone(), (i, tag)).is_some() {
+                    return Err(TypeError::new(
+                        ctor.line,
+                        format!(
+                            "constructor `{}` is defined more than once \
+                             (constructor names are global)",
+                            ctor.name
+                        ),
+                    ));
+                }
+                let mut fields = Vec::new();
+                for (_, tr) in &ctor.fields {
+                    let ty = resolve_type_ref(tr, &adt_index, &c.adts, Some(&param_scope))?;
+                    if ty == Ty::Unit {
+                        return Err(TypeError::new(
+                            tr.line,
+                            "constructor fields cannot be Unit".to_string(),
+                        ));
+                    }
+                    fields.push(ty);
+                }
+                c.adts[i].ctors.push(CtorSig {
+                    name: ctor.name.clone(),
+                    fields,
+                    tag: tag as u64,
+                    line: ctor.line,
+                });
+            }
+        }
+
+        // Built-in traits. They are not declared anywhere: implementing
+        // `Show` replaces a type's derived printing, and implementing `Ord`
+        // gives it `<`, `<=`, `>` and `>=`.
+        c.traits.push((
+            "Show".to_string(),
+            vec![MethodInfo {
+                name: "show".to_string(),
+                params: vec![Ty::Gen(0)],
+                ret: Ty::Str,
+            }],
+        ));
+        c.traits.push((
+            "Ord".to_string(),
+            vec![MethodInfo {
+                name: "compare".to_string(),
+                params: vec![Ty::Gen(0), Ty::Gen(0)],
+                ret: Ty::Int,
+            }],
+        ));
+        // `compare` is callable directly; `show` stays the built-in function
+        // and consults the impl table when the concrete type is known.
+        c.method_index.insert("compare".to_string(), (ORD_TRAIT, 0));
+
+        // Traits: method signatures with Gen(0) as the trait parameter.
+        for td in &module.traits {
+            if c.traits.iter().any(|(n, _)| *n == td.name) {
+                return Err(TypeError::new(
+                    td.line,
+                    format!("trait `{}` is already defined", td.name),
+                ));
+            }
+            if td.param.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()) {
+                return Err(TypeError::new(
+                    td.line,
+                    format!("trait parameter `{}` must be lowercase", td.param),
+                ));
+            }
+            let tid = c.traits.len();
+            let mut scope: HashMap<&str, u32> = HashMap::new();
+            scope.insert(td.param.as_str(), 0);
+            let mut methods = Vec::new();
+            for m in &td.methods {
+                if is_builtin_fn(&m.name) {
+                    return Err(TypeError::new(
+                        m.line,
+                        format!("`{}` is a built-in function and cannot be a method", m.name),
+                    ));
+                }
+                if c.method_index.contains_key(&m.name) {
+                    return Err(TypeError::new(
+                        m.line,
+                        format!("method `{}` is already defined (method names are global)", m.name),
+                    ));
+                }
+                let mut params = Vec::new();
+                for tr in &m.params {
+                    params.push(resolve_type_ref(tr, &adt_index, &c.adts, Some(&scope))?);
+                }
+                let ret = resolve_type_ref(&m.ret, &adt_index, &c.adts, Some(&scope))?;
+                c.method_index.insert(m.name.clone(), (tid, methods.len()));
+                methods.push(MethodInfo { name: m.name.clone(), params, ret });
+            }
+            c.traits.push((td.name.clone(), methods));
+        }
+
+        // Impls: each method becomes a mangled top-level function whose
+        // signature is forced by the trait (v1 targets: builtins and
+        // non-generic ADTs).
+        c.expanded_fns = module.functions.clone();
+        c.prelude_fns = module.prelude_fns;
+        for im in &module.impls {
+            let tid = match c.traits.iter().position(|(n, _)| *n == im.trait_name) {
+                Some(t) => t,
+                None => {
+                    return Err(TypeError::new(
+                        im.line,
+                        format!("unknown trait `{}`", im.trait_name),
+                    ));
+                }
+            };
+            // The target names a type constructor, optionally with its
+            // parameters: `impl Show(Money)` or `impl Show(List(a))`. A generic
+            // impl covers the constructor at every instantiation, so its
+            // methods become generic functions over the same parameters.
+            let (key, target_ty, tgen) = match im.target.name.as_str() {
+                "Int" => (ImplKey::Int, Ty::Int, 0),
+                "Float" => (ImplKey::Float, Ty::Float, 0),
+                "Bool" => (ImplKey::Bool, Ty::Bool, 0),
+                "Str" => (ImplKey::Str, Ty::Str, 0),
+                other => match adt_index.get(other) {
+                    Some(&i) => {
+                        let n = c.adts[i].nparams;
+                        if im.target.args.len() != n {
+                            return Err(TypeError::new(
+                                im.target.line,
+                                format!(
+                                    "`{other}` takes {n} type parameter(s), but the impl target \
+                                     names {}",
+                                    im.target.args.len()
+                                ),
+                            ));
+                        }
+                        let mut seen: HashSet<&str> = HashSet::new();
+                        for a in &im.target.args {
+                            let lower = a.name.chars().next().is_some_and(|ch| ch.is_lowercase());
+                            if !lower || !a.args.is_empty() || !seen.insert(a.name.as_str()) {
+                                return Err(TypeError::new(
+                                    a.line,
+                                    "an impl target's type arguments must be distinct type \
+                                     parameters, as in `impl Show(List(a))`"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                        let args: Vec<Ty> = (0..n).map(|k| Ty::Gen(k as u32)).collect();
+                        (ImplKey::Adt(i), Ty::Adt(i, args), n)
+                    }
+                    None => {
+                        return Err(TypeError::new(
+                            im.target.line,
+                            format!("unknown type `{other}` in impl target"),
+                        ));
+                    }
+                },
+            };
+            let trait_methods = c.traits[tid].1.clone();
+            let mut implemented = vec![false; trait_methods.len()];
+            for f in &im.fns {
+                let mid = match trait_methods.iter().position(|m| m.name == f.name) {
+                    Some(m) => m,
+                    None => {
+                        return Err(TypeError::new(
+                            f.line,
+                            format!("`{}` is not a method of trait `{}`", f.name, im.trait_name),
+                        ));
+                    }
+                };
+                if implemented[mid] {
+                    return Err(TypeError::new(
+                        f.line,
+                        format!("method `{}` is implemented twice", f.name),
+                    ));
+                }
+                implemented[mid] = true;
+                let sig = &trait_methods[mid];
+                if f.params.len() != sig.params.len() {
+                    return Err(TypeError::new(
+                        f.line,
+                        format!(
+                            "method `{}` takes {} parameter(s) in trait `{}`, but this \
+                             implementation has {}",
+                            f.name,
+                            sig.params.len(),
+                            im.trait_name,
+                            f.params.len()
+                        ),
+                    ));
+                }
+                if f.params.iter().any(|p| p.ann.is_some()) || f.ret_ann.is_some() {
+                    return Err(TypeError::new(
+                        f.line,
+                        "impl methods take their types from the trait; remove the annotations"
+                            .to_string(),
+                    ));
+                }
+                let inst = [target_ty.clone()];
+                let params: Vec<Ty> = sig.params.iter().map(|t| subst_gen(t, &inst)).collect();
+                let ret = subst_gen(&sig.ret, &inst);
+                let mangled = format!("{}.{}.{}", im.trait_name, im.target.name, f.name);
+                if c.impl_methods.insert((tid, mid, key.clone()), c.expanded_fns.len()).is_some()
+                {
+                    return Err(TypeError::new(
+                        im.line,
+                        format!(
+                            "trait `{}` is already implemented for `{}`",
+                            im.trait_name, im.target.name
+                        ),
+                    ));
+                }
+                c.forced_sigs.insert(mangled.clone(), (params, ret, tgen));
+                let mut renamed = f.clone();
+                renamed.name = mangled;
+                c.expanded_fns.push(renamed);
+            }
+            if let Some(mid) = implemented.iter().position(|b| !b) {
+                return Err(TypeError::new(
+                    im.line,
+                    format!(
+                        "impl of `{}` for `{}` is missing method `{}`",
+                        im.trait_name, im.target.name, trait_methods[mid].name
+                    ),
+                ));
+            }
+        }
+
+        // Foreign declarations. Their types are written out, never inferred,
+        // and only shapes the C ABI can carry are allowed.
+        for e in &module.externs {
+            if is_builtin_fn(&e.name) || c.method_index.contains_key(&e.name) {
+                return Err(TypeError::new(
+                    e.line,
+                    format!("`{}` is already a built-in or a trait method", e.name),
+                ));
+            }
+            let mut params = Vec::new();
+            for (pname, tr) in &e.params {
+                let what = format!("parameter `{pname}`");
+                let cty = resolve_c_type(tr, &adt_index, &c.adts, &what)?;
+                if cty == CTy::Unit {
+                    return Err(TypeError::new(
+                        tr.line,
+                        format!("{what}: `Unit` is not a value C can be passed"),
+                    ));
+                }
+                params.push(cty);
+            }
+            let ret = match &e.ret {
+                Some(tr) => {
+                    let r = resolve_c_type(tr, &adt_index, &c.adts, "return type")?;
+                    if matches!(r, CTy::Fn(..)) {
+                        return Err(TypeError::new(
+                            tr.line,
+                            "return type: a foreign function returning a callback \
+                             cannot be called back into; declare it `Ptr`"
+                                .to_string(),
+                        ));
+                    }
+                    r
+                }
+                None => CTy::Unit,
+            };
+            c.externs.insert(e.name.clone(), ExternSig { params, ret });
+            if let Some(lib) = &e.lib {
+                if !c.libs.contains(lib) {
+                    c.libs.push(lib.clone());
+                }
+            }
+        }
+
+        // Provisional function signatures.
+        let expanded = c.expanded_fns.clone();
+        for f in &expanded {
+            if c.fn_index.contains_key(&f.name) {
+                return Err(TypeError::new(
+                    f.name_line(),
+                    format!("function `{}` is defined more than once", f.name),
+                ));
+            }
+            if is_builtin_fn(&f.name) {
+                return Err(TypeError::new(
+                    f.line,
+                    format!("`{}` is a built-in function", f.name),
+                ));
+            }
+            if c.externs.contains_key(&f.name) {
+                return Err(TypeError::new(
+                    f.line,
+                    format!("`{}` is already declared as a foreign function", f.name),
+                ));
+            }
+            if c.method_index.contains_key(&f.name) {
+                return Err(TypeError::new(
+                    f.line,
+                    format!("`{}` is a trait method; functions cannot share its name", f.name),
+                ));
+            }
+            if let Some((params, ret, tgen)) = c.forced_sigs.get(&f.name).cloned() {
+                // The signature comes from the trait. A generic impl's type
+                // parameters become inference variables while the body is
+                // checked, then generalize back at the end — and must, which
+                // `run` verifies.
+                let inst: Vec<Ty> = (0..tgen).map(|_| c.fresh()).collect();
+                c.fn_index.insert(f.name.clone(), c.sigs.len());
+                c.sigs.push(SigState::Provisional {
+                    params: params.iter().map(|t| subst_gen(t, &inst)).collect(),
+                    ret: subst_gen(&ret, &inst),
+                });
+                continue;
+            }
+            if f.name == "main" {
+                if !f.params.is_empty() {
+                    return Err(TypeError::new(f.line, "`main` must take no parameters"));
+                }
+                if f.ret_ann.is_some() {
+                    return Err(TypeError::new(
+                        f.line,
+                        "`main` must not have a return type annotation",
+                    ));
+                }
+                c.fn_index.insert("main".into(), c.sigs.len());
+                c.sigs.push(SigState::Provisional { params: vec![], ret: Ty::Unit });
+                continue;
+            }
+            let mut params = Vec::new();
+            for Param { name, ann } in &f.params {
+                let ty = match ann {
+                    Some(tr) => {
+                        let ty = resolve_type_ref(tr, &adt_index, &c.adts, None)?;
+                        if ty == Ty::Unit {
+                            return Err(TypeError::new(
+                                tr.line,
+                                format!("parameter `{name}` cannot be Unit"),
+                            ));
+                        }
+                        ty
+                    }
+                    None => c.fresh(),
+                };
+                params.push(ty);
+            }
+            let ret = match &f.ret_ann {
+                Some(tr) => resolve_type_ref(tr, &adt_index, &c.adts, None)?,
+                None => c.fresh(),
+            };
+            c.fn_index.insert(f.name.clone(), c.sigs.len());
+            c.sigs.push(SigState::Provisional { params, ret });
+        }
+        if !c.fn_index.contains_key("main") {
+            return Err(TypeError::new(0, "no `main` function defined"));
+        }
+        Ok(c)
+    }
+
+    fn run(mut self, module: &Module) -> Result<TModule, TypeError> {
+        let _ = module;
+        self.gen_vars = vec![Vec::new(); self.sigs.len()];
+
+        // Phase 1: infer and generalize every function, impl methods
+        // included. Order matters: a function is only generalized once
+        // everything it calls has been, so mutually recursive functions are
+        // handled as one group and a function whose type is settled by a
+        // later definition still comes out right.
+        let fns_to_check = std::mem::take(&mut self.expanded_fns);
+        let mut tfns: Vec<Option<TFn>> = (0..fns_to_check.len()).map(|_| None).collect();
+        for group in dependency_groups(&fns_to_check, &self.fn_index) {
+            // Infer the whole group with every signature still provisional...
+            let mut inferred = Vec::new();
+            for &k in &group {
+                let f = &fns_to_check[k];
+                let idx = self.fn_index[&f.name];
+                let start = self.pending.len();
+                let body = self.infer_fn_body(f, idx)?;
+                inferred.push((k, idx, body, start, self.pending.len()));
+            }
+            // ...then generalize it, so recursive calls inside see the same
+            // types the group settled on.
+            for (k, idx, body, start, end) in inferred {
+                let tfn = self.generalize_fn(&fns_to_check[k], idx, body, start, end)?;
+                tfns[idx] = Some(tfn);
+            }
+        }
+        self.pending.clear();
+
+        // Phase 2: zonk all bodies now that every signature is generalized,
+        // rebuilding substitutions for calls made against provisional sigs.
+        let mut tfns: Vec<TFn> = tfns.into_iter().map(|f| f.unwrap()).collect();
+        for (idx, tfn) in tfns.iter_mut().enumerate() {
+            let genmap: HashMap<u32, u32> = self.gen_vars[idx]
+                .iter()
+                .enumerate()
+                .map(|(g, &v)| (v, g as u32))
+                .collect();
+            let mut defaults: HashMap<u32, Ty> = HashMap::new();
+            self.zonk_expr(&mut tfn.body, &genmap, &mut defaults);
+        }
+
+        // A generic impl must stay generic: if the body pinned the target's
+        // type parameter to something concrete, the impl does not actually
+        // cover the type constructor it claims to.
+        for (name, (_, _, tgen)) in &self.forced_sigs {
+            let f = &tfns[self.fn_index[name]];
+            if f.ngen < *tgen {
+                let (trait_name, target) = name.split_once('.').unwrap_or(("", name));
+                let target = target.split_once('.').map(|(t, _)| t).unwrap_or(target);
+                return Err(TypeError::new(
+                    f.line,
+                    format!(
+                        "this implementation of `{trait_name}` is not general enough: it only \
+                         works for some `{target}` types, but the impl covers all of them"
+                    ),
+                ));
+            }
+        }
+
+        Ok(TModule {
+            adts: self.adts,
+            ctors: self.ctors,
+            fns: tfns,
+            fn_index: self.fn_index,
+            traits: self
+                .traits
+                .into_iter()
+                .map(|(name, ms)| TraitInfo {
+                    name,
+                    methods: ms.into_iter().map(|m| m.name).collect(),
+                })
+                .collect(),
+            impl_methods: self.impl_methods,
+            externs: self.externs,
+            libs: self.libs,
+            prelude_fns: self.prelude_fns,
+        })
+    }
+
+    // ---- inference machinery --------------------------------------------
+
+    fn fresh(&mut self) -> Ty {
+        let v = self.subst.len() as u32;
+        self.subst.push(None);
+        Ty::Var(v)
+    }
+
+    /// Shallow resolution: follows var links at the top level only.
+    fn resolve(&self, ty: &Ty) -> Ty {
+        let mut ty = ty.clone();
+        while let Ty::Var(v) = ty {
+            match &self.subst[v as usize] {
+                Some(next) => ty = next.clone(),
+                None => return Ty::Var(v),
+            }
+        }
+        ty
+    }
+
+    fn occurs(&self, v: u32, ty: &Ty) -> bool {
+        match self.resolve(ty) {
+            Ty::Var(w) => w == v,
+            Ty::Adt(_, args) => args.iter().any(|a| self.occurs(v, a)),
+            Ty::Fn(params, ret) => {
+                params.iter().any(|p| self.occurs(v, p)) || self.occurs(v, &ret)
+            }
+            Ty::Chan(e) => self.occurs(v, &e),
+            Ty::Buf(_) => false,
+            _ => false,
+        }
+    }
+
+    fn unify(&mut self, a: &Ty, b: &Ty, line: usize, ctx: &str) -> Result<(), TypeError> {
+        let (ra, rb) = (self.resolve(a), self.resolve(b));
+        match (&ra, &rb) {
+            (Ty::Var(v), Ty::Var(w)) if v == w => Ok(()),
+            (Ty::Var(v), other) | (other, Ty::Var(v)) => {
+                if self.occurs(*v, other) {
+                    return Err(TypeError::new(line, format!("{ctx}: infinite type")));
+                }
+                self.subst[*v as usize] = Some(other.clone());
+                Ok(())
+            }
+            (Ty::Adt(i, xs), Ty::Adt(j, ys)) if i == j => {
+                for (x, y) in xs.clone().iter().zip(ys.clone().iter()) {
+                    self.unify(x, y, line, ctx)?;
+                }
+                Ok(())
+            }
+            (Ty::Fn(xp, xr), Ty::Fn(yp, yr)) if xp.len() == yp.len() => {
+                let (xp, xr, yp, yr) = (xp.clone(), xr.clone(), yp.clone(), yr.clone());
+                for (x, y) in xp.iter().zip(yp.iter()) {
+                    self.unify(x, y, line, ctx)?;
+                }
+                self.unify(&xr, &yr, line, ctx)
+            }
+            (Ty::Buf(x), Ty::Buf(y)) if x == y => Ok(()),
+            (Ty::Chan(x), Ty::Chan(y)) => {
+                let (x, y) = (x.clone(), y.clone());
+                self.unify(&x, &y, line, ctx)
+            }
+            _ if ra == rb => Ok(()),
+            _ => Err(TypeError::new(
+                line,
+                format!("{ctx}: expected {}, found {}", self.type_name(&ra), self.type_name(&rb)),
+            )),
+        }
+    }
+
+    fn type_name(&self, ty: &Ty) -> String {
+        match self.resolve(ty) {
+            Ty::Int => "Int".into(),
+            Ty::Float => "Float".into(),
+            Ty::Bool => "Bool".into(),
+            Ty::Str => "Str".into(),
+            Ty::Unit => "Unit".into(),
+            Ty::Ptr => "Ptr".into(),
+            Ty::Adt(i, args) => {
+                if args.is_empty() {
+                    self.adts[i].name.clone()
+                } else {
+                    let args: Vec<String> = args.iter().map(|a| self.type_name(a)).collect();
+                    format!("{}({})", self.adts[i].name, args.join(", "))
+                }
+            }
+            Ty::Fn(params, ret) => {
+                let params: Vec<String> = params.iter().map(|p| self.type_name(p)).collect();
+                format!("({}) -> {}", params.join(", "), self.type_name(&ret))
+            }
+            Ty::Chan(e) => format!("Chan({})", self.type_name(&e)),
+            Ty::Buf(w) => format!("Buf({})", w.name()),
+            Ty::Var(_) => "_".into(),
+            Ty::Gen(i) => format!("'{}", (b'a' + (i % 26) as u8) as char),
+        }
+    }
+
+    fn check_need(&self, ty: &Ty, need: Constraint, line: usize, ctx: &str) -> Result<(), TypeError> {
+        let ok = match need {
+            Constraint::Numeric => matches!(ty, Ty::Int | Ty::Float),
+            Constraint::Addable => matches!(ty, Ty::Int | Ty::Float | Ty::Str),
+            Constraint::Ordered => {
+                matches!(ty, Ty::Int | Ty::Float | Ty::Str) || self.has_impl(ORD_TRAIT, ty)
+            }
+            Constraint::Basic => {
+                matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Adt(..))
+            }
+        };
+        if ok {
+            Ok(())
+        } else {
+            let allowed = match need {
+                Constraint::Numeric => "Int or Float",
+                Constraint::Addable => "Int, Float or Str",
+                Constraint::Ordered => "Int, Float, Str or a type with an `Ord` implementation",
+                Constraint::Basic => "a value type (not a function or channel)",
+            };
+            Err(TypeError::new(
+                line,
+                format!("{ctx} requires {allowed}, found {}", self.type_name(ty)),
+            ))
+        }
+    }
+
+    /// Whether a concrete type implements one of the built-in traits.
+    fn has_impl(&self, trait_id: usize, ty: &Ty) -> bool {
+        impl_key(ty).is_some_and(|k| self.impl_methods.contains_key(&(trait_id, 0, k)))
+    }
+
+    fn require(
+        &mut self,
+        ty: &Ty,
+        need: Constraint,
+        line: usize,
+        ctx: &'static str,
+    ) -> Result<(), TypeError> {
+        match self.resolve(ty) {
+            Ty::Var(v) => {
+                self.pending.push((v, need, line, ctx));
+                Ok(())
+            }
+            ty => self.check_need(&ty, need, line, ctx),
+        }
+    }
+
+    /// Instantiates a signature: `Gen(i)` -> fresh vars. Returns the fresh
+    /// vars used, in Gen order, as the recorded substitution.
+    fn instantiate(&mut self, params: &[Ty], ret: &Ty, ngen: usize) -> (Vec<Ty>, Ty, Vec<Ty>) {
+        let inst: Vec<Ty> = (0..ngen).map(|_| self.fresh()).collect();
+        let p = params.iter().map(|t| subst_gen(t, &inst)).collect();
+        let r = subst_gen(ret, &inst);
+        (p, r, inst)
+    }
+
+    // ---- per-function check + finalize ----------------------------------
+
+    /// Infers a function body against its provisional signature, leaving
+    /// generalization to the caller.
+    fn infer_fn_body(&mut self, f: &FnDef, idx: usize) -> Result<TExpr, TypeError> {
+        let (sig_params, sig_ret) = match self.sigs[idx].clone() {
+            SigState::Provisional { params, ret } => (params, ret),
+            SigState::Generalized { .. } => unreachable!("checked twice"),
+        };
+
+        let mut env: HashMap<String, Ty> = HashMap::new();
+        for (p, ty) in f.params.iter().zip(&sig_params) {
+            if env.insert(p.name.clone(), ty.clone()).is_some() {
+                return Err(TypeError::new(
+                    f.line,
+                    format!("duplicate parameter `{}` in `{}`", p.name, f.name),
+                ));
+            }
+        }
+        let body = self.infer(&f.body, &mut env)?;
+        if f.name != "main" {
+            self.unify(&sig_ret, &body.ty, f.line, "function body type")?;
+        }
+        Ok(body)
+    }
+
+    /// Turns a checked body into a scheme: settles the requirements it
+    /// collected, then quantifies whatever type variables are still free.
+    fn generalize_fn(
+        &mut self,
+        f: &FnDef,
+        idx: usize,
+        body: TExpr,
+        pending_start: usize,
+        pending_end: usize,
+    ) -> Result<TFn, TypeError> {
+        let (sig_params, sig_ret) = match self.sigs[idx].clone() {
+            SigState::Provisional { params, ret } => (params, ret),
+            SigState::Generalized { .. } => unreachable!("generalized twice"),
+        };
+
+        // --- finalize this function's signature ---
+        // 1. Requirements collected while checking the body: settle the ones
+        //    whose type is already known, keep the rest for step 3.
+        let window: Vec<_> = self.pending[pending_start..pending_end].to_vec();
+        let mut deferred = Vec::new();
+        for (v, need, line, ctx) in window {
+            match self.resolve(&Ty::Var(v)) {
+                Ty::Var(v) => deferred.push((v, need, line, ctx)),
+                ty => self.check_need(&ty, need, line, ctx)?,
+            }
+        }
+
+        // 2. Generalize remaining free vars in the signature. This only
+        //    records the mapping — nothing is bound in the global
+        //    substitution, so later functions can still refer to these vars.
+        let mut genmap: HashMap<u32, u32> = HashMap::new();
+        let mut order: Vec<u32> = Vec::new();
+        let mut params = Vec::new();
+        for (p, ty) in f.params.iter().zip(&sig_params) {
+            params.push((p.name.clone(), self.generalize(ty, &mut genmap, &mut order)));
+        }
+        let ret = self.generalize(&sig_ret, &mut genmap, &mut order);
+        let ngen = genmap.len();
+        self.gen_vars[idx] = order;
+
+        // 3. A requirement on a type parameter travels with the scheme; one
+        //    on a variable that stayed local has nothing to constrain it, so
+        //    it defaults to Int the way an unannotated literal would.
+        let mut constraints = Vec::new();
+        for (v, need, line, ctx) in deferred {
+            match genmap.get(&v) {
+                Some(&g) => {
+                    if !constraints.iter().any(|(cg, cn, _)| *cg == g && *cn == need) {
+                        constraints.push((g, need, line));
+                    }
+                }
+                None => {
+                    self.subst[v as usize] = Some(Ty::Int);
+                    self.check_need(&Ty::Int, need, line, ctx)?;
+                }
+            }
+        }
+        self.sigs[idx] = SigState::Generalized {
+            params: params.iter().map(|(_, t)| t.clone()).collect(),
+            ret: ret.clone(),
+            ngen,
+        };
+
+        // The body is zonked in phase 2, once every signature is generalized.
+        Ok(TFn { name: f.name.clone(), params, ret, ngen, constraints, body, line: f.line })
+    }
+
+    /// Resolves a type; unresolved vars get fresh `Gen` indices.
+    fn generalize(&self, ty: &Ty, genmap: &mut HashMap<u32, u32>, order: &mut Vec<u32>) -> Ty {
+        match self.resolve(ty) {
+            Ty::Var(v) => {
+                if let Some(&g) = genmap.get(&v) {
+                    return Ty::Gen(g);
+                }
+                let g = genmap.len() as u32;
+                genmap.insert(v, g);
+                order.push(v);
+                Ty::Gen(g)
+            }
+            Ty::Adt(i, args) => {
+                Ty::Adt(i, args.iter().map(|a| self.generalize(a, genmap, order)).collect())
+            }
+            Ty::Fn(p, r) => Ty::Fn(
+                p.iter().map(|t| self.generalize(t, genmap, order)).collect(),
+                Box::new(self.generalize(&r, genmap, order)),
+            ),
+            Ty::Chan(e) => Ty::Chan(Box::new(self.generalize(&e, genmap, order))),
+            Ty::Buf(w) => Ty::Buf(w.clone()),
+            other => other,
+        }
+    }
+
+    /// Phase-2 resolution: vars of the enclosing function's scheme map to
+    /// `Gen`, anything else defaults to Int. Defaults are recorded per
+    /// function (`defaults`), never bound globally, so one function's
+    /// defaulting cannot leak into another's generalized vars.
+    fn zonk(
+        &self,
+        ty: &Ty,
+        genmap: &HashMap<u32, u32>,
+        defaults: &mut HashMap<u32, Ty>,
+    ) -> Ty {
+        match self.resolve(ty) {
+            Ty::Var(v) => {
+                if let Some(&g) = genmap.get(&v) {
+                    return Ty::Gen(g);
+                }
+                defaults.entry(v).or_insert(Ty::Int).clone()
+            }
+            Ty::Adt(i, args) => {
+                Ty::Adt(i, args.iter().map(|a| self.zonk(a, genmap, defaults)).collect())
+            }
+            Ty::Fn(p, r) => Ty::Fn(
+                p.iter().map(|t| self.zonk(t, genmap, defaults)).collect(),
+                Box::new(self.zonk(&r, genmap, defaults)),
+            ),
+            Ty::Chan(e) => Ty::Chan(Box::new(self.zonk(&e, genmap, defaults))),
+            Ty::Buf(w) => Ty::Buf(w.clone()),
+            other => other,
+        }
+    }
+
+    /// Rebuilds/normalizes a call's instantiation list. Calls made while the
+    /// callee was provisional recorded an empty substitution; the callee's
+    /// `gen_vars` tell us which inference vars ended up quantified, and
+    /// resolving those in the caller's context yields the true instantiation.
+    fn zonk_call_subst(
+        &self,
+        fn_idx: usize,
+        subst: &mut Vec<Ty>,
+        genmap: &HashMap<u32, u32>,
+        defaults: &mut HashMap<u32, Ty>,
+    ) {
+        let ngen = match &self.sigs[fn_idx] {
+            SigState::Generalized { ngen, .. } => *ngen,
+            SigState::Provisional { .. } => unreachable!("all sigs generalized in phase 2"),
+        };
+        if subst.len() != ngen {
+            debug_assert!(subst.is_empty(), "partial substitution cannot happen");
+            *subst = self.gen_vars[fn_idx]
+                .iter()
+                .map(|&v| self.zonk(&Ty::Var(v), genmap, defaults))
+                .collect();
+        } else {
+            for t in subst.iter_mut() {
+                *t = self.zonk(t, genmap, defaults);
+            }
+        }
+    }
+
+    fn zonk_expr(
+        &self,
+        e: &mut TExpr,
+        genmap: &HashMap<u32, u32>,
+        defaults: &mut HashMap<u32, Ty>,
+    ) {
+        e.ty = self.zonk(&e.ty, genmap, defaults);
+        match &mut e.kind {
+            TK::Int(_) | TK::Float(_) | TK::Str(_) | TK::Bool(_) | TK::Local(_) => {}
+            TK::Builtin { args, .. } => {
+                for a in args {
+                    self.zonk_expr(a, genmap, defaults);
+                }
+            }
+            TK::FnRef { fn_idx, subst } => {
+                self.zonk_call_subst(*fn_idx, subst, genmap, defaults);
+            }
+            TK::CallFn { fn_idx, subst, args } => {
+                self.zonk_call_subst(*fn_idx, subst, genmap, defaults);
+                for a in args {
+                    self.zonk_expr(a, genmap, defaults);
+                }
+            }
+            TK::CallExtern { args, .. } => {
+                for a in args {
+                    self.zonk_expr(a, genmap, defaults);
+                }
+            }
+            TK::BufNew { count, .. } => self.zonk_expr(count, genmap, defaults),
+            TK::BufLen { buf } | TK::BufPtr { buf } => {
+                self.zonk_expr(buf, genmap, defaults)
+            }
+            TK::BufGet { buf, idx } => {
+                self.zonk_expr(buf, genmap, defaults);
+                self.zonk_expr(idx, genmap, defaults);
+            }
+            TK::BufSet { buf, idx, val } => {
+                self.zonk_expr(buf, genmap, defaults);
+                self.zonk_expr(idx, genmap, defaults);
+                self.zonk_expr(val, genmap, defaults);
+            }
+            TK::MethodCall { recv, args, .. } => {
+                *recv = self.zonk(recv, genmap, defaults);
+                for a in args {
+                    self.zonk_expr(a, genmap, defaults);
+                }
+            }
+            TK::CallCtor { targs, args, .. } => {
+                for t in targs.iter_mut() {
+                    *t = self.zonk(t, genmap, defaults);
+                }
+                for a in args {
+                    self.zonk_expr(a, genmap, defaults);
+                }
+            }
+            TK::CallClosure { callee, args } => {
+                self.zonk_expr(callee, genmap, defaults);
+                for a in args {
+                    self.zonk_expr(a, genmap, defaults);
+                }
+            }
+            TK::Println(a) | TK::Print(a) | TK::Show(a) | TK::Neg(a) => {
+                self.zonk_expr(a, genmap, defaults)
+            }
+            TK::ChanNew(cap) => {
+                if let Some(c) = cap {
+                    self.zonk_expr(c, genmap, defaults);
+                }
+            }
+            TK::ChanSend { ch, val } => {
+                self.zonk_expr(ch, genmap, defaults);
+                self.zonk_expr(val, genmap, defaults);
+            }
+            TK::ChanRecv { ch } => self.zonk_expr(ch, genmap, defaults),
+            TK::Spawn { captures, body } => {
+                for (_, t) in captures.iter_mut() {
+                    *t = self.zonk(t, genmap, defaults);
+                }
+                self.zonk_expr(body, genmap, defaults);
+            }
+            TK::Select { arms, default } => {
+                for a in arms.iter_mut() {
+                    match &mut a.op {
+                        TSelectOp::Recv { chan, elem } => {
+                            self.zonk_expr(chan, genmap, defaults);
+                            *elem = self.zonk(elem, genmap, defaults);
+                        }
+                        TSelectOp::Send { chan, value } => {
+                            self.zonk_expr(chan, genmap, defaults);
+                            self.zonk_expr(value, genmap, defaults);
+                        }
+                    }
+                    if let Some((_, t)) = a.bind.as_mut() {
+                        *t = self.zonk(t, genmap, defaults);
+                    }
+                    self.zonk_expr(&mut a.body, genmap, defaults);
+                }
+                if let Some(d) = default {
+                    self.zonk_expr(d, genmap, defaults);
+                }
+            }
+            TK::Binary { lhs, rhs, .. } => {
+                self.zonk_expr(lhs, genmap, defaults);
+                self.zonk_expr(rhs, genmap, defaults);
+            }
+            TK::If { cond, then, els } => {
+                self.zonk_expr(cond, genmap, defaults);
+                self.zonk_expr(then, genmap, defaults);
+                self.zonk_expr(els, genmap, defaults);
+            }
+            TK::Match { scrutinee, arms } => {
+                self.zonk_expr(scrutinee, genmap, defaults);
+                for arm in arms {
+                    self.zonk_expr(&mut arm.body, genmap, defaults);
+                }
+            }
+            TK::Block(stmts) => {
+                for s in stmts {
+                    match s {
+                        TStmt::Bind { value, .. } => self.zonk_expr(value, genmap, defaults),
+                        TStmt::Expr(v) => self.zonk_expr(v, genmap, defaults),
+                    }
+                }
+            }
+            TK::Lambda { params, captures, body } => {
+                for (_, t) in params.iter_mut().chain(captures.iter_mut()) {
+                    *t = self.zonk(t, genmap, defaults);
+                }
+                self.zonk_expr(body, genmap, defaults);
+            }
+        }
+    }
+
+    // ---- expression inference -------------------------------------------
+
+    fn infer(&mut self, expr: &Expr, env: &mut HashMap<String, Ty>) -> Result<TExpr, TypeError> {
+        match expr {
+            Expr::Int(v) => Ok(TExpr { ty: Ty::Int, line: 0, kind: TK::Int(*v) }),
+            Expr::Float(v) => Ok(TExpr { ty: Ty::Float, line: 0, kind: TK::Float(*v) }),
+            Expr::Str(s) => Ok(TExpr { ty: Ty::Str, line: 0, kind: TK::Str(s.clone()) }),
+            Expr::Bool(v) => Ok(TExpr { ty: Ty::Bool, line: 0, kind: TK::Bool(*v) }),
+            Expr::Var(name, line) => self.infer_var(name, *line, env),
+            Expr::Call { name, args, line, .. } => self.infer_call(name, args, *line, env),
+            Expr::Unary { op: UnOp::Neg, expr } => {
+                let inner = self.infer(expr, env)?;
+                self.require(&inner.ty, Constraint::Numeric, inner.line, "negation")?;
+                Ok(TExpr {
+                    ty: inner.ty.clone(),
+                    line: inner.line,
+                    kind: TK::Neg(Box::new(inner)),
+                })
+            }
+            Expr::Binary { op, lhs, rhs, line } => {
+                let l = self.infer(lhs, env)?;
+                let r = self.infer(rhs, env)?;
+                self.unify(&l.ty, &r.ty, *line, "operands of a binary operator")?;
+                let ty = match op {
+                    BinOp::Add => {
+                        self.require(&l.ty, Constraint::Addable, *line, "`+`")?;
+                        l.ty.clone()
+                    }
+                    BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                        self.require(&l.ty, Constraint::Numeric, *line, "arithmetic")?;
+                        l.ty.clone()
+                    }
+                    BinOp::Mod => {
+                        self.unify(&l.ty, &Ty::Int, *line, "`%`")?;
+                        Ty::Int
+                    }
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        self.require(&l.ty, Constraint::Ordered, *line, "comparison")?;
+                        Ty::Bool
+                    }
+                    BinOp::Eq | BinOp::Ne => {
+                        self.require(&l.ty, Constraint::Basic, *line, "equality")?;
+                        Ty::Bool
+                    }
+                };
+                Ok(TExpr {
+                    ty,
+                    line: *line,
+                    kind: TK::Binary { op: *op, lhs: Box::new(l), rhs: Box::new(r) },
+                })
+            }
+            Expr::If { cond, then, els } => {
+                let c = self.infer(cond, env)?;
+                self.unify(&c.ty, &Ty::Bool, c.line, "`if` condition")?;
+                let t = self.infer(then, env)?;
+                let e = self.infer(els, env)?;
+                self.unify(&t.ty, &e.ty, e.line, "`if` branches")?;
+                Ok(TExpr {
+                    ty: t.ty.clone(),
+                    line: c.line,
+                    kind: TK::If { cond: Box::new(c), then: Box::new(t), els: Box::new(e) },
+                })
+            }
+            Expr::Match { scrutinee, arms, line } => self.infer_match(scrutinee, arms, *line, env),
+            Expr::Spawn { body, line } => {
+                let mut inner = env.clone();
+                let tbody = self.infer(body, &mut inner)?;
+                let mut free = Vec::new();
+                let mut seen = HashSet::new();
+                free_vars(body, &mut free, &mut seen);
+                let captures: Vec<(String, Ty)> = free
+                    .into_iter()
+                    .filter_map(|n| env.get(&n).map(|t| (n, t.clone())))
+                    .collect();
+                Ok(TExpr {
+                    ty: Ty::Unit,
+                    line: *line,
+                    kind: TK::Spawn { captures, body: Box::new(tbody) },
+                })
+            }
+            Expr::Select { arms, default, line } => {
+                let result_ty = self.fresh();
+                let mut tarms = Vec::new();
+                for arm in arms {
+                    let mut arm_env = env.clone();
+                    let (op, bind) = match &arm.op {
+                        SelectOp::Recv { chan, bind } => {
+                            let ch = self.infer(chan, env)?;
+                            let elem = self.fresh();
+                            self.unify(
+                                &ch.ty,
+                                &Ty::Chan(Box::new(elem.clone())),
+                                arm.line,
+                                "`recv` in select",
+                            )?;
+                            let b = bind.as_ref().map(|n| {
+                                arm_env.insert(n.clone(), elem.clone());
+                                (n.clone(), elem.clone())
+                            });
+                            (TSelectOp::Recv { chan: ch, elem }, b)
+                        }
+                        SelectOp::Send { chan, value } => {
+                            let ch = self.infer(chan, env)?;
+                            let v = self.infer(value, env)?;
+                            self.unify(
+                                &ch.ty,
+                                &Ty::Chan(Box::new(v.ty.clone())),
+                                arm.line,
+                                "`send` in select",
+                            )?;
+                            (TSelectOp::Send { chan: ch, value: v }, None)
+                        }
+                    };
+                    let body = self.infer(&arm.body, &mut arm_env)?;
+                    self.unify(&result_ty, &body.ty, arm.line, "select arms")?;
+                    tarms.push(TSelectArm { op, bind, body });
+                }
+                let tdefault = match default {
+                    Some(d) => {
+                        let td = self.infer(d, env)?;
+                        self.unify(&result_ty, &td.ty, *line, "select arms")?;
+                        Some(Box::new(td))
+                    }
+                    None => None,
+                };
+                Ok(TExpr {
+                    ty: result_ty,
+                    line: *line,
+                    kind: TK::Select { arms: tarms, default: tdefault },
+                })
+            }
+            Expr::Lambda { params, body, line } => {
+                let param_tys: Vec<Ty> = params.iter().map(|_| self.fresh()).collect();
+                let mut inner = env.clone();
+                for (p, t) in params.iter().zip(&param_tys) {
+                    inner.insert(p.clone(), t.clone());
+                }
+                let tbody = self.infer(body, &mut inner)?;
+
+                // Captures: free variables of the body that refer to locals of
+                // the enclosing scope (not the lambda's own parameters).
+                let mut free = Vec::new();
+                let mut seen = HashSet::new();
+                free_vars(body, &mut free, &mut seen);
+                let captures: Vec<(String, Ty)> = free
+                    .into_iter()
+                    .filter(|n| !params.contains(n))
+                    .filter_map(|n| env.get(&n).map(|t| (n, t.clone())))
+                    .collect();
+
+                let ty = Ty::Fn(param_tys.clone(), Box::new(tbody.ty.clone()));
+                Ok(TExpr {
+                    ty,
+                    line: *line,
+                    kind: TK::Lambda {
+                        params: params.iter().cloned().zip(param_tys).collect(),
+                        captures,
+                        body: Box::new(tbody),
+                    },
+                })
+            }
+            Expr::Block(stmts) => {
+                let mut out = Vec::new();
+                let mut ty = Ty::Unit;
+                for stmt in stmts {
+                    match stmt {
+                        Stmt::Bind { name, value, .. } => {
+                            let v = self.infer(value, env)?;
+                            env.insert(name.clone(), v.ty.clone());
+                            out.push(TStmt::Bind { name: name.clone(), value: v });
+                            ty = Ty::Unit;
+                        }
+                        Stmt::Expr(e) => {
+                            let v = self.infer(e, env)?;
+                            ty = v.ty.clone();
+                            out.push(TStmt::Expr(v));
+                        }
+                    }
+                }
+                Ok(TExpr { ty, line: 0, kind: TK::Block(out) })
+            }
+        }
+    }
+
+    fn infer_var(
+        &mut self,
+        name: &str,
+        line: usize,
+        env: &mut HashMap<String, Ty>,
+    ) -> Result<TExpr, TypeError> {
+        if let Some(ty) = env.get(name) {
+            return Ok(TExpr { ty: ty.clone(), line, kind: TK::Local(name.to_string()) });
+        }
+        if let Some(&(adt, ci)) = self.ctors.get(name) {
+            let nfields = self.adts[adt].ctors[ci].fields.len();
+            if nfields != 0 {
+                return Err(TypeError::new(
+                    line,
+                    format!("constructor `{name}` takes {nfields} argument(s)"),
+                ));
+            }
+            let targs: Vec<Ty> = (0..self.adts[adt].nparams).map(|_| self.fresh()).collect();
+            return Ok(TExpr {
+                ty: Ty::Adt(adt, targs.clone()),
+                line,
+                kind: TK::CallCtor { adt, ctor: ci, targs, args: vec![] },
+            });
+        }
+        if let Some(&idx) = self.fn_index.get(name) {
+            if name == "main" {
+                return Err(TypeError::new(line, "`main` cannot be used as a value"));
+            }
+            let (params, ret, subst) = match self.sigs[idx].clone() {
+                SigState::Provisional { params, ret } => (params, ret, vec![]),
+                SigState::Generalized { params, ret, ngen } => {
+                    self.instantiate(&params, &ret, ngen)
+                }
+            };
+            return Ok(TExpr {
+                ty: Ty::Fn(params, Box::new(ret)),
+                line,
+                kind: TK::FnRef { fn_idx: idx, subst },
+            });
+        }
+        Err(TypeError::new(line, format!("unknown variable `{name}`")))
+    }
+
+    fn infer_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        line: usize,
+        env: &mut HashMap<String, Ty>,
+    ) -> Result<TExpr, TypeError> {
+        // A local holding a closure shadows functions and constructors.
+        if env.contains_key(name) {
+            let callee = self.infer_var(name, line, env)?;
+            let mut targs = Vec::new();
+            for a in args {
+                targs.push(self.infer(a, env)?);
+            }
+            let ret = self.fresh();
+            let want = Ty::Fn(targs.iter().map(|a| a.ty.clone()).collect(), Box::new(ret.clone()));
+            self.unify(&callee.ty, &want, line, &format!("calling `{name}`"))?;
+            return Ok(TExpr {
+                ty: ret,
+                line,
+                kind: TK::CallClosure { callee: Box::new(callee), args: targs },
+            });
+        }
+
+        if name == "println" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`println` takes exactly one argument"));
+            }
+            let a = self.infer(&args[0], env)?;
+            self.require(&a.ty, Constraint::Basic, line, "`println`")?;
+            return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Println(Box::new(a)) });
+        }
+        if name == "channel" {
+            // `channel()` rendezvous; `channel(n)` buffers n values.
+            let cap = match args.len() {
+                0 => None,
+                1 => {
+                    let a = self.infer(&args[0], env)?;
+                    self.unify(&Ty::Int, &a.ty, line, "`channel` capacity")?;
+                    Some(Box::new(a))
+                }
+                _ => {
+                    return Err(TypeError::new(
+                        line,
+                        "`channel` takes an optional buffer size".to_string(),
+                    ))
+                }
+            };
+            let elem = self.fresh();
+            return Ok(TExpr { ty: Ty::Chan(Box::new(elem)), line, kind: TK::ChanNew(cap) });
+        }
+        // A buffer's element width is part of its type rather than inferred,
+        // so each width has its own constructor. Everything after that reads
+        // the width off the buffer it is given.
+        let buf_width = match name {
+            "buf_i8" => Some(CTy::I8),
+            "buf_u8" => Some(CTy::U8),
+            "buf_i16" => Some(CTy::I16),
+            "buf_u16" => Some(CTy::U16),
+            "buf_i32" => Some(CTy::I32),
+            "buf_u32" => Some(CTy::U32),
+            "buf_int" => Some(CTy::I64),
+            "buf_f32" => Some(CTy::F32),
+            "buf_float" => Some(CTy::F64),
+            "buf_ptr" => Some(CTy::Ptr),
+            _ => None,
+        };
+        if let Some(width) = buf_width {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, format!("`{name}` takes a length")));
+            }
+            let n = self.infer(&args[0], env)?;
+            self.unify(&Ty::Int, &n.ty, line, "buffer length")?;
+            return Ok(TExpr {
+                ty: Ty::Buf(width.clone()),
+                line,
+                kind: TK::BufNew { width, count: Box::new(n) },
+            });
+        }
+        if name == "buf_get" || name == "buf_set" || name == "buf_len" || name == "buf_data" {
+            let want = if name == "buf_set" { 3 } else if name == "buf_len" || name == "buf_data" { 1 } else { 2 };
+            if args.len() != want {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{name}` takes {want} argument(s), but {} given", args.len()),
+                ));
+            }
+            let b = self.infer(&args[0], env)?;
+            let width = match self.resolve(&b.ty) {
+                Ty::Buf(w) => w,
+                other => {
+                    return Err(TypeError::new(
+                        line,
+                        format!(
+                            "`{name}` needs a buffer, but this is `{}` — a `Buf` \
+                             width is never inferred, so annotate the parameter",
+                            self.type_name(&other)
+                        ),
+                    ))
+                }
+            };
+            if name == "buf_len" {
+                return Ok(TExpr { ty: Ty::Int, line, kind: TK::BufLen { buf: Box::new(b) } });
+            }
+            if name == "buf_data" {
+                return Ok(TExpr { ty: Ty::Ptr, line, kind: TK::BufPtr { buf: Box::new(b) } });
+            }
+            let idx = self.infer(&args[1], env)?;
+            self.unify(&Ty::Int, &idx.ty, line, "buffer index")?;
+            if name == "buf_get" {
+                return Ok(TExpr {
+                    ty: width.rill_ty(),
+                    line,
+                    kind: TK::BufGet { buf: Box::new(b), idx: Box::new(idx) },
+                });
+            }
+            let val = self.infer(&args[2], env)?;
+            self.unify(&width.rill_ty(), &val.ty, line, "buffer element")?;
+            return Ok(TExpr {
+                ty: Ty::Unit,
+                line,
+                kind: TK::BufSet {
+                    buf: Box::new(b),
+                    idx: Box::new(idx),
+                    val: Box::new(val),
+                },
+            });
+        }
+        if name == "send" {
+            if args.len() != 2 {
+                return Err(TypeError::new(line, "`send` takes a channel and a value"));
+            }
+            let ch = self.infer(&args[0], env)?;
+            let val = self.infer(&args[1], env)?;
+            let want = Ty::Chan(Box::new(val.ty.clone()));
+            self.unify(&ch.ty, &want, line, "`send`")?;
+            return Ok(TExpr {
+                ty: Ty::Unit,
+                line,
+                kind: TK::ChanSend { ch: Box::new(ch), val: Box::new(val) },
+            });
+        }
+        if name == "recv" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`recv` takes exactly one channel"));
+            }
+            let ch = self.infer(&args[0], env)?;
+            let elem = self.fresh();
+            self.unify(&ch.ty, &Ty::Chan(Box::new(elem.clone())), line, "`recv`")?;
+            return Ok(TExpr { ty: elem, line, kind: TK::ChanRecv { ch: Box::new(ch) } });
+        }
+        if name == "show" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`show` takes exactly one argument"));
+            }
+            let a = self.infer(&args[0], env)?;
+            self.require(&a.ty, Constraint::Basic, line, "`show`")?;
+            return Ok(TExpr { ty: Ty::Str, line, kind: TK::Show(Box::new(a)) });
+        }
+        if name == "print" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`print` takes exactly one argument"));
+            }
+            let a = self.infer(&args[0], env)?;
+            self.require(&a.ty, Constraint::Basic, line, "`print`")?;
+            return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Print(Box::new(a)) });
+        }
+        let simple_builtin: Option<(&'static str, Vec<Ty>, Ty)> = match name {
+            "str_len" => Some(("rill_str_len", vec![Ty::Str], Ty::Int)),
+            "int_to_str" => Some(("rill_int_to_str", vec![Ty::Int], Ty::Str)),
+            "float_to_str" => Some(("rill_float_to_str", vec![Ty::Float], Ty::Str)),
+            "bool_to_str" => Some(("rill_bool_to_str", vec![Ty::Bool], Ty::Str)),
+            "str_get" => Some(("rill_str_get", vec![Ty::Str, Ty::Int], Ty::Int)),
+            "str_sub" => Some(("rill_str_sub", vec![Ty::Str, Ty::Int, Ty::Int], Ty::Str)),
+            "str_find" => Some(("rill_str_find", vec![Ty::Str, Ty::Str], Ty::Int)),
+            "str_cmp" => Some(("rill_str_cmp", vec![Ty::Str, Ty::Str], Ty::Int)),
+            "str_to_int" => Some(("rill_str_to_int", vec![Ty::Str], Ty::Int)),
+            "str_to_float" => Some(("rill_str_to_float", vec![Ty::Str], Ty::Float)),
+            "chr" => Some(("rill_chr", vec![Ty::Int], Ty::Str)),
+            // Bit twiddling, needed by anything that touches a binary
+            // protocol. These compile to single instructions.
+            "bit_and" => Some(("rill.and", vec![Ty::Int, Ty::Int], Ty::Int)),
+            "bit_or" => Some(("rill.or", vec![Ty::Int, Ty::Int], Ty::Int)),
+            "bit_xor" => Some(("rill.xor", vec![Ty::Int, Ty::Int], Ty::Int)),
+            "bit_not" => Some(("rill.not", vec![Ty::Int], Ty::Int)),
+            "shl" => Some(("rill.shl", vec![Ty::Int, Ty::Int], Ty::Int)),
+            "shr" => Some(("rill.shr", vec![Ty::Int, Ty::Int], Ty::Int)),
+            // The two numeric types never mix implicitly, so crossing between
+            // them is written out. Both are single instructions.
+            "to_float" => Some(("rill.sitofp", vec![Ty::Int], Ty::Float)),
+            "to_int" => Some(("rill.fptosi", vec![Ty::Float], Ty::Int)),
+            "arg_count" => Some(("rill_arg_count", vec![], Ty::Int)),
+            "arg" => Some(("rill_arg", vec![Ty::Int], Ty::Str)),
+            "read_file_raw" => Some(("rill_read_file", vec![Ty::Str], Ty::Str)),
+            "io_ok" => Some(("rill_io_ok", vec![], Ty::Bool)),
+            "write_file" => Some(("rill_write_file", vec![Ty::Str, Ty::Str], Ty::Bool)),
+            "read_line" => Some(("rill_read_line", vec![], Ty::Str)),
+            "exit" => Some(("rill_exit", vec![Ty::Int], Ty::Unit)),
+            // Bridges to and from C strings; `to_cstr` allocates, so the
+            // caller frees with `free_ptr`.
+            "to_cstr" => Some(("rill_to_cstr", vec![Ty::Str], Ty::Ptr)),
+            "from_cstr" => Some(("rill_from_cstr", vec![Ty::Ptr], Ty::Str)),
+            "free_ptr" => Some(("rill_free_ptr", vec![Ty::Ptr], Ty::Unit)),
+            "null_ptr" => Some(("rill_null_ptr", vec![], Ty::Ptr)),
+            "is_null" => Some(("rill_is_null", vec![Ty::Ptr], Ty::Bool)),
+            // Raw buffers, for handing an array to a C library. The index is
+            // in elements, so `poke_f32(p, 3, x)` writes the fourth float;
+            // `ptr_offset` moves by bytes when a layout needs it.
+            "alloc_bytes" => Some(("rill_alloc_bytes", vec![Ty::Int], Ty::Ptr)),
+            "ptr_offset" => Some(("rill_ptr_offset", vec![Ty::Ptr, Ty::Int], Ty::Ptr)),
+            "poke_i8" => Some(("rill_poke_i8", vec![Ty::Ptr, Ty::Int, Ty::Int], Ty::Unit)),
+            "poke_i16" => Some(("rill_poke_i16", vec![Ty::Ptr, Ty::Int, Ty::Int], Ty::Unit)),
+            "poke_i32" => Some(("rill_poke_i32", vec![Ty::Ptr, Ty::Int, Ty::Int], Ty::Unit)),
+            "poke_i64" => Some(("rill_poke_i64", vec![Ty::Ptr, Ty::Int, Ty::Int], Ty::Unit)),
+            "poke_f32" => Some(("rill_poke_f32", vec![Ty::Ptr, Ty::Int, Ty::Float], Ty::Unit)),
+            "poke_f64" => Some(("rill_poke_f64", vec![Ty::Ptr, Ty::Int, Ty::Float], Ty::Unit)),
+            // Pointer slots: an array of C strings on the way in, a handle
+            // written by a C out-parameter on the way back.
+            "poke_ptr" => Some(("rill_poke_ptr", vec![Ty::Ptr, Ty::Int, Ty::Ptr], Ty::Unit)),
+            "peek_ptr" => Some(("rill_peek_ptr", vec![Ty::Ptr, Ty::Int], Ty::Ptr)),
+            "peek_i8" => Some(("rill_peek_i8", vec![Ty::Ptr, Ty::Int], Ty::Int)),
+            "peek_u8" => Some(("rill_peek_u8", vec![Ty::Ptr, Ty::Int], Ty::Int)),
+            "peek_i16" => Some(("rill_peek_i16", vec![Ty::Ptr, Ty::Int], Ty::Int)),
+            "peek_u16" => Some(("rill_peek_u16", vec![Ty::Ptr, Ty::Int], Ty::Int)),
+            "peek_i32" => Some(("rill_peek_i32", vec![Ty::Ptr, Ty::Int], Ty::Int)),
+            "peek_u32" => Some(("rill_peek_u32", vec![Ty::Ptr, Ty::Int], Ty::Int)),
+            "peek_i64" => Some(("rill_peek_i64", vec![Ty::Ptr, Ty::Int], Ty::Int)),
+            "peek_f32" => Some(("rill_peek_f32", vec![Ty::Ptr, Ty::Int], Ty::Float)),
+            "peek_f64" => Some(("rill_peek_f64", vec![Ty::Ptr, Ty::Int], Ty::Float)),
+            // Sockets. A strand blocked on one parks rather than holding
+            // up the worker running it.
+            "tcp_listen" => Some(("rill_tcp_listen", vec![Ty::Int], Ty::Int)),
+            "tcp_accept" => Some(("rill_tcp_accept", vec![Ty::Int], Ty::Int)),
+            "tcp_connect" => Some(("rill_tcp_connect", vec![Ty::Str, Ty::Int], Ty::Int)),
+            "sock_read" => Some(("rill_sock_read", vec![Ty::Int], Ty::Str)),
+            "sock_write" => Some(("rill_sock_write", vec![Ty::Int, Ty::Str], Ty::Int)),
+            "sock_close" => Some(("rill_sock_close", vec![Ty::Int], Ty::Unit)),
+            _ => None,
+        };
+        if let Some((rt, param_tys, ret_ty)) = simple_builtin {
+            if args.len() != param_tys.len() {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{name}` takes {} argument(s), but {} given", param_tys.len(), args.len()),
+                ));
+            }
+            let mut targs = Vec::new();
+            for (a, pt) in args.iter().zip(&param_tys) {
+                let at = self.infer(a, env)?;
+                self.unify(pt, &at.ty, line, name)?;
+                targs.push(at);
+            }
+            return Ok(TExpr { ty: ret_ty, line, kind: TK::Builtin { rt, args: targs } });
+        }
+
+        if let Some(sig) = self.externs.get(name).cloned() {
+            let params = &sig.params;
+            let ret = sig.ret.rill_ty();
+            if args.len() != params.len() {
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "`{name}` takes {} argument(s), but {} given",
+                        params.len(),
+                        args.len()
+                    ),
+                ));
+            }
+            let mut targs = Vec::new();
+            for (a, pt) in args.iter().zip(params) {
+                let at = self.infer(a, env)?;
+                self.unify(&pt.rill_ty(), &at.ty, line, "foreign argument")?;
+                targs.push(at);
+            }
+            return Ok(TExpr {
+                ty: ret,
+                line,
+                kind: TK::CallExtern { name: name.to_string(), args: targs },
+            });
+        }
+
+        if let Some(&(tid, mid)) = self.method_index.get(name) {
+            let sig = self.traits[tid].1[mid].clone();
+            if args.len() != sig.params.len() {
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "method `{name}` of trait `{}` takes {} argument(s), but {} given",
+                        self.traits[tid].0,
+                        sig.params.len(),
+                        args.len()
+                    ),
+                ));
+            }
+            let recv = self.fresh();
+            let inst = [recv.clone()];
+            let mut targs = Vec::new();
+            for (a, pt) in args.iter().zip(&sig.params) {
+                let want = subst_gen(pt, &inst);
+                let at = self.infer(a, env)?;
+                self.unify(&want, &at.ty, line, "method argument")?;
+                targs.push(at);
+            }
+            let ret = subst_gen(&sig.ret, &inst);
+            return Ok(TExpr {
+                ty: ret,
+                line,
+                kind: TK::MethodCall { trait_id: tid, method: mid, recv, args: targs },
+            });
+        }
+
+        if let Some(&(adt, ci)) = self.ctors.get(name) {
+            let fields = self.adts[adt].ctors[ci].fields.clone();
+            if args.len() != fields.len() {
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "constructor `{name}` takes {} argument(s), but {} given",
+                        fields.len(),
+                        args.len()
+                    ),
+                ));
+            }
+            let targs: Vec<Ty> = (0..self.adts[adt].nparams).map(|_| self.fresh()).collect();
+            let mut targ_exprs = Vec::new();
+            for (a, ft) in args.iter().zip(&fields) {
+                let at = self.infer(a, env)?;
+                let want = subst_gen(ft, &targs);
+                self.unify(&want, &at.ty, line, "constructor argument")?;
+                targ_exprs.push(at);
+            }
+            return Ok(TExpr {
+                ty: Ty::Adt(adt, targs.clone()),
+                line,
+                kind: TK::CallCtor { adt, ctor: ci, targs, args: targ_exprs },
+            });
+        }
+
+        if name == "main" {
+            return Err(TypeError::new(line, "`main` cannot be called"));
+        }
+        let idx = match self.fn_index.get(name) {
+            Some(&idx) => idx,
+            None => return Err(TypeError::new(line, format!("unknown function `{name}`"))),
+        };
+        let (params, ret, subst) = match self.sigs[idx].clone() {
+            SigState::Provisional { params, ret } => (params, ret, vec![]),
+            SigState::Generalized { params, ret, ngen } => self.instantiate(&params, &ret, ngen),
+        };
+        if args.len() != params.len() {
+            return Err(TypeError::new(
+                line,
+                format!(
+                    "function `{name}` takes {} argument(s), but {} given",
+                    params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        let mut targs = Vec::new();
+        for (a, pt) in args.iter().zip(&params) {
+            let at = self.infer(a, env)?;
+            self.unify(pt, &at.ty, line, "function argument")?;
+            targs.push(at);
+        }
+        Ok(TExpr { ty: ret, line, kind: TK::CallFn { fn_idx: idx, subst, args: targs } })
+    }
+
+    fn infer_match(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[Arm],
+        line: usize,
+        env: &mut HashMap<String, Ty>,
+    ) -> Result<TExpr, TypeError> {
+        let scrut = self.infer(scrutinee, env)?;
+        let result_ty = self.fresh();
+        let mut tarms = Vec::new();
+        // Rows seen so far, for the reachability check.
+        let mut matrix: Vec<Vec<Pattern>> = Vec::new();
+
+        for arm in arms {
+            let mut arm_env = env.clone();
+            let mut bound = HashSet::new();
+            self.check_pattern(&arm.pattern, &scrut.ty, arm.line, &mut arm_env, &mut bound)?;
+
+            if !self.useful(&matrix, &[arm.pattern.clone()], &[scrut.ty.clone()]) {
+                return Err(TypeError::new(
+                    arm.line,
+                    "unreachable match arm: earlier arms already cover this pattern".to_string(),
+                ));
+            }
+            matrix.push(vec![arm.pattern.clone()]);
+
+            let body = self.infer(&arm.body, &mut arm_env)?;
+            self.unify(&result_ty, &body.ty, arm.line, "match arms")?;
+            tarms.push(TArm { pattern: arm.pattern.clone(), body, line: arm.line });
+        }
+
+        if let Some(w) = self.witness(&matrix, &[scrut.ty.clone()]) {
+            return Err(TypeError::new(
+                line,
+                format!("match is not exhaustive; no arm matches `{}`", show_pattern(&w[0])),
+            ));
+        }
+        Ok(TExpr {
+            ty: result_ty,
+            line,
+            kind: TK::Match { scrutinee: Box::new(scrut), arms: tarms },
+        })
+    }
+
+    // ---- patterns --------------------------------------------------------
+
+    /// Types a pattern against the value it matches, binding its variables.
+    fn check_pattern(
+        &mut self,
+        p: &Pattern,
+        ty: &Ty,
+        line: usize,
+        env: &mut HashMap<String, Ty>,
+        bound: &mut HashSet<String>,
+    ) -> Result<(), TypeError> {
+        match p {
+            Pattern::Wildcard => Ok(()),
+            Pattern::Var(n) => {
+                if !bound.insert(n.clone()) {
+                    return Err(TypeError::new(
+                        line,
+                        format!("name `{n}` is bound twice in this pattern"),
+                    ));
+                }
+                env.insert(n.clone(), ty.clone());
+                Ok(())
+            }
+            Pattern::Int(_) => self.unify(ty, &Ty::Int, line, "match pattern"),
+            Pattern::Ctor { name, args, line: cline } => {
+                let &(adt, ci) = self.ctors.get(name).ok_or_else(|| {
+                    TypeError::new(*cline, format!("unknown constructor `{name}`"))
+                })?;
+                let targs: Vec<Ty> = (0..self.adts[adt].nparams).map(|_| self.fresh()).collect();
+                self.unify(ty, &Ty::Adt(adt, targs.clone()), *cline, "match pattern")?;
+                let fields = self.adts[adt].ctors[ci].fields.clone();
+                if args.len() != fields.len() {
+                    return Err(TypeError::new(
+                        *cline,
+                        format!(
+                            "constructor `{name}` has {} field(s), but the pattern names {}",
+                            fields.len(),
+                            args.len()
+                        ),
+                    ));
+                }
+                for (sub, ft) in args.iter().zip(&fields) {
+                    let fty = subst_gen(ft, &targs);
+                    self.check_pattern(sub, &fty, *cline, env, bound)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// The constructor a pattern tests for, if it tests for one.
+    fn head_of(&self, p: &Pattern) -> Option<Head> {
+        match p {
+            Pattern::Int(v) => Some(Head::Int(*v)),
+            Pattern::Ctor { name, .. } => self.ctors.get(name).map(|&(_, ci)| Head::Ctor(ci)),
+            _ => None,
+        }
+    }
+
+    /// Types of the values a head exposes (its constructor fields).
+    fn sub_types(&self, h: Head, col_ty: &Ty) -> Vec<Ty> {
+        match (h, self.resolve(col_ty)) {
+            (Head::Ctor(ci), Ty::Adt(adt, targs)) => self.adts[adt].ctors[ci]
+                .fields
+                .iter()
+                .map(|f| subst_gen(f, &targs))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Rows that can still match once the first column is known to be `h`,
+    /// with the head's fields spliced in where the column was.
+    fn specialize(&self, matrix: &[Vec<Pattern>], h: Head, arity: usize) -> Vec<Vec<Pattern>> {
+        let mut out = Vec::new();
+        for row in matrix {
+            let mut new = match (&row[0], h) {
+                (Pattern::Wildcard, _) | (Pattern::Var(_), _) => {
+                    vec![Pattern::Wildcard; arity]
+                }
+                (p, _) if self.head_of(p) == Some(h) => match p {
+                    Pattern::Ctor { args, .. } => args.clone(),
+                    _ => Vec::new(),
+                },
+                _ => continue,
+            };
+            new.extend_from_slice(&row[1..]);
+            out.push(new);
+        }
+        out
+    }
+
+    /// Rows that can still match when the first column is none of the heads
+    /// the matrix tests for.
+    fn default_matrix(&self, matrix: &[Vec<Pattern>]) -> Vec<Vec<Pattern>> {
+        matrix
+            .iter()
+            .filter(|row| matches!(row[0], Pattern::Wildcard | Pattern::Var(_)))
+            .map(|row| row[1..].to_vec())
+            .collect()
+    }
+
+    /// The distinct heads tested in the first column, in order.
+    fn column_heads(&self, matrix: &[Vec<Pattern>]) -> Vec<Head> {
+        let mut heads = Vec::new();
+        for row in matrix {
+            if let Some(h) = self.head_of(&row[0]) {
+                if !heads.contains(&h) {
+                    heads.push(h);
+                }
+            }
+        }
+        heads
+    }
+
+    /// True when the heads cover every constructor of the column's type, so
+    /// no default case is reachable.
+    fn is_complete(&self, col_ty: &Ty, heads: &[Head]) -> bool {
+        match self.resolve(col_ty) {
+            Ty::Adt(adt, _) => {
+                let n = self.adts[adt].ctors.len();
+                (0..n).all(|ci| heads.contains(&Head::Ctor(ci)))
+            }
+            // Int (and everything else) has no finite constructor set.
+            _ => false,
+        }
+    }
+
+    /// Maranget's usefulness test: can any value match `q` without having
+    /// matched an earlier row of `matrix`?
+    fn useful(&self, matrix: &[Vec<Pattern>], q: &[Pattern], tys: &[Ty]) -> bool {
+        if tys.is_empty() {
+            return matrix.is_empty();
+        }
+        let col_ty = tys[0].clone();
+        match self.head_of(&q[0]) {
+            Some(h) => {
+                let sub = self.sub_types(h, &col_ty);
+                let arity = sub.len();
+                let m2 = self.specialize(matrix, h, arity);
+                let q2 = self.specialize(std::slice::from_ref(&q.to_vec()), h, arity);
+                let mut tys2 = sub;
+                tys2.extend_from_slice(&tys[1..]);
+                match q2.first() {
+                    Some(row) => self.useful(&m2, row, &tys2),
+                    None => false,
+                }
+            }
+            None => {
+                let heads = self.column_heads(matrix);
+                if !heads.is_empty() && self.is_complete(&col_ty, &heads) {
+                    heads.iter().any(|&h| {
+                        let sub = self.sub_types(h, &col_ty);
+                        let arity = sub.len();
+                        let m2 = self.specialize(matrix, h, arity);
+                        let mut q2 = vec![Pattern::Wildcard; arity];
+                        q2.extend_from_slice(&q[1..]);
+                        let mut tys2 = sub;
+                        tys2.extend_from_slice(&tys[1..]);
+                        self.useful(&m2, &q2, &tys2)
+                    })
+                } else {
+                    self.useful(&self.default_matrix(matrix), &q[1..], &tys[1..])
+                }
+            }
+        }
+    }
+
+    /// An example value the matrix fails to match, or `None` when it is
+    /// exhaustive. Drives the "no arm matches ..." error.
+    fn witness(&self, matrix: &[Vec<Pattern>], tys: &[Ty]) -> Option<Vec<Pattern>> {
+        if tys.is_empty() {
+            return matrix.is_empty().then(Vec::new);
+        }
+        let col_ty = tys[0].clone();
+        let heads = self.column_heads(matrix);
+        if !heads.is_empty() && self.is_complete(&col_ty, &heads) {
+            let adt = match self.resolve(&col_ty) {
+                Ty::Adt(adt, _) => adt,
+                _ => unreachable!("only ADTs have complete signatures"),
+            };
+            for ci in 0..self.adts[adt].ctors.len() {
+                let h = Head::Ctor(ci);
+                let sub = self.sub_types(h, &col_ty);
+                let arity = sub.len();
+                let m2 = self.specialize(matrix, h, arity);
+                let mut tys2 = sub;
+                tys2.extend_from_slice(&tys[1..]);
+                if let Some(w) = self.witness(&m2, &tys2) {
+                    let mut out = vec![Pattern::Ctor {
+                        name: self.adts[adt].ctors[ci].name.clone(),
+                        args: w[..arity].to_vec(),
+                        line: 0,
+                    }];
+                    out.extend_from_slice(&w[arity..]);
+                    return Some(out);
+                }
+            }
+            None
+        } else {
+            let rest = self.witness(&self.default_matrix(matrix), &tys[1..])?;
+            let mut out = vec![self.missing_head(&col_ty, &heads)];
+            out.extend(rest);
+            Some(out)
+        }
+    }
+
+    /// A pattern for a value the matrix's first column never tests for.
+    fn missing_head(&self, col_ty: &Ty, heads: &[Head]) -> Pattern {
+        if heads.is_empty() {
+            return Pattern::Wildcard;
+        }
+        match self.resolve(col_ty) {
+            Ty::Adt(adt, _) => {
+                for (ci, c) in self.adts[adt].ctors.iter().enumerate() {
+                    if !heads.contains(&Head::Ctor(ci)) {
+                        return Pattern::Ctor {
+                            name: c.name.clone(),
+                            args: vec![Pattern::Wildcard; c.fields.len()],
+                            line: 0,
+                        };
+                    }
+                }
+                Pattern::Wildcard
+            }
+            Ty::Int => {
+                let mut v = 0;
+                while heads.contains(&Head::Int(v)) {
+                    v += 1;
+                }
+                Pattern::Int(v)
+            }
+            _ => Pattern::Wildcard,
+        }
+    }
+}
+
+/// Which value shape a pattern tests for; within one column all constructor
+/// heads belong to the same ADT, so the constructor index identifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Head {
+    Ctor(usize),
+    Int(i64),
+}
+
+fn show_pattern(p: &Pattern) -> String {
+    match p {
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Var(n) => n.clone(),
+        Pattern::Int(v) => v.to_string(),
+        Pattern::Ctor { name, args, .. } => {
+            if args.is_empty() {
+                name.clone()
+            } else {
+                let a: Vec<String> = args.iter().map(show_pattern).collect();
+                format!("{name}({})", a.join(", "))
+            }
+        }
+    }
+}
+
+// ---- helpers --------------------------------------------------------------
+
+/// Substitutes `Gen(i)` -> `args[i]` in a type.
+fn subst_gen(ty: &Ty, args: &[Ty]) -> Ty {
+    match ty {
+        Ty::Gen(i) => args[*i as usize].clone(),
+        Ty::Adt(a, ts) => Ty::Adt(*a, ts.iter().map(|t| subst_gen(t, args)).collect()),
+        Ty::Fn(p, r) => Ty::Fn(
+            p.iter().map(|t| subst_gen(t, args)).collect(),
+            Box::new(subst_gen(r, args)),
+        ),
+        Ty::Chan(e) => Ty::Chan(Box::new(subst_gen(e, args))),
+        Ty::Buf(w) => Ty::Buf(w.clone()),
+        other => other.clone(),
+    }
+}
+
+/// Groups functions so that each is checked only after everything it calls,
+/// with mutually recursive functions kept together. Tarjan's algorithm emits
+/// exactly that order.
+fn dependency_groups(fns: &[FnDef], index: &HashMap<String, usize>) -> Vec<Vec<usize>> {
+    let n = fns.len();
+    let mut slot_of = vec![usize::MAX; n];
+    for (k, f) in fns.iter().enumerate() {
+        slot_of[index[&f.name]] = k;
+    }
+    let mut edges: Vec<Vec<usize>> = Vec::with_capacity(n);
+    for f in fns {
+        let mut names = Vec::new();
+        let mut seen = HashSet::new();
+        free_vars(&f.body, &mut names, &mut seen);
+        let mut out: Vec<usize> = names
+            .iter()
+            .filter_map(|nm| index.get(nm))
+            .map(|&i| slot_of[i])
+            .filter(|&k| k != usize::MAX)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        edges.push(out);
+    }
+
+    let mut idx = vec![usize::MAX; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut next = 0usize;
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+
+    // Iterative Tarjan: the call graph can be as deep as the program is long.
+    for root in 0..n {
+        if idx[root] != usize::MAX {
+            continue;
+        }
+        let mut work: Vec<(usize, usize)> = vec![(root, 0)];
+        while let Some((v, ei)) = work.pop() {
+            if ei == 0 {
+                idx[v] = next;
+                low[v] = next;
+                next += 1;
+                stack.push(v);
+                on_stack[v] = true;
+            }
+            if ei < edges[v].len() {
+                let w = edges[v][ei];
+                work.push((v, ei + 1));
+                if idx[w] == usize::MAX {
+                    work.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(idx[w]);
+                }
+                continue;
+            }
+            if low[v] == idx[v] {
+                let mut group = Vec::new();
+                while let Some(w) = stack.pop() {
+                    on_stack[w] = false;
+                    group.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                group.sort_unstable();
+                groups.push(group);
+            }
+            if let Some(&(parent, _)) = work.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+        }
+    }
+    groups
+}
+
+/// A position in a foreign signature. Width names (`I32`, `F32`, ...) exist
+/// only here, so they are matched before falling back to the ordinary type
+/// namespace — which keeps `unknown type` errors and the `Str` advice intact
+/// for everything else.
+fn resolve_c_type(
+    tr: &TypeRef,
+    adt_index: &HashMap<String, usize>,
+    adts: &[AdtDef],
+    what: &str,
+) -> Result<CTy, TypeError> {
+    let width = match tr.name.as_str() {
+        "I8" => Some(CTy::I8),
+        "U8" => Some(CTy::U8),
+        "I16" => Some(CTy::I16),
+        "U16" => Some(CTy::U16),
+        "I32" => Some(CTy::I32),
+        "U32" => Some(CTy::U32),
+        "I64" => Some(CTy::I64),
+        "U64" => Some(CTy::U64),
+        "F32" => Some(CTy::F32),
+        "F64" => Some(CTy::F64),
+        _ => None,
+    };
+    if let Some(cty) = width {
+        if !tr.args.is_empty() {
+            return Err(TypeError::new(
+                tr.line,
+                format!("`{}` does not take type arguments", tr.name),
+            ));
+        }
+        return Ok(cty);
+    }
+    // `Fn(...)` is a C function pointer, optionally with a result: `Fn(I32) ->
+    // I32`. Without the arrow it hands nothing back, which is what a plain
+    // notification callback wants.
+    if tr.name == "Fn" {
+        let mut params = Vec::new();
+        for a in &tr.args {
+            let p = resolve_c_type(a, adt_index, adts, what)?;
+            if matches!(p, CTy::Fn(..) | CTy::Unit) {
+                return Err(TypeError::new(
+                    a.line,
+                    format!(
+                        "{what}: a callback parameter cannot be `{}`",
+                        p.name()
+                    ),
+                ));
+            }
+            params.push(p);
+        }
+        let ret = match &tr.ret {
+            Some(r) => {
+                let cty = resolve_c_type(r, adt_index, adts, what)?;
+                // A callback answering with another callback would need a
+                // trampoline built at run time, from a value C chose.
+                if matches!(cty, CTy::Fn(..)) {
+                    return Err(TypeError::new(
+                        r.line,
+                        format!("{what}: a callback cannot return `Fn`"),
+                    ));
+                }
+                cty
+            }
+            None => CTy::Unit,
+        };
+        return Ok(CTy::Fn(params, Box::new(ret)));
+    }
+    if let Some(r) = &tr.ret {
+        return Err(TypeError::new(
+            r.line,
+            format!("{what}: only `Fn` takes a `->` result type"),
+        ));
+    }
+    let ty = resolve_type_ref(tr, adt_index, adts, None)?;
+    check_ffi_type(&ty, tr.line, what)
+}
+
+/// The C ABI can carry numbers, pointers and nothing else Rill has: a `Str`
+/// is a counted heap object rather than a `char*`, so it has to be bridged
+/// explicitly.
+fn check_ffi_type(ty: &Ty, line: usize, what: &str) -> Result<CTy, TypeError> {
+    match ty {
+        // Unadorned `Int` and `Float` mean C's 64-bit forms. Anything narrower
+        // has to say so: a `float` parameter handed a double reads back the
+        // wrong half of the register, silently.
+        Ty::Int => Ok(CTy::I64),
+        Ty::Float => Ok(CTy::F64),
+        Ty::Bool => Ok(CTy::Bool),
+        Ty::Ptr => Ok(CTy::Ptr),
+        Ty::Unit => Ok(CTy::Unit),
+        Ty::Str => Err(TypeError::new(
+            line,
+            format!(
+                "{what}: a foreign function cannot take `Str` directly — pass \
+                 `to_cstr(s)` and declare it as `Ptr`"
+            ),
+        )),
+        other => Err(TypeError::new(
+            line,
+            format!("{what}: `{other:?}` cannot cross the C boundary; use `Ptr`"),
+        )),
+    }
+}
+
+/// The impl-table key for a concrete type, if traits can target it. An impl
+/// covers a whole type constructor, so `List(Int)` and `List(Str)` share a key
+/// and the receiver's type arguments pick the instance.
+pub fn impl_key(ty: &Ty) -> Option<ImplKey> {
+    match ty {
+        Ty::Int => Some(ImplKey::Int),
+        Ty::Float => Some(ImplKey::Float),
+        Ty::Bool => Some(ImplKey::Bool),
+        Ty::Str => Some(ImplKey::Str),
+        Ty::Adt(i, _) => Some(ImplKey::Adt(*i)),
+        _ => None,
+    }
+}
+
+/// The type arguments an impl instance needs for a receiver type.
+pub fn impl_targs(ty: &Ty) -> Vec<Ty> {
+    match ty {
+        Ty::Adt(_, args) => args.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn is_builtin_type(name: &str) -> bool {
+    matches!(name, "Int" | "Float" | "Bool" | "Str" | "Unit" | "Ptr")
+}
+
+fn is_builtin_fn(name: &str) -> bool {
+    matches!(
+        name,
+        "println"
+            | "print"
+            | "channel"
+            | "send"
+            | "recv"
+            | "str_len"
+            | "int_to_str"
+            | "float_to_str"
+            | "bool_to_str"
+            | "show"
+            | "str_get"
+            | "str_sub"
+            | "str_find"
+            | "str_cmp"
+            | "str_to_int"
+            | "str_to_float"
+            | "chr"
+            | "bit_and"
+            | "bit_or"
+            | "bit_xor"
+            | "bit_not"
+            | "shl"
+            | "shr"
+            | "to_float"
+            | "to_int"
+            | "arg_count"
+            | "arg"
+            | "read_file_raw"
+            | "io_ok"
+            | "write_file"
+            | "read_line"
+            | "exit"
+            | "to_cstr"
+            | "from_cstr"
+            | "free_ptr"
+            | "null_ptr"
+            | "is_null"
+            | "alloc_bytes"
+            | "ptr_offset"
+            | "poke_i8"
+            | "poke_i16"
+            | "poke_i32"
+            | "poke_i64"
+            | "poke_f32"
+            | "poke_f64"
+            | "poke_ptr"
+            | "peek_ptr"
+            | "buf_i8"
+            | "buf_u8"
+            | "buf_i16"
+            | "buf_u16"
+            | "buf_i32"
+            | "buf_u32"
+            | "buf_int"
+            | "buf_f32"
+            | "buf_float"
+            | "buf_ptr"
+            | "buf_get"
+            | "buf_set"
+            | "buf_len"
+            | "buf_data"
+            | "peek_i8"
+            | "peek_u8"
+            | "peek_i16"
+            | "peek_u16"
+            | "peek_i32"
+            | "peek_u32"
+            | "peek_i64"
+            | "peek_f32"
+            | "peek_f64"
+            | "tcp_listen"
+            | "tcp_accept"
+            | "tcp_connect"
+            | "sock_read"
+            | "sock_write"
+            | "sock_close"
+    )
+}
+
+fn resolve_type_ref(
+    tr: &TypeRef,
+    adt_index: &HashMap<String, usize>,
+    adts: &[AdtDef],
+    params: Option<&HashMap<&str, u32>>,
+) -> Result<Ty, TypeError> {
+    // Lowercase: a type parameter (only valid inside a generic `type` def).
+    if tr.name.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
+        if !tr.args.is_empty() {
+            return Err(TypeError::new(
+                tr.line,
+                format!("type parameter `{}` cannot take arguments", tr.name),
+            ));
+        }
+        return match params.and_then(|p| p.get(tr.name.as_str())) {
+            Some(&i) => Ok(Ty::Gen(i)),
+            None => Err(TypeError::new(tr.line, format!("unknown type `{}`", tr.name))),
+        };
+    }
+    if tr.name == "Buf" {
+        if tr.args.len() != 1 {
+            return Err(TypeError::new(
+                tr.line,
+                "`Buf` takes exactly one element width".to_string(),
+            ));
+        }
+        let w = resolve_c_type(&tr.args[0], adt_index, adts, "buffer element")?;
+        if matches!(w, CTy::Fn(..) | CTy::Unit) {
+            return Err(TypeError::new(
+                tr.args[0].line,
+                format!("a buffer cannot hold `{}`", w.name()),
+            ));
+        }
+        return Ok(Ty::Buf(w));
+    }
+    if tr.name == "Chan" {
+        if tr.args.len() != 1 {
+            return Err(TypeError::new(
+                tr.line,
+                "`Chan` takes exactly one type argument".to_string(),
+            ));
+        }
+        let elem = resolve_type_ref(&tr.args[0], adt_index, adts, params)?;
+        return Ok(Ty::Chan(Box::new(elem)));
+    }
+    if is_builtin_type(&tr.name) {
+        if !tr.args.is_empty() {
+            return Err(TypeError::new(
+                tr.line,
+                format!("`{}` does not take type arguments", tr.name),
+            ));
+        }
+        return Ok(match tr.name.as_str() {
+            "Int" => Ty::Int,
+            "Float" => Ty::Float,
+            "Bool" => Ty::Bool,
+            "Str" => Ty::Str,
+            "Ptr" => Ty::Ptr,
+            _ => Ty::Unit,
+        });
+    }
+    let &i = adt_index
+        .get(&tr.name)
+        .ok_or_else(|| TypeError::new(tr.line, format!("unknown type `{}`", tr.name)))?;
+    if tr.args.len() != adts[i].nparams {
+        return Err(TypeError::new(
+            tr.line,
+            format!(
+                "type `{}` takes {} type argument(s), but {} given",
+                tr.name,
+                adts[i].nparams,
+                tr.args.len()
+            ),
+        ));
+    }
+    let mut args = Vec::new();
+    for a in &tr.args {
+        args.push(resolve_type_ref(a, adt_index, adts, params)?);
+    }
+    Ok(Ty::Adt(i, args))
+}
+
+/// Collects free variable names of an expression in first-use order.
+fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
+    match e {
+        Expr::Var(n, _) => {
+            if seen.insert(n.clone()) {
+                out.push(n.clone());
+            }
+        }
+        Expr::Call { name, args, .. } => {
+            if seen.insert(name.clone()) {
+                out.push(name.clone());
+            }
+            for a in args {
+                free_vars(a, out, seen);
+            }
+        }
+        Expr::Unary { expr, .. } => free_vars(expr, out, seen),
+        Expr::Binary { lhs, rhs, .. } => {
+            free_vars(lhs, out, seen);
+            free_vars(rhs, out, seen);
+        }
+        Expr::If { cond, then, els } => {
+            free_vars(cond, out, seen);
+            free_vars(then, out, seen);
+            free_vars(els, out, seen);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            free_vars(scrutinee, out, seen);
+            for arm in arms {
+                // Pattern bindings shadow, but over-capturing is harmless:
+                // the capture list is filtered against the enclosing env.
+                free_vars(&arm.body, out, seen);
+            }
+        }
+        Expr::Spawn { body, .. } => free_vars(body, out, seen),
+        Expr::Select { arms, default, .. } => {
+            for a in arms {
+                match &a.op {
+                    SelectOp::Recv { chan, .. } => free_vars(chan, out, seen),
+                    SelectOp::Send { chan, value } => {
+                        free_vars(chan, out, seen);
+                        free_vars(value, out, seen);
+                    }
+                }
+                free_vars(&a.body, out, seen);
+            }
+            if let Some(d) = default {
+                free_vars(d, out, seen);
+            }
+        }
+        Expr::Lambda { params, body, .. } => {
+            let mut inner_out = Vec::new();
+            let mut inner_seen = seen.clone();
+            for p in params {
+                inner_seen.insert(p.clone());
+            }
+            free_vars(body, &mut inner_out, &mut inner_seen);
+            for n in inner_out {
+                if !params.contains(&n) && seen.insert(n.clone()) {
+                    out.push(n);
+                }
+            }
+        }
+        Expr::Block(stmts) => {
+            for s in stmts {
+                match s {
+                    Stmt::Bind { value, .. } => free_vars(value, out, seen),
+                    Stmt::Expr(v) => free_vars(v, out, seen),
+                }
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+    }
+}
+
+trait FnDefExt {
+    fn name_line(&self) -> usize;
+}
+
+impl FnDefExt for FnDef {
+    fn name_line(&self) -> usize {
+        self.line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_src(src: &str) -> Result<TModule, TypeError> {
+        check(&rill_syntax::parse(src).unwrap())
+    }
+
+    /// Like `check_src`, but with the prelude in scope (`List`, `Option`, ...).
+    fn check_std(src: &str) -> Result<TModule, TypeError> {
+        check(&rill_syntax::parse_program(src).unwrap())
+    }
+
+    fn sig<'a>(t: &'a TModule, name: &str) -> &'a TFn {
+        &t.fns[t.fn_index[name]]
+    }
+
+    #[test]
+    fn infers_int_fn() {
+        let t = check_src("fn double(x) = x * 2\n\nfn main() = println(double(21))\n").unwrap();
+        let f = sig(&t, "double");
+        assert_eq!(f.params[0].1, Ty::Int);
+        assert_eq!(f.ret, Ty::Int);
+        assert_eq!(f.ngen, 0);
+    }
+
+    #[test]
+    fn generalizes_identity() {
+        let t = check_src(
+            "fn id(x) = x\n\nfn main() =\n  println(id(1))\n  println(id(\"s\"))\n",
+        )
+        .unwrap();
+        let f = sig(&t, "id");
+        assert_eq!(f.ngen, 1);
+        assert_eq!(f.params[0].1, Ty::Gen(0));
+        assert_eq!(f.ret, Ty::Gen(0));
+    }
+
+    #[test]
+    fn generic_adt_list() {
+        let src = "type List(a)\n  Nil\n  Cons(head: a, tail: List(a))\n\nfn len(l) = match l\n  Nil -> 0\n  Cons(_, rest) -> 1 + len(rest)\n\nfn main() =\n  println(len(Cons(1, Nil)))\n  println(len(Cons(\"a\", Nil)))\n";
+        let t = check_src(src).unwrap();
+        let f = sig(&t, "len");
+        assert_eq!(f.ngen, 1);
+        assert_eq!(f.ret, Ty::Int);
+    }
+
+    #[test]
+    fn lambda_and_closure_capture() {
+        let src = "fn main() =\n  n = 10\n  f = \\x -> x + n\n  println(f(5))\n";
+        let t = check_src(src).unwrap();
+        let main = sig(&t, "main");
+        // find the lambda
+        fn find_lambda(e: &TExpr) -> Option<&TExpr> {
+            match &e.kind {
+                TK::Lambda { .. } => Some(e),
+                TK::Block(stmts) => stmts.iter().find_map(|s| match s {
+                    TStmt::Bind { value, .. } => find_lambda(value),
+                    TStmt::Expr(v) => find_lambda(v),
+                }),
+                _ => None,
+            }
+        }
+        let lam = find_lambda(&main.body).expect("lambda not found");
+        match &lam.kind {
+            TK::Lambda { captures, .. } => {
+                assert_eq!(captures.len(), 1);
+                assert_eq!(captures[0].0, "n");
+                assert_eq!(captures[0].1, Ty::Int);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn higher_order_fn() {
+        let src = "fn apply(f, x) = f(x)\n\nfn main() = println(apply(\\x -> x * 2, 21))\n";
+        let t = check_src(src).unwrap();
+        let f = sig(&t, "apply");
+        match &f.params[0].1 {
+            Ty::Fn(p, _) => assert_eq!(p.len(), 1),
+            other => panic!("expected fn type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_fn_as_value() {
+        let src = "fn double(x) = x * 2\n\nfn apply(f, x) = f(x)\n\nfn main() = println(apply(double, 21))\n";
+        check_src(src).unwrap();
+    }
+
+    #[test]
+    fn rejects_int_float_mix() {
+        assert!(check_src("fn main() = println(1 + 2.0)\n").is_err());
+    }
+
+    #[test]
+    fn rejects_arity_mismatch_closure() {
+        let src = "fn main() =\n  f = \\x -> x\n  println(f(1, 2))\n";
+        assert!(check_src(src).is_err());
+    }
+
+    #[test]
+    fn rejects_non_exhaustive_match() {
+        let src = "type Color\n  Red\n  Green\n\nfn f(c) = match c\n  Red -> 1\n\nfn main() = println(f(Red))\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("Green"), "{}", err.msg);
+    }
+
+    #[test]
+    fn rejects_printing_closure() {
+        assert!(check_src("fn main() = println(\\x -> x)\n").is_err());
+    }
+
+    #[test]
+    fn use_before_definition_pins_types() {
+        let src = "fn main() = println(twice(1))\n\nfn twice(x) = x * 2\n";
+        let t = check_src(src).unwrap();
+        assert_eq!(sig(&t, "twice").ngen, 0);
+    }
+
+    #[test]
+    fn type_settled_by_a_later_definition() {
+        // `step` is generalized only after `stop` and `again`, which are what
+        // decide it returns Unit. Checking in source order used to quantify
+        // the return type into a variable nothing could satisfy.
+        let src = "fn step(n) = if n == 0 then stop(n) else again(n)\n\nfn again(n) = step(n - 1)\n\nfn stop(n) = println(n)\n\nfn main() = step(3)\n";
+        let t = check_src(src).unwrap();
+        assert_eq!(sig(&t, "step").ngen, 0);
+        assert_eq!(sig(&t, "step").ret, Ty::Unit);
+    }
+
+    #[test]
+    fn constraints_ride_along_in_schemes() {
+        // `<` used to pin a parameter to Int; now it travels as a
+        // requirement, so the function stays generic.
+        let t = check_std("fn biggest(a, b) = if a > b then a else b\n\nfn main() =\n  println(biggest(1, 2))\n  println(biggest(\"a\", \"b\"))\n").unwrap();
+        let f = &t.fns[t.fn_index["biggest"]];
+        assert_eq!(f.ngen, 1);
+        assert_eq!(f.constraints.len(), 1);
+        assert_eq!(f.constraints[0].1, Constraint::Ordered);
+    }
+
+    #[test]
+    fn println_is_polymorphic() {
+        let t = check_std("fn announce(x) = println(x)\n\nfn main() =\n  announce(1)\n  announce(\"s\")\n").unwrap();
+        assert_eq!(t.fns[t.fn_index["announce"]].ngen, 1);
+    }
+
+    #[test]
+    fn local_requirements_still_default_to_int() {
+        let t = check_std("fn f() = 1 + 2\n\nfn main() = println(f())\n").unwrap();
+        assert_eq!(t.fns[t.fn_index["f"]].ret, Ty::Int);
+    }
+
+    #[test]
+    fn ord_impl_enables_comparison() {
+        let src = "type M\n  M(Int)\n\nimpl Ord(M)\n  fn compare(a, b) = match a\n    M(x) -> match b\n      M(y) -> x - y\n\nfn main() = println(M(1) < M(2))\n";
+        check_std(src).unwrap();
+    }
+
+    #[test]
+    fn comparison_without_ord_is_rejected() {
+        let src = "type C\n  Red\n\nfn main() = println(Red < Red)\n";
+        let err = check_std(src).unwrap_err();
+        assert!(err.msg.contains("Ord"), "{}", err.msg);
+    }
+
+    #[test]
+    fn redefining_a_builtin_trait_is_rejected() {
+        let src = "trait Ord(a)\n  cmp(a) -> Int\n\nfn main() = println(1)\n";
+        let err = check_std(src).unwrap_err();
+        assert!(err.msg.contains("already defined"), "{}", err.msg);
+    }
+
+    #[test]
+    fn nested_patterns_type_check() {
+        let src = "fn f(l) = match l\n  Nil -> 0\n  Cons(Some(0), _) -> 1\n  Cons(Some(n), _) -> n\n  Cons(None, _) -> 2\n\nfn main() = println(f(Nil))\n";
+        check_std(src).unwrap();
+    }
+
+    #[test]
+    fn nested_exhaustiveness_names_the_missing_case() {
+        let src = "fn f(l) = match l\n  Nil -> 0\n  Cons(Some(x), _) -> x\n  Cons(None, Nil) -> 1\n\nfn main() = println(f(Nil))\n";
+        let err = check_std(src).unwrap_err();
+        assert!(err.msg.contains("Cons(None, Cons(_, _))"), "{}", err.msg);
+    }
+
+    #[test]
+    fn int_exhaustiveness_names_a_missing_literal() {
+        let src = "fn f(n) = match n\n  0 -> 1\n  1 -> 2\n\nfn main() = println(f(0))\n";
+        let err = check_std(src).unwrap_err();
+        assert!(err.msg.contains("`2`"), "{}", err.msg);
+    }
+
+    #[test]
+    fn nested_unreachable_arm_rejected() {
+        let src = "fn f(o) = match o\n  Some(0) -> 1\n  Some(_) -> 2\n  None -> 3\n  Some(1) -> 4\n\nfn main() = println(f(None))\n";
+        let err = check_std(src).unwrap_err();
+        assert!(err.msg.contains("unreachable"), "{}", err.msg);
+    }
+
+    #[test]
+    fn nested_pattern_binds_at_depth() {
+        let src = "fn f(o) = match o\n  Some(Cons(x, _)) -> x\n  Some(Nil) -> 0\n  None -> -1\n\nfn main() = println(f(None))\n";
+        check_std(src).unwrap();
+    }
+
+    #[test]
+    fn trait_method_generalizes() {
+        let src = "trait D(a)\n  d(a) -> Str\n\nimpl D(Int)\n  fn d(n) = int_to_str(n)\n\nimpl D(Str)\n  fn d(s) = s\n\nfn announce(x) = println(d(x))\n\nfn main() =\n  announce(1)\n  announce(\"a\")\n";
+        let t = check_src(src).unwrap();
+        assert_eq!(sig(&t, "announce").ngen, 1);
+        assert_eq!(t.impl_methods.len(), 2);
+    }
+
+    #[test]
+    fn impl_missing_method_rejected() {
+        let src = "trait D(a)\n  d(a) -> Str\n  e(a) -> Int\n\nimpl D(Int)\n  fn d(n) = int_to_str(n)\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("missing method `e`"), "{}", err.msg);
+    }
+
+    #[test]
+    fn impl_for_unknown_trait_rejected() {
+        let src = "impl Nope(Int)\n  fn f(n) = 1\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("unknown trait"), "{}", err.msg);
+    }
+
+    #[test]
+    fn fn_clashing_with_method_rejected() {
+        let src = "trait D(a)\n  d(a) -> Str\n\nfn d(x) = \"no\"\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("trait method"), "{}", err.msg);
+    }
+
+    #[test]
+    fn generic_impl_covers_every_instantiation() {
+        let src = "type Box(a)\n  B(a)\n\ntrait D(a)\n  d(a) -> Str\n\nimpl D(Box(a))\n  fn d(b) = \"box\"\n\nfn main() = println(1)\n";
+        let t = check_src(src).unwrap();
+        // The method is generic over the target's parameter.
+        assert_eq!(t.fns[t.fn_index["D.Box.d"]].ngen, 1);
+    }
+
+    #[test]
+    fn impl_target_must_name_its_parameters() {
+        let src = "type Box(a)\n  B(a)\n\ntrait D(a)\n  d(a) -> Str\n\nimpl D(Box)\n  fn d(b) = \"box\"\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("type parameter"), "{}", err.msg);
+    }
+
+    #[test]
+    fn impl_pinned_to_one_instantiation_is_rejected() {
+        let src = "type Box(a)\n  B(a)\n\ntrait D(a)\n  d(a) -> Str\n\nimpl D(Box(a))\n  fn d(b) = match b\n    B(x) -> int_to_str(x)\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("not general enough"), "{}", err.msg);
+    }
+
+    /// A width in a foreign signature records the C side of the call; the
+    /// Rill side of it still speaks in `Int` and `Float`.
+    #[test]
+    fn foreign_widths_narrow_only_the_c_side() {
+        let src = "extern fn sqrtf(x: F32) -> F32\n\nextern fn abs(n: I32) -> I32\n\nfn main() =\n  println(sqrtf(2.0))\n  println(abs(-7))\n";
+        let t = check_src(src).unwrap();
+        let f = &t.externs["sqrtf"];
+        assert_eq!(f.params[0], CTy::F32);
+        assert_eq!(f.ret, CTy::F32);
+        assert_eq!(f.ret.rill_ty(), Ty::Float);
+        assert_eq!(t.externs["abs"].params[0].rill_ty(), Ty::Int);
+    }
+
+    /// Unadorned, they still mean C's 64-bit forms.
+    #[test]
+    fn foreign_int_and_float_stay_sixty_four_bit() {
+        let src = "extern fn f(a: Int, b: Float) -> Int\n\nfn main() = println(f(1, 2.0))\n";
+        let t = check_src(src).unwrap();
+        assert_eq!(t.externs["f"].params, vec![CTy::I64, CTy::F64]);
+    }
+
+    /// Codegen has no LLVM type to pass here, and used to panic on it.
+    #[test]
+    fn foreign_unit_parameter_is_rejected() {
+        let src = "extern fn f(x: Unit)\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("not a value C can be passed"), "{}", err.msg);
+    }
+
+    /// A buffer's width is part of its type, and reading one gives back the
+    /// Rill type that width stands for.
+    #[test]
+    fn buffer_width_decides_the_element_type() {
+        let src = "fn main() =\n  v = buf_f32(4)\n  buf_set(v, 0, 1.5)\n  println(buf_get(v, 0))\n";
+        let t = check_src(src).unwrap();
+        let _ = t;
+        let u = check_src("fn total(v: Buf(I32), i) = buf_get(v, i)\n\nfn main() = println(total(buf_i32(2), 0))\n").unwrap();
+        assert_eq!(sig(&u, "total").ret, Ty::Int);
+        assert_eq!(sig(&u, "total").params[0].1, Ty::Buf(CTy::I32));
+    }
+
+    /// Storing the wrong shape in one is a type error, not a silent
+    /// reinterpretation.
+    #[test]
+    fn buffer_rejects_the_wrong_element() {
+        let err = check_src("fn main() =\n  v = buf_i32(4)\n  buf_set(v, 0, 1.5)\n").unwrap_err();
+        assert!(err.msg.contains("buffer element"), "{}", err.msg);
+    }
+
+    /// The width is never inferred, so a function taking a buffer says which.
+    #[test]
+    fn buffer_parameter_must_be_annotated() {
+        let err = check_src("fn f(v, i) = buf_get(v, i)\n\nfn main() = println(f(buf_f32(1), 0))\n").unwrap_err();
+        assert!(err.msg.contains("annotate the parameter"), "{}", err.msg);
+    }
+
+    /// The numeric types never mix on their own, so crossing between them is
+    /// written out — and each way is a single instruction.
+    #[test]
+    fn numeric_conversions_are_explicit() {
+        let t = check_src("fn main() = println(to_float(3) / 2.0)\n").unwrap();
+        assert!(check_src("fn main() = println(1 + 2.0)\n").is_err());
+        let _ = t;
+        let u = check_src("fn half(n) = to_int(to_float(n) * 0.5)\n\nfn main() = println(half(7))\n").unwrap();
+        assert_eq!(sig(&u, "half").ret, Ty::Int);
+    }
+
+    /// A callback's Rill type is an ordinary function type, so passing one
+    /// type-checks like any other argument.
+    #[test]
+    fn callback_parameters_are_function_types() {
+        let src = "extern fn signal(sig: I32, handler: Fn(I32)) -> Ptr\n\nfn beep(n) = println(n)\n\nfn main() =\n  signal(30, beep)\n  println(1)\n";
+        let t = check_src(src).unwrap();
+        let sig = &t.externs["signal"];
+        assert_eq!(sig.params[1], CTy::Fn(vec![CTy::I32], Box::new(CTy::Unit)));
+        assert_eq!(sig.params[1].rill_ty(), Ty::Fn(vec![Ty::Int], Box::new(Ty::Unit)));
+    }
+
+    /// `Fn(..) -> T` gives the callback a result, and it reaches the Rill side
+    /// as an ordinary function type the argument has to match.
+    #[test]
+    fn callback_result_types_are_checked() {
+        let src = "extern fn each(f: Fn(I32) -> I32) -> Unit\n\nfn double(n) = n * 2\n\nfn main() =\n  each(double)\n  println(1)\n";
+        let t = check_src(src).unwrap();
+        let sig = &t.externs["each"];
+        assert_eq!(sig.params[0], CTy::Fn(vec![CTy::I32], Box::new(CTy::I32)));
+        assert_eq!(sig.params[0].rill_ty(), Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)));
+
+        // A callback whose result does not match the declared one is caught
+        // where any other argument mismatch is.
+        let bad = "extern fn each(f: Fn(I32) -> I32) -> Unit\n\nfn shout(n) = println(n)\n\nfn main() =\n  each(shout)\n  println(1)\n";
+        assert!(check_src(bad).is_err());
+    }
+
+    /// A callback that answers with another callback would need a trampoline
+    /// built from a value C chose, at run time.
+    #[test]
+    fn callback_returning_callback_is_rejected() {
+        let src = "extern fn odd(f: Fn(I32) -> Fn(I32)) -> Unit\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("cannot return `Fn`"), "{}", err.msg);
+    }
+
+    /// A callback hands nothing back, so it cannot be one's result either.
+    #[test]
+    fn callback_return_type_is_rejected() {
+        let src = "extern fn installer() -> Fn(I32)\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("declare it `Ptr`"), "{}", err.msg);
+    }
+
+    /// Widths are FFI-only spellings, not types the language gained.
+    #[test]
+    fn width_names_are_not_types_outside_an_extern() {
+        let src = "fn f(x: I32) = x\n\nfn main() = println(f(1))\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("unknown type `I32`"), "{}", err.msg);
+    }
+
+    #[test]
+    fn option_map() {
+        let src = "type Option(a)\n  None\n  Some(a)\n\nfn omap(o, f) = match o\n  None -> None\n  Some(x) -> Some(f(x))\n\nfn unwrap_or(o, d) = match o\n  None -> d\n  Some(x) -> x\n\nfn main() =\n  r = omap(Some(20), \\x -> x + 1)\n  println(unwrap_or(r, 0))\n";
+        let t = check_src(src).unwrap();
+        assert_eq!(sig(&t, "omap").ngen, 2);
+    }
+}

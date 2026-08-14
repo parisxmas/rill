@@ -1,0 +1,15 @@
+# Allocation stress: builds and drops 10 perfect binary trees of depth 18
+# (~5.2M boxes total), exercising Perceus RC against Go's GC.
+type Tree
+  Leaf
+  Node(l: Tree, v: Int, r: Tree)
+
+fn build(d) = if d == 0 then Leaf else Node(build(d - 1), d, build(d - 1))
+
+fn check(t) = match t
+  Leaf -> 1
+  Node(l, _, r) -> 1 + check(l) + check(r)
+
+fn iter(k, acc) = if k == 0 then acc else iter(k - 1, acc + check(build(18)))
+
+fn main() = println(iter(10, 0))

@@ -1,0 +1,13 @@
+# Recursive ADTs: a linked list of Ints, built and folded recursively.
+type IntList
+  Nil
+  Cons(head: Int, tail: IntList)
+
+fn sum(l) = match l
+  Nil -> 0
+  Cons(x, rest) -> x + sum(rest)
+
+fn range(a, b) = if a > b then Nil else Cons(a, range(a + 1, b))
+
+fn main() =
+  range(1, 100) |> sum |> println

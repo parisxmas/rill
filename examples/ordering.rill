@@ -1,0 +1,33 @@
+# Two built-in traits shape how a type behaves with the language's own
+# operators: `Show` replaces derived printing, `Ord` gives `<`, `<=`, `>`,
+# `>=`. Strings are ordered without any impl at all.
+type Money
+  Money(cents: Int)
+
+impl Show(Money)
+  fn show(m) = match m
+    Money(c) -> "$" + int_to_str(c / 100) + "." + pad2(c % 100)
+
+impl Ord(Money)
+  fn compare(a, b) = match a
+    Money(x) -> match b
+      Money(y) -> x - y
+
+fn pad2(n) = if n < 10 then "0" + int_to_str(n) else int_to_str(n)
+
+# Generic insertion sort: works for anything `<` accepts.
+fn insert(x, l) = match l
+  Nil -> Cons(x, Nil)
+  Cons(y, rest) -> if x < y then Cons(x, Cons(y, rest)) else Cons(y, insert(x, rest))
+
+fn sort(l) = match l
+  Nil -> Nil
+  Cons(x, rest) -> insert(x, sort(rest))
+
+fn main() =
+  wallet = Cons(Money(1250), Cons(Money(99), Cons(Money(30000), Nil)))
+  println(Money(1250))
+  println(sort(wallet))
+  println(Money(99) < Money(1250))
+  println(sort(Cons("pear", Cons("apple", Cons("fig", Nil)))))
+  println(sort(Cons(3, Cons(1, Cons(2, Nil)))))

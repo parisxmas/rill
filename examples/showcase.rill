@@ -1,0 +1,125 @@
+# showcase.rill — a larger tour of Rill in one program:
+#   1. an arithmetic-expression interpreter with Result-based error handling
+#   2. a binary-search-tree map (Int -> Str)
+#   3. merge sort over lists
+#   4. generic higher-order functions used at two different types
+#   5. a concurrent worker pool over channels
+#   6. derived show/eq and string report building throughout
+
+# ---- 1. expression interpreter --------------------------------------------
+
+type Expr
+  Num(Int)
+  Add(a: Expr, b: Expr)
+  Sub(a: Expr, b: Expr)
+  Mul(a: Expr, b: Expr)
+  Div(a: Expr, b: Expr)
+
+# Evaluate both sides; short-circuit the first error, then combine.
+fn eval2(a, b, f) = match eval(a)
+  Err(e) -> Err(e)
+  Ok(x) -> match eval(b)
+    Err(e2) -> Err(e2)
+    Ok(y) -> f(x, y)
+
+fn eval(e) = match e
+  Num(n) -> Ok(n)
+  Add(a, b) -> eval2(a, b, \x, y -> Ok(x + y))
+  Sub(a, b) -> eval2(a, b, \x, y -> Ok(x - y))
+  Mul(a, b) -> eval2(a, b, \x, y -> Ok(x * y))
+  Div(a, b) -> eval2(a, b, \x, y -> if y == 0 then Err("division by zero") else Ok(x / y))
+
+fn report(e) = match eval(e)
+  Ok(v) -> "= " + int_to_str(v)
+  Err(msg) -> "error: " + msg
+
+# ---- 2. a BST map: Int keys, Str values -----------------------------------
+
+type Bst
+  Tip
+  Fork(l: Bst, key: Int, val: Str, r: Bst)
+
+fn bst_put(t, k, v) = match t
+  Tip -> Fork(Tip, k, v, Tip)
+  Fork(l, key, val, r) -> if k < key then Fork(bst_put(l, k, v), key, val, r) else if k > key then Fork(l, key, val, bst_put(r, k, v)) else Fork(l, k, v, r)
+
+fn bst_get(t, k) = match t
+  Tip -> None
+  Fork(l, key, val, r) -> if k < key then bst_get(l, k) else if k > key then bst_get(r, k) else Some(val)
+
+# In-order traversal: keys come out sorted.
+fn bst_keys(t) = match t
+  Tip -> Nil
+  Fork(l, k, _, r) -> append(bst_keys(l), Cons(k, bst_keys(r)))
+
+# ---- 3. merge sort ---------------------------------------------------------
+
+fn merge(a, b) = match a
+  Nil -> b
+  Cons(x, ra) -> match b
+    Nil -> a
+    Cons(y, rb) -> if x <= y then Cons(x, merge(ra, b)) else Cons(y, merge(a, rb))
+
+fn msort(l) =
+  n = len(l)
+  if n < 2 then l else merge(msort(take(l, n / 2)), msort(drop(l, n / 2)))
+
+# ---- 4. a generic helper, used at List(Int) and List(Str) ------------------
+
+fn count_where(l, p) = len(filter(l, p))
+
+# ---- 5. concurrent worker pool ---------------------------------------------
+
+# Each worker loops: take a job, send back its square; a 0 job is the poison
+# value — acknowledge it and exit. Tail recursion with channel parameters runs
+# in constant stack. (Note: like Go, the program exits the moment main
+# returns; strands still in flight at that instant are abandoned to the OS,
+# which RILL_DEBUG_ALLOC reports as a few live objects at exit.)
+fn sq_worker(jobs, results) =
+  n = recv(jobs)
+  send(results, n * n)
+  if n == 0 then 0 else sq_worker(jobs, results)
+
+fn dispatch(ch, k) =
+  send(ch, k)
+  if k > 1 then dispatch(ch, k - 1) else 0
+
+fn collect(ch, k, acc) =
+  v = recv(ch)
+  if k == 1 then acc + v else collect(ch, k - 1, acc + v)
+
+# ---- main ------------------------------------------------------------------
+
+fn main() =
+  e1 = Mul(Add(Num(2), Num(3)), Sub(Num(10), Num(4)))
+  println(show(e1) + " " + report(e1))
+  println(report(Div(Num(1), Sub(Num(5), Num(5)))))
+
+  t = bst_put(bst_put(bst_put(bst_put(Tip, 3, "uc"), 1, "bir"), 2, "iki"), 5, "bes")
+  println(bst_keys(t))
+  println(unwrap_or(bst_get(t, 2), "?"))
+  println(unwrap_or(bst_get(t, 4), "?"))
+
+  xs = Cons(9, Cons(3, Cons(7, Cons(1, Cons(8, Cons(2, Nil))))))
+  println(msort(xs))
+  println(msort(xs) == Cons(1, Cons(2, Cons(3, Cons(7, Cons(8, Cons(9, Nil)))))))
+
+  jobs = channel()
+  results = channel()
+  spawn sq_worker(jobs, results)
+  spawn sq_worker(jobs, results)
+  spawn sq_worker(jobs, results)
+  spawn dispatch(jobs, 20)
+  total = collect(results, 20, 0)
+  expected = sum(map(range(1, 20), \x -> x * x))
+  println("workers: " + int_to_str(total) + " formula: " + int_to_str(expected) + " match: " + bool_to_str(total == expected))
+  send(jobs, 0)
+  send(jobs, 0)
+  send(jobs, 0)
+  acks = recv(results) + recv(results) + recv(results)
+  println("workers stopped, acks: " + int_to_str(acks))
+
+  names = map(range(1, 5), \i -> "w" + int_to_str(i))
+  println(join(names, ", "))
+  println(count_where(range(1, 100), \x -> x % 7 == 0))
+  println(count_where(names, \s -> s == "w3"))

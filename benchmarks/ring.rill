@@ -1,0 +1,11 @@
+# 100,000 strands chained by channels, passing a counter through all of them.
+fn chain(n, inp) =
+  next = channel()
+  spawn send(next, recv(inp) + 1)
+  if n == 1 then next else chain(n - 1, next)
+
+fn main() =
+  first = channel()
+  last = chain(100000, first)
+  spawn send(first, 0)
+  println(recv(last))

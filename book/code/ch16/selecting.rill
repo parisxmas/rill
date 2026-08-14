@@ -1,0 +1,24 @@
+fn ticker(ch, i, n) =
+  send(ch, i)
+  if i >= n then 0 else ticker(ch, i + 1, n)
+
+fn poll(ch) =
+  v = select
+    x = recv(ch) -> x
+    default -> 0 - 1
+  v
+
+fn main() =
+  a = channel()
+  b = channel()
+  spawn ticker(a, 1, 3)
+  spawn ticker(b, 100, 102)
+  println(both(a, b, 6, 0))
+  c = channel()
+  println(poll(c))
+
+fn both(a, b, left, acc) =
+  got = select
+    x = recv(a) -> x
+    y = recv(b) -> y
+  if left <= 1 then acc + got else both(a, b, left - 1, acc + got)

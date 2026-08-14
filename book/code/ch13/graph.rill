@@ -1,0 +1,32 @@
+type Edge
+  Edge(from: Int, to: Int)
+
+impl Show(List(a))
+  fn show(l) = "[" + join(map(l, \x -> show(x)), " ") + "]"
+
+fn edge_from(e) = match e
+  Edge(a, _) -> a
+
+fn edge_to(e) = match e
+  Edge(_, b) -> b
+
+fn neighbours(edges, n) = map(filter(edges, \e -> edge_from(e) == n), edge_to)
+
+fn seen(l, n) = any(l, \v -> v == n)
+
+fn bfs(edges, frontier, visited) = match frontier
+  Nil -> reverse(visited)
+  Cons(n, rest) -> bfs_on(edges, n, rest, visited)
+
+fn bfs_on(edges, n, rest, visited) =
+  fresh = filter(neighbours(edges, n), \m -> !seen(visited, m) && !seen(rest, m))
+  bfs(edges, append(rest, fresh), append(reverse(fresh), visited))
+
+fn reachable(edges, start) = bfs(edges, Cons(start, Nil), Cons(start, Nil))
+
+fn main() =
+  g = Cons(Edge(1, 2), Cons(Edge(1, 3), Cons(Edge(2, 4), Cons(Edge(3, 4), Cons(Edge(4, 5), Cons(Edge(6, 7), Nil))))))
+  println(neighbours(g, 1))
+  println(reachable(g, 1))
+  println(reachable(g, 6))
+  println(reachable(g, 5))

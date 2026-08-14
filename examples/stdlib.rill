@@ -1,0 +1,16 @@
+# The prelude in action: no imports, no local type definitions — List(a),
+# Option(a), map/filter/fold/... and string building are just there.
+fn main() =
+  xs = range(1, 10)
+  evens = filter(xs, \x -> x % 2 == 0)
+  println(sum(evens))
+  println(len(xs))
+  squares = map(xs, \x -> x * x)
+  println(unwrap_or(nth(squares, 4), 0))
+  words = Cons("rill", Cons("is", Cons("fast", Nil)))
+  println(join(words, " "))
+  println("n = " + int_to_str(sum(xs)))
+  println(repeat("ab", 3))
+  println(str_len("merhaba"))
+  println(any(xs, \x -> x > 9))
+  println(reverse(xs) |> take(3) |> sum)

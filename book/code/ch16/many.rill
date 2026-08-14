@@ -1,0 +1,14 @@
+fn relay(inp, out) = send(out, recv(inp) + 1)
+
+fn chain(first, n) = if n == 0 then first else chain(link(first), n - 1)
+
+fn link(inp) =
+  out = channel()
+  spawn relay(inp, out)
+  out
+
+fn main() =
+  head = channel()
+  tail = chain(head, 100000)
+  spawn send(head, 0)
+  println(recv(tail))

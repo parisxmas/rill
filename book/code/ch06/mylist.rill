@@ -1,0 +1,18 @@
+type Stack(a)
+  Empty
+  Push(top: a, rest: Stack(a))
+
+fn depth(s) = match s
+  Empty -> 0
+  Push(_, rest) -> 1 + depth(rest)
+
+fn peek(s) = match s
+  Empty -> None
+  Push(x, _) -> Some(x)
+
+fn main() =
+  s = Push(3, Push(2, Push(1, Empty)))
+  println(s)
+  println(depth(s))
+  println(peek(s))
+  println(peek(Empty))

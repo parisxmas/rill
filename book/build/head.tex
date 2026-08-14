@@ -1,0 +1,132 @@
+\usepackage{framed}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{microtype}
+\usepackage{needspace}
+
+% --- running heads: chapter on the left, section on the right -------------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\fancyhead[LE]{\small\itshape\nouppercase{\leftmark}}
+\fancyhead[RO]{\small\itshape\nouppercase{\rightmark}}
+\fancyfoot[C]{\thepage}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\thepage}\renewcommand{\headrulewidth}{0pt}}
+
+% --- chapter openings ------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\sffamily\bfseries}
+  {\raggedright\Large\color{black!55}\chaptertitlename\ \thechapter}
+  {6pt}
+  {\raggedright\huge}
+\titlespacing*{\chapter}{0pt}{0pt}{28pt}
+\titleformat{\section}{\normalfont\sffamily\large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalfont\sffamily\bfseries}{\thesubsection}{0.6em}{}
+
+% --- keep a heading with the text under it ---------------------------------
+\preto\section{\needspace{4\baselineskip}}
+\preto\subsection{\needspace{3\baselineskip}}
+
+% --- block quotes read as O'Reilly sidebars --------------------------------
+\usepackage{mdframed}
+\newmdenv[
+  backgroundcolor=black!4, linewidth=0pt, leftmargin=0pt, rightmargin=0pt,
+  innerleftmargin=10pt, innerrightmargin=10pt, innertopmargin=8pt,
+  innerbottommargin=8pt, skipabove=10pt, skipbelow=10pt
+]{sidebarbox}
+\renewenvironment{quote}{\begin{sidebarbox}\small}{\end{sidebarbox}}
+
+% --- characters the body font does not carry -------------------------------
+% Palatino has no arrows or maths signs; these fall back to the maths font.
+% Box-drawing characters are only ever inside code blocks, where Menlo has them.
+\usepackage{newunicodechar}
+\newunicodechar{→}{\ensuremath{\rightarrow}}
+\newunicodechar{←}{\ensuremath{\leftarrow}}
+\newunicodechar{≈}{\ensuremath{\approx}}
+\newunicodechar{≡}{\ensuremath{\equiv}}
+\newunicodechar{×}{\ensuremath{\times}}
+\newunicodechar{²}{\ensuremath{^2}}
+\newunicodechar{·}{\ensuremath{\cdot}}
+\newunicodechar{…}{\ldots}
+
+% --- code blocks: a tint, and air around them -------------------------------
+% Two listings in a row (a program then its output) were running together into
+% one grey slab; the shading and the space between are what separate them.
+\definecolor{shadecolor}{gray}{0.955}
+\BeforeBeginEnvironment{verbatim}{\begin{snugshade}\vspace{-2pt}}
+\AfterEndEnvironment{verbatim}{\vspace{-2pt}\end{snugshade}\vspace{2pt}}
+\BeforeBeginEnvironment{Shaded}{\vspace{2pt}}
+\AfterEndEnvironment{Shaded}{\vspace{2pt}}
+\fvset{fontsize=\small,xleftmargin=2pt}
+
+% --- title page -------------------------------------------------------------
+\usepackage{titling}
+\pretitle{\vspace*{5cm}\begin{flushleft}\sffamily\bfseries\fontsize{30}{34}\selectfont}
+\posttitle{\end{flushleft}\vspace{2pt}}
+\preauthor{\begin{flushleft}\sffamily\large\color{black!65}}
+\postauthor{\end{flushleft}}
+\predate{\begin{flushleft}\sffamily\small\color{black!55}\vspace{1.5cm}}
+\postdate{\end{flushleft}}
+
+% pandoc defines shadecolor after this file is included, so the last word has
+% to be said at the start of the document — otherwise highlighted listings and
+% plain ones come out two different greys.
+\AtBeginDocument{%
+  \definecolor{shadecolor}{gray}{0.955}%
+  % pandoc leaves Shaded empty unless the highlight style carries a background,
+  % so highlighted listings came out unshaded next to shaded plain ones.
+  \renewenvironment{Shaded}{\begin{snugshade}}{\end{snugshade}}%
+}
+
+% Inline code cannot hyphenate, so a long identifier at the end of a line used
+% to push three lines a few millimetres into the margin. This lets TeX stretch
+% the spaces a little further before it gives up and overflows.
+\emergencystretch=3em
+
+% --- the cover -------------------------------------------------------------
+% An homage to the O'Reilly animal books, and the parts that make one
+% recognisable are: a coloured band top and bottom, the engraving high on the
+% page and large, and the title centred underneath it in a serif — not a
+% sans-serif title hanging under a floating bird, which is what this was first.
+\usepackage{graphicx}
+\usepackage{tikz}
+\definecolor{rillteal}{HTML}{0E7C86}
+\renewcommand{\maketitle}{%
+  \begin{titlepage}
+  \thispagestyle{empty}
+  \newgeometry{left=1.9cm,right=1.9cm,top=0cm,bottom=0cm}
+  \centering
+  % top band
+  \noindent\begin{tikzpicture}[remember picture,overlay]
+    \fill[rillteal] (current page.north west) rectangle
+      ([yshift=-2.15cm]current page.north east);
+    \node[anchor=west, text=white, font=\sffamily\footnotesize, xshift=1.9cm,
+          yshift=-1.1cm] at (current page.north west)
+      {\MakeUppercase{A functional language that compiles to small native binaries}};
+  \end{tikzpicture}
+  \vspace*{3.4cm}
+
+  \includegraphics[width=0.66\textwidth]{kingfisher.png}
+
+  \vspace{0.9cm}
+  {\fontsize{33}{38}\selectfont Functional Programming\\[2pt] with Rill\par}
+  \vspace{14pt}
+  {\color{rillteal}\rule{0.30\textwidth}{1.2pt}}\par
+  \vspace{14pt}
+  {\large\itshape Writing programs out of values instead of commands\par}
+  \vfill
+  {\sffamily\fontsize{15}{18}\selectfont\MakeUppercase{Barış Akın}\par}
+  \vspace{10pt}
+  {\footnotesize\color{black!55}Version 0.2\ \ ·\ \ every example in this book was
+   compiled and run\par}
+  \vspace{1.5cm}
+  {\scriptsize\color{black!45}Cover: common kingfisher, from a copper plate by
+   Heinrich von Kittlitz, 1832\par}
+  \vspace{1.1cm}
+  \noindent\begin{tikzpicture}[remember picture,overlay]
+    \fill[rillteal] ([yshift=1.15cm]current page.south west) rectangle
+      (current page.south east);
+  \end{tikzpicture}
+  \restoregeometry
+  \end{titlepage}}

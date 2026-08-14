@@ -1,0 +1,86 @@
+# A fixture for the grammar: every construct the highlighter knows about, in
+# one compilable file. `rill run editors/vscode/test/fixture.rill` should print
+# the same output it always has, and `rill fmt --check` should leave it alone.
+extern "m" fn sqrt(x: Float) -> Float
+
+extern fn getpid() -> Int
+
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+
+type Box(a)
+  Boxed(item: a)
+
+trait Describe(a)
+  describe(a) -> Str
+
+impl Describe(Shape)
+  fn describe(s) = "shape " + show(s)
+
+impl Describe(Int)
+  fn describe(n) = "int " + int_to_str(n)
+
+impl Show(Box(a))
+  fn show(b) = match b
+    Boxed(x) -> "[" + show(x) + "]"
+
+impl Ord(Shape)
+  fn compare(a, b) = area(a) - area(b)
+
+fn area(s) = match s
+  Circle(r) -> 3
+  Rect(w, h) -> 4
+
+# Strings: a `#` inside one is not a comment, and every escape the lexer
+# accepts appears here.
+fn strings() =
+  a = "hash # inside a string"
+  b = "escapes \n \r \t \\ \" end"
+  a + b
+
+# Literals, operators and precedence.
+fn ops(a, b) = a + b - a * b / 2 % 3
+
+fn logic(a, b) = a >= b && !(a != b) || a <= b
+
+fn annotated(v: Float, k: Float) -> Float = v * k
+
+# Pipelines, lambdas, and prelude functions named without being called.
+fn evens(n) = range(1, n) |> filter(\x -> x % 2 == 0) |> map(\x -> x * x) |> sum
+
+fn pairs(l) = fold(l, 0, \acc, x -> acc + x)
+
+# Blocks, bindings, wildcards, nested patterns.
+fn classify(l) = match l
+  Nil -> "empty"
+  Cons(Some(0), _) -> "starts with zero"
+  Cons(Some(n), Cons(Some(m), _)) -> "two: " + int_to_str(n + m)
+  Cons(_, _) -> "something else"
+
+# Concurrency: spawn, channels, select with a default arm.
+fn produce(ch, tag) = send(ch, tag)
+
+fn poll(ch) = select
+  x = recv(ch) -> x
+  default -> -1
+
+fn main() =
+  println(strings())
+  println(ops(7, 3))
+  println(logic(1, 2))
+  println(true && !false)
+  println(annotated(2.0, 3.0))
+  println(evens(10))
+  println(pairs(Cons(1, Cons(2, Nil))))
+  println(classify(Cons(Some(0), Nil)))
+  println(describe(Circle(1.0)))
+  println(describe(42))
+  println(show(Boxed(1)))
+  println(sqrt(2.0) > 1.0)
+  println(getpid() > 0)
+  ch = channel()
+  spawn produce(ch, 9)
+  println(recv(ch))
+  println(poll(channel()))
+  println(match Some(1) None -> 0 Some(n) -> n * 10)

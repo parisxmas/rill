@@ -1,0 +1,50 @@
+# Rill has no `for` or `while`. Repetition is written in three ways, and all
+# three compile to the same kind of machine code — a loop, with no stack
+# growth, because a call in tail position becomes a jump.
+
+# 1. Tail recursion with an accumulator: this is the plain loop.
+#    `go` is the loop body, `acc` is the loop variable.
+fn sum_to(n) = go(n, 0)
+
+fn go(i, acc) = if i == 0 then acc else go(i - 1, acc + i)
+
+# A loop with two variables and an exit condition in the middle is written the
+# same way: every parameter is a loop variable.
+fn gcd(a, b) = if b == 0 then a else gcd(b, a % b)
+
+fn count_digits(n, acc) = if n < 10 then acc + 1 else count_digits(n / 10, acc + 1)
+
+# 2. Prelude functions over lists: `range`, `map`, `filter`, `fold`. This is
+#    how most everyday loops are written.
+fn squares_of_evens(n) = range(1, n) |> filter(\x -> x % 2 == 0) |> map(\x -> x * x)
+
+# `fold` is the general one — it *is* the loop, with the accumulator explicit.
+fn product(l) = fold(l, 1, \acc, x -> acc * x)
+
+# 3. Loops that do something rather than compute something: recurse in
+#    statement position.
+fn print_countdown(n) =
+  println(n)
+  if n <= 1 then 0 else print_countdown(n - 1)
+
+# A worker loop is the same shape, and runs forever without growing the stack.
+fn echo_loop(jobs, results) =
+  n = recv(jobs)
+  send(results, n * 2)
+  if n == 0 then 0 else echo_loop(jobs, results)
+
+fn main() =
+  println(sum_to(1000000))
+  println(gcd(1071, 462))
+  println(count_digits(90210, 0))
+  println(squares_of_evens(10))
+  println(product(range(1, 6)))
+  print_countdown(3)
+
+  jobs = channel()
+  results = channel()
+  spawn echo_loop(jobs, results)
+  send(jobs, 21)
+  println(recv(results))
+  send(jobs, 0)
+  println(recv(results))

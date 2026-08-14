@@ -1,0 +1,6 @@
+fn main() =
+  a = Nil
+  b = None
+  println(a)
+  println(b)
+  println(len(Cons(1, Cons(2, Nil))))

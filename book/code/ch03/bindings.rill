@@ -1,0 +1,10 @@
+fn celsius(f) = (f - 32.0) * 5.0 / 9.0
+
+fn report(f) =
+  c = celsius(f)
+  warm = c > 20.0
+  float_to_str(f) + "F is " + float_to_str(c) + "C" + (if warm then " (warm)" else " (cold)")
+
+fn main() =
+  println(report(72.0))
+  println(report(50.0))

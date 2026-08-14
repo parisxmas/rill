@@ -1,0 +1,39 @@
+# Calling C. An `extern` declaration names a C symbol and its types; the
+# optional string is a library to link, and is left out for anything already
+# in the C runtime.
+extern "m" fn sqrt(x: Float) -> Float
+
+extern "m" fn pow(base: Float, exponent: Float) -> Float
+
+# `Int` and `Float` are C's 64-bit forms. Anything narrower says which width
+# it is, so the call can convert: `abs` and `getpid` deal in C `int`s.
+extern fn getpid() -> I32
+
+extern fn abs(n: I32) -> I32
+
+# Rill strings are counted heap objects, not `char*`, so they cross the
+# boundary through `to_cstr` (which allocates) and `from_cstr` (which copies
+# back). `Ptr` is an opaque C pointer that reference counting leaves alone.
+extern fn strlen(s: Ptr) -> Int
+
+extern fn getenv(name: Ptr) -> Ptr
+
+fn c_strlen(s) =
+  p = to_cstr(s)
+  n = strlen(p)
+  free_ptr(p)
+  n
+
+fn env(name) =
+  p = to_cstr(name)
+  v = getenv(p)
+  free_ptr(p)
+  if is_null(v) then "<unset>" else from_cstr(v)
+
+fn main() =
+  println(sqrt(2.0))
+  println(pow(2.0, 10.0))
+  println(abs(-7))
+  println(getpid() > 0)
+  println(c_strlen("merhaba"))
+  println(env("RILL_FFI_DEMO"))

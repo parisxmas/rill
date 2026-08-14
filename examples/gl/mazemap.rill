@@ -1,0 +1,13 @@
+# The maze carver on its own, printed as text. No window, no OpenGL — the
+# grid is a raw buffer, the search keeps its stack in another one, and the
+# only thing recursion carries is the random state.
+#
+#   rill run examples/gl/mazemap.rill
+
+import "mazegen"
+
+fn main() =
+  w = 21
+  h = 21
+  g = maze_build(w, h, 20260812)
+  maze_print(g, w, h, 0)

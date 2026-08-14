@@ -1,0 +1,36 @@
+# `select` waits on several channels at once and runs the arm that becomes
+# ready first. A `default` arm makes it a non-blocking poll instead.
+fn produce(ch, tag, k) =
+  send(ch, tag)
+  if k == 1 then 0 else produce(ch, tag, k - 1)
+
+# Multiplex two producers into one total, without caring which arrives first.
+fn drain(a, b, k, acc) =
+  got = select
+    x = recv(a) -> x
+    y = recv(b) -> y
+  if k == 1 then acc + got else drain(a, b, k - 1, acc + got)
+
+fn poll(ch) =
+  v = select
+    x = recv(ch) -> x
+    default -> -1
+  v
+
+fn main() =
+  idle = channel()
+  println(poll(idle))
+
+  a = channel()
+  b = channel()
+  spawn produce(a, 1, 5)
+  spawn produce(b, 10, 5)
+  println(drain(a, b, 10, 0))
+
+  # A send arm: this one is ready because the channel has room.
+  out = channel(1)
+  which = select
+    send(out, 7) -> "sent"
+    x = recv(idle) -> "received"
+  println(which)
+  println(recv(out))

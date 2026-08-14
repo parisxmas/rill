@@ -1,0 +1,28 @@
+# `channel()` is a rendezvous: a send waits for a receiver. `channel(n)` adds
+# a buffer of n values, so a sender can run ahead and only blocks once the
+# buffer is full.
+fn fill(ch, k) =
+  send(ch, k)
+  if k == 1 then 0 else fill(ch, k - 1)
+
+fn drain(ch, k, acc) =
+  v = recv(ch)
+  if k == 1 then acc + v else drain(ch, k - 1, acc + v)
+
+fn main() =
+  # Nothing is receiving yet, and these still return immediately.
+  ch = channel(5)
+  send(ch, 10)
+  send(ch, 20)
+  println(recv(ch) + recv(ch))
+
+  # More values than the buffer holds: the producer parks when it fills up
+  # and resumes as the consumer drains it.
+  work = channel(4)
+  spawn fill(work, 100)
+  println(drain(work, 100, 0))
+
+  # Capacity zero is the rendezvous the language started with.
+  meet = channel()
+  spawn send(meet, "handed over directly")
+  println(recv(meet))

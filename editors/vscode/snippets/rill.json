@@ -1,0 +1,62 @@
+{
+  "main": {
+    "prefix": "main",
+    "body": ["fn main() =", "  $0"],
+    "description": "The entry point"
+  },
+  "function": {
+    "prefix": "fn",
+    "body": ["fn ${1:name}(${2:args}) = $0"],
+    "description": "A function definition"
+  },
+  "function block": {
+    "prefix": "fnb",
+    "body": ["fn ${1:name}(${2:args}) =", "  $0"],
+    "description": "A function whose body is an indented block"
+  },
+  "data type": {
+    "prefix": "type",
+    "body": ["type ${1:Name}", "  ${2:Ctor}($0)"],
+    "description": "An algebraic data type"
+  },
+  "match": {
+    "prefix": "match",
+    "body": ["match ${1:x}", "  ${2:Pattern} -> $0"],
+    "description": "A pattern match"
+  },
+  "if": {
+    "prefix": "if",
+    "body": ["if ${1:cond} then ${2:a} else ${3:b}"],
+    "description": "A conditional expression"
+  },
+  "trait": {
+    "prefix": "trait",
+    "body": ["trait ${1:Name}(a)", "  ${2:method}(a) -> ${3:Str}"],
+    "description": "A trait declaration"
+  },
+  "impl": {
+    "prefix": "impl",
+    "body": ["impl ${1:Trait}(${2:Type})", "  fn ${3:method}(${4:x}) = $0"],
+    "description": "A trait implementation"
+  },
+  "select": {
+    "prefix": "select",
+    "body": ["select", "  ${1:x} = recv(${2:ch}) -> $0"],
+    "description": "Wait on several channels"
+  },
+  "extern": {
+    "prefix": "extern",
+    "body": ["extern fn ${1:name}(${2:x}: ${3:Int}) -> ${4:Int}"],
+    "description": "A foreign function declaration"
+  },
+  "import": {
+    "prefix": "import",
+    "body": ["import \"${1:module}\""],
+    "description": "Import another file"
+  },
+  "lambda": {
+    "prefix": "lam",
+    "body": ["\\\\${1:x} -> $0"],
+    "description": "A lambda"
+  }
+}

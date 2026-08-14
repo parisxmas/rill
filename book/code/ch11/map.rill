@@ -1,0 +1,27 @@
+type Entry(k, v)
+  Entry(key: k, value: v)
+
+type Dict(k, v)
+  Empty
+  Branch(left: Dict(k, v), item: Entry(k, v), right: Dict(k, v))
+
+fn put(d, k, v) = match d
+  Empty -> Branch(Empty, Entry(k, v), Empty)
+  Branch(l, e, r) -> match e
+    Entry(ek, _) -> if k < ek then Branch(put(l, k, v), e, r) else if k > ek then Branch(l, e, put(r, k, v)) else Branch(l, Entry(k, v), r)
+
+fn get(d, k) = match d
+  Empty -> None
+  Branch(l, e, r) -> match e
+    Entry(ek, ev) -> if k == ek then Some(ev) else if k < ek then get(l, k) else get(r, k)
+
+fn count_words(d, l) = match l
+  Nil -> d
+  Cons(w, rest) -> count_words(put(d, w, unwrap_or(get(d, w), 0) + 1), rest)
+
+fn main() =
+  words = split("the cat sat on the mat the end", " ")
+  d = count_words(Empty, words)
+  println(get(d, "the"))
+  println(get(d, "cat"))
+  println(get(d, "dog"))

@@ -1,0 +1,12 @@
+fn main() =
+  s = "  the quick brown fox  "
+  println("[" + trim(s) + "]")
+  println(split(trim(s), " "))
+  println(join(split(trim(s), " "), "-"))
+  println(len(split(trim(s), " ")))
+  println(contains(s, "brown"))
+  println(starts_with(trim(s), "the"))
+  println(repeat("ab", 3))
+  println(str_len("fox"))
+  println(str_sub("quick", 1, 3))
+  println(str_find("quick", "ick"))

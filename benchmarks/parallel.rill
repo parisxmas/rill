@@ -1,0 +1,23 @@
+# Eight independent fib(32) computations handed to strands. With one
+# worker they run one after another; `RILL_THREADS=8` spreads them across
+# cores, since a strand that has not started yet may be stolen by any idle
+# worker.
+fn fib(n) = if n < 2 then n else fib(n - 1) + fib(n - 2)
+
+fn compute(ch, n) = send(ch, fib(n))
+
+fn spawn_all(ch, k, n) =
+  if k == 0 then 0 else spawn_more(ch, k, n)
+
+fn spawn_more(ch, k, n) =
+  spawn compute(ch, n)
+  spawn_all(ch, k - 1, n)
+
+fn collect(ch, k, acc) =
+  v = recv(ch)
+  if k == 1 then acc + v else collect(ch, k - 1, acc + v)
+
+fn main() =
+  ch = channel()
+  spawn_all(ch, 8, 32)
+  println(collect(ch, 8, 0))

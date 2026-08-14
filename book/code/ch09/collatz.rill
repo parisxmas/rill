@@ -1,0 +1,13 @@
+fn step(n) = if n % 2 == 0 then n / 2 else 3 * n + 1
+
+fn length_from(n, acc) = if n == 1 then acc else length_from(step(n), acc + 1)
+
+fn chain(n) = length_from(n, 0)
+
+fn best(l, bn, bl) = match l
+  Nil -> Cons(bn, Cons(bl, Nil))
+  Cons(n, rest) -> if chain(n) > bl then best(rest, n, chain(n)) else best(rest, bn, bl)
+
+fn main() =
+  println(chain(27))
+  println(best(range(1, 10000), 1, 0))

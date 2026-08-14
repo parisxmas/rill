@@ -1,0 +1,10 @@
+# Blocks, bindings, floats, bools, arithmetic.
+fn double(x) = x * 2
+
+fn main() =
+  a = 21 |> double
+  println(a)
+  pi = 3.14159
+  println(pi * 2.0)
+  println(a == 42)
+  println("done")

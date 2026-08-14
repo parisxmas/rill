@@ -1,0 +1,14 @@
+fn id(x) = x
+
+fn twice(f, x) = f(f(x))
+
+fn biggest(a, b) = if a > b then a else b
+
+fn main() =
+  println(id(42))
+  println(id("forty-two"))
+  println(twice(\n -> n + 1, 0))
+  println(twice(\s -> s + "-", "x"))
+  println(biggest(3, 9))
+  println(biggest("apple", "pear"))
+  println(biggest(1.5, 0.5))

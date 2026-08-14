@@ -1,0 +1,24 @@
+type Person
+  Person(name: Str, age: Int)
+
+impl Show(Person)
+  fn show(p) = match p
+    Person(n, a) -> n + "(" + int_to_str(a) + ")"
+
+impl Show(List(a))
+  fn show(l) = "[" + join(map(l, \x -> show(x)), " ") + "]"
+
+fn sort_by(l, before) = match l
+  Nil -> Nil
+  Cons(p, rest) -> append(sort_by(filter(rest, \x -> before(x, p)), before), Cons(p, sort_by(filter(rest, \x -> !before(x, p)), before)))
+
+fn age_of(p) = match p
+  Person(_, a) -> a
+
+fn name_of(p) = match p
+  Person(n, _) -> n
+
+fn main() =
+  people = Cons(Person("Ada", 36), Cons(Person("Bob", 24), Cons(Person("Cyd", 31), Nil)))
+  println(sort_by(people, \a, b -> age_of(a) < age_of(b)))
+  println(sort_by(people, \a, b -> name_of(a) > name_of(b)))

@@ -1,0 +1,25 @@
+type Dog
+  Dog(name: Str)
+
+type Robot
+  Robot(id: Int)
+
+trait Speak(a)
+  noise(a) -> Str
+  loudness(a) -> Int
+
+impl Speak(Dog)
+  fn noise(d) = match d
+    Dog(n) -> n + " says woof"
+  fn loudness(d) = 7
+
+impl Speak(Robot)
+  fn noise(r) = match r
+    Robot(i) -> "unit " + int_to_str(i) + " says beep"
+  fn loudness(r) = 3
+
+fn announce(x) = println(noise(x) + " (" + int_to_str(loudness(x)) + "/10)")
+
+fn main() =
+  announce(Dog("Rex"))
+  announce(Robot(7))

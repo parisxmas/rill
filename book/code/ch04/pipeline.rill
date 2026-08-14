@@ -1,0 +1,8 @@
+fn square(x) = x * x
+
+fn even(x) = x % 2 == 0
+
+fn main() =
+  println(range(1, 10) |> filter(even) |> map(square) |> sum)
+  println(sum(map(filter(range(1, 10), even), square)))
+  println(range(1, 5) |> map(\x -> x * 10))

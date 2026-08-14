@@ -1,0 +1,19 @@
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+  Triangle(base: Float, height: Float)
+
+fn area(s) = match s
+  Circle(r) -> 3.14159 * r * r
+  Rect(w, h) -> w * h
+  Triangle(b, h) -> b * h / 2.0
+
+fn describe(s) = match s
+  Circle(_) -> "round"
+  _ -> "straight-edged"
+
+fn main() =
+  shapes = Cons(Circle(1.0), Cons(Rect(2.0, 3.0), Cons(Triangle(4.0, 5.0), Nil)))
+  println(shapes)
+  println(map(shapes, area))
+  println(map(shapes, describe))

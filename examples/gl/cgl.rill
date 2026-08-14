@@ -1,0 +1,42 @@
+# CGL bindings — macOS's own way to get an OpenGL context with no window
+# attached to it. Part of the OpenGL framework `gl.rill` already links, so
+# this needs nothing installed.
+
+import "gl"
+
+extern fn CGLChoosePixelFormat(attribs: Ptr, pix: Ptr, npix: Ptr) -> I32
+
+extern fn CGLCreateContext(pix: Ptr, share: Ptr, ctx: Ptr) -> I32
+
+extern fn CGLSetCurrentContext(ctx: Ptr) -> I32
+
+extern fn CGLDestroyPixelFormat(pix: Ptr) -> I32
+
+extern fn CGLDestroyContext(ctx: Ptr) -> I32
+
+fn cgl_profile() = 99
+
+fn cgl_opengl_3_2_core() = 12800
+
+fn cgl_color_size() = 8
+
+# The attributes are a zero-terminated array of 32-bit words — exactly what a
+# raw buffer is for.
+fn cgl_core_pixel_format() =
+  attrs = buf_i32(5)
+  buf_set(attrs, 0, cgl_profile())
+  buf_set(attrs, 1, cgl_opengl_3_2_core())
+  buf_set(attrs, 2, cgl_color_size())
+  buf_set(attrs, 3, 24)
+  buf_set(attrs, 4, 0)
+  # Two out-parameters: the pixel format handle, and how many matched.
+  out = buf_ptr(2)
+  err = CGLChoosePixelFormat(buf_data(attrs), buf_data(out), ptr_offset(buf_data(out), 8))
+  pix = buf_get(out, 0)
+  if err == 0 then pix else fail("CGLChoosePixelFormat", int_to_str(err), null_ptr())
+
+fn cgl_create_context(pix) =
+  out = buf_ptr(1)
+  err = CGLCreateContext(pix, null_ptr(), buf_data(out))
+  ctx = buf_get(out, 0)
+  if err == 0 then ctx else fail("CGLCreateContext", int_to_str(err), null_ptr())

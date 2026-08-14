@@ -1,0 +1,116 @@
+# A maze, carved by depth-first search.
+#
+# The language has no mutable variables, but a buffer is memory, and this is
+# what that is for: the grid is a `Buf(U8)`, a byte per cell, and the search
+# keeps its own stack in a `Buf(I32)` with the depth in slot 0. What recursion
+# threads through is only the random number generator's state. Both are
+# counted, so neither is freed by hand.
+
+# 1 is rock, 0 is corridor. Odd sizes keep a wall on every border.
+fn maze_wall() = 1
+
+fn cell_at(g: Buf(U8), w, x, y) = buf_get(g, y * w + x)
+
+fn set_cell(g: Buf(U8), w, x, y, v) = buf_set(g, y * w + x, v)
+
+fn in_bounds(w, h, x, y) = x > 0 && y > 0 && x < w - 1 && y < h - 1
+
+fn dx_of(d) = if d == 0 then 1 else if d == 1 then -1 else 0
+
+fn dy_of(d) = if d == 2 then 1 else if d == 3 then -1 else 0
+
+# A linear congruential generator, so a run always produces the same maze.
+fn rng_next(r) = bit_and(r * 1103515245 + 12345, 2147483647)
+
+fn rng_pick(r, n) = rng_next(r) / 65536 % n
+
+# ---- the search stack ------------------------------------------------------
+
+fn stack_new(n) = buf_i32(n + 1)
+
+fn stack_depth(st: Buf(I32)) = buf_get(st, 0)
+
+fn stack_push(st: Buf(I32), v) =
+  n = stack_depth(st) + 1
+  buf_set(st, n, v)
+  buf_set(st, 0, n)
+
+fn stack_pop(st: Buf(I32)) = buf_set(st, 0, stack_depth(st) - 1)
+
+fn stack_top(st: Buf(I32)) = buf_get(st, stack_depth(st))
+
+# ---- carving ---------------------------------------------------------------
+
+fn fill_rock(g: Buf(U8), n, i) =
+  buf_set(g, i, maze_wall())
+  if i + 1 >= n then 0 else fill_rock(g, n, i + 1)
+
+# The first of the four directions, starting at `r`, whose cell two steps away
+# is still rock. -1 when this cell is surrounded by corridor already.
+fn find_dir(g: Buf(U8), w, h, x, y, r, k) =
+  if k >= 4 then -1 else try_dir(g, w, h, x, y, r, k)
+
+fn try_dir(g: Buf(U8), w, h, x, y, r, k) =
+  d = (r + k) % 4
+  nx = x + 2 * dx_of(d)
+  ny = y + 2 * dy_of(d)
+  if in_bounds(w, h, nx, ny) && cell_at(g, w, nx, ny) == maze_wall() then d else find_dir(g, w, h, x, y, r, k + 1)
+
+fn carve(g: Buf(U8), w, h, st: Buf(I32), r) =
+  if stack_depth(st) == 0 then r else carve_step(g, w, h, st, r)
+
+fn carve_step(g: Buf(U8), w, h, st: Buf(I32), r) =
+  idx = stack_top(st)
+  x = idx % w
+  y = idx / w
+  d = find_dir(g, w, h, x, y, rng_pick(r, 4), 0)
+  if d < 0 then carve_back(g, w, h, st, rng_next(r)) else carve_into(g, w, h, st, rng_next(r), x, y, d)
+
+fn carve_back(g: Buf(U8), w, h, st: Buf(I32), r) =
+  stack_pop(st)
+  carve(g, w, h, st, r)
+
+fn carve_into(g: Buf(U8), w, h, st: Buf(I32), r, x, y, d) =
+  nx = x + 2 * dx_of(d)
+  ny = y + 2 * dy_of(d)
+  set_cell(g, w, x + dx_of(d), y + dy_of(d), 0)
+  set_cell(g, w, nx, ny, 0)
+  stack_push(st, ny * w + nx)
+  carve(g, w, h, st, r)
+
+# Opens a few extra walls so the maze has loops in it: a perfect maze has
+# exactly one route anywhere, which reads as a corridor with no choices.
+fn open_loops(g: Buf(U8), w, h, r, n) =
+  x = 1 + 2 * rng_pick(r, (w - 1) / 2)
+  y = 1 + 2 * rng_pick(rng_next(r), (h - 1) / 2)
+  d = rng_pick(rng_next(rng_next(r)), 4)
+  bx = x + dx_of(d)
+  by = y + dy_of(d)
+  open_gap(g, w, h, bx, by)
+  if n <= 1 then 0 else open_loops(g, w, h, rng_next(rng_next(rng_next(r))), n - 1)
+
+fn open_gap(g: Buf(U8), w, h, x, y) =
+  if in_bounds(w, h, x, y) then clear_cell(g, w, x, y) else 0
+
+fn clear_cell(g: Buf(U8), w, x, y) =
+  set_cell(g, w, x, y, 0)
+  0
+
+fn maze_build(w, h, seed) =
+  g = buf_u8(w * h)
+  fill_rock(g, w * h, 0)
+  st = stack_new(w * h)
+  set_cell(g, w, 1, 1, 0)
+  stack_push(st, w + 1)
+  r = carve(g, w, h, st, seed)
+  open_loops(g, w, h, r, w / 3)
+  g
+
+# The map, as text. Handy on its own, and it is what says whether the carving
+# produced a maze or a cave.
+fn maze_row(g: Buf(U8), w, x, y, acc) =
+  if x >= w then acc else maze_row(g, w, x + 1, y, acc + (if cell_at(g, w, x, y) == 0 then "  " else "##"))
+
+fn maze_print(g: Buf(U8), w, h, y) =
+  println(maze_row(g, w, 0, y, ""))
+  if y + 1 >= h then 0 else maze_print(g, w, h, y + 1)

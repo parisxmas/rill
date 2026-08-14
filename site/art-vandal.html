@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Art Vandal — a torch-lit maze written in Rill</title>
+<meta name="description" content="A first-person maze lit by torches, written in Rill with no C anywhere: no shim library, no generated bindings, no build script. A 356 KB binary and its assets. macOS on Apple Silicon.">
+<link rel="canonical" href="https://rill.baltavista.com/art-vandal.html">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/art-vandal.html">
+<meta property="og:title" content="Art Vandal — a torch-lit maze written in Rill">
+<meta property="og:description" content="A first-person maze, lit by torches, in 356 KB of native code. Every call to the GPU and the sound card is an extern declaration — there is no C in it.">
+<meta property="og:image" content="https://rill.baltavista.com/art-vandal-og.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The title card: ART VANDAL written in blood down a torch-lit brick corridor, an axe held at the right">
+<meta property="og:locale" content="en_GB">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Art Vandal — a torch-lit maze written in Rill">
+<meta name="twitter:description" content="A first-person maze, lit by torches, in 356 KB of native code. No C anywhere in it.">
+<meta name="twitter:image" content="https://rill.baltavista.com/art-vandal-og.jpg">
+<meta name="twitter:image:alt" content="The title card: ART VANDAL written in blood down a torch-lit brick corridor">
+<meta name="theme-color" content="#0E7C86">
+<meta name="author" content="Barış Akın">
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<style>
+:root{
+  --paper:#F5F7F6; --ink:#0F1A1C; --muted:#5E6E70; --line:#DCE4E3;
+  --teal:#0E7C86; --deep:#0A4F56; --ember:#F2711C; --code:#EDF2F1;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --paper:#0B1314; --ink:#E4EDEC; --muted:#8CA0A1; --line:#1E2E30;
+         --teal:#3FB3BD; --deep:#8FD6DC; --ember:#FF9248; --code:#111D1F; }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:17px; line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1000px;margin:0 auto;padding:0 28px}
+a{color:var(--teal);text-decoration:none;border-bottom:1px solid rgba(14,124,134,.35)}
+a:hover{border-bottom-color:var(--teal)}
+:focus-visible{outline:2px solid var(--ember);outline-offset:3px;border-radius:2px}
+code{font-family:var(--mono);font-size:.92em}
+
+/* ---------- masthead ---------- */
+.top{border-top:4px solid var(--teal)}
+.bar{display:flex;align-items:baseline;gap:18px;padding:18px 0;font-family:var(--mono);font-size:13px}
+.bar .name{font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);border:0}
+.bar .ver{color:var(--muted)}
+.bar nav{margin-left:auto;display:flex;gap:20px}
+.bar nav a{color:var(--muted);border:0}
+.bar nav a:hover{color:var(--teal)}
+.bar nav a.here{color:var(--teal)}
+
+/* ---------- hero ---------- */
+.hero{padding:56px 0 40px}
+h1{
+  font-family:var(--mono); font-weight:700; letter-spacing:-.035em;
+  font-size:clamp(38px,6.2vw,62px); line-height:1.04; margin:0 0 22px;
+}
+h1 .dim{color:var(--muted);font-weight:400}
+h1 .nb{white-space:nowrap}
+.lede{font-size:20px;line-height:1.55;color:var(--ink);margin:0 0 12px;max-width:34em}
+.sub{color:var(--muted);margin:0 0 28px;max-width:36em}
+
+/* ---------- the screenshot ---------- */
+.shot{margin:34px 0 0}
+.shot img{width:100%;height:auto;display:block;border:1px solid var(--line);
+  border-radius:3px;background:#000}
+.shotcap{font-family:var(--mono);font-size:11.5px;color:var(--muted);
+  margin:9px 0 0;letter-spacing:.03em;max-width:none}
+.shotcap b{color:var(--ink);font-weight:700}
+
+/* ---------- the download ---------- */
+.get{border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  padding:30px 0;margin:0;display:grid;grid-template-columns:auto 1fr;gap:30px;align-items:center}
+.dl{display:inline-block;font-family:var(--mono);font-size:15px;font-weight:700;
+  padding:16px 26px;border:1px solid var(--teal);border-radius:3px;
+  color:var(--paper);background:var(--teal);white-space:nowrap}
+.dl:hover{background:var(--deep);border-color:var(--deep)}
+.dl .sz{display:block;font-size:11.5px;font-weight:400;letter-spacing:.06em;
+  opacity:.85;margin-top:4px}
+.getnote{font-size:14.5px;color:var(--muted);margin:0;max-width:36em}
+.getnote b{font-family:var(--mono);font-size:13px;color:var(--ink);font-weight:700}
+.sum{font-family:var(--mono);font-size:11.5px;color:var(--muted);
+  margin:10px 0 0;word-break:break-all;line-height:1.5}
+
+/* ---------- sections ---------- */
+section{padding:58px 0;border-bottom:1px solid var(--line)}
+h2.sec{font-family:var(--mono);font-size:13px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--teal);margin:0 0 8px;font-weight:700}
+h3{font-family:var(--mono);font-size:19px;letter-spacing:-.01em;margin:34px 0 10px;font-weight:700}
+.sec-lede{font-size:19px;max-width:40em;margin:0 0 26px}
+p{max-width:40em}
+
+/* ---------- code ---------- */
+pre{
+  background:var(--code); border:1px solid var(--line); border-left:3px solid var(--teal);
+  border-radius:3px; padding:16px 18px; overflow-x:auto; margin:16px 0;
+  font-family:var(--mono); font-size:14px; line-height:1.6;
+}
+pre.out{border-left-color:var(--muted);color:var(--muted)}
+.c{color:var(--muted);font-style:italic}
+.cap{font-family:var(--mono);font-size:12px;color:var(--muted);margin:0 0 -8px;letter-spacing:.04em}
+
+/* ---------- numbered steps ---------- */
+.steps{counter-reset:step;list-style:none;padding:0;margin:26px 0 0}
+.steps > li{counter-increment:step;position:relative;padding:0 0 26px 46px;
+  border-left:1px solid var(--line);margin-left:11px}
+.steps > li:last-child{border-left-color:transparent;padding-bottom:0}
+.steps > li::before{
+  content:counter(step);position:absolute;left:-11.5px;top:1px;
+  width:23px;height:23px;border-radius:50%;background:var(--paper);
+  border:1px solid var(--teal);color:var(--teal);
+  font-family:var(--mono);font-size:12px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;
+}
+.steps > li h4{font-family:var(--mono);font-size:15px;margin:0;font-weight:700;line-height:1.5}
+.steps > li p{font-size:15px;color:var(--muted);margin:6px 0 0}
+.steps > li pre{margin-bottom:0}
+
+/* ---------- features ---------- */
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;background:var(--line);
+  border:1px solid var(--line);border-radius:3px;overflow:hidden;margin-top:26px}
+.cell{background:var(--paper);padding:22px 20px}
+.cell h4{font-family:var(--mono);font-size:14px;margin:0 0 8px;font-weight:700}
+.cell p{font-size:14.5px;color:var(--muted);margin:0;line-height:1.55}
+
+/* ---------- table ---------- */
+table{width:100%;border-collapse:collapse;margin-top:22px;font-size:15px}
+th,td{text-align:right;padding:11px 10px;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+thead th{font-family:var(--mono);font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--muted);font-weight:600;border-bottom:1px solid var(--ink)}
+tbody tr:hover{background:var(--code)}
+td,th{font-variant-numeric:tabular-nums}
+td.key{font-family:var(--mono);font-weight:700;width:150px}
+
+/* ---------- honesty ---------- */
+.no{display:grid;grid-template-columns:repeat(2,1fr);gap:0 34px;margin-top:20px;padding:0;list-style:none}
+.no li{padding:11px 0;border-bottom:1px solid var(--line);font-size:15.5px}
+.no li b{font-family:var(--mono);font-size:14px;font-weight:700}
+.no li span{color:var(--muted);display:block;font-size:14px;line-height:1.5}
+
+blockquote{margin:22px 0;padding-left:20px;border-left:2px solid var(--line);
+  font-family:var(--serif);font-size:18px;color:var(--muted);font-style:italic;max-width:36em}
+
+footer{padding:40px 0 60px;color:var(--muted);font-size:14px}
+footer .mono{font-family:var(--mono);font-size:12.5px}
+
+@media (max-width:860px){
+  .hero{padding:36px 0 26px}
+  .get{grid-template-columns:1fr;gap:22px}
+  .grid{grid-template-columns:1fr}
+  .no{grid-template-columns:1fr}
+  .bar nav{display:none}
+}
+</style>
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.2</span>
+    <nav>
+      <a href="/">The language</a>
+      <a href="#get" class="here">Download</a>
+      <a href="#install">Installing</a>
+      <a href="#controls">Controls</a>
+    </nav>
+  </div>
+
+  <!-- ================= hero ================= -->
+  <div class="hero">
+    <h1>Art&nbsp;Vandal<br><span class="dim">a maze lit by</span>&nbsp;<span class="nb">torches.</span></h1>
+    <p class="lede">A first-person maze written in Rill, with no C written anywhere —
+    no shim library, no generated bindings, no build script. The whole path from
+    <code>main</code> to the GPU and the sound card is <code>extern</code>
+    declarations and raw buffers.</p>
+    <p class="sub">Walk it, swing an axe at what is on the walls, and find the brass
+    bolt turning on the floor. It runs until you close it.</p>
+
+    <figure class="shot">
+      <img src="/art-vandal.jpg" width="1260" height="774"
+           alt="The title card: ART VANDAL written in blood down a torch-lit brick
+                corridor, a torch burning on the left wall and an axe held at the right.
+                The readout across the top reads FPS 105 and RSS 25.1 MB, and along the
+                bottom, ART LEFT 20.">
+      <figcaption class="shotcap">The title card, and the readout it keeps in the
+      corners: <b>105 frames a second</b>, <b>25.1 MB resident</b>, and twenty
+      paintings still on the walls.</figcaption>
+    </figure>
+  </div>
+
+  <!-- ================= download ================= -->
+  <div class="get" id="get">
+    <a class="dl" href="/art-vandal-macos-arm64.zip" download>Download<span class="sz">macOS · Apple Silicon · 24 MB</span></a>
+    <div>
+      <p class="getnote">Two files come out of it: <b>artvandal</b>, 356 KB of native code,
+      and <b>assets.rpak</b>, 32.5 MB — the paintings, the font sheet, the models and
+      every recording, in one file. Nothing is installed and nothing is written
+      anywhere; delete the folder and it is gone.</p>
+      <p class="sum">sha256 &nbsp;57a58305a5fb5bcbc9f444f03d24bf0fe054f639c0215572dfc0b77a4c552da1</p>
+    </div>
+  </div>
+
+  <!-- ================= install ================= -->
+  <section id="install">
+    <h2 class="sec">Installing</h2>
+    <p class="sec-lede">Three commands, and the first one is the only thing that
+    installs anything.</p>
+
+    <ol class="steps">
+      <li>
+        <h4>The three libraries it links against</h4>
+        <p>OpenGL comes with macOS. These do not, and the binary is 356 KB because
+        they stay outside it rather than being folded in.</p>
+<pre>brew install glfw mpg123 openal-soft</pre>
+        <p>Homebrew has to be the <code>/opt/homebrew</code> one — the Apple Silicon
+        default — because that is the path written into the binary.</p>
+      </li>
+      <li>
+        <h4>Letting macOS run it</h4>
+        <p>The download arrives quarantined, and this binary is signed only ad-hoc,
+        not notarized. Gatekeeper will refuse it until the flag comes off:</p>
+<pre>unzip art-vandal-macos-arm64.zip
+xattr -dr com.apple.quarantine art-vandal</pre>
+      </li>
+      <li>
+        <h4>Playing it</h4>
+        <p><code>assets.rpak</code> is the one path the program knows, and it is
+        looked for in the working directory. So go into the folder first — running
+        it from anywhere else will not find it.</p>
+<pre>cd art-vandal
+./artvandal</pre>
+      </li>
+    </ol>
+
+    <p class="cap" style="margin-top:34px">what it prints on the way up</p>
+<pre class="out">GL 4.1 Metal - 90.5
+assets: 35 entries, 33320 KB
+maze: 2376 vertices, two generated textures
+torches: 14
+font: 95 glyphs, em 96
+wall faces: 196, one painting every 9
+paintings: 20
+blood: 61 stains, 44 running down the wall, 50 dragged along the floor
+remains: 13 of them, 33270 vertices from 5 models
+bolt: one of them, at 5.5,5.5
+walker at 1.5,13.5 — 36 cells, 36 seconds away, 20 poses
+sound: 16 fires, error 0</pre>
+    <p style="margin-top:18px;color:var(--muted);font-size:15px">The maze is carved
+    fresh each time, so those numbers are that run's and not yours.</p>
+  </section>
+
+  <!-- ================= what it wants ================= -->
+  <section id="requires">
+    <h2 class="sec">What it wants</h2>
+    <div class="grid">
+      <div class="cell">
+        <h4>macOS, Apple Silicon</h4>
+        <p>An arm64 Mach-O, so an M-series Mac. There is no Intel build and no
+        Rosetta path — the dylib paths inside it are the arm64 Homebrew prefix.</p>
+      </div>
+      <div class="cell">
+        <h4>Homebrew at /opt/homebrew</h4>
+        <p><code>glfw</code> for the window and the event pump, <code>openal-soft</code>
+        for positioned sound, <code>mpg123</code> to decode the recordings.</p>
+      </div>
+      <div class="cell">
+        <h4>35 MB on disk</h4>
+        <p>And nothing else. No installer, no application support folder, no save
+        file — a new maze every time you press <code>r</code> or start it again.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= controls ================= -->
+  <section id="controls">
+    <h2 class="sec">The controls</h2>
+    <p class="sec-lede">There is no run. What makes you quicker is the brass bolt
+    turning on the floor somewhere in the maze — one to a maze, and it is worth a
+    fifth for as long as that maze lasts.</p>
+    <table>
+      <thead><tr><th>Key</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td class="key">W A S D</td><td>walk</td></tr>
+        <tr><td class="key">mouse</td><td>look around — the arrow keys do the same</td></tr>
+        <tr><td class="key">space</td><td>swing the axe</td></tr>
+        <tr><td class="key">escape</td><td>stop the engine and open the menu: the volumes, the size of the window, and a hand to work them with</td></tr>
+        <tr><td class="key">r</td><td>a new maze, and a new camera with it</td></tr>
+        <tr><td class="key">q</td><td>quit</td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top:26px">A first aid box gives you back a tenth of your blood
+    and there are six of them. The bolt goes out with an arc rather than a chime —
+    half a second cut out of a ray gun, at your ear rather than out in the maze,
+    because a chime would have been the one sound in here that came from a
+    different game.</p>
+  </section>
+
+  <!-- ================= honesty ================= -->
+  <section id="known">
+    <h2 class="sec">Worth knowing before you download</h2>
+    <ul class="no">
+      <li><b>Not notarized</b>
+        <span>Signed ad-hoc by the linker and nothing more, so step 2 is not
+        optional. Nothing here talks to the network.</span></li>
+      <li><b>One platform</b>
+        <span>arm64 macOS. Rill cross-compiles, but the Linux and Windows builds
+        of this would want their own GLFW and OpenAL and have not been made.</span></li>
+      <li><b>It has to be run from its folder</b>
+        <span>Double-clicking it in Finder starts it with the wrong working
+        directory, and it will not find <code>assets.rpak</code>.</span></li>
+      <li><b>It closes on q</b>
+        <span>Not on the window's red button alone — the engine stops on
+        <code>q</code>, and escape only pauses it.</span></li>
+    </ul>
+  </section>
+
+  <!-- ================= the point ================= -->
+  <section id="why" style="border-bottom:0">
+    <h2 class="sec">Why it exists</h2>
+    <p class="sec-lede">To find out what a language with no C escape hatch does when
+    you ask it for a game.</p>
+    <p>Every OpenGL call, every GLFW window, every OpenAL source and every frame
+    that libmpg123 hands back is an <code>extern</code> declaration in Rill and a
+    buffer laid out by hand. There is no binding generator in this project and no
+    <code>.c</code> file to compile alongside — the language reaches the system
+    libraries directly, or it does not reach them at all.</p>
+    <blockquote>The brick, the flagstone and the boarded ceiling are not loaded.
+    They are written pixel by pixel at startup, which is why the pack holds
+    paintings and recordings and no wall.</blockquote>
+    <p>The maze is depth-first search, the torchlight is per-fragment, and the
+    thing walking toward you is 20 poses of a 17,196-vertex model, 36 cells and
+    36 seconds away when you start.</p>
+    <p style="margin-top:26px"><a href="/">← Rill, the language it is written in</a></p>
+  </section>
+
+  <footer>
+    <p class="mono">Art Vandal · built with Rill v0.2 · macOS arm64</p>
+    <p>The paintings on the walls are out of the public domain, and so is the
+    kingfisher this site is named for. Nothing in the download reports anything
+    anywhere.</p>
+  </footer>
+</div>
+</body>
+</html>

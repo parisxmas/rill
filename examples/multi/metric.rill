@@ -1,0 +1,7 @@
+type Unit
+  Meters(Float)
+
+fn label(u) = match u
+  Meters(v) -> float_to_str(v) + "m"
+
+fn scale(x) = x * 2.0

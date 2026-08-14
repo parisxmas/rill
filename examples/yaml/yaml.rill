@@ -1,0 +1,116 @@
+# YAML, written in Rill — the part configuration files actually use: nested
+# mappings by indentation, `- ` sequences, scalars, comments, and lists of
+# mappings. Not supported, and deliberately so: anchors and aliases, multiple
+# documents, flow collections, block scalars, tags.
+#
+# Values land in the JSON module's `Json` type, so a parsed document can be
+# printed as JSON without any conversion.
+import "../json/json"
+
+type YParsed
+  YParsed(value: Json, next: Int)
+
+fn parse_yaml(text) = start(useful(lines(text)))
+
+fn start(ls) =
+  if len(ls) == 0 then JNull else value_of(block_value(ls, 0, indent_of(unwrap_or(nth(ls, 0), ""))))
+
+fn value_of(p) = match p
+  YParsed(v, _) -> v
+
+# Blank lines and whole-line comments never matter, so drop them once.
+fn useful(ls) = filter(ls, \l -> !is_ignorable(l))
+
+fn is_ignorable(l) =
+  t = trim(l)
+  str_len(t) == 0 || str_get(t, 0) == 35
+
+fn indent_of(l) = count_spaces(l, 0)
+
+fn count_spaces(l, i) = if str_get(l, i) == 32 then count_spaces(l, i + 1) else i
+
+fn line_at(ls, i) = unwrap_or(nth(ls, i), "")
+
+fn is_item(l) = starts_with(trim(l), "- ")
+
+# -- blocks -------------------------------------------------------------------
+
+fn block_value(ls, i, ind) =
+  if i >= len(ls) then YParsed(JNull, i) else if is_item(line_at(ls, i)) then sequence(ls, i, ind, Nil) else mapping(ls, i, ind, Nil)
+
+fn sequence(ls, i, ind, acc) =
+  if i >= len(ls) then YParsed(JArr(reverse(acc)), i) else seq_line(ls, i, ind, acc, line_at(ls, i))
+
+fn seq_line(ls, i, ind, acc, l) =
+  if indent_of(l) != ind || !is_item(l) then YParsed(JArr(reverse(acc)), i) else seq_item(ls, i, ind, acc, trim(str_sub(l, indent_of(l) + 2, str_len(l))))
+
+fn seq_item(ls, i, ind, acc, rest) =
+  if str_len(rest) == 0 then nested_item(ls, i, ind, acc) else if str_find(rest, ": ") >= 0 || ends_with_colon(rest) then inline_map_item(ls, i, ind, acc, rest) else sequence(ls, i + 1, ind, Cons(scalar(rest), acc))
+
+# `- ` on its own: the value is the block indented under it.
+fn nested_item(ls, i, ind, acc) = match block_value(ls, i + 1, deeper(ls, i + 1, ind))
+  YParsed(v, j) -> sequence(ls, j, ind, Cons(v, acc))
+
+# `- key: value`: the item is a mapping whose first entry is on this line and
+# whose remaining entries are indented to where that key starts.
+fn inline_map_item(ls, i, ind, acc, rest) = match entry_of(ls, i, rest, ind + 2)
+  YParsed(first, j) -> continue_item(ls, j, ind, acc, first)
+
+fn continue_item(ls, j, ind, acc, first) = match mapping(ls, j, ind + 2, fields_of(first))
+  YParsed(m, k) -> sequence(ls, k, ind, Cons(m, acc))
+
+fn fields_of(j) = match j
+  JObj(fs) -> reverse(fs)
+  _ -> Nil
+
+fn mapping(ls, i, ind, acc) =
+  if i >= len(ls) then YParsed(JObj(reverse(acc)), i) else map_line(ls, i, ind, acc, line_at(ls, i))
+
+fn map_line(ls, i, ind, acc, l) =
+  if indent_of(l) != ind || is_item(l) then YParsed(JObj(reverse(acc)), i) else map_entry(ls, i, ind, acc, trim(l))
+
+fn map_entry(ls, i, ind, acc, text) = match entry_of(ls, i, text, ind)
+  YParsed(one, j) -> mapping(ls, j, ind, append(fields_of(one), acc))
+
+# One `key: value` (or `key:` followed by an indented block), as a one-field
+# object so the caller can splice it in.
+fn entry_of(ls, i, text, ind) =
+  c = str_find(text, ":")
+  if c < 0 then YParsed(JObj(Cons(Field(unquote(text), JNull), Nil)), i + 1) else entry_parts(ls, i, ind, unquote(trim(str_sub(text, 0, c))), trim(str_sub(text, c + 1, str_len(text))))
+
+fn entry_parts(ls, i, ind, key, rest) =
+  if str_len(rest) == 0 then nested_entry(ls, i, ind, key) else YParsed(JObj(Cons(Field(key, scalar(rest)), Nil)), i + 1)
+
+fn nested_entry(ls, i, ind, key) = match block_value(ls, i + 1, deeper(ls, i + 1, ind))
+  YParsed(v, j) -> YParsed(JObj(Cons(Field(key, v), Nil)), j)
+
+# The indentation of the block that follows, or something deeper than `ind`
+# when there is no next line.
+fn deeper(ls, i, ind) = if i >= len(ls) then ind + 2 else indent_of(line_at(ls, i))
+
+fn ends_with_colon(s) = str_len(s) > 0 && str_get(s, str_len(s) - 1) == 58
+
+# -- scalars ------------------------------------------------------------------
+
+fn scalar(raw) = classify(strip_comment(trim(raw)))
+
+fn classify(s) =
+  if s == "true" then JBool(true) else if s == "false" then JBool(false) else if s == "null" || s == "~" then JNull else if is_quoted(s) then JStr(unquote(s)) else if looks_numeric(s) then number_of(s) else JStr(s)
+
+fn is_quoted(s) =
+  str_len(s) >= 2 && (str_get(s, 0) == 34 || str_get(s, 0) == 39) && str_get(s, str_len(s) - 1) == str_get(s, 0)
+
+fn unquote(s) = if is_quoted(s) then str_sub(s, 1, str_len(s) - 2) else s
+
+# A trailing comment only counts when a space precedes the `#`.
+fn strip_comment(s) =
+  i = str_find(s, " #")
+  if is_quoted(s) || i < 0 then s else trim(str_sub(s, 0, i))
+
+fn looks_numeric(s) = str_len(s) > 0 && all_digits(s, 0) && has_digit(s, 0)
+
+fn all_digits(s, i) =
+  i >= str_len(s) || is_number_char(str_get(s, i)) && all_digits(s, i + 1)
+
+fn has_digit(s, i) =
+  if i >= str_len(s) then false else str_get(s, i) >= 48 && str_get(s, i) <= 57 || has_digit(s, i + 1)

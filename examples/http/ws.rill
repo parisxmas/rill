@@ -1,0 +1,86 @@
+# WebSocket (RFC 6455) on top of the socket builtins: the handshake, and text
+# frames in both directions. Scope is deliberate — text frames up to 64 KiB,
+# no fragmentation, no extensions — but it is the real protocol, and browsers
+# and `websocat` talk to it.
+
+import "sha1"
+
+fn ws_guid() = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+# -- handshake ----------------------------------------------------------------
+
+fn header_value(raw, name) =
+  i = str_find(raw, name)
+  if i < 0 then "" else header_tail(raw, i + str_len(name))
+
+fn header_tail(raw, from) =
+  rest = str_sub(raw, from, str_len(raw))
+  j = str_find(rest, "\r\n")
+  trim(if j < 0 then rest else str_sub(rest, 0, j))
+
+fn accept_key(key) = base64(sha1(key + ws_guid()))
+
+fn handshake_reply(key) =
+  "HTTP/1.1 101 Switching Protocols\r\n" + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n" + "Sec-WebSocket-Accept: " + accept_key(key) + "\r\n\r\n"
+
+# Answers a client's upgrade request. Returns whether it was one.
+fn ws_accept(conn, request_raw) =
+  key = header_value(request_raw, "Sec-WebSocket-Key: ")
+  if str_len(key) == 0 then false else send_upgrade(conn, key)
+
+fn send_upgrade(conn, key) =
+  sock_write(conn, handshake_reply(key))
+  true
+
+# -- frames -------------------------------------------------------------------
+
+# Reads until at least `want` bytes are buffered, or the peer stops talking.
+fn fill(conn, buf, want) =
+  if str_len(buf) >= want then buf else fill_more(conn, buf, want)
+
+fn fill_more(conn, buf, want) =
+  chunk = sock_read(conn)
+  if str_len(chunk) == 0 then buf else fill(conn, buf + chunk, want)
+
+# A text frame's payload, or "" once the connection is done.
+fn ws_read(conn) = read_frame(fill(conn, "", 2))
+
+fn read_frame(head) =
+  if str_len(head) < 2 then "" else decode(head, bit_and(str_get(head, 0), 15), bit_and(str_get(head, 1), 127), bit_and(str_get(head, 1), 128) != 0)
+
+fn decode(head, opcode, len7, masked) =
+  if opcode == 8 then "" else if len7 == 127 then "" else payload(head, len7, masked)
+
+# Header size: 2 bytes, plus 2 more for a 16-bit length, plus 4 for the mask.
+fn payload(head, len7, masked) =
+  ext = if len7 == 126 then 2 else 0
+  n = if len7 == 126 then bit_or(shl(str_get(head, 2), 8), str_get(head, 3)) else len7
+  start = 2 + ext + (if masked then 4 else 0)
+  body = str_sub(head, start, n)
+  if masked then unmask(body, str_sub(head, 2 + ext, 4), 0, "") else body
+
+fn unmask(body, key, i, acc) =
+  if i >= str_len(body) then acc else unmask(body, key, i + 1, acc + chr(bit_xor(str_get(body, i), str_get(key, i % 4))))
+
+# A frame the *server* sends: text, final, unmasked.
+fn ws_frame(text) =
+  n = str_len(text)
+  if n < 126 then chr(129) + chr(n) + text else chr(129) + chr(126) + chr(bit_and(shr(n, 8), 255)) + chr(bit_and(n, 255)) + text
+
+fn ws_write(conn, text) = sock_write(conn, ws_frame(text))
+
+fn ws_close(conn) =
+  sock_write(conn, chr(136) + chr(0))
+  sock_close(conn)
+
+# -- the client side ----------------------------------------------------------
+
+# Clients must mask; a fixed key is fine, the point is XOR not secrecy.
+fn client_frame(text) =
+  chr(129) + chr(bit_or(128, str_len(text))) + "abcd" + mask_with(text, "abcd", 0, "")
+
+fn mask_with(text, key, i, acc) =
+  if i >= str_len(text) then acc else mask_with(text, key, i + 1, acc + chr(bit_xor(str_get(text, i), str_get(key, i % 4))))
+
+fn ws_handshake_request(host, path) =
+  "GET " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n" + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" + "Sec-WebSocket-Version: 13\r\n\r\n"

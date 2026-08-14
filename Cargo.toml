@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rill_syntax",
+    "crates/rill_types",
+    "crates/rill_codegen",
+    "crates/rill_runtime",
+    "crates/rill_cli",
+]
+
+[workspace.package]
+version = "0.2.12"
+edition = "2021"
+license = "MIT"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+lto = true
+panic = "abort"

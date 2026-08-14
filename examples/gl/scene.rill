@@ -1,0 +1,62 @@
+# The triangle itself: its shaders, its vertices, and the draw call. Kept
+# apart from the bindings so both programs next door can render the same
+# scene, one in a window and one without.
+
+import "gl"
+
+# ---- the triangle ----------------------------------------------------------
+
+fn vertex_source() =
+  head = "#version 150 core\nin vec2 pos;\nin vec3 tint;\nout vec3 shade;\nuniform float angle;\n"
+  body = "void main() {\n  float c = cos(angle);\n  float s = sin(angle);\n"
+  spin = "  gl_Position = vec4(pos.x * c - pos.y * s, pos.x * s + pos.y * c, 0.0, 1.0);\n"
+  head + body + spin + "  shade = tint;\n}\n"
+
+fn fragment_source() =
+  head = "#version 150 core\nin vec3 shade;\nout vec4 color;\n"
+  head + "void main() {\n  color = vec4(shade, 1.0);\n}\n"
+
+fn triangle_program() =
+  prog = glCreateProgram()
+  glAttachShader(prog, compile_shader(gl_vertex_shader(), vertex_source()))
+  glAttachShader(prog, compile_shader(gl_fragment_shader(), fragment_source()))
+  with_cstr("pos", \p -> glBindAttribLocation(prog, 0, p))
+  with_cstr("tint", \p -> glBindAttribLocation(prog, 1, p))
+  link_checked(prog, "triangle link")
+
+# ---- geometry --------------------------------------------------------------
+
+# Five floats per vertex: a position and a colour. A `poke` index counts
+# elements, so vertex i starts at 5 * i.
+fn vertex(p: Buf(F32), i, x, y, r, g, b) =
+  buf_set(p, i * 5 + 0, x)
+  buf_set(p, i * 5 + 1, y)
+  buf_set(p, i * 5 + 2, r)
+  buf_set(p, i * 5 + 3, g)
+  buf_set(p, i * 5 + 4, b)
+
+fn upload_triangle() =
+  vao = gen_vertex_array()
+  glBindVertexArray(vao)
+  vbo = gen_buffer()
+  glBindBuffer(gl_array_buffer(), vbo)
+  data = buf_f32(3 * 5)
+  vertex(data, 0, 0.0, 0.62, 0.99, 0.75, 0.18)
+  vertex(data, 1, 0.0 - 0.55, 0.0 - 0.36, 0.13, 0.72, 0.85)
+  vertex(data, 2, 0.55, 0.0 - 0.36, 0.85, 0.22, 0.45)
+  glBufferData(gl_array_buffer(), 3 * 5 * 4, buf_data(data), gl_static_draw())
+  # The last argument is a byte offset into the bound buffer, carried in a
+  # pointer-shaped parameter — which is what offsetting null is for.
+  glVertexAttribPointer(0, 2, gl_float(), 0, 20, null_ptr())
+  glEnableVertexAttribArray(0)
+  glVertexAttribPointer(1, 3, gl_float(), 0, 20, ptr_offset(null_ptr(), 8))
+  glEnableVertexAttribArray(1)
+  vao
+
+fn draw_triangle(prog, vao, angle_at, angle) =
+  glClearColor(0.05, 0.06, 0.09, 1.0)
+  glClear(gl_color_buffer_bit())
+  glUseProgram(prog)
+  glUniform1f(angle_at, angle)
+  glBindVertexArray(vao)
+  glDrawArrays(gl_triangles(), 0, 3)

@@ -1,0 +1,62 @@
+# C calling back into Rill.
+#
+# `Fn(...)` in a foreign signature is a C function pointer. What may be passed
+# for one is a function known while compiling: the compiler wraps it in a
+# C-ABI trampoline that widens C's arguments to Rill's and calls through. A
+# lambda cannot cross, because a closure carries an environment and C has
+# nowhere to keep it — so a callback works with what it is handed, which is
+# how C callbacks are designed anyway.
+#
+# A callback may answer: `Fn(Ptr, Ptr) -> I32` is a comparator, and the result
+# is narrowed to the declared width on its way back out, the same as any other
+# value crossing to C. Without the arrow the callback hands nothing back.
+
+# Runs when the program exits, after main has returned.
+extern fn atexit(cb: Fn()) -> I32
+
+# The handler is called with the signal number, a 32-bit C `int`.
+extern fn signal(sig: I32, handler: Fn(I32)) -> Ptr
+
+extern fn raise(sig: I32) -> I32
+
+# The comparator is handed pointers into the array and answers with the sign
+# of the ordering, which is what makes this callback one that has to return.
+extern fn qsort(base: Ptr, n: U64, size: U64, cmp: Fn(Ptr, Ptr) -> I32) -> Unit
+
+fn sigusr1() = 30
+
+fn on_signal(n) = println("handler ran, signal " + int_to_str(n))
+
+fn on_exit() = println("atexit ran, after main returned")
+
+fn ascending(a, b) = peek_i32(a, 0) - peek_i32(b, 0)
+
+fn descending(a, b) = peek_i32(b, 0) - peek_i32(a, 0)
+
+# The comparator arrives as an ordinary parameter and is handed on to C. It
+# still has to be named by whoever calls — the trampoline is picked while
+# compiling — so this helper is emitted once per comparator it is called with.
+fn sort_by(b: Buf(I32), cmp) =
+  qsort(buf_data(b), buf_len(b), 4, cmp)
+  b
+
+fn show_buf(b: Buf(I32), i, acc) =
+  if i == buf_len(b) then acc else show_buf(b, i + 1, acc + " " + int_to_str(buf_get(b, i)))
+
+fn main() =
+  atexit(on_exit)
+  signal(sigusr1(), on_signal)
+  println("raising")
+  raise(sigusr1())
+
+  nums = buf_i32(5)
+  buf_set(nums, 0, 4)
+  buf_set(nums, 1, 1)
+  buf_set(nums, 2, 5)
+  buf_set(nums, 3, 3)
+  buf_set(nums, 4, 2)
+  # Four bytes an element — C is told the layout, not the type.
+  println("up  " + show_buf(sort_by(nums, ascending), 0, ""))
+  println("down" + show_buf(sort_by(nums, descending), 0, ""))
+
+  println("main done")

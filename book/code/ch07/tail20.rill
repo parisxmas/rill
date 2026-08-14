@@ -1,0 +1,3 @@
+fn go(i, acc) = if i == 0 then acc else go(i - 1, acc + i)
+
+fn main() = println(go(20000000, 0))

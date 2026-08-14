@@ -1,0 +1,14 @@
+# Go-style concurrency: a producer strand feeding a consumer over an
+# unbuffered channel. -1 signals the end of the stream.
+fn produce(ch, a, b) =
+  send(ch, a)
+  if a < b then produce(ch, a + 1, b) else send(ch, -1)
+
+fn consume(ch, acc) =
+  v = recv(ch)
+  if v < 0 then acc else consume(ch, acc + v)
+
+fn main() =
+  ch = channel()
+  spawn produce(ch, 1, 100)
+  println(consume(ch, 0))

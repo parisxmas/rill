@@ -1,0 +1,64 @@
+# The same triangle, rendered with no window at all and printed as text.
+#
+#   rill run examples/gl/offscreen.rill
+#
+# macOS hands out an OpenGL context with nothing attached through CGL, so this
+# needs nothing installed: it draws into a renderbuffer, reads the pixels back
+# and turns them into characters. That also makes it the testable half of the
+# pair — no display, no window server, same GPU path.
+
+import "cgl"
+
+import "scene"
+
+fn width() = 48
+
+fn height() = 24
+
+# A renderbuffer to draw into, and a framebuffer to hang it on.
+fn attach_target() =
+  fbo = buf_u32(1)
+  glGenFramebuffers(1, buf_data(fbo))
+  glBindFramebuffer(gl_framebuffer(), buf_get(fbo, 0))
+  rbo = buf_u32(1)
+  glGenRenderbuffers(1, buf_data(rbo))
+  glBindRenderbuffer(gl_renderbuffer(), buf_get(rbo, 0))
+  glRenderbufferStorage(gl_renderbuffer(), gl_rgba8(), width(), height())
+  glFramebufferRenderbuffer(gl_framebuffer(), gl_color_attachment0(), gl_renderbuffer(), buf_get(rbo, 0))
+  glViewport(0, 0, width(), height())
+
+# Four bytes a pixel, so pixel (x, y) starts at byte (y * width + x) * 4. A
+# lit pixel is one the triangle covers; the background is nearly black.
+fn lit(px: Buf(U8), x, y) =
+  i = (y * width() + x) * 4
+  buf_get(px, i) + buf_get(px, i + 1) + buf_get(px, i + 2) > 120
+
+fn row_text(px: Buf(U8), y, x, acc) =
+  if x >= width() then acc else row_text(px, y, x + 1, acc + (if lit(px, x, y) then "#" else "."))
+
+# GL puts the origin at the bottom left, so the rows come out in reverse.
+fn print_row(px: Buf(U8), y) =
+  println(row_text(px, y, 0, ""))
+  print_from(px, y - 1)
+
+fn print_from(px: Buf(U8), y) =
+  if y < 0 then 0 else print_row(px, y)
+
+fn read_and_print() =
+  px = buf_u8(width() * height() * 4)
+  glReadPixels(0, 0, width(), height(), gl_rgba(), gl_unsigned_byte(), buf_data(px))
+  print_from(px, height() - 1)
+
+fn main() =
+  pix = cgl_core_pixel_format()
+  ctx = cgl_create_context(pix)
+  CGLSetCurrentContext(ctx)
+  attach_target()
+  prog = triangle_program()
+  vao = upload_triangle()
+  angle_at = with_cstr("angle", \n -> glGetUniformLocation(prog, n))
+  draw_triangle(prog, vao, angle_at, 0.0)
+  read_and_print()
+  CGLSetCurrentContext(null_ptr())
+  CGLDestroyContext(ctx)
+  CGLDestroyPixelFormat(pix)

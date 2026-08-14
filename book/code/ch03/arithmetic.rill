@@ -1,0 +1,8 @@
+fn main() =
+  println(2 + 3 * 4)
+  println(7 / 2)
+  println(7 % 2)
+  println(7.0 / 2.0)
+  println(to_float(7) / 2.0)
+  println("a" + "b" + "c")
+  println(3 < 4 && !(1 == 2))

@@ -1,0 +1,35 @@
+type Tree(a)
+  Leaf
+  Node(left: Tree(a), value: a, right: Tree(a))
+
+fn insert(t, x) = match t
+  Leaf -> Node(Leaf, x, Leaf)
+  Node(l, v, r) -> if x < v then Node(insert(l, x), v, r) else if x > v then Node(l, v, insert(r, x)) else t
+
+fn member(t, x) = match t
+  Leaf -> false
+  Node(l, v, r) -> x == v || (if x < v then member(l, x) else member(r, x))
+
+fn to_list(t) = match t
+  Leaf -> Nil
+  Node(l, v, r) -> append(to_list(l), Cons(v, to_list(r)))
+
+fn size(t) = match t
+  Leaf -> 0
+  Node(l, _, r) -> 1 + size(l) + size(r)
+
+fn height(t) = match t
+  Leaf -> 0
+  Node(l, _, r) -> 1 + max(height(l), height(r))
+
+fn from_list(l) = fold(l, Leaf, insert)
+
+fn main() =
+  t = from_list(Cons(5, Cons(3, Cons(8, Cons(1, Cons(9, Cons(3, Nil)))))))
+  println(to_list(t))
+  println(size(t))
+  println(height(t))
+  println(member(t, 8))
+  println(member(t, 4))
+  println(to_list(from_list(range(1, 7))))
+  println(height(from_list(range(1, 7))))

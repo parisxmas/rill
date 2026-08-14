@@ -1,0 +1,13 @@
+fn main() =
+  xs = Cons(1, Cons(2, Cons(3, Nil)))
+  println(xs)
+  println(len(xs))
+  println(sum(xs))
+  println(reverse(xs))
+  println(append(xs, Cons(4, Nil)))
+  println(take(range(1, 100), 5))
+  println(drop(range(1, 10), 7))
+  println(nth(xs, 1))
+  println(nth(xs, 9))
+  println(any(xs, \x -> x > 2))
+  println(all(xs, \x -> x > 2))

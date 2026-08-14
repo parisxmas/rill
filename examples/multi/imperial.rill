@@ -1,0 +1,7 @@
+type Unit
+  Feet(Float)
+
+fn label(u) = match u
+  Feet(v) -> float_to_str(v) + "ft"
+
+fn scale(x) = x * 3.0

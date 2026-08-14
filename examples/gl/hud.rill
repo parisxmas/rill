@@ -1,0 +1,288 @@
+# A seven-segment readout, drawn with OpenGL like everything else — there is
+# no text in this program, only rectangles. One unit quad is uploaded once and
+# every segment is a `rect` uniform that stretches it into place, so a frame
+# of digits costs a handful of draw calls and no new buffers.
+
+import "gl"
+
+fn hud_vertex_source() =
+  head = "#version 150 core\nin vec2 corner;\nuniform vec4 rect;\n"
+  head + "void main() {\n  gl_Position = vec4(rect.xy + corner * rect.zw, 0.0, 1.0);\n}\n"
+
+fn hud_fragment_source() =
+  head = "#version 150 core\nuniform vec3 ink;\nout vec4 color;\n"
+  head + "void main() {\n  color = vec4(ink, 1.0);\n}\n"
+
+fn hud_program() =
+  prog = glCreateProgram()
+  glAttachShader(prog, compile_shader(gl_vertex_shader(), hud_vertex_source()))
+  glAttachShader(prog, compile_shader(gl_fragment_shader(), hud_fragment_source()))
+  with_cstr("corner", \p -> glBindAttribLocation(prog, 0, p))
+  link_checked(prog, "hud link")
+
+# The quad every segment is drawn from: two triangles over the unit square.
+fn hud_quad() =
+  vao = gen_vertex_array()
+  glBindVertexArray(vao)
+  vbo = gen_buffer()
+  glBindBuffer(gl_array_buffer(), vbo)
+  data = buf_f32(6 * 2)
+  corner(data, 0, 0.0, 0.0)
+  corner(data, 1, 1.0, 0.0)
+  corner(data, 2, 1.0, 1.0)
+  corner(data, 3, 0.0, 0.0)
+  corner(data, 4, 1.0, 1.0)
+  corner(data, 5, 0.0, 1.0)
+  glBufferData(gl_array_buffer(), 6 * 2 * 4, buf_data(data), gl_static_draw())
+  glVertexAttribPointer(0, 2, gl_float(), 0, 8, null_ptr())
+  glEnableVertexAttribArray(0)
+  Batch(vao, vbo)
+
+fn corner(p: Buf(F32), i, x, y) =
+  buf_set(p, i * 2 + 0, x)
+  buf_set(p, i * 2 + 1, y)
+
+# Which of the seven segments each digit lights, as a bitmask:
+# 1 top, 2 top right, 4 bottom right, 8 bottom, 16 bottom left, 32 top left,
+# 64 middle.
+fn segments_of(d) =
+  if d == 0 then 63 else if d == 1 then 6 else if d == 2 then 91 else if d == 3 then 79 else segments_of_high(d)
+
+fn segments_of_high(d) =
+  if d == 4 then 102 else if d == 5 then 109 else if d == 6 then 125 else if d == 7 then 7 else if d == 8 then 127 else 111
+
+# A digit cell is `w` by `h` with its lower left corner at (x, y); `t` is the
+# stroke. Each segment is one rectangle in those terms.
+fn segment_rect(rect_at, seg, x, y, w, h, t) =
+  if seg == 0 then place(rect_at, x, y + h - t, w, t) else if seg == 1 then place(rect_at, x + w - t, y + h / 2.0, t, h / 2.0) else if seg == 2 then place(rect_at, x + w - t, y, t, h / 2.0) else segment_rect_low(rect_at, seg, x, y, w, h, t)
+
+fn segment_rect_low(rect_at, seg, x, y, w, h, t) =
+  if seg == 3 then place(rect_at, x, y, w, t) else if seg == 4 then place(rect_at, x, y, t, h / 2.0) else if seg == 5 then place(rect_at, x, y + h / 2.0, t, h / 2.0) else place(rect_at, x, y + h / 2.0 - t / 2.0, w, t)
+
+# Returns a value only so it can sit in an `if` next to one — a segment that
+# is not lit still has to produce something.
+fn place(rect_at, x, y, w, h) =
+  glUniform4f(rect_at, x, y, w, h)
+  glDrawArrays(gl_triangles(), 0, 6)
+  0
+
+fn draw_segments(rect_at, mask, seg, x, y, w, h, t) =
+  lit = bit_and(shr(mask, seg), 1) == 1
+  if lit then segment_rect(rect_at, seg, x, y, w, h, t) else 0
+  if seg >= 6 then 0 else draw_segments(rect_at, mask, seg + 1, x, y, w, h, t)
+
+fn draw_digit(rect_at, d, x, y, w, h, t) =
+  draw_segments(rect_at, segments_of(d), 0, x, y, w, h, t)
+
+# Digits are drawn from the right, so the number grows leftwards from `x`.
+fn draw_number(rect_at, n, x, y, w, h, t) =
+  draw_digit(rect_at, n % 10, x, y, w, h, t)
+  if n < 10 then 0 else draw_number(rect_at, n / 10, x - (w + t * 2.0), y, w, h, t)
+
+# Seven segments cannot make an M, so the labels are written as block letters
+# instead: five pixels down, as many across as the letter needs, one bit per
+# pixel from the top left. The pixel is the same width as a digit's stroke, so
+# letters and digits weigh the same on screen.
+#
+# Three columns is enough for all of these but the M, which came out reading
+# as an H — the middle has nowhere to go in three. Five columns give it the
+# two strokes that meet, which is the whole of what makes an M an M.
+fn letter_f() = 4815
+
+fn letter_p() = 4843
+
+fn letter_a() = 23530
+
+fn letter_d() = 15211
+
+fn letter_e() = 29391
+
+fn letter_g() = 27470
+
+fn letter_i() = 29847
+
+fn letter_l() = 29257
+
+fn letter_n() = 23549
+
+fn letter_o() = 31599
+
+fn letter_t() = 9367
+
+fn letter_v() = 11117
+
+fn letter_r() = 23275
+
+fn letter_s() = 14478
+
+fn letter_m() = 18405233
+
+fn letter_b() = 15083
+
+# Two more, for the other ending. A U is an O with its top open; a Y is the
+# two arms for as long as three columns can hold them apart and then the stem,
+# because the diagonal that would join them has nowhere to be drawn.
+fn letter_u() = 31597
+
+fn letter_y() = 9389
+
+fn draw_pixels(rect_at, bits, i, cols, x, y, pw, ph) =
+  lit = bit_and(shr(bits, i), 1) == 1
+  if lit then place(rect_at, x + to_float(i % cols) * pw, y + to_float(4 - i / cols) * ph, pw, ph) else 0
+  if i + 1 >= cols * 5 then 0 else draw_pixels(rect_at, bits, i + 1, cols, x, y, pw, ph)
+
+# How many digits a number will take, which is what a left-aligned reading
+# needs and a right-aligned one does not.
+fn digits(n) = if n < 10 then 1 else 1 + digits(n / 10)
+
+# `draw_number` grows leftwards from where it starts, so putting a number to
+# the right of a label means moving the start over by the number's own width
+# first. The label then stays where it is however the reading changes.
+fn draw_left(rect_at, n, x, y, w, h, t) =
+  draw_number(rect_at, n, x + to_float(digits(n) - 1) * (w + t * 2.0), y, w, h, t)
+
+# Frames a second, labelled, in the top left corner of the window.
+fn draw_fps(prog, vao, rect_at, ink_at, fps) =
+  hud_ink(prog, vao, ink_at)
+  draw_pixels(rect_at, letter_f(), 0, 3, 0.0 - 0.9, 0.82, 0.012, 0.02)
+  draw_pixels(rect_at, letter_p(), 0, 3, 0.0 - 0.856, 0.82, 0.012, 0.02)
+  draw_pixels(rect_at, letter_s(), 0, 3, 0.0 - 0.812, 0.82, 0.012, 0.02)
+  draw_left(rect_at, max(fps, 0), 0.0 - 0.74, 0.82, 0.048, 0.1, 0.012)
+
+# Megabytes resident, in the top right, with the unit after it. Both readouts
+# are drawn from their rightmost digit leftwards, which is what keeps this one
+# pinned to the corner as the number changes width — the unit never moves.
+fn draw_rss(prog, vao, rect_at, ink_at, mb) =
+  hud_ink(prog, vao, ink_at)
+  # The label sits where three digits would end rather than against the
+  # number itself: the reading is right-aligned, so a label pushed up against
+  # it would slide about as the figure changed width.
+  draw_pixels(rect_at, letter_r(), 0, 3, 0.45, 0.82, 0.012, 0.02)
+  draw_pixels(rect_at, letter_s(), 0, 3, 0.494, 0.82, 0.012, 0.02)
+  draw_pixels(rect_at, letter_s(), 0, 3, 0.538, 0.82, 0.012, 0.02)
+  draw_number(rect_at, max(mb, 0), 0.732, 0.82, 0.048, 0.1, 0.012)
+  draw_pixels(rect_at, letter_m(), 0, 5, 0.808, 0.82, 0.012, 0.02)
+  draw_pixels(rect_at, letter_b(), 0, 3, 0.876, 0.82, 0.012, 0.02)
+
+# Both readouts are the same program, the same quad and the same colour; the
+# state is set again for each because they are drawn as two separate things.
+fn hud_ink(prog, vao, ink_at) =
+  glUseProgram(prog)
+  glBindVertexArray(vao)
+  glUniform3f(ink_at, 0.55, 0.62, 0.7)
+
+# ---- words -----------------------------------------------------------------
+#
+# A line of block letters out of a buffer of masks, three pixels wide each
+# with one between them. A zero is a space, which is the only reason the
+# buffer needs a value for one.
+fn draw_word(rect_at, masks: Buf(Int), i, n, x, y, pw, ph) =
+  if buf_get(masks, i) > 0 then draw_pixels(rect_at, buf_get(masks, i), 0, 3, x + to_float(i) * pw * 4.0, y, pw, ph) else 0
+  if i + 1 >= n then 0 else draw_word(rect_at, masks, i + 1, n, x, y, pw, ph)
+
+# What is left to break, along the bottom of the screen: ART LEFT and a
+# number. The maze has twenty paintings and the point of the axe is that it
+# ends with none.
+fn draw_score(prog, vao, rect_at, ink_at, left) =
+  hud_ink(prog, vao, ink_at)
+  w = buf_int(9)
+  buf_set(w, 0, letter_a())
+  buf_set(w, 1, letter_r())
+  buf_set(w, 2, letter_t())
+  buf_set(w, 3, 0)
+  buf_set(w, 4, letter_l())
+  buf_set(w, 5, letter_e())
+  buf_set(w, 6, letter_f())
+  buf_set(w, 7, letter_t())
+  buf_set(w, 8, 0)
+  draw_word(rect_at, w, 0, 9, 0.0 - 0.22, 0.0 - 0.9, 0.01, 0.017)
+  draw_left(rect_at, max(left, 0), 0.14, 0.0 - 0.9, 0.04, 0.085, 0.01)
+
+# And when there is none: two words in the middle of the screen, twice the
+# size of anything else on it.
+fn draw_over(prog, vao, rect_at, ink_at) =
+  hud_ink(prog, vao, ink_at)
+  w = buf_int(9)
+  buf_set(w, 0, letter_g())
+  buf_set(w, 1, letter_a())
+  buf_set(w, 2, letter_m())
+  buf_set(w, 3, letter_e())
+  buf_set(w, 4, 0)
+  buf_set(w, 5, letter_o())
+  buf_set(w, 6, letter_v())
+  buf_set(w, 7, letter_e())
+  buf_set(w, 8, letter_r())
+  draw_word(rect_at, w, 0, 9, 0.0 - 0.5, 0.0 - 0.06, 0.026, 0.045)
+
+# The other ending, and it does not get the same two words. Running out of
+# paintings is the game ending; running out of blood is something happening to
+# you, so it is put in the second person and in the colour of the thing that
+# happened.
+fn hud_blood(prog, vao, ink_at) =
+  glUseProgram(prog)
+  glBindVertexArray(vao)
+  glUniform3f(ink_at, 0.78, 0.08, 0.06)
+
+fn draw_died(prog, vao, rect_at, ink_at) =
+  hud_blood(prog, vao, ink_at)
+  w = buf_int(8)
+  buf_set(w, 0, letter_y())
+  buf_set(w, 1, letter_o())
+  buf_set(w, 2, letter_u())
+  buf_set(w, 3, 0)
+  buf_set(w, 4, letter_d())
+  buf_set(w, 5, letter_i())
+  buf_set(w, 6, letter_e())
+  buf_set(w, 7, letter_d())
+  draw_word(rect_at, w, 0, 8, 0.0 - 0.45, 0.0 - 0.06, 0.026, 0.045)
+
+# ---- what is left of you ---------------------------------------------------
+#
+# Two rectangles at the top of the screen: what a full life would be, and what
+# is left of it. The same quad and the same shader as the digits — there is
+# still nothing in this program but rectangles.
+fn draw_bar(prog, vao, rect_at, ink_at, left) =
+  glUseProgram(prog)
+  glBindVertexArray(vao)
+  # Three rectangles rather than two. The outline is what says how long the bar
+  # would be if it were full — without it the empty end has nothing to be empty
+  # against, and in a room lit by one torch that is most of the reading.
+  glUniform3f(ink_at, 0.44, 0.41, 0.36)
+  place(rect_at, 0.0 - 0.303, 0.891, 0.606, 0.064)
+  glUniform3f(ink_at, 0.05, 0.035, 0.035)
+  place(rect_at, 0.0 - 0.296, 0.898, 0.592, 0.05)
+  # Gold at full and blood at the end, and both of them bright. It was a dark
+  # red on a darker red before, which is two ways of saying nothing: at a
+  # glance neither where it ended nor how much of it there was could be read.
+  glUniform3f(ink_at, 0.85 + left * 0.1, 0.13 + left * 0.59, 0.08 + left * 0.24)
+  place(rect_at, 0.0 - 0.29, 0.904, 0.58 * clampf(left, 0.0, 1.0), 0.038)
+  # Four notches cut back to the trough colour, because a bite takes a fifth of
+  # you: what is left stops being a length and becomes a number you can count.
+  glUniform3f(ink_at, 0.05, 0.035, 0.035)
+  bar_notches(rect_at, 1)
+
+# The other one's, under yours and smaller: it is not you, and the eye should
+# not have to read a label to know which is which. Cold against your warm — a
+# bar the colour of the thing on the walls rather than of the fire.
+fn draw_foe_bar(prog, vao, rect_at, ink_at, left) =
+  glUseProgram(prog)
+  glBindVertexArray(vao)
+  glUniform3f(ink_at, 0.3, 0.31, 0.27)
+  place(rect_at, 0.0 - 0.233, 0.836, 0.466, 0.046)
+  glUniform3f(ink_at, 0.05, 0.05, 0.04)
+  place(rect_at, 0.0 - 0.228, 0.841, 0.456, 0.036)
+  glUniform3f(ink_at, 0.28 + left * 0.29, 0.44 + left * 0.35, 0.19 + left * 0.16)
+  place(rect_at, 0.0 - 0.223, 0.845, 0.446 * clampf(left, 0.0, 1.0), 0.028)
+  # Four notches again, and for the same reason: ten blows of the axe take it
+  # down, so each of the five lengths between them is two swings — what is left
+  # of it is a number of swings rather than a distance along a bar.
+  glUniform3f(ink_at, 0.05, 0.05, 0.04)
+  foe_notches(rect_at, 1)
+
+fn foe_notches(rect_at, i) =
+  place(rect_at, 0.0 - 0.2246 + 0.0892 * to_float(i), 0.845, 0.003, 0.028)
+  if i >= 4 then 0 else foe_notches(rect_at, i + 1)
+
+fn bar_notches(rect_at, i) =
+  place(rect_at, 0.0 - 0.292 + 0.116 * to_float(i), 0.904, 0.004, 0.038)
+  if i >= 4 then 0 else bar_notches(rect_at, i + 1)

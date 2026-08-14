@@ -1,0 +1,133 @@
+# What the machine as a whole is doing: per-core CPU load, and memory.
+#
+# `host_processor_info` answers with four tick counters per core — time spent
+# in user code, in the system, idle, and at nice priority. They only mean
+# something as a difference: what fraction of the ticks that passed between
+# two readings was not idle is what a core was busy doing.
+#
+# The call allocates the array itself and hands back a pointer, so it has to
+# be given back with `vm_deallocate` rather than freed. No privileges are
+# needed for any of this.
+
+extern fn mach_host_self() -> U32
+
+extern fn mach_task_self() -> U32
+
+extern fn host_processor_info(host: U32, flavor: I32, count: Ptr, info: Ptr, infocnt: Ptr) -> I32
+
+extern fn vm_deallocate(task: U32, addr: Ptr, size: U64) -> I32
+
+extern fn host_statistics64(host: U32, flavor: I32, info: Ptr, count: Ptr) -> I32
+
+extern fn sysctlbyname(name: Ptr, oldp: Ptr, oldlenp: Ptr, newp: Ptr, newlen: U64) -> I32
+
+fn cpu_load_info() = 2
+
+# user, system, idle, nice — in that order, per core.
+fn states() = 4
+
+fn state_user() = 0
+
+fn state_system() = 1
+
+fn state_idle() = 2
+
+fn state_nice() = 3
+
+# More than any Mac has, so one buffer serves whatever the machine turns out
+# to have.
+fn max_cores() = 64
+
+# Fills `out` with `states()` counters per core, and answers how many cores
+# there were. `out` must hold `max_cores() * states()`.
+fn sample_cores(out: Buf(Int)) =
+  n = buf_u32(1)
+  arr = buf_ptr(1)
+  cnt = buf_u32(1)
+  host_processor_info(mach_host_self(), cpu_load_info(), buf_data(n), buf_data(arr), buf_data(cnt))
+  copy_ticks(buf_get(arr, 0), out, 0, least(buf_get(n, 0) * states(), max_cores() * states()))
+  vm_deallocate(mach_task_self(), buf_get(arr, 0), buf_get(cnt, 0) * 4)
+  buf_get(n, 0)
+
+fn least(a, b) = if a < b then a else b
+
+# The counters are 32-bit and widen on the way in, because a difference taken
+# in 32 bits would wrap after about fifty days of uptime.
+fn copy_ticks(p, out: Buf(Int), i, n) = if i >= n then out else copy_one(p, out, i, n)
+
+fn copy_one(p, out: Buf(Int), i, n) =
+  buf_set(out, i, peek_u32(p, i))
+  copy_ticks(p, out, i + 1, n)
+
+fn core_count() = sample_cores(buf_int(max_cores() * states()))
+
+# ---- rates -----------------------------------------------------------------
+
+# Tenths of a percent of one core, between two readings. `busy` is everything
+# that was not idle; `system` is the part of it spent in the kernel, which is
+# drawn separately because it is the interesting half.
+fn busy_tenths(before: Buf(Int), now: Buf(Int), i) =
+  share(moved(before, now, i, state_user()) + moved(before, now, i, state_system()) + moved(before, now, i, state_nice()), passed(before, now, i))
+
+fn system_tenths(before: Buf(Int), now: Buf(Int), i) =
+  share(moved(before, now, i, state_system()), passed(before, now, i))
+
+fn moved(before: Buf(Int), now: Buf(Int), i, s) =
+  buf_get(now, i * states() + s) - buf_get(before, i * states() + s)
+
+fn passed(before: Buf(Int), now: Buf(Int), i) =
+  moved(before, now, i, state_user()) + moved(before, now, i, state_system()) + moved(before, now, i, state_idle()) + moved(before, now, i, state_nice())
+
+# Nothing passed means nothing to report — the first reading, or two taken so
+# close together that the counters did not move.
+fn share(part, whole) = if whole <= 0 || part < 0 then 0 else part * 1000 / whole
+
+# ---- memory ----------------------------------------------------------------
+
+# `host_statistics64` answers with a `vm_statistics64`, which is a count of
+# pages in each state. Its fields are a mix of 32- and 64-bit ones, so the
+# offsets below are counted in 32-bit words and were taken from the struct
+# rather than guessed: wired at 3, purgeable at 22, compressed at 32, and the
+# internal (application) pages at 35.
+fn host_vm_info64() = 4
+
+fn vm_info_words() = 38
+
+fn word_wired() = 3
+
+fn word_purgeable() = 22
+
+fn word_compressed() = 32
+
+fn word_internal() = 35
+
+fn vm_sample(out: Buf(U32)) =
+  cnt = buf_u32(1)
+  buf_set(cnt, 0, vm_info_words())
+  host_statistics64(mach_host_self(), host_vm_info64(), buf_data(out), buf_data(cnt))
+  out
+
+# What Activity Monitor calls "Memory Used": what applications hold, plus what
+# is wired down, plus what has been compressed rather than paged out. Free and
+# cached pages are not in it — on this system almost nothing is ever "free",
+# and counting it that way would read as full at all times.
+fn used_bytes(v: Buf(U32)) =
+  (app_pages(v) + buf_get(v, word_wired()) + buf_get(v, word_compressed())) * page_size()
+
+fn app_pages(v: Buf(U32)) = buf_get(v, word_internal()) - buf_get(v, word_purgeable())
+
+fn compressed_bytes(v: Buf(U32)) = buf_get(v, word_compressed()) * page_size()
+
+fn total_ram() = sysctl_int("hw.memsize", 8)
+
+fn page_size() = sysctl_int("hw.pagesize", 4)
+
+# One numeric sysctl, read into a buffer the kernel is told the size of.
+fn sysctl_int(name, width) =
+  out = buf_u8(8)
+  len = buf_int(1)
+  buf_set(len, 0, width)
+  n = to_cstr(name)
+  sysctlbyname(n, buf_data(out), buf_data(len), null_ptr(), 0)
+  free_ptr(n)
+  if width == 8 then peek_i64(buf_data(out), 0) else peek_u32(buf_data(out), 0)

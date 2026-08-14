@@ -1,0 +1,83 @@
+type Expr
+  Num(Int)
+  Add(Expr, Expr)
+  Sub(Expr, Expr)
+  Mul(Expr, Expr)
+
+impl Show(Expr)
+  fn show(e) = match e
+    Num(n) -> int_to_str(n)
+    Add(a, b) -> "(" + show(a) + " + " + show(b) + ")"
+    Sub(a, b) -> "(" + show(a) + " - " + show(b) + ")"
+    Mul(a, b) -> "(" + show(a) + " * " + show(b) + ")"
+
+fn eval(e) = match e
+  Num(n) -> n
+  Add(a, b) -> eval(a) + eval(b)
+  Sub(a, b) -> eval(a) - eval(b)
+  Mul(a, b) -> eval(a) * eval(b)
+
+# ---- what a parse returns: a value and where it stopped ---------------------
+
+type Parsed
+  Parsed(value: Expr, next: Int)
+  Bad(why: Str, at: Int)
+
+fn digit(c) = c >= 48 && c <= 57
+
+fn skip_space(s, i) = if i < str_len(s) && str_get(s, i) == 32 then skip_space(s, i + 1) else i
+
+fn read_int(s, i, acc) =
+  if i < str_len(s) && digit(str_get(s, i)) then read_int(s, i + 1, acc * 10 + str_get(s, i) - 48) else Parsed(Num(acc), i)
+
+# atom := number | "(" expr ")"
+fn atom(s, i0) =
+  i = skip_space(s, i0)
+  if i >= str_len(s) then Bad("expected a number", i) else if digit(str_get(s, i)) then read_int(s, i, 0) else if str_get(s, i) == 40 then bracketed(s, i + 1) else Bad("unexpected character", i)
+
+fn bracketed(s, i) = match expr(s, i)
+  Bad(w, at) -> Bad(w, at)
+  Parsed(e, j) -> closing(s, e, skip_space(s, j))
+
+fn closing(s, e, j) =
+  if j < str_len(s) && str_get(s, j) == 41 then Parsed(e, j + 1) else Bad("expected )", j)
+
+# term := atom ("*" atom)*
+fn term(s, i) = match atom(s, i)
+  Bad(w, at) -> Bad(w, at)
+  Parsed(a, j) -> term_more(s, a, j)
+
+fn term_more(s, a, j0) =
+  j = skip_space(s, j0)
+  if j < str_len(s) && str_get(s, j) == 42 then term_mul(s, a, j + 1) else Parsed(a, j)
+
+fn term_mul(s, a, j) = match atom(s, j)
+  Bad(w, at) -> Bad(w, at)
+  Parsed(b, k) -> term_more(s, Mul(a, b), k)
+
+# expr := term (("+" | "-") term)*
+fn expr(s, i) = match term(s, i)
+  Bad(w, at) -> Bad(w, at)
+  Parsed(a, j) -> expr_more(s, a, j)
+
+fn expr_more(s, a, j0) =
+  j = skip_space(s, j0)
+  plus = j < str_len(s) && str_get(s, j) == 43
+  minus = j < str_len(s) && str_get(s, j) == 45
+  if plus || minus then expr_op(s, a, j + 1, plus) else Parsed(a, j)
+
+fn expr_op(s, a, j, plus) = match term(s, j)
+  Bad(w, at) -> Bad(w, at)
+  Parsed(b, k) -> expr_more(s, if plus then Add(a, b) else Sub(a, b), k)
+
+fn run(src) = match expr(src, 0)
+  Bad(w, at) -> src + "  ->  error: " + w + " at " + int_to_str(at)
+  Parsed(e, _) -> src + "  ->  " + show(e) + " = " + int_to_str(eval(e))
+
+fn main() =
+  println(run("2 + 3 * 4"))
+  println(run("(2 + 3) * 4"))
+  println(run("10 - 4 - 3"))
+  println(run("2 * (3 + (4 - 1))"))
+  println(run("2 +"))
+  println(run("(1 + 2"))

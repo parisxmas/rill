@@ -1,0 +1,5 @@
+# Tail recursion compiles to a loop (LLVM tail-call elimination):
+# a million frames would overflow the stack without it.
+fn go(n, acc) = if n == 0 then acc else go(n - 1, acc + n)
+
+fn main() = println(go(1000000, 0))

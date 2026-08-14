@@ -1,0 +1,12 @@
+# The classic Go benchmark: a chain of 10,000 strands, each receiving a
+# number from its input channel, adding 1, and passing it on.
+fn chain(n, inp) =
+  next = channel()
+  spawn send(next, recv(inp) + 1)
+  if n == 1 then next else chain(n - 1, next)
+
+fn main() =
+  first = channel()
+  last = chain(10000, first)
+  spawn send(first, 0)
+  println(recv(last))
