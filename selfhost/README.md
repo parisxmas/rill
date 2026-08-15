@@ -60,7 +60,7 @@ involved.
 
 ## The code generator
 
-The third stage: `rillc.rill` compiles Rill — data types and `match`,
+The third stage: `rillc_gen.rill` compiles Rill — data types and `match`,
 generics by monomorphization, lambdas and closures, tail calls, the scalar
 built-ins — to LLVM IR text, ready for `cc out.ll librill_runtime.a`. It
 runs the self-hosted checker first, so emission starts from a program known
@@ -76,14 +76,14 @@ checker left polymorphic (a `die` that never returns) well typed.
 
 The proof has three tiers:
 
-1. **Behavior**: twenty-six programs build under both compilers and print
+1. **Behavior**: thirty-seven programs build under both compilers and print
    the same bytes — among them a five-million-iteration tail loop, a
    million-deep mutual recursion and a million-element list fold.
 2. **Fixpoint**: `rillc` compiles itself; the self-built compiler compiles
    `rillc.rill` again; the two IR files are byte-identical.
 3. **Full circle**: the self-built compiler builds the self-hosted
    formatter, and that binary matches `rill fmt` byte-for-byte over all
-   ~190 files in the repository. It builds the self-hosted type checker
+   ~200 files in the repository. It builds the self-hosted type checker
    too, which then matches `rill check` word-for-word on the error suite.
 
 Memory is precise: every box carries a reference count, every use of a
@@ -104,3 +104,32 @@ entry point flipped on when any of it appears. A fourth proof tier runs
 every runnable example under both compilers and requires identical output
 and a clean heap. What sits out: C function-pointer callbacks.
 The runtime stays Rust, as runtimes do.
+
+## The driver
+
+`rillc.rill` is the part that makes the above a compiler rather than a
+library: it parses a command line, finds the prelude and the runtime, writes
+the IR, and calls `cc`.
+
+```sh
+rillc build main.rill -o main    # check, emit IR, link — no Rust in the loop
+rillc run main.rill              # and then run it, exit code and all
+rillc emit-llvm main.rill        # the IR on stdout
+rillc check main.rill            # the checker alone
+```
+
+The prelude and `librill_runtime.a` are looked for beside `rillc` and one
+level up in the tree it was built in; `$RILL_PRELUDE`, `$RILL_RUNTIME`,
+`--prelude` and `--runtime` override that in the usual order. Libraries come
+out of the program's own `extern "lib"` declarations, in the linker's three
+forms — `-lname`, `-framework Name`, and anything starting with `-` passed
+through as written.
+
+Reaching the linker at all takes four C functions the language has no
+built-in for — `system`, `getenv`, `access`, `remove` — declared as plain
+`extern`s, which is to say the driver uses nothing a Rill program could not.
+Everything handed to the shell is single-quoted. `-O2` is load-bearing: the
+emitted IR is unoptimized and it is the optimizer that turns `tail call`
+into a jump, without which deep recursion overflows the stack. Success
+returns from `main` rather than calling `exit`, so the runtime's allocation
+report still runs — the leak proof depends on it.

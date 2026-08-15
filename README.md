@@ -141,9 +141,13 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
 | `webgpu/world/` | a walkable low-poly valley — terrain, physics and matrices in Rill; shadows, MSAA and compute particles on the GPU |
 
-`selfhost/` goes further: Rill's lexer, parser and formatter written in Rill
-itself, proven byte-for-byte against the Rust implementation over every
-`.rill` file in this repository (`./selfhost/check.sh`).
+`selfhost/` goes further: Rill compiled by Rill. The lexer, parser and
+formatter come first, proven byte-for-byte against the Rust implementation
+over every `.rill` file in this repository (`./selfhost/check.sh`); then the
+type checker, held to the same errors in the same words
+(`./selfhost/check_types.sh`); then `rillc` itself — a command that checks,
+emits LLVM IR and links, and compiles its own source to a byte-identical
+fixpoint (`./selfhost/check_rillc.sh`).
 
 ## How it is built
 

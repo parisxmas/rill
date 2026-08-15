@@ -1,2225 +1,256 @@
-# The third stage: code generation, in Rill. `rillc` compiles Rill — data
-# types and `match`, generic functions by monomorphization, lambdas and
-# closures, the scalar types and built-ins, tail calls — to LLVM IR text on
-# stdout, ready for `cc out.ll librill_runtime.a`. It runs the self-hosted
-# checker first, so emission starts from a program known to be well-typed.
+# `rillc` — the self-hosted compiler as a command.
 #
-# The shapes it leans on:
-# - Every value fits an 8-byte slot: i64, double, or a pointer. Data values
-#   are heap boxes `{ tag, field... }`; nullary constructors are shared
-#   static tags. Bools are i1 in registers and widen to a slot at rest.
-# - Generic functions are cloned per instantiation, discovered by a
-#   worklist from `main`; the instantiation is recovered by matching the
-#   checker's generalized signature against the argument types at each
-#   call, so no typed tree is needed.
-# - `match` and `if` results meet in one stack slot, not a phi: arms whose
-#   type the checker left polymorphic (a `die` that never returns) store
-#   their 8 bytes and the merge reads them at the type the checker proved.
-# - Lambdas lift to top-level functions over an environment box
-#   `{ fnptr, capture... }`; a call through a variable loads the pointer.
+# The stages behind it are all Rill: the lexer and parser, the type checker,
+# and the code generator in `rillc_gen.rill`. What was missing was the part a
+# compiler is actually used through — a driver that finds the prelude and the
+# runtime, writes the LLVM IR somewhere, and calls the system linker. That is
+# this file, and with it the toolchain no longer needs the Rust `rill` for
+# anything but building `rillc` the first time.
 #
-# Not yet: channels, `spawn`, `select`, traits, `==` on data types, Buf,
-# and reference counting — the generated code leaks; Perceus is the next
-# milestone. Each unsupported form dies with its name.
+#   rillc build <file.rill> [-o <out>] [--keep-ir]
+#   rillc run <file.rill>
+#   rillc emit-llvm <file.rill> [-o <out.ll>]
+#   rillc check <file.rill>
 #
-# Usage: rillc <file.rill> [<prelude.rill>] > out.ll
+# The linker is reached through C's `system`, so every path the driver hands
+# it is shell-quoted. `cc -O2` is not decoration: the generated IR is
+# unoptimized, and it is the optimizer that turns the emitted `tail call`
+# into a jump. Without it deep recursion overflows the stack.
 
-import "tyck_load"
-import "tyck_infer"
+import "rillc_gen"
 
-fn rc_prelude() = if arg_count() > 2 then arg(2) else "crates/rill_syntax/src/prelude.rill"
+# The C library does the four things a driver needs and Rill has no built-in
+# for: run a command, read the environment, ask whether a file exists, and
+# delete one.
+extern fn system(command: Ptr) -> I32
 
-fn main() = rc_gen(setup(load_program(arg(1), rc_prelude())))
+extern fn getenv(name: Ptr) -> Ptr
 
-fn rc_gen(so) = match so
-  SO(cx, st, fns) ->
-    st2 = fold(dep_groups(fns, cx_fnidx(cx)), st, \s, g -> run_group(cx, s, fns, g))
-    print(emit_program(cx, st2, fns))
+extern fn access(path: Ptr, mode: I32) -> I32
 
-fn rcdie(msg) =
+extern fn remove(path: Ptr) -> I32
+
+# What a command line adds up to: the source, where the output goes, where
+# the prelude and the runtime library are, and whether to keep the IR file.
+# Empty means "not given, work it out".
+type RCX
+  RCX(Str, Str, Str, Str, Bool)
+
+fn rc_usage() =
+  "usage:\n  rillc build <file.rill> [-o <out>] [--keep-ir]\n  rillc run <file.rill>\n  rillc emit-llvm <file.rill> [-o <out.ll>]\n  rillc check <file.rill>\n\n  -o          where to write the executable (or the IR, for emit-llvm)\n  --keep-ir   leave the <out>.ll file behind after linking\n  --prelude   the prelude source ($RILL_PRELUDE, else found next to rillc)\n  --runtime   librill_runtime.a ($RILL_RUNTIME, else found next to rillc)"
+
+fn rc_usage_die(msg) =
   println("rillc: " + msg)
+  println(rc_usage())
   exit(1)
-  rcdie(msg)
-
-fn fnd_body(f) = match f
-  FnD(_, _, _, _, b, _) -> b
-
-fn fnd_params(f) = match f
-  FnD(_, _, ps, _, _, _) -> ps
-
-# ---- types in the generated code --------------------------------------------
-#
-# `uk()` is the codegen's own unknown: a type the checker generalized away
-# at a call that never returns, or a container no one ever opens. Such a
-# value is only ever moved, never inspected, so it travels as an i64 slot.
-
-fn uk() = YVar(0 - 1)
-
-fn is_uk(t) = match t
-  YVar(_) -> true
-  _ -> false
-
-fn dz(st, t) = match resolve(st, t)
-  YAdt(i, args) -> YAdt(i, map(args, \a -> dz(st, a)))
-  YFn(ps, r) -> YFn(map(ps, \p -> dz(st, p)), dz(st, r))
-  YChan(e) -> YChan(dz(st, e))
-  other -> other
-
-fn tystr(t) = match t
-  YInt -> "i64"
-  YFloat -> "double"
-  YBool -> "i1"
-  YStr -> "ptr"
-  YPtr -> "ptr"
-  YUnit -> "void"
-  YAdt(_, _) -> "ptr"
-  YFn(_, _) -> "ptr"
-  YVar(_) -> "i64"
-  YBuf(_) -> "ptr"
-  YGen(_) -> rcdie("internal: generic type reached the code generator")
-  YChan(_) -> "ptr"
-
-# The type a value has at rest, in a box slot or merge slot.
-fn slot(t) = match t
-  YFloat -> "double"
-  YStr -> "ptr"
-  YPtr -> "ptr"
-  YAdt(_, _) -> "ptr"
-  YFn(_, _) -> "ptr"
-  YBuf(_) -> "ptr"
-  YChan(_) -> "ptr"
-  _ -> "i64"
-
-fn mang(t) = match t
-  YInt -> "i"
-  YFloat -> "f"
-  YBool -> "b"
-  YStr -> "s"
-  YUnit -> "u"
-  YPtr -> "p"
-  YVar(_) -> "x"
-  YGen(_) -> "g"
-  YAdt(a, args) -> "A" + int_to_str(a) + "<" + mang_list(args) + ">"
-  YFn(ps, r) -> "F<" + mang_list(ps) + ";" + mang(r) + ">"
-  YChan(e) -> "C<" + mang(e) + ">"
-  YBuf(w) -> "B" + ct_name(w)
-
-fn mang_list(l) = ml_loop(l, "")
-
-fn ml_loop(l, acc) = match l
-  Nil -> acc
-  Cons(t, rest) -> ml_loop(rest, if str_cmp(acc, "") == 0 then mang(t) else acc + "," + mang(t))
-
-fn mangle(n, targs) = match targs
-  Nil -> n
-  _ -> n + "$" + mang_list(targs)
-
-# ---- recovering instantiations ----------------------------------------------
-#
-# Match a generalized signature type against the concrete type of an
-# argument, collecting what each Gen must be. The program already checked,
-# so a mismatch can only involve an unknown; first binding wins.
-
-fn uni(sg, ct, m) = match sg
-  YGen(i) -> uni_gen(iget(m, i), i, ct, m)
-  YAdt(_, args) -> uni_adt(ct, args, m)
-  YFn(ps, r) -> uni_fn(ct, ps, r, m)
-  YChan(e) -> uni_chan(ct, e, m)
-  _ -> m
-
-fn uni_gen(o, i, ct, m) = match o
-  Some(_) -> m
-  None -> if is_uk(ct) then m else iput(m, i, ct)
-
-fn uni_adt(ct, args, m) = match ct
-  YAdt(_, cargs) -> uni_list(args, cargs, m)
-  _ -> m
-
-fn uni_fn(ct, ps, r, m) = match ct
-  YFn(cps, cr) -> uni(r, cr, uni_list(ps, cps, m))
-  _ -> m
-
-fn uni_chan(ct, e, m) = match ct
-  YChan(ce) -> uni(e, ce, m)
-  _ -> m
-
-fn uni_list(sgs, cts, m) = match sgs
-  Nil -> m
-  Cons(s, srest) -> uni_list2(cts, s, srest, m)
-
-fn uni_list2(cts, s, srest, m) = match cts
-  Cons(c, crest) -> uni_list(srest, crest, uni(s, c, m))
-  Nil -> m
-
-# The Gen bindings as a substitution list, unknowns where nothing bound.
-fn glist(m, ngen) = gl_loop(m, 0, ngen, Nil)
-
-fn gl_loop(m, i, ngen, acc) =
-  if i >= ngen then reverse(acc) else gl_loop(m, i + 1, ngen, Cons(gl_one(iget(m, i)), acc))
-
-fn gl_one(o) = match o
-  Some(t) -> t
-  None -> uk()
-
-# ---- the emission state -----------------------------------------------------
-#
-# Per function: the fresh-name counter, the current label, the lines so far
-# (newest first). Shared across the whole program: string and tag globals
-# with their counter, lifted lambda definitions, the instantiation worklist
-# and the set of symbols already queued.
-
-type CG
-  CG(Int, Str, List(Str), List(Str), Int, List(Str), List(WI), SM(Bool))
-
-type WI
-  WI(Str, Int, List(Ty2))
-  WR(Int, List(Ty2))
-  WE(Int, List(Ty2))
-  WS(Int, List(Ty2))
-
-type RV
-  RV(CG, Str, Ty2)
-
-type TS2
-  TS2(Str, CG)
-
-type IS
-  IS(Int, CG)
-
-fn cg_line(cg, s) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> CG(nid, lbl, Cons("  " + s, code), gl, gid, aux, pend, seen)
-
-fn cg_label(cg, l) = match cg
-  CG(nid, _, code, gl, gid, aux, pend, seen) -> CG(nid, l, Cons(l + ":", code), gl, gid, aux, pend, seen)
-
-fn cg_cur(cg) = match cg
-  CG(_, lbl, _, _, _, _, _, _) -> lbl
-
-fn cg_tmp(cg) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> TS2("%t" + int_to_str(nid), CG(nid + 1, lbl, code, gl, gid, aux, pend, seen))
-
-fn cg_id(cg) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> IS(nid, CG(nid + 1, lbl, code, gl, gid, aux, pend, seen))
-
-fn cg_gid(cg) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> IS(gid, CG(nid, lbl, code, gl, gid + 1, aux, pend, seen))
-
-fn cg_str(cg, raw) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) ->
-    nm = "@.str" + int_to_str(gid)
-    TS2(nm, CG(nid, lbl, code, Cons(render_strlit(nm, raw), gl), gid + 1, aux, pend, seen))
-
-fn cg_global(cg, def) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> CG(nid, lbl, code, Cons(def, gl), gid, aux, pend, seen)
-
-fn cg_has_global(cg, def) = match cg
-  CG(_, _, _, gl, _, _, _, _) -> str_listed(gl, def)
-
-fn str_listed(l, s) = match l
-  Nil -> false
-  Cons(h, t) -> str_cmp(h, s) == 0 || str_listed(t, s)
-
-fn cg_aux(cg, def) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> CG(nid, lbl, code, gl, gid, Cons(def, aux), pend, seen)
-
-fn cg_want(cg, sym, name, idx, targs) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) ->
-    if shas(seen, sym) then CG(nid, lbl, code, gl, gid, aux, pend, seen) else CG(nid, lbl, code, gl, gid, aux, Cons(WI(name, idx, targs), pend), sput(seen, sym, true))
-
-# A fresh function-local frame carrying the shared half of another.
-fn cg_sub(cg) = match cg
-  CG(_, _, _, gl, gid, aux, pend, seen) -> CG(0, "entry", Nil, gl, gid, aux, pend, seen)
-
-# The parent frame, with the shared half updated from a finished sub-frame.
-fn cg_merge(parent, sub) = match parent
-  CG(nid, lbl, code, _, _, _, _, _) -> cg_merge2(sub, nid, lbl, code)
-
-fn cg_merge2(sub, nid, lbl, code) = match sub
-  CG(_, _, _, gl, gid, aux, pend, seen) -> CG(nid, lbl, code, gl, gid, aux, pend, seen)
-
-fn cat(l) = fold(l, "", \a, s -> a + s)
-
-# Generated labels live in the same namespace as local values, so they wear
-# a dot no Rill identifier can: a parameter named `entry` must not collide.
-fn lb(nm) = "\"rc." + nm + "\""
-
-# ---- reference counting -----------------------------------------------------
-#
-# Ownership is simple and uniform: every use of a variable retains, every
-# binding owns one reference released when its scope ends, arguments are
-# consumed by the callee, and the runtime borrows what it is passed. The
-# static marker in a box's first slot makes retain and release no-ops on
-# shared constants.
-
-fn boxed(t) = match t
-  YStr -> true
-  YAdt(_, _) -> true
-  YFn(_, _) -> true
-  YBuf(_) -> true
-  YChan(_) -> true
-  _ -> false
-
-fn retain(cg, v, t) =
-  if boxed(t) then cg_line(cg, "call void @\"rc.retain\"(ptr " + v + ")") else cg
-
-fn retain_all(cg, es) = fold(es, cg, \c, e -> retain_vt(c, e))
-
-fn retain_vt(cg, e) = match e
-  VT(v, t) -> retain(cg, v, t)
-
-fn rel_sym(a, targs) = "rel$" + mang(YAdt(a, targs))
-
-fn cg_want_rel(cg, a, targs) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) ->
-    sym = rel_sym(a, targs)
-    if shas(seen, sym) then CG(nid, lbl, code, gl, gid, aux, pend, seen) else CG(nid, lbl, code, gl, gid, aux, Cons(WR(a, targs), pend), sput(seen, sym, true))
-
-fn release(cg, v, t) = match t
-  YStr -> cg_line(cg, "call void @rill_str_release(ptr " + v + ")")
-  YFn(_, _) -> cg_line(cg, "call void @\"rc.clorel\"(ptr " + v + ")")
-  YAdt(a, targs) -> cg_line(cg_want_rel(cg, a, targs), "call void @\"" + rel_sym(a, targs) + "\"(ptr " + v + ")")
-  YBuf(w) -> cg_line(cg, "call void @rill_buf_release(ptr " + v + ", i64 " + int_to_str(ct_size(w)) + ")")
-  YChan(_) -> cg_line(cg, "call void @rill_chan_release(ptr " + v + ")")
-  _ -> cg
-
-fn ct_size(w) = match w
-  CW(nm) -> ctw_size(nm)
-  CFn(_, _) -> 8
-
-fn ctw_size(nm) =
-  if str_cmp(nm, "I8") == 0 || str_cmp(nm, "U8") == 0 then 1 else if str_cmp(nm, "I16") == 0 || str_cmp(nm, "U16") == 0 then 2 else if str_cmp(nm, "I32") == 0 || str_cmp(nm, "U32") == 0 || str_cmp(nm, "F32") == 0 then 4 else 8
-
-fn eq_sym(a, targs) = "eq$" + mang(YAdt(a, targs))
-
-fn shw_sym(a, targs) = "shw$" + mang(YAdt(a, targs))
-
-fn cg_want_shw(cg, a, targs) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) ->
-    sym = shw_sym(a, targs)
-    if shas(seen, sym) then CG(nid, lbl, code, gl, gid, aux, pend, seen) else CG(nid, lbl, code, gl, gid, aux, Cons(WS(a, targs), pend), sput(seen, sym, true))
-
-fn cg_want_eq(cg, a, targs) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) ->
-    sym = eq_sym(a, targs)
-    if shas(seen, sym) then CG(nid, lbl, code, gl, gid, aux, pend, seen) else CG(nid, lbl, code, gl, gid, aux, Cons(WE(a, targs), pend), sput(seen, sym, true))
-
-fn rel_all(cg, es) = fold(es, cg, \c, e -> rel_vt(c, e))
-
-fn rel_vt(cg, e) = match e
-  VT(v, t) -> release(cg, v, t)
-
-# ---- string literals --------------------------------------------------------
-#
-# The token holds the source spelling, escapes included; decode to bytes,
-# then re-encode for LLVM's c"..." form. The i64 header marks the string
-# static so the runtime never frees it.
-
-type SB
-  SB(Str, Int)
-
-fn render_strlit(nm, raw) =
-  match decode_str(raw, 0, "", 0)
-    SB(esc, n) -> nm + " = private constant { i64, i64, [" + int_to_str(n) + " x i8] } { i64 4611686018427387903, i64 " + int_to_str(n) + ", [" + int_to_str(n) + " x i8] c\"" + esc + "\" }"
-
-fn decode_str(raw, i, out, n) =
-  if i >= str_len(raw) then SB(out, n) else decode_one(raw, i, str_get(raw, i), out, n)
-
-fn decode_one(raw, i, c, out, n) =
-  if c == 92 then decode_esc(raw, i, out, n) else decode_str(raw, i + 1, out + enc_byte(c), n + 1)
-
-fn decode_esc(raw, i, out, n) =
-  e = str_get(raw, i + 1)
-  b = if e == 110 then 10 else if e == 116 then 9 else if e == 92 then 92 else 34
-  decode_str(raw, i + 2, out + enc_byte(b), n + 1)
-
-fn enc_byte(b) =
-  if b >= 32 && b <= 126 && b != 34 && b != 92 then chr(b) else "\\" + hexd(shr(b, 4)) + hexd(bit_and(b, 15))
-
-fn hexd(i) = str_sub("0123456789ABCDEF", i, 1)
-
-# A double's bits, spelled the way LLVM wants inexact constants: the runtime
-# scratch buffer turns the spelling into bits at compile time.
-fn fhex(spelling) =
-  p = alloc_bytes(8)
-  poke_f64(p, 0, str_to_float(spelling))
-  b = peek_i64(p, 0)
+  rc_usage_die(msg)
+
+# ---- talking to the system --------------------------------------------------
+
+# A command's exit status the way a shell reports it: the code it exited
+# with, or 128 plus the signal that killed it.
+fn rc_status(st) =
+  sig = bit_and(st, 255)
+  if st < 0 then 127 else if sig != 0 then 128 + sig else bit_and(shr(st, 8), 255)
+
+fn rc_sh(cmd) =
+  p = to_cstr(cmd)
+  st = system(p)
   free_ptr(p)
-  "0x" + hex16(b, 16, "")
+  rc_status(st)
 
-fn hex16(b, k, out) =
-  if k == 0 then out else hex16(b, k - 1, out + hexd(bit_and(shr(b, (k - 1) * 4), 15)))
+fn rc_getenv(name) =
+  p = to_cstr(name)
+  v = getenv(p)
+  free_ptr(p)
+  if is_null(v) then "" else from_cstr(v)
 
-# ---- slot traffic -----------------------------------------------------------
+fn rc_exists(path) =
+  p = to_cstr(path)
+  r = access(p, 0)
+  free_ptr(p)
+  r == 0
 
-# Widen a register value for an 8-byte slot; only Bool changes shape.
-fn to_slot(cg, v, t) =
-  if is_ybool(t) then to_slot2(cg_tmp(cg), v) else TS2(v, cg)
+fn rc_unlink(path) =
+  p = to_cstr(path)
+  r = remove(p)
+  free_ptr(p)
+  r == 0
 
-fn to_slot2(ts, v) = match ts
-  TS2(r, cg) -> TS2(r, cg_line(cg, r + " = zext i1 " + v + " to i64"))
+# One shell word, whatever is in it. Single quotes protect everything except
+# a single quote, which has to leave and come back: `'` becomes `'\''`.
+fn rc_quote(s) = "'" + rc_quote_from(s, 0, "") + "'"
 
-# Narrow a loaded slot back to its register shape.
-fn from_slot(cg, v, t) =
-  if is_ybool(t) then from_slot2(cg_tmp(cg), v) else TS2(v, cg)
+fn rc_quote_from(s, i, acc) =
+  if i >= str_len(s) then acc else rc_quote_from(s, i + 1, acc + rc_quote_byte(str_get(s, i)))
 
-fn from_slot2(ts, v) = match ts
-  TS2(r, cg) -> TS2(r, cg_line(cg, r + " = trunc i64 " + v + " to i1"))
+fn rc_quote_byte(c) = if c == 39 then "'\\''" else chr(c)
 
-# Cross the unknown/concrete boundary: a value the checker generalized
-# away travels as i64; when it meets a position whose type is proven,
-# reinterpret the bits — such a value is either dead (a diverging call) or
-# was only ever moved, so the bits are already right.
-fn coerce(cg, v, t, w) =
-  if is_uk(t) && !is_uk(w) && !is_yunit(w) then co_from(cg_tmp(cg), v, w) else if !is_uk(t) && is_uk(w) && !is_yunit(t) then co_to(cg_tmp(cg), v, t) else TS2(v, cg)
+# ---- paths ------------------------------------------------------------------
 
-fn co_from(ts, v, w) = match ts
-  TS2(r, cg) ->
-    s = tystr(w)
-    if str_cmp(s, "i64") == 0 then TS2(v, cg) else if str_cmp(s, "ptr") == 0 then TS2(r, cg_line(cg, r + " = inttoptr i64 " + v + " to ptr")) else if str_cmp(s, "double") == 0 then TS2(r, cg_line(cg, r + " = bitcast i64 " + v + " to double")) else TS2(r, cg_line(cg, r + " = trunc i64 " + v + " to i1"))
+fn rc_last_slash(s, i) =
+  if i < 0 then 0 - 1 else if str_get(s, i) == 47 then i else rc_last_slash(s, i - 1)
 
-fn co_to(ts, v, t) = match ts
-  TS2(r, cg) ->
-    s = tystr(t)
-    if str_cmp(s, "i64") == 0 then TS2(v, cg) else if str_cmp(s, "ptr") == 0 then TS2(r, cg_line(cg, r + " = ptrtoint ptr " + v + " to i64")) else if str_cmp(s, "double") == 0 then TS2(r, cg_line(cg, r + " = bitcast double " + v + " to i64")) else TS2(r, cg_line(cg, r + " = zext i1 " + v + " to i64"))
+fn rc_dirname(p) = rc_dirname2(p, rc_last_slash(p, str_len(p) - 1))
 
-fn co_ty(t, w) = if is_uk(t) && !is_uk(w) then w else if !is_uk(t) && is_uk(w) then uk() else t
+fn rc_dirname2(p, i) = if i < 0 then "." else if i == 0 then "/" else str_sub(p, 0, i)
 
-# A pointer to slot k of a box.
-fn slot_ptr(cg, b, k) =
-  match cg_tmp(cg)
-    TS2(r, cg2) -> TS2(r, cg_line(cg2, r + " = getelementptr i8, ptr " + b + ", i64 " + int_to_str(8 * k)))
+fn rc_basename(p) = rc_basename2(p, rc_last_slash(p, str_len(p) - 1))
 
-fn load_slot(cg, b, k, t) =
-  match slot_ptr(cg, b, k)
-    TS2(p, cg2) -> load_slot2(cg_tmp(cg2), p, t)
+fn rc_basename2(p, i) = str_sub(p, i + 1, str_len(p) - i - 1)
 
-fn load_slot2(ts, p, t) = match ts
-  TS2(r, cg) -> from_slot(cg_line(cg, r + " = load " + slot(t) + ", ptr " + p), r, t)
+fn rc_ends_with(s, suf) =
+  str_len(s) >= str_len(suf) && str_sub(s, str_len(s) - str_len(suf), str_len(suf)) == suf
 
-fn store_slot(cg, b, k, v, t) =
-  match to_slot(cg, v, t)
-    TS2(sv, cg2) -> store_slot3(slot_ptr(cg2, b, k), sv, t)
+fn rc_drop_ext(p) = if rc_ends_with(p, ".rill") then str_sub(p, 0, str_len(p) - 5) else p
 
-fn store_slot3(ts, sv, t) = match ts
-  TS2(p, cg) -> cg_line(cg, "store " + slot(t) + " " + sv + ", ptr " + p)
+# `rillc run foo.rill` has to say `./foo`, not `foo`.
+fn rc_exe_path(out) = if str_find(out, "/") >= 0 then out else "./" + out
 
-# ---- expressions ------------------------------------------------------------
+fn rc_first_existing(cands, what, hint) = match cands
+  Cons(c, rest) -> if rc_exists(c) then c else rc_first_existing(rest, what, hint)
+  Nil -> rcdie("cannot find " + what + "; " + hint)
 
-type VT
-  VT(Str, Ty2)
+# The prelude and the runtime are looked for where a built tree keeps them:
+# beside `rillc` itself, or up one level in the source tree it was built in.
+fn rc_find_prelude(given, home) =
+  if given != "" then given else rc_find_prelude2(rc_getenv("RILL_PRELUDE"), home)
 
-fn emit(cx, st, env, e, cg) = match e
-  EInt(s) -> RV(cg, s, YInt)
-  EFloat(s) -> RV(cg, fhex(s), YFloat)
-  EStr(raw) -> emit_strlit(cg_str(cg, raw))
-  EBool(b) -> RV(cg, if b then "true" else "false", YBool)
-  EVar(n, ln) -> emit_var(sget(env, n), cx, st, n, cg)
-  ENeg(x) -> emit_neg(emit(cx, st, env, x, cg))
-  EBin(op, l, r, ln) -> emit_bin(cx, st, env, op, l, r, cg)
-  EIf(c, t, e2) -> emit_if(cx, st, env, c, t, e2, cg)
-  ECall(n, args, ln, _) -> emit_call(cx, st, env, n, args, cg)
-  EBlock(ss) -> emit_block(cx, st, env, ss, cg)
-  EMatch(s, arms, _) -> emit_match(cx, st, env, s, arms, cg)
-  ELambda(_, _, _) -> rcdie("a lambda here needs a call to give it a type")
-  ESpawn(b, _) -> emit_spawn(cx, st, env, b, cg)
-  ESelect(arms, d, _) -> emit_select(cx, st, env, arms, d, cg, false, YUnit, Nil)
+fn rc_find_prelude2(fromenv, home) =
+  if fromenv != "" then fromenv else rc_first_existing(rc_prelude_dirs(home), "the prelude", "set RILL_PRELUDE or pass --prelude")
 
-fn emit_strlit(ts) = match ts
-  TS2(nm, cg) -> RV(cg, nm, YStr)
+fn rc_prelude_dirs(home) =
+  Cons(home + "/prelude.rill", Cons(home + "/../crates/rill_syntax/src/prelude.rill", Cons("crates/rill_syntax/src/prelude.rill", Nil)))
 
-fn emit_var(o, cx, st, n, cg) = match o
-  Some(VT(v, t)) -> RV(retain(cg, v, t), v, t)
-  None -> emit_var2(sget(cx_ctors(cx), n), cx, st, n, cg)
+fn rc_find_runtime(given, home) =
+  if given != "" then given else rc_find_runtime2(rc_getenv("RILL_RUNTIME"), home)
 
-fn emit_var2(o, cx, st, n, cg) = match o
-  Some(CR(a, ci)) -> emit_nullary(cg, a, ci, map(range(1, adt_nparams(cx, a)), \i -> uk()))
-  None -> rcdie("a function used as a value needs a call to give it a type: `" + n + "`")
+fn rc_find_runtime2(fromenv, home) =
+  if fromenv != "" then fromenv else rc_first_existing(rc_runtime_dirs(home), "librill_runtime.a", "set RILL_RUNTIME or pass --runtime")
 
-# Nullary constructors are static: one shared tag box per (type, tag).
-fn emit_nullary(cg, a, ci, targs) =
-  nm = "@\"nul" + int_to_str(a) + "_" + int_to_str(ci) + "\""
-  def = nm + " = private constant { i64, i64 } { i64 4611686018427387903, i64 " + int_to_str(ci) + " }"
-  cg2 = if cg_has_global(cg, def) then cg else cg_global(cg, def)
-  RV(cg2, nm, YAdt(a, targs))
+fn rc_runtime_dirs(home) =
+  Cons(home + "/librill_runtime.a", Cons(home + "/../target/release/librill_runtime.a", Cons("target/release/librill_runtime.a", Nil)))
 
-fn emit_neg(ev) = match ev
-  RV(cg, v, t) -> emit_neg2(cg_tmp(cg), v, t)
-
-fn emit_neg2(ts, v, t) = match ts
-  TS2(r, cg) ->
-    line = if is_yfloat(t) then r + " = fneg double " + v else r + " = sub i64 0, " + v
-    RV(cg_line(cg, line), r, t)
-
-fn emit_bin(cx, st, env, op, l, r, cg) =
-  match emit(cx, st, env, l, cg)
-    RV(cg1, lv, lt) -> emit_bin2(emit(cx, st, env, r, cg1), cx, st, op, lv, lt)
-
-fn emit_bin2(ev, cx, st, op, lv, lt) = match ev
-  RV(cg, rv, rt) ->
-    t = if is_uk(lt) then rt else lt
-    emit_bin3(coerce(cg, lv, lt, t), cx, st, op, rv, rt, t)
-
-fn emit_bin3(ts, cx, st, op, rv, rt, t) = match ts
-  TS2(lv, cg) -> emit_bin4(coerce(cg, rv, rt, t), cx, st, op, lv, t)
-
-fn emit_bin4(ts, cx, st, op, lv, t) = match ts
-  TS2(rv, cg) ->
-    if is_adt_ty(t) then emit_abin(cx, st, cg, op, lv, rv, t) else if is_ystr(t) then emit_sbin(cg, op, lv, rv) else if is_yfloat(t) then emit_fbin(cg, op, lv, rv) else emit_ibin(cg, op, lv, rv, t)
-
-# Data values: `==` is structural — the generated eq borrows, so the owned
-# operands are released after. Ordering goes through the `Ord` impl, an
-# ordinary call that consumes its arguments.
-fn emit_abin(cx, st, cg, op, lv, rv, t) = match t
-  YAdt(a, targs) ->
-    if op == 5 || op == 6 then adt_eq_rel(adt_eq_ir(cg_want_eq(cg, a, targs), op, lv, rv, a, targs), lv, rv, t) else adt_ord_ir(cx, st, cg, op, lv, rv, t)
-  _ -> rcdie("internal: emit_abin on a non-data type")
-
-fn adt_eq_rel(ev, lv, rv, t) = match ev
-  RV(cg, v, vt) -> RV(release(release(cg, lv, t), rv, t), v, vt)
-
-fn adt_eq_ir(cg, op, lv, rv, a, targs) =
-  match cg_tmp(cg)
-    TS2(r, cg1) ->
-      cg2 = cg_line(cg1, r + " = call i1 @\"" + eq_sym(a, targs) + "\"(ptr " + lv + ", ptr " + rv + ")")
-      if op == 5 then RV(cg2, r, YBool) else str_eq_ir3(cg_tmp(cg2), r)
-
-fn adt_ord_ir(cx, st, cg, op, lv, rv, t) =
-  match trait_call_vts(cx, st, cg, "compare", Cons(VT(lv, t), Cons(VT(rv, t), Nil)))
-    RV(cg1, c, _) -> str_ord_ir2(cg_tmp(cg1), c, op)
-
-fn is_adt_ty(t) = match t
-  YAdt(_, _) -> true
-  _ -> false
-
-fn emit_ibin(cg, op, lv, rv, lt) =
-  match cg_tmp(cg)
-    TS2(r, cg2) ->
-      ty = if is_ybool(lt) then "i1" else "i64"
-      line = if op < 5 then r + " = " + iarith(op) + " i64 " + lv + ", " + rv else r + " = icmp " + icond(op) + " " + ty + " " + lv + ", " + rv
-      RV(cg_line(cg2, line), r, if op < 5 then YInt else YBool)
-
-fn iarith(op) =
-  if op == 0 then "add" else if op == 1 then "sub" else if op == 2 then "mul" else if op == 3 then "sdiv" else "srem"
-
-fn icond(op) =
-  if op == 5 then "eq" else if op == 6 then "ne" else if op == 7 then "slt" else if op == 8 then "sle" else if op == 9 then "sgt" else "sge"
-
-fn emit_fbin(cg, op, lv, rv) =
-  match cg_tmp(cg)
-    TS2(r, cg2) ->
-      line = if op < 4 then r + " = " + farith(op) + " double " + lv + ", " + rv else r + " = fcmp " + fcond(op) + " double " + lv + ", " + rv
-      RV(cg_line(cg2, line), r, if op < 4 then YFloat else YBool)
-
-fn farith(op) =
-  if op == 0 then "fadd" else if op == 1 then "fsub" else if op == 2 then "fmul" else "fdiv"
-
-fn fcond(op) =
-  if op == 5 then "oeq" else if op == 6 then "one" else if op == 7 then "olt" else if op == 8 then "ole" else if op == 9 then "ogt" else "oge"
-
-fn emit_sbin(cg, op, lv, rv) =
-  match emit_sbin0(cg, op, lv, rv)
-    RV(cg1, v, t) -> RV(release(release(cg1, lv, YStr), rv, YStr), v, t)
-
-fn emit_sbin0(cg, op, lv, rv) =
-  if op == 0 then rt1(cg, "ptr", "rill_str_concat", "ptr " + lv + ", ptr " + rv, YStr) else if op == 5 then str_eq_ir(cg, lv, rv, false) else if op == 6 then str_eq_ir(cg, lv, rv, true) else str_ord_ir(cg, op, lv, rv)
-
-fn str_eq_ir(cg, lv, rv, negate) =
-  match rt1(cg, "i8", "rill_str_eq", "ptr " + lv + ", ptr " + rv, YInt)
-    RV(cg1, v8, _) -> str_eq_ir2(cg_tmp(cg1), v8, negate)
-
-fn str_eq_ir2(ts, v8, negate) = match ts
-  TS2(r, cg) ->
-    cg2 = cg_line(cg, r + " = trunc i8 " + v8 + " to i1")
-    if negate then str_eq_ir3(cg_tmp(cg2), r) else RV(cg2, r, YBool)
-
-fn str_eq_ir3(ts, v) = match ts
-  TS2(r, cg) -> RV(cg_line(cg, r + " = xor i1 " + v + ", true"), r, YBool)
-
-fn str_ord_ir(cg, op, lv, rv) =
-  match rt1(cg, "i64", "rill_str_cmp", "ptr " + lv + ", ptr " + rv, YInt)
-    RV(cg1, c, _) -> str_ord_ir2(cg_tmp(cg1), c, op)
-
-fn str_ord_ir2(ts, c, op) = match ts
-  TS2(r, cg) -> RV(cg_line(cg, r + " = icmp " + icond(op) + " i64 " + c + ", 0"), r, YBool)
-
-# A runtime call with one fresh result.
-fn rt1(cg, rty, sym, args, t) =
-  match cg_tmp(cg)
-    TS2(r, cg2) -> RV(cg_line(cg2, r + " = call " + rty + " @" + sym + "(" + args + ")"), r, t)
-
-fn rt0(cg, sym, args) = RV(cg_line(cg, "call void @" + sym + "(" + args + ")"), "", YUnit)
-
-# A value as a channel word, and back.
-fn to_word(cg, v, t) =
-  s = slot(t)
-  if str_cmp(s, "i64") == 0 then to_slot(cg, v, t) else if str_cmp(s, "ptr") == 0 then word_cast(cg_tmp(cg), " = ptrtoint ptr " + v + " to i64") else word_cast(cg_tmp(cg), " = bitcast double " + v + " to i64")
-
-fn from_word(cg, v, t) =
-  s = slot(t)
-  if str_cmp(s, "i64") == 0 then from_slot(cg, v, t) else if str_cmp(s, "ptr") == 0 then word_cast(cg_tmp(cg), " = inttoptr i64 " + v + " to ptr") else word_cast(cg_tmp(cg), " = bitcast i64 " + v + " to double")
-
-fn word_cast(ts, tail2) = match ts
-  TS2(r, cg) -> TS2(r, cg_line(cg, r + tail2))
-
-fn chan_elem(t) = match t
-  YChan(e) -> e
-  _ -> uk()
-
-# Strand machinery in the program flips the entry point to the scheduler.
-fn cg_strands(cg) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> CG(nid, lbl, code, gl, gid, aux, pend, sput(seen, "rt.strands", true))
-
-# ---- if and match, meeting in a slot ----------------------------------------
+# ---- the libraries the program asks for -------------------------------------
 #
-# The merge of an `if` or a `match` is an 8-byte stack slot: every arm
-# stores at its own type, the merge loads at the type of the first arm the
-# checker pinned down. An arm that diverges (its type stayed polymorphic)
-# stores bits that are never read, and the IR stays well typed either way —
-# which a phi could not promise.
-
-type BR2
-  BR2(CG, Ty2)
-
-fn br_cg(b) = match b
-  BR2(cg, _) -> cg
-
-fn br_ty(b) = match b
-  BR2(_, t) -> t
-
-fn branch_into(ev, sl, mrg) = match ev
-  RV(cg, v, t) ->
-    cg2 = if is_yunit(t) then cg else bi_store(to_slot(cg, v, t), sl, t)
-    BR2(cg_line(cg2, "br label %" + mrg), t)
-
-fn bi_store(ts, sl, t) = match ts
-  TS2(sv, cg) -> cg_line(cg, "store " + slot(t) + " " + sv + ", ptr " + sl)
-
-# Like branch_into, but the arm's pattern bindings are released after the
-# result is safely in the slot.
-fn branch_into_rel(ev, sl, mrg, es) = match ev
-  RV(cg, v, t) ->
-    cg2 = if is_yunit(t) then cg else bi_store(to_slot(cg, v, t), sl, t)
-    BR2(cg_line(rel_all(cg2, es), "br label %" + mrg), t)
-
-fn merge_load(cg, t, sl) =
-  if is_yunit(t) then RV(cg, "", YUnit) else merge_load2(cg_tmp(cg), t, sl)
-
-fn merge_load2(ts, t, sl) = match ts
-  TS2(r, cg) -> unslot_rv(from_slot(cg_line(cg, r + " = load " + slot(t) + ", ptr " + sl), r, t), t)
-
-fn unslot_rv(ts, t) = match ts
-  TS2(v, cg) -> RV(cg, v, t)
-
-fn pick_ty(a, b) = if is_yunit(a) || is_uk(a) then b else a
-
-fn emit_if(cx, st, env, c, t, e2, cg) =
-  match emit(cx, st, env, c, cg)
-    RV(cg1, cv, _) -> emit_if2(cg_id(cg1), cx, st, env, cv, t, e2)
-
-fn emit_if2(is, cx, st, env, cv, t, e2) = match is
-  IS(k, cg) -> emit_if3(cg_tmp(cg), k, cx, st, env, cv, t, e2)
-
-fn emit_if3(ts, k, cx, st, env, cv, t, e2) = match ts
-  TS2(sl, cg) ->
-    thn = lb("then" + int_to_str(k))
-    els = lb("else" + int_to_str(k))
-    mrg = lb("merge" + int_to_str(k))
-    cg1 = cg_label(cg_line(cg_line(cg, sl + " = alloca i64"), "br i1 " + cv + ", label %" + thn + ", label %" + els), thn)
-    b1 = branch_into(emit(cx, st, env, t, cg1), sl, mrg)
-    b2 = branch_into(emit(cx, st, env, e2, cg_label(br_cg(b1), els)), sl, mrg)
-    merge_load(cg_label(br_cg(b2), mrg), pick_ty(br_ty(b1), br_ty(b2)), sl)
-
-fn emit_match(cx, st, env, s, arms, cg) =
-  match emit(cx, st, env, s, cg)
-    RV(cg1, v, t) -> emit_match2(cg_id(cg1), cx, st, env, v, t, arms)
-
-fn emit_match2(is, cx, st, env, v, t, arms) = match is
-  IS(k, cg) -> emit_match3(cg_tmp(cg), k, cx, st, env, v, t, arms)
-
-fn emit_match3(ts, k, cx, st, env, v, t, arms) = match ts
-  TS2(sl, cg) ->
-    cg1 = cg_line(cg_line(cg, sl + " = alloca i64"), "br label %" + lb("m" + int_to_str(k) + "a0"))
-    match marms(cx, st, env, arms, 0, k, v, t, sl, cg1, YUnit)
-      RV(cgm, mv, mt) -> RV(release(cgm, v, t), mv, mt)
-
-fn is_nil_arms(l) = match l
-  Nil -> true
-  _ -> false
-
-fn marms(cx, st, env, arms, i, k, v, t, sl, cg, bty) = match arms
-  Nil -> mend(cg, k, sl, bty)
-  Cons(Arm(p, b, _), rest) -> marm_one(cx, st, env, p, b, rest, i, k, v, t, sl, cg, bty)
-
-fn marm_one(cx, st, env, p, b, rest, i, k, v, t, sl, cg, bty) =
-  lbl = lb("m" + int_to_str(k) + "a" + int_to_str(i))
-  fail = if is_nil_arms(rest) then lb("m" + int_to_str(k) + "x") else lb("m" + int_to_str(k) + "a" + int_to_str(i + 1))
-  cg1 = cg_label(cg, lbl)
-  marm_two(pat(cx, st, env, p, v, t, fail, cg1, Nil), cx, st, b, rest, i, k, v, t, sl, bty)
-
-type PR2
-  PR2(CG, SM(VT), List(VT))
-
-fn marm_two(pr, cx, st, b, rest, i, k, v, t, sl, bty) = match pr
-  PR2(cg, env2, es) -> marm_three(branch_into_rel(emit(cx, st, env2, b, retain_all(cg, es)), sl, lb("m" + int_to_str(k) + "end"), es), cx, st, env2, rest, i, k, v, t, sl, bty)
-
-fn marm_three(b2, cx, st, env2, rest, i, k, v, t, sl, bty) =
-  marms(cx, st, env2, rest, i + 1, k, v, t, sl, br_cg(b2), pick_ty(bty, br_ty(b2)))
-
-fn mend(cg, k, sl, bty) =
-  cg1 = cg_label(cg, lb("m" + int_to_str(k) + "x"))
-  merge_load(cg_label(cg_line(cg1, "unreachable"), lb("m" + int_to_str(k) + "end")), bty, sl)
-
-# ---- patterns ---------------------------------------------------------------
-
-fn pat(cx, st, env, p, v, t, fail, cg, es) = match p
-  PWild -> PR2(cg, env, es)
-  PVar(n) -> PR2(cg, sput(env, n, VT(v, t)), Cons(VT(v, t), es))
-  PIntL(s) -> pat_int(cg_id(cg), env, v, s, fail, es)
-  PCtor(n, subs) -> pat_con(sget(cx_ctors(cx), n), cx, st, env, n, subs, v, t, fail, cg, es)
-
-fn pat_int(is, env, v, s, fail, es) = match is
-  IS(k, cg) -> pat_int2(cg_tmp(cg), k, env, v, s, fail, es)
-
-fn pat_int2(ts, k, env, v, s, fail, es) = match ts
-  TS2(r, cg) ->
-    cont = lb("pc" + int_to_str(k))
-    cg1 = cg_line(cg, r + " = icmp eq i64 " + v + ", " + s)
-    PR2(cg_label(cg_line(cg1, "br i1 " + r + ", label %" + cont + ", label %" + fail), cont), env, es)
-
-fn pat_con(o, cx, st, env, n, subs, v, t, fail, cg, es) = match o
-  Some(CR(a, ci)) -> pat_con2(cx, st, env, subs, v, t, fail, cg, a, ci, es)
-  None -> rcdie("internal: unknown constructor `" + n + "` in a pattern")
-
-fn pat_con2(cx, st, env, subs, v, t, fail, cg, a, ci, es) =
-  targs = adt_args_of(t, adt_nparams(cx, a))
-  pat_con3(coerce(cg, v, t, YAdt(a, targs)), cx, st, env, subs, fail, a, ci, targs, es)
-
-fn pat_con3(ts, cx, st, env, subs, fail, a, ci, targs, es) = match ts
-  TS2(v, cg) ->
-    cg1 = if len(adt_ctors(cx, a)) > 1 then pat_tag(cg, v, ci, fail) else cg
-    pat_fields(cx, st, env, subs, map(c2_fields(ctor_at(cx, a, ci)), \f -> sgen(f, targs)), 2, v, fail, cg1, es)
-
-fn adt_args_of(t, np) = match t
-  YAdt(_, args) -> args
-  _ -> map(range(1, np), \i -> uk())
-
-fn pat_tag(cg, v, ci, fail) =
-  match cg_id(cg)
-    IS(k, cg1) -> pat_tag2(cg_tmp(cg1), k, v, ci, fail)
-
-fn pat_tag2(ts, k, v, ci, fail) = match ts
-  TS2(tg, cg) -> pat_tag2b(slot_ptr(cg, v, 1), tg, k, ci, fail)
-
-fn pat_tag2b(ts, tg, k, ci, fail) = match ts
-  TS2(tp, cg) -> pat_tag3(cg_tmp(cg_line(cg, tg + " = load i64, ptr " + tp)), k, tg, ci, fail)
-
-fn pat_tag3(ts, k, tg, ci, fail) = match ts
-  TS2(c, cg) ->
-    cont = lb("pt" + int_to_str(k))
-    cg1 = cg_line(cg_line(cg, c + " = icmp eq i64 " + tg + ", " + int_to_str(ci)), "br i1 " + c + ", label %" + cont + ", label %" + fail)
-    cg_label(cg1, cont)
-
-fn pat_fields(cx, st, env, subs, ftys, k, v, fail, cg, es) = match subs
-  Nil -> PR2(cg, env, es)
-  Cons(sp, srest) -> pat_field(cx, st, env, sp, srest, ftys, k, v, fail, cg, es)
-
-fn pat_field(cx, st, env, sp, srest, ftys, k, v, fail, cg, es) = match ftys
-  Cons(ft, frest) -> pat_field2(load_slot(cg, v, k, ft), cx, st, env, sp, srest, frest, k, v, fail, ft, es)
-  Nil -> PR2(cg, env, es)
-
-fn pat_field2(ts, cx, st, env, sp, srest, frest, k, v, fail, ft, es) = match ts
-  TS2(fv, cg) -> pat_field3(pat(cx, st, env, sp, fv, ft, fail, cg, es), cx, st, srest, frest, k, v, fail)
-
-fn pat_field3(pr, cx, st, srest, frest, k, v, fail) = match pr
-  PR2(cg, env2, es2) -> pat_fields(cx, st, env2, srest, frest, k + 1, v, fail, cg, es2)
-
-# ---- blocks -----------------------------------------------------------------
-
-fn emit_block(cx, st, env, ss, cg) = emit_blk(cx, st, env, ss, cg, Nil)
-
-fn emit_blk(cx, st, env, ss, cg, sc) = match ss
-  Cons(SBind(n, v, _), rest) -> emit_blk_bind(emit_bound(cx, st, env, n, v, rest, cg), cx, st, env, n, rest, sc)
-  Cons(SExpr(v), Nil) -> emit_blk_last(emit(cx, st, env, v, cg), sc)
-  Cons(SExpr(v), rest) -> emit_blk_step(emit(cx, st, env, v, cg), cx, st, env, rest, sc)
-  Nil -> RV(rel_all(cg, sc), "", YUnit)
-
-fn emit_blk_bind(ev, cx, st, env, n, rest, sc) = match ev
-  RV(cg, v, t) -> emit_blk(cx, st, sput(env, n, VT(v, t)), rest, cg, Cons(VT(v, t), sc))
-
-fn emit_blk_last(ev, sc) = match ev
-  RV(cg, v, t) -> RV(rel_all(cg, sc), v, t)
-
-fn emit_blk_step(ev, cx, st, env, rest, sc) = match ev
-  RV(cg, v, t) -> emit_blk(cx, st, env, rest, release(cg, v, t), sc)
-
-# A binding's value, with one special case: `x = channel(n)` looks ahead
-# through the rest of the block for what `x` will carry — a call whose
-# signature types that argument as a channel, or a `send` whose payload's
-# type is apparent — so the element type most programs never write down is
-# recovered the way a reader recovers it.
-fn emit_bound(cx, st, env, n, v, rest, cg) = match v
-  ECall(cn, cargs, cln, cp) ->
-    if str_cmp(cn, "channel") == 0 then emit_call5(cx, st, env, cn, cargs, cg, YChan(hint_stmts(cx, st, env, rest, n))) else emit(cx, st, env, ECall(cn, cargs, cln, cp), cg)
-  _ -> emit(cx, st, env, v, cg)
-
-fn hint_stmts(cx, st, env, ss, n) = match ss
-  Nil -> uk()
-  Cons(SBind(_, v, _), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
-  Cons(SExpr(v), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
-
-fn hint_or(h, cx, st, env, rest, n) = if is_uk(h) then hint_stmts(cx, st, env, rest, n) else h
-
-fn hint_expr(cx, st, env, e, n) = match e
-  ECall(f, args, _, _) -> hint_call(cx, st, env, f, args, n)
-  ESpawn(b, _) -> hint_expr(cx, st, env, b, n)
-  ESelect(sarms, d, _) -> hint_sarms(cx, st, env, sarms, d, n)
-  EIf(c, t, e2) -> hint_u(hint_expr(cx, st, env, c, n), cx, st, env, Cons(t, Cons(e2, Nil)), n)
-  EBlock(ss) -> hint_stmts(cx, st, env, ss, n)
-  EMatch(sc, arms, _) -> hint_u(hint_expr(cx, st, env, sc, n), cx, st, env, map(arms, \a -> h_arm_body(a)), n)
-  _ -> uk()
-
-fn h_arm_body(a) = match a
-  Arm(_, b, _) -> b
-
-fn hint_sarms(cx, st, env, sarms, d, n) = match sarms
-  Nil -> hint_sdef(cx, st, env, d, n)
-  Cons(SArm(op, b, _), rest) -> hint_sarm(cx, st, env, op, b, rest, d, n)
-
-fn hint_sarm(cx, st, env, op, b, rest, d, n) =
-  h = hint_sop2(cx, st, env, op, n)
-  if is_uk(h) then hint_sarm2(hint_expr(cx, st, env, b, n), cx, st, env, rest, d, n) else h
-
-fn hint_sarm2(h, cx, st, env, rest, d, n) =
-  if is_uk(h) then hint_sarms(cx, st, env, rest, d, n) else h
-
-fn hint_sop2(cx, st, env, op, n) = match op
-  SSend(EVar(cn, _), v) -> if str_cmp(cn, n) == 0 then shallow_ty(cx, st, env, v) else uk()
-  _ -> uk()
-
-fn hint_sdef(cx, st, env, d, n) = match d
-  Some(b) -> hint_expr(cx, st, env, b, n)
-  None -> uk()
-
-fn hint_u(h, cx, st, env, es, n) = match es
-  Nil -> h
-  Cons(e, rest) -> if is_uk(h) then hint_u(hint_expr(cx, st, env, e, n), cx, st, env, rest, n) else h
-
-fn hint_call(cx, st, env, f, args, n) =
-  if str_cmp(f, "send") == 0 then hint_send(cx, st, env, args, n) else hint_call2(sget(cx_fnidx(cx), f), cx, st, env, args, n)
-
-fn hint_send(cx, st, env, args, n) = match args
-  Cons(EVar(cn, _), Cons(v, Nil)) -> if str_cmp(cn, n) == 0 then shallow_ty(cx, st, env, v) else hint_expr(cx, st, env, v, n)
-  _ -> uk()
-
-fn hint_call2(o, cx, st, env, args, n) = match o
-  Some(idx) -> hint_params(sig_parts(st, idx), cx, st, env, args, n)
-  None -> hint_args(cx, st, env, args, n)
-
-fn hint_args(cx, st, env, args, n) = match args
-  Nil -> uk()
-  Cons(a, rest) -> hint_u(hint_expr(cx, st, env, a, n), cx, st, env, rest, n)
-
-fn hint_params(sig, cx, st, env, args, n) = match sig
-  SigG(sps, _, _) -> hint_zip(cx, st, env, args, sps, n)
-  SigP(_, _) -> uk()
-
-fn hint_zip(cx, st, env, args, sps, n) = match args
-  Nil -> uk()
-  Cons(a, arest) -> hint_zip2(cx, st, env, a, arest, sps, n)
-
-fn hint_zip2(cx, st, env, a, arest, sps, n) = match sps
-  Cons(sp, srest) -> hint_zip3(hint_one(cx, st, env, a, sp, n), cx, st, env, arest, srest, n)
-  Nil -> uk()
-
-fn hint_zip3(h, cx, st, env, arest, srest, n) =
-  if is_uk(h) then hint_zip(cx, st, env, arest, srest, n) else h
-
-fn hint_one(cx, st, env, a, sp, n) = match a
-  EVar(an, _) -> if str_cmp(an, n) == 0 then hint_elem(sp) else uk()
-  _ -> hint_expr(cx, st, env, a, n)
-
-fn hint_elem(sp) = match sp
-  YChan(e) -> if is_uk(e) then uk() else hint_conc(e)
-  _ -> uk()
-
-fn hint_conc(e) = match e
-  YGen(_) -> uk()
-  _ -> e
-
-# A shallow, emission-free type guess: enough for a `send` payload.
-fn shallow_ty(cx, st, env, e) = match e
-  EInt(_) -> YInt
-  EFloat(_) -> YFloat
-  EStr(_) -> YStr
-  EBool(_) -> YBool
-  EVar(vn, _) -> shallow_var(sget(env, vn))
-  ECall(f, _, _, _) -> shallow_call(sget(cx_fnidx(cx), f), st)
-  EBin(op, l, _, _) -> if op >= 5 then YBool else shallow_ty(cx, st, env, l)
-  ENeg(x) -> shallow_ty(cx, st, env, x)
-  _ -> uk()
-
-fn shallow_var(o) = match o
-  Some(VT(_, t)) -> t
-  None -> uk()
-
-fn shallow_call(o, st) = match o
-  Some(idx) -> shallow_sig(sig_parts(st, idx))
-  None -> uk()
-
-fn shallow_sig(sig) = match sig
-  SigG(_, r, ngen) -> if ngen > 0 then uk() else r
-  SigP(_, _) -> uk()
-
-# ---- calls ------------------------------------------------------------------
-#
-# Arguments are emitted left to right; for a generic callee each argument's
-# type refines the instantiation, and the refined signature gives the next
-# argument its expected type — which is how a lambda argument learns its
-# parameter types before its body is lifted.
-
-type AV
-  AV(CG, List(VT), IM(Ty2))
-
-fn emit_args(cx, st, env, args, sps, ngen, cg, m, acc) = match args
-  Nil -> AV(cg, reverse(acc), m)
-  Cons(a, rest) -> emit_args_one(a, rest, cx, st, env, sps, ngen, cg, m, acc)
-
-fn emit_args_one(a, rest, cx, st, env, sps, ngen, cg, m, acc) = match sps
-  Cons(sp, sprest) -> emit_args_two(emit_arg(cx, st, env, a, sgen(sp, glist(m, ngen)), cg), sp, rest, cx, st, env, sprest, ngen, m, acc)
-  Nil -> emit_args_two(emit(cx, st, env, a, cg), YUnit, rest, cx, st, env, Nil, ngen, m, acc)
-
-fn emit_args_two(ev, sp, rest, cx, st, env, sprest, ngen, m, acc) = match ev
-  RV(cg, v, t) ->
-    m2 = uni(sp, t, m)
-    w = sgen(sp, glist(m2, ngen))
-    emit_args_three(coerce(cg, v, t, w), t, w, rest, cx, st, env, sprest, ngen, m2, acc)
-
-fn emit_args_three(ts, t, w, rest, cx, st, env, sprest, ngen, m2, acc) = match ts
-  TS2(v, cg) -> emit_args(cx, st, env, rest, sprest, ngen, cg, m2, Cons(VT(v, co_ty(t, w)), acc))
-
-# An argument with an expected type: what lambdas, bare constructors and
-# function values need.
-fn emit_arg(cx, st, env, a, want, cg) = match a
-  ELambda(ps, b, _) -> emit_lambda(cx, st, env, ps, b, want, cg)
-  EVar(n, ln) -> emit_arg_var(sget(env, n), cx, st, n, want, cg)
-  ECall(n, args, ln, p) -> emit_arg_call(sget(env, n), cx, st, env, n, args, want, cg, ECall(n, args, ln, p))
-  _ -> emit(cx, st, env, a, cg)
-
-fn emit_arg_call(o, cx, st, env, n, args, want, cg, orig) = match o
-  Some(vt) -> emit_closure_call(cx, st, env, args, cg, vt, false)
-  None -> emit_arg_call2(sget(cx_fnidx(cx), n), cx, st, env, n, args, want, cg, orig)
-
-fn emit_arg_call2(o, cx, st, env, n, args, want, cg, orig) = match o
-  Some(idx) -> emit_user_call_w(cx, st, env, n, idx, args, cg, false, want, Nil)
-  None -> if str_cmp(n, "channel") == 0 || str_cmp(n, "recv") == 0 then emit_call5(cx, st, env, n, args, cg, want) else emit(cx, st, env, orig, cg)
-
-fn emit_arg_var(o, cx, st, n, want, cg) = match o
-  Some(VT(v, t)) -> RV(retain(cg, v, t), v, t)
-  None -> emit_arg_var2(sget(cx_ctors(cx), n), cx, st, n, want, cg)
-
-fn emit_arg_var2(o, cx, st, n, want, cg) = match o
-  Some(CR(a, ci)) -> emit_nullary(cg, a, ci, adt_args_of(want, adt_nparams(cx, a)))
-  None -> emit_fnval(sget(cx_fnidx(cx), n), cx, st, n, want, cg)
-
-fn render_args(vts) = ra_loop(vts, "")
-
-fn ra_loop(vts, acc) = match vts
-  Nil -> acc
-  Cons(VT(v, t), rest) -> ra_loop(rest, if str_cmp(acc, "") == 0 then tystr(t) + " " + v else acc + ", " + tystr(t) + " " + v)
-
-fn emit_call(cx, st, env, n, args, cg) =
-  match sget(env, n)
-    Some(vt) -> emit_closure_call(cx, st, env, args, cg, vt, false)
-    None -> emit_call2(sget(cx_fnidx(cx), n), cx, st, env, n, args, cg)
-
-fn emit_call2(o, cx, st, env, n, args, cg) = match o
-  Some(idx) -> emit_user_call(cx, st, env, n, idx, args, cg, false)
-  None -> emit_call3(sget(cx_ctors(cx), n), cx, st, env, n, args, cg)
-
-fn emit_call3(o, cx, st, env, n, args, cg) = match o
-  Some(CR(a, ci)) -> emit_ctor(cx, st, env, args, cg, a, ci)
-  None -> emit_call4(sget(cx_midx(cx), n), cx, st, env, n, args, cg)
-
-fn emit_call4(o, cx, st, env, n, args, cg) = match o
-  Some(cr) -> emit_trait_call(cx, st, env, n, args, cg)
-  None -> emit_call5(cx, st, env, n, args, cg, uk())
-
-fn emit_call5(cx, st, env, n, args, cg, want) =
-  if str_cmp(n, "channel") == 0 then emit_channel(cx, st, env, args, cg, want) else if str_cmp(n, "send") == 0 then emit_send(cx, st, env, args, cg) else if str_cmp(n, "recv") == 0 then emit_recv(cx, st, env, args, cg, want) else emit_call6(sget(cx_externs(cx), n), cx, st, env, n, args, cg)
-
-fn emit_call6(o, cx, st, env, n, args, cg) = match o
-  Some(ES(cps, cret)) -> emit_extern(cx, st, env, n, args, cg, cps, cret)
-  None -> emit_builtin(cx, st, env, n, args, cg)
-
-# ---- foreign calls ----------------------------------------------------------
-#
-# A declared C function: arguments narrow from their 8-byte registers to the
-# declared widths, the result widens back. The declaration itself joins the
-# globals once per symbol.
-
-fn ct_ll(w) = match w
-  CW(nm) -> ctw_ll(nm)
-  CFn(_, _) -> rcdie("callbacks are not supported yet")
-
-fn ctw_ll(nm) =
-  if str_cmp(nm, "I8") == 0 || str_cmp(nm, "U8") == 0 || str_cmp(nm, "Bool") == 0 then "i8" else if str_cmp(nm, "I16") == 0 || str_cmp(nm, "U16") == 0 then "i16" else if str_cmp(nm, "I32") == 0 || str_cmp(nm, "U32") == 0 then "i32" else if str_cmp(nm, "F32") == 0 then "float" else if str_cmp(nm, "F64") == 0 then "double" else if str_cmp(nm, "Ptr") == 0 then "ptr" else if str_cmp(nm, "Unit") == 0 then "void" else "i64"
-
-fn emit_extern(cx, st, env, n, args, cg, cps, cret) =
-  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
-    AV(cg1, vts, _) -> emit_extern2(cg_global_once(cg1, "declare " + ct_ll(cret) + " @" + n + "(" + ext_decl_sig(cps, "") + ")"), n, vts, cps, cret)
-
-fn cg_global_once(cg, def) = if cg_has_global(cg, def) then cg else cg_global(cg, def)
-
-fn ext_decl_sig(cps, acc) = match cps
-  Nil -> acc
-  Cons(w, rest) -> ext_decl_sig(rest, if str_cmp(acc, "") == 0 then ct_ll(w) else acc + ", " + ct_ll(w))
-
-fn emit_extern2(cg, n, vts, cps, cret) =
-  match ext_args(cg, vts, cps, "")
-    TS2(rendered, cg1) -> ext_call(cg1, n, rendered, cret)
-
-fn ext_args(cg, vts, cps, acc) = match vts
-  Nil -> TS2(acc, cg)
-  Cons(VT(v, t), vrest) -> ext_args2(cg, v, t, vrest, cps, acc)
-
-fn ext_args2(cg, v, t, vrest, cps, acc) = match cps
-  Cons(w, wrest) -> ext_args3(ext_narrow(cg, v, t, w), w, vrest, wrest, acc)
-  Nil -> TS2(acc, cg)
-
-fn ext_args3(ts, w, vrest, wrest, acc) = match ts
-  TS2(cv, cg) -> ext_args(cg, vrest, wrest, if str_cmp(acc, "") == 0 then ct_ll(w) + " " + cv else acc + ", " + ct_ll(w) + " " + cv)
-
-fn ext_narrow(cg, v, t, w) =
-  ll = ct_ll(w)
-  if str_cmp(ll, "i64") == 0 || str_cmp(ll, "double") == 0 || str_cmp(ll, "ptr") == 0 then TS2(v, cg) else if str_cmp(ll, "float") == 0 then word_cast(cg_tmp(cg), " = fptrunc double " + v + " to float") else if is_ybool(t) then word_cast(cg_tmp(cg), " = zext i1 " + v + " to " + ll) else word_cast(cg_tmp(cg), " = trunc i64 " + v + " to " + ll)
-
-fn ext_call(cg, n, rendered, cret) =
-  ll = ct_ll(cret)
-  if str_cmp(ll, "void") == 0 then RV(cg_line(cg, "call void @" + n + "(" + rendered + ")"), "", YUnit) else ext_call2(cg_tmp(cg), n, rendered, cret, ll)
-
-fn ext_call2(ts, n, rendered, cret, ll) = match ts
-  TS2(r, cg) -> ext_widen(cg_line(cg, r + " = call " + ll + " @" + n + "(" + rendered + ")"), r, cret, ll)
-
-fn ext_widen(cg, r, cret, ll) =
-  if str_cmp(ll, "i64") == 0 || str_cmp(ll, "double") == 0 || str_cmp(ll, "ptr") == 0 then RV(cg, r, ct_rill(cret)) else if str_cmp(ll, "float") == 0 then ext_wide2(cg_tmp(cg), " = fpext float " + r + " to double", YFloat) else if ct_is_bool(cret) then ext_wide2(cg_tmp(cg), " = trunc i8 " + r + " to i1", YBool) else ext_wide2(cg_tmp(cg), " = " + ext_sz(cret) + " " + ll + " " + r + " to i64", YInt)
-
-fn ct_is_bool(w) = match w
-  CW(nm) -> str_cmp(nm, "Bool") == 0
-  CFn(_, _) -> false
-
-fn ext_sz(w) = match w
-  CW(nm) -> if str_cmp(str_sub(nm, 0, 1), "U") == 0 then "zext" else "sext"
-  CFn(_, _) -> "sext"
-
-fn ext_wide2(ts, tail2, t) = match ts
-  TS2(r, cg) -> RV(cg_line(cg, r + tail2), r, t)
-
-# ---- channels and strands ---------------------------------------------------
-#
-# A channel is a refcounted runtime object; what crosses it is one 8-byte
-# word, owned by whichever side holds it. `send` consumes its value and
-# borrows the channel; `recv` hands back an owned word. The element type
-# comes from the surrounding signature — the worker idiom — and a channel
-# used only through unknowns tolerates it as long as nothing needs to know.
-
-fn emit_channel(cx, st, env, args, cg, want) =
-  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
-    AV(cg1, vts, _) -> rt1(cg_strands(cg1), "ptr", "rill_chan_new", "i64 " + chan_cap(vts), YChan(chan_elem(want)))
-
-fn chan_cap(vts) = match vts
-  Cons(VT(v, _), _) -> v
-  Nil -> "0"
-
-fn vt2t(vts) = match vts
-  Cons(_, Cons(VT(_, t), _)) -> t
-  _ -> rcdie("internal: missing argument")
-
-fn emit_send(cx, st, env, args, cg) =
-  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
-    AV(cg1, vts, _) -> emit_send2(to_word(cg_strands(cg1), vt2(vts), vt2t(vts)), vt1(vts), vt1t(vts))
-
-fn emit_send2(ts, c, ct2) = match ts
-  TS2(w, cg) ->
-    cg1 = cg_line(cg, "call void @rill_chan_send(ptr " + c + ", i64 " + w + ", i64 0)")
-    RV(release(cg1, c, ct2), "", YUnit)
-
-fn emit_recv(cx, st, env, args, cg, want) =
-  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
-    AV(cg1, vts, _) -> emit_recv2(cg_tmp(cg_strands(cg1)), vt1(vts), vt1t(vts), if is_uk(want) then chan_elem(vt1t(vts)) else want)
-
-fn emit_recv2(ts, c, ct2, elem) = match ts
-  TS2(pair, cg) ->
-    cg1 = cg_line(cg, pair + " = call { i64, i64 } @rill_chan_recv(ptr " + c + ")")
-    emit_recv3(cg_tmp(cg1), pair, c, ct2, elem)
-
-fn emit_recv3(ts, pair, c, ct2, elem) = match ts
-  TS2(w, cg) ->
-    cg1 = cg_line(cg, w + " = extractvalue { i64, i64 } " + pair + ", 0")
-    emit_recv4(from_word(release(cg1, c, ct2), w, elem), elem)
-
-fn emit_recv4(ts, elem) = match ts
-  TS2(v, cg) -> RV(cg, v, elem)
-
-fn is_some_opt(o) = match o
-  Some(_) -> true
-  None -> false
-
-fn emit_select(cx, st, env, arms, d, cg, unused_tail, unused_rt, unused_stk) =
-  match sel_setup(cx, st, env, arms, is_some_opt(d), cg)
-    SSU(cg1, infos, sel, so, n) -> emit_select2(cg_id(cg1), cx, st, env, arms, d, infos, sel, so, n)
-
-fn emit_select2(is, cx, st, env, arms, d, infos, sel, so, n) = match is
-  IS(k, cg) -> emit_select3(cg_tmp(cg), k, cx, st, env, arms, d, infos, sel, so, n)
-
-fn emit_select3(ts, k, cx, st, env, arms, d, infos, sel, so, n) = match ts
-  TS2(ms, cg) ->
-    cg1 = cg_line(cg_line(cg, ms + " = alloca i64"), "br label %" + lb("s" + int_to_str(k) + "c0"))
-    sarm_loop(cx, st, env, arms, 0, k, infos, sel, so, ms, d, cg1, YUnit)
-
-fn sarm_loop(cx, st, env, arms, i, k, infos, sel, so, ms, d, cg, bty) = match arms
-  Nil -> sdefault(cx, st, env, d, k, infos, ms, cg, bty)
-  Cons(SArm(op, b, _), rest) -> sarm_one(cx, st, env, op, b, rest, i, k, infos, sel, so, ms, d, cg, bty)
-
-fn sarm_one(cx, st, env, op, b, rest, i, k, infos, sel, so, ms, d, cg, bty) =
-  chk = lb("s" + int_to_str(k) + "c" + int_to_str(i))
-  nxt = if is_nil_arms(rest) then lb("s" + int_to_str(k) + "d") else lb("s" + int_to_str(k) + "c" + int_to_str(i + 1))
-  lbl = lb("s" + int_to_str(k) + "a" + int_to_str(i))
-  cg0 = cg_label(cg, chk)
-  match cg_tmp(cg0)
-    TS2(c, cg1) ->
-      cg2 = cg_label(cg_line(cg_line(cg1, c + " = icmp eq i64 " + sel + ", " + int_to_str(i)), "br i1 " + c + ", label %" + lbl + ", label %" + nxt), lbl)
-      cg3 = sel_cleanup(cg2, infos, i, 0)
-      sarm_body(cx, st, env, op, b, rest, i, k, infos, sel, so, ms, d, cg3, bty)
-
-fn sarm_body(cx, st, env, op, b, rest, i, k, infos, sel, so, ms, d, cg, bty) =
-  match sarm_bind(cx, st, env, op, so, infos, i, cg)
-    PR2(cg1, env2, es) -> sarm_tail(branch_into_rel(emit(cx, st, env2, b, cg1), ms, lb("s" + int_to_str(k) + "end"), es), cx, st, env, rest, i, k, infos, sel, so, ms, d, bty)
-
-fn sarm_tail(b2, cx, st, env, rest, i, k, infos, sel, so, ms, d, bty) =
-  sarm_loop(cx, st, env, rest, i + 1, k, infos, sel, so, ms, d, br_cg(b2), pick_ty(bty, br_ty(b2)))
-
-# A receive arm's binding: the word the runtime wrote, at the channel's
-# element type, owned by the arm.
-fn sarm_bind(cx, st, env, op, so, infos, i, cg) = match op
-  SRecv(_, Some(nm)) -> sarm_bind2(cg_tmp(cg), env, nm, so, sel_elem(infos, i))
-  _ -> PR2(cg, env, Nil)
-
-fn sel_elem(infos, i) = match infos
-  Cons(SCI(_, VT(_, ct2), _), rest) -> if i == 0 then chan_elem(ct2) else sel_elem(rest, i - 1)
-  Nil -> uk()
-
-fn sarm_bind2(ts, env, nm, so, elem) = match ts
-  TS2(w, cg) ->
-    cg1 = cg_line(cg, w + " = load i64, ptr " + so)
-    sarm_bind3(from_word(cg1, w, elem), env, nm, elem)
-
-fn sarm_bind3(ts, env, nm, elem) = match ts
-  TS2(v, cg) -> PR2(cg, sput(env, nm, VT(v, elem)), Cons(VT(v, elem), Nil))
-
-fn sdefault(cx, st, env, d, k, infos, ms, cg, bty) = match d
-  Some(b) -> sdefault2(cx, st, env, b, k, infos, ms, cg, bty)
-  None -> smend(cg_line(cg_label(cg, lb("s" + int_to_str(k) + "d")), "unreachable"), k, ms, bty)
-
-fn sdefault2(cx, st, env, b, k, infos, ms, cg, bty) =
-  cg1 = sel_cleanup(cg_label(cg, lb("s" + int_to_str(k) + "d")), infos, 0 - 1, 0)
-  sdefault3(branch_into_rel(emit(cx, st, env, b, cg1), ms, lb("s" + int_to_str(k) + "end"), Nil), k, ms, bty)
-
-fn sdefault3(b2, k, ms, bty) = smend(br_cg(b2), k, ms, pick_ty(bty, br_ty(b2)))
-
-fn smend(cg, k, ms, bty) = merge_load(cg_label(cg, lb("s" + int_to_str(k) + "end")), bty, ms)
-
-# The tail-position select: each arm returns for itself.
-fn ret_select(cx, st, env, arms, d, cg, rt, stk) =
-  match sel_setup(cx, st, env, arms, is_some_opt(d), cg)
-    SSU(cg1, infos, sel, so, n) -> ret_select2(cg_id(cg1), cx, st, env, arms, d, infos, sel, so, rt, stk)
-
-fn ret_select2(is, cx, st, env, arms, d, infos, sel, so, rt, stk) = match is
-  IS(k, cg) -> rsarm_loop(cx, st, env, arms, 0, k, infos, sel, so, d, cg_line(cg, "br label %" + lb("s" + int_to_str(k) + "c0")), rt, stk)
-
-fn rsarm_loop(cx, st, env, arms, i, k, infos, sel, so, d, cg, rt, stk) = match arms
-  Nil -> rsdefault(cx, st, env, d, k, infos, cg, rt, stk)
-  Cons(SArm(op, b, _), rest) -> rsarm_one(cx, st, env, op, b, rest, i, k, infos, sel, so, d, cg, rt, stk)
-
-fn rsarm_one(cx, st, env, op, b, rest, i, k, infos, sel, so, d, cg, rt, stk) =
-  chk = lb("s" + int_to_str(k) + "c" + int_to_str(i))
-  nxt = if is_nil_arms(rest) then lb("s" + int_to_str(k) + "d") else lb("s" + int_to_str(k) + "c" + int_to_str(i + 1))
-  lbl = lb("s" + int_to_str(k) + "a" + int_to_str(i))
-  cg0 = cg_label(cg, chk)
-  match cg_tmp(cg0)
-    TS2(c, cg1) ->
-      cg2 = cg_label(cg_line(cg_line(cg1, c + " = icmp eq i64 " + sel + ", " + int_to_str(i)), "br i1 " + c + ", label %" + lbl + ", label %" + nxt), lbl)
-      cg3 = sel_cleanup(cg2, infos, i, 0)
-      rsarm_body(cx, st, env, op, b, rest, i, k, infos, sel, so, d, cg3, rt, stk)
-
-fn rsarm_body(cx, st, env, op, b, rest, i, k, infos, sel, so, d, cg, rt, stk) =
-  match sarm_bind(cx, st, env, op, so, infos, i, cg)
-    PR2(cg1, env2, es) -> rsarm_tail(emit_ret(cx, st, env2, b, cg1, rt, append(es, stk)), cx, st, env, rest, i, k, infos, sel, so, d, rt, stk)
-
-fn rsarm_tail(cg, cx, st, env, rest, i, k, infos, sel, so, d, rt, stk) =
-  rsarm_loop(cx, st, env, rest, i + 1, k, infos, sel, so, d, cg, rt, stk)
-
-fn rsdefault(cx, st, env, d, k, infos, cg, rt, stk) = match d
-  Some(b) -> emit_ret(cx, st, env, b, sel_cleanup(cg_label(cg, lb("s" + int_to_str(k) + "d")), infos, 0 - 1, 0), rt, stk)
-  None -> cg_line(cg_label(cg, lb("s" + int_to_str(k) + "d")), "unreachable")
-
-# `spawn body`: the body's free variables ride in a runtime environment box
-# `{ rc, dropfn, capture... }`; the runtime owns the box and releases it
-# when the strand ends.
-fn emit_spawn(cx, st, env, b, cg) =
-  match cg_gid(cg_strands(cg))
-    IS(k, cg1) -> emit_spawn2(cx, st, env, b, cg1, "spwn" + int_to_str(k), lam_caps(env, Nil, b))
-
-fn emit_spawn2(cx, st, env, b, cg, sname, caps) =
-  match lam_loads(caps, 2, cg_sub(cg), SLeaf)
-    PR2(sub1, senv, _) -> emit_spawn3(emit(cx, st, senv, b, sub1), cx, cg, sname, caps)
-
-fn emit_spawn3(ev, cx, cg, sname, caps) = match ev
-  RV(sub, bv, bt) ->
-    sub2 = cg_line(release(sub, bv, bt), "ret void")
-    def = "define void @\"" + sname + "\"(ptr %__env) {\n\"rc.entry\":\n" + render_code(sub2) + "}\n\n"
-    emit_spawn4(cg_aux(cg_merge(cg, sub2), def), sname, caps)
-
-fn emit_spawn4(cg, sname, caps) =
-  cg0 = if is_nil_caps(caps) then cg else spawn_dtor(cg, sname, caps)
-  match cg_tmp(cg0)
-    TS2(b, cg1) ->
-      cg2 = cg_line(cg1, b + " = call ptr @rill_alloc(i64 " + int_to_str(8 * (2 + len(caps))) + ")")
-      cg3 = cg_line(cg2, "store i64 1, ptr " + b)
-      dtor = if is_nil_caps(caps) then "@\"rc.sdtor0\"" else "@\"dtor." + sname + "\""
-      cg4 = store_slot(cg3, b, 1, dtor, YPtr)
-      cg5 = cap_stores(cg4, b, caps, 2)
-      RV(cg_line(cg5, "call void @rill_spawn(ptr @\"" + sname + "\", ptr " + b + ")"), "", YUnit)
-
-# `select`: build the runtime's case table, ask it which arm may run, then
-# run exactly that arm. Every channel was borrowed for the table and is
-# released in whichever arm runs; a send arm's value is consumed only if
-# that arm was chosen, so every other arm's value is released alongside.
-type SCI
-  SCI(Int, VT, Option(VT))
-
-type SSU
-  SSU(CG, List(SCI), Str, Str, Int)
-
-fn sel_setup(cx, st, env, arms, hasd, cg) =
-  match sel_collect(cx, st, env, arms, cg_strands(cg), Nil)
-    AVI(cg1, infos) -> sel_setup2(cg_tmp(cg1), infos, hasd)
-
-type AVI
-  AVI(CG, List(SCI))
-
-fn sel_collect(cx, st, env, arms, cg, acc) = match arms
-  Nil -> AVI(cg, reverse(acc))
-  Cons(SArm(op, _, _), rest) -> sel_collect2(cx, st, env, op, rest, cg, acc)
-
-fn sel_collect2(cx, st, env, op, rest, cg, acc) = match op
-  SRecv(ch, _) -> sel_collect3(emit(cx, st, env, ch, cg), cx, st, env, rest, acc)
-  SSend(ch, v) -> sel_collect4(emit(cx, st, env, ch, cg), cx, st, env, v, rest, acc)
-
-fn sel_collect3(ev, cx, st, env, rest, acc) = match ev
-  RV(cg, cv, ct2) -> sel_collect(cx, st, env, rest, cg, Cons(SCI(0, VT(cv, ct2), None), acc))
-
-fn sel_collect4(ev, cx, st, env, v, rest, acc) = match ev
-  RV(cg, cv, ct2) -> sel_collect5(emit(cx, st, env, v, cg), cx, st, env, rest, acc, VT(cv, ct2))
-
-fn sel_collect5(ev, cx, st, env, rest, acc, cvt) = match ev
-  RV(cg, vv, vt) -> sel_collect(cx, st, env, rest, cg, Cons(SCI(1, cvt, Some(VT(vv, vt))), acc))
-
-fn sel_setup2(ts, infos, hasd) = match ts
-  TS2(cs, cg) ->
-    n = len(infos)
-    cg1 = cg_line(cg, cs + " = alloca i64, i64 " + int_to_str(4 * n))
-    sel_setup3(cg_tmp(sel_fill(cg1, cs, infos, 0)), cs, infos, hasd, n)
-
-fn sel_fill(cg, cs, infos, i) = match infos
-  Nil -> cg
-  Cons(SCI(kind, VT(cv, _), sv), rest) ->
-    cg1 = sf_ptr(slot_ptr(cg, cs, 4 * i), "i64 " + int_to_str(kind))
-    cg2 = sf_ptr(slot_ptr(cg1, cs, 4 * i + 1), "ptr " + cv)
-    cg3 = sel_fill_a(cg2, cs, i, sv)
-    sel_fill(sf_ptr(slot_ptr(cg3, cs, 4 * i + 3), "i64 0"), cs, rest, i + 1)
-
-fn sf_ptr(ts, tyval) = match ts
-  TS2(p, cg) -> cg_line(cg, "store " + tyval + ", ptr " + p)
-
-fn sel_fill_a(cg, cs, i, sv) = match sv
-  Some(VT(vv, vt)) -> sel_fill_a2(to_word(cg, vv, vt), cs, i)
-  None -> sf_ptr(slot_ptr(cg, cs, 4 * i + 2), "i64 0")
-
-fn sel_fill_a2(ts, cs, i) = match ts
-  TS2(w, cg) -> sf_ptr(slot_ptr(cg, cs, 4 * i + 2), "i64 " + w)
-
-fn sel_setup3(ts, cs, infos, hasd, n) = match ts
-  TS2(so, cg) ->
-    cg1 = cg_line(cg, so + " = alloca i64, i64 2")
-    sel_setup4(cg_tmp(cg1), cs, so, infos, hasd, n)
-
-fn sel_setup4(ts, cs, so, infos, hasd, n) = match ts
-  TS2(sel, cg) ->
-    hd = if hasd then "1" else "0"
-    SSU(cg_line(cg, sel + " = call i64 @rill_select(ptr " + cs + ", i64 " + int_to_str(n) + ", i8 " + hd + ", ptr " + so + ")"), infos, sel, so, n)
-
-# Release every borrowed channel, and every send value except the chosen
-# arm's — the runtime took that one.
-fn sel_cleanup(cg, infos, chosen, i) = match infos
-  Nil -> cg
-  Cons(SCI(_, VT(cv, ct2), sv), rest) -> sel_cleanup2(release(cg, cv, ct2), sv, rest, chosen, i)
-
-fn sel_cleanup2(cg, sv, rest, chosen, i) = match sv
-  Some(VT(vv, vt)) -> sel_cleanup(if i == chosen then cg else release(cg, vv, vt), rest, chosen, i + 1)
-  None -> sel_cleanup(cg, rest, chosen, i + 1)
-
-fn spawn_dtor(cg, sname, caps) =
-  match lam_dtor_body(caps, 2, cg, "")
-    TS2(body, cg1) -> cg_aux(cg1, "define private void @\"dtor." + sname + "\"(ptr %p) {\n\"rc.entry\":\n" + body + "  call void @rill_free_sized(ptr %p, i64 " + int_to_str(8 * (2 + len(caps))) + ")\n  ret void\n}\n\n")
-
-# A trait method call: the receiver's concrete type names the impl, and the
-# impl's method is an ordinary (possibly generic) function.
-fn emit_trait_call(cx, st, env, n, args, cg) =
-  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
-    AV(cg1, vts, _) -> trait_call_vts(cx, st, cg1, n, vts)
-
-fn trait_call_vts(cx, st, cg, n, vts) =
-  match sget(cx_midx(cx), n)
-    Some(CR(tid, _)) -> trait_call2(cx, st, cg, trait_name(cx, tid) + "." + tgt_name(cx, vt1t(vts)) + "." + n, vts)
-    None -> rcdie("internal: `" + n + "` is not a trait method")
-
-fn tgt_name(cx, t) = match t
-  YAdt(a, _) -> adt_name(cx, a)
-  YInt -> "Int"
-  YFloat -> "Float"
-  YBool -> "Bool"
-  YStr -> "Str"
-  _ -> rcdie("a trait method needs a concrete receiver type")
-
-fn trait_call2(cx, st, cg, mangled, vts) =
-  match sget(cx_fnidx(cx), mangled)
-    Some(idx) -> trait_call3(sig_parts(st, idx), cg, mangled, idx, vts)
-    None -> rcdie("no implementation provides `" + mangled + "`")
-
-fn trait_call3(sig, cg, mangled, idx, vts) = match sig
-  SigG(sps, sret, ngen) -> emit_user_call2(AV(cg, vts, uni_vts(sps, vts, ILeaf)), mangled, idx, sret, ngen, false, uk(), Nil)
-  SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
-
-fn uni_vts(sps, vts, m) = match sps
-  Nil -> m
-  Cons(sp, srest) -> uni_vts2(vts, sp, srest, m)
-
-fn uni_vts2(vts, sp, srest, m) = match vts
-  Cons(VT(_, t), vrest) -> uni_vts(srest, vrest, uni(sp, t, m))
-  Nil -> m
-
-# ---- user calls and instantiation -------------------------------------------
-
-fn sig_parts(st, idx) = match st_sig(st, idx)
-  SigG(ps, r, ngen) -> SigG(map(ps, \p -> dz(st, p)), dz(st, r), ngen)
-  SigP(ps, r) -> SigG(map(ps, \p -> dz(st, p)), dz(st, r), 0)
-
-fn emit_user_call(cx, st, env, n, idx, args, cg, tail) =
-  emit_user_call_w(cx, st, env, n, idx, args, cg, tail, uk(), Nil)
-
-fn emit_user_call_w(cx, st, env, n, idx, args, cg, tail, rw, stk) =
-  match sig_parts(st, idx)
-    SigG(sps, sret, ngen) -> emit_user_call2(emit_args(cx, st, env, args, sps, ngen, cg, ILeaf, Nil), n, idx, sret, ngen, tail, rw, stk)
-    SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
-
-fn emit_user_call2(av, n, idx, sret, ngen, tail, rw, stk) = match av
-  AV(cg, vts, m) ->
-    targs = glist(uni(sret, rw, m), ngen)
-    sym = mangle(n, targs)
-    cg2 = cg_want(cg, sym, n, idx, targs)
-    emit_user_call3(cg2, sym, sgen(sret, targs), vts, tail, stk)
-
-fn emit_user_call3(cg, sym, rt, vts, tail, stk) =
-  kw = if tail then "tail call" else "call"
-  cg0 = if tail then rel_all(cg, stk) else cg
-  if is_yunit(rt) then RV(cg_line(cg0, kw + " void @\"" + sym + "\"(" + render_args(vts) + ")"), "", YUnit) else emit_user_call4(cg_tmp(cg0), kw, sym, rt, vts)
-
-fn emit_user_call4(ts, kw, sym, rt, vts) = match ts
-  TS2(r, cg) -> RV(cg_line(cg, r + " = " + kw + " " + tystr(rt) + " @\"" + sym + "\"(" + render_args(vts) + ")"), r, rt)
-
-# ---- constructors -----------------------------------------------------------
-
-fn emit_ctor(cx, st, env, args, cg, a, ci) =
-  fields = c2_fields(ctor_at(cx, a, ci))
-  np = adt_nparams(cx, a)
-  match emit_args(cx, st, env, args, fields, np, cg, ILeaf, Nil)
-    AV(cg1, vts, m) -> emit_ctor2(cg1, vts, a, ci, glist(m, np))
-
-fn emit_ctor2(cg, vts, a, ci, targs) = match vts
-  Nil -> emit_nullary(cg, a, ci, targs)
-  _ -> emit_ctor3(cg_tmp(cg), vts, a, ci, targs)
-
-fn emit_ctor3(ts, vts, a, ci, targs) = match ts
-  TS2(b, cg) ->
-    cg1 = cg_line(cg, b + " = call ptr @rill_alloc(i64 " + int_to_str(8 * (2 + len(vts))) + ")")
-    cg2 = cg_line(cg1, "store i64 1, ptr " + b)
-    cg3 = store_tag(slot_ptr(cg2, b, 1), ci)
-    RV(ctor_stores(cg3, b, vts, 2), b, YAdt(a, targs))
-
-fn store_tag(ts, ci) = match ts
-  TS2(p, cg) -> cg_line(cg, "store i64 " + int_to_str(ci) + ", ptr " + p)
-
-fn ctor_stores(cg, b, vts, k) = match vts
-  Nil -> cg
-  Cons(VT(v, t), rest) -> ctor_stores(store_slot(cg, b, k, v, t), b, rest, k + 1)
-
-# ---- lambdas and closures ---------------------------------------------------
-
-fn emit_lambda(cx, st, env, ps, body, want, cg) = match want
-  YFn(wps, wr) -> emit_lambda2(cx, st, env, ps, body, wps, cg)
-  _ -> rcdie("a lambda here needs a function-typed context")
-
-fn emit_lambda2(cx, st, env, ps, body, wps, cg) =
-  match cg_gid(cg)
-    IS(k, cg1) -> emit_lambda3(cx, st, env, ps, body, wps, cg1, "lam" + int_to_str(k), lam_caps(env, ps, body))
-
-# The captured variables: every free variable of the body that names a
-# binding in the enclosing scope.
-fn lam_caps(env, ps, body) = cap_uniq(fv_expr(body, names_set(ps, SLeaf), Nil), env, SLeaf, Nil)
-
-fn names_set(ns, s) = match ns
-  Nil -> s
-  Cons(n, rest) -> names_set(rest, sput(s, n, true))
-
-type CAP
-  CAP(Str, VT)
-
-fn cap_uniq(names, env, seen, acc) = match names
+# Every `extern "lib" fn ...` names something to link. A bare name is a
+# library to search for, `framework:Name` is a macOS framework, and anything
+# starting with `-` is handed to the linker as written — which is how a
+# program says where its libraries live. Search paths go first, so they apply
+# no matter which declaration carried them.
+
+fn rc_libs(ds, acc) = match ds
+  Cons(DExtern(_, lib, _, _, _), rest) -> rc_libs(rest, rc_add_lib(lib, acc))
+  Cons(_, rest) -> rc_libs(rest, acc)
   Nil -> reverse(acc)
-  Cons(n, rest) -> cap_uniq2(sget(env, n), n, rest, env, seen, acc)
 
-fn cap_uniq2(o, n, rest, env, seen, acc) = match o
-  Some(vt) -> if shas(seen, n) then cap_uniq(rest, env, seen, acc) else cap_uniq(rest, env, sput(seen, n, true), Cons(CAP(n, vt), acc))
-  None -> cap_uniq(rest, env, seen, acc)
-
-fn fv_expr(e, bound, acc) = match e
-  EVar(n, _) -> if shas(bound, n) then acc else Cons(n, acc)
-  ECall(n, args, _, _) -> fv_exprs(args, bound, if shas(bound, n) then acc else Cons(n, acc))
-  ENeg(x) -> fv_expr(x, bound, acc)
-  EBin(_, l, r, _) -> fv_expr(r, bound, fv_expr(l, bound, acc))
-  EIf(c, t, e2) -> fv_expr(e2, bound, fv_expr(t, bound, fv_expr(c, bound, acc)))
-  EMatch(s, arms, _) -> fv_arms(arms, bound, fv_expr(s, bound, acc))
-  ELambda(ps, b, _) -> fv_expr(b, names_set(ps, bound), acc)
-  ESpawn(b, _) -> fv_expr(b, bound, acc)
-  ESelect(arms, d, _) -> fv_expro(d, bound, fv_sarms(arms, bound, acc))
-  EBlock(ss) -> fv_stmts(ss, bound, acc)
-  _ -> acc
-
-fn fv_exprs(es, bound, acc) = match es
-  Nil -> acc
-  Cons(e, rest) -> fv_exprs(rest, bound, fv_expr(e, bound, acc))
-
-fn fv_expro(o, bound, acc) = match o
-  Some(e) -> fv_expr(e, bound, acc)
+fn rc_add_lib(lib, acc) = match lib
+  Some(l) -> if any(acc, \x -> x == l) then acc else Cons(l, acc)
   None -> acc
 
-fn fv_arms(arms, bound, acc) = match arms
-  Nil -> acc
-  Cons(Arm(p, b, _), rest) -> fv_arms(rest, bound, fv_expr(b, pat_names(p, bound), acc))
+fn rc_lib_flags(libs) =
+  paths = filter(libs, \l -> starts_with(l, "-"))
+  named = filter(libs, \l -> !starts_with(l, "-"))
+  cat(map(append(map(paths, \l -> rc_quote(l)), map(named, \l -> rc_lib_flag(l))), \f -> " " + f))
 
-fn pat_names(p, s) = match p
-  PVar(n) -> sput(s, n, true)
-  PCtor(_, args) -> pat_names_list(args, s)
-  _ -> s
+fn rc_lib_flag(l) =
+  if starts_with(l, "framework:") then "-framework " + rc_quote(str_sub(l, 10, str_len(l) - 10)) else "-l" + rc_quote(l)
 
-fn pat_names_list(ps, s) = match ps
-  Nil -> s
-  Cons(p, rest) -> pat_names_list(rest, pat_names(p, s))
+# ---- the command line -------------------------------------------------------
 
-fn fv_sarms(arms, bound, acc) = match arms
-  Nil -> acc
-  Cons(SArm(op, b, _), rest) -> fv_sarms(rest, bound, fv_expr(b, fv_sop_bound(op, bound), fvv_sop(op, bound, acc)))
+fn rc_parse(as, o) = match as
+  Nil -> o
+  Cons(a, rest) -> rc_parse_one(a, rest, o)
 
-fn fvv_sop(op, bound, acc) = match op
-  SRecv(ch, _) -> fv_expr(ch, bound, acc)
-  SSend(ch, v) -> fv_expr(v, bound, fv_expr(ch, bound, acc))
+fn rc_parse_one(a, rest, o) =
+  if a == "-o" then rc_parse(rc_tail(rest, a), rc_set_out(o, rc_head(rest, a))) else if a == "--prelude" then rc_parse(rc_tail(rest, a), rc_set_prelude(o, rc_head(rest, a))) else if a == "--runtime" then rc_parse(rc_tail(rest, a), rc_set_runtime(o, rc_head(rest, a))) else if a == "--keep-ir" then rc_parse(rest, rc_set_keep(o)) else if starts_with(a, "-") then rc_usage_die("unknown option `" + a + "`") else rc_parse(rest, rc_set_src(o, a))
 
-fn fv_sop_bound(op, bound) = match op
-  SRecv(_, Some(n)) -> sput(bound, n, true)
-  _ -> bound
+fn rc_head(l, flag) = match l
+  Cons(x, _) -> x
+  Nil -> rc_usage_die("`" + flag + "` needs a value")
 
-fn fv_stmts(ss, bound, acc) = match ss
-  Cons(SBind(n, v, _), rest) -> fv_stmts(rest, sput(bound, n, true), fv_expr(v, bound, acc))
-  Cons(SExpr(v), rest) -> fv_stmts(rest, bound, fv_expr(v, bound, acc))
-  Nil -> acc
+fn rc_tail(l, flag) = match l
+  Cons(_, r) -> r
+  Nil -> rc_usage_die("`" + flag + "` needs a value")
 
-# Lift the body: a top-level function over (env, params...), captures
-# loaded from the box up front.
-fn emit_lambda3(cx, st, env, ps, body, wps, cg, lname, caps) =
-  match lam_loads(caps, 3, cg_sub(cg), lam_params(ps, wps, SLeaf))
-    PR2(sub1, lenv, _) -> emit_lambda4(emit(cx, st, lenv, body, sub1), cx, ps, wps, cg, lname, caps)
+fn rc_set_src(o, v) = match o
+  RCX(s, out, pre, rt, k) -> if s != "" then rc_usage_die("more than one source file given") else RCX(v, out, pre, rt, k)
 
-fn lam_params(ps, wps, env) = match ps
-  Nil -> env
-  Cons(n, rest) -> lam_params2(wps, n, rest, env)
+fn rc_set_out(o, v) = match o
+  RCX(s, _, pre, rt, k) -> RCX(s, v, pre, rt, k)
 
-fn lam_params2(wps, n, rest, env) = match wps
-  Cons(w, wrest) -> lam_params(rest, wrest, sput(env, n, VT("%\"" + n + "\"", w)))
-  Nil -> lam_params(rest, Nil, sput(env, n, VT("%\"" + n + "\"", uk())))
+fn rc_set_prelude(o, v) = match o
+  RCX(s, out, _, rt, k) -> RCX(s, out, v, rt, k)
 
-fn lam_loads(caps, k, cg, env) = match caps
-  Nil -> PR2(cg, env, Nil)
-  Cons(CAP(n, VT(_, t)), rest) -> lam_loads2(load_slot(cg, "%__env", k, t), n, t, rest, k, env)
+fn rc_set_runtime(o, v) = match o
+  RCX(s, out, pre, _, k) -> RCX(s, out, pre, v, k)
 
-fn lam_loads2(ts, n, t, rest, k, env) = match ts
-  TS2(v, cg) -> lam_loads(rest, k + 1, cg, sput(env, n, VT(v, t)))
+fn rc_set_keep(o) = match o
+  RCX(s, out, pre, rt, _) -> RCX(s, out, pre, rt, true)
 
-fn emit_lambda4(ev, cx, ps, wps, cg, lname, caps) = match ev
-  RV(sub, bv, bt) ->
-    sub1 = rel_all(sub, lam_param_vts(ps, wps, Nil))
-    sub2 = if is_yunit(bt) then cg_line(sub1, "ret void") else cg_line(sub1, "ret " + tystr(bt) + " " + bv)
-    def = "define " + tystr(bt) + " @\"" + lname + "\"(" + lam_sig(ps, wps) + ") {\n\"rc.entry\":\n" + render_code(sub2) + "}\n\n"
-    emit_lambda5(cg_aux(cg_merge(cg, sub2), def), lname, caps, wps, bt)
+# Parsing, then the one default every command shares: the prelude. `-o` stays
+# as it came, empty and all, because an absent `-o` means the executable is
+# named after the source but the IR goes to stdout.
+fn rc_opts(flags, home) = rc_defaults(rc_parse(flags, RCX("", "", "", "", false)), home)
 
-fn lam_param_vts(ps, wps, acc) = match ps
-  Nil -> reverse(acc)
-  Cons(n, rest) -> lam_param_vts2(wps, n, rest, acc)
+fn rc_defaults(o, home) = match o
+  RCX(s, out, pre, rt, k) ->
+    if s == "" then rc_usage_die("no source file given") else RCX(s, out, rc_find_prelude(pre, home), rt, k)
 
-fn lam_param_vts2(wps, n, rest, acc) = match wps
-  Cons(w, wrest) -> lam_param_vts(rest, wrest, Cons(VT("%\"" + n + "\"", w), acc))
-  Nil -> lam_param_vts(rest, Nil, acc)
+fn rc_out_or(out, src) = if out != "" then out else rc_drop_ext(rc_basename(src))
 
-fn lam_sig(ps, wps) = ls_loop(ps, wps, "ptr %__env")
+# ---- the commands -----------------------------------------------------------
 
-fn ls_loop(ps, wps, acc) = match ps
-  Nil -> acc
-  Cons(n, rest) -> ls_loop2(wps, n, rest, acc)
+# `emit-llvm` with no `-o` prints, so the IR can be piped somewhere.
+fn rc_emit(o) = match o
+  RCX(src, out, pre, _, _) -> rc_emit2(rc_ir(setup(load_program(src, pre))), out)
 
-fn ls_loop2(wps, n, rest, acc) = match wps
-  Cons(w, wrest) -> ls_loop(rest, wrest, acc + ", " + tystr(w) + " %\"" + n + "\"")
-  Nil -> ls_loop(rest, Nil, acc + ", i64 %\"" + n + "\"")
+fn rc_emit2(ir, out) = if out == "" then print(ir) else rc_write(out, ir)
 
-# The closure box: the count, the function pointer, its destructor, then
-# the captures — retained, because the box now owns them too.
-fn emit_lambda5(cg, lname, caps, wps, bt) =
-  cg0 = if is_nil_caps(caps) then cg else lam_dtor(cg, lname, caps)
-  match cg_tmp(cg0)
-    TS2(b, cg1) ->
-      cg2 = cg_line(cg1, b + " = call ptr @rill_alloc(i64 " + int_to_str(8 * (3 + len(caps))) + ")")
-      cg3 = cg_line(cg2, "store i64 1, ptr " + b)
-      cg4 = store_slot(cg3, b, 1, "@\"" + lname + "\"", YPtr)
-      dtor = if is_nil_caps(caps) then "@\"rc.dtor0\"" else "@\"dtor." + lname + "\""
-      cg5 = store_slot(cg4, b, 2, dtor, YPtr)
-      cg6 = cap_stores(cg5, b, caps, 3)
-      RV(cg6, b, YFn(wps, bt))
+fn rc_write(path, text) =
+  if write_file(path, text) then rc_done() else rcdie("cannot write `" + path + "`")
 
-fn is_nil_caps(l) = match l
-  Nil -> true
-  _ -> false
+fn rc_check(o) = match o
+  RCX(src, _, pre, _, _) -> rc_checked(run_check_of(setup(load_program(src, pre))))
 
-fn cap_stores(cg, b, caps, k) = match caps
-  Nil -> cg
-  Cons(CAP(nm, VT(v, t)), rest) -> cap_stores(store_slot(retain(cg, v, t), b, k, v, t), b, rest, k + 1)
+fn run_check_of(so) = match so
+  SO(cx, st, fns) -> run_check(cx, st, fns)
 
-# The lambda's destructor: release the boxed captures, free the box.
-fn lam_dtor(cg, lname, caps) =
-  match lam_dtor_body(caps, 3, cg, "")
-    TS2(body, cg1) -> cg_aux(cg1, "define private void @\"dtor." + lname + "\"(ptr %p) {\n\"rc.entry\":\n" + body + "  call void @rill_free_sized(ptr %p, i64 " + int_to_str(8 * (3 + len(caps))) + ")\n  ret void\n}\n\n")
+fn rc_checked(r) = rc_done()
 
-fn lam_dtor_body(caps, k, cg, acc) = match caps
-  Nil -> TS2(acc, cg)
-  Cons(CAP(_, VT(_, t)), rest) -> lam_dtor_field(boxed(t), t, rest, k, cg, acc)
+# Nothing to say, and — unlike `exit(0)` — said by falling off the end of the
+# program, which is what lets the runtime's allocation report run. The whole
+# leak proof hangs off that, so success never leaves through `exit`.
+fn rc_done() = print("")
 
-fn lam_dtor_field(bx, t, rest, k, cg, acc) =
-  if bx then lam_dtor_field2(t, rest, k, cg_want_rel_ty(cg, t), acc) else lam_dtor_body(rest, k + 1, cg, acc)
+fn rc_build(o, home, then_run) = match o
+  RCX(src, out, pre, rt, keep) ->
+    rc_build2(src, rc_out_or(out, src), pre, rc_find_runtime(rt, home), keep, then_run)
 
-fn lam_dtor_field2(t, rest, k, cg, acc) =
-  ld = "  %f" + int_to_str(k) + " = getelementptr i8, ptr %p, i64 " + int_to_str(8 * k) + "\n  %v" + int_to_str(k) + " = load ptr, ptr %f" + int_to_str(k) + "\n"
-  lam_dtor_body(rest, k + 1, cg, acc + ld + rel_call(t, "%v" + int_to_str(k), "call"))
+fn rc_build2(src, out, pre, rt, keep, then_run) =
+  m = load_program(src, pre)
+  libs = rc_libs(m2_externs(m), Nil)
+  ll = out + ".ll"
+  if write_file(ll, rc_ir(setup(m))) then 0 else rcdie("cannot write `" + ll + "`")
+  st = rc_sh(rc_link(ll, rt, out, libs))
+  keep || rc_unlink(ll)
+  rc_linked(st, out, then_run)
 
-# The call that releases a value of a boxed type held in register `r`.
-fn rel_call(t, r, kw) = match t
-  YChan(_) -> "  " + kw + " void @rill_chan_release(ptr " + r + ")\n"
-  YStr -> "  " + kw + " void @rill_str_release(ptr " + r + ")\n"
-  YFn(_, _) -> "  " + kw + " void @\"rc.clorel\"(ptr " + r + ")\n"
-  YAdt(a, targs) -> "  " + kw + " void @\"" + rel_sym(a, targs) + "\"(ptr " + r + ")\n"
-  YBuf(w) -> "  " + kw + " void @rill_buf_release(ptr " + r + ", i64 " + int_to_str(ct_size(w)) + ")\n"
-  _ -> rcdie("internal: rel_call on an unboxed type")
+fn rc_link(ll, rt, out, libs) =
+  "cc -O2 -Wno-override-module " + rc_quote(ll) + " " + rc_quote(rt) + " -o " + rc_quote(out) + rc_lib_flags(libs)
 
-fn cg_want_rel_ty(cg, t) = match t
-  YAdt(a, targs) -> cg_want_rel(cg, a, targs)
-  _ -> cg
+fn rc_linked(st, out, then_run) =
+  if st != 0 then rcdie("linking failed") else if then_run then exit(rc_sh(rc_quote(rc_exe_path(out)))) else rc_done()
 
-# A named function used as a value: a wrapper that forwards to the
-# monomorphized symbol, boxed with no captures.
-fn emit_fnval(o, cx, st, n, want, cg) = match o
-  Some(idx) -> emit_fnval2(sig_parts(st, idx), n, idx, want, cg)
-  None -> rcdie("unknown name in expression position: `" + n + "`")
+# ---- the entry point --------------------------------------------------------
 
-fn emit_fnval2(sig, n, idx, want, cg) = match sig
-  SigG(sps, sret, ngen) -> emit_fnval3(n, idx, want, cg, sps, sret, ngen)
-  SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
+fn main() = rc_dispatch(drop(args(), 1), rc_dirname(arg(0)))
 
-fn emit_fnval3(n, idx, want, cg, sps, sret, ngen) =
-  targs = glist(uni(YFn(sps, sret), want, ILeaf), ngen)
-  sym = mangle(n, targs)
-  cg1 = cg_want(cg, sym, n, idx, targs)
-  emit_fnval4(cg_gid(cg1), sym, map(sps, \p -> sgen(p, targs)), sgen(sret, targs))
+fn rc_dispatch(as, home) = match as
+  Nil -> rc_usage_die("no command given")
+  Cons(cmd, flags) -> rc_command(cmd, flags, home)
 
-fn emit_fnval4(is, sym, cps, cret) = match is
-  IS(k, cg) ->
-    wname = "wv" + int_to_str(k)
-    def = "define " + tystr(cret) + " @\"" + wname + "\"(" + wv_sig(cps, 0, "ptr %__env") + ") {\n\"rc.entry\":\n" + wv_body(sym, cps, cret) + "}\n\n"
-    emit_fnval5(cg_tmp(cg_aux(cg, def)), wname, cps, cret)
+fn rc_command(cmd, flags, home) =
+  if cmd == "build" then rc_build(rc_opts(flags, home), home, false) else if cmd == "run" then rc_build(rc_opts(flags, home), home, true) else if cmd == "emit-llvm" then rc_emit(rc_opts(flags, home)) else if cmd == "check" then rc_check(rc_opts(flags, home)) else if cmd == "help" || cmd == "-h" || cmd == "--help" then rc_help() else rc_usage_die("unknown command `" + cmd + "`")
 
-fn wv_sig(cps, i, acc) = match cps
-  Nil -> acc
-  Cons(t, rest) -> wv_sig(rest, i + 1, acc + ", " + tystr(t) + " %a" + int_to_str(i))
-
-fn wv_args(cps, i, acc) = match cps
-  Nil -> acc
-  Cons(t, rest) -> wv_args(rest, i + 1, if str_cmp(acc, "") == 0 then tystr(t) + " %a" + int_to_str(i) else acc + ", " + tystr(t) + " %a" + int_to_str(i))
-
-fn wv_body(sym, cps, cret) =
-  call = "tail call " + tystr(cret) + " @\"" + sym + "\"(" + wv_args(cps, 0, "") + ")"
-  if is_yunit(cret) then "  " + call + "\n  ret void\n" else "  %r = " + call + "\n  ret " + tystr(cret) + " %r\n"
-
-fn emit_fnval5(ts, wname, cps, cret) = match ts
-  TS2(b, cg) ->
-    cg1 = cg_line(cg, b + " = call ptr @rill_alloc(i64 24)")
-    cg2 = cg_line(cg1, "store i64 1, ptr " + b)
-    cg3 = store_slot(cg2, b, 1, "@\"" + wname + "\"", YPtr)
-    RV(store_slot(cg3, b, 2, "@\"rc.dtor0\"", YPtr), b, YFn(cps, cret))
-
-# Calling a bound value: load the function pointer, pass the box first.
-fn emit_closure_call(cx, st, env, args, cg, vt, tail) = match vt
-  VT(v, t) -> emit_closure_call2(cx, st, env, args, cg, v, t, tail)
-
-fn emit_closure_call2(cx, st, env, args, cg, v, t, tail) = match t
-  YFn(pts, rt) -> emit_closure_call3(emit_args(cx, st, env, args, pts, 0, cg, ILeaf, Nil), v, rt, tail)
-  _ -> rcdie("calling a value that is not a function")
-
-fn emit_closure_call3(av, v, rt, tail) = match av
-  AV(cg, vts, m) -> emit_closure_call4(cg_tmp(cg), v, rt, vts, tail)
-
-fn emit_closure_call4(ts, v, rt, vts, tail) = match ts
-  TS2(fp, cg) -> emit_closure_call4b(slot_ptr(cg, v, 1), fp, v, rt, vts, tail)
-
-fn emit_closure_call4b(ts, fp, v, rt, vts, tail) = match ts
-  TS2(fpp, cg) ->
-    cg1 = cg_line(cg, fp + " = load ptr, ptr " + fpp)
-    args = ra_loop(vts, "ptr " + v)
-    kw = if tail then "tail call" else "call"
-    if is_yunit(rt) then RV(cg_line(cg1, kw + " void " + fp + "(" + args + ")"), "", YUnit) else emit_closure_call5(cg_tmp(cg1), fp, rt, args, kw)
-
-fn emit_closure_call5(ts, fp, rt, args, kw) = match ts
-  TS2(r, cg) -> RV(cg_line(cg, r + " = " + kw + " " + tystr(rt) + " " + fp + "(" + args + ")"), r, rt)
-
-# ---- built-ins --------------------------------------------------------------
-
-fn emit_builtin(cx, st, env, n, args, cg) =
-  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
-    AV(cg1, vts, m) -> builtin_done(builtin_ir(cx, st, cg1, n, vts), vts)
-
-fn builtin_done(ev, vts) = match ev
-  RV(cg, v, t) -> RV(rel_borrowed(cg, vts, v), v, t)
-
-fn rel_borrowed(cg, vts, keep) = match vts
-  Nil -> cg
-  Cons(VT(v, t), rest) -> rel_borrowed(if boxed(t) && !is_adt_ty(t) && str_cmp(v, keep) != 0 then release(cg, v, t) else cg, rest, keep)
-
-fn vt1(vts) = match vts
-  Cons(VT(v, _), _) -> v
-  Nil -> rcdie("internal: missing argument")
-
-fn vt1t(vts) = match vts
-  Cons(VT(_, t), _) -> t
-  Nil -> rcdie("internal: missing argument")
-
-fn vt2(vts) = match vts
-  Cons(_, Cons(VT(v, _), _)) -> v
-  _ -> rcdie("internal: missing argument")
-
-fn vt3(vts) = match vts
-  Cons(_, Cons(_, Cons(VT(v, _), _))) -> v
-  _ -> rcdie("internal: missing argument")
-
-fn bool_arg(cg, v) =
-  match cg_tmp(cg)
-    TS2(r, cg2) -> TS2(r, cg_line(cg2, r + " = zext i1 " + v + " to i8"))
-
-fn i8_result(ev) = match ev
-  RV(cg, v, _) -> i8_result2(cg_tmp(cg), v)
-
-fn i8_result2(ts, v) = match ts
-  TS2(r, cg) -> RV(cg_line(cg, r + " = trunc i8 " + v + " to i1"), r, YBool)
-
-fn builtin_ir(cx, st, cg, n, vts) =
-  if str_cmp(n, "println") == 0 then print_ir(cx, st, cg, "rill_println", vts) else if str_cmp(n, "print") == 0 then print_ir(cx, st, cg, "rill_print", vts) else if str_cmp(n, "show") == 0 then show_ir(cx, st, cg, vts) else buf_ir(cx, st, cg, n, vts)
-
-fn print_ir(cx, st, cg, base, vts) =
-  t = vt1t(vts)
-  v = vt1(vts)
-  if is_yint(t) then rt0(cg, base + "_int", "i64 " + v) else if is_yfloat(t) then rt0(cg, base + "_float", "double " + v) else if is_ystr(t) then rt0(cg, base + "_str", "ptr " + v) else if is_ybool(t) then print_bool_ir(bool_arg(cg, v), base) else if is_adt_ty(t) then print_adt(show_adt(cx, st, cg, vts, t), base) else rcdie("printing this type is not supported yet")
-
-fn print_adt(ev, base) = match ev
-  RV(cg, sv, _) ->
-    cg1 = cg_line(cg, "call void @" + base + "_str(ptr " + sv + ")")
-    RV(release(cg1, sv, YStr), "", YUnit)
-
-fn print_bool_ir(ts, base) = match ts
-  TS2(v8, cg) -> rt0(cg, base + "_bool", "i8 " + v8)
-
-fn show_ir(cx, st, cg, vts) =
-  t = vt1t(vts)
-  if is_yint(t) then rt1(cg, "ptr", "rill_int_to_str", "i64 " + vt1(vts), YStr) else if is_yfloat(t) then rt1(cg, "ptr", "rill_float_to_str", "double " + vt1(vts), YStr) else if is_ybool(t) then bool_to_str_ir(bool_arg(cg, vt1(vts))) else if is_ystr(t) then RV(cg, vt1(vts), YStr) else if is_adt_ty(t) then show_adt(cx, st, cg, vts, t) else rcdie("`show` on this type is not supported yet")
-
-fn show_adt(cx, st, cg, vts, t) =
-  match sget(cx_fnidx(cx), "Show." + tgt_name(cx, t) + ".show")
-    Some(_) -> trait_call2(cx, st, cg, "Show." + tgt_name(cx, t) + ".show", vts)
-    None -> show_struct(cg, vts, t)
-
-# The generated structural form borrows its argument, so the owned operand
-# is released after.
-fn show_struct(cg, vts, t) = match t
-  YAdt(a, targs) -> show_struct2(rt1(cg_want_shw(cg, a, targs), "ptr", "\"" + shw_sym(a, targs) + "\"", "ptr " + vt1(vts), YStr), vt1(vts), t)
-  _ -> rcdie("internal: show_struct on a non-data type")
-
-fn show_struct2(ev, p, t) = match ev
-  RV(cg, v, _) -> RV(release(cg, p, t), v, YStr)
-
-fn buf_ir(cx, st, cg, n, vts) =
-  match buf_width_of(n)
-    Some(w) -> buf_new_ir(cg, w, vts)
-    None -> buf_ir2(cg, n, vts)
-
-fn buf_new_ir(cg, w, vts) =
-  rt1(cg, "ptr", "rill_buf_new", "i64 " + vt1(vts) + ", i64 " + int_to_str(ct_size(w)), YBuf(w))
-
-fn buf_ir2(cg, n, vts) =
-  if str_cmp(n, "buf_len") == 0 then buf_len_ir(cg, vts) else if str_cmp(n, "buf_data") == 0 then buf_data_ir(cg, vts) else if str_cmp(n, "buf_get") == 0 then buf_get_ir(cg, vts) else if str_cmp(n, "buf_set") == 0 then buf_set_ir(cg, vts) else builtin_ir2(cg, n, vts)
-
-fn buf_width(t) = match t
-  YBuf(w) -> w
-  _ -> rcdie("internal: buffer operation on a non-buffer")
-
-fn buf_len_ir(cg, vts) =
-  match slot_ptr(cg, vt1(vts), 1)
-    TS2(p, cg1) -> rt_load(cg_tmp(cg1), "i64", p, YInt)
-
-fn rt_load(ts, ty, p, t) = match ts
-  TS2(r, cg) -> RV(cg_line(cg, r + " = load " + ty + ", ptr " + p), r, t)
-
-fn buf_data_ir(cg, vts) =
-  match slot_ptr(cg, vt1(vts), 2)
-    TS2(p, cg1) -> RV(cg1, p, YPtr)
-
-# The elementwise view of a width: its LLVM type, how a loaded element
-# widens to the 8-byte register, and how a register narrows to be stored.
-fn bw_llty(nm) =
-  if str_cmp(nm, "I8") == 0 || str_cmp(nm, "U8") == 0 then "i8" else if str_cmp(nm, "I16") == 0 || str_cmp(nm, "U16") == 0 then "i16" else if str_cmp(nm, "I32") == 0 || str_cmp(nm, "U32") == 0 then "i32" else if str_cmp(nm, "F32") == 0 then "float" else if str_cmp(nm, "F64") == 0 then "double" else if str_cmp(nm, "Ptr") == 0 then "ptr" else "i64"
-
-fn bw_rilly(nm) =
-  if str_cmp(nm, "F32") == 0 || str_cmp(nm, "F64") == 0 then YFloat else if str_cmp(nm, "Ptr") == 0 then YPtr else YInt
-
-fn bw_widen(nm) =
-  if str_cmp(nm, "I8") == 0 || str_cmp(nm, "I16") == 0 || str_cmp(nm, "I32") == 0 then "sext" else if str_cmp(nm, "U8") == 0 || str_cmp(nm, "U16") == 0 || str_cmp(nm, "U32") == 0 then "zext" else if str_cmp(nm, "F32") == 0 then "fpext" else ""
-
-fn bw_name(w) = match w
-  CW(nm) -> nm
-  CFn(_, _) -> "Ptr"
-
-# The bounds check and the element address, shared by get and set.
-fn buf_addr(cg, b, i, esz) =
-  match cg_id(cg)
-    IS(k, cg1) -> buf_addr2(slot_ptr(cg1, b, 1), k, b, i, esz)
-
-fn buf_addr2(ts, k, b, i, esz) = match ts
-  TS2(lp, cg) -> buf_addr3(cg_tmp(cg), lp, k, b, i, esz)
-
-fn buf_addr3(ts, lp, k, b, i, esz) = match ts
-  TS2(ln2, cg) -> buf_addr4(cg_tmp(cg_line(cg, ln2 + " = load i64, ptr " + lp)), ln2, k, b, i, esz)
-
-fn buf_addr4(ts, ln2, k, b, i, esz) = match ts
-  TS2(ok, cg) ->
-    oobl = lb("bo" + int_to_str(k))
-    okl = lb("bk" + int_to_str(k))
-    cg1 = cg_line(cg, ok + " = icmp ult i64 " + i + ", " + ln2)
-    cg2 = cg_label(cg_line(cg1, "br i1 " + ok + ", label %" + okl + ", label %" + oobl), oobl)
-    cg3 = cg_label(cg_line(cg_line(cg2, "call void @rill_buf_oob(i64 " + i + ", i64 " + ln2 + ")"), "unreachable"), okl)
-    buf_addr5(cg_tmp(cg3), b, i, esz)
-
-fn buf_addr5(ts, b, i, esz) = match ts
-  TS2(off, cg) -> buf_addr6(cg_tmp(cg_line(cg, off + " = mul i64 " + i + ", " + int_to_str(esz))), off, b)
-
-fn buf_addr6(ts, off, b) = match ts
-  TS2(d, cg) -> buf_addr7(cg_tmp(cg_line(cg, d + " = getelementptr i8, ptr " + b + ", i64 16")), d, off)
-
-fn buf_addr7(ts, d, off) = match ts
-  TS2(ad, cg) -> TS2(ad, cg_line(cg, ad + " = getelementptr i8, ptr " + d + ", i64 " + off))
-
-fn buf_get_ir(cg, vts) =
-  nm = bw_name(buf_width(vt1t(vts)))
-  match buf_addr(cg, vt1(vts), vt2(vts), ctw_size2(nm))
-    TS2(ad, cg1) -> buf_get2(cg_tmp(cg1), ad, nm)
-
-fn ctw_size2(nm) = ct_size(CW(nm))
-
-fn buf_get2(ts, ad, nm) = match ts
-  TS2(r, cg) ->
-    cg1 = cg_line(cg, r + " = load " + bw_llty(nm) + ", ptr " + ad)
-    wd = bw_widen(nm)
-    if str_cmp(wd, "") == 0 then RV(cg1, r, bw_rilly(nm)) else buf_get3(cg_tmp(cg1), r, nm, wd)
-
-fn buf_get3(ts, r0, nm, wd) = match ts
-  TS2(r, cg) ->
-    wide = if str_cmp(wd, "fpext") == 0 then "double" else "i64"
-    RV(cg_line(cg, r + " = " + wd + " " + bw_llty(nm) + " " + r0 + " to " + wide), r, bw_rilly(nm))
-
-fn buf_set_ir(cg, vts) =
-  nm = bw_name(buf_width(vt1t(vts)))
-  match buf_addr(cg, vt1(vts), vt2(vts), ctw_size2(nm))
-    TS2(ad, cg1) -> buf_set2(cg1, ad, nm, vt3(vts))
-
-fn buf_set2(cg, ad, nm, v) =
-  lt = bw_llty(nm)
-  if str_cmp(lt, "i64") == 0 || str_cmp(lt, "double") == 0 || str_cmp(lt, "ptr") == 0 then RV(cg_line(cg, "store " + lt + " " + v + ", ptr " + ad), "", YUnit) else buf_set3(cg_tmp(cg), ad, nm, v, lt)
-
-fn buf_set3(ts, ad, nm, v, lt) = match ts
-  TS2(r, cg) ->
-    op = if str_cmp(nm, "F32") == 0 then "fptrunc double " else "trunc i64 "
-    cg1 = cg_line(cg, r + " = " + op + v + " to " + lt)
-    RV(cg_line(cg1, "store " + lt + " " + r + ", ptr " + ad), "", YUnit)
-
-fn builtin_ir2(cg, n, vts) =
-  if str_cmp(n, "int_to_str") == 0 then rt1(cg, "ptr", "rill_int_to_str", "i64 " + vt1(vts), YStr) else if str_cmp(n, "float_to_str") == 0 then rt1(cg, "ptr", "rill_float_to_str", "double " + vt1(vts), YStr) else if str_cmp(n, "bool_to_str") == 0 then bool_to_str_ir(bool_arg(cg, vt1(vts))) else if str_cmp(n, "str_len") == 0 then rt1(cg, "i64", "rill_str_len", "ptr " + vt1(vts), YInt) else if str_cmp(n, "str_get") == 0 then rt1(cg, "i64", "rill_str_get", "ptr " + vt1(vts) + ", i64 " + vt2(vts), YInt) else if str_cmp(n, "str_sub") == 0 then rt1(cg, "ptr", "rill_str_sub", "ptr " + vt1(vts) + ", i64 " + vt2(vts) + ", i64 " + vt3(vts), YStr) else if str_cmp(n, "str_find") == 0 then rt1(cg, "i64", "rill_str_find", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt) else if str_cmp(n, "str_cmp") == 0 then rt1(cg, "i64", "rill_str_cmp", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt) else builtin_ir3(cg, n, vts)
-
-fn bool_to_str_ir(ts) = match ts
-  TS2(v8, cg) -> rt1(cg, "ptr", "rill_bool_to_str", "i8 " + v8, YStr)
-
-fn builtin_ir3(cg, n, vts) =
-  if str_cmp(n, "str_to_int") == 0 then rt1(cg, "i64", "rill_str_to_int", "ptr " + vt1(vts), YInt) else if str_cmp(n, "str_to_float") == 0 then rt1(cg, "double", "rill_str_to_float", "ptr " + vt1(vts), YFloat) else if str_cmp(n, "chr") == 0 then rt1(cg, "ptr", "rill_chr", "i64 " + vt1(vts), YStr) else if str_cmp(n, "to_float") == 0 then cast_ir(cg, "sitofp i64 ", " to double", vt1(vts), YFloat) else if str_cmp(n, "to_int") == 0 then cast_ir(cg, "fptosi double ", " to i64", vt1(vts), YInt) else if str_cmp(n, "bit_and") == 0 then bit_ir(cg, "and", vts) else if str_cmp(n, "bit_or") == 0 then bit_ir(cg, "or", vts) else if str_cmp(n, "bit_xor") == 0 then bit_ir(cg, "xor", vts) else if str_cmp(n, "shl") == 0 then bit_ir(cg, "shl", vts) else if str_cmp(n, "shr") == 0 then bit_ir(cg, "lshr", vts) else if str_cmp(n, "bit_not") == 0 then cast_ir(cg, "xor i64 ", ", -1", vt1(vts), YInt) else builtin_ir4(cg, n, vts)
-
-fn cast_ir(cg, pre, post, v, t) =
-  match cg_tmp(cg)
-    TS2(r, cg2) -> RV(cg_line(cg2, r + " = " + pre + v + post), r, t)
-
-fn bit_ir(cg, op, vts) =
-  match cg_tmp(cg)
-    TS2(r, cg2) -> RV(cg_line(cg2, r + " = " + op + " i64 " + vt1(vts) + ", " + vt2(vts)), r, YInt)
-
-fn builtin_ir4(cg, n, vts) =
-  if str_cmp(n, "to_cstr") == 0 then rt1(cg, "ptr", "rill_to_cstr", "ptr " + vt1(vts), YPtr) else if str_cmp(n, "from_cstr") == 0 then rt1(cg, "ptr", "rill_from_cstr", "ptr " + vt1(vts), YStr) else if str_cmp(n, "exit") == 0 then rt0(cg, "rill_exit", "i64 " + vt1(vts)) else if str_cmp(n, "arg_count") == 0 then rt1(cg, "i64", "rill_arg_count", "", YInt) else if str_cmp(n, "arg") == 0 then rt1(cg, "ptr", "rill_arg", "i64 " + vt1(vts), YStr) else if str_cmp(n, "read_file_raw") == 0 then rt1(cg, "ptr", "rill_read_file", "ptr " + vt1(vts), YStr) else if str_cmp(n, "io_ok") == 0 then i8_result(rt1(cg, "i8", "rill_io_ok", "", YInt)) else if str_cmp(n, "write_file") == 0 then i8_result(rt1(cg, "i8", "rill_write_file", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt)) else if str_cmp(n, "read_line") == 0 then rt1(cg, "ptr", "rill_read_line", "", YStr) else builtin_ir5(cg, n, vts)
-
-fn builtin_ir5(cg, n, vts) =
-  if str_cmp(n, "alloc_bytes") == 0 then rt1(cg, "ptr", "rill_alloc_bytes", "i64 " + vt1(vts), YPtr) else if str_cmp(n, "free_ptr") == 0 then rt0(cg, "rill_free_ptr", "ptr " + vt1(vts)) else if str_cmp(n, "null_ptr") == 0 then rt1(cg, "ptr", "rill_null_ptr", "", YPtr) else if str_cmp(n, "is_null") == 0 then i8_result(rt1(cg, "i8", "rill_is_null", "ptr " + vt1(vts), YInt)) else if str_cmp(n, "ptr_offset") == 0 then rt1(cg, "ptr", "rill_ptr_offset", "ptr " + vt1(vts) + ", i64 " + vt2(vts), YPtr) else builtin_ir6(cg, n, vts)
-
-fn builtin_ir6(cg, n, vts) =
-  if str_cmp(n, "poke_i8") == 0 || str_cmp(n, "poke_i16") == 0 || str_cmp(n, "poke_i32") == 0 || str_cmp(n, "poke_i64") == 0 then rt0(cg, "rill_" + n, "ptr " + vt1(vts) + ", i64 " + vt2(vts) + ", i64 " + vt3(vts)) else if str_cmp(n, "poke_f32") == 0 || str_cmp(n, "poke_f64") == 0 then rt0(cg, "rill_" + n, "ptr " + vt1(vts) + ", i64 " + vt2(vts) + ", double " + vt3(vts)) else if str_cmp(n, "peek_f32") == 0 || str_cmp(n, "peek_f64") == 0 then rt1(cg, "double", "rill_" + n, "ptr " + vt1(vts) + ", i64 " + vt2(vts), YFloat) else if str_cmp(n, "peek_i8") == 0 || str_cmp(n, "peek_u8") == 0 || str_cmp(n, "peek_i16") == 0 || str_cmp(n, "peek_u16") == 0 || str_cmp(n, "peek_i32") == 0 || str_cmp(n, "peek_u32") == 0 || str_cmp(n, "peek_i64") == 0 then rt1(cg, "i64", "rill_" + n, "ptr " + vt1(vts) + ", i64 " + vt2(vts), YInt) else rcdie("built-in `" + n + "` is not supported yet")
-
-# ---- tail position ----------------------------------------------------------
-
-fn emit_ret(cx, st, env, e, cg, rt, stk) = match e
-  EIf(c, t, e2) -> ret_if(cx, st, env, c, t, e2, cg, rt, stk)
-  EBlock(ss) -> ret_block(cx, st, env, ss, cg, rt, stk)
-  EMatch(s, arms, _) -> ret_match(cx, st, env, s, arms, cg, rt, stk)
-  ESelect(arms, d, _) -> ret_select(cx, st, env, arms, d, cg, rt, stk)
-  ECall(n, args, ln, p) -> ret_call(cx, st, env, n, args, cg, rt, ECall(n, args, ln, p), stk)
-  _ -> ret_plain(emit(cx, st, env, e, cg), rt, stk)
-
-fn ret_plain(ev, rt, stk) = match ev
-  RV(cg, v, t) -> if is_yunit(rt) then cg_line(rel_all(cg, stk), "ret void") else ret_coerced(coerce(rel_all(cg, stk), v, t, rt), rt)
-
-fn ret_coerced(ts, rt) = match ts
-  TS2(v, cg) -> cg_line(cg, "ret " + tystr(rt) + " " + v)
-
-fn ret_if(cx, st, env, c, t, e2, cg, rt, stk) =
-  match emit(cx, st, env, c, cg)
-    RV(cg1, cv, _) -> ret_if2(cg_id(cg1), cx, st, env, cv, t, e2, rt, stk)
-
-fn ret_if2(is, cx, st, env, cv, t, e2, rt, stk) = match is
-  IS(k, cg) ->
-    thn = lb("then" + int_to_str(k))
-    els = lb("else" + int_to_str(k))
-    cg1 = cg_label(cg_line(cg, "br i1 " + cv + ", label %" + thn + ", label %" + els), thn)
-    cg2 = emit_ret(cx, st, env, t, cg1, rt, stk)
-    emit_ret(cx, st, env, e2, cg_label(cg2, els), rt, stk)
-
-fn ret_block(cx, st, env, ss, cg, rt, stk) = match ss
-  Cons(SBind(n, v, _), rest) -> ret_block_bind(emit_bound(cx, st, env, n, v, rest, cg), cx, st, env, n, rest, rt, stk)
-  Cons(SExpr(v), Nil) -> emit_ret(cx, st, env, v, cg, rt, stk)
-  Cons(SExpr(v), rest) -> ret_block_step(emit(cx, st, env, v, cg), cx, st, env, rest, rt, stk)
-  Nil -> cg_line(rel_all(cg, stk), "ret void")
-
-fn ret_block_bind(ev, cx, st, env, n, rest, rt, stk) = match ev
-  RV(cg, v, t) -> ret_block(cx, st, sput(env, n, VT(v, t)), rest, cg, rt, Cons(VT(v, t), stk))
-
-fn ret_block_step(ev, cx, st, env, rest, rt, stk) = match ev
-  RV(cg, v, t) -> ret_block(cx, st, env, rest, release(cg, v, t), rt, stk)
-
-fn ret_match(cx, st, env, s, arms, cg, rt, stk) =
-  match emit(cx, st, env, s, cg)
-    RV(cg1, v, t) -> ret_match2(cg_id(cg1), cx, st, env, v, t, arms, rt, stk)
-
-fn ret_match2(is, cx, st, env, v, t, arms, rt, stk) = match is
-  IS(k, cg) ->
-    cg1 = cg_line(cg, "br label %" + lb("m" + int_to_str(k) + "a0"))
-    ret_marms(cx, st, env, arms, 0, k, v, t, cg1, rt, Cons(VT(v, t), stk))
-
-fn ret_marms(cx, st, env, arms, i, k, v, t, cg, rt, stk) = match arms
-  Nil -> cg
-  Cons(Arm(p, b, _), rest) -> ret_marm_one(cx, st, env, p, b, rest, i, k, v, t, cg, rt, stk)
-
-fn ret_marm_one(cx, st, env, p, b, rest, i, k, v, t, cg, rt, stk) =
-  lbl = lb("m" + int_to_str(k) + "a" + int_to_str(i))
-  fail = if is_nil_arms(rest) then lb("m" + int_to_str(k) + "x") else lb("m" + int_to_str(k) + "a" + int_to_str(i + 1))
-  cg1 = cg_label(cg, lbl)
-  ret_marm_two(pat(cx, st, env, p, v, t, fail, cg1, Nil), cx, st, b, rest, i, k, v, t, rt, stk)
-
-fn ret_marm_two(pr, cx, st, b, rest, i, k, v, t, rt, stk) = match pr
-  PR2(cg, env2, es) -> ret_marm_three(emit_ret(cx, st, env2, b, retain_all(cg, es), rt, append(es, stk)), cx, st, env2, rest, i, k, v, t, rt, stk)
-
-fn ret_marm_three(cg, cx, st, env2, rest, i, k, v, t, rt, stk) =
-  if is_nil_arms(rest) then cg_line(cg_label(cg, lb("m" + int_to_str(k) + "x")), "unreachable") else ret_marms(cx, st, env2, rest, i + 1, k, v, t, cg, rt, stk)
-
-fn ret_call(cx, st, env, n, args, cg, rt, orig, stk) =
-  match sget(env, n)
-    Some(vt) -> ret_plain(emit_closure_call(cx, st, env, args, cg, vt, false), rt, stk)
-    None -> ret_call2(sget(cx_fnidx(cx), n), cx, st, env, n, args, cg, rt, orig, stk)
-
-fn ret_call2(o, cx, st, env, n, args, cg, rt, orig, stk) = match o
-  Some(idx) -> ret_value_call(emit_user_call_w(cx, st, env, n, idx, args, cg, true, rt, stk), rt)
-  None -> if str_cmp(n, "channel") == 0 || str_cmp(n, "recv") == 0 then ret_plain(emit_call5(cx, st, env, n, args, cg, rt), rt, stk) else ret_plain(emit(cx, st, env, orig, cg), rt, stk)
-
-fn ret_value_call(ev, rt) = match ev
-  RV(cg, v, t) -> if is_yunit(t) || is_yunit(rt) then cg_line(cg, "ret void") else ret_coerced(coerce(cg, v, t, rt), rt)
-
-# ---- functions and the program ----------------------------------------------
-
-fn render_code(cg) = match cg
-  CG(_, _, code, _, _, _, _, _) -> cat(map(reverse(code), \l -> l + "\n"))
-
-type PE
-  PE(Str, SM(VT), List(VT))
-
-fn param_env(names, tys, first, sig, env, es) = match names
-  Nil -> PE(sig, env, reverse(es))
-  Cons(Par(n, _), rest) -> param_env2(rest, tys, first, sig, env, n, es)
-
-fn param_env2(rest, tys, first, sig, env, n, es) = match tys
-  Cons(t, trest) ->
-    piece = tystr(t) + " %\"" + n + "\""
-    param_env(rest, trest, false, if first then piece else sig + ", " + piece, sput(env, n, VT("%\"" + n + "\"", t)), Cons(VT("%\"" + n + "\"", t), es))
-  Nil -> PE(sig, env, reverse(es))
-
-type FR2
-  FR2(Str, CG)
-
-# One instance from the worklist: signature instantiated, body emitted.
-fn emit_inst(cx, st, fns, wi, shared) = match wi
-  WI(name, idx, targs) -> emit_inst2(cx, st, nth_fnd(fns, idx), name, idx, targs, shared)
-  WR(a, targs) -> emit_rel(cx, a, targs, shared)
-  WE(a, targs) -> emit_eq(cx, a, targs, shared)
-  WS(a, targs) -> emit_shw(cx, st, a, targs, shared)
-
-# ---- structural show --------------------------------------------------------
-#
-# One function per monomorphized data type, generated only when no user
-# `Show` impl exists: `Ctor` for a bare constructor, `Ctor(f1, f2)` with
-# each field shown by its own type. Borrows its argument, returns an owned
-# string.
-
-fn emit_shw(cx, st, a, targs, shared) =
-  cs = adt_ctors(cx, a)
-  sub = cg_sub(shared)
-  sub1 = if len(cs) > 1 then shw_tag(sub) else sub
-  match shw_ctors(cx, st, cs, 0, targs, len(cs) > 1, sub1)
-    cgo -> FR2("define private ptr @\"" + shw_sym(a, targs) + "\"(ptr %p) {\n\"rc.entry\":\n" + render_code(cgo) + "}\n\n", cgo)
-
-fn shw_tag(cg) =
-  match slot_ptr(cg, "%p", 1)
-    TS2(tp, cg1) -> cg_line(cg1, "%tag = load i64, ptr " + tp)
-
-fn shw_ctors(cx, st, cs, ci, targs, multi, cg) = match cs
-  Nil -> cg
-  Cons(C2(cn, fields), rest) -> shw_ctor(cx, st, cn, map(fields, \f -> sgen(f, targs)), ci, is_nil_arms(rest), rest, targs, multi, cg)
-
-fn shw_ctor(cx, st, cn, ftys, ci, last, rest, targs, multi, cg) =
-  cg1 = if multi then shw_check(cg, ci, last) else cg
-  cg2 = shw_body(cx, st, cn, ftys, ci, last, cg1)
-  shw_ctors(cx, st, rest, ci + 1, targs, multi, cg2)
-
-fn shw_check(cg, ci, last) =
-  if last then cg_label(cg_line(cg, "br label %" + lb("h" + int_to_str(ci))), lb("h" + int_to_str(ci))) else shw_check2(cg_tmp(cg), ci)
-
-fn shw_check2(ts, ci) = match ts
-  TS2(c, cg) ->
-    hl = lb("h" + int_to_str(ci))
-    nl = lb("n" + int_to_str(ci))
-    cg_label(cg_line(cg_line(cg, c + " = icmp eq i64 %tag, " + int_to_str(ci)), "br i1 " + c + ", label %" + hl + ", label %" + nl), hl)
-
-fn shw_body(cx, st, cn, ftys, ci, last, cg) = match ftys
-  Nil -> shw_bare(cg_str(cg, cn), ci, last)
-  _ -> shw_fields_start(cg_str(cg, cn + "("), cx, st, ftys, ci, last)
-
-# A bare constructor's name is a static string; hand back a retained view so
-# the caller's release balances.
-fn shw_bare(ts, ci, last) = match ts
-  TS2(nm, cg) -> shw_close_ret(cg, nm, ci, last)
-
-fn shw_close_ret(cg, v, ci, last) =
-  cg1 = cg_line(cg, "ret ptr " + v)
-  if last then cg1 else cg_label(cg1, lb("n" + int_to_str(ci)))
-
-fn shw_fields_start(ts, cx, st, ftys, ci, last) = match ts
-  TS2(acc, cg) -> shw_fields(cx, st, ftys, 0, ci, last, acc, cg)
-
-fn shw_fields(cx, st, ftys, i, ci, last, acc, cg) = match ftys
-  Nil -> shw_finish(cg_str(cg, ")"), ci, last, acc)
-  Cons(ft, rest) -> shw_field(cx, st, ft, rest, i, ci, last, acc, cg)
-
-fn shw_finish(ts, ci, last, acc) = match ts
-  TS2(par, cg) -> shw_finish2(shw_concat(cg, acc, par), ci, last)
-
-fn shw_finish2(ts, ci, last) = match ts
-  TS2(r, cg) -> shw_close_ret(cg, r, ci, last)
-
-fn shw_field(cx, st, ft, rest, i, ci, last, acc, cg) =
-  match if i > 0 then shw_sep(cg_str(cg, ", "), acc) else TS2(acc, cg)
-    TS2(acc1, cg1) -> shw_field2(load_slot(cg1, "%p", i + 2, ft), cx, st, ft, rest, i, ci, last, acc1)
-
-fn shw_sep(ts, acc) = match ts
-  TS2(sep, cg) -> shw_concat(cg, acc, sep)
-
-fn shw_field2(ts, cx, st, ft, rest, i, ci, last, acc) = match ts
-  TS2(fv, cg) -> shw_field3(shw_one(cx, st, cg, fv, ft), cx, st, ft, rest, i, ci, last, acc)
-
-type SHF
-  SHF(CG, Str, Bool)
-
-# A field as a string, and whether that string is ours to release. A field
-# whose type has its own `Show` impl is shown its own way.
-fn shw_one(cx, st, cg, fv, ft) = match ft
-  YInt -> shw_owned(rt1(cg, "ptr", "rill_int_to_str", "i64 " + fv, YStr))
-  YFloat -> shw_owned(rt1(cg, "ptr", "rill_float_to_str", "double " + fv, YStr))
-  YBool -> shw_bool(bool_arg(cg, fv))
-  YStr -> SHF(cg, fv, false)
-  YAdt(a2, ta2) -> shw_one_adt(sget(cx_fnidx(cx), "Show." + adt_name(cx, a2) + ".show"), cx, st, cg, fv, a2, ta2)
-  _ -> shw_unknown(cg_str(cg, "?"))
-
-fn shw_one_adt(o, cx, st, cg, fv, a2, ta2) = match o
-  Some(_) -> shw_owned(trait_call2(cx, st, retain(cg, fv, YAdt(a2, ta2)), "Show." + adt_name(cx, a2) + ".show", Cons(VT(fv, YAdt(a2, ta2)), Nil)))
-  None -> shw_sub(cg_tmp(cg_want_shw(cg, a2, ta2)), a2, ta2, fv)
-
-fn shw_owned(ev) = match ev
-  RV(cg, v, _) -> SHF(cg, v, true)
-
-fn shw_bool(ts) = match ts
-  TS2(v8, cg) -> shw_owned(rt1(cg, "ptr", "rill_bool_to_str", "i8 " + v8, YStr))
-
-fn shw_sub(ts, a2, ta2, fv) = match ts
-  TS2(r, cg) -> SHF(cg_line(cg, r + " = call ptr @\"" + shw_sym(a2, ta2) + "\"(ptr " + fv + ")"), r, true)
-
-fn shw_unknown(ts) = match ts
-  TS2(q, cg) -> SHF(cg, q, false)
-
-fn shw_field3(shf, cx, st, ft, rest, i, ci, last, acc) = match shf
-  SHF(cg, fs, owned) -> shw_field4(shw_concat(cg, acc, fs), cx, st, fs, owned, rest, i, ci, last)
-
-fn shw_field4(ts, cx, st, fs, owned, rest, i, ci, last) = match ts
-  TS2(acc2, cg) -> shw_fields(cx, st, rest, i + 1, ci, last, acc2, if owned then release(cg, fs, YStr) else cg)
-
-# Concatenate and let go of the left side; the runtime borrows both.
-fn shw_concat(cg, acc, piece) =
-  match rt1(cg, "ptr", "rill_str_concat", "ptr " + acc + ", ptr " + piece, YStr)
-    RV(cg1, r, _) -> TS2(r, release(cg1, acc, YStr))
-
-# ---- structural equality ----------------------------------------------------
-#
-# One function per monomorphized data type. The same pointer is equal to
-# itself (which also settles every nullary constructor), differing tags are
-# unequal, and fields compare by their own types — the last data-typed
-# field by tail call, so equality over a long list runs in constant stack.
-
-fn emit_eq(cx, a, targs, shared) =
-  hc = heap_ctors(adt_ctors(cx, a), 0, targs, Nil)
-  multi = len(adt_ctors(cx, a)) > 1
-  head = "define private i1 @\"" + eq_sym(a, targs) + "\"(ptr %a, ptr %b) {\n\"rc.entry\":\n  %same = icmp eq ptr %a, %b\n  br i1 %same, label %\"rc.t\", label %\"rc.g\"\n\"rc.t\":\n  ret i1 true\n\"rc.f\":\n  ret i1 false\n\"rc.g\":\n" + eq_tag(multi) + eq_dispatch(hc)
-  match eq_blocks(hc, shared, "")
-    TS2(body, cg) -> FR2(head + body + "}\n\n", cg)
-
-fn eq_tag(multi) =
-  if multi then "  %tpa = getelementptr i8, ptr %a, i64 8\n  %ta = load i64, ptr %tpa\n  %tpb = getelementptr i8, ptr %b, i64 8\n  %tb = load i64, ptr %tpb\n  %te = icmp eq i64 %ta, %tb\n  br i1 %te, label %\"rc.sw\", label %\"rc.f\"\n\"rc.sw\":\n" else "  br label %\"rc.sw\"\n\"rc.sw\":\n"
-
-fn eq_dispatch(hc) = match hc
-  Nil -> "  ret i1 true\n"
-  Cons(RHC(ci, _), Nil) -> "  br label %\"rc.e" + int_to_str(ci) + "\"\n"
-  _ -> eq_dispatch2(hc, "")
-
-fn eq_dispatch2(hc, acc) = match hc
-  Cons(RHC(ci, _), Nil) -> acc + "  br label %\"rc.e" + int_to_str(ci) + "\"\n"
-  Cons(RHC(ci, _), rest) -> eq_dispatch2(rest, acc + "  %ise" + int_to_str(ci) + " = icmp eq i64 %ta, " + int_to_str(ci) + "\n  br i1 %ise" + int_to_str(ci) + ", label %\"rc.e" + int_to_str(ci) + "\", label %\"rc.w" + int_to_str(ci) + "\"\n\"rc.w" + int_to_str(ci) + "\":\n")
-  Nil -> acc
-
-fn eq_blocks(hc, cg, acc) = match hc
-  Nil -> TS2(acc, cg)
-  Cons(RHC(ci, ftys), rest) -> eq_block(ci, ftys, rest, cg, acc)
-
-fn eq_block(ci, ftys, rest, cg, acc) =
-  match eq_fields(ftys, 0, ci, cg, "")
-    TS2(body, cg1) -> eq_blocks(rest, cg1, acc + "\"rc.e" + int_to_str(ci) + "\":\n" + body)
-
-fn eq_load2(ci, i, t) =
-  nm = int_to_str(ci) + "_" + int_to_str(i)
-  off = int_to_str(8 * (i + 2))
-  "  %xa" + nm + " = getelementptr i8, ptr %a, i64 " + off + "\n  %va" + nm + " = load " + slot(t) + ", ptr %xa" + nm + "\n  %xb" + nm + " = getelementptr i8, ptr %b, i64 " + off + "\n  %vb" + nm + " = load " + slot(t) + ", ptr %xb" + nm + "\n"
-
-fn eq_fields(ftys, i, ci, cg, acc) = match ftys
-  Nil -> TS2(acc + "  ret i1 true\n", cg)
-  Cons(t, Nil) -> eq_last(t, i, ci, cg, acc)
-  Cons(t, rest) -> eq_fields(rest, i + 1, ci, eq_reg(cg, t), acc + eq_load2(ci, i, t) + eq_cmp(ci, i, t) + eq_cont(ci, i))
-
-fn eq_reg(cg, t) = match t
-  YAdt(a2, ta2) -> cg_want_eq(cg, a2, ta2)
-  _ -> cg
-
-fn eq_cmp(ci, i, t) =
-  nm = int_to_str(ci) + "_" + int_to_str(i)
-  match t
-    YFloat -> "  %c" + nm + " = fcmp oeq double %va" + nm + ", %vb" + nm + "\n"
-    YStr -> "  %s" + nm + " = call i8 @rill_str_eq(ptr %va" + nm + ", ptr %vb" + nm + ")\n  %c" + nm + " = trunc i8 %s" + nm + " to i1\n"
-    YAdt(a2, ta2) -> "  %c" + nm + " = call i1 @\"" + eq_sym(a2, ta2) + "\"(ptr %va" + nm + ", ptr %vb" + nm + ")\n"
-    YFn(_, _) -> "  %c" + nm + " = icmp eq ptr %va" + nm + ", %vb" + nm + "\n"
-    YBuf(_) -> "  %c" + nm + " = icmp eq ptr %va" + nm + ", %vb" + nm + "\n"
-    YPtr -> "  %c" + nm + " = icmp eq ptr %va" + nm + ", %vb" + nm + "\n"
-    _ -> "  %c" + nm + " = icmp eq i64 %va" + nm + ", %vb" + nm + "\n"
-
-fn eq_cont(ci, i) =
-  nm = int_to_str(ci) + "_" + int_to_str(i)
-  "  br i1 %c" + nm + ", label %\"rc.q" + nm + "\", label %\"rc.f\"\n\"rc.q" + nm + "\":\n"
-
-fn eq_last(t, i, ci, cg, acc) = match t
-  YAdt(a2, ta2) -> TS2(acc + eq_load2(ci, i, t) + "  %r" + int_to_str(ci) + " = tail call i1 @\"" + eq_sym(a2, ta2) + "\"(ptr %va" + int_to_str(ci) + "_" + int_to_str(i) + ", ptr %vb" + int_to_str(ci) + "_" + int_to_str(i) + ")\n  ret i1 %r" + int_to_str(ci) + "\n", cg_want_eq(cg, a2, ta2))
-  _ -> TS2(acc + eq_load2(ci, i, t) + eq_cmp(ci, i, t) + eq_cont(ci, i) + "  ret i1 true\n", eq_reg(cg, t))
-
-# ---- release functions ------------------------------------------------------
-#
-# One per monomorphized data type: decrement, and at zero release the boxed
-# fields and free the box. The last boxed field of the last-visited kind is
-# released by tail call after the free, so a million-long list unwinds in
-# constant stack.
-
-fn emit_rel(cx, a, targs, shared) =
-  hc = heap_ctors(adt_ctors(cx, a), 0, targs, Nil)
-  head = "define private void @\"" + rel_sym(a, targs) + "\"(ptr %p) {\n\"rc.entry\":\n  %rc = load i64, ptr %p\n  %live = icmp ult i64 %rc, 2305843009213693951\n  br i1 %live, label %\"rc.d\", label %\"rc.s\"\n\"rc.d\":\n  %n = sub i64 %rc, 1\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %\"rc.f\", label %\"rc.k\"\n\"rc.k\":\n  store i64 %n, ptr %p\n  br label %\"rc.s\"\n\"rc.s\":\n  ret void\n\"rc.f\":\n"
-  match rel_free(hc, shared)
-    TS2(body, cg) -> FR2(head + body + "}\n\n", cg)
-
-type RHC
-  RHC(Int, List(Ty2))
-
-fn heap_ctors(cs, ci, targs, acc) = match cs
-  Nil -> reverse(acc)
-  Cons(C2(_, fields), rest) -> heap_ctors(rest, ci + 1, targs, if len(fields) > 0 then Cons(RHC(ci, map(fields, \f -> sgen(f, targs))), acc) else acc)
-
-fn rel_free(hc, cg) = match hc
-  Nil -> TS2("  unreachable\n", cg)
-  Cons(RHC(ci, ftys), Nil) -> rel_free_one("  br label %\"rc.c" + int_to_str(ci) + "\"\n", Cons(RHC(ci, ftys), Nil), cg)
-  _ -> rel_free_one("  %tp = getelementptr i8, ptr %p, i64 8\n  %tag = load i64, ptr %tp\n" + rel_dispatch(hc, ""), hc, cg)
-
-fn rel_dispatch(hc, acc) = match hc
-  Cons(RHC(ci, _), Nil) -> acc + "  br label %\"rc.c" + int_to_str(ci) + "\"\n"
-  Cons(RHC(ci, _), rest) -> rel_dispatch(rest, acc + "  %is" + int_to_str(ci) + " = icmp eq i64 %tag, " + int_to_str(ci) + "\n  br i1 %is" + int_to_str(ci) + ", label %\"rc.c" + int_to_str(ci) + "\", label %\"rc.n" + int_to_str(ci) + "\"\n\"rc.n" + int_to_str(ci) + "\":\n")
-  Nil -> acc
-
-fn rel_free_one(dispatch, hc, cg) = rel_blocks(hc, cg, dispatch)
-
-fn rel_blocks(hc, cg, acc) = match hc
-  Nil -> TS2(acc, cg)
-  Cons(RHC(ci, ftys), rest) -> rel_block(ci, ftys, rest, cg, acc)
-
-# One constructor's teardown: load the boxed fields, release all but the
-# last, free, then release the last — by tail call if it is a data value.
-fn rel_block(ci, ftys, rest, cg, acc) =
-  bf = boxed_fields(ftys, 0, Nil)
-  sz = int_to_str(8 * (2 + len(ftys)))
-  match rel_lines(bf, ci, cg, "", "")
-    RPRL(loads, rels, last, cg1) -> rel_blocks(rest, cg1, acc + "\"rc.c" + int_to_str(ci) + "\":\n" + loads + rels + "  call void @rill_free_sized(ptr %p, i64 " + sz + ")\n" + last + "  ret void\n")
-
-type RBF
-  RBF(Int, Ty2)
-
-fn boxed_fields(ftys, i, acc) = match ftys
-  Nil -> reverse(acc)
-  Cons(t, rest) -> boxed_fields(rest, i + 1, if boxed(t) then Cons(RBF(i, t), acc) else acc)
-
-type RPRL
-  RPRL(Str, Str, Str, CG)
-
-fn rel_lines(bf, ci, cg, loads, rels) = match bf
-  Nil -> RPRL(loads, rels, "", cg)
-  Cons(RBF(i, t), Nil) -> rel_last(i, t, ci, cg, loads, rels)
-  Cons(RBF(i, t), rest) -> rel_lines(rest, ci, cg_want_rel_ty(cg, t), loads + rel_load(ci, i), rels + rel_call(t, "%v" + int_to_str(ci) + "_" + int_to_str(i), "call"))
-
-fn rel_load(ci, i) =
-  nm = int_to_str(ci) + "_" + int_to_str(i)
-  "  %f" + nm + " = getelementptr i8, ptr %p, i64 " + int_to_str(8 * (i + 2)) + "\n  %v" + nm + " = load ptr, ptr %f" + nm + "\n"
-
-fn rel_last(i, t, ci, cg, loads, rels) =
-  kw = if is_adt_ty(t) then "tail call" else "call"
-  RPRL(loads + rel_load(ci, i), rels, rel_call(t, "%v" + int_to_str(ci) + "_" + int_to_str(i), kw), cg_want_rel_ty(cg, t))
-
-fn emit_inst2(cx, st, f, name, idx, targs, shared) = match f
-  FnD(_, _, ps, _, body, _) -> emit_inst3(sig_parts(st, idx), cx, st, ps, body, name, targs, shared)
-
-fn emit_inst3(sig, cx, st, ps, body, name, targs, shared) = match sig
-  SigG(sps, sret, ngen) -> emit_inst4(cx, st, ps, body, name, targs, map(sps, \p -> sgen(p, targs)), sgen(sret, targs), shared)
-  SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
-
-fn emit_inst4(cx, st, ps, body, name, targs, cps, cret, shared) =
-  rt = if str_cmp(name, "main") == 0 then YUnit else cret
-  match param_env(ps, cps, true, "", SLeaf, Nil)
-    PE(sig, env, es) -> emit_inst5(cx, st, body, name, targs, rt, sig, env, es, shared)
-
-fn emit_inst5(cx, st, body, name, targs, rt, sig, env, es, shared) =
-  nm = if str_cmp(name, "main") == 0 then "rill_main" else "\"" + mangle(name, targs) + "\""
-  cg = emit_ret(cx, st, env, body, cg_sub(shared), rt, es)
-  FR2("define " + tystr(rt) + " @" + nm + "(" + sig + ") {\n\"rc.entry\":\n" + render_code(cg) + "}\n\n", cg)
-
-type POP
-  POP(Option(WI), CG)
-
-fn cg_pop(cg) = match cg
-  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> cg_pop2(pend, nid, lbl, code, gl, gid, aux, seen)
-
-fn cg_pop2(pend, nid, lbl, code, gl, gid, aux, seen) = match pend
-  Nil -> POP(None, CG(nid, lbl, code, gl, gid, aux, Nil, seen))
-  Cons(wi, rest) -> POP(Some(wi), CG(nid, lbl, code, gl, gid, aux, rest, seen))
-
-type ASM
-  ASM(List(Str), CG)
-
-fn emit_worklist(cx, st, fns, shared, out) =
-  match cg_pop(shared)
-    POP(None, done) -> ASM(out, done)
-    POP(Some(wi), shared2) -> emit_worklist2(emit_inst(cx, st, fns, wi, shared2), cx, st, fns, out)
-
-fn emit_worklist2(fr, cx, st, fns, out) = match fr
-  FR2(text, cg) -> emit_worklist(cx, st, fns, cg, Cons(text, out))
-
-fn main_idx(cx) = match sget(cx_fnidx(cx), "main")
-  Some(i) -> i
-  None -> rcdie("internal: no main")
-
-fn emit_program(cx, st, fns) =
-  shared = cg_want(CG(0, "entry", Nil, Nil, 0, Nil, Nil, SLeaf), "main", "main", main_idx(cx), Nil)
-  match emit_worklist(cx, st, fns, shared, Nil)
-    ASM(texts, cg) -> rc_assemble(texts, cg)
-
-fn rc_assemble(texts, cg) = match cg
-  CG(_, _, _, gl, _, aux, _, seen) -> ir_header() + cat(map(reverse(gl), \g -> g + "\n")) + "\n" + ir_declares() + cat(reverse(texts)) + cat(reverse(aux)) + ir_main_wrapper(shas(seen, "rt.strands"))
-
-fn ir_header() =
-  "; ModuleID = 'rill'\nsource_filename = \"rill\"\n\n@rill_parallel_build = global i8 0\n\n" + rc_helpers()
-
-# Retain, the generic closure release, and the destructor of a captureless
-# closure — the three fixed pieces every program shares.
-fn rc_helpers() =
-  "define private void @\"rc.retain\"(ptr %p) {\n\"rc.entry\":\n  %rc = load i64, ptr %p\n  %live = icmp ult i64 %rc, 2305843009213693951\n  br i1 %live, label %\"rc.w\", label %\"rc.s\"\n\"rc.w\":\n  %inc = add i64 %rc, 1\n  store i64 %inc, ptr %p\n  br label %\"rc.s\"\n\"rc.s\":\n  ret void\n}\n\ndefine private void @\"rc.clorel\"(ptr %p) {\n\"rc.entry\":\n  %rc = load i64, ptr %p\n  %live = icmp ult i64 %rc, 2305843009213693951\n  br i1 %live, label %\"rc.d\", label %\"rc.s\"\n\"rc.d\":\n  %n = sub i64 %rc, 1\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %\"rc.f\", label %\"rc.k\"\n\"rc.k\":\n  store i64 %n, ptr %p\n  br label %\"rc.s\"\n\"rc.f\":\n  %dp = getelementptr i8, ptr %p, i64 16\n  %d = load ptr, ptr %dp\n  tail call void %d(ptr %p)\n  ret void\n\"rc.s\":\n  ret void\n}\n\ndefine private void @\"rc.dtor0\"(ptr %p) {\n\"rc.entry\":\n  call void @rill_free_sized(ptr %p, i64 24)\n  ret void\n}\n\ndefine private void @\"rc.sdtor0\"(ptr %p) {\n\"rc.entry\":\n  call void @rill_free_sized(ptr %p, i64 16)\n  ret void\n}\n"
-
-fn ir_declares() =
-  "declare void @rill_println_str(ptr)\ndeclare void @rill_println_int(i64)\ndeclare void @rill_println_float(double)\ndeclare void @rill_println_bool(i8)\ndeclare void @rill_print_str(ptr)\ndeclare void @rill_print_int(i64)\ndeclare void @rill_print_float(double)\ndeclare void @rill_print_bool(i8)\ndeclare i8 @rill_str_eq(ptr, ptr)\ndeclare ptr @rill_str_concat(ptr, ptr)\ndeclare i64 @rill_str_len(ptr)\ndeclare ptr @rill_int_to_str(i64)\ndeclare ptr @rill_float_to_str(double)\ndeclare ptr @rill_bool_to_str(i8)\ndeclare i64 @rill_str_get(ptr, i64)\ndeclare ptr @rill_str_sub(ptr, i64, i64)\ndeclare i64 @rill_str_find(ptr, ptr)\ndeclare i64 @rill_str_cmp(ptr, ptr)\ndeclare i64 @rill_str_to_int(ptr)\ndeclare double @rill_str_to_float(ptr)\ndeclare ptr @rill_chr(i64)\ndeclare void @rill_set_args(i64, ptr)\ndeclare i64 @rill_arg_count()\ndeclare ptr @rill_arg(i64)\ndeclare i8 @rill_io_ok()\ndeclare ptr @rill_read_file(ptr)\ndeclare i8 @rill_write_file(ptr, ptr)\ndeclare ptr @rill_read_line()\ndeclare void @rill_exit(i64)\ndeclare ptr @rill_to_cstr(ptr)\ndeclare ptr @rill_from_cstr(ptr)\ndeclare void @rill_free_ptr(ptr)\ndeclare ptr @rill_null_ptr()\ndeclare i8 @rill_is_null(ptr)\ndeclare ptr @rill_alloc_bytes(i64)\ndeclare ptr @rill_buf_new(i64, i64)\ndeclare void @rill_buf_release(ptr, i64)\ndeclare void @rill_buf_oob(i64, i64)\ndeclare ptr @rill_alloc(i64)\ndeclare void @rill_free_sized(ptr, i64)\ndeclare void @rill_str_release(ptr)\ndeclare ptr @rill_ptr_offset(ptr, i64)\ndeclare void @rill_poke_i8(ptr, i64, i64)\ndeclare void @rill_poke_i16(ptr, i64, i64)\ndeclare void @rill_poke_i32(ptr, i64, i64)\ndeclare void @rill_poke_i64(ptr, i64, i64)\ndeclare void @rill_poke_f32(ptr, i64, double)\ndeclare void @rill_poke_f64(ptr, i64, double)\ndeclare i64 @rill_peek_i8(ptr, i64)\ndeclare i64 @rill_peek_u8(ptr, i64)\ndeclare i64 @rill_peek_i16(ptr, i64)\ndeclare i64 @rill_peek_u16(ptr, i64)\ndeclare i64 @rill_peek_i32(ptr, i64)\ndeclare i64 @rill_peek_u32(ptr, i64)\ndeclare i64 @rill_peek_i64(ptr, i64)\ndeclare double @rill_peek_f32(ptr, i64)\ndeclare double @rill_peek_f64(ptr, i64)\ndeclare void @rill_rt_run_direct(ptr)\ndeclare void @rill_rt_run(ptr)\ndeclare ptr @rill_chan_new(i64)\ndeclare void @rill_chan_release(ptr)\ndeclare void @rill_chan_send(ptr, i64, i64)\ndeclare { i64, i64 } @rill_chan_recv(ptr)\ndeclare void @rill_spawn(ptr, ptr)\ndeclare i64 @rill_select(ptr, i64, i8, ptr)\ndeclare void @rill_alloc_report()\n\n"
-
-fn ir_main_wrapper(strands) =
-  run = if strands then "rill_rt_run" else "rill_rt_run_direct"
-  "define i32 @main(i32 %0, ptr %1) {\n\"rc.entry\":\n  %argc = sext i32 %0 to i64\n  call void @rill_set_args(i64 %argc, ptr %1)\n  call void @" + run + "(ptr @rill_main)\n  call void @rill_alloc_report()\n  ret i32 0\n}\n"
+fn rc_help() = println(rc_usage())

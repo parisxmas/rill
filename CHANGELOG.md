@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **`rillc` is a command, not a library.** The code generator moved to
+  `rillc_gen.rill` and `rillc.rill` became the driver every compiler needs:
+  `build`, `run`, `emit-llvm` and `check`, with `-o`, `--keep-ir`,
+  `--prelude` and `--runtime`. It finds the prelude and `librill_runtime.a`
+  beside itself or one level up, collects link flags from the program's own
+  `extern "lib"` declarations in all three of the linker's forms, writes the
+  IR and calls `cc` — through C's `system`, `getenv`, `access` and `remove`,
+  declared as ordinary `extern`s, so the driver uses nothing a Rill program
+  could not. Every path reaches the shell single-quoted, and success returns
+  from `main` rather than exiting, which keeps the runtime's leak report
+  running. The oracle now drives the whole proof through the new command,
+  including a tier holding `rillc check` to `rill check` and one that
+  watches `rillc run` hand back a program's exit code.
+
 - **The self-hosted compiler covers the language.** `rillc` now compiles
   traits (receiver-typed dispatch to impl functions), structural `==` and
   `show` for data types (generated per monomorphized type, user impls
