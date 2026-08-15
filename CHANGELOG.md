@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The self-hosted compiler stops leaking.** `rillc` now emits reference
+  counting: boxes carry a count with the static-constant marker the runtime
+  already understands, every variable use retains, bindings release at
+  scope end, arguments are consumed by the callee and the runtime borrows
+  what it is passed. Pattern matches retain their bindings only after the
+  whole pattern has matched, so a failing arm touches nothing; each
+  monomorphized data type gets a generated release function whose final
+  field is freed by tail call, so a million-long list unwinds in constant
+  stack. The proof is the runtime's own live-allocation counter: every
+  behavior test, the compiler-built formatter on the largest source file,
+  and the self-compilation of `rillc` by its own output all end with
+  `live allocations: 0` — and the fixpoint still holds.
+
 - **Rill compiles itself.** The self-hosted code generator grew from the
   scalar subset to the real language: data types and `match` (nested
   patterns, tag dispatch, shared static nullary constructors), generic

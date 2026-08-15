@@ -86,7 +86,12 @@ The proof has three tiers:
    ~190 files in the repository. It builds the self-hosted type checker
    too, which then matches `rill check` word-for-word on the error suite.
 
-Not yet: channels, `spawn`, `select`, traits, `==` on data types, Buf, and
-reference counting — the generated code leaks, which a batch compiler can
-afford; Perceus insertion is the next milestone. The runtime stays Rust,
-as runtimes do.
+Memory is precise: every box carries a reference count, every use of a
+variable retains, every binding releases when its scope ends, and each
+monomorphized data type gets a generated release function whose last field
+frees by tail call — a million-long list unwinds in constant stack. The
+harness runs every test and the self-compilation itself under
+`RILL_DEBUG_ALLOC` and requires `live allocations: 0` at exit.
+
+Not yet: channels, `spawn`, `select`, traits, `==` on data types, Buf.
+The runtime stays Rust, as runtimes do.

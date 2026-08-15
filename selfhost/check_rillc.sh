@@ -24,6 +24,10 @@ for f in "$root"/selfhost/rillc_tests/*.rill; do
   "$rill" build "$f" -o "$work/$n.rust" >/dev/null 2>&1 || { bad=$((bad+1)); echo "RUST BUILD FAILS: $n"; continue; }
   a=$("$work/$n.self" 2>&1); ae=$?
   b=$("$work/$n.rust" 2>&1); be=$?
+  lk=$(RILL_DEBUG_ALLOC=1 "$work/$n.self" 2>&1 >/dev/null | grep "live allocations" | grep -v ": 0" || true)
+  if [ -n "$lk" ]; then
+    bad=$((bad+1)); echo "LEAKS: $n ($lk)"; continue
+  fi
   if [ "$a" = "$b" ] && [ "$ae" = "$be" ]; then
     ok=$((ok+1))
   else
@@ -43,6 +47,9 @@ echo "matching: $ok   diverging: $bad"
   && "$work/rillc2" "$root/selfhost/rillc.rill" "$prelude" > "$work/rillc3.ll" 2>&1 \
   && cmp -s "$work/rillc2.ll" "$work/rillc3.ll" \
   && echo "fixpoint: rillc(rillc) == rillc2(rillc)" || { echo "FIXPOINT BROKEN"; bad=$((bad+1)); }
+selfleak=$(RILL_DEBUG_ALLOC=1 "$work/rillc2" "$root/selfhost/rillc.rill" "$prelude" 2>&1 >/dev/null | grep "live allocations" || true)
+echo "self-compilation heap at exit: ${selfleak:-unreported}"
+echo "$selfleak" | grep -q ": 0" || { echo "SELF-COMPILATION LEAKS"; bad=$((bad+1)); }
 "$work/rillc2" "$root/selfhost/fmt.rill" "$prelude" > "$work/fmt2.ll" 2>&1 \
   && cc -O2 -Wno-override-module "$work/fmt2.ll" "$runtime" -o "$work/fmt2" 2>/dev/null || { echo "FMT BUILD FAILS"; bad=$((bad+1)); }
 fok=0; fbad=0
