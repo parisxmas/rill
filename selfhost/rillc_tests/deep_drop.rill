@@ -1,0 +1,9 @@
+fn build(i, acc) = if i == 0 then acc else build(i - 1, Cons(int_to_str(i), acc))
+
+fn count(l, n) = match l
+  Nil -> n
+  Cons(_, t) -> count(t, n + 1)
+
+fn main() =
+  l = build(500000, Nil)
+  println(count(l, 0))

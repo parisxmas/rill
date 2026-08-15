@@ -44,7 +44,7 @@ use inkwell::targets::{
 use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::values::BasicValue;
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, IntValue, PointerValue,
 };
 use inkwell::{FloatPredicate, IntPredicate, OptimizationLevel};
 
@@ -1305,9 +1305,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.ctx.struct_type(&[self.ctx.i64_type().into(), self.ctx.i64_type().into()], false)
     }
 
-    fn call_rt(&self, name: &str, args: &[BasicMetadataValueEnum<'ctx>]) {
+    fn call_rt(&self, name: &str, args: &[BasicMetadataValueEnum<'ctx>]) -> CallSiteValue<'ctx> {
         let f = self.module.get_function(name).unwrap();
-        self.builder.build_call(f, args, "").expect("LLVM builder error");
+        self.builder.build_call(f, args, "").expect("LLVM builder error")
     }
 
     /// +1 on an owned heap reference (no-op for non-heap types).
@@ -1389,25 +1389,41 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     /// -1 on an owned heap reference, freeing (recursively) at zero.
     fn emit_release(&mut self, v: BasicValueEnum<'ctx>, ty: &Ty) {
-        match ty {
+        self.emit_release_call(v, ty, false);
+    }
+
+    /// The same, marked `tail`. Only for a release that is the last thing its
+    /// function does: the promise is that the callee touches nothing of this
+    /// frame, which lets the backend reuse it instead of stacking another.
+    fn emit_release_tail(&mut self, v: BasicValueEnum<'ctx>, ty: &Ty) {
+        self.emit_release_call(v, ty, true);
+    }
+
+    fn emit_release_call(&mut self, v: BasicValueEnum<'ctx>, ty: &Ty, tail: bool) {
+        let call = match ty {
             Ty::Adt(..) => {
                 let drop_fn = self.adt_drop(ty);
-                self.builder.build_call(drop_fn, &[v.into()], "").expect("LLVM builder error");
+                Some(self.builder.build_call(drop_fn, &[v.into()], "").expect("LLVM builder error"))
             }
-            Ty::Chan(..) => self.call_rt("rill_chan_release", &[v.into()]),
+            Ty::Chan(..) => Some(self.call_rt("rill_chan_release", &[v.into()])),
             Ty::Buf(w) => {
                 let size = self.ctx.i64_type().const_int(w.size_bytes(), false);
-                self.call_rt("rill_buf_release", &[v.into(), size.into()]);
+                Some(self.call_rt("rill_buf_release", &[v.into(), size.into()]))
             }
-            Ty::Str => self.call_rt("rill_str_release", &[v.into()]),
+            Ty::Str => Some(self.call_rt("rill_str_release", &[v.into()])),
             Ty::Fn(..) => {
                 let env = self
                     .builder
                     .build_extract_value(v.into_struct_value(), 1, "env")
                     .expect("LLVM builder error");
-                self.call_rt("rill_env_release", &[env.into()]);
+                Some(self.call_rt("rill_env_release", &[env.into()]))
             }
-            _ => {}
+            _ => None,
+        };
+        if tail {
+            if let Some(call) = call {
+                call.set_tail_call(true);
+            }
         }
     }
 
@@ -1577,6 +1593,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             self.builder.position_at_end(bb);
             let struct_ty = self.ctor_struct(adt, ci, &targs);
             let fields = ctors[ci].fields.clone();
+            // Every heap field is read out before the box goes, and the last
+            // of them is released *after* it, by a tail call — so a list
+            // releases its tail from the frame it is already in rather than
+            // stacking one per link. Freeing first is what makes the call the
+            // last thing this function does; nothing here touches the box
+            // again, and Rill data cannot point back at it. Only one field
+            // can have the last word: a chain running through some earlier
+            // field of a multi-field constructor still recurses, and a deep
+            // enough one still overflows.
+            let mut heap = Vec::new();
             for (fi, ft) in fields.iter().enumerate() {
                 let cf = subst_gen(ft, &targs);
                 if Self::is_heap(&cf) {
@@ -1588,12 +1614,24 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         .builder
                         .build_load(self.llvm_type(&cf).unwrap(), fp, "fv")
                         .expect("LLVM builder error");
-                    self.emit_release(fv, &cf);
+                    heap.push((fv, cf));
                 }
+            }
+            let last = heap.pop();
+            for (fv, cf) in heap {
+                self.emit_release(fv, &cf);
             }
             let size = struct_ty.size_of().expect("sized struct");
             self.call_rt("rill_free_sized", &[ptr.into(), size.into()]);
-            self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+            match last {
+                Some((fv, cf)) => {
+                    self.emit_release_tail(fv, &cf);
+                    self.builder.build_return(None).expect("LLVM builder error");
+                }
+                None => {
+                    self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                }
+            }
         }
 
         self.builder.position_at_end(done_bb);

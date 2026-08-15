@@ -78,6 +78,32 @@ fn compile_only(example: &str) {
     );
 }
 
+/// Compiles a program written here rather than kept in `examples/`, runs it,
+/// and gives back its stdout.
+fn run_source(name: &str, src: &str) -> String {
+    require_fresh_runtime();
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-src-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join(format!("{name}.rill"));
+    std::fs::write(&path, src).unwrap();
+    let exe = out_dir.join(name);
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(
+        build.status.success(),
+        "rill build {name} failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&exe).output().expect("failed to run produced executable");
+    assert!(run.status.success(), "{name} exited with {:?}", run.status.code());
+    String::from_utf8(run.stdout).expect("program output was not UTF-8")
+}
+
 /// Compiles a source that is expected to be rejected, and gives back what the
 /// compiler said.
 fn compile_error(src: &str) -> String {
@@ -139,6 +165,24 @@ fn option_pipeline() {
 #[test]
 fn tail_calls_run_in_constant_stack() {
     assert_eq!(compile_and_run("loop.rill"), "500000500000\n");
+}
+
+/// Tearing down a long list must not cost a stack frame per link. The
+/// generated drop frees the box first and releases its last heap field by a
+/// tail call, so this list — which is only released when `main` ends, long
+/// after it is done being read — unwinds in constant stack.
+#[test]
+fn long_lists_release_in_constant_stack() {
+    let src = "fn build(i, acc) = if i == 0 then acc else build(i - 1, Cons(int_to_str(i), acc))\n\
+               \n\
+               fn count(l, n) = match l\n  \
+                 Nil -> n\n  \
+                 Cons(_, t) -> count(t, n + 1)\n\
+               \n\
+               fn main() =\n  \
+                 l = build(2000000, Nil)\n  \
+                 println(count(l, 0))\n";
+    assert_eq!(run_source("deep_drop", src), "2000000\n");
 }
 
 /// Every `.rill` file in the repository is kept in canonical form, so

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Long lists no longer crash on the way out.** The generated drop for a
+  data type released its heap fields and *then* freed the box, so tearing
+  down a list cost a stack frame per link and a half-million-element one
+  segfaulted at scope end. It now reads the fields out, frees the box, and
+  releases the last of them by a tail call — the shape the self-hosted
+  compiler already used — so a five-million-element list unwinds in constant
+  stack, optimized build or not. One field can have the last word, so a
+  chain running through an earlier field of a multi-field constructor still
+  recurses.
+
 - **`rillc` is a command, not a library.** The code generator moved to
   `rillc_gen.rill` and `rillc.rill` became the driver every compiler needs:
   `build`, `run`, `emit-llvm` and `check`, with `-o`, `--keep-ir`,
