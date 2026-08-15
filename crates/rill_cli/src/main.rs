@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --target  compile for another machine; windows and wasm targets are linked,\n            anything else stops at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --target  compile for another machine; windows and wasm targets are linked,\n            anything else stops at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -35,6 +35,13 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 .status()
                 .map_err(|e| format!("failed to run `{}`: {e}", exe.display()))?;
             Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+        }
+        "check" => {
+            let src = rest.first().ok_or(USAGE)?;
+            let path = PathBuf::from(src);
+            let module = rill_syntax::load_program(&path)?;
+            rill_types::check(&module).map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(ExitCode::SUCCESS)
         }
         "repl" => {
             repl()?;

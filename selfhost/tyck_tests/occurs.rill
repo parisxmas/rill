@@ -1,0 +1,3 @@
+fn main() = println(occ(\x -> x))
+
+fn occ(f) = occ(\g -> g(f))

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The type checker, self-hosted.** The second compiler stage written in
+  Rill: module loading (`tyck_load.rill` — depth-first imports, aliased
+  modules qualified to `alias.name`, the prelude merged with transitive
+  shadowing), unification with occurs check over a persistent substitution,
+  traits and impls, dependency-ordered generalization, and Maranget's
+  usefulness test for match exhaustiveness. A new `rill check` subcommand
+  runs the Rust checker alone (load + type check, no codegen), and
+  `selfhost/check_types.sh` holds the two implementations to the same
+  verdict over every file in the repository plus a suite of deliberately
+  broken programs: same exit code, same first error, word for word —
+  161 cases, zero divergence.
+
 - **Block bodies for match arms, select arms and `if` branches.** The first
   thing writing the compiler in its own language taught was where the
   language pinched: an arm's body had to be one expression, so real logic

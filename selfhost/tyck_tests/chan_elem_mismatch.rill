@@ -1,0 +1,4 @@
+fn main() =
+  c = channel(1)
+  send(c, 1)
+  send(c, "x")

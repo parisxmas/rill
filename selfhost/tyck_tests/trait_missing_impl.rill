@@ -1,0 +1,7 @@
+type P
+  P(Int)
+
+trait Show2(a)
+  show2(a) -> Str
+
+fn main() = println(show2(P(1)))

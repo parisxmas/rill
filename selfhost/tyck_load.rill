@@ -1,0 +1,446 @@
+# Multi-file program loading and the prelude merge: the port of `loader.rs`
+# and `prelude.rs`. Imports resolve depth-first before the importing file's
+# own definitions; each file loads once; all files share one flat namespace,
+# and a name defined twice is an error naming both files. An aliased module
+# keeps its names to itself: everything it defines is renamed `alias.name`.
+# The prelude merges last and is shadowed by any user definition — a prelude
+# function that (transitively) references a dropped name is dropped too.
+#
+# One divergence from Rust: paths are normalized textually (`.` and `..`
+# folded away) rather than canonicalized by the OS, so messages that name
+# files print the path as given, not resolved through symlinks.
+
+import "lexer"
+import "parser"
+import "tyck_decl"
+
+fn tldie(msg) =
+  println(msg)
+  exit(1)
+  tldie(msg)
+
+fn ld_or(o, d) = match o
+  Some(x) -> x
+  None -> d
+
+fn fnd_name(f) = match f
+  FnD(n, _, _, _, _, _) -> n
+
+# ---- paths ------------------------------------------------------------------
+
+fn dirname(p) = dn_loop(p, str_len(p) - 1)
+
+fn dn_loop(p, i) =
+  if i < 0 then "" else if str_get(p, i) == 47 then str_sub(p, 0, i) else dn_loop(p, i - 1)
+
+fn path_join(dir, name) = if str_cmp(dir, "") == 0 then name else dir + "/" + name
+
+fn norm_path(p) = np_render(np_fold(split_slash(p), Nil), str_len(p) > 0 && str_get(p, 0) == 47)
+
+fn split_slash(p) = ss_loop(p, 0, 0, Nil)
+
+fn ss_loop(p, i, start, acc) =
+  if i >= str_len(p) then reverse(Cons(str_sub(p, start, i - start), acc)) else if str_get(p, i) == 47 then ss_loop(p, i + 1, i + 1, Cons(str_sub(p, start, i - start), acc)) else ss_loop(p, i + 1, start, acc)
+
+fn np_fold(segs, stack) = match segs
+  Nil -> reverse(stack)
+  Cons(s, rest) -> if str_cmp(s, "") == 0 || str_cmp(s, ".") == 0 then np_fold(rest, stack) else if str_cmp(s, "..") == 0 then np_fold(rest, np_pop(stack)) else np_fold(rest, Cons(s, stack))
+
+fn np_pop(stack) = match stack
+  Nil -> Cons("..", Nil)
+  Cons(h, t) -> if str_cmp(h, "..") == 0 then Cons("..", stack) else t
+
+fn np_render(segs, abs) =
+  s = join_slash(segs, "")
+  if abs then "/" + s else if str_cmp(s, "") == 0 then "." else s
+
+fn join_slash(segs, acc) = match segs
+  Nil -> acc
+  Cons(h, rest) -> join_slash(rest, if str_cmp(acc, "") == 0 then h else acc + "/" + h)
+
+# ---- the loader -------------------------------------------------------------
+#
+# visited, aliases ("" means unqualified), function origins, name origins,
+# and the accumulated declarations, newest first.
+
+type LD
+  LD(SM(Bool), SM(Str), SM(Str), SM(Str), List(Decl), List(Decl), List(Decl), List(Decl), List(FnD))
+
+fn ld0() = LD(SLeaf, SLeaf, SLeaf, SLeaf, Nil, Nil, Nil, Nil, Nil)
+
+fn load_program(entry, prelude_path) =
+  with_prelude(ld_finish(visit(ld0(), entry, "", "", 0)), prelude_path)
+
+fn ld_finish(ld) = match ld
+  LD(_, _, _, _, ty, tr, im, ex, fs) -> M2(reverse(ty), reverse(tr), reverse(im), reverse(ex), reverse(fs), 0)
+
+fn parse_src(src) = match lex_src(src)
+  LO(ts, _) -> p_module(ts)
+
+fn visit(ld, path, alias, from, fline) =
+  canon = norm_path(path)
+  src = read_file_raw(canon)
+  if io_ok() then visit2(ld, canon, src, alias) else read_fail(path, from, fline)
+
+fn read_fail(path, from, fline) =
+  if str_cmp(from, "") == 0 then tldie("cannot read `" + path + "`: No such file or directory (os error 2)") else tldie(from + ": line " + int_to_str(fline) + ": cannot import `" + path + "`: No such file or directory (os error 2)")
+
+fn visit2(ld, canon, src, alias) = match ld
+  LD(vis, al, fo, no, ty, tr, im, ex, fs) ->
+    if shas(vis, canon) then revisit(ld, sget(al, canon), canon, alias) else visit3(LD(sput(vis, canon, true), sput(al, canon, alias), fo, no, ty, tr, im, ex, fs), canon, src, alias)
+
+fn revisit(ld, had_o, canon, alias) =
+  had = ld_or(had_o, "")
+  if str_cmp(had, alias) == 0 then ld else tldie("`" + canon + "` is imported both " + alias_desc(had) + " and " + alias_desc(alias) + "; pick one")
+
+fn alias_desc(a) = if str_cmp(a, "") == 0 then "unqualified" else "as `" + a + "`"
+
+fn visit3(ld, canon, src, alias) =
+  decls = parse_src(src)
+  claim_decls(visit_imports(ld, decls, dirname(canon), canon), qualify(decls, alias), canon)
+
+fn visit_imports(ld, decls, dir, canon) = match decls
+  Nil -> ld
+  Cons(d, rest) -> visit_imports(vi_one(ld, d, dir, canon), rest, dir, canon)
+
+fn vi_one(ld, d, dir, canon) = match d
+  DImport(pth, al, ln) -> visit(ld, path_join(dir, pth + ".rill"), ld_or(al, ""), canon, ln)
+  _ -> ld
+
+# ---- qualification ----------------------------------------------------------
+
+fn qualify(decls, alias) =
+  if str_cmp(alias, "") == 0 then decls else q_decls(decls, own_names(decls, SLeaf), alias)
+
+fn own_names(decls, s) = match decls
+  Nil -> s
+  Cons(d, rest) -> own_names(rest, on_one(d, s))
+
+fn on_one(d, s) = match d
+  DType(n, _, ctors, _) -> on_ctors(ctors, sput(s, n, true))
+  DFn(FnD(n, _, _, _, _, _)) -> sput(s, n, true)
+  _ -> s
+
+fn on_ctors(cs, s) = match cs
+  Nil -> s
+  Cons(Ct(n, _, _), rest) -> on_ctors(rest, sput(s, n, true))
+
+fn q_decls(ds, own, a) = map(ds, \d -> q_decl(d, own, a))
+
+fn q_decl(d, own, a) = match d
+  DType(n, ps, ctors, ln) -> DType(a + "." + n, ps, map(ctors, \c -> q_ctor(c, own, a)), ln)
+  DFn(f) -> DFn(q_fn(f, own, a))
+  _ -> d
+
+fn q_ctor(c, own, a) = match c
+  Ct(n, fields, ln) -> Ct(a + "." + n, map(fields, \f -> q_field(f, own, a)), ln)
+
+fn q_field(f, own, a) = match f
+  Fld(nm, tr) -> Fld(nm, q_tr(tr, own, a))
+
+fn q_name(n, own, a) = if shas(own, n) then a + "." + n else n
+
+fn q_tr(t, own, a) = match t
+  TR(n, args, ret, ln) -> TR(q_name(n, own, a), map(args, \x -> q_tr(x, own, a)), q_tro(ret, own, a), ln)
+
+fn q_tro(o, own, a) = match o
+  Some(t) -> Some(q_tr(t, own, a))
+  None -> None
+
+fn q_fn(f, own, a) = match f
+  FnD(n, ex, ps, ret, body, ln) -> FnD(a + "." + n, ex, map(ps, \p -> q_par(p, own, a)), q_tro(ret, own, a), q_expr(body, own, a), ln)
+
+fn q_par(p, own, a) = match p
+  Par(n, ann) -> Par(n, q_tro(ann, own, a))
+
+fn q_expr(e, own, a) = match e
+  EVar(n, ln) -> EVar(q_name(n, own, a), ln)
+  ECall(n, args, ln, t) -> ECall(q_name(n, own, a), map(args, \x -> q_expr(x, own, a)), ln, t)
+  ENeg(x) -> ENeg(q_expr(x, own, a))
+  EBin(op, l, r, ln) -> EBin(op, q_expr(l, own, a), q_expr(r, own, a), ln)
+  EIf(c, t, e2) -> EIf(q_expr(c, own, a), q_expr(t, own, a), q_expr(e2, own, a))
+  EMatch(s, arms, ln) -> EMatch(q_expr(s, own, a), map(arms, \x -> q_arm(x, own, a)), ln)
+  ELambda(ps, b, ln) -> ELambda(ps, q_expr(b, own, a), ln)
+  ESpawn(b, ln) -> ESpawn(q_expr(b, own, a), ln)
+  ESelect(arms, d, ln) -> ESelect(map(arms, \x -> q_sarm(x, own, a)), q_expro(d, own, a), ln)
+  EBlock(ss) -> EBlock(map(ss, \s -> q_stmt(s, own, a)))
+  _ -> e
+
+fn q_expro(o, own, a) = match o
+  Some(e) -> Some(q_expr(e, own, a))
+  None -> None
+
+fn q_arm(x, own, a) = match x
+  Arm(p, b, ln) -> Arm(q_pat(p, own, a), q_expr(b, own, a), ln)
+
+fn q_pat(p, own, a) = match p
+  PCtor(n, args) -> PCtor(q_name(n, own, a), map(args, \x -> q_pat(x, own, a)))
+  _ -> p
+
+fn q_sarm(x, own, a) = match x
+  SArm(op, b, ln) -> SArm(q_sop(op, own, a), q_expr(b, own, a), ln)
+
+fn q_sop(op, own, a) = match op
+  SRecv(ch, nm) -> SRecv(q_expr(ch, own, a), nm)
+  SSend(ch, v) -> SSend(q_expr(ch, own, a), q_expr(v, own, a))
+
+fn q_stmt(s, own, a) = match s
+  SBind(n, v, ln) -> SBind(n, q_expr(v, own, a), ln)
+  SExpr(v) -> SExpr(q_expr(v, own, a))
+
+# ---- claiming names ---------------------------------------------------------
+#
+# Kinds are claimed in the Rust checker's order — types, traits, impls,
+# externs, functions — because the first duplicate found is the one reported.
+
+fn claim_decls(ld, decls, canon) =
+  ld1 = claim_types(ld, decls, canon)
+  ld2 = claim_traits(ld1, decls, canon)
+  ld3 = claim_impls(ld2, decls, canon)
+  ld4 = claim_externs(ld3, decls, canon)
+  claim_fns(ld4, decls, canon)
+
+fn claim_name(ld, name, what, canon) = match ld
+  LD(vis, al, fo, no, ty, tr, im, ex, fs) ->
+    key = what + ":" + name
+    cn2(sget(no, key), vis, al, fo, no, ty, tr, im, ex, fs, key, name, what, canon)
+
+fn cn2(prev, vis, al, fo, no, ty, tr, im, ex, fs, key, name, what, canon) = match prev
+  Some(p) -> tldie(what + " `" + name + "` is defined in both `" + p + "` and `" + canon + "`")
+  None -> LD(vis, al, fo, sput(no, key, canon), ty, tr, im, ex, fs)
+
+fn claim_types(ld, decls, canon) = match decls
+  Nil -> ld
+  Cons(d, rest) -> claim_types(ct_one(ld, d, canon), rest, canon)
+
+fn ct_one(ld, d, canon) = match d
+  DType(n, ps, ctors, ln) ->
+    ld1 = claim_ctor_names(claim_name(ld, n, "type", canon), ctors, canon)
+    ld_push_type(ld1, DType(n, ps, ctors, ln))
+  _ -> ld
+
+fn claim_ctor_names(ld, ctors, canon) = match ctors
+  Nil -> ld
+  Cons(Ct(n, _, _), rest) -> claim_ctor_names(claim_name(ld, n, "constructor", canon), rest, canon)
+
+fn ld_push_type(ld, d) = match ld
+  LD(vis, al, fo, no, ty, tr, im, ex, fs) -> LD(vis, al, fo, no, Cons(d, ty), tr, im, ex, fs)
+
+fn claim_traits(ld, decls, canon) = match decls
+  Nil -> ld
+  Cons(d, rest) -> claim_traits(tr_one(ld, d, canon), rest, canon)
+
+fn tr_one(ld, d, canon) = match d
+  DTrait(n, pn, sigs, ln) ->
+    ld1 = claim_sig_names(claim_name(ld, n, "trait", canon), sigs, canon)
+    ld_push_trait(ld1, DTrait(n, pn, sigs, ln))
+  _ -> ld
+
+fn claim_sig_names(ld, sigs, canon) = match sigs
+  Nil -> ld
+  Cons(Sig(n, _, _, _), rest) -> claim_sig_names(claim_name(ld, n, "method", canon), rest, canon)
+
+fn ld_push_trait(ld, d) = match ld
+  LD(vis, al, fo, no, ty, tr, im, ex, fs) -> LD(vis, al, fo, no, ty, Cons(d, tr), im, ex, fs)
+
+fn claim_impls(ld, decls, canon) = match decls
+  Nil -> ld
+  Cons(d, rest) -> claim_impls(im_one(ld, d, canon), rest, canon)
+
+fn im_one(ld, d, canon) = match d
+  DImpl(tn, TR(target, targs, tret, tln), fns, ln) ->
+    ld1 = claim_name(ld, tn + "(" + target + ")", "impl", canon)
+    ld_push_impl(ld1, DImpl(tn, TR(target, targs, tret, tln), fns, ln))
+  _ -> ld
+
+fn ld_push_impl(ld, d) = match ld
+  LD(vis, al, fo, no, ty, tr, im, ex, fs) -> LD(vis, al, fo, no, ty, tr, Cons(d, im), ex, fs)
+
+fn claim_externs(ld, decls, canon) = match decls
+  Nil -> ld
+  Cons(d, rest) -> claim_externs(ex_one(ld, d), rest, canon)
+
+# A C symbol has one meaning per program, so declaring it twice is fine as
+# long as nothing else claims the name.
+fn ex_one(ld, d) = match d
+  DExtern(n, sym, ps, ret, ln) -> ex_two(ld, DExtern(n, sym, ps, ret, ln), n)
+  _ -> ld
+
+fn ex_two(ld, d, n) = match ld
+  LD(vis, al, fo, no, ty, tr, im, ex, fs) ->
+    if extern_listed(ex, n) then LD(vis, al, fo, no, ty, tr, im, ex, fs) else LD(vis, al, fo, no, ty, tr, im, Cons(d, ex), fs)
+
+fn extern_listed(ex, n) = match ex
+  Nil -> false
+  Cons(DExtern(en, _, _, _, _), rest) -> str_cmp(en, n) == 0 || extern_listed(rest, n)
+  Cons(_, rest) -> extern_listed(rest, n)
+
+fn claim_fns(ld, decls, canon) = match decls
+  Nil -> ld
+  Cons(d, rest) -> claim_fns(cf_one(ld, d, canon), rest, canon)
+
+fn cf_one(ld, d, canon) = match d
+  DFn(f) -> cf_two(ld, f, canon)
+  _ -> ld
+
+fn cf_two(ld, f, canon) = match ld
+  LD(vis, al, fo, no, ty, tr, im, ex, fs) -> cf_three(sget(fo, fnd_name(f)), f, vis, al, fo, no, ty, tr, im, ex, fs, canon)
+
+fn cf_three(prev, f, vis, al, fo, no, ty, tr, im, ex, fs, canon) = match prev
+  Some(p) -> tldie("function `" + fnd_name(f) + "` is defined in both `" + p + "` and `" + canon + "`")
+  None -> LD(vis, al, sput(fo, fnd_name(f), canon), no, ty, tr, im, ex, Cons(f, fs))
+
+# ---- the prelude merge ------------------------------------------------------
+
+fn with_prelude(user, prelude_path) =
+  psrc = read_file_raw(prelude_path)
+  if io_ok() then merge_prelude(parse_src(psrc), user) else tldie("cannot read the prelude at `" + prelude_path + "`")
+
+fn merge_prelude(pdecls, user) = match user
+  M2(uty, utr, uim, uex, ufn, _) ->
+    uts = decl_type_names(uty, SLeaf)
+    ucs = decl_ctor_names(uty, SLeaf)
+    ufs = fn_name_set(ufn, extern_name_set(uex, SLeaf))
+    assemble(prelude_types(pdecls, uts, ucs, Nil, SLeaf), pdecls, ufs, uty, utr, uim, uex, ufn)
+
+fn decl_type_names(ds, s) = match ds
+  Nil -> s
+  Cons(DType(n, _, _, _), rest) -> decl_type_names(rest, sput(s, n, true))
+  Cons(_, rest) -> decl_type_names(rest, s)
+
+fn decl_ctor_names(ds, s) = match ds
+  Nil -> s
+  Cons(DType(_, _, ctors, _), rest) -> decl_ctor_names(rest, ctor_name_set(ctors, s))
+  Cons(_, rest) -> decl_ctor_names(rest, s)
+
+fn ctor_name_set(cs, s) = match cs
+  Nil -> s
+  Cons(Ct(n, _, _), rest) -> ctor_name_set(rest, sput(s, n, true))
+
+fn fn_name_set(fs, s) = match fs
+  Nil -> s
+  Cons(f, rest) -> fn_name_set(rest, sput(s, fnd_name(f), true))
+
+fn extern_name_set(ds, s) = match ds
+  Nil -> s
+  Cons(DExtern(n, _, _, _, _), rest) -> extern_name_set(rest, sput(s, n, true))
+  Cons(_, rest) -> extern_name_set(rest, s)
+
+# Kept prelude types (in order) and the names no longer provided.
+type PT
+  PT(List(Decl), SM(Bool))
+
+fn prelude_types(ds, uts, ucs, kept, dropped) = match ds
+  Nil -> PT(reverse(kept), dropped)
+  Cons(d, rest) -> pt_one(d, rest, uts, ucs, kept, dropped)
+
+fn pt_one(d, rest, uts, ucs, kept, dropped) = match d
+  DType(n, ps, ctors, ln) ->
+    if shas(uts, n) || ctor_clash(ctors, ucs) then prelude_types(rest, uts, ucs, kept, drop_type(dropped, n, ctors)) else prelude_types(rest, uts, ucs, Cons(DType(n, ps, ctors, ln), kept), dropped)
+  _ -> prelude_types(rest, uts, ucs, kept, dropped)
+
+fn ctor_clash(cs, ucs) = match cs
+  Nil -> false
+  Cons(Ct(n, _, _), rest) -> shas(ucs, n) || ctor_clash(rest, ucs)
+
+fn drop_type(dropped, n, ctors) = ctor_name_set(ctors, sput(dropped, n, true))
+
+# Each prelude function paired with every name its definition mentions.
+type PF
+  PF(FnD, SM(Bool))
+
+fn prelude_fns(ds, acc) = match ds
+  Nil -> reverse(acc)
+  Cons(DFn(f), rest) -> prelude_fns(rest, Cons(PF(f, cn_fn(f, SLeaf)), acc))
+  Cons(_, rest) -> prelude_fns(rest, acc)
+
+fn cn_fn(f, s) = match f
+  FnD(_, _, ps, ret, body, _) -> cn_pars(ps, cn_tro(ret, cn_expr(body, s)))
+
+fn cn_pars(ps, s) = match ps
+  Nil -> s
+  Cons(Par(_, ann), rest) -> cn_pars(rest, cn_tro(ann, s))
+
+fn cn_tro(o, s) = match o
+  Some(t) -> cn_tr(t, s)
+  None -> s
+
+fn cn_tr(t, s) = match t
+  TR(n, args, ret, _) -> cn_tro(ret, cn_trs(args, sput(s, n, true)))
+
+fn cn_trs(ts, s) = match ts
+  Nil -> s
+  Cons(t, rest) -> cn_trs(rest, cn_tr(t, s))
+
+fn cn_expr(e, s) = match e
+  EVar(n, _) -> sput(s, n, true)
+  ECall(n, args, _, _) -> cn_exprs(args, sput(s, n, true))
+  ENeg(x) -> cn_expr(x, s)
+  EBin(_, l, r, _) -> cn_expr(r, cn_expr(l, s))
+  EIf(c, t, e2) -> cn_expr(e2, cn_expr(t, cn_expr(c, s)))
+  EMatch(sc, arms, _) -> cn_arms(arms, cn_expr(sc, s))
+  ELambda(_, b, _) -> cn_expr(b, s)
+  ESpawn(b, _) -> cn_expr(b, s)
+  ESelect(arms, d, _) -> cn_expro(d, cn_sarms(arms, s))
+  EBlock(ss) -> cn_stmts(ss, s)
+  _ -> s
+
+fn cn_exprs(es, s) = match es
+  Nil -> s
+  Cons(e, rest) -> cn_exprs(rest, cn_expr(e, s))
+
+fn cn_expro(o, s) = match o
+  Some(e) -> cn_expr(e, s)
+  None -> s
+
+fn cn_arms(arms, s) = match arms
+  Nil -> s
+  Cons(Arm(p, b, _), rest) -> cn_arms(rest, cn_expr(b, cn_pat(p, s)))
+
+fn cn_pat(p, s) = match p
+  PCtor(n, args) -> cn_pats(args, sput(s, n, true))
+  _ -> s
+
+fn cn_pats(ps, s) = match ps
+  Nil -> s
+  Cons(p, rest) -> cn_pats(rest, cn_pat(p, s))
+
+fn cn_sarms(arms, s) = match arms
+  Nil -> s
+  Cons(SArm(op, b, _), rest) -> cn_sarms(rest, cn_expr(b, cn_sop(op, s)))
+
+fn cn_sop(op, s) = match op
+  SRecv(ch, _) -> cn_expr(ch, s)
+  SSend(ch, v) -> cn_expr(v, cn_expr(ch, s))
+
+fn cn_stmts(ss, s) = match ss
+  Nil -> s
+  Cons(SBind(_, v, _), rest) -> cn_stmts(rest, cn_expr(v, s))
+  Cons(SExpr(v), rest) -> cn_stmts(rest, cn_expr(v, s))
+
+# Shadowed functions drop, then anything referencing a dropped name drops,
+# until a pass removes nothing.
+type FX
+  FX(List(PF), SM(Bool), Bool)
+
+fn fix_fns(pfs, ufs, dropped) = match fix_pass(pfs, ufs, dropped, Nil, false)
+  FX(kept, dropped2, changed) -> if changed then fix_fns(kept, ufs, dropped2) else map(kept, \pf -> pf_fn(pf))
+
+fn pf_fn(pf) = match pf
+  PF(f, _) -> f
+
+fn fix_pass(pfs, ufs, dropped, kept, changed) = match pfs
+  Nil -> FX(reverse(kept), dropped, changed)
+  Cons(PF(f, names), rest) -> fp_one(f, names, rest, ufs, dropped, kept, changed)
+
+fn fp_one(f, names, rest, ufs, dropped, kept, changed) =
+  if shas(ufs, fnd_name(f)) || refs_dropped(names, dropped) then fix_pass(rest, ufs, sput(dropped, fnd_name(f), true), kept, true) else fix_pass(rest, ufs, dropped, Cons(PF(f, names), kept), changed)
+
+fn refs_dropped(names, dropped) = match names
+  SLeaf -> false
+  SNode(l, k, _, r) -> shas(dropped, k) || refs_dropped(l, dropped) || refs_dropped(r, dropped)
+
+fn assemble(pt, pdecls, ufs, uty, utr, uim, uex, ufn) = match pt
+  PT(ptypes, dropped) ->
+    pfns = fix_fns(prelude_fns(pdecls, Nil), ufs, dropped)
+    M2(append(ptypes, uty), utr, uim, uex, append(pfns, ufn), len(pfns))

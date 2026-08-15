@@ -26,12 +26,34 @@ every loop is a self-tail call because that is what a loop is. And one
 polymorphic `die_any` handles every parse error: its recursive tail call —
 never reached past `exit` — is what lets one function fail at every type.
 
-## Paused: the type checker
+## The type checker
 
-`tyck_core.rill`, `tyck_ty.rill`, `tyck_decl.rill` and `tyck_infer.rill` are
-the beginnings of the next stage — the type checker in Rill. Unification,
-declaration processing and the inference engine are written and compile;
-the module loader, prelude merge, driver and the parity harness are not.
-Nothing here is verified yet. Resume by writing `tyck_load.rill` (a port of
-`loader.rs` + `prelude.rs`) and a `typecheck.rill` driver, then diffing
-against `rill build`'s type errors the way `check.sh` diffs the formatter.
+The second stage: Rill's Hindley–Milner checker, in Rill. `typecheck.rill`
+loads a program the way the compiler does — imports resolved depth-first,
+aliased modules qualified, the prelude merged with shadowing — and runs the
+same judgements: unification with occurs check, trait constraints,
+dependency-ordered generalization, Maranget's usefulness test for match
+exhaustiveness. First error only, in the Rust checker's exact words.
+
+| file | what it is |
+|---|---|
+| `tyck_core.rill` | the type language, persistent substitution, unification |
+| `tyck_ty.rill` | resolution, generalization and instantiation |
+| `tyck_decl.rill` | ADTs, traits, impls, externs, provisional signatures |
+| `tyck_infer.rill` | the judgement per expression form; exhaustiveness |
+| `tyck_load.rill` | multi-file loading, aliasing, the prelude merge |
+| `typecheck.rill` | the driver: silent on success, first error otherwise |
+| `check_types.sh` | the proof, against `rill check` |
+| `tyck_tests/` | deliberately broken programs, one error path each |
+
+The proof is the same shape as the formatter's:
+
+```sh
+./selfhost/check_types.sh   # both checkers over every file + the error suite
+```
+
+Every repository file and every broken test must produce the same exit code
+and the same first error, word for word. The only known divergence is path
+canonicalization: Rust resolves symlinks through the OS, this port folds
+`.`/`..` textually, so messages naming files can differ when symlinks are
+involved.

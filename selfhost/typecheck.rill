@@ -1,0 +1,18 @@
+# The type checker's driver: load a program (imports resolved, prelude
+# merged), run declaration setup and inference, and say nothing on success —
+# exactly what `rill check` does. Errors print in the Rust checker's words;
+# `check_types.sh` holds the two implementations to the same first error.
+#
+# Usage: typecheck <file.rill> [<prelude.rill>]
+
+import "tyck_load"
+import "tyck_infer"
+
+fn prelude_path() = if arg_count() > 2 then arg(2) else "crates/rill_syntax/src/prelude.rill"
+
+fn finish(so) = match so
+  SO(cx, st, fns) -> done(run_check(cx, st, fns))
+
+fn done(r) = exit(0)
+
+fn main() = finish(setup(load_program(arg(1), prelude_path())))

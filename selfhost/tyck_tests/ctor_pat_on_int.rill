@@ -1,0 +1,4 @@
+type T
+  A
+
+fn main() = println(match 1 A -> 0)

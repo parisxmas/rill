@@ -1,0 +1,3 @@
+fn main() =
+  f = \x, y -> x + y
+  println(f(1))

@@ -1,0 +1,9 @@
+type MyList
+  Nil
+  Cons(Int, MyList)
+
+fn ln2(l) = match l
+  Nil -> 0
+  Cons(_, t) -> 1 + ln2(t)
+
+fn main() = println(ln2(Cons(1, Nil)))

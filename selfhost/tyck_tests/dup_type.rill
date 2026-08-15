@@ -1,0 +1,7 @@
+type T
+  A
+
+type T
+  B
+
+fn main() = println(1)

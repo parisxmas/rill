@@ -1,0 +1,3 @@
+fn f(x: a(Int)) = x
+
+fn main() = println(f(1))

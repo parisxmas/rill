@@ -1,0 +1,3 @@
+fn println(x) = x
+
+fn main() = println(1)

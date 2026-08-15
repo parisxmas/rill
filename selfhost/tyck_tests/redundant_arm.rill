@@ -1,0 +1,10 @@
+type T
+  A
+  B
+
+fn g(t) = match t
+  A -> 1
+  B -> 2
+  _ -> 3
+
+fn main() = println(g(A))

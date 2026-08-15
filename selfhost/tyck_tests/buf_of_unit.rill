@@ -1,0 +1,3 @@
+fn f(b: Buf(Unit)) = 1
+
+fn main() = println(1)
