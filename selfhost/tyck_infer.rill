@@ -1,0 +1,906 @@
+# Inference: the judgement for every expression form, the pattern checker,
+# Maranget's usefulness test for exhaustiveness, and the dependency-ordered
+# two-pass over the program's functions. Every arm mirrors the Rust checker,
+# error strings included.
+
+import "tyck_decl"
+
+# The line an expression reports errors at — the typed tree's convention:
+# literals and blocks have no line of their own.
+fn eline(e) = match e
+  EVar(_, ln) -> ln
+  ECall(_, _, ln, _) -> ln
+  EBin(_, _, _, ln) -> ln
+  EMatch(_, _, ln) -> ln
+  ELambda(_, _, ln) -> ln
+  ESpawn(_, ln) -> ln
+  ESelect(_, _, ln) -> ln
+  ENeg(x) -> eline(x)
+  EIf(c, _, _) -> eline(c)
+  _ -> 0
+
+# ---- the simple-builtin table ----------------------------------------------
+
+type BSg
+  BSg(List(Ty2), Ty2)
+
+fn l1(a) = Cons(a, Nil)
+
+fn l2(a, b) = Cons(a, Cons(b, Nil))
+
+fn l3(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
+
+fn bsig(n) =
+  if str_cmp(n, "str_len") == 0 then Some(BSg(l1(YStr), YInt)) else if str_cmp(n, "int_to_str") == 0 then Some(BSg(l1(YInt), YStr)) else if str_cmp(n, "float_to_str") == 0 then Some(BSg(l1(YFloat), YStr)) else if str_cmp(n, "bool_to_str") == 0 then Some(BSg(l1(YBool), YStr)) else if str_cmp(n, "str_get") == 0 then Some(BSg(l2(YStr, YInt), YInt)) else if str_cmp(n, "str_sub") == 0 then Some(BSg(l3(YStr, YInt, YInt), YStr)) else if str_cmp(n, "str_find") == 0 then Some(BSg(l2(YStr, YStr), YInt)) else if str_cmp(n, "str_cmp") == 0 then Some(BSg(l2(YStr, YStr), YInt)) else if str_cmp(n, "str_to_int") == 0 then Some(BSg(l1(YStr), YInt)) else if str_cmp(n, "str_to_float") == 0 then Some(BSg(l1(YStr), YFloat)) else if str_cmp(n, "chr") == 0 then Some(BSg(l1(YInt), YStr)) else bsig2(n)
+
+fn bsig2(n) =
+  if str_cmp(n, "bit_and") == 0 || str_cmp(n, "bit_or") == 0 || str_cmp(n, "bit_xor") == 0 || str_cmp(n, "shl") == 0 || str_cmp(n, "shr") == 0 then Some(BSg(l2(YInt, YInt), YInt)) else if str_cmp(n, "bit_not") == 0 then Some(BSg(l1(YInt), YInt)) else if str_cmp(n, "to_float") == 0 then Some(BSg(l1(YInt), YFloat)) else if str_cmp(n, "to_int") == 0 then Some(BSg(l1(YFloat), YInt)) else if str_cmp(n, "arg_count") == 0 then Some(BSg(Nil, YInt)) else if str_cmp(n, "arg") == 0 then Some(BSg(l1(YInt), YStr)) else if str_cmp(n, "read_file_raw") == 0 then Some(BSg(l1(YStr), YStr)) else if str_cmp(n, "io_ok") == 0 then Some(BSg(Nil, YBool)) else if str_cmp(n, "write_file") == 0 then Some(BSg(l2(YStr, YStr), YBool)) else if str_cmp(n, "read_line") == 0 then Some(BSg(Nil, YStr)) else if str_cmp(n, "exit") == 0 then Some(BSg(l1(YInt), YUnit)) else bsig3(n)
+
+fn bsig3(n) =
+  if str_cmp(n, "to_cstr") == 0 then Some(BSg(l1(YStr), YPtr)) else if str_cmp(n, "from_cstr") == 0 then Some(BSg(l1(YPtr), YStr)) else if str_cmp(n, "free_ptr") == 0 then Some(BSg(l1(YPtr), YUnit)) else if str_cmp(n, "null_ptr") == 0 then Some(BSg(Nil, YPtr)) else if str_cmp(n, "is_null") == 0 then Some(BSg(l1(YPtr), YBool)) else if str_cmp(n, "alloc_bytes") == 0 then Some(BSg(l1(YInt), YPtr)) else if str_cmp(n, "ptr_offset") == 0 then Some(BSg(l2(YPtr, YInt), YPtr)) else if str_cmp(n, "poke_i8") == 0 || str_cmp(n, "poke_i16") == 0 || str_cmp(n, "poke_i32") == 0 || str_cmp(n, "poke_i64") == 0 then Some(BSg(l3(YPtr, YInt, YInt), YUnit)) else if str_cmp(n, "poke_f32") == 0 || str_cmp(n, "poke_f64") == 0 then Some(BSg(l3(YPtr, YInt, YFloat), YUnit)) else if str_cmp(n, "poke_ptr") == 0 then Some(BSg(l3(YPtr, YInt, YPtr), YUnit)) else if str_cmp(n, "peek_ptr") == 0 then Some(BSg(l2(YPtr, YInt), YPtr)) else bsig4(n)
+
+fn bsig4(n) =
+  if str_cmp(n, "peek_i8") == 0 || str_cmp(n, "peek_u8") == 0 || str_cmp(n, "peek_i16") == 0 || str_cmp(n, "peek_u16") == 0 || str_cmp(n, "peek_i32") == 0 || str_cmp(n, "peek_u32") == 0 || str_cmp(n, "peek_i64") == 0 then Some(BSg(l2(YPtr, YInt), YInt)) else if str_cmp(n, "peek_f32") == 0 || str_cmp(n, "peek_f64") == 0 then Some(BSg(l2(YPtr, YInt), YFloat)) else if str_cmp(n, "tcp_listen") == 0 then Some(BSg(l1(YInt), YInt)) else if str_cmp(n, "tcp_accept") == 0 then Some(BSg(l1(YInt), YInt)) else if str_cmp(n, "tcp_connect") == 0 then Some(BSg(l2(YStr, YInt), YInt)) else if str_cmp(n, "sock_read") == 0 then Some(BSg(l1(YInt), YStr)) else if str_cmp(n, "sock_write") == 0 then Some(BSg(l2(YInt, YStr), YInt)) else if str_cmp(n, "sock_close") == 0 then Some(BSg(l1(YInt), YUnit)) else None
+
+fn buf_width_of(n) =
+  if str_cmp(n, "buf_i8") == 0 then Some(CW("I8")) else if str_cmp(n, "buf_u8") == 0 then Some(CW("U8")) else if str_cmp(n, "buf_i16") == 0 then Some(CW("I16")) else if str_cmp(n, "buf_u16") == 0 then Some(CW("U16")) else if str_cmp(n, "buf_i32") == 0 then Some(CW("I32")) else if str_cmp(n, "buf_u32") == 0 then Some(CW("U32")) else if str_cmp(n, "buf_int") == 0 then Some(CW("I64")) else if str_cmp(n, "buf_f32") == 0 then Some(CW("F32")) else if str_cmp(n, "buf_float") == 0 then Some(CW("F64")) else if str_cmp(n, "buf_ptr") == 0 then Some(CW("Ptr")) else None
+
+# ---- inference --------------------------------------------------------------
+
+fn infer(cx, st, env, e) = match e
+  EInt(_) -> TS(YInt, st)
+  EFloat(_) -> TS(YFloat, st)
+  EStr(_) -> TS(YStr, st)
+  EBool(_) -> TS(YBool, st)
+  EVar(n, ln) -> infer_var(cx, st, env, n, ln)
+  ECall(n, args, ln, _) -> infer_call(cx, st, env, n, args, ln)
+  ENeg(x) -> i_neg(infer(cx, st, env, x), cx, x)
+  EBin(op, l, r, ln) -> i_bin(cx, st, env, op, l, r, ln)
+  EIf(c, t, els) -> i_if(cx, st, env, c, t, els)
+  EMatch(sc, arms, ln) -> infer_match(cx, st, env, sc, arms, ln)
+  ELambda(ps, b, ln) -> i_lambda(cx, st, env, ps, b)
+  ESpawn(b, ln) -> i_spawn(infer(cx, st, env, b))
+  ESelect(arms, def, ln) -> i_select(cx, st, env, arms, def, ln)
+  EBlock(ss) -> i_block(cx, st, env, ss, YUnit)
+
+fn i_neg(ts, cx, x) = match ts
+  TS(t, st) -> TS(t, require(cx, st, t, 0, eline(x), "negation"))
+
+fn i_bin(cx, st, env, op, l, r, ln) = i_bin2(infer(cx, st, env, l), cx, env, op, r, ln)
+
+fn i_bin2(ts, cx, env, op, r, ln) = match ts
+  TS(lt, st) -> i_bin3(infer(cx, st, env, r), cx, lt, op, ln)
+
+fn i_bin3(ts, cx, lt, op, ln) = match ts
+  TS(rt, st) -> i_bin4(cx, unify(cx, st, lt, rt, ln, "operands of a binary operator"), lt, op, ln)
+
+fn i_bin4(cx, st, lt, op, ln) =
+  if op == 0 then TS(lt, require(cx, st, lt, 1, ln, "`+`")) else if op <= 3 then TS(lt, require(cx, st, lt, 0, ln, "arithmetic")) else if op == 4 then TS(YInt, unify(cx, st, lt, YInt, ln, "`%`")) else if op >= 7 then TS(YBool, require(cx, st, lt, 2, ln, "comparison")) else TS(YBool, require(cx, st, lt, 3, ln, "equality"))
+
+fn i_if(cx, st, env, c, t, els) = i_if2(infer(cx, st, env, c), cx, env, c, t, els)
+
+fn i_if2(ts, cx, env, c, t, els) = match ts
+  TS(ct, st) -> i_if3(cx, unify(cx, st, ct, YBool, eline(c), "`if` condition"), env, t, els)
+
+fn i_if3(cx, st, env, t, els) = i_if4(infer(cx, st, env, t), cx, env, els)
+
+fn i_if4(ts, cx, env, els) = match ts
+  TS(tt, st) -> i_if5(infer(cx, st, env, els), cx, tt, els)
+
+fn i_if5(ts, cx, tt, els) = match ts
+  TS(et, st) -> TS(tt, unify(cx, st, tt, et, eline(els), "`if` branches"))
+
+fn i_spawn(ts) = match ts
+  TS(_, st) -> TS(YUnit, st)
+
+fn i_lambda(cx, st, env, ps, b) = i_lam2(fresh_n(st, len(ps), Nil), cx, env, ps, b)
+
+fn i_lam2(tsl, cx, env, ps, b) = match tsl
+  TSL(ptys, st) -> i_lam3(infer(cx, st, env_add_all(env, ps, ptys), b), ptys)
+
+fn env_add_all(env, ns, ts) = match ns
+  Cons(n, nr) -> env_add_all2(env, n, nr, ts)
+  Nil -> env
+
+fn env_add_all2(env, n, nr, ts) = match ts
+  Cons(t, tr2) -> env_add_all(Cons(EV(n, t), env), nr, tr2)
+  Nil -> env
+
+fn i_lam3(ts, ptys) = match ts
+  TS(bt, st) -> TS(YFn(ptys, bt), st)
+
+fn i_block(cx, st, env, ss, ty) = match ss
+  Cons(SBind(n, v, _), rest) -> i_block_bind(infer(cx, st, env, v), cx, env, n, rest)
+  Cons(SExpr(e), rest) -> i_block_expr(infer(cx, st, env, e), cx, env, rest)
+  Nil -> TS(ty, st)
+
+fn i_block_bind(ts, cx, env, n, rest) = match ts
+  TS(vt, st) -> i_block(cx, st, Cons(EV(n, vt), env), rest, YUnit)
+
+fn i_block_expr(ts, cx, env, rest) = match ts
+  TS(et, st) -> i_block(cx, st, env, rest, et)
+
+fn i_select(cx, st, env, arms, def, ln) = i_sel2(fresh(st), cx, env, arms, def, ln)
+
+fn i_sel2(ts, cx, env, arms, def, ln) = match ts
+  TS(result, st) -> i_sel_arms(cx, st, env, arms, def, ln, result)
+
+fn i_sel_arms(cx, st, env, arms, def, ln, result) = match arms
+  Cons(SArm(op, body, aln), rest) -> i_sel_arm(cx, st, env, op, body, aln, rest, def, ln, result)
+  Nil -> i_sel_def(cx, st, env, def, ln, result)
+
+fn i_sel_arm(cx, st, env, op, body, aln, rest, def, ln, result) = match op
+  SRecv(ch, bind) -> i_sel_recv(infer(cx, st, env, ch), cx, env, bind, body, aln, rest, def, ln, result)
+  SSend(ch, v) -> i_sel_send(infer(cx, st, env, ch), cx, env, v, body, aln, rest, def, ln, result)
+
+fn i_sel_recv(ts, cx, env, bind, body, aln, rest, def, ln, result) = match ts
+  TS(cht, st) -> i_sel_recv2(fresh(st), cx, env, cht, bind, body, aln, rest, def, ln, result)
+
+fn i_sel_recv2(ts, cx, env, cht, bind, body, aln, rest, def, ln, result) = match ts
+  TS(elem, st) -> i_sel_recv3(cx, unify(cx, st, cht, YChan(elem), aln, "`recv` in select"), env, elem, bind, body, aln, rest, def, ln, result)
+
+fn i_sel_recv3(cx, st, env, elem, bind, body, aln, rest, def, ln, result) =
+  arm_env = i_sel_bind(env, bind, elem)
+  i_sel_body(infer(cx, st, arm_env, body), cx, env, aln, rest, def, ln, result)
+
+fn i_sel_bind(env, bind, elem) = match bind
+  Some(n) -> Cons(EV(n, elem), env)
+  None -> env
+
+fn i_sel_send(ts, cx, env, v, body, aln, rest, def, ln, result) = match ts
+  TS(cht, st) -> i_sel_send2(infer(cx, st, env, v), cx, env, cht, body, aln, rest, def, ln, result)
+
+fn i_sel_send2(ts, cx, env, cht, body, aln, rest, def, ln, result) = match ts
+  TS(vt, st) -> i_sel_body(infer(cx, unify(cx, st, cht, YChan(vt), aln, "`send` in select"), env, body), cx, env, aln, rest, def, ln, result)
+
+fn i_sel_body(ts, cx, env, aln, rest, def, ln, result) = match ts
+  TS(bt, st) -> i_sel_arms(cx, unify(cx, st, result, bt, aln, "select arms"), env, rest, def, ln, result)
+
+fn i_sel_def(cx, st, env, def, ln, result) = match def
+  Some(d) -> i_sel_def2(infer(cx, st, env, d), cx, ln, result)
+  None -> TS(result, st)
+
+fn i_sel_def2(ts, cx, ln, result) = match ts
+  TS(dt, st) -> TS(result, unify(cx, st, result, dt, ln, "select arms"))
+
+# ---- variables and calls ----------------------------------------------------
+
+fn infer_var(cx, st, env, n, ln) = iv_env(elook(env, n), cx, st, n, ln)
+
+fn iv_env(o, cx, st, n, ln) = match o
+  Some(t) -> TS(t, st)
+  None -> iv_ctor(sget(cx_ctors(cx), n), cx, st, n, ln)
+
+fn iv_ctor(o, cx, st, n, ln) = match o
+  Some(CR(adt, ci)) -> iv_ctor2(cx, st, n, ln, adt, ci)
+  None -> iv_fn(sget(cx_fnidx(cx), n), cx, st, n, ln)
+
+fn iv_ctor2(cx, st, n, ln, adt, ci) =
+  nf = len(c2_fields(ctor_at(cx, adt, ci)))
+  if nf != 0 then tydie("constructor `" + n + "` takes " + int_to_str(nf) + " argument(s)", ln) else iv_ctor3(fresh_n(st, adt_nparams(cx, adt), Nil), adt)
+
+fn c2_fields(c) = match c
+  C2(_, fs) -> fs
+
+fn iv_ctor3(tsl, adt) = match tsl
+  TSL(targs, st) -> TS(YAdt(adt, targs), st)
+
+fn iv_fn(o, cx, st, n, ln) = match o
+  Some(idx) -> iv_fn2(cx, st, n, ln, idx)
+  None -> tydie("unknown variable `" + n + "`", ln)
+
+fn iv_fn2(cx, st, n, ln, idx) =
+  if str_cmp(n, "main") == 0 then tydie("`main` cannot be used as a value", ln) else iv_fn3(st_sig(st, idx), st)
+
+fn iv_fn3(sig, st) = match sig
+  SigP(ps, r) -> TS(YFn(ps, r), st)
+  SigG(ps, r, ngen) -> iv_fn4(instantiate(st, ps, r, ngen))
+
+fn iv_fn4(itr) = match itr
+  ITR(ps, r, st) -> TS(YFn(ps, r), st)
+
+# Argument lists: infer each, unify against the wanted type as we go.
+type ATS
+  ATS(List(Ty2), St)
+
+fn infer_args(cx, st, env, args, acc) = match args
+  Cons(a, rest) -> infer_args2(infer(cx, st, env, a), cx, env, rest, acc)
+  Nil -> ATS(reverse(acc), st)
+
+fn infer_args2(ts, cx, env, rest, acc) = match ts
+  TS(t, st) -> infer_args(cx, st, env, rest, Cons(t, acc))
+
+fn unify_args(cx, st, env, args, want, ln, ctx) = match args
+  Cons(a, rest) -> ua2(infer(cx, st, env, a), cx, env, rest, want, ln, ctx)
+  Nil -> st
+
+fn ua2(ts, cx, env, rest, want, ln, ctx) = match ts
+  TS(at, st) -> ua3(cx, st, env, at, rest, want, ln, ctx)
+
+fn ua3(cx, st, env, at, rest, want, ln, ctx) = match want
+  Cons(w, wrest) -> unify_args(cx, unify(cx, st, w, at, ln, ctx), env, rest, wrest, ln, ctx)
+  Nil -> st
+
+fn infer_call(cx, st, env, n, args, ln) =
+  if ehas(env, n) then ic_closure(cx, st, env, n, args, ln) else ic_println(cx, st, env, n, args, ln)
+
+fn ic_closure(cx, st, env, n, args, ln) = ic_clo2(infer_var(cx, st, env, n, ln), cx, env, n, args, ln)
+
+fn ic_clo2(ts, cx, env, n, args, ln) = match ts
+  TS(callee, st) -> ic_clo3(infer_args(cx, st, env, args, Nil), cx, callee, n, ln)
+
+fn ic_clo3(ats, cx, callee, n, ln) = match ats
+  ATS(atys, st) -> ic_clo4(fresh(st), cx, callee, atys, n, ln)
+
+fn ic_clo4(ts, cx, callee, atys, n, ln) = match ts
+  TS(ret, st) -> TS(ret, unify(cx, st, callee, YFn(atys, ret), ln, "calling `" + n + "`"))
+
+fn ic_println(cx, st, env, n, args, ln) =
+  if str_cmp(n, "println") == 0 then ic_show_like(cx, st, env, args, ln, "`println` takes exactly one argument", "`println`", YUnit) else if str_cmp(n, "channel") == 0 then ic_channel(cx, st, env, args, ln) else ic_buf(cx, st, env, n, args, ln)
+
+fn ic_show_like(cx, st, env, args, ln, arity_msg, ctx, ret) = match args
+  Cons(a, Nil) -> ic_show2(infer(cx, st, env, a), cx, ln, ctx, ret)
+  _ -> tydie(arity_msg, ln)
+
+fn ic_show2(ts, cx, ln, ctx, ret) = match ts
+  TS(at, st) -> TS(ret, require(cx, st, at, 3, ln, ctx))
+
+fn ic_channel(cx, st, env, args, ln) = match args
+  Nil -> ic_chan0(fresh(st))
+  Cons(a, Nil) -> ic_chan1(infer(cx, st, env, a), cx, ln)
+  _ -> tydie("`channel` takes an optional buffer size", ln)
+
+fn ic_chan0(ts) = match ts
+  TS(elem, st) -> TS(YChan(elem), st)
+
+fn ic_chan1(ts, cx, ln) = match ts
+  TS(at, st) -> ic_chan2(fresh(unify(cx, st, YInt, at, ln, "`channel` capacity")))
+
+fn ic_chan2(ts) = match ts
+  TS(elem, st) -> TS(YChan(elem), st)
+
+fn ic_buf(cx, st, env, n, args, ln) = ic_buf2(buf_width_of(n), cx, st, env, n, args, ln)
+
+fn ic_buf2(o, cx, st, env, n, args, ln) = match o
+  Some(w) -> ic_bufnew(cx, st, env, n, args, ln, w)
+  None -> ic_bufop(cx, st, env, n, args, ln)
+
+fn ic_bufnew(cx, st, env, n, args, ln, w) = match args
+  Cons(a, Nil) -> ic_bufnew2(infer(cx, st, env, a), cx, ln, w)
+  _ -> tydie("`" + n + "` takes a length", ln)
+
+fn ic_bufnew2(ts, cx, ln, w) = match ts
+  TS(at, st) -> TS(YBuf(w), unify(cx, st, YInt, at, ln, "buffer length"))
+
+fn is_bufop(n) = str_cmp(n, "buf_get") == 0 || str_cmp(n, "buf_set") == 0 || str_cmp(n, "buf_len") == 0 || str_cmp(n, "buf_data") == 0
+
+fn ic_bufop(cx, st, env, n, args, ln) =
+  if is_bufop(n) then ic_bufop2(cx, st, env, n, args, ln) else ic_send(cx, st, env, n, args, ln)
+
+fn ic_bufop2(cx, st, env, n, args, ln) =
+  want = if str_cmp(n, "buf_set") == 0 then 3 else if str_cmp(n, "buf_get") == 0 then 2 else 1
+  if len(args) != want then tydie("`" + n + "` takes " + int_to_str(want) + " argument(s), but " + int_to_str(len(args)) + " given", ln) else ic_bufop3(infer(cx, st, env, head_of_args(args)), cx, env, n, args, ln)
+
+fn head_of_args(args) = match args
+  Cons(a, _) -> a
+  Nil -> EInt("0")
+
+fn ic_bufop3(ts, cx, env, n, args, ln) = match ts
+  TS(bt, st) -> ic_bufop4(resolve(st, bt), cx, st, env, n, args, ln)
+
+fn ic_bufop4(rbt, cx, st, env, n, args, ln) = match rbt
+  YBuf(w) -> ic_bufop5(cx, st, env, n, args, ln, w)
+  _ -> tydie("`" + n + "` needs a buffer, but this is `" + type_name(cx, st, rbt) + "` — a `Buf` width is never inferred, so annotate the parameter", ln)
+
+fn ic_bufop5(cx, st, env, n, args, ln, w) =
+  if str_cmp(n, "buf_len") == 0 then TS(YInt, st) else if str_cmp(n, "buf_data") == 0 then TS(YPtr, st) else ic_bufidx(infer(cx, st, env, second_arg(args)), cx, env, n, args, ln, w)
+
+fn second_arg(args) = match args
+  Cons(_, Cons(a, _)) -> a
+  _ -> EInt("0")
+
+fn third_arg(args) = match args
+  Cons(_, Cons(_, Cons(a, _))) -> a
+  _ -> EInt("0")
+
+fn ic_bufidx(ts, cx, env, n, args, ln, w) = match ts
+  TS(it, st) -> ic_bufidx2(cx, unify(cx, st, YInt, it, ln, "buffer index"), env, n, args, ln, w)
+
+fn ic_bufidx2(cx, st, env, n, args, ln, w) =
+  if str_cmp(n, "buf_get") == 0 then TS(ct_rill(w), st) else ic_bufset(infer(cx, st, env, third_arg(args)), cx, ln, w)
+
+fn ic_bufset(ts, cx, ln, w) = match ts
+  TS(vt, st) -> TS(YUnit, unify(cx, st, ct_rill(w), vt, ln, "buffer element"))
+
+fn ic_send(cx, st, env, n, args, ln) =
+  if str_cmp(n, "send") == 0 then ic_send2(cx, st, env, args, ln) else if str_cmp(n, "recv") == 0 then ic_recv(cx, st, env, args, ln) else if str_cmp(n, "show") == 0 then ic_show_like(cx, st, env, args, ln, "`show` takes exactly one argument", "`show`", YStr) else if str_cmp(n, "print") == 0 then ic_show_like(cx, st, env, args, ln, "`print` takes exactly one argument", "`print`", YUnit) else ic_simple(cx, st, env, n, args, ln)
+
+fn ic_send2(cx, st, env, args, ln) = match args
+  Cons(ch, Cons(v, Nil)) -> ic_send3(infer(cx, st, env, ch), cx, env, v, ln)
+  _ -> tydie("`send` takes a channel and a value", ln)
+
+fn ic_send3(ts, cx, env, v, ln) = match ts
+  TS(cht, st) -> ic_send4(infer(cx, st, env, v), cx, cht, ln)
+
+fn ic_send4(ts, cx, cht, ln) = match ts
+  TS(vt, st) -> TS(YUnit, unify(cx, st, cht, YChan(vt), ln, "`send`"))
+
+fn ic_recv(cx, st, env, args, ln) = match args
+  Cons(ch, Nil) -> ic_recv2(infer(cx, st, env, ch), cx, ln)
+  _ -> tydie("`recv` takes exactly one channel", ln)
+
+fn ic_recv2(ts, cx, ln) = match ts
+  TS(cht, st) -> ic_recv3(fresh(st), cx, cht, ln)
+
+fn ic_recv3(ts, cx, cht, ln) = match ts
+  TS(elem, st) -> TS(elem, unify(cx, st, cht, YChan(elem), ln, "`recv`"))
+
+fn ic_simple(cx, st, env, n, args, ln) = ic_simple2(bsig(n), cx, st, env, n, args, ln)
+
+fn ic_simple2(o, cx, st, env, n, args, ln) = match o
+  Some(BSg(ps, ret)) -> ic_simple3(cx, st, env, n, args, ln, ps, ret)
+  None -> ic_extern(sget(cx_externs(cx), n), cx, st, env, n, args, ln)
+
+fn ic_simple3(cx, st, env, n, args, ln, ps, ret) =
+  if len(args) != len(ps) then tydie("`" + n + "` takes " + int_to_str(len(ps)) + " argument(s), but " + int_to_str(len(args)) + " given", ln) else TS(ret, unify_args(cx, st, env, args, ps, ln, n))
+
+fn ic_extern(o, cx, st, env, n, args, ln) = match o
+  Some(ES(cps, cret)) -> ic_extern2(cx, st, env, n, args, ln, cps, cret)
+  None -> ic_method(sget(cx_midx(cx), n), cx, st, env, n, args, ln)
+
+fn ic_extern2(cx, st, env, n, args, ln, cps, cret) =
+  if len(args) != len(cps) then tydie("`" + n + "` takes " + int_to_str(len(cps)) + " argument(s), but " + int_to_str(len(args)) + " given", ln) else TS(ct_rill(cret), unify_args(cx, st, env, args, map(cps, \p -> ct_rill(p)), ln, "foreign argument"))
+
+fn ic_method(o, cx, st, env, n, args, ln) = match o
+  Some(CR(tid, mid)) -> ic_method2(nth_mi(trait_methods(cx, tid), mid), cx, st, env, n, args, ln, tid)
+  None -> ic_ctor(sget(cx_ctors(cx), n), cx, st, env, n, args, ln)
+
+fn ic_method2(sig, cx, st, env, n, args, ln, tid) = match sig
+  Mi(_, sps, sret) -> ic_method3(cx, st, env, n, args, ln, tid, sps, sret)
+
+fn ic_method3(cx, st, env, n, args, ln, tid, sps, sret) =
+  if len(args) != len(sps) then tydie("method `" + n + "` of trait `" + trait_name(cx, tid) + "` takes " + int_to_str(len(sps)) + " argument(s), but " + int_to_str(len(args)) + " given", ln) else ic_method4(fresh(st), cx, env, args, ln, sps, sret)
+
+fn ic_method4(ts, cx, env, args, ln, sps, sret) = match ts
+  TS(recv, st) -> ic_method5(cx, st, env, args, ln, sps, sret, Cons(recv, Nil))
+
+fn ic_method5(cx, st, env, args, ln, sps, sret, inst) =
+  TS(sgen(sret, inst), unify_args(cx, st, env, args, map(sps, \p -> sgen(p, inst)), ln, "method argument"))
+
+fn ic_ctor(o, cx, st, env, n, args, ln) = match o
+  Some(CR(adt, ci)) -> ic_ctor2(cx, st, env, n, args, ln, adt, ci)
+  None -> ic_fn(cx, st, env, n, args, ln)
+
+fn ic_ctor2(cx, st, env, n, args, ln, adt, ci) =
+  fields = c2_fields(ctor_at(cx, adt, ci))
+  if len(args) != len(fields) then tydie("constructor `" + n + "` takes " + int_to_str(len(fields)) + " argument(s), but " + int_to_str(len(args)) + " given", ln) else ic_ctor3(fresh_n(st, adt_nparams(cx, adt), Nil), cx, env, args, ln, adt, fields)
+
+fn ic_ctor3(tsl, cx, env, args, ln, adt, fields) = match tsl
+  TSL(targs, st) -> TS(YAdt(adt, targs), unify_args(cx, st, env, args, map(fields, \f -> sgen(f, targs)), ln, "constructor argument"))
+
+fn ic_fn(cx, st, env, n, args, ln) =
+  if str_cmp(n, "main") == 0 then tydie("`main` cannot be called", ln) else ic_fn2(sget(cx_fnidx(cx), n), cx, st, env, n, args, ln)
+
+fn ic_fn2(o, cx, st, env, n, args, ln) = match o
+  Some(idx) -> ic_fn3(st_sig(st, idx), cx, st, env, n, args, ln)
+  None -> tydie("unknown function `" + n + "`", ln)
+
+fn ic_fn3(sig, cx, st, env, n, args, ln) = match sig
+  SigP(ps, r) -> ic_fn4(cx, st, env, n, args, ln, ps, r)
+  SigG(ps, r, ngen) -> ic_fn3g(instantiate(st, ps, r, ngen), cx, env, n, args, ln)
+
+fn ic_fn3g(itr, cx, env, n, args, ln) = match itr
+  ITR(ps, r, st) -> ic_fn4(cx, st, env, n, args, ln, ps, r)
+
+fn ic_fn4(cx, st, env, n, args, ln, ps, r) =
+  if len(args) != len(ps) then tydie("function `" + n + "` takes " + int_to_str(len(ps)) + " argument(s), but " + int_to_str(len(args)) + " given", ln) else TS(r, unify_args(cx, st, env, args, ps, ln, "function argument"))
+
+# ---- match and exhaustiveness ----------------------------------------------
+
+type CPR
+  CPR(List(EnvE), SM(Int), St)
+
+fn check_pat(cx, st, env, bound, p, ty, ln) = match p
+  PWild -> CPR(env, bound, st)
+  PVar(n) -> cp_var(cx, st, env, bound, n, ln, ty)
+  PIntL(_) -> CPR(env, bound, unify(cx, st, ty, YInt, ln, "match pattern"))
+  PCtor(n, args) -> cp_ctor(sget(cx_ctors(cx), n), cx, st, env, bound, n, args, ty, ln)
+
+fn cp_var(cx, st, env, bound, n, ln, ty) =
+  if shas(bound, n) then tydie("name `" + n + "` is bound twice in this pattern", ln) else CPR(Cons(EV(n, ty), env), sput(bound, n, 0), st)
+
+fn cp_ctor(o, cx, st, env, bound, n, args, ty, ln) = match o
+  Some(CR(adt, ci)) -> cp_ctor2(fresh_n(st, adt_nparams(cx, adt), Nil), cx, env, bound, n, args, ty, ln, adt, ci)
+  None -> tydie("unknown constructor `" + n + "`", ln)
+
+fn cp_ctor2(tsl, cx, env, bound, n, args, ty, ln, adt, ci) = match tsl
+  TSL(targs, st) -> cp_ctor3(cx, unify(cx, st, ty, YAdt(adt, targs), ln, "match pattern"), env, bound, n, args, ln, adt, ci, targs)
+
+fn cp_ctor3(cx, st, env, bound, n, args, ln, adt, ci, targs) =
+  fields = c2_fields(ctor_at(cx, adt, ci))
+  if len(args) != len(fields) then tydie("constructor `" + n + "` has " + int_to_str(len(fields)) + " field(s), but the pattern names " + int_to_str(len(args)), ln) else cp_subs(cx, st, env, bound, args, map(fields, \f -> sgen(f, targs)), ln)
+
+fn cp_subs(cx, st, env, bound, args, ftys, ln) = match args
+  Cons(a, arest) -> cp_subs2(a, arest, cx, st, env, bound, ftys, ln)
+  Nil -> CPR(env, bound, st)
+
+fn cp_subs2(a, arest, cx, st, env, bound, ftys, ln) = match ftys
+  Cons(f, frest) -> cp_subs3(check_pat(cx, st, env, bound, a, f, ln), cx, arest, frest, ln)
+  Nil -> CPR(env, bound, st)
+
+fn cp_subs3(cpr, cx, arest, frest, ln) = match cpr
+  CPR(env, bound, st) -> cp_subs(cx, st, env, bound, arest, frest, ln)
+
+# Pattern heads for the usefulness test.
+type Hd
+  HC(Int)
+  HI(Str)
+
+fn head_of_pat(cx, p) = match p
+  PIntL(v) -> Some(HI(v))
+  PCtor(n, _) -> head_ctor(sget(cx_ctors(cx), n))
+  _ -> None
+
+fn head_ctor(o) = match o
+  Some(CR(_, ci)) -> Some(HC(ci))
+  None -> None
+
+fn hd_eq(a, b) = match a
+  HC(i) -> hd_eq_c(i, b)
+  HI(v) -> hd_eq_i(v, b)
+
+fn hd_eq_c(i, b) = match b
+  HC(j) -> i == j
+  HI(_) -> false
+
+fn hd_eq_i(v, b) = match b
+  HI(w) -> str_cmp(v, w) == 0
+  HC(_) -> false
+
+fn hd_in(hs, h) = any(hs, \x -> hd_eq(x, h))
+
+fn sub_types(cx, st, h, col) = match h
+  HC(ci) -> sub_types2(resolve(st, col), cx, ci)
+  HI(_) -> Nil
+
+fn sub_types2(rcol, cx, ci) = match rcol
+  YAdt(adt, targs) -> map(c2_fields(ctor_at(cx, adt, ci)), \f -> sgen(f, targs))
+  _ -> Nil
+
+fn wilds(n) = if n == 0 then Nil else Cons(PWild, wilds(n - 1))
+
+fn row_rest(row) = match row
+  Cons(_, rest) -> rest
+  Nil -> Nil
+
+fn row_head(row) = match row
+  Cons(h, _) -> h
+  Nil -> PWild
+
+fn specialize(cx, matrix, h, arity) = match matrix
+  Cons(row, rest) -> sp_row(cx, row, h, arity, specialize(cx, rest, h, arity))
+  Nil -> Nil
+
+fn sp_row(cx, row, h, arity, out) = sp_row2(cx, row_head(row), row_rest(row), h, arity, out)
+
+fn sp_row2(cx, h0, rest, h, arity, out) = match h0
+  PWild -> Cons(append(wilds(arity), rest), out)
+  PVar(_) -> Cons(append(wilds(arity), rest), out)
+  PIntL(v) -> if hd_eq(HI(v), h) then Cons(rest, out) else out
+  PCtor(n, args) -> sp_ctor(cx, n, args, rest, h, out)
+
+fn sp_ctor(cx, n, args, rest, h, out) = sp_ctor2(head_of_pat(cx, PCtor(n, args)), args, rest, h, out)
+
+fn sp_ctor2(o, args, rest, h, out) = match o
+  Some(h2) -> if hd_eq(h2, h) then Cons(append(args, rest), out) else out
+  None -> out
+
+fn default_matrix(matrix) = match matrix
+  Cons(row, rest) -> dm_row(row_head(row), row_rest(row), default_matrix(rest))
+  Nil -> Nil
+
+fn dm_row(h0, rest, out) = match h0
+  PWild -> Cons(rest, out)
+  PVar(_) -> Cons(rest, out)
+  _ -> out
+
+fn column_heads(cx, matrix, acc) = match matrix
+  Cons(row, rest) -> ch_row(head_of_pat(cx, row_head(row)), cx, rest, acc)
+  Nil -> reverse(acc)
+
+fn ch_row(o, cx, rest, acc) = match o
+  Some(h) -> column_heads(cx, rest, if hd_in(acc, h) then acc else Cons(h, acc))
+  None -> column_heads(cx, rest, acc)
+
+fn is_complete(cx, st, col, heads) = match resolve(st, col)
+  YAdt(adt, _) -> all(range(0, len(adt_ctors(cx, adt)) - 1), \ci -> hd_in(heads, HC(ci)))
+  _ -> false
+
+fn useful(cx, st, matrix, q, tys) = match tys
+  Nil -> len(matrix) == 0
+  Cons(col, trest) -> useful2(head_of_pat(cx, row_head(q)), cx, st, matrix, q, col, trest)
+
+fn useful2(o, cx, st, matrix, q, col, trest) = match o
+  Some(h) -> useful_h(cx, st, matrix, q, col, trest, h)
+  None -> useful_w(cx, st, matrix, q, col, trest)
+
+fn useful_h(cx, st, matrix, q, col, trest, h) =
+  sub = sub_types(cx, st, h, col)
+  m2 = specialize(cx, matrix, h, len(sub))
+  q2 = specialize(cx, Cons(q, Nil), h, len(sub))
+  useful_h2(q2, cx, st, m2, append(sub, trest))
+
+fn useful_h2(q2, cx, st, m2, tys2) = match q2
+  Cons(row, _) -> useful(cx, st, m2, row, tys2)
+  Nil -> false
+
+fn useful_w(cx, st, matrix, q, col, trest) =
+  heads = column_heads(cx, matrix, Nil)
+  if len(heads) > 0 && is_complete(cx, st, col, heads) then any(heads, \h -> useful_wh(cx, st, matrix, q, col, trest, h)) else useful(cx, st, default_matrix(matrix), row_rest(q), trest)
+
+fn useful_wh(cx, st, matrix, q, col, trest, h) =
+  sub = sub_types(cx, st, h, col)
+  useful(cx, st, specialize(cx, matrix, h, len(sub)), append(wilds(len(sub)), row_rest(q)), append(sub, trest))
+
+fn witness(cx, st, matrix, tys) = match tys
+  Nil -> if len(matrix) == 0 then Some(Nil) else None
+  Cons(col, trest) -> witness2(cx, st, matrix, col, trest)
+
+fn witness2(cx, st, matrix, col, trest) =
+  heads = column_heads(cx, matrix, Nil)
+  if len(heads) > 0 && is_complete(cx, st, col, heads) then witness_c(cx, st, matrix, col, trest, adt_of(cx, st, col), 0) else witness_d(witness(cx, st, default_matrix(matrix), trest), cx, st, col, heads)
+
+fn adt_of(cx, st, col) = match resolve(st, col)
+  YAdt(adt, _) -> adt
+  _ -> 0
+
+fn witness_c(cx, st, matrix, col, trest, adt, ci) =
+  if ci >= len(adt_ctors(cx, adt)) then None else witness_c2(cx, st, matrix, col, trest, adt, ci)
+
+fn witness_c2(cx, st, matrix, col, trest, adt, ci) =
+  sub = sub_types(cx, st, HC(ci), col)
+  witness_c3(witness(cx, st, specialize(cx, matrix, HC(ci), len(sub)), append(sub, trest)), cx, st, matrix, col, trest, adt, ci, len(sub))
+
+fn witness_c3(o, cx, st, matrix, col, trest, adt, ci, arity) = match o
+  Some(w) -> Some(Cons(PCtor(c2_name(ctor_at(cx, adt, ci)), take(w, arity)), drop(w, arity)))
+  None -> witness_c(cx, st, matrix, col, trest, adt, ci + 1)
+
+fn c2_name(c) = match c
+  C2(n, _) -> n
+
+fn witness_d(o, cx, st, col, heads) = match o
+  Some(rest) -> Some(Cons(missing_head(cx, st, col, heads), rest))
+  None -> None
+
+fn missing_head(cx, st, col, heads) =
+  if len(heads) == 0 then PWild else missing_head2(resolve(st, col), cx, heads)
+
+fn missing_head2(rcol, cx, heads) = match rcol
+  YAdt(adt, _) -> missing_ctor(cx, adt, heads, 0)
+  YInt -> missing_int(heads, 0)
+  _ -> PWild
+
+fn missing_ctor(cx, adt, heads, ci) =
+  if ci >= len(adt_ctors(cx, adt)) then PWild else if hd_in(heads, HC(ci)) then missing_ctor(cx, adt, heads, ci + 1) else PCtor(c2_name(ctor_at(cx, adt, ci)), wilds(len(c2_fields(ctor_at(cx, adt, ci)))))
+
+fn missing_int(heads, v) =
+  if hd_in(heads, HI(int_to_str(v))) then missing_int(heads, v + 1) else PIntL(int_to_str(v))
+
+fn pat_show(p) = match p
+  PWild -> "_"
+  PVar(n) -> n
+  PIntL(v) -> v
+  PCtor(n, args) -> pat_show_c(n, args)
+
+fn pat_show_c(n, args) = match args
+  Nil -> n
+  Cons(_, _) -> n + "(" + join(map(args, \a -> pat_show(a)), ", ") + ")"
+
+fn infer_match(cx, st, env, sc, arms, ln) = im2(infer(cx, st, env, sc), cx, env, arms, ln)
+
+fn im2(ts, cx, env, arms, ln) = match ts
+  TS(sct, st) -> im3(fresh(st), cx, env, arms, ln, sct)
+
+fn im3(ts, cx, env, arms, ln, sct) = match ts
+  TS(result, st) -> im_arms(cx, st, env, arms, ln, sct, result, Nil)
+
+fn im_arms(cx, st, env, arms, ln, sct, result, matrix) = match arms
+  Cons(Arm(p, body, aln), rest) -> im_arm(cx, st, env, p, body, aln, rest, ln, sct, result, matrix)
+  Nil -> im_done(witness(cx, st, reverse(matrix), Cons(sct, Nil)), st, ln, result)
+
+fn im_arm(cx, st, env, p, body, aln, rest, ln, sct, result, matrix) =
+  im_arm2(check_pat(cx, st, env, SLeaf, p, sct, aln), cx, env, p, body, aln, rest, ln, sct, result, matrix)
+
+fn im_arm2(cpr, cx, env, p, body, aln, rest, ln, sct, result, matrix) = match cpr
+  CPR(arm_env, _, st) -> im_arm3(cx, st, env, arm_env, p, body, aln, rest, ln, sct, result, matrix)
+
+fn im_arm3(cx, st, env, arm_env, p, body, aln, rest, ln, sct, result, matrix) =
+  if useful(cx, st, reverse(matrix), Cons(p, Nil), Cons(sct, Nil)) then im_arm4(infer(cx, st, arm_env, body), cx, env, p, aln, rest, ln, sct, result, matrix) else tydie("unreachable match arm: earlier arms already cover this pattern", aln)
+
+fn im_arm4(ts, cx, env, p, aln, rest, ln, sct, result, matrix) = match ts
+  TS(bt, st) -> im_arms(cx, unify(cx, st, result, bt, aln, "match arms"), env, rest, ln, sct, result, Cons(Cons(p, Nil), matrix))
+
+fn im_done(o, st, ln, result) = match o
+  Some(w) -> tydie("match is not exhaustive; no arm matches `" + pat_show(head_of_w(w)) + "`", ln)
+  None -> TS(result, st)
+
+fn head_of_w(w) = match w
+  Cons(p, _) -> p
+  Nil -> PWild
+
+# ---- free names, for dependency grouping ------------------------------------
+#
+# Only membership matters here: the edges get sorted and deduplicated, so a
+# set is enough where the Rust code keeps first-use order for capture lists
+# this checker does not build.
+
+fn sm_keys(m, acc) = match m
+  SLeaf -> acc
+  SNode(l, k, _, r) -> sm_keys(r, Cons(k, sm_keys(l, acc)))
+
+fn sm_union(a, b) = fold(sm_keys(b, Nil), a, \m, k -> sput(m, k, 0))
+
+fn sm_minus(m, names) = fold(sm_keys(m, Nil), SLeaf, \out, k -> if list_has(names, k) then out else sput(out, k, 0))
+
+fn list_has(names, k) = any(names, \n -> str_cmp(n, k) == 0)
+
+fn fv(e, acc) = match e
+  EVar(n, _) -> sput(acc, n, 0)
+  ECall(n, args, _, _) -> fold(args, sput(acc, n, 0), \a, x -> fv(x, a))
+  ENeg(x) -> fv(x, acc)
+  EBin(_, l, r, _) -> fv(r, fv(l, acc))
+  EIf(c, t, e2) -> fv(e2, fv(t, fv(c, acc)))
+  EMatch(sc, arms, _) -> fold(arms, fv(sc, acc), \a, arm -> fv_arm(arm, a))
+  ESpawn(b, _) -> fv(b, acc)
+  ESelect(arms, def, _) -> fv_def(def, fold(arms, acc, \a, sa -> fv_sarm(sa, a)))
+  ELambda(ps, b, _) -> sm_union(acc, sm_minus(fv(b, SLeaf), ps))
+  EBlock(ss) -> fold(ss, acc, \a, s -> fv_stmt(s, a))
+  _ -> acc
+
+fn fv_arm(arm, acc) = match arm
+  Arm(_, b, _) -> fv(b, acc)
+
+fn fv_sarm(sa, acc) = match sa
+  SArm(op, b, _) -> fv(b, fv_sop(op, acc))
+
+fn fv_sop(op, acc) = match op
+  SRecv(ch, _) -> fv(ch, acc)
+  SSend(ch, v) -> fv(v, fv(ch, acc))
+
+fn fv_def(def, acc) = match def
+  Some(d) -> fv(d, acc)
+  None -> acc
+
+fn fv_stmt(s, acc) = match s
+  SBind(_, v, _) -> fv(v, acc)
+  SExpr(e) -> fv(e, acc)
+
+# ---- dependency groups (Tarjan) ---------------------------------------------
+
+fn ins_sorted(l, x) = match l
+  Nil -> Cons(x, Nil)
+  Cons(h, t) -> if x < h then Cons(x, l) else if x == h then l else Cons(h, ins_sorted(t, x))
+
+fn fn_edges(f, fnidx) = match f
+  FnD(_, _, _, _, body, _) -> fold(sm_keys(fv(body, SLeaf), Nil), Nil, \es, nm -> edge_add(es, sget(fnidx, nm)))
+
+fn edge_add(es, o) = match o
+  Some(i) -> ins_sorted(es, i)
+  None -> es
+
+fn nth_edges(l, i) = match l
+  Cons(h, t) -> if i == 0 then h else nth_edges(t, i - 1)
+  Nil -> Nil
+
+fn nth_fnd(l, i) = match l
+  Cons(h, t) -> if i == 0 then h else nth_fnd(t, i - 1)
+  Nil -> tydie("internal: fn index out of range", 0)
+
+# Tarjan's strongly connected components, recursive, roots in order — the
+# same emission order as the Rust checker's iterative version.
+type TJ
+  TJ(IM(Int), IM(Int), IM(Int), List(Int), Int, List(List(Int)))
+
+fn tj_idx(tj, v) = match tj
+  TJ(ix, _, _, _, _, _) -> iget(ix, v)
+
+fn tj_low(tj, v) = match tj
+  TJ(_, lo, _, _, _, _) -> im_get_or(lo, v, 0)
+
+fn im_get_or(m, k, d) = match iget(m, k)
+  Some(v) -> v
+  None -> d
+
+fn tj_on(tj, v) = match tj
+  TJ(_, _, on, _, _, _) -> im_get_or(on, v, 0) == 1
+
+fn dfs(v, edges, tj) = match tj
+  TJ(ix, lo, on, stk, nx, gs) -> dfs_body(v, edges, TJ(iput(ix, v, nx), iput(lo, v, nx), iput(on, v, 1), Cons(v, stk), nx + 1, gs))
+
+fn dfs_body(v, edges, tj) = dfs_pop(v, fold(nth_edges(edges, v), tj, \t, w -> dfs_edge(v, w, edges, t)))
+
+fn dfs_edge(v, w, edges, tj) = match tj_idx(tj, w)
+  None -> dfs_edge_new(v, w, dfs(w, edges, tj))
+  Some(wi) -> if tj_on(tj, w) then tj_set_low(tj, v, min(tj_low(tj, v), wi)) else tj
+
+fn dfs_edge_new(v, w, tj) = tj_set_low(tj, v, min(tj_low(tj, v), tj_low(tj, w)))
+
+fn tj_set_low(tj, v, x) = match tj
+  TJ(ix, lo, on, stk, nx, gs) -> TJ(ix, iput(lo, v, x), on, stk, nx, gs)
+
+fn dfs_pop(v, tj) =
+  if tj_low(tj, v) == im_get_or_idx(tj, v) then pop_scc(v, tj, Nil) else tj
+
+fn im_get_or_idx(tj, v) = match tj_idx(tj, v)
+  Some(i) -> i
+  None -> 0
+
+fn pop_scc(v, tj, acc) = match tj
+  TJ(ix, lo, on, stk, nx, gs) -> pop_scc2(v, ix, lo, on, stk, nx, gs, acc)
+
+fn pop_scc2(v, ix, lo, on, stk, nx, gs, acc) = match stk
+  Cons(w, rest) -> pop_scc3(v, w, ix, lo, iput(on, w, 0), rest, nx, gs, ins_sorted(acc, w))
+  Nil -> TJ(ix, lo, on, Nil, nx, Cons(acc, gs))
+
+fn pop_scc3(v, w, ix, lo, on, stk, nx, gs, acc) =
+  if w == v then TJ(ix, lo, on, stk, nx, Cons(acc, gs)) else pop_scc2(v, ix, lo, on, stk, nx, gs, acc)
+
+fn dep_groups(fns, fnidx) =
+  edges = map(fns, \f -> fn_edges(f, fnidx))
+  reverse(tj_groups(dep_roots(0, len(fns), edges, TJ(ILeaf, ILeaf, ILeaf, Nil, 0, Nil))))
+
+fn dep_roots(v, n, edges, tj) =
+  if v >= n then tj else dep_roots(v + 1, n, edges, dep_root(v, edges, tj))
+
+fn dep_root(v, edges, tj) = match tj_idx(tj, v)
+  None -> dfs(v, edges, tj)
+  Some(_) -> tj
+
+fn tj_groups(tj) = match tj
+  TJ(_, _, _, _, _, gs) -> gs
+
+# ---- the two-pass over every function ---------------------------------------
+
+fn infer_fn_body(cx, st, f, idx) = match f
+  FnD(name, _, ps, _, body, ln) -> ifb2(st_sig(st, idx), cx, st, name, ps, body, ln)
+
+fn ifb2(sig, cx, st, name, ps, body, ln) = match sig
+  SigP(sps, sret) -> ifb3(cx, st, name, fn_env(ps, sps, name, ln, Nil), body, ln, sret)
+  SigG(_, _, _) -> tydie("internal: checked twice", 0)
+
+fn fn_env(ps, sps, fname, ln, env) = match ps
+  Cons(Par(pn, _), prest) -> fn_env2(pn, prest, sps, fname, ln, env)
+  Nil -> env
+
+fn fn_env2(pn, prest, sps, fname, ln, env) = match sps
+  Cons(t, trest) -> fn_env3(pn, prest, t, trest, fname, ln, env)
+  Nil -> env
+
+fn fn_env3(pn, prest, t, trest, fname, ln, env) =
+  if ehas(env, pn) then tydie("duplicate parameter `" + pn + "` in `" + fname + "`", ln) else fn_env(prest, trest, fname, ln, Cons(EV(pn, t), env))
+
+fn ifb4(ts, cx, name, ln, sret) = match ts
+  TS(bt, st) -> if str_cmp(name, "main") == 0 then st else unify(cx, st, sret, bt, ln, "function body type")
+
+fn ifb3(cx, st, name, env, body, ln, sret) = ifb4(infer(cx, st, env, body), cx, name, ln, sret)
+
+# The pending entries recorded between two counts, oldest first.
+fn pending_window(st, start, end) = match st
+  St(_, _, pd, pc, _) -> pw_take(pd, pc, start, end, Nil)
+
+fn pw_take(pd, i, start, end, acc) = match pd
+  Cons(p, rest) -> pw_take2(p, rest, i - 1, start, end, acc)
+  Nil -> acc
+
+fn pw_take2(p, rest, i, start, end, acc) =
+  if i < start then acc else if i < end then pw_take(rest, i, start, end, Cons(p, acc)) else pw_take(rest, i, start, end, acc)
+
+type GFR
+  GFR(St, Int)
+
+fn generalize_fn(cx, st, f, idx, pstart, pend) = match f
+  FnD(name, _, _, _, _, ln) -> gf2(st_sig(st, idx), cx, st, idx, pstart, pend)
+
+fn gf2(sig, cx, st, idx, pstart, pend) = match sig
+  SigP(sps, sret) -> gf3(cx, gf_settle(cx, st, pending_window(st, pstart, pend), Nil), sps, sret, idx)
+  SigG(_, _, _) -> tydie("internal: generalized twice", 0)
+
+# Settle the requirements collected while checking the body: the ones whose
+# type is known are checked now, the rest wait for generalization.
+type Setl
+  SL(St, List(Pnd))
+
+fn gf_settle(cx, st, wnd, deferred) = match wnd
+  Cons(Pnd(v, need, ln, ctx), rest) -> gf_settle2(resolve(st, YVar(v)), cx, st, rest, deferred, need, ln, ctx)
+  Nil -> SL(st, reverse(deferred))
+
+fn gf_settle2(rt, cx, st, rest, deferred, need, ln, ctx) = match rt
+  YVar(v2) -> gf_settle(cx, st, rest, Cons(Pnd(v2, need, ln, ctx), deferred))
+  _ -> gf_settle3(check_need(cx, st, rt, need, ln, ctx), cx, st, rest, deferred)
+
+fn gf_settle3(chk, cx, st, rest, deferred) = gf_settle(cx, st, rest, deferred)
+
+fn gf3(cx, sl, sps, sret, idx) = match sl
+  SL(st, deferred) -> gf4(cx, st, gen_list(st, sps, ILeaf, 0, Nil), sret, idx, deferred)
+
+fn gf4(cx, st, gzl, sret, idx, deferred) = match gzl
+  GZL(gps, gm, cnt) -> gf5(cx, st, gps, generalize(st, sret, gm, cnt), idx, deferred)
+
+fn gf5(cx, st, gps, gz, idx, deferred) = match gz
+  GZ(gret, gm, ngen) -> gf6(cx, gf_defaults(cx, st, deferred, gm), gps, gret, idx, ngen)
+
+# A requirement on a variable that stayed local defaults it to Int, the way
+# an unannotated literal would.
+fn gf_defaults(cx, st, deferred, gm) = match deferred
+  Cons(Pnd(v, need, ln, ctx), rest) -> gf_default(iget(gm, v), cx, st, rest, gm, v, need, ln, ctx)
+  Nil -> st
+
+fn gf_default(o, cx, st, rest, gm, v, need, ln, ctx) = match o
+  Some(_) -> gf_defaults(cx, st, rest, gm)
+  None -> gf_default2(check_need(cx, st, YInt, need, ln, ctx), cx, st_bind(st, v, YInt), rest, gm)
+
+fn gf_default2(chk, cx, st, rest, gm) = gf_defaults(cx, st, rest, gm)
+
+fn gf6(cx, st, gps, gret, idx, ngen) = GFR(st_put_sig(st, idx, SigG(gps, gret, ngen)), ngen)
+
+# ---- running the whole program ----------------------------------------------
+
+type IW
+  IW(Int, Int, Int)
+
+fn run_group(cx, st, fns, group) = rg_gen(cx, rg_infer(cx, st, fns, group, Nil), fns)
+
+type RGI
+  RGI(St, List(IW))
+
+fn rg_infer(cx, st, fns, group, acc) = match group
+  Cons(k, rest) -> rg_infer2(cx, st, fns, k, rest, acc)
+  Nil -> RGI(st, reverse(acc))
+
+fn rg_infer2(cx, st, fns, k, rest, acc) =
+  pstart = st_pcount(st)
+  st2 = infer_fn_body(cx, st, nth_fnd(fns, k), k)
+  rg_infer(cx, st2, fns, rest, Cons(IW(k, pstart, st_pcount(st2)), acc))
+
+fn rg_gen(cx, rgi, fns) = match rgi
+  RGI(st, ws) -> rg_gen2(cx, st, fns, ws)
+
+fn rg_gen2(cx, st, fns, ws) = match ws
+  Cons(IW(k, s, e), rest) -> rg_gen3(generalize_fn(cx, st, nth_fnd(fns, k), k, s, e), cx, fns, rest)
+  Nil -> st
+
+fn rg_gen3(gfr, cx, fns, rest) = match gfr
+  GFR(st, _) -> rg_gen2(cx, st, fns, rest)
+
+fn run_check(cx, st, fns) =
+  groups = dep_groups(fns, cx_fnidx(cx))
+  st2 = fold(groups, st, \s, g -> run_group(cx, s, fns, g))
+  check_generality(cx, st2, fns, 0)
+
+# A generic impl must stay generic: if the body pinned the target's type
+# parameter, the impl does not cover the constructor it claims to.
+fn check_generality(cx, st, fns, i) = match fns
+  Cons(f, rest) -> cg_one(cx, st, f, rest, i)
+  Nil -> 0
+
+fn cg_one(cx, st, f, rest, i) = match f
+  FnD(name, _, _, _, _, ln) -> cg_two(sget(cx_forced(cx), name), cx, st, name, ln, rest, i)
+
+fn cg_two(o, cx, st, name, ln, rest, i) = match o
+  Some(Fo(_, _, tgen)) -> cg_three(st_sig(st, i), cx, st, name, ln, rest, i, tgen)
+  None -> check_generality(cx, st, rest, i + 1)
+
+fn cg_three(sig, cx, st, name, ln, rest, i, tgen) = match sig
+  SigG(_, _, ngen) -> cg_four(cx, st, name, ln, rest, i, tgen, ngen)
+  SigP(_, _) -> check_generality(cx, st, rest, i + 1)
+
+fn cg_four(cx, st, name, ln, rest, i, tgen, ngen) =
+  if ngen < tgen then cg_die(name, ln) else check_generality(cx, st, rest, i + 1)
+
+fn cg_die(name, ln) =
+  d1 = str_find(name, ".")
+  tname = str_sub(name, 0, d1)
+  rest2 = str_sub(name, d1 + 1, str_len(name) - d1 - 1)
+  d2 = str_find(rest2, ".")
+  target = str_sub(rest2, 0, d2)
+  tydie("this implementation of `" + tname + "` is not general enough: it only works for some `" + target + "` types, but the impl covers all of them", ln)

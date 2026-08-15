@@ -1,0 +1,274 @@
+# Unification, type naming, constraints — the judgement side of the checker.
+# The error strings match the Rust checker's character for character, because
+# the harness diffs the two.
+
+import "tyck_core"
+
+# The immutable half, built once from the module's declarations:
+# ADTs, constructors, function indexes, traits, methods, externs, impls,
+# forced (trait-given) signatures.
+type CtRef
+  CR(Int, Int)
+
+type Trt
+  Trt(Str, List(Mi))
+
+type Forced
+  Fo(List(Ty2), Ty2, Int)
+
+type Cx
+  Cx(List(Adt2), SM(CtRef), SM(Int), List(Trt), SM(CtRef), SM(ES), SM(Int), SM(Forced))
+
+fn cx_adts(cx) = match cx
+  Cx(a, _, _, _, _, _, _, _) -> a
+
+fn cx_ctors(cx) = match cx
+  Cx(_, c, _, _, _, _, _, _) -> c
+
+fn cx_fnidx(cx) = match cx
+  Cx(_, _, f, _, _, _, _, _) -> f
+
+fn cx_traits(cx) = match cx
+  Cx(_, _, _, t, _, _, _, _) -> t
+
+fn cx_midx(cx) = match cx
+  Cx(_, _, _, _, m, _, _, _) -> m
+
+fn cx_externs(cx) = match cx
+  Cx(_, _, _, _, _, e, _, _) -> e
+
+fn cx_implm(cx) = match cx
+  Cx(_, _, _, _, _, _, i, _) -> i
+
+fn cx_forced(cx) = match cx
+  Cx(_, _, _, _, _, _, _, f) -> f
+
+fn adt_at(cx, i) = nth_adt(cx_adts(cx), i)
+
+fn nth_adt(l, i) = match l
+  Cons(h, t) -> if i == 0 then h else nth_adt(t, i - 1)
+  Nil -> tydie("internal: adt index out of range", 0)
+
+fn adt_name(cx, i) = match adt_at(cx, i)
+  Ad(n, _, _) -> n
+
+fn adt_nparams(cx, i) = match adt_at(cx, i)
+  Ad(_, n, _) -> n
+
+fn adt_ctors(cx, i) = match adt_at(cx, i)
+  Ad(_, _, cs) -> cs
+
+fn ctor_at(cx, i, ci) = nth_c2(adt_ctors(cx, i), ci)
+
+fn nth_c2(l, i) = match l
+  Cons(h, t) -> if i == 0 then h else nth_c2(t, i - 1)
+  Nil -> tydie("internal: ctor index out of range", 0)
+
+fn trait_at(cx, i) = nth_trt(cx_traits(cx), i)
+
+fn nth_trt(l, i) = match l
+  Cons(h, t) -> if i == 0 then h else nth_trt(t, i - 1)
+  Nil -> tydie("internal: trait index out of range", 0)
+
+fn trait_name(cx, i) = match trait_at(cx, i)
+  Trt(n, _) -> n
+
+fn trait_methods(cx, i) = match trait_at(cx, i)
+  Trt(_, ms) -> ms
+
+fn nth_mi(l, i) = match l
+  Cons(h, t) -> if i == 0 then h else nth_mi(t, i - 1)
+  Nil -> tydie("internal: method index out of range", 0)
+
+# ---- printing types in errors ----------------------------------------------
+
+fn type_name(cx, st, t) = match resolve(st, t)
+  YInt -> "Int"
+  YFloat -> "Float"
+  YBool -> "Bool"
+  YStr -> "Str"
+  YUnit -> "Unit"
+  YPtr -> "Ptr"
+  YAdt(i, args) -> adt_type_name(cx, st, i, args)
+  YFn(ps, r) -> "(" + join(map(ps, \p -> type_name(cx, st, p)), ", ") + ") -> " + type_name(cx, st, r)
+  YChan(e) -> "Chan(" + type_name(cx, st, e) + ")"
+  YBuf(w) -> "Buf(" + ct_name(w) + ")"
+  YVar(_) -> "_"
+  YGen(i) -> "'" + chr(97 + i % 26)
+
+fn adt_type_name(cx, st, i, args) = match args
+  Nil -> adt_name(cx, i)
+  Cons(_, _) -> adt_name(cx, i) + "(" + join(map(args, \a -> type_name(cx, st, a)), ", ") + ")"
+
+# ---- unification ------------------------------------------------------------
+
+fn unify(cx, st, a, b, ln, ctx) = unify_r(cx, st, resolve(st, a), resolve(st, b), ln, ctx)
+
+fn unify_r(cx, st, ra, rb, ln, ctx) = match ra
+  YVar(v) -> unify_var_l(cx, st, v, rb, ln, ctx)
+  _ -> unify_l(cx, st, ra, rb, ln, ctx)
+
+fn unify_var_l(cx, st, v, rb, ln, ctx) = match rb
+  YVar(w) -> if v == w then st else st_bind(st, v, YVar(w))
+  _ -> unify_bind(cx, st, v, rb, ln, ctx)
+
+fn unify_l(cx, st, ra, rb, ln, ctx) = match rb
+  YVar(v) -> unify_bind(cx, st, v, ra, ln, ctx)
+  _ -> unify_c(cx, st, ra, rb, ln, ctx)
+
+fn unify_bind(cx, st, v, other, ln, ctx) =
+  if occurs(st, v, other) then tydie(ctx + ": infinite type", ln) else st_bind(st, v, other)
+
+fn unify_c(cx, st, ra, rb, ln, ctx) = match ra
+  YAdt(i, xs) -> unify_adt(cx, st, i, xs, ra, rb, ln, ctx)
+  YFn(ps, r) -> unify_fn(cx, st, ps, r, ra, rb, ln, ctx)
+  YBuf(w) -> unify_buf(cx, st, w, ra, rb, ln, ctx)
+  YChan(e) -> unify_chan(cx, st, e, ra, rb, ln, ctx)
+  _ -> unify_last(cx, st, ra, rb, ln, ctx)
+
+fn unify_adt(cx, st, i, xs, ra, rb, ln, ctx) = match rb
+  YAdt(j, ys) -> if i == j then unify_list(cx, st, xs, ys, ln, ctx) else unify_fail(cx, st, ra, rb, ln, ctx)
+  _ -> unify_last(cx, st, ra, rb, ln, ctx)
+
+fn unify_fn(cx, st, ps, r, ra, rb, ln, ctx) = match rb
+  YFn(qs, s) -> if len(ps) == len(qs) then unify(cx, unify_list(cx, st, ps, qs, ln, ctx), r, s, ln, ctx) else unify_last(cx, st, ra, rb, ln, ctx)
+  _ -> unify_last(cx, st, ra, rb, ln, ctx)
+
+fn unify_buf(cx, st, w, ra, rb, ln, ctx) = match rb
+  YBuf(x) -> if ct_eq(w, x) then st else unify_last(cx, st, ra, rb, ln, ctx)
+  _ -> unify_last(cx, st, ra, rb, ln, ctx)
+
+fn unify_chan(cx, st, e, ra, rb, ln, ctx) = match rb
+  YChan(f) -> unify(cx, st, e, f, ln, ctx)
+  _ -> unify_last(cx, st, ra, rb, ln, ctx)
+
+fn unify_list(cx, st, xs, ys, ln, ctx) = match xs
+  Nil -> st
+  Cons(x, xt) -> unify_list2(cx, st, x, xt, ys, ln, ctx)
+
+fn unify_list2(cx, st, x, xt, ys, ln, ctx) = match ys
+  Cons(y, yt) -> unify_list(cx, unify(cx, st, x, y, ln, ctx), xt, yt, ln, ctx)
+  Nil -> st
+
+fn unify_last(cx, st, ra, rb, ln, ctx) =
+  if ty_eq(ra, rb) then st else unify_fail(cx, st, ra, rb, ln, ctx)
+
+fn unify_fail(cx, st, ra, rb, ln, ctx) =
+  tydie(ctx + ": expected " + type_name(cx, st, ra) + ", found " + type_name(cx, st, rb), ln)
+
+# ---- constraints ------------------------------------------------------------
+#
+# 0 numeric, 1 addable, 2 ordered, 3 basic — the same four the Rust checker
+# has, with the same membership.
+
+fn impl_key_str(t) = match t
+  YInt -> "i"
+  YFloat -> "f"
+  YBool -> "b"
+  YStr -> "s"
+  YAdt(i, _) -> "a" + int_to_str(i)
+  _ -> ""
+
+fn has_impl(cx, tid, t) =
+  k = impl_key_str(t)
+  str_len(k) > 0 && shas(cx_implm(cx), int_to_str(tid) + ":0:" + k)
+
+fn need_ok(cx, t, need) = match t
+  YInt -> true
+  YFloat -> true
+  YStr -> need >= 1
+  YBool -> need == 3
+  YAdt(_, _) -> need == 3 || need == 2 && has_impl(cx, 1, t)
+  _ -> false
+
+fn need_allowed(need) =
+  if need == 0 then "Int or Float" else if need == 1 then "Int, Float or Str" else if need == 2 then "Int, Float, Str or a type with an `Ord` implementation" else "a value type (not a function or channel)"
+
+fn check_need(cx, st, t, need, ln, ctx) =
+  if need_ok(cx, t, need) then 0 else die_need(cx, st, t, need, ln, ctx)
+
+fn die_need(cx, st, t, need, ln, ctx) = tydie(ctx + " requires " + need_allowed(need) + ", found " + type_name(cx, st, t), ln)
+
+fn require(cx, st, t, need, ln, ctx) = require_r(cx, st, resolve(st, t), need, ln, ctx)
+
+fn require_r(cx, st, rt, need, ln, ctx) = match rt
+  YVar(v) -> st_pend(st, v, need, ln, ctx)
+  _ -> require_chk(cx, st, rt, need, ln, ctx)
+
+fn require_chk(cx, st, rt, need, ln, ctx) =
+  chk = check_need(cx, st, rt, need, ln, ctx)
+  st
+
+# ---- instantiation and generalization ---------------------------------------
+
+type ITR
+  ITR(List(Ty2), Ty2, St)
+
+fn fresh_n(st, n, acc) =
+  if n == 0 then TSL(reverse(acc), st) else fresh_n2(fresh(st), n, acc)
+
+fn fresh_n2(ts, n, acc) = match ts
+  TS(v, st) -> fresh_n(st, n - 1, Cons(v, acc))
+
+type TSL
+  TSL(List(Ty2), St)
+
+fn instantiate(st, ps, r, ngen) = inst2(fresh_n(st, ngen, Nil), ps, r)
+
+fn inst2(tsl, ps, r) = match tsl
+  TSL(inst, st) -> ITR(map(ps, \p -> sgen(p, inst)), sgen(r, inst), st)
+
+# Generalization: unresolved vars become Gen indices, recorded in a map.
+type GZ
+  GZ(Ty2, IM(Int), Int)
+
+fn generalize(st, t, gm, cnt) = gen_r(st, resolve(st, t), gm, cnt)
+
+fn gen_r(st, rt, gm, cnt) = match rt
+  YVar(v) -> gen_var(st, v, iget(gm, v), gm, cnt)
+  YAdt(i, args) -> gen_adt(st, i, gen_list(st, args, gm, cnt, Nil))
+  YFn(ps, r) -> gen_fn(st, r, gen_list(st, ps, gm, cnt, Nil))
+  YChan(e) -> gen_chan(generalize(st, e, gm, cnt))
+  _ -> GZ(rt, gm, cnt)
+
+fn gen_var(st, v, o, gm, cnt) = match o
+  Some(g) -> GZ(YGen(g), gm, cnt)
+  None -> GZ(YGen(cnt), iput(gm, v, cnt), cnt + 1)
+
+type GZL
+  GZL(List(Ty2), IM(Int), Int)
+
+fn gen_list(st, ts, gm, cnt, acc) = match ts
+  Cons(h, rest) -> gen_list2(st, generalize(st, h, gm, cnt), rest, acc)
+  Nil -> GZL(reverse(acc), gm, cnt)
+
+fn gen_list2(st, gz, rest, acc) = match gz
+  GZ(t, gm, cnt) -> gen_list(st, rest, gm, cnt, Cons(t, acc))
+
+fn gen_adt(st, i, gzl) = match gzl
+  GZL(args, gm, cnt) -> GZ(YAdt(i, args), gm, cnt)
+
+fn gen_fn(st, r, gzl) = match gzl
+  GZL(ps, gm, cnt) -> gen_fn2(ps, generalize(st, r, gm, cnt))
+
+fn gen_fn2(ps, gz) = match gz
+  GZ(rt, gm, cnt) -> GZ(YFn(ps, rt), gm, cnt)
+
+fn gen_chan(gz) = match gz
+  GZ(e, gm, cnt) -> GZ(YChan(e), gm, cnt)
+
+# ---- environments -----------------------------------------------------------
+#
+# A scope is an association list; shadowing is prepending. Cloning for a
+# match arm or a lambda body is free, because nothing is ever destroyed.
+
+type EnvE
+  EV(Str, Ty2)
+
+fn elook(env, n) = match env
+  Cons(EV(en, t), rest) -> if str_cmp(en, n) == 0 then Some(t) else elook(rest, n)
+  Nil -> None
+
+fn ehas(env, n) = match elook(env, n)
+  Some(_) -> true
+  None -> false

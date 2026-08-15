@@ -1,0 +1,260 @@
+# The heart of the self-hosted type checker: the type language, the
+# substitution, and unification. A port of the machinery in `rill_types`,
+# with the same behaviors in a different shape — the Rust checker mutates a
+# vector of variable bindings; here the substitution is a persistent map
+# threaded through every judgement.
+#
+# Errors do not thread: the checker reports the first error and stops, which
+# is exactly what printing it and exiting does. `tydie`'s recursive tail call
+# makes it polymorphic, the same trick the parser uses.
+
+import "ast"
+
+# The types. `YVar` is an inference variable, `YGen` a quantified parameter.
+type Ty2
+  YInt
+  YFloat
+  YBool
+  YStr
+  YUnit
+  YPtr
+  YAdt(Int, List(Ty2))
+  YFn(List(Ty2), Ty2)
+  YChan(Ty2)
+  YBuf(Ct)
+  YVar(Int)
+  YGen(Int)
+
+# A C-side type: a width by its canonical name, or a callback.
+type Ct
+  CW(Str)
+  CFn(List(Ct), Ct)
+
+# Persistent maps: int-keyed and string-keyed unbalanced BSTs. The keys they
+# hold — variable numbers, source names — arrive varied enough in practice.
+type IM(a)
+  ILeaf
+  INode(IM(a), Int, a, IM(a))
+
+fn iget(m, k) = match m
+  ILeaf -> None
+  INode(l, mk, v, r) -> if k < mk then iget(l, k) else if k > mk then iget(r, k) else Some(v)
+
+fn iput(m, k, v) = match m
+  ILeaf -> INode(ILeaf, k, v, ILeaf)
+  INode(l, mk, mv, r) -> if k < mk then INode(iput(l, k, v), mk, mv, r) else if k > mk then INode(l, mk, mv, iput(r, k, v)) else INode(l, k, v, r)
+
+type SM(a)
+  SLeaf
+  SNode(SM(a), Str, a, SM(a))
+
+fn sget(m, k) = match m
+  SLeaf -> None
+  SNode(l, mk, v, r) -> sget2(m, k, str_cmp(k, mk), l, v, r)
+
+fn sget2(m, k, c, l, v, r) = if c < 0 then sget(l, k) else if c > 0 then sget(r, k) else Some(v)
+
+fn sput(m, k, v) = match m
+  SLeaf -> SNode(SLeaf, k, v, SLeaf)
+  SNode(l, mk, mv, r) -> sput2(k, v, str_cmp(k, mk), l, mk, mv, r)
+
+fn sput2(k, v, c, l, mk, mv, r) = if c < 0 then SNode(sput(l, k, v), mk, mv, r) else if c > 0 then SNode(l, mk, mv, sput(r, k, v)) else SNode(l, k, v, r)
+
+fn shas(m, k) = match sget(m, k)
+  Some(_) -> true
+  None -> false
+
+fn tydie(msg, ln) =
+  println(if ln > 0 then "error at line " + int_to_str(ln) + ": " + msg else "error: " + msg)
+  exit(1)
+  tydie(msg, ln)
+
+# ---- C types ----------------------------------------------------------------
+
+fn ct_rill(c) = match c
+  CW(w) -> ctw_rill(w)
+  CFn(ps, r) -> YFn(map(ps, \p -> ct_rill(p)), ct_rill(r))
+
+fn ctw_rill(w) =
+  if str_cmp(w, "F32") == 0 || str_cmp(w, "F64") == 0 then YFloat else if str_cmp(w, "Bool") == 0 then YBool else if str_cmp(w, "Ptr") == 0 then YPtr else if str_cmp(w, "Unit") == 0 then YUnit else YInt
+
+fn ct_name(c) = match c
+  CW(w) -> ctw_name(w)
+  CFn(_, _) -> "Fn"
+
+fn ctw_name(w) = if str_cmp(w, "I64") == 0 then "Int" else if str_cmp(w, "F64") == 0 then "Float" else w
+
+fn ct_eq(a, b) = match a
+  CW(x) -> ct_eq_w(x, b)
+  CFn(_, _) -> false
+
+fn ct_eq_w(x, b) = match b
+  CW(y) -> str_cmp(x, y) == 0
+  CFn(_, _) -> false
+
+# ---- the checker's shared shapes -------------------------------------------
+
+# One ADT: name, parameter count, constructors (name, field types).
+type Adt2
+  Ad(Str, Int, List(Ctor2))
+
+type Ctor2
+  C2(Str, List(Ty2))
+
+# A trait method: name, parameters and return with Gen(0) as the trait
+# parameter.
+type Mi
+  Mi(Str, List(Ty2), Ty2)
+
+# A foreign signature.
+type ES
+  ES(List(Ct), Ct)
+
+# A function signature: still provisional, or generalized with its arity.
+type FSig
+  SigP(List(Ty2), Ty2)
+  SigG(List(Ty2), Ty2, Int)
+
+# A pending requirement on an inference variable:
+# constraint 0 numeric, 1 addable, 2 ordered, 3 basic.
+type Pnd
+  Pnd(Int, Int, Int, Str)
+
+# The mutable half of the checker, threaded through inference: the
+# substitution, the variable counter, pending requirements (newest first)
+# with their count, and every function's signature state.
+type St
+  St(IM(Ty2), Int, List(Pnd), Int, IM(FSig))
+
+fn st0() = St(ILeaf, 0, Nil, 0, ILeaf)
+
+type TS
+  TS(Ty2, St)
+
+fn fresh(st) = match st
+  St(su, nv, pd, pc, sg) -> TS(YVar(nv), St(su, nv + 1, pd, pc, sg))
+
+fn st_bind(st, v, t) = match st
+  St(su, nv, pd, pc, sg) -> St(iput(su, v, t), nv, pd, pc, sg)
+
+fn st_pend(st, v, need, ln, ctx) = match st
+  St(su, nv, pd, pc, sg) -> St(su, nv, Cons(Pnd(v, need, ln, ctx), pd), pc + 1, sg)
+
+fn st_pcount(st) = match st
+  St(_, _, _, pc, _) -> pc
+
+fn st_sig(st, idx) = match st
+  St(_, _, _, _, sg) -> sig_of(iget(sg, idx))
+
+fn sig_of(o) = match o
+  Some(s) -> s
+  None -> tydie("internal: missing signature", 0)
+
+fn st_put_sig(st, idx, sig) = match st
+  St(su, nv, pd, pc, sg) -> St(su, nv, pd, pc, iput(sg, idx, sig))
+
+# ---- resolution and unification --------------------------------------------
+
+fn resolve(st, t) = match t
+  YVar(v) -> resolve_var(st, v)
+  _ -> t
+
+fn resolve_var(st, v) = match st
+  St(su, _, _, _, _) -> resolve_var2(st, iget(su, v), v)
+
+fn resolve_var2(st, o, v) = match o
+  Some(next) -> resolve(st, next)
+  None -> YVar(v)
+
+fn occurs(st, v, t) = match resolve(st, t)
+  YVar(w) -> w == v
+  YAdt(_, args) -> any(args, \a -> occurs(st, v, a))
+  YFn(ps, r) -> any(ps, \p -> occurs(st, v, p)) || occurs(st, v, r)
+  YChan(e) -> occurs(st, v, e)
+  _ -> false
+
+# `subst_gen`: Gen(i) -> args[i].
+fn sgen(t, args) = match t
+  YGen(i) -> nth_ty(args, i)
+  YAdt(a, ts) -> YAdt(a, map(ts, \x -> sgen(x, args)))
+  YFn(ps, r) -> YFn(map(ps, \p -> sgen(p, args)), sgen(r, args))
+  YChan(e) -> YChan(sgen(e, args))
+  _ -> t
+
+fn nth_ty(l, i) = match l
+  Cons(h, t) -> if i == 0 then h else nth_ty(t, i - 1)
+  Nil -> tydie("internal: Gen out of range", 0)
+
+fn ty_eq(a, b) = match a
+  YInt -> is_yint(b)
+  YFloat -> is_yfloat(b)
+  YBool -> is_ybool(b)
+  YStr -> is_ystr(b)
+  YUnit -> is_yunit(b)
+  YPtr -> is_yptr(b)
+  YAdt(i, xs) -> adt_eq(i, xs, b)
+  YFn(ps, r) -> fn_eq(ps, r, b)
+  YChan(e) -> chan_eq(e, b)
+  YBuf(w) -> buf_eq(w, b)
+  YVar(v) -> var_eq(v, b)
+  YGen(g) -> gen_eq(g, b)
+
+fn is_yint(b) = match b
+  YInt -> true
+  _ -> false
+
+fn is_yfloat(b) = match b
+  YFloat -> true
+  _ -> false
+
+fn is_ybool(b) = match b
+  YBool -> true
+  _ -> false
+
+fn is_ystr(b) = match b
+  YStr -> true
+  _ -> false
+
+fn is_yunit(b) = match b
+  YUnit -> true
+  _ -> false
+
+fn is_yptr(b) = match b
+  YPtr -> true
+  _ -> false
+
+fn adt_eq(i, xs, b) = match b
+  YAdt(j, ys) -> i == j && tys_eq(xs, ys)
+  _ -> false
+
+fn fn_eq(ps, r, b) = match b
+  YFn(qs, s) -> tys_eq(ps, qs) && ty_eq(r, s)
+  _ -> false
+
+fn chan_eq(e, b) = match b
+  YChan(f) -> ty_eq(e, f)
+  _ -> false
+
+fn buf_eq(w, b) = match b
+  YBuf(x) -> ct_eq(w, x)
+  _ -> false
+
+fn var_eq(v, b) = match b
+  YVar(w) -> v == w
+  _ -> false
+
+fn gen_eq(g, b) = match b
+  YGen(h) -> g == h
+  _ -> false
+
+fn tys_eq(xs, ys) = match xs
+  Nil -> tys_eq_nil(ys)
+  Cons(x, xt) -> tys_eq_cons(x, xt, ys)
+
+fn tys_eq_nil(ys) = match ys
+  Nil -> true
+  _ -> false
+
+fn tys_eq_cons(x, xt, ys) = match ys
+  Cons(y, yt) -> ty_eq(x, y) && tys_eq(xt, yt)
+  Nil -> false

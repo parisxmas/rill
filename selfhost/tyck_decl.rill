@@ -1,0 +1,478 @@
+# Declaration processing: the port of the Rust checker's setup pass. ADTs
+# first so fields can reference any of them, then the built-in and user
+# traits, impls (whose methods become mangled functions with trait-given
+# signatures), foreign declarations, and finally a provisional signature for
+# every function. The order of the error checks matches the Rust code,
+# because the first error is the one the harness compares.
+
+import "tyck_ty"
+
+# A loaded program: types, traits, impls, externs, functions (impl methods
+# appended by this pass), and how many functions came from the prelude.
+type Mod2
+  M2(List(Decl), List(Decl), List(Decl), List(Decl), List(FnD), Int)
+
+fn m2_types(m) = match m
+  M2(t, _, _, _, _, _) -> t
+
+fn m2_traits(m) = match m
+  M2(_, t, _, _, _, _) -> t
+
+fn m2_impls(m) = match m
+  M2(_, _, i, _, _, _) -> i
+
+fn m2_externs(m) = match m
+  M2(_, _, _, e, _, _) -> e
+
+fn m2_fns(m) = match m
+  M2(_, _, _, _, f, _) -> f
+
+fn is_builtin_type(n) =
+  str_cmp(n, "Int") == 0 || str_cmp(n, "Float") == 0 || str_cmp(n, "Bool") == 0 || str_cmp(n, "Str") == 0 || str_cmp(n, "Unit") == 0 || str_cmp(n, "Ptr") == 0
+
+fn is_builtin_fn(n) = is_bf1(n) || is_bf2(n) || is_bf3(n)
+
+fn is_bf1(n) =
+  str_cmp(n, "println") == 0 || str_cmp(n, "print") == 0 || str_cmp(n, "channel") == 0 || str_cmp(n, "send") == 0 || str_cmp(n, "recv") == 0 || str_cmp(n, "str_len") == 0 || str_cmp(n, "int_to_str") == 0 || str_cmp(n, "float_to_str") == 0 || str_cmp(n, "bool_to_str") == 0 || str_cmp(n, "show") == 0 || str_cmp(n, "str_get") == 0 || str_cmp(n, "str_sub") == 0 || str_cmp(n, "str_find") == 0 || str_cmp(n, "str_cmp") == 0 || str_cmp(n, "str_to_int") == 0 || str_cmp(n, "str_to_float") == 0 || str_cmp(n, "chr") == 0 || str_cmp(n, "bit_and") == 0 || str_cmp(n, "bit_or") == 0 || str_cmp(n, "bit_xor") == 0 || str_cmp(n, "bit_not") == 0 || str_cmp(n, "shl") == 0 || str_cmp(n, "shr") == 0 || str_cmp(n, "to_float") == 0 || str_cmp(n, "to_int") == 0
+
+fn is_bf2(n) =
+  str_cmp(n, "arg_count") == 0 || str_cmp(n, "arg") == 0 || str_cmp(n, "read_file_raw") == 0 || str_cmp(n, "io_ok") == 0 || str_cmp(n, "write_file") == 0 || str_cmp(n, "read_line") == 0 || str_cmp(n, "exit") == 0 || str_cmp(n, "to_cstr") == 0 || str_cmp(n, "from_cstr") == 0 || str_cmp(n, "free_ptr") == 0 || str_cmp(n, "null_ptr") == 0 || str_cmp(n, "is_null") == 0 || str_cmp(n, "alloc_bytes") == 0 || str_cmp(n, "ptr_offset") == 0 || str_cmp(n, "poke_i8") == 0 || str_cmp(n, "poke_i16") == 0 || str_cmp(n, "poke_i32") == 0 || str_cmp(n, "poke_i64") == 0 || str_cmp(n, "poke_f32") == 0 || str_cmp(n, "poke_f64") == 0 || str_cmp(n, "poke_ptr") == 0 || str_cmp(n, "peek_ptr") == 0
+
+fn is_bf3(n) =
+  str_cmp(n, "buf_i8") == 0 || str_cmp(n, "buf_u8") == 0 || str_cmp(n, "buf_i16") == 0 || str_cmp(n, "buf_u16") == 0 || str_cmp(n, "buf_i32") == 0 || str_cmp(n, "buf_u32") == 0 || str_cmp(n, "buf_int") == 0 || str_cmp(n, "buf_f32") == 0 || str_cmp(n, "buf_float") == 0 || str_cmp(n, "buf_ptr") == 0 || str_cmp(n, "buf_get") == 0 || str_cmp(n, "buf_set") == 0 || str_cmp(n, "buf_len") == 0 || str_cmp(n, "buf_data") == 0 || str_cmp(n, "peek_i8") == 0 || str_cmp(n, "peek_u8") == 0 || str_cmp(n, "peek_i16") == 0 || str_cmp(n, "peek_u16") == 0 || str_cmp(n, "peek_i32") == 0 || str_cmp(n, "peek_u32") == 0 || str_cmp(n, "peek_i64") == 0 || str_cmp(n, "peek_f32") == 0 || str_cmp(n, "peek_f64") == 0 || str_cmp(n, "tcp_listen") == 0 || str_cmp(n, "tcp_accept") == 0 || str_cmp(n, "tcp_connect") == 0 || str_cmp(n, "sock_read") == 0 || str_cmp(n, "sock_write") == 0 || str_cmp(n, "sock_close") == 0
+
+# ---- resolving written types ------------------------------------------------
+#
+# `adx` maps ADT names to indices; `adts` is the (possibly still growing)
+# ADT list; `pscope` maps type-parameter names to Gen indices, or is absent.
+
+fn starts_lower(n) = str_len(n) > 0 && str_get(n, 0) >= 97 && str_get(n, 0) <= 122
+
+fn resolve_tr(tr, adx, adts, pscope) = match tr
+  TR(n, args, ret, ln) -> rtr(n, args, ret, ln, adx, adts, pscope)
+
+fn rtr(n, args, ret, ln, adx, adts, pscope) =
+  if starts_lower(n) then rtr_param(n, args, ln, pscope) else if str_cmp(n, "Buf") == 0 then rtr_buf(n, args, ln, adx, adts) else if str_cmp(n, "Chan") == 0 then rtr_chan(n, args, ln, adx, adts, pscope) else if is_builtin_type(n) then rtr_builtin(n, args, ln) else rtr_adt(n, args, ln, adx, adts, pscope)
+
+fn rtr_param(n, args, ln, pscope) =
+  if len(args) > 0 then tydie("type parameter `" + n + "` cannot take arguments", ln) else rtr_param2(n, ln, pscope)
+
+fn rtr_param2(n, ln, pscope) = match pscope
+  Some(scope) -> rtr_param3(n, ln, sget(scope, n))
+  None -> tydie("unknown type `" + n + "`", ln)
+
+fn rtr_param3(n, ln, o) = match o
+  Some(i) -> YGen(i)
+  None -> tydie("unknown type `" + n + "`", ln)
+
+fn rtr_buf(n, args, ln, adx, adts) = match args
+  Cons(w, Nil) -> rtr_buf2(resolve_ct(w, adx, adts, "buffer element"), w)
+  _ -> tydie("`Buf` takes exactly one element width", ln)
+
+fn rtr_buf2(w, wtr) = match w
+  CFn(_, _) -> tydie("a buffer cannot hold `Fn`", tr_line(wtr))
+  CW(nm) -> rtr_buf3(w, nm, wtr)
+
+fn rtr_buf3(w, nm, wtr) =
+  if str_cmp(nm, "Unit") == 0 then tydie("a buffer cannot hold `Unit`", tr_line(wtr)) else YBuf(w)
+
+fn tr_line(tr) = match tr
+  TR(_, _, _, ln) -> ln
+
+fn rtr_chan(n, args, ln, adx, adts, pscope) = match args
+  Cons(e, Nil) -> YChan(resolve_tr(e, adx, adts, pscope))
+  _ -> tydie("`Chan` takes exactly one type argument", ln)
+
+fn rtr_builtin(n, args, ln) =
+  if len(args) > 0 then tydie("`" + n + "` does not take type arguments", ln) else rtr_builtin2(n)
+
+fn rtr_builtin2(n) =
+  if str_cmp(n, "Int") == 0 then YInt else if str_cmp(n, "Float") == 0 then YFloat else if str_cmp(n, "Bool") == 0 then YBool else if str_cmp(n, "Str") == 0 then YStr else if str_cmp(n, "Ptr") == 0 then YPtr else YUnit
+
+fn rtr_adt(n, args, ln, adx, adts, pscope) = rtr_adt2(sget(adx, n), n, args, ln, adx, adts, pscope)
+
+fn rtr_adt2(o, n, args, ln, adx, adts, pscope) = match o
+  Some(i) -> rtr_adt3(i, n, args, ln, adx, adts, pscope)
+  None -> tydie("unknown type `" + n + "`", ln)
+
+fn rtr_adt3(i, n, args, ln, adx, adts, pscope) =
+  np = adt_np(adts, i)
+  if len(args) != np then tydie("type `" + n + "` takes " + int_to_str(np) + " type argument(s), but " + int_to_str(len(args)) + " given", ln) else YAdt(i, map(args, \a -> resolve_tr(a, adx, adts, pscope)))
+
+fn adt_np(adts, i) = match nth_adt(adts, i)
+  Ad(_, np, _) -> np
+
+# ---- C types in foreign signatures -----------------------------------------
+
+fn c_width(n) =
+  str_cmp(n, "I8") == 0 || str_cmp(n, "U8") == 0 || str_cmp(n, "I16") == 0 || str_cmp(n, "U16") == 0 || str_cmp(n, "I32") == 0 || str_cmp(n, "U32") == 0 || str_cmp(n, "I64") == 0 || str_cmp(n, "U64") == 0 || str_cmp(n, "F32") == 0 || str_cmp(n, "F64") == 0
+
+fn resolve_ct(tr, adx, adts, what) = match tr
+  TR(n, args, ret, ln) -> rct(n, args, ret, ln, tr, adx, adts, what)
+
+fn rct(n, args, ret, ln, tr, adx, adts, what) =
+  if c_width(n) then rct_width(n, args, ln) else if str_cmp(n, "Fn") == 0 then rct_fn(args, ret, adx, adts, what) else rct_plain(ret, tr, adx, adts, what)
+
+fn rct_width(n, args, ln) =
+  if len(args) > 0 then tydie("`" + n + "` does not take type arguments", ln) else CW(n)
+
+fn rct_fn(args, ret, adx, adts, what) =
+  ps = map(args, \a -> rct_fn_param(resolve_ct(a, adx, adts, what), a, what))
+  CFn(ps, rct_fn_ret(ret, adx, adts, what))
+
+fn rct_fn_param(p, a, what) = match p
+  CFn(_, _) -> tydie(what + ": a callback parameter cannot be `Fn`", tr_line(a))
+  CW(nm) -> rct_fn_param2(p, nm, a, what)
+
+fn rct_fn_param2(p, nm, a, what) =
+  if str_cmp(nm, "Unit") == 0 then tydie(what + ": a callback parameter cannot be `Unit`", tr_line(a)) else p
+
+fn rct_fn_ret(ret, adx, adts, what) = match ret
+  Some(r) -> rct_fn_ret2(resolve_ct(r, adx, adts, what), r, what)
+  None -> CW("Unit")
+
+fn rct_fn_ret2(cty, r, what) = match cty
+  CFn(_, _) -> tydie(what + ": a callback cannot return `Fn`", tr_line(r))
+  CW(_) -> cty
+
+fn rct_plain(ret, tr, adx, adts, what) = match ret
+  Some(r) -> tydie(what + ": only `Fn` takes a `->` result type", tr_line(r))
+  None -> check_ffi(resolve_tr(tr, adx, adts, None), tr_line(tr), what)
+
+fn check_ffi(t, ln, what) = match t
+  YInt -> CW("I64")
+  YFloat -> CW("F64")
+  YBool -> CW("Bool")
+  YPtr -> CW("Ptr")
+  YUnit -> CW("Unit")
+  YStr -> tydie(what + ": a foreign function cannot take `Str` directly — pass `to_cstr(s)` and declare it as `Ptr`", ln)
+  _ -> tydie(what + ": this type cannot cross the C boundary; use `Ptr`", ln)
+
+# ---- building the checker's context ----------------------------------------
+#
+# The same passes as `Checker::new`, in the same order. The result carries
+# the immutable context, the state holding every provisional signature, and
+# the function list with impl methods appended.
+
+type SetOut
+  SO(Cx, St, List(FnD))
+
+# Pass 1: ADT names, so fields can reference any ADT.
+fn adt_names(types, adx, adts, n) = match types
+  Cons(DType(name, ps, cs, ln), rest) -> adt_names2(name, ps, ln, rest, adx, adts, n)
+  Cons(_, rest) -> adt_names(rest, adx, adts, n)
+  Nil -> AN(adx, reverse(adts), n)
+
+fn adt_names2(name, ps, ln, rest, adx, adts, n) =
+  if is_builtin_type(name) then tydie("`" + name + "` is a builtin type and cannot be redefined", ln) else if shas(adx, name) then tydie("type `" + name + "` is defined more than once", ln) else adt_names(rest, sput(adx, name, n), Cons(Ad(name, len(ps), Nil), adts), n + 1)
+
+type AN
+  AN(SM(Int), List(Adt2), Int)
+
+# Pass 2: constructors, resolved against the full ADT table.
+fn param_scope(ps, k, scope, ln) = match ps
+  Cons(p, rest) -> param_scope2(p, rest, k, scope, ln)
+  Nil -> scope
+
+fn param_scope2(p, rest, k, scope, ln) =
+  if shas(scope, p) then tydie("duplicate type parameter `" + p + "`", ln) else param_scope(rest, k + 1, sput(scope, p, k), ln)
+
+fn build_ctors(types, adx, adts, i, ctm, out) = match types
+  Cons(DType(name, ps, cs, ln), rest) -> bc_type(cs, param_scope(ps, 0, SLeaf, ln), rest, adx, adts, i, ctm, out, Nil)
+  Cons(_, rest) -> build_ctors(rest, adx, adts, i, ctm, out)
+  Nil -> BC(ctm, reverse(out))
+
+fn bc_type(cs, scope, rest, adx, adts, i, ctm, out, acc) = match cs
+  Cons(Ct(cn, fields, cln), more) -> bc_ctor(cn, fields, cln, more, scope, rest, adx, adts, i, ctm, out, acc)
+  Nil -> build_ctors(rest, adx, adts, i + 1, ctm, Cons(with_ctors(nth_adt(adts, i), reverse(acc)), out))
+
+fn with_ctors(ad, cs) = match ad
+  Ad(n, np, _) -> Ad(n, np, cs)
+
+fn bc_ctor(cn, fields, cln, more, scope, rest, adx, adts, i, ctm, out, acc) =
+  if shas(ctm, cn) then tydie("constructor `" + cn + "` is defined more than once (constructor names are global)", cln) else bc_ctor2(cn, map(fields, \f -> bc_field(f, adx, adts, scope)), cln, more, scope, rest, adx, adts, i, ctm, out, acc)
+
+fn bc_field(f, adx, adts, scope) = match f
+  Fld(_, tr) -> bc_field2(resolve_tr(tr, adx, adts, Some(scope)), tr)
+
+fn bc_field2(t, tr) = match t
+  YUnit -> tydie("constructor fields cannot be Unit", tr_line(tr))
+  _ -> t
+
+fn bc_ctor2(cn, ftys, cln, more, scope, rest, adx, adts, i, ctm, out, acc) =
+  bc_type(more, scope, rest, adx, adts, i, sput(ctm, cn, CR(i, len(acc))), out, Cons(C2(cn, ftys), acc))
+
+type BC
+  BC(SM(CtRef), List(Adt2))
+
+# Pass 3 and 4: built-in traits, then the user's.
+fn builtin_traits() = Cons(Trt("Show", Cons(Mi("show", Cons(YGen(0), Nil), YStr), Nil)), Cons(Trt("Ord", Cons(Mi("compare", Cons(YGen(0), Cons(YGen(0), Nil)), YInt), Nil)), Nil))
+
+fn build_traits(tds, adx, adts, traits, midx) = match tds
+  Cons(DTrait(name, param, sigs, ln), rest) -> bt_one(name, param, sigs, ln, rest, adx, adts, traits, midx)
+  Cons(_, rest) -> build_traits(rest, adx, adts, traits, midx)
+  Nil -> BT(traits, midx)
+
+fn bt_one(name, param, sigs, ln, rest, adx, adts, traits, midx) =
+  if any(traits, \t -> trt_named(t, name)) then tydie("trait `" + name + "` is already defined", ln) else if starts_lower(param) then bt_methods(name, param, sigs, rest, adx, adts, traits, midx, Nil, len(traits)) else tydie("trait parameter `" + param + "` must be lowercase", ln)
+
+fn trt_named(t, name) = match t
+  Trt(n, _) -> str_cmp(n, name) == 0
+
+fn bt_methods(name, param, sigs, rest, adx, adts, traits, midx, ms, tid) = match sigs
+  Cons(Sig(mn, mps, mret, mln), more) -> bt_method(mn, mps, mret, mln, more, name, param, rest, adx, adts, traits, midx, ms, tid)
+  Nil -> build_traits(rest, adx, adts, append(traits, Cons(Trt(name, reverse(ms)), Nil)), midx)
+
+fn bt_method(mn, mps, mret, mln, more, name, param, rest, adx, adts, traits, midx, ms, tid) =
+  if is_builtin_fn(mn) then tydie("`" + mn + "` is a built-in function and cannot be a method", mln) else if shas(midx, mn) then tydie("method `" + mn + "` is already defined (method names are global)", mln) else bt_method2(mn, mps, mret, more, name, param, rest, adx, adts, traits, midx, ms, tid)
+
+fn bt_method2(mn, mps, mret, more, name, param, rest, adx, adts, traits, midx, ms, tid) =
+  scope = sput(SLeaf, param, 0)
+  params = map(mps, \p -> resolve_tr(p, adx, adts, Some(scope)))
+  ret = resolve_tr(mret, adx, adts, Some(scope))
+  bt_methods(name, param, more, rest, adx, adts, traits, sput(midx, mn, CR(tid, len(ms))), Cons(Mi(mn, params, ret), ms), tid)
+
+type BT
+  BT(List(Trt), SM(CtRef))
+
+# Pass 5: impls. Each method becomes a mangled function whose signature the
+# trait dictates; the functions are appended to the checking list.
+type ImplAcc
+  IA(SM(Int), SM(Forced), List(FnD))
+
+fn build_impls(impls, adx, adts, traits, ia) = match impls
+  Cons(DImpl(tname, target, fns, ln), rest) -> bi_one(tname, target, fns, ln, rest, adx, adts, traits, ia)
+  Cons(_, rest) -> build_impls(rest, adx, adts, traits, ia)
+  Nil -> ia
+
+fn bi_one(tname, target, fns, ln, rest, adx, adts, traits, ia) =
+  tid = trait_pos(traits, tname, 0, ln)
+  bi_target(tid, tname, target, fns, ln, rest, adx, adts, traits, ia)
+
+fn trait_pos(traits, tname, i, ln) = match traits
+  Cons(Trt(n, _), rest) -> if str_cmp(n, tname) == 0 then i else trait_pos(rest, tname, i + 1, ln)
+  Nil -> tydie("unknown trait `" + tname + "`", ln)
+
+type TgtInfo
+  TG(Str, Ty2, Int)
+
+fn bi_target(tid, tname, target, fns, ln, rest, adx, adts, traits, ia) = match target
+  TR(tn, targs, _, tln) -> bi_target2(bi_key(tn, targs, tln, adx, adts), tid, tname, tn, fns, ln, rest, adx, adts, traits, ia)
+
+fn bi_key(tn, targs, tln, adx, adts) =
+  if str_cmp(tn, "Int") == 0 then TG("i", YInt, 0) else if str_cmp(tn, "Float") == 0 then TG("f", YFloat, 0) else if str_cmp(tn, "Bool") == 0 then TG("b", YBool, 0) else if str_cmp(tn, "Str") == 0 then TG("s", YStr, 0) else bi_key_adt(sget(adx, tn), tn, targs, tln, adts)
+
+fn bi_key_adt(o, tn, targs, tln, adts) = match o
+  Some(i) -> bi_key_adt2(i, tn, targs, tln, adts)
+  None -> tydie("unknown type `" + tn + "` in impl target", tln)
+
+fn bi_key_adt2(i, tn, targs, tln, adts) =
+  np = adt_np(adts, i)
+  if len(targs) != np then tydie("`" + tn + "` takes " + int_to_str(np) + " type parameter(s), but the impl target names " + int_to_str(len(targs)), tln) else bi_key_adt3(i, np, check_targ_params(targs, SLeaf))
+
+fn check_targ_params(targs, seen) = match targs
+  Cons(TR(an, aargs, _, aln), rest) -> ctp2(an, aargs, aln, rest, seen)
+  Nil -> 0
+
+fn ctp2(an, aargs, aln, rest, seen) =
+  if !starts_lower(an) || len(aargs) > 0 || shas(seen, an) then tydie("an impl target's type arguments must be distinct type parameters, as in `impl Show(List(a))`", aln) else check_targ_params(rest, sput(seen, an, 0))
+
+fn bi_key_adt3(i, np, chk) = TG("a" + int_to_str(i), YAdt(i, gen_args(0, np)), np)
+
+fn gen_args(k, n) = if k >= n then Nil else Cons(YGen(k), gen_args(k + 1, n))
+
+fn bi_target2(tg, tid, tname, tn, fns, ln, rest, adx, adts, traits, ia) = match tg
+  TG(key, tty, tgen) -> bi_fns(fns, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, mk_flags(len(trait_methods_of(traits, tid))))
+
+fn trait_methods_of(traits, tid) = match nth_trt(traits, tid)
+  Trt(_, ms) -> ms
+
+fn mk_flags(n) = if n == 0 then Nil else Cons(false, mk_flags(n - 1))
+
+fn flag_at(fl, i) = match fl
+  Cons(h, t) -> if i == 0 then h else flag_at(t, i - 1)
+  Nil -> false
+
+fn flag_set(fl, i) = match fl
+  Cons(h, t) -> if i == 0 then Cons(true, t) else Cons(h, flag_set(t, i - 1))
+  Nil -> Nil
+
+fn bi_fns(fns, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) = match fns
+  Cons(f, more) -> bi_fn(f, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags)
+  Nil -> bi_done(impl_flags, tid, tname, tn, ln, rest, adx, adts, traits, ia)
+
+fn bi_done(impl_flags, tid, tname, tn, ln, rest, adx, adts, traits, ia) =
+  miss = first_unset(impl_flags, 0)
+  if miss < 0 then build_impls(rest, adx, adts, traits, ia) else tydie("impl of `" + tname + "` for `" + tn + "` is missing method `" + mi_name(nth_mi(trait_methods_of(traits, tid), miss)) + "`", ln)
+
+fn first_unset(fl, i) = match fl
+  Cons(h, t) -> if h then first_unset(t, i + 1) else i
+  Nil -> 0 - 1
+
+fn mi_name(m) = match m
+  Mi(n, _, _) -> n
+
+fn bi_fn(f, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) = match f
+  FnD(fname, fex, fps, fret, fbody, fln) -> bi_fn2(fname, fps, fret, fbody, fln, f, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags)
+
+fn bi_fn2(fname, fps, fret, fbody, fln, f, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) =
+  mid = method_pos(trait_methods_of(traits, tid), fname, 0)
+  if mid < 0 then tydie("`" + fname + "` is not a method of trait `" + tname + "`", fln) else bi_fn3(mid, fname, fps, fret, fbody, fln, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags)
+
+fn method_pos(ms, fname, i) = match ms
+  Cons(Mi(n, _, _), rest) -> if str_cmp(n, fname) == 0 then i else method_pos(rest, fname, i + 1)
+  Nil -> 0 - 1
+
+fn bi_fn3(mid, fname, fps, fret, fbody, fln, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) =
+  if flag_at(impl_flags, mid) then tydie("method `" + fname + "` is implemented twice", fln) else bi_fn4(mid, fname, fps, fret, fbody, fln, nth_mi(trait_methods_of(traits, tid), mid), more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, flag_set(impl_flags, mid))
+
+fn bi_fn4(mid, fname, fps, fret, fbody, fln, sig, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) = match sig
+  Mi(_, sps, sret) -> bi_fn5(mid, fname, fps, fret, fbody, fln, sps, sret, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags)
+
+fn bi_fn5(mid, fname, fps, fret, fbody, fln, sps, sret, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) =
+  if len(fps) != len(sps) then tydie("method `" + fname + "` takes " + int_to_str(len(sps)) + " parameter(s) in trait `" + tname + "`, but this implementation has " + int_to_str(len(fps)), fln) else if any(fps, \p -> par_has_ann(p)) || is_some_tr(fret) then tydie("impl methods take their types from the trait; remove the annotations", fln) else bi_fn6(mid, fname, fps, fbody, fln, sps, sret, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags)
+
+fn par_has_ann(p) = match p
+  Par(_, Some(_)) -> true
+  Par(_, None) -> false
+
+fn is_some_tr(o) = match o
+  Some(_) -> true
+  None -> false
+
+fn bi_fn6(mid, fname, fps, fbody, fln, sps, sret, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) = match ia
+  IA(implm, forced, exp) -> bi_fn7(mid, fname, fps, fbody, fln, sps, sret, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, implm, forced, exp, impl_flags)
+
+fn bi_fn7(mid, fname, fps, fbody, fln, sps, sret, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, implm, forced, exp, impl_flags) =
+  ikey = int_to_str(tid) + ":" + int_to_str(mid) + ":" + key
+  if shas(implm, ikey) then tydie("trait `" + tname + "` is already implemented for `" + tn + "`", ln) else bi_fn8(mid, fname, fps, fbody, fln, sps, sret, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, sput(implm, ikey, 0), forced, exp, impl_flags, ikey)
+
+fn bi_fn8(mid, fname, fps, fbody, fln, sps, sret, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, implm, forced, exp, impl_flags, ikey) =
+  inst = Cons(tty, Nil)
+  mangled = tname + "." + tn + "." + fname
+  params = map(sps, \t -> sgen(t, inst))
+  ret = sgen(sret, inst)
+  bi_fns(more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, IA(implm, sput(forced, mangled, Fo(params, ret, tgen)), Cons(FnD(mangled, false, fps, None, fbody, fln), exp)), impl_flags)
+
+# Pass 6: foreign declarations.
+fn build_externs(es, adx, adts, midx, out) = match es
+  Cons(DExtern(name, lib, ps, ret, ln), rest) -> be_one(name, ps, ret, ln, rest, adx, adts, midx, out)
+  Cons(_, rest) -> build_externs(rest, adx, adts, midx, out)
+  Nil -> out
+
+fn be_one(name, ps, ret, ln, rest, adx, adts, midx, out) =
+  if is_builtin_fn(name) || shas(midx, name) then tydie("`" + name + "` is already a built-in or a trait method", ln) else be_params(name, ps, ret, rest, adx, adts, midx, out, Nil)
+
+fn be_params(name, ps, ret, rest, adx, adts, midx, out, acc) = match ps
+  Cons(EP(pn, tr), more) -> be_param(pn, tr, more, name, ret, rest, adx, adts, midx, out, acc)
+  Nil -> be_ret(name, ret, rest, adx, adts, midx, out, reverse(acc))
+
+fn be_param(pn, tr, more, name, ret, rest, adx, adts, midx, out, acc) =
+  what = "parameter `" + pn + "`"
+  cty = resolve_ct(tr, adx, adts, what)
+  be_param2(cty, what, tr, more, name, ret, rest, adx, adts, midx, out, acc)
+
+fn be_param2(cty, what, tr, more, name, ret, rest, adx, adts, midx, out, acc) = match cty
+  CW(w) -> be_param3(cty, w, what, tr, more, name, ret, rest, adx, adts, midx, out, acc)
+  CFn(_, _) -> be_params(name, more, ret, rest, adx, adts, midx, out, Cons(cty, acc))
+
+fn be_param3(cty, w, what, tr, more, name, ret, rest, adx, adts, midx, out, acc) =
+  if str_cmp(w, "Unit") == 0 then tydie(what + ": `Unit` is not a value C can be passed", tr_line(tr)) else be_params(name, more, ret, rest, adx, adts, midx, out, Cons(cty, acc))
+
+fn be_ret(name, ret, rest, adx, adts, midx, out, params) = match ret
+  Some(tr) -> be_ret2(resolve_ct(tr, adx, adts, "return type"), tr, name, rest, adx, adts, midx, out, params)
+  None -> build_externs(rest, adx, adts, midx, sput(out, name, ES(params, CW("Unit"))))
+
+fn be_ret2(cty, tr, name, rest, adx, adts, midx, out, params) = match cty
+  CFn(_, _) -> tydie("return type: a foreign function returning a callback cannot be called back into; declare it `Ptr`", tr_line(tr))
+  CW(_) -> build_externs(rest, adx, adts, midx, sput(out, name, ES(params, cty)))
+
+# Passes 7 and 8: a provisional signature for every function, main included.
+type SigAcc
+  SA(SM(Int), St, Int)
+
+fn build_sigs(fns, adx, adts, midx, externs, forced, sa) = match fns
+  Cons(f, rest) -> bs_one(f, rest, adx, adts, midx, externs, forced, sa)
+  Nil -> sa
+
+fn bs_one(f, rest, adx, adts, midx, externs, forced, sa) = match f
+  FnD(name, _, ps, ret, _, ln) -> bs_two(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, sa)
+
+fn bs_two(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, sa) = match sa
+  SA(fnidx, st, n) -> bs_checks(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n)
+
+fn bs_checks(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n) =
+  if shas(fnidx, name) then tydie("function `" + name + "` is defined more than once", ln) else if is_builtin_fn(name) then tydie("`" + name + "` is a built-in function", ln) else if shas(externs, name) then tydie("`" + name + "` is already declared as a foreign function", ln) else if shas(midx, name) then tydie("`" + name + "` is a trait method; functions cannot share its name", ln) else bs_forced(sget(forced, name), name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n)
+
+fn bs_forced(o, name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n) = match o
+  Some(Fo(fparams, fret, tgen)) -> bs_forced2(fparams, fret, tgen, name, rest, adx, adts, midx, externs, forced, fnidx, st, n)
+  None -> bs_main(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n)
+
+fn bs_forced2(fparams, fret, tgen, name, rest, adx, adts, midx, externs, forced, fnidx, st, n) =
+  bs_forced3(fresh_n(st, tgen, Nil), fparams, fret, name, rest, adx, adts, midx, externs, forced, fnidx, n)
+
+fn bs_forced3(tsl, fparams, fret, name, rest, adx, adts, midx, externs, forced, fnidx, n) = match tsl
+  TSL(inst, st) -> build_sigs(rest, adx, adts, midx, externs, forced, SA(sput(fnidx, name, n), st_put_sig(st, n, SigP(map(fparams, \t -> sgen(t, inst)), sgen(fret, inst))), n + 1))
+
+fn bs_main(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n) =
+  if str_cmp(name, "main") == 0 then bs_main2(ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n) else bs_plain(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n)
+
+fn bs_main2(ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n) =
+  if len(ps) > 0 then tydie("`main` must take no parameters", ln) else if is_some_tr(ret) then tydie("`main` must not have a return type annotation", ln) else build_sigs(rest, adx, adts, midx, externs, forced, SA(sput(fnidx, "main", n), st_put_sig(st, n, SigP(Nil, YUnit)), n + 1))
+
+type PTS
+  PTS(List(Ty2), St)
+
+fn bs_plain(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n) =
+  bs_plain2(bs_params(ps, adx, adts, st, Nil), name, ret, rest, adx, adts, midx, externs, forced, fnidx, n)
+
+fn bs_params(ps, adx, adts, st, acc) = match ps
+  Cons(Par(pn, ann), rest) -> bs_param(pn, ann, rest, adx, adts, st, acc)
+  Nil -> PTS(reverse(acc), st)
+
+fn bs_param(pn, ann, rest, adx, adts, st, acc) = match ann
+  Some(tr) -> bs_param_ann(resolve_tr(tr, adx, adts, None), pn, tr, rest, adx, adts, st, acc)
+  None -> bs_param_fresh(fresh(st), rest, adx, adts, acc)
+
+fn bs_param_ann(t, pn, tr, rest, adx, adts, st, acc) = match t
+  YUnit -> tydie("parameter `" + pn + "` cannot be Unit", tr_line(tr))
+  _ -> bs_params(rest, adx, adts, st, Cons(t, acc))
+
+fn bs_param_fresh(ts, rest, adx, adts, acc) = match ts
+  TS(v, st) -> bs_params(rest, adx, adts, st, Cons(v, acc))
+
+fn bs_plain2(pts, name, ret, rest, adx, adts, midx, externs, forced, fnidx, n) = match pts
+  PTS(ptys, st) -> bs_ret(ret, ptys, name, rest, adx, adts, midx, externs, forced, fnidx, st, n)
+
+fn bs_ret(ret, ptys, name, rest, adx, adts, midx, externs, forced, fnidx, st, n) = match ret
+  Some(tr) -> build_sigs(rest, adx, adts, midx, externs, forced, SA(sput(fnidx, name, n), st_put_sig(st, n, SigP(ptys, resolve_tr(tr, adx, adts, None))), n + 1))
+  None -> bs_ret_fresh(fresh(st), ptys, name, rest, adx, adts, midx, externs, forced, fnidx, n)
+
+fn bs_ret_fresh(ts, ptys, name, rest, adx, adts, midx, externs, forced, fnidx, n) = match ts
+  TS(v, st) -> build_sigs(rest, adx, adts, midx, externs, forced, SA(sput(fnidx, name, n), st_put_sig(st, n, SigP(ptys, v)), n + 1))
+
+# The whole setup, in declaration order.
+fn setup(m) = match m
+  M2(types, traits, impls, externs, fns, pf) -> setup2(adt_names(types, SLeaf, Nil, 0), types, traits, impls, externs, fns)
+
+fn setup2(an, types, traits, impls, externs, fns) = match an
+  AN(adx, adts0, _) -> setup3(build_ctors(types, adx, adts0, 0, SLeaf, Nil), adx, traits, impls, externs, fns)
+
+fn setup3(bc, adx, traits, impls, externs, fns) = match bc
+  BC(ctm, adts) -> setup4(build_traits(traits, adx, adts, builtin_traits(), sput(SLeaf, "compare", CR(1, 0))), adx, adts, ctm, impls, externs, fns)
+
+fn setup4(bt, adx, adts, ctm, impls, externs, fns) = match bt
+  BT(traits, midx) -> setup5(build_impls(impls, adx, adts, traits, IA(SLeaf, SLeaf, Nil)), adx, adts, ctm, traits, midx, externs, fns)
+
+fn setup5(ia, adx, adts, ctm, traits, midx, externs, fns) = match ia
+  IA(implm, forced, impl_fns) -> setup6(build_externs(externs, adx, adts, midx, SLeaf), adx, adts, ctm, traits, midx, implm, forced, append(fns, reverse(impl_fns)))
+
+fn setup6(exts, adx, adts, ctm, traits, midx, implm, forced, expanded) =
+  sa = build_sigs(expanded, adx, adts, midx, exts, forced, SA(SLeaf, st0(), 0))
+  setup7(sa, adx, adts, ctm, traits, midx, implm, forced, exts, expanded)
+
+fn setup7(sa, adx, adts, ctm, traits, midx, implm, forced, exts, expanded) = match sa
+  SA(fnidx, st, _) -> setup8(fnidx, st, adx, adts, ctm, traits, midx, implm, forced, exts, expanded)
+
+fn setup8(fnidx, st, adx, adts, ctm, traits, midx, implm, forced, exts, expanded) =
+  if shas(fnidx, "main") then SO(Cx(adts, ctm, fnidx, traits, midx, exts, implm, forced), st, expanded) else tydie("no `main` function defined", 0)
