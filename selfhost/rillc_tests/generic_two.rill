@@ -1,0 +1,9 @@
+fn first(p) = match p
+  P(a, _) -> a
+
+type Pair(a, b)
+  P(a, b)
+
+fn main() =
+  println(first(P(42, "x")))
+  println(first(P("hello", 1.5)))

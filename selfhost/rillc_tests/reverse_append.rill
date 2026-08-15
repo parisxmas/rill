@@ -1,0 +1,6 @@
+fn main() =
+  a = Cons(1, Cons(2, Nil))
+  b = Cons(3, Cons(4, Nil))
+  println(sum(append(a, b)))
+  println(sum(reverse(append(b, a))))
+  println(len(append(a, reverse(b))))

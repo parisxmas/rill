@@ -1,0 +1,9 @@
+fn total(l) = match l
+  Nil -> 0
+  Cons(h, t) -> h + total(t)
+
+fn main() =
+  xs = Cons(1, Cons(2, Cons(3, Nil)))
+  println(total(xs))
+  println(len(xs))
+  println(sum(xs))

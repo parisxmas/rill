@@ -1,0 +1,15 @@
+type Tok
+  Word(Str)
+  Num(Int)
+  End
+
+fn render(t) = match t
+  Word(s) -> "w:" + s
+  Num(n) -> "n:" + int_to_str(n)
+  End -> "end"
+
+fn render_all(ts) = match ts
+  Nil -> ""
+  Cons(h, t) -> render(h) + " " + render_all(t)
+
+fn main() = println(render_all(Cons(Word("hi"), Cons(Num(42), Cons(End, Nil)))))

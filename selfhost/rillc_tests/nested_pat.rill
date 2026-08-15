@@ -1,0 +1,15 @@
+type T
+  Leaf(Int)
+  Node(T, T)
+
+fn depth(t) = match t
+  Leaf(_) -> 1
+  Node(Leaf(a), Leaf(b)) -> if a > b then a else b
+  Node(l, r) -> depth2(depth(l), depth(r))
+
+fn depth2(a, b) = 1 + (if a > b then a else b)
+
+fn main() =
+  println(depth(Leaf(9)))
+  println(depth(Node(Leaf(3), Leaf(7))))
+  println(depth(Node(Node(Leaf(1), Leaf(2)), Leaf(5))))

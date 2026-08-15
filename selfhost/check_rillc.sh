@@ -33,4 +33,28 @@ for f in "$root"/selfhost/rillc_tests/*.rill; do
   fi
 done
 echo "matching: $ok   diverging: $bad"
+
+# The self-hosting proof: rillc compiles itself; the self-built compiler
+# compiles rillc again; the two IR files must be byte-identical. Then the
+# self-built compiler builds the formatter, which must agree with rill fmt
+# over the whole corpus.
+"$root/selfhost/rillc" "$root/selfhost/rillc.rill" "$prelude" > "$work/rillc2.ll" 2>&1 \
+  && cc -O2 -Wno-override-module "$work/rillc2.ll" "$runtime" -o "$work/rillc2" 2>/dev/null \
+  && "$work/rillc2" "$root/selfhost/rillc.rill" "$prelude" > "$work/rillc3.ll" 2>&1 \
+  && cmp -s "$work/rillc2.ll" "$work/rillc3.ll" \
+  && echo "fixpoint: rillc(rillc) == rillc2(rillc)" || { echo "FIXPOINT BROKEN"; bad=$((bad+1)); }
+"$work/rillc2" "$root/selfhost/fmt.rill" "$prelude" > "$work/fmt2.ll" 2>&1 \
+  && cc -O2 -Wno-override-module "$work/fmt2.ll" "$runtime" -o "$work/fmt2" 2>/dev/null || { echo "FMT BUILD FAILS"; bad=$((bad+1)); }
+fok=0; fbad=0
+for f in $(find "$root/examples" "$root/benchmarks" "$root/selfhost" "$root/book/code" \
+             -name '*.rill' 2>/dev/null | sort) "$prelude"; do
+  [ -f "$f" ] || continue
+  if "$work/fmt2" "$f" 2>/dev/null | diff -q - <("$rill" fmt "$f" --stdout 2>/dev/null) >/dev/null 2>&1; then
+    fok=$((fok+1))
+  else
+    fbad=$((fbad+1))
+  fi
+done
+echo "formatter built by self-built rillc: byte-identical: $fok   diverging: $fbad"
+bad=$((bad+fbad))
 [ $bad -eq 0 ]

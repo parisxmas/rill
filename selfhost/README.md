@@ -60,27 +60,33 @@ involved.
 
 ## The code generator
 
-The third stage, begun: `rillc.rill` compiles the scalar subset of the
-language — Int, Float, Bool, Str, functions, blocks, `if`, tail calls and
-the scalar built-ins — to LLVM IR text, ready for
-`cc out.ll librill_runtime.a`. It runs the self-hosted checker first, so
-every type is concrete before a line is emitted; only functions reachable
-from `main` are generated, which is what lets the generic prelude sit
-unused in a scalar program. Anything outside the subset dies with its name:
-data types and `match`, lambdas, channels, `spawn`, generics. Heap strings
-are not yet released — Perceus insertion arrives with the data-type
-milestone.
+The third stage: `rillc.rill` compiles Rill — data types and `match`,
+generics by monomorphization, lambdas and closures, tail calls, the scalar
+built-ins — to LLVM IR text, ready for `cc out.ll librill_runtime.a`. It
+runs the self-hosted checker first, so emission starts from a program known
+to be well-typed; generic instantiations are recovered by matching the
+checker's generalized signatures against argument types at each call, so no
+typed tree is needed. Every value fits an 8-byte slot; `match` and `if`
+results meet in a stack slot rather than a phi, which keeps arms the
+checker left polymorphic (a `die` that never returns) well typed.
 
 ```sh
-./selfhost/check_rillc.sh   # both compilers over rillc_tests/, output-diffed
+./selfhost/check_rillc.sh   # behavior parity, then the self-hosting proof
 ```
 
-The proof here is behavioral: every test program builds both ways and must
-print the same bytes and exit the same way. The suite includes a
-five-million-iteration tail loop and a million-deep mutual recursion, so
-`tail call` emission is load-bearing, not decorative.
+The proof has three tiers:
 
-With this, all three compiler stages exist in Rill: parse (proven
-byte-identical), type-check (proven error-identical), and code generation
-(proven behavior-identical on its subset). The runtime stays Rust, as
-runtimes do.
+1. **Behavior**: twenty-six programs build under both compilers and print
+   the same bytes — among them a five-million-iteration tail loop, a
+   million-deep mutual recursion and a million-element list fold.
+2. **Fixpoint**: `rillc` compiles itself; the self-built compiler compiles
+   `rillc.rill` again; the two IR files are byte-identical.
+3. **Full circle**: the self-built compiler builds the self-hosted
+   formatter, and that binary matches `rill fmt` byte-for-byte over all
+   ~190 files in the repository. It builds the self-hosted type checker
+   too, which then matches `rill check` word-for-word on the error suite.
+
+Not yet: channels, `spawn`, `select`, traits, `==` on data types, Buf, and
+reference counting — the generated code leaks, which a batch compiler can
+afford; Perceus insertion is the next milestone. The runtime stays Rust,
+as runtimes do.

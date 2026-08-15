@@ -1,0 +1,11 @@
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+
+fn area(s) = match s
+  Circle(r) -> 3.14159 * r * r
+  Rect(w, h) -> w * h
+
+fn main() =
+  println(area(Circle(2.0)))
+  println(area(Rect(3.0, 4.0)))

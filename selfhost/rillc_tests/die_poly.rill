@@ -1,0 +1,10 @@
+fn boom(msg) =
+  println(msg)
+  exit(1)
+  boom(msg)
+
+fn safe_div(a, b) = if b == 0 then boom("div by zero") else a / b
+
+fn main() =
+  println(safe_div(10, 2))
+  println(safe_div(7, 0))

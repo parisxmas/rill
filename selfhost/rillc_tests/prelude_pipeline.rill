@@ -1,0 +1,4 @@
+fn main() =
+  println(sum(range(1, 11)))
+  println(len(filter(range(1, 21), \x -> x % 3 == 0)))
+  println(sum(map(range(1, 5), \x -> x * x)))

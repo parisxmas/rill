@@ -1,0 +1,11 @@
+fn find_even(l) = match l
+  Nil -> None
+  Cons(h, t) -> if h % 2 == 0 then Some(h) else find_even(t)
+
+fn describe(o) = match o
+  Some(n) -> "even: " + int_to_str(n)
+  None -> "none"
+
+fn main() =
+  println(describe(find_even(Cons(3, Cons(5, Cons(8, Nil))))))
+  println(describe(find_even(Cons(1, Nil))))

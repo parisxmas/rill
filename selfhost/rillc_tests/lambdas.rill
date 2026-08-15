@@ -1,0 +1,6 @@
+fn main() =
+  xs = Cons(1, Cons(2, Cons(3, Cons(4, Nil))))
+  println(sum(map(xs, \x -> x * 10)))
+  k = 7
+  println(sum(map(xs, \x -> x + k)))
+  println(fold(xs, 100, \acc, x -> acc - x))

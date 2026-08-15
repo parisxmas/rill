@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Rill compiles itself.** The self-hosted code generator grew from the
+  scalar subset to the real language: data types and `match` (nested
+  patterns, tag dispatch, shared static nullary constructors), generic
+  functions cloned per instantiation by a worklist from `main`, lambdas
+  lifted to top-level functions over environment boxes, and an 8-byte-slot
+  value model that lets a `die` arm the checker left polymorphic coexist
+  with proven types. The proof is a fixpoint: `rillc` compiles itself, the
+  self-built compiler compiles it again, and the two IR files are
+  byte-identical. The self-built compiler then builds the self-hosted
+  formatter — byte-identical to `rill fmt` over ~190 files — and the
+  self-hosted type checker — word-identical to `rill check` on the whole
+  error suite. Reference counting is the one big absence: the generated
+  code leaks, which a batch compiler can afford until Perceus lands.
+
 - **A code generator in Rill.** The third compiler stage, begun:
   `selfhost/rillc.rill` compiles the scalar subset — Int, Float, Bool, Str,
   functions, blocks, `if`, tail calls, the scalar built-ins — to LLVM IR

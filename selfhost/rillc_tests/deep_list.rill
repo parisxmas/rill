@@ -1,0 +1,7 @@
+fn build(i, acc) = if i == 0 then acc else build(i - 1, Cons(i, acc))
+
+fn total(l, acc) = match l
+  Nil -> acc
+  Cons(h, t) -> total(t, acc + h)
+
+fn main() = println(total(build(1000000, Nil), 0))
