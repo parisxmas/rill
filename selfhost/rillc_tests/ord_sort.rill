@@ -1,0 +1,23 @@
+type Card
+  C(Int)
+
+impl Ord(Card)
+  fn compare(a, b) = match a
+    C(x) -> cv(b, x)
+
+fn cv(b, x) = match b
+  C(y) -> x - y
+
+fn insert(c, l) = match l
+  Nil -> Cons(c, Nil)
+  Cons(h, t) -> if c < h then Cons(c, Cons(h, t)) else Cons(h, insert(c, t))
+
+fn isort(l) = match l
+  Nil -> Nil
+  Cons(h, t) -> insert(h, isort(t))
+
+fn vals(l) = match l
+  Nil -> ""
+  Cons(C(x), t) -> int_to_str(x) + " " + vals(t)
+
+fn main() = println(vals(isort(Cons(C(3), Cons(C(1), Cons(C(4), Cons(C(1), Cons(C(5), Nil))))))))

@@ -1,0 +1,16 @@
+fn pump(jobs, out) =
+  select
+    n = recv(jobs) ->
+      doubled = n * 2
+      send(out, doubled)
+      pump(jobs, out)
+    default -> 0
+
+fn main() =
+  jobs = channel(4)
+  out = channel(4)
+  send(jobs, 21)
+  send(jobs, 100)
+  r = spawn pump(jobs, out)
+  println(recv(out))
+  println(recv(out))

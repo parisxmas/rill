@@ -1,0 +1,16 @@
+type Box(a)
+  Bx(a)
+
+trait Sized(a)
+  weight(a) -> Int
+
+impl Sized(Box(a))
+  fn weight(b) = 1
+
+impl Sized(Int)
+  fn weight(n) = n
+
+fn main() =
+  println(weight(Bx("x")))
+  println(weight(Bx(3.5)))
+  println(weight(42))

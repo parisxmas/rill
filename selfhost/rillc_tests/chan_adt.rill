@@ -1,0 +1,18 @@
+fn collect(c, n, acc) = if n == 0 then acc else collect(c, n - 1, acc + first(recv(c)))
+
+fn first(p) = match p
+  Pair(a, _) -> a
+
+type Pair
+  Pair(Int, Str)
+
+fn produce(c, i) =
+  if i == 0 then 0
+  else
+    send(c, Pair(i, "x"))
+    produce(c, i - 1)
+
+fn main() =
+  c = channel(4)
+  spawn produce(c, 5)
+  println(collect(c, 5, 0))

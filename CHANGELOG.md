@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **The self-hosted compiler covers the language.** `rillc` now compiles
+  traits (receiver-typed dispatch to impl functions), structural `==` and
+  `show` for data types (generated per monomorphized type, user impls
+  honored down to fields, last-field comparisons by tail call), `Buf`, and
+  the whole strand story: channels, `spawn`, `select`. Messages cross a
+  channel as one 8-byte word; a spawned strand's free variables ride in a
+  runtime-owned environment box; a `select` builds the runtime's case
+  table and runs exactly the arm it is told to. A channel bound without
+  annotations recovers its element type the way a reader does — from the
+  signature of the worker it is handed to, or the payload it is sent.
+  The oracle grew a fourth tier: every runnable example now builds under
+  both compilers and must print the same bytes and leave a clean heap —
+  26 of 26 do. Still out: C function-pointer callbacks.
+
 - **The self-hosted compiler stops leaking.** `rillc` now emits reference
   counting: boxes carry a count with the static-constant marker the runtime
   already understands, every variable use retains, bindings release at

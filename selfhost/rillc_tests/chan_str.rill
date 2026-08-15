@@ -1,0 +1,13 @@
+fn shout(inbox, outbox) =
+  s = recv(inbox)
+  send(outbox, s + "!")
+  shout(inbox, outbox)
+
+fn main() =
+  inbox = channel(2)
+  outbox = channel(2)
+  spawn shout(inbox, outbox)
+  send(inbox, "merhaba")
+  println(recv(outbox))
+  send(inbox, "rill")
+  println(recv(outbox))

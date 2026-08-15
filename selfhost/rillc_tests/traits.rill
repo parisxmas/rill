@@ -1,0 +1,21 @@
+type Money
+  M(Int, Int)
+
+impl Show(Money)
+  fn show(m) = match m
+    M(lira, kurus) -> int_to_str(lira) + "." + int_to_str(kurus) + " TL"
+
+impl Ord(Money)
+  fn compare(a, b) = match a
+    M(al, ak) -> cmp2(b, al, ak)
+
+fn cmp2(b, al, ak) = match b
+  M(bl, bk) -> if al != bl then al - bl else ak - bk
+
+fn main() =
+  a = M(12, 50)
+  b = M(12, 5)
+  println(show(a))
+  println(if a > b then "a" else "b")
+  println(compare(a, b))
+  println(show(M(0, 99)))

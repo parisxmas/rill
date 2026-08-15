@@ -1,0 +1,20 @@
+fn router(a, b, out) =
+  select
+    x = recv(a) ->
+      send(out, "a:" + int_to_str(x))
+      router(a, b, out)
+    y = recv(b) ->
+      send(out, "b:" + int_to_str(y))
+      router(a, b, out)
+
+fn main() =
+  a = channel(1)
+  b = channel(1)
+  out = channel(4)
+  spawn router(a, b, out)
+  send(a, 1)
+  println(recv(out))
+  send(b, 2)
+  println(recv(out))
+  send(a, 3)
+  println(recv(out))

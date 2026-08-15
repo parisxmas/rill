@@ -1,0 +1,22 @@
+fn fill(b: Buf(I64), i, n) =
+  if i == n then 0
+  else
+    buf_set(b, i, i * i)
+    fill(b, i + 1, n)
+
+fn total(b: Buf(I64), i, n, acc) = if i == n then acc else total(b, i + 1, n, acc + buf_get(b, i))
+
+fn main() =
+  b = buf_int(10)
+  r = fill(b, 0, 10)
+  println(total(b, 0, 10, 0))
+  println(buf_len(b))
+  f = buf_f32(4)
+  buf_set(f, 0, 1.5)
+  buf_set(f, 1, 2.25)
+  println(buf_get(f, 0) + buf_get(f, 1))
+  s = buf_u8(3)
+  buf_set(s, 0, 200)
+  buf_set(s, 1, 300)
+  println(buf_get(s, 0) + buf_get(s, 1))
+  println(r)

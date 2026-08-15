@@ -93,5 +93,14 @@ frees by tail call — a million-long list unwinds in constant stack. The
 harness runs every test and the self-compilation itself under
 `RILL_DEBUG_ALLOC` and requires `live allocations: 0` at exit.
 
-Not yet: channels, `spawn`, `select`, traits, `==` on data types, Buf.
+The language is covered: traits dispatch from the receiver's concrete
+type to the impl's mangled function; `==` on data types goes through a
+generated structural equality whose last field compares by tail call;
+`show` uses the user's impl when one exists and a generated structural
+form when none does; `Buf` maps to the runtime's counted buffers; and
+channels, `spawn` and `select` speak the strand runtime's ABI directly —
+one 8-byte word per message, an environment box per strand, the scheduler
+entry point flipped on when any of it appears. A fourth proof tier runs
+every runnable example under both compilers and requires identical output
+and a clean heap. What sits out: C function-pointer callbacks.
 The runtime stays Rust, as runtimes do.

@@ -24,9 +24,16 @@ for f in "$root"/selfhost/rillc_tests/*.rill; do
   "$rill" build "$f" -o "$work/$n.rust" >/dev/null 2>&1 || { bad=$((bad+1)); echo "RUST BUILD FAILS: $n"; continue; }
   a=$("$work/$n.self" 2>&1); ae=$?
   b=$("$work/$n.rust" 2>&1); be=$?
-  lk=$(RILL_DEBUG_ALLOC=1 "$work/$n.self" 2>&1 >/dev/null | grep "live allocations" | grep -v ": 0" || true)
-  if [ -n "$lk" ]; then
-    bad=$((bad+1)); echo "LEAKS: $n ($lk)"; continue
+  la=$(RILL_DEBUG_ALLOC=1 "$work/$n.self" 2>&1 >/dev/null | grep "live allocations" || true)
+  lb=$(RILL_DEBUG_ALLOC=1 "$work/$n.rust" 2>&1 >/dev/null | grep "live allocations" || true)
+  # Clean exit must be leak-free; a strand still running at exit legitimately
+  # holds its stack, so there both sides must simply agree on that fact.
+  if [ -z "$la" ]; then
+    : # the program left through exit(); no report to hold it to
+  elif echo "$la" | grep -q "still running"; then
+    echo "$lb" | grep -q "still running" || { bad=$((bad+1)); echo "LEAKS: $n (self abandons strands, rust does not)"; continue; }
+  elif ! echo "$la" | grep -q ": 0"; then
+    bad=$((bad+1)); echo "LEAKS: $n ($la)"; continue
   fi
   if [ "$a" = "$b" ] && [ "$ae" = "$be" ]; then
     ok=$((ok+1))
@@ -64,4 +71,31 @@ for f in $(find "$root/examples" "$root/benchmarks" "$root/selfhost" "$root/book
 done
 echo "formatter built by self-built rillc: byte-identical: $fok   diverging: $fbad"
 bad=$((bad+fbad))
+
+# Every runnable example, both compilers, output- and leak-diffed.
+# `callbacks` needs C function-pointer callbacks (not yet emitted) and
+# `echo_server` blocks forever; both sit out.
+eok=0; ebad=0
+for f in "$root"/examples/*.rill; do
+  n=$(basename "$f" .rill)
+  case "$n" in callbacks|echo_server) continue;; esac
+  "$rill" build "$f" -o "$work/e.$n.rust" >/dev/null 2>&1 || continue
+  "$root/selfhost/rillc" "$f" "$prelude" > "$work/e.$n.ll" 2>/dev/null \
+    && cc -O2 -Wno-override-module "$work/e.$n.ll" "$runtime" -o "$work/e.$n" 2>/dev/null \
+    || { ebad=$((ebad+1)); echo "EXAMPLE FAILS TO BUILD: $n"; continue; }
+  a=$(timeout 30 "$work/e.$n" 2>&1); ae=$?
+  b=$(timeout 30 "$work/e.$n.rust" 2>&1); be=$?
+  la=$(RILL_DEBUG_ALLOC=1 timeout 30 "$work/e.$n" 2>&1 >/dev/null | grep "live allocations" || true)
+  if [ "$a" = "$b" ] && [ "$ae" = "$be" ]; then
+    if [ -n "$la" ] && ! echo "$la" | grep -qE ": 0|still running"; then
+      ebad=$((ebad+1)); echo "EXAMPLE LEAKS: $n ($la)"
+    else
+      eok=$((eok+1))
+    fi
+  else
+    ebad=$((ebad+1)); echo "EXAMPLE DIVERGES: $n"
+  fi
+done
+echo "examples, both compilers: $eok matching and leak-free, $ebad failing"
+bad=$((bad+ebad))
 [ $bad -eq 0 ]

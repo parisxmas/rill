@@ -1,0 +1,7 @@
+fn build(i, acc) = if i == 0 then acc else build(i - 1, Cons(i, acc))
+
+fn main() =
+  a = build(100000, Nil)
+  b = build(100000, Nil)
+  println(a == b)
+  println(a == Cons(0, b))

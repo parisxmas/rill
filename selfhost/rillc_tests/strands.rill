@@ -1,0 +1,21 @@
+fn worker(jobs, results) =
+  n = recv(jobs)
+  if n < 0 then 0
+  else
+    send(results, n * n)
+    worker(jobs, results)
+
+fn feed(jobs, i, n) =
+  if i > n then send(jobs, -1)
+  else
+    send(jobs, i)
+    feed(jobs, i + 1, n)
+
+fn drain(results, i, n, acc) = if i > n then acc else drain(results, i + 1, n, acc + recv(results))
+
+fn main() =
+  jobs = channel(8)
+  results = channel(8)
+  spawn worker(jobs, results)
+  spawn feed(jobs, 1, 20)
+  println(drain(results, 1, 20, 0))

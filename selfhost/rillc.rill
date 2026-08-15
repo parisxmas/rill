@@ -75,9 +75,9 @@ fn tystr(t) = match t
   YAdt(_, _) -> "ptr"
   YFn(_, _) -> "ptr"
   YVar(_) -> "i64"
+  YBuf(_) -> "ptr"
   YGen(_) -> rcdie("internal: generic type reached the code generator")
-  YChan(_) -> rcdie("channels are not supported yet")
-  YBuf(_) -> rcdie("buffers are not supported yet")
+  YChan(_) -> "ptr"
 
 # The type a value has at rest, in a box slot or merge slot.
 fn slot(t) = match t
@@ -86,6 +86,8 @@ fn slot(t) = match t
   YPtr -> "ptr"
   YAdt(_, _) -> "ptr"
   YFn(_, _) -> "ptr"
+  YBuf(_) -> "ptr"
+  YChan(_) -> "ptr"
   _ -> "i64"
 
 fn mang(t) = match t
@@ -100,7 +102,7 @@ fn mang(t) = match t
   YAdt(a, args) -> "A" + int_to_str(a) + "<" + mang_list(args) + ">"
   YFn(ps, r) -> "F<" + mang_list(ps) + ";" + mang(r) + ">"
   YChan(e) -> "C<" + mang(e) + ">"
-  YBuf(_) -> "B"
+  YBuf(w) -> "B" + ct_name(w)
 
 fn mang_list(l) = ml_loop(l, "")
 
@@ -172,6 +174,8 @@ type CG
 type WI
   WI(Str, Int, List(Ty2))
   WR(Int, List(Ty2))
+  WE(Int, List(Ty2))
+  WS(Int, List(Ty2))
 
 type RV
   RV(CG, Str, Ty2)
@@ -251,6 +255,8 @@ fn boxed(t) = match t
   YStr -> true
   YAdt(_, _) -> true
   YFn(_, _) -> true
+  YBuf(_) -> true
+  YChan(_) -> true
   _ -> false
 
 fn retain(cg, v, t) =
@@ -272,7 +278,30 @@ fn release(cg, v, t) = match t
   YStr -> cg_line(cg, "call void @rill_str_release(ptr " + v + ")")
   YFn(_, _) -> cg_line(cg, "call void @\"rc.clorel\"(ptr " + v + ")")
   YAdt(a, targs) -> cg_line(cg_want_rel(cg, a, targs), "call void @\"" + rel_sym(a, targs) + "\"(ptr " + v + ")")
+  YBuf(w) -> cg_line(cg, "call void @rill_buf_release(ptr " + v + ", i64 " + int_to_str(ct_size(w)) + ")")
+  YChan(_) -> cg_line(cg, "call void @rill_chan_release(ptr " + v + ")")
   _ -> cg
+
+fn ct_size(w) = match w
+  CW(nm) -> ctw_size(nm)
+  CFn(_, _) -> 8
+
+fn ctw_size(nm) =
+  if str_cmp(nm, "I8") == 0 || str_cmp(nm, "U8") == 0 then 1 else if str_cmp(nm, "I16") == 0 || str_cmp(nm, "U16") == 0 then 2 else if str_cmp(nm, "I32") == 0 || str_cmp(nm, "U32") == 0 || str_cmp(nm, "F32") == 0 then 4 else 8
+
+fn eq_sym(a, targs) = "eq$" + mang(YAdt(a, targs))
+
+fn shw_sym(a, targs) = "shw$" + mang(YAdt(a, targs))
+
+fn cg_want_shw(cg, a, targs) = match cg
+  CG(nid, lbl, code, gl, gid, aux, pend, seen) ->
+    sym = shw_sym(a, targs)
+    if shas(seen, sym) then CG(nid, lbl, code, gl, gid, aux, pend, seen) else CG(nid, lbl, code, gl, gid, aux, Cons(WS(a, targs), pend), sput(seen, sym, true))
+
+fn cg_want_eq(cg, a, targs) = match cg
+  CG(nid, lbl, code, gl, gid, aux, pend, seen) ->
+    sym = eq_sym(a, targs)
+    if shas(seen, sym) then CG(nid, lbl, code, gl, gid, aux, pend, seen) else CG(nid, lbl, code, gl, gid, aux, Cons(WE(a, targs), pend), sput(seen, sym, true))
 
 fn rel_all(cg, es) = fold(es, cg, \c, e -> rel_vt(c, e))
 
@@ -392,8 +421,8 @@ fn emit(cx, st, env, e, cg) = match e
   EBlock(ss) -> emit_block(cx, st, env, ss, cg)
   EMatch(s, arms, _) -> emit_match(cx, st, env, s, arms, cg)
   ELambda(_, _, _) -> rcdie("a lambda here needs a call to give it a type")
-  ESpawn(_, _) -> rcdie("`spawn` is not supported yet")
-  ESelect(_, _, _) -> rcdie("`select` is not supported yet")
+  ESpawn(b, _) -> emit_spawn(cx, st, env, b, cg)
+  ESelect(arms, d, _) -> emit_select(cx, st, env, arms, d, cg, false, YUnit, Nil)
 
 fn emit_strlit(ts) = match ts
   TS2(nm, cg) -> RV(cg, nm, YStr)
@@ -423,19 +452,40 @@ fn emit_neg2(ts, v, t) = match ts
 
 fn emit_bin(cx, st, env, op, l, r, cg) =
   match emit(cx, st, env, l, cg)
-    RV(cg1, lv, lt) -> emit_bin2(emit(cx, st, env, r, cg1), op, lv, lt)
+    RV(cg1, lv, lt) -> emit_bin2(emit(cx, st, env, r, cg1), cx, st, op, lv, lt)
 
-fn emit_bin2(ev, op, lv, lt) = match ev
+fn emit_bin2(ev, cx, st, op, lv, lt) = match ev
   RV(cg, rv, rt) ->
     t = if is_uk(lt) then rt else lt
-    emit_bin3(coerce(cg, lv, lt, t), op, rv, rt, t)
+    emit_bin3(coerce(cg, lv, lt, t), cx, st, op, rv, rt, t)
 
-fn emit_bin3(ts, op, rv, rt, t) = match ts
-  TS2(lv, cg) -> emit_bin4(coerce(cg, rv, rt, t), op, lv, t)
+fn emit_bin3(ts, cx, st, op, rv, rt, t) = match ts
+  TS2(lv, cg) -> emit_bin4(coerce(cg, rv, rt, t), cx, st, op, lv, t)
 
-fn emit_bin4(ts, op, lv, t) = match ts
+fn emit_bin4(ts, cx, st, op, lv, t) = match ts
   TS2(rv, cg) ->
-    if is_adt_ty(t) then rcdie("`==` on data types is not supported yet") else if is_ystr(t) then emit_sbin(cg, op, lv, rv) else if is_yfloat(t) then emit_fbin(cg, op, lv, rv) else emit_ibin(cg, op, lv, rv, t)
+    if is_adt_ty(t) then emit_abin(cx, st, cg, op, lv, rv, t) else if is_ystr(t) then emit_sbin(cg, op, lv, rv) else if is_yfloat(t) then emit_fbin(cg, op, lv, rv) else emit_ibin(cg, op, lv, rv, t)
+
+# Data values: `==` is structural — the generated eq borrows, so the owned
+# operands are released after. Ordering goes through the `Ord` impl, an
+# ordinary call that consumes its arguments.
+fn emit_abin(cx, st, cg, op, lv, rv, t) = match t
+  YAdt(a, targs) ->
+    if op == 5 || op == 6 then adt_eq_rel(adt_eq_ir(cg_want_eq(cg, a, targs), op, lv, rv, a, targs), lv, rv, t) else adt_ord_ir(cx, st, cg, op, lv, rv, t)
+  _ -> rcdie("internal: emit_abin on a non-data type")
+
+fn adt_eq_rel(ev, lv, rv, t) = match ev
+  RV(cg, v, vt) -> RV(release(release(cg, lv, t), rv, t), v, vt)
+
+fn adt_eq_ir(cg, op, lv, rv, a, targs) =
+  match cg_tmp(cg)
+    TS2(r, cg1) ->
+      cg2 = cg_line(cg1, r + " = call i1 @\"" + eq_sym(a, targs) + "\"(ptr " + lv + ", ptr " + rv + ")")
+      if op == 5 then RV(cg2, r, YBool) else str_eq_ir3(cg_tmp(cg2), r)
+
+fn adt_ord_ir(cx, st, cg, op, lv, rv, t) =
+  match trait_call_vts(cx, st, cg, "compare", Cons(VT(lv, t), Cons(VT(rv, t), Nil)))
+    RV(cg1, c, _) -> str_ord_ir2(cg_tmp(cg1), c, op)
 
 fn is_adt_ty(t) = match t
   YAdt(_, _) -> true
@@ -498,6 +548,26 @@ fn rt1(cg, rty, sym, args, t) =
     TS2(r, cg2) -> RV(cg_line(cg2, r + " = call " + rty + " @" + sym + "(" + args + ")"), r, t)
 
 fn rt0(cg, sym, args) = RV(cg_line(cg, "call void @" + sym + "(" + args + ")"), "", YUnit)
+
+# A value as a channel word, and back.
+fn to_word(cg, v, t) =
+  s = slot(t)
+  if str_cmp(s, "i64") == 0 then to_slot(cg, v, t) else if str_cmp(s, "ptr") == 0 then word_cast(cg_tmp(cg), " = ptrtoint ptr " + v + " to i64") else word_cast(cg_tmp(cg), " = bitcast double " + v + " to i64")
+
+fn from_word(cg, v, t) =
+  s = slot(t)
+  if str_cmp(s, "i64") == 0 then from_slot(cg, v, t) else if str_cmp(s, "ptr") == 0 then word_cast(cg_tmp(cg), " = inttoptr i64 " + v + " to ptr") else word_cast(cg_tmp(cg), " = bitcast i64 " + v + " to double")
+
+fn word_cast(ts, tail2) = match ts
+  TS2(r, cg) -> TS2(r, cg_line(cg, r + tail2))
+
+fn chan_elem(t) = match t
+  YChan(e) -> e
+  _ -> uk()
+
+# Strand machinery in the program flips the entry point to the scheduler.
+fn cg_strands(cg) = match cg
+  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> CG(nid, lbl, code, gl, gid, aux, pend, sput(seen, "rt.strands", true))
 
 # ---- if and match, meeting in a slot ----------------------------------------
 #
@@ -668,7 +738,7 @@ fn pat_field3(pr, cx, st, srest, frest, k, v, fail) = match pr
 fn emit_block(cx, st, env, ss, cg) = emit_blk(cx, st, env, ss, cg, Nil)
 
 fn emit_blk(cx, st, env, ss, cg, sc) = match ss
-  Cons(SBind(n, v, _), rest) -> emit_blk_bind(emit(cx, st, env, v, cg), cx, st, env, n, rest, sc)
+  Cons(SBind(n, v, _), rest) -> emit_blk_bind(emit_bound(cx, st, env, n, v, rest, cg), cx, st, env, n, rest, sc)
   Cons(SExpr(v), Nil) -> emit_blk_last(emit(cx, st, env, v, cg), sc)
   Cons(SExpr(v), rest) -> emit_blk_step(emit(cx, st, env, v, cg), cx, st, env, rest, sc)
   Nil -> RV(rel_all(cg, sc), "", YUnit)
@@ -681,6 +751,124 @@ fn emit_blk_last(ev, sc) = match ev
 
 fn emit_blk_step(ev, cx, st, env, rest, sc) = match ev
   RV(cg, v, t) -> emit_blk(cx, st, env, rest, release(cg, v, t), sc)
+
+# A binding's value, with one special case: `x = channel(n)` looks ahead
+# through the rest of the block for what `x` will carry — a call whose
+# signature types that argument as a channel, or a `send` whose payload's
+# type is apparent — so the element type most programs never write down is
+# recovered the way a reader recovers it.
+fn emit_bound(cx, st, env, n, v, rest, cg) = match v
+  ECall(cn, cargs, cln, cp) ->
+    if str_cmp(cn, "channel") == 0 then emit_call5(cx, st, env, cn, cargs, cg, YChan(hint_stmts(cx, st, env, rest, n))) else emit(cx, st, env, ECall(cn, cargs, cln, cp), cg)
+  _ -> emit(cx, st, env, v, cg)
+
+fn hint_stmts(cx, st, env, ss, n) = match ss
+  Nil -> uk()
+  Cons(SBind(_, v, _), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
+  Cons(SExpr(v), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
+
+fn hint_or(h, cx, st, env, rest, n) = if is_uk(h) then hint_stmts(cx, st, env, rest, n) else h
+
+fn hint_expr(cx, st, env, e, n) = match e
+  ECall(f, args, _, _) -> hint_call(cx, st, env, f, args, n)
+  ESpawn(b, _) -> hint_expr(cx, st, env, b, n)
+  ESelect(sarms, d, _) -> hint_sarms(cx, st, env, sarms, d, n)
+  EIf(c, t, e2) -> hint_u(hint_expr(cx, st, env, c, n), cx, st, env, Cons(t, Cons(e2, Nil)), n)
+  EBlock(ss) -> hint_stmts(cx, st, env, ss, n)
+  EMatch(sc, arms, _) -> hint_u(hint_expr(cx, st, env, sc, n), cx, st, env, map(arms, \a -> h_arm_body(a)), n)
+  _ -> uk()
+
+fn h_arm_body(a) = match a
+  Arm(_, b, _) -> b
+
+fn hint_sarms(cx, st, env, sarms, d, n) = match sarms
+  Nil -> hint_sdef(cx, st, env, d, n)
+  Cons(SArm(op, b, _), rest) -> hint_sarm(cx, st, env, op, b, rest, d, n)
+
+fn hint_sarm(cx, st, env, op, b, rest, d, n) =
+  h = hint_sop2(cx, st, env, op, n)
+  if is_uk(h) then hint_sarm2(hint_expr(cx, st, env, b, n), cx, st, env, rest, d, n) else h
+
+fn hint_sarm2(h, cx, st, env, rest, d, n) =
+  if is_uk(h) then hint_sarms(cx, st, env, rest, d, n) else h
+
+fn hint_sop2(cx, st, env, op, n) = match op
+  SSend(EVar(cn, _), v) -> if str_cmp(cn, n) == 0 then shallow_ty(cx, st, env, v) else uk()
+  _ -> uk()
+
+fn hint_sdef(cx, st, env, d, n) = match d
+  Some(b) -> hint_expr(cx, st, env, b, n)
+  None -> uk()
+
+fn hint_u(h, cx, st, env, es, n) = match es
+  Nil -> h
+  Cons(e, rest) -> if is_uk(h) then hint_u(hint_expr(cx, st, env, e, n), cx, st, env, rest, n) else h
+
+fn hint_call(cx, st, env, f, args, n) =
+  if str_cmp(f, "send") == 0 then hint_send(cx, st, env, args, n) else hint_call2(sget(cx_fnidx(cx), f), cx, st, env, args, n)
+
+fn hint_send(cx, st, env, args, n) = match args
+  Cons(EVar(cn, _), Cons(v, Nil)) -> if str_cmp(cn, n) == 0 then shallow_ty(cx, st, env, v) else hint_expr(cx, st, env, v, n)
+  _ -> uk()
+
+fn hint_call2(o, cx, st, env, args, n) = match o
+  Some(idx) -> hint_params(sig_parts(st, idx), cx, st, env, args, n)
+  None -> hint_args(cx, st, env, args, n)
+
+fn hint_args(cx, st, env, args, n) = match args
+  Nil -> uk()
+  Cons(a, rest) -> hint_u(hint_expr(cx, st, env, a, n), cx, st, env, rest, n)
+
+fn hint_params(sig, cx, st, env, args, n) = match sig
+  SigG(sps, _, _) -> hint_zip(cx, st, env, args, sps, n)
+  SigP(_, _) -> uk()
+
+fn hint_zip(cx, st, env, args, sps, n) = match args
+  Nil -> uk()
+  Cons(a, arest) -> hint_zip2(cx, st, env, a, arest, sps, n)
+
+fn hint_zip2(cx, st, env, a, arest, sps, n) = match sps
+  Cons(sp, srest) -> hint_zip3(hint_one(cx, st, env, a, sp, n), cx, st, env, arest, srest, n)
+  Nil -> uk()
+
+fn hint_zip3(h, cx, st, env, arest, srest, n) =
+  if is_uk(h) then hint_zip(cx, st, env, arest, srest, n) else h
+
+fn hint_one(cx, st, env, a, sp, n) = match a
+  EVar(an, _) -> if str_cmp(an, n) == 0 then hint_elem(sp) else uk()
+  _ -> hint_expr(cx, st, env, a, n)
+
+fn hint_elem(sp) = match sp
+  YChan(e) -> if is_uk(e) then uk() else hint_conc(e)
+  _ -> uk()
+
+fn hint_conc(e) = match e
+  YGen(_) -> uk()
+  _ -> e
+
+# A shallow, emission-free type guess: enough for a `send` payload.
+fn shallow_ty(cx, st, env, e) = match e
+  EInt(_) -> YInt
+  EFloat(_) -> YFloat
+  EStr(_) -> YStr
+  EBool(_) -> YBool
+  EVar(vn, _) -> shallow_var(sget(env, vn))
+  ECall(f, _, _, _) -> shallow_call(sget(cx_fnidx(cx), f), st)
+  EBin(op, l, _, _) -> if op >= 5 then YBool else shallow_ty(cx, st, env, l)
+  ENeg(x) -> shallow_ty(cx, st, env, x)
+  _ -> uk()
+
+fn shallow_var(o) = match o
+  Some(VT(_, t)) -> t
+  None -> uk()
+
+fn shallow_call(o, st) = match o
+  Some(idx) -> shallow_sig(sig_parts(st, idx))
+  None -> uk()
+
+fn shallow_sig(sig) = match sig
+  SigG(_, r, ngen) -> if ngen > 0 then uk() else r
+  SigP(_, _) -> uk()
 
 # ---- calls ------------------------------------------------------------------
 #
@@ -723,7 +911,7 @@ fn emit_arg_call(o, cx, st, env, n, args, want, cg, orig) = match o
 
 fn emit_arg_call2(o, cx, st, env, n, args, want, cg, orig) = match o
   Some(idx) -> emit_user_call_w(cx, st, env, n, idx, args, cg, false, want, Nil)
-  None -> emit(cx, st, env, orig, cg)
+  None -> if str_cmp(n, "channel") == 0 || str_cmp(n, "recv") == 0 then emit_call5(cx, st, env, n, args, cg, want) else emit(cx, st, env, orig, cg)
 
 fn emit_arg_var(o, cx, st, n, want, cg) = match o
   Some(VT(v, t)) -> RV(retain(cg, v, t), v, t)
@@ -754,19 +942,371 @@ fn emit_call3(o, cx, st, env, n, args, cg) = match o
 
 fn emit_call4(o, cx, st, env, n, args, cg) = match o
   Some(cr) -> emit_trait_call(cx, st, env, n, args, cg)
+  None -> emit_call5(cx, st, env, n, args, cg, uk())
+
+fn emit_call5(cx, st, env, n, args, cg, want) =
+  if str_cmp(n, "channel") == 0 then emit_channel(cx, st, env, args, cg, want) else if str_cmp(n, "send") == 0 then emit_send(cx, st, env, args, cg) else if str_cmp(n, "recv") == 0 then emit_recv(cx, st, env, args, cg, want) else emit_call6(sget(cx_externs(cx), n), cx, st, env, n, args, cg)
+
+fn emit_call6(o, cx, st, env, n, args, cg) = match o
+  Some(ES(cps, cret)) -> emit_extern(cx, st, env, n, args, cg, cps, cret)
   None -> emit_builtin(cx, st, env, n, args, cg)
 
-# `show` on a scalar has a direct spelling; anything else is a trait.
+# ---- foreign calls ----------------------------------------------------------
+#
+# A declared C function: arguments narrow from their 8-byte registers to the
+# declared widths, the result widens back. The declaration itself joins the
+# globals once per symbol.
+
+fn ct_ll(w) = match w
+  CW(nm) -> ctw_ll(nm)
+  CFn(_, _) -> rcdie("callbacks are not supported yet")
+
+fn ctw_ll(nm) =
+  if str_cmp(nm, "I8") == 0 || str_cmp(nm, "U8") == 0 || str_cmp(nm, "Bool") == 0 then "i8" else if str_cmp(nm, "I16") == 0 || str_cmp(nm, "U16") == 0 then "i16" else if str_cmp(nm, "I32") == 0 || str_cmp(nm, "U32") == 0 then "i32" else if str_cmp(nm, "F32") == 0 then "float" else if str_cmp(nm, "F64") == 0 then "double" else if str_cmp(nm, "Ptr") == 0 then "ptr" else if str_cmp(nm, "Unit") == 0 then "void" else "i64"
+
+fn emit_extern(cx, st, env, n, args, cg, cps, cret) =
+  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
+    AV(cg1, vts, _) -> emit_extern2(cg_global_once(cg1, "declare " + ct_ll(cret) + " @" + n + "(" + ext_decl_sig(cps, "") + ")"), n, vts, cps, cret)
+
+fn cg_global_once(cg, def) = if cg_has_global(cg, def) then cg else cg_global(cg, def)
+
+fn ext_decl_sig(cps, acc) = match cps
+  Nil -> acc
+  Cons(w, rest) -> ext_decl_sig(rest, if str_cmp(acc, "") == 0 then ct_ll(w) else acc + ", " + ct_ll(w))
+
+fn emit_extern2(cg, n, vts, cps, cret) =
+  match ext_args(cg, vts, cps, "")
+    TS2(rendered, cg1) -> ext_call(cg1, n, rendered, cret)
+
+fn ext_args(cg, vts, cps, acc) = match vts
+  Nil -> TS2(acc, cg)
+  Cons(VT(v, t), vrest) -> ext_args2(cg, v, t, vrest, cps, acc)
+
+fn ext_args2(cg, v, t, vrest, cps, acc) = match cps
+  Cons(w, wrest) -> ext_args3(ext_narrow(cg, v, t, w), w, vrest, wrest, acc)
+  Nil -> TS2(acc, cg)
+
+fn ext_args3(ts, w, vrest, wrest, acc) = match ts
+  TS2(cv, cg) -> ext_args(cg, vrest, wrest, if str_cmp(acc, "") == 0 then ct_ll(w) + " " + cv else acc + ", " + ct_ll(w) + " " + cv)
+
+fn ext_narrow(cg, v, t, w) =
+  ll = ct_ll(w)
+  if str_cmp(ll, "i64") == 0 || str_cmp(ll, "double") == 0 || str_cmp(ll, "ptr") == 0 then TS2(v, cg) else if str_cmp(ll, "float") == 0 then word_cast(cg_tmp(cg), " = fptrunc double " + v + " to float") else if is_ybool(t) then word_cast(cg_tmp(cg), " = zext i1 " + v + " to " + ll) else word_cast(cg_tmp(cg), " = trunc i64 " + v + " to " + ll)
+
+fn ext_call(cg, n, rendered, cret) =
+  ll = ct_ll(cret)
+  if str_cmp(ll, "void") == 0 then RV(cg_line(cg, "call void @" + n + "(" + rendered + ")"), "", YUnit) else ext_call2(cg_tmp(cg), n, rendered, cret, ll)
+
+fn ext_call2(ts, n, rendered, cret, ll) = match ts
+  TS2(r, cg) -> ext_widen(cg_line(cg, r + " = call " + ll + " @" + n + "(" + rendered + ")"), r, cret, ll)
+
+fn ext_widen(cg, r, cret, ll) =
+  if str_cmp(ll, "i64") == 0 || str_cmp(ll, "double") == 0 || str_cmp(ll, "ptr") == 0 then RV(cg, r, ct_rill(cret)) else if str_cmp(ll, "float") == 0 then ext_wide2(cg_tmp(cg), " = fpext float " + r + " to double", YFloat) else if ct_is_bool(cret) then ext_wide2(cg_tmp(cg), " = trunc i8 " + r + " to i1", YBool) else ext_wide2(cg_tmp(cg), " = " + ext_sz(cret) + " " + ll + " " + r + " to i64", YInt)
+
+fn ct_is_bool(w) = match w
+  CW(nm) -> str_cmp(nm, "Bool") == 0
+  CFn(_, _) -> false
+
+fn ext_sz(w) = match w
+  CW(nm) -> if str_cmp(str_sub(nm, 0, 1), "U") == 0 then "zext" else "sext"
+  CFn(_, _) -> "sext"
+
+fn ext_wide2(ts, tail2, t) = match ts
+  TS2(r, cg) -> RV(cg_line(cg, r + tail2), r, t)
+
+# ---- channels and strands ---------------------------------------------------
+#
+# A channel is a refcounted runtime object; what crosses it is one 8-byte
+# word, owned by whichever side holds it. `send` consumes its value and
+# borrows the channel; `recv` hands back an owned word. The element type
+# comes from the surrounding signature — the worker idiom — and a channel
+# used only through unknowns tolerates it as long as nothing needs to know.
+
+fn emit_channel(cx, st, env, args, cg, want) =
+  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
+    AV(cg1, vts, _) -> rt1(cg_strands(cg1), "ptr", "rill_chan_new", "i64 " + chan_cap(vts), YChan(chan_elem(want)))
+
+fn chan_cap(vts) = match vts
+  Cons(VT(v, _), _) -> v
+  Nil -> "0"
+
+fn vt2t(vts) = match vts
+  Cons(_, Cons(VT(_, t), _)) -> t
+  _ -> rcdie("internal: missing argument")
+
+fn emit_send(cx, st, env, args, cg) =
+  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
+    AV(cg1, vts, _) -> emit_send2(to_word(cg_strands(cg1), vt2(vts), vt2t(vts)), vt1(vts), vt1t(vts))
+
+fn emit_send2(ts, c, ct2) = match ts
+  TS2(w, cg) ->
+    cg1 = cg_line(cg, "call void @rill_chan_send(ptr " + c + ", i64 " + w + ", i64 0)")
+    RV(release(cg1, c, ct2), "", YUnit)
+
+fn emit_recv(cx, st, env, args, cg, want) =
+  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
+    AV(cg1, vts, _) -> emit_recv2(cg_tmp(cg_strands(cg1)), vt1(vts), vt1t(vts), if is_uk(want) then chan_elem(vt1t(vts)) else want)
+
+fn emit_recv2(ts, c, ct2, elem) = match ts
+  TS2(pair, cg) ->
+    cg1 = cg_line(cg, pair + " = call { i64, i64 } @rill_chan_recv(ptr " + c + ")")
+    emit_recv3(cg_tmp(cg1), pair, c, ct2, elem)
+
+fn emit_recv3(ts, pair, c, ct2, elem) = match ts
+  TS2(w, cg) ->
+    cg1 = cg_line(cg, w + " = extractvalue { i64, i64 } " + pair + ", 0")
+    emit_recv4(from_word(release(cg1, c, ct2), w, elem), elem)
+
+fn emit_recv4(ts, elem) = match ts
+  TS2(v, cg) -> RV(cg, v, elem)
+
+fn is_some_opt(o) = match o
+  Some(_) -> true
+  None -> false
+
+fn emit_select(cx, st, env, arms, d, cg, unused_tail, unused_rt, unused_stk) =
+  match sel_setup(cx, st, env, arms, is_some_opt(d), cg)
+    SSU(cg1, infos, sel, so, n) -> emit_select2(cg_id(cg1), cx, st, env, arms, d, infos, sel, so, n)
+
+fn emit_select2(is, cx, st, env, arms, d, infos, sel, so, n) = match is
+  IS(k, cg) -> emit_select3(cg_tmp(cg), k, cx, st, env, arms, d, infos, sel, so, n)
+
+fn emit_select3(ts, k, cx, st, env, arms, d, infos, sel, so, n) = match ts
+  TS2(ms, cg) ->
+    cg1 = cg_line(cg_line(cg, ms + " = alloca i64"), "br label %" + lb("s" + int_to_str(k) + "c0"))
+    sarm_loop(cx, st, env, arms, 0, k, infos, sel, so, ms, d, cg1, YUnit)
+
+fn sarm_loop(cx, st, env, arms, i, k, infos, sel, so, ms, d, cg, bty) = match arms
+  Nil -> sdefault(cx, st, env, d, k, infos, ms, cg, bty)
+  Cons(SArm(op, b, _), rest) -> sarm_one(cx, st, env, op, b, rest, i, k, infos, sel, so, ms, d, cg, bty)
+
+fn sarm_one(cx, st, env, op, b, rest, i, k, infos, sel, so, ms, d, cg, bty) =
+  chk = lb("s" + int_to_str(k) + "c" + int_to_str(i))
+  nxt = if is_nil_arms(rest) then lb("s" + int_to_str(k) + "d") else lb("s" + int_to_str(k) + "c" + int_to_str(i + 1))
+  lbl = lb("s" + int_to_str(k) + "a" + int_to_str(i))
+  cg0 = cg_label(cg, chk)
+  match cg_tmp(cg0)
+    TS2(c, cg1) ->
+      cg2 = cg_label(cg_line(cg_line(cg1, c + " = icmp eq i64 " + sel + ", " + int_to_str(i)), "br i1 " + c + ", label %" + lbl + ", label %" + nxt), lbl)
+      cg3 = sel_cleanup(cg2, infos, i, 0)
+      sarm_body(cx, st, env, op, b, rest, i, k, infos, sel, so, ms, d, cg3, bty)
+
+fn sarm_body(cx, st, env, op, b, rest, i, k, infos, sel, so, ms, d, cg, bty) =
+  match sarm_bind(cx, st, env, op, so, infos, i, cg)
+    PR2(cg1, env2, es) -> sarm_tail(branch_into_rel(emit(cx, st, env2, b, cg1), ms, lb("s" + int_to_str(k) + "end"), es), cx, st, env, rest, i, k, infos, sel, so, ms, d, bty)
+
+fn sarm_tail(b2, cx, st, env, rest, i, k, infos, sel, so, ms, d, bty) =
+  sarm_loop(cx, st, env, rest, i + 1, k, infos, sel, so, ms, d, br_cg(b2), pick_ty(bty, br_ty(b2)))
+
+# A receive arm's binding: the word the runtime wrote, at the channel's
+# element type, owned by the arm.
+fn sarm_bind(cx, st, env, op, so, infos, i, cg) = match op
+  SRecv(_, Some(nm)) -> sarm_bind2(cg_tmp(cg), env, nm, so, sel_elem(infos, i))
+  _ -> PR2(cg, env, Nil)
+
+fn sel_elem(infos, i) = match infos
+  Cons(SCI(_, VT(_, ct2), _), rest) -> if i == 0 then chan_elem(ct2) else sel_elem(rest, i - 1)
+  Nil -> uk()
+
+fn sarm_bind2(ts, env, nm, so, elem) = match ts
+  TS2(w, cg) ->
+    cg1 = cg_line(cg, w + " = load i64, ptr " + so)
+    sarm_bind3(from_word(cg1, w, elem), env, nm, elem)
+
+fn sarm_bind3(ts, env, nm, elem) = match ts
+  TS2(v, cg) -> PR2(cg, sput(env, nm, VT(v, elem)), Cons(VT(v, elem), Nil))
+
+fn sdefault(cx, st, env, d, k, infos, ms, cg, bty) = match d
+  Some(b) -> sdefault2(cx, st, env, b, k, infos, ms, cg, bty)
+  None -> smend(cg_line(cg_label(cg, lb("s" + int_to_str(k) + "d")), "unreachable"), k, ms, bty)
+
+fn sdefault2(cx, st, env, b, k, infos, ms, cg, bty) =
+  cg1 = sel_cleanup(cg_label(cg, lb("s" + int_to_str(k) + "d")), infos, 0 - 1, 0)
+  sdefault3(branch_into_rel(emit(cx, st, env, b, cg1), ms, lb("s" + int_to_str(k) + "end"), Nil), k, ms, bty)
+
+fn sdefault3(b2, k, ms, bty) = smend(br_cg(b2), k, ms, pick_ty(bty, br_ty(b2)))
+
+fn smend(cg, k, ms, bty) = merge_load(cg_label(cg, lb("s" + int_to_str(k) + "end")), bty, ms)
+
+# The tail-position select: each arm returns for itself.
+fn ret_select(cx, st, env, arms, d, cg, rt, stk) =
+  match sel_setup(cx, st, env, arms, is_some_opt(d), cg)
+    SSU(cg1, infos, sel, so, n) -> ret_select2(cg_id(cg1), cx, st, env, arms, d, infos, sel, so, rt, stk)
+
+fn ret_select2(is, cx, st, env, arms, d, infos, sel, so, rt, stk) = match is
+  IS(k, cg) -> rsarm_loop(cx, st, env, arms, 0, k, infos, sel, so, d, cg_line(cg, "br label %" + lb("s" + int_to_str(k) + "c0")), rt, stk)
+
+fn rsarm_loop(cx, st, env, arms, i, k, infos, sel, so, d, cg, rt, stk) = match arms
+  Nil -> rsdefault(cx, st, env, d, k, infos, cg, rt, stk)
+  Cons(SArm(op, b, _), rest) -> rsarm_one(cx, st, env, op, b, rest, i, k, infos, sel, so, d, cg, rt, stk)
+
+fn rsarm_one(cx, st, env, op, b, rest, i, k, infos, sel, so, d, cg, rt, stk) =
+  chk = lb("s" + int_to_str(k) + "c" + int_to_str(i))
+  nxt = if is_nil_arms(rest) then lb("s" + int_to_str(k) + "d") else lb("s" + int_to_str(k) + "c" + int_to_str(i + 1))
+  lbl = lb("s" + int_to_str(k) + "a" + int_to_str(i))
+  cg0 = cg_label(cg, chk)
+  match cg_tmp(cg0)
+    TS2(c, cg1) ->
+      cg2 = cg_label(cg_line(cg_line(cg1, c + " = icmp eq i64 " + sel + ", " + int_to_str(i)), "br i1 " + c + ", label %" + lbl + ", label %" + nxt), lbl)
+      cg3 = sel_cleanup(cg2, infos, i, 0)
+      rsarm_body(cx, st, env, op, b, rest, i, k, infos, sel, so, d, cg3, rt, stk)
+
+fn rsarm_body(cx, st, env, op, b, rest, i, k, infos, sel, so, d, cg, rt, stk) =
+  match sarm_bind(cx, st, env, op, so, infos, i, cg)
+    PR2(cg1, env2, es) -> rsarm_tail(emit_ret(cx, st, env2, b, cg1, rt, append(es, stk)), cx, st, env, rest, i, k, infos, sel, so, d, rt, stk)
+
+fn rsarm_tail(cg, cx, st, env, rest, i, k, infos, sel, so, d, rt, stk) =
+  rsarm_loop(cx, st, env, rest, i + 1, k, infos, sel, so, d, cg, rt, stk)
+
+fn rsdefault(cx, st, env, d, k, infos, cg, rt, stk) = match d
+  Some(b) -> emit_ret(cx, st, env, b, sel_cleanup(cg_label(cg, lb("s" + int_to_str(k) + "d")), infos, 0 - 1, 0), rt, stk)
+  None -> cg_line(cg_label(cg, lb("s" + int_to_str(k) + "d")), "unreachable")
+
+# `spawn body`: the body's free variables ride in a runtime environment box
+# `{ rc, dropfn, capture... }`; the runtime owns the box and releases it
+# when the strand ends.
+fn emit_spawn(cx, st, env, b, cg) =
+  match cg_gid(cg_strands(cg))
+    IS(k, cg1) -> emit_spawn2(cx, st, env, b, cg1, "spwn" + int_to_str(k), lam_caps(env, Nil, b))
+
+fn emit_spawn2(cx, st, env, b, cg, sname, caps) =
+  match lam_loads(caps, 2, cg_sub(cg), SLeaf)
+    PR2(sub1, senv, _) -> emit_spawn3(emit(cx, st, senv, b, sub1), cx, cg, sname, caps)
+
+fn emit_spawn3(ev, cx, cg, sname, caps) = match ev
+  RV(sub, bv, bt) ->
+    sub2 = cg_line(release(sub, bv, bt), "ret void")
+    def = "define void @\"" + sname + "\"(ptr %__env) {\n\"rc.entry\":\n" + render_code(sub2) + "}\n\n"
+    emit_spawn4(cg_aux(cg_merge(cg, sub2), def), sname, caps)
+
+fn emit_spawn4(cg, sname, caps) =
+  cg0 = if is_nil_caps(caps) then cg else spawn_dtor(cg, sname, caps)
+  match cg_tmp(cg0)
+    TS2(b, cg1) ->
+      cg2 = cg_line(cg1, b + " = call ptr @rill_alloc(i64 " + int_to_str(8 * (2 + len(caps))) + ")")
+      cg3 = cg_line(cg2, "store i64 1, ptr " + b)
+      dtor = if is_nil_caps(caps) then "@\"rc.sdtor0\"" else "@\"dtor." + sname + "\""
+      cg4 = store_slot(cg3, b, 1, dtor, YPtr)
+      cg5 = cap_stores(cg4, b, caps, 2)
+      RV(cg_line(cg5, "call void @rill_spawn(ptr @\"" + sname + "\", ptr " + b + ")"), "", YUnit)
+
+# `select`: build the runtime's case table, ask it which arm may run, then
+# run exactly that arm. Every channel was borrowed for the table and is
+# released in whichever arm runs; a send arm's value is consumed only if
+# that arm was chosen, so every other arm's value is released alongside.
+type SCI
+  SCI(Int, VT, Option(VT))
+
+type SSU
+  SSU(CG, List(SCI), Str, Str, Int)
+
+fn sel_setup(cx, st, env, arms, hasd, cg) =
+  match sel_collect(cx, st, env, arms, cg_strands(cg), Nil)
+    AVI(cg1, infos) -> sel_setup2(cg_tmp(cg1), infos, hasd)
+
+type AVI
+  AVI(CG, List(SCI))
+
+fn sel_collect(cx, st, env, arms, cg, acc) = match arms
+  Nil -> AVI(cg, reverse(acc))
+  Cons(SArm(op, _, _), rest) -> sel_collect2(cx, st, env, op, rest, cg, acc)
+
+fn sel_collect2(cx, st, env, op, rest, cg, acc) = match op
+  SRecv(ch, _) -> sel_collect3(emit(cx, st, env, ch, cg), cx, st, env, rest, acc)
+  SSend(ch, v) -> sel_collect4(emit(cx, st, env, ch, cg), cx, st, env, v, rest, acc)
+
+fn sel_collect3(ev, cx, st, env, rest, acc) = match ev
+  RV(cg, cv, ct2) -> sel_collect(cx, st, env, rest, cg, Cons(SCI(0, VT(cv, ct2), None), acc))
+
+fn sel_collect4(ev, cx, st, env, v, rest, acc) = match ev
+  RV(cg, cv, ct2) -> sel_collect5(emit(cx, st, env, v, cg), cx, st, env, rest, acc, VT(cv, ct2))
+
+fn sel_collect5(ev, cx, st, env, rest, acc, cvt) = match ev
+  RV(cg, vv, vt) -> sel_collect(cx, st, env, rest, cg, Cons(SCI(1, cvt, Some(VT(vv, vt))), acc))
+
+fn sel_setup2(ts, infos, hasd) = match ts
+  TS2(cs, cg) ->
+    n = len(infos)
+    cg1 = cg_line(cg, cs + " = alloca i64, i64 " + int_to_str(4 * n))
+    sel_setup3(cg_tmp(sel_fill(cg1, cs, infos, 0)), cs, infos, hasd, n)
+
+fn sel_fill(cg, cs, infos, i) = match infos
+  Nil -> cg
+  Cons(SCI(kind, VT(cv, _), sv), rest) ->
+    cg1 = sf_ptr(slot_ptr(cg, cs, 4 * i), "i64 " + int_to_str(kind))
+    cg2 = sf_ptr(slot_ptr(cg1, cs, 4 * i + 1), "ptr " + cv)
+    cg3 = sel_fill_a(cg2, cs, i, sv)
+    sel_fill(sf_ptr(slot_ptr(cg3, cs, 4 * i + 3), "i64 0"), cs, rest, i + 1)
+
+fn sf_ptr(ts, tyval) = match ts
+  TS2(p, cg) -> cg_line(cg, "store " + tyval + ", ptr " + p)
+
+fn sel_fill_a(cg, cs, i, sv) = match sv
+  Some(VT(vv, vt)) -> sel_fill_a2(to_word(cg, vv, vt), cs, i)
+  None -> sf_ptr(slot_ptr(cg, cs, 4 * i + 2), "i64 0")
+
+fn sel_fill_a2(ts, cs, i) = match ts
+  TS2(w, cg) -> sf_ptr(slot_ptr(cg, cs, 4 * i + 2), "i64 " + w)
+
+fn sel_setup3(ts, cs, infos, hasd, n) = match ts
+  TS2(so, cg) ->
+    cg1 = cg_line(cg, so + " = alloca i64, i64 2")
+    sel_setup4(cg_tmp(cg1), cs, so, infos, hasd, n)
+
+fn sel_setup4(ts, cs, so, infos, hasd, n) = match ts
+  TS2(sel, cg) ->
+    hd = if hasd then "1" else "0"
+    SSU(cg_line(cg, sel + " = call i64 @rill_select(ptr " + cs + ", i64 " + int_to_str(n) + ", i8 " + hd + ", ptr " + so + ")"), infos, sel, so, n)
+
+# Release every borrowed channel, and every send value except the chosen
+# arm's — the runtime took that one.
+fn sel_cleanup(cg, infos, chosen, i) = match infos
+  Nil -> cg
+  Cons(SCI(_, VT(cv, ct2), sv), rest) -> sel_cleanup2(release(cg, cv, ct2), sv, rest, chosen, i)
+
+fn sel_cleanup2(cg, sv, rest, chosen, i) = match sv
+  Some(VT(vv, vt)) -> sel_cleanup(if i == chosen then cg else release(cg, vv, vt), rest, chosen, i + 1)
+  None -> sel_cleanup(cg, rest, chosen, i + 1)
+
+fn spawn_dtor(cg, sname, caps) =
+  match lam_dtor_body(caps, 2, cg, "")
+    TS2(body, cg1) -> cg_aux(cg1, "define private void @\"dtor." + sname + "\"(ptr %p) {\n\"rc.entry\":\n" + body + "  call void @rill_free_sized(ptr %p, i64 " + int_to_str(8 * (2 + len(caps))) + ")\n  ret void\n}\n\n")
+
+# A trait method call: the receiver's concrete type names the impl, and the
+# impl's method is an ordinary (possibly generic) function.
 fn emit_trait_call(cx, st, env, n, args, cg) =
-  if str_cmp(n, "show") == 0 then emit_show(cx, st, env, args, cg) else rcdie("trait methods are not supported yet: `" + n + "`")
+  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
+    AV(cg1, vts, _) -> trait_call_vts(cx, st, cg1, n, vts)
 
-fn emit_show(cx, st, env, args, cg) = match args
-  Cons(a, Nil) -> emit_show2(emit(cx, st, env, a, cg))
-  _ -> rcdie("internal: `show` takes one argument")
+fn trait_call_vts(cx, st, cg, n, vts) =
+  match sget(cx_midx(cx), n)
+    Some(CR(tid, _)) -> trait_call2(cx, st, cg, trait_name(cx, tid) + "." + tgt_name(cx, vt1t(vts)) + "." + n, vts)
+    None -> rcdie("internal: `" + n + "` is not a trait method")
 
-fn emit_show2(ev) = match ev
-  RV(cg, v, t) ->
-    if is_yint(t) then rt1(cg, "ptr", "rill_int_to_str", "i64 " + v, YStr) else if is_yfloat(t) then rt1(cg, "ptr", "rill_float_to_str", "double " + v, YStr) else if is_ybool(t) then bool_to_str_ir(bool_arg(cg, v)) else if is_ystr(t) then RV(cg, v, YStr) else rcdie("`show` on this type is not supported yet")
+fn tgt_name(cx, t) = match t
+  YAdt(a, _) -> adt_name(cx, a)
+  YInt -> "Int"
+  YFloat -> "Float"
+  YBool -> "Bool"
+  YStr -> "Str"
+  _ -> rcdie("a trait method needs a concrete receiver type")
+
+fn trait_call2(cx, st, cg, mangled, vts) =
+  match sget(cx_fnidx(cx), mangled)
+    Some(idx) -> trait_call3(sig_parts(st, idx), cg, mangled, idx, vts)
+    None -> rcdie("no implementation provides `" + mangled + "`")
+
+fn trait_call3(sig, cg, mangled, idx, vts) = match sig
+  SigG(sps, sret, ngen) -> emit_user_call2(AV(cg, vts, uni_vts(sps, vts, ILeaf)), mangled, idx, sret, ngen, false, uk(), Nil)
+  SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
+
+fn uni_vts(sps, vts, m) = match sps
+  Nil -> m
+  Cons(sp, srest) -> uni_vts2(vts, sp, srest, m)
+
+fn uni_vts2(vts, sp, srest, m) = match vts
+  Cons(VT(_, t), vrest) -> uni_vts(srest, vrest, uni(sp, t, m))
+  Nil -> m
 
 # ---- user calls and instantiation -------------------------------------------
 
@@ -985,14 +1525,16 @@ fn lam_dtor_field(bx, t, rest, k, cg, acc) =
 
 fn lam_dtor_field2(t, rest, k, cg, acc) =
   ld = "  %f" + int_to_str(k) + " = getelementptr i8, ptr %p, i64 " + int_to_str(8 * k) + "\n  %v" + int_to_str(k) + " = load ptr, ptr %f" + int_to_str(k) + "\n"
-  lam_dtor_body(rest, k + 1, cg, acc + ld + "  call void @" + rel_target(t) + "(ptr %v" + int_to_str(k) + ")\n")
+  lam_dtor_body(rest, k + 1, cg, acc + ld + rel_call(t, "%v" + int_to_str(k), "call"))
 
-# The symbol that releases a value of a boxed type.
-fn rel_target(t) = match t
-  YStr -> "rill_str_release"
-  YFn(_, _) -> "\"rc.clorel\""
-  YAdt(a, targs) -> "\"" + rel_sym(a, targs) + "\""
-  _ -> rcdie("internal: rel_target on an unboxed type")
+# The call that releases a value of a boxed type held in register `r`.
+fn rel_call(t, r, kw) = match t
+  YChan(_) -> "  " + kw + " void @rill_chan_release(ptr " + r + ")\n"
+  YStr -> "  " + kw + " void @rill_str_release(ptr " + r + ")\n"
+  YFn(_, _) -> "  " + kw + " void @\"rc.clorel\"(ptr " + r + ")\n"
+  YAdt(a, targs) -> "  " + kw + " void @\"" + rel_sym(a, targs) + "\"(ptr " + r + ")\n"
+  YBuf(w) -> "  " + kw + " void @rill_buf_release(ptr " + r + ", i64 " + int_to_str(ct_size(w)) + ")\n"
+  _ -> rcdie("internal: rel_call on an unboxed type")
 
 fn cg_want_rel_ty(cg, t) = match t
   YAdt(a, targs) -> cg_want_rel(cg, a, targs)
@@ -1067,14 +1609,14 @@ fn emit_closure_call5(ts, fp, rt, args, kw) = match ts
 
 fn emit_builtin(cx, st, env, n, args, cg) =
   match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
-    AV(cg1, vts, m) -> builtin_done(builtin_ir(cg1, n, vts), vts)
+    AV(cg1, vts, m) -> builtin_done(builtin_ir(cx, st, cg1, n, vts), vts)
 
 fn builtin_done(ev, vts) = match ev
   RV(cg, v, t) -> RV(rel_borrowed(cg, vts, v), v, t)
 
 fn rel_borrowed(cg, vts, keep) = match vts
   Nil -> cg
-  Cons(VT(v, t), rest) -> rel_borrowed(if is_ystr(t) && str_cmp(v, keep) != 0 then release(cg, v, t) else cg, rest, keep)
+  Cons(VT(v, t), rest) -> rel_borrowed(if boxed(t) && !is_adt_ty(t) && str_cmp(v, keep) != 0 then release(cg, v, t) else cg, rest, keep)
 
 fn vt1(vts) = match vts
   Cons(VT(v, _), _) -> v
@@ -1102,20 +1644,142 @@ fn i8_result(ev) = match ev
 fn i8_result2(ts, v) = match ts
   TS2(r, cg) -> RV(cg_line(cg, r + " = trunc i8 " + v + " to i1"), r, YBool)
 
-fn builtin_ir(cg, n, vts) =
-  if str_cmp(n, "println") == 0 then print_ir(cg, "rill_println", vts) else if str_cmp(n, "print") == 0 then print_ir(cg, "rill_print", vts) else if str_cmp(n, "show") == 0 then show_ir(cg, vts) else builtin_ir2(cg, n, vts)
+fn builtin_ir(cx, st, cg, n, vts) =
+  if str_cmp(n, "println") == 0 then print_ir(cx, st, cg, "rill_println", vts) else if str_cmp(n, "print") == 0 then print_ir(cx, st, cg, "rill_print", vts) else if str_cmp(n, "show") == 0 then show_ir(cx, st, cg, vts) else buf_ir(cx, st, cg, n, vts)
 
-fn print_ir(cg, base, vts) =
+fn print_ir(cx, st, cg, base, vts) =
   t = vt1t(vts)
   v = vt1(vts)
-  if is_yint(t) then rt0(cg, base + "_int", "i64 " + v) else if is_yfloat(t) then rt0(cg, base + "_float", "double " + v) else if is_ystr(t) then rt0(cg, base + "_str", "ptr " + v) else if is_ybool(t) then print_bool_ir(bool_arg(cg, v), base) else rcdie("printing this type is not supported yet")
+  if is_yint(t) then rt0(cg, base + "_int", "i64 " + v) else if is_yfloat(t) then rt0(cg, base + "_float", "double " + v) else if is_ystr(t) then rt0(cg, base + "_str", "ptr " + v) else if is_ybool(t) then print_bool_ir(bool_arg(cg, v), base) else if is_adt_ty(t) then print_adt(show_adt(cx, st, cg, vts, t), base) else rcdie("printing this type is not supported yet")
+
+fn print_adt(ev, base) = match ev
+  RV(cg, sv, _) ->
+    cg1 = cg_line(cg, "call void @" + base + "_str(ptr " + sv + ")")
+    RV(release(cg1, sv, YStr), "", YUnit)
 
 fn print_bool_ir(ts, base) = match ts
   TS2(v8, cg) -> rt0(cg, base + "_bool", "i8 " + v8)
 
-fn show_ir(cg, vts) =
+fn show_ir(cx, st, cg, vts) =
   t = vt1t(vts)
-  if is_yint(t) then rt1(cg, "ptr", "rill_int_to_str", "i64 " + vt1(vts), YStr) else if is_yfloat(t) then rt1(cg, "ptr", "rill_float_to_str", "double " + vt1(vts), YStr) else if is_ybool(t) then bool_to_str_ir(bool_arg(cg, vt1(vts))) else if is_ystr(t) then RV(cg, vt1(vts), YStr) else rcdie("`show` on this type is not supported yet")
+  if is_yint(t) then rt1(cg, "ptr", "rill_int_to_str", "i64 " + vt1(vts), YStr) else if is_yfloat(t) then rt1(cg, "ptr", "rill_float_to_str", "double " + vt1(vts), YStr) else if is_ybool(t) then bool_to_str_ir(bool_arg(cg, vt1(vts))) else if is_ystr(t) then RV(cg, vt1(vts), YStr) else if is_adt_ty(t) then show_adt(cx, st, cg, vts, t) else rcdie("`show` on this type is not supported yet")
+
+fn show_adt(cx, st, cg, vts, t) =
+  match sget(cx_fnidx(cx), "Show." + tgt_name(cx, t) + ".show")
+    Some(_) -> trait_call2(cx, st, cg, "Show." + tgt_name(cx, t) + ".show", vts)
+    None -> show_struct(cg, vts, t)
+
+# The generated structural form borrows its argument, so the owned operand
+# is released after.
+fn show_struct(cg, vts, t) = match t
+  YAdt(a, targs) -> show_struct2(rt1(cg_want_shw(cg, a, targs), "ptr", "\"" + shw_sym(a, targs) + "\"", "ptr " + vt1(vts), YStr), vt1(vts), t)
+  _ -> rcdie("internal: show_struct on a non-data type")
+
+fn show_struct2(ev, p, t) = match ev
+  RV(cg, v, _) -> RV(release(cg, p, t), v, YStr)
+
+fn buf_ir(cx, st, cg, n, vts) =
+  match buf_width_of(n)
+    Some(w) -> buf_new_ir(cg, w, vts)
+    None -> buf_ir2(cg, n, vts)
+
+fn buf_new_ir(cg, w, vts) =
+  rt1(cg, "ptr", "rill_buf_new", "i64 " + vt1(vts) + ", i64 " + int_to_str(ct_size(w)), YBuf(w))
+
+fn buf_ir2(cg, n, vts) =
+  if str_cmp(n, "buf_len") == 0 then buf_len_ir(cg, vts) else if str_cmp(n, "buf_data") == 0 then buf_data_ir(cg, vts) else if str_cmp(n, "buf_get") == 0 then buf_get_ir(cg, vts) else if str_cmp(n, "buf_set") == 0 then buf_set_ir(cg, vts) else builtin_ir2(cg, n, vts)
+
+fn buf_width(t) = match t
+  YBuf(w) -> w
+  _ -> rcdie("internal: buffer operation on a non-buffer")
+
+fn buf_len_ir(cg, vts) =
+  match slot_ptr(cg, vt1(vts), 1)
+    TS2(p, cg1) -> rt_load(cg_tmp(cg1), "i64", p, YInt)
+
+fn rt_load(ts, ty, p, t) = match ts
+  TS2(r, cg) -> RV(cg_line(cg, r + " = load " + ty + ", ptr " + p), r, t)
+
+fn buf_data_ir(cg, vts) =
+  match slot_ptr(cg, vt1(vts), 2)
+    TS2(p, cg1) -> RV(cg1, p, YPtr)
+
+# The elementwise view of a width: its LLVM type, how a loaded element
+# widens to the 8-byte register, and how a register narrows to be stored.
+fn bw_llty(nm) =
+  if str_cmp(nm, "I8") == 0 || str_cmp(nm, "U8") == 0 then "i8" else if str_cmp(nm, "I16") == 0 || str_cmp(nm, "U16") == 0 then "i16" else if str_cmp(nm, "I32") == 0 || str_cmp(nm, "U32") == 0 then "i32" else if str_cmp(nm, "F32") == 0 then "float" else if str_cmp(nm, "F64") == 0 then "double" else if str_cmp(nm, "Ptr") == 0 then "ptr" else "i64"
+
+fn bw_rilly(nm) =
+  if str_cmp(nm, "F32") == 0 || str_cmp(nm, "F64") == 0 then YFloat else if str_cmp(nm, "Ptr") == 0 then YPtr else YInt
+
+fn bw_widen(nm) =
+  if str_cmp(nm, "I8") == 0 || str_cmp(nm, "I16") == 0 || str_cmp(nm, "I32") == 0 then "sext" else if str_cmp(nm, "U8") == 0 || str_cmp(nm, "U16") == 0 || str_cmp(nm, "U32") == 0 then "zext" else if str_cmp(nm, "F32") == 0 then "fpext" else ""
+
+fn bw_name(w) = match w
+  CW(nm) -> nm
+  CFn(_, _) -> "Ptr"
+
+# The bounds check and the element address, shared by get and set.
+fn buf_addr(cg, b, i, esz) =
+  match cg_id(cg)
+    IS(k, cg1) -> buf_addr2(slot_ptr(cg1, b, 1), k, b, i, esz)
+
+fn buf_addr2(ts, k, b, i, esz) = match ts
+  TS2(lp, cg) -> buf_addr3(cg_tmp(cg), lp, k, b, i, esz)
+
+fn buf_addr3(ts, lp, k, b, i, esz) = match ts
+  TS2(ln2, cg) -> buf_addr4(cg_tmp(cg_line(cg, ln2 + " = load i64, ptr " + lp)), ln2, k, b, i, esz)
+
+fn buf_addr4(ts, ln2, k, b, i, esz) = match ts
+  TS2(ok, cg) ->
+    oobl = lb("bo" + int_to_str(k))
+    okl = lb("bk" + int_to_str(k))
+    cg1 = cg_line(cg, ok + " = icmp ult i64 " + i + ", " + ln2)
+    cg2 = cg_label(cg_line(cg1, "br i1 " + ok + ", label %" + okl + ", label %" + oobl), oobl)
+    cg3 = cg_label(cg_line(cg_line(cg2, "call void @rill_buf_oob(i64 " + i + ", i64 " + ln2 + ")"), "unreachable"), okl)
+    buf_addr5(cg_tmp(cg3), b, i, esz)
+
+fn buf_addr5(ts, b, i, esz) = match ts
+  TS2(off, cg) -> buf_addr6(cg_tmp(cg_line(cg, off + " = mul i64 " + i + ", " + int_to_str(esz))), off, b)
+
+fn buf_addr6(ts, off, b) = match ts
+  TS2(d, cg) -> buf_addr7(cg_tmp(cg_line(cg, d + " = getelementptr i8, ptr " + b + ", i64 16")), d, off)
+
+fn buf_addr7(ts, d, off) = match ts
+  TS2(ad, cg) -> TS2(ad, cg_line(cg, ad + " = getelementptr i8, ptr " + d + ", i64 " + off))
+
+fn buf_get_ir(cg, vts) =
+  nm = bw_name(buf_width(vt1t(vts)))
+  match buf_addr(cg, vt1(vts), vt2(vts), ctw_size2(nm))
+    TS2(ad, cg1) -> buf_get2(cg_tmp(cg1), ad, nm)
+
+fn ctw_size2(nm) = ct_size(CW(nm))
+
+fn buf_get2(ts, ad, nm) = match ts
+  TS2(r, cg) ->
+    cg1 = cg_line(cg, r + " = load " + bw_llty(nm) + ", ptr " + ad)
+    wd = bw_widen(nm)
+    if str_cmp(wd, "") == 0 then RV(cg1, r, bw_rilly(nm)) else buf_get3(cg_tmp(cg1), r, nm, wd)
+
+fn buf_get3(ts, r0, nm, wd) = match ts
+  TS2(r, cg) ->
+    wide = if str_cmp(wd, "fpext") == 0 then "double" else "i64"
+    RV(cg_line(cg, r + " = " + wd + " " + bw_llty(nm) + " " + r0 + " to " + wide), r, bw_rilly(nm))
+
+fn buf_set_ir(cg, vts) =
+  nm = bw_name(buf_width(vt1t(vts)))
+  match buf_addr(cg, vt1(vts), vt2(vts), ctw_size2(nm))
+    TS2(ad, cg1) -> buf_set2(cg1, ad, nm, vt3(vts))
+
+fn buf_set2(cg, ad, nm, v) =
+  lt = bw_llty(nm)
+  if str_cmp(lt, "i64") == 0 || str_cmp(lt, "double") == 0 || str_cmp(lt, "ptr") == 0 then RV(cg_line(cg, "store " + lt + " " + v + ", ptr " + ad), "", YUnit) else buf_set3(cg_tmp(cg), ad, nm, v, lt)
+
+fn buf_set3(ts, ad, nm, v, lt) = match ts
+  TS2(r, cg) ->
+    op = if str_cmp(nm, "F32") == 0 then "fptrunc double " else "trunc i64 "
+    cg1 = cg_line(cg, r + " = " + op + v + " to " + lt)
+    RV(cg_line(cg1, "store " + lt + " " + r + ", ptr " + ad), "", YUnit)
 
 fn builtin_ir2(cg, n, vts) =
   if str_cmp(n, "int_to_str") == 0 then rt1(cg, "ptr", "rill_int_to_str", "i64 " + vt1(vts), YStr) else if str_cmp(n, "float_to_str") == 0 then rt1(cg, "ptr", "rill_float_to_str", "double " + vt1(vts), YStr) else if str_cmp(n, "bool_to_str") == 0 then bool_to_str_ir(bool_arg(cg, vt1(vts))) else if str_cmp(n, "str_len") == 0 then rt1(cg, "i64", "rill_str_len", "ptr " + vt1(vts), YInt) else if str_cmp(n, "str_get") == 0 then rt1(cg, "i64", "rill_str_get", "ptr " + vt1(vts) + ", i64 " + vt2(vts), YInt) else if str_cmp(n, "str_sub") == 0 then rt1(cg, "ptr", "rill_str_sub", "ptr " + vt1(vts) + ", i64 " + vt2(vts) + ", i64 " + vt3(vts), YStr) else if str_cmp(n, "str_find") == 0 then rt1(cg, "i64", "rill_str_find", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt) else if str_cmp(n, "str_cmp") == 0 then rt1(cg, "i64", "rill_str_cmp", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt) else builtin_ir3(cg, n, vts)
@@ -1135,7 +1799,7 @@ fn bit_ir(cg, op, vts) =
     TS2(r, cg2) -> RV(cg_line(cg2, r + " = " + op + " i64 " + vt1(vts) + ", " + vt2(vts)), r, YInt)
 
 fn builtin_ir4(cg, n, vts) =
-  if str_cmp(n, "exit") == 0 then rt0(cg, "rill_exit", "i64 " + vt1(vts)) else if str_cmp(n, "arg_count") == 0 then rt1(cg, "i64", "rill_arg_count", "", YInt) else if str_cmp(n, "arg") == 0 then rt1(cg, "ptr", "rill_arg", "i64 " + vt1(vts), YStr) else if str_cmp(n, "read_file_raw") == 0 then rt1(cg, "ptr", "rill_read_file", "ptr " + vt1(vts), YStr) else if str_cmp(n, "io_ok") == 0 then i8_result(rt1(cg, "i8", "rill_io_ok", "", YInt)) else if str_cmp(n, "write_file") == 0 then i8_result(rt1(cg, "i8", "rill_write_file", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt)) else if str_cmp(n, "read_line") == 0 then rt1(cg, "ptr", "rill_read_line", "", YStr) else builtin_ir5(cg, n, vts)
+  if str_cmp(n, "to_cstr") == 0 then rt1(cg, "ptr", "rill_to_cstr", "ptr " + vt1(vts), YPtr) else if str_cmp(n, "from_cstr") == 0 then rt1(cg, "ptr", "rill_from_cstr", "ptr " + vt1(vts), YStr) else if str_cmp(n, "exit") == 0 then rt0(cg, "rill_exit", "i64 " + vt1(vts)) else if str_cmp(n, "arg_count") == 0 then rt1(cg, "i64", "rill_arg_count", "", YInt) else if str_cmp(n, "arg") == 0 then rt1(cg, "ptr", "rill_arg", "i64 " + vt1(vts), YStr) else if str_cmp(n, "read_file_raw") == 0 then rt1(cg, "ptr", "rill_read_file", "ptr " + vt1(vts), YStr) else if str_cmp(n, "io_ok") == 0 then i8_result(rt1(cg, "i8", "rill_io_ok", "", YInt)) else if str_cmp(n, "write_file") == 0 then i8_result(rt1(cg, "i8", "rill_write_file", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt)) else if str_cmp(n, "read_line") == 0 then rt1(cg, "ptr", "rill_read_line", "", YStr) else builtin_ir5(cg, n, vts)
 
 fn builtin_ir5(cg, n, vts) =
   if str_cmp(n, "alloc_bytes") == 0 then rt1(cg, "ptr", "rill_alloc_bytes", "i64 " + vt1(vts), YPtr) else if str_cmp(n, "free_ptr") == 0 then rt0(cg, "rill_free_ptr", "ptr " + vt1(vts)) else if str_cmp(n, "null_ptr") == 0 then rt1(cg, "ptr", "rill_null_ptr", "", YPtr) else if str_cmp(n, "is_null") == 0 then i8_result(rt1(cg, "i8", "rill_is_null", "ptr " + vt1(vts), YInt)) else if str_cmp(n, "ptr_offset") == 0 then rt1(cg, "ptr", "rill_ptr_offset", "ptr " + vt1(vts) + ", i64 " + vt2(vts), YPtr) else builtin_ir6(cg, n, vts)
@@ -1149,6 +1813,7 @@ fn emit_ret(cx, st, env, e, cg, rt, stk) = match e
   EIf(c, t, e2) -> ret_if(cx, st, env, c, t, e2, cg, rt, stk)
   EBlock(ss) -> ret_block(cx, st, env, ss, cg, rt, stk)
   EMatch(s, arms, _) -> ret_match(cx, st, env, s, arms, cg, rt, stk)
+  ESelect(arms, d, _) -> ret_select(cx, st, env, arms, d, cg, rt, stk)
   ECall(n, args, ln, p) -> ret_call(cx, st, env, n, args, cg, rt, ECall(n, args, ln, p), stk)
   _ -> ret_plain(emit(cx, st, env, e, cg), rt, stk)
 
@@ -1171,7 +1836,7 @@ fn ret_if2(is, cx, st, env, cv, t, e2, rt, stk) = match is
     emit_ret(cx, st, env, e2, cg_label(cg2, els), rt, stk)
 
 fn ret_block(cx, st, env, ss, cg, rt, stk) = match ss
-  Cons(SBind(n, v, _), rest) -> ret_block_bind(emit(cx, st, env, v, cg), cx, st, env, n, rest, rt, stk)
+  Cons(SBind(n, v, _), rest) -> ret_block_bind(emit_bound(cx, st, env, n, v, rest, cg), cx, st, env, n, rest, rt, stk)
   Cons(SExpr(v), Nil) -> emit_ret(cx, st, env, v, cg, rt, stk)
   Cons(SExpr(v), rest) -> ret_block_step(emit(cx, st, env, v, cg), cx, st, env, rest, rt, stk)
   Nil -> cg_line(rel_all(cg, stk), "ret void")
@@ -1214,7 +1879,7 @@ fn ret_call(cx, st, env, n, args, cg, rt, orig, stk) =
 
 fn ret_call2(o, cx, st, env, n, args, cg, rt, orig, stk) = match o
   Some(idx) -> ret_value_call(emit_user_call_w(cx, st, env, n, idx, args, cg, true, rt, stk), rt)
-  None -> ret_plain(emit(cx, st, env, orig, cg), rt, stk)
+  None -> if str_cmp(n, "channel") == 0 || str_cmp(n, "recv") == 0 then ret_plain(emit_call5(cx, st, env, n, args, cg, rt), rt, stk) else ret_plain(emit(cx, st, env, orig, cg), rt, stk)
 
 fn ret_value_call(ev, rt) = match ev
   RV(cg, v, t) -> if is_yunit(t) || is_yunit(rt) then cg_line(cg, "ret void") else ret_coerced(coerce(cg, v, t, rt), rt)
@@ -1244,6 +1909,188 @@ type FR2
 fn emit_inst(cx, st, fns, wi, shared) = match wi
   WI(name, idx, targs) -> emit_inst2(cx, st, nth_fnd(fns, idx), name, idx, targs, shared)
   WR(a, targs) -> emit_rel(cx, a, targs, shared)
+  WE(a, targs) -> emit_eq(cx, a, targs, shared)
+  WS(a, targs) -> emit_shw(cx, st, a, targs, shared)
+
+# ---- structural show --------------------------------------------------------
+#
+# One function per monomorphized data type, generated only when no user
+# `Show` impl exists: `Ctor` for a bare constructor, `Ctor(f1, f2)` with
+# each field shown by its own type. Borrows its argument, returns an owned
+# string.
+
+fn emit_shw(cx, st, a, targs, shared) =
+  cs = adt_ctors(cx, a)
+  sub = cg_sub(shared)
+  sub1 = if len(cs) > 1 then shw_tag(sub) else sub
+  match shw_ctors(cx, st, cs, 0, targs, len(cs) > 1, sub1)
+    cgo -> FR2("define private ptr @\"" + shw_sym(a, targs) + "\"(ptr %p) {\n\"rc.entry\":\n" + render_code(cgo) + "}\n\n", cgo)
+
+fn shw_tag(cg) =
+  match slot_ptr(cg, "%p", 1)
+    TS2(tp, cg1) -> cg_line(cg1, "%tag = load i64, ptr " + tp)
+
+fn shw_ctors(cx, st, cs, ci, targs, multi, cg) = match cs
+  Nil -> cg
+  Cons(C2(cn, fields), rest) -> shw_ctor(cx, st, cn, map(fields, \f -> sgen(f, targs)), ci, is_nil_arms(rest), rest, targs, multi, cg)
+
+fn shw_ctor(cx, st, cn, ftys, ci, last, rest, targs, multi, cg) =
+  cg1 = if multi then shw_check(cg, ci, last) else cg
+  cg2 = shw_body(cx, st, cn, ftys, ci, last, cg1)
+  shw_ctors(cx, st, rest, ci + 1, targs, multi, cg2)
+
+fn shw_check(cg, ci, last) =
+  if last then cg_label(cg_line(cg, "br label %" + lb("h" + int_to_str(ci))), lb("h" + int_to_str(ci))) else shw_check2(cg_tmp(cg), ci)
+
+fn shw_check2(ts, ci) = match ts
+  TS2(c, cg) ->
+    hl = lb("h" + int_to_str(ci))
+    nl = lb("n" + int_to_str(ci))
+    cg_label(cg_line(cg_line(cg, c + " = icmp eq i64 %tag, " + int_to_str(ci)), "br i1 " + c + ", label %" + hl + ", label %" + nl), hl)
+
+fn shw_body(cx, st, cn, ftys, ci, last, cg) = match ftys
+  Nil -> shw_bare(cg_str(cg, cn), ci, last)
+  _ -> shw_fields_start(cg_str(cg, cn + "("), cx, st, ftys, ci, last)
+
+# A bare constructor's name is a static string; hand back a retained view so
+# the caller's release balances.
+fn shw_bare(ts, ci, last) = match ts
+  TS2(nm, cg) -> shw_close_ret(cg, nm, ci, last)
+
+fn shw_close_ret(cg, v, ci, last) =
+  cg1 = cg_line(cg, "ret ptr " + v)
+  if last then cg1 else cg_label(cg1, lb("n" + int_to_str(ci)))
+
+fn shw_fields_start(ts, cx, st, ftys, ci, last) = match ts
+  TS2(acc, cg) -> shw_fields(cx, st, ftys, 0, ci, last, acc, cg)
+
+fn shw_fields(cx, st, ftys, i, ci, last, acc, cg) = match ftys
+  Nil -> shw_finish(cg_str(cg, ")"), ci, last, acc)
+  Cons(ft, rest) -> shw_field(cx, st, ft, rest, i, ci, last, acc, cg)
+
+fn shw_finish(ts, ci, last, acc) = match ts
+  TS2(par, cg) -> shw_finish2(shw_concat(cg, acc, par), ci, last)
+
+fn shw_finish2(ts, ci, last) = match ts
+  TS2(r, cg) -> shw_close_ret(cg, r, ci, last)
+
+fn shw_field(cx, st, ft, rest, i, ci, last, acc, cg) =
+  match if i > 0 then shw_sep(cg_str(cg, ", "), acc) else TS2(acc, cg)
+    TS2(acc1, cg1) -> shw_field2(load_slot(cg1, "%p", i + 2, ft), cx, st, ft, rest, i, ci, last, acc1)
+
+fn shw_sep(ts, acc) = match ts
+  TS2(sep, cg) -> shw_concat(cg, acc, sep)
+
+fn shw_field2(ts, cx, st, ft, rest, i, ci, last, acc) = match ts
+  TS2(fv, cg) -> shw_field3(shw_one(cx, st, cg, fv, ft), cx, st, ft, rest, i, ci, last, acc)
+
+type SHF
+  SHF(CG, Str, Bool)
+
+# A field as a string, and whether that string is ours to release. A field
+# whose type has its own `Show` impl is shown its own way.
+fn shw_one(cx, st, cg, fv, ft) = match ft
+  YInt -> shw_owned(rt1(cg, "ptr", "rill_int_to_str", "i64 " + fv, YStr))
+  YFloat -> shw_owned(rt1(cg, "ptr", "rill_float_to_str", "double " + fv, YStr))
+  YBool -> shw_bool(bool_arg(cg, fv))
+  YStr -> SHF(cg, fv, false)
+  YAdt(a2, ta2) -> shw_one_adt(sget(cx_fnidx(cx), "Show." + adt_name(cx, a2) + ".show"), cx, st, cg, fv, a2, ta2)
+  _ -> shw_unknown(cg_str(cg, "?"))
+
+fn shw_one_adt(o, cx, st, cg, fv, a2, ta2) = match o
+  Some(_) -> shw_owned(trait_call2(cx, st, retain(cg, fv, YAdt(a2, ta2)), "Show." + adt_name(cx, a2) + ".show", Cons(VT(fv, YAdt(a2, ta2)), Nil)))
+  None -> shw_sub(cg_tmp(cg_want_shw(cg, a2, ta2)), a2, ta2, fv)
+
+fn shw_owned(ev) = match ev
+  RV(cg, v, _) -> SHF(cg, v, true)
+
+fn shw_bool(ts) = match ts
+  TS2(v8, cg) -> shw_owned(rt1(cg, "ptr", "rill_bool_to_str", "i8 " + v8, YStr))
+
+fn shw_sub(ts, a2, ta2, fv) = match ts
+  TS2(r, cg) -> SHF(cg_line(cg, r + " = call ptr @\"" + shw_sym(a2, ta2) + "\"(ptr " + fv + ")"), r, true)
+
+fn shw_unknown(ts) = match ts
+  TS2(q, cg) -> SHF(cg, q, false)
+
+fn shw_field3(shf, cx, st, ft, rest, i, ci, last, acc) = match shf
+  SHF(cg, fs, owned) -> shw_field4(shw_concat(cg, acc, fs), cx, st, fs, owned, rest, i, ci, last)
+
+fn shw_field4(ts, cx, st, fs, owned, rest, i, ci, last) = match ts
+  TS2(acc2, cg) -> shw_fields(cx, st, rest, i + 1, ci, last, acc2, if owned then release(cg, fs, YStr) else cg)
+
+# Concatenate and let go of the left side; the runtime borrows both.
+fn shw_concat(cg, acc, piece) =
+  match rt1(cg, "ptr", "rill_str_concat", "ptr " + acc + ", ptr " + piece, YStr)
+    RV(cg1, r, _) -> TS2(r, release(cg1, acc, YStr))
+
+# ---- structural equality ----------------------------------------------------
+#
+# One function per monomorphized data type. The same pointer is equal to
+# itself (which also settles every nullary constructor), differing tags are
+# unequal, and fields compare by their own types — the last data-typed
+# field by tail call, so equality over a long list runs in constant stack.
+
+fn emit_eq(cx, a, targs, shared) =
+  hc = heap_ctors(adt_ctors(cx, a), 0, targs, Nil)
+  multi = len(adt_ctors(cx, a)) > 1
+  head = "define private i1 @\"" + eq_sym(a, targs) + "\"(ptr %a, ptr %b) {\n\"rc.entry\":\n  %same = icmp eq ptr %a, %b\n  br i1 %same, label %\"rc.t\", label %\"rc.g\"\n\"rc.t\":\n  ret i1 true\n\"rc.f\":\n  ret i1 false\n\"rc.g\":\n" + eq_tag(multi) + eq_dispatch(hc)
+  match eq_blocks(hc, shared, "")
+    TS2(body, cg) -> FR2(head + body + "}\n\n", cg)
+
+fn eq_tag(multi) =
+  if multi then "  %tpa = getelementptr i8, ptr %a, i64 8\n  %ta = load i64, ptr %tpa\n  %tpb = getelementptr i8, ptr %b, i64 8\n  %tb = load i64, ptr %tpb\n  %te = icmp eq i64 %ta, %tb\n  br i1 %te, label %\"rc.sw\", label %\"rc.f\"\n\"rc.sw\":\n" else "  br label %\"rc.sw\"\n\"rc.sw\":\n"
+
+fn eq_dispatch(hc) = match hc
+  Nil -> "  ret i1 true\n"
+  Cons(RHC(ci, _), Nil) -> "  br label %\"rc.e" + int_to_str(ci) + "\"\n"
+  _ -> eq_dispatch2(hc, "")
+
+fn eq_dispatch2(hc, acc) = match hc
+  Cons(RHC(ci, _), Nil) -> acc + "  br label %\"rc.e" + int_to_str(ci) + "\"\n"
+  Cons(RHC(ci, _), rest) -> eq_dispatch2(rest, acc + "  %ise" + int_to_str(ci) + " = icmp eq i64 %ta, " + int_to_str(ci) + "\n  br i1 %ise" + int_to_str(ci) + ", label %\"rc.e" + int_to_str(ci) + "\", label %\"rc.w" + int_to_str(ci) + "\"\n\"rc.w" + int_to_str(ci) + "\":\n")
+  Nil -> acc
+
+fn eq_blocks(hc, cg, acc) = match hc
+  Nil -> TS2(acc, cg)
+  Cons(RHC(ci, ftys), rest) -> eq_block(ci, ftys, rest, cg, acc)
+
+fn eq_block(ci, ftys, rest, cg, acc) =
+  match eq_fields(ftys, 0, ci, cg, "")
+    TS2(body, cg1) -> eq_blocks(rest, cg1, acc + "\"rc.e" + int_to_str(ci) + "\":\n" + body)
+
+fn eq_load2(ci, i, t) =
+  nm = int_to_str(ci) + "_" + int_to_str(i)
+  off = int_to_str(8 * (i + 2))
+  "  %xa" + nm + " = getelementptr i8, ptr %a, i64 " + off + "\n  %va" + nm + " = load " + slot(t) + ", ptr %xa" + nm + "\n  %xb" + nm + " = getelementptr i8, ptr %b, i64 " + off + "\n  %vb" + nm + " = load " + slot(t) + ", ptr %xb" + nm + "\n"
+
+fn eq_fields(ftys, i, ci, cg, acc) = match ftys
+  Nil -> TS2(acc + "  ret i1 true\n", cg)
+  Cons(t, Nil) -> eq_last(t, i, ci, cg, acc)
+  Cons(t, rest) -> eq_fields(rest, i + 1, ci, eq_reg(cg, t), acc + eq_load2(ci, i, t) + eq_cmp(ci, i, t) + eq_cont(ci, i))
+
+fn eq_reg(cg, t) = match t
+  YAdt(a2, ta2) -> cg_want_eq(cg, a2, ta2)
+  _ -> cg
+
+fn eq_cmp(ci, i, t) =
+  nm = int_to_str(ci) + "_" + int_to_str(i)
+  match t
+    YFloat -> "  %c" + nm + " = fcmp oeq double %va" + nm + ", %vb" + nm + "\n"
+    YStr -> "  %s" + nm + " = call i8 @rill_str_eq(ptr %va" + nm + ", ptr %vb" + nm + ")\n  %c" + nm + " = trunc i8 %s" + nm + " to i1\n"
+    YAdt(a2, ta2) -> "  %c" + nm + " = call i1 @\"" + eq_sym(a2, ta2) + "\"(ptr %va" + nm + ", ptr %vb" + nm + ")\n"
+    YFn(_, _) -> "  %c" + nm + " = icmp eq ptr %va" + nm + ", %vb" + nm + "\n"
+    YBuf(_) -> "  %c" + nm + " = icmp eq ptr %va" + nm + ", %vb" + nm + "\n"
+    YPtr -> "  %c" + nm + " = icmp eq ptr %va" + nm + ", %vb" + nm + "\n"
+    _ -> "  %c" + nm + " = icmp eq i64 %va" + nm + ", %vb" + nm + "\n"
+
+fn eq_cont(ci, i) =
+  nm = int_to_str(ci) + "_" + int_to_str(i)
+  "  br i1 %c" + nm + ", label %\"rc.q" + nm + "\", label %\"rc.f\"\n\"rc.q" + nm + "\":\n"
+
+fn eq_last(t, i, ci, cg, acc) = match t
+  YAdt(a2, ta2) -> TS2(acc + eq_load2(ci, i, t) + "  %r" + int_to_str(ci) + " = tail call i1 @\"" + eq_sym(a2, ta2) + "\"(ptr %va" + int_to_str(ci) + "_" + int_to_str(i) + ", ptr %vb" + int_to_str(ci) + "_" + int_to_str(i) + ")\n  ret i1 %r" + int_to_str(ci) + "\n", cg_want_eq(cg, a2, ta2))
+  _ -> TS2(acc + eq_load2(ci, i, t) + eq_cmp(ci, i, t) + eq_cont(ci, i) + "  ret i1 true\n", eq_reg(cg, t))
 
 # ---- release functions ------------------------------------------------------
 #
@@ -1302,7 +2149,7 @@ type RPRL
 fn rel_lines(bf, ci, cg, loads, rels) = match bf
   Nil -> RPRL(loads, rels, "", cg)
   Cons(RBF(i, t), Nil) -> rel_last(i, t, ci, cg, loads, rels)
-  Cons(RBF(i, t), rest) -> rel_lines(rest, ci, cg_want_rel_ty(cg, t), loads + rel_load(ci, i), rels + "  call void @" + rel_target(t) + "(ptr %v" + int_to_str(ci) + "_" + int_to_str(i) + ")\n")
+  Cons(RBF(i, t), rest) -> rel_lines(rest, ci, cg_want_rel_ty(cg, t), loads + rel_load(ci, i), rels + rel_call(t, "%v" + int_to_str(ci) + "_" + int_to_str(i), "call"))
 
 fn rel_load(ci, i) =
   nm = int_to_str(ci) + "_" + int_to_str(i)
@@ -1310,7 +2157,7 @@ fn rel_load(ci, i) =
 
 fn rel_last(i, t, ci, cg, loads, rels) =
   kw = if is_adt_ty(t) then "tail call" else "call"
-  RPRL(loads + rel_load(ci, i), rels, "  " + kw + " void @" + rel_target(t) + "(ptr %v" + int_to_str(ci) + "_" + int_to_str(i) + ")\n", cg_want_rel_ty(cg, t))
+  RPRL(loads + rel_load(ci, i), rels, rel_call(t, "%v" + int_to_str(ci) + "_" + int_to_str(i), kw), cg_want_rel_ty(cg, t))
 
 fn emit_inst2(cx, st, f, name, idx, targs, shared) = match f
   FnD(_, _, ps, _, body, _) -> emit_inst3(sig_parts(st, idx), cx, st, ps, body, name, targs, shared)
@@ -1360,7 +2207,7 @@ fn emit_program(cx, st, fns) =
     ASM(texts, cg) -> rc_assemble(texts, cg)
 
 fn rc_assemble(texts, cg) = match cg
-  CG(_, _, _, gl, _, aux, _, _) -> ir_header() + cat(map(reverse(gl), \g -> g + "\n")) + "\n" + ir_declares() + cat(reverse(texts)) + cat(reverse(aux)) + ir_main_wrapper()
+  CG(_, _, _, gl, _, aux, _, seen) -> ir_header() + cat(map(reverse(gl), \g -> g + "\n")) + "\n" + ir_declares() + cat(reverse(texts)) + cat(reverse(aux)) + ir_main_wrapper(shas(seen, "rt.strands"))
 
 fn ir_header() =
   "; ModuleID = 'rill'\nsource_filename = \"rill\"\n\n@rill_parallel_build = global i8 0\n\n" + rc_helpers()
@@ -1368,10 +2215,11 @@ fn ir_header() =
 # Retain, the generic closure release, and the destructor of a captureless
 # closure — the three fixed pieces every program shares.
 fn rc_helpers() =
-  "define private void @\"rc.retain\"(ptr %p) {\n\"rc.entry\":\n  %rc = load i64, ptr %p\n  %live = icmp ult i64 %rc, 2305843009213693951\n  br i1 %live, label %\"rc.w\", label %\"rc.s\"\n\"rc.w\":\n  %inc = add i64 %rc, 1\n  store i64 %inc, ptr %p\n  br label %\"rc.s\"\n\"rc.s\":\n  ret void\n}\n\ndefine private void @\"rc.clorel\"(ptr %p) {\n\"rc.entry\":\n  %rc = load i64, ptr %p\n  %live = icmp ult i64 %rc, 2305843009213693951\n  br i1 %live, label %\"rc.d\", label %\"rc.s\"\n\"rc.d\":\n  %n = sub i64 %rc, 1\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %\"rc.f\", label %\"rc.k\"\n\"rc.k\":\n  store i64 %n, ptr %p\n  br label %\"rc.s\"\n\"rc.f\":\n  %dp = getelementptr i8, ptr %p, i64 16\n  %d = load ptr, ptr %dp\n  tail call void %d(ptr %p)\n  ret void\n\"rc.s\":\n  ret void\n}\n\ndefine private void @\"rc.dtor0\"(ptr %p) {\n\"rc.entry\":\n  call void @rill_free_sized(ptr %p, i64 24)\n  ret void\n}\n"
+  "define private void @\"rc.retain\"(ptr %p) {\n\"rc.entry\":\n  %rc = load i64, ptr %p\n  %live = icmp ult i64 %rc, 2305843009213693951\n  br i1 %live, label %\"rc.w\", label %\"rc.s\"\n\"rc.w\":\n  %inc = add i64 %rc, 1\n  store i64 %inc, ptr %p\n  br label %\"rc.s\"\n\"rc.s\":\n  ret void\n}\n\ndefine private void @\"rc.clorel\"(ptr %p) {\n\"rc.entry\":\n  %rc = load i64, ptr %p\n  %live = icmp ult i64 %rc, 2305843009213693951\n  br i1 %live, label %\"rc.d\", label %\"rc.s\"\n\"rc.d\":\n  %n = sub i64 %rc, 1\n  %z = icmp eq i64 %n, 0\n  br i1 %z, label %\"rc.f\", label %\"rc.k\"\n\"rc.k\":\n  store i64 %n, ptr %p\n  br label %\"rc.s\"\n\"rc.f\":\n  %dp = getelementptr i8, ptr %p, i64 16\n  %d = load ptr, ptr %dp\n  tail call void %d(ptr %p)\n  ret void\n\"rc.s\":\n  ret void\n}\n\ndefine private void @\"rc.dtor0\"(ptr %p) {\n\"rc.entry\":\n  call void @rill_free_sized(ptr %p, i64 24)\n  ret void\n}\n\ndefine private void @\"rc.sdtor0\"(ptr %p) {\n\"rc.entry\":\n  call void @rill_free_sized(ptr %p, i64 16)\n  ret void\n}\n"
 
 fn ir_declares() =
-  "declare void @rill_println_str(ptr)\ndeclare void @rill_println_int(i64)\ndeclare void @rill_println_float(double)\ndeclare void @rill_println_bool(i8)\ndeclare void @rill_print_str(ptr)\ndeclare void @rill_print_int(i64)\ndeclare void @rill_print_float(double)\ndeclare void @rill_print_bool(i8)\ndeclare i8 @rill_str_eq(ptr, ptr)\ndeclare ptr @rill_str_concat(ptr, ptr)\ndeclare i64 @rill_str_len(ptr)\ndeclare ptr @rill_int_to_str(i64)\ndeclare ptr @rill_float_to_str(double)\ndeclare ptr @rill_bool_to_str(i8)\ndeclare i64 @rill_str_get(ptr, i64)\ndeclare ptr @rill_str_sub(ptr, i64, i64)\ndeclare i64 @rill_str_find(ptr, ptr)\ndeclare i64 @rill_str_cmp(ptr, ptr)\ndeclare i64 @rill_str_to_int(ptr)\ndeclare double @rill_str_to_float(ptr)\ndeclare ptr @rill_chr(i64)\ndeclare void @rill_set_args(i64, ptr)\ndeclare i64 @rill_arg_count()\ndeclare ptr @rill_arg(i64)\ndeclare i8 @rill_io_ok()\ndeclare ptr @rill_read_file(ptr)\ndeclare i8 @rill_write_file(ptr, ptr)\ndeclare ptr @rill_read_line()\ndeclare void @rill_exit(i64)\ndeclare void @rill_free_ptr(ptr)\ndeclare ptr @rill_null_ptr()\ndeclare i8 @rill_is_null(ptr)\ndeclare ptr @rill_alloc_bytes(i64)\ndeclare ptr @rill_alloc(i64)\ndeclare void @rill_free_sized(ptr, i64)\ndeclare void @rill_str_release(ptr)\ndeclare ptr @rill_ptr_offset(ptr, i64)\ndeclare void @rill_poke_i8(ptr, i64, i64)\ndeclare void @rill_poke_i16(ptr, i64, i64)\ndeclare void @rill_poke_i32(ptr, i64, i64)\ndeclare void @rill_poke_i64(ptr, i64, i64)\ndeclare void @rill_poke_f32(ptr, i64, double)\ndeclare void @rill_poke_f64(ptr, i64, double)\ndeclare i64 @rill_peek_i8(ptr, i64)\ndeclare i64 @rill_peek_u8(ptr, i64)\ndeclare i64 @rill_peek_i16(ptr, i64)\ndeclare i64 @rill_peek_u16(ptr, i64)\ndeclare i64 @rill_peek_i32(ptr, i64)\ndeclare i64 @rill_peek_u32(ptr, i64)\ndeclare i64 @rill_peek_i64(ptr, i64)\ndeclare double @rill_peek_f32(ptr, i64)\ndeclare double @rill_peek_f64(ptr, i64)\ndeclare void @rill_rt_run_direct(ptr)\ndeclare void @rill_alloc_report()\n\n"
+  "declare void @rill_println_str(ptr)\ndeclare void @rill_println_int(i64)\ndeclare void @rill_println_float(double)\ndeclare void @rill_println_bool(i8)\ndeclare void @rill_print_str(ptr)\ndeclare void @rill_print_int(i64)\ndeclare void @rill_print_float(double)\ndeclare void @rill_print_bool(i8)\ndeclare i8 @rill_str_eq(ptr, ptr)\ndeclare ptr @rill_str_concat(ptr, ptr)\ndeclare i64 @rill_str_len(ptr)\ndeclare ptr @rill_int_to_str(i64)\ndeclare ptr @rill_float_to_str(double)\ndeclare ptr @rill_bool_to_str(i8)\ndeclare i64 @rill_str_get(ptr, i64)\ndeclare ptr @rill_str_sub(ptr, i64, i64)\ndeclare i64 @rill_str_find(ptr, ptr)\ndeclare i64 @rill_str_cmp(ptr, ptr)\ndeclare i64 @rill_str_to_int(ptr)\ndeclare double @rill_str_to_float(ptr)\ndeclare ptr @rill_chr(i64)\ndeclare void @rill_set_args(i64, ptr)\ndeclare i64 @rill_arg_count()\ndeclare ptr @rill_arg(i64)\ndeclare i8 @rill_io_ok()\ndeclare ptr @rill_read_file(ptr)\ndeclare i8 @rill_write_file(ptr, ptr)\ndeclare ptr @rill_read_line()\ndeclare void @rill_exit(i64)\ndeclare ptr @rill_to_cstr(ptr)\ndeclare ptr @rill_from_cstr(ptr)\ndeclare void @rill_free_ptr(ptr)\ndeclare ptr @rill_null_ptr()\ndeclare i8 @rill_is_null(ptr)\ndeclare ptr @rill_alloc_bytes(i64)\ndeclare ptr @rill_buf_new(i64, i64)\ndeclare void @rill_buf_release(ptr, i64)\ndeclare void @rill_buf_oob(i64, i64)\ndeclare ptr @rill_alloc(i64)\ndeclare void @rill_free_sized(ptr, i64)\ndeclare void @rill_str_release(ptr)\ndeclare ptr @rill_ptr_offset(ptr, i64)\ndeclare void @rill_poke_i8(ptr, i64, i64)\ndeclare void @rill_poke_i16(ptr, i64, i64)\ndeclare void @rill_poke_i32(ptr, i64, i64)\ndeclare void @rill_poke_i64(ptr, i64, i64)\ndeclare void @rill_poke_f32(ptr, i64, double)\ndeclare void @rill_poke_f64(ptr, i64, double)\ndeclare i64 @rill_peek_i8(ptr, i64)\ndeclare i64 @rill_peek_u8(ptr, i64)\ndeclare i64 @rill_peek_i16(ptr, i64)\ndeclare i64 @rill_peek_u16(ptr, i64)\ndeclare i64 @rill_peek_i32(ptr, i64)\ndeclare i64 @rill_peek_u32(ptr, i64)\ndeclare i64 @rill_peek_i64(ptr, i64)\ndeclare double @rill_peek_f32(ptr, i64)\ndeclare double @rill_peek_f64(ptr, i64)\ndeclare void @rill_rt_run_direct(ptr)\ndeclare void @rill_rt_run(ptr)\ndeclare ptr @rill_chan_new(i64)\ndeclare void @rill_chan_release(ptr)\ndeclare void @rill_chan_send(ptr, i64, i64)\ndeclare { i64, i64 } @rill_chan_recv(ptr)\ndeclare void @rill_spawn(ptr, ptr)\ndeclare i64 @rill_select(ptr, i64, i8, ptr)\ndeclare void @rill_alloc_report()\n\n"
 
-fn ir_main_wrapper() =
-  "define i32 @main(i32 %0, ptr %1) {\n\"rc.entry\":\n  %argc = sext i32 %0 to i64\n  call void @rill_set_args(i64 %argc, ptr %1)\n  call void @rill_rt_run_direct(ptr @rill_main)\n  call void @rill_alloc_report()\n  ret i32 0\n}\n"
+fn ir_main_wrapper(strands) =
+  run = if strands then "rill_rt_run" else "rill_rt_run_direct"
+  "define i32 @main(i32 %0, ptr %1) {\n\"rc.entry\":\n  %argc = sext i32 %0 to i64\n  call void @rill_set_args(i64 %argc, ptr %1)\n  call void @" + run + "(ptr @rill_main)\n  call void @rill_alloc_report()\n  ret i32 0\n}\n"
