@@ -774,10 +774,13 @@ impl Parser {
                 let cond = self.expr()?;
                 self.continues_with(&Tok::Then);
                 self.expect(&Tok::Then, "after the `if` condition")?;
-                let then = self.expr()?;
+                // Both branches take an inline expression or an indented
+                // block; `else if` chains stay flat because an `if` right
+                // after `else` is just the expression form again.
+                let then = self.body()?;
                 self.continues_with(&Tok::Else);
                 self.expect(&Tok::Else, "after the `then` branch")?;
-                let els = self.expr()?;
+                let els = self.body()?;
                 Ok(Expr::If { cond: Box::new(cond), then: Box::new(then), els: Box::new(els) })
             }
             Tok::Match => {
@@ -889,7 +892,7 @@ impl Parser {
             }
         };
         self.expect(&Tok::Arrow, "after the select arm's channel operation")?;
-        let body = self.expr()?;
+        let body = self.body()?;
         arms.push(SelectArm { op, body, line });
         Ok(())
     }
@@ -914,7 +917,9 @@ impl Parser {
         let (line, _) = self.here();
         let pattern = self.pattern()?;
         self.expect(&Tok::Arrow, "after the pattern in a match arm")?;
-        let body = self.expr()?;
+        // An arm's body is an inline expression, or — like a function's —
+        // an indented block of statements.
+        let body = self.body()?;
         Ok(Arm { pattern, body, line })
     }
 

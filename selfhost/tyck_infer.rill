@@ -224,7 +224,8 @@ fn ua3(cx, st, env, at, rest, want, ln, ctx) = match want
 fn infer_call(cx, st, env, n, args, ln) =
   if ehas(env, n) then ic_closure(cx, st, env, n, args, ln) else ic_println(cx, st, env, n, args, ln)
 
-fn ic_closure(cx, st, env, n, args, ln) = ic_clo2(infer_var(cx, st, env, n, ln), cx, env, n, args, ln)
+fn ic_closure(cx, st, env, n, args, ln) =
+  ic_clo2(infer_var(cx, st, env, n, ln), cx, env, n, args, ln)
 
 fn ic_clo2(ts, cx, env, n, args, ln) = match ts
   TS(callee, st) -> ic_clo3(infer_args(cx, st, env, args, Nil), cx, callee, n, ln)
@@ -272,7 +273,8 @@ fn ic_bufnew(cx, st, env, n, args, ln, w) = match args
 fn ic_bufnew2(ts, cx, ln, w) = match ts
   TS(at, st) -> TS(YBuf(w), unify(cx, st, YInt, at, ln, "buffer length"))
 
-fn is_bufop(n) = str_cmp(n, "buf_get") == 0 || str_cmp(n, "buf_set") == 0 || str_cmp(n, "buf_len") == 0 || str_cmp(n, "buf_data") == 0
+fn is_bufop(n) =
+  str_cmp(n, "buf_get") == 0 || str_cmp(n, "buf_set") == 0 || str_cmp(n, "buf_len") == 0 || str_cmp(n, "buf_data") == 0
 
 fn ic_bufop(cx, st, env, n, args, ln) =
   if is_bufop(n) then ic_bufop2(cx, st, env, n, args, ln) else ic_send(cx, st, env, n, args, ln)
@@ -489,7 +491,8 @@ fn sp_row2(cx, h0, rest, h, arity, out) = match h0
   PIntL(v) -> if hd_eq(HI(v), h) then Cons(rest, out) else out
   PCtor(n, args) -> sp_ctor(cx, n, args, rest, h, out)
 
-fn sp_ctor(cx, n, args, rest, h, out) = sp_ctor2(head_of_pat(cx, PCtor(n, args)), args, rest, h, out)
+fn sp_ctor(cx, n, args, rest, h, out) =
+  sp_ctor2(head_of_pat(cx, PCtor(n, args)), args, rest, h, out)
 
 fn sp_ctor2(o, args, rest, h, out) = match o
   Some(h2) -> if hd_eq(h2, h) then Cons(append(args, rest), out) else out
@@ -640,7 +643,8 @@ fn sm_keys(m, acc) = match m
 
 fn sm_union(a, b) = fold(sm_keys(b, Nil), a, \m, k -> sput(m, k, 0))
 
-fn sm_minus(m, names) = fold(sm_keys(m, Nil), SLeaf, \out, k -> if list_has(names, k) then out else sput(out, k, 0))
+fn sm_minus(m, names) =
+  fold(sm_keys(m, Nil), SLeaf, \out, k -> if list_has(names, k) then out else sput(out, k, 0))
 
 fn list_has(names, k) = any(names, \n -> str_cmp(n, k) == 0)
 
@@ -717,7 +721,8 @@ fn tj_on(tj, v) = match tj
 fn dfs(v, edges, tj) = match tj
   TJ(ix, lo, on, stk, nx, gs) -> dfs_body(v, edges, TJ(iput(ix, v, nx), iput(lo, v, nx), iput(on, v, 1), Cons(v, stk), nx + 1, gs))
 
-fn dfs_body(v, edges, tj) = dfs_pop(v, fold(nth_edges(edges, v), tj, \t, w -> dfs_edge(v, w, edges, t)))
+fn dfs_body(v, edges, tj) =
+  dfs_pop(v, fold(nth_edges(edges, v), tj, \t, w -> dfs_edge(v, w, edges, t)))
 
 fn dfs_edge(v, w, edges, tj) = match tj_idx(tj, w)
   None -> dfs_edge_new(v, w, dfs(w, edges, tj))

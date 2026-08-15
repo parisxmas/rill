@@ -1,0 +1,44 @@
+# Block bodies: a match arm, a select arm or an `if` branch takes an indented
+# block of statements, exactly the way a function body does. The arrow or the
+# keyword ends its line, the block sits one level deeper, and `else` stands
+# level with its `if`.
+
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+
+fn area(s) = match s
+  Circle(r) ->
+    pi = 3.14159
+    pi * r * r
+  Rect(w, h) -> w * h
+
+fn describe(n) =
+  if n < 0 then
+    m = -n
+    "negative " + int_to_str(m)
+  else if n == 0 then "zero"
+  else
+    "positive " + int_to_str(n)
+
+# A worker whose arms do real work: the block form is what makes a select
+# arm with several steps readable.
+fn pump(jobs, out) =
+  select
+    n = recv(jobs) ->
+      doubled = n * 2
+      send(out, doubled)
+      pump(jobs, out)
+    default -> 0
+
+fn main() =
+  println(area(Circle(1.0)))
+  println(area(Rect(2.0, 3.0)))
+  println(describe(-5))
+  println(describe(0))
+  println(describe(7))
+  jobs = channel(4)
+  out = channel(4)
+  send(jobs, 21)
+  spawn pump(jobs, out)
+  println(recv(out))

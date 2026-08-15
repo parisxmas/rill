@@ -285,10 +285,10 @@ fn expect_else(ts) = match cw_else(ts)
 fn p_if(ts) = p_if2(p_expr(ts))
 
 fn p_if2(pr) = match pr
-  PR(c, ts) -> p_if3(c, p_expr(expect_then(ts)))
+  PR(c, ts) -> p_if3(c, p_body(expect_then(ts)))
 
 fn p_if3(c, pr) = match pr
-  PR(t, ts) -> p_if4(c, t, p_expr(expect_else(ts)))
+  PR(t, ts) -> p_if4(c, t, p_body(expect_else(ts)))
 
 fn p_if4(c, t, pr) = match pr
   PR(e, ts) -> PR(EIf(c, t, e), ts)
@@ -327,7 +327,7 @@ fn p_pat(ts) = match pat_try(ts)
 fn p_arm(ts) = arm_fin(p_pat(ts), p_line(ts))
 
 fn arm_fin(pr, ln) = match pr
-  PR(p, ts) -> arm_body(p, p_expr(expect_arrow(ts, "after the pattern in a match arm")), ln)
+  PR(p, ts) -> arm_body(p, p_body(expect_arrow(ts, "after the pattern in a match arm")), ln)
 
 fn arm_body(p, pr, ln) = match pr
   PR(b, ts) -> PR(Arm(p, b, ln), ts)
@@ -449,7 +449,7 @@ fn sel_send2(args, ln) = match args
   _ -> die_any("`send` takes a channel and a value", ln)
 
 fn p_sel_op(op, ts, ln) =
-  sel_item_fin(op, p_expr(expect_arrow(ts, "after the select arm's channel operation")), ln)
+  sel_item_fin(op, p_body(expect_arrow(ts, "after the select arm's channel operation")), ln)
 
 fn sel_item_fin(op, pr, ln) = match pr
   PR(b, ts) -> PR(SIArm(SArm(op, b, ln)), ts)

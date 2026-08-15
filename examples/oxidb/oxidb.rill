@@ -73,16 +73,19 @@ fn on(collection, fields) = Cons(Field("collection", JStr(collection)), fields)
 
 fn ping(fd) = call(fd, command("ping", Nil))
 
-fn hello(fd) = call(fd, command("hello", Cons(Field("wire_versions", JArr(Cons(JInt(1), Nil))), Nil)))
+fn hello(fd) =
+  call(fd, command("hello", Cons(Field("wire_versions", JArr(Cons(JInt(1), Nil))), Nil)))
 
 fn list_collections(fd) = call(fd, command("list_collections", Nil))
 
-fn insert(fd, collection, doc) = call(fd, command("insert", on(collection, Cons(Field("doc", doc), Nil))))
+fn insert(fd, collection, doc) =
+  call(fd, command("insert", on(collection, Cons(Field("doc", doc), Nil))))
 
 fn insert_many(fd, collection, docs) =
   call(fd, command("insert_many", on(collection, Cons(Field("docs", JArr(docs)), Nil))))
 
-fn find(fd, collection, query) = call(fd, command("find", on(collection, Cons(Field("query", query), Nil))))
+fn find(fd, collection, query) =
+  call(fd, command("find", on(collection, Cons(Field("query", query), Nil))))
 
 # `sort` is a document like `{"age": -1}`; a limit of 0 asks for no limit.
 fn find_sorted(fd, collection, query, sort, limit) =

@@ -339,6 +339,44 @@ impl Fmt {
         }
     }
 
+    /// The statements of a block body, one per line at `ind`, own-line
+    /// comments woven in and trailing comments kept on their lines. The
+    /// string starts with a newline, ready to follow `->`, `then` or `else`.
+    fn block_lines(&mut self, stmts: &[Stmt], ind: usize) -> String {
+        let mut s = String::new();
+        for st in stmts {
+            let line = stmt_line(st);
+            for (cl, text) in self.comments.before(line) {
+                self.mark(cl);
+                s.push_str(&format!("\n{}{}", pad(ind), text));
+            }
+            self.mark(line);
+            let text = match st {
+                Stmt::Bind { name, value, .. } => {
+                    format!("{name} = {}", self.render(value, ind + 1))
+                }
+                Stmt::Expr(e) => self.render(e, ind + 1),
+            };
+            s.push_str(&format!("\n{}{}", pad(ind), text));
+            if let Some(c) = self.comments.on(line) {
+                s.push_str(&format!("  {c}"));
+            }
+        }
+        s
+    }
+
+    /// Whether an `else` branch forces the layout form: it is a block, or an
+    /// `else if` chain that ends in one.
+    fn else_needs_layout(e: &Expr) -> bool {
+        match e {
+            Expr::Block(_) => true,
+            Expr::If { then, els, .. } => {
+                matches!(then.as_ref(), Expr::Block(_)) || Self::else_needs_layout(els)
+            }
+            _ => false,
+        }
+    }
+
     /// Renders an expression. Continuation lines (match arms, block
     /// statements) are indented at `cont`; the first line carries no indent.
     fn render(&mut self, expr: &Expr, cont: usize) -> String {
@@ -351,10 +389,18 @@ impl Fmt {
                         s.push_str(&format!("\n{}{}", pad(cont), text));
                     }
                     self.mark(arm.line);
-                    let body = self.render(&arm.body, cont + 1);
-                    s.push_str(&format!("\n{}{} -> {}", pad(cont), pattern(&arm.pattern), body));
-                    if let Some(c) = self.comments.on(arm.line) {
-                        s.push_str(&format!("  {c}"));
+                    if let Expr::Block(stmts) = &arm.body {
+                        s.push_str(&format!("\n{}{} ->", pad(cont), pattern(&arm.pattern)));
+                        if let Some(c) = self.comments.on(arm.line) {
+                            s.push_str(&format!("  {c}"));
+                        }
+                        s.push_str(&self.block_lines(stmts, cont + 1));
+                    } else {
+                        let body = self.render(&arm.body, cont + 1);
+                        s.push_str(&format!("\n{}{} -> {}", pad(cont), pattern(&arm.pattern), body));
+                        if let Some(c) = self.comments.on(arm.line) {
+                            s.push_str(&format!("  {c}"));
+                        }
                     }
                 }
                 s
@@ -375,6 +421,27 @@ impl Fmt {
             // `if` and the prefix forms can carry a multi-line branch (a
             // `match`), which has to stay on its own lines.
             Expr::If { cond, then, els } => {
+                let then_blk = matches!(then.as_ref(), Expr::Block(_));
+                if then_blk || Self::else_needs_layout(els) {
+                    let kw = cont.saturating_sub(1);
+                    let mut s = format!("if {} then", inline(cond, 0));
+                    match then.as_ref() {
+                        Expr::Block(stmts) => s.push_str(&self.block_lines(stmts, cont)),
+                        other => {
+                            s.push(' ');
+                            s.push_str(&self.render(other, cont));
+                        }
+                    }
+                    s.push_str(&format!("\n{}else", pad(kw)));
+                    match els.as_ref() {
+                        Expr::Block(stmts) => s.push_str(&self.block_lines(stmts, cont)),
+                        other => {
+                            s.push(' ');
+                            s.push_str(&self.render(other, cont));
+                        }
+                    }
+                    return s;
+                }
                 let t = self.render(then, cont);
                 let e = self.render(els, cont);
                 if t.contains('\n') || e.contains('\n') {
@@ -419,8 +486,13 @@ impl Fmt {
                             format!("send({}, {})", inline(chan, 0), inline(value, 0))
                         }
                     };
-                    let body = self.render(&arm.body, cont + 1);
-                    s.push_str(&format!("\n{}{op} -> {body}", pad(cont)));
+                    if let Expr::Block(stmts) = &arm.body {
+                        s.push_str(&format!("\n{}{op} ->", pad(cont)));
+                        s.push_str(&self.block_lines(stmts, cont + 1));
+                    } else {
+                        let body = self.render(&arm.body, cont + 1);
+                        s.push_str(&format!("\n{}{op} -> {body}", pad(cont)));
+                    }
                 }
                 if let Some(d) = default {
                     // A literal default body carries no line of its own; it
@@ -428,8 +500,13 @@ impl Fmt {
                     let dl = expr_line(d);
                     let after_last = arms.last().map(|a| a.line + 1).unwrap_or(0);
                     self.mark(if dl == 0 { after_last } else { dl });
-                    let body = self.render(d, cont + 1);
-                    s.push_str(&format!("\n{}default -> {body}", pad(cont)));
+                    if let Expr::Block(stmts) = d.as_ref() {
+                        s.push_str(&format!("\n{}default ->", pad(cont)));
+                        s.push_str(&self.block_lines(stmts, cont + 1));
+                    } else {
+                        let body = self.render(d, cont + 1);
+                        s.push_str(&format!("\n{}default -> {body}", pad(cont)));
+                    }
                 }
                 s
             }

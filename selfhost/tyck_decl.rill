@@ -206,7 +206,8 @@ type BC
   BC(SM(CtRef), List(Adt2))
 
 # Pass 3 and 4: built-in traits, then the user's.
-fn builtin_traits() = Cons(Trt("Show", Cons(Mi("show", Cons(YGen(0), Nil), YStr), Nil)), Cons(Trt("Ord", Cons(Mi("compare", Cons(YGen(0), Cons(YGen(0), Nil)), YInt), Nil)), Nil))
+fn builtin_traits() =
+  Cons(Trt("Show", Cons(Mi("show", Cons(YGen(0), Nil), YStr), Nil)), Cons(Trt("Ord", Cons(Mi("compare", Cons(YGen(0), Cons(YGen(0), Nil)), YInt), Nil)), Nil))
 
 fn build_traits(tds, adx, adts, traits, midx) = match tds
   Cons(DTrait(name, param, sigs, ln), rest) -> bt_one(name, param, sigs, ln, rest, adx, adts, traits, midx)

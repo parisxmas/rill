@@ -160,6 +160,34 @@ println(match o None -> 0 Some(n) -> n * 10)
 
 `select` follows the same rule.
 
+An arm's body is an inline expression, or — like a function's body — an
+indented block of statements. The arrow ends its line and the block sits one
+level deeper:
+
+```
+fn area(s) = match s
+  Circle(r) ->
+    pi = 3.14159
+    pi * r * r
+  Rect(w, h) -> w * h
+```
+
+`if` branches take the same block form, with `else` standing level with its
+`if`, and `else if` chains staying flat:
+
+```
+fn describe(n) =
+  if n < 0 then
+    m = -n
+    "negative " + int_to_str(m)
+  else if n == 0 then "zero"
+  else
+    "positive " + int_to_str(n)
+```
+
+The value of a block is its last statement's value, exactly as in a function
+body; every arm and branch must still agree on one type.
+
 ---
 
 ## 4. Functions

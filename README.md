@@ -136,6 +136,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `yaml/` | YAML for config files, sharing the JSON value type |
 | `stdlib.rill` | what the prelude gives you |
 | `loops.rill` | how repetition is written: tail recursion and folds |
+| `blocks.rill` | block bodies in match arms, select arms and `if` branches |
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
 | `webgpu/world/` | a walkable low-poly valley — terrain, physics and matrices in Rill; shadows, MSAA and compute particles on the GPU |

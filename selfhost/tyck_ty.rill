@@ -187,7 +187,8 @@ fn need_allowed(need) =
 fn check_need(cx, st, t, need, ln, ctx) =
   if need_ok(cx, t, need) then 0 else die_need(cx, st, t, need, ln, ctx)
 
-fn die_need(cx, st, t, need, ln, ctx) = tydie(ctx + " requires " + need_allowed(need) + ", found " + type_name(cx, st, t), ln)
+fn die_need(cx, st, t, need, ln, ctx) =
+  tydie(ctx + " requires " + need_allowed(need) + ", found " + type_name(cx, st, t), ln)
 
 fn require(cx, st, t, need, ln, ctx) = require_r(cx, st, resolve(st, t), need, ln, ctx)
 

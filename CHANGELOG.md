@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Block bodies for match arms, select arms and `if` branches.** The first
+  thing writing the compiler in its own language taught was where the
+  language pinched: an arm's body had to be one expression, so real logic
+  became chains of tiny helper functions, and a long `if` chain became one
+  long line. Now an arrow or a `then`/`else` may end its line and take an
+  indented block of statements, exactly the way a function body does —
+  `else` stands level with its `if`, and `else if` chains stay flat. No new
+  machinery below the parser: a block was already an expression everywhere
+  else, so the type checker and the code generator took the change without
+  a single edit.
+
+  The formatter learned the layout form in both of its implementations — the
+  Rust one and the self-hosted one — and the byte-for-byte oracle now runs
+  over 125 files including `examples/blocks.rill`, which exercises the new
+  forms. Zero divergence.
+
 - **The front end, self-hosted: Rill's lexer, parser and formatter, in Rill.**
   `selfhost/` holds a complete port of `rill fmt` — the layout-sensitive
   lexer with its indent stack, the recursive-descent parser, and the

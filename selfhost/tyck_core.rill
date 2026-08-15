@@ -58,7 +58,8 @@ fn sput(m, k, v) = match m
   SLeaf -> SNode(SLeaf, k, v, SLeaf)
   SNode(l, mk, mv, r) -> sput2(k, v, str_cmp(k, mk), l, mk, mv, r)
 
-fn sput2(k, v, c, l, mk, mv, r) = if c < 0 then SNode(sput(l, k, v), mk, mv, r) else if c > 0 then SNode(l, mk, mv, sput(r, k, v)) else SNode(l, k, v, r)
+fn sput2(k, v, c, l, mk, mv, r) =
+  if c < 0 then SNode(sput(l, k, v), mk, mv, r) else if c > 0 then SNode(l, mk, mv, sput(r, k, v)) else SNode(l, k, v, r)
 
 fn shas(m, k) = match sget(m, k)
   Some(_) -> true
@@ -82,7 +83,8 @@ fn ct_name(c) = match c
   CW(w) -> ctw_name(w)
   CFn(_, _) -> "Fn"
 
-fn ctw_name(w) = if str_cmp(w, "I64") == 0 then "Int" else if str_cmp(w, "F64") == 0 then "Float" else w
+fn ctw_name(w) =
+  if str_cmp(w, "I64") == 0 then "Int" else if str_cmp(w, "F64") == 0 then "Float" else w
 
 fn ct_eq(a, b) = match a
   CW(x) -> ct_eq_w(x, b)

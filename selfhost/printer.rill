@@ -222,6 +222,42 @@ fn tr_ret_str(s, ret) = match ret
 # their own lines at the continuation indent, and consume the comments
 # anchored to them.
 
+fn is_block(e) = match e
+  EBlock(_) -> true
+  _ -> false
+
+fn block_stmts(e) = match e
+  EBlock(ss) -> ss
+  _ -> Nil
+
+# Whether an `else` branch forces the layout form: it is a block, or an
+# `else if` chain that ends in one.
+fn else_needs_layout(e) = match e
+  EBlock(_) -> true
+  EIf(_, t, e2) -> is_block(t) || else_needs_layout(e2)
+  _ -> false
+
+# The statements of a block body, one per line at `ind`, comments woven in.
+# The string starts with a newline, ready to follow `->`, `then` or `else`.
+fn block_lines(fs, stmts, ind) = bl_loop(fs, stmts, ind, "")
+
+fn bl_loop(fs, stmts, ind, s) = match stmts
+  Cons(st, rest) -> bl_one(own_before(fs, stmt_line(st)), st, rest, ind, s)
+  Nil -> RR(fs, s)
+
+fn bl_one(ob, st, rest, ind, s) = match ob
+  OB(cs, fs) -> bl_two(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, ind)), st, rest, ind)
+
+fn bl_two(acc, st, rest, ind) = match acc
+  RRS(fs, s) -> bl_three(rb_text(fs_mark(fs, stmt_line(st)), st, ind), st, rest, ind, s)
+
+fn bl_three(rr, st, rest, ind, s) = match rr
+  RR(fs, text) -> bl_four(tr_on(fs, stmt_line(st)), rest, ind, s + "\n" + pad(ind) + text)
+
+fn bl_four(to, rest, ind, s) = match to
+  TO(Some(c), fs) -> bl_loop(fs, rest, ind, s + "  " + c)
+  TO(None, fs) -> bl_loop(fs, rest, ind, s)
+
 fn render(fs, e, cont) = match e
   EMatch(sc, arms, _) -> render_match(fs, sc, arms, cont)
   EBlock(ss) -> render_block(fs, ss, cont)
@@ -259,7 +295,17 @@ fn weave2(fs, s, c, cont) = match c
   Cm(cl, text, _) -> RRS(fs_mark(fs, cl), s + "\n" + pad(cont) + text)
 
 fn rm_arm3(acc, p, b, ln, cont) = match acc
-  RRS(fs, s) -> rm_arm4(render(fs_mark(fs, ln), b, cont + 1), p, ln, cont, s)
+  RRS(fs, s) -> rm_arm3b(fs_mark(fs, ln), p, b, ln, cont, s)
+
+fn rm_arm3b(fs, p, b, ln, cont, s) =
+  if is_block(b) then rm_blk(tr_on(fs, ln), b, cont, s + "\n" + pad(cont) + pat_str(p) + " ->") else rm_arm4(render(fs, b, cont + 1), p, ln, cont, s)
+
+fn rm_blk(to, b, cont, s) = match to
+  TO(Some(c), fs) -> rm_blk2(block_lines(fs, block_stmts(b), cont + 1), s + "  " + c)
+  TO(None, fs) -> rm_blk2(block_lines(fs, block_stmts(b), cont + 1), s)
+
+fn rm_blk2(rr, s) = match rr
+  RR(fs, bl) -> RR(fs, s + bl)
 
 fn rm_arm4(rr, p, ln, cont, s) = match rr
   RR(fs, body) -> rm_arm5(tr_on(fs, ln), s + "\n" + pad(cont) + pat_str(p) + " -> " + body)
@@ -284,7 +330,22 @@ fn rb_text(fs, st, cont) = match st
 fn rb_bind(rr, n) = match rr
   RR(fs, text) -> RR(fs, n + " = " + text)
 
-fn render_if(fs, c, t, els, cont) = ri2(render(fs, t, cont), fs, c, t, els, cont)
+fn render_if(fs, c, t, els, cont) =
+  if is_block(t) || else_needs_layout(els) then ri_layout(fs, c, t, els, cont) else ri2(render(fs, t, cont), fs, c, t, els, cont)
+
+fn ri_layout(fs, c, t, els, cont) = ri_then(ri_branch(fs, t, cont), c, els, cont)
+
+fn ri_branch(fs, b, cont) =
+  if is_block(b) then block_lines(fs, block_stmts(b), cont) else ri_sp(render(fs, b, cont))
+
+fn ri_sp(rr) = match rr
+  RR(fs, txt) -> RR(fs, " " + txt)
+
+fn ri_then(rr, c, els, cont) = match rr
+  RR(fs, tt) -> ri_else(ri_branch(fs, els, cont), c, tt, cont)
+
+fn ri_else(rr, c, tt, cont) = match rr
+  RR(fs, ee) -> RR(fs, "if " + inline(c, 0) + " then" + tt + "\n" + pad(if cont > 0 then cont - 1 else 0) + "else" + ee)
 
 fn ri2(rr, fs0, c, t, els, cont) = match rr
   RR(fs, tt) -> ri3(render(fs, els, cont), tt, c, t, els)
@@ -321,7 +382,13 @@ fn rsel_c2(ob, op, b, ln, rest, cont, s) = match ob
   OB(cs, fs) -> rsel_c3(fold(cs, RRS(fs, s), \acc, c -> weave(acc, c, cont)), op, b, ln, rest, cont)
 
 fn rsel_c3(acc, op, b, ln, rest, cont) = match acc
-  RRS(fs, s) -> rsel_c4(render(fs_mark(fs, ln), b, cont + 1), op, ln, rest, cont, s)
+  RRS(fs, s) -> rsel_c3b(fs_mark(fs, ln), op, b, ln, rest, cont, s)
+
+fn rsel_c3b(fs, op, b, ln, rest, cont, s) =
+  if is_block(b) then rsel_blk(block_lines(fs, block_stmts(b), cont + 1), ln, rest, cont, s + "\n" + pad(cont) + sel_op_str(op) + " ->") else rsel_c4(render(fs, b, cont + 1), op, ln, rest, cont, s)
+
+fn rsel_blk(rr, ln, rest, cont, s) = match rr
+  RR(fs, bl) -> rsel_collect(fs, rest, cont, s + bl, ln)
 
 fn rsel_c4(rr, op, ln, rest, cont, s) = match rr
   RR(fs, body) -> rsel_collect(fs, rest, cont, s + "\n" + pad(cont) + sel_op_str(op) + " -> " + body, ln)
@@ -333,7 +400,11 @@ fn rsf2(fs, s, lastln, def, cont) = match def
   Some(d) -> rsf3(fs_mark(fs, if expr_line(d) == 0 then lastln + 1 else expr_line(d)), s, d, cont)
   None -> RR(fs, s)
 
-fn rsf3(fs, s, d, cont) = rsf4(render(fs, d, cont + 1), s, cont)
+fn rsf3(fs, s, d, cont) =
+  if is_block(d) then rsf_blk(block_lines(fs, block_stmts(d), cont + 1), s + "\n" + pad(cont) + "default ->") else rsf4(render(fs, d, cont + 1), s, cont)
+
+fn rsf_blk(rr, s) = match rr
+  RR(fs, bl) -> RR(fs, s + bl)
 
 fn rsf4(rr, s, cont) = match rr
   RR(fs, body) -> RR(fs, s + "\n" + pad(cont) + "default -> " + body)
