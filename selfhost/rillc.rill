@@ -1,0 +1,553 @@
+# The third stage: code generation, in Rill. `rillc` compiles the scalar
+# subset of the language — Int, Float, Bool, Str, functions, blocks, `if`,
+# tail calls and the scalar built-ins — to LLVM IR text on stdout, ready for
+# `cc out.ll librill_runtime.a`. It runs the self-hosted checker first, so
+# every function's types are known and concrete before a line is emitted.
+#
+# Out of scope for now (each dies with its name): data types and `match`,
+# lambdas and function values, channels, `spawn`, `select`, generics.
+# Heap strings are not yet released — the scalar subset leaks them; Perceus
+# insertion arrives with the data-type milestone.
+#
+# Usage: rillc <file.rill> [<prelude.rill>] > out.ll
+
+import "tyck_load"
+import "tyck_infer"
+
+fn rc_prelude() = if arg_count() > 2 then arg(2) else "crates/rill_syntax/src/prelude.rill"
+
+fn main() = rc_gen(setup(load_program(arg(1), rc_prelude())))
+
+fn rc_gen(so) = match so
+  SO(cx, st, fns) ->
+    st2 = fold(dep_groups(fns, cx_fnidx(cx)), st, \s, g -> run_group(cx, s, fns, g))
+    print(emit_program(cx, st2, fns))
+
+fn rcdie(msg) =
+  println("rillc: " + msg)
+  exit(1)
+  rcdie(msg)
+
+fn fnd_body(f) = match f
+  FnD(_, _, _, _, b, _) -> b
+
+fn fnd_params(f) = match f
+  FnD(_, _, ps, _, _, _) -> ps
+
+# ---- types to IR ------------------------------------------------------------
+
+fn dz(st, t) = match resolve(st, t)
+  YAdt(i, args) -> YAdt(i, map(args, \a -> dz(st, a)))
+  YFn(ps, r) -> YFn(map(ps, \p -> dz(st, p)), dz(st, r))
+  YChan(e) -> YChan(dz(st, e))
+  other -> other
+
+fn tystr(t) = match t
+  YInt -> "i64"
+  YFloat -> "double"
+  YBool -> "i1"
+  YStr -> "ptr"
+  YPtr -> "ptr"
+  YUnit -> "void"
+  YAdt(_, _) -> rcdie("data types are not supported yet")
+  YFn(_, _) -> rcdie("function values are not supported yet")
+  YChan(_) -> rcdie("channels are not supported yet")
+  YBuf(_) -> rcdie("buffers are not supported yet")
+  YVar(_) -> rcdie("internal: unresolved type variable")
+  YGen(_) -> rcdie("internal: generic type reached the code generator")
+
+# ---- the emission state -----------------------------------------------------
+#
+# Fresh-name counter, the label the code is currently in, the function's
+# lines (newest first), the string-literal globals (newest first), and the
+# next global's number.
+
+type CG
+  CG(Int, Str, List(Str), List(Str), Int)
+
+type RV
+  RV(CG, Str, Ty2)
+
+type TS2
+  TS2(Str, CG)
+
+type IS
+  IS(Int, CG)
+
+fn cg_line(cg, s) = match cg
+  CG(nid, lbl, code, gl, gid) -> CG(nid, lbl, Cons("  " + s, code), gl, gid)
+
+fn cg_label(cg, l) = match cg
+  CG(nid, _, code, gl, gid) -> CG(nid, l, Cons(l + ":", code), gl, gid)
+
+fn cg_cur(cg) = match cg
+  CG(_, lbl, _, _, _) -> lbl
+
+fn cg_tmp(cg) = match cg
+  CG(nid, lbl, code, gl, gid) -> TS2("%t" + int_to_str(nid), CG(nid + 1, lbl, code, gl, gid))
+
+fn cg_id(cg) = match cg
+  CG(nid, lbl, code, gl, gid) -> IS(nid, CG(nid + 1, lbl, code, gl, gid))
+
+fn cg_str(cg, raw) = match cg
+  CG(nid, lbl, code, gl, gid) ->
+    nm = "@.str" + int_to_str(gid)
+    TS2(nm, CG(nid, lbl, code, Cons(render_strlit(nm, raw), gl), gid + 1))
+
+fn cat(l) = fold(l, "", \a, s -> a + s)
+
+# ---- string literals --------------------------------------------------------
+#
+# The token holds the source spelling, escapes included; decode to bytes,
+# then re-encode for LLVM's c"..." form. The i64 header marks the string
+# static so the runtime never frees it.
+
+type SB
+  SB(Str, Int)
+
+fn render_strlit(nm, raw) =
+  match decode_str(raw, 0, "", 0)
+    SB(esc, n) -> nm + " = private constant { i64, i64, [" + int_to_str(n) + " x i8] } { i64 4611686018427387903, i64 " + int_to_str(n) + ", [" + int_to_str(n) + " x i8] c\"" + esc + "\" }"
+
+fn decode_str(raw, i, out, n) =
+  if i >= str_len(raw) then SB(out, n) else decode_one(raw, i, str_get(raw, i), out, n)
+
+fn decode_one(raw, i, c, out, n) =
+  if c == 92 then decode_esc(raw, i, out, n) else decode_str(raw, i + 1, out + enc_byte(c), n + 1)
+
+fn decode_esc(raw, i, out, n) =
+  e = str_get(raw, i + 1)
+  b = if e == 110 then 10 else if e == 116 then 9 else if e == 92 then 92 else 34
+  decode_str(raw, i + 2, out + enc_byte(b), n + 1)
+
+fn enc_byte(b) =
+  if b >= 32 && b <= 126 && b != 34 && b != 92 then chr(b) else "\\" + hexd(shr(b, 4)) + hexd(bit_and(b, 15))
+
+fn hexd(i) = str_sub("0123456789ABCDEF", i, 1)
+
+# A double's bits, spelled the way LLVM wants inexact constants: the runtime
+# scratch buffer turns the spelling into bits at compile time.
+fn fhex(spelling) =
+  p = alloc_bytes(8)
+  poke_f64(p, 0, str_to_float(spelling))
+  b = peek_i64(p, 0)
+  free_ptr(p)
+  "0x" + hex16(b, 16, "")
+
+fn hex16(b, k, out) =
+  if k == 0 then out else hex16(b, k - 1, out + hexd(bit_and(shr(b, (k - 1) * 4), 15)))
+
+# ---- reachability -----------------------------------------------------------
+#
+# Only functions reachable from `main` are emitted, which is what lets the
+# generic prelude sit unused in a scalar program.
+
+fn reach_from_main(fns, fnidx) = reach_loop(Cons("main", Nil), fnidx, fns, SLeaf)
+
+fn reach_loop(work, fnidx, fns, seen) = match work
+  Nil -> seen
+  Cons(n, rest) -> if shas(seen, n) then reach_loop(rest, fnidx, fns, seen) else reach_go(sget(fnidx, n), n, rest, fnidx, fns, seen)
+
+fn reach_go(o, n, rest, fnidx, fns, seen) = match o
+  Some(idx) -> reach_loop(reach_expr(fnd_body(nth_fnd(fns, idx)), rest), fnidx, fns, sput(seen, n, true))
+  None -> reach_loop(rest, fnidx, fns, seen)
+
+fn reach_expr(e, acc) = match e
+  ECall(n, args, _, _) -> reach_exprs(args, Cons(n, acc))
+  ENeg(x) -> reach_expr(x, acc)
+  EBin(_, l, r, _) -> reach_expr(r, reach_expr(l, acc))
+  EIf(c, t, e2) -> reach_expr(e2, reach_expr(t, reach_expr(c, acc)))
+  EMatch(s, arms, _) -> reach_arms(arms, reach_expr(s, acc))
+  ELambda(_, b, _) -> reach_expr(b, acc)
+  ESpawn(b, _) -> reach_expr(b, acc)
+  ESelect(arms, d, _) -> reach_expro(d, reach_sarms(arms, acc))
+  EBlock(ss) -> reach_stmts(ss, acc)
+  EVar(n, _) -> Cons(n, acc)
+  _ -> acc
+
+fn reach_exprs(es, acc) = match es
+  Nil -> acc
+  Cons(e, rest) -> reach_exprs(rest, reach_expr(e, acc))
+
+fn reach_expro(o, acc) = match o
+  Some(e) -> reach_expr(e, acc)
+  None -> acc
+
+fn reach_arms(arms, acc) = match arms
+  Nil -> acc
+  Cons(Arm(_, b, _), rest) -> reach_arms(rest, reach_expr(b, acc))
+
+fn reach_sarms(arms, acc) = match arms
+  Nil -> acc
+  Cons(SArm(op, b, _), rest) -> reach_sarms(rest, reach_expr(b, reach_sop(op, acc)))
+
+fn reach_sop(op, acc) = match op
+  SRecv(ch, _) -> reach_expr(ch, acc)
+  SSend(ch, v) -> reach_expr(v, reach_expr(ch, acc))
+
+fn reach_stmts(ss, acc) = match ss
+  Nil -> acc
+  Cons(SBind(_, v, _), rest) -> reach_stmts(rest, reach_expr(v, acc))
+  Cons(SExpr(v), rest) -> reach_stmts(rest, reach_expr(v, acc))
+
+# ---- expressions ------------------------------------------------------------
+
+type VT
+  VT(Str, Ty2)
+
+fn emit(cx, st, env, e, cg) = match e
+  EInt(s) -> RV(cg, s, YInt)
+  EFloat(s) -> RV(cg, fhex(s), YFloat)
+  EStr(raw) -> emit_strlit(cg_str(cg, raw))
+  EBool(b) -> RV(cg, if b then "true" else "false", YBool)
+  EVar(n, ln) -> emit_var(sget(env, n), n, cg)
+  ENeg(x) -> emit_neg(emit(cx, st, env, x, cg))
+  EBin(op, l, r, ln) -> emit_bin(cx, st, env, op, l, r, cg)
+  EIf(c, t, e2) -> emit_if(cx, st, env, c, t, e2, cg)
+  ECall(n, args, ln, _) -> emit_call(cx, st, env, n, args, cg)
+  EBlock(ss) -> emit_block(cx, st, env, ss, cg)
+  EMatch(_, _, _) -> rcdie("`match` is not supported yet")
+  ELambda(_, _, _) -> rcdie("lambdas are not supported yet")
+  ESpawn(_, _) -> rcdie("`spawn` is not supported yet")
+  ESelect(_, _, _) -> rcdie("`select` is not supported yet")
+
+fn emit_strlit(ts) = match ts
+  TS2(nm, cg) -> RV(cg, nm, YStr)
+
+fn emit_var(o, n, cg) = match o
+  Some(VT(v, t)) -> RV(cg, v, t)
+  None -> rcdie("function values are not supported yet: `" + n + "`")
+
+fn emit_neg(ev) = match ev
+  RV(cg, v, t) -> emit_neg2(cg_tmp(cg), v, t)
+
+fn emit_neg2(ts, v, t) = match ts
+  TS2(r, cg) ->
+    line = if is_yfloat(t) then r + " = fneg double " + v else r + " = sub i64 0, " + v
+    RV(cg_line(cg, line), r, t)
+
+fn emit_bin(cx, st, env, op, l, r, cg) =
+  match emit(cx, st, env, l, cg)
+    RV(cg1, lv, lt) -> emit_bin2(emit(cx, st, env, r, cg1), op, lv, lt)
+
+fn emit_bin2(ev, op, lv, lt) = match ev
+  RV(cg, rv, _) ->
+    if is_ystr(lt) then emit_sbin(cg, op, lv, rv) else if is_yfloat(lt) then emit_fbin(cg, op, lv, rv) else emit_ibin(cg, op, lv, rv, lt)
+
+fn emit_ibin(cg, op, lv, rv, lt) =
+  match cg_tmp(cg)
+    TS2(r, cg2) ->
+      ty = tystr(lt)
+      line = if op < 5 then r + " = " + iarith(op) + " i64 " + lv + ", " + rv else r + " = icmp " + icond(op) + " " + ty + " " + lv + ", " + rv
+      RV(cg_line(cg2, line), r, if op < 5 then YInt else YBool)
+
+fn iarith(op) =
+  if op == 0 then "add" else if op == 1 then "sub" else if op == 2 then "mul" else if op == 3 then "sdiv" else "srem"
+
+fn icond(op) =
+  if op == 5 then "eq" else if op == 6 then "ne" else if op == 7 then "slt" else if op == 8 then "sle" else if op == 9 then "sgt" else "sge"
+
+fn emit_fbin(cg, op, lv, rv) =
+  match cg_tmp(cg)
+    TS2(r, cg2) ->
+      line = if op < 4 then r + " = " + farith(op) + " double " + lv + ", " + rv else r + " = fcmp " + fcond(op) + " double " + lv + ", " + rv
+      RV(cg_line(cg2, line), r, if op < 4 then YFloat else YBool)
+
+fn farith(op) =
+  if op == 0 then "fadd" else if op == 1 then "fsub" else if op == 2 then "fmul" else "fdiv"
+
+fn fcond(op) =
+  if op == 5 then "oeq" else if op == 6 then "one" else if op == 7 then "olt" else if op == 8 then "ole" else if op == 9 then "ogt" else "oge"
+
+fn emit_sbin(cg, op, lv, rv) =
+  if op == 0 then rt1(cg, "ptr", "rill_str_concat", "ptr " + lv + ", ptr " + rv, YStr) else if op == 5 then str_eq_ir(cg, lv, rv, false) else if op == 6 then str_eq_ir(cg, lv, rv, true) else str_ord_ir(cg, op, lv, rv)
+
+fn str_eq_ir(cg, lv, rv, negate) =
+  match rt1(cg, "i8", "rill_str_eq", "ptr " + lv + ", ptr " + rv, YInt)
+    RV(cg1, v8, _) -> str_eq_ir2(cg_tmp(cg1), v8, negate)
+
+fn str_eq_ir2(ts, v8, negate) = match ts
+  TS2(r, cg) ->
+    cg2 = cg_line(cg, r + " = trunc i8 " + v8 + " to i1")
+    if negate then str_eq_ir3(cg_tmp(cg2), r) else RV(cg2, r, YBool)
+
+fn str_eq_ir3(ts, v) = match ts
+  TS2(r, cg) -> RV(cg_line(cg, r + " = xor i1 " + v + ", true"), r, YBool)
+
+fn str_ord_ir(cg, op, lv, rv) =
+  match rt1(cg, "i64", "rill_str_cmp", "ptr " + lv + ", ptr " + rv, YInt)
+    RV(cg1, c, _) -> str_ord_ir2(cg_tmp(cg1), c, op)
+
+fn str_ord_ir2(ts, c, op) = match ts
+  TS2(r, cg) -> RV(cg_line(cg, r + " = icmp " + icond(op) + " i64 " + c + ", 0"), r, YBool)
+
+# A runtime call with one fresh result.
+fn rt1(cg, rty, sym, args, t) =
+  match cg_tmp(cg)
+    TS2(r, cg2) -> RV(cg_line(cg2, r + " = call " + rty + " @" + sym + "(" + args + ")"), r, t)
+
+fn rt0(cg, sym, args) = RV(cg_line(cg, "call void @" + sym + "(" + args + ")"), "", YUnit)
+
+fn emit_if(cx, st, env, c, t, e2, cg) =
+  match emit(cx, st, env, c, cg)
+    RV(cg1, cv, _) -> emit_if2(cg_id(cg1), cx, st, env, cv, t, e2)
+
+fn emit_if2(is, cx, st, env, cv, t, e2) = match is
+  IS(k, cg) ->
+    thn = "then" + int_to_str(k)
+    els = "else" + int_to_str(k)
+    mrg = "merge" + int_to_str(k)
+    cg1 = cg_label(cg_line(cg, "br i1 " + cv + ", label %" + thn + ", label %" + els), thn)
+    emit_if3(emit(cx, st, env, t, cg1), cx, st, env, e2, els, mrg)
+
+fn emit_if3(ev, cx, st, env, e2, els, mrg) = match ev
+  RV(cg, tv, tt) ->
+    tend = cg_cur(cg)
+    cg1 = cg_label(cg_line(cg, "br label %" + mrg), els)
+    emit_if4(emit(cx, st, env, e2, cg1), tv, tt, tend, mrg)
+
+fn emit_if4(ev, tv, tt, tend, mrg) = match ev
+  RV(cg, ev2, _) ->
+    eend = cg_cur(cg)
+    cg1 = cg_label(cg_line(cg, "br label %" + mrg), mrg)
+    if is_yunit(tt) then RV(cg1, "", YUnit) else emit_if5(cg_tmp(cg1), tv, tt, tend, ev2, eend)
+
+fn emit_if5(ts, tv, tt, tend, ev2, eend) = match ts
+  TS2(r, cg) -> RV(cg_line(cg, r + " = phi " + tystr(tt) + " [ " + tv + ", %" + tend + " ], [ " + ev2 + ", %" + eend + " ]"), r, tt)
+
+fn emit_block(cx, st, env, ss, cg) = match ss
+  Cons(SBind(n, v, _), rest) -> emit_block_bind(emit(cx, st, env, v, cg), cx, st, env, n, rest)
+  Cons(SExpr(v), Nil) -> emit(cx, st, env, v, cg)
+  Cons(SExpr(v), rest) -> emit_block_step(emit(cx, st, env, v, cg), cx, st, env, rest)
+  Nil -> RV(cg, "", YUnit)
+
+fn emit_block_bind(ev, cx, st, env, n, rest) = match ev
+  RV(cg, v, t) -> emit_block(cx, st, sput(env, n, VT(v, t)), rest, cg)
+
+fn emit_block_step(ev, cx, st, env, rest) = match ev
+  RV(cg, _, _) -> emit_block(cx, st, env, rest, cg)
+
+# ---- calls ------------------------------------------------------------------
+
+type AV
+  AV(CG, List(VT))
+
+fn emit_args(cx, st, env, args, cg, acc) = match args
+  Nil -> AV(cg, reverse(acc))
+  Cons(a, rest) -> emit_args2(emit(cx, st, env, a, cg), cx, st, env, rest, acc)
+
+fn emit_args2(ev, cx, st, env, rest, acc) = match ev
+  RV(cg, v, t) -> emit_args(cx, st, env, rest, cg, Cons(VT(v, t), acc))
+
+fn render_args(vts) = ra_loop(vts, "")
+
+fn ra_loop(vts, acc) = match vts
+  Nil -> acc
+  Cons(VT(v, t), rest) -> ra_loop(rest, if str_cmp(acc, "") == 0 then tystr(t) + " " + v else acc + ", " + tystr(t) + " " + v)
+
+fn emit_call(cx, st, env, n, args, cg) =
+  match sget(env, n)
+    Some(_) -> rcdie("calling a bound value is not supported yet: `" + n + "`")
+    None -> emit_call2(sget(cx_fnidx(cx), n), cx, st, env, n, args, cg)
+
+fn emit_call2(o, cx, st, env, n, args, cg) = match o
+  Some(idx) -> emit_user_call(cx, st, env, n, idx, args, cg, false)
+  None -> emit_builtin(cx, st, env, n, args, cg)
+
+fn sig_ret(st, idx) = match st_sig(st, idx)
+  SigG(_, r, _) -> dz(st, r)
+  SigP(_, r) -> dz(st, r)
+
+fn emit_user_call(cx, st, env, n, idx, args, cg, tail) =
+  match emit_args(cx, st, env, args, cg, Nil)
+    AV(cg1, vts) -> emit_user_call2(cg1, n, sig_ret(st, idx), vts, tail)
+
+fn emit_user_call2(cg, n, rt, vts, tail) =
+  kw = if tail then "tail call" else "call"
+  if is_yunit(rt) then RV(cg_line(cg, kw + " void @\"" + n + "\"(" + render_args(vts) + ")"), "", YUnit) else emit_user_call3(cg_tmp(cg), kw, n, rt, vts)
+
+fn emit_user_call3(ts, kw, n, rt, vts) = match ts
+  TS2(r, cg) -> RV(cg_line(cg, r + " = " + kw + " " + tystr(rt) + " @\"" + n + "\"(" + render_args(vts) + ")"), r, rt)
+
+# ---- built-ins --------------------------------------------------------------
+
+fn emit_builtin(cx, st, env, n, args, cg) =
+  match emit_args(cx, st, env, args, cg, Nil)
+    AV(cg1, vts) -> builtin_ir(cg1, n, vts)
+
+fn vt1(vts) = match vts
+  Cons(VT(v, _), _) -> v
+  Nil -> rcdie("internal: missing argument")
+
+fn vt1t(vts) = match vts
+  Cons(VT(_, t), _) -> t
+  Nil -> rcdie("internal: missing argument")
+
+fn vt2(vts) = match vts
+  Cons(_, Cons(VT(v, _), _)) -> v
+  _ -> rcdie("internal: missing argument")
+
+fn vt3(vts) = match vts
+  Cons(_, Cons(_, Cons(VT(v, _), _))) -> v
+  _ -> rcdie("internal: missing argument")
+
+fn bool_arg(cg, v) =
+  match cg_tmp(cg)
+    TS2(r, cg2) -> TS2(r, cg_line(cg2, r + " = zext i1 " + v + " to i8"))
+
+fn i8_result(ev) = match ev
+  RV(cg, v, _) -> i8_result2(cg_tmp(cg), v)
+
+fn i8_result2(ts, v) = match ts
+  TS2(r, cg) -> RV(cg_line(cg, r + " = trunc i8 " + v + " to i1"), r, YBool)
+
+fn builtin_ir(cg, n, vts) =
+  if str_cmp(n, "println") == 0 then print_ir(cg, "rill_println", vts) else if str_cmp(n, "print") == 0 then print_ir(cg, "rill_print", vts) else builtin_ir2(cg, n, vts)
+
+fn print_ir(cg, base, vts) =
+  t = vt1t(vts)
+  v = vt1(vts)
+  if is_yint(t) then rt0(cg, base + "_int", "i64 " + v) else if is_yfloat(t) then rt0(cg, base + "_float", "double " + v) else if is_ystr(t) then rt0(cg, base + "_str", "ptr " + v) else if is_ybool(t) then print_bool_ir(bool_arg(cg, v), base) else rcdie("printing this type is not supported yet")
+
+fn print_bool_ir(ts, base) = match ts
+  TS2(v8, cg) -> rt0(cg, base + "_bool", "i8 " + v8)
+
+fn builtin_ir2(cg, n, vts) =
+  if str_cmp(n, "int_to_str") == 0 then rt1(cg, "ptr", "rill_int_to_str", "i64 " + vt1(vts), YStr) else if str_cmp(n, "float_to_str") == 0 then rt1(cg, "ptr", "rill_float_to_str", "double " + vt1(vts), YStr) else if str_cmp(n, "bool_to_str") == 0 then bool_to_str_ir(bool_arg(cg, vt1(vts))) else if str_cmp(n, "show") == 0 then show_ir(cg, vts) else if str_cmp(n, "str_len") == 0 then rt1(cg, "i64", "rill_str_len", "ptr " + vt1(vts), YInt) else if str_cmp(n, "str_get") == 0 then rt1(cg, "i64", "rill_str_get", "ptr " + vt1(vts) + ", i64 " + vt2(vts), YInt) else if str_cmp(n, "str_sub") == 0 then rt1(cg, "ptr", "rill_str_sub", "ptr " + vt1(vts) + ", i64 " + vt2(vts) + ", i64 " + vt3(vts), YStr) else if str_cmp(n, "str_find") == 0 then rt1(cg, "i64", "rill_str_find", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt) else if str_cmp(n, "str_cmp") == 0 then rt1(cg, "i64", "rill_str_cmp", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt) else builtin_ir3(cg, n, vts)
+
+fn bool_to_str_ir(ts) = match ts
+  TS2(v8, cg) -> rt1(cg, "ptr", "rill_bool_to_str", "i8 " + v8, YStr)
+
+fn show_ir(cg, vts) =
+  t = vt1t(vts)
+  if is_yint(t) then rt1(cg, "ptr", "rill_int_to_str", "i64 " + vt1(vts), YStr) else if is_yfloat(t) then rt1(cg, "ptr", "rill_float_to_str", "double " + vt1(vts), YStr) else if is_ybool(t) then bool_to_str_ir(bool_arg(cg, vt1(vts))) else if is_ystr(t) then RV(cg, vt1(vts), YStr) else rcdie("`show` on this type is not supported yet")
+
+fn builtin_ir3(cg, n, vts) =
+  if str_cmp(n, "str_to_int") == 0 then rt1(cg, "i64", "rill_str_to_int", "ptr " + vt1(vts), YInt) else if str_cmp(n, "str_to_float") == 0 then rt1(cg, "double", "rill_str_to_float", "ptr " + vt1(vts), YFloat) else if str_cmp(n, "chr") == 0 then rt1(cg, "ptr", "rill_chr", "i64 " + vt1(vts), YStr) else if str_cmp(n, "to_float") == 0 then cast_ir(cg, "sitofp i64 ", " to double", vt1(vts), YFloat) else if str_cmp(n, "to_int") == 0 then cast_ir(cg, "fptosi double ", " to i64", vt1(vts), YInt) else if str_cmp(n, "bit_and") == 0 then bit_ir(cg, "and", vts) else if str_cmp(n, "bit_or") == 0 then bit_ir(cg, "or", vts) else if str_cmp(n, "bit_xor") == 0 then bit_ir(cg, "xor", vts) else if str_cmp(n, "shl") == 0 then bit_ir(cg, "shl", vts) else if str_cmp(n, "shr") == 0 then bit_ir(cg, "lshr", vts) else if str_cmp(n, "bit_not") == 0 then cast_ir(cg, "xor i64 ", ", -1", vt1(vts), YInt) else builtin_ir4(cg, n, vts)
+
+fn cast_ir(cg, pre, post, v, t) =
+  match cg_tmp(cg)
+    TS2(r, cg2) -> RV(cg_line(cg2, r + " = " + pre + v + post), r, t)
+
+fn bit_ir(cg, op, vts) =
+  match cg_tmp(cg)
+    TS2(r, cg2) -> RV(cg_line(cg2, r + " = " + op + " i64 " + vt1(vts) + ", " + vt2(vts)), r, YInt)
+
+fn builtin_ir4(cg, n, vts) =
+  if str_cmp(n, "exit") == 0 then rt0(cg, "rill_exit", "i64 " + vt1(vts)) else if str_cmp(n, "arg_count") == 0 then rt1(cg, "i64", "rill_arg_count", "", YInt) else if str_cmp(n, "arg") == 0 then rt1(cg, "ptr", "rill_arg", "i64 " + vt1(vts), YStr) else if str_cmp(n, "read_file_raw") == 0 then rt1(cg, "ptr", "rill_read_file", "ptr " + vt1(vts), YStr) else if str_cmp(n, "io_ok") == 0 then i8_result(rt1(cg, "i8", "rill_io_ok", "", YInt)) else if str_cmp(n, "write_file") == 0 then i8_result(rt1(cg, "i8", "rill_write_file", "ptr " + vt1(vts) + ", ptr " + vt2(vts), YInt)) else if str_cmp(n, "read_line") == 0 then rt1(cg, "ptr", "rill_read_line", "", YStr) else builtin_ir5(cg, n, vts)
+
+fn builtin_ir5(cg, n, vts) =
+  if str_cmp(n, "alloc_bytes") == 0 then rt1(cg, "ptr", "rill_alloc_bytes", "i64 " + vt1(vts), YPtr) else if str_cmp(n, "free_ptr") == 0 then rt0(cg, "rill_free_ptr", "ptr " + vt1(vts)) else if str_cmp(n, "null_ptr") == 0 then rt1(cg, "ptr", "rill_null_ptr", "", YPtr) else if str_cmp(n, "is_null") == 0 then i8_result(rt1(cg, "i8", "rill_is_null", "ptr " + vt1(vts), YInt)) else if str_cmp(n, "ptr_offset") == 0 then rt1(cg, "ptr", "rill_ptr_offset", "ptr " + vt1(vts) + ", i64 " + vt2(vts), YPtr) else builtin_ir6(cg, n, vts)
+
+fn builtin_ir6(cg, n, vts) =
+  if str_cmp(n, "poke_i8") == 0 || str_cmp(n, "poke_i16") == 0 || str_cmp(n, "poke_i32") == 0 || str_cmp(n, "poke_i64") == 0 then rt0(cg, "rill_" + n, "ptr " + vt1(vts) + ", i64 " + vt2(vts) + ", i64 " + vt3(vts)) else if str_cmp(n, "poke_f32") == 0 || str_cmp(n, "poke_f64") == 0 then rt0(cg, "rill_" + n, "ptr " + vt1(vts) + ", i64 " + vt2(vts) + ", double " + vt3(vts)) else if str_cmp(n, "peek_f32") == 0 || str_cmp(n, "peek_f64") == 0 then rt1(cg, "double", "rill_" + n, "ptr " + vt1(vts) + ", i64 " + vt2(vts), YFloat) else if str_cmp(n, "peek_i8") == 0 || str_cmp(n, "peek_u8") == 0 || str_cmp(n, "peek_i16") == 0 || str_cmp(n, "peek_u16") == 0 || str_cmp(n, "peek_i32") == 0 || str_cmp(n, "peek_u32") == 0 || str_cmp(n, "peek_i64") == 0 then rt1(cg, "i64", "rill_" + n, "ptr " + vt1(vts) + ", i64 " + vt2(vts), YInt) else rcdie("built-in `" + n + "` is not supported yet")
+
+# ---- tail position ----------------------------------------------------------
+
+fn emit_ret(cx, st, env, e, cg, rt) = match e
+  EIf(c, t, e2) -> ret_if(cx, st, env, c, t, e2, cg, rt)
+  EBlock(ss) -> ret_block(cx, st, env, ss, cg, rt)
+  ECall(n, args, ln, p) -> ret_call(cx, st, env, n, args, cg, rt, ECall(n, args, ln, p))
+  _ -> ret_plain(emit(cx, st, env, e, cg), rt)
+
+fn ret_plain(ev, rt) = match ev
+  RV(cg, v, _) -> if is_yunit(rt) then cg_line(cg, "ret void") else cg_line(cg, "ret " + tystr(rt) + " " + v)
+
+fn ret_if(cx, st, env, c, t, e2, cg, rt) =
+  match emit(cx, st, env, c, cg)
+    RV(cg1, cv, _) -> ret_if2(cg_id(cg1), cx, st, env, cv, t, e2, rt)
+
+fn ret_if2(is, cx, st, env, cv, t, e2, rt) = match is
+  IS(k, cg) ->
+    thn = "then" + int_to_str(k)
+    els = "else" + int_to_str(k)
+    cg1 = cg_label(cg_line(cg, "br i1 " + cv + ", label %" + thn + ", label %" + els), thn)
+    cg2 = emit_ret(cx, st, env, t, cg1, rt)
+    emit_ret(cx, st, env, e2, cg_label(cg2, els), rt)
+
+fn ret_block(cx, st, env, ss, cg, rt) = match ss
+  Cons(SBind(n, v, _), rest) -> ret_block_bind(emit(cx, st, env, v, cg), cx, st, env, n, rest, rt)
+  Cons(SExpr(v), Nil) -> emit_ret(cx, st, env, v, cg, rt)
+  Cons(SExpr(v), rest) -> ret_block_step(emit(cx, st, env, v, cg), cx, st, env, rest, rt)
+  Nil -> cg_line(cg, "ret void")
+
+fn ret_block_bind(ev, cx, st, env, n, rest, rt) = match ev
+  RV(cg, v, t) -> ret_block(cx, st, sput(env, n, VT(v, t)), rest, cg, rt)
+
+fn ret_block_step(ev, cx, st, env, rest, rt) = match ev
+  RV(cg, _, _) -> ret_block(cx, st, env, rest, cg, rt)
+
+fn ret_call(cx, st, env, n, args, cg, rt, orig) =
+  match sget(env, n)
+    Some(_) -> rcdie("calling a bound value is not supported yet: `" + n + "`")
+    None -> ret_call2(sget(cx_fnidx(cx), n), cx, st, env, n, args, cg, rt, orig)
+
+fn ret_call2(o, cx, st, env, n, args, cg, rt, orig) = match o
+  Some(idx) -> ret_user(emit_user_call(cx, st, env, n, idx, args, cg, true), rt)
+  None -> ret_plain(emit(cx, st, env, orig, cg), rt)
+
+fn ret_user(ev, rt) = match ev
+  RV(cg, v, t) -> if is_yunit(t) then cg_line(cg, "ret void") else cg_line(cg, "ret " + tystr(t) + " " + v)
+
+# ---- functions and the program ----------------------------------------------
+
+fn sig_params(st, idx) = match st_sig(st, idx)
+  SigG(ps, _, ngen) -> sig_params2(st, ps, ngen)
+  SigP(ps, _) -> map(ps, \p -> dz(st, p))
+
+fn sig_params2(st, ps, ngen) =
+  if ngen > 0 then rcdie("generic functions are not supported yet") else map(ps, \p -> dz(st, p))
+
+type PE
+  PE(Str, SM(VT))
+
+fn param_env(names, tys, first, sig, env) = match names
+  Nil -> PE(sig, env)
+  Cons(Par(n, _), rest) -> param_env2(rest, tys, first, sig, env, n)
+
+fn param_env2(rest, tys, first, sig, env, n) = match tys
+  Cons(t, trest) ->
+    piece = tystr(t) + " %\"" + n + "\""
+    param_env(rest, trest, false, if first then piece else sig + ", " + piece, sput(env, n, VT("%\"" + n + "\"", t)))
+  Nil -> PE(sig, env)
+
+fn emit_one_fn(cx, st, f, idx, gid, globs) = match f
+  FnD(name, _, ps, _, body, _) ->
+    ptys = sig_params(st, idx)
+    rt = if str_cmp(name, "main") == 0 then YUnit else sig_ret(st, idx)
+    emit_one_fn2(param_env(ps, ptys, true, "", SLeaf), cx, st, name, body, rt, gid, globs)
+
+type FR
+  FR(Str, List(Str), Int)
+
+fn emit_one_fn2(pe, cx, st, name, body, rt, gid, globs) = match pe
+  PE(sig, env) ->
+    nm = if str_cmp(name, "main") == 0 then "rill_main" else "\"" + name + "\""
+    cg = emit_ret(cx, st, env, body, CG(0, "entry", Nil, globs, gid), rt)
+    emit_one_fn3(cg, nm, rt, sig)
+
+fn emit_one_fn3(cg, nm, rt, sig) = match cg
+  CG(_, _, code, globs, gid) -> FR("define " + tystr(rt) + " @" + nm + "(" + sig + ") {\nentry:\n" + cat(map(reverse(code), \l -> l + "\n")) + "}\n\n", globs, gid)
+
+fn emit_fns(cx, st, fns, reach, i, gid, globs, out) = match fns
+  Nil -> FR(cat(reverse(out)), globs, gid)
+  Cons(f, rest) -> emit_fns2(cx, st, f, rest, reach, i, gid, globs, out)
+
+fn emit_fns2(cx, st, f, rest, reach, i, gid, globs, out) =
+  if shas(reach, fnd_name(f)) then emit_fns3(emit_one_fn(cx, st, f, i, gid, globs), cx, st, rest, reach, i, out) else emit_fns(cx, st, rest, reach, i + 1, gid, globs, out)
+
+fn emit_fns3(fr, cx, st, rest, reach, i, out) = match fr
+  FR(text, globs, gid) -> emit_fns(cx, st, rest, reach, i + 1, gid, globs, Cons(text, out))
+
+fn emit_program(cx, st, fns) =
+  match emit_fns(cx, st, fns, reach_from_main(fns, cx_fnidx(cx)), 0, 0, Nil, Nil)
+    FR(body, globs, _) -> ir_header() + cat(map(reverse(globs), \g -> g + "\n")) + "\n" + ir_declares() + body + ir_main_wrapper()
+
+fn ir_header() =
+  "; ModuleID = 'rill'\nsource_filename = \"rill\"\n\n@rill_parallel_build = global i8 0\n"
+
+fn ir_declares() =
+  "declare void @rill_println_str(ptr)\ndeclare void @rill_println_int(i64)\ndeclare void @rill_println_float(double)\ndeclare void @rill_println_bool(i8)\ndeclare void @rill_print_str(ptr)\ndeclare void @rill_print_int(i64)\ndeclare void @rill_print_float(double)\ndeclare void @rill_print_bool(i8)\ndeclare i8 @rill_str_eq(ptr, ptr)\ndeclare ptr @rill_str_concat(ptr, ptr)\ndeclare i64 @rill_str_len(ptr)\ndeclare ptr @rill_int_to_str(i64)\ndeclare ptr @rill_float_to_str(double)\ndeclare ptr @rill_bool_to_str(i8)\ndeclare i64 @rill_str_get(ptr, i64)\ndeclare ptr @rill_str_sub(ptr, i64, i64)\ndeclare i64 @rill_str_find(ptr, ptr)\ndeclare i64 @rill_str_cmp(ptr, ptr)\ndeclare i64 @rill_str_to_int(ptr)\ndeclare double @rill_str_to_float(ptr)\ndeclare ptr @rill_chr(i64)\ndeclare void @rill_set_args(i64, ptr)\ndeclare i64 @rill_arg_count()\ndeclare ptr @rill_arg(i64)\ndeclare i8 @rill_io_ok()\ndeclare ptr @rill_read_file(ptr)\ndeclare i8 @rill_write_file(ptr, ptr)\ndeclare ptr @rill_read_line()\ndeclare void @rill_exit(i64)\ndeclare void @rill_free_ptr(ptr)\ndeclare ptr @rill_null_ptr()\ndeclare i8 @rill_is_null(ptr)\ndeclare ptr @rill_alloc_bytes(i64)\ndeclare ptr @rill_ptr_offset(ptr, i64)\ndeclare void @rill_poke_i8(ptr, i64, i64)\ndeclare void @rill_poke_i16(ptr, i64, i64)\ndeclare void @rill_poke_i32(ptr, i64, i64)\ndeclare void @rill_poke_i64(ptr, i64, i64)\ndeclare void @rill_poke_f32(ptr, i64, double)\ndeclare void @rill_poke_f64(ptr, i64, double)\ndeclare i64 @rill_peek_i8(ptr, i64)\ndeclare i64 @rill_peek_u8(ptr, i64)\ndeclare i64 @rill_peek_i16(ptr, i64)\ndeclare i64 @rill_peek_u16(ptr, i64)\ndeclare i64 @rill_peek_i32(ptr, i64)\ndeclare i64 @rill_peek_u32(ptr, i64)\ndeclare i64 @rill_peek_i64(ptr, i64)\ndeclare double @rill_peek_f32(ptr, i64)\ndeclare double @rill_peek_f64(ptr, i64)\ndeclare void @rill_rt_run_direct(ptr)\ndeclare void @rill_alloc_report()\n\n"
+
+fn ir_main_wrapper() =
+  "define i32 @main(i32 %0, ptr %1) {\nentry:\n  %argc = sext i32 %0 to i64\n  call void @rill_set_args(i64 %argc, ptr %1)\n  call void @rill_rt_run_direct(ptr @rill_main)\n  call void @rill_alloc_report()\n  ret i32 0\n}\n"

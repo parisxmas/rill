@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A code generator in Rill.** The third compiler stage, begun:
+  `selfhost/rillc.rill` compiles the scalar subset — Int, Float, Bool, Str,
+  functions, blocks, `if`, tail calls, the scalar built-ins — to LLVM IR
+  text that `cc` links against `librill_runtime.a`. It runs the self-hosted
+  type checker first, so every emitted type is concrete, and generates only
+  what `main` reaches. `selfhost/check_rillc.sh` proves it behaviorally:
+  fourteen programs built by both compilers print the same bytes, including
+  a five-million-iteration tail loop and a million-deep mutual recursion.
+  All three stages of the front end now exist in Rill, each with its own
+  oracle against the Rust implementation.
+
 - **The type checker, self-hosted.** The second compiler stage written in
   Rill: module loading (`tyck_load.rill` — depth-first imports, aliased
   modules qualified to `alias.name`, the prelude merged with transitive

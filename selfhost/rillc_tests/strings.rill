@@ -1,0 +1,10 @@
+fn shout(s) = s + "!"
+
+fn main() =
+  println(shout("hey"))
+  println(str_len("merhaba"))
+  println(str_sub("kingfisher", 4, 6))
+  println(str_find("kingfisher", "fish"))
+  println(int_to_str(42) + "nd")
+  println(str_to_int("123") + 1)
+  println(chr(82) + chr(105) + chr(108) + chr(108))

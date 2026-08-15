@@ -1,0 +1,7 @@
+fn even(n) = n == 0 || odd(n - 1)
+
+fn odd(n) = if n == 0 then false else even(n - 1)
+
+fn main() =
+  println(even(1000000))
+  println(odd(1000001))

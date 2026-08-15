@@ -1,0 +1,7 @@
+fn main() =
+  println(bit_and(12, 10))
+  println(bit_or(12, 10))
+  println(bit_xor(12, 10))
+  println(bit_not(0))
+  println(shl(1, 10))
+  println(shr(-1, 60))

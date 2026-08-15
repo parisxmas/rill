@@ -1,0 +1,3 @@
+fn steps(n, k) = if n == 1 then k else steps(if n % 2 == 0 then n / 2 else 3 * n + 1, k + 1)
+
+fn main() = println(steps(27, 0))

@@ -1,0 +1,4 @@
+fn main() =
+  println("tab\there")
+  println("line1\nline2")
+  println("quote \" and slash \\")

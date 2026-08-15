@@ -1,0 +1,6 @@
+fn main() =
+  println("abc" == "abc")
+  println("abc" == "abd")
+  println("abc" != "abd")
+  println(if "apple" < "banana" then "sorted" else "not")
+  println(str_cmp("b", "a"))

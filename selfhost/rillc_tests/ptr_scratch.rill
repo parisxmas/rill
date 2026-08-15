@@ -1,0 +1,7 @@
+fn main() =
+  p = alloc_bytes(16)
+  poke_i64(p, 0, 12345)
+  poke_f64(p, 8, 2.5)
+  println(peek_i64(p, 0))
+  println(peek_f64(p, 8))
+  free_ptr(p)

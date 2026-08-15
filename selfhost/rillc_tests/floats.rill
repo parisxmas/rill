@@ -1,0 +1,9 @@
+fn area(r) = 3.14159 * r * r
+
+fn main() =
+  println(area(2.0))
+  println(1.5 + 2.25)
+  println(10.0 / 4.0)
+  println(to_float(7) / 2.0)
+  println(to_int(9.99))
+  println(0.1 + 0.2)

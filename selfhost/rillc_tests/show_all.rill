@@ -1,0 +1,5 @@
+fn main() =
+  println(show(42))
+  println(show(2.5))
+  println(show(true))
+  println(show("plain"))

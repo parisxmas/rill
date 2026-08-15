@@ -57,3 +57,30 @@ and the same first error, word for word. The only known divergence is path
 canonicalization: Rust resolves symlinks through the OS, this port folds
 `.`/`..` textually, so messages naming files can differ when symlinks are
 involved.
+
+## The code generator
+
+The third stage, begun: `rillc.rill` compiles the scalar subset of the
+language — Int, Float, Bool, Str, functions, blocks, `if`, tail calls and
+the scalar built-ins — to LLVM IR text, ready for
+`cc out.ll librill_runtime.a`. It runs the self-hosted checker first, so
+every type is concrete before a line is emitted; only functions reachable
+from `main` are generated, which is what lets the generic prelude sit
+unused in a scalar program. Anything outside the subset dies with its name:
+data types and `match`, lambdas, channels, `spawn`, generics. Heap strings
+are not yet released — Perceus insertion arrives with the data-type
+milestone.
+
+```sh
+./selfhost/check_rillc.sh   # both compilers over rillc_tests/, output-diffed
+```
+
+The proof here is behavioral: every test program builds both ways and must
+print the same bytes and exit the same way. The suite includes a
+five-million-iteration tail loop and a million-deep mutual recursion, so
+`tail call` emission is load-bearing, not decorative.
+
+With this, all three compiler stages exist in Rill: parse (proven
+byte-identical), type-check (proven error-identical), and code generation
+(proven behavior-identical on its subset). The runtime stays Rust, as
+runtimes do.

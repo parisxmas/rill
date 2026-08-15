@@ -1,0 +1,7 @@
+fn main() =
+  println(2 + 3 * 4)
+  println((2 + 3) * 4)
+  println(17 / 5)
+  println(17 % 5)
+  println(-7)
+  println(1000000007 * 3)
