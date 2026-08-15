@@ -72,12 +72,11 @@ echo "formatter built by self-built rillc: byte-identical: $fok   diverging: $fb
 bad=$((bad+fbad))
 
 # Every runnable example, both compilers, output- and leak-diffed.
-# `callbacks` needs C function-pointer callbacks (not yet emitted) and
-# `echo_server` blocks forever; both sit out.
+# `echo_server` blocks forever waiting for a connection, so it sits out.
 eok=0; ebad=0
 for f in "$root"/examples/*.rill; do
   n=$(basename "$f" .rill)
-  case "$n" in callbacks|echo_server) continue;; esac
+  case "$n" in echo_server) continue;; esac
   "$rill" build "$f" -o "$work/e.$n.rust" >/dev/null 2>&1 || continue
   "$rillc" build "$f" -o "$work/e.$n" 2>/dev/null \
     || { ebad=$((ebad+1)); echo "EXAMPLE FAILS TO BUILD: $n"; continue; }

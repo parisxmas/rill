@@ -76,7 +76,7 @@ checker left polymorphic (a `die` that never returns) well typed.
 
 The proof has three tiers:
 
-1. **Behavior**: thirty-seven programs build under both compilers and print
+1. **Behavior**: thirty-nine programs build under both compilers and print
    the same bytes — among them a five-million-iteration tail loop, a
    million-deep mutual recursion and a million-element list fold.
 2. **Fixpoint**: `rillc` compiles itself; the self-built compiler compiles
@@ -100,10 +100,13 @@ generated structural equality whose last field compares by tail call;
 form when none does; `Buf` maps to the runtime's counted buffers; and
 channels, `spawn` and `select` speak the strand runtime's ABI directly —
 one 8-byte word per message, an environment box per strand, the scheduler
-entry point flipped on when any of it appears. A fourth proof tier runs
+entry point flipped on when any of it appears. C callbacks cross as the
+address of a trampoline emitted while compiling — C keeps no environment, so
+which function it is has to be settled by then, and a helper that forwards a
+callback is emitted once per callback it is handed. A fourth proof tier runs
 every runnable example under both compilers and requires identical output
-and a clean heap. What sits out: C function-pointer callbacks.
-The runtime stays Rust, as runtimes do.
+and a clean heap; `echo_server`, which waits forever for a connection, is the
+only one that sits out. The runtime stays Rust, as runtimes do.
 
 ## The driver
 

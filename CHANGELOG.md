@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The self-hosted compiler calls back.** `rillc` emits C-ABI trampolines,
+  the last thing it could not compile: `Fn(...)` in a foreign signature is a
+  code pointer with nowhere to keep an environment, so the trampoline widens
+  C's arguments to Rill's, calls the function, and narrows the answer back.
+  Which function it is has to be settled while compiling, which is what the
+  new fixpoint over the program works out — every parameter that reaches a C
+  callback slot, directly or by being handed on, is marked, and a function
+  with one is emitted once per callback it is called with. `examples/
+  callbacks.rill` now joins the oracle's example tier: twenty-seven of
+  twenty-seven build under both compilers, print the same bytes and leave a
+  clean heap. The self-hosted compiler now covers the language.
+
 - **Long lists no longer crash on the way out.** The generated drop for a
   data type released its heap fields and *then* freed the box, so tearing
   down a list cost a stack frame per link and a half-million-element one

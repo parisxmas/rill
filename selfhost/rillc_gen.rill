@@ -22,9 +22,9 @@
 # - Memory is reference counted: a binding owns its value and releases it at
 #   the end of its scope, arguments are consumed by the callee, and a tail
 #   call releases the whole frame before it leaves.
-#
-# Not yet: C function-pointer callbacks. Each unsupported form dies with its
-# name.
+# - A C callback is the address of a trampoline emitted here, so which
+#   function it is has to be settled while compiling; a function that hands
+#   a parameter to C is emitted once per callback it is called with.
 
 import "tyck_load"
 import "tyck_infer"
@@ -172,10 +172,16 @@ type CG
   CG(Int, Str, List(Str), List(Str), Int, List(Str), List(WI), SM(Bool))
 
 type WI
-  WI(Str, Int, List(Ty2))
+  WI(Str, Int, List(Ty2), List(CB))
   WR(Int, List(Ty2))
   WE(Int, List(Ty2))
   WS(Int, List(Ty2))
+
+# A callback pinned to a parameter: which parameter, and the symbol of the
+# function it was handed. A function with one of these is emitted once per
+# distinct set of them, because each is a different body.
+type CB
+  CB(Int, Str)
 
 type RV
   RV(CG, Str, Ty2)
@@ -222,9 +228,18 @@ fn str_listed(l, s) = match l
 fn cg_aux(cg, def) = match cg
   CG(nid, lbl, code, gl, gid, aux, pend, seen) -> CG(nid, lbl, code, gl, gid, Cons(def, aux), pend, seen)
 
-fn cg_want(cg, sym, name, idx, targs) = match cg
+fn cg_want(cg, sym, name, idx, targs, binds) = match cg
   CG(nid, lbl, code, gl, gid, aux, pend, seen) ->
-    if shas(seen, sym) then CG(nid, lbl, code, gl, gid, aux, pend, seen) else CG(nid, lbl, code, gl, gid, aux, Cons(WI(name, idx, targs), pend), sput(seen, sym, true))
+    if shas(seen, sym) then CG(nid, lbl, code, gl, gid, aux, pend, seen) else CG(nid, lbl, code, gl, gid, aux, Cons(WI(name, idx, targs, binds), pend), sput(seen, sym, true))
+
+# The `seen` map does double duty: besides the symbols already queued it
+# carries flags keyed by names no Rill identifier can spell — the strand
+# flag, the callback-parameter marks, the trampolines already emitted.
+fn cg_mark(cg, k) = match cg
+  CG(nid, lbl, code, gl, gid, aux, pend, seen) -> CG(nid, lbl, code, gl, gid, aux, pend, sput(seen, k, true))
+
+fn cg_marked(cg, k) = match cg
+  CG(_, _, _, _, _, _, _, seen) -> shas(seen, k)
 
 # A fresh function-local frame carrying the shared half of another.
 fn cg_sub(cg) = match cg
@@ -959,35 +974,44 @@ fn emit_call6(o, cx, st, env, n, args, cg) = match o
 
 fn ct_ll(w) = match w
   CW(nm) -> ctw_ll(nm)
-  CFn(_, _) -> rcdie("callbacks are not supported yet")
+  CFn(_, _) -> "ptr"
 
 fn ctw_ll(nm) =
   if str_cmp(nm, "I8") == 0 || str_cmp(nm, "U8") == 0 || str_cmp(nm, "Bool") == 0 then "i8" else if str_cmp(nm, "I16") == 0 || str_cmp(nm, "U16") == 0 then "i16" else if str_cmp(nm, "I32") == 0 || str_cmp(nm, "U32") == 0 then "i32" else if str_cmp(nm, "F32") == 0 then "float" else if str_cmp(nm, "F64") == 0 then "double" else if str_cmp(nm, "Ptr") == 0 then "ptr" else if str_cmp(nm, "Unit") == 0 then "void" else "i64"
 
 fn emit_extern(cx, st, env, n, args, cg, cps, cret) =
-  match emit_args(cx, st, env, args, Nil, 0, cg, ILeaf, Nil)
-    AV(cg1, vts, _) -> emit_extern2(cg_global_once(cg1, "declare " + ct_ll(cret) + " @" + n + "(" + ext_decl_sig(cps, "") + ")"), n, vts, cps, cret)
+  match ext_walk(cx, st, env, args, cps, cg_global_once(cg, "declare " + ct_ll(cret) + " @" + n + "(" + ext_decl_sig(cps, "") + ")"), "")
+    TS2(rendered, cg1) -> ext_call(cg1, n, rendered, cret)
 
 fn cg_global_once(cg, def) = if cg_has_global(cg, def) then cg else cg_global(cg, def)
 
 fn ext_decl_sig(cps, acc) = match cps
   Nil -> acc
-  Cons(w, rest) -> ext_decl_sig(rest, if str_cmp(acc, "") == 0 then ct_ll(w) else acc + ", " + ct_ll(w))
+  Cons(w, rest) -> ext_decl_sig(rest, ext_join(acc, ct_ll(w)))
 
-fn emit_extern2(cg, n, vts, cps, cret) =
-  match ext_args(cg, vts, cps, "")
-    TS2(rendered, cg1) -> ext_call(cg1, n, rendered, cret)
+fn ext_join(acc, piece) = if str_cmp(acc, "") == 0 then piece else acc + ", " + piece
 
-fn ext_args(cg, vts, cps, acc) = match vts
+# The arguments, paired with the declared widths. A callback argument is not
+# a value at all: it becomes the address of a trampoline, which is why the
+# two lists are walked together rather than every argument being emitted
+# first.
+fn ext_walk(cx, st, env, args, cps, cg, acc) = match args
   Nil -> TS2(acc, cg)
-  Cons(VT(v, t), vrest) -> ext_args2(cg, v, t, vrest, cps, acc)
+  Cons(a, rest) -> ext_walk2(a, rest, cx, st, env, cps, cg, acc)
 
-fn ext_args2(cg, v, t, vrest, cps, acc) = match cps
-  Cons(w, wrest) -> ext_args3(ext_narrow(cg, v, t, w), w, vrest, wrest, acc)
+fn ext_walk2(a, rest, cx, st, env, cps, cg, acc) = match cps
+  Cons(w, wrest) -> ext_walk3(ext_one(cx, st, env, a, w, cg), cx, st, env, rest, wrest, acc, w)
   Nil -> TS2(acc, cg)
 
-fn ext_args3(ts, w, vrest, wrest, acc) = match ts
-  TS2(cv, cg) -> ext_args(cg, vrest, wrest, if str_cmp(acc, "") == 0 then ct_ll(w) + " " + cv else acc + ", " + ct_ll(w) + " " + cv)
+fn ext_walk3(ts, cx, st, env, rest, wrest, acc, w) = match ts
+  TS2(cv, cg) -> ext_walk(cx, st, env, rest, wrest, cg, ext_join(acc, ct_ll(w) + " " + cv))
+
+fn ext_one(cx, st, env, a, w, cg) = match w
+  CFn(ps, r) -> ext_callback(cx, st, env, a, ps, r, cg)
+  CW(_) -> ext_value(emit(cx, st, env, a, cg), w)
+
+fn ext_value(ev, w) = match ev
+  RV(cg, v, t) -> ext_narrow(cg, v, t, w)
 
 fn ext_narrow(cg, v, t, w) =
   ll = ct_ll(w)
@@ -1013,6 +1037,229 @@ fn ext_sz(w) = match w
 
 fn ext_wide2(ts, tail2, t) = match ts
   TS2(r, cg) -> RV(cg_line(cg, r + tail2), r, t)
+
+# ---- callbacks --------------------------------------------------------------
+#
+# `Fn(...)` in a foreign signature is a C function pointer. C has nowhere to
+# keep an environment, so what crosses is a bare code pointer: the address of
+# a trampoline that widens C's arguments to Rill's, calls the function, and
+# narrows the answer back. Which function that is has to be settled while
+# compiling — a closure cannot cross.
+#
+# The function may be named at the call, or arrive as a parameter. The second
+# is what `sp_analyze` below is for: a helper that forwards a callback is
+# emitted once per callback it is handed, and its parameter then names a
+# function as surely as a literal would.
+
+fn ext_callback(cx, st, env, a, ps, r, cg) =
+  match pin_of(cx, st, env, a, YFn(map(ps, \p -> ct_rill(p)), ct_rill(r)), cg)
+    TS2(sym, cg1) -> ext_tramp(cg1, sym, ps, r)
+
+# One trampoline per (function, C signature): the same function handed over
+# at two widths needs two of them.
+fn ext_tramp(cg, sym, ps, r) = ext_tramp2(sym + "$c" + tr_tag(ps, r), cg, sym, ps, r)
+
+fn ext_tramp2(nm, cg, sym, ps, r) =
+  TS2("@\"" + nm + "\"", if cg_marked(cg, "tr." + nm) then cg else cg_mark(cg_aux(cg, tr_def(nm, sym, ps, r)), "tr." + nm))
+
+fn tr_tag(ps, r) = cat(map(ps, \p -> "_" + ct_name(p))) + "_" + ct_name(r)
+
+fn tr_def(nm, sym, ps, r) =
+  "define private " + ct_ll(r) + " @\"" + nm + "\"(" + tr_sig(ps, 0, "") + ") {\n\"rc.entry\":\n" + tr_widen(ps, 0, "") + tr_call(sym, ps, r) + "}\n\n"
+
+fn tr_sig(ps, i, acc) = match ps
+  Nil -> acc
+  Cons(w, rest) -> tr_sig(rest, i + 1, ext_join(acc, ct_ll(w) + " %a" + int_to_str(i)))
+
+# A width C and Rill spell the same way arrives ready to use; the rest take
+# the conversions an `extern` result takes, in the same direction.
+fn tr_same(w) =
+  ll = ct_ll(w)
+  str_cmp(ll, "i64") == 0 || str_cmp(ll, "double") == 0 || str_cmp(ll, "ptr") == 0
+
+fn tr_widen(ps, i, acc) = match ps
+  Nil -> acc
+  Cons(w, rest) -> tr_widen(rest, i + 1, acc + tr_widen1(w, i))
+
+fn tr_widen1(w, i) =
+  if tr_same(w) then "" else "  %w" + int_to_str(i) + " = " + tr_wconv(w) + " " + ct_ll(w) + " %a" + int_to_str(i) + " to " + tystr(ct_rill(w)) + "\n"
+
+fn tr_wconv(w) =
+  if str_cmp(ct_ll(w), "float") == 0 then "fpext" else if ct_is_bool(w) then "trunc" else ext_sz(w)
+
+fn tr_args(ps, i, acc) = match ps
+  Nil -> acc
+  Cons(w, rest) -> tr_args(rest, i + 1, ext_join(acc, tystr(ct_rill(w)) + " " + tr_arg(w, i)))
+
+fn tr_arg(w, i) = if tr_same(w) then "%a" + int_to_str(i) else "%w" + int_to_str(i)
+
+fn tr_call(sym, ps, r) =
+  if str_cmp(ct_ll(r), "void") == 0 then "  tail call void @\"" + sym + "\"(" + tr_args(ps, 0, "") + ")\n  ret void\n" else tr_ret(sym, tr_args(ps, 0, ""), r)
+
+fn tr_ret(sym, args, r) =
+  rt = tystr(ct_rill(r))
+  call = "  %r = call " + rt + " @\"" + sym + "\"(" + args + ")\n"
+  if tr_same(r) then call + "  ret " + rt + " %r\n" else call + "  %n = " + tr_nconv(r) + " " + rt + " %r to " + ct_ll(r) + "\n  ret " + ct_ll(r) + " %n\n"
+
+fn tr_nconv(w) =
+  if str_cmp(ct_ll(w), "float") == 0 then "fptrunc" else if ct_is_bool(w) then "zext" else "trunc"
+
+# Settling which function a callback argument names: a parameter the caller
+# already pinned, or a top-level function named right here.
+fn pin_of(cx, st, env, a, want, cg) = match a
+  EVar(n, _) -> pin_name(cx, st, env, n, want, cg)
+  _ -> rcdie("a callback must be a function known while compiling — name a top-level function, or take one as a parameter and let the callers name it")
+
+fn pin_name(cx, st, env, n, want, cg) = match sget(env, cb_key(n))
+  Some(VT(sym, _)) -> TS2(sym, cg)
+  None -> pin_top(sget(cx_fnidx(cx), n), cx, st, n, want, cg)
+
+fn pin_top(o, cx, st, n, want, cg) = match o
+  Some(i) -> pin_inst(sig_parts(st, i), cx, n, i, want, cg)
+  None -> rcdie("`" + n + "` is not a function that can cross to C as a callback")
+
+fn pin_inst(sig, cx, n, i, want, cg) = match sig
+  SigG(sps, sret, ngen) -> pin_inst2(n, i, glist(uni(YFn(sps, sret), want, ILeaf), ngen), cg)
+  SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
+
+fn pin_inst2(n, i, targs, cg) = pin_inst3(mangle(n, targs), n, i, targs, cg)
+
+fn pin_inst3(sym, n, i, targs, cg) = TS2(sym, cg_want(cg, sym, n, i, targs, Nil))
+
+# ---- which parameters must be functions known while compiling ---------------
+#
+# A fixpoint over the program: a parameter is marked when its name appears in
+# a C callback slot, or is handed to a parameter already marked. A parameter
+# the body rebinds is never marked, so a marked name certainly means the
+# parameter. The marks live in the shared `seen` map, under keys with a dot
+# in them — which no Rill identifier has.
+
+fn sp_key(idx, pi) = "sp." + int_to_str(idx) + "." + int_to_str(pi)
+
+fn cb_key(n) = "cb." + n
+
+type SPR
+  SPR(SM(Bool), Bool)
+
+fn sp_analyze(cx, fns) = sp_fix(cx, fns, SLeaf)
+
+fn sp_fix(cx, fns, need) = match sp_round(cx, fns, 0, need, false)
+  SPR(need2, changed) -> if changed then sp_fix(cx, fns, need2) else need2
+
+fn sp_round(cx, fns, i, need, changed) = match fns
+  Nil -> SPR(need, changed)
+  Cons(f, rest) -> sp_one(f, rest, cx, i, need, changed)
+
+fn sp_one(f, rest, cx, i, need, changed) = match f
+  FnD(_, _, ps, _, body, _) -> sp_next(sp_mark(ps, 0, sp_used(cx, need, body, Nil), sb_names(body, SLeaf), i, need, changed), rest, cx, i)
+
+fn sp_next(spr, rest, cx, i) = match spr
+  SPR(need, changed) -> sp_round(cx, rest, i + 1, need, changed)
+
+fn sp_mark(ps, pi, used, rebound, i, need, changed) = match ps
+  Nil -> SPR(need, changed)
+  Cons(Par(n, _), rest) ->
+    if !shas(need, sp_key(i, pi)) && !shas(rebound, n) && str_listed(used, n) then sp_mark(rest, pi + 1, used, rebound, i, sput(need, sp_key(i, pi), true), true) else sp_mark(rest, pi + 1, used, rebound, i, need, changed)
+
+# Names this body uses where a compile-time function is required.
+fn sp_used(cx, need, e, acc) = sp_kids(cx, need, e_kids(e), sp_here(cx, need, e, acc))
+
+fn sp_kids(cx, need, es, acc) = match es
+  Nil -> acc
+  Cons(k, rest) -> sp_kids(cx, need, rest, sp_used(cx, need, k, acc))
+
+fn sp_here(cx, need, e, acc) = match e
+  ECall(n, args, _, _) -> sp_call(cx, need, n, args, acc)
+  _ -> acc
+
+fn sp_call(cx, need, n, args, acc) = match sget(cx_externs(cx), n)
+  Some(ES(cps, _)) -> sp_ext(args, cps, acc)
+  None -> sp_user(sget(cx_fnidx(cx), n), need, args, 0, acc)
+
+fn sp_ext(args, cps, acc) = match args
+  Nil -> acc
+  Cons(a, rest) -> sp_ext2(a, rest, cps, acc)
+
+fn sp_ext2(a, rest, cps, acc) = match cps
+  Cons(w, wrest) -> sp_ext(rest, wrest, if ct_is_fn(w) then sp_add(a, acc) else acc)
+  Nil -> acc
+
+fn ct_is_fn(w) = match w
+  CFn(_, _) -> true
+  CW(_) -> false
+
+fn sp_add(a, acc) = match a
+  EVar(n, _) -> Cons(n, acc)
+  _ -> acc
+
+fn sp_user(o, need, args, pi, acc) = match o
+  Some(idx) -> sp_user2(idx, args, pi, need, acc)
+  None -> acc
+
+fn sp_user2(idx, args, pi, need, acc) = match args
+  Nil -> acc
+  Cons(a, rest) -> sp_user2(idx, rest, pi + 1, need, if shas(need, sp_key(idx, pi)) then sp_add(a, acc) else acc)
+
+# Every name a body binds, so a parameter one of them shadows is left alone.
+fn sb_names(e, acc) = sb_kids(e_kids(e), sb_here(e, acc))
+
+fn sb_kids(es, acc) = match es
+  Nil -> acc
+  Cons(k, rest) -> sb_kids(rest, sb_names(k, acc))
+
+fn sb_here(e, acc) = match e
+  EBlock(ss) -> fold(ss, acc, \a, s -> sb_stmt(s, a))
+  EMatch(_, arms, _) -> fold(arms, acc, \a, ar -> sb_arm(ar, a))
+  ELambda(ps, _, _) -> fold(ps, acc, \a, p -> sput(a, p, true))
+  ESelect(arms, _, _) -> fold(arms, acc, \a, ar -> sb_sarm(ar, a))
+  _ -> acc
+
+fn sb_stmt(s, acc) = match s
+  SBind(n, _, _) -> sput(acc, n, true)
+  SExpr(_) -> acc
+
+fn sb_arm(a, acc) = match a
+  Arm(p, _, _) -> pat_names(p, acc)
+
+fn sb_sarm(a, acc) = match a
+  SArm(op, _, _) -> sb_sop(op, acc)
+
+fn sb_sop(op, acc) = match op
+  SRecv(_, b) -> sb_bind_opt(b, acc)
+  SSend(_, _) -> acc
+
+fn sb_bind_opt(o, acc) = match o
+  Some(n) -> sput(acc, n, true)
+  None -> acc
+
+# Every immediate sub-expression, for the two walks above.
+fn e_kids(e) = match e
+  ECall(_, args, _, _) -> args
+  ENeg(x) -> Cons(x, Nil)
+  EBin(_, l, r, _) -> Cons(l, Cons(r, Nil))
+  EIf(c, t, f) -> Cons(c, Cons(t, Cons(f, Nil)))
+  EMatch(s, arms, _) -> Cons(s, map(arms, \a -> h_arm_body(a)))
+  ELambda(_, b, _) -> Cons(b, Nil)
+  ESpawn(b, _) -> Cons(b, Nil)
+  ESelect(arms, d, _) -> append(sk_sarms(arms), sk_opt(d))
+  EBlock(ss) -> map(ss, \s -> sk_stmt(s))
+  _ -> Nil
+
+fn sk_sarms(arms) = match arms
+  Nil -> Nil
+  Cons(SArm(op, b, _), rest) -> append(Cons(b, sk_sop(op)), sk_sarms(rest))
+
+fn sk_sop(op) = match op
+  SRecv(c, _) -> Cons(c, Nil)
+  SSend(c, v) -> Cons(c, Cons(v, Nil))
+
+fn sk_opt(o) = match o
+  Some(e) -> Cons(e, Nil)
+  None -> Nil
+
+fn sk_stmt(s) = match s
+  SBind(_, v, _) -> v
+  SExpr(v) -> v
 
 # ---- channels and strands ---------------------------------------------------
 #
@@ -1297,7 +1544,7 @@ fn trait_call2(cx, st, cg, mangled, vts) =
     None -> rcdie("no implementation provides `" + mangled + "`")
 
 fn trait_call3(sig, cg, mangled, idx, vts) = match sig
-  SigG(sps, sret, ngen) -> emit_user_call2(AV(cg, vts, uni_vts(sps, vts, ILeaf)), mangled, idx, sret, ngen, false, uk(), Nil)
+  SigG(sps, sret, ngen) -> emit_user_call2(AV(cg, vts, uni_vts(sps, vts, ILeaf)), mangled, idx, sret, ngen, false, uk(), Nil, Nil)
   SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
 
 fn uni_vts(sps, vts, m) = match sps
@@ -1319,14 +1566,49 @@ fn emit_user_call(cx, st, env, n, idx, args, cg, tail) =
 
 fn emit_user_call_w(cx, st, env, n, idx, args, cg, tail, rw, stk) =
   match sig_parts(st, idx)
-    SigG(sps, sret, ngen) -> emit_user_call2(emit_args(cx, st, env, args, sps, ngen, cg, ILeaf, Nil), n, idx, sret, ngen, tail, rw, stk)
+    SigG(sps, sret, ngen) -> emit_user_callp(cx, st, env, n, idx, args, sps, sret, ngen, cg, tail, rw, stk)
     SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
 
-fn emit_user_call2(av, n, idx, sret, ngen, tail, rw, stk) = match av
+# Callbacks the callee hands to C are settled before the arguments are
+# emitted: they pick which copy of the callee this call goes to.
+fn emit_user_callp(cx, st, env, n, idx, args, sps, sret, ngen, cg, tail, rw, stk) =
+  match pin_args(cx, st, env, idx, args, sps, 0, cg, Nil)
+    CBS(binds, cg1) -> emit_user_call2(emit_args(cx, st, env, args, sps, ngen, cg1, ILeaf, Nil), n, idx, sret, ngen, tail, rw, stk, binds)
+
+type CBS
+  CBS(List(CB), CG)
+
+fn pin_args(cx, st, env, idx, args, sps, pi, cg, acc) = match args
+  Nil -> CBS(reverse(acc), cg)
+  Cons(a, rest) -> pin_arg(cx, st, env, idx, a, rest, sps, pi, cg, acc)
+
+fn pin_arg(cx, st, env, idx, a, rest, sps, pi, cg, acc) =
+  if cg_marked(cg, sp_key(idx, pi)) then pin_arg2(pin_of(cx, st, env, a, sp_head(sps), cg), cx, st, env, idx, rest, sp_tail(sps), pi, acc) else pin_args(cx, st, env, idx, rest, sp_tail(sps), pi + 1, cg, acc)
+
+fn pin_arg2(ts, cx, st, env, idx, rest, sprest, pi, acc) = match ts
+  TS2(sym, cg) -> pin_args(cx, st, env, idx, rest, sprest, pi + 1, cg, Cons(CB(pi, sym), acc))
+
+fn sp_head(sps) = match sps
+  Cons(t, _) -> t
+  Nil -> uk()
+
+fn sp_tail(sps) = match sps
+  Cons(_, rest) -> rest
+  Nil -> Nil
+
+# Each pinned callback earns the callee its own symbol and its own body.
+fn cb_tag(binds) = match binds
+  Nil -> ""
+  Cons(b, rest) -> cb_tag1(b) + cb_tag(rest)
+
+fn cb_tag1(b) = match b
+  CB(pi, sym) -> "$cb" + int_to_str(pi) + "$" + sym
+
+fn emit_user_call2(av, n, idx, sret, ngen, tail, rw, stk, binds) = match av
   AV(cg, vts, m) ->
     targs = glist(uni(sret, rw, m), ngen)
-    sym = mangle(n, targs)
-    cg2 = cg_want(cg, sym, n, idx, targs)
+    sym = mangle(n, targs) + cb_tag(binds)
+    cg2 = cg_want(cg, sym, n, idx, targs, binds)
     emit_user_call3(cg2, sym, sgen(sret, targs), vts, tail, stk)
 
 fn emit_user_call3(cg, sym, rt, vts, tail, stk) =
@@ -1551,9 +1833,17 @@ fn emit_fnval2(sig, n, idx, want, cg) = match sig
   SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
 
 fn emit_fnval3(n, idx, want, cg, sps, sret, ngen) =
+  # A helper specialized on the callbacks it forwards exists in as many
+  # copies as it has callers, so there is no one address to hand out for it.
+  if has_pinned(cg, idx, 0, len(sps)) then rcdie("`" + n + "` cannot be used as a value: it hands a parameter to C as a callback, so it is compiled once per callback it is called with — call it by name instead") else emit_fnval3b(n, idx, want, cg, sps, sret, ngen)
+
+fn has_pinned(cg, idx, i, n) =
+  if i >= n then false else cg_marked(cg, sp_key(idx, i)) || has_pinned(cg, idx, i + 1, n)
+
+fn emit_fnval3b(n, idx, want, cg, sps, sret, ngen) =
   targs = glist(uni(YFn(sps, sret), want, ILeaf), ngen)
   sym = mangle(n, targs)
-  cg1 = cg_want(cg, sym, n, idx, targs)
+  cg1 = cg_want(cg, sym, n, idx, targs, Nil)
   emit_fnval4(cg_gid(cg1), sym, map(sps, \p -> sgen(p, targs)), sgen(sret, targs))
 
 fn emit_fnval4(is, sym, cps, cret) = match is
@@ -1907,7 +2197,7 @@ type FR2
 
 # One instance from the worklist: signature instantiated, body emitted.
 fn emit_inst(cx, st, fns, wi, shared) = match wi
-  WI(name, idx, targs) -> emit_inst2(cx, st, nth_fnd(fns, idx), name, idx, targs, shared)
+  WI(name, idx, targs, binds) -> emit_inst2(cx, st, nth_fnd(fns, idx), name, idx, targs, binds, shared)
   WR(a, targs) -> emit_rel(cx, a, targs, shared)
   WE(a, targs) -> emit_eq(cx, a, targs, shared)
   WS(a, targs) -> emit_shw(cx, st, a, targs, shared)
@@ -2159,20 +2449,30 @@ fn rel_last(i, t, ci, cg, loads, rels) =
   kw = if is_adt_ty(t) then "tail call" else "call"
   RPRL(loads + rel_load(ci, i), rels, rel_call(t, "%v" + int_to_str(ci) + "_" + int_to_str(i), kw), cg_want_rel_ty(cg, t))
 
-fn emit_inst2(cx, st, f, name, idx, targs, shared) = match f
-  FnD(_, _, ps, _, body, _) -> emit_inst3(sig_parts(st, idx), cx, st, ps, body, name, targs, shared)
+fn emit_inst2(cx, st, f, name, idx, targs, binds, shared) = match f
+  FnD(_, _, ps, _, body, _) -> emit_inst3(sig_parts(st, idx), cx, st, ps, body, name, targs, binds, shared)
 
-fn emit_inst3(sig, cx, st, ps, body, name, targs, shared) = match sig
-  SigG(sps, sret, ngen) -> emit_inst4(cx, st, ps, body, name, targs, map(sps, \p -> sgen(p, targs)), sgen(sret, targs), shared)
+fn emit_inst3(sig, cx, st, ps, body, name, targs, binds, shared) = match sig
+  SigG(sps, sret, ngen) -> emit_inst4(cx, st, ps, body, name, targs, binds, map(sps, \p -> sgen(p, targs)), sgen(sret, targs), shared)
   SigP(_, _) -> rcdie("internal: sig_parts returned SigP")
 
-fn emit_inst4(cx, st, ps, body, name, targs, cps, cret, shared) =
+fn emit_inst4(cx, st, ps, body, name, targs, binds, cps, cret, shared) =
   rt = if str_cmp(name, "main") == 0 then YUnit else cret
   match param_env(ps, cps, true, "", SLeaf, Nil)
-    PE(sig, env, es) -> emit_inst5(cx, st, body, name, targs, rt, sig, env, es, shared)
+    PE(sig, env, es) -> emit_inst5(cx, st, body, name, targs, binds, rt, sig, cb_env(env, ps, binds), es, shared)
 
-fn emit_inst5(cx, st, body, name, targs, rt, sig, env, es, shared) =
-  nm = if str_cmp(name, "main") == 0 then "rill_main" else "\"" + mangle(name, targs) + "\""
+# The callbacks this copy was specialized on, put where the body will find
+# them: under a key the parameter's own name cannot collide with.
+fn cb_env(env, ps, binds) = match binds
+  Nil -> env
+  Cons(CB(pi, sym), rest) -> cb_env(sput(env, cb_key(par_at(ps, pi)), VT(sym, YUnit)), ps, rest)
+
+fn par_at(ps, i) = match ps
+  Cons(Par(n, _), rest) -> if i == 0 then n else par_at(rest, i - 1)
+  Nil -> rcdie("internal: a callback was pinned to a parameter that is not there")
+
+fn emit_inst5(cx, st, body, name, targs, binds, rt, sig, env, es, shared) =
+  nm = if str_cmp(name, "main") == 0 then "rill_main" else "\"" + mangle(name, targs) + cb_tag(binds) + "\""
   cg = emit_ret(cx, st, env, body, cg_sub(shared), rt, es)
   FR2("define " + tystr(rt) + " @" + nm + "(" + sig + ") {\n\"rc.entry\":\n" + render_code(cg) + "}\n\n", cg)
 
@@ -2202,7 +2502,7 @@ fn main_idx(cx) = match sget(cx_fnidx(cx), "main")
   None -> rcdie("internal: no main")
 
 fn emit_program(cx, st, fns) =
-  shared = cg_want(CG(0, "entry", Nil, Nil, 0, Nil, Nil, SLeaf), "main", "main", main_idx(cx), Nil)
+  shared = cg_want(CG(0, "entry", Nil, Nil, 0, Nil, Nil, sp_analyze(cx, fns)), "main", "main", main_idx(cx), Nil, Nil)
   match emit_worklist(cx, st, fns, shared, Nil)
     ASM(texts, cg) -> rc_assemble(texts, cg)
 

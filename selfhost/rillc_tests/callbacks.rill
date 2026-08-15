@@ -1,0 +1,30 @@
+extern fn qsort(base: Ptr, n: U64, size: U64, cmp: Fn(Ptr, Ptr) -> I32) -> Unit
+
+extern fn atexit(cb: Fn()) -> I32
+
+fn up(a, b) = peek_i32(a, 0) - peek_i32(b, 0)
+
+fn down(a, b) = peek_i32(b, 0) - peek_i32(a, 0)
+
+fn bye() = println("bye")
+
+fn inner(b: Buf(I32), cmp) =
+  qsort(buf_data(b), buf_len(b), 4, cmp)
+  b
+
+fn outer(b: Buf(I32), cmp) = inner(b, cmp)
+
+fn at_exit(cb) = atexit(cb)
+
+fn render(b: Buf(I32), i, acc) =
+  if i == buf_len(b) then acc else render(b, i + 1, acc + " " + int_to_str(buf_get(b, i)))
+
+fn main() =
+  at_exit(bye)
+  v = buf_i32(4)
+  buf_set(v, 0, 3)
+  buf_set(v, 1, 1)
+  buf_set(v, 2, 4)
+  buf_set(v, 3, 2)
+  println("up  " + render(outer(v, up), 0, ""))
+  println("down" + render(outer(v, down), 0, ""))
