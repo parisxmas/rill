@@ -50,10 +50,15 @@
     @location(4) sets: f32,
   }
 
-  @vertex fn vs(@location(0) xzd: vec3f) -> VOut {
+  @vertex fn vs(@location(0) xzd: vec3f, @location(1) slope: vec2f) -> VOut {
     let p0 = xzd.xy;
     let depth = xzd.z;
     let t = u.eye.w;
+
+    // Which way the shore is. `slope` is the gradient of the depth, so it
+    // points out into the lake; a wave runs the other way, up the bottom.
+    let gl = length(slope);
+    let shoreward = select(vec2f(0.0, 0.0), -slope / max(gl, 0.00001), gl > 0.00001);
     // Waves feel the bottom, and the wind: amplitude fades in the shallows
     // and follows the gusts.
     //
@@ -68,12 +73,31 @@
     var crest = 0.0;
     var norm = 0.0;
     for (var i = 0; i < WAVES; i++) {
+      let fi = f32(i);
+      let lam = wlen(i);
+      let k = 6.28318 / lam;
+
+      // Refraction. A wave slows where the water is shallow, so the shallower
+      // end of a crest falls behind and the whole line swings round until it
+      // runs straight up the slope — which is why surf arrives parallel to a
+      // beach whatever direction the wind came from. A long wave feels the
+      // bottom from deeper down, so it starts turning further out.
       let ang = wdir(i);
-      let d = vec2f(cos(ang), sin(ang));
+      let open = vec2f(cos(ang), sin(ang));
+      let feel = (1.0 - smoothstep(0.0, lam * 0.85, depth)) * smoothstep(0.01, 0.20, gl);
+      let bent = mix(open, shoreward, feel * 0.85);
+      let d = bent / max(length(bent), 0.0001);
+
       let a = wamp(i) * ampScale;
-      let k = 6.28318 / wlen(i);
       let c = sqrt(9.8 / k);
-      let f = k * (dot(d, p0) - c * t) + wphase(i);
+      // And out in the open, crests wander. A plane wave's crest is a straight
+      // line to the horizon; a lake's is not. Shifting the phase by a slow
+      // noise field bends the line without breaking it — the shift is written
+      // as a distance and turned into radians by this wave's own k, so every
+      // wavelength wanders by the same metre and three quarters rather than short
+      // ones tearing themselves apart.
+      let wander = (fnoise(p0 * 0.030 + vec2f(fi * 7.3, fi * 4.1)) - 0.5) * 3.6 * k;
+      let f = k * (dot(d, p0) - c * t) + wphase(i) + wander;
       let q = min(0.65 / (k * a * f32(WAVES) + 0.001), 1.0 / (k * a * f32(WAVES) + 0.001));
       p.x += q * a * d.x * cos(f);
       p.z += q * a * d.y * cos(f);

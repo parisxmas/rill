@@ -22,6 +22,32 @@
     .stat b { color: #f6c02e; }
     .err { position: fixed; inset: 0; display: grid; place-items: center;
            color: #c9c3e4; font: 14px ui-monospace, monospace; }
+
+    /* The loader. It covers the canvas until a frame has actually been drawn
+       on it, so nobody watches a black rectangle wondering whether it works. */
+    .boot {
+      position: fixed; inset: 0; z-index: 10; background: #05060c;
+      display: grid; place-items: center;
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      transition: opacity 700ms ease;
+    }
+    .boot.gone { opacity: 0; pointer-events: none; }
+    .boot .inner { width: min(360px, 74vw); }
+    .boot h1 {
+      margin: 0 0 22px; font-size: 15px; letter-spacing: 0.28em; color: #f6c02e;
+      font-weight: 600;
+    }
+    .boot .track { height: 2px; background: #1b1a2c; overflow: hidden; }
+    .boot .track i {
+      display: block; height: 100%; width: 0; background: #f6c02e;
+      transition: width 200ms ease;
+    }
+    .boot .row {
+      display: flex; justify-content: space-between; gap: 12px;
+      margin-top: 10px; color: #6f6a8c;
+    }
+    .boot .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .boot .pct { color: #9a94b8; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -33,11 +59,26 @@
       <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint</div>
   </div>
   <div class="stat" id="stat"></div>
+  <div class="boot" id="boot">
+    <div class="inner">
+      <h1>RILL &nbsp;VALLEY</h1>
+      <div class="track"><i id="bar"></i></div>
+      <div class="row">
+        <span class="what" id="what">asking for a GPU</span>
+        <span class="pct" id="pct">0%</span>
+      </div>
+    </div>
+  </div>
   <script type="module">
     // Versioned because the CDN in front of this holds .js for a week; bump it
     // when host.js changes. index.html itself is never cached.
-    import { run } from "./host.js?v=10";
+    import { run } from "./host.js?v=12";
     const stat = document.getElementById("stat");
+    const boot = document.getElementById("boot");
+    const bar = document.getElementById("bar");
+    const what = document.getElementById("what");
+    const pct = document.getElementById("pct");
+
     run(document.getElementById("c"), "./world.wasm", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
@@ -47,8 +88,18 @@
         `terrain, placement, physics, matrices: <b>world.rill</b> → ` +
         `<b>${h.wasmBytes ? (h.wasmBytes / 1024).toFixed(1) + " KB" : "?"}</b> of wasm<br>` +
         `shadows · MSAA 4x · instancing · gerstner water · compute particles`;
+    }, (done, total, label) => {
+      bar.style.width = `${(done / total * 100).toFixed(0)}%`;
+      pct.textContent = `${Math.round(done / total * 100)}%`;
+      what.textContent = label;
+    }).then(() => {
+      // `run` resolves on the first submitted frame, so the fade is over
+      // something rather than over nothing.
+      boot.classList.add("gone");
+      boot.addEventListener("transitionend", () => boot.remove(), { once: true });
     }).catch(e => {
       console.error("SETUP FAILED", e.stack || e);
+      boot.remove();
       document.body.insertAdjacentHTML("beforeend", `<div class="err">${e.message}</div>`);
     });
   </script>

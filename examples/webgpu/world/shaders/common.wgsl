@@ -99,9 +99,9 @@
   // and the height term keeps the air above the lake thicker than the air
   // around the summits.
   fn fogAt(world: vec3f, dist: f32) -> f32 {
-    let d = 1.0 - exp(-dist * 0.0135);
+    let d = 1.0 - exp(-dist * 0.019);
     let lift = mix(1.0, 0.30, smoothstep(2.0, 16.0, world.y));
-    return clamp(d * d * 1.35 * lift, 0.0, 0.92);
+    return clamp(d * d * 1.5 * lift, 0.0, 0.94);
   }
 
   fn fogColor(view: vec3f) -> vec3f {

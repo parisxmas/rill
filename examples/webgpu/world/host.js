@@ -62,12 +62,25 @@ const SHADERS = {
   "firefly-sim": null,
 };
 
-async function loadShaders() {
+// The images, and the square they are decoded to. Listed here rather than at
+// the point of use so that the loader can count them before it starts.
+const TEXTURES = [
+  ["./pine-twig.png", 256],    // the needle atlas
+  ["./pine-bark.jpg", 256],
+  ["./grass-ground.jpg", 256],
+  ["./plants.png", 512],       // the undergrowth atlas, 2x2
+  ["./rock-face.jpg", 256],
+  ["./shore-sand.jpg", 256],
+];
+
+async function loadShaders(step) {
   const src = Object.fromEntries(await Promise.all(
     Object.keys(SHADERS).map(async name => {
       const r = await fetch(`./shaders/${name}.wgsl`);
       if (!r.ok) throw new Error(`shaders/${name}.wgsl: ${r.status}`);
-      return [name, await r.text()];
+      const text = await r.text();
+      step(`shaders/${name}.wgsl`);
+      return [name, text];
     })
   ));
   // Each one preceded by whatever it was written against.
@@ -240,7 +253,16 @@ function grassMesh() {
 
 // ---- the program -----------------------------------------------------------
 
-export async function run(canvas, wasmURL, hud) {
+export async function run(canvas, wasmURL, hud, progress = () => {}) {
+  // Everything the first frame needs, counted up front so the loader can say
+  // how far along it is: the adapter, the module, one step per shader, one per
+  // texture, and the valley itself. `run` does not resolve until a frame has
+  // actually been submitted, so whatever is covering the canvas comes off over
+  // a painted one rather than over black.
+  const TOTAL = 3 + Object.keys(SHADERS).length + TEXTURES.length;
+  let done = 0;
+  const step = (what) => progress(++done, TOTAL, what);
+
   if (!navigator.gpu) throw new Error("this browser has no WebGPU");
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error("no GPU adapter");
@@ -255,6 +277,7 @@ export async function run(canvas, wasmURL, hud) {
   const gpuInfo = adapter.info ?? {};
   const gpuName = [gpuInfo.vendor, gpuInfo.architecture].filter(Boolean).join(" ") || "gpu";
   const maxTex = adapter.limits.maxTextureDimension2D;
+  step(gpuName);
 
   const context = canvas.getContext("webgpu");
   const format = navigator.gpu.getPreferredCanvasFormat();
@@ -262,7 +285,8 @@ export async function run(canvas, wasmURL, hud) {
 
   // The world, from Rill; the generated loader does the ceremony.
   const E = await load(wasmURL);
-  const S = await loadShaders();
+  step("world.wasm");
+  const S = await loadShaders(step);
 
   // How big the module is, read off the browser's own record of the request
   // the loader already made — no second one. `decodedBodySize` rather than
@@ -308,12 +332,13 @@ export async function run(canvas, wasmURL, hud) {
       { source: bmp }, { texture: tex, mipLevel: i }, [bmp.width, bmp.height]));
     return tex.createView();
   }
-  const foliageView = await mipped("./pine-twig.png", 256);
-  const barkView = await mipped("./pine-bark.jpg", 256);
-  const groundView = await mipped("./grass-ground.jpg", 256);
-  const plantView = await mipped("./plants.png", 512);
-  const rockView = await mipped("./rock-face.jpg", 256);
-  const sandView = await mipped("./shore-sand.jpg", 256);
+  // All six at once. Each one is a fetch and then a decode per mip level, and
+  // the decodes are the browser's work rather than ours; done one after
+  // another they were the longest thing between the page opening and the
+  // valley appearing.
+  const [foliageView, barkView, groundView, plantView, rockView, sandView] =
+    await Promise.all(TEXTURES.map(([url, size]) =>
+      mipped(url, size).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
     magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
     addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
@@ -451,14 +476,28 @@ export async function run(canvas, wasmURL, hud) {
   // The water grid: x, z, and the exact depth of the terrain below each
   // vertex — Rill's own height function, asked point by point.
   function waterMesh(half, seg) {
-    const verts = new Float32Array(seg * seg * 6 * 3);
-    const step = (half * 2) / seg;
-    const d = (x, z) => Math.max(-E.ground(x, z), 0.0);
+    const w = seg + 1, step = (half * 2) / seg;
+    // One depth per lattice corner rather than one per vertex. A corner
+    // belongs to four cells and each of the six vertices of a cell repeats
+    // one, so this is six times fewer calls into a function twelve sines
+    // deep — and the lattice is also where the bottom's slope comes from,
+    // which the waves need in order to bend as they come ashore.
+    const dep = new Float32Array(w * w);
+    for (let j = 0; j < w; j++) for (let i = 0; i < w; i++) {
+      dep[j * w + i] = Math.max(-E.ground(-half + i * step, -half + j * step), 0.0);
+    }
+    const clamp = (v) => v < 0 ? 0 : v > w - 1 ? w - 1 : v;
+    const at = (i, j) => dep[clamp(j) * w + clamp(i)];
+
+    const verts = new Float32Array(seg * seg * 6 * 5);
     let o = 0;
     for (let i = 0; i < seg; i++) for (let j = 0; j < seg; j++) {
-      const x0 = -half + i * step, z0 = -half + j * step, x1 = x0 + step, z1 = z0 + step;
-      for (const [x, z] of [[x0, z0], [x0, z1], [x1, z1], [x0, z0], [x1, z1], [x1, z0]]) {
-        verts[o++] = x; verts[o++] = z; verts[o++] = d(x, z);
+      for (const [ii, jj] of [[i, j], [i, j+1], [i+1, j+1], [i, j], [i+1, j+1], [i+1, j]]) {
+        verts[o++] = -half + ii * step;
+        verts[o++] = -half + jj * step;
+        verts[o++] = at(ii, jj);
+        verts[o++] = (at(ii + 1, jj) - at(ii - 1, jj)) / (2 * step);
+        verts[o++] = (at(ii, jj + 1) - at(ii, jj - 1)) / (2 * step);
       }
     }
     return verts;
@@ -528,7 +567,10 @@ export async function run(canvas, wasmURL, hud) {
 
     // The water pipeline carries this tier's wave and ripple counts.
     W.waterPipe = pipe("water", S.WATER,
-      [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }],
+      [{ arrayStride: 20, attributes: [
+        { shaderLocation: 0, offset: 0, format: "float32x3" },   // x, z, depth
+        { shaderLocation: 1, offset: 12, format: "float32x2" },  // the bottom's slope
+      ]}],
       { blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: {} },
         cull: "none", depth: { depthWriteEnabled: false },
         constants: { WAVES: T.waves, RIPPLES: T.ripples } });
@@ -536,6 +578,7 @@ export async function run(canvas, wasmURL, hud) {
     W.tris = Math.round((counts.terrain + pineVerts * counts.pines + crystalVerts * counts.crystals + grassVerts * counts.grass) / 3);
   }
   buildWorld(tierIdx);
+  step("the valley");
 
   // MSAA targets, remade when the canvas resizes or the tier's pixel ratio
   // changes.
@@ -570,6 +613,11 @@ export async function run(canvas, wasmURL, hud) {
   const median = a => [...a].sort((x, y) => x - y)[a.length >> 1];
 
   const uf = new Float32Array(52);
+  // Resolved by the frame loop the first time it actually submits, so `run`
+  // does not return on a canvas that has nothing on it yet.
+  let painted = null;
+  const firstFrame = new Promise(r => { painted = r; });
+
   let last = performance.now(), fps = 0, frames = 0, fpsT = last;
 
   function tick(now) {
@@ -659,6 +707,7 @@ export async function run(canvas, wasmURL, hud) {
       if (!qPending) enc.copyBufferToBuffer(qResolve, 0, qStage, 0, 16);
     }
     device.queue.submit([enc.finish()]);
+    if (painted) { painted(); painted = null; }
 
     if (qs && !qPending) {
       qPending = true;
@@ -680,4 +729,5 @@ export async function run(canvas, wasmURL, hud) {
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
+  await firstFrame;
 }
