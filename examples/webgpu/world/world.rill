@@ -27,6 +27,7 @@
 #   ptr 77       three chargers: crystal, its size, mode, clock
 #   f32 79       gate: zero lets one charge begin this frame
 #   f32 80       next slot in the blast ring    ptr 81  the blasts themselves
+#   f32 82       health, one to zero
 #   ptr 74       the fireballs the far crystals throw
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
 #   ptr 68, 69   the bullets, and the shards they knock loose
@@ -376,7 +377,7 @@ fn seg_dist2(ax, ay, az, bx, by, bz, cx, cy, cz) =
   pz = az + dz * t - cz
   px * px + py * py + pz * pz
 
-fn spawn_shard(sb, k, x, y, z, sc, r, g, b, seed) =
+fn spawn_shard(sb, k, x, y, z, sc, r, g, b, throw, heals, seed) =
   at = (k % shard_cap()) * shard_stride()
   h1 = hash2(seed, 11.0)
   h2 = hash2(seed, 23.0)
@@ -384,8 +385,11 @@ fn spawn_shard(sb, k, x, y, z, sc, r, g, b, seed) =
   h4 = hash2(seed, 51.0)
   # Outward and upward, the way a thing that has just been hit comes apart.
   a = h1 * 6.28318
-  up = 2.5 + h2 * 5.5
-  out = 1.6 + h3 * 3.4
+  # `throw` is how hard: one for a crystal coming apart where it stood, more
+  # for something blown out of a crater. It is the only thing that separates
+  # the two, which is why it is an argument rather than two copies of this.
+  up = (2.5 + h2 * 5.5) * throw
+  out = (1.6 + h3 * 3.4) * throw
   poke_f32(sb, at, x + (h1 - 0.5) * sc * 0.5)
   poke_f32(sb, at + 1, y + h2 * sc * 1.6)
   poke_f32(sb, at + 2, z + (h3 - 0.5) * sc * 0.5)
@@ -402,6 +406,10 @@ fn spawn_shard(sb, k, x, y, z, sc, r, g, b, seed) =
   poke_f32(sb, at + 13, r)
   poke_f32(sb, at + 14, g)
   poke_f32(sb, at + 15, b)
+  # Whether this piece is worth anything to walk over. A crystal you shot has
+  # the light still in it; the ground a meteor threw out of a crater does not.
+  # Slot 16 is spare in a stride of twenty and the renderer never reads it.
+  poke_f32(sb, at + 16, heals)
   1
 
 fn break_crystal(s, cb, cat, ci) =
@@ -423,7 +431,7 @@ fn break_crystal(s, cb, cat, ci) =
   poke_f32(cb, cat + 3, 0.0)
 
   for j in 0..8
-    spawn_shard(sb, k0 + j, x, y, z, sc, r, g, b, to_float(ci * 8 + j))
+    spawn_shard(sb, k0 + j, x, y, z, sc, r, g, b, 1.0, 1.0, to_float(ci * 8 + j))
 
   poke_f32(s, 61, to_float(k0 + 8))
   1
@@ -470,6 +478,12 @@ fn hit_crystals(s, b, at, ax, ay, az, bx, by, bz) =
 fn step_shard(sb, at, dt) =
   sc = peek_f32(sb, at + 12)
   if sc < 0.0001 then 0
+  # Charred ground is charred ground. Measured before this test existed: an
+  # impact took fifteen points off and then handed back sixty-three, because
+  # the eighteen pieces it blew out of the hillside landed on the player it had
+  # just hit and were picked up on the spot. Being shelled was the fastest way
+  # to heal in the valley.
+  else if peek_f32(sb, at + 16) < 0.5 then 0
   else
     vy = peek_f32(sb, at + 4) - 24.0 * dt
     x = peek_f32(sb, at) + peek_f32(sb, at + 3) * dt
@@ -710,6 +724,82 @@ fn blast_cap() = 8
 
 fn blast_stride() = 8
 
+# What an impact does to whoever is standing near it. Nothing past twenty
+# metres, falling off hard inside it — wider than the fireball's own twelve,
+# because the pressure gets to you before the fire does and there is nowhere to
+# be that is "just outside" an explosion.
+#
+# An eighth of you at the centre, so it takes nine direct hits. These arrive
+# about sixteen times a minute and all of them land on you if you stand still,
+# which at a fifth was death in twenty-five seconds — measured, and too short
+# for a valley anyone is meant to look at. Nine gives you most of a minute of
+# doing nothing, which is long enough to work out that doing nothing is the
+# problem. These are thrown
+# at where you are standing, so standing still is what gets you hit; at 0.62,
+# which is where this started, three landed in eleven seconds and killed a
+# player who had not yet finished looking around. Punishing the mistake is the
+# point, but it has to be a mistake you get to notice you are making.
+fn blast_hurt(s, x, y, z) =
+  dx = peek_f32(s, 21) - x
+  dy = peek_f32(s, 22) + 1.0 - y
+  dz = peek_f32(s, 23) - z
+  d = sqrt(dx * dx + dy * dy + dz * dz)
+  k = clampf(1.0 - d / 20.0, 0.0, 1.0)
+  # Cubed, not squared, and out to twenty metres rather than fourteen. Squared
+  # over a short radius meant every impact either missed entirely or took the
+  # same bite out of you, because these are thrown at where you are standing and
+  # so nearly all of them land within a few metres. Cubed over a wide one, a
+  # direct hit is worth twenty times a landing at the edge of the crater, and
+  # the difference between running and standing still is legible.
+  hit = 0.115 * k * k * k
+  if hit < 0.002 then 0
+  else
+    poke_f32(s, 82, clampf(peek_f32(s, 82) - hit, 0.0, 1.0))
+    1
+
+# Cuts do not heal on their own. What mends you is walking over what you broke:
+# the chips a shattered crystal leaves on the ground still have the light in
+# them, and stepping on one takes it.
+#
+# Which turns the whole thing into a loop rather than two unrelated systems. The
+# crystals throw fire at you; you shoot them; what is left of them is the only
+# medicine there is. Standing still is what gets you hit and also what stops you
+# healing, and the thing you are being punished for going near is the thing you
+# have to go near.
+#
+# A chip is taken once and is gone — its scale goes to zero, which is the same
+# "empty slot" the pool already understands, so the piece simply is not drawn
+# any more and no flag has to be invented for it.
+fn gather_shard(s, sb, i) =
+  at = i * shard_stride()
+  sc = peek_f32(sb, at + 12)
+  if sc < 0.0001 then 0
+  # Charred ground is charred ground. Measured before this test existed: an
+  # impact took fifteen points off and then handed back sixty-three, because
+  # the eighteen pieces it blew out of the hillside landed on the player it had
+  # just hit and were picked up on the spot. Being shelled was the fastest way
+  # to heal in the valley.
+  else if peek_f32(sb, at + 16) < 0.5 then 0
+  else
+    dx = peek_f32(sb, at) - peek_f32(s, 21)
+    dy = peek_f32(sb, at + 1) - peek_f32(s, 22)
+    dz = peek_f32(sb, at + 2) - peek_f32(s, 23)
+    # A generous reach on the flat and a tight one vertically: you pick up what
+    # you walk over, not what is on the ledge above your head.
+    if dx * dx + dz * dz > 2.9 then 0
+    else if dy > 2.2 then 0
+    else if dy < 0.0 - 1.2 then 0
+    else
+      poke_f32(sb, at + 12, 0.0)
+      poke_f32(s, 82, clampf(peek_f32(s, 82) + 0.035, 0.0, 1.0))
+      1
+
+fn gather(s, sb) =
+  for i in 0..shard_cap()
+    gather_shard(s, sb, i)
+
+export fn health(s: Ptr) -> Float = peek_f32(s, 82)
+
 fn add_blast(s, x, y, z, seed) =
   bb = peek_ptr(s, 81)
   k = to_int(peek_f32(s, 80)) % blast_cap()
@@ -720,16 +810,21 @@ fn add_blast(s, x, y, z, seed) =
   poke_f32(bb, at + 3, seed)
   poke_f32(bb, at + 4, 0.0)
   poke_f32(s, 80, to_float(k + 1))
+  blast_hurt(s, x, y, z)
 
-  # Ten pieces of what it hit, thrown out of the crater.
+  # Eighteen pieces of what it hit, thrown nearly twice as hard as a crystal
+  # coming apart. The fireball above them reaches twelve metres now and the
+  # dust runs twenty-seven along the ground; ten chips landing inside three of
+  # the crater read as a stone that cracked, not as ground that was blown out
+  # of a hill.
   sb = peek_ptr(s, 69)
   k0 = to_int(peek_f32(s, 61))
 
-  for j in 0..10
-    spawn_shard(sb, k0 + j, x, y, z, 1.1, 0.34, 0.13, 0.05,
+  for j in 0..18
+    spawn_shard(sb, k0 + j, x, y, z, 1.1, 0.34, 0.13, 0.05, 1.9, 0.0,
                 seed * 97.0 + to_float(j))
 
-  poke_f32(s, 61, to_float(k0 + 10))
+  poke_f32(s, 61, to_float(k0 + 18))
   1
 
 fn step_blast(bb, at, dt) =
@@ -811,7 +906,12 @@ export fn bullets_cap(s: Ptr) -> Int = bullet_cap()
 # be, and there would be two suns in the world with only one of them visible.
 
 fn light_vp(s, dx, dy, dz) =
-  hl = sqrt(dx * dx + dz * dz)
+  # The basis is built off the light's horizontal component, so a sun directly
+  # overhead has nothing to build it from. The path is set to miss the exact
+  # zenith by eight degrees, which keeps this well clear — the floor is here
+  # anyway, because a constant in one file protecting a division in another is
+  # how a black screen at noon gets shipped.
+  hl = clampf(sqrt(dx * dx + dz * dz), 0.02, 1.0)
   rx = 0.0 - dz / hl
   rz = dx / hl
   ux = 0.0 - rz * dy
@@ -889,6 +989,7 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 21, 0.0 - 14.0)
   poke_f32(s, 22, height(0.0 - 14.0, 0.0 - 34.0))
   poke_f32(s, 23, 0.0 - 34.0)
+  poke_f32(s, 82, 1.0)
   set_sun(s, 0.58, 0.0 - 0.62, 0.0 - 0.52)
   s
 
@@ -1028,6 +1129,7 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   step_fireballs(s, peek_ptr(s, 74), dt)
   step_blasts(peek_ptr(s, 81), dt)
   run_charge(s, dt, t)
+  gather(s, peek_ptr(s, 69))
   camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
 
 # The view-projection matrix, written straight into the state.

@@ -47,6 +47,37 @@
     body.cycling .aim .d { transform: translateY(16px); }
     body.cycling .aim .dot { opacity: 0; }
 
+    /* Health, across the whole bottom of the screen. Big, because it is the
+       one number you have to read without looking at it — a bar you have to
+       find is a bar you check after you are dead. It sits under everything and
+       takes no input. */
+    .vit {
+      position: fixed; left: 0; right: 0; bottom: 0; height: 14px;
+      background: rgba(8, 7, 14, 0.72); pointer-events: none;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    .vit i {
+      display: block; height: 100%; width: 100%;
+      /* Green while it is fine, amber as it goes, red at the end — carried by
+         the fill's own colour rather than by a number beside it, so it is
+         read peripherally. */
+      background: linear-gradient(90deg, #f6c02e, #8fd14f);
+      transition: width 260ms ease, background 600ms ease, box-shadow 260ms ease;
+    }
+    /* A shove of light when it drops, so a hit registers even if you were
+       looking at the sky when it landed. */
+    .vit i.hurt { box-shadow: 0 0 22px rgba(255, 120, 80, 0.85); }
+
+    /* The count, bottom left, opposite the frame stats. Same voice as the rest
+       of the HUD: small, monospaced, out of the way, and the only thing in
+       colour is the number that changed. */
+    .tally {
+      position: fixed; left: 20px; bottom: 26px; color: #6f6a8c;
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      pointer-events: none; font-variant-numeric: tabular-nums;
+    }
+    .tally b { color: #f6c02e; font-weight: 600; }
+
     /* When the last crystal is gone. Not a dialogue and not a button — there
        is nothing left to decide, so it is two lines over the valley and the
        valley keeps running behind them. Pointer-events stay off so looking
@@ -114,6 +145,8 @@
     <i class="h l"></i><i class="h r"></i><i class="v u"></i><i class="v d"></i>
     <i class="dot"></i>
   </div>
+  <div class="tally" id="tally"></div>
+  <div class="vit" id="vit"><i id="vitfill"></i></div>
   <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em></div>
   <div class="boot" id="boot">
     <div class="inner">
@@ -128,7 +161,7 @@
   <script type="module">
     // Versioned because the CDN in front of this holds .js for a week; bump it
     // when host.js changes. index.html itself is never cached.
-    import { run } from "./host.js?v=118";
+    import { run } from "./host.js?v=130";
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");

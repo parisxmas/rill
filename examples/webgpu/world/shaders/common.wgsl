@@ -128,11 +128,12 @@
   const SKY_SPIN = 0.0261799388;      // 2π / 240
 
   // The pole the whole sky turns about — the same one the sun runs round in
-  // `host.js`, tilted thirty-five degrees off vertical. Everything up there
+  // `host.js`, all but horizontal, so the sky wheels overhead the way it does
+  // at the equator rather than sliding round the rim. Everything up there
   // shares it: that is what a planet's rotation is, and it is why the moon
   // rises and sets on the same slant the sun does rather than sliding round
   // the horizon on a rail of its own.
-  const SKY_AXIS = vec3f(0.573576, 0.819152, 0.0);   // sin 35°, cos 35°
+  const SKY_AXIS = vec3f(0.990268, 0.139173, 0.0);   // sin 82°, cos 82°
 
   // A direction, taken out of the world and into the sky's own frame — the one
   // the stars and the bodies are nailed to. Rodrigues about the tilted pole,
@@ -466,6 +467,59 @@
     return mix(skyColor(dir, t), hit.rgb, hit.a);
   }
 
+  // The lamp on your head. It comes on by itself once the sun is under the
+  // world and goes off when it comes back, which is what anyone would do with
+  // one and saves the demo a key nobody would find.
+  //
+  // A torch, not a point light. Three things make a beam read as a beam and all
+  // three are one line each: a cone with a soft edge, so it ends somewhere; a
+  // hot centre inside the cone, because the reflector behind a bulb concentrates
+  // most of what it throws into a few degrees; and an inverse-square falloff
+  // with a hard end, so the dark past the beam is genuinely dark. Leave out the
+  // hotspot and it is a flat disc of light. Leave out the cone and it is the
+  // sun, from your face.
+  //
+  // No shadows off it, which for a light that always shines exactly where you
+  // are looking costs less than it sounds: the things it would have to shadow
+  // are almost all behind whatever you are pointing it at.
+  const LAMP_RANGE = 26.0;
+  const LAMP_COS_IN  = 0.965;      // ~15°, the hot middle
+  const LAMP_COS_OUT = 0.855;      // ~31°, where the beam gives out
+
+  fn headlamp(n: vec3f, world: vec3f, day: f32) -> vec3f {
+    let on = 1.0 - day;
+    if (on <= 0.001) { return vec3f(0.0); }
+    let toEye = u.eye.xyz - world;
+    let d = length(toEye);
+    if (d > LAMP_RANGE) { return vec3f(0.0); }
+    let L = toEye / max(d, 0.0001);
+
+    let yaw = u.cam.x; let pitch = u.cam.y;
+    let cp = cos(pitch);
+    let fwd = vec3f(sin(yaw) * cp, sin(pitch), -cos(yaw) * cp);
+
+    // How far off the axis of the beam this point is.
+    let c = dot(-L, fwd);
+    let cone = smoothstep(LAMP_COS_OUT, LAMP_COS_IN, c);
+    // And the hotspot inside it — the same profile raised, so the middle is
+    // several times the edge without the edge moving.
+    let beam = cone * (0.42 + 1.35 * cone * cone);
+
+    // Flat inside two and a half metres rather than following the inverse
+    // square all the way in. A real lamp sits on your forehead and the barrel
+    // is a foot below it; this one is at the eye exactly, and an inverse square
+    // from a point thirty centimetres from the receiver blows the rifle to
+    // white. Held flat, the gun reads as lit by something on your head, which
+    // is the whole idea.
+    let fall = 1.0 / (1.0 + pow(max(d, 2.6) / 5.5, 2.0));
+    // And out entirely at the end of its range rather than trailing off, which
+    // is what keeps the far hillside dark instead of faintly washed.
+    let reach = 1.0 - smoothstep(LAMP_RANGE * 0.72, LAMP_RANGE, d);
+
+    let ndl = max(dot(n, L), 0.0);
+    return vec3f(1.0, 0.955, 0.88) * (1.25 * ndl * beam * fall * reach * on);
+  }
+
   // Distance haze, thickest along the valley floor. The exponential alone
   // fogs a mountaintop as hard as the water in front of it, which is wrong in
   // both directions: the peaks lose their shape and the far shore never quite
@@ -522,7 +576,7 @@
     let M = normalize(MOON_AT);
     let moon = MOON_COL * max(dot(n, M), 0.0) * moonPhase() * 0.55 * (1.0 - day);
 
-    var col = albedo * (SUN_COL * 1.25 * nl * sh * day + moon + amb);
+    var col = albedo * (SUN_COL * 1.25 * nl * sh * day + moon + amb + headlamp(n, world, day));
     let view = world - u.eye.xyz;
     return mix(col, fogColor(view), fogAt(world, length(view)));
   }

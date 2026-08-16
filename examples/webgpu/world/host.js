@@ -1155,7 +1155,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the trigger does nothing, which is the whole of what a bolt action is.
   const BOLT_CYCLE = 1.15;
   let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0;
-  let ended = false;
+  let ended = false, lastStanding = -1;
+  const tally = document.getElementById("tally");
+  const vitfill = document.getElementById("vitfill");
+  let lastHp = -1, hurtUntil = 0;
   addEventListener("mousedown", e => {
     if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
   });
@@ -1170,25 +1173,35 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // turn in four minutes. `shaders/common.wgsl` carries the same axis and the
   // same rate, because the stars and the planets wheel about the same pole.
   //
-  // The pole is tilted thirty-five degrees off vertical, and that tilt is the
-  // whole reason there is a night. Turned about the vertical the sun keeps its
-  // height and the evening never ends — which is what this did at first, and
-  // it was a fair trade for keeping the hour until it became obvious that a
-  // world where the sun goes round and round at a fixed altitude is not a
-  // world with a sky, it is a world with a lamp on a turntable. Tilted, the
-  // path is a great circle: the sun climbs to thirty-five degrees, comes down,
-  // and spends half the cycle under the horizon.
+  // The pole is very nearly horizontal, so the sun's path is a great circle
+  // that passes near enough overhead: it rises on one side, stands at the top
+  // of the sky at midday, and sets on the other. That is what a day is on a
+  // planet whose axis is not leaning much and whose observer is not far from
+  // its equator — which is to say, it is Earth's, at the equinox.
   //
-  // Thirty-five rather than higher because that is the light this valley is
-  // built for. A sun that reaches overhead flattens everything at noon.
-  const SKY_TILT = 35 * Math.PI / 180;
+  // Turned about the vertical instead the sun would keep its height and the
+  // evening would never end, which is what this did at first: a fair trade for
+  // holding the golden hour, until it was obvious that a world where the sun
+  // goes round and round at a fixed altitude is not a world with a sky, it is
+  // a world with a lamp on a turntable. Then thirty-five degrees, which bought
+  // a night but capped the sun a third of the way up, so it was permanently
+  // late afternoon and never actually daytime.
+  //
+  // Eighty-two rather than a clean ninety for one arithmetic reason: at exactly
+  // ninety the sun passes through the zenith, and a light straight overhead has
+  // no horizontal component for the shadow matrix to build its basis from. Eight
+  // degrees off is invisible and keeps that term away from zero. `light_vp`
+  // guards it as well, because a constant here and an assumption there is how
+  // this sort of thing comes back.
+  const SKY_TILT = 82 * Math.PI / 180;
   // The axis, and the two directions that span the plane the sun runs round in.
   const SKY_AXIS = [Math.sin(SKY_TILT), Math.cos(SKY_TILT), 0];
   const SUN_E1 = [0, 0, 1];
   const SUN_E2 = [Math.cos(SKY_TILT), -Math.sin(SKY_TILT), 0];
-  // Where in the day it starts: late afternoon, thirty degrees up and coming
-  // down, so the first thing anyone sees is the light this place was lit for.
-  const SUN_PHASE = -1.058;
+  // Where in the day it starts: late afternoon, near thirty degrees up and
+  // coming down, so the first thing anyone sees is the light this place was
+  // built for rather than a flat noon.
+  const SUN_PHASE = -0.495;
   const SKY_SPIN = 2 * Math.PI / 240;
   const uf = new Float32Array(56);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
@@ -1367,14 +1380,47 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // their instances go up with everything else now rather than once at build.
     const cry = new Float32Array(E.memory.buffer, Number(E.crystals(state)), W.counts.crystals * 8);
     device.queue.writeBuffer(W.crystalInst, 0, cry);
-    // And the end of it: a crystal that has been shot has its scale set to
-    // zero, so the last one going is the whole condition. Read off the same
-    // array that was about to be uploaded anyway, and only until it happens —
-    // after that there is nothing to keep counting.
-    if (!ended) {
-      let alive = 0;
-      for (let i = 0; i < W.counts.crystals; i++) if (cry[i * 8 + 3] > 0.001) { alive = 1; break; }
-      if (!alive) { ended = true; document.getElementById("over").classList.add("on"); }
+    // Health, straight off Rill: it is the world that decides what a blast
+    // does to you, not the renderer. Only touched when it actually moves,
+    // for the same reason the tally is.
+    const hp = E.health(state);
+    if (Math.abs(hp - lastHp) > 0.002) {
+      if (hp < lastHp - 0.004) { vitfill.classList.add("hurt"); hurtUntil = t + 0.45; }
+      lastHp = hp;
+      vitfill.style.width = `${(hp * 100).toFixed(1)}%`;
+      // Amber through to red as it goes. Two stops rather than one so the bar
+      // reads as a quantity even at a glance, which a flat block does not.
+      vitfill.style.background = hp > 0.55
+        ? "linear-gradient(90deg, #f6c02e, #8fd14f)"
+        : hp > 0.28
+          ? "linear-gradient(90deg, #f6832e, #f6c02e)"
+          : "linear-gradient(90deg, #d92d2d, #f6642e)";
+      if (hp <= 0.001 && !ended) {
+        ended = true;
+        document.querySelector("#over em").textContent = "the valley kept its crystals";
+        document.getElementById("over").classList.add("on");
+      }
+    }
+    if (hurtUntil && t > hurtUntil) { vitfill.classList.remove("hurt"); hurtUntil = 0; }
+
+    // The tally, and with it the end of the thing. A crystal that has been shot
+    // has its scale set to zero, so counting the ones that still have a size is
+    // both the score and the win condition, off the same array that was about
+    // to be uploaded anyway.
+    //
+    // Every frame, because a few hundred floats is nothing next to what has
+    // just been written to the GPU — but the DOM is only touched when the
+    // number actually moves. Writing the same string into an element sixty
+    // times a second is how a text node ends up costing more than the valley.
+    let standing = 0;
+    for (let i = 0; i < W.counts.crystals; i++) if (cry[i * 8 + 3] > 0.001) standing++;
+    if (standing !== lastStanding) {
+      lastStanding = standing;
+      const gone = W.counts.crystals - standing;
+      tally.innerHTML =
+        `<b>${standing}</b> standing &nbsp;·&nbsp; <b>${gone}</b> broken ` +
+        `&nbsp;·&nbsp; ${W.counts.crystals} in the valley`;
+      if (!standing && !ended) { ended = true; document.getElementById("over").classList.add("on"); }
     }
     device.queue.writeBuffer(flyTime, 0, new Float32Array([t, dt, 0, 0]));
 
@@ -1432,7 +1478,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // the one thing that says there is something solid in there — was the part
     // that vanished first.
     pass.setPipeline(meteorPipe); pass.draw(3 * 11, fireCap);
-    pass.setPipeline(blastPipe); pass.setVertexBuffer(0, blastInst); pass.draw(6 * 26, blastCap);
+    pass.setPipeline(blastPipe); pass.setVertexBuffer(0, blastInst); pass.draw(6 * 56, blastCap);
 
     // Last, so it covers the water and the fireflies as well as the ground.
     pass.setBindGroup(0, W.bgMain);
