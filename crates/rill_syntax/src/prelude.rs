@@ -141,6 +141,15 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
                 collect_expr_names(a, out);
             }
         }
+        Expr::Index { base, index, .. } => {
+            collect_expr_names(base, out);
+            collect_expr_names(index, out);
+        }
+        Expr::IndexSet { base, index, value, .. } => {
+            collect_expr_names(base, out);
+            collect_expr_names(index, out);
+            collect_expr_names(value, out);
+        }
         Expr::Unary { expr, .. } => collect_expr_names(expr, out),
         Expr::Binary { lhs, rhs, .. } => {
             collect_expr_names(lhs, out);

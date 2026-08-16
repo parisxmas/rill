@@ -18,6 +18,8 @@ type Expr
   ELambda(List(Str), Expr, Int)
   ESpawn(Expr, Int)
   ESelect(List(SArm), Option(Expr), Int)
+  EIndex(Expr, Expr, Int)
+  EIndexSet(Expr, Expr, Expr, Int)
   EBlock(List(Stmt))
 
 type Stmt

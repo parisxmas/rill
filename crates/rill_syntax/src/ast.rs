@@ -137,6 +137,10 @@ pub enum Expr {
     Spawn { body: Box<Expr>, line: usize },
     /// `select` — waits until one of its channel operations can proceed.
     Select { arms: Vec<SelectArm>, default: Option<Box<Expr>>, line: usize },
+    /// `b[i]` — one element of a buffer, or one byte of a string.
+    Index { base: Box<Expr>, index: Box<Expr>, line: usize },
+    /// `b[i] = v` — writing one element of a buffer.
+    IndexSet { base: Box<Expr>, index: Box<Expr>, value: Box<Expr>, line: usize },
     /// Multi-statement block; its value is the value of the last statement.
     Block(Vec<Stmt>),
 }

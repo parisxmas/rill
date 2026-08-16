@@ -531,6 +531,8 @@ fn expr_line(e: &Expr) -> usize {
         Expr::Lambda { line, .. } => *line,
         Expr::Spawn { line, .. } => *line,
         Expr::Select { line, .. } => *line,
+        Expr::Index { line, .. } => *line,
+        Expr::IndexSet { line, .. } => *line,
         Expr::Unary { expr, .. } => expr_line(expr),
         Expr::If { cond, .. } => expr_line(cond),
         Expr::Block(stmts) => stmts.first().map(stmt_line).unwrap_or(0),
@@ -547,6 +549,9 @@ const P_CMP: u8 = 4;
 const P_ADD: u8 = 5;
 const P_MUL: u8 = 6;
 const P_UNARY: u8 = 7;
+/// `b[i]` binds tighter than any operator, so its base is printed at a level
+/// that parenthesizes anything looser.
+const P_INDEX: u8 = 8;
 
 fn binop(op: BinOp) -> (&'static str, u8) {
     match op {
@@ -618,6 +623,12 @@ fn inline(e: &Expr, prec: u8) -> String {
                 let a: Vec<String> = args.iter().map(|a| inline(a, 0)).collect();
                 format!("{name}({})", a.join(", "))
             }
+        }
+        Expr::Index { base, index, .. } => {
+            format!("{}[{}]", inline(base, P_INDEX), inline(index, 0))
+        }
+        Expr::IndexSet { base, index, value, .. } => {
+            format!("{}[{}] = {}", inline(base, P_INDEX), inline(index, 0), inline(value, 0))
         }
         Expr::Unary { op: UnOp::Neg, expr } => {
             wrap(prec > P_UNARY, format!("-{}", inline(expr, P_UNARY)))
@@ -746,6 +757,17 @@ mod tests {
         assert_eq!(fmt("fn f(a, b) = (a + b) * 2\n"), "fn f(a, b) = (a + b) * 2\n");
         assert_eq!(fmt("fn f(a, b) = (a * b) + 2\n"), "fn f(a, b) = a * b + 2\n");
         assert_eq!(fmt("fn f(a, b) = a - (b - 1)\n"), "fn f(a, b) = a - (b - 1)\n");
+    }
+
+    /// Indexing binds tighter than every operator, so its base parenthesizes
+    /// anything looser and nothing else needs parentheses around it.
+    #[test]
+    fn formats_indexing() {
+        let src = "fn f(b: Buf(I64), i) = b[i + 1] * 2 - b[i]\n";
+        assert_eq!(fmt(src), src);
+        let src = "fn g(b: Buf(I64), i) =\n  b[i] = -b[i + 1]\n  b[b[i]] = 7\n  b[0]\n";
+        assert_eq!(fmt(src), src);
+        assert_eq!(fmt("fn f(b:Buf(I64))=b[ 0 ]\n"), "fn f(b: Buf(I64)) = b[0]\n");
     }
 
     #[test]

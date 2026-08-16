@@ -1518,6 +1518,75 @@ impl Checker {
                     },
                 })
             }
+            // `b[i]` and `b[i] = v` are the reading and the writing of one
+            // element, and mean exactly what `buf_get`/`buf_set` mean. A
+            // string indexes to its bytes, and cannot be written.
+            Expr::Index { base, index, line } => {
+                let b = self.infer(base, env)?;
+                let idx = self.infer(index, env)?;
+                self.unify(&Ty::Int, &idx.ty, *line, "index")?;
+                match self.resolve(&b.ty) {
+                    Ty::Buf(w) => Ok(TExpr {
+                        ty: w.rill_ty(),
+                        line: *line,
+                        kind: TK::BufGet { buf: Box::new(b), idx: Box::new(idx) },
+                    }),
+                    // A base still open here cannot be a buffer — a `Buf`
+                    // width is never inferred, so one would have had to be
+                    // annotated. That leaves a string, and saying so is what
+                    // lets `fn f(s, i) = s[i]` type without an annotation.
+                    Ty::Str | Ty::Var(_) => {
+                        self.unify(&Ty::Str, &b.ty, *line, "the base of `[]`")?;
+                        Ok(TExpr {
+                            ty: Ty::Int,
+                            line: *line,
+                            kind: TK::Builtin { rt: "rill_str_get", args: vec![b, idx] },
+                        })
+                    }
+                    other => Err(TypeError::new(
+                        *line,
+                        format!(
+                            "`[]` indexes a buffer or a string, but this is `{}` — a \
+                             `Buf` width is never inferred, so annotate the parameter",
+                            self.type_name(&other)
+                        ),
+                    )),
+                }
+            }
+            Expr::IndexSet { base, index, value, line } => {
+                let b = self.infer(base, env)?;
+                let width = match self.resolve(&b.ty) {
+                    Ty::Buf(w) => w,
+                    other => {
+                        return Err(TypeError::new(
+                            *line,
+                            format!(
+                                "only a buffer element can be assigned to, but this is \
+                                 `{}`{}",
+                                self.type_name(&other),
+                                if matches!(other, Ty::Str) {
+                                    " — strings are values, not storage"
+                                } else {
+                                    ""
+                                }
+                            ),
+                        ))
+                    }
+                };
+                let idx = self.infer(index, env)?;
+                self.unify(&Ty::Int, &idx.ty, *line, "index")?;
+                let val = self.infer(value, env)?;
+                self.unify(&width.rill_ty(), &val.ty, *line, "buffer element")?;
+                Ok(TExpr {
+                    ty: Ty::Unit,
+                    line: *line,
+                    kind: TK::BufSet {
+                        buf: Box::new(b),
+                        idx: Box::new(idx),
+                        val: Box::new(val),
+                    },
+                })
+            }
             Expr::Block(stmts) => {
                 let mut out = Vec::new();
                 let mut ty = Ty::Unit;
@@ -2678,6 +2747,15 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
                 free_vars(&arm.body, out, seen);
             }
         }
+        Expr::Index { base, index, .. } => {
+            free_vars(base, out, seen);
+            free_vars(index, out, seen);
+        }
+        Expr::IndexSet { base, index, value, .. } => {
+            free_vars(base, out, seen);
+            free_vars(index, out, seen);
+            free_vars(value, out, seen);
+        }
         Expr::Spawn { body, .. } => free_vars(body, out, seen),
         Expr::Select { arms, default, .. } => {
             for a in arms {
@@ -3027,6 +3105,29 @@ mod tests {
         let u = check_src("fn total(v: Buf(I32), i) = buf_get(v, i)\n\nfn main() = println(total(buf_i32(2), 0))\n").unwrap();
         assert_eq!(sig(&u, "total").ret, Ty::Int);
         assert_eq!(sig(&u, "total").params[0].1, Ty::Buf(CTy::I32));
+    }
+
+    /// `b[i]` is `buf_get` and `b[i] = v` is `buf_set` — same types, same
+    /// errors, so the notation carries no meaning of its own.
+    #[test]
+    fn indexing_is_the_buffer_builtins() {
+        let t = check_src(
+            "fn f(v: Buf(F32), i) =\n  v[i] = 1.5\n  v[i]\n\nfn main() = println(f(buf_f32(2), 0))\n",
+        )
+        .unwrap();
+        assert_eq!(sig(&t, "f").ret, Ty::Float);
+        let s = check_src("fn main() = println(\"ab\"[1])\n").unwrap();
+        let _ = s;
+        // An unannotated base cannot be a buffer, so it settles as a string
+        // and drives the rest of inference the way `str_get` would.
+        let t = check_src("fn f(s, i) = s[i] + 1\n\nfn main() = println(f(\"ab\", 0))\n").unwrap();
+        assert_eq!(sig(&t, "f").params[0].1, Ty::Str);
+        let err = check_src("fn main() =\n  x = 1\n  println(x[0])\n").unwrap_err();
+        assert!(err.msg.contains("indexes a buffer or a string"), "{}", err.msg);
+        let err = check_src("fn main() =\n  s = \"ab\"\n  s[0] = 65\n").unwrap_err();
+        assert!(err.msg.contains("not storage"), "{}", err.msg);
+        let err = check_src("fn main() =\n  v = buf_i32(2)\n  v[0] = 1.5\n").unwrap_err();
+        assert!(err.msg.contains("buffer element"), "{}", err.msg);
     }
 
     /// Storing the wrong shape in one is a type error, not a silent

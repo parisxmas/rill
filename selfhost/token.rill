@@ -45,6 +45,8 @@ type Tok
   TkComma
   TkLParen
   TkRParen
+  TkLBracket
+  TkRBracket
   TkNewline
   TkIndent
   TkDedent

@@ -536,7 +536,29 @@ impl Parser {
             let value = self.expr()?;
             Ok(Stmt::Bind { name, value, line })
         } else {
-            Ok(Stmt::Expr(self.expr()?))
+            // `b[i] = v` is the one assignment Rill has, and only to a buffer
+            // element — which was already mutable through `buf_set`. Nothing
+            // else can appear to the left of `=`.
+            let e = self.expr()?;
+            if !matches!(self.peek(), Tok::Eq) {
+                return Ok(Stmt::Expr(e));
+            }
+            let (line, col) = self.here();
+            self.bump();
+            let value = self.expr()?;
+            match e {
+                Expr::Index { base, index, line } => Ok(Stmt::Expr(Expr::IndexSet {
+                    base,
+                    index,
+                    value: Box::new(value),
+                    line,
+                })),
+                _ => Err(SyntaxError::new(
+                    line,
+                    col,
+                    "only a buffer element can be assigned to: write `b[i] = v`".to_string(),
+                )),
+            }
         }
     }
 
@@ -663,8 +685,22 @@ impl Parser {
                 els: Box::new(Expr::Bool(true)),
             })
         } else {
-            self.primary()
+            self.postfix()
         }
+    }
+
+    /// `e[i]`, as many times as it is written. Binds tighter than anything
+    /// else, so `b[i] + 1` and `b[i][j]` read the way they look.
+    fn postfix(&mut self) -> Result<Expr, SyntaxError> {
+        let mut base = self.primary()?;
+        while matches!(self.peek(), Tok::LBracket) {
+            let (line, _) = self.here();
+            self.bump();
+            let index = self.expr()?;
+            self.expect(&Tok::RBracket, "to close the index")?;
+            base = Expr::Index { base: Box::new(base), index: Box::new(index), line };
+        }
+        Ok(base)
     }
 
     fn primary(&mut self) -> Result<Expr, SyntaxError> {

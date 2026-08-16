@@ -109,6 +109,8 @@ fn expr_line(e) = match e
   ELambda(_, _, ln) -> ln
   ESpawn(_, ln) -> ln
   ESelect(_, _, ln) -> ln
+  EIndex(_, _, ln) -> ln
+  EIndexSet(_, _, _, ln) -> ln
   ENeg(x) -> expr_line(x)
   EIf(c, _, _) -> expr_line(c)
   EBlock(ss) -> block_line(ss)
@@ -146,6 +148,8 @@ fn inline(e, prec) = match e
   EBool(b) -> if b then "true" else "false"
   EVar(n, _) -> n
   ECall(n, args, _, piped) -> inline_call(n, args, piped, prec)
+  EIndex(b, ix, _) -> inline(b, 8) + "[" + inline(ix, 0) + "]"
+  EIndexSet(b, ix, v, _) -> inline(b, 8) + "[" + inline(ix, 0) + "] = " + inline(v, 0)
   ENeg(x) -> wrapp(prec > 7, "-" + inline(x, 7))
   EBin(op, l, r, _) -> inline_bin(op, l, r, prec)
   EIf(c, t, els) -> inline_if(c, t, els, prec)

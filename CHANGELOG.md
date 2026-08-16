@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **`b[i]` and `b[i] = v`.** A buffer element is now written the way it is
+  read everywhere else, and a string indexes to its bytes with `s[i]`. Both
+  mean exactly what `buf_get`/`buf_set`/`str_get` mean — the same types, the
+  same bounds check, the same errors — so nothing new happens at run time;
+  `b[i] = v` is the one assignment the language has, and only to a buffer,
+  which was always storage. Indexing binds tighter than every operator. A
+  base whose type is still open cannot be a buffer, since a `Buf` width is
+  never inferred, so it settles as a string: `fn f(s, i) = s[i]` needs no
+  annotation. Measured on two benchmark programs rewritten to use it: a
+  Dijkstra with a hand-written heap loses 9% of its tokens, a JSON parser 3%.
+
 - **The self-hosted compiler calls back.** `rillc` emits C-ABI trampolines,
   the last thing it could not compile: `Fn(...)` in a foreign signature is a
   code pointer with nowhere to keep an environment, so the trampoline widens

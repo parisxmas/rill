@@ -49,6 +49,8 @@ pub enum Tok {
     Bang,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Comma,
     // layout
     Newline,
@@ -100,6 +102,8 @@ impl std::fmt::Display for Tok {
             Tok::Bang => write!(f, "`!`"),
             Tok::LParen => write!(f, "`(`"),
             Tok::RParen => write!(f, "`)`"),
+            Tok::LBracket => write!(f, "`[`"),
+            Tok::RBracket => write!(f, "`]`"),
             Tok::Comma => write!(f, "`,`"),
             Tok::Newline => write!(f, "end of line"),
             Tok::Indent => write!(f, "indent"),
@@ -389,6 +393,16 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                     ')' => {
                         paren_depth = paren_depth.saturating_sub(1);
                         Tok::RParen
+                    }
+                    // Brackets join the paren count, so an index expression may
+                    // span lines for the same reason a call may.
+                    '[' => {
+                        paren_depth += 1;
+                        Tok::LBracket
+                    }
+                    ']' => {
+                        paren_depth = paren_depth.saturating_sub(1);
+                        Tok::RBracket
                     }
                     '=' => {
                         if s.peek() == Some('=') {

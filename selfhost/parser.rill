@@ -214,7 +214,22 @@ fn p_mul_step(l, ts) = match ts
 fn p_unary(ts) = match ts
   Cons(Tk(TkMinus, _), r) -> neg_pr(p_unary(r))
   Cons(Tk(TkBang, _), r) -> not_pr(p_unary(r))
-  _ -> p_primary(ts)
+  _ -> p_postfix(p_primary(ts))
+
+# `e[i]`, as many times as it is written: tighter than any operator.
+fn p_postfix(pr) = match pr
+  PR(e, ts) -> p_postfix2(e, ts)
+
+fn p_postfix2(e, ts) = match ts
+  Cons(Tk(TkLBracket, ln), r) -> p_index(e, p_expr(r), ln)
+  _ -> PR(e, ts)
+
+fn p_index(e, pr, ln) = match pr
+  PR(ix, ts) -> p_postfix2(EIndex(e, ix, ln), expect_rb(ts))
+
+fn expect_rb(ts) = match ts
+  Cons(Tk(TkRBracket, _), r) -> r
+  _ -> die_any("expected `]` to close the index", p_line(ts))
 
 fn neg_pr(pr) = match pr
   PR(e, ts) -> PR(ENeg(e), ts)
@@ -458,7 +473,23 @@ fn sel_item_fin(op, pr, ln) = match pr
 
 fn p_stmt(ts) = match ts
   Cons(Tk(TkIdent(n), ln), Cons(Tk(TkEq, _), r)) -> bind_pr(n, p_expr(r), ln)
-  _ -> sexpr_pr(p_expr(ts))
+  _ -> p_assign(p_expr(ts))
+
+# `b[i] = v` is the one assignment Rill has, and only to a buffer element —
+# which `buf_set` could already write. Nothing else may precede the `=`.
+fn p_assign(pr) = match pr
+  PR(e, ts) -> p_assign2(e, ts)
+
+fn p_assign2(e, ts) = match ts
+  Cons(Tk(TkEq, ln), r) -> p_assign3(e, p_expr(r), ln)
+  _ -> PR(SExpr(e), ts)
+
+fn p_assign3(e, pr, ln) = match pr
+  PR(v, ts) -> PR(SExpr(index_set(e, v, ln)), ts)
+
+fn index_set(e, v, ln) = match e
+  EIndex(b, ix, l) -> EIndexSet(b, ix, v, l)
+  _ -> die_any("only a buffer element can be assigned to: write `b[i] = v`", ln)
 
 fn bind_pr(n, pr, ln) = match pr
   PR(e, ts) -> PR(SBind(n, e, ln), ts)

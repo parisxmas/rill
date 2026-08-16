@@ -1,0 +1,26 @@
+fn fill(v: Buf(I64), i, n) =
+  if i >= n then 0
+  else
+    v[i] = i * i
+    fill(v, i + 1, n)
+
+fn total(v: Buf(I64), i, acc) = if i >= buf_len(v) then acc else total(v, i + 1, acc + v[i])
+
+fn bytes(s, i, acc) = if i >= str_len(s) then acc else bytes(s, i + 1, acc + s[i])
+
+fn main() =
+  v = buf_int(6)
+  fill(v, 0, 6)
+  println(total(v, 0, 0))
+  v[v[2]] = -1
+  println(v[4])
+  w = buf_f32(2)
+  w[0] = 1.5
+  w[1] = w[0] * 2.0
+  println(w[1])
+  b = buf_u8(3)
+  b[0] = 200
+  b[1] = b[0] + 55
+  println(b[0] + b[1])
+  println(bytes("abc", 0, 0))
+  println(chr("rill"[1]))

@@ -438,6 +438,8 @@ fn emit(cx, st, env, e, cg) = match e
   ELambda(_, _, _) -> rcdie("a lambda here needs a call to give it a type")
   ESpawn(b, _) -> emit_spawn(cx, st, env, b, cg)
   ESelect(arms, d, _) -> emit_select(cx, st, env, arms, d, cg, false, YUnit, Nil)
+  EIndex(b, ix, _) -> emit_index(cx, st, env, b, ix, cg)
+  EIndexSet(b, ix, v, _) -> emit_builtin(cx, st, env, "buf_set", l3(b, ix, v), cg)
 
 fn emit_strlit(ts) = match ts
   TS2(nm, cg) -> RV(cg, nm, YStr)
@@ -2037,6 +2039,15 @@ fn buf_addr6(ts, off, b) = match ts
 
 fn buf_addr7(ts, d, off) = match ts
   TS2(ad, cg) -> TS2(ad, cg_line(cg, ad + " = getelementptr i8, ptr " + d + ", i64 " + off))
+
+# `b[i]` is a buffer load or a string byte, decided by what the base turned
+# out to be — the same two runtime paths `buf_get` and `str_get` take.
+fn emit_index(cx, st, env, b, ix, cg) =
+  match emit_args(cx, st, env, l2(b, ix), Nil, 0, cg, ILeaf, Nil)
+    AV(cg1, vts, _) -> builtin_done(index_ir(cg1, vts), vts)
+
+fn index_ir(cg, vts) =
+  if is_ystr(vt1t(vts)) then rt1(cg, "i64", "rill_str_get", "ptr " + vt1(vts) + ", i64 " + vt2(vts), YInt) else buf_get_ir(cg, vts)
 
 fn buf_get_ir(cg, vts) =
   nm = bw_name(buf_width(vt1t(vts)))

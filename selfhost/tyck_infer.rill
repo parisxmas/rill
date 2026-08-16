@@ -15,6 +15,8 @@ fn eline(e) = match e
   ELambda(_, _, ln) -> ln
   ESpawn(_, ln) -> ln
   ESelect(_, _, ln) -> ln
+  EIndex(_, _, ln) -> ln
+  EIndexSet(_, _, _, ln) -> ln
   ENeg(x) -> eline(x)
   EIf(c, _, _) -> eline(c)
   _ -> 0
@@ -61,7 +63,40 @@ fn infer(cx, st, env, e) = match e
   ELambda(ps, b, ln) -> i_lambda(cx, st, env, ps, b)
   ESpawn(b, ln) -> i_spawn(infer(cx, st, env, b))
   ESelect(arms, def, ln) -> i_select(cx, st, env, arms, def, ln)
+  EIndex(b, ix, ln) -> i_index(infer(cx, st, env, b), cx, env, ix, ln)
+  EIndexSet(b, ix, v, ln) -> i_iset(infer(cx, st, env, b), cx, env, ix, v, ln)
   EBlock(ss) -> i_block(cx, st, env, ss, YUnit)
+
+# `b[i]` reads one element of a buffer or one byte of a string, and means
+# exactly what `buf_get`/`str_get` mean. `b[i] = v` is `buf_set`; a string is
+# a value, not storage.
+fn i_index(ts, cx, env, ix, ln) = match ts
+  TS(bt, st) -> i_index2(resolve(st, bt), cx, st, env, ix, ln)
+
+# A base still open here cannot be a buffer — a `Buf` width is never
+# inferred, so one would have had to be annotated. That leaves a string, and
+# saying so is what lets `fn f(s, i) = s[i]` type without an annotation.
+fn i_index2(rbt, cx, st, env, ix, ln) = match rbt
+  YBuf(w) -> i_index3(infer(cx, st, env, ix), cx, ln, ct_rill(w))
+  YStr -> i_index3(infer(cx, st, env, ix), cx, ln, YInt)
+  YVar(v) -> i_index3(infer(cx, unify(cx, st, YStr, YVar(v), ln, "the base of `[]`"), env, ix), cx, ln, YInt)
+  _ -> tydie("`[]` indexes a buffer or a string, but this is `" + type_name(cx, st, rbt) + "` — a `Buf` width is never inferred, so annotate the parameter", ln)
+
+fn i_index3(ts, cx, ln, out) = match ts
+  TS(it, st) -> TS(out, unify(cx, st, YInt, it, ln, "index"))
+
+fn i_iset(ts, cx, env, ix, v, ln) = match ts
+  TS(bt, st) -> i_iset2(resolve(st, bt), cx, st, env, ix, v, ln)
+
+fn i_iset2(rbt, cx, st, env, ix, v, ln) = match rbt
+  YBuf(w) -> i_iset3(infer(cx, st, env, ix), cx, env, v, ln, w)
+  _ -> tydie("only a buffer element can be assigned to, but this is `" + type_name(cx, st, rbt) + "`" + if is_ystr(rbt) then " — strings are values, not storage" else "", ln)
+
+fn i_iset3(ts, cx, env, v, ln, w) = match ts
+  TS(it, st) -> i_iset4(infer(cx, unify(cx, st, YInt, it, ln, "index"), env, v), cx, ln, w)
+
+fn i_iset4(ts, cx, ln, w) = match ts
+  TS(vt, st) -> TS(YUnit, unify(cx, st, ct_rill(w), vt, ln, "buffer element"))
 
 fn i_neg(ts, cx, x) = match ts
   TS(t, st) -> TS(t, require(cx, st, t, 0, eline(x), "negation"))
