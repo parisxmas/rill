@@ -4,7 +4,10 @@
     eye:  vec4f,   // xyz eye, w time
     sun:  vec4f,   // xyz light direction, w aspect
     cam:  vec4f,   // yaw, pitch, wind angle, wind strength
-    wind: vec4f,   // x: the wind's own phase, integrated — see `frame`
+    wind: vec4f,   // x the wind's phase, y the player's speed, z the walk's,
+                   // w the recoil left in the rifle
+    vmMin:  vec4f, // the rifle's bounding box, which its vertices were
+    vmSize: vec4f, // quantized against — see `rifle.mesh`
   }
   @group(0) @binding(0) var<uniform> u: U;
 

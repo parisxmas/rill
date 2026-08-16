@@ -23,6 +23,21 @@
     .err { position: fixed; inset: 0; display: grid; place-items: center;
            color: #c9c3e4; font: 14px ui-monospace, monospace; }
 
+    /* The crosshair: four strokes with a gap in the middle, so it marks the
+       point without covering it. Each carries a dark rim, which is what keeps
+       it readable over the pale peaks and over the dark water both. */
+    .aim { position: fixed; inset: 0; pointer-events: none;
+           display: grid; place-items: center; }
+    .aim i { position: absolute; background: #fff;
+             box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55); }
+    .aim .h { width: 10px; height: 2px; }
+    .aim .v { width: 2px; height: 10px; }
+    .aim .l { transform: translateX(-11px); }
+    .aim .r { transform: translateX(11px); }
+    .aim .u { transform: translateY(-11px); }
+    .aim .d { transform: translateY(11px); }
+    .aim .dot { width: 2px; height: 2px; background: #f6c02e; }
+
     /* The loader. It covers the canvas until a frame has actually been drawn
        on it, so nobody watches a black rectangle wondering whether it works. */
     .boot {
@@ -56,9 +71,14 @@
     <h1>RILL &nbsp;VALLEY</h1>
     <div class="sub">the world below is computed by a functional language</div>
     <div class="keys"><b>click</b> to look &nbsp;·&nbsp; <b>WASD</b> walk &nbsp;·&nbsp;
-      <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint</div>
+      <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint &nbsp;·&nbsp;
+      <b>left mouse</b> fire</div>
   </div>
   <div class="stat" id="stat"></div>
+  <div class="aim">
+    <i class="h l"></i><i class="h r"></i><i class="v u"></i><i class="v d"></i>
+    <i class="dot"></i>
+  </div>
   <div class="boot" id="boot">
     <div class="inner">
       <h1>RILL &nbsp;VALLEY</h1>
@@ -72,7 +92,7 @@
   <script type="module">
     // Versioned because the CDN in front of this holds .js for a week; bump it
     // when host.js changes. index.html itself is never cached.
-    import { run } from "./host.js?v=12";
+    import { run } from "./host.js?v=22";
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");

@@ -98,3 +98,52 @@ What actually makes it read as water, though, is that the sea comes in sets: a
 slow noise field drifting across the lake scales every wave at once, so there
 are patches of chop and patches nearly glassy. Without it the same amplitude
 covers the whole surface, and no amount of spectrum saves that.
+
+## The rifle
+
+Poly Haven's `bolt_action_rifle_7_62`, CC0, baked down from a glTF into one
+file: welded, indexed, and quantized — position as three unorm16 across the
+model's own bounding box, normal as three snorm8, the atlas coordinate as two
+unorm16. Sixteen bytes a vertex against thirty-two, which with the indexing
+takes it from 1.9 MB to 423 KB for 19,913 triangles. Its two materials sit
+side by side in one 1024×512 atlas, which is why it is one draw call.
+
+It is placed by aiming rather than by carrying: the scope's own optical axis on
+the view axis, the barrel pointing where the eye points, and the butt behind
+the eye where a shouldered stock is. That needs a frustum of its own — a near
+plane at a centimetre, and a tighter field of view than the valley's, because a
+wide angle applied to something at arm's length stretches it into a caricature.
+The world's matrix cannot do either: a near plane that close would throw away
+the depth precision the valley needs across four hundred metres. So the gun is
+projected by hand and its depth squeezed into the front hundredth of the buffer,
+which is nearer than anything the camera can walk up to.
+
+The shot is Rill's. `fire` puts a round in a ring of thirty-two at 420 m/s, and
+`frame` flies it: gravity at 9.81 and drag taking a fraction of the speed away
+every second, which is why a bullet's drop grows faster than the schoolbook
+parabola says — it is slowing down the whole way, so it spends longer falling
+over the second half of its flight than over the first.
+
+The streak is built in screen space rather than as a billboard stretched along
+the velocity. The obvious way is wrong here: this is a first-person view, the
+round flies almost straight away from the camera, and a quad pointing away from
+the camera projects to nothing at all. In screen space the same round comes out
+as a bright point going away from you and as a streak when it crosses your
+view, which is what it looks like.
+
+A round that reaches a crystal takes it out of the instance buffer — its scale
+goes to zero, which is how the host stops drawing it without the array changing
+length — and leaves eight shards in its place, thrown outward and tumbling on
+all three axes. They keep the colour of what they came from, fall, land, and
+stay: a shard that reaches the ground has its velocity and its spin set to zero
+and its height snapped to the terrain, which is the same thing the walking
+camera does when it lands. The hit test is against the segment the round
+covered this frame, not against where it happens to be at the end of one —
+seven metres pass between frames, and a point test would go through anything
+narrower than that.
+
+The bang is a Mosin Nagant, which is the rifle in the hands, recorded outdoors
+with its own echo off the hills already in the tail — from Vincent Sevedge's
+firearm recordings, CC BY 3.0. Two and a half seconds, 25 KB, decoded once and
+played from the same buffer with a hair of detune and level each time, because
+the same file twice in a row is the one thing that gives a sample away.

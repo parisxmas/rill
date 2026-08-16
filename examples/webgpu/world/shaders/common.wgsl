@@ -18,6 +18,8 @@
   // Four plants in a 2x2 atlas: two tufts of grass, a fern frond, a nettle.
   // Shares the needle atlas's sampler, which clamps rather than repeats.
   @group(0) @binding(10) var plants: texture_2d<f32>;
+  // The rifle's two materials side by side: accessories left, rifle right.
+  @group(0) @binding(11) var rifleTex: texture_2d<f32>;
 
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
@@ -117,4 +119,109 @@
     var col = albedo * (SUN_COL * 1.25 * nl * sh + sky * 1.1);
     let view = world - u.eye.xyz;
     return mix(col, fogColor(view), fogAt(world, length(view)));
+  }
+
+  // ---- where the rifle is held ----------------------------------------------
+  //
+  // Shared by the rifle itself and by the flash at its muzzle, which have to
+  // agree to the millimetre or the fire comes out of the air beside the barrel.
+  //
+  // Aiming: the scope's own optical axis on the view axis, and the barrel
+  // pointing where the eye points. The lens sits at y = +0.0859 in the model
+  // and dead centre across it, so dropping the rifle by that much times the
+  // scale puts the sight picture where the crosshair is. Nudged right and
+  // canted besides, because it is held in a right hand — enough to see, not
+  // enough to take the sights off what they are pointed at.
+  const VM_SCALE = 0.46;
+  const VM_AT    = vec3f(0.0002 * VM_SCALE + 0.016, -0.0859 * VM_SCALE, 0.26);
+  const VM_YAW   = -0.055;
+  const VM_PITCH =  0.0;
+  const VM_ROLL  = -0.115;
+  // Its own frustum. A near plane at a centimetre so the stock can sit right
+  // against the eye without being cut in half, and a tighter field of view than
+  // the valley's, because a wide angle applied to something at arm's length
+  // stretches it into a caricature. Every shooter does both; the world's matrix
+  // cannot, because a near plane this close would throw away the depth
+  // precision the valley needs across four hundred metres.
+  const VM_NEAR = 0.01;
+  const VM_FAR  = 10.0;
+  const VM_FOV  = 0.40;   // half-angle, against the world's 0.53
+
+  // Model coordinates to the camera's own frame — right, up, forward — with the
+  // walk and the recoil folded in.
+  fn vmCam(m: vec3f) -> vec3f {
+    // Recoil: one at the shot, most of it gone in a fifth of a second. A rifle
+    // does not simply move back — the impulse runs along the bore, which is
+    // above the shoulder holding it, so the muzzle climbs as well. That is the
+    // whole of what a shot looks like from behind the sights.
+    let rc = u.wind.w;
+    let cy = cos(VM_YAW);               let sy = sin(VM_YAW);
+    let cp = cos(VM_PITCH + 0.11 * rc); let sp = sin(VM_PITCH + 0.11 * rc);
+    let cr = cos(VM_ROLL);              let sr = sin(VM_ROLL);
+    let Ry = mat3x3f(vec3f(cy, 0.0, -sy), vec3f(0.0, 1.0, 0.0), vec3f(sy, 0.0, cy));
+    let Rx = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, cp, sp), vec3f(0.0, -sp, cp));
+    let Rz = mat3x3f(vec3f(cr, sr, 0.0), vec3f(-sr, cr, 0.0), vec3f(0.0, 0.0, 1.0));
+
+    // The walk. `wind.y` is how fast the player is moving and `wind.z` a phase
+    // integrated from that speed, so the bob keeps its place when the speed
+    // changes instead of jumping. Small, because a rifle held on target is held
+    // still — enough that it is not welded to the screen, not enough to spoil
+    // the aim, with a slow idle sway on top.
+    let amp = clamp(u.wind.y / 5.5, 0.0, 1.0);
+    let bp = u.wind.z;
+    let t = u.eye.w;
+    let bob = vec3f(
+      sin(bp) * 0.0060 * amp + sin(t * 0.7) * 0.0014,
+      -abs(cos(bp)) * 0.0050 * amp + sin(t * 0.9 + 1.1) * 0.0011,
+      -0.004 * amp,
+    );
+    let kick = vec3f(0.0, 0.008 * rc, -0.048 * rc);
+    // The model is built with +x down the barrel, +y up and +z out to the
+    // right, so reaching the camera's axes is a shuffle and then the rotations.
+    return (Ry * Rx * Rz) * vec3f(m.z, m.y, m.x) * VM_SCALE + VM_AT + bob + kick;
+  }
+
+  // A direction, by the same rotation but without the offsets.
+  fn vmDir(d: vec3f) -> vec3f {
+    let rc = u.wind.w;
+    let cy = cos(VM_YAW);               let sy = sin(VM_YAW);
+    let cp = cos(VM_PITCH + 0.11 * rc); let sp = sin(VM_PITCH + 0.11 * rc);
+    let cr = cos(VM_ROLL);              let sr = sin(VM_ROLL);
+    let Ry = mat3x3f(vec3f(cy, 0.0, -sy), vec3f(0.0, 1.0, 0.0), vec3f(sy, 0.0, cy));
+    let Rx = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, cp, sp), vec3f(0.0, -sp, cp));
+    let Rz = mat3x3f(vec3f(cr, sr, 0.0), vec3f(-sr, cr, 0.0), vec3f(0.0, 0.0, 1.0));
+    return (Ry * Rx * Rz) * vec3f(d.z, d.y, d.x);
+  }
+
+  // The camera's axes in the world, rebuilt from the same yaw and pitch Rill
+  // used to build the view matrix, so nothing held can drift out of alignment.
+  fn camToWorld(cam: vec3f) -> vec3f {
+    let yaw = u.cam.x; let pitch = u.cam.y;
+    let cpi = cos(pitch);
+    let fwd = vec3f(sin(yaw) * cpi, sin(pitch), -cos(yaw) * cpi);
+    let rgt = vec3f(cos(yaw), 0.0, sin(yaw));
+    let up  = cross(rgt, fwd);
+    return u.eye.xyz + rgt * cam.x + up * cam.y + fwd * cam.z;
+  }
+
+  fn camDirToWorld(cam: vec3f) -> vec3f {
+    let yaw = u.cam.x; let pitch = u.cam.y;
+    let cpi = cos(pitch);
+    let fwd = vec3f(sin(yaw) * cpi, sin(pitch), -cos(yaw) * cpi);
+    let rgt = vec3f(cos(yaw), 0.0, sin(yaw));
+    let up  = cross(rgt, fwd);
+    return rgt * cam.x + up * cam.y + fwd * cam.z;
+  }
+
+  // The viewmodel's own projection. `cam` is already in the camera's frame,
+  // which is the only thing a view matrix would have produced. Depth into the
+  // front hundredth of the buffer, order among its own triangles intact: the
+  // camera collides with the world at rather more than ten centimetres, which
+  // is where a world fragment would have to be to land in front of it.
+  fn vmClip(cam: vec3f) -> vec4f {
+    let pb = 1.0 / tan(VM_FOV);
+    let pa = pb / u.sun.w;                       // w carries the aspect
+    let A = VM_FAR / (VM_FAR - VM_NEAR);
+    let B = VM_NEAR * VM_FAR / (VM_FAR - VM_NEAR);
+    return vec4f(pa * cam.x, pb * cam.y, (A * cam.z - B) * 0.012, cam.z);
   }

@@ -56,6 +56,7 @@ function guessTier(info) {
 const SHADERS = {
   uniforms: null, common: "uniforms",
   terrain: "common", instanced: "common", pine: "common", grass: "common",
+  viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms",
@@ -65,12 +66,13 @@ const SHADERS = {
 // The images, and the square they are decoded to. Listed here rather than at
 // the point of use so that the loader can count them before it starts.
 const TEXTURES = [
-  ["./pine-twig.png", 256],    // the needle atlas
-  ["./pine-bark.jpg", 256],
-  ["./grass-ground.jpg", 256],
-  ["./plants.png", 512],       // the undergrowth atlas, 2x2
-  ["./rock-face.jpg", 256],
-  ["./shore-sand.jpg", 256],
+  ["./pine-twig.png", 256, 256],     // the needle atlas
+  ["./pine-bark.jpg", 256, 256],
+  ["./grass-ground.jpg", 256, 256],
+  ["./plants.png", 512, 512],        // the undergrowth atlas, 2x2
+  ["./rock-face.jpg", 256, 256],
+  ["./shore-sand.jpg", 256, 256],
+  ["./rifle-atlas.jpg", 1024, 512],  // the rifle's two materials, side by side
 ];
 
 async function loadShaders(step) {
@@ -90,6 +92,10 @@ async function loadShaders(step) {
     INSTANCED: whole("instanced"),
     PINE: whole("pine"),
     GRASS: whole("grass"),
+    VIEWMODEL: whole("viewmodel"),
+    TRACER: whole("tracer"),
+    MUZZLE: whole("muzzle"),
+    SHARD: whole("shard"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
@@ -259,7 +265,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // texture, and the valley itself. `run` does not resolve until a frame has
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
-  const TOTAL = 3 + Object.keys(SHADERS).length + TEXTURES.length;
+  const TOTAL = 5 + Object.keys(SHADERS).length + TEXTURES.length;
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -309,7 +315,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
 
   // Static GPU objects: uniforms, sampler, small meshes, layouts, and every
   // pipeline that does not depend on the tier.
-  const uni = device.createBuffer({ size: 52 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const uni = device.createBuffer({ size: 56 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const shadowSamp = device.createSampler({ compare: "less" });
 
@@ -317,15 +323,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the file again at each size — cheaper to write than a blit pass, and alpha
   // tested foliage without mips shimmers the moment it is more than a few
   // trees away.
-  async function mipped(url, size0) {
+  async function mipped(url, w0, h0) {
     const bytes = await (await fetch(url)).arrayBuffer();
     const levels = [];
-    for (let size = size0; size >= 1; size >>= 1) {
+    for (let w = w0, h = h0; w >= 1 && h >= 1; w >>= 1, h >>= 1) {
       levels.push(await createImageBitmap(new Blob([bytes]),
-        { resizeWidth: size, resizeHeight: size, resizeQuality: "high" }));
+        { resizeWidth: w, resizeHeight: h, resizeQuality: "high" }));
     }
     const tex = device.createTexture({
-      size: [size0, size0], mipLevelCount: levels.length, format: "rgba8unorm",
+      size: [w0, h0], mipLevelCount: levels.length, format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
     levels.forEach((bmp, i) => device.queue.copyExternalImageToTexture(
@@ -336,9 +342,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the decodes are the browser's work rather than ours; done one after
   // another they were the longest thing between the page opening and the
   // valley appearing.
-  const [foliageView, barkView, groundView, plantView, rockView, sandView] =
-    await Promise.all(TEXTURES.map(([url, size]) =>
-      mipped(url, size).then(v => { step(url.slice(2)); return v; })));
+  const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView] =
+    await Promise.all(TEXTURES.map(([url, w, h]) =>
+      mipped(url, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
     magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
     addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
@@ -361,6 +367,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -387,6 +394,30 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const meshLayout = { arrayStride: 24, attributes: [
     { shaderLocation: 0, offset: 0, format: "float32x3" },
     { shaderLocation: 1, offset: 12, format: "float32x3" },
+  ]};
+  // The rifle, quantized: position as three unorm16 across the model's own
+  // bounding box, normal as three snorm8, the atlas coordinate as two
+  // unorm16. Sixteen bytes a vertex against thirty-two, and indexed, which
+  // between them take the file from 1.9 MB to 423 KB.
+  const vmLayout = [{ arrayStride: 16, attributes: [
+    { shaderLocation: 0, offset: 0, format: "unorm16x4" },
+    { shaderLocation: 1, offset: 8, format: "snorm8x4" },
+    { shaderLocation: 2, offset: 12, format: "unorm16x2" },
+  ]}];
+  // One bullet per instance: position, velocity, a spare, and the life left.
+  const bulletLayout = [{ arrayStride: 32, stepMode: "instance", attributes: [
+    { shaderLocation: 0, offset: 0, format: "float32x3" },
+    { shaderLocation: 1, offset: 12, format: "float32x3" },
+    { shaderLocation: 2, offset: 24, format: "float32" },
+    { shaderLocation: 3, offset: 28, format: "float32" },
+  ]}];
+  // A shard: twenty floats in Rill's pool, of which the renderer wants four —
+  // where it is, how it is turned, how big it is, and what colour it was.
+  const shardLayout = { arrayStride: 80, stepMode: "instance", attributes: [
+    { shaderLocation: 2, offset: 0, format: "float32x3" },    // position
+    { shaderLocation: 3, offset: 24, format: "float32x3" },   // orientation
+    { shaderLocation: 4, offset: 48, format: "float32" },     // scale
+    { shaderLocation: 5, offset: 52, format: "float32x3" },   // colour
   ]};
   const instLayout = { arrayStride: 32, stepMode: "instance", attributes: [
     { shaderLocation: 2, offset: 0, format: "float32x3" },
@@ -415,6 +446,82 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.72 } });
   const grassPipe = pipe("grass", S.GRASS, [pineLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // Backfaces culled, unlike the foliage: the butt sits behind the eye and is
+  // cut open by the near plane, and a culled interior reads as "not there"
+  // where an unculled one reads as a dark wall across the bottom of the screen.
+  const vmPipe = pipe("viewmodel", S.VIEWMODEL, vmLayout);
+  // Additive and depth-tested but not depth-writing: a tracer is light in the
+  // air, so the ground hides it and it hides nothing.
+  const tracerPipe = pipe("tracer", S.TRACER, bulletLayout,
+    { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // The flash sits in front of the rifle, so it is drawn after it and does not
+  // write depth: it is fire, and fire occludes nothing.
+  const shardPipe = pipe("shard", S.SHARD, [meshLayout, shardLayout]);
+  const muzzlePipe = pipe("muzzle", S.MUZZLE, [],
+    { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+
+  // The rifle: one file, its own header. Two counts, then the bounding box the
+  // positions were quantized against, then the vertices, then the indices.
+  const rifleBytes = await (await fetch("./rifle.mesh")).arrayBuffer();
+  const rifleHead = new DataView(rifleBytes, 0, 32);
+  const rifleVerts = rifleHead.getUint32(0, true);
+  const rifleIdx = rifleHead.getUint32(4, true);
+  const rifleBox = new Float32Array(rifleBytes, 8, 6);
+  const rifleVB = gpuBuf(new Uint8Array(rifleBytes, 32, rifleVerts * 16));
+  // An odd triangle count leaves an odd number of uint16s, and `writeBuffer`
+  // wants a multiple of four bytes either way, so the tail is padded.
+  const rifleIdxBytes = new Uint8Array((rifleIdx * 2 + 3) & ~3);
+  rifleIdxBytes.set(new Uint8Array(rifleBytes, 32 + rifleVerts * 16, rifleIdx * 2));
+  const rifleIB = device.createBuffer({
+    size: rifleIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(rifleIB, 0, rifleIdxBytes);
+  step("rifle.mesh");
+
+  // The bullets live in Rill's memory and are copied up whole every frame:
+  // thirty-two rounds is a kilobyte, which is less than the call it would take
+  // to work out whether any of them had moved.
+  // The shot, recorded rather than synthesised: a Mosin Nagant, which is the
+  // rifle in the hands, taken outdoors with its own echo off the hills already
+  // in the tail. Decoded once and played from the same buffer every time, so
+  // firing costs nothing but a node.
+  //
+  // The context is not started here — a browser will not let it be, before the
+  // page has been clicked on — so this only fetches. `bang` builds it on the
+  // first shot, which is by definition after a click.
+  let audio = null, shotBuf = null;
+  const shotBytes = await (await fetch("./rifle-shot.mp3")).arrayBuffer();
+  step("rifle-shot.mp3");
+  function play() {
+    if (!shotBuf) return;
+    const src = audio.createBufferSource();
+    src.buffer = shotBuf;
+    // A hair of detune and level each time: the same file twice in a row is
+    // the one thing that gives a sample away.
+    src.playbackRate.value = 0.97 + Math.random() * 0.06;
+    const g = audio.createGain();
+    g.gain.value = 0.55 + Math.random() * 0.12;
+    src.connect(g).connect(audio.destination);
+    src.start();
+  }
+  function bang() {
+    if (!audio) {
+      audio = new (globalThis.AudioContext ?? globalThis.webkitAudioContext)();
+      audio.decodeAudioData(shotBytes.slice(0)).then(b => { shotBuf = b; play(); });
+      return;
+    }
+    if (audio.state === "suspended") audio.resume();
+    play();
+  }
+
+  const bulletCap = Number(E.bullets_cap(0));
+  const bulletBuf = device.createBuffer({
+    size: bulletCap * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  const shardCap = Number(E.shards_cap(0));
+  const shardBuf = device.createBuffer({
+    size: shardCap * 80, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
 
   const flyBgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
@@ -563,6 +670,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 8, resource: rockView },
       { binding: 9, resource: sandView },
       { binding: 10, resource: plantView },
+      { binding: 11, resource: rifleView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -575,7 +683,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
         cull: "none", depth: { depthWriteEnabled: false },
         constants: { WAVES: T.waves, RIPPLES: T.ripples } });
 
-    W.tris = Math.round((counts.terrain + pineVerts * counts.pines + crystalVerts * counts.crystals + grassVerts * counts.grass) / 3);
+    W.tris = Math.round((counts.terrain + pineVerts * counts.pines + crystalVerts * counts.crystals
+                       + grassVerts * counts.grass + rifleIdx) / 3);
   }
   buildWorld(tierIdx);
   step("the valley");
@@ -606,13 +715,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     if (document.pointerLockElement === canvas) { mdx += e.movementX; mdy += e.movementY; }
   });
 
+  // The trigger. Only once the mouse is captured — the first click is what
+  // captures it, and firing on that one would put a round downrange before
+  // anyone had a chance to aim.
+  let wantShot = false, recoil = 0, lastShot = -9;
+  addEventListener("mousedown", e => {
+    if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
+  });
+
   // The adaptive loop's bookkeeping. The display's own frame interval is the
   // budget — measured, not assumed, so a 120 Hz screen asks for more.
   const dts = [];
   let refresh = 1000 / 60, warm = 0, changes = 0, stable = 0, locked = false;
   const median = a => [...a].sort((x, y) => x - y)[a.length >> 1];
 
-  const uf = new Float32Array(52);
+  const uf = new Float32Array(56);
+  let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
   // does not return on a canvas that has nothing on it yet.
   let painted = null;
@@ -642,6 +760,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       }
     }
 
+    // The shot, before the frame that will fly it. A bolt action is not a
+    // machine gun: one round every three quarters of a second, and holding the
+    // button does nothing — `wantShot` is set by the press, not by the state.
+    if (wantShot && t - lastShot > 0.75) {
+      const st0 = stateF32();
+      const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
+      E.fire(state, Math.sin(yaw) * cp, Math.sin(pit), -Math.cos(yaw) * cp);
+      lastShot = t;
+      recoil = 1;
+      bang();
+    }
+    wantShot = false;
+    recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
+
     E.frame(state, dt, mdx, mdy, BigInt(keys), canvas.width / canvas.height);
     mdx = 0; mdy = 0;
 
@@ -655,7 +787,27 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     uf[40] = st[19]; uf[41] = st[20];     // yaw, pitch
     uf[42] = st[26]; uf[43] = st[27];     // wind angle, wind strength
     uf[44] = st[29];                      // the wind's integrated phase
+    // How fast the player is going, and a phase integrated from it. The gun's
+    // bob reads both: the speed sets how far it swings, the phase where it is
+    // in the swing — a bob driven by the clock alone jumps whenever the speed
+    // changes, which is every time you start or stop walking.
+    const fx = st[21], fz = st[23];
+    const inst = Math.hypot(fx - lastX, fz - lastZ) / Math.max(dt, 0.0001);
+    lastX = fx; lastZ = fz;
+    speed += (Math.min(inst, 12) - speed) * 0.15;
+    bobPhase += speed * dt * 2.4;
+    uf[45] = speed; uf[46] = bobPhase; uf[47] = recoil;
+    uf.set(rifleBox.subarray(0, 3), 48);  // the rifle's bounding box, to unquantize against
+    uf.set(rifleBox.subarray(3, 6), 52);
     device.queue.writeBuffer(uni, 0, uf);
+    device.queue.writeBuffer(bulletBuf, 0,
+      new Float32Array(E.memory.buffer, Number(E.bullets(state)), bulletCap * 8));
+    device.queue.writeBuffer(shardBuf, 0,
+      new Float32Array(E.memory.buffer, Number(E.shards(state)), shardCap * 20));
+    // The crystals are no longer static — a hit sets one's scale to zero — so
+    // their instances go up with everything else now rather than once at build.
+    device.queue.writeBuffer(W.crystalInst, 0,
+      new Float32Array(E.memory.buffer, Number(E.crystals(state)), W.counts.crystals * 8));
     device.queue.writeBuffer(flyTime, 0, new Float32Array([t, dt, 0, 0]));
 
     const enc = device.createCommandEncoder();
@@ -700,6 +852,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     pass.setPipeline(W.waterPipe); pass.setVertexBuffer(0, W.waterBuf); pass.draw(W.waterVerts);
     pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);
     pass.setPipeline(flyDrawPipe); pass.setBindGroup(1, W.flyDrawBg); pass.draw(6, T.flies);
+
+    pass.setPipeline(shardPipe);
+    pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, shardBuf);
+    pass.draw(crystalVerts, shardCap);
+
+    pass.setPipeline(tracerPipe); pass.setVertexBuffer(0, bulletBuf); pass.draw(6, bulletCap);
+
+    // Last, so it covers the water and the fireflies as well as the ground.
+    pass.setBindGroup(0, W.bgMain);
+    pass.setPipeline(vmPipe);
+    pass.setVertexBuffer(0, rifleVB);
+    pass.setIndexBuffer(rifleIB, "uint16");
+    pass.drawIndexed(rifleIdx);
+    pass.setPipeline(muzzlePipe); pass.draw(12);
     pass.end();
 
     if (qs) {

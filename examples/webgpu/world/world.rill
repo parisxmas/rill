@@ -21,7 +21,9 @@
 #   f32 29      wind phase — see `frame`
 #   f32 32..47   the sun's shadow matrix, column-major (static)
 #   f32 56..59   terrain vertex count, pine count, crystal count, grass count
+#   f32 60, 61   next slot in the bullet ring, and in the shard ring
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
+#   ptr 68, 69   the bullets, and the shards they knock loose
 
 extern fn sin(x: Float) -> Float
 
@@ -243,6 +245,221 @@ fn placed(buf, count, i, kind) =
 fn place(buf, i, count, cap, lim, kind) =
   if i >= lim then count else if count >= cap then count else place(buf, i + 1, count + placed(buf, count, i, kind), cap, lim, kind)
 
+# ---- what the rifle sends downrange ----------------------------------------
+#
+# A ring of slots, eight floats each: position, velocity, a spare, and the
+# life left. Firing overwrites the oldest — a fixed pool needs no allocation
+# and no compaction, and thirty-two rounds is more than anyone can put in the
+# air with a bolt action.
+#
+# The flight is the honest one. Gravity pulls at 9.81, and drag takes a
+# fraction of the speed away every second, which is why a bullet's drop grows
+# faster than the schoolbook parabola says it should: it is slowing down the
+# whole way, so it spends longer falling over the second half of its flight
+# than over the first. At 260 m/s a shot across this valley lands about a
+# metre and a half low.
+
+fn bullet_cap() = 32
+
+fn bullet_speed() = 420.0
+
+fn bullet_life() = 3.2
+
+# Ground or water, whichever the bullet would meet first.
+fn stop_height(x, z) =
+  h = height(x, z)
+  if h < 0.0 then 0.0 else h
+
+fn step_bullet(s, b, at, dt) =
+  life = peek_f32(b, at + 7) - dt
+  on = if life > 0.0 then 1.0 else 0.0
+  # Drag, as a fraction of speed lost per second. Held to first order, which
+  # at sixty frames a second is exact to a part in ten thousand.
+  k = 1.0 - 0.085 * dt * on
+  vx = peek_f32(b, at + 3) * k
+  vy = (peek_f32(b, at + 4) - 9.81 * dt * on) * k
+  vz = peek_f32(b, at + 5) * k
+  px = peek_f32(b, at) + vx * dt * on
+  py = peek_f32(b, at + 1) + vy * dt * on
+  pz = peek_f32(b, at + 2) + vz * dt * on
+  landed = if py < stop_height(px, pz) then 1.0 else 0.0
+  # Anything solid on the way there, before the position is committed.
+  hit_crystals(s, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
+  poke_f32(b, at, px)
+  poke_f32(b, at + 1, py)
+  poke_f32(b, at + 2, pz)
+  poke_f32(b, at + 3, vx)
+  poke_f32(b, at + 4, vy)
+  poke_f32(b, at + 5, vz)
+  poke_f32(b, at + 7, if landed > 0.5 then 0.0 else (if peek_f32(b, at + 7) < 0.001 then 0.0 else life))
+
+fn step_bullets(s, b, dt) =
+  for i in 0..bullet_cap()
+    step_bullet(s, b, i * 8, dt)
+
+# `alloc_bytes` hands back whatever was there; a slot with life left in it
+# would draw a streak the moment the world appeared.
+fn clear_bullets(b) =
+  for i in 0..bullet_cap()
+    poke_f32(b, i * 8 + 7, 0.0)
+
+# `d` is where the sights point; the host works it out from the same yaw and
+# pitch this file wrote. The round starts a little ahead of the eye so its
+# streak does not begin inside the camera.
+export fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
+  b = peek_ptr(s, 68)
+  i = to_int(peek_f32(s, 60)) % bullet_cap()
+  at = i * 8
+  v = bullet_speed()
+  poke_f32(b, at, peek_f32(s, 16) + dx * 0.9)
+  poke_f32(b, at + 1, peek_f32(s, 17) + dy * 0.9)
+  poke_f32(b, at + 2, peek_f32(s, 18) + dz * 0.9)
+  poke_f32(b, at + 3, dx * v)
+  poke_f32(b, at + 4, dy * v)
+  poke_f32(b, at + 5, dz * v)
+  poke_f32(b, at + 6, 0.0)
+  poke_f32(b, at + 7, bullet_life())
+  poke_f32(s, 60, to_float(i + 1))
+
+# ---- what a round does when it arrives -------------------------------------
+#
+# The crystals are the only things in the valley solid enough to break. A hit
+# takes one out of the instance buffer — its scale goes to zero, which is how
+# the host stops drawing it without the array having to change length — and
+# puts eight shards in its place, thrown outward and tumbling.
+#
+# The shards keep the colour of what they came from, fall, land, and stay.
+# There is no settling to model: a shard that reaches the ground has its
+# velocity and its spin set to zero and its height snapped to the terrain,
+# which is the same thing the walking camera does when it lands.
+
+fn shard_cap() = 224
+
+# Twenty floats: position, velocity, orientation, spin, scale, colour.
+fn shard_stride() = 20
+
+# The closest approach of a point to a segment, squared. A round crosses seven
+# metres between frames, so testing where it happens to be at the end of one
+# would let it through anything narrower than that.
+fn seg_dist2(ax, ay, az, bx, by, bz, cx, cy, cz) =
+  dx = bx - ax
+  dy = by - ay
+  dz = bz - az
+  l2 = dx * dx + dy * dy + dz * dz + 0.000001
+  t = clampf(((cx - ax) * dx + (cy - ay) * dy + (cz - az) * dz) / l2, 0.0, 1.0)
+  px = ax + dx * t - cx
+  py = ay + dy * t - cy
+  pz = az + dz * t - cz
+  px * px + py * py + pz * pz
+
+fn spawn_shard(sb, k, x, y, z, sc, r, g, b, seed) =
+  at = (k % shard_cap()) * shard_stride()
+  h1 = hash2(seed, 11.0)
+  h2 = hash2(seed, 23.0)
+  h3 = hash2(seed, 37.0)
+  h4 = hash2(seed, 51.0)
+  # Outward and upward, the way a thing that has just been hit comes apart.
+  a = h1 * 6.28318
+  up = 2.5 + h2 * 5.5
+  out = 1.6 + h3 * 3.4
+  poke_f32(sb, at, x + (h1 - 0.5) * sc * 0.5)
+  poke_f32(sb, at + 1, y + h2 * sc * 1.6)
+  poke_f32(sb, at + 2, z + (h3 - 0.5) * sc * 0.5)
+  poke_f32(sb, at + 3, cos(a) * out)
+  poke_f32(sb, at + 4, up)
+  poke_f32(sb, at + 5, sin(a) * out)
+  poke_f32(sb, at + 6, h1 * 6.28318)
+  poke_f32(sb, at + 7, h2 * 6.28318)
+  poke_f32(sb, at + 8, h3 * 6.28318)
+  poke_f32(sb, at + 9, (h2 - 0.5) * 14.0)
+  poke_f32(sb, at + 10, (h3 - 0.5) * 14.0)
+  poke_f32(sb, at + 11, (h4 - 0.5) * 14.0)
+  poke_f32(sb, at + 12, sc * (0.14 + h4 * 0.16))
+  poke_f32(sb, at + 13, r)
+  poke_f32(sb, at + 14, g)
+  poke_f32(sb, at + 15, b)
+  1
+
+fn break_crystal(s, cb, cat, ci) =
+  sb = peek_ptr(s, 69)
+  k0 = to_int(peek_f32(s, 61))
+  x = peek_f32(cb, cat)
+  y = peek_f32(cb, cat + 1)
+  z = peek_f32(cb, cat + 2)
+  sc = peek_f32(cb, cat + 3)
+  r = peek_f32(cb, cat + 5)
+  g = peek_f32(cb, cat + 6)
+  b = peek_f32(cb, cat + 7)
+  poke_f32(cb, cat + 3, 0.0)
+
+  for j in 0..8
+    spawn_shard(sb, k0 + j, x, y, z, sc, r, g, b, to_float(ci * 8 + j))
+
+  poke_f32(s, 61, to_float(k0 + 8))
+  1
+
+# One crystal against one round's path this frame.
+fn try_break(s, cb, ci, b, at, ax, ay, az, bx, by, bz) =
+  cat = ci * 8
+  sc = peek_f32(cb, cat + 3)
+  if sc < 0.01 then 0
+  else
+    cx = peek_f32(cb, cat)
+    cy = peek_f32(cb, cat + 1) + sc * 0.9
+    cz = peek_f32(cb, cat + 2)
+    rr = sc * 0.55
+    if seg_dist2(ax, ay, az, bx, by, bz, cx, cy, cz) > rr * rr then 0
+    else
+      poke_f32(b, at + 7, 0.0)
+      break_crystal(s, cb, cat, ci)
+
+fn hit_crystals(s, b, at, ax, ay, az, bx, by, bz) =
+  cb = peek_ptr(s, 66)
+
+  for ci in 0..to_int(peek_f32(s, 58))
+    try_break(s, cb, ci, b, at, ax, ay, az, bx, by, bz)
+
+fn step_shard(sb, at, dt) =
+  sc = peek_f32(sb, at + 12)
+  if sc < 0.0001 then 0
+  else
+    vy = peek_f32(sb, at + 4) - 24.0 * dt
+    x = peek_f32(sb, at) + peek_f32(sb, at + 3) * dt
+    y = peek_f32(sb, at + 1) + vy * dt
+    z = peek_f32(sb, at + 2) + peek_f32(sb, at + 5) * dt
+    g = stop_height(x, z)
+    down = if y < g then 1.0 else 0.0
+    keep = 1.0 - down
+    poke_f32(sb, at, x)
+    poke_f32(sb, at + 1, if down > 0.5 then g else y)
+    poke_f32(sb, at + 2, z)
+    poke_f32(sb, at + 3, peek_f32(sb, at + 3) * keep)
+    poke_f32(sb, at + 4, vy * keep)
+    poke_f32(sb, at + 5, peek_f32(sb, at + 5) * keep)
+    poke_f32(sb, at + 6, peek_f32(sb, at + 6) + peek_f32(sb, at + 9) * dt)
+    poke_f32(sb, at + 7, peek_f32(sb, at + 7) + peek_f32(sb, at + 10) * dt)
+    poke_f32(sb, at + 8, peek_f32(sb, at + 8) + peek_f32(sb, at + 11) * dt)
+    poke_f32(sb, at + 9, peek_f32(sb, at + 9) * keep)
+    poke_f32(sb, at + 10, peek_f32(sb, at + 10) * keep)
+    poke_f32(sb, at + 11, peek_f32(sb, at + 11) * keep)
+    1
+
+fn step_shards(sb, dt) =
+  for i in 0..shard_cap()
+    step_shard(sb, i * shard_stride(), dt)
+
+fn clear_shards(sb) =
+  for i in 0..shard_cap()
+    poke_f32(sb, i * shard_stride() + 12, 0.0)
+
+export fn shards(s: Ptr) -> Ptr = peek_ptr(s, 69)
+
+export fn shards_cap(s: Ptr) -> Int = shard_cap()
+
+export fn bullets(s: Ptr) -> Ptr = peek_ptr(s, 68)
+
+export fn bullets_cap(s: Ptr) -> Int = bullet_cap()
+
 # ---- the sun's matrix ------------------------------------------------------
 #
 # A fixed golden-hour sun. Orthographic view-projection over the whole
@@ -291,6 +508,8 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   pine_buf = alloc_bytes(npine * 32)
   crystal_buf = alloc_bytes(ncrys * 32)
   grass_buf = alloc_bytes(ngrass * 32)
+  bullet_buf = alloc_bytes(bullet_cap() * 32)
+  shard_buf = alloc_bytes(shard_cap() * shard_stride() * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -302,6 +521,12 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 65, pine_buf)
   poke_ptr(s, 66, crystal_buf)
   poke_ptr(s, 67, grass_buf)
+  poke_ptr(s, 68, bullet_buf)
+  poke_ptr(s, 69, shard_buf)
+  poke_f32(s, 60, 0.0)
+  poke_f32(s, 61, 0.0)
+  clear_bullets(bullet_buf)
+  clear_shards(shard_buf)
   poke_f32(s, 56, to_float(grid * grid * 6))
   poke_f32(s, 57, to_float(np))
   poke_f32(s, 58, to_float(nc))
@@ -438,6 +663,8 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   poke_f32(s, 27, gust)
   poke_f32(s, 28, t)
   poke_f32(s, 29, peek_f32(s, 29) + wind_rate(gust) * dt)
+  step_bullets(s, peek_ptr(s, 68), dt)
+  step_shards(peek_ptr(s, 69), dt)
   camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
 
 # The view-projection matrix, written straight into the state.
