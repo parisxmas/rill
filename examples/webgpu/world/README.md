@@ -148,6 +148,15 @@ firearm recordings, CC BY 3.0. Two and a half seconds, 25 KB, decoded once and
 played from the same buffer with a hair of detune and level each time, because
 the same file twice in a row is the one thing that gives a sample away.
 
+A crystal going is three glass breaks from OpenGameArt's CC0 breaking pack,
+laid end to end in one file a second apart and played by offset: one fetch and
+one decode for three, and three is enough that a row of crystals does not sound
+like a loop. It is quieter with distance and panned to where it happened, which
+matters when there are three of them in front of you and only one of them
+broke. Rill counts the breaks and writes down where the last one stood; the
+host has no other way of knowing, because the hit happens inside a frame it
+only calls.
+
 The bolt is worked between shots, and until it is closed the trigger does
 nothing — which is the whole of what a bolt action is. It is four movements
 that do not overlap: lift the handle, draw it back, run it forward, turn it

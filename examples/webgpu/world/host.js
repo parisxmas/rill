@@ -265,7 +265,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // texture, and the valley itself. `run` does not resolve until a frame has
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
-  const TOTAL = 5 + Object.keys(SHADERS).length + TEXTURES.length;
+  const TOTAL = 6 + Object.keys(SHADERS).length + TEXTURES.length;
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -489,29 +489,61 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // The context is not started here — a browser will not let it be, before the
   // page has been clicked on — so this only fetches. `bang` builds it on the
   // first shot, which is by definition after a click.
-  let audio = null, shotBuf = null;
+  //
+  // The shatter is three glass breaks laid end to end in one file, a second
+  // each, played by offset. One fetch and one decode for three, and three is
+  // enough that a row of crystals does not sound like a loop.
+  let audio = null, shotBuf = null, breakBuf = null;
   const shotBytes = await (await fetch("./rifle-shot.mp3")).arrayBuffer();
   step("rifle-shot.mp3");
-  function play() {
-    if (!shotBuf) return;
+  const breakBytes = await (await fetch("./crystal-break.mp3")).arrayBuffer();
+  step("crystal-break.mp3");
+  // One node per sound, built and thrown away: cheaper than it looks, and the
+  // only way to have two of the same sample overlapping.
+  function playAt(buf, offset, dur, gain, pan, rate) {
+    if (!buf) return;
     const src = audio.createBufferSource();
-    src.buffer = shotBuf;
+    src.buffer = buf;
     // A hair of detune and level each time: the same file twice in a row is
     // the one thing that gives a sample away.
-    src.playbackRate.value = 0.97 + Math.random() * 0.06;
+    src.playbackRate.value = rate;
     const g = audio.createGain();
-    g.gain.value = 0.55 + Math.random() * 0.12;
-    src.connect(g).connect(audio.destination);
-    src.start();
+    g.gain.value = gain;
+    const p = audio.createStereoPanner();
+    p.pan.value = pan;
+    src.connect(g).connect(p).connect(audio.destination);
+    if (dur > 0) { src.start(0, offset, dur); } else { src.start(); }
   }
-  function bang() {
+  function ensureAudio(then) {
     if (!audio) {
       audio = new (globalThis.AudioContext ?? globalThis.webkitAudioContext)();
-      audio.decodeAudioData(shotBytes.slice(0)).then(b => { shotBuf = b; play(); });
+      Promise.all([
+        audio.decodeAudioData(shotBytes.slice(0)).then(b => { shotBuf = b; }),
+        audio.decodeAudioData(breakBytes.slice(0)).then(b => { breakBuf = b; }),
+      ]).then(then);
       return;
     }
     if (audio.state === "suspended") audio.resume();
-    play();
+    then();
+  }
+  function bang() {
+    ensureAudio(() => playAt(shotBuf, 0, 0, 0.55 + Math.random() * 0.12, 0,
+                             0.97 + Math.random() * 0.06));
+  }
+  // A crystal going. Quieter with distance and set where it happened: which
+  // one broke is worth hearing when there are three of them in front of you.
+  function shatter(x, y, z) {
+    ensureAudio(() => {
+      const st = stateF32();
+      const dx = x - st[16], dy = y - st[17], dz = z - st[18];
+      const d = Math.hypot(dx, dy, dz);
+      const yaw = st[19];
+      const pan = Math.max(-1, Math.min(1,
+        (Math.cos(yaw) * dx + Math.sin(yaw) * dz) / Math.max(d, 0.001)));
+      const slot = Math.floor(Math.random() * 3);
+      playAt(breakBuf, slot, 0.95, 0.75 * (12 / (12 + d)), pan * 0.8,
+             0.94 + Math.random() * 0.14);
+    });
   }
 
   const bulletCap = Number(E.bullets_cap(0));
@@ -722,7 +754,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // to BOLT_CYCLE after every shot; while it is running the rifle is open and
   // the trigger does nothing, which is the whole of what a bolt action is.
   const BOLT_CYCLE = 1.15;
-  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true;
+  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0;
   addEventListener("mousedown", e => {
     if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
   });
@@ -786,6 +818,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
 
     E.frame(state, dt, mdx, mdy, BigInt(keys), canvas.width / canvas.height);
     mdx = 0; mdy = 0;
+
+    // Anything break in there? Rill counts them; the host only has to notice.
+    // Not `>`: a tier change rebuilds the world and puts the tally back to
+    // zero, and a mirror that only ever climbs would go deaf until it caught
+    // up again.
+    const nb = Number(E.breaks(state));
+    if (nb !== breaks) {
+      const broke = nb > breaks;
+      breaks = nb;
+      if (broke) shatter(E.break_x(state), E.break_y(state), E.break_z(state));
+    }
 
     const st = stateF32();
     uf.set(st.subarray(0, 16), 0);        // vp

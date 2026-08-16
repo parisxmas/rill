@@ -22,6 +22,7 @@
 #   f32 32..47   the sun's shadow matrix, column-major (static)
 #   f32 56..59   terrain vertex count, pine count, crystal count, grass count
 #   f32 60, 61   next slot in the bullet ring, and in the shard ring
+#   f32 62       crystals broken so far    70..72  where the last one stood
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
 #   ptr 68, 69   the bullets, and the shards they knock loose
 
@@ -392,6 +393,12 @@ fn break_crystal(s, cb, cat, ci) =
   x = peek_f32(cb, cat)
   y = peek_f32(cb, cat + 1)
   z = peek_f32(cb, cat + 2)
+  # A tally the host watches, and where the last one went. It has no other way
+  # of knowing: the hit happens inside a frame it only calls.
+  poke_f32(s, 62, peek_f32(s, 62) + 1.0)
+  poke_f32(s, 70, x)
+  poke_f32(s, 71, y)
+  poke_f32(s, 72, z)
   sc = peek_f32(cb, cat + 3)
   r = peek_f32(cb, cat + 5)
   g = peek_f32(cb, cat + 6)
@@ -478,6 +485,16 @@ fn clear_shards(sb) =
 
 export fn shards(s: Ptr) -> Ptr = peek_ptr(s, 69)
 
+# How many crystals have been broken since the world was built, and where the
+# most recent one stood.
+export fn breaks(s: Ptr) -> Int = to_int(peek_f32(s, 62))
+
+export fn break_x(s: Ptr) -> Float = peek_f32(s, 70)
+
+export fn break_y(s: Ptr) -> Float = peek_f32(s, 71)
+
+export fn break_z(s: Ptr) -> Float = peek_f32(s, 72)
+
 export fn shards_cap(s: Ptr) -> Int = shard_cap()
 
 export fn bullets(s: Ptr) -> Ptr = peek_ptr(s, 68)
@@ -549,6 +566,7 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 69, shard_buf)
   poke_f32(s, 60, 0.0)
   poke_f32(s, 61, 0.0)
+  poke_f32(s, 62, 0.0)
   clear_bullets(bullet_buf)
   clear_shards(shard_buf)
   poke_f32(s, 56, to_float(grid * grid * 6))
