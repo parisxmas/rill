@@ -85,23 +85,53 @@ fn expand_index_op(op: BinOp, base: Expr, index: Expr, value: Expr, line: usize)
 
 /// `for i in a..b` is a local function over the half-open range, which is all
 /// a counting loop ever was. The end is evaluated once.
-fn expand_for(var: String, from: Expr, to: Expr, body: Expr, line: usize) -> Expr {
+///
+/// With `with acc = init` the body's value is what the next turn is handed and
+/// the loop is worth the last one — a parameter, which is to say a register,
+/// where otherwise a program has to keep the running value in a one-element
+/// buffer and reach through a pointer for every touch of it.
+fn expand_for(
+    var: String,
+    from: Expr,
+    to: Expr,
+    acc: Option<(String, Box<Expr>)>,
+    body: Expr,
+    line: usize,
+) -> Expr {
     let hi = "for.hi".to_string();
-    let step = Expr::Call {
-        name: "for".to_string(),
-        args: vec![Expr::Binary {
-            op: BinOp::Add,
-            lhs: Box::new(Expr::Var(var.clone(), line)),
-            rhs: Box::new(Expr::Int(1)),
-            line,
-        }],
+    let next = Expr::Binary {
+        op: BinOp::Add,
+        lhs: Box::new(Expr::Var(var.clone(), line)),
+        rhs: Box::new(Expr::Int(1)),
         line,
-        piped: false,
+    };
+    let (params, done, els, call_args) = match acc {
+        Some((name, init)) => (
+            vec![Param { name: var.clone(), ann: None }, Param { name: name.clone(), ann: None }],
+            Expr::Var(name, line),
+            // The body is the next value, so the call takes it directly.
+            Expr::Call { name: "for".into(), args: vec![next, body], line, piped: false },
+            vec![from, *init],
+        ),
+        None => (
+            vec![Param { name: var.clone(), ann: None }],
+            Expr::Int(0),
+            Expr::Block(vec![
+                Stmt::Expr(body),
+                Stmt::Expr(Expr::Call {
+                    name: "for".into(),
+                    args: vec![next],
+                    line,
+                    piped: false,
+                }),
+            ]),
+            vec![from],
+        ),
     };
     let loop_fn = FnDef {
         name: "for".to_string(),
         exported: false,
-        params: vec![Param { name: var.clone(), ann: None }],
+        params,
         ret_ann: None,
         body: Expr::If {
             cond: Box::new(Expr::Binary {
@@ -110,8 +140,8 @@ fn expand_for(var: String, from: Expr, to: Expr, body: Expr, line: usize) -> Exp
                 rhs: Box::new(Expr::Var(hi.clone(), line)),
                 line,
             }),
-            then: Box::new(Expr::Int(0)),
-            els: Box::new(Expr::Block(vec![Stmt::Expr(body), Stmt::Expr(step)])),
+            then: Box::new(done),
+            els: Box::new(els),
         },
         line,
         lifted_from: None,
@@ -119,7 +149,7 @@ fn expand_for(var: String, from: Expr, to: Expr, body: Expr, line: usize) -> Exp
     Expr::Block(vec![
         Stmt::Bind { name: hi, value: to, line },
         Stmt::Fn(Box::new(loop_fn)),
-        Stmt::Expr(Expr::Call { name: "for".to_string(), args: vec![from], line, piped: false }),
+        Stmt::Expr(Expr::Call { name: "for".to_string(), args: call_args, line, piped: false }),
     ])
 }
 
@@ -151,8 +181,8 @@ fn walk(
             },
             line,
         },
-        Expr::For { var, from, to, body, line } => {
-            walk(expand_for(var, *from, *to, *body, line), env, parent, used, out)?
+        Expr::For { var, from, to, acc, body, line } => {
+            walk(expand_for(var, *from, *to, acc, *body, line), env, parent, used, out)?
         }
         Expr::Block(stmts) => {
             Expr::Block(walk_block(expand_pat_binds(stmts), env, parent, used, out)?)
@@ -561,10 +591,14 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
             value: Box::new(rewrite(*value, locals)?),
             line,
         },
-        Expr::For { var, from, to, body, line } => Expr::For {
+        Expr::For { var, from, to, acc, body, line } => Expr::For {
             var,
             from: Box::new(rewrite(*from, locals)?),
             to: Box::new(rewrite(*to, locals)?),
+            acc: match acc {
+                Some((n, e)) => Some((n, Box::new(rewrite(*e, locals)?))),
+                None => None,
+            },
             body: Box::new(rewrite(*body, locals)?),
             line,
         },
@@ -682,11 +716,15 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
             free_of(target, bound, out);
             free_of(value, bound, out);
         }
-        Expr::For { var, from, to, body, .. } => {
+        Expr::For { var, from, to, acc, body, .. } => {
             free_of(from, bound, out);
             free_of(to, bound, out);
             let depth = bound.len();
             bound.push(var.clone());
+            if let Some((n, init)) = acc {
+                free_of(init, bound, out);
+                bound.push(n.clone());
+            }
             free_of(body, bound, out);
             bound.truncate(depth);
         }

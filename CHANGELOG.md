@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A loop can carry something.** `for i in a..b with acc = init` runs the
+  body for each `i` with `acc` in scope, takes the body's value as the next
+  `acc`, and is worth the last one. It costs nothing new: like the plain form
+  it becomes the tail-recursive local function a loop is, and what it carries
+  is a parameter. That is the point — a parameter is a register, and a program
+  without this had to keep a running value in a one-element buffer, which is
+  memory reached through a pointer on every touch. Measured on the Dijkstra
+  benchmark, whose graph is made by a linear congruential sequence: that phase
+  goes from 16 ms to 6 ms, which is faster than the C it is written against,
+  and the whole program from 47 ms to 37 ms against C's 31.
+
 - **String builders, and standard input read in blocks.** Building a string
   by `+` copies what is already there every time, so a `StrBuf` is what a
   `Buf` is, for bytes on their way to becoming a string: `strbuf()`,

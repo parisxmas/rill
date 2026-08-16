@@ -294,9 +294,18 @@ for i in 0..n                  # the half-open range: 0 up to but not n
   v[i] = i * i
 ```
 
-It is a loop over a buffer, which is the one thing in Rill that can be
-written to, and it is spelled out as the tail-recursive function below before
-anything else looks at it — the end of the range is evaluated once. `+=`,
+A loop that carries something says so, and is worth what it carried:
+
+```
+total = for i in 0..#v with acc = 0
+  acc + v[i]                   # the body's value is the next `acc`
+```
+
+Both forms are spelled out as the tail-recursive function below before
+anything else looks at them — the end of the range is evaluated once, and what
+the loop carries is a parameter, which is to say a register. Carrying it in a
+one-element buffer instead, which is what a program without this had to do,
+puts it in memory and reaches through a pointer for every touch. `+=`,
 `-=`, `*=` and `/=` write a buffer element in terms of what it held:
 `v[i] += 1`. The index is evaluated once, so `off[eu[i]] += 1` reads `eu[i]`
 one time.

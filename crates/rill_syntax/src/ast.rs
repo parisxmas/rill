@@ -166,8 +166,18 @@ pub enum Expr {
     /// name. `lift` leaves it; the checker turns it into `strbuf_add`.
     Append { target: Box<Expr>, value: Box<Expr>, line: usize },
     /// `for i in a..b` over the half-open range, its body run for each `i`.
-    /// `lift` turns it into a local function, which is what a loop is.
-    For { var: String, from: Box<Expr>, to: Box<Expr>, body: Box<Expr>, line: usize },
+    /// With `with acc = init` the body's value is the next `acc` and the loop
+    /// is worth the last one — which is how a loop carries something in a
+    /// register rather than in a one-element buffer. `lift` turns either into
+    /// the local function a loop is.
+    For {
+        var: String,
+        from: Box<Expr>,
+        to: Box<Expr>,
+        acc: Option<(String, Box<Expr>)>,
+        body: Box<Expr>,
+        line: usize,
+    },
     /// Multi-statement block; its value is the value of the last statement.
     Block(Vec<Stmt>),
 }

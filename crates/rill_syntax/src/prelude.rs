@@ -167,9 +167,12 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             collect_expr_names(target, out);
             collect_expr_names(value, out);
         }
-        Expr::For { from, to, body, .. } => {
+        Expr::For { from, to, acc, body, .. } => {
             collect_expr_names(from, out);
             collect_expr_names(to, out);
+            if let Some((_, init)) = acc {
+                collect_expr_names(init, out);
+            }
             collect_expr_names(body, out);
         }
         Expr::Unary { expr, .. } => collect_expr_names(expr, out),

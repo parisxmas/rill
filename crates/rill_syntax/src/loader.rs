@@ -261,9 +261,12 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str) {
             qualify_expr(target, own, alias);
             qualify_expr(value, own, alias);
         }
-        Expr::For { from, to, body, .. } => {
+        Expr::For { from, to, acc, body, .. } => {
             qualify_expr(from, own, alias);
             qualify_expr(to, own, alias);
+            if let Some((_, init)) = acc {
+                qualify_expr(init, own, alias);
+            }
             qualify_expr(body, own, alias);
         }
         Expr::Unary { expr, .. } => qualify_expr(expr, own, alias),

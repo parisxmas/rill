@@ -925,10 +925,22 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .build_gep(i64t, p, &[i64t.const_int(1, false)], "len.ptr")
                 .expect("LLVM builder error")
         };
-        self.builder
-            .build_load(i64t, slot, "len")
-            .expect("LLVM builder error")
-            .into_int_value()
+        let load = self.builder.build_load(i64t, slot, "len").expect("LLVM builder error");
+        // A buffer's length is fixed when it is made, so this load may be
+        // hoisted out of a loop and shared between the bounds checks of one.
+        // Without saying so, every indexed access reads the header again,
+        // since a write to an element is not obviously disjoint from it.
+        self.mark_invariant(load);
+        load.into_int_value()
+    }
+
+    /// Marks a load as reading memory that never changes after it is written.
+    fn mark_invariant(&self, load: BasicValueEnum<'ctx>) {
+        if let Ok(inst) = load.as_instruction_value().ok_or(()) {
+            let empty = self.ctx.metadata_node(&[]);
+            let kind = self.ctx.get_kind_id("invariant.load");
+            let _ = inst.set_metadata(empty, kind);
+        }
     }
 
     /// The first element's address, which is also what C is handed.

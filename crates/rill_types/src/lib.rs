@@ -2965,9 +2965,12 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
             free_vars(target, out, seen);
             free_vars(value, out, seen);
         }
-        Expr::For { from, to, body, .. } => {
+        Expr::For { from, to, acc, body, .. } => {
             free_vars(from, out, seen);
             free_vars(to, out, seen);
+            if let Some((_, init)) = acc {
+                free_vars(init, out, seen);
+            }
             free_vars(body, out, seen);
         }
         Expr::Spawn { body, .. } => free_vars(body, out, seen),

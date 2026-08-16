@@ -189,6 +189,49 @@ fn local_functions_capture_and_loop() {
     assert_eq!(run_source("local_fns", src), "true\n15000000\n");
 }
 
+/// A loop that carries something keeps it in a parameter, which is to say a
+/// register — the alternative being a one-element buffer reached through a
+/// pointer on every touch.
+#[test]
+fn loops_can_carry_a_value() {
+    let src = "fn main() =\n  \
+                 v = buf_int(6)\n\n  \
+                 for i in 0..6\n    \
+                   v[i] = i * i\n\n  \
+                 total = for i in 0..6 with acc = 0\n    \
+                   acc + v[i]\n\n  \
+                 println(total)\n  \
+                 println(for i in 1..6 with p = 1 p * i)\n  \
+                 println(for i in 0..3 with s = \"\" s + int_to_str(i))\n";
+    assert_eq!(run_source("for_with", src), "55\n120\n012\n");
+    // Nothing counted, and the carried value never reaches memory.
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-fw-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("carry.rill");
+    std::fs::write(
+        &path,
+        "fn main() = println(for i in 0..1000 with acc = 0 acc + i)\n",
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&path)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(out_dir.join("carry"))
+        .output()
+        .unwrap();
+    let ir = String::from_utf8_lossy(&build.stdout);
+    let body: String = ir
+        .lines()
+        .skip_while(|l| !l.starts_with("define i64 @main.for"))
+        .take_while(|l| *l != "}")
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!body.is_empty(), "the loop was not emitted as its own function");
+    assert!(!body.contains("store"), "the carried value went to memory:\n{body}");
+}
+
 /// A builder is storage for bytes on their way to a string: adding to one is
 /// a copy of what is added, not of what is already there.
 #[test]

@@ -543,9 +543,6 @@ impl Parser {
         if matches!(self.peek(), Tok::Fn) {
             return Ok(Stmt::Fn(Box::new(self.fndef(false)?)));
         }
-        if matches!(self.peek(), Tok::For) {
-            return Ok(Stmt::Expr(self.for_loop()?));
-        }
         // `Pair(a, b) = e` and `(a, b) = e` take a value apart. Only these two
         // shapes can start one, and only an `=` after the pattern settles it.
         let starts_pattern = matches!(self.peek(), Tok::LParen)
@@ -644,11 +641,23 @@ impl Parser {
         let from = self.expr()?;
         self.expect(&Tok::DotDot, "between the ends of the range")?;
         let to = self.expr()?;
+        // `with acc = init` makes the loop worth something: the body's value
+        // is the next `acc`, and the loop is the last one.
+        let acc = match self.peek() {
+            Tok::Ident(kw) if kw == "with" => {
+                self.bump();
+                let name = self.ident("a name after `with`")?;
+                self.expect(&Tok::Eq, "after the name of what the loop carries")?;
+                Some((name, Box::new(self.expr()?)))
+            }
+            _ => None,
+        };
         let body = self.body()?;
         Ok(Expr::For {
             var,
             from: Box::new(from),
             to: Box::new(to),
+            acc,
             body: Box::new(body),
             line,
         })
@@ -863,6 +872,10 @@ impl Parser {
                 self.expect(&Tok::RParen, "to close the tuple")?;
                 let name = tuple_name(args.len(), line, col)?;
                 Ok(Expr::Call { name, args, line, piped: false })
+            }
+            Tok::For => {
+                self.pos -= 1;
+                self.for_loop()
             }
             Tok::Spawn => {
                 let body = self.expr()?;

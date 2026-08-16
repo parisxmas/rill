@@ -465,8 +465,13 @@ impl Fmt {
             Expr::Append { target, value, .. } => {
             format!("{} += {}", inline(target, P_INDEX), inline(value, 0))
         }
-        Expr::For { var, from, to, body, .. } => {
-                let head = format!("for {var} in {}..{}", inline(from, 0), inline(to, 0));
+            Expr::For { var, from, to, acc, body, .. } => {
+                let head = format!(
+                    "for {var} in {}..{}{}",
+                    inline(from, 0),
+                    inline(to, 0),
+                    with_str(acc)
+                );
                 match body.as_ref() {
                     Expr::Block(stmts) => format!("{head}{}", self.block_lines(stmts, cont)),
                     other => format!("{head} {}", self.render(other, cont)),
@@ -709,8 +714,8 @@ fn inline(e: &Expr, prec: u8) -> String {
         Expr::Append { target, value, .. } => {
             format!("{} += {}", inline(target, P_INDEX), inline(value, 0))
         }
-        Expr::For { var, from, to, body, .. } => {
-            format!("for {var} in {}..{} {}", inline(from, 0), inline(to, 0), inline(body, 0))
+        Expr::For { var, from, to, acc, body, .. } => {
+            format!("for {var} in {}..{}{} {}", inline(from, 0), inline(to, 0), with_str(acc), inline(body, 0))
         }
         Expr::Unary { op: UnOp::Neg, expr } => {
             wrap(prec > P_UNARY, format!("-{}", inline(expr, P_UNARY)))
@@ -813,6 +818,14 @@ fn pattern(p: &Pattern) -> String {
 /// back the way they were written.
 fn is_tuple(name: &str, n: usize) -> bool {
     (2..=4).contains(&n) && name == format!("Tuple{n}")
+}
+
+/// `with acc = init`, when the loop carries something.
+fn with_str(acc: &Option<(String, Box<Expr>)>) -> String {
+    match acc {
+        Some((n, e)) => format!(" with {n} = {}", inline(e, 0)),
+        None => String::new(),
+    }
 }
 
 fn type_ref(t: &TypeRef) -> String {
