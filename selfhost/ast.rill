@@ -24,6 +24,7 @@ type Expr
 
 type Stmt
   SBind(Str, Expr, Int)
+  SFn(FnD)
   SExpr(Expr)
 
 type Pat
@@ -58,7 +59,7 @@ type Sig
   Sig(Str, List(TypeRef), TypeRef, Int)
 
 type FnD
-  FnD(Str, Bool, List(Par), Option(TypeRef), Expr, Int)
+  FnD(Str, Bool, List(Par), Option(TypeRef), Expr, Int, Option(Str))
 
 type EPar
   EP(Str, TypeRef)

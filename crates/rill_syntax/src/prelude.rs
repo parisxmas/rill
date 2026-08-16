@@ -18,14 +18,16 @@ pub const PRELUDE: &str = include_str!("prelude.rill");
 
 pub fn parse_program(src: &str) -> Result<Module, SyntaxError> {
     let user = parse(src)?;
-    Ok(with_prelude(user))
+    with_prelude(user)
 }
 
 /// Merges the embedded prelude under an already-assembled user module
 /// (used by the multi-file loader after import resolution).
-pub fn with_prelude(user: Module) -> Module {
+pub fn with_prelude(user: Module) -> Result<Module, SyntaxError> {
     let prelude = parse(PRELUDE).expect("the embedded prelude must parse");
-    merge(prelude, user)
+    let mut m = merge(prelude, user);
+    crate::lift::lift(&mut m)?;
+    Ok(m)
 }
 
 fn merge(prelude: Module, user: Module) -> Module {
@@ -188,6 +190,7 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             for s in stmts {
                 match s {
                     Stmt::Bind { value, .. } => collect_expr_names(value, out),
+                    Stmt::Fn(f) => collect_expr_names(&f.body, out),
                     Stmt::Expr(v) => collect_expr_names(v, out),
                 }
             }

@@ -1592,6 +1592,14 @@ impl Checker {
                 let mut ty = Ty::Unit;
                 for stmt in stmts {
                     match stmt {
+                        // `lift` runs before the checker, so a local function
+                        // is already a top-level one by now.
+                        Stmt::Fn(f) => {
+                            return Err(TypeError::new(
+                                f.line,
+                                format!("internal: `{}` was not lifted", f.name),
+                            ))
+                        }
                         Stmt::Bind { name, value, .. } => {
                             let v = self.infer(value, env)?;
                             env.insert(name.clone(), v.ty.clone());
@@ -2357,6 +2365,12 @@ fn dependency_groups(fns: &[FnDef], index: &HashMap<String, usize>) -> Vec<Vec<u
         let mut names = Vec::new();
         let mut seen = HashSet::new();
         free_vars(&f.body, &mut names, &mut seen);
+        // A lifted function is inferred with the one it was written inside:
+        // a captured value must have the type it had where it was captured,
+        // and a `Buf` width is never inferred from use.
+        if let Some(p) = &f.lifted_from {
+            names.push(p.clone());
+        }
         let mut out: Vec<usize> = names
             .iter()
             .filter_map(|nm| index.get(nm))
@@ -2409,7 +2423,7 @@ fn dependency_groups(fns: &[FnDef], index: &HashMap<String, usize>) -> Vec<Vec<u
                     }
                 }
                 group.sort_unstable();
-                groups.push(group);
+                groups.push(caller_first(group, &edges));
             }
             if let Some(&(parent, _)) = work.last() {
                 low[parent] = low[parent].min(low[v]);
@@ -2417,6 +2431,50 @@ fn dependency_groups(fns: &[FnDef], index: &HashMap<String, usize>) -> Vec<Vec<u
         }
     }
     groups
+}
+
+/// The members of one group, callers before the functions they call.
+///
+/// A group is inferred with every signature in it still provisional, so what
+/// a caller says about its callee's parameters is only known once the caller's
+/// body has been through. That matters wherever the checker has to look at a
+/// type as it stands — indexing and the `Buf` builtins, whose element type is
+/// not a variable — and it is what lets a function lifted out of another one
+/// take a buffer without an annotation. A real cycle has no such order; what
+/// is left keeps its index order.
+fn caller_first(group: Vec<usize>, edges: &[Vec<usize>]) -> Vec<usize> {
+    if group.len() < 2 {
+        return group;
+    }
+    let inside: HashSet<usize> = group.iter().copied().collect();
+    let mut callers: HashMap<usize, usize> = group.iter().map(|&k| (k, 0)).collect();
+    for &k in &group {
+        for &c in &edges[k] {
+            if c != k && inside.contains(&c) {
+                *callers.get_mut(&c).unwrap() += 1;
+            }
+        }
+    }
+    let mut out: Vec<usize> = Vec::with_capacity(group.len());
+    let mut seen: HashSet<usize> = HashSet::new();
+    // Depth-first from whatever nothing in the group calls, then anything a
+    // cycle left over, in index order.
+    let roots: Vec<usize> = group.iter().copied().filter(|k| callers[k] == 0).collect();
+    for start in roots.into_iter().chain(group.iter().copied()) {
+        let mut work = vec![start];
+        while let Some(v) = work.pop() {
+            if !inside.contains(&v) || !seen.insert(v) {
+                continue;
+            }
+            out.push(v);
+            let mut next: Vec<usize> =
+                edges[v].iter().copied().filter(|c| inside.contains(c) && !seen.contains(c)).collect();
+            next.sort_unstable();
+            next.reverse();
+            work.extend(next);
+        }
+    }
+    out
 }
 
 /// A position in a foreign signature. Width names (`I32`, `F32`, ...) exist
@@ -2789,6 +2847,7 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
             for s in stmts {
                 match s {
                     Stmt::Bind { value, .. } => free_vars(value, out, seen),
+                    Stmt::Fn(f) => free_vars(&f.body, out, seen),
                     Stmt::Expr(v) => free_vars(v, out, seen),
                 }
             }

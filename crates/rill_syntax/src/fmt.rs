@@ -39,6 +39,7 @@ pub fn format_source(src: &str) -> Result<String, SyntaxError> {
 fn stmt_expr(s: &Stmt) -> &Expr {
     match s {
         Stmt::Bind { value, .. } => value,
+        Stmt::Fn(f) => &f.body,
         Stmt::Expr(e) => e,
     }
 }
@@ -327,15 +328,47 @@ impl Fmt {
 
     fn stmts(&mut self, stmts: &[Stmt], indent: usize) {
         for s in stmts {
+            if let Stmt::Fn(f) = s {
+                // A local function prints exactly like a top-level one, one
+                // level in; `fndef` places its own comments and blank lines.
+                self.fndef(f, indent);
+                continue;
+            }
             let line = stmt_line(s);
             self.lead(line, indent);
             let text = match s {
                 Stmt::Bind { name, value, .. } => {
                     format!("{name} = {}", self.render(value, indent + 1))
                 }
+                Stmt::Fn(_) => unreachable!("handled above"),
                 Stmt::Expr(e) => self.render(e, indent + 1),
             };
             self.push_at(indent, &text, line);
+        }
+    }
+
+    /// A local function as text, for the block forms that build a string
+    /// rather than pushing lines.
+    fn fndef_text(&mut self, f: &FnDef, ind: usize) -> String {
+        let params: Vec<String> = f
+            .params
+            .iter()
+            .map(|p| match &p.ann {
+                Some(t) => format!("{}: {}", p.name, type_ref(t)),
+                None => p.name.clone(),
+            })
+            .collect();
+        let ret = match &f.ret_ann {
+            Some(t) => format!(" -> {}", type_ref(t)),
+            None => String::new(),
+        };
+        let header = format!("fn {}({}){} =", f.name, params.join(", "), ret);
+        match &f.body {
+            Expr::Block(stmts) => {
+                let body = self.block_lines(stmts, ind + 1);
+                format!("{header}{body}")
+            }
+            body => format!("{header} {}", self.render(body, ind + 1)),
         }
     }
 
@@ -355,6 +388,7 @@ impl Fmt {
                 Stmt::Bind { name, value, .. } => {
                     format!("{name} = {}", self.render(value, ind + 1))
                 }
+                Stmt::Fn(f) => self.fndef_text(f, ind),
                 Stmt::Expr(e) => self.render(e, ind + 1),
             };
             s.push_str(&format!("\n{}{}", pad(ind), text));
@@ -412,6 +446,7 @@ impl Fmt {
                         Stmt::Bind { name, value, .. } => {
                             format!("{name} = {}", self.render(value, cont + 1))
                         }
+                        Stmt::Fn(f) => self.fndef_text(f, cont),
                         Stmt::Expr(e) => self.render(e, cont + 1),
                     };
                     parts.push(format!("{}{}", pad(cont), text));
@@ -518,6 +553,7 @@ impl Fmt {
 fn stmt_line(s: &Stmt) -> usize {
     match s {
         Stmt::Bind { line, .. } => *line,
+        Stmt::Fn(f) => f.line,
         Stmt::Expr(e) => expr_line(e),
     }
 }

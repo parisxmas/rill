@@ -472,8 +472,12 @@ fn sel_item_fin(op, pr, ln) = match pr
 # ---- statements and bodies --------------------------------------------------
 
 fn p_stmt(ts) = match ts
+  Cons(Tk(TkFn, ln), r) -> sfn_pr(p_fndef(r, false, ln))
   Cons(Tk(TkIdent(n), ln), Cons(Tk(TkEq, _), r)) -> bind_pr(n, p_expr(r), ln)
   _ -> p_assign(p_expr(ts))
+
+fn sfn_pr(pr) = match pr
+  PR(f, ts) -> PR(SFn(f), ts)
 
 # `b[i] = v` is the one assignment Rill has, and only to a buffer element —
 # which `buf_set` could already write. Nothing else may precede the `=`.
@@ -530,7 +534,7 @@ fn p_fn4(name, ps, pr, ex, ln) = match pr
   PR(ret, ts) -> p_fn5(name, ps, ret, p_body(expect_eq(ts)), ex, ln)
 
 fn p_fn5(name, ps, ret, pr, ex, ln) = match pr
-  PR(b, ts) -> PR(FnD(name, ex, ps, ret, b, ln), ts)
+  PR(b, ts) -> PR(FnD(name, ex, ps, ret, b, ln, None), ts)
 
 fn p_field(ts) = match ts
   Cons(Tk(TkIdent(n), _), Cons(Tk(TkColon, _), r)) -> fld_named(n, p_type(r, "a field type after `:`"))

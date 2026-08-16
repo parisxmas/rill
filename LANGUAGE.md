@@ -232,6 +232,23 @@ fn sum_to(n) = go(n, 0)
 fn go(i, acc) = if i == 0 then acc else go(i - 1, acc + i)   # a loop
 ```
 
+A loop written this way is usually about the values around it, so it can be
+written there: a `fn` inside a body sees the names in scope, and may call
+itself and the functions beside it.
+
+```
+fn sum_to(n) =
+  fn go(i, acc) = if i > n then acc else go(i + 1, acc + i)
+  go(1, 0)                     # `n` comes from the enclosing function
+```
+
+Only the loop's own variables are parameters; everything else is simply in
+scope. The compiler lifts each such function out to the top level and hands
+it the names it uses, so nothing is allocated and the tail call is still a
+tail call — a local function is a loop, not a closure. That is also why it can
+only be called: there is no single value to pass around for one, since each
+call site supplies the captured names. A lambda is the thing to pass around.
+
 Each parameter is a loop variable and the `if` is the exit condition. This
 holds for loops that print, and for server loops that run forever:
 

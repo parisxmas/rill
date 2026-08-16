@@ -122,6 +122,7 @@ fn block_line(ss) = match ss
 
 fn stmt_line(s) = match s
   SBind(_, _, ln) -> ln
+  SFn(f) -> fnd_line(f)
   SExpr(e) -> expr_line(e)
 
 # ---- inline expressions -----------------------------------------------------
@@ -329,7 +330,20 @@ fn rb_one(rr, rest, cont, s, first) = match rr
 
 fn rb_text(fs, st, cont) = match st
   SBind(n, v, _) -> rb_bind(render(fs, v, cont + 1), n)
+  SFn(f) -> fndef_text(fs, f, cont)
   SExpr(e) -> render(fs, e, cont + 1)
+
+# A local function as text, for the block forms that build a string rather
+# than pushing lines.
+fn fndef_text(fs, f, ind) = match f
+  FnD(name, _, ps, ret, body, _, _) -> ft2(fs, "fn " + name + "(" + join(map(ps, \p -> par_str(p)), ", ") + ")" + ret_str(ret) + " =", body, ind)
+
+fn ft2(fs, header, body, ind) = match body
+  EBlock(ss) -> ft3(block_lines(fs, ss, ind + 1), header)
+  _ -> ft3(ri_sp(render(fs, body, ind + 1)), header)
+
+fn ft3(rr, header) = match rr
+  RR(fs, text) -> RR(fs, header + text)
 
 fn rb_bind(rr, n) = match rr
   RR(fs, text) -> RR(fs, n + " = " + text)
@@ -447,7 +461,7 @@ fn decl_line(d) = match d
   DFn(f) -> fnd_line(f)
 
 fn fnd_line(f) = match f
-  FnD(_, _, _, _, _, ln) -> ln
+  FnD(_, _, _, _, _, ln, _) -> ln
 
 fn is_import(d) = match d
   DImport(_, _, _) -> true
@@ -457,14 +471,15 @@ fn pr_stmts(fs, ss, ind) = match ss
   Cons(st, rest) -> pr_stmts(pr_stmt(fs, st, ind), rest, ind)
   Nil -> fs
 
-fn pr_stmt(fs, st, ind) =
-  pr_stmt2(rb_text(lead(fs, stmt_line(st), ind), st, ind), stmt_line(st), ind)
+fn pr_stmt(fs, st, ind) = match st
+  SFn(f) -> pr_fndef(fs, f, ind)
+  _ -> pr_stmt2(rb_text(lead(fs, stmt_line(st), ind), st, ind), stmt_line(st), ind)
 
 fn pr_stmt2(rr, ln, ind) = match rr
   RR(fs, text) -> push_at(fs, ind, text, ln)
 
 fn pr_fndef(fs, f, ind) = match f
-  FnD(name, ex, ps, ret, body, ln) -> pf2(lead(fs, ln, ind), name, ex, ps, ret, body, ln, ind)
+  FnD(name, ex, ps, ret, body, ln, _) -> pf2(lead(fs, ln, ind), name, ex, ps, ret, body, ln, ind)
 
 fn pf2(fs, name, ex, ps, ret, body, ln, ind) =
   pf3(fs, (if ex then "export fn " else "fn ") + name + "(" + join(map(ps, \p -> par_str(p)), ", ") + ")" + ret_str(ret) + " =", body, ln, ind)

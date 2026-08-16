@@ -24,7 +24,7 @@ fn ld_or(o, d) = match o
   None -> d
 
 fn fnd_name(f) = match f
-  FnD(n, _, _, _, _, _) -> n
+  FnD(n, _, _, _, _, _, _) -> n
 
 # ---- paths ------------------------------------------------------------------
 
@@ -118,7 +118,7 @@ fn own_names(decls, s) = match decls
 
 fn on_one(d, s) = match d
   DType(n, _, ctors, _) -> on_ctors(ctors, sput(s, n, true))
-  DFn(FnD(n, _, _, _, _, _)) -> sput(s, n, true)
+  DFn(FnD(n, _, _, _, _, _, _)) -> sput(s, n, true)
   _ -> s
 
 fn on_ctors(cs, s) = match cs
@@ -148,7 +148,7 @@ fn q_tro(o, own, a) = match o
   None -> None
 
 fn q_fn(f, own, a) = match f
-  FnD(n, ex, ps, ret, body, ln) -> FnD(a + "." + n, ex, map(ps, \p -> q_par(p, own, a)), q_tro(ret, own, a), q_expr(body, own, a), ln)
+  FnD(n, ex, ps, ret, body, ln, lf) -> FnD(a + "." + n, ex, map(ps, \p -> q_par(p, own, a)), q_tro(ret, own, a), q_expr(body, own, a), ln, lf)
 
 fn q_par(p, own, a) = match p
   Par(n, ann) -> Par(n, q_tro(ann, own, a))
@@ -162,6 +162,8 @@ fn q_expr(e, own, a) = match e
   EMatch(s, arms, ln) -> EMatch(q_expr(s, own, a), map(arms, \x -> q_arm(x, own, a)), ln)
   ELambda(ps, b, ln) -> ELambda(ps, q_expr(b, own, a), ln)
   ESpawn(b, ln) -> ESpawn(q_expr(b, own, a), ln)
+  EIndex(b, ix, ln) -> EIndex(q_expr(b, own, a), q_expr(ix, own, a), ln)
+  EIndexSet(b, ix, v, ln) -> EIndexSet(q_expr(b, own, a), q_expr(ix, own, a), q_expr(v, own, a), ln)
   ESelect(arms, d, ln) -> ESelect(map(arms, \x -> q_sarm(x, own, a)), q_expro(d, own, a), ln)
   EBlock(ss) -> EBlock(map(ss, \s -> q_stmt(s, own, a)))
   _ -> e
@@ -186,6 +188,7 @@ fn q_sop(op, own, a) = match op
 
 fn q_stmt(s, own, a) = match s
   SBind(n, v, ln) -> SBind(n, q_expr(v, own, a), ln)
+  SFn(FnD(n, ex, ps, ret, body, ln, lf)) -> SFn(FnD(n, ex, map(ps, \p -> q_par(p, own, a)), q_tro(ret, own, a), q_expr(body, own, a), ln, lf))
   SExpr(v) -> SExpr(q_expr(v, own, a))
 
 # ---- claiming names ---------------------------------------------------------
@@ -294,7 +297,7 @@ fn cf_three(prev, f, vis, al, fo, no, ty, tr, im, ex, fs, canon) = match prev
 
 fn with_prelude(user, prelude_path) =
   psrc = read_file_raw(prelude_path)
-  if io_ok() then merge_prelude(parse_src(psrc), user) else tldie("cannot read the prelude at `" + prelude_path + "`")
+  if io_ok() then lift(merge_prelude(parse_src(psrc), user)) else tldie("cannot read the prelude at `" + prelude_path + "`")
 
 fn merge_prelude(pdecls, user) = match user
   M2(uty, utr, uim, uex, ufn, _) ->
@@ -355,7 +358,7 @@ fn prelude_fns(ds, acc) = match ds
   Cons(_, rest) -> prelude_fns(rest, acc)
 
 fn cn_fn(f, s) = match f
-  FnD(_, _, ps, ret, body, _) -> cn_pars(ps, cn_tro(ret, cn_expr(body, s)))
+  FnD(_, _, ps, ret, body, _, _) -> cn_pars(ps, cn_tro(ret, cn_expr(body, s)))
 
 fn cn_pars(ps, s) = match ps
   Nil -> s
@@ -381,6 +384,8 @@ fn cn_expr(e, s) = match e
   EMatch(sc, arms, _) -> cn_arms(arms, cn_expr(sc, s))
   ELambda(_, b, _) -> cn_expr(b, s)
   ESpawn(b, _) -> cn_expr(b, s)
+  EIndex(b, ix, _) -> cn_expr(ix, cn_expr(b, s))
+  EIndexSet(b, ix, v, _) -> cn_expr(v, cn_expr(ix, cn_expr(b, s)))
   ESelect(arms, d, _) -> cn_expro(d, cn_sarms(arms, s))
   EBlock(ss) -> cn_stmts(ss, s)
   _ -> s
@@ -416,6 +421,7 @@ fn cn_sop(op, s) = match op
 fn cn_stmts(ss, s) = match ss
   Nil -> s
   Cons(SBind(_, v, _), rest) -> cn_stmts(rest, cn_expr(v, s))
+  Cons(SFn(FnD(_, _, ps, ret, body, _, _)), rest) -> cn_stmts(rest, cn_pars(ps, cn_tro(ret, cn_expr(body, s))))
   Cons(SExpr(v), rest) -> cn_stmts(rest, cn_expr(v, s))
 
 # Shadowed functions drop, then anything referencing a dropped name drops,
@@ -444,3 +450,376 @@ fn assemble(pt, pdecls, ufs, uty, utr, uim, uex, ufn) = match pt
   PT(ptypes, dropped) ->
     pfns = fix_fns(prelude_fns(pdecls, Nil), ufs, dropped)
     M2(append(ptypes, uty), utr, uim, uex, append(pfns, ufn), len(pfns))
+
+# ---- local functions, lifted out --------------------------------------------
+#
+# `fn go(i) = ...` written inside a body sees the names around it and may call
+# itself and the functions beside it. Nothing after this pass knows that: each
+# one becomes an ordinary top-level function whose captured names arrive as
+# leading parameters, and every call to it gains those arguments.
+#
+# A closure would have been the other way to do it, and would have cost an
+# environment box and turned a self tail call into a call and a return — and a
+# loop written as a local function has to stay a loop.
+#
+# The lifted name carries the enclosing function's, separated by a dot no Rill
+# identifier can contain, and the seventh field of `FnD` records the parent so
+# the checker infers the two together: a captured buffer must have the type it
+# had where it was captured, since a `Buf` width is never inferred.
+
+type LF
+  LF(SM(Bool), List(FnD))
+
+type LE
+  LE(Expr, LF)
+
+type LES
+  LES(List(Expr), LF)
+
+type LSS
+  LSS(List(Stmt), LF)
+
+type LR
+  LR(List(FnD), LF)
+
+type LD2
+  LD2(FnD, Str, List(Str))
+
+type LC
+  LC(Str, Str, List(Str), List(Str))
+
+fn lift(m) = match m
+  M2(ty, tr, im, ex, fs, pn) -> lift_fin(lf_fns(fs, LF(lf_names(fs, SLeaf), Nil), Nil), ty, tr, im, ex, pn)
+
+fn lf_names(fs, acc) = fold(fs, acc, \a, f -> sput(a, fnd_name(f), true))
+
+fn lift_fin(lr, ty, tr, im, ex, pn) = match lr
+  LR(fs2, LF(_, out)) -> M2(ty, tr, im, ex, append(fs2, reverse(out)), pn)
+
+fn lf_fns(fs, st, acc) = match fs
+  Nil -> LR(reverse(acc), st)
+  Cons(f, rest) -> lf_fn(f, rest, st, acc)
+
+fn lf_fn(f, rest, st, acc) = match f
+  FnD(n, ex, ps, ret, body, ln, pa) -> lf_fn2(lf_expr(body, par_names(ps, Nil), n, st), n, ex, ps, ret, ln, pa, rest, acc)
+
+fn lf_fn2(le, n, ex, ps, ret, ln, pa, rest, acc) = match le
+  LE(b2, st) -> lf_fns(rest, st, Cons(FnD(n, ex, ps, ret, b2, ln, pa), acc))
+
+fn par_names(ps, acc) = match ps
+  Nil -> reverse(acc)
+  Cons(Par(n, _), rest) -> par_names(rest, Cons(n, acc))
+
+fn lf_expr(e, env, parent, st) = match e
+  EBlock(ss) -> lf_block_e(lf_block(ss, env, parent, st))
+  ECall(n, args, ln, pi) -> lf_call(lf_exprs(args, env, parent, st, Nil), n, ln, pi)
+  ENeg(x) -> lf_neg(lf_expr(x, env, parent, st))
+  EBin(op, l, r, ln) -> lf_bin(lf_exprs(Cons(l, Cons(r, Nil)), env, parent, st, Nil), op, ln)
+  EIf(c, t, e2) -> lf_if(lf_exprs(Cons(c, Cons(t, Cons(e2, Nil))), env, parent, st, Nil))
+  EMatch(sc, arms, ln) -> lf_match(lf_expr(sc, env, parent, st), arms, env, parent, ln)
+  ELambda(ps, b, ln) -> lf_lam(lf_expr(b, append(env, ps), parent, st), ps, ln)
+  ESpawn(b, ln) -> lf_spawn(lf_expr(b, env, parent, st), ln)
+  ESelect(arms, def, ln) -> lf_select(arms, def, env, parent, st, ln)
+  EIndex(b, ix, ln) -> lf_index(lf_exprs(Cons(b, Cons(ix, Nil)), env, parent, st, Nil), ln)
+  EIndexSet(b, ix, v, ln) -> lf_iset(lf_exprs(Cons(b, Cons(ix, Cons(v, Nil))), env, parent, st, Nil), ln)
+  _ -> LE(e, st)
+
+fn lf_exprs(es, env, parent, st, acc) = match es
+  Nil -> LES(reverse(acc), st)
+  Cons(x, rest) -> lf_exprs2(lf_expr(x, env, parent, st), rest, env, parent, acc)
+
+fn lf_exprs2(le, rest, env, parent, acc) = match le
+  LE(x2, st) -> lf_exprs(rest, env, parent, st, Cons(x2, acc))
+
+fn at_e(es, i) = match nth(es, i)
+  Some(x) -> x
+  None -> EBool(false)
+
+fn lf_block_e(lss) = match lss
+  LSS(ss, st) -> LE(EBlock(ss), st)
+
+fn lf_call(les, n, ln, pi) = match les
+  LES(args, st) -> LE(ECall(n, args, ln, pi), st)
+
+fn lf_neg(le) = match le
+  LE(x, st) -> LE(ENeg(x), st)
+
+fn lf_bin(les, op, ln) = match les
+  LES(xs, st) -> LE(EBin(op, at_e(xs, 0), at_e(xs, 1), ln), st)
+
+fn lf_if(les) = match les
+  LES(xs, st) -> LE(EIf(at_e(xs, 0), at_e(xs, 1), at_e(xs, 2)), st)
+
+fn lf_index(les, ln) = match les
+  LES(xs, st) -> LE(EIndex(at_e(xs, 0), at_e(xs, 1), ln), st)
+
+fn lf_iset(les, ln) = match les
+  LES(xs, st) -> LE(EIndexSet(at_e(xs, 0), at_e(xs, 1), at_e(xs, 2), ln), st)
+
+fn lf_lam(le, ps, ln) = match le
+  LE(b, st) -> LE(ELambda(ps, b, ln), st)
+
+fn lf_spawn(le, ln) = match le
+  LE(b, st) -> LE(ESpawn(b, ln), st)
+
+fn lf_match(le, arms, env, parent, ln) = match le
+  LE(sc, st) -> lf_marms(arms, env, parent, st, Nil, sc, ln)
+
+fn lf_marms(arms, env, parent, st, acc, sc, ln) = match arms
+  Nil -> LE(EMatch(sc, reverse(acc), ln), st)
+  Cons(Arm(p, b, aln), rest) -> lf_marm(lf_expr(b, append(env, lf_pat_names(p, Nil)), parent, st), p, aln, rest, env, parent, acc, sc, ln)
+
+fn lf_marm(le, p, aln, rest, env, parent, acc, sc, ln) = match le
+  LE(b2, st) -> lf_marms(rest, env, parent, st, Cons(Arm(p, b2, aln), acc), sc, ln)
+
+fn lf_pat_names(p, acc) = match p
+  PVar(n) -> Cons(n, acc)
+  PCtor(_, args) -> fold(args, acc, \a, x -> lf_pat_names(x, a))
+  _ -> acc
+
+fn lf_select(arms, def, env, parent, st, ln) = lf_sarms(arms, env, parent, st, Nil, def, ln)
+
+fn lf_sarms(arms, env, parent, st, acc, def, ln) = match arms
+  Nil -> lf_sdef(def, env, parent, st, reverse(acc), ln)
+  Cons(SArm(op, b, aln), rest) -> lf_sarm(lf_sop(op, env, parent, st), b, aln, rest, env, parent, acc, def, ln)
+
+fn lf_sop(op, env, parent, st) = match op
+  SRecv(ch, bd) -> lf_srecv(lf_expr(ch, env, parent, st), bd)
+  SSend(ch, v) -> lf_ssend(lf_exprs(Cons(ch, Cons(v, Nil)), env, parent, st, Nil))
+
+fn lf_srecv(le, bd) = match le
+  LE(ch, st) -> LSO(SRecv(ch, bd), st)
+
+fn lf_ssend(les) = match les
+  LES(xs, st) -> LSO(SSend(at_e(xs, 0), at_e(xs, 1)), st)
+
+type LSO
+  LSO(SOp, LF)
+
+fn lf_sarm(lso, b, aln, rest, env, parent, acc, def, ln) = match lso
+  LSO(op, st) -> lf_sarm2(lf_expr(b, append(env, lf_sop_binds(op, Nil)), parent, st), op, aln, rest, env, parent, acc, def, ln)
+
+fn lf_sop_binds(op, acc) = match op
+  SRecv(_, Some(n)) -> Cons(n, acc)
+  _ -> acc
+
+fn lf_sarm2(le, op, aln, rest, env, parent, acc, def, ln) = match le
+  LE(b2, st) -> lf_sarms(rest, env, parent, st, Cons(SArm(op, b2, aln), acc), def, ln)
+
+fn lf_sdef(def, env, parent, st, arms, ln) = match def
+  None -> LE(ESelect(arms, None, ln), st)
+  Some(d) -> lf_sdef2(lf_expr(d, env, parent, st), arms, ln)
+
+fn lf_sdef2(le, arms, ln) = match le
+  LE(d, st) -> LE(ESelect(arms, Some(d), ln), st)
+
+type LB
+  LB(List(Stmt), List(LD2), List(Str), LF)
+
+type LN
+  LN(Str, LF)
+
+fn lf_has(st, n) = match st
+  LF(u, _) -> shas(u, n)
+
+fn lf_use(st, n) = match st
+  LF(u, out) -> LF(sput(u, n, true), out)
+
+fn lf_emit(st, f) = match st
+  LF(u, out) -> LF(u, Cons(f, out))
+
+fn lf_in(l, s) = match l
+  Nil -> false
+  Cons(x, rest) -> str_cmp(x, s) == 0 || lf_in(rest, s)
+
+# The lifted name: the enclosing one's, a dot, its own. Two blocks in one
+# function may use the same name; the second gets a number.
+fn pick_name(parent, n, st) = pick2(parent + "." + n, st, 2)
+
+fn pick2(base, st, k) =
+  if lf_has(st, base) then pick3(base + "." + int_to_str(k), base, st, k) else LN(base, lf_use(st, base))
+
+fn pick3(cand, base, st, k) =
+  if lf_has(st, cand) then pick3(base + "." + int_to_str(k + 1), base, st, k + 1) else LN(cand, lf_use(st, cand))
+
+fn lf_sib_names(ss, acc) = match ss
+  Nil -> reverse(acc)
+  Cons(SFn(f), rest) -> lf_sib_names(rest, Cons(fnd_name(f), acc))
+  Cons(_, rest) -> lf_sib_names(rest, acc)
+
+fn lf_block(ss, env, parent, st) =
+  sibs = lf_sib_names(ss, Nil)
+  if len(sibs) == 0 then lf_plain(ss, env, parent, st, Nil) else lf_block2(lf_pass1(ss, parent, LB(Nil, Nil, env, st)), sibs, parent)
+
+fn lf_plain(ss, env, parent, st, acc) = match ss
+  Nil -> LSS(reverse(acc), st)
+  Cons(SBind(n, v, ln), rest) -> lf_plain_bind(lf_expr(v, env, parent, st), n, ln, rest, env, parent, acc)
+  Cons(SExpr(e), rest) -> lf_plain_expr(lf_expr(e, env, parent, st), rest, env, parent, acc)
+  Cons(SFn(_), _) -> tldie("internal: a local function in a block reported as having none")
+
+fn lf_plain_bind(le, n, ln, rest, env, parent, acc) = match le
+  LE(v2, st) -> lf_plain(rest, append(env, Cons(n, Nil)), parent, st, Cons(SBind(n, v2, ln), acc))
+
+fn lf_plain_expr(le, rest, env, parent, acc) = match le
+  LE(e2, st) -> lf_plain(rest, env, parent, st, Cons(SExpr(e2), acc))
+
+# Pass one: lift what is nested inside each local function, and note the names
+# visible where it is written — so it cannot reach a binding made after it.
+fn lf_pass1(ss, parent, b) = match ss
+  Nil -> b
+  Cons(s, rest) -> lf_pass1(rest, parent, lf_p1(s, parent, b))
+
+fn lf_p1(s, parent, b) = match b
+  LB(kept, defs, env, st) -> lf_p1b(s, parent, kept, defs, env, st)
+
+fn lf_p1b(s, parent, kept, defs, env, st) = match s
+  SFn(f) -> lf_p1_fn(f, parent, kept, defs, env, st)
+  SBind(n, v, ln) -> lf_p1_bind(lf_expr(v, env, parent, st), n, ln, kept, defs, env)
+  SExpr(e) -> lf_p1_expr(lf_expr(e, env, parent, st), kept, defs, env)
+
+fn lf_p1_bind(le, n, ln, kept, defs, env) = match le
+  LE(v2, st) -> LB(Cons(SBind(n, v2, ln), kept), defs, append(env, Cons(n, Nil)), st)
+
+fn lf_p1_expr(le, kept, defs, env) = match le
+  LE(e2, st) -> LB(Cons(SExpr(e2), kept), defs, env, st)
+
+fn lf_p1_fn(f, parent, kept, defs, env, st) = match f
+  FnD(n, ex, ps, ret, body, ln, pa) -> lf_p1_fn2(pick_name(parent, n, st), n, ex, ps, ret, body, ln, pa, kept, defs, env)
+
+fn lf_p1_fn2(nm, n, ex, ps, ret, body, ln, pa, kept, defs, env) = match nm
+  LN(lifted, st) -> lf_p1_fn3(lf_expr(body, append(env, par_names(ps, Nil)), lifted, st), lifted, n, ex, ps, ret, ln, pa, kept, defs, env)
+
+fn lf_p1_fn3(le, lifted, n, ex, ps, ret, ln, pa, kept, defs, env) = match le
+  LE(b2, st) -> LB(kept, Cons(LD2(FnD(n, ex, ps, ret, b2, ln, pa), lifted, env), defs), env, st)
+
+# Pass two: what each one captures, then what its siblings force it to capture
+# as well — if `g` calls `h`, `g` has to hand `h` what `h` needs.
+fn lf_block2(b, sibs, parent) = match b
+  LB(kept, defs, _, st) -> lf_block3(reverse(kept), reverse(defs), sibs, parent, st)
+
+fn lf_block3(kept, defs, sibs, parent, st) =
+  lf_block4(lf_fix(lf_init_caps(defs, sibs, Nil)), kept, defs, parent, st)
+
+fn lf_init_caps(defs, sibs, acc) = match defs
+  Nil -> reverse(acc)
+  Cons(LD2(f, lifted, vis), rest) -> lf_init_caps(rest, sibs, Cons(lf_one_cap(f, lifted, vis, sibs), acc))
+
+fn lf_one_cap(f, lifted, vis, sibs) = match f
+  FnD(n, _, ps, _, body, _, _) -> lf_one_cap2(n, lifted, vis, sibs, lf_fv(body, par_names(ps, Nil), Nil))
+
+fn lf_one_cap2(n, lifted, vis, sibs, free) =
+  LC(n, lifted, filter(vis, \x -> lf_in(free, x) && !lf_in(sibs, x)), filter(sibs, \x -> lf_in(free, x)))
+
+fn lf_fix(cs) = lf_fix2(cs, map(cs, \c -> lf_grow(c, cs)))
+
+fn lf_fix2(cs, cs2) = if lf_total(cs, 0) == lf_total(cs2, 0) then cs else lf_fix(cs2)
+
+fn lf_total(cs, acc) = match cs
+  Nil -> acc
+  Cons(LC(_, _, caps, _), rest) -> lf_total(rest, acc + len(caps))
+
+fn lf_grow(c, all) = match c
+  LC(n, lifted, caps, refs) -> LC(n, lifted, fold(all, caps, \a, o -> lf_add_if(a, o, refs)), refs)
+
+fn lf_add_if(caps, o, refs) = match o
+  LC(n2, _, caps2, _) -> if lf_in(refs, n2) then lf_union(caps, caps2) else caps
+
+fn lf_union(a, b) = fold(b, a, \acc, x -> if lf_in(acc, x) then acc else append(acc, Cons(x, Nil)))
+
+# Pass three: every call to a lifted name gains its captures, in the lifted
+# bodies and in what is left of the block.
+fn lf_block4(cs, kept, defs, parent, st) =
+  LSS(map(kept, \s -> lf_rw_stmt(s, cs)), lf_emit_all(defs, cs, cs, parent, st))
+
+fn lf_emit_all(defs, cs, all, parent, st) = match defs
+  Nil -> st
+  Cons(d, drest) -> lf_emit_step(d, drest, cs, all, parent, st)
+
+fn lf_emit_step(d, drest, cs, all, parent, st) = match cs
+  Cons(c, crest) -> lf_emit_all(drest, crest, all, parent, lf_emit_one(d, c, all, parent, st))
+  Nil -> st
+
+fn lf_emit_one(d, c, all, parent, st) = match d
+  LD2(FnD(_, _, ps, ret, body, ln, _), _, _) -> lf_emit_one2(c, ps, ret, body, ln, all, parent, st)
+
+fn lf_emit_one2(c, ps, ret, body, ln, all, parent, st) = match c
+  LC(_, lifted, caps, _) -> lf_emit(st, FnD(lifted, false, append(map(caps, \x -> Par(x, None)), ps), ret, lf_rw(body, all), ln, Some(parent)))
+
+fn lf_rw_stmt(s, cs) = match s
+  SBind(n, v, ln) -> SBind(n, lf_rw(v, cs), ln)
+  SExpr(e) -> SExpr(lf_rw(e, cs))
+  SFn(_) -> tldie("internal: a local function survived lifting")
+
+fn lf_lookup(cs, n) = match cs
+  Nil -> None
+  Cons(LC(m, lifted, caps, refs), rest) -> if str_cmp(m, n) == 0 then Some(LC(m, lifted, caps, refs)) else lf_lookup(rest, n)
+
+fn lf_rw(e, cs) = match e
+  EVar(n, ln) -> lf_rw_var(lf_lookup(cs, n), n, ln)
+  ECall(n, args, ln, pi) -> lf_rw_call(lf_lookup(cs, n), n, map(args, \a -> lf_rw(a, cs)), ln, pi)
+  ENeg(x) -> ENeg(lf_rw(x, cs))
+  EBin(op, l, r, ln) -> EBin(op, lf_rw(l, cs), lf_rw(r, cs), ln)
+  EIf(c, t, e2) -> EIf(lf_rw(c, cs), lf_rw(t, cs), lf_rw(e2, cs))
+  EMatch(sc, arms, ln) -> EMatch(lf_rw(sc, cs), map(arms, \a -> lf_rw_arm(a, cs)), ln)
+  ELambda(ps, b, ln) -> ELambda(ps, lf_rw(b, cs), ln)
+  ESpawn(b, ln) -> ESpawn(lf_rw(b, cs), ln)
+  ESelect(arms, def, ln) -> ESelect(map(arms, \a -> lf_rw_sarm(a, cs)), opt_map(def, \d -> lf_rw(d, cs)), ln)
+  EIndex(b, ix, ln) -> EIndex(lf_rw(b, cs), lf_rw(ix, cs), ln)
+  EIndexSet(b, ix, v, ln) -> EIndexSet(lf_rw(b, cs), lf_rw(ix, cs), lf_rw(v, cs), ln)
+  EBlock(ss) -> EBlock(map(ss, \s -> lf_rw_stmt(s, cs)))
+  _ -> e
+
+fn lf_rw_var(o, n, ln) = match o
+  Some(_) -> tldie("`" + n + "` is a local function, and a local function can only be called — it takes the names around it as arguments, so there is no one value to hand out for it")
+  None -> EVar(n, ln)
+
+fn lf_rw_call(o, n, args, ln, pi) = match o
+  Some(LC(_, lifted, caps, _)) -> ECall(lifted, append(map(caps, \c -> EVar(c, ln)), args), ln, false)
+  None -> ECall(n, args, ln, pi)
+
+fn lf_rw_arm(a, cs) = match a
+  Arm(p, b, ln) -> Arm(p, lf_rw(b, cs), ln)
+
+fn lf_rw_sarm(a, cs) = match a
+  SArm(op, b, ln) -> SArm(lf_rw_sop(op, cs), lf_rw(b, cs), ln)
+
+fn lf_rw_sop(op, cs) = match op
+  SRecv(ch, bd) -> SRecv(lf_rw(ch, cs), bd)
+  SSend(ch, v) -> SSend(lf_rw(ch, cs), lf_rw(v, cs))
+
+# Names used in a body that nothing inside it binds. A callee name counts: a
+# name in scope may be a function value being called.
+fn lf_fv(e, bound, acc) = match e
+  EVar(n, _) -> if lf_in(bound, n) then acc else Cons(n, acc)
+  ECall(n, args, _, _) -> fold(args, if lf_in(bound, n) then acc else Cons(n, acc), \a, x -> lf_fv(x, bound, a))
+  ENeg(x) -> lf_fv(x, bound, acc)
+  EBin(_, l, r, _) -> lf_fv(r, bound, lf_fv(l, bound, acc))
+  EIf(c, t, e2) -> lf_fv(e2, bound, lf_fv(t, bound, lf_fv(c, bound, acc)))
+  EMatch(sc, arms, _) -> fold(arms, lf_fv(sc, bound, acc), \a, arm -> lf_fv_arm(arm, bound, a))
+  ELambda(ps, b, _) -> lf_fv(b, append(bound, ps), acc)
+  ESpawn(b, _) -> lf_fv(b, bound, acc)
+  ESelect(arms, def, _) -> lf_fv_def(def, bound, fold(arms, acc, \a, sa -> lf_fv_sarm(sa, bound, a)))
+  EIndex(b, ix, _) -> lf_fv(ix, bound, lf_fv(b, bound, acc))
+  EIndexSet(b, ix, v, _) -> lf_fv(v, bound, lf_fv(ix, bound, lf_fv(b, bound, acc)))
+  EBlock(ss) -> lf_fv_stmts(ss, bound, acc)
+  _ -> acc
+
+fn lf_fv_arm(arm, bound, acc) = match arm
+  Arm(p, b, _) -> lf_fv(b, append(bound, lf_pat_names(p, Nil)), acc)
+
+fn lf_fv_sarm(sa, bound, acc) = match sa
+  SArm(op, b, _) -> lf_fv(b, append(bound, lf_sop_binds(op, Nil)), lf_fv_sop(op, bound, acc))
+
+fn lf_fv_sop(op, bound, acc) = match op
+  SRecv(ch, _) -> lf_fv(ch, bound, acc)
+  SSend(ch, v) -> lf_fv(v, bound, lf_fv(ch, bound, acc))
+
+fn lf_fv_def(def, bound, acc) = match def
+  Some(d) -> lf_fv(d, bound, acc)
+  None -> acc
+
+fn lf_fv_stmts(ss, bound, acc) = match ss
+  Nil -> acc
+  Cons(SBind(n, v, _), rest) -> lf_fv_stmts(rest, append(bound, Cons(n, Nil)), lf_fv(v, bound, acc))
+  Cons(SExpr(e), rest) -> lf_fv_stmts(rest, bound, lf_fv(e, bound, acc))
+  Cons(SFn(_), _) -> tldie("internal: inner blocks are lifted first")

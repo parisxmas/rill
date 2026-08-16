@@ -167,6 +167,28 @@ fn tail_calls_run_in_constant_stack() {
     assert_eq!(compile_and_run("loop.rill"), "500000500000\n");
 }
 
+/// A function written inside another sees the names around it and may call
+/// itself; lifting turns it into a top-level one, so the loop stays a loop
+/// and a captured buffer keeps the type it was captured with.
+#[test]
+fn local_functions_capture_and_loop() {
+    let src = "fn main() =\n  \
+                 v = buf_int(4)\n  \
+                 n = 5000000\n\n  \
+                 fn fill(i) =\n    \
+                   if i >= 4 then 0\n    \
+                   else\n      \
+                     v[i] = i * 2\n      \
+                     fill(i + 1)\n\n  \
+                 fn even(i) = if i == 0 then true else odd(i - 1)\n\n  \
+                 fn odd(i) = if i == 0 then false else even(i - 1)\n\n  \
+                 fn count(i, acc) = if i > n then acc else count(i + 1, acc + v[i % 4])\n\n  \
+                 fill(0)\n  \
+                 println(even(n))\n  \
+                 println(count(1, 0))\n";
+    assert_eq!(run_source("local_fns", src), "true\n15000000\n");
+}
+
 /// Tearing down a long list must not cost a stack frame per link. The
 /// generated drop frees the box first and releases its last heap field by a
 /// tail call, so this list — which is only released when `main` ends, long

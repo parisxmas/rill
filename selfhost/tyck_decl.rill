@@ -314,7 +314,7 @@ fn mi_name(m) = match m
   Mi(n, _, _) -> n
 
 fn bi_fn(f, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) = match f
-  FnD(fname, fex, fps, fret, fbody, fln) -> bi_fn2(fname, fps, fret, fbody, fln, f, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags)
+  FnD(fname, fex, fps, fret, fbody, fln, _) -> bi_fn2(fname, fps, fret, fbody, fln, f, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags)
 
 fn bi_fn2(fname, fps, fret, fbody, fln, f, more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, ia, impl_flags) =
   mid = method_pos(trait_methods_of(traits, tid), fname, 0)
@@ -353,7 +353,7 @@ fn bi_fn8(mid, fname, fps, fbody, fln, sps, sret, more, tid, tname, tn, key, tty
   mangled = tname + "." + tn + "." + fname
   params = map(sps, \t -> sgen(t, inst))
   ret = sgen(sret, inst)
-  bi_fns(more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, IA(implm, sput(forced, mangled, Fo(params, ret, tgen)), Cons(FnD(mangled, false, fps, None, fbody, fln), exp)), impl_flags)
+  bi_fns(more, tid, tname, tn, key, tty, tgen, ln, rest, adx, adts, traits, IA(implm, sput(forced, mangled, Fo(params, ret, tgen)), Cons(FnD(mangled, false, fps, None, fbody, fln, None), exp)), impl_flags)
 
 # Pass 6: foreign declarations.
 fn build_externs(es, adx, adts, midx, out) = match es
@@ -397,7 +397,7 @@ fn build_sigs(fns, adx, adts, midx, externs, forced, sa) = match fns
   Nil -> sa
 
 fn bs_one(f, rest, adx, adts, midx, externs, forced, sa) = match f
-  FnD(name, _, ps, ret, _, ln) -> bs_two(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, sa)
+  FnD(name, _, ps, ret, _, ln, _) -> bs_two(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, sa)
 
 fn bs_two(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, sa) = match sa
   SA(fnidx, st, n) -> bs_checks(name, ps, ret, ln, rest, adx, adts, midx, externs, forced, fnidx, st, n)

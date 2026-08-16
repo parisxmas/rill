@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Functions inside functions.** A `fn` written in a body sees the names
+  around it and may call itself and the functions beside it, which is what a
+  loop over local state wants: only the loop's own variables are parameters.
+  Each one is lifted out to the top level with the names it uses as leading
+  parameters, so nothing is allocated and a tail call stays a tail call — a
+  local function is a loop, not a closure, and for the same reason it can only
+  be called, never passed. It is inferred together with the function it was
+  written inside, so a captured buffer keeps the type it was captured with;
+  that needed one further change, which is worth on its own: the functions of
+  a mutually-dependent group are now inferred callers first, so what a caller
+  says about its callee's parameters is known before the callee's body is
+  looked at. Measured: the Dijkstra benchmark falls from 1438 to 1002 tokens,
+  2.12&times; to 1.35&times; Go across both changes.
+
 - **`b[i]` and `b[i] = v`.** A buffer element is now written the way it is
   read everywhere else, and a string indexes to its bytes with `s[i]`. Both
   mean exactly what `buf_get`/`buf_set`/`str_get` mean — the same types, the

@@ -108,12 +108,20 @@ pub struct FnDef {
     pub ret_ann: Option<TypeRef>,
     pub body: Expr,
     pub line: usize,
+    /// Set on a function `lift` pulled out of another one: the name of the
+    /// function it was written inside. The checker keeps the two together so
+    /// a captured value has the type it had where it was captured.
+    pub lifted_from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `name = expr`
     Bind { name: String, value: Expr, line: usize },
+    /// A function defined inside a body. It sees the names around it and may
+    /// call itself and its siblings; `lift` turns it into a top-level one
+    /// before anything else looks at the program.
+    Fn(Box<FnDef>),
     Expr(Expr),
 }
 

@@ -31,7 +31,7 @@ pub fn load_program(entry: &Path) -> Result<Module, String> {
         functions: Vec::new(),
     };
     loader.visit(entry, None, None)?;
-    Ok(with_prelude(Module {
+    with_prelude(Module {
         imports: Vec::new(),
         types: loader.types,
         traits: loader.traits,
@@ -39,7 +39,8 @@ pub fn load_program(entry: &Path) -> Result<Module, String> {
         externs: loader.externs,
         functions: loader.functions,
         prelude_fns: 0,
-    }))
+    })
+    .map_err(|e| e.to_string())
 }
 
 struct Loader {
@@ -282,6 +283,7 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str) {
             for s in stmts {
                 match s {
                     Stmt::Bind { value, .. } => qualify_expr(value, own, alias),
+                    Stmt::Fn(f) => qualify_expr(&mut f.body, own, alias),
                     Stmt::Expr(v) => qualify_expr(v, own, alias),
                 }
             }

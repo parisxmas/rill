@@ -7,6 +7,12 @@ import "tyck_decl"
 
 # The line an expression reports errors at — the typed tree's convention:
 # literals and blocks have no line of their own.
+fn fnd_ln(f) = match f
+  FnD(_, _, _, _, _, ln, _) -> ln
+
+fn fnd_body2(f) = match f
+  FnD(_, _, _, _, b, _, _) -> b
+
 fn eline(e) = match e
   EVar(_, ln) -> ln
   ECall(_, _, ln, _) -> ln
@@ -90,7 +96,7 @@ fn i_iset(ts, cx, env, ix, v, ln) = match ts
 
 fn i_iset2(rbt, cx, st, env, ix, v, ln) = match rbt
   YBuf(w) -> i_iset3(infer(cx, st, env, ix), cx, env, v, ln, w)
-  _ -> tydie("only a buffer element can be assigned to, but this is `" + type_name(cx, st, rbt) + "`" + if is_ystr(rbt) then " — strings are values, not storage" else "", ln)
+  _ -> tydie("only a buffer element can be assigned to, but this is `" + type_name(cx, st, rbt) + "`" + (if is_ystr(rbt) then " — strings are values, not storage" else ""), ln)
 
 fn i_iset3(ts, cx, env, v, ln, w) = match ts
   TS(it, st) -> i_iset4(infer(cx, unify(cx, st, YInt, it, ln, "index"), env, v), cx, ln, w)
@@ -146,6 +152,7 @@ fn i_lam3(ts, ptys) = match ts
 
 fn i_block(cx, st, env, ss, ty) = match ss
   Cons(SBind(n, v, _), rest) -> i_block_bind(infer(cx, st, env, v), cx, env, n, rest)
+  Cons(SFn(f), _) -> tydie("internal: a local function reached the checker", fnd_ln(f))
   Cons(SExpr(e), rest) -> i_block_expr(infer(cx, st, env, e), cx, env, rest)
   Nil -> TS(ty, st)
 
@@ -691,6 +698,8 @@ fn fv(e, acc) = match e
   EIf(c, t, e2) -> fv(e2, fv(t, fv(c, acc)))
   EMatch(sc, arms, _) -> fold(arms, fv(sc, acc), \a, arm -> fv_arm(arm, a))
   ESpawn(b, _) -> fv(b, acc)
+  EIndex(b, ix, _) -> fv(ix, fv(b, acc))
+  EIndexSet(b, ix, v, _) -> fv(v, fv(ix, fv(b, acc)))
   ESelect(arms, def, _) -> fv_def(def, fold(arms, acc, \a, sa -> fv_sarm(sa, a)))
   ELambda(ps, b, _) -> sm_union(acc, sm_minus(fv(b, SLeaf), ps))
   EBlock(ss) -> fold(ss, acc, \a, s -> fv_stmt(s, a))
@@ -712,6 +721,7 @@ fn fv_def(def, acc) = match def
 
 fn fv_stmt(s, acc) = match s
   SBind(_, v, _) -> fv(v, acc)
+  SFn(f) -> fv(fnd_body2(f), acc)
   SExpr(e) -> fv(e, acc)
 
 # ---- dependency groups (Tarjan) ---------------------------------------------
@@ -720,8 +730,15 @@ fn ins_sorted(l, x) = match l
   Nil -> Cons(x, Nil)
   Cons(h, t) -> if x < h then Cons(x, l) else if x == h then l else Cons(h, ins_sorted(t, x))
 
+# A lifted function is inferred with the one it was written inside: a
+# captured value must have the type it had where it was captured, and a `Buf`
+# width is never inferred from use.
 fn fn_edges(f, fnidx) = match f
-  FnD(_, _, _, _, body, _) -> fold(sm_keys(fv(body, SLeaf), Nil), Nil, \es, nm -> edge_add(es, sget(fnidx, nm)))
+  FnD(_, _, _, _, body, _, pa) -> fold(sm_keys(fv(body, parent_seed(pa)), Nil), Nil, \es, nm -> edge_add(es, sget(fnidx, nm)))
+
+fn parent_seed(pa) = match pa
+  Some(p) -> sput(SLeaf, p, 0)
+  None -> SLeaf
 
 fn edge_add(es, o) = match o
   Some(i) -> ins_sorted(es, i)
@@ -787,7 +804,37 @@ fn pop_scc3(v, w, ix, lo, on, stk, nx, gs, acc) =
 
 fn dep_groups(fns, fnidx) =
   edges = map(fns, \f -> fn_edges(f, fnidx))
-  reverse(tj_groups(dep_roots(0, len(fns), edges, TJ(ILeaf, ILeaf, ILeaf, Nil, 0, Nil))))
+  map(reverse(tj_groups(dep_roots(0, len(fns), edges, TJ(ILeaf, ILeaf, ILeaf, Nil, 0, Nil)))), \g -> caller_first(g, edges))
+
+# The members of one group, callers before the functions they call.
+#
+# A group is inferred with every signature in it still provisional, so what a
+# caller says about its callee's parameters is only known once the caller's
+# body has been through. That matters wherever the checker has to look at a
+# type as it stands — indexing and the `Buf` builtins, whose element type is
+# not a variable — and it is what lets a function lifted out of another one
+# take a buffer without an annotation. A real cycle has no such order; what is
+# left keeps its index order.
+fn caller_first(g, edges) =
+  if len(g) < 2 then g else cf_walk(append(filter(g, \k -> cf_callers(g, edges, k) == 0), g), g, edges, Nil)
+
+fn cf_callers(g, edges, k) =
+  fold(g, 0, \a, v -> if v != k && int_listed(nth_edges(edges, v), k) then a + 1 else a)
+
+fn int_listed(l, x) = match l
+  Nil -> false
+  Cons(h, t) -> h == x || int_listed(t, x)
+
+fn cf_walk(starts, g, edges, out) = match starts
+  Nil -> reverse(out)
+  Cons(v, rest) -> cf_walk(rest, g, edges, cf_visit(v, g, edges, out))
+
+fn cf_visit(v, g, edges, out) =
+  if !int_listed(g, v) || int_listed(out, v) then out else cf_kids(nth_edges(edges, v), g, edges, Cons(v, out))
+
+fn cf_kids(ks, g, edges, out) = match ks
+  Nil -> out
+  Cons(k, rest) -> cf_kids(rest, g, edges, cf_visit(k, g, edges, out))
 
 fn dep_roots(v, n, edges, tj) =
   if v >= n then tj else dep_roots(v + 1, n, edges, dep_root(v, edges, tj))
@@ -802,7 +849,7 @@ fn tj_groups(tj) = match tj
 # ---- the two-pass over every function ---------------------------------------
 
 fn infer_fn_body(cx, st, f, idx) = match f
-  FnD(name, _, ps, _, body, ln) -> ifb2(st_sig(st, idx), cx, st, name, ps, body, ln)
+  FnD(name, _, ps, _, body, ln, _) -> ifb2(st_sig(st, idx), cx, st, name, ps, body, ln)
 
 fn ifb2(sig, cx, st, name, ps, body, ln) = match sig
   SigP(sps, sret) -> ifb3(cx, st, name, fn_env(ps, sps, name, ln, Nil), body, ln, sret)
@@ -839,7 +886,7 @@ type GFR
   GFR(St, Int)
 
 fn generalize_fn(cx, st, f, idx, pstart, pend) = match f
-  FnD(name, _, _, _, _, ln) -> gf2(st_sig(st, idx), cx, st, idx, pstart, pend)
+  FnD(name, _, _, _, _, ln, _) -> gf2(st_sig(st, idx), cx, st, idx, pstart, pend)
 
 fn gf2(sig, cx, st, idx, pstart, pend) = match sig
   SigP(sps, sret) -> gf3(cx, gf_settle(cx, st, pending_window(st, pstart, pend), Nil), sps, sret, idx)
@@ -924,7 +971,7 @@ fn check_generality(cx, st, fns, i) = match fns
   Nil -> 0
 
 fn cg_one(cx, st, f, rest, i) = match f
-  FnD(name, _, _, _, _, ln) -> cg_two(sget(cx_forced(cx), name), cx, st, name, ln, rest, i)
+  FnD(name, _, _, _, _, ln, _) -> cg_two(sget(cx_forced(cx), name), cx, st, name, ln, rest, i)
 
 fn cg_two(o, cx, st, name, ln, rest, i) = match o
   Some(Fo(_, _, tgen)) -> cg_three(st_sig(st, i), cx, st, name, ln, rest, i, tgen)

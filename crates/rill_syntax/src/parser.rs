@@ -490,7 +490,7 @@ impl Parser {
         };
         self.expect(&Tok::Eq, "before the function body")?;
         let body = self.body()?;
-        Ok(FnDef { name, exported, params, ret_ann, body, line })
+        Ok(FnDef { name, exported, params, ret_ann, body, line, lifted_from: None })
     }
 
     /// Function body: inline expression, or an indented block of statements.
@@ -529,6 +529,9 @@ impl Parser {
     }
 
     fn stmt(&mut self) -> Result<Stmt, SyntaxError> {
+        if matches!(self.peek(), Tok::Fn) {
+            return Ok(Stmt::Fn(Box::new(self.fndef(false)?)));
+        }
         if let (Tok::Ident(_), Tok::Eq) = (self.peek(), self.peek2()) {
             let (line, _) = self.here();
             let name = self.ident("a name")?;

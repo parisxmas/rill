@@ -42,10 +42,10 @@ fn rcdie(msg) =
   rcdie(msg)
 
 fn fnd_body(f) = match f
-  FnD(_, _, _, _, b, _) -> b
+  FnD(_, _, _, _, b, _, _) -> b
 
 fn fnd_params(f) = match f
-  FnD(_, _, ps, _, _, _) -> ps
+  FnD(_, _, ps, _, _, _, _) -> ps
 
 # ---- types in the generated code --------------------------------------------
 #
@@ -756,6 +756,7 @@ fn emit_block(cx, st, env, ss, cg) = emit_blk(cx, st, env, ss, cg, Nil)
 
 fn emit_blk(cx, st, env, ss, cg, sc) = match ss
   Cons(SBind(n, v, _), rest) -> emit_blk_bind(emit_bound(cx, st, env, n, v, rest, cg), cx, st, env, n, rest, sc)
+  Cons(SFn(_), _) -> rcdie("internal: a local function reached the code generator")
   Cons(SExpr(v), Nil) -> emit_blk_last(emit(cx, st, env, v, cg), sc)
   Cons(SExpr(v), rest) -> emit_blk_step(emit(cx, st, env, v, cg), cx, st, env, rest, sc)
   Nil -> RV(rel_all(cg, sc), "", YUnit)
@@ -782,6 +783,7 @@ fn emit_bound(cx, st, env, n, v, rest, cg) = match v
 fn hint_stmts(cx, st, env, ss, n) = match ss
   Nil -> uk()
   Cons(SBind(_, v, _), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
+  Cons(SFn(_), rest) -> hint_stmts(cx, st, env, rest, n)
   Cons(SExpr(v), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
 
 fn hint_or(h, cx, st, env, rest, n) = if is_uk(h) then hint_stmts(cx, st, env, rest, n) else h
@@ -789,6 +791,8 @@ fn hint_or(h, cx, st, env, rest, n) = if is_uk(h) then hint_stmts(cx, st, env, r
 fn hint_expr(cx, st, env, e, n) = match e
   ECall(f, args, _, _) -> hint_call(cx, st, env, f, args, n)
   ESpawn(b, _) -> hint_expr(cx, st, env, b, n)
+  EIndex(b, ix, _) -> hint_u(hint_expr(cx, st, env, b, n), cx, st, env, Cons(ix, Nil), n)
+  EIndexSet(b, ix, v, _) -> hint_u(hint_expr(cx, st, env, b, n), cx, st, env, Cons(ix, Cons(v, Nil)), n)
   ESelect(sarms, d, _) -> hint_sarms(cx, st, env, sarms, d, n)
   EIf(c, t, e2) -> hint_u(hint_expr(cx, st, env, c, n), cx, st, env, Cons(t, Cons(e2, Nil)), n)
   EBlock(ss) -> hint_stmts(cx, st, env, ss, n)
@@ -1153,7 +1157,7 @@ fn sp_round(cx, fns, i, need, changed) = match fns
   Cons(f, rest) -> sp_one(f, rest, cx, i, need, changed)
 
 fn sp_one(f, rest, cx, i, need, changed) = match f
-  FnD(_, _, ps, _, body, _) -> sp_next(sp_mark(ps, 0, sp_used(cx, need, body, Nil), sb_names(body, SLeaf), i, need, changed), rest, cx, i)
+  FnD(_, _, ps, _, body, _, _) -> sp_next(sp_mark(ps, 0, sp_used(cx, need, body, Nil), sb_names(body, SLeaf), i, need, changed), rest, cx, i)
 
 fn sp_next(spr, rest, cx, i) = match spr
   SPR(need, changed) -> sp_round(cx, rest, i + 1, need, changed)
@@ -1218,6 +1222,7 @@ fn sb_here(e, acc) = match e
 
 fn sb_stmt(s, acc) = match s
   SBind(n, _, _) -> sput(acc, n, true)
+  SFn(f) -> sput(acc, fnd_name(f), true)
   SExpr(_) -> acc
 
 fn sb_arm(a, acc) = match a
@@ -1243,6 +1248,8 @@ fn e_kids(e) = match e
   EMatch(s, arms, _) -> Cons(s, map(arms, \a -> h_arm_body(a)))
   ELambda(_, b, _) -> Cons(b, Nil)
   ESpawn(b, _) -> Cons(b, Nil)
+  EIndex(b, ix, _) -> Cons(b, Cons(ix, Nil))
+  EIndexSet(b, ix, v, _) -> Cons(b, Cons(ix, Cons(v, Nil)))
   ESelect(arms, d, _) -> append(sk_sarms(arms), sk_opt(d))
   EBlock(ss) -> map(ss, \s -> sk_stmt(s))
   _ -> Nil
@@ -1261,6 +1268,7 @@ fn sk_opt(o) = match o
 
 fn sk_stmt(s) = match s
   SBind(_, v, _) -> v
+  SFn(f) -> fnd_body(f)
   SExpr(v) -> v
 
 # ---- channels and strands ---------------------------------------------------
@@ -1685,6 +1693,8 @@ fn fv_expr(e, bound, acc) = match e
   EMatch(s, arms, _) -> fv_arms(arms, bound, fv_expr(s, bound, acc))
   ELambda(ps, b, _) -> fv_expr(b, names_set(ps, bound), acc)
   ESpawn(b, _) -> fv_expr(b, bound, acc)
+  EIndex(b, ix, _) -> fv_expr(ix, bound, fv_expr(b, bound, acc))
+  EIndexSet(b, ix, v, _) -> fv_expr(v, bound, fv_expr(ix, bound, fv_expr(b, bound, acc)))
   ESelect(arms, d, _) -> fv_expro(d, bound, fv_sarms(arms, bound, acc))
   EBlock(ss) -> fv_stmts(ss, bound, acc)
   _ -> acc
@@ -1724,6 +1734,7 @@ fn fv_sop_bound(op, bound) = match op
 
 fn fv_stmts(ss, bound, acc) = match ss
   Cons(SBind(n, v, _), rest) -> fv_stmts(rest, sput(bound, n, true), fv_expr(v, bound, acc))
+  Cons(SFn(_), rest) -> fv_stmts(rest, bound, acc)
   Cons(SExpr(v), rest) -> fv_stmts(rest, bound, fv_expr(v, bound, acc))
   Nil -> acc
 
@@ -2138,6 +2149,7 @@ fn ret_if2(is, cx, st, env, cv, t, e2, rt, stk) = match is
 
 fn ret_block(cx, st, env, ss, cg, rt, stk) = match ss
   Cons(SBind(n, v, _), rest) -> ret_block_bind(emit_bound(cx, st, env, n, v, rest, cg), cx, st, env, n, rest, rt, stk)
+  Cons(SFn(_), _) -> rcdie("internal: a local function reached the code generator")
   Cons(SExpr(v), Nil) -> emit_ret(cx, st, env, v, cg, rt, stk)
   Cons(SExpr(v), rest) -> ret_block_step(emit(cx, st, env, v, cg), cx, st, env, rest, rt, stk)
   Nil -> cg_line(rel_all(cg, stk), "ret void")
@@ -2461,7 +2473,7 @@ fn rel_last(i, t, ci, cg, loads, rels) =
   RPRL(loads + rel_load(ci, i), rels, rel_call(t, "%v" + int_to_str(ci) + "_" + int_to_str(i), kw), cg_want_rel_ty(cg, t))
 
 fn emit_inst2(cx, st, f, name, idx, targs, binds, shared) = match f
-  FnD(_, _, ps, _, body, _) -> emit_inst3(sig_parts(st, idx), cx, st, ps, body, name, targs, binds, shared)
+  FnD(_, _, ps, _, body, _, _) -> emit_inst3(sig_parts(st, idx), cx, st, ps, body, name, targs, binds, shared)
 
 fn emit_inst3(sig, cx, st, ps, body, name, targs, binds, shared) = match sig
   SigG(sps, sret, ngen) -> emit_inst4(cx, st, ps, body, name, targs, binds, map(sps, \p -> sgen(p, targs)), sgen(sret, targs), shared)

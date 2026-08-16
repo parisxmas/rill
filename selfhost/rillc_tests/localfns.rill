@@ -1,0 +1,30 @@
+fn spread(v: Buf(I64), n) =
+  fn fill(i) =
+    if i >= n then 0
+    else
+      v[i] = i * 3
+      fill(i + 1)
+
+  fn total(i, acc) = if i >= n then acc else total(i + 1, acc + v[i])
+
+  fill(0)
+  total(0, 0)
+
+fn main() =
+  n = 1000000
+
+  fn even(i) = i == 0 || odd(i - 1)
+
+  fn odd(i) = if i == 0 then false else even(i - 1)
+
+  fn count(i, acc) =
+    if i > n then acc
+    else
+      fn step(x) = x + 1
+      count(step(i), acc + i)
+
+  v = buf_int(7)
+  println(spread(v, 7))
+  println(even(n))
+  println(odd(n))
+  println(count(1, 0))
