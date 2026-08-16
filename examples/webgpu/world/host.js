@@ -722,7 +722,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // to BOLT_CYCLE after every shot; while it is running the rifle is open and
   // the trigger does nothing, which is the whole of what a bolt action is.
   const BOLT_CYCLE = 1.15;
-  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE;
+  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true;
   addEventListener("mousedown", e => {
     if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
   });
@@ -768,6 +768,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // and only on a press: holding the button does nothing, because `wantShot`
     // is set by the event rather than read from the state.
     boltT = Math.min(boltT + dt, BOLT_CYCLE);
+    // Say so on the page. The bolt itself is the honest indicator, but it is
+    // off to the right of where anyone aiming is looking, so the crosshair
+    // goes quiet while the rifle is open and comes back when it will fire.
+    const ready = boltT >= BOLT_CYCLE;
+    if (ready !== wasReady) { document.body.classList.toggle("cycling", !ready); wasReady = ready; }
     if (wantShot && boltT >= BOLT_CYCLE) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);

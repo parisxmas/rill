@@ -37,6 +37,15 @@
     .aim .u { transform: translateY(-11px); }
     .aim .d { transform: translateY(11px); }
     .aim .dot { width: 2px; height: 2px; background: #f6c02e; }
+    /* While the bolt is being worked the rifle will not fire, and the
+       crosshair says so: dimmed and opened out, back when it is ready. */
+    .aim i { transition: opacity 140ms ease, transform 220ms ease; }
+    body.cycling .aim i { opacity: 0.28; }
+    body.cycling .aim .l { transform: translateX(-16px); }
+    body.cycling .aim .r { transform: translateX(16px); }
+    body.cycling .aim .u { transform: translateY(-16px); }
+    body.cycling .aim .d { transform: translateY(16px); }
+    body.cycling .aim .dot { opacity: 0; }
 
     /* The loader. It covers the canvas until a frame has actually been drawn
        on it, so nobody watches a black rectangle wondering whether it works. */
@@ -92,7 +101,7 @@
   <script type="module">
     // Versioned because the CDN in front of this holds .js for a week; bump it
     // when host.js changes. index.html itself is never cached.
-    import { run } from "./host.js?v=35";
+    import { run } from "./host.js?v=37";
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");

@@ -261,7 +261,7 @@ fn place(buf, i, count, cap, lim, kind) =
 
 fn bullet_cap() = 32
 
-fn bullet_speed() = 260.0
+fn bullet_speed() = 180.0
 
 fn bullet_life() = 3.2
 
