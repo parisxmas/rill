@@ -171,14 +171,14 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=162";
+    import { run } from "./host.js?v=163";
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=162", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=163", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       stat.innerHTML =
@@ -195,7 +195,16 @@
       // `run` resolves on the first submitted frame, so the fade is over
       // something rather than over nothing.
       boot.classList.add("gone");
-      boot.addEventListener("transitionend", () => boot.remove(), { once: true });
+      // Removed on the transition, or on a timer if that never comes.
+      //
+      // A background tab does not run transitions, and it does not run
+      // requestAnimationFrame either — so switching away during the load and
+      // coming back left the curtain frozen half-faded over a running valley,
+      // for ever, because the one event that was going to remove it had already
+      // been missed. The timer is the same 700ms the CSS is, with room.
+      const drop = () => boot.remove();
+      boot.addEventListener("transitionend", drop, { once: true });
+      setTimeout(drop, 1200);
     }).catch(e => {
       console.error("SETUP FAILED", e.stack || e);
       boot.remove();
