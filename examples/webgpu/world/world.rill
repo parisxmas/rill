@@ -27,7 +27,7 @@
 #   ptr 77       three chargers: crystal, its size, mode, clock
 #   f32 79       gate: zero lets one charge begin this frame
 #   f32 80       next slot in the blast ring    ptr 81  the blasts themselves
-#   f32 82       health, one to zero
+#   f32 82       health, one to zero        84, 85  the push a blast left
 #   ptr 74       the fireballs the far crystals throw
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
 #   ptr 68, 69   the bullets, and the shards they knock loose
@@ -759,26 +759,35 @@ fn blast_hurt(s, x, y, z) =
     # both scaled by exactly the k² the damage is — so the push and the hurt
     # are the same number and a blast that barely reached you barely moves you.
     #
-    # Small. A metre at a direct hit and a hop of nine centimetres, which is a
-    # stagger rather than a launch. Nine metres and seven and a half metres a
-    # second was what this was first written at, and that is not being knocked
-    # back, it is being teleported: you arrive somewhere else with no idea how,
-    # and the one thing a shove has to do is tell you where the blast was.
+    # A velocity, not a displacement, and that is the whole of it. This was a
+    # metre written straight into the position first, and measured at 0.16 to
+    # 0.70 metres of ground covered — a real distance, and still invisible,
+    # because a metre delivered inside one sixtieth of a second is not a push,
+    # it is a cut to somewhere else. Handed over as a speed that decays across
+    # about a fifth of a second, the same couple of metres arrive as being
+    # shoved: you watch yourself go.
     #
-    # Straight into the position rather than into a velocity: there is one
-    # vertical velocity in this world and it belongs to jumping, so a shove
-    # written there would be swallowed by the next ground test. The horizontal
-    # part is a displacement because there is no horizontal velocity at all —
-    # walking sets the position directly — and a blast that moved you by
-    # setting a speed would need a whole momentum model to notice it.
+    # Thirty-four metres a second at a direct hit, which carries five or six
+    # before it dies away. One landing at your feet should throw you, and the
+    # squared falloff is what keeps that from being true of the ones that did
+    # not: at ten metres it is a quarter of this, at fifteen a sixteenth.
+    #
+    # Measured on the way up: nine metres a second moved you 1.0 to 1.3 in the
+    # second after, fifteen moved you 1.2 to 2.1, and neither read as being
+    # thrown.
+    #
+    # And it lifts you now as well as pushing you — nine up, which against a
+    # gravity of twenty-six is a metre and a half of air and two thirds of a
+    # second off the ground. This was 2.2, nine centimetres, deliberately: a
+    # stagger. One landing at your feet should not be a stagger. The two are
+    # separate numbers so that the far ones can still only nudge you, which the
+    # squared falloff sees to.
     hx = dx / (d + 0.4)
     hz = dz / (d + 0.4)
-    shove = 1.05 * k * k
-    poke_f32(s, 21, clampf(peek_f32(s, 21) + hx * shove, 0.0 - 80.0, 80.0))
-    poke_f32(s, 23, clampf(peek_f32(s, 23) + hz * shove, 0.0 - 80.0, 80.0))
-    # Off the ground with it. Written as an upward velocity, which is the one
-    # thing the jump machinery already knows how to bring back down.
-    poke_f32(s, 24, peek_f32(s, 24) + 2.2 * k * k)
+    shove = 34.0 * k * k
+    poke_f32(s, 84, peek_f32(s, 84) + hx * shove)
+    poke_f32(s, 85, peek_f32(s, 85) + hz * shove)
+    poke_f32(s, 24, peek_f32(s, 24) + 9.0 * k * k)
     poke_f32(s, 25, 0.0)
     1
 
@@ -852,6 +861,8 @@ export fn restart(s: Ptr) =
     restore_crystal(cb, i)
 
   poke_f32(s, 82, 1.0)
+  poke_f32(s, 84, 0.0)
+  poke_f32(s, 85, 0.0)
   poke_f32(s, 62, 0.0)
   clear_bullets(peek_ptr(s, 68))
   clear_shards(peek_ptr(s, 69))
@@ -1050,6 +1061,8 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 22, height(0.0 - 14.0, 0.0 - 34.0))
   poke_f32(s, 23, 0.0 - 34.0)
   poke_f32(s, 82, 1.0)
+  poke_f32(s, 84, 0.0)
+  poke_f32(s, 85, 0.0)
   set_sun(s, 0.58, 0.0 - 0.62, 0.0 - 0.52)
   s
 
@@ -1162,8 +1175,16 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   wl = sqrt(wx * wx + wz * wz)
   step = (if bit_and(keys, 32) == 32 then 16.0 else 7.5) * dt
   t = peek_f32(s, 28) + dt
-  px0 = clampf(peek_f32(s, 21) + (if wl > 0.01 then wx / wl * step else 0.0), 0.0 - 80.0, 80.0)
-  pz0 = clampf(peek_f32(s, 23) + (if wl > 0.01 then wz / wl * step else 0.0), 0.0 - 80.0, 80.0)
+  # What a blast is still pushing you by, spent down over about a fifth of a
+  # second. It goes in beside the walk rather than instead of it, so you can
+  # walk against it and the collisions below still run on where you end up.
+  shx = peek_f32(s, 84)
+  shz = peek_f32(s, 85)
+  keep = 1.0 / (1.0 + dt * 5.0)
+  poke_f32(s, 84, shx * keep)
+  poke_f32(s, 85, shz * keep)
+  px0 = clampf(peek_f32(s, 21) + (if wl > 0.01 then wx / wl * step else 0.0) + shx * dt, 0.0 - 80.0, 80.0)
+  pz0 = clampf(peek_f32(s, 23) + (if wl > 0.01 then wz / wl * step else 0.0) + shz * dt, 0.0 - 80.0, 80.0)
   poke_f32(s, 21, px0)
   poke_f32(s, 23, pz0)
   collide_all(s, peek_ptr(s, 65), to_int(peek_f32(s, 57)), 0.3)
