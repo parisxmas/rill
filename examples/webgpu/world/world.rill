@@ -261,7 +261,7 @@ fn place(buf, i, count, cap, lim, kind) =
 
 fn bullet_cap() = 32
 
-fn bullet_speed() = 180.0
+fn bullet_speed() = 120.0
 
 fn bullet_life() = 3.2
 
@@ -406,28 +406,33 @@ fn break_crystal(s, cb, cat, ci) =
 
 # One crystal against one round's path this frame.
 #
-# A crystal is a tall thin prism, so a single sphere around its middle is the
-# wrong shape twice over: it misses the tip and the base, and it is far too
-# generous around the waist. Three samples up its own axis, each with the
-# prism's own radius, is a capsule for the price of three subtractions — and a
-# capsule is what a spire actually is.
-fn near_axis(cb, cat, sc, f, ax, ay, az, bx, by, bz) =
-  seg_dist2(ax, ay, az, bx, by, bz,
-            peek_f32(cb, cat),
-            peek_f32(cb, cat + 1) + sc * f,
-            peek_f32(cb, cat + 2))
+# A crystal is a bipyramid: a point at the bottom, a waist at 0.7 of its scale
+# where it is 0.42 wide, and a long taper to a point at 2.4. One sphere around
+# its middle is the wrong shape twice over — far too generous at the tips,
+# where a shot half a crystal clear of it still counted, and not generous
+# enough at the waist.
+#
+# Four spheres up the axis, each the width the crystal actually is at that
+# height, with a little overlap so there are no gaps between them. That is a
+# hit test the shape of the thing being shot at.
+fn hit_at(cb, cat, sc, f, rr, ax, ay, az, bx, by, bz) =
+  d2 = seg_dist2(ax, ay, az, bx, by, bz,
+                 peek_f32(cb, cat),
+                 peek_f32(cb, cat + 1) + sc * f,
+                 peek_f32(cb, cat + 2))
+  r = sc * rr
+  if d2 < r * r then 1.0 else 0.0
 
 fn try_break(s, cb, ci, b, at, ax, ay, az, bx, by, bz) =
   cat = ci * 8
   sc = peek_f32(cb, cat + 3)
   if sc < 0.01 then 0
   else
-    rr = sc * 0.62
-    d2 = near_axis(cb, cat, sc, 0.15, ax, ay, az, bx, by, bz)
-    e2 = near_axis(cb, cat, sc, 1.05, ax, ay, az, bx, by, bz)
-    f2 = near_axis(cb, cat, sc, 1.95, ax, ay, az, bx, by, bz)
-    m2 = if d2 < e2 then (if d2 < f2 then d2 else f2) else (if e2 < f2 then e2 else f2)
-    if m2 > rr * rr then 0
+    n1 = hit_at(cb, cat, sc, 0.10, 0.18, ax, ay, az, bx, by, bz)
+    n2 = hit_at(cb, cat, sc, 0.70, 0.48, ax, ay, az, bx, by, bz)
+    n3 = hit_at(cb, cat, sc, 1.40, 0.28, ax, ay, az, bx, by, bz)
+    n4 = hit_at(cb, cat, sc, 2.00, 0.13, ax, ay, az, bx, by, bz)
+    if n1 + n2 + n3 + n4 < 0.5 then 0
     else
       poke_f32(b, at + 7, 0.0)
       break_crystal(s, cb, cat, ci)
