@@ -1,6 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — measured, and changed for it
+
+The release where the language stopped being argued about and started being
+counted. Two algorithms — a JSON parser and a Dijkstra — were written in eight
+languages, and the token cost of the Rill ones decided what the language grew
+next: `b[i]`, functions inside functions, `for` and `+=`, tuples, `#s`,
+`s[i:j]`, `for … with`, string builders and `scan_int` are all here because a
+count said where the words were going. The Dijkstra went from 1579 tokens to
+740, which is under Go's.
+
+Then the same programs were put on a clock, and the answer to every gap was
+looked up rather than guessed at. What came back was thirteen changes to the
+runtime and the code generator and four ideas measured and left unmade —
+bounds-check elimination twice, `noalias`, internal linkage, and inlining the
+allocator. The JSON benchmark went from 6.5 seconds to 149 ms, the end-to-end
+Dijkstra from 10.6 seconds to 97, and the whole suite is in
+`benchmarks/tokens/` so the numbers can be checked rather than believed.
+
+It is also the release where Rill reached the browser: WebAssembly with
+`export fn`, a triangle through WebGPU, and a world to walk around in.
 
 - **Float arithmetic contracts.** A multiply and the add that consumes it can
   become one fused instruction now, rounding once instead of twice. The answer
