@@ -36,7 +36,7 @@
   <script type="module">
     // Versioned because the CDN in front of this holds .js for a week; bump it
     // when host.js changes. index.html itself is never cached.
-    import { run } from "./host.js?v=6";
+    import { run } from "./host.js?v=8";
     const stat = document.getElementById("stat");
     run(document.getElementById("c"), "./world.wasm", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";

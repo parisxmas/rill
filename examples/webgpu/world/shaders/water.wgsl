@@ -79,6 +79,18 @@
     return o;
   }
 
+  // Value noise: one hash per lattice corner, smoothstepped between them.
+  fn fhash(p: vec2f) -> f32 {
+    return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453);
+  }
+  fn fnoise(p: vec2f) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let w = f * f * (3.0 - 2.0 * f);
+    return mix(mix(fhash(i), fhash(i + vec2f(1.0, 0.0)), w.x),
+               mix(fhash(i + vec2f(0.0, 1.0)), fhash(i + vec2f(1.0, 1.0)), w.x), w.y);
+  }
+
   // Ripple octaves: directional wavelets far below mesh resolution, summed
   // into the normal. This is where the sun's glitter comes from.
   fn ripple(p: vec2f, t: f32) -> vec3f {
@@ -122,12 +134,26 @@
     col += SUN_COL * pow(max(dot(n, hv), 0.0), 240.0) * 2.4 * sh;
 
     // Foam: at the shoreline, where the depth runs out, and on the crests,
-    // where the trochoids pinch. Speckled so it reads as froth, not paint.
-    let speck = fract(sin(dot(floor(v.world.xz * 7.0), vec2f(12.9898, 78.233))) * 43758.5453);
-    let shore = (1.0 - smoothstep(0.0, 1.0, v.depth))
-              * (0.55 + 0.45 * sin(v.depth * 9.0 - t * 2.1));
-    let crests = smoothstep(0.84, 0.99, v.crest) * 0.45 * (0.25 + 0.75 * u.cam.w) * (0.5 + 0.5 * speck);
-    let foam = clamp(shore + crests, 0.0, 1.0) * (0.55 + 0.45 * speck);
+    // where the trochoids pinch.
+    //
+    // The froth is value noise, not a hash of a floored coordinate. A hash
+    // gives every 14 cm square of lake one constant value, and a shoreline
+    // painted with it is a grid of hard little tiles that stay put while the
+    // water moves under them. Interpolated and scrolled, the same two lines
+    // read as foam being carried.
+    let drift = vec2f(cos(u.cam.z), sin(u.cam.z)) * t * 0.16;
+    let froth = fnoise(v.world.xz * 2.6 - drift) * 0.65
+              + fnoise(v.world.xz * 6.1 - drift * 1.9) * 0.35;
+
+    // The surf runs up the beach in bands. Wobbling the depth first keeps the
+    // bands off the lake bed's exact contour — a line of foam that traces the
+    // bathymetry looks like a map, not like water.
+    let d = v.depth + (fnoise(v.world.xz * 0.42 + vec2f(0.0, t * 0.04)) - 0.5) * 0.5;
+    let edge = 1.0 - smoothstep(0.0, 1.25, d);
+    let band = 0.5 + 0.5 * sin(d * 7.0 - t * 2.0);
+    let shore = edge * edge * (0.30 + 0.70 * band);
+    let crests = smoothstep(0.87, 1.0, v.crest) * 0.40 * (0.25 + 0.75 * u.cam.w);
+    let foam = clamp((shore + crests) * (0.45 + 0.75 * froth), 0.0, 1.0);
     col = mix(col, vec3f(0.90, 0.94, 0.93) * (0.6 + 0.4 * sh), clamp(foam, 0.0, 0.85));
 
     col = mix(col, fogColor(view), fogAmount(length(view)));

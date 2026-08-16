@@ -302,6 +302,8 @@ export async function run(canvas, wasmURL, hud) {
   const foliageView = await mipped("./pine-twig.png", 256);
   const barkView = await mipped("./pine-bark.jpg", 256);
   const groundView = await mipped("./grass-ground.jpg", 256);
+  const rockView = await mipped("./rock-face.jpg", 256);
+  const sandView = await mipped("./shore-sand.jpg", 256);
   const foliageSamp = device.createSampler({
     magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
     addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
@@ -321,6 +323,8 @@ export async function run(canvas, wasmURL, hud) {
     { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
     { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -506,6 +510,8 @@ export async function run(canvas, wasmURL, hud) {
       { binding: 5, resource: barkView },
       { binding: 6, resource: barkSamp },
       { binding: 7, resource: groundView },
+      { binding: 8, resource: rockView },
+      { binding: 9, resource: sandView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.

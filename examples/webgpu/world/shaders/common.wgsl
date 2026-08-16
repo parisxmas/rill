@@ -9,21 +9,63 @@
   // The meadow. Tiled from world x/z, so it needs the same repeating sampler
   // the bark uses and the terrain needs no texture coordinate of its own.
   @group(0) @binding(7) var groundTex: texture_2d<f32>;
+  // Rock, for both the dark bands and the pale peaks — they are the same
+  // stone under different light and different snow, so they are one texture
+  // with the band's own colour still deciding which.
+  @group(0) @binding(8) var rockTex: texture_2d<f32>;
+  // Wet shore gravel, for the strip the water reaches.
+  @group(0) @binding(9) var sandTex: texture_2d<f32>;
+
+  // Bump without a normal map and without a tangent frame. The screen-space
+  // derivatives of the height and of the surface position are between them
+  // enough to recover the gradient in world space, which is the one thing a
+  // tangent frame would have been for. (Mikkelsen, 2010.)
+  fn bumped(n: vec3f, world: vec3f, h: f32, strength: f32) -> vec3f {
+    let px = dpdx(world);
+    let py = dpdy(world);
+    let r1 = cross(py, n);
+    let r2 = cross(n, px);
+    let det = dot(px, r1);
+    let s = select(-1.0, 1.0, det >= 0.0);
+    let g = s * (dpdx(h) * r1 + dpdy(h) * r2);
+    return normalize(max(abs(det), 0.00000001) * n - strength * g);
+  }
 
   // No early return: textureSampleCompare demands uniform control flow, so
   // the samples always run and the out-of-map case is selected afterwards.
+  //
+  // The kernel is a 5x5 disc, and its step is a texel of whatever map this
+  // tier actually allocated — 1024, 2048 or 4096 — asked for rather than
+  // assumed. A fixed 1/2048 was half a texel on the small map, which is no
+  // filter at all, and two texels on the large one, which samples the gaps and
+  // leaves the staircase standing. Corners are dropped: a square kernel gives
+  // a soft edge square corners, and at this radius you can see them.
+  //
+  // The whole disc is then turned by an angle hashed from the ground position.
+  // Taps on a fixed grid put their own stairs back — every pixel crossing the
+  // edge steps through the same 25 levels in the same places, which is what
+  // the banding was. Turned per point, the levels land differently either side
+  // of a footstep, and the edge dissolves into grain the eye reads as soft.
   fn shadow(world: vec3f, nl: f32) -> f32 {
     let sc = u.lvp * vec4f(world, 1.0);
     let uvz = vec3f(sc.xy * vec2f(0.5, -0.5) + 0.5, sc.z);
     let bias = clamp(0.0028 * (1.0 - nl) + 0.0009, 0.0009, 0.004);
+    let step = 2.4 / f32(textureDimensions(shadowMap).x);
+    let a = fract(sin(dot(floor(world.xz * 37.0), vec2f(127.1, 311.7))) * 43758.5453) * 6.2831853;
+    let rot = vec2f(cos(a), sin(a));
     var acc = 0.0;
-    for (var dy = -1; dy <= 1; dy++) {
-      for (var dx = -1; dx <= 1; dx++) {
-        acc += textureSampleCompare(shadowMap, shadowSamp, uvz.xy + vec2f(f32(dx), f32(dy)) / 2048.0, uvz.z - bias);
+    var wsum = 0.0;
+    for (var dy = -2; dy <= 2; dy++) {
+      for (var dx = -2; dx <= 2; dx++) {
+        let o = vec2f(f32(dx), f32(dy));
+        let w = select(1.0, 0.0, dot(o, o) > 6.0);   // 21 taps of the 25
+        let r = vec2f(o.x * rot.x - o.y * rot.y, o.x * rot.y + o.y * rot.x);
+        acc += w * textureSampleCompare(shadowMap, shadowSamp, uvz.xy + r * step, uvz.z - bias);
+        wsum += w;
       }
     }
     let inside = uvz.x >= 0.0 && uvz.x <= 1.0 && uvz.y >= 0.0 && uvz.y <= 1.0 && uvz.z <= 1.0;
-    return select(1.0, acc / 9.0, inside);
+    return select(1.0, acc / wsum, inside);
   }
 
   const SKY_ZENITH  = vec3f(0.043, 0.055, 0.16);

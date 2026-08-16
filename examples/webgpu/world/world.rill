@@ -90,30 +90,45 @@ fn cell_step(n) = world_w() / to_float(n)
 # of these, so what two cells share they agree about exactly.
 fn lattice(k, s) = to_float(k) * s - world_w() * 0.5
 
-# The colour of one face, from the height and steepness at its centre:
-# sand, cliff, snow, or two-tone grass. `ny` is the normal's upward
-# component; low means steep.
-fn face_r(h, ny, j) =
-  if h < 0.4 then 0.72 * j else if ny < 0.74 then 0.38 * j else if h > 10.5 then 0.8 * j else 0.16 * j
+fn lerp(a, b, t) = a + (b - a) * t
 
-fn face_g(h, ny, j) =
-  if h < 0.4 then 0.63 * j else if ny < 0.74 then 0.38 * j else if h > 10.5 then 0.8 * j else 0.38 * j
+fn smoothstep(a, b, x) =
+  t = clampf((x - a) / (b - a), 0.0, 1.0)
+  t * t * (3.0 - 2.0 * t)
 
-fn face_b(h, ny, j) =
-  if h < 0.4 then 0.45 * j else if ny < 0.74 then 0.46 * j else if h > 10.5 then 0.86 * j else 0.26 * j
+# The colour of one corner: sand, cliff, snow or grass, but weighed rather
+# than chosen. Thresholds put the whole change at one triangle's edge, and a
+# snowline or a band of dark rock that turns on at an exact height has that
+# edge for a boundary — visibly, because the edge is a metre long. `ny` is the
+# normal's upward component; low means steep. The order is the order they
+# override in: grass under snow, snow under rock, rock under sand.
+fn band_r(h, ny) =
+  lerp(lerp(lerp(0.16, 0.80, smoothstep(9.8, 11.8, h)),
+            0.38, 1.0 - smoothstep(0.60, 0.84, ny)),
+       0.72, 1.0 - smoothstep(0.05, 1.15, h))
 
-# `sy` is the face's upward component — steepness, for the colour. `ny` is the
-# corner's, which is what the light reads. They differ, and that is the point.
-fn emit_vert(m, at, x, y, z, nx, ny, nz, h, sy, j) =
+fn band_g(h, ny) =
+  lerp(lerp(lerp(0.38, 0.80, smoothstep(9.8, 11.8, h)),
+            0.38, 1.0 - smoothstep(0.60, 0.84, ny)),
+       0.63, 1.0 - smoothstep(0.05, 1.15, h))
+
+fn band_b(h, ny) =
+  lerp(lerp(lerp(0.26, 0.86, smoothstep(9.8, 11.8, h)),
+            0.46, 1.0 - smoothstep(0.60, 0.84, ny)),
+       0.45, 1.0 - smoothstep(0.05, 1.15, h))
+
+# The corner's own height and its own steepness decide its colour, so the GPU
+# interpolates the band across the triangle instead of stopping it at the edge.
+fn emit_vert(m, at, x, y, z, nx, ny, nz, j) =
   poke_f32(m, at, x)
   poke_f32(m, at + 1, y)
   poke_f32(m, at + 2, z)
   poke_f32(m, at + 3, nx)
   poke_f32(m, at + 4, ny)
   poke_f32(m, at + 5, nz)
-  poke_f32(m, at + 6, face_r(h, sy, j))
-  poke_f32(m, at + 7, face_g(h, sy, j))
-  poke_f32(m, at + 8, face_b(h, sy, j))
+  poke_f32(m, at + 6, band_r(y, ny) * j)
+  poke_f32(m, at + 7, band_g(y, ny) * j)
+  poke_f32(m, at + 8, band_b(y, ny) * j)
 
 fn clampi(v, hi) = if v < 0 then 0 else if v > hi then hi else v
 
@@ -131,48 +146,25 @@ fn slope_z(hs: Buf(F64), w, ix, iz, s) =
   b = clampi(iz + 1, w - 1)
   (hs[b * w + ix] - hs[a * w + ix]) / (to_float(b - a) * s)
 
-fn emit_corner(m, at, hs: Buf(F64), w, s, ix, iz, h, sy, j) =
+fn emit_corner(m, at, hs: Buf(F64), w, s, ix, iz, j) =
   sx = slope_x(hs, w, ix, iz, s)
   sz = slope_z(hs, w, ix, iz, s)
   il = 1.0 / sqrt(sx * sx + 1.0 + sz * sz)
   x = lattice(ix, s)
   z = lattice(iz, s)
   y = hs[iz * w + ix]
-  emit_vert(m, at, x, y, z, (0.0 - sx) * il, il, (0.0 - sz) * il, h, sy, j)
-
-# How steep one face is, which is all the colour wants from its geometry.
-fn face_up(x0, y0, z0, x1, y1, z1, x2, y2, z2) =
-  ax = x1 - x0
-  ay = y1 - y0
-  az = z1 - z0
-  bx = x2 - x0
-  by = y2 - y0
-  bz = z2 - z0
-  nx = ay * bz - az * by
-  ny = az * bx - ax * bz
-  nz = ax * by - ay * bx
-  ny / sqrt(nx * nx + ny * ny + nz * nz + 0.0000001)
+  emit_vert(m, at, x, y, z, (0.0 - sx) * il, il, (0.0 - sz) * il, j)
 
 # One triangle — 27 floats — named by its three lattice corners rather than by
-# nine coordinates, because the corners are what the normals are read from.
+# nine coordinates, because the corners are what everything else is read from.
 fn emit_tri(m, at, hs: Buf(F64), w, s, ia, ja, ib, jb, ic, jc) =
-  x0 = lattice(ia, s)
-  z0 = lattice(ja, s)
-  y0 = hs[ja * w + ia]
-  x1 = lattice(ib, s)
-  z1 = lattice(jb, s)
-  y1 = hs[jb * w + ib]
-  x2 = lattice(ic, s)
-  z2 = lattice(jc, s)
-  y2 = hs[jc * w + ic]
-  sy = face_up(x0, y0, z0, x1, y1, z1, x2, y2, z2)
-  h = (y0 + y1 + y2) / 3.0
-  # Half the jitter it used to carry: with grain in the ground texture, a cell
-  # that is seven per cent brighter than its neighbour is a seam, not variety.
-  j = 0.965 + 0.07 * hash2(floor(x0 * 3.1), floor(z0 * 3.1))
-  emit_corner(m, at, hs, w, s, ia, ja, h, sy, j)
-  emit_corner(m, at + 9, hs, w, s, ib, jb, h, sy, j)
-  emit_corner(m, at + 18, hs, w, s, ic, jc, h, sy, j)
+  # A little brightness per cell, so the ground is not uniform. Half what it
+  # used to carry: with grain in the ground texture, a cell seven per cent
+  # brighter than its neighbour is a seam, not variety.
+  j = 0.965 + 0.07 * hash2(floor(lattice(ia, s) * 3.1), floor(lattice(ja, s) * 3.1))
+  emit_corner(m, at, hs, w, s, ia, ja, j)
+  emit_corner(m, at + 9, hs, w, s, ib, jb, j)
+  emit_corner(m, at + 18, hs, w, s, ic, jc, j)
 
 # The lattice: (n + 1) squared samples of the terrain, one per corner.
 fn gen_heights(hs: Buf(F64), n, s) =

@@ -40,23 +40,37 @@ Trees and crystals are solid — you slide around them, not through them — and
 the wind that moves the water moves the pines and the grass, because all
 three read the same two numbers Rill computes.
 
-Three textures ride along: `pine-twig.png`, the alpha-tested needle atlas the
-branch cards carry; `pine-bark.jpg`, tiled up and around the trunks; and
-`grass-ground.jpg`, tiled from world x/z across the green faces of the terrain,
-which is why the terrain still needs no texture coordinate of its own. All
-three are cut to 256×256 from Poly Haven's CC0 library — `pine_tree_01`,
-`pine_bark`, `leafy_grass` — 95 KB between them against 30 KB of wasm. Mip
-levels are made at load by decoding each file again at each size, because
-alpha tested foliage without them shimmers from a few trees away.
+Five textures ride along: `pine-twig.png`, the alpha-tested needle atlas the
+branch cards carry; `pine-bark.jpg`, tiled up and around the trunks; and three
+the ground is made of — `grass-ground.jpg`, `rock-face.jpg` and
+`shore-sand.jpg`. The ground's three are tiled straight from world x/z, which
+is why the terrain still needs no texture coordinate of its own; rock is also
+projected sideways and crossfaded in by steepness, because flat x/z alone
+smears stone into vertical streaks down exactly the cliffs it was meant to
+describe. All five are cut to 256×256 from Poly Haven's CC0 library —
+`pine_tree_01`, `pine_bark`, `leafy_grass`, `rock_face_03`, `coast_sand_03` —
+129 KB between them against 30 KB of wasm. Mip levels are made at load by
+decoding each file again at each size, because alpha tested foliage without
+them shimmers from a few trees away.
 
-The meadow photograph is not used as it was shot: it is daylight, and this
-valley is dusk. Its brightness drives the variation and its hue is folded in a
-third of the way, so the ground gains grain without the palette drifting brown
-— and sand, cliff and snow keep the flat colour they were given.
+None of the photographs is used as it was shot: they are daylight and this
+valley is dusk. Each is split — brightness drives the variation, hue is folded
+in a third of the way, and the face's own colour still decides what the valley
+looks like. The brightness is then read a second time as a height, and the
+normal bent along its gradient: rock strongly, sand less, grass barely. That
+needs no normal map and no tangent frame, only the screen-space derivatives of
+the height and of the surface position, which is what a tangent frame would
+have been for.
 
-Colour is per face and the normal is per corner. The bands are what makes the
-valley read as low-poly, and they stay; but a normal is a lighting question,
-not a style one, and a metre-wide triangle lit by its own face normal has a
-hard edge on all three sides. Rill takes the corner's normal from the slope of
-its own height lattice — two subtractions, not a cross product — so four cells
-meeting at a corner agree about it and the light crosses the seam.
+Colour is per corner, and so is the normal. The bands — sand, meadow, rock,
+snow — are what makes the valley read as low-poly, and they stay; but they are
+weighed rather than chosen. A threshold puts the whole of a snowline at one
+triangle's edge, and that edge is a metre long. The shader reads the weights
+back out of the colour so the textures crossfade on the same gradient the
+colours do, and the three of them sum to one — halfway between meadow and sand
+is fully both, not half of neither, which is where the texture used to vanish.
+
+The normal is a lighting question rather than a style one, so Rill takes each
+corner's from the slope of its own height lattice — two subtractions, not a
+cross product. Four cells meeting at a corner agree about it, and the light
+crosses the seam.
