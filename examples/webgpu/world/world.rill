@@ -755,9 +755,15 @@ fn blast_hurt(s, x, y, z) =
   if hit < 0.002 then 0
   else
     poke_f32(s, 82, clampf(peek_f32(s, 82) - hit, 0.0, 1.0))
-    # And it throws you. Away from the blast on the flat and upward as well,
-    # both falling off with the same distance the damage does — a near miss
-    # staggers you, one at your feet puts you in the air.
+    # And it shoves you. Away from the blast on the flat and a little upward,
+    # both scaled by exactly the k² the damage is — so the push and the hurt
+    # are the same number and a blast that barely reached you barely moves you.
+    #
+    # Small. A metre at a direct hit and a hop of nine centimetres, which is a
+    # stagger rather than a launch. Nine metres and seven and a half metres a
+    # second was what this was first written at, and that is not being knocked
+    # back, it is being teleported: you arrive somewhere else with no idea how,
+    # and the one thing a shove has to do is tell you where the blast was.
     #
     # Straight into the position rather than into a velocity: there is one
     # vertical velocity in this world and it belongs to jumping, so a shove
@@ -767,12 +773,12 @@ fn blast_hurt(s, x, y, z) =
     # setting a speed would need a whole momentum model to notice it.
     hx = dx / (d + 0.4)
     hz = dz / (d + 0.4)
-    shove = 9.0 * k * k
+    shove = 1.05 * k * k
     poke_f32(s, 21, clampf(peek_f32(s, 21) + hx * shove, 0.0 - 80.0, 80.0))
     poke_f32(s, 23, clampf(peek_f32(s, 23) + hz * shove, 0.0 - 80.0, 80.0))
     # Off the ground with it. Written as an upward velocity, which is the one
     # thing the jump machinery already knows how to bring back down.
-    poke_f32(s, 24, peek_f32(s, 24) + 7.5 * k * k)
+    poke_f32(s, 24, peek_f32(s, 24) + 2.2 * k * k)
     poke_f32(s, 25, 0.0)
     1
 
