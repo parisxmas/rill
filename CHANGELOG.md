@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **A `match` stops counting, and a field can be moved into a box.** Two
+  places where reference counting was doing work that cancels.
+
+  Matching on a local took a reference of its own, which meant a retain on
+  the way in and a release on the way out of every `match` in the language —
+  once per link for a list walked one link at a time. Whatever keeps that
+  local alive keeps it alive across the match too, and the arms already
+  retain their bindings as they use them, so the match borrows it now.
+
+  And a binding handed straight to a constructor is moved into it, the way
+  one handed to a tail call already was: `Cons(x, acc)` in an accumulating
+  loop no longer retains `acc` for the box and releases it for the frame.
+  Only where the box is a tail call's own argument, and only for a field
+  written as a name — a move under a branch is a move on one path and not the
+  other, which the first attempt at this got wrong and the leak check caught.
+
+  `rev_onto`, which every `map`, `filter`, `split` and `reverse` ends in, goes
+  from three retains and three recursive drops per link to two and one. JSON
+  drops from 176 ms to **154** and the short JSON from 312 to **269**.
+
 - **Releasing a counted value stops being a call.** Handing a buffer or a
   string to a function retains it and the function releases it on the way
   out, and the release was a call into the runtime every time. Nearly always

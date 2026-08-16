@@ -2354,7 +2354,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     // written as a tail call passes its whole working set.
                     let v = match self.take_owned(a, scope) {
                         Some(v) => v,
-                        None => self.gen_expr(a, scope, subst, func)?.expect("arguments are never Unit"),
+                        None => match &a.kind {
+                            TK::CallCtor { adt, ctor, targs, args } if !args.is_empty() => self
+                                .gen_ctor(*adt, *ctor, targs, args, scope, subst, func, true)?
+                                .expect("a constructor is never Unit"),
+                            _ => self
+                                .gen_expr(a, scope, subst, func)?
+                                .expect("arguments are never Unit"),
+                        },
                     };
                     argv.push(v.into());
                 }
@@ -3182,58 +3189,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 })
             }
             TK::CallCtor { adt, ctor, targs, args } => {
-                let targs: Vec<Ty> = targs.iter().map(|t| self.concrete(t, subst)).collect();
-                // Nullary constructors are immortal singletons: no allocation,
-                // and retains/releases on them are harmless counter churn.
-                if args.is_empty() {
-                    let key = (Ty::Adt(*adt, targs.clone()), *ctor);
-                    if let Some(&p) = self.nullary_singletons.get(&key) {
-                        return Ok(Some(p.into()));
-                    }
-                    let i64t = self.ctx.i64_type();
-                    let ty = self.ctx.struct_type(&[i64t.into(), i64t.into()], false);
-                    let sig = &self.tmod.adts[*adt].ctors[*ctor];
-                    let init = ty.const_named_struct(&[
-                        i64t.const_int(Self::IMMORTAL, false).into(),
-                        i64t.const_int(sig.tag, false).into(),
-                    ]);
-                    let name =
-                        format!("nul${}${}", mangle(&key.0, &self.tmod.adts), sig.name);
-                    let g = self.module.add_global(ty, None, &name);
-                    g.set_initializer(&init);
-                    g.set_linkage(inkwell::module::Linkage::Private);
-                    g.set_constant(true);
-                    let p = g.as_pointer_value();
-                    self.nullary_singletons.insert(key, p);
-                    return Ok(Some(p.into()));
-                }
-                // Evaluate fields before allocating (an argument may allocate).
-                let mut field_vals = Vec::with_capacity(args.len());
-                for a in args {
-                    field_vals.push(self.gen_expr(a, scope, subst, func)?);
-                }
-                let struct_ty = self.ctor_struct(*adt, *ctor, &targs);
-                let sig = &self.tmod.adts[*adt].ctors[*ctor];
-                let name = format!("{}.box", sig.name);
-                let tag = sig.tag;
-                let ptr = self.alloc_object(struct_ty, &name);
-                let tag_ptr = self
-                    .builder
-                    .build_struct_gep(struct_ty, ptr, 1, "tag")
-                    .expect("LLVM builder error");
-                self.builder
-                    .build_store(tag_ptr, self.ctx.i64_type().const_int(tag, false))
-                    .expect("LLVM builder error");
-                for (i, v) in field_vals.into_iter().enumerate() {
-                    let fp = self
-                        .builder
-                        .build_struct_gep(struct_ty, ptr, (i + 2) as u32, "field")
-                        .expect("LLVM builder error");
-                    self.builder
-                        .build_store(fp, v.expect("ADT fields are never Unit"))
-                        .expect("LLVM builder error");
-                }
-                Ok(Some(ptr.into()))
+                self.gen_ctor(*adt, *ctor, targs, args, scope, subst, func, false)
             }
             TK::CallClosure { callee, args } => {
                 let callee_ty = self.concrete(&callee.ty, subst);
@@ -4123,6 +4079,99 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     // the values a pattern binds are loaded there by walking their occurrence
     // path from the scrutinee, so no phi nodes are needed for bindings.
 
+    /// Builds a constructor. `moving` says the box is on its way straight out
+    /// of the frame as a tail call's argument, which is what makes moving a
+    /// field into it safe — see the note inside.
+    #[allow(clippy::too_many_arguments)]
+    fn gen_ctor(
+        &mut self,
+        adt: usize,
+        ctor: usize,
+        targs: &[Ty],
+        args: &[TExpr],
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+        moving: bool,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let (adt, ctor) = (&adt, &ctor);
+        let targs: Vec<Ty> = targs.iter().map(|t| self.concrete(t, subst)).collect();
+                // Nullary constructors are immortal singletons: no allocation,
+                // and retains/releases on them are harmless counter churn.
+                if args.is_empty() {
+                    let key = (Ty::Adt(*adt, targs.clone()), *ctor);
+                    if let Some(&p) = self.nullary_singletons.get(&key) {
+                        return Ok(Some(p.into()));
+                    }
+                    let i64t = self.ctx.i64_type();
+                    let ty = self.ctx.struct_type(&[i64t.into(), i64t.into()], false);
+                    let sig = &self.tmod.adts[*adt].ctors[*ctor];
+                    let init = ty.const_named_struct(&[
+                        i64t.const_int(Self::IMMORTAL, false).into(),
+                        i64t.const_int(sig.tag, false).into(),
+                    ]);
+                    let name =
+                        format!("nul${}${}", mangle(&key.0, &self.tmod.adts), sig.name);
+                    let g = self.module.add_global(ty, None, &name);
+                    g.set_initializer(&init);
+                    g.set_linkage(inkwell::module::Linkage::Private);
+                    g.set_constant(true);
+                    let p = g.as_pointer_value();
+                    self.nullary_singletons.insert(key, p);
+                    return Ok(Some(p.into()));
+                }
+                // Evaluate fields before allocating (an argument may allocate).
+                //
+                // A binding this frame owns and puts inside the box is moved
+                // there, exactly as one handed to a tail call is: the retain
+                // the use would take and the release the frame would make
+                // cancel, and the box holds the reference the frame held.
+                // `Cons(x, acc)` in an accumulating loop is this every time
+                // round.
+                let mut field_vals = Vec::with_capacity(args.len());
+                for a in args {
+                    // A binding this frame owns and puts straight inside the
+                    // box is moved there, exactly as one handed to a tail call
+                    // is: the retain the use would take and the release the
+                    // frame would make cancel, and the box keeps the reference
+                    // the frame held. `Cons(x, acc)` in an accumulating loop
+                    // is this on every link.
+                    //
+                    // Only a field written as a name, and only where the box
+                    // itself is a tail call's argument. A move under a branch
+                    // would be a move on one path and not the other, and the
+                    // paths that did not move would each be left holding a
+                    // count that nothing gives back.
+                    let moved = if moving { self.take_owned(a, scope) } else { None };
+                    match moved {
+                        Some(v) => field_vals.push(Some(v)),
+                        None => field_vals.push(self.gen_expr(a, scope, subst, func)?),
+                    }
+                }
+                let struct_ty = self.ctor_struct(*adt, *ctor, &targs);
+                let sig = &self.tmod.adts[*adt].ctors[*ctor];
+                let name = format!("{}.box", sig.name);
+                let tag = sig.tag;
+                let ptr = self.alloc_object(struct_ty, &name);
+                let tag_ptr = self
+                    .builder
+                    .build_struct_gep(struct_ty, ptr, 1, "tag")
+                    .expect("LLVM builder error");
+                self.builder
+                    .build_store(tag_ptr, self.ctx.i64_type().const_int(tag, false))
+                    .expect("LLVM builder error");
+                for (i, v) in field_vals.into_iter().enumerate() {
+                    let fp = self
+                        .builder
+                        .build_struct_gep(struct_ty, ptr, (i + 2) as u32, "field")
+                        .expect("LLVM builder error");
+                    self.builder
+                        .build_store(fp, v.expect("ADT fields are never Unit"))
+                        .expect("LLVM builder error");
+                }
+                Ok(Some(ptr.into()))
+    }
+
     fn gen_match(
         &mut self,
         whole: &TExpr,
@@ -4150,8 +4199,21 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         tail: Option<&Ty>,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
         let scrut_ty = self.concrete(&scrutinee.ty, subst);
-        let scrut = self.gen_expr(scrutinee, scope, subst, func)?;
-        if tail.is_some() {
+        // Matching on a local takes no reference of its own. Whatever keeps
+        // that local alive — this frame's own hold on it, or the box an
+        // enclosing arm borrowed it out of — keeps it alive across the match
+        // too, and the arms retain their bindings as they use them. Counting
+        // it again meant a retain and a release on every `match` in the
+        // language, which for a list walked one link at a time is once per
+        // link.
+        let borrowed = matches!(&scrutinee.kind, TK::Local(_)) && Self::is_heap(&scrut_ty);
+        let scrut = if borrowed {
+            let TK::Local(name) = &scrutinee.kind else { unreachable!() };
+            scope[name]
+        } else {
+            self.gen_expr(scrutinee, scope, subst, func)?
+        };
+        if tail.is_some() && !borrowed {
             // Each arm returns, so the scrutinee is released with the rest of
             // the frame just before the return.
             if let Some(sv) = scrut {
@@ -4205,7 +4267,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             return Ok(None);
         }
         let out = self.merge_branches(func, result_ty, incoming)?;
-        if let Some(sv) = scrut {
+        if let Some(sv) = scrut.filter(|_| !borrowed) {
             if Self::is_heap(&scrut_ty) {
                 self.emit_release(sv, &scrut_ty);
             }
