@@ -57,7 +57,7 @@ const SHADERS = {
   uniforms: null, common: "uniforms",
   terrain: "common", instanced: "common", pine: "common", grass: "common",
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
-  fireball: "common", blast: "common",
+  fireball: "common", blast: "common", meteor: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms",
@@ -74,6 +74,7 @@ const TEXTURES = [
   ["./rock-face.jpg", 256, 256],
   ["./shore-sand.jpg", 256, 256],
   ["./rifle-atlas.jpg", 1024, 512],  // the rifle's two materials, side by side
+  ["./meteor.jpg", 256, 256],        // the stone inside a fireball
 ];
 
 async function loadShaders(step) {
@@ -99,6 +100,7 @@ async function loadShaders(step) {
     SHARD: whole("shard"),
     FIREBALL: whole("fireball"),
     BLAST: whole("blast"),
+    METEOR: whole("meteor"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
@@ -268,7 +270,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // texture, and the valley itself. `run` does not resolve until a frame has
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
-  const TOTAL = 7 + Object.keys(SHADERS).length + TEXTURES.length;
+  const TOTAL = 8 + Object.keys(SHADERS).length + TEXTURES.length;
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -345,7 +347,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the decodes are the browser's work rather than ours; done one after
   // another they were the longest thing between the page opening and the
   // valley appearing.
-  const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView] =
+  const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
       mipped(url, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
@@ -371,6 +373,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 12, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -476,10 +479,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   // Same treatment as the tracers: additive, depth-tested so the land hides
   // them, never writing depth of their own.
+  // Premultiplied alpha: the shader hands over colour already multiplied by
+  // coverage, and coverage is what limits how much of a pixel each puff may
+  // claim. Additive has no such limit, which is fine for one spark and ruinous
+  // for fifty of them stacked along a line of sight.
+  const overPre = { color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+                    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } };
   const firePipe = pipe("fireball", S.FIREBALL, fireLayout,
-    { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+    { blend: overPre, cull: "none", depth: { depthWriteEnabled: false } });
   const blastPipe = pipe("blast", S.BLAST, blastLayout,
-    { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+    { blend: overPre, cull: "none", depth: { depthWriteEnabled: false } });
+  // The stone is solid, so it blends rather than adds — and it goes down before
+  // the flames, which then add over its edges and wrap round it.
+  const meteorPipe = pipe("meteor", S.METEOR, fireLayout,
+    { blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+               alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } },
+      cull: "none", depth: { depthWriteEnabled: false } });
   // The fireballs take the same eight floats a bullet does, and the same
   // treatment: additive, depth-tested so the land hides them, never writing.
 
@@ -522,12 +537,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // The shatter is three glass breaks laid end to end in one file, a second
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
-  let audio = null, shotBuf = null, breakBuf = null, musicBuf = null;
+  let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
   let musicGain = null, musicOn = true;
   const shotBytes = await (await fetch("./rifle-shot.mp3")).arrayBuffer();
   step("rifle-shot.mp3");
   const breakBytes = await (await fetch("./crystal-break.mp3")).arrayBuffer();
   step("crystal-break.mp3");
+  // Two explosions, 1.9 seconds each, laid end to end and played by offset.
+  const blastBytes = await (await fetch("./meteor-blast.mp3")).arrayBuffer();
+  step("meteor-blast.mp3");
   // The theme. Eighty seconds that begin and end in silence, which is what
   // makes it loop without a seam: no crossfade, no loop points, just the tail
   // running into the head the way the piece was already written.
@@ -558,6 +576,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       Promise.all([
         audio.decodeAudioData(shotBytes.slice(0)).then(b => { shotBuf = b; }),
         audio.decodeAudioData(breakBytes.slice(0)).then(b => { breakBuf = b; }),
+        audio.decodeAudioData(blastBytes.slice(0)).then(b => { blastSnd = b; }),
         audio.decodeAudioData(musicBytes.slice(0)).then(b => { musicBuf = b; startMusic(); }),
       ]).then(then);
       return;
@@ -590,19 +609,37 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     ensureAudio(() => playAt(shotBuf, 0, 0, 0.55 + Math.random() * 0.12, 0,
                              0.97 + Math.random() * 0.06));
   }
+  // Where a sound is, from the ear's point of view: how loud, and how far round
+  // to the side. `near` is the distance at which it is half as loud, which is
+  // the only number that distinguishes a crystal breaking at your feet from a
+  // meteor coming down across the valley.
+  function place(x, y, z, near) {
+    const st = stateF32();
+    const dx = x - st[16], dy = y - st[17], dz = z - st[18];
+    const d = Math.hypot(dx, dy, dz);
+    const yaw = st[19];
+    const pan = Math.max(-1, Math.min(1,
+      (Math.cos(yaw) * dx + Math.sin(yaw) * dz) / Math.max(d, 0.001)));
+    return { d, gain: near / (near + d), pan: pan * 0.8 };
+  }
   // A crystal going. Quieter with distance and set where it happened: which
   // one broke is worth hearing when there are three of them in front of you.
   function shatter(x, y, z) {
     ensureAudio(() => {
-      const st = stateF32();
-      const dx = x - st[16], dy = y - st[17], dz = z - st[18];
-      const d = Math.hypot(dx, dy, dz);
-      const yaw = st[19];
-      const pan = Math.max(-1, Math.min(1,
-        (Math.cos(yaw) * dx + Math.sin(yaw) * dz) / Math.max(d, 0.001)));
-      const slot = Math.floor(Math.random() * 3);
-      playAt(breakBuf, slot, 0.95, 0.75 * (12 / (12 + d)), pan * 0.8,
+      const p = place(x, y, z, 12);
+      playAt(breakBuf, Math.floor(Math.random() * 3), 0.95, 0.75 * p.gain, p.pan,
              0.94 + Math.random() * 0.14);
+    });
+  }
+  // A fireball landing. Carries much further than breaking glass does, so it
+  // falls off over a much longer distance — and slower and deeper the further
+  // off it is, which is most of what makes a big noise sound far away.
+  function boom(x, y, z) {
+    ensureAudio(() => {
+      const p = place(x, y, z, 55);
+      const far = Math.min(p.d / 90, 1);
+      playAt(blastSnd, Math.floor(Math.random() * 2) * 1.9, 1.85,
+             0.85 * p.gain, p.pan, 1.06 - 0.22 * far);
     });
   }
 
@@ -778,6 +815,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 9, resource: sandView },
       { binding: 10, resource: plantView },
       { binding: 11, resource: rifleView },
+      { binding: 12, resource: meteorView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -833,7 +871,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // to BOLT_CYCLE after every shot; while it is running the rifle is open and
   // the trigger does nothing, which is the whole of what a bolt action is.
   const BOLT_CYCLE = 1.15;
-  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0;
+  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0;
   addEventListener("mousedown", e => {
     if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
   });
@@ -902,6 +940,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // Not `>`: a tier change rebuilds the world and puts the tally back to
     // zero, and a mirror that only ever climbs would go deaf until it caught
     // up again.
+    // Anything land? Same trick as the breaks: Rill counts, the host notices,
+    // and the newest entry in the ring says where.
+    const nbl = Number(E.blasts_fired(state));
+    if (nbl !== blastsHeard) {
+      const grew = nbl > blastsHeard;
+      blastsHeard = nbl;
+      if (grew) {
+        const b = new Float32Array(E.memory.buffer, Number(E.blasts(state)), blastCap * 8);
+        const at = ((nbl - 1 + blastCap) % blastCap) * 8;
+        boom(b[at], b[at + 1], b[at + 2]);
+      }
+    }
+
     const nb = Number(E.breaks(state));
     if (nb !== breaks) {
       const broke = nb > breaks;
@@ -997,7 +1048,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     pass.draw(crystalVerts, shardCap);
 
     pass.setPipeline(tracerPipe); pass.setVertexBuffer(0, bulletBuf); pass.draw(6, bulletCap);
-    pass.setPipeline(firePipe); pass.setVertexBuffer(0, fireInst); pass.draw(6 * 32, fireCap);
+    pass.setPipeline(firePipe); pass.setVertexBuffer(0, fireInst); pass.draw(6 * 48, fireCap);
+    // The stone goes down after the flames, not before: drawn first it sat
+    // under an additive fire that simply burned it out, and the leading face —
+    // the one thing that says there is something solid in there — was the part
+    // that vanished first.
+    pass.setPipeline(meteorPipe); pass.draw(3 * 11, fireCap);
     pass.setPipeline(blastPipe); pass.setVertexBuffer(0, blastInst); pass.draw(6 * 26, blastCap);
 
     // Last, so it covers the water and the fireflies as well as the ground.

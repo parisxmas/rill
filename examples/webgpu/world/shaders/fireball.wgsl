@@ -32,11 +32,12 @@
 
   const BALL   = 0.62;            // the head, in metres
   // Enough of them, close enough together, to be a trail rather than a string
-  // of beads: at fourteen metres a second, 1.1 seconds is fifteen metres of
-  // flight, and thirty-two puffs put one every half metre against a head that
-  // is more than half a metre across. Sixteen did not, and it showed.
-  const PUFFS  = 32u;
-  const TRAIL  = 1.10;            // seconds of it behind the head
+  // of beads: at fourteen metres a second, 1.75 seconds is twenty-four metres
+  // of flight, and forty-eight puffs put one every half metre against a head
+  // more than half a metre across. Sixteen over thirteen metres did not, and
+  // it showed — the count has to go up with the length, not just the length.
+  const PUFFS  = 48u;
+  const TRAIL  = 1.75;            // seconds of it behind the head
   const FIRE_G = 3.2;             // must match `fireball_g` in world.rill
 
   @vertex fn vs(
@@ -71,6 +72,18 @@
     let t = age * span;
     let back = pos - vel * t - vec3f(0.0, 0.5 * FIRE_G * t * t, 0.0);
 
+    // The first few puffs are thrown out sideways rather than laid along the
+    // path: a meteor does not trail fire only behind it, it burns all round its
+    // leading face, because that is the face doing the compressing. This is
+    // that collar.
+    let collar = clamp(1.0 - age * 9.0, 0.0, 1.0);
+    let ca = seed * 13.0 + age * 47.0;
+    let axis = normalize(vel + vec3f(0.0, 0.0001, 0.0));
+    let side = normalize(cross(axis, vec3f(0.0, 1.0, 0.0)) + vec3f(0.0001, 0.0, 0.0));
+    let other = cross(axis, side);
+    let ring = (side * cos(ca) + other * sin(ca)) * collar * 0.62
+             + axis * collar * 0.30;
+
     // Drift: smoke lifts and spreads rather than staying on the line the fire
     // took. One direction per fireball, taken from the seed and held for the
     // whole trail — the earlier version swung the angle along the trail as
@@ -91,7 +104,7 @@
     let rgt = vec3f(cos(yaw), 0.0, sin(yaw));
     let up  = cross(rgt, fwd);
 
-    let centre = back + drift;
+    let centre = back + drift + ring;
     let world = centre + (rgt * cx + up * cy) * size;
 
     o.world = world;
@@ -134,6 +147,19 @@
     let soft = (1.0 - k * k) * 0.55;
     var glow = mix(core, soft, smoke) * (1.0 - 0.72 * smoke);
 
+    // Premultiplied alpha, not additive. Additive is right for a spark and
+    // wrong for a column of smoke: forty-eight puffs seen end-on — which is
+    // exactly what happens when a fireball is coming at you — land on the same
+    // pixels and sum to forty-eight times the brightness, and the screen goes
+    // white. Blended, the same forty-eight converge on the colour instead of
+    // running away from it, which is what smoke actually does. The head still
+    // burns because its colour is allowed over one; what is bounded is how much
+    // of a pixel each puff may claim, not how bright it is.
     let view = v.world - u.eye.xyz;
-    return vec4f(col * glow * 2.0 * v.fade * (1.0 - fogAt(v.world, length(view))), 1.0);
+    let clear = 1.0 - fogAt(v.world, length(view));
+    // Not `a`: that name is taken further up by the angle this puff's edge is
+    // wobbled against, and WGSL does not let a scope redeclare its own names.
+    let hot = pow(1.0 - v.age, 4.0);
+    let cover = clamp(glow * v.fade * mix(0.95, 0.34, smoke), 0.0, 1.0) * clear;
+    return vec4f(col * (0.6 + 2.4 * hot) * cover, cover);
   }

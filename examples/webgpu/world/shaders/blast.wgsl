@@ -23,8 +23,8 @@
   }
 
   const PUFFS = 26u;
-  const LIFE  = 2.20;             // seconds before there is nothing left
-  const REACH = 3.40;             // metres the fire gets to
+  const LIFE  = 2.70;             // seconds before there is nothing left
+  const REACH = 7.20;             // metres the fire gets to
 
   fn bhash(n: f32) -> f32 { return fract(sin(n * 127.1 + 311.7) * 43758.5453); }
 
@@ -64,11 +64,11 @@
     // going up long after the radius has settled.
     let t = age / LIFE;
     let grow = sqrt(clamp(age / 0.42, 0.0, 1.0));
-    let rise = vec3f(0.0, 1.0, 0.0) * t * t * 2.6 * (0.4 + 0.6 * h2);
+    let rise = vec3f(0.0, 1.0, 0.0) * t * t * 4.4 * (0.4 + 0.6 * h2);
     let centre = pos + dir * (REACH * depth * grow) + rise;
 
     // Puffs open out as they cool, the way smoke does.
-    let size = (0.42 + 0.30 * h3) * (0.55 + 1.5 * t);
+    let size = (0.85 + 0.60 * h3) * (0.55 + 1.6 * t);
 
     let yaw = u.cam.x; let pitch = u.cam.y;
     let cp = cos(pitch);
@@ -111,6 +111,14 @@
     let flash = exp(-v.age * 34.0) * (1.0 - k * k);
 
     let view = v.world - u.eye.xyz;
-    let lit = (col * glow * 1.55 + vec3f(1.0, 0.94, 0.86) * flash * 2.3) * v.alpha;
-    return vec4f(lit * (1.0 - fogAt(v.world, length(view))), 1.0);
+    // Not named `lit`: that is a function in `common.wgsl`, and a local of the
+    // same name shadows it in a way the compiler will not have.
+    // Premultiplied alpha rather than additive, for the same reason the trail
+    // is: twenty-six puffs on top of one another sum to a white blob with a
+    // soft edge, which is not an explosion, it is a headlight. Blended, they
+    // converge on the fire's own colour however many of them there are.
+    let clear = 1.0 - fogAt(v.world, length(view));
+    let a = clamp(glow * v.alpha * 0.9, 0.0, 1.0) * clear;
+    let col2 = col * (0.55 + 2.6 * v.heat) + vec3f(1.0, 0.94, 0.86) * flash * 3.0;
+    return vec4f(col2 * a, a);
   }

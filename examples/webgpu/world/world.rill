@@ -725,6 +725,11 @@ export fn blasts(s: Ptr) -> Ptr = peek_ptr(s, 81)
 
 export fn blasts_cap(s: Ptr) -> Int = blast_cap()
 
+# How many have gone off since the world was built. The host watches this the
+# way it watches the breaks: it has no other way of knowing, because the
+# landing happens inside a frame it only calls.
+export fn blasts_fired(s: Ptr) -> Int = to_int(peek_f32(s, 80))
+
 fn step_fireball(s, fb, at, dt) =
   life = peek_f32(fb, at + 7) - dt
   on = if life > 0.0 then 1.0 else 0.0

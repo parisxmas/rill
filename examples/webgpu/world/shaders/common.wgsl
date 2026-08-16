@@ -20,6 +20,9 @@
   @group(0) @binding(10) var plants: texture_2d<f32>;
   // The rifle's two materials side by side: accessories left, rifle right.
   @group(0) @binding(11) var rifleTex: texture_2d<f32>;
+  // The stone inside a fireball. Dark and pitted; the glow in its cracks is
+  // worked out from the texture rather than painted into it.
+  @group(0) @binding(12) var meteorTex: texture_2d<f32>;
 
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
