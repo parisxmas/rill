@@ -163,22 +163,44 @@
     return vec3f(dot(dir, right), dot(dir, up), dot(dir, at));
   }
 
-  // The sun's direction expressed in that same frame, so a phase can be worked
-  // out in flat disc coordinates.
-  // The bodies are fixed in the sky's frame while the sun is given in the
-  // world's, so the sun comes across into the sky's frame before the two are
-  // compared. It lands back on the direction it started from, which is the
-  // point: the sky and the sun turn together, so a phase worked out here is
-  // the same phase all evening.
-  fn sunInDisk(at: vec3f, t: f32) -> vec3f {
+  // A light direction expressed in a body's own frame, so a phase can be
+  // worked out in flat disc coordinates. Which light gets handed in is the
+  // caller's business, and it differs by body: the planets are nailed to the
+  // sky and want the sun brought into the sky's frame, while the moon is
+  // nailed to the world and wants it as it is.
+  fn sunInFrame(at: vec3f, L: vec3f) -> vec3f {
     let right = normalize(cross(vec3f(0.0, 1.0, 0.0), at));
     let up = cross(at, right);
-    let L = skySpace(-normalize(u.sun.xyz), t);
     return normalize(vec3f(dot(L, right), dot(L, up), dot(L, at)));
   }
 
-  // All three on the sun's side of the sky, between about forty and seventy
-  // degrees off it.
+  // Our moon does not rise or set. It is locked to this world and hangs in the
+  // same quarter of the sky for ever, which is a thing a close satellite can
+  // actually do — and it changes everything about what it is for. A moon that
+  // wheels past with the stars is scenery; one that is always in the same place
+  // is a landmark you can navigate by, and it goes through its phases in front
+  // of you as the sun comes round, because the sun is the only thing moving.
+  const MOON_AT = vec3f(0.62, 0.46, -0.64);
+  // What its light is worth on the ground. Real moonlight is four hundred
+  // thousand times weaker than sunlight and would be nothing here; this is the
+  // strength at which it does the job it is being asked to do, which is to give
+  // the valley a direction after dark. Cold, because reflected sunlight off
+  // grey rock is, and because a warm night light reads as a lamp.
+  const MOON_COL = vec3f(0.42, 0.50, 0.72);
+
+  // How much of the moon's face is lit, as seen from here: one at full, nothing
+  // when it is between us and the sun. The sun moves and the moon does not, so
+  // this is a real cycle — full at midnight when the sun is under the world
+  // directly opposite it, and down to a rind at noon.
+  fn moonPhase() -> f32 {
+    let L = -normalize(u.sun.xyz);
+    return clamp(0.5 + 0.5 * dot(-normalize(MOON_AT), L), 0.0, 1.0);
+  }
+
+  // The two planets on the sun's side of the sky, forty to seventy degrees off
+  // it. (The moon is elsewhere and is declared above, because it is fixed to
+  // this world rather than to the sky and everything about it follows from
+  // that.)
   //
   // Not an arbitrary arrangement — it is what makes the lighting legible. The
   // phase was being computed correctly before this and still read as wrong,
@@ -195,7 +217,6 @@
   // High, the planets — one low over a ridge reads as a lamp on the far hill,
   // and it is only well clear of the horizon that anyone takes it for something
   // out beyond the sky. The moon stays lower, where a moon belongs.
-  const MOON_AT = vec3f(-0.75, 0.35, -0.56);   // 69° from the sun: gibbous
   const JUP_AT  = vec3f(-0.42, 0.86, -0.29);   // 51°
   const SAT_AT  = vec3f(0.10, 0.80, 0.59);     // 42°
   // How big each one is drawn is no longer three numbers picked by eye: it is a
@@ -240,8 +261,10 @@
 
     // ---- the moon
     {
+      // In the world's own directions, not the sky's: this one does not turn
+      // with the stars.
       let at = normalize(MOON_AT);
-      let f = diskAt(dir, at);
+      let f = diskAt(dirWorld, at);
       let r = length(f.xy) / MOON_R;
       if (f.z > 0.0 && r < 1.35) {
         // The sphere, recovered: on a disc of unit radius the surface normal is
@@ -254,7 +277,7 @@
         // gibbous moon renders as a dark disc with a bright rim.
         let q = f.xy / MOON_R;
         let nrm = vec3f(q, -sqrt(max(1.0 - r * r, 0.0)));
-        let lam = clamp(dot(nrm, sunInDisk(at, t)), 0.0, 1.0);
+        let lam = clamp(dot(nrm, sunInFrame(at, -normalize(u.sun.xyz))), 0.0, 1.0);
         // The maria: darker, flatter plains, and the reason a full moon has a
         // face rather than being a plain disc.
         let mare = smoothstep(0.42, 0.72, skyNoise(q * 2.6 + 11.0)
@@ -291,7 +314,7 @@
         // airless moon's does, and not so much that the sun stops showing. A
         // planet with no terminator is a sticker, and the giveaway is that it
         // does not agree with where the light in the sky is coming from.
-        let lam = mix(clamp(dot(nrm, sunInDisk(at, t)), 0.0, 1.0), 1.0, 0.24);
+        let lam = mix(clamp(dot(nrm, sunInFrame(at, skySpace(-normalize(u.sun.xyz), t))), 0.0, 1.0), 1.0, 0.24);
         // The real map, wrapped on. The sphere normal recovered above is also
         // the point on the surface, so latitude and longitude come straight out
         // of it — and because the normal is right, the bands compress toward
@@ -333,7 +356,7 @@
       let r = length(q);
       if (f.z > 0.0 && r < 2.6) {
         let nrm = vec3f(q, -sqrt(max(1.0 - min(r * r, 1.0), 0.0)));
-        let sd = sunInDisk(at, t);
+        let sd = sunInFrame(at, skySpace(-normalize(u.sun.xyz), t));
         let lam = mix(clamp(dot(nrm, sd), 0.0, 1.0), 1.0, 0.24);
         // The real globe, wrapped on by latitude and longitude and turning on
         // its own — Saturn's day is a shade over ten hours, near enough
@@ -483,9 +506,23 @@
     // was, is exactly that. This is roughly the exposure an eye finds after a
     // few minutes outside, which is the honest thing to draw when the
     // alternative is drawing what a camera would get.
-    let night = vec3f(0.052, 0.062, 0.105) * (0.62 + 0.38 * (n.y * 0.5 + 0.5));
+    let night = vec3f(0.040, 0.048, 0.082) * (0.62 + 0.38 * (n.y * 0.5 + 0.5));
     let amb = mix(night, sky * 1.1, day);
-    var col = albedo * (SUN_COL * 1.25 * nl * sh * day + amb);
+
+    // And the moon, which is the other half of it. A flat ambient makes a night
+    // that is dim but shapeless — every face of every rock the same value, so
+    // the valley goes to a grey mass with no form in it. What gives a night its
+    // shape is that it does have a light in it, one light, weak and off to one
+    // side, and rock turned toward it is brighter than rock turned away.
+    //
+    // Scaled by how much of the moon's face is lit, so a night near new moon is
+    // genuinely darker than one near full — the moon is fixed and the sun is
+    // not, so that cycle comes for free. And gone by day: it is up there at
+    // noon too, but a hundredth of what the sun is putting down.
+    let M = normalize(MOON_AT);
+    let moon = MOON_COL * max(dot(n, M), 0.0) * moonPhase() * 0.55 * (1.0 - day);
+
+    var col = albedo * (SUN_COL * 1.25 * nl * sh * day + moon + amb);
     let view = world - u.eye.xyz;
     return mix(col, fogColor(view), fogAt(world, length(view)));
   }

@@ -57,7 +57,8 @@
     let sh = shadow(v.world, nl);
     let amb = mix(vec3f(0.10, 0.11, 0.18), vec3f(0.18, 0.19, 0.30), n.y * 0.5 + 0.5);
     let day = dayness();
-    var col = v.color * (SUN_COL * 1.25 * nl * sh * day + mix(vec3f(0.055, 0.065, 0.110), amb * 1.1, day))
+    var col = v.color * (SUN_COL * 1.25 * nl * sh * day + MOON_COL * max(dot(n, normalize(MOON_AT)), 0.0) * moonPhase() * 0.55 * (1.0 - day)
+                          + mix(vec3f(0.042, 0.050, 0.086), amb * 1.1, day))
             + v.color * 0.30;
 
     // Fresnel. A facet turned edge-on to you is a mirror; one facing you is
