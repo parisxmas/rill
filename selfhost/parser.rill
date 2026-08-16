@@ -94,7 +94,11 @@ fn p_bi_nl(x, ts, itemf) = match ts
 
 fn p_type(ts, ctx) = match ts
   Cons(Tk(TkIdent(n), ln), r) -> p_type_args(n, r, ln)
+  Cons(Tk(TkLParen, ln), r) -> p_tuple_type(p_comma(r, \t -> p_type(t, ctx)), ln)
   _ -> die_any("expected " + ctx, p_line(ts))
+
+fn p_tuple_type(pr, ln) = match pr
+  PR(args, ts) -> PR(TR(tuple_name(len(args)), args, None, ln), expect_rp(ts, "to close the tuple type"))
 
 fn p_type_args(n, ts, ln) = match ts
   Cons(Tk(TkLParen, _), r) -> p_type_fin(n, p_targs(r), ln)
@@ -237,6 +241,17 @@ fn neg_pr(pr) = match pr
 fn not_pr(pr) = match pr
   PR(e, ts) -> PR(EIf(e, EBool(false), EBool(true)), ts)
 
+# `(a, b)` is a tuple; a single parenthesized expression is itself.
+fn p_paren(pr, ln) = match pr
+  PR(e, ts) -> p_paren2(e, ts, ln)
+
+fn p_paren2(e, ts, ln) = match ts
+  Cons(Tk(TkComma, _), r) -> p_tuple(e, p_comma(r, \t -> p_expr(t)), ln)
+  _ -> PR(e, expect_rp(ts, "to close the parenthesized expression"))
+
+fn p_tuple(e, pr, ln) = match pr
+  PR(rest, ts) -> PR(ECall(tuple_name(1 + len(rest)), Cons(e, rest), ln, false), expect_rp(ts, "to close the tuple"))
+
 fn p_primary(ts) = match ts
   Cons(Tk(TkInt(v), _), r) -> PR(EInt(v), r)
   Cons(Tk(TkFloat(v), _), r) -> PR(EFloat(v), r)
@@ -245,7 +260,7 @@ fn p_primary(ts) = match ts
   Cons(Tk(TkFalse, _), r) -> PR(EBool(false), r)
   Cons(Tk(TkIdent(n), ln), Cons(Tk(TkLParen, _), r)) -> call_pr(n, p_args(r), ln)
   Cons(Tk(TkIdent(n), ln), r) -> PR(EVar(n, ln), r)
-  Cons(Tk(TkLParen, _), r) -> close_rp(p_expr(r), "to close the parenthesized expression")
+  Cons(Tk(TkLParen, ln), r) -> p_paren(p_expr(r), ln)
   Cons(Tk(TkSpawn, ln), r) -> spawn_pr(p_expr(r), ln)
   Cons(Tk(TkBackslash, ln), r) -> p_lambda(r, ln)
   Cons(Tk(TkIf, _), r) -> p_if(r)
@@ -314,6 +329,7 @@ fn pat_try(ts) = match ts
   Cons(Tk(TkInt(v), _), r) -> Some(PR(PIntL(v), r))
   Cons(Tk(TkMinus, _), Cons(Tk(TkInt(v), _), r)) -> Some(PR(PIntL("-" + v), r))
   Cons(Tk(TkIdent(n), _), r) -> pat_id(n, r)
+  Cons(Tk(TkLParen, ln), r) -> pat_args("", pat_try(r), Nil)
   _ -> None
 
 fn pat_id(n, ts) =
@@ -332,8 +348,12 @@ fn pat_args2(n, pr, acc) = match pr
 
 fn pat_args3(n, acc, ts) = match ts
   Cons(Tk(TkComma, _), r) -> pat_args(n, pat_try(r), acc)
-  Cons(Tk(TkRParen, _), r) -> Some(PR(PCtor(n, reverse(acc)), r))
+  Cons(Tk(TkRParen, _), r) -> Some(PR(PCtor(if str_cmp(n, "") == 0 then tuple_name(len(acc)) else n, reverse(acc)), r))
   _ -> None
+
+# `Tuple2`..`Tuple4` are what the tuple notation stands for.
+fn tuple_name(n) =
+  if n >= 2 && n <= 4 then "Tuple" + int_to_str(n) else die_any("a tuple holds two to four things, not " + int_to_str(n), 0)
 
 fn p_pat(ts) = match pat_try(ts)
   Some(pr) -> pr
@@ -475,7 +495,36 @@ fn p_stmt(ts) = match ts
   Cons(Tk(TkFn, ln), r) -> sfn_pr(p_fndef(r, false, ln))
   Cons(Tk(TkFor, ln), r) -> sexpr_pr(p_for(r, ln))
   Cons(Tk(TkIdent(n), ln), Cons(Tk(TkEq, _), r)) -> bind_pr(n, p_expr(r), ln)
-  _ -> p_assign(p_expr(ts))
+  _ -> p_stmt2(ts)
+
+# `Pair(a, b) = e` and `(a, b) = e` take a value apart. Only these two shapes
+# can start one, and only a plain `=` on the line settles it.
+fn p_stmt2(ts) =
+  if starts_pattern(ts) && has_binding_eq(ts, 0) then p_patbind(p_pat(ts), p_line(ts)) else p_assign(p_expr(ts))
+
+fn starts_pattern(ts) = match ts
+  Cons(Tk(TkLParen, _), _) -> true
+  Cons(Tk(TkIdent(n), _), _) -> starts_upper(n)
+  _ -> false
+
+fn has_binding_eq(ts, d) = match ts
+  Cons(Tk(TkLParen, _), r) -> has_binding_eq(r, d + 1)
+  Cons(Tk(TkLBracket, _), r) -> has_binding_eq(r, d + 1)
+  Cons(Tk(TkRParen, _), r) -> has_binding_eq(r, max(d - 1, 0))
+  Cons(Tk(TkRBracket, _), r) -> has_binding_eq(r, max(d - 1, 0))
+  Cons(Tk(TkEq, _), r) -> d == 0 || has_binding_eq(r, d)
+  Cons(Tk(TkNewline, _), _) -> false
+  Cons(Tk(TkIndent, _), _) -> false
+  Cons(Tk(TkDedent, _), _) -> false
+  Cons(Tk(TkEof, _), _) -> false
+  Cons(_, r) -> has_binding_eq(r, d)
+  Nil -> false
+
+fn p_patbind(pr, ln) = match pr
+  PR(p, ts) -> p_patbind2(p, p_expr(expect_eq(ts)), ln)
+
+fn p_patbind2(p, pr, ln) = match pr
+  PR(v, ts) -> PR(SPatBind(p, v, ln), ts)
 
 fn sfn_pr(pr) = match pr
   PR(f, ts) -> PR(SFn(f), ts)

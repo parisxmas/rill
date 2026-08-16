@@ -1599,8 +1599,14 @@ impl Checker {
                 let mut ty = Ty::Unit;
                 for stmt in stmts {
                     match stmt {
-                        // `lift` runs before the checker, so a local function
-                        // is already a top-level one by now.
+                        // `lift` runs before the checker, so neither of these
+                        // is still around by now.
+                        Stmt::PatBind { line, .. } => {
+                            return Err(TypeError::new(
+                                *line,
+                                "internal: a pattern binding was not expanded".to_string(),
+                            ))
+                        }
                         Stmt::Fn(f) => {
                             return Err(TypeError::new(
                                 f.line,
@@ -2859,7 +2865,9 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
         Expr::Block(stmts) => {
             for s in stmts {
                 match s {
-                    Stmt::Bind { value, .. } => free_vars(value, out, seen),
+                    Stmt::Bind { value, .. } | Stmt::PatBind { value, .. } => {
+                        free_vars(value, out, seen)
+                    }
                     Stmt::Fn(f) => free_vars(&f.body, out, seen),
                     Stmt::Expr(v) => free_vars(v, out, seen),
                 }

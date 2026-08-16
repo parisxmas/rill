@@ -14,6 +14,17 @@ type List(a)
   Nil
   Cons(head: a, tail: List(a))
 
+# What `(a, b)` is written with. One constructor apiece, which is what lets a
+# tuple be taken apart by a binding rather than a branch.
+type Tuple2(a, b)
+  Tuple2(a, b)
+
+type Tuple3(a, b, c)
+  Tuple3(a, b, c)
+
+type Tuple4(a, b, c, d)
+  Tuple4(a, b, c, d)
+
 # -- lists -------------------------------------------------------------------
 
 fn map(l, f) = match l

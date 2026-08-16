@@ -196,6 +196,10 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             for s in stmts {
                 match s {
                     Stmt::Bind { value, .. } => collect_expr_names(value, out),
+                    Stmt::PatBind { pattern, value, .. } => {
+                        collect_pattern_names(pattern, out);
+                        collect_expr_names(value, out);
+                    }
                     Stmt::Fn(f) => collect_expr_names(&f.body, out),
                     Stmt::Expr(v) => collect_expr_names(v, out),
                 }

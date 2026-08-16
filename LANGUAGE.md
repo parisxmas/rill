@@ -121,6 +121,28 @@ works with bit patterns).
 Precedence, loosest to tightest: `|>`, `||`, `&&`, comparisons, `+ -`, `* / %`,
 unary `- !`, calls and literals.
 
+### Tuples
+
+`(a, b)` hands back more than one thing without declaring a type for it:
+
+```
+fn divmod(a, b) = (a / b, a % b)
+
+fn main() =
+  (q, r) = divmod(17, 5)      # a binding that takes the value apart
+  println(q)
+```
+
+A tuple holds two to four values, and `(A, B)` is its type. It is an
+ordinary data type underneath — `Tuple2`, `Tuple3`, `Tuple4` in the prelude —
+so it compares, shows and pattern-matches like any other, and `(n, s) -> ...`
+is a pattern anywhere a pattern goes.
+
+A binding may take apart any type with exactly one constructor:
+`Parsed(v, rest) = parse(s)` reads as a binding because it cannot fail. On a
+type with more than one, the compiler says the match is not exhaustive, which
+is the truth: use `match`.
+
 ### Blocks and bindings
 
 An indented block runs its lines in order and evaluates to the last one:
@@ -262,6 +284,11 @@ it the names it uses, so nothing is allocated and the tail call is still a
 tail call — a local function is a loop, not a closure. That is also why it can
 only be called: there is no single value to pass around for one, since each
 call site supplies the captured names. A lambda is the thing to pass around.
+
+A local function is typed together with the one it is written inside, which
+is what lets a captured buffer keep its width. The price is that it has one
+type rather than a scheme: a helper used at two different types has to be a
+top-level function, where it generalizes as usual.
 
 Each parameter is a loop variable and the `if` is the exit condition. This
 holds for loops that print, and for server loops that run forever:

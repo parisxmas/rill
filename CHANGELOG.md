@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Tuples, and bindings that take a value apart.** `(a, b)` hands back more
+  than one thing, `(A, B)` is its type, and `(q, r) = divmod(17, 5)` reads it
+  back. None of it is new machinery: a tuple is the prelude's `Tuple2`,
+  `Tuple3` or `Tuple4` under a notation short enough to use, so it compares,
+  shows and matches like the data type it is — and the notation is what
+  `show` prints and what the formatter puts back. A binding may take apart
+  any type with exactly one constructor, which is what makes it a binding and
+  not a branch; it is the one-armed `match` it has always been, over
+  everything that follows it. Written this way, the JSON benchmark falls from
+  1525 to 1396 tokens, 1.14&times; to 1.04&times; Go.
+
 - **`for i in a..b`, and `+=` on a buffer element.** Counting over a range now
   has a form of its own, and a buffer element can be written in terms of what
   it held (`+=`, `-=`, `*=`, `/=`, with the index evaluated once). Neither is

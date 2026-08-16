@@ -118,6 +118,10 @@ pub struct FnDef {
 pub enum Stmt {
     /// `name = expr`
     Bind { name: String, value: Expr, line: usize },
+    /// `Pair(a, b) = expr` — a binding that takes a value apart. Only a type
+    /// with one constructor can be taken apart this way, which is what makes
+    /// it a binding and not a branch; `lift` turns it into the `match` it is.
+    PatBind { pattern: Pattern, value: Expr, line: usize },
     /// A function defined inside a body. It sees the names around it and may
     /// call itself and its siblings; `lift` turns it into a top-level one
     /// before anything else looks at the program.

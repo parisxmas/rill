@@ -323,7 +323,18 @@ impl Parser {
     /// A type reference: `Int`, `Shape`, `List(Int)`, or a lowercase type
     /// parameter like `a` (validated against the enclosing definition later).
     fn type_ref(&mut self, ctx: &str) -> Result<TypeRef, SyntaxError> {
-        let (line, _) = self.here();
+        let (line, col) = self.here();
+        if matches!(self.peek(), Tok::LParen) {
+            self.bump();
+            let mut args = vec![self.type_ref(ctx)?];
+            while matches!(self.peek(), Tok::Comma) {
+                self.bump();
+                args.push(self.type_ref(ctx)?);
+            }
+            self.expect(&Tok::RParen, "to close the tuple type")?;
+            let name = tuple_name(args.len(), line, col)?;
+            return Ok(TypeRef { name, args, ret: None, line });
+        }
         let name = self.ident(ctx)?;
         let mut args = Vec::new();
         if matches!(self.peek(), Tok::LParen) {
@@ -534,6 +545,17 @@ impl Parser {
         }
         if matches!(self.peek(), Tok::For) {
             return Ok(Stmt::Expr(self.for_loop()?));
+        }
+        // `Pair(a, b) = e` and `(a, b) = e` take a value apart. Only these two
+        // shapes can start one, and only an `=` after the pattern settles it.
+        let starts_pattern = matches!(self.peek(), Tok::LParen)
+            || matches!(self.peek(), Tok::Ident(n) if starts_upper(n));
+        if starts_pattern && self.has_binding_eq() {
+            let (line, _) = self.here();
+            let pattern = self.pattern()?;
+            self.expect(&Tok::Eq, "after the pattern of a binding")?;
+            let value = self.expr()?;
+            return Ok(Stmt::PatBind { pattern, value, line });
         }
         if let (Tok::Ident(_), Tok::Eq) = (self.peek(), self.peek2()) {
             let (line, _) = self.here();
@@ -793,9 +815,22 @@ impl Parser {
                 }
             }
             Tok::LParen => {
-                let expr = self.expr()?;
-                self.expect(&Tok::RParen, "to close the parenthesized expression")?;
-                Ok(expr)
+                let first = self.expr()?;
+                if !matches!(self.peek(), Tok::Comma) {
+                    self.expect(&Tok::RParen, "to close the parenthesized expression")?;
+                    return Ok(first);
+                }
+                // `(a, b)` is a tuple, which is the prelude's `Tuple2` under a
+                // notation short enough to use for what it is for: handing
+                // back more than one thing.
+                let mut args = vec![first];
+                while matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                    args.push(self.expr()?);
+                }
+                self.expect(&Tok::RParen, "to close the tuple")?;
+                let name = tuple_name(args.len(), line, col)?;
+                Ok(Expr::Call { name, args, line, piped: false })
             }
             Tok::Spawn => {
                 let body = self.expr()?;
@@ -994,6 +1029,23 @@ impl Parser {
         Ok(())
     }
 
+    /// Whether a plain `=` follows on this line, outside any brackets — which
+    /// is what tells `Pair(a, b) = e` from an expression that merely starts
+    /// with a constructor. `==` is a different token and does not count.
+    fn has_binding_eq(&self) -> bool {
+        let mut depth = 0usize;
+        for t in &self.toks[self.pos..] {
+            match t.tok {
+                Tok::LParen | Tok::LBracket => depth += 1,
+                Tok::RParen | Tok::RBracket => depth = depth.saturating_sub(1),
+                Tok::Eq if depth == 0 => return true,
+                Tok::Newline | Tok::Indent | Tok::Dedent | Tok::Eof => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Runs a parse, rewinding completely if it fails. Used where the end of
     /// a repetition can only be found by trying to parse one more item.
     fn try_parse<T>(
@@ -1051,7 +1103,26 @@ impl Parser {
                 }
                 Ok(Pattern::Ctor { name, args, line })
             }
+            Tok::LParen => {
+                let mut args = vec![self.pattern()?];
+                while matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                    args.push(self.pattern()?);
+                }
+                self.expect(&Tok::RParen, "to close the tuple pattern")?;
+                let name = tuple_name(args.len(), line, col)?;
+                Ok(Pattern::Ctor { name, args, line })
+            }
             other => Err(SyntaxError::new(line, col, format!("expected a pattern, found {other}"))),
         }
+    }
+}
+
+/// The prelude type a tuple of this size is written with.
+pub fn tuple_name(n: usize, line: usize, col: usize) -> Result<String, SyntaxError> {
+    if (2..=4).contains(&n) {
+        Ok(format!("Tuple{n}"))
+    } else {
+        Err(SyntaxError::new(line, col, format!("a tuple holds two to four things, not {n}")))
     }
 }

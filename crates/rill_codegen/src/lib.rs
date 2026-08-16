@@ -333,6 +333,11 @@ fn mangle(ty: &Ty, adts: &[rill_types::AdtDef]) -> String {
     }
 }
 
+/// `Tuple2`..`Tuple4` are what the tuple notation stands for.
+fn is_tuple_ctor(name: &str, n: usize) -> bool {
+    (2..=4).contains(&n) && name == format!("Tuple{n}")
+}
+
 /// A function value pinned at compile time: which top-level function, at
 /// which instantiation. This is what a C callback ultimately needs, since the
 /// trampoline it points at is emitted while compiling.
@@ -1764,7 +1769,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 continue;
             }
             let struct_ty = self.ctor_struct(adt, ci, &targs);
-            let mut acc: BasicValueEnum<'ctx> = self.const_str(&format!("{}(", c.name)).into();
+            // A tuple shows the way it is written, without the name standing
+            // in for the notation.
+            let head = if is_tuple_ctor(&c.name, c.fields.len()) {
+                "(".to_string()
+            } else {
+                format!("{}(", c.name)
+            };
+            let mut acc: BasicValueEnum<'ctx> = self.const_str(&head).into();
             let fields = c.fields.clone();
             for (fi, fty) in fields.iter().enumerate() {
                 if fi > 0 {

@@ -119,7 +119,9 @@ fn walk(
         Expr::For { var, from, to, body, line } => {
             walk(expand_for(var, *from, *to, *body, line), env, parent, used, out)?
         }
-        Expr::Block(stmts) => Expr::Block(walk_block(stmts, env, parent, used, out)?),
+        Expr::Block(stmts) => {
+            Expr::Block(walk_block(expand_pat_binds(stmts), env, parent, used, out)?)
+        }
         Expr::Call { name, args, line, piped } => Expr::Call {
             name,
             args: walk_all(args, env, parent, used, out)?,
@@ -204,6 +206,28 @@ fn walk(
     })
 }
 
+/// `Pat = e` is bound over everything after it, which is what makes it the
+/// one-armed `match` that a binding taking a value apart has always been.
+fn expand_pat_binds(stmts: Vec<Stmt>) -> Vec<Stmt> {
+    let mut out = Vec::new();
+    let mut it = stmts.into_iter();
+    while let Some(s) = it.next() {
+        match s {
+            Stmt::PatBind { pattern, value, line } => {
+                let rest = expand_pat_binds(it.collect());
+                out.push(Stmt::Expr(Expr::Match {
+                    scrutinee: Box::new(value),
+                    arms: vec![Arm { pattern, body: Expr::Block(rest), line }],
+                    line,
+                }));
+                return out;
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn walk_all(
     es: Vec<Expr>,
     env: &mut Vec<String>,
@@ -240,6 +264,7 @@ fn walk_block(
                     Stmt::Bind { name, value, line }
                 }
                 Stmt::Expr(e) => Stmt::Expr(walk(e, env, parent, used, out)?),
+                Stmt::PatBind { .. } => unreachable!("pattern bindings are expanded first"),
                 Stmt::Fn(_) => unreachable!("no local functions in this block"),
             });
         }
@@ -267,6 +292,7 @@ fn walk_block(
                 rest.push(Stmt::Bind { name, value, line });
             }
             Stmt::Expr(e) => rest.push(Stmt::Expr(walk(e, env, parent, used, out)?)),
+            Stmt::PatBind { .. } => unreachable!("pattern bindings are expanded first"),
         }
     }
     env.truncate(depth);
@@ -326,6 +352,7 @@ fn walk_block(
                 kept.push(Stmt::Bind { name, value: rewrite(value, &by_name)?, line })
             }
             Stmt::Expr(e) => kept.push(Stmt::Expr(rewrite(e, &by_name)?)),
+            Stmt::PatBind { .. } => unreachable!("pattern bindings are expanded first"),
             Stmt::Fn(_) => unreachable!("local functions were taken out above"),
         }
     }
@@ -485,6 +512,9 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
                         Stmt::Bind { name, value, line } => {
                             Stmt::Bind { name, value: rewrite(value, locals)?, line }
                         }
+                        Stmt::PatBind { pattern, value, line } => {
+                            Stmt::PatBind { pattern, value: rewrite(value, locals)?, line }
+                        }
                         Stmt::Expr(e) => Stmt::Expr(rewrite(e, locals)?),
                         Stmt::Fn(f) => {
                             let mut f = *f;
@@ -589,6 +619,10 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
                     Stmt::Bind { name, value, .. } => {
                         free_of(value, bound, out);
                         bound.push(name.clone());
+                    }
+                    Stmt::PatBind { pattern, value, .. } => {
+                        free_of(value, bound, out);
+                        pattern_names(pattern, bound);
                     }
                     Stmt::Expr(x) => free_of(x, bound, out),
                     Stmt::Fn(f) => {

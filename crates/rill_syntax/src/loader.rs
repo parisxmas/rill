@@ -289,6 +289,10 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str) {
             for s in stmts {
                 match s {
                     Stmt::Bind { value, .. } => qualify_expr(value, own, alias),
+                    Stmt::PatBind { pattern, value, .. } => {
+                        qualify_pattern(pattern, own, alias);
+                        qualify_expr(value, own, alias);
+                    }
                     Stmt::Fn(f) => qualify_expr(&mut f.body, own, alias),
                     Stmt::Expr(v) => qualify_expr(v, own, alias),
                 }

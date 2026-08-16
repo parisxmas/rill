@@ -124,6 +124,7 @@ fn block_line(ss) = match ss
 
 fn stmt_line(s) = match s
   SBind(_, _, ln) -> ln
+  SPatBind(_, _, ln) -> ln
   SFn(f) -> fnd_line(f)
   SExpr(e) -> expr_line(e)
 
@@ -165,7 +166,7 @@ fn inline(e, prec) = match e
   EBlock(_) -> "..."
 
 fn inline_call(n, args, piped, prec) =
-  if piped then inline_pipe(n, args, prec) else n + "(" + join(map(args, \a -> inline(a, 0)), ", ") + ")"
+  if piped then inline_pipe(n, args, prec) else pr_name(n, len(args)) + "(" + join(map(args, \a -> inline(a, 0)), ", ") + ")"
 
 fn inline_pipe(n, args, prec) = match args
   Cons(h, rest) -> wrapp(prec > 1, inline(h, 1) + " |> " + pipe_callee(n, rest))
@@ -213,13 +214,19 @@ fn pat_str(p) = match p
 
 fn pat_ctor_str(n, args) = match args
   Nil -> n
-  Cons(_, _) -> n + "(" + join(map(args, \a -> pat_str(a)), ", ") + ")"
+  Cons(_, _) -> pr_name(n, len(args)) + "(" + join(map(args, \a -> pat_str(a)), ", ") + ")"
+
+# `Tuple2`..`Tuple4` are what the tuple notation stands for, and are printed
+# back the way they were written.
+fn is_tuple(n, k) = k >= 2 && k <= 4 && str_cmp(n, "Tuple" + int_to_str(k)) == 0
+
+fn pr_name(n, k) = if is_tuple(n, k) then "" else n
 
 fn tr_str(t) = match t
   TR(n, args, ret, _) -> tr_str2(n, args, ret)
 
 fn tr_str2(n, args, ret) =
-  tr_ret_str(if len(args) == 0 && str_cmp(n, "Fn") != 0 then n else n + "(" + join(map(args, \a -> tr_str(a)), ", ") + ")", ret)
+  tr_ret_str(if len(args) == 0 && str_cmp(n, "Fn") != 0 then n else pr_name(n, len(args)) + "(" + join(map(args, \a -> tr_str(a)), ", ") + ")", ret)
 
 fn tr_ret_str(s, ret) = match ret
   Some(r) -> s + " -> " + tr_str(r)
@@ -335,6 +342,7 @@ fn rb_one(rr, rest, cont, s, first) = match rr
 
 fn rb_text(fs, st, cont) = match st
   SBind(n, v, _) -> rb_bind(render(fs, v, cont + 1), n)
+  SPatBind(p, v, _) -> rb_bind(render(fs, v, cont + 1), pat_str(p))
   SFn(f) -> fndef_text(fs, f, cont)
   SExpr(e) -> render(fs, e, cont + 1)
 

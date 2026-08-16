@@ -157,6 +157,7 @@ fn i_lam3(ts, ptys) = match ts
 fn i_block(cx, st, env, ss, ty) = match ss
   Cons(SBind(n, v, _), rest) -> i_block_bind(infer(cx, st, env, v), cx, env, n, rest)
   Cons(SFn(f), _) -> tydie("internal: a local function reached the checker", fnd_ln(f))
+  Cons(SPatBind(_, _, ln), _) -> tydie("internal: a pattern binding was not expanded", ln)
   Cons(SExpr(e), rest) -> i_block_expr(infer(cx, st, env, e), cx, env, rest)
   Nil -> TS(ty, st)
 
@@ -727,6 +728,7 @@ fn fv_def(def, acc) = match def
 
 fn fv_stmt(s, acc) = match s
   SBind(_, v, _) -> fv(v, acc)
+  SPatBind(_, v, _) -> fv(v, acc)
   SFn(f) -> fv(fnd_body2(f), acc)
   SExpr(e) -> fv(e, acc)
 

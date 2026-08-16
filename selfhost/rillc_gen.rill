@@ -759,6 +759,7 @@ fn emit_block(cx, st, env, ss, cg) = emit_blk(cx, st, env, ss, cg, Nil)
 fn emit_blk(cx, st, env, ss, cg, sc) = match ss
   Cons(SBind(n, v, _), rest) -> emit_blk_bind(emit_bound(cx, st, env, n, v, rest, cg), cx, st, env, n, rest, sc)
   Cons(SFn(_), _) -> rcdie("internal: a local function reached the code generator")
+  Cons(SPatBind(_, _, _), _) -> rcdie("internal: a pattern binding was not expanded")
   Cons(SExpr(v), Nil) -> emit_blk_last(emit(cx, st, env, v, cg), sc)
   Cons(SExpr(v), rest) -> emit_blk_step(emit(cx, st, env, v, cg), cx, st, env, rest, sc)
   Nil -> RV(rel_all(cg, sc), "", YUnit)
@@ -786,6 +787,7 @@ fn hint_stmts(cx, st, env, ss, n) = match ss
   Nil -> uk()
   Cons(SBind(_, v, _), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
   Cons(SFn(_), rest) -> hint_stmts(cx, st, env, rest, n)
+  Cons(SPatBind(_, v, _), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
   Cons(SExpr(v), rest) -> hint_or(hint_expr(cx, st, env, v, n), cx, st, env, rest, n)
 
 fn hint_or(h, cx, st, env, rest, n) = if is_uk(h) then hint_stmts(cx, st, env, rest, n) else h
@@ -1225,6 +1227,7 @@ fn sb_here(e, acc) = match e
 fn sb_stmt(s, acc) = match s
   SBind(n, _, _) -> sput(acc, n, true)
   SFn(f) -> sput(acc, fnd_name(f), true)
+  SPatBind(p, _, _) -> pat_names(p, acc)
   SExpr(_) -> acc
 
 fn sb_arm(a, acc) = match a
@@ -1272,6 +1275,7 @@ fn sk_opt(o) = match o
 
 fn sk_stmt(s) = match s
   SBind(_, v, _) -> v
+  SPatBind(_, v, _) -> v
   SFn(f) -> fnd_body(f)
   SExpr(v) -> v
 
@@ -1741,6 +1745,7 @@ fn fv_sop_bound(op, bound) = match op
 fn fv_stmts(ss, bound, acc) = match ss
   Cons(SBind(n, v, _), rest) -> fv_stmts(rest, sput(bound, n, true), fv_expr(v, bound, acc))
   Cons(SFn(_), rest) -> fv_stmts(rest, bound, acc)
+  Cons(SPatBind(p, v, _), rest) -> fv_stmts(rest, pat_names(p, bound), fv_expr(v, bound, acc))
   Cons(SExpr(v), rest) -> fv_stmts(rest, bound, fv_expr(v, bound, acc))
   Nil -> acc
 
@@ -2156,6 +2161,7 @@ fn ret_if2(is, cx, st, env, cv, t, e2, rt, stk) = match is
 fn ret_block(cx, st, env, ss, cg, rt, stk) = match ss
   Cons(SBind(n, v, _), rest) -> ret_block_bind(emit_bound(cx, st, env, n, v, rest, cg), cx, st, env, n, rest, rt, stk)
   Cons(SFn(_), _) -> rcdie("internal: a local function reached the code generator")
+  Cons(SPatBind(_, _, _), _) -> rcdie("internal: a pattern binding was not expanded")
   Cons(SExpr(v), Nil) -> emit_ret(cx, st, env, v, cg, rt, stk)
   Cons(SExpr(v), rest) -> ret_block_step(emit(cx, st, env, v, cg), cx, st, env, rest, rt, stk)
   Nil -> cg_line(rel_all(cg, stk), "ret void")
@@ -2267,9 +2273,13 @@ fn shw_check2(ts, ci) = match ts
     nl = lb("n" + int_to_str(ci))
     cg_label(cg_line(cg_line(cg, c + " = icmp eq i64 %tag, " + int_to_str(ci)), "br i1 " + c + ", label %" + hl + ", label %" + nl), hl)
 
+# A tuple shows the way it is written, without the name standing in for the
+# notation.
+fn shw_head(cn, k) = if k >= 2 && k <= 4 && str_cmp(cn, "Tuple" + int_to_str(k)) == 0 then "(" else cn + "("
+
 fn shw_body(cx, st, cn, ftys, ci, last, cg) = match ftys
   Nil -> shw_bare(cg_str(cg, cn), ci, last)
-  _ -> shw_fields_start(cg_str(cg, cn + "("), cx, st, ftys, ci, last)
+  _ -> shw_fields_start(cg_str(cg, shw_head(cn, len(ftys))), cx, st, ftys, ci, last)
 
 # A bare constructor's name is a static string; hand back a retained view so
 # the caller's release balances.

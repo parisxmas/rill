@@ -38,7 +38,7 @@ pub fn format_source(src: &str) -> Result<String, SyntaxError> {
 
 fn stmt_expr(s: &Stmt) -> &Expr {
     match s {
-        Stmt::Bind { value, .. } => value,
+        Stmt::Bind { value, .. } | Stmt::PatBind { value, .. } => value,
         Stmt::Fn(f) => &f.body,
         Stmt::Expr(e) => e,
     }
@@ -340,6 +340,9 @@ impl Fmt {
                 Stmt::Bind { name, value, .. } => {
                     format!("{name} = {}", self.render(value, indent + 1))
                 }
+                Stmt::PatBind { pattern: p, value, .. } => {
+                    format!("{} = {}", pattern(p), self.render(value, indent + 1))
+                }
                 Stmt::Fn(_) => unreachable!("handled above"),
                 Stmt::Expr(e) => self.render(e, indent + 1),
             };
@@ -387,6 +390,9 @@ impl Fmt {
             let text = match st {
                 Stmt::Bind { name, value, .. } => {
                     format!("{name} = {}", self.render(value, ind + 1))
+                }
+                Stmt::PatBind { pattern: p, value, .. } => {
+                    format!("{} = {}", pattern(p), self.render(value, ind + 1))
                 }
                 Stmt::Fn(f) => self.fndef_text(f, ind),
                 Stmt::Expr(e) => self.render(e, ind + 1),
@@ -445,6 +451,9 @@ impl Fmt {
                     let text = match s {
                         Stmt::Bind { name, value, .. } => {
                             format!("{name} = {}", self.render(value, cont + 1))
+                        }
+                        Stmt::PatBind { pattern: p, value, .. } => {
+                            format!("{} = {}", pattern(p), self.render(value, cont + 1))
                         }
                         Stmt::Fn(f) => self.fndef_text(f, cont),
                         Stmt::Expr(e) => self.render(e, cont + 1),
@@ -559,7 +568,7 @@ impl Fmt {
 
 fn stmt_line(s: &Stmt) -> usize {
     match s {
-        Stmt::Bind { line, .. } => *line,
+        Stmt::Bind { line, .. } | Stmt::PatBind { line, .. } => *line,
         Stmt::Fn(f) => f.line,
         Stmt::Expr(e) => expr_line(e),
     }
@@ -666,7 +675,7 @@ fn inline(e: &Expr, prec: u8) -> String {
                 wrap(prec > P_PIPE, format!("{head} |> {call}"))
             } else {
                 let a: Vec<String> = args.iter().map(|a| inline(a, 0)).collect();
-                format!("{name}({})", a.join(", "))
+                format!("{}({})", if is_tuple(name, args.len()) { "" } else { name }, a.join(", "))
             }
         }
         Expr::Index { base, index, .. } => {
@@ -774,15 +783,29 @@ fn pattern(p: &Pattern) -> String {
                 name.clone()
             } else {
                 let a: Vec<String> = args.iter().map(pattern).collect();
-                format!("{name}({})", a.join(", "))
+                if is_tuple(name, args.len()) {
+                    format!("({})", a.join(", "))
+                } else {
+                    format!("{name}({})", a.join(", "))
+                }
             }
         }
     }
 }
 
+/// `Tuple2`..`Tuple4` are what the tuple notation stands for, and are printed
+/// back the way they were written.
+fn is_tuple(name: &str, n: usize) -> bool {
+    (2..=4).contains(&n) && name == format!("Tuple{n}")
+}
+
 fn type_ref(t: &TypeRef) -> String {
     // `Fn` keeps its parentheses even when empty: `Fn()` is a callback taking
     // nothing, not a type named `Fn`.
+    if is_tuple(&t.name, t.args.len()) {
+        let a: Vec<String> = t.args.iter().map(type_ref).collect();
+        return format!("({})", a.join(", "));
+    }
     let mut s = if t.args.is_empty() && t.name != "Fn" {
         t.name.clone()
     } else {

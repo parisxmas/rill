@@ -26,6 +26,7 @@ type Expr
 
 type Stmt
   SBind(Str, Expr, Int)
+  SPatBind(Pat, Expr, Int)
   SFn(FnD)
   SExpr(Expr)
 
