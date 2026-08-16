@@ -1989,6 +1989,7 @@ impl Checker {
             "io_ok" => Some(("rill_io_ok", vec![], Ty::Bool)),
             "write_file" => Some(("rill_write_file", vec![Ty::Str, Ty::Str], Ty::Bool)),
             "read_line" => Some(("rill_read_line", vec![], Ty::Str)),
+            "scan_int" => Some(("rill_scan_int", vec![], Ty::Int)),
             "exit" => Some(("rill_exit", vec![Ty::Int], Ty::Unit)),
             // Bridges to and from C strings; `to_cstr` allocates, so the
             // caller frees with `free_ptr`.
@@ -2776,6 +2777,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "io_ok"
             | "write_file"
             | "read_line"
+            | "scan_int"
             | "exit"
             | "to_cstr"
             | "from_cstr"

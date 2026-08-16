@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **`scan_int`, and two optimizations that turned out not to be worth
+  making.** Chasing the last of the distance to C, the plan was to drop bounds
+  checks where the loop proves the index is in range. Measuring first said
+  not to: removing every bounds check from the Dijkstra benchmark takes it
+  from 47 ms to 46, and marking buffer parameters `noalias` changes nothing at
+  all. Both were dropped unmade. The same measurement said where the time
+  actually was — 88% of that program's end-to-end run is reading its input,
+  where every line becomes a list of strings through `split`, `filter` and
+  `map`, about fifteen allocations a line. `scan_int()` scans a
+  whitespace-delimited number straight out of the input buffer and allocates
+  nothing, stopping on the delimiter without swallowing it. The benchmark goes
+  from 495 ms to **120 ms** — past the C it is written against, which spends
+  221 ms in `scanf`.
+
 - **A loop can carry something.** `for i in a..b with acc = init` runs the
   body for each `i` with `acc` in scope, takes the body's value as the next
   `acc`, and is worth the last one. It costs nothing new: like the plain form

@@ -536,6 +536,52 @@ unsafe fn in_byte() -> i32 {
     b as i32
 }
 
+/// Puts back the byte just taken, so a scanner can stop on the delimiter it
+/// found without swallowing it.
+unsafe fn in_unread() {
+    if IN_POS > 0 {
+        IN_POS -= 1;
+    }
+}
+
+/// Reads the next whitespace-delimited integer from stdin. Nothing is
+/// allocated on the way, which is the difference between this and splitting a
+/// line into a list of strings and converting each. Sets `io_ok` false at the
+/// end of the input or on anything that is not a number.
+#[no_mangle]
+pub unsafe extern "C" fn rill_scan_int() -> i64 {
+    IO_OK = 1;
+    let mut c = in_byte();
+    while c == 32 || c == 10 || c == 9 || c == 13 {
+        c = in_byte();
+    }
+    if c < 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    let neg = c == b'-' as i32;
+    if neg || c == b'+' as i32 {
+        c = in_byte();
+    }
+    if !(48..=57).contains(&c) {
+        IO_OK = 0;
+        return 0;
+    }
+    let mut v: i64 = 0;
+    while (48..=57).contains(&c) {
+        v = v.wrapping_mul(10).wrapping_add((c - 48) as i64);
+        c = in_byte();
+    }
+    if c >= 0 {
+        in_unread();
+    }
+    if neg {
+        -v
+    } else {
+        v
+    }
+}
+
 /// Reads one line from stdin (newline stripped); EOF with no data sets
 /// `io_ok` false.
 ///

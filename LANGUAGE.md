@@ -797,7 +797,7 @@ owns the frame.
 | `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage |
 | `channel()` `send(ch, v)` `recv(ch)` | channels |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
-| `read_file_raw(path)` `write_file(path, text)` `read_line()` `io_ok()` | file and stdin IO; standard input is read in blocks |
+| `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |
 | `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `#b` | building a string a piece at a time |
 | `to_cstr` `from_cstr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |

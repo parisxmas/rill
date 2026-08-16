@@ -1110,6 +1110,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_read_line", ptrt.fn_type(&[], false), None);
+        self.module.add_function("rill_scan_int", i64t.fn_type(&[], false), None);
         self.module.add_function("rill_exit", void.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_to_cstr", ptrt.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_from_cstr", ptrt.fn_type(&[ptrt.into()], false), None);

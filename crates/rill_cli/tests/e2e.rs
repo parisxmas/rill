@@ -251,6 +251,46 @@ fn string_builders_accumulate() {
     assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
 }
 
+/// `scan_int` scans a number straight out of the input buffer: no line, no
+/// split, no list of strings, nothing allocated. It stops on the delimiter it
+/// finds without swallowing it, so the rest of the line is still there.
+#[test]
+fn scan_int_scans_numbers() {
+    let src = "fn main() =\n  \
+                 a = scan_int()\n  \
+                 b = scan_int()\n  \
+                 c = scan_int()\n  \
+                 println(a + b + c)\n  \
+                 println(read_line())\n  \
+                 d = scan_int()\n  \
+                 println(d)\n  \
+                 println(io_ok())\n  \
+                 e = scan_int()\n  \
+                 println(io_ok())\n";
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-ri-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("scan.rill");
+    std::fs::write(&path, src).unwrap();
+    let exe = out_dir.join("scan");
+    assert!(Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .unwrap()
+        .success());
+    let mut child = std::process::Command::new(&exe)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    write!(child.stdin.as_mut().unwrap(), "  10 -3\n7 tail\n42\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "14\n tail\n42\ntrue\nfalse\n");
+}
+
 /// Standard input is read in blocks. It used to be a syscall a byte, which on
 /// a large input was the whole of what a program did.
 #[test]
