@@ -555,7 +555,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     const now = audio.currentTime;
     musicGain.gain.cancelScheduledValues(now);
     musicGain.gain.setValueAtTime(musicGain.gain.value, now);
-    musicGain.gain.linearRampToValueAtTime(on ? 0.34 : 0.0, now + (on ? 4.0 : 0.6));
+    musicGain.gain.linearRampToValueAtTime(on ? 0.17 : 0.0, now + (on ? 4.0 : 0.6));
   }
   function bang() {
     ensureAudio(() => playAt(shotBuf, 0, 0, 0.55 + Math.random() * 0.12, 0,
