@@ -308,8 +308,24 @@ fn step_bullet(s, b, at, dt) =
   py = peek_f32(b, at + 1) + vy * dt * on
   pz = peek_f32(b, at + 2) + vz * dt * on
   landed = if py < stop_height(px, pz) then 1.0 else 0.0
-  # Anything solid on the way there, before the position is committed.
-  hit_crystals(s, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
+  # Anything solid on the way there, before the position is committed — and
+  # only if there is a round to do the hitting.
+  #
+  # This ran unconditionally, and a dead slot is not a harmless one. An expired
+  # bullet keeps its last position and stops moving, so the test ran every frame
+  # on a segment of zero length sitting wherever it stopped — and the slots
+  # start life at the origin, all thirty-two of them, because `clear_bullets`
+  # zeroes the lifetime and nothing else. A crystal near that point was safe
+  # only until it charged: the swell takes it to two and a half times its size,
+  # the hit spheres grow with it, and the crystal reached out and broke itself
+  # on a round that had been dead for a minute.
+  #
+  # It looked like crystals shattering on their own, and it got worse the more
+  # often they fired, which is the sort of thing that sends you looking at the
+  # charge animation. It was one missing guard.
+  if on > 0.5 then
+    hit_crystals(s, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
+  else 0
   poke_f32(b, at, px)
   poke_f32(b, at + 1, py)
   poke_f32(b, at + 2, pz)
@@ -571,12 +587,18 @@ fn relax_time() = 0.95
 
 fn charge_swell() = 1.5
 
-# Three seconds between attempts, not one. Measured at one, twenty-two of these
-# landed on the player in thirty-five seconds — a fireball every second and a
-# half, arriving faster than the two and a half seconds one takes to fly. That
-# is not a valley that occasionally throws something at you, it is a barrage,
-# and a threat that never stops stops being a threat.
-fn fireball_every() = 3.0       # seconds between attempts
+# One and a bit seconds between attempts.
+#
+# This has been round twice. At one second, twenty-two landed on a standing
+# player in thirty-five — arriving faster than the two and a half seconds one
+# takes to fly, which is a barrage, and a threat that never stops stops being a
+# threat. At three it was sixteen a minute and the hillside went quiet.
+#
+# What changed in between is that a blast now throws you: getting knocked
+# several metres means the next one, aimed at where you were, lands wide, so
+# the rate a player can absorb went up on its own. One point six sits where the
+# valley is busy without the sky being permanently full.
+fn fireball_every() = 1.6       # seconds between attempts
 
 fn fireball_reach() = 70.0      # nothing nearer than this throws
 
@@ -724,8 +746,8 @@ fn blast_cap() = 8
 
 fn blast_stride() = 8
 
-# What an impact does to whoever is standing near it. Nothing past twenty
-# metres, falling off hard inside it — wider than the fireball's own twelve,
+# What an impact does to whoever is standing near it. Nothing past sixty
+# metres, falling off hard inside it — five times the fireball's own twelve,
 # because the pressure gets to you before the fire does and there is nowhere to
 # be that is "just outside" an explosion.
 #
@@ -744,13 +766,17 @@ fn blast_hurt(s, x, y, z) =
   dy = peek_f32(s, 22) + 1.0 - y
   dz = peek_f32(s, 23) - z
   d = sqrt(dx * dx + dy * dy + dz * dz)
-  k = clampf(1.0 - d / 20.0, 0.0, 1.0)
-  # Cubed, not squared, and out to twenty metres rather than fourteen. Squared
-  # over a short radius meant every impact either missed entirely or took the
-  # same bite out of you, because these are thrown at where you are standing and
-  # so nearly all of them land within a few metres. Cubed over a wide one, a
-  # direct hit is worth twenty times a landing at the edge of the crater, and
-  # the difference between running and standing still is legible.
+  k = clampf(1.0 - d / 60.0, 0.0, 1.0)
+  # Cubed, and out to sixty metres. Squared over a short radius meant every
+  # impact either missed entirely or took the same bite out of you, because
+  # these are thrown at where you are standing and so nearly all of them land
+  # within a few metres.
+  #
+  # Sixty is wide — most of what you can see — and the cube is what stops that
+  # from meaning everything hurts equally: full at your feet, a third of it at
+  # twenty metres, a hundredth at fifty. What it buys is that a near miss is
+  # felt at all, so the ones that land across the meadow are still part of the
+  # weather rather than being either lethal or nothing.
   hit = 0.115 * k * k * k
   if hit < 0.002 then 0
   else

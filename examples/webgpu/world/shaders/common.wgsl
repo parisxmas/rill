@@ -126,12 +126,13 @@
   // sky, and the planets are scaled to keep the same ratio to it that makes
   // them read as further away.
 
-  // How fast the world turns under the sky: one revolution in four minutes.
-  // Fast enough that a pine's shadow visibly sweeps the ground while you stand
-  // still. The same number lives in `host.js`, which swings the sun and the
+  // How fast the world turns under the sky: one revolution in ninety seconds,
+  // because this is a small planet and that is the only way the size of a world
+  // shows from standing on it. Fast enough that a pine's shadow visibly travels
+  // while you stand still, and that a whole day happens inside a visit. The same number lives in `host.js`, which swings the sun and the
   // shadow matrix by it — they have to agree, or the moon's terminator drifts
   // away from the sun that is supposed to be casting it.
-  const SKY_SPIN = 0.0261799388;      // 2π / 240
+  const SKY_SPIN = 0.0698131701;      // 2π / 90
 
   // The pole the whole sky turns about — the same one the sun runs round in
   // `host.js`, all but horizontal, so the sky wheels overhead the way it does

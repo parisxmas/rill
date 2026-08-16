@@ -166,14 +166,19 @@
   <script type="module">
     // Versioned because the CDN in front of this holds .js for a week; bump it
     // when host.js changes. index.html itself is never cached.
-    import { run } from "./host.js?v=153";
+    //
+    // The wasm carries the same number, and that is not decoration: a rebuilt
+    // world.wasm behind an unversioned URL is served from cache, and what you
+    // get is new renderer against old world — which looks exactly like the fix
+    // you just made not working.
+    import { run } from "./host.js?v=162";
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=162", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       stat.innerHTML =

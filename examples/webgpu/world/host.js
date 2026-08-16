@@ -282,7 +282,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // texture, and the valley itself. `run` does not resolve until a frame has
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
-  const TOTAL = 9 + Object.keys(SHADERS).length + TEXTURES.length;
+  // Nine fetch/build steps, one per shader, one per texture, and six decodes.
+  const TOTAL = 10 + Object.keys(SHADERS).length + TEXTURES.length + 6;
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -559,7 +560,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
-  let roarBuf = null, roars = null;
+  let roarBuf = null, roars = null, pickBuf = null, musicStarted = false;
   let musicGain = null, musicOn = true;
   const shotBytes = await (await fetch("./rifle-shot.mp3")).arrayBuffer();
   step("rifle-shot.mp3");
@@ -590,6 +591,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // no crossfade needed anywhere.
   const roarBytes = await (await fetch("./meteor-air.mp3")).arrayBuffer();
   step("meteor-air.mp3");
+  // A chip of crystal going in. Three quarters of a second off the front of a
+  // CC0 harp figure by Julie Damsgaard — the rest of it is a two-second tail,
+  // which is a lovely thing to have and the wrong shape entirely for a sound
+  // that fires four times while you cross a patch of debris.
+  const pickBytes = await (await fetch("./pickup.mp3")).arrayBuffer();
+  step("pickup.mp3");
   // The theme. Eighty seconds that begin and end in silence, which is what
   // makes it loop without a seam: no crossfade, no loop points, just the tail
   // running into the head the way the piece was already written.
@@ -611,22 +618,42 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     src.connect(g).connect(p).connect(audio.destination);
     if (dur > 0) { src.start(0, offset, dur); } else { src.start(); }
   }
+  // Everything decoded while the bar is still on screen, not on the first
+  // click. A browser will not let audio *play* before a gesture, but it will
+  // decode: the context is made here and left suspended, and six files turn
+  // into six buffers during the load rather than in the first second of play.
+  //
+  // That is worth a step each on the bar. Decoding is the slow half of getting
+  // a sound ready — the theme is eighty seconds of mp3 — and doing it on the
+  // click meant the click that started the game also stalled it, with the
+  // loading screen already gone and nothing to say why.
+  async function decodeAll(step) {
+    audio = new (globalThis.AudioContext ?? globalThis.webkitAudioContext)();
+    musicGain = audio.createGain();
+    musicGain.gain.value = 0;
+    musicGain.connect(audio.destination);
+    const one = async (bytes, label) => {
+      const b = await audio.decodeAudioData(bytes.slice(0));
+      step(label);
+      return b;
+    };
+    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, musicBuf] = await Promise.all([
+      one(shotBytes, "decoding rifle-shot"),
+      one(breakBytes, "decoding crystal-break"),
+      one(blastBytes, "decoding meteor-blast"),
+      one(roarBytes, "decoding meteor-air"),
+      one(pickBytes, "decoding pickup"),
+      one(musicBytes, "decoding valley-theme"),
+    ]);
+  }
+
+  // The gesture only has to wake it up now, and start the two things that run
+  // for the life of the page.
   function ensureAudio(then) {
-    if (!audio) {
-      audio = new (globalThis.AudioContext ?? globalThis.webkitAudioContext)();
-      musicGain = audio.createGain();
-      musicGain.gain.value = 0;
-      musicGain.connect(audio.destination);
-      Promise.all([
-        audio.decodeAudioData(shotBytes.slice(0)).then(b => { shotBuf = b; }),
-        audio.decodeAudioData(breakBytes.slice(0)).then(b => { breakBuf = b; }),
-        audio.decodeAudioData(blastBytes.slice(0)).then(b => { blastSnd = b; }),
-        audio.decodeAudioData(roarBytes.slice(0)).then(b => { roarBuf = b; startRoars(); }),
-        audio.decodeAudioData(musicBytes.slice(0)).then(b => { musicBuf = b; startMusic(); }),
-      ]).then(then);
-      return;
-    }
+    if (!audio) { then(); return; }
     if (audio.state === "suspended") audio.resume();
+    if (!roars && roarBuf) startRoars();
+    if (!musicStarted && musicBuf) { musicStarted = true; startMusic(); }
     then();
   }
 
@@ -729,6 +756,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
              0.94 + Math.random() * 0.14);
     });
   }
+  // Picking one up. Walking over a break takes several chips in a row, so this
+  // climbs a semitone each time and resets after a gap — a run rather than the
+  // same note four times, which is what turns a pile of pickups into one
+  // gesture. Seven steps is a fifth, and it stops there rather than climbing
+  // out of the top of the scale.
+  let chimeStep = 0, chimeAt = -9;
+  function chime(now) {
+    ensureAudio(() => {
+      chimeStep = now - chimeAt < 0.75 ? Math.min(chimeStep + 1, 7) : 0;
+      chimeAt = now;
+      playAt(pickBuf, 0, 0, 0.46, 0, Math.pow(2, chimeStep / 12));
+    });
+  }
+
   // How far an impact carries, and nothing past it.
   //
   // Thirty-two metres, which is close. Measured over half a minute of play the
@@ -1049,6 +1090,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   }
   buildWorld(tierIdx);
   step("the valley");
+  // Last, because it is the one thing that can be done while the GPU work
+  // above is already in flight, and because six decodes finishing is a fair
+  // definition of "everything is loaded".
+  await decodeAll(step);
 
   // A ninety-degree view from a point, as one column-major matrix. Written out
   // by hand because this is the only place in the whole program that builds a
@@ -1181,7 +1226,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const median = a => [...a].sort((x, y) => x - y)[a.length >> 1];
 
   // The sun's path across the sky, and how fast the world runs along it: one
-  // turn in four minutes. `shaders/common.wgsl` carries the same axis and the
+  // turn in a minute and a half.
+  //
+  // This is a small planet. Not a decision about the terrain — the valley is
+  // the size it always was — but about how long it takes to carry you round,
+  // and that is the only way the size of a world is visible from standing on
+  // it. A day and a night in ninety seconds means the sun comes up while you
+  // are still working out where you are, and the whole cycle is something you
+  // watch rather than something you wait for. It was four minutes, which was
+  // long enough that most of a visit happened under one lighting. `shaders/common.wgsl` carries the same axis and the
   // same rate, because the stars and the planets wheel about the same pole.
   //
   // The pole is very nearly horizontal, so the sun's path is a great circle
@@ -1213,7 +1266,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // coming down, so the first thing anyone sees is the light this place was
   // built for rather than a flat noon.
   const SUN_PHASE = -0.495;
-  const SKY_SPIN = 2 * Math.PI / 240;
+  const SKY_SPIN = 2 * Math.PI / 90;
   const uf = new Float32Array(56);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
@@ -1352,8 +1405,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // it stays evening. A tilted axis would be more honest and would put the
     // sun in the ground within ten minutes, taking the whole look with it.
     //
-    // One turn in four minutes — a degree and a half a second, ninety times a
-    // real day, which reads as weather moving rather than as time-lapse.
+    // One turn in ninety seconds — four degrees a second, which is fast enough
+    // to watch a shadow travel and slow enough not to strobe.
     // Where the sun is now: a point on the tilted circle. What goes into the
     // uniform and into the shadow matrix is the direction the light travels,
     // which is the other way round from where the sun is.
@@ -1412,6 +1465,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     const hp = E.health(state);
     if (Math.abs(hp - lastHp) > 0.002) {
       if (hp < lastHp - 0.004) { vitfill.classList.add("hurt"); hurtUntil = t + 0.45; }
+      else if (hp > lastHp + 0.001 && lastHp >= 0) chime(t);
       lastHp = hp;
       vitfill.style.width = `${(hp * 100).toFixed(1)}%`;
       // Amber through to red as it goes. Two stops rather than one so the bar
