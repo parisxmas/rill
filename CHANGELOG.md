@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **Float arithmetic contracts.** A multiply and the add that consumes it can
+  become one fused instruction now, rounding once instead of twice. The answer
+  is nearer the true one, not further, but it is not the answer two separate
+  roundings give — which is exactly the trade C, C++ and Go make by default
+  and Rust and Zig decline. Rill follows the first group, and nothing else is
+  loosened: no reassociation, no assumptions about NaN or infinity, no
+  reciprocals, just `contract`.
+
+  It is worth six percent on a Mandelbrot — 194 ms to **182**, which is past
+  the 196 of the C it is measured against, and that C is the one with three
+  fused instructions to Rill's one. The same benchmark is what found it: C,
+  C++ and Go sat at 201 ms and Rust, Zig and C# at 249, and the whole of that
+  gap was this one flag.
+
+- **A better error when a local function is asked to be two types.** It is
+  checked together with the function it is written inside — that is what lets
+  a captured buffer keep its width — so it has one type rather than a scheme.
+  Used at two, it failed with a plain mismatch that said nothing about why.
+  It now names the function it was written inside, and says that moving it to
+  the top level is the fix.
+
+- **`List` or `Buf`.** Not something the compiler can decide, so LANGUAGE.md
+  says when each is right, with the JSON parser as the worked example: it
+  builds arrays as lists, and that one choice is half of what it still gives
+  away to the C it is measured against.
+
 - **A list can be rebuilt in the list it came from.** Perceus reuse: when a
   `match` arm takes a box apart, the frame is what holds it, and nothing left
   in the arm can say its name, the next constructor of exactly that shape is

@@ -82,6 +82,14 @@ fn area(r: Float) -> Float = 3.14159 * r * r
 There are no implicit conversions. `1 + 2.0` is a type error; `to_float` and
 `to_int` cross between them explicitly.
 
+Float arithmetic may be **contracted**: a multiply and the add that consumes it
+can become one fused instruction, rounding once instead of twice. The answer is
+nearer the true one, not further, but it is not the answer two separate
+roundings give. C, C++ and Go do this by default and Rill follows them; Rust
+and Zig do not. Nothing else about float arithmetic is loosened — no
+reassociation, no assumptions about NaN or infinity, no reciprocals. On a
+Mandelbrot it is worth about six percent.
+
 ### Algebraic data types
 
 ```
@@ -423,8 +431,30 @@ last reference dies — deterministically, with no pauses. Nullary constructors
 (`Nil`, `None`) are static singletons and never allocate; small objects come
 from a pooled allocator.
 
+When a `match` takes a box apart and nothing left can reach it by name, the
+next constructor of exactly that shape is built **in that box** rather than in
+a fresh one — so `map`, `filter`, `reverse` and `split` walk a list without
+allocating anything, writing each link over the link they read it from.
+
 Run any program with `RILL_DEBUG_ALLOC=1` to have the runtime print the number
 of live allocations at exit.
+
+### `List` or `Buf`
+
+`List(a)` is a cons list: `Cons` in front is free, and everything else is a
+walk. Building one in order means accumulating it backwards and turning it
+round, which the prelude does for you and which costs a second pass — the
+reuse above makes it allocate nothing, but it is still a pass.
+
+`Buf(w)` is storage: a counted, mutable, bounds-checked array of a fixed
+width, indexed in constant time and appended to by keeping your own length.
+
+Reach for `Buf` when the program is really building an array — a growing
+sequence read by index, or anything a C version would `realloc`. Reach for
+`List` when the program is really consing: recursion over a structure, a stack,
+a queue of work. The JSON parser in `benchmarks/tokens/` is the honest example
+of the difference: it builds arrays as lists, and that one choice is half of
+what it still gives away to the C it is measured against.
 
 ---
 

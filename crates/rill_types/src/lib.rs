@@ -406,6 +406,10 @@ struct Checker {
     forced_sigs: HashMap<String, (Vec<Ty>, Ty, usize)>,
     /// All functions to check: user functions plus mangled impl methods.
     expanded_fns: Vec<FnDef>,
+    /// For each function index, the name it was written inside if it was
+    /// lifted out of one. Only used to say something useful when a local
+    /// function is asked to be two types at once — see below.
+    lifted: Vec<Option<String>>,
     /// Carried through to `TModule`; see the field there.
     prelude_fns: usize,
     /// Per function: the inference-var id behind each `Gen` index, recorded at
@@ -431,6 +435,7 @@ impl Checker {
             impl_methods: HashMap::new(),
             forced_sigs: HashMap::new(),
             expanded_fns: Vec::new(),
+            lifted: Vec::new(),
             prelude_fns: 0,
             gen_vars: Vec::new(),
         };
@@ -830,6 +835,12 @@ impl Checker {
         // handled as one group and a function whose type is settled by a
         // later definition still comes out right.
         let fns_to_check = std::mem::take(&mut self.expanded_fns);
+        self.lifted = vec![None; self.sigs.len()];
+        for f in &fns_to_check {
+            if let (Some(&i), Some(outer)) = (self.fn_index.get(&f.name), f.lifted_from.as_ref()) {
+                self.lifted[i] = Some(outer.clone());
+            }
+        }
         let mut tfns: Vec<Option<TFn>> = (0..fns_to_check.len()).map(|_| None).collect();
         for group in dependency_groups(&fns_to_check, &self.fn_index) {
             // Infer the whole group with every signature still provisional...
@@ -2158,7 +2169,30 @@ impl Checker {
         let mut targs = Vec::new();
         for (a, pt) in args.iter().zip(&params) {
             let at = self.infer(a, env)?;
-            self.unify(pt, &at.ty, line, "function argument")?;
+            // A function written inside another is checked together with it,
+            // which is what lets it take a captured buffer without being told
+            // its width — and is also why it settles on one type per use site
+            // rather than one per call. The error for that reads as an
+            // ordinary mismatch, so say what it really is.
+            self.unify(pt, &at.ty, line, "function argument").map_err(|e| {
+                match (&self.sigs[idx], self.lifted.get(idx).and_then(|l| l.as_ref())) {
+                    (SigState::Provisional { .. }, Some(outer)) => {
+                        // Lifting renamed it `outer.name`; say the name that
+                        // was written.
+                        let short = name.rsplit('.').next().unwrap_or(name);
+                        TypeError::new(
+                            line,
+                            format!(
+                                "{}\n  `{short}` is written inside `{outer}`, and a function \
+                                 written inside another has one type rather than one per call. \
+                                 Move it to the top level to use it at more than one.",
+                                e.msg
+                            ),
+                        )
+                    }
+                    _ => e,
+                }
+            })?;
             targs.push(at);
         }
         Ok(TExpr { ty: ret, line, kind: TK::CallFn { fn_idx: idx, subst, args: targs } })

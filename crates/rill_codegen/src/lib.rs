@@ -1386,6 +1386,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// of what the store touches, and reference counting is hot enough that
     /// this showed up as a third of the running time on tree-building code.
     /// Taken as written, the common path is exactly what it was before.
+    /// Marks a float instruction as fusable. See the note at its use.
+    fn contract(v: inkwell::values::FloatValue<'ctx>) -> inkwell::values::FloatValue<'ctx> {
+        if let Some(i) = v.as_instruction() {
+            let _ = i.set_fast_math_flags(inkwell::values::FastMathFlags::AllowContract);
+        }
+        v
+    }
+
     fn store_rc(
         &mut self,
         rc_ptr: PointerValue<'ctx>,
@@ -3619,9 +3627,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Ty::Float => {
                 let (l, r) = (l.into_float_value(), r.into_float_value());
                 match op {
-                    BinOp::Add => b.build_float_add(l, r, "add").unwrap().into(),
-                    BinOp::Sub => b.build_float_sub(l, r, "sub").unwrap().into(),
-                    BinOp::Mul => b.build_float_mul(l, r, "mul").unwrap().into(),
+                    // `contract`, and nothing else. It lets the backend fold a
+                    // multiply and the add that consumes it into one fused
+                    // instruction, which rounds once instead of twice — the
+                    // result is nearer the true one, not further, but it is
+                    // not the result two separate roundings would give. C, C++
+                    // and Go do this by default; Rust and Zig do not. Nothing
+                    // else is loosened: no reassociation, no assumptions about
+                    // NaN or infinity, no reciprocals.
+                    BinOp::Add => Self::contract(b.build_float_add(l, r, "add").unwrap()).into(),
+                    BinOp::Sub => Self::contract(b.build_float_sub(l, r, "sub").unwrap()).into(),
+                    BinOp::Mul => Self::contract(b.build_float_mul(l, r, "mul").unwrap()).into(),
                     BinOp::Div => b.build_float_div(l, r, "div").unwrap().into(),
                     cmp => {
                         let pred = match cmp {
