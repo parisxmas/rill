@@ -33,6 +33,12 @@ extern "C" {
     fn free(ptr: *mut u8);
     fn getenv(name: *const u8) -> *const u8;
     fn strtod(s: *const u8, end: *mut *const u8) -> f64;
+    // Searching a byte at a time is what a naive `find` does; `memchr` is
+    // vectorized in every C library worth linking against, and standard
+    // everywhere this runtime is built — including wasi and Windows, which
+    // `memmem` is not.
+    fn memchr(s: *const u8, c: i32, n: usize) -> *const u8;
+    fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32;
 }
 
 #[panic_handler]
@@ -365,11 +371,20 @@ pub unsafe extern "C" fn rill_str_find(s: *const u8, needle: *const u8) -> i64 {
     if m > n {
         return -1;
     }
-    let hay = core::slice::from_raw_parts(str_bytes(s), n);
-    let nee = core::slice::from_raw_parts(str_bytes(needle), m);
+    let hay = str_bytes(s);
+    let nee = str_bytes(needle);
+    // Jump to each place the first byte occurs and compare from there. The
+    // jumping is the vectorized part and it is where the time goes: a needle's
+    // first byte is rare in ordinary text, so most of the haystack is crossed
+    // sixteen bytes at a time and never looked at again.
     let mut i = 0;
     while i + m <= n {
-        if &hay[i..i + m] == nee {
+        let hit = memchr(hay.add(i), *nee as i32, n - m - i + 1);
+        if hit.is_null() {
+            return -1;
+        }
+        i = hit as usize - hay as usize;
+        if m == 1 || memcmp(hay.add(i), nee, m) == 0 {
             return i as i64;
         }
         i += 1;

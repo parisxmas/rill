@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **`str_find` stops looking one byte at a time.** It compared the needle
+  against every position in turn, which is how a search reads when you write
+  it out and is not how anyone's C library does it. It now jumps to each place
+  the first byte occurs — `memchr`, which is vectorized everywhere this
+  runtime is built — and compares from there. Searching a 20 MB text twenty
+  times goes from 1020 ms to **27**, which is also seven times faster than the
+  same searches through macOS's own `memmem`. `contains`, `starts_with`,
+  `split` and `lines` all go through it.
+
+  This was the answer to a wider question: does Rill get SIMD at all? It does,
+  from LLVM, and it gets it for the loops people actually write — summing a
+  `Buf` and counting bytes in a `Str` both compile to the same NEON as the C
+  they were written against, whether the loop is spelled `for … with` or as
+  tail recursion. What was left out was the runtime's own byte loops, and
+  `str_find` was the one that mattered.
+
 - **Four things the runtime was doing the slow way.** The JSON benchmark was
   the last place Rill lost badly to C, so it was profiled rather than guessed
   at, and every one of the four costs turned out to be the language's fault
