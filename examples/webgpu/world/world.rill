@@ -533,15 +533,16 @@ fn fireball_speed() = 14.0      # horizontal; the arc comes from the height
 # aiming, the drag, the landing — is the same arithmetic as the rifle's.
 fn fireball_g() = 3.2
 
-# Before it throws, a crystal draws itself up: half again its size over a
-# second, held for the instant of the throw, then let back down. Only ever one
-# at a time, so the whole animation is three numbers in the state rather than a
-# field on every instance.
-fn charge_time() = 1.05
+# Before it throws, a crystal draws itself up — two and a half times its own
+# size over a second and a quarter, which is enough to see from across the
+# valley and is the only warning there is — throws, and settles back over
+# nearly as long. Only ever one at a time, so the whole animation is three
+# numbers in the state rather than a field on every instance.
+fn charge_time() = 1.25
 
-fn relax_time() = 0.85
+fn relax_time() = 0.95
 
-fn charge_swell() = 0.55
+fn charge_swell() = 1.5
 
 fn fireball_every() = 2.6       # seconds between attempts
 

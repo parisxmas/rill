@@ -96,9 +96,12 @@
 
     o.world = world;
     o.clip = u.vp * vec4f(world, 1.0);
-    // Thinning away at the far end, and gone entirely if there is no trail to
-    // draw yet.
-    o.fade = select(0.0, 1.0 - age * age * 0.55, span > 0.02);
+    // Dimming the whole way back, and reaching nothing rather than levelling
+    // off. It has to fall this steeply because the puffs overlap: thirty-two
+    // of them over fifteen metres, added together, hold a near-constant
+    // brightness across the first half of the trail unless each one is already
+    // most of the way down by the time the next one arrives.
+    o.fade = select(0.0, pow(1.0 - age, 2.2), span > 0.02);
     return o;
   }
 
@@ -132,5 +135,5 @@
     var glow = mix(core, soft, smoke) * (1.0 - 0.72 * smoke);
 
     let view = v.world - u.eye.xyz;
-    return vec4f(col * glow * 2.3 * v.fade * (1.0 - fogAt(v.world, length(view))), 1.0);
+    return vec4f(col * glow * 2.0 * v.fade * (1.0 - fogAt(v.world, length(view))), 1.0);
   }
