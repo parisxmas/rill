@@ -24,8 +24,9 @@
 #   f32 60, 61   next slot in the bullet ring, and in the shard ring
 #   f32 62       crystals broken so far    70..72  where the last one stood
 #   f32 63       next slot in the fireball ring   73  the charge's own clock
-#   f32 75, 76   which crystal is winding up, and the size it was
-#   f32 78       0 idle, 1 growing, 2 settling back
+#   ptr 77       three chargers: crystal, its size, mode, clock
+#   f32 79       gate: zero lets one charge begin this frame
+#   f32 80       next slot in the blast ring    ptr 81  the blasts themselves
 #   ptr 74       the fireballs the far crystals throw
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
 #   ptr 68, 69   the bullets, and the shards they knock loose
@@ -544,7 +545,7 @@ fn relax_time() = 0.95
 
 fn charge_swell() = 1.5
 
-fn fireball_every() = 2.6       # seconds between attempts
+fn fireball_every() = 1.0       # seconds between attempts
 
 fn fireball_reach() = 45.0      # nothing nearer than this throws
 
@@ -565,77 +566,166 @@ fn launch_fireball(fb, k, cx, cy, cz, px, py, pz, seed) =
   poke_f32(fb, at + 8, 0.0)
   1
 
-# Pick one to wind up: far enough away, still standing, chosen at random.
-fn begin_charge(s, tnow) =
-  cb = peek_ptr(s, 66)
-  n = to_int(peek_f32(s, 58))
-  r = hash2(floor(tnow * 7.3), 91.0)
-  i = to_int(r * to_float(n)) % n
-  cat = i * 8
-  sc = peek_f32(cb, cat + 3)
-  if sc < 0.01 then 0
-  else
-    dx = peek_f32(s, 21) - peek_f32(cb, cat)
-    dz = peek_f32(s, 23) - peek_f32(cb, cat + 2)
-    if sqrt(dx * dx + dz * dz) < fireball_reach() then 0
-    else
-      poke_f32(s, 75, to_float(i))
-      poke_f32(s, 76, sc)
-      poke_f32(s, 78, 1.0)
-      poke_f32(s, 73, 0.0)
-      1
+# Three crystals can be winding up at once. One at a time held the rate down to
+# a shot every five seconds however short the wait between them was made: the
+# swell and the settle are two and a quarter of those seconds on their own, and
+# nothing else could start until they were done. Three of them, each with its
+# own index, size, mode and clock, live in a little buffer rather than in state
+# slots — which is also what makes the count a constant to change rather than a
+# rewrite.
 
-fn throw_now(s, tnow) =
-  cb = peek_ptr(s, 66)
-  cat = to_int(peek_f32(s, 75)) * 8
-  base = peek_f32(s, 76)
-  cx = peek_f32(cb, cat)
-  cy = peek_f32(cb, cat + 1) + base * 1.9
-  cz = peek_f32(cb, cat + 2)
+fn charger_cap() = 3
+
+fn charger_stride() = 4          # crystal, its size, mode, clock
+
+# Two chargers must not take the same crystal. Written out rather than looped
+# because a `for` here would have nothing to accumulate into.
+fn taken_at(cbuf, at, i) =
+  if peek_f32(cbuf, at + 2) < 0.5 then 0
+  else if to_int(peek_f32(cbuf, at)) == i then 1
+  else 0
+
+fn taken(cbuf, i) =
+  taken_at(cbuf, 0, i) + taken_at(cbuf, 4, i) + taken_at(cbuf, 8, i)
+
+# Slot 79 is the gate: zero means one charge may begin this frame.
+fn maybe_start(s, cbuf, ci, tnow) =
+  at = ci * charger_stride()
+  if peek_f32(s, 79) > 0.5 then 0
+  else if peek_f32(cbuf, at + 2) > 0.5 then 0
+  else
+    cb = peek_ptr(s, 66)
+    n = to_int(peek_f32(s, 58))
+    r = hash2(floor(tnow * 7.3) + to_float(ci) * 3.0, 91.0)
+    i = to_int(r * to_float(n)) % n
+    cat = i * 8
+    sc = peek_f32(cb, cat + 3)
+    if sc < 0.01 then 0
+    else if taken(cbuf, i) > 0 then 0
+    else
+      dx = peek_f32(s, 21) - peek_f32(cb, cat)
+      dz = peek_f32(s, 23) - peek_f32(cb, cat + 2)
+      if sqrt(dx * dx + dz * dz) < fireball_reach() then 0
+      else
+        poke_f32(cbuf, at, to_float(i))
+        poke_f32(cbuf, at + 1, sc)
+        poke_f32(cbuf, at + 2, 1.0)
+        poke_f32(cbuf, at + 3, 0.0)
+        poke_f32(s, 79, 1.0)
+        1
+
+fn throw_from(s, cb, cat, base, tnow) =
   k = to_int(peek_f32(s, 63))
   poke_f32(s, 63, to_float(k + 1))
-  launch_fireball(peek_ptr(s, 74), k, cx, cy, cz,
+  launch_fireball(peek_ptr(s, 74), k,
+                  peek_f32(cb, cat), peek_f32(cb, cat + 1) + base * 1.9, peek_f32(cb, cat + 2),
                   peek_f32(s, 21), peek_f32(s, 22) + 1.2, peek_f32(s, 23),
                   hash2(floor(tnow * 11.7), 53.0))
 
 # Growing, throwing, settling back. If the crystal is shot while it is winding
-# up, its scale is already zero and there is nothing to put back: the machine
-# just goes idle, which is what `alive` below is for.
-fn run_charge(s, dt, tnow) =
-  mode = peek_f32(s, 78)
-  ct = peek_f32(s, 73) + dt
-  poke_f32(s, 73, ct)
-  if mode < 0.5 then
-    (if ct > fireball_every() then begin_charge(s, tnow) else 0)
+# up, its scale is already zero and there is nothing to put back: the charger
+# just goes idle, which is what the liveness test is for.
+fn run_one(s, cbuf, ci, dt, tnow) =
+  at = ci * charger_stride()
+  mode = peek_f32(cbuf, at + 2)
+  if mode < 0.5 then 0
   else
     cb = peek_ptr(s, 66)
-    cat = to_int(peek_f32(s, 75)) * 8
-    base = peek_f32(s, 76)
-    alive = if peek_f32(cb, cat + 3) > 0.01 then 1.0 else 0.0
-    if alive < 0.5 then
-      poke_f32(s, 78, 0.0)
-      poke_f32(s, 73, 0.0)
+    cat = to_int(peek_f32(cbuf, at)) * 8
+    base = peek_f32(cbuf, at + 1)
+    ct = peek_f32(cbuf, at + 3) + dt
+    poke_f32(cbuf, at + 3, ct)
+    if peek_f32(cb, cat + 3) < 0.01 then
+      poke_f32(cbuf, at + 2, 0.0)
       0
     else if mode < 1.5 then
-      k = smoothstep(0.0, charge_time(), ct)
-      poke_f32(cb, cat + 3, base * (1.0 + charge_swell() * k))
+      poke_f32(cb, cat + 3, base * (1.0 + charge_swell() * smoothstep(0.0, charge_time(), ct)))
       if ct < charge_time() then 0
       else
-        throw_now(s, tnow)
-        poke_f32(s, 78, 2.0)
-        poke_f32(s, 73, 0.0)
+        throw_from(s, cb, cat, base, tnow)
+        poke_f32(cbuf, at + 2, 2.0)
+        poke_f32(cbuf, at + 3, 0.0)
         1
     else
-      k = smoothstep(0.0, relax_time(), ct)
-      poke_f32(cb, cat + 3, base * (1.0 + charge_swell() * (1.0 - k)))
+      poke_f32(cb, cat + 3, base * (1.0 + charge_swell() * (1.0 - smoothstep(0.0, relax_time(), ct))))
       if ct < relax_time() then 0
       else
         poke_f32(cb, cat + 3, base)
-        poke_f32(s, 78, 0.0)
-        poke_f32(s, 73, 0.0)
+        poke_f32(cbuf, at + 2, 0.0)
         1
 
-fn step_fireball(fb, at, dt) =
+fn start_pass(s, cbuf, tnow) =
+  for ci in 0..charger_cap()
+    maybe_start(s, cbuf, ci, tnow)
+
+fn step_pass(s, cbuf, dt, tnow) =
+  for ci in 0..charger_cap()
+    run_one(s, cbuf, ci, dt, tnow)
+
+fn run_charge(s, dt, tnow) =
+  cbuf = peek_ptr(s, 77)
+  ct = peek_f32(s, 73) + dt
+  due = if ct > fireball_every() then 1.0 else 0.0
+  poke_f32(s, 73, if due > 0.5 then 0.0 else ct)
+  poke_f32(s, 79, 1.0 - due)
+  start_pass(s, cbuf, tnow)
+  step_pass(s, cbuf, dt, tnow)
+
+fn clear_chargers(cbuf) =
+  for ci in 0..charger_cap()
+    poke_f32(cbuf, ci * charger_stride() + 2, 0.0)
+
+# ---- where one lands -------------------------------------------------------
+#
+# A ring of eight impacts, each remembered just long enough to be drawn: where
+# it was, a seed so no two blasts look alike, and how long ago. The debris is
+# not a second system — it is the same shards a broken crystal leaves, thrown
+# from the impact instead, charred rather than coloured. They fall, land and
+# stay, because that is what the shard pool already does.
+
+fn blast_cap() = 8
+
+fn blast_stride() = 8
+
+fn add_blast(s, x, y, z, seed) =
+  bb = peek_ptr(s, 81)
+  k = to_int(peek_f32(s, 80)) % blast_cap()
+  at = k * blast_stride()
+  poke_f32(bb, at, x)
+  poke_f32(bb, at + 1, y)
+  poke_f32(bb, at + 2, z)
+  poke_f32(bb, at + 3, seed)
+  poke_f32(bb, at + 4, 0.0)
+  poke_f32(s, 80, to_float(k + 1))
+
+  # Ten pieces of what it hit, thrown out of the crater.
+  sb = peek_ptr(s, 69)
+  k0 = to_int(peek_f32(s, 61))
+
+  for j in 0..10
+    spawn_shard(sb, k0 + j, x, y, z, 1.1, 0.34, 0.13, 0.05,
+                seed * 97.0 + to_float(j))
+
+  poke_f32(s, 61, to_float(k0 + 10))
+  1
+
+fn step_blast(bb, at, dt) =
+  a = peek_f32(bb, at + 4)
+  poke_f32(bb, at + 4, if a < 0.0 then a else a + dt)
+
+fn step_blasts(bb, dt) =
+  for i in 0..blast_cap()
+    step_blast(bb, i * blast_stride(), dt)
+
+fn clear_blasts(bb) =
+  for i in 0..blast_cap()
+    poke_f32(bb, i * blast_stride() + 4, 0.0 - 1.0)
+
+export fn blasts(s: Ptr) -> Ptr = peek_ptr(s, 81)
+
+export fn blasts_cap(s: Ptr) -> Int = blast_cap()
+
+fn step_fireball(s, fb, at, dt) =
   life = peek_f32(fb, at + 7) - dt
   on = if life > 0.0 then 1.0 else 0.0
   vx0 = peek_f32(fb, at + 3)
@@ -660,10 +750,13 @@ fn step_fireball(fb, at, dt) =
   poke_f32(fb, at + 5, vz)
   poke_f32(fb, at + 7, if landed > 0.5 then 0.0 else life)
   poke_f32(fb, at + 8, peek_f32(fb, at + 8) + dt * on)
+  # It touched the ground while it was still flying: that is an arrival, not an
+  # expiry, and only an arrival makes a crater.
+  if landed * on > 0.5 then add_blast(s, px, py, pz, peek_f32(fb, at + 6)) else 0
 
-fn step_fireballs(fb, dt) =
+fn step_fireballs(s, fb, dt) =
   for i in 0..fireball_cap()
-    step_fireball(fb, i * fireball_stride(), dt)
+    step_fireball(s, fb, i * fireball_stride(), dt)
 
 fn clear_fireballs(fb) =
   for i in 0..fireball_cap()
@@ -728,6 +821,8 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   bullet_buf = alloc_bytes(bullet_cap() * 32)
   shard_buf = alloc_bytes(shard_cap() * shard_stride() * 4)
   fire_buf = alloc_bytes(fireball_cap() * fireball_stride() * 4)
+  charge_buf = alloc_bytes(charger_cap() * charger_stride() * 4)
+  blast_buf = alloc_bytes(blast_cap() * blast_stride() * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -742,17 +837,20 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 68, bullet_buf)
   poke_ptr(s, 69, shard_buf)
   poke_ptr(s, 74, fire_buf)
+  poke_ptr(s, 77, charge_buf)
+  poke_ptr(s, 81, blast_buf)
   poke_f32(s, 60, 0.0)
   poke_f32(s, 61, 0.0)
   poke_f32(s, 62, 0.0)
   poke_f32(s, 63, 0.0)
   poke_f32(s, 73, 0.0)
-  poke_f32(s, 75, 0.0)
-  poke_f32(s, 76, 0.0)
-  poke_f32(s, 78, 0.0)
+  poke_f32(s, 79, 1.0)
+  poke_f32(s, 80, 0.0)
   clear_bullets(bullet_buf)
   clear_shards(shard_buf)
   clear_fireballs(fire_buf)
+  clear_chargers(charge_buf)
+  clear_blasts(blast_buf)
   poke_f32(s, 56, to_float(grid * grid * 6))
   poke_f32(s, 57, to_float(np))
   poke_f32(s, 58, to_float(nc))
@@ -891,7 +989,8 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   poke_f32(s, 29, peek_f32(s, 29) + wind_rate(gust) * dt)
   step_bullets(s, peek_ptr(s, 68), dt)
   step_shards(peek_ptr(s, 69), dt)
-  step_fireballs(peek_ptr(s, 74), dt)
+  step_fireballs(s, peek_ptr(s, 74), dt)
+  step_blasts(peek_ptr(s, 81), dt)
   run_charge(s, dt, t)
   camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
 
