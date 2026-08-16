@@ -92,17 +92,31 @@
     let side = normalize(cross(axis, vec3f(0.0, 1.0, 0.0)) + vec3f(0.0001, 0.0, 0.0));
     let other = cross(axis, side);
     let radial = (side * cos(ca) + other * sin(ca)) * sin(lat);
-    let ring = (axis * cos(lat) * 0.85 + radial * 0.72) * collar * 0.78;
 
-    // Drift: smoke lifts and spreads rather than staying on the line the fire
-    // took. One direction per fireball, taken from the seed and held for the
-    // whole trail — the earlier version swung the angle along the trail as
-    // well, which put every puff somewhere else and made the smoke read as a
-    // scatter rather than as a column. What varies along it is only how far,
+    // The air, as the stone sees it. Standing flame around a body moving at
+    // fourteen metres a second is the thing that gives a fire away as painted
+    // on: air does not sit still to be burnt in, it is coming past at speed,
+    // and what it does to the flame is drag it backwards. Most of that is the
+    // stone's own motion, but the valley's wind is in it too — the same wind
+    // that is moving the pines and the water, off the same two numbers.
+    let airIn = vec3f(cos(u.cam.z), 0.0, sin(u.cam.z)) * (1.4 + 4.0 * u.cam.w);
+    let airflow = normalize(airIn - vel);
+
+    // A puff square onto the airflow sits where it started; one out at the
+    // shoulder has had the air run past it the whole way round and is dragged
+    // much further back. That difference is the shape of a bow shock.
+    let expose = 1.0 - cos(lat);
+    let ring = (axis * cos(lat) * 0.75 + radial * 0.70) * collar * 0.62
+             + airflow * collar * (0.22 + 0.95 * expose);
+
+    // Drift: smoke lifts, and it goes where the wind takes it. That direction
+    // used to be picked per fireball out of the seed, which looked plausible
+    // and was wrong — every trail in the sky leant a different way at the same
+    // moment. It is the valley's own wind now, so the smoke lies down with the
+    // trees. What varies along the trail is only how far it has been carried,
     // and that grows smoothly, so the trail stays a trail.
-    let dir = seed * 6.2831;
-    let lean = vec3f(cos(dir), 0.0, sin(dir));
-    let drift = (lean * 0.45 + vec3f(0.0, 0.9, 0.0)) * age * age * 0.55;
+    let carried = vec3f(cos(u.cam.z), 0.0, sin(u.cam.z)) * (0.30 + 1.5 * u.cam.w);
+    let drift = (carried + vec3f(0.0, 0.9, 0.0)) * age * age * 0.55;
 
     // Bigger as it goes back, the way smoke opens out, and smaller again right
     // at the head where the flame is tight.
