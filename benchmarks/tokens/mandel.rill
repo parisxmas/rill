@@ -1,0 +1,16 @@
+fn escape(cr, ci, zr, zi, i) =
+  if i >= 255 || zr * zr + zi * zi > 4.0 then i
+  else escape(cr, ci, zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, i + 1)
+
+fn main() =
+  w = 2000
+  h = 2000
+
+  total = for y in 0..h with acc = 0
+    ci = (to_float(y) - to_float(h) / 2.0) * 4.0 / to_float(h)
+
+    acc + for x in 0..w with row = 0
+      cr = (to_float(x) - to_float(w) / 2.0) * 4.0 / to_float(w)
+      row + escape(cr, ci, 0.0, 0.0, 0)
+
+  println(total)

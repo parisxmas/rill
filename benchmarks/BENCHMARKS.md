@@ -208,12 +208,13 @@ measures peak RSS, and fails if outputs differ.
 
 `tokens/` is a second suite with a different question: not just how fast the
 same algorithm runs, but how much source it takes to say it. The same JSON
-parser and the same Dijkstra are written in seven languages — Rill, C, Rust,
-Zig, C#, Go and OCaml — and counted with `tiktoken` as well as timed.
+parser and the same Dijkstra are written in eight languages — Rill, C, C++,
+Rust, Zig, C#, Go and OCaml — and counted with `tiktoken` as well as timed.
 
 | | Dijkstra | JSON |
 |---|---:|---:|
-| Rill | **740** | 1353 |
+| C++ | **692** | 1503 |
+| Rill | 740 | 1353 |
 | Go | 744 | **1338** |
 | C# | 776 | 1440 |
 | Rust | 803 | 1698 |
@@ -226,6 +227,18 @@ came from: `b[i]`, local recursive functions, `for` and `+=`, tuples, `#s`,
 `s[i:j]`, `for … with`, `scan_int` and a string builder were each added
 because a count said where the words were going. The Dijkstra program went
 from 1579 tokens to 740 along the way.
+
+The suite times three more programs it does not count: a tight indexed loop, a
+Dijkstra with the graph built in process, and a Mandelbrot. That last one is
+there because nothing else in either suite is floating point in a loop with a
+data-dependent exit, and it produced the most surprising number in the set —
+Rill 206 ms against C's 206, while emitting no fused multiply-add at all where
+C emits three. Turning C's contraction off puts it at 252, exactly where Rust
+and Zig already sit.
+
+C++ writes the Dijkstra in the fewest tokens of the eight and runs it the
+slowest of the eight, and both are `std::cin >>`: 3.7 seconds against C's 217
+ms, and 218 ms once the same program reads with `scanf`.
 
 See `tokens/README.md`; reproduce with `python3 benchmarks/tokens/gen_inputs.py`
 then `python3 benchmarks/tokens/run.py`.

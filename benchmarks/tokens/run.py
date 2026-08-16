@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Builds, checks and times the same four programs in seven languages.
+"""Builds, checks and times the same five programs in eight languages.
 
 Two of them — `json` and `dijkstra` — are the pair the token comparison is
-about: what it costs to *write* the same algorithm. The other two are timed
+about: what it costs to *write* the same algorithm. The other three are timed
 only. Every language's output is compared against every other's before any
 time is reported, because a benchmark that is quietly wrong is worse than no
 benchmark.
@@ -34,10 +34,17 @@ BENCH = {
     "dijkstra": ("big.graph", True),
     "loop": (None, False),
     "algo": (None, False),
+    "mandel": (None, False),
 }
 # The extra Rill entry: the same task written the plain way, with `map` and
 # `join` instead of a builder threaded through by hand.
-EXTRA = {"json": [("Rill · short", "json_short.rill")]}
+# Two more rows that are the same task written differently, kept because
+# without them a number in the table means something it does not: nearly all
+# of C++'s Dijkstra time is `std::cin >>` rather than anything about C++.
+EXTRA = {
+    "json": [("Rill · short", "json_short.rill"), ("C · frees", "json_free.c")],
+    "dijkstra": [("C++ · scanf", "dijkstra_scanf.cpp")],
+}
 
 
 def sh(args, **kw):
@@ -71,6 +78,8 @@ def build_cs(src, exe):
 LANGS = [
     ("Rill", "rill", lambda s, e: sh([RILL, "build", s, "-o", e]), lambda: os.path.exists(RILL)),
     ("C", "c", lambda s, e: sh(["clang", "-O2", "-o", e, s]), lambda: have("clang")),
+    ("C++", "cpp", lambda s, e: sh(["clang++", "-O2", "-std=c++20", "-o", e, s]),
+     lambda: have("clang++")),
     ("Rust", "rs", lambda s, e: sh(["rustc", "-O", "-o", e, s]), lambda: have("rustc")),
     ("Zig", "zig", lambda s, e: sh(["zig", "build-exe", "-O", "ReleaseFast", "-femit-bin=" + e, s],
                                    cwd=BIN), lambda: have("zig")),
@@ -124,7 +133,7 @@ def main():
             if not os.path.exists(path):
                 continue
             builder = next(b for n, _, b, _ in LANGS if n == name.split(" ·")[0])
-            exe = os.path.join(BIN, f"{bench}-{name.replace(' · ', '-').replace('#', 'sharp')}")
+            exe = os.path.join(BIN, f"{bench}-{name.replace(' · ', '-').replace('#', 'sharp').replace('+', 'p')}")
             r = builder(path, exe)
             if r.returncode != 0 or not os.path.exists(exe):
                 print(f"  {name}: BUILD FAILED\n{r.stderr[-400:]}")
@@ -139,6 +148,20 @@ def main():
             else:
                 digests[name] = h
                 rows.append((name, min(times), os.path.getsize(exe), tokens(path)))
+
+        # C contracts `a*b + c` into a fused multiply-add by default and Go
+        # does too; Rill, Rust, Zig and C# do not. On a program that is
+        # nothing but `a*b + c` that is most of the difference between them,
+        # so C is built both ways here rather than leaving the reader to
+        # wonder. It is a question of what rounding a language promises, not
+        # of how fast it is.
+        if bench == "mandel" and have("clang"):
+            exe = os.path.join(BIN, "mandel-C-strict")
+            r = sh(["clang", "-O2", "-ffp-contract=off", "-o", exe,
+                    os.path.join(DIR, "mandel.c")])
+            if r.returncode == 0:
+                times = [run_once(exe, None)[0] for _ in range(RUNS)]
+                rows.append(("C · no FMA", min(times), os.path.getsize(exe), None))
 
         agree = len(set(digests.values())) <= 1
         print(f"== {bench}   {'all outputs identical' if agree else 'OUTPUTS DIFFER: ' + str(digests)}")
