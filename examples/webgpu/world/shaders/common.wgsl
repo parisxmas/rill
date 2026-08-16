@@ -285,8 +285,12 @@
   // at the end of the throw rather than vanishing on a frame, and by then it is
   // off the edge of the screen anyway.
   //
-  // It is the same round that comes back for the next shot, which is a lie a
-  // magazine tells for free: nobody counts.
+  // What flies out is the case alone. The model carries a whole cartridge — a
+  // rifle at rest has a loaded round in it — so the brass and the bullet are
+  // marked separately at the case mouth, and the bullet is simply not there
+  // during the ejection: it left down the barrel. Both come back together
+  // afterwards, which is the magazine feeding the next one, and a lie the
+  // magazine tells for free because nobody counts.
   const CASE_AT   = vec3f(-0.2023, 0.0452, 0.0);   // its centre, at the chamber
   const CASE_LIFT = 0.100;                          // magazine to chamber
 
@@ -317,4 +321,12 @@
     let cb = cos(b); let sb = sin(b);
     let q = vec3f(n.x * ca - n.y * sa, n.x * sa + n.y * ca, n.z);
     return vec3f(q.x * cb + q.z * sb, q.y, -q.x * sb + q.z * cb);
+  }
+
+  // The bullet, while its case is in the air: gone, collapsed to a point, which
+  // costs one comparison and draws nothing.
+  fn slugPos(m: vec3f) -> vec3f {
+    let t = u.vmMin.w;
+    if (t < 0.20 || t > 0.62) { return m; }
+    return CASE_AT;
   }

@@ -17,14 +17,17 @@
     // Unpack: position is unorm16 across the model's own bounding box, normal
     // is snorm8. Sixteen bytes a vertex instead of thirty-two.
     let m0 = u.vmMin.xyz + qpos.xyz * u.vmSize.xyz;
-    // `qpos.w` says which of the three parts a vertex belongs to: one for the
-    // bolt, a half for the cartridge, zero for the rifle proper. A flag baked
-    // into the spare component of a position that was already being unpacked,
-    // so it costs the file nothing.
-    let bolt = qpos.w > 0.75;
-    let brass = qpos.w > 0.25 && qpos.w < 0.75;
+    // `qpos.w` says which part a vertex belongs to: one for the bolt, three
+    // quarters for the bullet, a half for its case, zero for the rifle proper.
+    // A flag baked into the spare component of a position that was already
+    // being unpacked, so it costs the file nothing.
+    let bolt = qpos.w > 0.85;
+    let slug = qpos.w > 0.62 && qpos.w < 0.85;
+    let brass = qpos.w > 0.25 && qpos.w < 0.62;
     var m = m0;
-    if (bolt) { m = boltPos(m0); } else if (brass) { m = casePos(m0); }
+    if (bolt) { m = boltPos(m0); }
+    else if (slug) { m = slugPos(m0); }
+    else if (brass) { m = casePos(m0); }
     let cam = vmCam(m);
 
     var o: VOut;
