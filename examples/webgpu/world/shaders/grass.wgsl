@@ -10,9 +10,8 @@
   ) -> VOut {
     let c = cos(rot); let s = sin(rot);
     var p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
-    let t = u.eye.w;
     let dirn = vec2f(cos(u.cam.z), sin(u.cam.z));
-    let osc = sin(t * (1.5 + 3.0 * u.cam.w) + ipos.x * 0.9 + ipos.z * 0.7);
+    let osc = sin(u.wind.x * 1.5 + ipos.x * 0.9 + ipos.z * 0.7);
     let sway = (u.cam.w * 0.20 + osc * (0.05 + 0.16 * u.cam.w)) * pos.y * scale;
     p.x += dirn.x * sway; p.z += dirn.y * sway;
     var o: VOut;

@@ -452,6 +452,7 @@ export async function run(canvas, wasmURL, hud) {
     uf[39] = canvas.width / canvas.height;
     uf[40] = st[19]; uf[41] = st[20];     // yaw, pitch
     uf[42] = st[26]; uf[43] = st[27];     // wind angle, wind strength
+    uf[44] = st[29];                      // the wind's integrated phase
     device.queue.writeBuffer(uni, 0, uf);
     device.queue.writeBuffer(flyTime, 0, new Float32Array([t, dt, 0, 0]));
 

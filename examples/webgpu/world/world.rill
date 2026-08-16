@@ -18,6 +18,7 @@
 #   f32 21..23   camera foot position
 #   f32 24       vertical velocity   25  grounded flag
 #   f32 26..28   wind: angle, strength, accumulated time
+#   f32 29      wind phase — see `frame`
 #   f32 32..47   the sun's shadow matrix, column-major (static)
 #   f32 56..59   terrain vertex count, pine count, crystal count, grass count
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
@@ -324,6 +325,17 @@ fn wind_strength(t) =
   g = 0.55 + 0.22 * sin(t * 0.31) + 0.13 * sin(t * 0.83 + 1.7) + 0.06 * sin(t * 2.3)
   clampf(g, 0.15, 1.0)
 
+# What everything that sways reads its phase from, rather than the clock.
+#
+# The rate a tree flutters at rises with the wind, and the obvious way to
+# write that — `sin(t * rate(t))` — is wrong: differentiate it and the angular
+# velocity is `rate + t * rate'`, so a change in the wind moves the phase by
+# that change times however long the program has been running. A minute in, a
+# gust makes everything shiver; an hour in it tears. The phase has to be
+# integrated instead, a step at a time, and then a change in the wind changes
+# only what happens next.
+fn wind_rate(w) = 1.0 + 2.0 * w
+
 # ---- collision --------------------------------------------------------------
 #
 # The player is a circle; a trunk or a crystal is a circle of its own scale.
@@ -389,9 +401,11 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   poke_f32(s, 22, py)
   poke_f32(s, 24, if py0 < ground then 0.0 else vy)
   poke_f32(s, 25, if py0 < ground then 1.0 else 0.0)
+  gust = wind_strength(t)
   poke_f32(s, 26, wind_angle(t))
-  poke_f32(s, 27, wind_strength(t))
+  poke_f32(s, 27, gust)
   poke_f32(s, 28, t)
+  poke_f32(s, 29, peek_f32(s, 29) + wind_rate(gust) * dt)
   camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
 
 # The view-projection matrix, written straight into the state.

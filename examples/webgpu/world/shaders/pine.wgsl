@@ -13,7 +13,7 @@
     var p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
     let hgt = max(pos.y, 0.0) / 3.6;
     let dirn = vec2f(cos(u.cam.z), sin(u.cam.z));
-    let flutter = sin(u.eye.w * (1.6 + 2.4 * u.cam.w) + ipos.x * 1.31 + ipos.z * 0.97);
+    let flutter = sin(u.wind.x * 1.6 + ipos.x * 1.31 + ipos.z * 0.97);
     let sway = (u.cam.w * hgt * hgt * 0.45 + flutter * 0.09 * u.cam.w * hgt) * scale;
     p = vec3f(p.x + dirn.x * sway, p.y, p.z + dirn.y * sway);
     let nr = vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c);

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **The wind stops making the trees shiver.** Everything that sways read its
+  phase as `sin(t * rate(wind))` — a frequency that rises with the wind,
+  multiplied by the clock. Differentiate that and the angular velocity is
+  `rate + t * rate'`: a change in the wind moves the phase by that change
+  times however long the page has been open. Five minutes in, the pines were
+  turning 3.4 radians a frame at 60 fps — past π, so past what the frame rate
+  can even represent, which is what the shivering was. Ten minutes in, 6.3.
+  It also ran backwards, which is the part that looked wrong before it looked
+  broken.
+
+  The phase is integrated now, a step at a time, in `frame` where the wind is
+  already computed: a change in the wind changes only what happens next. The
+  pines, the grass and the water's ripples all read it, so they still agree
+  about their cause. Steady 0.08 radians a frame, at any wind and any hour.
+
 - **`poke_*` and `peek_*` are a store and a load, not a call.** They are one
   instruction each — the address is `p + i * width`, unaligned as the
   runtime's were — and they went through the runtime every time. For a

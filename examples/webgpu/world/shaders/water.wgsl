@@ -89,7 +89,7 @@
     for (var i = 0; i < RIPPLES; i++) {
       let fi = f32(i);
       let d = normalize(mix(vec2f(sin(fi * 2.4 + 1.2), cos(fi * 1.7 - 0.4)), wd, 0.6));
-      let ph = dot(d, p) * freq + t * (0.7 + fi * 0.5) * (0.5 + u.cam.w);
+      let ph = dot(d, p) * freq + u.wind.x * (0.35 + fi * 0.25);
       n.x -= d.x * amp * cos(ph);
       n.z -= d.y * amp * cos(ph);
       freq *= 2.3;
