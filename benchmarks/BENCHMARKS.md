@@ -203,3 +203,29 @@ that were still running. It now asks a counter first.
 Each benchmark is a `.rill`/`.go`/`.ml` triple kept as close to
 idiomatic-equivalent as possible; `run.py` builds all three, times them,
 measures peak RSS, and fails if outputs differ.
+
+## What a program costs to write
+
+`tokens/` is a second suite with a different question: not just how fast the
+same algorithm runs, but how much source it takes to say it. The same JSON
+parser and the same Dijkstra are written in seven languages — Rill, C, Rust,
+Zig, C#, Go and OCaml — and counted with `tiktoken` as well as timed.
+
+| | Dijkstra | JSON |
+|---|---:|---:|
+| Rill | **740** | 1353 |
+| Go | 744 | **1338** |
+| C# | 776 | 1440 |
+| Rust | 803 | 1698 |
+| C | 836 | 1988 |
+| OCaml | 895 | 1343 |
+| Zig | 1033 | 1846 |
+
+`o200k_base` tokens. Measuring this is what most of the language's surface
+came from: `b[i]`, local recursive functions, `for` and `+=`, tuples, `#s`,
+`s[i:j]`, `for … with`, `scan_int` and a string builder were each added
+because a count said where the words were going. The Dijkstra program went
+from 1579 tokens to 740 along the way.
+
+See `tokens/README.md`; reproduce with `python3 benchmarks/tokens/gen_inputs.py`
+then `python3 benchmarks/tokens/run.py`.

@@ -1,0 +1,102 @@
+fn main() =
+  n = scan_int()
+  m = scan_int()
+  s = scan_int()
+  t = scan_int()
+  q = max(m, 1)
+  eu = buf_int(q)
+  ev = buf_int(q)
+  ew = buf_int(q)
+  off = buf_int(n + 1)
+  cur = buf_int(n + 1)
+  to = buf_int(q)
+  wt = buf_int(q)
+  dist = buf_int(max(n, 1))
+  hd = buf_int(m + 1)
+  hn = buf_int(m + 1)
+  hs = buf_int(1)
+
+  fn swap(b, i, j) =
+    x = b[i]
+    b[i] = b[j]
+    b[j] = x
+
+  fn sift_up(i) =
+    if i == 0 then 0
+    else
+      p = (i - 1) / 2
+      if hd[p] <= hd[i] then 0
+      else
+        swap(hd, i, p)
+        swap(hn, i, p)
+        sift_up(p)
+
+  fn hpush(d, v) =
+    hd[hs[0]] = d
+    hn[hs[0]] = v
+    hs[0] += 1
+    sift_up(hs[0] - 1)
+
+  fn sift_down(i) =
+    l = 2 * i + 1
+    if l >= hs[0] then 0
+    else
+      c = if l + 1 < hs[0] && hd[l + 1] < hd[l] then l + 1 else l
+      if hd[i] <= hd[c] then 0
+      else
+        swap(hd, i, c)
+        swap(hn, i, c)
+        sift_down(c)
+
+  fn hpop() =
+    hs[0] -= 1
+    hd[0] = hd[hs[0]]
+    hn[0] = hn[hs[0]]
+    sift_down(0)
+
+  for i in 0..m
+    eu[i] = scan_int()
+    ev[i] = scan_int()
+    ew[i] = scan_int()
+
+  for i in 0..m
+    off[eu[i] + 1] += 1
+
+  for i in 1..n + 1
+    off[i] += off[i - 1]
+
+  for i in 0..n + 1
+    cur[i] = off[i]
+
+  for i in 0..m
+    u = eu[i]
+    p = cur[u]
+    to[p] = ev[i]
+    wt[p] = ew[i]
+    cur[u] += 1
+
+  for i in 0..n
+    dist[i] = 4611686018427387903
+
+  dist[s] = 0
+  hpush(0, s)
+
+  fn loop() =
+    if hs[0] == 0 then -1
+    else
+      d = hd[0]
+      u = hn[0]
+      hpop()
+      if u == t then d
+      else
+        if d <= dist[u] then
+          for e in off[u]..off[u + 1]
+            nd = d + wt[e]
+            if nd < dist[to[e]] then
+              dist[to[e]] = nd
+              hpush(nd, to[e])
+            else 0
+        else 0
+        loop()
+
+  println(loop())

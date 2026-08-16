@@ -1,0 +1,10 @@
+# Made by gen_inputs.py — 43 MB between them, and reproducible in two seconds.
+big.graph
+big.json
+
+# Where run.py builds, including the scratch C# projects.
+bin/
+
+# `ocamlopt` writes these next to the source however it is invoked.
+*.cmi
+*.cmx
