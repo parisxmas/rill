@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **Releasing a counted value stops being a call.** Handing a buffer or a
+  string to a function retains it and the function releases it on the way
+  out, and the release was a call into the runtime every time. Nearly always
+  there is nothing to do there — the count goes from something to something,
+  not to zero — so the decrement is emitted at the site now, with the call
+  kept for the one time in many that actually frees. What that buys is not
+  the call itself but what it uncovers: a `+1` in the caller and a `-1` in
+  the callee, once inlining has brought them together, are now plainly a pair
+  and cancel.
+
+  It shows up wherever a program passes storage around. The Dijkstra
+  algorithm benchmark, which threads six buffers through a heap's worth of
+  small functions, goes from 46 ms to **42** (1.20&times; the C it is written
+  against, from 1.32); JSON from 176 to **165**; end-to-end Dijkstra from 121
+  to **113**. A `--parallel` build keeps the call, where the count has to be
+  atomic.
+
+  Two other candidates were measured and left unmade. Bounds checks in that
+  benchmark's heap loop cost 3 ms in 720 — the third time this year that
+  removing them has been measured and found not to be worth it. Giving
+  generated functions internal linkage, so LLVM knows every caller, does turn
+  the `% n` in a lifted loop from a division into a multiply, and changes the
+  running time of nothing at all.
+
 - **The prelude's list functions cost constant stack now, and are faster for
   it.** `map`, `filter`, `take`, `append`, `range` and `len` were written the
   way the definitions read — `Cons(f(x), map(rest, f))` — which leaves work

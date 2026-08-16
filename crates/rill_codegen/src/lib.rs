@@ -1465,6 +1465,57 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     fn emit_release_call(&mut self, v: BasicValueEnum<'ctx>, ty: &Ty, tail: bool) {
+        // Counted values whose release is a runtime call get the last step of
+        // that call laid down here instead: the count is nearly always about
+        // to go from something to something, not to zero, and a load, a
+        // compare and a store say so without leaving the function. What it
+        // buys is not the call — it is that a `+1` here and a `-1` there,
+        // once inlining has brought them together, now cancel.
+        if !self.parallel && matches!(ty, Ty::Buf(_) | Ty::Str | Ty::StrBuf) {
+            if let Some(func) = self.builder.get_insert_block().and_then(|b| b.get_parent()) {
+                let i64t = self.ctx.i64_type();
+                let p = v.into_pointer_value();
+                let rc = self
+                    .builder
+                    .build_load(i64t, p, "rc")
+                    .expect("LLVM builder error")
+                    .into_int_value();
+                let dead = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, rc, i64t.const_int(1, false), "dead")
+                    .expect("LLVM builder error");
+                let free_bb = self.ctx.append_basic_block(func, "rel.free");
+                let dec_bb = self.ctx.append_basic_block(func, "rel.dec");
+                let done_bb = self.ctx.append_basic_block(func, "rel.done");
+                self.builder
+                    .build_conditional_branch(dead, free_bb, dec_bb)
+                    .expect("LLVM builder error");
+                // The last reference: the runtime does the freeing, count and
+                // all, exactly as it did before.
+                self.builder.position_at_end(free_bb);
+                let call = match ty {
+                    Ty::Buf(w) => {
+                        let size = self.ctx.i64_type().const_int(w.size_bytes(), false);
+                        self.call_rt("rill_buf_release", &[v.into(), size.into()])
+                    }
+                    Ty::Str => self.call_rt("rill_str_release", &[v.into()]),
+                    _ => self.call_rt("rill_strbuf_release", &[v.into()]),
+                };
+                if tail {
+                    call.set_tail_call(true);
+                }
+                self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                // Not the last, or not counted at all: `store_rc` leaves a
+                // compile-time constant's count alone.
+                self.builder.position_at_end(dec_bb);
+                let less =
+                    self.builder.build_int_sub(rc, i64t.const_int(1, false), "dec").expect("builder");
+                self.store_rc(p, rc, less);
+                self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                self.builder.position_at_end(done_bb);
+                return;
+            }
+        }
         let call = match ty {
             Ty::Adt(..) => {
                 let drop_fn = self.adt_drop(ty);
