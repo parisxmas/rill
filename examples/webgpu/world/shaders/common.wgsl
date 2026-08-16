@@ -36,6 +36,17 @@
   // `skyColor` in through the alpha. Cheaper, sharper, and the sun disc stays
   // a disc instead of becoming four pixels.
   @group(0) @binding(13) var envCube: texture_cube<f32>;
+  // Jupiter, equirectangular — Cassini's own map, wrapped onto the sphere by
+  // latitude and longitude rather than painted on as bands. Everything that is
+  // actually up there is in it: the belts and zones with the right widths in
+  // the right places, the festoons hanging off the equatorial band, the white
+  // ovals, and a Great Red Spot that is where the Great Red Spot is.
+  @group(0) @binding(14) var jupiterTex: texture_2d<f32>;
+  // Saturn's globe, the same way. Its rings stay drawn rather than sampled:
+  // they are an annulus seen at a tilt, and the shape is the whole of what
+  // reads at this size — a map of them would be a hundred pixels of gradient
+  // doing what two smoothsteps already do.
+  @group(0) @binding(15) var saturnTex: texture_2d<f32>;
 
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
@@ -109,19 +120,29 @@
   // sky, and the planets are scaled to keep the same ratio to it that makes
   // them read as further away.
 
-  // How fast the world turns under the sky: one revolution in half an hour.
-  // The same number lives in `host.js`, which swings the sun and the shadow
-  // matrix by it — they have to agree, or the moon's terminator drifts away
-  // from the sun that is supposed to be casting it.
-  const SKY_SPIN = 0.0034906585;      // 2π / 1800
+  // How fast the world turns under the sky: one revolution in four minutes.
+  // Fast enough that a pine's shadow visibly sweeps the ground while you stand
+  // still. The same number lives in `host.js`, which swings the sun and the
+  // shadow matrix by it — they have to agree, or the moon's terminator drifts
+  // away from the sun that is supposed to be casting it.
+  const SKY_SPIN = 0.0261799388;      // 2π / 240
+
+  // The pole the whole sky turns about — the same one the sun runs round in
+  // `host.js`, tilted thirty-five degrees off vertical. Everything up there
+  // shares it: that is what a planet's rotation is, and it is why the moon
+  // rises and sets on the same slant the sun does rather than sliding round
+  // the horizon on a rail of its own.
+  const SKY_AXIS = vec3f(0.573576, 0.819152, 0.0);   // sin 35°, cos 35°
 
   // A direction, taken out of the world and into the sky's own frame — the one
-  // the stars and the bodies are nailed to. The rotation is about the world's
-  // vertical, so the sky wheels round the horizon rather than tipping over it.
+  // the stars and the bodies are nailed to. Rodrigues about the tilted pole,
+  // backwards, which is what turns "where is this in the world now" into
+  // "which piece of the sky is this".
   fn skySpace(dir: vec3f, t: f32) -> vec3f {
-    let a = t * SKY_SPIN;
+    let a = -t * SKY_SPIN;
     let c = cos(a); let s = sin(a);
-    return vec3f(dir.x * c - dir.z * s, dir.y, dir.x * s + dir.z * c);
+    let k = SKY_AXIS;
+    return dir * c + cross(k, dir) * s + k * dot(k, dir) * (1.0 - c);
   }
 
   fn skyHash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453); }
@@ -156,15 +177,54 @@
     return normalize(vec3f(dot(L, right), dot(L, up), dot(L, at)));
   }
 
-  // High, both of them — a planet low over a ridge reads as a lamp on the far
-  // hill, and it is only well clear of the horizon that anyone takes it for
-  // something out beyond the sky. The moon stays lower, where a moon belongs.
-  const MOON_AT = vec3f(0.35, 0.42, -0.84);
-  const JUP_AT  = vec3f(-0.44, 0.82, -0.37);
-  const SAT_AT  = vec3f(0.52, 0.71, -0.47);
-  const MOON_R  = 0.048;
-  const JUP_R   = 0.019;
-  const SAT_R   = 0.014;
+  // All three on the sun's side of the sky, between about forty and seventy
+  // degrees off it.
+  //
+  // Not an arbitrary arrangement — it is what makes the lighting legible. The
+  // phase was being computed correctly before this and still read as wrong,
+  // because the bodies sat a hundred and twelve degrees from the sun: you
+  // could see a moon lit from above, or you could turn round and see the sun,
+  // and never both at once, so there was nothing on screen for the terminator
+  // to agree with. Put them where a single look takes in the body and the sun
+  // together and the same arithmetic reads as obviously right.
+  //
+  // Forty degrees is about the near limit: closer and the disc is nearly full
+  // and there is no terminator to see. Past seventy it is a thin crescent and
+  // the body stops being recognisable.
+  //
+  // High, the planets — one low over a ridge reads as a lamp on the far hill,
+  // and it is only well clear of the horizon that anyone takes it for something
+  // out beyond the sky. The moon stays lower, where a moon belongs.
+  const MOON_AT = vec3f(-0.75, 0.35, -0.56);   // 69° from the sun: gibbous
+  const JUP_AT  = vec3f(-0.42, 0.86, -0.29);   // 51°
+  const SAT_AT  = vec3f(0.10, 0.80, 0.59);     // 42°
+  // How big each one is drawn is no longer three numbers picked by eye: it is a
+  // radius over a distance, which is the small-angle form of the angle a sphere
+  // actually subtends. Change where a body is and its size follows.
+  //
+  // The radii are true, in units of the moon's — Jupiter is 40.2 moon-radii,
+  // Saturn 33.5. The distances are not. The planets are pulled about sixteen
+  // times nearer than they really are, because at their real remove each is a
+  // single pixel and the point of drawing a thing is that it can be seen. What
+  // the numbers do keep is the order and the ratio: Saturn is further out than
+  // Jupiter and smaller in the sky than it, by the right amount.
+  const MOON_RAD = 1.0;    const MOON_DIST = 20.8;
+  // Jupiter is brought right in — two hundred moon-radii out, ten times nearer
+  // than Saturn, which puts a disc four times the moon's width overhead. Wrong
+  // by any almanac and the whole point of the picture: something that size in
+  // the sky is not an object in the scene, it is a fact about where you are.
+  // The size still comes out of the distance rather than being set, so it and
+  // Saturn stay on the one scale.
+  const JUP_RAD  = 40.2;   const JUP_DIST  = 201.0;
+  // Saturn brought in behind Jupiter — four hundred and twenty out against
+  // Jupiter's two hundred, so it comes to about half the width on screen. Near
+  // enough to read the rings and the banding, far enough that the two of them
+  // are plainly at different distances, which is the only thing the numbers
+  // have to carry.
+  const SAT_RAD  = 33.5;   const SAT_DIST  = 420.0;
+  const MOON_R = MOON_RAD / MOON_DIST;
+  const JUP_R  = JUP_RAD / JUP_DIST;
+  const SAT_R  = SAT_RAD / SAT_DIST;
 
   // What the sun does to a body it is lighting: its own colour where the light
   // lands, and the cold of the sky it is hanging in where it does not.
@@ -232,17 +292,28 @@
         // planet with no terminator is a sticker, and the giveaway is that it
         // does not agree with where the light in the sky is coming from.
         let lam = mix(clamp(dot(nrm, sunInDisk(at, t)), 0.0, 1.0), 1.0, 0.24);
-        // Belts and zones. The latitude is the sphere's, not the disc's, so
-        // they crowd together toward the poles the way they actually do.
-        let lat = asin(clamp(q.y, -1.0, 1.0));
-        let band = sin(lat * 7.0) * 0.5 + 0.35 * sin(lat * 13.0 + 1.7)
-                 + 0.18 * skyNoise(vec2f(q.x * 3.0, lat * 9.0));
-        var jc = mix(vec3f(0.80, 0.68, 0.50), vec3f(0.62, 0.45, 0.31),
-                     smoothstep(-0.2, 0.6, band));
-        jc = mix(jc, vec3f(0.90, 0.84, 0.71), smoothstep(0.35, -0.5, band) * 0.55);
-        // The spot: an oval, south of the equator, turned with the belts.
-        let sp = (q - vec2f(0.30, -0.34)) / vec2f(0.34, 0.19);
-        jc = mix(jc, vec3f(0.72, 0.34, 0.22), (1.0 - smoothstep(0.6, 1.0, length(sp))) * 0.85);
+        // The real map, wrapped on. The sphere normal recovered above is also
+        // the point on the surface, so latitude and longitude come straight out
+        // of it — and because the normal is right, the bands compress toward
+        // the limb on their own. The sine bands that used to be here were drawn
+        // in flat disc coordinates and stayed the same width all the way across,
+        // which is what made a sphere look like a painted circle.
+        //
+        // And it turns. Jupiter's day is under ten hours, the shortest of any
+        // planet, which is why it is visibly flattened at the poles; here it is
+        // a turn every hundred seconds, fast enough that the spot crosses the
+        // face while you watch and slow enough not to be a spinning ball.
+        let lonV = atan2(nrm.x, -nrm.z) / 6.2831853 + t * (1.0 / 100.0);
+        let latV = 0.5 - asin(clamp(nrm.y, -1.0, 1.0)) / 3.14159265;
+        // Sampled at an explicit level rather than by derivative: this runs
+        // inside a branch, and a gradient asked for under non-uniform control
+        // flow is undefined. The level is stepped up hard toward the limb,
+        // where half a hemisphere is crushed into the last few pixels — the
+        // sixth power keeps the middle of the disc at full sharpness and only
+        // blurs the sliver where the map is being sampled at fifty texels a
+        // pixel and would otherwise crawl with aliasing.
+        let lod = 6.5 * pow(r, 6.0);
+        var jc = textureSampleLevel(jupiterTex, barkSamp, vec2f(lonV, latV), lod).rgb;
         // Limb darkening — a gas giant has no edge, it just goes away.
         let limb = pow(clamp(1.0 - r * r, 0.0, 1.0), 0.22);
         let a = 1.0 - smoothstep(0.965, 1.0, r);
@@ -264,10 +335,13 @@
         let nrm = vec3f(q, -sqrt(max(1.0 - min(r * r, 1.0), 0.0)));
         let sd = sunInDisk(at, t);
         let lam = mix(clamp(dot(nrm, sd), 0.0, 1.0), 1.0, 0.24);
-        let lat = asin(clamp(q.y, -1.0, 1.0));
-        let band = sin(lat * 5.0) * 0.5 + 0.25 * sin(lat * 11.0 + 0.9);
-        let sc = mix(vec3f(0.84, 0.75, 0.56), vec3f(0.70, 0.62, 0.45),
-                     smoothstep(-0.3, 0.6, band));
+        // The real globe, wrapped on by latitude and longitude and turning on
+        // its own — Saturn's day is a shade over ten hours, near enough
+        // Jupiter's, so it is given a similar spin here.
+        let lonV = atan2(nrm.x, -nrm.z) / 6.2831853 + t * (1.0 / 115.0);
+        let latV = 0.5 - asin(clamp(nrm.y, -1.0, 1.0)) / 3.14159265;
+        let lod = 5.5 * pow(min(r, 1.0), 6.0);
+        let sc = textureSampleLevel(saturnTex, barkSamp, vec2f(lonV, latV), lod).rgb;
         let limb = pow(clamp(1.0 - r * r, 0.0, 1.0), 0.22);
         let planet = 1.0 - smoothstep(0.965, 1.0, r);
 
@@ -304,13 +378,33 @@
     return out;
   }
 
+  // Night, for the sky itself. Not black: a clear sky with a moon in it is a
+  // deep blue, and the horizon keeps a little of the day's warmth longest.
+  const NIGHT_ZENITH  = vec3f(0.006, 0.010, 0.032);
+  const NIGHT_HORIZON = vec3f(0.022, 0.026, 0.058);
+
+  // How much of a day it is: one where the sun is well up, zero once it is
+  // properly under. The band either side of zero is the twilight, and it is
+  // deliberately wide — the light going is the slowest thing in an evening and
+  // a sky that switches off at the moment the sun touches the ridge is the
+  // single most obvious way to get a day/night cycle wrong.
+  fn dayness() -> f32 {
+    return smoothstep(-0.20, 0.14, -normalize(u.sun.xyz).y);
+  }
+
   fn skyColor(dir: vec3f, t: f32) -> vec3f {
     let up = max(dir.y, 0.0);
-    var col = mix(SKY_HORIZON, SKY_ZENITH, pow(up, 0.55));
+    let day = dayness();
+    let grad = pow(up, 0.55);
+    var col = mix(mix(NIGHT_HORIZON, NIGHT_ZENITH, grad),
+                  mix(SKY_HORIZON, SKY_ZENITH, grad), day);
     let sa = max(dot(dir, -normalize(u.sun.xyz)), 0.0);
-    col += SUN_WARM * pow(sa, 5.0) * 0.5;             // the warm side of the sky
-    col += SUN_COL * pow(sa, 900.0) * 20.0;           // the disc
-    col += SUN_WARM * pow(sa, 60.0) * 1.2;            // its halo
+    // The warm side of the sky outlives the sun itself — that is what an
+    // afterglow is — so it fades on a later, wider curve than the disc.
+    let glow = smoothstep(-0.34, 0.06, -normalize(u.sun.xyz).y);
+    col += SUN_WARM * pow(sa, 5.0) * 0.5 * glow;
+    col += SUN_COL * pow(sa, 900.0) * 20.0 * day;     // the disc
+    col += SUN_WARM * pow(sa, 60.0) * 1.2 * glow;     // its halo
     // Stars, on the sky's frame rather than the world's, so they wheel with
     // the moon and the planets instead of hanging while everything else moves.
     //
@@ -330,7 +424,9 @@
       // sort themselves — and the tint only shows on the bright ones.
       let tint = mix(vec3f(1.0), mix(vec3f(1.0, 0.78, 0.62), vec3f(0.72, 0.82, 1.0),
                                      fract(h * 733.0)), mag);
-      col += tint * up * twinkle * (0.55 + 2.6 * mag * mag);
+      // Out entirely in daylight and full once the sun is down. Stars do not
+      // go anywhere at noon; the sky in front of them does.
+      col += tint * up * twinkle * (0.55 + 2.6 * mag * mag) * (1.0 - day);
     }
     // The moon and the two planets, over the stars and under nothing: they are
     // the furthest things in the world and the last thing composited into it.
@@ -361,15 +457,35 @@
 
   fn fogColor(view: vec3f) -> vec3f {
     let sa = max(dot(normalize(vec3f(view.x, 0.0, view.z)), -normalize(vec3f(u.sun.x, 0.0, u.sun.z))), 0.0);
-    return mix(vec3f(0.10, 0.11, 0.19), vec3f(0.55, 0.35, 0.22), pow(sa, 3.0));
+    let day = dayness();
+    // The haze is lit by the sun like everything else, so at night it stops
+    // being warm on one side and goes to the flat blue of air with only a moon
+    // over it. Fog that keeps a sunset in it after dark is the thing that makes
+    // a night look like a day with the brightness turned down.
+    let lit2 = mix(vec3f(0.10, 0.11, 0.19), vec3f(0.55, 0.35, 0.22), pow(sa, 3.0));
+    return mix(vec3f(0.020, 0.026, 0.052), lit2, day);
   }
 
   fn lit(albedo: vec3f, n: vec3f, world: vec3f) -> vec3f {
     let L = -normalize(u.sun.xyz);
+    let day = dayness();
     let nl = max(dot(n, L), 0.0);
     let sh = shadow(world, nl);
     let sky = mix(vec3f(0.10, 0.11, 0.18), vec3f(0.18, 0.19, 0.30), n.y * 0.5 + 0.5);
-    var col = albedo * (SUN_COL * 1.25 * nl * sh + sky * 1.1);
+    // Two lights, and at night only one of them is left. The sun's own term is
+    // cut by `day` as well as by the geometry: a surface can face where the sun
+    // was long after it has gone, and without this the hillside stays lit by a
+    // sun that is under the world.
+    //
+    // What remains is the sky's own light, at a third of its daytime strength
+    // and turned cold. Not a third chosen for realism — a moonlit valley you
+    // cannot walk through is a black screen, and a sixth, which is what this
+    // was, is exactly that. This is roughly the exposure an eye finds after a
+    // few minutes outside, which is the honest thing to draw when the
+    // alternative is drawing what a camera would get.
+    let night = vec3f(0.052, 0.062, 0.105) * (0.62 + 0.38 * (n.y * 0.5 + 0.5));
+    let amb = mix(night, sky * 1.1, day);
+    var col = albedo * (SUN_COL * 1.25 * nl * sh * day + amb);
     let view = world - u.eye.xyz;
     return mix(col, fogColor(view), fogAt(world, length(view)));
   }

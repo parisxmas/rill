@@ -56,7 +56,9 @@
     let nl = max(dot(n, L), 0.0);
     let sh = shadow(v.world, nl);
     let amb = mix(vec3f(0.10, 0.11, 0.18), vec3f(0.18, 0.19, 0.30), n.y * 0.5 + 0.5);
-    var col = v.color * (SUN_COL * 1.25 * nl * sh + amb * 1.1) + v.color * 0.30;
+    let day = dayness();
+    var col = v.color * (SUN_COL * 1.25 * nl * sh * day + mix(vec3f(0.055, 0.065, 0.110), amb * 1.1, day))
+            + v.color * 0.30;
 
     // Fresnel. A facet turned edge-on to you is a mirror; one facing you is
     // mostly its own colour. One dot product, and it is the entire difference
@@ -88,7 +90,10 @@
     // Never wholly dead in shadow. A crystal in the shade still catches the
     // sky, and a shard that goes flat the moment a cloud of smoke crosses it
     // looks switched off rather than shaded.
-    let key = 0.30 + 0.70 * sh;
+    // And gone with the sun. A chip of glass has nothing of its own to catch:
+    // the highlight is the sun in it, so when the sun is under the world the
+    // shard keeps only the glow it was cut from.
+    let key = (0.30 + 0.70 * sh) * day;
     col += SUN_COL * pow(nh, 42.0) * 1.15 * key;
     col += vec3f(1.0, 0.97, 0.92) * pow(nh, 380.0) * 4.5 * key;
 

@@ -75,6 +75,13 @@ const TEXTURES = [
   ["./shore-sand.jpg", 256, 256],
   ["./rifle-atlas.jpg", 1024, 512],  // the rifle's two materials, side by side
   ["./meteor.jpg", 256, 256],        // the stone inside a fireball
+  // Jupiter, equirectangular: Cassini's imagery by way of Solar System Scope,
+  // CC BY 4.0. Two thousand across for a disc four hundred pixels wide — the
+  // visible hemisphere is half the map, so it is still better than a texel a
+  // pixel, and the belts are the one thing that has to survive.
+  ["./jupiter.jpg", 2048, 1024],
+  // Saturn's globe. Half Jupiter's width on screen, so half the map does.
+  ["./saturn.jpg", 1024, 512],
 ];
 
 async function loadShaders(step) {
@@ -347,7 +354,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the decodes are the browser's work rather than ours; done one after
   // another they were the longest thing between the page opening and the
   // valley appearing.
-  const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView] =
+  const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView,
+         jupiterView, saturnView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
       mipped(url, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
@@ -378,6 +386,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // faces of a cube. Anything that wants to know what is around it rather
     // than what is lighting it reads this.
     { binding: 13, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: "cube" } },
+    { binding: 14, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 15, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -940,6 +950,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 11, resource: rifleView },
       { binding: 12, resource: meteorView },
       { binding: 13, resource: W.envView },
+      { binding: 14, resource: jupiterView },
+      { binding: 15, resource: saturnView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -971,6 +983,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 11, resource: rifleView },
       { binding: 12, resource: meteorView },
       { binding: 13, resource: blankCube },
+      { binding: 14, resource: jupiterView },
+      { binding: 15, resource: saturnView },
     ]});
     const envFmt = { format: "rgba8unorm" };
     W.envPipes = {
@@ -1143,11 +1157,30 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   let refresh = 1000 / 60, warm = 0, changes = 0, stable = 0, locked = false;
   const median = a => [...a].sort((x, y) => x - y)[a.length >> 1];
 
-  // Where the sun stands before the world has turned, and how fast it turns:
-  // one revolution in half an hour. `shaders/common.wgsl` carries the same
-  // rate, because the sky's own stars and bodies have to swing with it.
-  const SUN_BASE = [0.58, -0.62, -0.52];
-  const SKY_SPIN = 2 * Math.PI / 1800;
+  // The sun's path across the sky, and how fast the world runs along it: one
+  // turn in four minutes. `shaders/common.wgsl` carries the same axis and the
+  // same rate, because the stars and the planets wheel about the same pole.
+  //
+  // The pole is tilted thirty-five degrees off vertical, and that tilt is the
+  // whole reason there is a night. Turned about the vertical the sun keeps its
+  // height and the evening never ends — which is what this did at first, and
+  // it was a fair trade for keeping the hour until it became obvious that a
+  // world where the sun goes round and round at a fixed altitude is not a
+  // world with a sky, it is a world with a lamp on a turntable. Tilted, the
+  // path is a great circle: the sun climbs to thirty-five degrees, comes down,
+  // and spends half the cycle under the horizon.
+  //
+  // Thirty-five rather than higher because that is the light this valley is
+  // built for. A sun that reaches overhead flattens everything at noon.
+  const SKY_TILT = 35 * Math.PI / 180;
+  // The axis, and the two directions that span the plane the sun runs round in.
+  const SKY_AXIS = [Math.sin(SKY_TILT), Math.cos(SKY_TILT), 0];
+  const SUN_E1 = [0, 0, 1];
+  const SUN_E2 = [Math.cos(SKY_TILT), -Math.sin(SKY_TILT), 0];
+  // Where in the day it starts: late afternoon, thirty degrees up and coming
+  // down, so the first thing anyone sees is the light this place was lit for.
+  const SUN_PHASE = -1.058;
+  const SKY_SPIN = 2 * Math.PI / 240;
   const uf = new Float32Array(56);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
@@ -1271,24 +1304,28 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // it stays evening. A tilted axis would be more honest and would put the
     // sun in the ground within ten minutes, taking the whole look with it.
     //
-    // One turn in half an hour — twelve degrees a minute. Watch the shadow of a
-    // pine and it is moving; look up at the sky and it is still.
-    const spin = t * SKY_SPIN;
-    const cs = Math.cos(spin), sn = Math.sin(spin);
-    const sunX = SUN_BASE[0] * cs + SUN_BASE[2] * sn;
-    const sunZ = -SUN_BASE[0] * sn + SUN_BASE[2] * cs;
+    // One turn in four minutes — a degree and a half a second, ninety times a
+    // real day, which reads as weather moving rather than as time-lapse.
+    // Where the sun is now: a point on the tilted circle. What goes into the
+    // uniform and into the shadow matrix is the direction the light travels,
+    // which is the other way round from where the sun is.
+    const th = SUN_PHASE + t * SKY_SPIN;
+    const cs = Math.cos(th), sn = Math.sin(th);
+    const sunX = -(SUN_E1[0] * cs + SUN_E2[0] * sn);
+    const sunY = -(SUN_E1[1] * cs + SUN_E2[1] * sn);
+    const sunZ = -(SUN_E1[2] * cs + SUN_E2[2] * sn);
     // Into the shadow matrix first, so what is copied out of the state below is
     // this frame's sun and not the last one's. There is one sun in this world:
     // the disc in the sky, the direction `lit` shades from and the matrix the
     // shadows are cast with are all the same three numbers.
-    E.set_sun(state, sunX, SUN_BASE[1], sunZ);
+    E.set_sun(state, sunX, sunY, sunZ);
 
     const st = stateF32();
     uf.set(st.subarray(0, 16), 0);        // vp
     uf.set(st.subarray(32, 48), 16);      // light vp
     uf.set(st.subarray(16, 19), 32);      // eye
     uf[35] = t;
-    uf[36] = sunX; uf[37] = SUN_BASE[1]; uf[38] = sunZ;
+    uf[36] = sunX; uf[37] = sunY; uf[38] = sunZ;
     uf[39] = canvas.width / canvas.height;
     uf[40] = st[19]; uf[41] = st[20];     // yaw, pitch
     uf[42] = st[26]; uf[43] = st[27];     // wind angle, wind strength

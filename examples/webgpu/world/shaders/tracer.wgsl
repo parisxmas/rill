@@ -30,6 +30,7 @@
   // still a couple of pixels wide rather than nothing.
   const TRAIL = 0.30;
   const HALFW = 0.005;
+  const BULLET_LIFE = 3.2;        // must match `bullet_life` in world.rill
 
   @vertex fn vs(
     @builtin(vertex_index) vi: u32,
@@ -41,14 +42,21 @@
     let cy = select(-1.0, 1.0, vi == 2u || vi == 4u || vi == 5u);
 
     let head = pos;
-    // The streak reaches back along the flight path, but never nearer the eye
-    // than a couple of metres. Cutting it at the near plane instead — which is
-    // the obvious thing — draws a line that starts at your own eyeball and
-    // reads as a beam rather than as a bullet; this keeps it out at the muzzle
-    // where the round actually was, and collapses it to a point for the first
-    // frame or two, which is right.
-    let speed = max(length(vel), 1.0);
-    let reach = min(TRAIL, max(distance(head, u.eye.xyz) - 2.2, 0.0) / speed);
+    // How far back the streak reaches is the round's own business: how long it
+    // has been in the air, and nothing else. It grows from nothing over the
+    // first three tenths of a second and is the same length from then on.
+    //
+    // It used to be measured from the eye — the streak reached back until it
+    // came within a couple of metres of you — which kept it off your own face
+    // at the muzzle but tied the shape of the thing to where you were standing
+    // and which way you had turned. Walk or spin while a round is out and the
+    // streak grew and shrank with you, which is exactly the tell that it is not
+    // really out there. Anchored to the flight it is inert: fire, turn away,
+    // turn back, and it is where the physics put it, the length the physics
+    // made it. The near-plane case the eye term was guarding is handled below
+    // by the clamp on the tail's own w.
+    let flown = max(BULLET_LIFE - life, 0.0);
+    let reach = min(TRAIL, flown);
     let tail = pos - vel * reach;
     let hc = u.vp * vec4f(head, 1.0);
     let tc = u.vp * vec4f(tail, 1.0);
