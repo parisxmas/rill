@@ -265,7 +265,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // texture, and the valley itself. `run` does not resolve until a frame has
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
-  const TOTAL = 6 + Object.keys(SHADERS).length + TEXTURES.length;
+  const TOTAL = 7 + Object.keys(SHADERS).length + TEXTURES.length;
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -493,11 +493,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // The shatter is three glass breaks laid end to end in one file, a second
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
-  let audio = null, shotBuf = null, breakBuf = null;
+  let audio = null, shotBuf = null, breakBuf = null, musicBuf = null;
+  let musicGain = null, musicOn = true;
   const shotBytes = await (await fetch("./rifle-shot.mp3")).arrayBuffer();
   step("rifle-shot.mp3");
   const breakBytes = await (await fetch("./crystal-break.mp3")).arrayBuffer();
   step("crystal-break.mp3");
+  // The theme. Eighty seconds that begin and end in silence, which is what
+  // makes it loop without a seam: no crossfade, no loop points, just the tail
+  // running into the head the way the piece was already written.
+  const musicBytes = await (await fetch("./valley-theme.mp3")).arrayBuffer();
+  step("valley-theme.mp3");
   // One node per sound, built and thrown away: cheaper than it looks, and the
   // only way to have two of the same sample overlapping.
   function playAt(buf, offset, dur, gain, pan, rate) {
@@ -517,14 +523,39 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   function ensureAudio(then) {
     if (!audio) {
       audio = new (globalThis.AudioContext ?? globalThis.webkitAudioContext)();
+      musicGain = audio.createGain();
+      musicGain.gain.value = 0;
+      musicGain.connect(audio.destination);
       Promise.all([
         audio.decodeAudioData(shotBytes.slice(0)).then(b => { shotBuf = b; }),
         audio.decodeAudioData(breakBytes.slice(0)).then(b => { breakBuf = b; }),
+        audio.decodeAudioData(musicBytes.slice(0)).then(b => { musicBuf = b; startMusic(); }),
       ]).then(then);
       return;
     }
     if (audio.state === "suspended") audio.resume();
     then();
+  }
+
+  // Started once and left running. Fading it up over four seconds rather than
+  // cutting it in matters more than it sounds like it should: the theme opens
+  // on a held chord, and a held chord that begins at full volume the instant
+  // you click reads as a jingle rather than as somewhere you have arrived.
+  function startMusic() {
+    const src = audio.createBufferSource();
+    src.buffer = musicBuf;
+    src.loop = true;
+    src.connect(musicGain);
+    src.start();
+    setMusic(musicOn);
+  }
+  function setMusic(on) {
+    musicOn = on;
+    if (!musicGain) return;
+    const now = audio.currentTime;
+    musicGain.gain.cancelScheduledValues(now);
+    musicGain.gain.setValueAtTime(musicGain.gain.value, now);
+    musicGain.gain.linearRampToValueAtTime(on ? 0.34 : 0.0, now + (on ? 4.0 : 0.6));
   }
   function bang() {
     ensureAudio(() => playAt(shotBuf, 0, 0, 0.55 + Math.random() * 0.12, 0,
@@ -741,8 +772,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   let keys = 0, mdx = 0, mdy = 0;
   const bit = { KeyW: 1, KeyS: 2, KeyA: 4, KeyD: 8, Space: 16, ShiftLeft: 32, ShiftRight: 32 };
   addEventListener("keydown", e => { if (bit[e.code]) { keys |= bit[e.code]; e.preventDefault(); } });
+  addEventListener("keydown", e => { if (e.code === "KeyM") setMusic(!musicOn); });
   addEventListener("keyup", e => { if (bit[e.code]) keys &= ~bit[e.code]; });
-  canvas.addEventListener("click", () => canvas.requestPointerLock());
+  canvas.addEventListener("click", () => {
+    canvas.requestPointerLock();
+    ensureAudio(() => {});     // the first gesture: a browser will start audio on it
+  });
   addEventListener("mousemove", e => {
     if (document.pointerLockElement === canvas) { mdx += e.movementX; mdy += e.movementY; }
   });

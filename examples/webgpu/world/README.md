@@ -170,3 +170,13 @@ Which vertices move is a flag baked into the spare fourth component of the
 position: one for the bolt's two thousand-odd vertices, a half for the round's
 four hundred, zero for the rifle proper. The position was already being
 unpacked from unorm16, so the flag costs the file nothing at all.
+
+The theme is pauliuw's *The Field of Dreams* from OpenGameArt, CC0 — eighty
+seconds that begin and end in silence, which is what makes it loop without a
+seam: no crossfade, no loop points, just the tail running into the head the way
+the piece was already written. It starts on the click that captures the mouse,
+because a browser will not start audio before a gesture and that is the first
+one there is, and it fades up over four seconds rather than cutting in. That
+matters more than it sounds like it should: the piece opens on a held chord,
+and a held chord at full volume the instant you click reads as a jingle rather
+than as somewhere you have arrived. **M** turns it off and on.

@@ -81,7 +81,7 @@
     <div class="sub">the world below is computed by a functional language</div>
     <div class="keys"><b>click</b> to look &nbsp;·&nbsp; <b>WASD</b> walk &nbsp;·&nbsp;
       <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint &nbsp;·&nbsp;
-      <b>left mouse</b> fire</div>
+      <b>left mouse</b> fire &nbsp;·&nbsp; <b>M</b> music</div>
   </div>
   <div class="stat" id="stat"></div>
   <div class="aim">
@@ -101,7 +101,7 @@
   <script type="module">
     // Versioned because the CDN in front of this holds .js for a week; bump it
     // when host.js changes. index.html itself is never cached.
-    import { run } from "./host.js?v=42";
+    import { run } from "./host.js?v=43";
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");
