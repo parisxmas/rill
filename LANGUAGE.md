@@ -794,7 +794,7 @@ owns the frame.
 | `show(x) -> Str` | render any value as a string |
 | `int_to_str` `float_to_str` `bool_to_str` `str_to_int` | conversions |
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
-| `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage |
+| `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_find_from(s, needle, from)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage. `str_find_from` starts partway along, so a long line can be walked field by field without slicing off the part already read; a start outside the string is clamped |
 | `channel()` `send(ch, v)` `recv(ch)` | channels |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |

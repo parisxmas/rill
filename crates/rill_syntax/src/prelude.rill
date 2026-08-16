@@ -113,9 +113,11 @@ fn contains(s, p) = str_find(s, p) >= 0
 
 fn starts_with(s, p) = str_find(s, p) == 0
 
-fn split(s, sep) =
-  i = str_find(s, sep)
-  if str_len(sep) == 0 || i < 0 then Cons(s, Nil) else Cons(str_sub(s, 0, i), split(str_sub(s, i + str_len(sep), str_len(s)), sep))
+fn split(s, sep) = if str_len(sep) == 0 then Cons(s, Nil) else split_on(s, sep, 0, Nil)
+
+fn split_on(s, sep, from, acc) =
+  i = str_find_from(s, sep, from)
+  if i < 0 then reverse(Cons(str_sub(s, from, str_len(s)), acc)) else split_on(s, sep, i + str_len(sep), Cons(str_sub(s, from, i - from), acc))
 
 fn lines(s) = split(s, "\n")
 

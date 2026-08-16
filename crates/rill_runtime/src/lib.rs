@@ -364,11 +364,26 @@ pub unsafe extern "C" fn rill_str_sub(s: *const u8, start: i64, len: i64) -> *mu
 /// Both must be live string objects.
 #[no_mangle]
 pub unsafe extern "C" fn rill_str_find(s: *const u8, needle: *const u8) -> i64 {
+    rill_str_find_from(s, needle, 0)
+}
+
+/// The same search, started partway along. Scanning a string without one of
+/// these means slicing off the part already looked at, which copies it — so
+/// walking a long line field by field cost more the further along it got.
+///
+/// A start before the beginning is clamped; one past the end finds nothing,
+/// except for the empty needle, which is found wherever you look for it.
+///
+/// # Safety
+/// Both must be live string objects.
+#[no_mangle]
+pub unsafe extern "C" fn rill_str_find_from(s: *const u8, needle: *const u8, from: i64) -> i64 {
     let (n, m) = (str_len_of(s), str_len_of(needle));
+    let start = from.clamp(0, n as i64) as usize;
     if m == 0 {
-        return 0;
+        return start as i64;
     }
-    if m > n {
+    if m + start > n {
         return -1;
     }
     let hay = str_bytes(s);
@@ -377,7 +392,7 @@ pub unsafe extern "C" fn rill_str_find(s: *const u8, needle: *const u8) -> i64 {
     // jumping is the vectorized part and it is where the time goes: a needle's
     // first byte is rare in ordinary text, so most of the haystack is crossed
     // sixteen bytes at a time and never looked at again.
-    let mut i = 0;
+    let mut i = start;
     while i + m <= n {
         let hit = memchr(hay.add(i), *nee as i32, n - m - i + 1);
         if hit.is_null() {

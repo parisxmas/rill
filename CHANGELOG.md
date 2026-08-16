@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **`str_find_from`, and a `split` that walks the line once.** Searching a
+  string from anywhere but the beginning meant slicing off the part already
+  read, which copies it — so `split` copied the whole remainder of the line at
+  every separator. A line of a hundred thousand fields took two seconds, and
+  one of two hundred thousand overflowed the stack, because `split` was not
+  tail-recursive either. `str_find_from(s, needle, from)` starts partway
+  along, `split` is written on top of it, and both problems go with it: the
+  hundred-thousand-field line now takes 6 ms and five million fields take 117.
+
 - **`str_find` stops looking one byte at a time.** It compared the needle
   against every position in turn, which is how a search reads when you write
   it out and is not how anyone's C library does it. It now jumps to each place

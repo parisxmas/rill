@@ -1084,6 +1084,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function(
+            "rill_str_find_from",
+            i64t.fn_type(&[ptrt.into(), ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
             "rill_str_cmp",
             i64t.fn_type(&[ptrt.into(), ptrt.into()], false),
             None,

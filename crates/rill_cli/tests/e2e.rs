@@ -382,6 +382,44 @@ fn slices_a_string() {
     assert_eq!(run_source("slices", src), "mer\nhaba\nmer\n\nba\nerhab\n");
 }
 
+/// `str_find_from` starts partway along and clamps a start outside the
+/// string; `split` is written on top of it, so it walks a line once instead
+/// of copying what is left of it at every separator.
+#[test]
+fn finds_from_a_starting_point() {
+    let src = "fn main() =\n  \
+                 s = \"a,bb,,c\"\n  \
+                 println(str_find_from(s, \",\", 0))\n  \
+                 println(str_find_from(s, \",\", 2))\n  \
+                 println(str_find_from(s, \",\", -7))\n  \
+                 println(str_find_from(s, \",\", 100))\n  \
+                 println(str_find_from(s, \"\", 3))\n  \
+                 println(str_find_from(s, \"\", 100))\n  \
+                 println(join(split(s, \",\"), \"|\"))\n  \
+                 println(join(split(\",x,\", \",\"), \"|\"))\n  \
+                 println(join(split(\"abc\", \"q\"), \"|\"))\n";
+    assert_eq!(
+        run_source("findfrom", src),
+        "1\n4\n1\n-1\n3\n7\na|bb||c\n|x|\nabc\n"
+    );
+}
+
+/// A line with many fields must cost time in proportion to its length, not to
+/// its length times its field count: `split` used to copy the whole remainder
+/// at every separator, which made a long line quadratic and overflowed the
+/// stack besides.
+#[test]
+fn splitting_a_long_line_is_linear() {
+    let src = "fn count(l, n) = match l\n  \
+                 Nil -> n\n  \
+                 Cons(_, t) -> count(t, n + 1)\n\
+               \n\
+               fn wide(i, acc) = if i == 0 then acc else wide(i - 1, acc + \" ab\")\n\
+               \n\
+               fn main() = println(count(split(wide(200000, \"\"), \" \"), 0))\n";
+    assert_eq!(run_source("splitwide", src), "200001\n");
+}
+
 /// Tearing down a long list must not cost a stack frame per link. The
 /// generated drop frees the box first and releases its last heap field by a
 /// tail call, so this list — which is only released when `main` ends, long

@@ -1967,6 +1967,9 @@ impl Checker {
             "str_get" => Some(("rill_str_get", vec![Ty::Str, Ty::Int], Ty::Int)),
             "str_sub" => Some(("rill_str_sub", vec![Ty::Str, Ty::Int, Ty::Int], Ty::Str)),
             "str_find" => Some(("rill_str_find", vec![Ty::Str, Ty::Str], Ty::Int)),
+            "str_find_from" => {
+                Some(("rill_str_find_from", vec![Ty::Str, Ty::Str, Ty::Int], Ty::Int))
+            }
             "str_cmp" => Some(("rill_str_cmp", vec![Ty::Str, Ty::Str], Ty::Int)),
             "str_to_int" => Some(("rill_str_to_int", vec![Ty::Str], Ty::Int)),
             "str_to_float" => Some(("rill_str_to_float", vec![Ty::Str], Ty::Float)),
@@ -2759,6 +2762,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "str_get"
             | "str_sub"
             | "str_find"
+            | "str_find_from"
             | "str_cmp"
             | "str_to_int"
             | "str_to_float"
