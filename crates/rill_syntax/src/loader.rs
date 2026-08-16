@@ -257,6 +257,10 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str) {
             qualify_expr(index, own, alias);
             qualify_expr(value, own, alias);
         }
+        Expr::Append { target, value, .. } => {
+            qualify_expr(target, own, alias);
+            qualify_expr(value, own, alias);
+        }
         Expr::For { from, to, body, .. } => {
             qualify_expr(from, own, alias);
             qualify_expr(to, own, alias);

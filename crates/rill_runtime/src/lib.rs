@@ -104,6 +104,117 @@ pub unsafe extern "C" fn rill_str_concat(a: *const u8, b: *const u8) -> *mut u8 
     p
 }
 
+// ---- string builders -------------------------------------------------------
+//
+// A string is a counted value, so building one a piece at a time with `+`
+// copies what is already there every time — quadratic in the length. A builder
+// is what a `Buf` is, for bytes on their way to becoming a string:
+// `{ i64 rc, *mut u8 data, i64 len, i64 cap }`. The bytes live behind a
+// pointer rather than in the object, so growing them leaves the object where
+// it is and the name that holds it stays good.
+
+unsafe fn sb_data(p: *const u8) -> *mut u8 {
+    *(p as *const *mut u8).add(1)
+}
+
+unsafe fn sb_len(p: *const u8) -> usize {
+    *(p as *const i64).add(2) as usize
+}
+
+/// # Safety
+/// Hands back a live builder, owned by the caller.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_new() -> *mut u8 {
+    let p = rill_alloc(32);
+    *(p as *mut i64) = 1;
+    *(p as *mut *mut u8).add(1) = core::ptr::null_mut();
+    *(p as *mut i64).add(2) = 0;
+    *(p as *mut i64).add(3) = 0;
+    p
+}
+
+/// # Safety
+/// `p` must be a live builder and `s` a live string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_add(p: *mut u8, s: *const u8) {
+    let n = str_len_of(s);
+    if n == 0 {
+        return;
+    }
+    let len = sb_len(p);
+    let cap = *(p as *const i64).add(3) as usize;
+    if len + n > cap {
+        let mut want = if cap == 0 { 32 } else { cap };
+        while want < len + n {
+            want *= 2;
+        }
+        let fresh = malloc(want);
+        let old = sb_data(p);
+        if !old.is_null() {
+            core::ptr::copy_nonoverlapping(old, fresh, len);
+            free(old);
+        }
+        *(p as *mut *mut u8).add(1) = fresh;
+        *(p as *mut i64).add(3) = want as i64;
+    }
+    core::ptr::copy_nonoverlapping(str_bytes(s), sb_data(p).add(len), n);
+    *(p as *mut i64).add(2) = (len + n) as i64;
+}
+
+/// # Safety
+/// `p` must be a live builder. Adds one byte, which is what reading a string
+/// a character at a time produces — `chr` would allocate a string for each.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_byte(p: *mut u8, c: i64) {
+    let len = sb_len(p);
+    let cap = *(p as *const i64).add(3) as usize;
+    if len + 1 > cap {
+        let want = if cap == 0 { 32 } else { cap * 2 };
+        let fresh = malloc(want);
+        let old = sb_data(p);
+        if !old.is_null() {
+            core::ptr::copy_nonoverlapping(old, fresh, len);
+            free(old);
+        }
+        *(p as *mut *mut u8).add(1) = fresh;
+        *(p as *mut i64).add(3) = want as i64;
+    }
+    *sb_data(p).add(len) = c as u8;
+    *(p as *mut i64).add(2) = (len + 1) as i64;
+}
+
+/// # Safety
+/// `p` must be a live builder; hands back a new owned string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_str(p: *const u8) -> *mut u8 {
+    let len = sb_len(p);
+    let out = str_new(len);
+    if len > 0 {
+        core::ptr::copy_nonoverlapping(sb_data(p), out.add(16), len);
+    }
+    out
+}
+
+/// # Safety
+/// `p` must be a live builder.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_len(p: *const u8) -> i64 {
+    sb_len(p) as i64
+}
+
+/// # Safety
+/// `p` must be a live builder.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_release(p: *mut u8) {
+    if rc_dec(p as *mut i64) == 0 {
+        let d = sb_data(p);
+        if !d.is_null() {
+            free(d);
+        }
+        rill_free_sized(p, 32);
+    }
+}
+
 /// # Safety
 /// `s` must be a live string object.
 #[no_mangle]
@@ -398,6 +509,33 @@ pub unsafe extern "C" fn rill_write_file(path: *const u8, content: *const u8) ->
     1
 }
 
+// Standard input is read in blocks and handed out a line at a time. A
+// syscall per byte is what this used to be, and on a large input that was all
+// the program did; nothing else reads this descriptor, so holding what was
+// read ahead is safe.
+const IN_CAP: usize = 1 << 16;
+static mut IN_BUF: *mut u8 = core::ptr::null_mut();
+static mut IN_POS: usize = 0;
+static mut IN_LEN: usize = 0;
+
+/// The next byte of standard input, or -1 at the end of it.
+unsafe fn in_byte() -> i32 {
+    if IN_POS == IN_LEN {
+        if IN_BUF.is_null() {
+            IN_BUF = malloc(IN_CAP);
+        }
+        let got = read(0, IN_BUF, IN_CAP);
+        if got <= 0 {
+            return -1;
+        }
+        IN_LEN = got as usize;
+        IN_POS = 0;
+    }
+    let b = *IN_BUF.add(IN_POS);
+    IN_POS += 1;
+    b as i32
+}
+
 /// Reads one line from stdin (newline stripped); EOF with no data sets
 /// `io_ok` false.
 ///
@@ -410,14 +548,14 @@ pub unsafe extern "C" fn rill_read_line() -> *mut u8 {
     let mut buf = malloc(cap);
     let mut n = 0usize;
     loop {
-        let mut b: u8 = 0;
-        let r = read(0, &mut b, 1);
-        if r <= 0 {
+        let c = in_byte();
+        if c < 0 {
             if n == 0 {
                 IO_OK = 0;
             }
             break;
         }
+        let b = c as u8;
         if b == b'\n' {
             break;
         }

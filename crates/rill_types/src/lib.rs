@@ -41,6 +41,10 @@ pub enum Ty {
     /// mutable thing in the language, and the only one C can be handed a
     /// pointer into: `Buf(F32)` is what a vertex array is.
     Buf(CTy),
+    /// Bytes on their way to becoming a string. Storage like a `Buf`, and for
+    /// the same reason: a string is a value, so building one by `+` copies
+    /// what is already there every time.
+    StrBuf,
     /// Inference variable; never present in checker output.
     Var(u32),
     /// Quantified type parameter (of the enclosing function or ADT).
@@ -988,6 +992,7 @@ impl Checker {
                 format!("({}) -> {}", params.join(", "), self.type_name(&ret))
             }
             Ty::Chan(e) => format!("Chan({})", self.type_name(&e)),
+            Ty::StrBuf => "StrBuf".into(),
             Ty::Buf(w) => format!("Buf({})", w.name()),
             Ty::Var(_) => "_".into(),
             Ty::Gen(i) => format!("'{}", (b'a' + (i % 26) as u8) as char),
@@ -1538,6 +1543,11 @@ impl Checker {
                         line: *line,
                         kind: TK::BufLen { buf: Box::new(b) },
                     }),
+                    Ty::StrBuf => Ok(TExpr {
+                        ty: Ty::Int,
+                        line: *line,
+                        kind: TK::Builtin { rt: "rill_strbuf_len", args: vec![b] },
+                    }),
                     Ty::Str | Ty::Var(_) => {
                         self.unify(&Ty::Str, &b.ty, *line, "the operand of `#`")?;
                         Ok(TExpr {
@@ -1549,7 +1559,7 @@ impl Checker {
                     other => Err(TypeError::new(
                         *line,
                         format!(
-                            "`#` measures a string or a buffer, but this is `{}`",
+                            "`#` measures a string, a buffer or a builder, but this is `{}`",
                             self.type_name(&other)
                         ),
                     )),
@@ -1623,6 +1633,35 @@ impl Checker {
                         val: Box::new(val),
                     },
                 })
+            }
+            // `b += s` adds to a builder, which is the only `op=` whose
+            // target is a name — what it changes is the storage, not the name.
+            Expr::Append { target, value, line } => {
+                let b = self.infer(target, env)?;
+                match self.resolve(&b.ty) {
+                    Ty::StrBuf => {}
+                    other => {
+                        return Err(TypeError::new(
+                            *line,
+                            format!(
+                                "`+=` on a name adds to a string builder, but this is `{}` \
+                                 — bindings do not change",
+                                self.type_name(&other)
+                            ),
+                        ))
+                    }
+                }
+                // A string goes in as it is; a number goes in as one byte,
+                // which is what reading a string a character at a time gives
+                // and what `chr` would otherwise allocate a string for.
+                let v = self.infer(value, env)?;
+                let rt = if matches!(self.resolve(&v.ty), Ty::Int) {
+                    "rill_strbuf_byte"
+                } else {
+                    self.unify(&Ty::Str, &v.ty, *line, "what `+=` adds")?;
+                    "rill_strbuf_add"
+                };
+                Ok(TExpr { ty: Ty::Unit, line: *line, kind: TK::Builtin { rt, args: vec![b, v] } })
             }
             // `lift` spells these out before the checker sees a program.
             Expr::IndexOp { line, .. } => {
@@ -1917,6 +1956,10 @@ impl Checker {
             return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Print(Box::new(a)) });
         }
         let simple_builtin: Option<(&'static str, Vec<Ty>, Ty)> = match name {
+            "strbuf" => Some(("rill_strbuf_new", vec![], Ty::StrBuf)),
+            "strbuf_add" => Some(("rill_strbuf_add", vec![Ty::StrBuf, Ty::Str], Ty::Unit)),
+            "strbuf_byte" => Some(("rill_strbuf_byte", vec![Ty::StrBuf, Ty::Int], Ty::Unit)),
+            "strbuf_str" => Some(("rill_strbuf_str", vec![Ty::StrBuf], Ty::Str)),
             "str_len" => Some(("rill_str_len", vec![Ty::Str], Ty::Int)),
             "int_to_str" => Some(("rill_int_to_str", vec![Ty::Int], Ty::Str)),
             "float_to_str" => Some(("rill_float_to_str", vec![Ty::Float], Ty::Str)),
@@ -2692,7 +2735,7 @@ pub fn impl_targs(ty: &Ty) -> Vec<Ty> {
 }
 
 fn is_builtin_type(name: &str) -> bool {
-    matches!(name, "Int" | "Float" | "Bool" | "Str" | "Unit" | "Ptr")
+    matches!(name, "Int" | "Float" | "Bool" | "Str" | "StrBuf" | "Unit" | "Ptr")
 }
 
 fn is_builtin_fn(name: &str) -> bool {
@@ -2703,6 +2746,10 @@ fn is_builtin_fn(name: &str) -> bool {
             | "channel"
             | "send"
             | "recv"
+            | "strbuf"
+            | "strbuf_add"
+            | "strbuf_byte"
+            | "strbuf_str"
             | "str_len"
             | "int_to_str"
             | "float_to_str"
@@ -2834,6 +2881,7 @@ fn resolve_type_ref(
             "Float" => Ty::Float,
             "Bool" => Ty::Bool,
             "Str" => Ty::Str,
+            "StrBuf" => Ty::StrBuf,
             "Ptr" => Ty::Ptr,
             _ => Ty::Unit,
         });
@@ -2911,6 +2959,10 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
         | Expr::IndexOp { base, index, value, .. } => {
             free_vars(base, out, seen);
             free_vars(index, out, seen);
+            free_vars(value, out, seen);
+        }
+        Expr::Append { target, value, .. } => {
+            free_vars(target, out, seen);
             free_vars(value, out, seen);
         }
         Expr::For { from, to, body, .. } => {
@@ -3317,7 +3369,7 @@ mod tests {
         assert_eq!(sig(&t, "f").params[0].1, Ty::Str);
         assert_eq!(sig(&t, "f").ret, Ty::Int);
         let err = check_src("fn main() = println(#1)\n").unwrap_err();
-        assert!(err.msg.contains("measures a string or a buffer"), "{}", err.msg);
+        assert!(err.msg.contains("measures a string, a buffer or a builder"), "{}", err.msg);
     }
 
     /// Storing the wrong shape in one is a type error, not a silent

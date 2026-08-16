@@ -163,6 +163,10 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             collect_expr_names(index, out);
             collect_expr_names(value, out);
         }
+        Expr::Append { target, value, .. } => {
+            collect_expr_names(target, out);
+            collect_expr_names(value, out);
+        }
         Expr::For { from, to, body, .. } => {
             collect_expr_names(from, out);
             collect_expr_names(to, out);

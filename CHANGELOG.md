@@ -2,7 +2,19 @@
 
 ## Unreleased
 
-- **Loops stopped counting references.** A tight loop over a buffer ran
+- **String builders, and standard input read in blocks.** Building a string
+  by `+` copies what is already there every time, so a `StrBuf` is what a
+  `Buf` is, for bytes on their way to becoming a string: `strbuf()`,
+  `b += s` (a string) or `b += byte` (a number), `strbuf_str(b)`, `#b`. `+=`
+  on a name is the one assignment whose target is not an index, and it changes
+  no binding — what it adds to is the storage the name points at. Written with
+  one, the JSON benchmark's printing went from 44% of its time to 3%.
+  Measuring the rest of it found something worse and simpler: `read_line` was
+  a `read` syscall per byte, which on an eleven-megabyte input was almost the
+  whole program. Standard input is now read in blocks. Together: JSON 6.4 s to
+  **0.22 s**, level with Go and past OCaml; Dijkstra end to end 10.3 s to
+  **0.51 s**, past Go. All four benchmarks now sit within about twice of C.
+  **The self-hosted compiler does not know `StrBuf` yet**, as with slicing. A tight loop over a buffer ran
   twenty-four times slower than the same loop in C, and the emitted IR said
   why: six retains and eight releases per iteration, none of which changed
   anything. Two rules removed all of them. An operation that only reads

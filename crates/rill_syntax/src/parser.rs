@@ -586,10 +586,19 @@ impl Parser {
                         value: Box::new(value),
                         line,
                     })),
+                    // `b += s` on a name is an append, and only `+` is one.
+                    Expr::Var(n, line) if c == '+' => Ok(Stmt::Expr(Expr::Append {
+                        target: Box::new(Expr::Var(n, line)),
+                        value: Box::new(value),
+                        line,
+                    })),
                     _ => Err(SyntaxError::new(
                         line,
                         col,
-                        format!("`{c}=` writes a buffer element: write `b[i] {c}= v`"),
+                        format!(
+                            "`{c}=` writes a buffer element: write `b[i] {c}= v` \
+                             (or `b += s` to add to a string builder)"
+                        ),
                     )),
                 };
             }

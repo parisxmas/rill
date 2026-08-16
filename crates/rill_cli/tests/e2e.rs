@@ -189,6 +189,60 @@ fn local_functions_capture_and_loop() {
     assert_eq!(run_source("local_fns", src), "true\n15000000\n");
 }
 
+/// A builder is storage for bytes on their way to a string: adding to one is
+/// a copy of what is added, not of what is already there.
+#[test]
+fn string_builders_accumulate() {
+    let src = "fn main() =\n  \
+                 b = strbuf()\n  \
+                 b += \"mer\"\n  \
+                 b += \"haba\"\n  \
+                 b += 33\n  \
+                 println(strbuf_str(b))\n  \
+                 println(#b)\n  \
+                 big = strbuf()\n\n  \
+                 for i in 0..100000\n    \
+                   big += \"0123456789\"\n\n  \
+                 println(#big)\n  \
+                 println(#strbuf_str(big))\n";
+    assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
+}
+
+/// Standard input is read in blocks. It used to be a syscall a byte, which on
+/// a large input was the whole of what a program did.
+#[test]
+fn standard_input_is_read_in_blocks() {
+    let src = "fn main() =\n  \
+                 a = read_line()\n  \
+                 b = read_line()\n  \
+                 println(#a)\n  \
+                 println(b)\n  \
+                 println(io_ok())\n";
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-in-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("input.rill");
+    std::fs::write(&path, src).unwrap();
+    let exe = out_dir.join("input");
+    assert!(Command::new(env!("CARGO_BIN_EXE_rill"))
+        .args(["build"])
+        .arg(&path)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .unwrap()
+        .success());
+    let mut child = std::process::Command::new(&exe)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    let long = "x".repeat(100_000);
+    write!(child.stdin.as_mut().unwrap(), "{long}\nsecond\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "100000\nsecond\ntrue\n");
+}
+
 /// A loop over buffers must not count references. The buffers a loop carries
 /// are borrowed where they are read and moved where they are handed on, so
 /// the body of one has no retain and no release left in it — which is the

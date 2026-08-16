@@ -462,7 +462,10 @@ impl Fmt {
                 }
                 parts.join("\n").trim_start().to_string()
             }
-            Expr::For { var, from, to, body, .. } => {
+            Expr::Append { target, value, .. } => {
+            format!("{} += {}", inline(target, P_INDEX), inline(value, 0))
+        }
+        Expr::For { var, from, to, body, .. } => {
                 let head = format!("for {var} in {}..{}", inline(from, 0), inline(to, 0));
                 match body.as_ref() {
                     Expr::Block(stmts) => format!("{head}{}", self.block_lines(stmts, cont)),
@@ -588,6 +591,7 @@ fn expr_line(e: &Expr) -> usize {
         Expr::Slice { line, .. } => *line,
         Expr::IndexSet { line, .. } => *line,
         Expr::IndexOp { line, .. } => *line,
+        Expr::Append { line, .. } => *line,
         Expr::For { line, .. } => *line,
         Expr::Unary { expr, .. } => expr_line(expr),
         Expr::If { cond, .. } => expr_line(cond),
@@ -702,6 +706,9 @@ fn inline(e: &Expr, prec: u8) -> String {
         ),
         // Nothing in an expression can consume a `..`, so neither end of the
         // range ever needs parentheses.
+        Expr::Append { target, value, .. } => {
+            format!("{} += {}", inline(target, P_INDEX), inline(value, 0))
+        }
         Expr::For { var, from, to, body, .. } => {
             format!("for {var} in {}..{} {}", inline(from, 0), inline(to, 0), inline(body, 0))
         }

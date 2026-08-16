@@ -307,6 +307,7 @@ fn mangle(ty: &Ty, adts: &[rill_types::AdtDef]) -> String {
         Ty::Float => "Float".into(),
         Ty::Bool => "Bool".into(),
         Ty::Str => "Str".into(),
+        Ty::StrBuf => "StrBuf".into(),
         Ty::Unit => "Unit".into(),
         Ty::Adt(i, args) => {
             let mut s = adts[*i].name.clone();
@@ -841,7 +842,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Ty::Int => Some(self.ctx.i64_type().into()),
             Ty::Float => Some(self.ctx.f64_type().into()),
             Ty::Bool => Some(self.ctx.bool_type().into()),
-            Ty::Str | Ty::Adt(..) | Ty::Chan(..) | Ty::Ptr | Ty::Buf(_) => {
+            Ty::Str | Ty::StrBuf | Ty::Adt(..) | Ty::Chan(..) | Ty::Ptr | Ty::Buf(_) => {
                 Some(self.ctx.ptr_type(Default::default()).into())
             }
             Ty::Fn(..) => Some(self.closure_type().into()),
@@ -1113,6 +1114,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             void.fn_type(&[ptrt.into(), i64t.into()], false),
             None,
         );
+        self.module.add_function("rill_strbuf_new", ptrt.fn_type(&[], false), None);
+        self.module.add_function(
+            "rill_strbuf_add",
+            void.fn_type(&[ptrt.into(), ptrt.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_strbuf_byte",
+            void.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_strbuf_str", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_strbuf_len", i64t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_strbuf_release", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function(
             "rill_buf_oob",
             void.fn_type(&[i64t.into(), i64t.into()], false),
@@ -1254,7 +1269,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .into_int_value(),
                 zero,
             ),
-            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::Ptr | Ty::Buf(_) => (
+            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_) => (
                 b.build_ptr_to_int(v.into_pointer_value(), i64t, "w").unwrap(),
                 zero,
             ),
@@ -1289,7 +1304,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Ty::Float => b
                 .build_bit_cast(a, self.ctx.f64_type(), "f")
                 .unwrap(),
-            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::Ptr | Ty::Buf(_) => {
+            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_) => {
                 let _ = bw;
                 b.build_int_to_ptr(a, ptrt, "p").unwrap().into()
             }
@@ -1309,7 +1324,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     // ---- reference counting ---------------------------------------------
 
     fn is_heap(ty: &Ty) -> bool {
-        matches!(ty, Ty::Adt(..) | Ty::Fn(..) | Ty::Chan(..) | Ty::Str | Ty::Buf(_))
+        matches!(ty, Ty::Adt(..) | Ty::Fn(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Buf(_))
     }
 
     /// The `{ i64 rc, i64 tag }` header shared by all ADT boxes.
@@ -1387,7 +1402,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         match ty {
             // Boxes, channels and strings are never null; closure
             // environments can be, so those keep the null-safe runtime call.
-            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::Buf(_) => self.emit_rc_inc(v),
+            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Buf(_) => self.emit_rc_inc(v),
             Ty::Fn(..) => {
                 let env = self
                     .builder
@@ -1443,6 +1458,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Some(self.call_rt("rill_buf_release", &[v.into(), size.into()]))
             }
             Ty::Str => Some(self.call_rt("rill_str_release", &[v.into()])),
+            Ty::StrBuf => Some(self.call_rt("rill_strbuf_release", &[v.into()])),
             Ty::Fn(..) => {
                 let env = self
                     .builder

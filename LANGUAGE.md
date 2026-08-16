@@ -68,6 +68,7 @@ length operator instead.
 | `Str` | `"hi"`, `"a\nb"` | escapes: `\n` `\t` `\\` `\"` |
 | `Unit` | — | what `println` and `main` return |
 | `Chan(a)` | `channel()` | see [Concurrency](#7-concurrency) |
+| `StrBuf` | `strbuf()` | bytes on their way to a string |
 | `(A, B) -> C` | `\x, y -> ...` | function values |
 | user types | `Circle(1.0)` | declared with `type` |
 
@@ -144,6 +145,28 @@ A binding may take apart any type with exactly one constructor:
 `Parsed(v, rest) = parse(s)` reads as a binding because it cannot fail. On a
 type with more than one, the compiler says the match is not exhaustive, which
 is the truth: use `match`.
+
+### String builders
+
+A string is a value, so building one a piece at a time with `+` copies what
+is already there every time. A `StrBuf` is storage for the bytes on their way
+to becoming one — a `Buf` for text:
+
+```
+b = strbuf()
+b += "hello, "        # a string goes in as it is
+b += "world"
+b += 33               # a number goes in as one byte: `!`
+println(strbuf_str(b))
+println(#b)           # how many bytes it holds
+```
+
+`b += s` is the one `op=` whose target is a name, and it changes no binding:
+what it adds to is the storage the name points at, exactly as `v[i] = x`
+writes a buffer. `strbuf_add(b, s)` and `strbuf_byte(b, n)` are the same two
+operations spelled out. A builder is not a value type — it does not show,
+compare or cross a channel; `strbuf_str` takes the string out of it, and the
+builder stays usable.
 
 ### Slices
 
@@ -765,7 +788,8 @@ owns the frame.
 | `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage |
 | `channel()` `send(ch, v)` `recv(ch)` | channels |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
-| `read_file_raw(path)` `write_file(path, text)` `read_line()` `io_ok()` | file and stdin IO |
+| `read_file_raw(path)` `write_file(path, text)` `read_line()` `io_ok()` | file and stdin IO; standard input is read in blocks |
+| `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `#b` | building a string a piece at a time |
 | `to_cstr` `from_cstr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |
 | `exit(code)` | terminate |

@@ -161,6 +161,10 @@ pub enum Expr {
     /// `b[i] += v` and its friends: one read, one write, the index evaluated
     /// once. `lift` spells it out.
     IndexOp { op: BinOp, base: Box<Expr>, index: Box<Expr>, value: Box<Expr>, line: usize },
+    /// `b += s` on a string builder: the one `op=` whose target is a name,
+    /// because what it changes is the storage the name points at, not the
+    /// name. `lift` leaves it; the checker turns it into `strbuf_add`.
+    Append { target: Box<Expr>, value: Box<Expr>, line: usize },
     /// `for i in a..b` over the half-open range, its body run for each `i`.
     /// `lift` turns it into a local function, which is what a loop is.
     For { var: String, from: Box<Expr>, to: Box<Expr>, body: Box<Expr>, line: usize },

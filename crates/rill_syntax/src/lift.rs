@@ -134,6 +134,11 @@ fn walk(
         Expr::IndexOp { op, base, index, value, line } => {
             walk(expand_index_op(op, *base, *index, *value, line), env, parent, used, out)?
         }
+        Expr::Append { target, value, line } => Expr::Append {
+            target: Box::new(walk(*target, env, parent, used, out)?),
+            value: Box::new(walk(*value, env, parent, used, out)?),
+            line,
+        },
         Expr::Slice { base, from, to, line } => Expr::Slice {
             base: Box::new(walk(*base, env, parent, used, out)?),
             from: match from {
@@ -544,6 +549,11 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
             value: Box::new(rewrite(*value, locals)?),
             line,
         },
+        Expr::Append { target, value, line } => Expr::Append {
+            target: Box::new(rewrite(*target, locals)?),
+            value: Box::new(rewrite(*value, locals)?),
+            line,
+        },
         Expr::IndexOp { op, base, index, value, line } => Expr::IndexOp {
             op,
             base: Box::new(rewrite(*base, locals)?),
@@ -666,6 +676,10 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
         | Expr::IndexOp { base, index, value, .. } => {
             free_of(base, bound, out);
             free_of(index, bound, out);
+            free_of(value, bound, out);
+        }
+        Expr::Append { target, value, .. } => {
+            free_of(target, bound, out);
             free_of(value, bound, out);
         }
         Expr::For { var, from, to, body, .. } => {
