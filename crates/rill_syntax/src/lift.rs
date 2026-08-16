@@ -11,9 +11,12 @@
 //! tail call a tail call and adds no allocation at all.
 //!
 //! The lifted name carries the enclosing function's, separated by a dot no
-//! Rill identifier can contain, and `lifted_from` records the parent so the
-//! checker can infer the two together: a captured buffer must have the type it
-//! had where it was captured, since a `Buf` width is never inferred.
+//! Rill identifier can contain. `lifted_from` records the parent when there is
+//! something captured, so the checker infers the two together: a captured
+//! buffer must have the type it had where it was captured, since a `Buf` width
+//! is never inferred from use. A local function that captures nothing needs no
+//! such tie, and without it the checker generalizes it like any other
+//! top-level function — so it can be used at more than one type.
 
 use std::collections::{HashMap, HashSet};
 
@@ -444,7 +447,9 @@ fn walk_block(
             ret_ann: f.ret_ann,
             body,
             line: f.line,
-            lifted_from: Some(parent.to_string()),
+            // Only what closed over something has to be inferred with the
+            // function it was written in; see the note at the top.
+            lifted_from: (!l.caps.is_empty()).then(|| parent.to_string()),
         });
     }
     Ok(kept)

@@ -445,6 +445,17 @@ fn list_functions_take_constant_stack() {
     );
 }
 
+/// A local function that closes over nothing is an ordinary function once it
+/// has been lifted, so it may be used at more than one type. One that closes
+/// over something is checked with the function it was written in — that is
+/// what lets a captured buffer keep its width without an annotation — and so
+/// has one type. Both halves have to keep working.
+#[test]
+fn local_functions_generalize_unless_they_capture() {
+    let src = "fn main() =\n                   fn id(x) = x\n\n                   v = buf_int(4)\n                   w = buf_f32(3)\n\n                   fn fill(i) =\n                       if i < 4 then\n                           v[i] = i * i\n                           fill(i + 1)\n                       else\n                           0\n\n                   fn fillf(i) =\n                       if i < 3 then\n                           w[i] = to_float(i) / 2.0\n                           fillf(i + 1)\n                       else\n                           0\n\n                   fill(0)\n                   fillf(0)\n                   println(id(1))\n                   println(id(\"a\"))\n                   println(v[0] + v[1] + v[2] + v[3])\n                   println(w[2])\n";
+    assert_eq!(run_source("localpoly", src), "1\na\n14\n1\n");
+}
+
 /// Tearing down a long list must not cost a stack frame per link. The
 /// generated drop frees the box first and releases its last heap field by a
 /// tail call, so this list — which is only released when `main` ends, long

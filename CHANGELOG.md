@@ -16,12 +16,19 @@
   C++ and Go sat at 201 ms and Rust, Zig and C# at 249, and the whole of that
   gap was this one flag.
 
-- **A better error when a local function is asked to be two types.** It is
-  checked together with the function it is written inside — that is what lets
-  a captured buffer keep its width — so it has one type rather than a scheme.
-  Used at two, it failed with a plain mismatch that said nothing about why.
-  It now names the function it was written inside, and says that moving it to
-  the top level is the fix.
+- **A local function that captures nothing is polymorphic.** It was not,
+  and the reason turned out to be narrower than it looked: a lifted function
+  is tied to the one it was written inside so that a captured buffer keeps the
+  width it was captured with, since a `Buf` width is never inferred from use.
+  That tie is what costs it a scheme — and a function that captured nothing
+  never needed it. It is no longer made. `fn id(x) = x` inside `main` now
+  works at `Int` and at `Str`, and so does the `die` that ends a branch at two
+  different result types.
+
+  What still has one type is a local function that closed over something,
+  which is the case where the tie is doing real work. The error for that used
+  to be a plain mismatch that said nothing; it now says which function the
+  names came from, and that one which captures nothing would have generalized.
 
 - **`List` or `Buf`.** Not something the compiler can decide, so LANGUAGE.md
   says when each is right, with the JSON parser as the worked example: it

@@ -343,10 +343,19 @@ tail call — a local function is a loop, not a closure. That is also why it can
 only be called: there is no single value to pass around for one, since each
 call site supplies the captured names. A lambda is the thing to pass around.
 
-A local function is typed together with the one it is written inside, which
-is what lets a captured buffer keep its width. The price is that it has one
-type rather than a scheme: a helper used at two different types has to be a
-top-level function, where it generalizes as usual.
+A local function that captures something is typed together with the one it is
+written inside, which is what lets a captured buffer keep its width. The price
+is that it has one type rather than a scheme: a capturing helper used at two
+different types has to be a top-level function, where it generalizes as usual.
+One that captures nothing is tied to nothing, and generalizes where it stands:
+
+```
+fn main() =
+  fn id(x) = x
+
+  println(id(1))
+  println(id("a"))
+```
 
 Each parameter is a loop variable and the `if` is the exit condition. This
 holds for loops that print, and for server loops that run forever:

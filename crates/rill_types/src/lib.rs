@@ -2169,11 +2169,12 @@ impl Checker {
         let mut targs = Vec::new();
         for (a, pt) in args.iter().zip(&params) {
             let at = self.infer(a, env)?;
-            // A function written inside another is checked together with it,
-            // which is what lets it take a captured buffer without being told
-            // its width — and is also why it settles on one type per use site
-            // rather than one per call. The error for that reads as an
-            // ordinary mismatch, so say what it really is.
+            // A function that closed over something is checked together with
+            // the one it was written in, which is what lets it take a captured
+            // buffer without being told its width — and is also why it settles
+            // on one type rather than one per call. (One that captures nothing
+            // is not tied to its parent and generalizes like any other.) The
+            // error reads as an ordinary mismatch, so say what it really is.
             self.unify(pt, &at.ty, line, "function argument").map_err(|e| {
                 match (&self.sigs[idx], self.lifted.get(idx).and_then(|l| l.as_ref())) {
                     (SigState::Provisional { .. }, Some(outer)) => {
@@ -2183,9 +2184,10 @@ impl Checker {
                         TypeError::new(
                             line,
                             format!(
-                                "{}\n  `{short}` is written inside `{outer}`, and a function \
-                                 written inside another has one type rather than one per call. \
-                                 Move it to the top level to use it at more than one.",
+                                "{}\n  `{short}` uses names from `{outer}`, so it is checked \
+                                 with it and has one type rather than one per call. A local \
+                                 function that captures nothing does generalize; this one \
+                                 would have to move to the top level.",
                                 e.msg
                             ),
                         )
@@ -3491,6 +3493,26 @@ mod tests {
         let src = "fn f(x: I32) = x\n\nfn main() = println(f(1))\n";
         let err = check_src(src).unwrap_err();
         assert!(err.msg.contains("unknown type `I32`"), "{}", err.msg);
+    }
+
+    /// A local function that closes over nothing is an ordinary top-level
+    /// function once it has been lifted, and generalizes like one.
+    #[test]
+    fn a_local_function_that_captures_nothing_is_polymorphic() {
+        let src = "fn main() =\n  fn id(x) = x\n\n  println(id(1))\n  println(id(\"a\"))\n";
+        check_std(src).unwrap();
+    }
+
+    /// One that closes over something is checked with the function it was
+    /// written in — which is what lets a captured buffer keep its width — and
+    /// so has one type. The error has to say that, not just report a mismatch.
+    #[test]
+    fn a_capturing_local_function_says_why_it_has_one_type() {
+        let src = "fn main() =\n  k = 3\n\n  fn pair(x) = (k, x)\n\n  \
+                   println(show(pair(1)))\n  println(show(pair(\"a\")))\n";
+        let err = check_std(src).unwrap_err();
+        assert!(err.msg.contains("uses names from `main`"), "{}", err.msg);
+        assert!(err.msg.contains("captures nothing does generalize"), "{}", err.msg);
     }
 
     #[test]
