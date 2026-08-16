@@ -14,8 +14,11 @@ The demo sizes itself to the machine. The adapter's description picks a
 starting quality tier; then measured frame times take over, and the world is
 regenerated denser or sparser — grid, forests, grass, fireflies, shadow map,
 wave count, pixel ratio — until the display's own frame budget is spent.
-Rill rebuilds the whole valley in tens of milliseconds, which is what makes
-re-asking cheap. When the adapter offers `timestamp-query`, the HUD shows
+Rill rebuilds the whole valley in about four milliseconds, which is what makes
+re-asking cheap: the terrain is sampled once per lattice corner rather than
+once per cell corner, and a candidate tree or crystal is rejected on its seed
+before the ground under it is ever worked out — the ground being twelve sines
+deep. When the adapter offers `timestamp-query`, the HUD shows
 what a frame actually costs the GPU.
 
 ```sh

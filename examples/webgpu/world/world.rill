@@ -73,19 +73,18 @@ fn height(x, z) =
 # own normal and colour, which is what gives low-poly terrain its facets.
 # A vertex is nine floats — position, normal, colour.
 #
-# The loops here are written as self-recursion whose body is a helper that
-# returns how far to advance: `gen_cells(m, i + cell_done(m, i))`. The call
-# that comes back around must be a tail call and nothing else — the optimizer
-# turns self-tail-recursion into a genuine loop, and a wasm stack is not deep
-# enough to survive it being anything less.
+# The heights come from a lattice computed once, not from `height` called at
+# each cell's four corners: a corner belongs to four cells, and `height` is
+# twelve sines deep. It is also the more correct way round — two cells sharing
+# an edge now read one number for it rather than each working out its own.
 
 fn world_w() = 170.0
 
 fn cell_step(n) = world_w() / to_float(n)
 
-fn cell_x(i, n) = to_float(i % n) * cell_step(n) - world_w() * 0.5
-
-fn cell_z(i, n) = to_float(i / n) * cell_step(n) - world_w() * 0.5
+# Where lattice column (or row) `k` stands. Every vertex of the mesh is at one
+# of these, so what two cells share they agree about exactly.
+fn lattice(k, s) = to_float(k) * s - world_w() * 0.5
 
 # The colour of one face, from the height and steepness at its centre:
 # sand, cliff, snow, or two-tone grass. `ny` is the normal's upward
@@ -129,22 +128,28 @@ fn emit_tri(m, at, x0, y0, z0, x1, y1, z1, x2, y2, z2) =
   emit_vert(m, at + 9, x1, y1, z1, nx * il, ny * il, nz * il, h, j)
   emit_vert(m, at + 18, x2, y2, z2, nx * il, ny * il, nz * il, h, j)
 
-# Both triangles of one cell; returns 1, which is what advances the loop.
-fn cell_done(m, i, n) =
-  x = cell_x(i, n)
-  z = cell_z(i, n)
-  s = cell_step(n)
-  y00 = height(x, z)
-  y10 = height(x + s, z)
-  y01 = height(x, z + s)
-  y11 = height(x + s, z + s)
-  at = i * 54
-  emit_tri(m, at, x, y00, z, x, y01, z + s, x + s, y11, z + s)
-  emit_tri(m, at + 27, x, y00, z, x + s, y11, z + s, x + s, y10, z)
-  1
+# The lattice: (n + 1) squared samples of the terrain, one per corner.
+fn gen_heights(hs: Buf(F64), n, s) =
+  w = n + 1
 
-fn gen_cells(m, i, n) =
-  if i >= n * n then 0 else gen_cells(m, i + cell_done(m, i, n), n)
+  for k in 0..w * w
+    hs[k] = height(lattice(k % w, s), lattice(k / w, s))
+
+# Both triangles of every cell, reading the corners the lattice already has.
+fn gen_cells(m, hs: Buf(F64), n, s) =
+  w = n + 1
+
+  for i in 0..n * n
+    ix = i % n
+    iz = i / n
+    k = iz * w + ix
+    x0 = lattice(ix, s)
+    x1 = lattice(ix + 1, s)
+    z0 = lattice(iz, s)
+    z1 = lattice(iz + 1, s)
+    at = i * 54
+    emit_tri(m, at, x0, hs[k], z0, x0, hs[k + w], z1, x1, hs[k + w + 1], z1)
+    emit_tri(m, at + 27, x0, hs[k], z0, x1, hs[k + w + 1], z1, x1, hs[k + 1], z0)
 
 # ---- placing the pines and the crystals ------------------------------------
 #
@@ -186,14 +191,21 @@ fn emit_inst(buf, at, x, y, z, i, kind) =
   poke_f32(buf, at + 7, inst_b(c, kind))
   1
 
+# The loosest seed any of the three tests can accept. Above it nothing stands
+# whatever the ground is like, and asking costs nothing — where sampling the
+# terrain costs twelve sines. Most candidates end here.
+fn seed_cap(kind) = if kind == 0 then 0.22 else if kind == 2 then 0.85 else 0.11
+
 # Tries candidate `i`; returns 1 if something now stands there.
 fn placed(buf, count, i, kind) =
-  x = (hash2(to_float(i), 7.0 + to_float(kind)) - 0.5) * 152.0
-  z = (hash2(to_float(i), 113.0 + to_float(kind)) - 0.5) * 152.0
-  h = height(x, z)
   seed = hash2(to_float(i), 311.0 + to_float(kind))
-  keep = if kind == 0 then keep_pine(h, seed) else if kind == 2 then keep_grass(h, seed) else keep_crystal(h, seed)
-  if near_spawn(x, z) then 0 else if keep then emit_inst(buf, count * 8, x, h, z, i, kind) else 0
+  if seed >= seed_cap(kind) then 0
+  else
+    x = (hash2(to_float(i), 7.0 + to_float(kind)) - 0.5) * 152.0
+    z = (hash2(to_float(i), 113.0 + to_float(kind)) - 0.5) * 152.0
+    h = height(x, z)
+    keep = if kind == 0 then keep_pine(h, seed) else if kind == 2 then keep_grass(h, seed) else keep_crystal(h, seed)
+    if near_spawn(x, z) then 0 else if keep then emit_inst(buf, count * 8, x, h, z, i, kind) else 0
 
 fn place(buf, i, count, cap, lim, kind) =
   if i >= lim then count else if count >= cap then count else place(buf, i + 1, count + placed(buf, count, i, kind), cap, lim, kind)
@@ -246,7 +258,10 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   pine_buf = alloc_bytes(npine * 32)
   crystal_buf = alloc_bytes(ncrys * 32)
   grass_buf = alloc_bytes(ngrass * 32)
-  gen_cells(m, 0, grid)
+  step = cell_step(grid)
+  hs = buf_float((grid + 1) * (grid + 1))
+  gen_heights(hs, grid, step)
+  gen_cells(m, hs, grid, step)
   np = place(pine_buf, 0, 0, npine, 20000, 0)
   nc = place(crystal_buf, 0, 0, ncrys, 20000, 1)
   ng = place(grass_buf, 0, 0, ngrass, 20000, 2)
@@ -316,8 +331,9 @@ fn wind_strength(t) =
 # in the state, so the loop reads it, resolves one instance, writes it back
 # and moves on — the state block doubling as the accumulator.
 
-fn collide_all(s, buf, n, i, factor) =
-  if i >= n then 0 else collide_all(s, buf, n, i + collide_one(s, buf, i, factor), factor)
+fn collide_all(s, buf, n, factor) =
+  for i in 0..n
+    collide_one(s, buf, i, factor)
 
 fn collide_one(s, buf, i, factor) =
   ix = peek_f32(buf, i * 8)
@@ -360,8 +376,8 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   pz0 = clampf(peek_f32(s, 23) + (if wl > 0.01 then wz / wl * step else 0.0), 0.0 - 80.0, 80.0)
   poke_f32(s, 21, px0)
   poke_f32(s, 23, pz0)
-  collide_all(s, peek_ptr(s, 65), to_int(peek_f32(s, 57)), 0, 0.3)
-  collide_all(s, peek_ptr(s, 66), to_int(peek_f32(s, 58)), 0, 0.55)
+  collide_all(s, peek_ptr(s, 65), to_int(peek_f32(s, 57)), 0.3)
+  collide_all(s, peek_ptr(s, 66), to_int(peek_f32(s, 58)), 0.55)
   px = peek_f32(s, 21)
   pz = peek_f32(s, 23)
   ground = height(px, pz)

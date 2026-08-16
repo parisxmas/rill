@@ -1386,6 +1386,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// of what the store touches, and reference counting is hot enough that
     /// this showed up as a third of the running time on tree-building code.
     /// Taken as written, the common path is exactly what it was before.
+    /// How wide a pointer is on the target. Four on wasm32, eight elsewhere —
+    /// which is why a `poke_ptr` index means different bytes in a wasm build
+    /// than in a native one, and why a layout written in pointer slots has to
+    /// pick a target.
+    fn ptr_bytes(&self) -> u64 {
+        if self.wasm {
+            4
+        } else {
+            8
+        }
+    }
+
     /// Marks a float instruction as fusable. See the note at its use.
     fn contract(v: inkwell::values::FloatValue<'ctx>) -> inkwell::values::FloatValue<'ctx> {
         if let Some(i) = v.as_instruction() {
@@ -2932,6 +2944,90 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 if owned {
                     self.emit_release(b, &Ty::Str);
                 }
+                Ok(Some(out))
+            }
+            // `poke_*` and `peek_*`: a store and a load at `p + i * width`,
+            // unaligned because the runtime's were. They were calls into the
+            // runtime, which for a program writing a vertex buffer is one
+            // call per float — and the whole of what a wasm module does is
+            // write buffers the host will read.
+            TK::Builtin { rt, args }
+                if rt.starts_with("rill_poke_") || rt.starts_with("rill_peek_") =>
+            {
+                let ctx = self.ctx;
+                let (width, elem): (u64, BasicTypeEnum<'ctx>) = match &rt[10..] {
+                    "i8" | "u8" => (1, ctx.i8_type().into()),
+                    "i16" | "u16" => (2, ctx.i16_type().into()),
+                    "i32" | "u32" => (4, ctx.i32_type().into()),
+                    "i64" => (8, ctx.i64_type().into()),
+                    "f32" => (4, ctx.f32_type().into()),
+                    "f64" => (8, ctx.f64_type().into()),
+                    "ptr" => (
+                        self.ptr_bytes(),
+                        ctx.ptr_type(Default::default()).into(),
+                    ),
+                    other => unreachable!("unknown raw-memory builtin width {other}"),
+                };
+                let p = self
+                    .gen_expr(&args[0], scope, subst, func)?
+                    .expect("value")
+                    .into_pointer_value();
+                let i = self
+                    .gen_expr(&args[1], scope, subst, func)?
+                    .expect("value")
+                    .into_int_value();
+                let off = self
+                    .builder
+                    .build_int_mul(i, ctx.i64_type().const_int(width, false), "off")
+                    .expect("LLVM builder error");
+                let slot = unsafe { self.builder.build_gep(ctx.i8_type(), p, &[off], "slot") }
+                    .expect("LLVM builder error");
+                if rt.starts_with("rill_poke_") {
+                    let v = self.gen_expr(&args[2], scope, subst, func)?.expect("value");
+                    // The runtime narrowed on the way in; so does this.
+                    let narrowed: BasicValueEnum<'ctx> = match elem {
+                        BasicTypeEnum::IntType(t) => self
+                            .builder
+                            .build_int_truncate_or_bit_cast(v.into_int_value(), t, "n")
+                            .expect("LLVM builder error")
+                            .into(),
+                        // Only `f32` narrows; `f64` is already the width a
+                        // `Float` is carried in.
+                        BasicTypeEnum::FloatType(t) if width == 4 => self
+                            .builder
+                            .build_float_trunc(v.into_float_value(), t, "n")
+                            .expect("LLVM builder error")
+                            .into(),
+                        _ => v,
+                    };
+                    let st = self.builder.build_store(slot, narrowed).expect("LLVM builder error");
+                    st.set_alignment(1).expect("store takes an alignment");
+                    return Ok(None);
+                }
+                let got = self.builder.build_load(elem, slot, "peek").expect("LLVM builder error");
+                got.as_instruction_value()
+                    .expect("a load is an instruction")
+                    .set_alignment(1)
+                    .expect("load takes an alignment");
+                // And widened on the way back, signed or not as the name says.
+                let out: BasicValueEnum<'ctx> = match elem {
+                    BasicTypeEnum::IntType(_) if rt.starts_with("rill_peek_u") => self
+                        .builder
+                        .build_int_z_extend_or_bit_cast(got.into_int_value(), ctx.i64_type(), "w")
+                        .expect("LLVM builder error")
+                        .into(),
+                    BasicTypeEnum::IntType(_) => self
+                        .builder
+                        .build_int_s_extend_or_bit_cast(got.into_int_value(), ctx.i64_type(), "w")
+                        .expect("LLVM builder error")
+                        .into(),
+                    BasicTypeEnum::FloatType(_) if width == 4 => self
+                        .builder
+                        .build_float_ext(got.into_float_value(), ctx.f64_type(), "w")
+                        .expect("LLVM builder error")
+                        .into(),
+                    _ => got,
+                };
                 Ok(Some(out))
             }
             // `#s` and `s[i]`. A string is `{ i64 rc, i64 len, bytes… }`, so
