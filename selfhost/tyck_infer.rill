@@ -23,6 +23,8 @@ fn eline(e) = match e
   ESelect(_, _, ln) -> ln
   EIndex(_, _, ln) -> ln
   EIndexSet(_, _, _, ln) -> ln
+  EIndexOp(_, _, _, _, ln) -> ln
+  EFor(_, _, _, _, ln) -> ln
   ENeg(x) -> eline(x)
   EIf(c, _, _) -> eline(c)
   _ -> 0
@@ -71,6 +73,8 @@ fn infer(cx, st, env, e) = match e
   ESelect(arms, def, ln) -> i_select(cx, st, env, arms, def, ln)
   EIndex(b, ix, ln) -> i_index(infer(cx, st, env, b), cx, env, ix, ln)
   EIndexSet(b, ix, v, ln) -> i_iset(infer(cx, st, env, b), cx, env, ix, v, ln)
+  EIndexOp(_, _, _, _, ln) -> tydie("internal: `[]=` was not expanded", ln)
+  EFor(_, _, _, _, ln) -> tydie("internal: `for` was not expanded", ln)
   EBlock(ss) -> i_block(cx, st, env, ss, YUnit)
 
 # `b[i]` reads one element of a buffer or one byte of a string, and means
@@ -700,6 +704,8 @@ fn fv(e, acc) = match e
   ESpawn(b, _) -> fv(b, acc)
   EIndex(b, ix, _) -> fv(ix, fv(b, acc))
   EIndexSet(b, ix, v, _) -> fv(v, fv(ix, fv(b, acc)))
+  EIndexOp(_, b, ix, v, _) -> fv(v, fv(ix, fv(b, acc)))
+  EFor(_, a, b, body, _) -> fv(body, fv(b, fv(a, acc)))
   ESelect(arms, def, _) -> fv_def(def, fold(arms, acc, \a, sa -> fv_sarm(sa, a)))
   ELambda(ps, b, _) -> sm_union(acc, sm_minus(fv(b, SLeaf), ps))
   EBlock(ss) -> fold(ss, acc, \a, s -> fv_stmt(s, a))

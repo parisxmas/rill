@@ -473,6 +473,7 @@ fn sel_item_fin(op, pr, ln) = match pr
 
 fn p_stmt(ts) = match ts
   Cons(Tk(TkFn, ln), r) -> sfn_pr(p_fndef(r, false, ln))
+  Cons(Tk(TkFor, ln), r) -> sexpr_pr(p_for(r, ln))
   Cons(Tk(TkIdent(n), ln), Cons(Tk(TkEq, _), r)) -> bind_pr(n, p_expr(r), ln)
   _ -> p_assign(p_expr(ts))
 
@@ -486,7 +487,42 @@ fn p_assign(pr) = match pr
 
 fn p_assign2(e, ts) = match ts
   Cons(Tk(TkEq, ln), r) -> p_assign3(e, p_expr(r), ln)
+  Cons(Tk(TkOpEq(op), ln), r) -> p_opassign(e, p_expr(r), op, ln)
   _ -> PR(SExpr(e), ts)
+
+fn p_opassign(e, pr, op, ln) = match pr
+  PR(v, ts) -> PR(SExpr(index_op(e, v, op, ln)), ts)
+
+fn index_op(e, v, op, ln) = match e
+  EIndex(b, ix, l) -> EIndexOp(op, b, ix, v, l)
+  _ -> die_any("`" + op_sym(op) + "=` writes a buffer element: write `b[i] " + op_sym(op) + "= v`", ln)
+
+fn op_sym(op) = if op == 0 then "+" else if op == 1 then "-" else if op == 2 then "*" else "/"
+
+# `for i in a..b`, over the half-open range.
+fn p_for(ts, ln) = p_for2(p_ident(ts, "a loop variable after `for`"), ln)
+
+fn p_for2(pr, ln) = match pr
+  PR(v, ts) -> p_for3(v, expect_in(ts, ln), ln)
+
+fn expect_in(ts, ln) = match ts
+  Cons(Tk(TkIdent(kw), _), r) -> if str_cmp(kw, "in") == 0 then r else die_any("expected `in` after the loop variable", ln)
+  _ -> die_any("expected `in` after the loop variable", ln)
+
+fn p_for3(v, ts, ln) = p_for4(v, p_expr(ts), ln)
+
+fn p_for4(v, pr, ln) = match pr
+  PR(from, ts) -> p_for5(v, from, p_expr(expect_dotdot(ts, ln)), ln)
+
+fn expect_dotdot(ts, ln) = match ts
+  Cons(Tk(TkDotDot, _), r) -> r
+  _ -> die_any("expected `..` between the ends of the range", ln)
+
+fn p_for5(v, from, pr, ln) = match pr
+  PR(to, ts) -> p_for6(v, from, to, p_body(ts), ln)
+
+fn p_for6(v, from, to, pr, ln) = match pr
+  PR(body, ts) -> PR(EFor(v, from, to, body, ln), ts)
 
 fn p_assign3(e, pr, ln) = match pr
   PR(v, ts) -> PR(SExpr(index_set(e, v, ln)), ts)

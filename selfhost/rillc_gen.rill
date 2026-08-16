@@ -440,6 +440,8 @@ fn emit(cx, st, env, e, cg) = match e
   ESelect(arms, d, _) -> emit_select(cx, st, env, arms, d, cg, false, YUnit, Nil)
   EIndex(b, ix, _) -> emit_index(cx, st, env, b, ix, cg)
   EIndexSet(b, ix, v, _) -> emit_builtin(cx, st, env, "buf_set", l3(b, ix, v), cg)
+  EIndexOp(_, _, _, _, _) -> rcdie("internal: `[]=` was not expanded")
+  EFor(_, _, _, _, _) -> rcdie("internal: `for` was not expanded")
 
 fn emit_strlit(ts) = match ts
   TS2(nm, cg) -> RV(cg, nm, YStr)
@@ -1250,6 +1252,8 @@ fn e_kids(e) = match e
   ESpawn(b, _) -> Cons(b, Nil)
   EIndex(b, ix, _) -> Cons(b, Cons(ix, Nil))
   EIndexSet(b, ix, v, _) -> Cons(b, Cons(ix, Cons(v, Nil)))
+  EIndexOp(_, b, ix, v, _) -> Cons(b, Cons(ix, Cons(v, Nil)))
+  EFor(_, f, t, body, _) -> Cons(f, Cons(t, Cons(body, Nil)))
   ESelect(arms, d, _) -> append(sk_sarms(arms), sk_opt(d))
   EBlock(ss) -> map(ss, \s -> sk_stmt(s))
   _ -> Nil
@@ -1695,6 +1699,8 @@ fn fv_expr(e, bound, acc) = match e
   ESpawn(b, _) -> fv_expr(b, bound, acc)
   EIndex(b, ix, _) -> fv_expr(ix, bound, fv_expr(b, bound, acc))
   EIndexSet(b, ix, v, _) -> fv_expr(v, bound, fv_expr(ix, bound, fv_expr(b, bound, acc)))
+  EIndexOp(_, b, ix, v, _) -> fv_expr(v, bound, fv_expr(ix, bound, fv_expr(b, bound, acc)))
+  EFor(x, f, t, body, _) -> fv_expr(body, sput(bound, x, true), fv_expr(t, bound, fv_expr(f, bound, acc)))
   ESelect(arms, d, _) -> fv_expro(d, bound, fv_sarms(arms, bound, acc))
   EBlock(ss) -> fv_stmts(ss, bound, acc)
   _ -> acc

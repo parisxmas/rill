@@ -20,6 +20,8 @@ type Expr
   ESelect(List(SArm), Option(Expr), Int)
   EIndex(Expr, Expr, Int)
   EIndexSet(Expr, Expr, Expr, Int)
+  EIndexOp(Int, Expr, Expr, Expr, Int)
+  EFor(Str, Expr, Expr, Expr, Int)
   EBlock(List(Stmt))
 
 type Stmt

@@ -20,6 +20,7 @@ pub enum Tok {
     Impl,
     Extern,
     Export,
+    For,
     // literals / names
     Ident(String),
     Int(i64),
@@ -51,6 +52,8 @@ pub enum Tok {
     RParen,
     LBracket,
     RBracket,
+    DotDot,
+    OpEq(char),
     Comma,
     // layout
     Newline,
@@ -104,6 +107,9 @@ impl std::fmt::Display for Tok {
             Tok::RParen => write!(f, "`)`"),
             Tok::LBracket => write!(f, "`[`"),
             Tok::RBracket => write!(f, "`]`"),
+            Tok::DotDot => write!(f, "`..`"),
+            Tok::OpEq(c) => write!(f, "`{c}=`"),
+            Tok::For => write!(f, "`for`"),
             Tok::Comma => write!(f, "`,`"),
             Tok::Newline => write!(f, "end of line"),
             Tok::Indent => write!(f, "indent"),
@@ -315,6 +321,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                     }
                 }
                 match text.as_str() {
+                    "for" => Tok::For,
                     "fn" => Tok::Fn,
                     "if" => Tok::If,
                     "then" => Tok::Then,
@@ -371,17 +378,53 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
             _ => {
                 s.bump();
                 match c {
-                    '+' => Tok::Plus,
+                    '+' => {
+                        if s.peek() == Some('=') {
+                            s.bump();
+                            Tok::OpEq('+')
+                        } else {
+                            Tok::Plus
+                        }
+                    }
                     '-' => {
                         if s.peek() == Some('>') {
                             s.bump();
                             Tok::Arrow
+                        } else if s.peek() == Some('=') {
+                            s.bump();
+                            Tok::OpEq('-')
                         } else {
                             Tok::Minus
                         }
                     }
-                    '*' => Tok::Star,
-                    '/' => Tok::Slash,
+                    '*' => {
+                        if s.peek() == Some('=') {
+                            s.bump();
+                            Tok::OpEq('*')
+                        } else {
+                            Tok::Star
+                        }
+                    }
+                    '/' => {
+                        if s.peek() == Some('=') {
+                            s.bump();
+                            Tok::OpEq('/')
+                        } else {
+                            Tok::Slash
+                        }
+                    }
+                    '.' => {
+                        if s.peek() == Some('.') {
+                            s.bump();
+                            Tok::DotDot
+                        } else {
+                            return Err(SyntaxError::new(
+                                line,
+                                col,
+                                "a lone `.` means nothing; `..` is a range".to_string(),
+                            ));
+                        }
+                    }
                     '%' => Tok::Percent,
                     ',' => Tok::Comma,
                     ':' => Tok::Colon,

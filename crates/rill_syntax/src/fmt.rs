@@ -453,6 +453,13 @@ impl Fmt {
                 }
                 parts.join("\n").trim_start().to_string()
             }
+            Expr::For { var, from, to, body, .. } => {
+                let head = format!("for {var} in {}..{}", inline(from, 0), inline(to, 0));
+                match body.as_ref() {
+                    Expr::Block(stmts) => format!("{head}{}", self.block_lines(stmts, cont)),
+                    other => format!("{head} {}", self.render(other, cont)),
+                }
+            }
             // `if` and the prefix forms can carry a multi-line branch (a
             // `match`), which has to stay on its own lines.
             Expr::If { cond, then, els } => {
@@ -569,6 +576,8 @@ fn expr_line(e: &Expr) -> usize {
         Expr::Select { line, .. } => *line,
         Expr::Index { line, .. } => *line,
         Expr::IndexSet { line, .. } => *line,
+        Expr::IndexOp { line, .. } => *line,
+        Expr::For { line, .. } => *line,
         Expr::Unary { expr, .. } => expr_line(expr),
         Expr::If { cond, .. } => expr_line(cond),
         Expr::Block(stmts) => stmts.first().map(stmt_line).unwrap_or(0),
@@ -665,6 +674,18 @@ fn inline(e: &Expr, prec: u8) -> String {
         }
         Expr::IndexSet { base, index, value, .. } => {
             format!("{}[{}] = {}", inline(base, P_INDEX), inline(index, 0), inline(value, 0))
+        }
+        Expr::IndexOp { op, base, index, value, .. } => format!(
+            "{}[{}] {}= {}",
+            inline(base, P_INDEX),
+            inline(index, 0),
+            binop(*op).0,
+            inline(value, 0)
+        ),
+        // Nothing in an expression can consume a `..`, so neither end of the
+        // range ever needs parentheses.
+        Expr::For { var, from, to, body, .. } => {
+            format!("for {var} in {}..{} {}", inline(from, 0), inline(to, 0), inline(body, 0))
         }
         Expr::Unary { op: UnOp::Neg, expr } => {
             wrap(prec > P_UNARY, format!("-{}", inline(expr, P_UNARY)))
@@ -804,6 +825,18 @@ mod tests {
         let src = "fn g(b: Buf(I64), i) =\n  b[i] = -b[i + 1]\n  b[b[i]] = 7\n  b[0]\n";
         assert_eq!(fmt(src), src);
         assert_eq!(fmt("fn f(b:Buf(I64))=b[ 0 ]\n"), "fn f(b: Buf(I64)) = b[0]\n");
+    }
+
+    /// `for` and `op=` survive the round trip; both are spelled out only
+    /// after the formatter has had its look.
+    #[test]
+    fn formats_for_and_compound_assignment() {
+        let src = "fn main() =\n  v = buf_int(4)\n\n  for i in 0..4\n    v[i] = i\n    v[i] += 1\n\n  println(v[3])\n";
+        assert_eq!(fmt(src), src);
+        assert_eq!(
+            fmt("fn f(v: Buf(I64), n) =\n  for i in 0..n - 1\n    v[i] *= 2\n"),
+            "fn f(v: Buf(I64), n) =\n  for i in 0..n - 1\n    v[i] *= 2\n"
+        );
     }
 
     #[test]

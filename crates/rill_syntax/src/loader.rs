@@ -241,10 +241,16 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str) {
             qualify_expr(base, own, alias);
             qualify_expr(index, own, alias);
         }
-        Expr::IndexSet { base, index, value, .. } => {
+        Expr::IndexSet { base, index, value, .. }
+        | Expr::IndexOp { base, index, value, .. } => {
             qualify_expr(base, own, alias);
             qualify_expr(index, own, alias);
             qualify_expr(value, own, alias);
+        }
+        Expr::For { from, to, body, .. } => {
+            qualify_expr(from, own, alias);
+            qualify_expr(to, own, alias);
+            qualify_expr(body, own, alias);
         }
         Expr::Unary { expr, .. } => qualify_expr(expr, own, alias),
         Expr::Binary { lhs, rhs, .. } => {

@@ -1,0 +1,41 @@
+fn grid(w, h) =
+  g = buf_int(w * h)
+
+  for y in 0..h
+    for x in 0..w
+      g[y * w + x] = y * 10 + x
+
+  g
+
+fn main() =
+  n = 6
+  v = buf_int(n)
+
+  for i in 0..n
+    v[i] = i
+
+  for i in 1..n
+    v[i] += v[i - 1]
+
+  acc = buf_int(4)
+  acc[0] = 100
+  acc[1] = 2
+  acc[2] = 3
+
+  for i in 0..1
+    acc[0] -= 10
+    acc[1] *= 8
+    acc[2] /= 3
+
+  t = buf_int(1)
+
+  for i in 0..2000000
+    t[0] += 1
+
+  println(v[n - 1])
+  println(acc[0] + acc[1] + acc[2])
+  println(t[0])
+  println(buf_get(grid(3, 3), 8))
+
+  for i in 0..0
+    println("never")

@@ -532,6 +532,9 @@ impl Parser {
         if matches!(self.peek(), Tok::Fn) {
             return Ok(Stmt::Fn(Box::new(self.fndef(false)?)));
         }
+        if matches!(self.peek(), Tok::For) {
+            return Ok(Stmt::Expr(self.for_loop()?));
+        }
         if let (Tok::Ident(_), Tok::Eq) = (self.peek(), self.peek2()) {
             let (line, _) = self.here();
             let name = self.ident("a name")?;
@@ -543,6 +546,31 @@ impl Parser {
             // element — which was already mutable through `buf_set`. Nothing
             // else can appear to the left of `=`.
             let e = self.expr()?;
+            if let Tok::OpEq(c) = *self.peek() {
+                let (line, col) = self.here();
+                self.bump();
+                let value = self.expr()?;
+                let op = match c {
+                    '+' => BinOp::Add,
+                    '-' => BinOp::Sub,
+                    '*' => BinOp::Mul,
+                    _ => BinOp::Div,
+                };
+                return match e {
+                    Expr::Index { base, index, line } => Ok(Stmt::Expr(Expr::IndexOp {
+                        op,
+                        base,
+                        index,
+                        value: Box::new(value),
+                        line,
+                    })),
+                    _ => Err(SyntaxError::new(
+                        line,
+                        col,
+                        format!("`{c}=` writes a buffer element: write `b[i] {c}= v`"),
+                    )),
+                };
+            }
             if !matches!(self.peek(), Tok::Eq) {
                 return Ok(Stmt::Expr(e));
             }
@@ -563,6 +591,36 @@ impl Parser {
                 )),
             }
         }
+    }
+
+    /// `for i in a..b`, over the half-open range.
+    fn for_loop(&mut self) -> Result<Expr, SyntaxError> {
+        let (line, col) = self.here();
+        self.bump();
+        let var = self.ident("a loop variable after `for`")?;
+        match self.peek() {
+            Tok::Ident(kw) if kw == "in" => {
+                self.bump();
+            }
+            other => {
+                return Err(SyntaxError::new(
+                    line,
+                    col,
+                    format!("expected `in` after the loop variable, found {other}"),
+                ))
+            }
+        }
+        let from = self.expr()?;
+        self.expect(&Tok::DotDot, "between the ends of the range")?;
+        let to = self.expr()?;
+        let body = self.body()?;
+        Ok(Expr::For {
+            var,
+            from: Box::new(from),
+            to: Box::new(to),
+            body: Box::new(body),
+            line,
+        })
     }
 
     fn expr(&mut self) -> Result<Expr, SyntaxError> {

@@ -40,6 +40,71 @@ struct Local {
     caps: Vec<String>,
 }
 
+/// `b[i] op= v` spelled out, with the index evaluated once — it may be a call,
+/// and running one twice would run what it does twice.
+fn expand_index_op(op: BinOp, base: Expr, index: Expr, value: Expr, line: usize) -> Expr {
+    let (b, i) = ("[]=.b".to_string(), "[]=.i".to_string());
+    Expr::Block(vec![
+        Stmt::Bind { name: b.clone(), value: base, line },
+        Stmt::Bind { name: i.clone(), value: index, line },
+        Stmt::Expr(Expr::IndexSet {
+            base: Box::new(Expr::Var(b.clone(), line)),
+            index: Box::new(Expr::Var(i.clone(), line)),
+            value: Box::new(Expr::Binary {
+                op,
+                lhs: Box::new(Expr::Index {
+                    base: Box::new(Expr::Var(b, line)),
+                    index: Box::new(Expr::Var(i, line)),
+                    line,
+                }),
+                rhs: Box::new(value),
+                line,
+            }),
+            line,
+        }),
+    ])
+}
+
+/// `for i in a..b` is a local function over the half-open range, which is all
+/// a counting loop ever was. The end is evaluated once.
+fn expand_for(var: String, from: Expr, to: Expr, body: Expr, line: usize) -> Expr {
+    let hi = "for.hi".to_string();
+    let step = Expr::Call {
+        name: "for".to_string(),
+        args: vec![Expr::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(Expr::Var(var.clone(), line)),
+            rhs: Box::new(Expr::Int(1)),
+            line,
+        }],
+        line,
+        piped: false,
+    };
+    let loop_fn = FnDef {
+        name: "for".to_string(),
+        exported: false,
+        params: vec![Param { name: var.clone(), ann: None }],
+        ret_ann: None,
+        body: Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Ge,
+                lhs: Box::new(Expr::Var(var, line)),
+                rhs: Box::new(Expr::Var(hi.clone(), line)),
+                line,
+            }),
+            then: Box::new(Expr::Int(0)),
+            els: Box::new(Expr::Block(vec![Stmt::Expr(body), Stmt::Expr(step)])),
+        },
+        line,
+        lifted_from: None,
+    };
+    Expr::Block(vec![
+        Stmt::Bind { name: hi, value: to, line },
+        Stmt::Fn(Box::new(loop_fn)),
+        Stmt::Expr(Expr::Call { name: "for".to_string(), args: vec![from], line, piped: false }),
+    ])
+}
+
 fn walk(
     e: Expr,
     env: &mut Vec<String>,
@@ -48,6 +113,12 @@ fn walk(
     out: &mut Vec<FnDef>,
 ) -> Result<Expr, SyntaxError> {
     Ok(match e {
+        Expr::IndexOp { op, base, index, value, line } => {
+            walk(expand_index_op(op, *base, *index, *value, line), env, parent, used, out)?
+        }
+        Expr::For { var, from, to, body, line } => {
+            walk(expand_for(var, *from, *to, *body, line), env, parent, used, out)?
+        }
         Expr::Block(stmts) => Expr::Block(walk_block(stmts, env, parent, used, out)?),
         Expr::Call { name, args, line, piped } => Expr::Call {
             name,
@@ -176,21 +247,17 @@ fn walk_block(
         return Ok(kept);
     }
 
-    // Pass one: lift what is nested inside each local function, and record the
-    // names it takes from the block — as of where it is written, so a local
-    // function cannot reach a binding made after it.
+    // Pass one: the names each local function can see — as of where it is
+    // written, so it cannot reach a binding made after it. Its body is left
+    // alone until the block's own rewriting is settled.
     let depth = env.len();
     let mut defs: Vec<(FnDef, String, Vec<String>)> = Vec::new();
     let mut rest: Vec<Stmt> = Vec::new();
     for s in stmts {
         match s {
             Stmt::Fn(f) => {
-                let mut f = *f;
+                let f = *f;
                 let lifted = pick_name(parent, &f.name, used);
-                let mut inner: Vec<String> = env.clone();
-                inner.extend(f.params.iter().map(|p| p.name.clone()));
-                let body = std::mem::replace(&mut f.body, Expr::Bool(false));
-                f.body = walk(body, &mut inner, &lifted, used, out)?;
                 let visible = env.clone();
                 defs.push((f, lifted, visible));
             }
@@ -209,14 +276,18 @@ fn walk_block(
     let mut locals: Vec<Local> = Vec::new();
     let mut refs: Vec<HashSet<String>> = Vec::new();
     for (f, lifted, visible) in &defs {
-        let mut bound: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+        let mut bound: Vec<String> = sibling_names.iter().cloned().collect();
+        bound.extend(f.params.iter().map(|p| p.name.clone()));
         let mut free = Vec::new();
         free_of(&f.body, &mut bound, &mut free);
+        let mut named = Vec::new();
+        let mut inner_bound: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+        free_of(&f.body, &mut inner_bound, &mut named);
         let seen: HashSet<&String> = free.iter().collect();
         let caps: Vec<String> =
             visible.iter().filter(|n| seen.contains(n) && !sibling_names.contains(*n)).cloned()
                 .collect();
-        refs.push(free.iter().filter(|n| sibling_names.contains(*n)).cloned().collect());
+        refs.push(named.iter().filter(|n| sibling_names.contains(*n)).cloned().collect());
         locals.push(Local { name: f.name.clone(), lifted: lifted.clone(), caps: dedup(caps) });
     }
     loop {
@@ -243,8 +314,9 @@ fn walk_block(
         }
     }
 
-    // Pass three: rewrite every call to a lifted name, in the lifted bodies
-    // and in what is left of the block.
+    // Pass three: rewrite every call to a lifted name, then lift what is
+    // nested inside the rewritten bodies — in that order, so a nested
+    // function's free names already include what a sibling call passes.
     let by_name: HashMap<String, &Local> =
         locals.iter().map(|l| (l.name.clone(), l)).collect();
     let mut kept: Vec<Stmt> = Vec::new();
@@ -261,12 +333,15 @@ fn walk_block(
         let mut params: Vec<Param> =
             l.caps.iter().map(|c| Param { name: c.clone(), ann: None }).collect();
         params.extend(f.params);
+        // The lifted function's own scope is exactly its parameter list.
+        let mut inner: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+        let body = walk(rewrite(f.body, &by_name)?, &mut inner, &l.lifted, used, out)?;
         out.push(FnDef {
             name: l.lifted.clone(),
             exported: false,
             params,
             ret_ann: f.ret_ann,
-            body: rewrite(f.body, &by_name)?,
+            body,
             line: f.line,
             lifted_from: Some(parent.to_string()),
         });
@@ -388,6 +463,20 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
             value: Box::new(rewrite(*value, locals)?),
             line,
         },
+        Expr::IndexOp { op, base, index, value, line } => Expr::IndexOp {
+            op,
+            base: Box::new(rewrite(*base, locals)?),
+            index: Box::new(rewrite(*index, locals)?),
+            value: Box::new(rewrite(*value, locals)?),
+            line,
+        },
+        Expr::For { var, from, to, body, line } => Expr::For {
+            var,
+            from: Box::new(rewrite(*from, locals)?),
+            to: Box::new(rewrite(*to, locals)?),
+            body: Box::new(rewrite(*body, locals)?),
+            line,
+        },
         Expr::Block(stmts) => Expr::Block(
             stmts
                 .into_iter()
@@ -397,7 +486,11 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
                             Stmt::Bind { name, value: rewrite(value, locals)?, line }
                         }
                         Stmt::Expr(e) => Stmt::Expr(rewrite(e, locals)?),
-                        Stmt::Fn(_) => unreachable!("blocks are lifted before rewriting"),
+                        Stmt::Fn(f) => {
+                            let mut f = *f;
+                            f.body = rewrite(f.body, locals)?;
+                            Stmt::Fn(Box::new(f))
+                        }
                     })
                 })
                 .collect::<Result<_, SyntaxError>>()?,
@@ -475,10 +568,19 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
             free_of(base, bound, out);
             free_of(index, bound, out);
         }
-        Expr::IndexSet { base, index, value, .. } => {
+        Expr::IndexSet { base, index, value, .. }
+        | Expr::IndexOp { base, index, value, .. } => {
             free_of(base, bound, out);
             free_of(index, bound, out);
             free_of(value, bound, out);
+        }
+        Expr::For { var, from, to, body, .. } => {
+            free_of(from, bound, out);
+            free_of(to, bound, out);
+            let depth = bound.len();
+            bound.push(var.clone());
+            free_of(body, bound, out);
+            bound.truncate(depth);
         }
         Expr::Block(stmts) => {
             let depth = bound.len();
@@ -489,7 +591,14 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
                         bound.push(name.clone());
                     }
                     Stmt::Expr(x) => free_of(x, bound, out),
-                    Stmt::Fn(_) => unreachable!("inner blocks are lifted first"),
+                    Stmt::Fn(f) => {
+                        let d = bound.len();
+                        bound.push(f.name.clone());
+                        bound.extend(f.params.iter().map(|p| p.name.clone()));
+                        free_of(&f.body, bound, out);
+                        bound.truncate(d);
+                        bound.push(f.name.clone());
+                    }
                 }
             }
             bound.truncate(depth);

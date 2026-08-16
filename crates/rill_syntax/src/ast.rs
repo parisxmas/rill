@@ -149,6 +149,12 @@ pub enum Expr {
     Index { base: Box<Expr>, index: Box<Expr>, line: usize },
     /// `b[i] = v` — writing one element of a buffer.
     IndexSet { base: Box<Expr>, index: Box<Expr>, value: Box<Expr>, line: usize },
+    /// `b[i] += v` and its friends: one read, one write, the index evaluated
+    /// once. `lift` spells it out.
+    IndexOp { op: BinOp, base: Box<Expr>, index: Box<Expr>, value: Box<Expr>, line: usize },
+    /// `for i in a..b` over the half-open range, its body run for each `i`.
+    /// `lift` turns it into a local function, which is what a loop is.
+    For { var: String, from: Box<Expr>, to: Box<Expr>, body: Box<Expr>, line: usize },
     /// Multi-statement block; its value is the value of the last statement.
     Block(Vec<Stmt>),
 }

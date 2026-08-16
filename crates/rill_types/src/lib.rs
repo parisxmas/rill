@@ -1587,6 +1587,13 @@ impl Checker {
                     },
                 })
             }
+            // `lift` spells these out before the checker sees a program.
+            Expr::IndexOp { line, .. } => {
+                Err(TypeError::new(*line, "internal: `[]=` was not expanded".to_string()))
+            }
+            Expr::For { line, .. } => {
+                Err(TypeError::new(*line, "internal: `for` was not expanded".to_string()))
+            }
             Expr::Block(stmts) => {
                 let mut out = Vec::new();
                 let mut ty = Ty::Unit;
@@ -2809,10 +2816,16 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
             free_vars(base, out, seen);
             free_vars(index, out, seen);
         }
-        Expr::IndexSet { base, index, value, .. } => {
+        Expr::IndexSet { base, index, value, .. }
+        | Expr::IndexOp { base, index, value, .. } => {
             free_vars(base, out, seen);
             free_vars(index, out, seen);
             free_vars(value, out, seen);
+        }
+        Expr::For { from, to, body, .. } => {
+            free_vars(from, out, seen);
+            free_vars(to, out, seen);
+            free_vars(body, out, seen);
         }
         Expr::Spawn { body, .. } => free_vars(body, out, seen),
         Expr::Select { arms, default, .. } => {

@@ -147,10 +147,16 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             collect_expr_names(base, out);
             collect_expr_names(index, out);
         }
-        Expr::IndexSet { base, index, value, .. } => {
+        Expr::IndexSet { base, index, value, .. }
+        | Expr::IndexOp { base, index, value, .. } => {
             collect_expr_names(base, out);
             collect_expr_names(index, out);
             collect_expr_names(value, out);
+        }
+        Expr::For { from, to, body, .. } => {
+            collect_expr_names(from, out);
+            collect_expr_names(to, out);
+            collect_expr_names(body, out);
         }
         Expr::Unary { expr, .. } => collect_expr_names(expr, out),
         Expr::Binary { lhs, rhs, .. } => {

@@ -17,6 +17,7 @@ type Tok
   TkImpl
   TkExtern
   TkExport
+  TkFor
   TkTrue
   TkFalse
   TkIdent(Str)
@@ -47,6 +48,8 @@ type Tok
   TkRParen
   TkLBracket
   TkRBracket
+  TkDotDot
+  TkOpEq(Int)
   TkNewline
   TkIndent
   TkDedent

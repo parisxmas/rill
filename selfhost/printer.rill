@@ -111,6 +111,8 @@ fn expr_line(e) = match e
   ESelect(_, _, ln) -> ln
   EIndex(_, _, ln) -> ln
   EIndexSet(_, _, _, ln) -> ln
+  EIndexOp(_, _, _, _, ln) -> ln
+  EFor(_, _, _, _, ln) -> ln
   ENeg(x) -> expr_line(x)
   EIf(c, _, _) -> expr_line(c)
   EBlock(ss) -> block_line(ss)
@@ -151,6 +153,8 @@ fn inline(e, prec) = match e
   ECall(n, args, _, piped) -> inline_call(n, args, piped, prec)
   EIndex(b, ix, _) -> inline(b, 8) + "[" + inline(ix, 0) + "]"
   EIndexSet(b, ix, v, _) -> inline(b, 8) + "[" + inline(ix, 0) + "] = " + inline(v, 0)
+  EIndexOp(op, b, ix, v, _) -> inline(b, 8) + "[" + inline(ix, 0) + "] " + bin_sym(op) + "= " + inline(v, 0)
+  EFor(x, a, b, body, _) -> "for " + x + " in " + inline(a, 0) + ".." + inline(b, 0) + " " + inline(body, 0)
   ENeg(x) -> wrapp(prec > 7, "-" + inline(x, 7))
   EBin(op, l, r, _) -> inline_bin(op, l, r, prec)
   EIf(c, t, els) -> inline_if(c, t, els, prec)
@@ -269,6 +273,7 @@ fn render(fs, e, cont) = match e
   EIf(c, t, els) -> render_if(fs, c, t, els, cont)
   ELambda(ps, b, _) -> render_lambda(fs, ps, b, cont)
   ESpawn(b, _) -> render_spawn(fs, b, cont)
+  EFor(x, a, b, body, _) -> render_for(fs, x, a, b, body, cont)
   ESelect(arms, def, _) -> render_select_full(fs, arms, def, cont)
   _ -> RR(fs, inline(e, 0))
 
@@ -347,6 +352,13 @@ fn ft3(rr, header) = match rr
 
 fn rb_bind(rr, n) = match rr
   RR(fs, text) -> RR(fs, n + " = " + text)
+
+fn render_for(fs, x, a, b, body, cont) =
+  head = "for " + x + " in " + inline(a, 0) + ".." + inline(b, 0)
+  if is_block(body) then rf2(block_lines(fs, block_stmts(body), cont), head) else rf2(ri_sp(render(fs, body, cont)), head)
+
+fn rf2(rr, head) = match rr
+  RR(fs, text) -> RR(fs, head + text)
 
 fn render_if(fs, c, t, els, cont) =
   if is_block(t) || else_needs_layout(els) then ri_layout(fs, c, t, els, cont) else ri2(render(fs, t, cont), fs, c, t, els, cont)

@@ -224,8 +224,22 @@ the types of that use, and there is no polymorphic recursion.
 
 ### Loops
 
-Rill has no `for` or `while`. Repetition is tail recursion: a call in tail
-position compiles to a jump, so it runs in constant stack, exactly like a loop.
+Counting over a range has a form of its own:
+
+```
+for i in 0..n                  # the half-open range: 0 up to but not n
+  v[i] = i * i
+```
+
+It is a loop over a buffer, which is the one thing in Rill that can be
+written to, and it is spelled out as the tail-recursive function below before
+anything else looks at it — the end of the range is evaluated once. `+=`,
+`-=`, `*=` and `/=` write a buffer element in terms of what it held:
+`v[i] += 1`. The index is evaluated once, so `off[eu[i]] += 1` reads `eu[i]`
+one time.
+
+Everything else is tail recursion: a call in tail position compiles to a
+jump, so it runs in constant stack, exactly like a loop.
 
 ```
 fn sum_to(n) = go(n, 0)
@@ -730,7 +744,8 @@ rill repl                       # interactive: definitions persist
 
 - **Mutation.** No mutable bindings, no mutable fields. State is threaded
   through arguments or channels. The one exception is a buffer element,
-  `b[i] = v` — a `Buf` is storage, and always was.
+  `b[i] = v` (and `+=`, `-=`, `*=`, `/=`) — a `Buf` is storage, and always
+  was.
 - **Exceptions.** Errors are `Result` values.
 - **Null.** Absence is `Option`.
 - **Implicit conversions.** Numeric types never mix silently.

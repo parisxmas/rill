@@ -164,6 +164,8 @@ fn q_expr(e, own, a) = match e
   ESpawn(b, ln) -> ESpawn(q_expr(b, own, a), ln)
   EIndex(b, ix, ln) -> EIndex(q_expr(b, own, a), q_expr(ix, own, a), ln)
   EIndexSet(b, ix, v, ln) -> EIndexSet(q_expr(b, own, a), q_expr(ix, own, a), q_expr(v, own, a), ln)
+  EIndexOp(op, b, ix, v, ln) -> EIndexOp(op, q_expr(b, own, a), q_expr(ix, own, a), q_expr(v, own, a), ln)
+  EFor(x, f, t, body, ln) -> EFor(x, q_expr(f, own, a), q_expr(t, own, a), q_expr(body, own, a), ln)
   ESelect(arms, d, ln) -> ESelect(map(arms, \x -> q_sarm(x, own, a)), q_expro(d, own, a), ln)
   EBlock(ss) -> EBlock(map(ss, \s -> q_stmt(s, own, a)))
   _ -> e
@@ -386,6 +388,8 @@ fn cn_expr(e, s) = match e
   ESpawn(b, _) -> cn_expr(b, s)
   EIndex(b, ix, _) -> cn_expr(ix, cn_expr(b, s))
   EIndexSet(b, ix, v, _) -> cn_expr(v, cn_expr(ix, cn_expr(b, s)))
+  EIndexOp(_, b, ix, v, _) -> cn_expr(v, cn_expr(ix, cn_expr(b, s)))
+  EFor(_, f, t, body, _) -> cn_expr(body, cn_expr(t, cn_expr(f, s)))
   ESelect(arms, d, _) -> cn_expro(d, cn_sarms(arms, s))
   EBlock(ss) -> cn_stmts(ss, s)
   _ -> s
@@ -510,7 +514,21 @@ fn par_names(ps, acc) = match ps
   Nil -> reverse(acc)
   Cons(Par(n, _), rest) -> par_names(rest, Cons(n, acc))
 
+# `b[i] op= v` spelled out, with the index evaluated once — it may be a call,
+# and running one twice would run what it does twice.
+fn expand_index_op(op, base, index, value, ln) =
+  EBlock(Cons(SBind("[]=.b", base, ln), Cons(SBind("[]=.i", index, ln), Cons(SExpr(EIndexSet(EVar("[]=.b", ln), EVar("[]=.i", ln), EBin(op, EIndex(EVar("[]=.b", ln), EVar("[]=.i", ln), ln), value, ln), ln)), Nil))))
+
+# `for i in a..b` is a local function over the half-open range, which is all a
+# counting loop ever was. The end is evaluated once.
+fn expand_for(x, from, to, body, ln) =
+  step = ECall("for", Cons(EBin(0, EVar(x, ln), EInt("1"), ln), Nil), ln, false)
+  loopf = FnD("for", false, Cons(Par(x, None), Nil), None, EIf(EBin(10, EVar(x, ln), EVar("for.hi", ln), ln), EInt("0"), EBlock(Cons(SExpr(body), Cons(SExpr(step), Nil)))), ln, None)
+  EBlock(Cons(SBind("for.hi", to, ln), Cons(SFn(loopf), Cons(SExpr(ECall("for", Cons(from, Nil), ln, false)), Nil))))
+
 fn lf_expr(e, env, parent, st) = match e
+  EIndexOp(op, b, ix, v, ln) -> lf_expr(expand_index_op(op, b, ix, v, ln), env, parent, st)
+  EFor(x, a, b, body, ln) -> lf_expr(expand_for(x, a, b, body, ln), env, parent, st)
   EBlock(ss) -> lf_block_e(lf_block(ss, env, parent, st))
   ECall(n, args, ln, pi) -> lf_call(lf_exprs(args, env, parent, st, Nil), n, ln, pi)
   ENeg(x) -> lf_neg(lf_expr(x, env, parent, st))
@@ -687,10 +705,7 @@ fn lf_p1_fn(f, parent, kept, defs, env, st) = match f
   FnD(n, ex, ps, ret, body, ln, pa) -> lf_p1_fn2(pick_name(parent, n, st), n, ex, ps, ret, body, ln, pa, kept, defs, env)
 
 fn lf_p1_fn2(nm, n, ex, ps, ret, body, ln, pa, kept, defs, env) = match nm
-  LN(lifted, st) -> lf_p1_fn3(lf_expr(body, append(env, par_names(ps, Nil)), lifted, st), lifted, n, ex, ps, ret, ln, pa, kept, defs, env)
-
-fn lf_p1_fn3(le, lifted, n, ex, ps, ret, ln, pa, kept, defs, env) = match le
-  LE(b2, st) -> LB(kept, Cons(LD2(FnD(n, ex, ps, ret, b2, ln, pa), lifted, env), defs), env, st)
+  LN(lifted, st) -> LB(kept, Cons(LD2(FnD(n, ex, ps, ret, body, ln, pa), lifted, env), defs), env, st)
 
 # Pass two: what each one captures, then what its siblings force it to capture
 # as well — if `g` calls `h`, `g` has to hand `h` what `h` needs.
@@ -708,7 +723,13 @@ fn lf_one_cap(f, lifted, vis, sibs) = match f
   FnD(n, _, ps, _, body, _, _) -> lf_one_cap2(n, lifted, vis, sibs, lf_fv(body, par_names(ps, Nil), Nil))
 
 fn lf_one_cap2(n, lifted, vis, sibs, free) =
-  LC(n, lifted, filter(vis, \x -> lf_in(free, x) && !lf_in(sibs, x)), filter(sibs, \x -> lf_in(free, x)))
+  LC(n, lifted, lf_dedup(filter(vis, \x -> lf_in(free, x) && !lf_in(sibs, x)), Nil), filter(sibs, \x -> lf_in(free, x)))
+
+# A name shadowed further in is in the visible list twice; one parameter is
+# what the lifted function wants, and the call site passes the inner one.
+fn lf_dedup(l, acc) = match l
+  Nil -> reverse(acc)
+  Cons(x, rest) -> lf_dedup(rest, if lf_in(acc, x) then acc else Cons(x, acc))
 
 fn lf_fix(cs) = lf_fix2(cs, map(cs, \c -> lf_grow(c, cs)))
 
@@ -742,13 +763,21 @@ fn lf_emit_step(d, drest, cs, all, parent, st) = match cs
 fn lf_emit_one(d, c, all, parent, st) = match d
   LD2(FnD(_, _, ps, ret, body, ln, _), _, _) -> lf_emit_one2(c, ps, ret, body, ln, all, parent, st)
 
+# Rewritten first, then lifted: a nested function's free names have to
+# include what a sibling call passes. Its scope is exactly its parameters.
 fn lf_emit_one2(c, ps, ret, body, ln, all, parent, st) = match c
-  LC(_, lifted, caps, _) -> lf_emit(st, FnD(lifted, false, append(map(caps, \x -> Par(x, None)), ps), ret, lf_rw(body, all), ln, Some(parent)))
+  LC(_, lifted, caps, _) -> lf_emit_one3(lf_expr(lf_rw(body, all), append(caps, par_names(ps, Nil)), lifted, st), lifted, caps, ps, ret, ln, parent)
+
+fn lf_emit_one3(le, lifted, caps, ps, ret, ln, parent) = match le
+  LE(b2, st) -> lf_emit(st, FnD(lifted, false, append(map(caps, \x -> Par(x, None)), ps), ret, b2, ln, Some(parent)))
 
 fn lf_rw_stmt(s, cs) = match s
   SBind(n, v, ln) -> SBind(n, lf_rw(v, cs), ln)
   SExpr(e) -> SExpr(lf_rw(e, cs))
-  SFn(_) -> tldie("internal: a local function survived lifting")
+  SFn(f) -> SFn(lf_rw_fnd(f, cs))
+
+fn lf_rw_fnd(f, cs) = match f
+  FnD(n, ex, ps, ret, body, ln, pa) -> FnD(n, ex, ps, ret, lf_rw(body, cs), ln, pa)
 
 fn lf_lookup(cs, n) = match cs
   Nil -> None
@@ -766,6 +795,8 @@ fn lf_rw(e, cs) = match e
   ESelect(arms, def, ln) -> ESelect(map(arms, \a -> lf_rw_sarm(a, cs)), opt_map(def, \d -> lf_rw(d, cs)), ln)
   EIndex(b, ix, ln) -> EIndex(lf_rw(b, cs), lf_rw(ix, cs), ln)
   EIndexSet(b, ix, v, ln) -> EIndexSet(lf_rw(b, cs), lf_rw(ix, cs), lf_rw(v, cs), ln)
+  EIndexOp(op, b, ix, v, ln) -> EIndexOp(op, lf_rw(b, cs), lf_rw(ix, cs), lf_rw(v, cs), ln)
+  EFor(x, f, t, body, ln) -> EFor(x, lf_rw(f, cs), lf_rw(t, cs), lf_rw(body, cs), ln)
   EBlock(ss) -> EBlock(map(ss, \s -> lf_rw_stmt(s, cs)))
   _ -> e
 
@@ -801,6 +832,8 @@ fn lf_fv(e, bound, acc) = match e
   ESelect(arms, def, _) -> lf_fv_def(def, bound, fold(arms, acc, \a, sa -> lf_fv_sarm(sa, bound, a)))
   EIndex(b, ix, _) -> lf_fv(ix, bound, lf_fv(b, bound, acc))
   EIndexSet(b, ix, v, _) -> lf_fv(v, bound, lf_fv(ix, bound, lf_fv(b, bound, acc)))
+  EIndexOp(_, b, ix, v, _) -> lf_fv(v, bound, lf_fv(ix, bound, lf_fv(b, bound, acc)))
+  EFor(x, f, t, body, _) -> lf_fv(body, Cons(x, bound), lf_fv(t, bound, lf_fv(f, bound, acc)))
   EBlock(ss) -> lf_fv_stmts(ss, bound, acc)
   _ -> acc
 
@@ -822,4 +855,4 @@ fn lf_fv_stmts(ss, bound, acc) = match ss
   Nil -> acc
   Cons(SBind(n, v, _), rest) -> lf_fv_stmts(rest, append(bound, Cons(n, Nil)), lf_fv(v, bound, acc))
   Cons(SExpr(e), rest) -> lf_fv_stmts(rest, bound, lf_fv(e, bound, acc))
-  Cons(SFn(_), _) -> tldie("internal: inner blocks are lifted first")
+  Cons(SFn(FnD(n, _, ps, _, body, _, _)), rest) -> lf_fv_stmts(rest, Cons(n, bound), lf_fv(body, append(Cons(n, bound), par_names(ps, Nil)), acc))

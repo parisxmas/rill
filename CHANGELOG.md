@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **`for i in a..b`, and `+=` on a buffer element.** Counting over a range now
+  has a form of its own, and a buffer element can be written in terms of what
+  it held (`+=`, `-=`, `*=`, `/=`, with the index evaluated once). Neither is
+  a new idea in the language: `for` is spelled out as the tail-recursive local
+  function it always was, and `v[i] += 1` as the read and the write it always
+  was — both before the checker sees a program, so the formatter is the only
+  thing besides the parser that knows they exist. Lifting had to learn one
+  thing along the way: a function nested in another block is now lifted after
+  the enclosing block's calls are rewritten, since what a sibling call passes
+  is part of what the nested one captures. With this the Dijkstra benchmark
+  reaches 833 tokens — 1.12&times; the Go it is written against, level with C
+  and past OCaml, from 1579 three changes ago.
+
 - **Functions inside functions.** A `fn` written in a body sees the names
   around it and may call itself and the functions beside it, which is what a
   loop over local state wants: only the loop's own variables are parameters.
