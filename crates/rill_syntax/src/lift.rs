@@ -40,29 +40,47 @@ struct Local {
     caps: Vec<String>,
 }
 
-/// `b[i] op= v` spelled out, with the index evaluated once — it may be a call,
-/// and running one twice would run what it does twice.
+/// A value that can be written twice for nothing: a name or a literal. Naming
+/// one anyway would cost a binding, and a binding of a counted value costs a
+/// retain and a release — which is the whole difference in a hot loop.
+fn is_simple(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Var(..) | Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_)
+    )
+}
+
+/// `b[i] op= v` spelled out. The base and the index are named first unless
+/// they already are: either may be a call, and running one twice would run
+/// what it does twice.
 fn expand_index_op(op: BinOp, base: Expr, index: Expr, value: Expr, line: usize) -> Expr {
-    let (b, i) = ("[]=.b".to_string(), "[]=.i".to_string());
-    Expr::Block(vec![
-        Stmt::Bind { name: b.clone(), value: base, line },
-        Stmt::Bind { name: i.clone(), value: index, line },
-        Stmt::Expr(Expr::IndexSet {
-            base: Box::new(Expr::Var(b.clone(), line)),
-            index: Box::new(Expr::Var(i.clone(), line)),
-            value: Box::new(Expr::Binary {
-                op,
-                lhs: Box::new(Expr::Index {
-                    base: Box::new(Expr::Var(b, line)),
-                    index: Box::new(Expr::Var(i, line)),
-                    line,
-                }),
-                rhs: Box::new(value),
-                line,
-            }),
+    let mut binds = Vec::new();
+    let mut once = |e: Expr, n: &str, binds: &mut Vec<Stmt>| {
+        if is_simple(&e) {
+            e
+        } else {
+            binds.push(Stmt::Bind { name: n.to_string(), value: e, line });
+            Expr::Var(n.to_string(), line)
+        }
+    };
+    let b = once(base, "[]=.b", &mut binds);
+    let i = once(index, "[]=.i", &mut binds);
+    let set = Expr::IndexSet {
+        base: Box::new(b.clone()),
+        index: Box::new(i.clone()),
+        value: Box::new(Expr::Binary {
+            op,
+            lhs: Box::new(Expr::Index { base: Box::new(b), index: Box::new(i), line }),
+            rhs: Box::new(value),
             line,
         }),
-    ])
+        line,
+    };
+    if binds.is_empty() {
+        return set;
+    }
+    binds.push(Stmt::Expr(set));
+    Expr::Block(binds)
 }
 
 /// `for i in a..b` is a local function over the half-open range, which is all
@@ -302,11 +320,10 @@ fn walk_block(
                 defs.push((f, lifted, visible));
             }
             Stmt::Bind { name, value, line } => {
-                let value = walk(value, env, parent, used, out)?;
                 env.push(name.clone());
                 rest.push(Stmt::Bind { name, value, line });
             }
-            Stmt::Expr(e) => rest.push(Stmt::Expr(walk(e, env, parent, used, out)?)),
+            Stmt::Expr(e) => rest.push(Stmt::Expr(e)),
             Stmt::PatBind { .. } => unreachable!("pattern bindings are expanded first"),
         }
     }
@@ -357,20 +374,27 @@ fn walk_block(
 
     // Pass three: rewrite every call to a lifted name, then lift what is
     // nested inside the rewritten bodies — in that order, so a nested
-    // function's free names already include what a sibling call passes.
+    // function's free names already include what a sibling call passes. That
+    // holds for what a `for` loop turns into as much as for a function the
+    // author wrote, which is why nothing above this point was walked.
     let by_name: HashMap<String, &Local> =
         locals.iter().map(|l| (l.name.clone(), l)).collect();
     let mut kept: Vec<Stmt> = Vec::new();
     for s in rest {
         match s {
             Stmt::Bind { name, value, line } => {
-                kept.push(Stmt::Bind { name, value: rewrite(value, &by_name)?, line })
+                let value = walk(rewrite(value, &by_name)?, env, parent, used, out)?;
+                env.push(name.clone());
+                kept.push(Stmt::Bind { name, value, line })
             }
-            Stmt::Expr(e) => kept.push(Stmt::Expr(rewrite(e, &by_name)?)),
+            Stmt::Expr(e) => {
+                kept.push(Stmt::Expr(walk(rewrite(e, &by_name)?, env, parent, used, out)?))
+            }
             Stmt::PatBind { .. } => unreachable!("pattern bindings are expanded first"),
             Stmt::Fn(_) => unreachable!("local functions were taken out above"),
         }
     }
+    env.truncate(depth);
     for ((f, _, _), l) in defs.into_iter().zip(&locals) {
         let mut params: Vec<Param> =
             l.caps.iter().map(|c| Param { name: c.clone(), ann: None }).collect();

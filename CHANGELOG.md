@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Loops stopped counting references.** A tight loop over a buffer ran
+  twenty-four times slower than the same loop in C, and the emitted IR said
+  why: six retains and eight releases per iteration, none of which changed
+  anything. Two rules removed all of them. An operation that only reads
+  through a reference — a buffer's element or length, a string handed to the
+  runtime — **borrows** it when it is a local, since whatever owns it outlives
+  the expression, so neither the retain nor the release that undoes it is
+  emitted. And a binding this frame owns and hands to a tail call is
+  **moved**: the retain the argument takes and the release that follows it
+  cancel exactly, which is the whole of what a loop written as a tail call was
+  paying. `v[i] += 1` also stopped naming its own base and index when they are
+  already names. Measured: the tight loop 707 ms to 31 ms, within a tenth of
+  C; Dijkstra's algorithm 236 ms to 66 ms, past OCaml and within twice of C.
+  Seventy programs still end with `live allocations: 0`, and a test now reads
+  the IR of a loop body to keep it that way.
+
 - **`s[i:j]` slices a string.** The bytes from `i` up to but not `j` — the
   half-open range `for` already counts over — with either end omissible for
   the string's own: `s[3:]`, `s[:3]`, `s[1:#s - 1]`. It is `str_sub` with an

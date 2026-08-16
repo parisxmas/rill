@@ -189,6 +189,47 @@ fn local_functions_capture_and_loop() {
     assert_eq!(run_source("local_fns", src), "true\n15000000\n");
 }
 
+/// A loop over buffers must not count references. The buffers a loop carries
+/// are borrowed where they are read and moved where they are handed on, so
+/// the body of one has no retain and no release left in it — which is the
+/// difference between this running at C's speed and at a fraction of it.
+#[test]
+fn loops_over_buffers_do_not_count_references() {
+    let src = "fn main() =\n  \
+                 v = buf_int(8)\n  \
+                 acc = buf_int(1)\n\n  \
+                 for i in 0..8\n    \
+                   acc[0] += v[i]\n\n  \
+                 println(acc[0])\n";
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-ir-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("loop.rill");
+    std::fs::write(&path, src).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&path)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(out_dir.join("loop"))
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let ir = String::from_utf8_lossy(&build.stdout);
+    let body: String = ir
+        .lines()
+        .skip_while(|l| !l.starts_with("define i64 @main.for"))
+        .take_while(|l| *l != "}")
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!body.is_empty(), "the loop was not emitted as its own function");
+    // The exit branch releases what the frame owns, once; nothing else may.
+    assert_eq!(body.matches("rc.retain").count(), 0, "retains in a loop body:\n{body}");
+    assert!(
+        body.matches("rill_buf_release").count() <= 2,
+        "more than the frame's own releases:\n{body}"
+    );
+}
+
 /// Slicing runs the runtime's `str_sub` with an end instead of a length,
 /// each part evaluated once, and clamps rather than failing.
 #[test]

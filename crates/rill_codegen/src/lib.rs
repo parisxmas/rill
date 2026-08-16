@@ -1399,6 +1399,26 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
+    /// An operand the operation only borrows. A local can be handed over
+    /// where it stands: whatever owns it outlives this expression, so the
+    /// retain that a use would normally take, and the release that would undo
+    /// it, are both nothing but counter traffic. Anything else is generated as
+    /// usual and comes back owned, for the caller to release.
+    fn gen_borrowed(
+        &mut self,
+        e: &TExpr,
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, bool), CodegenError> {
+        if let TK::Local(name) = &e.kind {
+            if let Some(Some(v)) = scope.get(name) {
+                return Ok((*v, false));
+            }
+        }
+        Ok((self.gen_expr(e, scope, subst, func)?.expect("value"), true))
+    }
+
     /// -1 on an owned heap reference, freeing (recursively) at zero.
     fn emit_release(&mut self, v: BasicValueEnum<'ctx>, ty: &Ty) {
         self.emit_release_call(v, ty, false);
@@ -2243,11 +2263,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let callee = self.request_instance(*fn_idx, inner, bound);
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
                 for a in args {
-                    let v = self.gen_expr(a, scope, subst, func)?;
-                    argv.push(v.expect("arguments are never Unit").into());
+                    // A binding this frame owns and hands to the call is
+                    // moved, not copied: the retain a use would take and the
+                    // release that follows it cancel exactly, and every loop
+                    // written as a tail call passes its whole working set.
+                    let v = match self.take_owned(a, scope) {
+                        Some(v) => v,
+                        None => self.gen_expr(a, scope, subst, func)?.expect("arguments are never Unit"),
+                    };
+                    argv.push(v.into());
                 }
-                // Everything this frame owns dies before the call (arguments
-                // carry their own retains): this makes it a genuine tail call.
+                // Everything this frame still owns dies before the call, which
+                // is what makes it a genuine tail call.
                 self.flush_cleanup();
                 let call =
                     self.builder.build_call(callee, &argv, "tcall").expect("LLVM builder error");
@@ -2268,6 +2295,21 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     /// Emits every pending release (reverse order) without clearing the list
     /// permanently — each control-flow leaf flushes its own copy.
+    /// A local whose one reference this frame owns and is about to give away.
+    /// Taking it out of the cleanup list is the whole move: nothing retains it
+    /// and nothing releases it here.
+    fn take_owned(
+        &mut self,
+        e: &TExpr,
+        scope: &Scope<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let TK::Local(name) = &e.kind else { return None };
+        let v = (*scope.get(name)?)?;
+        let i = self.cleanup.iter().position(|(c, _)| *c == v)?;
+        self.cleanup.remove(i);
+        Some(v)
+    }
+
     fn flush_cleanup(&mut self) {
         let items = self.cleanup.clone();
         for (v, ty) in items.into_iter().rev() {
@@ -2739,7 +2781,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // turned into one here. Each part is evaluated once, which is why
             // this is a node of its own rather than a rewrite.
             TK::Slice { base, from, to } => {
-                let b = self.gen_expr(base, scope, subst, func)?.expect("value");
+                let (b, owned) = self.gen_borrowed(base, scope, subst, func)?;
                 let f = self
                     .gen_expr(from, scope, subst, func)?
                     .expect("value")
@@ -2762,9 +2804,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     inkwell::values::ValueKind::Basic(v) => v,
                     _ => unreachable!("rill_str_sub returns a string"),
                 };
-                // The runtime borrows what it is handed; the string this was
-                // taken from is this expression's to release.
-                self.emit_release(b, &Ty::Str);
+                // The runtime borrows what it is handed; a string this
+                // expression made is then its to release.
+                if owned {
+                    self.emit_release(b, &Ty::Str);
+                }
                 Ok(Some(out))
             }
             TK::Builtin { rt, args } if *rt == "rill.sitofp" || *rt == "rill.fptosi" => {
@@ -2817,7 +2861,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let mut owned: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
                 for a in args {
                     let ty = self.concrete(&a.ty, subst);
-                    let v = self.gen_expr(a, scope, subst, func)?.expect("value");
+                    // The runtime borrows what it is passed, so a local goes
+                    // in as it stands.
+                    let (v, held) = self.gen_borrowed(a, scope, subst, func)?;
                     let passed = if ty == Ty::Bool {
                         self.builder
                             .build_int_z_extend(v.into_int_value(), self.ctx.i8_type(), "b")
@@ -2827,7 +2873,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         v
                     };
                     argv.push(passed.into());
-                    if Self::is_heap(&ty) {
+                    if held && Self::is_heap(&ty) {
                         owned.push((v, ty));
                     }
                 }
@@ -2919,15 +2965,19 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 })
             }
             TK::BufLen { buf } => {
-                let b = self.gen_expr(buf, scope, subst, func)?.expect("value");
+                let (b, owned) = self.gen_borrowed(buf, scope, subst, func)?;
                 let len = self.buf_len(b.into_pointer_value());
-                self.emit_release(b, &self.concrete(&buf.ty, subst));
+                if owned {
+                    self.emit_release(b, &self.concrete(&buf.ty, subst));
+                }
                 Ok(Some(len.into()))
             }
             TK::BufPtr { buf } => {
-                let b = self.gen_expr(buf, scope, subst, func)?.expect("value");
+                let (b, owned) = self.gen_borrowed(buf, scope, subst, func)?;
                 let data = self.buf_data(b.into_pointer_value());
-                self.emit_release(b, &self.concrete(&buf.ty, subst));
+                if owned {
+                    self.emit_release(b, &self.concrete(&buf.ty, subst));
+                }
                 Ok(Some(data.into()))
             }
             TK::BufGet { buf, idx } => {
@@ -2936,7 +2986,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     Ty::Buf(w) => w.clone(),
                     _ => unreachable!("checked as a buffer"),
                 };
-                let b = self.gen_expr(buf, scope, subst, func)?.expect("value");
+                let (b, owned) = self.gen_borrowed(buf, scope, subst, func)?;
                 let i = self.gen_expr(idx, scope, subst, func)?.expect("value").into_int_value();
                 let slot = self.buf_slot(b.into_pointer_value(), i, &w, func);
                 let loaded = self
@@ -2944,7 +2994,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .build_load(self.c_type(&w).expect("a width"), slot, "bget")
                     .expect("LLVM builder error");
                 let out = self.from_c(loaded, &w);
-                self.emit_release(b, &bty);
+                if owned {
+                    self.emit_release(b, &bty);
+                }
                 Ok(Some(out))
             }
             TK::BufSet { buf, idx, val } => {
@@ -2953,13 +3005,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     Ty::Buf(w) => w.clone(),
                     _ => unreachable!("checked as a buffer"),
                 };
-                let b = self.gen_expr(buf, scope, subst, func)?.expect("value");
+                let (b, owned) = self.gen_borrowed(buf, scope, subst, func)?;
                 let i = self.gen_expr(idx, scope, subst, func)?.expect("value").into_int_value();
                 let v = self.gen_expr(val, scope, subst, func)?.expect("value");
                 let slot = self.buf_slot(b.into_pointer_value(), i, &w, func);
                 let narrowed = self.to_c(v, &w);
                 self.builder.build_store(slot, narrowed).expect("LLVM builder error");
-                self.emit_release(b, &bty);
+                if owned {
+                    self.emit_release(b, &bty);
+                }
                 Ok(None)
             }
             TK::CallExtern { name, args } => {
