@@ -21,9 +21,14 @@
   }
 
   // How much of the flight the streak covers, and how wide it is on screen.
-  // The width is angular — a fixed slice of the frame — so a round a hundred
-  // metres out is still a pixel or two wide rather than nothing.
-  const TRAIL = 0.07;
+  //
+  // Three tenths of a second is far longer than the smear a camera would
+  // actually record — that would be one frame, seven metres, and from behind
+  // the rifle it projects to a dot. This is a tracer as a tracer is meant to
+  // read: a line you can follow to where the round went. The width is
+  // angular, a fixed slice of the frame, so a round two hundred metres out is
+  // still a couple of pixels wide rather than nothing.
+  const TRAIL = 0.30;
   const HALFW = 0.005;
 
   @vertex fn vs(
@@ -93,10 +98,15 @@
     let d = length(vec2f(v.local.x - x, v.local.y)) / HALFW;
     let glow = pow(clamp(1.0 - d, 0.0, 1.0), 2.0);
 
-    // Hot at the front, cooling toward the tail.
+    // Which end is which. A long trail lit evenly is ambiguous — it reads as
+    // easily as something coming at you as something leaving — so nearly all
+    // of the light is put in the last few metres at the head and the rest
+    // falls away behind it. A bright point with a tail behind it can only be
+    // going one way.
     let front = clamp(v.local.x / max(v.len, 0.000001), 0.0, 1.0);
-    let col = mix(vec3f(1.0, 0.30, 0.06), vec3f(1.0, 0.94, 0.72), front * front);
+    let head = pow(front, 6.0);
+    let col = mix(vec3f(1.0, 0.26, 0.05), vec3f(1.0, 0.95, 0.78), head);
     let view = v.world - u.eye.xyz;
     // Additive, and thinned by the haze rather than tinted by it.
-    return vec4f(col * glow * (1.6 + 5.0 * front) * (1.0 - fogAt(v.world, length(view))), 1.0);
+    return vec4f(col * glow * (0.35 + 6.5 * head) * (1.0 - fogAt(v.world, length(view))), 1.0);
   }

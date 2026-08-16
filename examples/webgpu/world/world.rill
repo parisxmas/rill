@@ -261,7 +261,7 @@ fn place(buf, i, count, cap, lim, kind) =
 
 fn bullet_cap() = 32
 
-fn bullet_speed() = 420.0
+fn bullet_speed() = 760.0
 
 fn bullet_life() = 3.2
 
@@ -273,12 +273,18 @@ fn stop_height(x, z) =
 fn step_bullet(s, b, at, dt) =
   life = peek_f32(b, at + 7) - dt
   on = if life > 0.0 then 1.0 else 0.0
-  # Drag, as a fraction of speed lost per second. Held to first order, which
-  # at sixty frames a second is exact to a part in ten thousand.
-  k = 1.0 - 0.085 * dt * on
-  vx = peek_f32(b, at + 3) * k
-  vy = (peek_f32(b, at + 4) - 9.81 * dt * on) * k
-  vz = peek_f32(b, at + 5) * k
+  vx0 = peek_f32(b, at + 3)
+  vy0 = peek_f32(b, at + 4)
+  vz0 = peek_f32(b, at + 5)
+  # Quadratic drag: the retardation is proportional to the speed squared, so
+  # what comes off the velocity vector each step is proportional to the speed
+  # itself. First order is plenty — at sixty frames a second and this
+  # coefficient the step is under a thousandth of the velocity.
+  sp = sqrt(vx0 * vx0 + vy0 * vy0 + vz0 * vz0)
+  k = 1.0 - 0.00011 * sp * dt * on
+  vx = vx0 * k
+  vy = vy0 * k - 9.81 * dt * on
+  vz = vz0 * k
   px = peek_f32(b, at) + vx * dt * on
   py = peek_f32(b, at + 1) + vy * dt * on
   pz = peek_f32(b, at + 2) + vz * dt * on
@@ -399,16 +405,29 @@ fn break_crystal(s, cb, cat, ci) =
   1
 
 # One crystal against one round's path this frame.
+#
+# A crystal is a tall thin prism, so a single sphere around its middle is the
+# wrong shape twice over: it misses the tip and the base, and it is far too
+# generous around the waist. Three samples up its own axis, each with the
+# prism's own radius, is a capsule for the price of three subtractions — and a
+# capsule is what a spire actually is.
+fn near_axis(cb, cat, sc, f, ax, ay, az, bx, by, bz) =
+  seg_dist2(ax, ay, az, bx, by, bz,
+            peek_f32(cb, cat),
+            peek_f32(cb, cat + 1) + sc * f,
+            peek_f32(cb, cat + 2))
+
 fn try_break(s, cb, ci, b, at, ax, ay, az, bx, by, bz) =
   cat = ci * 8
   sc = peek_f32(cb, cat + 3)
   if sc < 0.01 then 0
   else
-    cx = peek_f32(cb, cat)
-    cy = peek_f32(cb, cat + 1) + sc * 0.9
-    cz = peek_f32(cb, cat + 2)
-    rr = sc * 0.55
-    if seg_dist2(ax, ay, az, bx, by, bz, cx, cy, cz) > rr * rr then 0
+    rr = sc * 0.62
+    d2 = near_axis(cb, cat, sc, 0.15, ax, ay, az, bx, by, bz)
+    e2 = near_axis(cb, cat, sc, 1.05, ax, ay, az, bx, by, bz)
+    f2 = near_axis(cb, cat, sc, 1.95, ax, ay, az, bx, by, bz)
+    m2 = if d2 < e2 then (if d2 < f2 then d2 else f2) else (if e2 < f2 then e2 else f2)
+    if m2 > rr * rr then 0
     else
       poke_f32(b, at + 7, 0.0)
       break_crystal(s, cb, cat, ci)
