@@ -1,37 +1,45 @@
   override WAVES: i32 = 5;
   override RIPPLES: i32 = 3;
 
-  // Directions as offsets from the wind's own angle.
-  fn woff(i: i32) -> f32 {
-    switch i {
-      case 0:  { return -0.38; }
-      case 1:  { return  0.26; }
-      case 2:  { return -0.12; }
-      case 3:  { return  0.47; }
-      case 4:  { return  0.05; }
-      default: { return -0.55; }
-    }
+  // Value noise: one hash per lattice corner, smoothstepped between them.
+  fn fhash(p: vec2f) -> f32 {
+    return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453);
   }
+  fn fnoise(p: vec2f) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let w = f * f * (3.0 - 2.0 * f);
+    return mix(mix(fhash(i), fhash(i + vec2f(1.0, 0.0)), w.x),
+               mix(fhash(i + vec2f(0.0, 1.0)), fhash(i + vec2f(1.0, 1.0)), w.x), w.y);
+  }
+
+  // The spectrum, as five or six plane waves.
+  //
+  // A wind sea is broad in direction and in wavelength, and these were neither:
+  // six waves inside two thirds of a radian of each other, on wavelengths in
+  // near-halves. Waves that parallel and that harmonic add up to one shape
+  // repeated, which is the corduroy the lake used to wear.
+  //
+  // Direction fans wider for the short waves — a swell holds its line, chop
+  // does not — and the offsets are a sine of the golden angle, which never
+  // comes back round on itself for any count of waves.
+  fn wdir(i: i32) -> f32 {
+    let fi = f32(i);
+    return u.cam.z + (0.42 + 0.60 * fi / f32(WAVES)) * sin(fi * 2.39996323 * 3.0 + 1.3);
+  }
+  // Not halving: with an integer ratio every second crest lands on the one
+  // below it and the sum has a period you can see. A jittered 0.72 does not,
+  // and it keeps the eighth wave near 0.8 m rather than under the grid's cell.
   fn wlen(i: i32) -> f32 {
-    switch i {
-      case 0:  { return 6.5; }
-      case 1:  { return 4.0; }
-      case 2:  { return 2.6; }
-      case 3:  { return 1.7; }
-      case 4:  { return 1.1; }
-      default: { return 0.75; }
-    }
+    let fi = f32(i);
+    return 7.4 * pow(0.72, fi) * (0.84 + 0.32 * fhash(vec2f(fi, 3.0)));
   }
-  fn wamp(i: i32) -> f32 {
-    switch i {
-      case 0:  { return 0.050; }
-      case 1:  { return 0.036; }
-      case 2:  { return 0.026; }
-      case 3:  { return 0.018; }
-      case 4:  { return 0.012; }
-      default: { return 0.008; }
-    }
-  }
+  // Steepness roughly constant down the spectrum, which is what keeps short
+  // waves from looking like scale models of long ones.
+  fn wamp(i: i32) -> f32 { return wlen(i) * 0.0086; }
+  // Every wave starts somewhere else. They all started at zero before, so
+  // every crest in the sum passed through the same line at the same moment.
+  fn wphase(i: i32) -> f32 { return fhash(vec2f(f32(i), 17.0)) * 6.2831853; }
 
   struct VOut {
     @builtin(position) clip: vec4f,
@@ -39,6 +47,7 @@
     @location(1) normal: vec3f,
     @location(2) depth: f32,
     @location(3) crest: f32,
+    @location(4) sets: f32,
   }
 
   @vertex fn vs(@location(0) xzd: vec3f) -> VOut {
@@ -47,18 +56,24 @@
     let t = u.eye.w;
     // Waves feel the bottom, and the wind: amplitude fades in the shallows
     // and follows the gusts.
-    let ampScale = clamp(depth * 0.55, 0.12, 1.0) * (0.35 + 0.75 * u.cam.w);
+    //
+    // And the sea comes in sets. A slow noise field drifting across the lake
+    // scales every wave at once, so there are patches of chop and patches
+    // nearly glassy — without it the same amplitude covers the whole surface
+    // and no amount of spectrum makes that look like water.
+    let sets = 0.35 + 1.05 * fnoise(p0 * 0.032 + vec2f(t * 0.028, t * 0.016));
+    let ampScale = clamp(depth * 0.55, 0.12, 1.0) * (0.35 + 0.75 * u.cam.w) * sets;
     var p = vec3f(p0.x, 0.0, p0.y);
     var n = vec3f(0.0, 1.0, 0.0);
     var crest = 0.0;
     var norm = 0.0;
     for (var i = 0; i < WAVES; i++) {
-      let ang = u.cam.z + woff(i);
+      let ang = wdir(i);
       let d = vec2f(cos(ang), sin(ang));
       let a = wamp(i) * ampScale;
       let k = 6.28318 / wlen(i);
       let c = sqrt(9.8 / k);
-      let f = k * (dot(d, p0) - c * t);
+      let f = k * (dot(d, p0) - c * t) + wphase(i);
       let q = min(0.65 / (k * a * f32(WAVES) + 0.001), 1.0 / (k * a * f32(WAVES) + 0.001));
       p.x += q * a * d.x * cos(f);
       p.z += q * a * d.y * cos(f);
@@ -76,35 +91,29 @@
     o.normal = normalize(n);
     o.depth = depth;
     o.crest = crest / max(norm, 0.001);
+    o.sets = sets;
     return o;
-  }
-
-  // Value noise: one hash per lattice corner, smoothstepped between them.
-  fn fhash(p: vec2f) -> f32 {
-    return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453);
-  }
-  fn fnoise(p: vec2f) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let w = f * f * (3.0 - 2.0 * f);
-    return mix(mix(fhash(i), fhash(i + vec2f(1.0, 0.0)), w.x),
-               mix(fhash(i + vec2f(0.0, 1.0)), fhash(i + vec2f(1.0, 1.0)), w.x), w.y);
   }
 
   // Ripple octaves: directional wavelets far below mesh resolution, summed
   // into the normal. This is where the sun's glitter comes from.
-  fn ripple(p: vec2f, t: f32) -> vec3f {
+  //
+  // The frequency ratio is 2.17 rather than 2.3 and the directions fan the
+  // same way the waves do — an octave stack that stays lined up with the wind
+  // combs the whole lake in one direction, and the glitter comes out in
+  // stripes rather than in points.
+  fn ripple(p: vec2f, t: f32, sets: f32) -> vec3f {
     var n = vec3f(0.0, 0.0, 0.0);
     var freq = 1.4;
-    var amp = 0.20;
-    let wd = vec2f(cos(u.cam.z), sin(u.cam.z));
+    var amp = 0.20 * (0.45 + 0.75 * sets);
     for (var i = 0; i < RIPPLES; i++) {
       let fi = f32(i);
-      let d = normalize(mix(vec2f(sin(fi * 2.4 + 1.2), cos(fi * 1.7 - 0.4)), wd, 0.6));
-      let ph = dot(d, p) * freq + u.wind.x * (0.35 + fi * 0.25);
+      let ang = u.cam.z + (0.35 + 0.75 * fi / f32(RIPPLES)) * sin(fi * 2.39996323 * 2.0 - 0.7);
+      let d = vec2f(cos(ang), sin(ang));
+      let ph = dot(d, p) * freq + u.wind.x * (0.35 + fi * 0.25) + fhash(vec2f(fi, 29.0)) * 6.28;
       n.x -= d.x * amp * cos(ph);
       n.z -= d.y * amp * cos(ph);
-      freq *= 2.3;
+      freq *= 2.17;
       amp *= 0.55;
     }
     return n;
@@ -112,7 +121,7 @@
 
   @fragment fn fs(v: VOut) -> @location(0) vec4f {
     let t = u.eye.w;
-    let n = normalize(v.normal + ripple(v.world.xz, t));
+    let n = normalize(v.normal + ripple(v.world.xz, t, v.sets));
     let view = v.world - u.eye.xyz;
     let vdir = normalize(view);
     let L = -normalize(u.sun.xyz);

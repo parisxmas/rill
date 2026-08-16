@@ -84,3 +84,17 @@ The normal is a lighting question rather than a style one, so Rill takes each
 corner's from the slope of its own height lattice — two subtractions, not a
 cross product. Four cells meeting at a corner agree about it, and the light
 crosses the seam.
+
+The lake is a sum of plane waves, and it used to look it: five or six of them
+inside two thirds of a radian of each other, on wavelengths in near-halves,
+all starting at phase zero. Waves that parallel and that harmonic add up to one
+shape repeated, which is the corduroy the water wore. The spectrum is broad
+now — direction fans wider for the shorter waves, because a swell holds its
+line and chop does not, and the offsets are sines of the golden angle, which
+never come back round on themselves for any count of waves. Wavelengths fall by
+a jittered 0.72 rather than a half, and every wave starts somewhere else.
+
+What actually makes it read as water, though, is that the sea comes in sets: a
+slow noise field drifting across the lake scales every wave at once, so there
+are patches of chop and patches nearly glassy. Without it the same amplitude
+covers the whole surface, and no amount of spectrum saves that.
