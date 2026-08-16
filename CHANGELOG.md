@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`read_line` reads runs, not bytes.** It pulled one byte at a time out of
+  the input buffer and grew its own buffer around them, so an eleven-megabyte
+  line was eleven million calls and two copies of itself. It finds the newline
+  with `memchr` and takes what is before it in one copy now: that line goes
+  from 7 ms to **2**, against 1 for the `fgets` it is measured against.
+
 - **A `match` stops counting, and a field can be moved into a box.** Two
   places where reference counting was doing work that cancels.
 

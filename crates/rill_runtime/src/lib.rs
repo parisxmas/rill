@@ -678,33 +678,56 @@ pub unsafe extern "C" fn rill_scan_int() -> i64 {
 pub unsafe extern "C" fn rill_read_line() -> *mut u8 {
     IO_OK = 1;
     let mut cap = 128usize;
-    let mut buf = malloc(cap);
+    let mut buf = rill_alloc(cap as u64);
+    live_add(-1);
     let mut n = 0usize;
     loop {
-        let c = in_byte();
-        if c < 0 {
-            if n == 0 {
-                IO_OK = 0;
+        if IN_POS == IN_LEN {
+            if IN_BUF.is_null() {
+                IN_BUF = malloc(IN_CAP);
             }
-            break;
+            let got = read(0, IN_BUF, IN_CAP);
+            if got <= 0 {
+                if n == 0 {
+                    IO_OK = 0;
+                }
+                break;
+            }
+            IN_LEN = got as usize;
+            IN_POS = 0;
         }
-        let b = c as u8;
-        if b == b'\n' {
-            break;
-        }
-        if n == cap {
-            let bigger = malloc(cap * 2);
-            core::ptr::copy_nonoverlapping(buf, bigger, n);
-            free(buf);
+        // Whole runs at a time rather than a byte at a time: `memchr` finds
+        // the newline sixteen bytes at a step, and what is before it is one
+        // copy. A megabyte-long line used to be a megabyte of calls.
+        let avail = IN_LEN - IN_POS;
+        let from = IN_BUF.add(IN_POS);
+        let hit = memchr(from, b'\n' as i32, avail);
+        let take = if hit.is_null() { avail } else { hit as usize - from as usize };
+        if n + take > cap {
+            let mut want = cap;
+            while want < n + take {
+                want *= 2;
+            }
+            let bigger = rill_alloc(want as u64);
+            live_add(-1);
+            copy_small(buf, bigger, n);
+            live_add(1);
+            rill_free_sized(buf, cap as u64);
             buf = bigger;
-            cap *= 2;
+            cap = want;
         }
-        *buf.add(n) = b;
-        n += 1;
+        copy_small(from, buf.add(n), take);
+        n += take;
+        IN_POS += take;
+        if !hit.is_null() {
+            IN_POS += 1;
+            break;
+        }
     }
     let p = str_new(n);
-    core::ptr::copy_nonoverlapping(buf, p.add(16), n);
-    free(buf);
+    copy_small(buf, p.add(16), n);
+    live_add(1);
+    rill_free_sized(buf, cap as u64);
     p
 }
 
