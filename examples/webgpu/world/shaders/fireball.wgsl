@@ -28,6 +28,7 @@
     @location(2) seed: f32,
     @location(3) age: f32,        // 0 at the head, 1 at the end of the smoke
     @location(4) fade: f32,
+    @location(5) windward: f32,   // how much this puff faces the way it is going
   }
 
   const BALL   = 0.62;            // the head, in metres
@@ -72,17 +73,26 @@
     let t = age * span;
     let back = pos - vel * t - vec3f(0.0, 0.5 * FIRE_G * t * t, 0.0);
 
-    // The first few puffs are thrown out sideways rather than laid along the
-    // path: a meteor does not trail fire only behind it, it burns all round its
-    // leading face, because that is the face doing the compressing. This is
-    // that collar.
+    // The fire on the stone itself, which is not a ring round it.
+    //
+    // Friction is not the same in every direction. The heat is where the air is
+    // being compressed, and that is the face going forwards — a bow of fire
+    // ahead of and around the nose, thinning off toward the sides, and nothing
+    // at all behind, where the stone is moving away from the air and leaves a
+    // wake rather than a flame. The wake is the trail; it is already drawn.
+    //
+    // So these puffs sit on a cap tilted onto the front rather than a ring
+    // round the middle: `lat` is how far off the nose each one is, never past a
+    // right angle, and `cos(lat)` — how square-on to the airflow it is — is
+    // handed to the fragment to burn by.
     let collar = clamp(1.0 - age * 9.0, 0.0, 1.0);
     let ca = seed * 13.0 + age * 47.0;
+    let lat = 0.30 + 1.05 * fract(seed * 31.0 + f32(n) * 0.37);
     let axis = normalize(vel + vec3f(0.0, 0.0001, 0.0));
     let side = normalize(cross(axis, vec3f(0.0, 1.0, 0.0)) + vec3f(0.0001, 0.0, 0.0));
     let other = cross(axis, side);
-    let ring = (side * cos(ca) + other * sin(ca)) * collar * 0.62
-             + axis * collar * 0.30;
+    let radial = (side * cos(ca) + other * sin(ca)) * sin(lat);
+    let ring = (axis * cos(lat) * 0.85 + radial * 0.72) * collar * 0.78;
 
     // Drift: smoke lifts and spreads rather than staying on the line the fire
     // took. One direction per fireball, taken from the seed and held for the
@@ -115,6 +125,9 @@
     // brightness across the first half of the trail unless each one is already
     // most of the way down by the time the next one arrives.
     o.fade = select(0.0, pow(1.0 - age, 2.2), span > 0.02);
+    // Zero for anything in the trail: the wake does not burn, it only glows
+    // with what it was given on the way past.
+    o.windward = collar * clamp(cos(lat), 0.0, 1.0);
     return o;
   }
 
@@ -159,7 +172,11 @@
     let clear = 1.0 - fogAt(v.world, length(view));
     // Not `a`: that name is taken further up by the angle this puff's edge is
     // wobbled against, and WGSL does not let a scope redeclare its own names.
-    let hot = pow(1.0 - v.age, 4.0);
-    let cover = clamp(glow * v.fade * mix(0.95, 0.34, smoke), 0.0, 1.0) * clear;
+    // What burns is what faces the airflow. A puff square onto it is white and
+    // opaque; one out at the shoulder is half that; one behind the stone is
+    // just the trail, and gets none of it.
+    let hot = pow(1.0 - v.age, 4.0) + v.windward * v.windward * 1.6;
+    let cover = clamp(glow * v.fade * mix(0.95, 0.34, smoke) * (1.0 + 0.7 * v.windward),
+                      0.0, 1.0) * clear;
     return vec4f(col * (0.6 + 2.4 * hot) * cover, cover);
   }

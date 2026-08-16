@@ -100,5 +100,11 @@
     let col = mix(crust + heat, fogColor(view), fogAt(v.world, length(view)));
     // Solid through the middle and giving out before the rim: some of the fire
     // is in front of it, and a stone in a fire is seen through the fire.
-    return vec4f(col, (1.0 - smoothstep(0.55, 1.05, r)) * 0.82);
+    //
+    // And gone entirely within a few metres of the eye. A fan of triangles is
+    // one flat face, which is fine at forty metres and reads as a slab of card
+    // at two — and at two metres the thing is about to land on you anyway, so
+    // what should be filling the screen is the fire, not the stone.
+    let near = smoothstep(1.8, 5.5, length(v.world - u.eye.xyz));
+    return vec4f(col, (1.0 - smoothstep(0.55, 1.05, r)) * 0.82 * near);
   }
