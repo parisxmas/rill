@@ -34,7 +34,9 @@
   </div>
   <div class="stat" id="stat"></div>
   <script type="module">
-    import { run } from "./host.js";
+    // Versioned because the CDN in front of this holds .js for a week; bump it
+    // when host.js changes. index.html itself is never cached.
+    import { run } from "./host.js?v=3";
     const stat = document.getElementById("stat");
     run(document.getElementById("c"), "./world.wasm", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
@@ -42,7 +44,8 @@
       stat.innerHTML =
         `<b>${h.gpuName}</b> · quality <b>${h.tier}</b>${lock}<br>` +
         `<b>${h.fps}</b> fps${gpu} · ${Math.round(h.tris / 1000)}k triangles<br>` +
-        `terrain, placement, physics, matrices: <b>world.rill</b> → wasm<br>` +
+        `terrain, placement, physics, matrices: <b>world.rill</b> → ` +
+        `<b>${h.wasmBytes ? (h.wasmBytes / 1024).toFixed(1) + " KB" : "?"}</b> of wasm<br>` +
         `shadows · MSAA 4x · instancing · gerstner water · compute particles`;
     }).catch(e => {
       console.error("SETUP FAILED", e.stack || e);

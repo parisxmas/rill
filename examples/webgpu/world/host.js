@@ -41,461 +41,50 @@ function guessTier(info) {
 // shadow map and therefore must not be able to see it. Everything else
 // builds on `COMMON`, which adds the map and the lighting helpers.
 
-const UNI = /* wgsl */`
-  struct U {
-    vp:   mat4x4f,
-    lvp:  mat4x4f,
-    eye:  vec4f,   // xyz eye, w time
-    sun:  vec4f,   // xyz light direction, w aspect
-    cam:  vec4f,   // yaw, pitch, wind angle, wind strength
-  }
-  @group(0) @binding(0) var<uniform> u: U;
-`;
+// ---- shaders ---------------------------------------------------------------
+//
+// WGSL, in `shaders/`, one file per pipeline. They are not standalone: every
+// one is written against `uniforms.wgsl`, and all but the shadow pair against
+// `common.wgsl` as well — the shadow pass writes the shadow map and so must
+// not be able to see it. The composing happens here rather than in the files
+// so that what each shader may reach is stated in one place.
+//
+// Thirteen small fetches rather than one large one, in parallel: they are
+// 15 KB between them, and a file per shader is what makes them editable as
+// shaders rather than as string literals.
 
-const COMMON = UNI + /* wgsl */`
-  @group(0) @binding(1) var shadowMap: texture_depth_2d;
-  @group(0) @binding(2) var shadowSamp: sampler_comparison;
+const SHADERS = {
+  uniforms: null, common: "uniforms",
+  terrain: "common", instanced: "common", pine: "common", grass: "common",
+  sky: "common", water: "common", glow: "common", "firefly-draw": "common",
+  "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
+  "firefly-sim": null,
+};
 
-  // No early return: textureSampleCompare demands uniform control flow, so
-  // the samples always run and the out-of-map case is selected afterwards.
-  fn shadow(world: vec3f, nl: f32) -> f32 {
-    let sc = u.lvp * vec4f(world, 1.0);
-    let uvz = vec3f(sc.xy * vec2f(0.5, -0.5) + 0.5, sc.z);
-    let bias = clamp(0.0028 * (1.0 - nl) + 0.0009, 0.0009, 0.004);
-    var acc = 0.0;
-    for (var dy = -1; dy <= 1; dy++) {
-      for (var dx = -1; dx <= 1; dx++) {
-        acc += textureSampleCompare(shadowMap, shadowSamp, uvz.xy + vec2f(f32(dx), f32(dy)) / 2048.0, uvz.z - bias);
-      }
-    }
-    let inside = uvz.x >= 0.0 && uvz.x <= 1.0 && uvz.y >= 0.0 && uvz.y <= 1.0 && uvz.z <= 1.0;
-    return select(1.0, acc / 9.0, inside);
-  }
-
-  const SKY_ZENITH  = vec3f(0.043, 0.055, 0.16);
-  const SKY_HORIZON = vec3f(0.23, 0.19, 0.28);
-  const SUN_WARM    = vec3f(1.0, 0.62, 0.24);
-  const SUN_COL     = vec3f(1.0, 0.85, 0.6);
-
-  fn skyColor(dir: vec3f, t: f32) -> vec3f {
-    let up = max(dir.y, 0.0);
-    var col = mix(SKY_HORIZON, SKY_ZENITH, pow(up, 0.55));
-    let sa = max(dot(dir, -normalize(u.sun.xyz)), 0.0);
-    col += SUN_WARM * pow(sa, 5.0) * 0.5;             // the warm side of the sky
-    col += SUN_COL * pow(sa, 900.0) * 20.0;           // the disc
-    col += SUN_WARM * pow(sa, 60.0) * 1.2;            // its halo
-    // stars, fading out toward the bright horizon
-    let cell = floor(dir * 260.0);
-    let h = fract(sin(dot(cell, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
-    if (h > 0.9982 && dir.y > 0.08) {
-      col += vec3f(0.8) * up * (0.5 + 0.5 * sin(t * 2.0 + h * 40.0));
-    }
-    return col;
-  }
-
-  fn fogAmount(dist: f32) -> f32 { return 1.0 - exp(-dist * 0.0065); }
-
-  fn fogColor(view: vec3f) -> vec3f {
-    let sa = max(dot(normalize(vec3f(view.x, 0.0, view.z)), -normalize(vec3f(u.sun.x, 0.0, u.sun.z))), 0.0);
-    return mix(vec3f(0.10, 0.11, 0.19), vec3f(0.55, 0.35, 0.22), pow(sa, 3.0));
-  }
-
-  fn lit(albedo: vec3f, n: vec3f, world: vec3f) -> vec3f {
-    let L = -normalize(u.sun.xyz);
-    let nl = max(dot(n, L), 0.0);
-    let sh = shadow(world, nl);
-    let sky = mix(vec3f(0.10, 0.11, 0.18), vec3f(0.18, 0.19, 0.30), n.y * 0.5 + 0.5);
-    var col = albedo * (SUN_COL * 1.25 * nl * sh + sky * 1.1);
-    let view = world - u.eye.xyz;
-    return mix(col, fogColor(view), fogAmount(length(view)));
-  }
-`;
-
-const TERRAIN = COMMON + /* wgsl */`
-  struct VOut {
-    @builtin(position) clip: vec4f,
-    @location(0) world: vec3f,
-    @location(1) normal: vec3f,
-    @location(2) color: vec3f,
-  }
-  @vertex fn vs(@location(0) pos: vec3f, @location(1) n: vec3f, @location(2) c: vec3f) -> VOut {
-    var o: VOut;
-    o.clip = u.vp * vec4f(pos, 1.0);
-    o.world = pos; o.normal = n; o.color = c;
-    return o;
-  }
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    return vec4f(lit(v.color, normalize(v.normal), v.world), 1.0);
-  }
-`;
-
-// Crystals: instanced, rigid, emissive.
-const INSTANCED = COMMON + /* wgsl */`
-  override emissive: f32 = 0.0;
-  struct VOut {
-    @builtin(position) clip: vec4f,
-    @location(0) world: vec3f,
-    @location(1) normal: vec3f,
-    @location(2) color: vec3f,
-  }
-  @vertex fn vs(
-    @location(0) pos: vec3f, @location(1) n: vec3f,
-    @location(2) ipos: vec3f, @location(3) scale: f32,
-    @location(4) rot: f32, @location(5) icol: vec3f,
-  ) -> VOut {
-    let c = cos(rot); let s = sin(rot);
-    let p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
-    let nr = vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c);
-    var o: VOut;
-    o.clip = u.vp * vec4f(p, 1.0);
-    o.world = p; o.normal = nr; o.color = icol;
-    return o;
-  }
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    let base = lit(v.color, normalize(v.normal), v.world);
-    let pulse = 0.75 + 0.25 * sin(u.eye.w * 2.1 + v.world.x * 3.0);
-    let glow = v.color * (1.35 * pulse);
-    let view = v.world - u.eye.xyz;
-    let glowFogged = mix(glow, fogColor(view), fogAmount(length(view)));
-    return vec4f(mix(base, glowFogged, emissive), 1.0);
-  }
-`;
-
-// Pines bend to the wind Rill computes: the offset grows with the square of
-// the height up the tree — trunks stand, crowns lean — plus a flutter whose
-// tempo rises with the gusts.
-const PINE = COMMON + /* wgsl */`
-  struct VOut {
-    @builtin(position) clip: vec4f,
-    @location(0) world: vec3f,
-    @location(1) normal: vec3f,
-    @location(2) color: vec3f,
-  }
-  @vertex fn vs(
-    @location(0) pos: vec3f, @location(1) n: vec3f,
-    @location(2) ipos: vec3f, @location(3) scale: f32,
-    @location(4) rot: f32, @location(5) icol: vec3f,
-  ) -> VOut {
-    let c = cos(rot); let s = sin(rot);
-    var p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
-    let hgt = max(pos.y, 0.0) / 3.6;
-    let dirn = vec2f(cos(u.cam.z), sin(u.cam.z));
-    let flutter = sin(u.eye.w * (1.6 + 2.4 * u.cam.w) + ipos.x * 1.31 + ipos.z * 0.97);
-    let sway = (u.cam.w * hgt * hgt * 0.45 + flutter * 0.09 * u.cam.w * hgt) * scale;
-    p = vec3f(p.x + dirn.x * sway, p.y, p.z + dirn.y * sway);
-    let nr = vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c);
-    var o: VOut;
-    o.clip = u.vp * vec4f(p, 1.0);
-    o.world = p; o.normal = nr; o.color = icol;
-    return o;
-  }
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    return vec4f(lit(v.color, normalize(v.normal), v.world), 1.0);
-  }
-`;
-
-// Grass: normals point up so a blade is lit like the ground it stands on,
-// and the top of each blade leans with a slow wind.
-const GRASS = COMMON + /* wgsl */`
-  struct VOut {
-    @builtin(position) clip: vec4f,
-    @location(0) world: vec3f,
-    @location(1) color: vec3f,
-  }
-  @vertex fn vs(
-    @location(0) pos: vec3f, @location(1) n: vec3f,
-    @location(2) ipos: vec3f, @location(3) scale: f32,
-    @location(4) rot: f32, @location(5) icol: vec3f,
-  ) -> VOut {
-    let c = cos(rot); let s = sin(rot);
-    var p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
-    let t = u.eye.w;
-    let dirn = vec2f(cos(u.cam.z), sin(u.cam.z));
-    let osc = sin(t * (1.5 + 3.0 * u.cam.w) + ipos.x * 0.9 + ipos.z * 0.7);
-    let sway = (u.cam.w * 0.20 + osc * (0.05 + 0.16 * u.cam.w)) * pos.y * scale;
-    p.x += dirn.x * sway; p.z += dirn.y * sway;
-    var o: VOut;
-    o.clip = u.vp * vec4f(p, 1.0);
-    o.world = p; o.color = icol;
-    return o;
-  }
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    return vec4f(lit(v.color, vec3f(0.0, 1.0, 0.0), v.world), 1.0);
-  }
-`;
-
-// Depth-only variants for the shadow pass.
-const SHADOW_TERRAIN = UNI + /* wgsl */`
-  @vertex fn vs(@location(0) pos: vec3f, @location(1) n: vec3f, @location(2) c: vec3f) -> @builtin(position) vec4f {
-    return u.lvp * vec4f(pos, 1.0);
-  }
-`;
-const SHADOW_INST = UNI + /* wgsl */`
-  @vertex fn vs(
-    @location(0) pos: vec3f, @location(1) n: vec3f,
-    @location(2) ipos: vec3f, @location(3) scale: f32,
-    @location(4) rot: f32, @location(5) icol: vec3f,
-  ) -> @builtin(position) vec4f {
-    let c = cos(rot); let s = sin(rot);
-    let p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
-    return u.lvp * vec4f(p, 1.0);
-  }
-`;
-
-const SKY = COMMON + /* wgsl */`
-  struct VOut { @builtin(position) clip: vec4f, @location(0) ndc: vec2f }
-  @vertex fn vs(@builtin(vertex_index) i: u32) -> VOut {
-    let xy = vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
-    var o: VOut;
-    o.clip = vec4f(xy, 1.0, 1.0);   // on the far plane
-    o.ndc = xy;
-    return o;
-  }
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    let yaw = u.cam.x; let pitch = u.cam.y;
-    let cp = cos(pitch);
-    let fwd = vec3f(sin(yaw) * cp, sin(pitch), -cos(yaw) * cp);
-    let right = vec3f(cos(yaw), 0.0, sin(yaw));
-    let upv = cross(right, fwd);
-    let th = tan(0.53);
-    let dir = normalize(fwd + right * v.ndc.x * th * u.sun.w + upv * v.ndc.y * th);
-    return vec4f(skyColor(dir, u.eye.w), 1.0);
-  }
-`;
-
-// The water. A lake, not an ocean: short, frequent Gerstner waves whose
-// directions cluster around the wind and whose amplitude follows its
-// strength — Rill computes the wind, the shader obeys it. Each wave is still
-// a trochoid with its phase speed from the gravity relation, every vertex
-// still carries the exact terrain depth beneath it (so waves die in the
-// shallows and foam sits on the real shoreline), and ripple octaves on top
-// supply the sun's glitter.
-const WATER = COMMON + /* wgsl */`
-  override WAVES: i32 = 5;
-  override RIPPLES: i32 = 3;
-
-  // Directions as offsets from the wind's own angle.
-  fn woff(i: i32) -> f32 {
-    switch i {
-      case 0:  { return -0.38; }
-      case 1:  { return  0.26; }
-      case 2:  { return -0.12; }
-      case 3:  { return  0.47; }
-      case 4:  { return  0.05; }
-      default: { return -0.55; }
-    }
-  }
-  fn wlen(i: i32) -> f32 {
-    switch i {
-      case 0:  { return 6.5; }
-      case 1:  { return 4.0; }
-      case 2:  { return 2.6; }
-      case 3:  { return 1.7; }
-      case 4:  { return 1.1; }
-      default: { return 0.75; }
-    }
-  }
-  fn wamp(i: i32) -> f32 {
-    switch i {
-      case 0:  { return 0.050; }
-      case 1:  { return 0.036; }
-      case 2:  { return 0.026; }
-      case 3:  { return 0.018; }
-      case 4:  { return 0.012; }
-      default: { return 0.008; }
-    }
-  }
-
-  struct VOut {
-    @builtin(position) clip: vec4f,
-    @location(0) world: vec3f,
-    @location(1) normal: vec3f,
-    @location(2) depth: f32,
-    @location(3) crest: f32,
-  }
-
-  @vertex fn vs(@location(0) xzd: vec3f) -> VOut {
-    let p0 = xzd.xy;
-    let depth = xzd.z;
-    let t = u.eye.w;
-    // Waves feel the bottom, and the wind: amplitude fades in the shallows
-    // and follows the gusts.
-    let ampScale = clamp(depth * 0.55, 0.12, 1.0) * (0.35 + 0.75 * u.cam.w);
-    var p = vec3f(p0.x, 0.0, p0.y);
-    var n = vec3f(0.0, 1.0, 0.0);
-    var crest = 0.0;
-    var norm = 0.0;
-    for (var i = 0; i < WAVES; i++) {
-      let ang = u.cam.z + woff(i);
-      let d = vec2f(cos(ang), sin(ang));
-      let a = wamp(i) * ampScale;
-      let k = 6.28318 / wlen(i);
-      let c = sqrt(9.8 / k);
-      let f = k * (dot(d, p0) - c * t);
-      let q = min(0.65 / (k * a * f32(WAVES) + 0.001), 1.0 / (k * a * f32(WAVES) + 0.001));
-      p.x += q * a * d.x * cos(f);
-      p.z += q * a * d.y * cos(f);
-      p.y += a * sin(f);
-      let wa = k * a;
-      n.x -= d.x * wa * cos(f);
-      n.z -= d.y * wa * cos(f);
-      n.y -= q * wa * sin(f);
-      crest += (sin(f) * 0.5 + 0.5) * a;
-      norm += a;
-    }
-    var o: VOut;
-    o.world = p;
-    o.clip = u.vp * vec4f(p, 1.0);
-    o.normal = normalize(n);
-    o.depth = depth;
-    o.crest = crest / max(norm, 0.001);
-    return o;
-  }
-
-  // Ripple octaves: directional wavelets far below mesh resolution, summed
-  // into the normal. This is where the sun's glitter comes from.
-  fn ripple(p: vec2f, t: f32) -> vec3f {
-    var n = vec3f(0.0, 0.0, 0.0);
-    var freq = 1.4;
-    var amp = 0.20;
-    let wd = vec2f(cos(u.cam.z), sin(u.cam.z));
-    for (var i = 0; i < RIPPLES; i++) {
-      let fi = f32(i);
-      let d = normalize(mix(vec2f(sin(fi * 2.4 + 1.2), cos(fi * 1.7 - 0.4)), wd, 0.6));
-      let ph = dot(d, p) * freq + t * (0.7 + fi * 0.5) * (0.5 + u.cam.w);
-      n.x -= d.x * amp * cos(ph);
-      n.z -= d.y * amp * cos(ph);
-      freq *= 2.3;
-      amp *= 0.55;
-    }
-    return n;
-  }
-
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    let t = u.eye.w;
-    let n = normalize(v.normal + ripple(v.world.xz, t));
-    let view = v.world - u.eye.xyz;
-    let vdir = normalize(view);
-    let L = -normalize(u.sun.xyz);
-
-    // Schlick's fresnel against the same sky the sky pass draws.
-    let cosv = max(dot(-vdir, n), 0.0);
-    let fresnel = 0.02 + 0.98 * pow(1.0 - cosv, 5.0);
-    let reflDir = reflect(vdir, n);
-    let refl = skyColor(vec3f(reflDir.x, abs(reflDir.y), reflDir.z), t);
-
-    // The body of the water: absorption with depth.
-    let body = mix(vec3f(0.11, 0.37, 0.40), vec3f(0.012, 0.10, 0.13), smoothstep(0.0, 5.5, v.depth));
-
-    let sh = shadow(v.world, max(dot(n, L), 0.0));
-    var col = mix(body, refl, clamp(fresnel * 1.6 + 0.06, 0.0, 1.0));
-
-    // Sun glitter: a tight Blinn lobe on the rippled normal.
-    let hv = normalize(L - vdir);
-    col += SUN_COL * pow(max(dot(n, hv), 0.0), 240.0) * 2.4 * sh;
-
-    // Foam: at the shoreline, where the depth runs out, and on the crests,
-    // where the trochoids pinch. Speckled so it reads as froth, not paint.
-    let speck = fract(sin(dot(floor(v.world.xz * 7.0), vec2f(12.9898, 78.233))) * 43758.5453);
-    let shore = (1.0 - smoothstep(0.0, 1.0, v.depth))
-              * (0.55 + 0.45 * sin(v.depth * 9.0 - t * 2.1));
-    let crests = smoothstep(0.84, 0.99, v.crest) * 0.45 * (0.25 + 0.75 * u.cam.w) * (0.5 + 0.5 * speck);
-    let foam = clamp(shore + crests, 0.0, 1.0) * (0.55 + 0.45 * speck);
-    col = mix(col, vec3f(0.90, 0.94, 0.93) * (0.6 + 0.4 * sh), clamp(foam, 0.0, 0.85));
-
-    col = mix(col, fogColor(view), fogAmount(length(view)));
-    let alpha = mix(0.78, 0.95, smoothstep(0.0, 4.0, v.depth));
-    return vec4f(col, alpha);
-  }
-`;
-
-// Fireflies live in a storage buffer the compute pass rewrites each frame,
-// and the render pass turns each one into a camera-facing quad.
-const FIREFLY_SIM = /* wgsl */`
-  struct P { anchor: vec4f, pos: vec4f }
-  @group(0) @binding(0) var<storage, read_write> ps: array<P>;
-  struct T { t: f32, dt: f32, pad0: f32, pad1: f32 }
-  @group(0) @binding(1) var<uniform> tt: T;
-  @compute @workgroup_size(64) fn cs(@builtin(global_invocation_id) id: vec3u) {
-    let i = id.x;
-    if (i >= arrayLength(&ps)) { return; }
-    let a = ps[i].anchor;
-    let s = a.w;
-    let t = tt.t;
-    let p = a.xyz + vec3f(
-      sin(t * 0.37 + s * 11.0) * 2.8,
-      sin(t * 0.53 + s * 23.0) * 1.1 + 1.6,
-      cos(t * 0.41 + s * 17.0) * 2.8,
-    );
-    let glow = 0.55 + 0.45 * sin(t * 2.4 + s * 37.0);
-    ps[i].pos = vec4f(p, glow);
-  }
-`;
-
-const FIREFLY_DRAW = COMMON + /* wgsl */`
-  struct P { anchor: vec4f, pos: vec4f }
-  @group(1) @binding(0) var<storage, read> ps: array<P>;
-  struct VOut {
-    @builtin(position) clip: vec4f,
-    @location(0) uv: vec2f,
-    @location(1) glow: f32,
-    @location(2) dist: f32,
-  }
-  @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    let p = ps[ii].pos;
-    let corner = vec2f(f32((vi << 1u) & 2u), f32(vi & 2u)) - 0.5;   // two-triangle quad
-    let yaw = u.cam.x;
-    let right = vec3f(cos(yaw), 0.0, sin(yaw));
-    let size = 0.16;
-    let world = p.xyz + right * corner.x * size + vec3f(0.0, corner.y * size, 0.0);
-    var o: VOut;
-    o.clip = u.vp * vec4f(world, 1.0);
-    o.uv = corner * 2.0;
-    o.glow = p.w;
-    o.dist = length(world - u.eye.xyz);
-    return o;
-  }
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    let d = length(v.uv);
-    let a = max(1.0 - d, 0.0);
-    let fade = exp(-v.dist * 0.02);
-    return vec4f(vec3f(1.0, 0.82, 0.42) * a * a * v.glow * fade, 1.0);
-  }
-`;
-
-// The crystals' halos reuse the billboard idea, fed straight from the
-// instance buffer Rill wrote.
-const GLOW = COMMON + /* wgsl */`
-  struct VOut {
-    @builtin(position) clip: vec4f,
-    @location(0) uv: vec2f,
-    @location(1) color: vec3f,
-    @location(2) dist: f32,
-  }
-  @vertex fn vs(
-    @builtin(vertex_index) vi: u32,
-    @location(2) ipos: vec3f, @location(3) scale: f32,
-    @location(4) rot: f32, @location(5) icol: vec3f,
-  ) -> VOut {
-    let corner = vec2f(f32((vi << 1u) & 2u), f32(vi & 2u)) - 0.5;
-    let yaw = u.cam.x;
-    let right = vec3f(cos(yaw), 0.0, sin(yaw));
-    let size = scale * 4.0;
-    let center = ipos + vec3f(0.0, scale * 1.1, 0.0);
-    let world = center + right * corner.x * size + vec3f(0.0, corner.y * size, 0.0);
-    var o: VOut;
-    o.clip = u.vp * vec4f(world, 1.0);
-    o.uv = corner * 2.0; o.color = icol;
-    o.dist = length(world - u.eye.xyz);
-    return o;
-  }
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    let d = length(v.uv);
-    let a = max(1.0 - d, 0.0);
-    let pulse = 0.8 + 0.2 * sin(u.eye.w * 2.1 + v.dist);
-    return vec4f(v.color * a * a * a * 0.5 * pulse, 1.0);
-  }
-`;
+async function loadShaders() {
+  const src = Object.fromEntries(await Promise.all(
+    Object.keys(SHADERS).map(async name => {
+      const r = await fetch(`./shaders/${name}.wgsl`);
+      if (!r.ok) throw new Error(`shaders/${name}.wgsl: ${r.status}`);
+      return [name, await r.text()];
+    })
+  ));
+  // Each one preceded by whatever it was written against.
+  const whole = name => (SHADERS[name] ? whole(SHADERS[name]) : "") + src[name];
+  return {
+    TERRAIN: whole("terrain"),
+    INSTANCED: whole("instanced"),
+    PINE: whole("pine"),
+    GRASS: whole("grass"),
+    SHADOW_TERRAIN: whole("shadow-terrain"),
+    SHADOW_INST: whole("shadow-instanced"),
+    SKY: whole("sky"),
+    WATER: whole("water"),
+    FIREFLY_SIM: whole("firefly-sim"),
+    FIREFLY_DRAW: whole("firefly-draw"),
+    GLOW: whole("glow"),
+  };
+}
 
 // ---- small meshes, built here because they are renderer detail -------------
 //
@@ -585,6 +174,20 @@ export async function run(canvas, wasmURL, hud) {
 
   // The world, from Rill; the generated loader does the ceremony.
   const E = await load(wasmURL);
+  const S = await loadShaders();
+
+  // How big the module is, read off the browser's own record of the request
+  // the loader already made — no second one. `decodedBodySize` rather than
+  // `encodedBodySize`: what is wanted on screen is the size of the thing, not
+  // what a CDN's gzip happened to squeeze it to on the way. The entry lands a
+  // moment after the fetch resolves, so this asks again until it is there.
+  let wasmBytes = 0;
+  const wasmSize = () => {
+    if (wasmBytes) return wasmBytes;
+    const e = performance.getEntriesByType("resource").find(r => r.name.endsWith(".wasm"));
+    wasmBytes = e ? e.decodedBodySize || e.encodedBodySize || 0 : 0;
+    return wasmBytes;
+  };
 
   const gpuBuf = (data) => {
     const b = device.createBuffer({ size: (data.byteLength + 3) & ~3, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -640,12 +243,12 @@ export async function run(canvas, wasmURL, hud) {
     multisample: MS,
   });
 
-  const skyPipe = pipe("sky", SKY, [], { depth: { depthWriteEnabled: false, depthCompare: "less-equal" }, cull: "none" });
-  const terrainPipe = pipe("terrain", TERRAIN, terrainLayout);
-  const pinePipe = pipe("pine", PINE, [meshLayout, instLayout]);
-  const crystalPipe = pipe("crystal", INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.72 } });
-  const grassPipe = pipe("grass", GRASS, [meshLayout, instLayout], { cull: "none" });
-  const glowPipe = pipe("glow", GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  const skyPipe = pipe("sky", S.SKY, [], { depth: { depthWriteEnabled: false, depthCompare: "less-equal" }, cull: "none" });
+  const terrainPipe = pipe("terrain", S.TERRAIN, terrainLayout);
+  const pinePipe = pipe("pine", S.PINE, [meshLayout, instLayout]);
+  const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.72 } });
+  const grassPipe = pipe("grass", S.GRASS, [meshLayout, instLayout], { cull: "none" });
+  const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
 
   const flyBgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
@@ -653,8 +256,8 @@ export async function run(canvas, wasmURL, hud) {
   const flyDrawPipe = device.createRenderPipeline({
     label: "fireflies",
     layout: device.createPipelineLayout({ bindGroupLayouts: [bglMain, flyBgl] }),
-    vertex: { module: device.createShaderModule({ code: FIREFLY_DRAW }) },
-    fragment: { module: device.createShaderModule({ code: FIREFLY_DRAW }), targets: [{ format, blend: additive }] },
+    vertex: { module: device.createShaderModule({ code: S.FIREFLY_DRAW }) },
+    fragment: { module: device.createShaderModule({ code: S.FIREFLY_DRAW }), targets: [{ format, blend: additive }] },
     primitive: { cullMode: "none" },
     depthStencil: { ...depth, depthWriteEnabled: false },
     multisample: MS,
@@ -666,7 +269,7 @@ export async function run(canvas, wasmURL, hud) {
   const simPipe = device.createComputePipeline({
     label: "fly-sim",
     layout: device.createPipelineLayout({ bindGroupLayouts: [simBgl] }),
-    compute: { module: device.createShaderModule({ code: FIREFLY_SIM }) },
+    compute: { module: device.createShaderModule({ code: S.FIREFLY_SIM }) },
   });
 
   const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bglShadow] });
@@ -676,8 +279,8 @@ export async function run(canvas, wasmURL, hud) {
     primitive: { cullMode: "none" },
     depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
   });
-  const shTerrain = shadowPipe("shadow-terrain", SHADOW_TERRAIN, terrainLayout);
-  const shInst = shadowPipe("shadow-inst", SHADOW_INST, [meshLayout, instLayout]);
+  const shTerrain = shadowPipe("shadow-terrain", S.SHADOW_TERRAIN, terrainLayout);
+  const shInst = shadowPipe("shadow-inst", S.SHADOW_INST, [meshLayout, instLayout]);
 
   const pineData = pineMesh(), crystalData = crystalMesh(), grassData = grassMesh();
   const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
@@ -770,7 +373,7 @@ export async function run(canvas, wasmURL, hud) {
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
-    W.waterPipe = pipe("water", WATER,
+    W.waterPipe = pipe("water", S.WATER,
       [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }],
       { blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: {} },
         cull: "none", depth: { depthWriteEnabled: false },
@@ -916,7 +519,7 @@ export async function run(canvas, wasmURL, hud) {
     if (now - fpsT > 500) {
       fps = Math.round(frames * 1000 / (now - fpsT));
       frames = 0; fpsT = now;
-      hud({ fps, gpuMs: qs ? gpuMs : null, tier: T.name, gpuName, tris: W.tris, locked });
+      hud({ fps, gpuMs: qs ? gpuMs : null, tier: T.name, gpuName, tris: W.tris, locked, wasmBytes: wasmSize() });
     }
     requestAnimationFrame(tick);
   }

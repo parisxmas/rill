@@ -28,7 +28,12 @@ python3 -m http.server 8000        # from this directory
 ```
 
 `world.js` is the generated loader — the WASI shim, instantiation and init —
-so `host.js` here is nothing but the scene: shaders, passes, tiers.
+so `host.js` here is nothing but the scene: passes, pipelines and tiers. The
+shaders themselves are in `shaders/`, one WGSL file per pipeline, fetched in
+parallel at startup. They are not standalone: every one is written against
+`uniforms.wgsl`, and all but the shadow pair against `common.wgsl` too — the
+shadow pass writes the shadow map and so must not be able to see it. What each
+may reach is stated in one place, the `SHADERS` map at the top of `host.js`.
 
 Click to capture the mouse; WASD to walk, space to jump, shift to sprint.
 Trees and crystals are solid — you slide around them, not through them — and
