@@ -1,6 +1,15 @@
   @group(0) @binding(1) var shadowMap: texture_depth_2d;
   @group(0) @binding(2) var shadowSamp: sampler_comparison;
 
+  // Pine bark. Unlike the needle atlas above it, this one is not in
+  // `uniforms.wgsl`: the shadow pass has no use for it, because a trunk is
+  // opaque and its silhouette is all the shadow map needs.
+  @group(0) @binding(5) var barkTex: texture_2d<f32>;
+  @group(0) @binding(6) var barkSamp: sampler;
+  // The meadow. Tiled from world x/z, so it needs the same repeating sampler
+  // the bark uses and the terrain needs no texture coordinate of its own.
+  @group(0) @binding(7) var groundTex: texture_2d<f32>;
+
   // No early return: textureSampleCompare demands uniform control flow, so
   // the samples always run and the out-of-map case is selected afterwards.
   fn shadow(world: vec3f, nl: f32) -> f32 {

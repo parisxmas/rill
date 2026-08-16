@@ -58,6 +58,7 @@ const SHADERS = {
   terrain: "common", instanced: "common", pine: "common", grass: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
+  "shadow-pine": "uniforms",
   "firefly-sim": null,
 };
 
@@ -78,6 +79,7 @@ async function loadShaders() {
     GRASS: whole("grass"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
+    SHADOW_PINE: whole("shadow-pine"),
     SKY: whole("sky"),
     WATER: whole("water"),
     FIREFLY_SIM: whole("firefly-sim"),
@@ -116,12 +118,89 @@ function coneRing(y0, y1, r0, r1, seg) {
   return tris;
 }
 
+// The pine: a trunk, and branch cards carrying the needle atlas.
+//
+// Cones would be cheaper and were what stood here, but a conifer read from a
+// distance is mostly silhouette, and a cone has none — every branch card is a
+// hole with needles in it, which is what an alpha texture is for. Eight floats
+// a vertex now: position, normal, and the atlas coordinate. The trunk has no
+// atlas and says so with a negative u.
 function pineMesh() {
-  return flatMesh([
-    ...coneRing(0.0, 1.2, 0.16, 0.13, 5),      // trunk
-    ...coneRing(0.9, 2.6, 1.15, 0.0, 6),       // lower boughs
-    ...coneRing(2.0, 3.6, 0.85, 0.0, 6),       // upper boughs
-  ]);
+  const out = [];
+  const push = (p, n, uv) => out.push(p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1]);
+
+  // The trunk. It runs the full height of the tree and tapers to a spire, so
+  // the crown has something to hang off instead of ending in a cloud of loose
+  // cards. Its u is shifted into [-2, -1] — negative u is what tells the
+  // shader to reach for bark instead of the needle atlas, and the shift lets
+  // the same two floats still carry a real coordinate.
+  const top = 2.62, r0 = 0.10, r1 = 0.012, seg = 7;
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+    const ring = (a, r, y) => [Math.cos(a) * r, y, Math.sin(a) * r];
+    const p00 = ring(a0, r0, 0), p10 = ring(a1, r0, 0);
+    const p01 = ring(a0, r1, top), p11 = ring(a1, r1, top);
+    const u0 = -2 + i / seg, u1 = -2 + (i + 1) / seg;
+    // Smooth around the trunk rather than flat-shaded: a five-sided post reads
+    // as a post, and bark that lights per facet gives the flatness away.
+    const nOf = a => [Math.cos(a), 0.16, Math.sin(a)];
+    const n0 = nOf(a0), n1 = nOf(a1);
+    push(p00, n0, [u0, 0]); push(p01, n0, [u0, 1]); push(p10, n1, [u1, 0]);
+    push(p10, n1, [u1, 0]); push(p01, n0, [u0, 1]); push(p11, n1, [u1, 1]);
+  }
+
+  // Twelve whorls of branches up that trunk, each shorter and sparser than the
+  // one below it — the conical silhouette comes out of the taper, not out of a
+  // shape carved by hand. A card stands *upright*: its width is vertical and
+  // its length reaches outward, with the twig's stem at the trunk and its tip
+  // at the far end. A card lying flat would vanish when you look at it from
+  // the side, which is where a walking camera looks at a tree from.
+  const tiers = [];
+  for (let i = 0; i < 12; i++) {
+    const u = i / 11;                       // 0 at the lowest whorl, 1 at the spire
+    tiers.push({
+      y: 0.95 + u * 1.60,
+      len: 0.22 + 1.05 * (1 - u) ** 1.1,
+      tall: 0.30 + 0.75 * (1 - u),
+      drop: 0.10 + 0.22 * (1 - u),
+      n: Math.round(9 - 4 * u),
+    });
+  }
+  for (const [ti, t] of tiers.entries()) {
+    for (let k = 0; k < t.n; k++) {
+      const a = (k / t.n) * Math.PI * 2 + ti * 0.7;
+      const d = [Math.cos(a), 0, Math.sin(a)];
+      const perp = [-d[2], 0, d[0]];
+      const r = r0 + (r1 - r0) * (t.y / top);   // the trunk's own radius here
+      const base = [d[0] * r, t.y, d[2] * r];
+      const tip = [d[0] * t.len, t.y - t.drop, d[2] * t.len];
+      // Up-biased, so foliage is lit like foliage rather than like a wall and
+      // the two faces of a card do not read as different materials.
+      const n = [d[0] * 0.3, 0.86, d[2] * 0.3];
+      // Two quads crossed about the branch's own axis. One alone disappears
+      // when you look along it, and a canopy that thins out from some angles
+      // is a canopy the trunk shows through.
+      for (const roll of [0.30, 0.30 + Math.PI / 2]) {
+        const w = [perp[0] * Math.sin(roll), Math.cos(roll), perp[2] * Math.sin(roll)];
+        const at = (p, sgn, half) =>
+          [p[0] + w[0] * sgn * half, p[1] + w[1] * sgn * half, p[2] + w[2] * sgn * half];
+        const hIn = t.tall * 0.18, hOut = t.tall * 0.5;   // narrow at the stem
+        const p00 = at(base, -1, hIn), p01 = at(base, 1, hIn);
+        const p10 = at(tip, -1, hOut), p11 = at(tip, 1, hOut);
+        // v = 1 at the stem, 0 at the tip: the atlas has the twig pointing up.
+        push(p00, n, [0, 1]); push(p01, n, [1, 1]); push(p11, n, [1, 0]);
+        push(p00, n, [0, 1]); push(p11, n, [1, 0]); push(p10, n, [0, 0]);
+      }
+    }
+  }
+  return new Float32Array(out);
+}
+
+function faceNormal(a, b, c) {
+  const u = [b[0]-a[0], b[1]-a[1], b[2]-a[2]], v = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
+  const n = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+  const l = Math.hypot(...n) || 1;
+  return [n[0]/l, n[1]/l, n[2]/l];
 }
 
 function crystalMesh() {
@@ -201,16 +280,57 @@ export async function run(canvas, wasmURL, hud) {
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const shadowSamp = device.createSampler({ compare: "less" });
 
+  // The two pine textures. Mip levels are made by asking the browser to decode
+  // the file again at each size — cheaper to write than a blit pass, and alpha
+  // tested foliage without mips shimmers the moment it is more than a few
+  // trees away.
+  async function mipped(url, size0) {
+    const bytes = await (await fetch(url)).arrayBuffer();
+    const levels = [];
+    for (let size = size0; size >= 1; size >>= 1) {
+      levels.push(await createImageBitmap(new Blob([bytes]),
+        { resizeWidth: size, resizeHeight: size, resizeQuality: "high" }));
+    }
+    const tex = device.createTexture({
+      size: [size0, size0], mipLevelCount: levels.length, format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    levels.forEach((bmp, i) => device.queue.copyExternalImageToTexture(
+      { source: bmp }, { texture: tex, mipLevel: i }, [bmp.width, bmp.height]));
+    return tex.createView();
+  }
+  const foliageView = await mipped("./pine-twig.png", 256);
+  const barkView = await mipped("./pine-bark.jpg", 256);
+  const groundView = await mipped("./grass-ground.jpg", 256);
+  const foliageSamp = device.createSampler({
+    magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
+    addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
+  });
+  // Bark tiles up and around the trunk, so it repeats where the atlas clamps.
+  const barkSamp = device.createSampler({
+    magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
+    addressModeU: "repeat", addressModeV: "repeat",
+  });
+
   const bglMain = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} },
     { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
     { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "comparison" } },
+    { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+    { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+    { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
+    { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
   ]});
   const bgShadow = device.createBindGroup({ layout: bglShadow, entries: [
     { binding: 0, resource: { buffer: uni } },
+    { binding: 3, resource: foliageView },
+    { binding: 4, resource: foliageSamp },
   ]});
 
   const terrainLayout = [{ arrayStride: 36, attributes: [
@@ -218,6 +338,12 @@ export async function run(canvas, wasmURL, hud) {
     { shaderLocation: 1, offset: 12, format: "float32x3" },
     { shaderLocation: 2, offset: 24, format: "float32x3" },
   ]}];
+  // Position, normal, atlas coordinate.
+  const pineLayout = { arrayStride: 32, attributes: [
+    { shaderLocation: 0, offset: 0, format: "float32x3" },
+    { shaderLocation: 1, offset: 12, format: "float32x3" },
+    { shaderLocation: 6, offset: 24, format: "float32x2" },
+  ] };
   const meshLayout = { arrayStride: 24, attributes: [
     { shaderLocation: 0, offset: 0, format: "float32x3" },
     { shaderLocation: 1, offset: 12, format: "float32x3" },
@@ -245,7 +371,7 @@ export async function run(canvas, wasmURL, hud) {
 
   const skyPipe = pipe("sky", S.SKY, [], { depth: { depthWriteEnabled: false, depthCompare: "less-equal" }, cull: "none" });
   const terrainPipe = pipe("terrain", S.TERRAIN, terrainLayout);
-  const pinePipe = pipe("pine", S.PINE, [meshLayout, instLayout]);
+  const pinePipe = pipe("pine", S.PINE, [pineLayout, instLayout], { cull: "none" });
   const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.72 } });
   const grassPipe = pipe("grass", S.GRASS, [meshLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
@@ -273,18 +399,23 @@ export async function run(canvas, wasmURL, hud) {
   });
 
   const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bglShadow] });
-  const shadowPipe = (label, code, buffers) => device.createRenderPipeline({
+  const shadowPipe = (label, code, buffers, cutout = false) => device.createRenderPipeline({
     label, layout: shadowLayout,
     vertex: { module: device.createShaderModule({ code }), buffers },
+    // Depth only, unless the thing being drawn is mostly holes.
+    fragment: cutout
+      ? { module: device.createShaderModule({ code }), entryPoint: "fs", targets: [] }
+      : undefined,
     primitive: { cullMode: "none" },
     depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
   });
   const shTerrain = shadowPipe("shadow-terrain", S.SHADOW_TERRAIN, terrainLayout);
   const shInst = shadowPipe("shadow-inst", S.SHADOW_INST, [meshLayout, instLayout]);
+  const shPine = shadowPipe("shadow-pine", S.SHADOW_PINE, [pineLayout, instLayout], true);
 
   const pineData = pineMesh(), crystalData = crystalMesh(), grassData = grassMesh();
   const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
-  const pineVerts = pineData.length / 6, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 6;
+  const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 6;
 
   // GPU frame timing, when the adapter offers it.
   let qs = null, qResolve = null, qStage = null, qPending = false, gpuMs = 0;
@@ -370,6 +501,11 @@ export async function run(canvas, wasmURL, hud) {
       { binding: 0, resource: { buffer: uni } },
       { binding: 1, resource: W.shadowView },
       { binding: 2, resource: shadowSamp },
+      { binding: 3, resource: foliageView },
+      { binding: 4, resource: foliageSamp },
+      { binding: 5, resource: barkView },
+      { binding: 6, resource: barkSamp },
+      { binding: 7, resource: groundView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -470,8 +606,9 @@ export async function run(canvas, wasmURL, hud) {
     });
     sh.setBindGroup(0, bgShadow);
     sh.setPipeline(shTerrain); sh.setVertexBuffer(0, W.terrainBuf); sh.draw(W.counts.terrain);
-    sh.setPipeline(shInst);
+    sh.setPipeline(shPine);
     sh.setVertexBuffer(0, pineBuf); sh.setVertexBuffer(1, W.pineInst); sh.draw(pineVerts, W.counts.pines);
+    sh.setPipeline(shInst);
     sh.setVertexBuffer(0, crystalBuf); sh.setVertexBuffer(1, W.crystalInst); sh.draw(crystalVerts, W.counts.crystals);
     sh.end();
 

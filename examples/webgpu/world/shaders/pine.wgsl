@@ -3,9 +3,10 @@
     @location(0) world: vec3f,
     @location(1) normal: vec3f,
     @location(2) color: vec3f,
+    @location(3) uv: vec2f,
   }
   @vertex fn vs(
-    @location(0) pos: vec3f, @location(1) n: vec3f,
+    @location(0) pos: vec3f, @location(1) n: vec3f, @location(6) uv: vec2f,
     @location(2) ipos: vec3f, @location(3) scale: f32,
     @location(4) rot: f32, @location(5) icol: vec3f,
   ) -> VOut {
@@ -19,9 +20,33 @@
     let nr = vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c);
     var o: VOut;
     o.clip = u.vp * vec4f(p, 1.0);
-    o.world = p; o.normal = nr; o.color = icol;
+    o.world = p; o.normal = nr; o.color = icol; o.uv = uv;
     return o;
   }
-  @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    return vec4f(lit(v.color, normalize(v.normal), v.world), 1.0);
+  @fragment fn fs(v: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
+    // Both texture lookups happen before any branch: WGSL asks for them in
+    // uniform control flow, because a sampler needs the derivatives of its
+    // coordinate and those come from the neighbouring fragments.
+    let t = textureSample(foliage, foliageSamp, v.uv);
+    // The trunk's u was shifted into [-2, -1] to mark it; shift it back, and
+    // tile the bark twice around and four times up the trunk.
+    let b = textureSample(barkTex, barkSamp, (v.uv + vec2f(2.0, 0.0)) * vec2f(2.0, 4.0));
+    let trunk = v.uv.x < 0.0;
+    // Both atlases carry their own colour; the instance's tint keeps one tree
+    // from looking exactly like the next.
+    // Bark at dusk is a vertical surface facing away from a low sun, which is
+    // to say black. A little wrap — light that reaches round the trunk — is
+    // what keeps it reading as wood rather than as a hole in the forest.
+    let bark = b.rgb * (1.15 + v.color.g * 0.7);
+    let albedo = select(t.rgb * (0.7 + v.color * 1.5), bark, trunk);
+    // Cards are drawn from both sides, so a trunk's far wall arrives with its
+    // normal pointing away and would be lit as if it were the inside of the
+    // tree. Foliage keeps its up-biased normal either way — a needle looks
+    // like a needle from underneath.
+    let nn = normalize(v.normal);
+    let n = select(nn, select(-nn, nn, front), trunk);
+    var col = lit(albedo, n, v.world);
+    if (trunk) { col += albedo * 0.10; }
+    if (!trunk && t.a < 0.5) { discard; }
+    return vec4f(col, 1.0);
   }

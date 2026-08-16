@@ -39,3 +39,17 @@ Click to capture the mouse; WASD to walk, space to jump, shift to sprint.
 Trees and crystals are solid — you slide around them, not through them — and
 the wind that moves the water moves the pines and the grass, because all
 three read the same two numbers Rill computes.
+
+Three textures ride along: `pine-twig.png`, the alpha-tested needle atlas the
+branch cards carry; `pine-bark.jpg`, tiled up and around the trunks; and
+`grass-ground.jpg`, tiled from world x/z across the green faces of the terrain,
+which is why the terrain still needs no texture coordinate of its own. All
+three are cut to 256×256 from Poly Haven's CC0 library — `pine_tree_01`,
+`pine_bark`, `leafy_grass` — 95 KB between them against 30 KB of wasm. Mip
+levels are made at load by decoding each file again at each size, because
+alpha tested foliage without them shimmers from a few trees away.
+
+The meadow photograph is not used as it was shot: it is daylight, and this
+valley is dusk. Its brightness drives the variation and its hue is folded in a
+third of the way, so the ground gains grain without the palette drifting brown
+— and sand, cliff and snow keep the flat shading they were given.
