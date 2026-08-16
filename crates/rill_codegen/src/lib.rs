@@ -494,6 +494,13 @@ fn find_callback_locals<'a>(
 fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
     match &e.kind {
         TK::Int(_) | TK::Float(_) | TK::Str(_) | TK::Bool(_) | TK::Local(_) | TK::FnRef { .. } => {}
+        TK::Slice { base, from, to } => {
+            f(base);
+            f(from);
+            if let Some(t) = to {
+                f(t);
+            }
+        }
         TK::Builtin { args, .. }
         | TK::CallFn { args, .. }
         | TK::MethodCall { args, .. }
@@ -2728,6 +2735,38 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // Bit operations are instructions, not calls.
             // Converting between the numeric types: the only intrinsics whose
             // operand is not an integer, so they come first.
+            // `s[i:j]`: the runtime takes a start and a length, so the end is
+            // turned into one here. Each part is evaluated once, which is why
+            // this is a node of its own rather than a rewrite.
+            TK::Slice { base, from, to } => {
+                let b = self.gen_expr(base, scope, subst, func)?.expect("value");
+                let f = self
+                    .gen_expr(from, scope, subst, func)?
+                    .expect("value")
+                    .into_int_value();
+                let end = match to {
+                    Some(t) => {
+                        self.gen_expr(t, scope, subst, func)?.expect("value").into_int_value()
+                    }
+                    None => {
+                        let call = self.call_rt("rill_str_len", &[b.into()]);
+                        match call.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+                            _ => unreachable!("rill_str_len returns a length"),
+                        }
+                    }
+                };
+                let len = self.builder.build_int_sub(end, f, "slicelen").expect("builder");
+                let call = self.call_rt("rill_str_sub", &[b.into(), f.into(), len.into()]);
+                let out = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => unreachable!("rill_str_sub returns a string"),
+                };
+                // The runtime borrows what it is handed; the string this was
+                // taken from is this expression's to release.
+                self.emit_release(b, &Ty::Str);
+                Ok(Some(out))
+            }
             TK::Builtin { rt, args } if *rt == "rill.sitofp" || *rt == "rill.fptosi" => {
                 let v = self.gen_expr(&args[0], scope, subst, func)?.expect("value");
                 let out = if *rt == "rill.sitofp" {

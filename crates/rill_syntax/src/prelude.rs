@@ -144,6 +144,15 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             }
         }
         Expr::Len { expr, .. } => collect_expr_names(expr, out),
+        Expr::Slice { base, from, to, .. } => {
+            collect_expr_names(base, out);
+            if let Some(f) = from {
+                collect_expr_names(f, out);
+            }
+            if let Some(t) = to {
+                collect_expr_names(t, out);
+            }
+        }
         Expr::Index { base, index, .. } => {
             collect_expr_names(base, out);
             collect_expr_names(index, out);

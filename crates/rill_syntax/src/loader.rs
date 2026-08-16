@@ -238,6 +238,15 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str) {
             }
         }
         Expr::Len { expr, .. } => qualify_expr(expr, own, alias),
+        Expr::Slice { base, from, to, .. } => {
+            qualify_expr(base, own, alias);
+            if let Some(f) = from {
+                qualify_expr(f, own, alias);
+            }
+            if let Some(t) = to {
+                qualify_expr(t, own, alias);
+            }
+        }
         Expr::Index { base, index, .. } => {
             qualify_expr(base, own, alias);
             qualify_expr(index, own, alias);

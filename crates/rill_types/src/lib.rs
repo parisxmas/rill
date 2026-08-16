@@ -268,6 +268,9 @@ pub enum TK {
     /// `buf_f32(n)` and friends: a counted buffer of `n` elements.
     BufNew { width: CTy, count: Box<TExpr> },
     /// Reading and writing one element, bounds-checked.
+    /// `s[i:j]` — the bytes from `i` up to but not `j`, either end the
+    /// string's own when it was left out.
+    Slice { base: Box<TExpr>, from: Box<TExpr>, to: Option<Box<TExpr>> },
     BufGet { buf: Box<TExpr>, idx: Box<TExpr> },
     BufSet { buf: Box<TExpr>, idx: Box<TExpr>, val: Box<TExpr> },
     BufLen { buf: Box<TExpr> },
@@ -1256,6 +1259,13 @@ impl Checker {
             TK::BufLen { buf } | TK::BufPtr { buf } => {
                 self.zonk_expr(buf, genmap, defaults)
             }
+            TK::Slice { base, from, to } => {
+                self.zonk_expr(base, genmap, defaults);
+                self.zonk_expr(from, genmap, defaults);
+                if let Some(t) = to {
+                    self.zonk_expr(t, genmap, defaults);
+                }
+            }
             TK::BufGet { buf, idx } => {
                 self.zonk_expr(buf, genmap, defaults);
                 self.zonk_expr(idx, genmap, defaults);
@@ -1620,6 +1630,44 @@ impl Checker {
             }
             Expr::For { line, .. } => {
                 Err(TypeError::new(*line, "internal: `for` was not expanded".to_string()))
+            }
+            // `s[i:j]` is `str_sub` with an end instead of a length, which
+            // is what a slice means everywhere else and what makes `s[i:]`
+            // and `s[:j]` sensible.
+            Expr::Slice { base, from, to, line } => {
+                let b = self.infer(base, env)?;
+                match self.resolve(&b.ty) {
+                    Ty::Str | Ty::Var(_) => {
+                        self.unify(&Ty::Str, &b.ty, *line, "the value a slice is taken from")?
+                    }
+                    other => {
+                        return Err(TypeError::new(
+                            *line,
+                            format!(
+                                "`[:]` slices a string, but this is `{}`",
+                                self.type_name(&other)
+                            ),
+                        ))
+                    }
+                }
+                let f = match from {
+                    Some(e) => self.infer(e, env)?,
+                    None => TExpr { ty: Ty::Int, line: *line, kind: TK::Int(0) },
+                };
+                self.unify(&Ty::Int, &f.ty, *line, "the start of a slice")?;
+                let t = match to {
+                    Some(e) => {
+                        let t = self.infer(e, env)?;
+                        self.unify(&Ty::Int, &t.ty, *line, "the end of a slice")?;
+                        Some(Box::new(t))
+                    }
+                    None => None,
+                };
+                Ok(TExpr {
+                    ty: Ty::Str,
+                    line: *line,
+                    kind: TK::Slice { base: Box::new(b), from: Box::new(f), to: t },
+                })
             }
             Expr::Block(stmts) => {
                 let mut out = Vec::new();
@@ -2846,6 +2894,15 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
             }
         }
         Expr::Len { expr, .. } => free_vars(expr, out, seen),
+        Expr::Slice { base, from, to, .. } => {
+            free_vars(base, out, seen);
+            if let Some(f) = from {
+                free_vars(f, out, seen);
+            }
+            if let Some(t) = to {
+                free_vars(t, out, seen);
+            }
+        }
         Expr::Index { base, index, .. } => {
             free_vars(base, out, seen);
             free_vars(index, out, seen);
@@ -3236,6 +3293,19 @@ mod tests {
         assert!(err.msg.contains("not storage"), "{}", err.msg);
         let err = check_src("fn main() =\n  v = buf_i32(2)\n  v[0] = 1.5\n").unwrap_err();
         assert!(err.msg.contains("buffer element"), "{}", err.msg);
+    }
+
+    /// `s[i:j]` takes bytes rather than one, and either end may be left out.
+    #[test]
+    fn slices_take_a_range_of_a_string() {
+        let t = check_src("fn mid(s) = s[1:#s - 1]\n\nfn main() = println(mid(\"abc\"))\n").unwrap();
+        assert_eq!(sig(&t, "mid").params[0].1, Ty::Str);
+        assert_eq!(sig(&t, "mid").ret, Ty::Str);
+        check_src("fn main() = println(\"ab\"[:] + \"c\"[1:])\n").unwrap();
+        let err = check_src("fn main() =\n  v = buf_int(2)\n  println(v[0:1])\n").unwrap_err();
+        assert!(err.msg.contains("slices a string"), "{}", err.msg);
+        let err = check_src("fn main() = println(\"ab\"[0:\"x\"])\n").unwrap_err();
+        assert!(err.msg.contains("the end of a slice"), "{}", err.msg);
     }
 
     /// `#x` measures the two things `[]` indexes, and settles an open operand

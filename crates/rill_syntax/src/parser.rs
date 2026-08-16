@@ -784,9 +784,27 @@ impl Parser {
         while matches!(self.peek(), Tok::LBracket) {
             let (line, _) = self.here();
             self.bump();
-            let index = self.expr()?;
-            self.expect(&Tok::RBracket, "to close the index")?;
-            base = Expr::Index { base: Box::new(base), index: Box::new(index), line };
+            // `[i]` is one element; a `:` anywhere in it makes it a slice, and
+            // either end may be left out for the string's own.
+            let from = if matches!(self.peek(), Tok::Colon) {
+                None
+            } else {
+                Some(Box::new(self.expr()?))
+            };
+            if !matches!(self.peek(), Tok::Colon) {
+                self.expect(&Tok::RBracket, "to close the index")?;
+                let index = from.expect("an index without a colon has a value");
+                base = Expr::Index { base: Box::new(base), index, line };
+                continue;
+            }
+            self.bump();
+            let to = if matches!(self.peek(), Tok::RBracket) {
+                None
+            } else {
+                Some(Box::new(self.expr()?))
+            };
+            self.expect(&Tok::RBracket, "to close the slice")?;
+            base = Expr::Slice { base: Box::new(base), from, to, line };
         }
         Ok(base)
     }

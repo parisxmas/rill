@@ -116,6 +116,18 @@ fn walk(
         Expr::IndexOp { op, base, index, value, line } => {
             walk(expand_index_op(op, *base, *index, *value, line), env, parent, used, out)?
         }
+        Expr::Slice { base, from, to, line } => Expr::Slice {
+            base: Box::new(walk(*base, env, parent, used, out)?),
+            from: match from {
+                Some(f) => Some(Box::new(walk(*f, env, parent, used, out)?)),
+                None => None,
+            },
+            to: match to {
+                Some(t) => Some(Box::new(walk(*t, env, parent, used, out)?)),
+                None => None,
+            },
+            line,
+        },
         Expr::For { var, from, to, body, line } => {
             walk(expand_for(var, *from, *to, *body, line), env, parent, used, out)?
         }
@@ -485,6 +497,18 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
         Expr::Len { expr, line } => {
             Expr::Len { expr: Box::new(rewrite(*expr, locals)?), line }
         }
+        Expr::Slice { base, from, to, line } => Expr::Slice {
+            base: Box::new(rewrite(*base, locals)?),
+            from: match from {
+                Some(f) => Some(Box::new(rewrite(*f, locals)?)),
+                None => None,
+            },
+            to: match to {
+                Some(t) => Some(Box::new(rewrite(*t, locals)?)),
+                None => None,
+            },
+            line,
+        },
         Expr::Index { base, index, line } => Expr::Index {
             base: Box::new(rewrite(*base, locals)?),
             index: Box::new(rewrite(*index, locals)?),
@@ -601,6 +625,15 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
             }
         }
         Expr::Len { expr, .. } => free_of(expr, bound, out),
+        Expr::Slice { base, from, to, .. } => {
+            free_of(base, bound, out);
+            if let Some(f) = from {
+                free_of(f, bound, out);
+            }
+            if let Some(t) = to {
+                free_of(t, bound, out);
+            }
+        }
         Expr::Index { base, index, .. } => {
             free_of(base, bound, out);
             free_of(index, bound, out);

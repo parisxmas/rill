@@ -189,6 +189,21 @@ fn local_functions_capture_and_loop() {
     assert_eq!(run_source("local_fns", src), "true\n15000000\n");
 }
 
+/// Slicing runs the runtime's `str_sub` with an end instead of a length,
+/// each part evaluated once, and clamps rather than failing.
+#[test]
+fn slices_a_string() {
+    let src = "fn main() =\n  \
+                 s = \"merhaba\"\n  \
+                 println(s[0:3])\n  \
+                 println(s[3:])\n  \
+                 println(s[:3])\n  \
+                 println(s[2:2])\n  \
+                 println(s[5:100])\n  \
+                 println(s[1:#s - 1])\n";
+    assert_eq!(run_source("slices", src), "mer\nhaba\nmer\n\nba\nerhab\n");
+}
+
 /// Tearing down a long list must not cost a stack frame per link. The
 /// generated drop frees the box first and releases its last heap field by a
 /// tail call, so this list — which is only released when `main` ends, long

@@ -2,7 +2,15 @@
 
 ## Unreleased
 
-- **`#s` for how long something is.** `#` measures the two things `[]`
+- **`s[i:j]` slices a string.** The bytes from `i` up to but not `j` — the
+  half-open range `for` already counts over — with either end omissible for
+  the string's own: `s[3:]`, `s[:3]`, `s[1:#s - 1]`. It is `str_sub` with an
+  end instead of a length, which is what makes leaving an end out mean
+  anything, and it is a node of its own rather than a rewrite so that each
+  part is evaluated once and the error says `[:]` rather than naming the
+  builtin it lowers to. **The self-hosted compiler does not know this one
+  yet** — no file in the repository uses it, so every oracle still holds, but
+  `rillc` will refuse a program that does until it is taught. `#` measures the two things `[]`
   indexes: a string's bytes and a buffer's elements, `str_len` and `buf_len`
   under the notation. It costs the language one rule, stated where comments
   are: a `#` opens a comment when a space or the end of the line follows it,

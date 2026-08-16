@@ -2288,7 +2288,8 @@ fn shw_check2(ts, ci) = match ts
 
 # A tuple shows the way it is written, without the name standing in for the
 # notation.
-fn shw_head(cn, k) = if k >= 2 && k <= 4 && str_cmp(cn, "Tuple" + int_to_str(k)) == 0 then "(" else cn + "("
+fn shw_head(cn, k) =
+  if k >= 2 && k <= 4 && str_cmp(cn, "Tuple" + int_to_str(k)) == 0 then "(" else cn + "("
 
 fn shw_body(cx, st, cn, ftys, ci, last, cg) = match ftys
   Nil -> shw_bare(cg_str(cg, cn), ci, last)

@@ -145,6 +145,22 @@ A binding may take apart any type with exactly one constructor:
 type with more than one, the compiler says the match is not exhaustive, which
 is the truth: use `match`.
 
+### Slices
+
+`s[i:j]` is the bytes of a string from `i` up to but not `j` — the same
+half-open range `for` counts over. Either end may be left out for the
+string's own:
+
+```
+s[1:#s - 1]      # everything but the first and last byte
+s[3:]            # from the fourth byte to the end
+s[:3]            # the first three
+```
+
+An end outside the string is clamped rather than an error, as `str_sub` has
+always been, and each part is evaluated once. Slicing is for strings; a `Buf`
+is storage and is not copied by notation this quiet.
+
 ### Blocks and bindings
 
 An indented block runs its lines in order and evaluates to the last one:
@@ -746,7 +762,7 @@ owns the frame.
 | `show(x) -> Str` | render any value as a string |
 | `int_to_str` `float_to_str` `bool_to_str` `str_to_int` | conversions |
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
-| `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `str_sub(s, start, len)` `str_find(s, needle)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage |
+| `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage |
 | `channel()` `send(ch, v)` `recv(ch)` | channels |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `io_ok()` | file and stdin IO |

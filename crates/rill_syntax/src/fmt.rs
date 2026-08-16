@@ -585,6 +585,7 @@ fn expr_line(e: &Expr) -> usize {
         Expr::Select { line, .. } => *line,
         Expr::Len { line, .. } => *line,
         Expr::Index { line, .. } => *line,
+        Expr::Slice { line, .. } => *line,
         Expr::IndexSet { line, .. } => *line,
         Expr::IndexOp { line, .. } => *line,
         Expr::For { line, .. } => *line,
@@ -683,6 +684,12 @@ fn inline(e: &Expr, prec: u8) -> String {
         Expr::Index { base, index, .. } => {
             format!("{}[{}]", inline(base, P_INDEX), inline(index, 0))
         }
+        Expr::Slice { base, from, to, .. } => format!(
+            "{}[{}:{}]",
+            inline(base, P_INDEX),
+            from.as_ref().map(|e| inline(e, 0)).unwrap_or_default(),
+            to.as_ref().map(|e| inline(e, 0)).unwrap_or_default()
+        ),
         Expr::IndexSet { base, index, value, .. } => {
             format!("{}[{}] = {}", inline(base, P_INDEX), inline(index, 0), inline(value, 0))
         }
@@ -862,6 +869,13 @@ mod tests {
             fmt("fn f(v: Buf(I64), n) =\n  for i in 0..n - 1\n    v[i] *= 2\n"),
             "fn f(v: Buf(I64), n) =\n  for i in 0..n - 1\n    v[i] *= 2\n"
         );
+    }
+
+    /// A slice keeps whichever ends were written.
+    #[test]
+    fn formats_slices() {
+        let src = "fn f(s) = s[1:#s - 1] + s[:2] + s[3:] + s[:]\n";
+        assert_eq!(fmt(src), src);
     }
 
     /// `#` opens a comment only when a space or the line's end follows it;

@@ -153,6 +153,9 @@ pub enum Expr {
     Len { expr: Box<Expr>, line: usize },
     /// `b[i]` — one element of a buffer, or one byte of a string.
     Index { base: Box<Expr>, index: Box<Expr>, line: usize },
+    /// `s[i:j]` — the bytes from `i` up to but not `j`; either end may be
+    /// left out for the string's own. `lift` spells it out as `str_sub`.
+    Slice { base: Box<Expr>, from: Option<Box<Expr>>, to: Option<Box<Expr>>, line: usize },
     /// `b[i] = v` — writing one element of a buffer.
     IndexSet { base: Box<Expr>, index: Box<Expr>, value: Box<Expr>, line: usize },
     /// `b[i] += v` and its friends: one read, one write, the index evaluated
