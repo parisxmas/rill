@@ -15,17 +15,17 @@ regression that is not there, or hide one that is.
 
 | benchmark | what it measures | rill (ms) | go (ms) | ocaml (ms) | fastest |
 |---|---|---:|---:|---:|---|
-| fib | fib(35), pure recursion, no allocation | 16.6 | 22.8 | 23.9 | **rill, 1.38× over 2nd** |
-| trees | 10× build+drop perfect binary tree, depth 18 | 34.3 | 57.9 | 61.2 | **rill, 1.69× over 2nd** |
-| ring | 100k lightweight threads chained by channels | 13.6 | 99.3 | 67.1 | **rill, 4.93× over 2nd** |
-| lcg | 100M-iteration LCG loop (tail recursion vs `for`) | 133.1 | 288.2 | 310.3 | **rill, 2.16× over 2nd** |
+| fib | fib(35), pure recursion, no allocation | 15.6 | 21.8 | 22.8 | **rill, 1.40× over 2nd** |
+| trees | 10× build+drop perfect binary tree, depth 18 | 26.8 | 55.6 | 59.8 | **rill, 2.08× over 2nd** |
+| ring | 100k lightweight threads chained by channels | 12.4 | 97.3 | 63.1 | **rill, 5.08× over 2nd** |
+| lcg | 100M-iteration LCG loop (tail recursion vs `for`) | 125.2 | 271.7 | 297.1 | **rill, 2.17× over 2nd** |
 
 ## Peak memory (RSS)
 
 | benchmark | rill | go | ocaml | smallest |
 |---|---:|---:|---:|---|
 | fib | 1.2 MB | 3.5 MB | 2.1 MB | **rill** |
-| trees | 13.2 MB | 16.9 MB | 18.3 MB | **rill** |
+| trees | 13.2 MB | 16.3 MB | 18.3 MB | **rill** |
 | ring | 53.5 MB | 269.4 MB | 103.0 MB | **rill** |
 | lcg | 1.2 MB | 3.6 MB | 2.1 MB | **rill** |
 
@@ -184,6 +184,13 @@ smallest (5.0× less memory than Go, 1.9× less than OCaml). Go uses growable
 8 KB-initial stacks; OCaml 5 has no built-in lightweight threads — its
 benchmark hand-rolls a ~50-line effects-based scheduler (the canonical
 pattern), which notably beats Go's time here while Rill beats both.
+
+The August 2026 pass over reference counting moved these too, without any of
+them being what it was aimed at: `trees` — which is nothing but building and
+dropping — went from 34.3 ms to 26.8, `fib` from 16.6 to 15.6, `ring` from
+13.6 to 12.4, `lcg` from 133.1 to 125.2. The changes were an inlined release
+fast path, a `match` that stops taking a reference of its own, a field moved
+into the box it is being put in rather than counted twice, and Perceus reuse.
 
 ## History
 
