@@ -492,6 +492,22 @@ fn find_callback_locals<'a>(
 }
 
 /// Applies `f` to every immediate sub-expression.
+/// Whether the name is still spoken anywhere in the expression. A box can
+/// only be built over if nothing left can reach it by name; its fields have
+/// already been loaded into registers by then, so those do not count.
+fn names_local(e: &TExpr, name: &str) -> bool {
+    if matches!(&e.kind, TK::Local(n) if n == name) {
+        return true;
+    }
+    let mut found = false;
+    walk_children(e, &mut |c| {
+        if !found {
+            found = names_local(c, name);
+        }
+    });
+    found
+}
+
 fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
     match &e.kind {
         TK::Int(_) | TK::Float(_) | TK::Str(_) | TK::Bool(_) | TK::Local(_) | TK::FnRef { .. } => {}
@@ -689,6 +705,10 @@ struct Codegen<'ctx, 'a> {
     /// Owned (value, type) pairs of the function currently being generated,
     /// released before its return.
     cleanup: Vec<(BasicValueEnum<'ctx>, Ty)>,
+    /// A box this frame owns, whose arm is being generated, and which the arm
+    /// can no longer name: a constructor of exactly its shape may be built in
+    /// it instead of in a fresh one. See `take_reuse`.
+    reuse: Option<(PointerValue<'ctx>, Ty, usize)>,
     str_count: usize,
     lambda_count: usize,
     /// Built with `--parallel`: refcount updates check `rill_mt` and go
@@ -751,6 +771,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             adt_eqs: HashMap::new(),
             nullary_singletons: HashMap::new(),
             cleanup: Vec::new(),
+            reuse: None,
             str_count: 0,
             lambda_count: 0,
             parallel,
@@ -2325,10 +2346,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .build_conditional_branch(cv, then_bb, else_bb)
                     .expect("LLVM builder error");
                 let saved_cleanup = self.cleanup.clone();
+                let saved_reuse = self.reuse.clone();
                 self.builder.position_at_end(then_bb);
                 let mut then_scope = scope.clone();
                 self.gen_tail(then, &mut then_scope, subst, func, ret_ty)?;
                 self.cleanup = saved_cleanup;
+                self.reuse = saved_reuse;
                 self.builder.position_at_end(else_bb);
                 let mut else_scope = scope.clone();
                 self.gen_tail(els, &mut else_scope, subst, func, ret_ty)
@@ -4079,6 +4102,93 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     // the values a pattern binds are loaded there by walking their occurrence
     // path from the scrutinee, so no phi nodes are needed for bindings.
 
+    /// Hands back a box to build in, if this arm left one behind that is the
+    /// right shape for it. The count decides at run time: at one, this frame
+    /// holds the only reference, so the box's own references to its fields are
+    /// let go — exactly as its drop would have done — and the memory is kept
+    /// rather than handed back to the pool for the very next allocation to ask
+    /// for it again. Above one, the box is still someone else's; the count
+    /// comes down by one and a fresh box is taken.
+    ///
+    /// Reversing a list, which is what `map`, `filter`, `split` and `reverse`
+    /// all end in, allocates nothing at all this way: every link is built over
+    /// the link it was read from.
+    fn take_reuse(
+        &mut self,
+        want: &Ty,
+        ctor: usize,
+        struct_ty: StructType<'ctx>,
+        name: &str,
+    ) -> Option<PointerValue<'ctx>> {
+        let (old, old_ty, old_ctor) = self.reuse.take()?;
+        if &old_ty != want || old_ctor != ctor {
+            self.reuse = Some((old, old_ty, old_ctor));
+            return None;
+        }
+        let i = self.cleanup.iter().position(|(c, _)| c.into_pointer_value() == old)?;
+        self.cleanup.remove(i);
+        let i64t = self.ctx.i64_type();
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .expect("emitting outside a function");
+        let rc = self
+            .builder
+            .build_load(i64t, old, "rc")
+            .expect("LLVM builder error")
+            .into_int_value();
+        let alone = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, rc, i64t.const_int(1, false), "alone")
+            .expect("LLVM builder error");
+        let keep_bb = self.ctx.append_basic_block(func, "reuse.keep");
+        let fresh_bb = self.ctx.append_basic_block(func, "reuse.fresh");
+        let done_bb = self.ctx.append_basic_block(func, "reuse.done");
+        self.builder.build_conditional_branch(alone, keep_bb, fresh_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(keep_bb);
+        let (adt, targs) = match &old_ty {
+            Ty::Adt(a, ts) => (*a, ts.clone()),
+            _ => unreachable!("only an ADT box is reused"),
+        };
+        let old_struct = self.ctor_struct(adt, old_ctor, &targs);
+        let fields: Vec<Ty> = self.tmod.adts[adt].ctors[old_ctor]
+            .fields
+            .iter()
+            .map(|f| subst_gen(f, &targs))
+            .collect();
+        for (fi, fty) in fields.iter().enumerate() {
+            if !Self::is_heap(fty) {
+                continue;
+            }
+            let fp = self
+                .builder
+                .build_struct_gep(old_struct, old, (fi + 2) as u32, "oldf")
+                .expect("LLVM builder error");
+            let fv = self
+                .builder
+                .build_load(self.llvm_type(fty).expect("ADT fields are never Unit"), fp, "oldfv")
+                .expect("LLVM builder error");
+            self.emit_release(fv, fty);
+        }
+        let keep_end = self.builder.get_insert_block().expect("block");
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(fresh_bb);
+        let less =
+            self.builder.build_int_sub(rc, i64t.const_int(1, false), "dec").expect("builder");
+        self.store_rc(old, rc, less);
+        let fresh = self.alloc_object(struct_ty, name);
+        let fresh_end = self.builder.get_insert_block().expect("block");
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(done_bb);
+        let phi = self.builder.build_phi(self.ctx.ptr_type(Default::default()), name).expect("phi");
+        phi.add_incoming(&[(&old, keep_end), (&fresh, fresh_end)]);
+        Some(phi.as_basic_value().into_pointer_value())
+    }
+
     /// Builds a constructor. `moving` says the box is on its way straight out
     /// of the frame as a tail call's argument, which is what makes moving a
     /// field into it safe — see the note inside.
@@ -4152,7 +4262,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let sig = &self.tmod.adts[*adt].ctors[*ctor];
                 let name = format!("{}.box", sig.name);
                 let tag = sig.tag;
-                let ptr = self.alloc_object(struct_ty, &name);
+                let reused = if moving {
+                    self.take_reuse(&Ty::Adt(*adt, targs.clone()), *ctor, struct_ty, &name)
+                } else {
+                    None
+                };
+                let ptr = match reused {
+                    Some(p) => p,
+                    None => self.alloc_object(struct_ty, &name),
+                };
                 let tag_ptr = self
                     .builder
                     .build_struct_gep(struct_ty, ptr, 1, "tag")
@@ -4245,6 +4363,26 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             let tmod = self.tmod;
             collect_bindings(&arm.pattern, Vec::new(), &tmod.ctors, &mut binds);
             let saved_bound = self.bound_fns.clone();
+            let saved_reuse = self.reuse.clone();
+            // The box this arm just took apart can be built over, if this
+            // frame is what holds it, the arm ends in a return, and nothing
+            // left in the arm can still say its name. Its fields are already
+            // in registers by now, so writing over it cannot lose them.
+            if tail.is_some() {
+                if let (Some(sv), TK::Local(sname)) = (scrut, &scrutinee.kind) {
+                    let ctor = match &arm.pattern {
+                        Pattern::Ctor { name, .. } => self.tmod.ctors.get(name).map(|&(_, c)| c),
+                        _ => None,
+                    };
+                    let owned = self.cleanup.iter().any(|(c, _)| *c == sv);
+                    if let Some(ctor) = ctor {
+                        if owned && !names_local(&arm.body, sname) {
+                            self.reuse =
+                                Some((sv.into_pointer_value(), scrut_ty.clone(), ctor));
+                        }
+                    }
+                }
+            }
             for (name, occ) in &binds {
                 // Borrowed out of the box, which outlives the arm; every use
                 // of the binding retains it in the usual way.
@@ -4260,6 +4398,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
             }
             self.bound_fns = saved_bound;
+            self.reuse = saved_reuse;
         }
         self.cleanup = saved_cleanup;
 

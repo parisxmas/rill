@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **A list can be rebuilt in the list it came from.** Perceus reuse: when a
+  `match` arm takes a box apart, the frame is what holds it, and nothing left
+  in the arm can say its name, the next constructor of exactly that shape is
+  built *in that box* rather than in a fresh one. The count decides at run
+  time — at one, the box's own references to its fields are let go, exactly as
+  its drop would have done, and the memory is kept; above one, the count comes
+  down and a fresh box is taken.
+
+  `rev_onto`, which `map`, `filter`, `take`, `append`, `split`, `join` and
+  `reverse` all end in, now allocates nothing: every link is written over the
+  link it was read from. Those functions are **8–14% faster** — `map` 33.4 ms
+  to 28.7 over two million elements, `filter` 34.2 to 30.7, `append` 29.8 to
+  26.8, `join` 5.5 to 4.9. `range` and `len`, which build from nothing and
+  build nothing, are unchanged, which is the shape of the result one would
+  want.
+
+  It buys **no memory**, and that is worth saying: the pool's free list is
+  LIFO, so the block a link was freed from was already the block the next link
+  was allocated in. Reversing ten million elements peaks at 321 MB either way.
+  What reuse removes is the pair of calls, not the footprint.
+
+  It is also worth saying that the four benchmarks in the report do not move
+  at all — they spend their time elsewhere. This one was measured on what it
+  actually touches.
+
 - **`read_line` reads runs, not bytes.** It pulled one byte at a time out of
   the input buffer and grew its own buffer around them, so an eleven-megabyte
   line was eleven million calls and two copies of itself. It finds the newline
