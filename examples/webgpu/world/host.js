@@ -57,6 +57,7 @@ const SHADERS = {
   uniforms: null, common: "uniforms",
   terrain: "common", instanced: "common", pine: "common", grass: "common",
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
+  fireball: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms",
@@ -96,6 +97,7 @@ async function loadShaders(step) {
     TRACER: whole("tracer"),
     MUZZLE: whole("muzzle"),
     SHARD: whole("shard"),
+    FIREBALL: whole("fireball"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
@@ -419,6 +421,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     { shaderLocation: 4, offset: 48, format: "float32" },     // scale
     { shaderLocation: 5, offset: 52, format: "float32x3" },   // colour
   ]};
+  // Nine floats a fireball, not the bullet's eight: the trail needs to know how
+  // long the thing has been in the air, or it draws smoke from before the
+  // fireball existed.
+  const fireLayout = [{ arrayStride: 36, stepMode: "instance", attributes: [
+    { shaderLocation: 0, offset: 0, format: "float32x3" },
+    { shaderLocation: 1, offset: 12, format: "float32x3" },
+    { shaderLocation: 2, offset: 24, format: "float32" },
+    { shaderLocation: 3, offset: 28, format: "float32" },
+    { shaderLocation: 4, offset: 32, format: "float32" },
+  ]}];
   const instLayout = { arrayStride: 32, stepMode: "instance", attributes: [
     { shaderLocation: 2, offset: 0, format: "float32x3" },
     { shaderLocation: 3, offset: 12, format: "float32" },
@@ -454,6 +466,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // air, so the ground hides it and it hides nothing.
   const tracerPipe = pipe("tracer", S.TRACER, bulletLayout,
     { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // Same treatment as the tracers: additive, depth-tested so the land hides
+  // them, never writing depth of their own.
+  const firePipe = pipe("fireball", S.FIREBALL, fireLayout,
+    { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // The fireballs take the same eight floats a bullet does, and the same
+  // treatment: additive, depth-tested so the land hides them, never writing.
+
   // The flash sits in front of the rifle, so it is drawn after it and does not
   // write depth: it is fire, and fire occludes nothing.
   const shardPipe = pipe("shard", S.SHARD, [meshLayout, shardLayout]);
@@ -580,6 +599,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const bulletCap = Number(E.bullets_cap(0));
   const bulletBuf = device.createBuffer({
     size: bulletCap * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  const fireCap = Number(E.fireballs_cap(0));
+  const fireInst = device.createBuffer({
+    size: fireCap * 36, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
   const shardCap = Number(E.shards_cap(0));
   const shardBuf = device.createBuffer({
@@ -895,6 +918,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       new Float32Array(E.memory.buffer, Number(E.bullets(state)), bulletCap * 8));
     device.queue.writeBuffer(shardBuf, 0,
       new Float32Array(E.memory.buffer, Number(E.shards(state)), shardCap * 20));
+    device.queue.writeBuffer(fireInst, 0,
+      new Float32Array(E.memory.buffer, Number(E.fireballs(state)), fireCap * 9));
     // The crystals are no longer static — a hit sets one's scale to zero — so
     // their instances go up with everything else now rather than once at build.
     device.queue.writeBuffer(W.crystalInst, 0,
@@ -949,6 +974,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     pass.draw(crystalVerts, shardCap);
 
     pass.setPipeline(tracerPipe); pass.setVertexBuffer(0, bulletBuf); pass.draw(6, bulletCap);
+    pass.setPipeline(firePipe); pass.setVertexBuffer(0, fireInst); pass.draw(6 * 32, fireCap);
 
     // Last, so it covers the water and the fireflies as well as the ground.
     pass.setBindGroup(0, W.bgMain);

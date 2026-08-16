@@ -23,6 +23,10 @@
 #   f32 56..59   terrain vertex count, pine count, crystal count, grass count
 #   f32 60, 61   next slot in the bullet ring, and in the shard ring
 #   f32 62       crystals broken so far    70..72  where the last one stood
+#   f32 63       next slot in the fireball ring   73  the charge's own clock
+#   f32 75, 76   which crystal is winding up, and the size it was
+#   f32 78       0 idle, 1 growing, 2 settling back
+#   ptr 74       the fireballs the far crystals throw
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
 #   ptr 68, 69   the bullets, and the shards they knock loose
 
@@ -284,7 +288,7 @@ fn step_bullet(s, b, at, dt) =
   sp = sqrt(vx0 * vx0 + vy0 * vy0 + vz0 * vz0)
   k = 1.0 - 0.00011 * sp * dt * on
   vx = vx0 * k
-  vy = vy0 * k - 9.81 * dt * on
+  vy = vy0 * k - fireball_g() * dt * on
   vz = vz0 * k
   px = peek_f32(b, at) + vx * dt * on
   py = peek_f32(b, at + 1) + vy * dt * on
@@ -497,6 +501,177 @@ export fn break_z(s: Ptr) -> Float = peek_f32(s, 72)
 
 export fn shards_cap(s: Ptr) -> Int = shard_cap()
 
+# ---- what the far crystals throw back --------------------------------------
+#
+# Every couple of seconds one crystal, chosen at random and only if it is far
+# enough away to be worth watching, lobs a ball of fire at where the player is
+# standing. Where they are standing, not where they will be: a shot led onto a
+# moving target always lands, and a fireball you cannot walk out of the way of
+# is not a fireball, it is a cutscene.
+#
+# The launch angle is solved without any inverse trigonometry, which this file
+# has none of. Pick the flight time instead of the angle — the horizontal
+# distance over a chosen horizontal speed — and the two velocities fall out of
+# it: across, the distance over the time; upward, whatever cancels the drop
+# over that time and still arrives at the right height. Exact in a vacuum, and
+# at fourteen metres a second the air is very nearly a vacuum.
+
+fn fireball_cap() = 24
+
+# Nine floats: position, velocity, a seed, the life left, and how long it has
+# been flying — which the trail needs, so it cannot draw smoke from before the
+# thing existed.
+fn fireball_stride() = 9
+
+fn fireball_speed() = 14.0      # horizontal; the arc comes from the height
+
+# Fireballs fall at a third of what everything else falls at. This is the one
+# unphysical number in the file and it earns its place: a projectile this slow
+# thrown this far has to be lobbed over a house, and it spends its whole flight
+# above the top of the screen. A third of a gravity keeps the arc low enough to
+# watch without making the thing any faster. Everything else about it — the
+# aiming, the drag, the landing — is the same arithmetic as the rifle's.
+fn fireball_g() = 3.2
+
+# Before it throws, a crystal draws itself up: half again its size over a
+# second, held for the instant of the throw, then let back down. Only ever one
+# at a time, so the whole animation is three numbers in the state rather than a
+# field on every instance.
+fn charge_time() = 1.05
+
+fn relax_time() = 0.85
+
+fn charge_swell() = 0.55
+
+fn fireball_every() = 2.6       # seconds between attempts
+
+fn fireball_reach() = 45.0      # nothing nearer than this throws
+
+fn launch_fireball(fb, k, cx, cy, cz, px, py, pz, seed) =
+  dx = px - cx
+  dz = pz - cz
+  d = sqrt(dx * dx + dz * dz) + 0.001
+  t = d / fireball_speed()
+  at = (k % fireball_cap()) * fireball_stride()
+  poke_f32(fb, at, cx)
+  poke_f32(fb, at + 1, cy)
+  poke_f32(fb, at + 2, cz)
+  poke_f32(fb, at + 3, dx / t)
+  poke_f32(fb, at + 4, (py - cy + 0.5 * fireball_g() * t * t) / t)
+  poke_f32(fb, at + 5, dz / t)
+  poke_f32(fb, at + 6, seed)
+  poke_f32(fb, at + 7, t + 2.0)
+  poke_f32(fb, at + 8, 0.0)
+  1
+
+# Pick one to wind up: far enough away, still standing, chosen at random.
+fn begin_charge(s, tnow) =
+  cb = peek_ptr(s, 66)
+  n = to_int(peek_f32(s, 58))
+  r = hash2(floor(tnow * 7.3), 91.0)
+  i = to_int(r * to_float(n)) % n
+  cat = i * 8
+  sc = peek_f32(cb, cat + 3)
+  if sc < 0.01 then 0
+  else
+    dx = peek_f32(s, 21) - peek_f32(cb, cat)
+    dz = peek_f32(s, 23) - peek_f32(cb, cat + 2)
+    if sqrt(dx * dx + dz * dz) < fireball_reach() then 0
+    else
+      poke_f32(s, 75, to_float(i))
+      poke_f32(s, 76, sc)
+      poke_f32(s, 78, 1.0)
+      poke_f32(s, 73, 0.0)
+      1
+
+fn throw_now(s, tnow) =
+  cb = peek_ptr(s, 66)
+  cat = to_int(peek_f32(s, 75)) * 8
+  base = peek_f32(s, 76)
+  cx = peek_f32(cb, cat)
+  cy = peek_f32(cb, cat + 1) + base * 1.9
+  cz = peek_f32(cb, cat + 2)
+  k = to_int(peek_f32(s, 63))
+  poke_f32(s, 63, to_float(k + 1))
+  launch_fireball(peek_ptr(s, 74), k, cx, cy, cz,
+                  peek_f32(s, 21), peek_f32(s, 22) + 1.2, peek_f32(s, 23),
+                  hash2(floor(tnow * 11.7), 53.0))
+
+# Growing, throwing, settling back. If the crystal is shot while it is winding
+# up, its scale is already zero and there is nothing to put back: the machine
+# just goes idle, which is what `alive` below is for.
+fn run_charge(s, dt, tnow) =
+  mode = peek_f32(s, 78)
+  ct = peek_f32(s, 73) + dt
+  poke_f32(s, 73, ct)
+  if mode < 0.5 then
+    (if ct > fireball_every() then begin_charge(s, tnow) else 0)
+  else
+    cb = peek_ptr(s, 66)
+    cat = to_int(peek_f32(s, 75)) * 8
+    base = peek_f32(s, 76)
+    alive = if peek_f32(cb, cat + 3) > 0.01 then 1.0 else 0.0
+    if alive < 0.5 then
+      poke_f32(s, 78, 0.0)
+      poke_f32(s, 73, 0.0)
+      0
+    else if mode < 1.5 then
+      k = smoothstep(0.0, charge_time(), ct)
+      poke_f32(cb, cat + 3, base * (1.0 + charge_swell() * k))
+      if ct < charge_time() then 0
+      else
+        throw_now(s, tnow)
+        poke_f32(s, 78, 2.0)
+        poke_f32(s, 73, 0.0)
+        1
+    else
+      k = smoothstep(0.0, relax_time(), ct)
+      poke_f32(cb, cat + 3, base * (1.0 + charge_swell() * (1.0 - k)))
+      if ct < relax_time() then 0
+      else
+        poke_f32(cb, cat + 3, base)
+        poke_f32(s, 78, 0.0)
+        poke_f32(s, 73, 0.0)
+        1
+
+fn step_fireball(fb, at, dt) =
+  life = peek_f32(fb, at + 7) - dt
+  on = if life > 0.0 then 1.0 else 0.0
+  vx0 = peek_f32(fb, at + 3)
+  vy0 = peek_f32(fb, at + 4)
+  vz0 = peek_f32(fb, at + 5)
+  # The same quadratic drag the rounds get. At this speed it barely bites,
+  # which is the point: the arc it flies is the one it was aimed along.
+  sp = sqrt(vx0 * vx0 + vy0 * vy0 + vz0 * vz0)
+  k = 1.0 - 0.00011 * sp * dt * on
+  vx = vx0 * k
+  vy = vy0 * k - fireball_g() * dt * on
+  vz = vz0 * k
+  px = peek_f32(fb, at) + vx * dt * on
+  py = peek_f32(fb, at + 1) + vy * dt * on
+  pz = peek_f32(fb, at + 2) + vz * dt * on
+  landed = if py < stop_height(px, pz) then 1.0 else 0.0
+  poke_f32(fb, at, px)
+  poke_f32(fb, at + 1, py)
+  poke_f32(fb, at + 2, pz)
+  poke_f32(fb, at + 3, vx)
+  poke_f32(fb, at + 4, vy)
+  poke_f32(fb, at + 5, vz)
+  poke_f32(fb, at + 7, if landed > 0.5 then 0.0 else life)
+  poke_f32(fb, at + 8, peek_f32(fb, at + 8) + dt * on)
+
+fn step_fireballs(fb, dt) =
+  for i in 0..fireball_cap()
+    step_fireball(fb, i * fireball_stride(), dt)
+
+fn clear_fireballs(fb) =
+  for i in 0..fireball_cap()
+    poke_f32(fb, i * fireball_stride() + 7, 0.0)
+
+export fn fireballs(s: Ptr) -> Ptr = peek_ptr(s, 74)
+
+export fn fireballs_cap(s: Ptr) -> Int = fireball_cap()
+
 export fn bullets(s: Ptr) -> Ptr = peek_ptr(s, 68)
 
 export fn bullets_cap(s: Ptr) -> Int = bullet_cap()
@@ -551,6 +726,7 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   grass_buf = alloc_bytes(ngrass * 32)
   bullet_buf = alloc_bytes(bullet_cap() * 32)
   shard_buf = alloc_bytes(shard_cap() * shard_stride() * 4)
+  fire_buf = alloc_bytes(fireball_cap() * fireball_stride() * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -564,11 +740,18 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 67, grass_buf)
   poke_ptr(s, 68, bullet_buf)
   poke_ptr(s, 69, shard_buf)
+  poke_ptr(s, 74, fire_buf)
   poke_f32(s, 60, 0.0)
   poke_f32(s, 61, 0.0)
   poke_f32(s, 62, 0.0)
+  poke_f32(s, 63, 0.0)
+  poke_f32(s, 73, 0.0)
+  poke_f32(s, 75, 0.0)
+  poke_f32(s, 76, 0.0)
+  poke_f32(s, 78, 0.0)
   clear_bullets(bullet_buf)
   clear_shards(shard_buf)
+  clear_fireballs(fire_buf)
   poke_f32(s, 56, to_float(grid * grid * 6))
   poke_f32(s, 57, to_float(np))
   poke_f32(s, 58, to_float(nc))
@@ -707,6 +890,8 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   poke_f32(s, 29, peek_f32(s, 29) + wind_rate(gust) * dt)
   step_bullets(s, peek_ptr(s, 68), dt)
   step_shards(peek_ptr(s, 69), dt)
+  step_fireballs(peek_ptr(s, 74), dt)
+  run_charge(s, dt, t)
   camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
 
 # The view-projection matrix, written straight into the state.
