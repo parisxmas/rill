@@ -225,3 +225,96 @@
     let B = VM_NEAR * VM_FAR / (VM_FAR - VM_NEAR);
     return vec4f(pa * cam.x, pb * cam.y, (A * cam.z - B) * 0.012, cam.z);
   }
+
+  // ---- working the bolt ------------------------------------------------------
+  //
+  // `vmMin.w` carries the cycle: zero when the rifle is closed and ready, and
+  // running to one over the throw. A bolt action is four movements and they do
+  // not overlap — lift the handle, draw it back, run it forward, turn it down —
+  // which is exactly why it is slow, and why you cannot fire in the middle of
+  // one. Each gets its own slice of the cycle, eased, because a bolt is worked
+  // by a hand rather than by a servo: it starts and it stops.
+  //
+  // The axis of the thing is the bore's own line through the bolt body, and the
+  // handle sticks out to the right of it. Turning about that line by minus a
+  // right angle and a bit takes the handle from out to up, which is what
+  // lifting a bolt is.
+  const BOLT_AXIS  = vec2f(0.0522, 0.0022);   // y and z of the bolt's centre line
+  const BOLT_THROW = 0.095;                   // how far back it comes
+  const BOLT_LIFT  = -1.30;                   // radians, handle out to handle up
+
+  fn ease(a: f32, b: f32, t: f32) -> f32 {
+    let x = clamp((t - a) / (b - a), 0.0, 1.0);
+    return x * x * (3.0 - 2.0 * x);
+  }
+
+  fn boltLift(t: f32) -> f32 {
+    // Up over the first sixth, down again over the last; open in between.
+    return BOLT_LIFT * (ease(0.00, 0.16, t) - ease(0.80, 0.97, t));
+  }
+
+  fn boltPos(m: vec3f) -> vec3f {
+    let t = u.vmMin.w;
+    if (t <= 0.0 || t >= 1.0) { return m; }
+    // Back over the second quarter, forward over the third.
+    let back = ease(0.16, 0.46, t) - ease(0.52, 0.80, t);
+    let a = boltLift(t);
+    let ca = cos(a); let sa = sin(a);
+    let y = m.y - BOLT_AXIS.x;
+    let z = m.z - BOLT_AXIS.y;
+    return vec3f(m.x - BOLT_THROW * back,
+                 BOLT_AXIS.x + y * ca - z * sa,
+                 BOLT_AXIS.y + y * sa + z * ca);
+  }
+
+  fn boltDir(n: vec3f) -> vec3f {
+    let t = u.vmMin.w;
+    if (t <= 0.0 || t >= 1.0) { return n; }
+    let a = boltLift(t);
+    let ca = cos(a); let sa = sin(a);
+    return vec3f(n.x, n.y * ca - n.z * sa, n.y * sa + n.z * ca);
+  }
+
+  // ---- and the empty case ----------------------------------------------------
+  //
+  // The model carries a 54 mm round in the magazine, below the receiver and out
+  // of sight behind the stock. That is where it stays until the bolt draws
+  // back: then it is lifted to the chamber, thrown out to the right and up, and
+  // allowed to fall — the extractor's own arc, which is why brass always leaves
+  // a bolt gun over your shoulder rather than in front of you. It shrinks away
+  // at the end of the throw rather than vanishing on a frame, and by then it is
+  // off the edge of the screen anyway.
+  //
+  // It is the same round that comes back for the next shot, which is a lie a
+  // magazine tells for free: nobody counts.
+  const CASE_AT   = vec3f(-0.2023, 0.0452, 0.0);   // its centre, at the chamber
+  const CASE_LIFT = 0.100;                          // magazine to chamber
+
+  fn caseK(t: f32) -> f32 { return (t - 0.20) / 0.42; }
+
+  fn casePos(m: vec3f) -> vec3f {
+    let t = u.vmMin.w;
+    if (t < 0.20 || t > 0.62) { return m; }
+    let k = caseK(t);
+    var p = m + vec3f(0.0, CASE_LIFT, 0.0) - CASE_AT;
+    // End over end as it goes, and turning as well: brass tumbles.
+    let a = 9.0 * k; let b = 4.0 * k;
+    let ca = cos(a); let sa = sin(a);
+    let cb = cos(b); let sb = sin(b);
+    p = vec3f(p.x * ca - p.y * sa, p.x * sa + p.y * ca, p.z);
+    p = vec3f(p.x * cb + p.z * sb, p.y, -p.x * sb + p.z * cb);
+    let shrink = 1.0 - smoothstep(0.80, 1.0, k);
+    return CASE_AT + p * shrink
+         + vec3f(-0.02 * k, 0.34 * k - 0.70 * k * k, 0.36 * k);
+  }
+
+  fn caseDir(n: vec3f) -> vec3f {
+    let t = u.vmMin.w;
+    if (t < 0.20 || t > 0.62) { return n; }
+    let k = caseK(t);
+    let a = 9.0 * k; let b = 4.0 * k;
+    let ca = cos(a); let sa = sin(a);
+    let cb = cos(b); let sb = sin(b);
+    let q = vec3f(n.x * ca - n.y * sa, n.x * sa + n.y * ca, n.z);
+    return vec3f(q.x * cb + q.z * sb, q.y, -q.x * sb + q.z * cb);
+  }

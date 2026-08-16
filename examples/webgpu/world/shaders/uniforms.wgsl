@@ -6,8 +6,9 @@
     cam:  vec4f,   // yaw, pitch, wind angle, wind strength
     wind: vec4f,   // x the wind's phase, y the player's speed, z the walk's,
                    // w the recoil left in the rifle
-    vmMin:  vec4f, // the rifle's bounding box, which its vertices were
-    vmSize: vec4f, // quantized against — see `rifle.mesh`
+    vmMin:  vec4f, // xyz the rifle's bounding box, which its vertices were
+                   // quantized against; w how far through the bolt's throw
+    vmSize: vec4f, // the box's size — see `rifle.mesh`
   }
   @group(0) @binding(0) var<uniform> u: U;
 

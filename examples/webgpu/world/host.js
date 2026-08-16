@@ -718,7 +718,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // The trigger. Only once the mouse is captured — the first click is what
   // captures it, and firing on that one would put a round downrange before
   // anyone had a chance to aim.
-  let wantShot = false, recoil = 0, lastShot = -9;
+  // A bolt action fires once and then has to be worked. `boltT` runs from zero
+  // to BOLT_CYCLE after every shot; while it is running the rifle is open and
+  // the trigger does nothing, which is the whole of what a bolt action is.
+  const BOLT_CYCLE = 1.15;
+  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE;
   addEventListener("mousedown", e => {
     if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
   });
@@ -760,14 +764,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       }
     }
 
-    // The shot, before the frame that will fly it. A bolt action is not a
-    // machine gun: one round every three quarters of a second, and holding the
-    // button does nothing — `wantShot` is set by the press, not by the state.
-    if (wantShot && t - lastShot > 0.75) {
+    // The shot, before the frame that will fly it. Only with the bolt closed,
+    // and only on a press: holding the button does nothing, because `wantShot`
+    // is set by the event rather than read from the state.
+    boltT = Math.min(boltT + dt, BOLT_CYCLE);
+    if (wantShot && boltT >= BOLT_CYCLE) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
       E.fire(state, Math.sin(yaw) * cp, Math.sin(pit), -Math.cos(yaw) * cp);
-      lastShot = t;
+      boltT = 0;
       recoil = 1;
       bang();
     }
@@ -799,6 +804,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     uf[45] = speed; uf[46] = bobPhase; uf[47] = recoil;
     uf.set(rifleBox.subarray(0, 3), 48);  // the rifle's bounding box, to unquantize against
     uf.set(rifleBox.subarray(3, 6), 52);
+    // The bolt's throw, as a fraction. The shot itself is the first instant of
+    // it, so the recoil and the lift start together the way they do in a hand.
+    uf[51] = boltT / BOLT_CYCLE;
     device.queue.writeBuffer(uni, 0, uf);
     device.queue.writeBuffer(bulletBuf, 0,
       new Float32Array(E.memory.buffer, Number(E.bullets(state)), bulletCap * 8));

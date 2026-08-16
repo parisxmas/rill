@@ -147,3 +147,17 @@ with its own echo off the hills already in the tail — from Vincent Sevedge's
 firearm recordings, CC BY 3.0. Two and a half seconds, 25 KB, decoded once and
 played from the same buffer with a hair of detune and level each time, because
 the same file twice in a row is the one thing that gives a sample away.
+
+The bolt is worked between shots, and until it is closed the trigger does
+nothing — which is the whole of what a bolt action is. It is four movements
+that do not overlap: lift the handle, draw it back, run it forward, turn it
+down. Each gets its own slice of the cycle, eased, because a bolt is worked by
+a hand rather than by a servo: it starts and it stops. Drawing back lifts the
+round out of the magazine, throws it up and to the right and lets it fall
+tumbling — the extractor's own arc, which is why brass leaves a bolt gun over
+your shoulder rather than in front of you.
+
+Which vertices move is a flag baked into the spare fourth component of the
+position: one for the bolt's two thousand-odd vertices, a half for the round's
+four hundred, zero for the rifle proper. The position was already being
+unpacked from unorm16, so the flag costs the file nothing at all.
