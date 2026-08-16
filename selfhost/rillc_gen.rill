@@ -438,6 +438,7 @@ fn emit(cx, st, env, e, cg) = match e
   ELambda(_, _, _) -> rcdie("a lambda here needs a call to give it a type")
   ESpawn(b, _) -> emit_spawn(cx, st, env, b, cg)
   ESelect(arms, d, _) -> emit_select(cx, st, env, arms, d, cg, false, YUnit, Nil)
+  ELen(x, _) -> emit_len(cx, st, env, x, cg)
   EIndex(b, ix, _) -> emit_index(cx, st, env, b, ix, cg)
   EIndexSet(b, ix, v, _) -> emit_builtin(cx, st, env, "buf_set", l3(b, ix, v), cg)
   EIndexOp(_, _, _, _, _) -> rcdie("internal: `[]=` was not expanded")
@@ -795,6 +796,7 @@ fn hint_or(h, cx, st, env, rest, n) = if is_uk(h) then hint_stmts(cx, st, env, r
 fn hint_expr(cx, st, env, e, n) = match e
   ECall(f, args, _, _) -> hint_call(cx, st, env, f, args, n)
   ESpawn(b, _) -> hint_expr(cx, st, env, b, n)
+  ELen(x, _) -> hint_expr(cx, st, env, x, n)
   EIndex(b, ix, _) -> hint_u(hint_expr(cx, st, env, b, n), cx, st, env, Cons(ix, Nil), n)
   EIndexSet(b, ix, v, _) -> hint_u(hint_expr(cx, st, env, b, n), cx, st, env, Cons(ix, Cons(v, Nil)), n)
   ESelect(sarms, d, _) -> hint_sarms(cx, st, env, sarms, d, n)
@@ -1253,6 +1255,7 @@ fn e_kids(e) = match e
   EMatch(s, arms, _) -> Cons(s, map(arms, \a -> h_arm_body(a)))
   ELambda(_, b, _) -> Cons(b, Nil)
   ESpawn(b, _) -> Cons(b, Nil)
+  ELen(x, _) -> Cons(x, Nil)
   EIndex(b, ix, _) -> Cons(b, Cons(ix, Nil))
   EIndexSet(b, ix, v, _) -> Cons(b, Cons(ix, Cons(v, Nil)))
   EIndexOp(_, b, ix, v, _) -> Cons(b, Cons(ix, Cons(v, Nil)))
@@ -1701,6 +1704,7 @@ fn fv_expr(e, bound, acc) = match e
   EMatch(s, arms, _) -> fv_arms(arms, bound, fv_expr(s, bound, acc))
   ELambda(ps, b, _) -> fv_expr(b, names_set(ps, bound), acc)
   ESpawn(b, _) -> fv_expr(b, bound, acc)
+  ELen(x, _) -> fv_expr(x, bound, acc)
   EIndex(b, ix, _) -> fv_expr(ix, bound, fv_expr(b, bound, acc))
   EIndexSet(b, ix, v, _) -> fv_expr(v, bound, fv_expr(ix, bound, fv_expr(b, bound, acc)))
   EIndexOp(_, b, ix, v, _) -> fv_expr(v, bound, fv_expr(ix, bound, fv_expr(b, bound, acc)))
@@ -2061,6 +2065,15 @@ fn buf_addr6(ts, off, b) = match ts
 
 fn buf_addr7(ts, d, off) = match ts
   TS2(ad, cg) -> TS2(ad, cg_line(cg, ad + " = getelementptr i8, ptr " + d + ", i64 " + off))
+
+# `#x` is a string's byte count or a buffer's element count, decided by what
+# the operand turned out to be.
+fn emit_len(cx, st, env, x, cg) =
+  match emit_args(cx, st, env, l1(x), Nil, 0, cg, ILeaf, Nil)
+    AV(cg1, vts, _) -> builtin_done(len_ir(cg1, vts), vts)
+
+fn len_ir(cg, vts) =
+  if is_ystr(vt1t(vts)) then rt1(cg, "i64", "rill_str_len", "ptr " + vt1(vts), YInt) else buf_len_ir(cg, vts)
 
 # `b[i]` is a buffer load or a string byte, decided by what the base turned
 # out to be — the same two runtime paths `buf_get` and `str_get` take.

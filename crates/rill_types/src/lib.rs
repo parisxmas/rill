@@ -1518,6 +1518,33 @@ impl Checker {
                     },
                 })
             }
+            // `#x` is how long the one indexable thing in hand is. A base
+            // still open cannot be a buffer, for the same reason as below.
+            Expr::Len { expr, line } => {
+                let b = self.infer(expr, env)?;
+                match self.resolve(&b.ty) {
+                    Ty::Buf(_) => Ok(TExpr {
+                        ty: Ty::Int,
+                        line: *line,
+                        kind: TK::BufLen { buf: Box::new(b) },
+                    }),
+                    Ty::Str | Ty::Var(_) => {
+                        self.unify(&Ty::Str, &b.ty, *line, "the operand of `#`")?;
+                        Ok(TExpr {
+                            ty: Ty::Int,
+                            line: *line,
+                            kind: TK::Builtin { rt: "rill_str_len", args: vec![b] },
+                        })
+                    }
+                    other => Err(TypeError::new(
+                        *line,
+                        format!(
+                            "`#` measures a string or a buffer, but this is `{}`",
+                            self.type_name(&other)
+                        ),
+                    )),
+                }
+            }
             // `b[i]` and `b[i] = v` are the reading and the writing of one
             // element, and mean exactly what `buf_get`/`buf_set` mean. A
             // string indexes to its bytes, and cannot be written.
@@ -2818,6 +2845,7 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
                 free_vars(&arm.body, out, seen);
             }
         }
+        Expr::Len { expr, .. } => free_vars(expr, out, seen),
         Expr::Index { base, index, .. } => {
             free_vars(base, out, seen);
             free_vars(index, out, seen);
@@ -3208,6 +3236,18 @@ mod tests {
         assert!(err.msg.contains("not storage"), "{}", err.msg);
         let err = check_src("fn main() =\n  v = buf_i32(2)\n  v[0] = 1.5\n").unwrap_err();
         assert!(err.msg.contains("buffer element"), "{}", err.msg);
+    }
+
+    /// `#x` measures the two things `[]` indexes, and settles an open operand
+    /// as a string for the same reason.
+    #[test]
+    fn hash_measures_strings_and_buffers() {
+        let t = check_src("fn f(s, v: Buf(I32)) = #s + #v\n\nfn main() = println(f(\"a\", buf_i32(1)))\n")
+            .unwrap();
+        assert_eq!(sig(&t, "f").params[0].1, Ty::Str);
+        assert_eq!(sig(&t, "f").ret, Ty::Int);
+        let err = check_src("fn main() = println(#1)\n").unwrap_err();
+        assert!(err.msg.contains("measures a string or a buffer"), "{}", err.msg);
     }
 
     /// Storing the wrong shape in one is a type error, not a silent

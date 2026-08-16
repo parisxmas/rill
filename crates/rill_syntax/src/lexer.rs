@@ -52,6 +52,7 @@ pub enum Tok {
     RParen,
     LBracket,
     RBracket,
+    Hash,
     DotDot,
     OpEq(char),
     Comma,
@@ -107,6 +108,7 @@ impl std::fmt::Display for Tok {
             Tok::RParen => write!(f, "`)`"),
             Tok::LBracket => write!(f, "`[`"),
             Tok::RBracket => write!(f, "`]`"),
+            Tok::Hash => write!(f, "`#`"),
             Tok::DotDot => write!(f, "`..`"),
             Tok::OpEq(c) => write!(f, "`{c}=`"),
             Tok::For => write!(f, "`for`"),
@@ -136,6 +138,14 @@ pub struct Comment {
     pub text: String,
     /// Nothing but whitespace precedes it on its line.
     pub own_line: bool,
+}
+
+/// Whether the `#` under the scanner opens a comment rather than asking for
+/// a length: a space, the end of the line or the end of the file follows it.
+fn comment_here(s: &Scanner<'_>) -> bool {
+    let mut ahead = s.chars.clone();
+    ahead.next();
+    matches!(ahead.peek(), None | Some(' ') | Some('\n') | Some('\r'))
 }
 
 struct Scanner<'a> {
@@ -191,6 +201,10 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                         "tabs are not allowed; use spaces".to_string(),
                     ));
                 }
+                // `#` starts a comment when a space or the end of the line
+                // follows it; written against something, it is the length
+                // operator. Every comment in the language is written `# ...`.
+                Some('#') if !comment_here(&s) => break,
                 Some('#') => {
                     let (cline, ccol) = (s.line, s.col);
                     let mut text = String::new();
@@ -413,6 +427,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                             Tok::Slash
                         }
                     }
+                    '#' => Tok::Hash,
                     '.' => {
                         if s.peek() == Some('.') {
                             s.bump();

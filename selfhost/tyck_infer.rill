@@ -21,6 +21,7 @@ fn eline(e) = match e
   ELambda(_, _, ln) -> ln
   ESpawn(_, ln) -> ln
   ESelect(_, _, ln) -> ln
+  ELen(_, ln) -> ln
   EIndex(_, _, ln) -> ln
   EIndexSet(_, _, _, ln) -> ln
   EIndexOp(_, _, _, _, ln) -> ln
@@ -71,11 +72,23 @@ fn infer(cx, st, env, e) = match e
   ELambda(ps, b, ln) -> i_lambda(cx, st, env, ps, b)
   ESpawn(b, ln) -> i_spawn(infer(cx, st, env, b))
   ESelect(arms, def, ln) -> i_select(cx, st, env, arms, def, ln)
+  ELen(x, ln) -> i_len(infer(cx, st, env, x), cx, ln)
   EIndex(b, ix, ln) -> i_index(infer(cx, st, env, b), cx, env, ix, ln)
   EIndexSet(b, ix, v, ln) -> i_iset(infer(cx, st, env, b), cx, env, ix, v, ln)
   EIndexOp(_, _, _, _, ln) -> tydie("internal: `[]=` was not expanded", ln)
   EFor(_, _, _, _, ln) -> tydie("internal: `for` was not expanded", ln)
   EBlock(ss) -> i_block(cx, st, env, ss, YUnit)
+
+# `#x` is how long the one indexable thing in hand is. A base still open
+# cannot be a buffer, for the same reason as below.
+fn i_len(ts, cx, ln) = match ts
+  TS(t, st) -> i_len2(resolve(st, t), cx, st, ln)
+
+fn i_len2(rt, cx, st, ln) = match rt
+  YBuf(_) -> TS(YInt, st)
+  YStr -> TS(YInt, st)
+  YVar(v) -> TS(YInt, unify(cx, st, YStr, YVar(v), ln, "the operand of `#`"))
+  _ -> tydie("`#` measures a string or a buffer, but this is `" + type_name(cx, st, rt) + "`", ln)
 
 # `b[i]` reads one element of a buffer or one byte of a string, and means
 # exactly what `buf_get`/`str_get` mean. `b[i] = v` is `buf_set`; a string is
@@ -703,6 +716,7 @@ fn fv(e, acc) = match e
   EIf(c, t, e2) -> fv(e2, fv(t, fv(c, acc)))
   EMatch(sc, arms, _) -> fold(arms, fv(sc, acc), \a, arm -> fv_arm(arm, a))
   ESpawn(b, _) -> fv(b, acc)
+  ELen(x, _) -> fv(x, acc)
   EIndex(b, ix, _) -> fv(ix, fv(b, acc))
   EIndexSet(b, ix, v, _) -> fv(v, fv(ix, fv(b, acc)))
   EIndexOp(_, b, ix, v, _) -> fv(v, fv(ix, fv(b, acc)))

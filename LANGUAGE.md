@@ -52,7 +52,9 @@ A construct may continue on the next line only where the grammar allows it
 (`then` and `else` may start a line). Inside parentheses indentation is ignored,
 so anything written there stays on one line.
 
-Comments run from `#` to the end of the line.
+Comments run from `#` to the end of the line. The `#` needs a space (or the
+line's end) after it, because written against something — `#s` — it is the
+length operator instead.
 
 ---
 
@@ -600,7 +602,7 @@ println(buf_len(v))
 draw(buf_data(v), 3)        # an extern taking (Ptr, I32)
 ```
 
-`v[i]` and `v[i] = x` are the notation for it; `buf_get(v, i)` and
+`#v` is how many elements it has, `v[i]` and `v[i] = x` are one of them; `buf_get(v, i)` and
 `buf_set(v, i, x)` are the same two operations spelled out, and either may be
 written. Indexing binds tighter than every operator, so `v[i + 1] * 2` reads
 the way it looks, and `v[i] = x` may only appear as a statement — it is the
@@ -610,7 +612,7 @@ one assignment the language has, and only to a buffer element.
 |---|---|
 | `buf_i8` `buf_u8` `buf_i16` `buf_u16` `buf_i32` `buf_u32` `buf_int` `buf_f32` `buf_float` `buf_ptr` | one constructor per element width; the argument is a length in elements |
 | `b[i]` / `b[i] = v` — or `buf_get(b, i)` / `buf_set(b, i, v)` | one element, bounds-checked |
-| `buf_len(b) -> Int` | how many elements |
+| `#b` (or `buf_len(b)`) | how many elements |
 | `buf_data(b) -> Ptr` | the first element's address, for C |
 
 Three things follow from the width living in the type. Reading gives back the
@@ -744,7 +746,7 @@ owns the frame.
 | `show(x) -> Str` | render any value as a string |
 | `int_to_str` `float_to_str` `bool_to_str` `str_to_int` | conversions |
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
-| `str_len` `s[i]` (or `str_get(s, i)`) `str_sub(s, start, len)` `str_find(s, needle)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage |
+| `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `str_sub(s, start, len)` `str_find(s, needle)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage |
 | `channel()` `send(ch, v)` `recv(ch)` | channels |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `io_ok()` | file and stdin IO |

@@ -48,6 +48,7 @@ type Tok
   TkRParen
   TkLBracket
   TkRBracket
+  TkHash
   TkDotDot
   TkOpEq(Int)
   TkNewline

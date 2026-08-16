@@ -1,5 +1,7 @@
 fn divmod(a, b) = (a / b, a % b)
 
+fn measure(s, i) = if i >= #s then 0 else s[i] + measure(s, i + 1)
+
 fn label(p: (Int, Str)) = match p
   (n, s) -> s + ":" + int_to_str(n)
 
@@ -26,3 +28,6 @@ fn main() =
 
   println(v[0] + v[1] + v[2])
   println(show((4, 5)))
+  println(#v)
+  println(#"merhaba" + #"")
+  println(measure("ab", 0))

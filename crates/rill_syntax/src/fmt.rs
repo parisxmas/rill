@@ -583,6 +583,7 @@ fn expr_line(e: &Expr) -> usize {
         Expr::Lambda { line, .. } => *line,
         Expr::Spawn { line, .. } => *line,
         Expr::Select { line, .. } => *line,
+        Expr::Len { line, .. } => *line,
         Expr::Index { line, .. } => *line,
         Expr::IndexSet { line, .. } => *line,
         Expr::IndexOp { line, .. } => *line,
@@ -678,6 +679,7 @@ fn inline(e: &Expr, prec: u8) -> String {
                 format!("{}({})", if is_tuple(name, args.len()) { "" } else { name }, a.join(", "))
             }
         }
+        Expr::Len { expr, .. } => format!("#{}", inline(expr, P_UNARY)),
         Expr::Index { base, index, .. } => {
             format!("{}[{}]", inline(base, P_INDEX), inline(index, 0))
         }
@@ -860,6 +862,17 @@ mod tests {
             fmt("fn f(v: Buf(I64), n) =\n  for i in 0..n - 1\n    v[i] *= 2\n"),
             "fn f(v: Buf(I64), n) =\n  for i in 0..n - 1\n    v[i] *= 2\n"
         );
+    }
+
+    /// `#` opens a comment only when a space or the line's end follows it;
+    /// against a name it is the length operator, and both survive the round
+    /// trip on the same line.
+    #[test]
+    fn formats_length_and_comments() {
+        let src = "# how long\nfn f(s) = #s + 1  # both on one line\n";
+        assert_eq!(fmt(src), src);
+        // A space after the `#` keeps it a comment, wherever it sits.
+        assert_eq!(fmt("fn f(s) =\n  # why\n  #s\n"), "fn f(s) =\n  # why\n  #s\n");
     }
 
     #[test]

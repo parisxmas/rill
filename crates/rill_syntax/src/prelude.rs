@@ -143,6 +143,7 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
                 collect_expr_names(a, out);
             }
         }
+        Expr::Len { expr, .. } => collect_expr_names(expr, out),
         Expr::Index { base, index, .. } => {
             collect_expr_names(base, out);
             collect_expr_names(index, out);

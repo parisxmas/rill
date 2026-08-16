@@ -162,6 +162,7 @@ fn q_expr(e, own, a) = match e
   EMatch(s, arms, ln) -> EMatch(q_expr(s, own, a), map(arms, \x -> q_arm(x, own, a)), ln)
   ELambda(ps, b, ln) -> ELambda(ps, q_expr(b, own, a), ln)
   ESpawn(b, ln) -> ESpawn(q_expr(b, own, a), ln)
+  ELen(x, ln) -> ELen(q_expr(x, own, a), ln)
   EIndex(b, ix, ln) -> EIndex(q_expr(b, own, a), q_expr(ix, own, a), ln)
   EIndexSet(b, ix, v, ln) -> EIndexSet(q_expr(b, own, a), q_expr(ix, own, a), q_expr(v, own, a), ln)
   EIndexOp(op, b, ix, v, ln) -> EIndexOp(op, q_expr(b, own, a), q_expr(ix, own, a), q_expr(v, own, a), ln)
@@ -387,6 +388,7 @@ fn cn_expr(e, s) = match e
   EMatch(sc, arms, _) -> cn_arms(arms, cn_expr(sc, s))
   ELambda(_, b, _) -> cn_expr(b, s)
   ESpawn(b, _) -> cn_expr(b, s)
+  ELen(x, _) -> cn_expr(x, s)
   EIndex(b, ix, _) -> cn_expr(ix, cn_expr(b, s))
   EIndexSet(b, ix, v, _) -> cn_expr(v, cn_expr(ix, cn_expr(b, s)))
   EIndexOp(_, b, ix, v, _) -> cn_expr(v, cn_expr(ix, cn_expr(b, s)))
@@ -547,6 +549,7 @@ fn lf_expr(e, env, parent, st) = match e
   ELambda(ps, b, ln) -> lf_lam(lf_expr(b, append(env, ps), parent, st), ps, ln)
   ESpawn(b, ln) -> lf_spawn(lf_expr(b, env, parent, st), ln)
   ESelect(arms, def, ln) -> lf_select(arms, def, env, parent, st, ln)
+  ELen(x, ln) -> lf_len(lf_expr(x, env, parent, st), ln)
   EIndex(b, ix, ln) -> lf_index(lf_exprs(Cons(b, Cons(ix, Nil)), env, parent, st, Nil), ln)
   EIndexSet(b, ix, v, ln) -> lf_iset(lf_exprs(Cons(b, Cons(ix, Cons(v, Nil))), env, parent, st, Nil), ln)
   _ -> LE(e, st)
@@ -576,6 +579,9 @@ fn lf_bin(les, op, ln) = match les
 
 fn lf_if(les) = match les
   LES(xs, st) -> LE(EIf(at_e(xs, 0), at_e(xs, 1), at_e(xs, 2)), st)
+
+fn lf_len(le, ln) = match le
+  LE(x, st) -> LE(ELen(x, ln), st)
 
 fn lf_index(les, ln) = match les
   LES(xs, st) -> LE(EIndex(at_e(xs, 0), at_e(xs, 1), ln), st)
@@ -805,6 +811,7 @@ fn lf_rw(e, cs) = match e
   ELambda(ps, b, ln) -> ELambda(ps, lf_rw(b, cs), ln)
   ESpawn(b, ln) -> ESpawn(lf_rw(b, cs), ln)
   ESelect(arms, def, ln) -> ESelect(map(arms, \a -> lf_rw_sarm(a, cs)), opt_map(def, \d -> lf_rw(d, cs)), ln)
+  ELen(x, ln) -> ELen(lf_rw(x, cs), ln)
   EIndex(b, ix, ln) -> EIndex(lf_rw(b, cs), lf_rw(ix, cs), ln)
   EIndexSet(b, ix, v, ln) -> EIndexSet(lf_rw(b, cs), lf_rw(ix, cs), lf_rw(v, cs), ln)
   EIndexOp(op, b, ix, v, ln) -> EIndexOp(op, lf_rw(b, cs), lf_rw(ix, cs), lf_rw(v, cs), ln)
@@ -842,6 +849,7 @@ fn lf_fv(e, bound, acc) = match e
   ELambda(ps, b, _) -> lf_fv(b, append(bound, ps), acc)
   ESpawn(b, _) -> lf_fv(b, bound, acc)
   ESelect(arms, def, _) -> lf_fv_def(def, bound, fold(arms, acc, \a, sa -> lf_fv_sarm(sa, bound, a)))
+  ELen(x, _) -> lf_fv(x, bound, acc)
   EIndex(b, ix, _) -> lf_fv(ix, bound, lf_fv(b, bound, acc))
   EIndexSet(b, ix, v, _) -> lf_fv(v, bound, lf_fv(ix, bound, lf_fv(b, bound, acc)))
   EIndexOp(_, b, ix, v, _) -> lf_fv(v, bound, lf_fv(ix, bound, lf_fv(b, bound, acc)))

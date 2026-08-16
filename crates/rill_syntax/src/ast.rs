@@ -149,6 +149,8 @@ pub enum Expr {
     Spawn { body: Box<Expr>, line: usize },
     /// `select` — waits until one of its channel operations can proceed.
     Select { arms: Vec<SelectArm>, default: Option<Box<Expr>>, line: usize },
+    /// `#s` — how many bytes a string has, or how many elements a buffer.
+    Len { expr: Box<Expr>, line: usize },
     /// `b[i]` — one element of a buffer, or one byte of a string.
     Index { base: Box<Expr>, index: Box<Expr>, line: usize },
     /// `b[i] = v` — writing one element of a buffer.

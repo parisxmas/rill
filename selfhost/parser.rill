@@ -216,6 +216,7 @@ fn p_mul_step(l, ts) = match ts
 
 # `!e` desugars to `if e then false else true`, exactly as in the Rust parser.
 fn p_unary(ts) = match ts
+  Cons(Tk(TkHash, ln), r) -> len_pr(p_unary(r), ln)
   Cons(Tk(TkMinus, _), r) -> neg_pr(p_unary(r))
   Cons(Tk(TkBang, _), r) -> not_pr(p_unary(r))
   _ -> p_postfix(p_primary(ts))
@@ -234,6 +235,9 @@ fn p_index(e, pr, ln) = match pr
 fn expect_rb(ts) = match ts
   Cons(Tk(TkRBracket, _), r) -> r
   _ -> die_any("expected `]` to close the index", p_line(ts))
+
+fn len_pr(pr, ln) = match pr
+  PR(e, ts) -> PR(ELen(e, ln), ts)
 
 fn neg_pr(pr) = match pr
   PR(e, ts) -> PR(ENeg(e), ts)

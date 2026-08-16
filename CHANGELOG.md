@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`#s` for how long something is.** `#` measures the two things `[]`
+  indexes: a string's bytes and a buffer's elements, `str_len` and `buf_len`
+  under the notation. It costs the language one rule, stated where comments
+  are: a `#` opens a comment when a space or the end of the line follows it,
+  and is the operator when something does. Every comment ever written in this
+  repository already reads `# ...`, so nothing moved. JSON reaches 1361
+  tokens, 1.02&times; Go; Dijkstra 829, 1.11&times;.
+
 - **Tuples, and bindings that take a value apart.** `(a, b)` hands back more
   than one thing, `(A, B)` is its type, and `(q, r) = divmod(17, 5)` reads it
   back. None of it is new machinery: a tuple is the prelude's `Tuple2`,

@@ -191,6 +191,9 @@ fn walk(
             };
             Expr::Select { arms: new, default, line }
         }
+        Expr::Len { expr, line } => {
+            Expr::Len { expr: Box::new(walk(*expr, env, parent, used, out)?), line }
+        }
         Expr::Index { base, index, line } => Expr::Index {
             base: Box::new(walk(*base, env, parent, used, out)?),
             index: Box::new(walk(*index, env, parent, used, out)?),
@@ -479,6 +482,9 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
             },
             line,
         },
+        Expr::Len { expr, line } => {
+            Expr::Len { expr: Box::new(rewrite(*expr, locals)?), line }
+        }
         Expr::Index { base, index, line } => Expr::Index {
             base: Box::new(rewrite(*base, locals)?),
             index: Box::new(rewrite(*index, locals)?),
@@ -594,6 +600,7 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
                 free_of(d, bound, out);
             }
         }
+        Expr::Len { expr, .. } => free_of(expr, bound, out),
         Expr::Index { base, index, .. } => {
             free_of(base, bound, out);
             free_of(index, bound, out);

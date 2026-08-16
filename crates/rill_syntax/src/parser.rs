@@ -767,6 +767,11 @@ impl Parser {
                 then: Box::new(Expr::Bool(false)),
                 els: Box::new(Expr::Bool(true)),
             })
+        } else if matches!(self.peek(), Tok::Hash) {
+            let (line, _) = self.here();
+            self.bump();
+            let expr = self.unary()?;
+            Ok(Expr::Len { expr: Box::new(expr), line })
         } else {
             self.postfix()
         }
