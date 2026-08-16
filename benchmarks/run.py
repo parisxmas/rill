@@ -35,6 +35,27 @@ def langs():
         ("go", lambda b, exe: sh(["go", "build", "-o", exe,
                                   os.path.join(BENCH_DIR, f"{b}.go")])),
     ]
+    if shutil.which("dotnet"):
+        def build_cs(b, exe):
+            # NativeAOT, so what is timed is a program rather than a runtime
+            # warming up — the other three are native already.
+            proj = os.path.join(OUT, "cs")
+            os.makedirs(proj, exist_ok=True)
+            with open(os.path.join(proj, "p.csproj"), "w") as f:
+                f.write(
+                    "<Project Sdk='Microsoft.NET.Sdk'><PropertyGroup>"
+                    "<OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework>"
+                    "<Nullable>enable</Nullable><PublishAot>true</PublishAot>"
+                    "<AssemblyName>p</AssemblyName>"
+                    "<InvariantGlobalization>true</InvariantGlobalization>"
+                    "</PropertyGroup></Project>"
+                )
+            shutil.copyfile(os.path.join(BENCH_DIR, f"{b}.cs"),
+                            os.path.join(proj, "Program.cs"))
+            sh(["dotnet", "publish", "-c", "Release", "-o", os.path.join(proj, "out"), proj])
+            shutil.copyfile(os.path.join(proj, "out", "p"), exe)
+            os.chmod(exe, 0o755)
+        out.append(("csharp", build_cs))
     if shutil.which("ocamlopt"):
         def build_ml(b, exe):
             # ocamlopt writes .cmi/.cmx/.o next to the source; build in OUT.

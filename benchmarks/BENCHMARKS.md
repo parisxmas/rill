@@ -1,8 +1,13 @@
-# Rill vs Go vs OCaml
+# Rill vs Go vs C# vs OCaml
+
+The four languages here are the ones that ship lightweight concurrency, which
+is what `ring` is about; the other three benchmarks come along because the
+same four programs answer them.
 
 Apple M4, macOS. Rill via LLVM 18 `-O3` (host CPU features) with the release
-runtime; Go 1.23.4 (`go build`); OCaml 5.5.0 (`ocamlopt`, Homebrew build,
-non-flambda). Time = median of 25 runs (warmup 3); peak RSS = median of 3 via
+runtime; Go 1.23.4 (`go build`); C# 11 preview (NativeAOT, so what is timed is
+a program rather than a runtime warming up); OCaml 5.5.0 (`ocamlopt`, Homebrew
+build, non-flambda). Time = median of 25 runs (warmup 3); peak RSS = median of 3 via
 `/usr/bin/time -l`; outputs cross-checked identical across all three
 languages. Reproduce with `python3 benchmarks/run.py`.
 
@@ -13,21 +18,21 @@ regression that is not there, or hide one that is.
 
 ## Time
 
-| benchmark | what it measures | rill (ms) | go (ms) | ocaml (ms) | fastest |
-|---|---|---:|---:|---:|---|
-| fib | fib(35), pure recursion, no allocation | 15.6 | 21.8 | 22.8 | **rill, 1.40× over 2nd** |
-| trees | 10× build+drop perfect binary tree, depth 18 | 26.8 | 55.6 | 59.8 | **rill, 2.08× over 2nd** |
-| ring | 100k lightweight threads chained by channels | 12.4 | 97.3 | 63.1 | **rill, 5.08× over 2nd** |
-| lcg | 100M-iteration LCG loop (tail recursion vs `for`) | 125.2 | 271.7 | 297.1 | **rill, 2.17× over 2nd** |
+| benchmark | what it measures | rill (ms) | go (ms) | c# (ms) | ocaml (ms) | fastest |
+|---|---|---:|---:|---:|---:|---|
+| fib | fib(35), pure recursion, no allocation | 15.9 | 22.3 | 23.3 | 23.9 | **rill, 1.40× over 2nd** |
+| trees | 10× build+drop perfect binary tree, depth 18 | 27.3 | 56.6 | 49.3 | 60.1 | **rill, 1.80× over 2nd** |
+| ring | 100k lightweight threads chained by channels | 12.1 | 97.4 | 150.5 | 64.8 | **rill, 5.34× over 2nd** |
+| lcg | 100M-iteration LCG loop (tail recursion vs `for`) | 129.8 | 279.9 | 188.8 | 305.1 | **rill, 1.45× over 2nd** |
 
 ## Peak memory (RSS)
 
-| benchmark | rill | go | ocaml | smallest |
-|---|---:|---:|---:|---|
-| fib | 1.2 MB | 3.5 MB | 2.1 MB | **rill** |
-| trees | 13.2 MB | 16.3 MB | 18.3 MB | **rill** |
-| ring | 53.5 MB | 269.4 MB | 103.0 MB | **rill** |
-| lcg | 1.2 MB | 3.6 MB | 2.1 MB | **rill** |
+| benchmark | rill | go | c# | ocaml | smallest |
+|---|---:|---:|---:|---:|---|
+| fib | 1.2 MB | 3.5 MB | 6.7 MB | 2.1 MB | **rill** |
+| trees | 13.2 MB | 14.9 MB | 38.2 MB | 18.3 MB | **rill** |
+| ring | 53.5 MB | 271.9 MB | 138.6 MB | 103.0 MB | **rill** |
+| lcg | 1.2 MB | 3.6 MB | 6.7 MB | 2.1 MB | **rill** |
 
 ## Parallel scaling
 
@@ -207,9 +212,22 @@ that were still running. It now asks a counter first.
 
 ## Files
 
-Each benchmark is a `.rill`/`.go`/`.ml` triple kept as close to
-idiomatic-equivalent as possible; `run.py` builds all three, times them,
+Each benchmark is a `.rill`/`.go`/`.cs`/`.ml` quadruple kept as close to
+idiomatic-equivalent as possible; `run.py` builds all four, times them,
 measures peak RSS, and fails if outputs differ.
+
+C#'s `ring` is `System.Threading.Channels` and `async Task`, which is what a
+C# program uses and needs no thread per hop — the honest counterpart to a
+goroutine or a strand. It is the slowest of the four here and the second
+hungriest: 150 ms and 139 MB for a hundred thousand awaiting tasks, against
+Rill's 12 ms and 54 MB.
+
+The four languages on this page are the ones with lightweight concurrency in
+the box. Rust has no executor in its standard library, and C, C++ and Zig have
+only OS threads, so a hundred thousand of anything means either an external
+runtime or a scheduler written by hand — at which point the benchmark measures
+the scheduler rather than the language. That is why they are in
+`tokens/` and not here.
 
 ## What a program costs to write
 
