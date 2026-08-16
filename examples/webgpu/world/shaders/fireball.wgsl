@@ -40,6 +40,9 @@
   const PUFFS  = 48u;
   const TRAIL  = 1.75;            // seconds of it behind the head
   const FIRE_G = 3.2;             // must match `fireball_g` in world.rill
+  const RATE   = 27.0;            // parcels of smoke made a second
+
+  fn phash(n: f32) -> f32 { return fract(sin(n * 127.1 + 311.7) * 43758.5453); }
 
   @vertex fn vs(
     @builtin(vertex_index) vi: u32,
@@ -50,28 +53,49 @@
     let n = vi / 6u;                       // 0 the head, up to PUFFS-1 the tail
     let cx = select(-1.0, 1.0, q == 1u || q == 2u || q == 4u);
     let cy = select(-1.0, 1.0, q == 2u || q == 4u || q == 5u);
-    let age = f32(n) / f32(PUFFS - 1u);
 
     var o: VOut;
     o.uv = vec2f(cx, cy);
     o.seed = seed;
-    o.age = age;
+    o.age = 0.0;
     o.world = pos;
     o.fade = 0.0;
+    o.windward = 0.0;
     if (life <= 0.0) {
       o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
       return o;
     }
 
-    // Backwards along the flight. The gravity term comes back with a plus,
-    // which is what makes the trail sag under the head exactly as much as the
-    // head has already risen above where it was.
-    // Never further back than the thing has actually flown: a fireball a
-    // quarter of a second old has a quarter of a second of smoke behind it,
-    // not a second and a tenth reaching back past the crystal that threw it.
-    let span = min(TRAIL, flown);
-    let t = age * span;
+    // Which parcel of smoke this is — not which slot in a list, which parcel.
+    //
+    // Drawing the trail by index is what made it read as a shape rather than a
+    // fire: the puff at index five would take index six's size and colour and
+    // wobble the moment the meteor moved on, so the whole pattern slid backward
+    // through smoke that was otherwise sitting still. Nothing had an identity;
+    // there was no parcel of anything, only a diagram of one.
+    //
+    // Anchored to when it was made instead, everything follows. Smoke is made
+    // at a fixed rate, so `floor(flown * RATE) - n` names a parcel and keeps
+    // naming it: as the meteor flies on, the parcel that was the head becomes
+    // the second, then the third, and carries its own hash — its own crumple,
+    // its own drift, its own size — the whole way. Its age is real time since
+    // it was made, so it grows and cools rather than inheriting the look of
+    // whatever is now that far behind.
+    let slot = floor(flown * RATE) - f32(n);
+    let t = clamp(flown - slot / RATE, 0.0, TRAIL);
+    let age = t / TRAIL;
+    let born = slot >= 0.0;              // not made yet, at the start of a shot
+
+    // Three numbers that belong to this parcel and to no other.
+    let hA = phash(slot * 1.37 + seed * 91.0);
+    let hB = phash(slot * 2.71 + seed * 57.0);
+    let hC = phash(slot * 4.19 + seed * 23.0);
+
+    // Backwards along the flight. The gravity term comes back with a minus,
+    // which is what makes the trail sag below the straight line back from the
+    // head by exactly what the head has already climbed.
     let back = pos - vel * t - vec3f(0.0, 0.5 * FIRE_G * t * t, 0.0);
+    o.age = age;
 
     // The fire on the stone itself, which is not a ring round it.
     //
@@ -86,8 +110,8 @@
     // right angle, and `cos(lat)` — how square-on to the airflow it is — is
     // handed to the fragment to burn by.
     let collar = clamp(1.0 - age * 9.0, 0.0, 1.0);
-    let ca = seed * 13.0 + age * 47.0;
-    let lat = 0.30 + 1.05 * fract(seed * 31.0 + f32(n) * 0.37);
+    let ca = hB * 6.2831;
+    let lat = 0.30 + 1.05 * hA;
     let axis = normalize(vel + vec3f(0.0, 0.0001, 0.0));
     let side = normalize(cross(axis, vec3f(0.0, 1.0, 0.0)) + vec3f(0.0001, 0.0, 0.0));
     let other = cross(axis, side);
@@ -116,11 +140,19 @@
     // trees. What varies along the trail is only how far it has been carried,
     // and that grows smoothly, so the trail stays a trail.
     let carried = vec3f(cos(u.cam.z), 0.0, sin(u.cam.z)) * (0.30 + 1.5 * u.cam.w);
-    let drift = (carried + vec3f(0.0, 0.9, 0.0)) * age * age * 0.55;
+    // And its own crumple. Smoke does not expand evenly, it rolls: each parcel
+    // takes a direction of its own and keeps turning that way for as long as it
+    // lasts. Because the direction belongs to the parcel rather than to the
+    // slot, the curl travels with the smoke instead of standing still in the
+    // air while smoke slides through it.
+    let curl = vec3f(hA - 0.5, (hB - 0.5) * 0.6, hC - 0.5) * 2.0;
+    let roll = age * (1.4 + hC * 2.2);
+    let churn = (curl + cross(curl, vec3f(0.0, 1.0, 0.0)) * sin(roll)) * age * age * 0.9;
+    let drift = (carried + vec3f(0.0, 0.9, 0.0)) * age * age * 0.55 + churn;
 
     // Bigger as it goes back, the way smoke opens out, and smaller again right
     // at the head where the flame is tight.
-    let size = BALL * (0.55 + 1.7 * age * age + 0.45 * (1.0 - age));
+    let size = BALL * (0.55 + 1.7 * age * age + 0.45 * (1.0 - age)) * (0.72 + 0.55 * hC);
 
     let yaw = u.cam.x; let pitch = u.cam.y;
     let cp = cos(pitch);
@@ -138,7 +170,7 @@
     // of them over fifteen metres, added together, hold a near-constant
     // brightness across the first half of the trail unless each one is already
     // most of the way down by the time the next one arrives.
-    o.fade = select(0.0, pow(1.0 - age, 2.2), span > 0.02);
+    o.fade = select(0.0, pow(1.0 - age, 2.2) * (0.7 + 0.6 * hB), born);
     // Zero for anything in the trail: the wake does not burn, it only glows
     // with what it was given on the way past.
     o.windward = collar * clamp(cos(lat), 0.0, 1.0);
