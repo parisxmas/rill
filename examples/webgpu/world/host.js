@@ -270,7 +270,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // texture, and the valley itself. `run` does not resolve until a frame has
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
-  const TOTAL = 8 + Object.keys(SHADERS).length + TEXTURES.length;
+  const TOTAL = 9 + Object.keys(SHADERS).length + TEXTURES.length;
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -538,6 +538,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
+  let roarBuf = null, roars = null;
   let musicGain = null, musicOn = true;
   const shotBytes = await (await fetch("./rifle-shot.mp3")).arrayBuffer();
   step("rifle-shot.mp3");
@@ -546,6 +547,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // Two explosions, 1.9 seconds each, laid end to end and played by offset.
   const blastBytes = await (await fetch("./meteor-blast.mp3")).arrayBuffer();
   step("meteor-blast.mp3");
+  // Four seconds of fire, filtered down to the roar underneath the crackle and
+  // cross-faded end to end so it loops without a seam. This is what a fireball
+  // sounds like on its way over.
+  const roarBytes = await (await fetch("./fire-roar.mp3")).arrayBuffer();
+  step("fire-roar.mp3");
   // The theme. Eighty seconds that begin and end in silence, which is what
   // makes it loop without a seam: no crossfade, no loop points, just the tail
   // running into the head the way the piece was already written.
@@ -577,12 +583,40 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
         audio.decodeAudioData(shotBytes.slice(0)).then(b => { shotBuf = b; }),
         audio.decodeAudioData(breakBytes.slice(0)).then(b => { breakBuf = b; }),
         audio.decodeAudioData(blastBytes.slice(0)).then(b => { blastSnd = b; }),
+        audio.decodeAudioData(roarBytes.slice(0)).then(b => { roarBuf = b; startRoars(); }),
         audio.decodeAudioData(musicBytes.slice(0)).then(b => { musicBuf = b; startMusic(); }),
       ]).then(then);
       return;
     }
     if (audio.state === "suspended") audio.resume();
     then();
+  }
+
+  // Three voices, started once and left running for the life of the page, each
+  // following one fireball. Not one voice per round — twenty-four looping
+  // sources for something you can only ever hear three of is a waste, and the
+  // fourth-nearest is inaudible under the other three anyway. Each frame the
+  // rounds in the air are sorted by distance and the nearest three are handed
+  // to the voices; a voice with nothing to follow is turned down rather than
+  // stopped, because starting and stopping a loop is what clicks.
+  function startRoars() {
+    roars = [0, 1, 2].map(() => {
+      const src = audio.createBufferSource();
+      src.buffer = roarBuf;
+      src.loop = true;
+      const filt = audio.createBiquadFilter();
+      filt.type = "lowpass";
+      filt.frequency.value = 700;
+      const gain = audio.createGain();
+      gain.gain.value = 0;
+      const pan = audio.createStereoPanner();
+      src.connect(filt).connect(gain).connect(pan).connect(audio.destination);
+      // Each at its own speed, or three rounds in the air beat against each
+      // other and the whole sky sounds like one engine.
+      src.playbackRate.value = 0.88 + Math.random() * 0.3;
+      src.start();
+      return { gain, pan, filt };
+    });
   }
 
   // Started once and left running. Fading it up over four seconds rather than
@@ -940,6 +974,28 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // Not `>`: a tier change rebuilds the world and puts the tally back to
     // zero, and a mirror that only ever climbs would go deaf until it caught
     // up again.
+    // The roar of whatever is in the air. Air swallows the top of a sound
+    // before it swallows the bottom, so the filter opens as a round gets
+    // closer: near ones hiss, far ones are only a rumble. That is most of what
+    // makes distance audible, more than loudness is.
+    if (roars) {
+      const fb = new Float32Array(E.memory.buffer, Number(E.fireballs(state)), fireCap * 9);
+      const flying = [];
+      for (let i = 0; i < fireCap; i++) {
+        if (fb[i * 9 + 7] > 0) flying.push(place(fb[i * 9], fb[i * 9 + 1], fb[i * 9 + 2], 26));
+      }
+      flying.sort((a, b) => a.d - b.d);
+      const now = audio.currentTime;
+      for (let v = 0; v < roars.length; v++) {
+        const f = flying[v];
+        roars[v].gain.gain.setTargetAtTime(f ? 0.55 * f.gain : 0, now, 0.10);
+        if (f) {
+          roars[v].pan.pan.setTargetAtTime(f.pan, now, 0.10);
+          roars[v].filt.frequency.setTargetAtTime(600 + 3200 * f.gain, now, 0.15);
+        }
+      }
+    }
+
     // Anything land? Same trick as the breaks: Rill counts, the host notices,
     // and the newest entry in the ring says where.
     const nbl = Number(E.blasts_fired(state));
