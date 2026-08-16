@@ -70,8 +70,11 @@ fn height(x, z) =
 
 # ---- building the mesh -----------------------------------------------------
 #
-# 96 x 96 cells, two triangles each, flat-shaded: every triangle carries its
-# own normal and colour, which is what gives low-poly terrain its facets.
+# 96 x 96 cells, two triangles each. The colour is per face — that is where
+# the low-poly banding comes from — but the normal is per corner, taken from
+# the height field's own slope, so the ground is lit as the smooth surface it
+# is. Facets in the palette read as style; facets in the lighting read as a
+# mistake, and a metre-wide triangle lit flat has a hard edge on every side.
 # A vertex is nine floats — position, normal, colour.
 #
 # The heights come from a lattice computed once, not from `height` called at
@@ -99,20 +102,46 @@ fn face_g(h, ny, j) =
 fn face_b(h, ny, j) =
   if h < 0.4 then 0.45 * j else if ny < 0.74 then 0.46 * j else if h > 10.5 then 0.86 * j else 0.26 * j
 
-fn emit_vert(m, at, x, y, z, nx, ny, nz, h, j) =
+# `sy` is the face's upward component — steepness, for the colour. `ny` is the
+# corner's, which is what the light reads. They differ, and that is the point.
+fn emit_vert(m, at, x, y, z, nx, ny, nz, h, sy, j) =
   poke_f32(m, at, x)
   poke_f32(m, at + 1, y)
   poke_f32(m, at + 2, z)
   poke_f32(m, at + 3, nx)
   poke_f32(m, at + 4, ny)
   poke_f32(m, at + 5, nz)
-  poke_f32(m, at + 6, face_r(h, ny, j))
-  poke_f32(m, at + 7, face_g(h, ny, j))
-  poke_f32(m, at + 8, face_b(h, ny, j))
+  poke_f32(m, at + 6, face_r(h, sy, j))
+  poke_f32(m, at + 7, face_g(h, sy, j))
+  poke_f32(m, at + 8, face_b(h, sy, j))
 
-# One triangle — 27 floats — from its three corners; the normal is the face's
-# own, which is what "flat-shaded" means.
-fn emit_tri(m, at, x0, y0, z0, x1, y1, z1, x2, y2, z2) =
+fn clampi(v, hi) = if v < 0 then 0 else if v > hi then hi else v
+
+# The slope at a lattice corner, from the two heights either side of it. The
+# terrain is a height field, so this is a subtraction rather than a cross
+# product — and a corner shared by four cells gets one answer instead of four,
+# which is exactly what makes the lighting continuous across the edge.
+fn slope_x(hs: Buf(F64), w, ix, iz, s) =
+  a = clampi(ix - 1, w - 1)
+  b = clampi(ix + 1, w - 1)
+  (hs[iz * w + b] - hs[iz * w + a]) / (to_float(b - a) * s)
+
+fn slope_z(hs: Buf(F64), w, ix, iz, s) =
+  a = clampi(iz - 1, w - 1)
+  b = clampi(iz + 1, w - 1)
+  (hs[b * w + ix] - hs[a * w + ix]) / (to_float(b - a) * s)
+
+fn emit_corner(m, at, hs: Buf(F64), w, s, ix, iz, h, sy, j) =
+  sx = slope_x(hs, w, ix, iz, s)
+  sz = slope_z(hs, w, ix, iz, s)
+  il = 1.0 / sqrt(sx * sx + 1.0 + sz * sz)
+  x = lattice(ix, s)
+  z = lattice(iz, s)
+  y = hs[iz * w + ix]
+  emit_vert(m, at, x, y, z, (0.0 - sx) * il, il, (0.0 - sz) * il, h, sy, j)
+
+# How steep one face is, which is all the colour wants from its geometry.
+fn face_up(x0, y0, z0, x1, y1, z1, x2, y2, z2) =
   ax = x1 - x0
   ay = y1 - y0
   az = z1 - z0
@@ -122,12 +151,28 @@ fn emit_tri(m, at, x0, y0, z0, x1, y1, z1, x2, y2, z2) =
   nx = ay * bz - az * by
   ny = az * bx - ax * bz
   nz = ax * by - ay * bx
-  il = 1.0 / sqrt(nx * nx + ny * ny + nz * nz + 0.0000001)
+  ny / sqrt(nx * nx + ny * ny + nz * nz + 0.0000001)
+
+# One triangle — 27 floats — named by its three lattice corners rather than by
+# nine coordinates, because the corners are what the normals are read from.
+fn emit_tri(m, at, hs: Buf(F64), w, s, ia, ja, ib, jb, ic, jc) =
+  x0 = lattice(ia, s)
+  z0 = lattice(ja, s)
+  y0 = hs[ja * w + ia]
+  x1 = lattice(ib, s)
+  z1 = lattice(jb, s)
+  y1 = hs[jb * w + ib]
+  x2 = lattice(ic, s)
+  z2 = lattice(jc, s)
+  y2 = hs[jc * w + ic]
+  sy = face_up(x0, y0, z0, x1, y1, z1, x2, y2, z2)
   h = (y0 + y1 + y2) / 3.0
-  j = 0.93 + 0.14 * hash2(floor(x0 * 3.1), floor(z0 * 3.1))
-  emit_vert(m, at, x0, y0, z0, nx * il, ny * il, nz * il, h, j)
-  emit_vert(m, at + 9, x1, y1, z1, nx * il, ny * il, nz * il, h, j)
-  emit_vert(m, at + 18, x2, y2, z2, nx * il, ny * il, nz * il, h, j)
+  # Half the jitter it used to carry: with grain in the ground texture, a cell
+  # that is seven per cent brighter than its neighbour is a seam, not variety.
+  j = 0.965 + 0.07 * hash2(floor(x0 * 3.1), floor(z0 * 3.1))
+  emit_corner(m, at, hs, w, s, ia, ja, h, sy, j)
+  emit_corner(m, at + 9, hs, w, s, ib, jb, h, sy, j)
+  emit_corner(m, at + 18, hs, w, s, ic, jc, h, sy, j)
 
 # The lattice: (n + 1) squared samples of the terrain, one per corner.
 fn gen_heights(hs: Buf(F64), n, s) =
@@ -143,14 +188,9 @@ fn gen_cells(m, hs: Buf(F64), n, s) =
   for i in 0..n * n
     ix = i % n
     iz = i / n
-    k = iz * w + ix
-    x0 = lattice(ix, s)
-    x1 = lattice(ix + 1, s)
-    z0 = lattice(iz, s)
-    z1 = lattice(iz + 1, s)
     at = i * 54
-    emit_tri(m, at, x0, hs[k], z0, x0, hs[k + w], z1, x1, hs[k + w + 1], z1)
-    emit_tri(m, at + 27, x0, hs[k], z0, x1, hs[k + w + 1], z1, x1, hs[k + 1], z0)
+    emit_tri(m, at, hs, w, s, ix, iz, ix, iz + 1, ix + 1, iz + 1)
+    emit_tri(m, at + 27, hs, w, s, ix, iz, ix + 1, iz + 1, ix + 1, iz)
 
 # ---- placing the pines and the crystals ------------------------------------
 #

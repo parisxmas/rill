@@ -52,4 +52,11 @@ alpha tested foliage without them shimmers from a few trees away.
 The meadow photograph is not used as it was shot: it is daylight, and this
 valley is dusk. Its brightness drives the variation and its hue is folded in a
 third of the way, so the ground gains grain without the palette drifting brown
-— and sand, cliff and snow keep the flat shading they were given.
+— and sand, cliff and snow keep the flat colour they were given.
+
+Colour is per face and the normal is per corner. The bands are what makes the
+valley read as low-poly, and they stay; but a normal is a lighting question,
+not a style one, and a metre-wide triangle lit by its own face normal has a
+hard edge on all three sides. Rill takes the corner's normal from the slope of
+its own height lattice — two subtractions, not a cross product — so four cells
+meeting at a corner agree about it and the light crosses the seam.

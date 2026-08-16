@@ -1,7 +1,7 @@
 // The renderer half of the valley. Rill (world.wasm) computes the world —
 // mesh, placement, camera, physics, matrices — and this file spends the GPU
 // on it: a shadow pass under a fixed golden-hour sun, a 4x MSAA forward pass
-// with procedural sky, flat-shaded terrain, instanced pines, crystals and
+// with procedural sky, banded terrain, instanced pines, crystals and
 // swaying grass, Gerstner-wave water with foam, additive crystal glow, and a
 // compute-shader swarm of fireflies.
 //
