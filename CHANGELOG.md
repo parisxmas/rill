@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- **`poke_*` and `peek_*` are a store and a load, not a call.** They are one
+  instruction each — the address is `p + i * width`, unaligned as the
+  runtime's were — and they went through the runtime every time. For a
+  program filling a vertex buffer that is one call per float, and filling
+  buffers the host will read is the whole of what a wasm module does. Worth
+  about 2% on the WebGPU valley; the rest of what follows is the example
+  itself.
+
+- **The WebGPU valley rebuilds in 3.8 ms instead of 8.5.** It sampled the
+  terrain at each cell's four corners, and a corner belongs to four cells;
+  the heights come off a lattice computed once now — 9409 samples where there
+  were 36864, and each is twelve sines deep. It is also the more correct way
+  round: two cells sharing an edge read one number for it instead of each
+  working out its own in floating point. And a candidate pine, crystal or
+  grass tuft is now rejected on its seed before the ground under it is worked
+  out, which settles most of them.
+
+  The mesh is unchanged — all 497,664 floats agree with the old one to five
+  decimal places, and the three instance counts are the same. The loops that
+  were self-recursion through a helper returning 1 are `for` loops.
+
 ## 0.3.0 — measured, and changed for it
 
 The release where the language stopped being argued about and started being
