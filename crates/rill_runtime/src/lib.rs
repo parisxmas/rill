@@ -99,8 +99,8 @@ pub unsafe extern "C" fn rill_str_release(s: *mut u8) {
 pub unsafe extern "C" fn rill_str_concat(a: *const u8, b: *const u8) -> *mut u8 {
     let (la, lb) = (str_len_of(a), str_len_of(b));
     let p = str_new(la + lb);
-    core::ptr::copy_nonoverlapping(str_bytes(a), p.add(16), la);
-    core::ptr::copy_nonoverlapping(str_bytes(b), p.add(16 + la), lb);
+    copy_small(str_bytes(a), p.add(16), la);
+    copy_small(str_bytes(b), p.add(16 + la), lb);
     p
 }
 
@@ -133,6 +133,49 @@ pub unsafe extern "C" fn rill_strbuf_new() -> *mut u8 {
     p
 }
 
+/// Copies `n` bytes with a loop when there are few of them. `memcpy` is a
+/// call into another library that then works out how to go fast; for the two
+/// or three bytes of `","` or `"null"` the working-out costs more than the
+/// copy. Text is assembled a piece at a time, and the pieces are short.
+///
+/// # Safety
+/// The ranges must not overlap and must both be `n` bytes long.
+#[inline(always)]
+unsafe fn copy_small(src: *const u8, dst: *mut u8, n: usize) {
+    if n > 16 {
+        core::ptr::copy_nonoverlapping(src, dst, n);
+        return;
+    }
+    let mut i = 0;
+    while i < n {
+        *dst.add(i) = *src.add(i);
+        i += 1;
+    }
+}
+
+/// Moves a builder's bytes into a larger block. The block comes from the same
+/// pool as everything else rather than from `malloc`, because a program that
+/// builds one short string per input token — a JSON parser, say — asks for
+/// one of these per token, and the pool answers from a free list where
+/// `malloc` walks its own bookkeeping.
+///
+/// # Safety
+/// `p` must be a live builder holding `len` bytes in a block of `cap`.
+unsafe fn sb_grow(p: *mut u8, len: usize, cap: usize, want: usize) {
+    let fresh = rill_alloc(want as u64);
+    // The block is raw bytes, not an object with a count: the allocation
+    // ledger must not see it, or every live builder would look like a leak.
+    live_add(-1);
+    let old = sb_data(p);
+    if !old.is_null() {
+        core::ptr::copy_nonoverlapping(old, fresh, len);
+        live_add(1);
+        rill_free_sized(old, cap as u64);
+    }
+    *(p as *mut *mut u8).add(1) = fresh;
+    *(p as *mut i64).add(3) = want as i64;
+}
+
 /// # Safety
 /// `p` must be a live builder and `s` a live string.
 #[no_mangle]
@@ -148,16 +191,9 @@ pub unsafe extern "C" fn rill_strbuf_add(p: *mut u8, s: *const u8) {
         while want < len + n {
             want *= 2;
         }
-        let fresh = malloc(want);
-        let old = sb_data(p);
-        if !old.is_null() {
-            core::ptr::copy_nonoverlapping(old, fresh, len);
-            free(old);
-        }
-        *(p as *mut *mut u8).add(1) = fresh;
-        *(p as *mut i64).add(3) = want as i64;
+        sb_grow(p, len, cap, want);
     }
-    core::ptr::copy_nonoverlapping(str_bytes(s), sb_data(p).add(len), n);
+    copy_small(str_bytes(s), sb_data(p).add(len), n);
     *(p as *mut i64).add(2) = (len + n) as i64;
 }
 
@@ -169,15 +205,7 @@ pub unsafe extern "C" fn rill_strbuf_byte(p: *mut u8, c: i64) {
     let len = sb_len(p);
     let cap = *(p as *const i64).add(3) as usize;
     if len + 1 > cap {
-        let want = if cap == 0 { 32 } else { cap * 2 };
-        let fresh = malloc(want);
-        let old = sb_data(p);
-        if !old.is_null() {
-            core::ptr::copy_nonoverlapping(old, fresh, len);
-            free(old);
-        }
-        *(p as *mut *mut u8).add(1) = fresh;
-        *(p as *mut i64).add(3) = want as i64;
+        sb_grow(p, len, cap, if cap == 0 { 32 } else { cap * 2 });
     }
     *sb_data(p).add(len) = c as u8;
     *(p as *mut i64).add(2) = (len + 1) as i64;
@@ -190,7 +218,7 @@ pub unsafe extern "C" fn rill_strbuf_str(p: *const u8) -> *mut u8 {
     let len = sb_len(p);
     let out = str_new(len);
     if len > 0 {
-        core::ptr::copy_nonoverlapping(sb_data(p), out.add(16), len);
+        copy_small(sb_data(p), out.add(16), len);
     }
     out
 }
@@ -209,7 +237,8 @@ pub unsafe extern "C" fn rill_strbuf_release(p: *mut u8) {
     if rc_dec(p as *mut i64) == 0 {
         let d = sb_data(p);
         if !d.is_null() {
-            free(d);
+            live_add(1);
+            rill_free_sized(d, *(p as *const i64).add(3) as u64);
         }
         rill_free_sized(p, 32);
     }
@@ -222,15 +251,43 @@ pub unsafe extern "C" fn rill_str_len(s: *const u8) -> i64 {
     str_len_of(s) as i64
 }
 
+/// Writes `v` in decimal into the end of `buf` and returns the range holding
+/// it. Digits come out backwards and are placed from the right, so the caller
+/// gets a contiguous slice without a second pass to reverse them.
+///
+/// This exists because `snprintf("%lld")` is not cheap: it walks a format
+/// string, consults the locale (taking a lock to do it), and runs the whole
+/// of `vfprintf` to produce at most twenty digits. A program that prints a
+/// million numbers spends real time there.
+#[inline]
+fn dec(v: i64, buf: &mut [u8; 24]) -> usize {
+    let mut i = 24;
+    // Negated rather than made positive, so that i64::MIN works.
+    let mut n = if v < 0 { v } else { -v };
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (-(n % 10)) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    if v < 0 {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    i
+}
+
 /// # Safety
 /// Returns a new owned string.
 #[no_mangle]
 pub unsafe extern "C" fn rill_int_to_str(v: i64) -> *mut u8 {
     let mut buf = [0u8; 24];
-    let n = snprintf(buf.as_mut_ptr(), 23, b"%lld\0".as_ptr(), v);
-    let n = n.clamp(0, 23) as usize;
+    let i = dec(v, &mut buf);
+    let n = 24 - i;
     let p = str_new(n);
-    core::ptr::copy_nonoverlapping(buf.as_ptr(), p.add(16), n);
+    copy_small(buf.as_ptr().add(i), p.add(16), n);
     p
 }
 
@@ -242,7 +299,7 @@ pub unsafe extern "C" fn rill_float_to_str(v: f64) -> *mut u8 {
     let n = snprintf(buf.as_mut_ptr(), 39, b"%g\0".as_ptr(), v);
     let n = n.clamp(0, 39) as usize;
     let p = str_new(n);
-    core::ptr::copy_nonoverlapping(buf.as_ptr(), p.add(16), n);
+    copy_small(buf.as_ptr(), p.add(16), n);
     p
 }
 
@@ -291,7 +348,7 @@ pub unsafe extern "C" fn rill_str_sub(s: *const u8, start: i64, len: i64) -> *mu
     let a = start.clamp(0, n);
     let b = (a + len.max(0)).clamp(a, n);
     let out = str_new((b - a) as usize);
-    core::ptr::copy_nonoverlapping(str_bytes(s).add(a as usize), out.add(16), (b - a) as usize);
+    copy_small(str_bytes(s).add(a as usize), out.add(16), (b - a) as usize);
     out
 }
 
@@ -654,7 +711,7 @@ pub unsafe extern "C" fn rill_from_cstr(p: *const u8) -> *mut u8 {
         n += 1;
     }
     let out = str_new(n);
-    core::ptr::copy_nonoverlapping(p, out.add(16), n);
+    copy_small(p, out.add(16), n);
     out
 }
 
@@ -851,9 +908,8 @@ pub unsafe extern "C" fn rill_print_str(s: *const u8) {
 #[no_mangle]
 pub extern "C" fn rill_print_int(v: i64) {
     let mut buf = [0u8; 24];
-    let n = unsafe { snprintf(buf.as_mut_ptr(), 23, b"%lld\0".as_ptr(), v) };
-    let n = n.clamp(0, 23) as usize;
-    out(&buf[..n]);
+    let i = dec(v, &mut buf);
+    out(&buf[i..]);
 }
 
 #[no_mangle]

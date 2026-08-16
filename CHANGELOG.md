@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **Four things the runtime was doing the slow way.** The JSON benchmark was
+  the last place Rill lost badly to C, so it was profiled rather than guessed
+  at, and every one of the four costs turned out to be the language's fault
+  rather than the program's. `int_to_str` formatted through `snprintf`, which
+  walks a format string and takes a lock to ask the locale about a decimal
+  point it will not use; it now writes the digits itself. A string builder's
+  bytes came from `malloc`, so a parser that builds one short string per token
+  asked `malloc` for one per token; they come from the same pool as everything
+  else now. `#s` and `s[i]` were calls into the runtime, which is why they
+  could not be hoisted out of a loop — a string is `{ rc, len, bytes… }`, so
+  both are a load, and both are emitted as one. And pieces like `","` were
+  copied with `memcpy`, where working out how to go fast costs more than
+  copying three bytes.
+
+  Together: the benchmark goes from 215 ms to **174**, against 113 for the C
+  it is written against and 148 for a C that frees what it allocated. Nothing
+  about the language changed — the same program is faster.
+
+  A fifth idea was measured and dropped. The pool's fast path can be laid down
+  at the allocation site, where the size is a constant and the size class
+  folds away; it is worth 3% on the JSON benchmark and nothing at all on the
+  self-hosted compiler, which is not enough to justify generated code that
+  knows the allocator's layout by heart.
+
 - **`scan_int`, and two optimizations that turned out not to be worth
   making.** Chasing the last of the distance to C, the plan was to drop bounds
   checks where the loop proves the index is in range. Measuring first said

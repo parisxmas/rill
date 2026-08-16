@@ -2840,6 +2840,48 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 Ok(Some(out))
             }
+            // `#s` and `s[i]`. A string is `{ i64 rc, i64 len, bytes… }`, so
+            // both are a load — but as runtime calls they were among the two
+            // most expensive things in a program that reads text, because a
+            // call cannot be hoisted out of a loop and a load can. The bounds
+            // test is unsigned, which folds `i < 0` into the same compare, and
+            // it picks the address rather than branching on it: the loaded
+            // byte is thrown away when the index is out of range.
+            TK::Builtin { rt, args } if (*rt == "rill_str_len" || *rt == "rill_str_get") => {
+                let (s, owned) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let s = s.into_pointer_value();
+                let i64t = self.ctx.i64_type();
+                let b = &self.builder;
+                let lenp = unsafe { b.build_gep(self.ctx.i8_type(), s, &[i64t.const_int(8, false)], "lenp") }
+                    .expect("LLVM builder error");
+                let len = b.build_load(i64t, lenp, "strlen").expect("LLVM builder error").into_int_value();
+                let out: BasicValueEnum<'ctx> = if *rt == "rill_str_len" {
+                    len.into()
+                } else {
+                    let i = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_int_value();
+                    let b = &self.builder;
+                    let inb = b
+                        .build_int_compare(inkwell::IntPredicate::ULT, i, len, "inb")
+                        .expect("LLVM builder error");
+                    let off = b.build_int_add(i, i64t.const_int(16, false), "off").expect("LLVM builder error");
+                    let at = unsafe { b.build_gep(self.ctx.i8_type(), s, &[off], "at") }
+                        .expect("LLVM builder error");
+                    // `s` itself is always readable, so it stands in for an
+                    // address that must not be dereferenced.
+                    let safe = b.build_select(inb, at, s, "safe").expect("LLVM builder error");
+                    let byte = b
+                        .build_load(self.ctx.i8_type(), safe.into_pointer_value(), "byte")
+                        .expect("LLVM builder error")
+                        .into_int_value();
+                    let wide = b.build_int_z_extend(byte, i64t, "chr").expect("LLVM builder error");
+                    b.build_select(inb, wide, i64t.const_int(-1i64 as u64, true), "get")
+                        .expect("LLVM builder error")
+                };
+                if owned {
+                    self.emit_release(s.into(), &Ty::Str);
+                }
+                Ok(Some(out))
+            }
             TK::Builtin { rt, args } if *rt == "rill.sitofp" || *rt == "rill.fptosi" => {
                 let v = self.gen_expr(&args[0], scope, subst, func)?.expect("value");
                 let out = if *rt == "rill.sitofp" {
