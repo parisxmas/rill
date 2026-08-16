@@ -420,6 +420,31 @@ fn splitting_a_long_line_is_linear() {
     assert_eq!(run_source("splitwide", src), "200001\n");
 }
 
+/// The prelude's list functions must cost constant stack, whatever the list.
+/// Written the natural way they do not: `Cons(f(x), map(rest, f))` leaves
+/// work after the call, so half a million elements used to be a segmentation
+/// fault. They build backwards and turn the result round instead.
+#[test]
+fn list_functions_take_constant_stack() {
+    let src = "fn count(l, n) = match l\n  \
+                 Nil -> n\n  \
+                 Cons(_, t) -> count(t, n + 1)\n\
+               \n\
+               fn main() =\n  \
+                 n = 500000\n  \
+                 println(len(range(1, n)))\n  \
+                 println(count(map(range(1, n), \\x -> x + 1), 0))\n  \
+                 println(count(filter(range(1, n), \\x -> x > 0), 0))\n  \
+                 println(count(take(range(1, n), n), 0))\n  \
+                 println(count(append(range(1, n), Nil), 0))\n  \
+                 println(#join(map(range(1, n), \\x -> \"ab\"), \",\"))\n  \
+                 println(#repeat(\"ab\", n))\n";
+    assert_eq!(
+        run_source("liststack", src),
+        "500000\n500000\n500000\n500000\n500000\n1499999\n1000000\n"
+    );
+}
+
 /// Tearing down a long list must not cost a stack frame per link. The
 /// generated drop frees the box first and releases its last heap field by a
 /// tail call, so this list — which is only released when `main` ends, long

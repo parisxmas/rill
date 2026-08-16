@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **The prelude's list functions cost constant stack now, and are faster for
+  it.** `map`, `filter`, `take`, `append`, `range` and `len` were written the
+  way the definitions read — `Cons(f(x), map(rest, f))` — which leaves work
+  after the recursive call and so costs a stack frame per element. Half a
+  million of them was a segmentation fault. They build the result backwards
+  and turn it round at the end instead, which costs a second cell per element
+  and buys the whole list back: five million elements go through every one of
+  them without trouble.
+
+  The extra pass was expected to cost something. It does not: at a hundred
+  thousand elements, where the old ones still survived, `map` is 29% faster,
+  `range` 33% and `len` 38%. Deep recursion is more expensive than a second
+  walk.
+
+  `join` and `repeat` had the same shape and a second problem — they built
+  their result with `+`, which copies everything assembled so far at every
+  step. Through a builder they are linear: joining twenty thousand pieces
+  goes from 19.7 ms to 1.9.
+
+  The last of those shows up where it matters most. The short, idiomatic JSON
+  benchmark — the one written with `map` and `join` rather than a builder
+  threaded by hand, and 255 tokens cheaper for it — went from **6.5 seconds
+  to 300 ms**. Writing it the plain way no longer costs twenty times the
+  running time.
+
 - **`str_find_from`, and a `split` that walks the line once.** Searching a
   string from anywhere but the beginning meant slicing off the part already
   read, which copies it — so `split` copied the whole remainder of the line at

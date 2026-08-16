@@ -27,25 +27,41 @@ type Tuple4(a, b, c, d)
 
 # -- lists -------------------------------------------------------------------
 
-fn map(l, f) = match l
-  Nil -> Nil
-  Cons(x, rest) -> Cons(f(x), map(rest, f))
+# Every list function here builds its result backwards and turns it round at
+# the end. Written the natural way — `Cons(f(x), map(rest, f))` — the work
+# left after the recursive call is what makes it a real call, and a list long
+# enough then costs a stack frame per element. Turning it round costs one more
+# pass and a second cell per element, which the allocator hands back off a
+# free list; running out of stack costs the program.
 
-fn filter(l, p) = match l
-  Nil -> Nil
-  Cons(x, rest) -> if p(x) then Cons(x, filter(rest, p)) else filter(rest, p)
+fn map(l, f) = map_onto(l, f, Nil)
+
+fn map_onto(l, f, acc) = match l
+  Nil -> reverse(acc)
+  Cons(x, rest) -> map_onto(rest, f, Cons(f(x), acc))
+
+fn filter(l, p) = filter_onto(l, p, Nil)
+
+fn filter_onto(l, p, acc) = match l
+  Nil -> reverse(acc)
+  Cons(x, rest) -> filter_onto(rest, p, if p(x) then Cons(x, acc) else acc)
 
 fn fold(l, acc, f) = match l
   Nil -> acc
   Cons(x, rest) -> fold(rest, f(acc, x), f)
 
-fn len(l) = match l
-  Nil -> 0
-  Cons(_, rest) -> 1 + len(rest)
+fn len(l) = len_from(l, 0)
+
+fn len_from(l, n) = match l
+  Nil -> n
+  Cons(_, rest) -> len_from(rest, n + 1)
 
 fn sum(l) = fold(l, 0, \a, x -> a + x)
 
-fn range(a, b) = if a > b then Nil else Cons(a, range(a + 1, b))
+# Counted downwards, so the list comes out in order without a second pass.
+fn range(a, b) = range_down(b, a, Nil)
+
+fn range_down(i, a, acc) = if i < a then acc else range_down(i - 1, a, Cons(i, acc))
 
 fn rev_onto(l, acc) = match l
   Nil -> acc
@@ -53,13 +69,13 @@ fn rev_onto(l, acc) = match l
 
 fn reverse(l) = rev_onto(l, Nil)
 
-fn append(a, b) = match a
-  Nil -> b
-  Cons(x, rest) -> Cons(x, append(rest, b))
+fn append(a, b) = rev_onto(rev_onto(a, Nil), b)
 
-fn take(l, n) = if n <= 0 then Nil else match l
-  Nil -> Nil
-  Cons(x, rest) -> Cons(x, take(rest, n - 1))
+fn take(l, n) = take_onto(l, n, Nil)
+
+fn take_onto(l, n, acc) = if n <= 0 then reverse(acc) else match l
+  Nil -> reverse(acc)
+  Cons(x, rest) -> take_onto(rest, n - 1, Cons(x, acc))
 
 fn drop(l, n) = if n <= 0 then l else match l
   Nil -> Nil
@@ -101,13 +117,31 @@ fn abs(n) = if n < 0 then -n else n
 
 # -- strings -----------------------------------------------------------------
 
+# Through a builder rather than `x + sep + join(rest, sep)`: that copied
+# everything joined so far at every element, which is quadratic in the length
+# of the result as well as a stack frame per element.
+
 fn join(l, sep) = match l
   Nil -> ""
-  Cons(x, rest) -> match rest
-    Nil -> x
-    Cons(_, _) -> x + sep + join(rest, sep)
+  Cons(x, rest) -> join_onto(strbuf(), x, rest, sep)
 
-fn repeat(s, n) = if n <= 0 then "" else s + repeat(s, n - 1)
+fn join_onto(b: StrBuf, x, rest, sep) = match rest
+  Nil ->
+    b += x
+    strbuf_str(b)
+  Cons(y, more) ->
+    b += x
+    b += sep
+    join_onto(b, y, more, sep)
+
+fn repeat(s, n) = if n <= 0 then "" else rep_onto(strbuf(), s, n)
+
+fn rep_onto(b: StrBuf, s, n) =
+  if n <= 0 then
+    strbuf_str(b)
+  else
+    b += s
+    rep_onto(b, s, n - 1)
 
 fn contains(s, p) = str_find(s, p) >= 0
 
