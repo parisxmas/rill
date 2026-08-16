@@ -82,6 +82,11 @@ const TEXTURES = [
   ["./jupiter.jpg", 2048, 1024],
   // Saturn's globe. Half Jupiter's width on screen, so half the map does.
   ["./saturn.jpg", 1024, 512],
+  // The four Galileans in one 2x2 atlas — Io and Europa on the top row,
+  // Ganymede and Callisto beneath. USGS and Voyager/Galileo mosaics by way of
+  // the Celestia project. Twenty pixels of moon does not need five hundred and
+  // twelve, but the poles turn to mush below it and one atlas is one binding.
+  ["./moons.jpg", 1024, 512],
 ];
 
 async function loadShaders(step) {
@@ -355,7 +360,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // another they were the longest thing between the page opening and the
   // valley appearing.
   const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView,
-         jupiterView, saturnView] =
+         jupiterView, saturnView, moonsView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
       mipped(url, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
@@ -388,6 +393,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     { binding: 13, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: "cube" } },
     { binding: 14, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 15, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 16, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -961,6 +967,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 13, resource: W.envView },
       { binding: 14, resource: jupiterView },
       { binding: 15, resource: saturnView },
+      { binding: 16, resource: moonsView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -994,6 +1001,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 13, resource: blankCube },
       { binding: 14, resource: jupiterView },
       { binding: 15, resource: saturnView },
+      { binding: 16, resource: moonsView },
     ]});
     const envFmt = { format: "rgba8unorm" };
     W.envPipes = {
@@ -1138,6 +1146,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const bit = { KeyW: 1, KeyS: 2, KeyA: 4, KeyD: 8, Space: 16, ShiftLeft: 32, ShiftRight: 32 };
   addEventListener("keydown", e => { if (bit[e.code]) { keys |= bit[e.code]; e.preventDefault(); } });
   addEventListener("keydown", e => { if (e.code === "KeyM") setMusic(!musicOn); });
+  // On the press, not held: read from the event rather than from the key mask,
+  // so leaning on space at the end does not restart over and over.
+  addEventListener("keydown", e => { if (e.code === "Space" && !e.repeat) wantRestart = true; });
   addEventListener("keyup", e => { if (bit[e.code]) keys &= ~bit[e.code]; });
   canvas.addEventListener("click", () => {
     canvas.requestPointerLock();
@@ -1155,7 +1166,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the trigger does nothing, which is the whole of what a bolt action is.
   const BOLT_CYCLE = 1.15;
   let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0;
-  let ended = false, lastStanding = -1;
+  let ended = false, lastStanding = -1, wantRestart = false;
   const tally = document.getElementById("tally");
   const vitfill = document.getElementById("vitfill");
   let lastHp = -1, hurtUntil = 0;
@@ -1246,6 +1257,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // Nothing fires from in the lake. Refused here rather than inside `fire`
     // so the bolt does not cycle and the bang does not play: a rifle that goes
     // off and does nothing is worse than one that will not go off.
+    // Space starts again once it is over. The same key jumps while you are
+    // alive, which is why this is gated on `ended` rather than being a key of
+    // its own: at the end of it there is nothing to jump for, and the one key
+    // anyone presses when a screen says GAME OVER is the big one.
+    if (ended && wantRestart) {
+      E.restart(state);
+      ended = false;
+      lastHp = -1; lastStanding = -1;
+      breaks = Number(E.breaks(state));
+      blastsHeard = Number(E.blasts_fired(state));
+      document.getElementById("over").classList.remove("on");
+      document.querySelector("#over em").textContent = "the valley is dark";
+    }
+    wantRestart = false;
+
     if (wantShot && boltT >= BOLT_CYCLE && !Number(E.wading(state))) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);

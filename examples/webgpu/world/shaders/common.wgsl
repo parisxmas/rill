@@ -47,6 +47,12 @@
   // reads at this size — a map of them would be a hundred pixels of gradient
   // doing what two smoothsteps already do.
   @group(0) @binding(15) var saturnTex: texture_2d<f32>;
+  // The four Galileans in a 2x2 atlas: Io and Europa across the top, Ganymede
+  // and Callisto below. USGS and Voyager/Galileo mosaics — Io's sulphur
+  // yellows, Europa's cracked ice, Ganymede's grooves, Callisto's craters, all
+  // of it in about twenty pixels a moon, which is what they are worth from
+  // here and is still the difference between four moons and four dots.
+  @group(0) @binding(16) var moonsTex: texture_2d<f32>;
 
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
@@ -251,8 +257,37 @@
   // What the sun does to a body it is lighting: its own colour where the light
   // lands, and the cold of the sky it is hanging in where it does not.
   fn sunTint(lam: f32) -> vec3f {
-    return mix(vec3f(0.13, 0.14, 0.24), SUN_COL * 1.30, lam);
+    // The unlit side of a body in space is nearly black. There is no air on it
+    // to scatter light round the limb and nothing nearby to bounce any back, so
+    // what it gets is what the stars give it, which is almost nothing. It was
+    // sitting at 0.13 here, which is a quarter-lit night side — enough to fill
+    // the shadow in and leave every planet reading as a flat textured circle
+    // with a slightly dim edge, rather than as a ball with a sun on one side.
+    return mix(vec3f(0.030, 0.035, 0.068), SUN_COL * 1.30, lam);
   }
+
+  // How much sunlight reaches something that far out, in Earth-distances.
+  //
+  // Inverse square, and then compressed hard. Jupiter gets a twenty-seventh of
+  // what the moon does and Saturn a ninetieth; drawn anywhere near straight,
+  // those are a brown smudge and nothing at all.
+  //
+  // The exponent was 0.35 first — about what a dark-adapted eye makes of a
+  // ratio — and it was a mistake worth writing down, because the physics was
+  // right and the picture got worse. Jupiter came out at a third of its old
+  // brightness, and a third of the brightness of a banded disc is not a
+  // dimmer banded disc, it is a grey oval: the contrast between the belts goes
+  // with the level, and the belts were the whole reason to draw it.
+  //
+  // At 0.12 the ordering survives and the subject does too. The moon is
+  // brightest, Jupiter is a sixth down from it and Saturn a sixth down again —
+  // enough that the sky says which is further without any of them being
+  // sacrificed to say it. The falloff here is doing a compositional job, not
+  // a radiometric one, and pretending otherwise cost a good-looking planet.
+  const AU_MOON = 1.00;      // ours, near enough the Earth's distance
+  const AU_JUP  = 5.20;
+  const AU_SAT  = 9.54;
+  fn sunlightAt(au: f32) -> f32 { return 1.75 * pow(1.0 / (au * au), 0.12); }
 
   // Premultiplied: colour already scaled by coverage, so the caller adds it
   // over whatever the sky was without having to know what is in it.
@@ -296,7 +331,7 @@
         // a body with no air has nothing to scatter light round its own limb,
         // which is why the dark side of a crescent moon is a hole in the sky
         // rather than a dim disc.
-        out += vec4f(mc * mix(vec3f(0.045, 0.050, 0.090), SUN_COL * 1.60, day) * a, a);
+        out += vec4f(mc * mix(vec3f(0.045, 0.050, 0.090), SUN_COL * sunlightAt(AU_MOON), day) * a, a);
         // And the glow it puts on the air around it.
         out += vec4f(vec3f(0.30, 0.32, 0.40) * pow(clamp(1.35 - r, 0.0, 1.0), 3.0) * 0.30, 0.0);
       }
@@ -310,12 +345,16 @@
       if (f.z > 0.0 && r < 1.0) {
         let q = f.xy / JUP_R;
         let nrm = vec3f(q, -sqrt(max(1.0 - r * r, 0.0)));   // the sign: see the moon, above
-        // Lit by the same sun as everything below. Only a quarter filled in:
-        // enough that the far limb does not go to a hard black edge the way an
-        // airless moon's does, and not so much that the sun stops showing. A
-        // planet with no terminator is a sticker, and the giveaway is that it
-        // does not agree with where the light in the sky is coming from.
-        let lam = mix(clamp(dot(nrm, sunInFrame(at, skySpace(-normalize(u.sun.xyz), t))), 0.0, 1.0), 1.0, 0.24);
+        // Lit by the same sun as everything below, and barely filled in — a
+        // twentieth, which is only there so the limb of a gas giant does not go
+        // to the hard black edge an airless moon's does.
+        //
+        // It was a quarter, and a quarter is what makes a sphere read as a
+        // circle: Jupiter sits fifty degrees off the sun, so a third of its
+        // face should be in shadow, and propping that third up to a quarter-lit
+        // leaves a flat textured disc with a slightly dim side. The terminator
+        // is the only thing in the picture saying the planet is round.
+        let lam = mix(clamp(dot(nrm, sunInFrame(at, skySpace(-normalize(u.sun.xyz), t))), 0.0, 1.0), 1.0, 0.05);
         // The real map, wrapped on. The sphere normal recovered above is also
         // the point on the surface, so latitude and longitude come straight out
         // of it — and because the normal is right, the bands compress toward
@@ -345,7 +384,77 @@
         // other. Multiplying by a grey `lam` would only have dimmed it; what a
         // low sun actually does is make the lit limb warm while the shadowed
         // one keeps the blue of the sky it is sitting in.
-        out += vec4f(jc * sunTint(lam) * limb * 1.35 * a, a);
+        out += vec4f(jc * sunTint(lam) * limb * sunlightAt(AU_JUP) * a, a);
+      }
+    }
+
+    // ---- the Galileans, going round
+    //
+    // Four of them, on real orbits seen nearly edge-on — which is how they are
+    // always seen from anywhere but above Jupiter's pole, and why in a
+    // telescope they are a line of dots strung out either side rather than a
+    // ring. Each runs its own circle at its own rate, and a moon on the far
+    // half of its orbit goes behind the planet and is gone until it comes out
+    // the other side.
+    //
+    // The orbits are compressed, hard. Io really sits six Jupiter-radii out and
+    // Callisto twenty-seven; at the size Jupiter is drawn here — eleven and a
+    // half degrees of sky to its radius — that would put Callisto fifty-eight
+    // degrees away, which is not in the same view as the planet, let alone the
+    // same photograph. One and a third out to two and two thirds keeps all four
+    // beside it in one look, and keeps what the numbers are for: the order, and
+    // Io tight and quick against Callisto wide and slow.
+    //
+    // The periods are real in ratio: Io 1.77 days, Europa 3.55, Ganymede 7.15,
+    // Callisto 16.7 — each about twice the last, which is the Laplace
+    // resonance and is why they line up and spread out again the way they do.
+    for (var m = 0u; m < 4u; m++) {
+      let fm = f32(m);
+      let at = normalize(JUP_AT);
+      let f = diskAt(dir, at);
+
+      let orbit = array<f32, 4>(1.42, 1.80, 2.28, 2.85)[m];
+      let rate  = array<f32, 4>(0.0940, 0.0470, 0.0234, 0.0100)[m];
+      let size  = array<f32, 4>(0.098, 0.086, 0.140, 0.130)[m];
+      let phase = array<f32, 4>(0.0, 2.20, 4.05, 5.60)[m];
+
+      let th = t * rate * 6.2831853 + phase;
+      // Barely tilted, so the orbits read as lines rather than as ellipses.
+      let ox = cos(th) * orbit;
+      let oy = sin(th) * orbit * 0.14;
+      let oz = sin(th);                       // + is the far half of the circle
+
+      // Where the moon sits on Jupiter's own disc, in Jupiter-radii.
+      let q = f.xy / JUP_R - vec2f(ox, oy);
+      let rm = length(q) / size;
+      // Behind the planet: on the far half of the orbit and inside its edge.
+      let hidden = oz > 0.0 && length(vec2f(ox, oy)) < 1.0;
+
+      if (f.z > 0.0 && rm < 1.0 && !hidden) {
+        let p = q / size;
+        let nrm = vec3f(p, -sqrt(max(1.0 - rm * rm, 0.0)));
+        let lam = mix(clamp(dot(nrm, sunInFrame(at, skySpace(-normalize(u.sun.xyz), t))), 0.0, 1.0), 1.0, 0.04);
+        // Out of the 2x2 atlas: Io and Europa across the top, Ganymede and
+        // Callisto below. The half-cell inset keeps a sample at the edge of one
+        // map from picking up the next one along.
+        let lonV = fract(atan2(nrm.x, -nrm.z) / 6.2831853 + t * rate * 2.0);
+        let latV = 0.5 - asin(clamp(nrm.y, -1.0, 1.0)) / 3.14159265;
+        let cell = vec2f(f32(m % 2u), f32(m / 2u)) * 0.5;
+        let uv = cell + clamp(vec2f(lonV, latV), vec2f(0.004), vec2f(0.996)) * 0.5;
+        let mc = textureSampleLevel(moonsTex, foliageSamp, uv, 0.0).rgb;
+        // Opaque, with only enough softness at the very rim to keep the edge
+        // from stepping. A tenth of the radius was being faded before, which
+        // over a moon ten pixels across is most of it, and made four solid
+        // bodies look like four smudges of gas.
+        let a = 1.0 - smoothstep(0.965, 1.0, rm);
+        // And composited OVER what is already there rather than added to it.
+        // Everything in this sky is disjoint except these — a moon crossing the
+        // face of Jupiter is the one place two bodies share a pixel — and added,
+        // the planet showed straight through it. That is not what a rock in
+        // front of a planet does. `out` is premultiplied, so the over-operator
+        // is one multiply: keep the moon whole and let through what is left.
+        let lay = vec4f(mc * sunTint(lam) * sunlightAt(AU_JUP), 1.0) * a;
+        out = lay + out * (1.0 - a);
       }
     }
 
@@ -358,7 +467,7 @@
       if (f.z > 0.0 && r < 2.6) {
         let nrm = vec3f(q, -sqrt(max(1.0 - min(r * r, 1.0), 0.0)));
         let sd = sunInFrame(at, skySpace(-normalize(u.sun.xyz), t));
-        let lam = mix(clamp(dot(nrm, sd), 0.0, 1.0), 1.0, 0.24);
+        let lam = mix(clamp(dot(nrm, sd), 0.0, 1.0), 1.0, 0.05);   // see Jupiter, above
         // The real globe, wrapped on by latitude and longitude and turning on
         // its own — Saturn's day is a shade over ten hours, near enough
         // Jupiter's, so it is given a similar spin here.
@@ -385,7 +494,7 @@
         // why in every photograph the rings are the brightest thing there.
         let rl = clamp(0.42 + 0.58 * dot(normalize(rq + vec2f(1e-4)),
                                          normalize(sd.xy + vec2f(1e-4))), 0.0, 1.0);
-        let rc = vec3f(0.80, 0.74, 0.62) * sunTint(rl) * 1.25;
+        let rc = vec3f(0.80, 0.74, 0.62) * sunTint(rl) * sunlightAt(AU_SAT) * 1.35;
         // The near half passes in front of the planet, the far half goes
         // behind it. Which is which is just the sign of y in ring space.
         let front = step(q.y, 0.0);
@@ -393,7 +502,7 @@
         let ab = ring * (1.0 - front) * (1.0 - planet) * 0.85;
         out += vec4f(rc * ab, ab);
         let ap = planet;
-        out += vec4f(sc * sunTint(lam) * limb * 1.30 * ap, ap);
+        out += vec4f(sc * sunTint(lam) * limb * sunlightAt(AU_SAT) * ap, ap);
         let af = ring * front * 0.85;
         out += vec4f(rc * af, af);
       }

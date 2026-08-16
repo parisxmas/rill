@@ -755,6 +755,25 @@ fn blast_hurt(s, x, y, z) =
   if hit < 0.002 then 0
   else
     poke_f32(s, 82, clampf(peek_f32(s, 82) - hit, 0.0, 1.0))
+    # And it throws you. Away from the blast on the flat and upward as well,
+    # both falling off with the same distance the damage does — a near miss
+    # staggers you, one at your feet puts you in the air.
+    #
+    # Straight into the position rather than into a velocity: there is one
+    # vertical velocity in this world and it belongs to jumping, so a shove
+    # written there would be swallowed by the next ground test. The horizontal
+    # part is a displacement because there is no horizontal velocity at all —
+    # walking sets the position directly — and a blast that moved you by
+    # setting a speed would need a whole momentum model to notice it.
+    hx = dx / (d + 0.4)
+    hz = dz / (d + 0.4)
+    shove = 9.0 * k * k
+    poke_f32(s, 21, clampf(peek_f32(s, 21) + hx * shove, 0.0 - 80.0, 80.0))
+    poke_f32(s, 23, clampf(peek_f32(s, 23) + hz * shove, 0.0 - 80.0, 80.0))
+    # Off the ground with it. Written as an upward velocity, which is the one
+    # thing the jump machinery already knows how to bring back down.
+    poke_f32(s, 24, peek_f32(s, 24) + 7.5 * k * k)
+    poke_f32(s, 25, 0.0)
     1
 
 # Cuts do not heal on their own. What mends you is walking over what you broke:
@@ -770,6 +789,13 @@ fn blast_hurt(s, x, y, z) =
 # A chip is taken once and is gone — its scale goes to zero, which is the same
 # "empty slot" the pool already understands, so the piece simply is not drawn
 # any more and no flag has to be invented for it.
+#
+# Five per cent for a whole crystal, split eight ways across the chips it
+# leaves: a hundredth and a quarter each, so sweeping up every last piece of one
+# is worth exactly five and there is no way to get more out of it than that.
+# It was three and a half a chip, which made a single crystal worth twenty-eight
+# and turned one lucky shot into a full heal — the medicine has to be worth
+# less than a hit costs, or there is nothing to weigh.
 fn gather_shard(s, sb, i) =
   at = i * shard_stride()
   sc = peek_f32(sb, at + 12)
@@ -791,7 +817,7 @@ fn gather_shard(s, sb, i) =
     else if dy < 0.0 - 1.2 then 0
     else
       poke_f32(sb, at + 12, 0.0)
-      poke_f32(s, 82, clampf(peek_f32(s, 82) + 0.035, 0.0, 1.0))
+      poke_f32(s, 82, clampf(peek_f32(s, 82) + 0.00625, 0.0, 1.0))
       1
 
 fn gather(s, sb) =
@@ -799,6 +825,34 @@ fn gather(s, sb) =
     gather_shard(s, sb, i)
 
 export fn health(s: Ptr) -> Float = peek_f32(s, 82)
+
+# Start again, without rebuilding the valley.
+#
+# Every crystal's size came out of `inst_scale` on a hash, and breaking one set
+# it to zero — but the hash itself is still sitting in slot 4 of the same
+# record, where it was written as an angle to turn the prism by. So the size is
+# recoverable exactly rather than needing to be stored a second time, and the
+# valley comes back with the same crystals in the same places at the same sizes
+# instead of a fresh random one. That matters: starting again should be the same
+# valley, or it is not starting again.
+fn restore_crystal(cb, i) =
+  at = i * 8
+  poke_f32(cb, at + 3, inst_scale(peek_f32(cb, at + 4) / 6.28, 1))
+
+export fn restart(s: Ptr) =
+  cb = peek_ptr(s, 66)
+
+  for i in 0..to_int(peek_f32(s, 58))
+    restore_crystal(cb, i)
+
+  poke_f32(s, 82, 1.0)
+  poke_f32(s, 62, 0.0)
+  clear_bullets(peek_ptr(s, 68))
+  clear_shards(peek_ptr(s, 69))
+  clear_fireballs(peek_ptr(s, 74))
+  clear_blasts(peek_ptr(s, 81))
+  clear_chargers(peek_ptr(s, 77))
+  1
 
 fn add_blast(s, x, y, z, seed) =
   bb = peek_ptr(s, 81)
