@@ -215,16 +215,25 @@ function crystalMesh() {
 }
 
 // Three crossed blades, normals up so a tuft is lit like the ground.
+// The undergrowth: two crossed cards carrying one cell of the plant atlas.
+//
+// One square card serves all four plants. Each was pasted into its cell at
+// its own aspect and stood on the cell's floor, so a tuft comes out low and
+// wide and a fern comes out tall and narrow from the same four corners — the
+// rest of the card is transparent and gets discarded. The alternative, a mesh
+// shaped per plant, would need a draw call per plant.
 function grassMesh() {
   const out = [];
-  for (let b = 0; b < 3; b++) {
-    const a = b * Math.PI / 3;
-    const dx = Math.cos(a) * 0.09, dz = Math.sin(a) * 0.09;
-    out.push(
-      -dx, 0, -dz, 0, 1, 0,
-       dx, 0,  dz, 0, 1, 0,
-      dz * 0.3, 0.9, -dx * 0.3, 0, 1, 0,
-    );
+  const push = (p, n, uv) => out.push(p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1]);
+  for (const a of [0.0, Math.PI / 2]) {
+    const dx = Math.cos(a) * 0.5, dz = Math.sin(a) * 0.5;
+    // Up-biased, so a leaf is lit like a leaf from either side.
+    const n = [Math.sin(a) * 0.32, 0.95, -Math.cos(a) * 0.32];
+    const p00 = [-dx, 0, -dz], p10 = [dx, 0, dz];
+    const p01 = [-dx, 1, -dz], p11 = [dx, 1, dz];
+    // v = 1 at the root: the atlas has each plant standing on its cell floor.
+    push(p00, n, [0, 1]); push(p10, n, [1, 1]); push(p11, n, [1, 0]);
+    push(p00, n, [0, 1]); push(p11, n, [1, 0]); push(p01, n, [0, 0]);
   }
   return new Float32Array(out);
 }
@@ -302,6 +311,7 @@ export async function run(canvas, wasmURL, hud) {
   const foliageView = await mipped("./pine-twig.png", 256);
   const barkView = await mipped("./pine-bark.jpg", 256);
   const groundView = await mipped("./grass-ground.jpg", 256);
+  const plantView = await mipped("./plants.png", 512);
   const rockView = await mipped("./rock-face.jpg", 256);
   const sandView = await mipped("./shore-sand.jpg", 256);
   const foliageSamp = device.createSampler({
@@ -325,6 +335,7 @@ export async function run(canvas, wasmURL, hud) {
     { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 8, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -377,7 +388,7 @@ export async function run(canvas, wasmURL, hud) {
   const terrainPipe = pipe("terrain", S.TERRAIN, terrainLayout);
   const pinePipe = pipe("pine", S.PINE, [pineLayout, instLayout], { cull: "none" });
   const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.72 } });
-  const grassPipe = pipe("grass", S.GRASS, [meshLayout, instLayout], { cull: "none" });
+  const grassPipe = pipe("grass", S.GRASS, [pineLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
 
   const flyBgl = device.createBindGroupLayout({ entries: [
@@ -419,7 +430,7 @@ export async function run(canvas, wasmURL, hud) {
 
   const pineData = pineMesh(), crystalData = crystalMesh(), grassData = grassMesh();
   const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
-  const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 6;
+  const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 8;
 
   // GPU frame timing, when the adapter offers it.
   let qs = null, qResolve = null, qStage = null, qPending = false, gpuMs = 0;
@@ -512,6 +523,7 @@ export async function run(canvas, wasmURL, hud) {
       { binding: 7, resource: groundView },
       { binding: 8, resource: rockView },
       { binding: 9, resource: sandView },
+      { binding: 10, resource: plantView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.

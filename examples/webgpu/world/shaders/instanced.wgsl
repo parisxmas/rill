@@ -23,6 +23,6 @@
     let pulse = 0.75 + 0.25 * sin(u.eye.w * 2.1 + v.world.x * 3.0);
     let glow = v.color * (1.35 * pulse);
     let view = v.world - u.eye.xyz;
-    let glowFogged = mix(glow, fogColor(view), fogAmount(length(view)));
+    let glowFogged = mix(glow, fogColor(view), fogAt(v.world, length(view)));
     return vec4f(mix(base, glowFogged, emissive), 1.0);
   }

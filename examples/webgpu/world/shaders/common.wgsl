@@ -15,6 +15,9 @@
   @group(0) @binding(8) var rockTex: texture_2d<f32>;
   // Wet shore gravel, for the strip the water reaches.
   @group(0) @binding(9) var sandTex: texture_2d<f32>;
+  // Four plants in a 2x2 atlas: two tufts of grass, a fern frond, a nettle.
+  // Shares the needle atlas's sampler, which clamps rather than repeats.
+  @group(0) @binding(10) var plants: texture_2d<f32>;
 
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
@@ -89,7 +92,17 @@
     return col;
   }
 
-  fn fogAmount(dist: f32) -> f32 { return 1.0 - exp(-dist * 0.0065); }
+  // Distance haze, thickest along the valley floor. The exponential alone
+  // fogs a mountaintop as hard as the water in front of it, which is wrong in
+  // both directions: the peaks lose their shape and the far shore never quite
+  // recedes. Squaring it holds the near ground clear and lets the far end go,
+  // and the height term keeps the air above the lake thicker than the air
+  // around the summits.
+  fn fogAt(world: vec3f, dist: f32) -> f32 {
+    let d = 1.0 - exp(-dist * 0.0135);
+    let lift = mix(1.0, 0.30, smoothstep(2.0, 16.0, world.y));
+    return clamp(d * d * 1.35 * lift, 0.0, 0.92);
+  }
 
   fn fogColor(view: vec3f) -> vec3f {
     let sa = max(dot(normalize(vec3f(view.x, 0.0, view.z)), -normalize(vec3f(u.sun.x, 0.0, u.sun.z))), 0.0);
@@ -103,5 +116,5 @@
     let sky = mix(vec3f(0.10, 0.11, 0.18), vec3f(0.18, 0.19, 0.30), n.y * 0.5 + 0.5);
     var col = albedo * (SUN_COL * 1.25 * nl * sh + sky * 1.1);
     let view = world - u.eye.xyz;
-    return mix(col, fogColor(view), fogAmount(length(view)));
+    return mix(col, fogColor(view), fogAt(world, length(view)));
   }

@@ -156,7 +156,7 @@
     let foam = clamp((shore + crests) * (0.45 + 0.75 * froth), 0.0, 1.0);
     col = mix(col, vec3f(0.90, 0.94, 0.93) * (0.6 + 0.4 * sh), clamp(foam, 0.0, 0.85));
 
-    col = mix(col, fogColor(view), fogAmount(length(view)));
+    col = mix(col, fogColor(view), fogAt(v.world, length(view)));
     let alpha = mix(0.78, 0.95, smoothstep(0.0, 4.0, v.depth));
     return vec4f(col, alpha);
   }
