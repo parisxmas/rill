@@ -631,24 +631,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // rounds in the air are sorted by distance and the nearest three are handed
   // to the voices; a voice with nothing to follow is turned down rather than
   // stopped, because starting and stopping a loop is what clicks.
-  // Where the roar gives out entirely — just inside the forty-five metres of
-  // `fireball_reach` in world.rill, which is the nearest a crystal may be and
-  // still throw. So a round is silent for the whole first half of its flight
-  // and only announces itself once it is genuinely close.
+  // Where the roar gives out entirely — twenty-eight metres, a fraction of the
+  // seventy a crystal has to stand off to throw at all. A round is silent for
+  // almost its whole flight and only speaks up in the last two seconds, coming
+  // in. That is the point of it: three of these in the air at forty metres is a
+  // wash of noise with nothing to attach it to, and it makes the valley sound
+  // like it is on fire rather than like something is coming at you.
   //
   // A hard edge and a steep curve do different jobs here. The edge is what
-  // stops six rounds scattered across the valley adding up to a permanent
-  // hiss: three voices each following something forty metres off is a wash of
-  // noise with nothing to attach it to, and it makes the place sound like it
-  // is on fire rather than like something is coming at you. The curve — cubed,
-  // so nine tenths of the loudness is spent in the last fifteen metres — is
-  // what makes the approach itself audible.
+  // stops the rounds scattered across the valley adding up to a permanent
+  // hiss; the curve — cubed, so nine tenths of the loudness is spent in the
+  // last ten metres — is what makes the approach itself audible.
   //
   // The explosions are the opposite case and are tuned the opposite way: a
   // half-second impact carries across a valley and should, so `boom` rolls off
   // over a hundred and ten metres. Continuous and distant is noise; loud and
   // brief and distant is an event.
-  const REACH = 46.0;
+  const REACH = 28.0;
   function startRoars() {
     roars = [0, 1, 2].map(() => {
       const src = audio.createBufferSource();
@@ -724,22 +723,32 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
              0.94 + Math.random() * 0.14);
     });
   }
-  // A fireball landing. Carries much further than breaking glass does, so it
-  // falls off over a much longer distance — and slower and deeper the further
+  // How far an impact carries, and nothing past it.
+  //
+  // Thirty-two metres, which is close. Measured over half a minute of play the
+  // impacts land between one and forty-four metres out — they are aimed at you,
+  // so they all land somewhere near — and at fifty-eight every single one was
+  // audible. That is a continuous distant bombardment with nothing to look at,
+  // and it flattens the ones that matter. Cut to thirty-two, about half of them
+  // go quiet and the near ones land.
+  //
+  // Still wider than the roar's, because a bang does travel further than a
+  // rush of air.
+  const BOOM_REACH = 32.0;
+  // A fireball landing. Squared falloff inside the cutoff, so nearly all of the
+  // loudness is in the last twenty metres — and slower and deeper the further
   // off it is, which is most of what makes a big noise sound far away.
   function boom(x, y, z) {
     ensureAudio(() => {
-      // Half as loud at a hundred and ten metres, which is a long way for a
-      // half-second impact and deliberately so: the valley is bigger than the
-      // range these were first tuned for, and an explosion you cannot hear
-      // across it reads as a silent flash on the far hillside rather than as
-      // something that happened. The pitch drop is spread over the same longer
-      // distance, or everything past ninety metres arrives equally deep and
-      // the cue stops carrying any information.
-      const p = place(x, y, z, 110);
-      const far = Math.min(p.d / 150, 1);
+      const p = place(x, y, z, 40);
+      const k = Math.max(0, 1 - p.d / BOOM_REACH);
+      // Not worth a node: past the cutoff there is nothing to hear, and an
+      // explosion a hundred metres off would otherwise still allocate a source,
+      // a panner and a gain to play silence for two seconds.
+      if (k <= 0.02) return;
+      const far = Math.min(p.d / BOOM_REACH, 1);
       playAt(blastSnd, Math.floor(Math.random() * 2) * 1.9, 1.85,
-             0.85 * p.gain, p.pan, 1.06 - 0.22 * far);
+             0.95 * k * k, p.pan, 1.06 - 0.22 * far);
     });
   }
 

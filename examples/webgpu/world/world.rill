@@ -557,7 +557,12 @@ fn relax_time() = 0.95
 
 fn charge_swell() = 1.5
 
-fn fireball_every() = 1.0       # seconds between attempts
+# Three seconds between attempts, not one. Measured at one, twenty-two of these
+# landed on the player in thirty-five seconds — a fireball every second and a
+# half, arriving faster than the two and a half seconds one takes to fly. That
+# is not a valley that occasionally throws something at you, it is a barrage,
+# and a threat that never stops stops being a threat.
+fn fireball_every() = 3.0       # seconds between attempts
 
 fn fireball_reach() = 70.0      # nothing nearer than this throws
 
