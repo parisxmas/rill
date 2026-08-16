@@ -23,6 +23,19 @@
   // The stone inside a fireball. Dark and pitted; the glow in its cracks is
   // worked out from the texture rather than painted into it.
   @group(0) @binding(12) var meteorTex: texture_2d<f32>;
+  // The valley itself, rendered once from a point in the middle of it onto the
+  // six faces of a cube. Only the still parts are in it — ground, trees,
+  // crystals, water — because it is baked at load and never redrawn: what is
+  // in a reflection at a hundred and twenty-eight pixels a face is colour and
+  // rough shape, and neither of those changes when a pine sways.
+  //
+  // The sky is deliberately not in it. Drawing sky into a cube face would need
+  // a version of the sky shader that works at ninety degrees and straight up,
+  // and there is no reason to store what can be evaluated: the faces are
+  // cleared transparent instead, and anything reading this blends its own
+  // `skyColor` in through the alpha. Cheaper, sharper, and the sun disc stays
+  // a disc instead of becoming four pixels.
+  @group(0) @binding(13) var envCube: texture_cube<f32>;
 
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
@@ -81,6 +94,216 @@
   const SUN_WARM    = vec3f(1.0, 0.62, 0.24);
   const SUN_COL     = vec3f(1.0, 0.85, 0.6);
 
+  // ---- what else is up there -------------------------------------------
+  //
+  // The moon, Jupiter and Saturn, each a sphere lit by the same sun that is
+  // lighting the valley. Not sprites: the phase on each one is the real dot
+  // product of the sun's direction with a sphere normal recovered from the
+  // disc, so the moon's terminator faces the sunset and moves if the sun does.
+  // That is the one thing that gives a painted-on moon away, and it is a line
+  // of arithmetic to get right.
+  //
+  // Bigger than life, all three — the real moon is half a degree across and
+  // would be four pixels here. What is being drawn is the moon you remember
+  // rather than the one a protractor finds, which is the usual bargain in a
+  // sky, and the planets are scaled to keep the same ratio to it that makes
+  // them read as further away.
+
+  // How fast the world turns under the sky: one revolution in half an hour.
+  // The same number lives in `host.js`, which swings the sun and the shadow
+  // matrix by it — they have to agree, or the moon's terminator drifts away
+  // from the sun that is supposed to be casting it.
+  const SKY_SPIN = 0.0034906585;      // 2π / 1800
+
+  // A direction, taken out of the world and into the sky's own frame — the one
+  // the stars and the bodies are nailed to. The rotation is about the world's
+  // vertical, so the sky wheels round the horizon rather than tipping over it.
+  fn skySpace(dir: vec3f, t: f32) -> vec3f {
+    let a = t * SKY_SPIN;
+    let c = cos(a); let s = sin(a);
+    return vec3f(dir.x * c - dir.z * s, dir.y, dir.x * s + dir.z * c);
+  }
+
+  fn skyHash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453); }
+
+  fn skyNoise(p: vec2f) -> f32 {
+    let i = floor(p); let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(skyHash(i), skyHash(i + vec2f(1.0, 0.0)), u.x),
+               mix(skyHash(i + vec2f(0.0, 1.0)), skyHash(i + vec2f(1.0, 1.0)), u.x), u.y);
+  }
+
+  // Where `dir` falls on a body sitting at `at`: xy across its face, z how far
+  // round the sky it is from the body. Only meaningful near the body, which is
+  // the only place it is asked.
+  fn diskAt(dir: vec3f, at: vec3f) -> vec3f {
+    let right = normalize(cross(vec3f(0.0, 1.0, 0.0), at));
+    let up = cross(at, right);
+    return vec3f(dot(dir, right), dot(dir, up), dot(dir, at));
+  }
+
+  // The sun's direction expressed in that same frame, so a phase can be worked
+  // out in flat disc coordinates.
+  // The bodies are fixed in the sky's frame while the sun is given in the
+  // world's, so the sun comes across into the sky's frame before the two are
+  // compared. It lands back on the direction it started from, which is the
+  // point: the sky and the sun turn together, so a phase worked out here is
+  // the same phase all evening.
+  fn sunInDisk(at: vec3f, t: f32) -> vec3f {
+    let right = normalize(cross(vec3f(0.0, 1.0, 0.0), at));
+    let up = cross(at, right);
+    let L = skySpace(-normalize(u.sun.xyz), t);
+    return normalize(vec3f(dot(L, right), dot(L, up), dot(L, at)));
+  }
+
+  // High, both of them — a planet low over a ridge reads as a lamp on the far
+  // hill, and it is only well clear of the horizon that anyone takes it for
+  // something out beyond the sky. The moon stays lower, where a moon belongs.
+  const MOON_AT = vec3f(0.35, 0.42, -0.84);
+  const JUP_AT  = vec3f(-0.44, 0.82, -0.37);
+  const SAT_AT  = vec3f(0.52, 0.71, -0.47);
+  const MOON_R  = 0.048;
+  const JUP_R   = 0.019;
+  const SAT_R   = 0.014;
+
+  // What the sun does to a body it is lighting: its own colour where the light
+  // lands, and the cold of the sky it is hanging in where it does not.
+  fn sunTint(lam: f32) -> vec3f {
+    return mix(vec3f(0.13, 0.14, 0.24), SUN_COL * 1.30, lam);
+  }
+
+  // Premultiplied: colour already scaled by coverage, so the caller adds it
+  // over whatever the sky was without having to know what is in it.
+  fn nightSky(dirWorld: vec3f, t: f32) -> vec4f {
+    let dir = skySpace(dirWorld, t);
+    var out = vec4f(0.0);
+
+    // ---- the moon
+    {
+      let at = normalize(MOON_AT);
+      let f = diskAt(dir, at);
+      let r = length(f.xy) / MOON_R;
+      if (f.z > 0.0 && r < 1.35) {
+        // The sphere, recovered: on a disc of unit radius the surface normal is
+        // (x, y, ±sqrt(1 - x² - y²)) — and the sign is the whole thing. The
+        // half of the sphere you can see is the half facing you, so its normal
+        // runs back along the line of sight, against the frame's third axis,
+        // which points away from the eye and out at the body. Written with a
+        // plus it computes the phase of the far side instead, and the
+        // terminator comes out mirrored through the middle of the disc: a
+        // gibbous moon renders as a dark disc with a bright rim.
+        let q = f.xy / MOON_R;
+        let nrm = vec3f(q, -sqrt(max(1.0 - r * r, 0.0)));
+        let lam = clamp(dot(nrm, sunInDisk(at, t)), 0.0, 1.0);
+        // The maria: darker, flatter plains, and the reason a full moon has a
+        // face rather than being a plain disc.
+        let mare = smoothstep(0.42, 0.72, skyNoise(q * 2.6 + 11.0)
+                                        + 0.4 * skyNoise(q * 6.1 + 3.0));
+        var mc = mix(vec3f(0.86, 0.85, 0.80), vec3f(0.52, 0.53, 0.55), mare * 0.85);
+        // Craters, and the dust the whole thing is under.
+        mc *= 0.86 + 0.28 * skyNoise(q * 15.0 + 41.0);
+        // No atmosphere means no soft terminator: the shadow line on the moon
+        // is famously hard, and softening it is what makes one look like a
+        // sticker. Only the very limb is eased, and that for the pixels.
+        let day = smoothstep(0.0, 0.06, lam) * (0.25 + 0.75 * pow(lam, 0.6));
+        let edge = 1.0 - smoothstep(0.985, 1.0, r);
+        let a = edge;
+        // Warm where the sun is on it, and very nearly out where it is not:
+        // a body with no air has nothing to scatter light round its own limb,
+        // which is why the dark side of a crescent moon is a hole in the sky
+        // rather than a dim disc.
+        out += vec4f(mc * mix(vec3f(0.045, 0.050, 0.090), SUN_COL * 1.60, day) * a, a);
+        // And the glow it puts on the air around it.
+        out += vec4f(vec3f(0.30, 0.32, 0.40) * pow(clamp(1.35 - r, 0.0, 1.0), 3.0) * 0.30, 0.0);
+      }
+    }
+
+    // ---- Jupiter: bands, and the spot
+    {
+      let at = normalize(JUP_AT);
+      let f = diskAt(dir, at);
+      let r = length(f.xy) / JUP_R;
+      if (f.z > 0.0 && r < 1.0) {
+        let q = f.xy / JUP_R;
+        let nrm = vec3f(q, -sqrt(max(1.0 - r * r, 0.0)));   // the sign: see the moon, above
+        // Lit by the same sun as everything below. Only a quarter filled in:
+        // enough that the far limb does not go to a hard black edge the way an
+        // airless moon's does, and not so much that the sun stops showing. A
+        // planet with no terminator is a sticker, and the giveaway is that it
+        // does not agree with where the light in the sky is coming from.
+        let lam = mix(clamp(dot(nrm, sunInDisk(at, t)), 0.0, 1.0), 1.0, 0.24);
+        // Belts and zones. The latitude is the sphere's, not the disc's, so
+        // they crowd together toward the poles the way they actually do.
+        let lat = asin(clamp(q.y, -1.0, 1.0));
+        let band = sin(lat * 7.0) * 0.5 + 0.35 * sin(lat * 13.0 + 1.7)
+                 + 0.18 * skyNoise(vec2f(q.x * 3.0, lat * 9.0));
+        var jc = mix(vec3f(0.80, 0.68, 0.50), vec3f(0.62, 0.45, 0.31),
+                     smoothstep(-0.2, 0.6, band));
+        jc = mix(jc, vec3f(0.90, 0.84, 0.71), smoothstep(0.35, -0.5, band) * 0.55);
+        // The spot: an oval, south of the equator, turned with the belts.
+        let sp = (q - vec2f(0.30, -0.34)) / vec2f(0.34, 0.19);
+        jc = mix(jc, vec3f(0.72, 0.34, 0.22), (1.0 - smoothstep(0.6, 1.0, length(sp))) * 0.85);
+        // Limb darkening — a gas giant has no edge, it just goes away.
+        let limb = pow(clamp(1.0 - r * r, 0.0, 1.0), 0.22);
+        let a = 1.0 - smoothstep(0.965, 1.0, r);
+        // The sun's own colour on the lit side, and cold and nearly out on the
+        // other. Multiplying by a grey `lam` would only have dimmed it; what a
+        // low sun actually does is make the lit limb warm while the shadowed
+        // one keeps the blue of the sky it is sitting in.
+        out += vec4f(jc * sunTint(lam) * limb * 1.35 * a, a);
+      }
+    }
+
+    // ---- Saturn: the disc, and the rings across it
+    {
+      let at = normalize(SAT_AT);
+      let f = diskAt(dir, at);
+      let q = f.xy / SAT_R;
+      let r = length(q);
+      if (f.z > 0.0 && r < 2.6) {
+        let nrm = vec3f(q, -sqrt(max(1.0 - min(r * r, 1.0), 0.0)));
+        let sd = sunInDisk(at, t);
+        let lam = mix(clamp(dot(nrm, sd), 0.0, 1.0), 1.0, 0.24);
+        let lat = asin(clamp(q.y, -1.0, 1.0));
+        let band = sin(lat * 5.0) * 0.5 + 0.25 * sin(lat * 11.0 + 0.9);
+        let sc = mix(vec3f(0.84, 0.75, 0.56), vec3f(0.70, 0.62, 0.45),
+                     smoothstep(-0.3, 0.6, band));
+        let limb = pow(clamp(1.0 - r * r, 0.0, 1.0), 0.22);
+        let planet = 1.0 - smoothstep(0.965, 1.0, r);
+
+        // The rings, seen at a tilt: a circle squashed along one axis is what
+        // an inclined annulus projects to, so the ring radius is measured in a
+        // stretched frame rather than the disc's.
+        let tilt = 0.30;                       // how open they are, 0 edge-on
+        let rq = vec2f(q.x, q.y / tilt);
+        let rr = length(rq);
+        // Two bright bands with Cassini's gap between them, and the whole thing
+        // fading at both edges.
+        var ring = smoothstep(1.20, 1.28, rr) * (1.0 - smoothstep(2.22, 2.35, rr));
+        ring *= 1.0 - 0.75 * (1.0 - smoothstep(0.02, 0.05, abs(rr - 1.95)));
+        ring *= 0.55 + 0.45 * skyNoise(vec2f(rr * 22.0, 0.5));
+        // The rings take the sun from the side, so the arc turned toward it is
+        // the bright one. Ice is a better reflector than the planet, which is
+        // why in every photograph the rings are the brightest thing there.
+        let rl = clamp(0.42 + 0.58 * dot(normalize(rq + vec2f(1e-4)),
+                                         normalize(sd.xy + vec2f(1e-4))), 0.0, 1.0);
+        let rc = vec3f(0.80, 0.74, 0.62) * sunTint(rl) * 1.25;
+        // The near half passes in front of the planet, the far half goes
+        // behind it. Which is which is just the sign of y in ring space.
+        let front = step(q.y, 0.0);
+        // Behind first, then the planet, then the near arc over the top.
+        let ab = ring * (1.0 - front) * (1.0 - planet) * 0.85;
+        out += vec4f(rc * ab, ab);
+        let ap = planet;
+        out += vec4f(sc * sunTint(lam) * limb * 1.30 * ap, ap);
+        let af = ring * front * 0.85;
+        out += vec4f(rc * af, af);
+      }
+    }
+
+    return out;
+  }
+
   fn skyColor(dir: vec3f, t: f32) -> vec3f {
     let up = max(dir.y, 0.0);
     var col = mix(SKY_HORIZON, SKY_ZENITH, pow(up, 0.55));
@@ -88,13 +311,40 @@
     col += SUN_WARM * pow(sa, 5.0) * 0.5;             // the warm side of the sky
     col += SUN_COL * pow(sa, 900.0) * 20.0;           // the disc
     col += SUN_WARM * pow(sa, 60.0) * 1.2;            // its halo
-    // stars, fading out toward the bright horizon
-    let cell = floor(dir * 260.0);
+    // Stars, on the sky's frame rather than the world's, so they wheel with
+    // the moon and the planets instead of hanging while everything else moves.
+    //
+    // Brighter, and a few of them much brighter: one lattice at one intensity
+    // is a dusting of identical specks, which is what a star field never looks
+    // like. Two passes over the same cells at different densities give a scatter
+    // of ordinary ones and a handful that carry, and the brightest get a touch
+    // of colour, because the bright ones are the only ones an eye can see any
+    // colour in at all.
+    let sdir = skySpace(dir, t);
+    let cell = floor(sdir * 240.0);
     let h = fract(sin(dot(cell, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
-    if (h > 0.9982 && dir.y > 0.08) {
-      col += vec3f(0.8) * up * (0.5 + 0.5 * sin(t * 2.0 + h * 40.0));
+    if (h > 0.9955 && dir.y > 0.04) {
+      let mag = (h - 0.9955) / 0.0045;                 // 0 faint, 1 the brightest
+      let twinkle = 0.62 + 0.38 * sin(t * 2.4 + h * 400.0);
+      // Warm at one end of the scale and blue at the other, the way real ones
+      // sort themselves — and the tint only shows on the bright ones.
+      let tint = mix(vec3f(1.0), mix(vec3f(1.0, 0.78, 0.62), vec3f(0.72, 0.82, 1.0),
+                                     fract(h * 733.0)), mag);
+      col += tint * up * twinkle * (0.55 + 2.6 * mag * mag);
     }
-    return col;
+    // The moon and the two planets, over the stars and under nothing: they are
+    // the furthest things in the world and the last thing composited into it.
+    let b = nightSky(dir, t);
+    return col * (1.0 - b.a) + b.rgb;
+  }
+
+  // What is in the direction `dir` from the middle of the valley: whatever was
+  // baked into the cube, over the live sky wherever nothing was. One sample and
+  // one mix, and it is the difference between a surface that shines and one
+  // that shows you where it is standing.
+  fn envAt(dir: vec3f, t: f32) -> vec3f {
+    let hit = textureSampleLevel(envCube, barkSamp, dir, 0.0);
+    return mix(skyColor(dir, t), hit.rgb, hit.a);
   }
 
   // Distance haze, thickest along the valley floor. The exponential alone

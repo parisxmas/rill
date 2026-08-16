@@ -29,16 +29,22 @@
     @location(3) age: f32,        // 0 at the head, 1 at the end of the smoke
     @location(4) fade: f32,
     @location(5) windward: f32,   // how much this puff faces the way it is going
+    @location(6) secs: f32,       // real seconds since this parcel was made
   }
 
   const BALL   = 0.62;            // the head, in metres
   // Enough of them, close enough together, to be a trail rather than a string
-  // of beads: at fourteen metres a second, 1.75 seconds is twenty-four metres
-  // of flight, and forty-eight puffs put one every half metre against a head
-  // more than half a metre across. Sixteen over thirteen metres did not, and
-  // it showed — the count has to go up with the length, not just the length.
-  const PUFFS  = 48u;
-  const TRAIL  = 1.75;            // seconds of it behind the head
+  // of beads: at fourteen metres a second, 2.9 seconds is forty metres of
+  // flight, and eighty puffs put one every half metre against a head more than
+  // half a metre across. Sixteen over thirteen metres did not, and it showed —
+  // the count has to go up with the length, not just the length. It is set by
+  // the rate, in fact, not chosen: RATE parcels a second for TRAIL seconds is
+  // how many exist, and any fewer means the far end of the trail is missing.
+  const PUFFS  = 80u;
+  const TRAIL  = 2.90;            // seconds of it behind the head
+  // What the constants below were tuned against, so that changing TRAIL moves
+  // only the length and leaves the near end of the trail exactly as it was.
+  const WAS    = 1.75;
   const FIRE_G = 3.2;             // must match `fireball_g` in world.rill
   const RATE   = 27.0;            // parcels of smoke made a second
 
@@ -61,6 +67,7 @@
     o.world = pos;
     o.fade = 0.0;
     o.windward = 0.0;
+    o.secs = 0.0;
     if (life <= 0.0) {
       o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
       return o;
@@ -96,6 +103,14 @@
     // head by exactly what the head has already climbed.
     let back = pos - vel * t - vec3f(0.0, 0.5 * FIRE_G * t * t, 0.0);
     o.age = age;
+    // Real seconds as well as the fraction. Everything that is a fact about
+    // the smoke — how long the wind has had it, how long it takes a flame to
+    // become smoke, how far back the fire on the stone reaches — is a fact
+    // about seconds, and if it is written against the fraction instead then
+    // lengthening the trail stretches the flame along with it and the head
+    // stops looking like a head. The fraction is for one thing only: fading to
+    // nothing by the end, wherever the end has been put.
+    o.secs = t;
 
     // The fire on the stone itself, which is not a ring round it.
     //
@@ -109,7 +124,7 @@
     // round the middle: `lat` is how far off the nose each one is, never past a
     // right angle, and `cos(lat)` — how square-on to the airflow it is — is
     // handed to the fragment to burn by.
-    let collar = clamp(1.0 - age * 9.0, 0.0, 1.0);
+    let collar = clamp(1.0 - t * (9.0 / WAS), 0.0, 1.0);
     let ca = hB * 6.2831;
     let lat = 0.30 + 1.05 * hA;
     let axis = normalize(vel + vec3f(0.0, 0.0001, 0.0));
@@ -146,13 +161,18 @@
     // slot, the curl travels with the smoke instead of standing still in the
     // air while smoke slides through it.
     let curl = vec3f(hA - 0.5, (hB - 0.5) * 0.6, hC - 0.5) * 2.0;
-    let roll = age * (1.4 + hC * 2.2);
-    let churn = (curl + cross(curl, vec3f(0.0, 1.0, 0.0)) * sin(roll)) * age * age * 0.9;
-    let drift = (carried + vec3f(0.0, 0.9, 0.0)) * age * age * 0.55 + churn;
+    let roll = t * ((1.4 + hC * 2.2) / WAS);
+    let churn = (curl + cross(curl, vec3f(0.0, 1.0, 0.0)) * sin(roll)) * t * t * (0.9 / (WAS * WAS));
+    let drift = (carried + vec3f(0.0, 0.9, 0.0)) * t * t * (0.55 / (WAS * WAS)) + churn;
 
     // Bigger as it goes back, the way smoke opens out, and smaller again right
     // at the head where the flame is tight.
-    let size = BALL * (0.55 + 1.7 * age * age + 0.45 * (1.0 - age)) * (0.72 + 0.55 * hC);
+    // A plume opens out roughly in step with how long it has been out, so this
+    // grows with the seconds and not with the fraction — and linearly, not as
+    // the square it used to be: squared was indistinguishable over 1.75 seconds
+    // and reaches three-metre puffs over 2.9, which is a cloud, not a trail.
+    let old = t / WAS;
+    let size = BALL * (0.55 + 1.7 * old + 0.45 * max(1.0 - old, 0.0)) * (0.72 + 0.55 * hC);
 
     let yaw = u.cam.x; let pitch = u.cam.y;
     let cp = cos(pitch);
@@ -197,7 +217,9 @@
     // thinnest — and then, further back, none of that: grey, and thinning.
     var col = mix(vec3f(1.0, 0.96, 0.80), vec3f(1.0, 0.44, 0.08), pow(k, 0.7));
     col = mix(col, vec3f(0.85, 0.12, 0.02), smoothstep(0.72, 1.0, k));
-    let smoke = smoothstep(0.22, 0.62, v.age);
+    // Flame becomes smoke after about a third of a second and is all smoke by
+    // a second, however long the trail behind it has been made.
+    let smoke = smoothstep(0.22 * WAS, 0.62 * WAS, v.secs);
     col = mix(col, vec3f(0.30, 0.27, 0.26), smoke);
 
     // The head is a hard little sun; the smoke is a soft blob that mostly is
@@ -221,7 +243,7 @@
     // What burns is what faces the airflow. A puff square onto it is white and
     // opaque; one out at the shoulder is half that; one behind the stone is
     // just the trail, and gets none of it.
-    let hot = pow(1.0 - v.age, 4.0) + v.windward * v.windward * 1.6;
+    let hot = pow(clamp(1.0 - v.secs / WAS, 0.0, 1.0), 4.0) + v.windward * v.windward * 1.6;
     let cover = clamp(glow * v.fade * mix(0.95, 0.34, smoke) * (1.0 + 0.7 * v.windward),
                       0.0, 1.0) * clear;
     return vec4f(col * (0.6 + 2.4 * hot) * cover, cover);

@@ -374,6 +374,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     { binding: 10, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 12, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    // The valley, seen from a point in the middle of it and stored on the six
+    // faces of a cube. Anything that wants to know what is around it rather
+    // than what is lighting it reads this.
+    { binding: 13, visibility: GPUShaderStage.FRAGMENT, texture: { viewDimension: "cube" } },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -457,7 +461,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const pipe = (label, code, buffers, opts = {}) => device.createRenderPipeline({
     label, layout,
     vertex: { module: device.createShaderModule({ code }), buffers, constants: opts.constants },
-    fragment: { module: device.createShaderModule({ code }), targets: [{ format, blend: opts.blend }], constants: opts.constants },
+    fragment: { module: device.createShaderModule({ code }),
+                targets: [{ format: opts.format ?? format, blend: opts.blend }], constants: opts.constants },
     primitive: { cullMode: opts.cull ?? "back" },
     depthStencil: { ...depth, ...opts.depth },
     multisample: MS,
@@ -547,11 +552,28 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // Two explosions, 1.9 seconds each, laid end to end and played by offset.
   const blastBytes = await (await fetch("./meteor-blast.mp3")).arrayBuffer();
   step("meteor-blast.mp3");
-  // Four seconds of fire, filtered down to the roar underneath the crackle and
-  // cross-faded end to end so it loops without a seam. This is what a fireball
-  // sounds like on its way over.
-  const roarBytes = await (await fetch("./fire-roar.mp3")).arrayBuffer();
-  step("fire-roar.mp3");
+  // What something falling through the sky sounds like from underneath.
+  //
+  // Not a recording of a fire. That was the first attempt at this and it was
+  // wrong twice over: a fireplace filtered down to its rumble is inaudible on a
+  // laptop — measured 60 dB down in the band a small speaker can move air in —
+  // and the part of it that does come through is crackle, which is the sound of
+  // wood splitting. Nothing is splitting up there.
+  //
+  // A body going through the air at speed makes turbulence, and turbulence is
+  // broadband noise: a roar with a low body and a tearing edge, breathing as
+  // the flow round it changes. So this is built rather than found — three bands
+  // of noise, each shaped and each swelling on its own slow clock, so the
+  // timbre wanders instead of sitting still the way one static band of hiss
+  // does.
+  //
+  // Built in the frequency domain, which is what makes it loop: every component
+  // is a whole number of cycles per four seconds, so the waveform is periodic
+  // by construction and the join is a step of 4046 against a mean sample-to-
+  // sample step of 2437 — indistinguishable from the noise's own motion, with
+  // no crossfade needed anywhere.
+  const roarBytes = await (await fetch("./meteor-air.mp3")).arrayBuffer();
+  step("meteor-air.mp3");
   // The theme. Eighty seconds that begin and end in silence, which is what
   // makes it loop without a seam: no crossfade, no loop points, just the tail
   // running into the head the way the piece was already written.
@@ -599,11 +621,38 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // rounds in the air are sorted by distance and the nearest three are handed
   // to the voices; a voice with nothing to follow is turned down rather than
   // stopped, because starting and stopping a loop is what clicks.
+  // Where the roar gives out entirely — just inside the forty-five metres of
+  // `fireball_reach` in world.rill, which is the nearest a crystal may be and
+  // still throw. So a round is silent for the whole first half of its flight
+  // and only announces itself once it is genuinely close.
+  //
+  // A hard edge and a steep curve do different jobs here. The edge is what
+  // stops six rounds scattered across the valley adding up to a permanent
+  // hiss: three voices each following something forty metres off is a wash of
+  // noise with nothing to attach it to, and it makes the place sound like it
+  // is on fire rather than like something is coming at you. The curve — cubed,
+  // so nine tenths of the loudness is spent in the last fifteen metres — is
+  // what makes the approach itself audible.
+  //
+  // The explosions are the opposite case and are tuned the opposite way: a
+  // half-second impact carries across a valley and should, so `boom` rolls off
+  // over a hundred and ten metres. Continuous and distant is noise; loud and
+  // brief and distant is an event.
+  const REACH = 46.0;
   function startRoars() {
     roars = [0, 1, 2].map(() => {
       const src = audio.createBufferSource();
       src.buffer = roarBuf;
       src.loop = true;
+      // Looping the inside of the buffer rather than the whole of it. MP3 is
+      // not sample-accurate: the encoder puts a short silence at the front and
+      // pads the end, and a roar that is meant to be continuous would drop out
+      // for a few dozen milliseconds every time round. Skipping past both means
+      // the loop no longer lands on the period exactly — which for noise costs
+      // nothing, because the two ends were never going to line up audibly and
+      // the whole point of the construction is that they do not have to.
+      src.loopStart = 0.06;
+      src.loopEnd = roarBuf.duration - 0.06;
       const filt = audio.createBiquadFilter();
       filt.type = "lowpass";
       filt.frequency.value = 700;
@@ -670,8 +719,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // off it is, which is most of what makes a big noise sound far away.
   function boom(x, y, z) {
     ensureAudio(() => {
-      const p = place(x, y, z, 55);
-      const far = Math.min(p.d / 90, 1);
+      // Half as loud at a hundred and ten metres, which is a long way for a
+      // half-second impact and deliberately so: the valley is bigger than the
+      // range these were first tuned for, and an explosion you cannot hear
+      // across it reads as a silent flash on the far hillside rather than as
+      // something that happened. The pitch drop is spread over the same longer
+      // distance, or everything past ninety metres arrives equally deep and
+      // the cue stops carrying any information.
+      const p = place(x, y, z, 110);
+      const far = Math.min(p.d / 150, 1);
       playAt(blastSnd, Math.floor(Math.random() * 2) * 1.9, 1.85,
              0.85 * p.gain, p.pan, 1.06 - 0.22 * far);
     });
@@ -685,13 +741,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const fireInst = device.createBuffer({
     size: fireCap * 36, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
-  globalThis.__t = {                                  // TEST
-    live: () => { const a = new Float32Array(E.memory.buffer, Number(E.fireballs(state)), fireCap * 9);
-      let n = 0; for (let i = 0; i < fireCap; i++) if (a[i*9+7] > 0) n++; return n; },
-    charging: () => { const st = new Uint32Array(E.memory.buffer, Number(state), 128);
-      const cb = new Float32Array(E.memory.buffer, st[77], 12);
-      return [0,1,2].map(i => cb[i*4+2]); },
-  };
   const blastCap = Number(E.blasts_cap(0));
   const blastInst = device.createBuffer({
     size: blastCap * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
@@ -836,6 +885,46 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     W.shadowView = W.shadowTex.createView();
+    // ---- the environment probe -------------------------------------------
+    //
+    // One point in the middle of the valley, six ninety-degree views from it,
+    // stored on the faces of a cube. This is what lets a surface reflect the
+    // place it is standing in rather than a guess at it: a chip of glass on the
+    // grass shows green underneath and hillside to the side, and turns as you
+    // walk around it, because the cube knows which way is which.
+    //
+    // A single probe is wrong for everything not standing at its centre, and
+    // that is the accepted trade: parallax in a reflection is only legible on a
+    // surface large enough to see two things in at once. On a shard the size of
+    // a thumbnail it is not, and one bake at load is the entire cost.
+    //
+    // 128 pixels a face. Reflections in something faceted and moving carry
+    // colour and rough shape and nothing finer, and the whole cube at this size
+    // is 384 KB.
+    const ENV = 128;
+    W.envTex = device.createTexture({
+      label: "env-probe", size: [ENV, ENV, 6], format: "rgba8unorm",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    W.envView = W.envTex.createView({ dimension: "cube" });
+    // Multisampled once and resolved into each face in turn. Reusing the
+    // existing pipelines rather than building unsampled copies of every one of
+    // them costs a 128-pixel scratch target and saves four pipelines.
+    const envMs = device.createTexture({
+      size: [ENV, ENV], sampleCount: 4, format: "rgba8unorm",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    const envMsView = envMs.createView();
+    const envDepth = device.createTexture({
+      size: [ENV, ENV], sampleCount: 4, format: "depth24plus",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    }).createView();
+    // The bake cannot read the cube it is writing, so it gets a black one.
+    const blankCube = device.createTexture({
+      size: [1, 1, 6], format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    }).createView({ dimension: "cube" });
+
     W.bgMain = device.createBindGroup({ layout: bglMain, entries: [
       { binding: 0, resource: { buffer: uni } },
       { binding: 1, resource: W.shadowView },
@@ -850,6 +939,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 10, resource: plantView },
       { binding: 11, resource: rifleView },
       { binding: 12, resource: meteorView },
+      { binding: 13, resource: W.envView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -862,11 +952,147 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
         cull: "none", depth: { depthWriteEnabled: false },
         constants: { WAVES: T.waves, RIPPLES: T.ripples } });
 
+    // The same four things the main pass draws first, into a face of the cube.
+    // Not the sky, which is evaluated at read time; not the fireflies, tracers
+    // or fire, which are not there when this is baked and would be wrong a
+    // second later if they were.
+    W.envBg = device.createBindGroup({ layout: bglMain, entries: [
+      { binding: 0, resource: { buffer: uni } },
+      { binding: 1, resource: W.shadowView },
+      { binding: 2, resource: shadowSamp },
+      { binding: 3, resource: foliageView },
+      { binding: 4, resource: foliageSamp },
+      { binding: 5, resource: barkView },
+      { binding: 6, resource: barkSamp },
+      { binding: 7, resource: groundView },
+      { binding: 8, resource: rockView },
+      { binding: 9, resource: sandView },
+      { binding: 10, resource: plantView },
+      { binding: 11, resource: rifleView },
+      { binding: 12, resource: meteorView },
+      { binding: 13, resource: blankCube },
+    ]});
+    const envFmt = { format: "rgba8unorm" };
+    W.envPipes = {
+      terrain: pipe("env-terrain", S.TERRAIN, terrainLayout, envFmt),
+      pine:    pipe("env-pine", S.PINE, [pineLayout, instLayout], { ...envFmt, cull: "none" }),
+      crystal: pipe("env-crystal", S.INSTANCED, [meshLayout, instLayout],
+                    { ...envFmt, constants: { emissive: 0.72 } }),
+      water:   pipe("env-water", S.WATER,
+        [{ arrayStride: 20, attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x3" },
+          { shaderLocation: 1, offset: 12, format: "float32x2" },
+        ]}],
+        { ...envFmt,
+          blend: { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: {} },
+          cull: "none", depth: { depthWriteEnabled: false },
+          constants: { WAVES: T.waves, RIPPLES: T.ripples } }),
+    };
+
+    // Where the probe stands, and the six directions from it. The ups are the
+    // standard cube-face ups, which are flipped against the world's because a
+    // cube map's own space has y running the other way — get this wrong and the
+    // reflections are right in every respect except upside down, which is the
+    // sort of mistake that looks like a lighting bug for an hour.
+    W.envAt = [0, 7, 0];
+    W.envFaces = [
+      { dir: [ 1, 0, 0], up: [0, -1,  0] },
+      { dir: [-1, 0, 0], up: [0, -1,  0] },
+      { dir: [ 0, 1, 0], up: [0,  0,  1] },
+      { dir: [ 0,-1, 0], up: [0,  0, -1] },
+      { dir: [ 0, 0, 1], up: [0, -1,  0] },
+      { dir: [ 0, 0,-1], up: [0, -1,  0] },
+    ];
+    W.envMsView = envMsView;
+    W.envDepth = envDepth;
+    // Not a flag on the run: `buildWorld` is called again every time the
+    // quality tier moves, and it makes a new cube along with every other
+    // buffer. A `let envBaked` set once at startup means the first bake goes
+    // into a texture that is thrown away moments later and the one that
+    // replaces it stays blank for the life of the page — with no error, since
+    // sampling an unwritten texture is perfectly legal and returns nothing.
+    W.envBaked = false;
+
     W.tris = Math.round((counts.terrain + pineVerts * counts.pines + crystalVerts * counts.crystals
                        + grassVerts * counts.grass + rifleIdx) / 3);
   }
   buildWorld(tierIdx);
   step("the valley");
+
+  // A ninety-degree view from a point, as one column-major matrix. Written out
+  // by hand because this is the only place in the whole program that builds a
+  // matrix in JavaScript — every other one comes out of world.rill — and a
+  // library for two functions used once would be the larger cost.
+  //
+  // At ninety degrees the projection is almost all zeroes: the focal term is
+  // 1/tan(45°), which is one, and the aspect is one, so the whole of it is the
+  // depth range.
+  function faceVP(eye, dir, up, near, far) {
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const cross = (a, b) => [a[1]*b[2] - a[2]*b[1], a[2]*b[0] - a[0]*b[2], a[0]*b[1] - a[1]*b[0]];
+    const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+    const norm = a => { const l = Math.hypot(...a); return [a[0]/l, a[1]/l, a[2]/l]; };
+    const z = norm(sub([0, 0, 0], dir));          // the camera looks down -z
+    const x = norm(cross(up, z));
+    const y = cross(z, x);
+    // The view, column-major: the basis in the first three columns and the
+    // translation, in that basis, in the fourth.
+    const V = [ x[0], y[0], z[0], 0,
+                x[1], y[1], z[1], 0,
+                x[2], y[2], z[2], 0,
+                -dot(x, eye), -dot(y, eye), -dot(z, eye), 1 ];
+    const d = near - far;
+    const P = [ 1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, far / d, -1,
+                0, 0, far * near / d, 0 ];
+    const out = new Float32Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += P[k * 4 + r] * V[c * 4 + k];
+      out[c * 4 + r] = s;
+    }
+    return out;
+  }
+
+  // Six passes, six submits. Separate submits rather than one encoder because
+  // the uniform buffer holds one view-projection at a time and `writeBuffer`
+  // lands on the queue, not in the encoder: six writes before a single submit
+  // would leave every face drawn from the sixth camera.
+  function bakeEnv(uf) {
+    const u = uf.slice();
+    u.set([W.envAt[0], W.envAt[1], W.envAt[2]], 32);      // the eye, for the fog
+    for (let f = 0; f < 6; f++) {
+      const face = W.envFaces[f];
+      u.set(faceVP(W.envAt, face.dir, face.up, 0.4, 400), 0);
+      device.queue.writeBuffer(uni, 0, u);
+      const e = device.createCommandEncoder({ label: `env-face-${f}` });
+      const p = e.beginRenderPass({
+        colorAttachments: [{
+          view: W.envMsView,
+          resolveTarget: W.envTex.createView({ dimension: "2d", baseArrayLayer: f, arrayLayerCount: 1 }),
+          // Cleared to nothing, alpha and all: the sky is not drawn here, it is
+          // evaluated when the cube is read, and a zero alpha is how a face
+          // says "nothing of the valley is this way, use the sky".
+          loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }],
+        depthStencilAttachment: {
+          view: W.envDepth, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "discard",
+        },
+      });
+      p.setBindGroup(0, W.envBg);
+      p.setPipeline(W.envPipes.terrain);
+      p.setVertexBuffer(0, W.terrainBuf); p.draw(W.counts.terrain);
+      p.setPipeline(W.envPipes.pine);
+      p.setVertexBuffer(0, pineBuf); p.setVertexBuffer(1, W.pineInst); p.draw(pineVerts, W.counts.pines);
+      p.setPipeline(W.envPipes.crystal);
+      p.setVertexBuffer(0, crystalBuf); p.setVertexBuffer(1, W.crystalInst); p.draw(crystalVerts, W.counts.crystals);
+      p.setPipeline(W.envPipes.water);
+      p.setVertexBuffer(0, W.waterBuf); p.draw(W.waterVerts);
+      p.end();
+      device.queue.submit([e.finish()]);
+    }
+  }
 
   // MSAA targets, remade when the canvas resizes or the tier's pixel ratio
   // changes.
@@ -906,6 +1132,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the trigger does nothing, which is the whole of what a bolt action is.
   const BOLT_CYCLE = 1.15;
   let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0;
+  let ended = false;
   addEventListener("mousedown", e => {
     if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
   });
@@ -916,6 +1143,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   let refresh = 1000 / 60, warm = 0, changes = 0, stable = 0, locked = false;
   const median = a => [...a].sort((x, y) => x - y)[a.length >> 1];
 
+  // Where the sun stands before the world has turned, and how fast it turns:
+  // one revolution in half an hour. `shaders/common.wgsl` carries the same
+  // rate, because the sky's own stars and bodies have to swing with it.
+  const SUN_BASE = [0.58, -0.62, -0.52];
+  const SKY_SPIN = 2 * Math.PI / 1800;
   const uf = new Float32Array(56);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
@@ -956,7 +1188,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // goes quiet while the rifle is open and comes back when it will fire.
     const ready = boltT >= BOLT_CYCLE;
     if (ready !== wasReady) { document.body.classList.toggle("cycling", !ready); wasReady = ready; }
-    if (wantShot && boltT >= BOLT_CYCLE) {
+    // Nothing fires from in the lake. Refused here rather than inside `fire`
+    // so the bolt does not cycle and the bang does not play: a rifle that goes
+    // off and does nothing is worse than one that will not go off.
+    if (wantShot && boltT >= BOLT_CYCLE && !Number(E.wading(state))) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
       E.fire(state, Math.sin(yaw) * cp, Math.sin(pit), -Math.cos(yaw) * cp);
@@ -982,16 +1217,30 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       const fb = new Float32Array(E.memory.buffer, Number(E.fireballs(state)), fireCap * 9);
       const flying = [];
       for (let i = 0; i < fireCap; i++) {
-        if (fb[i * 9 + 7] > 0) flying.push(place(fb[i * 9], fb[i * 9 + 1], fb[i * 9 + 2], 26));
+        if (fb[i * 9 + 7] > 0) flying.push(place(fb[i * 9], fb[i * 9 + 1], fb[i * 9 + 2], 34));
       }
       flying.sort((a, b) => a.d - b.d);
       const now = audio.currentTime;
       for (let v = 0; v < roars.length; v++) {
         const f = flying[v];
-        roars[v].gain.gain.setTargetAtTime(f ? 0.55 * f.gain : 0, now, 0.10);
+        // Nothing at all at the far end, and climbing steeply as it closes.
+        //
+        // Not the inverse-distance curve the impacts and the crystals use. That
+        // one never reaches zero, so a round launched forty-five metres out is
+        // already faintly audible the instant it leaves, and three of them at
+        // that range are a constant hiss with nothing to attach it to. Silence
+        // is the whole point of a sound that arrives: you notice a meteor
+        // because you did not hear it a moment ago.
+        //
+        // Squared, so almost all of the loudness is spent in the last fifteen
+        // metres — which is also the physically honest shape, being what an
+        // inverse-square law looks like once you have said where it ends.
+        const k = f ? Math.max(0, 1 - f.d / REACH) : 0;
+        const near = k * k * k;
+        roars[v].gain.gain.setTargetAtTime(0.62 * near, now, 0.10);
         if (f) {
           roars[v].pan.pan.setTargetAtTime(f.pan, now, 0.10);
-          roars[v].filt.frequency.setTargetAtTime(600 + 3200 * f.gain, now, 0.15);
+          roars[v].filt.frequency.setTargetAtTime(500 + 5200 * near, now, 0.15);
         }
       }
     }
@@ -1016,12 +1265,30 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       if (broke) shatter(E.break_x(state), E.break_y(state), E.break_z(state));
     }
 
+    // The valley is on a planet and the planet turns. Around the world's own
+    // axis rather than along a tilted one, which keeps the sun's height fixed
+    // and so keeps the hour: the light swings round the valley all evening and
+    // it stays evening. A tilted axis would be more honest and would put the
+    // sun in the ground within ten minutes, taking the whole look with it.
+    //
+    // One turn in half an hour — twelve degrees a minute. Watch the shadow of a
+    // pine and it is moving; look up at the sky and it is still.
+    const spin = t * SKY_SPIN;
+    const cs = Math.cos(spin), sn = Math.sin(spin);
+    const sunX = SUN_BASE[0] * cs + SUN_BASE[2] * sn;
+    const sunZ = -SUN_BASE[0] * sn + SUN_BASE[2] * cs;
+    // Into the shadow matrix first, so what is copied out of the state below is
+    // this frame's sun and not the last one's. There is one sun in this world:
+    // the disc in the sky, the direction `lit` shades from and the matrix the
+    // shadows are cast with are all the same three numbers.
+    E.set_sun(state, sunX, SUN_BASE[1], sunZ);
+
     const st = stateF32();
     uf.set(st.subarray(0, 16), 0);        // vp
     uf.set(st.subarray(32, 48), 16);      // light vp
     uf.set(st.subarray(16, 19), 32);      // eye
     uf[35] = t;
-    uf[36] = 0.58; uf[37] = -0.62; uf[38] = -0.52;
+    uf[36] = sunX; uf[37] = SUN_BASE[1]; uf[38] = sunZ;
     uf[39] = canvas.width / canvas.height;
     uf[40] = st[19]; uf[41] = st[20];     // yaw, pitch
     uf[42] = st[26]; uf[43] = st[27];     // wind angle, wind strength
@@ -1052,8 +1319,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       new Float32Array(E.memory.buffer, Number(E.blasts(state)), blastCap * 8));
     // The crystals are no longer static — a hit sets one's scale to zero — so
     // their instances go up with everything else now rather than once at build.
-    device.queue.writeBuffer(W.crystalInst, 0,
-      new Float32Array(E.memory.buffer, Number(E.crystals(state)), W.counts.crystals * 8));
+    const cry = new Float32Array(E.memory.buffer, Number(E.crystals(state)), W.counts.crystals * 8);
+    device.queue.writeBuffer(W.crystalInst, 0, cry);
+    // And the end of it: a crystal that has been shot has its scale set to
+    // zero, so the last one going is the whole condition. Read off the same
+    // array that was about to be uploaded anyway, and only until it happens —
+    // after that there is nothing to keep counting.
+    if (!ended) {
+      let alive = 0;
+      for (let i = 0; i < W.counts.crystals; i++) if (cry[i * 8 + 3] > 0.001) { alive = 1; break; }
+      if (!alive) { ended = true; document.getElementById("over").classList.add("on"); }
+    }
     device.queue.writeBuffer(flyTime, 0, new Float32Array([t, dt, 0, 0]));
 
     const enc = device.createCommandEncoder();
@@ -1104,7 +1380,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     pass.draw(crystalVerts, shardCap);
 
     pass.setPipeline(tracerPipe); pass.setVertexBuffer(0, bulletBuf); pass.draw(6, bulletCap);
-    pass.setPipeline(firePipe); pass.setVertexBuffer(0, fireInst); pass.draw(6 * 48, fireCap);
+    pass.setPipeline(firePipe); pass.setVertexBuffer(0, fireInst); pass.draw(6 * 80, fireCap);
     // The stone goes down after the flames, not before: drawn first it sat
     // under an additive fire that simply burned it out, and the leading face —
     // the one thing that says there is something solid in there — was the part
@@ -1126,6 +1402,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       if (!qPending) enc.copyBufferToBuffer(qResolve, 0, qStage, 0, 16);
     }
     device.queue.submit([enc.finish()]);
+    // Once, at the end of the first frame — by which point the shadow map has
+    // been drawn, so the valley in the cube is lit the same way the valley is.
+    if (!W.envBaked) { W.envBaked = true; bakeEnv(uf); }
     if (painted) { painted(); painted = null; }
 
     if (qs && !qPending) {

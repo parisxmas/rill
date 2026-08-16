@@ -39,9 +39,65 @@
   }
 
   @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    // Lit like the crystal it broke off, and glowing like it too, but less:
-    // a chip lying in the grass is not a standing crystal, and the light in
-    // these things evidently keeps some of its own once it is loose.
-    let base = lit(v.color, normalize(v.normal), v.world);
-    return vec4f(base + v.color * 0.34, 1.0);
+    let n = normalize(v.normal);
+    let view = v.world - u.eye.xyz;
+    let V = normalize(view);
+
+    // The diffuse half, written out rather than taken from `lit`, because the
+    // reflection has to go on before the fog does. A facet forty metres off
+    // shows you a hazed sky; it does not show you a clear one and then have
+    // haze laid over the top. That is the difference between a shard that
+    // recedes into the valley and one that looks pasted onto it.
+    //
+    // Lit like the crystal it broke off, and glowing like it too, but less: a
+    // chip lying in the grass is not a standing crystal, and the light in these
+    // things evidently keeps some of its own once it is loose.
+    let L = -normalize(u.sun.xyz);
+    let nl = max(dot(n, L), 0.0);
+    let sh = shadow(v.world, nl);
+    let amb = mix(vec3f(0.10, 0.11, 0.18), vec3f(0.18, 0.19, 0.30), n.y * 0.5 + 0.5);
+    var col = v.color * (SUN_COL * 1.25 * nl * sh + amb * 1.1) + v.color * 0.30;
+
+    // Fresnel. A facet turned edge-on to you is a mirror; one facing you is
+    // mostly its own colour. One dot product, and it is the entire difference
+    // between glass and painted plastic — without it a reflection added at
+    // constant strength just reads as the whole thing having been washed pale.
+    //
+    // Absolute value, not a clamp: these tumble, and half the facets you can
+    // see at any moment are being looked at from behind.
+    let fres = 0.10 + 0.90 * pow(1.0 - abs(dot(V, n)), 5.0);
+
+    // What the facet is actually pointed at — the valley, out of the probe.
+    // This is the difference between a shard that shines and one that is a
+    // mirror: sky alone gives a facet turned down at the grass the colour of
+    // the horizon, which is the one direction it certainly is not looking. Out
+    // of the cube it gets green, and the hillside to the side of it, and the
+    // lake, and all of it swings as you walk around the shard because that is
+    // what a reflection does and a sheen does not.
+    let R = reflect(V, n);
+    col = mix(col, envAt(R, u.eye.w), fres * 0.80);
+
+    // What actually reads as glass is the highlight. Two lobes off the same
+    // sun: a broad one that gives a facet its sheen and is visible from most
+    // angles, and a tight one on top that is a hard white spark and is not.
+    // One alone is either a dull plastic gloss or an invisible pinprick; the
+    // pair is what a polished surface does, because a real one is smooth at
+    // two scales at once.
+    let H = normalize(L - V);
+    let nh = max(dot(n, H), 0.0);
+    // Never wholly dead in shadow. A crystal in the shade still catches the
+    // sky, and a shard that goes flat the moment a cloud of smoke crosses it
+    // looks switched off rather than shaded.
+    let key = 0.30 + 0.70 * sh;
+    col += SUN_COL * pow(nh, 42.0) * 1.15 * key;
+    col += vec3f(1.0, 0.97, 0.92) * pow(nh, 380.0) * 4.5 * key;
+
+    // And the edge. Every facet you can see nearly side-on goes bright, which
+    // is the one cue that survives at any distance and in any light: it is
+    // geometry, not illumination. Half the crystal's own colour and half white,
+    // so a shard's edges glow in its colour without going to paint.
+    let rim = pow(1.0 - abs(dot(V, n)), 3.0);
+    col += mix(v.color, vec3f(1.0), 0.45) * rim * 0.75;
+
+    return vec4f(mix(col, fogColor(view), fogAt(v.world, length(view))), 1.0);
   }

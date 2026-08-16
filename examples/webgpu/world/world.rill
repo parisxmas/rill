@@ -76,6 +76,18 @@ fn height(x, z) =
   d2 = (x * x + z * z) / 7225.0
   clampf(n + d2 * d2 * 26.0 - 10.5 * exp(0.0 - (x * x + z * z) / 1400.0), 0.0 - 9.0, 34.0)
 
+# Whether the player is standing in the lake. The water sits at zero and the
+# ground is carved below it, so the ground under their feet being negative is
+# the whole test — no flag to keep, and nothing that can get out of step with
+# where they actually are.
+fn in_water(s) =
+  if height(peek_f32(s, 21), peek_f32(s, 23)) < 0.0 then 1 else 0
+
+# The host asks too, so that a shot taken while wading is refused before the
+# bolt cycles and the bang plays rather than after: a rifle that goes off and
+# does nothing is worse than one that will not go off.
+export fn wading(s: Ptr) -> Int = in_water(s)
+
 # ---- building the mesh -----------------------------------------------------
 #
 # 96 x 96 cells, two triangles each. The colour is per face — that is where
@@ -547,7 +559,7 @@ fn charge_swell() = 1.5
 
 fn fireball_every() = 1.0       # seconds between attempts
 
-fn fireball_reach() = 45.0      # nothing nearer than this throws
+fn fireball_reach() = 70.0      # nothing nearer than this throws
 
 fn launch_fireball(fb, k, cx, cy, cz, px, py, pz, seed) =
   dx = px - cx
@@ -592,6 +604,12 @@ fn taken(cbuf, i) =
 fn maybe_start(s, cbuf, ci, tnow) =
   at = ci * charger_stride()
   if peek_f32(s, 79) > 0.5 then 0
+  # Nothing is thrown at someone standing in the lake. Checked where a charge
+  # begins rather than where one is released, so a crystal that is already
+  # swelling still finishes its throw: cutting the animation off mid-swell
+  # because the player waded in would leave a crystal stuck at twice its size
+  # with nothing to bring it back.
+  else if in_water(s) > 0 then 0
   else if peek_f32(cbuf, at + 2) > 0.5 then 0
   else
     cb = peek_ptr(s, 66)
@@ -777,16 +795,17 @@ export fn bullets_cap(s: Ptr) -> Int = bullet_cap()
 
 # ---- the sun's matrix ------------------------------------------------------
 #
-# A fixed golden-hour sun. Orthographic view-projection over the whole
-# valley for the shadow pass, column-major like everything the GPU reads.
-# `d` is the direction the light travels; the shader's "toward the sun"
-# is its negation, and `host.js` hard-codes the same three numbers.
+# The sun. Orthographic view-projection over the whole valley for the shadow
+# pass, column-major like everything the GPU reads. `d` is the direction the
+# light travels; the shader's "toward the sun" is its negation.
+#
+# No longer fixed: the world turns, so the direction is an argument and this is
+# recomputed every frame from whatever the host has swung it to. That matters
+# more than it sounds like it should — with the matrix baked at load and the
+# sky's sun moving, the shadows would keep pointing at where the sun used to
+# be, and there would be two suns in the world with only one of them visible.
 
-fn light_vp(s) =
-  il = 1.0 / sqrt(0.58 * 0.58 + 0.62 * 0.62 + 0.52 * 0.52)
-  dx = 0.58 * il
-  dy = (0.0 - 0.62) * il
-  dz = (0.0 - 0.52) * il
+fn light_vp(s, dx, dy, dz) =
   hl = sqrt(dx * dx + dz * dz)
   rx = 0.0 - dz / hl
   rz = dx / hl
@@ -865,8 +884,15 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 21, 0.0 - 14.0)
   poke_f32(s, 22, height(0.0 - 14.0, 0.0 - 34.0))
   poke_f32(s, 23, 0.0 - 34.0)
-  light_vp(s)
+  set_sun(s, 0.58, 0.0 - 0.62, 0.0 - 0.52)
   s
+
+# Where the light comes from, this frame. The host works out the swing and
+# hands it over here, so the shadow matrix and the sun in the sky are the same
+# sun and cannot drift apart.
+export fn set_sun(s: Ptr, dx: Float, dy: Float, dz: Float) =
+  il = 1.0 / sqrt(dx * dx + dy * dy + dz * dz)
+  light_vp(s, dx * il, dy * il, dz * il)
 
 export fn terrain(s: Ptr) -> Ptr = peek_ptr(s, 64)
 

@@ -47,6 +47,32 @@
     body.cycling .aim .d { transform: translateY(16px); }
     body.cycling .aim .dot { opacity: 0; }
 
+    /* When the last crystal is gone. Not a dialogue and not a button — there
+       is nothing left to decide, so it is two lines over the valley and the
+       valley keeps running behind them. Pointer-events stay off so looking
+       around still works: the ending is a caption, not a wall. */
+    .over {
+      position: fixed; inset: 0; z-index: 9; display: grid; place-content: center;
+      justify-items: center; gap: 0.6rem; pointer-events: none;
+      opacity: 0; transition: opacity 1600ms ease;
+      background: radial-gradient(ellipse at center, rgba(4, 3, 8, 0.62), rgba(4, 3, 8, 0.92));
+    }
+    .over.on { opacity: 1; }
+    .over span {
+      font: 800 clamp(3rem, 15vw, 11rem)/0.9 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.06em; color: #f6c02e;
+      text-shadow: 0 0 40px rgba(246, 192, 46, 0.35), 0 0 4px rgba(0, 0, 0, 0.9);
+      /* It arrives rather than appearing: the letters ease in from wide, which
+         is the difference between an ending and a popup. */
+      transform: scale(1.18); transition: transform 2200ms cubic-bezier(.16,.8,.28,1);
+    }
+    .over.on span { transform: scale(1); }
+    .over em {
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-style: normal; letter-spacing: 0.28em; text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.42);
+    }
+
     /* The loader. It covers the canvas until a frame has actually been drawn
        on it, so nobody watches a black rectangle wondering whether it works. */
     .boot {
@@ -88,6 +114,7 @@
     <i class="h l"></i><i class="h r"></i><i class="v u"></i><i class="v d"></i>
     <i class="dot"></i>
   </div>
+  <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em></div>
   <div class="boot" id="boot">
     <div class="inner">
       <h1>RILL &nbsp;VALLEY</h1>
@@ -101,7 +128,7 @@
   <script type="module">
     // Versioned because the CDN in front of this holds .js for a week; bump it
     // when host.js changes. index.html itself is never cached.
-    import { run } from "./host.js?v=76";
+    import { run } from "./host.js?v=104";
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");
