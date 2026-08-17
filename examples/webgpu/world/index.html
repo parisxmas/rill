@@ -47,6 +47,22 @@
     body.cycling .aim .d { transform: translateY(16px); }
     body.cycling .aim .dot { opacity: 0; }
 
+    /* Refusals. Low and centred, over the health bar and under everything
+       else: near enough the crosshair to be seen without looking away, far
+       enough not to sit on top of what you are aiming at. It comes in fast
+       and leaves slowly, which is the way round that reads as an answer to
+       something you just did rather than as an alert arriving on its own. */
+    .warn {
+      position: fixed; left: 0; right: 0; bottom: 52px; z-index: 8;
+      text-align: center; pointer-events: none;
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.22em; text-transform: uppercase;
+      color: #f6832e; text-shadow: 0 0 12px rgba(0, 0, 0, 0.9);
+      opacity: 0; transform: translateY(6px);
+      transition: opacity 420ms ease, transform 420ms ease;
+    }
+    .warn.on { opacity: 1; transform: none; transition-duration: 90ms; }
+
     /* Health, across the whole bottom of the screen. Big, because it is the
        one number you have to read without looking at it — a bar you have to
        find is a bar you check after you are dead. It sits under everything and
@@ -150,6 +166,7 @@
     <i class="h l"></i><i class="h r"></i><i class="v u"></i><i class="v d"></i>
     <i class="dot"></i>
   </div>
+  <div class="warn" id="warn"></div>
   <div class="tally" id="tally"></div>
   <div class="vit" id="vit"><i id="vitfill"></i></div>
   <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em><small>space to begin again</small></div>
@@ -171,14 +188,15 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=163";
+    import { run } from "./host.js?v=174";
+    const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=163", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=174", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       stat.innerHTML =
@@ -186,7 +204,13 @@
         `<b>${h.fps}</b> fps${gpu} · ${Math.round(h.tris / 1000)}k triangles<br>` +
         `terrain, placement, physics, matrices: <b>world.rill</b> → ` +
         `<b>${h.wasmBytes ? (h.wasmBytes / 1024).toFixed(1) + " KB" : "?"}</b> of wasm<br>` +
-        `shadows · MSAA 4x · instancing · gerstner water · compute particles`;
+        `shadows · MSAA 4x · instancing · gerstner water · compute particles<br>` +
+        `textures <b>${kb(h.tex)}</b> · all assets <b>${kb(h.raw)}</b> → ` +
+        // "deflated" only when it actually was. Served off a plain local server
+        // nothing is compressed and `transferSize` counts response headers, so
+        // the wire figure comes out *larger* than the payload — true, and a lie
+        // if it is labelled as compression.
+        `<b>${kb(h.wire)}</b> ${h.wire < h.raw ? "deflated" : "over the wire"}`;
     }, (done, total, label) => {
       bar.style.width = `${(done / total * 100).toFixed(0)}%`;
       pct.textContent = `${Math.round(done / total * 100)}%`;

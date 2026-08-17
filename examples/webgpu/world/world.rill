@@ -778,7 +778,13 @@ fn blast_hurt(s, x, y, z) =
   # felt at all, so the ones that land across the meadow are still part of the
   # weather rather than being either lethal or nothing.
   hit = 0.115 * k * k * k
-  if hit < 0.002 then 0
+  # Nothing reaches you in the lake. The crystals already refuse to throw at
+  # someone standing in it; this is the other half of that — one already in the
+  # air when you waded in should not still land on you. Water takes a blast
+  # wave apart, and more to the point the two rules have to agree or wading in
+  # only protects you from the shots that had not been fired yet.
+  if in_water(s) > 0 then 0
+  else if hit < 0.002 then 0
   else
     poke_f32(s, 82, clampf(peek_f32(s, 82) - hit, 0.0, 1.0))
     # And it shoves you. Away from the blast on the flat and a little upward,

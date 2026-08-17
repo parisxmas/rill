@@ -15,7 +15,17 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js";
+import { load } from "./world.js?v=174";   // keep in step with V below
+
+// One number, appended to every asset URL.
+//
+// Not for the browser's cache — that would be reason enough — but for the CDN's.
+// The images and audio went out under bare names, so replacing a texture at the
+// origin changed nothing anyone could see: CloudFlare kept serving the old one
+// and there is no purging it without a token. A version in the query string
+// makes a new file a new URL, which is the only cache invalidation that needs
+// nobody's permission. Bump it with `?v=` in index.html.
+const V = "174";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -76,10 +86,11 @@ const TEXTURES = [
   ["./rifle-atlas.jpg", 1024, 512],  // the rifle's two materials, side by side
   ["./meteor.jpg", 256, 256],        // the stone inside a fireball
   // Jupiter, equirectangular: Cassini's imagery by way of Solar System Scope,
-  // CC BY 4.0. Two thousand across for a disc four hundred pixels wide — the
-  // visible hemisphere is half the map, so it is still better than a texel a
-  // pixel, and the belts are the one thing that has to survive.
-  ["./jupiter.jpg", 2048, 1024],
+  // CC BY 4.0. A thousand across for a disc four hundred pixels wide — the
+  // visible hemisphere is half the map, so five hundred texels cover four
+  // hundred pixels and it is still oversampled. Two thousand was 219 KB for
+  // detail that never reached the screen; this is 62.
+  ["./jupiter.jpg", 1024, 512],
   // Saturn's globe. Half Jupiter's width on screen, so half the map does.
   ["./saturn.jpg", 1024, 512],
   // The four Galileans in one 2x2 atlas — Io and Europa on the top row,
@@ -92,7 +103,7 @@ const TEXTURES = [
 async function loadShaders(step) {
   const src = Object.fromEntries(await Promise.all(
     Object.keys(SHADERS).map(async name => {
-      const r = await fetch(`./shaders/${name}.wgsl`);
+      const r = await fetch(`./shaders/${name}.wgsl?v=${V}`);
       if (!r.ok) throw new Error(`shaders/${name}.wgsl: ${r.status}`);
       const text = await r.text();
       step(`shaders/${name}.wgsl`);
@@ -320,7 +331,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   let wasmBytes = 0;
   const wasmSize = () => {
     if (wasmBytes) return wasmBytes;
-    const e = performance.getEntriesByType("resource").find(r => r.name.endsWith(".wasm"));
+    const e = performance.getEntriesByType("resource").find(r => r.name.includes(".wasm"));
     wasmBytes = e ? e.decodedBodySize || e.encodedBodySize || 0 : 0;
     return wasmBytes;
   };
@@ -363,7 +374,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView,
          jupiterView, saturnView, moonsView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
-      mipped(url, w, h).then(v => { step(url.slice(2)); return v; })));
+      mipped(`${url}?v=${V}`, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
     magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
     addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
@@ -528,7 +539,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
 
   // The rifle: one file, its own header. Two counts, then the bounding box the
   // positions were quantized against, then the vertices, then the indices.
-  const rifleBytes = await (await fetch("./rifle.mesh")).arrayBuffer();
+  const rifleBytes = await (await fetch(`./rifle.mesh?v=${V}`)).arrayBuffer();
   const rifleHead = new DataView(rifleBytes, 0, 32);
   const rifleVerts = rifleHead.getUint32(0, true);
   const rifleIdx = rifleHead.getUint32(4, true);
@@ -562,12 +573,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
   let roarBuf = null, roars = null, pickBuf = null, musicStarted = false;
   let musicGain = null, musicOn = true;
-  const shotBytes = await (await fetch("./rifle-shot.mp3")).arrayBuffer();
+  const shotBytes = await (await fetch(`./rifle-shot.mp3?v=${V}`)).arrayBuffer();
   step("rifle-shot.mp3");
-  const breakBytes = await (await fetch("./crystal-break.mp3")).arrayBuffer();
+  const breakBytes = await (await fetch(`./crystal-break.mp3?v=${V}`)).arrayBuffer();
   step("crystal-break.mp3");
   // Two explosions, 1.9 seconds each, laid end to end and played by offset.
-  const blastBytes = await (await fetch("./meteor-blast.mp3")).arrayBuffer();
+  const blastBytes = await (await fetch(`./meteor-blast.mp3?v=${V}`)).arrayBuffer();
   step("meteor-blast.mp3");
   // What something falling through the sky sounds like from underneath.
   //
@@ -589,18 +600,18 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // by construction and the join is a step of 4046 against a mean sample-to-
   // sample step of 2437 — indistinguishable from the noise's own motion, with
   // no crossfade needed anywhere.
-  const roarBytes = await (await fetch("./meteor-air.mp3")).arrayBuffer();
+  const roarBytes = await (await fetch(`./meteor-air.mp3?v=${V}`)).arrayBuffer();
   step("meteor-air.mp3");
   // A chip of crystal going in. Three quarters of a second off the front of a
   // CC0 harp figure by Julie Damsgaard — the rest of it is a two-second tail,
   // which is a lovely thing to have and the wrong shape entirely for a sound
   // that fires four times while you cross a patch of debris.
-  const pickBytes = await (await fetch("./pickup.mp3")).arrayBuffer();
+  const pickBytes = await (await fetch(`./pickup.mp3?v=${V}`)).arrayBuffer();
   step("pickup.mp3");
   // The theme. Eighty seconds that begin and end in silence, which is what
   // makes it loop without a seam: no crossfade, no loop points, just the tail
   // running into the head the way the piece was already written.
-  const musicBytes = await (await fetch("./valley-theme.mp3")).arrayBuffer();
+  const musicBytes = await (await fetch(`./valley-theme.mp3?v=${V}`)).arrayBuffer();
   step("valley-theme.mp3");
   // One node per sound, built and thrown away: cheaper than it looks, and the
   // only way to have two of the same sample overlapping.
@@ -1113,10 +1124,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     const y = cross(z, x);
     // The view, column-major: the basis in the first three columns and the
     // translation, in that basis, in the fourth.
-    const V = [ x[0], y[0], z[0], 0,
-                x[1], y[1], z[1], 0,
-                x[2], y[2], z[2], 0,
-                -dot(x, eye), -dot(y, eye), -dot(z, eye), 1 ];
+    // `view`, not `V`: that is the asset version at module scope, and a local
+    // of the same name shadowing it here is the sort of thing that is harmless
+    // until someone adds a fetch to this function.
+    const view = [ x[0], y[0], z[0], 0,
+                   x[1], y[1], z[1], 0,
+                   x[2], y[2], z[2], 0,
+                   -dot(x, eye), -dot(y, eye), -dot(z, eye), 1 ];
     const d = near - far;
     const P = [ 1, 0, 0, 0,
                 0, 1, 0, 0,
@@ -1125,7 +1139,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     const out = new Float32Array(16);
     for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
       let s = 0;
-      for (let k = 0; k < 4; k++) s += P[k * 4 + r] * V[c * 4 + k];
+      for (let k = 0; k < 4; k++) s += P[k * 4 + r] * view[c * 4 + k];
       out[c * 4 + r] = s;
     }
     return out;
@@ -1211,7 +1225,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the trigger does nothing, which is the whole of what a bolt action is.
   const BOLT_CYCLE = 1.15;
   let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0;
-  let ended = false, lastStanding = -1, wantRestart = false;
+  let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
+  const warn = document.getElementById("warn");
   const tally = document.getElementById("tally");
   const vitfill = document.getElementById("vitfill");
   let lastHp = -1, hurtUntil = 0;
@@ -1274,6 +1289,25 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   let painted = null;
   const firstFrame = new Promise(r => { painted = r; });
 
+  // What the page actually pulled down, asked of the browser rather than
+  // written down here. `decodedBodySize` is the asset as the decoder sees it,
+  // `transferSize` is what crossed the wire — the gap between them is what
+  // gzip and brotli did, and it is the only honest way to report it: a number
+  // typed into a comment goes stale the first time a texture is re-encoded.
+  //
+  // Recomputed on each HUD tick rather than cached, because it costs a walk
+  // over forty entries twice a second and it catches anything that loads late.
+  const IMG = /\.(jpg|png)(\?|$)/;
+  function weights() {
+    let raw = 0, wire = 0, tex = 0;
+    for (const e of performance.getEntriesByType("resource")) {
+      raw += e.decodedBodySize || 0;
+      wire += e.transferSize || 0;
+      if (IMG.test(e.name)) tex += e.decodedBodySize || 0;
+    }
+    return { raw, wire, tex };
+  }
+
   let last = performance.now(), fps = 0, frames = 0, fpsT = last;
 
   function tick(now) {
@@ -1325,7 +1359,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     }
     wantRestart = false;
 
-    if (wantShot && boltT >= BOLT_CYCLE && !Number(E.wading(state))) {
+    // Nothing fires from in the lake — and it says so. A control that silently
+    // does nothing is indistinguishable from a broken one: you pull the
+    // trigger, get no bolt, no bang and no round, and the only conclusion
+    // available is that the game has stopped working. One line turns a fault
+    // into a rule.
+    const wading = Number(E.wading(state));
+    if (wantShot && wading) {
+      warn.textContent = "you cannot fire from the water";
+      warn.classList.add("on");
+      warnUntil = t + 1.9;
+    }
+    if (warnUntil && t > warnUntil) { warn.classList.remove("on"); warnUntil = 0; }
+
+    if (wantShot && boltT >= BOLT_CYCLE && !wading) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
       E.fire(state, Math.sin(yaw) * cp, Math.sin(pit), -Math.cos(yaw) * cp);
@@ -1594,7 +1641,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     if (now - fpsT > 500) {
       fps = Math.round(frames * 1000 / (now - fpsT));
       frames = 0; fpsT = now;
-      hud({ fps, gpuMs: qs ? gpuMs : null, tier: T.name, gpuName, tris: W.tris, locked, wasmBytes: wasmSize() });
+      hud({ fps, gpuMs: qs ? gpuMs : null, tier: T.name, gpuName, tris: W.tris, locked,
+            wasmBytes: wasmSize(), ...weights() });
     }
     requestAnimationFrame(tick);
   }
