@@ -20,8 +20,15 @@
       font: 12px/1.6 ui-monospace, monospace; pointer-events: none;
     }
     .stat b { color: #f6c02e; }
-    .err { position: fixed; inset: 0; display: grid; place-items: center;
-           color: #c9c3e4; font: 14px ui-monospace, monospace; }
+    /* Left-aligned and pre-wrapped, not centred. What lands here is no longer
+       one short line: the no-adapter message names two settings pages and a
+       diagnostic one, and centring a block of instructions makes every line
+       start somewhere different, which is the hardest way to read a list of
+       things to go and click. */
+    .err { position: fixed; inset: 0; overflow: auto; z-index: 11;
+           background: rgba(6, 6, 12, 0.94); padding: 2rem;
+           color: #c9c3e4; font: 13px/1.7 ui-monospace, monospace;
+           white-space: pre-wrap; }
 
     /* The crosshair: four strokes with a gap in the middle, so it marks the
        point without covering it. Each carries a dark rim, which is what keeps
@@ -188,7 +195,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=220";
+    import { run } from "./host.js?v=221";
     const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
@@ -196,7 +203,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=220", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=221", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       stat.innerHTML =
@@ -232,7 +239,14 @@
     }).catch(e => {
       console.error("SETUP FAILED", e.stack || e);
       boot.remove();
-      document.body.insertAdjacentHTML("beforeend", `<div class="err">${e.message}</div>`);
+      // textContent, not an interpolated string: the message is now several
+      // lines with slashes and quotes in it, and putting that through innerHTML
+      // both eats the newlines and hands the page's own error text to the HTML
+      // parser, which is a habit worth not having whatever the source.
+      const box = document.createElement("div");
+      box.className = "err";
+      box.textContent = e.message;
+      document.body.appendChild(box);
     });
   </script>
 </body>

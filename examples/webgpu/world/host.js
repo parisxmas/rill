@@ -15,7 +15,7 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=220";   // keep in step with V below
+import { load } from "./world.js?v=221";   // keep in step with V below
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +25,7 @@ import { load } from "./world.js?v=220";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "220";
+const V = "221";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -336,9 +336,40 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     throw new Error("this browser has no WebGPU — on iPhone or iPad it needs " +
                     "Safari 26 or newer, and on a desktop a current Chrome, " +
                     "Edge or Safari");
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error("no GPU adapter — the browser has WebGPU but " +
-                                "would not give this page a GPU");
+  // Ask more than once before giving up.
+  //
+  // `requestAdapter()` with no options returns null on a machine that has a
+  // perfectly good GPU more often than you would think, and the usual reason on
+  // Windows is that the browser has been told not to use one — Edge and Chrome
+  // both have a "use graphics acceleration when available" switch, and with it
+  // off there is no adapter to hand out however capable the card is. Remote
+  // Desktop does the same thing, and so does a driver on the browser's
+  // blocklist.
+  //
+  // So: the default, then explicitly the low-power one in case the discrete
+  // card is the thing being refused, and finally the fallback adapter, which is
+  // the browser's own software rasteriser. That last one is not fast — it is a
+  // CPU drawing four hundred thousand triangles — but the tiering already
+  // recognises it by name and starts at the bottom, and a valley at six frames
+  // a second is a different thing from a page that will not open.
+  let adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) adapter = await navigator.gpu.requestAdapter({ powerPreference: "low-power" });
+  let software = false;
+  if (!adapter) {
+    adapter = await navigator.gpu.requestAdapter({ forceFallbackAdapter: true });
+    software = !!adapter;
+  }
+  if (!adapter) throw new Error(
+    "no GPU adapter.\n\n" +
+    "the browser has WebGPU but would not give this page a GPU, and would not " +
+    "give it a software one either. that is nearly always graphics " +
+    "acceleration being switched off in the browser rather than anything to do " +
+    "with this page:\n\n" +
+    "  Edge    edge://settings/system — \"use graphics acceleration when available\"\n" +
+    "  Chrome  chrome://settings/system — the same switch\n\n" +
+    "then restart the browser. edge://gpu or chrome://gpu will say what it " +
+    "thinks of your card. Remote Desktop and some virtual machines have no GPU " +
+    "to give at all.");
 
   // The one feature worth asking for: GPU timestamps, so the HUD can show
   // what a frame costs the GPU rather than what rAF implies.
@@ -405,6 +436,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     row.textContent = detail ? `${what}\n  ${detail}` : what;
     panel.appendChild(row);
   };
+  // If we got here on the fallback adapter, say so. It will run, and it will
+  // run badly, and a visitor who is not told will read that as the page being
+  // slow rather than as their browser drawing it on the CPU.
+  if (software) shout("running on a software renderer",
+    "the browser would not give this page a real GPU, so this is being drawn " +
+    "on the processor and will be slow. graphics acceleration is probably " +
+    "switched off: edge://settings/system or chrome://settings/system, then " +
+    "restart the browser.");
   device.addEventListener("uncapturederror", e => {
     console.error("WEBGPU:", e.error.message);
     shout("the gpu rejected something", e.error.message);
