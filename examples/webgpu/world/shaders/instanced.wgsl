@@ -77,12 +77,15 @@
     //
     // Premultiplied, because the pipeline blends that way: the colour arrives
     // already scaled by coverage.
-    // Only a hint of it. At 0.40 the hillside came through the middle of every
-    // prism and they stopped reading as solid objects standing in the valley —
-    // which is the trap with glass: past a point the transparency is not
-    // showing you the inside of a thing, it is showing you that there is no
-    // thing there. Eight tenths keeps the interior visible without the crystal
-    // dissolving into what is behind it.
-    let a = clamp(0.82 + 0.18 * fres, 0.0, 1.0);
+    // Barely any. This has come down twice: 0.40 let the hillside through the
+    // middle of every prism and they stopped reading as solid objects standing
+    // in the valley, and 0.82 still washed them. At 0.93 what is left is a
+    // trace — enough that a face catches the light coming through from behind
+    // and the far edges of the prism are faintly there, and not enough to see
+    // the meadow through it.
+    //
+    // Which is the trap with glass: past a point transparency stops showing you
+    // the inside of a thing and starts showing you that there is no thing.
+    let a = clamp(0.93 + 0.07 * fres, 0.0, 1.0);
     return vec4f(col * a, a);
   }

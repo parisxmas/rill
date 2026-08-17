@@ -188,7 +188,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=204";
+    import { run } from "./host.js?v=205";
     const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
@@ -196,7 +196,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=204", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=205", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       stat.innerHTML =
