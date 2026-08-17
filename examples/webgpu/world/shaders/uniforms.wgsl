@@ -15,6 +15,12 @@
     sharkAt:   vec4f,
     sharkMin:  vec4f,
     sharkSize: vec4f,
+    // The impact that is currently lighting the valley: xyz where it landed,
+    // w how many seconds ago. Negative w means nothing is burning. Only one,
+    // and the newest — two blasts close enough together to both matter is rare
+    // enough that the second one taking over is not something you can see, and
+    // a light per blast would cost a loop in every fragment in the world.
+    blast: vec4f,
   }
   @group(0) @binding(0) var<uniform> u: U;
 

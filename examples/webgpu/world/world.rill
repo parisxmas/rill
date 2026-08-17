@@ -494,13 +494,15 @@ fn hit_crystals(s, b, at, ax, ay, az, bx, by, bz) =
 
 fn step_shard(sb, at, dt) =
   sc = peek_f32(sb, at + 12)
+  # Every piece falls, whatever it is worth. The test for that — slot 16, the
+  # flag that says a chip came off a crystal you shot and not out of a crater —
+  # belongs in `gather_shard` and was for a while in here as well, which meant
+  # the eighteen lumps a meteor throws were never stepped at all: no gravity,
+  # no tumble, no landing. They hung in the air over the crater at the height
+  # they spawned, each frozen at its random spawn angle, until the slot was
+  # reused. What a shard is worth to walk over has nothing to do with whether
+  # it obeys gravity.
   if sc < 0.0001 then 0
-  # Charred ground is charred ground. Measured before this test existed: an
-  # impact took fifteen points off and then handed back sixty-three, because
-  # the eighteen pieces it blew out of the hillside landed on the player it had
-  # just hit and were picked up on the spot. Being shelled was the fastest way
-  # to heal in the valley.
-  else if peek_f32(sb, at + 16) < 0.5 then 0
   else
     vy = peek_f32(sb, at + 4) - 24.0 * dt
     x = peek_f32(sb, at) + peek_f32(sb, at + 3) * dt
@@ -767,17 +769,22 @@ fn blast_hurt(s, x, y, z) =
   dy = peek_f32(s, 22) + 1.0 - y
   dz = peek_f32(s, 23) - z
   d = sqrt(dx * dx + dy * dy + dz * dz)
-  k = clampf(1.0 - d / 60.0, 0.0, 1.0)
-  # Cubed, and out to sixty metres. Squared over a short radius meant every
-  # impact either missed entirely or took the same bite out of you, because
-  # these are thrown at where you are standing and so nearly all of them land
-  # within a few metres.
+  k = clampf(1.0 - d / 45.0, 0.0, 1.0)
+  # Cubed, and out to forty-five metres. Squared over a short radius meant
+  # every impact either missed entirely or took the same bite out of you,
+  # because these are thrown at where you are standing and so nearly all of
+  # them land within a few metres.
   #
-  # Sixty is wide — most of what you can see — and the cube is what stops that
-  # from meaning everything hurts equally: full at your feet, a third of it at
-  # twenty metres, a hundredth at fifty. What it buys is that a near miss is
-  # felt at all, so the ones that land across the meadow are still part of the
-  # weather rather than being either lethal or nothing.
+  # The cube is what stops a wide radius from meaning everything hurts equally:
+  # full at your feet, a third of it at fifteen metres, a hundredth at thirty
+  # -eight. What it buys is that a near miss is felt at all, so the ones that
+  # land across the meadow are still part of the weather rather than being
+  # either lethal or nothing.
+  #
+  # Sixty was the radius for a while and it was too much of the valley — an
+  # impact you could barely see across the meadow still registered, which made
+  # the whole map feel dangerous rather than the ground around you. Forty-five
+  # keeps the near miss and gives back the far side.
   hit = 0.115 * k * k * k
   # Nothing reaches you in the lake. The crystals already refuse to throw at
   # someone standing in it; this is the other half of that — one already in the

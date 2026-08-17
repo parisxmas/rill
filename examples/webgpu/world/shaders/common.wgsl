@@ -685,6 +685,44 @@
     return mix(vec3f(0.020, 0.026, 0.052), lit2, day);
   }
 
+  // The light an impact throws onto everything around it.
+  //
+  // This was missing and it was the largest thing missing. A fireball the size
+  // of a house was going off against a hillside that took no notice of it: the
+  // fire was a bright sprite in front of unchanged ground, which is exactly how
+  // a sticker looks. What sells an explosion is not the fireball, it is the
+  // half second where the grass, the trunks and the far slope all go orange and
+  // then go back — because that is the only part of it that says the light is
+  // in the world rather than on the screen.
+  //
+  // One point light with the inverse square it actually obeys, and a decay far
+  // faster than the fireball's own: what lights a valley is the first second,
+  // long before the smoke is finished. The `1 - exp` is the rise — the flash
+  // does not exist and then does, it takes a frame or two to reach full, and
+  // without that the whole valley changes brightness between two frames and
+  // reads as a bug in the exposure rather than as an explosion.
+  fn blastLight(n: vec3f, world: vec3f) -> vec3f {
+    let age = u.blast.w;
+    if (age < 0.0 || age > 2.6) { return vec3f(0.0); }
+    let d = u.blast.xyz - world;
+    let dist = length(d);
+    let L = d / max(dist, 0.001);
+    let fall = 1.0 / (1.0 + dist * dist * 0.0075);
+    let burn = exp(-age * 2.1) * (1.0 - exp(-age * 55.0));
+    // Warmer and redder than the sun by a long way, and with a floor under the
+    // dot product: a fireball is a volume, not a point, so the faces turned
+    // away from its centre are still standing inside its glow.
+    let face = 0.18 + 0.82 * max(dot(n, L), 0.0);
+    // Twice the sun at your feet and a fifth of it at twenty metres. This was
+    // six and a half, which is what a fireball three metres away really does to
+    // your eye and which turned the whole screen into one flat yellow field
+    // with the trees, the lake and the far slope all the same value — the exact
+    // headlight the puffs are blended rather than added to avoid. An explosion
+    // has to light the valley and still leave it a valley; past about two it
+    // stops lighting anything because there is no longer anything to light.
+    return vec3f(1.0, 0.44, 0.13) * face * fall * burn * 2.1;
+  }
+
   fn lit(albedo: vec3f, n: vec3f, world: vec3f) -> vec3f {
     let L = -normalize(u.sun.xyz);
     let day = dayness();
@@ -718,7 +756,8 @@
     let M = normalize(MOON_AT);
     let moon = MOON_COL * max(dot(n, M), 0.0) * moonPhase() * 0.55 * (1.0 - day);
 
-    var col = albedo * (SUN_COL * 1.25 * nl * sh * day + moon + amb + headlamp(n, world, day));
+    var col = albedo * (SUN_COL * 1.25 * nl * sh * day + moon + amb + headlamp(n, world, day)
+                        + blastLight(n, world));
     let view = world - u.eye.xyz;
     return mix(col, fogColor(view), fogAt(world, length(view)));
   }

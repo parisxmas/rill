@@ -15,7 +15,7 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=207";   // keep in step with V below
+import { load } from "./world.js?v=216";   // keep in step with V below
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +25,7 @@ import { load } from "./world.js?v=207";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "207";
+const V = "216";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -352,7 +352,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // the GPU buffer did not is a `writeBuffer` overrun, which is a validation
   // error, an invalid pipeline and a black screen with nothing in the console
   // that names the cause.
-  const UNI_FLOATS = 72;
+  const UNI_FLOATS = 76;
   const uni = device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const shadowSamp = device.createSampler({ compare: "less" });
@@ -1575,6 +1575,24 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // The bolt's throw, as a fraction. The shot itself is the first instant of
     // it, so the recoil and the lift start together the way they do in a hand.
     uf[51] = boltT / BOLT_CYCLE;
+
+    // The impact that is lighting the valley: the youngest one still burning.
+    // Rill keeps the ages, so this is a scan of eight floats and not a clock of
+    // the host's own — which matters on the frame after a restart, when every
+    // blast is cleared and a host-side timer would still be counting one down.
+    {
+      const bl = new Float32Array(E.memory.buffer, Number(E.blasts(state)), blastCap * 8);
+      let best = -1;
+      for (let i = 0; i < blastCap; i++) {
+        const a = bl[i * 8 + 4];
+        if (a >= 0 && a < 2.6 && (best < 0 || a < bl[best * 8 + 4])) best = i;
+      }
+      if (best < 0) { uf[75] = -1; }
+      else {
+        uf[72] = bl[best * 8]; uf[73] = bl[best * 8 + 1]; uf[74] = bl[best * 8 + 2];
+        uf[75] = bl[best * 8 + 4];
+      }
+    }
     device.queue.writeBuffer(uni, 0, uf);
     device.queue.writeBuffer(bulletBuf, 0,
       new Float32Array(E.memory.buffer, Number(E.bullets(state)), bulletCap * 8));
@@ -1709,7 +1727,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // the one thing that says there is something solid in there — was the part
     // that vanished first.
     pass.setPipeline(meteorPipe); pass.draw(3 * 11, fireCap);
-    pass.setPipeline(blastPipe); pass.setVertexBuffer(0, blastInst); pass.draw(6 * 56, blastCap);
+    pass.setPipeline(blastPipe); pass.setVertexBuffer(0, blastInst); pass.draw(6 * 96, blastCap);
 
     // Last, so it covers the water and the fireflies as well as the ground.
     pass.setBindGroup(0, W.bgMain);
