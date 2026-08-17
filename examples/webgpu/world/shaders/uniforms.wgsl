@@ -9,6 +9,12 @@
     vmMin:  vec4f, // xyz the rifle's bounding box, which its vertices were
                    // quantized against; w how far through the bolt's throw
     vmSize: vec4f, // the box's size — see `rifle.mesh`
+    // The shark: x yaw, y unused, z where the tail is in its beat, w how far
+    // the jaw is open. Its position and its own bounding box follow.
+    shark:     vec4f,
+    sharkAt:   vec4f,
+    sharkMin:  vec4f,
+    sharkSize: vec4f,
   }
   @group(0) @binding(0) var<uniform> u: U;
 

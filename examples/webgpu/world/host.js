@@ -15,7 +15,7 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=184";   // keep in step with V below
+import { load } from "./world.js?v=204";   // keep in step with V below
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +25,7 @@ import { load } from "./world.js?v=184";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "184";
+const V = "204";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -67,7 +67,7 @@ const SHADERS = {
   uniforms: null, common: "uniforms",
   terrain: "common", instanced: "common", pine: "common", grass: "common",
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
-  fireball: "common", blast: "common", meteor: "common",
+  fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms",
@@ -98,6 +98,8 @@ const TEXTURES = [
   // the Celestia project. Twenty pixels of moon does not need five hundred and
   // twelve, but the poles turn to mush below it and one atlas is one binding.
   ["./moons.jpg", 1024, 512],
+  // The shark, seen only under water and mostly through it.
+  ["./shark-skin.jpg", 512, 512],
 ];
 
 async function loadShaders(step) {
@@ -124,6 +126,7 @@ async function loadShaders(step) {
     FIREBALL: whole("fireball"),
     BLAST: whole("blast"),
     METEOR: whole("meteor"),
+    SHARK: whole("shark"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
@@ -294,7 +297,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 10 + Object.keys(SHADERS).length + TEXTURES.length + 6;
+  const TOTAL = 11 + Object.keys(SHADERS).length + TEXTURES.length + 6;
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -344,7 +347,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
 
   // Static GPU objects: uniforms, sampler, small meshes, layouts, and every
   // pipeline that does not depend on the tier.
-  const uni = device.createBuffer({ size: 56 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  // Sized from the struct, not from a number that has to be remembered. It was
+  // 56 floats and the shark added sixteen more; a staging array that grew while
+  // the GPU buffer did not is a `writeBuffer` overrun, which is a validation
+  // error, an invalid pipeline and a black screen with nothing in the console
+  // that names the cause.
+  const UNI_FLOATS = 72;
+  const uni = device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const shadowSamp = device.createSampler({ compare: "less" });
 
@@ -372,7 +381,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // another they were the longest thing between the page opening and the
   // valley appearing.
   const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView,
-         jupiterView, saturnView, moonsView] =
+         jupiterView, saturnView, moonsView, sharkView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
       mipped(`${url}?v=${V}`, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
@@ -406,6 +415,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     { binding: 14, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 15, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 16, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 17, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -529,6 +539,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // cut open by the near plane, and a culled interior reads as "not there"
   // where an unculled one reads as a dark wall across the bottom of the screen.
   const vmPipe = pipe("viewmodel", S.VIEWMODEL, vmLayout);
+  // The shark. Culled normally, depth-tested and depth-writing like any solid
+  // — it is only unusual in when it is drawn at all, which is decided in the
+  // frame rather than here.
+  const sharkLayout = [{ arrayStride: 20, attributes: [
+    { shaderLocation: 0, offset: 0,  format: "unorm16x4" },   // position in the box
+    { shaderLocation: 1, offset: 8,  format: "snorm8x4" },    // normal
+    { shaderLocation: 2, offset: 12, format: "snorm16x2" },   // uv, times 4096
+    { shaderLocation: 3, offset: 16, format: "unorm8x4" },    // flat colour
+  ]}];
+  const sharkPipe = pipe("shark", S.SHARK, sharkLayout);
   // Additive and depth-tested but not depth-writing: a tracer is light in the
   // air, so the ground hides it and it hides nothing.
   const tracerPipe = pipe("tracer", S.TRACER, bulletLayout,
@@ -571,6 +591,26 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   });
   device.queue.writeBuffer(rifleIB, 0, rifleIdxBytes);
   step("rifle.mesh");
+
+  // The shark. Same shape of file as the rifle, one header longer: a magic,
+  // the two counts, and the box the positions were quantized against.
+  //
+  // Twenty bytes a vertex — position in unorm16 across that box, normal in
+  // snorm8, texture coordinate in snorm16, and a flat colour for the parts
+  // the skin does not cover. 2,396 vertices and 2,816 triangles in 64 KB.
+  const sharkBytes = await (await fetch(`./shark.mesh?v=${V}`)).arrayBuffer();
+  const sharkHead = new DataView(sharkBytes, 0, 40);
+  const sharkVerts = sharkHead.getUint32(4, true);
+  const sharkIdx = sharkHead.getUint32(8, true);
+  const sharkBox = new Float32Array(sharkBytes, 16, 6);
+  const sharkVB = gpuBuf(new Uint8Array(sharkBytes, 40, sharkVerts * 20));
+  const sharkIdxBytes = new Uint8Array((sharkIdx * 2 + 3) & ~3);
+  sharkIdxBytes.set(new Uint8Array(sharkBytes, 40 + sharkVerts * 20, sharkIdx * 2));
+  const sharkIB = device.createBuffer({
+    size: sharkIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(sharkIB, 0, sharkIdxBytes);
+  step("shark.mesh");
 
   // The bullets live in Rill's memory and are copied up whole every frame:
   // thirty-two rounds is a kilobyte, which is less than the call it would take
@@ -1037,6 +1077,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 14, resource: jupiterView },
       { binding: 15, resource: saturnView },
       { binding: 16, resource: moonsView },
+      { binding: 17, resource: sharkView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -1071,6 +1112,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       { binding: 14, resource: jupiterView },
       { binding: 15, resource: saturnView },
       { binding: 16, resource: moonsView },
+      { binding: 17, resource: sharkView },
     ]});
     const envFmt = { format: "rgba8unorm" };
     W.envPipes = {
@@ -1306,7 +1348,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // setting one — the same y, the other side of the day.
   const SUN_PHASE = Math.PI - 0.10;
   const SKY_SPIN = 2 * Math.PI / 90;
-  const uf = new Float32Array(56);
+  const uf = new Float32Array(UNI_FLOATS);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
   // does not return on a canvas that has nothing on it yet.
@@ -1521,6 +1563,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     uf[45] = speed; uf[46] = bobPhase; uf[47] = recoil;
     uf.set(rifleBox.subarray(0, 3), 48);  // the rifle's bounding box, to unquantize against
     uf.set(rifleBox.subarray(3, 6), 52);
+    // The shark: which way it faces, where the tail is in its beat, how wide
+    // the jaw is, and where it is. Straight out of Rill — the renderer is told
+    // where the animal is, it does not decide.
+    uf[56] = st[89];                      // heading
+    uf[58] = st[92];                      // where the tail is in its beat
+    uf[59] = st[93];                      // how wide the jaw is
+    uf[60] = st[86]; uf[61] = st[87]; uf[62] = st[88];
+    uf.set(sharkBox.subarray(0, 3), 64);
+    uf.set(sharkBox.subarray(3, 6), 68);
     // The bolt's throw, as a fraction. The shot itself is the first instant of
     // it, so the recoil and the lift start together the way they do in a hand.
     uf[51] = boltT / BOLT_CYCLE;
@@ -1628,6 +1679,24 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
     pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);
     pass.setPipeline(flyDrawPipe); pass.setBindGroup(1, W.flyDrawBg); pass.draw(6, T.flies);
+
+    // The shark, and only from in the water.
+    //
+    // Not faded, not hidden behind a fog term — simply not drawn. The whole
+    // point of it is that standing on the shore tells you nothing: you can
+    // look straight down at the lake and there is nothing there, and the only
+    // way to find out is to get in. A version that dims with depth would still
+    // put a shape on the water for anyone who looked hard, and then the water
+    // would be a thing you inspect rather than a thing you enter.
+    //
+    // The surface is at zero, so the test is the eye's own height. Feet in the
+    // shallows do not count — it is about what the camera is inside of.
+    if (st[17] < 0.0) {
+      pass.setPipeline(sharkPipe);
+      pass.setVertexBuffer(0, sharkVB);
+      pass.setIndexBuffer(sharkIB, "uint16");
+      pass.drawIndexed(sharkIdx);
+    }
 
     pass.setPipeline(shardPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, shardBuf);

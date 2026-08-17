@@ -28,6 +28,7 @@
 #   f32 79       gate: zero lets one charge begin this frame
 #   f32 80       next slot in the blast ring    ptr 81  the blasts themselves
 #   f32 82       health, one to zero        84, 85  the push a blast left
+#   f32 86..93   the shark: where, which way, what it is doing
 #   ptr 74       the fireballs the far crystals throw
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
 #   ptr 68, 69   the bullets, and the shards they knock loose
@@ -996,6 +997,173 @@ export fn bullets(s: Ptr) -> Ptr = peek_ptr(s, 68)
 
 export fn bullets_cap(s: Ptr) -> Int = bullet_cap()
 
+
+# ---- what lives in the lake ------------------------------------------------
+#
+# One shark, and it is only ever one: a lake this size with a shoal in it is an
+# aquarium, and the thing that makes water frightening is that there is
+# something in it rather than how many.
+#
+# It has four states and they are the whole animal. It wanders; it notices you;
+# it comes; it bites and thinks better of it. Everything else — the turn rate,
+# the fact that it will not leave the water, the way it gives up if you get out
+# — falls out of those four and a couple of clamps.
+#
+# Slots 86..93: x, y, z, heading, mode, mode clock, swim phase, wander target.
+
+fn shark_speed() = 5.2        # metres a second, cruising
+fn shark_rush() = 11.5        # and when it has seen you
+fn shark_turn() = 1.5         # radians a second it can come round
+fn shark_see() = 30.0         # how far it notices someone in the water
+fn shark_reach() = 2.6        # how close it has to be to bite
+fn shark_bite() = 0.10        # a tenth of you
+
+# It stays in the water and off the bottom. The lake is carved below zero, so
+# the ceiling is a little under the surface — a fin breaking the surface would
+# give it away to someone standing on the shore, and the whole point of it is
+# that you cannot see it from up there.
+fn shark_depth(x, z) =
+  bed = height(x, z)
+  lo = bed + 1.1
+  hi = 0.0 - 1.6
+  if lo > hi then hi else lo
+
+# Where the water is deep enough to be worth swimming in.
+fn deep_at(x, z) = if height(x, z) < 0.0 - 2.2 then 1 else 0
+
+# Turn toward `want`, no faster than it can. The wrap keeps the difference in
+# (-π, π] so it always takes the short way round rather than unwinding the long
+# way through three radians.
+fn turn_to(cur, want, dt) =
+  d0 = want - cur
+  d1 = if d0 > 3.14159265 then d0 - 6.28318531 else d0
+  d = if d1 < 0.0 - 3.14159265 then d1 + 6.28318531 else d1
+  lim = shark_turn() * dt
+  cur + (if d > lim then lim else if d < 0.0 - lim then 0.0 - lim else d)
+
+# Somewhere else to be, re-rolled every few seconds. Aimed at the middle of the
+# lake rather than anywhere, so it does not spend the whole time nosing the
+# shore.
+fn wander_angle(x, z, tnow) =
+  home = atan2_like(0.0 - x, 0.0 - z)
+  home + (hash2(floor(tnow * 0.25), 7.0) - 0.5) * 2.6
+
+# There is no atan2 in this file and the shark is the only thing that wants
+# one. Two quadrant tests around the cheap ratio approximation is enough for
+# something that only has to point a fish.
+fn atan_small(r) = r * (0.7853982 - (r * (r - 1.0)) * (0.2447 + 0.0663 * r))
+
+fn atan2_like(y, x) =
+  ax = if x < 0.0 then 0.0 - x else x
+  ay = if y < 0.0 then 0.0 - y else y
+  a = if ax > ay then atan_small(ay / (ax + 0.000001)) else 1.5707963 - atan_small(ax / (ay + 0.000001))
+  b = if x < 0.0 then 3.14159265 - a else a
+  if y < 0.0 then 0.0 - b else b
+
+# Where it wants to be pointed. Backing off is away from you, hunting is at
+# you, and wandering is wherever the water is still deep six metres ahead —
+# otherwise back toward the middle, which is the whole of its shore avoidance.
+fn shark_want(mode, toward, sx, sz, hd, tnow) =
+  if mode > 2.5 then toward + 3.14159265 else shark_want2(mode, toward, sx, sz, hd, tnow)
+
+fn shark_want2(mode, toward, sx, sz, hd, tnow) =
+  if mode > 0.5 then toward else shark_wander(sx, sz, hd, tnow)
+
+fn shark_wander(sx, sz, hd, tnow) =
+  if deep_at(sx + sin(hd) * 6.0, sz + cos(hd) * 6.0) > 0 then wander_angle(sx, sz, tnow) else atan2_like(0.0 - sx, 0.0 - sz)
+
+# The four states, in the order they can reach each other.
+fn shark_next(mode, seen, near, clk) =
+  if mode < 0.5 then (if seen > 0 then 1.0 else 0.0) else shark_next2(mode, seen, near, clk)
+
+fn shark_next2(mode, seen, near, clk) =
+  if mode < 1.5 then shark_hunting(seen, near) else shark_next3(mode, clk)
+
+fn shark_hunting(seen, near) =
+  if near > 0 then 2.0 else (if seen > 0 then 1.0 else 0.0)
+
+fn shark_next3(mode, clk) =
+  if mode < 2.5 then 3.0 else (if clk > 3.4 then 0.0 else 3.0)
+
+fn shark_sense(s, sx, sz) =
+  if in_water(s) < 1 then 0
+  else
+    dx = peek_f32(s, 21) - sx
+    dz = peek_f32(s, 23) - sz
+    if dx * dx + dz * dz < shark_see() * shark_see() then 1 else 0
+
+fn shark_step(s, dt, tnow) =
+  sx = peek_f32(s, 86)
+  sy = peek_f32(s, 87)
+  sz = peek_f32(s, 88)
+  hd = peek_f32(s, 89)
+  mode = peek_f32(s, 90)
+  clk = peek_f32(s, 91) + dt
+
+  # Where it would like to be pointed, which is the only thing the modes
+  # actually disagree about.
+  px = peek_f32(s, 21)
+  pz = peek_f32(s, 23)
+  toward = atan2_like(px - sx, pz - sz)
+  seen = shark_sense(s, sx, sz)
+
+  want = shark_want(mode, toward, sx, sz, hd, tnow)
+
+  hd2 = turn_to(hd, want, dt)
+  sp = if mode > 0.5 && mode < 2.5 then shark_rush() else shark_speed()
+  nx = sx + sin(hd2) * sp * dt
+  nz = sz + cos(hd2) * sp * dt
+  # It cannot leave the lake — but "stay put unless the next step is deep" is
+  # a trap, because a shark that ever finds itself in the shallows can then
+  # never move again, in any direction, for ever. It was spawned in exactly
+  # that state and sat there: measured at the same three coordinates across
+  # twenty-one samples.
+  #
+  # The rule that works is asymmetric. In deep water it only moves into deep
+  # water; out of it, it always moves, and the steering is already pointing it
+  # back at the middle. So the shallows are sticky to enter and never sticky to
+  # leave.
+  free = if deep_at(sx, sz) < 1 then 1 else deep_at(nx, nz)
+  ox = if free > 0 then nx else sx
+  oz = if free > 0 then nz else sz
+  ny = shark_depth(ox, oz)
+
+  dpx = px - ox
+  dpz = pz - oz
+  near = if dpx * dpx + dpz * dpz < shark_reach() * shark_reach() then 1 else 0
+
+  # roam -> charge when it sees you; charge -> bite on contact; bite is one
+  # instant; then it turns away for a few seconds before it will come again.
+  m2 = shark_next(mode, seen, near, clk)
+
+  # The bite itself, once, on the frame the mode turns over.
+  bit = if mode > 1.5 && mode < 2.5 then 1 else 0
+  if bit > 0 then
+    poke_f32(s, 82, clampf(peek_f32(s, 82) - shark_bite(), 0.0, 1.0))
+    0
+  else 0
+
+  poke_f32(s, 86, ox)
+  poke_f32(s, 87, ny)
+  poke_f32(s, 88, oz)
+  poke_f32(s, 89, hd2)
+  poke_f32(s, 90, m2)
+  poke_f32(s, 91, if m2 == mode then clk else 0.0)
+  # The tail. It beats with the speed, so a charging shark is visibly working.
+  poke_f32(s, 92, peek_f32(s, 92) + dt * (1.9 + sp * 0.55))
+  # And the jaw, written down rather than asked for: the host reads this block
+  # of memory every frame anyway, so putting it here costs nothing and saves a
+  # call across the wasm boundary — where `Int` is 64-bit and every index would
+  # have to be handed over as a BigInt.
+  poke_f32(s, 93, shark_gape(s))
+  1
+
+# How far the jaw is open: on the approach, wide at the bite, shut on the way
+# out — so the mouth is the tell that it has decided about you.
+fn shark_gape(s) =
+  m = peek_f32(s, 90)
+  if m > 2.5 then clampf(1.0 - peek_f32(s, 91) * 1.8, 0.0, 1.0) else if m > 0.5 then 0.85 else 0.0
+
 # ---- the sun's matrix ------------------------------------------------------
 #
 # The sun. Orthographic view-projection over the whole valley for the shadow
@@ -1095,6 +1263,12 @@ export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 82, 1.0)
   poke_f32(s, 84, 0.0)
   poke_f32(s, 85, 0.0)
+  # In the deepest water there is. The lake bottoms out around (-2, -2) at nine
+  # metres, and starting it anywhere shallower is starting it aground.
+  poke_f32(s, 86, 0.0 - 2.0)
+  poke_f32(s, 87, 0.0 - 4.0)
+  poke_f32(s, 88, 0.0 - 2.0)
+  poke_f32(s, 89, 1.2)
   set_sun(s, 0.58, 0.0 - 0.62, 0.0 - 0.52)
   s
 
@@ -1242,6 +1416,7 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
   step_fireballs(s, peek_ptr(s, 74), dt)
   step_blasts(peek_ptr(s, 81), dt)
   run_charge(s, dt, t)
+  shark_step(s, dt, t)
   gather(s, peek_ptr(s, 69))
   camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
 

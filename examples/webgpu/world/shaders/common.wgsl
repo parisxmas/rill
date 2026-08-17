@@ -53,6 +53,9 @@
   // of it in about twenty pixels a moon, which is what they are worth from
   // here and is still the difference between four moons and four dots.
   @group(0) @binding(16) var moonsTex: texture_2d<f32>;
+  // The shark's skin. Only ever sampled from inside the water, which is the
+  // one place the animal is drawn at all.
+  @group(0) @binding(17) var sharkTex: texture_2d<f32>;
 
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
