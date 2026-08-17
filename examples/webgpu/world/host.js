@@ -15,7 +15,7 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=217";   // keep in step with V below
+import { load } from "./world.js?v=219";   // keep in step with V below
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +25,7 @@ import { load } from "./world.js?v=217";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "217";
+const V = "219";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -366,17 +366,44 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // command after a loss is discarded, so the loop would burn a core redrawing
   // nothing behind the message that says so.
   let gone = false;
-  let saidIt = false;
+  // Accumulating rather than first-only. The first message a driver gives you
+  // is rarely the useful one: a pipeline that fails to build takes every draw
+  // that uses it down with it, and what you want to read is the list, because
+  // the shape of the list is the diagnosis. Capped, because a failing pipeline
+  // can report once per frame and a wall of the same line says nothing the
+  // first one did not.
+  let panel = null, lines = 0;
+  const said = new Set();
   const shout = (what, detail) => {
-    if (saidIt) return;
-    saidIt = true;
-    const box = document.createElement("div");
-    box.style.cssText = "position:fixed;inset:0;display:grid;place-items:center;" +
-      "background:rgba(6,6,12,0.88);color:#c9c3e4;font:14px/1.7 ui-monospace,monospace;" +
-      "text-align:center;padding:2rem;z-index:9";
-      box.textContent = detail ? `${what}\n\n${detail}` : what;
-    box.style.whiteSpace = "pre-wrap";
-    document.body.appendChild(box);
+    // Once each. Every pipeline builds its vertex and its fragment module from
+    // the same source, so a bad shader reports itself twice before anything
+    // else gets a line; and an invalid pipeline complains again on every frame
+    // that tries to use it. Neither repetition carries information, and both
+    // will happily fill the panel before the message you needed arrives.
+    const key = `${what} ${detail ?? ""}`;
+    if (said.has(key)) return;
+    said.add(key);
+    if (lines >= 8) return;
+    if (!panel) {
+      // Above the loading curtain, and take the curtain down with it. The
+      // curtain is z-index 10 and opaque, and it only lifts once the first
+      // frame has been drawn — which is exactly what does not happen when a
+      // pipeline has failed to build. The first version of this sat at 9 and
+      // was therefore invisible behind the one thing guaranteed to still be
+      // there: the message about why nothing was coming was hidden by the
+      // screen that says something is coming.
+      document.querySelector(".boot")?.remove();
+      panel = document.createElement("div");
+      panel.style.cssText = "position:fixed;inset:0;overflow:auto;" +
+        "background:rgba(6,6,12,0.94);color:#c9c3e4;font:13px/1.6 ui-monospace,monospace;" +
+        "white-space:pre-wrap;padding:2rem;z-index:11";
+      document.body.appendChild(panel);
+    }
+    lines++;
+    const row = document.createElement("div");
+    row.style.cssText = "margin:0 0 1.1rem";
+    row.textContent = detail ? `${what}\n  ${detail}` : what;
+    panel.appendChild(row);
   };
   device.addEventListener("uncapturederror", e => {
     console.error("WEBGPU:", e.error.message);
@@ -391,6 +418,44 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       "the browser took the gpu back. on iPadOS and iOS this is usually the " +
       "tab going over its memory budget: try closing other tabs and reloading.");
   });
+  // Which one.
+  //
+  // "vertex library failed creation" — Metal's way of saying a shader would not
+  // compile for the device — arrives through `uncapturederror` with nothing
+  // attached to say which of the twenty pipelines it came from, which makes it
+  // almost useless. Both of these attach the name.
+  //
+  // `mod` asks the module itself: WGSL is compiled by the browser, and any
+  // complaint it has is available with a line and a column. That catches
+  // anything wrong with the source.
+  //
+  // `watched` catches what `mod` cannot. A module can be perfectly valid WGSL
+  // and still fail when the backend turns it into MSL for this particular
+  // device — a driver limit, a construct the Metal compiler will not take. That
+  // surfaces as an `internal` error against the pipeline, so the pipeline is
+  // built inside an error scope named after it. Both scopes, because a bad
+  // vertex layout is a `validation` error and a bad shader is an `internal`
+  // one, and from a black screen you cannot tell which you are looking at.
+  const mod = (code, label) => {
+    const m = device.createShaderModule({ code, label });
+    m.getCompilationInfo?.().then(info => {
+      const bad = (info.messages ?? []).filter(x => x.type === "error");
+      if (bad.length) shout(`shader "${label}" did not compile`,
+        bad.map(x => `line ${x.lineNum}:${x.linePos}  ${x.message}`).join("\n  "));
+    }).catch(() => {});
+    return m;
+  };
+  const watched = (label, build) => {
+    device.pushErrorScope("internal");
+    device.pushErrorScope("validation");
+    const made = build();
+    const say = kind => e => { if (e) { console.error(`PIPELINE ${label}:`, e.message);
+                                        shout(`pipeline "${label}" (${kind})`, e.message); } };
+    device.popErrorScope().then(say("validation")).catch(() => {});
+    device.popErrorScope().then(say("internal")).catch(() => {});
+    return made;
+  };
+
   const gpuInfo = adapter.info ?? {};
   const gpuName = [gpuInfo.vendor, gpuInfo.architecture].filter(Boolean).join(" ") || "gpu";
   const maxTex = adapter.limits.maxTextureDimension2D;
@@ -575,15 +640,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const depth = { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" };
   const additive = { color: { srcFactor: "one", dstFactor: "one" }, alpha: { srcFactor: "one", dstFactor: "one" } };
 
-  const pipe = (label, code, buffers, opts = {}) => device.createRenderPipeline({
+  const pipe = (label, code, buffers, opts = {}) => watched(label, () => device.createRenderPipeline({
     label, layout,
-    vertex: { module: device.createShaderModule({ code }), buffers, constants: opts.constants },
-    fragment: { module: device.createShaderModule({ code }),
+    vertex: { module: mod(code, label), buffers, constants: opts.constants },
+    fragment: { module: mod(code, label),
                 targets: [{ format: opts.format ?? format, blend: opts.blend }], constants: opts.constants },
     primitive: { cullMode: opts.cull ?? "back" },
     depthStencil: { ...depth, ...opts.depth },
     multisample: MS,
-  });
+  }));
 
   // Premultiplied alpha: the shader hands over colour already multiplied by
   // coverage, and coverage is what limits how much of a pixel each thing may
@@ -966,36 +1031,36 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const flyBgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
   ]});
-  const flyDrawPipe = device.createRenderPipeline({
+  const flyDrawPipe = watched("fireflies", () => device.createRenderPipeline({
     label: "fireflies",
     layout: device.createPipelineLayout({ bindGroupLayouts: [bglMain, flyBgl] }),
-    vertex: { module: device.createShaderModule({ code: S.FIREFLY_DRAW }) },
-    fragment: { module: device.createShaderModule({ code: S.FIREFLY_DRAW }), targets: [{ format, blend: additive }] },
+    vertex: { module: mod(S.FIREFLY_DRAW, "fireflies") },
+    fragment: { module: mod(S.FIREFLY_DRAW, "fireflies"), targets: [{ format, blend: additive }] },
     primitive: { cullMode: "none" },
     depthStencil: { ...depth, depthWriteEnabled: false },
     multisample: MS,
-  });
+  }));
   const simBgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
     { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: {} },
   ]});
-  const simPipe = device.createComputePipeline({
+  const simPipe = watched("fly-sim", () => device.createComputePipeline({
     label: "fly-sim",
     layout: device.createPipelineLayout({ bindGroupLayouts: [simBgl] }),
-    compute: { module: device.createShaderModule({ code: S.FIREFLY_SIM }) },
-  });
+    compute: { module: mod(S.FIREFLY_SIM, "fly-sim") },
+  }));
 
   const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bglShadow] });
-  const shadowPipe = (label, code, buffers, cutout = false) => device.createRenderPipeline({
+  const shadowPipe = (label, code, buffers, cutout = false) => watched(label, () => device.createRenderPipeline({
     label, layout: shadowLayout,
-    vertex: { module: device.createShaderModule({ code }), buffers },
+    vertex: { module: mod(code, label), buffers },
     // Depth only, unless the thing being drawn is mostly holes.
     fragment: cutout
-      ? { module: device.createShaderModule({ code }), entryPoint: "fs", targets: [] }
+      ? { module: mod(code, label), entryPoint: "fs", targets: [] }
       : undefined,
     primitive: { cullMode: "none" },
     depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
-  });
+  }));
   const shTerrain = shadowPipe("shadow-terrain", S.SHADOW_TERRAIN, terrainLayout);
   const shInst = shadowPipe("shadow-inst", S.SHADOW_INST, [meshLayout, instLayout]);
   const shPine = shadowPipe("shadow-pine", S.SHADOW_PINE, [pineLayout, instLayout], true);
