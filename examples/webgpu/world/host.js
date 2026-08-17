@@ -15,7 +15,7 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=216";   // keep in step with V below
+import { load } from "./world.js?v=217";   // keep in step with V below
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +25,7 @@ import { load } from "./world.js?v=216";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "216";
+const V = "217";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -36,10 +36,37 @@ const TIERS = [
   { name: "ultra",  grid: 160, pines: 900, crystals: 380, grass: 5000, flies: 4000, shadow: 4096, water: 128, dpr: 3.0, waves: 8, ripples: 4 },
 ];
 
+// iPadOS and iOS, which need a ceiling the measurements are not allowed to
+// lift. Safari on an iPad reports itself as a Mac and gives the adapter Apple's
+// own name, so `guessTier` matched `/apple/` and handed a tablet the desktop
+// tier — after which the tuner, seeing a perfectly good sixty frames, climbed
+// it to `ultra`. That means a device pixel ratio of three and a 4096 shadow
+// map. At three, a 12.9" iPad's canvas is 4096x3072, and MSAA 4x colour plus a
+// 4x depth buffer over that is around four hundred megabytes of render target
+// alone. Safari does not fail that allocation with an error you can read; it
+// takes the GPU back, and every call after that is silently dropped. Black
+// screen, no console, nothing in the page.
+//
+// The count of things — trees, crystals, grass — is not what costs a tablet
+// anything, so the ceiling is on tier and the ratio separately: `high` keeps
+// the geometry and the 2048 shadow map, and the ratio is held at 1.5, which on
+// a retina panel is still more pixels than the screen has points and is a
+// quarter of the memory that three was asking for.
+//
+// The Mac test is the standard one: iPadOS Safari says "MacIntel" and reports
+// five touch points, where a real Mac reports none.
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const MAX_TIER = IOS ? 2 : TIERS.length - 1;
+const DPR_CAP  = IOS ? 1.5 : Infinity;
+
 // A guess to start from, no more: the measurements take over immediately.
 function guessTier(info) {
   const desc = `${info?.vendor ?? ""} ${info?.architecture ?? ""} ${info?.device ?? ""} ${info?.description ?? ""}`.toLowerCase();
   if (/swiftshader|llvmpipe|software/.test(desc)) return 0;
+  // Start a tablet a step below what its GPU name suggests and let it earn the
+  // rest: the climb costs one rebuild, the fall costs a lost device.
+  if (IOS) return 1;
   if (/apple|nvidia|geforce|rtx|radeon rx/.test(desc)) return 2;
   if (/intel|mali|adreno|powervr/.test(desc)) return 1;
   return 1;
@@ -301,9 +328,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
-  if (!navigator.gpu) throw new Error("this browser has no WebGPU");
+  // Named, because the message is the whole of what a visitor gets. Safari
+  // only shipped WebGPU on iPhone and iPad in version 26, so an older tablet
+  // lands here and deserves to be told which of the two it is rather than
+  // being left to guess from the word "WebGPU".
+  if (!navigator.gpu)
+    throw new Error("this browser has no WebGPU — on iPhone or iPad it needs " +
+                    "Safari 26 or newer, and on a desktop a current Chrome, " +
+                    "Edge or Safari");
   const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error("no GPU adapter");
+  if (!adapter) throw new Error("no GPU adapter — the browser has WebGPU but " +
+                                "would not give this page a GPU");
 
   // The one feature worth asking for: GPU timestamps, so the HUD can show
   // what a frame costs the GPU rather than what rAF implies.
@@ -311,7 +346,51 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const device = await adapter.requestDevice({
     requiredFeatures: canTime ? ["timestamp-query"] : [],
   });
-  device.addEventListener("uncapturederror", e => console.error("WEBGPU:", e.error.message));
+  // Say it on the screen, not only in the console.
+  //
+  // On a phone or a tablet there is no console to open, so anything that only
+  // reaches `console.error` may as well not have happened. Two things used to
+  // go there and nowhere else, and between them they produce the one failure
+  // that tells you nothing at all: a black screen.
+  //
+  // The worse of the two is a lost device, which was not being listened for in
+  // any form. WebGPU does not throw when a device dies — every call after it is
+  // quietly dropped — so the canvas simply stops changing and keeps whatever
+  // was last drawn on it, which at startup is black. Nothing in the page says
+  // anything, the frame loop goes on calling into a device that is gone, and
+  // the report you get from the other end is "it is black on my iPad".
+  //
+  // Its own dim backdrop rather than the page's `.err`, because by the time
+  // this fires there is usually a half-drawn valley underneath it.
+  // Checked by the frame loop. There is nothing to be gained by going on: every
+  // command after a loss is discarded, so the loop would burn a core redrawing
+  // nothing behind the message that says so.
+  let gone = false;
+  let saidIt = false;
+  const shout = (what, detail) => {
+    if (saidIt) return;
+    saidIt = true;
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;inset:0;display:grid;place-items:center;" +
+      "background:rgba(6,6,12,0.88);color:#c9c3e4;font:14px/1.7 ui-monospace,monospace;" +
+      "text-align:center;padding:2rem;z-index:9";
+      box.textContent = detail ? `${what}\n\n${detail}` : what;
+    box.style.whiteSpace = "pre-wrap";
+    document.body.appendChild(box);
+  };
+  device.addEventListener("uncapturederror", e => {
+    console.error("WEBGPU:", e.error.message);
+    shout("the gpu rejected something", e.error.message);
+  });
+  // Resolves rather than rejects, and resolves on a deliberate `destroy()` too
+  // — which this never does, so anything arriving here is a real loss.
+  device.lost.then(info => {
+    console.error("WEBGPU DEVICE LOST:", info.reason, info.message);
+    gone = true;
+    shout("the gpu device was lost", info.message ||
+      "the browser took the gpu back. on iPadOS and iOS this is usually the " +
+      "tab going over its memory budget: try closing other tabs and reloading.");
+  });
   const gpuInfo = adapter.info ?? {};
   const gpuName = [gpuInfo.vendor, gpuInfo.architecture].filter(Boolean).join(" ") || "gpu";
   const maxTex = adapter.limits.maxTextureDimension2D;
@@ -935,7 +1014,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
 
   // ---- everything the tier decides, rebuilt when the tier changes ----------
 
-  let tierIdx = guessTier(gpuInfo);
+  let tierIdx = Math.min(guessTier(gpuInfo), MAX_TIER);
   let T = null;       // the active tier
   let state = 0;      // the world, as a pointer into wasm memory
   let W = null;       // tier-dependent GPU resources
@@ -1248,7 +1327,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // changes.
   let msaaTex, depthTex;
   function resize() {
-    const dpr = Math.min(devicePixelRatio, T.dpr);
+    const dpr = Math.min(devicePixelRatio, T.dpr, DPR_CAP);
     const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
     if (w !== canvas.width || h !== canvas.height) {
       canvas.width = w; canvas.height = h;
@@ -1377,6 +1456,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   let last = performance.now(), fps = 0, frames = 0, fpsT = last, startT = 0;
 
   function tick(now) {
+    // The device died. Every command from here is discarded, so the only thing
+    // left to do is stop asking for frames and leave the message on the screen.
+    if (gone) return;
     resize();
     const dt = Math.min((now - last) / 1000, 0.05);
     const dtMs = now - last;
@@ -1398,7 +1480,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       if (!locked && dts.length >= 48) {
         const med = median(dts);
         dts.length = 0;
-        if (med < refresh * 1.25 && tierIdx < TIERS.length - 1) { tierIdx++; changes++; buildWorld(tierIdx); }
+        if (med < refresh * 1.25 && tierIdx < MAX_TIER) { tierIdx++; changes++; buildWorld(tierIdx); }
         else if (med > refresh * 1.6 && tierIdx > 0) { tierIdx--; changes++; buildWorld(tierIdx); }
         else stable++;
         if (changes >= 3 || stable >= 2) locked = true;
