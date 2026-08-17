@@ -79,7 +79,7 @@
     // lake, and all of it swings as you walk around the shard because that is
     // what a reflection does and a sheen does not.
     let R = reflect(V, n);
-    col = mix(col, envAt(R, u.eye.w), fres * 0.80);
+    col = mix(col, envHere(v.world, R, u.eye.w), fres * 0.80);
 
     // What actually reads as glass is the highlight. Two lobes off the same
     // sun: a broad one that gives a facet its sheen and is visible from most

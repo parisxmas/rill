@@ -15,7 +15,7 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=176";   // keep in step with V below
+import { load } from "./world.js?v=184";   // keep in step with V below
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +25,7 @@ import { load } from "./world.js?v=176";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "176";
+const V = "184";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -496,10 +496,33 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     multisample: MS,
   });
 
+  // Premultiplied alpha: the shader hands over colour already multiplied by
+  // coverage, and coverage is what limits how much of a pixel each thing may
+  // claim. Additive has no such limit, which is fine for one spark and ruinous
+  // for fifty of them stacked along a line of sight — or for a crystal, which
+  // would simply add its colour to the hillside behind it and glow white.
+  //
+  // Declared up here because the crystals want it too, and `const` in a
+  // temporal dead zone is a runtime error rather than a compile one: the
+  // pipeline below would have thrown on the first frame with nothing rendered
+  // and nothing said.
+  const overPre = { color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
+                    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } };
+
   const skyPipe = pipe("sky", S.SKY, [], { depth: { depthWriteEnabled: false, depthCompare: "less-equal" }, cull: "none" });
   const terrainPipe = pipe("terrain", S.TERRAIN, terrainLayout);
   const pinePipe = pipe("pine", S.PINE, [pineLayout, instLayout], { cull: "none" });
-  const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.72 } });
+  // Glass, so: blended, both faces drawn, and writing no depth of its own.
+  //
+  // All three are needed together and each fixes something the others cannot.
+  // Blending is what makes it see-through. Drawing the back faces is what puts
+  // anything *inside* it to see — a transparent prism with its far side culled
+  // is a coloured window, not a solid of glass. And a transparent thing must
+  // not write depth, or it punches a hole in everything drawn after it: the
+  // grass and the water behind a crystal would simply be missing.
+  const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout],
+    { constants: { emissive: 0.72 }, blend: overPre, cull: "none",
+      depth: { depthWriteEnabled: false } });
   const grassPipe = pipe("grass", S.GRASS, [pineLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   // Backfaces culled, unlike the foliage: the butt sits behind the eye and is
@@ -512,12 +535,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   // Same treatment as the tracers: additive, depth-tested so the land hides
   // them, never writing depth of their own.
-  // Premultiplied alpha: the shader hands over colour already multiplied by
-  // coverage, and coverage is what limits how much of a pixel each puff may
-  // claim. Additive has no such limit, which is fine for one spark and ruinous
-  // for fifty of them stacked along a line of sight.
-  const overPre = { color: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
-                    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } };
   const firePipe = pipe("fireball", S.FIREBALL, fireLayout,
     { blend: overPre, cull: "none", depth: { depthWriteEnabled: false } });
   const blastPipe = pipe("blast", S.BLAST, blastLayout,
@@ -1095,6 +1112,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // replaces it stays blank for the life of the page — with no error, since
     // sampling an unwritten texture is perfectly legal and returns nothing.
     W.envBaked = false;
+    W.envWhen = -99;   // not `envAt`: that is where the probe stands
 
     W.tris = Math.round((counts.terrain + pineVerts * counts.pines + crystalVerts * counts.crystals
                        + grassVerts * counts.grass + rifleIdx) / 3);
@@ -1598,12 +1616,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     pass.setPipeline(terrainPipe); pass.setVertexBuffer(0, W.terrainBuf); pass.draw(W.counts.terrain);
     pass.setPipeline(pinePipe);
     pass.setVertexBuffer(0, pineBuf); pass.setVertexBuffer(1, W.pineInst); pass.draw(pineVerts, W.counts.pines);
-    pass.setPipeline(crystalPipe);
-    pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
     pass.setPipeline(grassPipe);
     pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.grassInst); pass.draw(grassVerts, W.counts.grass);
     pass.setPipeline(skyPipe); pass.draw(3);
     pass.setPipeline(W.waterPipe); pass.setVertexBuffer(0, W.waterBuf); pass.draw(W.waterVerts);
+    // The crystals go here rather than with the other solids: they are
+    // transparent now, and a transparent thing has to be drawn after whatever
+    // is meant to show through it. Before the water they were blending against
+    // an empty lake.
+    pass.setPipeline(crystalPipe);
+    pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
     pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);
     pass.setPipeline(flyDrawPipe); pass.setBindGroup(1, W.flyDrawBg); pass.draw(6, T.flies);
 
@@ -1636,7 +1658,24 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     device.queue.submit([enc.finish()]);
     // Once, at the end of the first frame — by which point the shadow map has
     // been drawn, so the valley in the cube is lit the same way the valley is.
-    if (!W.envBaked) { W.envBaked = true; bakeEnv(uf); }
+    // The probe, kept current.
+    //
+    // Baked once was right when the sun stood still. It does not any more: a
+    // cube taken on the first frame is a photograph of the valley at sunrise,
+    // and a crystal at noon was reflecting the night — measured at 12,19,24 out
+    // of 255 across every face, which is why the reflections read as nothing at
+    // all. The valley's own colour is now a function of the hour, so the
+    // picture of it has to be too.
+    //
+    // Every six tenths of a second — about two degrees of sun between bakes,
+    // which is under what anyone can catch stepping. Six passes at 128 pixels
+    // is a fifth of a millisecond; the reason not to do it every frame is that
+    // there is no reason to.
+    if (!W.envBaked || t - W.envWhen > 0.6) {
+      W.envBaked = true;
+      W.envWhen = t;
+      bakeEnv(uf);
+    }
     if (painted) { painted(); painted = null; }
 
     if (qs && !qPending) {

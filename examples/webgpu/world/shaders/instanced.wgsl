@@ -40,12 +40,17 @@
     // to you is mostly its own colour. Absolute value rather than a clamp, for
     // the same reason as the shards — the prisms are transparent enough in
     // spirit that you see faces from behind.
-    let fres = 0.10 + 0.90 * pow(1.0 - abs(dot(V, n)), 5.0);
+    // A high floor, unlike the shards'. A crystal is 72 per cent its own glow
+    // by the time this runs, so a Fresnel that starts at a tenth leaves the
+    // reflection as a six per cent tint on a self-lit block — arithmetically
+    // present and invisible. A quarter at dead-on and nearly all of it at the
+    // limb is what a big polished prism actually does with a valley.
+    let fres = 0.26 + 0.74 * pow(1.0 - abs(dot(V, n)), 4.0);
     // What that face is pointed at, out of the probe: grass below, hillside
     // across, lake beyond it. This is the whole difference between a crystal
     // that is standing in the valley and one that has been pasted onto it.
     let R = reflect(V, n);
-    col = mix(col, envAt(R, u.eye.w), fres * 0.62);
+    col = mix(col, envHere(v.world, R, u.eye.w), fres * 0.88);
 
     // And the sun on it. Two lobes, the broad one for sheen and the tight one
     // for the spark — a single lobe is either plastic gloss or an invisible
@@ -62,5 +67,22 @@
     // and any hour, and it is what makes a prism read as having edges at all
     // against a hillside of the same brightness.
     col += mix(v.color, vec3f(1.0), 0.40) * pow(1.0 - abs(dot(V, n)), 3.0) * 0.55;
-    return vec4f(col, 1.0);
+
+    // How solid it is, off the same Fresnel that decided the reflection —
+    // which is the physical truth and not a coincidence: the light a surface
+    // does not let through is the light it sends back. Square to you a face is
+    // mostly window; at the limb it is mostly mirror and mostly opaque, which
+    // is why the silhouette of a glass object stays firm while its middle
+    // disappears.
+    //
+    // Premultiplied, because the pipeline blends that way: the colour arrives
+    // already scaled by coverage.
+    // Only a hint of it. At 0.40 the hillside came through the middle of every
+    // prism and they stopped reading as solid objects standing in the valley —
+    // which is the trap with glass: past a point the transparency is not
+    // showing you the inside of a thing, it is showing you that there is no
+    // thing there. Eight tenths keeps the interior visible without the crystal
+    // dissolving into what is behind it.
+    let a = clamp(0.82 + 0.18 * fres, 0.0, 1.0);
+    return vec4f(col * a, a);
   }

@@ -577,6 +577,35 @@
     return mix(skyColor(dir, t), hit.rgb, hit.a);
   }
 
+  // The same cube, corrected for where you are standing in it.
+  //
+  // A cube map is a picture taken from one point, and read straight it behaves
+  // as if it were infinitely far away: every surface in the valley reflects the
+  // identical image, and nothing in the reflection moves when the surface does.
+  // That is the whole reason a probe reads as a painted-on tint rather than as
+  // a mirror — a mirror's defining property is that what is in it depends on
+  // where it is and where you are, and an uncorrected lookup has neither.
+  //
+  // The fix is to stop pretending the valley is at infinity. Fire the reflected
+  // ray at a box drawn round the place, find where it actually lands, and look
+  // *that* point up from the probe's position instead of looking up a bare
+  // direction. Now a crystal on the west shore reflecting east gets the east
+  // hillside, the one beside it gets a slightly different piece of it, and
+  // walking past sweeps the image across the face. (Behrens' parallax-corrected
+  // cubemap, and it is six lines.)
+  const ENV_MIN = vec3f(-88.0, -12.0, -88.0);
+  const ENV_MAX = vec3f( 88.0,  44.0,  88.0);
+  const ENV_EYE = vec3f(0.0, 7.0, 0.0);      // must match `W.envAt` in host.js
+
+  fn envHere(world: vec3f, R: vec3f, t: f32) -> vec3f {
+    // Guard the reciprocal: a ray exactly parallel to an axis has an infinite
+    // hit distance on it, and the min below has to be able to ignore that.
+    let inv = 1.0 / (R + vec3f(0.000001));
+    let far = max((ENV_MAX - world) * inv, (ENV_MIN - world) * inv);
+    let d = min(min(far.x, far.y), far.z);
+    return envAt(normalize(world + R * d - ENV_EYE), t);
+  }
+
   // The lamp on your head. It comes on by itself once the sun is under the
   // world and goes off when it comes back, which is what anyone would do with
   // one and saves the demo a key nobody would find.
