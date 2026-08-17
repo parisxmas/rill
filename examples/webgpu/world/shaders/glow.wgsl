@@ -12,12 +12,17 @@
     let corner = vec2f(f32((vi << 1u) & 2u), f32(vi & 2u)) - 0.5;
     let yaw = u.cam.x;
     let right = vec3f(cos(yaw), 0.0, sin(yaw));
-    // Wider than the crystal by a good margin. A halo the size of the object
-    // is a rim light; a halo three times its size is something the object is
-    // putting into the air around it, and only the second one reads as a thing
-    // that gives off light.
-    let size = scale * 9.0;
-    let center = ipos + vec3f(0.0, scale * 1.1, 0.0);
+    // Wider than the crystal, but not so wide that the card runs into the
+    // hillside. This is a camera-facing quad, and where the terrain cuts
+    // through it the cut is a straight line — so a nine-times halo on a slope
+    // stopped reading as light in the air and started reading as a hard-edged
+    // triangle lying on the ground beside the crystal. The glow was soft; the
+    // place it was being sliced was not.
+    //
+    // Five and a half keeps the halo generous and mostly clear of the slope,
+    // and the centre is lifted further off the ground for the same reason.
+    let size = scale * 5.5;
+    let center = ipos + vec3f(0.0, scale * 1.9, 0.0);
     let world = center + right * corner.x * size + vec3f(0.0, corner.y * size, 0.0);
     var o: VOut;
     o.clip = u.vp * vec4f(world, 1.0);
@@ -40,5 +45,8 @@
     // see against a lit hillside at noon is a glow that swallows the valley
     // after dark — and this now covers nine times the area it used to.
     let night = 1.0 - 0.55 * dayness();
-    return vec4f(v.color * (core * 0.62 + haze * 0.26) * pulse * night, 1.0);
+    // And the haze pulled well down. What is left of the card out at its edge
+    // has to be near enough nothing that clipping it against the ground is
+    // invisible — the softness has to be in the falloff, not in the size.
+    return vec4f(v.color * (core * 0.78 + haze * 0.12) * pulse * night, 1.0);
   }
