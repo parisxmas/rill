@@ -15,7 +15,7 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=174";   // keep in step with V below
+import { load } from "./world.js?v=176";   // keep in step with V below
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +25,7 @@ import { load } from "./world.js?v=174";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "174";
+const V = "176";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1277,10 +1277,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const SKY_AXIS = [Math.sin(SKY_TILT), Math.cos(SKY_TILT), 0];
   const SUN_E1 = [0, 0, 1];
   const SUN_E2 = [Math.cos(SKY_TILT), -Math.sin(SKY_TILT), 0];
-  // Where in the day it starts: late afternoon, near thirty degrees up and
-  // coming down, so the first thing anyone sees is the light this place was
-  // built for rather than a flat noon.
-  const SUN_PHASE = -0.495;
+  // Where in the day it starts: a few degrees below the horizon and climbing,
+  // so the first thing that happens is sunrise. The sky is still dawn-blue when
+  // the curtain lifts, the ridge lights up within a couple of seconds, and the
+  // shadows swing out across the meadow while you are still working out which
+  // way you are facing.
+  //
+  // π minus a tenth. y = -sin(θ) on this path, so θ = π is the horizon exactly
+  // and cos(θ) < 0 there is what makes it the rising crossing rather than the
+  // setting one — the same y, the other side of the day.
+  const SUN_PHASE = Math.PI - 0.10;
   const SKY_SPIN = 2 * Math.PI / 90;
   const uf = new Float32Array(56);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
@@ -1308,14 +1314,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     return { raw, wire, tex };
   }
 
-  let last = performance.now(), fps = 0, frames = 0, fpsT = last;
+  let last = performance.now(), fps = 0, frames = 0, fpsT = last, startT = 0;
 
   function tick(now) {
     resize();
     const dt = Math.min((now - last) / 1000, 0.05);
     const dtMs = now - last;
     last = now;
-    const t = now / 1000;
+    // The world's clock starts at the first frame, not at the first byte.
+    //
+    // It was `performance.now()`, which begins when the page does — so the ten
+    // seconds of loading were ten seconds of the day going by, and where the
+    // sun stood when anyone first saw the valley depended on how fast their
+    // connection was. Anchored here, the opening is the opening.
+    if (!startT) startT = now;
+    const t = (now - startT) / 1000;
 
     // Settle the tier: warm up, measure, step, lock.
     warm++;
