@@ -2005,6 +2005,11 @@ impl Checker {
             "read_line" => Some(("rill_read_line", vec![], Ty::Str)),
             "scan_int" => Some(("rill_scan_int", vec![], Ty::Int)),
             "exit" => Some(("rill_exit", vec![Ty::Int], Ty::Unit)),
+            // A monotonic clock, in nanoseconds. The origin is arbitrary and
+            // only differences mean anything — this is for measuring intervals,
+            // not for telling the time, and a wall clock that an administrator
+            // can set backwards is the wrong instrument for that.
+            "now_nanos" => Some(("rill_now_nanos", vec![], Ty::Int)),
             // Bridges to and from C strings; `to_cstr` allocates, so the
             // caller frees with `free_ptr`.
             "to_cstr" => Some(("rill_to_cstr", vec![Ty::Str], Ty::Ptr)),
@@ -2803,6 +2808,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "str_to_int"
             | "str_to_float"
             | "chr"
+            | "now_nanos"
             | "bit_and"
             | "bit_or"
             | "bit_xor"

@@ -1219,6 +1219,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             );
         }
         self.module.add_function("rill_preempt_yield", void.fn_type(&[], false), None);
+        self.module.add_function("rill_now_nanos", i64t.fn_type(&[], false), None);
         self.module.add_function("rill_tcp_listen", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_tcp_accept", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function(

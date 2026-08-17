@@ -738,6 +738,69 @@ pub unsafe extern "C" fn rill_exit(code: i64) -> ! {
     exit(code as i32)
 }
 
+// ---- time -----------------------------------------------------------------
+//
+// A monotonic clock, and nothing else. Not the wall clock: this is for
+// measuring intervals — how long a tick took, how long until the next one —
+// and a wall clock is the wrong instrument for that, because it can be set
+// backwards under you by an administrator or a time server and hand you a
+// negative duration.
+//
+// `CLOCK_MONOTONIC` is 1 on Linux and 6 on macOS. They are different numbers
+// for the same idea, and getting them the wrong way round is not a compile
+// error — it is a clock that quietly counts something else — so they are
+// written out one platform at a time rather than shared.
+
+#[cfg(all(unix, target_vendor = "apple"))]
+const CLOCK_MONOTONIC: i32 = 6;
+#[cfg(all(unix, not(target_vendor = "apple")))]
+const CLOCK_MONOTONIC: i32 = 1;
+
+#[cfg(unix)]
+extern "C" {
+    fn clock_gettime(clk: i32, tp: *mut Timespec) -> i32;
+}
+
+/// Nanoseconds on a monotonic clock. The origin is arbitrary — only
+/// differences mean anything.
+#[cfg(unix)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_now_nanos() -> i64 {
+    let mut t = Timespec { secs: 0, nanos: 0 };
+    if clock_gettime(CLOCK_MONOTONIC, &mut t) != 0 {
+        return 0;
+    }
+    t.secs.wrapping_mul(1_000_000_000).wrapping_add(t.nanos)
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn QueryPerformanceCounter(count: *mut i64) -> i32;
+    fn QueryPerformanceFrequency(freq: *mut i64) -> i32;
+}
+
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_now_nanos() -> i64 {
+    let mut c: i64 = 0;
+    let mut f: i64 = 0;
+    if QueryPerformanceCounter(&mut c) == 0 || QueryPerformanceFrequency(&mut f) == 0 || f == 0 {
+        return 0;
+    }
+    // Seconds and remainder separately: `c * 1_000_000_000` overflows an i64
+    // after about three hours at a 10 MHz counter, and the counter does not
+    // start at zero.
+    (c / f).wrapping_mul(1_000_000_000).wrapping_add((c % f).wrapping_mul(1_000_000_000) / f)
+}
+
+/// wasip1 has `clock_time_get`, but nothing that reaches this build uses it:
+/// the wasm target is the browser one, where the host keeps the clock.
+#[cfg(target_family = "wasm")]
+#[no_mangle]
+pub unsafe extern "C" fn rill_now_nanos() -> i64 {
+    0
+}
+
 // ---- the C boundary -------------------------------------------------------
 //
 // Rill strings are counted heap objects with a header, so they are not
@@ -1278,7 +1341,17 @@ const MAX_WORKERS: usize = 32;
 
 const PROT_NONE: i32 = 0;
 const PROT_RW: i32 = 3;
+
+/// "Private, and backed by nothing" — one idea, two numbers. `MAP_PRIVATE` is
+/// 0x02 everywhere; the anonymous bit is 0x1000 on the BSDs and 0x20 on Linux.
+/// Using the BSD one on Linux does not fail loudly: 0x1000 there is
+/// `MAP_EXECUTABLE`, so the call asks for an executable file mapping of file
+/// descriptor -1 and comes back with `MAP_FAILED`, which surfaces as "cannot
+/// map strand stack" the first time a program spawns anything.
+#[cfg(not(target_os = "linux"))]
 const MAP_PRIVATE_ANON: i32 = 0x0002 | 0x1000;
+#[cfg(target_os = "linux")]
+const MAP_PRIVATE_ANON: i32 = 0x0002 | 0x0020;
 
 #[cfg(unix)]
 extern "C" {
@@ -1741,8 +1814,15 @@ struct Worker {
     /// run is tied to its worker's stack and only that worker can resume it:
     /// the readiness event has to arrive where the strand lives.
     kq: core::sync::atomic::AtomicI32,
-    /// Set while this worker is asleep inside `kevent`, so that another worker
-    /// only pays for a wakeup syscall when there is really someone to wake.
+    /// How to interrupt this worker's wait. kqueue can be poked directly with
+    /// a user event, so on BSD this stays -1; epoll has no such thing and needs
+    /// a real descriptor in the set to write to, which is what an eventfd is
+    /// for. The difference is small enough to carry in one field rather than in
+    /// two shapes of `Worker`.
+    wake_fd: core::sync::atomic::AtomicI32,
+    /// Set while this worker is asleep inside the poller, so that another
+    /// worker only pays for a wakeup syscall when there is really someone to
+    /// wake.
     asleep: core::sync::atomic::AtomicBool,
 }
 
@@ -1758,6 +1838,7 @@ const WORKER_INIT: Worker = Worker {
     exec_top: 0,
     index: 0,
     kq: core::sync::atomic::AtomicI32::new(0),
+    wake_fd: core::sync::atomic::AtomicI32::new(0),
     asleep: core::sync::atomic::AtomicBool::new(false),
 };
 
@@ -1967,6 +2048,35 @@ unsafe extern "C" fn g_entry() {
     core::hint::unreachable_unchecked()
 }
 
+/// Where a strand's stack pointer starts, given the top of the stack it is to
+/// run on.
+///
+/// A strand is entered with a jump, not a call, and on x86-64 that is an eight
+/// byte difference the compiler is entitled to assume. The System V and
+/// Windows conventions both require the stack to be sixteen-byte aligned at a
+/// `call`; the call then pushes an eight byte return address, so every
+/// function begins life with a stack pointer eight past an alignment boundary
+/// and its prologue is built around that. Entering by jump with a
+/// sixteen-aligned pointer leaves everything downstream misaligned by eight,
+/// and the first aligned SSE store — which is how a compiler spills a pair of
+/// doubles, or how `memcpy` moves sixteen bytes at a time — takes a general
+/// protection fault.
+///
+/// AArch64 has no return address on the stack and requires sixteen-byte
+/// alignment at all times, so there the top is exactly right. Which is why
+/// this was invisible on an Apple Silicon Mac and immediate on anything else:
+/// the strand would run, block, resume, and die on the first line that
+/// happened to touch a vector register.
+#[cfg(target_arch = "x86_64")]
+unsafe fn stack_start(top: usize) -> u64 {
+    ((top & !15) - 8) as u64
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn stack_start(top: usize) -> u64 {
+    (top & !15) as u64
+}
+
 /// Resets a strand record for (re)use.
 unsafe fn init_g(g: *mut G, code: extern "C" fn(*mut u8), env: *mut u8) {
     (*g).ctx = Ctx { regs: [0; 21] };
@@ -2022,7 +2132,7 @@ unsafe fn new_main_g(code: extern "C" fn(*mut u8)) -> *mut G {
     (*g).is_main = true;
     init_g(g, code, core::ptr::null_mut());
     (*g).started = true;
-    (*g).ctx.regs[12] = ((stack as usize + total) & !15) as u64;
+    (*g).ctx.regs[12] = stack_start(stack as usize + total);
     g
 }
 
@@ -2224,7 +2334,7 @@ unsafe fn worker_loop(w: *mut Worker) {
             // First run: adopt this worker's execution stack.
             (*g).started = true;
             (*g).home = (*w).index;
-            (*g).ctx.regs[12] = (*w).exec_top as u64;
+            (*g).ctx.regs[12] = stack_start((*w).exec_top);
         } else if !(*g).is_main {
             restore_stack(g, (*w).exec_top);
         }
@@ -2402,9 +2512,12 @@ pub unsafe extern "C" fn rill_rt_run(code: extern "C" fn(*mut u8)) {
         WORKERS[i].index = i;
         WORKERS[i].exec_top = (base as usize + EXEC_STACK_SIZE + PAGE) & !15;
         // The statics start zeroed, so the parts that are not zero at rest
-        // are set here: a usable mutex, and "no kqueue yet".
+        // are set here: a usable mutex, and "no poller yet". Zero would be a
+        // valid descriptor — it is stdin — so the "not opened" marker has to
+        // be -1 and cannot be left to the loader.
         pthread_mutex_init(&raw mut WORKERS[i].lock, core::ptr::null());
         WORKERS[i].kq.store(-1, core::sync::atomic::Ordering::Release);
+        WORKERS[i].wake_fd.store(-1, core::sync::atomic::Ordering::Release);
     }
     // The key has to exist before `rill_mt` turns on, because from that moment
     // allocation looks up the calling worker through it.
@@ -2801,19 +2914,47 @@ pub unsafe extern "C" fn rill_select(
 // became ready. So a strand blocked on the network costs a worker nothing,
 // which is what makes one-strand-per-connection practical.
 
+// The numbers, which are not the same everywhere.
+//
+// `AF_INET`, `SOCK_STREAM` and `F_SETFL` happen to agree across the Unixes.
+// The rest do not, and none of the disagreements is a compile error: a BSD
+// `SOL_SOCKET` on Linux is not a level that exists, so `setsockopt` fails
+// silently and the address stays un-reusable; a BSD `O_NONBLOCK` on Linux is
+// `O_APPEND`, so the socket stays blocking and the first `accept` freezes a
+// worker for good. They are written out one platform at a time for that
+// reason — the failure mode of getting one wrong is a hang, not a message.
 const AF_INET: i32 = 2;
 const SOCK_STREAM: i32 = 1;
-const SOL_SOCKET: i32 = 0xffff;
-const SO_REUSEADDR: i32 = 0x0004;
-const SO_ERROR: i32 = 0x1007;
 const F_SETFL: i32 = 4;
-const O_NONBLOCK: i32 = 0x0004;// ---- sockets ---------------------------------------------------------------
+
+#[cfg(not(target_os = "linux"))]
+const SOL_SOCKET: i32 = 0xffff;
+#[cfg(not(target_os = "linux"))]
+const SO_REUSEADDR: i32 = 0x0004;
+#[cfg(not(target_os = "linux"))]
+const SO_ERROR: i32 = 0x1007;
+#[cfg(not(target_os = "linux"))]
+const O_NONBLOCK: i32 = 0x0004;
+
+#[cfg(target_os = "linux")]
+const SOL_SOCKET: i32 = 1;
+#[cfg(target_os = "linux")]
+const SO_REUSEADDR: i32 = 2;
+#[cfg(target_os = "linux")]
+const SO_ERROR: i32 = 4;
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: i32 = 0o4000;
+
+// ---- sockets ---------------------------------------------------------------
 //
-// BSD sockets and kqueue, which is to say: not Windows. Winsock has the same
-// shape and different names, and its waiting is done with completion ports
-// rather than by asking which handles are ready — so the port of this section
-// is a rewrite rather than a rename, and it is not written yet. A program
-// that opens no socket links and runs without it.
+// BSD sockets, which is to say: not Windows. Winsock has the same shape and
+// different names, and its waiting is done with completion ports rather than
+// by asking which handles are ready — so the port of this section is a rewrite
+// rather than a rename, and it is not written yet. A program that opens no
+// socket links and runs without it.
+//
+// Everything above the poller is shared; the poller itself is kqueue on the
+// BSDs and epoll on Linux, behind four functions.
 #[cfg(unix)]
 use net::{poll_network, wake_a_stealer, wake_worker, IO_WAITERS};
 
@@ -2848,24 +2989,20 @@ static IO_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicU
 mod net {
     use super::*;
 
+    #[cfg(not(target_os = "linux"))]
     const EAGAIN: i32 = 35;
+    #[cfg(not(target_os = "linux"))]
     const EINPROGRESS: i32 = 36;
+    #[cfg(target_os = "linux")]
+    const EAGAIN: i32 = 11;
+    #[cfg(target_os = "linux")]
+    const EINPROGRESS: i32 = 115;
     const EINTR: i32 = 4;
 
-    const EVFILT_READ: i16 = -1;
-    const EVFILT_WRITE: i16 = -2;
-    /// A filter the program triggers itself, used to wake a worker asleep in
-    /// `kevent` the moment another worker queues work for it.
-    const EVFILT_USER: i16 = -10;
-    const EV_ADD: u16 = 0x0001;
-    const EV_ONESHOT: u16 = 0x0010;
-    const EV_CLEAR: u16 = 0x0020;
-    const NOTE_TRIGGER: u32 = 0x0100_0000;
-    /// Identifier of that wakeup event. Filters have separate ident spaces, so
-    /// this cannot collide with a file descriptor.
-    const WAKE_IDENT: usize = 0;
-
     const READ_CHUNK: usize = 64 * 1024;
+
+    /// How many ready strands one look at the poller may collect.
+    const READY_BATCH: usize = 32;
 
     extern "C" {
         fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
@@ -2876,15 +3013,6 @@ mod net {
         fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
         fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
         fn fcntl(fd: i32, cmd: i32, ...) -> i32;
-        fn kqueue() -> i32;
-        fn kevent(
-            kq: i32,
-            changes: *const KEvent,
-            nchanges: i32,
-            events: *mut KEvent,
-            nevents: i32,
-            timeout: *const TimeSpec,
-        ) -> i32;
         /// macOS's errno: a function, because errno is per-thread and a plain
         /// global could not be.
         #[cfg(target_vendor = "apple")]
@@ -2898,6 +3026,10 @@ mod net {
         fn __error() -> *mut i32;
     }
 
+    /// The BSD one carries its own length in the first byte; Linux uses those
+    /// two bytes for the family instead. Same sixteen bytes either way, which
+    /// is why passing the wrong one is a silent misparse rather than an error.
+    #[cfg(not(target_os = "linux"))]
     #[repr(C)]
     struct SockAddrIn {
         len: u8,
@@ -2907,20 +3039,23 @@ mod net {
         zero: [u8; 8],
     }
 
+    #[cfg(target_os = "linux")]
     #[repr(C)]
-    struct KEvent {
-        ident: usize,
-        filter: i16,
-        flags: u16,
-        fflags: u32,
-        data: isize,
-        udata: *mut u8,
+    struct SockAddrIn {
+        family: u16,
+        port: u16,
+        addr: [u8; 4],
+        zero: [u8; 8],
     }
 
-    #[repr(C)]
-    struct TimeSpec {
-        sec: i64,
-        nsec: i64,
+    #[cfg(not(target_os = "linux"))]
+    unsafe fn sock_addr(ip: [u8; 4], port: i64) -> SockAddrIn {
+        SockAddrIn { len: 16, family: AF_INET as u8, port: (port as u16).to_be(), addr: ip, zero: [0; 8] }
+    }
+
+    #[cfg(target_os = "linux")]
+    unsafe fn sock_addr(ip: [u8; 4], port: i64) -> SockAddrIn {
+        SockAddrIn { family: AF_INET as u16, port: (port as u16).to_be(), addr: ip, zero: [0; 8] }
     }
 
     /// Strands currently parked on a file descriptor. While this is non-zero
@@ -2931,29 +3066,270 @@ mod net {
         *__error()
     }
 
+    // ---- the poller ---------------------------------------------------------
+    //
+    // Four operations, two implementations. Everything else in this module is
+    // written once against these, because the difference between kqueue and
+    // epoll is genuinely small at this scale: register interest in one
+    // descriptor for one event, wait for whatever became ready, and have some
+    // way to interrupt that wait from another thread.
+    //
+    //   poller_open   create it, and whatever it needs to be woken through
+    //   poller_wake   interrupt a worker asleep in `poller_wait`
+    //   poller_arm    park this strand on this descriptor, once
+    //   poller_wait   collect the strands that became runnable
+    //
+    // The one real asymmetry is the wakeup. kqueue has a filter for events the
+    // program raises itself, so a worker can be poked through the same handle
+    // it is waiting on. epoll has nothing like it and needs a real descriptor
+    // in the set — an eventfd, whose entire purpose is to be that descriptor.
+
+    #[cfg(not(target_os = "linux"))]
+    use bsd::{poller_arm, poller_open, poller_wait, poller_wake};
+    #[cfg(target_os = "linux")]
+    use linux::{poller_arm, poller_open, poller_wait, poller_wake};
+
+    #[cfg(not(target_os = "linux"))]
+    mod bsd {
+        use super::*;
+
+        const EVFILT_READ: i16 = -1;
+        const EVFILT_WRITE: i16 = -2;
+        /// A filter the program triggers itself, used to wake a worker asleep
+        /// in `kevent` the moment another worker queues work for it.
+        const EVFILT_USER: i16 = -10;
+        const EV_ADD: u16 = 0x0001;
+        const EV_ONESHOT: u16 = 0x0010;
+        const EV_CLEAR: u16 = 0x0020;
+        const NOTE_TRIGGER: u32 = 0x0100_0000;
+        /// Identifier of that wakeup event. Filters have separate ident spaces,
+        /// so this cannot collide with a file descriptor.
+        const WAKE_IDENT: usize = 0;
+
+        extern "C" {
+            fn kqueue() -> i32;
+            fn kevent(
+                kq: i32,
+                changes: *const KEvent,
+                nchanges: i32,
+                events: *mut KEvent,
+                nevents: i32,
+                timeout: *const TimeSpec,
+            ) -> i32;
+        }
+
+        #[repr(C)]
+        pub(super) struct KEvent {
+            ident: usize,
+            filter: i16,
+            flags: u16,
+            fflags: u32,
+            data: isize,
+            udata: *mut u8,
+        }
+
+        #[repr(C)]
+        struct TimeSpec {
+            sec: i64,
+            nsec: i64,
+        }
+
+        pub(super) unsafe fn poller_open(w: *mut Worker) -> i32 {
+            let kq = kqueue();
+            if kq < 0 {
+                out(b"rill: cannot create kqueue\n");
+                abort();
+            }
+            let ev = KEvent {
+                ident: WAKE_IDENT,
+                filter: EVFILT_USER,
+                flags: EV_ADD | EV_CLEAR,
+                fflags: 0,
+                data: 0,
+                udata: core::ptr::null_mut(),
+            };
+            kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null());
+            (*w).kq.store(kq, core::sync::atomic::Ordering::Release);
+            kq
+        }
+
+        pub(super) unsafe fn poller_wake(w: *mut Worker) {
+            let kq = (*w).kq.load(core::sync::atomic::Ordering::Acquire);
+            if kq < 0 {
+                return;
+            }
+            let ev = KEvent {
+                ident: WAKE_IDENT,
+                filter: EVFILT_USER,
+                flags: 0,
+                fflags: NOTE_TRIGGER,
+                data: 0,
+                udata: core::ptr::null_mut(),
+            };
+            kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null());
+        }
+
+        /// One-shot, so nothing has to be unregistered afterwards.
+        pub(super) unsafe fn poller_arm(kq: i32, fd: i32, writable: bool, g: *mut G) -> bool {
+            let ev = KEvent {
+                ident: fd as usize,
+                filter: if writable { EVFILT_WRITE } else { EVFILT_READ },
+                flags: EV_ADD | EV_ONESHOT,
+                fflags: 0,
+                data: 0,
+                udata: g as *mut u8,
+            };
+            kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null()) >= 0
+        }
+
+        pub(super) unsafe fn poller_wait(kq: i32, ms: i32, ready: *mut *mut G) -> usize {
+            let mut events: [KEvent; READY_BATCH] = core::mem::zeroed();
+            let ts = TimeSpec { sec: 0, nsec: ms as i64 * 1_000_000 };
+            let n = kevent(kq, core::ptr::null(), 0, events.as_mut_ptr(), READY_BATCH as i32, &ts);
+            if n <= 0 {
+                return 0;
+            }
+            let mut got = 0usize;
+            for i in 0..n as usize {
+                let g = events[i].udata as *mut G;
+                if !g.is_null() {
+                    *ready.add(got) = g;
+                    got += 1;
+                }
+            }
+            got
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod linux {
+        use super::*;
+
+        const EPOLLIN: u32 = 0x001;
+        const EPOLLOUT: u32 = 0x004;
+        const EPOLLONESHOT: u32 = 1 << 30;
+        const EPOLL_CTL_ADD: i32 = 1;
+        const EPOLL_CTL_MOD: i32 = 3;
+        const EEXIST: i32 = 17;
+        /// The eventfd is only ever read to drain it, and must never be the
+        /// thing that blocks a worker.
+        const EFD_NONBLOCK: i32 = 0o4000;
+
+        extern "C" {
+            fn epoll_create1(flags: i32) -> i32;
+            fn epoll_ctl(epfd: i32, op: i32, fd: i32, ev: *mut EpollEvent) -> i32;
+            fn epoll_wait(epfd: i32, events: *mut EpollEvent, maxevents: i32, timeout: i32) -> i32;
+            fn eventfd(initval: u32, flags: i32) -> i32;
+        }
+
+        /// Packed on x86-64 and not on anything else — the kernel's own
+        /// definition carries `__attribute__((packed))` only for the one
+        /// architecture, to keep the 32-bit and 64-bit layouts identical. Get
+        /// this wrong and every `data` field comes back shifted by four bytes,
+        /// which reads as a wild pointer to a strand.
+        #[cfg(target_arch = "x86_64")]
+        #[repr(C, packed)]
+        pub(super) struct EpollEvent {
+            events: u32,
+            data: u64,
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        #[repr(C)]
+        pub(super) struct EpollEvent {
+            events: u32,
+            data: u64,
+        }
+
+        pub(super) unsafe fn poller_open(w: *mut Worker) -> i32 {
+            let ep = epoll_create1(0);
+            if ep < 0 {
+                out(b"rill: cannot create epoll\n");
+                abort();
+            }
+            // The wakeup channel. Registered level-triggered and never
+            // one-shot, so it stays armed for the life of the worker.
+            let efd = eventfd(0, EFD_NONBLOCK);
+            if efd < 0 {
+                out(b"rill: cannot create eventfd\n");
+                abort();
+            }
+            let mut ev = EpollEvent { events: EPOLLIN, data: 0 };
+            epoll_ctl(ep, EPOLL_CTL_ADD, efd, &mut ev);
+            (*w).wake_fd.store(efd, core::sync::atomic::Ordering::Release);
+            (*w).kq.store(ep, core::sync::atomic::Ordering::Release);
+            ep
+        }
+
+        pub(super) unsafe fn poller_wake(w: *mut Worker) {
+            let efd = (*w).wake_fd.load(core::sync::atomic::Ordering::Acquire);
+            if efd < 0 {
+                return;
+            }
+            let one: u64 = 1;
+            write(efd, &one as *const u64 as *const u8, 8);
+        }
+
+        /// `EPOLLONESHOT` disarms the descriptor after one event but leaves it
+        /// in the set, so a second arm on the same descriptor is a modify and
+        /// not an add. Trying the add first and falling back keeps the common
+        /// case — a connection's first wait — to one syscall.
+        pub(super) unsafe fn poller_arm(ep: i32, fd: i32, writable: bool, g: *mut G) -> bool {
+            let mut ev = EpollEvent {
+                events: (if writable { EPOLLOUT } else { EPOLLIN }) | EPOLLONESHOT,
+                data: g as u64,
+            };
+            if epoll_ctl(ep, EPOLL_CTL_ADD, fd, &mut ev) >= 0 {
+                return true;
+            }
+            if errno() != EEXIST {
+                return false;
+            }
+            epoll_ctl(ep, EPOLL_CTL_MOD, fd, &mut ev) >= 0
+        }
+
+        pub(super) unsafe fn poller_wait(ep: i32, ms: i32, ready: *mut *mut G) -> usize {
+            let mut events: [EpollEvent; READY_BATCH] = core::mem::zeroed();
+            let n = epoll_wait(ep, events.as_mut_ptr(), READY_BATCH as i32, ms);
+            if n <= 0 {
+                return 0;
+            }
+            let mut got = 0usize;
+            for i in 0..n as usize {
+                // A copy, because the field is unaligned in the packed form and
+                // may not be borrowed.
+                let d = core::ptr::addr_of!(events[i].data).read_unaligned();
+                if d == 0 {
+                    // The wakeup channel. Drain it so a level-triggered
+                    // registration does not report it for ever.
+                    let efd = wake_fd_of_current();
+                    if efd >= 0 {
+                        let mut sink: u64 = 0;
+                        read(efd, &mut sink as *mut u64 as *mut u8, 8);
+                    }
+                    continue;
+                }
+                *ready.add(got) = d as *mut G;
+                got += 1;
+            }
+            got
+        }
+
+        /// The worker running this call is the one whose poller it is.
+        unsafe fn wake_fd_of_current() -> i32 {
+            let w = me();
+            (*w).wake_fd.load(core::sync::atomic::Ordering::Acquire)
+        }
+    }
+
     /// Opens this worker's poller on first use. Only the owning worker calls it,
     /// so the lazy creation needs no lock.
-    unsafe fn ensure_kqueue(w: *mut Worker) -> i32 {
+    unsafe fn ensure_poller(w: *mut Worker) -> i32 {
         let existing = (*w).kq.load(core::sync::atomic::Ordering::Acquire);
         if existing >= 0 {
             return existing;
         }
-        let kq = kqueue();
-        if kq < 0 {
-            out(b"rill: cannot create kqueue\n");
-            abort();
-        }
-        let ev = KEvent {
-            ident: WAKE_IDENT,
-            filter: EVFILT_USER,
-            flags: EV_ADD | EV_CLEAR,
-            fflags: 0,
-            data: 0,
-            udata: core::ptr::null_mut(),
-        };
-        kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null());
-        (*w).kq.store(kq, core::sync::atomic::Ordering::Release);
-        kq
+        poller_open(w)
     }
 
     /// Cuts short the sleep of one specific worker. Without this, work queued by
@@ -2962,19 +3338,7 @@ mod net {
         if !(*w).asleep.load(core::sync::atomic::Ordering::Acquire) {
             return;
         }
-        let kq = (*w).kq.load(core::sync::atomic::Ordering::Acquire);
-        if kq < 0 {
-            return;
-        }
-        let ev = KEvent {
-            ident: WAKE_IDENT,
-            filter: EVFILT_USER,
-            flags: 0,
-            fflags: NOTE_TRIGGER,
-            data: 0,
-            udata: core::ptr::null_mut(),
-        };
-        kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null());
+        poller_wake(w);
     }
 
     /// Wakes one sleeping worker so it can come and steal. Fresh strands sit on
@@ -3000,17 +3364,9 @@ mod net {
         let w = me();
         let g = (*w).current;
         (*g).selected = -1;
-        let kq = ensure_kqueue(w);
-        let ev = KEvent {
-            ident: fd as usize,
-            filter: if writable { EVFILT_WRITE } else { EVFILT_READ },
-            flags: EV_ADD | EV_ONESHOT,
-            fflags: 0,
-            data: 0,
-            udata: g as *mut u8,
-        };
+        let p = ensure_poller(w);
         IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
-        if kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null()) < 0 {
+        if !poller_arm(p, fd, writable, g) {
             IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
             return; // fall back to spinning on the syscall
         }
@@ -3020,14 +3376,13 @@ mod net {
     /// Collects whatever the network has made ready and queues those strands.
     /// `wait` decides whether an idle scheduler should sleep here.
     pub(super) unsafe fn poll_network(w: *mut Worker, wait: bool) -> usize {
-        let kq = (*w).kq.load(core::sync::atomic::Ordering::Acquire);
-        if kq < 0 || IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) == 0 {
+        let p = (*w).kq.load(core::sync::atomic::Ordering::Acquire);
+        if p < 0 || IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) == 0 {
             return 0;
         }
-        let mut events: [KEvent; 32] = core::mem::zeroed();
+        let mut ready: [*mut G; READY_BATCH] = [core::ptr::null_mut(); READY_BATCH];
         // A short sleep rather than an indefinite one: another worker may make
         // something runnable while this one is inside the call.
-        let ts = TimeSpec { sec: 0, nsec: if wait { 20_000_000 } else { 0 } };
         if wait {
             (*w).asleep.store(true, core::sync::atomic::Ordering::Release);
             // A worker that queued something for us a moment ago saw us awake and
@@ -3040,25 +3395,19 @@ mod net {
                 return 0;
             }
         }
-        let n = kevent(kq, core::ptr::null(), 0, events.as_mut_ptr(), 32, &ts);
+        let n = poller_wait(p, if wait { 20 } else { 0 }, ready.as_mut_ptr());
         if wait {
             (*w).asleep.store(false, core::sync::atomic::Ordering::Release);
         }
-        if n <= 0 {
-            return 0;
-        }
-        for i in 0..n as usize {
-            let g = events[i].udata as *mut G;
-            if g.is_null() {
-                continue;
-            }
+        for i in 0..n {
+            let g = ready[i];
             IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
             (*g).selected = 0;
             lock();
             make_ready(g);
             unlock();
         }
-        n as usize
+        n
     }
 
     /// Opens a listening socket on `port`, or returns -1.
@@ -3073,13 +3422,7 @@ mod net {
         }
         let one: i32 = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one as *const i32 as *const u8, 4);
-        let addr = SockAddrIn {
-            len: 16,
-            family: AF_INET as u8,
-            port: (port as u16).to_be(),
-            addr: [0, 0, 0, 0],
-            zero: [0; 8],
-        };
+        let addr = sock_addr([0, 0, 0, 0], port);
         if bind(fd, &addr, 16) < 0 || listen(fd, 128) < 0 {
             close(fd);
             return -1;
@@ -3155,13 +3498,7 @@ mod net {
             return -1;
         }
         set_nonblocking(fd);
-        let addr = SockAddrIn {
-            len: 16,
-            family: AF_INET as u8,
-            port: (port as u16).to_be(),
-            addr: ip,
-            zero: [0; 8],
-        };
+        let addr = sock_addr(ip, port);
         if connect(fd, &addr, 16) < 0 {
             let e = errno();
             if e != EINPROGRESS {
