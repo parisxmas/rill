@@ -15,7 +15,7 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=219";   // keep in step with V below
+import { load } from "./world.js?v=220";   // keep in step with V below
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +25,7 @@ import { load } from "./world.js?v=219";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "219";
+const V = "220";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -436,8 +436,55 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   // built inside an error scope named after it. Both scopes, because a bad
   // vertex layout is a `validation` error and a bad shader is an `internal`
   // one, and from a black screen you cannot tell which you are looking at.
-  const mod = (code, label) => {
-    const m = device.createShaderModule({ code, label });
+  // Bake the pipeline constants into the source instead of overriding them.
+  //
+  // WGSL lets a module declare `override X: f32 = 0.0;` and a pipeline supply
+  // the value, so one shader can serve several pipelines. Four here did that —
+  // the crystals' emissive fraction, and the water's wave and ripple counts,
+  // each in a main-pass and an environment-probe copy — and those four are
+  // exactly the four that would not build on iPadOS. Every other pipeline in
+  // the valley came up. The diagnosis was the list: not one of them reported a
+  // WGSL error, so the source was fine; all four failed with Metal's "vertex
+  // library failed creation", which is the backend refusing to turn the module
+  // into a Metal library. WebKit implements overrides as Metal function
+  // constants and does not get a vertex function out the other side.
+  //
+  // There is nothing to be gained by fighting that. An override is a
+  // convenience for reusing one module across pipelines, and the substitution
+  // it saves is a string replacement — so do the replacement. `override N: T =
+  // d;` becomes `const N: T = value;`, the pipeline is built with no constants
+  // at all, and the backend sees an ordinary shader with an ordinary literal in
+  // it. Applied to every module whether it has constants or not, so the word
+  // never reaches a driver: a shader that keeps its default is just one whose
+  // default got written down.
+  //
+  // The literal has to match the declared type or the module will not compile —
+  // an f32 written `1` is an abstract-int in WGSL and will not go into an f32.
+  const wgslLit = (type, v) => {
+    if (type === "bool") return v ? "true" : "false";
+    if (type === "u32") return `${Math.round(v)}u`;
+    if (type === "i32") return `${Math.round(v)}`;
+    return Number.isInteger(v) ? `${v}.0` : String(v);
+  };
+  const spec = (code, values) => code.replace(
+    /^([ \t]*)(?:@id\(\s*\d+\s*\)[ \t]*)?override[ \t]+([A-Za-z_]\w*)[ \t]*:[ \t]*(\w+)[ \t]*=[ \t]*([^;]+);/gm,
+    (_, pad, name, type, dflt) => {
+      const given = values && Object.prototype.hasOwnProperty.call(values, name);
+      return `${pad}const ${name}: ${type} = ${given ? wgslLit(type, values[name]) : dflt.trim()};`;
+    });
+
+  // One module per distinct source. Each pipeline asks for its vertex and its
+  // fragment stage separately and both come from the same file, so without this
+  // every shader in the valley is compiled twice — which is a startup cost paid
+  // most heavily by the machines least able to afford it.
+  const modCache = new Map();
+  const mod = (code, label, constants) => {
+    const src = spec(code, constants);
+    const key = `${label} ${src}`;
+    const had = modCache.get(key);
+    if (had) return had;
+    const m = device.createShaderModule({ code: src, label });
+    modCache.set(key, m);
     m.getCompilationInfo?.().then(info => {
       const bad = (info.messages ?? []).filter(x => x.type === "error");
       if (bad.length) shout(`shader "${label}" did not compile`,
@@ -642,9 +689,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
 
   const pipe = (label, code, buffers, opts = {}) => watched(label, () => device.createRenderPipeline({
     label, layout,
-    vertex: { module: mod(code, label), buffers, constants: opts.constants },
-    fragment: { module: mod(code, label),
-                targets: [{ format: opts.format ?? format, blend: opts.blend }], constants: opts.constants },
+    // No `constants` on either stage: the values are already in the source that
+    // `mod` handed to the driver. See `spec` for why they cannot be passed here.
+    vertex: { module: mod(code, label, opts.constants), buffers },
+    fragment: { module: mod(code, label, opts.constants),
+                targets: [{ format: opts.format ?? format, blend: opts.blend }] },
     primitive: { cullMode: opts.cull ?? "back" },
     depthStencil: { ...depth, ...opts.depth },
     multisample: MS,
