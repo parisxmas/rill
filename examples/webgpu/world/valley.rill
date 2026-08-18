@@ -1558,9 +1558,14 @@ fn player_pitch(s: Ptr) -> Float = peek_f32(s, 20)
 # Where someone is looking is theirs to decide: a server that corrected an aim
 # would be a server that moved somebody's crosshair while they were using it.
 # Where they *are* is the server's, which is the other half of `walk`.
+# The look is the client's to decide and the server's to keep sane. Pitch is
+# held to the same limits `walk` holds it to — a browser clamps its own, and a
+# server that took a client's word for it would let somebody aim through their
+# own feet. Yaw wraps, so it is only kept finite and inside a turn or two;
+# `sin` and `cos` do the rest.
 fn set_look(s: Ptr, yaw: Float, pitch: Float) =
-  poke_f32(s, 19, yaw)
-  poke_f32(s, 20, pitch)
+  poke_f32(s, 19, clamped(yaw, 0.0 - 100.0, 100.0))
+  poke_f32(s, 20, clamped(pitch, 0.0 - 1.45, 1.45))
   1
 
 fn set_at(s: Ptr, x: Float, y: Float, z: Float) =
@@ -1603,7 +1608,34 @@ fn heard(s: Ptr, t: Float) =
 
 fn last_heard(s: Ptr) -> Float = peek_f32(s, 51)
 
-fn want_fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
+# Nothing off the wire is believed. A number that arrived from somewhere else
+# is a number somebody chose, and `str_to_float` will hand back a NaN for
+# "nan" and an infinity for "1e400" as happily as it hands back 2.75.
+#
+# NaN is the one that spreads: it compares false against everything, so a
+# player at a NaN position is not hit by anything, is not seen by the shark,
+# is always far enough away to be worth throwing at, and puts NaN into every
+# snapshot everybody else reads.
+fn finite(x) = if x == x then x else 0.0
+
+fn clamped(x, lo, hi) = clampf(finite(x), lo, hi)
+
+# Where the sights point, made a unit vector here rather than trusted.
+#
+# `fire` multiplies this by the muzzle velocity, so a client that sent a
+# direction a million long got a round at a hundred thousand kilometres a
+# second — one that crosses the whole valley inside a single step, and the
+# segment it sweeps takes out every crystal along a line through the world. A
+# rifle, not a rail gun. A direction too short to normalise is no direction,
+# and the shot is dropped.
+fn want_fire(s: Ptr, dx0: Float, dy0: Float, dz0: Float) =
+  dx = finite(dx0)
+  dy = finite(dy0)
+  dz = finite(dz0)
+  l = sqrt(dx * dx + dy * dy + dz * dz)
+  if l < 0.001 then 0 else aim_at(s, dx / l, dy / l, dz / l)
+
+fn aim_at(s, dx, dy, dz) =
   poke_f32(s, 31, 1.0)
   poke_f32(s, 48, dx)
   poke_f32(s, 49, dy)

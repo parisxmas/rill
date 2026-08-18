@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+- **The valley server stops taking a client's word for anything.** It was a
+  demo on a trusted network and read like one, and asking what an unfriendly
+  client could do turned up four things.
+
+  Numbers off the wire are numbers somebody chose. `str_to_float` hands back a
+  NaN for `"nan"` and an infinity for `"1e400"` as happily as it hands back
+  2.75, and NaN is the one that spreads: it compares false against everything,
+  so a player at a NaN position is hit by nothing, seen by nothing, always far
+  enough away to be worth throwing at, and puts NaN into every snapshot
+  everybody else reads. Measured before the fix: `i 0 nan nan` and the
+  snapshot said `nan nan`. Everything arriving is now checked finite, and
+  pitch is held to the same limits `walk` holds it to.
+
+  The direction of a shot was multiplied by the muzzle velocity and believed.
+  A client sending a direction a million long got a round at **158 billion
+  metres a second** — measured — which crosses the whole valley inside one
+  step and sweeps a segment that takes out every crystal along a line through
+  the world. A rifle, not a rail gun: the direction is made a unit vector on
+  arrival, and a shot too short to normalise is dropped. The same shot now
+  leaves at 120 m/s.
+
+  One client could stop the world for everybody. The hub takes its tick off
+  the same channel as the key presses, and against an unbounded sender the
+  tick never wins — modelled on its own, four busy senders and the ticker got
+  through **zero times in eight seconds**. Each connection now has ninety
+  messages a second, which is comfortably above what a browser sends and far
+  below what a machine can; over the budget a line is read and dropped without
+  being parsed. Under three flooding clients the tick now holds at a full 20 a
+  second, where before the server fell over.
+
+  And there was no limit on open sockets. Eighty connections that said nothing
+  at all held eighty strands and eighty descriptors for ever; there are
+  sixty-four places now and the eighty-first is closed on arrival. That is a
+  cap, not a timeout — a slow client still holds its place until it speaks,
+  because a read cannot be given a deadline in this language yet.
+
+- **Known, not fixed: `select` corrupts the heap when it parks a great many
+  times.** Found while testing the above, and the reason the server used to
+  die under load. Five lines reproduce it, with no sockets and no valley:
+
+  ```
+  fn spam(ch) =
+    send(ch, 1)
+    spam(ch)
+
+  fn drain(a, n) =
+    x = select
+      v = recv(a) -> v
+    if n == 0 then 0 else drain(a, n - 1)
+
+  fn main() =
+    a = channel()
+    spawn spam(a)
+    drain(a, 3000000)
+  ```
+
+  That dies with SIGBUS inside `free`, five times out of five. The same loop
+  written with a plain `recv` runs clean, and so does a `select` that never
+  parks — one with a `default` and nothing to take, three billion times over,
+  with flat memory. So it is the path where `select` finds nothing ready,
+  allocates its waiters, parks, and is woken. Leaving those waiters unfreed
+  does not help, and neither does unlinking them from both queues, so it is
+  not the obvious double-free or the obvious stale queue entry.
+
+  The server no longer reaches it, because the input budget above keeps the
+  pressure off — but that is a mitigation and this is still a bug in the
+  runtime. Nothing in the valley should be exposed to the open internet until
+  it is understood.
+
 - **An aliased import no longer renames the module's own local names.**
   `import "lib" as v` qualifies everything `lib` defines, and it was doing that
   to *references* by name alone — so a local binding, a parameter, a loop's

@@ -57,6 +57,24 @@ fn reload_s() = 0.55
 # count, in the way, and a target for whatever the crystals throw.
 fn quiet_s() = 10.0
 
+# How many messages a second one connection may have listened to. A browser
+# sends its keys once a frame, so ninety is comfortably above anything honest
+# and far below what a machine can send — and it is what keeps one client from
+# spending the whole server on itself. Over the budget the line is read and
+# dropped: the socket still has to be drained, or the sender simply blocks and
+# the backlog moves into the kernel.
+#
+# This is the fix for a real starvation, not a theoretical one: the hub takes
+# its tick off the same channel as the key presses, and with an unbounded
+# sender the tick never wins. Measured on a model of it — four busy senders,
+# and in eight seconds the ticker got through exactly zero times.
+fn heard_per_second() = 90
+
+# How many sockets may be open at once, whether or not their owners ever say
+# anything. The valley holds thirty-two; the rest of these are room for the
+# handshake and for connections on their way out.
+fn max_connections() = 64
+
 # ---- what goes between them ------------------------------------------------
 #
 # One inbox, one message type. `Tick` arrives on the same channel as the key
@@ -369,9 +387,11 @@ fn ticker(inbox, next) =
 
 # ---- one connection --------------------------------------------------------
 
-fn serve(conn, inbox) =
+fn serve(conn, inbox, live) =
   request = fill(conn, "", 4)
   if ws_accept(conn, request) then play(conn, inbox) else sock_close(conn)
+  drop_slot(live)
+  0
 
 fn play(conn, inbox) =
   out = channel(4)
@@ -389,7 +409,7 @@ fn play(conn, inbox) =
 
 fn both_ways(conn, inbox, out, id) =
   spawn writer(conn, out)
-  reader(conn, inbox, id, "")
+  reader(conn, inbox, id, heard_per_second(), now_nanos() + 1000000000)
   # The socket first, so that anything the writer still has to send fails at
   # once instead of parking on a connection with nobody at the other end. Then
   # an empty line, which is the one thing that reaches a strand waiting on a
@@ -413,14 +433,26 @@ fn keep_writing(conn, out, line) =
 
 # One frame is one message, so a read that comes back empty is the end of the
 # connection and nothing else.
-fn reader(conn, inbox, id, acc) =
+#
+# `budget` is what is left of this second's allowance and `until` is when the
+# second is up. Over the allowance the line is read and thrown away without
+# being parsed, which is the point: the cost of a message is the parsing and
+# the hub's attention, and neither is spent on the ten-thousandth one.
+fn reader(conn, inbox, id, budget, until) =
   msg = ws_read(conn)
-  if str_len(msg) == 0 then 0 else handle_line(conn, inbox, id, msg)
+  if str_len(msg) == 0 then 0 else gate(conn, inbox, id, budget, until, msg)
 
-fn handle_line(conn, inbox, id, msg) =
+fn gate(conn, inbox, id, budget, until, msg) =
+  now = now_nanos()
+  if now > until then gate_on(conn, inbox, id, heard_per_second(), now + 1000000000, msg) else gate_on(conn, inbox, id, budget, until, msg)
+
+fn gate_on(conn, inbox, id, budget, until, msg) =
+  if budget <= 0 then reader(conn, inbox, id, 0, until) else handle_line(conn, inbox, id, budget, until, msg)
+
+fn handle_line(conn, inbox, id, budget, until, msg) =
   parts = split(msg, " ")
   route(inbox, id, unwrap_or(nth(parts, 0), ""), parts)
-  reader(conn, inbox, id, "")
+  reader(conn, inbox, id, budget - 1, until)
 
 fn route(inbox, id, kind, parts) =
   if kind == "i" then tell(inbox, Moved(id, num_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "f" then tell(inbox, Shot(id, fnum_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else 0
@@ -435,19 +467,37 @@ fn fnum_at(parts, i) = str_to_float(unwrap_or(nth(parts, i), "0"))
 
 # ---- and the door ----------------------------------------------------------
 
-fn accept_loop(server, inbox) =
+# The count of open connections lives in a byte of memory the strands share.
+# One worker runs all of them and nothing here yields between the read and the
+# write, so the increment does not need to be atomic — which it could not be
+# anyway. Build this `--parallel` and that stops being true.
+fn take_slot(live) =
+  n = to_int(peek_f32(live, 0))
+  if n >= max_connections() then 0 else claim_slot(live, n)
+
+fn claim_slot(live, n) =
+  poke_f32(live, 0, to_float(n + 1))
+  1
+
+fn drop_slot(live) =
+  poke_f32(live, 0, to_float(to_int(peek_f32(live, 0)) - 1))
+  1
+
+fn accept_loop(server, inbox, live) =
   conn = tcp_accept(server)
-  spawn serve(conn, inbox)
-  accept_loop(server, inbox)
+  if take_slot(live) > 0 then spawn serve(conn, inbox, live) else sock_close(conn)
+  accept_loop(server, inbox, live)
 
 fn main() = match listen_on(port())
   Err(e) -> println(e)
   Ok(server) -> run(server)
 
 fn run(server) =
+  live = alloc_bytes(16)
+  poke_f32(live, 0, 0.0)
   w = v.init(64, n_pines(), n_crystals(), n_grass())
   println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
   inbox = channel()
-  spawn accept_loop(server, inbox)
+  spawn accept_loop(server, inbox, live)
   spawn ticker(inbox, now_nanos() + tick_ms() * 1000000)
   hub(w, Nil, inbox, 0)

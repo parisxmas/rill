@@ -175,6 +175,31 @@ machine draws a coarser valley and stands on exactly the same ground, since
 every physical question is asked of the height function rather than of the
 mesh.
 
+Nothing a client sends is believed. Every number is checked finite, because
+`str_to_float` will hand back a NaN for `"nan"` and NaN compares false against
+everything — a player at a NaN position is hit by nothing, seen by nothing,
+and always far enough away to be worth throwing at. Pitch is held to the same
+limits `walk` holds it to. A shot's direction is made a unit vector on
+arrival: it is multiplied by the muzzle velocity, so a direction a million
+long is otherwise a round at a hundred and fifty billion metres a second,
+which crosses the valley inside one step and takes out every crystal along a
+line through the world.
+
+Each connection is allowed ninety messages a second — a browser sends its keys
+once a frame, so that is well above anything honest — and over that a line is
+read and dropped without being parsed. That is not tidiness: the hub takes its
+tick off the same channel as the key presses, and against an unbounded sender
+the tick never wins at all. Sixty-four sockets may be open at once, whichever
+of them ever say anything.
+
+It is still a demo server. There is no timeout on a connection that opens and
+then says nothing (a read cannot be given a deadline in this language yet, so
+the cap is the only limit), no per-address limit, and `ws.rill` assumes one
+read gives a whole frame — true for messages this small, false in general.
+`CHANGELOG.md` records a runtime bug found while testing this, which the
+server no longer reaches but which is not fixed. Do not put it on the open
+internet.
+
 `check.rill` is the same shared world with neither a browser nor a socket:
 three players in one valley, walking, shooting each other and leaving. It is
 run by the test suite, which is the only way any of this is checked
