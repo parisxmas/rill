@@ -119,6 +119,8 @@ fn main() =
   shoot_at(w, a, b)
   shoot_at(w, a, b)
   shoot_at(w, a, b)
+  println("  the first has landed " + int_to_str(v.hits_given(a)) + " and taken " + int_to_str(v.hits_taken(a)))
+  println("  the second has landed " + int_to_str(v.hits_given(b)) + " and taken " + int_to_str(v.hits_taken(b)))
 
   # Down, and put back on their feet at the spawn with the valley as it is.
   v.respawn(b)

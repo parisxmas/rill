@@ -13,7 +13,7 @@
 //
 //   in     hello <id> <pines> <crystals> <grass> <clock>
 //          gone <i>...                     crystals already shot
-//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose>...
+//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose hit shot>...
 //          r <x y z vx vy vz owner>        a round left somebody's rifle
 //          t <x y z vx vy vz seed life>    a crystal threw
 //          k <x y z seed>                  one landed
@@ -156,7 +156,11 @@ function snapshot(net, line) {
       // The pose is what the server says they are doing — standing, walking,
       // running, crouching, down — rather than something guessed here from how
       // fast the figure seems to be sliding.
-      return { id: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], pitch: n[5], health: n[6], pose: n[7] | 0 };
+      // `hit` is how many rounds this player has landed on other people and
+      // `shot` how many they have taken. Both are the server's count: a client
+      // can see somebody flinch but has no way of knowing whose round it was.
+      return { id: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], pitch: n[5], health: n[6],
+               pose: n[7] | 0, hit: n[8] | 0, shot: n[9] | 0 };
     }),
   };
   // How long one takes to arrive, smoothed. It is the length of the walk
@@ -238,6 +242,8 @@ export function everyone(net) {
     id: p.id,
     name: net.names.get(p.id) ?? "",
     health: p.health,
+    hit: p.hit,
+    shot: p.shot,
     self: p.id === net.id,
   }));
 }

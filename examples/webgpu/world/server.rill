@@ -534,6 +534,7 @@ fn add_player(b, c, rest) =
   strbuf_add(b, " " + float_to_str(v.player_x(s)) + " " + float_to_str(v.player_y(s)) + " " + float_to_str(v.player_z(s)))
   strbuf_add(b, " " + float_to_str(v.player_yaw(s)) + " " + float_to_str(v.player_pitch(s)))
   strbuf_add(b, " " + float_to_str(v.health(s)) + " " + int_to_str(pose_of(s)))
+  strbuf_add(b, " " + int_to_str(v.hits_given(s)) + " " + int_to_str(v.hits_taken(s)))
   add_players(b, rest)
 
 # What somebody looks like they are doing, for whoever has to draw them.

@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=252";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=252";
+import { load } from "./world.js?v=254";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=254";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=252";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "252";
+const V = "254";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1528,15 +1528,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // How fast to play it, which is not one.
   //
   // The clip is a run at about four metres a second — two steps in seven tenths
-  // of a second, which is what a person does. This valley moves at seven and a
-  // half, and at sixteen with the sprint key, so played at its own speed the
-  // feet skate: the body covers twice the ground the legs are asking for.
+  // of a second, which is what a person does. This valley moves at five and a
+  // half, and at twelve with the sprint key, so played at its own speed the
+  // feet skate: the body covers more ground than the legs are asking for.
   //
   // Cadence goes about as the square root of speed — most of the rest is a
   // longer stride, which is why a sprinter does not pedal twice as fast as a
-  // jogger. √(7.5/4) and √(16/4) are these two numbers, and they put the feet
-  // near enough under the body at both speeds.
-  const CLIP_RATE = [1, 1.35, 1.95, 1, 1];
+  // jogger. √(5.625/4) and √(12/4) are these two numbers, and they put the
+  // feet near enough under the body at both speeds.
+  const CLIP_RATE = [1, 1.19, 1.73, 1, 1];
   // The clips that only have legs worth keeping. Quaternius' library has a
   // walk, a run and a crouch, and an armed idle, and no armed anything else —
   // so in these three the arms swing like the empty arms they were animated
@@ -1732,18 +1732,27 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         const nm = document.createElement("span");
         nm.className = "nm";
         nm.textContent = p.name || `player ${p.id}`;
+        // What they have done and what has been done to them. Two numbers
+        // rather than a ratio: a ratio hides how much has happened, and in a
+        // valley of four people that is most of the story.
+        const hit = document.createElement("span");
+        hit.className = "hit";
+        const shot = document.createElement("span");
+        shot.className = "shot";
         const bar = document.createElement("span");
         bar.className = "bar";
         const fill = document.createElement("i");
         bar.appendChild(fill);
-        row.append(dot, nm, bar);
+        row.append(dot, nm, hit, shot, bar);
         rowsEl.appendChild(row);
-        rowFor.set(p.id, { row, fill });
+        rowFor.set(p.id, { row, fill, hit, shot });
       }
     }
     for (const p of list) {
       const r = rowFor.get(p.id);
       if (!r) continue;
+      if (r.hit.textContent !== `${p.hit}`) r.hit.textContent = `${p.hit}`;
+      if (r.shot.textContent !== `${p.shot}`) r.shot.textContent = `${p.shot}`;
       const frac = Math.max(0, Math.min(1, p.health));
       r.fill.style.width = `${(frac * 100).toFixed(0)}%`;
       // Green while it is fine, amber on the way down, red at the end — and

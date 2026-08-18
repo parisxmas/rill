@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **A quarter off both speeds.** Five and a half metres a second, and twelve
+  with the sprint key, down from seven and a half and sixteen. At the old pace
+  the valley went past faster than anything on the ground in it could account
+  for, and a shot at somebody crossing the meadow was a lead nobody could
+  judge. The run clip's playback follows — √(5.625/4) and √(12/4) — so the feet
+  still land under the body.
+
+- **Who has hit whom, down the left.** Two numbers a row beside the health bar:
+  rounds landed in green and rounds taken in red, the same two colours the bar
+  uses, so neither needs a label. Both are the server's count and both are
+  written down at the moment a round connects, because the second cannot be
+  worked out from the first — a client can see somebody flinch but has no way
+  of knowing whose round it was. `check.rill` shoots somebody three times and
+  reads both sides.
+
 - **A word at the door.** The shared valley asks for one before it lets anybody
   in — `135` for now. It travels in the query of the address the socket is
   opened to, so the server can refuse before it answers the handshake and
