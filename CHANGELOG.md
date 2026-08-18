@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Hold the right button to aim.** The world narrows to two and a half times
+  — a scope, not a telescope: enough that somebody at two hundred metres is a
+  person rather than a pixel, not so much that the valley leaves the edges of
+  the screen. The rifle comes five centimetres nearer the eye and straightens
+  out of its cant, the sway drops to a quarter, and the crosshair steps back to
+  a quarter of itself, because behind the sights the rifle has its own and two
+  at once is one more than anybody needs.
+
+  All of it eased over about a sixth of a second and framerate-independent: a
+  field of view that changes between one frame and the next reads as a cut
+  rather than as somebody raising a rifle. The mouse slows with the zoom, or
+  the same movement of the hand covers two and a half times the angle and the
+  sights are unusable. Letting go of the pointer lets go of the sights, since a
+  held button cannot report itself released once the page has stopped hearing
+  about it.
+
+  The left button still fires while the right is held, which is the whole point
+  of holding it. The rifle was always drawn with its scope on the view axis, so
+  none of this is a new pose — it is the same rifle, closer, steadier, and
+  looking further.
+
 - **A quarter off both speeds.** Five and a half metres a second, and twelve
   with the sprint key, down from seven and a half and sixteen. At the old pace
   the valley went past faster than anything on the ground in it could account

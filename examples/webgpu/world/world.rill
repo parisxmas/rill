@@ -89,6 +89,9 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
 
 export fn look(s: Ptr, aspect: Float) = v.look(s, aspect)
 
+# How much the sights magnify. Eased by the page; see .
+export fn set_zoom(s: Ptr, z: Float) = v.set_zoom(s, z)
+
 # How long this player has been on the ground, and how long that lasts — the
 # page counts the seconds down on screen out of these two.
 export fn down_for(s: Ptr) -> Float = v.down_for(s)

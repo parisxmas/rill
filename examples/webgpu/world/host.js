@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=254";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=254";
+import { load } from "./world.js?v=255";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=255";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=254";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "254";
+const V = "255";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2182,6 +2182,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
+  const crosshair = document.querySelector(".aim");
+  let sighted = false;
 
   const deadEl = document.getElementById("dead");
   const tickEl = document.getElementById("tick");
@@ -2193,10 +2195,33 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const tally = document.getElementById("tally");
   const vitfill = document.getElementById("vitfill");
   let lastHp = -1, hurtUntil = 0;
+  // The sights. `wantAim` is the button; `aim` is how far through the move,
+  // eased, because a field of view that changes between one frame and the next
+  // reads as a cut rather than as somebody raising a rifle.
+  let wantAim = false, aim = 0;
+  // What the scope does to the world. Two and a half is a modest one — enough
+  // that a figure at two hundred metres is a person rather than a pixel, not
+  // so much that the valley disappears from the edges of the screen.
+  const AIM_ZOOM = 2.5;
   // When this player last told the server anything. See the send below.
   let lastSent = -1e9;
+  // Left to fire, right held to aim. Both while the mouse is captured, and
+  // both at once: the whole point of holding the right button is to press the
+  // left one while it is down.
   addEventListener("mousedown", e => {
-    if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
+    if (document.pointerLockElement !== canvas) return;
+    if (e.button === 0) wantShot = true;
+    if (e.button === 2) { wantAim = true; e.preventDefault(); }
+  });
+  addEventListener("mouseup", e => { if (e.button === 2) wantAim = false; });
+  // A right button that is held is not a request for a menu. The browser will
+  // not open one over a locked pointer anyway, but it will the moment the lock
+  // is lost — mid-aim, which is the worst possible moment for a menu.
+  addEventListener("contextmenu", e => e.preventDefault());
+  // Letting go of the pointer lets go of the sights: a button that is held
+  // cannot report itself released once the page has stopped hearing about it.
+  document.addEventListener("pointerlockchange", () => {
+    if (document.pointerLockElement !== canvas) wantAim = false;
   });
 
   // The adaptive loop's bookkeeping. The display's own frame interval is the
@@ -2381,6 +2406,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     wantShot = false;
     recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
 
+    // The sights, eased both ways over about a sixth of a second, and framerate
+    // independent so they take the same time on every screen.
+    aim += ((wantAim && E.health(state) > 0.001 ? 1 : 0) - aim) * (1 - Math.pow(0.0005, dt));
+    if (aim < 0.001) aim = 0;
+    const zoom = 1 + (AIM_ZOOM - 1) * aim;
+    E.set_zoom(state, zoom);
+    // And the mouse slows with it, or the sights are unusable: the same
+    // movement of the hand has to cover the same angle on the screen, and the
+    // screen is showing a narrower slice of the world.
+    mdx /= zoom; mdy /= zoom;
+
     if (net) {
       // Sixty times a second at most, whatever the screen is doing. That is
       // already more often than the server ticks — it walks from the last
@@ -2490,6 +2526,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // browser quietly playing on its own in a world nobody else can see is a
     // worse thing than a stopped one. Nothing is torn down: what is on screen
     // is the last thing everybody agreed about, and it stays there.
+    // The crosshair fades as the scope comes up: two sights at once is one
+    // more than anybody needs, and the rifle's own is the one that is aimed.
+    if ((aim > 0.5) !== sighted) { sighted = aim > 0.5; crosshair.classList.toggle("scoped", sighted); }
+
     if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");
 
     // Down, and how long for. The clock is Rill's — the same one the server
@@ -2635,6 +2675,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The bolt's throw, as a fraction. The shot itself is the first instant of
     // it, so the recoil and the lift start together the way they do in a hand.
     uf[51] = boltT / BOLT_CYCLE;
+    uf[55] = aim;                         // how far behind the sights
 
     // The impact that is lighting the valley: the youngest one still burning.
     // Rill keeps the ages, so this is a scan of eight floats and not a clock of

@@ -775,6 +775,12 @@
   // enough to take the sights off what they are pointed at.
   const VM_SCALE = 0.46;
   const VM_AT    = vec3f(0.0002 * VM_SCALE + 0.016, -0.0859 * VM_SCALE, 0.26);
+  // And where it goes with the right button held: five centimetres nearer the
+  // eye and dead centre, with the cant taken out of it. The rifle already sits
+  // with the scope on the view axis — it always did — so getting behind it is
+  // a small move and a long look rather than a new pose. `vmSize.w` says how
+  // far through that move it is, nought to one.
+  const VM_AIM   = vec3f(0.0, -0.0859 * VM_SCALE, 0.21);
   const VM_YAW   = -0.055;
   const VM_PITCH =  0.0;
   const VM_ROLL  = -0.115;
@@ -796,9 +802,10 @@
     // above the shoulder holding it, so the muzzle climbs as well. That is the
     // whole of what a shot looks like from behind the sights.
     let rc = u.wind.w;
-    let cy = cos(VM_YAW);               let sy = sin(VM_YAW);
+    let held = 1.0 - u.vmSize.w;
+    let cy = cos(VM_YAW * held);        let sy = sin(VM_YAW * held);
     let cp = cos(VM_PITCH + 0.11 * rc); let sp = sin(VM_PITCH + 0.11 * rc);
-    let cr = cos(VM_ROLL);              let sr = sin(VM_ROLL);
+    let cr = cos(VM_ROLL * held);       let sr = sin(VM_ROLL * held);
     let Ry = mat3x3f(vec3f(cy, 0.0, -sy), vec3f(0.0, 1.0, 0.0), vec3f(sy, 0.0, cy));
     let Rx = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, cp, sp), vec3f(0.0, -sp, cp));
     let Rz = mat3x3f(vec3f(cr, sr, 0.0), vec3f(-sr, cr, 0.0), vec3f(0.0, 0.0, 1.0));
@@ -811,23 +818,28 @@
     let amp = clamp(u.wind.y / 5.5, 0.0, 1.0);
     let bp = u.wind.z;
     let t = u.eye.w;
+    // A quarter of it behind the sights: somebody aiming is holding their
+    // breath, and a sway that reads as life at the hip reads as a shake
+    // through a scope.
     let bob = vec3f(
       sin(bp) * 0.0060 * amp + sin(t * 0.7) * 0.0014,
       -abs(cos(bp)) * 0.0050 * amp + sin(t * 0.9 + 1.1) * 0.0011,
       -0.004 * amp,
-    );
+    ) * (1.0 - 0.75 * u.vmSize.w);
     let kick = vec3f(0.0, 0.008 * rc, -0.048 * rc);
     // The model is built with +x down the barrel, +y up and +z out to the
     // right, so reaching the camera's axes is a shuffle and then the rotations.
-    return (Ry * Rx * Rz) * vec3f(m.z, m.y, m.x) * VM_SCALE + VM_AT + bob + kick;
+    return (Ry * Rx * Rz) * vec3f(m.z, m.y, m.x) * VM_SCALE
+         + mix(VM_AT, VM_AIM, u.vmSize.w) + bob + kick;
   }
 
   // A direction, by the same rotation but without the offsets.
   fn vmDir(d: vec3f) -> vec3f {
     let rc = u.wind.w;
-    let cy = cos(VM_YAW);               let sy = sin(VM_YAW);
+    let held = 1.0 - u.vmSize.w;
+    let cy = cos(VM_YAW * held);        let sy = sin(VM_YAW * held);
     let cp = cos(VM_PITCH + 0.11 * rc); let sp = sin(VM_PITCH + 0.11 * rc);
-    let cr = cos(VM_ROLL);              let sr = sin(VM_ROLL);
+    let cr = cos(VM_ROLL * held);       let sr = sin(VM_ROLL * held);
     let Ry = mat3x3f(vec3f(cy, 0.0, -sy), vec3f(0.0, 1.0, 0.0), vec3f(sy, 0.0, cy));
     let Rx = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, cp, sp), vec3f(0.0, -sp, cp));
     let Rz = mat3x3f(vec3f(cr, sr, 0.0), vec3f(-sr, cr, 0.0), vec3f(0.0, 0.0, 1.0));
