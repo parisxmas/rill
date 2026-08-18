@@ -2105,15 +2105,16 @@ fn kick_secs() = 0.42
 
 # ---- and what dying does ----------------------------------------------------
 #
-# Five seconds on the ground. Long enough that it is an event and not a
-# stutter — you watch the valley from where you fell, and whoever shot you
-# walks past — and short enough that it is not a punishment.
+# Ten seconds on the ground. Long enough that it is an event and not a stutter
+# — you watch the valley from where you fell, your rifle in the grass beside
+# you, and whoever shot you walks past — and short enough that it is not a
+# punishment.
 #
 # The clock is kept by whoever is running `walk`, which is both ends: a client
 # needs it for the camera and for the number on the screen, a server needs it
 # to decide when somebody may stand up. The standing up itself is `step_world`'s
 # and so the server's, like every other decision in here.
-fn dead_secs() = 5.0
+fn dead_secs() = 10.0
 
 fn down_for(s: Ptr) -> Float = peek_f32(s, 107)
 

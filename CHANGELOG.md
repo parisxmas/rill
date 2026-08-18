@@ -2,12 +2,13 @@
 
 ## Unreleased
 
-- **Five seconds on the ground.** Running out of health in a shared valley used
+- **Ten seconds on the ground.** Running out of health in a shared valley used
   to be a frame: the server stood you back up on the next tick, so the die clip
   never played and being killed was a teleport with a health bar behind it. Now
-  you go over, you stay there for five seconds, and then you are back at the
-  spawn — long enough that it is an event and that whoever shot you walks past,
-  short enough that it is not a punishment.
+  you go over, you stay there for ten seconds, and then you are back at the
+  spawn — long enough that it is an event, that your rifle is in the grass
+  beside you and that whoever shot you walks past, short enough that it is not
+  a punishment.
 
   The camera goes down with the body. The eye falls from a metre seventy-five
   to a metre thirty-five below that, the horizon rolls a quarter turn, and it
@@ -22,10 +23,19 @@
   same clock the server decides on, rather than a timer of its own that agrees
   for a while.
 
-  The rifle goes with them: no viewmodel while you are down. A gun held out at
-  arm's length in front of a camera lying in the grass is the one thing left on
-  that screen still behaving as though nothing had happened, and the figure
-  everybody else sees had already dropped it.
+  The rifle goes with them, and it goes on the ground. No viewmodel while you
+  are down — a gun held out at arm's length in front of a camera lying in the
+  grass is the one thing left on that screen still behaving as though nothing
+  had happened — and in its place a rifle lying in the grass a pace ahead of
+  where you fell, on its side, turned a little off the way you were facing,
+  because one that landed square with its owner reads as placed rather than
+  dropped. Everybody else's does the same: the die clip puts the hand on the
+  ground and a rifle still gripped in it is a body holding its weapon at
+  attention while lying dead.
+
+  This player's own is the one rifle in the valley with nobody to hang it off —
+  you are the camera, there is no figure and so no hand — so the skinner keeps
+  one spare matrix past the last person for it.
 
   Somebody on the ground does not walk, does not look about and cannot fire.
   All three are in `walk`, which both ends run, so the keys a dead client keeps

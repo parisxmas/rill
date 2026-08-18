@@ -47,6 +47,11 @@ fn tilt(s) =
 # when they did: `look` writes it, so this reads it after `tilt` has looked.
 fn eye(s) = float_to_str(peek_f32(s, 17) - v.player_y(s))
 
+# Up or down. Not the health to four decimal places: the valley is still going
+# on around them and a crater somewhere can take a thousandth off somebody who
+# has just stood up, which is true and is not what this line is asking.
+fn upright(s) = if v.health(s) > 0.5 then "on their feet" else "down"
+
 # One player turns to the other and fires, once, and the round is given long
 # enough to get there.
 fn shoot_at(w, a, b) =
@@ -145,11 +150,11 @@ fn main() =
   # over with them, which is the matrix again rather than anybody's word.
   shoot_at(w, a, b)
   shoot_at(w, a, b)
-  println("shot down, they are on " + float_to_str(v.health(b)) + " and the camera is " + tilt(b) + ", eye at " + eye(b))
-  serve(w, 60)
-  println("three seconds later, still on " + float_to_str(v.health(b)) + ", camera " + tilt(b) + ", eye at " + eye(b))
-  serve(w, 60)
-  println("six seconds later, on " + float_to_str(v.health(b)) + ", camera " + tilt(b) + ", eye at " + eye(b))
+  println("shot down: " + upright(b) + ", camera " + tilt(b) + ", eye at " + eye(b))
+  serve(w, 120)
+  println("six seconds later: " + upright(b) + ", camera " + tilt(b) + ", eye at " + eye(b))
+  serve(w, 100)
+  println("eleven seconds later: " + upright(b) + ", camera " + tilt(b) + ", eye at " + eye(b))
 
   v.leave(w, b)
   println("one leaves: " + int_to_str(v.players(w)) + " remain, ids " + int_to_str(v.player_id(v.player_block(w, 0))) + " " + int_to_str(v.player_id(v.player_block(w, 1))))

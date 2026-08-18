@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=240";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=240";
+import { load } from "./world.js?v=242";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=242";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=240";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "240";
+const V = "242";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -353,7 +353,10 @@ function makeSkinner(figure, capacity) {
   // Where each person's rifle is. The hand's world matrix rather than its
   // skinning matrix: what a weapon wants is where the hand *is*, not the
   // difference between where it is and where it was bound.
-  const held = new Float32Array(capacity * 16);
+  // One spare: everybody else's rifle is held in their hand, and the extra is
+  // this player's own once they have dropped it. There is no figure for
+  // yourself — you are the camera — so there is no hand to hang it off.
+  const held = new Float32Array((capacity + 1) * 16);
 
   // Column-major, as WGSL wants it: o = a * b.
   const mul = (o, oi, a, ai, b, bi) => {
@@ -404,6 +407,31 @@ function makeSkinner(figure, capacity) {
   return {
     matrices: out,
     held,
+    // A rifle lying on the ground, on its side, pointing the way whoever was
+    // holding it was facing and turned a little off it — a weapon that landed
+    // square with its owner reads as placed rather than dropped.
+    //
+    // The scale comes off the grip, which is where the bake put the only
+    // opinion about how long a rifle is. Nothing here has a second one.
+    drop(slot, x, y, z, yaw, spin) {
+      const s = Math.hypot(figure.grip[0], figure.grip[1], figure.grip[2]);
+      const a = yaw + spin;
+      const dx = Math.sin(a), dz = -Math.cos(a);
+      const at = slot * 16;
+      // A pace out in front of where they went down, rather than under them.
+      // For everybody else that is the difference between a rifle on the grass
+      // and a rifle inside a body; for this player it is the difference
+      // between seeing it and not, because the camera they are left with lies
+      // at their own feet looking where they were last looking.
+      x += Math.sin(yaw) * 0.9;
+      z -= Math.cos(yaw) * 0.9;
+      // Barrel along the facing, the rifle's own up laid across it — so it is
+      // on its side — and the third axis falls out pointing at the ground.
+      held[at] = dx * s; held[at + 1] = 0; held[at + 2] = dz * s; held[at + 3] = 0;
+      held[at + 4] = -dz * s; held[at + 5] = 0; held[at + 6] = dx * s; held[at + 7] = 0;
+      held[at + 8] = 0; held[at + 9] = -s; held[at + 10] = 0; held[at + 11] = 0;
+      held[at + 12] = x; held[at + 13] = y + 0.05; held[at + 14] = z; held[at + 15] = 1;
+    },
     // One person: their clip, how far into it, and where they are standing.
     //
     // `over` is a second clip for the upper body, and it exists because the
@@ -1426,7 +1454,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     layout: poseBgl, entries: [{ binding: 0, resource: { buffer: poseBuf } }],
   });
   const heldBuf = device.createBuffer({
-    size: FIGURE_CAP * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    // One more than there are people: the spare is this player's own, on the
+    // ground, once they have been knocked off their feet.
+    size: (FIGURE_CAP + 1) * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   const heldBg = device.createBindGroup({
     layout: poseBgl, entries: [{ binding: 0, resource: { buffer: heldBuf } }],
@@ -1449,6 +1479,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   const figures = new Float32Array(FIGURE_CAP * 8);
   let figureCount = 0;
+  // Rifles to draw. One per person, plus one on the ground for this player
+  // when they are down and have no figure to hang it off.
+  let heldCount = 0;
 
   // Where each person is in their animation, and what they were doing last
   // time. Kept here rather than sent, because a clock is exactly the sort of
@@ -2321,6 +2354,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // per footfall.
         const over = LEGS_ONLY.has(clock.name) ? figure.clips.get("idle") : null;
         skinner.pose(i, clip, (now - clock.since) / 1000, p.x, p.y, p.z, p.yaw, over, now / 1000);
+        // Whoever is down has let go of it. The die clip puts the hand on the
+        // ground and the rifle would have followed it there still gripped,
+        // which is a body holding its weapon at attention while lying dead.
+        if (p.health < 0.001) skinner.drop(i, p.x, p.y, p.z, p.yaw, 0.7 + (p.id % 5) * 0.4);
       }
       // And the same positions again, into the world this time, so that a
       // round stops at the body it hit instead of carrying on through it.
@@ -2343,11 +2380,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         const here = new Set(seen.map(p => p.id));
         for (const id of clocks.keys()) if (!here.has(id)) clocks.delete(id);
       }
+      // And this player's own, once they are on the ground: the only rifle in
+      // the valley with nobody to hang it off, drawn after the others in the
+      // spare slot the skinner keeps for it.
+      heldCount = figureCount;
+      if (E.health(state) <= 0.001) {
+        skinner.drop(figureCount, E.player_x(state), E.player_y(state), E.player_z(state), stateF32()[19], 1.1);
+        heldCount = figureCount + 1;
+      }
       if (figureCount) {
         device.queue.writeBuffer(figureInst, 0, figures, 0, figureCount * 8);
         device.queue.writeBuffer(poseBuf, 0, skinner.matrices, 0, figureCount * figure.joints * 16);
-        device.queue.writeBuffer(heldBuf, 0, skinner.held, 0, figureCount * 16);
       }
+      if (heldCount) device.queue.writeBuffer(heldBuf, 0, skinner.held, 0, heldCount * 16);
       drawTags(seen, stateF32());
       drawRoster(everyone(net));
     }
@@ -2635,11 +2680,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       pass.setVertexBuffer(0, figVB); pass.setVertexBuffer(1, figureInst);
       pass.setIndexBuffer(figIB, "uint16");
       pass.drawIndexed(figure.indices, figureCount);
+    }
+    if (heldCount) {
       pass.setPipeline(heldPipe);
       pass.setBindGroup(1, heldBg);
       pass.setVertexBuffer(0, rifleVB);
       pass.setIndexBuffer(rifleIB, "uint16");
-      pass.drawIndexed(rifleIdx, figureCount);
+      pass.drawIndexed(rifleIdx, heldCount);
     }
     pass.setPipeline(skyPipe); pass.draw(3);
     pass.setPipeline(W.waterPipe); pass.setVertexBuffer(0, W.waterBuf); pass.draw(W.waterVerts);
