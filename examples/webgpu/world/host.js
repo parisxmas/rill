@@ -15,7 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=221";   // keep in step with V below
+import { load } from "./world.js?v=222";   // keep in step with V below
+import { join, others, me, sharkNow } from "./net.js?v=222";
 
 // One number, appended to every asset URL.
 //
@@ -25,7 +26,7 @@ import { load } from "./world.js?v=221";   // keep in step with V below
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "221";
+const V = "222";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -280,6 +281,36 @@ function faceNormal(a, b, c) {
   return [n[0]/l, n[1]/l, n[2]/l];
 }
 
+// Somebody else, standing in the valley.
+//
+// Low-poly like everything here, and deliberately not a person: seven-sided
+// rings stacked into a body, a head, and a barrel out in front. What it has to
+// do is read at forty metres as *somebody, facing that way* — which is a
+// silhouette question, so the barrel and the shoulders carry it and the face
+// does not exist. A detailed figure at this distance is the same handful of
+// pixels with more triangles behind them.
+//
+// It is built around the origin at the feet, because that is where the walk
+// puts a player: the same y the terrain is at.
+function figureMesh() {
+  const tris = [];
+  const seg = 7;
+  const at = (t, dx, dy, dz) => t.map((tri) => tri.map((p) => [p[0] + dx, p[1] + dy, p[2] + dz]));
+  // Legs, side by side and slightly apart, then a torso that widens into the
+  // shoulders, a neck, and a head.
+  for (const x of [-0.11, 0.11]) tris.push(...at(coneRing(0.0, 0.86, 0.10, 0.09, 5), x, 0, 0));
+  tris.push(...coneRing(0.80, 1.30, 0.24, 0.30, seg));
+  tris.push(...coneRing(1.30, 1.46, 0.30, 0.13, seg));
+  tris.push(...coneRing(1.46, 1.72, 0.15, 0.14, seg));
+  tris.push(...coneRing(1.72, 1.80, 0.14, 0.0, seg));
+  // The rifle, out in front of the right shoulder. `coneRing` builds along +y,
+  // so it is laid down: (x, y, z) -> (x, z, -y) turns "up" into "forward",
+  // and forward is -z, which is what `walk` means by a yaw of zero.
+  const lay = (t, x, y, z) => t.map((tri) => tri.map(([px, py, pz]) => [px + x, pz + y, -py + z]));
+  tris.push(...lay(coneRing(0.0, 0.95, 0.05, 0.035, 4), 0.19, 1.26, 0.0));
+  return flatMesh(tris);
+}
+
 function crystalMesh() {
   const tris = [];
   const top = [0, 2.4, 0], bot = [0, -0.25, 0], seg = 5, r = 0.42, ym = 0.7;
@@ -317,14 +348,19 @@ function grassMesh() {
 
 // ---- the program -----------------------------------------------------------
 
-export async function run(canvas, wasmURL, hud, progress = () => {}) {
+// `server` is a WebSocket URL, and with one the valley belongs to whoever is
+// running it: this browser walks, aims and shoots, and is told what any of
+// that came to. Without one the valley is this tab's alone and nothing here
+// changes — which is the version that goes on a static page, where there is
+// no server to talk to.
+export async function run(canvas, wasmURL, hud, progress = () => {}, server = null) {
   // Everything the first frame needs, counted up front so the loader can say
   // how far along it is: the adapter, the module, one step per shader, one per
   // texture, and the valley itself. `run` does not resolve until a frame has
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 11 + Object.keys(SHADERS).length + TEXTURES.length + 6;
+  const TOTAL = 11 + Object.keys(SHADERS).length + TEXTURES.length + 6 + (server ? 1 : 0);
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -765,6 +801,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout],
     { constants: { emissive: 0.72 }, blend: overPre, cull: "none",
       depth: { depthWriteEnabled: false } });
+  // Other people. The same shader the crystals use, with none of the glow: a
+  // mesh, an instance carrying a position, a scale, a yaw and a colour. There
+  // was nothing to add — a player is a solid thing standing on the ground,
+  // which is what that pipeline already draws four hundred of.
+  const figurePipe = pipe("figure", S.INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.0 } });
   const grassPipe = pipe("grass", S.GRASS, [pineLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   // Backfaces culled, unlike the foliage: the butt sits behind the eye and is
@@ -1157,6 +1198,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
   const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
   const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 8;
 
+  // The other people, and room for as many as the server will hold. The buffer
+  // is written every frame and mostly empty; thirty-two instances of eight
+  // floats is a kilobyte, which is not worth being clever about.
+  const figureData = figureMesh();
+  const figureBuf = gpuBuf(figureData);
+  const figureVerts = figureData.length / 6;
+  const FIGURE_CAP = 32;
+  const figureInst = device.createBuffer({
+    size: FIGURE_CAP * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  const figures = new Float32Array(FIGURE_CAP * 8);
+  let figureCount = 0;
+
   // GPU frame timing, when the adapter offers it.
   let qs = null, qResolve = null, qStage = null, qPending = false, gpuMs = 0;
   if (canTime) {
@@ -1165,11 +1219,82 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     qStage = device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
   }
 
+  // ---- being told, rather than deciding ------------------------------------
+  //
+  // Everything in this block is only reached with a server. Without one it is
+  // dead code and the valley below runs exactly as it did.
+
+  // The snapshot this player's own position was last squared with, so that a
+  // twentieth of a second's answer is not applied sixty times.
+  let appliedSnap = null;
+
+  // What has happened since the last frame, in the order it happened. Each of
+  // these is the same write the world made where it happened: a round entering
+  // the ring, a crystal coming apart, a crater. The sounds need no help —
+  // `blasts_fired` and `breaks` are counters the frame already watches, and
+  // these push them along exactly as the real thing does.
+  function applyEvents(evs) {
+    for (const e of evs) {
+      const n = e.n;
+      if (e.kind === "gone") { net.gone = e.which; for (const i of e.which) E.put_gone(world, BigInt(i)); }
+      // A round of this player's own is already in the air: it was fired here
+      // the moment the mouse went down, because a tracer that waits for the
+      // server is a rifle that fires late. This is the same round coming back.
+      else if (e.kind === "r") { if (n[6] !== net.id) E.put_bullet(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6]); }
+      else if (e.kind === "t") E.put_fireball(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]);
+      else if (e.kind === "k") E.put_blast(world, n[0], n[1], n[2], n[3]);
+      else if (e.kind === "b") E.put_break(world, BigInt(n[0]));
+    }
+  }
+
+  // The server's word against this browser's guess.
+  //
+  // Both ran the same `walk` on the same keys, so they mostly agree, and what
+  // is left is the tenth of a second the answer took to come back. Snapping to
+  // it would be a walk that stutters twenty times a second; ignoring it would
+  // be a player who is somewhere else as far as everyone else is concerned. So
+  // it is eased toward, once per snapshot rather than once per frame — unless
+  // it is far enough out that easing would take seconds, which is what being
+  // thrown by a blast or respawning looks like from here, and then it is taken
+  // as given.
+  function reconcile() {
+    const m = me(net);
+    if (!m || net.last === appliedSnap) return;
+    appliedSnap = net.last;
+    E.set_health(state, m.health);
+    const x = E.player_x(state), y = E.player_y(state), z = E.player_z(state);
+    const d = Math.hypot(x - m.x, y - m.y, z - m.z);
+    if (d > 4) E.set_at(state, m.x, m.y, m.z);
+    else if (d > 0.03) E.set_at(state, x + (m.x - x) * 0.35, y + (m.y - y) * 0.35, z + (m.z - z) * 0.35);
+    // The clock is let run locally and only pulled back when it has drifted
+    // further than the wind can notice. Writing it every snapshot would step
+    // the weather backwards and forwards twenty times a second.
+    if (Math.abs(E.world_time(world) - m.clock) > 0.5) E.set_world_time(world, m.clock);
+  }
+
+  // A colour per player, off the golden angle round the hue circle: the second
+  // person to arrive is a different colour rather than a slightly different
+  // green. It pales as they run out of health, which is the only tell there is
+  // that somebody across the meadow is nearly down.
+  function hueOf(id, health) {
+    const h = (id * 0.61803398875) % 1, s = 0.35 + 0.4 * Math.max(health, 0), v = 0.55 + 0.35 * Math.max(health, 0);
+    const k = (n) => (n + h * 6) % 6;
+    const f = (n) => v - v * s * Math.max(0, Math.min(Math.min(k(n) , 4 - k(n)), 1));
+    return [f(5), f(3), f(1)];
+  }
+
   // ---- everything the tier decides, rebuilt when the tier changes ----------
 
   let tierIdx = Math.min(guessTier(gpuInfo), MAX_TIER);
   let T = null;       // the active tier
-  let state = 0;      // the world, as a pointer into wasm memory
+  // Two pointers into wasm memory now, and the difference between them is the
+  // whole of what makes more than one person possible. `world` owns the
+  // terrain, the crystals, the rounds in the air and the shark; `state` is
+  // this player — a look, a walk, a health. Everything below asks `state`,
+  // because a player block knows which world it is in and the exports follow
+  // that pointer; only building and freeing the valley needs `world` itself.
+  let world = 0;
+  let state = 0;
   let W = null;       // tier-dependent GPU resources
   const stateF32 = () => new Float32Array(E.memory.buffer, Number(state), 64);
 
@@ -1207,8 +1332,27 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     T = TIERS[idx];
     // The camera survives the world being rebuilt around it.
     let cam = null;
-    if (state) { cam = stateF32().slice(19, 26); E.free_world(state); }
-    state = E.init(BigInt(T.grid), BigInt(T.pines), BigInt(T.crystals), BigInt(T.grass));
+    if (state) { cam = stateF32().slice(19, 26); E.free_world(world); }
+    // How many pines and crystals is the server's to decide when there is one.
+    // The grid is not: it is the terrain mesh's resolution and nothing else
+    // samples it, so a slow machine draws a coarser valley and still stands on
+    // exactly the same ground and shoots exactly the same crystals. That is the
+    // whole of what re-tiering may still change while other people are here.
+    const pines = net ? net.world.pines : T.pines;
+    const crystals = net ? net.world.crystals : T.crystals;
+    const grass = net ? net.world.grass : T.grass;
+    world = E.init(BigInt(T.grid), BigInt(pines), BigInt(crystals), BigInt(grass));
+    state = E.join(world);
+    if (net) {
+      // Rejoining after a tier change: the valley is new, the connection is
+      // not. Where everybody is arrives again with the next snapshot, but the
+      // clock and the crystals already shot have to be right before the first
+      // frame — otherwise the wind jumps and three hundred crystals stand back
+      // up for a twentieth of a second.
+      E.set_world_time(world, net.last ? net.last.clock : net.world.clock);
+      for (const i of net.gone ?? []) E.put_gone(world, BigInt(i));
+      appliedSnap = null;
+    }
     if (cam) stateF32().set(cam, 19);
 
     if (W) for (const k of ["terrainBuf", "pineInst", "crystalInst", "grassInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
@@ -1391,6 +1535,25 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     W.tris = Math.round((counts.terrain + pineVerts * counts.pines + crystalVerts * counts.crystals
                        + grassVerts * counts.grass + rifleIdx) / 3);
   }
+  // The valley someone else is running, if this page was pointed at one. The
+  // welcome has to arrive before the world is built: how much valley there is
+  // is not a decision a client gets to make while other people are standing
+  // in it.
+  let net = null;
+  if (server) {
+    step("asking to join");
+    try {
+      net = join(server);
+      await net.arrival;
+      net.gone = [];
+    } catch (e) {
+      // A valley that cannot be reached is not a reason to show nothing: the
+      // single-player one is right here and works.
+      console.warn(`[valley] ${e.message} — playing alone`);
+      net = null;
+    }
+  }
+
   buildWorld(tierIdx);
   step("the valley");
   // Last, because it is the one thing that can be done while the GPU work
@@ -1656,7 +1819,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     // alive, which is why this is gated on `ended` rather than being a key of
     // its own: at the end of it there is nothing to jump for, and the one key
     // anyone presses when a screen says GAME OVER is the big one.
-    if (ended && wantRestart) {
+    // Only alone. In somebody else's valley there is nothing here to restart:
+    // the crystals are the server's and it is the one that decides whether a
+    // valley that has run out of them begins again.
+    if (ended && wantRestart && !net) {
       E.restart(state);
       ended = false;
       lastHp = -1; lastStanding = -1;
@@ -1683,7 +1849,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     if (wantShot && boltT >= BOLT_CYCLE && !wading) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
-      E.fire(state, Math.sin(yaw) * cp, Math.sin(pit), -Math.cos(yaw) * cp);
+      const dx = Math.sin(yaw) * cp, dy = Math.sin(pit), dz = -Math.cos(yaw) * cp;
+      // Fired here for the tracer and the bang, and asked for there for what it
+      // hits. A rifle whose report waits for a round trip is a rifle that fires
+      // when you have stopped pulling the trigger; a round that decides what it
+      // hit locally is a client deciding whether it shot somebody. So both, and
+      // the server's copy of this round is dropped on the way back in.
+      E.fire(state, dx, dy, dz);
+      if (net) net.fired(dx, dy, dz);
       boltT = 0;
       recoil = 1;
       bang();
@@ -1691,8 +1864,50 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     wantShot = false;
     recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
 
-    E.frame(state, dt, mdx, mdy, BigInt(keys), canvas.width / canvas.height);
+    if (net) {
+      // Sixty times a second, which is more often than the server ticks: it
+      // walks from the last thing it heard, so an input that arrives between
+      // two ticks is the one that counts at the next.
+      const look = stateF32();
+      net.input(keys, look[19], look[20]);
+      applyEvents(net.take());
+      // Walked here as well as there, so that turning and walking answer the
+      // key rather than the round trip. What the server made of it arrives a
+      // moment later and is eased in.
+      E.walk(state, dt, mdx, mdy, BigInt(keys));
+      // Everything moves; nothing here decides. What a round hit, what a
+      // crater cost and which crystal went are the server's, and have already
+      // been applied above.
+      E.step_visuals(world, dt);
+      E.pick_up(state);
+      reconcile();
+      // The shark is the server's too, and it only speaks twenty times a
+      // second — so it is drawn at a point between the last two, like a
+      // player.
+      const sk = sharkNow(net, now);
+      if (sk) E.set_shark(world, sk.x, sk.y, sk.z, sk.heading, sk.mode, sk.mode > 2.5 ? 0.0 : (sk.mode > 0.5 ? 0.85 : 0.0));
+      E.look(state, canvas.width / canvas.height);
+    } else {
+      E.frame(state, dt, mdx, mdy, BigInt(keys), canvas.width / canvas.height);
+    }
     mdx = 0; mdy = 0;
+
+    // The other people, as instances: where they are, how big, which way they
+    // are facing, and their colour. Written every frame because it is a
+    // kilobyte and they are always moving.
+    if (net) {
+      const seen = others(net, now);
+      figureCount = Math.min(seen.length, FIGURE_CAP);
+      for (let i = 0; i < figureCount; i++) {
+        const p = seen[i], o = i * 8;
+        const c = hueOf(p.id, p.health);
+        figures[o] = p.x; figures[o + 1] = p.y; figures[o + 2] = p.z;
+        figures[o + 3] = 1;                    // the mesh is already a person tall
+        figures[o + 4] = p.yaw;
+        figures[o + 5] = c[0]; figures[o + 6] = c[1]; figures[o + 7] = c[2];
+      }
+      if (figureCount) device.queue.writeBuffer(figureInst, 0, figures, 0, figureCount * 8);
+    }
 
     // Anything break in there? Rill counts them; the host only has to notice.
     // Not `>`: a tier change rebuilds the world and puts the tally back to
@@ -1904,6 +2119,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     sh.setVertexBuffer(0, pineBuf); sh.setVertexBuffer(1, W.pineInst); sh.draw(pineVerts, W.counts.pines);
     sh.setPipeline(shInst);
     sh.setVertexBuffer(0, crystalBuf); sh.setVertexBuffer(1, W.crystalInst); sh.draw(crystalVerts, W.counts.crystals);
+    // A person standing in the sun has a shadow, and without one they read as
+    // pasted onto the hillside rather than standing on it.
+    if (figureCount > 0) {
+      sh.setVertexBuffer(0, figureBuf); sh.setVertexBuffer(1, figureInst);
+      sh.draw(figureVerts, figureCount);
+    }
     sh.end();
 
     const pass = enc.beginRenderPass({
@@ -1922,6 +2143,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
     pass.setVertexBuffer(0, pineBuf); pass.setVertexBuffer(1, W.pineInst); pass.draw(pineVerts, W.counts.pines);
     pass.setPipeline(grassPipe);
     pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.grassInst); pass.draw(grassVerts, W.counts.grass);
+    if (figureCount > 0) {
+      pass.setPipeline(figurePipe);
+      pass.setVertexBuffer(0, figureBuf); pass.setVertexBuffer(1, figureInst);
+      pass.draw(figureVerts, figureCount);
+    }
     pass.setPipeline(skyPipe); pass.draw(3);
     pass.setPipeline(W.waterPipe); pass.setVertexBuffer(0, W.waterBuf); pass.draw(W.waterVerts);
     // The crystals go here rather than with the other solids: they are
@@ -2016,6 +2242,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}) {
       fps = Math.round(frames * 1000 / (now - fpsT));
       frames = 0; fpsT = now;
       hud({ fps, gpuMs: qs ? gpuMs : null, tier: T.name, gpuName, tris: W.tris, locked,
+            // How many people are in it, which is null when this valley is
+            // nobody else's business.
+            here: net && net.last ? net.last.players.length : null,
             wasmBytes: wasmSize(), ...weights() });
     }
     requestAnimationFrame(tick);

@@ -27,6 +27,13 @@ python3 -m http.server 8000        # from this directory
 # open http://localhost:8000 in a browser with WebGPU
 ```
 
+The valley itself is `valley.rill`, and it is compiled twice. `world.rill` is
+fifty-six exports over it and becomes `world.wasm` for the browser;
+`server.rill` is a WebSocket server around it and becomes a native binary that
+several browsers can walk about in at once. Neither of them decides anything
+about what the valley *is* — that is all in the one file, which is the only
+reason a server and a client can agree about where a round went.
+
 `world.js` is the generated loader — the WASI shim, instantiation and init —
 so `host.js` here is nothing but the scene: passes, pipelines and tiers. The
 shaders themselves are in `shaders/`, one WGSL file per pipeline, fetched in
@@ -98,6 +105,81 @@ What actually makes it read as water, though, is that the sea comes in sets: a
 slow noise field drifting across the lake scales every wave at once, so there
 are patches of chop and patches nearly glassy. Without it the same amplitude
 covers the whole surface, and no amount of spectrum saves that.
+
+## Other people
+
+```sh
+rill build server.rill -o valleyd && ./valleyd          # holds one valley
+python3 -m http.server 8000                             # and the page beside it
+# open http://localhost:8000/?join   — or ?join=ws://a.box:8091/ for someone else's
+```
+
+Without `?join` nothing below happens and the valley is this tab's alone, which
+is what a static page gets. With it, the world belongs to the server: the
+crystals, the rounds in the air, the craters and the shark are that process's,
+and a browser is told about them.
+
+The server is one strand per connection and one hub that owns the world, which
+is what makes it safe without a lock anywhere — the world block is reached from
+exactly one strand and everything else is a channel. A tick is a message on the
+same channel as the key presses, so an input either lands before a tick or
+after it and never inside one. Twenty ticks a second, with `sleep_ms` parking
+the ticker rather than holding a worker; the deadline is carried rather than
+recomputed, so a tick that woke up late is followed by one that sleeps less.
+
+What goes over the wire is text, and deliberately: the whole exchange is
+legible in a terminal with `websocat`, which was worth more while it was being
+got right than the bytes were. Twenty times a second every client is told the
+world clock, where the shark is, and where everybody stands; and as they
+happen, every round fired, every fireball thrown, every crater and every
+crystal that came apart. Those events are not recorded twice — each of those
+things already lives in a ring with a cursor that counts up, so what a client
+has not been told is exactly the difference between the cursor now and the
+cursor at the start of the tick.
+
+A connection that ends says so — the read comes back empty, the player is
+taken out of the world, their block is freed and their id is retired, so a
+round still in the air that carries it cannot be credited to somebody who
+arrives later. A connection whose far end fell asleep, lost its network or was
+unplugged says nothing at all, and TCP will not mention it for hours: the read
+simply never returns. The only thing that can tell those apart is the silence,
+so the tick drops anybody who has not been heard from for ten seconds — a
+client sends its keys every frame it draws, so that is two or three hundred
+messages that did not arrive. Ten seconds of the *world's* clock, which is a
+fraction slower than the wall's, since the world advances a fiftieth of a
+second per tick and a tick takes however long the operating system's timers
+take.
+
+The socket of somebody dropped that way is deliberately left alone. A strand is
+parked on that descriptor inside the poller; closing it from another strand
+does not wake it, and the number could be handed to the next connection while
+the old registration is still armed, which is a great deal worse than a
+descriptor held open until TCP gives up on it. What matters is that they are
+out of the valley, and that happens at once.
+
+A client does not simply draw what it is sent. It walks itself as well, on the
+same `walk` the server runs, so that turning and moving answer the key rather
+than the round trip; what comes back is eased in over a few frames unless it is
+metres out, which is what being thrown by a blast looks like from here. Aim is
+never corrected — a server that moved your crosshair while you were using it is
+worse than one that lets you look wherever you like. Between snapshots the
+world keeps moving under `step_visuals`, which is everything that moves and
+nothing that decides: rounds fly and hit nothing, fireballs arc and leave no
+crater. Whether they hit anything is the server's answer, and it arrives.
+
+The valley everyone stands in is generated, not shipped: the server says how
+many pines, crystals and tufts of grass, and each client builds the same one
+from the same three numbers, because the placement is a deterministic walk over
+a hash. The terrain *mesh* resolution is still the client's own — a slow
+machine draws a coarser valley and stands on exactly the same ground, since
+every physical question is asked of the height function rather than of the
+mesh.
+
+`check.rill` is the same shared world with neither a browser nor a socket:
+three players in one valley, walking, shooting each other and leaving. It is
+run by the test suite, which is the only way any of this is checked
+automatically — a server that holds a port and a renderer that wants a GPU are
+both things a test suite cannot have.
 
 ## The rifle
 

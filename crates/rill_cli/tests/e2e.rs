@@ -771,6 +771,37 @@ fn wasm_refuses_sleep_ms() {
     assert!(err.contains("`sleep_ms` needs the scheduler"), "{err}");
 }
 
+/// The valley with several people in it. `valley.rill` is the file the browser
+/// compiles to wasm and the server compiles for a Linux box, and this runs the
+/// same arithmetic with neither: three players join one world, one of them
+/// walks, one shoots another down, and one leaves.
+#[test]
+fn shared_valley() {
+    assert_eq!(
+        compile_and_run("webgpu/world/check.rill"),
+        concat!(
+            "300 crystals and 400 pines, nobody in it yet: 0\n",
+            "three arrive: 3, with ids 0 1 2\n",
+            "the first is at -40, -40 on 1\n",
+            "the third is at -28, -38 on 1\n",
+            "the first shoots the second:\n",
+            "  they are on 0.66, the shooter still on 1\n",
+            "  they are on 0.32, the shooter still on 1\n",
+            "  they are on 0, the shooter still on 1\n",
+            "after a respawn they are on 1\n",
+            "one leaves: 2 remain, ids 0 2\n",
+            "the valley is put away\n",
+        )
+    );
+}
+
+/// And the server in front of it — compiled rather than run, because it holds
+/// a port and a world and does not stop.
+#[test]
+fn valley_server_compiles() {
+    compile_only("webgpu/world/server.rill");
+}
+
 /// Calls into libm and libc, including the string bridge and a null check.
 #[test]
 fn foreign_functions() {

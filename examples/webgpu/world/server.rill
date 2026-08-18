@@ -1,0 +1,453 @@
+# The valley, with other people in it.
+#
+# One process holds one world and steps it twenty times a second. Everybody
+# connected gets the same valley because there is only one — the crystals, the
+# rounds in the air, the craters and the shark are this program's, and a
+# browser is told about them rather than deciding any of it for itself.
+#
+# The shape is three kinds of strand:
+#
+#   a reader per connection   the socket, turned into messages for the hub
+#   a writer per connection   an outbox, turned back into frames
+#   one hub                   the world, and the only thing that touches it
+#
+# The hub is what makes this safe without a lock anywhere: the world block is
+# reached from exactly one strand, and everything else talks to it over
+# channels. It is also why a tick is a message like any other — a `Tick` in the
+# same inbox as an arriving key press, so the two cannot interleave halfway.
+#
+# `valley.rill` is the same file the browser compiles into `world.wasm`. That
+# is the whole point: a server that reimplemented the walk would be a server
+# that disagreed with it.
+import "valley" as v
+import "../../http/ws"
+
+# ---- what it costs to be here ----------------------------------------------
+
+fn port() = 8091
+
+# Fifty milliseconds. Fast enough that a walk looks like a walk once the
+# client interpolates between two of them, slow enough that a valley with
+# eight people in it is a few kilobytes a second.
+fn tick_ms() = 50
+
+fn dt() = 0.05
+
+# What the world is made of. The client is told these and builds the same
+# valley from them — the placement is a deterministic walk over a hash, so the
+# same three numbers give the same trees and the same crystals in the same
+# places. The grid is *not* here: it is the terrain mesh's resolution and
+# nothing else samples it, so a slow machine may draw a coarser valley and
+# still stand on exactly the same ground.
+fn n_pines() = 400
+
+fn n_crystals() = 300
+
+fn n_grass() = 900
+
+# A bolt action, enforced where it matters. The animation is the browser's,
+# but a client that simply did not play it could otherwise send five hundred
+# rounds a second.
+fn reload_s() = 0.55
+
+# How long a silence is allowed to last before somebody is taken out of the
+# valley. A client sends its keys and its look every frame it draws, so ten
+# seconds is two or three hundred messages that did not arrive — and until
+# they are dropped they are still standing there: in the snapshot, in the
+# count, in the way, and a target for whatever the crystals throw.
+fn quiet_s() = 10.0
+
+# ---- what goes between them ------------------------------------------------
+#
+# One inbox, one message type. `Tick` arrives on the same channel as the key
+# presses, which is what makes a tick a point in time everybody agrees on
+# rather than something that cuts across a message being handled.
+
+type Msg
+  Arrived(out: Chan(Str))
+  Moved(id: Int, keys: Int, yaw: Float, pitch: Float)
+  Shot(id: Int, dx: Float, dy: Float, dz: Float)
+  Left(id: Int)
+  Tick
+
+# A connection, from the hub's side: who it is, their block in the world, and
+# the channel their writer is listening on. What they have asked to do lives on
+# the block, so that the tick reads one thing rather than two that have to be
+# kept in step.
+type Conn
+  Conn(id: Int, block: Ptr, out: Chan(Str))
+
+# ---- the hub ---------------------------------------------------------------
+
+fn hub(w, conns, inbox, joins) =
+  m = recv(inbox)
+  next = handle(w, conns, inbox, joins, m)
+  hub(w, next, inbox, if_arrived(m, joins))
+
+# The id to hand out next. It comes off the world's own counter rather than
+# being kept here, so a player's id and their block agree about who they are.
+fn if_arrived(m, joins) = match m
+  Arrived(_) -> joins + 1
+  _ -> joins
+
+fn handle(w, conns, inbox, joins, m) = match m
+  Arrived(out) -> admit(w, conns, out)
+  Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
+  Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
+  Left(id) -> drop_one(w, conns, id)
+  Tick -> tick(w, conns)
+
+fn admit(w, conns, out) =
+  s = v.join(w)
+  if is_null(s) then refuse(conns, out) else welcome(w, conns, s, out)
+
+fn refuse(conns, out) =
+  send(out, "no the valley is full")
+  conns
+
+# What a client needs before it can draw anything: which player it is, and how
+# much valley to build.
+fn welcome(w, conns, s, out) =
+  id = v.player_id(s)
+  send(out, "hello " + int_to_str(id) + " " + int_to_str(n_pines()) + " " + int_to_str(n_crystals()) + " " + int_to_str(n_grass()) + " " + float_to_str(v.world_time(w)))
+  send(out, gone_list(w))
+  println("player " + int_to_str(id) + " arrived, " + int_to_str(v.players(w)) + " in the valley")
+  Cons(Conn(id, s, out), conns)
+
+# Which crystals are already gone. A break is an event from here on, but
+# somebody arriving an hour in has missed several hundred of them, and a
+# client drawing crystals that were shot before it connected would be a client
+# shooting at nothing.
+fn gone_list(w) =
+  b = strbuf()
+  strbuf_add(b, "gone")
+
+  for i in 0..v.crystal_count(w)
+    if_gone(w, b, i)
+
+  strbuf_str(b)
+
+fn if_gone(w, b, i) = if v.crystal_scale(w, i) < 0.01 then note_gone(b, i) else 0
+
+fn note_gone(b, i) =
+  strbuf_add(b, " " + int_to_str(i))
+  1
+
+fn find(conns, id) = match conns
+  Nil -> None
+  Cons(c, rest) -> if conn_id(c) == id then Some(c) else find(rest, id)
+
+fn conn_id(c) = match c
+  Conn(id, _, _) -> id
+
+fn conn_block(c) = match c
+  Conn(_, s, _) -> s
+
+fn conn_out(c) = match c
+  Conn(_, _, out) -> out
+
+# An input is a look and a set of keys, and the walk is run at the tick rate
+# from whatever the last one said. Running it on arrival instead would let a
+# client walk faster by talking faster, which is the oldest trick there is.
+fn move_one(w, conns, id, keys, yaw, pitch) = match find(conns, id)
+  None -> conns
+  Some(c) -> apply_input(w, conns, c, keys, yaw, pitch)
+
+fn apply_input(w, conns, c, keys, yaw, pitch) =
+  v.set_look(conn_block(c), yaw, pitch)
+  v.set_keys(conn_block(c), keys)
+  v.heard(conn_block(c), v.world_time(w))
+  conns
+
+# A shot is asked for here and taken at the next tick, with everybody else's.
+fn shoot_one(w, conns, id, dx, dy, dz) = match find(conns, id)
+  None -> conns
+  Some(c) -> asked_to_fire(w, conns, conn_block(c), dx, dy, dz)
+
+fn asked_to_fire(w, conns, s, dx, dy, dz) =
+  v.want_fire(s, dx, dy, dz)
+  v.heard(s, v.world_time(w))
+  conns
+
+fn drop_one(w, conns, id) = match find(conns, id)
+  None -> conns
+  Some(c) -> forget(w, conns, c, id)
+
+fn forget(w, conns, c, id) =
+  v.leave(w, conn_block(c))
+  println("player " + int_to_str(id) + " left, " + int_to_str(v.players(w)) + " remain")
+  without(conns, id)
+
+fn without(conns, id) = match conns
+  Nil -> Nil
+  Cons(c, rest) -> if conn_id(c) == id then rest else Cons(c, without(rest, id))
+
+# ---- one tick --------------------------------------------------------------
+#
+# Everybody walks, the world moves, everybody picks up what is now at their
+# feet — the same order, and the same three calls, that `frame` makes in a
+# browser with the valley to itself.
+
+fn tick(w, conns) =
+  # What the rings said before the world moved. Everything that happens in
+  # between is the difference, which is the whole of the event log: a cursor
+  # that only counts up and a ring behind it means nothing has to be recorded
+  # a second time in order to be sent.
+  shots0 = v.shots(w)
+  throws0 = v.throws(w)
+  craters0 = v.blasts_fired(w)
+  breaks0 = v.breaks(w)
+  walk_all(conns)
+  fire_all(w, conns)
+  v.step_world(w, dt())
+  pick_all(conns)
+  revive_all(conns)
+  left = drop_quiet(w, conns, v.world_time(w))
+  send_shots(w, left, shots0)
+  send_throws(w, left, throws0)
+  send_craters(w, left, craters0)
+  send_breaks(w, left, breaks0)
+  broadcast(w, left, snapshot(w, left))
+  left
+
+# Whoever is still talking. The socket is deliberately not closed here: a
+# strand is parked on that descriptor inside the poller, closing it from
+# another strand does not wake it, and the number could be handed to the next
+# connection while the old registration is still armed — which is a great deal
+# worse than a descriptor held open until TCP gives up on it. What matters is
+# that they are out of the valley, and that happens here; the reader ends on
+# its own whenever the connection is finally noticed to be gone.
+fn drop_quiet(w, conns, now) = match conns
+  Nil -> Nil
+  Cons(c, rest) -> keep_or_drop(w, c, drop_quiet(w, rest, now), now)
+
+fn keep_or_drop(w, c, rest, now) =
+  if now - v.last_heard(conn_block(c)) < quiet_s() then Cons(c, rest) else gone_quiet(w, c, rest)
+
+fn gone_quiet(w, c, rest) =
+  v.leave(w, conn_block(c))
+  println("player " + int_to_str(conn_id(c)) + " went quiet, dropped; " + int_to_str(v.players(w)) + " left in the valley")
+  rest
+
+# Everything below is the same shape: from where the cursor was to where it is
+# now, one line each. They go out before the snapshot, so a client applies what
+# happened and then is told where everyone ended up.
+
+fn send_shots(w, conns, from) =
+  if from == v.shots(w) then 0 else send_shot(w, conns, from)
+
+fn send_shot(w, conns, k) =
+  b = strbuf()
+  strbuf_add(b, "r " + float_to_str(v.bullet_f(w, k, 0)) + " " + float_to_str(v.bullet_f(w, k, 1)) + " " + float_to_str(v.bullet_f(w, k, 2)))
+  strbuf_add(b, " " + float_to_str(v.bullet_f(w, k, 3)) + " " + float_to_str(v.bullet_f(w, k, 4)) + " " + float_to_str(v.bullet_f(w, k, 5)))
+  strbuf_add(b, " " + float_to_str(v.bullet_f(w, k, 6)))
+  broadcast(w, conns, strbuf_str(b))
+  send_shots(w, conns, k + 1)
+
+fn send_throws(w, conns, from) =
+  if from == v.throws(w) then 0 else send_throw(w, conns, from)
+
+fn send_throw(w, conns, k) =
+  b = strbuf()
+  strbuf_add(b, "t " + float_to_str(v.fireball_f(w, k, 0)) + " " + float_to_str(v.fireball_f(w, k, 1)) + " " + float_to_str(v.fireball_f(w, k, 2)))
+  strbuf_add(b, " " + float_to_str(v.fireball_f(w, k, 3)) + " " + float_to_str(v.fireball_f(w, k, 4)) + " " + float_to_str(v.fireball_f(w, k, 5)))
+  strbuf_add(b, " " + float_to_str(v.fireball_f(w, k, 6)) + " " + float_to_str(v.fireball_f(w, k, 7)))
+  broadcast(w, conns, strbuf_str(b))
+  send_throws(w, conns, k + 1)
+
+fn send_craters(w, conns, from) =
+  if from == v.blasts_fired(w) then 0 else send_crater(w, conns, from)
+
+fn send_crater(w, conns, k) =
+  b = strbuf()
+  strbuf_add(b, "k " + float_to_str(v.blast_f(w, k, 0)) + " " + float_to_str(v.blast_f(w, k, 1)) + " " + float_to_str(v.blast_f(w, k, 2)))
+  strbuf_add(b, " " + float_to_str(v.blast_f(w, k, 3)))
+  broadcast(w, conns, strbuf_str(b))
+  send_craters(w, conns, k + 1)
+
+fn send_breaks(w, conns, from) =
+  if from == v.breaks(w) then 0 else send_break(w, conns, from)
+
+fn send_break(w, conns, k) =
+  broadcast(w, conns, "b " + int_to_str(v.break_which(w, k)))
+  send_breaks(w, conns, k + 1)
+
+fn walk_all(conns) = match conns
+  Nil -> 0
+  Cons(c, rest) -> walk_one(c, rest)
+
+fn walk_one(c, rest) =
+  s = conn_block(c)
+  v.walk(s, dt(), 0.0, 0.0, v.keys_of(s))
+  walk_all(rest)
+
+fn fire_all(w, conns) = match conns
+  Nil -> 0
+  Cons(c, rest) -> fire_one(w, c, rest)
+
+fn fire_one(w, c, rest) =
+  v.try_fire(conn_block(c), v.world_time(w), reload_s())
+  fire_all(w, rest)
+
+fn pick_all(conns) = match conns
+  Nil -> 0
+  Cons(c, rest) -> pick_one(c, rest)
+
+fn pick_one(c, rest) =
+  v.pick_up(conn_block(c))
+  pick_all(rest)
+
+# Being killed puts you back at the spawn with the valley as you left it. There
+# is nothing else sensible to do with somebody in a world that does not end:
+# the crystals they broke stay broken and the crater they were standing in is
+# still there.
+fn revive_all(conns) = match conns
+  Nil -> 0
+  Cons(c, rest) -> revive_one(c, rest)
+
+fn revive_one(c, rest) =
+  s = conn_block(c)
+  if v.health(s) < 0.001 then v.respawn(s) else 0
+  revive_all(rest)
+
+# ---- what goes on the wire -------------------------------------------------
+#
+# One line per tick. The clock first, because the wind and the sun are
+# functions of it and a client that has the time needs to be told neither.
+# Then the shark, which is one animal and so is six numbers. Then everybody,
+# seven numbers each.
+
+fn snapshot(w, conns) =
+  b = strbuf()
+  strbuf_add(b, "s " + float_to_str(v.world_time(w)))
+  strbuf_add(b, " " + float_to_str(v.shark_x(w)) + " " + float_to_str(v.shark_y(w)) + " " + float_to_str(v.shark_z(w)))
+  strbuf_add(b, " " + float_to_str(v.shark_heading(w)) + " " + float_to_str(v.shark_mode(w)))
+  add_players(b, conns)
+  strbuf_str(b)
+
+fn add_players(b, conns) = match conns
+  Nil -> 0
+  Cons(c, rest) -> add_player(b, c, rest)
+
+fn add_player(b, c, rest) =
+  s = conn_block(c)
+  strbuf_add(b, " | " + int_to_str(conn_id(c)))
+  strbuf_add(b, " " + float_to_str(v.player_x(s)) + " " + float_to_str(v.player_y(s)) + " " + float_to_str(v.player_z(s)))
+  strbuf_add(b, " " + float_to_str(v.player_yaw(s)) + " " + float_to_str(v.player_pitch(s)))
+  strbuf_add(b, " " + float_to_str(v.health(s)))
+  add_players(b, rest)
+
+# A snapshot goes into every outbox that will take one without waiting. A
+# client whose connection has backed up does not get to hold up the tick for
+# everybody else — it misses this one and is told the next, which is the whole
+# advantage of sending state rather than a list of changes.
+fn broadcast(w, conns, line) = match conns
+  Nil -> 0
+  Cons(c, rest) -> broadcast_one(w, c, rest, line)
+
+fn broadcast_one(w, c, rest, line) =
+  offer(conn_out(c), line)
+  broadcast(w, rest, line)
+
+fn offer(out, line) =
+  sent = select
+    send(out, line) -> 1
+    default -> 0
+  sent
+
+# ---- the clock -------------------------------------------------------------
+#
+# The deadline is carried rather than recomputed, so the slack in the
+# operating system's timers does not accumulate: a tick that woke up two
+# milliseconds late is followed by one that sleeps two milliseconds less.
+
+fn ticker(inbox, next) =
+  now = now_nanos()
+  sleep_ms(if next > now then (next - now) / 1000000 else 0)
+  send(inbox, Tick)
+  ticker(inbox, next + tick_ms() * 1000000)
+
+# ---- one connection --------------------------------------------------------
+
+fn serve(conn, inbox) =
+  request = fill(conn, "", 4)
+  if ws_accept(conn, request) then play(conn, inbox) else sock_close(conn)
+
+fn play(conn, inbox) =
+  out = channel(4)
+  send(inbox, Arrived(out))
+  # The first thing in the outbox is the welcome, and it carries the id
+  # everything else is in terms of.
+  first = recv(out)
+  ws_write(conn, first)
+  parts = split(first, " ")
+  # By what it is, not by reading a number out of whatever turned up. The
+  # refusal a full valley sends is words, and `str_to_int` of a word is zero —
+  # so a client that had been turned away used to decide it was player zero
+  # and start driving whoever that was.
+  if unwrap_or(nth(parts, 0), "") == "hello" then both_ways(conn, inbox, out, num_at(parts, 1)) else sock_close(conn)
+
+fn both_ways(conn, inbox, out, id) =
+  spawn writer(conn, out)
+  reader(conn, inbox, id, "")
+  # The socket first, so that anything the writer still has to send fails at
+  # once instead of parking on a connection with nobody at the other end. Then
+  # an empty line, which is the one thing that reaches a strand waiting on a
+  # channel nothing will ever be sent to again — without it the writer sits
+  # there for the life of the process.
+  #
+  # It cannot block: a full outbox is a writer with four lines to get through
+  # and a socket that will refuse the first of them, so it is leaving anyway.
+  sock_close(conn)
+  select
+    send(out, "") -> 1
+    default -> 0
+  send(inbox, Left(id))
+
+fn writer(conn, out) =
+  line = recv(out)
+  if str_len(line) == 0 then 0 else keep_writing(conn, out, line)
+
+fn keep_writing(conn, out, line) =
+  if ws_write(conn, line) < 0 then 0 else writer(conn, out)
+
+# One frame is one message, so a read that comes back empty is the end of the
+# connection and nothing else.
+fn reader(conn, inbox, id, acc) =
+  msg = ws_read(conn)
+  if str_len(msg) == 0 then 0 else handle_line(conn, inbox, id, msg)
+
+fn handle_line(conn, inbox, id, msg) =
+  parts = split(msg, " ")
+  route(inbox, id, unwrap_or(nth(parts, 0), ""), parts)
+  reader(conn, inbox, id, "")
+
+fn route(inbox, id, kind, parts) =
+  if kind == "i" then tell(inbox, Moved(id, num_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "f" then tell(inbox, Shot(id, fnum_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else 0
+
+fn tell(inbox, m) =
+  send(inbox, m)
+  1
+
+fn num_at(parts, i) = str_to_int(unwrap_or(nth(parts, i), "0"))
+
+fn fnum_at(parts, i) = str_to_float(unwrap_or(nth(parts, i), "0"))
+
+# ---- and the door ----------------------------------------------------------
+
+fn accept_loop(server, inbox) =
+  conn = tcp_accept(server)
+  spawn serve(conn, inbox)
+  accept_loop(server, inbox)
+
+fn main() = match listen_on(port())
+  Err(e) -> println(e)
+  Ok(server) -> run(server)
+
+fn run(server) =
+  w = v.init(64, n_pines(), n_crystals(), n_grass())
+  println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
+  inbox = channel()
+  spawn accept_loop(server, inbox)
+  spawn ticker(inbox, now_nanos() + tick_ms() * 1000000)
+  hub(w, Nil, inbox, 0)

@@ -1,1473 +1,165 @@
-# A walkable valley, computed in Rill and rendered through WebGPU.
+# The browser's names for the valley.
 #
-# Everything that decides what the world *is* happens here: the terrain and
-# its mesh, where the pines and the crystals stand, how the camera walks,
-# falls and jumps, and the matrices the GPU consumes. The host (`host.js`)
-# owns what wasm cannot: the promise-based device setup, the shaders, and the
-# render passes. The two halves meet at a block of raw memory whose layout is
-# written down below.
+# `valley.rill` is the world; this file is the wall between it and `host.js` —
+# fifty-six functions wasm can call, each of them the same call one module
+# in. It is separate because an export is a wasm idea: the server compiles the
+# same valley for a machine that has no such thing, and a compiler that let
+# `export` through on a native target would be promising something it could
+# not deliver.
 #
-# Exports are pure functions, so the world's state lives in memory Rill
-# allocates once with `alloc_bytes` — deliberately uncounted — and the host
-# carries the pointer back in on every call.
-#
-# State layout, in 4-byte slots from the base pointer:
-#   f32  0..15   view-projection matrix, column-major
-#   f32 16..18   eye position (for lighting and fog)
-#   f32 19, 20   yaw, pitch
-#   f32 21..23   camera foot position
-#   f32 24       vertical velocity   25  grounded flag
-#   f32 26..28   wind: angle, strength, accumulated time
-#   f32 29      wind phase — see `frame`
-#   f32 32..47   the sun's shadow matrix, column-major (static)
-#   f32 56..59   terrain vertex count, pine count, crystal count, grass count
-#   f32 60, 61   next slot in the bullet ring, and in the shard ring
-#   f32 62       crystals broken so far    70..72  where the last one stood
-#   f32 63       next slot in the fireball ring   73  the charge's own clock
-#   ptr 77       three chargers: crystal, its size, mode, clock
-#   f32 79       gate: zero lets one charge begin this frame
-#   f32 80       next slot in the blast ring    ptr 81  the blasts themselves
-#   f32 82       health, one to zero        84, 85  the push a blast left
-#   f32 86..93   the shark: where, which way, what it is doing
-#   ptr 74       the fireballs the far crystals throw
-#   ptr 64..67   terrain mesh, pine, crystal and grass instances
-#   ptr 68, 69   the bullets, and the shards they knock loose
+# The host holds two pointers. `init` hands back the world — the terrain, the
+# crystals, the rounds in the air, the shark — and `join` hands back a player
+# in it. Everything except building and freeing the valley is asked of the
+# player, because a player block knows which world it is in and these follow
+# that pointer.
+import "valley" as v
+
+# ---- the valley, and who is in it ------------------------------------------
 
-extern fn sin(x: Float) -> Float
-
-extern fn cos(x: Float) -> Float
-
-extern fn tan(x: Float) -> Float
-
-extern fn floor(x: Float) -> Float
-
-extern fn sqrt(x: Float) -> Float
-
-extern fn exp(x: Float) -> Float
-
-# ---- the shape of the land -------------------------------------------------
-
-fn fract(x) = x - floor(x)
-
-fn clampf(x, lo, hi) = if x < lo then lo else if x > hi then hi else x
-
-# One pseudo-random number per lattice point; the classic sine hash.
-fn hash2(ix, iz) = fract(sin(ix * 127.1 + iz * 311.7) * 43758.5453)
-
-# Value noise: hashes at the cell corners, blended with a smoothstep.
-fn vnoise(x, z) =
-  ix = floor(x)
-  iz = floor(z)
-  fx = x - ix
-  fz = z - iz
-  ux = fx * fx * (3.0 - 2.0 * fx)
-  uz = fz * fz * (3.0 - 2.0 * fz)
-  a = hash2(ix, iz)
-  b = hash2(ix + 1.0, iz)
-  c = hash2(ix, iz + 1.0)
-  d = hash2(ix + 1.0, iz + 1.0)
-  a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz
-
-# The valley: three octaves of noise, a lake carved from the middle, and a
-# rim that rises toward the edges so the world has a horizon of its own.
-fn height(x, z) =
-  n1 = vnoise(x * 0.035, z * 0.035) * 9.0
-  n2 = vnoise(x * 0.09 + 40.0, z * 0.09) * 4.0
-  n3 = vnoise(x * 0.22, z * 0.22 + 40.0) * 1.4
-  n = n1 + n2 + n3
-  d2 = (x * x + z * z) / 7225.0
-  clampf(n + d2 * d2 * 26.0 - 10.5 * exp(0.0 - (x * x + z * z) / 1400.0), 0.0 - 9.0, 34.0)
-
-# Whether the player is standing in the lake. The water sits at zero and the
-# ground is carved below it, so the ground under their feet being negative is
-# the whole test — no flag to keep, and nothing that can get out of step with
-# where they actually are.
-fn in_water(s) =
-  if height(peek_f32(s, 21), peek_f32(s, 23)) < 0.0 then 1 else 0
-
-# The host asks too, so that a shot taken while wading is refused before the
-# bolt cycles and the bang plays rather than after: a rifle that goes off and
-# does nothing is worse than one that will not go off.
-export fn wading(s: Ptr) -> Int = in_water(s)
-
-# ---- building the mesh -----------------------------------------------------
-#
-# 96 x 96 cells, two triangles each. The colour is per face — that is where
-# the low-poly banding comes from — but the normal is per corner, taken from
-# the height field's own slope, so the ground is lit as the smooth surface it
-# is. Facets in the palette read as style; facets in the lighting read as a
-# mistake, and a metre-wide triangle lit flat has a hard edge on every side.
-# A vertex is nine floats — position, normal, colour.
-#
-# The heights come from a lattice computed once, not from `height` called at
-# each cell's four corners: a corner belongs to four cells, and `height` is
-# twelve sines deep. It is also the more correct way round — two cells sharing
-# an edge now read one number for it rather than each working out its own.
-
-fn world_w() = 170.0
-
-fn cell_step(n) = world_w() / to_float(n)
-
-# Where lattice column (or row) `k` stands. Every vertex of the mesh is at one
-# of these, so what two cells share they agree about exactly.
-fn lattice(k, s) = to_float(k) * s - world_w() * 0.5
-
-fn lerp(a, b, t) = a + (b - a) * t
-
-fn smoothstep(a, b, x) =
-  t = clampf((x - a) / (b - a), 0.0, 1.0)
-  t * t * (3.0 - 2.0 * t)
-
-# The colour of one corner: sand, cliff, snow or grass, but weighed rather
-# than chosen. Thresholds put the whole change at one triangle's edge, and a
-# snowline or a band of dark rock that turns on at an exact height has that
-# edge for a boundary — visibly, because the edge is a metre long. `ny` is the
-# normal's upward component; low means steep. The order is the order they
-# override in: grass under snow, snow under rock, rock under sand.
-fn band_r(h, ny) =
-  lerp(lerp(lerp(0.16, 0.80, smoothstep(9.8, 11.8, h)),
-            0.38, 1.0 - smoothstep(0.60, 0.84, ny)),
-       0.72, 1.0 - smoothstep(0.05, 1.15, h))
-
-fn band_g(h, ny) =
-  lerp(lerp(lerp(0.38, 0.80, smoothstep(9.8, 11.8, h)),
-            0.38, 1.0 - smoothstep(0.60, 0.84, ny)),
-       0.63, 1.0 - smoothstep(0.05, 1.15, h))
-
-fn band_b(h, ny) =
-  lerp(lerp(lerp(0.26, 0.86, smoothstep(9.8, 11.8, h)),
-            0.46, 1.0 - smoothstep(0.60, 0.84, ny)),
-       0.45, 1.0 - smoothstep(0.05, 1.15, h))
-
-# The corner's own height and its own steepness decide its colour, so the GPU
-# interpolates the band across the triangle instead of stopping it at the edge.
-fn emit_vert(m, at, x, y, z, nx, ny, nz, j) =
-  poke_f32(m, at, x)
-  poke_f32(m, at + 1, y)
-  poke_f32(m, at + 2, z)
-  poke_f32(m, at + 3, nx)
-  poke_f32(m, at + 4, ny)
-  poke_f32(m, at + 5, nz)
-  poke_f32(m, at + 6, band_r(y, ny) * j)
-  poke_f32(m, at + 7, band_g(y, ny) * j)
-  poke_f32(m, at + 8, band_b(y, ny) * j)
-
-fn clampi(v, hi) = if v < 0 then 0 else if v > hi then hi else v
-
-# The slope at a lattice corner, from the two heights either side of it. The
-# terrain is a height field, so this is a subtraction rather than a cross
-# product — and a corner shared by four cells gets one answer instead of four,
-# which is exactly what makes the lighting continuous across the edge.
-fn slope_x(hs: Buf(F64), w, ix, iz, s) =
-  a = clampi(ix - 1, w - 1)
-  b = clampi(ix + 1, w - 1)
-  (hs[iz * w + b] - hs[iz * w + a]) / (to_float(b - a) * s)
-
-fn slope_z(hs: Buf(F64), w, ix, iz, s) =
-  a = clampi(iz - 1, w - 1)
-  b = clampi(iz + 1, w - 1)
-  (hs[b * w + ix] - hs[a * w + ix]) / (to_float(b - a) * s)
-
-fn emit_corner(m, at, hs: Buf(F64), w, s, ix, iz, j) =
-  sx = slope_x(hs, w, ix, iz, s)
-  sz = slope_z(hs, w, ix, iz, s)
-  il = 1.0 / sqrt(sx * sx + 1.0 + sz * sz)
-  x = lattice(ix, s)
-  z = lattice(iz, s)
-  y = hs[iz * w + ix]
-  emit_vert(m, at, x, y, z, (0.0 - sx) * il, il, (0.0 - sz) * il, j)
-
-# One triangle — 27 floats — named by its three lattice corners rather than by
-# nine coordinates, because the corners are what everything else is read from.
-fn emit_tri(m, at, hs: Buf(F64), w, s, ia, ja, ib, jb, ic, jc) =
-  # A little brightness per cell, so the ground is not uniform. Half what it
-  # used to carry: with grain in the ground texture, a cell seven per cent
-  # brighter than its neighbour is a seam, not variety.
-  j = 0.965 + 0.07 * hash2(floor(lattice(ia, s) * 3.1), floor(lattice(ja, s) * 3.1))
-  emit_corner(m, at, hs, w, s, ia, ja, j)
-  emit_corner(m, at + 9, hs, w, s, ib, jb, j)
-  emit_corner(m, at + 18, hs, w, s, ic, jc, j)
-
-# The lattice: (n + 1) squared samples of the terrain, one per corner.
-fn gen_heights(hs: Buf(F64), n, s) =
-  w = n + 1
-
-  for k in 0..w * w
-    hs[k] = height(lattice(k % w, s), lattice(k / w, s))
-
-# Both triangles of every cell, reading the corners the lattice already has.
-fn gen_cells(m, hs: Buf(F64), n, s) =
-  w = n + 1
-
-  for i in 0..n * n
-    ix = i % n
-    iz = i / n
-    at = i * 54
-    emit_tri(m, at, hs, w, s, ix, iz, ix, iz + 1, ix + 1, iz + 1)
-    emit_tri(m, at + 27, hs, w, s, ix, iz, ix + 1, iz + 1, ix + 1, iz)
-
-# ---- placing the pines and the crystals ------------------------------------
-#
-# Candidate spots come from the same hash as the terrain; each is kept or
-# rejected by where it landed: pines on the grass slopes, crystals near the
-# waterline with a few strays up in the rocks. An instance is eight floats —
-# position, scale, rotation, colour.
-
-fn near_spawn(x, z) = (x + 14.0) * (x + 14.0) + (z + 34.0) * (z + 34.0) < 81.0
-
-fn keep_pine(h, seed) = if h < 1.0 then false else if h > 9.5 then false else seed < 0.22
-
-fn keep_crystal(h, seed) = if h < 0.7 then false else if h > 3.5 then seed < 0.012 else seed < 0.11
-
-fn keep_grass(h, seed) = if h < 0.9 then false else if h > 8.5 then false else seed < 0.85
-
-fn inst_r(c, kind) =
-  if kind == 0 then 0.1 + c * 0.05 else if kind == 2 then 0.11 + c * 0.07 else if c < 0.6 then 1.0 else if c < 0.85 then 0.25 else 0.75
-
-fn inst_g(c, kind) =
-  if kind == 0 then 0.3 + c * 0.1 else if kind == 2 then 0.3 + c * 0.16 else if c < 0.6 then 0.72 else if c < 0.85 then 0.95 else 0.45
-
-fn inst_b(c, kind) =
-  if kind == 0 then 0.2 + c * 0.06 else if kind == 2 then 0.13 + c * 0.09 else if c < 0.6 then 0.18 else if c < 0.85 then 0.85 else 1.0
-
-fn inst_scale(sd, kind) =
-  if kind == 0 then 0.85 + sd * 0.9 else if kind == 2 then 0.55 + sd * 0.8 else 0.5 + sd * 1.1
-
-fn emit_inst(buf, at, x, y, z, i, kind) =
-  s = hash2(to_float(i), 500.0)
-  c = hash2(to_float(i), 900.0)
-  poke_f32(buf, at, x)
-  poke_f32(buf, at + 1, y)
-  poke_f32(buf, at + 2, z)
-  poke_f32(buf, at + 3, inst_scale(s, kind))
-  poke_f32(buf, at + 4, s * 6.28)
-  poke_f32(buf, at + 5, inst_r(c, kind))
-  poke_f32(buf, at + 6, inst_g(c, kind))
-  poke_f32(buf, at + 7, inst_b(c, kind))
-  1
-
-# The loosest seed any of the three tests can accept. Above it nothing stands
-# whatever the ground is like, and asking costs nothing — where sampling the
-# terrain costs twelve sines. Most candidates end here.
-fn seed_cap(kind) = if kind == 0 then 0.22 else if kind == 2 then 0.85 else 0.11
-
-# Tries candidate `i`; returns 1 if something now stands there.
-fn placed(buf, count, i, kind) =
-  seed = hash2(to_float(i), 311.0 + to_float(kind))
-  if seed >= seed_cap(kind) then 0
-  else
-    x = (hash2(to_float(i), 7.0 + to_float(kind)) - 0.5) * 152.0
-    z = (hash2(to_float(i), 113.0 + to_float(kind)) - 0.5) * 152.0
-    h = height(x, z)
-    keep = if kind == 0 then keep_pine(h, seed) else if kind == 2 then keep_grass(h, seed) else keep_crystal(h, seed)
-    if near_spawn(x, z) then 0 else if keep then emit_inst(buf, count * 8, x, h, z, i, kind) else 0
-
-fn place(buf, i, count, cap, lim, kind) =
-  if i >= lim then count else if count >= cap then count else place(buf, i + 1, count + placed(buf, count, i, kind), cap, lim, kind)
-
-# ---- what the rifle sends downrange ----------------------------------------
-#
-# A ring of slots, eight floats each: position, velocity, a spare, and the
-# life left. Firing overwrites the oldest — a fixed pool needs no allocation
-# and no compaction, and thirty-two rounds is more than anyone can put in the
-# air with a bolt action.
-#
-# The flight is the honest one. Gravity pulls at 9.81, and drag takes a
-# fraction of the speed away every second, which is why a bullet's drop grows
-# faster than the schoolbook parabola says it should: it is slowing down the
-# whole way, so it spends longer falling over the second half of its flight
-# than over the first. At 260 m/s a shot across this valley lands about a
-# metre and a half low.
-
-fn bullet_cap() = 32
-
-fn bullet_speed() = 120.0
-
-fn bullet_life() = 3.2
-
-# Ground or water, whichever the bullet would meet first.
-fn stop_height(x, z) =
-  h = height(x, z)
-  if h < 0.0 then 0.0 else h
-
-fn step_bullet(s, b, at, dt) =
-  life = peek_f32(b, at + 7) - dt
-  on = if life > 0.0 then 1.0 else 0.0
-  vx0 = peek_f32(b, at + 3)
-  vy0 = peek_f32(b, at + 4)
-  vz0 = peek_f32(b, at + 5)
-  # Quadratic drag: the retardation is proportional to the speed squared, so
-  # what comes off the velocity vector each step is proportional to the speed
-  # itself. First order is plenty — at sixty frames a second and this
-  # coefficient the step is under a thousandth of the velocity.
-  sp = sqrt(vx0 * vx0 + vy0 * vy0 + vz0 * vz0)
-  k = 1.0 - 0.00011 * sp * dt * on
-  vx = vx0 * k
-  vy = vy0 * k - fireball_g() * dt * on
-  vz = vz0 * k
-  px = peek_f32(b, at) + vx * dt * on
-  py = peek_f32(b, at + 1) + vy * dt * on
-  pz = peek_f32(b, at + 2) + vz * dt * on
-  landed = if py < stop_height(px, pz) then 1.0 else 0.0
-  # Anything solid on the way there, before the position is committed — and
-  # only if there is a round to do the hitting.
-  #
-  # This ran unconditionally, and a dead slot is not a harmless one. An expired
-  # bullet keeps its last position and stops moving, so the test ran every frame
-  # on a segment of zero length sitting wherever it stopped — and the slots
-  # start life at the origin, all thirty-two of them, because `clear_bullets`
-  # zeroes the lifetime and nothing else. A crystal near that point was safe
-  # only until it charged: the swell takes it to two and a half times its size,
-  # the hit spheres grow with it, and the crystal reached out and broke itself
-  # on a round that had been dead for a minute.
-  #
-  # It looked like crystals shattering on their own, and it got worse the more
-  # often they fired, which is the sort of thing that sends you looking at the
-  # charge animation. It was one missing guard.
-  if on > 0.5 then
-    hit_crystals(s, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
-  else 0
-  poke_f32(b, at, px)
-  poke_f32(b, at + 1, py)
-  poke_f32(b, at + 2, pz)
-  poke_f32(b, at + 3, vx)
-  poke_f32(b, at + 4, vy)
-  poke_f32(b, at + 5, vz)
-  poke_f32(b, at + 7, if landed > 0.5 then 0.0 else (if peek_f32(b, at + 7) < 0.001 then 0.0 else life))
-
-fn step_bullets(s, b, dt) =
-  for i in 0..bullet_cap()
-    step_bullet(s, b, i * 8, dt)
-
-# `alloc_bytes` hands back whatever was there; a slot with life left in it
-# would draw a streak the moment the world appeared.
-fn clear_bullets(b) =
-  for i in 0..bullet_cap()
-    poke_f32(b, i * 8 + 7, 0.0)
-
-# `d` is where the sights point; the host works it out from the same yaw and
-# pitch this file wrote. The round starts a little ahead of the eye so its
-# streak does not begin inside the camera.
-export fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
-  b = peek_ptr(s, 68)
-  i = to_int(peek_f32(s, 60)) % bullet_cap()
-  at = i * 8
-  v = bullet_speed()
-  poke_f32(b, at, peek_f32(s, 16) + dx * 0.9)
-  poke_f32(b, at + 1, peek_f32(s, 17) + dy * 0.9)
-  poke_f32(b, at + 2, peek_f32(s, 18) + dz * 0.9)
-  poke_f32(b, at + 3, dx * v)
-  poke_f32(b, at + 4, dy * v)
-  poke_f32(b, at + 5, dz * v)
-  poke_f32(b, at + 6, 0.0)
-  poke_f32(b, at + 7, bullet_life())
-  poke_f32(s, 60, to_float(i + 1))
-
-# ---- what a round does when it arrives -------------------------------------
-#
-# The crystals are the only things in the valley solid enough to break. A hit
-# takes one out of the instance buffer — its scale goes to zero, which is how
-# the host stops drawing it without the array having to change length — and
-# puts eight shards in its place, thrown outward and tumbling.
-#
-# The shards keep the colour of what they came from, fall, land, and stay.
-# There is no settling to model: a shard that reaches the ground has its
-# velocity and its spin set to zero and its height snapped to the terrain,
-# which is the same thing the walking camera does when it lands.
-
-fn shard_cap() = 224
-
-# Twenty floats: position, velocity, orientation, spin, scale, colour.
-fn shard_stride() = 20
-
-# The closest approach of a point to a segment, squared. A round crosses seven
-# metres between frames, so testing where it happens to be at the end of one
-# would let it through anything narrower than that.
-fn seg_dist2(ax, ay, az, bx, by, bz, cx, cy, cz) =
-  dx = bx - ax
-  dy = by - ay
-  dz = bz - az
-  l2 = dx * dx + dy * dy + dz * dz + 0.000001
-  t = clampf(((cx - ax) * dx + (cy - ay) * dy + (cz - az) * dz) / l2, 0.0, 1.0)
-  px = ax + dx * t - cx
-  py = ay + dy * t - cy
-  pz = az + dz * t - cz
-  px * px + py * py + pz * pz
-
-fn spawn_shard(sb, k, x, y, z, sc, r, g, b, throw, heals, seed) =
-  at = (k % shard_cap()) * shard_stride()
-  h1 = hash2(seed, 11.0)
-  h2 = hash2(seed, 23.0)
-  h3 = hash2(seed, 37.0)
-  h4 = hash2(seed, 51.0)
-  # Outward and upward, the way a thing that has just been hit comes apart.
-  a = h1 * 6.28318
-  # `throw` is how hard: one for a crystal coming apart where it stood, more
-  # for something blown out of a crater. It is the only thing that separates
-  # the two, which is why it is an argument rather than two copies of this.
-  up = (2.5 + h2 * 5.5) * throw
-  out = (1.6 + h3 * 3.4) * throw
-  poke_f32(sb, at, x + (h1 - 0.5) * sc * 0.5)
-  poke_f32(sb, at + 1, y + h2 * sc * 1.6)
-  poke_f32(sb, at + 2, z + (h3 - 0.5) * sc * 0.5)
-  poke_f32(sb, at + 3, cos(a) * out)
-  poke_f32(sb, at + 4, up)
-  poke_f32(sb, at + 5, sin(a) * out)
-  poke_f32(sb, at + 6, h1 * 6.28318)
-  poke_f32(sb, at + 7, h2 * 6.28318)
-  poke_f32(sb, at + 8, h3 * 6.28318)
-  poke_f32(sb, at + 9, (h2 - 0.5) * 14.0)
-  poke_f32(sb, at + 10, (h3 - 0.5) * 14.0)
-  poke_f32(sb, at + 11, (h4 - 0.5) * 14.0)
-  poke_f32(sb, at + 12, sc * (0.14 + h4 * 0.16))
-  poke_f32(sb, at + 13, r)
-  poke_f32(sb, at + 14, g)
-  poke_f32(sb, at + 15, b)
-  # Whether this piece is worth anything to walk over. A crystal you shot has
-  # the light still in it; the ground a meteor threw out of a crater does not.
-  # Slot 16 is spare in a stride of twenty and the renderer never reads it.
-  poke_f32(sb, at + 16, heals)
-  1
-
-fn break_crystal(s, cb, cat, ci) =
-  sb = peek_ptr(s, 69)
-  k0 = to_int(peek_f32(s, 61))
-  x = peek_f32(cb, cat)
-  y = peek_f32(cb, cat + 1)
-  z = peek_f32(cb, cat + 2)
-  # A tally the host watches, and where the last one went. It has no other way
-  # of knowing: the hit happens inside a frame it only calls.
-  poke_f32(s, 62, peek_f32(s, 62) + 1.0)
-  poke_f32(s, 70, x)
-  poke_f32(s, 71, y)
-  poke_f32(s, 72, z)
-  sc = peek_f32(cb, cat + 3)
-  r = peek_f32(cb, cat + 5)
-  g = peek_f32(cb, cat + 6)
-  b = peek_f32(cb, cat + 7)
-  poke_f32(cb, cat + 3, 0.0)
-
-  for j in 0..8
-    spawn_shard(sb, k0 + j, x, y, z, sc, r, g, b, 1.0, 1.0, to_float(ci * 8 + j))
-
-  poke_f32(s, 61, to_float(k0 + 8))
-  1
-
-# One crystal against one round's path this frame.
-#
-# A crystal is a bipyramid: a point at the bottom, a waist at 0.7 of its scale
-# where it is 0.42 wide, and a long taper to a point at 2.4. One sphere around
-# its middle is the wrong shape twice over — far too generous at the tips,
-# where a shot half a crystal clear of it still counted, and not generous
-# enough at the waist.
-#
-# Four spheres up the axis, each the width the crystal actually is at that
-# height, with a little overlap so there are no gaps between them. That is a
-# hit test the shape of the thing being shot at.
-fn hit_at(cb, cat, sc, f, rr, ax, ay, az, bx, by, bz) =
-  d2 = seg_dist2(ax, ay, az, bx, by, bz,
-                 peek_f32(cb, cat),
-                 peek_f32(cb, cat + 1) + sc * f,
-                 peek_f32(cb, cat + 2))
-  r = sc * rr
-  if d2 < r * r then 1.0 else 0.0
-
-fn try_break(s, cb, ci, b, at, ax, ay, az, bx, by, bz) =
-  cat = ci * 8
-  sc = peek_f32(cb, cat + 3)
-  if sc < 0.01 then 0
-  else
-    n1 = hit_at(cb, cat, sc, 0.10, 0.18, ax, ay, az, bx, by, bz)
-    n2 = hit_at(cb, cat, sc, 0.70, 0.48, ax, ay, az, bx, by, bz)
-    n3 = hit_at(cb, cat, sc, 1.40, 0.28, ax, ay, az, bx, by, bz)
-    n4 = hit_at(cb, cat, sc, 2.00, 0.13, ax, ay, az, bx, by, bz)
-    if n1 + n2 + n3 + n4 < 0.5 then 0
-    else
-      poke_f32(b, at + 7, 0.0)
-      break_crystal(s, cb, cat, ci)
-
-fn hit_crystals(s, b, at, ax, ay, az, bx, by, bz) =
-  cb = peek_ptr(s, 66)
-
-  for ci in 0..to_int(peek_f32(s, 58))
-    try_break(s, cb, ci, b, at, ax, ay, az, bx, by, bz)
-
-fn step_shard(sb, at, dt) =
-  sc = peek_f32(sb, at + 12)
-  # Every piece falls, whatever it is worth. The test for that — slot 16, the
-  # flag that says a chip came off a crystal you shot and not out of a crater —
-  # belongs in `gather_shard` and was for a while in here as well, which meant
-  # the eighteen lumps a meteor throws were never stepped at all: no gravity,
-  # no tumble, no landing. They hung in the air over the crater at the height
-  # they spawned, each frozen at its random spawn angle, until the slot was
-  # reused. What a shard is worth to walk over has nothing to do with whether
-  # it obeys gravity.
-  if sc < 0.0001 then 0
-  else
-    vy = peek_f32(sb, at + 4) - 24.0 * dt
-    x = peek_f32(sb, at) + peek_f32(sb, at + 3) * dt
-    y = peek_f32(sb, at + 1) + vy * dt
-    z = peek_f32(sb, at + 2) + peek_f32(sb, at + 5) * dt
-    g = stop_height(x, z)
-    down = if y < g then 1.0 else 0.0
-    keep = 1.0 - down
-    poke_f32(sb, at, x)
-    poke_f32(sb, at + 1, if down > 0.5 then g else y)
-    poke_f32(sb, at + 2, z)
-    poke_f32(sb, at + 3, peek_f32(sb, at + 3) * keep)
-    poke_f32(sb, at + 4, vy * keep)
-    poke_f32(sb, at + 5, peek_f32(sb, at + 5) * keep)
-    poke_f32(sb, at + 6, peek_f32(sb, at + 6) + peek_f32(sb, at + 9) * dt)
-    poke_f32(sb, at + 7, peek_f32(sb, at + 7) + peek_f32(sb, at + 10) * dt)
-    poke_f32(sb, at + 8, peek_f32(sb, at + 8) + peek_f32(sb, at + 11) * dt)
-    poke_f32(sb, at + 9, peek_f32(sb, at + 9) * keep)
-    poke_f32(sb, at + 10, peek_f32(sb, at + 10) * keep)
-    poke_f32(sb, at + 11, peek_f32(sb, at + 11) * keep)
-    1
-
-fn step_shards(sb, dt) =
-  for i in 0..shard_cap()
-    step_shard(sb, i * shard_stride(), dt)
-
-fn clear_shards(sb) =
-  for i in 0..shard_cap()
-    poke_f32(sb, i * shard_stride() + 12, 0.0)
-
-export fn shards(s: Ptr) -> Ptr = peek_ptr(s, 69)
-
-# How many crystals have been broken since the world was built, and where the
-# most recent one stood.
-export fn breaks(s: Ptr) -> Int = to_int(peek_f32(s, 62))
-
-export fn break_x(s: Ptr) -> Float = peek_f32(s, 70)
-
-export fn break_y(s: Ptr) -> Float = peek_f32(s, 71)
-
-export fn break_z(s: Ptr) -> Float = peek_f32(s, 72)
-
-export fn shards_cap(s: Ptr) -> Int = shard_cap()
-
-# ---- what the far crystals throw back --------------------------------------
-#
-# Every couple of seconds one crystal, chosen at random and only if it is far
-# enough away to be worth watching, lobs a ball of fire at where the player is
-# standing. Where they are standing, not where they will be: a shot led onto a
-# moving target always lands, and a fireball you cannot walk out of the way of
-# is not a fireball, it is a cutscene.
-#
-# The launch angle is solved without any inverse trigonometry, which this file
-# has none of. Pick the flight time instead of the angle — the horizontal
-# distance over a chosen horizontal speed — and the two velocities fall out of
-# it: across, the distance over the time; upward, whatever cancels the drop
-# over that time and still arrives at the right height. Exact in a vacuum, and
-# at fourteen metres a second the air is very nearly a vacuum.
-
-fn fireball_cap() = 24
-
-# Nine floats: position, velocity, a seed, the life left, and how long it has
-# been flying — which the trail needs, so it cannot draw smoke from before the
-# thing existed.
-fn fireball_stride() = 9
-
-fn fireball_speed() = 14.0      # horizontal; the arc comes from the height
-
-# Fireballs fall at a third of what everything else falls at. This is the one
-# unphysical number in the file and it earns its place: a projectile this slow
-# thrown this far has to be lobbed over a house, and it spends its whole flight
-# above the top of the screen. A third of a gravity keeps the arc low enough to
-# watch without making the thing any faster. Everything else about it — the
-# aiming, the drag, the landing — is the same arithmetic as the rifle's.
-fn fireball_g() = 3.2
-
-# Before it throws, a crystal draws itself up — two and a half times its own
-# size over a second and a quarter, which is enough to see from across the
-# valley and is the only warning there is — throws, and settles back over
-# nearly as long. Only ever one at a time, so the whole animation is three
-# numbers in the state rather than a field on every instance.
-fn charge_time() = 1.25
-
-fn relax_time() = 0.95
-
-fn charge_swell() = 1.5
-
-# One and a bit seconds between attempts.
-#
-# This has been round twice. At one second, twenty-two landed on a standing
-# player in thirty-five — arriving faster than the two and a half seconds one
-# takes to fly, which is a barrage, and a threat that never stops stops being a
-# threat. At three it was sixteen a minute and the hillside went quiet.
-#
-# What changed in between is that a blast now throws you: getting knocked
-# several metres means the next one, aimed at where you were, lands wide, so
-# the rate a player can absorb went up on its own. One point six sits where the
-# valley is busy without the sky being permanently full.
-fn fireball_every() = 1.6       # seconds between attempts
-
-fn fireball_reach() = 70.0      # nothing nearer than this throws
-
-fn launch_fireball(fb, k, cx, cy, cz, px, py, pz, seed) =
-  dx = px - cx
-  dz = pz - cz
-  d = sqrt(dx * dx + dz * dz) + 0.001
-  t = d / fireball_speed()
-  at = (k % fireball_cap()) * fireball_stride()
-  poke_f32(fb, at, cx)
-  poke_f32(fb, at + 1, cy)
-  poke_f32(fb, at + 2, cz)
-  poke_f32(fb, at + 3, dx / t)
-  poke_f32(fb, at + 4, (py - cy + 0.5 * fireball_g() * t * t) / t)
-  poke_f32(fb, at + 5, dz / t)
-  poke_f32(fb, at + 6, seed)
-  poke_f32(fb, at + 7, t + 2.0)
-  poke_f32(fb, at + 8, 0.0)
-  1
-
-# Three crystals can be winding up at once. One at a time held the rate down to
-# a shot every five seconds however short the wait between them was made: the
-# swell and the settle are two and a quarter of those seconds on their own, and
-# nothing else could start until they were done. Three of them, each with its
-# own index, size, mode and clock, live in a little buffer rather than in state
-# slots — which is also what makes the count a constant to change rather than a
-# rewrite.
-
-fn charger_cap() = 3
-
-fn charger_stride() = 4          # crystal, its size, mode, clock
-
-# Two chargers must not take the same crystal. Written out rather than looped
-# because a `for` here would have nothing to accumulate into.
-fn taken_at(cbuf, at, i) =
-  if peek_f32(cbuf, at + 2) < 0.5 then 0
-  else if to_int(peek_f32(cbuf, at)) == i then 1
-  else 0
-
-fn taken(cbuf, i) =
-  taken_at(cbuf, 0, i) + taken_at(cbuf, 4, i) + taken_at(cbuf, 8, i)
-
-# Slot 79 is the gate: zero means one charge may begin this frame.
-fn maybe_start(s, cbuf, ci, tnow) =
-  at = ci * charger_stride()
-  if peek_f32(s, 79) > 0.5 then 0
-  # Nothing is thrown at someone standing in the lake. Checked where a charge
-  # begins rather than where one is released, so a crystal that is already
-  # swelling still finishes its throw: cutting the animation off mid-swell
-  # because the player waded in would leave a crystal stuck at twice its size
-  # with nothing to bring it back.
-  else if in_water(s) > 0 then 0
-  else if peek_f32(cbuf, at + 2) > 0.5 then 0
-  else
-    cb = peek_ptr(s, 66)
-    n = to_int(peek_f32(s, 58))
-    r = hash2(floor(tnow * 7.3) + to_float(ci) * 3.0, 91.0)
-    i = to_int(r * to_float(n)) % n
-    cat = i * 8
-    sc = peek_f32(cb, cat + 3)
-    if sc < 0.01 then 0
-    else if taken(cbuf, i) > 0 then 0
-    else
-      dx = peek_f32(s, 21) - peek_f32(cb, cat)
-      dz = peek_f32(s, 23) - peek_f32(cb, cat + 2)
-      if sqrt(dx * dx + dz * dz) < fireball_reach() then 0
-      else
-        poke_f32(cbuf, at, to_float(i))
-        poke_f32(cbuf, at + 1, sc)
-        poke_f32(cbuf, at + 2, 1.0)
-        poke_f32(cbuf, at + 3, 0.0)
-        poke_f32(s, 79, 1.0)
-        1
-
-fn throw_from(s, cb, cat, base, tnow) =
-  k = to_int(peek_f32(s, 63))
-  poke_f32(s, 63, to_float(k + 1))
-  launch_fireball(peek_ptr(s, 74), k,
-                  peek_f32(cb, cat), peek_f32(cb, cat + 1) + base * 1.9, peek_f32(cb, cat + 2),
-                  peek_f32(s, 21), peek_f32(s, 22) + 1.2, peek_f32(s, 23),
-                  hash2(floor(tnow * 11.7), 53.0))
-
-# Growing, throwing, settling back. If the crystal is shot while it is winding
-# up, its scale is already zero and there is nothing to put back: the charger
-# just goes idle, which is what the liveness test is for.
-fn run_one(s, cbuf, ci, dt, tnow) =
-  at = ci * charger_stride()
-  mode = peek_f32(cbuf, at + 2)
-  if mode < 0.5 then 0
-  else
-    cb = peek_ptr(s, 66)
-    cat = to_int(peek_f32(cbuf, at)) * 8
-    base = peek_f32(cbuf, at + 1)
-    ct = peek_f32(cbuf, at + 3) + dt
-    poke_f32(cbuf, at + 3, ct)
-    if peek_f32(cb, cat + 3) < 0.01 then
-      poke_f32(cbuf, at + 2, 0.0)
-      0
-    else if mode < 1.5 then
-      poke_f32(cb, cat + 3, base * (1.0 + charge_swell() * smoothstep(0.0, charge_time(), ct)))
-      if ct < charge_time() then 0
-      else
-        throw_from(s, cb, cat, base, tnow)
-        poke_f32(cbuf, at + 2, 2.0)
-        poke_f32(cbuf, at + 3, 0.0)
-        1
-    else
-      poke_f32(cb, cat + 3, base * (1.0 + charge_swell() * (1.0 - smoothstep(0.0, relax_time(), ct))))
-      if ct < relax_time() then 0
-      else
-        poke_f32(cb, cat + 3, base)
-        poke_f32(cbuf, at + 2, 0.0)
-        1
-
-fn start_pass(s, cbuf, tnow) =
-  for ci in 0..charger_cap()
-    maybe_start(s, cbuf, ci, tnow)
-
-fn step_pass(s, cbuf, dt, tnow) =
-  for ci in 0..charger_cap()
-    run_one(s, cbuf, ci, dt, tnow)
-
-fn run_charge(s, dt, tnow) =
-  cbuf = peek_ptr(s, 77)
-  ct = peek_f32(s, 73) + dt
-  due = if ct > fireball_every() then 1.0 else 0.0
-  poke_f32(s, 73, if due > 0.5 then 0.0 else ct)
-  poke_f32(s, 79, 1.0 - due)
-  start_pass(s, cbuf, tnow)
-  step_pass(s, cbuf, dt, tnow)
-
-fn clear_chargers(cbuf) =
-  for ci in 0..charger_cap()
-    poke_f32(cbuf, ci * charger_stride() + 2, 0.0)
-
-# ---- where one lands -------------------------------------------------------
-#
-# A ring of eight impacts, each remembered just long enough to be drawn: where
-# it was, a seed so no two blasts look alike, and how long ago. The debris is
-# not a second system — it is the same shards a broken crystal leaves, thrown
-# from the impact instead, charred rather than coloured. They fall, land and
-# stay, because that is what the shard pool already does.
-
-fn blast_cap() = 8
-
-fn blast_stride() = 8
-
-# What an impact does to whoever is standing near it. Nothing past sixty
-# metres, falling off hard inside it — five times the fireball's own twelve,
-# because the pressure gets to you before the fire does and there is nowhere to
-# be that is "just outside" an explosion.
-#
-# An eighth of you at the centre, so it takes nine direct hits. These arrive
-# about sixteen times a minute and all of them land on you if you stand still,
-# which at a fifth was death in twenty-five seconds — measured, and too short
-# for a valley anyone is meant to look at. Nine gives you most of a minute of
-# doing nothing, which is long enough to work out that doing nothing is the
-# problem. These are thrown
-# at where you are standing, so standing still is what gets you hit; at 0.62,
-# which is where this started, three landed in eleven seconds and killed a
-# player who had not yet finished looking around. Punishing the mistake is the
-# point, but it has to be a mistake you get to notice you are making.
-fn blast_hurt(s, x, y, z) =
-  dx = peek_f32(s, 21) - x
-  dy = peek_f32(s, 22) + 1.0 - y
-  dz = peek_f32(s, 23) - z
-  d = sqrt(dx * dx + dy * dy + dz * dz)
-  k = clampf(1.0 - d / 45.0, 0.0, 1.0)
-  # Cubed, and out to forty-five metres. Squared over a short radius meant
-  # every impact either missed entirely or took the same bite out of you,
-  # because these are thrown at where you are standing and so nearly all of
-  # them land within a few metres.
-  #
-  # The cube is what stops a wide radius from meaning everything hurts equally:
-  # full at your feet, a third of it at fifteen metres, a hundredth at thirty
-  # -eight. What it buys is that a near miss is felt at all, so the ones that
-  # land across the meadow are still part of the weather rather than being
-  # either lethal or nothing.
-  #
-  # Sixty was the radius for a while and it was too much of the valley — an
-  # impact you could barely see across the meadow still registered, which made
-  # the whole map feel dangerous rather than the ground around you. Forty-five
-  # keeps the near miss and gives back the far side.
-  hit = 0.115 * k * k * k
-  # Nothing reaches you in the lake. The crystals already refuse to throw at
-  # someone standing in it; this is the other half of that — one already in the
-  # air when you waded in should not still land on you. Water takes a blast
-  # wave apart, and more to the point the two rules have to agree or wading in
-  # only protects you from the shots that had not been fired yet.
-  if in_water(s) > 0 then 0
-  else if hit < 0.002 then 0
-  else
-    poke_f32(s, 82, clampf(peek_f32(s, 82) - hit, 0.0, 1.0))
-    # And it shoves you. Away from the blast on the flat and a little upward,
-    # both scaled by exactly the k² the damage is — so the push and the hurt
-    # are the same number and a blast that barely reached you barely moves you.
-    #
-    # A velocity, not a displacement, and that is the whole of it. This was a
-    # metre written straight into the position first, and measured at 0.16 to
-    # 0.70 metres of ground covered — a real distance, and still invisible,
-    # because a metre delivered inside one sixtieth of a second is not a push,
-    # it is a cut to somewhere else. Handed over as a speed that decays across
-    # about a fifth of a second, the same couple of metres arrive as being
-    # shoved: you watch yourself go.
-    #
-    # Thirty-four metres a second at a direct hit, which carries five or six
-    # before it dies away. One landing at your feet should throw you, and the
-    # squared falloff is what keeps that from being true of the ones that did
-    # not: at ten metres it is a quarter of this, at fifteen a sixteenth.
-    #
-    # Measured on the way up: nine metres a second moved you 1.0 to 1.3 in the
-    # second after, fifteen moved you 1.2 to 2.1, and neither read as being
-    # thrown.
-    #
-    # And it lifts you now as well as pushing you — nine up, which against a
-    # gravity of twenty-six is a metre and a half of air and two thirds of a
-    # second off the ground. This was 2.2, nine centimetres, deliberately: a
-    # stagger. One landing at your feet should not be a stagger. The two are
-    # separate numbers so that the far ones can still only nudge you, which the
-    # squared falloff sees to.
-    hx = dx / (d + 0.4)
-    hz = dz / (d + 0.4)
-    shove = 34.0 * k * k
-    poke_f32(s, 84, peek_f32(s, 84) + hx * shove)
-    poke_f32(s, 85, peek_f32(s, 85) + hz * shove)
-    poke_f32(s, 24, peek_f32(s, 24) + 9.0 * k * k)
-    poke_f32(s, 25, 0.0)
-    1
-
-# Cuts do not heal on their own. What mends you is walking over what you broke:
-# the chips a shattered crystal leaves on the ground still have the light in
-# them, and stepping on one takes it.
-#
-# Which turns the whole thing into a loop rather than two unrelated systems. The
-# crystals throw fire at you; you shoot them; what is left of them is the only
-# medicine there is. Standing still is what gets you hit and also what stops you
-# healing, and the thing you are being punished for going near is the thing you
-# have to go near.
-#
-# A chip is taken once and is gone — its scale goes to zero, which is the same
-# "empty slot" the pool already understands, so the piece simply is not drawn
-# any more and no flag has to be invented for it.
-#
-# Five per cent for a whole crystal, split eight ways across the chips it
-# leaves: a hundredth and a quarter each, so sweeping up every last piece of one
-# is worth exactly five and there is no way to get more out of it than that.
-# It was three and a half a chip, which made a single crystal worth twenty-eight
-# and turned one lucky shot into a full heal — the medicine has to be worth
-# less than a hit costs, or there is nothing to weigh.
-fn gather_shard(s, sb, i) =
-  at = i * shard_stride()
-  sc = peek_f32(sb, at + 12)
-  if sc < 0.0001 then 0
-  # Charred ground is charred ground. Measured before this test existed: an
-  # impact took fifteen points off and then handed back sixty-three, because
-  # the eighteen pieces it blew out of the hillside landed on the player it had
-  # just hit and were picked up on the spot. Being shelled was the fastest way
-  # to heal in the valley.
-  else if peek_f32(sb, at + 16) < 0.5 then 0
-  else
-    dx = peek_f32(sb, at) - peek_f32(s, 21)
-    dy = peek_f32(sb, at + 1) - peek_f32(s, 22)
-    dz = peek_f32(sb, at + 2) - peek_f32(s, 23)
-    # A generous reach on the flat and a tight one vertically: you pick up what
-    # you walk over, not what is on the ledge above your head.
-    if dx * dx + dz * dz > 2.9 then 0
-    else if dy > 2.2 then 0
-    else if dy < 0.0 - 1.2 then 0
-    else
-      poke_f32(sb, at + 12, 0.0)
-      poke_f32(s, 82, clampf(peek_f32(s, 82) + 0.00625, 0.0, 1.0))
-      1
-
-fn gather(s, sb) =
-  for i in 0..shard_cap()
-    gather_shard(s, sb, i)
-
-export fn health(s: Ptr) -> Float = peek_f32(s, 82)
-
-# Start again, without rebuilding the valley.
-#
-# Every crystal's size came out of `inst_scale` on a hash, and breaking one set
-# it to zero — but the hash itself is still sitting in slot 4 of the same
-# record, where it was written as an angle to turn the prism by. So the size is
-# recoverable exactly rather than needing to be stored a second time, and the
-# valley comes back with the same crystals in the same places at the same sizes
-# instead of a fresh random one. That matters: starting again should be the same
-# valley, or it is not starting again.
-fn restore_crystal(cb, i) =
-  at = i * 8
-  poke_f32(cb, at + 3, inst_scale(peek_f32(cb, at + 4) / 6.28, 1))
-
-export fn restart(s: Ptr) =
-  cb = peek_ptr(s, 66)
-
-  for i in 0..to_int(peek_f32(s, 58))
-    restore_crystal(cb, i)
-
-  poke_f32(s, 82, 1.0)
-  poke_f32(s, 84, 0.0)
-  poke_f32(s, 85, 0.0)
-  poke_f32(s, 62, 0.0)
-  clear_bullets(peek_ptr(s, 68))
-  clear_shards(peek_ptr(s, 69))
-  clear_fireballs(peek_ptr(s, 74))
-  clear_blasts(peek_ptr(s, 81))
-  clear_chargers(peek_ptr(s, 77))
-  1
-
-fn add_blast(s, x, y, z, seed) =
-  bb = peek_ptr(s, 81)
-  k = to_int(peek_f32(s, 80)) % blast_cap()
-  at = k * blast_stride()
-  poke_f32(bb, at, x)
-  poke_f32(bb, at + 1, y)
-  poke_f32(bb, at + 2, z)
-  poke_f32(bb, at + 3, seed)
-  poke_f32(bb, at + 4, 0.0)
-  poke_f32(s, 80, to_float(k + 1))
-  blast_hurt(s, x, y, z)
-
-  # Eighteen pieces of what it hit, thrown nearly twice as hard as a crystal
-  # coming apart. The fireball above them reaches twelve metres now and the
-  # dust runs twenty-seven along the ground; ten chips landing inside three of
-  # the crater read as a stone that cracked, not as ground that was blown out
-  # of a hill.
-  sb = peek_ptr(s, 69)
-  k0 = to_int(peek_f32(s, 61))
-
-  for j in 0..18
-    spawn_shard(sb, k0 + j, x, y, z, 1.1, 0.34, 0.13, 0.05, 1.9, 0.0,
-                seed * 97.0 + to_float(j))
-
-  poke_f32(s, 61, to_float(k0 + 18))
-  1
-
-fn step_blast(bb, at, dt) =
-  a = peek_f32(bb, at + 4)
-  poke_f32(bb, at + 4, if a < 0.0 then a else a + dt)
-
-fn step_blasts(bb, dt) =
-  for i in 0..blast_cap()
-    step_blast(bb, i * blast_stride(), dt)
-
-fn clear_blasts(bb) =
-  for i in 0..blast_cap()
-    poke_f32(bb, i * blast_stride() + 4, 0.0 - 1.0)
-
-export fn blasts(s: Ptr) -> Ptr = peek_ptr(s, 81)
-
-export fn blasts_cap(s: Ptr) -> Int = blast_cap()
-
-# How many have gone off since the world was built. The host watches this the
-# way it watches the breaks: it has no other way of knowing, because the
-# landing happens inside a frame it only calls.
-export fn blasts_fired(s: Ptr) -> Int = to_int(peek_f32(s, 80))
-
-fn step_fireball(s, fb, at, dt) =
-  life = peek_f32(fb, at + 7) - dt
-  on = if life > 0.0 then 1.0 else 0.0
-  vx0 = peek_f32(fb, at + 3)
-  vy0 = peek_f32(fb, at + 4)
-  vz0 = peek_f32(fb, at + 5)
-  # The same quadratic drag the rounds get. At this speed it barely bites,
-  # which is the point: the arc it flies is the one it was aimed along.
-  sp = sqrt(vx0 * vx0 + vy0 * vy0 + vz0 * vz0)
-  k = 1.0 - 0.00011 * sp * dt * on
-  vx = vx0 * k
-  vy = vy0 * k - fireball_g() * dt * on
-  vz = vz0 * k
-  px = peek_f32(fb, at) + vx * dt * on
-  py = peek_f32(fb, at + 1) + vy * dt * on
-  pz = peek_f32(fb, at + 2) + vz * dt * on
-  landed = if py < stop_height(px, pz) then 1.0 else 0.0
-  poke_f32(fb, at, px)
-  poke_f32(fb, at + 1, py)
-  poke_f32(fb, at + 2, pz)
-  poke_f32(fb, at + 3, vx)
-  poke_f32(fb, at + 4, vy)
-  poke_f32(fb, at + 5, vz)
-  poke_f32(fb, at + 7, if landed > 0.5 then 0.0 else life)
-  poke_f32(fb, at + 8, peek_f32(fb, at + 8) + dt * on)
-  # It touched the ground while it was still flying: that is an arrival, not an
-  # expiry, and only an arrival makes a crater.
-  if landed * on > 0.5 then add_blast(s, px, py, pz, peek_f32(fb, at + 6)) else 0
-
-fn step_fireballs(s, fb, dt) =
-  for i in 0..fireball_cap()
-    step_fireball(s, fb, i * fireball_stride(), dt)
-
-fn clear_fireballs(fb) =
-  for i in 0..fireball_cap()
-    poke_f32(fb, i * fireball_stride() + 7, 0.0)
-
-export fn fireballs(s: Ptr) -> Ptr = peek_ptr(s, 74)
-
-export fn fireballs_cap(s: Ptr) -> Int = fireball_cap()
-
-export fn bullets(s: Ptr) -> Ptr = peek_ptr(s, 68)
-
-export fn bullets_cap(s: Ptr) -> Int = bullet_cap()
-
-
-# ---- what lives in the lake ------------------------------------------------
-#
-# One shark, and it is only ever one: a lake this size with a shoal in it is an
-# aquarium, and the thing that makes water frightening is that there is
-# something in it rather than how many.
-#
-# It has four states and they are the whole animal. It wanders; it notices you;
-# it comes; it bites and thinks better of it. Everything else — the turn rate,
-# the fact that it will not leave the water, the way it gives up if you get out
-# — falls out of those four and a couple of clamps.
-#
-# Slots 86..93: x, y, z, heading, mode, mode clock, swim phase, wander target.
-
-fn shark_speed() = 5.2        # metres a second, cruising
-fn shark_rush() = 11.5        # and when it has seen you
-fn shark_turn() = 1.5         # radians a second it can come round
-fn shark_see() = 30.0         # how far it notices someone in the water
-fn shark_reach() = 2.6        # how close it has to be to bite
-fn shark_bite() = 0.10        # a tenth of you
-
-# It stays in the water and off the bottom. The lake is carved below zero, so
-# the ceiling is a little under the surface — a fin breaking the surface would
-# give it away to someone standing on the shore, and the whole point of it is
-# that you cannot see it from up there.
-fn shark_depth(x, z) =
-  bed = height(x, z)
-  lo = bed + 1.1
-  hi = 0.0 - 1.6
-  if lo > hi then hi else lo
-
-# Where the water is deep enough to be worth swimming in.
-fn deep_at(x, z) = if height(x, z) < 0.0 - 2.2 then 1 else 0
-
-# Turn toward `want`, no faster than it can. The wrap keeps the difference in
-# (-π, π] so it always takes the short way round rather than unwinding the long
-# way through three radians.
-fn turn_to(cur, want, dt) =
-  d0 = want - cur
-  d1 = if d0 > 3.14159265 then d0 - 6.28318531 else d0
-  d = if d1 < 0.0 - 3.14159265 then d1 + 6.28318531 else d1
-  lim = shark_turn() * dt
-  cur + (if d > lim then lim else if d < 0.0 - lim then 0.0 - lim else d)
-
-# Somewhere else to be, re-rolled every few seconds. Aimed at the middle of the
-# lake rather than anywhere, so it does not spend the whole time nosing the
-# shore.
-fn wander_angle(x, z, tnow) =
-  home = atan2_like(0.0 - x, 0.0 - z)
-  home + (hash2(floor(tnow * 0.25), 7.0) - 0.5) * 2.6
-
-# There is no atan2 in this file and the shark is the only thing that wants
-# one. Two quadrant tests around the cheap ratio approximation is enough for
-# something that only has to point a fish.
-fn atan_small(r) = r * (0.7853982 - (r * (r - 1.0)) * (0.2447 + 0.0663 * r))
-
-fn atan2_like(y, x) =
-  ax = if x < 0.0 then 0.0 - x else x
-  ay = if y < 0.0 then 0.0 - y else y
-  a = if ax > ay then atan_small(ay / (ax + 0.000001)) else 1.5707963 - atan_small(ax / (ay + 0.000001))
-  b = if x < 0.0 then 3.14159265 - a else a
-  if y < 0.0 then 0.0 - b else b
-
-# Where it wants to be pointed. Backing off is away from you, hunting is at
-# you, and wandering is wherever the water is still deep six metres ahead —
-# otherwise back toward the middle, which is the whole of its shore avoidance.
-fn shark_want(mode, toward, sx, sz, hd, tnow) =
-  if mode > 2.5 then toward + 3.14159265 else shark_want2(mode, toward, sx, sz, hd, tnow)
-
-fn shark_want2(mode, toward, sx, sz, hd, tnow) =
-  if mode > 0.5 then toward else shark_wander(sx, sz, hd, tnow)
-
-fn shark_wander(sx, sz, hd, tnow) =
-  if deep_at(sx + sin(hd) * 6.0, sz + cos(hd) * 6.0) > 0 then wander_angle(sx, sz, tnow) else atan2_like(0.0 - sx, 0.0 - sz)
-
-# The four states, in the order they can reach each other.
-fn shark_next(mode, seen, near, clk) =
-  if mode < 0.5 then (if seen > 0 then 1.0 else 0.0) else shark_next2(mode, seen, near, clk)
-
-fn shark_next2(mode, seen, near, clk) =
-  if mode < 1.5 then shark_hunting(seen, near) else shark_next3(mode, clk)
-
-fn shark_hunting(seen, near) =
-  if near > 0 then 2.0 else (if seen > 0 then 1.0 else 0.0)
-
-fn shark_next3(mode, clk) =
-  if mode < 2.5 then 3.0 else (if clk > 3.4 then 0.0 else 3.0)
-
-fn shark_sense(s, sx, sz) =
-  if in_water(s) < 1 then 0
-  else
-    dx = peek_f32(s, 21) - sx
-    dz = peek_f32(s, 23) - sz
-    if dx * dx + dz * dz < shark_see() * shark_see() then 1 else 0
-
-fn shark_step(s, dt, tnow) =
-  sx = peek_f32(s, 86)
-  sy = peek_f32(s, 87)
-  sz = peek_f32(s, 88)
-  hd = peek_f32(s, 89)
-  mode = peek_f32(s, 90)
-  clk = peek_f32(s, 91) + dt
-
-  # Where it would like to be pointed, which is the only thing the modes
-  # actually disagree about.
-  px = peek_f32(s, 21)
-  pz = peek_f32(s, 23)
-  toward = atan2_like(px - sx, pz - sz)
-  seen = shark_sense(s, sx, sz)
-
-  want = shark_want(mode, toward, sx, sz, hd, tnow)
-
-  hd2 = turn_to(hd, want, dt)
-  sp = if mode > 0.5 && mode < 2.5 then shark_rush() else shark_speed()
-  nx = sx + sin(hd2) * sp * dt
-  nz = sz + cos(hd2) * sp * dt
-  # It cannot leave the lake — but "stay put unless the next step is deep" is
-  # a trap, because a shark that ever finds itself in the shallows can then
-  # never move again, in any direction, for ever. It was spawned in exactly
-  # that state and sat there: measured at the same three coordinates across
-  # twenty-one samples.
-  #
-  # The rule that works is asymmetric. In deep water it only moves into deep
-  # water; out of it, it always moves, and the steering is already pointing it
-  # back at the middle. So the shallows are sticky to enter and never sticky to
-  # leave.
-  free = if deep_at(sx, sz) < 1 then 1 else deep_at(nx, nz)
-  ox = if free > 0 then nx else sx
-  oz = if free > 0 then nz else sz
-  ny = shark_depth(ox, oz)
-
-  dpx = px - ox
-  dpz = pz - oz
-  near = if dpx * dpx + dpz * dpz < shark_reach() * shark_reach() then 1 else 0
-
-  # roam -> charge when it sees you; charge -> bite on contact; bite is one
-  # instant; then it turns away for a few seconds before it will come again.
-  m2 = shark_next(mode, seen, near, clk)
-
-  # The bite itself, once, on the frame the mode turns over.
-  bit = if mode > 1.5 && mode < 2.5 then 1 else 0
-  if bit > 0 then
-    poke_f32(s, 82, clampf(peek_f32(s, 82) - shark_bite(), 0.0, 1.0))
-    0
-  else 0
-
-  poke_f32(s, 86, ox)
-  poke_f32(s, 87, ny)
-  poke_f32(s, 88, oz)
-  poke_f32(s, 89, hd2)
-  poke_f32(s, 90, m2)
-  poke_f32(s, 91, if m2 == mode then clk else 0.0)
-  # The tail. It beats with the speed, so a charging shark is visibly working.
-  poke_f32(s, 92, peek_f32(s, 92) + dt * (1.9 + sp * 0.55))
-  # And the jaw, written down rather than asked for: the host reads this block
-  # of memory every frame anyway, so putting it here costs nothing and saves a
-  # call across the wasm boundary — where `Int` is 64-bit and every index would
-  # have to be handed over as a BigInt.
-  poke_f32(s, 93, shark_gape(s))
-  1
-
-# How far the jaw is open: on the approach, wide at the bite, shut on the way
-# out — so the mouth is the tell that it has decided about you.
-fn shark_gape(s) =
-  m = peek_f32(s, 90)
-  if m > 2.5 then clampf(1.0 - peek_f32(s, 91) * 1.8, 0.0, 1.0) else if m > 0.5 then 0.85 else 0.0
-
-# ---- the sun's matrix ------------------------------------------------------
-#
-# The sun. Orthographic view-projection over the whole valley for the shadow
-# pass, column-major like everything the GPU reads. `d` is the direction the
-# light travels; the shader's "toward the sun" is its negation.
-#
-# No longer fixed: the world turns, so the direction is an argument and this is
-# recomputed every frame from whatever the host has swung it to. That matters
-# more than it sounds like it should — with the matrix baked at load and the
-# sky's sun moving, the shadows would keep pointing at where the sun used to
-# be, and there would be two suns in the world with only one of them visible.
-
-fn light_vp(s, dx, dy, dz) =
-  # The basis is built off the light's horizontal component, so a sun directly
-  # overhead has nothing to build it from. The path is set to miss the exact
-  # zenith by eight degrees, which keeps this well clear — the floor is here
-  # anyway, because a constant in one file protecting a division in another is
-  # how a black screen at noon gets shipped.
-  hl = clampf(sqrt(dx * dx + dz * dz), 0.02, 1.0)
-  rx = 0.0 - dz / hl
-  rz = dx / hl
-  ux = 0.0 - rz * dy
-  uy = rz * dx - rx * dz
-  uz = rx * dy
-  inv = 1.0 / 320.0
-  poke_f32(s, 32, rx / 115.0)
-  poke_f32(s, 33, ux / 115.0)
-  poke_f32(s, 34, dx * inv)
-  poke_f32(s, 35, 0.0)
-  poke_f32(s, 36, 0.0)
-  poke_f32(s, 37, uy / 115.0)
-  poke_f32(s, 38, dy * inv)
-  poke_f32(s, 39, 0.0)
-  poke_f32(s, 40, rz / 115.0)
-  poke_f32(s, 41, uz / 115.0)
-  poke_f32(s, 42, dz * inv)
-  poke_f32(s, 43, 0.0)
-  poke_f32(s, 44, 0.0)
-  poke_f32(s, 45, 0.0)
-  poke_f32(s, 46, 149.0 * inv)
-  poke_f32(s, 47, 1.0)
-
-# ---- building the world ----------------------------------------------------
-
-# The world at whatever resolution the machine can afford: the host measures
-# what the GPU keeps up with and asks again. The terrain function is the same
-# at every grid size, so a denser mesh is the same valley drawn finer, and
-# the physics — which sample the function, not the mesh — never notice.
 export fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
-  s = alloc_bytes(512)
-  m = alloc_bytes(grid * grid * 54 * 4)
-  pine_buf = alloc_bytes(npine * 32)
-  crystal_buf = alloc_bytes(ncrys * 32)
-  grass_buf = alloc_bytes(ngrass * 32)
-  bullet_buf = alloc_bytes(bullet_cap() * 32)
-  shard_buf = alloc_bytes(shard_cap() * shard_stride() * 4)
-  fire_buf = alloc_bytes(fireball_cap() * fireball_stride() * 4)
-  charge_buf = alloc_bytes(charger_cap() * charger_stride() * 4)
-  blast_buf = alloc_bytes(blast_cap() * blast_stride() * 4)
-  step = cell_step(grid)
-  hs = buf_float((grid + 1) * (grid + 1))
-  gen_heights(hs, grid, step)
-  gen_cells(m, hs, grid, step)
-  np = place(pine_buf, 0, 0, npine, 20000, 0)
-  nc = place(crystal_buf, 0, 0, ncrys, 20000, 1)
-  ng = place(grass_buf, 0, 0, ngrass, 20000, 2)
-  poke_ptr(s, 64, m)
-  poke_ptr(s, 65, pine_buf)
-  poke_ptr(s, 66, crystal_buf)
-  poke_ptr(s, 67, grass_buf)
-  poke_ptr(s, 68, bullet_buf)
-  poke_ptr(s, 69, shard_buf)
-  poke_ptr(s, 74, fire_buf)
-  poke_ptr(s, 77, charge_buf)
-  poke_ptr(s, 81, blast_buf)
-  poke_f32(s, 60, 0.0)
-  poke_f32(s, 61, 0.0)
-  poke_f32(s, 62, 0.0)
-  poke_f32(s, 63, 0.0)
-  poke_f32(s, 73, 0.0)
-  poke_f32(s, 79, 1.0)
-  poke_f32(s, 80, 0.0)
-  clear_bullets(bullet_buf)
-  clear_shards(shard_buf)
-  clear_fireballs(fire_buf)
-  clear_chargers(charge_buf)
-  clear_blasts(blast_buf)
-  poke_f32(s, 56, to_float(grid * grid * 6))
-  poke_f32(s, 57, to_float(np))
-  poke_f32(s, 58, to_float(nc))
-  poke_f32(s, 59, to_float(ng))
-  poke_f32(s, 19, 2.75)
-  poke_f32(s, 20, 0.0 - 0.1)
-  poke_f32(s, 21, 0.0 - 14.0)
-  poke_f32(s, 22, height(0.0 - 14.0, 0.0 - 34.0))
-  poke_f32(s, 23, 0.0 - 34.0)
-  poke_f32(s, 82, 1.0)
-  poke_f32(s, 84, 0.0)
-  poke_f32(s, 85, 0.0)
-  # In the deepest water there is. The lake bottoms out around (-2, -2) at nine
-  # metres, and starting it anywhere shallower is starting it aground.
-  poke_f32(s, 86, 0.0 - 2.0)
-  poke_f32(s, 87, 0.0 - 4.0)
-  poke_f32(s, 88, 0.0 - 2.0)
-  poke_f32(s, 89, 1.2)
-  set_sun(s, 0.58, 0.0 - 0.62, 0.0 - 0.52)
-  s
+  v.init(grid, npine, ncrys, ngrass)
 
-# Where the light comes from, this frame. The host works out the swing and
-# hands it over here, so the shadow matrix and the sun in the sky are the same
-# sun and cannot drift apart.
-export fn set_sun(s: Ptr, dx: Float, dy: Float, dz: Float) =
-  il = 1.0 / sqrt(dx * dx + dy * dy + dz * dz)
-  light_vp(s, dx * il, dy * il, dz * il)
+export fn free_world(s: Ptr) = v.free_world(s)
 
-export fn terrain(s: Ptr) -> Ptr = peek_ptr(s, 64)
+export fn join(w: Ptr) -> Ptr = v.join(w)
 
-export fn terrain_verts(s: Ptr) -> Int = to_int(peek_f32(s, 56))
+export fn leave(w: Ptr, s: Ptr) = v.leave(w, s)
 
-export fn pines(s: Ptr) -> Ptr = peek_ptr(s, 65)
+export fn player_id(s: Ptr) -> Int = v.player_id(s)
 
-export fn pine_count(s: Ptr) -> Int = to_int(peek_f32(s, 57))
+export fn players(w: Ptr) -> Int = v.players(w)
 
-export fn crystals(s: Ptr) -> Ptr = peek_ptr(s, 66)
+export fn player_block(w: Ptr, i: Int) -> Ptr = v.player_block(w, i)
 
-export fn crystal_count(s: Ptr) -> Int = to_int(peek_f32(s, 58))
+# ---- what the renderer reads -----------------------------------------------
 
-export fn grass(s: Ptr) -> Ptr = peek_ptr(s, 67)
+export fn terrain(s: Ptr) -> Ptr = v.terrain(s)
 
-export fn grass_count(s: Ptr) -> Int = to_int(peek_f32(s, 59))
+export fn terrain_verts(s: Ptr) -> Int = v.terrain_verts(s)
+
+export fn pines(s: Ptr) -> Ptr = v.pines(s)
+
+export fn pine_count(s: Ptr) -> Int = v.pine_count(s)
+
+export fn crystals(s: Ptr) -> Ptr = v.crystals(s)
+
+export fn crystal_count(s: Ptr) -> Int = v.crystal_count(s)
+
+export fn grass(s: Ptr) -> Ptr = v.grass(s)
+
+export fn grass_count(s: Ptr) -> Int = v.grass_count(s)
+
+export fn shards(s: Ptr) -> Ptr = v.shards(s)
+
+export fn shards_cap(s: Ptr) -> Int = v.shards_cap(s)
+
+export fn bullets(s: Ptr) -> Ptr = v.bullets(s)
+
+export fn bullets_cap(s: Ptr) -> Int = v.bullets_cap(s)
+
+export fn fireballs(s: Ptr) -> Ptr = v.fireballs(s)
+
+export fn fireballs_cap(s: Ptr) -> Int = v.fireballs_cap(s)
+
+export fn blasts(s: Ptr) -> Ptr = v.blasts(s)
+
+export fn blasts_cap(s: Ptr) -> Int = v.blasts_cap(s)
 
 # The terrain function itself, for the host to sample: the water mesh carries
 # the exact depth under every vertex, so the shore foam sits where the shore
 # is rather than where a 32-bit re-derivation guesses it might be.
-export fn ground(x: Float, z: Float) -> Float = height(x, z)
+export fn ground(x: Float, z: Float) -> Float = v.ground(x, z)
 
-# Hands a world back. `alloc_bytes` is malloc, so `free_ptr` is its pair;
-# the host calls this before asking for the valley at another resolution.
-export fn free_world(s: Ptr) =
-  free_ptr(peek_ptr(s, 64))
-  free_ptr(peek_ptr(s, 65))
-  free_ptr(peek_ptr(s, 66))
-  free_ptr(peek_ptr(s, 67))
-  free_ptr(s)
+export fn set_sun(s: Ptr, dx: Float, dy: Float, dz: Float) = v.set_sun(s, dx, dy, dz)
 
-# ---- wind -------------------------------------------------------------------
+# ---- one step of time ------------------------------------------------------
 #
-# One wind for the whole valley: a direction that wanders and a moderate
-# strength that gusts. The water's ripples, the pines and the grass all read
-# these two numbers — movement agreeing about its cause is what makes it
-# read as weather rather than as three separate effects.
+# `frame` is the three of them and a camera, and is what a browser alone in the
+# valley calls. A browser in someone else's valley calls `walk` and lets the
+# server do the rest.
 
-fn wind_angle(t) = 2.1 + 0.5 * sin(t * 0.05) + 0.17 * sin(t * 0.13)
+export fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) = v.walk(s, dt, mdx, mdy, keys)
 
-fn wind_strength(t) =
-  g = 0.55 + 0.22 * sin(t * 0.31) + 0.13 * sin(t * 0.83 + 1.7) + 0.06 * sin(t * 2.3)
-  clampf(g, 0.15, 1.0)
+export fn step_world(w: Ptr, dt: Float) = v.step_world(w, dt)
 
-# What everything that sways reads its phase from, rather than the clock.
-#
-# The rate a tree flutters at rises with the wind, and the obvious way to
-# write that — `sin(t * rate(t))` — is wrong: differentiate it and the angular
-# velocity is `rate + t * rate'`, so a change in the wind moves the phase by
-# that change times however long the program has been running. A minute in, a
-# gust makes everything shiver; an hour in it tears. The phase has to be
-# integrated instead, a step at a time, and then a change in the wind changes
-# only what happens next.
-fn wind_rate(w) = 1.0 + 2.0 * w
-
-# ---- collision --------------------------------------------------------------
-#
-# The player is a circle; a trunk or a crystal is a circle of its own scale.
-# Overlap pushes the player back to the boundary. The camera's position lives
-# in the state, so the loop reads it, resolves one instance, writes it back
-# and moves on — the state block doubling as the accumulator.
-
-fn collide_all(s, buf, n, factor) =
-  for i in 0..n
-    collide_one(s, buf, i, factor)
-
-fn collide_one(s, buf, i, factor) =
-  ix = peek_f32(buf, i * 8)
-  iz = peek_f32(buf, i * 8 + 2)
-  r = factor * peek_f32(buf, i * 8 + 3) + 0.35
-  dx = peek_f32(s, 21) - ix
-  dz = peek_f32(s, 23) - iz
-  d2 = dx * dx + dz * dz
-  if d2 < r * r && d2 > 0.0001 then push_out(s, ix, iz, dx, dz, sqrt(d2), r) else 1
-
-fn push_out(s, ix, iz, dx, dz, d, r) =
-  poke_f32(s, 21, ix + dx / d * r)
-  poke_f32(s, 23, iz + dz / d * r)
-  1
-
-# ---- one step of the walk --------------------------------------------------
-#
-# `keys` is a bitmask: 1 forward, 2 back, 4 left, 8 right, 16 jump,
-# 32 sprint. Mouse movement arrives in pixels and leaves as radians.
-
-fn walk_axis(keys, plus, minus) =
-  a = if bit_and(keys, plus) == plus then 1.0 else 0.0
-  b = if bit_and(keys, minus) == minus then 1.0 else 0.0
-  a - b
-
-fn jump_vel(keys, grounded, vy) =
-  if bit_and(keys, 16) == 16 then if grounded > 0.5 then 9.5 else vy else vy
+export fn pick_up(s: Ptr) = v.pick_up(s)
 
 export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Float) =
-  yaw = peek_f32(s, 19) + mdx * 0.0026
-  pitch = clampf(peek_f32(s, 20) - mdy * 0.0026, 0.0 - 1.45, 1.45)
-  fx = sin(yaw)
-  fz = 0.0 - cos(yaw)
-  wx = walk_axis(keys, 1, 2) * fx + walk_axis(keys, 8, 4) * (0.0 - fz)
-  wz = walk_axis(keys, 1, 2) * fz + walk_axis(keys, 8, 4) * fx
-  wl = sqrt(wx * wx + wz * wz)
-  step = (if bit_and(keys, 32) == 32 then 16.0 else 7.5) * dt
-  t = peek_f32(s, 28) + dt
-  # What a blast is still pushing you by, spent down over about a fifth of a
-  # second. It goes in beside the walk rather than instead of it, so you can
-  # walk against it and the collisions below still run on where you end up.
-  shx = peek_f32(s, 84)
-  shz = peek_f32(s, 85)
-  keep = 1.0 / (1.0 + dt * 5.0)
-  poke_f32(s, 84, shx * keep)
-  poke_f32(s, 85, shz * keep)
-  px0 = clampf(peek_f32(s, 21) + (if wl > 0.01 then wx / wl * step else 0.0) + shx * dt, 0.0 - 80.0, 80.0)
-  pz0 = clampf(peek_f32(s, 23) + (if wl > 0.01 then wz / wl * step else 0.0) + shz * dt, 0.0 - 80.0, 80.0)
-  poke_f32(s, 21, px0)
-  poke_f32(s, 23, pz0)
-  collide_all(s, peek_ptr(s, 65), to_int(peek_f32(s, 57)), 0.3)
-  collide_all(s, peek_ptr(s, 66), to_int(peek_f32(s, 58)), 0.55)
-  px = peek_f32(s, 21)
-  pz = peek_f32(s, 23)
-  ground = height(px, pz)
-  vy = jump_vel(keys, peek_f32(s, 25), peek_f32(s, 24)) - 26.0 * dt
-  py0 = peek_f32(s, 22) + vy * dt
-  py = if py0 < ground then ground else py0
-  poke_f32(s, 19, yaw)
-  poke_f32(s, 20, pitch)
-  poke_f32(s, 22, py)
-  poke_f32(s, 24, if py0 < ground then 0.0 else vy)
-  poke_f32(s, 25, if py0 < ground then 1.0 else 0.0)
-  gust = wind_strength(t)
-  poke_f32(s, 26, wind_angle(t))
-  poke_f32(s, 27, gust)
-  poke_f32(s, 28, t)
-  poke_f32(s, 29, peek_f32(s, 29) + wind_rate(gust) * dt)
-  step_bullets(s, peek_ptr(s, 68), dt)
-  step_shards(peek_ptr(s, 69), dt)
-  step_fireballs(s, peek_ptr(s, 74), dt)
-  step_blasts(peek_ptr(s, 81), dt)
-  run_charge(s, dt, t)
-  shark_step(s, dt, t)
-  gather(s, peek_ptr(s, 69))
-  camera(s, px, py + 1.75, pz, yaw, pitch, aspect)
+  v.frame(s, dt, mdx, mdy, keys, aspect)
 
-# The view-projection matrix, written straight into the state.
+export fn look(s: Ptr, aspect: Float) = v.look(s, aspect)
+
+# ---- being told rather than deciding ---------------------------------------
 #
-# The basis: forward from yaw and pitch, right flat on the ground, up their
-# cross product. The projection is WebGPU's zero-to-one depth, near 0.1, far
-# 420, and the product with the view collapses because the projection is
-# almost diagonal — each column below is `P * V` worked out by hand.
-fn camera(s, ex, ey, ez, yaw, pitch, aspect) =
-  cp = cos(pitch)
-  dx = sin(yaw) * cp
-  dy = sin(pitch)
-  dz = (0.0 - cos(yaw)) * cp
-  rx = cos(yaw)
-  rz = sin(yaw)
-  ux = 0.0 - rz * dy
-  uy = rz * dx - rx * dz
-  uz = rx * dy
-  bx = 0.0 - dx
-  by = 0.0 - dy
-  bz = 0.0 - dz
-  pb = 1.0 / tan(0.53)
-  pa = pb / aspect
-  pc = 420.0 / (0.1 - 420.0)
-  pd = 0.1 * 420.0 / (0.1 - 420.0)
-  poke_f32(s, 0, pa * rx)
-  poke_f32(s, 1, pb * ux)
-  poke_f32(s, 2, pc * bx)
-  poke_f32(s, 3, 0.0 - bx)
-  poke_f32(s, 4, 0.0)
-  poke_f32(s, 5, pb * uy)
-  poke_f32(s, 6, pc * by)
-  poke_f32(s, 7, 0.0 - by)
-  poke_f32(s, 8, pa * rz)
-  poke_f32(s, 9, pb * uz)
-  poke_f32(s, 10, pc * bz)
-  poke_f32(s, 11, 0.0 - bz)
-  poke_f32(s, 12, pa * (0.0 - (rx * ex + rz * ez)))
-  poke_f32(s, 13, pb * (0.0 - (ux * ex + uy * ey + uz * ez)))
-  poke_f32(s, 14, pc * (0.0 - (bx * ex + by * ey + bz * ez)) + pd)
-  poke_f32(s, 15, bx * ex + by * ey + bz * ez)
-  poke_f32(s, 16, ex)
-  poke_f32(s, 17, ey)
-  poke_f32(s, 18, ez)
+# What a browser in somebody else's valley uses. `step_visuals` moves
+# everything and decides nothing; the rest is applying what the server worked
+# out — where people are, what they are down to, which crystal went, and every
+# round, throw and crater as it happens.
 
+export fn step_visuals(w: Ptr, dt: Float) = v.step_visuals(w, dt)
+
+export fn player_x(s: Ptr) -> Float = v.player_x(s)
+
+export fn player_y(s: Ptr) -> Float = v.player_y(s)
+
+export fn player_z(s: Ptr) -> Float = v.player_z(s)
+
+export fn player_yaw(s: Ptr) -> Float = v.player_yaw(s)
+
+export fn player_pitch(s: Ptr) -> Float = v.player_pitch(s)
+
+export fn set_at(s: Ptr, x: Float, y: Float, z: Float) = v.set_at(s, x, y, z)
+
+export fn set_health(s: Ptr, h: Float) = v.set_health(s, h)
+
+export fn world_time(w: Ptr) -> Float = v.world_time(w)
+
+export fn set_world_time(w: Ptr, t: Float) = v.set_world_time(w, t)
+
+export fn set_shark(w: Ptr, x: Float, y: Float, z: Float, hd: Float, mode: Float, gape: Float) =
+  v.set_shark(w, x, y, z, hd, mode, gape)
+
+export fn put_bullet(w: Ptr, x: Float, y: Float, z: Float, vx: Float, vy: Float, vz: Float, owner: Float) =
+  v.put_bullet(w, x, y, z, vx, vy, vz, owner)
+
+export fn put_fireball(w: Ptr, x: Float, y: Float, z: Float, vx: Float, vy: Float, vz: Float, seed: Float, life: Float) =
+  v.put_fireball(w, x, y, z, vx, vy, vz, seed, life)
+
+export fn put_blast(w: Ptr, x: Float, y: Float, z: Float, seed: Float) =
+  v.put_blast(w, x, y, z, seed)
+
+export fn put_break(w: Ptr, i: Int) = v.put_break(w, i)
+
+export fn put_gone(w: Ptr, i: Int) = v.put_gone(w, i)
+
+# ---- the rifle, and what it leaves -----------------------------------------
+#
+# The tally and the last position are how the host learns about a hit at all:
+# it happens inside a frame the host only calls.
+
+export fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) = v.fire(s, dx, dy, dz)
+
+export fn breaks(s: Ptr) -> Int = v.breaks(s)
+
+export fn break_x(s: Ptr) -> Float = v.break_x(s)
+
+export fn break_y(s: Ptr) -> Float = v.break_y(s)
+
+export fn break_z(s: Ptr) -> Float = v.break_z(s)
+
+export fn blasts_fired(s: Ptr) -> Int = v.blasts_fired(s)
+
+# ---- how one player is getting on ------------------------------------------
+
+export fn health(s: Ptr) -> Float = v.health(s)
+
+export fn wading(s: Ptr) -> Int = v.wading(s)
+
+export fn respawn(s: Ptr) = v.respawn(s)
+
+export fn restart(s: Ptr) = v.restart(s)
+
+# Called once when the module is instantiated, and there is nothing to set up:
+# the valley is built when the host has measured the machine and knows how much
+# of it to ask for.
 fn main() = println("world ready")

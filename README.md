@@ -139,7 +139,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `blocks.rill` | block bodies in match arms, select arms and `if` branches |
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
-| `webgpu/world/` | a walkable low-poly valley — terrain, physics and matrices in Rill; shadows, MSAA and compute particles on the GPU |
+| `webgpu/world/` | a walkable low-poly valley — terrain, physics and matrices in Rill; shadows, MSAA and compute particles on the GPU — and `server.rill`, which is the same valley compiled for a Linux box so that several browsers can walk about in it at once |
 
 `selfhost/` goes further: Rill compiled by Rill. The lexer, parser and
 formatter come first, proven byte-for-byte against the Rust implementation

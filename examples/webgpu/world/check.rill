@@ -1,0 +1,83 @@
+# The shared valley, without a browser and without a socket.
+#
+# `server.rill` is the network and `world.rill` is the browser, and neither can
+# be run by a test suite — one holds a port for ever and the other needs a GPU.
+# What is left in the middle is the part that actually decides anything, and
+# this is that part: several people in one valley, walking, shooting each other
+# and leaving, checked by running it.
+import "valley" as v
+
+extern fn sqrt(x: Float) -> Float
+
+fn tick(w, n) = if n == 0 then 0 else tick_one(w, n)
+
+fn tick_one(w, n) =
+  walk_all(w)
+  v.step_world(w, 0.05)
+  pick_all(w)
+  tick(w, n - 1)
+
+fn walk_all(w) =
+  for i in 0..v.players(w)
+    v.walk(v.player_block(w, i), 0.05, 0.0, 0.0, v.keys_of(v.player_block(w, i)))
+
+fn pick_all(w) =
+  for i in 0..v.players(w)
+    v.pick_up(v.player_block(w, i))
+
+fn place(s, x, z) = v.set_at(s, x, v.ground(x, z), z)
+
+# Rounded to the metre. What is being checked is that a walk went somewhere
+# and that standing still did not, and the sixth decimal place of that is a
+# different machine's floating point rather than a fact about the valley.
+fn where_is(name, s) =
+  println(name + " is at " + int_to_str(to_int(v.player_x(s))) + ", " + int_to_str(to_int(v.player_z(s))) + " on " + float_to_str(v.health(s)))
+
+# One player turns to the other and fires, once, and the round is given long
+# enough to get there.
+fn shoot_at(w, a, b) =
+  dx = v.player_x(b) - v.player_x(a)
+  dy = v.player_y(b) + 0.95 - (v.player_y(a) + 1.75)
+  dz = v.player_z(b) - v.player_z(a)
+  l = sqrt(dx * dx + dy * dy + dz * dz)
+  v.fire(a, dx / l, dy / l, dz / l)
+  tick(w, 12)
+  println("  they are on " + float_to_str(v.health(b)) + ", the shooter still on " + float_to_str(v.health(a)))
+
+fn main() =
+  w = v.init(48, 400, 300, 900)
+  println(int_to_str(v.crystal_count(w)) + " crystals and " + int_to_str(v.pine_count(w)) + " pines, nobody in it yet: " + int_to_str(v.players(w)))
+
+  a = v.join(w)
+  b = v.join(w)
+  c = v.join(w)
+  println("three arrive: " + int_to_str(v.players(w)) + ", with ids " + int_to_str(v.player_id(a)) + " " + int_to_str(v.player_id(b)) + " " + int_to_str(v.player_id(c)))
+
+  # Somewhere flat and away from the lake, twelve metres apart.
+  place(a, 0.0 - 40.0, 0.0 - 40.0)
+  place(b, 0.0 - 28.0, 0.0 - 40.0)
+  place(c, 0.0 - 34.0, 0.0 - 52.0)
+  tick(w, 4)
+  where_is("the first", a)
+
+  # Walking is the server's: the keys are set, and the tick moves whoever
+  # holds them. The third one walks and the other two stand.
+  v.set_keys(c, 1)
+  tick(w, 40)
+  where_is("the third", c)
+
+  println("the first shoots the second:")
+  shoot_at(w, a, b)
+  shoot_at(w, a, b)
+  shoot_at(w, a, b)
+
+  # Down, and put back on their feet at the spawn with the valley as it is.
+  v.respawn(b)
+  println("after a respawn they are on " + float_to_str(v.health(b)))
+
+  v.leave(w, b)
+  println("one leaves: " + int_to_str(v.players(w)) + " remain, ids " + int_to_str(v.player_id(v.player_block(w, 0))) + " " + int_to_str(v.player_id(v.player_block(w, 1))))
+
+  tick(w, 20)
+  v.free_world(w)
+  println("the valley is put away")

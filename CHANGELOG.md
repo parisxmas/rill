@@ -16,6 +16,76 @@
   Found by splitting the valley in two, which is the first thing in this
   repository to import anything under an alias in earnest.
 
+- **The valley holds more than one person.** `examples/webgpu/world/server.rill`
+  is a WebSocket server that owns one world and steps it twenty times a second,
+  and browsers pointed at `?join` walk about in it together.
+
+  The point of it is which file it is made of. `valley.rill` is now the valley
+  and nothing else — no exports, no `main` — and it is compiled twice: through
+  `world.rill` into the wasm the browser loads, and through `server.rill` into
+  a native binary. Both run the same walk, the same collisions, the same
+  ballistics, because they are the same code. A server that reimplemented any
+  of that would be a server that disagreed with the client about where a round
+  went, and this one cannot.
+
+  A player is a block of state pointing at a world, and the world's block
+  points at itself, so `wd(s)` is the world whichever kind of block it is
+  handed and one player is the same arithmetic as eight. `frame` came apart
+  into `walk`, `step_world` and `pick_up` — one per player, one per tick, one
+  per player again, in the order `frame` always ran them, so a browser alone in
+  the valley behaves exactly as it did.
+
+  Everything shared is decided once, on the server. The crystals throw at
+  somebody chosen from the people actually in range; the shark hunts the
+  nearest swimmer and bites whoever that is; a blast hurts everyone near it;
+  and a round now carries whose it is, in the slot the tracer shader has always
+  called `spare`, so a hit can be credited and nobody shoots themselves in the
+  back of the head at the muzzle. Three rounds take a player down.
+
+  What goes on the wire is text, one line per event, and the events cost the
+  world nothing to produce: the rounds, the throws and the craters already live
+  in rings whose cursors count up, so the difference between the cursor at the
+  start of a tick and the cursor at the end *is* the log. Those cursors used to
+  be stored already wrapped — 31, 32, 1 — which was fine for finding the newest
+  entry, useless as a log, and quietly ate one crater's sound every time round.
+
+  The client still walks itself, on the same `walk`, and eases toward what the
+  server says rather than snapping to it; between snapshots it runs
+  `step_visuals`, which moves everything and decides nothing. Its aim is never
+  corrected. Other people are drawn as instances of a figure built the way the
+  pines and crystals are, interpolated between the last two snapshots and
+  casting a shadow like anything else standing in the sun.
+
+  Three things the first cut of the server did not handle, all found by asking
+  what happens when somebody's connection dies rather than closes:
+
+  A connection that ends cleanly was already handled — the player leaves the
+  valley, their block is freed and their id retired. But the strand *writing*
+  to them was not: it sat waiting on an outbox nothing would ever be sent to
+  again, one leaked strand and channel per disconnect, which measured 1,584 KB
+  over two thousand connections. The socket is now closed first, so anything
+  still queued fails at once, and then an empty line goes into the outbox as
+  the one thing that can reach a strand waiting on a channel. The same two
+  thousand connections now cost 112 KB.
+
+  A connection whose far end fell asleep or was unplugged said nothing at all,
+  and the player stood in the valley for ever: in the snapshot, in the count,
+  in the way, a target for whatever the crystals threw, and holding one of the
+  thirty-two places. The tick now drops anybody not heard from for ten seconds.
+  Their socket is left alone on purpose — a strand is parked on that descriptor
+  in the poller, closing it from elsewhere does not wake it, and the number
+  could be reused by the next connection while the old registration is still
+  armed.
+
+  And a client turned away from a full valley used to decide it was player
+  zero. The refusal is words, `str_to_int` of a word is zero, and the id was
+  being read out of whatever arrived — so the thirty-third arrival could drive
+  whoever player zero was. The welcome is now recognised by being a welcome.
+
+  Also fixed while in there: `free_world` never freed the rounds, the shards,
+  the fireballs, the chargers or the blasts, and the host asks for the valley
+  at three or four resolutions while it settles on one.
+
 - **`sleep_ms` — a strand can wait on the clock without holding a worker.**
   There was no way to wait at all: a program that wanted a rate had to spin,
   which costs a core to do nothing, and a server tick could not be written.

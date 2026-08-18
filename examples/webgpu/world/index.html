@@ -195,7 +195,16 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=221";
+    import { run } from "./host.js?v=222";
+
+    // Whose valley. `?join` takes the one on this host, `?join=ws://box:8091/`
+    // somebody else's, and no `join` at all is the valley this tab has to
+    // itself — which is what a static page gets, because there is no server
+    // behind one.
+    const q = new URLSearchParams(location.search);
+    const server = q.has("join")
+      ? (q.get("join") || `ws://${location.hostname || "localhost"}:8091/`)
+      : null;
     const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
@@ -203,11 +212,13 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=221", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=222", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
+      const here = h.here === null ? ""
+        : ` · <b>${h.here}</b> ${h.here === 1 ? "person" : "people"} in the valley`;
       stat.innerHTML =
-        `<b>${h.gpuName}</b> · quality <b>${h.tier}</b>${lock}<br>` +
+        `<b>${h.gpuName}</b> · quality <b>${h.tier}</b>${lock}${here}<br>` +
         `<b>${h.fps}</b> fps${gpu} · ${Math.round(h.tris / 1000)}k triangles<br>` +
         `terrain, placement, physics, matrices: <b>world.rill</b> → ` +
         `<b>${h.wasmBytes ? (h.wasmBytes / 1024).toFixed(1) + " KB" : "?"}</b> of wasm<br>` +
@@ -222,7 +233,7 @@
       bar.style.width = `${(done / total * 100).toFixed(0)}%`;
       pct.textContent = `${Math.round(done / total * 100)}%`;
       what.textContent = label;
-    }).then(() => {
+    }, server).then(() => {
       // `run` resolves on the first submitted frame, so the fade is over
       // something rather than over nothing.
       boot.classList.add("gone");
