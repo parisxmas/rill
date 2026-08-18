@@ -54,6 +54,25 @@ fn shoot_at(w, a, b) =
   tick(w, 12)
   println("  they are on " + float_to_str(v.health(b)) + ", the shooter still on " + float_to_str(v.health(a)))
 
+# One round, fired at a point, and stepped the way a client steps — far enough
+# to have reached ten metres and no further.
+fn aim_at(s, x, y, z) =
+  dx = x - v.player_x(s)
+  dy = y - (v.player_y(s) + 1.75)
+  dz = z - v.player_z(s)
+  l = sqrt(dx * dx + dy * dy + dz * dz)
+  v.fire(s, dx / l, dy / l, dz / l)
+
+fn drift(w, n) = if n == 0 then 0 else drifted(w, n)
+
+fn drifted(w, n) =
+  v.step_visuals(w, 0.01)
+  drift(w, n - 1)
+
+fn alive(w) =
+  drift(w, 10)
+  if v.bullet_f(w, v.shots(w) - 1, 7) > 0.001 then "still flying" else "stopped"
+
 fn main() =
   w = v.init(48, 400, 300, 900)
   println(int_to_str(v.crystal_count(w)) + " crystals and " + int_to_str(v.pine_count(w)) + " pines, nobody in it yet: " + int_to_str(v.players(w)))
@@ -92,6 +111,20 @@ fn main() =
   hit = tilt(b)
   tick(w, 14)
   println("the camera was " + before + ", then " + hit + ", and " + tilt(b) + " again")
+
+  # A round stops at somebody a client can only see. On a client there are no
+  # player blocks but this browser's own, so the world is told where the
+  # figures are being drawn and the rounds stop there — `step_visuals` is the
+  # client's step, the one that moves everything and decides nothing.
+  gx = v.player_x(a) + 10.0
+  gz = v.player_z(a)
+  gy = v.ground(gx, gz)
+  aim_at(a, gx, gy + 0.95, gz)
+  println("with nobody drawn there, the round is " + alive(w) + " ten metres on")
+  v.set_ghosts(w, 1)
+  v.set_ghost(w, 0, gx, gy, gz)
+  aim_at(a, gx, gy + 0.95, gz)
+  println("with somebody drawn there, it is " + alive(w) + " at the same point")
 
   v.leave(w, b)
   println("one leaves: " + int_to_str(v.players(w)) + " remain, ids " + int_to_str(v.player_id(v.player_block(w, 0))) + " " + int_to_str(v.player_id(v.player_block(w, 1))))

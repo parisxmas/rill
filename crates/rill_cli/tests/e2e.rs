@@ -880,6 +880,8 @@ fn shared_valley() {
             "after a respawn they are on 1\n",
             "  they are on 0.66, the shooter still on 1\n",
             "the camera was level, then thrown, and level again\n",
+            "with nobody drawn there, the round is still flying ten metres on\n",
+            "with somebody drawn there, it is stopped at the same point\n",
             "one leaves: 2 remain, ids 0 2\n",
             "the valley is put away\n",
         )

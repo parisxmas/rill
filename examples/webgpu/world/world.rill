@@ -89,6 +89,12 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
 
 export fn look(s: Ptr, aspect: Float) = v.look(s, aspect)
 
+# Where this browser is drawing the other people, so that a round can stop at
+# one. Written every frame from the same interpolated positions the figures
+# are drawn at, and read by nothing but the bullet step.
+export fn set_ghosts(w: Ptr, n: Int) = v.set_ghosts(w, n)
+export fn set_ghost(w: Ptr, i: Int, x: Float, y: Float, z: Float) = v.set_ghost(w, i, x, y, z)
+
 # ---- being told rather than deciding ---------------------------------------
 #
 # What a browser in somebody else's valley uses. `step_visuals` moves

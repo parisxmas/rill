@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **The rifle stopped lying on its side.** The grip was levelled against the
+  bind pose, which is the one pose in the whole library where nobody is holding
+  anything: a bind pose has the palms turned down, every armed pose turns the
+  wrist ninety degrees to grip, and a rifle squared up against the first
+  therefore spends the entire game on its side. It is levelled against the pose
+  people actually stand in now, and the barrel is laid along the direction the
+  *figure* faces rather than the direction the forearm points — those differ by
+  ten degrees, and ten degrees is the difference between a rifle aimed at what
+  its owner is aimed at and one that is not. Everywhere else it follows the
+  wrist, which is what a wrist is for. Standing and firing, the barrel now
+  comes out exactly level and exactly forward.
+
+  The consequence, said plainly: walking and crouching swing it, because the
+  library has no armed walk and no armed crouch — the arms in those clips are
+  empty and swing like it. Fixing that properly means blending the armed idle's
+  upper body onto the walk's legs, which is a mask and not a constant.
+
+- **A round stops at the person it hit.** It stopped on the server, which is
+  where the damage is decided, and carried on through them on every screen,
+  which is where it is watched. A client has no player blocks but its own —
+  everybody else arrives as a snapshot and is drawn from it — so there was
+  nothing in its world for a round to hit. The page now writes down where it is
+  drawing people, and rounds stop there.
+
+  It is not a decision and there is no health in that table: what a hit costs is
+  still the server's word. And it is where they are *drawn*, interpolated
+  between the last two snapshots, so a round stops at the body you can see. That
+  is why it is not done off the health going down in the next snapshot instead —
+  at a hundred and twenty metres a second, one tick of waiting is six metres of
+  tracer past somebody's back.
+
+- **DISCONNECTED, in the middle, in the largest letters on the page.** Losing
+  the socket looked like nothing at all: the valley carried on being drawn, the
+  wind carried on blowing, and this player carried on walking around a world
+  that had stopped existing for everybody else. Nothing is torn down — what is
+  on screen is the last thing everybody agreed about — but it says so.
+
 - **A round throws your head about.** Being shot moved a bar in the corner and
   nothing else. Now the camera takes it: a roll, mostly, with a little pitch
   and yaw on top, settling out over four hundred milliseconds — three degrees

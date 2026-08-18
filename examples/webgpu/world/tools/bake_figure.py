@@ -67,6 +67,11 @@ RIFLE_METRES = 1.10
 # the small of the stock, which is behind the middle; the model's own origin is
 # not, so the difference is what this shifts by.
 GRIP_AT = 0.40
+# The clip whose first frame the rifle is levelled against. See `main`.
+GRIP_POSE = "Pistol_Idle_Loop"
+# Which way the mannequin faces in its own space. Its nose and its toes agree
+# about this, and so does the π − yaw the page places it by.
+FACES = (0.0, 0.0, 1.0)
 GRIP_UP = 0.02
 
 # What the valley does with a person, and the clip that says it. Everything
@@ -170,6 +175,27 @@ def rigid_inverse(m):
                 -(m[8] * tx + m[9] * ty + m[10] * tz), 1.0]
 
 
+def pose_world(js, bin_, at, parent, bind_t, bind_r, clip_name, t):
+    """The skeleton at one moment of one clip, in world space.
+
+    Rotations only: the root's translation moves the whole figure and the grip
+    lives in the hand's own space, where it cancels.
+    """
+    anim = next(a for a in js["animations"] if a["name"] == clip_name)
+    rot = {}
+    for ch in anim["channels"]:
+        node, path = ch["target"]["node"], ch["target"]["path"]
+        if node in at and path == "rotation":
+            s = anim["samplers"][ch["sampler"]]
+            rot[at[node]] = (accessor(js, bin_, s["input"]), accessor(js, bin_, s["output"]))
+    world = []
+    for j in range(len(parent)):
+        q = sample_at(*rot[j], t) if j in rot else bind_r[j]
+        local = mat_trs(bind_t[j], q)
+        world.append(local if parent[j] < 0 else mat_mul(world[parent[j]], local))
+    return world
+
+
 def rifle_box(path):
     """The rifle's own origin and size, out of the header of `rifle.mesh`.
 
@@ -181,19 +207,25 @@ def rifle_box(path):
     return struct.unpack_from("<6f", head, 8)
 
 
-def grip_matrix(world, hand, forearm, box):
+def grip_matrix(world, hand, box):
     """Where a rifle sits in the hand's own space.
 
     The model is built with +x down the barrel, +y up and +z out to the right,
-    which `common.wgsl` says and the viewmodel relies on. So: point +x along
-    the arm, take world up for +y as far as it is perpendicular, and let +z
-    fall out of the two. Then take the whole frame back into the hand's space,
-    which is where it has to live to travel with it.
+    which `common.wgsl` says and the viewmodel relies on. So in the pose this
+    is worked out against: point +x where the figure faces, take up for +y as
+    far as it is perpendicular, and let +z fall out of the two. Then take the
+    whole frame back into the hand's space, which is where it has to live to
+    travel with it.
+
+    The barrel goes where the *figure* points and not where the forearm does.
+    Those differ by ten degrees in the armed idle — an arm holding something is
+    not a rod aimed at what it is holding — and ten degrees is the difference
+    between a rifle that is aimed at what its owner is aimed at and one that is
+    not. Everywhere but this pose it follows the wrist, which is right: that is
+    what a wrist does.
     """
-    h, f = world[hand], world[forearm]
-    ax = [h[12] - f[12], h[13] - f[13], h[14] - f[14]]
-    n = sum(v * v for v in ax) ** 0.5 or 1.0
-    ax = [v / n for v in ax]
+    h = world[hand]
+    ax = list(FACES)
     up = [0.0, 1.0, 0.0]
     az = [ax[1] * up[2] - ax[2] * up[1], ax[2] * up[0] - ax[0] * up[2], ax[0] * up[1] - ax[1] * up[0]]
     n = sum(v * v for v in az) ** 0.5 or 1.0
@@ -251,17 +283,20 @@ def main(src, dst):
     hi = [max(v[0][c] for v in verts) for c in range(3)]
     span = [max(hi[c] - lo[c], 1e-6) for c in range(3)]
 
-    # The bind pose, which is what the grip is worked out against.
-    bind_world = []
-    for j in range(len(joints)):
-        local = mat_trs(bind_t[j], bind_r[j])
-        bind_world.append(local if parent[j] < 0 else mat_mul(bind_world[parent[j]], local))
     names = [js["nodes"][n].get("name", "") for n in joints]
     hand = names.index(HAND)
     # The rifle is next to the figure it goes in, and is read for its size
     # rather than believed about it.
     box = rifle_box(os.path.join(os.path.dirname(os.path.abspath(dst)), "rifle.mesh"))
-    grip = grip_matrix(bind_world, hand, parent[hand], box)
+    # The pose the rifle is levelled in — not the bind pose, which is the one
+    # place in the whole library nobody is holding anything. A bind pose has
+    # the palms turned down; every armed pose in it turns the wrist ninety
+    # degrees to grip, and a rifle levelled against the bind pose therefore
+    # spends the entire game lying on its side. Levelled against the pose
+    # somebody actually stands in, it is level when it is being aimed and rolls
+    # with the wrist everywhere else, which is what a wrist is for.
+    armed = pose_world(js, bin_, at, parent, bind_t, bind_r, GRIP_POSE, 0.0)
+    grip = grip_matrix(armed, hand, box)
 
     out = bytearray()
     out += b"RILLFIG2"

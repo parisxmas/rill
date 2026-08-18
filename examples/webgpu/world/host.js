@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=233";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=233";
+import { load } from "./world.js?v=235";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=235";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=233";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "233";
+const V = "235";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2049,6 +2049,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0;
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
+  const cut = document.getElementById("cut");
   const tally = document.getElementById("tally");
   const vitfill = document.getElementById("vitfill");
   let lastHp = -1, hurtUntil = 0;
@@ -2281,6 +2282,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         const clip = figure.clips.get(clock.name) ?? figure.clips.get("idle");
         skinner.pose(i, clip, (now - clock.since) / 1000, p.x, p.y, p.z, p.yaw);
       }
+      // And the same positions again, into the world this time, so that a
+      // round stops at the body it hit instead of carrying on through it.
+      // Only the drawing knows where anybody is on a client — everybody but
+      // this player arrives as a snapshot — so this is the only place that
+      // can say. This player goes in as well: a round of somebody else's
+      // ought to stop at their chest too, even if the chest is the camera.
+      for (let i = 0; i < figureCount; i++) {
+        const p = seen[i];
+        E.set_ghost(world, BigInt(i), p.x, p.y, p.z);
+      }
+      if (figureCount < FIGURE_CAP) {
+        E.set_ghost(world, BigInt(figureCount), E.player_x(state), E.player_y(state), E.player_z(state));
+        E.set_ghosts(world, BigInt(figureCount + 1));
+      } else E.set_ghosts(world, BigInt(figureCount));
+
       // Whoever has gone is forgotten, or the map grows for the life of the
       // page in a valley people keep passing through.
       if (clocks.size > seen.length) {
@@ -2295,6 +2311,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       drawTags(seen, stateF32());
       drawRoster(everyone(net));
     }
+
+    // The socket went. Said in the middle and in the largest letters on the
+    // page, because everything else carries on looking fine — the valley is
+    // still drawn, the wind still blows, this player still walks — and a
+    // browser quietly playing on its own in a world nobody else can see is a
+    // worse thing than a stopped one. Nothing is torn down: what is on screen
+    // is the last thing everybody agreed about, and it stays there.
+    if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");
 
     // Anything break in there? Rill counts them; the host only has to notice.
     // Not `>`: a tier change rebuilds the world and puts the tally back to

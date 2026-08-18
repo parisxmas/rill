@@ -65,6 +65,7 @@
 #   ptr 68, 69   the bullets, and the shards they knock loose
 #   ptr 96       the players, as blocks    f32 98  how many   100  the next id
 #   ptr 97       a ring of which crystal broke, indexed by the tally at 62
+#   f32 105      how many people a client can see    ptr 106  where they are
 #
 # The sun's matrix is written into whichever block was asked, because it is the
 # host that swings the sun and the host has one block in its hand.
@@ -371,6 +372,7 @@ fn step_bullet(w, b, at, dt, decide) =
   if on > 0.5 && decide > 0 then
     hit_crystals(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
     hit_players(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
+  else if on > 0.5 then stop_on_ghosts(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
   else 0
 
   poke_f32(b, at, px)
@@ -380,6 +382,56 @@ fn step_bullet(w, b, at, dt, decide) =
   poke_f32(b, at + 4, vy)
   poke_f32(b, at + 5, vz)
   poke_f32(b, at + 7, if landed > 0.5 then 0.0 else if peek_f32(b, at + 7) < 0.001 then 0.0 else life)
+
+# ---- who a client can see, for rounds to stop on ----------------------------
+#
+# A round that goes through somebody is the one thing in this valley that reads
+# as broken rather than as a miss. It does not go through them on the server —
+# `try_hit_player` ends it — but a client has no player blocks except its own:
+# everybody else arrives as a snapshot and is drawn from it, so there was
+# nothing in the world for a round to stop against and the tracer sailed on
+# through the chest of the person it had just killed.
+#
+# So the page writes down where it is drawing people, and the rounds stop
+# there. Not a decision — the damage is still the server's word, and this
+# table has no health in it and nothing reads it but the bullet step. It is
+# where they are *drawn*, interpolated between the last two snapshots, which
+# means a round stops at the body you can see rather than at one a tenth of a
+# second behind it. That is the whole reason it is done here rather than off
+# the health going down in the next snapshot: at a hundred and twenty metres a
+# second, one tick of waiting is six metres of tracer past somebody's back.
+fn ghost_cap() = 40
+
+fn set_ghosts(w: Ptr, n: Int) =
+  poke_f32(w, 105, to_float(if n > ghost_cap() then ghost_cap() else n))
+  1
+
+fn set_ghost(w: Ptr, i: Int, x: Float, y: Float, z: Float) =
+  g = peek_ptr(w, 106)
+  poke_f32(g, i * 3, x)
+  poke_f32(g, i * 3 + 1, y)
+  poke_f32(g, i * 3 + 2, z)
+  1
+
+fn ghost_hit(g, i, ax, ay, az, bx, by, bz) =
+  x = peek_f32(g, i * 3)
+  y = peek_f32(g, i * 3 + 1)
+  z = peek_f32(g, i * 3 + 2)
+  body = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 0.95, z) < 0.2025 then 1 else 0
+  head = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 1.62, z) < 0.09 then 1 else 0
+  body + head
+
+fn stop_on_ghosts(w, b, at, ax, ay, az, bx, by, bz) =
+  g = peek_ptr(w, 106)
+
+  for i in 0..to_int(peek_f32(w, 105))
+    stopped(b, at, ghost_hit(g, i, ax, ay, az, bx, by, bz))
+
+fn stopped(b, at, hit) = if hit > 0 then poked_out(b, at) else 0
+
+fn poked_out(b, at) =
+  poke_f32(b, at + 7, 0.0)
+  1
 
 fn step_bullets(w, b, dt, decide) =
   for i in 0..bullet_cap()
@@ -1418,6 +1470,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   charge_buf = alloc_bytes(charger_cap() * charger_stride() * 4)
   blast_buf = alloc_bytes(blast_cap() * blast_stride() * 4)
   break_buf = alloc_bytes(break_ring() * 4)
+  ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -1431,6 +1484,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 67, grass_buf)
   poke_ptr(s, 68, bullet_buf)
   poke_ptr(s, 69, shard_buf)
+  poke_ptr(s, 106, ghost_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)

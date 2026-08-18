@@ -241,10 +241,21 @@ still be what you are aiming at when it settles.
 What everybody holds is the same `rifle.mesh` the viewmodel draws — one rifle
 in this valley rather than two — instanced once per person off the hand
 joint's world matrix times a grip. The grip is worked out at bake time rather
-than by eye: the barrel goes along the direction the bind-pose forearm points,
-up is world up, and the whole frame is written into the header with the index
-of the joint it hangs off. So the weapon follows the arm through every clip
-and the page knows nothing about the rig beyond one number.
+than by eye, and against the armed idle rather than the bind pose: a bind pose
+has the palms turned down, every armed pose turns the wrist ninety degrees to
+grip, and a rifle squared up against the bind pose lies on its side for the
+whole game. The barrel goes where the figure faces, up is world up, and the
+frame is written into the header with the index of the joint it hangs off. So
+it is level when it is being aimed, follows the wrist everywhere else, and the
+page knows nothing about the rig beyond one number. Walking swings it, because
+the library has no armed walk.
+
+A round stops at the person it hit. On the server that is `try_hit_player`; on
+a client there are no player blocks but its own, so the page writes down where
+it is drawing everybody and the rounds stop there. No health lives in that
+table and nothing else reads it: what a hit costs is still the server's word.
+The positions are the interpolated ones the figures are drawn at, so a round
+stops at the body you can see rather than at one a tick behind it.
 
 Placing a figure is π − yaw and not yaw + π. The second mirrors rather than
 turns, so everybody walked at a right angle to where they were aiming, and on

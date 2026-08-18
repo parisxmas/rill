@@ -132,6 +132,14 @@
       color: rgba(255, 255, 255, 0.42);
     }
 
+    /* The same caption, for the socket rather than the crystals. Red instead
+       of amber and it arrives in a fifth of a second rather than easing in
+       over a second and a half: an ending is something to sit with, a dropped
+       connection is something to be told at once. */
+    .over.cut { transition-duration: 220ms; }
+    .over.cut span { color: #e0503a; text-shadow: 0 0 40px rgba(224, 80, 58, 0.35), 0 0 4px rgba(0, 0, 0, 0.9); transition-duration: 320ms; }
+    .over.cut small { color: #e0503a; }
+
     /* Who else is in the valley, down the left under the keys. A row apiece:
        the colour they are drawn in, what they are called, and how much of
        them is left. The bar is the honest one — a health number in a corner
@@ -241,6 +249,7 @@
   <div class="warn" id="warn"></div>
   <div class="tally" id="tally"></div>
   <div class="vit" id="vit"><i id="vitfill"></i></div>
+  <div class="over cut" id="cut"><span>DISCONNECTED</span><em>the valley went on without you</em><small>reload to go back</small></div>
   <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em><small>space to begin again</small></div>
   <div class="boot" id="boot">
     <div class="inner">
@@ -265,7 +274,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=233";
+    import { run } from "./host.js?v=235";
 
     // Whose valley. `?join` takes the one on this host, `?join=ws://box:8091/`
     // somebody else's, and no `join` at all is the valley this tab has to
@@ -310,7 +319,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=233", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=235", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""
