@@ -630,6 +630,11 @@ fn debug_builds_carry_source_lines() {
 
 /// YAML for configuration files, reusing the JSON module's value type so a
 /// parsed document prints as JSON with no conversion.
+///
+/// The last line is the two shapes the parser used to get wrong: a `-` alone
+/// on its line became a mapping key named `-`, because `is_item` looked for
+/// `"- "` in a line it had just trimmed the space off; and a key with no
+/// value took the next line as its block whatever that line's indentation.
 #[test]
 fn yaml_module() {
     assert_eq!(
@@ -637,7 +642,9 @@ fn yaml_module() {
         "{\"name\":\"gateway\",\"port\":8080,\"debug\":false,\
          \"limits\":{\"memory\":512,\"cpu\":1.5},\"tags\":[\"fast\",\"small\"],\
          \"servers\":[{\"name\":\"alpha\",\"port\":1000},{\"name\":\"beta\",\"port\":2000}]}\n\
-         gateway\n1.5\nfast+small\n2000\n"
+         gateway\n1.5\nfast+small\n2000\n\
+         {\"rules\":[{\"name\":\"first\",\"on\":true},\
+         {\"name\":\"second\",\"on\":false}],\"spare\":null,\"after\":1}\n"
     );
 }
 

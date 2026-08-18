@@ -37,7 +37,13 @@ fn indent_of(l) = count_spaces(l, 0)
 
 fn count_spaces(l, i) = if str_get(l, i) == 32 then count_spaces(l, i + 1) else i
 
-fn is_item(l) = starts_with(trim(l), "- ")
+# A `-` with nothing after it is an item too — the value is the block indented
+# under it. This looked for `"- "` in the trimmed line, and trimming is what
+# removes the space it was looking for, so a line holding only a dash read as
+# a mapping key named `-` and `nested_item` below was never reached at all.
+fn is_item(l) = dashed(trim(l))
+
+fn dashed(t) = t == "-" || starts_with(t, "- ")
 
 # -- blocks -------------------------------------------------------------------
 
@@ -57,8 +63,13 @@ fn seq_line(ls, rest, ind, acc, l) =
 fn seq_item(rest, ind, acc, item) =
   if str_len(item) == 0 then nested_item(rest, ind, acc) else if str_find(item, ": ") >= 0 || ends_with_colon(item) then inline_map_item(rest, ind, acc, item) else sequence(rest, ind, Cons(scalar(item), acc))
 
-# `- ` on its own: the value is the block indented under it.
-fn nested_item(rest, ind, acc) = match block_value(rest, deeper(rest, ind))
+# `- ` on its own: the value is the block indented under it, or nothing at all
+# when there is no such block.
+fn nested_item(rest, ind, acc) = match block_under(rest, ind)
+  None -> sequence(rest, ind, Cons(JNull, acc))
+  Some(deep) -> nested_item_at(rest, deep, ind, acc)
+
+fn nested_item_at(rest, deep, ind, acc) = match block_value(rest, deep)
   YParsed(v, after) -> sequence(after, ind, Cons(v, acc))
 
 # `- key: value`: the item is a mapping whose first entry is on this line and
@@ -93,14 +104,21 @@ fn entry_of(rest, text, ind) =
 fn entry_parts(rest, ind, key, value_text) =
   if str_len(value_text) == 0 then nested_entry(rest, ind, key) else YParsed(JObj(Cons(Field(key, scalar(value_text)), Nil)), rest)
 
-fn nested_entry(rest, ind, key) = match block_value(rest, deeper(rest, ind))
+fn nested_entry(rest, ind, key) = match block_under(rest, ind)
+  None -> YParsed(JObj(Cons(Field(key, JNull), Nil)), rest)
+  Some(deep) -> nested_entry_at(rest, deep, key)
+
+fn nested_entry_at(rest, deep, key) = match block_value(rest, deep)
   YParsed(v, after) -> YParsed(JObj(Cons(Field(key, v), Nil)), after)
 
-# The indentation of the block that follows, or something deeper than `ind`
-# when there is no next line.
-fn deeper(ls, ind) = match ls
-  Nil -> ind + 2
-  Cons(l, _) -> indent_of(l)
+# How far in the block below is indented, when there is one. A block belongs
+# to the line above it only by being further in than that line: this used to
+# answer with the next line's indentation whatever it was, so a key with no
+# value swallowed whatever came next — including a key at its own level, which
+# belongs beside it rather than inside it.
+fn block_under(ls, ind) = match ls
+  Nil -> None
+  Cons(l, _) -> if indent_of(l) > ind then Some(indent_of(l)) else None
 
 fn ends_with_colon(s) = str_len(s) > 0 && str_get(s, str_len(s) - 1) == 58
 
