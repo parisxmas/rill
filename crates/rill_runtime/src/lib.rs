@@ -2965,6 +2965,25 @@ const SO_ERROR: i32 = 4;
 #[cfg(target_os = "linux")]
 const O_NONBLOCK: i32 = 0o4000;
 
+// A socket whose far end has gone is an error to write to. It is not a reason
+// to kill the process — but by default it is exactly that, because the kernel
+// raises SIGPIPE and nothing here handles it.
+//
+// Rust's own runtime ignores SIGPIPE before `main` runs. A Rill binary's main
+// is generated code and never goes through it, so a server that wrote one line
+// to a client which had just walked away died where it stood: no panic, no
+// message, no line in the log, exit 141. It is the kind of fault that looks
+// like a mystery for a week.
+//
+// Turned off per socket rather than for the whole process, because a program
+// piping into `head` should still stop when `head` does and that is a pipe.
+// BSD says it once with a socket option; Linux has no such option and says it
+// on every send instead.
+#[cfg(not(target_os = "linux"))]
+const SO_NOSIGPIPE: i32 = 0x1022;
+#[cfg(target_os = "linux")]
+const MSG_NOSIGNAL: i32 = 0x4000;
+
 // ---- sockets ---------------------------------------------------------------
 //
 // BSD sockets, which is to say: not Windows. Winsock has the same shape and
@@ -3030,6 +3049,7 @@ mod net {
         fn listen(fd: i32, backlog: i32) -> i32;
         fn accept(fd: i32, addr: *mut u8, len: *mut u32) -> i32;
         fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
+        fn send(fd: i32, buf: *const u8, len: usize, flags: i32) -> isize;
         fn getpeername(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
         fn connect(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
         fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
@@ -3533,6 +3553,30 @@ mod net {
 
     const MSG_PEEK: i32 = 0x2;
 
+    /// Says, on the platforms that let a socket say it, that writing to a dead
+    /// peer is an error rather than a signal. See `SO_NOSIGPIPE` above.
+    unsafe fn no_sigpipe(fd: i32) {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let one: i32 = 1;
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one as *const i32 as *const u8, 4);
+        }
+        #[cfg(target_os = "linux")]
+        let _ = fd;
+    }
+
+    /// A write that cannot raise SIGPIPE on either platform.
+    unsafe fn sock_send(fd: i32, buf: *const u8, len: usize) -> isize {
+        #[cfg(target_os = "linux")]
+        {
+            send(fd, buf, len, MSG_NOSIGNAL)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            write(fd, buf, len)
+        }
+    }
+
     unsafe fn set_nonblocking(fd: i32) {
         fcntl(fd, F_SETFL, O_NONBLOCK);
     }
@@ -3734,6 +3778,7 @@ mod net {
             let c = accept(fd as i32, core::ptr::null_mut(), core::ptr::null_mut());
             if c >= 0 {
                 set_nonblocking(c);
+                no_sigpipe(c);
                 return c as i64;
             }
             let e = errno();
@@ -3791,6 +3836,7 @@ mod net {
             return -1;
         }
         set_nonblocking(fd);
+        no_sigpipe(fd);
         let addr = sock_addr(ip, port);
         if connect(fd, &addr, 16) < 0 {
             let e = errno();
@@ -3851,7 +3897,7 @@ mod net {
         let total = str_len_of(s);
         let mut sent = 0usize;
         while sent < total {
-            let n = write(fd as i32, str_bytes(s).add(sent), total - sent);
+            let n = sock_send(fd as i32, str_bytes(s).add(sent), total - sent);
             if n > 0 {
                 sent += n as usize;
                 continue;

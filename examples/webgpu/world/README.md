@@ -186,11 +186,28 @@ which crosses the valley inside one step and takes out every crystal along a
 line through the world.
 
 Each connection is allowed ninety messages a second — a browser sends its keys
-once a frame, so that is well above anything honest — and over that a line is
-read and dropped without being parsed. That is not tidiness: the hub takes its
-tick off the same channel as the key presses, and against an unbounded sender
-the tick never wins at all. Sixty-four sockets may be open at once, whichever
-of them ever say anything.
+once a frame, so that is well above anything honest — and over that the reader
+sleeps until the second is up rather than reading on. That is not tidiness: the
+hub takes its tick off the same channel as the key presses, and against an
+unbounded sender the tick never wins at all. It has to be a sleep and not a
+drop, because reading is most of what a message costs: the frame walk and the
+unmask happen before anything can decide a line is unwanted, so a client
+sending a million lines a second was still being read a million times a second
+and an honest player got no snapshots for as long as it went on. Asleep, the
+frames stay in the kernel buffer, the window fills, and the sender's own writes
+block. Sixty-four sockets may be open at once, whichever of them ever say
+anything, and no more than sixteen from one address.
+
+A name may be changed once every three seconds, and only to a different one.
+Every accepted name goes out to everybody, so that is the one thing a single
+client can make the server say to all the others, and at ninety a second times
+sixty-four people it is the cheapest amplifier in the protocol.
+
+Writing to a socket whose far end has gone is an error here and not a signal —
+`SO_NOSIGPIPE` on BSD, `MSG_NOSIGNAL` per send on Linux. It has to be said out
+loud because Rust's runtime turns SIGPIPE off before `main` and a Rill binary's
+main is generated code that never goes through it, so until this was set any
+client that walked away at the wrong moment killed the server outright.
 
 A connection has five seconds to get its handshake in, measured against the
 clock rather than per read, so a client dribbling a byte at a time cannot

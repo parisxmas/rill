@@ -141,7 +141,7 @@ fn if_arrived(m, joins) = match m
 
 fn handle(w, conns, inbox, joins, m) = match m
   Arrived(out) -> admit(w, conns, out)
-  Named(id, name) -> name_one(conns, id, name)
+  Named(id, name) -> name_one(w, conns, id, name)
   Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
   Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
   Pinged(id, token) -> pong(conns, id, token)
@@ -249,9 +249,20 @@ fn took(b, c) =
 fn ok_char(c) =
   c >= 48 && c <= 57 || (c >= 65 && c <= 90 || c >= 97 && c <= 122)
 
-fn name_one(conns, id, raw) = match find(conns, id)
+fn name_one(w, conns, id, raw) = match find(conns, id)
   None -> conns
-  Some(c) -> rename(conns, c, id, unique(conns, id, clean_name(raw, id)))
+  Some(c) -> maybe_rename(w, conns, c, id, unique(conns, id, clean_name(raw, id)))
+
+# A name change goes out to everybody in the valley, so one client renaming as
+# fast as it is allowed to speak is that many lines times everybody here — the
+# cheapest amplifier in the protocol. Two things stop it: a name that is not
+# actually different is not news, and nobody needs to change theirs more than
+# once every few seconds. Both are refusals rather than disconnections, because
+# a client repeating itself is a bug and not an attack and the two look the
+# same from this side.
+fn maybe_rename(w, conns, c, id, name) =
+  s = conn_block(c)
+  if conn_name(c) == name then conns else if v.may_rename(s, v.world_time(w)) == 0 then conns else rename(w, conns, c, id, name)
 
 # The first free one of `name`, `name2`, `name3` and so on. The suffix eats
 # into the cap rather than pushing past it, so what comes out is still a name
@@ -271,7 +282,8 @@ fn taken(conns, id, name) = match conns
   Nil -> false
   Cons(c, rest) -> if conn_id(c) != id && conn_name(c) == name then true else taken(rest, id, name)
 
-fn rename(conns, c, id, name) =
+fn rename(w, conns, c, id, name) =
+  v.renamed(conn_block(c), v.world_time(w))
   next = replace(conns, id, Conn(id, conn_block(c), conn_out(c), name))
   tell_all(next, "who " + int_to_str(id) + " " + name)
   next
@@ -625,7 +637,25 @@ fn gate(conn, inbox, id, budget, until, msg, rest) =
   if now > until then gate_on(conn, inbox, id, heard_per_second(), now + 1000000000, msg, rest) else gate_on(conn, inbox, id, budget, until, msg, rest)
 
 fn gate_on(conn, inbox, id, budget, until, msg, rest) =
-  if budget <= 0 then reader(conn, inbox, id, 0, until, rest) else handle_line(conn, inbox, id, budget, until, msg, rest)
+  if budget <= 0 then hush(conn, inbox, id, until, rest) else handle_line(conn, inbox, id, budget, until, msg, rest)
+
+# Over the allowance, stop listening rather than listen and throw away.
+#
+# Reading is most of what a message costs. The frame walk and the unmask happen
+# before anything can decide the line is unwanted, so a client sending a million
+# lines a second was still being read a million times a second, and the tick
+# starved behind it: an honest player in the same valley got no snapshots at all
+# for as long as it went on. The budget was stopping the hub from being
+# bothered and not the reader from working.
+#
+# So sleep out the rest of the second instead. The frames stay in the kernel
+# buffer where they belong, the window fills, the sender's own writes start
+# blocking, and this strand is off the run queue while it happens — which is
+# what makes it free rather than merely cheaper.
+fn hush(conn, inbox, id, until, rest) =
+  left = (until - now_nanos()) / 1000000
+  sleep_ms(if left < 1 then 1 else left)
+  reader(conn, inbox, id, heard_per_second(), now_nanos() + 1000000000, rest)
 
 fn handle_line(conn, inbox, id, budget, until, msg, rest) =
   parts = split(msg, " ")

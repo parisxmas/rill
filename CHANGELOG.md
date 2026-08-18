@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **A dead socket killed the server.** Writing to a peer that has gone raises
+  SIGPIPE, and nothing in a Rill binary handles it: the process died where it
+  stood, no panic, no message, exit 141. Rust's own runtime turns SIGPIPE off
+  before `main`, but a Rill binary's main is generated code and never goes
+  through it. So any client that walked away between one snapshot and the next
+  could take the valley down with it — which is what a public port is full of,
+  and it is almost certainly the unreproducible death seen once during testing
+  a while back.
+
+  It is turned off per socket rather than for the process, because a program
+  piping into `head` should still stop when `head` does and that is a pipe.
+  BSD says it once with `SO_NOSIGPIPE`; Linux has no such option and says it on
+  every send with `MSG_NOSIGNAL`.
+
+- **A flood of messages stopped starving everybody else.** The per-second
+  allowance stopped the hub being bothered by the ten-thousandth message and
+  did not stop the reader from working: the frame walk and the unmask happen
+  before anything can decide a line is unwanted, so a client sending a million
+  lines a second was still being read a million times a second. An honest
+  player in the same valley got **no snapshots at all** for as long as it went
+  on. Over the allowance the reader now sleeps out the rest of the second
+  instead, which leaves the frames in the kernel buffer where they belong, the
+  window fills, and the sender's own writes start blocking. Measured: the
+  honest client went from 0.0 snapshots a second under the flood to a full
+  20.0, and the flooder got 32,000 lines away instead of a million.
+
+- **Renaming stopped being an amplifier.** Every accepted name goes out to
+  everybody in the valley, so one client renaming as fast as it was allowed to
+  speak was ninety lines a second times everybody here — the cheapest
+  amplifier in the protocol. A name that is not different is not news now, and
+  nobody may change theirs more than once every three seconds. Measured: 54.2
+  broadcast lines a second down to 0.6, with the same client still asking 108
+  times a second.
+
 - **Ten seconds on the ground.** Running out of health in a shared valley used
   to be a frame: the server stood you back up on the next tick, so the die clip
   never played and being killed was a teleport with a health bar behind it. Now
