@@ -206,9 +206,9 @@ leaves most of the valley to everybody else.
 
 Other people are drawn as people. The model is Quaternius' mannequin from the
 Universal Animation Library (CC0) — fifty-three joints, 13,744 triangles — and
-six of that library's clips: standing, walking, running, crouching, firing and
-going down. `tools/bake_figure.py` takes the glTF and writes `figure.mesh`,
-389 KB, and three facts about the source are what make it that small rather
+seven of that library's clips: standing, walking, running, crouching, firing,
+taking a round and going down. `tools/bake_figure.py` takes the glTF and
+writes `figure.mesh`, 383 KB, and three facts about the source are what make it that small rather
 than a megabyte and a half. Nothing in the rig is ever scaled. Exactly one
 joint translates — the hips — so every other joint keeps its bind translation
 and a frame is a root position and a rotation each. And the clips are authored
@@ -226,15 +226,41 @@ this end from how fast a figure seems to be sliding: it has the keys and the
 health, and two people watching the same person should not disagree about
 whether they are running. Firing is the exception, because it is an event
 rather than a state — a round leaving somebody's rifle plays the shot over
-whatever their legs are doing.
+whatever their legs are doing. Being hit is the other, and it is not in the
+protocol at all: a health that has gone down since the last snapshot without
+reaching zero is somebody taking a round, which is the same fact the server
+would have had to send, arriving for nothing.
+
+What everybody holds is the same `rifle.mesh` the viewmodel draws — one rifle
+in this valley rather than two — instanced once per person off the hand
+joint's world matrix times a grip. The grip is worked out at bake time rather
+than by eye: the barrel goes along the direction the bind-pose forearm points,
+up is world up, and the whole frame is written into the header with the index
+of the joint it hangs off. So the weapon follows the arm through every clip
+and the page knows nothing about the rig beyond one number.
+
+Placing a figure is π − yaw and not yaw + π. The second mirrors rather than
+turns, so everybody walked at a right angle to where they were aiming, and on
+a mannequin that is symmetric until it moves that is invisible until you watch
+somebody walk.
 
 Everybody is asked who they are before they connect, and their name is drawn
 over their head: sent once, kept by the server, handed to whoever walks in
-next. It is cut down to letters, digits, a dash and an underscore — a space
-would split the line it travels on — and anybody who says nothing is
-`player7`. The tags are elements over the canvas rather than geometry in it,
+next. It is cut down to letters and digits, eight at most — a space would split the
+line it travels on — and anybody who says nothing is `player7`. It also has to
+be free: a taken name gets a number, which eats into the eight rather than
+pushing past it, and the client is told what it ended up with rather than
+being refused after its world is already built. The tags are elements over the canvas rather than geometry in it,
 placed with the same view-projection matrix the valley is drawn with; they are
 not occluded by the terrain, which is a choice.
+
+Down the left is everybody in the valley: their colour, their name, and a bar
+for how much of them is left. The tag over a head answers "who is that"; the
+roster answers "who am I in here with", which is a different question and not
+one that can be answered by turning round. Top right is the round trip to the
+server, once a second — answered from the hub rather than the reader strand,
+so what it measures is how long this server takes to get round to you rather
+than how fast the socket is.
 
 The crystals do not throw fire in the shared valley for the moment. A meteor
 is aimed at where somebody is standing, and standing about is most of what
@@ -326,10 +352,10 @@ position: one for the bolt's two thousand-odd vertices, a half for the round's
 four hundred, zero for the rifle proper. The position was already being
 unpacked from unorm16, so the flag costs the file nothing at all.
 
-The people are Quaternius' mannequin and six clips from his Universal
+The people are Quaternius' mannequin and seven clips from his Universal
 Animation Library, both CC0, by way of OpenGameArt. Nothing of it is shipped
 as it came: `tools/bake_figure.py` keeps the mesh, the fifty-three joint
-skeleton and the six clips, and leaves the other forty behind.
+skeleton and the seven clips, and leaves the other forty behind.
 
 The theme is pauliuw's *The Field of Dreams* from OpenGameArt, CC0 — eighty
 seconds that begin and end in silence, which is what makes it loop without a

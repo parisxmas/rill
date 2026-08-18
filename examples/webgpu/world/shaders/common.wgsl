@@ -135,7 +135,7 @@
   // while you stand still, and that a whole day happens inside a visit. The same number lives in `host.js`, which swings the sun and the
   // shadow matrix by it — they have to agree, or the moon's terminator drifts
   // away from the sun that is supposed to be casting it.
-  const SKY_SPIN = 0.0698131701;      // 2π / 90
+  const SKY_SPIN = 0.0349065850;      // 2π / 180, and the host's must agree
 
   // The pole the whole sky turns about — the same one the sun runs round in
   // `host.js`, all but horizontal, so the sky wheels overhead the way it does

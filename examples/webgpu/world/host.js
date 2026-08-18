@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=225";   // keep in step with V below
-import { join, others, me, sharkNow } from "./net.js?v=225";
+import { load } from "./world.js?v=231";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=231";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow } from "./net.js?v=225";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "225";
+const V = "231";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -97,7 +97,7 @@ const SHADERS = {
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
-  figure: "common",
+  figure: "common", held: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
   "firefly-sim": null,
@@ -160,6 +160,7 @@ async function loadShaders(step) {
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
     FIGURE: whole("figure"),
+    HELD: whole("held"),
     SHADOW_FIGURE: whole("shadow-figure"),
     SKY: whole("sky"),
     WATER: whole("water"),
@@ -294,12 +295,16 @@ function faceNormal(a, b, c) {
 function readFigure(bytes) {
   const v = new DataView(bytes);
   const magic = new TextDecoder().decode(new Uint8Array(bytes, 0, 8));
-  if (magic !== "RILLFIG1") throw new Error(`figure.mesh is not a figure (${magic})`);
+  if (magic !== "RILLFIG2") throw new Error(`figure.mesh is not a figure this reads (${magic})`);
   const joints = v.getUint32(8, true), verts = v.getUint32(12, true);
   const indices = v.getUint32(16, true), clipCount = v.getUint32(20, true);
-  const box = new Float32Array(bytes.slice(24, 48));
+  // Which joint a weapon hangs off, and where on it — worked out at bake time
+  // from the arm's own direction in the bind pose rather than by eye.
+  const hand = v.getUint32(24, true);
+  const grip = new Float32Array(bytes.slice(28, 92));
+  const box = new Float32Array(bytes.slice(92, 116));
 
-  let at = 48;
+  let at = 116;
   const parent = new Int32Array(joints);
   const bindT = new Float32Array(joints * 3);
   const bindR = new Float32Array(joints * 4);
@@ -328,7 +333,7 @@ function readFigure(bytes) {
     const rot = new Int16Array(bytes.slice(at, at + frames * joints * 8)); at += frames * joints * 8;
     clips.set(name, { name, frames, fps, loops, root, rootT, rot, seconds: (frames - 1) / fps });
   }
-  return { joints, verts, indices, box, parent, bindT, bindR, invBind, clips, vertexAt, indexAt };
+  return { joints, verts, indices, box, hand, grip, parent, bindT, bindR, invBind, clips, vertexAt, indexAt };
 }
 
 // A pose, worked out on the page and handed over as one matrix per joint.
@@ -342,6 +347,10 @@ function makeSkinner(figure, capacity) {
   const local = new Float32Array(J * 16);
   const world = new Float32Array(J * 16);
   const out = new Float32Array(capacity * J * 16);
+  // Where each person's rifle is. The hand's world matrix rather than its
+  // skinning matrix: what a weapon wants is where the hand *is*, not the
+  // difference between where it is and where it was bound.
+  const held = new Float32Array(capacity * 16);
 
   // Column-major, as WGSL wants it: o = a * b.
   const mul = (o, oi, a, ai, b, bi) => {
@@ -369,10 +378,17 @@ function makeSkinner(figure, capacity) {
   };
 
   // Where the player is, as a matrix: turned about the vertical, then put down
-  // on the ground. The model faces +z and `walk` calls -z forward, so what it
-  // is drawn at is half a turn from what it is walking at.
+  // on the ground.
+  //
+  // The angle is not the yaw and not the yaw plus half a turn. This rotation
+  // takes the model's forward — the mannequin faces +z, which its toes and its
+  // nose agree about — to (sin a, 0, cos a), and Rill's `walk` means
+  // (sin yaw, 0, -cos yaw) by a yaw. Those meet at a = π - yaw, and π + yaw
+  // meets them nowhere: it mirrors rather than turns, so everybody walked
+  // sideways-on to the way they were looking, and worse, the mirror is
+  // invisible on a figure that is roughly symmetric until it moves.
   const place = (m, x, y, z, yaw) => {
-    const a = yaw + Math.PI, c = Math.cos(a), s = Math.sin(a);
+    const a = Math.PI - yaw, c = Math.cos(a), s = Math.sin(a);
     m[0] = c; m[1] = 0; m[2] = -s; m[3] = 0;
     m[4] = 0; m[5] = 1; m[6] = 0; m[7] = 0;
     m[8] = s; m[9] = 0; m[10] = c; m[11] = 0;
@@ -384,6 +400,7 @@ function makeSkinner(figure, capacity) {
 
   return {
     matrices: out,
+    held,
     // One person: their clip, how far into it, and where they are standing.
     pose(slot, clip, time, x, y, z, yaw) {
       const f = clip.loops
@@ -424,6 +441,8 @@ function makeSkinner(figure, capacity) {
         mul(rooted, 0, world, j * 16, figure.invBind, j * 16);
         out.set(rooted, (slot * J + j) * 16);
       }
+      mul(rooted, 0, world, figure.hand * 16, figure.grip, 0);
+      held.set(rooted, slot * 16);
     },
   };
 }
@@ -1362,6 +1381,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
   }));
 
+  // And the rifle each of them is carrying: one matrix apiece, the hand's own
+  // world matrix times the grip. Drawn from the same file the viewmodel uses,
+  // so there is one rifle in this valley and not two.
+  const heldPipe = watched("held", () => device.createRenderPipeline({
+    label: "held",
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bglMain, poseBgl] }),
+    vertex: { module: mod(S.HELD, "held"), buffers: vmLayout },
+    fragment: { module: mod(S.HELD, "held"), targets: [{ format }] },
+    primitive: { cullMode: "none" },
+    depthStencil: depth,
+    multisample: MS,
+  }));
+
   // One matrix per joint per person, rebuilt on the page every frame and
   // handed over whole. Thirty-two people is a hundred and eight kilobytes,
   // which is a sixth of what the terrain is.
@@ -1373,6 +1405,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   const poseBg = device.createBindGroup({
     layout: poseBgl, entries: [{ binding: 0, resource: { buffer: poseBuf } }],
+  });
+  const heldBuf = device.createBuffer({
+    size: FIGURE_CAP * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const heldBg = device.createBindGroup({
+    layout: poseBgl, entries: [{ binding: 0, resource: { buffer: heldBuf } }],
   });
   // What a frame costs the GPU, when the adapter will say. Two timestamps
   // around the passes, resolved into a buffer and read back a frame later so
@@ -1401,12 +1439,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const clocks = new Map();
   const CLIP_FOR = ["idle", "walk", "run", "crouch", "die"];
 
-  // A shot is an event rather than a state, so it plays over whatever the
-  // legs are doing for as long as the clip lasts.
+  // Firing and being hit are events rather than states, so they play over
+  // whatever the legs are doing for as long as their clip lasts.
+  //
+  // A hit is noticed rather than announced: health only ever goes down for one
+  // reason at a time and the snapshot carries it, so a drop since the last one
+  // is somebody having just been shot — which also covers the shark and a
+  // crater without either needing to say anything. The cost is that it arrives
+  // a tick late, which is the same tick the health bar moves on.
   function clipFor(p, now) {
-    const c = clocks.get(p.id) ?? { name: "idle", since: now, firedAt: -9 };
+    const c = clocks.get(p.id) ?? { name: "idle", since: now, firedAt: -9, hitAt: -9, health: p.health };
+    if (p.health < c.health - 0.001 && p.health > 0.001) c.hitAt = now;
+    c.health = p.health;
     const shooting = now - c.firedAt < figure.clips.get("fire").seconds * 1000;
-    const want = p.health < 0.001 ? "die" : shooting ? "fire" : (CLIP_FOR[p.pose] ?? "idle");
+    const hurt = now - c.hitAt < figure.clips.get("hit").seconds * 1000;
+    // Down first: somebody on the ground is not flinching or shooting.
+    const want = p.health < 0.001 ? "die" : hurt ? "hit" : shooting ? "fire" : (CLIP_FOR[p.pose] ?? "idle");
     if (want !== c.name) { c.name = want; c.since = now; }
     clocks.set(p.id, c);
     return c;
@@ -1528,6 +1576,63 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     for (const [id, el] of tagFor) {
       if (!live.has(id)) { el.remove(); tagFor.delete(id); }
+    }
+  }
+
+  // ---- the roster ----------------------------------------------------------
+  //
+  // The same list the tags come from, stood still down the left: who is here,
+  // in the colour their figure is drawn in, and how much of them is left. The
+  // tag over a head answers "who is that"; this answers "who am I in here
+  // with", which is a different question and is not one you can answer by
+  // turning round.
+  //
+  // Rebuilt only when the shape of it changes — a row arriving or leaving, or
+  // a name landing after the player did. Health moves every snapshot, so that
+  // goes straight onto the element it belongs to and the browser is left to
+  // ease it; rewriting the markup twenty times a second would restart every
+  // one of those transitions and the bars would step instead of slide.
+  const rosterEl = document.querySelector("#roster");
+  const rowsEl = document.querySelector("#rosterRows");
+  const rowFor = new Map();
+  let rosterShape = "";
+
+  function drawRoster(list) {
+    if (rosterEl.hidden) rosterEl.hidden = false;
+    const shape = list.map(p => `${p.id}:${p.name}`).join(",");
+    if (shape !== rosterShape) {
+      rosterShape = shape;
+      rowsEl.textContent = "";
+      rowFor.clear();
+      for (const p of list) {
+        const row = document.createElement("div");
+        row.className = p.self ? "row self" : "row";
+        const dot = document.createElement("i");
+        dot.className = "dot";
+        const c = hueOf(p.id, 1);
+        dot.style.background = `rgb(${c.map(v => Math.round(v * 255)).join(",")})`;
+        const nm = document.createElement("span");
+        nm.className = "nm";
+        nm.textContent = p.name || `player ${p.id}`;
+        const bar = document.createElement("span");
+        bar.className = "bar";
+        const fill = document.createElement("i");
+        bar.appendChild(fill);
+        row.append(dot, nm, bar);
+        rowsEl.appendChild(row);
+        rowFor.set(p.id, { row, fill });
+      }
+    }
+    for (const p of list) {
+      const r = rowFor.get(p.id);
+      if (!r) continue;
+      const frac = Math.max(0, Math.min(1, p.health));
+      r.fill.style.width = `${(frac * 100).toFixed(0)}%`;
+      // Green while it is fine, amber on the way down, red at the end — and
+      // the row itself goes quiet once there is nothing left, so somebody
+      // waiting to come back is still on the list but plainly not in it.
+      r.fill.style.background = frac > 0.55 ? "#57c26a" : frac > 0.25 ? "#f6c02e" : "#e0503a";
+      r.row.classList.toggle("out", frac <= 0.001);
     }
   }
 
@@ -2004,7 +2109,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // and cos(θ) < 0 there is what makes it the rising crossing rather than the
   // setting one — the same y, the other side of the day.
   const SUN_PHASE = Math.PI - 0.10;
-  const SKY_SPIN = 2 * Math.PI / 90;
+  // A day, in seconds. Ninety was a good number for somebody who would look at
+  // this for a minute; it is a poor one for somebody living in it, because the
+  // shadows visibly crawl and the sun sets while you are crossing the meadow.
+  // A hundred and eighty is still nothing like a day and still shows a whole
+  // one inside a session, but the sky stops being something you can watch move.
+  const SKY_SPIN = 2 * Math.PI / 180;
   const uf = new Float32Array(UNI_FLOATS);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
@@ -2180,8 +2290,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       if (figureCount) {
         device.queue.writeBuffer(figureInst, 0, figures, 0, figureCount * 8);
         device.queue.writeBuffer(poseBuf, 0, skinner.matrices, 0, figureCount * figure.joints * 16);
+        device.queue.writeBuffer(heldBuf, 0, skinner.held, 0, figureCount * 16);
       }
       drawTags(seen, stateF32());
+      drawRoster(everyone(net));
     }
 
     // Anything break in there? Rill counts them; the host only has to notice.
@@ -2427,6 +2539,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       pass.setVertexBuffer(0, figVB); pass.setVertexBuffer(1, figureInst);
       pass.setIndexBuffer(figIB, "uint16");
       pass.drawIndexed(figure.indices, figureCount);
+      pass.setPipeline(heldPipe);
+      pass.setBindGroup(1, heldBg);
+      pass.setVertexBuffer(0, rifleVB);
+      pass.setIndexBuffer(rifleIB, "uint16");
+      pass.drawIndexed(rifleIdx, figureCount);
     }
     pass.setPipeline(skyPipe); pass.draw(3);
     pass.setPipeline(W.waterPipe); pass.setVertexBuffer(0, W.waterBuf); pass.draw(W.waterVerts);
@@ -2525,6 +2642,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
             // How many people are in it, which is null when this valley is
             // nobody else's business.
             here: net && net.last ? net.last.players.length : null,
+            // How far away the server is, in milliseconds, or null when there
+            // is not one or the first reply has not come back yet.
+            ping: net ? net.ping : null,
             wasmBytes: wasmSize(), ...weights() });
     }
     requestAnimationFrame(tick);

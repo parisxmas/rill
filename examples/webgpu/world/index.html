@@ -132,6 +132,36 @@
       color: rgba(255, 255, 255, 0.42);
     }
 
+    /* Who else is in the valley, down the left under the keys. A row apiece:
+       the colour they are drawn in, what they are called, and how much of
+       them is left. The bar is the honest one — a health number in a corner
+       is something you read, a bar is something you see out of the side of
+       your eye while you are busy being shot at. Only shown when there is a
+       server to have a roster of. */
+    .who-list {
+      position: fixed; left: 20px; top: 118px; width: 178px;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      user-select: none; pointer-events: none; color: #9a94b8;
+    }
+    .who-list h2 {
+      margin: 0 0 7px; font-size: 11px; font-weight: 400; letter-spacing: 0.22em;
+      text-transform: uppercase; color: #565273;
+    }
+    .who-list .row { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+    .who-list .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; }
+    .who-list .nm {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; letter-spacing: 0.08em; color: #c9c3e4;
+    }
+    .who-list .row.self .nm { color: #f6c02e; }
+    .who-list .bar {
+      width: 54px; height: 4px; flex: none; background: #1b1a2c;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+    }
+    .who-list .bar i { display: block; height: 100%; width: 0; transition: width 160ms linear; }
+    .who-list .row.out { opacity: 0.42; }
+    .who-list .row.out .nm { text-decoration: line-through; }
+
     /* Names over heads. One element per player, moved by transform every
        frame — the browser's own text engine does the hinting and the kerning,
        which is worth more than a glyph atlas would be. They take no input and
@@ -203,6 +233,7 @@
       <b>left mouse</b> fire &nbsp;·&nbsp; <b>M</b> music</div>
   </div>
   <div class="stat" id="stat"></div>
+  <div class="who-list" id="roster" hidden><h2>in the valley</h2><div id="rosterRows"></div></div>
   <div class="aim">
     <i class="h l"></i><i class="h r"></i><i class="v u"></i><i class="v d"></i>
     <i class="dot"></i>
@@ -220,10 +251,10 @@
         <span class="pct" id="pct">0%</span>
       </div>
       <form class="who" id="who" style="display:none">
-        <input id="name" maxlength="12" placeholder="WHO ARE YOU" autocomplete="off" spellcheck="false">
+        <input id="name" maxlength="8" placeholder="WHO ARE YOU" autocomplete="off" spellcheck="false">
         <button type="submit">enter</button>
       </form>
-      <small id="whonote" style="display:none">letters, digits, dash and underscore</small>
+      <small id="whonote" style="display:none">letters and digits, eight at most — and it has to be free</small>
     </div>
   </div>
   <script type="module">
@@ -234,7 +265,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=225";
+    import { run } from "./host.js?v=231";
 
     // Whose valley. `?join` takes the one on this host, `?join=ws://box:8091/`
     // somebody else's, and no `join` at all is the valley this tab has to
@@ -262,7 +293,12 @@
       });
       form.style.display = "none";
       document.getElementById("whonote").style.display = "none";
-      const name = given.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 12);
+      // The same rule the server applies, applied here so that what somebody
+      // types is what they see over their own head. The server still checks
+      // it — this field is not where the rule lives, it is only where it is
+      // polite about it — and the server may still hand back a number on the
+      // end if the name was already somebody else's.
+      const name = given.replace(/[^A-Za-z0-9]/g, "").slice(0, 8);
       if (name) localStorage.setItem("valley.name", name);
       return name;
     };
@@ -274,14 +310,20 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=225", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=231", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""
         : ` · <b>${h.here}</b> ${h.here === 1 ? "person" : "people"} in the valley`;
+      // Round trip to the server's own tick loop, not to its socket. Coloured
+      // at the thresholds a player would notice one: under 60 ms nothing is
+      // wrong, over 150 ms a shot that looked like it landed may not have.
+      const ping = h.ping == null ? ""
+        : ` · <b style="color:${h.ping < 60 ? "#57c26a" : h.ping < 150 ? "#f6c02e" : "#e0503a"}">` +
+          `${Math.round(h.ping)}</b> ms to the server`;
       stat.innerHTML =
         `<b>${h.gpuName}</b> · quality <b>${h.tier}</b>${lock}${here}<br>` +
-        `<b>${h.fps}</b> fps${gpu} · ${Math.round(h.tris / 1000)}k triangles<br>` +
+        `<b>${h.fps}</b> fps${gpu} · ${Math.round(h.tris / 1000)}k triangles${ping}<br>` +
         `terrain, placement, physics, matrices: <b>world.rill</b> → ` +
         `<b>${h.wasmBytes ? (h.wasmBytes / 1024).toFixed(1) + " KB" : "?"}</b> of wasm<br>` +
         `shadows · MSAA 4x · instancing · gerstner water · compute particles<br>` +

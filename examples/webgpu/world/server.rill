@@ -115,6 +115,7 @@ type Msg
   Named(id: Int, name: Str)
   Moved(id: Int, keys: Int, yaw: Float, pitch: Float)
   Shot(id: Int, dx: Float, dy: Float, dz: Float)
+  Pinged(id: Int, token: Str)
   Left(id: Int)
   Tick
 
@@ -143,6 +144,7 @@ fn handle(w, conns, inbox, joins, m) = match m
   Named(id, name) -> name_one(conns, id, name)
   Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
   Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
+  Pinged(id, token) -> pong(conns, id, token)
   Left(id) -> drop_one(w, conns, id)
   Tick -> tick(w, conns)
 
@@ -212,10 +214,20 @@ fn conn_name(c) = match c
 # twenty times a second: it changes about as often as a person arrives.
 #
 # What comes off the wire is somebody's to choose, so it is cut down to what
-# can be drawn and what cannot break the protocol — letters, digits, a dash and
-# an underscore, twelve of them at most. A space would split the line it is
-# sent on, which is the whole reason this is not passed through as it came.
-fn name_cap() = 12
+# can be drawn and what cannot break the protocol — letters and digits, eight
+# of them at most. A space would split the line it is sent on, which is the
+# whole reason this is not passed through as it came.
+#
+# And it has to be somebody else's name than everybody else's. Two players
+# called the same thing is not a cosmetic problem: the tag over a head and the
+# row in the roster are the only way anybody tells who shot them, and a valley
+# with two `baris` in it cannot be reasoned about by the people in it. Taken
+# names get a number, which is done here rather than refused back to the
+# client — a join that fails on the last step, after the world has been built
+# and the socket is open, is a worse thing to hand somebody than a name with a
+# 2 after it. The client is told what it ended up with, on the same `who` line
+# everybody else gets, so it is never guessing.
+fn name_cap() = 8
 
 fn called(id) = "player" + int_to_str(id)
 
@@ -235,11 +247,29 @@ fn took(b, c) =
   1
 
 fn ok_char(c) =
-  c >= 48 && c <= 57 || (c >= 65 && c <= 90 || (c >= 97 && c <= 122 || (c == 45 || c == 95)))
+  c >= 48 && c <= 57 || (c >= 65 && c <= 90 || c >= 97 && c <= 122)
 
 fn name_one(conns, id, raw) = match find(conns, id)
   None -> conns
-  Some(c) -> rename(conns, c, id, clean_name(raw, id))
+  Some(c) -> rename(conns, c, id, unique(conns, id, clean_name(raw, id)))
+
+# The first free one of `name`, `name2`, `name3` and so on. The suffix eats
+# into the cap rather than pushing past it, so what comes out is still a name
+# eight characters long at most. Sixty-four connections is the ceiling, so
+# `n` cannot climb past two digits and the search cannot fail to terminate.
+fn unique(conns, id, name) =
+  if taken(conns, id, name) then unique_from(conns, id, name, 2) else name
+
+fn unique_from(conns, id, name, n) =
+  tag = int_to_str(n)
+  tried = str_sub(name, 0, name_cap() - str_len(tag)) + tag
+  if taken(conns, id, tried) then unique_from(conns, id, name, n + 1) else tried
+
+# Whoever is asking does not count against themselves — sending the same name
+# twice is a client repeating itself, not a collision.
+fn taken(conns, id, name) = match conns
+  Nil -> false
+  Cons(c, rest) -> if conn_id(c) != id && conn_name(c) == name then true else taken(rest, id, name)
 
 fn rename(conns, c, id, name) =
   next = replace(conns, id, Conn(id, conn_block(c), conn_out(c), name))
@@ -257,6 +287,39 @@ fn tell_all(conns, line) = match conns
 fn tell_one(c, rest, line) =
   offer(conn_out(c), line)
   tell_all(rest, line)
+
+# ---- how far away the server is --------------------------------------------
+#
+# The token comes back on the same channel everything else does, which is the
+# point: a reply sent from the reader strand would time the socket and the
+# kernel and nothing else, and the socket is not what a player is waiting on.
+# Queued behind the ticks and the inputs like a snapshot is, it measures the
+# thing that actually decides whether a shot lands — how long it takes this
+# server to get round to you.
+#
+# The token itself is never read here, only handed back. It is the client's
+# clock, and the server has no business having an opinion about it; it is
+# passed through the same cleaner a name is so that a client cannot make the
+# server emit an arbitrary line to itself.
+fn pong(conns, id, token) = match find(conns, id)
+  None -> conns
+  Some(c) -> ponged(conns, c, token)
+
+fn ponged(conns, c, token) =
+  offer(conn_out(c), "p " + str_sub(clean_token(token), 0, 20))
+  conns
+
+fn clean_token(raw) =
+  b = strbuf()
+
+  for i in 0..str_len(raw)
+    keep_digit(b, raw, i)
+
+  strbuf_str(b)
+
+fn keep_digit(b, raw, i) = if is_digit(str_get(raw, i)) then took(b, str_get(raw, i)) else 0
+
+fn is_digit(c) = c >= 48 && c <= 57
 
 # Everyone already here, for somebody who has just walked in.
 fn roster(conns, out) = match conns
@@ -575,7 +638,7 @@ fn handle_line(conn, inbox, id, budget, until, msg, rest) =
   reader(conn, inbox, id, budget - 1, until, rest)
 
 fn route(inbox, id, kind, parts) =
-  if kind == "i" then tell(inbox, Moved(id, num_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "f" then tell(inbox, Shot(id, fnum_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "n" then tell(inbox, Named(id, unwrap_or(nth(parts, 1), ""))) else 0
+  if kind == "i" then tell(inbox, Moved(id, num_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "f" then tell(inbox, Shot(id, fnum_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "n" then tell(inbox, Named(id, unwrap_or(nth(parts, 1), ""))) else if kind == "p" then tell(inbox, Pinged(id, unwrap_or(nth(parts, 1), ""))) else 0
 
 fn tell(inbox, m) =
   send(inbox, m)

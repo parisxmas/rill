@@ -53,6 +53,9 @@ export function join(url, name) {
     // Set once the socket is gone, so the frame loop can say so and carry on
     // rather than throwing sixty times a second.
     lost: false,
+    // Round trip to the hub and back, in milliseconds, smoothed. Null until
+    // the first one comes home. See the ping below for what it is measuring.
+    ping: null,
     send(line) { if (sock.readyState === 1) sock.send(line); },
     input(keys, yaw, pitch) {
       look = [yaw, pitch];
@@ -73,6 +76,15 @@ export function join(url, name) {
     if (kind === "hello") { hello(net, line, ready); return; }
     if (kind === "gone") { net.events.push({ kind: "gone", which: nums(line, 1) }); return; }
     if (kind === "who") { const p = line.split(" "); net.names.set(+p[1], p[2] ?? ""); return; }
+    if (kind === "p") {
+      const sent = +line.slice(sp + 1);
+      const rtt = performance.now() - sent;
+      // A quarter weight on each new one. Enough to show a link going bad
+      // within a couple of seconds and not so much that one late packet
+      // behind a scheduler makes the number jump about while it is read.
+      net.ping = net.ping === null ? rtt : net.ping * 0.75 + rtt * 0.25;
+      return;
+    }
     if (kind === "no") { failed(new Error(line)); return; }
     // r, t, k, b — one line each, applied in the order they arrived.
     net.events.push({ kind, n: nums(line, 1) });
@@ -91,7 +103,17 @@ export function join(url, name) {
   // server walks from the last input it was given until it is given another.
   let look = [0, 0];
   const beat = setInterval(() => net.send(`i 0 ${look[0].toFixed(4)} ${look[1].toFixed(4)}`), 2000);
-  const stop = () => clearInterval(beat);
+
+  // The ping. The token is this browser's own clock, sent out and handed
+  // straight back, so nothing has to be remembered here and two pings in the
+  // air at once cannot be confused for each other.
+  //
+  // Once a second: a round trip that is worth knowing about does not change
+  // faster than that, and the reply is queued behind the ticks like everything
+  // else, so asking ten times a second would measure the queue this ping
+  // added.
+  const pulse = setInterval(() => net.send(`p ${Math.round(performance.now())}`), 1000);
+  const stop = () => { clearInterval(beat); clearInterval(pulse); };
 
   sock.addEventListener("error", () => { stop(); net.lost = true; failed(new Error(`cannot reach ${url}`)); });
   sock.addEventListener("close", () => { stop(); net.lost = true; failed(new Error(`${url} closed`)); });
@@ -185,6 +207,21 @@ export function sharkNow(net, now) {
     heading: a.heading + wrap(b.heading - a.heading) * t,
     mode: b.mode,
   };
+}
+
+// Everybody in the valley, this player included, in the order the server
+// listed them — which is the order they arrived and does not shuffle under a
+// reader's eye the way sorting by health would. Straight off the last
+// snapshot: a roster does not want the interpolation the figures do, because
+// nothing about a name or a health bar moves between snapshots.
+export function everyone(net) {
+  if (!net.last) return [];
+  return net.last.players.map((p) => ({
+    id: p.id,
+    name: net.names.get(p.id) ?? "",
+    health: p.health,
+    self: p.id === net.id,
+  }));
 }
 
 export function me(net) {

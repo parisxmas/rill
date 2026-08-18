@@ -2,13 +2,60 @@
 
 ## Unreleased
 
+- **A rifle in everybody's hands.** The figure was firing an empty fist. What
+  it holds now is the same `rifle.mesh` the viewmodel draws — one rifle in this
+  valley, not two — instanced once per person off a matrix the page works out
+  each frame: the hand joint's own world matrix times a grip.
+
+  The grip is derived at bake time rather than guessed. `bake_figure.py` finds
+  the right hand in the bind pose, takes the direction its own forearm points
+  as the barrel's, world up as the rifle's up, and writes the result into the
+  header along with which joint it hangs off — so the weapon follows the arm
+  through every clip and the page knows nothing about the rig beyond one index.
+  The bolt and the round do not animate out here: they belong to the gun in
+  your own hands, ten centimetres from the eye, and at the distance somebody
+  else is a bolt is two pixels.
+
+  Standing still is now the armed idle rather than the empty-handed one,
+  because somebody standing still is who you look at, and they are holding a
+  rifle.
+
+- **Everybody stopped walking sideways.** The figures were placed at yaw plus
+  half a turn, which mirrors rather than turns — so a person walked at a right
+  angle to where they were aiming, and on a mannequin that is symmetric until
+  it moves the mirror was invisible. The rotation that takes the model's
+  forward to the direction Rill means by a yaw is π − yaw, and nothing else
+  does.
+
+- **Who else is in here.** A roster down the left: everybody in the valley,
+  the colour their figure is drawn in, what they are called, and a bar for how
+  much of them is left. The tag over a head answers "who is that"; this answers
+  "who am I in here with", which is a different question and not one you can
+  answer by turning round. It is rebuilt only when a row arrives or leaves, so
+  the bars slide rather than step.
+
+- **How far away the server is.** A round trip, once a second, shown top right
+  and coloured at the thresholds where a player would start noticing one. The
+  token is the browser's own clock handed straight back, so nothing has to be
+  remembered on either side. It is answered from the hub, queued behind the
+  ticks and the inputs like a snapshot is, rather than from the reader strand —
+  a reply sent from there would time the socket and the kernel, and the socket
+  is not what anybody is waiting on.
+
+- **The day is twice as long.** Ninety seconds was a good number for somebody
+  who would look at this for a minute and a poor one for somebody living in it:
+  the shadows visibly crawled and the sun set while you were crossing the
+  meadow. A hundred and eighty is still nothing like a day, still shows a whole
+  one inside a session, and the sky has stopped being something you can watch
+  move.
+
 - **Other people are people now.** The blocky figure of stacked cones is gone;
   what stands in the valley is Quaternius' mannequin off the Universal
-  Animation Library (CC0), with six of that library's clips — standing,
-  walking, running, crouching, firing, and going down.
+  Animation Library (CC0), with seven of that library's clips — standing,
+  walking, running, crouching, firing, taking a round, and going down.
 
   `tools/bake_figure.py` reads the glTF and writes `figure.mesh`: fifty-three
-  joints, 13,744 triangles, six clips, 389 KB. Three facts about the source are
+  joints, 13,744 triangles, seven clips, 383 KB. Three facts about the source are
   what keep it there rather than at a megabyte and a half, and the baker checks
   each rather than assuming it — nothing in the rig is ever scaled, exactly one
   joint translates, and the clips are already authored on a thirty-a-second
@@ -22,6 +69,12 @@
   arrive already in world space, so the vertex stage has no model transform, no
   bind pose and no per-instance rotation in it. They cast shadows through the
   same skin.
+
+  Two of those seven are events rather than states and are decided on the
+  page, off what the snapshot already says. Firing is one. Being hit is the
+  other, and it is not in the protocol at all: a health that went down since
+  the last snapshot and has not reached zero is somebody taking a round, which
+  is the same fact the server would have had to send, arriving for nothing.
 
   Which clip somebody is playing comes from the server, in a new field on each
   player in the snapshot. It has the keys and the health, and two people
@@ -48,10 +101,20 @@
   arrives. Somebody walking in is told the whole roster; everybody already
   there hears about them.
 
-  What arrives is somebody's to choose, so the server cuts it down to letters,
-  digits, a dash and an underscore, twelve at most, and hands out `player7` to
-  anyone who says nothing. A space would have split the line it is sent on,
-  which is the first reason not to pass it through as it came.
+  What arrives is somebody's to choose, so the server cuts it down to letters
+  and digits, eight at most, and hands out `player7` to anyone who says
+  nothing. A space would have split the line it is sent on, which is the first
+  reason not to pass it through as it came.
+
+  And it has to be free. Two people called the same thing is not a cosmetic
+  problem — the tag over a head and the row in the roster are the only way
+  anybody tells who shot them, and a valley with two `baris` in it cannot be
+  reasoned about by the people in it. A taken name gets a number, and the
+  number eats into the eight rather than pushing past it. That is done on the
+  server rather than refused back to the client: a join that fails on its last
+  step, after the world is built and the socket is open, is a worse thing to
+  hand somebody than a name with a 2 after it. They are told what they ended
+  up with on the same `who` line everybody else gets, so nobody is guessing.
 
   The tags are elements over the canvas rather than geometry in it. Text in a
   3D scene means a glyph atlas, a quad each and a pipeline to put them through;
