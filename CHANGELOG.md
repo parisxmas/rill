@@ -75,9 +75,12 @@
   before the scope arrives: two opinions about where the middle is, is one too
   many.
 
-  All of it eased over about a sixth of a second and framerate-independent: a
-  field of view that changes between one frame and the next reads as a cut
-  rather than as somebody raising a rifle. The mouse slows with the zoom, or
+  All of it eased and framerate-independent: nine tenths of the way in about
+  seventy milliseconds and settled inside an eighth of a second, measured at
+  sixty frames and at a hundred and forty-four. A field of view that changes
+  between one frame and the next reads as a cut rather than as somebody raising
+  a rifle; one that takes a sixth of a second — which is where this started —
+  reads as the game thinking about it. The mouse slows with the zoom, or
   the same movement of the hand covers two and a half times the angle and the
   sights are unusable. Letting go of the pointer lets go of the sights, since a
   held button cannot report itself released once the page has stopped hearing

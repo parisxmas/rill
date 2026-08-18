@@ -35,7 +35,7 @@
        it readable over the pale peaks and over the dark water both. */
     .aim { position: fixed; inset: 0; pointer-events: none;
            display: grid; place-items: center;
-           transition: opacity 140ms ease; }
+           transition: opacity 70ms ease; }
     /* Halfway up, the rifle's own sight and this one are both on screen and
        two at once is one too many; at the top there is a reticle in the scope
        and this one has no business there at all. Driven from the frame loop
@@ -403,7 +403,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=266";
+    import { run } from "./host.js?v=267";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -468,7 +468,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=266", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=267", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

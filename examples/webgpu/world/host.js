@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=266";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=266";
+import { load } from "./world.js?v=267";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=267";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=266";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "266";
+const V = "267";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2451,9 +2451,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     wantShot = false;
     recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
 
-    // The sights, eased both ways over about a sixth of a second, and framerate
-    // independent so they take the same time on every screen.
-    aim += ((wantAim && E.health(state) > 0.001 ? 1 : 0) - aim) * (1 - Math.pow(0.0005, dt));
+    // The sights, eased both ways and framerate independent so they take the
+    // same time on every screen.
+    //
+    // Nine tenths of the way in about seventy milliseconds and settled inside
+    // an eighth of a second, measured at sixty and at a hundred and
+    // forty-four. That is about as fast as a rifle can be brought up and is
+    // what the hand expects; the ease that was here before took four times as
+    // long and felt like the game thinking about it. Still an ease and not a
+    // cut — the field of view has to travel, or it reads as an edit — but the
+    // travelling is over before it is noticed.
+    aim += ((wantAim && E.health(state) > 0.001 ? 1 : 0) - aim) * (1 - Math.exp(-dt / 0.024));
     if (aim < 0.001) aim = 0;
     const zoom = 1 + (AIM_ZOOM - 1) * aim;
     E.set_zoom(state, zoom);
