@@ -29,12 +29,15 @@ fn now_seconds() = rec_now()
 # Five baskets, each a minute older than the last. What they have in common is
 # what the engine is being asked about afterwards.
 #
-# Five rather than three on purpose: a real engine answers nothing at all
-# until a model has seen a few, and it is not `min_support` doing it — that
-# was tried at every setting down to zero, as were `half_life`, a checkpoint,
-# and timestamps near the epoch and far from it. Whatever the threshold is, it
-# is the engine's, and a demonstration that sat under it would suggest this
-# client was at fault.
+# The last basket has no kahve in it, and that is not decoration. The default
+# scoring is Dunning's log-likelihood ratio, which measures the evidence that
+# two items travel together *more than chance would have it* — and an item
+# present in every basket cannot show such evidence, because "appears with
+# kahve" and "appears" are then the same fact. The G² statistic is exactly
+# zero for it, and the engine files a zero score under no-evidence rather
+# than answering with it. So a demo whose every basket held kahve would ask
+# about kahve and be told nothing, correctly. One kahve-free basket is what
+# makes the question answerable; `scoring: "count"` would answer without it.
 # The basket ids come off the clock because `track` is idempotent: an id the
 # engine has already counted is counted once, and a second run of this against
 # the same server would otherwise answer `counted: false` five times over.
