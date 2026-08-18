@@ -69,25 +69,43 @@ RIFLE_METRES = 1.10
 GRIP_AT = 0.40
 # The clip whose first frame the rifle is levelled against. See `main`.
 GRIP_POSE = "Pistol_Idle_Loop"
-# Which joints move with the arms rather than with the legs, so that somebody
-# can walk with a rifle up in a library that has a walk and an armed idle and
-# no armed walk. Everything descending from the spine — neck, head, both arms,
-# every finger — plus the pelvis itself, and the pelvis is the interesting one.
+# How much of the armed idle each joint takes, against the clip somebody is
+# actually doing. One number a joint, nought to one — a weight and not a flag,
+# and that is the whole of what makes a run look like running.
 #
-# Its rotation is what pitches a running body forward, and the torso rides on
-# it: masked from the spine alone, the rifle came out level and pointed twenty
-# five degrees into the ground, because the whole upper body had been tipped
-# by a joint underneath the mask. Its *children* stay behind — the legs hang
-# off the pelvis rather than off the spine — so they still run, on an upright
-# pelvis rather than a leaning one. The stride's own bob is a translation and
-# is not masked at all, so the body still rises and falls with the footfalls.
+# Taken as a flag it was: everything from the spine up came wholly from the
+# armed idle, so the legs pumped underneath a torso that did not move at all.
+# The rifle was steady and the man carrying it was a shop dummy on rails.
 #
-# Which is why this goes into the file as a joint apiece rather than as one
-# index and a subtree: the rule has an exception in it, and the place to know
-# about the exception is here, where the rig is being read, and not on a page
-# that has never heard of a pelvis.
-UPPER = "DEF-spine.001"
-PELVIS = "DEF-hips"
+# So the arms keep the weapon — they are the reason for any of this — and
+# everything between them and the legs takes most of the idle and a little of
+# the run, in the proportion each part can afford:
+#
+#   the pelvis, which is what pitches a running body forward and carries the
+#   whole torso with it, keeps about half of its lean. All of it put the barrel
+#   twenty-five degrees into the ground; none of it stood the runner up like a
+#   guardsman.
+#
+#   the spine and the head keep a third, which is the bob and the twist you see
+#   from ten metres away and is most of what says a body is moving.
+#
+#   the shoulders keep a little, so the weapon rides the stride instead of
+#   floating over it, and the arms and hands take none of it at all.
+#
+# The names are checked against the rig rather than guessed: a joint this does
+# not name takes nothing, which is what the legs want.
+WEIGHTS = [
+    ("DEF-hips", 0.55),
+    ("DEF-spine", 0.65),
+    ("DEF-neck", 0.7),
+    ("DEF-head", 0.7),
+    ("DEF-shoulder", 0.85),
+    ("DEF-upper_arm", 1.0),
+    ("DEF-forearm", 1.0),
+    ("DEF-hand", 1.0),
+    ("DEF-f_", 1.0),
+    ("DEF-thumb", 1.0),
+]
 # Which way the mannequin faces in its own space. Its nose and its toes agree
 # about this, and so does the π − yaw the page places it by.
 FACES = (0.0, 0.0, 1.0)
@@ -318,12 +336,14 @@ def main(src, dst):
     grip = grip_matrix(armed, hand, box)
 
     out = bytearray()
-    # The mask, one byte a joint: the spine's subtree, and the pelvis on its own.
-    spine = names.index(UPPER)
-    upper = [0] * len(joints)
-    for j in range(len(joints)):
-        upper[j] = 1 if j == spine or (parent[j] >= 0 and upper[parent[j]]) else 0
-    upper[names.index(PELVIS)] = 1
+    # The weights, one byte a joint. Longest name first, so `DEF-hand` does not
+    # answer for `DEF-head`.
+    order = sorted(WEIGHTS, key=lambda w: -len(w[0]))
+    upper = []
+    for n in names:
+        w = next((v for prefix, v in order if n.startswith(prefix)), 0.0)
+        upper.append(int(round(w * 255)))
+    assert any(v == 255 for v in upper), "no joint takes the whole of the armed pose"
 
     out += b"RILLFIG4"
     out += struct.pack("<IIII", len(joints), len(verts), len(tris), len(CLIPS))
@@ -391,7 +411,7 @@ def main(src, dst):
     open(dst, "wb").write(out)
     print(f"{dst}: {len(out) / 1024:.0f} KB — {len(joints)} joints, {len(verts)} vertices, "
           f"{len(tris) // 3} triangles, {len(CLIPS)} clips, weapon on {names[hand]}, "
-          f"{sum(upper)} joints on the upper body")
+          f"{sum(1 for v in upper if v)} joints carrying the armed pose")
 
 
 if __name__ == "__main__":

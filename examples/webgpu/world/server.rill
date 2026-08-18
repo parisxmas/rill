@@ -585,8 +585,47 @@ fn ticker(inbox, next) =
 # `max_connections()` however it dresses them up.
 fn serve(conn, inbox, live) =
   request = fill_until(conn, "", 4, now_nanos() + handshake_ms() * 1000000)
+  if said_the_word(request) == 0 then no_entry(conn, live) else at_the_door(conn, inbox, live, request)
+
+fn at_the_door(conn, inbox, live, request) =
   addr = whose(conn, request)
   if take_addr(live, addr) <= 0 then turn_away(conn, live, addr) else admitted(conn, inbox, live, addr, request)
+
+# ---- the word at the door ---------------------------------------------------
+#
+# A shared word, in the query of the address the socket is opened to, checked
+# before the handshake is answered and before anything is allocated for whoever
+# is asking. It is a latch and not a lock: one word for everybody, sent in
+# plain sight inside the TLS, and anybody who has it can pass it on. It keeps
+# the valley to the people who were told about it, which is all it is for.
+#
+# The line it travels on is the request line, and nginx is asked not to log
+# that for this location — a password in an access log outlives the password.
+fn word() = "135"
+
+fn said_the_word(request) =
+  line = str_sub(request, 0, headline(request))
+  at = str_find(line, "p=" + word())
+  if at < 0 then 0 else ends_there(line, at + 2 + str_len(word()))
+
+# What follows the word has to be the end of it: a space, because the request
+# line ends ` HTTP/1.1`, or an ampersand if something else follows in the
+# query. Without this the word `135` also admits `1350`, and `1` would admit
+# everything — the sort of hole nobody looks for until the word is short.
+fn ends_there(line, i) =
+  c = if i < str_len(line) then str_get(line, i) else 32
+  if c == 32 || c == 38 then 1 else 0
+
+# Only the request line: a word further down would be a header, and a header is
+# somebody else's to write.
+fn headline(request) =
+  i = str_find(request, "\r\n")
+  if i < 0 then str_len(request) else i
+
+fn no_entry(conn, live) =
+  drop_slot(live)
+  sock_close(conn)
+  0
 
 fn admitted(conn, inbox, live, addr, request) =
   if ws_accept(conn, request) then play(conn, inbox) else sock_close(conn)

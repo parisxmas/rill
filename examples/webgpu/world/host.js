@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=244";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=244";
+import { load } from "./world.js?v=252";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=252";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=244";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "244";
+const V = "252";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -403,6 +403,34 @@ function makeSkinner(figure, capacity) {
 
   const model = new Float32Array(16);
   const rooted = new Float32Array(16);
+  // Two quaternions of scratch: the clip somebody is doing, and the armed pose
+  // being mixed into it.
+  const qa = new Float32Array(4), qb = new Float32Array(4);
+
+  // One joint out of one clip: the two frames either side of the moment, the
+  // short way round between them.
+  const sample = (k, j, out) => {
+    const a = (k.f0 * J + j) * 4, b = (k.f1 * J + j) * 4;
+    const ax = k.rot[a] / 32767, ay = k.rot[a + 1] / 32767;
+    const az = k.rot[a + 2] / 32767, aw = k.rot[a + 3] / 32767;
+    let bx = k.rot[b] / 32767, by = k.rot[b + 1] / 32767;
+    let bz = k.rot[b + 2] / 32767, bw = k.rot[b + 3] / 32767;
+    if (ax * bx + ay * by + az * bz + aw * bw < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; }
+    out[0] = ax + (bx - ax) * k.t; out[1] = ay + (by - ay) * k.t;
+    out[2] = az + (bz - az) * k.t; out[3] = aw + (bw - aw) * k.t;
+  };
+
+  // `a` moves `w` of the way to `b`, the short way round. Straight lerp and a
+  // normalise rather than a proper slerp: these two are never far apart — one
+  // is a man running and the other is the same man holding a rifle — and at
+  // that separation the difference is a fraction of a degree in the middle of
+  // the arc, which nothing on a screen can tell.
+  const mix = (a, b, w) => {
+    if (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] < 0) {
+      b[0] = -b[0]; b[1] = -b[1]; b[2] = -b[2]; b[3] = -b[3];
+    }
+    for (let i = 0; i < 4; i++) a[i] += (b[i] - a[i]) * w;
+  };
 
   return {
     matrices: out,
@@ -455,16 +483,15 @@ function makeSkinner(figure, capacity) {
       const { f0, f1, t } = low;
 
       for (let j = 0; j < J; j++) {
-        const k = over && figure.upper[j] ? up : low;
-        const a = (k.f0 * J + j) * 4, b = (k.f1 * J + j) * 4;
-        // snorm16 back to a quaternion, taking the short way between frames.
-        const ax = k.rot[a] / 32767, ay = k.rot[a + 1] / 32767;
-        const az = k.rot[a + 2] / 32767, aw = k.rot[a + 3] / 32767;
-        let bx = k.rot[b] / 32767, by = k.rot[b + 1] / 32767;
-        let bz = k.rot[b + 2] / 32767, bw = k.rot[b + 3] / 32767;
-        if (ax * bx + ay * by + az * bz + aw * bw < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; }
-        let qx = ax + (bx - ax) * k.t, qy = ay + (by - ay) * k.t;
-        let qz = az + (bz - az) * k.t, qw = aw + (bw - aw) * k.t;
+        // What they are doing, and then however much of the armed pose this
+        // joint is asked to carry — all of it in the hands, none of it in the
+        // legs, and a proportion in between. A weight and not a flag: taken as
+        // a flag the whole torso came from the idle and the legs pumped
+        // underneath a body that did not move.
+        sample(low, j, qa);
+        const w = over ? figure.upper[j] / 255 : 0;
+        if (w > 0.001) { sample(up, j, qb); mix(qa, qb, w); }
+        let qx = qa[0], qy = qa[1], qz = qa[2], qw = qa[3];
         const n = Math.hypot(qx, qy, qz, qw) || 1;
         qx /= n; qy /= n; qz /= n; qw /= n;
 
@@ -1489,7 +1516,27 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // different point in the same walk without anybody disagreeing about
   // anything that matters.
   const clocks = new Map();
-  const CLIP_FOR = ["idle", "walk", "run", "crouch", "die"];
+  // What the server says somebody is doing, as a clip.
+  //
+  // Nobody in this valley walks. Moving without the sprint key is seven and a
+  // half metres a second, which is faster than anybody has ever run, and the
+  // walk clip under it made the legs stroll while the body flew — the thing
+  // that reads as broken, more than any amount of jitter. So the run clip
+  // covers both, at two rates.
+  const CLIP_FOR = ["idle", "run", "run", "crouch", "die"];
+
+  // How fast to play it, which is not one.
+  //
+  // The clip is a run at about four metres a second — two steps in seven tenths
+  // of a second, which is what a person does. This valley moves at seven and a
+  // half, and at sixteen with the sprint key, so played at its own speed the
+  // feet skate: the body covers twice the ground the legs are asking for.
+  //
+  // Cadence goes about as the square root of speed — most of the rest is a
+  // longer stride, which is why a sprinter does not pedal twice as fast as a
+  // jogger. √(7.5/4) and √(16/4) are these two numbers, and they put the feet
+  // near enough under the body at both speeds.
+  const CLIP_RATE = [1, 1.35, 1.95, 1, 1];
   // The clips that only have legs worth keeping. Quaternius' library has a
   // walk, a run and a crouch, and an armed idle, and no armed anything else —
   // so in these three the arms swing like the empty arms they were animated
@@ -1508,14 +1555,25 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // crater without either needing to say anything. The cost is that it arrives
   // a tick late, which is the same tick the health bar moves on.
   function clipFor(p, now) {
-    const c = clocks.get(p.id) ?? { name: "idle", since: now, firedAt: -9, hitAt: -9, health: p.health };
+    const c = clocks.get(p.id) ?? { name: "idle", since: now, at: 0, seen: now, firedAt: -9, hitAt: -9, health: p.health };
     if (p.health < c.health - 0.001 && p.health > 0.001) c.hitAt = now;
     c.health = p.health;
     const shooting = now - c.firedAt < figure.clips.get("fire").seconds * 1000;
     const hurt = now - c.hitAt < figure.clips.get("hit").seconds * 1000;
     // Down first: somebody on the ground is not flinching or shooting.
     const want = p.health < 0.001 ? "die" : hurt ? "hit" : shooting ? "fire" : (CLIP_FOR[p.pose] ?? "idle");
-    if (want !== c.name) { c.name = want; c.since = now; }
+    // How far into the clip, kept as a running total rather than worked out
+    // from when it started. The two agree until the rate changes, and then the
+    // subtraction jumps: somebody who has been running for ten seconds and
+    // presses sprint would be thrown four and a half seconds down the clip
+    // mid-stride. Adding up the frames cannot do that.
+    //
+    // The step is capped, because a tab that was in the background comes back
+    // with a gap of minutes in its hand.
+    const step = Math.min((now - c.seen) / 1000, 0.1);
+    c.seen = now;
+    const rate = want === "run" ? (CLIP_RATE[p.pose] ?? 1) : 1;
+    if (want !== c.name) { c.name = want; c.since = now; c.at = 0; } else c.at += step * rate;
     clocks.set(p.id, c);
     return c;
   }
@@ -1964,6 +2022,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // is not a decision a client gets to make while other people are standing
   // in it.
   let net = null;
+  let turnedAway = false;
   if (server) {
     step("asking to join");
     try {
@@ -1972,8 +2031,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       net.gone = [];
     } catch (e) {
       // A valley that cannot be reached is not a reason to show nothing: the
-      // single-player one is right here and works.
+      // single-player one is right here and works. But it has to say so, and
+      // in the same letters that say the socket went — a player who gave the
+      // wrong word and was quietly dropped into a valley of their own would
+      // wander around it wondering where everybody was.
       console.warn(`[valley] ${e.message} — playing alone`);
+      turnedAway = true;
       net = null;
     }
   }
@@ -2110,6 +2173,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
+
   const deadEl = document.getElementById("dead");
   const tickEl = document.getElementById("tick");
   // How long the valley leaves somebody on the ground. Asked of Rill rather
@@ -2367,7 +2431,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // the rifle keeps breathing at its own rate instead of bobbing once
         // per footfall.
         const over = LEGS_ONLY.has(clock.name) ? figure.clips.get("idle") : null;
-        skinner.pose(i, clip, (now - clock.since) / 1000, p.x, p.y, p.z, p.yaw, over, now / 1000);
+        skinner.pose(i, clip, clock.at, p.x, p.y, p.z, p.yaw, over, now / 1000);
         // Whoever is down has let go of it. The die clip puts the hand on the
         // ground and the rifle would have followed it there still gripped,
         // which is a body holding its weapon at attention while lying dead.
@@ -2815,4 +2879,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   }
   requestAnimationFrame(tick);
   await firstFrame;
+
+  // Turned away at the door: said here rather than at the moment it happened,
+  // because at that moment the loading screen is still over everything and
+  // nobody would have seen it. Six seconds is long enough to read twice, and
+  // then it goes: what is behind it is a valley that works.
+  if (turnedAway) {
+    cut.querySelector("span").textContent = "NOT IN";
+    cut.querySelector("em").textContent = "wrong word, or nobody is home";
+    cut.querySelector("small").textContent = "this valley is yours alone";
+    cut.classList.add("on");
+    setTimeout(() => cut.classList.remove("on"), 6000);
+  }
 }

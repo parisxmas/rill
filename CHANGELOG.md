@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- **A word at the door.** The shared valley asks for one before it lets anybody
+  in — `135` for now. It travels in the query of the address the socket is
+  opened to, so the server can refuse before it answers the handshake and
+  before anything is allocated for whoever is asking, and nginx is told not to
+  log that line: a password in an access log outlives the password. It is a
+  latch and not a lock — one word for everybody, in plain sight inside the TLS,
+  and anybody who has it can pass it on. It keeps the valley to the people who
+  were told about it, which is all it is for.
+
+  The word has to end where it ends, too: `135` matching as a prefix would have
+  admitted `1350`, and a word of `1` would have admitted everything.
+
+  Giving the wrong one leaves you in a valley of your own, and now it says so
+  rather than dropping you there quietly to wander about wondering where
+  everybody went.
+
+- **Nobody was being interpolated.** The position between two snapshots was
+  measured from the *older* of the two, so by the first frame after one arrived
+  the sum was already past the newer one and the clamp pinned it at the end.
+  Everybody stood still for a twentieth of a second and then jumped, twenty
+  times a second — which on a fast screen reads as a flicker between positions
+  rather than as walking. Measured from the newer one, which is what the
+  comment above it always claimed, every frame moves: at 60 Hz not one frame in
+  three hundred stood still, and the largest step was 1.3× the median.
+
+  The interval between snapshots is smoothed as well, so one late packet does
+  not make everybody sprint to catch up and one early one does not leave them
+  standing.
+
+- **Nobody walks in this valley.** Moving is seven and a half metres a second,
+  which is faster than anybody has ever run, and the walk clip under it made
+  the legs stroll while the body flew. The run clip covers both speeds now, at
+  two rates: the clip is a run at about four metres a second, and cadence goes
+  about as the square root of speed — √(7.5/4) and √(16/4) — so the feet stay
+  under the body at both. The clip's own time is carried forward frame by frame
+  rather than worked out from when it started, or pressing sprint would throw a
+  runner four seconds down the cycle mid-stride.
+
+- **And the run looks like running.** The armed pose was a flag: every joint
+  from the spine up came wholly from the armed idle, so the legs pumped
+  underneath a torso that did not move at all — the rifle was steady and the
+  man carrying it was a shop dummy on rails. It is a weight now, one number a
+  joint, baked from the rig: the arms and hands keep the weapon, the shoulders
+  keep a little of the stride, the spine and head keep a third of it, and the
+  pelvis keeps about half its lean. The barrel dips twelve to eighteen degrees
+  through a running stride instead of nought or twenty-nine, and the chest
+  moves twenty centimetres through the cycle instead of standing still.
+
 - **A player on a fast screen watched their own ping climb past half a minute.**
   144 fps, and the page sent one input a *frame* — 144 messages a second against
   an allowance of ninety. Fifty-four a second went unread, waited in the kernel

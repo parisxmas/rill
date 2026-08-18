@@ -275,9 +275,10 @@
       </div>
       <form class="who" id="who" style="display:none">
         <input id="name" maxlength="8" placeholder="WHO ARE YOU" autocomplete="off" spellcheck="false">
+        <input id="word" maxlength="16" placeholder="WORD" autocomplete="off" spellcheck="false" style="flex:0 0 5.5rem">
         <button type="submit">enter</button>
       </form>
-      <small id="whonote" style="display:none">letters and digits, eight at most — and it has to be free</small>
+      <small id="whonote" style="display:none">a name of letters and digits, eight at most — and the word you were given</small>
     </div>
   </div>
   <script type="module">
@@ -288,7 +289,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=244";
+    import { run } from "./host.js?v=252";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -314,6 +315,7 @@
       if (!server) return "";
       const form = document.getElementById("who");
       const field = document.getElementById("name");
+      const word = document.getElementById("word");
       form.style.display = "flex";
       document.getElementById("whonote").style.display = "block";
       field.value = localStorage.getItem("valley.name") ?? "";
@@ -322,6 +324,12 @@
       const given = await new Promise((res) => {
         form.addEventListener("submit", (e) => { e.preventDefault(); res(field.value.trim()); }, { once: true });
       });
+      // The word travels in the query of the socket's own address, where the
+      // server can refuse it before it answers the handshake — no protocol, no
+      // round trip, and nothing allocated for somebody who does not have it.
+      // Not kept: a name is worth remembering between visits and a shared word
+      // is not.
+      pass = word.value.trim();
       form.style.display = "none";
       document.getElementById("whonote").style.display = "none";
       // The same rule the server applies, applied here so that what somebody
@@ -333,7 +341,12 @@
       if (name) localStorage.setItem("valley.name", name);
       return name;
     };
+    let pass = "";
     const name = await askName();
+    // `?join` may already carry a query of its own.
+    const door = server && pass
+      ? server + (server.includes("?") ? "&" : "?") + "p=" + encodeURIComponent(pass)
+      : server;
     const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
@@ -341,7 +354,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=244", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=252", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""
@@ -368,7 +381,7 @@
       bar.style.width = `${(done / total * 100).toFixed(0)}%`;
       pct.textContent = `${Math.round(done / total * 100)}%`;
       what.textContent = label;
-    }, server, name).then(() => {
+    }, door, name).then(() => {
       // `run` resolves on the first submitted frame, so the fade is over
       // something rather than over nothing.
       boot.classList.add("gone");

@@ -48,6 +48,9 @@ export function join(url, name) {
     // them rather than the older of the two.
     prev: null,
     last: null,
+    // How long a snapshot takes to arrive, smoothed — the length of the walk
+    // between two of them. See `snapshot`.
+    span: 0,
     // Everything that has happened since the renderer last looked.
     events: [],
     // Set once the socket is gone, so the frame loop can say so and carry on
@@ -156,6 +159,11 @@ function snapshot(net, line) {
       return { id: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], pitch: n[5], health: n[6], pose: n[7] | 0 };
     }),
   };
+  // How long one takes to arrive, smoothed. It is the length of the walk
+  // between two of them, and one late packet should not make everybody sprint
+  // to catch up — nor one early one leave them standing.
+  const gap = net.last ? snap.at - net.last.at : 0;
+  if (gap > 1 && gap < 500) net.span = net.span ? net.span * 0.8 + gap * 0.2 : gap;
   net.prev = net.last ?? snap;
   net.last = snap;
 }
@@ -169,8 +177,18 @@ function snapshot(net, line) {
 // past a wall and snaps back is worse than one that is a snapshot behind.
 export function others(net, now) {
   if (!net.last || !net.prev) return [];
-  const span = net.last.at - net.prev.at;
-  const t = span > 1 ? Math.min(1, Math.max(0, (now - net.prev.at) / span)) : 1;
+  // A snapshot behind, and that is what makes it smooth: the moment one
+  // arrives we are still showing the one before it, and over the next
+  // twentieth of a second everybody walks to where this one puts them —
+  // arriving just as the next one lands.
+  //
+  // This was measured from the *older* of the two, so by the first frame after
+  // a snapshot `now` was already past the newer one and the clamp pinned it at
+  // one. Nothing was interpolated at all: everybody stood still for a twentieth
+  // of a second and then jumped, twenty times a second, which on a fast screen
+  // reads as a flicker between positions rather than as walking.
+  const span = net.span || (net.last.at - net.prev.at);
+  const t = span > 1 ? Math.min(1, Math.max(0, (now - net.last.at) / span)) : 1;
   const out = [];
   for (const p of net.last.players) {
     if (p.id === net.id) continue;
@@ -197,8 +215,8 @@ export function others(net, now) {
 // who is not there — so between ticks it is interpolated rather than swum.
 export function sharkNow(net, now) {
   if (!net.last || !net.prev) return null;
-  const span = net.last.at - net.prev.at;
-  const t = span > 1 ? Math.min(1, Math.max(0, (now - net.prev.at) / span)) : 1;
+  const span = net.span || (net.last.at - net.prev.at);
+  const t = span > 1 ? Math.min(1, Math.max(0, (now - net.last.at) / span)) : 1;
   const a = net.prev.shark, b = net.last.shark;
   return {
     x: a.x + (b.x - a.x) * t,
