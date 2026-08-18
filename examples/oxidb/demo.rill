@@ -12,13 +12,18 @@
 #     ./demo 4444
 import "oxidb"
 
+# `args()` includes the program's own name, so "no arguments" is a list of
+# one. Matching `Nil` here meant the stand-in never ran: every run took the
+# port branch, read a port of 0 out of the program's path, and failed to
+# connect to it.
 fn main() = match args()
+  Cons(_, Nil) -> against_stand_in()
+  Cons(_, Cons(port, _)) -> report(str_to_int(port))
   Nil -> against_stand_in()
-  Cons(port, _) -> report(str_to_int(port))
 
 # -- the client half ----------------------------------------------------------
 
-fn report(port) = match connect("127.0.0.1", port)
+fn report(port) = match dial("127.0.0.1", port)
   Err(e) -> println(e)
   Ok(fd) -> converse(fd)
 
@@ -30,7 +35,7 @@ fn converse(fd) =
   show_result("find", find(fd, "team", JObj(Cons(field("role", text("eng")), Nil))), \d -> names_of(d))
   show_result("update", update(fd, "team", JObj(Cons(field("name", text("linus")), Nil)), set(Cons(field("role", text("sre")), Nil))), \d -> int_to_str(modified(d)))
   show_result("delete", delete(fd, "team", JObj(Cons(field("name", text("ada")), Nil))), \d -> int_to_str(deleted(d)))
-  close(fd)
+  hang_up(fd)
 
 fn person(name, role, age) =
   JObj(Cons(field("name", text(name)), Cons(field("role", text(role)), Cons(field("age", int(age)), Nil))))
@@ -59,8 +64,11 @@ fn stand_in(server, remaining) =
   answer_all(conn, remaining)
   sock_close(server)
 
+# A request the stand-in cannot read becomes `JNull`, which has no `cmd` and
+# so falls through to the unknown-command reply — the shape a real server
+# answers a nonsense request with anyway.
 fn answer_all(conn, remaining) =
-  request = parse(read_frame(conn))
+  request = parsed_or(read_frame(conn), JNull)
   send_frame(conn, to_string(reply_to(as_str(unwrap_or(get(request, "cmd"), JNull)), request)))
   if remaining == 1 then sock_close(conn) else answer_all(conn, remaining - 1)
 

@@ -1,0 +1,82 @@
+# The OxiDB time-series client, driven two ways.
+#
+# With no arguments it exercises the codec against itself: a value is encoded
+# to OxiWire, decoded back, and printed as JSON. That is the half of the
+# driver with nothing to do with a network, and it is the half that is new —
+# the framing is the document client's, already proven.
+#
+# Give it a port and it talks to a real server instead. The time-series engine
+# is off unless the server was started with it:
+#
+#     OXIDB_TSDB=1 oxidb-server &      # listening on 4444
+#     ./tsdemo 4444
+import "oxitsdb"
+
+# `args()` includes the program's own name, so "no arguments" is a list of one.
+fn main() = match args()
+  Cons(_, Cons(port, _)) -> against_server(str_to_int(port))
+  _ -> round_trip()
+
+# -- the codec, against itself ------------------------------------------------
+
+# Each of these is printed twice over: once as the JSON it started as, once as
+# the JSON it comes back as. The two lines being equal is the whole test.
+fn round_trip() =
+  each_way("null", JNull)
+  each_way("bools", JArr(Cons(JBool(true), Cons(JBool(false), Nil))))
+  each_way("ints", JArr(Cons(JInt(0), Cons(JInt(-1), Cons(JInt(1755000000000), Nil)))))
+  each_way("floats", JArr(Cons(JNum(0.93), Cons(JNum(-273.15), Nil))))
+  each_way("empties", JArr(Cons(JArr(Nil), Cons(JObj(Nil), Cons(JStr(""), Nil)))))
+  each_way("a point", sample_point())
+  each_way("a request", ts_request("write", Cons(Field("points", JArr(Cons(sample_point(), Nil))), Nil)))
+  # A reply frame as the server writes one: the magic byte, a status, a value.
+  answered("an answer", chr(219) + chr(0) + ow_encode(JObj(Cons(Field("written", JInt(3)), Nil))))
+  answered("a complaint", chr(219) + chr(1) + ow_encode(JStr("unknown tsdb op: \"nope\"")))
+
+fn sample_point() =
+  ts_point("cpu", Cons(ts_tag("host", "a"), Cons(ts_tag("region", "eu"), Nil)), Cons(ts_field("usage", 0.93), Cons(ts_count_field("cores", 8), Nil)), 1755000000000)
+
+fn each_way(label, value) =
+  println(label + " out: " + to_string(value))
+  println(label + " back: " + came_back(ow_encode(value)))
+
+fn came_back(bytes) = match ow_decode(bytes, 0)
+  Failed(why, pos) -> "undecodable: " + why + ", at byte " + int_to_str(pos)
+  Parsed(v, _) -> to_string(v)
+
+fn answered(label, frame) = match ts_reply(frame)
+  Ok(v) -> println(label + ": ok " + to_string(v))
+  Err(e) -> println(label + ": err " + e)
+
+# -- a real server ------------------------------------------------------------
+
+fn against_server(port) = match ts_connect("127.0.0.1", port)
+  Err(e) -> println(e)
+  Ok(fd) -> converse(fd)
+
+fn converse(fd) =
+  at = 1755000000000
+  shown("write", ts_write(fd, Cons(ts_point("cpu", Cons(ts_tag("host", "a"), Nil), Cons(ts_field("usage", 0.93), Nil), at), Cons(ts_point("cpu", Cons(ts_tag("host", "a"), Nil), Cons(ts_field("usage", 0.71), Nil), at + 60000), Cons(ts_point("cpu", Cons(ts_tag("host", "b"), Nil), Cons(ts_field("usage", 0.2), Nil), at + 60000), Nil)))))
+  shown("lines", ts_write_lines(fd, "mem,host=a used=0.42 " + int_to_str(at) + "000000"))
+  shown("stats", ts_stats(fd))
+  shown("mean", ts_query(fd, "cpu", "usage", ts_agg("mean", Nil)))
+  shown("by host", ts_query(fd, "cpu", "usage", ts_agg("max", ts_group_by(Cons("host", Nil), Nil))))
+  shown("windowed", ts_query(fd, "cpu", "usage", ts_agg("mean", ts_every(60000, ts_between(at, at + 120000)))))
+  shown("host a", ts_query(fd, "cpu", "usage", ts_agg("last", ts_where(Cons(ts_tag("host", "a"), Nil), Nil))))
+  shown("nonsense", ts_call(fd, ts_request("nope", Nil)))
+  ts_hang_up(fd)
+
+# A query answers series rather than one number, so it is worth unpacking
+# rather than printing whole.
+fn shown(label, result) = match result
+  Err(e) -> println(label + ": error: " + e)
+  Ok(data) -> println(label + ": " + rendered(data))
+
+fn rendered(data) = match data
+  JArr(_) -> join(map(ts_series(data), \s -> series_line(s)), " | ")
+  _ -> to_string(data)
+
+fn series_line(s) =
+  to_string(ts_series_tags(s)) + " " + join(map(ts_series_points(s), \p -> point_text(p)), ",")
+
+fn point_text(p) = int_to_str(ts_at(p)) + "=" + float_to_str(ts_value(p))

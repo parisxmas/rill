@@ -509,6 +509,7 @@ fn repository_sources_are_formatted() {
         "examples/json",
         "examples/yaml",
         "examples/gl",
+        "examples/oxidb",
         "benchmarks",
         "benchmarks/http",
         "editors/vscode/test",
@@ -701,6 +702,50 @@ fn sha1_and_base64() {
         String::from_utf8_lossy(&run.stdout),
         // The last is the example key from RFC 6455.
         "qZk+NkcGgWq6PiVxeFDCbJzQ2J0=\nTWFu\ns3pPLMBiTxaQ9kYGzzhZRbK+xOo=\n"
+    );
+}
+
+/// The OxiDB document client against a stand-in server on a strand. This is
+/// the test that was missing when the JSON module's `parse` grew a `Result`:
+/// nothing compiled `examples/oxidb/` at all, so a caller left behind went
+/// unnoticed.
+#[test]
+fn oxidb_document_client() {
+    assert_eq!(
+        compile_and_run("oxidb/demo.rill"),
+        "ping: pong\ninsert: 1\ninsert_many: 2,3\ncount: 3\n\
+         find: ada,grace\nupdate: 1\ndelete: 1\n"
+    );
+}
+
+/// The OxiWire codec — OxiDB's binary wire — encoded and decoded by Rill
+/// against itself. Every value goes out as JSON, round-trips through the
+/// binary form, and comes back the same text; the last two lines are reply
+/// frames as the server writes them, status byte and all.
+#[test]
+fn oxidb_tsdb_codec() {
+    assert_eq!(
+        compile_and_run("oxidb/tsdemo.rill"),
+        "null out: null\nnull back: null\n\
+         bools out: [true,false]\nbools back: [true,false]\n\
+         ints out: [0,-1,1755000000000]\nints back: [0,-1,1755000000000]\n\
+         floats out: [0.93,-273.15]\nfloats back: [0.93,-273.15]\n\
+         empties out: [[],{},\"\"]\nempties back: [[],{},\"\"]\n\
+         a point out: {POINT}\na point back: {POINT}\n\
+         a request out: {REQUEST}\na request back: {REQUEST}\n\
+         an answer: ok {\"written\":3}\n\
+         a complaint: err unknown tsdb op: \"nope\"\n"
+            .replace(
+                "{POINT}",
+                "{\"measurement\":\"cpu\",\"tags\":{\"host\":\"a\",\"region\":\"eu\"},\
+                 \"fields\":{\"usage\":0.93,\"cores\":8},\"ts\":1755000000000}"
+            )
+            .replace(
+                "{REQUEST}",
+                "{\"engine\":\"tsdb\",\"cmd\":\"tsdb\",\"op\":\"write\",\"points\":[\
+                 {\"measurement\":\"cpu\",\"tags\":{\"host\":\"a\",\"region\":\"eu\"},\
+                 \"fields\":{\"usage\":0.93,\"cores\":8},\"ts\":1755000000000}]}"
+            )
     );
 }
 

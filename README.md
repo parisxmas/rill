@@ -133,6 +133,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `echo_server.rill` | a TCP server and client in one program |
 | `http/` | a server answering its own requests, and a WebSocket one |
 | `json/`, `yaml/` | reading and writing both, from `lib/` |
+| `oxidb/` | two clients for the OxiDB database: documents over its JSON wire, time series over its binary one |
 | `stdlib.rill` | what the prelude gives you |
 | `loops.rill` | how repetition is written: tail recursion and folds |
 | `blocks.rill` | block bodies in match arms, select arms and `if` branches |

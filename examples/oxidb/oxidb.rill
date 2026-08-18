@@ -39,9 +39,9 @@ fn take_more(fd, buf, want) =
 
 # -- calling ------------------------------------------------------------------
 
-fn connect(host, port) = connect_to(host, port)
+fn dial(host, port) = connect_to(host, port)
 
-fn close(fd) = sock_close(fd)
+fn hang_up(fd) = sock_close(fd)
 
 # One request, one reply, unwrapped into a `Result`.
 fn call(fd, request) =

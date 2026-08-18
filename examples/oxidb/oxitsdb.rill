@@ -1,0 +1,265 @@
+# A client for OxiDB's time-series engine, written in Rill, speaking the
+# server's binary wire rather than its JSON one.
+#
+# The framing is the same as the document client next door: a 4-byte
+# little-endian length in front of a payload, one frame out and one back. What
+# differs is the payload. The server picks its format from the payload's first
+# byte — `{` is JSON, `0xDB` is OxiWire — so choosing the binary format is a
+# matter of what is written first, with no handshake and no negotiation.
+#
+# OxiWire is a tagged encoding of the same values JSON carries, with every
+# length and every number a fixed width so a reader never decodes a varint:
+#
+#   00 null   01 false   02 true
+#   03 i64    04 u64     05 f64      — 8 bytes little-endian
+#   06 string — 4-byte LE length, then the bytes
+#   07 array  — 4-byte LE count, then the values
+#   08 map    — 4-byte LE count, then (bare key, value) pairs
+#
+# A map key carries no tag of its own: a 4-byte length and the bytes, because
+# a key is always a string. That one asymmetry is the whole difference between
+# reading a map and reading an array.
+#
+# A request is `0xDB` and a value. A reply is `0xDB`, a status byte — 0 for an
+# answer, 1 for a complaint — and a value. Note the reply is *not* wrapped in
+# the `{"ok":.., "data":..}` envelope the JSON wire uses: the status byte is
+# the envelope, which is one of the things the binary format buys.
+#
+# Values are `Json` from the JSON module, so a point built here is the same
+# kind of thing a document is, and `to_string` prints either.
+import "json"
+
+# -- bytes out ----------------------------------------------------------------
+
+fn ow_u32(b: StrBuf, n) =
+  b += bit_and(n, 255)
+  b += bit_and(shr(n, 8), 255)
+  b += bit_and(shr(n, 16), 255)
+  b += bit_and(shr(n, 24), 255)
+
+fn ow_u64(b: StrBuf, n) =
+  ow_u32(b, n)
+  b += bit_and(shr(n, 32), 255)
+  b += bit_and(shr(n, 40), 255)
+  b += bit_and(shr(n, 48), 255)
+  b += bit_and(shr(n, 56), 255)
+
+fn ow_le32(n) =
+  b = strbuf()
+  ow_u32(b, n)
+  strbuf_str(b)
+
+# A float goes on the wire as its bits. Rill will not reinterpret one as an
+# integer, so eight bytes of scratch memory do it: write a float, read an int.
+fn ow_bits_of(f) =
+  p = alloc_bytes(8)
+  poke_f64(p, 0, f)
+  n = peek_i64(p, 0)
+  free_ptr(p)
+  n
+
+fn ow_float_of(n) =
+  p = alloc_bytes(8)
+  poke_i64(p, 0, n)
+  f = peek_f64(p, 0)
+  free_ptr(p)
+  f
+
+# -- encoding -----------------------------------------------------------------
+
+fn ow_encode(j) =
+  b = strbuf()
+  ow_put(b, j)
+  strbuf_str(b)
+
+fn ow_put(b: StrBuf, j) = match j
+  JNull -> strbuf_byte(b, 0)
+  JBool(x) -> strbuf_byte(b, if x then 2 else 1)
+  JInt(n) ->
+    b += 3
+    ow_u64(b, n)
+  JNum(f) ->
+    b += 5
+    ow_u64(b, ow_bits_of(f))
+  JStr(s) ->
+    b += 6
+    ow_u32(b, str_len(s))
+    b += s
+  JArr(xs) ->
+    b += 7
+    ow_u32(b, len(xs))
+    ow_put_items(b, xs)
+  JObj(fs) ->
+    b += 8
+    ow_u32(b, len(fs))
+    ow_put_fields(b, fs)
+
+# `strbuf_add(b, "")` is the end of a walk that is only ever run for its
+# effect: the builder is what the recursion is threading, and adding nothing
+# to it is how an empty list contributes nothing.
+fn ow_put_items(b: StrBuf, xs) = match xs
+  Nil -> strbuf_add(b, "")
+  Cons(x, rest) ->
+    ow_put(b, x)
+    ow_put_items(b, rest)
+
+fn ow_put_fields(b: StrBuf, fs) = match fs
+  Nil -> strbuf_add(b, "")
+  Cons(f, rest) ->
+    ow_put_field(b, f)
+    ow_put_fields(b, rest)
+
+fn ow_put_field(b: StrBuf, f) = match f
+  Field(k, v) ->
+    ow_u32(b, str_len(k))
+    b += k
+    ow_put(b, v)
+
+# -- decoding -----------------------------------------------------------------
+
+# Answers a `Parsed` — the JSON module's, so a frame that will not decode
+# travels out the same way a document that will not parse does.
+fn ow_decode(s, i) =
+  t = str_get(s, i)
+  if t == 0 then Parsed(JNull, i + 1) else if t == 1 then Parsed(JBool(false), i + 1) else if t == 2 then Parsed(JBool(true), i + 1) else if t == 3 then Parsed(JInt(ow_int_at(s, i + 1)), i + 9) else if t == 4 then Parsed(JInt(ow_int_at(s, i + 1)), i + 9) else if t == 5 then Parsed(JNum(ow_float_of(ow_int_at(s, i + 1))), i + 9) else if t == 6 then ow_str_at(s, i + 1) else if t == 7 then ow_arr_at(s, i + 5, ow_int32_at(s, i + 1), Nil) else if t == 8 then ow_obj_at(s, i + 5, ow_int32_at(s, i + 1), Nil) else if t < 0 then Failed("the frame ended", i) else Failed("unknown OxiWire tag " + int_to_str(t), i)
+
+fn ow_int32_at(s, i) =
+  str_get(s, i) + shl(str_get(s, i + 1), 8) + shl(str_get(s, i + 2), 16) + shl(str_get(s, i + 3), 24)
+
+fn ow_int_at(s, i) =
+  ow_int32_at(s, i) + shl(str_get(s, i + 4), 32) + shl(str_get(s, i + 5), 40) + shl(str_get(s, i + 6), 48) + shl(str_get(s, i + 7), 56)
+
+fn ow_str_at(s, i) = ow_str_of(s, i + 4, ow_int32_at(s, i))
+
+fn ow_str_of(s, i, n) = Parsed(JStr(str_sub(s, i, n)), i + n)
+
+fn ow_arr_at(s, i, n, acc) =
+  if n <= 0 then Parsed(JArr(reverse(acc)), i) else ow_arr_item(s, i, n, acc)
+
+fn ow_arr_item(s, i, n, acc) = match ow_decode(s, i)
+  Failed(why, pos) -> Failed(why, pos)
+  Parsed(v, j) -> ow_arr_at(s, j, n - 1, Cons(v, acc))
+
+fn ow_obj_at(s, i, n, acc) =
+  if n <= 0 then Parsed(JObj(reverse(acc)), i) else ow_obj_key(s, i, n, acc)
+
+# The one place a key is not a tagged value: a length and the bytes.
+fn ow_obj_key(s, i, n, acc) =
+  k = ow_int32_at(s, i)
+  ow_obj_value(s, i + 4 + k, n, acc, str_sub(s, i + 4, k))
+
+fn ow_obj_value(s, i, n, acc, key) = match ow_decode(s, i)
+  Failed(why, pos) -> Failed(why, pos)
+  Parsed(v, j) -> ow_obj_at(s, j, n - 1, Cons(Field(key, v), acc))
+
+# -- framing ------------------------------------------------------------------
+
+fn ow_send(fd, value) = ow_frame_out(fd, chr(219) + ow_encode(value))
+
+fn ow_frame_out(fd, body) = sock_write(fd, ow_le32(str_len(body)) + body)
+
+# The reply arrives in whatever pieces the network chose, so read until the
+# length at the front says the frame is whole.
+fn ow_recv(fd) = ow_frame_in(fd, ow_fill(fd, "", 4))
+
+fn ow_frame_in(fd, head) =
+  if str_len(head) < 4 then "" else ow_body_in(fd, head, ow_int32_at(head, 0))
+
+fn ow_body_in(fd, head, n) = str_sub(ow_fill(fd, head, 4 + n), 4, n)
+
+fn ow_fill(fd, buf, want) =
+  if str_len(buf) >= want then buf else ow_more(fd, buf, want)
+
+fn ow_more(fd, buf, want) =
+  chunk = sock_read(fd)
+  if str_len(chunk) == 0 then buf else ow_fill(fd, buf + chunk, want)
+
+# -- calling ------------------------------------------------------------------
+
+fn ts_connect(host, port) = connect_to(host, port)
+
+fn ts_hang_up(fd) = sock_close(fd)
+
+fn ts_call(fd, request) =
+  ow_send(fd, request)
+  ts_reply(ow_recv(fd))
+
+fn ts_reply(frame) =
+  if str_len(frame) < 2 then Err("oxidb: the server said nothing") else if str_get(frame, 0) != 219 then Err("oxidb: the reply is not OxiWire") else ts_reply_of(frame, str_get(frame, 1))
+
+fn ts_reply_of(frame, status) = match ow_decode(frame, 2)
+  Failed(why, pos) -> Err("oxidb: unreadable reply: " + why + ", at byte " + int_to_str(pos))
+  Parsed(v, _) -> if status == 0 then Ok(v) else Err(as_str(v))
+
+# -- the time-series surface --------------------------------------------------
+
+# Every request names the engine as well as the command: the server mounts the
+# time-series engine beside the document and SQL ones, and `engine` is what
+# tells them apart. It is off unless the server was started with OXIDB_TSDB.
+fn ts_request(op, fields) =
+  JObj(Cons(Field("engine", JStr("tsdb")), Cons(Field("cmd", JStr("tsdb")), Cons(Field("op", JStr(op)), fields))))
+
+# A point is a measurement, a moment, any number of string tags and one or
+# more named fields. `at` is epoch milliseconds.
+fn ts_point(measurement, tags, fields, at) =
+  JObj(Cons(Field("measurement", JStr(measurement)), Cons(Field("tags", JObj(tags)), Cons(Field("fields", JObj(fields)), Cons(Field("ts", JInt(at)), Nil)))))
+
+fn ts_tag(key, value) = Field(key, JStr(value))
+
+fn ts_field(key, value) = Field(key, JNum(value))
+
+fn ts_count_field(key, value) = Field(key, JInt(value))
+
+fn ts_write(fd, points) =
+  ts_call(fd, ts_request("write", Cons(Field("points", JArr(points)), Nil)))
+
+# InfluxDB line protocol, for a feed that already speaks it. A line with no
+# timestamp is stamped by the server as it arrives.
+fn ts_write_lines(fd, lines_text) =
+  ts_call(fd, ts_request("write_lp", Cons(Field("lp", JStr(lines_text)), Nil)))
+
+# `agg` is mean, sum, min, max, count, distinct, first, last, rate, or a
+# percentile written `p95`. An `interval` in milliseconds buckets the answer;
+# without one the whole range collapses to a single point per series.
+fn ts_query(fd, measurement, field_name, spec) =
+  ts_call(fd, ts_request("query", Cons(Field("measurement", JStr(measurement)), Cons(Field("field", JStr(field_name)), spec))))
+
+fn ts_between(start, end) = Cons(Field("start", JInt(start)), Cons(Field("end", JInt(end)), Nil))
+
+fn ts_agg(name, rest) = Cons(Field("agg", JStr(name)), rest)
+
+fn ts_every(interval, rest) = Cons(Field("interval", JInt(interval)), rest)
+
+fn ts_where(tags, rest) = Cons(Field("tags", JObj(tags)), rest)
+
+fn ts_group_by(keys, rest) =
+  Cons(Field("group_by", JArr(map(keys, \k -> JStr(k)))), rest)
+
+fn ts_stats(fd) = ts_call(fd, ts_request("stats", Nil))
+
+fn ts_retention(fd, cutoff) =
+  ts_call(fd, ts_request("retention", Cons(Field("cutoff", JInt(cutoff)), Nil)))
+
+fn ts_checkpoint(fd) = ts_call(fd, ts_request("checkpoint", Nil))
+
+fn ts_rollup_add(fd, measurement, interval, agg) =
+  ts_call(fd, ts_request("rollup_add", Cons(Field("measurement", JStr(measurement)), Cons(Field("interval", JInt(interval)), Cons(Field("agg", JStr(agg)), Nil)))))
+
+fn ts_rollup_refresh(fd) = ts_call(fd, ts_request("rollup_refresh", Nil))
+
+fn ts_rollups(fd) = ts_call(fd, ts_request("rollups", Nil))
+
+# -- reading answers out ------------------------------------------------------
+
+# A query answers an array of series, each `{tags, type, points:[{ts, value}]}`.
+fn ts_series(answer) = items(answer)
+
+fn ts_series_tags(series) = unwrap_or(get(series, "tags"), JObj(Nil))
+
+fn ts_series_points(series) = items(unwrap_or(get(series, "points"), JArr(Nil)))
+
+fn ts_at(point) = as_int(unwrap_or(get(point, "ts"), JNull))
+
+fn ts_value(point) = as_float(unwrap_or(get(point, "value"), JNull))
+
+fn ts_written(answer) = as_int(unwrap_or(get(answer, "written"), JNull))
