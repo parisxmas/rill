@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=267";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=267";
+import { load } from "./world.js?v=270";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=270";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=267";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "267";
+const V = "270";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1645,6 +1645,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
               : `you hit <b>${them}</b> for <i>${much}</i>`)
           : `<b>${them}</b> hit you for <i>${much}</i>`;
         tookEl.classList.toggle("gave", mine);
+        // And into the log, from whoever's point of view it is not.
+        const shooter = mine ? "you" : (net.names.get(n[1]) ?? "somebody");
+        const hitWho = mine ? them : "you";
+        note(n[3]
+          ? `<b>${shooter}</b> <em>💀</em> <i>${hitWho}</i>`
+          : `<b>${shooter}</b> → <i>${hitWho}</i> <s>${much}</s>`);
         // Off, reflow, on: a second round while the first line is still up has
         // to restart the animation, and a class that is already there does not.
         tookEl.classList.remove("on");
@@ -1757,6 +1763,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
   function drawRoster(list) {
     if (rosterEl.hidden) rosterEl.hidden = false;
+    // Somebody is announced once their name has arrived, which is a moment
+    // after they have: the id comes in the snapshot and the name follows on a
+    // `who` line, and "somebody joined" is not worth saying. Never about this
+    // player — you know when you arrived.
+    for (const p of list) {
+      if (!p.name || told.has(p.id)) continue;
+      told.set(p.id, p.name);
+      if (!firstRoster && p.id !== net.id) { cry(p.name, "joined", "in"); note(`<b>${p.name}</b> joined`); }
+    }
+    for (const [id, name] of told) {
+      if (list.some(p => p.id === id)) continue;
+      told.delete(id);
+      if (id !== net.id) { cry(name, "left", "out"); note(`<u>${name}</u> left`); }
+    }
+    firstRoster = false;
     const shape = list.map(p => `${p.id}:${p.name}`).join(",");
     if (shape !== rosterShape) {
       rosterShape = shape;
@@ -2224,6 +2245,42 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const cut = document.getElementById("cut");
   const tookEl = document.getElementById("took");
   let tookUntil = 0;
+  // Arrivals and departures, across the middle. Announced from the roster
+  // rather than from a message of their own: the roster already knows, and a
+  // valley that has to be told twice about the same fact will one day be told
+  // once.
+  const crierEl = document.getElementById("crier");
+  const told = new Map();
+  let crierUntil = 0, firstRoster = true;
+
+  // The log, bottom left: everything that happened, in the order it happened,
+  // oldest at the top. The middle of the screen says the one thing that is
+  // happening *now* and then gets out of the way; this is where it goes to be
+  // read a moment later — who has been shooting whom while you were busy
+  // somewhere else, and who arrived behind you.
+  const logEl = document.getElementById("log");
+  const LOG_KEEP = 7;
+
+  function note(html) {
+    const line = document.createElement("div");
+    line.innerHTML = html;
+    logEl.appendChild(line);
+    while (logEl.children.length > LOG_KEEP) logEl.firstChild.remove();
+    // Each line fades on its own clock rather than the list scrolling: a line
+    // that is still being read should not move because a new one arrived.
+    setTimeout(() => line.classList.add("gone"), 9000);
+    setTimeout(() => line.remove(), 9800);
+  }
+
+  function cry(who, what, kind) {
+    crierEl.innerHTML = `<b>${who}</b> ${what}`;
+    crierEl.className = `crier ${kind}`;
+    // Off, reflow, on, so a second arrival while the first is still up
+    // restarts the movement rather than sitting there.
+    void crierEl.offsetWidth;
+    crierEl.classList.add("on");
+    crierUntil = performance.now() + 1800;
+  }
   const crosshair = document.querySelector(".aim");
   const scopeEl = document.getElementById("scope");
   let sighted = 1, saidScope = -1;
@@ -2604,6 +2661,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
 
     if (tookUntil && now > tookUntil) { tookEl.classList.remove("on"); tookUntil = 0; }
+    if (crierUntil && now > crierUntil) { crierEl.classList.remove("on"); crierUntil = 0; }
 
     if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");
 

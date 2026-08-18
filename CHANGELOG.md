@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **A round has to go roughly where its owner is looking.** The look and the
+  shot arrive on separate lines and the server kept only the latest of each, so
+  a client could face north and put a round through somebody standing south of
+  it while everybody else watched it stare into the distance. Twenty degrees of
+  slack now — enough for a frame's lag on a fast turn, not enough to shoot
+  behind yourself. It does not stop anybody aiming perfectly, which is between
+  a player and their own mouse and which no server can see; it makes them turn
+  to do it, and turning is the part everybody else can see. `check.rill` fires
+  one with the shooter facing the other way and it is refused.
+
+- **Keys are masked to the seven that mean anything.** What arrives is whatever
+  somebody typed into a socket, and a key that is not a key should not become
+  one the first time something new is hung off the eighth bit.
+
+- **Everybody comes in somewhere else.** The spawn was a spiral round one patch
+  of grass, which put everybody within sight of each other the moment they
+  arrived and put whoever had just been shot back where they fell, in front of
+  whoever shot them. It is a hash of who is arriving and when now, tried until
+  it lands on grass between the waterline and the rocks — dry, walkable, and
+  never the same twice.
+
+- **The top of a crystal is a crystal.** The four spheres that stood in for one
+  left two holes: from 1.68 to 1.87 of its height, and from 2.13 to the tip at
+  2.40. The second one is the one anybody would notice, because the top tenth
+  of a crystal is the part that stands clear of everything around it and is
+  therefore exactly what people shoot at. Six spheres now, each at least as
+  wide as the crystal is there and at least half the distance to the next, so
+  the chain cannot have a hole in it.
+
+- **A log down the bottom left.** Everything that happened, oldest at the top,
+  each line fading on its own clock rather than the list scrolling — a line
+  still being read should not move because a new one arrived. And an
+  announcement across the middle when somebody arrives or leaves, in the same
+  shape as the hit line: in from half again its size, out by shrinking.
+
 - **Where a round lands is now the whole of it.** Three spheres stacked and
   tested from the top down, because the smallest is worth the most: the head
   ends it outright, the body takes a third, the legs take a tenth. The

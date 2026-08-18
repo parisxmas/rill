@@ -304,6 +304,51 @@
     .took.gave { color: #57c26a; }
     .took em { font-style: normal; font-size: 1.5em; }
 
+    /* The log. Bottom left, above the tally, oldest at the top — the order
+       things happened in, which is the order they are read in. Each line fades
+       on its own clock rather than the list scrolling, because a line still
+       being read should not move because a new one arrived. */
+    .log {
+      position: fixed; left: 20px; bottom: 74px; width: 320px;
+      pointer-events: none; user-select: none;
+      font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.06em; color: #9a94b8;
+      text-shadow: 0 0 6px rgba(0,0,0,0.95);
+    }
+    .log div {
+      opacity: 1; transition: opacity 800ms ease;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .log div.gone { opacity: 0; }
+    .log b { color: #f6c02e; font-weight: 600; }   /* who did it */
+    .log i { color: #e8e4da; font-style: normal; } /* who it happened to */
+    .log s { color: #e0503a; text-decoration: none; }  /* what it cost */
+    .log u { color: #6f6a8c; text-decoration: none; }  /* somebody leaving */
+    .log em { font-style: normal; }
+
+    /* Who has arrived and who has gone, across the middle. Bigger than the hit
+       line and higher up, because it is about the valley rather than about you
+       — and it comes in from half again its size and leaves by shrinking, so
+       it is read while it moves rather than after it has settled. */
+    .crier {
+      position: fixed; left: 0; right: 0; top: 28%; text-align: center;
+      pointer-events: none; opacity: 0; transform: scale(0.85);
+      transition: opacity 240ms ease, transform 240ms ease;
+      font: 600 clamp(24px, 3vw, 44px)/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.1em; color: #e8e4da;
+      text-shadow: 0 0 18px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,0.95);
+    }
+    .crier.on {
+      opacity: 1; transform: scale(1); transition-duration: 80ms;
+      animation: crier-pop 220ms cubic-bezier(.15, .9, .25, 1);
+    }
+    @keyframes crier-pop { from { transform: scale(1.55); } to { transform: scale(1); } }
+    /* Arriving is the valley's amber; leaving is the colour of everything else
+       that has stopped. */
+    .crier.in b { color: #f6c02e; }
+    .crier.out { color: #6f6a8c; }
+    .crier.out b { color: #9a94b8; }
+
     /* The loader. It covers the canvas until a frame has actually been drawn
        on it, so nobody watches a black rectangle wondering whether it works. */
     .boot {
@@ -374,6 +419,8 @@
   </div>
   <div class="warn" id="warn"></div>
   <div class="took" id="took"></div>
+  <div class="crier" id="crier"></div>
+  <div class="log" id="log"></div>
   <div class="tally" id="tally"></div>
   <div class="vit" id="vit"><i id="vitfill"></i></div>
   <div class="over dead" id="dead"><span>YOU ARE DEAD</span><span class="tick" id="tick">5</span><small>back on your feet in a moment</small></div>
@@ -403,7 +450,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=267";
+    import { run } from "./host.js?v=270";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -468,7 +515,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=267", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=270", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

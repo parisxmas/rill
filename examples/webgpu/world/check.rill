@@ -9,6 +9,8 @@ import "valley" as v
 
 extern fn sqrt(x: Float) -> Float
 
+extern fn atan2(y: Float, x: Float) -> Float
+
 fn tick(w, n) = if n == 0 then 0 else tick_one(w, n)
 
 fn tick_one(w, n) =
@@ -35,6 +37,11 @@ fn where_is(name, s) =
 
 fn absf(x) = if x < 0.0 then 0.0 - x else x
 
+# Where somebody came in, to the metre, and how far the ground there is above
+# the water.
+fn where_in(name, s) =
+  println("  " + name + " came in at " + int_to_str(to_int(v.player_x(s))) + ", " + int_to_str(to_int(v.player_z(s))) + ", on ground " + int_to_str(to_int(v.ground(v.player_x(s), v.player_z(s)) * 10.0)) + " decimetres up")
+
 # Whether the camera is level. Slot 4 of the view-projection is zero for as
 # long as it is — the across direction has no height of its own — so anything
 # in it is the roll a round put there, and that is a fact about the matrix
@@ -55,12 +62,33 @@ fn upright(s) = if v.health(s) > 0.5 then "on their feet" else "down"
 # One player turns to the other and fires at a height on them, once, and the
 # round is given long enough to get there. `up` is metres above their feet:
 # half a metre is a leg, one is the body, one and six tenths is the head.
+# The same shot with the shooter looking the other way, which the server
+# should refuse.
+fn shoot_blind(w, a, b) =
+  dx = v.player_x(b) - v.player_x(a)
+  dy = v.player_y(b) + 1.05 - (v.player_y(a) + 1.75)
+  dz = v.player_z(b) - v.player_z(a)
+  l = sqrt(dx * dx + dy * dy + dz * dz)
+  v.set_look(a, atan2(dx, 0.0 - dz) + 3.14159, 0.0)
+  v.want_fire(a, dx / l, dy / l, dz / l)
+  v.try_fire(a, v.world_time(w), 0.55)
+  tick(w, 12)
+  println("  with the shooter looking away, they are still on " + float_to_str(v.health(b)))
+
 fn shoot_at(w, a, b, up) =
   dx = v.player_x(b) - v.player_x(a)
   dy = v.player_y(b) + up - (v.player_y(a) + 1.75)
   dz = v.player_z(b) - v.player_z(a)
   l = sqrt(dx * dx + dy * dy + dz * dz)
-  v.fire(a, dx / l, dy / l, dz / l)
+  # Look where the shot is going first: the server refuses a round that is not
+  # roughly where its owner says they are pointed, which is what stops a client
+  # shooting behind itself.
+  v.set_look(a, atan2(dx, 0.0 - dz), atan2(dy, sqrt(dx * dx + dz * dz)))
+  # The way a round is actually asked for: the direction is offered, and the
+  # server decides at the tick whether it may be taken — which is where the
+  # bolt, the water and the shooter's own aim are checked.
+  v.want_fire(a, dx / l, dy / l, dz / l)
+  v.try_fire(a, v.world_time(w), 0.55)
   tick(w, 12)
   println("  they are on " + float_to_str(v.health(b)) + ", the shooter still on " + float_to_str(v.health(a)))
 
@@ -103,6 +131,13 @@ fn main() =
   c = v.join(w)
   println("three arrive: " + int_to_str(v.players(w)) + ", with ids " + int_to_str(v.player_id(a)) + " " + int_to_str(v.player_id(b)) + " " + int_to_str(v.player_id(c)))
 
+  # Nobody chose these: they are a hash of who arrived and when. What is being
+  # checked is that they are not the same spot and that none of them is in the
+  # lake, which is the only thing a spawn has to get right.
+  where_in("the first", a)
+  where_in("the second", b)
+  where_in("the third", c)
+
   # Somewhere flat and away from the lake, twelve metres apart.
   place(a, 0.0 - 40.0, 0.0 - 40.0)
   place(b, 0.0 - 28.0, 0.0 - 40.0)
@@ -126,6 +161,13 @@ fn main() =
   # Down, and put back on their feet at the spawn with the valley as it is.
   v.respawn(b)
   println("after a respawn they are on " + float_to_str(v.health(b)))
+
+  # And a round that does not go where its owner says they are looking is
+  # refused. This is the whole of what the server can do about aiming: it
+  # cannot tell a good shot from a scripted one, but it can insist that
+  # whoever takes it has turned to take it, which is the part everybody else
+  # can see.
+  shoot_blind(w, a, b)
 
   # Being shot throws the head about. The throw goes on the camera and not on
   # the yaw and pitch, so the way to see it is the matrix rather than the look.

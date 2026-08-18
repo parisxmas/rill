@@ -321,6 +321,12 @@ masked, so a crouching player is still down and a running one still bobs. The
 mask is in `figure.mesh` a joint at a time, because the rule has an exception
 in it and the place to know about that is the tool reading the rig.
 
+A round has to go roughly where its owner says they are looking — twenty
+degrees of slack, which is a frame's lag on a fast turn and nowhere near enough
+to shoot behind yourself. Nothing a server can do stops somebody aiming
+perfectly; this makes them turn to do it, and turning is the part everybody
+else can see.
+
 What a round costs depends on where it lands: the head ends it, the body takes
 a third, the legs a tenth — three spheres tested from the top down, since the
 smallest is worth the most. Whoever is hit is told who hit them and for how

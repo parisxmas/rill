@@ -584,9 +584,14 @@ fn break_crystal(w, cb, cat, ci) =
 # where a shot half a crystal clear of it still counted, and not generous
 # enough at the waist.
 #
-# Four spheres up the axis, each the width the crystal actually is at that
-# height, with a little overlap so there are no gaps between them. That is a
-# hit test the shape of the thing being shot at.
+# Six spheres up the axis, each at least as wide as the crystal is at that
+# height and at least half the distance to the next, so the chain has no holes
+# in it. That is a hit test the shape of the thing being shot at.
+#
+# Four of them left two: from 1.68 to 1.87, and from 2.13 to the tip at 2.40.
+# The second one is the one anybody would notice — the top eleven per cent of
+# a crystal is the part that stands clear of everything around it, so it is
+# exactly the part people shoot at, and rounds went straight through it.
 fn hit_at(cb, cat, sc, f, rr, ax, ay, az, bx, by, bz) =
   d2 = seg_dist2(ax, ay, az, bx, by, bz, peek_f32(cb, cat), peek_f32(cb, cat + 1) + sc * f, peek_f32(cb, cat + 2))
 
@@ -598,11 +603,13 @@ fn try_break(w, cb, ci, b, at, ax, ay, az, bx, by, bz) =
   sc = peek_f32(cb, cat + 3)
   if sc < 0.01 then 0
   else
-    n1 = hit_at(cb, cat, sc, 0.1, 0.18, ax, ay, az, bx, by, bz)
-    n2 = hit_at(cb, cat, sc, 0.7, 0.48, ax, ay, az, bx, by, bz)
-    n3 = hit_at(cb, cat, sc, 1.4, 0.28, ax, ay, az, bx, by, bz)
-    n4 = hit_at(cb, cat, sc, 2.0, 0.13, ax, ay, az, bx, by, bz)
-    if n1 + n2 + n3 + n4 < 0.5 then 0
+    n1 = hit_at(cb, cat, sc, 0.0, 0.25, ax, ay, az, bx, by, bz)
+    n2 = hit_at(cb, cat, sc, 0.5, 0.34, ax, ay, az, bx, by, bz)
+    n3 = hit_at(cb, cat, sc, 1.0, 0.35, ax, ay, az, bx, by, bz)
+    n4 = hit_at(cb, cat, sc, 1.5, 0.25, ax, ay, az, bx, by, bz)
+    n5 = hit_at(cb, cat, sc, 1.9, 0.20, ax, ay, az, bx, by, bz)
+    n6 = hit_at(cb, cat, sc, 2.25, 0.18, ax, ay, az, bx, by, bz)
+    if n1 + n2 + n3 + n4 + n5 + n6 < 0.5 then 0
     else
       poke_f32(b, at + 7, 0.0)
       break_crystal(w, cb, cat, ci)
@@ -1612,17 +1619,39 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
 # world's and are reached through that pointer, so two players cannot disagree
 # about what the valley is doing.
 
-# Where somebody comes in. The spiral is a phyllotaxis one — the golden angle,
-# and a radius that grows as the square root of the count — which puts the
-# first arrival exactly where the single-player spawn has always been and each
-# one after that a stride or so from anyone else. Everybody landing on the same
-# metre of grass and then being pushed apart by the collisions is a scrum.
+# Where somebody comes in: somewhere dry, and somewhere else each time.
+#
+# It was a spiral round one patch of grass, which put everybody within sight of
+# each other the moment they arrived and put whoever had just been shot back
+# where they fell, in front of whoever shot them. A valley a hundred and sixty
+# metres across has better places to start than one of them.
+#
+# The spot is a hash of who is arriving and when, so two people who arrive
+# together are not on the same metre and coming back is not coming back to the
+# same corner. It is tried up to eight times and the first dry one wins: the
+# lake is most of the middle of this valley and there is no sense in starting
+# somebody in it. Eight failures — which the hash does not do, but a different
+# terrain might — fall back to the old spot rather than to the water.
+fn spawn_x(seed, t) = (hash2(seed * 12.9898 + to_float(t) * 7.13, 78.233) - 0.5) * 150.0
+
+fn spawn_z(seed, t) = (hash2(seed * 39.3467 + to_float(t) * 3.71, 11.135) - 0.5) * 150.0
+
+# Which try landed somewhere worth standing, or eight if none did. Dry, and
+# below the rocks: the band between the waterline and nine metres is the grass
+# the pines grow on, and putting somebody down on a peak thirty metres up is
+# not a spawn, it is a punishment.
+fn spawn_try(seed, t) =
+  if t >= 8 then 8 else if good_spot(height(spawn_x(seed, t), spawn_z(seed, t))) then t else spawn_try(seed, t + 1)
+
+fn good_spot(h) = h > 0.6 && h < 9.0
+
 fn place_player(s) =
-  id = peek_f32(s, 99)
-  a = id * 2.39996
-  r = 1.6 * sqrt(id)
-  x = 0.0 - 14.0 + sin(a) * r
-  z = 0.0 - 34.0 + cos(a) * r
+  # Who, and when: without the clock every respawn is the same spot for the
+  # same person, which is the old problem with extra steps.
+  seed = peek_f32(s, 99) * 1.618 + peek_f32(wd(s), 28) * 0.37
+  t = spawn_try(seed, 0)
+  x = if t >= 8 then 0.0 - 14.0 else spawn_x(seed, t)
+  z = if t >= 8 then 0.0 - 34.0 else spawn_z(seed, t)
   y = height(x, z)
   poke_f32(s, 19, 2.75)
   poke_f32(s, 20, 0.0 - 0.1)
@@ -1749,8 +1778,12 @@ fn set_health(s: Ptr, h: Float) =
 # packet. So an input is stored on the player and read by the tick — which is
 # also what makes one tick a point in time everybody's inputs are resolved at.
 
+# Only the seven bits that mean anything: forward, back, left, right, jump,
+# sprint, crouch. What arrives is whatever somebody typed into a socket, and a
+# key that is not a key should not be one the first time something new is
+# hung off the eighth bit.
 fn set_keys(s: Ptr, keys: Int) =
-  poke_f32(s, 30, to_float(keys))
+  poke_f32(s, 30, to_float(bit_and(keys, 127)))
   1
 
 fn keys_of(s: Ptr) -> Int = to_int(peek_f32(s, 30))
@@ -1796,6 +1829,28 @@ fn want_fire(s: Ptr, dx0: Float, dy0: Float, dz0: Float) =
   if l < 0.001 then 0 else aim_at(s, dx / l, dy / l, dz / l)
 
 fn aim_at(s, dx, dy, dz) =
+  if faces(s, dx, dy, dz) == 0 then 0 else asked(s, dx, dy, dz)
+
+# A shot has to go roughly where its owner says they are looking.
+#
+# The look and the shot arrive on separate lines and the server keeps only the
+# latest of each, so they can be a frame apart on a fast turn — twenty degrees
+# of slack covers that and more. What it does not cover is a hundred and
+# eighty: without this a client could face north and put a round through
+# somebody standing south of it, and everybody else would watch it stare into
+# the distance while they fell over.
+#
+# It does not stop anybody aiming perfectly — that is between a player and
+# their own mouse, and no server can see the difference. It makes them turn to
+# do it, which is the part everybody else can see.
+fn faces(s, dx, dy, dz) =
+  cp = cos(peek_f32(s, 20))
+  fx = sin(peek_f32(s, 19)) * cp
+  fy = sin(peek_f32(s, 20))
+  fz = (0.0 - cos(peek_f32(s, 19))) * cp
+  if fx * dx + fy * dy + fz * dz > 0.94 then 1 else 0
+
+fn asked(s, dx, dy, dz) =
   poke_f32(s, 31, 1.0)
   poke_f32(s, 48, dx)
   poke_f32(s, 49, dy)
