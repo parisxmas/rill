@@ -278,12 +278,21 @@
        took you down was aimed. */
     .took {
       position: fixed; left: 0; right: 0; bottom: 92px; text-align: center;
-      pointer-events: none; opacity: 0; transition: opacity 320ms ease;
+      pointer-events: none; opacity: 0;
+      /* It arrives big and lands, and it leaves by shrinking: a line that
+         simply appears is read a beat later than one that moves, and a beat is
+         what there is. */
+      transform: scale(0.8);
+      transition: opacity 170ms ease, transform 170ms ease;
       font: 600 clamp(20px, 2.1vw, 30px)/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
       letter-spacing: 0.08em; color: #e0503a;
       text-shadow: 0 0 14px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.95);
     }
-    .took.on { opacity: 1; transition-duration: 90ms; }
+    .took.on {
+      opacity: 1; transform: scale(1); transition-duration: 70ms;
+      animation: took-pop 170ms cubic-bezier(.15, .9, .25, 1);
+    }
+    @keyframes took-pop { from { transform: scale(1.75); } to { transform: scale(1); } }
     /* The name in the valley's own amber, and what it cost bigger than the
        words around it — that is the part you read while something else is
        shooting at you. */
@@ -389,7 +398,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=262";
+    import { run } from "./host.js?v=265";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -454,7 +463,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=262", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=265", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

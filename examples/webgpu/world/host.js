@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=262";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=262";
+import { load } from "./world.js?v=265";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=265";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=262";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "262";
+const V = "265";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1124,7 +1124,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
-  let roarBuf = null, roars = null, pickBuf = null, musicStarted = false;
+  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, musicStarted = false;
   let musicGain = null, musicOn = true;
   const shotBytes = await (await fetch(`./rifle-shot.mp3?v=${V}`)).arrayBuffer();
   step("rifle-shot.mp3");
@@ -1161,6 +1161,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // that fires four times while you cross a patch of debris.
   const pickBytes = await (await fetch(`./pickup.mp3?v=${V}`)).arrayBuffer();
   step("pickup.mp3");
+  // What it sounds like to be shot. Four of qubodup's CC0 recordings of
+  // himself straining, a second each end to end and played by offset like the
+  // glass — four is enough that a burst does not sound like a loop of one man.
+  const hurtBytes = await (await fetch(`./hurt.mp3?v=${V}`)).arrayBuffer();
+  step("hurt.mp3");
   // The theme. Eighty seconds that begin and end in silence, which is what
   // makes it loop without a seam: no crossfade, no loop points, just the tail
   // running into the head the way the piece was already written.
@@ -1201,12 +1206,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       step(label);
       return b;
     };
-    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, musicBuf] = await Promise.all([
+    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf] = await Promise.all([
       one(shotBytes, "decoding rifle-shot"),
       one(breakBytes, "decoding crystal-break"),
       one(blastBytes, "decoding meteor-blast"),
       one(roarBytes, "decoding meteor-air"),
       one(pickBytes, "decoding pickup"),
+      one(hurtBytes, "decoding hurt"),
       one(musicBytes, "decoding valley-theme"),
     ]);
   }
@@ -1618,10 +1624,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // shown it, and only when there is a name to put to it — an id is not
       // an answer to "who shot me".
       else if (e.kind === "x" && n[0] === net.id) {
+        // Out loud as well. Louder for a bigger hit, and a hair of detune each
+        // time, because the same file twice in a row is what gives a sample
+        // away — the same argument as everything else that plays here.
+        if (audio && hurtBuf) {
+          playAt(hurtBuf, Math.floor(Math.random() * 4), 0.95,
+                 0.55 + 0.45 * Math.min(1, n[2] * 2), 0, 0.94 + Math.random() * 0.12);
+        }
         const who = net.names.get(n[1]);
         tookEl.innerHTML = `<b>${who ?? "somebody"}</b> hit you for <i>${Math.round(n[2] * 100)}</i>`;
+        // Off, reflow, on: a second round while the first line is still up has
+        // to restart the animation, and a class that is already there does not.
+        tookEl.classList.remove("on");
+        void tookEl.offsetWidth;
         tookEl.classList.add("on");
-        tookUntil = performance.now() + 2600;
+        // Long enough to read and no longer: it is one line about something
+        // that has already happened, and it is over the middle of the screen.
+        tookUntil = performance.now() + 1100;
       }
     }
   }

@@ -427,6 +427,12 @@ firearm recordings, CC BY 3.0. Two and a half seconds, 25 KB, decoded once and
 played from the same buffer with a hair of detune and level each time, because
 the same file twice in a row is the one thing that gives a sample away.
 
+Being shot has a voice: four of qubodup's CC0 recordings of himself straining,
+from OpenGameArt, a second each end to end in one file and played by offset the
+way the glass is. Four is enough that a burst does not sound like one man on a
+loop, and it is louder for a bigger hit — a leg and a head are different things
+to have happen to you and should not sound the same.
+
 A crystal going is three glass breaks from OpenGameArt's CC0 breaking pack,
 laid end to end in one file a second apart and played by offset: one fetch and
 one decode for three, and three is enough that a row of crystals does not sound

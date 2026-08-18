@@ -10,6 +10,18 @@
   is what the scope is for. Rounds stop at a leg on the page as well, from the
   same three spheres, so a man behind a rock is hit where he is showing.
 
+- **And a voice.** Being hit says so out loud: four of qubodup's CC0 recordings
+  of himself straining, from OpenGameArt, a second each end to end in one 33 KB
+  file and played by offset the way the glass breaks are. Louder for a bigger
+  hit, and a hair of detune each time — a leg and a head are different things
+  to have happen to you and should not sound the same, and the same file twice
+  in a row is the one thing that gives a sample away.
+
+  The line pops in and shrinks away rather than appearing: a line that simply
+  appears is read a beat later than one that moves, and a beat is all there is.
+  It goes after a second, since it is one sentence about something that has
+  already happened and it is sitting over the middle of the screen.
+
 - **Who shot you, and for how much.** Low and in the middle, where the eye goes
   when something has happened *to* you rather than in front of you: the name in
   the valley's amber and the number bigger than the words around it. "Hit" is a
