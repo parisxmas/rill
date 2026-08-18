@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=258";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=258";
+import { load } from "./world.js?v=259";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=259";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=258";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "258";
+const V = "259";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2531,12 +2531,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // is the last thing everybody agreed about, and it stays there.
     // The crosshair fades as the scope comes up: two sights at once is one
     // more than anybody needs, and the rifle's own is the one that is aimed.
-    if ((aim > 0.5) !== sighted) { sighted = aim > 0.5; crosshair.classList.toggle("scoped", sighted); }
-    // The tube closing in. Written at a fiftieth of the way rather than every
-    // frame, because it is a style property and the compositor has better
-    // things to do with a hundred and forty of them a second.
+    // The crosshair steps back while both sights are on screen and comes back
+    // at the top, where the rifle has gone and it is the only one left.
+    const half = aim > 0.35 && aim < 0.9;
+    if (half !== sighted) { sighted = half; crosshair.classList.toggle("scoped", half); }
+    // The sight picture opening. Written at a fiftieth of the way rather than
+    // every frame, because these are style properties and the compositor has
+    // better things to do with a hundred and forty of them a second.
     const shade = Math.round(aim * 50);
-    if (shade !== saidScope) { saidScope = shade; scopeEl.style.opacity = `${shade / 50}`; }
+    if (shade !== saidScope) {
+      saidScope = shade;
+      const a = shade / 50;
+      scopeEl.style.opacity = `${a}`;
+      // Nothing at the hip, a keyhole halfway, and most of the screen at the
+      // top — the circle opens as the weapon comes out of the way.
+      scopeEl.style.setProperty("--r", `${(a * a * 34).toFixed(1)}vmin`);
+    }
 
     if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");
 
@@ -2868,11 +2878,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
     // Last, so it covers the water and the fireflies as well as the ground.
     //
-    // Except when this player is on the ground themselves: a rifle held out at
-    // arm's length in front of a camera lying in the grass is the one thing on
-    // that screen still behaving as though nothing had happened. The figure
-    // everybody else sees drops it with the body; so does this.
-    if (E.health(state) > 0.001) {
+    // Except when this player is on the ground themselves — a rifle held out
+    // at arm's length in front of a camera lying in the grass is the one thing
+    // on that screen still behaving as though nothing had happened; the figure
+    // everybody else sees drops it with the body, so does this — and except at
+    // the top of the aim, where the scope has become the screen and the rifle
+    // behind it would only be in the way of what it is aiming at.
+    if (E.health(state) > 0.001 && aim < 0.9) {
       pass.setBindGroup(0, W.bgMain);
       pass.setPipeline(vmPipe);
       pass.setVertexBuffer(0, rifleVB);

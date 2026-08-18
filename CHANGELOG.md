@@ -11,10 +11,14 @@
   because behind the sights the rifle has its own and two at once is one more
   than anybody needs.
 
-  The rest of it is the eye rather than the valley, so it is done on the page:
-  a vignette that closes in around the tube as the sights come up, a radial
-  gradient over the canvas that costs nothing next to a pass which would have
-  to touch every pixel.
+  Looking down the tube of the rifle's own scope was honest and useless: the
+  far lens is a centimetre across and the eye is twenty behind it, so what
+  could be seen through it was a keyhole. So at the top of the aim the rifle
+  goes and the scope becomes the screen — a clear circle two thirds of the
+  screen high, black outside it, the crosshair in the middle of it as the
+  reticle. It opens as the aim comes up and closes as it drops, and it is a
+  radial gradient over the canvas rather than a pass that would have to touch
+  every pixel, because it is in the eye and not in the valley.
 
   All of it eased over about a sixth of a second and framerate-independent: a
   field of view that changes between one frame and the next reads as a cut

@@ -36,19 +36,30 @@
     .aim { position: fixed; inset: 0; pointer-events: none;
            display: grid; place-items: center;
            transition: opacity 140ms ease; }
-    /* Behind the sights the rifle has its own, and two at once is one more
-       than anybody needs. Not hidden — a quarter left, so the centre of the
-       screen is still marked while the scope does the aiming. */
-    .aim.scoped { opacity: 0.25; }
+    /* Halfway up, the rifle's own sight and this one are both on screen and
+       two at once is one too many; at the top the rifle is gone and this is
+       the reticle, so it comes back. */
+    .aim.scoped { opacity: 0.3; }
 
-    /* What the eye does behind a scope: everything outside the tube goes.
-       Drawn here rather than in the valley because it is not in the valley —
-       it is in the eye — and a radial gradient over the canvas costs nothing
-       at all next to a pass that would have to touch every pixel. */
+    /* The sight picture.
+       Looking down the tube of the rifle's own scope was honest and useless:
+       the far lens is a centimetre across and two hundred away, so what you
+       could see through it was a keyhole. Every rifle game does the same thing
+       instead — as the sights settle, the weapon goes and the scope becomes
+       the screen. So this is the scope: a clear circle that opens as the aim
+       comes up, black outside it, and the crosshair in the middle of it is the
+       reticle.
+       Drawn here rather than in the valley because it is not in the valley, it
+       is in the eye — and a radial gradient over the canvas costs nothing next
+       to a pass that would have to touch every pixel. */
     .scope {
       position: fixed; inset: 0; pointer-events: none; opacity: 0;
+      --r: 0vmin;
       background: radial-gradient(circle at center,
-        rgba(0,0,0,0) 24%, rgba(0,0,0,0.55) 46%, rgba(0,0,0,0.92) 62%, #000 78%);
+        rgba(0,0,0,0) var(--r),
+        rgba(0,0,0,0.45) calc(var(--r) + 1.2vmin),
+        rgba(0,0,0,0.97) calc(var(--r) + 6vmin),
+        #000 calc(var(--r) + 12vmin));
     }
     .aim i { position: absolute; background: #fff;
              box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55); }
@@ -314,7 +325,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=258";
+    import { run } from "./host.js?v=259";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -379,7 +390,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=258", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=259", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

@@ -263,9 +263,12 @@ reaching zero is somebody taking a round, which is the same fact the server
 would have had to send, arriving for nothing.
 
 Holding the right button aims: the world narrows to five times, the rifle comes
-to the eye and straightens, the sway drops to a quarter, the crosshair steps
-back because the rifle has its own sight, and a vignette closes in around the
-tube. The zoom is one number written into the player's block and read by
+to the eye and straightens, the sway drops to a quarter, and past nine
+tenths of the way the rifle goes and the scope becomes the screen: a clear
+circle two thirds of the screen high, black around it, the crosshair in the
+middle of it as the reticle. Looking down the tube of the rifle's own scope was
+honest and useless — the far lens is a centimetre across and the eye is twenty
+behind it, so the sight picture was a keyhole. The zoom is one number written into the player's block and read by
 `camera`, so the projection is still Rill's; the mouse is slowed by the same
 factor on the page, or the same movement of the hand covers five times the
 angle and nothing can be held on target.
