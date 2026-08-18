@@ -251,12 +251,14 @@ page knows nothing about the rig beyond one number.
 
 Walking, running and crouching take their legs from those clips and everything
 from the spine up from the armed idle, because the library has no armed walk:
-the arms in those three were animated empty and swung like it. The hips are
-below the split, so the pelvis still sways with the stride and carries the
-torso — a mask on the skeleton rather than two clips faded together. Where the
-split falls is one joint index in `figure.mesh`, and the page marks the subtree
-off the parents it already has; the legs hang off the hips rather than off the
-spine, so there is no list of exceptions.
+the arms in those three were animated empty and swung like it. It is a mask on
+the skeleton rather than two clips faded together, and it carries the pelvis —
+whose rotation is what pitches a running body forward, taking the whole torso
+and the rifle with it. Its children stay behind, so the legs still run on an
+upright pelvis, and the stride's rise and fall is a translation and is not
+masked, so a crouching player is still down and a running one still bobs. The
+mask is in `figure.mesh` a joint at a time, because the rule has an exception
+in it and the place to know about that is the tool reading the rig.
 
 A round stops at the person it hit. On the server that is `try_hit_player`; on
 a client there are no player blocks but its own, so the page writes down where

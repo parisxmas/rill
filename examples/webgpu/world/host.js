@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=236";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=236";
+import { load } from "./world.js?v=237";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=237";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=236";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "236";
+const V = "237";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -295,19 +295,19 @@ function faceNormal(a, b, c) {
 function readFigure(bytes) {
   const v = new DataView(bytes);
   const magic = new TextDecoder().decode(new Uint8Array(bytes, 0, 8));
-  if (magic !== "RILLFIG3") throw new Error(`figure.mesh is not a figure this reads (${magic})`);
+  if (magic !== "RILLFIG4") throw new Error(`figure.mesh is not a figure this reads (${magic})`);
   const joints = v.getUint32(8, true), verts = v.getUint32(12, true);
   const indices = v.getUint32(16, true), clipCount = v.getUint32(20, true);
   // Which joint a weapon hangs off, and where on it — worked out at bake time
   // from the arm's own direction in the bind pose rather than by eye.
   const hand = v.getUint32(24, true);
-  // Where the upper body starts. One index, because the parents are here too
-  // and a descendant test is three lines — see below.
-  const upperRoot = v.getUint32(28, true);
-  const grip = new Float32Array(bytes.slice(32, 96));
-  const box = new Float32Array(bytes.slice(96, 120));
+  const grip = new Float32Array(bytes.slice(28, 92));
+  const box = new Float32Array(bytes.slice(92, 116));
+  // Which joints move with the arms rather than with the legs, one byte
+  // apiece. Worked out at bake time, where something knows what a pelvis is.
+  const upper = new Uint8Array(bytes.slice(116, 116 + joints));
 
-  let at = 120;
+  let at = 116 + ((joints + 3) & ~3);
   const parent = new Int32Array(joints);
   const bindT = new Float32Array(joints * 3);
   const bindR = new Float32Array(joints * 4);
@@ -336,13 +336,6 @@ function readFigure(bytes) {
     const rot = new Int16Array(bytes.slice(at, at + frames * joints * 8)); at += frames * joints * 8;
     clips.set(name, { name, frames, fps, loops, root, rootT, rot, seconds: (frames - 1) / fps });
   }
-  // Which joints move with the arms rather than with the legs. The joints
-  // arrive parent-first, so one pass down the list marks the whole subtree.
-  const upper = new Uint8Array(joints);
-  for (let j = 0; j < joints; j++) {
-    upper[j] = j === upperRoot || (parent[j] >= 0 && upper[parent[j]]) ? 1 : 0;
-  }
-
   return { joints, verts, indices, box, hand, grip, upper, parent, bindT, bindR, invBind, clips, vertexAt, indexAt };
 }
 

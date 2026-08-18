@@ -24,12 +24,22 @@
   together. Walking, the barrel went from forty-nine degrees into the ground to
   five, and level.
 
-  Where the split falls is one joint index in the file — the spine above the
-  hips — and the page marks the subtree itself off the parents it already has.
-  The legs hang off the hips rather than off the spine, so no list of
-  exceptions is needed. Running and crouching still point the rifle down by
-  about twenty-five degrees, and that is the body's own lean coming through the
-  pelvis, which is what a person carrying a rifle at a run actually does.
+  The pelvis is masked with the arms, and it is the interesting one. Its
+  rotation is what pitches a running body forward and the whole torso rides on
+  it — masked from the spine alone, the rifle came out level and pointing
+  twenty-five degrees into the ground, tipped by a joint underneath the mask.
+  Its children stay behind, because the legs hang off the pelvis rather than
+  off the spine, so they still run: the knee still swings sixty-four
+  centimetres at a run and twenty-three at a walk, on an upright pelvis rather
+  than a leaning one. The stride's rise and fall is a translation and is not
+  masked at all, so a crouching player is still down at a metre and a running
+  one still bobs fourteen centimetres. Standing, walking, running, crouching —
+  the barrel now comes out level and forward in all four.
+
+  Which is why the mask goes into the file a joint at a time rather than as one
+  index and a subtree: the rule has an exception in it, and the place to know
+  about the exception is the tool that is reading the rig, not a page that has
+  never heard of a pelvis.
 
 - **A round stops at the person it hit.** It stopped on the server, which is
   where the damage is decided, and carried on through them on every screen,

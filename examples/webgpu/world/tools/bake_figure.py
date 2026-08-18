@@ -69,13 +69,25 @@ RIFLE_METRES = 1.10
 GRIP_AT = 0.40
 # The clip whose first frame the rifle is levelled against. See `main`.
 GRIP_POSE = "Pistol_Idle_Loop"
-# Where the upper body starts. Everything descending from this joint — spine,
-# neck, head, both arms, every finger — can be taken from one clip while the
-# legs take another, which is how somebody walks with a rifle up in a library
-# that has a walk and an armed idle and no armed walk. The legs hang off the
-# hips and the hips are below this, so the split falls where it has to with no
-# list of exceptions.
+# Which joints move with the arms rather than with the legs, so that somebody
+# can walk with a rifle up in a library that has a walk and an armed idle and
+# no armed walk. Everything descending from the spine — neck, head, both arms,
+# every finger — plus the pelvis itself, and the pelvis is the interesting one.
+#
+# Its rotation is what pitches a running body forward, and the torso rides on
+# it: masked from the spine alone, the rifle came out level and pointed twenty
+# five degrees into the ground, because the whole upper body had been tipped
+# by a joint underneath the mask. Its *children* stay behind — the legs hang
+# off the pelvis rather than off the spine — so they still run, on an upright
+# pelvis rather than a leaning one. The stride's own bob is a translation and
+# is not masked at all, so the body still rises and falls with the footfalls.
+#
+# Which is why this goes into the file as a joint apiece rather than as one
+# index and a subtree: the rule has an exception in it, and the place to know
+# about the exception is here, where the rig is being read, and not on a page
+# that has never heard of a pelvis.
 UPPER = "DEF-spine.001"
+PELVIS = "DEF-hips"
 # Which way the mannequin faces in its own space. Its nose and its toes agree
 # about this, and so does the π − yaw the page places it by.
 FACES = (0.0, 0.0, 1.0)
@@ -306,12 +318,19 @@ def main(src, dst):
     grip = grip_matrix(armed, hand, box)
 
     out = bytearray()
-    out += b"RILLFIG3"
+    # The mask, one byte a joint: the spine's subtree, and the pelvis on its own.
+    spine = names.index(UPPER)
+    upper = [0] * len(joints)
+    for j in range(len(joints)):
+        upper[j] = 1 if j == spine or (parent[j] >= 0 and upper[parent[j]]) else 0
+    upper[names.index(PELVIS)] = 1
+
+    out += b"RILLFIG4"
     out += struct.pack("<IIII", len(joints), len(verts), len(tris), len(CLIPS))
     out += struct.pack("<I", hand)
-    out += struct.pack("<I", names.index(UPPER))
     out += struct.pack("<16f", *grip)
     out += struct.pack("<6f", *lo, *hi)
+    out += bytes(upper) + b"\0" * (-len(upper) % 4)
     for i in range(len(joints)):
         out += struct.pack("<i", parent[i])
         out += struct.pack("<3f", *bind_t[i])
@@ -372,7 +391,7 @@ def main(src, dst):
     open(dst, "wb").write(out)
     print(f"{dst}: {len(out) / 1024:.0f} KB — {len(joints)} joints, {len(verts)} vertices, "
           f"{len(tris) // 3} triangles, {len(CLIPS)} clips, weapon on {names[hand]}, "
-          f"upper body from {names.index(UPPER)}")
+          f"{sum(upper)} joints on the upper body")
 
 
 if __name__ == "__main__":
