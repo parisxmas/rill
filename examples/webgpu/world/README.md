@@ -212,6 +212,11 @@ would split the line it travels on — and anybody who says nothing is
 placed with the same view-projection matrix the valley is drawn with; they are
 not occluded by the terrain, which is a choice.
 
+The crystals do not throw fire in the shared valley for the moment. A meteor
+is aimed at where somebody is standing, and standing about is most of what
+people do while there are others to look at; `meteors()` in `server.rill` is
+the switch, and a browser alone in its own valley still gets them.
+
 It is still a demo server, and nothing here has been through anything harsher
 than an afternoon of being shot at from the same machine.
 The crash this used to die of is fixed — it was a `select` in a loop leaking

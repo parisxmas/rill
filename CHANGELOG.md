@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The crystals hold their fire in a shared valley.** A meteor is thrown at
+  where somebody is standing, and standing about is most of what people do
+  while there are others to look at — thirty seconds of not moving used to cost
+  most of a life. `meteors()` in `server.rill` is the switch, and it is a
+  switch on the world rather than a constant in `valley.rill`, because a
+  browser alone in its own valley is the demo the fireballs were written for
+  and still gets them. Only the starting is gated: a crystal already winding up
+  finishes its swell and settles back, since one cut off mid-swell would stay
+  at two and a half times its size with nothing to bring it down.
+
 - **Names over heads.** A browser joining somebody else's valley is asked who
   it is before it connects, and everybody else sees that over the player's
   head. The name is sent once and comes back as a `who`, rather than riding in

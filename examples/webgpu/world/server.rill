@@ -93,6 +93,12 @@ fn handshake_ms() = 5000
 # three-quarters of the valley to everyone else.
 fn per_address() = 16
 
+# Whether the crystals throw fire in the shared valley. Off for now: a meteor
+# is aimed at where somebody is standing, and standing about is most of what
+# people do while there are others to look at. The browser's own valley still
+# has them — this is the switch for this one.
+fn meteors() = 0
+
 # How many addresses are tracked at once. One row per connection is more than
 # enough: a row is only in use while at least one connection from that address
 # is, so they come back as people leave.
@@ -661,6 +667,7 @@ fn run(server) =
     poke_i64(live, i, 0)
 
   w = v.init(64, n_pines(), n_crystals(), n_grass())
+  v.set_meteors(w, meteors())
   println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
   inbox = channel()
   spawn accept_loop(server, inbox, live)

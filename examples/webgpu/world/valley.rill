@@ -56,6 +56,7 @@
 #   ptr 77       chargers: crystal, its size, mode, clock, and who it is for
 #   f32 79       gate: zero lets one charge begin this frame
 #   f32 80       next slot in the blast ring    ptr 81  the blasts themselves
+#   f32 53       whether the far crystals throw at all
 #   f32 86..93   the shark: where, which way, what it is doing
 #   ptr 74       the fireballs the far crystals throw
 #   ptr 64..67   terrain mesh, pine, crystal and grass instances
@@ -854,13 +855,30 @@ fn step_pass(w, cbuf, dt, tnow) =
   for ci in 0..charger_cap()
     run_one(w, cbuf, ci, dt, tnow)
 
+# Whether the far crystals throw at all.
+#
+# A switch on the world rather than a constant in this file, because the two
+# valleys want different answers: a browser alone in one is the demo the
+# fireballs were written for, and a shared one is a place people are trying to
+# stand about in and shoot each other. `init` turns them on; a server may turn
+# them off.
+#
+# Only the *starting* is gated. Whatever is already winding up finishes its
+# swell, throws and settles back, because a crystal cut off mid-swell would
+# stay at two and a half times its size with nothing left to bring it down.
+fn meteors_on(w: Ptr) -> Int = if peek_f32(w, 53) > 0.5 then 1 else 0
+
+fn set_meteors(w: Ptr, on: Int) =
+  poke_f32(w, 53, if on > 0 then 1.0 else 0.0)
+  1
+
 fn run_charge(w, dt, tnow) =
   cbuf = peek_ptr(w, 77)
   ct = peek_f32(w, 73) + dt
   due = if ct > fireball_every() then 1.0 else 0.0
   poke_f32(w, 73, if due > 0.5 then 0.0 else ct)
   poke_f32(w, 79, 1.0 - due)
-  start_pass(w, cbuf, tnow)
+  if meteors_on(w) > 0 then start_pass(w, cbuf, tnow) else 0
   step_pass(w, cbuf, dt, tnow)
 
 fn clear_chargers(cbuf) =
@@ -1422,6 +1440,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 73, 0.0)
   poke_f32(s, 79, 1.0)
   poke_f32(s, 80, 0.0)
+  poke_f32(s, 53, 1.0)
   clear_bullets(bullet_buf)
   clear_shards(shard_buf)
   clear_fireballs(fire_buf)

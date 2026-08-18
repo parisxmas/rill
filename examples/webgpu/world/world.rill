@@ -159,6 +159,12 @@ export fn respawn(s: Ptr) = v.respawn(s)
 
 export fn restart(s: Ptr) = v.restart(s)
 
+# Whether the far crystals throw. On in a valley this browser built for itself;
+# a server decides for a shared one.
+export fn set_meteors(w: Ptr, on: Int) = v.set_meteors(w, on)
+
+export fn meteors_on(w: Ptr) -> Int = v.meteors_on(w)
+
 # Called once when the module is instantiated, and there is nothing to set up:
 # the valley is built when the host has measured the machine and knows how much
 # of it to ask for.
