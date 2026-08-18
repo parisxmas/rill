@@ -414,7 +414,7 @@ fn play(conn, inbox) =
 
 fn both_ways(conn, inbox, out, id) =
   spawn writer(conn, out)
-  reader(conn, inbox, id, heard_per_second(), now_nanos() + 1000000000)
+  reader(conn, inbox, id, heard_per_second(), now_nanos() + 1000000000, "")
   # The socket first, so that anything the writer still has to send fails at
   # once instead of parking on a connection with nobody at the other end. Then
   # an empty line, which is the one thing that reaches a strand waiting on a
@@ -443,21 +443,26 @@ fn keep_writing(conn, out, line) =
 # second is up. Over the allowance the line is read and thrown away without
 # being parsed, which is the point: the cost of a message is the parsing and
 # the hub's attention, and neither is spent on the ten-thousandth one.
-fn reader(conn, inbox, id, budget, until) =
-  msg = ws_read(conn)
-  if str_len(msg) == 0 then 0 else gate(conn, inbox, id, budget, until, msg)
+# `acc` is whatever arrived after the last frame. A read is not a frame: a
+# client that sends two messages quickly puts both in one, and one message can
+# arrive in two — so the leftovers are carried rather than thrown away, which
+# is what keeps the rest of a connection from turning into noise the first time
+# a message is split.
+fn reader(conn, inbox, id, budget, until, acc) =
+  (msg, rest) = ws_take(conn, acc)
+  if str_len(msg) == 0 then 0 else gate(conn, inbox, id, budget, until, msg, rest)
 
-fn gate(conn, inbox, id, budget, until, msg) =
+fn gate(conn, inbox, id, budget, until, msg, rest) =
   now = now_nanos()
-  if now > until then gate_on(conn, inbox, id, heard_per_second(), now + 1000000000, msg) else gate_on(conn, inbox, id, budget, until, msg)
+  if now > until then gate_on(conn, inbox, id, heard_per_second(), now + 1000000000, msg, rest) else gate_on(conn, inbox, id, budget, until, msg, rest)
 
-fn gate_on(conn, inbox, id, budget, until, msg) =
-  if budget <= 0 then reader(conn, inbox, id, 0, until) else handle_line(conn, inbox, id, budget, until, msg)
+fn gate_on(conn, inbox, id, budget, until, msg, rest) =
+  if budget <= 0 then reader(conn, inbox, id, 0, until, rest) else handle_line(conn, inbox, id, budget, until, msg, rest)
 
-fn handle_line(conn, inbox, id, budget, until, msg) =
+fn handle_line(conn, inbox, id, budget, until, msg, rest) =
   parts = split(msg, " ")
   route(inbox, id, unwrap_or(nth(parts, 0), ""), parts)
-  reader(conn, inbox, id, budget - 1, until)
+  reader(conn, inbox, id, budget - 1, until, rest)
 
 fn route(inbox, id, kind, parts) =
   if kind == "i" then tell(inbox, Moved(id, num_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "f" then tell(inbox, Shot(id, fnum_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else 0

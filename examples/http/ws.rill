@@ -42,25 +42,69 @@ fn fill_more(conn, buf, want) =
   chunk = sock_read(conn)
   if str_len(chunk) == 0 then buf else fill(conn, buf + chunk, want)
 
-# A text frame's payload, or "" once the connection is done.
-fn ws_read(conn) = read_frame(fill(conn, "", 2))
+# One frame, and whatever arrived after it.
+#
+# A read is not a frame. TCP hands over bytes, so one read can carry half a
+# frame, or three of them, and a reader that assumes otherwise works perfectly
+# until a message is split across two segments — after which every following
+# frame is read from the middle of the last one and the connection quietly
+# turns to noise. It also silently dropped whatever came in the same read as
+# the frame it returned, which is every message after the first when a client
+# sends two of them quickly.
+#
+# So the leftovers are handed back with the message and passed in next time.
+# `("", rest)` means the peer has stopped talking.
+fn ws_take(conn, acc) =
+  head = fill(conn, acc, 2)
+  if str_len(head) < 2 then ("", "") else framed(conn, head)
 
-fn read_frame(head) =
-  if str_len(head) < 2 then "" else decode(head, bit_and(str_get(head, 0), 15), bit_and(str_get(head, 1), 127), bit_and(str_get(head, 1), 128) != 0)
+fn framed(conn, head) =
+  opcode = bit_and(str_get(head, 0), 15)
+  len7 = bit_and(str_get(head, 1), 127)
+  masked = bit_and(str_get(head, 1), 128) != 0
+  if opcode == 8 then ("", "") else if len7 == 127 then ("", "") else sized(conn, head, len7, masked)
 
-fn decode(head, opcode, len7, masked) =
-  if opcode == 8 then "" else if len7 == 127 then "" else payload(head, len7, masked)
+# Sixty-four bit lengths are not read here, and a frame that claims one
+# cannot be skipped over safely either — the length is exactly what is not
+# understood — so the connection ends.
 
-# Header size: 2 bytes, plus 2 more for a 16-bit length, plus 4 for the mask.
-fn payload(head, len7, masked) =
+fn sized(conn, head, len7, masked) =
   ext = if len7 == 126 then 2 else 0
-  n = if len7 == 126 then bit_or(shl(str_get(head, 2), 8), str_get(head, 3)) else len7
-  start = 2 + ext + (if masked then 4 else 0)
-  body = str_sub(head, start, n)
-  if masked then unmask(body, str_sub(head, 2 + ext, 4), 0, "") else body
+  short = fill(conn, head, 2 + ext)
+  if str_len(short) < 2 + ext then ("", "") else whole(conn, short, ext, frame_len(short, len7, ext), masked)
 
-fn unmask(body, key, i, acc) =
-  if i >= str_len(body) then acc else unmask(body, key, i + 1, acc + chr(bit_xor(str_get(body, i), str_get(key, i % 4))))
+fn frame_len(b, len7, ext) =
+  if ext == 0 then len7 else bit_or(shl(str_get(b, 2), 8), str_get(b, 3))
+
+fn whole(conn, short, ext, n, masked) =
+  start = 2 + ext + (if masked then 4 else 0)
+  need = start + n
+  b = fill(conn, short, need)
+  if str_len(b) < need then ("", "") else cut(b, start, n, need, masked, ext)
+
+fn cut(b, start, n, need, masked, ext) =
+  body = str_sub(b, start, n)
+  rest = str_sub(b, need, str_len(b) - need)
+  (if masked then unmask(body, str_sub(b, 2 + ext, 4)) else body, rest)
+
+# A text frame's payload, or "" once the connection is done. Keeps nothing
+# between calls, so it is only safe where one message arrives at a time —
+# `ws_take` is what a server should use.
+fn ws_read(conn) =
+  (msg, rest) = ws_take(conn, "")
+  msg
+
+# Byte by byte into a builder rather than by joining strings. `acc + chr(...)`
+# copies everything accumulated so far every time round, which is quadratic:
+# a sixty-four kilobyte frame — the largest this reads — came to two gigabytes
+# of copying and about sixty-five milliseconds of one core, for one message.
+fn unmask(body, key) =
+  b = strbuf()
+
+  for i in 0..str_len(body)
+    strbuf_byte(b, bit_xor(str_get(body, i), str_get(key, i % 4)))
+
+  strbuf_str(b)
 
 # A frame the *server* sends: text, final, unmasked.
 fn ws_frame(text) =
@@ -77,10 +121,7 @@ fn ws_close(conn) =
 
 # Clients must mask; a fixed key is fine, the point is XOR not secrecy.
 fn client_frame(text) =
-  chr(129) + chr(bit_or(128, str_len(text))) + "abcd" + mask_with(text, "abcd", 0, "")
-
-fn mask_with(text, key, i, acc) =
-  if i >= str_len(text) then acc else mask_with(text, key, i + 1, acc + chr(bit_xor(str_get(text, i), str_get(key, i % 4))))
+  chr(129) + chr(bit_or(128, str_len(text))) + "abcd" + unmask(text, "abcd")
 
 fn ws_handshake_request(host, path) =
   "GET " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n" + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" + "Sec-WebSocket-Version: 13\r\n\r\n"

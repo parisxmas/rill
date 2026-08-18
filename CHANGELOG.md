@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **`ws.rill` stops assuming a read is a frame.** TCP hands over bytes: one
+  read can carry half a frame or three of them. The reader took the first frame
+  out of whatever a single read produced and threw the rest away — so a client
+  sending two messages in one write lost the second, and a message split across
+  two segments was truncated, after which every following frame was read from
+  the middle of the last one and the connection quietly turned to noise. That
+  is what a large frame really did: it did not stall the server, it desynced
+  the stream and the connection died.
+
+  `ws_take(conn, acc)` hands back the message and the bytes after it, and they
+  go back in next time. Measured on the valley server: three frames in one
+  write all arrive, a frame split down the middle is reassembled, and a
+  65,000-byte frame is answered on the next tick with the connection intact —
+  all three of which used to fail. The echo example now sends both its messages
+  in one write, so the test covers it.
+
+  Unmasking was also quadratic — `acc + chr(...)` copies everything so far,
+  every byte — which for the largest frame this reads came to two gigabytes of
+  copying and about sixty-five milliseconds of one core, for one message. It
+  goes through a `StrBuf` now.
+
 - **The valley server stops taking a client's word for anything.** It was a
   demo on a trusted network and read like one, and asking what an unfriendly
   client could do turned up four things.

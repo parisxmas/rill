@@ -5,15 +5,19 @@ import "ws"
 
 fn serve_ws(conn) =
   request = fill(conn, "", 4)
-  if ws_accept(conn, request) then echo_loop(conn) else sock_close(conn)
+  if ws_accept(conn, request) then echo_loop(conn, "") else sock_close(conn)
 
-fn echo_loop(conn) =
-  msg = ws_read(conn)
-  if str_len(msg) == 0 then ws_close(conn) else echo_back(conn, msg)
+# The leftovers are carried from one frame to the next. A read is not a frame:
+# the client below sends both of its messages in one write, so the second
+# arrives in the same read as the first and a loop that threw the remainder
+# away would answer once and then wait for ever.
+fn echo_loop(conn, acc) =
+  (msg, rest) = ws_take(conn, acc)
+  if str_len(msg) == 0 then ws_close(conn) else echo_back(conn, msg, rest)
 
-fn echo_back(conn, msg) =
+fn echo_back(conn, msg, rest) =
   ws_write(conn, "echo: " + msg)
-  echo_loop(conn)
+  echo_loop(conn, rest)
 
 fn accept_loop(server, remaining) =
   conn = tcp_accept(server)
@@ -34,14 +38,21 @@ fn talk(fd, messages) =
 
 fn first_line_of(raw) = unwrap_or(nth(split(raw, "\r\n"), 0), "")
 
-fn exchange(fd, messages) = match messages
-  Nil -> 0
-  Cons(m, rest) -> send_one(fd, m, rest)
+# Both messages in one write, and then both answers read back — which is what
+# a browser does when two frames leave in the same tick, and what the echo loop
+# above has to survive.
+fn exchange(fd, messages) =
+  sock_write(fd, all_frames(messages))
+  read_back(fd, len(messages), "")
 
-fn send_one(fd, m, rest) =
-  sock_write(fd, client_frame(m))
-  println(ws_read(fd))
-  exchange(fd, rest)
+fn all_frames(messages) = match messages
+  Nil -> ""
+  Cons(m, rest) -> client_frame(m) + all_frames(rest)
+
+fn read_back(fd, n, acc) =
+  (msg, rest) = ws_take(fd, acc)
+  println(msg)
+  if n == 1 then 0 else read_back(fd, n - 1, rest)
 
 fn main() = match listen_on(8090)
   Err(e) -> println(e)
