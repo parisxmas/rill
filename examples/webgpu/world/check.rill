@@ -64,6 +64,36 @@ fn upright(s) = if v.health(s) > 0.5 then "on their feet" else "down"
 # half a metre is a leg, one is the body, one and six tenths is the head.
 # The same shot with the shooter looking the other way, which the server
 # should refuse.
+# What one player is told about another depends on whether there is a line
+# between them. Two standing together can see each other; the same two with a
+# hundred metres and whatever the terrain does in between usually cannot, and
+# the point of the test is that the answer is the terrain's and not a constant.
+fn sightlines(w, a, b) =
+  place(a, 0.0, 0.0)
+  place(b, 3.0, 0.0)
+  println("three metres apart on the same ground: " + yes(v.can_see(a, b)) + ", and the other way " + yes(v.can_see(b, a)))
+  place(b, 40.0, 0.0)
+  near = v.can_see(a, b)
+  place(b, 120.0, 40.0)
+  far = v.can_see(a, b)
+  println("forty metres away: " + yes(near) + "; a hundred and thirty: " + yes(far))
+  println("across the valley, " + int_to_str(counted(w, a, b, 0, 0)) + " of 16 places are in sight of the middle")
+
+# Sixteen points around the valley, asked one at a time. A number rather than a
+# list of yes and no: what matters is that it is neither nought nor sixteen —
+# terrain that hid everybody would be a valley nobody could play in, and
+# terrain that hid nobody would be this whole defence doing nothing.
+fn counted(w, a, b, i, acc) =
+  if i >= 16 then acc else counted(w, a, b, i + 1, acc + at_ring(w, a, b, i))
+
+fn at_ring(w, a, b, i) =
+  ang = to_float(i) * 0.3927
+  place(a, 0.0, 0.0)
+  place(b, cos(ang) * 70.0, sin(ang) * 70.0)
+  v.can_see(a, b)
+
+fn yes(n) = if n == 1 then "yes" else "no"
+
 fn shoot_blind(w, a, b) =
   dx = v.player_x(b) - v.player_x(a)
   dy = v.player_y(b) + 1.05 - (v.player_y(a) + 1.75)
@@ -230,6 +260,7 @@ fn main() =
   println("eleven seconds later: " + upright(b) + ", camera " + tilt(b) + ", eye at " + eye(b))
 
   v.leave(w, b)
+  sightlines(w, a, b)
   println("one leaves: " + int_to_str(v.players(w)) + " remain, ids " + int_to_str(v.player_id(v.player_block(w, 0))) + " " + int_to_str(v.player_id(v.player_block(w, 1))))
 
   tick(w, 20)

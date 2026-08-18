@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=270";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=270";
+import { load } from "./world.js?v=271";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=271";
 
 // One number, appended to every asset URL.
 //
@@ -658,7 +658,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // else gets a line; and an invalid pipeline complains again on every frame
     // that tries to use it. Neither repetition carries information, and both
     // will happily fill the panel before the message you needed arrives.
-    const key = `${what} ${detail ?? ""}`;
+    const key = `${what}\0${detail ?? ""}`;
     if (said.has(key)) return;
     said.add(key);
     if (lines >= 8) return;
@@ -766,7 +766,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const modCache = new Map();
   const mod = (code, label, constants) => {
     const src = spec(code, constants);
-    const key = `${label} ${src}`;
+    const key = `${label}\0${src}`;
     const had = modCache.get(key);
     if (had) return had;
     const m = device.createShaderModule({ code: src, label });

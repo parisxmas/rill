@@ -321,6 +321,32 @@ masked, so a crouching player is still down and a running one still bobs. The
 mask is in `figure.mesh` a joint at a time, because the rule has an exception
 in it and the place to know about that is the tool reading the rig.
 
+## What a client is told
+
+The snapshot used to carry everybody's position to everybody. Nothing a browser
+can do fixes that — a client that has been told where somebody is can draw them
+through a hill — so the answer is in the server: it works out, per reader, who
+has a line of sight to whom, and a player behind the terrain arrives with their
+position blanked and a zero on the end of their block.
+
+They stay in the roster. Names, health and the two counts are who is in the
+valley, which is not a secret from anyone standing in it; what is withheld is
+*where*. It is the only one of the three defences here that a modified client
+cannot work around, because it is not a rule it is asked to follow.
+
+The line is eye to eye, so it is the same question both ways round, and the
+ground may come a third of a metre above it before it counts as blocking —
+somebody on a crest reads as visible rather than flickering. Trees and crystals
+are not asked: they are thin, and hiding somebody behind a sapling costs more in
+shots that should have landed than it takes from anybody cheating.
+
+The cost is the one-line broadcast, which was the cheapest thing in the loop:
+it is now one string per reader. Measured with everybody running about, it does
+not show — 20 snapshots a second either way, and the server at one per cent of
+a core with twenty-four players in the valley. What it buys depends entirely on
+the terrain, and this terrain is a bowl: about one player in twenty is blanked
+at any moment. In a valley with more cover it would be most of them.
+
 ## Whose name is whose
 
 Everybody gets a token the first time they arrive. The browser keeps it, it

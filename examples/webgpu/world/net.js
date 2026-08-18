@@ -13,7 +13,7 @@
 //
 //   in     hello <id> <pines> <crystals> <grass> <clock> <token>
 //          gone <i>...                     crystals already shot
-//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose hit shot>...
+//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose hit shot seen>...
 //          r <x y z vx vy vz owner>        a round left somebody's rifle
 //          t <x y z vx vy vz seed life>    a crystal threw
 //          k <x y z seed>                  one landed
@@ -168,8 +168,15 @@ function snapshot(net, line) {
       // `hit` is how many rounds this player has landed on other people and
       // `shot` how many they have taken. Both are the server's count: a client
       // can see somebody flinch but has no way of knowing whose round it was.
+      // `seen` is whether this snapshot says where they are. The server works
+      // out what each player can actually look at and blanks the rest — so a
+      // zero here is not "they left", it is "there is no line to them from
+      // where you are standing", and the position fields are zeros. They stay
+      // in the roster; they are simply not drawn. Older servers do not send
+      // it, and everybody being visible is the right reading of its absence.
       return { id: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], pitch: n[5], health: n[6],
-               pose: n[7] | 0, hit: n[8] | 0, shot: n[9] | 0 };
+               pose: n[7] | 0, hit: n[8] | 0, shot: n[9] | 0,
+               seen: n.length > 10 ? n[10] !== 0 : true };
     }),
   };
   // How long one takes to arrive, smoothed. It is the length of the walk
@@ -204,8 +211,12 @@ export function others(net, now) {
   const t = span > 1 ? Math.min(1, Math.max(0, (now - net.last.at) / span)) : 1;
   const out = [];
   for (const p of net.last.players) {
-    if (p.id === net.id) continue;
-    const q = net.prev.players.find((o) => o.id === p.id) ?? p;
+    if (p.id === net.id || !p.seen) continue;
+    // Interpolating from a snapshot that did not say where they were would
+    // walk them out of the origin and across the valley. Somebody coming round
+    // a corner is drawn where they are, once, and interpolated from then on.
+    const before = net.prev.players.find((o) => o.id === p.id);
+    const q = before && before.seen ? before : p;
     out.push({
       id: p.id,
       x: q.x + (p.x - q.x) * t,

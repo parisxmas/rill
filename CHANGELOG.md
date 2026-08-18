@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **A client is no longer told where it cannot see.** The snapshot carried
+  everybody's position to everybody, and no amount of care in the renderer can
+  unsay that: a browser that has been given a coordinate can draw a figure
+  through a hill. The server now works the line of sight out per reader —
+  eye to eye, sampled against the terrain every three metres — and a player
+  behind the ground arrives with their position blanked and a zero on the end
+  of their block.
+
+  They stay in the roster: who is in the valley is not a secret from anyone
+  standing in it, and health and the two counts are not positions. The cost is
+  the one-line broadcast, which becomes one string per reader; measured with
+  everybody running about it does not show, 20 snapshots a second either way
+  and one per cent of a core at twenty-four players. What it buys is the
+  terrain's to give, and this terrain is a bowl — about one player in twenty is
+  blanked at any moment. It is also the only one of the three defences a
+  modified client cannot work around, because it is not a rule it is asked to
+  follow.
+
 - **A name belongs to somebody now.** The server mints a token on a browser's
   first visit, hands it back in `hello`, and the browser sends it in the query
   from then on; `who.txt` holds one `<token> <name>` line per person and the

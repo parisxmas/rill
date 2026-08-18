@@ -306,7 +306,7 @@ fn unique_from(conns, c, id, name, book, n) =
 # they come back, and the way to make that true is to refuse it to everybody
 # else while they are gone.
 fn spoken_for(conns, c, id, name, book) =
-  if taken(conns, id, name) then true else mine_elsewhere(owner_of(book, name), conn_token(c))
+  taken(conns, id, name) || mine_elsewhere(owner_of(book, name), conn_token(c))
 
 fn mine_elsewhere(owner, token) = str_len(owner) > 0 && owner != token
 
@@ -314,7 +314,7 @@ fn mine_elsewhere(owner, token) = str_len(owner) > 0 && owner != token
 # twice is a client repeating itself, not a collision.
 fn taken(conns, id, name) = match conns
   Nil -> false
-  Cons(c, rest) -> if conn_id(c) != id && conn_name(c) == name then true else taken(rest, id, name)
+  Cons(c, rest) -> conn_id(c) != id && conn_name(c) == name || taken(rest, id, name)
 
 fn rename(w, conns, c, id, name, book) =
   v.renamed(conn_block(c), v.world_time(w))
@@ -440,7 +440,7 @@ fn tick(w, conns) =
   send_craters(w, left, craters0)
   send_breaks(w, left, breaks0)
   send_hurts(w, left, hurts0)
-  broadcast(w, left, snapshot(w, left))
+  tell_each(w, left, left)
   left
 
 # Whoever is still talking. The socket is deliberately not closed here: a
@@ -455,9 +455,7 @@ fn drop_quiet(w, conns, now) = match conns
   Cons(c, rest) -> keep_or_drop(w, c, drop_quiet(w, rest, now), now)
 
 fn keep_or_drop(w, c, rest, now) =
-  if v.shooting_wild(conn_block(c)) > 0 then shooting_wild(w, c, rest)
-  else if now - v.last_heard(conn_block(c)) < quiet_s() then Cons(c, rest)
-  else gone_quiet(w, c, rest)
+  if v.shooting_wild(conn_block(c)) > 0 then shooting_wild(w, c, rest) else if now - v.last_heard(conn_block(c)) < quiet_s() then Cons(c, rest) else gone_quiet(w, c, rest)
 
 # Out the same door as anyone who has gone quiet, and for a related reason:
 # whatever is on the other end of that socket, it is not the client we ship.
@@ -568,7 +566,6 @@ fn pick_one(c, rest) =
 # of that — the clock and the standing up — are `valley.rill`'s, so a browser
 # alone in its own valley falls over the same way.
 
-
 # ---- what goes on the wire -------------------------------------------------
 #
 # One line per tick. The clock first, because the wind and the sun are
@@ -576,26 +573,56 @@ fn pick_one(c, rest) =
 # Then the shark, which is one animal and so is six numbers. Then everybody,
 # seven numbers each.
 
-fn snapshot(w, conns) =
+# One snapshot per player now, rather than one for everybody.
+#
+# Everybody is still in every snapshot — the names, the health bars and the two
+# counts down the left are who is in the valley, and that is not a secret from
+# anyone standing in it. What is withheld is *where*: a player with a hill
+# between them and the reader is sent with their position blanked and a zero on
+# the end, and there is nothing in the line to draw them from.
+#
+# This is what costs the one-line broadcast, which was the cheapest thing in
+# the loop. At eight players it is eight strings a tick instead of one and the
+# line-of-sight work is a few hundred samples of a function that is arithmetic;
+# at the sixty-four the valley can hold it is the most expensive thing here.
+# The alternative is telling every client where everybody is and asking it
+# nicely not to look.
+fn snapshot(w, conns, eye) =
   b = strbuf()
   strbuf_add(b, "s " + float_to_str(v.world_time(w)))
   strbuf_add(b, " " + float_to_str(v.shark_x(w)) + " " + float_to_str(v.shark_y(w)) + " " + float_to_str(v.shark_z(w)))
   strbuf_add(b, " " + float_to_str(v.shark_heading(w)) + " " + float_to_str(v.shark_mode(w)))
-  add_players(b, conns)
+  add_players(b, conns, eye)
   strbuf_str(b)
 
-fn add_players(b, conns) = match conns
+fn add_players(b, conns, eye) = match conns
   Nil -> 0
-  Cons(c, rest) -> add_player(b, c, rest)
+  Cons(c, rest) -> add_player(b, c, rest, eye)
 
-fn add_player(b, c, rest) =
+fn add_player(b, c, rest, eye) =
   s = conn_block(c)
+  # Themselves always, and `can_see` of a block with itself would be a line of
+  # length zero: two pointers are not compared here because they cannot be, so
+  # it goes by the id the world gave them.
+  seen = if v.player_id(s) == v.player_id(eye) then 1 else v.can_see(eye, s)
   strbuf_add(b, " | " + int_to_str(conn_id(c)))
-  strbuf_add(b, " " + float_to_str(v.player_x(s)) + " " + float_to_str(v.player_y(s)) + " " + float_to_str(v.player_z(s)))
-  strbuf_add(b, " " + float_to_str(v.player_yaw(s)) + " " + float_to_str(v.player_pitch(s)))
+  place(b, s, seen)
   strbuf_add(b, " " + float_to_str(v.health(s)) + " " + int_to_str(pose_of(s)))
   strbuf_add(b, " " + int_to_str(v.hits_given(s)) + " " + int_to_str(v.hits_taken(s)))
-  add_players(b, rest)
+  strbuf_add(b, " " + int_to_str(seen))
+  add_players(b, rest, eye)
+
+# Zeros where the numbers would be. Not the last place they were seen, which
+# would be a slower leak of the same thing, and not a plausible-looking guess,
+# which would put a figure where nobody is — this says nothing, and the client
+# draws nobody.
+fn place(b, s, seen) =
+  if seen == 1 then
+    strbuf_add(b, " " + float_to_str(v.player_x(s)) + " " + float_to_str(v.player_y(s)) + " " + float_to_str(v.player_z(s)))
+    strbuf_add(b, " " + float_to_str(v.player_yaw(s)) + " " + float_to_str(v.player_pitch(s)))
+  else
+    strbuf_add(b, " 0 0 0 0 0")
+  0
 
 # What somebody looks like they are doing, for whoever has to draw them.
 #
@@ -619,6 +646,17 @@ fn broadcast(w, conns, line) = match conns
 fn broadcast_one(w, c, rest, line) =
   offer(conn_out(c), line)
   broadcast(w, rest, line)
+
+# The snapshot is built once per reader, because what is in it depends on where
+# the reader is standing. `all` is everybody — the list being written about —
+# and `to` is who is left to write it for.
+fn tell_each(w, all, to) = match to
+  Nil -> 0
+  Cons(c, rest) -> tell_theirs(w, all, c, rest)
+
+fn tell_theirs(w, all, c, rest) =
+  offer(conn_out(c), snapshot(w, all, conn_block(c)))
+  tell_each(w, all, rest)
 
 fn offer(out, line) =
   sent = select
@@ -653,7 +691,9 @@ fn ticker(inbox, next) =
 # and the only handle is an address that changes with the weather.
 
 fn who_file() = "who.txt"
+
 fn ban_file() = "banned.txt"
+
 fn token_len() = 16
 
 # Enough of a mix that two people arriving in the same millisecond do not get
@@ -666,7 +706,8 @@ fn token_len() = 16
 # everything else about it. Both halves are needed: the clock stops one client
 # from getting the same token twice, the key stops anybody else from working
 # out what it was.
-fn mint(request) = hex_str(mix64(now_nanos() * 6364136223846793005 + hash_str(request)), token_len(), "")
+fn mint(request) =
+  hex_str(mix64(now_nanos() * 6364136223846793005 + hash_str(request)), token_len(), "")
 
 fn mix64(x0) =
   a = bit_xor(x0, shr(x0, 33)) * 7109453100751455733
@@ -695,13 +736,11 @@ fn token_at(request) =
   if at < 0 then "" else hex_run(line, at + 4, "")
 
 fn hex_run(line, i, acc) =
-  if i >= str_len(line) || str_len(acc) >= token_len() then good_token(acc)
-  else if is_hex(str_get(line, i)) then hex_run(line, i + 1, acc + str_sub(line, i, 1))
-  else good_token(acc)
+  if i >= str_len(line) || str_len(acc) >= token_len() then good_token(acc) else if is_hex(str_get(line, i)) then hex_run(line, i + 1, acc + str_sub(line, i, 1)) else good_token(acc)
 
 fn good_token(acc) = if str_len(acc) == token_len() then acc else ""
 
-fn is_hex(c) = c >= 48 && c <= 57 || (c >= 97 && c <= 102)
+fn is_hex(c) = c >= 48 && c <= 57 || c >= 97 && c <= 102
 
 # ---- the two files ---------------------------------------------------------
 #
@@ -724,9 +763,7 @@ fn after_token(book, at) =
   if at < 0 then "" else to_eol(book, at + token_len() + 1, "")
 
 fn to_eol(book, i, acc) =
-  if i >= str_len(book) then acc
-  else if str_get(book, i) == 10 || str_get(book, i) == 13 then acc
-  else to_eol(book, i + 1, acc + str_sub(book, i, 1))
+  if i >= str_len(book) then acc else if str_get(book, i) == 10 || str_get(book, i) == 13 then acc else to_eol(book, i + 1, acc + str_sub(book, i, 1))
 
 # Who owns this name, if anybody. Reading it the other way round: the name is
 # at the end of its line, so a line ends with a space and the name.
@@ -734,7 +771,8 @@ fn owner_of(book, name) = owner_at(book, str_find(book, " " + name + "\n"))
 
 # The space is the one between the token and the name, so the token is the
 # sixteen characters in front of it.
-fn owner_at(book, at) = if at < token_len() then "" else str_sub(book, at - token_len(), token_len())
+fn owner_at(book, at) =
+  if at < token_len() then "" else str_sub(book, at - token_len(), token_len())
 
 # Writing it back is a rewrite of the whole file, which at one line per player
 # ever is cheap and is atomic in the only sense that matters here: the process

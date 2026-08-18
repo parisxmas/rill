@@ -377,8 +377,7 @@ fn step_bullet(w, b, at, dt, decide) =
   if on > 0.5 && decide > 0 then
     hit_crystals(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
     hit_players(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
-  else if on > 0.5 then stop_on_ghosts(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
-  else 0
+  else if on > 0.5 then stop_on_ghosts(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz) else 0
 
   poke_f32(b, at, px)
   poke_f32(b, at + 1, py)
@@ -607,7 +606,7 @@ fn try_break(w, cb, ci, b, at, ax, ay, az, bx, by, bz) =
     n2 = hit_at(cb, cat, sc, 0.5, 0.34, ax, ay, az, bx, by, bz)
     n3 = hit_at(cb, cat, sc, 1.0, 0.35, ax, ay, az, bx, by, bz)
     n4 = hit_at(cb, cat, sc, 1.5, 0.25, ax, ay, az, bx, by, bz)
-    n5 = hit_at(cb, cat, sc, 1.9, 0.20, ax, ay, az, bx, by, bz)
+    n5 = hit_at(cb, cat, sc, 1.9, 0.2, ax, ay, az, bx, by, bz)
     n6 = hit_at(cb, cat, sc, 2.25, 0.18, ax, ay, az, bx, by, bz)
     if n1 + n2 + n3 + n4 + n5 + n6 < 0.5 then 0
     else
@@ -654,17 +653,12 @@ fn player_sphere(s, up, r, ax, ay, az, bx, by, bz) =
 # A round passes through whoever fired it: at the muzzle it starts nine tenths
 # of a metre from their own eye, which is inside the sphere around their head.
 fn try_hit_player(w, s, owner, b, at, ax, ay, az, bx, by, bz) =
-  if peek_f32(s, 99) == owner then 0
-  else if peek_f32(s, 82) < 0.001 then 0
-  else hit_where(w, s, owner, b, at, ax, ay, az, bx, by, bz)
+  if peek_f32(s, 99) == owner then 0 else if peek_f32(s, 82) < 0.001 then 0 else hit_where(w, s, owner, b, at, ax, ay, az, bx, by, bz)
 
 # Top down: the head is inside the body's sphere as far as a segment test is
 # concerned, so asking about the body first would give away every head shot.
 fn hit_where(w, s, owner, b, at, ax, ay, az, bx, by, bz) =
-  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, head_hurt())
-  else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, body_hurt())
-  else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, leg_hurt())
-  else 0
+  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, head_hurt()) else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, body_hurt()) else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, leg_hurt()) else 0
 
 # Both halves of a hit are written down: one for whoever was hit and one for
 # whoever fired, because the second is the interesting number and cannot be
@@ -696,7 +690,7 @@ fn hurt_ring() = 32
 
 fn put_hurt(w, victim, shooter, dmg, down) =
   k = to_int(peek_f32(w, 112))
-  at = (k % hurt_ring()) * 4
+  at = k % hurt_ring() * 4
   hb = peek_ptr(w, 113)
   poke_f32(hb, at, victim)
   poke_f32(hb, at + 1, shooter)
@@ -707,7 +701,7 @@ fn put_hurt(w, victim, shooter, dmg, down) =
 
 fn hurts(w: Ptr) -> Int = to_int(peek_f32(w, 112))
 
-fn hurt_f(w: Ptr, k: Int, j: Int) -> Float = peek_f32(peek_ptr(w, 113), (k % hurt_ring()) * 4 + j)
+fn hurt_f(w: Ptr, k: Int, j: Int) -> Float = peek_f32(peek_ptr(w, 113), k % hurt_ring() * 4 + j)
 
 # The shooter by their id rather than by where they were in the table: a round
 # outlives the slot of whoever fired it, which is the whole reason the id is
@@ -1734,6 +1728,52 @@ fn player_block(w: Ptr, i: Int) -> Ptr = player_at(w, i)
 # the slot numbers are this file's business — a second file that knew the
 # state block by heart would be a second file to change when it moves.
 
+# ---- what one player can see of another -------------------------------------
+#
+# The snapshot used to carry everybody's position to everybody, whether or not
+# there was any way to look at them. Nothing a browser does can fix that: a
+# client that has been told where somebody is can draw them through a hill, and
+# a client that has not cannot. So the answer has to be here, and it is the
+# only one of the three defences in this file that a modified client cannot
+# work around — it is not a rule it is asked to follow, it is a fact it is not
+# told.
+#
+# The line is eye to eye, which makes it the same question both ways round and
+# is close enough: a head that is behind the ridge takes the rest with it. The
+# ground is allowed to come up to a third of a metre above the line before it
+# counts as blocking, so that somebody standing right on a crest reads as
+# visible rather than flickering between the two as they breathe.
+#
+# Trees and crystals are not asked. They are thin, they move, and a defence
+# that hides somebody behind a sapling costs more in shots that should have
+# landed than it takes away from anybody cheating.
+
+fn eye_up() = 1.62
+
+fn sight_slack() = 0.33
+
+# One sample every three metres, and never more than twenty-four of them: the
+# far end of the valley is a hundred and fifty metres away and sampling it
+# every three would cost fifty for a pair nobody can make out anyway.
+fn sight_steps(d) = if d < 12.0 then 4 else if d > 72.0 then 24 else to_int(d / 3.0)
+
+fn can_see(a: Ptr, b: Ptr) -> Int =
+  ax = player_x(a)
+  ay = player_y(a) + eye_up()
+  az = player_z(a)
+  bx = player_x(b)
+  by = player_y(b) + eye_up()
+  bz = player_z(b)
+  dx = bx - ax
+  dz = bz - az
+  clear_to(ax, ay, az, bx, by, bz, sight_steps(sqrt(dx * dx + dz * dz)), 1)
+
+fn clear_to(ax, ay, az, bx, by, bz, n, i) =
+  if i >= n then 1 else if blocked_at(ax, ay, az, bx, by, bz, to_float(i) / to_float(n)) then 0 else clear_to(ax, ay, az, bx, by, bz, n, i + 1)
+
+fn blocked_at(ax, ay, az, bx, by, bz, t) =
+  height(ax + (bx - ax) * t, az + (bz - az) * t) > ay + (by - ay) * t + sight_slack()
+
 fn player_x(s: Ptr) -> Float = peek_f32(s, 21)
 
 fn player_y(s: Ptr) -> Float = peek_f32(s, 22)
@@ -2297,7 +2337,8 @@ fn renamed(s: Ptr, t: Float) =
   poke_f32(s, 108, t)
   1
 
-fn may_rise(s: Ptr) -> Int = if peek_f32(s, 82) < 0.001 && peek_f32(s, 107) > dead_secs() then 1 else 0
+fn may_rise(s: Ptr) -> Int =
+  if peek_f32(s, 82) < 0.001 && peek_f32(s, 107) > dead_secs() then 1 else 0
 
 fn lie(s, dead, dt) =
   poke_f32(s, 107, if dead > 0.5 then peek_f32(s, 107) + dt else 0.0)

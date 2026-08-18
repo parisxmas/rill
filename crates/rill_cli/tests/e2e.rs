@@ -895,6 +895,9 @@ fn shared_valley() {
             "shot down: down, camera thrown, eye at 0.980103\n",
             "six seconds later: down, camera thrown, eye at 0.35\n",
             "eleven seconds later: on their feet, camera level, eye at 1.75\n",
+            "three metres apart on the same ground: yes, and the other way yes\n",
+            "forty metres away: yes; a hundred and thirty: no\n",
+            "across the valley, 11 of 16 places are in sight of the middle\n",
             "one leaves: 2 remain, ids 0 2\n",
             "the valley is put away\n",
         )
