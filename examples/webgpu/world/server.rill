@@ -55,7 +55,12 @@ fn reload_s() = 0.55
 # seconds is two or three hundred messages that did not arrive — and until
 # they are dropped they are still standing there: in the snapshot, in the
 # count, in the way, and a target for whatever the crystals throw.
-fn quiet_s() = 10.0
+# Thirty seconds. A client sends a heartbeat every two whether or not anybody
+# is looking at it, so this is fifteen missed in a row — but a browser throttles
+# its timers in a tab that has been hidden for a while, and being thrown out of
+# the valley for looking at another tab is worse than holding a dead
+# connection's place for another twenty seconds.
+fn quiet_s() = 30.0
 
 # How many messages a second one connection may have listened to. A browser
 # sends its keys once a frame, so ninety is comfortably above anything honest

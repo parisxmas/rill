@@ -46,7 +46,10 @@ export function join(url) {
     // rather than throwing sixty times a second.
     lost: false,
     send(line) { if (sock.readyState === 1) sock.send(line); },
-    input(keys, yaw, pitch) { net.send(`i ${keys} ${yaw.toFixed(4)} ${pitch.toFixed(4)}`); },
+    input(keys, yaw, pitch) {
+      look = [yaw, pitch];
+      net.send(`i ${keys} ${yaw.toFixed(4)} ${pitch.toFixed(4)}`);
+    },
     fired(dx, dy, dz) { net.send(`f ${dx.toFixed(4)} ${dy.toFixed(4)} ${dz.toFixed(4)}`); },
     take() { const e = net.events; net.events = []; return e; },
     close() { sock.close(); },
@@ -64,8 +67,23 @@ export function join(url) {
     net.events.push({ kind, n: nums(line, 1) });
   });
 
-  sock.addEventListener("error", () => { net.lost = true; failed(new Error(`cannot reach ${url}`)); });
-  sock.addEventListener("close", () => { net.lost = true; failed(new Error(`${url} closed`)); });
+  // A heartbeat, on a timer rather than on the frame loop.
+  //
+  // Input is sent once a frame, and a browser stops running frames the moment
+  // its tab is hidden — so a tab left in the background stopped saying
+  // anything at all and the server, which drops whoever it has not heard from,
+  // quite correctly threw it out of a valley it was still connected to.
+  //
+  // What goes out is the last look with no keys held: it says "still here" and
+  // "standing still", which is the right thing for somebody who has looked
+  // away — otherwise a tab hidden mid-stride would keep walking, because the
+  // server walks from the last input it was given until it is given another.
+  let look = [0, 0];
+  const beat = setInterval(() => net.send(`i 0 ${look[0].toFixed(4)} ${look[1].toFixed(4)}`), 2000);
+  const stop = () => clearInterval(beat);
+
+  sock.addEventListener("error", () => { stop(); net.lost = true; failed(new Error(`cannot reach ${url}`)); });
+  sock.addEventListener("close", () => { stop(); net.lost = true; failed(new Error(`${url} closed`)); });
 
   return net;
 }

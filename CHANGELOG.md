@@ -36,6 +36,18 @@
   being parsed. Under three flooding clients the tick now holds at a full 20 a
   second, where before the server fell over.
 
+  The timeout then threw out the one client it was meant to protect. Input is
+  sent once a frame and a browser stops running frames the moment its tab is
+  hidden, so a tab left in the background said nothing at all and was dropped
+  from a valley it was still connected to — measured, and then measured again
+  after the fix, because the first attempt at testing it was served a cached
+  `index.html` and proved nothing. There is a heartbeat on a timer now: the
+  last look with no keys held, every two seconds, which says "still here" and
+  "standing still". Standing still matters — the server walks from the last
+  input it was given, so a tab hidden mid-stride would otherwise keep walking.
+  The silence a connection is allowed is thirty seconds rather than ten, since
+  a browser throttles the timers of a hidden tab.
+
   And there was no limit on open sockets. Eighty connections that said nothing
   at all held eighty strands and eighty descriptors for ever; there are
   sixty-four places now and the eighty-first is closed on arrival. That is a
