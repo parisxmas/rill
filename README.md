@@ -144,9 +144,11 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 `lib/` is what the examples above are written on, and is written in Rill
 itself: `json.rill` and `yaml.rill`, `http.rill` for HTTP/1.1, `ws.rill` for
 WebSocket, `sha1.rill` for the handshake, and three clients for the OxiDB
-database, one per wire it speaks — `oxidb.rill` for documents over JSON,
-`oxitsdb.rill` for time series over its binary OxiWire, and `oxiresp.rill` for
-the key-value engine over RESP, the protocol Redis speaks. It is not a
+database, one per engine: `oxidb.rill` for documents and `oxitsdb.rill` for
+time series, both over `oxiwire.rill` — the server's binary format, about two
+and a half times faster to talk than its JSON one and about a third larger on
+the wire — and `oxiresp.rill` for the key-value engine over RESP, the protocol
+Redis speaks. It is not a
 standard library and nothing is promised about it between releases — the
 prelude is the part that ships with the compiler. It is a directory, so
 `import "json"` finds it from anywhere under this repository, and `RILL_PATH`

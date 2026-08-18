@@ -44,7 +44,7 @@ fn came_back(bytes) = match ow_decode(bytes, 0)
   Failed(why, pos) -> "undecodable: " + why + ", at byte " + int_to_str(pos)
   Parsed(v, _) -> to_string(v)
 
-fn answered(label, frame) = match ts_reply(frame)
+fn answered(label, frame) = match ow_reply(frame)
   Ok(v) -> println(label + ": ok " + to_string(v))
   Err(e) -> println(label + ": err " + e)
 

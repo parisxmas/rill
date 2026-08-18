@@ -64,20 +64,27 @@ fn stand_in(server, remaining) =
   answer_all(conn, remaining)
   sock_close(server)
 
-# A request the stand-in cannot read becomes `JNull`, which has no `cmd` and
-# so falls through to the unknown-command reply — the shape a real server
-# answers a nonsense request with anyway.
+# A frame is `0xDB` and a value, so the request decodes from byte 1. One the
+# stand-in cannot read becomes `JNull`, which has no `cmd` and so falls
+# through to the unknown-command reply — the shape a real server answers a
+# nonsense request with anyway.
 fn answer_all(conn, remaining) =
-  request = parsed_or(read_frame(conn), JNull)
-  send_frame(conn, to_string(reply_to(as_str(unwrap_or(get(request, "cmd"), JNull)), request)))
+  request = asked(ow_decode(ow_recv(conn), 1))
+  answer(conn, reply_to(as_str(unwrap_or(get(request, "cmd"), JNull)), request))
   if remaining == 1 then sock_close(conn) else answer_all(conn, remaining - 1)
 
-# The reply shapes a real server uses, verified against oxidb-server 0.42.8.
+fn asked(read) = match read
+  Parsed(v, _) -> v
+  Failed(_, _) -> JNull
+
+# On this wire the status byte says whether the value is an answer or a
+# complaint, so there is no envelope around it. 0 is an answer, 1 is not.
+fn answer(conn, reply) = match reply
+  Ok(data) -> ow_frame_out(conn, chr(219) + chr(0) + ow_encode(data))
+  Err(msg) -> ow_frame_out(conn, chr(219) + chr(1) + ow_encode(JStr(msg)))
+
+# The reply shapes a real server uses, verified against oxidb-server 0.43.0.
 fn reply_to(cmd, request) =
-  if cmd == "ping" then ok(JStr("pong")) else if cmd == "insert" then ok(one_field("id", JInt(1))) else if cmd == "insert_many" then ok(JArr(Cons(JInt(2), Cons(JInt(3), Nil)))) else if cmd == "count" then ok(one_field("count", JInt(3))) else if cmd == "find" then ok(JArr(Cons(person("ada", "eng", 36), Cons(person("grace", "eng", 45), Nil)))) else if cmd == "update" then ok(one_field("modified", JInt(1))) else if cmd == "delete" then ok(one_field("deleted", JInt(1))) else err("unknown command: " + cmd)
-
-fn ok(data) = JObj(Cons(Field("ok", JBool(true)), Cons(Field("data", data), Nil)))
-
-fn err(msg) = JObj(Cons(Field("ok", JBool(false)), Cons(Field("error", JStr(msg)), Nil)))
+  if cmd == "ping" then Ok(JStr("pong")) else if cmd == "insert" then Ok(one_field("id", JInt(1))) else if cmd == "insert_many" then Ok(JArr(Cons(JInt(2), Cons(JInt(3), Nil)))) else if cmd == "count" then Ok(one_field("count", JInt(3))) else if cmd == "find" then Ok(JArr(Cons(person("ada", "eng", 36), Cons(person("grace", "eng", 45), Nil)))) else if cmd == "update" then Ok(one_field("modified", JInt(1))) else if cmd == "delete" then Ok(one_field("deleted", JInt(1))) else Err("unknown command: " + cmd)
 
 fn one_field(key, value) = JObj(Cons(Field(key, value), Nil))
