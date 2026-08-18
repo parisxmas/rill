@@ -750,10 +750,11 @@ fn oxidb_tsdb_codec() {
 }
 
 /// RESP — the protocol Redis speaks — encoded and decoded by Rill, with no
-/// server in reach. The two halves worth the test are the ones a
-/// length-prefixed wire never needs: a reply that has only half arrived must
-/// read as "not yet" rather than as malformed, and a bulk string must carry
-/// any byte, a NUL included.
+/// server in reach. Three halves worth the test are ones a length-prefixed
+/// wire never needs: a reply that has only half arrived must read as "not
+/// yet" rather than as malformed, a bulk string must carry any byte including
+/// a NUL, and two pushed messages landing in one read must both survive —
+/// the second is not going to be sent again.
 #[test]
 fn oxidb_resp_protocol() {
     assert_eq!(
@@ -776,7 +777,12 @@ fn oxidb_resp_protocol() {
          a bulk arriving in pieces (both): \"ada\" (9 bytes)\n\
          an array arriving in pieces (first half): not yet\n\
          an array arriving in pieces (both): [\"ada\", \"grace\"] (24 bytes)\n\
-         not RESP at all: bad: no RESP value begins with `h`, at byte 0\n"
+         not RESP at all: bad: no RESP value begins with `h`, at byte 0\n\
+         a subscribe note: subscribe news, now holding 1\n\
+         a message: message on news: hello\n\
+         a pattern message: message matching news.* on news.home: hi\n\
+         two in one read: message on news: one\n\
+         \x20 and then: message on news: two\n"
     );
 }
 

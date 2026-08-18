@@ -22,8 +22,9 @@
 # Unlike a length-prefixed wire, RESP gives no frame size up front — a reader
 # has to parse to find out whether it has the whole reply. So decoding answers
 # `RMore` for a reply that has not all arrived, and the socket is read again.
-# One command, one reply: this client does not pipeline, and a `SUBSCRIBE`
-# that pushes messages unasked is beyond what it is written for.
+# One command, one reply, except while subscribed — see the bottom of this
+# file, where the reply to a command and a message nobody asked for arrive
+# through the same socket and have to be told apart.
 
 type Resp
   RSimple(Str)
@@ -38,6 +39,22 @@ type RespRead
   RGot(value: Resp, pos: Int)
   RMore
   RBad(why: Str, pos: Int)
+
+# A subscription is a socket and what has been read off it but not yet used.
+# Every command until now has been one write and one reply, so whatever came
+# after the reply could be thrown away; a subscriber cannot do that, because
+# one read may carry two messages and the second is not going to be sent
+# again. So the leftover is carried, and `kv_next` answers a new subscription
+# along with the message — the bytes have to live somewhere, and a binding
+# does not change.
+type Sub
+  Sub(fd: Int, buf: Str)
+
+type Delivery
+  Message(sub: Sub, channel: Str, payload: Str)
+  PatternMessage(sub: Sub, pattern: Str, channel: Str, payload: Str)
+  Note(sub: Sub, kind: Str, name: Str, count: Int)
+  Ended(why: Str)
 
 # -- writing a command --------------------------------------------------------
 
@@ -286,6 +303,119 @@ fn kv_missing(v) = match v
 fn kv_broke_off(v) = match v
   RNilArray -> true
   _ -> false
+
+# -- publish and subscribe ----------------------------------------------------
+
+# `PUBLISH` answers how many subscribers were handed the message, and it is an
+# ordinary command on an ordinary connection.
+#
+# `SUBSCRIBE` is not. The server hands that connection to a loop of its own
+# and never gives it back, so a program that both publishes and subscribes
+# needs two — which is why `kv_publish` takes a socket and everything below
+# takes a `Sub`.
+fn kv_publish(fd, channel, payload) =
+  kv_command(fd, kv_args3("PUBLISH", channel, payload))
+
+fn kv_subscribe(fd, channels) =
+  sub_start(fd, Cons("SUBSCRIBE", channels), len(channels))
+
+# Patterns are globs: `news.*` takes `news.home` and `news.sport`, and what
+# arrives says which pattern caught it as well as which channel it came from.
+fn kv_psubscribe(fd, patterns) =
+  sub_start(fd, Cons("PSUBSCRIBE", patterns), len(patterns))
+
+fn sub_start(fd, args, wanted) =
+  sock_write(fd, resp_command(args))
+  sub_confirm(Sub(fd, ""), wanted)
+
+# One note comes back per channel. Reading them here is what leaves the
+# subscription pointed at messages rather than at its own paperwork.
+fn sub_confirm(sub, remaining) =
+  if remaining <= 0 then Ok(sub) else sub_confirmed(remaining, kv_next(sub))
+
+fn sub_confirmed(remaining, delivery) = match delivery
+  Note(s, _, _, _) -> sub_confirm(s, remaining - 1)
+  Ended(why) -> Err(why)
+  Message(_, ch, _) -> Err("oxidb: a message on `" + ch + "` arrived before the subscription was confirmed")
+  PatternMessage(_, _, ch, _) -> Err("oxidb: a message on `" + ch + "` arrived before the subscription was confirmed")
+
+# More channels on a subscription that already has some. Do this before
+# anything is published to it: the notes are read back here, and a message
+# that arrives in the middle of them is one this cannot put down again — it
+# says so rather than dropping it.
+fn kv_subscribe_more(sub, channels) =
+  sub_more(sub, Cons("SUBSCRIBE", channels), len(channels))
+
+fn kv_psubscribe_more(sub, patterns) =
+  sub_more(sub, Cons("PSUBSCRIBE", patterns), len(patterns))
+
+fn sub_more(sub, args, wanted) =
+  Sub(fd, _) = sub
+  sock_write(fd, resp_command(args))
+  sub_confirm(sub, wanted)
+
+fn kv_unsubscribe(sub, channels) =
+  Sub(fd, _) = sub
+  sock_write(fd, resp_command(Cons("UNSUBSCRIBE", channels)))
+  sub_confirm(sub, len(channels))
+
+fn kv_punsubscribe(sub, patterns) =
+  Sub(fd, _) = sub
+  sock_write(fd, resp_command(Cons("PUNSUBSCRIBE", patterns)))
+  sub_confirm(sub, len(patterns))
+
+fn kv_sub_hang_up(sub) =
+  Sub(fd, _) = sub
+  sock_close(fd)
+
+# Waits for whatever comes next, which may be a message or the server's word
+# about a subscription. A strand blocked here parks, so a subscriber costs
+# nothing between messages.
+fn kv_next(sub) =
+  Sub(fd, buf) = sub
+  sub_step(fd, buf, resp_decode(buf, 0))
+
+fn sub_step(fd, buf, read) = match read
+  RGot(v, j) -> sub_delivered(Sub(fd, str_sub(buf, j, str_len(buf) - j)), v)
+  RBad(why, pos) -> Ended("oxidb: unreadable message: " + why + ", at byte " + int_to_str(pos))
+  RMore -> sub_fill(fd, buf)
+
+fn sub_fill(fd, buf) =
+  chunk = sock_read(fd)
+  if str_len(chunk) == 0 then Ended("oxidb: the subscription ended") else kv_next(Sub(fd, buf + chunk))
+
+# The same as `kv_next`, with the server's paperwork passed over — for a
+# caller that subscribed once and only wants what was published.
+fn kv_next_message(sub) = sub_past_notes(kv_next(sub))
+
+fn sub_past_notes(delivery) = match delivery
+  Note(s, _, _, _) -> kv_next_message(s)
+  _ -> delivery
+
+# Every push is an array whose first item says what it is.
+fn sub_delivered(sub, v) = match v
+  RError(e) -> Ended(e)
+  RArray(parts) -> sub_parts(sub, parts)
+  _ -> Ended("oxidb: a subscription reply that is not an array")
+
+fn sub_parts(sub, parts) = match parts
+  Nil -> Ended("oxidb: an empty subscription reply")
+  Cons(kind, rest) -> sub_kind(sub, kv_text(kind), rest)
+
+fn sub_kind(sub, kind, rest) =
+  if kind == "message" then sub_message(sub, rest) else if kind == "pmessage" then sub_pattern_message(sub, rest) else sub_note(sub, kind, rest)
+
+fn sub_message(sub, rest) = match rest
+  Cons(channel, Cons(payload, _)) -> Message(sub, kv_text(channel), kv_text(payload))
+  _ -> Ended("oxidb: a message with no channel")
+
+fn sub_pattern_message(sub, rest) = match rest
+  Cons(pattern, Cons(channel, Cons(payload, _))) -> PatternMessage(sub, kv_text(pattern), kv_text(channel), kv_text(payload))
+  _ -> Ended("oxidb: a pattern message missing its parts")
+
+fn sub_note(sub, kind, rest) = match rest
+  Cons(name, Cons(count, _)) -> Note(sub, kind, kv_text(name), kv_int(count))
+  _ -> Ended("oxidb: a `" + kind + "` note missing its parts")
 
 # For printing a reply whatever shape it came in.
 fn kv_shown(v) = match v

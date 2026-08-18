@@ -37,6 +37,12 @@ fn without_a_server() =
   in_pieces("a bulk arriving in pieces", "$3\r\na", "da\r\n")
   in_pieces("an array arriving in pieces", "*2\r\n$3\r\nada\r\n$", "5\r\ngrace\r\n")
   read_back("not RESP at all", "hello\r\n")
+  # What a subscriber is handed. Two of these can land in one read, which is
+  # why a subscription carries what it has not used yet.
+  pushed("a subscribe note", "*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n")
+  pushed("a message", "*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n")
+  pushed("a pattern message", "*4\r\n$8\r\npmessage\r\n$6\r\nnews.*\r\n$9\r\nnews.home\r\n$2\r\nhi\r\n")
+  both_at_once("*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$3\r\none\r\n", "*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$3\r\ntwo\r\n")
 
 fn sent(label, args) = println(label + " out: " + visible(resp_command(args)))
 
@@ -47,6 +53,28 @@ fn read_back(label, frame) = println(label + ": " + decoded(frame))
 fn in_pieces(label, head, tail) =
   println(label + " (first half): " + decoded(head))
   println(label + " (both): " + decoded(head + tail))
+
+# A push is read through the subscription machinery rather than through
+# `resp_decode` alone, so what is shown is what a subscriber would act on. The
+# socket is never touched: every frame here is whole.
+fn pushed(label, frame) = println(label + ": " + delivery_shown(kv_next(Sub(-1, frame))))
+
+# Two messages in one read. The first must come back with the second still in
+# hand, or the second is lost — which is the whole reason a subscription is a
+# value and not just a socket.
+fn both_at_once(first, second) =
+  println("two in one read: " + delivery_shown(kv_next(Sub(-1, first + second))))
+  println("  and then: " + delivery_shown(carried_on(kv_next(Sub(-1, first + second)))))
+
+fn carried_on(delivery) = match delivery
+  Message(sub, _, _) -> kv_next(sub)
+  _ -> delivery
+
+fn delivery_shown(delivery) = match delivery
+  Message(_, channel, payload) -> "message on " + channel + ": " + payload
+  PatternMessage(_, pattern, channel, payload) -> "message matching " + pattern + " on " + channel + ": " + payload
+  Note(_, kind, name, count) -> kind + " " + name + ", now holding " + int_to_str(count)
+  Ended(why) -> "ended: " + why
 
 fn decoded(frame) = match resp_decode(frame, 0)
   RMore -> "not yet"
@@ -66,9 +94,9 @@ fn visible_byte(c) =
 
 fn against_engine(port) = match kv_connect("127.0.0.1", port)
   Err(e) -> println(e)
-  Ok(fd) -> converse(fd)
+  Ok(fd) -> converse(fd, port)
 
-fn converse(fd) =
+fn converse(fd, port) =
   tell("ping", kv_ping(fd))
   tell("flushdb", kv_flushdb(fd))
   tell("set", kv_set(fd, "user:1", "ada"))
@@ -94,6 +122,49 @@ fn converse(fd) =
   transaction(fd)
   tell("nonsense", kv_command(fd, kv_args1("NOPECMD")))
   kv_hang_up(fd)
+  pub_sub(port)
+
+# Two connections, because a socket that subscribes is handed to a loop of the
+# server's own and never comes back to answer commands. The subscriber is
+# confirmed before the publisher is started, so nothing is published into an
+# empty room; then the publisher runs on a strand of its own while this one
+# parks on the socket waiting to be told something.
+fn pub_sub(port) = match kv_connect("127.0.0.1", port)
+  Err(e) -> println("subscriber: " + e)
+  Ok(fd) -> subscribing(fd, port)
+
+fn subscribing(fd, port) = match kv_subscribe(fd, Cons("news", Nil))
+  Err(e) -> println("subscribe: " + e)
+  Ok(sub) -> also_patterned(sub, port)
+
+fn also_patterned(sub, port) = match kv_psubscribe_more(sub, Cons("sport.*", Nil))
+  Err(e) -> println("psubscribe: " + e)
+  Ok(listening) ->
+    spawn publisher(port)
+    heard(listening, 3)
+
+fn publisher(port) = match kv_connect("127.0.0.1", port)
+  Err(e) -> println("publisher: " + e)
+  Ok(fd) -> publish_all(fd)
+
+fn publish_all(fd) =
+  tell("published to", kv_publish(fd, "news", "one"))
+  tell("published to", kv_publish(fd, "news", "two"))
+  tell("published to", kv_publish(fd, "sport.football", "a goal"))
+  kv_hang_up(fd)
+
+fn heard(sub, remaining) =
+  if remaining <= 0 then kv_sub_hang_up(sub) else heard_one(kv_next_message(sub), remaining)
+
+fn heard_one(delivery, remaining) = match delivery
+  Message(s, channel, payload) ->
+    println("heard on " + channel + ": " + payload)
+    heard(s, remaining - 1)
+  PatternMessage(s, pattern, channel, payload) ->
+    println("heard matching " + pattern + " on " + channel + ": " + payload)
+    heard(s, remaining - 1)
+  Note(s, _, _, _) -> heard(s, remaining)
+  Ended(why) -> println("subscription ended: " + why)
 
 fn binary_round_trip(fd) =
   raw = "a" + chr(0) + "b"
