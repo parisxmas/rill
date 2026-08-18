@@ -7,13 +7,21 @@
 # printed as JSON without any conversion.
 import "json"
 
+# What is left to read, and the value read so far. It used to be a line
+# *number* into the list of lines, and every step then cost a walk from the
+# front to reach it — `nth` to read a line, `len` to ask whether there were
+# any left. Both are linear in a list, both were called per line, and an
+# eight-hundred-entry config took fifty-five milliseconds to read because of
+# it. Carrying the rest of the lines instead makes each step O(1) and the
+# whole parse linear.
 type YParsed
-  YParsed(value: Json, next: Int)
+  YParsed(value: Json, rest: List(Str))
 
 fn parse_yaml(text) = start(useful(lines(text)))
 
-fn start(ls) =
-  if len(ls) == 0 then JNull else value_of(block_value(ls, 0, indent_of(unwrap_or(nth(ls, 0), ""))))
+fn start(ls) = match ls
+  Nil -> JNull
+  Cons(first, _) -> value_of(block_value(ls, indent_of(first)))
 
 fn value_of(p) = match p
   YParsed(v, _) -> v
@@ -29,64 +37,70 @@ fn indent_of(l) = count_spaces(l, 0)
 
 fn count_spaces(l, i) = if str_get(l, i) == 32 then count_spaces(l, i + 1) else i
 
-fn line_at(ls, i) = unwrap_or(nth(ls, i), "")
-
 fn is_item(l) = starts_with(trim(l), "- ")
 
 # -- blocks -------------------------------------------------------------------
 
-fn block_value(ls, i, ind) =
-  if i >= len(ls) then YParsed(JNull, i) else if is_item(line_at(ls, i)) then sequence(ls, i, ind, Nil) else mapping(ls, i, ind, Nil)
+fn block_value(ls, ind) = match ls
+  Nil -> YParsed(JNull, Nil)
+  Cons(l, _) -> if is_item(l) then sequence(ls, ind, Nil) else mapping(ls, ind, Nil)
 
-fn sequence(ls, i, ind, acc) =
-  if i >= len(ls) then YParsed(JArr(reverse(acc)), i) else seq_line(ls, i, ind, acc, line_at(ls, i))
+# A line that does not belong to this block is handed back unread, which is
+# what `ls` rather than `rest` means in every `YParsed` below.
+fn sequence(ls, ind, acc) = match ls
+  Nil -> YParsed(JArr(reverse(acc)), Nil)
+  Cons(l, rest) -> seq_line(ls, rest, ind, acc, l)
 
-fn seq_line(ls, i, ind, acc, l) =
-  if indent_of(l) != ind || !is_item(l) then YParsed(JArr(reverse(acc)), i) else seq_item(ls, i, ind, acc, trim(str_sub(l, indent_of(l) + 2, str_len(l))))
+fn seq_line(ls, rest, ind, acc, l) =
+  if indent_of(l) != ind || !is_item(l) then YParsed(JArr(reverse(acc)), ls) else seq_item(rest, ind, acc, trim(str_sub(l, indent_of(l) + 2, str_len(l))))
 
-fn seq_item(ls, i, ind, acc, rest) =
-  if str_len(rest) == 0 then nested_item(ls, i, ind, acc) else if str_find(rest, ": ") >= 0 || ends_with_colon(rest) then inline_map_item(ls, i, ind, acc, rest) else sequence(ls, i + 1, ind, Cons(scalar(rest), acc))
+fn seq_item(rest, ind, acc, item) =
+  if str_len(item) == 0 then nested_item(rest, ind, acc) else if str_find(item, ": ") >= 0 || ends_with_colon(item) then inline_map_item(rest, ind, acc, item) else sequence(rest, ind, Cons(scalar(item), acc))
 
 # `- ` on its own: the value is the block indented under it.
-fn nested_item(ls, i, ind, acc) = match block_value(ls, i + 1, deeper(ls, i + 1, ind))
-  YParsed(v, j) -> sequence(ls, j, ind, Cons(v, acc))
+fn nested_item(rest, ind, acc) = match block_value(rest, deeper(rest, ind))
+  YParsed(v, after) -> sequence(after, ind, Cons(v, acc))
 
 # `- key: value`: the item is a mapping whose first entry is on this line and
 # whose remaining entries are indented to where that key starts.
-fn inline_map_item(ls, i, ind, acc, rest) = match entry_of(ls, i, rest, ind + 2)
-  YParsed(first, j) -> continue_item(ls, j, ind, acc, first)
+fn inline_map_item(rest, ind, acc, item) = match entry_of(rest, item, ind + 2)
+  YParsed(first, after) -> continue_item(after, ind, acc, first)
 
-fn continue_item(ls, j, ind, acc, first) = match mapping(ls, j, ind + 2, fields_of(first))
-  YParsed(m, k) -> sequence(ls, k, ind, Cons(m, acc))
+fn continue_item(after, ind, acc, first) = match mapping(after, ind + 2, fields_of(first))
+  YParsed(m, k) -> sequence(k, ind, Cons(m, acc))
 
 fn fields_of(j) = match j
   JObj(fs) -> reverse(fs)
   _ -> Nil
 
-fn mapping(ls, i, ind, acc) =
-  if i >= len(ls) then YParsed(JObj(reverse(acc)), i) else map_line(ls, i, ind, acc, line_at(ls, i))
+fn mapping(ls, ind, acc) = match ls
+  Nil -> YParsed(JObj(reverse(acc)), Nil)
+  Cons(l, rest) -> map_line(ls, rest, ind, acc, l)
 
-fn map_line(ls, i, ind, acc, l) =
-  if indent_of(l) != ind || is_item(l) then YParsed(JObj(reverse(acc)), i) else map_entry(ls, i, ind, acc, trim(l))
+fn map_line(ls, rest, ind, acc, l) =
+  if indent_of(l) != ind || is_item(l) then YParsed(JObj(reverse(acc)), ls) else map_entry(rest, ind, acc, trim(l))
 
-fn map_entry(ls, i, ind, acc, text) = match entry_of(ls, i, text, ind)
-  YParsed(one, j) -> mapping(ls, j, ind, append(fields_of(one), acc))
+fn map_entry(rest, ind, acc, text) = match entry_of(rest, text, ind)
+  YParsed(one, after) -> mapping(after, ind, append(fields_of(one), acc))
 
 # One `key: value` (or `key:` followed by an indented block), as a one-field
-# object so the caller can splice it in.
-fn entry_of(ls, i, text, ind) =
+# object so the caller can splice it in. `rest` is what follows the line this
+# text came off.
+fn entry_of(rest, text, ind) =
   c = str_find(text, ":")
-  if c < 0 then YParsed(JObj(Cons(Field(unquote(text), JNull), Nil)), i + 1) else entry_parts(ls, i, ind, unquote(trim(str_sub(text, 0, c))), trim(str_sub(text, c + 1, str_len(text))))
+  if c < 0 then YParsed(JObj(Cons(Field(unquote(text), JNull), Nil)), rest) else entry_parts(rest, ind, unquote(trim(str_sub(text, 0, c))), trim(str_sub(text, c + 1, str_len(text))))
 
-fn entry_parts(ls, i, ind, key, rest) =
-  if str_len(rest) == 0 then nested_entry(ls, i, ind, key) else YParsed(JObj(Cons(Field(key, scalar(rest)), Nil)), i + 1)
+fn entry_parts(rest, ind, key, value_text) =
+  if str_len(value_text) == 0 then nested_entry(rest, ind, key) else YParsed(JObj(Cons(Field(key, scalar(value_text)), Nil)), rest)
 
-fn nested_entry(ls, i, ind, key) = match block_value(ls, i + 1, deeper(ls, i + 1, ind))
-  YParsed(v, j) -> YParsed(JObj(Cons(Field(key, v), Nil)), j)
+fn nested_entry(rest, ind, key) = match block_value(rest, deeper(rest, ind))
+  YParsed(v, after) -> YParsed(JObj(Cons(Field(key, v), Nil)), after)
 
 # The indentation of the block that follows, or something deeper than `ind`
 # when there is no next line.
-fn deeper(ls, i, ind) = if i >= len(ls) then ind + 2 else indent_of(line_at(ls, i))
+fn deeper(ls, ind) = match ls
+  Nil -> ind + 2
+  Cons(l, _) -> indent_of(l)
 
 fn ends_with_colon(s) = str_len(s) > 0 && str_get(s, str_len(s) - 1) == 58
 
