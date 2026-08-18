@@ -16,12 +16,16 @@
   pitch is held to the same limits `walk` holds it to.
 
   The direction of a shot was multiplied by the muzzle velocity and believed.
-  A client sending a direction a million long got a round at **158 billion
-  metres a second** — measured — which crosses the whole valley inside one
-  step and sweeps a segment that takes out every crystal along a line through
-  the world. A rifle, not a rail gun: the direction is made a unit vector on
-  arrival, and a shot too short to normalise is dropped. The same shot now
-  leaves at 120 m/s.
+  A client sending a direction a million long got a round leaving the muzzle at
+  a hundred and seventy million metres a second, which crosses the whole valley
+  inside one step and sweeps a segment that takes out every crystal along a
+  line through the world. It gets worse on the way: the drag term is
+  `1 - 0.00011 * speed * dt`, which at that speed is not a fraction under one
+  but a factor of minus nine hundred, so a tenth of a second later the round
+  was measured at 158 billion metres a second and going backwards. A rifle, not
+  a rail gun: the direction is made a unit vector on arrival, and one too short
+  to normalise is not a direction, so the shot is dropped. The same message now
+  leaves at 120 m/s, where the drag term is the fraction it was meant to be.
 
   One client could stop the world for everybody. The hub takes its tick off
   the same channel as the key presses, and against an unbounded sender the
@@ -38,38 +42,34 @@
   cap, not a timeout — a slow client still holds its place until it speaks,
   because a read cannot be given a deadline in this language yet.
 
-- **Known, not fixed: `select` corrupts the heap when it parks a great many
-  times.** Found while testing the above, and the reason the server used to
-  die under load. Five lines reproduce it, with no sockets and no valley:
+- **A `select` in a loop is a loop again.** It was not corrupting the heap,
+  which is what it looked like: it was leaking the stack.
 
-  ```
-  fn spam(ch) =
-    send(ch, 1)
-    spam(ch)
+  `select` builds a table of its cases and a slot for the result, and both were
+  `alloca`s emitted where they were first needed. An `alloca` in the entry
+  block is free — LLVM folds it into the frame layout and gives it a fixed
+  offset — but anywhere else it is a real adjustment of the stack pointer, made
+  every time control reaches it. Worse, a function holding a dynamically sized
+  `alloca` cannot have its frame popped before a call, so LLVM quietly drops
+  the `tail` marker and a Rill loop written as tail recursion stops being a
+  loop.
 
-  fn drain(a, n) =
-    x = select
-      v = recv(a) -> v
-    if n == 0 then 0 else drain(a, n - 1)
+  A hundred and sixty bytes a turn, measured: the stack pointer moved exactly
+  sixteen megabytes between the hundred-thousandth `select` and the two
+  hundred-thousandth. Two hundred thousand turns is thirty-two megabytes, which
+  is the main strand's whole stack, and the next push went past the bottom into
+  the guard page of the mapping next door. That is a *bus* error rather than a
+  segmentation fault, landing wherever the program happened to be — usually
+  inside `free`, once inside `strtod` — which is why it read as heap
+  corruption for so long. Five lines of Rill, no sockets and no valley, five
+  crashes out of five.
 
-  fn main() =
-    a = channel()
-    spawn spam(a)
-    drain(a, 3000000)
-  ```
-
-  That dies with SIGBUS inside `free`, five times out of five. The same loop
-  written with a plain `recv` runs clean, and so does a `select` that never
-  parks — one with a `default` and nothing to take, three billion times over,
-  with flat memory. So it is the path where `select` finds nothing ready,
-  allocates its waiters, parks, and is woken. Leaving those waiters unfreed
-  does not help, and neither does unlinking them from both queues, so it is
-  not the obvious double-free or the obvious stale queue entry.
-
-  The server no longer reaches it, because the input budget above keeps the
-  pressure off — but that is a mitigation and this is still a bug in the
-  runtime. Nothing in the valley should be exposed to the open internet until
-  it is understood.
+  Both allocas are taken in the entry block now, where they cost nothing and
+  happen once however many times control comes back round. The reproduction
+  runs a hundred million times with the stack flat, and the same loop is a
+  test. This was what the valley server kept dying of, and it explains the
+  shape of it: nothing to do with what a client sent, everything to do with how
+  many times the hub had been round.
 
 - **An aliased import no longer renames the module's own local names.**
   `import "lib" as v` qualifies everything `lib` defines, and it was doing that

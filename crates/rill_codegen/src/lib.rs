@@ -4043,6 +4043,31 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     // ---- select --------------------------------------------------------
 
+    /// A slot in the function's frame, taken in the entry block.
+    ///
+    /// Where an `alloca` goes is not a matter of taste. LLVM folds the ones in
+    /// the entry block into the frame layout and gives them a fixed offset,
+    /// which costs nothing and happens once however many times control comes
+    /// back round; anywhere else it is a real adjustment of the stack pointer,
+    /// executed every time it is reached. Inside a loop that is a leak — and
+    /// worse, a function holding a dynamically sized `alloca` cannot have its
+    /// frame popped before a call, so LLVM quietly drops the `tail` marker and
+    /// a Rill loop written as tail recursion stops being a loop.
+    fn entry_alloca(
+        &self,
+        func: FunctionValue<'ctx>,
+        ty: impl BasicType<'ctx>,
+        name: &str,
+    ) -> PointerValue<'ctx> {
+        let b = self.ctx.create_builder();
+        let entry = func.get_first_basic_block().expect("every function has an entry block");
+        match entry.get_first_instruction() {
+            Some(first) => b.position_before(&first),
+            None => b.position_at_end(entry),
+        }
+        b.build_alloca(ty, name).expect("LLVM builder error")
+    }
+
     /// Builds the case table the runtime scans, calls it, then branches to the
     /// arm it picked. Channels are borrowed for the call; a send value is
     /// consumed only by the arm that actually ran, so the others release theirs.
@@ -4059,10 +4084,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let ptrt = self.ctx.ptr_type(Default::default());
         let case_ty = self.ctx.struct_type(&[i64t.into(), ptrt.into(), i64t.into(), i64t.into()], false);
         let n = arms.len();
-        let table = self
-            .builder
-            .build_array_alloca(case_ty, i64t.const_int(n as u64, false), "cases")
-            .expect("LLVM builder error");
+        // Both of these are a fixed size — the arms are known here — so they
+        // belong in the entry block, and a `select` inside a loop then costs
+        // the frame nothing and leaves the loop a loop. Written as array
+        // allocas where they are first needed, one `select` in a tail
+        // recursive function leaked a hundred and sixty bytes of stack every
+        // time round, and thirty-two megabytes later the strand ran off the
+        // bottom of its stack into the next mapping's guard page.
+        let table = self.entry_alloca(func, case_ty.array_type(n as u32), "cases");
 
         // Evaluate every channel (and send value) once, in source order.
         let mut chans: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
@@ -4106,10 +4135,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             }
         }
 
-        let out = self
-            .builder
-            .build_array_alloca(i64t, i64t.const_int(2, false), "sel.out")
-            .expect("LLVM builder error");
+        let out = self.entry_alloca(func, i64t.array_type(2), "sel.out");
         let sel = self.module.get_function("rill_select").unwrap();
         let has_default = self.ctx.i8_type().const_int(default.is_some() as u64, false);
         let call = self

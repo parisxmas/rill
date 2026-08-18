@@ -771,6 +771,40 @@ fn wasm_refuses_sleep_ms() {
     assert!(err.contains("`sleep_ms` needs the scheduler"), "{err}");
 }
 
+/// A `select` in a loop must leave the loop a loop.
+///
+/// Its case table and its result slot are `alloca`s, and an `alloca` outside
+/// the entry block is a real adjustment of the stack pointer every time it is
+/// reached — so a tail call that should have been a jump grew the stack by a
+/// hundred and sixty bytes a turn, and a server built on `select` ran off the
+/// bottom of its stack after a couple of hundred thousand messages. It died
+/// with a bus error somewhere else entirely, wherever the code happened to be.
+///
+/// A million and a half turns is seven times the old ceiling and takes a third
+/// of a second.
+#[test]
+fn a_select_loop_runs_in_constant_stack() {
+    let out = run_source(
+        "select_loop",
+        "fn spam(ch) =\n  \
+           send(ch, 1)\n  \
+           spam(ch)\n\
+         \n\
+         fn drain(a, n) =\n  \
+           x = select\n    \
+             v = recv(a) -> v\n  \
+           if n == 0 then done(n) else drain(a, n - 1)\n\
+         \n\
+         fn done(n) = println(\"the loop held\")\n\
+         \n\
+         fn main() =\n  \
+           a = channel()\n  \
+           spawn spam(a)\n  \
+           drain(a, 1500000)\n",
+    );
+    assert_eq!(out, "the loop held\n");
+}
+
 /// The valley with several people in it. `valley.rill` is the file the browser
 /// compiles to wasm and the server compiles for a Linux box, and this runs the
 /// same arithmetic with neither: three players join one world, one of them

@@ -196,9 +196,10 @@ It is still a demo server. There is no timeout on a connection that opens and
 then says nothing (a read cannot be given a deadline in this language yet, so
 the cap is the only limit), no per-address limit, and `ws.rill` assumes one
 read gives a whole frame — true for messages this small, false in general.
-`CHANGELOG.md` records a runtime bug found while testing this, which the
-server no longer reaches but which is not fixed. Do not put it on the open
-internet.
+The crash this used to die of is fixed — it was a `select` in a loop leaking
+its stack, which `CHANGELOG.md` tells properly — but a demo server that has
+been shot at for an afternoon is not a server that has been shot at, so do not
+put it on the open internet.
 
 `check.rill` is the same shared world with neither a browser nor a socket:
 three players in one valley, walking, shooting each other and leaving. It is
