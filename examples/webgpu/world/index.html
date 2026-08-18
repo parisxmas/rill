@@ -504,9 +504,23 @@
     };
     let pass = "";
     const name = await askName();
+    // Who this browser is, as far as the valley is concerned. The server mints
+    // it on the first visit and hands it back in `hello`; from then on it
+    // travels in the query beside the word, and it is what makes a name stay
+    // yours between visits — see `who somebody is` in server.rill.
+    //
+    // Not a password: it is never typed, it cannot be recovered, and anybody
+    // who copies it out of this browser is this player. It is kept here rather
+    // than in a cookie because nothing else needs to see it, least of all
+    // whatever is proxying the socket.
+    const who = localStorage.getItem("valley.who") ?? "";
     // `?join` may already carry a query of its own.
-    const door = server && pass
-      ? server + (server.includes("?") ? "&" : "?") + "p=" + encodeURIComponent(pass)
+    const query = [
+      pass ? "p=" + encodeURIComponent(pass) : "",
+      who ? "who=" + encodeURIComponent(who) : "",
+    ].filter(Boolean).join("&");
+    const door = server && query
+      ? server + (server.includes("?") ? "&" : "?") + query
       : server;
     const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
     const stat = document.getElementById("stat");

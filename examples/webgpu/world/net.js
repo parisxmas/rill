@@ -11,7 +11,7 @@
 // during the week you are getting it right than the bytes are. A valley with
 // eight people in it is under three kilobytes a second either way.
 //
-//   in     hello <id> <pines> <crystals> <grass> <clock>
+//   in     hello <id> <pines> <crystals> <grass> <clock> <token>
 //          gone <i>...                     crystals already shot
 //          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose hit shot>...
 //          r <x y z vx vy vz owner>        a round left somebody's rifle
@@ -137,6 +137,14 @@ function hello(net, line, ready) {
   const p = line.split(" ");
   net.id = +p[1];
   net.world = { pines: +p[2], crystals: +p[3], grass: +p[4], clock: +p[5] };
+  // Who this browser is. Sent back in the query next time, which is what makes
+  // the name it took stay its own. Stored only when it looks like one of the
+  // server's — sixteen hex characters — so a line from something else cannot
+  // put anything it likes in this browser's storage under that key.
+  const token = p[6] ?? "";
+  if (/^[0-9a-f]{16}$/.test(token)) {
+    try { localStorage.setItem("valley.who", token); } catch {}
+  }
   ready(net.world);
 }
 

@@ -119,7 +119,7 @@ fn address_rows() = 64
 # rather than something that cuts across a message being handled.
 
 type Msg
-  Arrived(out: Chan(Str))
+  Arrived(out: Chan(Str), token: Str)
   Named(id: Int, name: Str)
   Moved(id: Int, keys: Int, yaw: Float, pitch: Float)
   Shot(id: Int, dx: Float, dy: Float, dz: Float)
@@ -132,7 +132,7 @@ type Msg
 # the block, so that the tick reads one thing rather than two that have to be
 # kept in step.
 type Conn
-  Conn(id: Int, block: Ptr, out: Chan(Str), name: Str)
+  Conn(id: Int, block: Ptr, out: Chan(Str), name: Str, token: Str)
 
 # ---- the hub ---------------------------------------------------------------
 
@@ -144,11 +144,11 @@ fn hub(w, conns, inbox, joins) =
 # The id to hand out next. It comes off the world's own counter rather than
 # being kept here, so a player's id and their block agree about who they are.
 fn if_arrived(m, joins) = match m
-  Arrived(_) -> joins + 1
+  Arrived(_, _) -> joins + 1
   _ -> joins
 
 fn handle(w, conns, inbox, joins, m) = match m
-  Arrived(out) -> admit(w, conns, out)
+  Arrived(out, token) -> admit(w, conns, out, token)
   Named(id, name) -> name_one(w, conns, id, name)
   Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
   Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
@@ -156,9 +156,9 @@ fn handle(w, conns, inbox, joins, m) = match m
   Left(id) -> drop_one(w, conns, id)
   Tick -> tick(w, conns)
 
-fn admit(w, conns, out) =
+fn admit(w, conns, out, token) =
   s = v.join(w)
-  if is_null(s) then refuse(conns, out) else welcome(w, conns, s, out)
+  if is_null(s) then refuse(conns, out) else welcome(w, conns, s, out, token)
 
 fn refuse(conns, out) =
   send(out, "no the valley is full")
@@ -166,19 +166,27 @@ fn refuse(conns, out) =
 
 # What a client needs before it can draw anything: which player it is, and how
 # much valley to build.
-fn welcome(w, conns, s, out) =
+fn welcome(w, conns, s, out, token) =
   id = v.player_id(s)
-  send(out, "hello " + int_to_str(id) + " " + int_to_str(n_pines()) + " " + int_to_str(n_crystals()) + " " + int_to_str(n_grass()) + " " + float_to_str(v.world_time(w)))
+  # The name they left with, if that token has one and nobody in the valley is
+  # wearing it this second — two people cannot both be `ada`, whoever owns it.
+  mine = name_of(read_file_raw(who_file()), token)
+  name = if str_len(mine) > 0 && !taken(conns, id, mine) then mine else called(id)
+  send(out, "hello " + int_to_str(id) + " " + int_to_str(n_pines()) + " " + int_to_str(n_crystals()) + " " + int_to_str(n_grass()) + " " + float_to_str(v.world_time(w)) + " " + token)
   send(out, gone_list(w))
   roster(conns, out)
-  println("player " + int_to_str(id) + " arrived, " + int_to_str(v.players(w)) + " in the valley")
-  joined(Cons(Conn(id, s, out, called(id)), conns), id)
+  println("player " + int_to_str(id) + " arrived as " + name + ", " + int_to_str(v.players(w)) + " in the valley")
+  joined(Cons(Conn(id, s, out, name, token), conns), id, name)
 
 # Everybody hears about the new arrival straight away, under the name they get
 # for nothing. A client that goes on to say what it would rather be called
 # sends that separately, and everyone hears again.
-fn joined(conns, id) =
-  tell_all(conns, "who " + int_to_str(id) + " " + called(id))
+# Under the name they arrived with, which is the one they took last time if
+# they have been here before — `called(id)` was right back when it was the only
+# name anybody could have on arrival, and saying it now would announce
+# `player7` and then correct itself to `ada` a moment later.
+fn joined(conns, id, name) =
+  tell_all(conns, "who " + int_to_str(id) + " " + name)
   conns
 
 # Which crystals are already gone. A break is an event from here on, but
@@ -205,16 +213,19 @@ fn find(conns, id) = match conns
   Cons(c, rest) -> if conn_id(c) == id then Some(c) else find(rest, id)
 
 fn conn_id(c) = match c
-  Conn(id, _, _, _) -> id
+  Conn(id, _, _, _, _) -> id
 
 fn conn_block(c) = match c
-  Conn(_, s, _, _) -> s
+  Conn(_, s, _, _, _) -> s
 
 fn conn_out(c) = match c
-  Conn(_, _, out, _) -> out
+  Conn(_, _, out, _, _) -> out
 
 fn conn_name(c) = match c
-  Conn(_, _, _, n) -> n
+  Conn(_, _, _, n, _) -> n
+
+fn conn_token(c) = match c
+  Conn(_, _, _, _, t) -> t
 
 # ---- who everyone is -------------------------------------------------------
 #
@@ -259,7 +270,12 @@ fn ok_char(c) =
 
 fn name_one(w, conns, id, raw) = match find(conns, id)
   None -> conns
-  Some(c) -> maybe_rename(w, conns, c, id, unique(conns, id, clean_name(raw, id)))
+  Some(c) -> wants(w, conns, c, id, clean_name(raw, id), read_file_raw(who_file()))
+
+# Read once and carried down, because `unique` asks about a name several times
+# and a file read for each would be a file read per letter of the suffix.
+fn wants(w, conns, c, id, name, book) =
+  maybe_rename(w, conns, c, id, unique(conns, c, id, name, book), book)
 
 # A name change goes out to everybody in the valley, so one client renaming as
 # fast as it is allowed to speak is that many lines times everybody here — the
@@ -268,21 +284,31 @@ fn name_one(w, conns, id, raw) = match find(conns, id)
 # once every few seconds. Both are refusals rather than disconnections, because
 # a client repeating itself is a bug and not an attack and the two look the
 # same from this side.
-fn maybe_rename(w, conns, c, id, name) =
+fn maybe_rename(w, conns, c, id, name, book) =
   s = conn_block(c)
-  if conn_name(c) == name then conns else if v.may_rename(s, v.world_time(w)) == 0 then conns else rename(w, conns, c, id, name)
+  if conn_name(c) == name then conns else if v.may_rename(s, v.world_time(w)) == 0 then conns else rename(w, conns, c, id, name, book)
 
 # The first free one of `name`, `name2`, `name3` and so on. The suffix eats
 # into the cap rather than pushing past it, so what comes out is still a name
 # eight characters long at most. Sixty-four connections is the ceiling, so
 # `n` cannot climb past two digits and the search cannot fail to terminate.
-fn unique(conns, id, name) =
-  if taken(conns, id, name) then unique_from(conns, id, name, 2) else name
+fn unique(conns, c, id, name, book) =
+  if spoken_for(conns, c, id, name, book) then unique_from(conns, c, id, name, book, 2) else name
 
-fn unique_from(conns, id, name, n) =
+fn unique_from(conns, c, id, name, book, n) =
   tag = int_to_str(n)
   tried = str_sub(name, 0, name_cap() - str_len(tag)) + tag
-  if taken(conns, id, tried) then unique_from(conns, id, name, n + 1) else tried
+  if spoken_for(conns, c, id, tried, book) then unique_from(conns, c, id, name, book, n + 1) else tried
+
+# Two ways a name can be somebody else's: they are standing in the valley
+# wearing it, or they took it once and are not here. The second is the whole
+# point of a token — a name somebody walked away with is still theirs when
+# they come back, and the way to make that true is to refuse it to everybody
+# else while they are gone.
+fn spoken_for(conns, c, id, name, book) =
+  if taken(conns, id, name) then true else mine_elsewhere(owner_of(book, name), conn_token(c))
+
+fn mine_elsewhere(owner, token) = str_len(owner) > 0 && owner != token
 
 # Whoever is asking does not count against themselves — sending the same name
 # twice is a client repeating itself, not a collision.
@@ -290,9 +316,10 @@ fn taken(conns, id, name) = match conns
   Nil -> false
   Cons(c, rest) -> if conn_id(c) != id && conn_name(c) == name then true else taken(rest, id, name)
 
-fn rename(w, conns, c, id, name) =
+fn rename(w, conns, c, id, name, book) =
   v.renamed(conn_block(c), v.world_time(w))
-  next = replace(conns, id, Conn(id, conn_block(c), conn_out(c), name))
+  remember(book, conn_token(c), name)
+  next = replace(conns, id, Conn(id, conn_block(c), conn_out(c), name, conn_token(c)))
   tell_all(next, "who " + int_to_str(id) + " " + name)
   next
 
@@ -611,6 +638,119 @@ fn ticker(inbox, next) =
   send(inbox, Tick)
   ticker(inbox, next + tick_ms() * 1000000)
 
+# ---- who somebody is -------------------------------------------------------
+#
+# A name is worth nothing if the next person to walk in can wear it. Everybody
+# gets a token the first time they arrive, their browser keeps it, and it comes
+# back in the query the next time — so a name belongs to whoever first took it,
+# and goes on belonging to them while they are away.
+#
+# It is not a password and it is not an account. It is not typed and it cannot
+# be recovered; anybody who copies the string out of a browser is that player
+# as far as this server is concerned. What it buys is exactly two things: a
+# name that stays yours, and a way to say that one particular person is not
+# welcome any more — neither of which is possible when everybody is anonymous
+# and the only handle is an address that changes with the weather.
+
+fn who_file() = "who.txt"
+fn ban_file() = "banned.txt"
+fn token_len() = 16
+
+# Enough of a mix that two people arriving in the same millisecond do not get
+# the same token, and enough that a third party cannot sit and guess them.
+#
+# The clock alone would not do the second part: a token minted at a known
+# moment is a token somebody can search for. The other half comes from the
+# client — a browser puts sixteen random bytes in `Sec-WebSocket-Key` for every
+# connection it opens, and hashing the whole request takes that in along with
+# everything else about it. Both halves are needed: the clock stops one client
+# from getting the same token twice, the key stops anybody else from working
+# out what it was.
+fn mint(request) = hex_str(mix64(now_nanos() * 6364136223846793005 + hash_str(request)), token_len(), "")
+
+fn mix64(x0) =
+  a = bit_xor(x0, shr(x0, 33)) * 7109453100751455733
+  b = bit_xor(a, shr(a, 29)) * 6329220948346402883
+  bit_xor(b, shr(b, 32))
+
+# The FNV basis, written as what it is in a signed sixty-four-bit world: the
+# constant everyone quotes is above the top of an `Int` by a hair, and it is
+# the same bits either way.
+fn hash_str(s) = hash_from(s, 0, 0 - 3750763034362895579)
+
+fn hash_from(s, i, h) =
+  if i >= str_len(s) then h else hash_from(s, i + 1, bit_xor(h, str_get(s, i)) * 1099511628211)
+
+fn hex_str(n, left, acc) =
+  if left == 0 then acc else hex_str(shr(n, 4), left - 1, hex_digit(bit_and(n, 15)) + acc)
+
+fn hex_digit(d) = str_sub("0123456789abcdef", d, 1)
+
+# What the client sent back, if it sent anything: `who=` in the query, hex and
+# nothing else, and exactly as long as one of ours. A token this cannot read is
+# no token, and whoever sent it gets a new one rather than an argument.
+fn token_at(request) =
+  line = str_sub(request, 0, headline(request))
+  at = str_find(line, "who=")
+  if at < 0 then "" else hex_run(line, at + 4, "")
+
+fn hex_run(line, i, acc) =
+  if i >= str_len(line) || str_len(acc) >= token_len() then good_token(acc)
+  else if is_hex(str_get(line, i)) then hex_run(line, i + 1, acc + str_sub(line, i, 1))
+  else good_token(acc)
+
+fn good_token(acc) = if str_len(acc) == token_len() then acc else ""
+
+fn is_hex(c) = c >= 48 && c <= 57 || (c >= 97 && c <= 102)
+
+# ---- the two files ---------------------------------------------------------
+#
+# Read on the way in and written when a name is taken, rather than held in
+# memory: at this size a few kilobytes is nothing next to a connection, and it
+# means a ban takes hold on the next person to knock instead of on the next
+# restart. It also means the names outlive the process, which is the point of
+# having them at all.
+
+fn banned(token) =
+  if str_len(token) == 0 then 0 else has_line(read_file_raw(ban_file()), token)
+
+fn has_line(text, want) = if str_find("\n" + text + "\n", "\n" + want + "\n") < 0 then 0 else 1
+
+# The name this token has taken, or nothing. Lines are `<token> <name>`.
+fn name_of(book, token) =
+  if str_len(token) == 0 then "" else after_token(book, str_find("\n" + book, "\n" + token + " "))
+
+fn after_token(book, at) =
+  if at < 0 then "" else to_eol(book, at + token_len() + 1, "")
+
+fn to_eol(book, i, acc) =
+  if i >= str_len(book) then acc
+  else if str_get(book, i) == 10 || str_get(book, i) == 13 then acc
+  else to_eol(book, i + 1, acc + str_sub(book, i, 1))
+
+# Who owns this name, if anybody. Reading it the other way round: the name is
+# at the end of its line, so a line ends with a space and the name.
+fn owner_of(book, name) = owner_at(book, str_find(book, " " + name + "\n"))
+
+# The space is the one between the token and the name, so the token is the
+# sixteen characters in front of it.
+fn owner_at(book, at) = if at < token_len() then "" else str_sub(book, at - token_len(), token_len())
+
+# Writing it back is a rewrite of the whole file, which at one line per player
+# ever is cheap and is atomic in the only sense that matters here: the process
+# that writes it is the only one that reads it.
+fn remember(book, token, name) =
+  write_file(who_file(), without_line(book, token) + token + " " + name + "\n")
+  0
+
+fn without_line(book, token) = strip_lines(split(book, "\n"), token, "")
+
+fn strip_lines(lines, token, acc) = match lines
+  Nil -> acc
+  Cons(l, rest) -> strip_lines(rest, token, if keep_line(l, token) then acc + l + "\n" else acc)
+
+fn keep_line(l, token) = str_len(l) > 0 && str_sub(l, 0, token_len()) != token
+
 # ---- one connection --------------------------------------------------------
 
 # The per-address gate is here rather than at `accept` because who somebody is
@@ -619,7 +759,13 @@ fn ticker(inbox, next) =
 # `max_connections()` however it dresses them up.
 fn serve(conn, inbox, live) =
   request = fill_until(conn, "", 4, now_nanos() + handshake_ms() * 1000000)
-  if said_the_word(request) == 0 then no_entry(conn, live) else at_the_door(conn, inbox, live, request)
+  if said_the_word(request) == 0 then no_entry(conn, live) else past_the_word(conn, inbox, live, request)
+
+# A ban is checked before the address gate and before the handshake, and it
+# reads the list every time rather than at boot: a ban that needs a restart to
+# take hold is a ban nobody applies while the valley has people in it.
+fn past_the_word(conn, inbox, live, request) =
+  if banned(token_at(request)) == 1 then no_entry(conn, live) else at_the_door(conn, inbox, live, request)
 
 fn at_the_door(conn, inbox, live, request) =
   addr = whose(conn, request)
@@ -662,10 +808,19 @@ fn no_entry(conn, live) =
   0
 
 fn admitted(conn, inbox, live, addr, request) =
-  if ws_accept(conn, request) then play(conn, inbox) else sock_close(conn)
+  if ws_accept(conn, request) then play(conn, inbox, known_or_new(request)) else sock_close(conn)
   drop_slot(live)
   drop_addr(live, addr)
   0
+
+# Whoever they say they are, or a name for somebody nobody has met. Minting one
+# for a token this server has never issued is deliberate: it costs nothing, it
+# needs no table of what is outstanding, and a made-up token simply becomes
+# theirs. Guessing somebody else's is the thing that matters, and that is what
+# the sixteen random bytes in the handshake are for.
+fn known_or_new(request) =
+  said = token_at(request)
+  if str_len(said) == token_len() then said else mint(request)
 
 # ---- who is really on the other end ----------------------------------------
 #
@@ -708,9 +863,9 @@ fn ip_from(s, i, acc, part) =
   c = if i < str_len(s) then str_get(s, i) else 13
   if c >= 48 && c <= 57 then ip_from(s, i + 1, acc * 10 + (c - 48), part) else if c == 46 then ip_from(s, i + 1, 0, shl(part, 8) + acc) else shl(part, 8) + acc
 
-fn play(conn, inbox) =
+fn play(conn, inbox, token) =
   out = channel(4)
-  send(inbox, Arrived(out))
+  send(inbox, Arrived(out, token))
   # The first thing in the outbox is the welcome, and it carries the id
   # everything else is in terms of.
   first = recv(out)

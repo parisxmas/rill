@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **A name belongs to somebody now.** The server mints a token on a browser's
+  first visit, hands it back in `hello`, and the browser sends it in the query
+  from then on; `who.txt` holds one `<token> <name>` line per person and the
+  name is refused to everybody else, including while its owner is away. The
+  entropy is half the clock and half the sixteen random bytes a browser puts in
+  `Sec-WebSocket-Key` — the clock so one client cannot get the same token
+  twice, the key so nobody else can work out what it was.
+
+  It is not an account: never typed, not recoverable, and whoever copies it out
+  of a browser is that player. It buys two things that were impossible while
+  everybody was anonymous — a name that stays yours, and `banned.txt`, read on
+  every knock so that saying somebody is not welcome does not need a restart.
+
+- **`fn bind` in a Rill program takes the name away from the C library.** Top
+  level functions are emitted under their own names, so a program that defines
+  one the runtime calls through libc replaces it — and the failure is a socket
+  call landing in your own function, which is a segfault at startup with a
+  stack that makes no sense. Renamed here; the compiler should be the one
+  saying it, and does not yet.
+
 - **The server used to fall over about one arrival in ten, and it was the
   scheduler.** A strand parked on a socket and a strand parked on a channel
   both had `selected` set to -1, and the poller took that one flag to mean

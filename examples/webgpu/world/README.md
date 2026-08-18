@@ -321,6 +321,20 @@ masked, so a crouching player is still down and a running one still bobs. The
 mask is in `figure.mesh` a joint at a time, because the rule has an exception
 in it and the place to know about that is the tool reading the rig.
 
+## Whose name is whose
+
+Everybody gets a token the first time they arrive. The browser keeps it, it
+comes back in the query on the next visit, and the name it took is refused to
+everybody else — including while its owner is away. Two files next to the
+binary hold all of it: `who.txt`, one `<token> <name>` per line, and
+`banned.txt`, one token per line, read on every knock so a ban takes hold
+without a restart.
+
+It is not an account. It is never typed, it cannot be recovered, and anybody
+who copies the string out of a browser is that player. What it buys is a name
+that stays yours and a way to say that one particular person is not welcome —
+neither of which is possible when the only handle is an address.
+
 A round has to go roughly where its owner says they are looking — twenty
 degrees of slack, which is a frame's lag on a fast turn and nowhere near enough
 to shoot behind yourself. Nothing a server can do stops somebody aiming
