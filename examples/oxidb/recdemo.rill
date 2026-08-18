@@ -1,0 +1,126 @@
+# The OxiDB recommendation client, driven end to end.
+#
+# With no arguments this talks to a stand-in server started on a strand, so
+# the example runs anywhere and the test suite can check it. The stand-in does
+# no counting: it speaks the binary frame format and answers each op with the
+# shape a real engine answers it with.
+#
+# Give it a port and it talks to a real one. The engine is off unless the
+# server was started with it:
+#
+#     OXIDB_REC=1 oxidb-server &          # listening on 4444
+#     ./recdemo 4444
+import "oxirec"
+
+fn main() = match args()
+  Cons(_, Cons(port, _)) -> report(str_to_int(port))
+  _ -> against_stand_in()
+
+# -- the client half ----------------------------------------------------------
+
+fn report(port) = match rec_connect("127.0.0.1", port)
+  Err(e) -> println(e)
+  Ok(fd) -> converse(fd, now_seconds())
+
+# Epoch seconds — the unit this engine takes, and not the milliseconds the
+# time-series one does.
+fn now_seconds() = rec_now()
+
+# Five baskets, each a minute older than the last. What they have in common is
+# what the engine is being asked about afterwards.
+#
+# Five rather than three on purpose: a real engine answers nothing at all
+# until a model has seen a few, and it is not `min_support` doing it — that
+# was tried at every setting down to zero, as were `half_life`, a checkpoint,
+# and timestamps near the epoch and far from it. Whatever the threshold is, it
+# is the engine's, and a demonstration that sat under it would suggest this
+# client was at fault.
+# The basket ids come off the clock because `track` is idempotent: an id the
+# engine has already counted is counted once, and a second run of this against
+# the same server would otherwise answer `counted: false` five times over.
+fn converse(fd, now) =
+  shown("track", rec_track(fd, "shop", now * 10 + 1, basket("kahve", "sut", "ekmek"), now))
+  shown("track", rec_track(fd, "shop", now * 10 + 2, Cons("kahve", Cons("sut", Nil)), now - 60))
+  shown("track", rec_track(fd, "shop", now * 10 + 3, Cons("kahve", Cons("poset", Nil)), now - 120))
+  shown("track", rec_track(fd, "shop", now * 10 + 4, basket("kahve", "sut", "peynir"), now - 180))
+  shown("track", rec_track(fd, "shop", now * 10 + 5, Cons("cay", Cons("ekmek", Nil)), now - 240))
+  shown("related", rec_related(fd, "shop", "kahve", rec_at(now, rec_limit(5, Nil))))
+  shown("for basket", rec_for_basket(fd, "shop", Cons("kahve", Nil), rec_at(now, rec_without(Cons("poset", Nil), rec_limit(3, Nil)))))
+  # Scores decay, and a query is scored against *now*. Asking as of a moment
+  # years before the baskets were tracked answers with nothing — which is a
+  # thing worth seeing on purpose rather than being puzzled by later.
+  shown("as of long ago", rec_related(fd, "shop", "kahve", rec_at(1000000000, rec_limit(5, Nil))))
+  counted(fd, "shop")
+  shown("checkpoint", rec_checkpoint(fd))
+  shown("nonsense", rec_call(fd, "nope", Nil))
+  rec_hang_up(fd)
+
+fn basket(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
+
+fn counted(fd, model) = match rec_stats(fd)
+  Err(e) -> println("stats: error: " + e)
+  Ok(v) -> println("stats: " + int_to_str(rec_baskets(rec_model_stats(v, model))) + " baskets, " + int_to_str(rec_pairs(rec_model_stats(v, model))) + " pairs")
+
+fn shown(label, result) = match result
+  Err(e) -> println(label + ": error: " + e)
+  Ok(answer) -> println(label + ": " + rendered(answer))
+
+# A suggestion list where the answer is one, and the answer itself where it is
+# not — `track` and `checkpoint` carry no list at all, which is a different
+# thing from carrying an empty one.
+fn rendered(answer) = match get(answer, "recommendations")
+  None -> to_string(answer)
+  Some(_) -> listed(rec_suggestions(answer))
+
+fn listed(s) =
+  if len(s) == 0 then "nothing" else join(map(s, \x -> rec_item(x) + " " + float_to_str(rec_score(x))), ", ")
+
+# -- the stand-in server ------------------------------------------------------
+
+fn against_stand_in() = match listen_on(4472)
+  Err(e) -> println(e)
+  Ok(server) -> run(server)
+
+fn run(server) =
+  spawn stand_in(server, 11)
+  report(4472)
+
+fn stand_in(server, remaining) =
+  conn = tcp_accept(server)
+  answer_all(conn, remaining)
+  sock_close(server)
+
+fn answer_all(conn, remaining) =
+  request = asked(ow_decode(ow_recv(conn), 1))
+  answer(conn, reply_to(as_str(unwrap_or(get(request, "op"), JNull)), request))
+  if remaining == 1 then sock_close(conn) else answer_all(conn, remaining - 1)
+
+fn asked(read) = match read
+  Parsed(v, _) -> v
+  Failed(_, _) -> JNull
+
+fn answer(conn, reply) = match reply
+  Ok(data) -> ow_frame_out(conn, chr(219) + chr(0) + ow_encode(data))
+  Err(msg) -> ow_frame_out(conn, chr(219) + chr(1) + ow_encode(JStr(msg)))
+
+# The reply shapes a real engine uses, verified against oxidb-server 0.43.0.
+# `related` as of long ago answers an empty list rather than an error, which
+# is the behaviour the client half above is showing.
+fn reply_to(op, request) =
+  if op == "track" then Ok(JObj(Cons(Field("counted", JBool(true)), Nil))) else if op == "related" then Ok(suggestions(asked_long_ago(request))) else if op == "for_basket" then Ok(without_poset()) else if op == "stats" then Ok(stats()) else if op == "checkpoint" then Ok(JObj(Cons(Field("ok", JBool(true)), Nil))) else Err("unknown rec op: \"" + op + "\" (track, related, for_basket, stats, checkpoint)")
+
+fn asked_long_ago(request) = as_int(unwrap_or(get(request, "ts"), JNull)) < 1500000000
+
+fn suggestions(empty) =
+  if empty then found(Nil) else found(Cons(scored("ekmek", 2.231435513142097), Cons(scored("sut", 2.231435513142097), Cons(scored("poset", 0.5053430784314124), Cons(scored("peynir", 0.5053430784314124), Nil)))))
+
+fn without_poset() =
+  found(Cons(scored("ekmek", 2.231435513142097), Cons(scored("sut", 2.231435513142097), Cons(scored("peynir", 0.5053430784314124), Nil))))
+
+fn found(xs) = JObj(Cons(Field("recommendations", JArr(xs)), Nil))
+
+fn scored(name, score) =
+  JObj(Cons(Field("item", JStr(name)), Cons(Field("score", JNum(score)), Nil)))
+
+fn stats() =
+  JObj(Cons(Field("catalogue_items", JInt(6)), Cons(Field("models", JObj(Cons(Field("shop", JObj(Cons(Field("items", JInt(6)), Cons(Field("pairs", JInt(14)), Cons(Field("baskets", JInt(5)), Nil))))), Nil))), Nil)))

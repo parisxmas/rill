@@ -1,0 +1,106 @@
+# A client for OxiDB's recommendation engine, written in Rill.
+#
+# The wire is `oxiwire.rill`, the same binary one the document, time-series
+# and SQL clients use. This engine is off unless the server was started with
+# OXIDB_REC.
+#
+# What it holds is co-occurrence: baskets go in, and it answers what tends to
+# turn up beside a thing. A basket is an id and a list of items at a moment;
+# nothing else about them is kept.
+#
+# **Time is in seconds here**, not the milliseconds the time-series engine
+# takes — and it matters more than a unit usually does, because scores decay
+# with age. A query is scored against *now* unless given a moment of its own,
+# so baskets tracked with old timestamps answer with nothing at all rather
+# than with an error. If `rec_related` comes back empty, check the two clocks
+# before checking the data.
+import "oxiwire"
+
+# -- the clock ----------------------------------------------------------------
+
+# Rill's own `now_nanos` is monotonic — time since the machine started, not
+# since 1970 — so it cannot be handed to an engine that dates things: a basket
+# tracked with it lands somewhere in 1970 and every query scored against a
+# real clock answers with nothing. libc's `time` gives the epoch, and this is
+# the whole of what that takes.
+extern fn time(p: Ptr) -> Int
+
+fn rec_now() = time(null_ptr())
+
+# -- calling ------------------------------------------------------------------
+
+fn rec_connect(host, port) = connect_to(host, port)
+
+fn rec_hang_up(fd) = sock_close(fd)
+
+fn rec_request(op, fields) =
+  JObj(Cons(Field("engine", JStr("rec")), Cons(Field("cmd", JStr("rec")), Cons(Field("op", JStr(op)), fields))))
+
+fn rec_call(fd, op, fields) = ow_call(fd, rec_request(op, fields))
+
+# -- putting baskets in -------------------------------------------------------
+
+# One basket: who it was, what was in it, and when. `at` is epoch seconds; the
+# server's own clock is used when it is left out, which `rec_track_now` does.
+fn rec_track(fd, model, basket_id, item_names, at) =
+  rec_call(fd, "track", Cons(Field("model", JStr(model)), Cons(Field("basket_id", JInt(basket_id)), Cons(Field("items", JArr(map(item_names, \i -> JStr(i)))), Cons(Field("ts", JInt(at)), Nil)))))
+
+fn rec_track_now(fd, model, basket_id, item_names) =
+  rec_call(fd, "track", Cons(Field("model", JStr(model)), Cons(Field("basket_id", JInt(basket_id)), Cons(Field("items", JArr(map(item_names, \i -> JStr(i)))), Nil))))
+
+# -- asking --------------------------------------------------------------------
+
+# What turns up beside one item. `spec` is built with the options below, or
+# `Nil` for the engine's own defaults.
+fn rec_related(fd, model, item_name, spec) =
+  rec_call(fd, "related", Cons(Field("model", JStr(model)), Cons(Field("item", JStr(item_name)), spec)))
+
+# What to put beside a basket somebody already has. `rec_without` keeps what
+# is already in it out of the answer.
+fn rec_for_basket(fd, model, item_names, spec) =
+  rec_call(fd, "for_basket", Cons(Field("model", JStr(model)), Cons(Field("items", JArr(map(item_names, \i -> JStr(i)))), spec)))
+
+fn rec_stats(fd) = rec_call(fd, "stats", Nil)
+
+fn rec_checkpoint(fd) = rec_call(fd, "checkpoint", Nil)
+
+# -- options -------------------------------------------------------------------
+
+fn rec_limit(n, rest) = Cons(Field("limit", JInt(n)), rest)
+
+# `llr` — the log-likelihood ratio — asks whether two things turn up together
+# more than chance would have it, rather than merely often.
+fn rec_scoring(name, rest) = Cons(Field("scoring", JStr(name)), rest)
+
+fn rec_half_life(days, rest) = Cons(Field("half_life", JNum(days)), rest)
+
+fn rec_min_support(n, rest) = Cons(Field("min_support", JNum(n)), rest)
+
+fn rec_without(item_names, rest) =
+  Cons(Field("exclude", JArr(map(item_names, \i -> JStr(i)))), rest)
+
+# The moment to score against, in epoch seconds. Without it the server's clock
+# is used, which is what makes old test data answer with nothing.
+fn rec_at(seconds, rest) = Cons(Field("ts", JInt(seconds)), rest)
+
+# -- reading answers out -------------------------------------------------------
+
+fn rec_suggestions(answer) = items(unwrap_or(get(answer, "recommendations"), JArr(Nil)))
+
+fn rec_item(suggestion) = as_str(unwrap_or(get(suggestion, "item"), JNull))
+
+fn rec_score(suggestion) = as_float(unwrap_or(get(suggestion, "score"), JNull))
+
+fn rec_names(answer) = map(rec_suggestions(answer), \s -> rec_item(s))
+
+fn rec_counted(answer) = as_bool(unwrap_or(get(answer, "counted"), JBool(false)))
+
+# `stats` answers about the store as a whole and about each model in it.
+fn rec_catalogue(answer) = as_int(unwrap_or(get(answer, "catalogue_items"), JNull))
+
+fn rec_model_stats(answer, model) =
+  unwrap_or(path(answer, Cons("models", Cons(model, Nil))), JNull)
+
+fn rec_baskets(model_stats) = as_int(unwrap_or(get(model_stats, "baskets"), JNull))
+
+fn rec_pairs(model_stats) = as_int(unwrap_or(get(model_stats, "pairs"), JNull))

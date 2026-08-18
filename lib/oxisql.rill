@@ -1,0 +1,78 @@
+# A client for OxiDB's SQL engine, written in Rill.
+#
+# The wire is `oxiwire.rill`, the same binary one the document and time-series
+# clients use — the engine is chosen by a field in the request rather than by
+# a port, so one connection could speak to all three. This engine is off
+# unless the server was started with OXIDB_SQL, and it is gated at the write
+# role: there is no read-only SQL in this version.
+#
+# One request may carry more than one statement, so the answer is always a
+# *list* of results, one per statement, and each is one of three shapes:
+#
+#   {"ddl": true}                                   CREATE, DROP, ALTER
+#   {"affected": 2}                                 INSERT, UPDATE, DELETE
+#   {"columns": [..], "types": [..], "rows": [[..]]} SELECT
+#
+# A row is a list of values positionally matching `columns`, so reading one by
+# name means finding the column first — `sql_at` below does that once per
+# result rather than once per row.
+import "oxiwire"
+
+# -- calling ------------------------------------------------------------------
+
+fn sql_connect(host, port) = connect_to(host, port)
+
+fn sql_hang_up(fd) = sock_close(fd)
+
+fn sql_request(fields) =
+  JObj(Cons(Field("engine", JStr("sql")), Cons(Field("cmd", JStr("sql")), fields)))
+
+fn sql_run(fd, text) =
+  ow_call(fd, sql_request(Cons(Field("sql", JStr(text)), Nil)))
+
+# `?` in the text takes the next value from `params`, which is how a value
+# reaches the engine without being written into the statement.
+fn sql_run_with(fd, text, params) =
+  ow_call(fd, sql_request(Cons(Field("sql", JStr(text)), Cons(Field("params", JArr(params)), Nil))))
+
+# Admin-only, and gated as such before the request reaches the engine.
+fn sql_backup(fd, path) =
+  ow_call(fd, JObj(Cons(Field("engine", JStr("sql")), Cons(Field("cmd", JStr("backup")), Cons(Field("path", JStr(path)), Nil)))))
+
+fn sql_restore(fd, archive, target) =
+  ow_call(fd, JObj(Cons(Field("engine", JStr("sql")), Cons(Field("cmd", JStr("restore")), Cons(Field("archive", JStr(archive)), Cons(Field("target", JStr(target)), Nil))))))
+
+# -- reading answers out ------------------------------------------------------
+
+# One result per statement sent.
+fn sql_results(answer) = items(answer)
+
+# The common case is one statement, and a caller that sent one should not have
+# to say so twice.
+fn sql_first(answer) = unwrap_or(nth(sql_results(answer), 0), JNull)
+
+fn sql_columns(result) = map(items(unwrap_or(get(result, "columns"), JArr(Nil))), \c -> as_str(c))
+
+# A column's declared type — `INT`, `TEXT`, `DOUBLE` — or the empty string
+# where the engine had none to give, as for a bare `NULL` in a select list.
+fn sql_types(result) = map(items(unwrap_or(get(result, "types"), JArr(Nil))), \t -> as_str(t))
+
+fn sql_rows(result) = items(unwrap_or(get(result, "rows"), JArr(Nil)))
+
+fn sql_affected(result) = as_int(unwrap_or(get(result, "affected"), JNull))
+
+fn sql_is_ddl(result) = as_bool(unwrap_or(get(result, "ddl"), JBool(false)))
+
+# Where a named column sits in every row of this result, or -1. Worth holding
+# on to across a loop rather than asking per row.
+fn sql_at(result, name) = column_index(sql_columns(result), name, 0)
+
+fn column_index(names, name, i) = match names
+  Nil -> 0 - 1
+  Cons(c, rest) -> if c == name then i else column_index(rest, name, i + 1)
+
+fn sql_cell(row, i) = if i < 0 then JNull else unwrap_or(nth(items(row), i), JNull)
+
+# The value of a named column in one row. Fine for a handful; for a table use
+# `sql_at` once and `sql_cell` per row.
+fn sql_value(result, row, name) = sql_cell(row, sql_at(result, name))

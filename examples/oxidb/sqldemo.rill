@@ -1,0 +1,104 @@
+# The OxiDB SQL client, driven end to end.
+#
+# With no arguments this talks to a stand-in server started on a strand, so
+# the example runs anywhere and the test suite can check it. The stand-in is
+# not an SQL engine: it speaks the binary frame format and answers the
+# handful of statements below with the shapes a real engine answers them
+# with, which is exactly the surface the client is responsible for.
+#
+# Give it a port and it talks to a real one. The engine is off unless the
+# server was started with it:
+#
+#     OXIDB_SQL=1 oxidb-server &          # listening on 4444
+#     ./sqldemo 4444
+import "oxisql"
+
+fn main() = match args()
+  Cons(_, Cons(port, _)) -> report(str_to_int(port))
+  _ -> against_stand_in()
+
+# -- the client half ----------------------------------------------------------
+
+fn report(port) = match sql_connect("127.0.0.1", port)
+  Err(e) -> println(e)
+  Ok(fd) -> converse(fd)
+
+fn converse(fd) =
+  shown("ddl", sql_run(fd, "CREATE TABLE IF NOT EXISTS crew (id INTEGER PRIMARY KEY, name TEXT, score REAL)"))
+  shown("insert", sql_run_with(fd, "INSERT INTO crew (id, name, score) VALUES (?, ?, ?)", Cons(JInt(1), Cons(JStr("ada"), Cons(JNum(9.5), Nil)))))
+  shown("select", sql_run(fd, "SELECT id, name, score FROM crew ORDER BY id"))
+  # One request, two statements, two results — which is why an answer is a
+  # list even when a caller sent only one.
+  shown("both", sql_run(fd, "UPDATE crew SET score = 10.0 WHERE id = 1; SELECT COUNT(*) AS n FROM crew"))
+  shown("no such table", sql_run(fd, "SELECT * FROM nope"))
+  sql_hang_up(fd)
+
+fn shown(label, result) = match result
+  Err(e) -> println(label + ": error: " + e)
+  Ok(answer) -> println(label + ": " + join(map(sql_results(answer), \r -> rendered(r)), " | "))
+
+# The three shapes a statement answers with, told apart the way a caller has
+# to tell them apart.
+fn rendered(r) =
+  if sql_is_ddl(r) then "ddl" else if len(sql_columns(r)) == 0 then "affected " + int_to_str(sql_affected(r)) else table_of(r)
+
+fn table_of(r) =
+  join(sql_columns(r), ",") + " (" + join(sql_types(r), ",") + ")" + rows_of(r)
+
+fn rows_of(r) = join(map(sql_rows(r), \row -> " [" + line_of(r, row) + "]"), "")
+
+# `sql_at` once for the column, not once per row. `range` includes its end,
+# so the last index is one less than the count.
+fn line_of(r, row) =
+  name = sql_at(r, "name")
+  join(map(range(0, len(sql_columns(r)) - 1), \i -> to_string(sql_cell(row, i))), " ") + name_note(row, name)
+
+fn name_note(row, name) =
+  if name < 0 then "" else " <- " + as_str(sql_cell(row, name))
+
+# -- the stand-in server ------------------------------------------------------
+
+fn against_stand_in() = match listen_on(4471)
+  Err(e) -> println(e)
+  Ok(server) -> run(server)
+
+# The socket is open before the strand starts, so the first request cannot
+# arrive before there is something to accept it.
+fn run(server) =
+  spawn stand_in(server, 5)
+  report(4471)
+
+fn stand_in(server, remaining) =
+  conn = tcp_accept(server)
+  answer_all(conn, remaining)
+  sock_close(server)
+
+fn answer_all(conn, remaining) =
+  request = asked(ow_decode(ow_recv(conn), 1))
+  answer(conn, reply_to(as_str(unwrap_or(get(request, "sql"), JNull))))
+  if remaining == 1 then sock_close(conn) else answer_all(conn, remaining - 1)
+
+fn asked(read) = match read
+  Parsed(v, _) -> v
+  Failed(_, _) -> JNull
+
+fn answer(conn, reply) = match reply
+  Ok(data) -> ow_frame_out(conn, chr(219) + chr(0) + ow_encode(data))
+  Err(msg) -> ow_frame_out(conn, chr(219) + chr(1) + ow_encode(JStr(msg)))
+
+# The reply shapes a real engine uses, verified against oxidb-server 0.43.0.
+fn reply_to(text) =
+  if starts_with(text, "CREATE") then Ok(JArr(Cons(ddl(), Nil))) else if starts_with(text, "INSERT") then Ok(JArr(Cons(affected(1), Nil))) else if starts_with(text, "UPDATE") then Ok(JArr(Cons(affected(1), Cons(counted(1), Nil)))) else if starts_with(text, "SELECT * FROM nope") then Err("sql error: no such table: nope") else Ok(JArr(Cons(crew(), Nil)))
+
+fn ddl() = JObj(Cons(Field("ddl", JBool(true)), Nil))
+
+fn affected(n) = JObj(Cons(Field("affected", JInt(n)), Nil))
+
+fn counted(n) =
+  table(Cons("n", Nil), Cons("INT", Nil), Cons(JArr(Cons(JInt(n), Nil)), Nil))
+
+fn crew() =
+  table(Cons("id", Cons("name", Cons("score", Nil))), Cons("INT", Cons("TEXT", Cons("DOUBLE", Nil))), Cons(JArr(Cons(JInt(1), Cons(JStr("ada"), Cons(JNum(9.5), Nil)))), Nil))
+
+fn table(names, kinds, rows) =
+  JObj(Cons(Field("columns", JArr(map(names, \c -> JStr(c)))), Cons(Field("types", JArr(map(kinds, \t -> JStr(t)))), Cons(Field("rows", JArr(rows)), Nil))))

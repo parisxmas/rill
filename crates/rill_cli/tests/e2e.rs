@@ -756,6 +756,47 @@ fn oxidb_tsdb_codec() {
     );
 }
 
+/// The OxiDB SQL client against a stand-in on a strand. An answer is a list
+/// of results, one per statement sent, and each is one of three shapes — DDL,
+/// a count of rows affected, or columns and rows. `both` sends two statements
+/// in one request and gets two results back, which is why the list is a list
+/// even for callers who only ever send one.
+#[test]
+fn oxidb_sql_client() {
+    assert_eq!(
+        compile_and_run("oxidb/sqldemo.rill"),
+        "ddl: ddl\n\
+         insert: affected 1\n\
+         select: id,name,score (INT,TEXT,DOUBLE) [1 \"ada\" 9.5 <- ada]\n\
+         both: affected 1 | n (INT) [1]\n\
+         no such table: error: sql error: no such table: nope\n"
+    );
+}
+
+/// The OxiDB recommendation client against a stand-in on a strand. The
+/// stand-in's answers are the ones a real engine gave for this basket data,
+/// compared against it byte for byte — including that a query as of a moment
+/// long before the baskets were tracked answers with an empty list rather
+/// than an error, scores being decayed by age.
+#[test]
+fn oxidb_rec_client() {
+    assert_eq!(
+        compile_and_run("oxidb/recdemo.rill"),
+        "track: {\"counted\":true}\n\
+         track: {\"counted\":true}\n\
+         track: {\"counted\":true}\n\
+         track: {\"counted\":true}\n\
+         track: {\"counted\":true}\n\
+         related: ekmek 2.23144, sut 2.23144, poset 0.505343, peynir 0.505343\n\
+         for basket: ekmek 2.23144, sut 2.23144, peynir 0.505343\n\
+         as of long ago: nothing\n\
+         stats: 5 baskets, 14 pairs\n\
+         checkpoint: {\"ok\":true}\n\
+         nonsense: error: unknown rec op: \"nope\" \
+         (track, related, for_basket, stats, checkpoint)\n"
+    );
+}
+
 /// RESP — the protocol Redis speaks — encoded and decoded by Rill, with no
 /// server in reach. Three halves worth the test are ones a length-prefixed
 /// wire never needs: a reply that has only half arrived must read as "not

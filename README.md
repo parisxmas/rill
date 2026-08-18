@@ -133,7 +133,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `echo_server.rill` | a TCP server and client in one program |
 | `http/` | a server answering its own requests, and a WebSocket one |
 | `json/`, `yaml/` | reading and writing both, from `lib/` |
-| `oxidb/` | the three OxiDB clients driven: a stand-in document server on a strand, a binary codec against itself, and RESP replies that arrive in pieces |
+| `oxidb/` | the five OxiDB clients driven, four of them against stand-in servers on strands answering the shapes a real engine answers with |
 | `stdlib.rill` | what the prelude gives you |
 | `loops.rill` | how repetition is written: tail recursion and folds |
 | `blocks.rill` | block bodies in match arms, select arms and `if` branches |
@@ -143,12 +143,13 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 
 `lib/` is what the examples above are written on, and is written in Rill
 itself: `json.rill` and `yaml.rill`, `http.rill` for HTTP/1.1, `ws.rill` for
-WebSocket, `sha1.rill` for the handshake, and three clients for the OxiDB
-database, one per engine: `oxidb.rill` for documents and `oxitsdb.rill` for
-time series, both over `oxiwire.rill` — the server's binary format, about a
-third larger on the wire than its JSON one and about 1.4 times faster to talk
-— and `oxiresp.rill` for the key-value engine over RESP, the protocol
-Redis speaks. It is not a
+WebSocket, `sha1.rill` for the handshake, and a client for each of the five
+engines OxiDB mounts. Four are on its native wire and share `oxiwire.rill`,
+the server's binary format — about a third larger on the wire than its JSON
+one and about 1.4 times faster to talk: `oxidb.rill` for documents,
+`oxisql.rill` for SQL, `oxitsdb.rill` for time series and `oxirec.rill` for
+co-occurrence recommendations. The fifth, `oxiresp.rill`, speaks RESP to the
+key-value engine on a port of its own — the protocol Redis speaks. It is not a
 standard library and nothing is promised about it between releases — the
 prelude is the part that ships with the compiler. It is a directory, so
 `import "json"` finds it from anywhere under this repository, and `RILL_PATH`
