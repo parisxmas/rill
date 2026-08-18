@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **A player on a fast screen watched their own ping climb past half a minute.**
+  144 fps, and the page sent one input a *frame* — 144 messages a second against
+  an allowance of ninety. Fifty-four a second went unread, waited in the kernel
+  buffer, and everything sent after them waited behind: the ping is a message
+  like any other, so what came back was the backlog and not the network. It read
+  36 seconds and was still rising.
+
+  Two things were wrong. The page now sends sixty a second whatever the screen
+  is doing — already three times the tick rate, since the server walks from the
+  last thing it heard, so an input between two ticks is the one that counts at
+  the next. And the allowance is a hundred and fifty rather than ninety, with
+  room above the sixty for the shots and the pings and for any client that does
+  not know about the cap.
+
+  Measured before and after with a client sending a hundred and twenty a second:
+  the round trip read 1,014 ms and climbing, and now reads 0. A flood of a
+  million lines a second is still held off — the honest client keeps its full
+  twenty snapshots a second through it.
+
 - **The published page joins the published valley.** `?join` with nothing after
   it used to mean `ws://<host>:8091/`, which on a page served over TLS is two
   things a browser will not do: a plain socket from an encrypted page, and a

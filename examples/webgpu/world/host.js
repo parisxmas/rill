@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=243";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=243";
+import { load } from "./world.js?v=244";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=244";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=243";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "243";
+const V = "244";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2120,6 +2120,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const tally = document.getElementById("tally");
   const vitfill = document.getElementById("vitfill");
   let lastHp = -1, hurtUntil = 0;
+  // When this player last told the server anything. See the send below.
+  let lastSent = -1e9;
   addEventListener("mousedown", e => {
     if (e.button === 0 && document.pointerLockElement === canvas) wantShot = true;
   });
@@ -2307,11 +2309,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
 
     if (net) {
-      // Sixty times a second, which is more often than the server ticks: it
-      // walks from the last thing it heard, so an input that arrives between
-      // two ticks is the one that counts at the next.
-      const look = stateF32();
-      net.input(keys, look[19], look[20]);
+      // Sixty times a second at most, whatever the screen is doing. That is
+      // already more often than the server ticks — it walks from the last
+      // thing it heard, so an input arriving between two ticks is the one that
+      // counts at the next — and on a hundred-and-twenty hertz screen, one a
+      // frame is sixty wasted messages a second.
+      //
+      // Worse than wasted. Over the server's allowance its reader stops
+      // listening until the second is up, and everything sent after that waits
+      // behind what did not get read: a player on a fast screen watched their
+      // own round trip climb past half a minute, which is the backlog and not
+      // the network. Twice the tick rate is plenty and leaves room under the
+      // allowance for the shots and the pings.
+      if (now - lastSent >= 15) {
+        lastSent = now;
+        const look = stateF32();
+        net.input(keys, look[19], look[20]);
+      }
       applyEvents(net.take());
       // Walked here as well as there, so that turning and walking answer the
       // key rather than the round trip. What the server made of it arrives a

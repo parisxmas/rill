@@ -185,9 +185,15 @@ long is otherwise a round at a hundred and fifty billion metres a second,
 which crosses the valley inside one step and takes out every crystal along a
 line through the world.
 
-Each connection is allowed ninety messages a second — a browser sends its keys
-once a frame, so that is well above anything honest — and over that the reader
-sleeps until the second is up rather than reading on. That is not tidiness: the
+Each connection is allowed a hundred and fifty messages a second — a browser
+sends its keys sixty times a second and a ping once, so that is well above
+anything honest — and over that the reader
+sleeps until the second is up rather than reading on. The cap on the page
+matters as much as the number here: it used to send one input per *frame*, and
+on a 144 Hz screen that is 144 a second — over the allowance, so a fifty-fourth
+of every second went unread, waited in the kernel, and everything behind it
+waited too. The player's own ping came back reading half a minute, because a
+ping is a message like any other and it was queued behind the backlog. That is not tidiness: the
 hub takes its tick off the same channel as the key presses, and against an
 unbounded sender the tick never wins at all. It has to be a sleep and not a
 drop, because reading is most of what a message costs: the frame walk and the

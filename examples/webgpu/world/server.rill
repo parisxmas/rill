@@ -63,17 +63,25 @@ fn reload_s() = 0.55
 fn quiet_s() = 30.0
 
 # How many messages a second one connection may have listened to. A browser
-# sends its keys once a frame, so ninety is comfortably above anything honest
-# and far below what a machine can send — and it is what keeps one client from
-# spending the whole server on itself. Over the budget the line is read and
-# dropped: the socket still has to be drained, or the sender simply blocks and
-# the backlog moves into the kernel.
+# sends its keys sixty times a second and a ping once, so a hundred and fifty
+# is well above anything honest and far below what a machine can send — and it
+# is what keeps one client from spending the whole server on itself. Over the
+# budget the reader sleeps out the rest of the second; see `hush`.
 #
-# This is the fix for a real starvation, not a theoretical one: the hub takes
-# its tick off the same channel as the key presses, and with an unbounded
-# sender the tick never wins. Measured on a model of it — four busy senders,
-# and in eight seconds the ticker got through exactly zero times.
-fn heard_per_second() = 90
+# It was ninety, which is above sixty and looked like plenty. It was not: a
+# browser sent one input a *frame*, and a hundred-and-twenty hertz screen sends
+# a hundred and twenty a second. Nineteen of them a second went unread, waited
+# in the kernel buffer, and everything sent after them waited behind — so the
+# player's own ping, which is a message like any other, came back reading half
+# a minute. The page sends sixty a second now whatever the screen does, and the
+# allowance has room above it for the shots and the pings and for a client that
+# does not know about the cap.
+#
+# The number below is the fix for a real starvation, not a theoretical one: the
+# hub takes its tick off the same channel as the key presses, and with an
+# unbounded sender the tick never wins. Measured on a model of it — four busy
+# senders, and in eight seconds the ticker got through exactly zero times.
+fn heard_per_second() = 150
 
 # How many sockets may be open at once, whether or not their owners ever say
 # anything. The valley holds thirty-two; the rest of these are room for the
