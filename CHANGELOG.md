@@ -14,10 +14,22 @@
   wrist, which is what a wrist is for. Standing and firing, the barrel now
   comes out exactly level and exactly forward.
 
-  The consequence, said plainly: walking and crouching swing it, because the
-  library has no armed walk and no armed crouch — the arms in those clips are
-  empty and swing like it. Fixing that properly means blending the armed idle's
-  upper body onto the walk's legs, which is a mask and not a constant.
+- **Walking with it up.** The library has a walk, a run and a crouch, and an
+  armed idle, and no armed anything else — so in those three the arms swung
+  like the empty arms they were animated as, and the rifle swung with them. The
+  legs now take the clip somebody is actually doing and everything from the
+  spine up takes the armed idle. The hips are below the split, so the pelvis
+  still sways with the stride and carries the torso rather than nailing it to
+  the world; that is why this is a mask on the skeleton and not two clips faded
+  together. Walking, the barrel went from forty-nine degrees into the ground to
+  five, and level.
+
+  Where the split falls is one joint index in the file — the spine above the
+  hips — and the page marks the subtree itself off the parents it already has.
+  The legs hang off the hips rather than off the spine, so no list of
+  exceptions is needed. Running and crouching still point the rifle down by
+  about twenty-five degrees, and that is the body's own lean coming through the
+  pelvis, which is what a person carrying a rifle at a run actually does.
 
 - **A round stops at the person it hit.** It stopped on the server, which is
   where the damage is decided, and carried on through them on every screen,

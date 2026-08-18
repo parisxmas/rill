@@ -69,6 +69,13 @@ RIFLE_METRES = 1.10
 GRIP_AT = 0.40
 # The clip whose first frame the rifle is levelled against. See `main`.
 GRIP_POSE = "Pistol_Idle_Loop"
+# Where the upper body starts. Everything descending from this joint — spine,
+# neck, head, both arms, every finger — can be taken from one clip while the
+# legs take another, which is how somebody walks with a rifle up in a library
+# that has a walk and an armed idle and no armed walk. The legs hang off the
+# hips and the hips are below this, so the split falls where it has to with no
+# list of exceptions.
+UPPER = "DEF-spine.001"
 # Which way the mannequin faces in its own space. Its nose and its toes agree
 # about this, and so does the π − yaw the page places it by.
 FACES = (0.0, 0.0, 1.0)
@@ -299,9 +306,10 @@ def main(src, dst):
     grip = grip_matrix(armed, hand, box)
 
     out = bytearray()
-    out += b"RILLFIG2"
+    out += b"RILLFIG3"
     out += struct.pack("<IIII", len(joints), len(verts), len(tris), len(CLIPS))
     out += struct.pack("<I", hand)
+    out += struct.pack("<I", names.index(UPPER))
     out += struct.pack("<16f", *grip)
     out += struct.pack("<6f", *lo, *hi)
     for i in range(len(joints)):
@@ -363,7 +371,8 @@ def main(src, dst):
 
     open(dst, "wb").write(out)
     print(f"{dst}: {len(out) / 1024:.0f} KB — {len(joints)} joints, {len(verts)} vertices, "
-          f"{len(tris) // 3} triangles, {len(CLIPS)} clips, weapon on {names[hand]}")
+          f"{len(tris) // 3} triangles, {len(CLIPS)} clips, weapon on {names[hand]}, "
+          f"upper body from {names.index(UPPER)}")
 
 
 if __name__ == "__main__":

@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=235";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=235";
+import { load } from "./world.js?v=236";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=236";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=235";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "235";
+const V = "236";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -295,16 +295,19 @@ function faceNormal(a, b, c) {
 function readFigure(bytes) {
   const v = new DataView(bytes);
   const magic = new TextDecoder().decode(new Uint8Array(bytes, 0, 8));
-  if (magic !== "RILLFIG2") throw new Error(`figure.mesh is not a figure this reads (${magic})`);
+  if (magic !== "RILLFIG3") throw new Error(`figure.mesh is not a figure this reads (${magic})`);
   const joints = v.getUint32(8, true), verts = v.getUint32(12, true);
   const indices = v.getUint32(16, true), clipCount = v.getUint32(20, true);
   // Which joint a weapon hangs off, and where on it — worked out at bake time
   // from the arm's own direction in the bind pose rather than by eye.
   const hand = v.getUint32(24, true);
-  const grip = new Float32Array(bytes.slice(28, 92));
-  const box = new Float32Array(bytes.slice(92, 116));
+  // Where the upper body starts. One index, because the parents are here too
+  // and a descendant test is three lines — see below.
+  const upperRoot = v.getUint32(28, true);
+  const grip = new Float32Array(bytes.slice(32, 96));
+  const box = new Float32Array(bytes.slice(96, 120));
 
-  let at = 116;
+  let at = 120;
   const parent = new Int32Array(joints);
   const bindT = new Float32Array(joints * 3);
   const bindR = new Float32Array(joints * 4);
@@ -333,7 +336,14 @@ function readFigure(bytes) {
     const rot = new Int16Array(bytes.slice(at, at + frames * joints * 8)); at += frames * joints * 8;
     clips.set(name, { name, frames, fps, loops, root, rootT, rot, seconds: (frames - 1) / fps });
   }
-  return { joints, verts, indices, box, hand, grip, parent, bindT, bindR, invBind, clips, vertexAt, indexAt };
+  // Which joints move with the arms rather than with the legs. The joints
+  // arrive parent-first, so one pass down the list marks the whole subtree.
+  const upper = new Uint8Array(joints);
+  for (let j = 0; j < joints; j++) {
+    upper[j] = j === upperRoot || (parent[j] >= 0 && upper[parent[j]]) ? 1 : 0;
+  }
+
+  return { joints, verts, indices, box, hand, grip, upper, parent, bindT, bindR, invBind, clips, vertexAt, indexAt };
 }
 
 // A pose, worked out on the page and handed over as one matrix per joint.
@@ -402,22 +412,38 @@ function makeSkinner(figure, capacity) {
     matrices: out,
     held,
     // One person: their clip, how far into it, and where they are standing.
-    pose(slot, clip, time, x, y, z, yaw) {
-      const f = clip.loops
-        ? (Math.max(time, 0) * clip.fps) % (clip.frames - 1)
-        : Math.min(Math.max(time, 0) * clip.fps, clip.frames - 1);
-      const f0 = Math.floor(f), f1 = Math.min(f0 + 1, clip.frames - 1), t = f - f0;
+    //
+    // `over` is a second clip for the upper body, and it exists because the
+    // library has a walk and an armed idle and no armed walk. The legs take
+    // the clip somebody is actually doing; the spine and everything above it
+    // takes the one where they are holding the rifle. The hips are below the
+    // split, so the pelvis still sways with the stride and the torso is
+    // carried by it rather than nailed to the world — which is the whole
+    // reason a mask is done on the skeleton and not by playing two clips and
+    // fading between them.
+    pose(slot, clip, time, x, y, z, yaw, over = null, overTime = 0) {
+      const cut = (c, s) => {
+        const f = c.loops
+          ? (Math.max(s, 0) * c.fps) % (c.frames - 1)
+          : Math.min(Math.max(s, 0) * c.fps, c.frames - 1);
+        const f0 = Math.floor(f);
+        return { rot: c.rot, f0, f1: Math.min(f0 + 1, c.frames - 1), t: f - f0 };
+      };
+      const low = cut(clip, time);
+      const up = over ? cut(over, overTime) : low;
+      const { f0, f1, t } = low;
 
       for (let j = 0; j < J; j++) {
-        const a = (f0 * J + j) * 4, b = (f1 * J + j) * 4;
+        const k = over && figure.upper[j] ? up : low;
+        const a = (k.f0 * J + j) * 4, b = (k.f1 * J + j) * 4;
         // snorm16 back to a quaternion, taking the short way between frames.
-        const ax = clip.rot[a] / 32767, ay = clip.rot[a + 1] / 32767;
-        const az = clip.rot[a + 2] / 32767, aw = clip.rot[a + 3] / 32767;
-        let bx = clip.rot[b] / 32767, by = clip.rot[b + 1] / 32767;
-        let bz = clip.rot[b + 2] / 32767, bw = clip.rot[b + 3] / 32767;
+        const ax = k.rot[a] / 32767, ay = k.rot[a + 1] / 32767;
+        const az = k.rot[a + 2] / 32767, aw = k.rot[a + 3] / 32767;
+        let bx = k.rot[b] / 32767, by = k.rot[b + 1] / 32767;
+        let bz = k.rot[b + 2] / 32767, bw = k.rot[b + 3] / 32767;
         if (ax * bx + ay * by + az * bz + aw * bw < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; }
-        let qx = ax + (bx - ax) * t, qy = ay + (by - ay) * t;
-        let qz = az + (bz - az) * t, qw = aw + (bw - aw) * t;
+        let qx = ax + (bx - ax) * k.t, qy = ay + (by - ay) * k.t;
+        let qz = az + (bz - az) * k.t, qw = aw + (bw - aw) * k.t;
         const n = Math.hypot(qx, qy, qz, qw) || 1;
         qx /= n; qy /= n; qz /= n; qw /= n;
 
@@ -1438,6 +1464,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // anything that matters.
   const clocks = new Map();
   const CLIP_FOR = ["idle", "walk", "run", "crouch", "die"];
+  // The clips that only have legs worth keeping. Quaternius' library has a
+  // walk, a run and a crouch, and an armed idle, and no armed anything else —
+  // so in these three the arms swing like the empty arms they were animated
+  // as, and a rifle swung with them. The upper body comes from the armed idle
+  // instead, from the spine up; see `pose`. Firing, being hit and going down
+  // are whole-body and are left alone, and so is the idle, which is where the
+  // upper body is coming from.
+  const LEGS_ONLY = new Set(["walk", "run", "crouch"]);
 
   // Firing and being hit are events rather than states, so they play over
   // whatever the legs are doing for as long as their clip lasts.
@@ -2280,7 +2314,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         figures[o + 5] = c[0]; figures[o + 6] = c[1]; figures[o + 7] = c[2];
         const clock = clipFor(p, now);
         const clip = figure.clips.get(clock.name) ?? figure.clips.get("idle");
-        skinner.pose(i, clip, (now - clock.since) / 1000, p.x, p.y, p.z, p.yaw);
+        // The armed idle runs on its own clock rather than on the walk's, so
+        // the rifle keeps breathing at its own rate instead of bobbing once
+        // per footfall.
+        const over = LEGS_ONLY.has(clock.name) ? figure.clips.get("idle") : null;
+        skinner.pose(i, clip, (now - clock.since) / 1000, p.x, p.y, p.z, p.yaw, over, now / 1000);
       }
       // And the same positions again, into the world this time, so that a
       // round stops at the body it hit instead of carrying on through it.
