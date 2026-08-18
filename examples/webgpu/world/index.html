@@ -288,16 +288,24 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=242";
+    import { run } from "./host.js?v=243";
 
-    // Whose valley. `?join` takes the one on this host, `?join=ws://box:8091/`
-    // somebody else's, and no `join` at all is the valley this tab has to
-    // itself — which is what a static page gets, because there is no server
-    // behind one.
+    // Whose valley. `?join` takes the one this page is served from,
+    // `?join=wss://box/valley` somebody else's, and no `join` at all is the
+    // valley this tab has to itself — which is what a static page gets,
+    // because there is no server behind one.
+    //
+    // The default follows the page it is on. A page served over TLS may not
+    // open a plain socket, so it asks for `wss://` on the same host and lets
+    // whatever is in front of it hand the connection on — one path, no port,
+    // and the certificate is the one the page already came over. Served over
+    // plain http, which is how this runs while it is being worked on, it goes
+    // straight at the port the server listens on.
     const q = new URLSearchParams(location.search);
-    const server = q.has("join")
-      ? (q.get("join") || `ws://${location.hostname || "localhost"}:8091/`)
-      : null;
+    const here = location.protocol === "https:"
+      ? `wss://${location.host}/valley`
+      : `ws://${location.hostname || "localhost"}:8091/`;
+    const server = q.has("join") ? (q.get("join") || here) : null;
 
     // Who to put over this player's head. Only asked when there is somebody to
     // see it; the answer is kept, because nobody wants to type their own name
@@ -333,7 +341,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=242", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=243", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""
@@ -347,7 +355,7 @@
       stat.innerHTML =
         `<b>${h.gpuName}</b> · quality <b>${h.tier}</b>${lock}${here}<br>` +
         `<b>${h.fps}</b> fps${gpu} · ${Math.round(h.tris / 1000)}k triangles${ping}<br>` +
-        `terrain, placement, physics, matrices: <b>world.rill</b> → ` +
+        `terrain, placement, physics, matrices: <b>valley.rill</b> → ` +
         `<b>${h.wasmBytes ? (h.wasmBytes / 1024).toFixed(1) + " KB" : "?"}</b> of wasm<br>` +
         `shadows · MSAA 4x · instancing · gerstner water · compute particles<br>` +
         `textures <b>${kb(h.tex)}</b> · all assets <b>${kb(h.raw)}</b> → ` +

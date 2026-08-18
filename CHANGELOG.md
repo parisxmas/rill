@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The published page joins the published valley.** `?join` with nothing after
+  it used to mean `ws://<host>:8091/`, which on a page served over TLS is two
+  things a browser will not do: a plain socket from an encrypted page, and a
+  port that is not open. It now follows the page it is on — `wss://<host>/valley`
+  over https, and straight at the port over plain http, which is how it runs
+  while it is being worked on. One path, no port, and the certificate is the
+  one the page already came over.
+
 - **Behind a proxy, the valley knows who is really there.** Put nginx in front
   — which is what `wss://` requires, since the page is served over TLS and a
   browser will not open a plain socket from an encrypted one — and every
