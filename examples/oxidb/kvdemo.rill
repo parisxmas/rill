@@ -1,0 +1,116 @@
+# The OxiDB key-value client, driven two ways.
+#
+# With no arguments it works the protocol without a server: commands are built
+# and shown as the bytes that go out, and replies are decoded from frames
+# written here by hand — including one that arrives in pieces, which is the
+# part of RESP a length-prefixed wire never has to think about.
+#
+# Give it a port and it talks to a real engine. The engine listens separately
+# from the rest of the server and is off unless it was given a port:
+#
+#     OXIDB_OXIMEM_PORT=6380 oxidb-server &
+#     ./kvdemo 6380
+import "oxiresp"
+
+fn main() = match args()
+  Cons(_, Cons(port, _)) -> against_engine(str_to_int(port))
+  _ -> without_a_server()
+
+# -- the protocol, on its own -------------------------------------------------
+
+fn without_a_server() =
+  sent("PING", kv_args1("PING"))
+  sent("SET", kv_args3("SET", "user:1", "ada"))
+  sent("a value with a NUL in it", kv_args3("SET", "raw", "a" + chr(0) + "b"))
+  read_back("simple", "+OK\r\n")
+  read_back("error", "-ERR no such key\r\n")
+  read_back("integer", ":42\r\n")
+  read_back("bulk", "$3\r\nada\r\n")
+  read_back("empty bulk", "$0\r\n\r\n")
+  read_back("a NUL inside a bulk", "$3\r\na" + chr(0) + "b\r\n")
+  read_back("no value", "$-1\r\n")
+  read_back("no array", "*-1\r\n")
+  read_back("array", "*3\r\n$4\r\nrole\r\n:7\r\n$-1\r\n")
+  read_back("nested", "*2\r\n*2\r\n+a\r\n+b\r\n:1\r\n")
+  # A reply is not framed by a length the way the other wires here are, so a
+  # decoder has to be able to say "not yet" about every prefix of one.
+  in_pieces("a bulk arriving in pieces", "$3\r\na", "da\r\n")
+  in_pieces("an array arriving in pieces", "*2\r\n$3\r\nada\r\n$", "5\r\ngrace\r\n")
+  read_back("not RESP at all", "hello\r\n")
+
+fn sent(label, args) = println(label + " out: " + visible(resp_command(args)))
+
+fn read_back(label, frame) = println(label + ": " + decoded(frame))
+
+# The same frame cut in two: the first half must answer "not yet", and the
+# whole must answer the value.
+fn in_pieces(label, head, tail) =
+  println(label + " (first half): " + decoded(head))
+  println(label + " (both): " + decoded(head + tail))
+
+fn decoded(frame) = match resp_decode(frame, 0)
+  RMore -> "not yet"
+  RBad(why, pos) -> "bad: " + why + ", at byte " + int_to_str(pos)
+  RGot(v, j) -> visible(kv_shown(v)) + " (" + int_to_str(j) + " bytes)"
+
+# CR and LF are what the protocol is made of, so they are worth seeing.
+fn visible(s) = visible_from(s, 0, "")
+
+fn visible_from(s, i, acc) =
+  if i >= str_len(s) then acc else visible_from(s, i + 1, acc + visible_byte(str_get(s, i)))
+
+fn visible_byte(c) =
+  if c == 13 then "\\r" else if c == 10 then "\\n" else if c == 0 then "\\0" else chr(c)
+
+# -- a real engine ------------------------------------------------------------
+
+fn against_engine(port) = match kv_connect("127.0.0.1", port)
+  Err(e) -> println(e)
+  Ok(fd) -> converse(fd)
+
+fn converse(fd) =
+  tell("ping", kv_ping(fd))
+  tell("flushdb", kv_flushdb(fd))
+  tell("set", kv_set(fd, "user:1", "ada"))
+  tell("get", kv_get(fd, "user:1"))
+  tell("absent", kv_get(fd, "nobody"))
+  tell("incr", kv_incr(fd, "hits"))
+  tell("incrby", kv_incrby(fd, "hits", 41))
+  tell("hset", kv_hset(fd, "user:1:meta", "role", "eng"))
+  tell("hgetall", kv_hgetall(fd, "user:1:meta"))
+  tell("rpush", kv_rpush(fd, "queue", "first"))
+  tell("rpush", kv_rpush(fd, "queue", "second"))
+  tell("lrange", kv_lrange(fd, "queue", 0, -1))
+  tell("sadd", kv_sadd(fd, "tags", "fast"))
+  tell("smembers", kv_smembers(fd, "tags"))
+  tell("zadd", kv_zadd(fd, "board", 9.5, "ada"))
+  tell("zscore", kv_zscore(fd, "board", "ada"))
+  tell("ttl", kv_setex(fd, "session", 60, "token"))
+  tell("ttl left", kv_ttl(fd, "session"))
+  tell("type", kv_type(fd, "queue"))
+  tell("dbsize", kv_dbsize(fd))
+  # A bulk string is length-prefixed, so a value may hold any byte at all.
+  binary_round_trip(fd)
+  transaction(fd)
+  tell("nonsense", kv_command(fd, kv_args1("NOPECMD")))
+  kv_hang_up(fd)
+
+fn binary_round_trip(fd) =
+  raw = "a" + chr(0) + "b"
+  tell("set raw", kv_set(fd, "raw", raw))
+  println("get raw: " + kept(kv_get(fd, "raw"), raw))
+
+fn kept(result, sent_value) = match result
+  Err(e) -> "error: " + e
+  Ok(v) -> if kv_text(v) == sent_value then "the same " + int_to_str(str_len(kv_text(v))) + " bytes came back" else "CHANGED"
+
+# MULTI queues, EXEC answers one array holding every queued reply.
+fn transaction(fd) =
+  tell("multi", kv_multi(fd))
+  tell("queued", kv_set(fd, "tx", "1"))
+  tell("queued", kv_incr(fd, "hits"))
+  tell("exec", kv_exec(fd))
+
+fn tell(label, result) = match result
+  Err(e) -> println(label + ": error: " + e)
+  Ok(v) -> println(label + ": " + kv_shown(v))

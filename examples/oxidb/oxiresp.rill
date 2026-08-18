@@ -1,0 +1,298 @@
+# A client for OxiDB's in-memory key-value engine, written in Rill.
+#
+# This engine is not on the wire the other two clients here use. It listens on
+# a port of its own — the server is started with OXIDB_OXIMEM_PORT — and it
+# speaks RESP, the protocol Redis speaks, so what is written here is what any
+# Redis client writes and the engine cannot tell them apart.
+#
+# RESP2, and the whole of it:
+#
+#   +OK\r\n              a simple string
+#   -ERR no such key\r\n an error
+#   :42\r\n              an integer
+#   $3\r\nada\r\n        a bulk string: a length, then exactly that many bytes
+#   $-1\r\n              no value
+#   *2\r\n<v><v>         an array
+#   *-1\r\n              no array — what EXEC answers when a transaction broke
+#
+# A command is an array of bulk strings and nothing else, which is why every
+# argument below is a `Str`: numbers go out as their digits and come back as
+# whatever the command decided to answer with.
+#
+# Unlike a length-prefixed wire, RESP gives no frame size up front — a reader
+# has to parse to find out whether it has the whole reply. So decoding answers
+# `RMore` for a reply that has not all arrived, and the socket is read again.
+# One command, one reply: this client does not pipeline, and a `SUBSCRIBE`
+# that pushes messages unasked is beyond what it is written for.
+
+type Resp
+  RSimple(Str)
+  RError(Str)
+  RInt(Int)
+  RBulk(Str)
+  RNil
+  RNilArray
+  RArray(List(Resp))
+
+type RespRead
+  RGot(value: Resp, pos: Int)
+  RMore
+  RBad(why: Str, pos: Int)
+
+# -- writing a command --------------------------------------------------------
+
+fn resp_command(args) =
+  b = strbuf()
+  b += "*"
+  b += int_to_str(len(args))
+  b += "\r\n"
+  resp_put_args(b, args)
+  strbuf_str(b)
+
+fn resp_put_args(b: StrBuf, args) = match args
+  Nil -> strbuf_add(b, "")
+  Cons(a, rest) ->
+    b += "$"
+    b += int_to_str(str_len(a))
+    b += "\r\n"
+    b += a
+    b += "\r\n"
+    resp_put_args(b, rest)
+
+# -- reading a reply ----------------------------------------------------------
+
+# `RMore` and `RBad` are different answers and the difference is the whole
+# reason this can be driven off a socket: a reply that has not finished
+# arriving is not a reply that is wrong.
+fn resp_decode(s, i) =
+  c = str_get(s, i)
+  if c < 0 then RMore else resp_kind(s, i, c, str_find_from(s, "\r\n", i))
+
+fn resp_kind(s, i, c, e) =
+  if e < 0 then RMore else if c == 43 then RGot(RSimple(resp_head(s, i, e)), e + 2) else if c == 45 then RGot(RError(resp_head(s, i, e)), e + 2) else if c == 58 then RGot(RInt(str_to_int(resp_head(s, i, e))), e + 2) else if c == 36 then resp_bulk(s, e + 2, str_to_int(resp_head(s, i, e))) else if c == 42 then resp_array(s, e + 2, str_to_int(resp_head(s, i, e)), Nil) else RBad("no RESP value begins with `" + chr(c) + "`", i)
+
+# The text between the type byte and the CRLF.
+fn resp_head(s, i, e) = str_sub(s, i + 1, e - i - 1)
+
+# A bulk string is the one place a length is given, so it is the one place a
+# byte may be anything at all — a NUL included.
+fn resp_bulk(s, i, n) =
+  if n < 0 then RGot(RNil, i) else if str_len(s) < i + n + 2 then RMore else RGot(RBulk(str_sub(s, i, n)), i + n + 2)
+
+fn resp_array(s, i, n, acc) =
+  if n < 0 then RGot(RNilArray, i) else if n == 0 then RGot(RArray(reverse(acc)), i) else resp_item(s, i, n, acc)
+
+fn resp_item(s, i, n, acc) = match resp_decode(s, i)
+  RMore -> RMore
+  RBad(why, pos) -> RBad(why, pos)
+  RGot(v, j) -> resp_array(s, j, n - 1, Cons(v, acc))
+
+# -- the connection -----------------------------------------------------------
+
+fn kv_connect(host, port) = connect_to(host, port)
+
+fn kv_hang_up(fd) = sock_close(fd)
+
+# Every call answers `Ok(value)` or `Err(message)`. An error the server sent
+# and a connection that broke are both failures, and both belong here.
+fn kv_command(fd, args) =
+  sock_write(fd, resp_command(args))
+  resp_await(fd, "")
+
+fn resp_await(fd, buf) = match resp_decode(buf, 0)
+  RGot(v, _) -> resp_answer(v)
+  RBad(why, pos) -> Err("oxidb: unreadable reply: " + why + ", at byte " + int_to_str(pos))
+  RMore -> resp_fill(fd, buf)
+
+fn resp_fill(fd, buf) =
+  chunk = sock_read(fd)
+  if str_len(chunk) == 0 then Err("oxidb: the connection ended mid-reply") else resp_await(fd, buf + chunk)
+
+fn resp_answer(v) = match v
+  RError(e) -> Err(e)
+  _ -> Ok(v)
+
+# -- building argument lists --------------------------------------------------
+
+fn kv_args1(a) = Cons(a, Nil)
+
+fn kv_args2(a, b) = Cons(a, Cons(b, Nil))
+
+fn kv_args3(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
+
+fn kv_args4(a, b, c, d) = Cons(a, Cons(b, Cons(c, Cons(d, Nil))))
+
+# -- strings ------------------------------------------------------------------
+
+fn kv_ping(fd) = kv_command(fd, kv_args1("PING"))
+
+fn kv_echo(fd, text) = kv_command(fd, kv_args2("ECHO", text))
+
+fn kv_set(fd, key, value) = kv_command(fd, kv_args3("SET", key, value))
+
+fn kv_setex(fd, key, seconds, value) =
+  kv_command(fd, kv_args4("SETEX", key, int_to_str(seconds), value))
+
+fn kv_get(fd, key) = kv_command(fd, kv_args2("GET", key))
+
+fn kv_getset(fd, key, value) = kv_command(fd, kv_args3("GETSET", key, value))
+
+fn kv_append(fd, key, value) = kv_command(fd, kv_args3("APPEND", key, value))
+
+fn kv_strlen(fd, key) = kv_command(fd, kv_args2("STRLEN", key))
+
+fn kv_incr(fd, key) = kv_command(fd, kv_args2("INCR", key))
+
+fn kv_incrby(fd, key, by) = kv_command(fd, kv_args3("INCRBY", key, int_to_str(by)))
+
+fn kv_mset(fd, pairs) = kv_command(fd, Cons("MSET", pairs))
+
+fn kv_mget(fd, keys) = kv_command(fd, Cons("MGET", keys))
+
+# -- keys ---------------------------------------------------------------------
+
+fn kv_del(fd, key) = kv_command(fd, kv_args2("DEL", key))
+
+fn kv_exists(fd, key) = kv_command(fd, kv_args2("EXISTS", key))
+
+fn kv_type(fd, key) = kv_command(fd, kv_args2("TYPE", key))
+
+fn kv_rename(fd, key, to) = kv_command(fd, kv_args3("RENAME", key, to))
+
+fn kv_expire(fd, key, seconds) =
+  kv_command(fd, kv_args3("EXPIRE", key, int_to_str(seconds)))
+
+fn kv_ttl(fd, key) = kv_command(fd, kv_args2("TTL", key))
+
+fn kv_persist(fd, key) = kv_command(fd, kv_args2("PERSIST", key))
+
+fn kv_keys(fd, pattern) = kv_command(fd, kv_args2("KEYS", pattern))
+
+fn kv_dbsize(fd) = kv_command(fd, kv_args1("DBSIZE"))
+
+fn kv_flushdb(fd) = kv_command(fd, kv_args1("FLUSHDB"))
+
+fn kv_select(fd, n) = kv_command(fd, kv_args2("SELECT", int_to_str(n)))
+
+# -- hashes -------------------------------------------------------------------
+
+fn kv_hset(fd, key, field_name, value) =
+  kv_command(fd, kv_args4("HSET", key, field_name, value))
+
+fn kv_hget(fd, key, field_name) = kv_command(fd, kv_args3("HGET", key, field_name))
+
+fn kv_hdel(fd, key, field_name) = kv_command(fd, kv_args3("HDEL", key, field_name))
+
+fn kv_hgetall(fd, key) = kv_command(fd, kv_args2("HGETALL", key))
+
+fn kv_hkeys(fd, key) = kv_command(fd, kv_args2("HKEYS", key))
+
+fn kv_hvals(fd, key) = kv_command(fd, kv_args2("HVALS", key))
+
+fn kv_hlen(fd, key) = kv_command(fd, kv_args2("HLEN", key))
+
+# -- lists --------------------------------------------------------------------
+
+fn kv_lpush(fd, key, value) = kv_command(fd, kv_args3("LPUSH", key, value))
+
+fn kv_rpush(fd, key, value) = kv_command(fd, kv_args3("RPUSH", key, value))
+
+fn kv_lpop(fd, key) = kv_command(fd, kv_args2("LPOP", key))
+
+fn kv_rpop(fd, key) = kv_command(fd, kv_args2("RPOP", key))
+
+fn kv_llen(fd, key) = kv_command(fd, kv_args2("LLEN", key))
+
+fn kv_lrange(fd, key, start, stop) =
+  kv_command(fd, kv_args4("LRANGE", key, int_to_str(start), int_to_str(stop)))
+
+# -- sets ---------------------------------------------------------------------
+
+fn kv_sadd(fd, key, member) = kv_command(fd, kv_args3("SADD", key, member))
+
+fn kv_srem(fd, key, member) = kv_command(fd, kv_args3("SREM", key, member))
+
+fn kv_sismember(fd, key, member) =
+  kv_command(fd, kv_args3("SISMEMBER", key, member))
+
+fn kv_smembers(fd, key) = kv_command(fd, kv_args2("SMEMBERS", key))
+
+fn kv_scard(fd, key) = kv_command(fd, kv_args2("SCARD", key))
+
+# -- sorted sets --------------------------------------------------------------
+
+fn kv_zadd(fd, key, score, member) =
+  kv_command(fd, kv_args4("ZADD", key, float_to_str(score), member))
+
+fn kv_zscore(fd, key, member) = kv_command(fd, kv_args3("ZSCORE", key, member))
+
+fn kv_zrem(fd, key, member) = kv_command(fd, kv_args3("ZREM", key, member))
+
+fn kv_zcard(fd, key) = kv_command(fd, kv_args2("ZCARD", key))
+
+fn kv_zrange(fd, key, start, stop) =
+  kv_command(fd, kv_args4("ZRANGE", key, int_to_str(start), int_to_str(stop)))
+
+# -- transactions -------------------------------------------------------------
+
+# `MULTI` queues what follows and `EXEC` answers an array of every queued
+# reply. A `WATCH`ed key that somebody else changed makes `EXEC` answer the
+# null array, which is `kv_broke_off` below rather than an error.
+fn kv_multi(fd) = kv_command(fd, kv_args1("MULTI"))
+
+fn kv_exec(fd) = kv_command(fd, kv_args1("EXEC"))
+
+fn kv_discard(fd) = kv_command(fd, kv_args1("DISCARD"))
+
+fn kv_watch(fd, key) = kv_command(fd, kv_args2("WATCH", key))
+
+fn kv_unwatch(fd) = kv_command(fd, kv_args1("UNWATCH"))
+
+# -- reading values out -------------------------------------------------------
+
+# A simple string and a bulk string are different things on the wire and the
+# same thing to a caller who wanted text.
+fn kv_text(v) = match v
+  RSimple(s) -> s
+  RBulk(s) -> s
+  RInt(n) -> int_to_str(n)
+  RError(e) -> e
+  _ -> ""
+
+fn kv_int(v) = match v
+  RInt(n) -> n
+  RBulk(s) -> str_to_int(s)
+  RSimple(s) -> str_to_int(s)
+  _ -> 0
+
+fn kv_float(v) = match v
+  RBulk(s) -> str_to_float(s)
+  RSimple(s) -> str_to_float(s)
+  RInt(n) -> str_to_float(int_to_str(n))
+  _ -> 0.0
+
+fn kv_list(v) = match v
+  RArray(xs) -> xs
+  _ -> Nil
+
+fn kv_texts(v) = map(kv_list(v), \x -> kv_text(x))
+
+# A key that is not there. Distinct from the empty string, which is a value.
+fn kv_missing(v) = match v
+  RNil -> true
+  _ -> false
+
+# What `EXEC` answers when a `WATCH`ed key moved under the transaction.
+fn kv_broke_off(v) = match v
+  RNilArray -> true
+  _ -> false
+
+# For printing a reply whatever shape it came in.
+fn kv_shown(v) = match v
+  RSimple(s) -> s
+  RBulk(s) -> "\"" + s + "\""
+  RInt(n) -> int_to_str(n)
+  RError(e) -> "error: " + e
+  RNil -> "nil"
+  RNilArray -> "nil-array"
+  RArray(xs) -> "[" + join(map(xs, \x -> kv_shown(x)), ", ") + "]"

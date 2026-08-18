@@ -749,6 +749,37 @@ fn oxidb_tsdb_codec() {
     );
 }
 
+/// RESP — the protocol Redis speaks — encoded and decoded by Rill, with no
+/// server in reach. The two halves worth the test are the ones a
+/// length-prefixed wire never needs: a reply that has only half arrived must
+/// read as "not yet" rather than as malformed, and a bulk string must carry
+/// any byte, a NUL included.
+#[test]
+fn oxidb_resp_protocol() {
+    assert_eq!(
+        compile_and_run("oxidb/kvdemo.rill"),
+        "PING out: *1\\r\\n$4\\r\\nPING\\r\\n\n\
+         SET out: *3\\r\\n$3\\r\\nSET\\r\\n$6\\r\\nuser:1\\r\\n$3\\r\\nada\\r\\n\n\
+         a value with a NUL in it out: \
+         *3\\r\\n$3\\r\\nSET\\r\\n$3\\r\\nraw\\r\\n$3\\r\\na\\0b\\r\\n\n\
+         simple: OK (5 bytes)\n\
+         error: error: ERR no such key (18 bytes)\n\
+         integer: 42 (5 bytes)\n\
+         bulk: \"ada\" (9 bytes)\n\
+         empty bulk: \"\" (6 bytes)\n\
+         a NUL inside a bulk: \"a\\0b\" (9 bytes)\n\
+         no value: nil (5 bytes)\n\
+         no array: nil-array (5 bytes)\n\
+         array: [\"role\", 7, nil] (23 bytes)\n\
+         nested: [[a, b], 1] (20 bytes)\n\
+         a bulk arriving in pieces (first half): not yet\n\
+         a bulk arriving in pieces (both): \"ada\" (9 bytes)\n\
+         an array arriving in pieces (first half): not yet\n\
+         an array arriving in pieces (both): [\"ada\", \"grace\"] (24 bytes)\n\
+         not RESP at all: bad: no RESP value begins with `h`, at byte 0\n"
+    );
+}
+
 /// An HTTP server written in Rill, answering its own requests. Six requests
 /// arrive over five connections: the fourth and fifth share one, which is the
 /// keep-alive path.
