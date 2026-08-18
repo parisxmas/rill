@@ -131,15 +131,21 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `io.rill` | files, arguments, text processing |
 | `ffi.rill` | calling libm and libc through `extern` |
 | `echo_server.rill` | a TCP server and client in one program |
-| `http/` | HTTP/1.1 and WebSocket servers written in Rill, plus SHA-1 and base64 |
-| `json/` | a JSON parser and printer, also written in Rill |
-| `yaml/` | YAML for config files, sharing the JSON value type |
+| `http/` | a server answering its own requests, and a WebSocket one |
+| `json/`, `yaml/` | reading and writing both, from `lib/` |
 | `stdlib.rill` | what the prelude gives you |
 | `loops.rill` | how repetition is written: tail recursion and folds |
 | `blocks.rill` | block bodies in match arms, select arms and `if` branches |
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
 | `webgpu/world/` | a walkable low-poly valley — terrain, physics and matrices in Rill; shadows, MSAA and compute particles on the GPU — and `server.rill`, which is the same valley compiled for a Linux box so that several browsers can walk about in it at once |
+
+`lib/` is what the examples above are written on, and is written in Rill
+itself: `json.rill` and `yaml.rill`, `http.rill` for HTTP/1.1, `ws.rill` for
+WebSocket, and `sha1.rill` for the handshake. It is not a standard library and
+nothing is promised about it between releases — the prelude is the part that
+ships with the compiler. It is a directory, so `import "json"` finds it from
+anywhere under this repository, and `RILL_PATH` points at it from outside.
 
 `selfhost/` goes further: Rill compiled by Rill. The lexer, parser and
 formatter come first, proven byte-for-byte against the Rust implementation

@@ -59,7 +59,7 @@ echo "$selfleak" | grep -q ": 0" || { echo "SELF-COMPILATION LEAKS"; bad=$((bad+
 "$work/rillc2" build "$root/selfhost/fmt.rill" -o "$work/fmt2" \
   --prelude "$prelude" --runtime "$runtime" || { echo "FMT BUILD FAILS"; bad=$((bad+1)); }
 fok=0; fbad=0
-for f in $(find "$root/examples" "$root/benchmarks" "$root/selfhost" "$root/book/code" \
+for f in $(find "$root/lib" "$root/examples" "$root/benchmarks" "$root/selfhost" "$root/book/code" \
              -name '*.rill' 2>/dev/null | sort) "$prelude"; do
   [ -f "$f" ] || continue
   if "$work/fmt2" "$f" 2>/dev/null | diff -q - <("$rill" fmt "$f" --stdout 2>/dev/null) >/dev/null 2>&1; then

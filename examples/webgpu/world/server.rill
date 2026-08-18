@@ -20,7 +20,7 @@
 # is the whole point: a server that reimplemented the walk would be a server
 # that disagreed with it.
 import "valley" as v
-import "../../http/ws"
+import "ws"
 
 # ---- what it costs to be here ----------------------------------------------
 

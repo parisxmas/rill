@@ -1,0 +1,211 @@
+# JSON, written in Rill: a recursive-descent parser and a printer.
+#
+# Parsing functions return a `Parsed` — the value together with where it
+# stopped, or why it stopped — because that is how a recursive-descent parser
+# threads position through immutable data. A failure is a `Parsed` like any
+# other and rides out through the same returns a value does; `parse` is the
+# only one that turns it into a `Result`, because the caller is the only one
+# with anywhere else to put it.
+
+type Json
+  JNull
+  JBool(Bool)
+  JInt(Int)
+  JNum(Float)
+  JStr(Str)
+  JArr(List(Json))
+  JObj(List(Field))
+
+type Field
+  Field(key: Str, value: Json)
+
+type Parsed
+  Parsed(value: Json, pos: Int)
+  Failed(why: Str, pos: Int)
+
+# -- parsing ------------------------------------------------------------------
+
+# A document is one value and then nothing but space. Text after that value
+# means the document was not what it claimed to be, and a parser that returns
+# the value anyway has answered a question nobody asked: `nonsense` is not the
+# JSON document `null` with a remark after it.
+fn parse(text) = match parse_value(text, skip_ws(text, 0))
+  Failed(why, pos) -> Err(complain(why, pos))
+  Parsed(v, j) -> finish(text, v, skip_ws(text, j))
+
+fn finish(text, v, end) =
+  if end >= str_len(text) then Ok(v) else Err(complain("trailing text", end))
+
+fn complain(why, pos) = why + ", at byte " + int_to_str(pos)
+
+fn skip_ws(s, i) = if i < str_len(s) && is_space(str_get(s, i)) then skip_ws(s, i + 1) else i
+
+# `str_get` answers -1 past the end, so every byte test here doubles as the
+# end-of-text test, and the text running out is never mistaken for a byte.
+fn parse_value(s, i) =
+  c = str_get(s, i)
+  if c == 123 then parse_object(s, skip_ws(s, i + 1), Nil) else if c == 91 then parse_array(s, skip_ws(s, i + 1), Nil) else if c == 34 then parse_string(s, i + 1, "") else if c == 116 then keyword(s, i, "true", JBool(true)) else if c == 102 then keyword(s, i, "false", JBool(false)) else if c == 110 then keyword(s, i, "null", JNull) else if c < 0 then Failed("a value expected and the text ended", i) else if is_number_char(c) then parse_number(s, i) else Failed("no value begins with `" + chr(c) + "`", i)
+
+# The three literals used to be taken on their first byte and their length
+# alone, so `nul` and `true_enough` were read as `null` and `true`.
+fn keyword(s, i, word, value) =
+  if str_sub(s, i, str_len(word)) == word then Parsed(value, i + str_len(word)) else Failed("`" + word + "` expected", i)
+
+# `"` is 34, `\` is 92.
+fn parse_string(s, i, acc) =
+  c = str_get(s, i)
+  if c < 0 then Failed("the text ended inside a string", i) else if c == 34 then Parsed(JStr(acc), i + 1) else if c == 92 then parse_escape(s, i + 1, acc) else parse_string(s, i + 1, acc + chr(c))
+
+fn parse_escape(s, i, acc) =
+  c = str_get(s, i)
+  if c < 0 then Failed("the text ended inside an escape", i) else if c == 110 then parse_string(s, i + 1, acc + "\n") else if c == 116 then parse_string(s, i + 1, acc + "\t") else if c == 114 then parse_string(s, i + 1, acc + "\r") else if c == 117 then parse_unicode(s, i + 1, acc) else parse_string(s, i + 1, acc + chr(c))
+
+# Only the Latin-1 range is turned back into a byte; anything above it becomes
+# `?`, which is honest about this being a byte-oriented string type.
+fn parse_unicode(s, i, acc) =
+  if is_hex4(s, i) then parse_string(s, i + 4, acc + code_point(hex4(s, i))) else Failed("`\\u` needs four hex digits", i)
+
+fn code_point(v) = if v < 256 then chr(v) else "?"
+
+fn is_hex4(s, i) =
+  is_hex(str_get(s, i)) && is_hex(str_get(s, i + 1)) && is_hex(str_get(s, i + 2)) && is_hex(str_get(s, i + 3))
+
+fn is_hex(c) = c >= 48 && c <= 57 || c >= 97 && c <= 102 || c >= 65 && c <= 70
+
+fn hex4(s, i) =
+  hex_digit(str_get(s, i)) * 4096 + hex_digit(str_get(s, i + 1)) * 256 + hex_digit(str_get(s, i + 2)) * 16 + hex_digit(str_get(s, i + 3))
+
+fn hex_digit(c) =
+  if c >= 48 && c <= 57 then c - 48 else if c >= 97 && c <= 102 then c - 87 else if c >= 65 && c <= 70 then c - 55 else 0
+
+# `parse_value` only comes here on a byte a number may begin with, so there is
+# always at least one to take. What is taken is not checked past that: `1.2.3`
+# is handed to `str_to_float` and becomes whatever that makes of it.
+fn parse_number(s, i) =
+  j = number_end(s, i)
+  Parsed(number_of(str_sub(s, i, j - i)), j)
+
+# JSON has a single number type, but a document id or a count is exact and a
+# measurement is not. A literal that never showed a decimal point or an
+# exponent stays an integer, so it prints back exactly the way it arrived —
+# `%g` would turn an id of 1234567 into 1.23457e+06.
+fn number_of(text) =
+  if is_integral(text) then JInt(str_to_int(text)) else JNum(str_to_float(text))
+
+fn is_integral(text) =
+  str_find(text, ".") < 0 && str_find(text, "e") < 0 && str_find(text, "E") < 0
+
+fn number_end(s, i) =
+  c = str_get(s, i)
+  if is_number_char(c) then number_end(s, i + 1) else i
+
+fn is_number_char(c) = c >= 48 && c <= 57 || c == 45 || c == 43 || c == 46 || c == 101 || c == 69
+
+# `]` is 93, `,` is 44. Only an empty array ends here; every other `]` is the
+# one `array_next` is looking for, which is what keeps `[1,]` from parsing.
+fn parse_array(s, i, acc) =
+  c = str_get(s, i)
+  if c == 93 then Parsed(JArr(reverse(acc)), i + 1) else if c < 0 then Failed("the text ended inside an array", i) else array_item(s, i, acc)
+
+fn array_item(s, i, acc) = match parse_value(s, i)
+  Failed(why, pos) -> Failed(why, pos)
+  Parsed(v, j) -> array_next(s, skip_ws(s, j), Cons(v, acc))
+
+fn array_next(s, i, acc) =
+  c = str_get(s, i)
+  if c == 44 then array_item(s, skip_ws(s, i + 1), acc) else if c == 93 then Parsed(JArr(reverse(acc)), i + 1) else if c < 0 then Failed("the text ended inside an array", i) else Failed("`,` or `]` expected", i)
+
+# `}` is 125, `:` is 58.
+fn parse_object(s, i, acc) =
+  c = str_get(s, i)
+  if c == 125 then Parsed(JObj(reverse(acc)), i + 1) else if c < 0 then Failed("the text ended inside an object", i) else object_key(s, i, acc)
+
+fn object_key(s, i, acc) =
+  if str_get(s, i) == 34 then object_string(s, i, acc) else Failed("a key expected", i)
+
+fn object_string(s, i, acc) = match parse_string(s, i + 1, "")
+  Failed(why, pos) -> Failed(why, pos)
+  Parsed(k, j) -> object_colon(s, skip_ws(s, j), key_text(k), acc)
+
+fn object_colon(s, i, key, acc) =
+  if str_get(s, i) == 58 then object_pair(s, skip_ws(s, i + 1), key, acc) else Failed("`:` expected after a key", i)
+
+fn object_pair(s, i, key, acc) = match parse_value(s, i)
+  Failed(why, pos) -> Failed(why, pos)
+  Parsed(v, j) -> object_next(s, skip_ws(s, j), Cons(Field(key, v), acc))
+
+fn key_text(k) = match k
+  JStr(t) -> t
+  _ -> ""
+
+fn object_next(s, i, acc) =
+  c = str_get(s, i)
+  if c == 44 then object_key(s, skip_ws(s, i + 1), acc) else if c == 125 then Parsed(JObj(reverse(acc)), i + 1) else if c < 0 then Failed("the text ended inside an object", i) else Failed("`,` or `}` expected", i)
+
+# -- printing -----------------------------------------------------------------
+
+fn to_string(j) = match j
+  JNull -> "null"
+  JBool(b) -> bool_to_str(b)
+  JInt(n) -> int_to_str(n)
+  JNum(n) -> float_to_str(n)
+  JStr(t) -> "\"" + escape(t, 0, "") + "\""
+  JArr(items) -> "[" + join(map(items, \x -> to_string(x)), ",") + "]"
+  JObj(fields) -> "{" + join(map(fields, \f -> field_string(f)), ",") + "}"
+
+fn field_string(f) = match f
+  Field(k, v) -> "\"" + escape(k, 0, "") + "\":" + to_string(v)
+
+fn escape(s, i, acc) =
+  if i >= str_len(s) then acc else escape(s, i + 1, acc + escape_byte(str_get(s, i)))
+
+fn escape_byte(c) =
+  if c == 34 then "\\\"" else if c == 92 then "\\\\" else if c == 10 then "\\n" else if c == 9 then "\\t" else if c == 13 then "\\r" else chr(c)
+
+# -- reading values out -------------------------------------------------------
+
+fn get(j, key) = match j
+  JObj(fields) -> field_lookup(fields, key)
+  _ -> None
+
+fn field_lookup(fields, key) = match fields
+  Nil -> None
+  Cons(f, rest) -> match f
+    Field(k, v) -> if k == key then Some(v) else field_lookup(rest, key)
+
+fn items(j) = match j
+  JArr(xs) -> xs
+  _ -> Nil
+
+fn as_str(j) = match j
+  JStr(t) -> t
+  _ -> ""
+
+fn as_float(j) = match j
+  JNum(n) -> n
+  JInt(n) -> str_to_float(int_to_str(n))
+  _ -> 0.0
+
+# For values that arrived as integers — ids, counts, versions. A `JNum` has no
+# exact integer to give back, so it answers 0 rather than rounding silently.
+fn as_int(j) = match j
+  JInt(n) -> n
+  _ -> 0
+
+fn as_bool(j) = match j
+  JBool(b) -> b
+  _ -> false
+
+# Walks a path of object keys: `path(doc, Cons("user", Cons("name", Nil)))`.
+fn path(j, keys) = match keys
+  Nil -> Some(j)
+  Cons(k, rest) -> match get(j, k)
+    None -> None
+    Some(v) -> path(v, rest)
+
+# For a caller that has decided a bad document is simply an absent one — a
+# cache entry, an optional config. Anything that answers a user wants the
+# `Err` and the byte it names.
+fn parsed_or(text, fallback) = match parse(text)
+  Ok(v) -> v
+  Err(_) -> fallback

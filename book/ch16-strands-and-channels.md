@@ -236,7 +236,7 @@ fn serve(server) =
 ```
 
 One strand per connection, ten thousand connections, and the cost while they
-wait is the parked stacks. This is why `examples/http/http.rill` — an HTTP/1.1
+wait is the parked stacks. This is why `lib/http.rill` — an HTTP/1.1
 server in about a hundred lines of Rill — outruns Go's `net/http` on the same
 one-route service.
 

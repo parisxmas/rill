@@ -9,7 +9,7 @@
 # and every call below returns that envelope as a `Result`: `Ok(data)` or
 # `Err(message)`. The connection is a plain socket, so a strand waiting on a
 # reply parks and costs nothing.
-import "../json/json"
+import "json"
 
 # -- framing ------------------------------------------------------------------
 
@@ -46,7 +46,14 @@ fn close(fd) = sock_close(fd)
 # One request, one reply, unwrapped into a `Result`.
 fn call(fd, request) =
   send_frame(fd, to_string(request))
-  unwrap_reply(parse(read_frame(fd)))
+  reply_of(parse(read_frame(fd)))
+
+# A reply that is not JSON is the server breaking the protocol. It used to
+# arrive as an empty document and be reported as a missing `ok` field, which
+# sent every reader of this client looking in the wrong place.
+fn reply_of(parsed) = match parsed
+  Err(why) -> Err("oxidb: unreadable reply: " + why)
+  Ok(reply) -> unwrap_reply(reply)
 
 fn unwrap_reply(reply) =
   if as_bool(unwrap_or(get(reply, "ok"), JBool(false))) then Ok(unwrap_or(get(reply, "data"), JNull)) else Err(reply_error(reply))

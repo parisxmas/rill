@@ -1,7 +1,8 @@
 //! Multi-file program loading.
 //!
 //! `import "name"` loads `name.rill` relative to the importing file's
-//! directory (subdirectories via `import "lib/name"`). Imports resolve
+//! directory (subdirectories via `import "lib/name"`), and failing that from
+//! the search path — see `resolve`. Imports resolve
 //! depth-first before the importing file's own definitions, so library
 //! functions are generalized before their users type-check. Each file loads
 //! once (cycles are harmless); all files share one flat namespace, and a name
@@ -41,6 +42,54 @@ pub fn load_program(entry: &Path) -> Result<Module, String> {
         prelude_fns: 0,
     })
     .map_err(|e| e.to_string())
+}
+
+/// Where `import "name"` looks. A file beside the importer wins, because a
+/// program's own files are what it means most of the time and nothing on the
+/// search path should be able to take that over. Only when there is no such
+/// file does the search path get a turn, which is what lets two programs in
+/// different directories share a library without either one spelling out the
+/// way to the other.
+///
+/// Nothing found comes back as the path beside the importer, so the error
+/// names the import as it was written rather than the last place searched.
+fn resolve(dir: &Path, name: &str) -> PathBuf {
+    let beside = dir.join(format!("{name}.rill"));
+    if beside.is_file() {
+        return beside;
+    }
+    for base in search_path(dir) {
+        let candidate = base.join(format!("{name}.rill"));
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    beside
+}
+
+/// `RILL_PATH` first — a colon-separated list, for a library that lives
+/// outside the project entirely — and then every `lib/` from the importing
+/// file's own directory upwards.
+///
+/// The walk stops at the directory holding `.git`, and stops before the home
+/// directory and the filesystem root in any case: a project with no `lib/` of
+/// its own must fail to find the import rather than quietly find `/usr/lib`.
+fn search_path(dir: &Path) -> Vec<PathBuf> {
+    let mut bases = Vec::new();
+    if let Ok(var) = std::env::var("RILL_PATH") {
+        bases.extend(var.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
+    }
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    for ancestor in dir.ancestors() {
+        if ancestor.parent().is_none() || Some(ancestor) == home.as_deref() {
+            break;
+        }
+        bases.push(ancestor.join("lib"));
+        if ancestor.join(".git").exists() {
+            break;
+        }
+    }
+    bases
 }
 
 struct Loader {
@@ -92,7 +141,7 @@ impl Loader {
 
         let dir = canon.parent().map(Path::to_path_buf).unwrap_or_default();
         for imp in &module.imports {
-            let child = dir.join(format!("{}.rill", imp.path));
+            let child = resolve(&dir, &imp.path);
             self.visit(&child, imp.alias.as_deref(), Some((path, imp.line)))?;
         }
 
@@ -422,6 +471,40 @@ mod tests {
         std::fs::write(d.join("y.rill"), "fn f() = 2\n").unwrap();
         let err = load_program(&d.join("x.rill")).unwrap_err();
         assert!(err.contains("y.rill") && err.contains("x.rill"), "{err}");
+    }
+
+    /// A program in a directory of its own imports a library it is not beside
+    /// and finds the project's `lib/`, which is the whole point: neither file
+    /// has to know how far apart they are.
+    #[test]
+    fn the_search_path_finds_a_shared_library() {
+        let d = dir();
+        let nested = d.join("apps/one");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(d.join("lib/shared.rill"), "fn shared() = 41\n").unwrap();
+        std::fs::write(
+            nested.join("app.rill"),
+            "import \"shared\"\n\nfn main() = println(shared() + 1)\n",
+        )
+        .unwrap();
+        let m = load_program(&nested.join("app.rill")).unwrap();
+        assert!(m.functions.iter().any(|f| f.name == "shared"), "lib/shared.rill was not found");
+    }
+
+    /// And never takes over a name the program keeps beside itself: the near
+    /// file wins, or a library dropped into `lib/` could silently replace one
+    /// of the program's own.
+    #[test]
+    fn a_file_beside_the_importer_beats_the_search_path() {
+        let d = dir();
+        let nested = d.join("apps/two");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(d.join("lib/pick.rill"), "fn pick() = 1\n").unwrap();
+        std::fs::write(nested.join("pick.rill"), "fn pick() = 2\n\nfn near() = 0\n").unwrap();
+        std::fs::write(nested.join("app.rill"), "import \"pick\"\n\nfn main() = println(pick())\n")
+            .unwrap();
+        let m = load_program(&nested.join("app.rill")).unwrap();
+        assert!(m.functions.iter().any(|f| f.name == "near"), "the far `pick` was loaded");
     }
 
     #[test]

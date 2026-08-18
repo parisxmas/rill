@@ -45,6 +45,13 @@ fn main() = println(m.label(m.Meters(1.5)) + " " + i.label(i.Feet(2.0)))
 `m.label` and `i.label` are different functions, and `m.Unit` and `i.Unit` are
 different types.
 
+A file that is not beside the importer is looked for on the search path:
+`RILL_PATH`, a colon-separated list, and then every `lib/` from the importing
+file's directory upwards, stopping at the one holding `.git`. So a library in
+the project's `lib/` is `import "json"` from anywhere in the project, and a
+program's own files still win — a file beside the importer is never taken over
+by one on the path.
+
 ### Layout
 
 Blocks are written by indentation — two spaces per level, spaces only, no tabs.
@@ -652,7 +659,7 @@ fn greet(conn) =
 Underneath it the descriptor and a deadline are armed together and whichever
 arrives first wakes the strand; a peek at the socket then says which it was.
 
-Everything above TCP is ordinary Rill: `examples/http/http.rill` is an HTTP/1.1
+Everything above TCP is ordinary Rill: `lib/http.rill` is an HTTP/1.1
 server in about a hundred lines — request parsing, routing, responses, and
 keep-alive — and it answers `curl`. Open the listening socket before spawning
 the accept loop, or the first client can arrive before the socket exists.

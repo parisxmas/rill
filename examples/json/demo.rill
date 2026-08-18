@@ -1,10 +1,22 @@
 import "json"
 
 fn main() =
-  doc = parse("{\"user\":{\"name\":\"ada\",\"age\":36},\"tags\":[\"x\",\"y\"],\"ok\":true,\"pi\":3.5}")
+  doc = parsed_or("{\"user\":{\"name\":\"ada\",\"age\":36},\"tags\":[\"x\",\"y\"],\"ok\":true,\"pi\":3.5}", JNull)
   println(as_str(unwrap_or(path(doc, Cons("user", Cons("name", Nil))), JNull)))
   println(as_float(unwrap_or(path(doc, Cons("user", Cons("age", Nil))), JNull)))
   println(as_bool(unwrap_or(get(doc, "ok"), JNull)))
   println(join(map(items(unwrap_or(get(doc, "tags"), JNull)), \x -> as_str(x)), "+"))
   println(to_string(doc))
-  println(to_string(parse("[1,\"a\\nb\",null,false,[2]]")))
+  println(show_parse("[1,\"a\\nb\",null,false,[2]]"))
+  # What a document that is not one says for itself. Each of these used to
+  # come back as a value: `nonsense` as `null`, the other two as nothing at
+  # all, and none of them as a complaint.
+  println(show_parse("nonsense"))
+  println(show_parse("{\"a\": "))
+  println(show_parse("[1,2"))
+  println(show_parse("{\"a\":1,}"))
+  println(show_parse("[1,2] and then some"))
+
+fn show_parse(text) = match parse(text)
+  Ok(v) -> to_string(v)
+  Err(why) -> "error: " + why

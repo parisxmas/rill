@@ -502,6 +502,7 @@ fn repository_sources_are_formatted() {
     let root = workspace_root();
     let mut files: Vec<PathBuf> = Vec::new();
     for dir in [
+        "lib",
         "examples",
         "examples/multi",
         "examples/http",
@@ -640,14 +641,22 @@ fn yaml_module() {
 }
 
 /// A JSON parser and printer written in Rill: nested lookup, escapes, and a
-/// round trip that comes back identical.
+/// round trip that comes back identical — and then five documents that are
+/// not documents, each of which used to come back as a value. `nonsense` in
+/// particular parsed as `null`, because the literal was taken on its first
+/// byte alone.
 #[test]
 fn json_module() {
     assert_eq!(
         compile_and_run("json/demo.rill"),
         "ada\n36\ntrue\nx+y\n\
          {\"user\":{\"name\":\"ada\",\"age\":36},\"tags\":[\"x\",\"y\"],\"ok\":true,\"pi\":3.5}\n\
-         [1,\"a\\nb\",null,false,[2]]\n"
+         [1,\"a\\nb\",null,false,[2]]\n\
+         error: `null` expected, at byte 0\n\
+         error: a value expected and the text ended, at byte 6\n\
+         error: the text ended inside an array, at byte 4\n\
+         error: a key expected, at byte 7\n\
+         error: trailing text, at byte 6\n"
     );
 }
 
@@ -662,12 +671,15 @@ fn websocket_server() {
 }
 
 /// SHA-1 and base64 in Rill, against the values the RFCs publish.
+///
+/// The program is written outside the project, so nothing above it holds a
+/// `lib/` and `RILL_PATH` is the only way `sha1` can be found — which makes
+/// this the test that the variable is read at all.
 #[test]
 fn sha1_and_base64() {
     let root = workspace_root();
     let out_dir = std::env::temp_dir().join(format!("rill-e2e-sha-{}", std::process::id()));
     std::fs::create_dir_all(&out_dir).unwrap();
-    std::fs::copy(root.join("examples/http/sha1.rill"), out_dir.join("sha1.rill")).unwrap();
     let src = out_dir.join("check.rill");
     std::fs::write(
         &src,
@@ -680,6 +692,7 @@ fn sha1_and_base64() {
         .arg(&src)
         .arg("-o")
         .arg(&exe)
+        .env("RILL_PATH", root.join("lib"))
         .output()
         .unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));

@@ -9,7 +9,7 @@ rill="$root/target/release/rill"
 prelude="$root/crates/rill_syntax/src/prelude.rill"
 "$rill" build "$root/selfhost/typecheck.rill" -o "$root/selfhost/typecheck" || exit 1
 ok=0; bad=0
-for f in $(find "$root/examples" "$root/benchmarks" "$root/selfhost" "$root/book/code" \
+for f in $(find "$root/lib" "$root/examples" "$root/benchmarks" "$root/selfhost" "$root/book/code" \
              -name '*.rill' 2>/dev/null | sort); do
   [ -f "$f" ] || continue
   rust_out=$("$rill" check "$f" 2>&1); rust_e=$?

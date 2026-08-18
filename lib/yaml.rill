@@ -5,7 +5,7 @@
 #
 # Values land in the JSON module's `Json` type, so a parsed document can be
 # printed as JSON without any conversion.
-import "../json/json"
+import "json"
 
 type YParsed
   YParsed(value: Json, next: Int)

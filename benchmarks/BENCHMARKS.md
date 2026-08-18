@@ -65,7 +65,7 @@ parallelism is opt-in per build and per run rather than the default.
 ## HTTP server
 
 `benchmarks/http/`: the same one-route service — `GET /` → `Hello, World!` —
-written on Rill's HTTP module (`examples/http/http.rill`, itself written in
+written on Rill's HTTP module (`lib/http.rill`, itself written in
 Rill on top of the socket builtins) and on Go's `net/http`. Load from `wrk
 -t4 -c50 -d10s` on the same machine. Reproduce with `benchmarks/http/run.sh`.
 Go's connection-per-request run reported 48 connect errors out of 133k

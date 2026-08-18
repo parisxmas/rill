@@ -270,7 +270,7 @@ short functions.
 5. Write `depth_of(t, x)` returning `Option(Int)` — how far down a value is, or
    `None` if it is not there.
 6. Model JSON as a type: null, boolean, number, string, array of values, object
-   of key-value pairs. Write `render(json) -> Str`. (`examples/json/json.rill`
+   of key-value pairs. Write `render(json) -> Str`. (`lib/json.rill`
    in this repository is a full parser and printer, if you want to compare.)
 
 ---

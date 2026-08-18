@@ -7,7 +7,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 rill="$root/target/release/rill"
 "$rill" build "$root/selfhost/fmt.rill" -o "$root/selfhost/selffmt" || exit 1
 ok=0; bad=0
-for f in $(find "$root/examples" "$root/benchmarks" "$root/selfhost" "$root/book/code" \
+for f in $(find "$root/lib" "$root/examples" "$root/benchmarks" "$root/selfhost" "$root/book/code" \
              -name '*.rill' 2>/dev/null | sort) "$root/crates/rill_syntax/src/prelude.rill"; do
   [ -f "$f" ] || continue
   if "$root/selfhost/selffmt" "$f" 2>/dev/null | diff -q - <("$rill" fmt "$f" --stdout 2>/dev/null) >/dev/null 2>&1; then
