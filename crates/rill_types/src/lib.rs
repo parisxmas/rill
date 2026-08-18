@@ -2054,6 +2054,10 @@ impl Checker {
             // says which — the only way to put a deadline on a connection
             // that has gone quiet without closing it from another strand.
             "sock_wait" => Some(("rill_sock_wait", vec![Ty::Int, Ty::Int], Ty::Bool)),
+            // The address at the other end, packed into one number, for a
+            // server that wants to know how many connections it already has
+            // from there.
+            "sock_peer" => Some(("rill_sock_peer", vec![Ty::Int], Ty::Int)),
             "sock_write" => Some(("rill_sock_write", vec![Ty::Int, Ty::Str], Ty::Int)),
             "sock_close" => Some(("rill_sock_close", vec![Ty::Int], Ty::Unit)),
             _ => None,
@@ -2876,6 +2880,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "tcp_connect"
             | "sock_read"
             | "sock_wait"
+            | "sock_peer"
             | "sock_write"
             | "sock_close"
     )

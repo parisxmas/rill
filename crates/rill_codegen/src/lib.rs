@@ -168,12 +168,13 @@ fn type_label(t: &Ty, adts: &[rill_types::AdtDef]) -> String {
 }
 
 /// The socket builtins, by the runtime symbol each becomes.
-const SOCKET_RT: [&str; 7] = [
+const SOCKET_RT: [&str; 8] = [
     "rill_tcp_listen",
     "rill_tcp_accept",
     "rill_tcp_connect",
     "rill_sock_read",
     "rill_sock_wait",
+    "rill_sock_peer",
     "rill_sock_write",
     "rill_sock_close",
 ];
@@ -1241,6 +1242,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             self.ctx.bool_type().fn_type(&[i64t.into(), i64t.into()], false),
             None,
         );
+        self.module.add_function("rill_sock_peer", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function(
             "rill_sock_write",
             i64t.fn_type(&[i64t.into(), ptrt.into()], false),

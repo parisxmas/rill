@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=223";   // keep in step with V below
-import { join, others, me, sharkNow } from "./net.js?v=223";
+import { load } from "./world.js?v=224";   // keep in step with V below
+import { join, others, me, sharkNow } from "./net.js?v=224";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow } from "./net.js?v=223";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "223";
+const V = "224";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -352,8 +352,9 @@ function grassMesh() {
 // running it: this browser walks, aims and shoots, and is told what any of
 // that came to. Without one the valley is this tab's alone and nothing here
 // changes — which is the version that goes on a static page, where there is
-// no server to talk to.
-export async function run(canvas, wasmURL, hud, progress = () => {}, server = null) {
+// no server to talk to. `name` is what the others will see over this player's
+// head.
+export async function run(canvas, wasmURL, hud, progress = () => {}, server = null, name = "") {
   // Everything the first frame needs, counted up front so the loader can say
   // how far along it is: the adapter, the module, one step per shader, one per
   // texture, and the valley itself. `run` does not resolve until a frame has
@@ -1272,6 +1273,61 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (Math.abs(E.world_time(world) - m.clock) > 0.5) E.set_world_time(world, m.clock);
   }
 
+  // ---- names over heads ----------------------------------------------------
+  //
+  // Drawn as elements over the canvas rather than as geometry in it. Text in a
+  // 3D scene means an atlas, a quad per glyph and a pipeline to put them
+  // through; the browser already has a text engine that hints and kerns and
+  // knows about every script there is, and the tags want to face the camera
+  // and stay legible at any distance, which is exactly what it is good at.
+  //
+  // Where a tag goes is the only part that is ours: the world position of a
+  // point above their head, through the same view-projection the valley was
+  // drawn with, which is sitting in the first sixteen floats of the state.
+  const tags = document.createElement("div");
+  tags.className = "tags";
+  canvas.parentElement.appendChild(tags);
+  const tagFor = new Map();
+
+  function drawTags(seen, st) {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const live = new Set();
+    for (const p of seen) {
+      if (!p.name) continue;
+      // Column-major, so a row of the matrix is a stride of four.
+      const x = p.x, y = p.y + 2.05, z = p.z;
+      const cw = st[3] * x + st[7] * y + st[11] * z + st[15];
+      // Behind the eye. Not "off screen" — behind it, where the projection
+      // turns round and would put the tag back on the far side.
+      if (cw <= 0.05) continue;
+      const cx = st[0] * x + st[4] * y + st[8] * z + st[12];
+      const cy = st[1] * x + st[5] * y + st[9] * z + st[13];
+      const sx = (cx / cw * 0.5 + 0.5) * w;
+      const sy = (1 - (cy / cw * 0.5 + 0.5)) * h;
+      if (sx < -80 || sx > w + 80 || sy < -40 || sy > h + 40) continue;
+      // The eye is in the state too, so distance costs nothing.
+      const d = Math.hypot(x - st[16], y - st[17], z - st[18]);
+      if (d > 90) continue;
+      let el = tagFor.get(p.id);
+      if (!el) {
+        el = document.createElement("span");
+        tags.appendChild(el);
+        tagFor.set(p.id, el);
+      }
+      if (el.textContent !== p.name) el.textContent = p.name;
+      // Fades out over the last twenty metres rather than vanishing, and goes
+      // amber as they run out of health — the same tell their colour carries,
+      // for when they are too far off to see the colour.
+      el.style.opacity = `${Math.min(1, (90 - d) / 20).toFixed(2)}`;
+      el.style.color = p.health > 0.35 ? "#e8e4da" : "#f6832e";
+      el.style.transform = `translate(${Math.round(sx)}px, ${Math.round(sy)}px) translate(-50%, -100%)`;
+      live.add(p.id);
+    }
+    for (const [id, el] of tagFor) {
+      if (!live.has(id)) { el.remove(); tagFor.delete(id); }
+    }
+  }
+
   // A colour per player, off the golden angle round the hue circle: the second
   // person to arrive is a different colour rather than a slightly different
   // green. It pales as they run out of health, which is the only tell there is
@@ -1543,7 +1599,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   if (server) {
     step("asking to join");
     try {
-      net = join(server);
+      net = join(server, name);
       await net.arrival;
       net.gone = [];
     } catch (e) {
@@ -1907,6 +1963,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         figures[o + 5] = c[0]; figures[o + 6] = c[1]; figures[o + 7] = c[2];
       }
       if (figureCount) device.queue.writeBuffer(figureInst, 0, figures, 0, figureCount * 8);
+      drawTags(seen, stateF32());
     }
 
     // Anything break in there? Rill counts them; the host only has to notice.

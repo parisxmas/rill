@@ -86,6 +86,18 @@ fn max_connections() = 64
 # above.
 fn handshake_ms() = 5000
 
+# And how many of those one address may have. The whole cap is no use against
+# somebody who simply opens sixty-four connections: they are then the only
+# person who can get in. Sixteen is generous for a household or an office
+# behind one address — everybody there shares it — and still leaves
+# three-quarters of the valley to everyone else.
+fn per_address() = 16
+
+# How many addresses are tracked at once. One row per connection is more than
+# enough: a row is only in use while at least one connection from that address
+# is, so they come back as people leave.
+fn address_rows() = 64
+
 # ---- what goes between them ------------------------------------------------
 #
 # One inbox, one message type. `Tick` arrives on the same channel as the key
@@ -187,6 +199,10 @@ fn apply_input(w, conns, c, keys, yaw, pitch) =
   v.set_keys(conn_block(c), keys)
   v.heard(conn_block(c), v.world_time(w))
   conns
+
+fn replace(conns, id, c2) = match conns
+  Nil -> Nil
+  Cons(c, rest) -> if conn_id(c) == id then Cons(c2, rest) else Cons(c, replace(rest, id, c2))
 
 # A shot is asked for here and taken at the next tick, with everybody else's.
 fn shoot_one(w, conns, id, dx, dy, dz) = match find(conns, id)
@@ -398,10 +414,11 @@ fn ticker(inbox, next) =
 
 # ---- one connection --------------------------------------------------------
 
-fn serve(conn, inbox, live) =
+fn serve(conn, inbox, live, addr) =
   request = fill_until(conn, "", 4, now_nanos() + handshake_ms() * 1000000)
   if ws_accept(conn, request) then play(conn, inbox) else sock_close(conn)
   drop_slot(live)
+  drop_addr(live, addr)
   0
 
 fn play(conn, inbox) =
@@ -483,34 +500,96 @@ fn fnum_at(parts, i) = str_to_float(unwrap_or(nth(parts, i), "0"))
 
 # ---- and the door ----------------------------------------------------------
 
-# The count of open connections lives in a byte of memory the strands share.
-# One worker runs all of them and nothing here yields between the read and the
-# write, so the increment does not need to be atomic — which it could not be
+# The count of open connections lives in memory the strands share, with the
+# per-address rows after it: an address and a count, eight bytes each. One
+# worker runs all of them and nothing here yields between a read and the write
+# that follows it, so none of this needs to be atomic — which it could not be
 # anyway. Build this `--parallel` and that stops being true.
+#
+# Row zero of the number space is the total, so the rows start at one.
+fn total_at() = 0
+
+fn row_addr(i) = 1 + i * 2
+
+fn row_count(i) = 2 + i * 2
+
 fn take_slot(live) =
-  n = to_int(peek_f32(live, 0))
+  n = peek_i64(live, total_at())
   if n >= max_connections() then 0 else claim_slot(live, n)
 
 fn claim_slot(live, n) =
-  poke_f32(live, 0, to_float(n + 1))
+  poke_i64(live, total_at(), n + 1)
   1
 
 fn drop_slot(live) =
-  poke_f32(live, 0, to_float(to_int(peek_f32(live, 0)) - 1))
+  poke_i64(live, total_at(), peek_i64(live, total_at()) - 1)
   1
 
+# The row this address already has, or -1. A row with nobody on it is free
+# whatever address it used to hold.
+fn addr_row(live, addr, i) =
+  if i == address_rows() then 0 - 1 else if peek_i64(live, row_count(i)) > 0 && peek_i64(live, row_addr(i)) == addr then i else addr_row(live, addr, i + 1)
+
+fn free_row(live, i) =
+  if i == address_rows() then 0 - 1 else if peek_i64(live, row_count(i)) == 0 then i else free_row(live, i + 1)
+
+fn take_addr(live, addr) =
+  r = addr_row(live, addr, 0)
+  if r >= 0 then one_more(live, r) else first_from(live, addr)
+
+fn one_more(live, r) =
+  n = peek_i64(live, row_count(r))
+  if n >= per_address() then 0 else count_up(live, r, n)
+
+fn count_up(live, r, n) =
+  poke_i64(live, row_count(r), n + 1)
+  1
+
+fn first_from(live, addr) =
+  f = free_row(live, 0)
+  if f < 0 then 0 else start_row(live, f, addr)
+
+fn start_row(live, f, addr) =
+  poke_i64(live, row_addr(f), addr)
+  poke_i64(live, row_count(f), 1)
+  1
+
+fn drop_addr(live, addr) =
+  r = addr_row(live, addr, 0)
+  if r < 0 then 0 else count_down(live, r)
+
+fn count_down(live, r) =
+  poke_i64(live, row_count(r), peek_i64(live, row_count(r)) - 1)
+  1
+
+# Two gates, and the second one gives its place back if the first refuses.
 fn accept_loop(server, inbox, live) =
   conn = tcp_accept(server)
-  if take_slot(live) > 0 then spawn serve(conn, inbox, live) else sock_close(conn)
+  admit_conn(conn, inbox, live, sock_peer(conn))
   accept_loop(server, inbox, live)
+
+fn admit_conn(conn, inbox, live, addr) =
+  if take_slot(live) <= 0 then sock_close(conn) else if take_addr(live, addr) <= 0 then turn_away(conn, live, addr) else spawn serve(conn, inbox, live, addr)
+
+fn turn_away(conn, live, addr) =
+  drop_slot(live)
+  println("too many connections from one address, refusing " + dotted(addr))
+  sock_close(conn)
+
+fn dotted(a) =
+  int_to_str(bit_and(shr(a, 24), 255)) + "." + int_to_str(bit_and(shr(a, 16), 255)) + "." + int_to_str(bit_and(shr(a, 8), 255)) + "." + int_to_str(bit_and(a, 255))
 
 fn main() = match listen_on(port())
   Err(e) -> println(e)
   Ok(server) -> run(server)
 
 fn run(server) =
-  live = alloc_bytes(16)
-  poke_f32(live, 0, 0.0)
+  # The total, then two numbers per address row.
+  live = alloc_bytes((1 + address_rows() * 2) * 8)
+
+  for i in 0..1 + address_rows() * 2
+    poke_i64(live, i, 0)
+
   w = v.init(64, n_pines(), n_crystals(), n_grass())
   println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
   inbox = channel()

@@ -19,10 +19,16 @@
 //          k <x y z seed>                  one landed
 //          b <i>                           crystal i came apart
 //
-//   out    i <keys> <yaw> <pitch>          what this player is doing
+//          who <id> <name>                 what to call somebody
+//
+//   out    n <name>                        what to call this one
+//          i <keys> <yaw> <pitch>          what this player is doing
 //          f <dx> <dy> <dz>                and where they just fired
+//
+// A name is sent once and comes back as a `who`, rather than riding in every
+// snapshot: it changes about as often as a person arrives.
 
-export function join(url) {
+export function join(url, name) {
   const sock = new WebSocket(url);
   sock.binaryType = "arraybuffer";
 
@@ -36,6 +42,8 @@ export function join(url) {
   const net = {
     id: -1,
     arrival,
+    // id -> what to call them, for everybody here including this player.
+    names: new Map(),
     // The last two snapshots, so that what is drawn can be a point between
     // them rather than the older of the two.
     prev: null,
@@ -55,6 +63,8 @@ export function join(url) {
     close() { sock.close(); },
   };
 
+  sock.addEventListener("open", () => { if (name) net.send(`n ${name}`); });
+
   sock.addEventListener("message", (ev) => {
     const line = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
     const sp = line.indexOf(" ");
@@ -62,6 +72,7 @@ export function join(url) {
     if (kind === "s") { snapshot(net, line); return; }
     if (kind === "hello") { hello(net, line, ready); return; }
     if (kind === "gone") { net.events.push({ kind: "gone", which: nums(line, 1) }); return; }
+    if (kind === "who") { const p = line.split(" "); net.names.set(+p[1], p[2] ?? ""); return; }
     if (kind === "no") { failed(new Error(line)); return; }
     // r, t, k, b — one line each, applied in the order they arrived.
     net.events.push({ kind, n: nums(line, 1) });
@@ -149,6 +160,7 @@ export function others(net, now) {
       yaw: q.yaw + wrap(p.yaw - q.yaw) * t,
       pitch: q.pitch + (p.pitch - q.pitch) * t,
       health: p.health,
+      name: net.names.get(p.id) ?? "",
     });
   }
   return out;

@@ -3030,6 +3030,7 @@ mod net {
         fn listen(fd: i32, backlog: i32) -> i32;
         fn accept(fd: i32, addr: *mut u8, len: *mut u32) -> i32;
         fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
+        fn getpeername(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
         fn connect(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
         fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
         fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
@@ -3581,6 +3582,27 @@ mod net {
         if held > 0 {
             close(held);
         }
+    }
+
+    /// Who is at the other end, as the four bytes of an IPv4 address packed
+    /// into one number — 127.0.0.1 is 2130706433 — or -1 if it cannot be had.
+    ///
+    /// A number rather than a string because what a server does with it is
+    /// count: how many connections this address already has. Dotted quad is
+    /// what a person reads, and `int_to_str` of this is not that, which is the
+    /// small price.
+    ///
+    /// # Safety
+    /// `fd` must be an open socket.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_sock_peer(fd: i64) -> i64 {
+        let mut addr: SockAddrIn = core::mem::zeroed();
+        let mut len: u32 = core::mem::size_of::<SockAddrIn>() as u32;
+        if getpeername(fd as i32, &mut addr, &mut len) < 0 {
+            return -1;
+        }
+        let a = addr.addr;
+        ((a[0] as i64) << 24) | ((a[1] as i64) << 16) | ((a[2] as i64) << 8) | (a[3] as i64)
     }
 
     /// Waits until `fd` has something to say or `ms` milliseconds have gone

@@ -199,9 +199,13 @@ the socket from another strand would not have worked, because the reader is
 parked on that descriptor inside the poller and closing it from elsewhere does
 not wake it.
 
-It is still a demo server: there is no per-address limit, and nothing here has
-been through anything harsher than an afternoon of being shot at from the same
-machine.
+Sixty-four connections at once, and sixteen from any one address — the whole
+cap alone is no defence against one machine opening all sixty-four of them.
+Sixteen is generous for a household or an office behind one address and still
+leaves most of the valley to everybody else.
+
+It is still a demo server, and nothing here has been through anything harsher
+than an afternoon of being shot at from the same machine.
 The crash this used to die of is fixed — it was a `select` in a loop leaking
 its stack, which `CHANGELOG.md` tells properly — but a demo server that has
 been shot at for an afternoon is not a server that has been shot at, so do not

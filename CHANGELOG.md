@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A limit per address, not just in total.** Sixty-four connections was no
+  defence against one machine opening sixty-four of them: it could still take
+  the whole valley. Sixteen from any one address now — generous for a household
+  or an office behind one, and still three-quarters of the room left for
+  everyone else. Measured: twenty-four attempts from one address, sixteen
+  accepted and eight refused.
+
+  Which needed `sock_peer(fd)`, the address at the other end as one number.
+  A number rather than a dotted quad because what a server does with it is
+  count, and the server keeps its rows in the same shared block as the total —
+  one row per connection is more than enough, since a row is only in use while
+  somebody from that address is.
+
 - **A read can be given a deadline: `sock_wait(fd, ms)`.** A socket read had
   none, so a peer that opened a connection and then said nothing held a strand
   and a descriptor for as long as it cared to, and the valley server's answer

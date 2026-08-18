@@ -132,6 +132,39 @@
       color: rgba(255, 255, 255, 0.42);
     }
 
+    /* Names over heads. One element per player, moved by transform every
+       frame — the browser's own text engine does the hinting and the kerning,
+       which is worth more than a glyph atlas would be. They take no input and
+       are never wider than the name. */
+    .tags { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+    .tags span {
+      position: absolute; top: 0; left: 0; white-space: nowrap;
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.12em; color: #e8e4da;
+      text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.95);
+      will-change: transform;
+    }
+
+    /* Who are you. Only asked when joining somebody else's valley, and it is
+       part of the loading screen rather than a dialogue in front of it —
+       there is nothing else on that screen to interrupt, and a name is
+       something the server needs before this browser can be let in. */
+    .who { margin-top: 20px; display: flex; gap: 8px; }
+    .who input {
+      flex: 1; min-width: 0; background: #10101c; border: 1px solid #2b2a40;
+      color: #e8e4da; padding: 7px 9px;
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.14em; outline: none;
+    }
+    .who input:focus { border-color: #f6c02e; }
+    .who button {
+      background: #f6c02e; border: 0; color: #10101c; padding: 7px 14px;
+      font: 600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.18em; text-transform: uppercase; cursor: pointer;
+    }
+    .who small { display: block; margin-top: 8px; color: #6f6a8c;
+                 font: 11px/1.5 ui-monospace, monospace; letter-spacing: 0.1em; }
+
     /* The loader. It covers the canvas until a frame has actually been drawn
        on it, so nobody watches a black rectangle wondering whether it works. */
     .boot {
@@ -185,6 +218,11 @@
         <span class="what" id="what">asking for a GPU</span>
         <span class="pct" id="pct">0%</span>
       </div>
+      <form class="who" id="who" style="display:none">
+        <input id="name" maxlength="12" placeholder="WHO ARE YOU" autocomplete="off" spellcheck="false">
+        <button type="submit">enter</button>
+      </form>
+      <small id="whonote" style="display:none">letters, digits, dash and underscore</small>
     </div>
   </div>
   <script type="module">
@@ -195,7 +233,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=223";
+    import { run } from "./host.js?v=224";
 
     // Whose valley. `?join` takes the one on this host, `?join=ws://box:8091/`
     // somebody else's, and no `join` at all is the valley this tab has to
@@ -205,6 +243,29 @@
     const server = q.has("join")
       ? (q.get("join") || `ws://${location.hostname || "localhost"}:8091/`)
       : null;
+
+    // Who to put over this player's head. Only asked when there is somebody to
+    // see it; the answer is kept, because nobody wants to type their own name
+    // every time they reload.
+    const askName = async () => {
+      if (!server) return "";
+      const form = document.getElementById("who");
+      const field = document.getElementById("name");
+      form.style.display = "flex";
+      document.getElementById("whonote").style.display = "block";
+      field.value = localStorage.getItem("valley.name") ?? "";
+      field.focus();
+      field.select();
+      const given = await new Promise((res) => {
+        form.addEventListener("submit", (e) => { e.preventDefault(); res(field.value.trim()); }, { once: true });
+      });
+      form.style.display = "none";
+      document.getElementById("whonote").style.display = "none";
+      const name = given.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 12);
+      if (name) localStorage.setItem("valley.name", name);
+      return name;
+    };
+    const name = await askName();
     const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
     const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
@@ -212,7 +273,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=223", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=224", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""
@@ -233,7 +294,7 @@
       bar.style.width = `${(done / total * 100).toFixed(0)}%`;
       pct.textContent = `${Math.round(done / total * 100)}%`;
       what.textContent = label;
-    }, server).then(() => {
+    }, server, name).then(() => {
       // `run` resolves on the first submitted frame, so the fade is over
       // something rather than over nothing.
       boot.classList.add("gone");
