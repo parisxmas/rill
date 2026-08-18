@@ -15,10 +15,22 @@
   far lens is a centimetre across and the eye is twenty behind it, so what
   could be seen through it was a keyhole. So at the top of the aim the rifle
   goes and the scope becomes the screen — a clear circle two thirds of the
-  screen high, black outside it, the crosshair in the middle of it as the
-  reticle. It opens as the aim comes up and closes as it drops, and it is a
-  radial gradient over the canvas rather than a pass that would have to touch
-  every pixel, because it is in the eye and not in the valley.
+  screen high and black outside it. It opens as the aim comes up and closes as
+  it drops, and it is a radial gradient over the canvas rather than a pass that
+  would have to touch every pixel, because it is in the eye and not in the
+  valley.
+
+  In the middle of it is a reticle rather than the page's crosshair: a duplex
+  with a mil scale, which is what a rifle scope has and what makes one useful
+  for anything besides pointing. The thick posts carry the eye to the middle
+  from any background, the thin cross is what you aim with, and the ticks are a
+  ruler — two mils apart, so a figure of a metre eighty subtends one of them at
+  nine hundred metres and four at two hundred, and holding over is counting
+  rather than guessing. Black glass over a pale edge, because a reticle that is
+  only black vanishes against dark water and one that is only white vanishes
+  against the ridge. The crosshair fades as the rifle comes up and is gone
+  before the scope arrives: two opinions about where the middle is, is one too
+  many.
 
   All of it eased over about a sixth of a second and framerate-independent: a
   field of view that changes between one frame and the next reads as a cut

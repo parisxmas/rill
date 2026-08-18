@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=259";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=259";
+import { load } from "./world.js?v=260";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=260";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=259";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "259";
+const V = "260";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2184,7 +2184,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const cut = document.getElementById("cut");
   const crosshair = document.querySelector(".aim");
   const scopeEl = document.getElementById("scope");
-  let sighted = false, saidScope = -1;
+  let sighted = 1, saidScope = -1;
 
   const deadEl = document.getElementById("dead");
   const tickEl = document.getElementById("tick");
@@ -2531,10 +2531,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // is the last thing everybody agreed about, and it stays there.
     // The crosshair fades as the scope comes up: two sights at once is one
     // more than anybody needs, and the rifle's own is the one that is aimed.
-    // The crosshair steps back while both sights are on screen and comes back
-    // at the top, where the rifle has gone and it is the only one left.
-    const half = aim > 0.35 && aim < 0.9;
-    if (half !== sighted) { sighted = half; crosshair.classList.toggle("scoped", half); }
+    // The page's crosshair is for the hip. It steps back as the rifle comes up
+    // and is gone by the time the scope has the screen, which has a reticle of
+    // its own and no room for a second opinion about where the middle is.
+    const cross = aim > 0.9 ? 0 : aim > 0.35 ? 0.3 : 1;
+    if (cross !== sighted) { sighted = cross; crosshair.style.opacity = `${cross}`; }
     // The sight picture opening. Written at a fiftieth of the way rather than
     // every frame, because these are style properties and the compositor has
     // better things to do with a hundred and forty of them a second.
@@ -2546,6 +2547,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // Nothing at the hip, a keyhole halfway, and most of the screen at the
       // top — the circle opens as the weapon comes out of the way.
       scopeEl.style.setProperty("--r", `${(a * a * 34).toFixed(1)}vmin`);
+      // The reticle is the scope's glass, so it arrives with the scope rather
+      // than with the movement: nothing until the rifle is most of the way up,
+      // then all of it.
+      scopeEl.style.setProperty("--ret", `${Math.max(0, (a - 0.7) / 0.25).toFixed(2)}`);
     }
 
     if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");

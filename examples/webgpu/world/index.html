@@ -37,9 +37,9 @@
            display: grid; place-items: center;
            transition: opacity 140ms ease; }
     /* Halfway up, the rifle's own sight and this one are both on screen and
-       two at once is one too many; at the top the rifle is gone and this is
-       the reticle, so it comes back. */
-    .aim.scoped { opacity: 0.3; }
+       two at once is one too many; at the top there is a reticle in the scope
+       and this one has no business there at all. Driven from the frame loop
+       rather than by a class, because it has three states. */
 
     /* The sight picture.
        Looking down the tube of the rifle's own scope was honest and useless:
@@ -55,12 +55,31 @@
     .scope {
       position: fixed; inset: 0; pointer-events: none; opacity: 0;
       --r: 0vmin;
+      --ret: 0;
       background: radial-gradient(circle at center,
         rgba(0,0,0,0) var(--r),
         rgba(0,0,0,0.45) calc(var(--r) + 1.2vmin),
         rgba(0,0,0,0.97) calc(var(--r) + 6vmin),
         #000 calc(var(--r) + 12vmin));
+      display: grid; place-items: center;
     }
+
+    /* The reticle: a duplex with a mil scale, which is what a rifle scope has
+       and what makes one useful for anything but pointing. The thick posts
+       carry the eye to the middle from any background; the thin cross is what
+       you actually aim with; the ticks are the ruler — two mils apart, so a
+       figure of a metre eight subtends one of them at nine hundred metres and
+       four of them at two hundred, and holding over is counting rather than
+       guessing.
+       Black glass with a thin light edge, because a reticle that is only black
+       vanishes against dark water and one that is only white vanishes against
+       the ridge. It is sized against the sight picture, so it opens with it. */
+    .reticle {
+      width: calc(var(--r) * 2); height: calc(var(--r) * 2);
+      opacity: var(--ret);
+    }
+    .reticle .glass { fill: none; stroke: #000; stroke-opacity: 0.9; }
+    .reticle .edge  { fill: none; stroke: #fff; stroke-opacity: 0.32; }
     .aim i { position: absolute; background: #fff;
              box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55); }
     .aim .h { width: 10px; height: 2px; }
@@ -290,7 +309,31 @@
   </div>
   <div class="stat" id="stat"></div>
   <div class="who-list" id="roster" hidden><h2>in the valley</h2><div id="rosterRows"></div></div>
-  <div class="scope" id="scope"></div>
+  <div class="scope" id="scope">
+    <svg class="reticle" viewBox="-100 -100 200 200" aria-hidden="true">
+      <!-- Each group is drawn twice: a pale wide stroke under a black narrow
+           one, which is how a black line stays visible over a dark valley. -->
+      <g class="edge" stroke-width="3.4" stroke-linecap="butt">
+        <path d="M-100 0H-52M52 0H100M0-100V-52M0 52V100"/>
+      </g>
+      <g class="glass" stroke-width="2.6" stroke-linecap="butt">
+        <path d="M-100 0H-52M52 0H100M0-100V-52M0 52V100"/>
+      </g>
+      <g class="edge" stroke-width="1.9">
+        <path d="M-52 0H-5M5 0H52M0-52V-5M0 5V52"/>
+        <path d="M-40 -4V4M-28 -3V3M-16 -3V3M16 -3V3M28 -3V3M40 -4V4"/>
+        <path d="M-4 -40H4M-3 -28H3M-3 -16H3M-3 16H3M-3 28H3M-4 40H4"/>
+      </g>
+      <g class="glass" stroke-width="1.1">
+        <path d="M-52 0H-5M5 0H52M0-52V-5M0 5V52"/>
+        <path d="M-40 -4V4M-28 -3V3M-16 -3V3M16 -3V3M28 -3V3M40 -4V4"/>
+        <path d="M-4 -40H4M-3 -28H3M-3 -16H3M-3 16H3M-3 28H3M-4 40H4"/>
+      </g>
+      <!-- The centre: a gap rather than a dot, so what is being aimed at is
+           not the one thing covered up. -->
+      <circle class="edge" r="1.6" stroke-width="0.8"/>
+    </svg>
+  </div>
   <div class="aim">
     <i class="h l"></i><i class="h r"></i><i class="v u"></i><i class="v d"></i>
     <i class="dot"></i>
@@ -325,7 +368,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=259";
+    import { run } from "./host.js?v=260";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -390,7 +433,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=259", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=260", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

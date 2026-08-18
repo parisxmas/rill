@@ -265,8 +265,11 @@ would have had to send, arriving for nothing.
 Holding the right button aims: the world narrows to five times, the rifle comes
 to the eye and straightens, the sway drops to a quarter, and past nine
 tenths of the way the rifle goes and the scope becomes the screen: a clear
-circle two thirds of the screen high, black around it, the crosshair in the
-middle of it as the reticle. Looking down the tube of the rifle's own scope was
+circle two thirds of the screen high, black around it, and a duplex reticle with a
+mil scale in the middle of it — thick posts to carry the eye in, a thin cross
+to aim with, and ticks two mils apart to hold over with. The page's crosshair
+fades out on the way up; two opinions about where the middle is, is one too
+many. Looking down the tube of the rifle's own scope was
 honest and useless — the far lens is a centimetre across and the eye is twenty
 behind it, so the sight picture was a keyhole. The zoom is one number written into the player's block and read by
 `camera`, so the projection is still Rill's; the mouse is slowed by the same
