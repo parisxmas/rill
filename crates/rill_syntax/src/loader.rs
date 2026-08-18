@@ -195,7 +195,44 @@ fn qualify(m: &mut Module, alias: &str) {
         if let Some(t) = &mut f.ret_ann {
             qualify_type(t, &own, alias);
         }
-        qualify_expr(&mut f.body, &own, alias);
+        // The parameters are names of this function's own, whatever the module
+        // calls its functions.
+        let mut scope: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+        qualify_expr(&mut f.body, &own, alias, &mut scope);
+    }
+}
+
+/// Names bound where this expression is, which are nobody's to rename.
+///
+/// Without this, a module imported under an alias has every local binding
+/// that happens to share a name with one of its own functions rewritten into a
+/// reference to that function — so `ground = height(x, z)` inside a file that
+/// also defines `fn ground(x, z)` becomes a function where a number was meant,
+/// and the file compiles alone and fails the moment somebody imports it
+/// `as v`. The rule is the ordinary one: the nearest binding wins.
+fn bound(scope: &[String], n: &str) -> bool {
+    scope.iter().any(|s| s == n)
+}
+
+/// Runs `f` with `names` added to the scope, and takes them off again.
+fn under<T>(scope: &mut Vec<String>, names: impl IntoIterator<Item = String>, f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+    let depth = scope.len();
+    scope.extend(names);
+    let out = f(scope);
+    scope.truncate(depth);
+    out
+}
+
+/// The names a pattern binds.
+fn pattern_binds(p: &Pattern, out: &mut Vec<String>) {
+    match p {
+        Pattern::Var(n) => out.push(n.clone()),
+        Pattern::Ctor { args, .. } => {
+            for a in args {
+                pattern_binds(a, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -222,98 +259,128 @@ fn qualify_pattern(p: &mut Pattern, own: &HashSet<String>, alias: &str) {
     }
 }
 
-fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str) {
+fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str, scope: &mut Vec<String>) {
     match e {
         Expr::Var(n, _) => {
-            if own.contains(n) {
+            if own.contains(n) && !bound(scope, n) {
                 *n = format!("{alias}.{n}");
             }
         }
         Expr::Call { name, args, .. } => {
-            if own.contains(name) {
+            if own.contains(name) && !bound(scope, name) {
                 *name = format!("{alias}.{name}");
             }
             for a in args {
-                qualify_expr(a, own, alias);
+                qualify_expr(a, own, alias, scope);
             }
         }
-        Expr::Len { expr, .. } => qualify_expr(expr, own, alias),
+        Expr::Len { expr, .. } => qualify_expr(expr, own, alias, scope),
         Expr::Slice { base, from, to, .. } => {
-            qualify_expr(base, own, alias);
+            qualify_expr(base, own, alias, scope);
             if let Some(f) = from {
-                qualify_expr(f, own, alias);
+                qualify_expr(f, own, alias, scope);
             }
             if let Some(t) = to {
-                qualify_expr(t, own, alias);
+                qualify_expr(t, own, alias, scope);
             }
         }
         Expr::Index { base, index, .. } => {
-            qualify_expr(base, own, alias);
-            qualify_expr(index, own, alias);
+            qualify_expr(base, own, alias, scope);
+            qualify_expr(index, own, alias, scope);
         }
         Expr::IndexSet { base, index, value, .. }
         | Expr::IndexOp { base, index, value, .. } => {
-            qualify_expr(base, own, alias);
-            qualify_expr(index, own, alias);
-            qualify_expr(value, own, alias);
+            qualify_expr(base, own, alias, scope);
+            qualify_expr(index, own, alias, scope);
+            qualify_expr(value, own, alias, scope);
         }
         Expr::Append { target, value, .. } => {
-            qualify_expr(target, own, alias);
-            qualify_expr(value, own, alias);
+            qualify_expr(target, own, alias, scope);
+            qualify_expr(value, own, alias, scope);
         }
-        Expr::For { from, to, acc, body, .. } => {
-            qualify_expr(from, own, alias);
-            qualify_expr(to, own, alias);
-            if let Some((_, init)) = acc {
-                qualify_expr(init, own, alias);
+        Expr::For { var, from, to, acc, body, .. } => {
+            // The bounds and the accumulator's first value are worked out
+            // where the loop is written, before either name exists.
+            qualify_expr(from, own, alias, scope);
+            qualify_expr(to, own, alias, scope);
+            let mut names = vec![var.clone()];
+            if let Some((a, init)) = acc {
+                qualify_expr(init, own, alias, scope);
+                names.push(a.clone());
             }
-            qualify_expr(body, own, alias);
+            under(scope, names, |sc| qualify_expr(body, own, alias, sc));
         }
-        Expr::Unary { expr, .. } => qualify_expr(expr, own, alias),
+        Expr::Unary { expr, .. } => qualify_expr(expr, own, alias, scope),
         Expr::Binary { lhs, rhs, .. } => {
-            qualify_expr(lhs, own, alias);
-            qualify_expr(rhs, own, alias);
+            qualify_expr(lhs, own, alias, scope);
+            qualify_expr(rhs, own, alias, scope);
         }
         Expr::If { cond, then, els } => {
-            qualify_expr(cond, own, alias);
-            qualify_expr(then, own, alias);
-            qualify_expr(els, own, alias);
+            qualify_expr(cond, own, alias, scope);
+            qualify_expr(then, own, alias, scope);
+            qualify_expr(els, own, alias, scope);
         }
         Expr::Match { scrutinee, arms, .. } => {
-            qualify_expr(scrutinee, own, alias);
+            qualify_expr(scrutinee, own, alias, scope);
             for arm in arms {
                 qualify_pattern(&mut arm.pattern, own, alias);
-                qualify_expr(&mut arm.body, own, alias);
+                let mut names = Vec::new();
+                pattern_binds(&arm.pattern, &mut names);
+                under(scope, names, |sc| qualify_expr(&mut arm.body, own, alias, sc));
             }
         }
-        Expr::Lambda { body, .. } | Expr::Spawn { body, .. } => qualify_expr(body, own, alias),
+        Expr::Lambda { params, body, .. } => {
+            under(scope, params.clone(), |sc| qualify_expr(body, own, alias, sc));
+        }
+        Expr::Spawn { body, .. } => qualify_expr(body, own, alias, scope),
         Expr::Select { arms, default, .. } => {
             for a in arms {
+                let mut names = Vec::new();
                 match &mut a.op {
-                    SelectOp::Recv { chan, .. } => qualify_expr(chan, own, alias),
+                    SelectOp::Recv { chan, bind } => {
+                        qualify_expr(chan, own, alias, scope);
+                        if let Some(n) = bind {
+                            names.push(n.clone());
+                        }
+                    }
                     SelectOp::Send { chan, value } => {
-                        qualify_expr(chan, own, alias);
-                        qualify_expr(value, own, alias);
+                        qualify_expr(chan, own, alias, scope);
+                        qualify_expr(value, own, alias, scope);
                     }
                 }
-                qualify_expr(&mut a.body, own, alias);
+                under(scope, names, |sc| qualify_expr(&mut a.body, own, alias, sc));
             }
             if let Some(d) = default {
-                qualify_expr(d, own, alias);
+                qualify_expr(d, own, alias, scope);
             }
         }
         Expr::Block(stmts) => {
+            // A binding is in scope for the rest of the block and not for its
+            // own right-hand side: `x = x + 1` reads whatever `x` meant
+            // before, which here is the module's function of that name.
+            let depth = scope.len();
             for s in stmts {
                 match s {
-                    Stmt::Bind { value, .. } => qualify_expr(value, own, alias),
-                    Stmt::PatBind { pattern, value, .. } => {
-                        qualify_pattern(pattern, own, alias);
-                        qualify_expr(value, own, alias);
+                    Stmt::Bind { name, value, .. } => {
+                        qualify_expr(value, own, alias, scope);
+                        scope.push(name.clone());
                     }
-                    Stmt::Fn(f) => qualify_expr(&mut f.body, own, alias),
-                    Stmt::Expr(v) => qualify_expr(v, own, alias),
+                    Stmt::PatBind { pattern, value, .. } => {
+                        qualify_expr(value, own, alias, scope);
+                        qualify_pattern(pattern, own, alias);
+                        pattern_binds(pattern, scope);
+                    }
+                    // A local function may call itself, so its own name goes
+                    // into scope before its body is walked.
+                    Stmt::Fn(f) => {
+                        scope.push(f.name.clone());
+                        let params: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+                        under(scope, params, |sc| qualify_expr(&mut f.body, own, alias, sc));
+                    }
+                    Stmt::Expr(v) => qualify_expr(v, own, alias, scope),
                 }
             }
+            scope.truncate(depth);
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
     }
@@ -363,6 +430,47 @@ mod tests {
         std::fs::write(d.join("m.rill"), "import \"nope\"\n\nfn main() = println(1)\n").unwrap();
         let err = load_program(&d.join("m.rill")).unwrap_err();
         assert!(err.contains("line 1") && err.contains("nope"), "{err}");
+    }
+
+    /// An alias renames what the module defines, and nothing else. A local
+    /// binding, a parameter, a loop variable or a name a pattern bound is the
+    /// function's own, even when the module happens to define something of
+    /// that name — and it used to be rewritten into a reference to it, so a
+    /// file that compiled perfectly well alone stopped compiling the moment
+    /// somebody imported it `as v`.
+    #[test]
+    fn an_alias_does_not_rename_local_names() {
+        let d = dir();
+        std::fs::write(
+            d.join("u.rill"),
+            "import \"w\" as v\n\nfn main() = println(v.pick(1.0) + v.total(3) + v.first(Some(9)))\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("w.rill"),
+            concat!(
+                "fn ground(x: Float, z: Float) -> Float = x + z\n",
+                "\n",
+                // The binding is fed by the very function it shadows.
+                "fn pick(a) =\n",
+                "  ground = ground(a, 2.0)\n",
+                "  if a < ground then ground else a\n",
+                "\n",
+                "fn total(n) =\n",
+                "  sum = 0\n",
+                "  for i in 0..n with sum = 0\n",
+                "    sum + i\n",
+                "\n",
+                "fn first(o) = match o\n",
+                "  Some(ground) -> ground\n",
+                "  None -> 0\n",
+            ),
+        )
+        .unwrap();
+        let m = load_program(&d.join("u.rill")).unwrap();
+        let src = format!("{:?}", m.functions);
+        assert!(!src.contains("Var(\"v.ground\""), "a local binding was qualified: {src}");
+        assert!(!src.contains("Var(\"v.sum\""), "a loop's accumulator was qualified: {src}");
     }
 
     #[test]

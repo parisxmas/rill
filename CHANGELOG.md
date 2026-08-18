@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **An aliased import no longer renames the module's own local names.**
+  `import "lib" as v` qualifies everything `lib` defines, and it was doing that
+  to *references* by name alone — so a local binding, a parameter, a loop's
+  accumulator or a name a pattern bound was rewritten into a reference to the
+  module function it happened to share a name with. A file that compiled
+  perfectly well on its own stopped compiling the moment somebody imported it
+  under an alias, and the error pointed at the innocent line: `ground` bound
+  from `height(x, z)` came out as "expected Float, found (Float, Float) ->
+  Float", which is the module's `ground` function standing where the number
+  was.
+
+  Found by splitting the valley in two, which is the first thing in this
+  repository to import anything under an alias in earnest.
+
 - **`sleep_ms` — a strand can wait on the clock without holding a worker.**
   There was no way to wait at all: a program that wanted a rate had to spin,
   which costs a core to do nothing, and a server tick could not be written.
