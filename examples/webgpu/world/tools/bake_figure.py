@@ -39,18 +39,34 @@ Layout, little-endian throughout:
 """
 
 import json
+import os
 import struct
 import sys
 
 COMPONENT = {5120: ("b", 1), 5121: ("B", 1), 5122: ("h", 2), 5123: ("H", 2), 5125: ("I", 4), 5126: ("f", 4)}
 COUNT = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
 
-# The hand a rifle goes in, and how long the rifle is meant to be. The grip is
+# The hand a rifle goes in, and how big the rifle is meant to be. The grip is
 # not guessed at: the forearm and the hand say which way the arm points in the
 # bind pose, and the barrel is laid along that.
 HAND = "DEF-hand.R"
-RIFLE_SCALE = 0.46          # matches VM_SCALE in common.wgsl
-GRIP_ALONG = 0.06           # metres back down the barrel from the hand
+
+# How long the rifle is, in metres, and it is measured against the person
+# holding it rather than set by eye. A bolt-action rifle with a scope is about
+# 1.1 m, which is a shade over six tenths of a 1.83 m mannequin — and the scale
+# that gets it there is worked out from `rifle.mesh`'s own bounding box rather
+# than written down, because a number written down beside a mesh is a number
+# that goes wrong the first time the mesh is rebaked.
+#
+# `VM_SCALE` in `common.wgsl` is a different number for a different job: the
+# viewmodel is placed in camera space and projected through its own frustum, so
+# what looks right there says nothing about how long a rifle is in the valley.
+# Taking it for one is what put a toothpick in everybody's hands.
+RIFLE_METRES = 1.10
+# Where along it the hand goes, as a fraction from the butt. A rifle is held at
+# the small of the stock, which is behind the middle; the model's own origin is
+# not, so the difference is what this shifts by.
+GRIP_AT = 0.40
 GRIP_UP = 0.02
 
 # What the valley does with a person, and the clip that says it. Everything
@@ -154,7 +170,18 @@ def rigid_inverse(m):
                 -(m[8] * tx + m[9] * ty + m[10] * tz), 1.0]
 
 
-def grip_matrix(world, hand, forearm):
+def rifle_box(path):
+    """The rifle's own origin and size, out of the header of `rifle.mesh`.
+
+    Six floats after the two counts: the minimum corner, then the size — which
+    is what the viewmodel's decode says they are, `min + q * size`.
+    """
+    with open(path, "rb") as f:
+        head = f.read(32)
+    return struct.unpack_from("<6f", head, 8)
+
+
+def grip_matrix(world, hand, forearm, box):
     """Where a rifle sits in the hand's own space.
 
     The model is built with +x down the barrel, +y up and +z out to the right,
@@ -172,8 +199,13 @@ def grip_matrix(world, hand, forearm):
     n = sum(v * v for v in az) ** 0.5 or 1.0
     az = [v / n for v in az]
     ay = [az[1] * ax[2] - az[2] * ax[1], az[2] * ax[0] - az[0] * ax[2], az[0] * ax[1] - az[1] * ax[0]]
-    s = RIFLE_SCALE
-    at = [h[12 + c] - ax[c] * GRIP_ALONG + ay[c] * GRIP_UP for c in range(3)]
+    s = RIFLE_METRES / box[3]
+    # The origin sits wherever the modeller left it along the barrel; the hand
+    # wants to be at the small of the stock. The gap between the two is what
+    # the rifle is slid by, so that changing where a hand grips is one number
+    # and not a fiddle.
+    origin_at = -box[0] / box[3]
+    at = [h[12 + c] + ax[c] * (origin_at - GRIP_AT) * RIFLE_METRES + ay[c] * GRIP_UP for c in range(3)]
     want = [ax[0] * s, ax[1] * s, ax[2] * s, 0.0,
             ay[0] * s, ay[1] * s, ay[2] * s, 0.0,
             az[0] * s, az[1] * s, az[2] * s, 0.0,
@@ -226,7 +258,10 @@ def main(src, dst):
         bind_world.append(local if parent[j] < 0 else mat_mul(bind_world[parent[j]], local))
     names = [js["nodes"][n].get("name", "") for n in joints]
     hand = names.index(HAND)
-    grip = grip_matrix(bind_world, hand, parent[hand])
+    # The rifle is next to the figure it goes in, and is read for its size
+    # rather than believed about it.
+    box = rifle_box(os.path.join(os.path.dirname(os.path.abspath(dst)), "rifle.mesh"))
+    grip = grip_matrix(bind_world, hand, parent[hand], box)
 
     out = bytearray()
     out += b"RILLFIG2"

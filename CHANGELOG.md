@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **A round throws your head about.** Being shot moved a bar in the corner and
+  nothing else. Now the camera takes it: a roll, mostly, with a little pitch
+  and yaw on top, settling out over four hundred milliseconds — three degrees
+  of tilt reads as a head snapping sideways in a way the same angle spent on
+  pitch reads only as recoil. The rifle rides it for nothing, being placed
+  relative to the eye.
+
+  Nothing announces the hit. Health only ever goes down, so the frame it goes
+  down on is the frame somebody was hit — which is how the page already picks
+  the hit clip for everybody else, and it means the throw works the same
+  whether the damage came from a round, a blast, or a server saying so. It goes
+  on the camera and not on the yaw and pitch, because a round should throw the
+  view about and not turn the player: what you were aiming at is still what you
+  are aiming at when it settles. `check.rill` shoots somebody and looks at the
+  matrix, which is where a roll cannot hide.
+
+- **The rifle in their hands is the size of a rifle.** It was a toothpick. The
+  scale had been taken from `VM_SCALE`, which is the viewmodel's number — the
+  viewmodel is placed in camera space and projected through its own frustum, so
+  what looks right there says nothing about how long a rifle is in the valley.
+  It is now 1.10 m, measured against the 1.83 m mannequin holding it, and the
+  scale that gets it there is worked out from `rifle.mesh`'s own bounding box
+  rather than written down beside it. Where the hand grips is a fraction along
+  the stock rather than an offset in metres, so moving it is one number.
+
+- **The sky is the server's too.** The sun ran on each browser's own clock, so
+  two people standing next to each other were in different parts of the
+  afternoon — one of them shooting into a glare the other could not see. It now
+  runs on the world clock, which is the number the server sends in every
+  snapshot and which the wind and the water already ride on. Alone in a valley
+  that clock is this browser's own count of the frames it has drawn, which is
+  what it always was: a day does not pass while a tab is hidden.
+
 - **A rifle in everybody's hands.** The figure was firing an empty fist. What
   it holds now is the same `rifle.mesh` the viewmodel draws — one rifle in this
   valley, not two — instanced once per person off a matrix the page works out

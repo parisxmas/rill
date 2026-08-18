@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=231";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=231";
+import { load } from "./world.js?v=233";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=233";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=231";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "231";
+const V = "233";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2362,12 +2362,25 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // it stays evening. A tilted axis would be more honest and would put the
     // sun in the ground within ten minutes, taking the whole look with it.
     //
-    // One turn in ninety seconds — four degrees a second, which is fast enough
-    // to watch a shadow travel and slow enough not to strobe.
+    // One turn in a hundred and eighty seconds — two degrees a second, which is
+    // fast enough to watch a shadow travel and slow enough not to strobe.
+    //
+    // The clock it runs on is the *world's*, not the page's. In a shared valley
+    // that clock belongs to the server and arrives in every snapshot, which is
+    // the only way two people standing next to each other agree about what time
+    // of day it is — on the page's own clock they each ran their own sunset,
+    // and one of them was shooting into a glare the other could not see. It is
+    // the same number the wind and the water already ride on, so this is one
+    // clock for the whole sky rather than a second one beside it.
+    //
+    // Alone in a valley there is no server and it is this browser's own count
+    // of the frames it has drawn, which is what it always was: a day does not
+    // pass while a tab is hidden and nobody is watching it.
+    const sky = E.world_time(world);
     // Where the sun is now: a point on the tilted circle. What goes into the
     // uniform and into the shadow matrix is the direction the light travels,
     // which is the other way round from where the sun is.
-    const th = SUN_PHASE + t * SKY_SPIN;
+    const th = SUN_PHASE + sky * SKY_SPIN;
     const cs = Math.cos(th), sn = Math.sin(th);
     const sunX = -(SUN_E1[0] * cs + SUN_E2[0] * sn);
     const sunY = -(SUN_E1[1] * cs + SUN_E2[1] * sn);
@@ -2382,7 +2395,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf.set(st.subarray(0, 16), 0);        // vp
     uf.set(st.subarray(32, 48), 16);      // light vp
     uf.set(st.subarray(16, 19), 32);      // eye
-    uf[35] = t;
+    uf[35] = sky;
     uf[36] = sunX; uf[37] = sunY; uf[38] = sunZ;
     uf[39] = canvas.width / canvas.height;
     uf[40] = st[19]; uf[41] = st[20];     // yaw, pitch

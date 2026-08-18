@@ -231,6 +231,13 @@ protocol at all: a health that has gone down since the last snapshot without
 reaching zero is somebody taking a round, which is the same fact the server
 would have had to send, arriving for nothing.
 
+Being shot throws the camera about — a roll mostly, settling over four hundred
+milliseconds — and that is noticed rather than announced: health only ever goes
+down, so the frame it goes down on is the frame this player was hit, whether
+the damage came from a round, a blast or a server saying so. It goes on the
+camera and not on the yaw and pitch, because what you were aiming at should
+still be what you are aiming at when it settles.
+
 What everybody holds is the same `rifle.mesh` the viewmodel draws — one rifle
 in this valley rather than two — instanced once per person off the hand
 joint's world matrix times a grip. The grip is worked out at bake time rather

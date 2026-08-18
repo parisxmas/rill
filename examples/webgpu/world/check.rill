@@ -33,6 +33,16 @@ fn place(s, x, z) = v.set_at(s, x, v.ground(x, z), z)
 fn where_is(name, s) =
   println(name + " is at " + int_to_str(to_int(v.player_x(s))) + ", " + int_to_str(to_int(v.player_z(s))) + " on " + float_to_str(v.health(s)))
 
+fn absf(x) = if x < 0.0 then 0.0 - x else x
+
+# Whether the camera is level. Slot 4 of the view-projection is zero for as
+# long as it is — the across direction has no height of its own — so anything
+# in it is the roll a round put there, and that is a fact about the matrix
+# rather than about anybody's floating point.
+fn tilt(s) =
+  v.look(s, 1.6)
+  if absf(peek_f32(s, 4)) < 0.001 then "level" else "thrown"
+
 # One player turns to the other and fires, once, and the round is given long
 # enough to get there.
 fn shoot_at(w, a, b) =
@@ -74,6 +84,14 @@ fn main() =
   # Down, and put back on their feet at the spawn with the valley as it is.
   v.respawn(b)
   println("after a respawn they are on " + float_to_str(v.health(b)))
+
+  # Being shot throws the head about. The throw goes on the camera and not on
+  # the yaw and pitch, so the way to see it is the matrix rather than the look.
+  before = tilt(b)
+  shoot_at(w, a, b)
+  hit = tilt(b)
+  tick(w, 14)
+  println("the camera was " + before + ", then " + hit + ", and " + tilt(b) + " again")
 
   v.leave(w, b)
   println("one leaves: " + int_to_str(v.players(w)) + " remain, ids " + int_to_str(v.player_id(v.player_block(w, 0))) + " " + int_to_str(v.player_id(v.player_block(w, 1))))

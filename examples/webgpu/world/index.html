@@ -265,7 +265,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=231";
+    import { run } from "./host.js?v=233";
 
     // Whose valley. `?join` takes the one on this host, `?join=ws://box:8091/`
     // somebody else's, and no `join` at all is the valley this tab has to
@@ -310,7 +310,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=231", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=233", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

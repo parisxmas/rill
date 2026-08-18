@@ -42,6 +42,8 @@
 #   f32 51       when anything was last heard from them
 #   f32 32..47   the sun's shadow matrix, column-major
 #   f32 82       health, one to zero        84, 85  the push a blast left
+#   f32 101      the health this player had last frame — see `note_hit`
+#   f32 102..104 what being shot did to their head: a clock, how hard, which way
 #   f32 99       this player's id, which outlives its place in the table
 #   ptr 94       the world it is in; in the world's own block, itself
 #
@@ -1959,6 +1961,7 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   # person taking it was standing.
   poke_f32(s, 16, px)
   poke_f32(s, 17, py + 1.75)
+  note_hit(s, dt)
   poke_f32(s, 18, pz)
 
 # Everything the valley does whether or not anybody is watching: the wind, the
@@ -2010,12 +2013,65 @@ fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Float) =
   pick_up(s)
   look(s, aspect)
 
+# ---- what being shot does to the head ---------------------------------------
+#
+# Nobody announces a hit. Health only ever goes down, so the frame it goes down
+# on is the frame this player was hit — which is how the page already decides
+# which clip to play for everybody else, and it is the same argument: both ends
+# have the health, and sending the hit again would only make it arrive later.
+#
+# It is noticed here rather than at each of the places that do damage, of which
+# there are three and could be four. A round, a blast and whatever a server has
+# decided all land in the same slot in the end, and watching the slot cannot
+# miss one.
+fn kick_secs() = 0.42
+
+fn note_hit(s: Ptr, dt: Float) =
+  hp = peek_f32(s, 82)
+  was = peek_f32(s, 101)
+  poke_f32(s, 101, hp)
+  if hp < was - 0.001 then start_kick(s, was - hp) else fade_kick(s, dt)
+
+fn fade_kick(s, dt) =
+  poke_f32(s, 102, if peek_f32(s, 102) < dt then 0.0 else peek_f32(s, 102) - dt)
+  1
+
+# How hard is what it cost, floored so that a graze still registers: being shot
+# at all is the thing worth telling somebody about, and a hit that took a
+# thirtieth of them off is exactly the one they might otherwise miss.
+#
+# Which way it throws them comes off the wind's clock rather than a random
+# number this file does not have. Two hits running do not throw the head the
+# same way, and a browser and a server working from the same world agree about
+# it without either being asked.
+fn start_kick(s, lost) =
+  poke_f32(s, 102, kick_secs())
+  poke_f32(s, 103, clampf(0.42 + lost * 1.7, 0.0, 1.3))
+  poke_f32(s, 104, if sin(peek_f32(wd(s), 28) * 9.7) < 0.0 then 0.0 - 1.0 else 1.0)
+  1
+
+# One clock, one strength, one side, and a shape that starts at full and rings
+# down: `u` runs one to zero over the four hundred milliseconds, and the cosine
+# turns what would be a single lean into a couple of wobbles settling out. The
+# square is what makes it snap rather than drift back.
+fn kick_at(s) =
+  u = peek_f32(s, 102) / kick_secs()
+  if u <= 0.0 then 0.0 else peek_f32(s, 103) * u * u * cos((1.0 - u) * 15.0)
+
 # The camera alone. A client in someone else's valley walks, steps what it is
 # allowed to step, applies what it has been told, and only then works out where
 # to look from — which is why this is a call of its own rather than the tail of
 # `frame`.
-fn look(s: Ptr, aspect: Float) =
-  camera(s, peek_f32(s, 21), peek_f32(s, 22) + 1.75, peek_f32(s, 23), peek_f32(s, 19), peek_f32(s, 20), aspect)
+#
+# The kick goes on the camera and not on the yaw and pitch themselves: a round
+# should throw the view about, not turn the player. Roll is most of what sells
+# it — three degrees of tilt reads as a head snapping sideways in a way that
+# the same angle spent on the pitch reads only as recoil — and the rifle rides
+# it for nothing, being placed relative to the eye.
+fn look(s: Ptr, aspect: Float) = aimed(s, aspect, kick_at(s), peek_f32(s, 104))
+
+fn aimed(s, aspect, k, side) =
+  camera(s, peek_f32(s, 21), peek_f32(s, 22) + 1.75, peek_f32(s, 23), peek_f32(s, 19) + k * side * 0.05, clampf(peek_f32(s, 20) + k * 0.075, 0.0 - 1.55, 1.55), k * side * 0.14, aspect)
 
 # The view-projection matrix, written straight into the state.
 #
@@ -2023,16 +2079,27 @@ fn look(s: Ptr, aspect: Float) =
 # cross product. The projection is WebGPU's zero-to-one depth, near 0.1, far
 # 420, and the product with the view collapses because the projection is
 # almost diagonal — each column below is `P * V` worked out by hand.
-fn camera(s, ex, ey, ez, yaw, pitch, aspect) =
+fn camera(s, ex, ey, ez, yaw, pitch, roll, aspect) =
   cp = cos(pitch)
   dx = sin(yaw) * cp
   dy = sin(pitch)
   dz = (0.0 - cos(yaw)) * cp
-  rx = cos(yaw)
-  rz = sin(yaw)
-  ux = 0.0 - rz * dy
-  uy = rz * dx - rx * dz
-  uz = rx * dy
+  r0x = cos(yaw)
+  r0z = sin(yaw)
+  u0x = 0.0 - r0z * dy
+  u0y = r0z * dx - r0x * dz
+  u0z = r0x * dy
+  # Rolled about the forward direction, which leaves the direction alone and
+  # tilts only what across and up mean. Right has no height of its own until
+  # this happens, which is why it grows a y here and had none above.
+  cr = cos(roll)
+  sr = sin(roll)
+  rx = r0x * cr + u0x * sr
+  ry = u0y * sr
+  rz = r0z * cr + u0z * sr
+  ux = u0x * cr - r0x * sr
+  uy = u0y * cr
+  uz = u0z * cr - r0z * sr
   bx = 0.0 - dx
   by = 0.0 - dy
   bz = 0.0 - dz
@@ -2044,7 +2111,7 @@ fn camera(s, ex, ey, ez, yaw, pitch, aspect) =
   poke_f32(s, 1, pb * ux)
   poke_f32(s, 2, pc * bx)
   poke_f32(s, 3, 0.0 - bx)
-  poke_f32(s, 4, 0.0)
+  poke_f32(s, 4, pa * ry)
   poke_f32(s, 5, pb * uy)
   poke_f32(s, 6, pc * by)
   poke_f32(s, 7, 0.0 - by)
@@ -2052,7 +2119,7 @@ fn camera(s, ex, ey, ez, yaw, pitch, aspect) =
   poke_f32(s, 9, pb * uz)
   poke_f32(s, 10, pc * bz)
   poke_f32(s, 11, 0.0 - bz)
-  poke_f32(s, 12, pa * (0.0 - (rx * ex + rz * ez)))
+  poke_f32(s, 12, pa * (0.0 - (rx * ex + ry * ey + rz * ez)))
   poke_f32(s, 13, pb * (0.0 - (ux * ex + uy * ey + uz * ez)))
   poke_f32(s, 14, pc * (0.0 - (bx * ex + by * ey + bz * ez)) + pd)
   poke_f32(s, 15, bx * ex + by * ey + bz * ez)
