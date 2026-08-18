@@ -15,6 +15,15 @@
   everybody was anonymous — a name that stays yours, and `banned.txt`, read on
   every knock so that saying somebody is not welcome does not need a restart.
 
+- **`write_file` could not create a file on Linux, and never could.** The
+  three flags it hands `open` were the numbers a Mac uses, and the difference
+  is not that Linux calls them something else — it is that the same numbers
+  mean other things there. `O_CREAT | O_TRUNC` from BSD reads on Linux as
+  `O_TRUNC | O_APPEND`, with nothing saying create. Writing over a file that
+  existed worked, which is why nothing noticed for so long; the first program
+  to want a file that was not there yet found out. `examples/io.rill` now
+  writes to a path nothing has used before, so creating is what the test tests.
+
 - **`fn bind` in a Rill program takes the name away from the C library.** Top
   level functions are emitted under their own names, so a program that defines
   one the runtime calls through libc replaces it — and the failure is a socket

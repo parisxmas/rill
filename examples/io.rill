@@ -15,7 +15,14 @@ fn check_missing() = match read_file("/no/such/rill/file")
 
 fn main() =
   println("args >= 1: " + bool_to_str(arg_count() >= 1))
-  path = "/tmp/rill_io_demo.txt"
+  # A path nothing has written to yet, so that creating the file is what is
+  # being tested and not only writing over one. The two are separate flags to
+  # `open` and they are separate numbers on every platform: for a long time
+  # this asked for the ones a Mac uses, which on Linux mean truncate and append
+  # and do not include create at all — so writing over a file worked there and
+  # making one did not, and a fixed path left over from the last run hid it.
+  path = "/tmp/rill_io_demo_" + int_to_str(now_nanos()) + ".txt"
+  println("made a new one: " + bool_to_str(write_file(path, "not this")))
   println("written: " + bool_to_str(write_file(path, "  alpha  \nbeta,gamma,delta\n42\n")))
   check_missing()
   match read_file(path)

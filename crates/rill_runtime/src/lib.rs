@@ -564,6 +564,28 @@ pub unsafe extern "C" fn rill_read_file(path: *const u8) -> *mut u8 {
     p
 }
 
+// The three flags a write needs, which are not the same everywhere. `O_CREAT`
+// and `O_TRUNC` are 0x200 and 0x400 on the BSDs and 0x40 and 0x200 on Linux,
+// and the numbers overlap rather than simply differing: the BSD pair asked for
+// on Linux is `O_TRUNC | O_APPEND` with no `O_CREAT` in it at all. So writing
+// over a file that exists worked and creating one did not, which is why this
+// was wrong for as long as it was — nothing notices until the day a program
+// wants a file that is not there yet. Written out one platform at a time, like
+// the socket constants further down and for the same reason.
+#[cfg(not(target_os = "linux"))]
+const O_WRONLY: i32 = 0x1;
+#[cfg(not(target_os = "linux"))]
+const O_CREAT: i32 = 0x200;
+#[cfg(not(target_os = "linux"))]
+const O_TRUNC: i32 = 0x400;
+
+#[cfg(target_os = "linux")]
+const O_WRONLY: i32 = 0o1;
+#[cfg(target_os = "linux")]
+const O_CREAT: i32 = 0o100;
+#[cfg(target_os = "linux")]
+const O_TRUNC: i32 = 0o1000;
+
 /// Writes (creates/truncates) a whole file; returns success.
 ///
 /// # Safety
@@ -572,8 +594,7 @@ pub unsafe extern "C" fn rill_read_file(path: *const u8) -> *mut u8 {
 pub unsafe extern "C" fn rill_write_file(path: *const u8, content: *const u8) -> i8 {
     IO_OK = 1;
     let c = cstr(path);
-    // O_WRONLY | O_CREAT | O_TRUNC, mode 0644
-    let fd = open(c, 0x1 | 0x200 | 0x400, 0o644 as i32);
+    let fd = open(c, O_WRONLY | O_CREAT | O_TRUNC, 0o644 as i32);
     free(c);
     if fd < 0 {
         IO_OK = 0;

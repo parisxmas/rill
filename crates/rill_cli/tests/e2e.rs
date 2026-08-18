@@ -1146,6 +1146,7 @@ fn file_io_and_text_processing() {
     assert_eq!(
         compile_and_run("io.rill"),
         "args >= 1: true\n\
+         made a new one: true\n\
          written: true\n\
          cannot read /no/such/rill/file\n\
          lines: 3\n\
