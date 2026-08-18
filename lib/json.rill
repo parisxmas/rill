@@ -52,9 +52,27 @@ fn keyword(s, i, word, value) =
   if str_sub(s, i, str_len(word)) == word then Parsed(value, i + str_len(word)) else Failed("`" + word + "` expected", i)
 
 # `"` is 34, `\` is 92.
+#
+# The bytes up to the next `"` or `\` come off in one piece. Nearly every
+# string in a document holds no escape at all, and taking those a byte at a
+# time cost a string the square of its length — a fresh copy of everything
+# read so far, per byte read.
 fn parse_string(s, i, acc) =
+  j = plain_end(s, i)
+  parse_string_at(s, j, joined(acc, str_sub(s, i, j - i)))
+
+# A string with no escape in it is one run, and one run onto nothing is the
+# run itself — worth saying, because it is the case nearly every string is.
+fn joined(acc, run) = if str_len(acc) == 0 then run else acc + run
+
+# Reached only on a `"`, a `\`, or the end: `plain_end` stops at nothing else.
+fn parse_string_at(s, i, acc) =
   c = str_get(s, i)
-  if c < 0 then Failed("the text ended inside a string", i) else if c == 34 then Parsed(JStr(acc), i + 1) else if c == 92 then parse_escape(s, i + 1, acc) else parse_string(s, i + 1, acc + chr(c))
+  if c < 0 then Failed("the text ended inside a string", i) else if c == 34 then Parsed(JStr(acc), i + 1) else parse_escape(s, i + 1, acc)
+
+fn plain_end(s, i) =
+  c = str_get(s, i)
+  if c < 0 || c == 34 || c == 92 then i else plain_end(s, i + 1)
 
 fn parse_escape(s, i, acc) =
   c = str_get(s, i)
@@ -144,20 +162,86 @@ fn object_next(s, i, acc) =
 
 # -- printing -----------------------------------------------------------------
 
-fn to_string(j) = match j
-  JNull -> "null"
-  JBool(b) -> bool_to_str(b)
-  JInt(n) -> int_to_str(n)
-  JNum(n) -> float_to_str(n)
-  JStr(t) -> "\"" + escape(t, 0, "") + "\""
-  JArr(items) -> "[" + join(map(items, \x -> to_string(x)), ",") + "]"
-  JObj(fields) -> "{" + join(map(fields, \f -> field_string(f)), ",") + "}"
+# Written into one builder rather than assembled out of pieces: the old
+# printer built a string per value and a list of them per array, then joined
+# those — so a document of six hundred records made thousands of strings on
+# the way to one. Nothing here makes a string but the builder.
+fn to_string(j) =
+  b = strbuf()
+  put_json(b, j)
+  strbuf_str(b)
 
-fn field_string(f) = match f
-  Field(k, v) -> "\"" + escape(k, 0, "") + "\":" + to_string(v)
+fn put_json(b: StrBuf, j) = match j
+  JNull -> strbuf_add(b, "null")
+  JBool(x) -> strbuf_add(b, bool_to_str(x))
+  JInt(n) -> strbuf_add(b, int_to_str(n))
+  JNum(n) -> strbuf_add(b, float_to_str(n))
+  JStr(t) -> put_quoted(b, t)
+  JArr(xs) ->
+    b += "["
+    put_items(b, xs)
+    b += "]"
+  JObj(fs) ->
+    b += "{"
+    put_fields(b, fs)
+    b += "}"
 
-fn escape(s, i, acc) =
-  if i >= str_len(s) then acc else escape(s, i + 1, acc + escape_byte(str_get(s, i)))
+# The comma belongs before every item but the first, so the first is written
+# and the rest are written by somebody who knows they are not it.
+fn put_items(b: StrBuf, xs) = match xs
+  Nil -> strbuf_add(b, "")
+  Cons(x, rest) ->
+    put_json(b, x)
+    put_more_items(b, rest)
+
+fn put_more_items(b: StrBuf, xs) = match xs
+  Nil -> strbuf_add(b, "")
+  Cons(x, rest) ->
+    b += ","
+    put_json(b, x)
+    put_more_items(b, rest)
+
+fn put_fields(b: StrBuf, fs) = match fs
+  Nil -> strbuf_add(b, "")
+  Cons(f, rest) ->
+    put_field(b, f)
+    put_more_fields(b, rest)
+
+fn put_more_fields(b: StrBuf, fs) = match fs
+  Nil -> strbuf_add(b, "")
+  Cons(f, rest) ->
+    b += ","
+    put_field(b, f)
+    put_more_fields(b, rest)
+
+fn put_field(b: StrBuf, f) = match f
+  Field(k, v) ->
+    put_quoted(b, k)
+    b += ":"
+    put_json(b, v)
+
+fn put_quoted(b: StrBuf, t) =
+  b += "\""
+  put_escaped(b, t, 0)
+  b += "\""
+
+# The same run-at-a-time reading as `parse_string`, for the same reason: a
+# byte needing an escape is the exception, so the stretches between them go in
+# whole.
+fn put_escaped(b: StrBuf, s, i) = put_escaped_run(b, s, i, clean_end(s, i))
+
+fn put_escaped_run(b: StrBuf, s, i, j) =
+  b += str_sub(s, i, j - i)
+  if j >= str_len(s) then strbuf_add(b, "") else put_escaped_byte(b, s, j)
+
+fn put_escaped_byte(b: StrBuf, s, j) =
+  b += escape_byte(str_get(s, j))
+  put_escaped(b, s, j + 1)
+
+fn clean_end(s, i) =
+  if i >= str_len(s) || needs_escaping(str_get(s, i)) then i else clean_end(s, i + 1)
+
+fn needs_escaping(c) = c == 34 || c == 92 || c == 10 || c == 9 || c == 13
 
 fn escape_byte(c) =
   if c == 34 then "\\\"" else if c == 92 then "\\\\" else if c == 10 then "\\n" else if c == 9 then "\\t" else if c == 13 then "\\r" else chr(c)

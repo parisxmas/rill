@@ -19,10 +19,11 @@
 # reading a map and reading an array.
 #
 # It is not smaller than JSON — fixed-width numbers see to that, and a reply
-# of six hundred documents measured about a third larger. It is faster to
-# read, which for a client written in Rill is where nearly all of the
-# difference lies: a length known in front means one `str_sub` where parsing
-# JSON builds a string a byte at a time.
+# of six hundred documents measured about a third larger. What it is is
+# quicker to read: a length known in front means one `str_sub` where a parser
+# has to look for where the value stops. About 1.4 times, end to end on a
+# local socket, and it was 2.5 before `json.rill`'s parser was fixed — most
+# of what looked like the format's advantage was that parser's fault.
 #
 # A request is `0xDB` and a value. A reply is `0xDB`, a status byte — 0 for an
 # answer, 1 for a complaint — and a value. The reply is *not* wrapped in the

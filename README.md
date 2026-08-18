@@ -145,9 +145,9 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 itself: `json.rill` and `yaml.rill`, `http.rill` for HTTP/1.1, `ws.rill` for
 WebSocket, `sha1.rill` for the handshake, and three clients for the OxiDB
 database, one per engine: `oxidb.rill` for documents and `oxitsdb.rill` for
-time series, both over `oxiwire.rill` — the server's binary format, about two
-and a half times faster to talk than its JSON one and about a third larger on
-the wire — and `oxiresp.rill` for the key-value engine over RESP, the protocol
+time series, both over `oxiwire.rill` — the server's binary format, about a
+third larger on the wire than its JSON one and about 1.4 times faster to talk
+— and `oxiresp.rill` for the key-value engine over RESP, the protocol
 Redis speaks. It is not a
 standard library and nothing is promised about it between releases — the
 prelude is the part that ships with the compiler. It is a directory, so

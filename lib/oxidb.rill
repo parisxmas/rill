@@ -7,11 +7,17 @@
 #
 # It spoke JSON until the two were measured against each other. Binary is not
 # the smaller of the two — a reply of six hundred documents came to about a
-# third more bytes, fixed-width numbers being what they are — but it is about
-# two and a half times faster end to end on a local socket, and nearly all of
-# that is this side of the wire: decoding a length-prefixed value is one
-# `str_sub` where parsing JSON text builds every string a byte at a time. Over
-# a slow enough link the extra bytes would take the gain back.
+# third more bytes, fixed-width numbers being what they are — but it is
+# faster: roughly two and a half times, on a local socket, against the JSON
+# parser as it then stood.
+#
+# That last clause matters. Most of the gap was the parser rather than the
+# format, and the parser has since been fixed — it took strings a byte at a
+# time, which cost a string the square of its length. Measured again
+# afterwards the binary is about 1.4 times faster rather than 2.5. It is still
+# the faster wire and there is no reason to go back, but the honest figure is
+# the smaller one, and over a slow enough link the extra bytes would take even
+# that back.
 #
 # Every call answers `Ok(data)` or `Err(message)`. On this wire the status byte
 # carries which of the two it is, so there is no `{"ok":.., "data":..}`
