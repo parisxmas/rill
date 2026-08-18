@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Names over heads.** A browser joining somebody else's valley is asked who
+  it is before it connects, and everybody else sees that over the player's
+  head. The name is sent once and comes back as a `who`, rather than riding in
+  every snapshot twenty times a second: it changes about as often as a person
+  arrives. Somebody walking in is told the whole roster; everybody already
+  there hears about them.
+
+  What arrives is somebody's to choose, so the server cuts it down to letters,
+  digits, a dash and an underscore, twelve at most, and hands out `player7` to
+  anyone who says nothing. A space would have split the line it is sent on,
+  which is the first reason not to pass it through as it came.
+
+  The tags are elements over the canvas rather than geometry in it. Text in a
+  3D scene means a glyph atlas, a quad each and a pipeline to put them through;
+  the browser already has a text engine that hints and kerns and knows about
+  every script there is, and a tag wants to face the camera and stay legible at
+  any distance, which is what it is good at. All that is ours is where it goes:
+  a point above their head, through the same view-projection the valley was
+  drawn with, which is sitting in the first sixteen floats of the state. They
+  fade over the last twenty metres and go amber as somebody runs out of health.
+  They are not occluded by the terrain, which is a choice rather than an
+  oversight.
+
 - **A limit per address, not just in total.** Sixty-four connections was no
   defence against one machine opening sixty-four of them: it could still take
   the whole valley. Sixteen from any one address now — generous for a household

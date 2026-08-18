@@ -204,6 +204,14 @@ cap alone is no defence against one machine opening all sixty-four of them.
 Sixteen is generous for a household or an office behind one address and still
 leaves most of the valley to everybody else.
 
+Everybody is asked who they are before they connect, and their name is drawn
+over their head: sent once, kept by the server, handed to whoever walks in
+next. It is cut down to letters, digits, a dash and an underscore — a space
+would split the line it travels on — and anybody who says nothing is
+`player7`. The tags are elements over the canvas rather than geometry in it,
+placed with the same view-projection matrix the valley is drawn with; they are
+not occluded by the terrain, which is a choice.
+
 It is still a demo server, and nothing here has been through anything harsher
 than an afternoon of being shot at from the same machine.
 The crash this used to die of is fixed — it was a `select` in a loop leaking

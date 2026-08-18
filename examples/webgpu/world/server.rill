@@ -106,6 +106,7 @@ fn address_rows() = 64
 
 type Msg
   Arrived(out: Chan(Str))
+  Named(id: Int, name: Str)
   Moved(id: Int, keys: Int, yaw: Float, pitch: Float)
   Shot(id: Int, dx: Float, dy: Float, dz: Float)
   Left(id: Int)
@@ -116,7 +117,7 @@ type Msg
 # the block, so that the tick reads one thing rather than two that have to be
 # kept in step.
 type Conn
-  Conn(id: Int, block: Ptr, out: Chan(Str))
+  Conn(id: Int, block: Ptr, out: Chan(Str), name: Str)
 
 # ---- the hub ---------------------------------------------------------------
 
@@ -133,6 +134,7 @@ fn if_arrived(m, joins) = match m
 
 fn handle(w, conns, inbox, joins, m) = match m
   Arrived(out) -> admit(w, conns, out)
+  Named(id, name) -> name_one(conns, id, name)
   Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
   Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
   Left(id) -> drop_one(w, conns, id)
@@ -152,8 +154,16 @@ fn welcome(w, conns, s, out) =
   id = v.player_id(s)
   send(out, "hello " + int_to_str(id) + " " + int_to_str(n_pines()) + " " + int_to_str(n_crystals()) + " " + int_to_str(n_grass()) + " " + float_to_str(v.world_time(w)))
   send(out, gone_list(w))
+  roster(conns, out)
   println("player " + int_to_str(id) + " arrived, " + int_to_str(v.players(w)) + " in the valley")
-  Cons(Conn(id, s, out), conns)
+  joined(Cons(Conn(id, s, out, called(id)), conns), id)
+
+# Everybody hears about the new arrival straight away, under the name they get
+# for nothing. A client that goes on to say what it would rather be called
+# sends that separately, and everyone hears again.
+fn joined(conns, id) =
+  tell_all(conns, "who " + int_to_str(id) + " " + called(id))
+  conns
 
 # Which crystals are already gone. A break is an event from here on, but
 # somebody arriving an hour in has missed several hundred of them, and a
@@ -179,13 +189,77 @@ fn find(conns, id) = match conns
   Cons(c, rest) -> if conn_id(c) == id then Some(c) else find(rest, id)
 
 fn conn_id(c) = match c
-  Conn(id, _, _) -> id
+  Conn(id, _, _, _) -> id
 
 fn conn_block(c) = match c
-  Conn(_, s, _) -> s
+  Conn(_, s, _, _) -> s
 
 fn conn_out(c) = match c
-  Conn(_, _, out) -> out
+  Conn(_, _, out, _) -> out
+
+fn conn_name(c) = match c
+  Conn(_, _, _, n) -> n
+
+# ---- who everyone is -------------------------------------------------------
+#
+# A name is sent once and remembered rather than riding in every snapshot
+# twenty times a second: it changes about as often as a person arrives.
+#
+# What comes off the wire is somebody's to choose, so it is cut down to what
+# can be drawn and what cannot break the protocol — letters, digits, a dash and
+# an underscore, twelve of them at most. A space would split the line it is
+# sent on, which is the whole reason this is not passed through as it came.
+fn name_cap() = 12
+
+fn called(id) = "player" + int_to_str(id)
+
+fn clean_name(raw, id) =
+  b = strbuf()
+
+  for i in 0..str_len(raw)
+    keep_char(b, raw, i)
+
+  short = str_sub(strbuf_str(b), 0, name_cap())
+  if str_len(short) == 0 then called(id) else short
+
+fn keep_char(b, raw, i) = if ok_char(str_get(raw, i)) then took(b, str_get(raw, i)) else 0
+
+fn took(b, c) =
+  strbuf_byte(b, c)
+  1
+
+fn ok_char(c) =
+  c >= 48 && c <= 57 || (c >= 65 && c <= 90 || (c >= 97 && c <= 122 || (c == 45 || c == 95)))
+
+fn name_one(conns, id, raw) = match find(conns, id)
+  None -> conns
+  Some(c) -> rename(conns, c, id, clean_name(raw, id))
+
+fn rename(conns, c, id, name) =
+  next = replace(conns, id, Conn(id, conn_block(c), conn_out(c), name))
+  tell_all(next, "who " + int_to_str(id) + " " + name)
+  next
+
+fn replace(conns, id, c2) = match conns
+  Nil -> Nil
+  Cons(c, rest) -> if conn_id(c) == id then Cons(c2, rest) else Cons(c, replace(rest, id, c2))
+
+fn tell_all(conns, line) = match conns
+  Nil -> 0
+  Cons(c, rest) -> tell_one(c, rest, line)
+
+fn tell_one(c, rest, line) =
+  offer(conn_out(c), line)
+  tell_all(rest, line)
+
+# Everyone already here, for somebody who has just walked in.
+fn roster(conns, out) = match conns
+  Nil -> 0
+  Cons(c, rest) -> roster_one(c, rest, out)
+
+fn roster_one(c, rest, out) =
+  offer(out, "who " + int_to_str(conn_id(c)) + " " + conn_name(c))
+  roster(rest, out)
 
 # An input is a look and a set of keys, and the walk is run at the tick rate
 # from whatever the last one said. Running it on arrival instead would let a
@@ -199,10 +273,6 @@ fn apply_input(w, conns, c, keys, yaw, pitch) =
   v.set_keys(conn_block(c), keys)
   v.heard(conn_block(c), v.world_time(w))
   conns
-
-fn replace(conns, id, c2) = match conns
-  Nil -> Nil
-  Cons(c, rest) -> if conn_id(c) == id then Cons(c2, rest) else Cons(c, replace(rest, id, c2))
 
 # A shot is asked for here and taken at the next tick, with everybody else's.
 fn shoot_one(w, conns, id, dx, dy, dz) = match find(conns, id)
@@ -488,7 +558,7 @@ fn handle_line(conn, inbox, id, budget, until, msg, rest) =
   reader(conn, inbox, id, budget - 1, until, rest)
 
 fn route(inbox, id, kind, parts) =
-  if kind == "i" then tell(inbox, Moved(id, num_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "f" then tell(inbox, Shot(id, fnum_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else 0
+  if kind == "i" then tell(inbox, Moved(id, num_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "f" then tell(inbox, Shot(id, fnum_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "n" then tell(inbox, Named(id, unwrap_or(nth(parts, 1), ""))) else 0
 
 fn tell(inbox, m) =
   send(inbox, m)
