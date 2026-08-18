@@ -43,6 +43,7 @@
 #   f32 32..47   the sun's shadow matrix, column-major
 #   f32 82       health, one to zero        84, 85  the push a blast left
 #   f32 101      the health this player had last frame — see `note_hit`
+#   f32 107      how long they have been down, in seconds
 #   f32 102..104 what being shot did to their head: a clock, how hard, which way
 #   f32 99       this player's id, which outlives its place in the table
 #   ptr 94       the world it is in; in the world's own block, itself
@@ -1555,6 +1556,7 @@ fn place_player(s) =
   poke_f32(s, 82, 1.0)
   poke_f32(s, 84, 0.0)
   poke_f32(s, 85, 0.0)
+  poke_f32(s, 107, 0.0)
   poke_f32(s, 30, 0.0)
   poke_f32(s, 31, 0.0)
   poke_f32(s, 52, 0.0 - 99.0)
@@ -1976,14 +1978,21 @@ fn jump_vel(keys, grounded, vy) =
 # player and the order it runs them in does not matter.
 fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   w = wd(s)
-  yaw = peek_f32(s, 19) + mdx * 0.0026
-  pitch = clampf(peek_f32(s, 20) - mdy * 0.0026, 0.0 - 1.45, 1.45)
+  # Somebody on the ground does not walk and does not look about. Both ends run
+  # this, so the keys a dead client keeps sending are ignored in the same way
+  # in both places rather than only where somebody thought to check.
+  dead = if peek_f32(s, 82) < 0.001 then 1.0 else 0.0
+  lie(s, dead, dt)
+  live = 1.0 - dead
+  k = if dead > 0.5 then 0 else keys
+  yaw = peek_f32(s, 19) + mdx * 0.0026 * live
+  pitch = clampf(peek_f32(s, 20) - mdy * 0.0026 * live, 0.0 - 1.45, 1.45)
   fx = sin(yaw)
   fz = 0.0 - cos(yaw)
-  wx = walk_axis(keys, 1, 2) * fx + walk_axis(keys, 8, 4) * (0.0 - fz)
-  wz = walk_axis(keys, 1, 2) * fz + walk_axis(keys, 8, 4) * fx
+  wx = walk_axis(k, 1, 2) * fx + walk_axis(k, 8, 4) * (0.0 - fz)
+  wz = walk_axis(k, 1, 2) * fz + walk_axis(k, 8, 4) * fx
   wl = sqrt(wx * wx + wz * wz)
-  step = (if bit_and(keys, 32) == 32 then 16.0 else 7.5) * dt
+  step = (if bit_and(k, 32) == 32 then 16.0 else 7.5) * dt
   # What a blast is still pushing you by, spent down over about a fifth of a
   # second. It goes in beside the walk rather than instead of it, so you can
   # walk against it and the collisions below still run on where you end up.
@@ -2001,7 +2010,7 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   px = peek_f32(s, 21)
   pz = peek_f32(s, 23)
   gnd = height(px, pz)
-  vy = jump_vel(keys, peek_f32(s, 25), peek_f32(s, 24)) - 26.0 * dt
+  vy = jump_vel(k, peek_f32(s, 25), peek_f32(s, 24)) - 26.0 * dt
   py0 = peek_f32(s, 22) + vy * dt
   py = if py0 < gnd then gnd else py0
   poke_f32(s, 19, yaw)
@@ -2054,6 +2063,20 @@ fn step_visuals(w: Ptr, dt: Float) =
   step_fireballs(w, peek_ptr(w, 74), dt, 0)
   step_blasts(peek_ptr(w, 81), dt)
 
+# Whoever has been down long enough is put back on their feet where they
+# started, in the valley as it now is: the crystals they broke stay broken and
+# the crater they fell in is still there.
+#
+# Called by the server and not by `step_world`, which a browser alone in its
+# own valley also runs: there, running out of health is the end of the thing
+# and there is a screen that says so. Standing somebody back up is a decision,
+# and the decisions are the server's.
+fn rise_all(w) =
+  for i in 0..player_count(w)
+    rise_one(player_at(w, i))
+
+fn rise_one(s) = if may_rise(s) > 0 then respawn(s) else 0
+
 # What one player sweeps up off the ground, after the world has finished
 # moving it about.
 fn pick_up(s: Ptr) = gather(s, peek_ptr(wd(s), 69))
@@ -2079,6 +2102,40 @@ fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Float) =
 # decided all land in the same slot in the end, and watching the slot cannot
 # miss one.
 fn kick_secs() = 0.42
+
+# ---- and what dying does ----------------------------------------------------
+#
+# Five seconds on the ground. Long enough that it is an event and not a
+# stutter — you watch the valley from where you fell, and whoever shot you
+# walks past — and short enough that it is not a punishment.
+#
+# The clock is kept by whoever is running `walk`, which is both ends: a client
+# needs it for the camera and for the number on the screen, a server needs it
+# to decide when somebody may stand up. The standing up itself is `step_world`'s
+# and so the server's, like every other decision in here.
+fn dead_secs() = 5.0
+
+fn down_for(s: Ptr) -> Float = peek_f32(s, 107)
+
+fn may_rise(s: Ptr) -> Int = if peek_f32(s, 82) < 0.001 && peek_f32(s, 107) > dead_secs() then 1 else 0
+
+fn lie(s, dead, dt) =
+  poke_f32(s, 107, if dead > 0.5 then peek_f32(s, 107) + dt else 0.0)
+  1
+
+# The fall, nought to one over three quarters of a second and smooth at both
+# ends. The eye goes down to where a head on the ground is and the horizon
+# rolls over with it — a camera that simply cut to ankle height would read as
+# a bug, and one that stayed at eye level while the figure fell would read as
+# a ghost.
+fn fell(s) =
+  u = clampf(peek_f32(s, 107) / 0.75, 0.0, 1.0)
+  u * u * (3.0 - 2.0 * u)
+
+# Which way they go over: the side the last round threw their head, so falling
+# finishes the motion being shot started. Nought is nobody's side, and goes
+# right.
+fn fall_side(s) = if peek_f32(s, 104) < 0.0 then 0.0 - 1.0 else 1.0
 
 fn note_hit(s: Ptr, dt: Float) =
   hp = peek_f32(s, 82)
@@ -2122,10 +2179,10 @@ fn kick_at(s) =
 # it — three degrees of tilt reads as a head snapping sideways in a way that
 # the same angle spent on the pitch reads only as recoil — and the rifle rides
 # it for nothing, being placed relative to the eye.
-fn look(s: Ptr, aspect: Float) = aimed(s, aspect, kick_at(s), peek_f32(s, 104))
+fn look(s: Ptr, aspect: Float) = aimed(s, aspect, kick_at(s), peek_f32(s, 104), fell(s))
 
-fn aimed(s, aspect, k, side) =
-  camera(s, peek_f32(s, 21), peek_f32(s, 22) + 1.75, peek_f32(s, 23), peek_f32(s, 19) + k * side * 0.05, clampf(peek_f32(s, 20) + k * 0.075, 0.0 - 1.55, 1.55), k * side * 0.14, aspect)
+fn aimed(s, aspect, k, side, f) =
+  camera(s, peek_f32(s, 21), peek_f32(s, 22) + 1.75 - 1.4 * f, peek_f32(s, 23), peek_f32(s, 19) + k * side * 0.05, clampf(peek_f32(s, 20) + k * 0.075 - 0.45 * f, 0.0 - 1.55, 1.55), k * side * 0.14 + fall_side(s) * 1.3 * f, aspect)
 
 # The view-projection matrix, written straight into the state.
 #

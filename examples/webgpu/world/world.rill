@@ -89,6 +89,11 @@ export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Fl
 
 export fn look(s: Ptr, aspect: Float) = v.look(s, aspect)
 
+# How long this player has been on the ground, and how long that lasts — the
+# page counts the seconds down on screen out of these two.
+export fn down_for(s: Ptr) -> Float = v.down_for(s)
+export fn dead_secs() -> Float = v.dead_secs()
+
 # Where this browser is drawing the other people, so that a round can stop at
 # one. Written every frame from the same interpolated positions the figures
 # are drawn at, and read by nothing but the bullet step.

@@ -385,7 +385,7 @@ fn tick(w, conns) =
   fire_all(w, conns)
   v.step_world(w, dt())
   pick_all(conns)
-  revive_all(conns)
+  v.rise_all(w)
   left = drop_quiet(w, conns, v.world_time(w))
   send_shots(w, left, shots0)
   send_throws(w, left, throws0)
@@ -481,18 +481,13 @@ fn pick_one(c, rest) =
   v.pick_up(conn_block(c))
   pick_all(rest)
 
-# Being killed puts you back at the spawn with the valley as you left it. There
-# is nothing else sensible to do with somebody in a world that does not end:
-# the crystals they broke stay broken and the crater they were standing in is
-# still there.
-fn revive_all(conns) = match conns
-  Nil -> 0
-  Cons(c, rest) -> revive_one(c, rest)
+# Being killed leaves you on the ground for five seconds and then puts you back
+# at the spawn with the valley as you left it. There is nothing else sensible
+# to do with somebody in a world that does not end: the crystals they broke
+# stay broken and the crater they were standing in is still there. Both halves
+# of that — the clock and the standing up — are `valley.rill`'s, so a browser
+# alone in its own valley falls over the same way.
 
-fn revive_one(c, rest) =
-  s = conn_block(c)
-  if v.health(s) < 0.001 then v.respawn(s) else 0
-  revive_all(rest)
 
 # ---- what goes on the wire -------------------------------------------------
 #

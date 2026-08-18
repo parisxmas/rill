@@ -132,6 +132,19 @@
       color: rgba(255, 255, 255, 0.42);
     }
 
+    /* Down, in somebody else's valley — where running out of health is not the
+       end of anything, it is five seconds on your back. The count is the whole
+       point of the screen: without it, being dead is indistinguishable from
+       being broken. It is the largest thing on the page for the same reason
+       the letters above it are. */
+    .over.dead span { color: #e0503a; text-shadow: 0 0 40px rgba(224, 80, 58, 0.3), 0 0 4px rgba(0, 0, 0, 0.9); }
+    .over.dead { transition-duration: 260ms; }
+    .over.dead span.tick {
+      font-size: clamp(4rem, 22vw, 16rem); color: #f6c02e;
+      text-shadow: 0 0 60px rgba(246, 192, 46, 0.3), 0 0 4px rgba(0, 0, 0, 0.9);
+      font-variant-numeric: tabular-nums; transform: none; transition: none;
+    }
+
     /* The same caption, for the socket rather than the crystals. Red instead
        of amber and it arrives in a fifth of a second rather than easing in
        over a second and a half: an ending is something to sit with, a dropped
@@ -249,6 +262,7 @@
   <div class="warn" id="warn"></div>
   <div class="tally" id="tally"></div>
   <div class="vit" id="vit"><i id="vitfill"></i></div>
+  <div class="over dead" id="dead"><span>YOU ARE DEAD</span><span class="tick" id="tick">5</span><small>back on your feet in a moment</small></div>
   <div class="over cut" id="cut"><span>DISCONNECTED</span><em>the valley went on without you</em><small>reload to go back</small></div>
   <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em><small>space to begin again</small></div>
   <div class="boot" id="boot">
@@ -274,7 +288,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=237";
+    import { run } from "./host.js?v=238";
 
     // Whose valley. `?join` takes the one on this host, `?join=ws://box:8091/`
     // somebody else's, and no `join` at all is the valley this tab has to
@@ -319,7 +333,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=237", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=238", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

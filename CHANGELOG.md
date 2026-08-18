@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **Five seconds on the ground.** Running out of health in a shared valley used
+  to be a frame: the server stood you back up on the next tick, so the die clip
+  never played and being killed was a teleport with a health bar behind it. Now
+  you go over, you stay there for five seconds, and then you are back at the
+  spawn — long enough that it is an event and that whoever shot you walks past,
+  short enough that it is not a punishment.
+
+  The camera goes down with the body. The eye falls from a metre seventy-five
+  to a metre thirty-five below that, the horizon rolls a quarter turn, and it
+  goes over on the side the last round threw the head — so the fall finishes
+  the motion being shot started. A camera that cut to ankle height would read
+  as a bug and one that stayed at eye level while the figure fell would read as
+  a ghost, so it eases over three quarters of a second, smooth at both ends.
+
+  On screen: **YOU ARE DEAD**, and the seconds counting down under it in the
+  largest numerals on the page. The count is the point of the screen — without
+  it, being dead is indistinguishable from being broken. It counts against the
+  same clock the server decides on, rather than a timer of its own that agrees
+  for a while.
+
+  Somebody on the ground does not walk, does not look about and cannot fire.
+  All three are in `walk`, which both ends run, so the keys a dead client keeps
+  sending are ignored the same way in both places rather than only where
+  somebody thought to check. Getting up is a decision and so is the server's;
+  the clock is kept by both, because a client needs it for the camera and for
+  the number.
+
+  Alone in your own valley none of this happens: there, running out of health
+  is the end of the thing and there is already a screen that says so.
+
 - **The rifle stopped lying on its side.** The grip was levelled against the
   bind pose, which is the one pose in the whole library where nobody is holding
   anything: a bind pose has the palms turned down, every armed pose turns the

@@ -231,6 +231,17 @@ protocol at all: a health that has gone down since the last snapshot without
 reaching zero is somebody taking a round, which is the same fact the server
 would have had to send, arriving for nothing.
 
+Being killed leaves you on the ground for five seconds. The camera goes down
+with the body — the eye falls to a third of a metre, the horizon rolls a
+quarter turn, and it goes over on the side the last round threw the head, so
+the fall finishes the motion being shot started — and the screen says YOU ARE
+DEAD with the seconds counting down under it. Somebody on the ground does not
+walk, does not look about and cannot fire, all three in `walk`, which both ends
+run. Getting up is a decision and so the server's; the clock is kept by both,
+because a client needs it for the camera and for the number. Alone in your own
+valley none of this happens: there, running out of health is the end of the
+thing and there is a screen that says so.
+
 Being shot throws the camera about — a roll mostly, settling over four hundred
 milliseconds — and that is noticed rather than announced: health only ever goes
 down, so the frame it goes down on is the frame this player was hit, whether

@@ -43,6 +43,10 @@ fn tilt(s) =
   v.look(s, 1.6)
   if absf(peek_f32(s, 4)) < 0.001 then "level" else "thrown"
 
+# How high the eye is above their own feet, which is where the camera went
+# when they did: `look` writes it, so this reads it after `tilt` has looked.
+fn eye(s) = float_to_str(peek_f32(s, 17) - v.player_y(s))
+
 # One player turns to the other and fires, once, and the round is given long
 # enough to get there.
 fn shoot_at(w, a, b) =
@@ -72,6 +76,17 @@ fn drifted(w, n) =
 fn alive(w) =
   drift(w, 10)
   if v.bullet_f(w, v.shots(w) - 1, 7) > 0.001 then "still flying" else "stopped"
+
+# A server's tick, near enough: everybody walks, the world moves, everybody
+# picks up, and whoever has been down long enough gets up.
+fn serve(w, n) = if n == 0 then 0 else served(w, n)
+
+fn served(w, n) =
+  walk_all(w)
+  v.step_world(w, 0.05)
+  pick_all(w)
+  v.rise_all(w)
+  serve(w, n - 1)
 
 fn main() =
   w = v.init(48, 400, 300, 900)
@@ -125,6 +140,16 @@ fn main() =
   v.set_ghost(w, 0, gx, gy, gz)
   aim_at(a, gx, gy + 0.95, gz)
   println("with somebody drawn there, it is " + alive(w) + " at the same point")
+
+  # Down, and up again five seconds later — and not before. The camera goes
+  # over with them, which is the matrix again rather than anybody's word.
+  shoot_at(w, a, b)
+  shoot_at(w, a, b)
+  println("shot down, they are on " + float_to_str(v.health(b)) + " and the camera is " + tilt(b) + ", eye at " + eye(b))
+  serve(w, 60)
+  println("three seconds later, still on " + float_to_str(v.health(b)) + ", camera " + tilt(b) + ", eye at " + eye(b))
+  serve(w, 60)
+  println("six seconds later, on " + float_to_str(v.health(b)) + ", camera " + tilt(b) + ", eye at " + eye(b))
 
   v.leave(w, b)
   println("one leaves: " + int_to_str(v.players(w)) + " remain, ids " + int_to_str(v.player_id(v.player_block(w, 0))) + " " + int_to_str(v.player_id(v.player_block(w, 1))))

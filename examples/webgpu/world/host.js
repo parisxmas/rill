@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=237";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=237";
+import { load } from "./world.js?v=238";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=238";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=237";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "237";
+const V = "238";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2077,6 +2077,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
+  const deadEl = document.getElementById("dead");
+  const tickEl = document.getElementById("tick");
+  // How long the valley leaves somebody on the ground. Asked of Rill rather
+  // than written here twice: the number that matters is the one the server
+  // counts against, and this only says it out loud.
+  const DOWN_FOR = E.dead_secs();
+  let saidDown = "";
   const tally = document.getElementById("tally");
   const vitfill = document.getElementById("vitfill");
   let lastHp = -1, hurtUntil = 0;
@@ -2351,6 +2358,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // is the last thing everybody agreed about, and it stays there.
     if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");
 
+    // Down, and how long for. The clock is Rill's — the same one the server
+    // counts against to decide when somebody may stand up — so the number on
+    // the screen and the moment they actually get up are the same fact rather
+    // than two timers that agree for a while.
+    if (net) {
+      const down = E.health(state) <= 0.001;
+      if (down) {
+        const left = Math.max(0, Math.ceil(DOWN_FOR - E.down_for(state)));
+        const say = `${left}`;
+        if (say !== saidDown) { tickEl.textContent = say; saidDown = say; }
+      }
+      if (down !== deadEl.classList.contains("on")) deadEl.classList.toggle("on", down);
+    }
+
     // Anything break in there? Rill counts them; the host only has to notice.
     // Not `>`: a tier change rebuilds the world and puts the tally back to
     // zero, and a mirror that only ever climbs would go deaf until it caught
@@ -2527,7 +2548,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         : hp > 0.28
           ? "linear-gradient(90deg, #f6832e, #f6c02e)"
           : "linear-gradient(90deg, #d92d2d, #f6642e)";
-      if (hp <= 0.001 && !ended) {
+      // Alone, running out of health is the end of the thing and there is a
+      // screen for it. In somebody else's valley it is five seconds on your
+      // back, so it gets a different screen and a number counting down — being
+      // dead has to be told apart from being broken, and the count is the only
+      // thing on the page that can do it.
+      if (hp <= 0.001 && !ended && !net) {
         ended = true;
         document.querySelector("#over em").textContent = "the valley kept its crystals";
         document.getElementById("over").classList.add("on");

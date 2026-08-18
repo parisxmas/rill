@@ -882,6 +882,11 @@ fn shared_valley() {
             "the camera was level, then thrown, and level again\n",
             "with nobody drawn there, the round is still flying ten metres on\n",
             "with somebody drawn there, it is stopped at the same point\n",
+            "  they are on 0.32, the shooter still on 1\n",
+            "  they are on 0, the shooter still on 1\n",
+            "shot down, they are on 0 and the camera is thrown, eye at 1.1199\n",
+            "three seconds later, still on 0, camera thrown, eye at 0.35\n",
+            "six seconds later, on 1, camera level, eye at 1.75\n",
             "one leaves: 2 remain, ids 0 2\n",
             "the valley is put away\n",
         )
