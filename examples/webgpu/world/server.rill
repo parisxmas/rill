@@ -401,6 +401,7 @@ fn tick(w, conns) =
   throws0 = v.throws(w)
   craters0 = v.blasts_fired(w)
   breaks0 = v.breaks(w)
+  hurts0 = v.hurts(w)
   walk_all(conns)
   fire_all(w, conns)
   v.step_world(w, dt())
@@ -411,6 +412,7 @@ fn tick(w, conns) =
   send_throws(w, left, throws0)
   send_craters(w, left, craters0)
   send_breaks(w, left, breaks0)
+  send_hurts(w, left, hurts0)
   broadcast(w, left, snapshot(w, left))
   left
 
@@ -468,6 +470,20 @@ fn send_crater(w, conns, k) =
   strbuf_add(b, " " + float_to_str(v.blast_f(w, k, 3)))
   broadcast(w, conns, strbuf_str(b))
   send_craters(w, conns, k + 1)
+
+# Who hit whom, and for how much. Sent to everybody rather than to the one it
+# happened to: it costs three numbers, and a client that knows what happened to
+# the person beside it can say so — which is the difference between a valley
+# where things happen and one where they happen to you.
+fn send_hurts(w, conns, from) =
+  if from == v.hurts(w) then 0 else send_hurt(w, conns, from)
+
+fn send_hurt(w, conns, k) =
+  b = strbuf()
+  strbuf_add(b, "x " + int_to_str(to_int(v.hurt_f(w, k, 0))) + " " + int_to_str(to_int(v.hurt_f(w, k, 1))))
+  strbuf_add(b, " " + float_to_str(v.hurt_f(w, k, 2)))
+  broadcast(w, conns, strbuf_str(b))
+  send_hurts(w, conns, k + 1)
 
 fn send_breaks(w, conns, from) =
   if from == v.breaks(w) then 0 else send_break(w, conns, from)

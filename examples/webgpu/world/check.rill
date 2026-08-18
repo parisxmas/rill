@@ -52,11 +52,12 @@ fn eye(s) = float_to_str(peek_f32(s, 17) - v.player_y(s))
 # has just stood up, which is true and is not what this line is asking.
 fn upright(s) = if v.health(s) > 0.5 then "on their feet" else "down"
 
-# One player turns to the other and fires, once, and the round is given long
-# enough to get there.
-fn shoot_at(w, a, b) =
+# One player turns to the other and fires at a height on them, once, and the
+# round is given long enough to get there. `up` is metres above their feet:
+# half a metre is a leg, one is the body, one and six tenths is the head.
+fn shoot_at(w, a, b, up) =
   dx = v.player_x(b) - v.player_x(a)
-  dy = v.player_y(b) + 0.95 - (v.player_y(a) + 1.75)
+  dy = v.player_y(b) + up - (v.player_y(a) + 1.75)
   dz = v.player_z(b) - v.player_z(a)
   l = sqrt(dx * dx + dy * dy + dz * dz)
   v.fire(a, dx / l, dy / l, dz / l)
@@ -115,10 +116,10 @@ fn main() =
   tick(w, 40)
   where_is("the third", c)
 
-  println("the first shoots the second:")
-  shoot_at(w, a, b)
-  shoot_at(w, a, b)
-  shoot_at(w, a, b)
+  println("the first shoots the second in the leg, the body and the head:")
+  shoot_at(w, a, b, 0.45)
+  shoot_at(w, a, b, 1.05)
+  shoot_at(w, a, b, 1.62)
   println("  the first has landed " + int_to_str(v.hits_given(a)) + " and taken " + int_to_str(v.hits_taken(a)))
   println("  the second has landed " + int_to_str(v.hits_given(b)) + " and taken " + int_to_str(v.hits_taken(b)))
 
@@ -129,7 +130,7 @@ fn main() =
   # Being shot throws the head about. The throw goes on the camera and not on
   # the yaw and pitch, so the way to see it is the matrix rather than the look.
   before = tilt(b)
-  shoot_at(w, a, b)
+  shoot_at(w, a, b, 1.05)
   hit = tilt(b)
   tick(w, 14)
   println("the camera was " + before + ", then " + hit + ", and " + tilt(b) + " again")
@@ -150,8 +151,7 @@ fn main() =
 
   # Down, and up again five seconds later — and not before. The camera goes
   # over with them, which is the matrix again rather than anybody's word.
-  shoot_at(w, a, b)
-  shoot_at(w, a, b)
+  shoot_at(w, a, b, 1.62)
   println("shot down: " + upright(b) + ", camera " + tilt(b) + ", eye at " + eye(b))
   serve(w, 120)
   println("six seconds later: " + upright(b) + ", camera " + tilt(b) + ", eye at " + eye(b))

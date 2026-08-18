@@ -70,6 +70,7 @@
 #   ptr 96       the players, as blocks    f32 98  how many   100  the next id
 #   ptr 97       a ring of which crystal broke, indexed by the tally at 62
 #   f32 105      how many people a client can see    ptr 106  where they are
+#   f32 112      rounds that have found somebody   ptr 113  who, by whom, how much
 #
 # The sun's matrix is written into whichever block was asked, because it is the
 # host that swings the sun and the host has one block in its hand.
@@ -417,13 +418,17 @@ fn set_ghost(w: Ptr, i: Int, x: Float, y: Float, z: Float) =
   poke_f32(g, i * 3 + 2, z)
   1
 
+# The same three spheres the server decides with, so a round stops where it
+# would have counted — head, body and legs, and a leg is most of what is
+# showing when somebody is behind a rock.
 fn ghost_hit(g, i, ax, ay, az, bx, by, bz) =
   x = peek_f32(g, i * 3)
   y = peek_f32(g, i * 3 + 1)
   z = peek_f32(g, i * 3 + 2)
-  body = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 0.95, z) < 0.2025 then 1 else 0
   head = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 1.62, z) < 0.09 then 1 else 0
-  body + head
+  body = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 1.05, z) < 0.1764 then 1 else 0
+  legs = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 0.45, z) < 0.1296 then 1 else 0
+  head + body + legs
 
 fn stop_on_ghosts(w, b, at, ax, ay, az, bx, by, bz) =
   g = peek_ptr(w, 106)
@@ -616,11 +621,23 @@ fn hit_crystals(w, b, at, ax, ay, az, bx, by, bz) =
 # also covers the half metre of air on either side of them, and rounds that
 # went visibly wide still counted.
 #
-# What a hit costs is a third of you, so three rounds. That is deliberately
-# more than the fireballs do — one of those takes an eighth — because the
-# fireballs are weather and the rifle is somebody deciding.
+# What a hit costs depends on where it lands. Three spheres stacked, tested
+# from the top down because the smallest is worth the most:
+#
+#   the head, a tenth of a metre wide at eye height, ends it outright;
+#   the body, from the hips to the shoulders, takes a third;
+#   the legs, from the ground to the hips, take a tenth.
+#
+# The whole of the difficulty of this rifle is now in where it is pointed
+# rather than in how many times it is fired, which is the difference between a
+# shot and a sequence. A body hit is still deliberately worse than a fireball
+# — one of those takes an eighth — because the fireballs are weather and the
+# rifle is somebody deciding.
+fn head_hurt() = 1.0
 
-fn bullet_hurt() = 0.34
+fn body_hurt() = 0.3
+
+fn leg_hurt() = 0.1
 
 fn player_sphere(s, up, r, ax, ay, az, bx, by, bz) =
   d2 = seg_dist2(ax, ay, az, bx, by, bz, peek_f32(s, 21), peek_f32(s, 22) + up, peek_f32(s, 23))
@@ -632,22 +649,55 @@ fn player_sphere(s, up, r, ax, ay, az, bx, by, bz) =
 fn try_hit_player(w, s, owner, b, at, ax, ay, az, bx, by, bz) =
   if peek_f32(s, 99) == owner then 0
   else if peek_f32(s, 82) < 0.001 then 0
-  else
-    body = player_sphere(s, 0.95, 0.45, ax, ay, az, bx, by, bz)
-    head = player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz)
-    if body + head < 0.5 then 0
-    else landed(w, s, owner, b, at)
+  else hit_where(w, s, owner, b, at, ax, ay, az, bx, by, bz)
+
+# Top down: the head is inside the body's sphere as far as a segment test is
+# concerned, so asking about the body first would give away every head shot.
+fn hit_where(w, s, owner, b, at, ax, ay, az, bx, by, bz) =
+  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, head_hurt())
+  else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, body_hurt())
+  else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, leg_hurt())
+  else 0
 
 # Both halves of a hit are written down: one for whoever was hit and one for
 # whoever fired, because the second is the interesting number and cannot be
 # worked out from the first — a valley of four people has no way of telling
 # whose round it was from the fact that somebody flinched.
-fn landed(w, s, owner, b, at) =
+fn landed(w, s, owner, b, at, hurt) =
   poke_f32(b, at + 7, 0.0)
-  poke_f32(s, 82, clampf(peek_f32(s, 82) - bullet_hurt(), 0.0, 1.0))
+  was = peek_f32(s, 82)
+  poke_f32(s, 82, clampf(was - hurt, 0.0, 1.0))
   poke_f32(s, 109, peek_f32(s, 109) + 1.0)
   credit(w, owner)
+  put_hurt(w, peek_f32(s, 99), owner, was - peek_f32(s, 82))
   1
+
+# ---- who hit you ------------------------------------------------------------
+#
+# A ring, and a count that only goes up, in the shape everything else that
+# happens between two ticks is sent in. Three numbers: who was hit, who hit
+# them, and how much of them it took — the last because a hit is not always
+# the same size, and because "sixteen" is a different thing to be told than
+# "you have been shot".
+#
+# Only the server fills this in. A client is told, and tells whoever it is
+# about; it is the one fact in the valley that somebody else knows about you
+# before you do.
+fn hurt_ring() = 32
+
+fn put_hurt(w, victim, shooter, dmg) =
+  k = to_int(peek_f32(w, 112))
+  at = (k % hurt_ring()) * 3
+  hb = peek_ptr(w, 113)
+  poke_f32(hb, at, victim)
+  poke_f32(hb, at + 1, shooter)
+  poke_f32(hb, at + 2, dmg)
+  poke_f32(w, 112, to_float(k + 1))
+  1
+
+fn hurts(w: Ptr) -> Int = to_int(peek_f32(w, 112))
+
+fn hurt_f(w: Ptr, k: Int, j: Int) -> Float = peek_f32(peek_ptr(w, 113), (k % hurt_ring()) * 3 + j)
 
 # The shooter by their id rather than by where they were in the table: a round
 # outlives the slot of whoever fired it, which is the whole reason the id is
@@ -1498,6 +1548,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   blast_buf = alloc_bytes(blast_cap() * blast_stride() * 4)
   break_buf = alloc_bytes(break_ring() * 4)
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
+  hurt_buf = alloc_bytes(hurt_ring() * 3 * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -1512,6 +1563,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 68, bullet_buf)
   poke_ptr(s, 69, shard_buf)
   poke_ptr(s, 106, ghost_buf)
+  poke_ptr(s, 113, hurt_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)

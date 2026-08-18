@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Where a round lands is now the whole of it.** Three spheres stacked and
+  tested from the top down, because the smallest is worth the most: the head
+  ends it outright, the body takes a third, the legs take a tenth. The
+  difficulty of this rifle has moved from how many times it is fired to where
+  it is pointed, which is the difference between a shot and a sequence — and it
+  is what the scope is for. Rounds stop at a leg on the page as well, from the
+  same three spheres, so a man behind a rock is hit where he is showing.
+
+- **Who shot you, and for how much.** Low and in the middle, where the eye goes
+  when something has happened *to* you rather than in front of you: the name in
+  the valley's amber and the number bigger than the words around it. "Hit" is a
+  different thing to be told than "hit for a third of you", and in a valley
+  where four people are firing there is otherwise no way to know whether the
+  round that took you down was aimed at you.
+
+  It is a ring on the world and a cursor that counts up, the same shape as
+  every other thing that happens between two ticks. Sent to everybody rather
+  than to the one it happened to — it is three numbers — because a client that
+  knows what happened to the person beside it can say so, which is the
+  difference between a valley where things happen and one where they happen
+  only to you.
+
 - **Hold the right button to aim.** The world narrows to five times: the far
   ridge is four hundred metres off and somebody standing on it becomes a figure
   rather than a suggestion. The rifle comes eleven centimetres nearer the eye

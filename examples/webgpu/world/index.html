@@ -270,6 +270,26 @@
     .who small { display: block; margin-top: 8px; color: #6f6a8c;
                  font: 11px/1.5 ui-monospace, monospace; letter-spacing: 0.1em; }
 
+    /* Who just shot you, low and in the middle, where the eye goes when
+       something has happened to you rather than in front of you. It says the
+       name and what it cost, because "hit" is a different thing to be told
+       than "hit for a third of you" — and because a valley where four people
+       are firing is one where you cannot otherwise tell whether the round that
+       took you down was aimed. */
+    .took {
+      position: fixed; left: 0; right: 0; bottom: 92px; text-align: center;
+      pointer-events: none; opacity: 0; transition: opacity 320ms ease;
+      font: 600 clamp(20px, 2.1vw, 30px)/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.08em; color: #e0503a;
+      text-shadow: 0 0 14px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.95);
+    }
+    .took.on { opacity: 1; transition-duration: 90ms; }
+    /* The name in the valley's own amber, and what it cost bigger than the
+       words around it — that is the part you read while something else is
+       shooting at you. */
+    .took b { color: #f6c02e; }
+    .took i { font-style: normal; font-size: 1.35em; color: #fff; }
+
     /* The loader. It covers the canvas until a frame has actually been drawn
        on it, so nobody watches a black rectangle wondering whether it works. */
     .boot {
@@ -339,6 +359,7 @@
     <i class="dot"></i>
   </div>
   <div class="warn" id="warn"></div>
+  <div class="took" id="took"></div>
   <div class="tally" id="tally"></div>
   <div class="vit" id="vit"><i id="vitfill"></i></div>
   <div class="over dead" id="dead"><span>YOU ARE DEAD</span><span class="tick" id="tick">5</span><small>back on your feet in a moment</small></div>
@@ -368,7 +389,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=260";
+    import { run } from "./host.js?v=262";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -433,7 +454,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=260", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=262", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

@@ -18,6 +18,7 @@
 //          t <x y z vx vy vz seed life>    a crystal threw
 //          k <x y z seed>                  one landed
 //          b <i>                           crystal i came apart
+//          x <who> <by whom> <how much>    a round found somebody
 //
 //          who <id> <name>                 what to call somebody
 //

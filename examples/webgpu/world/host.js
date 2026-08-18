@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=260";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=260";
+import { load } from "./world.js?v=262";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=262";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=260";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "260";
+const V = "262";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1614,6 +1614,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       else if (e.kind === "t") E.put_fireball(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]);
       else if (e.kind === "k") E.put_blast(world, n[0], n[1], n[2], n[3]);
       else if (e.kind === "b") E.put_break(world, BigInt(n[0]));
+      // Somebody was hit. Everybody is told; only the one it happened to is
+      // shown it, and only when there is a name to put to it — an id is not
+      // an answer to "who shot me".
+      else if (e.kind === "x" && n[0] === net.id) {
+        const who = net.names.get(n[1]);
+        tookEl.innerHTML = `<b>${who ?? "somebody"}</b> hit you for <i>${Math.round(n[2] * 100)}</i>`;
+        tookEl.classList.add("on");
+        tookUntil = performance.now() + 2600;
+      }
     }
   }
 
@@ -2182,6 +2191,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
+  const tookEl = document.getElementById("took");
+  let tookUntil = 0;
   const crosshair = document.querySelector(".aim");
   const scopeEl = document.getElementById("scope");
   let sighted = 1, saidScope = -1;
@@ -2552,6 +2563,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // then all of it.
       scopeEl.style.setProperty("--ret", `${Math.max(0, (a - 0.7) / 0.25).toFixed(2)}`);
     }
+
+    if (tookUntil && now > tookUntil) { tookEl.classList.remove("on"); tookUntil = 0; }
 
     if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");
 

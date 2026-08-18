@@ -321,6 +321,15 @@ masked, so a crouching player is still down and a running one still bobs. The
 mask is in `figure.mesh` a joint at a time, because the rule has an exception
 in it and the place to know about that is the tool reading the rig.
 
+What a round costs depends on where it lands: the head ends it, the body takes
+a third, the legs a tenth — three spheres tested from the top down, since the
+smallest is worth the most. Whoever is hit is told who hit them and for how
+much, low and in the middle of their screen: it goes out as a ring and a cursor
+like everything else that happens between two ticks, and to everybody rather
+than to the one it happened to, because three numbers are cheap and a valley
+where you can see what is happening to the person beside you is a different
+place from one where you can only see what is happening to you.
+
 A round stops at the person it hit. On the server that is `try_hit_player`; on
 a client there are no player blocks but its own, so the page writes down where
 it is drawing everybody and the rounds stop there. No health lives in that
