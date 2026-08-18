@@ -235,9 +235,11 @@ Being killed leaves you on the ground for five seconds. The camera goes down
 with the body — the eye falls to a third of a metre, the horizon rolls a
 quarter turn, and it goes over on the side the last round threw the head, so
 the fall finishes the motion being shot started — and the screen says YOU ARE
-DEAD with the seconds counting down under it. Somebody on the ground does not
-walk, does not look about and cannot fire, all three in `walk`, which both ends
-run. Getting up is a decision and so the server's; the clock is kept by both,
+DEAD with the seconds counting down under it. The rifle goes with them — no
+viewmodel while you are down, because a gun held out in front of a camera lying
+in the grass is the one thing on that screen still behaving as though nothing
+had happened. Somebody on the ground does not walk, does not look about and
+cannot fire, all three in `walk`, which both ends run. Getting up is a decision and so the server's; the clock is kept by both,
 because a client needs it for the camera and for the number. Alone in your own
 valley none of this happens: there, running out of health is the end of the
 thing and there is a screen that says so.

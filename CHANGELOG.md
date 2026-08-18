@@ -22,6 +22,11 @@
   same clock the server decides on, rather than a timer of its own that agrees
   for a while.
 
+  The rifle goes with them: no viewmodel while you are down. A gun held out at
+  arm's length in front of a camera lying in the grass is the one thing left on
+  that screen still behaving as though nothing had happened, and the figure
+  everybody else sees had already dropped it.
+
   Somebody on the ground does not walk, does not look about and cannot fire.
   All three are in `walk`, which both ends run, so the keys a dead client keeps
   sending are ignored the same way in both places rather than only where
@@ -164,12 +169,13 @@
   a reply sent from there would time the socket and the kernel, and the socket
   is not what anybody is waiting on.
 
-- **The day is twice as long.** Ninety seconds was a good number for somebody
+- **The day is six minutes long.** Ninety seconds was a good number for somebody
   who would look at this for a minute and a poor one for somebody living in it:
   the shadows visibly crawled and the sun set while you were crossing the
-  meadow. A hundred and eighty is still nothing like a day, still shows a whole
-  one inside a session, and the sky has stopped being something you can watch
-  move.
+  meadow. Three hundred and sixty is still nothing like a day and still shows a
+  whole one inside a session somebody stays in, and the sky has stopped being
+  something you can watch move — the light changes while you are busy and you
+  notice it afterwards, which is what daylight does.
 
 - **Other people are people now.** The blocky figure of stacked cones is gone;
   what stands in the valley is Quaternius' mannequin off the Universal

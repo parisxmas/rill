@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=238";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=238";
+import { load } from "./world.js?v=240";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=240";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=238";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "238";
+const V = "240";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2147,9 +2147,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // A day, in seconds. Ninety was a good number for somebody who would look at
   // this for a minute; it is a poor one for somebody living in it, because the
   // shadows visibly crawl and the sun sets while you are crossing the meadow.
-  // A hundred and eighty is still nothing like a day and still shows a whole
-  // one inside a session, but the sky stops being something you can watch move.
-  const SKY_SPIN = 2 * Math.PI / 180;
+  // Six minutes is still nothing like a day and still shows a whole one inside
+  // a session somebody stays in, and the sky has stopped being something you
+  // can watch move — the light changes while you are busy and you notice it
+  // afterwards, which is what daylight does.
+  const SKY_SPIN = 2 * Math.PI / 360;
   const uf = new Float32Array(UNI_FLOATS);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
@@ -2682,12 +2684,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(blastPipe); pass.setVertexBuffer(0, blastInst); pass.draw(6 * 96, blastCap);
 
     // Last, so it covers the water and the fireflies as well as the ground.
-    pass.setBindGroup(0, W.bgMain);
-    pass.setPipeline(vmPipe);
-    pass.setVertexBuffer(0, rifleVB);
-    pass.setIndexBuffer(rifleIB, "uint16");
-    pass.drawIndexed(rifleIdx);
-    pass.setPipeline(muzzlePipe); pass.draw(12);
+    //
+    // Except when this player is on the ground themselves: a rifle held out at
+    // arm's length in front of a camera lying in the grass is the one thing on
+    // that screen still behaving as though nothing had happened. The figure
+    // everybody else sees drops it with the body; so does this.
+    if (E.health(state) > 0.001) {
+      pass.setBindGroup(0, W.bgMain);
+      pass.setPipeline(vmPipe);
+      pass.setVertexBuffer(0, rifleVB);
+      pass.setIndexBuffer(rifleIB, "uint16");
+      pass.drawIndexed(rifleIdx);
+      pass.setPipeline(muzzlePipe); pass.draw(12);
+    }
     pass.end();
 
     if (qs) {
