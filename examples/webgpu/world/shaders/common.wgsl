@@ -775,12 +775,16 @@
   // enough to take the sights off what they are pointed at.
   const VM_SCALE = 0.46;
   const VM_AT    = vec3f(0.0002 * VM_SCALE + 0.016, -0.0859 * VM_SCALE, 0.26);
-  // And where it goes with the right button held: five centimetres nearer the
-  // eye and dead centre, with the cant taken out of it. The rifle already sits
+  // And where it goes with the right button held: seven centimetres nearer the
+  // eye and dead centre, with the cant taken out of it. Nearer than this and
+  // the eyepiece is most of what there is to see — which is honest, an eye
+  // against a scope does see mostly scope, and it is also unplayable. The rest
+  // of the effect is the page's: a vignette that closes in as the sights come
+  // up, which is what the eye does anyway. The rifle already sits
   // with the scope on the view axis — it always did — so getting behind it is
   // a small move and a long look rather than a new pose. `vmSize.w` says how
   // far through that move it is, nought to one.
-  const VM_AIM   = vec3f(0.0, -0.0859 * VM_SCALE, 0.21);
+  const VM_AIM   = vec3f(0.0, -0.0859 * VM_SCALE, 0.15);
   const VM_YAW   = -0.055;
   const VM_PITCH =  0.0;
   const VM_ROLL  = -0.115;

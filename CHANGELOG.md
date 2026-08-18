@@ -2,13 +2,19 @@
 
 ## Unreleased
 
-- **Hold the right button to aim.** The world narrows to two and a half times
-  — a scope, not a telescope: enough that somebody at two hundred metres is a
-  person rather than a pixel, not so much that the valley leaves the edges of
-  the screen. The rifle comes five centimetres nearer the eye and straightens
-  out of its cant, the sway drops to a quarter, and the crosshair steps back to
-  a quarter of itself, because behind the sights the rifle has its own and two
-  at once is one more than anybody needs.
+- **Hold the right button to aim.** The world narrows to five times: the far
+  ridge is four hundred metres off and somebody standing on it becomes a figure
+  rather than a suggestion. The rifle comes eleven centimetres nearer the eye
+  and straightens out of its cant — close enough that the eyepiece is most of
+  what there is to see, which is what an eye against a scope sees — the sway
+  drops to a quarter, and the crosshair steps back to a quarter of itself,
+  because behind the sights the rifle has its own and two at once is one more
+  than anybody needs.
+
+  The rest of it is the eye rather than the valley, so it is done on the page:
+  a vignette that closes in around the tube as the sights come up, a radial
+  gradient over the canvas that costs nothing next to a pass which would have
+  to touch every pixel.
 
   All of it eased over about a sixth of a second and framerate-independent: a
   field of view that changes between one frame and the next reads as a cut

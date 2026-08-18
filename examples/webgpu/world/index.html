@@ -40,6 +40,16 @@
        than anybody needs. Not hidden — a quarter left, so the centre of the
        screen is still marked while the scope does the aiming. */
     .aim.scoped { opacity: 0.25; }
+
+    /* What the eye does behind a scope: everything outside the tube goes.
+       Drawn here rather than in the valley because it is not in the valley —
+       it is in the eye — and a radial gradient over the canvas costs nothing
+       at all next to a pass that would have to touch every pixel. */
+    .scope {
+      position: fixed; inset: 0; pointer-events: none; opacity: 0;
+      background: radial-gradient(circle at center,
+        rgba(0,0,0,0) 24%, rgba(0,0,0,0.55) 46%, rgba(0,0,0,0.92) 62%, #000 78%);
+    }
     .aim i { position: absolute; background: #fff;
              box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55); }
     .aim .h { width: 10px; height: 2px; }
@@ -269,6 +279,7 @@
   </div>
   <div class="stat" id="stat"></div>
   <div class="who-list" id="roster" hidden><h2>in the valley</h2><div id="rosterRows"></div></div>
+  <div class="scope" id="scope"></div>
   <div class="aim">
     <i class="h l"></i><i class="h r"></i><i class="v u"></i><i class="v d"></i>
     <i class="dot"></i>
@@ -303,7 +314,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=255";
+    import { run } from "./host.js?v=258";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -368,7 +379,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=255", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=258", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

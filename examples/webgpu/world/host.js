@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=255";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=255";
+import { load } from "./world.js?v=258";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=258";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=255";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "255";
+const V = "258";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2183,7 +2183,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
   const crosshair = document.querySelector(".aim");
-  let sighted = false;
+  const scopeEl = document.getElementById("scope");
+  let sighted = false, saidScope = -1;
 
   const deadEl = document.getElementById("dead");
   const tickEl = document.getElementById("tick");
@@ -2199,10 +2200,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // eased, because a field of view that changes between one frame and the next
   // reads as a cut rather than as somebody raising a rifle.
   let wantAim = false, aim = 0;
-  // What the scope does to the world. Two and a half is a modest one — enough
-  // that a figure at two hundred metres is a person rather than a pixel, not
-  // so much that the valley disappears from the edges of the screen.
-  const AIM_ZOOM = 2.5;
+  // What the scope does to the world. Five times: the far ridge is four
+  // hundred metres off and somebody standing on it is a figure rather than a
+  // suggestion. It is a lot of magnification for a rifle, and the mouse is
+  // divided by the same number, so what it costs is how fast you can swing —
+  // which is what a scope costs.
+  const AIM_ZOOM = 5;
   // When this player last told the server anything. See the send below.
   let lastSent = -1e9;
   // Left to fire, right held to aim. Both while the mouse is captured, and
@@ -2529,6 +2532,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The crosshair fades as the scope comes up: two sights at once is one
     // more than anybody needs, and the rifle's own is the one that is aimed.
     if ((aim > 0.5) !== sighted) { sighted = aim > 0.5; crosshair.classList.toggle("scoped", sighted); }
+    // The tube closing in. Written at a fiftieth of the way rather than every
+    // frame, because it is a style property and the compositor has better
+    // things to do with a hundred and forty of them a second.
+    const shade = Math.round(aim * 50);
+    if (shade !== saidScope) { saidScope = shade; scopeEl.style.opacity = `${shade / 50}`; }
 
     if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");
 

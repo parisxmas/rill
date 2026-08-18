@@ -262,12 +262,13 @@ protocol at all: a health that has gone down since the last snapshot without
 reaching zero is somebody taking a round, which is the same fact the server
 would have had to send, arriving for nothing.
 
-Holding the right button aims: the world narrows to two and a half times, the
-rifle comes to the eye and straightens, the sway drops to a quarter and the
-crosshair steps back because the rifle has its own sight. The zoom is one
-number written into the player's block and read by `camera`, so the projection
-is still Rill's; the mouse is slowed by the same factor on the page, or the
-same movement of the hand covers two and a half times the angle.
+Holding the right button aims: the world narrows to five times, the rifle comes
+to the eye and straightens, the sway drops to a quarter, the crosshair steps
+back because the rifle has its own sight, and a vignette closes in around the
+tube. The zoom is one number written into the player's block and read by
+`camera`, so the projection is still Rill's; the mouse is slowed by the same
+factor on the page, or the same movement of the hand covers five times the
+angle and nothing can be held on target.
 
 Being killed leaves you on the ground for ten seconds. The camera goes down
 with the body — the eye falls to a third of a metre, the horizon rolls a
