@@ -3029,6 +3029,7 @@ mod net {
         fn bind(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
         fn listen(fd: i32, backlog: i32) -> i32;
         fn accept(fd: i32, addr: *mut u8, len: *mut u32) -> i32;
+        fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
         fn connect(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
         fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
         fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
@@ -3112,9 +3113,15 @@ mod net {
     // on Linux there is an fd behind the wait and on the BSDs there is not.
 
     #[cfg(not(target_os = "linux"))]
-    use bsd::{poller_arm, poller_open, poller_timer, poller_wait, poller_wake};
+    use bsd::{
+        poller_arm, poller_arm_deadline, poller_disarm, poller_open, poller_timer, poller_wait,
+        poller_wake,
+    };
     #[cfg(target_os = "linux")]
-    use linux::{poller_arm, poller_open, poller_timer, poller_wait, poller_wake};
+    use linux::{
+        poller_arm, poller_arm_deadline, poller_disarm, poller_open, poller_timer, poller_wait,
+        poller_wake,
+    };
 
     #[cfg(not(target_os = "linux"))]
     mod bsd {
@@ -3130,6 +3137,7 @@ mod net {
         /// in `kevent` the moment another worker queues work for it.
         const EVFILT_USER: i16 = -10;
         const EV_ADD: u16 = 0x0001;
+        const EV_DELETE: u16 = 0x0002;
         const EV_ONESHOT: u16 = 0x0010;
         const EV_CLEAR: u16 = 0x0020;
         const NOTE_TRIGGER: u32 = 0x0100_0000;
@@ -3230,6 +3238,58 @@ mod net {
                 return -1;
             }
             0
+        }
+
+        /// The descriptor and a deadline at once, so whichever comes first
+        /// wakes the strand. Both are one-shot; the one that did not fire is
+        /// deleted on the way out, and deleting what is no longer there is a
+        /// harmless `ENOENT`.
+        pub(super) unsafe fn poller_arm_deadline(kq: i32, fd: i32, writable: bool, ms: i64, g: *mut G) -> i32 {
+            let evs = [
+                KEvent {
+                    ident: fd as usize,
+                    filter: if writable { EVFILT_WRITE } else { EVFILT_READ },
+                    flags: EV_ADD | EV_ONESHOT,
+                    fflags: 0,
+                    data: 0,
+                    udata: g as *mut u8,
+                },
+                KEvent {
+                    ident: g as usize,
+                    filter: EVFILT_TIMER,
+                    flags: EV_ADD | EV_ONESHOT,
+                    fflags: 0,
+                    data: ms as isize,
+                    udata: g as *mut u8,
+                },
+            ];
+            if kevent(kq, evs.as_ptr(), 2, core::ptr::null_mut(), 0, core::ptr::null()) < 0 {
+                return -1;
+            }
+            0
+        }
+
+        /// Takes both registrations back down.
+        pub(super) unsafe fn poller_disarm(kq: i32, fd: i32, writable: bool, _held: i32, g: *mut G) {
+            let evs = [
+                KEvent {
+                    ident: fd as usize,
+                    filter: if writable { EVFILT_WRITE } else { EVFILT_READ },
+                    flags: EV_DELETE,
+                    fflags: 0,
+                    data: 0,
+                    udata: core::ptr::null_mut(),
+                },
+                KEvent {
+                    ident: g as usize,
+                    filter: EVFILT_TIMER,
+                    flags: EV_DELETE,
+                    fflags: 0,
+                    data: 0,
+                    udata: core::ptr::null_mut(),
+                },
+            ];
+            kevent(kq, evs.as_ptr(), 2, core::ptr::null_mut(), 0, core::ptr::null());
         }
 
         pub(super) unsafe fn poller_wait(kq: i32, ms: i32, ready: *mut *mut G) -> usize {
@@ -3374,6 +3434,36 @@ mod net {
             fd
         }
 
+        /// The descriptor and a timerfd in the same set, both pointing at the
+        /// same strand. The timerfd is handed back so the waker can close it —
+        /// closing is also what takes it out of the set.
+        pub(super) unsafe fn poller_arm_deadline(ep: i32, fd: i32, writable: bool, ms: i64, g: *mut G) -> i32 {
+            let tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+            if tfd < 0 {
+                return -1;
+            }
+            let spec = ITimerSpec {
+                interval: Timespec { secs: 0, nanos: 0 },
+                value: Timespec { secs: ms / 1000, nanos: (ms % 1000) * 1_000_000 },
+            };
+            if timerfd_settime(tfd, 0, &spec, core::ptr::null_mut()) < 0
+                || !poller_arm(ep, tfd, false, g)
+                || !poller_arm(ep, fd, writable, g)
+            {
+                close(tfd);
+                return -1;
+            }
+            tfd
+        }
+
+        /// The socket's registration is one-shot and disarms itself; the timer
+        /// leaves the set when its descriptor is closed.
+        pub(super) unsafe fn poller_disarm(_ep: i32, _fd: i32, _writable: bool, held: i32, _g: *mut G) {
+            if held > 0 {
+                close(held);
+            }
+        }
+
         pub(super) unsafe fn poller_wait(ep: i32, ms: i32, ready: *mut *mut G) -> usize {
             let mut events: [EpollEvent; READY_BATCH] = core::mem::zeroed();
             let n = epoll_wait(ep, events.as_mut_ptr(), READY_BATCH as i32, ms);
@@ -3440,6 +3530,8 @@ mod net {
         }
     }
 
+    const MSG_PEEK: i32 = 0x2;
+
     unsafe fn set_nonblocking(fd: i32) {
         fcntl(fd, F_SETFL, O_NONBLOCK);
     }
@@ -3491,6 +3583,48 @@ mod net {
         }
     }
 
+    /// Waits until `fd` has something to say or `ms` milliseconds have gone
+    /// by, and says which. The strand parks either way.
+    ///
+    /// Both are armed at once and whichever arrives first wakes the strand;
+    /// the other is taken down afterwards. What it fired on is not asked of
+    /// the poller — a peek at the socket answers it directly, and a peek
+    /// cannot be wrong the way a race between two registrations can.
+    ///
+    /// # Safety
+    /// `fd` must be an open socket; called from strand context.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_sock_wait(fd: i64, ms: i64) -> i8 {
+        if peekable(fd as i32) {
+            return 1;
+        }
+        if ms <= 0 {
+            return 0;
+        }
+        let w = me();
+        let g = (*w).current;
+        (*g).selected = -1;
+        let p = ensure_poller(w);
+        IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        let held = poller_arm_deadline(p, fd as i32, false, ms, g);
+        if held < 0 {
+            IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+            return peekable(fd as i32) as i8;
+        }
+        block_current();
+        poller_disarm(p, fd as i32, false, held, g);
+        peekable(fd as i32) as i8
+    }
+
+    /// Is there anything to read? A one-byte peek, which takes nothing.
+    unsafe fn peekable(fd: i32) -> bool {
+        let mut b: u8 = 0;
+        let n = recv(fd, &raw mut b, 1, MSG_PEEK);
+        // Zero means the peer has closed, which is something to read in the
+        // sense that matters: the read that follows returns "" at once.
+        n >= 0
+    }
+
     /// Waits `ms` milliseconds without holding up the worker.
     ///
     /// # Safety
@@ -3531,10 +3665,17 @@ mod net {
         }
         for i in 0..n {
             let g = ready[i];
-            IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
-            (*g).selected = 0;
+            // A strand can be registered on two things at once — a socket and
+            // a deadline — and both can come ready before it runs. Whoever
+            // gets there first claims it; the second finds it already claimed
+            // and leaves it alone, because queueing the same strand twice
+            // corrupts the run queue and runs it twice.
             lock();
-            make_ready(g);
+            if (*g).selected < 0 {
+                (*g).selected = 0;
+                IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+                make_ready(g);
+            }
             unlock();
         }
         n

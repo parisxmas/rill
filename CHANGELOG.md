@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **A read can be given a deadline: `sock_wait(fd, ms)`.** A socket read had
+  none, so a peer that opened a connection and then said nothing held a strand
+  and a descriptor for as long as it cared to, and the valley server's answer
+  was a cap on how many of those it would hold. Closing the socket from
+  somewhere else is not the fix and this is worth writing down: the reader is
+  parked on that descriptor inside the poller, closing it from another strand
+  does not wake it, and the number can be handed to the next connection while
+  the old registration is still armed.
+
+  So the descriptor and a deadline are armed together — two kevents in one call
+  on the BSDs, a socket and a timerfd in the same epoll set on Linux — and
+  whichever arrives first wakes the strand. What it fired on is not asked of
+  the poller: a one-byte `MSG_PEEK` answers it directly, and a peek cannot be
+  wrong the way a race between two registrations can.
+
+  Which uncovered a hazard worth fixing on its own: a strand registered on two
+  things could be made runnable twice, and queueing the same strand twice
+  corrupts the run queue. Whoever claims it first now wins, and the second
+  event finds it claimed and leaves it alone.
+
+  The valley server gives a connection five seconds to get its handshake in,
+  measured against the clock rather than per read so that dribbling a byte at a
+  time cannot extend it. Eighty sockets that connect and say nothing used to be
+  held indefinitely; they are all let go now, and a real client connects
+  afterwards.
+
 - **`ws.rill` stops assuming a read is a frame.** TCP hands over bytes: one
   read can carry half a frame or three of them. The reader took the first frame
   out of whatever a single read produced and threw the rest away — so a client

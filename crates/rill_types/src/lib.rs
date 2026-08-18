@@ -2050,6 +2050,10 @@ impl Checker {
             "tcp_accept" => Some(("rill_tcp_accept", vec![Ty::Int], Ty::Int)),
             "tcp_connect" => Some(("rill_tcp_connect", vec![Ty::Str, Ty::Int], Ty::Int)),
             "sock_read" => Some(("rill_sock_read", vec![Ty::Int], Ty::Str)),
+            // Waits for something to read, or for the time to run out, and
+            // says which — the only way to put a deadline on a connection
+            // that has gone quiet without closing it from another strand.
+            "sock_wait" => Some(("rill_sock_wait", vec![Ty::Int, Ty::Int], Ty::Bool)),
             "sock_write" => Some(("rill_sock_write", vec![Ty::Int, Ty::Str], Ty::Int)),
             "sock_close" => Some(("rill_sock_close", vec![Ty::Int], Ty::Unit)),
             _ => None,
@@ -2871,6 +2875,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "tcp_accept"
             | "tcp_connect"
             | "sock_read"
+            | "sock_wait"
             | "sock_write"
             | "sock_close"
     )

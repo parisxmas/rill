@@ -168,11 +168,12 @@ fn type_label(t: &Ty, adts: &[rill_types::AdtDef]) -> String {
 }
 
 /// The socket builtins, by the runtime symbol each becomes.
-const SOCKET_RT: [&str; 6] = [
+const SOCKET_RT: [&str; 7] = [
     "rill_tcp_listen",
     "rill_tcp_accept",
     "rill_tcp_connect",
     "rill_sock_read",
+    "rill_sock_wait",
     "rill_sock_write",
     "rill_sock_close",
 ];
@@ -1235,6 +1236,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_sock_read", ptrt.fn_type(&[i64t.into()], false), None);
+        self.module.add_function(
+            "rill_sock_wait",
+            self.ctx.bool_type().fn_type(&[i64t.into(), i64t.into()], false),
+            None,
+        );
         self.module.add_function(
             "rill_sock_write",
             i64t.fn_type(&[i64t.into(), ptrt.into()], false),
@@ -2715,9 +2721,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// source, so it counts what was actually emitted — a channel in a
     /// function nothing reaches does not drag a scheduler in.
     fn needs_scheduler(&self) -> bool {
-        const WAITERS: [&str; 13] = [
+        const WAITERS: [&str; 14] = [
             "rill_spawn",
             "rill_sleep_ms",
+            "rill_sock_wait",
             "rill_chan_new",
             "rill_chan_send",
             "rill_chan_recv",

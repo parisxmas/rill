@@ -628,12 +628,29 @@ fn serve(server) =
 | `tcp_accept(server) -> Int` | next connection, parking until one arrives |
 | `tcp_connect(ipv4, port) -> Int` | client socket, or -1 |
 | `sock_read(fd) -> Str` | whatever has arrived; `""` means the peer closed |
+| `sock_wait(fd, ms) -> Bool` | wait for something to read, or give up after `ms` |
 | `sock_write(fd, s) -> Int` | writes all of it, parking as needed |
 | `sock_close(fd)` | |
 
 The prelude wraps the three that can fail: `listen_on`, `accept_on` and
 `connect_to` return `Result`. Addresses are dotted-quad IPv4 — resolving a name
 would block, and nothing in the runtime may block a worker.
+
+`sock_wait` is how a connection gets a deadline. A read has none — a peer that
+opens a socket and then says nothing holds a strand and a descriptor for as
+long as it likes, and there is no shortage of people who will open several
+thousand of those. Closing the socket from another strand is not the answer:
+the reader is parked on that descriptor inside the poller, closing it from
+elsewhere does not wake it, and the number can be handed to the next
+connection while the old registration is still armed.
+
+```
+fn greet(conn) =
+  if sock_wait(conn, 5000) then handshake(conn, sock_read(conn)) else sock_close(conn)
+```
+
+Underneath it the descriptor and a deadline are armed together and whichever
+arrives first wakes the strand; a peek at the socket then says which it was.
 
 Everything above TCP is ordinary Rill: `examples/http/http.rill` is an HTTP/1.1
 server in about a hundred lines — request parsing, routing, responses, and

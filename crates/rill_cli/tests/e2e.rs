@@ -771,6 +771,61 @@ fn wasm_refuses_sleep_ms() {
     assert!(err.contains("`sleep_ms` needs the scheduler"), "{err}");
 }
 
+/// A read can be given a deadline, so a connection that says nothing is not a
+/// connection held for ever.
+#[test]
+fn a_socket_read_can_be_given_a_deadline() {
+    let out = run_source(
+        "sock_wait",
+        "fn serve(conn) =\n  \
+           if sock_wait(conn, 300) then answer(conn) else refuse(conn)\n\
+         \n\
+         fn answer(conn) =\n  \
+           msg = sock_read(conn)\n  \
+           sock_write(conn, \"heard: \" + msg)\n  \
+           sock_close(conn)\n\
+         \n\
+         fn refuse(conn) =\n  \
+           println(\"nothing said, closing\")\n  \
+           sock_close(conn)\n\
+         \n\
+         fn accept_loop(server, n) =\n  \
+           conn = tcp_accept(server)\n  \
+           spawn serve(conn)\n  \
+           if n == 1 then sock_close(server) else accept_loop(server, n - 1)\n\
+         \n\
+         fn talker(port) = match connect_to(\"127.0.0.1\", port)\n  \
+           Err(e) -> println(e)\n  \
+           Ok(fd) -> say(fd)\n\
+         \n\
+         fn say(fd) =\n  \
+           sock_write(fd, \"hello\")\n  \
+           println(sock_read(fd))\n  \
+           sock_close(fd)\n\
+         \n\
+         fn silent(port) = match connect_to(\"127.0.0.1\", port)\n  \
+           Err(e) -> println(e)\n  \
+           Ok(fd) -> hush(fd)\n\
+         \n\
+         fn hush(fd) =\n  \
+           sleep_ms(600)\n  \
+           println(\"the silent one read [\" + sock_read(fd) + \"]\")\n  \
+           sock_close(fd)\n\
+         \n\
+         fn main() = match listen_on(8096)\n  \
+           Err(e) -> println(e)\n  \
+           Ok(server) -> run(server)\n\
+         \n\
+         fn run(server) =\n  \
+           spawn accept_loop(server, 2)\n  \
+           spawn silent(8096)\n  \
+           sleep_ms(100)\n  \
+           talker(8096)\n  \
+           sleep_ms(700)\n",
+    );
+    assert_eq!(out, "heard: hello\nnothing said, closing\nthe silent one read []\n");
+}
+
 /// A `select` in a loop must leave the loop a loop.
 ///
 /// Its case table and its result slot are `alloca`s, and an `alloca` outside

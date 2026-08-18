@@ -192,10 +192,16 @@ tick off the same channel as the key presses, and against an unbounded sender
 the tick never wins at all. Sixty-four sockets may be open at once, whichever
 of them ever say anything.
 
-It is still a demo server. There is no timeout on a connection that opens and
-then says nothing (a read cannot be given a deadline in this language yet, so
-the cap is the only limit), no per-address limit, and `ws.rill` assumes one
-read gives a whole frame — true for messages this small, false in general.
+A connection has five seconds to get its handshake in, measured against the
+clock rather than per read, so a client dribbling a byte at a time cannot
+extend it. That needs `sock_wait`, which the language grew for this: closing
+the socket from another strand would not have worked, because the reader is
+parked on that descriptor inside the poller and closing it from elsewhere does
+not wake it.
+
+It is still a demo server: there is no per-address limit, and nothing here has
+been through anything harsher than an afternoon of being shot at from the same
+machine.
 The crash this used to die of is fixed — it was a `select` in a loop leaking
 its stack, which `CHANGELOG.md` tells properly — but a demo server that has
 been shot at for an afternoon is not a server that has been shot at, so do not

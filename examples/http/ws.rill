@@ -34,6 +34,22 @@ fn send_upgrade(conn, key) =
 
 # -- frames -------------------------------------------------------------------
 
+# The same, but it gives up at a deadline instead of waiting for ever.
+#
+# A connection that opens and then says nothing holds a strand and a
+# descriptor, and there is no shortage of people who will open several
+# thousand of them. `until` is a moment on the monotonic clock, so a client
+# that dribbles a byte at a time cannot keep extending it either.
+fn fill_until(conn, buf, want, until) =
+  if str_len(buf) >= want then buf else fill_left(conn, buf, want, until, (until - now_nanos()) / 1000000)
+
+fn fill_left(conn, buf, want, until, left) =
+  if left <= 0 then buf else if sock_wait(conn, left) then fill_step(conn, buf, want, until) else buf
+
+fn fill_step(conn, buf, want, until) =
+  chunk = sock_read(conn)
+  if str_len(chunk) == 0 then buf else fill_until(conn, buf + chunk, want, until)
+
 # Reads until at least `want` bytes are buffered, or the peer stops talking.
 fn fill(conn, buf, want) =
   if str_len(buf) >= want then buf else fill_more(conn, buf, want)

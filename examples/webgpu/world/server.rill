@@ -80,6 +80,12 @@ fn heard_per_second() = 90
 # handshake and for connections on their way out.
 fn max_connections() = 64
 
+# How long a connection has to get its handshake in. A browser sends it in the
+# same breath as opening the socket; anything that has not managed it in five
+# seconds is not a browser, and until it does it is holding one of the places
+# above.
+fn handshake_ms() = 5000
+
 # ---- what goes between them ------------------------------------------------
 #
 # One inbox, one message type. `Tick` arrives on the same channel as the key
@@ -393,7 +399,7 @@ fn ticker(inbox, next) =
 # ---- one connection --------------------------------------------------------
 
 fn serve(conn, inbox, live) =
-  request = fill(conn, "", 4)
+  request = fill_until(conn, "", 4, now_nanos() + handshake_ms() * 1000000)
   if ws_accept(conn, request) then play(conn, inbox) else sock_close(conn)
   drop_slot(live)
   0
