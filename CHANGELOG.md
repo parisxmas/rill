@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — a valley with other people in it
+
+The release where a Rill program was handed to strangers. `examples/webgpu/world`
+went from one browser walking around its own valley to one server holding a
+single world for everybody in it: the crystals, the rounds in the air, the
+craters, the shark and every player's health are the server's, and a browser is
+told about them rather than deciding any of it for itself. It is a few hundred
+lines of Rill on a socket, published at a name, with the word at the door and
+people who are not us behind it.
+
+Nothing sharpens a runtime like that. The list below is mostly the language
+being found out by a program that could not be restarted quietly: a write to a
+peer that had gone raised `SIGPIPE` and killed the process, a read was assumed
+to be a frame and was not, a socket read had no deadline so a client that
+connected and said nothing held a strand for ever, a per-second budget stopped
+parsing but not reading and starved everybody honest, and — the one that took
+longest — a strand parked on a channel and a strand parked on a socket looked
+identical to the poller, so an event that had outlived its wait delivered a
+value that had never been sent. That last one read as heap corruption for weeks
+and was nothing of the kind.
+
+The rest is the game: a skinned figure with a rifle that points where it is
+aimed, damage that depends on where the round lands, a scope, a roster, spawns
+that are not all the same patch of grass, and three defences against a modified
+client — a shot has to go roughly where its owner is looking, a name belongs to
+a token rather than to whoever typed it first, and a client is no longer told
+where somebody it cannot see is standing. The last of those is the only one a
+client cannot work around, because it is not a rule it is asked to follow.
 
 - **A client is no longer told where it cannot see.** The snapshot carried
   everybody's position to everybody, and no amount of care in the renderer can
