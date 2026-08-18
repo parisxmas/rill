@@ -525,6 +525,39 @@ Arms are tried in order, so an earlier one wins a tie. Like `match`, `select`
 needs an indented block, so it goes in a body, a statement or a binding rather
 than inside parentheses.
 
+### Waiting on the clock
+
+`sleep_ms(ms)` parks the strand for that long and hands its worker to whoever
+else is runnable — the same manoeuvre a strand waiting on a socket makes, in
+the same poller. A thousand strands can be asleep at once and the program is
+using no processor at all; a program whose every strand is asleep is not a
+deadlock, because it is waiting on something that always answers.
+
+There is no `Ticker` type, because it is three lines and a channel:
+
+```
+fn ticker(ch, ms) =
+  sleep_ms(ms)
+  send(ch, 1)
+  ticker(ch, ms)
+```
+
+Give it a `channel(1)` and it composes with everything else through `select`,
+which is what a loop that has to answer a client *and* keep a rate needs.
+
+Ask for the time with `now_nanos()`, which is monotonic — only differences
+mean anything. A fixed-rate loop should sleep the distance to its next
+deadline rather than a constant, because the operating system's timers have
+slack in them and a constant accumulates it:
+
+```
+fn tick(next, period) =
+  now = now_nanos()
+  sleep_ms(if next > now then (next - now) / 1000000 else 0)
+  # ... a tick's work here ...
+  tick(next + period, period)
+```
+
 ### Running on several cores
 
 By default every strand runs on one OS thread, which is what lets reference
@@ -840,6 +873,7 @@ owns the frame.
 | `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `#b` | building a string a piece at a time |
 | `to_cstr` `from_cstr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |
+| `now_nanos()` `sleep_ms(ms)` | a monotonic clock, and a wait that parks the strand |
 | `exit(code)` | terminate |
 
 ---

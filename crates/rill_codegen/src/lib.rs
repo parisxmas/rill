@@ -177,6 +177,11 @@ const SOCKET_RT: [&str; 6] = [
     "rill_sock_close",
 ];
 
+/// `sleep_ms`, which parks a strand in the same poller a socket would have.
+/// It belongs beside the sockets in every judgement made here: it needs the
+/// scheduler, and wasm cannot run one.
+const TIMER_RT: &str = "rill_sleep_ms";
+
 /// Whether any function `main` can reach has a strand in it.
 ///
 /// Asked before a line of code is generated, because it decides whether tail
@@ -250,7 +255,7 @@ fn collect_calls(e: &TExpr, out: &mut Vec<usize>, found: &mut bool, methods: &mu
         | TK::ChanSend { .. }
         | TK::ChanRecv { .. }
         | TK::Select { .. } => *found = true,
-        TK::Builtin { rt, .. } if SOCKET_RT.contains(rt) => *found = true,
+        TK::Builtin { rt, .. } if SOCKET_RT.contains(rt) || *rt == TIMER_RT => *found = true,
         TK::CallFn { fn_idx, .. } => out.push(*fn_idx),
         TK::FnRef { fn_idx, .. } => out.push(*fn_idx),
         TK::MethodCall { .. } => *methods = true,
@@ -267,6 +272,7 @@ fn find_unsupported(e: &TExpr) -> Option<(usize, &'static str)> {
         TK::ChanNew(_) | TK::ChanSend { .. } | TK::ChanRecv { .. } => Some("a channel"),
         TK::Select { .. } => Some("select"),
         TK::Builtin { rt, .. } if SOCKET_RT.contains(rt) => Some("a socket"),
+        TK::Builtin { rt, .. } if *rt == TIMER_RT => Some("`sleep_ms`"),
         _ => None,
     };
     if let Some(what) = here {
@@ -1220,6 +1226,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         self.module.add_function("rill_preempt_yield", void.fn_type(&[], false), None);
         self.module.add_function("rill_now_nanos", i64t.fn_type(&[], false), None);
+        self.module.add_function("rill_sleep_ms", void.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_tcp_listen", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_tcp_accept", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function(
@@ -2708,8 +2715,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// source, so it counts what was actually emitted — a channel in a
     /// function nothing reaches does not drag a scheduler in.
     fn needs_scheduler(&self) -> bool {
-        const WAITERS: [&str; 12] = [
+        const WAITERS: [&str; 13] = [
             "rill_spawn",
+            "rill_sleep_ms",
             "rill_chan_new",
             "rill_chan_send",
             "rill_chan_recv",

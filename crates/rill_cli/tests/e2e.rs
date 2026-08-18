@@ -104,6 +104,27 @@ fn run_source(name: &str, src: &str) -> String {
     String::from_utf8(run.stdout).expect("program output was not UTF-8")
 }
 
+/// The same, for what only a wasm build refuses. The refusal happens in
+/// codegen, so this stops before anything has to be linked and needs no wasm
+/// toolchain to be installed.
+fn compile_error_for_wasm(src: &str) -> String {
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-wasm-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("bad.rill");
+    std::fs::write(&path, src).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(out_dir.join("bad.wasm"))
+        .arg("--target")
+        .arg("wasm32-wasip1")
+        .output()
+        .expect("failed to spawn rill");
+    assert!(!build.status.success(), "expected wasm to reject this:\n{src}");
+    String::from_utf8_lossy(&build.stderr).into_owned()
+}
+
 /// Compiles a source that is expected to be rejected, and gives back what the
 /// compiler said.
 fn compile_error(src: &str) -> String {
@@ -687,6 +708,67 @@ fn http_server() {
 #[test]
 fn tcp_echo_server() {
     assert_eq!(compile_and_run("echo_server.rill"), "echo: merhaba\necho: dunya\n");
+}
+
+/// `sleep_ms` parks the strand and not the worker, so a thousand of them can
+/// be waiting at once and the whole program still takes as long as the longest
+/// one. A worker held by a sleep would make this the sum instead, which at
+/// these numbers is half a minute.
+///
+/// The upper bound is loose on purpose: this asserts that the waits overlap,
+/// not what the operating system's timer slack is.
+#[test]
+fn sleeping_strands_do_not_hold_a_worker() {
+    let out = run_source(
+        "sleepers",
+        "fn sleeper(ch, ms) =\n  \
+           sleep_ms(ms)\n  \
+           send(ch, 1)\n\
+         \n\
+         fn start_all(ch, i, n) = if i == n then 0 else start_one(ch, i, n)\n\
+         \n\
+         fn start_one(ch, i, n) =\n  \
+           spawn sleeper(ch, 20 + i % 30)\n  \
+           start_all(ch, i + 1, n)\n\
+         \n\
+         fn gather(ch, left, acc) =\n  \
+           n = recv(ch)\n  \
+           if left == 1 then acc + n else gather(ch, left - 1, acc + n)\n\
+         \n\
+         fn main() =\n  \
+           ch = channel()\n  \
+           t0 = now_nanos()\n  \
+           start_all(ch, 0, 1000)\n  \
+           woke = gather(ch, 1000, 0)\n  \
+           ms = (now_nanos() - t0) / 1000000\n  \
+           println(int_to_str(woke) + \" woke\")\n  \
+           println(if ms < 2000 then \"overlapped\" else \"serialised: \" + int_to_str(ms) + \" ms\")\n",
+    );
+    assert_eq!(out, "1000 woke\noverlapped\n");
+}
+
+/// And the wait is the length that was asked for, within the slack any
+/// operating system takes on a timer.
+#[test]
+fn sleep_ms_waits_about_that_long() {
+    let out = run_source(
+        "sleep_length",
+        "fn main() =\n  \
+           t0 = now_nanos()\n  \
+           sleep_ms(200)\n  \
+           ms = (now_nanos() - t0) / 1000000\n  \
+           println(if ms >= 195 && ms < 320 then \"about 200 ms\" else int_to_str(ms) + \" ms\")\n",
+    );
+    assert_eq!(out, "about 200 ms\n");
+}
+
+/// wasm has no scheduler to park in, so a sleep there would be a program
+/// silently running at the wrong speed. It is refused where the sockets and
+/// the strands are.
+#[test]
+fn wasm_refuses_sleep_ms() {
+    let err = compile_error_for_wasm("fn main() = sleep_ms(10)\n");
+    assert!(err.contains("`sleep_ms` needs the scheduler"), "{err}");
 }
 
 /// Calls into libm and libc, including the string bridge and a null check.

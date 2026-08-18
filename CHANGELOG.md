@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **`sleep_ms` — a strand can wait on the clock without holding a worker.**
+  There was no way to wait at all: a program that wanted a rate had to spin,
+  which costs a core to do nothing, and a server tick could not be written.
+
+  It is the fifth operation on the poller rather than a call to the operating
+  system's sleep, and that is the whole point — the strand goes into the same
+  place a strand waiting on a socket goes, and the worker leaves to run
+  something else. kqueue has a filter that counts time; epoll has only
+  descriptors, so on Linux the wait is a `timerfd` that becomes readable and
+  is closed by the sleeper on its way out. A thousand strands asleep at once
+  cost 2% of one core and finish together, in as long as the longest.
+
+  A sleeping strand counts as an I/O waiter, so a program in which every
+  strand is asleep is not reported as a deadlock: it is waiting on something
+  that always answers. There is no ticker type, because with a channel it is
+  three lines of Rill; `LANGUAGE.md` shows those, and the deadline-driven loop
+  that keeps a rate despite the slack every operating system's timers have.
+
+  Refused on wasm, beside the sockets and the strands. A sleep that returned
+  instantly there would be a program silently running at the wrong speed.
+
 - **The wind stops making the trees shiver.** Everything that sways read its
   phase as `sin(t * rate(wind))` — a frequency that rises with the wind,
   multiplied by the clock. Differentiate that and the angular velocity is

@@ -2010,6 +2010,9 @@ impl Checker {
             // not for telling the time, and a wall clock that an administrator
             // can set backwards is the wrong instrument for that.
             "now_nanos" => Some(("rill_now_nanos", vec![], Ty::Int)),
+            // Waiting, without a worker standing still to do it: the strand
+            // goes into the same poller a socket would have parked it in.
+            "sleep_ms" => Some(("rill_sleep_ms", vec![Ty::Int], Ty::Unit)),
             // Bridges to and from C strings; `to_cstr` allocates, so the
             // caller frees with `free_ptr`.
             "to_cstr" => Some(("rill_to_cstr", vec![Ty::Str], Ty::Ptr)),
@@ -2809,6 +2812,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "str_to_float"
             | "chr"
             | "now_nanos"
+            | "sleep_ms"
             | "bit_and"
             | "bit_or"
             | "bit_xor"

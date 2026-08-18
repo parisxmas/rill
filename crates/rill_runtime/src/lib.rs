@@ -801,6 +801,26 @@ pub unsafe extern "C" fn rill_now_nanos() -> i64 {
     0
 }
 
+/// Windows has no poller here — it has no sockets here either — so there is
+/// nothing to park on and the wait is the worker's. A program that needs a
+/// tick and a connection at the same time is not a Windows program yet, and
+/// the compiler is not in a position to say so, so this at least waits the
+/// length it was asked to.
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_sleep_ms(ms: i64) {
+    if ms > 0 {
+        sleep_nanos(ms * 1_000_000);
+    }
+}
+
+/// Refused at compile time on wasm, alongside the sockets and the strands:
+/// there is no scheduler to park in, and a sleep that returned instantly
+/// would be a program that silently runs at the wrong speed.
+#[cfg(target_family = "wasm")]
+#[no_mangle]
+pub unsafe extern "C" fn rill_sleep_ms(_ms: i64) {}
+
 // ---- the C boundary -------------------------------------------------------
 //
 // Rill strings are counted heap objects with a header, so they are not
@@ -3077,17 +3097,24 @@ mod net {
     //   poller_open   create it, and whatever it needs to be woken through
     //   poller_wake   interrupt a worker asleep in `poller_wait`
     //   poller_arm    park this strand on this descriptor, once
+    //   poller_timer  park this strand until a deadline, once
     //   poller_wait   collect the strands that became runnable
     //
     // The one real asymmetry is the wakeup. kqueue has a filter for events the
     // program raises itself, so a worker can be poked through the same handle
     // it is waiting on. epoll has nothing like it and needs a real descriptor
     // in the set — an eventfd, whose entire purpose is to be that descriptor.
+    //
+    // The timer is the second asymmetry, and the same shape: kqueue has a
+    // filter that counts time, and epoll has only descriptors, so a Linux
+    // timer is a descriptor that becomes readable — which is what a timerfd
+    // is. That difference is why `poller_timer` hands back something to close:
+    // on Linux there is an fd behind the wait and on the BSDs there is not.
 
     #[cfg(not(target_os = "linux"))]
-    use bsd::{poller_arm, poller_open, poller_wait, poller_wake};
+    use bsd::{poller_arm, poller_open, poller_timer, poller_wait, poller_wake};
     #[cfg(target_os = "linux")]
-    use linux::{poller_arm, poller_open, poller_wait, poller_wake};
+    use linux::{poller_arm, poller_open, poller_timer, poller_wait, poller_wake};
 
     #[cfg(not(target_os = "linux"))]
     mod bsd {
@@ -3095,6 +3122,10 @@ mod net {
 
         const EVFILT_READ: i16 = -1;
         const EVFILT_WRITE: i16 = -2;
+        /// A filter that counts time down and reports once. Its `data` is
+        /// milliseconds unless an `fflags` says otherwise, which is the unit
+        /// `sleep_ms` wants anyway.
+        const EVFILT_TIMER: i16 = -7;
         /// A filter the program triggers itself, used to wake a worker asleep
         /// in `kevent` the moment another worker queues work for it.
         const EVFILT_USER: i16 = -10;
@@ -3182,6 +3213,25 @@ mod net {
             kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null()) >= 0
         }
 
+        /// One-shot too, and identified by the strand itself: filters have
+        /// separate ident spaces, so a timer keyed on a `G` cannot collide
+        /// with a socket keyed on a descriptor. Nothing is left behind to
+        /// close, hence the zero.
+        pub(super) unsafe fn poller_timer(kq: i32, ms: i64, g: *mut G) -> i32 {
+            let ev = KEvent {
+                ident: g as usize,
+                filter: EVFILT_TIMER,
+                flags: EV_ADD | EV_ONESHOT,
+                fflags: 0,
+                data: ms as isize,
+                udata: g as *mut u8,
+            };
+            if kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null()) < 0 {
+                return -1;
+            }
+            0
+        }
+
         pub(super) unsafe fn poller_wait(kq: i32, ms: i32, ready: *mut *mut G) -> usize {
             let mut events: [KEvent; READY_BATCH] = core::mem::zeroed();
             let ts = TimeSpec { sec: 0, nsec: ms as i64 * 1_000_000 };
@@ -3214,12 +3264,28 @@ mod net {
         /// The eventfd is only ever read to drain it, and must never be the
         /// thing that blocks a worker.
         const EFD_NONBLOCK: i32 = 0o4000;
+        /// Same two bits as the eventfd's, under the timerfd's own names. A
+        /// timer that is read must not block, and a timer must not survive an
+        /// `exec` into a program that knows nothing about it.
+        const TFD_NONBLOCK: i32 = 0o4000;
+        const TFD_CLOEXEC: i32 = 0o2000000;
 
         extern "C" {
             fn epoll_create1(flags: i32) -> i32;
             fn epoll_ctl(epfd: i32, op: i32, fd: i32, ev: *mut EpollEvent) -> i32;
             fn epoll_wait(epfd: i32, events: *mut EpollEvent, maxevents: i32, timeout: i32) -> i32;
             fn eventfd(initval: u32, flags: i32) -> i32;
+            fn timerfd_create(clock: i32, flags: i32) -> i32;
+            fn timerfd_settime(fd: i32, flags: i32, new: *const ITimerSpec, old: *mut ITimerSpec) -> i32;
+        }
+
+        /// An interval and a first expiry. Leaving the interval at zero is what
+        /// makes it fire once — this is a deadline, not a metronome, because
+        /// the strand that is woken decides for itself whether to ask again.
+        #[repr(C)]
+        struct ITimerSpec {
+            interval: Timespec,
+            value: Timespec,
         }
 
         /// Packed on x86-64 and not on anything else — the kernel's own
@@ -3286,6 +3352,26 @@ mod net {
                 return false;
             }
             epoll_ctl(ep, EPOLL_CTL_MOD, fd, &mut ev) >= 0
+        }
+
+        /// A timer here is a descriptor that becomes readable, so it goes into
+        /// the set exactly as a socket does. The descriptor is handed back for
+        /// the sleeper to close on the way out: it belongs to one wait, and
+        /// leaving it open would leak a file for every sleep a program takes.
+        pub(super) unsafe fn poller_timer(ep: i32, ms: i64, g: *mut G) -> i32 {
+            let fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+            if fd < 0 {
+                return -1;
+            }
+            let spec = ITimerSpec {
+                interval: Timespec { secs: 0, nanos: 0 },
+                value: Timespec { secs: ms / 1000, nanos: (ms % 1000) * 1_000_000 },
+            };
+            if timerfd_settime(fd, 0, &spec, core::ptr::null_mut()) < 0 || !poller_arm(ep, fd, false, g) {
+                close(fd);
+                return -1;
+            }
+            fd
         }
 
         pub(super) unsafe fn poller_wait(ep: i32, ms: i32, ready: *mut *mut G) -> usize {
@@ -3371,6 +3457,50 @@ mod net {
             return; // fall back to spinning on the syscall
         }
         block_current();
+    }
+
+    /// Parks the current strand for `ms` milliseconds.
+    ///
+    /// This is the same manoeuvre as parking on a socket, and deliberately so:
+    /// the strand goes into the poller and its worker goes off to run
+    /// something else, so a program can hold a tick rate without a thread
+    /// standing still to do it. It also means a sleeping strand counts as an
+    /// I/O waiter, which is what keeps a program whose every strand is asleep
+    /// from being reported as a deadlock — it is waiting on the clock, and the
+    /// clock always answers.
+    ///
+    /// If the timer cannot be armed at all the worker sleeps instead, which is
+    /// worse but is still the duration the caller asked for.
+    unsafe fn park_on_timer(ms: i64) {
+        let w = me();
+        let g = (*w).current;
+        (*g).selected = -1;
+        let p = ensure_poller(w);
+        IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        let held = poller_timer(p, ms, g);
+        if held < 0 {
+            IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+            sleep_nanos(ms * 1_000_000);
+            return;
+        }
+        block_current();
+        // Back on a worker, and the descriptor the wait was made of — if this
+        // platform needed one — has done its one job.
+        if held > 0 {
+            close(held);
+        }
+    }
+
+    /// Waits `ms` milliseconds without holding up the worker.
+    ///
+    /// # Safety
+    /// Called from strand context.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_sleep_ms(ms: i64) {
+        if ms <= 0 {
+            return;
+        }
+        park_on_timer(ms);
     }
 
     /// Collects whatever the network has made ready and queues those strands.
