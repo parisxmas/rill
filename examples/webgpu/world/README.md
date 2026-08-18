@@ -324,9 +324,13 @@ in it and the place to know about that is the tool reading the rig.
 What a round costs depends on where it lands: the head ends it, the body takes
 a third, the legs a tenth — three spheres tested from the top down, since the
 smallest is worth the most. Whoever is hit is told who hit them and for how
-much, low and in the middle of their screen: it goes out as a ring and a cursor
-like everything else that happens between two ticks, and to everybody rather
-than to the one it happened to, because three numbers are cheap and a valley
+much, low and in the middle of their screen, and whoever hit them is told what
+they did — in green rather than red, with a skull on it if that was the end of
+them. Whether it was is the server's to say and rides with the hit, because the
+snapshot that says somebody is down says nothing about who put them there. It
+goes out as a ring and a cursor like everything else that happens between two
+ticks, and to everybody rather than to the one it happened to, because four
+numbers are cheap and a valley
 where you can see what is happening to the person beside you is a different
 place from one where you can only see what is happening to you.
 

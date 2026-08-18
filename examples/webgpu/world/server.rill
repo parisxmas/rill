@@ -481,7 +481,7 @@ fn send_hurts(w, conns, from) =
 fn send_hurt(w, conns, k) =
   b = strbuf()
   strbuf_add(b, "x " + int_to_str(to_int(v.hurt_f(w, k, 0))) + " " + int_to_str(to_int(v.hurt_f(w, k, 1))))
-  strbuf_add(b, " " + float_to_str(v.hurt_f(w, k, 2)))
+  strbuf_add(b, " " + float_to_str(v.hurt_f(w, k, 2)) + " " + int_to_str(to_int(v.hurt_f(w, k, 3))))
   broadcast(w, conns, strbuf_str(b))
   send_hurts(w, conns, k + 1)
 

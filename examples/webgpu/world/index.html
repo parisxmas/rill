@@ -298,6 +298,11 @@
        shooting at you. */
     .took b { color: #f6c02e; }
     .took i { font-style: normal; font-size: 1.35em; color: #fff; }
+    /* What you did, rather than what was done to you: the same line in the
+       other direction and in the other colour, so which of the two it is does
+       not have to be read to be known. */
+    .took.gave { color: #57c26a; }
+    .took em { font-style: normal; font-size: 1.5em; }
 
     /* The loader. It covers the canvas until a frame has actually been drawn
        on it, so nobody watches a black rectangle wondering whether it works. */
@@ -398,7 +403,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=265";
+    import { run } from "./host.js?v=266";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -463,7 +468,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=265", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=266", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

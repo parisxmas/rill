@@ -669,35 +669,38 @@ fn landed(w, s, owner, b, at, hurt) =
   poke_f32(s, 82, clampf(was - hurt, 0.0, 1.0))
   poke_f32(s, 109, peek_f32(s, 109) + 1.0)
   credit(w, owner)
-  put_hurt(w, peek_f32(s, 99), owner, was - peek_f32(s, 82))
+  put_hurt(w, peek_f32(s, 99), owner, was - peek_f32(s, 82), if peek_f32(s, 82) < 0.001 then 1.0 else 0.0)
   1
 
 # ---- who hit you ------------------------------------------------------------
 #
 # A ring, and a count that only goes up, in the shape everything else that
-# happens between two ticks is sent in. Three numbers: who was hit, who hit
-# them, and how much of them it took — the last because a hit is not always
-# the same size, and because "sixteen" is a different thing to be told than
-# "you have been shot".
+# happens between two ticks is sent in. Four numbers: who was hit, who hit
+# them, how much of them it took, and whether that was the end of them. The
+# third because a hit is not always the same size and "sixteen" is a different
+# thing to be told than "you have been shot"; the fourth because the shooter
+# cannot work it out — the snapshot that says the victim is down arrives after
+# this and says nothing about who put them there.
 #
 # Only the server fills this in. A client is told, and tells whoever it is
 # about; it is the one fact in the valley that somebody else knows about you
 # before you do.
 fn hurt_ring() = 32
 
-fn put_hurt(w, victim, shooter, dmg) =
+fn put_hurt(w, victim, shooter, dmg, down) =
   k = to_int(peek_f32(w, 112))
-  at = (k % hurt_ring()) * 3
+  at = (k % hurt_ring()) * 4
   hb = peek_ptr(w, 113)
   poke_f32(hb, at, victim)
   poke_f32(hb, at + 1, shooter)
   poke_f32(hb, at + 2, dmg)
+  poke_f32(hb, at + 3, down)
   poke_f32(w, 112, to_float(k + 1))
   1
 
 fn hurts(w: Ptr) -> Int = to_int(peek_f32(w, 112))
 
-fn hurt_f(w: Ptr, k: Int, j: Int) -> Float = peek_f32(peek_ptr(w, 113), (k % hurt_ring()) * 3 + j)
+fn hurt_f(w: Ptr, k: Int, j: Int) -> Float = peek_f32(peek_ptr(w, 113), (k % hurt_ring()) * 4 + j)
 
 # The shooter by their id rather than by where they were in the table: a round
 # outlives the slot of whoever fired it, which is the whole reason the id is
@@ -1548,7 +1551,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   blast_buf = alloc_bytes(blast_cap() * blast_stride() * 4)
   break_buf = alloc_bytes(break_ring() * 4)
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
-  hurt_buf = alloc_bytes(hurt_ring() * 3 * 4)
+  hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)

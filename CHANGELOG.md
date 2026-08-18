@@ -22,9 +22,18 @@
   It goes after a second, since it is one sentence about something that has
   already happened and it is sitting over the middle of the screen.
 
-- **Who shot you, and for how much.** Low and in the middle, where the eye goes
+- **Who shot you, and who you shot.** Low and in the middle, where the eye goes
   when something has happened *to* you rather than in front of you: the name in
-  the valley's amber and the number bigger than the words around it. "Hit" is a
+  the valley's amber and the number bigger than the words around it. The two
+  people a round concerns each get their own sentence — one of them has been
+  shot and the other has hit something, which are not the same news — and the
+  outgoing one is green rather than red, so which of the two it is does not
+  have to be read to be known. A kill gets a skull and stays up half a second
+  longer.
+
+  Whether a hit was fatal is the server's to say and rides with it. The shooter
+  cannot work it out: the snapshot that says somebody is down says nothing
+  about who put them there. "Hit" is a
   different thing to be told than "hit for a third of you", and in a valley
   where four people are firing there is otherwise no way to know whether the
   round that took you down was aimed at you.

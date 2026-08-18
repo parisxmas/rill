@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=265";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=265";
+import { load } from "./world.js?v=266";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=266";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=265";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "265";
+const V = "266";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1620,19 +1620,31 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       else if (e.kind === "t") E.put_fireball(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]);
       else if (e.kind === "k") E.put_blast(world, n[0], n[1], n[2], n[3]);
       else if (e.kind === "b") E.put_break(world, BigInt(n[0]));
-      // Somebody was hit. Everybody is told; only the one it happened to is
-      // shown it, and only when there is a name to put to it — an id is not
-      // an answer to "who shot me".
-      else if (e.kind === "x" && n[0] === net.id) {
-        // Out loud as well. Louder for a bigger hit, and a hair of detune each
-        // time, because the same file twice in a row is what gives a sample
-        // away — the same argument as everything else that plays here.
-        if (audio && hurtBuf) {
-          playAt(hurtBuf, Math.floor(Math.random() * 4), 0.95,
-                 0.55 + 0.45 * Math.min(1, n[2] * 2), 0, 0.94 + Math.random() * 0.12);
+      // A round found somebody. Everybody is told, and the two people it
+      // concerns each get their own sentence: one of them has been shot and
+      // the other has hit something, which are not the same news.
+      else if (e.kind === "x" && (n[0] === net.id || n[1] === net.id)) {
+        const mine = n[1] === net.id;
+        const them = net.names.get(mine ? n[0] : n[1]) ?? "somebody";
+        const much = Math.round(n[2] * 100);
+        if (!mine) {
+          // Out loud as well, and only for the one being shot. Louder for a
+          // bigger hit and a hair of detune each time, because the same file
+          // twice in a row is what gives a sample away.
+          if (audio && hurtBuf) {
+            playAt(hurtBuf, Math.floor(Math.random() * 4), 0.95,
+                   0.55 + 0.45 * Math.min(1, n[2] * 2), 0, 0.94 + Math.random() * 0.12);
+          }
         }
-        const who = net.names.get(n[1]);
-        tookEl.innerHTML = `<b>${who ?? "somebody"}</b> hit you for <i>${Math.round(n[2] * 100)}</i>`;
+        // A kill is not something the shooter could work out: the snapshot
+        // that says somebody is down says nothing about who put them there,
+        // so the server says it here.
+        tookEl.innerHTML = mine
+          ? (n[3]
+              ? `<em>💀</em> you killed <b>${them}</b>`
+              : `you hit <b>${them}</b> for <i>${much}</i>`)
+          : `<b>${them}</b> hit you for <i>${much}</i>`;
+        tookEl.classList.toggle("gave", mine);
         // Off, reflow, on: a second round while the first line is still up has
         // to restart the animation, and a class that is already there does not.
         tookEl.classList.remove("on");
@@ -1640,7 +1652,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         tookEl.classList.add("on");
         // Long enough to read and no longer: it is one line about something
         // that has already happened, and it is over the middle of the screen.
-        tookUntil = performance.now() + 1100;
+        tookUntil = performance.now() + (mine && n[3] ? 1700 : 1100);
       }
     }
   }
