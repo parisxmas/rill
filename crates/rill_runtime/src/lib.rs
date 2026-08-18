@@ -1305,6 +1305,17 @@ pub unsafe extern "C" fn rill_alloc_report() {
     if getenv(b"RILL_DEBUG_ALLOC\0".as_ptr()).is_null() {
         return;
     }
+    let stray = STRAY_WAKES.load(core::sync::atomic::Ordering::Relaxed);
+    if stray > 0 {
+        let mut b = [0u8; 96];
+        let n = snprintf(
+            b.as_mut_ptr(),
+            95,
+            b"poller events with no owner, dropped: %lld\n\0".as_ptr(),
+            stray as i64,
+        );
+        write(2, b.as_ptr(), n.clamp(0, 95) as usize);
+    }
     let mut buf = [0u8; 128];
     let n = if ABANDONED == 0 {
         snprintf(buf.as_mut_ptr(), 127, b"live allocations: %lld\n\0".as_ptr(), LIVE_ALLOCS)
@@ -1727,6 +1738,19 @@ struct G {
     /// The `select` case that claimed this strand, or -1 while it is still
     /// waiting. Also marks plain sends and receives as claimed.
     selected: i64,
+    /// True from the moment this strand hands a descriptor or a deadline to
+    /// the poller until the poller hands it back.
+    ///
+    /// The poller used to go by `selected < 0`, which a strand parked on a
+    /// channel also has: an event that arrived for a strand no longer waiting
+    /// on it — a registration outliving the wait that made it — would then
+    /// wake a strand sitting in a channel's queue, and `recv` would return the
+    /// two zero words its waiter was initialised with. In Rill that is a null
+    /// string, and the first thing anybody does with a received line is ask
+    /// its length. This says plainly which of the two waits the strand is in,
+    /// so an event that no longer has an owner is dropped instead of being
+    /// delivered to whoever holds the record now.
+    on_io: bool,
     /// Queue node for a plain send or receive, which never needs more than one.
     waiter: Waiter,
     /// Every strand record ever allocated, on one list. `next` cannot be used
@@ -2109,6 +2133,7 @@ unsafe fn init_g(g: *mut G, code: extern "C" fn(*mut u8), env: *mut u8) {
     (*g).started = false;
     (*g).home = 0;
     (*g).selected = -1;
+    (*g).on_io = false;
     (*g).waiter = WAITER_INIT;
     // Slot 11 is where the switch resumes: the link register on ARM, and
     // the address it jumps to on x86-64.
@@ -2995,7 +3020,7 @@ const MSG_NOSIGNAL: i32 = 0x4000;
 // Everything above the poller is shared; the poller itself is kqueue on the
 // BSDs and epoll on Linux, behind four functions.
 #[cfg(unix)]
-use net::{poll_network, wake_a_stealer, wake_worker, IO_WAITERS};
+use net::{poll_network, wake_a_stealer, wake_worker, IO_WAITERS, STRAY_WAKES};
 
 /// Without sockets there is nothing to wait on and nobody to wake: the
 /// scheduler asks after the network every time round, and on Windows the
@@ -3010,6 +3035,8 @@ unsafe fn poll_network(_w: *mut Worker, _block: bool) -> i32 {
 }
 #[cfg(windows)]
 static IO_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(windows)]
+static STRAY_WAKES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// The same silence on wasm, for a different reason: wasip1 has no sockets to
 /// offer and no worker to wake if it had.
@@ -3023,6 +3050,8 @@ unsafe fn poll_network(_w: *mut Worker, _block: bool) -> i32 {
 }
 #[cfg(target_family = "wasm")]
 static IO_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(target_family = "wasm")]
+static STRAY_WAKES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(unix)]
 mod net {
@@ -3103,6 +3132,11 @@ mod net {
     /// Strands currently parked on a file descriptor. While this is non-zero
     /// an idle scheduler waits in kqueue instead of declaring a deadlock.
     pub(super) static IO_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+    /// Events delivered for a strand that is no longer waiting on them. Kept
+    /// as a number because it is a real thing that happens and not an error:
+    /// what would be an error is acting on one.
+    pub(super) static STRAY_WAKES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
     unsafe fn errno() -> i32 {
         *__error()
@@ -3589,7 +3623,9 @@ mod net {
         (*g).selected = -1;
         let p = ensure_poller(w);
         IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        (*g).on_io = true;
         if !poller_arm(p, fd, writable, g) {
+            (*g).on_io = false;
             IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
             return; // fall back to spinning on the syscall
         }
@@ -3614,8 +3650,10 @@ mod net {
         (*g).selected = -1;
         let p = ensure_poller(w);
         IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        (*g).on_io = true;
         let held = poller_timer(p, ms, g);
         if held < 0 {
+            (*g).on_io = false;
             IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
             sleep_nanos(ms * 1_000_000);
             return;
@@ -3672,8 +3710,10 @@ mod net {
         (*g).selected = -1;
         let p = ensure_poller(w);
         IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        (*g).on_io = true;
         let held = poller_arm_deadline(p, fd as i32, false, ms, g);
         if held < 0 {
+            (*g).on_io = false;
             IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
             return peekable(fd as i32) as i8;
         }
@@ -3733,14 +3773,25 @@ mod net {
             let g = ready[i];
             // A strand can be registered on two things at once — a socket and
             // a deadline — and both can come ready before it runs. Whoever
-            // gets there first claims it; the second finds it already claimed
-            // and leaves it alone, because queueing the same strand twice
-            // corrupts the run queue and runs it twice.
+            // gets there first claims it; the second finds `on_io` already
+            // false and leaves it alone, because queueing the same strand
+            // twice corrupts the run queue and runs it twice.
+            //
+            // That flag is also what makes an event with no owner harmless. A
+            // registration can outlive the wait that made it, and by the time
+            // it is delivered the strand named in it may be parked on a
+            // channel instead — where being made runnable is not a spurious
+            // wake to be retried but a value that was never sent. It reads as
+            // a null string, and it took down the server perhaps one arrival
+            // in ten.
             lock();
-            if (*g).selected < 0 {
+            if (*g).on_io && (*g).selected < 0 {
+                (*g).on_io = false;
                 (*g).selected = 0;
                 IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
                 make_ready(g);
+            } else {
+                STRAY_WAKES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             }
             unlock();
         }

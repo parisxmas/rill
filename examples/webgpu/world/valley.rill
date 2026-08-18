@@ -1829,7 +1829,32 @@ fn want_fire(s: Ptr, dx0: Float, dy0: Float, dz0: Float) =
   if l < 0.001 then 0 else aim_at(s, dx / l, dy / l, dz / l)
 
 fn aim_at(s, dx, dy, dz) =
-  if faces(s, dx, dy, dz) == 0 then 0 else asked(s, dx, dy, dz)
+  if faces(s, dx, dy, dz) == 0 then refused(s) else asked(s, dx, dy, dz)
+
+# Refusing the shot is the whole defence; counting the refusals is what makes
+# it worth having.
+#
+# The client we ship cannot produce one of these. It works out the direction
+# from the same camera matrix it just sent the look from, so the two disagree
+# by at most one frame of turning — nine degrees at twenty frames a second and
+# a half-turn every second, and the slack is twenty. A run of them is not a bad
+# connection or an unlucky flick. It is somebody talking to the socket with
+# something that is not our client, and it is the clearest single signal this
+# server can get.
+#
+# A streak rather than a total: the honest number is zero, so anything that
+# reaches the limit did it in one breath. The count is not logged as it climbs
+# — a client can ask to fire a hundred and fifty times a second, and a line
+# each would be a way to fill the disk from outside.
+fn refused(s) =
+  poke_f32(s, 114, peek_f32(s, 114) + 1.0)
+  0
+
+fn wild_limit() = 12
+
+# For the server, which drops them the way it drops anyone who has gone quiet.
+fn shooting_wild(s: Ptr) -> Int =
+  if peek_f32(s, 114) >= to_float(wild_limit()) then 1 else 0
 
 # A shot has to go roughly where its owner says they are looking.
 #
@@ -1851,6 +1876,7 @@ fn faces(s, dx, dy, dz) =
   if fx * dx + fy * dy + fz * dz > 0.94 then 1 else 0
 
 fn asked(s, dx, dy, dz) =
+  poke_f32(s, 114, 0.0)
   poke_f32(s, 31, 1.0)
   poke_f32(s, 48, dx)
   poke_f32(s, 49, dy)

@@ -428,7 +428,24 @@ fn drop_quiet(w, conns, now) = match conns
   Cons(c, rest) -> keep_or_drop(w, c, drop_quiet(w, rest, now), now)
 
 fn keep_or_drop(w, c, rest, now) =
-  if now - v.last_heard(conn_block(c)) < quiet_s() then Cons(c, rest) else gone_quiet(w, c, rest)
+  if v.shooting_wild(conn_block(c)) > 0 then shooting_wild(w, c, rest)
+  else if now - v.last_heard(conn_block(c)) < quiet_s() then Cons(c, rest)
+  else gone_quiet(w, c, rest)
+
+# Out the same door as anyone who has gone quiet, and for a related reason:
+# whatever is on the other end of that socket, it is not the client we ship.
+# The valley refuses a shot that goes nowhere near where its owner says they
+# are looking, and a browser running our code cannot produce a run of them —
+# so a run of them says the connection is being driven by hand, and the rest of
+# what it sends is worth no more than the shots were.
+#
+# The socket is left to TCP, as above. Being out of the valley is what matters:
+# the connection can go on talking, and every line it sends will find nobody to
+# apply it to.
+fn shooting_wild(w, c, rest) =
+  v.leave(w, conn_block(c))
+  println("player " + int_to_str(conn_id(c)) + " " + conn_name(c) + " was shooting where they were not looking, dropped; " + int_to_str(v.players(w)) + " left in the valley")
+  rest
 
 fn gone_quiet(w, c, rest) =
   v.leave(w, conn_block(c))

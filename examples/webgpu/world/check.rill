@@ -74,6 +74,33 @@ fn shoot_blind(w, a, b) =
   v.try_fire(a, v.world_time(w), 0.55)
   tick(w, 12)
   println("  with the shooter looking away, they are still on " + float_to_str(v.health(b)))
+  println("  and after one of those the server does not want them gone yet: " + int_to_str(v.shooting_wild(a)))
+
+# A browser running our client cannot send a run of these, so a run of them is
+# how the server tells that something else is on the other end of the socket.
+fn shoot_blind_again(w, a, b, n) =
+  for i in 0..n
+    blind_once(w, a, b)
+
+  println("  after " + int_to_str(n + 1) + " of them, drop this connection: " + int_to_str(v.shooting_wild(a)))
+
+fn blind_once(w, a, b) =
+  dx = v.player_x(b) - v.player_x(a)
+  dz = v.player_z(b) - v.player_z(a)
+  l = sqrt(dx * dx + dz * dz)
+  v.want_fire(a, dx / l, 0.0, dz / l)
+  0
+
+# And one honest shot puts the count back where it started: the streak is what
+# is being counted, because the honest number of these is zero.
+fn shoot_straight_again(w, a, b) =
+  dx = v.player_x(b) - v.player_x(a)
+  dy = v.player_y(b) + 1.05 - (v.player_y(a) + 1.75)
+  dz = v.player_z(b) - v.player_z(a)
+  l = sqrt(dx * dx + dy * dy + dz * dz)
+  v.set_look(a, atan2(dx, 0.0 - dz), atan2(dy, sqrt(dx * dx + dz * dz)))
+  v.want_fire(a, dx / l, dy / l, dz / l)
+  println("  one honest shot and they are welcome again: " + int_to_str(v.shooting_wild(a)))
 
 fn shoot_at(w, a, b, up) =
   dx = v.player_x(b) - v.player_x(a)
@@ -168,6 +195,8 @@ fn main() =
   # whoever takes it has turned to take it, which is the part everybody else
   # can see.
   shoot_blind(w, a, b)
+  shoot_blind_again(w, a, b, 11)
+  shoot_straight_again(w, a, b)
 
   # Being shot throws the head about. The throw goes on the camera and not on
   # the yaw and pitch, so the way to see it is the matrix rather than the look.

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **The server used to fall over about one arrival in ten, and it was the
+  scheduler.** A strand parked on a socket and a strand parked on a channel
+  both had `selected` set to -1, and the poller took that one flag to mean
+  "waiting on me". A registration can outlive the wait that made it — the
+  strand was woken by the other half of a two-part wait, or the descriptor was
+  handed on — and when that event was finally delivered, the strand named in it
+  had usually gone on to `recv` on a channel. The poller made it runnable, and
+  `recv` returned the two zero words its waiter was initialised with: a null
+  string, handed to the first thing that asks a received line for its length.
+
+  It read as heap corruption and it was not: nothing was corrupt, a value was
+  delivered that had never been sent. Strands now say which of the two waits
+  they are in, so an event with no owner is dropped. Eight crashes in ten runs
+  of a connect-shoot-hang-up loop, then none in ten. The count of dropped
+  events is in the `RILL_DEBUG_ALLOC` report, because it is a real thing that
+  happens; what would be an error is acting on one.
+
+- **A run of shots that go nowhere near where the shooter is looking now costs
+  the connection.** Refusing them was the defence; counting them is what makes
+  it worth having. Our client cannot produce one — it works the direction out
+  from the same camera matrix it just sent the look from — so twelve in a row
+  is not a bad connection, it is something other than our client on the socket.
+  Out the same door as anyone who has gone quiet. It is a streak, not a total,
+  and it is never logged as it climbs: a client can ask to fire a hundred and
+  fifty times a second, and a line each would be a way to fill the disk from
+  outside.
+
 - **A round has to go roughly where its owner is looking.** The look and the
   shot arrive on separate lines and the server kept only the latest of each, so
   a client could face north and put a round through somebody standing south of
