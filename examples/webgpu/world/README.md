@@ -204,6 +204,30 @@ cap alone is no defence against one machine opening all sixty-four of them.
 Sixteen is generous for a household or an office behind one address and still
 leaves most of the valley to everybody else.
 
+Other people are drawn as people. The model is Quaternius' mannequin from the
+Universal Animation Library (CC0) — fifty-three joints, 13,744 triangles — and
+six of that library's clips: standing, walking, running, crouching, firing and
+going down. `tools/bake_figure.py` takes the glTF and writes `figure.mesh`,
+389 KB, and three facts about the source are what make it that small rather
+than a megabyte and a half. Nothing in the rig is ever scaled. Exactly one
+joint translates — the hips — so every other joint keeps its bind translation
+and a frame is a root position and a rotation each. And the clips are authored
+on a thirty-a-second grid already, so resampling onto one loses nothing.
+Rotations go down as snorm16, which is a hundredth of a degree.
+
+The skinning is split the way the rest of this is: the page works out one
+matrix per joint per person — fifty-three small matrix products each, which is
+nothing for eight people — and the shader is four matrices and their weights.
+The joint matrices arrive already in world space, so there is no model
+transform, no bind pose and no per-instance rotation in the vertex stage.
+
+Which clip somebody is playing is the *server's* answer, not a guess made at
+this end from how fast a figure seems to be sliding: it has the keys and the
+health, and two people watching the same person should not disagree about
+whether they are running. Firing is the exception, because it is an event
+rather than a state — a round leaving somebody's rifle plays the shot over
+whatever their legs are doing.
+
 Everybody is asked who they are before they connect, and their name is drawn
 over their head: sent once, kept by the server, handed to whoever walks in
 next. It is cut down to letters, digits, a dash and an underscore — a space
@@ -301,6 +325,11 @@ Which vertices move is a flag baked into the spare fourth component of the
 position: one for the bolt's two thousand-odd vertices, a half for the round's
 four hundred, zero for the rifle proper. The position was already being
 unpacked from unorm16, so the flag costs the file nothing at all.
+
+The people are Quaternius' mannequin and six clips from his Universal
+Animation Library, both CC0, by way of OpenGameArt. Nothing of it is shipped
+as it came: `tools/bake_figure.py` keeps the mesh, the fifty-three joint
+skeleton and the six clips, and leaves the other forty behind.
 
 The theme is pauliuw's *The Field of Dreams* from OpenGameArt, CC0 — eighty
 seconds that begin and end in silence, which is what makes it loop without a

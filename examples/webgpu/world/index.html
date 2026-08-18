@@ -199,6 +199,7 @@
     <div class="sub">the world below is computed by a functional language</div>
     <div class="keys"><b>click</b> to look &nbsp;·&nbsp; <b>WASD</b> walk &nbsp;·&nbsp;
       <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint &nbsp;·&nbsp;
+      <b>C</b> crouch &nbsp;·&nbsp;
       <b>left mouse</b> fire &nbsp;·&nbsp; <b>M</b> music</div>
   </div>
   <div class="stat" id="stat"></div>
@@ -233,7 +234,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=224";
+    import { run } from "./host.js?v=225";
 
     // Whose valley. `?join` takes the one on this host, `?join=ws://box:8091/`
     // somebody else's, and no `join` at all is the valley this tab has to
@@ -273,7 +274,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=224", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=225", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

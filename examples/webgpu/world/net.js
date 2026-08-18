@@ -13,7 +13,7 @@
 //
 //   in     hello <id> <pines> <crystals> <grass> <clock>
 //          gone <i>...                     crystals already shot
-//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health>...
+//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose>...
 //          r <x y z vx vy vz owner>        a round left somebody's rifle
 //          t <x y z vx vy vz seed life>    a crystal threw
 //          k <x y z seed>                  one landed
@@ -128,7 +128,10 @@ function snapshot(net, line) {
     shark: { x: h[1], y: h[2], z: h[3], heading: h[4], mode: h[5] },
     players: people.map((p) => {
       const n = p.split(" ").map(Number);
-      return { id: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], pitch: n[5], health: n[6] };
+      // The pose is what the server says they are doing — standing, walking,
+      // running, crouching, down — rather than something guessed here from how
+      // fast the figure seems to be sliding.
+      return { id: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], pitch: n[5], health: n[6], pose: n[7] | 0 };
     }),
   };
   net.prev = net.last ?? snap;
@@ -160,6 +163,7 @@ export function others(net, now) {
       yaw: q.yaw + wrap(p.yaw - q.yaw) * t,
       pitch: q.pitch + (p.pitch - q.pitch) * t,
       health: p.health,
+      pose: p.pose,
       name: net.names.get(p.id) ?? "",
     });
   }

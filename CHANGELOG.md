@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **Other people are people now.** The blocky figure of stacked cones is gone;
+  what stands in the valley is Quaternius' mannequin off the Universal
+  Animation Library (CC0), with six of that library's clips — standing,
+  walking, running, crouching, firing, and going down.
+
+  `tools/bake_figure.py` reads the glTF and writes `figure.mesh`: fifty-three
+  joints, 13,744 triangles, six clips, 389 KB. Three facts about the source are
+  what keep it there rather than at a megabyte and a half, and the baker checks
+  each rather than assuming it — nothing in the rig is ever scaled, exactly one
+  joint translates, and the clips are already authored on a thirty-a-second
+  grid. So a frame is a root position and one rotation per joint in snorm16,
+  and everything else is stored once.
+
+  The skinning is split the way the rest of this is. The page works out one
+  matrix per joint per person — fifty-three small matrix products each, which
+  is nothing for eight people, and it keeps the whole animation somewhere it
+  can be read — and the shader is four matrices and their weights. The matrices
+  arrive already in world space, so the vertex stage has no model transform, no
+  bind pose and no per-instance rotation in it. They cast shadows through the
+  same skin.
+
+  Which clip somebody is playing comes from the server, in a new field on each
+  player in the snapshot. It has the keys and the health, and two people
+  watching the same person should not disagree about whether they are running.
+  Firing is the exception because it is an event rather than a state: a round
+  leaving somebody's rifle plays the shot over whatever their legs are doing.
+  **C** crouches, which changes what everybody sees and not where anybody goes
+  — the honest half of it to ship first.
+
 - **The crystals hold their fire in a shared valley.** A meteor is thrown at
   where somebody is standing, and standing about is most of what people do
   while there are others to look at — thirty seconds of not moving used to cost

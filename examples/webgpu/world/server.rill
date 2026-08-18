@@ -455,8 +455,19 @@ fn add_player(b, c, rest) =
   strbuf_add(b, " | " + int_to_str(conn_id(c)))
   strbuf_add(b, " " + float_to_str(v.player_x(s)) + " " + float_to_str(v.player_y(s)) + " " + float_to_str(v.player_z(s)))
   strbuf_add(b, " " + float_to_str(v.player_yaw(s)) + " " + float_to_str(v.player_pitch(s)))
-  strbuf_add(b, " " + float_to_str(v.health(s)))
+  strbuf_add(b, " " + float_to_str(v.health(s)) + " " + int_to_str(pose_of(s)))
   add_players(b, rest)
+
+# What somebody looks like they are doing, for whoever has to draw them.
+#
+# Worked out here rather than guessed at the far end from how fast a figure
+# seems to be sliding: the server has the keys and the health, and two clients
+# watching the same person should not disagree about whether they are running.
+#
+#   0 standing   1 walking   2 running   3 crouching   4 down
+fn pose_of(s) =
+  k = v.keys_of(s)
+  if v.health(s) < 0.001 then 4 else if bit_and(k, 64) == 64 then 3 else if bit_and(k, 15) == 0 then 0 else if bit_and(k, 32) == 32 then 2 else 1
 
 # A snapshot goes into every outbox that will take one without waiting. A
 # client whose connection has backed up does not get to hold up the tick for

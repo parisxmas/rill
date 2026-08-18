@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=224";   // keep in step with V below
-import { join, others, me, sharkNow } from "./net.js?v=224";
+import { load } from "./world.js?v=225";   // keep in step with V below
+import { join, others, me, sharkNow } from "./net.js?v=225";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow } from "./net.js?v=224";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "224";
+const V = "225";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -97,8 +97,9 @@ const SHADERS = {
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
+  figure: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
-  "shadow-pine": "uniforms",
+  "shadow-pine": "uniforms", "shadow-figure": "uniforms",
   "firefly-sim": null,
 };
 
@@ -158,6 +159,8 @@ async function loadShaders(step) {
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
+    FIGURE: whole("figure"),
+    SHADOW_FIGURE: whole("shadow-figure"),
     SKY: whole("sky"),
     WATER: whole("water"),
     FIREFLY_SIM: whole("firefly-sim"),
@@ -281,34 +284,148 @@ function faceNormal(a, b, c) {
   return [n[0]/l, n[1]/l, n[2]/l];
 }
 
-// Somebody else, standing in the valley.
+// ---- the skinned figure ----------------------------------------------------
 //
-// Low-poly like everything here, and deliberately not a person: seven-sided
-// rings stacked into a body, a head, and a barrel out in front. What it has to
-// do is read at forty metres as *somebody, facing that way* — which is a
-// silhouette question, so the barrel and the shoulders carry it and the face
-// does not exist. A detailed figure at this distance is the same handful of
-// pixels with more triangles behind them.
+// `tools/bake_figure.py` writes the file this reads; the layout is documented
+// at the top of that script. Everything here is a view onto the bytes that
+// were fetched rather than a copy of them — the vertices and the indices go
+// straight to the GPU, and only the skeleton and the clips are unpacked,
+// because those are what the page does arithmetic with sixty times a second.
+function readFigure(bytes) {
+  const v = new DataView(bytes);
+  const magic = new TextDecoder().decode(new Uint8Array(bytes, 0, 8));
+  if (magic !== "RILLFIG1") throw new Error(`figure.mesh is not a figure (${magic})`);
+  const joints = v.getUint32(8, true), verts = v.getUint32(12, true);
+  const indices = v.getUint32(16, true), clipCount = v.getUint32(20, true);
+  const box = new Float32Array(bytes.slice(24, 48));
+
+  let at = 48;
+  const parent = new Int32Array(joints);
+  const bindT = new Float32Array(joints * 3);
+  const bindR = new Float32Array(joints * 4);
+  const invBind = new Float32Array(joints * 16);
+  for (let j = 0; j < joints; j++) {
+    parent[j] = v.getInt32(at, true); at += 4;
+    for (let k = 0; k < 3; k++) { bindT[j * 3 + k] = v.getFloat32(at, true); at += 4; }
+    for (let k = 0; k < 4; k++) { bindR[j * 4 + k] = v.getFloat32(at, true); at += 4; }
+    for (let k = 0; k < 16; k++) { invBind[j * 16 + k] = v.getFloat32(at, true); at += 4; }
+  }
+
+  const vertexAt = at;
+  at += verts * 20;
+  const indexAt = at;
+  at += indices * 2;
+
+  const clips = new Map();
+  for (let c = 0; c < clipCount; c++) {
+    const len = v.getUint8(at); at += 1;
+    const name = new TextDecoder().decode(new Uint8Array(bytes, at, len)); at += len;
+    const frames = v.getUint32(at, true); at += 4;
+    const fps = v.getFloat32(at, true); at += 4;
+    const loops = v.getUint8(at) !== 0; at += 1;
+    const root = v.getUint8(at); at += 1;
+    const rootT = new Float32Array(bytes.slice(at, at + frames * 12)); at += frames * 12;
+    const rot = new Int16Array(bytes.slice(at, at + frames * joints * 8)); at += frames * joints * 8;
+    clips.set(name, { name, frames, fps, loops, root, rootT, rot, seconds: (frames - 1) / fps });
+  }
+  return { joints, verts, indices, box, parent, bindT, bindR, invBind, clips, vertexAt, indexAt };
+}
+
+// A pose, worked out on the page and handed over as one matrix per joint.
 //
-// It is built around the origin at the feet, because that is where the walk
-// puts a player: the same y the terrain is at.
-function figureMesh() {
-  const tris = [];
-  const seg = 7;
-  const at = (t, dx, dy, dz) => t.map((tri) => tri.map((p) => [p[0] + dx, p[1] + dy, p[2] + dz]));
-  // Legs, side by side and slightly apart, then a torso that widens into the
-  // shoulders, a neck, and a head.
-  for (const x of [-0.11, 0.11]) tris.push(...at(coneRing(0.0, 0.86, 0.10, 0.09, 5), x, 0, 0));
-  tris.push(...coneRing(0.80, 1.30, 0.24, 0.30, seg));
-  tris.push(...coneRing(1.30, 1.46, 0.30, 0.13, seg));
-  tris.push(...coneRing(1.46, 1.72, 0.15, 0.14, seg));
-  tris.push(...coneRing(1.72, 1.80, 0.14, 0.0, seg));
-  // The rifle, out in front of the right shoulder. `coneRing` builds along +y,
-  // so it is laid down: (x, y, z) -> (x, z, -y) turns "up" into "forward",
-  // and forward is -z, which is what `walk` means by a yaw of zero.
-  const lay = (t, x, y, z) => t.map((tri) => tri.map(([px, py, pz]) => [px + x, pz + y, -py + z]));
-  tris.push(...lay(coneRing(0.0, 0.95, 0.05, 0.035, 4), 0.19, 1.26, 0.0));
-  return flatMesh(tris);
+// The alternative is to send the skeleton and the clips to the GPU and skin in
+// a compute pass, which is what a game with a hundred people on screen does.
+// Eight of them is fifty-three small matrix products each, which is nothing,
+// and it keeps the whole animation in one place where it can be read.
+function makeSkinner(figure, capacity) {
+  const J = figure.joints;
+  const local = new Float32Array(J * 16);
+  const world = new Float32Array(J * 16);
+  const out = new Float32Array(capacity * J * 16);
+
+  // Column-major, as WGSL wants it: o = a * b.
+  const mul = (o, oi, a, ai, b, bi) => {
+    for (let c = 0; c < 4; c++) {
+      for (let r = 0; r < 4; r++) {
+        o[oi + c * 4 + r] = a[ai + r] * b[bi + c * 4]
+                          + a[ai + 4 + r] * b[bi + c * 4 + 1]
+                          + a[ai + 8 + r] * b[bi + c * 4 + 2]
+                          + a[ai + 12 + r] * b[bi + c * 4 + 3];
+      }
+    }
+  };
+
+  // A rotation and a translation straight into a matrix; nothing in this rig
+  // is ever scaled, which the bake checks rather than assumes.
+  const trs = (m, at, x, y, z, qx, qy, qz, qw) => {
+    const x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
+    const xx = qx * x2, xy = qx * y2, xz = qx * z2;
+    const yy = qy * y2, yz = qy * z2, zz = qz * z2;
+    const wx = qw * x2, wy = qw * y2, wz = qw * z2;
+    m[at] = 1 - (yy + zz); m[at + 1] = xy + wz; m[at + 2] = xz - wy; m[at + 3] = 0;
+    m[at + 4] = xy - wz; m[at + 5] = 1 - (xx + zz); m[at + 6] = yz + wx; m[at + 7] = 0;
+    m[at + 8] = xz + wy; m[at + 9] = yz - wx; m[at + 10] = 1 - (xx + yy); m[at + 11] = 0;
+    m[at + 12] = x; m[at + 13] = y; m[at + 14] = z; m[at + 15] = 1;
+  };
+
+  // Where the player is, as a matrix: turned about the vertical, then put down
+  // on the ground. The model faces +z and `walk` calls -z forward, so what it
+  // is drawn at is half a turn from what it is walking at.
+  const place = (m, x, y, z, yaw) => {
+    const a = yaw + Math.PI, c = Math.cos(a), s = Math.sin(a);
+    m[0] = c; m[1] = 0; m[2] = -s; m[3] = 0;
+    m[4] = 0; m[5] = 1; m[6] = 0; m[7] = 0;
+    m[8] = s; m[9] = 0; m[10] = c; m[11] = 0;
+    m[12] = x; m[13] = y; m[14] = z; m[15] = 1;
+  };
+
+  const model = new Float32Array(16);
+  const rooted = new Float32Array(16);
+
+  return {
+    matrices: out,
+    // One person: their clip, how far into it, and where they are standing.
+    pose(slot, clip, time, x, y, z, yaw) {
+      const f = clip.loops
+        ? (Math.max(time, 0) * clip.fps) % (clip.frames - 1)
+        : Math.min(Math.max(time, 0) * clip.fps, clip.frames - 1);
+      const f0 = Math.floor(f), f1 = Math.min(f0 + 1, clip.frames - 1), t = f - f0;
+
+      for (let j = 0; j < J; j++) {
+        const a = (f0 * J + j) * 4, b = (f1 * J + j) * 4;
+        // snorm16 back to a quaternion, taking the short way between frames.
+        const ax = clip.rot[a] / 32767, ay = clip.rot[a + 1] / 32767;
+        const az = clip.rot[a + 2] / 32767, aw = clip.rot[a + 3] / 32767;
+        let bx = clip.rot[b] / 32767, by = clip.rot[b + 1] / 32767;
+        let bz = clip.rot[b + 2] / 32767, bw = clip.rot[b + 3] / 32767;
+        if (ax * bx + ay * by + az * bz + aw * bw < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; }
+        let qx = ax + (bx - ax) * t, qy = ay + (by - ay) * t;
+        let qz = az + (bz - az) * t, qw = aw + (bw - aw) * t;
+        const n = Math.hypot(qx, qy, qz, qw) || 1;
+        qx /= n; qy /= n; qz /= n; qw /= n;
+
+        let tx = figure.bindT[j * 3], ty = figure.bindT[j * 3 + 1], tz = figure.bindT[j * 3 + 2];
+        if (j === clip.root) {
+          const r0 = f0 * 3, r1 = f1 * 3;
+          tx = clip.rootT[r0] + (clip.rootT[r1] - clip.rootT[r0]) * t;
+          ty = clip.rootT[r0 + 1] + (clip.rootT[r1 + 1] - clip.rootT[r0 + 1]) * t;
+          tz = clip.rootT[r0 + 2] + (clip.rootT[r1 + 2] - clip.rootT[r0 + 2]) * t;
+        }
+        trs(local, j * 16, tx, ty, tz, qx, qy, qz, qw);
+      }
+
+      place(model, x, y, z, yaw);
+      for (let j = 0; j < J; j++) {
+        const p = figure.parent[j];
+        if (p < 0) mul(world, j * 16, model, 0, local, j * 16);
+        else mul(world, j * 16, world, p * 16, local, j * 16);
+      }
+      for (let j = 0; j < J; j++) {
+        mul(rooted, 0, world, j * 16, figure.invBind, j * 16);
+        out.set(rooted, (slot * J + j) * 16);
+      }
+    },
+  };
 }
 
 function crystalMesh() {
@@ -361,7 +478,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 11 + Object.keys(SHADERS).length + TEXTURES.length + 6 + (server ? 1 : 0);
+  const TOTAL = 12 + Object.keys(SHADERS).length + TEXTURES.length + 6 + (server ? 1 : 0);
   let done = 0;
   const step = (what) => progress(++done, TOTAL, what);
 
@@ -802,11 +919,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout],
     { constants: { emissive: 0.72 }, blend: overPre, cull: "none",
       depth: { depthWriteEnabled: false } });
-  // Other people. The same shader the crystals use, with none of the glow: a
-  // mesh, an instance carrying a position, a scale, a yaw and a colour. There
-  // was nothing to add — a player is a solid thing standing on the ground,
-  // which is what that pipeline already draws four hundred of.
-  const figurePipe = pipe("figure", S.INSTANCED, [meshLayout, instLayout], { constants: { emissive: 0.0 } });
   const grassPipe = pipe("grass", S.GRASS, [pineLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   // Backfaces culled, unlike the foliage: the butt sits behind the eye and is
@@ -885,6 +997,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   device.queue.writeBuffer(sharkIB, 0, sharkIdxBytes);
   step("shark.mesh");
+
+  // Somebody else, with a skeleton in them: Quaternius' mannequin off the
+  // Universal Animation Library (CC0), baked by `tools/bake_figure.py` down to
+  // the six clips this valley has any use for. Fifty-three joints, 13,744
+  // triangles and 389 KB, of which the animation is a third: nothing is scaled
+  // and only the hips translate, so a frame is a root position and a rotation
+  // per joint in snorm16.
+  const figBytes = await (await fetch(`./figure.mesh?v=${V}`)).arrayBuffer();
+  const figure = readFigure(figBytes);
+  const figVB = gpuBuf(new Uint8Array(figBytes, figure.vertexAt, figure.verts * 20));
+  const figIdxBytes = new Uint8Array((figure.indices * 2 + 3) & ~3);
+  figIdxBytes.set(new Uint8Array(figBytes, figure.indexAt, figure.indices * 2));
+  const figIB = device.createBuffer({
+    size: figIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(figIB, 0, figIdxBytes);
+  step("figure.mesh");
 
   // The bullets live in Rill's memory and are copied up whole every frame:
   // thirty-two rounds is a kilobyte, which is less than the call it would take
@@ -1195,30 +1324,97 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const shInst = shadowPipe("shadow-inst", S.SHADOW_INST, [meshLayout, instLayout]);
   const shPine = shadowPipe("shadow-pine", S.SHADOW_PINE, [pineLayout, instLayout], true);
 
-  const pineData = pineMesh(), crystalData = crystalMesh(), grassData = grassMesh();
-  const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
-  const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 8;
+  // The people. Twenty bytes a vertex — position quantized across the model's
+  // own box, normal and material, four joints and four weights — and a second
+  // buffer, per instance, for nothing but the colour: where each of them is
+  // standing is already inside the matrices.
+  const figLayout = { arrayStride: 20, attributes: [
+    { shaderLocation: 0, offset: 0, format: "unorm16x4" },
+    { shaderLocation: 1, offset: 8, format: "snorm8x4" },
+    { shaderLocation: 2, offset: 12, format: "uint8x4" },
+    { shaderLocation: 3, offset: 16, format: "unorm8x4" },
+  ]};
+  const figInstLayout = { arrayStride: 32, stepMode: "instance", attributes: [
+    { shaderLocation: 4, offset: 20, format: "float32x3" },
+  ]};
+  const figConst = {
+    BOX_MIN_X: figure.box[0], BOX_MIN_Y: figure.box[1], BOX_MIN_Z: figure.box[2],
+    BOX_MAX_X: figure.box[3], BOX_MAX_Y: figure.box[4], BOX_MAX_Z: figure.box[5],
+    JOINTS: figure.joints,
+  };
+  const poseBgl = device.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+  ]});
+  const figurePipe = watched("figure", () => device.createRenderPipeline({
+    label: "figure",
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bglMain, poseBgl] }),
+    vertex: { module: mod(S.FIGURE, "figure", figConst), buffers: [figLayout, figInstLayout] },
+    fragment: { module: mod(S.FIGURE, "figure", figConst), targets: [{ format }] },
+    primitive: { cullMode: "back" },
+    depthStencil: depth,
+    multisample: MS,
+  }));
+  const shFigure = watched("shadow-figure", () => device.createRenderPipeline({
+    label: "shadow-figure",
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bglShadow, poseBgl] }),
+    vertex: { module: mod(S.SHADOW_FIGURE, "shadow-figure", figConst), buffers: [figLayout] },
+    primitive: { cullMode: "back" },
+    depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
+  }));
 
-  // The other people, and room for as many as the server will hold. The buffer
-  // is written every frame and mostly empty; thirty-two instances of eight
-  // floats is a kilobyte, which is not worth being clever about.
-  const figureData = figureMesh();
-  const figureBuf = gpuBuf(figureData);
-  const figureVerts = figureData.length / 6;
+  // One matrix per joint per person, rebuilt on the page every frame and
+  // handed over whole. Thirty-two people is a hundred and eight kilobytes,
+  // which is a sixth of what the terrain is.
   const FIGURE_CAP = 32;
-  const figureInst = device.createBuffer({
-    size: FIGURE_CAP * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  const skinner = makeSkinner(figure, FIGURE_CAP);
+  const poseBuf = device.createBuffer({
+    size: FIGURE_CAP * figure.joints * 64,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  const figures = new Float32Array(FIGURE_CAP * 8);
-  let figureCount = 0;
-
-  // GPU frame timing, when the adapter offers it.
+  const poseBg = device.createBindGroup({
+    layout: poseBgl, entries: [{ binding: 0, resource: { buffer: poseBuf } }],
+  });
+  // What a frame costs the GPU, when the adapter will say. Two timestamps
+  // around the passes, resolved into a buffer and read back a frame later so
+  // that nothing waits on it.
   let qs = null, qResolve = null, qStage = null, qPending = false, gpuMs = 0;
   if (canTime) {
     qs = device.createQuerySet({ type: "timestamp", count: 2 });
     qResolve = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
     qStage = device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
   }
+
+  // Nothing per instance but the colour; where each of them is standing is
+  // already inside the matrices. The record keeps the old eight-float shape so
+  // that one stride serves both this and anything else instanced.
+  const figureInst = device.createBuffer({
+    size: FIGURE_CAP * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  const figures = new Float32Array(FIGURE_CAP * 8);
+  let figureCount = 0;
+
+  // Where each person is in their animation, and what they were doing last
+  // time. Kept here rather than sent, because a clock is exactly the sort of
+  // thing that should not go over a network: everybody's legs can be at a
+  // different point in the same walk without anybody disagreeing about
+  // anything that matters.
+  const clocks = new Map();
+  const CLIP_FOR = ["idle", "walk", "run", "crouch", "die"];
+
+  // A shot is an event rather than a state, so it plays over whatever the
+  // legs are doing for as long as the clip lasts.
+  function clipFor(p, now) {
+    const c = clocks.get(p.id) ?? { name: "idle", since: now, firedAt: -9 };
+    const shooting = now - c.firedAt < figure.clips.get("fire").seconds * 1000;
+    const want = p.health < 0.001 ? "die" : shooting ? "fire" : (CLIP_FOR[p.pose] ?? "idle");
+    if (want !== c.name) { c.name = want; c.since = now; }
+    clocks.set(p.id, c);
+    return c;
+  }
+
+  const pineData = pineMesh(), crystalData = crystalMesh(), grassData = grassMesh();
+  const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
+  const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 8;
 
   // ---- being told, rather than deciding ------------------------------------
   //
@@ -1241,7 +1437,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // A round of this player's own is already in the air: it was fired here
       // the moment the mouse went down, because a tracer that waits for the
       // server is a rifle that fires late. This is the same round coming back.
-      else if (e.kind === "r") { if (n[6] !== net.id) E.put_bullet(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6]); }
+      else if (e.kind === "r") {
+        if (n[6] !== net.id) E.put_bullet(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6]);
+        // Whoever fired it plays the shot, this player included: their own
+        // round never comes back, but the tag over their head is not the only
+        // thing other people see of them.
+        const c = clocks.get(n[6]);
+        if (c) c.firedAt = performance.now();
+      }
       else if (e.kind === "t") E.put_fireball(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]);
       else if (e.kind === "k") E.put_blast(world, n[0], n[1], n[2], n[3]);
       else if (e.kind === "b") E.put_break(world, BigInt(n[0]));
@@ -1713,7 +1916,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
   // Input.
   let keys = 0, mdx = 0, mdy = 0;
-  const bit = { KeyW: 1, KeyS: 2, KeyA: 4, KeyD: 8, Space: 16, ShiftLeft: 32, ShiftRight: 32 };
+  // 64 is the crouch. Rill's `walk` reads the first six bits and ignores this
+  // one, so crouching changes what everybody sees and not where anybody goes —
+  // which is the honest half of it to ship first.
+  const bit = { KeyW: 1, KeyS: 2, KeyA: 4, KeyD: 8, Space: 16, ShiftLeft: 32, ShiftRight: 32, KeyC: 64 };
   addEventListener("keydown", e => { if (bit[e.code]) { keys |= bit[e.code]; e.preventDefault(); } });
   addEventListener("keydown", e => { if (e.code === "KeyM") setMusic(!musicOn); });
   // On the press, not held: read from the event rather than from the key mask,
@@ -1958,11 +2164,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         const p = seen[i], o = i * 8;
         const c = hueOf(p.id, p.health);
         figures[o] = p.x; figures[o + 1] = p.y; figures[o + 2] = p.z;
-        figures[o + 3] = 1;                    // the mesh is already a person tall
+        figures[o + 3] = 1;
         figures[o + 4] = p.yaw;
         figures[o + 5] = c[0]; figures[o + 6] = c[1]; figures[o + 7] = c[2];
+        const clock = clipFor(p, now);
+        const clip = figure.clips.get(clock.name) ?? figure.clips.get("idle");
+        skinner.pose(i, clip, (now - clock.since) / 1000, p.x, p.y, p.z, p.yaw);
       }
-      if (figureCount) device.queue.writeBuffer(figureInst, 0, figures, 0, figureCount * 8);
+      // Whoever has gone is forgotten, or the map grows for the life of the
+      // page in a valley people keep passing through.
+      if (clocks.size > seen.length) {
+        const here = new Set(seen.map(p => p.id));
+        for (const id of clocks.keys()) if (!here.has(id)) clocks.delete(id);
+      }
+      if (figureCount) {
+        device.queue.writeBuffer(figureInst, 0, figures, 0, figureCount * 8);
+        device.queue.writeBuffer(poseBuf, 0, skinner.matrices, 0, figureCount * figure.joints * 16);
+      }
       drawTags(seen, stateF32());
     }
 
@@ -2179,8 +2397,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // A person standing in the sun has a shadow, and without one they read as
     // pasted onto the hillside rather than standing on it.
     if (figureCount > 0) {
-      sh.setVertexBuffer(0, figureBuf); sh.setVertexBuffer(1, figureInst);
-      sh.draw(figureVerts, figureCount);
+      sh.setPipeline(shFigure);
+      sh.setBindGroup(1, poseBg);
+      sh.setVertexBuffer(0, figVB);
+      sh.setIndexBuffer(figIB, "uint16");
+      sh.drawIndexed(figure.indices, figureCount);
     }
     sh.end();
 
@@ -2202,8 +2423,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.grassInst); pass.draw(grassVerts, W.counts.grass);
     if (figureCount > 0) {
       pass.setPipeline(figurePipe);
-      pass.setVertexBuffer(0, figureBuf); pass.setVertexBuffer(1, figureInst);
-      pass.draw(figureVerts, figureCount);
+      pass.setBindGroup(1, poseBg);
+      pass.setVertexBuffer(0, figVB); pass.setVertexBuffer(1, figureInst);
+      pass.setIndexBuffer(figIB, "uint16");
+      pass.drawIndexed(figure.indices, figureCount);
     }
     pass.setPipeline(skyPipe); pass.draw(3);
     pass.setPipeline(W.waterPipe); pass.setVertexBuffer(0, W.waterBuf); pass.draw(W.waterVerts);
