@@ -4811,11 +4811,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         // Only the host's backend is initialised for a host build, which is
         // the common case and the cheap one; asking for another target brings
-        // the rest of LLVM's backends in.
+        // in the three backends that are linked. Registering every backend
+        // instead would make the linker keep all nineteen of LLVM's, which
+        // doubles the size of this compiler for architectures nobody asks for.
         match want {
             None => Target::initialize_native(&InitializationConfig::default())
                 .map_err(|e| CodegenError::new(0, format!("failed to initialize LLVM target: {e}")))?,
-            Some(_) => Target::initialize_all(&InitializationConfig::default()),
+            Some(_) => {
+                let cfg = InitializationConfig::default();
+                Target::initialize_aarch64(&cfg);
+                Target::initialize_x86(&cfg);
+                Target::initialize_webassembly(&cfg);
+            }
         }
         let triple = match want {
             None => TargetMachine::get_default_triple(),
