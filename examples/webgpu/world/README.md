@@ -198,6 +198,14 @@ frames stay in the kernel buffer, the window fills, and the sender's own writes
 block. Sixty-four sockets may be open at once, whichever of them ever say
 anything, and no more than sixteen from one address.
 
+Behind a proxy the address comes from the `X-Real-IP` header rather than from
+the socket, and only when the socket is the loopback — which on a machine where
+nothing else can reach the port means nginx. Without that, `wss://` would make
+every player look like 127.0.0.1 and sixteen of them would fill the valley for
+everybody. With it, a header from anywhere else is ignored, which is the whole
+of the security in it: a client that could name its own address would invent a
+new one per connection.
+
 A name may be changed once every three seconds, and only to a different one.
 Every accepted name goes out to everybody, so that is the one thing a single
 client can make the server say to all the others, and at ninety a second times

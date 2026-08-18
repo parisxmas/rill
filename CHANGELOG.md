@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Behind a proxy, the valley knows who is really there.** Put nginx in front
+  — which is what `wss://` requires, since the page is served over TLS and a
+  browser will not open a plain socket from an encrypted one — and every
+  connection arrives from 127.0.0.1. The limit of sixteen per address would
+  then have counted the whole internet as one house and turned away the
+  seventeenth person in the world.
+
+  So the address is taken from `X-Real-IP` when, and only when, the socket
+  itself is the loopback: on that machine nothing but nginx can reach the port,
+  and a header is something the client writes — one that could name its own
+  address would invent a new one per connection and walk round the limit
+  entirely. Checked both ways: seventeen through the proxy from one machine and
+  the seventeenth is refused by its real address, eighteen straight at the port
+  with a different invented address each and every one of them still counts as
+  the socket it came from.
+
+  The per-address gate moved from `accept` to after the request is read, since
+  that is when there is a request to read it from. The total gate stays at the
+  door, so a flood of half-open handshakes still cannot get past
+  `max_connections()`.
+
 - **A dead socket killed the server.** Writing to a peer that has gone raises
   SIGPIPE, and nothing in a Rill binary handles it: the process died where it
   stood, no panic, no message, exit 141. Rust's own runtime turns SIGPIPE off

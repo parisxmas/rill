@@ -571,12 +571,61 @@ fn ticker(inbox, next) =
 
 # ---- one connection --------------------------------------------------------
 
-fn serve(conn, inbox, live, addr) =
+# The per-address gate is here rather than at `accept` because who somebody is
+# is not known until the request has been read — see `whose`. The total gate is
+# still taken at the door, so a flood of half-open handshakes cannot get past
+# `max_connections()` however it dresses them up.
+fn serve(conn, inbox, live) =
   request = fill_until(conn, "", 4, now_nanos() + handshake_ms() * 1000000)
+  addr = whose(conn, request)
+  if take_addr(live, addr) <= 0 then turn_away(conn, live, addr) else admitted(conn, inbox, live, addr, request)
+
+fn admitted(conn, inbox, live, addr, request) =
   if ws_accept(conn, request) then play(conn, inbox) else sock_close(conn)
   drop_slot(live)
   drop_addr(live, addr)
   0
+
+# ---- who is really on the other end ----------------------------------------
+#
+# Straight off the socket, unless the socket is the loopback — which on this
+# machine means nginx, because nothing else can reach the port. A proxy makes
+# every player look like 127.0.0.1, and a per-address limit that counts them
+# all as one address stops the seventeenth person in the world rather than the
+# seventeenth from one house. So behind it the address comes from the
+# `X-Real-IP` header nginx sets.
+#
+# Only from the loopback, and that is the whole of the security in it: a header
+# is something the client writes, and a client that could name its own address
+# would walk round the limit by inventing a new one for every connection.
+fn loopback() = 2130706433
+
+fn whose(conn, request) =
+  peer = sock_peer(conn)
+  if peer == loopback() then behind_proxy(request, peer) else peer
+
+fn behind_proxy(request, peer) =
+  at = real_ip_at(request)
+  if at < 0 then peer else ip_from(request, at, 0, 0)
+
+fn real_ip_at(request) =
+  a = str_find(request, "X-Real-IP: ")
+  if a >= 0 then a + 11 else lower_real_ip_at(request)
+
+# Header names are case-insensitive and this has no case-folding to hand, so
+# the two spellings anything would actually send are both looked for.
+fn lower_real_ip_at(request) =
+  b = str_find(request, "x-real-ip: ")
+  if b >= 0 then b + 11 else 0 - 1
+
+# A dotted quad into the one integer `sock_peer` hands back, high octet first.
+# Anything that is not a digit or a dot ends it, which includes the carriage
+# return at the end of the header and the colon of an address that is not IPv4
+# — and an address this cannot read becomes some number, which is fine: it is a
+# key in a table of counts and not something anybody looks up.
+fn ip_from(s, i, acc, part) =
+  c = if i < str_len(s) then str_get(s, i) else 13
+  if c >= 48 && c <= 57 then ip_from(s, i + 1, acc * 10 + (c - 48), part) else if c == 46 then ip_from(s, i + 1, 0, shl(part, 8) + acc) else shl(part, 8) + acc
 
 fn play(conn, inbox) =
   out = channel(4)
@@ -740,16 +789,17 @@ fn count_down(live, r) =
 # Two gates, and the second one gives its place back if the first refuses.
 fn accept_loop(server, inbox, live) =
   conn = tcp_accept(server)
-  admit_conn(conn, inbox, live, sock_peer(conn))
+  admit_conn(conn, inbox, live)
   accept_loop(server, inbox, live)
 
-fn admit_conn(conn, inbox, live, addr) =
-  if take_slot(live) <= 0 then sock_close(conn) else if take_addr(live, addr) <= 0 then turn_away(conn, live, addr) else spawn serve(conn, inbox, live, addr)
+fn admit_conn(conn, inbox, live) =
+  if take_slot(live) <= 0 then sock_close(conn) else spawn serve(conn, inbox, live)
 
 fn turn_away(conn, live, addr) =
   drop_slot(live)
   println("too many connections from one address, refusing " + dotted(addr))
   sock_close(conn)
+  0
 
 fn dotted(a) =
   int_to_str(bit_and(shr(a, 24), 255)) + "." + int_to_str(bit_and(shr(a, 16), 255)) + "." + int_to_str(bit_and(shr(a, 8), 255)) + "." + int_to_str(bit_and(a, 255))
