@@ -41,7 +41,9 @@ use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
+use inkwell::types::{
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, IntType, StructType,
+};
 use inkwell::values::BasicValue;
 use inkwell::values::{
     BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, IntValue, PointerValue,
@@ -880,6 +882,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
+    /// The integer C calls a word: `size_t` wide, which is pointer wide.
+    fn word_type(&self) -> IntType<'ctx> {
+        if self.wasm { self.ctx.i32_type() } else { self.ctx.i64_type() }
+    }
+
     /// LLVM type of a foreign signature position; `None` for Unit (a void
     /// return). C takes a bool as a byte.
     fn c_type(&self, c: &CTy) -> Option<BasicTypeEnum<'ctx>> {
@@ -888,6 +895,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             CTy::I16 | CTy::U16 => self.ctx.i16_type().into(),
             CTy::I32 | CTy::U32 => self.ctx.i32_type().into(),
             CTy::I64 | CTy::U64 => self.ctx.i64_type().into(),
+            // C's word: as wide as the target's pointer. Everywhere Rill links
+            // natively that is 64 bits and this costs nothing; on wasm32 it is
+            // 32, which is the whole reason the type exists.
+            CTy::USize | CTy::ISize => self.word_type().into(),
             CTy::F32 => self.ctx.f32_type().into(),
             CTy::F64 => self.ctx.f64_type().into(),
             CTy::Ptr | CTy::Fn(..) => self.ctx.ptr_type(Default::default()).into(),
@@ -909,6 +920,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error")
                 .into(),
             CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Unit | CTy::Fn(..) => v,
+            // A word is already 64 bits on a 64-bit target, and `trunc` to the
+            // width a value already has is not an instruction.
+            CTy::USize | CTy::ISize if !self.wasm => v,
             _ => {
                 let t = self.c_type(c).expect("not Unit").into_int_type();
                 b.build_int_truncate(v.into_int_value(), t, "ci")
@@ -934,6 +948,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error")
                 .into(),
             CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Unit | CTy::Fn(..) => v,
+            CTy::USize | CTy::ISize if !self.wasm => v,
             _ if c.is_signed() => b
                 .build_int_s_extend(v.into_int_value(), i64t, "rs")
                 .expect("LLVM builder error")
@@ -2758,7 +2773,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // wasm module has no such thing — it imports from its host instead. A
         // bare `extern fn` is different: it resolves against wasi-libc like
         // any other C symbol, so it is left alone.
-        if let Some(lib) = self.tmod.libs.iter().find(|l| !l.starts_with('-')) {
+        //
+        // `m` and `c` are the exception, and not by kindness: wasi-libc is one
+        // archive with the maths in it, so `sqrt` and `strlen` come from the
+        // same `libc.a` the module already links. A program that asks for
+        // `-lm` on a Mac is asking for something wasm gives it anyway.
+        if let Some(lib) =
+            self.tmod.libs.iter().find(|l| !l.starts_with('-') && !matches!(l.as_str(), "m" | "c"))
+        {
             let name = lib.strip_prefix("framework:").unwrap_or(lib);
             return Err(CodegenError::new(
                 0,
@@ -4904,6 +4926,44 @@ mod tests {
         assert!(e.msg.contains("Str"), "{e}");
         check("export fn f(x: Int) -> Float = to_float(x)\nfn main() = 0\n", Some("wasm32-wasip1"))
             .unwrap();
+    }
+
+    /// Builds for wasm and hands back the module's IR, or what the target
+    /// refused it for.
+    fn wasm_ir(src: &str) -> Result<String, CodegenError> {
+        let m = rill_syntax::parse(src).unwrap();
+        let tmod = rill_types::check(&m).unwrap();
+        let context = Context::create();
+        let cg = Codegen::build_module(&context, &tmod, false, None, Some("wasm32-wasip1"))?;
+        cg.check_wasm_supported()?;
+        Ok(cg.module.print_to_string().to_string())
+    }
+
+    /// `size_t` is 64 bits on every target Rill links natively and 32 on
+    /// wasm32, and a declaration cannot say that with a number. The same
+    /// source has to produce both, or a signature mismatch traps at run time.
+    #[test]
+    fn word_width_follows_the_target() {
+        let src = "extern fn strlen(s: Ptr) -> USize\n\nfn main() =\n  p = to_cstr(\"abc\")\n  n = strlen(p)\n  free_ptr(p)\n  println(n)\n";
+        let native = ir(src);
+        assert!(native.contains("declare i64 @strlen"), "{native}");
+        let wasm = wasm_ir(src).unwrap();
+        assert!(wasm.contains("declare i32 @strlen"), "{wasm}");
+        // Narrower than Rill's `Int`, so the result comes back widened — and
+        // unsigned, so a big length does not arrive negative.
+        assert!(wasm.contains("zext i32"), "{wasm}");
+    }
+
+    /// A wasm module links no shared object, but `m` is not one there: the
+    /// maths is inside the same wasi-libc archive as `strlen`, so asking for
+    /// `-lm` is asking for something the module already has.
+    #[test]
+    fn wasm_takes_libm_and_refuses_a_real_library() {
+        let sqrt = "extern \"m\" fn sqrt(x: Float) -> Float\n\nfn main() = println(sqrt(4.0))\n";
+        assert!(wasm_ir(sqrt).unwrap().contains("declare double @sqrt"));
+        let glfw = "extern \"glfw\" fn glfwInit() -> I32\n\nfn main() = println(glfwInit())\n";
+        let e = wasm_ir(glfw).unwrap_err();
+        assert!(e.msg.contains("`glfw`"), "{e}");
     }
 
     #[test]

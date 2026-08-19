@@ -703,6 +703,19 @@ extern "m" fn sqrtf(x: F32) -> F32      # C `float`, not `double`
 extern fn abs(n: I32) -> I32            # C `int`, not a 64-bit one
 ```
 
+One width has no number to name it: C's `size_t` is as wide as a pointer, which
+is 64 bits everywhere Rill links natively and 32 on `wasm32`. `USize` and
+`ISize` are that width, filled in by whatever is being built for, so one
+declaration is right on both:
+
+```
+extern fn strlen(s: Ptr) -> USize
+extern fn qsort(base: Ptr, n: USize, size: USize, cmp: Fn(Ptr, Ptr) -> I32) -> Unit
+```
+
+They are for signatures, not storage: `Buf` refuses them, because a buffer's
+layout is the program's to decide and this width is the target's.
+
 Getting this wrong is not a compile error but a silently wrong answer, and the
 float case is the sharp one: a `float` parameter handed a double reads the
 wrong half of the register. Width names are only spellable inside an `extern`.
@@ -881,6 +894,16 @@ declare `extern fn gpu_draw(v: Ptr, n: Int)`, supply `env.gpu_draw` from
 JavaScript. `examples/webgpu/` renders through WebGPU exactly this way — the
 host owns the asynchronous device setup that a wasm module cannot await, Rill
 owns the frame.
+
+What a wasm build will not do is link a library by name: a module imports from
+its host rather than loading a shared object, so `extern "glfw"` is refused
+where it would otherwise fail obscurely at run time. `"m"` and `"c"` are the
+exception, and not as a courtesy — wasi-libc is a single archive with the maths
+already in it, so a program written against `-lm` on a Mac needs no second
+spelling for the browser. A C name that wasi genuinely lacks — `getpid`,
+`signal`, anything about processes or users — is a link error naming it, and a
+declaration whose width disagrees with the C is one too rather than a stub that
+traps mid-run.
 
 ## 11. Built-in functions
 

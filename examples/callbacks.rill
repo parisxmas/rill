@@ -21,7 +21,7 @@ extern fn raise(sig: I32) -> I32
 
 # The comparator is handed pointers into the array and answers with the sign
 # of the ordering, which is what makes this callback one that has to return.
-extern fn qsort(base: Ptr, n: U64, size: U64, cmp: Fn(Ptr, Ptr) -> I32) -> Unit
+extern fn qsort(base: Ptr, n: USize, size: USize, cmp: Fn(Ptr, Ptr) -> I32) -> Unit
 
 fn sigusr1() = 30
 

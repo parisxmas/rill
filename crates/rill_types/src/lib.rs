@@ -68,6 +68,11 @@ pub enum CTy {
     U64,
     F32,
     F64,
+    /// C's `size_t` and `ssize_t`: as wide as the target's pointer, which is
+    /// the one width a signature cannot state as a number and stay portable.
+    /// 64 bits everywhere Rill runs natively, 32 on `wasm32`.
+    USize,
+    ISize,
     Bool,
     Ptr,
     Unit,
@@ -83,7 +88,7 @@ impl CTy {
     pub fn rill_ty(&self) -> Ty {
         match self {
             CTy::I8 | CTy::U8 | CTy::I16 | CTy::U16 | CTy::I32 | CTy::U32 | CTy::I64
-            | CTy::U64 => Ty::Int,
+            | CTy::U64 | CTy::USize | CTy::ISize => Ty::Int,
             CTy::F32 | CTy::F64 => Ty::Float,
             CTy::Bool => Ty::Bool,
             CTy::Ptr => Ty::Ptr,
@@ -94,7 +99,8 @@ impl CTy {
         }
     }
 
-    /// Width in bits of the integer forms; `None` for everything else.
+    /// Width in bits of the integer forms that state one; `None` for the rest,
+    /// `USize`/`ISize` among them — theirs is the target's to say.
     pub fn int_bits(&self) -> Option<u32> {
         match self {
             CTy::I8 | CTy::U8 => Some(8),
@@ -106,20 +112,28 @@ impl CTy {
     }
 
     /// How much memory one of these takes, which is what a buffer of them
-    /// indexes by.
+    /// indexes by. `USize`/`ISize` are refused as buffer widths for exactly
+    /// this reason — a buffer's layout is one thing and the target's word is
+    /// another — so the 8 here is never an index.
     pub fn size_bytes(&self) -> u64 {
         match self {
             CTy::I8 | CTy::U8 | CTy::Bool => 1,
             CTy::I16 | CTy::U16 => 2,
             CTy::I32 | CTy::U32 | CTy::F32 => 4,
             CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Fn(..) => 8,
+            CTy::USize | CTy::ISize => 8,
             CTy::Unit => 0,
         }
     }
 
     /// Whether a narrower result sign-extends back to Rill's `Int`.
     pub fn is_signed(&self) -> bool {
-        matches!(self, CTy::I8 | CTy::I16 | CTy::I32 | CTy::I64)
+        matches!(self, CTy::I8 | CTy::I16 | CTy::I32 | CTy::I64 | CTy::ISize)
+    }
+
+    /// Whether the target decides the width, rather than the name.
+    pub fn is_word_sized(&self) -> bool {
+        matches!(self, CTy::USize | CTy::ISize)
     }
 
     /// The name this type is written with in a signature.
@@ -135,6 +149,8 @@ impl CTy {
             CTy::U64 => "U64",
             CTy::F32 => "F32",
             CTy::F64 => "Float",
+            CTy::USize => "USize",
+            CTy::ISize => "ISize",
             CTy::Bool => "Bool",
             CTy::Ptr => "Ptr",
             CTy::Unit => "Unit",
@@ -2685,6 +2701,8 @@ fn resolve_c_type(
         "U64" => Some(CTy::U64),
         "F32" => Some(CTy::F32),
         "F64" => Some(CTy::F64),
+        "USize" => Some(CTy::USize),
+        "ISize" => Some(CTy::ISize),
         _ => None,
     };
     if let Some(cty) = width {
@@ -2917,6 +2935,20 @@ fn resolve_type_ref(
             return Err(TypeError::new(
                 tr.args[0].line,
                 format!("a buffer cannot hold `{}`", w.name()),
+            ));
+        }
+        // A buffer is memory with a layout, and an index into it is elements
+        // times a width the program has to know. `USize` is whatever the
+        // target says, so a buffer of them would change shape underneath a C
+        // library that was told how wide its array is. Name the width.
+        if w.is_word_sized() {
+            return Err(TypeError::new(
+                tr.args[0].line,
+                format!(
+                    "a buffer cannot hold `{}`: its width is the target's, and a buffer's \
+                     layout is the program's. Use `I64`/`U64` or `I32`/`U32`",
+                    w.name()
+                ),
             ));
         }
         return Ok(Ty::Buf(w));
@@ -3367,6 +3399,27 @@ mod tests {
         let src = "extern fn f(a: Int, b: Float) -> Int\n\nfn main() = println(f(1, 2.0))\n";
         let t = check_src(src).unwrap();
         assert_eq!(t.externs["f"].params, vec![CTy::I64, CTy::F64]);
+    }
+
+    /// The one width a portable signature cannot write as a number. The Rill
+    /// side of the call still deals in `Int`, exactly as `I32` does.
+    #[test]
+    fn foreign_word_width_is_the_targets() {
+        let src = "extern fn strlen(s: Ptr) -> USize\n\nfn main() = println(strlen(to_cstr(\"ab\")))\n";
+        let t = check_src(src).unwrap();
+        assert_eq!(t.externs["strlen"].ret, CTy::USize);
+        assert_eq!(t.externs["strlen"].ret.rill_ty(), Ty::Int);
+        assert!(CTy::USize.is_word_sized() && CTy::ISize.is_signed());
+        assert_eq!(CTy::USize.int_bits(), None);
+    }
+
+    /// A buffer is memory the program lays out, so its element width has to be
+    /// one the program can state — not one the target decides.
+    #[test]
+    fn a_buffer_cannot_be_a_word_wide() {
+        let src = "fn f(v: Buf(USize), i) = buf_get(v, i)\n\nfn main() = println(1)\n";
+        let err = check_src(src).unwrap_err();
+        assert!(err.msg.contains("the target's"), "{}", err.msg);
     }
 
     /// Codegen has no LLVM type to pass here, and used to panic on it.

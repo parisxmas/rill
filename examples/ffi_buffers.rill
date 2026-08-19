@@ -13,8 +13,9 @@ extern "m" fn powf(base: F32, exponent: F32) -> F32
 # C's `abs` takes an `int`, which is not Rill's `Int`.
 extern fn abs(n: I32) -> I32
 
-# Reads a buffer this program filled in, and stops at the NUL.
-extern fn strlen(s: Ptr) -> Int
+# Reads a buffer this program filled in, and stops at the NUL. Its `size_t`
+# result is pointer-wide, which `USize` says without naming a number.
+extern fn strlen(s: Ptr) -> USize
 
 # Bytes of a Rill string, copied into raw memory one at a time: `str_get`
 # hands back a byte and `poke_i8` stores one. The pair recurses until the

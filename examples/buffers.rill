@@ -25,7 +25,9 @@ fn byte_pair(u: Buf(U8), s: Buf(I8)) =
   buf_set(s, 0, 200)
   int_to_str(buf_get(u, 0)) + " " + int_to_str(buf_get(s, 0))
 
-extern fn strlen(s: Ptr) -> Int
+# `size_t` is as wide as a pointer, which is not a number a portable signature
+# can name: 64 bits here, 32 on wasm32. `USize` is that width, whatever it is.
+extern fn strlen(s: Ptr) -> USize
 
 # A buffer is C's kind of memory, so a C function can read it directly.
 fn c_sees(b: Buf(U8)) =

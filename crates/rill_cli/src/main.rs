@@ -539,10 +539,26 @@ fn link_wasm(
         .output()
         .map_err(|e| format!("failed to invoke `wasm-ld`: {e}\ninstall it with `brew install lld`"))?;
     if !link.status.success() {
-        return Err(format!(
-            "linking for {triple} failed:\n{}",
-            String::from_utf8_lossy(&link.stderr)
-        ));
+        let said = String::from_utf8_lossy(&link.stderr);
+        // Two of these read as toolchain trouble and are not. A symbol wasi-libc
+        // does not have is usually one wasi has no notion of — processes,
+        // signals, users — and no flag will conjure it; the answer is either to
+        // drop it or to let the host supply it, which is what a module with an
+        // `export fn` does. A signature mismatch is the other: a declaration
+        // that says 64 bits where the C is a word wide, which `--fatal-warnings`
+        // catches here rather than letting it trap at run time.
+        let hint = if said.contains("undefined symbol") {
+            "\nwasi-libc has no processes, signals or users, so a C name for one of those is \
+             not there to link. A module with an `export fn` in it is a reactor and may import \
+             the name from its host instead."
+        } else if said.contains("signature mismatch") {
+            "\nthe declared width disagrees with the C symbol's. On wasm32 a `size_t` or a \
+             pointer is 32 bits: write `USize`/`ISize` for those rather than `Int`, and they \
+             stay 64-bit on every native target."
+        } else {
+            ""
+        };
+        return Err(format!("linking for {triple} failed:\n{said}{hint}"));
     }
     let _ = std::fs::remove_file(obj);
     // A reactor is made to be embedded, so the embedding half comes with it:

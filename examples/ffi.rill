@@ -14,7 +14,11 @@ extern fn abs(n: I32) -> I32
 # Rill strings are counted heap objects, not `char*`, so they cross the
 # boundary through `to_cstr` (which allocates) and `from_cstr` (which copies
 # back). `Ptr` is an opaque C pointer that reference counting leaves alone.
-extern fn strlen(s: Ptr) -> Int
+#
+# `strlen` answers a `size_t`, and that width is the target's rather than a
+# number this line could state: 64 bits on everything Rill links natively, 32
+# on wasm32. `USize` says pointer-wide and lets the target fill it in.
+extern fn strlen(s: Ptr) -> USize
 
 extern fn getenv(name: Ptr) -> Ptr
 

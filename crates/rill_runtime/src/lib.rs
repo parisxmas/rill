@@ -534,7 +534,7 @@ unsafe fn cstr(s: *const u8) -> *mut u8 {
 pub unsafe extern "C" fn rill_read_file(path: *const u8) -> *mut u8 {
     IO_OK = 1;
     let c = cstr(path);
-    let fd = open(c, 0);
+    let fd = open(c, O_RDONLY);
     free(c);
     if fd < 0 {
         IO_OK = 0;
@@ -564,7 +564,7 @@ pub unsafe extern "C" fn rill_read_file(path: *const u8) -> *mut u8 {
     p
 }
 
-// The three flags a write needs, which are not the same everywhere. `O_CREAT`
+// The flags a file open needs, which are not the same everywhere. `O_CREAT`
 // and `O_TRUNC` are 0x200 and 0x400 on the BSDs and 0x40 and 0x200 on Linux,
 // and the numbers overlap rather than simply differing: the BSD pair asked for
 // on Linux is `O_TRUNC | O_APPEND` with no `O_CREAT` in it at all. So writing
@@ -572,19 +572,38 @@ pub unsafe extern "C" fn rill_read_file(path: *const u8) -> *mut u8 {
 // was wrong for as long as it was — nothing notices until the day a program
 // wants a file that is not there yet. Written out one platform at a time, like
 // the socket constants further down and for the same reason.
-#[cfg(not(target_os = "linux"))]
+//
+// WASI is a third set and the least like the others: its flags are the bits of
+// a capability rather than a mode, so `O_RDONLY` is not zero there. Opening a
+// file to read it with a flag word of 0 asks for a descriptor with no right to
+// read, which is why file reading appeared to be missing from the wasm build
+// rather than merely wrong.
+#[cfg(not(any(target_os = "linux", target_os = "wasi")))]
+const O_RDONLY: i32 = 0x0;
+#[cfg(not(any(target_os = "linux", target_os = "wasi")))]
 const O_WRONLY: i32 = 0x1;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "wasi")))]
 const O_CREAT: i32 = 0x200;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "wasi")))]
 const O_TRUNC: i32 = 0x400;
 
+#[cfg(target_os = "linux")]
+const O_RDONLY: i32 = 0o0;
 #[cfg(target_os = "linux")]
 const O_WRONLY: i32 = 0o1;
 #[cfg(target_os = "linux")]
 const O_CREAT: i32 = 0o100;
 #[cfg(target_os = "linux")]
 const O_TRUNC: i32 = 0o1000;
+
+#[cfg(target_os = "wasi")]
+const O_RDONLY: i32 = 0x04000000;
+#[cfg(target_os = "wasi")]
+const O_WRONLY: i32 = 0x10000000;
+#[cfg(target_os = "wasi")]
+const O_CREAT: i32 = 0x1 << 12;
+#[cfg(target_os = "wasi")]
+const O_TRUNC: i32 = 0x8 << 12;
 
 /// Writes (creates/truncates) a whole file; returns success.
 ///
