@@ -110,6 +110,13 @@ fn handshake_ms() = 5000
 # three-quarters of the valley to everyone else.
 fn per_address() = 16
 
+# How many people this valley admits. The world itself has room for thirty-two
+# — `player_cap` in `valley.rill`, which is a shape the browser compiles too —
+# and this is not that: it is what this server chooses to let in, and it can be
+# lowered without touching the file the client shares. Eight is what a tick of
+# fifty milliseconds carries comfortably, everybody being told about everybody.
+fn max_players() = 8
+
 # Whether the crystals throw fire in the shared valley. Off for now: a meteor
 # is aimed at where somebody is standing, and standing about is most of what
 # people do while there are others to look at. The browser's own valley still
@@ -166,6 +173,9 @@ fn handle(w, conns, inbox, joins, m) = match m
   Tick -> tick(w, conns)
 
 fn admit(w, conns, out, token) =
+  if v.players(w) >= max_players() then refuse(conns, out) else take_in(w, conns, out, token)
+
+fn take_in(w, conns, out, token) =
   s = v.join(w)
   if is_null(s) then refuse(conns, out) else welcome(w, conns, s, out, token)
 

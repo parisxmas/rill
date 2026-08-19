@@ -39,3 +39,7 @@ node_modules/
 # history deliberately — the file is untouched on disk, and deleting this line
 # puts it back. `site/rill.pdf`, which index.html does link, stays in.
 /site/*.zip
+
+# The valley server writes the names people gave it, beside itself. It is a
+# running program leaving state where it stands, and a local test creates one.
+/examples/webgpu/world/who.txt

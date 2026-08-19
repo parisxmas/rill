@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=271";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=271";
+import { load } from "./world.js?v=272";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=272";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=271";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "271";
+const V = "272";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2092,7 +2092,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // is not a decision a client gets to make while other people are standing
   // in it.
   let net = null;
-  let turnedAway = false;
+  // Null while nothing has gone wrong; otherwise the line to show for it.
+  let turnedAway = null;
   if (server) {
     step("asking to join");
     try {
@@ -2105,8 +2106,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // in the same letters that say the socket went — a player who gave the
       // wrong word and was quietly dropped into a valley of their own would
       // wander around it wondering where everybody was.
+      //
+      // What it says depends on who decided it. A server that answered `no`
+      // gave a reason and that reason is shown, because "the valley is full"
+      // and "wrong word" send the person to do different things: one waits a
+      // few minutes, the other checks what they typed. A socket that simply
+      // never opened said nothing worth repeating — `cannot reach ws://…` is
+      // for the console — so that keeps the old guess.
       console.warn(`[valley] ${e.message} — playing alone`);
-      turnedAway = true;
+      turnedAway = e.refused || "wrong word, or nobody is home";
       net = null;
     }
   }
@@ -3071,7 +3079,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // then it goes: what is behind it is a valley that works.
   if (turnedAway) {
     cut.querySelector("span").textContent = "NOT IN";
-    cut.querySelector("em").textContent = "wrong word, or nobody is home";
+    cut.querySelector("em").textContent = turnedAway;
     cut.querySelector("small").textContent = "this valley is yours alone";
     cut.classList.add("on");
     setTimeout(() => cut.classList.remove("on"), 6000);

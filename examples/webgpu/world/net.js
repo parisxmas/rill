@@ -89,7 +89,24 @@ export function join(url, name) {
       net.ping = net.ping === null ? rtt : net.ping * 0.75 + rtt * 0.25;
       return;
     }
-    if (kind === "no") { failed(new Error(line)); return; }
+    // A refusal, and the only one the server sends: there is no room. What
+    // arrives is protocol — `no the valley is full` — and the person who just
+    // clicked join is not reading protocol, so it becomes a sentence here
+    // rather than being shown as the line it came in on. Anything else the
+    // server ever refuses with is passed through with its `no ` taken off,
+    // which is worse to read than a written answer and better than nothing.
+    if (kind === "no") {
+      const why = line === "no the valley is full"
+        ? "the valley is full — try again in a minute"
+        : line.slice(3);
+      const e = new Error(why);
+      // Marked as the server's own answer rather than something guessed at
+      // from a socket that went quiet: a page may show this to the person who
+      // asked to join, where "cannot reach ws://..." is only worth a console.
+      e.refused = why;
+      failed(e);
+      return;
+    }
     // r, t, k, b — one line each, applied in the order they arrived.
     net.events.push({ kind, n: nums(line, 1) });
   });
