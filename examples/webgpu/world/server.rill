@@ -24,7 +24,16 @@ import "ws"
 
 # ---- what it costs to be here ----------------------------------------------
 
-fn port() = 8091
+# The one thing this program is told rather than knows. 8091 is what the page
+# opens when it is served over plain http, which is how this runs while it is
+# being worked on, so that stays the default and a local run needs no argument.
+# A box it is deployed to may have that port spoken for by something else
+# entirely — and did: the machine serving this had a container on 8091, so the
+# valley there listens on 8291 and nginx hands `/valley` to it. That number
+# lived only in the binary running on the box for a while, which meant the
+# thing in production could not be rebuilt from what is written down here. Now
+# it is an argument, and the source is the whole story again.
+fn port() = if arg_count() > 1 then str_to_int(arg(1)) else 8091
 
 # Fifty milliseconds. Fast enough that a walk looks like a walk once the
 # client interpolates between two of them, slow enough that a valley with
