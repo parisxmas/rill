@@ -153,6 +153,15 @@ pub enum Expr {
     Len { expr: Box<Expr>, line: usize },
     /// `b[i]` — one element of a buffer, or one byte of a string.
     Index { base: Box<Expr>, index: Box<Expr>, line: usize },
+    /// `p.x` — one field of a value whose type has a single constructor. A
+    /// dot written against a name is part of that name until the checker
+    /// takes it apart, since `geo.area` is one too; this is what the parser
+    /// builds where the base is not a name, as in `f(x).y`.
+    Field { base: Box<Expr>, name: String, line: usize },
+    /// `e?` — the value inside an `Ok`, or the whole function's `Err`. `lift`
+    /// turns it into the `match` it is, taking the rest of the block as the
+    /// `Ok` arm, so nothing after this pass knows it was ever written.
+    Try { expr: Box<Expr>, line: usize },
     /// `s[i:j]` — the bytes from `i` up to but not `j`; either end may be
     /// left out for the string's own. `lift` spells it out as `str_sub`.
     Slice { base: Box<Expr>, from: Option<Box<Expr>>, to: Option<Box<Expr>>, line: usize },
@@ -201,6 +210,10 @@ pub enum SelectOp {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Arm {
     pub pattern: Pattern,
+    /// `pattern if cond ->`. The arm is taken when the pattern matches *and*
+    /// this is true; a false one falls through to the arms below, which is
+    /// why a guarded arm covers nothing as far as exhaustiveness goes.
+    pub guard: Option<Expr>,
     pub body: Expr,
     pub line: usize,
 }

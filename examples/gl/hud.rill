@@ -33,7 +33,7 @@ fn hud_quad() =
   corner(data, 3, 0.0, 0.0)
   corner(data, 4, 1.0, 1.0)
   corner(data, 5, 0.0, 1.0)
-  glBufferData(gl_array_buffer(), 6 * 2 * 4, buf_data(data), gl_static_draw())
+  glBufferData(gl_array_buffer(), 6 * 2 * 4, data, gl_static_draw())
   glVertexAttribPointer(0, 2, gl_float(), 0, 8, null_ptr())
   glEnableVertexAttribArray(0)
   Batch(vao, vbo)

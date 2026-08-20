@@ -1,0 +1,76 @@
+# `Map(k, v)` — a hash table, and the second thing in the language that is
+# storage rather than a value.
+#
+# A map is written like a buffer and read like an `Option`: `m[k] = v` puts
+# something in, and `m[k]` answers `Some(v)` or `None`, because a key may not
+# be there and absence is an `Option` everywhere else in Rill. Anything with
+# structural equality can be a key — a number, a string, a tuple, a data type —
+# and the compiler works out how to hash it from the type, the same way it
+# works out how to print it.
+
+type Point
+  P(x: Int, y: Int)
+
+# The tally is the shape a map is really for. `map_or(m, k, 0)` is the value
+# or a default, and unlike `unwrap_or(m[k], 0)` it builds no `Some` on the way
+# — which a loop doing this a million times can feel.
+fn count_words(text) = tally(map_new(), split(text, " "))
+
+fn tally(m, words) = match words
+  Nil -> m
+  Cons(w, rest) ->
+    m[w] = map_or(m, w, 0) + 1
+    tally(m, rest)
+
+# A walk hands back the entries in the table's own order, which is the hash's
+# order and nobody else's. What has to come out in an order of its own asks
+# for the keys it wants, in the order it wants them.
+fn report(m, keys) = match keys
+  Nil -> ""
+  Cons(k, rest) -> k + "=" + int_to_str(map_or(m, k, 0)) + " " + report(m, rest)
+
+fn main() =
+  counts = count_words("the cat sat on the mat the cat")
+  println(report(counts, Cons("the", Cons("cat", Cons("dog", Nil)))))
+  println(#counts)
+
+  # Reading answers with an `Option`, and a match says what to do with either.
+  match counts["mat"]
+    None -> println("no mat")
+    Some(n) -> println(n)
+  println(map_has(counts, "sat"))
+  println(map_has(counts, "dog"))
+
+  # Writing an existing key replaces it; the table does not grow.
+  counts["cat"] = 100
+  println(map_or(counts, "cat", 0))
+  println(#counts)
+
+  # Deleting says whether there was anything to delete.
+  println(map_del(counts, "on"))
+  println(map_del(counts, "on"))
+  println(#counts)
+
+  # Walking: order is the table's, so this adds up rather than printing.
+  println(sum(map_values(counts)))
+  println(len(map_keys(counts)))
+  println(len(map_items(counts)))
+
+  # A data type is a key as readily as a string is. So is a tuple.
+  grid = map_new()
+  grid[P(0, 0)] = "origin"
+  grid[P(3, 4)] = "corner"
+  println(map_or(grid, P(3, 4), "?"))
+  println(map_or(grid, P(9, 9), "?"))
+
+  spans = map_new()
+  spans[(1, 2)] = 10
+  println(map_or(spans, (1, 2), 0))
+
+  # And a list of pairs is a table, if that is where the entries came from.
+  names = map_of(Cons((1, "one"), Cons((2, "two"), Nil)))
+  println(map_or(names, 2, "?"))
+
+  # Nothing here is freed by hand and nothing here leaks: a map is counted
+  # like a string, and what it holds is released with it.
+  println("done")

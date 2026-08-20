@@ -41,6 +41,10 @@ pub enum Ty {
     /// mutable thing in the language, and the only one C can be handed a
     /// pointer into: `Buf(F32)` is what a vertex array is.
     Buf(CTy),
+    /// A hash table from keys to values. Storage like a `Buf` — what it holds
+    /// changes without the name changing — but its two type arguments are
+    /// ordinary types rather than a C width, so they are inferred as usual.
+    Map(Box<Ty>, Box<Ty>),
     /// Bytes on their way to becoming a string. Storage like a `Buf`, and for
     /// the same reason: a string is a value, so building one by `+` copies
     /// what is already there every time.
@@ -171,6 +175,9 @@ pub struct CtorSig {
     pub name: String,
     /// Field types; `Ty::Gen(i)` refers to the ADT's i-th type parameter.
     pub fields: Vec<Ty>,
+    /// What each field was called, where it was called anything. A name is
+    /// what `p.x` reads it by, and a field without one can only be matched.
+    pub names: Vec<Option<String>>,
     pub tag: u64,
     pub line: usize,
 }
@@ -291,6 +298,25 @@ pub enum TK {
     /// `s[i:j]` — the bytes from `i` up to but not `j`, either end the
     /// string's own when it was left out.
     Slice { base: Box<TExpr>, from: Box<TExpr>, to: Option<Box<TExpr>> },
+    /// `map_new()` — an empty table of the expression's `Map(k, v)` type.
+    MapNew,
+    /// `m[k] = v` — the key and the value are moved into the table.
+    MapSet { map: Box<TExpr>, key: Box<TExpr>, val: Box<TExpr> },
+    /// `map_find(m, k)` — the slot holding `k`, or -1. Everything a program
+    /// asks a map is written from this and the two `*_at` readers, which is
+    /// why `map_get` can live in the prelude and return an `Option`.
+    MapFind { map: Box<TExpr>, key: Box<TExpr> },
+    MapDel { map: Box<TExpr>, key: Box<TExpr> },
+    MapLen { map: Box<TExpr> },
+    MapClear { map: Box<TExpr> },
+    /// `map_next(m, i)` — the first slot at or after `i` holding an entry.
+    MapNext { map: Box<TExpr>, from: Box<TExpr> },
+    /// The key or the value in a slot, owned.
+    MapKeyAt { map: Box<TExpr>, idx: Box<TExpr> },
+    MapValAt { map: Box<TExpr>, idx: Box<TExpr> },
+    /// `p.x` — one field of a box, read by the position its name has. The
+    /// value comes back owned, as everything a program holds does.
+    FieldGet { base: Box<TExpr>, adt: usize, ctor: usize, index: usize },
     BufGet { buf: Box<TExpr>, idx: Box<TExpr> },
     BufSet { buf: Box<TExpr>, idx: Box<TExpr>, val: Box<TExpr> },
     BufLen { buf: Box<TExpr> },
@@ -326,6 +352,9 @@ pub enum TSelectOp {
 #[derive(Debug)]
 pub struct TArm {
     pub pattern: Pattern,
+    /// The arm is taken when the pattern matches and this is true. A false
+    /// one falls through to the arms below.
+    pub guard: Option<TExpr>,
     pub body: TExpr,
     pub line: usize,
 }
@@ -499,7 +528,20 @@ impl Checker {
                     ));
                 }
                 let mut fields = Vec::new();
-                for (_, tr) in &ctor.fields {
+                let mut names = Vec::new();
+                for (name, tr) in &ctor.fields {
+                    if let Some(n) = name {
+                        if names.contains(&Some(n.clone())) {
+                            return Err(TypeError::new(
+                                ctor.line,
+                                format!(
+                                    "constructor `{}` has two fields called `{n}`",
+                                    ctor.name
+                                ),
+                            ));
+                        }
+                    }
+                    names.push(name.clone());
                     let ty = resolve_type_ref(tr, &adt_index, &c.adts, Some(&param_scope))?;
                     if ty == Ty::Unit {
                         return Err(TypeError::new(
@@ -512,6 +554,7 @@ impl Checker {
                 c.adts[i].ctors.push(CtorSig {
                     name: ctor.name.clone(),
                     fields,
+                    names,
                     tag: tag as u64,
                     line: ctor.line,
                 });
@@ -956,6 +999,7 @@ impl Checker {
                 params.iter().any(|p| self.occurs(v, p)) || self.occurs(v, &ret)
             }
             Ty::Chan(e) => self.occurs(v, &e),
+            Ty::Map(k, val) => self.occurs(v, &k) || self.occurs(v, &val),
             Ty::Buf(_) => false,
             _ => false,
         }
@@ -990,6 +1034,11 @@ impl Checker {
                 let (x, y) = (x.clone(), y.clone());
                 self.unify(&x, &y, line, ctx)
             }
+            (Ty::Map(xk, xv), Ty::Map(yk, yv)) => {
+                let (xk, xv, yk, yv) = (xk.clone(), xv.clone(), yk.clone(), yv.clone());
+                self.unify(&xk, &yk, line, ctx)?;
+                self.unify(&xv, &yv, line, ctx)
+            }
             _ if ra == rb => Ok(()),
             _ => Err(TypeError::new(
                 line,
@@ -1019,6 +1068,7 @@ impl Checker {
                 format!("({}) -> {}", params.join(", "), self.type_name(&ret))
             }
             Ty::Chan(e) => format!("Chan({})", self.type_name(&e)),
+            Ty::Map(k, v) => format!("Map({}, {})", self.type_name(&k), self.type_name(&v)),
             Ty::StrBuf => "StrBuf".into(),
             Ty::Buf(w) => format!("Buf({})", w.name()),
             Ty::Var(_) => "_".into(),
@@ -1044,11 +1094,20 @@ impl Checker {
                 Constraint::Numeric => "Int or Float",
                 Constraint::Addable => "Int, Float or Str",
                 Constraint::Ordered => "Int, Float, Str or a type with an `Ord` implementation",
-                Constraint::Basic => "a value type (not a function or channel)",
+                Constraint::Basic => "a value type (not a function, channel or storage)",
+            };
+            // Storage is the interesting refusal: a map or a buffer is a
+            // thing that changes, so printing or comparing one is a question
+            // about a moment rather than about a value. Both can be asked as
+            // one, and the answer says how.
+            let hint = match ty {
+                Ty::Map(..) => " — `map_items(m)` is a map as a value",
+                Ty::Buf(_) => " — a buffer is storage; measure it or read an element",
+                _ => "",
             };
             Err(TypeError::new(
                 line,
-                format!("{ctx} requires {allowed}, found {}", self.type_name(ty)),
+                format!("{ctx} requires {allowed}, found {}{hint}", self.type_name(ty)),
             ))
         }
     }
@@ -1056,6 +1115,28 @@ impl Checker {
     /// Whether a concrete type implements one of the built-in traits.
     fn has_impl(&self, trait_id: usize, ty: &Ty) -> bool {
         impl_key(ty).is_some_and(|k| self.impl_methods.contains_key(&(trait_id, 0, k)))
+    }
+
+    /// An argument at a position that wants a `Ptr`. A buffer handed to one
+    /// is its first element's address — which is what C is always given, and
+    /// what `buf_data` used to be written for. The buffer stays counted and
+    /// stays the caller's; what crosses is an address, good for as long as the
+    /// call it was written in.
+    fn arg_for(
+        &mut self,
+        a: &Expr,
+        want: &Ty,
+        env: &mut HashMap<String, Ty>,
+        line: usize,
+        ctx: &str,
+    ) -> Result<TExpr, TypeError> {
+        let at = self.infer(a, env)?;
+        if matches!(want, Ty::Ptr) && matches!(self.resolve(&at.ty), Ty::Buf(_)) {
+            let line = at.line;
+            return Ok(TExpr { ty: Ty::Ptr, line, kind: TK::BufPtr { buf: Box::new(at) } });
+        }
+        self.unify(want, &at.ty, line, ctx)?;
+        Ok(at)
     }
 
     fn require(
@@ -1196,6 +1277,10 @@ impl Checker {
                 Box::new(self.generalize(&r, genmap, order)),
             ),
             Ty::Chan(e) => Ty::Chan(Box::new(self.generalize(&e, genmap, order))),
+            Ty::Map(k, v) => Ty::Map(
+                Box::new(self.generalize(&k, genmap, order)),
+                Box::new(self.generalize(&v, genmap, order)),
+            ),
             Ty::Buf(w) => Ty::Buf(w.clone()),
             other => other,
         }
@@ -1226,6 +1311,10 @@ impl Checker {
                 Box::new(self.zonk(&r, genmap, defaults)),
             ),
             Ty::Chan(e) => Ty::Chan(Box::new(self.zonk(&e, genmap, defaults))),
+            Ty::Map(k, v) => Ty::Map(
+                Box::new(self.zonk(&k, genmap, defaults)),
+                Box::new(self.zonk(&v, genmap, defaults)),
+            ),
             Ty::Buf(w) => Ty::Buf(w.clone()),
             other => other,
         }
@@ -1307,6 +1396,22 @@ impl Checker {
                 self.zonk_expr(idx, genmap, defaults);
                 self.zonk_expr(val, genmap, defaults);
             }
+            TK::FieldGet { base, .. } => self.zonk_expr(base, genmap, defaults),
+            TK::MapNew => {}
+            TK::MapLen { map } | TK::MapClear { map } => self.zonk_expr(map, genmap, defaults),
+            TK::MapFind { map, key: other }
+            | TK::MapDel { map, key: other }
+            | TK::MapNext { map, from: other }
+            | TK::MapKeyAt { map, idx: other }
+            | TK::MapValAt { map, idx: other } => {
+                self.zonk_expr(map, genmap, defaults);
+                self.zonk_expr(other, genmap, defaults);
+            }
+            TK::MapSet { map, key, val } => {
+                self.zonk_expr(map, genmap, defaults);
+                self.zonk_expr(key, genmap, defaults);
+                self.zonk_expr(val, genmap, defaults);
+            }
             TK::MethodCall { recv, args, .. } => {
                 *recv = self.zonk(recv, genmap, defaults);
                 for a in args {
@@ -1379,6 +1484,9 @@ impl Checker {
             TK::Match { scrutinee, arms } => {
                 self.zonk_expr(scrutinee, genmap, defaults);
                 for arm in arms {
+                    if let Some(g) = arm.guard.as_mut() {
+                        self.zonk_expr(g, genmap, defaults);
+                    }
                     self.zonk_expr(&mut arm.body, genmap, defaults);
                 }
             }
@@ -1408,6 +1516,10 @@ impl Checker {
             Expr::Str(s) => Ok(TExpr { ty: Ty::Str, line: 0, kind: TK::Str(s.clone()) }),
             Expr::Bool(v) => Ok(TExpr { ty: Ty::Bool, line: 0, kind: TK::Bool(*v) }),
             Expr::Var(name, line) => self.infer_var(name, *line, env),
+            Expr::Field { base, name, line } => {
+                let b = self.infer(base, env)?;
+                self.field_of(b, name, *line)
+            }
             Expr::Call { name, args, line, .. } => self.infer_call(name, args, *line, env),
             Expr::Unary { op: UnOp::Neg, expr } => {
                 let inner = self.infer(expr, env)?;
@@ -1421,7 +1533,32 @@ impl Checker {
             Expr::Binary { op, lhs, rhs, line } => {
                 let l = self.infer(lhs, env)?;
                 let r = self.infer(rhs, env)?;
-                self.unify(&l.ty, &r.ty, *line, "operands of a binary operator")?;
+                // `m[k] + 1` is the shape `m[k] += 1` expands to, and reading
+                // a map gives an `Option` — which is the answer to the
+                // question the program asked, but not a number. Say which of
+                // the two it is rather than leaving `Option(Int)` against
+                // `Int` to be worked out.
+                if let Err(e) = self.unify(&l.ty, &r.ty, *line, "operands of a binary operator") {
+                    let (a, b) = (self.resolve(&l.ty), self.resolve(&r.ty));
+                    for (opt, plain) in [(&a, &b), (&b, &a)] {
+                        if let Ty::Adt(i, args) = opt {
+                            if self.adts[*i].name == "Option"
+                                && args.first().map(|t| self.resolve(t)).as_ref() == Some(plain)
+                            {
+                                return Err(TypeError::new(
+                                    *line,
+                                    format!(
+                                        "{} — a map read answers with an `Option`, since the \
+                                         key may not be there. `unwrap_or(m[k], 0)` is the \
+                                         value or a default",
+                                        e.msg,
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    return Err(e);
+                }
                 let ty = match op {
                     BinOp::Add => {
                         self.require(&l.ty, Constraint::Addable, *line, "`+`")?;
@@ -1575,6 +1712,13 @@ impl Checker {
                         line: *line,
                         kind: TK::Builtin { rt: "rill_strbuf_len", args: vec![b] },
                     }),
+                    // How many entries, not how many slots: the slots are the
+                    // table's business.
+                    Ty::Map(..) => Ok(TExpr {
+                        ty: Ty::Int,
+                        line: *line,
+                        kind: TK::MapLen { map: Box::new(b) },
+                    }),
                     Ty::Str | Ty::Var(_) => {
                         self.unify(&Ty::Str, &b.ty, *line, "the operand of `#`")?;
                         Ok(TExpr {
@@ -1586,7 +1730,8 @@ impl Checker {
                     other => Err(TypeError::new(
                         *line,
                         format!(
-                            "`#` measures a string, a buffer or a builder, but this is `{}`",
+                            "`#` measures a string, a buffer, a map or a builder, but this \
+                             is `{}`",
                             self.type_name(&other)
                         ),
                     )),
@@ -1597,6 +1742,20 @@ impl Checker {
             // string indexes to its bytes, and cannot be written.
             Expr::Index { base, index, line } => {
                 let b = self.infer(base, env)?;
+                // A map is read through the prelude's `map_get`, which is
+                // where the `Option` comes from: a key may not be there, and
+                // absence is an `Option` everywhere else in the language. The
+                // base is inferred a second time by the call, which costs a
+                // few type variables and no code.
+                if matches!(self.resolve(&b.ty), Ty::Map(..)) {
+                    let call = Expr::Call {
+                        name: "map_get".to_string(),
+                        args: vec![(**base).clone(), (**index).clone()],
+                        line: *line,
+                        piped: false,
+                    };
+                    return self.infer(&call, env);
+                }
                 let idx = self.infer(index, env)?;
                 self.unify(&Ty::Int, &idx.ty, *line, "index")?;
                 match self.resolve(&b.ty) {
@@ -1620,7 +1779,7 @@ impl Checker {
                     other => Err(TypeError::new(
                         *line,
                         format!(
-                            "`[]` indexes a buffer or a string, but this is `{}` — a \
+                            "`[]` indexes a buffer, a map or a string, but this is `{}` — a \
                              `Buf` width is never inferred, so annotate the parameter",
                             self.type_name(&other)
                         ),
@@ -1629,14 +1788,47 @@ impl Checker {
             }
             Expr::IndexSet { base, index, value, line } => {
                 let b = self.infer(base, env)?;
+                // `m[k] = v` is `map_set`, and inserts as readily as it
+                // replaces: a table has no element that was already there.
+                //
+                // A base still open here is one: a `Buf` width is never
+                // inferred, so a buffer would have had to be annotated, and a
+                // string is a value rather than storage. Saying so is what
+                // lets `fn put(m, k, v) = m[k] = v` type without an
+                // annotation, exactly as `s[i]` does on the reading side.
+                if matches!(self.resolve(&b.ty), Ty::Var(_)) {
+                    let (k, v) = (self.fresh(), self.fresh());
+                    self.unify(
+                        &b.ty,
+                        &Ty::Map(Box::new(k.clone()), Box::new(v)),
+                        *line,
+                        "the base of `[] =`",
+                    )?;
+                    self.require(&k, Constraint::Basic, *line, "a map key")?;
+                }
+                if let Ty::Map(k, v) = self.resolve(&b.ty) {
+                    let key = self.infer(index, env)?;
+                    self.unify(&k, &key.ty, *line, "a map key")?;
+                    let val = self.infer(value, env)?;
+                    self.unify(&v, &val.ty, *line, "a map value")?;
+                    return Ok(TExpr {
+                        ty: Ty::Unit,
+                        line: *line,
+                        kind: TK::MapSet {
+                            map: Box::new(b),
+                            key: Box::new(key),
+                            val: Box::new(val),
+                        },
+                    });
+                }
                 let width = match self.resolve(&b.ty) {
                     Ty::Buf(w) => w,
                     other => {
                         return Err(TypeError::new(
                             *line,
                             format!(
-                                "only a buffer element can be assigned to, but this is \
-                                 `{}`{}",
+                                "only a buffer element or a map key can be assigned to, but \
+                                 this is `{}`{}",
                                 self.type_name(&other),
                                 if matches!(other, Ty::Str) {
                                     " — strings are values, not storage"
@@ -1693,6 +1885,9 @@ impl Checker {
             // `lift` spells these out before the checker sees a program.
             Expr::IndexOp { line, .. } => {
                 Err(TypeError::new(*line, "internal: `[]=` was not expanded".to_string()))
+            }
+            Expr::Try { line, .. } => {
+                Err(TypeError::new(*line, "internal: `?` was not expanded".to_string()))
             }
             Expr::For { line, .. } => {
                 Err(TypeError::new(*line, "internal: `for` was not expanded".to_string()))
@@ -1772,6 +1967,73 @@ impl Checker {
         }
     }
 
+    /// One named field of a value. A type with more than one constructor has
+    /// no field that is certainly there, which is the same reason a binding
+    /// cannot take one apart; `match` is what asks those.
+    fn field_of(&mut self, base: TExpr, field: &str, line: usize) -> Result<TExpr, TypeError> {
+        let (adt, targs) = match self.resolve(&base.ty) {
+            Ty::Adt(i, targs) => (i, targs),
+            // Which field `.x` is depends on which type this is, and nothing
+            // here has said yet. Inference does not work backwards from a
+            // field name — two types may both have an `x` — so this is one of
+            // the few places an annotation is not optional.
+            Ty::Var(_) => {
+                let what = match &base.kind {
+                    TK::Local(n) => format!("`{n}`"),
+                    _ => "this".to_string(),
+                };
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "the type of {what} is not known here, so `.{field}` cannot say \
+                         which field it is — annotate it (`{}: SomeType`)",
+                        match &base.kind {
+                            TK::Local(n) => n.clone(),
+                            _ => "x".to_string(),
+                        }
+                    ),
+                ));
+            }
+            other => {
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "`{}` has no fields, so `.{field}` means nothing here",
+                        self.type_name(&other)
+                    ),
+                ))
+            }
+        };
+        let def = &self.adts[adt];
+        if def.ctors.len() != 1 {
+            let names: Vec<&str> = def.ctors.iter().map(|c| c.name.as_str()).collect();
+            return Err(TypeError::new(
+                line,
+                format!(
+                    "`{}` has more than one constructor ({}), so `.{field}` cannot say \
+                     which — `match` is how a type like this is taken apart",
+                    def.name,
+                    names.join(", ")
+                ),
+            ));
+        }
+        let ctor = &def.ctors[0];
+        let Some(index) = ctor.names.iter().position(|n| n.as_deref() == Some(field)) else {
+            let known: Vec<&str> = ctor.names.iter().filter_map(|n| n.as_deref()).collect();
+            let has = if known.is_empty() {
+                "its fields are not named, and a field is read by its name".to_string()
+            } else {
+                format!("it has {}", known.join(", "))
+            };
+            return Err(TypeError::new(
+                line,
+                format!("`{}` has no field `{field}` — {has}", def.name),
+            ));
+        };
+        let ty = subst_gen(&ctor.fields[index], &targs);
+        Ok(TExpr { ty, line, kind: TK::FieldGet { base: Box::new(base), adt, ctor: 0, index } })
+    }
+
     fn infer_var(
         &mut self,
         name: &str,
@@ -1811,6 +2073,19 @@ impl Checker {
                 line,
                 kind: TK::FnRef { fn_idx: idx, subst },
             });
+        }
+        // `p.x` and `geo.area` are the same shape, and the lexer cannot tell
+        // them apart — so a dotted name that is nothing the program declared
+        // is read as a field of what its first part names. `a.b.c` is the
+        // field `c` of the field `b`, which is the same rule applied twice.
+        if let Some((head, rest)) = name.split_once('.') {
+            if env.contains_key(head) {
+                let mut base = self.infer_var(head, line, env)?;
+                for field in rest.split('.') {
+                    base = self.field_of(base, field, line)?;
+                }
+                return Ok(base);
+            }
         }
         Err(TypeError::new(line, format!("unknown variable `{name}`")))
     }
@@ -1894,8 +2169,8 @@ impl Checker {
                 kind: TK::BufNew { width, count: Box::new(n) },
             });
         }
-        if name == "buf_get" || name == "buf_set" || name == "buf_len" || name == "buf_data" {
-            let want = if name == "buf_set" { 3 } else if name == "buf_len" || name == "buf_data" { 1 } else { 2 };
+        if name == "buf_get" || name == "buf_set" || name == "buf_len" {
+            let want = if name == "buf_set" { 3 } else if name == "buf_len" { 1 } else { 2 };
             if args.len() != want {
                 return Err(TypeError::new(
                     line,
@@ -1919,9 +2194,6 @@ impl Checker {
             if name == "buf_len" {
                 return Ok(TExpr { ty: Ty::Int, line, kind: TK::BufLen { buf: Box::new(b) } });
             }
-            if name == "buf_data" {
-                return Ok(TExpr { ty: Ty::Ptr, line, kind: TK::BufPtr { buf: Box::new(b) } });
-            }
             let idx = self.infer(&args[1], env)?;
             self.unify(&Ty::Int, &idx.ty, line, "buffer index")?;
             if name == "buf_get" {
@@ -1941,6 +2213,73 @@ impl Checker {
                     idx: Box::new(idx),
                     val: Box::new(val),
                 },
+            });
+        }
+        // A map's two type arguments are ordinary types, so — unlike a
+        // buffer's width — they unify like anything else and these all work
+        // inside a generic function without an annotation.
+        if let Some(arity) = map_builtin_arity(name) {
+            if args.len() != arity {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{name}` takes {arity} argument(s), but {} given", args.len()),
+                ));
+            }
+            if name == "map_new" {
+                let (k, v) = (self.fresh(), self.fresh());
+                self.require(&k, Constraint::Basic, line, "a map key")?;
+                return Ok(TExpr {
+                    ty: Ty::Map(Box::new(k), Box::new(v)),
+                    line,
+                    kind: TK::MapNew,
+                });
+            }
+            let m = self.infer(&args[0], env)?;
+            let (k, v) = (self.fresh(), self.fresh());
+            self.unify(
+                &m.ty,
+                &Ty::Map(Box::new(k.clone()), Box::new(v.clone())),
+                line,
+                &format!("`{name}`"),
+            )?;
+            self.require(&k, Constraint::Basic, line, "a map key")?;
+            let map = Box::new(m);
+            return Ok(match name {
+                "map_len" => TExpr { ty: Ty::Int, line, kind: TK::MapLen { map } },
+                "map_clear" => TExpr { ty: Ty::Unit, line, kind: TK::MapClear { map } },
+                "map_set" => {
+                    let key = self.infer(&args[1], env)?;
+                    self.unify(&k, &key.ty, line, "a map key")?;
+                    let val = self.infer(&args[2], env)?;
+                    self.unify(&v, &val.ty, line, "a map value")?;
+                    TExpr {
+                        ty: Ty::Unit,
+                        line,
+                        kind: TK::MapSet { map, key: Box::new(key), val: Box::new(val) },
+                    }
+                }
+                "map_find" | "map_del" => {
+                    let key = self.infer(&args[1], env)?;
+                    self.unify(&k, &key.ty, line, "a map key")?;
+                    let key = Box::new(key);
+                    if name == "map_find" {
+                        TExpr { ty: Ty::Int, line, kind: TK::MapFind { map, key } }
+                    } else {
+                        TExpr { ty: Ty::Bool, line, kind: TK::MapDel { map, key } }
+                    }
+                }
+                _ => {
+                    let idx = self.infer(&args[1], env)?;
+                    self.unify(&Ty::Int, &idx.ty, line, "a map slot")?;
+                    let idx = Box::new(idx);
+                    match name {
+                        "map_next" => {
+                            TExpr { ty: Ty::Int, line, kind: TK::MapNext { map, from: idx } }
+                        }
+                        "map_key_at" => TExpr { ty: k, line, kind: TK::MapKeyAt { map, idx } },
+                        _ => TExpr { ty: v, line, kind: TK::MapValAt { map, idx } },
+                    }
+                }
             });
         }
         if name == "send" {
@@ -2087,9 +2426,7 @@ impl Checker {
             }
             let mut targs = Vec::new();
             for (a, pt) in args.iter().zip(&param_tys) {
-                let at = self.infer(a, env)?;
-                self.unify(pt, &at.ty, line, name)?;
-                targs.push(at);
+                targs.push(self.arg_for(a, pt, env, line, name)?);
             }
             return Ok(TExpr { ty: ret_ty, line, kind: TK::Builtin { rt, args: targs } });
         }
@@ -2109,9 +2446,7 @@ impl Checker {
             }
             let mut targs = Vec::new();
             for (a, pt) in args.iter().zip(params) {
-                let at = self.infer(a, env)?;
-                self.unify(&pt.rill_ty(), &at.ty, line, "foreign argument")?;
-                targs.push(at);
+                targs.push(self.arg_for(a, &pt.rill_ty(), env, line, "foreign argument")?);
             }
             return Ok(TExpr {
                 ty: ret,
@@ -2200,6 +2535,12 @@ impl Checker {
         }
         let mut targs = Vec::new();
         for (a, pt) in args.iter().zip(&params) {
+            // A parameter annotated `Ptr` is a `Ptr` position like any other,
+            // so a buffer handed to one decays there too.
+            if matches!(self.resolve(pt), Ty::Ptr) {
+                targs.push(self.arg_for(a, &Ty::Ptr, env, line, "function argument")?);
+                continue;
+            }
             let at = self.infer(a, env)?;
             // A function that closed over something is checked together with
             // the one it was written in, which is what lets it take a captured
@@ -2240,6 +2581,26 @@ impl Checker {
         env: &mut HashMap<String, Ty>,
     ) -> Result<TExpr, TypeError> {
         let scrut = self.infer(scrutinee, env)?;
+        // `?` is written for a `Result`, and the two arms it becomes only fit
+        // one. Anything else gets told what it is rather than being shown a
+        // pattern it never wrote.
+        if is_try_match(arms) {
+            let ok = match self.resolve(&scrut.ty) {
+                Ty::Adt(i, _) => self.adts[i].name == "Result",
+                Ty::Var(_) => true,
+                _ => false,
+            };
+            if !ok {
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "`?` takes the value out of a `Result`, and this is `{}` — \
+                         `match` on it, or `unwrap_or` for a default",
+                        self.type_name(&scrut.ty)
+                    ),
+                ));
+            }
+        }
         let result_ty = self.fresh();
         let mut tarms = Vec::new();
         // Rows seen so far, for the reachability check.
@@ -2256,11 +2617,45 @@ impl Checker {
                     "unreachable match arm: earlier arms already cover this pattern".to_string(),
                 ));
             }
-            matrix.push(vec![arm.pattern.clone()]);
+            // A guarded arm is checked against what came before it, but adds
+            // nothing to what is covered: its condition may be false, and then
+            // the value falls through to the arms below. So the rows below it
+            // stay reachable, and the match still has to cover the case
+            // without it — which is what makes `Some(n) if n > 0` alone not
+            // exhaustive, and rightly.
+            let guard = match &arm.guard {
+                Some(g) => {
+                    let tg = self.infer(g, &mut arm_env)?;
+                    self.unify(&Ty::Bool, &tg.ty, tg.line, "a match guard")?;
+                    Some(tg)
+                }
+                None => {
+                    matrix.push(vec![arm.pattern.clone()]);
+                    None
+                }
+            };
 
             let body = self.infer(&arm.body, &mut arm_env)?;
-            self.unify(&result_ty, &body.ty, arm.line, "match arms")?;
-            tarms.push(TArm { pattern: arm.pattern.clone(), body, line: arm.line });
+            // The one `match` a program did not write is the one `?` becomes,
+            // and its arms disagreeing means only one thing: the `?` was
+            // written where the block's value is not the function's. Say that
+            // rather than showing the match nobody typed.
+            self.unify(&result_ty, &body.ty, arm.line, "match arms").map_err(|e| {
+                if is_try_match(arms) {
+                    TypeError::new(
+                        arm.line,
+                        format!(
+                            "`?` leaves the function with an `Err`, so the block it is in \
+                             has to be what the function returns — and this one is worth \
+                             `{}` instead. Take the `?` out to a block that is.",
+                            self.type_name(&result_ty)
+                        ),
+                    )
+                } else {
+                    e
+                }
+            })?;
+            tarms.push(TArm { pattern: arm.pattern.clone(), guard, body, line: arm.line });
         }
 
         if let Some(w) = self.witness(&matrix, &[scrut.ty.clone()]) {
@@ -2539,6 +2934,19 @@ fn show_pattern(p: &Pattern) -> String {
 
 // ---- helpers --------------------------------------------------------------
 
+/// Whether these are the two arms `lift` writes for a `?`. The error binding
+/// it names them with cannot be spelled in Rill, so nothing else can look
+/// like this.
+fn is_try_match(arms: &[Arm]) -> bool {
+    arms.len() == 2
+        && matches!(
+            &arms[1].pattern,
+            Pattern::Ctor { name, args, .. }
+                if name == "Err"
+                    && matches!(args.as_slice(), [Pattern::Var(v)] if v == "try.e")
+        )
+}
+
 /// Substitutes `Gen(i)` -> `args[i]` in a type.
 fn subst_gen(ty: &Ty, args: &[Ty]) -> Ty {
     match ty {
@@ -2549,6 +2957,7 @@ fn subst_gen(ty: &Ty, args: &[Ty]) -> Ty {
             Box::new(subst_gen(r, args)),
         ),
         Ty::Chan(e) => Ty::Chan(Box::new(subst_gen(e, args))),
+        Ty::Map(k, v) => Ty::Map(Box::new(subst_gen(k, args)), Box::new(subst_gen(v, args))),
         Ty::Buf(w) => Ty::Buf(w.clone()),
         other => other.clone(),
     }
@@ -2812,6 +3221,18 @@ fn is_builtin_type(name: &str) -> bool {
     matches!(name, "Int" | "Float" | "Bool" | "Str" | "StrBuf" | "Unit" | "Ptr")
 }
 
+/// How many arguments each map builtin takes, and by being `Some` at all,
+/// that the name is one.
+fn map_builtin_arity(name: &str) -> Option<usize> {
+    Some(match name {
+        "map_new" => 0,
+        "map_len" | "map_clear" => 1,
+        "map_find" | "map_del" | "map_next" | "map_key_at" | "map_val_at" => 2,
+        "map_set" => 3,
+        _ => return None,
+    })
+}
+
 fn is_builtin_fn(name: &str) -> bool {
     matches!(
         name,
@@ -2883,7 +3304,15 @@ fn is_builtin_fn(name: &str) -> bool {
             | "buf_get"
             | "buf_set"
             | "buf_len"
-            | "buf_data"
+            | "map_new"
+            | "map_set"
+            | "map_find"
+            | "map_del"
+            | "map_len"
+            | "map_clear"
+            | "map_next"
+            | "map_key_at"
+            | "map_val_at"
             | "peek_i8"
             | "peek_u8"
             | "peek_i16"
@@ -2963,6 +3392,17 @@ fn resolve_type_ref(
         let elem = resolve_type_ref(&tr.args[0], adt_index, adts, params)?;
         return Ok(Ty::Chan(Box::new(elem)));
     }
+    if tr.name == "Map" {
+        if tr.args.len() != 2 {
+            return Err(TypeError::new(
+                tr.line,
+                "`Map` takes a key type and a value type".to_string(),
+            ));
+        }
+        let k = resolve_type_ref(&tr.args[0], adt_index, adts, params)?;
+        let v = resolve_type_ref(&tr.args[1], adt_index, adts, params)?;
+        return Ok(Ty::Map(Box::new(k), Box::new(v)));
+    }
     if is_builtin_type(&tr.name) {
         if !tr.args.is_empty() {
             return Err(TypeError::new(
@@ -3032,10 +3472,14 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
             for arm in arms {
                 // Pattern bindings shadow, but over-capturing is harmless:
                 // the capture list is filtered against the enclosing env.
+                if let Some(g) = &arm.guard {
+                    free_vars(g, out, seen);
+                }
                 free_vars(&arm.body, out, seen);
             }
         }
-        Expr::Len { expr, .. } => free_vars(expr, out, seen),
+        Expr::Len { expr, .. } | Expr::Try { expr, .. } => free_vars(expr, out, seen),
+        Expr::Field { base, .. } => free_vars(base, out, seen),
         Expr::Slice { base, from, to, .. } => {
             free_vars(base, out, seen);
             if let Some(f) = from {
@@ -3458,11 +3902,179 @@ mod tests {
         let t = check_src("fn f(s, i) = s[i] + 1\n\nfn main() = println(f(\"ab\", 0))\n").unwrap();
         assert_eq!(sig(&t, "f").params[0].1, Ty::Str);
         let err = check_src("fn main() =\n  x = 1\n  println(x[0])\n").unwrap_err();
-        assert!(err.msg.contains("indexes a buffer or a string"), "{}", err.msg);
+        assert!(err.msg.contains("indexes a buffer, a map or a string"), "{}", err.msg);
         let err = check_src("fn main() =\n  s = \"ab\"\n  s[0] = 65\n").unwrap_err();
         assert!(err.msg.contains("not storage"), "{}", err.msg);
         let err = check_src("fn main() =\n  v = buf_i32(2)\n  v[0] = 1.5\n").unwrap_err();
         assert!(err.msg.contains("buffer element"), "{}", err.msg);
+    }
+
+    /// A map's two type arguments are inferred like any others — unlike a
+    /// buffer's width, which is not a type argument at all — so a table needs
+    /// no annotation anywhere it is written or read.
+    #[test]
+    fn map_types_are_inferred() {
+        let t = check_std(
+            "fn main() =\n  m = map_new()\n  m[\"a\"] = 1\n  println(map_or(m, \"a\", 0))\n",
+        )
+        .unwrap();
+        let _ = t;
+        // The base of a write cannot be anything else: a buffer would have
+        // been annotated and a string is not storage.
+        let t = check_std("fn put(m, k, v) =\n  m[k] = v\n\nfn main() =\n  m = map_new()\n  put(m, 1, \"x\")\n")
+            .unwrap();
+        assert!(
+            matches!(sig(&t, "put").params[0].1, Ty::Map(..)),
+            "{:?}",
+            sig(&t, "put").params[0].1
+        );
+        // Reading answers with an `Option`, which is what a key that may not
+        // be there is worth. An open base still settles as a string, as it
+        // always did, so a map one is said out loud — by an annotation here,
+        // or by anything else that has already fixed the type.
+        let t = check_std(
+            "fn get(m: Map(Int, Str)) = m[1]\n\nfn main() =\n  m = map_new()\n  m[1] = \"x\"\n  println(unwrap_or(get(m), \"?\"))\n",
+        )
+        .unwrap();
+        assert!(matches!(sig(&t, "get").ret, Ty::Adt(..)), "{:?}", sig(&t, "get").ret);
+        // `#m` is how many entries, not how many slots.
+        check_std("fn main() =\n  m = map_new()\n  m[1] = 2\n  println(#m)\n").unwrap();
+    }
+
+    /// What may be a key is what has structural equality, and what may not
+    /// says so where the key is written rather than somewhere later.
+    #[test]
+    fn map_keys_must_be_value_types() {
+        let err = check_std(
+            "fn main() =\n  m = map_new()\n  m[\\x -> x + 1] = 1\n  println(#m)\n",
+        )
+        .unwrap_err();
+        assert!(err.msg.contains("a map key requires"), "{}", err.msg);
+        // A table is storage, so it neither prints nor compares — and the
+        // error says what to ask instead.
+        let err =
+            check_std("fn main() =\n  m = map_new()\n  m[1] = 2\n  println(m)\n").unwrap_err();
+        assert!(err.msg.contains("map_items"), "{}", err.msg);
+        // `m[k] += 1` expands to `m[k] = m[k] + 1`, where the `Option` a read
+        // gives back meets a number. Saying which is which is the difference
+        // between a puzzle and a fix.
+        let err = check_std(
+            "fn main() =\n  m = map_new()\n  m[\"a\"] = 1\n  m[\"a\"] += 1\n  println(#m)\n",
+        )
+        .unwrap_err();
+        assert!(err.msg.contains("unwrap_or(m[k], 0)"), "{}", err.msg);
+    }
+
+    /// A guard is the rest of what a pattern cannot say, and an arm with one
+    /// covers nothing: its condition may be false, and the value falls
+    /// through to the arms below.
+    #[test]
+    fn a_guarded_arm_covers_nothing() {
+        let t = check_std(
+            "fn sign(n) = match n\n  x if x > 0 -> 1\n  x if x < 0 -> -1\n  _ -> 0\n\nfn main() = println(sign(3))\n",
+        )
+        .unwrap();
+        assert_eq!(sig(&t, "sign").ret, Ty::Int);
+        // Guarded arms leave the case they are guarding open.
+        let err = check_std(
+            "fn f(o) = match o\n  Some(n) if n > 0 -> \"pos\"\n  None -> \"none\"\n\nfn main() = println(f(None))\n",
+        )
+        .unwrap_err();
+        assert!(err.msg.contains("not exhaustive"), "{}", err.msg);
+        // And they do not make the arms below them unreachable — but an
+        // unguarded arm above still does.
+        let err = check_std(
+            "fn f(n) = match n\n  _ -> 0\n  x if x > 0 -> 1\n\nfn main() = println(f(1))\n",
+        )
+        .unwrap_err();
+        assert!(err.msg.contains("unreachable match arm"), "{}", err.msg);
+        // A guard is a condition, so it is a `Bool`.
+        let err = check_std(
+            "fn f(n) = match n\n  x if x + 1 -> 0\n  _ -> 1\n\nfn main() = println(f(1))\n",
+        )
+        .unwrap_err();
+        assert!(err.msg.contains("a match guard"), "{}", err.msg);
+    }
+
+    /// A field is read by the name its constructor gave it, from a type with
+    /// one constructor — the same rule a binding that takes a value apart
+    /// already followed.
+    #[test]
+    fn fields_are_read_by_name() {
+        let point = "type Point\n  P(x: Int, y: Int)\n\n";
+        let t = check_src(&format!(
+            "{point}fn get(p: Point) = p.x + p.y\n\nfn main() = println(get(P(1, 2)))\n"
+        ))
+        .unwrap();
+        assert_eq!(sig(&t, "get").ret, Ty::Int);
+        // A dot after something that is not a name is the same read.
+        check_src(&format!(
+            "{point}fn mk(n) = P(n, n)\n\nfn main() = println(mk(1).y)\n"
+        ))
+        .unwrap();
+        // More than one constructor: which fields there are depends on which
+        // one it is, so `match` is the way in and the error says so.
+        let err = check_src(
+            "type Shape\n  Circle(r: Float)\n  Rect(w: Float, h: Float)\n\nfn f(s: Shape) = s.r\n\nfn main() = println(1)\n",
+        )
+        .unwrap_err();
+        assert!(err.msg.contains("more than one constructor"), "{}", err.msg);
+        // A field that is not there is named against the ones that are.
+        let err = check_src(&format!("{point}fn f(p: Point) = p.z\n\nfn main() = println(1)\n"))
+            .unwrap_err();
+        assert!(err.msg.contains("no field `z`"), "{}", err.msg);
+        // And a base whose type nothing has settled says what to do about it.
+        let err = check_src(&format!("{point}fn f(p) = p.x\n\nfn main() = println(f(P(1, 2)))\n"))
+            .unwrap_err();
+        assert!(err.msg.contains("annotate it"), "{}", err.msg);
+    }
+
+    /// `?` is a `match` whose `Ok` arm is the rest of the block, so what it
+    /// asks of the program is that the block be what the function returns.
+    #[test]
+    fn question_mark_carries_an_error_out() {
+        let half = "fn half(n) = if n % 2 == 0 then Ok(n / 2) else Err(\"odd\")\n\n";
+        let t = check_std(&format!(
+            "{half}fn quarter(n) =\n  h = half(n)?\n  half(h)\n\nfn main() = println(1)\n"
+        ))
+        .unwrap();
+        // `Result(Int, Str)` either way: the error type travels with it.
+        assert_eq!(sig(&t, "quarter").ret, sig(&t, "half").ret);
+        // Written where the block is not the function's value, it says so —
+        // and says which value the block is worth instead.
+        let err = check_std(&format!(
+            "{half}fn bad(n) =\n  h = half(n)?\n  h + 1\n\nfn main() = println(1)\n"
+        ))
+        .unwrap_err();
+        assert!(err.msg.contains("has to be what the function returns"), "{}", err.msg);
+        // And on anything but a `Result`, it says what to write instead.
+        let err = check_std(
+            "fn first(l) =\n  x = nth(l, 0)?\n  Some(x)\n\nfn main() = println(1)\n",
+        )
+        .unwrap_err();
+        assert!(err.msg.contains("takes the value out of a `Result`"), "{}", err.msg);
+    }
+
+    /// Where a `Ptr` is wanted, a buffer is its first element's address —
+    /// at a foreign parameter, at a builtin, and at a Rill parameter that
+    /// says `Ptr`. Everywhere else a buffer is a buffer.
+    #[test]
+    fn a_buffer_decays_where_a_pointer_is_wanted() {
+        check_src(
+            "extern fn strlen(s: Ptr) -> USize\n\nfn main() =\n  b = buf_u8(4)\n  println(strlen(b))\n",
+        )
+        .unwrap();
+        // A builtin position, and a Rill parameter annotated `Ptr`.
+        check_src(
+            "fn first(p: Ptr) = peek_u8(p, 0)\n\nfn main() =\n  b = buf_u8(4)\n  println(first(b) + peek_u8(b, 1))\n",
+        )
+        .unwrap();
+        // Not a coercion in general: a buffer is a buffer anywhere else.
+        let err = check_src(
+            "fn main() =\n  b = buf_u8(4)\n  p = null_ptr()\n  println(is_null(if true then b else p))\n",
+        )
+        .unwrap_err();
+        assert!(err.msg.contains("Buf(U8)") || err.msg.contains("Ptr"), "{}", err.msg);
     }
 
     /// `s[i:j]` takes bytes rather than one, and either end may be left out.
@@ -3487,7 +4099,7 @@ mod tests {
         assert_eq!(sig(&t, "f").params[0].1, Ty::Str);
         assert_eq!(sig(&t, "f").ret, Ty::Int);
         let err = check_src("fn main() = println(#1)\n").unwrap_err();
-        assert!(err.msg.contains("measures a string, a buffer or a builder"), "{}", err.msg);
+        assert!(err.msg.contains("measures a string, a buffer, a map or a builder"), "{}", err.msg);
     }
 
     /// Storing the wrong shape in one is a type error, not a silent

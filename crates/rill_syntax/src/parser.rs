@@ -555,8 +555,24 @@ impl Parser {
             return Ok(Stmt::PatBind { pattern, value, line });
         }
         if let (Tok::Ident(_), Tok::Eq) = (self.peek(), self.peek2()) {
-            let (line, _) = self.here();
+            let (line, col) = self.here();
             let name = self.ident("a name")?;
+            // `p.x = v` reads as a binding because the lexer joins a name to
+            // what follows a dot, and it would quietly make a binding called
+            // `p.x` rather than saying what it is: a record field, which is
+            // part of a value and does not change.
+            if let Some((base, field)) = name.split_once('.') {
+                return Err(SyntaxError::new(
+                    line,
+                    col,
+                    format!(
+                        "`{name}` is a field of `{base}`, and a field cannot be assigned \
+                         to — a value does not change. Build the one you want with the \
+                         constructor, keeping the fields (`{field}` among them) it should \
+                         keep"
+                    ),
+                ));
+            }
             self.bump(); // `=`
             let value = self.expr()?;
             Ok(Stmt::Bind { name, value, line })
@@ -795,12 +811,39 @@ impl Parser {
         }
     }
 
-    /// `e[i]`, as many times as it is written. Binds tighter than anything
-    /// else, so `b[i] + 1` and `b[i][j]` read the way they look.
+    /// `e[i]` and `e?`, as many times as they are written. Both bind tighter
+    /// than anything else, so `b[i] + 1`, `b[i][j]` and `f(x)? + 1` read the
+    /// way they look.
     fn postfix(&mut self) -> Result<Expr, SyntaxError> {
         let mut base = self.primary()?;
-        while matches!(self.peek(), Tok::LBracket) {
+        while matches!(self.peek(), Tok::LBracket | Tok::Question | Tok::Dot) {
             let (line, _) = self.here();
+            if matches!(self.peek(), Tok::Question) {
+                self.bump();
+                base = Expr::Try { expr: Box::new(base), line };
+                continue;
+            }
+            // A dot against a name was joined to it by the lexer, so one
+            // reaching here follows something else: `f(x).y`, `v[0].name`.
+            if matches!(self.peek(), Tok::Dot) {
+                self.bump();
+                let name = match self.peek().clone() {
+                    Tok::Ident(n) => {
+                        self.bump();
+                        n
+                    }
+                    other => {
+                        let (l, c) = self.here();
+                        return Err(SyntaxError::new(
+                            l,
+                            c,
+                            format!("expected a field name after `.`, found {other}"),
+                        ));
+                    }
+                };
+                base = Expr::Field { base: Box::new(base), name, line };
+                continue;
+            }
             self.bump();
             // `[i]` is one element; a `:` anywhere in it makes it a slice, and
             // either end may be left out for the string's own.
@@ -1110,11 +1153,20 @@ impl Parser {
     fn arm(&mut self) -> Result<Arm, SyntaxError> {
         let (line, _) = self.here();
         let pattern = self.pattern()?;
+        // `pattern if cond ->` — the rest of what a pattern cannot say. The
+        // condition is an ordinary expression, and `->` ends it, so nothing
+        // here needs bracketing.
+        let guard = if matches!(self.peek(), Tok::If) {
+            self.bump();
+            Some(self.expr()?)
+        } else {
+            None
+        };
         self.expect(&Tok::Arrow, "after the pattern in a match arm")?;
         // An arm's body is an inline expression, or — like a function's —
         // an indented block of statements.
         let body = self.body()?;
-        Ok(Arm { pattern, body, line })
+        Ok(Arm { pattern, guard, body, line })
     }
 
     /// Patterns nest freely: `Some(Cons(0, rest))`.

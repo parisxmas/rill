@@ -53,6 +53,8 @@ pub enum Tok {
     LBracket,
     RBracket,
     Hash,
+    Question,
+    Dot,
     DotDot,
     OpEq(char),
     Comma,
@@ -109,6 +111,8 @@ impl std::fmt::Display for Tok {
             Tok::LBracket => write!(f, "`[`"),
             Tok::RBracket => write!(f, "`]`"),
             Tok::Hash => write!(f, "`#`"),
+            Tok::Question => write!(f, "`?`"),
+            Tok::Dot => write!(f, "`.`"),
             Tok::DotDot => write!(f, "`..`"),
             Tok::OpEq(c) => write!(f, "`{c}=`"),
             Tok::For => write!(f, "`for`"),
@@ -428,16 +432,18 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                         }
                     }
                     '#' => Tok::Hash,
+                    '?' => Tok::Question,
                     '.' => {
                         if s.peek() == Some('.') {
                             s.bump();
                             Tok::DotDot
                         } else {
-                            return Err(SyntaxError::new(
-                                line,
-                                col,
-                                "a lone `.` means nothing; `..` is a range".to_string(),
-                            ));
+                            // A dot against a name is part of it — the rule
+                            // above joins `geo.area` and `p.x` alike, and the
+                            // checker tells a module from a record. This is
+                            // the other one: a dot after something that is not
+                            // a name, as in `f(x).y`.
+                            Tok::Dot
                         }
                     }
                     '%' => Tok::Percent,

@@ -1,0 +1,78 @@
+# `?` — carrying an error out without writing the carrying.
+#
+# Errors are `Result` values in Rill, which is the honest way round: a function
+# that can fail says so in its type and a caller cannot forget. What it used to
+# cost was a `match` per call, three lines of which two were the same two lines
+# every time. `?` is those two lines: the value inside the `Ok`, or else the
+# whole function's `Err`.
+#
+# It is a `match` and nothing more — the rest of the block becomes the `Ok`
+# arm — so it costs nothing at run time, and a tail call written after one is
+# still a tail call. Which is also the rule for where it may be written: the
+# block it is in has to be what the function returns, because that is where
+# the `Err` leaves by.
+
+type Config
+  Config(host: Str, port: Int, retries: Int)
+
+fn field(text, name) =
+  i = str_find(text, name + "=")
+  if i < 0 then Err("no " + name) else Ok(trim(rest_of_line(text, i + #name + 1)))
+
+fn rest_of_line(text, from) =
+  j = str_find_from(text, "\n", from)
+  if j < 0 then text[from:] else text[from:j]
+
+fn number(s) =
+  n = str_to_int(s)
+  if n <= 0 then Err("not a number: " + s) else Ok(n)
+
+# Four things that can fail, and one line each. Without `?` this is four
+# `match`es nested four deep, and the last one is where the work is.
+fn parse(text) =
+  host = field(text, "host")?
+  port = number(field(text, "port")?)?
+  retries = number(field(text, "retries")?)?
+  Ok(Config(host, port, retries))
+
+# A `?` on a statement of its own: the value is not wanted, only the failure.
+fn check(text) =
+  field(text, "host")?
+  Ok("has a host")
+
+# `?` in a branch works when the branch is what the function returns.
+fn parse_or_default(text, use_default) =
+  if use_default then
+    Ok(Config("localhost", 8080, 1))
+  else
+    cfg = parse(text)?
+    Ok(cfg)
+
+fn show_config(r) = match r
+  Ok(Config(h, p, n)) -> println(h + ":" + int_to_str(p) + " x" + int_to_str(n))
+  Err(e) -> println("error: " + e)
+
+fn main() =
+  good = "host=example.com\nport=8080\nretries=3\n"
+  show_config(parse(good))
+  show_config(parse_or_default("", true))
+
+  # Each failure comes out of the middle of the chain with nothing written
+  # to carry it: the first `?` that is an `Err` is the function's answer.
+  show_config(parse("port=8080\nretries=3\n"))
+  show_config(parse("host=example.com\nretries=3\n"))
+  show_config(parse("host=example.com\nport=zero\nretries=3\n"))
+
+  match check(good)
+    Ok(s) -> println(s)
+    Err(e) -> println("error: " + e)
+
+  # The prelude's `read_file` answers with a `Result` too, so a file that is
+  # not there travels the same way.
+  match load_missing()
+    Ok(n) -> println(n)
+    Err(e) -> println("error: " + e)
+
+fn load_missing() =
+  text = read_file("no-such-file-in-this-directory")?
+  Ok(#text)

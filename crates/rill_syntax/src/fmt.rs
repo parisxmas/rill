@@ -429,15 +429,21 @@ impl Fmt {
                         s.push_str(&format!("\n{}{}", pad(cont), text));
                     }
                     self.mark(arm.line);
+                    let head = match &arm.guard {
+                        Some(g) => {
+                            format!("{} if {}", pattern(&arm.pattern), self.render(g, cont + 1))
+                        }
+                        None => pattern(&arm.pattern),
+                    };
                     if let Expr::Block(stmts) = &arm.body {
-                        s.push_str(&format!("\n{}{} ->", pad(cont), pattern(&arm.pattern)));
+                        s.push_str(&format!("\n{}{head} ->", pad(cont)));
                         if let Some(c) = self.comments.on(arm.line) {
                             s.push_str(&format!("  {c}"));
                         }
                         s.push_str(&self.block_lines(stmts, cont + 1));
                     } else {
                         let body = self.render(&arm.body, cont + 1);
-                        s.push_str(&format!("\n{}{} -> {}", pad(cont), pattern(&arm.pattern), body));
+                        s.push_str(&format!("\n{}{head} -> {}", pad(cont), body));
                         if let Some(c) = self.comments.on(arm.line) {
                             s.push_str(&format!("  {c}"));
                         }
@@ -592,6 +598,7 @@ fn expr_line(e: &Expr) -> usize {
         Expr::Spawn { line, .. } => *line,
         Expr::Select { line, .. } => *line,
         Expr::Len { line, .. } => *line,
+        Expr::Try { line, .. } | Expr::Field { line, .. } => *line,
         Expr::Index { line, .. } => *line,
         Expr::Slice { line, .. } => *line,
         Expr::IndexSet { line, .. } => *line,
@@ -690,6 +697,9 @@ fn inline(e: &Expr, prec: u8) -> String {
             }
         }
         Expr::Len { expr, .. } => format!("#{}", inline(expr, P_UNARY)),
+        // `?` binds as tightly as a call, so nothing round it needs bracketing.
+        Expr::Try { expr, .. } => format!("{}?", inline(expr, P_INDEX)),
+        Expr::Field { base, name, .. } => format!("{}.{name}", inline(base, P_INDEX)),
         Expr::Index { base, index, .. } => {
             format!("{}[{}]", inline(base, P_INDEX), inline(index, 0))
         }
@@ -762,7 +772,15 @@ fn inline(e: &Expr, prec: u8) -> String {
         Expr::Match { scrutinee, arms, .. } => {
             let arms: Vec<String> = arms
                 .iter()
-                .map(|a| format!("{} -> {}", pattern(&a.pattern), inline(&a.body, 0)))
+                .map(|a| match &a.guard {
+                    Some(g) => format!(
+                        "{} if {} -> {}",
+                        pattern(&a.pattern),
+                        inline(g, 0),
+                        inline(&a.body, 0)
+                    ),
+                    None => format!("{} -> {}", pattern(&a.pattern), inline(&a.body, 0)),
+                })
                 .collect();
             wrap(prec > 0, format!("match {} {}", inline(scrutinee, 0), arms.join(" ")))
         }

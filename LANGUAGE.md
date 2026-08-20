@@ -75,6 +75,7 @@ length operator instead.
 | `Str` | `"hi"`, `"a\nb"` | escapes: `\n` `\t` `\\` `\"` |
 | `Unit` | — | what `println` and `main` return |
 | `Chan(a)` | `channel()` | see [Concurrency](#7-concurrency) |
+| `Map(k, v)` | `map_new()` | a hash table; see [Maps](#maps) |
 | `StrBuf` | `strbuf()` | bytes on their way to a string |
 | `(A, B) -> C` | `\x, y -> ...` | function values |
 | user types | `Circle(1.0)` | declared with `type` |
@@ -109,9 +110,46 @@ type List(a)                    # generic, and recursive
   Cons(head: a, tail: List(a))
 ```
 
-Field names are optional documentation (`Rect(Float, Float)` is equivalent).
-Constructor names are global and must start with an uppercase letter; a type and
-one of its constructors may share a name.
+Field names are optional (`Rect(Float, Float)` is equivalent), but a named
+field can be read by its name — see [Fields](#fields). Constructor names are
+global and must start with an uppercase letter; a type and one of its
+constructors may share a name.
+
+### Fields
+
+A value whose type has **one** constructor is read with a dot:
+
+```
+type Point
+  P(x: Float, y: Float)
+
+fn dist(a: Point, b: Point) =
+  dx = a.x - b.x
+  dy = a.y - b.y
+  sqrt(dx * dx + dy * dy)
+```
+
+One constructor is the whole condition, and it is the condition a binding
+already had: `P(x, y) = p` reads as a binding because it cannot fail, and
+`p.x` for the same reason. A type with several constructors has no field that
+is certainly there, so `match` is how those are read — the error names the
+constructors when a dot is tried on one.
+
+The dot works on anything, not only a name: `mk(1).y`, `p.pos.x`. What it does
+not do is change anything. A record is a value; the way to a different one is
+to build it, which is what `Player(p.name, p.pos, p.health - 35, p.kills)`
+says out loud — including which fields it keeps. Writing `p.x = 3` is refused,
+and says this.
+
+The one thing a field read asks of a program is that the type be known where
+the dot is written. Inference does not work backwards from a field name, since
+two types may both have an `x`, so a parameter that is read this way is
+annotated — one of the few places in Rill where an annotation is not optional.
+The error says which name it needs one for.
+
+A dot means one of two things and the compiler tells them apart by what the
+name in front of it is: a module alias (`geo.area`, from `import "geo" as
+geo`) or a value with fields. An alias wins where a program has both.
 
 ---
 
@@ -130,6 +168,8 @@ f(x, y)              # call
 \x, y -> x + y       # lambda
 xs |> map(f) |> sum  # pipeline: x |> f(a) means f(x, a)
 if c then a else b   # conditional (an expression, not a statement)
+f(x)?                # the value inside an `Ok`, or the function's `Err`
+p.x                  # one field of a one-constructor type
 ```
 
 Bit operations are functions rather than operators: `bit_and`, `bit_or`,
@@ -137,7 +177,7 @@ Bit operations are functions rather than operators: `bit_and`, `bit_or`,
 works with bit patterns).
 
 Precedence, loosest to tightest: `|>`, `||`, `&&`, comparisons, `+ -`, `* / %`,
-unary `- !`, calls and literals.
+unary `- !`, then the postfix `[]`, `?` and `.`, calls and literals.
 
 ### Tuples
 
@@ -227,6 +267,29 @@ integer literal, or a constructor with sub-patterns. The compiler checks that a
 match covers every case — if not, it names one that is missing — and rejects
 arms that earlier arms already cover.
 
+An arm may carry a **guard**: what a pattern cannot say, written after it.
+
+```
+fn size(l) = match l
+  Cons(x, _) if x > 100 -> "starts big"
+  Cons(x, _) if x > 0 -> "starts small"
+  Cons(_, _) -> "starts at or below zero"
+  Nil -> "empty"
+```
+
+The arm is taken when the pattern matches **and** the condition holds; a false
+condition falls through to the arms below, which the value is then matched
+against as though the guarded arm were not there. So a guarded arm **covers
+nothing**: the first two arms above leave `Cons(_, _)` to be answered, and
+without the third the match is not exhaustive — the checker says so, naming
+`Cons(_, _)`. For the same reason a guarded arm makes nothing below it
+unreachable, while an unguarded one above it still does.
+
+A guard sees the pattern's bindings and everything else in scope, and is an
+ordinary expression of type `Bool`. It costs what it says: the arms below a
+guarded one are tested again when its condition fails, rather than every value
+being tested once as an unguarded match arranges.
+
 A `match` written across lines uses an indented block. Inside parentheses,
 where indentation carries no meaning, the arms simply follow one another on the
 line — nothing else in the grammar can continue an expression with
@@ -265,6 +328,46 @@ fn describe(n) =
 
 The value of a block is its last statement's value, exactly as in a function
 body; every arm and branch must still agree on one type.
+
+### Carrying an error out: `?`
+
+Errors are `Result` values, which is the honest way round — a function that can
+fail says so in its type and a caller cannot forget. What that used to cost was
+a `match` per call, two of whose three lines were the same two lines every time.
+`?` is those two lines: **the value inside the `Ok`, or else the whole
+function's `Err`.**
+
+```
+fn parse(text) =
+  host = field(text, "host")?
+  port = number(field(text, "port")?)?
+  Ok(Config(host, port))
+```
+
+It is a `match` and nothing else. The rest of the block becomes the `Ok` arm,
+so the two lines above mean:
+
+```
+match field(text, "host")
+  Ok(host) -> ...the rest of the block...
+  Err(e) -> Err(e)
+```
+
+Which is where the one rule comes from: **a `?` belongs where the block it is
+in is what the function returns**, because that is the door its `Err` leaves
+by. A `?` in the middle of an expression is fine — `number(field(text, "port")?)?`
+names the inner result first, in the order the expression evaluates — and so is
+one inside an `if` branch or a `match` arm, as long as that branch is the
+function's answer. One written where the block is worth something else says so,
+and says what that something else is.
+
+Nothing is added at run time: the `match` is the one that would have been
+written, an error travels no further than it did, and a tail call after a `?`
+is still a tail call. The error types have to agree, since `Err(e) -> Err(e)`
+carries the same value out; there is no conversion, and one is not wanted.
+
+`?` is for `Result`. On an `Option`, `match` on it or `unwrap_or` for a
+default — and the error says so if it is tried.
 
 ---
 
@@ -472,6 +575,81 @@ a queue of work. The JSON parser in `benchmarks/tokens/` is the honest example
 of the difference: it builds arrays as lists, and that one choice is half of
 what it still gives away to the C it is measured against.
 
+### Maps
+
+`Map(k, v)` is a hash table, and the other thing in the language that is
+storage rather than a value. It is written like a buffer and read like an
+`Option`:
+
+```
+counts = map_new()
+counts["cat"] = 2            # insert, or replace what was there
+counts["cat"]                # Some(2)
+counts["dog"]                # None — the key may not be there, and that is
+                             # an Option here as it is everywhere else
+#counts                      # 1 — entries, not slots
+```
+
+Both type arguments are inferred; unlike a buffer's width they are ordinary
+types, so nothing has to be annotated. Anything with structural equality may
+be a key — a number, a string, a tuple, a data type, nested as deep as you
+like — and the compiler works out how to hash it from the type, exactly as it
+works out how to print it. A function or a channel cannot be a key, and says so
+where the key is written.
+
+| | |
+|---|---|
+| `map_new()` | an empty table |
+| `m[k] = v` (or `map_set(m, k, v)`) | insert or replace |
+| `m[k]` (or `map_get(m, k)`) | `Some(v)` or `None` |
+| `map_or(m, k, d)` | the value or a default, without the `Option` |
+| `map_has(m, k)` | whether the key is there |
+| `map_del(m, k)` | remove it, saying whether there was anything to remove |
+| `#m` (or `map_len(m)`) | how many entries |
+| `map_clear(m)` | empty it, keeping the room it has |
+| `map_keys(m)` `map_values(m)` `map_items(m)` | everything in it, as a list |
+| `map_of(items)` | a table from a list of `(key, value)` pairs |
+
+A map is reference counted like a string, and what it holds is released with
+it: nothing frees a table, and nothing leaks when the last reference goes. A
+table crosses a channel like any other value, and — being storage, with nothing
+locking it — should be one strand's at a time on a `--parallel` build, exactly
+as a buffer should.
+
+Three things are worth knowing. **Order is the table's**: `map_keys` and its
+two siblings hand back entries in whatever order the hashes put them in, which
+is stable within a run and nothing to depend on across one — a program that
+needs an order asks for the keys it wants, in the order it wants them.
+**`map_or` allocates nothing** where `unwrap_or(m[k], 0)` builds a `Some` to
+take apart again, which a loop doing it a million times can feel. And **a
+table is storage**, so `println(m)` and `m == n` are refused the way they are
+for a buffer; `map_items(m)` is the same table as a value, and prints and
+compares like one.
+
+The one place a type has to be said out loud is a read whose base is otherwise
+unknown: `fn get(m) = m[1]` settles `m` as a string, because that is what `[]`
+has always meant on an unannotated base. Write `fn get(m: Map(Int, Str)) =
+m[1]`, or use `map_get(m, 1)`, which needs nothing. A *write* has no such
+ambiguity — a buffer would have been annotated and a string is not storage —
+so `fn put(m, k, v) = m[k] = v` is a map function without being told.
+
+Reach for a `Map` when the program is really looking things up by name, and
+for a `List` or a `Buf` when it is walking or indexing. Lookup is one hash and
+a short probe: a million `Int` keys go in in about 26 ms and come back out in
+about 22 on an M4, against 61 and 23 for Go's own map, and peak at 73 MB
+against Go's 85.
+
+An entry costs seventeen bytes. One is a **control byte** — whether the slot
+holds anything, and if it does, seven bits of the key's hash; the other sixteen
+are the key and the value, side by side. A probe walks the control bytes, which
+for two million slots is two megabytes and stays in cache while the slots
+themselves cannot, and touches a slot once, for the one key it believes it has
+found. Keeping the whole hash beside the key would answer the same question and
+cost eight bytes an entry to do it; the price of not keeping it is that growing
+hashes every key again, which is about a tenth of the time it takes to fill a
+table. The table is kept under three quarters full, counting deleted slots, and
+grown by doubling.
+
 ---
 
 ## 7. Concurrency
@@ -600,6 +778,9 @@ replaces the prelude's.
 `drop` `nth` `any` `all`
 
 **Option/Result**: `unwrap_or` `opt_map` `res_map`
+
+**Maps**: `map_get` `map_or` `map_has` `map_keys` `map_values` `map_items`
+`map_of`
 
 **Numbers**: `max` `min` `abs`
 
@@ -756,7 +937,7 @@ v = buf_f32(3 * 5)          # fifteen 32-bit floats, zeroed
 v[0] = 1.5
 println(v[0])
 println(buf_len(v))
-draw(buf_data(v), 3)        # an extern taking (Ptr, I32)
+draw(v, 3)                  # an extern taking (Ptr, I32)
 ```
 
 `#v` is how many elements it has, `v[i]` and `v[i] = x` are one of them; `buf_get(v, i)` and
@@ -770,7 +951,21 @@ one assignment the language has, and only to a buffer element.
 | `buf_i8` `buf_u8` `buf_i16` `buf_u16` `buf_i32` `buf_u32` `buf_int` `buf_f32` `buf_float` `buf_ptr` | one constructor per element width; the argument is a length in elements |
 | `b[i]` / `b[i] = v` — or `buf_get(b, i)` / `buf_set(b, i, v)` | one element, bounds-checked |
 | `#b` (or `buf_len(b)`) | how many elements |
-| `buf_data(b) -> Ptr` | the first element's address, for C |
+
+Where a `Ptr` is wanted — a foreign parameter, a `peek`/`poke`, a Rill
+parameter annotated `Ptr` — a buffer written there **is** its first element's
+address. This is C's own rule for an array, and it is the only place in the
+language where a value is not the type it was written as. Nothing about the
+buffer changes: it stays counted, stays the caller's, and a buffer built in
+the argument itself is released after the call rather than before, so the
+address is good for as long as the call is.
+
+```
+b = buf_u8(8)
+strlen(b)                   # extern fn strlen(s: Ptr) -> USize
+from_cstr(b)                # a builtin taking a Ptr
+peek_u8(b, 1)               # so are peek and poke
+```
 
 Three things follow from the width living in the type. Reading gives back the
 Rill type that width stands for, so `Buf(U8)` yields 200 where `Buf(I8)` yields
@@ -822,7 +1017,7 @@ registration rather than every call site repeating it:
 
 ```
 fn sort_by(b: Buf(I32), cmp) =
-  qsort(buf_data(b), buf_len(b), 4, cmp)
+  qsort(b, buf_len(b), 4, cmp)
   b
 
 fn main() = sort_by(nums, ascending)
@@ -885,8 +1080,9 @@ under its own name.
 The boundary takes what wasm can pass: parameters must be `Int`, `Float`,
 `Bool` or `Ptr`, the return those or `Unit`, and the function must be
 concrete — an export is one entry point, not a generic family. Data wider than
-a scalar crosses through a `Buf`: build one, hand `buf_data` to an import, and
-the host reads it straight out of the module's linear memory.
+a scalar crosses through a `Buf`: build one, hand it to an import — where a
+`Ptr` is wanted a buffer is its address — and the host reads it straight out
+of the module's linear memory.
 
 On wasm an `extern fn` that no library satisfies becomes an *import* — a hole
 the host fills at instantiation. That is the whole FFI story in a browser:
@@ -915,6 +1111,8 @@ traps mid-run.
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
 | `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_find_from(s, needle, from)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage. `str_find_from` starts partway along, so a long line can be walked field by field without slicing off the part already read; a start outside the string is clamped |
 | `channel()` `send(ch, v)` `recv(ch)` | channels |
+| `map_new()` `m[k] = v` (or `map_set`) `map_len` `map_del` `map_clear` | hash tables; `#m` is `map_len`, and the prelude's `map_get`, `map_or`, `map_has`, `map_keys`, `map_values` and `map_items` are written on top of these |
+| `map_find(m, k)` `map_next(m, i)` `map_key_at(m, i)` `map_val_at(m, i)` | the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |
 | `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `#b` | building a string a piece at a time |
@@ -941,11 +1139,15 @@ rill repl                       # interactive: definitions persist
 ## 13. What Rill deliberately does not have
 
 - **Mutation.** No mutable bindings, no mutable fields. State is threaded
-  through arguments or channels. The one exception is a buffer element,
-  `b[i] = v` (and `+=`, `-=`, `*=`, `/=`) — a `Buf` is storage, and always
-  was.
-- **Exceptions.** Errors are `Result` values.
+  through arguments or channels. The exceptions are the two kinds of storage:
+  a buffer element, `b[i] = v` (and `+=`, `-=`, `*=`, `/=`), and a map entry,
+  `m[k] = v`. Neither is a binding that changes — what changes is the storage
+  the name has always pointed at.
+- **Exceptions.** Errors are `Result` values, and `?` carries one out without
+  the carrying being written.
 - **Null.** Absence is `Option`.
 - **Implicit conversions.** Numeric types never mix silently.
+- **Field assignment.** A field is read with `p.x` and never written: a
+  record is a value, and a changed one is a new one built from the old.
 - **Inheritance or subtyping.** Composition and traits instead.
 - **A garbage collector.** Reference counting, decided at compile time.

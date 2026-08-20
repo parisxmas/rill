@@ -1,6 +1,7 @@
-# Rill has no `for` or `while`. Repetition is written in three ways, and all
-# three compile to the same kind of machine code — a loop, with no stack
-# growth, because a call in tail position becomes a jump.
+# Rill has no `while`. Repetition is written in four ways, and all four
+# compile to the same kind of machine code — a loop, with no stack growth,
+# because a call in tail position becomes a jump. The fourth, `for`, is the
+# compiler writing the first one for you.
 
 # 1. Tail recursion with an accumulator: this is the plain loop.
 #    `go` is the loop body, `acc` is the loop variable.
@@ -33,6 +34,19 @@ fn echo_loop(jobs, results) =
   send(results, n * 2)
   if n == 0 then 0 else echo_loop(jobs, results)
 
+# 4. `for` over a half-open range, which is the loop above with the writing
+#    done for you: the end is evaluated once, and `with` carries a value from
+#    one turn to the next — a parameter, which is to say a register.
+fn triangle(n) = for i in 0..n with acc = 0
+  acc + i
+
+# One loop inside another is two of those, and each keeps its own end and its
+# own variable. Nothing here is shared, including when both count with `i`.
+fn grid(rows, cols) = for r in 0..rows with total = 0
+  row = for c in 0..cols with n = 0
+    n + 1
+  total + row
+
 fn main() =
   println(sum_to(1000000))
   println(gcd(1071, 462))
@@ -40,6 +54,8 @@ fn main() =
   println(squares_of_evens(10))
   println(product(range(1, 6)))
   print_countdown(3)
+  println(triangle(5))
+  println(grid(3, 5))
 
   jobs = channel()
   results = channel()

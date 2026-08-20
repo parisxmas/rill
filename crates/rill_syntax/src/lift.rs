@@ -29,7 +29,7 @@ pub fn lift(module: &mut Module) -> Result<(), SyntaxError> {
     for f in &mut module.functions {
         let mut env: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
         let body = std::mem::replace(&mut f.body, Expr::Bool(false));
-        f.body = walk(body, &mut env, &f.name, &mut used, &mut lifted)?;
+        f.body = walk(expand_body(body)?, &mut env, &f.name, &mut used, &mut lifted)?;
     }
     module.functions.extend(lifted);
     Ok(())
@@ -100,8 +100,14 @@ fn expand_for(
     acc: Option<(String, Box<Expr>)>,
     body: Expr,
     line: usize,
+    used: &mut HashSet<String>,
 ) -> Expr {
-    let hi = "for.hi".to_string();
+    // The end and the loop function need names, and one loop can be written
+    // inside another — where the same two names twice would have the inner
+    // loop's end answer for the outer one's. They are taken from the same
+    // pool the lifted function names come from, so each is its own.
+    let hi = pick_name("for", "hi", used);
+    let go = pick_name("for", "go", used);
     let next = Expr::Binary {
         op: BinOp::Add,
         lhs: Box::new(Expr::Var(var.clone(), line)),
@@ -113,7 +119,7 @@ fn expand_for(
             vec![Param { name: var.clone(), ann: None }, Param { name: name.clone(), ann: None }],
             Expr::Var(name, line),
             // The body is the next value, so the call takes it directly.
-            Expr::Call { name: "for".into(), args: vec![next, body], line, piped: false },
+            Expr::Call { name: go.clone(), args: vec![next, body], line, piped: false },
             vec![from, *init],
         ),
         None => (
@@ -122,7 +128,7 @@ fn expand_for(
             Expr::Block(vec![
                 Stmt::Expr(body),
                 Stmt::Expr(Expr::Call {
-                    name: "for".into(),
+                    name: go.clone(),
                     args: vec![next],
                     line,
                     piped: false,
@@ -132,7 +138,7 @@ fn expand_for(
         ),
     };
     let loop_fn = FnDef {
-        name: "for".to_string(),
+        name: go.clone(),
         exported: false,
         params,
         ret_ann: None,
@@ -152,7 +158,7 @@ fn expand_for(
     Expr::Block(vec![
         Stmt::Bind { name: hi, value: to, line },
         Stmt::Fn(Box::new(loop_fn)),
-        Stmt::Expr(Expr::Call { name: "for".to_string(), args: call_args, line, piped: false }),
+        Stmt::Expr(Expr::Call { name: go, args: call_args, line, piped: false }),
     ])
 }
 
@@ -185,10 +191,17 @@ fn walk(
             line,
         },
         Expr::For { var, from, to, acc, body, line } => {
-            walk(expand_for(var, *from, *to, acc, *body, line), env, parent, used, out)?
+            walk(expand_for(var, *from, *to, acc, *body, line, used), env, parent, used, out)?
         }
         Expr::Block(stmts) => {
-            Expr::Block(walk_block(expand_pat_binds(stmts), env, parent, used, out)?)
+            let mut n = 0usize;
+            Expr::Block(walk_block(
+                expand_pat_binds(expand_try(stmts, &mut n)?),
+                env,
+                parent,
+                used,
+                out,
+            )?)
         }
         Expr::Call { name, args, line, piped } => Expr::Call {
             name,
@@ -216,9 +229,13 @@ fn walk(
             for a in arms {
                 let depth = env.len();
                 pattern_names(&a.pattern, env);
+                let guard = match a.guard {
+                    Some(g) => Some(walk(g, env, parent, used, out)?),
+                    None => None,
+                };
                 let body = walk(a.body, env, parent, used, out)?;
                 env.truncate(depth);
-                new.push(Arm { pattern: a.pattern, body, line: a.line });
+                new.push(Arm { pattern: a.pattern, guard, body, line: a.line });
             }
             Expr::Match { scrutinee, arms: new, line }
         }
@@ -267,6 +284,11 @@ fn walk(
             index: Box::new(walk(*index, env, parent, used, out)?),
             line,
         },
+        Expr::Field { base, name, line } => Expr::Field {
+            base: Box::new(walk(*base, env, parent, used, out)?),
+            name,
+            line,
+        },
         Expr::IndexSet { base, index, value, line } => Expr::IndexSet {
             base: Box::new(walk(*base, env, parent, used, out)?),
             index: Box::new(walk(*index, env, parent, used, out)?),
@@ -288,7 +310,7 @@ fn expand_pat_binds(stmts: Vec<Stmt>) -> Vec<Stmt> {
                 let rest = expand_pat_binds(it.collect());
                 out.push(Stmt::Expr(Expr::Match {
                     scrutinee: Box::new(value),
-                    arms: vec![Arm { pattern, body: Expr::Block(rest), line }],
+                    arms: vec![Arm { pattern, guard: None, body: Expr::Block(rest), line }],
                     line,
                 }));
                 return out;
@@ -297,6 +319,332 @@ fn expand_pat_binds(stmts: Vec<Stmt>) -> Vec<Stmt> {
         }
     }
     out
+}
+
+/// A function's body, with any `?` in it spelled out. A body written as one
+/// expression is a block of one statement as far as this is concerned, which
+/// is what lets `fn f(p) = Ok(#read_file(p)?)` mean what it reads as.
+fn expand_body(body: Expr) -> Result<Expr, SyntaxError> {
+    if matches!(body, Expr::Block(_)) {
+        return Ok(body);
+    }
+    let mut n = 0usize;
+    let mut stmts = expand_try(vec![Stmt::Expr(body)], &mut n)?;
+    if stmts.len() == 1 {
+        if let Stmt::Expr(e) = stmts.remove(0) {
+            return Ok(e);
+        }
+        unreachable!("a body is an expression");
+    }
+    Ok(Expr::Block(stmts))
+}
+
+/// `e?` spelled out.
+///
+/// A `?` says: the value inside the `Ok`, or else the whole function's `Err`.
+/// In a language where everything is an expression that means a `match` whose
+/// `Ok` arm is everything the block had left to do — the same rewriting
+/// `expand_pat_binds` does, with a second arm for the error:
+///
+/// ```text
+///     text = read_file(p)?          match read_file(p)
+///     Ok(#text)              ==>      Ok(text) -> Ok(#text)
+///                                     Err(e) -> Err(e)
+/// ```
+///
+/// Which is why a `?` belongs where the block it is in is what the function
+/// returns: the `Err` arm leaves by the same door the block does. Written in a
+/// branch of its own the arms disagree, and the checker says so.
+fn expand_try(stmts: Vec<Stmt>, n: &mut usize) -> Result<Vec<Stmt>, SyntaxError> {
+    let mut out = Vec::new();
+    let mut it = stmts.into_iter();
+    while let Some(s) = it.next() {
+        // A `?` written inside a statement rather than at the top of one is
+        // named first, in the order it is evaluated — and then the list is
+        // started again, because those names are `?` at the top of a
+        // statement themselves.
+        let mut pre: Vec<Stmt> = Vec::new();
+        let s = match s {
+            Stmt::Bind { name, value, line } => {
+                Stmt::Bind { name, value: hoist(value, &mut pre, n, true)?, line }
+            }
+            Stmt::PatBind { pattern, value, line } => {
+                Stmt::PatBind { pattern, value: hoist(value, &mut pre, n, true)?, line }
+            }
+            Stmt::Expr(e) => Stmt::Expr(hoist(e, &mut pre, n, true)?),
+            // A local function is its own body, with its own blocks.
+            other => {
+                out.push(other);
+                continue;
+            }
+        };
+        if !pre.is_empty() {
+            pre.push(s);
+            pre.extend(it);
+            out.extend(expand_try(pre, n)?);
+            return Ok(out);
+        }
+        let (pattern, inner, line) = match s {
+            Stmt::Bind { name, value: Expr::Try { expr, line }, .. } => {
+                (Pattern::Var(name), *expr, line)
+            }
+            // `(a, b) = f()?` takes the value apart inside the `Ok`, which
+            // is one pattern rather than two matches.
+            Stmt::PatBind { pattern, value: Expr::Try { expr, line }, .. } => {
+                (pattern, *expr, line)
+            }
+            Stmt::Expr(Expr::Try { expr, line }) => (Pattern::Wildcard, *expr, line),
+            other => {
+                out.push(other);
+                continue;
+            }
+        };
+        let rest = expand_try(it.collect(), n)?;
+        if rest.is_empty() {
+            // Nothing left to do with the value: `f()?` last in a block is
+            // `f()`, and taking it apart to put it back would be a lie about
+            // what the program does.
+            out.push(Stmt::Expr(inner));
+            return Ok(out);
+        }
+        let err = "try.e".to_string();
+        out.push(Stmt::Expr(Expr::Match {
+            scrutinee: Box::new(inner),
+            arms: vec![
+                Arm {
+                    pattern: Pattern::Ctor { name: "Ok".into(), args: vec![pattern], line },
+                    guard: None,
+                    body: Expr::Block(rest),
+                    line,
+                },
+                Arm {
+                    pattern: Pattern::Ctor {
+                        name: "Err".into(),
+                        args: vec![Pattern::Var(err.clone())],
+                        line,
+                    },
+                    guard: None,
+                    body: Expr::Call {
+                        name: "Err".into(),
+                        args: vec![Expr::Var(err, line)],
+                        line,
+                        piped: false,
+                    },
+                    line,
+                },
+            ],
+            line,
+        }));
+        return Ok(out);
+    }
+    Ok(out)
+}
+
+/// Names every `?` written inside an expression rather than at the top of one,
+/// in the order the expression evaluates. `top` says this position is the
+/// statement's own value, where a `?` may simply stay.
+///
+/// Only positions that certainly run are walked into. The far side of `&&`, a
+/// branch, an arm, a lambda — none of those is somewhere a value can be
+/// pulled out of, so a `?` there is refused rather than quietly moved to
+/// where it would run every time.
+fn hoist(e: Expr, pre: &mut Vec<Stmt>, n: &mut usize, top: bool) -> Result<Expr, SyntaxError> {
+    Ok(match e {
+        Expr::Try { expr, line } => {
+            let inner = hoist(*expr, pre, n, false)?;
+            if top {
+                return Ok(Expr::Try { expr: Box::new(inner), line });
+            }
+            let name = format!("try.{n}");
+            *n += 1;
+            pre.push(Stmt::Bind {
+                name: name.clone(),
+                value: Expr::Try { expr: Box::new(inner), line },
+                line,
+            });
+            Expr::Var(name, line)
+        }
+        Expr::Call { name, args, line, piped } => Expr::Call {
+            name,
+            args: args
+                .into_iter()
+                .map(|a| hoist(a, pre, n, false))
+                .collect::<Result<Vec<_>, _>>()?,
+            line,
+            piped,
+        },
+        Expr::Unary { op, expr } => {
+            Expr::Unary { op, expr: Box::new(hoist(*expr, pre, n, false)?) }
+        }
+        // Every binary operator runs both sides: `&&` and `||` are not among
+        // them, having been an `if` since the parser.
+        Expr::Binary { op, lhs, rhs, line } => {
+            Expr::Binary {
+                op,
+                lhs: Box::new(hoist(*lhs, pre, n, false)?),
+                rhs: Box::new(hoist(*rhs, pre, n, false)?),
+                line,
+            }
+        }
+        Expr::Len { expr, line } => {
+            Expr::Len { expr: Box::new(hoist(*expr, pre, n, false)?), line }
+        }
+        Expr::Index { base, index, line } => Expr::Index {
+            base: Box::new(hoist(*base, pre, n, false)?),
+            index: Box::new(hoist(*index, pre, n, false)?),
+            line,
+        },
+        Expr::Field { base, name, line } => {
+            Expr::Field { base: Box::new(hoist(*base, pre, n, false)?), name, line }
+        }
+        Expr::IndexSet { base, index, value, line } => Expr::IndexSet {
+            base: Box::new(hoist(*base, pre, n, false)?),
+            index: Box::new(hoist(*index, pre, n, false)?),
+            value: Box::new(hoist(*value, pre, n, false)?),
+            line,
+        },
+        Expr::IndexOp { op, base, index, value, line } => Expr::IndexOp {
+            op,
+            base: Box::new(hoist(*base, pre, n, false)?),
+            index: Box::new(hoist(*index, pre, n, false)?),
+            value: Box::new(hoist(*value, pre, n, false)?),
+            line,
+        },
+        Expr::Append { target, value, line } => Expr::Append {
+            target: Box::new(hoist(*target, pre, n, false)?),
+            value: Box::new(hoist(*value, pre, n, false)?),
+            line,
+        },
+        Expr::Slice { base, from, to, line } => Expr::Slice {
+            base: Box::new(hoist(*base, pre, n, false)?),
+            from: match from {
+                Some(f) => Some(Box::new(hoist(*f, pre, n, false)?)),
+                None => None,
+            },
+            to: match to {
+                Some(t) => Some(Box::new(hoist(*t, pre, n, false)?)),
+                None => None,
+            },
+            line,
+        },
+        // The scrutinee of a `match` and the condition of an `if` do run,
+        // every time; their arms and branches are another matter, and a
+        // block among them expands on its own.
+        Expr::Match { scrutinee, arms, line } => {
+            let scrutinee = Box::new(hoist(*scrutinee, pre, n, false)?);
+            for a in &arms {
+                no_stray_try(&a.body)?;
+            }
+            Expr::Match { scrutinee, arms, line }
+        }
+        Expr::If { cond, then, els } => {
+            let cond = Box::new(hoist(*cond, pre, n, false)?);
+            no_stray_try(&then)?;
+            no_stray_try(&els)?;
+            Expr::If { cond, then, els }
+        }
+        other => {
+            no_stray_try(&other)?;
+            other
+        }
+    })
+}
+
+/// A `?` left where nothing can be done with it. Blocks are not walked into:
+/// each expands against its own rest, and one in tail position is exactly
+/// where a `?` belongs.
+fn no_stray_try(e: &Expr) -> Result<(), SyntaxError> {
+    if let Expr::Try { line, .. } = e {
+        return Err(SyntaxError::new(
+            *line,
+            1,
+            "`?` cannot be written here: it hands the function's caller an \
+             `Err`, so it belongs where the block it is in is what the \
+             function returns. Bind the call to a name first."
+                .to_string(),
+        ));
+    }
+    if matches!(e, Expr::Block(_)) {
+        return Ok(());
+    }
+    let mut found = Ok(());
+    each_child(e, &mut |c| {
+        if found.is_ok() {
+            found = no_stray_try(c);
+        }
+    });
+    found
+}
+
+/// Applies `f` to every immediate sub-expression, whatever the shape.
+fn each_child<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
+    match e {
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(..) => {}
+        Expr::Call { args, .. } => args.iter().for_each(f),
+        Expr::Unary { expr, .. } | Expr::Len { expr, .. } | Expr::Try { expr, .. } => f(expr),
+        Expr::Field { base, .. } => f(base),
+        Expr::Binary { lhs, rhs, .. } | Expr::Append { target: lhs, value: rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        Expr::If { cond, then, els } => {
+            f(cond);
+            f(then);
+            f(els);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            f(scrutinee);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    f(g);
+                }
+                f(&a.body);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::Spawn { body, .. } => f(body),
+        Expr::Select { arms, default, .. } => {
+            for a in arms {
+                match &a.op {
+                    SelectOp::Recv { chan, .. } => f(chan),
+                    SelectOp::Send { chan, value } => {
+                        f(chan);
+                        f(value);
+                    }
+                }
+                f(&a.body);
+            }
+            if let Some(d) = default {
+                f(d);
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            f(base);
+            f(index);
+        }
+        Expr::IndexSet { base, index, value, .. } | Expr::IndexOp { base, index, value, .. } => {
+            f(base);
+            f(index);
+            f(value);
+        }
+        Expr::Slice { base, from, to, .. } => {
+            f(base);
+            if let Some(x) = from {
+                f(x);
+            }
+            if let Some(x) = to {
+                f(x);
+            }
+        }
+        Expr::For { from, to, acc, body, .. } => {
+            f(from);
+            f(to);
+            if let Some((_, init)) = acc {
+                f(init);
+            }
+            f(body);
+        }
+        Expr::Block(_) => {}
+    }
 }
 
 fn walk_all(
@@ -439,7 +787,8 @@ fn walk_block(
         params.extend(f.params);
         // The lifted function's own scope is exactly its parameter list.
         let mut inner: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-        let body = walk(rewrite(f.body, &by_name)?, &mut inner, &l.lifted, used, out)?;
+        let body =
+            walk(expand_body(rewrite(f.body, &by_name)?)?, &mut inner, &l.lifted, used, out)?;
         out.push(FnDef {
             name: l.lifted.clone(),
             exported: false,
@@ -525,7 +874,15 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
             arms: arms
                 .into_iter()
                 .map(|a| {
-                    Ok(Arm { pattern: a.pattern, body: rewrite(a.body, locals)?, line: a.line })
+                    Ok(Arm {
+                        pattern: a.pattern,
+                        guard: match a.guard {
+                            Some(g) => Some(rewrite(g, locals)?),
+                            None => None,
+                        },
+                        body: rewrite(a.body, locals)?,
+                        line: a.line,
+                    })
                 })
                 .collect::<Result<_, SyntaxError>>()?,
             line,

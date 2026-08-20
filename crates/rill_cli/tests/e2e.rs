@@ -1063,6 +1063,49 @@ fn foreign_functions() {
     );
 }
 
+/// Reading a field by name: a single-constructor type, a field of a field, a
+/// field of what a call answered with — and the value the first one was, left
+/// as it was, since building a changed record is what changing one is.
+#[test]
+fn record_fields() {
+    assert_eq!(
+        compile_and_run("records.rill"),
+        "ada at 0,0 hp 100\n65\n100\nada at 3,4 hp 65\n5\n9\ntrue\n"
+    );
+}
+
+/// `?` — a chain of things that can fail, and the first failure out of the
+/// middle of it. Every line here would be a `match` without it.
+#[test]
+fn error_propagation() {
+    assert_eq!(
+        compile_and_run("results.rill"),
+        concat!(
+            "example.com:8080 x3\n",
+            "localhost:8080 x1\n",
+            "error: no host\n",
+            "error: no port\n",
+            "error: not a number: zero\n",
+            "has a host\n",
+            "error: cannot read no-such-file-in-this-directory\n"
+        )
+    );
+}
+
+/// The hash table: strings, a data type and a tuple as keys, an `Option` out
+/// of every read, and a walk that is summed rather than printed — the order
+/// entries come back in is the hash's, and no program should depend on it.
+#[test]
+fn hash_tables() {
+    assert_eq!(
+        compile_and_run("maps.rill"),
+        concat!(
+            "the=3 cat=2 dog=0 \n5\n1\ntrue\nfalse\n100\n5\ntrue\nfalse\n4\n",
+            "105\n4\n4\ncorner\n?\n10\ntwo\ndone\n"
+        )
+    );
+}
+
 /// The typed buffer: a width in the type, a length it checks against, and a
 /// count that frees it — with C reading the same bytes through `buf_data`.
 #[test]
@@ -1143,7 +1186,7 @@ fn a_callback_chosen_at_run_time_is_rejected() {
         "extern fn qsort(base: Ptr, n: U64, size: U64, cmp: Fn(Ptr, Ptr) -> I32) -> Unit\n\
          \n\
          fn order(b: Buf(I32), cmp) =\n\
-        \x20 qsort(buf_data(b), buf_len(b), 4, cmp)\n\
+        \x20 qsort(b, buf_len(b), 4, cmp)\n\
         \x20 b\n\
          \n\
          fn main() =\n\
@@ -1223,6 +1266,8 @@ fn loops_are_tail_recursion() {
          Cons(4, Cons(16, Cons(36, Cons(64, Cons(100, Nil)))))\n\
          720\n\
          3\n2\n1\n\
+         10\n\
+         15\n\
          42\n\
          0\n"
     );
@@ -1240,6 +1285,9 @@ fn custom_show_and_ord() {
     );
 }
 
+/// Nested patterns, the decision tree they compile to, and the guards that
+/// cover nothing: the arms below a guarded one are still reachable, and still
+/// have to answer for the case its condition turns down.
 #[test]
 fn nested_patterns() {
     assert_eq!(
@@ -1256,7 +1304,15 @@ fn nested_patterns() {
          single 42\n\
          many\n\
          empty list\n\
-         nothing\n"
+         nothing\n\
+         starts big: 500\n\
+         starts small: 5\n\
+         starts at or below zero: 0\n\
+         empty\n\
+         3 under, then 9 over, then end\n\
+         positive\n\
+         not positive\n\
+         a hole\n"
     );
 }
 

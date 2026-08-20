@@ -50,7 +50,7 @@ fn now_ticks() = mach_absolute_time()
 # silicon and 1/1 on Intel, so the tick is not a nanosecond on either.
 fn ticks_per_second() =
   b = buf_u32(2)
-  mach_timebase_info(buf_data(b))
+  mach_timebase_info(b)
   1000000000 * buf_get(b, 1) / buf_get(b, 0)
 
 # One process as the kernel describes it. `cpu` is the CPU time burned since
@@ -72,13 +72,13 @@ type Row
 
 fn snapshot() =
   pids = buf_i32(pid_cap())
-  bytes = proc_listpids(all_pids(), 0, buf_data(pids), pid_cap() * 4)
+  bytes = proc_listpids(all_pids(), 0, pids, pid_cap() * 4)
   gather(pids, buf_u8(64), buf_u8(rusage_size()), bytes / 4 - 1, Nil)
 
 # Every process there is, readable or not, so the ones left out can be counted.
 fn pid_count() =
   pids = buf_i32(pid_cap())
-  proc_listpids(all_pids(), 0, buf_data(pids), pid_cap() * 4) / 4
+  proc_listpids(all_pids(), 0, pids, pid_cap() * 4) / 4
 
 # Walked backwards so the list comes out in the order the kernel gave.
 fn gather(pids: Buf(I32), name: Buf(U8), ru: Buf(U8), i, acc) =
@@ -91,19 +91,19 @@ fn prepend(pids: Buf(I32), name: Buf(U8), ru: Buf(U8), i, acc) =
   # last one wrote. So a refusal means leave it out, not read zeroes. Activity
   # Monitor shows those because it asks through a helper running as root;
   # about a third of the machine's processes are missing here for want of one.
-  if proc_pid_rusage(pid, rusage_v0(), buf_data(ru)) == 0 then Cons(read_proc(pid, name, ru), acc) else acc
+  if proc_pid_rusage(pid, rusage_v0(), ru) == 0 then Cons(read_proc(pid, name, ru), acc) else acc
 
 # Offsets into `rusage_info_v0`, counted in 64-bit words: a 16-byte uuid,
 # then user and system time, and — nine words in — the memory footprint.
 fn read_proc(pid, name: Buf(U8), ru: Buf(U8)) =
-  Proc(pid, read_name(pid, name), peek_i64(buf_data(ru), 2) + peek_i64(buf_data(ru), 3), peek_i64(buf_data(ru), 9))
+  Proc(pid, read_name(pid, name), peek_i64(ru, 2) + peek_i64(ru, 3), peek_i64(ru, 9))
 
 fn read_name(pid, name: Buf(U8)) =
   # Emptied first, so a call that writes nothing reads back as nothing rather
   # than as the previous process's name.
   buf_set(name, 0, 0)
-  proc_name(pid, buf_data(name), 63)
-  named(from_cstr(buf_data(name)), pid)
+  proc_name(pid, name, 63)
+  named(from_cstr(name), pid)
 
 fn named(s, pid) = if str_len(s) == 0 then "(" + int_to_str(pid) + ")" else s
 

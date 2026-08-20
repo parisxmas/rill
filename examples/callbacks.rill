@@ -37,7 +37,7 @@ fn descending(a, b) = peek_i32(b, 0) - peek_i32(a, 0)
 # still has to be named by whoever calls — the trampoline is picked while
 # compiling — so this helper is emitted once per comparator it is called with.
 fn sort_by(b: Buf(I32), cmp) =
-  qsort(buf_data(b), buf_len(b), 4, cmp)
+  qsort(b, buf_len(b), 4, cmp)
   b
 
 fn show_buf(b: Buf(I32), i, acc) =

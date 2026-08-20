@@ -44,7 +44,7 @@ fn upload_triangle() =
   vertex(data, 0, 0.0, 0.62, 0.99, 0.75, 0.18)
   vertex(data, 1, 0.0 - 0.55, 0.0 - 0.36, 0.13, 0.72, 0.85)
   vertex(data, 2, 0.55, 0.0 - 0.36, 0.85, 0.22, 0.45)
-  glBufferData(gl_array_buffer(), 3 * 5 * 4, buf_data(data), gl_static_draw())
+  glBufferData(gl_array_buffer(), 3 * 5 * 4, data, gl_static_draw())
   # The last argument is a byte offset into the bound buffer, carried in a
   # pointer-shaped parameter — which is what offsetting null is for.
   glVertexAttribPointer(0, 2, gl_float(), 0, 20, null_ptr())

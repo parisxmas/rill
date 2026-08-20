@@ -107,6 +107,53 @@ fn res_map(r, f) = match r
   Ok(x) -> Ok(f(x))
   Err(e) -> Err(e)
 
+# -- maps --------------------------------------------------------------------
+
+# Everything a program asks a map goes through its slots: `map_find` says
+# which slot holds a key, `map_next` walks to the next slot with anything in
+# it, and the two readers take the key or the value out of one. A slot number
+# means nothing after the next insertion, so nothing here keeps one.
+
+fn map_get(m, k) =
+  i = map_find(m, k)
+  if i < 0 then None else Some(map_val_at(m, i))
+
+fn map_has(m, k) = map_find(m, k) >= 0
+
+# The value or a default, without the `Option` in between. `unwrap_or(m[k], 0)`
+# is the same answer and builds a `Some` to take it apart again, which a loop
+# doing this a million times can feel.
+fn map_or(m, k, d) =
+  i = map_find(m, k)
+  if i < 0 then d else map_val_at(m, i)
+
+fn map_keys(m) = map_keys_from(m, 0, Nil)
+
+fn map_keys_from(m, i, acc) =
+  j = map_next(m, i)
+  if j < 0 then reverse(acc) else map_keys_from(m, j + 1, Cons(map_key_at(m, j), acc))
+
+fn map_values(m) = map_values_from(m, 0, Nil)
+
+fn map_values_from(m, i, acc) =
+  j = map_next(m, i)
+  if j < 0 then reverse(acc) else map_values_from(m, j + 1, Cons(map_val_at(m, j), acc))
+
+fn map_items(m) = map_items_from(m, 0, Nil)
+
+fn map_items_from(m, i, acc) =
+  j = map_next(m, i)
+  if j < 0 then reverse(acc) else map_items_from(m, j + 1, Cons((map_key_at(m, j), map_val_at(m, j)), acc))
+
+# The other direction: a list of pairs becomes a table.
+fn map_of(items) = map_fill(map_new(), items)
+
+fn map_fill(m, items) = match items
+  Nil -> m
+  Cons((k, v), rest) ->
+    m[k] = v
+    map_fill(m, rest)
+
 # -- numbers -----------------------------------------------------------------
 
 fn max(a, b) = if a > b then a else b

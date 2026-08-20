@@ -981,6 +981,403 @@ pub extern "C" fn rill_buf_oob(i: i64, len: i64) -> ! {
     }
 }
 
+// ---- hash tables ----------------------------------------------------------
+//
+// `Map(k, v)` is storage the way a `Buf` is: open addressing, linear probing,
+// a power-of-two number of slots, and one table for every key and value type
+// there is. What a table cannot know about what it holds — how to hash a key,
+// how to compare two, how to count a reference up and down, and how wide a
+// value is — the compiler works out per instantiation and leaves in a vtable
+// beside the program. Those calls are the only indirect ones, and they are why
+// the same probing loop serves `Map(Str, Int)` and `Map(Point, List(Str))`.
+//
+// A table is two blocks in one allocation. The **control bytes** are one byte
+// a slot saying whether it holds anything, and if it does, seven bits of the
+// key's hash. The **slots** are the key and the value, side by side, so that
+// finding a key and reading its value is one place in memory rather than two.
+//
+// The point of the split is that the control bytes are small: a table with two
+// million slots has two megabytes of them, which stays in cache while the
+// slots themselves cannot. A probe walks bytes that are there, and touches the
+// slots once, for the one key it believes it has found. Keeping the whole
+// 64-bit hash in the slot instead would answer the same question and cost
+// eight bytes a slot to do it — half again the size of an `Int`-to-`Int`
+// entry. What that costs is the growth, which has to hash every key again
+// rather than reading it back; measured, that is about a tenth of the time to
+// fill a table, and it buys most of the memory the table takes.
+//
+// A key is one word: what may be a key is what has structural equality, and a
+// closure — the only value needing two — has none. A value is one word too
+// unless it is a closure, and which it is comes from the vtable, so an
+// `Int`-to-`Int` entry is seventeen bytes and not a byte more.
+
+/// Nothing was ever here; a probe that reaches one is finished.
+const CTRL_EMPTY: u8 = 0xFF;
+/// Something was here and was deleted. A probe walks past it and an insert may
+/// take it — without this a deletion would cut the chain a later key probed
+/// along.
+const CTRL_TOMB: u8 = 0xFE;
+const MAP_MIN_CAP: usize = 8;
+
+/// The seven bits of the hash a slot keeps, which is what a probe compares
+/// before it goes anywhere near the key. Taken from the top, because the
+/// bottom bits already chose the bucket.
+#[inline]
+fn ctrl_of(h: u64) -> u8 {
+    (h >> 57) as u8
+}
+
+#[inline]
+fn is_full(c: u8) -> bool {
+    c < 0x80
+}
+
+/// The per-instantiation operations, emitted by the compiler as a constant.
+#[repr(C)]
+pub struct MapVt {
+    hash: unsafe extern "C" fn(i64) -> i64,
+    eq: unsafe extern "C" fn(i64, i64) -> i8,
+    kretain: unsafe extern "C" fn(i64),
+    krelease: unsafe extern "C" fn(i64),
+    /// Called with as many words as `vwords` says.
+    vretain: unsafe extern "C" fn(i64, i64),
+    vrelease: unsafe extern "C" fn(i64, i64),
+    /// 1 for every value type but a closure, which needs its code and its
+    /// environment.
+    vwords: i64,
+}
+
+#[repr(C)]
+struct Map {
+    rc: i64,
+    vt: *const MapVt,
+    ctrl: *mut u8,
+    /// `cap * stride` words: the key, then the value.
+    slots: *mut i64,
+    cap: usize,
+    /// Words a slot takes: the key and the value.
+    stride: usize,
+    /// Live entries.
+    len: usize,
+    /// Live entries plus tombstones — what the load factor is really about,
+    /// since a tombstone lengthens a probe exactly as an entry does.
+    used: usize,
+}
+
+/// The one allocation: control bytes, padded to a word, then the slots.
+#[inline]
+fn map_block_bytes(cap: usize, stride: usize) -> u64 {
+    ((cap + 7) & !7) as u64 + (cap * stride * 8) as u64
+}
+
+unsafe fn map_alloc_block(m: *mut Map, cap: usize) {
+    let p = rill_alloc(map_block_bytes(cap, (*m).stride));
+    let mut i = 0;
+    while i < cap {
+        *p.add(i) = CTRL_EMPTY;
+        i += 1;
+    }
+    (*m).ctrl = p;
+    (*m).slots = p.add((cap + 7) & !7) as *mut i64;
+    (*m).cap = cap;
+}
+
+#[inline]
+unsafe fn map_key(m: *const Map, i: usize) -> *mut i64 {
+    (*m).slots.add(i * (*m).stride)
+}
+
+/// The slot holding `k`, or -1. The control byte answers for all but one slot
+/// in a hundred and twenty-eight without the key being read at all.
+unsafe fn map_lookup(m: *const Map, h: u64, k: i64) -> isize {
+    let cap = (*m).cap;
+    if cap == 0 {
+        return -1;
+    }
+    let mask = cap - 1;
+    let want = ctrl_of(h);
+    let eq = (*(*m).vt).eq;
+    let mut i = (h as usize) & mask;
+    loop {
+        let c = *(*m).ctrl.add(i);
+        if c == CTRL_EMPTY {
+            return -1;
+        }
+        if c == want && eq(*map_key(m, i), k) != 0 {
+            return i as isize;
+        }
+        i = (i + 1) & mask;
+    }
+}
+
+/// Moves every live entry into a fresh block of `want` slots (or more), which
+/// is also how tombstones are cleared. Every key is hashed again, since a slot
+/// keeps seven bits of its hash and not the rest. No reference count moves: an
+/// entry keeps the two it already held.
+unsafe fn map_grow(m: *mut Map, want: usize) {
+    let mut cap = MAP_MIN_CAP;
+    while cap < want {
+        cap *= 2;
+    }
+    let (octrl, oslots, ocap) = ((*m).ctrl, (*m).slots, (*m).cap);
+    let stride = (*m).stride;
+    map_alloc_block(m, cap);
+    let hash = (*(*m).vt).hash;
+    let mask = cap - 1;
+    let mut i = 0;
+    while i < ocap {
+        if is_full(*octrl.add(i)) {
+            let from = oslots.add(i * stride);
+            let h = hash(*from) as u64;
+            let mut j = (h as usize) & mask;
+            while *(*m).ctrl.add(j) != CTRL_EMPTY {
+                j = (j + 1) & mask;
+            }
+            *(*m).ctrl.add(j) = ctrl_of(h);
+            let to = map_key(m, j);
+            let mut w = 0;
+            while w < stride {
+                *to.add(w) = *from.add(w);
+                w += 1;
+            }
+        }
+        i += 1;
+    }
+    (*m).used = (*m).len;
+    if ocap != 0 {
+        rill_free_sized(octrl, map_block_bytes(ocap, stride));
+    }
+}
+
+/// # Safety
+/// `vt` must outlive every table made with it (the compiler emits it as a
+/// constant global). Returns an owned, empty map (rc = 1) that has not
+/// allocated any slots yet.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_new(vt: *const MapVt) -> *mut u8 {
+    let m = rill_alloc(core::mem::size_of::<Map>() as u64) as *mut Map;
+    core::ptr::write(
+        m,
+        Map {
+            rc: 1,
+            vt,
+            ctrl: core::ptr::null_mut(),
+            slots: core::ptr::null_mut(),
+            cap: 0,
+            stride: 1 + (*vt).vwords as usize,
+            len: 0,
+            used: 0,
+        },
+    );
+    m as *mut u8
+}
+
+/// Inserts or replaces. The key and the value arrive owned: on a replacement
+/// the old value is released and so is the incoming key, since the key that
+/// is already there stays.
+///
+/// # Safety
+/// `p` must be a live map holding this key and value type.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_set(p: *mut u8, k: i64, v0: i64, v1: i64) {
+    let m = p as *mut Map;
+    let vt = (*m).vt;
+    let h = ((*vt).hash)(k) as u64;
+    let at = map_lookup(m, h, k);
+    if at >= 0 {
+        let slot = map_key(m, at as usize);
+        ((*vt).vrelease)(*slot.add(1), if (*m).stride > 2 { *slot.add(2) } else { 0 });
+        *slot.add(1) = v0;
+        if (*m).stride > 2 {
+            *slot.add(2) = v1;
+        }
+        ((*vt).krelease)(k);
+        return;
+    }
+    // Three quarters full counting tombstones, so a probe stays short and
+    // always meets an empty slot. A table that is three quarters tombstone
+    // is rebuilt at the same size rather than doubled.
+    if ((*m).used + 1) * 4 >= (*m).cap * 3 {
+        let want = if ((*m).len + 1) * 4 >= (*m).cap * 3 { (*m).cap * 2 } else { (*m).cap };
+        map_grow(m, want);
+    }
+    let mask = (*m).cap - 1;
+    let mut i = (h as usize) & mask;
+    loop {
+        let c = *(*m).ctrl.add(i);
+        if c == CTRL_EMPTY {
+            (*m).used += 1;
+            break;
+        }
+        if c == CTRL_TOMB {
+            break;
+        }
+        i = (i + 1) & mask;
+    }
+    *(*m).ctrl.add(i) = ctrl_of(h);
+    let slot = map_key(m, i);
+    *slot = k;
+    *slot.add(1) = v0;
+    if (*m).stride > 2 {
+        *slot.add(2) = v1;
+    }
+    (*m).len += 1;
+}
+
+/// The slot holding `k`, or -1. The key is borrowed.
+///
+/// # Safety
+/// `p` must be a live map holding this key type.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_find(p: *mut u8, k: i64) -> i64 {
+    let m = p as *mut Map;
+    let h = ((*(*m).vt).hash)(k) as u64;
+    map_lookup(m, h, k) as i64
+}
+
+/// Removes `k` if it is there, saying whether it was. The key is borrowed;
+/// the key and value the table held are released.
+///
+/// # Safety
+/// `p` must be a live map holding this key type.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_del(p: *mut u8, k: i64) -> i8 {
+    let m = p as *mut Map;
+    let vt = (*m).vt;
+    let h = ((*vt).hash)(k) as u64;
+    let at = map_lookup(m, h, k);
+    if at < 0 {
+        return 0;
+    }
+    let slot = map_key(m, at as usize);
+    ((*vt).krelease)(*slot);
+    ((*vt).vrelease)(*slot.add(1), if (*m).stride > 2 { *slot.add(2) } else { 0 });
+    *(*m).ctrl.add(at as usize) = CTRL_TOMB;
+    (*m).len -= 1;
+    1
+}
+
+/// # Safety
+/// `p` must be a live map.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_len(p: *mut u8) -> i64 {
+    (*(p as *const Map)).len as i64
+}
+
+/// The first slot at or after `from` that holds an entry, or -1. This is what
+/// walking a map is written with.
+///
+/// # Safety
+/// `p` must be a live map.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_next(p: *mut u8, from: i64) -> i64 {
+    let m = p as *const Map;
+    let mut i = if from < 0 { 0 } else { from as usize };
+    while i < (*m).cap {
+        if is_full(*(*m).ctrl.add(i)) {
+            return i as i64;
+        }
+        i += 1;
+    }
+    -1
+}
+
+unsafe fn map_slot(m: *const Map, i: i64) -> *mut i64 {
+    if i < 0 || i as usize >= (*m).cap || !is_full(*(*m).ctrl.add(i as usize)) {
+        out(b"rill: map slot ");
+        out_dec(i);
+        out(b" holds nothing\n");
+        abort()
+    }
+    map_key(m, i as usize)
+}
+
+/// The key in a slot, owned by the caller.
+///
+/// # Safety
+/// `p` must be a live map and `i` a slot holding an entry.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_key_at(p: *mut u8, i: i64) -> i64 {
+    let m = p as *const Map;
+    let slot = map_slot(m, i);
+    ((*(*m).vt).kretain)(*slot);
+    *slot
+}
+
+/// The value in a slot, owned by the caller. The second word is nothing when
+/// the value type does not use one.
+///
+/// # Safety
+/// `p` must be a live map and `i` a slot holding an entry.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_val_at(p: *mut u8, i: i64) -> TwoWords {
+    let m = p as *const Map;
+    let slot = map_slot(m, i);
+    let (v0, v1) = (*slot.add(1), if (*m).stride > 2 { *slot.add(2) } else { 0 });
+    ((*(*m).vt).vretain)(v0, v1);
+    TwoWords { a: v0 as u64, b: v1 as u64 }
+}
+
+/// Releases every entry and leaves an empty table of the same capacity, which
+/// is what a map reused round a loop wants instead of a fresh one.
+unsafe fn map_drop_entries(m: *mut Map) {
+    let vt = (*m).vt;
+    let mut i = 0;
+    while i < (*m).cap {
+        if is_full(*(*m).ctrl.add(i)) {
+            let slot = map_key(m, i);
+            ((*vt).krelease)(*slot);
+            ((*vt).vrelease)(*slot.add(1), if (*m).stride > 2 { *slot.add(2) } else { 0 });
+        }
+        *(*m).ctrl.add(i) = CTRL_EMPTY;
+        i += 1;
+    }
+    (*m).len = 0;
+    (*m).used = 0;
+}
+
+/// # Safety
+/// `p` must be a live map.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_clear(p: *mut u8) {
+    map_drop_entries(p as *mut Map);
+}
+
+/// # Safety
+/// `p` must be a live map.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_release(p: *mut u8) {
+    let m = p as *mut Map;
+    if rc_dec(p as *mut i64) != 0 {
+        return;
+    }
+    let (cap, stride) = ((*m).cap, (*m).stride);
+    map_drop_entries(m);
+    if cap != 0 {
+        rill_free_sized((*m).ctrl, map_block_bytes(cap, stride));
+    }
+    rill_free_sized(p, core::mem::size_of::<Map>() as u64);
+}
+
+/// FNV-1a over a string's bytes. The compiler hashes everything else inline —
+/// a string is the one key whose hashing is a loop worth keeping in one place.
+///
+/// # Safety
+/// `s` must be a live string object.
+#[no_mangle]
+pub unsafe extern "C" fn rill_str_hash(s: *const u8) -> i64 {
+    let n = str_len_of(s);
+    let b = str_bytes(s);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut i = 0;
+    while i < n {
+        h ^= *b.add(i) as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        i += 1;
+    }
+    h as i64
+}
+
 // ---- raw buffers ----------------------------------------------------------
 //
 // A C library that wants an array — vertex data, a pixel buffer, a matrix —

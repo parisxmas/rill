@@ -44,7 +44,7 @@ fn sample_cores(out: Buf(Int)) =
   n = buf_u32(1)
   arr = buf_ptr(1)
   cnt = buf_u32(1)
-  host_processor_info(mach_host_self(), cpu_load_info(), buf_data(n), buf_data(arr), buf_data(cnt))
+  host_processor_info(mach_host_self(), cpu_load_info(), n, arr, cnt)
   copy_ticks(buf_get(arr, 0), out, 0, least(buf_get(n, 0) * states(), max_cores() * states()))
   vm_deallocate(mach_task_self(), buf_get(arr, 0), buf_get(cnt, 0) * 4)
   buf_get(n, 0)
@@ -104,7 +104,7 @@ fn word_internal() = 35
 fn vm_sample(out: Buf(U32)) =
   cnt = buf_u32(1)
   buf_set(cnt, 0, vm_info_words())
-  host_statistics64(mach_host_self(), host_vm_info64(), buf_data(out), buf_data(cnt))
+  host_statistics64(mach_host_self(), host_vm_info64(), out, cnt)
   out
 
 # What Activity Monitor calls "Memory Used": what applications hold, plus what
@@ -128,6 +128,6 @@ fn sysctl_int(name, width) =
   len = buf_int(1)
   buf_set(len, 0, width)
   n = to_cstr(name)
-  sysctlbyname(n, buf_data(out), buf_data(len), null_ptr(), 0)
+  sysctlbyname(n, out, len, null_ptr(), 0)
   free_ptr(n)
-  if width == 8 then peek_i64(buf_data(out), 0) else peek_u32(buf_data(out), 0)
+  if width == 8 then peek_i64(out, 0) else peek_u32(out, 0)

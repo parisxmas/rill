@@ -204,7 +204,7 @@
       "patterns": [
         {
           "name": "support.type.primitive.rill",
-          "match": "\\b(Int|Float|Bool|Str|Unit|Ptr|Chan|Buf|I8|U8|I16|U16|I32|U32|I64|U64|F32|F64|Fn)\\b"
+          "match": "\\b(Int|Float|Bool|Str|Unit|Ptr|Chan|Buf|Map|I8|U8|I16|U16|I32|U32|I64|U64|F32|F64|Fn)\\b"
         },
         {
           "name": "support.class.prelude.rill",
@@ -219,12 +219,12 @@
 
     "builtin-function": {
       "name": "support.function.builtin.rill",
-      "match": "\\b(println|print|show|channel|send|recv|str_len|str_get|str_sub|str_find|str_cmp|str_to_int|str_to_float|int_to_str|float_to_str|bool_to_str|chr|bit_and|bit_or|bit_xor|bit_not|shl|shr|arg_count|arg|read_file_raw|io_ok|write_file|read_line|exit|to_cstr|from_cstr|free_ptr|null_ptr|is_null|tcp_listen|tcp_accept|tcp_connect|sock_read|sock_write|sock_close|alloc_bytes|ptr_offset|poke_i8|poke_i16|poke_i32|poke_i64|poke_f32|poke_f64|peek_i8|peek_u8|peek_i16|peek_u16|peek_i32|peek_u32|peek_i64|peek_f32|peek_f64|poke_ptr|peek_ptr|to_float|to_int|buf_i8|buf_u8|buf_i16|buf_u16|buf_i32|buf_u32|buf_int|buf_f32|buf_float|buf_ptr|buf_get|buf_set|buf_len|buf_data)\\b(?=\\s*\\()"
+      "match": "\\b(println|print|show|channel|send|recv|str_len|str_get|str_sub|str_find|str_cmp|str_to_int|str_to_float|int_to_str|float_to_str|bool_to_str|chr|bit_and|bit_or|bit_xor|bit_not|shl|shr|arg_count|arg|read_file_raw|io_ok|write_file|read_line|exit|to_cstr|from_cstr|free_ptr|null_ptr|is_null|tcp_listen|tcp_accept|tcp_connect|sock_read|sock_write|sock_close|alloc_bytes|ptr_offset|poke_i8|poke_i16|poke_i32|poke_i64|poke_f32|poke_f64|peek_i8|peek_u8|peek_i16|peek_u16|peek_i32|peek_u32|peek_i64|peek_f32|peek_f64|poke_ptr|peek_ptr|to_float|to_int|buf_i8|buf_u8|buf_i16|buf_u16|buf_i32|buf_u32|buf_int|buf_f32|buf_float|buf_ptr|buf_get|buf_set|buf_len|map_new|map_set|map_find|map_del|map_len|map_clear|map_next|map_key_at|map_val_at)\\b(?=\\s*\\()"
     },
 
     "prelude-function": {
       "name": "support.function.prelude.rill",
-      "match": "\\b(map|filter|fold|len|sum|range|reverse|rev_onto|append|take|drop|nth|any|all|unwrap_or|opt_map|res_map|max|min|abs|join|repeat|contains|starts_with|split|lines|is_space|trim|trim_from|trim_to|args|args_from|read_file|listen_on|accept_on|connect_to|compare)\\b(?=\\s*\\()"
+      "match": "\\b(map|filter|fold|len|sum|range|reverse|rev_onto|append|take|drop|nth|any|all|unwrap_or|opt_map|res_map|max|min|abs|join|repeat|contains|starts_with|split|lines|is_space|trim|trim_from|trim_to|args|args_from|read_file|listen_on|accept_on|connect_to|compare|map_get|map_or|map_has|map_keys|map_values|map_items|map_of|map_fill)\\b(?=\\s*\\()"
     },
 
     "pipeline-call": {
@@ -315,6 +315,10 @@
         {
           "name": "keyword.operator.arrow.rill",
           "match": "->"
+        },
+        {
+          "name": "keyword.operator.try.rill",
+          "match": "\\?"
         },
         {
           "name": "keyword.operator.comparison.rill",

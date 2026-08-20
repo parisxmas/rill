@@ -2,7 +2,8 @@
 #
 # A buffer holds elements of one C width, knows how many it has, and is
 # reference counted like a string: nothing frees it by hand. Indexing is
-# checked, and `buf_data` hands the first element's address to C.
+# checked, and handing one where C wants a pointer passes the first element's
+# address — the buffer stays counted and stays yours.
 #
 # The width is part of the type rather than something inferred, so each one
 # has its own constructor — `buf_f32`, `buf_i32`, `buf_u8`, `buf_int`,
@@ -36,7 +37,7 @@ fn c_sees(b: Buf(U8)) =
   buf_set(b, 2, 108)
   buf_set(b, 3, 108)
   buf_set(b, 4, 0)
-  strlen(buf_data(b))
+  strlen(b)
 
 fn main() =
   v = buf_f32(6)

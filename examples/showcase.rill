@@ -15,12 +15,12 @@ type Expr
   Mul(a: Expr, b: Expr)
   Div(a: Expr, b: Expr)
 
-# Evaluate both sides; short-circuit the first error, then combine.
-fn eval2(a, b, f) = match eval(a)
-  Err(e) -> Err(e)
-  Ok(x) -> match eval(b)
-    Err(e2) -> Err(e2)
-    Ok(y) -> f(x, y)
+# Evaluate both sides, then combine. The `?` is the short-circuit: the first
+# side that fails is what this answers with, and the second is never evaluated.
+fn eval2(a, b, f) =
+  x = eval(a)?
+  y = eval(b)?
+  f(x, y)
 
 fn eval(e) = match e
   Num(n) -> Ok(n)

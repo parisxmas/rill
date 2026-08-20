@@ -323,7 +323,8 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str, scope: &mut Ve
                 qualify_expr(a, own, alias, scope);
             }
         }
-        Expr::Len { expr, .. } => qualify_expr(expr, own, alias, scope),
+        Expr::Len { expr, .. } | Expr::Try { expr, .. } => qualify_expr(expr, own, alias, scope),
+        Expr::Field { base, .. } => qualify_expr(base, own, alias, scope),
         Expr::Slice { base, from, to, .. } => {
             qualify_expr(base, own, alias, scope);
             if let Some(f) = from {
@@ -375,7 +376,12 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str, scope: &mut Ve
                 qualify_pattern(&mut arm.pattern, own, alias);
                 let mut names = Vec::new();
                 pattern_binds(&arm.pattern, &mut names);
-                under(scope, names, |sc| qualify_expr(&mut arm.body, own, alias, sc));
+                under(scope, names, |sc| {
+                    if let Some(g) = arm.guard.as_mut() {
+                        qualify_expr(g, own, alias, sc);
+                    }
+                    qualify_expr(&mut arm.body, own, alias, sc);
+                });
             }
         }
         Expr::Lambda { params, body, .. } => {

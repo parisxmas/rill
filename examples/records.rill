@@ -1,0 +1,71 @@
+# `p.x` — reading a field by the name it was given.
+#
+# A constructor's fields have always been able to carry names: `P(x: Int, y:
+# Int)` says which number is which. Until now that was documentation, and the
+# only way to a field was `match`. It is a read now.
+#
+# The rule is the one a binding already followed: a type with a single
+# constructor can be taken apart without asking, because there is nothing to
+# ask. A type with several has no field that is certainly there, and `match`
+# is how those are read — the compiler says so, naming the constructors.
+#
+# What a field read is *not* is a way to change one. A record is a value; the
+# way to a different one is to build it.
+
+type Point
+  P(x: Float, y: Float)
+
+type Player
+  Player(name: Str, pos: Point, health: Int, kills: Int)
+
+# Several constructors: which fields there are depends on which one it is, so
+# these are read by `match` as they always were.
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+
+# A field read needs to know the type it is reading from — inference does not
+# work backwards from a name, since two types may both have an `x`. So this is
+# one of the few places an annotation is not optional.
+fn dist(a: Point, b: Point) =
+  dx = a.x - b.x
+  dy = a.y - b.y
+  sqrt(dx * dx + dy * dy)
+
+extern "m" fn sqrt(x: Float) -> Float
+
+# A field of a field, and no `match` in sight.
+fn describe(p: Player) =
+  p.name + " at " + show(p.pos.x) + "," + show(p.pos.y) + " hp " + int_to_str(p.health)
+
+# Building the changed one is what "updating" is: the fields that stay are
+# named, so the line says what it keeps as well as what it changes.
+fn hurt(p: Player, by) = Player(p.name, p.pos, p.health - by, p.kills)
+
+fn moved(p: Player, to) = Player(p.name, to, p.health, p.kills)
+
+# Several constructors, so the fields come out of a `match`.
+fn area(s) = match s
+  Circle(r) -> 3.14159 * r * r
+  Rect(w, h) -> w * h
+
+fn main() =
+  ada = Player("ada", P(0.0, 0.0), 100, 0)
+  println(describe(ada))
+
+  hurt_once = hurt(ada, 35)
+  println(hurt_once.health)
+  println(ada.health)  # the first one is untouched: it is a value
+
+  there = moved(hurt_once, P(3.0, 4.0))
+  println(describe(there))
+  println(dist(ada.pos, there.pos))
+
+  # A field of what a call answered with, where the dot follows a `)`.
+  println(spawn_at(9.0).y)
+
+  # And the other way of taking a value apart is still there, and still the
+  # only way when there is more than one constructor.
+  println(area(Circle(1.0)) > area(Rect(1.0, 2.0)))
+
+fn spawn_at(y) = P(0.0, y)

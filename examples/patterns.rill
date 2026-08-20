@@ -1,6 +1,8 @@
 # Patterns nest freely and compile to a decision tree: each value is tested
 # once, arms are never duplicated, and the checker proves the match covers
-# every case (it names a missing one otherwise).
+# every case (it names a missing one otherwise). A guard is what a pattern
+# cannot say — a condition after it — and an arm with one covers nothing,
+# since its condition may be false and the value falls through.
 
 # Classify the first two elements of a list of options.
 fn classify(l) = match l
@@ -31,6 +33,31 @@ fn deep(t) = match t
 type Wrapper
   Wrap(inner: Option(List(Int)))
 
+# A guard is the rest of what a pattern cannot say: the arm is taken when the
+# pattern matches *and* the condition holds, and a false one falls through to
+# the arms below. Which is why a guarded arm covers nothing as far as the
+# checker is concerned — `Cons(x, _) if x > 0` leaves `Cons(_, _)` to be
+# answered, and the match is not exhaustive until something answers it.
+fn size(l) = match l
+  Cons(x, _) if x > 100 -> "starts big: " + int_to_str(x)
+  Cons(x, _) if x > 0 -> "starts small: " + int_to_str(x)
+  Cons(x, _) -> "starts at or below zero: " + int_to_str(x)
+  Nil -> "empty"
+
+# A guard sees the pattern's bindings and everything around the match.
+fn over(l, limit) = match l
+  Cons(x, rest) if x > limit -> int_to_str(x) + " over, then " + over(rest, limit)
+  Cons(x, rest) -> int_to_str(x) + " under, then " + over(rest, limit)
+  Nil -> "end"
+
+# Guards and nesting together: what the guard turns down is still matched
+# against everything below, so the second arm here does see `Some(-1)`.
+fn head_sign(l) = match l
+  Cons(Some(x), _) if x > 0 -> "positive"
+  Cons(Some(_), _) -> "not positive"
+  Cons(None, _) -> "a hole"
+  Nil -> "empty"
+
 fn main() =
   println(classify(Nil))
   println(classify(Cons(None, Nil)))
@@ -45,3 +72,11 @@ fn main() =
   println(deep(Wrap(Some(Cons(1, Cons(2, Nil))))))
   println(deep(Wrap(Some(Nil))))
   println(deep(Wrap(None)))
+  println(size(Cons(500, Nil)))
+  println(size(Cons(5, Nil)))
+  println(size(Cons(0, Nil)))
+  println(size(Nil))
+  println(over(Cons(3, Cons(9, Nil)), 5))
+  println(head_sign(Cons(Some(1), Nil)))
+  println(head_sign(Cons(Some(-1), Nil)))
+  println(head_sign(Cons(None, Nil)))

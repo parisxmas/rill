@@ -307,6 +307,8 @@ fn subst_gen(ty: &Ty, args: &[Ty]) -> Ty {
             p.iter().map(|t| subst_gen(t, args)).collect(),
             Box::new(subst_gen(r, args)),
         ),
+        Ty::Chan(e) => Ty::Chan(Box::new(subst_gen(e, args))),
+        Ty::Map(k, v) => Ty::Map(Box::new(subst_gen(k, args)), Box::new(subst_gen(v, args))),
         other => other.clone(),
     }
 }
@@ -338,6 +340,7 @@ fn mangle(ty: &Ty, adts: &[rill_types::AdtDef]) -> String {
             s
         }
         Ty::Chan(e) => format!("Chan_{}", mangle(e, adts)),
+        Ty::Map(k, v) => format!("Map_{}_{}", mangle(k, adts), mangle(v, adts)),
         Ty::Buf(w) => format!("Buf_{}", w.name()),
         Ty::Ptr => "Ptr".into(),
         Ty::Var(_) | Ty::Gen(_) => unreachable!("mangling requires concrete types"),
@@ -424,6 +427,9 @@ fn collect_rebound(e: &TExpr, out: &mut HashSet<String>) {
             collect_rebound(scrutinee, out);
             for a in arms {
                 collect_pattern_binds(&a.pattern, out);
+                if let Some(g) = &a.guard {
+                    collect_rebound(g, out);
+                }
                 collect_rebound(&a.body, out);
             }
         }
@@ -548,6 +554,22 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(val);
         }
         TK::ChanRecv { ch } | TK::BufLen { buf: ch } | TK::BufPtr { buf: ch } => f(ch),
+        TK::FieldGet { base, .. } => f(base),
+        TK::MapNew => {}
+        TK::MapLen { map } | TK::MapClear { map } => f(map),
+        TK::MapFind { map, key: other }
+        | TK::MapDel { map, key: other }
+        | TK::MapNext { map, from: other }
+        | TK::MapKeyAt { map, idx: other }
+        | TK::MapValAt { map, idx: other } => {
+            f(map);
+            f(other);
+        }
+        TK::MapSet { map, key, val } => {
+            f(map);
+            f(key);
+            f(val);
+        }
         TK::BufNew { count, .. } => f(count),
         TK::BufGet { buf, idx } => {
             f(buf);
@@ -584,7 +606,12 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         }
         TK::Match { scrutinee, arms } => {
             f(scrutinee);
-            arms.iter().for_each(|a| f(&a.body));
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    f(g);
+                }
+                f(&a.body);
+            }
         }
         TK::Block(stmts) => stmts.iter().for_each(|s| match s {
             TStmt::Bind { value, .. } => f(value),
@@ -615,8 +642,11 @@ enum Head {
 }
 
 enum Tree {
-    /// Run this arm.
-    Leaf(usize),
+    /// Run this arm. A guarded one carries what to do when the guard is
+    /// false: the rest of the match, in the same value context — which is
+    /// where the fall-through goes, and why a guard costs the arms below it
+    /// being tested again rather than the whole match being linear.
+    Leaf(usize, Option<Box<Tree>>),
     /// Test the value at `occ` and take the matching branch.
     Switch { occ: Occ, on_int: bool, cases: Vec<(u64, Tree)>, default: Option<Box<Tree>> },
     /// No row can match — unreachable once the checker has run.
@@ -873,9 +903,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Ty::Int => Some(self.ctx.i64_type().into()),
             Ty::Float => Some(self.ctx.f64_type().into()),
             Ty::Bool => Some(self.ctx.bool_type().into()),
-            Ty::Str | Ty::StrBuf | Ty::Adt(..) | Ty::Chan(..) | Ty::Ptr | Ty::Buf(_) => {
-                Some(self.ctx.ptr_type(Default::default()).into())
-            }
+            Ty::Str | Ty::StrBuf | Ty::Adt(..) | Ty::Chan(..) | Ty::Ptr | Ty::Buf(_)
+            | Ty::Map(..) => Some(self.ctx.ptr_type(Default::default()).into()),
             Ty::Fn(..) => Some(self.closure_type().into()),
             Ty::Unit => None,
             Ty::Var(_) | Ty::Gen(_) => unreachable!("codegen requires concrete types"),
@@ -1265,6 +1294,46 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         );
         self.module.add_function("rill_sock_close", void.fn_type(&[i64t.into()], false), None);
 
+        // Hash tables. The table is one piece of code for every key and value
+        // type; what it cannot know about them it reads out of the vtable it
+        // was made with.
+        let words = self.ctx.struct_type(&[i64t.into(), i64t.into()], false);
+        self.module.add_function("rill_map_new", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_map_set",
+            void.fn_type(&[ptrt.into(), i64t.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_map_find",
+            i64t.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_map_del",
+            i8t.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_map_len", i64t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_map_clear", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_map_next",
+            i64t.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_map_key_at",
+            i64t.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_map_val_at",
+            words.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_map_release", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_str_hash", i64t.fn_type(&[ptrt.into()], false), None);
+
         // Foreign functions, declared at the widths the C symbol was compiled
         // with rather than at Rill's own — the conversion happens per call.
         for (name, sig) in &self.tmod.externs {
@@ -1339,7 +1408,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .into_int_value(),
                 zero,
             ),
-            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_) => (
+            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_)
+            | Ty::Map(..) => (
                 b.build_ptr_to_int(v.into_pointer_value(), i64t, "w").unwrap(),
                 zero,
             ),
@@ -1374,7 +1444,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Ty::Float => b
                 .build_bit_cast(a, self.ctx.f64_type(), "f")
                 .unwrap(),
-            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_) => {
+            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_)
+            | Ty::Map(..) => {
                 let _ = bw;
                 b.build_int_to_ptr(a, ptrt, "p").unwrap().into()
             }
@@ -1394,7 +1465,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     // ---- reference counting ---------------------------------------------
 
     fn is_heap(ty: &Ty) -> bool {
-        matches!(ty, Ty::Adt(..) | Ty::Fn(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Buf(_))
+        matches!(
+            ty,
+            Ty::Adt(..)
+                | Ty::Fn(..)
+                | Ty::Chan(..)
+                | Ty::Str
+                | Ty::StrBuf
+                | Ty::Buf(_)
+                | Ty::Map(..)
+        )
     }
 
     /// The `{ i64 rc, i64 tag }` header shared by all ADT boxes.
@@ -1492,7 +1572,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         match ty {
             // Boxes, channels and strings are never null; closure
             // environments can be, so those keep the null-safe runtime call.
-            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Buf(_) => self.emit_rc_inc(v),
+            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Buf(_) | Ty::Map(..) => {
+                self.emit_rc_inc(v)
+            }
             Ty::Fn(..) => {
                 let env = self
                     .builder
@@ -1594,6 +1676,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Some(self.builder.build_call(drop_fn, &[v.into()], "").expect("LLVM builder error"))
             }
             Ty::Chan(..) => Some(self.call_rt("rill_chan_release", &[v.into()])),
+            Ty::Map(..) => Some(self.call_rt("rill_map_release", &[v.into()])),
             Ty::Buf(w) => {
                 let size = self.ctx.i64_type().const_int(w.size_bytes(), false);
                 Some(self.call_rt("rill_buf_release", &[v.into(), size.into()]))
@@ -2143,6 +2226,330 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             self.builder.position_at_end(bb);
         }
         Ok(f)
+    }
+
+    // ---- hash tables ------------------------------------------------------
+
+    /// The key and value types of a map, refusing a `Unit` value: a table
+    /// holds what it is given, and `Unit` is the type with nothing to hold.
+    fn map_kv(&self, ty: &Ty, line: usize) -> Result<(Ty, Ty), CodegenError> {
+        match ty {
+            Ty::Map(k, v) => {
+                if **v == Ty::Unit {
+                    return Err(CodegenError::new(
+                        line,
+                        "a map cannot hold `Unit` — there would be nothing to look up"
+                            .to_string(),
+                    ));
+                }
+                Ok(((**k).clone(), (**v).clone()))
+            }
+            other => unreachable!("map operation on {other:?}"),
+        }
+    }
+
+    /// splitmix64's finaliser. A key's own bits are rarely spread evenly —
+    /// small integers and pointers least of all — and the table takes the low
+    /// ones to pick a bucket with, so every bit is made to depend on the rest.
+    fn mix64(&self, x: IntValue<'ctx>) -> IntValue<'ctx> {
+        let i64t = self.ctx.i64_type();
+        let b = &self.builder;
+        let s1 = b.build_right_shift(x, i64t.const_int(30, false), false, "s1").expect("builder");
+        let x1 = b.build_xor(x, s1, "x1").expect("builder");
+        let m1 =
+            b.build_int_mul(x1, i64t.const_int(0xbf58_476d_1ce4_e5b9, false), "m1").expect("builder");
+        let s2 = b.build_right_shift(m1, i64t.const_int(27, false), false, "s2").expect("builder");
+        let x2 = b.build_xor(m1, s2, "x2").expect("builder");
+        let m2 =
+            b.build_int_mul(x2, i64t.const_int(0x94d0_49bb_1331_11eb, false), "m2").expect("builder");
+        let s3 = b.build_right_shift(m2, i64t.const_int(31, false), false, "s3").expect("builder");
+        b.build_xor(m2, s3, "h").expect("builder")
+    }
+
+    /// The hash of a borrowed value. Nothing here moves a reference count:
+    /// hashing only reads. Two values `==` calls equal must hash alike, which
+    /// is why this walks exactly what `gen_eq_of` compares.
+    fn gen_hash_of(
+        &mut self,
+        v: BasicValueEnum<'ctx>,
+        ty: &Ty,
+        line: usize,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let i64t = self.ctx.i64_type();
+        match ty {
+            Ty::Int => Ok(self.mix64(v.into_int_value())),
+            Ty::Bool => {
+                let w = self
+                    .builder
+                    .build_int_z_extend(v.into_int_value(), i64t, "bw")
+                    .expect("LLVM builder error");
+                Ok(self.mix64(w))
+            }
+            // `0.0 == -0.0` is true and their bits differ, so the two are
+            // brought together before hashing. A NaN is equal to nothing,
+            // itself included, so a key that is one can never be looked up
+            // again whatever this returns.
+            Ty::Float => {
+                let f = v.into_float_value();
+                let zero = self.ctx.f64_type().const_zero();
+                let is_zero = self
+                    .builder
+                    .build_float_compare(FloatPredicate::OEQ, f, zero, "fz")
+                    .expect("LLVM builder error");
+                let bits = self
+                    .builder
+                    .build_bit_cast(f, i64t, "fb")
+                    .expect("LLVM builder error")
+                    .into_int_value();
+                let sel = self
+                    .builder
+                    .build_select(is_zero, i64t.const_zero(), bits, "fh")
+                    .expect("LLVM builder error")
+                    .into_int_value();
+                Ok(self.mix64(sel))
+            }
+            Ty::Str => {
+                let f = self.module.get_function("rill_str_hash").unwrap();
+                let call =
+                    self.builder.build_call(f, &[v.into()], "strh").expect("LLVM builder error");
+                Ok(match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(x) => x.into_int_value(),
+                    _ => unreachable!("rill_str_hash returns a number"),
+                })
+            }
+            Ty::Adt(..) => {
+                let f = self.adt_hash(ty, line)?;
+                let call = self.builder.build_call(f, &[v.into()], "h").expect("builder");
+                Ok(match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(x) => x.into_int_value(),
+                    _ => unreachable!("a hash is a number"),
+                })
+            }
+            other => Err(CodegenError::new(
+                line,
+                format!(
+                    "cannot hash a value of type {}, so it cannot be a map key",
+                    mangle_friendly(other, &self.tmod.adts)
+                ),
+            )),
+        }
+    }
+
+    /// The generated structural hash for one concrete ADT type: borrows the
+    /// box and mixes its tag with each field's hash, in the order `eq$T`
+    /// compares them.
+    fn adt_hash(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!("hash${}", mangle(ty, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let (adt, targs) = match ty {
+            Ty::Adt(i, targs) => (*i, targs.clone()),
+            _ => unreachable!("adt_hash on non-ADT"),
+        };
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let i64t = self.ctx.i64_type();
+        // In the module before the body is generated, so a recursive type
+        // reaches this same function instead of generating for ever.
+        let f = self.module.add_function(&name, i64t.fn_type(&[ptrt.into()], false), None);
+        f.set_linkage(inkwell::module::Linkage::Private);
+
+        let saved = self.builder.get_insert_block();
+        let ptr = f.get_nth_param(0).unwrap().into_pointer_value();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        let plain_bb = self.ctx.append_basic_block(f, "hash.tag");
+        self.builder.position_at_end(entry);
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(self.header_struct(), ptr, 1, "tag.ptr")
+            .expect("LLVM builder error");
+        let tag = self
+            .builder
+            .build_load(i64t, tag_ptr, "tag")
+            .expect("LLVM builder error")
+            .into_int_value();
+        let ctors = self.tmod.adts[adt].ctors.clone();
+        let mut cases = Vec::new();
+        for (ci, c) in ctors.iter().enumerate() {
+            if c.fields.is_empty() {
+                continue;
+            }
+            let bb = self.ctx.append_basic_block(f, &format!("hash.{}", c.name));
+            cases.push((i64t.const_int(c.tag, false), bb, ci));
+        }
+        self.builder
+            .build_switch(tag, plain_bb, &cases.iter().map(|(v, b, _)| (*v, *b)).collect::<Vec<_>>())
+            .expect("LLVM builder error");
+
+        // A constructor with no fields is its tag and nothing else.
+        self.builder.position_at_end(plain_bb);
+        let h = self.mix64(tag);
+        self.builder.build_return(Some(&h)).expect("LLVM builder error");
+
+        for (_, bb, ci) in cases {
+            self.builder.position_at_end(bb);
+            let struct_ty = self.ctor_struct(adt, ci, &targs);
+            let mut acc = self.mix64(tag);
+            for (fi, fty) in ctors[ci].fields.clone().iter().enumerate() {
+                let cf = subst_gen(fty, &targs);
+                let fp = self
+                    .builder
+                    .build_struct_gep(struct_ty, ptr, (fi + 2) as u32, "f")
+                    .expect("LLVM builder error");
+                let fv = self
+                    .builder
+                    .build_load(self.llvm_type(&cf).unwrap(), fp, "fv")
+                    .expect("LLVM builder error");
+                let fh = self.gen_hash_of(fv, &cf, line)?;
+                let x = self.builder.build_xor(acc, fh, "mixin").expect("LLVM builder error");
+                acc = self.mix64(x);
+            }
+            self.builder.build_return(Some(&acc)).expect("LLVM builder error");
+        }
+
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(f)
+    }
+
+    /// `i64 (i64, i64)` — hashes a key the table handed back in raw words.
+    fn map_hash_thunk(
+        &mut self,
+        ty: &Ty,
+        line: usize,
+    ) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!("maphash${}", mangle(ty, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let i64t = self.ctx.i64_type();
+        let f = self.module.add_function(&name, i64t.fn_type(&[i64t.into()], false), None);
+        f.set_linkage(inkwell::module::Linkage::Private);
+        let saved = self.builder.get_insert_block();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        let a = f.get_nth_param(0).unwrap().into_int_value();
+        let v = self.unpack_words(a, i64t.const_zero(), ty);
+        let h = self.gen_hash_of(v, ty, line)?;
+        self.builder.build_return(Some(&h)).expect("LLVM builder error");
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(f)
+    }
+
+    /// `i8 (i64, i64, i64, i64)` — the stored key against the wanted one.
+    fn map_eq_thunk(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!("mapeq${}", mangle(ty, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let (i64t, i8t) = (self.ctx.i64_type(), self.ctx.i8_type());
+        let f =
+            self.module.add_function(&name, i8t.fn_type(&[i64t.into(), i64t.into()], false), None);
+        f.set_linkage(inkwell::module::Linkage::Private);
+        let saved = self.builder.get_insert_block();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        let zero = i64t.const_zero();
+        let p: Vec<IntValue> =
+            (0..2).map(|i| f.get_nth_param(i).unwrap().into_int_value()).collect();
+        let a = self.unpack_words(p[0], zero, ty);
+        let b = self.unpack_words(p[1], zero, ty);
+        let eq = self.gen_eq_of(a, b, ty, line)?;
+        let out = self.builder.build_int_z_extend(eq, i8t, "eqb").expect("LLVM builder error");
+        self.builder.build_return(Some(&out)).expect("LLVM builder error");
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(f)
+    }
+
+    /// One step of the reference count on a stored key or value: `void (i64)`
+    /// for a key, `void (i64, i64)` for a value, since a value may be a
+    /// closure and a key may not. For a type that is not counted at all this
+    /// is an empty function, which is what lets the table call it without
+    /// asking first.
+    fn map_rc_thunk(&mut self, ty: &Ty, retain: bool, words: u32) -> FunctionValue<'ctx> {
+        let what = if retain { "maprt" } else { "maprl" };
+        let name = format!("{what}${words}${}", mangle(ty, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return f;
+        }
+        let i64t = self.ctx.i64_type();
+        let params = vec![i64t.into(); words as usize];
+        let f =
+            self.module.add_function(&name, self.ctx.void_type().fn_type(&params, false), None);
+        f.set_linkage(inkwell::module::Linkage::Private);
+        let saved = self.builder.get_insert_block();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        if Self::is_heap(ty) {
+            let a = f.get_nth_param(0).unwrap().into_int_value();
+            let b = if words > 1 {
+                f.get_nth_param(1).unwrap().into_int_value()
+            } else {
+                i64t.const_zero()
+            };
+            let v = self.unpack_words(a, b, ty);
+            if retain {
+                self.emit_retain(v, ty);
+            } else {
+                self.emit_release(v, ty);
+            }
+        }
+        self.builder.build_return(None).expect("LLVM builder error");
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        f
+    }
+
+    /// The constant a table is made with: hashing and comparing a key, and a
+    /// retain and a release apiece for the key and the value. The table is one
+    /// piece of code in the runtime, and this is everything about the two
+    /// types it holds that had to be compiled.
+    fn map_vtable(
+        &mut self,
+        kty: &Ty,
+        vty: &Ty,
+        line: usize,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let name =
+            format!("mapvt${}${}", mangle(kty, &self.tmod.adts), mangle(vty, &self.tmod.adts));
+        if let Some(g) = self.module.get_global(&name) {
+            return Ok(g.as_pointer_value());
+        }
+        // A value takes one word of a slot unless it is a closure, which is
+        // the only Rill value needing its code and its environment. Saying
+        // which here is what keeps an `Int`-to-`Int` entry down to a key and
+        // a value.
+        let vwords = if matches!(vty, Ty::Fn(..)) { 2 } else { 1 };
+        let entries = [
+            self.map_hash_thunk(kty, line)?,
+            self.map_eq_thunk(kty, line)?,
+            self.map_rc_thunk(kty, true, 1),
+            self.map_rc_thunk(kty, false, 1),
+            // Always two words, whatever `vwords` says about storage: the
+            // runtime calls these through a pointer, and wasm checks that an
+            // indirect call's type is the one it was declared with.
+            self.map_rc_thunk(vty, true, 2),
+            self.map_rc_thunk(vty, false, 2),
+        ];
+        let (ptrt, i64t) = (self.ctx.ptr_type(Default::default()), self.ctx.i64_type());
+        let mut fields: Vec<BasicTypeEnum> = vec![ptrt.into(); 6];
+        fields.push(i64t.into());
+        let vt_ty = self.ctx.struct_type(&fields, false);
+        let mut values: Vec<BasicValueEnum> =
+            entries.iter().map(|f| f.as_global_value().as_pointer_value().into()).collect();
+        values.push(i64t.const_int(vwords as u64, false).into());
+        let init = vt_ty.const_named_struct(&values);
+        let g = self.module.add_global(vt_ty, None, &name);
+        g.set_initializer(&init);
+        g.set_linkage(inkwell::module::Linkage::Private);
+        g.set_constant(true);
+        Ok(g.as_pointer_value())
     }
 
     // ---- instances -------------------------------------------------------
@@ -3008,10 +3415,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     ),
                     other => unreachable!("unknown raw-memory builtin width {other}"),
                 };
-                let p = self
-                    .gen_expr(&args[0], scope, subst, func)?
-                    .expect("value")
-                    .into_pointer_value();
+                // The same decay as everywhere else a `Ptr` is wanted, and
+                // the same reason to hold the buffer until the access is over.
+                let (p, keep) = if let TK::BufPtr { buf } = &args[0].kind {
+                    let (b, held) = self.gen_borrowed(buf, scope, subst, func)?;
+                    let data = self.buf_data(b.into_pointer_value());
+                    (data, if held { Some((b, self.concrete(&buf.ty, subst))) } else { None })
+                } else {
+                    (
+                        self.gen_expr(&args[0], scope, subst, func)?
+                            .expect("value")
+                            .into_pointer_value(),
+                        None,
+                    )
+                };
                 let i = self
                     .gen_expr(&args[1], scope, subst, func)?
                     .expect("value")
@@ -3042,6 +3459,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     };
                     let st = self.builder.build_store(slot, narrowed).expect("LLVM builder error");
                     st.set_alignment(1).expect("store takes an alignment");
+                    if let Some((b, ty)) = keep {
+                        self.emit_release(b, &ty);
+                    }
                     return Ok(None);
                 }
                 let got = self.builder.build_load(elem, slot, "peek").expect("LLVM builder error");
@@ -3068,6 +3488,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         .into(),
                     _ => got,
                 };
+                if let Some((b, ty)) = keep {
+                    self.emit_release(b, &ty);
+                }
                 Ok(Some(out))
             }
             // `#s` and `s[i]`. A string is `{ i64 rc, i64 len, bytes… }`, so
@@ -3162,6 +3585,21 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let mut owned: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
                 for a in args {
                     let ty = self.concrete(&a.ty, subst);
+                    // A buffer written where a `Ptr` is wanted goes in as its
+                    // first element's address, and the buffer itself has to
+                    // outlive the call — so one made for this call is released
+                    // after it rather than before. That is the difference
+                    // between an address into memory the callee is reading and
+                    // an address into a free list.
+                    if let TK::BufPtr { buf } = &a.kind {
+                        let (b, held) = self.gen_borrowed(buf, scope, subst, func)?;
+                        let data = self.buf_data(b.into_pointer_value());
+                        argv.push(data.into());
+                        if held {
+                            owned.push((b, self.concrete(&buf.ty, subst)));
+                        }
+                        continue;
+                    }
                     // The runtime borrows what it is passed, so a local goes
                     // in as it stands.
                     let (v, held) = self.gen_borrowed(a, scope, subst, func)?;
@@ -3317,10 +3755,164 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 Ok(None)
             }
+            // One field of a box, by the position its name has. The box is
+            // borrowed — a name in scope is not given up by being read — and
+            // what comes out is retained, since the caller owns what it holds.
+            TK::FieldGet { base, adt, ctor, index } => {
+                let bty = self.concrete(&base.ty, subst);
+                let targs = match &bty {
+                    Ty::Adt(_, targs) => targs.clone(),
+                    other => unreachable!("field of {other:?}"),
+                };
+                let (b, owned) = self.gen_borrowed(base, scope, subst, func)?;
+                let struct_ty = self.ctor_struct(*adt, *ctor, &targs);
+                let fty = subst_gen(&self.tmod.adts[*adt].ctors[*ctor].fields[*index], &targs);
+                let fp = self
+                    .builder
+                    .build_struct_gep(struct_ty, b.into_pointer_value(), (*index + 2) as u32, "f")
+                    .expect("LLVM builder error");
+                let v = self
+                    .builder
+                    .build_load(self.llvm_type(&fty).expect("a field is never Unit"), fp, "fv")
+                    .expect("LLVM builder error");
+                self.emit_retain(v, &fty);
+                if owned {
+                    self.emit_release(b, &bty);
+                }
+                Ok(Some(v))
+            }
+            TK::MapNew => {
+                let (kty, vty) = {
+                    let mty = self.concrete(&e.ty, subst);
+                    self.map_kv(&mty, e.line)?
+                };
+                let vt = self.map_vtable(&kty, &vty, e.line)?;
+                let f = self.module.get_function("rill_map_new").unwrap();
+                let call = self.builder.build_call(f, &[vt.into()], "map").expect("builder");
+                Ok(match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Some(v),
+                    _ => unreachable!("rill_map_new returns a pointer"),
+                })
+            }
+            // The key and the value are moved into the table, exactly as a
+            // value sent down a channel is: what the frame owned, the table
+            // owns now.
+            TK::MapSet { map, key, val } => {
+                let mty = self.concrete(&map.ty, subst);
+                let (kty, vty) = self.map_kv(&mty, e.line)?;
+                let (m, owned) = self.gen_borrowed(map, scope, subst, func)?;
+                let kv = self.gen_expr(key, scope, subst, func)?.expect("value");
+                let vv = self.gen_expr(val, scope, subst, func)?.expect("value");
+                let (k0, _) = self.pack_words(kv, &kty);
+                let (v0, v1) = self.pack_words(vv, &vty);
+                self.call_rt("rill_map_set", &[m.into(), k0.into(), v0.into(), v1.into()]);
+                if owned {
+                    self.emit_release(m, &mty);
+                }
+                Ok(None)
+            }
+            // A lookup only borrows its key, so one that was made for the
+            // call is released after it.
+            TK::MapFind { map, key } | TK::MapDel { map, key } => {
+                let deleting = matches!(&e.kind, TK::MapDel { .. });
+                let mty = self.concrete(&map.ty, subst);
+                let (kty, _) = self.map_kv(&mty, e.line)?;
+                let (m, owned) = self.gen_borrowed(map, scope, subst, func)?;
+                let (kv, kowned) = self.gen_borrowed(key, scope, subst, func)?;
+                let (k0, _) = self.pack_words(kv, &kty);
+                let rt = if deleting { "rill_map_del" } else { "rill_map_find" };
+                let call = self.call_rt(rt, &[m.into(), k0.into()]);
+                let raw = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+                    _ => unreachable!("both answer with a number"),
+                };
+                if kowned {
+                    self.emit_release(kv, &kty);
+                }
+                if owned {
+                    self.emit_release(m, &mty);
+                }
+                if !deleting {
+                    return Ok(Some(raw.into()));
+                }
+                let out = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        raw,
+                        self.ctx.i8_type().const_zero(),
+                        "was",
+                    )
+                    .expect("LLVM builder error");
+                Ok(Some(out.into()))
+            }
+            TK::MapLen { map } | TK::MapClear { map } => {
+                let clearing = matches!(&e.kind, TK::MapClear { .. });
+                let mty = self.concrete(&map.ty, subst);
+                let (m, owned) = self.gen_borrowed(map, scope, subst, func)?;
+                let call = self
+                    .call_rt(if clearing { "rill_map_clear" } else { "rill_map_len" }, &[m.into()]);
+                let out = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Some(v),
+                    _ => None,
+                };
+                if owned {
+                    self.emit_release(m, &mty);
+                }
+                Ok(out)
+            }
+            TK::MapNext { map, from: idx }
+            | TK::MapKeyAt { map, idx }
+            | TK::MapValAt { map, idx } => {
+                let mty = self.concrete(&map.ty, subst);
+                let (kty, vty) = self.map_kv(&mty, e.line)?;
+                let (m, owned) = self.gen_borrowed(map, scope, subst, func)?;
+                let i = self.gen_expr(idx, scope, subst, func)?.expect("value");
+                let rt = match &e.kind {
+                    TK::MapNext { .. } => "rill_map_next",
+                    TK::MapKeyAt { .. } => "rill_map_key_at",
+                    _ => "rill_map_val_at",
+                };
+                let call = self.call_rt(rt, &[m.into(), i.into()]);
+                let got = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => unreachable!("all three answer with something"),
+                };
+                // A slot number is a number; a key or a value comes back in
+                // the same two words everything else travels in, and comes
+                // back owned — the table retained it before letting go.
+                let out = if matches!(&e.kind, TK::MapNext { .. }) {
+                    got
+                } else if let TK::MapKeyAt { .. } = &e.kind {
+                    // A key is one word by construction: what may be a key is
+                    // what has structural equality, and a closure — the only
+                    // value needing two — has none.
+                    let w = got.into_int_value();
+                    self.unpack_words(w, self.ctx.i64_type().const_zero(), &kty)
+                } else {
+                    let words = got.into_struct_value();
+                    let w0 = self
+                        .builder
+                        .build_extract_value(words, 0, "w0")
+                        .expect("LLVM builder error")
+                        .into_int_value();
+                    let w1 = self
+                        .builder
+                        .build_extract_value(words, 1, "w1")
+                        .expect("LLVM builder error")
+                        .into_int_value();
+                    self.unpack_words(w0, w1, &vty)
+                };
+                if owned {
+                    self.emit_release(m, &mty);
+                }
+                Ok(Some(out))
+            }
             TK::CallExtern { name, args } => {
                 let sig = self.tmod.externs[name].clone();
                 let callee = self.module.get_function(name).expect("declared above");
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
+                let mut owned: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
                 for (a, pt) in args.iter().zip(&sig.params) {
                     // A callback does not evaluate to a value C can hold: the
                     // named function is wrapped in a C-ABI trampoline and it
@@ -3328,6 +3920,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     if let CTy::Fn(cps, cret) = pt {
                         let trampoline = self.gen_callback(a, cps, cret, subst)?;
                         argv.push(trampoline.as_global_value().as_pointer_value().into());
+                        continue;
+                    }
+                    // A buffer decays to its address here, and stays alive
+                    // until C is done with it: released after the call, not
+                    // before. `strlen(buf_u8(8))` is the shape that needs it.
+                    if let TK::BufPtr { buf } = &a.kind {
+                        let (b, held) = self.gen_borrowed(buf, scope, subst, func)?;
+                        let data = self.buf_data(b.into_pointer_value());
+                        argv.push(data.into());
+                        if held {
+                            owned.push((b, self.concrete(&buf.ty, subst)));
+                        }
                         continue;
                     }
                     let v = self.gen_expr(a, scope, subst, func)?.expect("value");
@@ -3339,6 +3943,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,
                 };
+                for (v, ty) in owned {
+                    self.emit_release(v, &ty);
+                }
                 Ok(out.map(|v| self.from_c(v, &sig.ret)))
             }
             TK::MethodCall { trait_id, method, recv, args } => {
@@ -4524,12 +5131,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .enumerate()
             .map(|(i, a)| Row { pats: vec![a.pattern.clone()], arm: i })
             .collect();
-        let tree = self.build_tree(vec![Vec::new()], vec![scrut_ty.clone()], rows);
+        let guarded: Vec<bool> = arms.iter().map(|a| a.guard.is_some()).collect();
+        let tree = self.build_tree_guarded(
+            vec![Vec::new()],
+            vec![scrut_ty.clone()],
+            rows,
+            &guarded,
+        );
 
         let arm_blocks: Vec<BasicBlock<'ctx>> = (0..arms.len())
             .map(|i| self.ctx.append_basic_block(func, &format!("arm{i}")))
             .collect();
-        self.emit_tree(&tree, scrut, &scrut_ty, &arm_blocks, func);
+        self.emit_tree(&tree, scrut, &scrut_ty, &arm_blocks, func, arms, scope, subst)?;
 
         let saved_cleanup = self.cleanup.clone();
         let mut incoming: Vec<(Option<BasicValueEnum<'ctx>>, BasicBlock<'ctx>)> = Vec::new();
@@ -4613,11 +5226,31 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     fn build_tree(&self, occs: Vec<Occ>, tys: Vec<Ty>, rows: Vec<Row>) -> Tree {
+        self.build_tree_guarded(occs, tys, rows, &[])
+    }
+
+    /// `guarded[i]` says whether arm `i` has a condition after its pattern.
+    /// An empty slice is a match with none, which is nearly all of them.
+    fn build_tree_guarded(
+        &self,
+        occs: Vec<Occ>,
+        tys: Vec<Ty>,
+        rows: Vec<Row>,
+        guarded: &[bool],
+    ) -> Tree {
         if rows.is_empty() {
             return Tree::Fail;
         }
         if rows[0].pats.iter().all(is_wild) {
-            return Tree::Leaf(rows[0].arm);
+            let arm = rows[0].arm;
+            if !guarded.get(arm).copied().unwrap_or(false) {
+                return Tree::Leaf(arm, None);
+            }
+            // Guarded: if the condition is false the value is still to be
+            // matched, against everything written below this arm.
+            let rest = rows[1..].to_vec();
+            let fallback = self.build_tree_guarded(occs, tys, rest, guarded);
+            return Tree::Leaf(arm, Some(Box::new(fallback)));
         }
         // Test the leftmost column the first row actually constrains.
         let col = rows[0].pats.iter().position(|p| !is_wild(p)).expect("row is not all wildcards");
@@ -4677,7 +5310,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             let mut next_tys = sub_tys;
             next_tys.extend_from_slice(&tys[1..]);
             let next_rows = specialize(&rows, h, arity, |p| self.pat_head(p));
-            cases.push((tag, self.build_tree(next_occs, next_tys, next_rows)));
+            cases.push((tag, self.build_tree_guarded(next_occs, next_tys, next_rows, guarded)));
         }
 
         let complete = match &col_ty {
@@ -4695,7 +5328,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .filter(|r| is_wild(&r.pats[0]))
                 .map(|r| Row { pats: r.pats[1..].to_vec(), arm: r.arm })
                 .collect();
-            Some(Box::new(self.build_tree(occs[1..].to_vec(), tys[1..].to_vec(), rest_rows)))
+            Some(Box::new(self.build_tree_guarded(
+                occs[1..].to_vec(),
+                tys[1..].to_vec(),
+                rest_rows,
+                guarded,
+            )))
         };
 
         Tree::Switch { occ, on_int, cases, default }
@@ -4732,6 +5370,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         (val, ty)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_tree(
         &mut self,
         tree: &Tree,
@@ -4739,12 +5378,45 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         root_ty: &Ty,
         arm_blocks: &[BasicBlock<'ctx>],
         func: FunctionValue<'ctx>,
-    ) {
+        arms: &[TArm],
+        scope: &Scope<'ctx>,
+        subst: &[Ty],
+    ) -> Result<(), CodegenError> {
         match tree {
-            Tree::Leaf(k) => {
+            Tree::Leaf(k, fallback) => {
+                let Some(guard) = arms[*k].guard.as_ref() else {
+                    self.builder
+                        .build_unconditional_branch(arm_blocks[*k])
+                        .expect("LLVM builder error");
+                    return Ok(());
+                };
+                // The guard is asked here rather than in the arm's own block,
+                // because a false one has somewhere else to go. Its bindings
+                // are borrowed out of the box exactly as the arm's are.
+                let mut guard_scope = scope.clone();
+                let mut binds = Vec::new();
+                collect_bindings(&arms[*k].pattern, Vec::new(), &self.tmod.ctors, &mut binds);
+                for (name, occ) in &binds {
+                    let (v, _) = self.value_at(root.expect("value"), root_ty, occ);
+                    guard_scope.insert(name.clone(), Some(v));
+                }
+                let cond = self
+                    .gen_expr(guard, &mut guard_scope, subst, func)?
+                    .expect("a guard is a Bool")
+                    .into_int_value();
+                let else_bb = self.ctx.append_basic_block(func, "guard.else");
                 self.builder
-                    .build_unconditional_branch(arm_blocks[*k])
+                    .build_conditional_branch(cond, arm_blocks[*k], else_bb)
                     .expect("LLVM builder error");
+                self.builder.position_at_end(else_bb);
+                match fallback {
+                    Some(t) => {
+                        self.emit_tree(t, root, root_ty, arm_blocks, func, arms, scope, subst)?
+                    }
+                    None => {
+                        self.builder.build_unreachable().expect("LLVM builder error");
+                    }
+                }
             }
             Tree::Fail => {
                 self.builder.build_unreachable().expect("LLVM builder error");
@@ -4779,17 +5451,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .expect("LLVM builder error");
                 for ((_, sub), bb) in cases.iter().zip(&blocks) {
                     self.builder.position_at_end(*bb);
-                    self.emit_tree(sub, root, root_ty, arm_blocks, func);
+                    self.emit_tree(sub, root, root_ty, arm_blocks, func, arms, scope, subst)?;
                 }
                 self.builder.position_at_end(default_bb);
                 match default {
-                    Some(d) => self.emit_tree(d, root, root_ty, arm_blocks, func),
+                    Some(d) => {
+                        self.emit_tree(d, root, root_ty, arm_blocks, func, arms, scope, subst)?
+                    }
                     None => {
                         self.builder.build_unreachable().expect("LLVM builder error");
                     }
                 }
             }
         }
+        Ok(())
     }
 
     /// Joins N (value, predecessor-block) pairs with a merge block and a phi.

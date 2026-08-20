@@ -1,5 +1,180 @@
 # Changelog
 
+## Unreleased — a loop inside a loop counted the wrong one
+
+- **Nested `for` loops were wrong, and had been since `for` existed.** Both
+  the end of the range and the loop function it expands to were named the same
+  thing every time — `for.hi` and `for` — so an inner loop's end answered for
+  the outer one's: `for i in 0..3` around `for j in 0..5` ran the outer body
+  five times, and every count above it was wrong by whatever the inner loop
+  said. Each loop takes its names from the same pool the lifted functions use
+  now, so each is its own. Three levels deep, `with` inside plain, and two
+  loops both counting with `i` all give the answers they read as.
+- `examples/loops.rill` gained the `for` form it never had and the nested
+  loop that would have caught this, and stopped saying Rill has no `for`.
+
+## Unreleased — guards
+
+An arm can say what a pattern cannot.
+
+- **`pattern if cond ->`**: the arm is taken when the pattern matches and the
+  condition holds, and a false one falls through to the arms below — which the
+  value is then matched against as though the guarded arm were not written.
+- **A guarded arm covers nothing.** `Cons(x, _) if x > 0` leaves `Cons(_, _)`
+  to be answered, and a match that does not answer it is not exhaustive; the
+  checker names the case as it always did. The other side of the same rule:
+  nothing below a guarded arm becomes unreachable, while an unguarded arm above
+  still makes things unreachable.
+- **The decision tree keeps its shape.** A guarded leaf carries what to do when
+  the condition is false — the rest of the match, built in the same value
+  context — so an unguarded match compiles exactly as it did, and a guarded one
+  pays by testing the arms below it again rather than by going linear. A guard
+  is asked at the leaf, with the pattern's bindings borrowed out of the box the
+  way the arm's own are, which is what keeps a tail call in a guarded arm a
+  tail call: two million of them run in constant stack.
+- `examples/patterns.rill` gained three functions and the sentence that goes
+  with them.
+
+## Unreleased — fields have names, and names can be read
+
+A constructor's fields could always carry names — `P(x: Int, y: Int)` says
+which number is which — and nothing but a human reader could use them. They
+are a read now.
+
+- **`p.x`**, on any type with a single constructor. That is the whole
+  condition, and it is the one a binding already had: `P(x, y) = p` reads as a
+  binding because it cannot fail, and `p.x` for the same reason. A type with
+  several constructors has no field that is certainly there, and the error says
+  so, naming them.
+- **Anywhere, not only on a name.** `mk(1).y`, `p.pos.x`, `find(n)?.y`. A dot
+  written against a name is still part of that name as far as the lexer is
+  concerned — `geo.area` is one too — and the checker tells a module alias from
+  a value with fields; a dot after anything else is a token of its own now,
+  which is what makes `f(x).y` parse.
+- **A field is read, never written.** `p.x = 3` used to parse as a binding
+  called `p.x` and quietly shadow nothing at all; it is refused now, and says
+  what to do instead: build the record you want, which is what changing a value
+  means.
+- **The one thing it asks** is that the type be known where the dot is written.
+  Inference does not work backwards from a field name — two types may both have
+  an `x` — so a parameter read this way is annotated, and the error names it.
+- `examples/records.rill` is a player, a position inside it, and the four
+  lines that make a hurt one; `CtorSig` keeps field names for it.
+
+## Unreleased — `?`
+
+Errors are `Result` values and always were. What that cost was a `match` per
+call, two of whose three lines were the same two lines every time.
+
+- **`e?` is the value inside the `Ok`, or else the whole function's `Err`.** It
+  is a `match` and nothing else: `lift` takes the rest of the block as the `Ok`
+  arm and adds `Err(e) -> Err(e)`, before the checker sees the program. Nothing
+  is added at run time, an error travels no further than it did, and a tail
+  call written after a `?` is still a tail call — two million of them run in
+  constant stack.
+- **Anywhere in an expression.** `number(field(text, "port")?)?` names the
+  inner result first, in the order the expression evaluates. A statement of its
+  own (`field(text, "host")?`) and a binding that takes the value apart
+  (`(a, b) = pair()?`) work too.
+- **One rule, and it is the one the desugaring implies**: a `?` belongs where
+  the block it is in is what the function returns, since that is the door its
+  `Err` leaves by. In a branch or an arm that *is* the function's answer, it
+  works. Written where the block is worth something else, the error names that
+  something else — the generated `match` never appears in a message, because a
+  program that did not write it should not have to read it.
+- **On anything but a `Result`**, the error says what to write instead:
+  `match` on an `Option`, or `unwrap_or` for a default. There is no `From`
+  conversion between error types either, and none is wanted: `Err(e) -> Err(e)`
+  carries the same value out.
+- `examples/results.rill` is the whole of it — a four-step parse where every
+  step can fail, the failures coming out of the middle with nothing written to
+  carry them. And `examples/showcase.rill`'s interpreter lost its `eval2`: the
+  five lines that evaluated both sides of a binary operator and passed the
+  first error along are three now, and print what they always printed.
+
+## Unreleased — a buffer is its address where C wants one
+
+`buf_data(b)` said the same thing at fifty call sites: *the first element's
+address*. It is now what handing the buffer over means.
+
+- **A `Buf` decays to a `Ptr` where one is wanted** — a foreign parameter, a
+  `peek` or a `poke`, a Rill parameter annotated `Ptr`. This is C's own rule
+  for an array, and it is the only place in the language where a value is not
+  the type it was written as. `glGetShaderiv(sh, status_name(), status)` reads
+  the way the C does, and `status[0]` reads it back.
+- **`buf_data` is gone**, and the fifty calls to it with it. Nothing else
+  changed at those sites: the buffer stays counted, stays the caller's, and
+  the address it lends is still only good for the call.
+- **A buffer built in the argument no longer dangles.** `strlen(buf_u8(4))`
+  used to hand C an address and release the buffer before the call — the block
+  went back to the pool with C still reading it. A buffer decayed at a call is
+  released *after* the call now, which is the only reason the shorter spelling
+  is safe to encourage. `examples/cocoa/cocoa.rill` had a comment warning
+  about exactly this; `frame_of` hands back the buffer instead of a pointer
+  into it, and the warning is gone.
+- The one thing decay does not do is make a buffer a pointer anywhere else: a
+  binding, a branch, a data field and a channel all still say which they hold.
+
+## Unreleased — hash tables
+
+Rill could look a thing up by walking a list or by keeping a sorted tree, and
+both are in `examples/showcase.rill` because there was nothing else. `Map(k, v)`
+is the thing that was missing: open addressing, linear probing, and a key type
+the compiler works the hashing out for.
+
+- **`Map(k, v)`**, the second thing in the language that is storage rather than
+  a value. `map_new()` makes one, `m[k] = v` inserts or replaces, `m[k]` answers
+  `Some(v)` or `None` — a key may not be there, and absence is an `Option` here
+  as it is everywhere else — `#m` is how many entries, and `map_del`,
+  `map_has`, `map_or`, `map_keys`, `map_values`, `map_items`, `map_of` and
+  `map_clear` are the rest of it. Both type arguments are inferred; unlike a
+  buffer's width they are ordinary types.
+- **Any value type is a key.** A number, a string, a tuple, a data type, nested
+  as deep as it likes. The compiler generates `hash$T` beside the `eq$T` it
+  already generated, walking the same fields in the same order — which is what
+  makes the two agree. A function or a channel is refused where the key is
+  written, not somewhere later.
+- **One table for every instantiation.** The probing loop is in the runtime and
+  knows nothing about what it holds; what it cannot know — hashing a key,
+  comparing two, counting a key's and a value's references, and how wide a
+  value is — is compiled per instantiation into a constant vtable beside the
+  program.
+- **Seventeen bytes an entry.** One control byte says whether a slot holds
+  anything and, if it does, carries seven bits of the key's hash; the key and
+  the value are sixteen more, side by side. A probe walks the control bytes —
+  two megabytes for two million slots, which stays in cache while the slots
+  cannot — and touches a slot once, for the one key it believes it has found.
+  A key is one word, because what has structural equality fits in one; a value
+  is one too unless it is a closure, which is the only Rill value needing its
+  code and its environment, and which of the two comes from the vtable. Not
+  keeping the whole hash costs a rehash of every key when the table grows,
+  which is about a tenth of the time it takes to fill one.
+- **Counted like a string.** What a table holds is released when the table is,
+  including the entries a `map_del` or a `map_clear` drops. Every map program in
+  the tests ends on `live allocations: 0`, including one that inserts, deletes
+  and reinserts five hundred keys.
+- **Ahead of Go's map on all three.** A million `Int` keys: 26 ms to insert
+  against Go's 61, 22 ms to read back against Go's 23, peaking at 73 MB against
+  Go's 85, on an M4. Half a million `Str` keys, string building included: 28 ms
+  against 58, 20 ms against 37, 53 MB against 67. `map_or(m, k, d)` is the read
+  for a hot loop — `unwrap_or(m[k], 0)` builds a `Some` to take apart again and
+  costs about a third more.
+- **Two errors say what to do.** `println(m)` is refused like a buffer, and
+  points at `map_items(m)`. `m[k] += 1` expands to `m[k] = m[k] + 1`, where an
+  `Option` meets a number — the message names `unwrap_or(m[k], 0)` rather than
+  leaving `Option(Int)` against `Int` to be worked out.
+- **wasm found an ABI sloppiness native had tolerated.** A vtable's value
+  retain and release are called through a pointer, so they take two words
+  whatever the value is stored in — an extra argument a native call ignores is
+  a signature mismatch to wasm, and traps. Both are two words now, and the
+  first `wasm32-wasip1` build of `examples/maps.rill` printed what the native
+  one does.
+- Codegen's own type substitution never looked inside a `Chan(a)`, so a
+  generic function taking one was monomorphized with the element type left as a
+  parameter. Nothing had ever depended on it — releasing a channel is the same
+  whatever it carries — but a map's key type decides how the key is hashed, and
+  found it at once. Both shapes substitute now.
+
 ## 0.4.0 — a valley with other people in it
 
 The release where a Rill program was handed to strangers. `examples/webgpu/world`

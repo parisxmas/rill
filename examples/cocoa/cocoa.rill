@@ -371,13 +371,12 @@ fn progress_bar(x, y, w, h) =
   send_d(p, sel("setMaxValue:"), 1000.0)
   p
 
-# x, y, width, height — four doubles, in that order. The result points into
-# `out`, so `out` has to be a binding that outlives the reading: handing this
-# a buffer built in the argument itself leaves the pointer dangling, because
-# the buffer is released when this returns.
+# x, y, width, height — four doubles, in that order. AppKit writes them into
+# `out`, which is handed back so that reading them keeps the buffer alive:
+# a count, rather than a promise about where the pointer came from.
 fn frame_of(v, out: Buf(U8)) =
-  send_pi(send_p(v, sel("valueForKey:"), nsstr("frame")), sel("getValue:size:"), buf_data(out), 32)
-  buf_data(out)
+  send_pi(send_p(v, sel("valueForKey:"), nsstr("frame")), sel("getValue:size:"), out, 32)
+  out
 
 fn set_frame(v, x, y, w, h) =
   send_4d(v, sel("setFrame:"), x, y, w, h)

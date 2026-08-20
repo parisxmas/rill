@@ -18,10 +18,10 @@ fn height() = 24
 # A renderbuffer to draw into, and a framebuffer to hang it on.
 fn attach_target() =
   fbo = buf_u32(1)
-  glGenFramebuffers(1, buf_data(fbo))
+  glGenFramebuffers(1, fbo)
   glBindFramebuffer(gl_framebuffer(), buf_get(fbo, 0))
   rbo = buf_u32(1)
-  glGenRenderbuffers(1, buf_data(rbo))
+  glGenRenderbuffers(1, rbo)
   glBindRenderbuffer(gl_renderbuffer(), buf_get(rbo, 0))
   glRenderbufferStorage(gl_renderbuffer(), gl_rgba8(), width(), height())
   glFramebufferRenderbuffer(gl_framebuffer(), gl_color_attachment0(), gl_renderbuffer(), buf_get(rbo, 0))
@@ -46,7 +46,7 @@ fn print_from(px: Buf(U8), y) =
 
 fn read_and_print() =
   px = buf_u8(width() * height() * 4)
-  glReadPixels(0, 0, width(), height(), gl_rgba(), gl_unsigned_byte(), buf_data(px))
+  glReadPixels(0, 0, width(), height(), gl_rgba(), gl_unsigned_byte(), px)
   print_from(px, height() - 1)
 
 fn main() =

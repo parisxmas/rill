@@ -222,17 +222,17 @@ fn free_source_array(arr: Buf(Ptr)) = free_ptr(buf_get(arr, 0))
 # is a symbol rather than a value, so each one gets its own reader.
 fn gen_vertex_array() =
   out = buf_u32(1)
-  glGenVertexArrays(1, buf_data(out))
+  glGenVertexArrays(1, out)
   buf_get(out, 0)
 
 fn gen_texture() =
   out = buf_u32(1)
-  glGenTextures(1, buf_data(out))
+  glGenTextures(1, out)
   buf_get(out, 0)
 
 fn gen_buffer() =
   out = buf_u32(1)
-  glGenBuffers(1, buf_data(out))
+  glGenBuffers(1, out)
   buf_get(out, 0)
 
 fn with_cstr(s, use_it) =
@@ -243,13 +243,13 @@ fn with_cstr(s, use_it) =
 
 fn shader_log(sh) =
   buf = buf_u8(1024)
-  glGetShaderInfoLog(sh, 1024, null_ptr(), buf_data(buf))
-  from_cstr(buf_data(buf))
+  glGetShaderInfoLog(sh, 1024, null_ptr(), buf)
+  from_cstr(buf)
 
 fn program_log(prog) =
   buf = buf_u8(1024)
-  glGetProgramInfoLog(prog, 1024, null_ptr(), buf_data(buf))
-  from_cstr(buf_data(buf))
+  glGetProgramInfoLog(prog, 1024, null_ptr(), buf)
+  from_cstr(buf)
 
 # Rill has no bottom type, so a function that never returns still has to
 # return something: `fallback` is that value, and naming it at the call site
@@ -264,11 +264,11 @@ fn fail(what, detail, fallback) =
 fn compile_shader(kind, src) =
   sh = glCreateShader(kind)
   arr = source_array(src)
-  glShaderSource(sh, 1, buf_data(arr), null_ptr())
+  glShaderSource(sh, 1, arr, null_ptr())
   glCompileShader(sh)
   free_source_array(arr)
   status = buf_i32(1)
-  glGetShaderiv(sh, gl_compile_status(), buf_data(status))
+  glGetShaderiv(sh, gl_compile_status(), status)
   ok = buf_get(status, 0)
   if ok == 1 then sh else fail("shader", shader_log(sh), 0)
 
@@ -278,7 +278,7 @@ fn compile_shader(kind, src) =
 fn link_checked(prog, what) =
   glLinkProgram(prog)
   status = buf_i32(1)
-  glGetProgramiv(prog, gl_link_status(), buf_data(status))
+  glGetProgramiv(prog, gl_link_status(), status)
   ok = buf_get(status, 0)
   # The two shaders have done their work by now: linking copies what it needs
   # out of them. Detached and deleted here, the program owns nothing but
@@ -291,7 +291,7 @@ fn link_checked(prog, what) =
 fn shed_shaders(prog) =
   got = buf_i32(1)
   names = buf_u32(8)
-  glGetAttachedShaders(prog, 8, buf_data(got), buf_data(names))
+  glGetAttachedShaders(prog, 8, got, names)
   shed_each(prog, names, buf_get(got, 0), 0)
 
 fn shed_each(prog, names: Buf(U32), n, i) =
@@ -310,19 +310,19 @@ fn shed_one(prog, names: Buf(U32), n, i) =
 fn drop_vao(v) =
   one = buf_u32(1)
   buf_set(one, 0, v)
-  glDeleteVertexArrays(1, buf_data(one))
+  glDeleteVertexArrays(1, one)
   0
 
 fn drop_vbo(v) =
   one = buf_u32(1)
   buf_set(one, 0, v)
-  glDeleteBuffers(1, buf_data(one))
+  glDeleteBuffers(1, one)
   0
 
 fn drop_tex(v) =
   one = buf_u32(1)
   buf_set(one, 0, v)
-  glDeleteTextures(1, buf_data(one))
+  glDeleteTextures(1, one)
   0
 
 fn drop_prog(v) =

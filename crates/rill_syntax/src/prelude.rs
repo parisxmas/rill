@@ -143,7 +143,8 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
                 collect_expr_names(a, out);
             }
         }
-        Expr::Len { expr, .. } => collect_expr_names(expr, out),
+        Expr::Len { expr, .. } | Expr::Try { expr, .. } => collect_expr_names(expr, out),
+        Expr::Field { base, .. } => collect_expr_names(base, out),
         Expr::Slice { base, from, to, .. } => {
             collect_expr_names(base, out);
             if let Some(f) = from {
@@ -189,6 +190,9 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             collect_expr_names(scrutinee, out);
             for arm in arms {
                 collect_pattern_names(&arm.pattern, out);
+                if let Some(g) = &arm.guard {
+                    collect_expr_names(g, out);
+                }
                 collect_expr_names(&arm.body, out);
             }
         }

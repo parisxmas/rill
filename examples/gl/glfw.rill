@@ -140,7 +140,7 @@ fn glfw_place(win, mode, w, h) =
 # or a move to a different display both just work.
 fn glfw_fit_viewport(win) =
   wh = buf_i32(2)
-  glfwGetFramebufferSize(win, buf_data(wh), ptr_offset(buf_data(wh), 4))
+  glfwGetFramebufferSize(win, wh, ptr_offset(wh, 4))
   glViewport(0, 0, buf_get(wh, 0), buf_get(wh, 1))
 
 # ---- filling the screen, and giving it back --------------------------------

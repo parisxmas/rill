@@ -121,8 +121,6 @@ fn push_sample(d, main, second) =
 # drawing right *during* a resize: AppKit runs its own loop while a corner is
 # being dragged, and nothing of ours gets to run until it lets go.
 fn plot_draw(this, cmd, x, y, w, h) =
-  # The buffer is bound rather than built in the call: `frame_of` answers with
-  # a pointer into it, and a temporary would already have been released.
   b = buf_u8(32)
   f = frame_of(this, b)
   strip(bytes_of(kept(this, "hist")), peek_f64(f, 2), peek_f64(f, 3))

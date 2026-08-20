@@ -31,12 +31,12 @@ fn cgl_core_pixel_format() =
   buf_set(attrs, 4, 0)
   # Two out-parameters: the pixel format handle, and how many matched.
   out = buf_ptr(2)
-  err = CGLChoosePixelFormat(buf_data(attrs), buf_data(out), ptr_offset(buf_data(out), 8))
+  err = CGLChoosePixelFormat(attrs, out, ptr_offset(out, 8))
   pix = buf_get(out, 0)
   if err == 0 then pix else fail("CGLChoosePixelFormat", int_to_str(err), null_ptr())
 
 fn cgl_create_context(pix) =
   out = buf_ptr(1)
-  err = CGLCreateContext(pix, null_ptr(), buf_data(out))
+  err = CGLCreateContext(pix, null_ptr(), out)
   ctx = buf_get(out, 0)
   if err == 0 then ctx else fail("CGLCreateContext", int_to_str(err), null_ptr())

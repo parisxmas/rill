@@ -39,6 +39,6 @@ export fn frame(t: Float) =
   corner(v, 0, t)
   corner(v, 1, t)
   corner(v, 2, t)
-  gpu_triangle(buf_data(v), 3)
+  gpu_triangle(v, 3)
 
 fn main() = println("rill webgpu demo ready")
