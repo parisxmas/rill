@@ -60,7 +60,17 @@
     n = normalize(vec3f(n.x - n.z * slope, n.y, n.z + n.x * slope));
 
     // Into the world: yaw about Y, then the shark's own position.
-    let yaw = u.shark.x;
+    //
+    // Half a circle is added on the way in, and it is not a fudge. The world
+    // moves the animal toward `(sin hd, cos hd)`, and this rotation carries the
+    // model's +Z onto exactly that — but +Z is the tail. The head is at -Z:
+    // 1,600 of the model's 2,396 vertices are in the front eighth of it, which
+    // is the jaw, the teeth and the eyes, against 120 in the back eighth, which
+    // is a caudal fin a seventh as wide and twice as tall. Without the turn the
+    // shark swam at people tail first — so the beat that runs down its length
+    // was leading, which reads as an animal that is not swimming at all, and
+    // the only part of it that ever reached anybody was the tail.
+    let yaw = u.shark.x + 3.14159265;
     let c = cos(yaw); let sn = sin(yaw);
     let p = vec3f(m.x * c + m.z * sn, m.y, -m.x * sn + m.z * c) + u.sharkAt.xyz;
     let nw = vec3f(n.x * c + n.z * sn, n.y, -n.x * sn + n.z * c);
