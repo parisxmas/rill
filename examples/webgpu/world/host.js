@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=277";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=277";
+import { load } from "./world.js?v=278";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=278";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=277";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "277";
+const V = "278";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1304,6 +1304,29 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     ensureAudio(() => playAt(shotBuf, 0, 0, 0.55 + Math.random() * 0.12, 0,
                              0.97 + Math.random() * 0.06));
   }
+  // A hammer falling on nothing. Not a sample: it is thirty milliseconds of
+  // noise with no tail, and a file for that would be mostly silence and one
+  // more thing to fetch. Quiet, because it is the sound of an absence — loud
+  // enough to say the trigger was heard and not loud enough to be mistaken for
+  // something happening.
+  function dryClick() {
+    ensureAudio(() => {
+      const n = Math.floor(audio.sampleRate * 0.03);
+      const buf = audio.createBuffer(1, n, audio.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 9);
+      const src = audio.createBufferSource();
+      src.buffer = buf;
+      const bp = audio.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = 2200;
+      bp.Q.value = 1.4;
+      const g = audio.createGain();
+      g.gain.value = 0.22;
+      src.connect(bp).connect(g).connect(audio.destination);
+      src.start();
+    });
+  }
   // Where a sound is, from the ear's point of view: how loud, and how far round
   // to the side. `near` is the distance at which it is half as loud, which is
   // the only number that distinguishes a crystal breaking at your feet from a
@@ -2527,7 +2550,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     if (warnUntil && t > warnUntil) { warn.classList.remove("on"); warnUntil = 0; }
 
-    if (wantShot && boltT >= BOLT_CYCLE && !wading) {
+    // An empty rifle is the same kind of fault as one held under water: the
+    // trigger is pulled and nothing happens, and without a word for it the only
+    // conclusion available is that the game has stopped working. `fire` refuses
+    // on its own — it is the one gate both the browser and the server come
+    // through — but the bang, the recoil, the bolt and the message to the
+    // server all live out here and were happening anyway, so a rifle with
+    // nothing in it went off in every way except the one that counted.
+    if (wantShot && boltT >= BOLT_CYCLE && !wading && Number(E.rounds(state)) === 0) {
+      warn.textContent = "the magazine is empty";
+      warn.classList.add("on");
+      warnUntil = t + 1.9;
+      dryClick();
+    } else if (wantShot && boltT >= BOLT_CYCLE && !wading) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
       const dx = Math.sin(yaw) * cp, dy = Math.sin(pit), dz = -Math.cos(yaw) * cp;
