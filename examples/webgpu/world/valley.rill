@@ -1354,7 +1354,7 @@ fn blast_hurt(s, x, y, z) =
 # that matters: the medicine has to be worth less than a hit costs, or there is
 # nothing to weigh. It was three and a half a chip once, which made one crystal
 # worth twenty-eight and turned a lucky shot into a full heal.
-fn gather_shard(s, sb, i) =
+fn gather_shard(s, sb, i, mend) =
   at = i * shard_stride()
   sc = peek_f32(sb, at + 12)
   if sc < 0.0001 then 0
@@ -1376,7 +1376,7 @@ fn gather_shard(s, sb, i) =
     else if wanted(s, sb, at) == 0 then 0
     else
       poke_f32(sb, at + 12, 0.0)
-      worth_of(s, sb, i, at)
+      worth_of(s, sb, i, at, mend)
 
 # Whether this is worth anything to whoever is standing on it. A full rifle
 # walks over ammunition: taking it would put ten rounds into a rifle that has
@@ -1387,9 +1387,9 @@ fn gather_shard(s, sb, i) =
 fn wanted(s, sb, at) =
   if peek_f32(sb, at + 16) < 1.5 then 1 else if rounds(s) >= mag_size() then 0 else 1
 
-fn gather(s, sb) =
+fn gather(s, sb, mend) =
   for i in 0..shard_cap()
-    gather_shard(s, sb, i)
+    gather_shard(s, sb, i, mend)
 
 fn health(s: Ptr) -> Float = peek_f32(s, 82)
 
@@ -2612,7 +2612,7 @@ fn rise_one(s) = if may_rise(s) > 0 then respawn(s) else 0
 # What one was worth. A chip off a crystal still has the light in it and mends
 # you a little; a magazine fills the rifle and says when it will be back.
 # Anything else is scenery and does not reach here.
-fn worth_of(s, sb, i, at) =
+fn worth_of(s, sb, i, at, mend) =
   if peek_f32(sb, at + 16) > 1.5 then
     poke_f32(s, 118, to_float(mag_size()))
     # Taken here, and it turns up somewhere else. Which somewhere is a
@@ -2621,11 +2621,28 @@ fn worth_of(s, sb, i, at) =
     # agree about where it went without either telling the other.
     place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
+  else if mend < 1 then 1
   else
     poke_f32(s, 82, clampf(peek_f32(s, 82) + peek_f32(sb, at + 16), 0.0, 1.0))
     1
 
-fn pick_up(s: Ptr) = gather(s, peek_ptr(wd(s), 69))
+fn pick_up(s: Ptr) = gather(s, peek_ptr(wd(s), 69), 1)
+
+# Sweeping up without the mending, which is what a browser in somebody else's
+# valley does.
+#
+# There, health is the server's: it arrives in every snapshot and is written
+# over whatever this browser had decided. So healing locally buys nothing —
+# it is overwritten a tenth of a second later — and it costs something, because
+# what it is overwritten *with* is the health from before the pickup, and a
+# health that goes down is exactly how this file decides somebody has been
+# shot. Every chip picked up in a shared valley threw the player's head, at the
+# full strength a graze gets, which is the floor in `start_kick`.
+#
+# The pieces still vanish and the boxes still move and still fill the rifle,
+# for the same reason walking is done locally: those answer the key. Only the
+# fraction of a per cent is left to the one that owns it.
+fn pick_up_quiet(s: Ptr) = gather(s, peek_ptr(wd(s), 69), 0)
 
 # The three of them and a camera, which is a browser with the valley to itself.
 # The order is the one this file has always had: the player moves, then the

@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=283";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=283";
+import { load } from "./world.js?v=284";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=284";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=283";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "283";
+const V = "284";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2692,7 +2692,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // crater cost and which crystal went are the server's, and have already
       // been applied above.
       E.step_visuals(world, dt);
-      E.pick_up(state);
+      // Swept up but not healed by. What a chip is worth is the server's to
+      // give, and it arrives in the next snapshot; doing it here as well meant
+      // the snapshot's own figure — from before the pickup — came back as a
+      // drop, and a drop is how the world decides somebody has been shot. Every
+      // chip threw the player's head.
+      E.pick_up_quiet(state);
       reconcile();
       // The shark is the server's too, and it only speaks twenty times a
       // second — so it is drawn at a point between the last two, like a

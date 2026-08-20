@@ -84,6 +84,9 @@ export fn step_world(w: Ptr, dt: Float) = v.step_world(w, dt)
 
 export fn pick_up(s: Ptr) = v.pick_up(s)
 
+# The same, without the healing: in a shared valley health is the server's.
+export fn pick_up_quiet(s: Ptr) = v.pick_up_quiet(s)
+
 export fn frame(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int, aspect: Float) =
   v.frame(s, dt, mdx, mdy, keys, aspect)
 
