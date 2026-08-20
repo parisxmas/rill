@@ -18,6 +18,10 @@
 //          t <x y z vx vy vz seed life>    a crystal threw
 //          k <x y z seed>                  one landed
 //          b <i>                           crystal i came apart
+//          m <i> <times>                   ammunition box i has been taken
+//                                          that many times, which is where
+//                                          it is — sent once each at the
+//                                          door, and after that when one moves
 //          x <who> <by whom> <how much> <down>   a round found somebody
 //
 //          who <id> <name>                 what to call somebody

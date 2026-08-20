@@ -187,6 +187,13 @@ export fn mag_full() -> Int = v.mag_full()
 # prisms, so it has to be told where the line is.
 export fn mag_count() -> Int = v.mag_count()
 
+# Where a box is, said as a count rather than as a position: box `i` has been
+# taken `n` times, and the valley works out the rest. This is what arrives on
+# the wire when somebody else picks one up.
+export fn set_mag(w: Ptr, i: Int, times: Int) = v.set_mag(w, i, times)
+
+export fn mag_times(w: Ptr, i: Int) -> Int = v.mag_times(w, i)
+
 # And what the server says it is, for the rare frame the two have drifted.
 export fn set_rounds(s: Ptr, n: Int) = v.set_rounds(s, n)
 

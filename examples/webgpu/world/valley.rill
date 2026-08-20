@@ -519,11 +519,6 @@ fn mag_count() = 16
 
 fn mag_size() = 10
 
-# How long a taken one stays gone. Twenty seconds is long enough that taking
-# one matters and short enough that the valley does not run dry with eight
-# people in it.
-fn mag_return() = 20.0
-
 # How big a box on the ground is drawn, against the twenty-six centimetres the
 # real one was scanned at. Sixteen boxes over a hundred and fifty metres of
 # valley, and at life size one of them lying in that grass is something you
@@ -674,7 +669,13 @@ fn hue_b(id: Float, hp: Float) = hue_ch(hue_h(id), hue_s(hp), hue_v(hp), 1.0)
 fn place_mags(w: Ptr) =
   sb = peek_ptr(w, 69)
   for i in 0..mag_count()
-    place_mag(sb, i, mag_spot(to_float(i), 0))
+    place_mag(sb, i, 0)
+
+# Where box `i` lies once it has been taken `n` times. A pure function of the
+# two, which is the whole of how the valley stays in step: nobody has to be
+# told a position, only a count. Thirty-seven is nothing but a stride large
+# enough that box three on its second life is not box four on its first.
+fn mag_seed(i: Int, times: Int) = to_float(i) + to_float(times) * 37.0
 
 fn mag_spot(seed: Float, tries: Int) =
   x = (hash2(seed * 3.7 + to_float(tries) * 11.3, 5.0) - 0.5) * 150.0
@@ -685,8 +686,8 @@ fn mag_spot(seed: Float, tries: Int) =
 # floats and this is the one place that wanted a pair.
 fn pack_spot(x: Float, z: Float) = (x, z)
 
-fn place_mag(sb, i, spot) =
-  (x, z) = spot
+fn place_mag(sb, i, times) =
+  (x, z) = mag_spot(mag_seed(i, times), 0)
   at = i * shard_stride()
   poke_f32(sb, at, x)
   poke_f32(sb, at + 1, stop_height(x, z))
@@ -711,25 +712,23 @@ fn place_mag(sb, i, spot) =
   poke_f32(sb, at + 14, 0.23)
   poke_f32(sb, at + 15, 0.3)
   poke_f32(sb, at + 16, worth_rounds())
-  poke_f32(sb, at + 17, 0.0)
+  # How many times this one has been taken, which is the other half of where
+  # it is. Not a clock: a count survives a client and a server disagreeing
+  # about the time by a tenth of a second, and a due date does not.
+  poke_f32(sb, at + 17, to_float(times))
   1
 
-# A taken magazine is gone rather than removed: its scale is zero and slot 17
-# says when it comes back, which is the same trick the crystals use for being
-# broken and costs nothing to step over.
-fn step_mags(w, t) =
-  sb = peek_ptr(w, 69)
-  for i in 0..mag_count()
-    back_mag(sb, i * shard_stride(), t)
+# What the wire says about a box, and what a browser does about it: box `i`
+# has been taken `n` times, so it is lying wherever that pair puts it. Stated
+# rather than stepped, so a client that missed the message before it, or heard
+# one twice, still ends up in the same place as everybody else.
+fn set_mag(w: Ptr, i: Int, times: Int) =
+  place_mag(peek_ptr(w, 69), i, times)
+  1
 
-fn back_mag(sb, at, t) =
-  due = peek_f32(sb, at + 17)
-  if due < 0.001 then 0
-  else if t < due then 0
-  else
-    poke_f32(sb, at + 12, mag_scale())
-    poke_f32(sb, at + 17, 0.0)
-    1
+# And what a server reads off its own world to know there is anything to say.
+fn mag_times(w: Ptr, i: Int) -> Int =
+  to_int(peek_f32(peek_ptr(w, 69), i * shard_stride() + 17))
 
 fn break_crystal(w, cb, cat, ci) =
   sb = peek_ptr(w, 69)
@@ -1349,9 +1348,19 @@ fn gather_shard(s, sb, i) =
     if dx * dx + dz * dz > 2.9 then 0
     else if dy > 2.2 then 0
     else if dy < 0.0 - 1.2 then 0
+    else if wanted(s, sb, at) == 0 then 0
     else
       poke_f32(sb, at + 12, 0.0)
-      worth_of(s, sb, at)
+      worth_of(s, sb, i, at)
+
+# Whether this is worth anything to whoever is standing on it. A full rifle
+# walks over ammunition: taking it would put ten rounds into a rifle that has
+# ten and move the box to the far side of the valley, which is the worst of
+# both. A chip of crystal is always taken — the heal clamps, and a chip is
+# small enough that losing a fraction of one is not something anybody is
+# counting.
+fn wanted(s, sb, at) =
+  if peek_f32(sb, at + 16) < 1.5 then 1 else if rounds(s) >= mag_size() then 0 else 1
 
 fn gather(s, sb) =
   for i in 0..shard_cap()
@@ -2516,7 +2525,6 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
 # shark has decided. Once a tick, however many people are in it.
 fn step_world(w: Ptr, dt: Float) =
   t = step_wind(w, dt)
-  step_mags(w, t)
   step_bullets(w, peek_ptr(w, 68), dt, 1)
   step_shards(peek_ptr(w, 69), dt)
   step_fireballs(w, peek_ptr(w, 74), dt, 1)
@@ -2542,7 +2550,6 @@ fn step_wind(w, dt) =
 # to somebody, which crystal went and where the shark is are the server's, and
 # arrive as events.
 fn step_visuals(w: Ptr, dt: Float) =
-  step_mags(w, world_time(w))
   step_wind(w, dt)
   step_bullets(w, peek_ptr(w, 68), dt, 0)
   step_shards(peek_ptr(w, 69), dt)
@@ -2568,10 +2575,14 @@ fn rise_one(s) = if may_rise(s) > 0 then respawn(s) else 0
 # What one was worth. A chip off a crystal still has the light in it and mends
 # you a little; a magazine fills the rifle and says when it will be back.
 # Anything else is scenery and does not reach here.
-fn worth_of(s, sb, at) =
+fn worth_of(s, sb, i, at) =
   if peek_f32(sb, at + 16) > 1.5 then
     poke_f32(s, 118, to_float(mag_size()))
-    poke_f32(sb, at + 17, world_time(wd(s)) + mag_return())
+    # Taken here, and it turns up somewhere else. Which somewhere is a
+    # function of nothing but the box's number and how many times it has been
+    # taken, so a server and a browser that have both seen the same pickups
+    # agree about where it went without either telling the other.
+    place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else
     poke_f32(s, 82, clampf(peek_f32(s, 82) + 0.00625, 0.0, 1.0))

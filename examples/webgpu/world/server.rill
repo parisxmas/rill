@@ -155,10 +155,10 @@ type Conn
 
 # ---- the hub ---------------------------------------------------------------
 
-fn hub(w, conns, inbox, joins) =
+fn hub(w, conns, inbox, joins, said) =
   m = recv(inbox)
-  next = handle(w, conns, inbox, joins, m)
-  hub(w, next, inbox, if_arrived(m, joins))
+  next = handle(w, conns, inbox, joins, m, said)
+  hub(w, next, inbox, if_arrived(m, joins), said)
 
 # The id to hand out next. It comes off the world's own counter rather than
 # being kept here, so a player's id and their block agree about who they are.
@@ -166,14 +166,14 @@ fn if_arrived(m, joins) = match m
   Arrived(_, _) -> joins + 1
   _ -> joins
 
-fn handle(w, conns, inbox, joins, m) = match m
+fn handle(w, conns, inbox, joins, m, said) = match m
   Arrived(out, token) -> admit(w, conns, out, token)
   Named(id, name) -> name_one(w, conns, id, name)
   Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
   Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
   Pinged(id, token) -> pong(conns, id, token)
   Left(id) -> drop_one(w, conns, id)
-  Tick -> tick(w, conns)
+  Tick -> tick(w, conns, said)
 
 fn admit(w, conns, out, token) =
   if v.players(w) >= max_players() then refuse(conns, out) else take_in(w, conns, out, token)
@@ -196,6 +196,7 @@ fn welcome(w, conns, s, out, token) =
   name = if str_len(mine) > 0 && !taken(conns, id, mine) then mine else called(id)
   send(out, "hello " + int_to_str(id) + " " + int_to_str(n_pines()) + " " + int_to_str(n_crystals()) + " " + int_to_str(n_grass()) + " " + float_to_str(v.world_time(w)) + " " + token)
   send(out, gone_list(w))
+  send_mags(w, out, 0)
   roster(conns, out)
   println("player " + int_to_str(id) + " arrived as " + name + ", " + int_to_str(v.players(w)) + " in the valley")
   joined(Cons(Conn(id, s, out, name, token), conns), id, name)
@@ -225,6 +226,16 @@ fn gone_list(w) =
   strbuf_str(b)
 
 fn if_gone(w, b, i) = if v.crystal_scale(w, i) < 0.01 then note_gone(b, i) else 0
+
+# Where the ammunition is, for somebody who has just walked in. One line each
+# and only at the door: a box moves when it is picked up and not otherwise, so
+# after this the client hears about them one at a time.
+fn send_mags(w, out, i) =
+  if i >= v.mag_count() then 0 else say_mag(w, out, i)
+
+fn say_mag(w, out, i) =
+  send(out, "m " + int_to_str(i) + " " + int_to_str(v.mag_times(w, i)))
+  send_mags(w, out, i + 1)
 
 fn note_gone(b, i) =
   strbuf_add(b, " " + int_to_str(i))
@@ -441,7 +452,7 @@ fn without(conns, id) = match conns
 # feet — the same order, and the same three calls, that `frame` makes in a
 # browser with the valley to itself.
 
-fn tick(w, conns) =
+fn tick(w, conns, said) =
   # What the rings said before the world moved. Everything that happens in
   # between is the difference, which is the whole of the event log: a cursor
   # that only counts up and a ring behind it means nothing has to be recorded
@@ -462,8 +473,51 @@ fn tick(w, conns) =
   send_craters(w, left, craters0)
   send_breaks(w, left, breaks0)
   send_hurts(w, left, hurts0)
+  again(said)
+  send_mag_moves(w, left, said, 0)
   tell_each(w, left, left)
   left
+
+# One box said again every second, whether it moved or not.
+#
+# The count a client keeps is its own until it hears otherwise, and it moves a
+# box the moment it walks onto one rather than waiting for the round trip. Two
+# ways that can come apart: a pickup this server did not agree with — somebody
+# standing on the edge of the reach, where a few centimetres of disagreement
+# about where they are is the difference — and a message that did not arrive.
+# Neither would ever be corrected by a scheme that only speaks when something
+# changes, and what they leave behind is a box drawn where there is none.
+#
+# So the last slot of the buffer counts ticks, and every twentieth one forgets
+# what was said about one box, which sends it again. Sixteen seconds to work
+# right round, one short line a second, and nothing to go wrong in the quiet.
+fn again(said) =
+  c = peek_i64(said, mag_count_slot()) + 1
+  poke_i64(said, mag_count_slot(), c)
+  if c % 20 != 0 then 0 else forget_one(said, c / 20)
+
+fn forget_one(said, k) =
+  poke_i64(said, k % v.mag_count(), 0 - 1)
+  1
+
+# Where that counter lives: one past the boxes.
+fn mag_count_slot() = v.mag_count()
+
+# A box that is not where this server last said it was. Sixteen comparisons a
+# tick against sixteen numbers written down here, which is cheaper than either
+# putting them all in every snapshot or making the world keep a log of its own
+# — and it says nothing at all on a tick where nobody picked anything up.
+fn send_mag_moves(w, conns, said, i) =
+  if i >= v.mag_count() then 0 else moved_mag(w, conns, said, i)
+
+fn moved_mag(w, conns, said, i) =
+  now = v.mag_times(w, i)
+  if now == peek_i64(said, i) then send_mag_moves(w, conns, said, i + 1) else tell_moved(w, conns, said, i, now)
+
+fn tell_moved(w, conns, said, i, now) =
+  poke_i64(said, i, now)
+  broadcast(w, conns, "m " + int_to_str(i) + " " + int_to_str(now))
+  send_mag_moves(w, conns, said, i + 1)
 
 # Whoever is still talking. The socket is deliberately not closed here: a
 # strand is parked on that descriptor inside the poller, closing it from
@@ -1119,7 +1173,15 @@ fn run(server) =
   w = v.init(64, n_pines(), n_crystals(), n_grass())
   v.set_meteors(w, meteors())
   println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
+  # What this server has last told anybody about each ammunition box. Zeros,
+  # which is where `v.init` put them.
+  # One slot per box and one more for the tick counter `again` keeps.
+  said = alloc_bytes((v.mag_count() + 1) * 8)
+
+  for i in 0..v.mag_count() + 1
+    poke_i64(said, i, 0)
+
   inbox = channel()
   spawn accept_loop(server, inbox, live)
   spawn ticker(inbox, now_nanos() + tick_ms() * 1000000)
-  hub(w, Nil, inbox, 0)
+  hub(w, Nil, inbox, 0, said)

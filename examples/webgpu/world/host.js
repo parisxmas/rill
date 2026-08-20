@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=279";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=279";
+import { load } from "./world.js?v=280";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=280";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=279";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "279";
+const V = "280";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1700,6 +1700,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       else if (e.kind === "t") E.put_fireball(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]);
       else if (e.kind === "k") E.put_blast(world, n[0], n[1], n[2], n[3]);
       else if (e.kind === "b") E.put_break(world, BigInt(n[0]));
+      // A box of ammunition is somewhere else. What arrives is how many times
+      // box `i` has been taken, not where it now is: where that puts it is the
+      // valley's own arithmetic, run identically here and on the server, so
+      // the wire carries a count rather than a position. Said as a total and
+      // not a step, which is what makes it safe to hear twice — and this
+      // player hears their own pickup come back exactly once too many.
+      else if (e.kind === "m") E.set_mag(world, BigInt(n[0]), BigInt(n[1]));
       // A round found somebody. Everybody is told, and the two people it
       // concerns each get their own sentence: one of them has been shot and
       // the other has hit something, which are not the same news.
