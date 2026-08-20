@@ -546,6 +546,77 @@ fn spawn_shard(sb, k, x, y, z, sc, r, g, b, throw, heals, seed) =
   poke_f32(sb, at + 16, heals)
   1
 
+# Somebody coming apart.
+#
+# The pieces are the ones a crystal already breaks into — a fifth of the file
+# is about how those fall, land and stay, and a body has no reason to want a
+# second answer. What changes is where they start and what colour they are:
+# eighteen of them, out of the head, the two arms and the legs, at the heights
+# a round is tested against, in the colour the renderer gives that player.
+#
+# It is the renderer's business rather than the world's, which is why it is
+# spawned by whoever is watching rather than sent: a server that nobody is
+# looking at has no reason to make debris, and a client already knows the
+# moment a health it was told about reaches zero.
+fn gib_at(w: Ptr, x: Float, y: Float, z: Float, yaw: Float, id: Int) =
+  sb = peek_ptr(w, 69)
+  k0 = to_int(peek_f32(w, 61))
+  # Dimmed, which is what the figure itself does when it goes down.
+  r = hue_r(to_float(id), 0.0)
+  g = hue_g(to_float(id), 0.0)
+  b = hue_b(to_float(id), 0.0)
+  # Across the shoulders, turned the way they were facing.
+  ax = cos(yaw) * 0.34
+  az = sin(yaw) * 0.34
+  seed = to_float(id) * 31.0 + y * 7.0
+  # A crystal stands on its base, so `spawn_shard` scatters upward from the
+  # point it is given. A shoulder is not a base: what is wanted here is a
+  # scatter *around* the height, so each burst starts half its own spread
+  # below the part it is coming from — which is what `low` works out.
+  for j in 0..4
+    spawn_shard(sb, k0 + j, x, low(y + 1.62, head_bit()), z, head_bit(), r, g, b, 1.3, 0.0, seed + to_float(j))
+  for j in 0..4
+    spawn_shard(sb, k0 + 4 + j, x + ax, low(y + 1.15, limb_bit()), z + az, limb_bit(), r, g, b, 1.2, 0.0, seed + to_float(j) + 40.0)
+  for j in 0..4
+    spawn_shard(sb, k0 + 8 + j, x - ax, low(y + 1.15, limb_bit()), z - az, limb_bit(), r, g, b, 1.2, 0.0, seed + to_float(j) + 80.0)
+  for j in 0..6
+    spawn_shard(sb, k0 + 12 + j, x, low(y + 0.45, limb_bit()), z, limb_bit(), r, g, b, 1.0, 0.0, seed + to_float(j) + 120.0)
+  poke_f32(w, 61, to_float(k0 + 18))
+  1
+
+# How big a piece is, which is also how far the burst scatters: a shard's own
+# size is a fifth of this and its spread is one and a half times it.
+fn head_bit() = 0.6
+
+fn limb_bit() = 0.55
+
+fn low(h: Float, bit: Float) = h - bit * 0.8
+
+# The same colour the renderer works out for a player, which is the golden
+# angle round the hue circle and a saturation that falls with their health.
+# Written here as well because the pieces have to match the person, and the
+# world is where they are made.
+fn hue_h(id: Float) = id * 0.61803398875 - floor(id * 0.61803398875)
+
+fn hue_s(hp: Float) = 0.35 + 0.4 * clampf(hp, 0.0, 1.0)
+
+fn hue_v(hp: Float) = 0.55 + 0.35 * clampf(hp, 0.0, 1.0)
+
+# Hue to red, green and blue, one channel at a time: each is the same curve
+# with the wheel turned a third, which is cheaper to say three times than to
+# say once with an index into something.
+fn hue_ch(h: Float, sat: Float, val: Float, turn: Float) =
+  t = h * 6.0 + turn
+  k = t - 6.0 * floor(t / 6.0)
+  m = if k < 3.0 then k else 6.0 - k
+  val * (1.0 - sat * clampf(1.0 - clampf(m - 1.0, 0.0, 1.0), 0.0, 1.0))
+
+fn hue_r(id: Float, hp: Float) = hue_ch(hue_h(id), hue_s(hp), hue_v(hp), 5.0)
+
+fn hue_g(id: Float, hp: Float) = hue_ch(hue_h(id), hue_s(hp), hue_v(hp), 3.0)
+
+fn hue_b(id: Float, hp: Float) = hue_ch(hue_h(id), hue_s(hp), hue_v(hp), 1.0)
+
 fn break_crystal(w, cb, cat, ci) =
   sb = peek_ptr(w, 69)
   k0 = to_int(peek_f32(w, 61))

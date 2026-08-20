@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=274";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=274";
+import { load } from "./world.js?v=275";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=275";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=274";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "274";
+const V = "275";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1563,6 +1563,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   function clipFor(p, now) {
     const c = clocks.get(p.id) ?? { name: "idle", since: now, at: 0, seen: now, firedAt: -9, hitAt: -9, health: p.health };
     if (p.health < c.health - 0.001 && p.health > 0.001) c.hitAt = now;
+    // And coming apart, on the one tick their health reaches zero. The pieces
+    // are the world's own — the same ones a crystal breaks into — so nothing
+    // is sent for this and nothing new is drawn: the snapshot is where a death
+    // is learned, and this is the moment it is learned on.
+    if (p.health < 0.001 && c.health >= 0.001 && world) {
+      E.gib_at(world, p.x, p.y, p.z, p.yaw, BigInt(p.id));
+    }
     c.health = p.health;
     const shooting = now - c.firedAt < figure.clips.get("fire").seconds * 1000;
     const hurt = now - c.hitAt < figure.clips.get("hit").seconds * 1000;
@@ -2304,6 +2311,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const vitfill = document.getElementById("vitfill");
   const windfill = document.getElementById("windfill");
   let lastWind = -1;
+  let wasDown = false;
   let lastHp = -1, hurtUntil = 0;
   // The sights. `wantAim` is the button; `aim` is how far through the move,
   // eased, because a field of view that changes between one frame and the next
@@ -2679,6 +2687,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // counts against to decide when somebody may stand up — so the number on
     // the screen and the moment they actually get up are the same fact rather
     // than two timers that agree for a while.
+    // Your own, which no snapshot tells you about: the same edge, off the
+    // block you are walking. Alone in the valley as well as in company, and
+    // the camera is thrown when you go down so there is something to see.
+    const downNow = E.health(state) <= 0.001;
+    if (downNow && !wasDown && world) {
+      E.gib_at(world, E.player_x(state), E.player_y(state), E.player_z(state),
+               E.player_yaw(state), BigInt(E.player_id(state)));
+    }
+    wasDown = downNow;
     if (net) {
       const down = E.health(state) <= 0.001;
       if (down) {

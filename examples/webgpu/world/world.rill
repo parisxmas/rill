@@ -95,12 +95,14 @@ export fn set_zoom(s: Ptr, z: Float) = v.set_zoom(s, z)
 # How long this player has been on the ground, and how long that lasts — the
 # page counts the seconds down on screen out of these two.
 export fn down_for(s: Ptr) -> Float = v.down_for(s)
+
 export fn dead_secs() -> Float = v.dead_secs()
 
 # Where this browser is drawing the other people, so that a round can stop at
 # one. Written every frame from the same interpolated positions the figures
 # are drawn at, and read by nothing but the bullet step.
 export fn set_ghosts(w: Ptr, n: Int) = v.set_ghosts(w, n)
+
 export fn set_ghost(w: Ptr, i: Int, x: Float, y: Float, z: Float) = v.set_ghost(w, i, x, y, z)
 
 # ---- being told rather than deciding ---------------------------------------
@@ -169,6 +171,11 @@ export fn health(s: Ptr) -> Float = v.health(s)
 
 # How much running is left, and whether they are winded — a bar the browser
 # draws under the vital one, and the reason the sprint key stops working.
+# Somebody coming apart where they fell. The renderer calls this the moment a
+# health it is drawing reaches zero, its own or one that arrived.
+export fn gib_at(w: Ptr, x: Float, y: Float, z: Float, yaw: Float, id: Int) =
+  v.gib_at(w, x, y, z, yaw, id)
+
 export fn breath(s: Ptr) -> Float = v.breath(s)
 
 export fn winded(s: Ptr) -> Int = v.winded(s)
