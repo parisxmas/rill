@@ -823,18 +823,24 @@ fn relax_time() = 0.95
 
 fn charge_swell() = 1.5
 
-# One and a bit seconds between attempts.
+# Three and a bit seconds between attempts.
 #
-# This has been round twice. At one second, twenty-two landed on a standing
-# player in thirty-five — arriving faster than the two and a half seconds one
-# takes to fly, which is a barrage, and a threat that never stops stops being a
-# threat. At three it was sixteen a minute and the hillside went quiet.
+# This has been round three times. At one second, twenty-two landed on a
+# standing player in thirty-five — arriving faster than the two and a half
+# seconds one takes to fly, which is a barrage, and a threat that never stops
+# stops being a threat. At three it was sixteen a minute and the hillside went
+# quiet. One point six sat between them for a while, and it was the right
+# number for a blast that reached forty-five metres: at that radius the sky
+# being busy *was* the threat, because there was nowhere in the meadow a
+# meteor did not reach.
 #
-# What changed in between is that a blast now throws you: getting knocked
-# several metres means the next one, aimed at where you were, lands wide, so
-# the rate a player can absorb went up on its own. One point six sits where the
-# valley is busy without the sky being permanently full.
-fn fireball_every() = 1.6  # seconds between attempts
+# Halving the radius changed what a meteor is. It is now a thing that happens
+# where it lands — ten metres away is two per cent of you — so the pressure
+# has to come from one arriving near you rather than from several arriving at
+# once. Three point two is that: half as many, each of which means something.
+# Measured against the running server with somebody standing in it: seventeen
+# throws a minute became nine.
+fn fireball_every() = 3.2  # seconds between attempts
 
 fn fireball_reach() = 70.0  # nothing nearer than this throws
 
@@ -2188,6 +2194,17 @@ fn walk_axis(keys, plus, minus) =
   b = if bit_and(keys, minus) == minus then 1.0 else 0.0
   a - b
 
+# Radians of turn per pixel of mouse. A number rather than two, because yaw
+# and pitch reading differently is the thing that makes aiming feel wrong and
+# nobody can say why.
+#
+# This was 0.0026, which is about a hundred and fifty degrees across a hand's
+# worth of desk — quick enough to spin round, and quicker than a rifle wants:
+# putting the crosshair on somebody across the meadow meant a movement smaller
+# than the smallest one a hand makes on purpose. The scope divides this by its
+# magnification already, so the far shot was the one that suffered.
+fn look_per_pixel() = 0.0018
+
 fn jump_vel(keys, grounded, vy) =
   if bit_and(keys, 16) == 16 then if grounded > 0.5 then 9.5 else vy else vy
 
@@ -2226,8 +2243,8 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   lie(s, dead, dt)
   live = 1.0 - dead
   k = if dead > 0.5 then 0 else keys
-  yaw = peek_f32(s, 19) + mdx * 0.0026 * live
-  pitch = clampf(peek_f32(s, 20) - mdy * 0.0026 * live, 0.0 - 1.45, 1.45)
+  yaw = peek_f32(s, 19) + mdx * look_per_pixel() * live
+  pitch = clampf(peek_f32(s, 20) - mdy * look_per_pixel() * live, 0.0 - 1.45, 1.45)
   fx = sin(yaw)
   fz = 0.0 - cos(yaw)
   wx = walk_axis(k, 1, 2) * fx + walk_axis(k, 8, 4) * (0.0 - fz)
