@@ -21,6 +21,10 @@
     // enough that the second one taking over is not something you can see, and
     // a light per blast would cost a loop in every fragment in the world.
     blast: vec4f,
+    // The ammunition box's own bounding box, which its vertices were
+    // quantized against — see `ammo-box.mesh` and `tools/bake_prop.py`.
+    propMin:  vec4f,
+    propSize: vec4f,
   }
   @group(0) @binding(0) var<uniform> u: U;
 

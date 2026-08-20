@@ -471,6 +471,30 @@ covered this frame, not against where it happens to be at the end of one —
 seven metres pass between frames, and a point test would go through anything
 narrower than that.
 
+## The ammunition
+
+Ten rounds go in it, and there are sixteen boxes lying about the valley to fill
+it again from. The box is Poly Haven's `ammo_box`, CC0, by DanKit — the same
+library the rifle came out of, and photoscanned the same way: olive drab,
+yellow stencils, worn paint and rust. `tools/bake_prop.py` welds its five nodes
+— a body, a handle, a latch, two rings — into one buffer in the rifle's own
+format, 3,978 vertices and 4,382 triangles in 88 KB. The published diffuse is
+1k and is halved here: nothing gets nearer to one of these than the reach that
+picks it up, and 512 is already more texels than the box has pixels.
+
+It is drawn out of the shard buffer. A box on the ground *is* a shard as far as
+Rill is concerned — the same twenty floats, a position, an orientation, a scale
+and a time to come back at — so the front sixteen slots are boxes and every
+chip of broken crystal goes in what is left. Two draws over one buffer, split
+by `firstInstance`, and nothing is copied to make the second one possible. The
+scale is the world's opinion of how big to draw the thing rather than a number
+in the shader: sixteen boxes over a hundred and fifty metres, and at the twenty
+six centimetres a real one measures, a box in that grass is something you walk
+past. It is drawn at one and six tenths of life.
+
+Only the yaw is used. A shard tumbles on all three axes because it was thrown;
+a box was put down, and a box lying on its corner reads as a bug.
+
 The bang is a Mosin Nagant, which is the rifle in the hands, recorded outdoors
 with its own echo off the hills already in the tail — from Vincent Sevedge's
 firearm recordings, CC BY 3.0. Two and a half seconds, 25 KB, decoded once and

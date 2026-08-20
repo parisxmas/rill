@@ -524,6 +524,14 @@ fn mag_size() = 10
 # people in it.
 fn mag_return() = 20.0
 
+# How big a box on the ground is drawn, against the twenty-six centimetres the
+# real one was scanned at. Sixteen boxes over a hundred and fifty metres of
+# valley, and at life size one of them lying in that grass is something you
+# walk past rather than something you find — the crystal chip it replaced was
+# nearly a metre tall and glowed. Forty centimetres is a box you can see at a
+# run and still a box.
+fn mag_scale() = 1.6
+
 # What the flag in slot 16 means: nothing, a crystal chip that heals, or a
 # magazine that reloads.
 fn worth_nothing() = 0.0
@@ -686,16 +694,19 @@ fn place_mag(sb, i, spot) =
   poke_f32(sb, at + 3, 0.0)
   poke_f32(sb, at + 4, 0.0)
   poke_f32(sb, at + 5, 0.0)
-  poke_f32(sb, at + 6, hash2(to_float(i), 3.0) * 6.28318)
-  poke_f32(sb, at + 7, 0.0)
-  poke_f32(sb, at + 8, hash2(to_float(i), 7.0) * 6.28318)
+  # Only the yaw. A shard tumbles on all three axes because it was thrown; a
+  # box was put down, and a box lying on its corner in the grass reads as a
+  # bug rather than as scenery.
+  poke_f32(sb, at + 6, 0.0)
+  poke_f32(sb, at + 7, hash2(to_float(i), 3.0) * 6.28318)
+  poke_f32(sb, at + 8, 0.0)
   poke_f32(sb, at + 9, 0.0)
   poke_f32(sb, at + 10, 0.0)
   poke_f32(sb, at + 11, 0.0)
-  poke_f32(sb, at + 12, 0.34)
-  # Gunmetal, and nothing like the colour of anything else on the ground: a
-  # crystal chip glows, a lump of hillside is the hillside, and this is the
-  # only dark blue-grey thing in the valley.
+  poke_f32(sb, at + 12, mag_scale())
+  # And the colour goes unread. The prop pipeline samples a photograph of the
+  # real thing; these three are left as they were so that a slot is the same
+  # twenty floats wherever it is looked at.
   poke_f32(sb, at + 13, 0.2)
   poke_f32(sb, at + 14, 0.23)
   poke_f32(sb, at + 15, 0.3)
@@ -716,7 +727,7 @@ fn back_mag(sb, at, t) =
   if due < 0.001 then 0
   else if t < due then 0
   else
-    poke_f32(sb, at + 12, 0.34)
+    poke_f32(sb, at + 12, mag_scale())
     poke_f32(sb, at + 17, 0.0)
     1
 

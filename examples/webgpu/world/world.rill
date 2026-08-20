@@ -182,6 +182,11 @@ export fn rounds(s: Ptr) -> Int = v.rounds(s)
 
 export fn mag_full() -> Int = v.mag_full()
 
+# How many of the shard slots are ammunition boxes rather than chips of
+# crystal. The renderer draws the front of that buffer as boxes and the rest as
+# prisms, so it has to be told where the line is.
+export fn mag_count() -> Int = v.mag_count()
+
 # And what the server says it is, for the rare frame the two have drifted.
 export fn set_rounds(s: Ptr, n: Int) = v.set_rounds(s, n)
 

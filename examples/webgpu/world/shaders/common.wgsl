@@ -57,6 +57,12 @@
   // one place the animal is drawn at all.
   @group(0) @binding(17) var sharkTex: texture_2d<f32>;
 
+  // What is lying on the ground and is not a chip of crystal. One texture, one
+  // prop: there is a single thing in this valley you can pick up and it is an
+  // ammunition box, so an atlas of props would be an atlas with one entry in
+  // it.
+  @group(0) @binding(18) var propTex: texture_2d<f32>;
+
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
   // enough to recover the gradient in world space, which is the one thing a

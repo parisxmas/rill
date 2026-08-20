@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=278";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=278";
+import { load } from "./world.js?v=279";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=279";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=278";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "278";
+const V = "279";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -97,7 +97,7 @@ const SHADERS = {
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
-  figure: "common", held: "common",
+  figure: "common", held: "common", prop: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
   "firefly-sim": null,
@@ -129,6 +129,12 @@ const TEXTURES = [
   ["./moons.jpg", 1024, 512],
   // The shark, seen only under water and mostly through it.
   ["./shark-skin.jpg", 512, 512],
+  // The ammunition box: Poly Haven's own diffuse, which is a photograph of a
+  // real one — olive drab, yellow stencils, and rust where the paint has gone.
+  // Halved from the 1k they publish. Nothing gets closer to one of these than
+  // the reach that picks it up, and at that distance five hundred and twelve
+  // across is already more texels than the box has pixels.
+  ["./ammo-box.jpg", 512, 512],
 ];
 
 async function loadShaders(step) {
@@ -156,6 +162,7 @@ async function loadShaders(step) {
     BLAST: whole("blast"),
     METEOR: whole("meteor"),
     SHARK: whole("shark"),
+    PROP: whole("prop"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
@@ -571,9 +578,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 12 + Object.keys(SHADERS).length + TEXTURES.length + 6 + (server ? 1 : 0);
+  const TOTAL = 13 + Object.keys(SHADERS).length + TEXTURES.length + 6 + (server ? 1 : 0);
   let done = 0;
-  const step = (what) => progress(++done, TOTAL, what);
+  // Never past the end. This is a count kept by hand of steps taken elsewhere,
+  // and the two drift every time something is added — a bar that says 104% is
+  // a smaller problem than the one it points at, but it is the visible one.
+  const step = (what) => progress(Math.min(++done, TOTAL), TOTAL, what);
 
   // Named, because the message is the whole of what a visitor gets. Safari
   // only shipped WebGPU on iPhone and iPad in version 26, so an older tablet
@@ -829,7 +839,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // the GPU buffer did not is a `writeBuffer` overrun, which is a validation
   // error, an invalid pipeline and a black screen with nothing in the console
   // that names the cause.
-  const UNI_FLOATS = 76;
+  const UNI_FLOATS = 84;
   const uni = device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const shadowSamp = device.createSampler({ compare: "less" });
@@ -858,7 +868,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // another they were the longest thing between the page opening and the
   // valley appearing.
   const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView,
-         jupiterView, saturnView, moonsView, sharkView] =
+         jupiterView, saturnView, moonsView, sharkView, propView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
       mipped(`${url}?v=${V}`, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
@@ -893,6 +903,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     { binding: 15, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 16, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 17, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 18, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -1050,6 +1061,25 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // The flash sits in front of the rifle, so it is drawn after it and does not
   // write depth: it is fire, and fire occludes nothing.
   const shardPipe = pipe("shard", S.SHARD, [meshLayout, shardLayout]);
+  // The props on the ground. The rifle's vertex layout, and the shards' own
+  // instance buffer for the second slot — a magazine is a shard in Rill and
+  // there is nothing to copy across.
+  const propLayout = [
+    { arrayStride: 16, attributes: [
+      { shaderLocation: 0, offset: 0, format: "unorm16x4" },
+      { shaderLocation: 1, offset: 8, format: "snorm8x4" },
+      { shaderLocation: 2, offset: 12, format: "unorm16x2" },
+    ]},
+    // The shards' own buffer, read at different locations: the mesh has taken
+    // 0, 1 and 2 for itself, so what the shard pipeline calls 2, 3 and 4 is 3,
+    // 4 and 5 here. Same eighty bytes, same offsets — only the names differ.
+    { arrayStride: 80, stepMode: "instance", attributes: [
+      { shaderLocation: 3, offset: 0, format: "float32x3" },    // position
+      { shaderLocation: 4, offset: 24, format: "float32x3" },   // orientation
+      { shaderLocation: 5, offset: 48, format: "float32" },     // there or not
+    ]},
+  ];
+  const propPipe = pipe("prop", S.PROP, propLayout);
   const muzzlePipe = pipe("muzzle", S.MUZZLE, [],
     { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
 
@@ -1070,6 +1100,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   device.queue.writeBuffer(rifleIB, 0, rifleIdxBytes);
   step("rifle.mesh");
+
+  // The ammunition box, in the rifle's own format and read by the same six
+  // lines. Poly Haven's `ammo_box`, CC0, welded out of its five nodes by
+  // `tools/bake_prop.py`: 3,978 vertices and 4,382 triangles in 88 KB.
+  const propBytes = await (await fetch(`./ammo-box.mesh?v=${V}`)).arrayBuffer();
+  const propHead = new DataView(propBytes, 0, 32);
+  const propVerts = propHead.getUint32(0, true);
+  const propIdx = propHead.getUint32(4, true);
+  const propBox = new Float32Array(propBytes, 8, 6);
+  const propVB = gpuBuf(new Uint8Array(propBytes, 32, propVerts * 16));
+  const propIdxBytes = new Uint8Array((propIdx * 2 + 3) & ~3);
+  propIdxBytes.set(new Uint8Array(propBytes, 32 + propVerts * 16, propIdx * 2));
+  const propIB = device.createBuffer({
+    size: propIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(propIB, 0, propIdxBytes);
+  step("ammo-box.mesh");
 
   // The shark. Same shape of file as the rifle, one header longer: a magic,
   // the two counts, and the box the positions were quantized against.
@@ -1405,6 +1452,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     size: blastCap * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
   const shardCap = Number(E.shards_cap(0));
+  // How many of those slots are ammunition rather than crystal. The world
+  // decides; the renderer only needs to know where the line is.
+  const magCount = Number(E.mag_count());
   const shardBuf = device.createBuffer({
     size: shardCap * 80, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
@@ -2045,6 +2095,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       { binding: 15, resource: saturnView },
       { binding: 16, resource: moonsView },
       { binding: 17, resource: sharkView },
+      { binding: 18, resource: propView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -2080,6 +2131,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       { binding: 15, resource: saturnView },
       { binding: 16, resource: moonsView },
       { binding: 17, resource: sharkView },
+      { binding: 18, resource: propView },
     ]});
     const envFmt = { format: "rgba8unorm" };
     W.envPipes = {
@@ -2886,6 +2938,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[60] = st[86]; uf[61] = st[87]; uf[62] = st[88];
     uf.set(sharkBox.subarray(0, 3), 64);
     uf.set(sharkBox.subarray(3, 6), 68);
+    uf.set(propBox.subarray(0, 3), 76);   // and the ammunition box's
+    uf.set(propBox.subarray(3, 6), 80);
     // The bolt's throw, as a fraction. The shot itself is the first instant of
     // it, so the recoil and the lift start together the way they do in a hand.
     uf[51] = boltT / BOLT_CYCLE;
@@ -3086,9 +3140,18 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       pass.drawIndexed(sharkIdx);
     }
 
+    // The buffer is divided rather than copied. Rill lays the magazines out
+    // first and throws every broken chip of crystal into what is left, so the
+    // two draws are one buffer read twice: boxes over the front of it, prisms
+    // over the rest. `firstInstance` is what makes that free.
+    pass.setPipeline(propPipe);
+    pass.setVertexBuffer(0, propVB); pass.setVertexBuffer(1, shardBuf);
+    pass.setIndexBuffer(propIB, "uint16");
+    pass.drawIndexed(propIdx, magCount);
+
     pass.setPipeline(shardPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, shardBuf);
-    pass.draw(crystalVerts, shardCap);
+    pass.draw(crystalVerts, shardCap - magCount, 0, magCount);
 
     pass.setPipeline(tracerPipe); pass.setVertexBuffer(0, bulletBuf); pass.draw(6, bulletCap);
     pass.setPipeline(firePipe); pass.setVertexBuffer(0, fireInst); pass.draw(6 * 80, fireCap);
