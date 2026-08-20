@@ -2302,6 +2302,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let saidDown = "";
   const tally = document.getElementById("tally");
   const vitfill = document.getElementById("vitfill");
+  const windfill = document.getElementById("windfill");
+  let lastWind = -1;
   let lastHp = -1, hurtUntil = 0;
   // The sights. `wantAim` is the button; `aim` is how far through the move,
   // eased, because a field of view that changes between one frame and the next
@@ -2851,6 +2853,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // Health, straight off Rill: it is the world that decides what a blast
     // does to you, not the renderer. Only touched when it actually moves,
     // for the same reason the tally is.
+    // Breath, straight off Rill for the same reason health is: what running
+    // costs is the world's business and not the renderer's. It moves every
+    // frame you are running, so the threshold is tighter than the vital bar's
+    // and the transition on it is short enough not to lag the key.
+    const wind = E.breath(state);
+    if (Math.abs(wind - lastWind) > 0.004) {
+      lastWind = wind;
+      windfill.style.width = `${(wind * 100).toFixed(1)}%`;
+      windfill.classList.toggle("spent", E.winded(state) === 1);
+      windfill.classList.toggle("rested", wind > 0.999);
+    }
     const hp = E.health(state);
     if (Math.abs(hp - lastHp) > 0.002) {
       if (hp < lastHp - 0.004) { vitfill.classList.add("hurt"); hurtUntil = t + 0.45; }

@@ -167,6 +167,12 @@ export fn blasts_fired(s: Ptr) -> Int = v.blasts_fired(s)
 
 export fn health(s: Ptr) -> Float = v.health(s)
 
+# How much running is left, and whether they are winded — a bar the browser
+# draws under the vital one, and the reason the sprint key stops working.
+export fn breath(s: Ptr) -> Float = v.breath(s)
+
+export fn winded(s: Ptr) -> Int = v.winded(s)
+
 export fn wading(s: Ptr) -> Int = v.wading(s)
 
 export fn respawn(s: Ptr) = v.respawn(s)

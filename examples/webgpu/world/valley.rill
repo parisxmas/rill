@@ -47,6 +47,7 @@
 #   f32 108      when they last chose a name, on the world's clock
 #   f32 109, 110 rounds taken, and rounds landed on somebody else
 #   f32 111      how much the sights are magnifying, 1 when they are not
+#   f32 115      breath, one to zero        116  out of it, until 115 comes back
 #   f32 102..104 what being shot did to their head: a clock, how hard, which way
 #   f32 99       this player's id, which outlives its place in the table
 #   ptr 94       the world it is in; in the world's own block, itself
@@ -1052,22 +1053,26 @@ fn blast_hurt(s, x, y, z) =
   dy = peek_f32(s, 22) + 1.0 - y
   dz = peek_f32(s, 23) - z
   d = sqrt(dx * dx + dy * dy + dz * dz)
-  k = clampf(1.0 - d / 45.0, 0.0, 1.0)
-  # Cubed, and out to forty-five metres. Squared over a short radius meant
-  # every impact either missed entirely or took the same bite out of you,
+  k = clampf(1.0 - d / 22.5, 0.0, 1.0)
+  # Cubed, and out to twenty-two and a half metres. Squared over a short radius
+  # meant every impact either missed entirely or took the same bite out of you,
   # because these are thrown at where you are standing and so nearly all of
   # them land within a few metres.
   #
-  # The cube is what stops a wide radius from meaning everything hurts equally:
-  # full at your feet, a third of it at fifteen metres, a hundredth at thirty
-  # -eight. What it buys is that a near miss is felt at all, so the ones that
-  # land across the meadow are still part of the weather rather than being
-  # either lethal or nothing.
+  # The cube is what stops a radius from meaning everything hurts equally: full
+  # at your feet, a third of it at seven and a half metres, a twenty-seventh at
+  # fifteen, and under the floor below — nothing at all past about seventeen.
+  # What it buys is that a near miss is felt at all, so the one that lands a
+  # few paces away is still part of the weather rather than being either lethal
+  # or nothing.
   #
-  # Sixty was the radius for a while and it was too much of the valley — an
+  # The radius has come down twice. Sixty was too much of the valley — an
   # impact you could barely see across the meadow still registered, which made
   # the whole map feel dangerous rather than the ground around you. Forty-five
-  # keeps the near miss and gives back the far side.
+  # gave back the far side and still reached a third of the way across it.
+  # Halving that again is what makes a meteor a thing that happens *where it
+  # lands*: standing ten metres off is now most of the way to safe, which is
+  # the distance somebody walking away covers while one is in the air.
   hit = 0.115 * k * k * k
   # Nothing reaches you in the lake. The crystals already refuse to throw at
   # someone standing in it; this is the other half of that — one already in the
@@ -1093,7 +1098,7 @@ fn blast_hurt(s, x, y, z) =
     # Thirty-four metres a second at a direct hit, which carries five or six
     # before it dies away. One landing at your feet should throw you, and the
     # squared falloff is what keeps that from being true of the ones that did
-    # not: at ten metres it is a quarter of this, at fifteen a sixteenth.
+    # not: at ten metres it is under a third of this, at fifteen a ninth.
     #
     # Measured on the way up: nine metres a second moved you 1.0 to 1.3 in the
     # second after, fifteen moved you 1.2 to 2.1, and neither read as being
@@ -1163,6 +1168,13 @@ fn gather(s, sb) =
     gather_shard(s, sb, i)
 
 fn health(s: Ptr) -> Float = peek_f32(s, 82)
+
+# How much running is left, one to zero, for whatever wants to draw it.
+fn breath(s: Ptr) -> Float = peek_f32(s, 115)
+
+# And whether they are winded, which is the difference between an empty bar
+# and a bar that is filling but will not let you run yet.
+fn winded(s: Ptr) -> Int = if peek_f32(s, 116) > 0.5 then 1 else 0
 
 # Start again, without rebuilding the valley.
 #
@@ -1658,6 +1670,8 @@ fn place_player(s) =
   poke_f32(s, 17, y + 1.75)
   poke_f32(s, 18, z)
   poke_f32(s, 82, 1.0)
+  poke_f32(s, 115, 1.0)
+  poke_f32(s, 116, 0.0)
   poke_f32(s, 84, 0.0)
   poke_f32(s, 85, 0.0)
   poke_f32(s, 107, 0.0)
@@ -2177,6 +2191,29 @@ fn walk_axis(keys, plus, minus) =
 fn jump_vel(keys, grounded, vy) =
   if bit_and(keys, 16) == 16 then if grounded > 0.5 then 9.5 else vy else vy
 
+# Whether the sprint key does anything this frame: it is held, there is
+# somewhere to go, there is breath left, and the last time it ran out is far
+# enough behind. Standing still with it held is not running and costs nothing.
+fn wants_run(s: Ptr, keys: Int, wl: Float) =
+  if bit_and(keys, 32) != 32 then 0.0 else if wl < 0.01 then 0.0 else if peek_f32(s, 116) > 0.5 then 0.0 else if peek_f32(s, 115) <= 0.0 then 0.0 else 1.0
+
+fn breath_spend() = 0.166
+
+fn breath_fill() = 0.11
+
+# A third of a tank is what it takes to be allowed to run again, which at the
+# rate above is about three seconds of standing — long enough to feel like
+# catching your breath, short enough not to be a punishment on top of one.
+fn breath_back() = 0.34
+
+fn spend_breath(s: Ptr, dt: Float, sprinting: Float, wl: Float) =
+  b0 = peek_f32(s, 115)
+  b1 = if sprinting > 0.5 then b0 - breath_spend() * dt else if wl < 0.01 then b0 + breath_fill() * dt else b0
+  b = clampf(b1, 0.0, 1.0)
+  poke_f32(s, 115, b)
+  poke_f32(s, 116, if b <= 0.0 then 1.0 else if b >= breath_back() then 0.0 else peek_f32(s, 116))
+  b
+
 # One player's own step: where they are looking, where that takes them, and
 # what they walk into. Nothing here is shared, so a server runs it once per
 # player and the order it runs them in does not matter.
@@ -2196,11 +2233,26 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   wx = walk_axis(k, 1, 2) * fx + walk_axis(k, 8, 4) * (0.0 - fz)
   wz = walk_axis(k, 1, 2) * fz + walk_axis(k, 8, 4) * fx
   wl = sqrt(wx * wx + wz * wz)
+  # Running is not free. What it spends is slot 115, a tank that empties in
+  # about six seconds of running — seventy metres, which is most of the way
+  # across the meadow — and fills again only while you are standing still, at
+  # two thirds of the rate it empties, so nine seconds of standing buys back
+  # six of running. Walking neither spends nor fills it: what buys breath back
+  # is stopping, which is exactly what a valley with meteors aimed at where
+  # people are standing makes expensive.
+  #
+  # Emptying it leaves you out of breath rather than merely at zero: slot 116
+  # is set, and until the tank is a third full again the sprint key does
+  # nothing. Without that, running at zero would be a stutter — one frame of
+  # sprint for every frame of standing — which reads as a bug rather than as
+  # being winded.
+  sprinting = wants_run(s, k, wl)
+  spend_breath(s, dt, sprinting, wl)
   # Five and a half metres a second, and twelve with the sprint key. Both were
   # a quarter faster and it read as skating: at seven and a half the valley
   # went past faster than anything on the ground in it could account for, and
   # a shot at somebody crossing the meadow was a lead nobody could judge.
-  step = (if bit_and(k, 32) == 32 then 12.0 else 5.625) * dt
+  step = (if sprinting > 0.5 then 12.0 else 5.625) * dt
   # What a blast is still pushing you by, spent down over about a fifth of a
   # second. It goes in beside the walk rather than instead of it, so you can
   # walk against it and the collisions below still run on where you end up.

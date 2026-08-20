@@ -136,6 +136,26 @@
        looking at the sky when it landed. */
     .vit i.hurt { box-shadow: 0 0 22px rgba(255, 120, 80, 0.85); }
 
+    /* Breath, above the vital bar and thinner than it, because running out of
+       it costs you speed and running out of the other one costs you the
+       valley. Blue rather than green so the two are told apart without
+       reading either. */
+    .wind {
+      position: fixed; left: 0; right: 0; bottom: 14px; height: 5px;
+      background: rgba(8, 7, 14, 0.55); pointer-events: none;
+    }
+    .wind i {
+      display: block; height: 100%; width: 100%;
+      background: linear-gradient(90deg, #4aa3d8, #7fd7f2);
+      transition: width 120ms linear, background 400ms ease, opacity 400ms ease;
+    }
+    /* Winded: the bar is filling but will not let you run yet, and saying so
+       is the difference between a mechanic and a bug. */
+    .wind i.spent { background: linear-gradient(90deg, #6b5f7a, #9d8fb0); }
+    /* Full is the ordinary state, and an ordinary state does not need a bar
+       drawn about it. */
+    .wind i.rested { opacity: 0.25; }
+
     /* The count, bottom left, opposite the frame stats. Same voice as the rest
        of the HUD: small, monospaced, out of the way, and the only thing in
        colour is the number that changed. */
@@ -423,6 +443,7 @@
   <div class="log" id="log"></div>
   <div class="tally" id="tally"></div>
   <div class="vit" id="vit"><i id="vitfill"></i></div>
+  <div class="wind" id="wind"><i id="windfill"></i></div>
   <div class="over dead" id="dead"><span>YOU ARE DEAD</span><span class="tick" id="tick">5</span><small>back on your feet in a moment</small></div>
   <div class="over cut" id="cut"><span>DISCONNECTED</span><em>the valley went on without you</em><small>reload to go back</small></div>
   <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em><small>space to begin again</small></div>
