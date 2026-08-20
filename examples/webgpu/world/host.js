@@ -2858,11 +2858,18 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // frame you are running, so the threshold is tighter than the vital bar's
     // and the transition on it is short enough not to lag the key.
     const wind = E.breath(state);
-    if (Math.abs(wind - lastWind) > 0.004) {
+    if (Math.abs(wind - lastWind) > 0.002) {
       lastWind = wind;
       windfill.style.width = `${(wind * 100).toFixed(1)}%`;
+      // The same two stops the vital bar has, for the same reason: a bar that
+      // only changes width reads as a quantity when you look at it, and one
+      // that changes colour reads as a quantity out of the corner of an eye.
+      windfill.style.background = wind > 0.55
+        ? "linear-gradient(90deg, #4aa3d8, #7fd7f2)"
+        : wind > 0.28
+          ? "linear-gradient(90deg, #3f7fb8, #4aa3d8)"
+          : "linear-gradient(90deg, #2f5f8c, #3f7fb8)";
       windfill.classList.toggle("spent", E.winded(state) === 1);
-      windfill.classList.toggle("rested", wind > 0.999);
     }
     const hp = E.health(state);
     if (Math.abs(hp - lastHp) > 0.002) {
