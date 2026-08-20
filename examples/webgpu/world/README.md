@@ -471,6 +471,18 @@ covered this frame, not against where it happens to be at the end of one —
 seven metres pass between frames, and a point test would go through anything
 narrower than that.
 
+Since the crystals are not all one thing, what they leave is not all worth the
+same. There are three in the valley and the colour is the whole of the tell:
+amber is three in five of them and mends three per cent of a player, cyan is
+one in five and mends six, and violet — one in six — mends twelve. Rarity and
+value in the same order, which is what makes a colour worth reading at two
+hundred metres: the rare one is a reason to cross the valley rather than the
+same crystal in another paint. It averages 5.19 per cent against the flat five
+that every crystal used to be worth, so the valley hands out what it always
+did; only where it comes from has moved. The colour is read once, at the break,
+and a chip carries a number from then on — a palette that changes should change
+what the valley looks like and not what it heals.
+
 ## The ammunition
 
 Ten rounds go in it, and there are sixteen boxes lying about the valley to fill

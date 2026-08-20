@@ -527,13 +527,37 @@ fn mag_size() = 10
 # run and still a box.
 fn mag_scale() = 1.6
 
-# What the flag in slot 16 means: nothing, a crystal chip that heals, or a
-# magazine that reloads.
+# What slot 16 holds: nothing, a magazine, or — anywhere in between — how much
+# of somebody a chip of crystal is worth. Two is not a fraction anybody can
+# heal by, so the one number says both what a thing is and what it gives.
 fn worth_nothing() = 0.0
 
-fn worth_healing() = 1.0
-
 fn worth_rounds() = 2.0
+
+# What one chip mends, by the colour of the crystal it came off. There are
+# three in the valley and they are not worth the same:
+#
+#   amber   three in five of them, and three per cent of a player per crystal
+#   cyan    one in five, and six
+#   violet  one in six, and twelve
+#
+# Counted, not assumed: 187, 60 and 53 of the three hundred.
+#
+# Rarity and value in the same order, which is the only arrangement that makes
+# the colour worth reading at two hundred metres — the rare one is now a reason
+# to cross the valley rather than the same crystal in another paint. Split
+# eight ways across the chips a crystal leaves, so sweeping up every piece of
+# one is worth exactly that and there is no way to get more out of it.
+#
+# It averages 5.19 per cent a crystal over the three hundred, against the flat
+# five every crystal was worth before this, so what the valley hands out in a
+# minute has not moved — only where it comes from.
+#
+# The colour is read once, here, out of the crystal that is coming apart. The
+# chips carry a number from then on: a palette that changes should change what
+# the valley looks like and not what it heals.
+fn chip_heal(r: Float, g: Float, b: Float) =
+  if r < 0.5 then 0.0075 else if b > 0.9 then 0.015 else 0.00375
 
 # Debris goes round the ring above the magazines, so a busy minute of breaking
 # crystals cannot write over them.
@@ -754,8 +778,10 @@ fn break_crystal(w, cb, cat, ci) =
   b = peek_f32(cb, cat + 7)
   poke_f32(cb, cat + 3, 0.0)
 
+  worth = chip_heal(r, g, b)
+
   for j in 0..8
-    spawn_shard(sb, k0 + j, x, y, z, sc, r, g, b, 1.0, 1.0, to_float(ci * 8 + j))
+    spawn_shard(sb, k0 + j, x, y, z, sc, r, g, b, 1.0, worth, to_float(ci * 8 + j))
 
   poke_f32(w, 61, to_float(k0 + 8))
   1
@@ -1323,17 +1349,16 @@ fn blast_hurt(s, x, y, z) =
 # "empty slot" the pool already understands, so the piece simply is not drawn
 # any more and no flag has to be invented for it.
 #
-# Five per cent for a whole crystal, split eight ways across the chips it
-# leaves: a hundredth and a quarter each, so sweeping up every last piece of one
-# is worth exactly five and there is no way to get more out of it than that.
-# It was three and a half a chip, which made a single crystal worth twenty-eight
-# and turned one lucky shot into a full heal — the medicine has to be worth
-# less than a hit costs, or there is nothing to weigh.
+# What a crystal is worth depends on which one it was — three per cent, six or
+# twelve, by colour; see `chip_heal`. It averages five, and five is the number
+# that matters: the medicine has to be worth less than a hit costs, or there is
+# nothing to weigh. It was three and a half a chip once, which made one crystal
+# worth twenty-eight and turned a lucky shot into a full heal.
 fn gather_shard(s, sb, i) =
   at = i * shard_stride()
   sc = peek_f32(sb, at + 12)
   if sc < 0.0001 then 0
-  else if peek_f32(sb, at + 16) < 0.5 then 0
+  else if peek_f32(sb, at + 16) < 0.0001 then 0
   else
     # Charred ground is charred ground. Measured before this test existed: an
     # impact took fifteen points off and then handed back sixty-three, because
@@ -2585,7 +2610,7 @@ fn worth_of(s, sb, i, at) =
     place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else
-    poke_f32(s, 82, clampf(peek_f32(s, 82) + 0.00625, 0.0, 1.0))
+    poke_f32(s, 82, clampf(peek_f32(s, 82) + peek_f32(sb, at + 16), 0.0, 1.0))
     1
 
 fn pick_up(s: Ptr) = gather(s, peek_ptr(wd(s), 69))
