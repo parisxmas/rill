@@ -115,6 +115,13 @@ cargo test                    # 110 tests: unit, plus end-to-end compile-and-run
 
 ### In an editor
 
+The compiler is also a language server: `rill lsp` answers an editor with
+diagnostics on the buffer as it stands, the type of the name under the cursor,
+go to definition, an outline and formatting — which in a language that infers
+everything is the only place a signature gets said out loud. `editors/README.md`
+has the few lines Neovim, Helix or Emacs needs to start it, and `rill types
+main.rill` prints the same signatures for a whole file.
+
 `editors/vscode/` is a Visual Studio Code extension: syntax highlighting for
 every construct in the language, two-space layout-aware indentation, and
 snippets. Symlink it in and reload the window:

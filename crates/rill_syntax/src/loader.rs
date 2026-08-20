@@ -20,7 +20,19 @@ use crate::parser::parse;
 use crate::prelude::with_prelude;
 
 pub fn load_program(entry: &Path) -> Result<Module, String> {
+    load_program_with(entry, None)
+}
+
+/// The same, with the entry file's text supplied rather than read. What an
+/// editor has in front of somebody is not what is on disk, and the answers it
+/// wants are about what is in front of them.
+pub fn load_program_text(entry: &Path, text: &str) -> Result<Module, String> {
+    load_program_with(entry, Some(text))
+}
+
+fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String> {
     let mut loader = Loader {
+        overlay: text.map(|t| (entry.canonicalize().unwrap_or_else(|_| entry.into()), t.to_string())),
         visited: HashSet::new(),
         aliases: HashMap::new(),
         fn_origin: HashMap::new(),
@@ -100,6 +112,8 @@ struct Loader {
     name_origin: HashMap<String, PathBuf>,
     /// Canonical path -> the alias it was imported under, if any.
     aliases: HashMap<PathBuf, Option<String>>,
+    /// One file whose text is given rather than read, for an editor.
+    overlay: Option<(PathBuf, String)>,
     types: Vec<TypeDef>,
     traits: Vec<TraitDef>,
     impls: Vec<ImplDef>,
@@ -135,8 +149,11 @@ impl Loader {
         }
         self.aliases.insert(canon.clone(), alias.map(str::to_string));
 
-        let src = std::fs::read_to_string(&canon)
-            .map_err(|e| format!("cannot read `{display}`: {e}"))?;
+        let src = match &self.overlay {
+            Some((p, text)) if *p == canon => text.clone(),
+            _ => std::fs::read_to_string(&canon)
+                .map_err(|e| format!("cannot read `{display}`: {e}"))?,
+        };
         let module = parse(&src).map_err(|e| format!("{display}: {e}"))?;
 
         let dir = canon.parent().map(Path::to_path_buf).unwrap_or_default();

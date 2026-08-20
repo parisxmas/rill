@@ -429,7 +429,12 @@ puts it in memory and reaches through a pointer for every touch. `+=`,
 one time.
 
 Everything else is tail recursion: a call in tail position compiles to a
-jump, so it runs in constant stack, exactly like a loop.
+jump, so it runs in constant stack, exactly like a loop. That holds for a loop
+written as several functions calling each other as much as for one calling
+itself, and it holds whatever the loop's value is — Rill's functions use
+LLVM's guaranteed-tail-call convention and mark the call `musttail`, so it is
+a promise the optimizer cannot take back rather than a hint it usually
+honours.
 
 ```
 fn sum_to(n) = go(n, 0)
@@ -1130,9 +1135,23 @@ rill build main.rill -o main    # compile (LLVM -O3, stripped)
 rill build main.rill --debug    # no optimization, DWARF line info for lldb
 rill build main.rill --emit-ir  # print LLVM IR
 rill run main.rill              # compile and run
+rill check main.rill            # type-check only, saying everything it finds
+rill types main.rill            # the signature the checker worked out for each function
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist
+rill lsp                        # a language server on stdin/stdout
 ```
+
+`rill types` is the answer to the question an inferring language raises: what
+did it decide? It prints every function in the file as the checker sees it,
+including the requirements a body imposed — `fn merge(a: List('a), b: List('a))
+-> List('a)    # where 'a is ordered` for a function whose source says nothing
+about being ordered.
+
+`rill lsp` is the same knowledge, kept open for an editor: diagnostics on the
+buffer as it stands, the type of the name under the cursor, go to definition,
+an outline, and formatting. `editors/README.md` has the three lines each that
+Neovim, Helix and Emacs need to start it.
 
 ---
 

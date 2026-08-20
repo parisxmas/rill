@@ -412,7 +412,18 @@ pub enum Constraint {
 // ---- checker --------------------------------------------------------------
 
 pub fn check(module: &Module) -> Result<TModule, TypeError> {
-    Checker::new(module)?.run(module)
+    check_all(module).map_err(|mut es| es.remove(0))
+}
+
+/// The same, reporting everything one pass can find rather than stopping at
+/// the first. A body that does not check is recorded and stepped over, so the
+/// functions after it are still checked — which is one error per function,
+/// and what an editor wants to underline.
+pub fn check_all(module: &Module) -> Result<TModule, Vec<TypeError>> {
+    match Checker::new(module) {
+        Ok(c) => c.run(module),
+        Err(e) => Err(vec![e]),
+    }
 }
 
 #[derive(Clone)]
@@ -884,7 +895,7 @@ impl Checker {
         Ok(c)
     }
 
-    fn run(mut self, module: &Module) -> Result<TModule, TypeError> {
+    fn run(mut self, module: &Module) -> Result<TModule, Vec<TypeError>> {
         let _ = module;
         self.gen_vars = vec![Vec::new(); self.sigs.len()];
 
@@ -901,6 +912,11 @@ impl Checker {
             }
         }
         let mut tfns: Vec<Option<TFn>> = (0..fns_to_check.len()).map(|_| None).collect();
+        // A function whose body does not check is stepped over: its signature
+        // stays provisional, which is a fresh variable at every call, so the
+        // functions after it mostly check as though it were fine and each
+        // says its own first problem rather than the first one in the file.
+        let mut errors: Vec<TypeError> = Vec::new();
         for group in dependency_groups(&fns_to_check, &self.fn_index) {
             // Infer the whole group with every signature still provisional...
             let mut inferred = Vec::new();
@@ -908,17 +924,28 @@ impl Checker {
                 let f = &fns_to_check[k];
                 let idx = self.fn_index[&f.name];
                 let start = self.pending.len();
-                let body = self.infer_fn_body(f, idx)?;
-                inferred.push((k, idx, body, start, self.pending.len()));
+                match self.infer_fn_body(f, idx) {
+                    Ok(body) => inferred.push((k, idx, body, start, self.pending.len())),
+                    Err(e) => errors.push(e),
+                }
             }
             // ...then generalize it, so recursive calls inside see the same
             // types the group settled on.
             for (k, idx, body, start, end) in inferred {
-                let tfn = self.generalize_fn(&fns_to_check[k], idx, body, start, end)?;
-                tfns[idx] = Some(tfn);
+                match self.generalize_fn(&fns_to_check[k], idx, body, start, end) {
+                    Ok(tfn) => tfns[idx] = Some(tfn),
+                    Err(e) => errors.push(e),
+                }
             }
         }
         self.pending.clear();
+        if !errors.is_empty() {
+            // Two functions can arrive at the same complaint about the same
+            // line; an editor should show it once.
+            errors.sort_by_key(|e| e.line);
+            errors.dedup_by(|a, b| a.line == b.line && a.msg == b.msg);
+            return Err(errors);
+        }
 
         // Phase 2: zonk all bodies now that every signature is generalized,
         // rebuilding substitutions for calls made against provisional sigs.
@@ -941,13 +968,13 @@ impl Checker {
             if f.ngen < *tgen {
                 let (trait_name, target) = name.split_once('.').unwrap_or(("", name));
                 let target = target.split_once('.').map(|(t, _)| t).unwrap_or(target);
-                return Err(TypeError::new(
+                return Err(vec![TypeError::new(
                     f.line,
                     format!(
                         "this implementation of `{trait_name}` is not general enough: it only \
                          works for some `{target}` types, but the impl covers all of them"
                     ),
-                ));
+                )]);
             }
         }
 
@@ -1049,6 +1076,8 @@ impl Checker {
 
     fn type_name(&self, ty: &Ty) -> String {
         match self.resolve(ty) {
+            // Only the head is resolved by the match; the arguments below go
+            // back through this so that a variable inside one is resolved too.
             Ty::Int => "Int".into(),
             Ty::Float => "Float".into(),
             Ty::Bool => "Bool".into(),
@@ -3198,6 +3227,165 @@ fn check_ffi_type(ty: &Ty, line: usize, what: &str) -> Result<CTy, TypeError> {
 /// The impl-table key for a concrete type, if traits can target it. An impl
 /// covers a whole type constructor, so `List(Int)` and `List(Str)` share a key
 /// and the receiver's type arguments pick the instance.
+/// A type as a program would write it, for anything that has to show one
+/// after checking: `rill types`, an editor asking what a name is. The
+/// checker's own `type_name` is this with inference variables resolved first,
+/// which is what it needs mid-inference and what nothing else does.
+pub fn show_type(ty: &Ty, adts: &[AdtDef]) -> String {
+    match ty {
+        Ty::Int => "Int".into(),
+        Ty::Float => "Float".into(),
+        Ty::Bool => "Bool".into(),
+        Ty::Str => "Str".into(),
+        Ty::Unit => "Unit".into(),
+        Ty::Ptr => "Ptr".into(),
+        Ty::StrBuf => "StrBuf".into(),
+        Ty::Buf(w) => format!("Buf({})", w.name()),
+        Ty::Adt(i, args) => {
+            if args.is_empty() {
+                adts[*i].name.clone()
+            } else {
+                let args: Vec<String> = args.iter().map(|a| show_type(a, adts)).collect();
+                format!("{}({})", adts[*i].name, args.join(", "))
+            }
+        }
+        Ty::Fn(params, ret) => {
+            let params: Vec<String> = params.iter().map(|p| show_type(p, adts)).collect();
+            format!("({}) -> {}", params.join(", "), show_type(ret, adts))
+        }
+        Ty::Chan(e) => format!("Chan({})", show_type(e, adts)),
+        Ty::Map(k, v) => format!("Map({}, {})", show_type(k, adts), show_type(v, adts)),
+        Ty::Var(_) => "_".into(),
+        Ty::Gen(i) => format!("'{}", (b'a' + (*i % 26) as u8) as char),
+    }
+}
+
+/// A function's signature as a program would write it, with the requirements
+/// its body imposed on each type parameter — which is the part a reader cannot
+/// work out and the checker can.
+pub fn show_signature(f: &TFn, adts: &[AdtDef]) -> String {
+    let params: Vec<String> = f
+        .params
+        .iter()
+        .map(|(n, t)| format!("{n}: {}", show_type(t, adts)))
+        .collect();
+    let mut s = format!("fn {}({}) -> {}", f.name, params.join(", "), show_type(&f.ret, adts));
+    let mut needs: Vec<String> = Vec::new();
+    for (g, c, _) in &f.constraints {
+        let what = match c {
+            Constraint::Numeric => "a number",
+            Constraint::Addable => "addable",
+            Constraint::Ordered => "ordered",
+            Constraint::Basic => "a value type",
+        };
+        let name = show_type(&Ty::Gen(*g), adts);
+        let one = format!("{name} is {what}");
+        if !needs.contains(&one) {
+            needs.push(one);
+        }
+    }
+    if !needs.is_empty() {
+        s.push_str(&format!("    # where {}", needs.join(", ")));
+    }
+    s
+}
+
+/// Applies `f` to every immediate sub-expression of a checked expression.
+/// Written here rather than beside its one user because more than one thing
+/// wants to walk a body now: codegen, and whatever is answering an editor.
+pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
+    match &e.kind {
+        TK::Int(_) | TK::Float(_) | TK::Str(_) | TK::Bool(_) | TK::Local(_) | TK::FnRef { .. } => {}
+        TK::MapNew => {}
+        TK::Builtin { args, .. }
+        | TK::CallFn { args, .. }
+        | TK::MethodCall { args, .. }
+        | TK::CallExtern { args, .. }
+        | TK::CallCtor { args, .. } => args.iter().for_each(f),
+        TK::CallClosure { callee, args } => {
+            f(callee);
+            args.iter().for_each(f);
+        }
+        TK::Println(x)
+        | TK::Print(x)
+        | TK::Show(x)
+        | TK::Neg(x)
+        | TK::Spawn { body: x, .. }
+        | TK::Lambda { body: x, .. } => f(x),
+        TK::ChanNew(x) => {
+            if let Some(x) = x {
+                f(x)
+            }
+        }
+        TK::ChanSend { ch, val } => {
+            f(ch);
+            f(val);
+        }
+        TK::ChanRecv { ch }
+        | TK::BufLen { buf: ch }
+        | TK::BufPtr { buf: ch }
+        | TK::MapLen { map: ch }
+        | TK::MapClear { map: ch }
+        | TK::FieldGet { base: ch, .. } => f(ch),
+        TK::BufNew { count, .. } => f(count),
+        TK::BufGet { buf: a, idx: b }
+        | TK::MapFind { map: a, key: b }
+        | TK::MapDel { map: a, key: b }
+        | TK::MapNext { map: a, from: b }
+        | TK::MapKeyAt { map: a, idx: b }
+        | TK::MapValAt { map: a, idx: b }
+        | TK::Binary { lhs: a, rhs: b, .. } => {
+            f(a);
+            f(b);
+        }
+        TK::BufSet { buf: a, idx: b, val: c } | TK::MapSet { map: a, key: b, val: c } => {
+            f(a);
+            f(b);
+            f(c);
+        }
+        TK::Slice { base, from, to } => {
+            f(base);
+            f(from);
+            if let Some(t) = to {
+                f(t);
+            }
+        }
+        TK::If { cond, then, els } => {
+            f(cond);
+            f(then);
+            f(els);
+        }
+        TK::Match { scrutinee, arms } => {
+            f(scrutinee);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    f(g);
+                }
+                f(&a.body);
+            }
+        }
+        TK::Select { arms, default } => {
+            for a in arms {
+                match &a.op {
+                    TSelectOp::Recv { chan, .. } => f(chan),
+                    TSelectOp::Send { chan, value } => {
+                        f(chan);
+                        f(value);
+                    }
+                }
+                f(&a.body);
+            }
+            if let Some(d) = default {
+                f(d);
+            }
+        }
+        TK::Block(stmts) => stmts.iter().for_each(|s| match s {
+            TStmt::Bind { value, .. } => f(value),
+            TStmt::Expr(x) => f(x),
+        }),
+    }
+}
+
 pub fn impl_key(ty: &Ty) -> Option<ImplKey> {
     match ty {
         Ty::Int => Some(ImplKey::Int),

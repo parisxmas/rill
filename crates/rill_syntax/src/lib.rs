@@ -10,7 +10,7 @@ pub mod prelude;
 
 pub use ast::*;
 pub use fmt::format_source;
-pub use loader::load_program;
+pub use loader::{load_program, load_program_text};
 pub use parser::parse;
 pub use prelude::{parse_program, PRELUDE};
 

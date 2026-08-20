@@ -2581,6 +2581,35 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         s
     }
 
+    /// A Rill function's own calling convention.
+    ///
+    /// `tailcc` is LLVM's guaranteed-tail-call convention, and what it buys is
+    /// not speed but the promise this language makes: a call in tail position
+    /// is a jump. The C convention cannot keep that promise. A tail call is a
+    /// hint there, and the optimizer is free to take it away — when it proves
+    /// that every path through a loop returns the same value it folds the
+    /// returns together, and a call that no longer ends its function is one
+    /// the backend will not jump to. That is not a rare shape: it is what
+    /// every loop written for its effects looks like, and it cost a running
+    /// server one frame per message until it ran off the end of its stack.
+    ///
+    /// With `tailcc` the call is marked `musttail`, which is an invariant
+    /// rather than a hint: no pass may break it, and the two functions need
+    /// not even have the same signature — which is what a loop written as
+    /// several functions calling each other needs.
+    ///
+    /// Everything the runtime calls keeps the C convention: `main`, whose
+    /// address is handed to the scheduler, the body of a `spawn`, an
+    /// environment's drop function, a map's vtable, and every trampoline C
+    /// itself calls.
+    const TAILCC: u32 = 18;
+
+    /// Gives a call site the convention of what it calls, which is the only
+    /// way the two can be sure to agree.
+    fn match_cc(&self, call: inkwell::values::CallSiteValue<'ctx>, callee: FunctionValue<'ctx>) {
+        call.set_call_convention(callee.get_call_conventions());
+    }
+
     fn request_instance(
         &mut self,
         fn_idx: usize,
@@ -2603,6 +2632,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let fn_type = self.fn_llvm_type(&params, &ret, false);
         let name = self.key_name(&key);
         let v = self.module.add_function(&name, fn_type, None);
+        // `main` is called by the scheduler, which is C. Everything else is
+        // called by Rill, and Rill wants its tail calls to be jumps. On wasm
+        // a tail call needs a feature the module may not be allowed to
+        // declare, so there the C convention stays.
+        if !self.wasm && self.tmod.fns[fn_idx].name != "main" {
+            v.set_call_conventions(Self::TAILCC);
+        }
         self.instances.insert(key.clone(), v);
         self.queue.push_back(key);
         v
@@ -2851,7 +2887,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.flush_cleanup();
                 let call =
                     self.builder.build_call(callee, &argv, "tcall").expect("LLVM builder error");
+                self.match_cc(call, callee);
                 call.set_tail_call(true);
+                // `musttail` is the promise rather than the hint, and it is
+                // only sayable where the shape it requires already holds: the
+                // return has to be this call's value and nothing else, which
+                // is exactly what `ret_leaf` writes when the two types agree.
+                // A `Unit` return releases what came back first, and a call
+                // with an instruction after it is not a tail call at all.
+                if callee.get_call_conventions() == Self::TAILCC
+                    && out_ty == *ret_ty
+                    && self.llvm_type(ret_ty).is_some()
+                {
+                    call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
+                }
                 let out = match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,
@@ -3032,6 +3081,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let shim_ty = self.fn_llvm_type(&params, &ret, true);
         let name = format!("{}$shim", self.instance_name(key.0, &key.1));
         let shim = self.module.add_function(&name, shim_ty, None);
+        // A shim is reached through a closure value, so it is called however
+        // lambdas are called.
+        if !self.wasm {
+            shim.set_call_conventions(Self::TAILCC);
+        }
 
         let saved = self.builder.get_insert_block();
         let entry = self.ctx.append_basic_block(shim, "entry");
@@ -3039,6 +3093,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let args: Vec<BasicMetadataValueEnum> =
             (1..shim.count_params()).map(|i| shim.get_nth_param(i).unwrap().into()).collect();
         let call = self.builder.build_call(target, &args, "").expect("LLVM builder error");
+        self.match_cc(call, target);
         match call.try_as_basic_value() {
             inkwell::values::ValueKind::Basic(v) => {
                 self.builder.build_return(Some(&v)).expect("LLVM builder error");
@@ -3110,6 +3165,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None => self.ctx.void_type().fn_type(&ps, false),
         };
         let name = format!("{}$c", self.instance_name(fn_idx, &inner));
+        // C calls this one, so this one is C. The Rill function behind it is
+        // called the way Rill functions are.
         let tramp = self.module.add_function(&name, fty, None);
 
         let saved = self.builder.get_insert_block();
@@ -3121,6 +3178,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .map(|(i, c)| self.from_c(tramp.get_nth_param(i as u32).unwrap(), c).into())
             .collect();
         let call = self.builder.build_call(target, &args, "").expect("LLVM builder error");
+        self.match_cc(call, target);
         match call.try_as_basic_value() {
             // The checker has already unified the function's result with the
             // declared one, so what comes back only needs narrowing.
@@ -3315,7 +3373,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     ) -> inkwell::values::CallSiteValue<'ctx> {
         let targs = rill_types::impl_targs(recv_ty);
         let callee = self.request_instance(fn_idx, targs, vec![]);
-        self.builder.build_call(callee, args, name).expect("LLVM builder error")
+        let call = self.builder.build_call(callee, args, name).expect("LLVM builder error");
+        self.match_cc(call, callee);
+        call
     }
 
     /// Static trait dispatch: the concrete receiver type selects the impl.
@@ -3685,6 +3745,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 let call =
                     self.builder.build_call(callee, &argv, "call").expect("LLVM builder error");
+                self.match_cc(call, callee);
                 Ok(match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,
@@ -3994,6 +4055,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .builder
                     .build_indirect_call(fn_ty, code, &argv, "ccall")
                     .expect("LLVM builder error");
+                // Every closure target — a lambda, or a shim over a named
+                // function — is made with the same convention, so an indirect
+                // call can be sure of it.
+                if !self.wasm {
+                    call.set_call_convention(Self::TAILCC);
+                }
                 let out = match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,
@@ -4506,6 +4573,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.lambda_count += 1;
         let lifted_ty = self.fn_llvm_type(&param_tys, &ret_ty, true);
         let lifted = self.module.add_function(&format!("lambda${id}"), lifted_ty, None);
+        // A `spawn` body is started by the scheduler and keeps the C
+        // convention; a lambda is called by Rill through a closure value.
+        if !self.wasm && !discard_result {
+            lifted.set_call_conventions(Self::TAILCC);
+        }
 
         let saved = self.builder.get_insert_block();
         let outer_cleanup = std::mem::take(&mut self.cleanup);
@@ -5225,12 +5297,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
-    fn build_tree(&self, occs: Vec<Occ>, tys: Vec<Ty>, rows: Vec<Row>) -> Tree {
-        self.build_tree_guarded(occs, tys, rows, &[])
-    }
-
     /// `guarded[i]` says whether arm `i` has a condition after its pattern.
-    /// An empty slice is a match with none, which is nearly all of them.
     fn build_tree_guarded(
         &self,
         occs: Vec<Occ>,

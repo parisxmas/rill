@@ -117,11 +117,14 @@ fn per_address() = 16
 # fifty milliseconds carries comfortably, everybody being told about everybody.
 fn max_players() = 8
 
-# Whether the crystals throw fire in the shared valley. Off for now: a meteor
-# is aimed at where somebody is standing, and standing about is most of what
-# people do while there are others to look at. The browser's own valley still
-# has them — this is the switch for this one.
-fn meteors() = 0
+# Whether the crystals throw fire in the shared valley. On: what a meteor is
+# aimed at is where somebody is standing, and standing about is most of what
+# people do while there are others to look at — which is the argument for
+# leaving it off and turned out to be the argument for turning it on, since
+# something that makes standing about dangerous is the point. The throws and
+# the craters were already on the wire, one line each per tick, so a browser
+# sees this valley's meteors exactly as it sees its own.
+fn meteors() = 1
 
 # How many addresses are tracked at once. One row per connection is more than
 # enough: a row is only in use while at least one connection from that address

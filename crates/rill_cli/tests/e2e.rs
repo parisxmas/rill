@@ -245,7 +245,7 @@ fn loops_can_carry_a_value() {
     let ir = String::from_utf8_lossy(&build.stdout);
     let body: String = ir
         .lines()
-        .skip_while(|l| !l.starts_with("define i64 @main.for"))
+        .skip_while(|l| !(l.starts_with("define") && l.contains("@main.for")))
         .take_while(|l| *l != "}")
         .collect::<Vec<_>>()
         .join("\n");
@@ -375,7 +375,7 @@ fn loops_over_buffers_do_not_count_references() {
     let ir = String::from_utf8_lossy(&build.stdout);
     let body: String = ir
         .lines()
-        .skip_while(|l| !l.starts_with("define i64 @main.for"))
+        .skip_while(|l| !(l.starts_with("define") && l.contains("@main.for")))
         .take_while(|l| *l != "}")
         .collect::<Vec<_>>()
         .join("\n");
@@ -1283,6 +1283,77 @@ fn custom_show_and_ord() {
          Cons(apple, Cons(fig, Cons(pear, Nil)))\n\
          Cons(1, Cons(2, Cons(3, Nil)))\n"
     );
+}
+
+/// A loop written as several functions calling each other in tail position,
+/// where every path returns the same thing — which is what a loop written for
+/// its effects looks like, and what used to grow the stack by a frame a turn.
+/// Two hundred thousand turns is far past what eight megabytes holds.
+#[test]
+fn a_tail_call_cycle_runs_in_constant_stack() {
+    let src = "fn take(acc) = (\"i 1 2\", \"rest\")\n\n\
+               fn reader(n, acc) =\n  \
+                 (msg, rest) = take(acc)\n  \
+                 if n == 0 then 0 else gate(n, msg, rest)\n\n\
+               fn gate(n, msg, rest) = handle(n, msg, rest)\n\n\
+               fn handle(n, msg, rest) =\n  \
+                 parts = split(msg, \" \")\n  \
+                 route(unwrap_or(nth(parts, 0), \"\"), parts)\n  \
+                 reader(n - 1, rest)\n\n\
+               fn route(kind, parts) = if kind == \"i\" then 1 else 0\n\n\
+               fn main() = println(reader(200000, \"\"))\n";
+    assert_eq!(run_source("tailcycle", src), "0\n");
+}
+
+/// The language server, driven the way an editor drives it: a buffer that
+/// was never saved is what gets checked, the type of a name that nothing
+/// annotated is what comes back, and the answers arrive framed.
+#[test]
+fn language_server_answers_an_editor() {
+    use std::io::Write;
+    let dir = std::env::temp_dir().join(format!("rill-lsp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("buffer.rill");
+    // On disk: nothing. What the editor holds is the whole story.
+    std::fs::write(&file, "").unwrap();
+    let uri = format!("file://{}", file.display());
+
+    let good = "fn twice(n) = n * 2\n\nfn main() = println(twice(21))\n";
+    let bad = "fn main() = println(nope)\n";
+    let mut input = Vec::new();
+    let mut frame = |body: String| {
+        input.extend_from_slice(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+    };
+    frame(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.to_string());
+    frame(format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{uri}","text":"{good}"}}}}}}"#
+    ));
+    // Hover over `twice`, whose parameter and result nothing wrote down.
+    frame(format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":0,"character":4}}}}}}"#
+    ));
+    frame(format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{uri}"}},"contentChanges":[{{"text":"{bad}"}}]}}}}"#
+    ));
+    frame(r#"{"jsonrpc":"2.0","method":"exit","params":{}}"#.to_string());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("lsp")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the server");
+    child.stdin.as_mut().unwrap().write_all(&input).unwrap();
+    let out = child.wait_with_output().expect("server did not finish");
+    let text = String::from_utf8(out.stdout).expect("the protocol is UTF-8");
+
+    assert!(text.contains("\"hoverProvider\":true"), "{text}");
+    // Every message is framed with the length of its body.
+    assert!(text.starts_with("Content-Length: "), "{text}");
+    assert!(text.contains("fn twice(n: Int) -> Int"), "hover said: {text}");
+    // The first buffer checks; the second does not, and says why.
+    assert!(text.contains("unknown variable `nope`"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Nested patterns, the decision tree they compile to, and the guards that

@@ -1,5 +1,74 @@
 # Changelog
 
+## Unreleased — a tail call is a jump, and now it is a promise
+
+The valley server segfaulted three times in two hours, disconnecting everybody
+in it each time. The core said what it was: eight thousand stacked frames of
+`reader`, `gate_on`, `handle_line`, `route` — the loop that reads one
+connection, every call in it in tail position, every one of them supposed to
+be a jump.
+
+- **Rill's own functions use `tailcc`**, LLVM's guaranteed-tail-call
+  convention, and a tail call is emitted as `musttail`. The C convention could
+  not keep the promise this language makes about tail calls: `tail` is a hint
+  there, and the optimizer may take it away. It does so in a shape that is not
+  rare at all — when every path through a loop returns the same value, the
+  returns are folded into one block, and a call that no longer ends its
+  function is not one the backend will jump to. That is what every loop
+  written for its effects looks like, and it cost one frame per message until
+  the strand ran off the end of its stack. `musttail` is an invariant instead
+  of a hint: no pass may break it, and under `tailcc` the two functions need
+  not even share a signature — which is what a loop written as several
+  functions calling each other needs.
+- **Everything the runtime calls keeps the C convention**: `main`, whose
+  address goes to the scheduler; the body of a `spawn`; an environment's drop
+  function; a map's vtable; and every trampoline C itself calls. A closure is
+  reached through a pointer, so lambdas, the shims that wrap named functions,
+  and the indirect call itself all use the one convention and can be sure of
+  each other. On wasm nothing changes: a tail call there needs a feature the
+  module may not be allowed to declare.
+- Measured on the machine it mattered on: before, the reader cycle compiled to
+  four calls and five jumps on x86-64, and the server died at about eight
+  thousand messages on one connection. After, it is one call — the one that
+  enters the loop — and eight jumps, and the deployed valley took twenty-four
+  thousand messages on one connection without growing.
+- `a_tail_call_cycle_runs_in_constant_stack` is the test that would have
+  caught it: three functions calling each other in tail position, two hundred
+  thousand turns, every path returning the same thing.
+
+## Unreleased — the compiler, kept open
+
+A language that infers everything is a language whose types are somewhere the
+program does not say them. Three things say them now.
+
+- **`rill check` reports everything one pass can find** rather than the first
+  thing. A function whose body does not check is recorded and stepped over —
+  its signature stays provisional, which is a fresh variable at every call, so
+  the functions after it mostly check as though it were fine and each says its
+  own first problem. Three mistakes take one run to learn about.
+- **`rill types <file.rill>`** prints the signature the checker worked out for
+  every function in the file, with the requirements the body imposed: `fn
+  merge(a: List('a), b: List('a)) -> List('a)    # where 'a is ordered`, over a
+  source line that says nothing about being ordered.
+- **`rill lsp`** is a language server, built into the compiler and speaking the
+  protocol on stdin and stdout. Diagnostics on the buffer as it stands —
+  nothing has to be saved, since the loader will take the entry file's text
+  from memory — the type of the name under the cursor, go to definition, an
+  outline, and formatting. `editors/README.md` has the three lines each that
+  Neovim, Helix and Emacs need; VS Code still wants a client extension, which
+  is not here yet.
+- What the server answers is worked out from **names rather than positions**,
+  because the AST records the line a thing is on and not the column. So a
+  diagnostic underlines a line and hover reads the identifier written under the
+  cursor. That is exact for anything declared at the top level and right for a
+  local wherever one name in a function means one thing; a name bound twice in
+  one body shows the first. Columns in the tree would fix that, and are a
+  bigger change than this one was.
+- The protocol is spoken without a dependency: `crates/rill_cli/src/json.rs` is
+  a value, a parser and an escaper, which is as much JSON as `initialize` and
+  `textDocument/hover` need between them. This toolchain has one dependency and
+  it is LLVM.
+
 ## Unreleased — a loop inside a loop counted the wrong one
 
 - **Nested `for` loops were wrong, and had been since `for` existed.** Both

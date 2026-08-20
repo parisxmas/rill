@@ -4,6 +4,9 @@
 //!   rill build <file.rill> [-o <out>] [--emit-ir]
 //!   rill run <file.rill>
 
+mod json;
+mod lsp;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -18,7 +21,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill types <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -40,9 +43,21 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let src = rest.first().ok_or(USAGE)?;
             let path = PathBuf::from(src);
             let module = rill_syntax::load_program(&path)?;
-            rill_types::check(&module).map_err(|e| format!("{}: {e}", path.display()))?;
-            Ok(ExitCode::SUCCESS)
+            // Everything one pass can find, rather than the first thing: a
+            // file with three mistakes in it should take one run to learn
+            // about three mistakes.
+            match rill_types::check_all(&module) {
+                Ok(_) => Ok(ExitCode::SUCCESS),
+                Err(errors) => {
+                    for e in &errors {
+                        eprintln!("{}: {e}", path.display());
+                    }
+                    Ok(ExitCode::FAILURE)
+                }
+            }
         }
+        "types" => types_cmd(rest),
+        "lsp" => lsp::serve(),
         "repl" => {
             repl()?;
             Ok(ExitCode::SUCCESS)
@@ -50,6 +65,39 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "fmt" => fmt_cmd(rest),
         _ => Err(USAGE.to_string()),
     }
+}
+
+// ---- types -----------------------------------------------------------------
+
+/// Every signature the checker worked out for the file's own functions. A
+/// language where annotations are optional is a language where the types are
+/// somewhere the program does not say, and this is where they are said.
+fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let src = args.first().ok_or(USAGE)?;
+    let path = PathBuf::from(src);
+    // The file's own names, so the prelude and the imports it pulled in do
+    // not answer a question about this file.
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mine: Vec<String> = own.functions.iter().map(|f| f.name.clone()).collect();
+
+    let module = rill_syntax::load_program(&path)?;
+    let tmod = match rill_types::check_all(&module) {
+        Ok(t) => t,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("{}: {e}", path.display());
+            }
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    for name in mine {
+        if let Some(&i) = tmod.fn_index.get(&name) {
+            println!("{}", rill_types::show_signature(&tmod.fns[i], &tmod.adts));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 // ---- fmt -------------------------------------------------------------------
