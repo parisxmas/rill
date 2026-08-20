@@ -30,6 +30,7 @@
     @location(4) fade: f32,
     @location(5) windward: f32,   // how much this puff faces the way it is going
     @location(6) secs: f32,       // real seconds since this parcel was made
+    @location(7) rocket: f32,     // one if this trail is behind a rocket
   }
 
   const BALL   = 0.62;            // the head, in metres
@@ -62,13 +63,20 @@
 
     var o: VOut;
     o.uv = vec2f(cx, cy);
-    o.seed = seed;
+    o.seed = abs(seed);
     o.age = 0.0;
     o.world = pos;
     o.fade = 0.0;
     o.windward = 0.0;
     o.secs = 0.0;
-    if (life <= 0.0) {
+    o.rocket = select(0.0, 1.0, seed < 0.0);
+    // A negative seed is a rocket rather than a crystal's fire — see `launch`
+    // in valley.rill. It flies through the same ring and gets the same trail,
+    // which is the whole reason it is in this ring, but the head of it is a
+    // tube of steel drawn by `rocket.wgsl` and not a ball of fire. So the head
+    // quad is dropped here and what is left is the smoke.
+    let rocket = seed < 0.0;
+    if (life <= 0.0 || (rocket && n == 0u)) {
       o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
       return o;
     }
@@ -94,9 +102,10 @@
     let born = slot >= 0.0;              // not made yet, at the start of a shot
 
     // Three numbers that belong to this parcel and to no other.
-    let hA = phash(slot * 1.37 + seed * 91.0);
-    let hB = phash(slot * 2.71 + seed * 57.0);
-    let hC = phash(slot * 4.19 + seed * 23.0);
+    let sd = abs(seed);
+    let hA = phash(slot * 1.37 + sd * 91.0);
+    let hB = phash(slot * 2.71 + sd * 57.0);
+    let hC = phash(slot * 4.19 + sd * 23.0);
 
     // Backwards along the flight. The gravity term comes back with a minus,
     // which is what makes the trail sag below the straight line back from the
@@ -193,7 +202,10 @@
     o.fade = select(0.0, pow(1.0 - age, 2.2) * (0.7 + 0.6 * hB), born);
     // Zero for anything in the trail: the wake does not burn, it only glows
     // with what it was given on the way past.
-    o.windward = collar * clamp(cos(lat), 0.0, 1.0);
+    // And no bow of fire ahead of a rocket: the heat on a meteor is the air it
+    // is compressing, and a rocket at seventy metres a second is not
+    // compressing anything worth drawing.
+    o.windward = collar * clamp(cos(lat), 0.0, 1.0) * (1.0 - o.rocket);
     return o;
   }
 
@@ -219,8 +231,14 @@
     col = mix(col, vec3f(0.85, 0.12, 0.02), smoothstep(0.72, 1.0, k));
     // Flame becomes smoke after about a third of a second and is all smoke by
     // a second, however long the trail behind it has been made.
-    let smoke = smoothstep(0.22 * WAS, 0.62 * WAS, v.secs);
-    col = mix(col, vec3f(0.30, 0.27, 0.26), smoke);
+    //
+    // A rocket's is smoke from the first parcel and paler than a meteor's: what
+    // comes off a motor is unburnt propellant and it hangs about white, where
+    // what comes off a stone at four hundred degrees is soot. It is the one
+    // thing anybody watching a rocket actually follows, so it is not left dark.
+    let smoke = max(smoothstep(0.22 * WAS, 0.62 * WAS, v.secs), v.rocket);
+    let ash = mix(vec3f(0.30, 0.27, 0.26), vec3f(0.72, 0.71, 0.70), v.rocket);
+    col = mix(col, ash, smoke);
 
     // The head is a hard little sun; the smoke is a soft blob that mostly is
     // not there at all.

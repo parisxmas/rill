@@ -187,6 +187,9 @@
     /* Empty is the one state worth interrupting for: the trigger does nothing
        now, and the row says so rather than simply being dark. */
     .ammo.dry i { background: rgba(226, 74, 60, 0.5); animation: dry 900ms ease-in-out infinite; }
+    /* Three rockets rather than ten rounds: fewer and fatter, so a glance tells
+       you which weapon is up without reading the count. */
+    .ammo.tube i { width: 11px; }
     @keyframes dry { 50% { background: rgba(226, 74, 60, 0.16); } }
 
     /* When the last crystal is gone. Not a dialogue and not a button — there
@@ -427,7 +430,8 @@
     <div class="keys"><b>click</b> to look &nbsp;·&nbsp; <b>WASD</b> walk &nbsp;·&nbsp;
       <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint &nbsp;·&nbsp;
       <b>C</b> crouch &nbsp;·&nbsp;
-      <b>left mouse</b> fire &nbsp;·&nbsp; <b>M</b> music</div>
+      <b>left mouse</b> fire &nbsp;·&nbsp; <b>1</b> rifle &nbsp;·&nbsp; <b>2</b> launcher
+      &nbsp;·&nbsp; <b>M</b> music</div>
   </div>
   <div class="stat" id="stat"></div>
   <div class="who-list" id="roster" hidden><h2>in the valley</h2><div id="rosterRows"></div></div>
@@ -495,7 +499,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=284";
+    import { run } from "./host.js?v=295";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -574,7 +578,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=284", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=295", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

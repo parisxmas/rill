@@ -27,7 +27,9 @@
 //          who <id> <name>                 what to call somebody
 //
 //   out    n <name>                        what to call this one
-//          i <keys> <yaw> <pitch>          what this player is doing
+//          i <keys> <yaw> <pitch>          what this player is doing — and the
+//                                          eighth bit of <keys> is not a key,
+//                                          it is which weapon is up
 //          f <dx> <dy> <dz>                and where they just fired
 //
 // A name is sent once and comes back as a `who`, rather than riding in every

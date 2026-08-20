@@ -63,6 +63,10 @@
   // it.
   @group(0) @binding(18) var propTex: texture_2d<f32>;
 
+  // The launcher and the rocket it fires, off one 512-pixel sheet — they came
+  // out of one file and they are the same object a moment apart.
+  @group(0) @binding(19) var rpgTex: texture_2d<f32>;
+
   // Bump without a normal map and without a tangent frame. The screen-space
   // derivatives of the height and of the surface position are between them
   // enough to recover the gradient in world space, which is the one thing a
@@ -837,10 +841,15 @@
       -0.004 * amp,
     ) * (1.0 - 0.75 * u.vmSize.w);
     let kick = vec3f(0.0, 0.008 * rc, -0.048 * rc);
+    // And out of frame while the hands are changing weapons. One number does
+    // both weapons because only one of them is ever drawn: it runs to one as
+    // what is held goes down, the draw switches to the other mesh at the
+    // bottom, and it runs back to nought as that one comes up.
+    let stow = vec3f(0.0, -0.42 * u.rpgMin.w, 0.10 * u.rpgMin.w);
     // The model is built with +x down the barrel, +y up and +z out to the
     // right, so reaching the camera's axes is a shuffle and then the rotations.
     return (Ry * Rx * Rz) * vec3f(m.z, m.y, m.x) * VM_SCALE
-         + mix(VM_AT, VM_AIM, u.vmSize.w) + bob + kick;
+         + mix(VM_AT, VM_AIM, u.vmSize.w) + bob + kick + stow;
   }
 
   // A direction, by the same rotation but without the offsets.

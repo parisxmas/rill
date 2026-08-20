@@ -483,6 +483,49 @@ did; only where it comes from has moved. The colour is read once, at the break,
 and a chip carries a number from then on — a palette that changes should change
 what the valley looks like and not what it heals.
 
+## The launcher
+
+Two, then. One and two put the rifle or the launcher in the hands, and the
+change is an animation rather than a substitution: whatever is held goes down
+and back over about a fifth of a second, the draw swaps at the bottom of it,
+and the other comes up. One number in the uniform does both weapons because
+only one of them is ever drawn.
+
+An RPG-7, CC0, out of OpenGameArt — an FBX, so `assimp` converts it to glTF and
+`tools/bake_prop.py` does the rest. The file carries the launcher *and* the
+rocket it fires as two nodes off one 512-pixel sheet, which is one texture
+binding for the thing in the hands and the thing in the air: they are the same
+object a moment apart. The model was authored at eighteen degrees to its own
+axes, so the baker learned `--align`: it takes the principal axis of the point
+cloud and turns it onto +x, which is what every shader here reads a baked mesh
+with. A model at an angle is a fact about the file, not a rendering problem to
+be corrected with two more constants in a shader.
+
+A rocket is a fireball with somebody's aim behind it. The crystals already
+throw fire that flies, drags, falls, lands and leaves a crater that hurts
+whoever is near it, and every bit of that is already on the wire — a `t` when
+one is thrown and a `k` where it comes down. So a rocket goes in the same ring
+and inherits all of it, including the trail, which is reconstructed from the
+ballistic curve rather than recorded. What tells the two apart is the sign of
+the seed: a crystal's comes out of `hash2` and is never negative, a rocket's is
+the same number with a minus in front. `fireball.wgsl` drops the head quad for
+those and turns the smoke pale — what comes off a motor is unburnt propellant,
+not soot — `meteor.wgsl` skips the stone, and `rocket.wgsl` draws the tube of
+steel at the head, nose along its velocity. No field was added to the ring and
+no message to the protocol.
+
+Seventy metres a second against the crystals' fourteen, which is eight tenths
+of a metre of drop at fifty and three and a third at a hundred: a weapon you
+lead with at range and point at anything close. Three in the tube, filled by
+the same boxes that fill the rifle, and two and a half seconds between shots,
+which is what stops a rocket being a rifle.
+
+What the browser is holding travels to the server in the eighth bit of the
+integer the keys already ride in. It is not a key, but a client telling a
+server what it is doing this frame is already sending that number, and what it
+is holding is part of it — and a server old enough not to know masks it off and
+gets the rifle.
+
 ## The ammunition
 
 Ten rounds go in it, and there are sixteen boxes lying about the valley to fill

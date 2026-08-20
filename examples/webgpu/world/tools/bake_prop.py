@@ -2,6 +2,7 @@
 """Bakes a static glTF prop into the one file the page loads.
 
     python3 tools/bake_prop.py ammo_box_1k.gltf ammo-box.mesh
+    python3 tools/bake_prop.py rpg7.gltf rpg7.mesh --node RPG7_node --scale 100
 
 The format is the rifle's, because the rifle already had it and a second
 format would have been a second loader for no reason:
@@ -19,10 +20,19 @@ format would have been a second loader for no reason:
 Sixteen bytes a vertex against a float's thirty-two, and indexed.
 
 A prop is several nodes — a box, a handle, a latch, two rings — and they are
-welded into one buffer here rather than drawn as five. Node translations are
-applied on the way in; rotation and scale are asserted away rather than
-supported, because no prop in this valley has either and code for a case that
-never arrives is code nobody has ever run.
+welded into one buffer here rather than drawn as five, with each node's own
+transform applied on the way in.
+
+`--node NAME` takes only the nodes named, which is how one file holding a
+launcher and the rocket it fires becomes two meshes off one texture. `--scale`
+divides the positions afterwards: a glTF converted out of FBX arrives in
+centimetres, and this valley is in metres.
+
+`--align` turns the model so that its own long axis is +X, which is the
+convention every shader here reads a baked mesh with. A model authored at an
+angle in its own space is not a rendering problem to be corrected with two more
+constants in a shader — it is a fact about the file, and the place to settle it
+is once, here, where it can be measured rather than guessed at.
 """
 import json
 import struct
@@ -50,7 +60,68 @@ def read(gltf, blob, index):
     return out
 
 
-def main(src, dst):
+def matmul(m, v):
+    """glTF stores a node matrix column-major; this is m * (v, 1) in that layout."""
+    return tuple(
+        m[0 + i] * v[0] + m[4 + i] * v[1] + m[8 + i] * v[2] + m[12 + i]
+        for i in range(3)
+    )
+
+
+def matmul3(m, v):
+    """The same without the translation — for normals. Renormalised by the
+    caller, which is right for a rotation with a uniform scale and is all any
+    node in these files has."""
+    return tuple(m[0 + i] * v[0] + m[4 + i] * v[1] + m[8 + i] * v[2] for i in range(3))
+
+
+def node_matrix(node):
+    if "matrix" in node:
+        return node["matrix"]
+    tx, ty, tz = node.get("translation", (0.0, 0.0, 0.0))
+    assert "rotation" not in node and "scale" not in node, node.get("name")
+    return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, tx, ty, tz, 1]
+
+
+def long_axis(pts):
+    """The direction the model mostly lies along, by power iteration on the
+    covariance. A launcher is a tube: one axis carries nearly all of the
+    variance and the answer is not close."""
+    n = len(pts)
+    mean = [sum(p[i] for p in pts) / n for i in range(3)]
+    cov = [[sum((p[a] - mean[a]) * (p[b] - mean[b]) for p in pts) / n for b in range(3)]
+           for a in range(3)]
+    v = [1.0, 0.3, 0.1]
+    for _ in range(200):
+        w = [sum(cov[a][b] * v[b] for b in range(3)) for a in range(3)]
+        m = max(abs(x) for x in w) or 1.0
+        v = [x / m for x in w]
+    ln = sum(x * x for x in v) ** 0.5
+    return [x / ln for x in v]
+
+
+def onto_x(a):
+    """The shortest rotation taking `a` onto +X, as a 3x3 by rows. Rodrigues
+    about the axis perpendicular to both; the antiparallel case cannot arise
+    here because the power iteration is seeded pointing along +X."""
+    ax = [0.0, a[2], -a[1]]                       # cross(a, +X)
+    s = sum(c * c for c in ax) ** 0.5
+    if s < 1e-9:
+        return [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    k = [c / s for c in ax]
+    c = a[0]                                       # dot(a, +X)
+    K = [[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]]
+    R = []
+    for i in range(3):
+        row = []
+        for j in range(3):
+            kk = k[i] * k[j]
+            row.append((1 if i == j else 0) * c + K[i][j] * s + kk * (1 - c))
+        R.append(row)
+    return R
+
+
+def main(src, dst, want=None, scale=1.0, align=False):
     src = Path(src)
     gltf = json.loads(src.read_text())
     blobs = {}
@@ -64,8 +135,9 @@ def main(src, dst):
     for node in gltf["nodes"]:
         if "mesh" not in node:
             continue
-        assert "rotation" not in node and "scale" not in node, node.get("name")
-        tx, ty, tz = node.get("translation", (0.0, 0.0, 0.0))
+        if want and node.get("name") not in want:
+            continue
+        m = node_matrix(node)
         for prim in gltf["meshes"][node["mesh"]]["primitives"]:
             a = prim["attributes"]
             pos = read(gltf, blob, a["POSITION"])
@@ -73,8 +145,21 @@ def main(src, dst):
             uv = read(gltf, blob, a["TEXCOORD_0"])
             base = len(verts)
             for p, n, t in zip(pos, nor, uv):
-                verts.append(((p[0] + tx, p[1] + ty, p[2] + tz), n, t))
+                wp = matmul(m, p)
+                wn = matmul3(m, n)
+                ln = max((wn[0] ** 2 + wn[1] ** 2 + wn[2] ** 2) ** 0.5, 1e-9)
+                verts.append(
+                    (tuple(c / scale for c in wp), tuple(c / ln for c in wn), t)
+                )
             idx.extend(base + i for i in read(gltf, blob, prim["indices"]))
+    assert verts, f"no node matched {want}"
+
+    if align:
+        a = long_axis([v[0] for v in verts])
+        R = onto_x(a)
+        turn = lambda v: tuple(sum(R[i][j] * v[j] for j in range(3)) for i in range(3))
+        verts = [(turn(p), turn(n), t) for (p, n, t) in verts]
+        print(f"  aligned {[round(c, 3) for c in a]} onto +x")
 
     assert len(verts) < 65536, f"{len(verts)} vertices will not index in u16"
 
@@ -104,4 +189,16 @@ def main(src, dst):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    args = sys.argv[1:]
+    want, scale, align = set(), 1.0, False
+    while len(args) > 2:
+        flag = args.pop(2)
+        if flag == "--node":
+            want.add(args.pop(2))
+        elif flag == "--scale":
+            scale = float(args.pop(2))
+        elif flag == "--align":
+            align = True
+        else:
+            raise SystemExit(f"unknown flag {flag}")
+    main(args[0], args[1], want, scale, align)

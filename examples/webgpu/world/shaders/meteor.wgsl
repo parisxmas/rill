@@ -36,7 +36,9 @@
     o.world = pos;
     o.uv = vec2f(0.5);
     o.local = vec2f(0.0);
-    if (life <= 0.0) {
+    // A rocket flies through the same ring — see `launch` in valley.rill — and
+    // there is no stone inside it. It has a mesh of its own.
+    if (life <= 0.0 || seed < 0.0) {
       o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
       return o;
     }

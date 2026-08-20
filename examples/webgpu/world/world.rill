@@ -190,6 +190,17 @@ export fn mag_full() -> Int = v.mag_full()
 # prisms, so it has to be told where the line is.
 export fn mag_count() -> Int = v.mag_count()
 
+# Which weapon is up, how many rockets are left, and how many the tube holds.
+# The browser sets the weapon on the key and the server hears it in the eighth
+# bit of the same integer the keys ride in.
+export fn weapon(s: Ptr) -> Int = v.weapon(s)
+
+export fn set_weapon(s: Ptr, n: Int) = v.set_weapon(s, n)
+
+export fn rockets(s: Ptr) -> Int = v.rockets(s)
+
+export fn rocket_full() -> Int = v.rocket_full()
+
 # Where a box is, said as a count rather than as a position: box `i` has been
 # taken `n` times, and the valley works out the rest. This is what arrives on
 # the wire when somebody else picks one up.

@@ -469,7 +469,48 @@ fn clear_bullets(b) =
 # count is spent in the same instruction on both, which is what keeps the
 # number on the screen and the number the server is enforcing the same one.
 fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
+  if weapon(s) == 1 then fire_rocket(s, dx, dy, dz) else fire_bullet(s, dx, dy, dz)
+
+fn fire_bullet(s, dx, dy, dz) =
   if peek_f32(s, 118) < 0.5 then 0 else fire_round(s, dx, dy, dz)
+
+# A rocket is a fireball with a flat trajectory and somebody's aim behind it.
+#
+# The crystals already throw fire that flies, drags, falls, lands and leaves a
+# crater that hurts whoever is near it, and all of that is already on the wire
+# — a `t` when one is thrown and a `k` where it came down. A rocket that is a
+# second system beside that one would be the same arithmetic written twice and
+# two more messages to keep in step. So it goes in the same ring.
+#
+# What tells them apart is the sign of the seed. A crystal's seed comes out of
+# `hash2` and is never negative; a rocket's is the same number with a minus in
+# front of it. The renderer reads the sign and draws a tube of steel with a
+# smoke trail instead of a ball of fire, and the sign survives the wire without
+# a field being added to it. The same trick the mesh uses for "no texture here"
+# and the shard pool uses for "nothing in this slot".
+fn fire_rocket(s, dx, dy, dz) =
+  if peek_f32(s, 120) < 0.5 then 0 else launch(s, dx, dy, dz)
+
+fn launch(s, dx, dy, dz) =
+  poke_f32(s, 120, peek_f32(s, 120) - 1.0)
+  w = wd(s)
+  fb = peek_ptr(w, 74)
+  k = to_int(peek_f32(w, 63))
+  at = k % fireball_cap() * fireball_stride()
+  v = rocket_speed()
+  # Out of the tube rather than out of the eye, or the first thing a rocket
+  # meets is the shoulder it was fired from.
+  poke_f32(fb, at, peek_f32(s, 16) + dx * 1.1)
+  poke_f32(fb, at + 1, peek_f32(s, 17) + dy * 1.1)
+  poke_f32(fb, at + 2, peek_f32(s, 18) + dz * 1.1)
+  poke_f32(fb, at + 3, dx * v)
+  poke_f32(fb, at + 4, dy * v)
+  poke_f32(fb, at + 5, dz * v)
+  poke_f32(fb, at + 6, 0.0 - (0.01 + hash2(peek_f32(w, 28), 61.0) * 0.98))
+  poke_f32(fb, at + 7, 6.0)
+  poke_f32(fb, at + 8, 0.0)
+  poke_f32(w, 63, to_float(k + 1))
+  1
 
 fn fire_round(s, dx, dy, dz) =
   poke_f32(s, 118, peek_f32(s, 118) - 1.0)
@@ -1917,6 +1958,8 @@ fn place_player(s) =
   poke_f32(s, 115, 1.0)
   poke_f32(s, 116, 0.0)
   poke_f32(s, 118, to_float(mag_size()))
+  poke_f32(s, 119, 0.0)
+  poke_f32(s, 120, to_float(rocket_full()))
   poke_f32(s, 84, 0.0)
   poke_f32(s, 85, 0.0)
   poke_f32(s, 107, 0.0)
@@ -2091,9 +2134,37 @@ fn set_rounds(s: Ptr, n: Int) =
 # sprint, crouch. What arrives is whatever somebody typed into a socket, and a
 # key that is not a key should not be one the first time something new is
 # hung off the eighth bit.
+# The eighth bit is not a key. It is which weapon is up — the rifle or the
+# launcher — and it travels in the same number for the same reason the keys do:
+# a client that is telling a server what it is doing this frame is already
+# sending one integer, and what it is holding is part of that. Nothing else in
+# the message had to change and an old server simply masks it off.
 fn set_keys(s: Ptr, keys: Int) =
   poke_f32(s, 30, to_float(bit_and(keys, 127)))
+  poke_f32(s, 119, if bit_and(keys, 128) == 128 then 1.0 else 0.0)
   1
+
+# Which weapon is up: nought the rifle, one the launcher.
+fn weapon(s: Ptr) -> Int = to_int(peek_f32(s, 119))
+
+fn set_weapon(s: Ptr, n: Int) =
+  poke_f32(s, 119, to_float(n))
+  1
+
+# How many rockets are left, and how many the tube holds. Fewer than the rifle
+# has rounds by a long way: one of these is a meteor you aimed.
+fn rockets(s: Ptr) -> Int = to_int(peek_f32(s, 120))
+
+fn rocket_full() -> Int = 3
+
+# How fast it leaves the tube. Five times the crystals' lobbed fourteen,
+# because this is a thing that is aimed rather than arced. It shares their
+# gravity — a third of the world's, which is the one unphysical number in this
+# file — and at this speed that comes to eight tenths of a metre of drop at
+# fifty and three and a third at a hundred, which is a weapon you lead with at
+# range and point at anything close. Measured: a level shot travels two hundred
+# and eighty metres in four seconds.
+fn rocket_speed() = 70.0
 
 fn keys_of(s: Ptr) -> Int = to_int(peek_f32(s, 30))
 
@@ -2615,6 +2686,10 @@ fn rise_one(s) = if may_rise(s) > 0 then respawn(s) else 0
 fn worth_of(s, sb, i, at, mend) =
   if peek_f32(sb, at + 16) > 1.5 then
     poke_f32(s, 118, to_float(mag_size()))
+    # A box on the ground is ammunition, not rifle ammunition: it fills the
+    # tube as well. There is one thing to pick up in this valley, and one that
+    # left half of what you are carrying empty would be a strange one.
+    poke_f32(s, 120, to_float(rocket_full()))
     # Taken here, and it turns up somewhere else. Which somewhere is a
     # function of nothing but the box's number and how many times it has been
     # taken, so a server and a browser that have both seen the same pickups

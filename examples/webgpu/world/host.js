@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=284";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=284";
+import { load } from "./world.js?v=295";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=295";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=284";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "284";
+const V = "295";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -98,6 +98,7 @@ const SHADERS = {
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common",
+  launcher: "common", rocket: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
   "firefly-sim": null,
@@ -135,6 +136,9 @@ const TEXTURES = [
   // the reach that picks it up, and at that distance five hundred and twelve
   // across is already more texels than the box has pixels.
   ["./ammo-box.jpg", 512, 512],
+  // The launcher and the rocket it fires, off one sheet — they came out of one
+  // file and they are the same object a moment apart.
+  ["./rpg7.jpg", 512, 512],
 ];
 
 async function loadShaders(step) {
@@ -163,6 +167,8 @@ async function loadShaders(step) {
     METEOR: whole("meteor"),
     SHARK: whole("shark"),
     PROP: whole("prop"),
+    LAUNCHER: whole("launcher"),
+    ROCKET: whole("rocket"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
@@ -578,7 +584,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 13 + Object.keys(SHADERS).length + TEXTURES.length + 6 + (server ? 1 : 0);
+  const TOTAL = 15 + Object.keys(SHADERS).length + TEXTURES.length + 6 + (server ? 1 : 0);
   let done = 0;
   // Never past the end. This is a count kept by hand of steps taken elsewhere,
   // and the two drift every time something is added — a bar that says 104% is
@@ -839,7 +845,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // the GPU buffer did not is a `writeBuffer` overrun, which is a validation
   // error, an invalid pipeline and a black screen with nothing in the console
   // that names the cause.
-  const UNI_FLOATS = 84;
+  const UNI_FLOATS = 100;
   const uni = device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const shadowSamp = device.createSampler({ compare: "less" });
@@ -868,7 +874,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // another they were the longest thing between the page opening and the
   // valley appearing.
   const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView,
-         jupiterView, saturnView, moonsView, sharkView, propView] =
+         jupiterView, saturnView, moonsView, sharkView, propView, rpgView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
       mipped(`${url}?v=${V}`, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
@@ -904,6 +910,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     { binding: 16, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 17, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 18, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 19, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const bglShadow = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: {} },
@@ -1080,6 +1087,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     ]},
   ];
   const propPipe = pipe("prop", S.PROP, propLayout);
+  // The launcher in the hands: the rifle's vertex layout, its own frustum, and
+  // no instances — there is only ever one pair of hands.
+  const rpgPipe = pipe("launcher", S.LAUNCHER, vmLayout);
+  // And the rocket in the air, one instance per slot of the fireballs' ring.
+  const rocketPipe = pipe("rocket", S.ROCKET, [
+    { arrayStride: 16, attributes: [
+      { shaderLocation: 0, offset: 0, format: "unorm16x4" },
+      { shaderLocation: 1, offset: 8, format: "snorm8x4" },
+      { shaderLocation: 2, offset: 12, format: "unorm16x2" },
+    ]},
+    { arrayStride: 36, stepMode: "instance", attributes: [
+      { shaderLocation: 3, offset: 0, format: "float32x3" },    // where
+      { shaderLocation: 4, offset: 12, format: "float32x3" },   // and how fast
+      { shaderLocation: 5, offset: 24, format: "float32" },     // seed: sign says rocket
+      { shaderLocation: 6, offset: 28, format: "float32" },     // life
+    ]},
+  ]);
   const muzzlePipe = pipe("muzzle", S.MUZZLE, [],
     { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
 
@@ -1117,6 +1141,28 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   device.queue.writeBuffer(propIB, 0, propIdxBytes);
   step("ammo-box.mesh");
+
+  // The launcher and its rocket. One file, one texture, two meshes, all in the
+  // rifle's own format — so this is the same six lines a third and a fourth
+  // time, which is what a format earns you.
+  const oneMesh = async (url) => {
+    const bytes = await (await fetch(`${url}?v=${V}`)).arrayBuffer();
+    const head = new DataView(bytes, 0, 32);
+    const verts = head.getUint32(0, true);
+    const count = head.getUint32(4, true);
+    const box = new Float32Array(bytes, 8, 6);
+    const vb = gpuBuf(new Uint8Array(bytes, 32, verts * 16));
+    const idxBytes = new Uint8Array((count * 2 + 3) & ~3);
+    idxBytes.set(new Uint8Array(bytes, 32 + verts * 16, count * 2));
+    const ib = device.createBuffer({
+      size: idxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(ib, 0, idxBytes);
+    step(url.slice(2));
+    return { vb, ib, count, box };
+  };
+  const rpg = await oneMesh("./rpg7.mesh");
+  const rocket = await oneMesh("./rocket.mesh");
 
   // The shark. Same shape of file as the rifle, one header longer: a magic,
   // the two counts, and the box the positions were quantized against.
@@ -1983,6 +2029,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     return verts;
   }
 
+  // Which weapon is up, which one has been asked for, and how far through the
+  // change of hands we are. `swap` runs nought to one and back; `held` only
+  // changes at the bottom of it, which is what makes it read as one weapon
+  // being put away and another brought up rather than a substitution.
+  //
+  // Declared up here rather than beside the rest of the frame loop's state
+  // because `buildWorld` reads it, and `buildWorld` runs while the page is
+  // still starting up — a `let` further down is in its dead zone at that
+  // point and the first frame throws.
+  let held = 0, wantHeld = 0, swap = 0, swapping = 0;
+
   function buildWorld(idx) {
     T = TIERS[idx];
     // The camera survives the world being rebuilt around it.
@@ -1998,6 +2055,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     const grass = net ? net.world.grass : T.grass;
     world = E.init(BigInt(T.grid), BigInt(pines), BigInt(crystals), BigInt(grass));
     state = E.join(world);
+    // A re-tier is a new valley and a new player block in it, and `join` hands
+    // out a player carrying the rifle. What is in the hands is the page's
+    // business and did not change because the terrain got coarser — without
+    // this the launcher stayed on screen and fired rounds.
+    E.set_weapon(state, BigInt(held));
     if (net) {
       // Rejoining after a tier change: the valley is new, the connection is
       // not. Where everybody is arrives again with the next snapshot, but the
@@ -2110,6 +2172,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       { binding: 16, resource: moonsView },
       { binding: 17, resource: sharkView },
       { binding: 18, resource: propView },
+      { binding: 19, resource: rpgView },
     ]});
 
     // The water pipeline carries this tier's wave and ripple counts.
@@ -2146,6 +2209,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       { binding: 16, resource: moonsView },
       { binding: 17, resource: sharkView },
       { binding: 18, resource: propView },
+      { binding: 19, resource: rpgView },
     ]});
     const envFmt = { format: "rgba8unorm" };
     W.envPipes = {
@@ -2333,6 +2397,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const bit = { KeyW: 1, KeyS: 2, KeyA: 4, KeyD: 8, Space: 16, ShiftLeft: 32, ShiftRight: 32, KeyC: 64 };
   addEventListener("keydown", e => { if (bit[e.code]) { keys |= bit[e.code]; e.preventDefault(); } });
   addEventListener("keydown", e => { if (e.code === "KeyM") setMusic(!musicOn); });
+  // One and two, the rifle and the launcher. Asked for rather than done: what
+  // happens next is an animation, and pressing the key you are already holding
+  // should do nothing rather than play it.
+  addEventListener("keydown", e => {
+    if (e.repeat) return;
+    if (e.code === "Digit1" || e.code === "Numpad1") wantHeld = 0;
+    if (e.code === "Digit2" || e.code === "Numpad2") wantHeld = 1;
+  });
   // On the press, not held: read from the event rather than from the key mask,
   // so leaning on space at the end does not restart over and over.
   addEventListener("keydown", e => { if (e.code === "Space" && !e.repeat) wantRestart = true; });
@@ -2352,6 +2424,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // to BOLT_CYCLE after every shot; while it is running the rifle is open and
   // the trigger does nothing, which is the whole of what a bolt action is.
   const BOLT_CYCLE = 1.15;
+  // The launcher is slower to bring back on target than a bolt is to work: the
+  // whole of the propellant leaves the front of it and there is a tube to
+  // reload. Two and a half seconds is what stops a rocket being a rifle.
+  const RPG_CYCLE = 2.5;
+  const cycleNow = () => (held ? RPG_CYCLE : BOLT_CYCLE);
   let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0;
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
@@ -2418,13 +2495,18 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     ammoEl.appendChild(pip);
     pips.push(pip);
   }
-  let lastAmmo = -1;
+  // The row shows what is in the thing being held, so it is as long as that
+  // weapon is loaded: ten thin ones for the rifle, three fat ones for the
+  // tube. A row that stayed ten long with three of them lit would read as a
+  // rifle with seven rounds gone.
+  let lastAmmo = -1, lastHeld = -1;
   let wasDown = false;
   let lastHp = -1, hurtUntil = 0;
   // The sights. `wantAim` is the button; `aim` is how far through the move,
   // eased, because a field of view that changes between one frame and the next
   // reads as a cut rather than as somebody raising a rifle.
   let wantAim = false, aim = 0;
+  const SWAP_SECS = 0.19;
   // What the scope does to the world. Five times: the far ridge is four
   // hundred metres off and somebody standing on it is a figure rather than a
   // suggestion. It is a lot of magnification for a rifle, and the mouse is
@@ -2576,7 +2658,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The shot, before the frame that will fly it. Only with the bolt closed,
     // and only on a press: holding the button does nothing, because `wantShot`
     // is set by the event rather than read from the state.
-    boltT = Math.min(boltT + dt, BOLT_CYCLE);
+    boltT = Math.min(boltT + dt, cycleNow());
     // Say so on the page. The bolt itself is the honest indicator, but it is
     // off to the right of where anyone aiming is looking, so the crosshair
     // goes quiet while the rifle is open and comes back when it will fire.
@@ -2623,12 +2705,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // through — but the bang, the recoil, the bolt and the message to the
     // server all live out here and were happening anyway, so a rifle with
     // nothing in it went off in every way except the one that counted.
-    if (wantShot && boltT >= BOLT_CYCLE && !wading && Number(E.rounds(state)) === 0) {
-      warn.textContent = "the magazine is empty";
+    const loaded = held ? Number(E.rockets(state)) : Number(E.rounds(state));
+    if (wantShot && boltT >= cycleNow() && !wading && loaded === 0) {
+      warn.textContent = held ? "the tube is empty" : "the magazine is empty";
       warn.classList.add("on");
       warnUntil = t + 1.9;
       dryClick();
-    } else if (wantShot && boltT >= BOLT_CYCLE && !wading) {
+    } else if (wantShot && boltT >= cycleNow() && !wading) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
       const dx = Math.sin(yaw) * cp, dy = Math.sin(pit), dz = -Math.cos(yaw) * cp;
@@ -2645,6 +2728,24 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     wantShot = false;
     recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
+
+    // Changing hands. Down over `SWAP_SECS`, over at the bottom, up again — so
+    // the weapon that is going away is the one that is drawn on the way down
+    // and the new one is drawn on the way up. Firing is refused throughout by
+    // the bolt clock, which is set to the new weapon's cycle at the changeover.
+    if (swapping === 0 && wantHeld !== held) { swapping = 1; }
+    if (swapping === 1) {
+      swap = Math.min(1, swap + dt / SWAP_SECS);
+      if (swap >= 1) {
+        held = wantHeld;
+        E.set_weapon(state, BigInt(held));
+        boltT = 0;                       // it takes a moment to be ready
+        swapping = 2;
+      }
+    } else if (swapping === 2) {
+      swap = Math.max(0, swap - dt / SWAP_SECS);
+      if (swap <= 0) swapping = 0;
+    }
 
     // The sights, eased both ways and framerate independent so they take the
     // same time on every screen.
@@ -2681,7 +2782,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       if (now - lastSent >= 15) {
         lastSent = now;
         const look = stateF32();
-        net.input(keys, look[19], look[20]);
+        // The eighth bit is what is in the hands, not a key. It rides in the
+        // same integer because the message is already being sent and what a
+        // player is holding is part of what they are doing this frame; the
+        // server masks the keys off it and reads the bit as the weapon. A
+        // server old enough not to know about it drops it and gets the rifle.
+        net.input(keys | (held ? 128 : 0), look[19], look[20]);
       }
       applyEvents(net.take());
       // Walked here as well as there, so that turning and walking answer the
@@ -2960,6 +3066,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf.set(sharkBox.subarray(3, 6), 68);
     uf.set(propBox.subarray(0, 3), 76);   // and the ammunition box's
     uf.set(propBox.subarray(3, 6), 80);
+    uf.set(rocket.box.subarray(0, 3), 84);
+    uf.set(rocket.box.subarray(3, 6), 88);
+    uf.set(rpg.box.subarray(0, 3), 92);
+    uf.set(rpg.box.subarray(3, 6), 96);
+    // How far through a weapon swap the hands are. One number for both, since
+    // only one weapon is drawn: it runs to one as what is held goes down, the
+    // draw changes over at the bottom, and it runs back to nought.
+    uf[95] = swap;
     // The bolt's throw, as a fraction. The shot itself is the first instant of
     // it, so the recoil and the lift start together the way they do in a hand.
     uf[51] = boltT / BOLT_CYCLE;
@@ -3019,10 +3133,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The rifle. A whole number that changes on the frame the trigger goes
     // down, so it is compared rather than eased: nothing here moves unless a
     // round left or a magazine arrived.
-    const ammo = Number(E.rounds(state));
-    if (ammo !== lastAmmo) {
-      lastAmmo = ammo;
-      for (let i = 0; i < pips.length; i++) pips[i].classList.toggle("out", i >= ammo);
+    const ammo = held ? Number(E.rockets(state)) : Number(E.rounds(state));
+    const shown = held ? Number(E.rocket_full()) : Number(E.mag_full());
+    if (ammo !== lastAmmo || held !== lastHeld) {
+      lastAmmo = ammo; lastHeld = held;
+      ammoEl.classList.toggle("tube", held === 1);
+      for (let i = 0; i < pips.length; i++) {
+        pips[i].hidden = i >= shown;
+        pips[i].classList.toggle("out", i >= ammo);
+      }
       ammoEl.classList.toggle("dry", ammo === 0);
     }
     const hp = E.health(state);
@@ -3180,6 +3299,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // the one thing that says there is something solid in there — was the part
     // that vanished first.
     pass.setPipeline(meteorPipe); pass.draw(3 * 11, fireCap);
+    // And the rockets, over the same ring: the shader keeps the slots whose
+    // seed is negative and sends the rest past the far plane. Drawn after the
+    // smoke and before the blast, which is the order they happen in.
+    pass.setPipeline(rocketPipe);
+    pass.setVertexBuffer(0, rocket.vb); pass.setVertexBuffer(1, fireInst);
+    pass.setIndexBuffer(rocket.ib, "uint16");
+    pass.drawIndexed(rocket.count, fireCap);
     pass.setPipeline(blastPipe); pass.setVertexBuffer(0, blastInst); pass.draw(6 * 96, blastCap);
 
     // Last, so it covers the water and the fireflies as well as the ground.
@@ -3192,11 +3318,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // behind it would only be in the way of what it is aiming at.
     if (E.health(state) > 0.001 && aim < 0.9) {
       pass.setBindGroup(0, W.bgMain);
-      pass.setPipeline(vmPipe);
-      pass.setVertexBuffer(0, rifleVB);
-      pass.setIndexBuffer(rifleIB, "uint16");
-      pass.drawIndexed(rifleIdx);
-      pass.setPipeline(muzzlePipe); pass.draw(12);
+      if (held === 1) {
+        pass.setPipeline(rpgPipe);
+        pass.setVertexBuffer(0, rpg.vb);
+        pass.setIndexBuffer(rpg.ib, "uint16");
+        pass.drawIndexed(rpg.count);
+      } else {
+        pass.setPipeline(vmPipe);
+        pass.setVertexBuffer(0, rifleVB);
+        pass.setIndexBuffer(rifleIB, "uint16");
+        pass.drawIndexed(rifleIdx);
+        // The flash belongs to the rifle. The launcher's own is the trail.
+        pass.setPipeline(muzzlePipe); pass.draw(12);
+      }
     }
     pass.end();
 

@@ -25,6 +25,13 @@
     // quantized against — see `ammo-box.mesh` and `tools/bake_prop.py`.
     propMin:  vec4f,
     propSize: vec4f,
+    // The rocket's, and the launcher's. `rpgMin.w` is not a bound: it is how
+    // far through a weapon swap the hands are, nought with a weapon up and one
+    // with it out of frame, which both viewmodels read to duck out of the way.
+    rocketMin:  vec4f,
+    rocketSize: vec4f,
+    rpgMin:     vec4f,
+    rpgSize:    vec4f,
   }
   @group(0) @binding(0) var<uniform> u: U;
 
