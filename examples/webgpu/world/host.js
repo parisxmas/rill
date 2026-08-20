@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=276";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=276";
+import { load } from "./world.js?v=277";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=277";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=276";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "276";
+const V = "277";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1690,7 +1690,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // about it. Two rounds of slack covers everything in flight; past that the
     // two have genuinely disagreed — a magazine one side walked over and the
     // other did not — and the server is the one that is right.
-    if (m.ammo !== null && Math.abs(m.ammo - E.rounds(state)) > 2) E.set_rounds(state, m.ammo);
+    // Both conversions are load-bearing: an `Int` across the wasm boundary is
+    // an i64, which arrives as a BigInt and will not be subtracted from a
+    // number, and will not be passed back as one either.
+    if (m.ammo !== null && Math.abs(m.ammo - Number(E.rounds(state))) > 2) E.set_rounds(state, BigInt(m.ammo));
     const x = E.player_x(state), y = E.player_y(state), z = E.player_z(state);
     const d = Math.hypot(x - m.x, y - m.y, z - m.z);
     if (d > 4) E.set_at(state, m.x, m.y, m.z);
