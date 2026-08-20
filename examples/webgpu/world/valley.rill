@@ -1721,6 +1721,17 @@ fn shark_step(w, dt, tnow) =
   poke_f32(w, 93, shark_gape(w))
   1
 
+# The tail keeps beating in a valley this browser is not the one thinking
+# about. What arrives twenty times a second is where the animal is and what it
+# is doing, and nothing at all about its tail — so the beat is run locally, by
+# the rule the server runs, with the speed taken from the mode rather than from
+# a distance nobody measured here. Without it a shark in a shared valley is a
+# model being dragged through the water.
+fn swim_on(w: Ptr, dt: Float) =
+  sp = if shark_mode(w) > 0.5 then shark_rush() else shark_speed()
+  poke_f32(w, 92, peek_f32(w, 92) + dt * (1.9 + sp * 0.55))
+  1
+
 # How far the jaw is open: on the approach, wide at the bite, shut on the way
 # out — so the mouth is the tell that it has decided about you.
 fn shark_gape(w) =
@@ -2575,6 +2586,7 @@ fn step_wind(w, dt) =
 # to somebody, which crystal went and where the shark is are the server's, and
 # arrive as events.
 fn step_visuals(w: Ptr, dt: Float) =
+  swim_on(w, dt)
   step_wind(w, dt)
   step_bullets(w, peek_ptr(w, 68), dt, 0)
   step_shards(peek_ptr(w, 69), dt)

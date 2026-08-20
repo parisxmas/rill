@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=281";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=281";
+import { load } from "./world.js?v=282";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=282";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=281";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "281";
+const V = "282";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1945,6 +1945,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let state = 0;
   let W = null;       // tier-dependent GPU resources
   const stateF32 = () => new Float32Array(E.memory.buffer, Number(state), 64);
+  // The world's own block, which is not the player's. The shark lives here —
+  // it is one animal in a valley that may have eight people in it, and in
+  // somebody else's valley the server is what says where it is. This was being
+  // read out of the player block, sixty-four floats long, at indices in the
+  // eighties: `undefined` every one of them, which lands in the uniform as NaN
+  // and puts the animal at no position at all. It has been invisible since the
+  // day the shark moved out of a player and into the world.
 
   // The water grid: x, z, and the exact depth of the terrain below each
   // vertex — Rill's own height function, asked point by point.
@@ -2939,10 +2946,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The shark: which way it faces, where the tail is in its beat, how wide
     // the jaw is, and where it is. Straight out of Rill — the renderer is told
     // where the animal is, it does not decide.
-    uf[56] = st[89];                      // heading
-    uf[58] = st[92];                      // where the tail is in its beat
-    uf[59] = st[93];                      // how wide the jaw is
-    uf[60] = st[86]; uf[61] = st[87]; uf[62] = st[88];
+    const wf = new Float32Array(E.memory.buffer, Number(world), 96);
+    uf[56] = wf[89];                      // heading
+    uf[58] = wf[92];                      // where the tail is in its beat
+    uf[59] = wf[93];                      // how wide the jaw is
+    uf[60] = wf[86]; uf[61] = wf[87]; uf[62] = wf[88];
     uf.set(sharkBox.subarray(0, 3), 64);
     uf.set(sharkBox.subarray(3, 6), 68);
     uf.set(propBox.subarray(0, 3), 76);   // and the ammunition box's
