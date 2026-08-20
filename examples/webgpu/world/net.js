@@ -13,7 +13,7 @@
 //
 //   in     hello <id> <pines> <crystals> <grass> <clock> <token>
 //          gone <i>...                     crystals already shot
-//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose hit shot seen>...
+//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose hit shot seen ammo>...
 //          r <x y z vx vy vz owner>        a round left somebody's rifle
 //          t <x y z vx vy vz seed life>    a crystal threw
 //          k <x y z seed>                  one landed
@@ -193,7 +193,12 @@ function snapshot(net, line) {
       // it, and everybody being visible is the right reading of its absence.
       return { id: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], pitch: n[5], health: n[6],
                pose: n[7] | 0, hit: n[8] | 0, shot: n[9] | 0,
-               seen: n.length > 10 ? n[10] !== 0 : true };
+               seen: n.length > 10 ? n[10] !== 0 : true,
+               // Rounds left, for your own block only — everybody else's says
+               // minus one, and so does every block from a server old enough
+               // not to send it at all. Both mean the same thing here: this
+               // snapshot does not know, so do not touch the count.
+               ammo: n.length > 11 && n[11] >= 0 ? n[11] | 0 : null };
     }),
   };
   // How long one takes to arrive, smoothed. It is the length of the walk

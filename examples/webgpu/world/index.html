@@ -169,6 +169,26 @@
     }
     .tally b { color: #f6c02e; font-weight: 600; }
 
+    /* What is in the rifle, bottom right, opposite the count. Ten pips rather
+       than a numeral: how many are left is a thing to know without reading,
+       and a row that is visibly half gone says it before a "5" would. Brass
+       for a round that is there, and the socket it left behind for one that is
+       not, so the row keeps its shape and only the fill moves. */
+    .ammo {
+      position: fixed; right: 20px; bottom: 26px; display: flex; gap: 3px;
+      pointer-events: none;
+    }
+    .ammo i {
+      display: block; width: 4px; height: 13px; border-radius: 1px;
+      background: #f0b64a; box-shadow: 0 0 6px rgba(240, 182, 74, 0.45);
+      transition: background 120ms linear, box-shadow 120ms linear;
+    }
+    .ammo i.out { background: rgba(255, 255, 255, 0.1); box-shadow: none; }
+    /* Empty is the one state worth interrupting for: the trigger does nothing
+       now, and the row says so rather than simply being dark. */
+    .ammo.dry i { background: rgba(226, 74, 60, 0.5); animation: dry 900ms ease-in-out infinite; }
+    @keyframes dry { 50% { background: rgba(226, 74, 60, 0.16); } }
+
     /* When the last crystal is gone. Not a dialogue and not a button — there
        is nothing left to decide, so it is two lines over the valley and the
        valley keeps running behind them. Pointer-events stay off so looking
@@ -447,6 +467,7 @@
   <div class="tally" id="tally"></div>
   <div class="vit" id="vit"><i id="vitfill"></i></div>
   <div class="wind" id="wind"><i id="windfill"></i></div>
+  <div class="ammo" id="ammo"></div>
   <div class="over dead" id="dead"><span>YOU ARE DEAD</span><span class="tick" id="tick">5</span><small>back on your feet in a moment</small></div>
   <div class="over cut" id="cut"><span>DISCONNECTED</span><em>the valley went on without you</em><small>reload to go back</small></div>
   <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em><small>space to begin again</small></div>
@@ -474,7 +495,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=275";
+    import { run } from "./host.js?v=276";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -553,7 +574,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=275", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=276", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

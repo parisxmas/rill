@@ -632,6 +632,11 @@ fn add_player(b, c, rest, eye) =
   strbuf_add(b, " " + float_to_str(v.health(s)) + " " + int_to_str(pose_of(s)))
   strbuf_add(b, " " + int_to_str(v.hits_given(s)) + " " + int_to_str(v.hits_taken(s)))
   strbuf_add(b, " " + int_to_str(seen))
+  # How many rounds are in the rifle, and only ever your own. Whether the man
+  # behind the rock is reloading is the sort of thing a client should have to
+  # watch for rather than read off the wire, so everybody else's block says
+  # minus one, which is not a count and cannot be mistaken for an empty one.
+  strbuf_add(b, " " + int_to_str(if v.player_id(s) == v.player_id(eye) then v.rounds(s) else 0 - 1))
   add_players(b, rest, eye)
 
 # Zeros where the numbers would be. Not the last place they were seen, which

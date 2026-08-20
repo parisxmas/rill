@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=275";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=275";
+import { load } from "./world.js?v=276";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=276";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=275";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "275";
+const V = "276";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1685,6 +1685,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (!m || net.last === appliedSnap) return;
     appliedSnap = net.last;
     E.set_health(state, m.health);
+    // The count is the browser's own between snapshots, or it would jump back
+    // up for the tenth of a second between pulling the trigger and hearing
+    // about it. Two rounds of slack covers everything in flight; past that the
+    // two have genuinely disagreed — a magazine one side walked over and the
+    // other did not — and the server is the one that is right.
+    if (m.ammo !== null && Math.abs(m.ammo - E.rounds(state)) > 2) E.set_rounds(state, m.ammo);
     const x = E.player_x(state), y = E.player_y(state), z = E.player_z(state);
     const d = Math.hypot(x - m.x, y - m.y, z - m.z);
     if (d > 4) E.set_at(state, m.x, m.y, m.z);
@@ -2311,6 +2317,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const vitfill = document.getElementById("vitfill");
   const windfill = document.getElementById("windfill");
   let lastWind = -1;
+  // The pips are built once out of what a magazine holds, so the row is the
+  // world's number and not a ten written into the page.
+  const ammoEl = document.getElementById("ammo");
+  const pips = [];
+  for (let i = 0; i < Number(E.mag_full()); i++) {
+    const pip = document.createElement("i");
+    ammoEl.appendChild(pip);
+    pips.push(pip);
+  }
+  let lastAmmo = -1;
   let wasDown = false;
   let lastHp = -1, hurtUntil = 0;
   // The sights. `wantAim` is the button; `aim` is how far through the move,
@@ -2887,6 +2903,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
           ? "linear-gradient(90deg, #3f7fb8, #4aa3d8)"
           : "linear-gradient(90deg, #2f5f8c, #3f7fb8)";
       windfill.classList.toggle("spent", E.winded(state) === 1);
+    }
+    // The rifle. A whole number that changes on the frame the trigger goes
+    // down, so it is compared rather than eased: nothing here moves unless a
+    // round left or a magazine arrived.
+    const ammo = Number(E.rounds(state));
+    if (ammo !== lastAmmo) {
+      lastAmmo = ammo;
+      for (let i = 0; i < pips.length; i++) pips[i].classList.toggle("out", i >= ammo);
+      ammoEl.classList.toggle("dry", ammo === 0);
     }
     const hp = E.health(state);
     if (Math.abs(hp - lastHp) > 0.002) {

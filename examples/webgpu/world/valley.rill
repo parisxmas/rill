@@ -48,6 +48,7 @@
 #   f32 109, 110 rounds taken, and rounds landed on somebody else
 #   f32 111      how much the sights are magnifying, 1 when they are not
 #   f32 115      breath, one to zero        116  out of it, until 115 comes back
+#   f32 118      rounds left in the magazine
 #   f32 102..104 what being shot did to their head: a clock, how hard, which way
 #   f32 99       this player's id, which outlives its place in the table
 #   ptr 94       the world it is in; in the world's own block, itself
@@ -462,7 +463,16 @@ fn clear_bullets(b) =
 # written against it under that name — and it carries whose round this is, so a
 # hit can be credited and so that nobody shoots themselves in the back of the
 # head at the muzzle.
+# An empty rifle is a rifle that does not go off, and this is the one place
+# both ways of asking come through: the browser fires here for its own tracer
+# and bang, and the server fires here for what the round actually hits. The
+# count is spent in the same instruction on both, which is what keeps the
+# number on the screen and the number the server is enforcing the same one.
 fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
+  if peek_f32(s, 118) < 0.5 then 0 else fire_round(s, dx, dy, dz)
+
+fn fire_round(s, dx, dy, dz) =
+  poke_f32(s, 118, peek_f32(s, 118) - 1.0)
   w = wd(s)
   b = peek_ptr(w, 68)
   k = to_int(peek_f32(w, 60))
@@ -477,6 +487,7 @@ fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
   poke_f32(b, at + 6, peek_f32(s, 99))
   poke_f32(b, at + 7, bullet_life())
   poke_f32(w, 60, to_float(k + 1))
+  1
 
 # ---- what a round does when it arrives -------------------------------------
 #
@@ -493,6 +504,37 @@ fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
 fn break_ring() = 32
 
 fn shard_cap() = 224
+
+# The first slots of the shard buffer are not debris at all: they are the
+# magazines lying about the valley, which is how they get drawn and stepped
+# and picked up without a buffer, a pipeline or a wire message of their own.
+# A piece of a crystal, a lump out of a crater and a magazine are the same
+# twenty floats; what tells them apart is slot 16, which already said whether
+# walking over one was worth anything.
+#
+# Sixteen of them, which at ten rounds each is a hundred and sixty rounds on
+# the ground at once — enough that somebody who has spent a magazine has
+# somewhere to walk rather than nothing to do until they respawn.
+fn mag_count() = 16
+
+fn mag_size() = 10
+
+# How long a taken one stays gone. Twenty seconds is long enough that taking
+# one matters and short enough that the valley does not run dry with eight
+# people in it.
+fn mag_return() = 20.0
+
+# What the flag in slot 16 means: nothing, a crystal chip that heals, or a
+# magazine that reloads.
+fn worth_nothing() = 0.0
+
+fn worth_healing() = 1.0
+
+fn worth_rounds() = 2.0
+
+# Debris goes round the ring above the magazines, so a busy minute of breaking
+# crystals cannot write over them.
+fn shard_ring() = shard_cap() - mag_count()
 
 # Twenty floats: position, velocity, orientation, spin, scale, colour.
 fn shard_stride() = 20
@@ -512,7 +554,7 @@ fn seg_dist2(ax, ay, az, bx, by, bz, cx, cy, cz) =
   px * px + py * py + pz * pz
 
 fn spawn_shard(sb, k, x, y, z, sc, r, g, b, throw, heals, seed) =
-  at = k % shard_cap() * shard_stride()
+  at = (mag_count() + k % shard_ring()) * shard_stride()
   h1 = hash2(seed, 11.0)
   h2 = hash2(seed, 23.0)
   h3 = hash2(seed, 37.0)
@@ -616,6 +658,67 @@ fn hue_r(id: Float, hp: Float) = hue_ch(hue_h(id), hue_s(hp), hue_v(hp), 5.0)
 fn hue_g(id: Float, hp: Float) = hue_ch(hue_h(id), hue_s(hp), hue_v(hp), 3.0)
 
 fn hue_b(id: Float, hp: Float) = hue_ch(hue_h(id), hue_s(hp), hue_v(hp), 1.0)
+
+# Where the magazines lie. Scattered like everything else in the valley — a
+# hash of the index, tried a few times until one lands on ground rather than in
+# the lake, because a magazine at the bottom of the water is one nobody will
+# ever have.
+fn place_mags(w: Ptr) =
+  sb = peek_ptr(w, 69)
+  for i in 0..mag_count()
+    place_mag(sb, i, mag_spot(to_float(i), 0))
+
+fn mag_spot(seed: Float, tries: Int) =
+  x = (hash2(seed * 3.7 + to_float(tries) * 11.3, 5.0) - 0.5) * 150.0
+  z = (hash2(seed * 5.1 + to_float(tries) * 7.9, 9.0) - 0.5) * 150.0
+  if height(x, z) > 0.4 then pack_spot(x, z) else if tries > 6 then pack_spot(x, z) else mag_spot(seed, tries + 1)
+
+# Two numbers out of one return, without a tuple: the valley is one array of
+# floats and this is the one place that wanted a pair.
+fn pack_spot(x: Float, z: Float) = (x, z)
+
+fn place_mag(sb, i, spot) =
+  (x, z) = spot
+  at = i * shard_stride()
+  poke_f32(sb, at, x)
+  poke_f32(sb, at + 1, stop_height(x, z))
+  poke_f32(sb, at + 2, z)
+  poke_f32(sb, at + 3, 0.0)
+  poke_f32(sb, at + 4, 0.0)
+  poke_f32(sb, at + 5, 0.0)
+  poke_f32(sb, at + 6, hash2(to_float(i), 3.0) * 6.28318)
+  poke_f32(sb, at + 7, 0.0)
+  poke_f32(sb, at + 8, hash2(to_float(i), 7.0) * 6.28318)
+  poke_f32(sb, at + 9, 0.0)
+  poke_f32(sb, at + 10, 0.0)
+  poke_f32(sb, at + 11, 0.0)
+  poke_f32(sb, at + 12, 0.34)
+  # Gunmetal, and nothing like the colour of anything else on the ground: a
+  # crystal chip glows, a lump of hillside is the hillside, and this is the
+  # only dark blue-grey thing in the valley.
+  poke_f32(sb, at + 13, 0.2)
+  poke_f32(sb, at + 14, 0.23)
+  poke_f32(sb, at + 15, 0.3)
+  poke_f32(sb, at + 16, worth_rounds())
+  poke_f32(sb, at + 17, 0.0)
+  1
+
+# A taken magazine is gone rather than removed: its scale is zero and slot 17
+# says when it comes back, which is the same trick the crystals use for being
+# broken and costs nothing to step over.
+fn step_mags(w, t) =
+  sb = peek_ptr(w, 69)
+  for i in 0..mag_count()
+    back_mag(sb, i * shard_stride(), t)
+
+fn back_mag(sb, at, t) =
+  due = peek_f32(sb, at + 17)
+  if due < 0.001 then 0
+  else if t < due then 0
+  else
+    poke_f32(sb, at + 12, 0.34)
+    poke_f32(sb, at + 17, 0.0)
+    1
 
 fn break_crystal(w, cb, cat, ci) =
   sb = peek_ptr(w, 69)
@@ -1237,14 +1340,19 @@ fn gather_shard(s, sb, i) =
     else if dy < 0.0 - 1.2 then 0
     else
       poke_f32(sb, at + 12, 0.0)
-      poke_f32(s, 82, clampf(peek_f32(s, 82) + 0.00625, 0.0, 1.0))
-      1
+      worth_of(s, sb, at)
 
 fn gather(s, sb) =
   for i in 0..shard_cap()
     gather_shard(s, sb, i)
 
 fn health(s: Ptr) -> Float = peek_f32(s, 82)
+
+# How many rounds are in the rifle, which is a number on the screen and the
+# reason it will not go off.
+fn rounds(s: Ptr) -> Int = to_int(peek_f32(s, 118))
+
+fn mag_full() -> Int = mag_size()
 
 # How much running is left, one to zero, for whatever wants to draw it.
 fn breath(s: Ptr) -> Float = peek_f32(s, 115)
@@ -1671,6 +1779,9 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 53, 1.0)
   clear_bullets(bullet_buf)
   clear_shards(shard_buf)
+  # After the clearing, because the magazines live in the same buffer and are
+  # the one thing in it that is there from the start.
+  place_mags(s)
   clear_fireballs(fire_buf)
   clear_chargers(charge_buf)
   clear_blasts(blast_buf)
@@ -1749,6 +1860,7 @@ fn place_player(s) =
   poke_f32(s, 82, 1.0)
   poke_f32(s, 115, 1.0)
   poke_f32(s, 116, 0.0)
+  poke_f32(s, 118, to_float(mag_size()))
   poke_f32(s, 84, 0.0)
   poke_f32(s, 85, 0.0)
   poke_f32(s, 107, 0.0)
@@ -1901,6 +2013,16 @@ fn set_health(s: Ptr, h: Float) =
   poke_f32(s, 82, h)
   1
 
+# What the server says is in the rifle. The browser keeps its own count so that
+# the number falls on the frame the trigger was pulled rather than a tenth of a
+# second later, and the two only ever disagree in that tenth of a second — the
+# same code fires and the same code picks magazines up on both sides. So this
+# is written only when the disagreement is bigger than the round trip can
+# explain: a magazine one side saw and the other did not.
+fn set_rounds(s: Ptr, n: Int) =
+  poke_f32(s, 118, to_float(n))
+  1
+
 # ---- what a player has asked for -------------------------------------------
 #
 # A browser alone in the valley acts the moment the key goes down. A server
@@ -2026,10 +2148,13 @@ fn take_fire(s, tnow, gap) =
   if tnow - peek_f32(s, 52) < gap then 0
   else if in_water(s) > 0 then 0
   else if peek_f32(s, 82) < 0.001 then 0
+  else if peek_f32(s, 118) < 0.5 then 0
   else
+    # An empty magazine is the one refusal that is not about the shot being
+    # wrong, so it does not count against the wild-shot allowance either: the
+    # trigger is being pulled honestly, there is simply nothing in there.
     poke_f32(s, 52, tnow)
     fire(s, peek_f32(s, 48), peek_f32(s, 49), peek_f32(s, 50))
-    1
 
 fn world_time(w: Ptr) -> Float = peek_f32(w, 28)
 
@@ -2380,6 +2505,7 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
 # shark has decided. Once a tick, however many people are in it.
 fn step_world(w: Ptr, dt: Float) =
   t = step_wind(w, dt)
+  step_mags(w, t)
   step_bullets(w, peek_ptr(w, 68), dt, 1)
   step_shards(peek_ptr(w, 69), dt)
   step_fireballs(w, peek_ptr(w, 74), dt, 1)
@@ -2405,6 +2531,7 @@ fn step_wind(w, dt) =
 # to somebody, which crystal went and where the shark is are the server's, and
 # arrive as events.
 fn step_visuals(w: Ptr, dt: Float) =
+  step_mags(w, world_time(w))
   step_wind(w, dt)
   step_bullets(w, peek_ptr(w, 68), dt, 0)
   step_shards(peek_ptr(w, 69), dt)
@@ -2427,6 +2554,18 @@ fn rise_one(s) = if may_rise(s) > 0 then respawn(s) else 0
 
 # What one player sweeps up off the ground, after the world has finished
 # moving it about.
+# What one was worth. A chip off a crystal still has the light in it and mends
+# you a little; a magazine fills the rifle and says when it will be back.
+# Anything else is scenery and does not reach here.
+fn worth_of(s, sb, at) =
+  if peek_f32(sb, at + 16) > 1.5 then
+    poke_f32(s, 118, to_float(mag_size()))
+    poke_f32(sb, at + 17, world_time(wd(s)) + mag_return())
+    1
+  else
+    poke_f32(s, 82, clampf(peek_f32(s, 82) + 0.00625, 0.0, 1.0))
+    1
+
 fn pick_up(s: Ptr) = gather(s, peek_ptr(wd(s), 69))
 
 # The three of them and a camera, which is a browser with the valley to itself.

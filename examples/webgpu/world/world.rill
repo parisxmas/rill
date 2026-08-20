@@ -176,6 +176,15 @@ export fn health(s: Ptr) -> Float = v.health(s)
 export fn gib_at(w: Ptr, x: Float, y: Float, z: Float, yaw: Float, id: Int) =
   v.gib_at(w, x, y, z, yaw, id)
 
+# Rounds left in the rifle, and how many one magazine holds — the number on
+# the screen, and what it is out of.
+export fn rounds(s: Ptr) -> Int = v.rounds(s)
+
+export fn mag_full() -> Int = v.mag_full()
+
+# And what the server says it is, for the rare frame the two have drifted.
+export fn set_rounds(s: Ptr, n: Int) = v.set_rounds(s, n)
+
 export fn breath(s: Ptr) -> Float = v.breath(s)
 
 export fn winded(s: Ptr) -> Int = v.winded(s)
