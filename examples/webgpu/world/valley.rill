@@ -1419,14 +1419,18 @@ fn gather_shard(s, sb, i, mend) =
       poke_f32(sb, at + 12, 0.0)
       worth_of(s, sb, i, at, mend)
 
-# Whether this is worth anything to whoever is standing on it. A full rifle
-# walks over ammunition: taking it would put ten rounds into a rifle that has
-# ten and move the box to the far side of the valley, which is the worst of
-# both. A chip of crystal is always taken — the heal clamps, and a chip is
-# small enough that losing a fraction of one is not something anybody is
-# counting.
+# Whether this is worth anything to whoever is standing on it. Somebody
+# carrying a full rifle and a full tube walks over ammunition: taking it would
+# put ten rounds into a rifle that has ten and move the box to the far side of
+# the valley, which is the worst of both. Room in either is enough — a box
+# holds both kinds, and the rule that asked only about the rifle meant that
+# firing three rockets with a full magazine left you walking over box after box
+# with an empty tube and no way to fill it.
+#
+# A chip of crystal is always taken: the heal clamps, and a chip is small
+# enough that losing a fraction of one is not something anybody is counting.
 fn wanted(s, sb, at) =
-  if peek_f32(sb, at + 16) < 1.5 then 1 else if rounds(s) >= mag_size() then 0 else 1
+  if peek_f32(sb, at + 16) < 1.5 then 1 else if rounds(s) < mag_size() then 1 else if rockets(s) < rocket_full() then 1 else 0
 
 fn gather(s, sb, mend) =
   for i in 0..shard_cap()
