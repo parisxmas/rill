@@ -1156,10 +1156,15 @@ fn try_break(w, cb, ci, b, at, ax, ay, az, bx, by, bz) =
       break_crystal(w, cb, cat, ci)
 
 fn hit_crystals(w, b, at, ax, ay, az, bx, by, bz) =
-  cb = peek_ptr(w, 66)
-
-  for ci in 0..to_int(peek_f32(w, 58))
-    try_break(w, cb, ci, b, at, ax, ay, az, bx, by, bz)
+  sg = seg_of(w)
+  poke_f32(sg, 0, ax)
+  poke_f32(sg, 1, ay)
+  poke_f32(sg, 2, az)
+  poke_f32(sg, 3, bx)
+  poke_f32(sg, 4, by)
+  poke_f32(sg, 5, bz)
+  set_grid_bounds(sg, ax, az, bx, bz, 4.5)
+  grid_walk(w, b, at, 0)
 
 # ---- and what it does to somebody ------------------------------------------
 #
@@ -1807,10 +1812,12 @@ fn glass_near(w, x, y, z, seed) =
   if seed > 0.0 then 0 else break_near(w, x, y, z)
 
 fn break_near(w, x, y, z) =
-  cb = peek_ptr(w, 66)
-
-  for ci in 0..to_int(peek_f32(w, 58))
-    break_if_near(w, cb, ci, x, y, z)
+  sg = seg_of(w)
+  poke_f32(sg, 0, x)
+  poke_f32(sg, 1, y)
+  poke_f32(sg, 2, z)
+  set_grid_bounds(sg, x, z, x, z, blast_glass() + 4.5)
+  grid_walk(w, null_ptr(), 0, 1)
 
 fn break_if_near(w, cb, ci, x, y, z) =
   cat = ci * 8
@@ -2214,6 +2221,108 @@ fn hits_stone(w, fb, at, ax, ay, az, bx, by, bz) =
 # are four bytes and nothing spills, so the whole thing looked correct until
 # the first rocket flew on the server. Registers only, in this whole chain.
 fn seg_of(w) = peek_ptr(w, 118)
+
+# ---- the crystal grid -------------------------------------------------------
+#
+# Three hundred crystals, none of which ever moves, and every round in the air
+# was asking all three hundred on every step: six sphere tests each, eighteen
+# hundred a projectile a tick, half of what a step cost. So the valley is cut
+# into sixteen by sixteen cells of ten metres once, at init, and a segment asks
+# only the cells it could reach.
+#
+# The layout is one flat buffer: 257 offsets — cell c's crystals are entries
+# offs[c] to offs[c+1], the 257th closing the last cell — and then the crystal
+# indices themselves. Built by counting, summing, and dealing, which is three
+# passes and no sorting.
+#
+# The walk visits all 256 cell slots and compares each against the query's
+# bounds rather than looping the bounds themselves — 256 integer tests cost
+# nothing next to the sphere tests they avoid, and it keeps every helper here
+# at five or six integer arguments, in registers on both targets. The bounds
+# travel as floats in the segment scratch (slots 10-13) for the same reason
+# the segment does.
+fn crystal_grid(w) = peek_ptr(w, 119)
+
+fn grid_cell(x) = clampi(to_int((x + 80.0) * 0.1), 15)
+
+fn build_crystal_grid(w, cb, nc) =
+  gr = crystal_grid(w)
+  tmp = alloc_bytes(256 * 4)
+
+  for c in 0..256
+    poke_f32(tmp, c, 0.0)
+
+  for ci in 0..nc
+    count_into(tmp, cb, ci)
+
+  poke_f32(gr, 0, 0.0)
+
+  for c in 0..256
+    poke_f32(gr, c + 1, peek_f32(gr, c) + peek_f32(tmp, c))
+
+  for c in 0..256
+    poke_f32(tmp, c, peek_f32(gr, c))
+
+  for ci in 0..nc
+    deal_into(gr, tmp, cb, ci)
+  1
+
+fn cell_of(cb, ci) = grid_cell(peek_f32(cb, ci * 8)) * 16 + grid_cell(peek_f32(cb, ci * 8 + 2))
+
+fn count_into(tmp, cb, ci) =
+  c = cell_of(cb, ci)
+  poke_f32(tmp, c, peek_f32(tmp, c) + 1.0)
+  1
+
+fn deal_into(gr, tmp, cb, ci) =
+  c = cell_of(cb, ci)
+  at = to_int(peek_f32(tmp, c))
+  poke_f32(gr, 257 + at, to_float(ci))
+  poke_f32(tmp, c, to_float(at + 1))
+  1
+
+# The query. The segment and the cell bounds are already in the scratch; mode
+# says what to do with each crystal found — 0 is a round's break test, 1 is a
+# blast's radius test — because the walk is the same walk and a second copy of
+# it would drift from the first.
+fn grid_walk(w, p, at, mode) =
+  for c in 0..256
+    walk_cell(w, p, at, mode, c)
+  0
+
+fn walk_cell(w, p, at, mode, c) =
+  sg = seg_of(w)
+  cx = c / 16
+  cz = c % 16
+  if cx < to_int(peek_f32(sg, 10)) then 0 else if cx > to_int(peek_f32(sg, 11)) then 0 else if cz < to_int(peek_f32(sg, 12)) then 0 else if cz > to_int(peek_f32(sg, 13)) then 0 else cell_entries(w, p, at, mode, c)
+
+fn cell_entries(w, p, at, mode, c) =
+  gr = crystal_grid(w)
+  e0 = to_int(peek_f32(gr, c))
+  e1 = to_int(peek_f32(gr, c + 1))
+
+  for e in e0..e1
+    one_entry(w, p, at, mode, e)
+  0
+
+fn one_entry(w, p, at, mode, e) =
+  sg = seg_of(w)
+  ci = to_int(peek_f32(crystal_grid(w), 257 + e))
+  if mode == 0 then try_break(w, peek_ptr(w, 66), ci, p, at, peek_f32(sg, 0), peek_f32(sg, 1), peek_f32(sg, 2), peek_f32(sg, 3), peek_f32(sg, 4), peek_f32(sg, 5)) else break_if_near(w, peek_ptr(w, 66), ci, peek_f32(sg, 0), peek_f32(sg, 1), peek_f32(sg, 2))
+
+# Bounds into the scratch: the box round the segment, grown by how far a
+# crystal's spheres can reach past its own centre — a charged one swells to
+# two and a half times its size.
+fn set_grid_bounds(sg, ax, az, bx, bz, reach) =
+  lo = if ax < bx then ax else bx
+  hi = if ax > bx then ax else bx
+  zlo = if az < bz then az else bz
+  zhi = if az > bz then az else bz
+  poke_f32(sg, 10, to_float(grid_cell(lo - reach)))
+  poke_f32(sg, 11, to_float(grid_cell(hi + reach)))
+  poke_f32(sg, 12, to_float(grid_cell(zlo - reach)))
+  poke_f32(sg, 13, to_float(grid_cell(zhi + reach)))
+  1
 
 # A stone knocked out of a wall lies where it fell, and it is still a stone:
 # it stops rounds, it stops rockets, it stops a boot, and another warhead can
@@ -2626,6 +2735,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   down_buf = alloc_bytes(down_ring() * 4)
   wallbox_buf = alloc_bytes(wall_cap() * 4 * 4)
   seg_buf = alloc_bytes(64)
+  grid_buf = alloc_bytes((257 + ncrys + 1) * 4)
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
   hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
   step = cell_step(grid)
@@ -2648,6 +2758,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 116, down_buf)
   poke_ptr(s, 117, wallbox_buf)
   poke_ptr(s, 118, seg_buf)
+  poke_ptr(s, 119, grid_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
@@ -2664,6 +2775,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   clear_shards(shard_buf)
   # After the clearing, because the magazines live in the same buffer and are
   # the one thing in it that is there from the start.
+  build_crystal_grid(s, crystal_buf, nc)
   place_walls(s, block_buf)
   place_mags(s)
   clear_fireballs(fire_buf)
