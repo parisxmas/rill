@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=313";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=313";
+import { load } from "./world.js?v=314";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=314";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=313";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "313";
+const V = "314";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1799,6 +1799,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // A stone off a wall. The blast that did it arrives as its own `k`; this
       // says which block went, because nothing on this side decided it.
       else if (e.kind === "w") E.drop_block(world, BigInt(n[0]));
+      // A meteor somebody shot out of the air. Nothing on this side decided
+      // it, so the pieces are spawned from the same call the shooter's world
+      // made.
+      else if (e.kind === "d") E.down_fire(world, BigInt(n[0]));
       // A box of ammunition is somewhere else. What arrives is how many times
       // box `i` has been taken, not where it now is: where that puts it is the
       // valley's own arithmetic, run identically here and on the server, so

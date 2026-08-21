@@ -543,6 +543,7 @@ fn step_bullet(w, b, at, dt, decide) =
   # charge animation. It was one missing guard.
   if on > 0.5 && decide > 0 then
     hit_stone(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
+    hit_fire(w, b, at, 0 - 1, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
     hit_crystals(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
     hit_players(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
   else if on > 0.5 then stop_on_ghosts(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz) else 0
@@ -2053,7 +2054,74 @@ fn fly_fireball(w, fb, at, dt, decide) =
 # through another path.
 fn rocket_stop(w, fb, at, ax, ay, az, bx, by, bz) =
   hit_crystals(w, fb, at, ax, ay, az, bx, by, bz)
-  if peek_f32(fb, at + 7) < 0.001 then 1 else if hits_stone(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else hits_body(w, fb, at, ax, ay, az, bx, by, bz)
+  if peek_f32(fb, at + 7) < 0.001 then 1 else if hits_stone(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else if hits_fire(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else hits_body(w, fb, at, ax, ay, az, bx, by, bz)
+
+fn hits_fire(w, fb, at, ax, ay, az, bx, by, bz) =
+  hit_fire(w, fb, at, at, ax, ay, az, bx, by, bz)
+  if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+
+# ---- shooting the sky down --------------------------------------------------
+#
+# What a crystal throws is a stone with a flame round it, and a stone can be
+# hit. It takes the round with it and comes apart where it was, and the pieces
+# fall the rest of the way — which is the difference between a thing you have
+# to run from and a thing you can answer.
+#
+# Only where the world is deciding, and only the crystals' own fire: a rocket
+# has a negative seed and is nobody's to shoot out of the air. Which ones went
+# is sent, because a client does not know what anybody else's rounds did.
+fn meteor_r() = 0.9
+
+fn hit_fire(w, p, at, skip, ax, ay, az, bx, by, bz) =
+  fb = peek_ptr(w, 74)
+
+  for i in 0..fireball_cap()
+    try_down_fire(w, fb, i, p, at, skip, ax, ay, az, bx, by, bz)
+  0
+
+fn try_down_fire(w, fb, i, p, at, skip, ax, ay, az, bx, by, bz) =
+  fat = i * fireball_stride()
+  if fat == skip then 0 else if peek_f32(fb, fat + 7) <= 0.0 then 0 else if peek_f32(fb, fat + 6) < 0.0 then 0 else if peek_f32(p, at + 7) < 0.001 then 0 else cross_fire(w, fb, i, fat, p, at, ax, ay, az, bx, by, bz)
+
+fn cross_fire(w, fb, i, fat, p, at, ax, ay, az, bx, by, bz) =
+  d2 = seg_dist2(ax, ay, az, bx, by, bz, peek_f32(fb, fat), peek_f32(fb, fat + 1), peek_f32(fb, fat + 2))
+  if d2 > meteor_r() * meteor_r() then 0
+  else
+    poke_f32(p, at + 7, 0.0)
+    shatter_fire(w, fb, fat)
+    note_down(w, i)
+    1
+
+# Down and outward, because it was on its way down. Pieces that leapt upward
+# would read as something going off; this is something being broken.
+fn shatter_fire(w, fb, fat) =
+  sb = peek_ptr(w, 69)
+  k0 = to_int(peek_f32(w, 61))
+
+  for j in 0..9
+    spawn_chunk(sb, k0 + j, peek_f32(fb, fat), peek_f32(fb, fat + 1), peek_f32(fb, fat + 2), 0.5, 0.36, 0.16, 0.07, peek_f32(fb, fat + 3) * 0.3, peek_f32(fb, fat + 4) * 0.3 + 2.0, peek_f32(fb, fat + 5) * 0.3, to_float(fat) * 17.3 + to_float(j))
+
+  poke_f32(w, 61, to_float(k0 + 9))
+  poke_f32(fb, fat + 7, 0.0)
+  1
+
+fn down_ring() = 32
+
+fn note_down(w, i) =
+  n = to_int(peek_f32(w, 125))
+  poke_f32(peek_ptr(w, 126), n % down_ring(), to_float(i))
+  poke_f32(w, 125, peek_f32(w, 125) + 1.0)
+  1
+
+fn fires_down(w: Ptr) -> Int = to_int(peek_f32(w, 125))
+
+fn down_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 126), k % down_ring()))
+
+# Being told which one went, with no round of our own to have done it.
+fn down_fire(w: Ptr, i: Int) =
+  fb = peek_ptr(w, 74)
+  fat = i * fireball_stride()
+  if i < 0 || i >= fireball_cap() then 0 else if peek_f32(fb, fat + 7) <= 0.0 then 0 else shatter_fire(w, fb, fat)
 
 # Stone is solid, and a warhead that flew through a wall to crater the hill
 # behind it is the same wrong that flying through a crystal was. The answer is
@@ -2411,6 +2479,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   break_buf = alloc_bytes(break_ring() * 4)
   block_buf = alloc_bytes(block_cap() * 32)
   gone_buf = alloc_bytes(block_ring() * 4)
+  down_buf = alloc_bytes(down_ring() * 4)
   wallbox_buf = alloc_bytes(wall_cap() * 4 * 4)
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
   hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
@@ -2431,6 +2500,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 113, hurt_buf)
   poke_ptr(s, 122, block_buf)
   poke_ptr(s, 124, gone_buf)
+  poke_ptr(s, 126, down_buf)
   poke_ptr(s, 127, wallbox_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)

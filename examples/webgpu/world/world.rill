@@ -226,6 +226,14 @@ export fn blocks_cap() -> Int = v.block_cap()
 # What the server reads back and a client is told: which stones have gone.
 # ---- the match --------------------------------------------------------------
 
+# Which of the crystals' fire has been shot out of the air, for a client that
+# did not fire the round that did it.
+export fn fires_down(w: Ptr) -> Int = v.fires_down(w)
+
+export fn down_which(w: Ptr, k: Int) -> Int = v.down_which(w, k)
+
+export fn down_fire(w: Ptr, i: Int) -> Int = v.down_fire(w, i)
+
 export fn match_left(w: Ptr) -> Float = v.match_left(w)
 
 export fn match_phase(w: Ptr) -> Int = v.match_phase(w)

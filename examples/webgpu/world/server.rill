@@ -462,6 +462,7 @@ fn tick(w, conns, said) =
   craters0 = v.blasts_fired(w)
   breaks0 = v.breaks(w)
   stones0 = v.blocks_gone(w)
+  downed0 = v.fires_down(w)
   hurts0 = v.hurts(w)
   walk_all(conns)
   fire_all(w, conns)
@@ -474,6 +475,7 @@ fn tick(w, conns, said) =
   send_craters(w, left, craters0)
   send_breaks(w, left, breaks0)
   send_stones(w, left, stones0)
+  send_downed(w, left, downed0)
   send_hurts(w, left, hurts0)
   again(said)
   send_mag_moves(w, left, said, 0)
@@ -608,6 +610,16 @@ fn send_hurt(w, conns, k) =
 # Which stones went. A client cannot work out which blocks a warhead took —
 # it does not decide what a rocket hit — so it is told, one index at a time,
 # the same way it is told which crystal broke.
+# Which of the crystals' fire was shot out of the air. A client fires its own
+# rounds but is not told what they hit, and it certainly does not know what
+# anybody else's did, so the ones that went are named.
+fn send_downed(w, conns, from) =
+  if from == v.fires_down(w) then 0 else send_down(w, conns, from)
+
+fn send_down(w, conns, k) =
+  broadcast(w, conns, "d " + int_to_str(v.down_which(w, k)))
+  send_downed(w, conns, k + 1)
+
 fn send_stones(w, conns, from) =
   if from == v.blocks_gone(w) then 0 else send_stone(w, conns, from)
 
