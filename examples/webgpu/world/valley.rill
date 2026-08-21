@@ -2345,7 +2345,7 @@ fn down_fire(w: Ptr, i: Int) =
 # behind it is the same wrong that flying through a crystal was. The answer is
 # read back out of slot 7 the way the others are.
 fn hits_stone(w, fb, at, ax, ay, az, bx, by, bz) =
-  sweep_walls(w, fb, at, ax, ay, az, bx, by, bz)
+  sweep_walls(w, fb, at, ax, ay, az, bx, by, bz, 1.15)
   if peek_f32(fb, at + 7) < 0.001 then 1 else 0
 
 # Every wall the segment could reach, and only then the stones in it.
@@ -2553,8 +2553,18 @@ fn fill_kick(cs, vx, vy, vz) =
   poke_f32(cs, 9, vz)
   1
 
-fn sweep_walls(w, p, at, ax, ay, az, bx, by, bz) =
+# `wide` is how fat the projectile is against a stone, in multiples of the
+# stone's size, and it rides in the scratch with the segment. A round gets
+# 0.75 — enough that a shot into the wall cannot thread the corners between
+# four stones. A warhead gets 1.15: it is a hand's width of casing with a
+# contact fuse, and at 0.75 a rocket aimed at the ragged edge of a hole
+# slipped past the outermost stone by a few centimetres, sailed on, and
+# cratered the dirt ten metres behind — which read, again, as a wall that
+# would not break. Grazing the edge now bursts on the edge. The middle of a
+# real hole is still a miss, because it is one.
+fn sweep_walls(w, p, at, ax, ay, az, bx, by, bz, wide) =
   sg = seg_of(w)
+  poke_f32(sg, 10, wide)
   poke_f32(sg, 0, ax)
   poke_f32(sg, 1, ay)
   poke_f32(sg, 2, az)
@@ -2595,15 +2605,11 @@ fn cross_block(bb, i, p, at, sg) =
   bx = peek_f32(sg, 3)
   by = peek_f32(sg, 4)
   bz = peek_f32(sg, 5)
-  # 0.75, not 0.62. The stones sit on a 0.3-metre grid and the test is a
-  # sphere per stone: at 0.62 the radius is 0.186 and the point where four
-  # stones meet is 0.212 from every one of their centres — so a rocket that
-  # crossed the wall near a junction threaded the gap between the spheres and
-  # cratered the dirt behind. It looked like an indestructible wall, and it
-  # only looked that way for shots that were not squarely on a stone, which is
-  # why every aimed test passed while every player missed. 0.75 puts the
-  # radius past the far corner with a margin.
-  r = block_f(bb, i, 3) * 0.75
+  # The factor came down the scratch with the segment: 0.75 for a round —
+  # past the corner where four stones meet, with a margin, so a shot into the
+  # wall cannot thread between them — and wider for a warhead; see
+  # `sweep_walls` for the history both numbers were paid for.
+  r = block_f(bb, i, 3) * peek_f32(sg, 10)
   d2 = seg_dist2(ax, ay, az, bx, by, bz, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2))
   if d2 > r * r then 0 else stopped_on(bb, i, p, at, sg)
 
@@ -2632,7 +2638,7 @@ fn stopped_on(bb, i, p, at, sg) =
 
 # The same test for a round, which stops on a wall rather than passing through
 # it. It does not take the block with it: a rifle does not knock stone out.
-fn hit_stone(w, b, at, ax, ay, az, bx, by, bz) = sweep_walls(w, b, at, ax, ay, az, bx, by, bz)
+fn hit_stone(w, b, at, ax, ay, az, bx, by, bz) = sweep_walls(w, b, at, ax, ay, az, bx, by, bz, 0.75)
 
 fn hits_body(w, fb, at, ax, ay, az, bx, by, bz) =
   owner = rocket_owner(peek_f32(fb, at + 6))

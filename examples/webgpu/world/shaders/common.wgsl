@@ -548,7 +548,15 @@
   // the water are the ground's wind; tying the whole cloud deck to them would
   // swing the sky round every time the breeze turned.
   const CLOUD_DRIFT = vec2f(0.86, 0.40); // where the weather comes from
-  const CLOUD_WIND  = 5.5;               // and how fast, metres a second
+  // Twenty-two, not five and a half. At five the deck was honest — that is a
+  // calm day's wind — and it read as a painted ceiling, because from the
+  // ground a cloud three hundred metres up moving five metres a second is a
+  // minute of staring before anything has visibly gone anywhere. Aloft blows
+  // harder than the ground does anyway, and at twenty-two a cloud crosses its
+  // own width in about twenty seconds, which is the slowest thing an eye
+  // still catches unprompted. The shadows sweep the valley at the same pace,
+  // because they are the same field.
+  const CLOUD_WIND  = 22.0;              // and how fast, metres a second
 
   fn cloudField(p: vec2f) -> f32 {
     var v = 0.0;
