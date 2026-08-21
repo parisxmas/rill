@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=307";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=307";
+import { load } from "./world.js?v=308";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=308";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=307";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "307";
+const V = "308";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -221,7 +221,20 @@ function coneRing(y0, y1, r0, r1, seg) {
 // hole with needles in it, which is what an alpha texture is for. Eight floats
 // a vertex now: position, normal, and the atlas coordinate. The trunk has no
 // atlas and says so with a negative u.
-function pineMesh() {
+// `coarse` builds the same tree with far fewer, larger cards, for the shadow
+// pass. Two things come out of that, and they are the two complaints.
+//
+// The shadows flickered because a shadow texel either caught a needle or did
+// not, and the sun turns every frame — the ortho is fixed over the valley, so
+// nothing swims when the camera moves, but the light's basis rotates and every
+// texel lands somewhere new. Thin alpha-tested detail under that shimmers. Big
+// cards do not: there is far less edge per texel to flip.
+//
+// And it was expensive because a depth-only pass that discards cannot use
+// early-Z, so every covered pixel of every one of eighty-four crossed cards
+// ran a texture fetch, on every pine, every frame. Sixteen cards instead, and
+// the fetch takes a fixed coarse mip.
+function pineMesh(coarse) {
   const out = [];
   const push = (p, n, uv) => out.push(p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1]);
 
@@ -252,14 +265,17 @@ function pineMesh() {
   // at the far end. A card lying flat would vanish when you look at it from
   // the side, which is where a walking camera looks at a tree from.
   const tiers = [];
-  for (let i = 0; i < 12; i++) {
-    const u = i / 11;                       // 0 at the lowest whorl, 1 at the spire
+  const whorls = coarse ? 4 : 12;
+  for (let i = 0; i < whorls; i++) {
+    const u = whorls === 1 ? 0 : i / (whorls - 1);  // 0 at the lowest whorl, 1 at the spire
     tiers.push({
       y: 0.95 + u * 1.60,
       len: 0.22 + 1.05 * (1 - u) ** 1.1,
-      tall: 0.30 + 0.75 * (1 - u),
+      // Taller cards when there are fewer of them, so the canopy still covers
+      // the ground it used to rather than turning into four thin discs.
+      tall: (0.30 + 0.75 * (1 - u)) * (coarse ? 2.1 : 1.0),
       drop: 0.10 + 0.22 * (1 - u),
-      n: Math.round(9 - 4 * u),
+      n: coarse ? 4 : Math.round(9 - 4 * u),
     });
   }
   for (const [ti, t] of tiers.entries()) {
@@ -1713,9 +1729,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     return c;
   }
 
-  const pineData = pineMesh(), crystalData = crystalMesh(), grassData = grassMesh();
+  const pineData = pineMesh(false), crystalData = crystalMesh(), grassData = grassMesh();
   const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
   const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 8;
+  // The same tree with a fifth of the cards, for casting only.
+  const pineShadowData = pineMesh(true);
+  const pineShadowBuf = gpuBuf(pineShadowData);
+  const pineShadowVerts = pineShadowData.length / 8;
 
   // ---- being told, rather than deciding ------------------------------------
   //
@@ -3228,7 +3248,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     sh.setBindGroup(0, bgShadow);
     sh.setPipeline(shTerrain); sh.setVertexBuffer(0, W.terrainBuf); sh.draw(W.counts.terrain);
     sh.setPipeline(shPine);
-    sh.setVertexBuffer(0, pineBuf); sh.setVertexBuffer(1, W.pineInst); sh.draw(pineVerts, W.counts.pines);
+    sh.setVertexBuffer(0, pineShadowBuf); sh.setVertexBuffer(1, W.pineInst); sh.draw(pineShadowVerts, W.counts.pines);
     sh.setPipeline(shInst);
     sh.setVertexBuffer(0, crystalBuf); sh.setVertexBuffer(1, W.crystalInst); sh.draw(crystalVerts, W.counts.crystals);
     // A person standing in the sun has a shadow, and without one they read as

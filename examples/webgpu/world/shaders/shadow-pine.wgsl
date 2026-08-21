@@ -18,6 +18,11 @@
   // mostly gaps, and a shadow map that does not know puts a solid slab on the
   // ground under every tree.
   @fragment fn fs(v: SOut) {
-    let a = textureSample(foliage, foliageSamp, v.uv).a;
-    if (v.uv.x >= 0.0 && a < 0.5) { discard; }
+    // A fixed mip rather than whatever the derivatives ask for. Two reasons and
+    // they are both the point of this pass: it needs no derivatives, and the
+    // needle detail that a full-resolution fetch brings back is exactly the
+    // high-frequency edge that flips on and off as the sun turns. Level two is
+    // blurred enough that the half-way cut moves smoothly.
+    let a = textureSampleLevel(foliage, foliageSamp, v.uv, 2.0).a;
+    if (v.uv.x >= 0.0 && a < 0.45) { discard; }
   }
