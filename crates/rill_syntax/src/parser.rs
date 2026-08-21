@@ -1152,7 +1152,22 @@ impl Parser {
 
     fn arm(&mut self) -> Result<Arm, SyntaxError> {
         let (line, _) = self.here();
-        let pattern = self.pattern()?;
+        let first = self.pattern()?;
+        // `1 | 2 ->`. Only here, at the top of an arm: a pattern inside a
+        // constructor is a field's, and `Cons(1 | 2, _)` would be asking one
+        // arm to be two in a place where the expansion cannot be written back
+        // out. What it buys is the common case — several constants, or several
+        // constructors that take no arguments, going the same way.
+        let pattern = if matches!(self.peek(), Tok::Pipe) {
+            let mut alts = vec![first];
+            while matches!(self.peek(), Tok::Pipe) {
+                self.bump();
+                alts.push(self.pattern()?);
+            }
+            Pattern::Or(alts, line)
+        } else {
+            first
+        };
         // `pattern if cond ->` — the rest of what a pattern cannot say. The
         // condition is an ordinary expression, and `->` ends it, so nothing
         // here needs bracketing.

@@ -228,6 +228,11 @@ pub enum Pattern {
     Int(i64),
     /// `Circle(r)` — sub-patterns are limited to `_` and variables in M1.
     Ctor { name: String, args: Vec<Pattern>, line: usize },
+    /// `1 | 2 | 3` — any one of these. Never survives `lift`, which turns one
+    /// arm holding it into one arm per alternative; nothing downstream of that
+    /// pass knows it was written. It exists in the tree at all so that the
+    /// formatter prints back what was typed rather than the expansion.
+    Or(Vec<Pattern>, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

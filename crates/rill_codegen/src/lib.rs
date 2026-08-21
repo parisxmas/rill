@@ -463,6 +463,7 @@ fn collect_rebound(e: &TExpr, out: &mut HashSet<String>) {
 
 fn collect_pattern_binds(p: &Pattern, out: &mut HashSet<String>) {
     match p {
+        Pattern::Or(..) => unreachable!("`lift` expands `|` patterns"),
         Pattern::Var(n) => {
             out.insert(n.clone());
         }

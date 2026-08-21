@@ -2712,6 +2712,9 @@ impl Checker {
         bound: &mut HashSet<String>,
     ) -> Result<(), TypeError> {
         match p {
+            // `lift` turned one arm holding alternatives into one arm per
+            // alternative before this ran; there is nothing left to check.
+            Pattern::Or(..) => unreachable!("`lift` expands `|` patterns"),
             Pattern::Wildcard => Ok(()),
             Pattern::Var(n) => {
                 if !bound.insert(n.clone()) {
@@ -2947,6 +2950,7 @@ enum Head {
 
 fn show_pattern(p: &Pattern) -> String {
     match p {
+        Pattern::Or(..) => unreachable!("`lift` expands `|` patterns"),
         Pattern::Wildcard => "_".to_string(),
         Pattern::Var(n) => n.clone(),
         Pattern::Int(v) => v.to_string(),

@@ -814,6 +814,9 @@ fn inline(e: &Expr, prec: u8) -> String {
 
 fn pattern(p: &Pattern) -> String {
     match p {
+        Pattern::Or(alts, _) => {
+            alts.iter().map(pattern).collect::<Vec<_>>().join(" | ")
+        }
         Pattern::Wildcard => "_".to_string(),
         Pattern::Var(n) => n.clone(),
         Pattern::Int(v) => v.to_string(),

@@ -41,6 +41,8 @@ pub enum Tok {
     Gt,
     Ge,
     Eq,
+    /// `|` on its own, which separates the alternatives of one pattern.
+    Pipe,
     PipeGt,
     Arrow,
     Colon,
@@ -99,6 +101,7 @@ impl std::fmt::Display for Tok {
             Tok::Gt => write!(f, "`>`"),
             Tok::Ge => write!(f, "`>=`"),
             Tok::Eq => write!(f, "`=`"),
+            Tok::Pipe => write!(f, "`|`"),
             Tok::PipeGt => write!(f, "`|>`"),
             Tok::Arrow => write!(f, "`->`"),
             Tok::Colon => write!(f, "`:`"),
@@ -520,7 +523,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                             s.bump();
                             Tok::PipePipe
                         } else {
-                            return Err(SyntaxError::new(line, col, "unexpected `|`".to_string()));
+                            Tok::Pipe
                         }
                     }
                     other => {

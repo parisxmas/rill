@@ -272,6 +272,71 @@ fn string_builders_accumulate() {
     assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
 }
 
+/// Several patterns, one arm. `lift` turns it into one arm per alternative
+/// before anything else sees it, so guards, exhaustiveness and reachability all
+/// go on working on ordinary arms.
+#[test]
+fn or_patterns_take_any_alternative() {
+    let src = "type Yon\n  \
+                 Kuzey\n  \
+                 Guney\n  \
+                 Dogu\n  \
+                 Bati\n\n\
+               fn eksen(y) = match y\n  \
+                 Kuzey | Guney -> \"dikey\"\n  \
+                 Dogu | Bati -> \"yatay\"\n\n\
+               fn az(n) = match n\n  \
+                 0 | 1 | 2 -> \"az\"\n  \
+                 _ -> \"cok\"\n\n\
+               fn inner(o) = match o\n  \
+                 Some(0) | Some(1) -> \"kucuk\"\n  \
+                 Some(n) -> int_to_str(n)\n  \
+                 None -> \"yok\"\n\n\
+               fn guarded(n) = match n\n  \
+                 1 | 2 if n > 1 -> \"iki\"\n  \
+                 1 | 2 -> \"bir\"\n  \
+                 _ -> \"baska\"\n\n\
+               fn main() =\n  \
+                 println(eksen(Kuzey) + \" \" + eksen(Bati))\n  \
+                 println(az(1) + \" \" + az(9))\n  \
+                 println(inner(Some(1)) + \" \" + inner(Some(7)) + \" \" + inner(None))\n  \
+                 println(guarded(1) + \" \" + guarded(2) + \" \" + guarded(5))\n";
+    assert_eq!(
+        run_source("orpat", src),
+        "dikey yatay\naz cok\nkucuk 7 yok\nbir iki baska\n"
+    );
+}
+
+/// The body is one body and it is written once, so a name it uses has to mean
+/// something whichever alternative was taken.
+#[test]
+fn or_pattern_alternatives_must_bind_alike() {
+    let src = "fn f(o) = match o\n  \
+                 Some(x) | None -> \"?\"\n  \
+                 _ -> \"!\"\n\n\
+               fn main() = println(f(None))\n";
+    let err = compile_error(src);
+    assert!(
+        err.contains("must bind the same names") && err.contains("one binds x"),
+        "{err}"
+    );
+}
+
+/// Exhaustiveness counts the alternatives, not the arms: three directions and
+/// an arm naming two of them still leaves one uncovered.
+#[test]
+fn or_patterns_still_have_to_be_exhaustive() {
+    let src = "type Yon\n  \
+                 Kuzey\n  \
+                 Guney\n  \
+                 Dogu\n\n\
+               fn f(y) = match y\n  \
+                 Kuzey | Guney -> \"a\"\n\n\
+               fn main() = println(f(Kuzey))\n";
+    let err = compile_error(src);
+    assert!(err.contains("not exhaustive") && err.contains("Dogu"), "{err}");
+}
+
 /// A byte is not a character. `#s` counts bytes and stays counting bytes —
 /// a lexer wants that, and so does the compiler that compiles the prelude —
 /// so the characters are their own layer on top, and the point of it is that

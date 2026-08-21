@@ -227,15 +227,24 @@ fn walk(
             let scrutinee = Box::new(walk(*scrutinee, env, parent, used, out)?);
             let mut new = Vec::with_capacity(arms.len());
             for a in arms {
-                let depth = env.len();
-                pattern_names(&a.pattern, env);
-                let guard = match a.guard {
-                    Some(g) => Some(walk(g, env, parent, used, out)?),
-                    None => None,
-                };
-                let body = walk(a.body, env, parent, used, out)?;
-                env.truncate(depth);
-                new.push(Arm { pattern: a.pattern, guard, body, line: a.line });
+                // `1 | 2 -> body` is one arm per alternative, and the split
+                // happens here, before anything is walked: each one then binds
+                // its own names and walks its own copy of the guard and body.
+                // Splitting after the walk would have shared one set of
+                // bindings between alternatives, which is only right when they
+                // name their fields in the same order, and nothing says they
+                // must. Nothing downstream of this pass ever sees an `Or`.
+                for pattern in alternatives(a.pattern, a.line)? {
+                    let depth = env.len();
+                    pattern_names(&pattern, env);
+                    let guard = match a.guard.clone() {
+                        Some(g) => Some(walk(g, env, parent, used, out)?),
+                        None => None,
+                    };
+                    let body = walk(a.body.clone(), env, parent, used, out)?;
+                    env.truncate(depth);
+                    new.push(Arm { pattern, guard, body, line: a.line });
+                }
             }
             Expr::Match { scrutinee, arms: new, line }
         }
@@ -1119,12 +1128,56 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
     }
 }
 
+/// The alternatives one arm's pattern stands for: its own, or the several an
+/// `|` holds.
+///
+/// They must bind the same names. The body is one body, written once, so a name
+/// it uses has to mean something whichever alternative was taken — and where
+/// they disagree the expansion would produce arms whose bodies mention
+/// variables they never bound, which surfaces much later as an unknown
+/// variable pointing at a line that plainly does bind it.
+fn alternatives(p: Pattern, line: usize) -> Result<Vec<Pattern>, SyntaxError> {
+    let Pattern::Or(alts, oline) = p else { return Ok(vec![p]) };
+    let mut want = Vec::new();
+    pattern_names(&alts[0], &mut want);
+    want.sort();
+    for alt in &alts[1..] {
+        let mut got = Vec::new();
+        pattern_names(alt, &mut got);
+        got.sort();
+        if got != want {
+            return Err(SyntaxError::new(
+                if oline > 0 { oline } else { line },
+                1,
+                format!(
+                    "every alternative of an `|` pattern must bind the same names: one binds {}, another binds {}",
+                    shown_names(&want),
+                    shown_names(&got)
+                ),
+            ));
+        }
+    }
+    Ok(alts)
+}
+
+fn shown_names(v: &[String]) -> String {
+    if v.is_empty() { "nothing".to_string() } else { v.join(", ") }
+}
+
 fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
     match p {
         Pattern::Var(n) => out.push(n.clone()),
         Pattern::Ctor { args, .. } => {
             for a in args {
                 pattern_names(a, out);
+            }
+        }
+        Pattern::Or(alts, _) => {
+            // Every alternative binds the same names, so the first speaks for
+            // all of them — and by the time anything else asks, the arm has
+            // been split and there is no `Or` left to ask about.
+            if let Some(first) = alts.first() {
+                pattern_names(first, out);
             }
         }
         Pattern::Wildcard | Pattern::Int(_) => {}
