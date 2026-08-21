@@ -162,9 +162,11 @@
     let sh = shadow(v.world, max(dot(n, L), 0.0));
     var col = mix(body, refl, clamp(fresnel * 1.6 + 0.06, 0.0, 1.0));
 
-    // Sun glitter: a tight Blinn lobe on the rippled normal.
+    // Sun glitter: a tight Blinn lobe on the rippled normal — and put out by
+    // whatever cloud is standing between the lake and the sun, because glitter
+    // is the sun's own image and a covered sun has no image to give.
     let hv = normalize(L - vdir);
-    col += SUN_COL * pow(max(dot(n, hv), 0.0), 240.0) * 2.4 * sh;
+    col += SUN_COL * pow(max(dot(n, hv), 0.0), 240.0) * 2.4 * sh * cloudShadow(v.world, t);
 
     // Foam: at the shoreline, where the depth runs out, and on the crests,
     // where the trochoids pinch.

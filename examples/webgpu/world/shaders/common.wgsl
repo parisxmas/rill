@@ -530,6 +530,124 @@
   const NIGHT_ZENITH  = vec3f(0.006, 0.010, 0.032);
   const NIGHT_HORIZON = vec3f(0.022, 0.026, 0.058);
 
+  // ---- the clouds ------------------------------------------------------
+  //
+  // A layer of weather at three hundred metres, and it is a *place*, not a
+  // backdrop: the field is sampled by where a ray actually crosses the layer,
+  // so the clouds sit still over the valley while you walk under them, and the
+  // same crossing computed from the sun's side puts their shadows on the
+  // ground — one field asked two questions, which is the only reason the
+  // shadow under a cloud is under that cloud.
+  //
+  // Everything here runs on the world's own clock, which the server hands to
+  // every browser: two people standing together are under the same sky, and
+  // the shadow that slides over one of them slides over both.
+  const CLOUD_H     = 300.0;
+  const CLOUD_SCALE = 0.0021;            // metres of layer to noise units
+  // High-altitude drift, fixed on purpose. The gusts that work the pines and
+  // the water are the ground's wind; tying the whole cloud deck to them would
+  // swing the sky round every time the breeze turned.
+  const CLOUD_DRIFT = vec2f(0.86, 0.40); // where the weather comes from
+  const CLOUD_WIND  = 5.5;               // and how fast, metres a second
+
+  fn cloudField(p: vec2f) -> f32 {
+    var v = 0.0;
+    var a = 0.5;
+    var q = p;
+    for (var i = 0; i < 5; i++) {
+      v += a * skyNoise(q);
+      q = q * 2.03 + vec2f(19.0, 47.0);
+      a *= 0.55;
+    }
+    return v;
+  }
+
+  // The same field at three octaves, for the fragments that only want to know
+  // whether they are standing in a shadow: the two missing octaves are ten
+  // metres of curl on a shadow edge already softened by distance.
+  fn cloudFieldLow(p: vec2f) -> f32 {
+    return 0.5 * skyNoise(p)
+         + 0.275 * skyNoise(p * 2.03 + vec2f(19.0, 47.0))
+         + 0.151 * skyNoise(p * 4.12 + vec2f(57.6, 142.4));
+  }
+
+  // Where the weather stands, nought a clear sky and one properly overcast.
+  // Two sines against the world clock, out of phase, so the sky clears and
+  // closes over a quarter of an hour and never repeats on a beat anyone could
+  // hum — and every client computes the same weather, because it is the same
+  // clock.
+  fn cloudCover(t: f32) -> f32 {
+    return clamp(0.46 + 0.26 * sin(t * 0.011) + 0.14 * sin(t * 0.031 + 2.0), 0.0, 1.0);
+  }
+
+  fn cloudWindow(t: f32) -> f32 { return 0.68 - 0.26 * cloudCover(t); }
+
+  fn cloudDensity(uv: vec2f, t: f32) -> f32 {
+    let cw = cloudWindow(t);
+    return smoothstep(cw, cw + 0.30, cloudField(uv));
+  }
+
+  // Where a ray from `from` along `dir` crosses the layer, in noise units,
+  // with the drift folded in.
+  fn cloudUv(org: vec3f, dir: vec3f, t: f32) -> vec2f {
+    let hit = org.xz + dir.xz * ((CLOUD_H - org.y) / max(dir.y, 0.03));
+    return (hit + CLOUD_DRIFT * (t * CLOUD_WIND)) * CLOUD_SCALE;
+  }
+
+  // The deck as seen along `dir`: a colour and how much of it there is.
+  fn cloudsAt(org: vec3f, dir: vec3f, t: f32) -> vec4f {
+    if (dir.y < 0.015) { return vec4f(0.0); }
+    let uv = cloudUv(org, dir, t);
+    let den = cloudDensity(uv, t);
+    if (den <= 0.003) { return vec4f(0.0); }
+
+    let day = dayness();
+    let L = -normalize(u.sun.xyz);
+    let sa = max(dot(dir, L), 0.0);
+    let glow = smoothstep(-0.34, 0.06, L.y);
+
+    // Cheap self-shadow: the field again, a step toward the sun. Where the
+    // step finds thinner cloud the sun is getting in, and that face is the
+    // bright one; where it finds thicker, this is the underside of a pile.
+    let denS = cloudDensity(uv + normalize(L.xz + vec2f(0.0001)) * 0.055, t);
+    let face = clamp(0.5 + 0.9 * (denS - den), 0.0, 1.0);   // 0 sunlit, 1 shaded
+
+    // Lit tops by day; by night the deck goes to a dark slate that still
+    // carries a little of whatever moon there is.
+    let litc  = mix(vec3f(0.050, 0.058, 0.095) * (0.6 + 0.7 * moonPhase()),
+                    vec3f(1.02, 1.00, 0.965), day);
+    let shade = mix(vec3f(0.016, 0.019, 0.036),
+                    vec3f(0.355, 0.360, 0.430), day);
+    var c = mix(litc, shade, clamp(face * 0.8 + den * 0.35, 0.0, 1.0));
+
+    // The sunset on their undersides. It outlives the sun the way the sky's
+    // own afterglow does, and it lands hardest on the thin outlying scraps —
+    // a solid deck is its own shadow and stays grey while the wisps burn.
+    c += SUN_WARM * pow(sa, 3.0) * glow * (1.0 - 0.75 * day) * (1.0 - 0.62 * den) * 1.35;
+    // And the silver lining, which is the sun getting through the last metre
+    // of a cloud's edge: strongest where the deck is neither absent nor thick.
+    c += SUN_COL * pow(sa, 24.0) * den * (1.0 - den) * 3.2 * glow;
+
+    // Swallowed by the horizon haze rather than cut: the far edge of a cloud
+    // deck sinks into the air long before it reaches the ground.
+    let a = den * smoothstep(0.015, 0.15, dir.y) * 0.94;
+    return vec4f(c, a);
+  }
+
+  // How much sun reaches the ground through the deck. The same crossing the
+  // eye's rays make, taken from the sun's side — so this is not a second
+  // weather, it is the one overhead, and when a gap in it drifts across the
+  // valley a patch of sunlight drifts with it.
+  fn cloudShadow(world: vec3f, t: f32) -> f32 {
+    let L = -normalize(u.sun.xyz);
+    if (L.y < 0.05) { return 1.0; }
+    let hit = world.xz + L.xz * ((CLOUD_H - world.y) / L.y);
+    let uv = (hit + CLOUD_DRIFT * (t * CLOUD_WIND)) * CLOUD_SCALE;
+    let cw = cloudWindow(t);
+    let den = smoothstep(cw, cw + 0.30, cloudFieldLow(uv));
+    return 1.0 - 0.60 * den;
+  }
+
   // How much of a day it is: one where the sun is well up, zero once it is
   // properly under. The band either side of zero is the twilight, and it is
   // deliberately wide — the light going is the slowest thing in an evening and
@@ -545,6 +663,13 @@
     let grad = pow(up, 0.55);
     var col = mix(mix(NIGHT_HORIZON, NIGHT_ZENITH, grad),
                   mix(SKY_HORIZON, SKY_ZENITH, grad), day);
+    // The air itself, thickest along the horizon. Looking level you look
+    // through fifty times the atmosphere you look through overhead, and all
+    // that air scatters the day back at you: the horizon whitens toward a
+    // milk the zenith never reaches, and at night it holds the faint lift
+    // that keeps a ridge legible against the sky.
+    let airy = pow(1.0 - up, 5.0);
+    col = mix(col, mix(vec3f(0.034, 0.040, 0.066), vec3f(0.315, 0.305, 0.355), day), airy * 0.55);
     let sa = max(dot(dir, -normalize(u.sun.xyz)), 0.0);
     // The warm side of the sky outlives the sun itself — that is what an
     // afterglow is — so it fades on a later, wider curve than the disc.
@@ -576,9 +701,14 @@
       col += tint * up * twinkle * (0.55 + 2.6 * mag * mag) * (1.0 - day);
     }
     // The moon and the two planets, over the stars and under nothing: they are
-    // the furthest things in the world and the last thing composited into it.
+    // the furthest things in the world beyond the air.
     let b = nightSky(dir, t);
-    return col * (1.0 - b.a) + b.rgb;
+    col = col * (1.0 - b.a) + b.rgb;
+    // And the clouds over the lot of it — sun, stars, moon and planets alike —
+    // because they are the one thing up there that is *inside* the atmosphere.
+    // A thin scrap lets the disc bleed through; a deck puts it out.
+    let cl = cloudsAt(u.eye.xyz, dir, t);
+    return mix(col, cl.rgb, cl.a);
   }
 
   // What is in the direction `dir` from the middle of the valley: whatever was
@@ -766,7 +896,11 @@
     let M = normalize(MOON_AT);
     let moon = MOON_COL * max(dot(n, M), 0.0) * moonPhase() * 0.55 * (1.0 - day);
 
-    var col = albedo * (SUN_COL * 1.25 * nl * sh * day + moon + amb + headlamp(n, world, day)
+    // The sun through the weather: a fragment under a cloud gets what the
+    // cloud lets past, and the ambient stands in for the rest. The shadow
+    // moves because the deck does.
+    var col = albedo * (SUN_COL * 1.25 * nl * sh * day * cloudShadow(world, u.eye.w)
+                        + moon + amb + headlamp(n, world, day)
                         + blastLight(n, world));
     let view = world - u.eye.xyz;
     return mix(col, fogColor(view), fogAt(world, length(view)));
