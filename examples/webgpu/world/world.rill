@@ -206,6 +206,16 @@ export fn rocket_full() -> Int = v.rocket_full()
 # this is where the ranges split.
 export fn mags_only() -> Int = v.mag_only()
 
+# The crystals' bites: how many, who and which crystal, and the applying of
+# one this browser was told about rather than decided.
+export fn zaps(w: Ptr) -> Int = v.zaps(w)
+
+export fn zap_who(w: Ptr, k: Int) -> Int = v.zap_who(w, k)
+
+export fn zap_which(w: Ptr, k: Int) -> Int = v.zap_which(w, k)
+
+export fn put_zap(w: Ptr, who: Int, ci: Int) -> Int = v.put_zap(w, who, ci)
+
 # Where a box is, said as a count rather than as a position: box `i` has been
 # taken `n` times, and the valley works out the rest. This is what arrives on
 # the wire when somebody else picks one up.

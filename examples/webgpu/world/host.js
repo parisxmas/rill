@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=329";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=329";
+import { load } from "./world.js?v=330";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=330";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=329";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "329";
+const V = "330";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -97,7 +97,7 @@ const SHADERS = {
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
-  figure: "common", held: "common", prop: "common", crate: "common",
+  figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
   launcher: "common", rocket: "common", warhead: "common", stone: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
@@ -169,6 +169,7 @@ async function loadShaders(step) {
     SHARK: whole("shark"),
     PROP: whole("prop"),
     CRATE: whole("crate"),
+    ZAP: whole("zap"),
     STONE: whole("stone"),
     LAUNCHER: whole("launcher"),
     WARHEAD: whole("warhead"),
@@ -626,7 +627,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 15 + Object.keys(SHADERS).length + TEXTURES.length + 6 + (server ? 1 : 0);
+  const TOTAL = 15 + Object.keys(SHADERS).length + TEXTURES.length + 8 + (server ? 1 : 0);
   let done = 0;
   // Never past the end. This is a count kept by hand of steps taken elsewhere,
   // and the two drift every time something is added — a bar that says 104% is
@@ -1093,6 +1094,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // air, so the ground hides it and it hides nothing.
   const tracerPipe = pipe("tracer", S.TRACER, bulletLayout,
     { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // The crystals' bites: a handful of pinned beams, uploaded fresh each frame.
+  const zapLayout = [{ arrayStride: 40, stepMode: "instance", attributes: [
+    { shaderLocation: 0, offset: 0, format: "float32x3" },
+    { shaderLocation: 1, offset: 12, format: "float32x3" },
+    { shaderLocation: 2, offset: 24, format: "float32x3" },
+    { shaderLocation: 3, offset: 36, format: "float32" },
+  ]}];
+  const zapPipe = pipe("zap", S.ZAP, zapLayout,
+    { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  const ZAP_MAX = 16;
+  const zapGpu = device.createBuffer({ size: ZAP_MAX * 40, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  const zapData = new Float32Array(ZAP_MAX * 10);
+  const zapsLive = [];
   // Same treatment as the tracers: additive, depth-tested so the land hides
   // them, never writing depth of their own.
   const firePipe = pipe("fireball", S.FIREBALL, fireLayout,
@@ -1280,7 +1294,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
-  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, musicStarted = false;
+  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, musicStarted = false;
   let musicGain = null, musicOn = true;
   const shotBytes = await (await fetch(`./rifle-shot.mp3?v=${V}`)).arrayBuffer();
   step("rifle-shot.mp3");
@@ -1327,6 +1341,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // running into the head the way the piece was already written.
   const musicBytes = await (await fetch(`./valley-theme.mp3?v=${V}`)).arrayBuffer();
   step("valley-theme.mp3");
+  // A crystal's bite. Kenney's digital SFX set by way of OpenGameArt, CC0 —
+  // the same shelf half this valley's sounds came off.
+  const zapBytes = await (await fetch(`./crystal-zap.mp3?v=${V}`)).arrayBuffer();
+  step("crystal-zap.mp3");
   // One node per sound, built and thrown away: cheaper than it looks, and the
   // only way to have two of the same sample overlapping.
   function playAt(buf, offset, dur, gain, pan, rate) {
@@ -1362,7 +1380,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       step(label);
       return b;
     };
-    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf] = await Promise.all([
+    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf] = await Promise.all([
       one(shotBytes, "decoding rifle-shot"),
       one(breakBytes, "decoding crystal-break"),
       one(blastBytes, "decoding meteor-blast"),
@@ -1370,6 +1388,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       one(pickBytes, "decoding pickup"),
       one(hurtBytes, "decoding hurt"),
       one(musicBytes, "decoding valley-theme"),
+      one(zapBytes, "decoding crystal-zap"),
     ]);
   }
 
@@ -2584,7 +2603,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // reload. Two and a half seconds is what stops a rocket being a rifle.
   const RPG_CYCLE = 2.5;
   const cycleNow = () => (held ? RPG_CYCLE : BOLT_CYCLE);
-  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0;
+  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
@@ -2847,6 +2866,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       lastHp = -1; lastStanding = -1;
       breaks = Number(E.breaks(state));
       blastsHeard = Number(E.blasts_fired(state));
+      zapSeen = Number(E.zaps(state));
       document.getElementById("over").classList.remove("on");
       document.querySelector("#over em").textContent = "the valley is dark";
     }
@@ -3190,6 +3210,33 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // of the frames it has drawn, which is what it always was: a day does not
     // pass while a tab is hidden and nobody is watching it.
     const sky = E.world_time(world);
+    // The crystals' bites. The counter moves — whether this world decided the
+    // bite (alone) or was told about one (`z`) — and the light and the sound
+    // follow from the ring: which crystal, in its own colour, to whom.
+    const nz = Number(E.zaps(state));
+    if (nz !== zapSeen) {
+      const cryF = new Float32Array(E.memory.buffer, Number(E.crystals(state)), Number(E.crystal_count(state)) * 8);
+      for (let k = Math.max(zapSeen, nz - 8); k < nz; k++) {
+        const zwho = Number(E.zap_who(state, BigInt(k)));
+        const zci = Number(E.zap_which(state, BigInt(k)));
+        const ca = zci * 8;
+        let tx, ty, tz;
+        const sf = stateF32();
+        if (!net || zwho === net.id) { tx = sf[16]; ty = sf[17] - 0.25; tz = sf[18]; }
+        else {
+          const q = net.last && net.last.players.find(p => p.id === zwho && p.seen);
+          if (!q) continue;
+          tx = q.x; ty = q.y + 1.1; tz = q.z;
+        }
+        zapsLive.push({ ax: cryF[ca], ay: cryF[ca + 1] + cryF[ca + 3] * 1.05, az: cryF[ca + 2],
+                        bx: tx, by: ty, bz: tz,
+                        r: cryF[ca + 5], g: cryF[ca + 6], b: cryF[ca + 7], born: sky });
+        if (zapsLive.length > ZAP_MAX) zapsLive.shift();
+        const pl = place(cryF[ca], cryF[ca + 1], cryF[ca + 2], 10);
+        ensureAudio(() => playAt(zapSndBuf, 0, 0, 0.15 + 0.8 * pl.gain, pl.pan, 0.96 + Math.random() * 0.1));
+      }
+      zapSeen = nz;
+    }
     // Where the sun is now: a point on the tilted circle. What goes into the
     // uniform and into the shadow matrix is the direction the light travels,
     // which is the other way round from where the sun is.
@@ -3532,6 +3579,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.draw(crystalVerts, shardCap - magCount, 0, magCount);
 
     pass.setPipeline(tracerPipe); pass.setVertexBuffer(0, bulletBuf); pass.draw(6, bulletCap);
+    // The crystals' light, on the same additive terms the tracers get.
+    let zn = 0;
+    for (const zp of zapsLive) {
+      if (sky - zp.born > 0.4 || zn >= ZAP_MAX) continue;
+      zapData.set([zp.ax, zp.ay, zp.az, zp.bx, zp.by, zp.bz, zp.r, zp.g, zp.b, zp.born], zn * 10);
+      zn++;
+    }
+    if (zn > 0) {
+      device.queue.writeBuffer(zapGpu, 0, zapData, 0, zn * 10);
+      pass.setPipeline(zapPipe);
+      pass.setVertexBuffer(0, zapGpu);
+      pass.draw(6, zn);
+    }
     // A hundred and twenty parcels, which is what a rocket's trail wants; a
     // meteor's own runs out at eighty and the rest come out past the end of it
     // and are discarded. See PUFFS in fireball.wgsl.

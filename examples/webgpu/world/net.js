@@ -43,7 +43,7 @@
 const OP = {
   hello: 104, no: 110, gone: 103, wall: 87, mag: 109, who: 117, pong: 112,
   snap: 115, round: 114, thrown: 116, crater: 107, hurt: 120,
-  downed: 100, stone: 119, broke: 98, fell: 121, pineList: 80,
+  downed: 100, stone: 119, broke: 98, fell: 121, pineList: 80, zap: 122,
   input: 105, fire: 102, name: 110, ping: 112,
 };
 
@@ -149,6 +149,8 @@ export function join(url, name) {
     // A pine a warhead took, and at the door the whole list of them.
     if (op === OP.fell) { net.events.push({ kind: "y", n: [dv.getUint16(1, true)] }); return; }
     if (op === OP.pineList) { net.events.push({ kind: "pines", n: u16s(dv, 1) }); return; }
+    // A crystal bit somebody: who, and which crystal.
+    if (op === OP.zap) { net.events.push({ kind: "z", n: [dv.getUint16(1, true), dv.getUint16(3, true)] }); return; }
     if (op === OP.mag) { net.events.push({ kind: "m", n: [dv.getUint8(1), dv.getUint32(2, true)] }); return; }
     if (op === OP.hurt) {
       net.events.push({ kind: "x", n: [dv.getUint16(1, true), dv.getUint16(3, true), dv.getFloat32(5, true), dv.getUint8(9)] });

@@ -2282,7 +2282,49 @@ fn glide(fb, at, px, py, pz) =
 # through another path.
 fn rocket_stop(w, fb, at, ax, ay, az, bx, by, bz) =
   hit_crystals(w, fb, at, ax, ay, az, bx, by, bz)
-  if peek_f32(fb, at + 7) < 0.001 then 1 else if hits_stone(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else if hits_fire(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else hits_body(w, fb, at, ax, ay, az, bx, by, bz)
+  if peek_f32(fb, at + 7) < 0.001 then 1 else if hits_stone(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else if hits_trunk(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else if hits_fire(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else hits_body(w, fb, at, ax, ay, az, bx, by, bz)
+
+# And a tree is solid too — to a warhead. A rocket aimed square at a trunk
+# used to pass through it and crater the hill behind, which put the blast
+# outside its own felling reach of the very tree it hit: "I shot the trunk
+# and nothing happened", the same wrong the walls had. The trunk is a
+# vertical cylinder, forty-five centimetres wide to a warhead and seven
+# metres tall; the canopy stays passable, because needles are not armour.
+# Rounds still fly through — a bullet through a pine is a bullet that keeps
+# going, and nobody has ever complained about that.
+fn hits_trunk(w, fb, at, ax, ay, az, bx, by, bz) =
+  pb = peek_ptr(w, 65)
+
+  for i in 0..to_int(peek_f32(w, 57))
+    trunk_stop(fb, at, pb, i, ax, ay, az, bx, by, bz)
+
+  if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+
+fn trunk_stop(fb, at, pb, i, ax, ay, az, bx, by, bz) =
+  if peek_f32(fb, at + 7) < 0.001 then 0 else if peek_f32(pb, i * 8 + 3) <= 0.01 then 0 else trunk_cross(fb, at, pb, i, ax, ay, az, bx, by, bz)
+
+fn trunk_cross(fb, at, pb, i, ax, ay, az, bx, by, bz) =
+  px = peek_f32(pb, i * 8)
+  pz = peek_f32(pb, i * 8 + 2)
+  dx = bx - ax
+  dz = bz - az
+  l2 = dx * dx + dz * dz
+  n = if l2 < 0.000001 then 1.0 else l2
+  t = clampf(((px - ax) * dx + (pz - az) * dz) / n, 0.0, 1.0)
+  cx = ax + dx * t
+  cz = az + dz * t
+  if (cx - px) * (cx - px) + (cz - pz) * (cz - pz) > 0.2 then 0 else trunk_tall(fb, at, pb, i, ay, by, t, cx, cz)
+
+fn trunk_tall(fb, at, pb, i, ay, by, t, cx, cz) =
+  g = peek_f32(pb, i * 8 + 1)
+  cy = ay + (by - ay) * t
+  if cy < g || cy > g + 7.0 then 0
+  else
+    poke_f32(fb, at, cx)
+    poke_f32(fb, at + 1, cy)
+    poke_f32(fb, at + 2, cz)
+    poke_f32(fb, at + 7, 0.0)
+    1
 
 fn hits_fire(w, fb, at, ax, ay, az, bx, by, bz) =
   hit_fire(w, fb, at, at, ax, ay, az, bx, by, bz)
@@ -2966,6 +3008,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
   hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
   fell_buf = alloc_bytes(fell_ring() * 4)
+  zap_buf = alloc_bytes(zap_ring() * 2 * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -2989,6 +3032,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 119, grid_buf)
   poke_ptr(s, 120, mark_buf)
   poke_ptr(s, 121, fell_buf)
+  poke_ptr(s, 122, zap_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
@@ -3001,6 +3045,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 79, 1.0)
   poke_f32(s, 80, 0.0)
   poke_f32(s, 93, 0.0)
+  poke_f32(s, 95, 0.0)
   poke_f32(s, 53, 1.0)
   clear_bullets(bullet_buf)
   clear_shards(shard_buf)
@@ -3957,6 +4002,82 @@ fn step_world(w: Ptr, dt: Float) =
   step_blasts(peek_ptr(w, 81), dt)
   run_charge(w, dt, t)
   shark_step(w, dt, t)
+  step_zaps(w)
+
+# ---- the crystals bite back -------------------------------------------------
+#
+# Stand against a crystal and it answers: a tenth of you, down a line of its
+# own light, every three seconds you keep standing there. The glass was the
+# one thing in the valley with no opinion about being leaned on — people
+# fought from inside the stands because the crystals made better walls than
+# the walls. Now proximity is a wager.
+#
+# Only where the world decides — this runs in `step_world`, which a client in
+# somebody else's valley never steps — and only the *event* crosses the wire:
+# who was bitten and by which crystal, one `z` each. The damage arrives the
+# way all server damage does, in the snapshot; the ring is for the light and
+# the sound, which every browser draws from the same two numbers.
+fn zap_reach() = 2.4
+
+fn zap_bite() = 0.10
+
+fn zap_every() = 3.0
+
+fn zap_ring() = 32
+
+fn step_zaps(w) =
+  for i in 0..player_count(w)
+    zap_check(w, player_at(w, i))
+
+fn zap_check(w, s) =
+  if world_time(w) - peek_f32(s, 105) < zap_every() then 0 else if peek_f32(s, 82) < 0.001 then 0 else zap_scan(w, s, peek_ptr(w, 66), to_int(peek_f32(w, 58)), 0)
+
+fn zap_scan(w, s, cb, n, i) =
+  if i >= n then 0 else if near_glass(s, cb, i) > 0 then zap(w, s, cb, i) else zap_scan(w, s, cb, n, i + 1)
+
+# Near the glass: within arm-and-a-step of the crystal's foot, and at its
+# height. The smallest shards of standing crystal do not bite — a thing that
+# reaches your knee is not a thing you were warned about.
+fn near_glass(s, cb, i) =
+  at = i * 8
+  if peek_f32(cb, at + 3) < 0.35 then 0
+  else
+    dx = peek_f32(cb, at) - peek_f32(s, 21)
+    dz = peek_f32(cb, at + 2) - peek_f32(s, 23)
+    dy = peek_f32(cb, at + 1) - peek_f32(s, 22)
+    if dx * dx + dz * dz > zap_reach() * zap_reach() then 0 else if dy > 2.0 || dy < 0.0 - 4.0 then 0 else 1
+
+fn zap(w, s, cb, i) =
+  poke_f32(s, 105, world_time(w))
+  poke_f32(s, 82, clampf(peek_f32(s, 82) - zap_bite(), 0.0, 1.0))
+  # And a small shove off the glass, so being bitten reads on the body as
+  # well as on the bar — a fraction of a blast's, from the crystal outward.
+  dx = peek_f32(s, 21) - peek_f32(cb, i * 8)
+  dz = peek_f32(s, 23) - peek_f32(cb, i * 8 + 2)
+  d = sqrt(dx * dx + dz * dz) + 0.2
+  poke_f32(s, 84, peek_f32(s, 84) + dx / d * 7.0)
+  poke_f32(s, 85, peek_f32(s, 85) + dz / d * 7.0)
+  note_zap(w, player_id(s), i)
+  1
+
+fn note_zap(w, who, ci) =
+  n = to_int(peek_f32(w, 95))
+  zb = peek_ptr(w, 122)
+  poke_f32(zb, n % zap_ring() * 2, to_float(who))
+  poke_f32(zb, n % zap_ring() * 2 + 1, to_float(ci))
+  poke_f32(w, 95, peek_f32(w, 95) + 1.0)
+  1
+
+fn zaps(w: Ptr) -> Int = to_int(peek_f32(w, 95))
+
+fn zap_who(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 122), k % zap_ring() * 2))
+
+fn zap_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 122), k % zap_ring() * 2 + 1))
+
+# Being told about a bite this browser did not decide: the ring and the
+# counter move, the light and the sound follow, and the health arrives in the
+# snapshot the way it always does.
+fn put_zap(w: Ptr, who: Int, ci: Int) = note_zap(w, who, ci)
 
 # The wind is a function of the clock and of nothing else, which is why a
 # client can run it without being told anything: give two machines the same
