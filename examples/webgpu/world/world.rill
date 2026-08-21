@@ -238,6 +238,8 @@ export fn match_left(w: Ptr) -> Float = v.match_left(w)
 
 export fn match_phase(w: Ptr) -> Int = v.match_phase(w)
 
+export fn set_match(w: Ptr, phase: Int, left: Float) -> Int = v.set_match(w, phase, left)
+
 export fn kills(s: Ptr) -> Int = v.kills(s)
 
 export fn deaths(s: Ptr) -> Int = v.deaths(s)

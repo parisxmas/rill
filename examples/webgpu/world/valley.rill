@@ -3393,6 +3393,14 @@ fn new_match_player(s) =
   place_player(s)
   1
 
+# The server's clock, put on a client's world. The seconds left are what
+# crosses the wire, because that is what anybody reads; the clock itself is how
+# far into the phase we are, which is the other end of the same number.
+fn set_match(w: Ptr, phase: Int, left: Float) =
+  poke_f32(w, 129, if phase > 0 then 1.0 else 0.0)
+  poke_f32(w, 128, clampf(if phase > 0 then report_len() - left else match_len() - left, 0.0, match_len()))
+  1
+
 fn kills(s: Ptr) -> Int = to_int(peek_f32(s, 130))
 
 fn deaths(s: Ptr) -> Int = to_int(peek_f32(s, 131))
@@ -3439,6 +3447,13 @@ fn step_wind(w, dt) =
 # to somebody, which crystal went and where the shark is are the server's, and
 # arrive as events.
 fn step_visuals(w: Ptr, dt: Float) =
+  # The round runs here too. It was only in `step_world`, which a client never
+  # calls, so the clock on a client sat at ten minutes for ever — and worse,
+  # the turn of the round never reached one: the server rebuilt its valley and
+  # the client went on looking at the crystals it had broken and the holes it
+  # had shot. Running it on both sides means a client rebuilds its own valley
+  # at the same moment, and `set_match` keeps the two clocks honest.
+  step_match(w, dt)
   swim_on(w, dt)
   step_wind(w, dt)
   step_bullets(w, peek_ptr(w, 68), dt, 0)

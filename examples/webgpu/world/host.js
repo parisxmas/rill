@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=317";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=317";
+import { load } from "./world.js?v=318";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=318";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=317";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "317";
+const V = "318";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2034,6 +2034,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const boardRows = document.querySelector("#boardRows");
   const boardCount = document.querySelector("#boardCount");
   let boardShape = "";
+  // Which snapshot the round's clock was last set from, so it is corrected
+  // once per arrival rather than every frame.
+  let syncedAt = -1;
 
   // A browser alone in its valley still has a round, and one player in it.
   const soloBoard = () => [{
@@ -3275,9 +3278,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // The round's clock and, between rounds, the board. Here rather than
       // beside the roster because the roster only exists when there is a
       // server, and a browser alone in its valley plays rounds too.
+      // The world's own clock is what is read, on both sides: it runs in
+      // `step_visuals` now, so it counts down smoothly between snapshots
+      // rather than stepping twenty times a second. A snapshot only corrects
+      // it, and only when a new one has actually arrived.
       const snap = net && net.last;
-      if (snap && snap.left != null) drawRound(snap.phase, snap.left, everyone(net), net.id);
-      else if (world) drawRound(Number(E.match_phase(world)), E.match_left(world), soloBoard(), net && net.id);
+      if (snap && snap.left != null && snap.at !== syncedAt) {
+        syncedAt = snap.at;
+        E.set_match(world, snap.phase, snap.left);
+      }
+      if (world) {
+        drawRound(Number(E.match_phase(world)), E.match_left(world),
+                  snap ? everyone(net) : soloBoard(), net && net.id);
+      }
     }
     // The rifle. A whole number that changes on the frame the trigger goes
     // down, so it is compared rather than eased: nothing here moves unless a
