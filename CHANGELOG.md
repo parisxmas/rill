@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — three things a match could not say
+
+- **`1 | 2 -> ...`**: arms that go the same way say so once. `lift` turns one
+  arm holding alternatives into one arm per alternative before anything else
+  sees it, so exhaustiveness, reachability and guards go on working unchanged.
+  Alternatives must bind the same names — the body is written once, so a name it
+  uses has to mean something whichever alternative was taken. Top of an arm
+  only.
+- **`hepsi @ Daire(r) -> hepsi`**: names the whole of what a pattern matched, so
+  an arm can take a value apart to ask about it and hand back the value it was
+  given rather than building an equal one. Nests, unlike `|`.
+- **`{ p | x = 9 }`**: every field `p` had, apart from those named. Becomes a
+  call to the constructor; the base is bound first, so it is read once however
+  many fields are carried over. Needs a single-constructor type, the rule `.x`
+  already has.
+
+A name is a binding and not a test, so everything that asks a pattern what it
+tests for reads through the `@` first. One place deliberately does not: the
+optimisation that lets an arm build over the box it took apart, which an `@`
+name is precisely something that can still be holding.
+
+Also: the rejected-source test helpers all wrote to one file per process, so two
+of them running at once — the harness runs tests in parallel — could read back
+each other's source. Latent until three more callers made it show.
+
 ## Unreleased — a byte is not a character
 
 `#s` is ten for `"günaydın"`, which is eight letters, and `s[0:2]` cut the `ü`

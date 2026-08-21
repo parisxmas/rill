@@ -158,6 +158,11 @@ pub enum Expr {
     /// takes it apart, since `geo.area` is one too; this is what the parser
     /// builds where the base is not a name, as in `f(x).y`.
     Field { base: Box<Expr>, name: String, line: usize },
+    /// `{ p | x = 9, y = 0 }` — the value `p` with those fields replaced and
+    /// every other one carried over. The base has to be a type with one
+    /// constructor, for the same reason `p.x` does: with two, a field name
+    /// does not say which.
+    Update { base: Box<Expr>, fields: Vec<(String, Expr, usize)>, line: usize },
     /// `e?` — the value inside an `Ok`, or the whole function's `Err`. `lift`
     /// turns it into the `match` it is, taking the rest of the block as the
     /// `Ok` arm, so nothing after this pass knows it was ever written.

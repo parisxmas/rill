@@ -898,6 +898,36 @@ impl Parser {
                     Ok(Expr::Var(name, line))
                 }
             }
+            Tok::LBrace => {
+                // `{ p | x = 9, y = 0 }`. The `|` reads as "except", which is
+                // the one thing this notation says: everything the base had,
+                // apart from these.
+                let base = self.expr()?;
+                self.expect(&Tok::Pipe, "after the value being updated")?;
+                let mut fields = Vec::new();
+                loop {
+                    let (fline, fcol) = self.here();
+                    let name = match self.bump() {
+                        Tok::Ident(n) if !starts_upper(&n) => n,
+                        other => {
+                            return Err(SyntaxError::new(
+                                fline,
+                                fcol,
+                                format!("expected a field name to update, found {other}"),
+                            ))
+                        }
+                    };
+                    self.expect(&Tok::Eq, "after the field name")?;
+                    fields.push((name, self.expr()?, fline));
+                    if matches!(self.peek(), Tok::Comma) {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RBrace, "to close the update")?;
+                Ok(Expr::Update { base: Box::new(base), fields, line })
+            }
             Tok::LParen => {
                 let first = self.expr()?;
                 if !matches!(self.peek(), Tok::Comma) {

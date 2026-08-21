@@ -291,7 +291,67 @@ structure of the code.
 
 ---
 
-## 5.7 Designing with sum types
+## 5.7 Several patterns, and naming the whole
+
+Two shortcuts that come up constantly once you are writing real matches.
+
+Arms that go the same way can say so once, with `|` between the alternatives:
+
+```rill
+fn eksen(y) = match y
+  Kuzey | Guney -> "dikey"
+  Dogu | Bati -> "yatay"
+```
+
+Every alternative has to bind the same names, because the body is one body: a
+name it uses must mean something whichever alternative was taken. In practice
+that means `|` is for constants and for constructors that take no arguments,
+which is what it is wanted for. The compiler still checks that you covered every
+case — three directions and an arm naming two of them still leaves one
+uncovered — and it still tells you when an alternative is unreachable.
+
+And `@` names the whole of what a pattern matched, so an arm can take a value
+apart to ask about it and hand back the value it was given:
+
+```rill
+fn buyut(s) = match s
+  hepsi @ Daire(r) if r > 10.0 -> hepsi
+  Daire(r) -> Daire(r * 2.0)
+  hepsi @ Kare(_) -> hepsi
+```
+
+Without the `@`, the first arm would have to write `Daire(r)` back out — an
+equal value, built again, where the one you already had would do. Unlike `|`,
+`@` nests: `Cons(bir @ 1, _)` is a field that must be `1` and is also called
+`bir`.
+
+## 5.8 Changing one field
+
+A record with six fields, one of which you want different, is tedious to write
+out and easy to get wrong — and positional constructors make the mistake silent
+when two fields have the same type. So there is a notation for it:
+
+```rill
+a = Nokta(1, 2, "a")
+b = { a | x = 9 }              # (9, 2, "a")
+c = { a | x = 9, ad = "yeni" } # (9, 2, "yeni")
+```
+
+Read the `|` as "except". Nothing is mutated: `a` is still `(1, 2, "a")`
+afterwards, and `b` is a new value. It becomes an ordinary call to the
+constructor, with the named fields taking the new expressions and every other
+one read off `a`.
+
+The base is read once, however many fields are carried over — `{ f(x) | y = 0 }`
+calls `f` once — so it is safe to update the result of a call.
+
+The rule about constructors is the one `.x` has, for the same reason: a field
+name only says which field when the type has a single constructor for it to
+belong to.
+
+---
+
+## 5.9 Designing with sum types
 
 The technique worth learning from this chapter is **making illegal states
 unrepresentable**. It is a design move, not a language feature.
@@ -328,7 +388,7 @@ number is much larger than the first, there is a sum type waiting.
 
 ---
 
-## 5.8 Exercises
+## 5.10 Exercises
 
 1. Model a traffic light as a type and write `next(light)`. Then add a
    flashing-amber state and see what the compiler asks you to fix.

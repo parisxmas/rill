@@ -449,6 +449,9 @@ struct Checker {
     fn_index: HashMap<String, usize>,
     sigs: Vec<SigState>,
     subst: Vec<Option<Ty>>,
+    /// Numbers the bindings `{ p | x = 9 }` needs for the value it is updating.
+    /// A dot keeps them out of reach of anything a program could name.
+    updates: usize,
     pending: Vec<(u32, Constraint, usize, &'static str)>,
     traits: Vec<(String, Vec<MethodInfo>)>,
     externs: HashMap<String, ExternSig>,
@@ -481,6 +484,7 @@ impl Checker {
             adts: Vec::new(),
             ctors: HashMap::new(),
             fn_index: HashMap::new(),
+            updates: 0,
             sigs: Vec::new(),
             subst: Vec::new(),
             pending: Vec::new(),
@@ -1549,6 +1553,7 @@ impl Checker {
                 let b = self.infer(base, env)?;
                 self.field_of(b, name, *line)
             }
+            Expr::Update { base, fields, line } => self.infer_update(base, fields, *line, env),
             Expr::Call { name, args, line, .. } => self.infer_call(name, args, *line, env),
             Expr::Unary { op: UnOp::Neg, expr } => {
                 let inner = self.infer(expr, env)?;
@@ -2061,6 +2066,121 @@ impl Checker {
         };
         let ty = subst_gen(&ctor.fields[index], &targs);
         Ok(TExpr { ty, line, kind: TK::FieldGet { base: Box::new(base), adt, ctor: 0, index } })
+    }
+
+    /// `{ p | x = 9 }` — every field `p` had, with those named replaced.
+    ///
+    /// It becomes an ordinary call to the constructor: the named fields take
+    /// the new expressions, and every other one is read off the base. Which
+    /// means the base has to be read several times, so it is bound first —
+    /// `{ f(a) | x = 9 }` must call `f` once, not once per field it did not
+    /// mention.
+    fn infer_update(
+        &mut self,
+        base: &Expr,
+        fields: &[(String, Expr, usize)],
+        line: usize,
+        env: &mut HashMap<String, Ty>,
+    ) -> Result<TExpr, TypeError> {
+        let b = self.infer(base, env)?;
+        // The same rule `.x` has, and the same reasons, so the same words: a
+        // field name only says which field when there is one constructor for
+        // it to belong to.
+        let (adt, targs) = match self.resolve(&b.ty) {
+            Ty::Adt(i, targs) => (i, targs),
+            Ty::Var(_) => {
+                return Err(TypeError::new(
+                    line,
+                    "the type of the value being updated is not known here, so the field \
+                     names cannot say which fields they are — annotate it"
+                        .to_string(),
+                ))
+            }
+            other => {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{}` has no fields to update", self.type_name(&other)),
+                ))
+            }
+        };
+        if self.adts[adt].ctors.len() != 1 {
+            let names: Vec<&str> = self.adts[adt].ctors.iter().map(|c| c.name.as_str()).collect();
+            return Err(TypeError::new(
+                line,
+                format!(
+                    "`{}` has more than one constructor ({}), so an update cannot say which \
+                     fields these are",
+                    self.adts[adt].name,
+                    names.join(", ")
+                ),
+            ));
+        }
+        let arity = self.adts[adt].ctors[0].fields.len();
+        let field_names: Vec<Option<String>> = self.adts[adt].ctors[0].names.clone();
+        let adt_name = self.adts[adt].name.clone();
+
+        // Which field each name is, checked before anything is inferred so
+        // that a misspelling is reported as one.
+        let mut slot: Vec<Option<TExpr>> = (0..arity).map(|_| None).collect();
+        for (name, value, fline) in fields {
+            let Some(index) = field_names.iter().position(|n| n.as_deref() == Some(name)) else {
+                let known: Vec<&str> = field_names.iter().filter_map(|n| n.as_deref()).collect();
+                let has = if known.is_empty() {
+                    "its fields are not named, and a field is set by its name".to_string()
+                } else {
+                    format!("it has {}", known.join(", "))
+                };
+                return Err(TypeError::new(
+                    *fline,
+                    format!("`{adt_name}` has no field `{name}` — {has}"),
+                ));
+            };
+            if slot[index].is_some() {
+                return Err(TypeError::new(
+                    *fline,
+                    format!("field `{name}` is set twice in this update"),
+                ));
+            }
+            let v = self.infer(value, env)?;
+            let want = subst_gen(&self.adts[adt].ctors[0].fields[index], &targs);
+            self.unify(&want, &v.ty, *fline, "the new value for a field")?;
+            slot[index] = Some(v);
+        }
+
+        let held = format!("update.{}", self.updates);
+        self.updates += 1;
+        let ty = Ty::Adt(adt, targs.clone());
+        let args = (0..arity)
+            .map(|i| match slot[i].take() {
+                Some(v) => v,
+                None => TExpr {
+                    ty: subst_gen(&self.adts[adt].ctors[0].fields[i], &targs),
+                    line,
+                    kind: TK::FieldGet {
+                        base: Box::new(TExpr {
+                            ty: ty.clone(),
+                            line,
+                            kind: TK::Local(held.clone()),
+                        }),
+                        adt,
+                        ctor: 0,
+                        index: i,
+                    },
+                },
+            })
+            .collect();
+        Ok(TExpr {
+            ty: ty.clone(),
+            line,
+            kind: TK::Block(vec![
+                TStmt::Bind { name: held, value: b },
+                TStmt::Expr(TExpr {
+                    ty,
+                    line,
+                    kind: TK::CallCtor { adt, ctor: 0, targs, args },
+                }),
+            ]),
+        })
     }
 
     fn infer_var(
@@ -3700,6 +3820,12 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
         }
         Expr::Len { expr, .. } | Expr::Try { expr, .. } => free_vars(expr, out, seen),
         Expr::Field { base, .. } => free_vars(base, out, seen),
+        Expr::Update { base, fields, .. } => {
+            free_vars(base, out, seen);
+            for (_, v, _) in fields {
+                free_vars(v, out, seen);
+            }
+        }
         Expr::Slice { base, from, to, .. } => {
             free_vars(base, out, seen);
             if let Some(f) = from {

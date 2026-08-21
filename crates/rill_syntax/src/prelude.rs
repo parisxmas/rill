@@ -137,6 +137,12 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
         Expr::Var(n, _) => {
             out.insert(n.clone());
         }
+        Expr::Update { base, fields, .. } => {
+            collect_expr_names(base, out);
+            for (_, v, _) in fields {
+                collect_expr_names(v, out);
+            }
+        }
         Expr::Call { name, args, .. } => {
             out.insert(name.clone());
             for a in args {

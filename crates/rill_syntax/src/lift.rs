@@ -592,6 +592,12 @@ fn each_child<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
         Expr::Call { args, .. } => args.iter().for_each(f),
         Expr::Unary { expr, .. } | Expr::Len { expr, .. } | Expr::Try { expr, .. } => f(expr),
         Expr::Field { base, .. } => f(base),
+        Expr::Update { base, fields, .. } => {
+            f(base);
+            for (_, v, _) in fields {
+                f(v);
+            }
+        }
         Expr::Binary { lhs, rhs, .. } | Expr::Append { target: lhs, value: rhs, .. } => {
             f(lhs);
             f(rhs);

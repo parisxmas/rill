@@ -332,6 +332,12 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str, scope: &mut Ve
                 *n = format!("{alias}.{n}");
             }
         }
+        Expr::Update { base, fields, .. } => {
+            qualify_expr(base, own, alias, scope);
+            for (_, v, _) in fields {
+                qualify_expr(v, own, alias, scope);
+            }
+        }
         Expr::Call { name, args, .. } => {
             if own.contains(name) && !bound(scope, name) {
                 *name = format!("{alias}.{name}");

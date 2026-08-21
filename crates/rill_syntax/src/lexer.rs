@@ -45,6 +45,9 @@ pub enum Tok {
     Pipe,
     /// `@`, which names the whole of what a pattern matched.
     At,
+    /// `{` and `}`, which appear in one place: `{ p | x = 9 }`.
+    LBrace,
+    RBrace,
     PipeGt,
     Arrow,
     Colon,
@@ -104,6 +107,8 @@ impl std::fmt::Display for Tok {
             Tok::Ge => write!(f, "`>=`"),
             Tok::Eq => write!(f, "`=`"),
             Tok::At => write!(f, "`@`"),
+            Tok::LBrace => write!(f, "`{{`"),
+            Tok::RBrace => write!(f, "`}}`"),
             Tok::Pipe => write!(f, "`|`"),
             Tok::PipeGt => write!(f, "`|>`"),
             Tok::Arrow => write!(f, "`->`"),
@@ -454,6 +459,8 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                     }
                     '%' => Tok::Percent,
                     '@' => Tok::At,
+                    '{' => Tok::LBrace,
+                    '}' => Tok::RBrace,
                     ',' => Tok::Comma,
                     ':' => Tok::Colon,
                     '\\' => Tok::Backslash,

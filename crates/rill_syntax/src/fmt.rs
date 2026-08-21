@@ -681,6 +681,14 @@ fn inline(e: &Expr, prec: u8) -> String {
         Expr::Str(s) => format!("\"{}\"", escape(s)),
         Expr::Bool(b) => b.to_string(),
         Expr::Var(n, _) => n.clone(),
+        Expr::Update { base, fields, .. } => {
+            let set = fields
+                .iter()
+                .map(|(n, v, _)| format!("{n} = {}", inline(v, 0)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ {} | {set} }}", inline(base, 0))
+        }
         Expr::Call { name, args, piped, .. } => {
             if *piped && !args.is_empty() {
                 let head = inline(&args[0], P_PIPE);

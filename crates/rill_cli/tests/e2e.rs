@@ -284,6 +284,69 @@ fn string_builders_accumulate() {
     assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
 }
 
+/// `{ p | x = 9 }` — everything `p` had, apart from these. It becomes a call
+/// to the constructor: the named fields take the new values, and every other
+/// one is read off the base. `p` itself does not change; nothing in Rill does.
+#[test]
+fn record_update_replaces_named_fields() {
+    let src = "type Nokta\n  \
+                 Nokta(x: Int, y: Int, ad: Str)\n\n\
+               fn goster(p: Nokta) = \
+                 int_to_str(p.x) + \",\" + int_to_str(p.y) + \",\" + p.ad\n\n\
+               fn main() =\n  \
+                 a = Nokta(1, 2, \"a\")\n  \
+                 println(goster({ a | x = 9 }))\n  \
+                 println(goster({ a | x = 9, ad = \"yeni\" }))\n  \
+                 println(goster(a))\n  \
+                 println(goster({ { a | x = 7 } | y = 8 }))\n";
+    assert_eq!(run_source("update", src), "9,2,a\n9,2,yeni\n1,2,a\n7,8,a\n");
+}
+
+/// The base is read once per field it did not mention, so it is bound first:
+/// `{ f(a) | x = 9 }` calls `f` once, not once for every field carried over.
+#[test]
+fn record_update_evaluates_its_base_once() {
+    let src = "type Nokta\n  \
+                 Nokta(x: Int, y: Int, z: Int)\n\n\
+               fn once(n) =\n  \
+                 println(\"read\")\n  \
+                 Nokta(n, n, n)\n\n\
+               fn main() =\n  \
+                 p = { once(5) | y = 0 }\n  \
+                 println(int_to_str(p.x) + int_to_str(p.y) + int_to_str(p.z))\n";
+    assert_eq!(run_source("updonce", src), "read\n505\n");
+}
+
+/// A field name says which field only when there is one constructor for it to
+/// belong to — the rule `.x` has, for the reason `.x` has it.
+#[test]
+fn record_update_needs_one_constructor_and_real_fields() {
+    let two = "type Sekil\n  \
+                 Daire(r: Int)\n  \
+                 Kare(k: Int)\n\n\
+               fn main() =\n  \
+                 a = Daire(1)\n  \
+                 println(int_to_str({ a | r = 9 }.r))\n";
+    let err = compile_error(two);
+    assert!(err.contains("more than one constructor"), "{err}");
+
+    let missing = "type Nokta\n  \
+                     Nokta(x: Int, y: Int)\n\n\
+                   fn main() =\n  \
+                     a = Nokta(1, 2)\n  \
+                     println(int_to_str({ a | z = 9 }.x))\n";
+    let err = compile_error(missing);
+    assert!(err.contains("no field `z`") && err.contains("it has x, y"), "{err}");
+
+    let twice = "type Nokta\n  \
+                   Nokta(x: Int, y: Int)\n\n\
+                 fn main() =\n  \
+                   a = Nokta(1, 2)\n  \
+                   println(int_to_str({ a | x = 9, x = 8 }.x))\n";
+    let err = compile_error(twice);
+    assert!(err.contains("set twice"), "{err}");
+}
+
 /// `whole @ Circle(r)` matches what follows the `@` and names all of it too.
 /// Nests, unlike `|`, because it asks nothing of the arm.
 #[test]
