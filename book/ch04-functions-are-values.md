@@ -202,7 +202,50 @@ data structures and is not something you are likely to trip over by accident.
 
 ---
 
-## 4.5 The three combinators
+## 4.5 Leaving an argument for later
+
+Writing `\x -> add(2, x)` to pass "add two" to something is a lot of notation
+for very little thought. An underscore where the argument would go says the same
+thing:
+
+```rill
+ikiEkle = add(2, _)        # \x -> add(2, x)
+yariya  = bol(_, 2)        # \x -> bol(x, 2)
+map(l, add(10, _))
+```
+
+Any position, not only the ones at the end — `bol(_, 2)` divides *by* two, which
+a curried language cannot express without writing the lambda out. Two
+underscores make a function of two arguments, in the order they were left:
+`uc(_, 5, _)` takes the first and third.
+
+It works for anything that is called, which includes constructors and the
+builtins:
+
+```rill
+map(Cons(4, Nil), Daire(_))          # a constructor as a function
+map(l, int_to_str(_))                # a builtin, which is not a value on its own
+```
+
+Note what this deliberately does *not* do. Calling a function with too few
+arguments is still an error:
+
+```rill
+f = add(2)     # error: `add` takes 2 argument(s), but 1 given
+```
+
+In a language where that produced a function, every miscounted argument list
+becomes a value of the wrong type, and the complaint arrives somewhere else
+entirely — often several functions away. The underscore is how you say you meant
+it, and leaving it out is how the compiler knows you did not.
+
+One thing you cannot do yet is call the result immediately: `add(2, _)(5)` does
+not parse, because calling what a call returned is not a shape the parser has.
+Bind it to a name first.
+
+---
+
+## 4.6 The three combinators
 
 Almost every loop you would write in another language is one of these:
 
@@ -240,7 +283,7 @@ that a fold is "a loop with one variable in it", you stop writing loops.
 
 ---
 
-## 4.6 Exercises
+## 4.7 Exercises
 
 1. Write `compose(f, g)` returning a function that applies `g` then `f`. Use it
    to build "double then increment" and "increment then double", and show they

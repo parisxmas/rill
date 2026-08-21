@@ -203,12 +203,18 @@ fn walk(
                 out,
             )?)
         }
-        Expr::Call { name, args, line, piped } => Expr::Call {
-            name,
-            args: walk_all(args, env, parent, used, out)?,
-            line,
-            piped,
-        },
+        Expr::Call { name, args, line, piped } => {
+            // `add(2, _)` is the function you get by leaving that argument to
+            // be given later. It is written out as the lambda it means and
+            // then walked as one, so everything after this pass sees an
+            // ordinary closure and nothing knows an underscore was involved.
+            if args.iter().any(is_placeholder) {
+                let lam = placeholder_lambda(name, args, line, piped);
+                walk(lam, env, parent, used, out)?
+            } else {
+                Expr::Call { name, args: walk_all(args, env, parent, used, out)?, line, piped }
+            }
+        }
         Expr::Unary { op, expr } => {
             Expr::Unary { op, expr: Box::new(walk(*expr, env, parent, used, out)?) }
         }
@@ -1132,6 +1138,41 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
         }
         _ => {}
     }
+}
+
+/// `_` standing where an argument would be. In a pattern an underscore means
+/// "anything and do not name it"; here it means "not this one, yet", which is
+/// the same thought pointed the other way.
+fn is_placeholder(e: &Expr) -> bool {
+    matches!(e, Expr::Var(n, _) if n == "_")
+}
+
+/// `f(a, _)` as `\arg.1 -> f(a, arg.1)`.
+///
+/// The parameters are named for the position they were left at rather than
+/// from a counter, and two lambdas can therefore both hold an `arg.0`. That is
+/// safe, and worth saying why: a placeholder's parameter is used exactly once,
+/// in the argument slot the underscore was written in, which is inside its own
+/// lambda and nowhere else. `f(_, g(_))` gives `\arg.0 -> f(arg.0, \arg.0 ->
+/// g(arg.0))`, and the outer `arg.0` sits in f's first argument, outside the
+/// inner lambda entirely. There is no way to write an underscore whose
+/// parameter would have to reach past a nearer one of the same name.
+fn placeholder_lambda(name: String, args: Vec<Expr>, line: usize, piped: bool) -> Expr {
+    let mut params = Vec::new();
+    let args = args
+        .into_iter()
+        .enumerate()
+        .map(|(i, a)| {
+            if is_placeholder(&a) {
+                let p = format!("arg.{i}");
+                params.push(p.clone());
+                Expr::Var(p, line)
+            } else {
+                a
+            }
+        })
+        .collect();
+    Expr::Lambda { params, body: Box::new(Expr::Call { name, args, line, piped }), line }
 }
 
 /// The alternatives one arm's pattern stands for: its own, or the several an

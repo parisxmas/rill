@@ -2335,6 +2335,14 @@ impl Checker {
                 return Ok(base);
             }
         }
+        if name == "_" {
+            // It got past `lift`, so it was not in an argument list.
+            return Err(TypeError::new(
+                line,
+                "`_` stands for an argument left to be given later, so it only means something where an argument would go — `add(2, _)`"
+                    .to_string(),
+            ));
+        }
         Err(TypeError::new(line, format!("unknown variable `{name}`")))
     }
 

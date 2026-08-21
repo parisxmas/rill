@@ -284,6 +284,60 @@ fn string_builders_accumulate() {
     assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
 }
 
+/// `add(2, _)` is the function you get by leaving an argument to be given
+/// later. Written out as the lambda it means, so everything after `lift` sees
+/// an ordinary closure.
+#[test]
+fn a_placeholder_leaves_an_argument_for_later() {
+    let src = "type Sekil\n  \
+                 Daire(r: Int)\n\n\
+               fn add(a, b) = a + b\n\n\
+               fn bol(a, b) = a / b\n\n\
+               fn uc(a, b, c) = a * 100 + b * 10 + c\n\n\
+               fn uygula(x, f) = f(x)\n\n\
+               fn main() =\n  \
+                 iki = add(2, _)\n  \
+                 println(int_to_str(iki(5)))\n  \
+                 yari = bol(_, 2)\n  \
+                 println(int_to_str(yari(10)))\n  \
+                 ikisi = uc(_, 5, _)\n  \
+                 println(int_to_str(ikisi(9, 4)))\n  \
+                 l = Cons(1, Cons(2, Nil))\n  \
+                 println(join(map(map(l, add(10, _)), int_to_str(_)), \",\"))\n  \
+                 ds = map(Cons(4, Nil), Daire(_))\n  \
+                 println(match ds\n    \
+                   Cons(Daire(r), _) -> int_to_str(r)\n    \
+                   Nil -> \"yok\")\n  \
+                 g = uygula(_, add(1, _))\n  \
+                 println(int_to_str(g(5)))\n";
+    // Bound first and called after, because calling what a call returned —
+    // `add(2, _)(5)` — is not something the parser does, placeholder or not.
+    // Any position, not only the last: `bol(_, 2)` halves what it is given.
+    // `int_to_str(_)` is a builtin, which could not be passed as a value at
+    // all before. `Daire(_)` is a constructor. The last is a placeholder
+    // inside a placeholder.
+    assert_eq!(run_source("placeholder", src), "7\n5\n954\n11,12\n4\n6\n");
+}
+
+/// Leaving an argument out altogether is still the mistake it usually is. This
+/// is the reason for the underscore: under-application that means it says so,
+/// and under-application that does not is still caught where it happened.
+#[test]
+fn too_few_arguments_is_still_an_error() {
+    let src = "fn add(a, b) = a + b\n\n\
+               fn main() =\n  \
+                 f = add(2)\n  \
+                 println(int_to_str(f(3)))\n";
+    let err = compile_error(src);
+    assert!(err.contains("takes 2 argument(s), but 1 given"), "{err}");
+
+    let bare = "fn main() =\n  \
+                  x = _\n  \
+                  println(int_to_str(1))\n";
+    let err = compile_error(bare);
+    assert!(err.contains("only means something where an argument would go"), "{err}");
+}
+
 /// Every program that ships with the repository still compiles.
 ///
 /// The tests around this one are all sources written inside them, which says

@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — an argument left for later
+
+`\x -> add(2, x)` is a lot of notation for very little thought.
+
+- **`add(2, _)`** is the function you get by leaving that argument to be given
+  later. Written out as the lambda it means, in `lift`, so everything after that
+  pass sees an ordinary closure.
+- **Any position**, not only the ones at the end: `bol(_, 2)` divides *by* two,
+  which currying cannot express without writing the lambda out. Two underscores
+  make a function of two arguments, in the order they were left.
+- **Constructors and builtins too**: `Daire(_)` and `int_to_str(_)`. The second
+  matters — a builtin was not a value at all before, so `map(l, int_to_str)`
+  said "unknown variable" and there was nothing to write instead but a lambda.
+- **Too few arguments is still an error.** `add(2)` says so. That is the reason
+  for the underscore rather than bare under-application: otherwise every
+  miscounted argument list becomes a value of the wrong type and the complaint
+  arrives several functions away.
+
+Not yet: calling the result immediately. `add(2, _)(5)` does not parse, because
+calling what a call returned is not a shape the parser has.
+
 ## Unreleased — a field is answered at the end, not where it was written
 
 `p.x` used to be resolved the moment it was read, so it depended on the order
