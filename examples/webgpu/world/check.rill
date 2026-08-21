@@ -179,8 +179,22 @@ fn served(w, n) =
   v.rise_all(w)
   serve(w, n - 1)
 
+# The walls are taken down before anybody shoots. This file checks what people
+# do to each other — walking, shooting, falling, leaving — and the shots are
+# staged along fixed lanes. Where the twelve Ls happen to stand is a placement
+# decision that has moved twice already and will move again, and the day one of
+# them stood across a lane, every expectation below it changed for a reason
+# that had nothing to do with people. The walls have their own tests, with
+# rockets, in `wt`-style native runs; here the range is cleared.
+fn clear_walls(w) =
+  bb = v.blocks_ptr(w)
+
+  for i in 0..v.block_count(w)
+    poke_f32(bb, i * 8 + 3, 0.0)
+
 fn main() =
   w = v.init(48, 400, 300, 900)
+  clear_walls(w)
   println(int_to_str(v.crystal_count(w)) + " crystals and " + int_to_str(v.pine_count(w)) + " pines, nobody in it yet: " + int_to_str(v.players(w)))
 
   a = v.join(w)

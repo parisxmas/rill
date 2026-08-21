@@ -2627,6 +2627,27 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// itself calls.
     const TAILCC: u32 = 18;
 
+    /// The convention a Rill function of this signature gets: `tailcc` when
+    /// every argument rides in a register on every native target — six
+    /// integer-class on x86-64 SysV, eight float-class on both — and the C
+    /// convention when any would touch the stack, because LLVM's lowering of
+    /// tailcc stack arguments walked a caller's stack pointer sixteen bytes
+    /// per call until a live server's return address came out of the heap.
+    /// `extra_ints` is for the closure paths, whose LLVM signature carries an
+    /// environment pointer the `Ty` list does not mention. The budgets read
+    /// an env override so the boundary can be probed without a rebuild.
+    fn cc_for(params: &[Ty], extra_ints: usize) -> Option<u32> {
+        let iregs: usize = std::env::var("RILL_CC_INT_REGS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+        let fregs: usize = std::env::var("RILL_CC_FLOAT_REGS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+        let floats = params.iter().filter(|t| matches!(t, Ty::Float)).count();
+        let ints = params.len() - floats + extra_ints;
+        if ints > iregs || floats > fregs {
+            None
+        } else {
+            Some(Self::TAILCC)
+        }
+    }
+
     /// Gives a call site the convention of what it calls, which is the only
     /// way the two can be sure to agree.
     fn match_cc(&self, call: inkwell::values::CallSiteValue<'ctx>, callee: FunctionValue<'ctx>) {
@@ -2660,7 +2681,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // a tail call needs a feature the module may not be allowed to
         // declare, so there the C convention stays.
         if !self.wasm && self.tmod.fns[fn_idx].name != "main" {
-            v.set_call_conventions(Self::TAILCC);
+            if let Some(cc) = Self::cc_for(&params, 0) {
+                v.set_call_conventions(cc);
+            }
         }
         self.instances.insert(key.clone(), v);
         self.queue.push_back(key);
@@ -2918,7 +2941,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // is exactly what `ret_leaf` writes when the two types agree.
                 // A `Unit` return releases what came back first, and a call
                 // with an instruction after it is not a tail call at all.
+                let caller_tailcc = self
+                    .builder
+                    .get_insert_block()
+                    .and_then(|b| b.get_parent())
+                    .is_some_and(|f| f.get_call_conventions() == Self::TAILCC);
                 if callee.get_call_conventions() == Self::TAILCC
+                    && caller_tailcc
                     && out_ty == *ret_ty
                     && self.llvm_type(ret_ty).is_some()
                 {
@@ -3105,9 +3134,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let name = format!("{}$shim", self.instance_name(key.0, &key.1));
         let shim = self.module.add_function(&name, shim_ty, None);
         // A shim is reached through a closure value, so it is called however
-        // lambdas are called.
+        // lambdas are called — one more integer argument than the type says,
+        // for the environment pointer.
         if !self.wasm {
-            shim.set_call_conventions(Self::TAILCC);
+            if let Some(cc) = Self::cc_for(&params, 1) {
+                shim.set_call_conventions(cc);
+            }
         }
 
         let saved = self.builder.get_insert_block();
@@ -4080,10 +4112,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .build_indirect_call(fn_ty, code, &argv, "ccall")
                     .expect("LLVM builder error");
                 // Every closure target — a lambda, or a shim over a named
-                // function — is made with the same convention, so an indirect
-                // call can be sure of it.
+                // function — is made with the same rule over the same types,
+                // so an indirect call computing it again lands on the same
+                // convention.
                 if !self.wasm {
-                    call.set_call_convention(Self::TAILCC);
+                    if let Some(cc) = Self::cc_for(&params, 1) {
+                        call.set_call_convention(cc);
+                    }
                 }
                 let out = match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
@@ -4600,7 +4635,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // A `spawn` body is started by the scheduler and keeps the C
         // convention; a lambda is called by Rill through a closure value.
         if !self.wasm && !discard_result {
-            lifted.set_call_conventions(Self::TAILCC);
+            if let Some(cc) = Self::cc_for(&param_tys, 1) {
+                lifted.set_call_conventions(cc);
+            }
         }
 
         let saved = self.builder.get_insert_block();
