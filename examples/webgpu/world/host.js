@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=332";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=332";
+import { load } from "./world.js?v=333";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=333";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=332";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "332";
+const V = "333";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -113,7 +113,7 @@ const TEXTURES = [
   ["./plants.png", 512, 512],        // the undergrowth atlas, 2x2
   ["./rock-face.jpg", 256, 256],
   ["./shore-sand.jpg", 256, 256],
-  ["./rifle-atlas.jpg", 1024, 512],  // the rifle's two materials, side by side
+  ["./rifle-atlas.jpg", 1024, 1024], // rifle materials on top, the AK's skin below
   ["./meteor.jpg", 256, 256],        // the stone inside a fireball
   // Jupiter, equirectangular: Cassini's imagery by way of Solar System Scope,
   // CC BY 4.0. A thousand across for a disc four hundred pixels wide — the
@@ -627,7 +627,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 15 + Object.keys(SHADERS).length + TEXTURES.length + 8 + (server ? 1 : 0);
+  const TOTAL = 15 + Object.keys(SHADERS).length + TEXTURES.length + 10 + (server ? 1 : 0);
   let done = 0;
   // Never past the end. This is a count kept by hand of steps taken elsewhere,
   // and the two drift every time something is added — a bar that says 104% is
@@ -888,7 +888,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // the GPU buffer did not is a `writeBuffer` overrun, which is a validation
   // error, an invalid pipeline and a black screen with nothing in the console
   // that names the cause.
-  const UNI_FLOATS = 108;
+  const UNI_FLOATS = 116;
   const uni = device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const shadowSamp = device.createSampler({ compare: "less" });
@@ -1080,6 +1080,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // cut open by the near plane, and a culled interior reads as "not there"
   // where an unculled one reads as a dark wall across the bottom of the screen.
   const vmPipe = pipe("viewmodel", S.VIEWMODEL, vmLayout);
+  // The same shader with one constant flipped: unpack against the AK's box
+  // and sample the lower half of the sheet.
+  const akPipe = pipe("viewmodel", S.VIEWMODEL, vmLayout, { constants: { AKV: 1 } });
   // The shark. Culled normally, depth-tested and depth-writing like any solid
   // — it is only unusual in when it is drawn at all, which is decided in the
   // frame rather than here.
@@ -1174,6 +1177,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const rifleVerts = rifleHead.getUint32(0, true);
   const rifleIdx = rifleHead.getUint32(4, true);
   const rifleBox = new Float32Array(rifleBytes, 8, 6);
+  // The AK: GGBotNet's soviet assault rifle, CC0, baked from its OBJ into the
+  // rifle's own sixteen-byte format with the barrel turned onto +x.
+  const akBytes = await (await fetch(`./ak47.mesh?v=${V}`)).arrayBuffer();
+  const akHead = new DataView(akBytes, 0, 32);
+  const akVerts = akHead.getUint32(0, true);
+  const akIdx = akHead.getUint32(4, true);
+  const akBox = new Float32Array(akBytes, 8, 6);
+  const akVB = gpuBuf(new Uint8Array(akBytes, 32, akVerts * 16));
+  const akIdxBytes = new Uint8Array((akIdx * 2 + 3) & ~3);
+  akIdxBytes.set(new Uint8Array(akBytes, 32 + akVerts * 16, akIdx * 2));
+  const akIB = device.createBuffer({
+    size: akIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(akIB, 0, akIdxBytes);
+  step("ak47.mesh");
   const rifleVB = gpuBuf(new Uint8Array(rifleBytes, 32, rifleVerts * 16));
   // An odd triangle count leaves an odd number of uint16s, and `writeBuffer`
   // wants a multiple of four bytes either way, so the tail is padded.
@@ -1294,7 +1312,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
-  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, musicStarted = false;
+  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, akBuf = null, musicStarted = false;
   let musicGain = null, musicOn = true;
   const shotBytes = await (await fetch(`./rifle-shot.mp3?v=${V}`)).arrayBuffer();
   step("rifle-shot.mp3");
@@ -1345,6 +1363,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // the same shelf half this valley's sounds came off.
   const zapBytes = await (await fetch(`./crystal-zap.mp3?v=${V}`)).arrayBuffer();
   step("crystal-zap.mp3");
+  // One real AK-47 report, cut from the Free Firearm Sound Library (CC0).
+  const akSndBytes = await (await fetch(`./ak-shot.m4a?v=${V}`)).arrayBuffer();
+  step("ak-shot.m4a");
   // One node per sound, built and thrown away: cheaper than it looks, and the
   // only way to have two of the same sample overlapping.
   function playAt(buf, offset, dur, gain, pan, rate) {
@@ -1380,7 +1401,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       step(label);
       return b;
     };
-    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf] = await Promise.all([
+    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf, akBuf] = await Promise.all([
       one(shotBytes, "decoding rifle-shot"),
       one(breakBytes, "decoding crystal-break"),
       one(blastBytes, "decoding meteor-blast"),
@@ -1389,6 +1410,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       one(hurtBytes, "decoding hurt"),
       one(musicBytes, "decoding valley-theme"),
       one(zapBytes, "decoding crystal-zap"),
+      one(akSndBytes, "decoding ak-shot"),
     ]);
   }
 
@@ -1478,6 +1500,26 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   function bang() {
     ensureAudio(() => playAt(shotBuf, 0, 0, 0.55 + Math.random() * 0.12, 0,
                              0.97 + Math.random() * 0.06));
+  }
+  // The AK's report, once per round leaving.
+  function akBang() {
+    ensureAudio(() => playAt(akBuf, 0, 0, 0.42 + Math.random() * 0.08, 0,
+                             0.95 + Math.random() * 0.1));
+  }
+  // And the valley answering when the burst stops: the same report, three
+  // times off the far slopes, quieter and later each time.
+  function akEcho() {
+    ensureAudio(() => {
+      for (const [d, g, p] of [[0.22, 0.2, -0.55], [0.5, 0.1, 0.55], [0.85, 0.05, 0]]) {
+        const src = audio.createBufferSource();
+        src.buffer = akBuf;
+        src.playbackRate.value = 0.88;
+        const gn = audio.createGain(); gn.gain.value = g;
+        const pn = audio.createStereoPanner(); pn.pan.value = p;
+        src.connect(gn).connect(pn).connect(audio.destination);
+        src.start(audio.currentTime + d);
+      }
+    });
   }
   // A hammer falling on nothing. Not a sample: it is thirty milliseconds of
   // noise with no tail, and a file for that would be mostly silence and one
@@ -1929,7 +1971,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // Both conversions are load-bearing: an `Int` across the wasm boundary is
     // an i64, which arrives as a BigInt and will not be subtracted from a
     // number, and will not be passed back as one either.
-    if (m.ammo !== null && Math.abs(m.ammo - Number(E.rounds(state))) > 2) E.set_rounds(state, BigInt(m.ammo));
+    if (m.ammo !== null && Math.abs(m.ammo - Number(E.held_ammo(state))) > 2) E.set_held_ammo(state, BigInt(m.ammo));
     const x = E.player_x(state), y = E.player_y(state), z = E.player_z(state);
     const d = Math.hypot(x - m.x, y - m.y, z - m.z);
     if (d > 4) E.set_at(state, m.x, m.y, m.z);
@@ -2214,7 +2256,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // because `buildWorld` reads it, and `buildWorld` runs while the page is
   // still starting up — a `let` further down is in its dead zone at that
   // point and the first frame throws.
-  let held = 0, wantHeld = 0, swap = 0, swapping = 0, loadedTube = false;
+  let held = 2, wantHeld = 2, swap = 0, swapping = 0, loadedTube = false;
 
   function buildWorld(idx) {
     T = TIERS[idx];
@@ -2582,6 +2624,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (e.repeat) return;
     if (e.code === "Digit1" || e.code === "Numpad1") wantHeld = 0;
     if (e.code === "Digit2" || e.code === "Numpad2") wantHeld = 1;
+    if (e.code === "Digit3" || e.code === "Numpad3") wantHeld = 2;
   });
   // On the press, not held: read from the event rather than from the key mask,
   // so leaning on space at the end does not restart over and over.
@@ -2606,8 +2649,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // whole of the propellant leaves the front of it and there is a tube to
   // reload. Two and a half seconds is what stops a rocket being a rifle.
   const RPG_CYCLE = 2.5;
-  const cycleNow = () => (held ? RPG_CYCLE : BOLT_CYCLE);
-  let wantShot = false, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
+  const AK_CYCLE = 0.05;
+  const cycleNow = () => (held === 1 ? RPG_CYCLE : held === 2 ? AK_CYCLE : BOLT_CYCLE);
+  let wantShot = false, fireHeld = false, akBurst = 0, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
@@ -2668,7 +2712,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // world's number and not a ten written into the page.
   const ammoEl = document.getElementById("ammo");
   const pips = [];
-  for (let i = 0; i < Number(E.mag_full()); i++) {
+  for (let i = 0; i < Number(E.ak_full()); i++) {
     const pip = document.createElement("i");
     ammoEl.appendChild(pip);
     pips.push(pip);
@@ -2704,10 +2748,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // left one while it is down.
   addEventListener("mousedown", e => {
     if (document.pointerLockElement !== canvas) return;
-    if (e.button === 0) wantShot = true;
+    if (e.button === 0) { wantShot = true; fireHeld = true; }
     if (e.button === 2) { wantAim = true; e.preventDefault(); }
   });
-  addEventListener("mouseup", e => { if (e.button === 2) wantAim = false; });
+  addEventListener("mouseup", e => { if (e.button === 2) wantAim = false; if (e.button === 0) fireHeld = false; });
   // A right button that is held is not a request for a menu. The browser will
   // not open one over a locked pointer anyway, but it will the moment the lock
   // is lost — mid-aim, which is the worst possible moment for a menu.
@@ -2715,7 +2759,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // Letting go of the pointer lets go of the sights: a button that is held
   // cannot report itself released once the page has stopped hearing about it.
   document.addEventListener("pointerlockchange", () => {
-    if (document.pointerLockElement !== canvas) wantAim = false;
+    if (document.pointerLockElement !== canvas) { wantAim = false; fireHeld = false; }
   });
 
   // The adaptive loop's bookkeeping. The display's own frame interval is the
@@ -2852,7 +2896,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // Say so on the page. The bolt itself is the honest indicator, but it is
     // off to the right of where anyone aiming is looking, so the crosshair
     // goes quiet while the rifle is open and comes back when it will fire.
-    const ready = boltT >= BOLT_CYCLE;
+    const ready = boltT >= Math.min(cycleNow(), BOLT_CYCLE);
     if (ready !== wasReady) { document.body.classList.toggle("cycling", !ready); wasReady = ready; }
     // Nothing fires from in the lake. Refused here rather than inside `fire`
     // so the bolt does not cycle and the bang does not play: a rifle that goes
@@ -2896,9 +2940,18 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // through — but the bang, the recoil, the bolt and the message to the
     // server all live out here and were happening anyway, so a rifle with
     // nothing in it went off in every way except the one that counted.
-    const loaded = held ? Number(E.rockets(state)) : Number(E.rounds(state));
+    const loaded = held === 1 ? Number(E.rockets(state))
+                 : held === 2 ? Number(E.ak_rounds(state))
+                 : Number(E.rounds(state));
+    // The AK is automatic: while the trigger is held and there is anything in
+    // the magazine, every twentieth millisecond is a shot. The press itself
+    // set wantShot; this keeps setting it for as long as the button is down.
+    if (held === 2 && fireHeld && !wading && loaded > 0 && boltT >= cycleNow()) wantShot = true;
+    // The end of a burst is what the valley answers: let the echo go when the
+    // trigger lifts or the magazine runs out.
+    if (akBurst > 0 && (!fireHeld || loaded === 0 || held !== 2)) { akEcho(); akBurst = 0; }
     if (wantShot && boltT >= cycleNow() && !wading && loaded === 0) {
-      warn.textContent = held ? "the tube is empty" : "the magazine is empty";
+      warn.textContent = held === 1 ? "the tube is empty" : "the magazine is empty";
       warn.classList.add("on");
       warnUntil = t + 1.9;
       dryClick();
@@ -2914,8 +2967,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       E.fire(state, dx, dy, dz);
       if (net) net.fired(dx, dy, dz);
       boltT = 0;
-      recoil = 1;
-      bang();
+      recoil = held === 2 ? 0.45 : 1;
+      if (held === 2) { akBang(); akBurst++; } else { bang(); }
     }
     wantShot = false;
     recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
@@ -2983,7 +3036,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // player is holding is part of what they are doing this frame; the
         // server masks the keys off it and reads the bit as the weapon. A
         // server old enough not to know about it drops it and gets the rifle.
-        net.input(keys | (held ? 128 : 0), look[19], look[20]);
+        net.input(keys | (held << 7), look[19], look[20]);
       }
       applyEvents(net.take());
       // Walked here as well as there, so that turning and walking answer the
@@ -3291,6 +3344,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[45] = speed; uf[46] = bobPhase; uf[47] = recoil;
     uf.set(rifleBox.subarray(0, 3), 48);  // the rifle's bounding box, to unquantize against
     uf.set(rifleBox.subarray(3, 6), 52);
+    uf.set(akBox.subarray(0, 3), 108);    // and the AK's, for its own pipeline
+    uf.set(akBox.subarray(3, 6), 112);
     // The shark: which way it faces, where the tail is in its beat, how wide
     // the jaw is, and where it is. Straight out of Rill — the renderer is told
     // where the animal is, it does not decide.
@@ -3315,7 +3370,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[95] = swap;
     // The bolt's throw, as a fraction. The shot itself is the first instant of
     // it, so the recoil and the lift start together the way they do in a hand.
-    uf[51] = boltT / BOLT_CYCLE;
+    uf[51] = held === 2 ? 0 : boltT / BOLT_CYCLE;   // the AK has no bolt to work
     uf[55] = aim;                         // how far behind the sights
 
     // The impact that is lighting the valley: the youngest one still burning.
@@ -3401,7 +3456,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The rifle and the tube, each its own row. Whole numbers that change on
     // the frame the trigger goes down, so they are compared rather than
     // eased: nothing here moves unless a round left or a magazine arrived.
-    const rounds = Number(E.rounds(state));
+    const rounds = held === 2 ? Number(E.ak_rounds(state)) : Number(E.rounds(state));
+    const gunCap = held === 2 ? Number(E.ak_full()) : Number(E.mag_full());
     const rkts = Number(E.rockets(state));
     // A warhead is in the tube when there is one left to load and the reload
     // has finished. `boltT` is the same clock the trigger is gated on, so what
@@ -3409,7 +3465,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     loadedTube = held === 1 && rkts > 0 && boltT >= RPG_CYCLE;
     if (rounds !== lastAmmo || rkts !== lastRockets || held !== lastHeld) {
       lastAmmo = rounds; lastRockets = rkts; lastHeld = held;
-      for (let i = 0; i < pips.length; i++) pips[i].classList.toggle("out", i >= rounds);
+      for (let i = 0; i < pips.length; i++) {
+        pips[i].hidden = i >= gunCap;
+        pips[i].classList.toggle("out", i >= rounds);
+      }
       for (let i = 0; i < rpips.length; i++) rpips[i].classList.toggle("out", i >= rkts);
       // The held weapon's row burns full and the other dims — which is up is
       // said by light rather than by shape. Empty only interrupts on the row
@@ -3638,6 +3697,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
           pass.setIndexBuffer(rocket.ib, "uint16");
           pass.drawIndexed(rocket.count);
         }
+      } else if (held === 2) {
+        pass.setPipeline(akPipe);
+        pass.setVertexBuffer(0, akVB);
+        pass.setIndexBuffer(akIB, "uint16");
+        pass.drawIndexed(akIdx);
+        pass.setPipeline(muzzlePipe); pass.draw(12);
       } else {
         pass.setPipeline(vmPipe);
         pass.setVertexBuffer(0, rifleVB);

@@ -33,8 +33,8 @@
 //          n  the words of a refusal
 //
 //   out    n  name…                  what to call this one
-//          i  u8 keys, f32 yaw, f32 pitch — and the eighth bit of keys is
-//             not a key, it is which weapon is up
+//          i  u16 keys, f32 yaw, f32 pitch — bits 7-8 of keys are not keys,
+//             they are which weapon is up: 0 rifle, 1 launcher, 2 AK
 //          f  f32 dx dy dz           and where they just fired
 //
 // A name is sent once and comes back as a `u`, rather than riding in every
@@ -83,11 +83,11 @@ export function join(url, name) {
     send(buf) { if (sock.readyState === 1) sock.send(buf); },
     input(keys, yaw, pitch) {
       look = [yaw, pitch];
-      const dv = new DataView(new ArrayBuffer(10));
+      const dv = new DataView(new ArrayBuffer(11));
       dv.setUint8(0, OP.input);
-      dv.setUint8(1, keys);
-      dv.setFloat32(2, yaw, true);
-      dv.setFloat32(6, pitch, true);
+      dv.setUint16(1, keys, true);
+      dv.setFloat32(3, yaw, true);
+      dv.setFloat32(7, pitch, true);
       net.send(dv.buffer);
     },
     fired(dx, dy, dz) { net.send(floats(OP.fire, [dx, dy, dz])); },

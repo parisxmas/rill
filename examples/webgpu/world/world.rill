@@ -201,6 +201,17 @@ export fn rockets(s: Ptr) -> Int = v.rockets(s)
 
 export fn rocket_full() -> Int = v.rocket_full()
 
+# The AK: the default arm, thirty rounds, automatic.
+export fn ak_rounds(s: Ptr) -> Int = v.ak_rounds(s)
+
+export fn ak_full() -> Int = v.ak_full()
+
+# What the held weapon has left — the snapshot's one ammo number — and the
+# writing of it back when the server disagrees.
+export fn held_ammo(s: Ptr) -> Int = v.held_ammo(s)
+
+export fn set_held_ammo(s: Ptr, n: Int) = v.set_held_ammo(s, n)
+
 # How many of the boxes are rifle magazines; the rest are rocket crates. The
 # renderer draws the two kinds with two meshes over one instance buffer, and
 # this is where the ranges split.

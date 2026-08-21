@@ -388,7 +388,7 @@ fn conn_token(c) = match c
 #        P  u16 pine indices already down, for whoever walks in late
 #        z  u16 who, u16 crystal — a crystal bit somebody standing against it
 #
-# Up:    i  u8 keys, f32 yaw, f32 pitch
+# Up:    i  u16 keys, f32 yaw, f32 pitch — bits 7-8 carry which weapon
 #        f  f32 dx dy dz
 #        n  the name
 #        p  the ping token
@@ -976,7 +976,7 @@ fn add_player(b, sc, c, rest, eye) =
   # behind the rock is reloading is the sort of thing a client should have to
   # watch for rather than read off the wire, so everybody else's byte says
   # minus one, which is not a count and cannot be mistaken for an empty one.
-  put_u8(b, if v.player_id(s) == v.player_id(eye) then v.rounds(s) else 0 - 1)
+  put_u8(b, if v.player_id(s) == v.player_id(eye) then v.held_ammo(s) else 0 - 1)
   # Kills and deaths, everybody's. Unlike the rifle's count these are meant to
   # be read about other people — that is what the board at the end of a round
   # is — and they are the server's to say.
@@ -1375,11 +1375,11 @@ fn handle_line(conn, inbox, id, budget, until, msg, rest) =
 # the end of: `str_get` past the end is not a guard, the length is.
 fn route(inbox, id, msg) =
   k = str_get(msg, 0)
-  if k == op_input() && str_len(msg) >= 10 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
+  if k == op_input() && str_len(msg) >= 11 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
 
 fn moved(inbox, id, msg) =
   sc = alloc_bytes(8)
-  m = Moved(id, str_get(msg, 1), f32_at(msg, sc, 2), f32_at(msg, sc, 6))
+  m = Moved(id, u16_at(msg, 1), f32_at(msg, sc, 3), f32_at(msg, sc, 7))
   free_ptr(sc)
   tell(inbox, m)
 

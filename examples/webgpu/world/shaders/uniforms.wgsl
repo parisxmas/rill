@@ -35,6 +35,9 @@
     // The rocket crate's, for the second kind of box on the ground.
     crateMin:   vec4f,
     crateSize:  vec4f,
+    // The AK's, for the viewmodel pipeline built with AKV set.
+    akMin:      vec4f,
+    akSize:     vec4f,
   }
   @group(0) @binding(0) var<uniform> u: U;
 

@@ -133,6 +133,9 @@ fn shoot_straight_again(w, a, b) =
   println("  one honest shot and they are welcome again: " + int_to_str(v.shooting_wild(a)))
 
 fn shoot_at(w, a, b, up) =
+  # The bolt rifle, whatever the spawn handed out: these lanes were measured
+  # with a 120 m/s round, and the AK's forty would land in a different tick.
+  v.set_weapon(a, 0)
   dx = v.player_x(b) - v.player_x(a)
   dy = v.player_y(b) + up - (v.player_y(a) + 1.75)
   dz = v.player_z(b) - v.player_z(a)

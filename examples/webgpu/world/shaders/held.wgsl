@@ -35,7 +35,9 @@
   }
 
   @fragment fn fs(v: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
-    let albedo = textureSample(rifleTex, barkSamp, v.uv).rgb;
+    // The top half of the sheet: the AK's skin moved in below the rifle's
+    // materials, and everybody else is drawn carrying the rifle.
+    let albedo = textureSample(rifleTex, barkSamp, vec2f(v.uv.x, v.uv.y * 0.5)).rgb;
     let nn = normalize(v.normal);
     let col = lit(albedo, select(-nn, nn, front), v.world);
     let view = v.world - u.eye.xyz;

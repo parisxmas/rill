@@ -717,7 +717,7 @@ fn clear_bullets(b) =
 # count is spent in the same instruction on both, which is what keeps the
 # number on the screen and the number the server is enforcing the same one.
 fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
-  if weapon(s) == 1 then fire_rocket(s, dx, dy, dz) else fire_bullet(s, dx, dy, dz)
+  if weapon(s) == 1 then fire_rocket(s, dx, dy, dz) else if weapon(s) == 2 then fire_ak(s, dx, dy, dz) else fire_bullet(s, dx, dy, dz)
 
 fn fire_bullet(s, dx, dy, dz) =
   if peek_f32(s, 118) < 0.5 then 0 else fire_round(s, dx, dy, dz)
@@ -787,6 +787,51 @@ fn fire_round(s, dx, dy, dz) =
   poke_f32(b, at + 6, peek_f32(s, 99))
   poke_f32(b, at + 7, bullet_life())
   poke_f32(w, 60, to_float(k + 1))
+  1
+
+# ---- the AK ----------------------------------------------------------------
+#
+# The default arm: thirty rounds, held-trigger automatic at one round every
+# fifty milliseconds — one round per server tick, which is as fast as a
+# twenty-hertz world can honestly decide — and a bullet at a third of the rifle's speed — forty a
+# second instead of a hundred and twenty, which is a weapon you hose with at
+# thirty metres and lead like a garden sprinkler at eighty. Same rounds in the
+# same ring; only the muzzle velocity and the magazine differ.
+fn ak_full() = 30
+
+fn ak_gap() = 0.05
+
+fn ak_rounds(s: Ptr) -> Int = to_int(peek_f32(s, 106))
+
+fn fire_ak(s, dx, dy, dz) =
+  if peek_f32(s, 106) < 0.5 then 0 else fire_ak_round(s, dx, dy, dz)
+
+fn fire_ak_round(s, dx, dy, dz) =
+  poke_f32(s, 106, peek_f32(s, 106) - 1.0)
+  w = wd(s)
+  b = peek_ptr(w, 68)
+  k = to_int(peek_f32(w, 60))
+  at = k % bullet_cap() * 8
+  v = bullet_speed() / 3.0
+  poke_f32(b, at, peek_f32(s, 16) + dx * 0.9)
+  poke_f32(b, at + 1, peek_f32(s, 17) + dy * 0.9)
+  poke_f32(b, at + 2, peek_f32(s, 18) + dz * 0.9)
+  poke_f32(b, at + 3, dx * v)
+  poke_f32(b, at + 4, dy * v)
+  poke_f32(b, at + 5, dz * v)
+  poke_f32(b, at + 6, peek_f32(s, 99))
+  poke_f32(b, at + 7, bullet_life())
+  poke_f32(w, 60, to_float(k + 1))
+  1
+
+# What the held weapon has left, and the writing of it — one number on the
+# wire whatever is in the hands, because the snapshot says "your weapon holds
+# n" and both ends agree about which weapon that is.
+fn held_ammo(s: Ptr) -> Int =
+  if weapon(s) == 1 then rockets(s) else if weapon(s) == 2 then ak_rounds(s) else rounds(s)
+
+fn set_held_ammo(s: Ptr, n: Int) =
+  if weapon(s) == 1 then poke_f32(s, 120, to_float(n)) else if weapon(s) == 2 then poke_f32(s, 106, to_float(n)) else poke_f32(s, 118, to_float(n))
   1
 
 # ---- what a round does when it arrives -------------------------------------
@@ -1788,7 +1833,7 @@ fn gather_shard(s, sb, i, mend) =
 # enough that losing a fraction of one is not something anybody is counting.
 fn wanted(s, sb, at) =
   kind = peek_f32(sb, at + 16)
-  if kind < 1.5 then 1 else if kind > 2.5 then (if rockets(s) < rocket_full() then 1 else 0) else if rounds(s) < mag_size() then 1 else 0
+  if kind < 1.5 then 1 else if kind > 2.5 then (if rockets(s) < rocket_full() then 1 else 0) else if rounds(s) < mag_size() || ak_rounds(s) < ak_full() then 1 else 0
 
 fn gather(s, sb, mend) =
   for i in 0..shard_cap()
@@ -3146,8 +3191,9 @@ fn place_player(s) =
   poke_f32(s, 115, 1.0)
   poke_f32(s, 116, 0.0)
   poke_f32(s, 118, to_float(mag_size()))
-  poke_f32(s, 119, 0.0)
+  poke_f32(s, 119, 2.0)
   poke_f32(s, 120, to_float(rocket_full()))
+  poke_f32(s, 106, to_float(ak_full()))
   poke_f32(s, 84, 0.0)
   poke_f32(s, 85, 0.0)
   poke_f32(s, 107, 0.0)
@@ -3329,10 +3375,13 @@ fn set_rounds(s: Ptr, n: Int) =
 # the message had to change and an old server simply masks it off.
 fn set_keys(s: Ptr, keys: Int) =
   poke_f32(s, 30, to_float(bit_and(keys, 127)))
-  poke_f32(s, 119, if bit_and(keys, 128) == 128 then 1.0 else 0.0)
+  # Two bits of weapon above the seven of movement: nought the rifle, one the
+  # launcher, two the AK. One bit held two weapons; the third cost the keys
+  # their eighth bit and the wire a byte.
+  poke_f32(s, 119, to_float(bit_and(shr(keys, 7), 3)))
   1
 
-# Which weapon is up: nought the rifle, one the launcher.
+# Which weapon is up: nought the rifle, one the launcher, two the AK.
 fn weapon(s: Ptr) -> Int = to_int(peek_f32(s, 119))
 
 fn set_weapon(s: Ptr, n: Int) =
@@ -3460,10 +3509,13 @@ fn try_fire(s: Ptr, tnow: Float, gap: Float) =
 
 fn take_fire(s, tnow, gap) =
   poke_f32(s, 31, 0.0)
-  if tnow - peek_f32(s, 52) < gap then 0
+  # The bolt's gap for the rifle, its own twenty milliseconds for the AK. The
+  # launcher rides the rifle's — its real cycle is the client's animation and
+  # the tube's own count.
+  if tnow - peek_f32(s, 52) < (if weapon(s) == 2 then ak_gap() else gap) then 0
   else if in_water(s) > 0 then 0
   else if peek_f32(s, 82) < 0.001 then 0
-  else if peek_f32(s, 118) < 0.5 then 0
+  else if held_ammo(s) < 1 then 0
   else
     # An empty magazine is the one refusal that is not about the shot being
     # wrong, so it does not count against the wild-shot allowance either: the
@@ -4146,13 +4198,15 @@ fn worth_of(s, sb, i, at, mend) =
     place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else if peek_f32(sb, at + 16) > 1.5 then
-    # And a magazine fills the rifle and nothing else.
+    # And a magazine fills the guns that take rounds — the rifle and the AK —
+    # and not the tube.
     #
     # Taken here, and it turns up somewhere else. Which somewhere is a
     # function of nothing but the box's number and how many times it has been
     # taken, so a server and a browser that have both seen the same pickups
     # agree about where it went without either telling the other.
     poke_f32(s, 118, to_float(mag_size()))
+    poke_f32(s, 106, to_float(ak_full()))
     place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else if mend < 1 then 1

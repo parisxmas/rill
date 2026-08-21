@@ -1,0 +1,27 @@
+# The AK: the default arm, thirty rounds, automatic at one round per tick,
+# and a bullet at a third of the rifle's muzzle speed.
+import "valley" as v
+
+fn run_ticks(w, s, n) =
+  if n == 0 then 0 else run_tick(w, s, n)
+
+fn run_tick(w, s, n) =
+  v.want_fire(s, 0.0, 0.0, 0.0 - 1.0)
+  v.try_fire(s, v.world_time(w), 0.55)
+  v.step_world(w, 0.05)
+  run_ticks(w, s, n - 1)
+
+fn main() =
+  w = v.init(48, 400, 300, 900)
+  s = v.join(w)
+  println("default weapon: " + int_to_str(v.weapon(s)) + " (want 2, the AK), magazine " + int_to_str(v.ak_rounds(s)) + " of " + int_to_str(v.ak_full()))
+  v.set_look(s, 0.0, 0.0)
+  run_ticks(w, s, 20)
+  fired = v.ak_full() - v.ak_rounds(s)
+  println("one second of held trigger: " + int_to_str(fired) + " rounds gone (want ~19-20), rifle still " + int_to_str(v.rounds(s)))
+  b = v.bullets(w)
+  vx = peek_f32(b, 3)
+  vz = peek_f32(b, 5)
+  println("muzzle speed " + float_to_str(sqrt(vx * vx + vz * vz)) + " (want 40 = a third of 120)")
+  run_ticks(w, s, 40)
+  println("after the magazine: " + int_to_str(v.ak_rounds(s)) + " left, held ammo says " + int_to_str(v.held_ammo(s)))
