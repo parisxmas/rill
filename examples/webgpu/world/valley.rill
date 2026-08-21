@@ -2527,6 +2527,16 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 57, to_float(np))
   poke_f32(s, 58, to_float(nc))
   poke_f32(s, 59, to_float(ng))
+  # Everything the walls, the wire rings and the round keep, set to nought
+  # rather than left to whatever the allocator handed over. `alloc_bytes` does
+  # not promise zeros, and slot 129 is the round's phase: one bit of rubbish in
+  # it and a brand new valley opens on ROUND OVER with a counter that never
+  # reaches nought, because the twenty seconds it is counting started before
+  # the world existed. Which is exactly what shipped.
+  poke_f32(s, 123, 0.0)
+  poke_f32(s, 125, 0.0)
+  poke_f32(s, 128, 0.0)
+  poke_f32(s, 129, 0.0)
   # The world points at itself, so `wd` works on it exactly as it works on a
   # player and nothing below has to ask which kind of block it was given. It
   # starts with nobody in it: even the browser with the valley to itself asks

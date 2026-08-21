@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=314";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=314";
+import { load } from "./world.js?v=317";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=317";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=314";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "314";
+const V = "317";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2047,7 +2047,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   };
 
   function drawRound(phase, left, list, myId) {
-    if (left == null) { clockEl.hidden = true; boardEl.hidden = true; return; }
+    // Nothing at all until there is a round to talk about. Reading the phase
+    // off a world that does not exist yet gives whatever was in that memory,
+    // and a stray bit in it puts ROUND OVER over the loading screen with a
+    // counter that never reaches nought — which is what shipped, because the
+    // valley is asked about before it is built.
+    if (left == null || !Number.isFinite(left) || left < 0 || left > 4000) {
+      clockEl.hidden = true;
+      boardEl.hidden = true;
+      return;
+    }
     const over = phase === 1;
     clockEl.hidden = over;
     if (!over) {
@@ -3268,7 +3277,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // server, and a browser alone in its valley plays rounds too.
       const snap = net && net.last;
       if (snap && snap.left != null) drawRound(snap.phase, snap.left, everyone(net), net.id);
-      else drawRound(Number(E.match_phase(world)), E.match_left(world), soloBoard(), net && net.id);
+      else if (world) drawRound(Number(E.match_phase(world)), E.match_left(world), soloBoard(), net && net.id);
     }
     // The rifle. A whole number that changes on the frame the trigger goes
     // down, so it is compared rather than eased: nothing here moves unless a

@@ -269,6 +269,11 @@
       font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
       color: #cfc9e8; user-select: none; pointer-events: none;
     }
+    /* `display: flex` above beats the browser's own `[hidden] { display: none }`
+       — author styles win over the user agent's — so without this the board is
+       never hidden by setting the attribute, and ROUND OVER sits over the
+       valley from the first frame to the last. */
+    .board[hidden] { display: none; }
     .board h2 {
       margin: 0; font-size: 13px; font-weight: 400; letter-spacing: 0.3em;
       text-transform: uppercase; color: #6f6a92;
@@ -545,7 +550,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=314";
+    import { run } from "./host.js?v=317";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -624,7 +629,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=314", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=317", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""
