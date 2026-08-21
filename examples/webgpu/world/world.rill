@@ -248,6 +248,8 @@ export fn deaths(s: Ptr) -> Int = v.deaths(s)
 
 export fn blocks_gone(w: Ptr) -> Int = v.blocks_gone(w)
 
+export fn block_broken(w: Ptr, i: Int) -> Int = v.block_broken(w, i)
+
 export fn block_which(w: Ptr, k: Int) -> Int = v.block_which(w, k)
 
 export fn drop_block(w: Ptr, i: Int) -> Int = v.drop_block(w, i)

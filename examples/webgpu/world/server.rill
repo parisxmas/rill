@@ -234,6 +234,7 @@ fn welcome(w, conns, s, out, token) =
   name = if str_len(mine) > 0 && !taken(conns, id, mine) then mine else called(id)
   send(out, "hello " + int_to_str(id) + " " + int_to_str(n_pines()) + " " + int_to_str(n_crystals()) + " " + int_to_str(n_grass()) + " " + float_to_str(v.world_time(w)) + " " + token)
   send(out, gone_list(w))
+  send(out, stones_list(w))
   send_mags(w, out, 0)
   roster(conns, out)
   println("player " + int_to_str(id) + " arrived as " + name + ", " + int_to_str(v.players(w)) + " in the valley")
@@ -254,6 +255,21 @@ fn joined(conns, id, name) =
 # somebody arriving an hour in has missed several hundred of them, and a
 # client drawing crystals that were shot before it connected would be a client
 # shooting at nothing.
+# Which stones are already broken, for the same reason and by the same means:
+# one line at the door with every index on it, read straight off the marks the
+# world keeps. The client computes where each one lies — the resting place is
+# a function of the index, which is the whole reason it could be.
+fn stones_list(w) =
+  b = strbuf()
+  strbuf_add(b, "wall")
+
+  for i in 0..v.block_count(w)
+    if_broken(w, b, i)
+
+  strbuf_str(b)
+
+fn if_broken(w, b, i) = if v.block_broken(w, i) > 0 then note_gone(b, i) else 0
+
 fn gone_list(w) =
   b = strbuf()
   strbuf_add(b, "gone")

@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=322";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=322";
+import { load } from "./world.js?v=323";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=323";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=322";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "322";
+const V = "323";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1803,6 +1803,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // it, so the pieces are spawned from the same call the shooter's world
       // made.
       else if (e.kind === "d") E.down_fire(world, BigInt(n[0]));
+      // The wall's whole history, one line at the door: every stone broken
+      // before this client arrived. Each lands exactly where it did for
+      // everybody else, because the resting place is computed from the index.
+      else if (e.kind === "wall") for (const i of e.n) E.drop_block(world, BigInt(i));
       // A box of ammunition is somewhere else. What arrives is how many times
       // box `i` has been taken, not where it now is: where that puts it is the
       // valley's own arithmetic, run identically here and on the server, so
@@ -2720,6 +2724,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // can watch move — the light changes while you are busy and you notice it
   // afterwards, which is what daylight does.
   const SKY_SPIN = 2 * Math.PI / 360;
+  // The sun's circle is lifted by half its amplitude, which is the geometry of
+  // a wider world: on a planet fat enough, the day arc runs long and the sun
+  // dips under the horizon for exactly a third of the turn instead of half.
+  // sin(30°) of the amplitude is what makes the split 2/3 to 1/3 — solve
+  // elevation = A·sin(θ) + A/2 > 0 and θ spends 240 of 360 degrees above.
+  const SUN_LIFT = Math.sin(SKY_TILT) * 0.5;
   const uf = new Float32Array(UNI_FLOATS);
   let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
@@ -3153,9 +3163,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // which is the other way round from where the sun is.
     const th = SUN_PHASE + sky * SKY_SPIN;
     const cs = Math.cos(th), sn = Math.sin(th);
-    const sunX = -(SUN_E1[0] * cs + SUN_E2[0] * sn);
-    const sunY = -(SUN_E1[1] * cs + SUN_E2[1] * sn);
-    const sunZ = -(SUN_E1[2] * cs + SUN_E2[2] * sn);
+    let sunX = -(SUN_E1[0] * cs + SUN_E2[0] * sn);
+    let sunY = -(SUN_E1[1] * cs + SUN_E2[1] * sn) - SUN_LIFT;
+    let sunZ = -(SUN_E1[2] * cs + SUN_E2[2] * sn);
+    // Lifted, so no longer unit; everything downstream — the shadow basis,
+    // the sky, the fog — assumes a direction of length one.
+    const sl = Math.hypot(sunX, sunY, sunZ);
+    sunX /= sl; sunY /= sl; sunZ /= sl;
     // Into the shadow matrix first, so what is copied out of the state below is
     // this frame's sun and not the last one's. There is one sun in this world:
     // the disc in the sky, the direction `lit` shades from and the matrix the
