@@ -1,0 +1,63 @@
+# A wt-style native run for the warhead: a rocket fired straight at a wall
+# from eight metres must break stones on the FIRST shot, and the blast must go
+# off against the face it struck — not at the end of the step it was killed
+# in, which at seventy metres a second is three and a half metres past a wall
+# thirty centimetres thick.
+import "valley" as v
+
+fn absf(x) = if x < 0.0 then 0.0 - x else x
+
+# The sixth course of the first column: high enough that eight metres of
+# approach does not clip the ground the wall stands on.
+fn target() = 6
+
+fn fire_at(w, bx, by, bz) =
+  fb = v.fireballs(w)
+  k = to_int(peek_f32(w, 63))
+  at = k % 24 * 9
+  poke_f32(fb, at, bx - 8.0)
+  poke_f32(fb, at + 1, by)
+  poke_f32(fb, at + 2, bz)
+  poke_f32(fb, at + 3, 70.0)
+  poke_f32(fb, at + 4, 0.0)
+  poke_f32(fb, at + 5, 0.0)
+  poke_f32(fb, at + 6, 0.0 - 1.5)
+  poke_f32(fb, at + 7, 6.0)
+  poke_f32(fb, at + 8, 0.0)
+  poke_f32(w, 63, to_float(k + 1))
+  1
+
+fn run_ticks(w, n) =
+  if n == 0 then 0 else run_tick(w, n)
+
+fn run_tick(w, n) =
+  v.step_world(w, 0.05)
+  run_ticks(w, n - 1)
+
+fn main() =
+  w = v.init(48, 400, 300, 900)
+  bb = v.blocks_ptr(w)
+  i = target()
+  bx = peek_f32(bb, i * 8)
+  by = peek_f32(bb, i * 8 + 1)
+  bz = peek_f32(bb, i * 8 + 2)
+  println("aiming at stone " + int_to_str(i) + " at " + float_to_str(bx) + " " + float_to_str(by) + " " + float_to_str(bz))
+
+  fire_at(w, bx, by, bz)
+  run_ticks(w, 12)
+  gone1 = v.blocks_gone(w)
+  blast = peek_ptr(w, 81)
+  k = to_int(peek_f32(w, 80))
+  at = (k - 1) % 8 * 8
+  off = absf(peek_f32(blast, at) - bx)
+  println("first rocket: " + int_to_str(gone1) + " stones gone, blast " + float_to_str(off) + " m from the wall line" + (if gone1 > 0 && off < 0.8 then " — good" else " — WRONG"))
+
+  # And again, twelve columns along the same wall — well clear of the hole
+  # the first one made. A second shot through the hole itself breaks nothing,
+  # and that is not a fault: there is nothing left there to break.
+  j = 12 * 8 + 6
+  fire_at(w, peek_f32(bb, j * 8), peek_f32(bb, j * 8 + 1), peek_f32(bb, j * 8 + 2))
+  run_ticks(w, 12)
+  gone2 = v.blocks_gone(w)
+  println("second rocket: " + int_to_str(gone2 - gone1) + " more stones gone" + (if gone2 > gone1 then " — good" else " — WRONG"))
+  0

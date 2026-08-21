@@ -2149,9 +2149,11 @@ fn fly_fireball(w, fb, at, dt, decide) =
   else
     0
 
-  poke_f32(fb, at, px)
-  poke_f32(fb, at + 1, py)
-  poke_f32(fb, at + 2, pz)
+  # A rocket that struck something keeps the place it struck — `stopped_on`
+  # parked it against the stone — rather than being written forward to where
+  # the step would have ended. The smoke rises from the wall it hit, and so
+  # does the blast below.
+  if struck > 0 then 0 else glide(fb, at, px, py, pz)
   poke_f32(fb, at + 3, vx)
   poke_f32(fb, at + 4, vy)
   poke_f32(fb, at + 5, vz)
@@ -2166,8 +2168,16 @@ fn fly_fireball(w, fb, at, dt, decide) =
   poke_f32(fb, at + 7, if smokes > 0.5 then 0.0 - 0.0001 else if ended > 0.5 then 0.0 else if away > 0.5 then 0.0 else life)
   poke_f32(fb, at + 8, peek_f32(fb, at + 8) + dt * on)
   # It touched the ground while it was still flying, or it touched glass: that
-  # is an arrival, not an expiry, and only an arrival makes a crater.
-  if (landed * on > 0.5 || struck > 0) && decide > 0 then add_blast(w, px, py, pz, peek_f32(fb, at + 6)) else 0
+  # is an arrival, not an expiry, and only an arrival makes a crater. The
+  # crater goes where the slot says the rocket is, which for a strike is the
+  # face it struck and not the far side of it.
+  if (landed * on > 0.5 || struck > 0) && decide > 0 then add_blast(w, peek_f32(fb, at), peek_f32(fb, at + 1), peek_f32(fb, at + 2), peek_f32(fb, at + 6)) else 0
+
+fn glide(fb, at, px, py, pz) =
+  poke_f32(fb, at, px)
+  poke_f32(fb, at + 1, py)
+  poke_f32(fb, at + 2, pz)
+  1
 
 # The rounds' own crystal test, run against a rocket. It works unchanged
 # because a fireball and a bullet agree about where the life is — slot 7 in
@@ -2514,10 +2524,30 @@ fn cross_block(bb, i, p, at, sg) =
   # radius past the far corner with a margin.
   r = block_f(bb, i, 3) * 0.75
   d2 = seg_dist2(ax, ay, az, bx, by, bz, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2))
-  if d2 > r * r then 0
-  else
-    poke_f32(p, at + 7, 0.0)
-    1
+  if d2 > r * r then 0 else stopped_on(bb, i, p, at, sg)
+
+# Where along the step it happened, not merely that it did. The projectile is
+# parked at the nearest point of its path to the stone — within a stone's
+# radius of the face it struck — because a step is three and a half metres at
+# a rocket's speed and a wall is thirty centimetres thick: a blast placed at
+# the end of the step goes off a couple of metres *behind* the wall it hit,
+# outside its own reach of the stones, and every so often a direct hit reads
+# as a warhead that did nothing.
+fn stopped_on(bb, i, p, at, sg) =
+  ax = peek_f32(sg, 0)
+  ay = peek_f32(sg, 1)
+  az = peek_f32(sg, 2)
+  dx = peek_f32(sg, 3) - ax
+  dy = peek_f32(sg, 4) - ay
+  dz = peek_f32(sg, 5) - az
+  l2 = dx * dx + dy * dy + dz * dz
+  n = if l2 < 0.000001 then 1.0 else l2
+  t = clampf(((block_f(bb, i, 0) - ax) * dx + (block_f(bb, i, 1) - ay) * dy + (block_f(bb, i, 2) - az) * dz) / n, 0.0, 1.0)
+  poke_f32(p, at, ax + dx * t)
+  poke_f32(p, at + 1, ay + dy * t)
+  poke_f32(p, at + 2, az + dz * t)
+  poke_f32(p, at + 7, 0.0)
+  1
 
 # The same test for a round, which stops on a wall rather than passing through
 # it. It does not take the block with it: a rifle does not knock stone out.

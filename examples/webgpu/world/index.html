@@ -187,10 +187,27 @@
     /* Empty is the one state worth interrupting for: the trigger does nothing
        now, and the row says so rather than simply being dark. */
     .ammo.dry i { background: rgba(226, 74, 60, 0.5); animation: dry 900ms ease-in-out infinite; }
-    /* Three rockets rather than ten rounds: fewer and fatter, so a glance tells
-       you which weapon is up without reading the count. */
-    .ammo.tube i { width: 11px; }
     @keyframes dry { 50% { background: rgba(226, 74, 60, 0.16); } }
+    /* The rockets, above the rounds and always there: what used to be one row
+       that changed shape with the weapon is two rows that never move, because
+       a count you only see while holding the tube is a count you learn about
+       one warhead too late. */
+    .rockets {
+      position: fixed; right: 20px; bottom: 46px; display: flex; gap: 5px;
+      pointer-events: none;
+    }
+    /* A body with a nose, which is all a rocket is at eight pixels. The glow
+       is a filter rather than a shadow so the clip does not cut it off. */
+    .rockets i {
+      display: block; width: 8px; height: 15px; background: #f0b64a;
+      clip-path: polygon(50% 0%, 100% 32%, 100% 100%, 0% 100%, 0% 32%);
+      filter: drop-shadow(0 0 4px rgba(240, 182, 74, 0.45));
+      transition: background 120ms linear, filter 120ms linear;
+    }
+    .rockets i.out { background: rgba(255, 255, 255, 0.12); filter: none; }
+    .rockets.dry i { background: rgba(226, 74, 60, 0.5); animation: dry 900ms ease-in-out infinite; }
+    /* The held weapon's row burns full; the other waits at half light. */
+    .ammo.dim, .rockets.dim { opacity: 0.4; }
 
     /* When the last crystal is gone. Not a dialogue and not a button — there
        is nothing left to decide, so it is two lines over the valley and the
@@ -523,6 +540,7 @@
   <div class="vit" id="vit"><i id="vitfill"></i></div>
   <div class="wind" id="wind"><i id="windfill"></i></div>
   <div class="ammo" id="ammo"></div>
+  <div class="rockets" id="rockets"></div>
   <div class="over dead" id="dead"><span>YOU ARE DEAD</span><span class="tick" id="tick">5</span><small>back on your feet in a moment</small></div>
   <div class="over cut" id="cut"><span>DISCONNECTED</span><em>the valley went on without you</em><small>reload to go back</small></div>
   <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em><small>space to begin again</small></div>
@@ -550,7 +568,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=325";
+    import { run } from "./host.js?v=326";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -629,7 +647,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=325", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=326", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

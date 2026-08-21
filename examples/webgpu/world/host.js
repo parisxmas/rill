@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=325";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=325";
+import { load } from "./world.js?v=326";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=326";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=325";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "325";
+const V = "326";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2624,11 +2624,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     ammoEl.appendChild(pip);
     pips.push(pip);
   }
-  // The row shows what is in the thing being held, so it is as long as that
-  // weapon is loaded: ten thin ones for the rifle, three fat ones for the
-  // tube. A row that stayed ten long with three of them lit would read as a
-  // rifle with seven rounds gone.
-  let lastAmmo = -1, lastHeld = -1;
+  // And the tube's row above it, as long as the tube holds. Two rows that
+  // never change shape, because a rocket count you can only see while holding
+  // the launcher is a count you learn about one warhead too late.
+  const rocketsEl = document.getElementById("rockets");
+  const rpips = [];
+  for (let i = 0; i < Number(E.rocket_full()); i++) {
+    const pip = document.createElement("i");
+    rocketsEl.appendChild(pip);
+    rpips.push(pip);
+  }
+  let lastAmmo = -1, lastRockets = -1, lastHeld = -1;
   let wasDown = false;
   let lastHp = -1, hurtUntil = 0;
   // The sights. `wantAim` is the button; `aim` is how far through the move,
@@ -3308,23 +3314,26 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
                   snap ? everyone(net) : soloBoard(), net && net.id);
       }
     }
-    // The rifle. A whole number that changes on the frame the trigger goes
-    // down, so it is compared rather than eased: nothing here moves unless a
-    // round left or a magazine arrived.
-    const ammo = held ? Number(E.rockets(state)) : Number(E.rounds(state));
+    // The rifle and the tube, each its own row. Whole numbers that change on
+    // the frame the trigger goes down, so they are compared rather than
+    // eased: nothing here moves unless a round left or a magazine arrived.
+    const rounds = Number(E.rounds(state));
+    const rkts = Number(E.rockets(state));
     // A warhead is in the tube when there is one left to load and the reload
     // has finished. `boltT` is the same clock the trigger is gated on, so what
     // you see and what the trigger will do cannot disagree.
-    loadedTube = held === 1 && ammo > 0 && boltT >= RPG_CYCLE;
-    const shown = held ? Number(E.rocket_full()) : Number(E.mag_full());
-    if (ammo !== lastAmmo || held !== lastHeld) {
-      lastAmmo = ammo; lastHeld = held;
-      ammoEl.classList.toggle("tube", held === 1);
-      for (let i = 0; i < pips.length; i++) {
-        pips[i].hidden = i >= shown;
-        pips[i].classList.toggle("out", i >= ammo);
-      }
-      ammoEl.classList.toggle("dry", ammo === 0);
+    loadedTube = held === 1 && rkts > 0 && boltT >= RPG_CYCLE;
+    if (rounds !== lastAmmo || rkts !== lastRockets || held !== lastHeld) {
+      lastAmmo = rounds; lastRockets = rkts; lastHeld = held;
+      for (let i = 0; i < pips.length; i++) pips[i].classList.toggle("out", i >= rounds);
+      for (let i = 0; i < rpips.length; i++) rpips[i].classList.toggle("out", i >= rkts);
+      // The held weapon's row burns full and the other dims — which is up is
+      // said by light rather than by shape. Empty only interrupts on the row
+      // whose trigger would do nothing right now.
+      ammoEl.classList.toggle("dim", held === 1);
+      rocketsEl.classList.toggle("dim", held !== 1);
+      ammoEl.classList.toggle("dry", held !== 1 && rounds === 0);
+      rocketsEl.classList.toggle("dry", held === 1 && rkts === 0);
     }
     const hp = E.health(state);
     if (Math.abs(hp - lastHp) > 0.002) {
