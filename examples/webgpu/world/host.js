@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=308";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=308";
+import { load } from "./world.js?v=310";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=310";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=308";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "308";
+const V = "310";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -98,7 +98,7 @@ const SHADERS = {
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common",
-  launcher: "common", rocket: "common", warhead: "common",
+  launcher: "common", rocket: "common", warhead: "common", stone: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
   "firefly-sim": null,
@@ -167,6 +167,7 @@ async function loadShaders(step) {
     METEOR: whole("meteor"),
     SHARK: whole("shark"),
     PROP: whole("prop"),
+    STONE: whole("stone"),
     LAUNCHER: whole("launcher"),
     WARHEAD: whole("warhead"),
     ROCKET: whole("rocket"),
@@ -304,6 +305,28 @@ function pineMesh(coarse) {
         push(p00, n, [0, 1]); push(p11, n, [1, 0]); push(p10, n, [0, 0]);
       }
     }
+  }
+  return new Float32Array(out);
+}
+
+// A block of the walls on the tops. Six faces, flat-shaded, in the same six
+// floats a crystal's mesh uses so it can go through the same layout.
+function blockMesh() {
+  const out = [];
+  const push = (p, n) => out.push(p[0], p[1], p[2], n[0], n[1], n[2]);
+  // Each face as two triangles, wound so the outside faces out.
+  const faces = [
+    [[0, 0, 1], [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]]],
+    [[0, 0, -1], [[1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]]],
+    [[1, 0, 0], [[1, -1, 1], [1, -1, -1], [1, 1, -1], [1, 1, 1]]],
+    [[-1, 0, 0], [[-1, -1, -1], [-1, -1, 1], [-1, 1, 1], [-1, 1, -1]]],
+    [[0, 1, 0], [[-1, 1, 1], [1, 1, 1], [1, 1, -1], [-1, 1, -1]]],
+    [[0, -1, 0], [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]]],
+  ];
+  for (const [n, q] of faces) {
+    const h = q.map(p => [p[0] * 0.5, p[1] * 0.5, p[2] * 0.5]);
+    push(h[0], n); push(h[1], n); push(h[2], n);
+    push(h[0], n); push(h[2], n); push(h[3], n);
   }
   return new Float32Array(out);
 }
@@ -1044,6 +1067,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // is a coloured window, not a solid of glass. And a transparent thing must
   // not write depth, or it punches a hole in everything drawn after it: the
   // grass and the water behind a crystal would simply be missing.
+  const stonePipe = pipe("stone", S.STONE, [meshLayout, instLayout]);
   const crystalPipe = pipe("crystal", S.INSTANCED, [meshLayout, instLayout],
     { constants: { emissive: 0.72 }, blend: overPre, cull: "none",
       depth: { depthWriteEnabled: false } });
@@ -1733,6 +1757,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
   const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 8;
   // The same tree with a fifth of the cards, for casting only.
+  const blockData = blockMesh();
+  const blockBuf = gpuBuf(blockData);
+  const blockVerts = blockData.length / 6;
   const pineShadowData = pineMesh(true);
   const pineShadowBuf = gpuBuf(pineShadowData);
   const pineShadowVerts = pineShadowData.length / 8;
@@ -1769,6 +1796,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       else if (e.kind === "t") E.put_fireball(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]);
       else if (e.kind === "k") E.put_blast(world, n[0], n[1], n[2], n[3]);
       else if (e.kind === "b") E.put_break(world, BigInt(n[0]));
+      // A stone off a wall. The blast that did it arrives as its own `k`; this
+      // says which block went, because nothing on this side decided it.
+      else if (e.kind === "w") E.drop_block(world, BigInt(n[0]));
       // A box of ammunition is somewhere else. What arrives is how many times
       // box `i` has been taken, not where it now is: where that puts it is the
       // valley's own arithmetic, run identically here and on the server, so
@@ -2104,6 +2134,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     };
     W = { counts };
     W.terrainBuf = gpuBuf(new Float32Array(E.memory.buffer, Number(E.terrain(state)), counts.terrain * 9));
+    W.blocks = Number(E.blocks_count(state));
+    W.blockInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.blocks(state)), Math.max(W.blocks, 1) * 8));
     W.pineInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.pines(state)), counts.pines * 8));
     W.crystalInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.crystals(state)), counts.crystals * 8));
     W.grassInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.grass(state)), counts.grass * 8));
@@ -3147,6 +3179,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // their instances go up with everything else now rather than once at build.
     const cry = new Float32Array(E.memory.buffer, Number(E.crystals(state)), W.counts.crystals * 8);
     device.queue.writeBuffer(W.crystalInst, 0, cry);
+    // The walls go the same way the crystals do — a block that has been shot
+    // has its size set to nought — so they are re-uploaded for the same reason.
+    if (W.blocks > 0) {
+      device.queue.writeBuffer(W.blockInst, 0,
+        new Float32Array(E.memory.buffer, Number(E.blocks(state)), W.blocks * 8));
+    }
     // Health, straight off Rill: it is the world that decides what a blast
     // does to you, not the renderer. Only touched when it actually moves,
     // for the same reason the tally is.
@@ -3250,6 +3288,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     sh.setPipeline(shPine);
     sh.setVertexBuffer(0, pineShadowBuf); sh.setVertexBuffer(1, W.pineInst); sh.draw(pineShadowVerts, W.counts.pines);
     sh.setPipeline(shInst);
+    if (W.blocks > 0) {
+      sh.setVertexBuffer(0, blockBuf); sh.setVertexBuffer(1, W.blockInst); sh.draw(blockVerts, W.blocks);
+    }
     sh.setVertexBuffer(0, crystalBuf); sh.setVertexBuffer(1, W.crystalInst); sh.draw(crystalVerts, W.counts.crystals);
     // A person standing in the sun has a shadow, and without one they read as
     // pasted onto the hillside rather than standing on it.
@@ -3298,6 +3339,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // transparent now, and a transparent thing has to be drawn after whatever
     // is meant to show through it. Before the water they were blending against
     // an empty lake.
+    if (W.blocks > 0) {
+      pass.setPipeline(stonePipe);
+      pass.setVertexBuffer(0, blockBuf); pass.setVertexBuffer(1, W.blockInst);
+      pass.draw(blockVerts, W.blocks);
+    }
     pass.setPipeline(crystalPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
     pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);

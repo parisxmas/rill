@@ -215,6 +215,21 @@ export fn breath(s: Ptr) -> Float = v.breath(s)
 
 export fn winded(s: Ptr) -> Int = v.winded(s)
 
+# ---- the stone walls --------------------------------------------------------
+
+export fn blocks(s: Ptr) -> Ptr = v.blocks_ptr(v.wd(s))
+
+export fn blocks_count(s: Ptr) -> Int = v.block_count(v.wd(s))
+
+export fn blocks_cap() -> Int = v.block_cap()
+
+# What the server reads back and a client is told: which stones have gone.
+export fn blocks_gone(w: Ptr) -> Int = v.blocks_gone(w)
+
+export fn block_which(w: Ptr, k: Int) -> Int = v.block_which(w, k)
+
+export fn drop_block(w: Ptr, i: Int) -> Int = v.drop_block(w, i)
+
 export fn wading(s: Ptr) -> Int = v.wading(s)
 
 export fn respawn(s: Ptr) = v.respawn(s)

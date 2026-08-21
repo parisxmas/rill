@@ -317,6 +317,111 @@ fn placed(buf, count, i, kind) =
 fn place(buf, i, count, cap, lim, kind) =
   if i >= lim then count else if count >= cap then count else place(buf, i + 1, count + placed(buf, count, i, kind), cap, lim, kind)
 
+# ---- the walls on the tops --------------------------------------------------
+#
+# Stone, laid in an L, on the bare flats above the treeline. Pines stop at 9.5
+# and crystals are mostly under 3.5, so everything over twelve is open ground
+# with nothing on it — which is exactly where a thing you can put your back
+# against is worth having, and where a rocket can be seen coming.
+#
+# A wall is not one object. It is a run of blocks, each standing on its own, and
+# taking one out takes out only that one: the shape of what is left is decided
+# by what has been shot rather than by a list of damage states somebody wrote.
+# The stride is the crystals' — eight floats, with the size at slot 3 — and so
+# is the way a piece leaves: the size goes to zero and the renderer stops
+# drawing it, which is one number to change and one number to send.
+
+fn block_size() = 0.8
+
+fn wall_tall() = 3
+
+fn wall_cap() = 12
+
+# The most blocks one L can want: two arms of seven, three high.
+fn wall_blocks() = 42
+
+fn block_cap() = wall_cap() * wall_blocks()
+
+fn blocks_ptr(w) = peek_ptr(w, 122)
+
+fn block_count(w) = to_int(peek_f32(w, 121))
+
+fn block_f(bb, i, k) = peek_f32(bb, i * 8 + k)
+
+fn block_live(bb, i) = block_f(bb, i, 3) > 0.01
+
+# Bare, and level enough to build on. Four samples three metres out: a ridge
+# passes the height test and fails this one, which is the point — a wall that
+# starts halfway down a slope has one end buried and the other in the air.
+fn good_site(x, z) =
+  h = height(x, z)
+  if h < 12.0 then false else level_at(x, z, h, 3.0) && level_at(x, z, h, 6.0)
+
+fn level_at(x, z, h, d) =
+  a = absf(height(x + d, z) - h)
+  b = absf(height(x - d, z) - h)
+  c = absf(height(x, z + d) - h)
+  e = absf(height(x, z - d) - h)
+  a < 1.3 && b < 1.3 && c < 1.3 && e < 1.3
+
+fn absf(v) = if v < 0.0 then 0.0 - v else v
+
+fn place_walls(w, bb) =
+  n = wall_try(w, bb, 0, 0)
+  poke_f32(w, 121, to_float(n * wall_blocks()))
+  n
+
+fn wall_try(w, bb, i, made) =
+  if i >= 600 || made >= wall_cap() then made
+  else
+    x = (hash2(to_float(i), 17.0) - 0.5) * 150.0
+    z = (hash2(to_float(i), 29.0) - 0.5) * 150.0
+    if good_site(x, z) then wall_try(w, bb, i + 1, made + lay_wall(bb, made, x, z, to_float(i))) else wall_try(w, bb, i + 1, made)
+
+# One L. Two arms meeting at a corner, each a run of blocks, each run three
+# high. The turn is always a right angle — that is what makes it an L and not a
+# bent line — but which way it faces and how long each arm runs is the site's.
+fn lay_wall(bb, wi, x, z, seed) =
+  yaw = hash2(seed, 41.0) * 6.28318
+  la = 4 + to_int(hash2(seed, 53.0) * 3.9)
+  lb = 3 + to_int(hash2(seed, 67.0) * 3.9)
+  base = wi * wall_blocks()
+
+  # Nothing is drawn until it is written, so the whole slice starts empty and
+  # the two arms fill what they need.
+  for j in 0..wall_blocks()
+    poke_f32(bb, (base + j) * 8 + 3, 0.0)
+
+  arm(bb, base, x, z, sin(yaw), cos(yaw), la, seed)
+  arm(bb, base + la * wall_tall(), x + sin(yaw) * block_size() * to_float(la - 1), z + cos(yaw) * block_size() * to_float(la - 1), cos(yaw), 0.0 - sin(yaw), lb, seed + 3.0)
+  1
+
+fn arm(bb, base, x, z, dx, dz, len, seed) =
+  for j in 0..len
+    column(bb, base + j * wall_tall(), x + dx * block_size() * to_float(j), z + dz * block_size() * to_float(j), seed + to_float(j))
+
+fn column(bb, base, x, z, seed) =
+  g = height(x, z)
+
+  for k in 0..wall_tall()
+    emit_block(bb, base + k, x, g + block_size() * (0.5 + to_float(k)), z, seed + to_float(k) * 7.0)
+
+fn emit_block(bb, i, x, y, z, seed) =
+  at = i * 8
+  # A stone is not the stone next to it: the size wobbles a little and so does
+  # the grey, which is what keeps a run of them from reading as one extruded
+  # box with lines drawn on it.
+  v = 0.4 + hash2(seed, 91.0) * 0.13
+  poke_f32(bb, at, x)
+  poke_f32(bb, at + 1, y)
+  poke_f32(bb, at + 2, z)
+  poke_f32(bb, at + 3, block_size() * (0.92 + hash2(seed, 13.0) * 0.12))
+  poke_f32(bb, at + 4, (hash2(seed, 71.0) - 0.5) * 0.25)
+  poke_f32(bb, at + 5, v)
+  poke_f32(bb, at + 6, v * (0.97 + hash2(seed, 29.0) * 0.05))
+  poke_f32(bb, at + 7, v * (0.93 + hash2(seed, 47.0) * 0.07))
+  1
+
 # ---- what the rifle sends downrange ----------------------------------------
 #
 # A ring of slots, eight floats each: position, velocity, a spare, and the
@@ -391,6 +496,7 @@ fn step_bullet(w, b, at, dt, decide) =
   # often they fired, which is the sort of thing that sends you looking at the
   # charge animation. It was one missing guard.
   if on > 0.5 && decide > 0 then
+    hit_stone(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
     hit_crystals(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
     hit_players(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
   else if on > 0.5 then stop_on_ghosts(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz) else 0
@@ -675,6 +781,37 @@ fn spawn_piece(sb, k, x, y, z, sc, r, g, b, up, out, seed) =
   poke_f32(sb, at + 10, (h3 - 0.5) * 22.0)
   poke_f32(sb, at + 11, (h4 - 0.5) * 22.0)
   poke_f32(sb, at + 12, sc * (0.14 + h4 * 0.16))
+  poke_f32(sb, at + 13, r)
+  poke_f32(sb, at + 14, g)
+  poke_f32(sb, at + 15, b)
+  poke_f32(sb, at + 16, 0.0)
+  1
+
+# A piece thrown where we say, rather than in a direction of its own.
+#
+# `spawn_piece` picks its own angle, which is right for something bursting
+# where it stands. A wall does not do that: it comes apart *away* from the
+# thing that hit it, and which way that is is the whole difference between
+# stone blown off a wall and stone that happened to fall over.
+fn spawn_chunk(sb, k, x, y, z, sc, r, g, b, vx, vy, vz, seed) =
+  at = (mag_count() + k % shard_ring()) * shard_stride()
+  h1 = hash2(seed, 11.0)
+  h2 = hash2(seed, 23.0)
+  h3 = hash2(seed, 37.0)
+  h4 = hash2(seed, 51.0)
+  poke_f32(sb, at, x + (h1 - 0.5) * sc)
+  poke_f32(sb, at + 1, y + (h2 - 0.5) * sc)
+  poke_f32(sb, at + 2, z + (h3 - 0.5) * sc)
+  poke_f32(sb, at + 3, vx + (h1 - 0.5) * 6.0)
+  poke_f32(sb, at + 4, vy + h2 * 4.0)
+  poke_f32(sb, at + 5, vz + (h3 - 0.5) * 6.0)
+  poke_f32(sb, at + 6, h1 * 6.28318)
+  poke_f32(sb, at + 7, h2 * 6.28318)
+  poke_f32(sb, at + 8, h3 * 6.28318)
+  poke_f32(sb, at + 9, (h2 - 0.5) * 26.0)
+  poke_f32(sb, at + 10, (h3 - 0.5) * 26.0)
+  poke_f32(sb, at + 11, (h4 - 0.5) * 26.0)
+  poke_f32(sb, at + 12, sc * (0.2 + h4 * 0.26))
   poke_f32(sb, at + 13, r)
   poke_f32(sb, at + 14, g)
   poke_f32(sb, at + 15, b)
@@ -1616,6 +1753,90 @@ fn add_blast(w, x, y, z, seed) =
 
   poke_f32(w, 61, to_float(k0 + 18))
   warhead_debris(w, x, y, z, seed)
+  smash_walls(w, x, y, z, seed)
+
+# What a warhead does to a wall. Only a warhead — a meteor landing on the tops
+# would quietly take the walls apart over an afternoon with nobody there.
+fn blast_stone() = 3.4
+
+fn smash_walls(w, x, y, z, seed) =
+  if seed > 0.0 then 0 else break_blocks(w, x, y, z, seed)
+
+fn break_blocks(w, x, y, z, seed) =
+  bb = blocks_ptr(w)
+
+  for i in 0..block_count(w)
+    maybe_break_block(w, bb, i, x, y, z, seed)
+  1
+
+fn maybe_break_block(w, bb, i, x, y, z, seed) =
+  if block_live(bb, i) then try_break_block(w, bb, i, x, y, z, seed) else 0
+
+fn try_break_block(w, bb, i, x, y, z, seed) =
+  dx = block_f(bb, i, 0) - x
+  dy = block_f(bb, i, 1) - y
+  dz = block_f(bb, i, 2) - z
+  d2 = dx * dx + dy * dy + dz * dz
+  if d2 > blast_stone() * blast_stone() then 0 else burst_block(w, bb, i, dx, dy, dz, d2, seed)
+
+# The block goes, and what it was goes outward from where the warhead was.
+#
+# Speed falls off with distance the way the push does — the stone at the point
+# of impact is thrown twice as hard as the one at the edge of the reach, which
+# is what makes a hole rather than a uniformly scattered wall.
+fn burst_block(w, bb, i, dx, dy, dz, d2, seed) =
+  d = sqrt(d2)
+  n = if d < 0.001 then 1.0 else 1.0 / d
+  push = 22.0 * (1.0 - d / blast_stone()) + 6.0
+  sb = peek_ptr(w, 69)
+  k0 = to_int(peek_f32(w, 61))
+  sc = block_f(bb, i, 3)
+  bx = block_f(bb, i, 0)
+  by = block_f(bb, i, 1)
+  bz = block_f(bb, i, 2)
+  r = block_f(bb, i, 5)
+  g = block_f(bb, i, 6)
+  b = block_f(bb, i, 7)
+
+  for j in 0..5
+    spawn_chunk(sb, k0 + j, bx, by, bz, sc * 0.5, r, g, b, dx * n * push, dy * n * push + 5.0, dz * n * push, seed * 53.0 + to_float(i) * 7.3 + to_float(j))
+
+  poke_f32(w, 61, to_float(k0 + 5))
+  poke_f32(bb, i * 8 + 3, 0.0)
+  note_block(w, i)
+  1
+
+# A ring the server reads back, the same shape the crystals' is: a count that
+# only goes up, and where it points is which block it was. A client cannot work
+# out on its own which stone went, so it is told.
+fn block_ring() = 64
+
+fn note_block(w, i) =
+  n = to_int(peek_f32(w, 123))
+  poke_f32(peek_ptr(w, 124), n % block_ring(), to_float(i))
+  poke_f32(w, 123, peek_f32(w, 123) + 1.0)
+  1
+
+fn blocks_gone(w: Ptr) -> Int = to_int(peek_f32(w, 123))
+
+fn block_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 124), k % block_ring()))
+
+# Taking one out because the server said so, with no blast to work it out from.
+fn drop_block(w: Ptr, i: Int) =
+  bb = blocks_ptr(w)
+  if i < 0 || i >= block_count(w) then 0 else if block_live(bb, i) then scatter_block(w, bb, i) else 0
+
+fn scatter_block(w, bb, i) =
+  sb = peek_ptr(w, 69)
+  k0 = to_int(peek_f32(w, 61))
+  sc = block_f(bb, i, 3)
+
+  for j in 0..5
+    spawn_chunk(sb, k0 + j, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2), sc * 0.5, block_f(bb, i, 5), block_f(bb, i, 6), block_f(bb, i, 7), 0.0, 6.0, 0.0, to_float(i) * 31.7 + to_float(j))
+
+  poke_f32(w, 61, to_float(k0 + 5))
+  poke_f32(bb, i * 8 + 3, 0.0)
+  1
 
 # What a warhead does that a stone does not, and only a warhead: a meteor comes
 # down somewhere every few seconds and the valley would be full of columns.
@@ -1756,7 +1977,41 @@ fn fly_fireball(w, fb, at, dt, decide) =
 # through another path.
 fn rocket_stop(w, fb, at, ax, ay, az, bx, by, bz) =
   hit_crystals(w, fb, at, ax, ay, az, bx, by, bz)
-  if peek_f32(fb, at + 7) < 0.001 then 1 else hits_body(w, fb, at, ax, ay, az, bx, by, bz)
+  if peek_f32(fb, at + 7) < 0.001 then 1 else if hits_stone(w, fb, at, ax, ay, az, bx, by, bz) > 0 then 1 else hits_body(w, fb, at, ax, ay, az, bx, by, bz)
+
+# Stone is solid, and a warhead that flew through a wall to crater the hill
+# behind it is the same wrong that flying through a crystal was. The answer is
+# read back out of slot 7 the way the others are.
+fn hits_stone(w, fb, at, ax, ay, az, bx, by, bz) =
+  bb = blocks_ptr(w)
+
+  for i in 0..block_count(w)
+    stop_on_block(bb, i, fb, at, ax, ay, az, bx, by, bz)
+
+  if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+
+fn stop_on_block(bb, i, p, at, ax, ay, az, bx, by, bz) =
+  if block_live(bb, i) then cross_block(bb, i, p, at, ax, ay, az, bx, by, bz) else 0
+
+# A sphere round the block rather than the box itself. A block is very nearly
+# as wide as it is tall and the difference is a few centimetres of corner,
+# which nobody aiming a rocket is going to miss by.
+fn cross_block(bb, i, p, at, ax, ay, az, bx, by, bz) =
+  r = block_f(bb, i, 3) * 0.62
+  d2 = seg_dist2(ax, ay, az, bx, by, bz, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2))
+  if d2 > r * r then 0
+  else
+    poke_f32(p, at + 7, 0.0)
+    1
+
+# The same test for a round, which stops on a wall rather than passing through
+# it. It does not take the block with it: a rifle does not knock stone out.
+fn hit_stone(w, b, at, ax, ay, az, bx, by, bz) =
+  bb = blocks_ptr(w)
+
+  for i in 0..block_count(w)
+    stop_on_block(bb, i, b, at, ax, ay, az, bx, by, bz)
+  0
 
 # A direct hit goes off on the person rather than somewhere behind them. It
 # does them no damage of its own: the blast is what a rocket does to somebody,
@@ -2072,6 +2327,8 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   charge_buf = alloc_bytes(charger_cap() * charger_stride() * 4)
   blast_buf = alloc_bytes(blast_cap() * blast_stride() * 4)
   break_buf = alloc_bytes(break_ring() * 4)
+  block_buf = alloc_bytes(block_cap() * 32)
+  gone_buf = alloc_bytes(block_ring() * 4)
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
   hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
   step = cell_step(grid)
@@ -2089,6 +2346,8 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 69, shard_buf)
   poke_ptr(s, 106, ghost_buf)
   poke_ptr(s, 113, hurt_buf)
+  poke_ptr(s, 122, block_buf)
+  poke_ptr(s, 124, gone_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
@@ -2105,6 +2364,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   clear_shards(shard_buf)
   # After the clearing, because the magazines live in the same buffer and are
   # the one thing in it that is there from the start.
+  place_walls(s, block_buf)
   place_mags(s)
   clear_fireballs(fire_buf)
   clear_chargers(charge_buf)
