@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased — the evening the valley would not answer
+## Unreleased — a scratch handed back
+
+The binary wire's float-to-bytes conversion took an eight-byte `alloc_bytes`
+scratch per message — and `alloc_bytes` is deliberately uncounted, so every
+snapshot, every input and every event broadcast left eight bytes (and a
+malloc header) on the floor for ever. Invisible at a glance and unmissable in
+a soak: sixteen players for nineteen minutes walked RSS from three megabytes
+to sixteen in a perfectly straight line, about half a megabyte per ninety-
+second session, while an idle server and six hundred join/leave cycles both
+held flat — which is what pointed the finger at the traffic rather than the
+connections. Every scratch is now `free_ptr`'d before its function returns,
+and the same soak holds level after warm-up. The test rides along as
+`wt_load.rill` (sixteen concurrent players) and `wt_churn.rill` (three
+hundred joins and leaves), both against a live server, both read with `ps`.
 
 Two production faults in one evening, each found by somebody standing at the
 door of a live server.

@@ -255,6 +255,10 @@ fn joined(conns, id, name) =
   tell_all(conns, who_msg(id, name))
   conns
 
+# `alloc_bytes` is deliberately uncounted, so every scratch taken here is
+# handed back with `free_ptr` before the function returns. The lesson cost a
+# soak test: a scratch per snapshot at twenty a second per player was half a
+# megabyte a minute that never came back.
 fn hello_msg(w, id, token) =
   b = strbuf()
   sc = alloc_bytes(8)
@@ -265,6 +269,7 @@ fn hello_msg(w, id, token) =
   put_u32(b, n_grass())
   put_f32(b, sc, v.world_time(w))
   strbuf_add(b, token)
+  free_ptr(sc)
   strbuf_str(b)
 
 fn who_msg(id, name) =
@@ -768,6 +773,7 @@ fn send_shot(w, conns, k) =
   for j in 0..7
     put_f32(b, sc, v.bullet_f(w, k, j))
 
+  free_ptr(sc)
   broadcast(w, conns, strbuf_str(b))
   send_shots(w, conns, k + 1)
 
@@ -782,6 +788,7 @@ fn send_throw(w, conns, k) =
   for j in 0..8
     put_f32(b, sc, v.fireball_f(w, k, j))
 
+  free_ptr(sc)
   broadcast(w, conns, strbuf_str(b))
   send_throws(w, conns, k + 1)
 
@@ -796,6 +803,7 @@ fn send_crater(w, conns, k) =
   for j in 0..4
     put_f32(b, sc, v.blast_f(w, k, j))
 
+  free_ptr(sc)
   broadcast(w, conns, strbuf_str(b))
   send_craters(w, conns, k + 1)
 
@@ -814,6 +822,7 @@ fn send_hurt(w, conns, k) =
   put_u16(b, to_int(v.hurt_f(w, k, 1)))
   put_f32(b, sc, v.hurt_f(w, k, 2))
   put_u8(b, to_int(v.hurt_f(w, k, 3)))
+  free_ptr(sc)
   broadcast(w, conns, strbuf_str(b))
   send_hurts(w, conns, k + 1)
 
@@ -921,6 +930,7 @@ fn snapshot(w, conns, eye) =
   put_f32(b, sc, v.match_left(w))
   put_u8(b, count_conns(conns, 0))
   add_players(b, sc, conns, eye)
+  free_ptr(sc)
   strbuf_str(b)
 
 fn count_conns(conns, n) = match conns
@@ -1351,11 +1361,15 @@ fn route(inbox, id, msg) =
 
 fn moved(inbox, id, msg) =
   sc = alloc_bytes(8)
-  tell(inbox, Moved(id, str_get(msg, 1), f32_at(msg, sc, 2), f32_at(msg, sc, 6)))
+  m = Moved(id, str_get(msg, 1), f32_at(msg, sc, 2), f32_at(msg, sc, 6))
+  free_ptr(sc)
+  tell(inbox, m)
 
 fn fired(inbox, id, msg) =
   sc = alloc_bytes(8)
-  tell(inbox, Shot(id, f32_at(msg, sc, 1), f32_at(msg, sc, 5), f32_at(msg, sc, 9)))
+  m = Shot(id, f32_at(msg, sc, 1), f32_at(msg, sc, 5), f32_at(msg, sc, 9))
+  free_ptr(sc)
+  tell(inbox, m)
 
 fn tell(inbox, m) =
   send(inbox, m)
