@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.5.0 — the words a program reaches for
+
+The release where the language grew its everyday vocabulary. `Map(k, v)`,
+`p.x`, a guard after a pattern, `?` for the error that only wants passing on,
+`add(2, _)` for the argument left for later, and a character layer over the
+byte strings — none of them new ideas, all of them words a program reaches for
+in its first ten lines, and each arrived because a real program had just
+reached for it and found it missing. The sections below this one tell each of
+them properly.
+
+Underneath them, two promises were made hard. A tail call is `musttail` on its
+own calling convention now — a jump by contract rather than by an optimizer's
+mood — which is what lets the valley's server recurse for a day without a
+stack. And the compiler stopped being a closed box: `rill check` reports
+everything one pass can find, `rill types` says what was inferred, and
+`rill lsp` hands both to an editor.
+
+The valley kept being the proving ground, and the release closes with two
+things it asked for:
+
+- **The wire is binary.** One message per frame, little-endian, and the first
+  byte is the letter the text protocol used — a snapshot still starts with an
+  `s` in a hexdump. The layouts live in one place, `server.rill`'s "bytes on
+  the wire" section, and `net.js` mirrors them field for field; a snapshot
+  went from about 70 bytes a player to 37, and neither end pays for
+  `float_to_str` or the parse back. `ws.rill` learned to send binary frames
+  (`ws_write_bin`, `client_frame_bin`) without giving up text, and
+  `wt_wire.rill` is a client that checks the whole door sequence against a
+  running server, byte by byte.
+- **A shot-at wall settles.** Stones above the hole used to keep their height,
+  hanging in the air on nothing. Now every break packs the column down — each
+  standing stone drops to sit on however many standing stones are left below
+  it, on the ground if there are none. Computed from the broken set alone,
+  like the rubble's resting place, so a client that arrives an hour late and
+  replays the history ends with the same wall as everybody who watched it come
+  down. Settling happens after the whole blast has had its say: settling
+  mid-loop fed the survivors downward into the blast sphere one course at a
+  time, and one rocket ate the column to the top.
+
 ## Unreleased — an argument left for later
 
 `\x -> add(2, x)` is a lot of notation for very little thought.
