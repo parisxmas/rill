@@ -49,7 +49,9 @@
   }
 
   @fragment fn fs(v: VOut) -> @location(0) vec4f {
-    let albedo = textureSample(propTex, barkSamp, v.uv).rgb;
+    // The left half of the sheet: the boxes and the crates share one atlas,
+    // the ammunition box's photograph on the left, the crate's on the right.
+    let albedo = textureSample(propTex, barkSamp, v.uv * vec2f(0.5, 1.0)).rgb;
     let n = normalize(v.normal);
     let col = lit(albedo, n, v.world);
     let view = v.world - u.eye.xyz;

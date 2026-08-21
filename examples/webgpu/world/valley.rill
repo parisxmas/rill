@@ -817,6 +817,12 @@ fn shard_cap() = 224
 # somewhere to walk rather than nothing to do until they respawn.
 fn mag_count() = 16
 
+# The first ten boxes are rifle magazines and the last six are rocket crates.
+# The split is by index and contiguous, which is what lets the renderer draw
+# each kind with its own mesh in one instanced call — a range, not a filter —
+# and it costs the wire nothing: which kind box `i` is falls out of `i`.
+fn mag_only() = 10
+
 fn mag_size() = 10
 
 # How big a box on the ground is drawn, against the twenty-six centimetres the
@@ -827,12 +833,20 @@ fn mag_size() = 10
 # run and still a box.
 fn mag_scale() = 1.6
 
-# What slot 16 holds: nothing, a magazine, or — anywhere in between — how much
-# of somebody a chip of crystal is worth. Two is not a fraction anybody can
-# heal by, so the one number says both what a thing is and what it gives.
+# The crate is Poly Haven's `old_military_crate`, eighty centimetres of olive
+# wood scanned at life size, and it is drawn close to it: a crate of rockets
+# is a thing you find, not a thing you trip over.
+fn crate_scale() = 0.95
+
+# What slot 16 holds: nothing, a magazine, a rocket crate, or — anywhere below
+# one — how much of somebody a chip of crystal is worth. Two and three are not
+# fractions anybody can heal by, so the one number says both what a thing is
+# and what it gives.
 fn worth_nothing() = 0.0
 
 fn worth_rounds() = 2.0
+
+fn worth_rockets() = 3.0
 
 # What one chip mends, by the colour of the crystal it came off. There are
 # three in the valley and they are not worth the same:
@@ -1106,14 +1120,14 @@ fn place_mag(sb, i, times) =
   poke_f32(sb, at + 9, 0.0)
   poke_f32(sb, at + 10, 0.0)
   poke_f32(sb, at + 11, 0.0)
-  poke_f32(sb, at + 12, mag_scale())
+  poke_f32(sb, at + 12, if i < mag_only() then mag_scale() else crate_scale())
   # And the colour goes unread. The prop pipeline samples a photograph of the
   # real thing; these three are left as they were so that a slot is the same
   # twenty floats wherever it is looked at.
   poke_f32(sb, at + 13, 0.2)
   poke_f32(sb, at + 14, 0.23)
   poke_f32(sb, at + 15, 0.3)
-  poke_f32(sb, at + 16, worth_rounds())
+  poke_f32(sb, at + 16, if i < mag_only() then worth_rounds() else worth_rockets())
   # How many times this one has been taken, which is the other half of where
   # it is. Not a clock: a count survives a client and a server disagreeing
   # about the time by a tenth of a second, and a due date does not.
@@ -1763,17 +1777,18 @@ fn gather_shard(s, sb, i, mend) =
       worth_of(s, sb, i, at, mend)
 
 # Whether this is worth anything to whoever is standing on it. Somebody
-# carrying a full rifle and a full tube walks over ammunition: taking it would
-# put ten rounds into a rifle that has ten and move the box to the far side of
-# the valley, which is the worst of both. Room in either is enough — a box
-# holds both kinds, and the rule that asked only about the rifle meant that
-# firing three rockets with a full magazine left you walking over box after box
-# with an empty tube and no way to fill it.
+# carrying a full rifle walks over a magazine: taking it would put ten rounds
+# into a rifle that has ten and move the box to the far side of the valley,
+# which is the worst of both. A magazine speaks only for the rifle now and a
+# crate only for the tube — ammunition stopped being one thing the day the
+# crates arrived — so what you are full of, you walk past, and what you are
+# short of is the thing you go looking for.
 #
 # A chip of crystal is always taken: the heal clamps, and a chip is small
 # enough that losing a fraction of one is not something anybody is counting.
 fn wanted(s, sb, at) =
-  if peek_f32(sb, at + 16) < 1.5 then 1 else if rounds(s) < mag_size() then 1 else if rockets(s) < rocket_full() then 1 else 0
+  kind = peek_f32(sb, at + 16)
+  if kind < 1.5 then 1 else if kind > 2.5 then (if rockets(s) < rocket_full() then 1 else 0) else if rounds(s) < mag_size() then 1 else 0
 
 fn gather(s, sb, mend) =
   for i in 0..shard_cap()
@@ -3995,16 +4010,21 @@ fn rise_one(s) = if may_rise(s) > 0 then respawn(s) else 0
 # you a little; a magazine fills the rifle and says when it will be back.
 # Anything else is scenery and does not reach here.
 fn worth_of(s, sb, i, at, mend) =
-  if peek_f32(sb, at + 16) > 1.5 then
-    poke_f32(s, 118, to_float(mag_size()))
-    # A box on the ground is ammunition, not rifle ammunition: it fills the
-    # tube as well. There is one thing to pick up in this valley, and one that
-    # left half of what you are carrying empty would be a strange one.
+  if peek_f32(sb, at + 16) > 2.5 then
+    # A crate of rockets fills the tube and nothing else. `wanted` has already
+    # said the tube has room, which is the whole of "only if you carry the
+    # launcher" in a valley where everybody does: a full tube walks past it.
     poke_f32(s, 120, to_float(rocket_full()))
+    place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
+    1
+  else if peek_f32(sb, at + 16) > 1.5 then
+    # And a magazine fills the rifle and nothing else.
+    #
     # Taken here, and it turns up somewhere else. Which somewhere is a
     # function of nothing but the box's number and how many times it has been
     # taken, so a server and a browser that have both seen the same pickups
     # agree about where it went without either telling the other.
+    poke_f32(s, 118, to_float(mag_size()))
     place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else if mend < 1 then 1

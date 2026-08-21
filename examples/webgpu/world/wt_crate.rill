@@ -1,0 +1,37 @@
+# Two kinds of box: a magazine fills the rifle and nothing else, a crate the
+# tube and nothing else, and neither is taken by somebody already full of it.
+import "valley" as v
+
+fn box_at(w, i) =
+  sb = peek_ptr(w, 69)
+  (peek_f32(sb, i * 20), peek_f32(sb, i * 20 + 1), peek_f32(sb, i * 20 + 2))
+
+fn stand_on(s, x, y, z) =
+  poke_f32(s, 21, x)
+  poke_f32(s, 22, y + 1.0)
+  poke_f32(s, 23, z)
+  1
+
+fn main() =
+  w = v.init(48, 400, 300, 900)
+  s = v.join(w)
+  # Spent: two rounds in the rifle, no rockets in the tube.
+  poke_f32(s, 118, 2.0)
+  poke_f32(s, 120, 0.0)
+
+  (mx, my, mz) = box_at(w, 0)
+  stand_on(s, mx, my, mz)
+  v.pick_up(s)
+  println("on a magazine: rounds " + int_to_str(v.rounds(s)) + " (want 10), rockets " + int_to_str(v.rockets(s)) + " (want still 0)")
+
+  (cx, cy, cz) = box_at(w, 12)
+  stand_on(s, cx, cy, cz)
+  v.pick_up(s)
+  println("on a crate: rounds " + int_to_str(v.rounds(s)) + " (want still 10), rockets " + int_to_str(v.rockets(s)) + " (want 3)")
+
+  # Full of both now: neither box moves for this player.
+  t0 = v.mag_times(w, 1)
+  (nx, ny, nz) = box_at(w, 1)
+  stand_on(s, nx, ny, nz)
+  v.pick_up(s)
+  println("full, on a magazine: taken " + int_to_str(v.mag_times(w, 1) - t0) + " times (want 0)")

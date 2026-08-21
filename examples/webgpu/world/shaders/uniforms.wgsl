@@ -32,6 +32,9 @@
     rocketSize: vec4f,
     rpgMin:     vec4f,
     rpgSize:    vec4f,
+    // The rocket crate's, for the second kind of box on the ground.
+    crateMin:   vec4f,
+    crateSize:  vec4f,
   }
   @group(0) @binding(0) var<uniform> u: U;
 

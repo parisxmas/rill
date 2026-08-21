@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=328";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=328";
+import { load } from "./world.js?v=329";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=329";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=328";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "328";
+const V = "329";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -97,7 +97,7 @@ const SHADERS = {
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
-  figure: "common", held: "common", prop: "common",
+  figure: "common", held: "common", prop: "common", crate: "common",
   launcher: "common", rocket: "common", warhead: "common", stone: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
@@ -130,12 +130,13 @@ const TEXTURES = [
   ["./moons.jpg", 1024, 512],
   // The shark, seen only under water and mostly through it.
   ["./shark-skin.jpg", 512, 512],
-  // The ammunition box: Poly Haven's own diffuse, which is a photograph of a
-  // real one — olive drab, yellow stencils, and rust where the paint has gone.
-  // Halved from the 1k they publish. Nothing gets closer to one of these than
-  // the reach that picks it up, and at that distance five hundred and twelve
-  // across is already more texels than the box has pixels.
-  ["./ammo-box.jpg", 512, 512],
+  // The two boxes on the ground, side by side in one atlas: the ammunition
+  // box's diffuse on the left, the rocket crate's on the right — both Poly
+  // Haven photographs, both halved from the published 1k. One more thing to
+  // draw did not get one more binding, because sixteen sampled textures a
+  // stage is exactly what this scene already spends: the sheet trick the
+  // rifle uses is free and the seventeenth binding is not there to give.
+  ["./boxes-atlas.jpg", 1024, 512],
   // The launcher and the rocket it fires, off one sheet — they came out of one
   // file and they are the same object a moment apart.
   ["./rpg7.jpg", 512, 512],
@@ -167,6 +168,7 @@ async function loadShaders(step) {
     METEOR: whole("meteor"),
     SHARK: whole("shark"),
     PROP: whole("prop"),
+    CRATE: whole("crate"),
     STONE: whole("stone"),
     LAUNCHER: whole("launcher"),
     WARHEAD: whole("warhead"),
@@ -885,7 +887,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // the GPU buffer did not is a `writeBuffer` overrun, which is a validation
   // error, an invalid pipeline and a black screen with nothing in the console
   // that names the cause.
-  const UNI_FLOATS = 100;
+  const UNI_FLOATS = 108;
   const uni = device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const flyTime = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const shadowSamp = device.createSampler({ compare: "less" });
@@ -1128,6 +1130,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     ]},
   ];
   const propPipe = pipe("prop", S.PROP, propLayout);
+  const cratePipe = pipe("crate", S.CRATE, propLayout);
   // The launcher in the hands: the rifle's vertex layout, its own frustum, and
   // no instances — there is only ever one pair of hands.
   const rpgPipe = pipe("launcher", S.LAUNCHER, vmLayout);
@@ -1184,6 +1187,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   device.queue.writeBuffer(propIB, 0, propIdxBytes);
   step("ammo-box.mesh");
+
+  // The rocket crate: Poly Haven's `old_military_crate`, CC0, the `a` crate
+  // of the pair welded by the same baker, recentred so its footprint sits on
+  // the instance point. Same format, same six lines.
+  const crateBytes = await (await fetch(`./rocket-crate.mesh?v=${V}`)).arrayBuffer();
+  const crateHead = new DataView(crateBytes, 0, 32);
+  const crateVerts = crateHead.getUint32(0, true);
+  const crateIdx = crateHead.getUint32(4, true);
+  const crateBox = new Float32Array(crateBytes, 8, 6);
+  const crateVB = gpuBuf(new Uint8Array(crateBytes, 32, crateVerts * 16));
+  const crateIdxBytes = new Uint8Array((crateIdx * 2 + 3) & ~3);
+  crateIdxBytes.set(new Uint8Array(crateBytes, 32 + crateVerts * 16, crateIdx * 2));
+  const crateIB = device.createBuffer({
+    size: crateIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(crateIB, 0, crateIdxBytes);
+  step("rocket-crate.mesh");
 
   // The launcher and its rocket. One file, one texture, two meshes, all in the
   // rifle's own format — so this is the same six lines a third and a fourth
@@ -1544,6 +1564,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // How many of those slots are ammunition rather than crystal. The world
   // decides; the renderer only needs to know where the line is.
   const magCount = Number(E.mag_count());
+  const magsOnly = Number(E.mags_only());
   const shardBuf = device.createBuffer({
     size: shardCap * 80, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
@@ -3235,6 +3256,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf.set(rocket.box.subarray(3, 6), 88);
     uf.set(rpg.box.subarray(0, 3), 92);
     uf.set(rpg.box.subarray(3, 6), 96);
+    uf.set(crateBox.subarray(0, 3), 100); // and the rocket crate's
+    uf.set(crateBox.subarray(3, 6), 104);
     // How far through a weapon swap the hands are. One number for both, since
     // only one weapon is drawn: it runs to one as what is held goes down, the
     // draw changes over at the bottom, and it runs back to nought.
@@ -3495,7 +3518,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(propPipe);
     pass.setVertexBuffer(0, propVB); pass.setVertexBuffer(1, shardBuf);
     pass.setIndexBuffer(propIB, "uint16");
-    pass.drawIndexed(propIdx, magCount);
+    pass.drawIndexed(propIdx, magsOnly);
+
+    // The crates: the back range of the same sixteen slots, their own mesh
+    // and photograph, and `firstInstance` again doing the dividing.
+    pass.setPipeline(cratePipe);
+    pass.setVertexBuffer(0, crateVB); pass.setVertexBuffer(1, shardBuf);
+    pass.setIndexBuffer(crateIB, "uint16");
+    pass.drawIndexed(crateIdx, magCount - magsOnly, 0, 0, magsOnly);
 
     pass.setPipeline(shardPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, shardBuf);

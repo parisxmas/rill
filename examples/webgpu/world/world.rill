@@ -201,6 +201,11 @@ export fn rockets(s: Ptr) -> Int = v.rockets(s)
 
 export fn rocket_full() -> Int = v.rocket_full()
 
+# How many of the boxes are rifle magazines; the rest are rocket crates. The
+# renderer draws the two kinds with two meshes over one instance buffer, and
+# this is where the ranges split.
+export fn mags_only() -> Int = v.mag_only()
+
 # Where a box is, said as a count rather than as a position: box `i` has been
 # taken `n` times, and the valley works out the rest. This is what arrives on
 # the wire when somebody else picks one up.
