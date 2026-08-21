@@ -362,7 +362,7 @@ fn block_size() = 0.3
 # what it is for.
 fn wall_tall() = 8
 
-fn wall_cap() = 12
+fn wall_cap() = 16
 
 # The most blocks one L can want: two arms of nineteen, eight courses high.
 fn wall_arm_max() = 26
@@ -405,9 +405,20 @@ fn block_live(bb, i) = block_f(bb, i, 3) > 0.01
 # The levelness test is unchanged and still does the real work: four samples
 # three metres out and four more at six, because a wall that starts halfway
 # down a slope has one end buried and the other in the air.
+# One point two to eight metres — the shore and the meadows, not the slopes.
+# The three-and-a-half-to-twelve band read as "in the valley" on paper and put
+# every wall inside the pine belt in practice, where a grey knee-high L among
+# four hundred trees is a thing nobody found. Below one point two is the
+# water's edge; below eight is where the crystals, the boxes and the people
+# actually are, and the shoreline is bare because the pines refuse to grow
+# under a metre — a wall there is visible from across the lake.
+# Two bands: the shore and the meadows below eight metres, and the bare flats
+# above twelve. What is skipped is the belt between them, which is where the
+# four hundred pines live — a knee-high grey L inside a forest is a thing
+# nobody finds, and nobody found them.
 fn good_site(x, z) =
   h = height(x, z)
-  if h < 3.5 then false else if h > 12.0 then false else level_at(x, z, h, 3.0) && level_at(x, z, h, 6.0)
+  if h < 1.2 then false else if h > 8.0 && h < 12.0 then false else level_at(x, z, h, 3.0) && level_at(x, z, h, 6.0)
 
 fn level_at(x, z, h, d) =
   a = absf(height(x + d, z) - h)
@@ -429,11 +440,26 @@ fn place_walls(w, bb) =
   n
 
 fn wall_try(w, bb, i, made) =
-  if i >= 600 || made >= wall_cap() then made
+  # Four thousand tries, not six hundred. The shore band is the slope of a
+  # bowl, and level ground there is rarer than it was on the tops — at six
+  # hundred tries the valley came up with five walls of the sixteen it wanted.
+  # This runs once, at init, and a failed try is two hashes and five heights.
+  if i >= 4000 || made >= wall_cap() then made
   else
     x = (hash2(to_float(i), 17.0) - 0.5) * 150.0
     z = (hash2(to_float(i), 29.0) - 0.5) * 150.0
-    if good_site(x, z) then wall_try(w, bb, i + 1, made + lay_wall(bb, wall_box(w), made, x, z, to_float(i))) else wall_try(w, bb, i + 1, made)
+    if good_site(x, z) && far_from_walls(wall_box(w), 0, made, x, z) then wall_try(w, bb, i + 1, made + lay_wall(bb, wall_box(w), made, x, z, to_float(i))) else wall_try(w, bb, i + 1, made)
+
+# Eighteen metres from every wall already laid. Without this the first decent
+# flat in the hash sequence collects half the walls in the valley — nine of
+# sixteen stood within a few metres of one another on the north-shore meadow,
+# a quarry where cover was wanted.
+fn far_from_walls(wb, k, made, x, z) =
+  if k >= made then true
+  else
+    dx = peek_f32(wb, k * 4) - x
+    dz = peek_f32(wb, k * 4 + 2) - z
+    if dx * dx + dz * dz < 324.0 then false else far_from_walls(wb, k + 1, made, x, z)
 
 # One L. Two arms meeting at a corner, each a run of blocks, each run three
 # high. The turn is always a right angle — that is what makes it an L and not a
