@@ -250,6 +250,44 @@
        is something you read, a bar is something you see out of the side of
        your eye while you are busy being shot at. Only shown when there is a
        server to have a roster of. */
+    /* How much of the round is left, over the middle of the screen where it can
+       be read without looking away from anything. */
+    .clock {
+      position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
+      font: 500 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.10em; color: #cfc9e8; text-shadow: 0 1px 3px #000a;
+      user-select: none; pointer-events: none; opacity: 0.82;
+    }
+    .clock.low { color: #ffb96b; }
+
+    /* The board between rounds. Deliberately large and deliberately over
+       everything: the twenty seconds it is up are not for playing. */
+    .board {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 18px;
+      background: #0b0a14e8; z-index: 40;
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #cfc9e8; user-select: none; pointer-events: none;
+    }
+    .board h2 {
+      margin: 0; font-size: 13px; font-weight: 400; letter-spacing: 0.3em;
+      text-transform: uppercase; color: #6f6a92;
+    }
+    .board table { border-collapse: collapse; font-size: 22px; }
+    .board th {
+      font-size: 11px; font-weight: 400; letter-spacing: 0.2em; color: #6f6a92;
+      text-transform: uppercase; padding: 0 18px 10px; text-align: right;
+    }
+    .board th:first-child { text-align: left; }
+    .board td { padding: 5px 18px; text-align: right; font-variant-numeric: tabular-nums; }
+    .board td:first-child { text-align: left; color: #efeaff; }
+    .board tr.you td { color: #ffd08a; }
+    .board .count {
+      font-size: 44px; letter-spacing: 0.04em; color: #efeaff;
+      font-variant-numeric: tabular-nums;
+    }
+    .board .until { font-size: 12px; letter-spacing: 0.22em; color: #6f6a92; text-transform: uppercase; }
+
     .who-list {
       position: fixed; left: 20px; top: 118px; width: 216px;
       font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -468,6 +506,14 @@
   <div class="took" id="took"></div>
   <div class="crier" id="crier"></div>
   <div class="log" id="log"></div>
+  <div class="clock" id="clock" hidden></div>
+  <div class="board" id="board" hidden>
+    <h2>round over</h2>
+    <table><thead><tr><th>player</th><th>kills</th><th>deaths</th></tr></thead>
+      <tbody id="boardRows"></tbody></table>
+    <div class="count" id="boardCount">20</div>
+    <div class="until">next round</div>
+  </div>
   <div class="tally" id="tally"></div>
   <div class="vit" id="vit"><i id="vitfill"></i></div>
   <div class="wind" id="wind"><i id="windfill"></i></div>
@@ -499,7 +545,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=311";
+    import { run } from "./host.js?v=313";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -578,7 +624,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=311", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=313", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

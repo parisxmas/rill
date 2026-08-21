@@ -680,6 +680,9 @@ fn snapshot(w, conns, eye) =
   strbuf_add(b, "s " + float_to_str(v.world_time(w)))
   strbuf_add(b, " " + float_to_str(v.shark_x(w)) + " " + float_to_str(v.shark_y(w)) + " " + float_to_str(v.shark_z(w)))
   strbuf_add(b, " " + float_to_str(v.shark_heading(w)) + " " + float_to_str(v.shark_mode(w)))
+  # Which part of the round this is, and how much of it is left. On the header
+  # rather than per player: it is the same for everybody in the valley.
+  strbuf_add(b, " " + int_to_str(v.match_phase(w)) + " " + float_to_str(v.match_left(w)))
   add_players(b, conns, eye)
   strbuf_str(b)
 
@@ -703,6 +706,10 @@ fn add_player(b, c, rest, eye) =
   # watch for rather than read off the wire, so everybody else's block says
   # minus one, which is not a count and cannot be mistaken for an empty one.
   strbuf_add(b, " " + int_to_str(if v.player_id(s) == v.player_id(eye) then v.rounds(s) else 0 - 1))
+  # Kills and deaths, everybody's. Unlike the rifle's count these are meant to
+  # be read about other people — that is what the board at the end of a round
+  # is — and they are the server's to say.
+  strbuf_add(b, " " + int_to_str(v.kills(s)) + " " + int_to_str(v.deaths(s)))
   add_players(b, rest, eye)
 
 # Zeros where the numbers would be. Not the last place they were seen, which

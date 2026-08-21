@@ -224,6 +224,16 @@ export fn blocks_count(s: Ptr) -> Int = v.block_count(v.wd(s))
 export fn blocks_cap() -> Int = v.block_cap()
 
 # What the server reads back and a client is told: which stones have gone.
+# ---- the match --------------------------------------------------------------
+
+export fn match_left(w: Ptr) -> Float = v.match_left(w)
+
+export fn match_phase(w: Ptr) -> Int = v.match_phase(w)
+
+export fn kills(s: Ptr) -> Int = v.kills(s)
+
+export fn deaths(s: Ptr) -> Int = v.deaths(s)
+
 export fn blocks_gone(w: Ptr) -> Int = v.blocks_gone(w)
 
 export fn block_which(w: Ptr, k: Int) -> Int = v.block_which(w, k)

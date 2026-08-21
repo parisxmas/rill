@@ -183,6 +183,11 @@ function snapshot(net, line) {
     at: performance.now(),
     clock: h[0],
     shark: { x: h[1], y: h[2], z: h[3], heading: h[4], mode: h[5] },
+    // Which part of the round, and how many seconds of it are left. A server
+    // old enough not to send them looks like a match that never ends, which is
+    // what it is.
+    phase: h.length > 6 ? h[6] | 0 : 0,
+    left: h.length > 7 ? h[7] : null,
     players: people.map((p) => {
       const n = p.split(" ").map(Number);
       // The pose is what the server says they are doing — standing, walking,
@@ -204,7 +209,10 @@ function snapshot(net, line) {
                // minus one, and so does every block from a server old enough
                // not to send it at all. Both mean the same thing here: this
                // snapshot does not know, so do not touch the count.
-               ammo: n.length > 11 && n[11] >= 0 ? n[11] | 0 : null };
+               ammo: n.length > 11 && n[11] >= 0 ? n[11] | 0 : null,
+               // What the board at the end of a round is made of.
+               kills: n.length > 12 ? n[12] | 0 : 0,
+               deaths: n.length > 13 ? n[13] | 0 : 0 };
     }),
   };
   // How long one takes to arrive, smoothed. It is the length of the walk
@@ -292,6 +300,9 @@ export function everyone(net) {
     health: p.health,
     hit: p.hit,
     shot: p.shot,
+    // What the board between rounds is made of.
+    kills: p.kills | 0,
+    deaths: p.deaths | 0,
     self: p.id === net.id,
   }));
 }

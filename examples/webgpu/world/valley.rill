@@ -341,7 +341,7 @@ fn wall_tall() = 8
 fn wall_cap() = 12
 
 # The most blocks one L can want: two arms of nineteen, eight courses high.
-fn wall_arm_max() = 19
+fn wall_arm_max() = 26
 
 fn wall_blocks() = wall_arm_max() * 2 * wall_tall()
 
@@ -409,8 +409,8 @@ fn wall_try(w, bb, i, made) =
 # bent line — but which way it faces and how long each arm runs is the site's.
 fn lay_wall(bb, wb, wi, x, z, seed) =
   yaw = hash2(seed, 41.0) * 6.28318
-  la = 11 + to_int(hash2(seed, 53.0) * 8.9)
-  lb = 8 + to_int(hash2(seed, 67.0) * 8.9)
+  la = 16 + to_int(hash2(seed, 53.0) * 10.9)
+  lb = 13 + to_int(hash2(seed, 67.0) * 10.9)
   base = wi * wall_blocks()
 
   # Nothing is drawn until it is written, so the whole slice starts empty and
@@ -1192,6 +1192,7 @@ fn put_hurt(w, victim, shooter, dmg, down) =
   poke_f32(hb, at + 2, dmg)
   poke_f32(hb, at + 3, down)
   poke_f32(w, 112, to_float(k + 1))
+  if down > 0.5 then tally_end(w, victim, shooter) else 0
   1
 
 fn hurts(w: Ptr) -> Int = to_int(peek_f32(w, 112))
@@ -1808,7 +1809,16 @@ fn add_blast(w, x, y, z, seed) =
 # now, so the same reach would have taken far more of the wall rather than the
 # same amount in smaller pieces. Volume goes as the cube, so a third of the
 # damage is the cube root of a third off the radius.
-fn blast_stone() = 2.35
+# A hole, not the wall.
+#
+# The reach is what decides how much of a wall goes, and a wall is a slab: the
+# stones taken are the ones in the disc the sphere cuts through it, so the count
+# goes as the *square* of the reach and not the cube. At 2.35 that disc was
+# four and a half metres across against arms four to five metres long, which is
+# not a hole in a wall, it is the wall. At 1.2 it is two and a half across and
+# leaves stone standing either side, and it takes twenty-odd rockets to finish
+# an L rather than two.
+fn blast_stone() = 1.2
 
 fn smash_walls(w, x, y, z, seed) =
   if seed > 0.0 then 0 else break_blocks(w, x, y, z, seed)
@@ -3238,7 +3248,91 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
 # Everything the valley does whether or not anybody is watching: the wind, the
 # rounds in the air, the shards falling, the crystals winding up, whatever the
 # shark has decided. Once a tick, however many people are in it.
+# ---- the match --------------------------------------------------------------
+#
+# Ten minutes of valley, then twenty seconds of looking at who did what to
+# whom, then all of it again with the walls rebuilt and everybody somewhere
+# else. The clock lives on the world and not on the server, so a browser alone
+# in its own valley plays the same rounds a shared one does, and a client can
+# put the number on the screen without being told it every tick.
+fn match_len() = 600.0
+
+fn report_len() = 20.0
+
+fn match_clock(w: Ptr) -> Float = peek_f32(w, 128)
+
+fn match_phase(w: Ptr) -> Int = if peek_f32(w, 129) > 0.5 then 1 else 0
+
+# What the clock counts *down* to, which is what anybody wants to read: how
+# long is left of the match, or of the twenty seconds before the next one.
+fn match_left(w: Ptr) -> Float =
+  if match_phase(w) > 0 then report_len() - peek_f32(w, 128) else match_len() - peek_f32(w, 128)
+
+fn step_match(w, dt) =
+  t = peek_f32(w, 128) + dt
+  if match_phase(w) > 0 then
+    if t >= report_len() then new_match(w) else tick_clock(w, t)
+  else if t >= match_len() then
+    poke_f32(w, 129, 1.0)
+    poke_f32(w, 128, 0.0)
+    1
+  else
+    tick_clock(w, t)
+
+fn tick_clock(w, t) =
+  poke_f32(w, 128, t)
+  1
+
+# Everything that was, gone. The valley comes back whole — every crystal
+# standing, every wall rebuilt, every ring emptied — and everybody in it is put
+# down somewhere new with a full bar and nothing on their record.
+#
+# The blocks are laid again rather than un-broken one at a time: `place_walls`
+# is a pure function of the terrain, so running it a second time gives the same
+# twelve walls with all their stones back, which is both simpler and exactly
+# what "a new valley" means here.
+fn new_match(w) =
+  reset_world(w)
+  place_walls(w, blocks_ptr(w))
+  place_mags(w)
+  poke_f32(w, 121, peek_f32(w, 121))
+  poke_f32(w, 123, 0.0)
+  poke_f32(w, 125, 0.0)
+  poke_f32(w, 128, 0.0)
+  poke_f32(w, 129, 0.0)
+
+  for i in 0..player_count(w)
+    new_match_player(player_at(w, i))
+  1
+
+fn new_match_player(s) =
+  poke_f32(s, 130, 0.0)
+  poke_f32(s, 131, 0.0)
+  poke_f32(s, 109, 0.0)
+  poke_f32(s, 110, 0.0)
+  place_player(s)
+  1
+
+fn kills(s: Ptr) -> Int = to_int(peek_f32(s, 130))
+
+fn deaths(s: Ptr) -> Int = to_int(peek_f32(s, 131))
+
+# One place knows a death happened, and it already knows both names.
+fn tally_end(w, victim, shooter) =
+  add_to(w, victim, 131)
+  if shooter == victim then 0 else add_to(w, shooter, 130)
+  1
+
+fn add_to(w, id, slot) =
+  i = index_of(w, id, 0)
+  if i < 0 then 0 else add_one(player_at(w, i), slot)
+
+fn add_one(s, slot) =
+  poke_f32(s, slot, peek_f32(s, slot) + 1.0)
+  1
+
 fn step_world(w: Ptr, dt: Float) =
+  step_match(w, dt)
   t = step_wind(w, dt)
   step_bullets(w, peek_ptr(w, 68), dt, 1)
   step_shards(peek_ptr(w, 69), dt)

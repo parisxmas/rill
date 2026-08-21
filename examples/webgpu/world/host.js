@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=311";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=311";
+import { load } from "./world.js?v=313";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=313";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=311";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "311";
+const V = "313";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2019,6 +2019,60 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
   }
 
+  // ---- the round -----------------------------------------------------------
+  //
+  // How long is left, and the board between rounds. Both read the same two
+  // numbers off the world — the phase and the seconds remaining — so a browser
+  // alone in its own valley shows exactly what a shared one does, without a
+  // server having to be there to say so.
+  const clockEl = document.querySelector("#clock");
+  const boardEl = document.querySelector("#board");
+  const boardRows = document.querySelector("#boardRows");
+  const boardCount = document.querySelector("#boardCount");
+  let boardShape = "";
+
+  // A browser alone in its valley still has a round, and one player in it.
+  const soloBoard = () => [{
+    id: (net && net.id) ?? 0, name: "you",
+    kills: Number(E.kills(state)), deaths: Number(E.deaths(state)),
+  }];
+
+  const mmss = (secs) => {
+    const t = Math.max(0, Math.ceil(secs));
+    return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0");
+  };
+
+  function drawRound(phase, left, list, myId) {
+    if (left == null) { clockEl.hidden = true; boardEl.hidden = true; return; }
+    const over = phase === 1;
+    clockEl.hidden = over;
+    if (!over) {
+      clockEl.textContent = mmss(left);
+      // The last half minute in the colour everything urgent on this page is.
+      clockEl.classList.toggle("low", left <= 30);
+    }
+    if (boardEl.hidden !== !over) boardEl.hidden = !over;
+    if (!over) return;
+    boardCount.textContent = String(Math.max(0, Math.ceil(left)));
+    // Most kills first, then fewest deaths, then whoever arrived first — a
+    // board that reordered itself every tick would be unreadable.
+    const rank = list.slice().sort((a, b) =>
+      (b.kills | 0) - (a.kills | 0) || (a.deaths | 0) - (b.deaths | 0) || a.id - b.id);
+    const shape = rank.map(p => `${p.id}:${p.name ?? ""}:${p.kills | 0}:${p.deaths | 0}`).join("|");
+    if (shape === boardShape) return;
+    boardShape = shape;
+    boardRows.replaceChildren(...rank.map((p) => {
+      const tr = document.createElement("tr");
+      if (p.id === myId) tr.className = "you";
+      for (const v of [p.name ?? ("player" + p.id), p.kills | 0, p.deaths | 0]) {
+        const td = document.createElement("td");
+        td.textContent = String(v);
+        tr.append(td);
+      }
+      return tr;
+    }));
+  }
+
   // A colour per player, off the golden angle round the hue circle: the second
   // person to arrive is a different colour rather than a slightly different
   // green. It pales as they run out of health, which is the only tell there is
@@ -3205,6 +3259,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
           ? "linear-gradient(90deg, #3f7fb8, #4aa3d8)"
           : "linear-gradient(90deg, #2f5f8c, #3f7fb8)";
       windfill.classList.toggle("spent", E.winded(state) === 1);
+      // The round's clock and, between rounds, the board. Here rather than
+      // beside the roster because the roster only exists when there is a
+      // server, and a browser alone in its valley plays rounds too.
+      const snap = net && net.last;
+      if (snap && snap.left != null) drawRound(snap.phase, snap.left, everyone(net), net.id);
+      else drawRound(Number(E.match_phase(world)), E.match_left(world), soloBoard(), net && net.id);
     }
     // The rifle. A whole number that changes on the frame the trigger goes
     // down, so it is compared rather than eased: nothing here moves unless a
