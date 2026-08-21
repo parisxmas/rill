@@ -395,12 +395,19 @@ fn block_f(bb, i, k) = peek_f32(bb, i * 8 + k)
 
 fn block_live(bb, i) = block_f(bb, i, 3) > 0.01
 
-# Bare, and level enough to build on. Four samples three metres out: a ridge
-# passes the height test and fails this one, which is the point — a wall that
-# starts halfway down a slope has one end buried and the other in the air.
+# Level enough to build on, and down where the game is. They stood on the bare
+# tops above twelve metres at first, which kept them clear of the trees and
+# also clear of everybody: the fighting happens around the meadows and the
+# water, and cover a climb away is scenery. The band is three and a half to
+# twelve now — above the lake's edge, below the peaks — so an L stands among
+# the pines and the crystals where somebody actually ducks behind it.
+#
+# The levelness test is unchanged and still does the real work: four samples
+# three metres out and four more at six, because a wall that starts halfway
+# down a slope has one end buried and the other in the air.
 fn good_site(x, z) =
   h = height(x, z)
-  if h < 12.0 then false else level_at(x, z, h, 3.0) && level_at(x, z, h, 6.0)
+  if h < 3.5 then false else if h > 12.0 then false else level_at(x, z, h, 3.0) && level_at(x, z, h, 6.0)
 
 fn level_at(x, z, h, d) =
   a = absf(height(x + d, z) - h)
@@ -456,7 +463,9 @@ fn lay_wall(bb, wb, wi, x, z, seed) =
   r2 = sqrt((cx - mx) * (cx - mx) + (cz - mz) * (cz - mz))
   r3 = sqrt((ex - mx) * (ex - mx) + (ez - mz) * (ez - mz))
   far = if r1 > r2 then if r1 > r3 then r1 else r3 else if r2 > r3 then r2 else r3
-  set_wall_box(wb, wi, mx, height(mx, mz) + block_size() * to_float(wall_tall()) * 0.5, mz, far + 2.0)
+  # +5.5, not +2: a broken stone rolls up to three metres from where it stood
+  # and is still this wall's to collide with, so the sphere has to reach it.
+  set_wall_box(wb, wi, mx, height(mx, mz) + block_size() * to_float(wall_tall()) * 0.5, mz, far + 5.5)
   1
 
 fn set_wall_box(wb, wi, x, y, z, r) =
@@ -1928,7 +1937,7 @@ fn burst_block(w, bb, i, dx, dy, dz, d2, seed) =
     spawn_chunk(sb, k0 + j, cs, sbase + to_float(j))
 
   poke_f32(w, 61, to_float(k0 + 2))
-  poke_f32(bb, i * 8 + 3, 0.0)
+  fall_to_ground(bb, i, sc)
   note_block(w, i)
   1
 
@@ -1966,7 +1975,7 @@ fn scatter_block(w, bb, i) =
     spawn_chunk(sb, k0 + j, cs, sbase + to_float(j))
 
   poke_f32(w, 61, to_float(k0 + 2))
-  poke_f32(bb, i * 8 + 3, 0.0)
+  fall_to_ground(bb, i, sc)
   1
 
 # What a warhead does that a stone does not, and only a warhead: a meteor comes
@@ -2205,6 +2214,34 @@ fn hits_stone(w, fb, at, ax, ay, az, bx, by, bz) =
 # are four bytes and nothing spills, so the whole thing looked correct until
 # the first rocket flew on the server. Registers only, in this whole chain.
 fn seg_of(w) = peek_ptr(w, 118)
+
+# A stone knocked out of a wall lies where it fell, and it is still a stone:
+# it stops rounds, it stops rockets, it stops a boot, and another warhead can
+# break it again. The flying pieces overhead stay what they were — a visual in
+# the shard ring, gone when the ring comes round — but the block itself is
+# never killed, only moved: down to the ground a deterministic step away,
+# four-fifths the size, lying low.
+#
+# Deterministic, and that is the whole design. A client is told which stone
+# went — `w <i>` — and nothing else, so where it lands has to be computable
+# from the stone alone: its index and where it stood. Server and every client
+# run this same arithmetic and put the same stone in the same place; had the
+# rubble followed the flying pieces it would lie somewhere different in every
+# browser, and a wall of stones nobody else can see is a valley of invisible
+# tripwires. Hashing the position in means a stone broken again rolls to a new
+# spot rather than snapping back to the old one.
+fn fall_to_ground(bb, i, sc) =
+  x0 = block_f(bb, i, 0)
+  z0 = block_f(bb, i, 2)
+  a = hash2(to_float(i) * 3.1 + x0, z0 * 1.7) * 6.28318
+  d = 1.2 + hash2(to_float(i), 77.0) * 1.8
+  x = x0 + cos(a) * d
+  z = z0 + sin(a) * d
+  poke_f32(bb, i * 8, x)
+  poke_f32(bb, i * 8 + 1, height(x, z) + sc * 0.3)
+  poke_f32(bb, i * 8 + 2, z)
+  poke_f32(bb, i * 8 + 3, sc * 0.8)
+  1
 
 fn fill_chunk(cs, x, y, z, sc, r, g, b) =
   poke_f32(cs, 0, x)
