@@ -298,6 +298,11 @@ pub enum TK {
     /// `s[i:j]` — the bytes from `i` up to but not `j`, either end the
     /// string's own when it was left out.
     Slice { base: Box<TExpr>, from: Box<TExpr>, to: Option<Box<TExpr>> },
+    /// `p.x` where the type of `p` was not yet known where it was written.
+    /// Which field that is cannot be said until it is, so the name is carried
+    /// until `zonk`, by which point inference has finished and the answer is
+    /// there. Nothing past the checker ever sees one.
+    FieldNamed { base: Box<TExpr>, name: String },
     /// `map_new()` — an empty table of the expression's `Map(k, v)` type.
     MapNew,
     /// `m[k] = v` — the key and the value are moved into the table.
@@ -452,6 +457,14 @@ struct Checker {
     /// Numbers the bindings `{ p | x = 9 }` needs for the value it is updating.
     /// A dot keeps them out of reach of anything a program could name.
     updates: usize,
+    /// `p.x` read before the type of `p` was known: the type it was read from,
+    /// the field name, the variable standing for the result, and where. They
+    /// are settled once the whole dependency group is inferred, which is the
+    /// first moment the answer can exist.
+    field_obligations: Vec<(Ty, String, Ty, usize)>,
+    /// Problems found in `zonk`, which walks bodies after every signature is
+    /// settled and has no way to return.
+    late_errors: std::cell::RefCell<Vec<TypeError>>,
     pending: Vec<(u32, Constraint, usize, &'static str)>,
     traits: Vec<(String, Vec<MethodInfo>)>,
     externs: HashMap<String, ExternSig>,
@@ -485,6 +498,8 @@ impl Checker {
             ctors: HashMap::new(),
             fn_index: HashMap::new(),
             updates: 0,
+            field_obligations: Vec::new(),
+            late_errors: std::cell::RefCell::new(Vec::new()),
             sigs: Vec::new(),
             subst: Vec::new(),
             pending: Vec::new(),
@@ -964,6 +979,17 @@ impl Checker {
             self.zonk_expr(&mut tfn.body, &genmap, &mut defaults);
         }
 
+        // A field whose type inference never learned. This is the annotation
+        // the old rule demanded up front, asked for now only where it is
+        // genuinely needed.
+        let late = std::mem::take(&mut *self.late_errors.borrow_mut());
+        if !late.is_empty() {
+            let mut late = late;
+            late.sort_by_key(|e| e.line);
+            late.dedup_by(|a, b| a.line == b.line && a.msg == b.msg);
+            return Err(late);
+        }
+
         // A generic impl must stay generic: if the body pinned the target's
         // type parameter to something concrete, the impl does not actually
         // cover the type constructor it claims to.
@@ -1239,6 +1265,23 @@ impl Checker {
         };
 
         // --- finalize this function's signature ---
+        // 0. Fields read before their type was known. The whole group has been
+        //    inferred by now, so this is the first moment the answer can
+        //    exist — and it has to happen before the requirements below, since
+        //    `a = p.x` followed by `a + 1` leaves a requirement on whatever
+        //    `a` is, and only this says what that is. One that still does not
+        //    resolve is left alone: it may be genuinely polymorphic, and
+        //    `zonk` says so at the end having actually looked.
+        let obligations = std::mem::take(&mut self.field_obligations);
+        for (base_ty, name, result, line) in obligations {
+            if let Ty::Adt(adt, targs) = self.resolve(&base_ty) {
+                if let Ok((_, index)) = self.settled_field(&base_ty, &name, line, "it") {
+                    let ty = subst_gen(&self.adts[adt].ctors[0].fields[index], &targs);
+                    self.unify(&ty, &result, line, "a field")?;
+                }
+            }
+        }
+
         // 1. Requirements collected while checking the body: settle the ones
         //    whose type is already known, keep the rest for step 3.
         let window: Vec<_> = self.pending[pending_start..pending_end].to_vec();
@@ -1430,6 +1473,24 @@ impl Checker {
                 self.zonk_expr(val, genmap, defaults);
             }
             TK::FieldGet { base, .. } => self.zonk_expr(base, genmap, defaults),
+            // The field can be named now. Everything the group learned is in
+            // the substitution, and the base has just been zonked with it, so
+            // if the type is ever going to be known it is known here.
+            TK::FieldNamed { base, name } => {
+                self.zonk_expr(base, genmap, defaults);
+                let name = name.clone();
+                let what = describe(base);
+                match self.settled_field(&base.ty, &name, e.line, &what) {
+                    Ok((adt, index)) => {
+                        let base = std::mem::replace(
+                            base,
+                            Box::new(TExpr { ty: Ty::Unit, line: e.line, kind: TK::MapNew }),
+                        );
+                        e.kind = TK::FieldGet { base, adt, ctor: 0, index };
+                    }
+                    Err(err) => self.late_errors.borrow_mut().push(err),
+                }
+            }
             TK::MapNew => {}
             TK::MapLen { map } | TK::MapClear { map } => self.zonk_expr(map, genmap, defaults),
             TK::MapFind { map, key: other }
@@ -2004,29 +2065,68 @@ impl Checker {
     /// One named field of a value. A type with more than one constructor has
     /// no field that is certainly there, which is the same reason a binding
     /// cannot take one apart; `match` is what asks those.
+    /// `p.x`.
+    ///
+    /// When the type of `p` is known here, this is a lookup and the answer is
+    /// a `FieldGet`. When it is not, the answer cannot exist yet — and used to
+    /// be an error demanding an annotation, which made `.x` depend on the
+    /// order the statements were written in: `a = uzak(p)` then `p.x` compiled,
+    /// and the same two lines the other way round did not, though the second
+    /// says exactly as much about `p` as the first.
+    ///
+    /// So it is deferred. The name is carried on the node and an obligation is
+    /// recorded against the type, both settled once the whole dependency group
+    /// is inferred. The annotation is still needed when inference genuinely
+    /// never learns the type — a function polymorphic in that parameter — and
+    /// that is what the error says now, at the end, having actually looked.
     fn field_of(&mut self, base: TExpr, field: &str, line: usize) -> Result<TExpr, TypeError> {
-        let (adt, targs) = match self.resolve(&base.ty) {
-            Ty::Adt(i, targs) => (i, targs),
-            // Which field `.x` is depends on which type this is, and nothing
-            // here has said yet. Inference does not work backwards from a
-            // field name — two types may both have an `x` — so this is one of
-            // the few places an annotation is not optional.
-            Ty::Var(_) => {
-                let what = match &base.kind {
-                    TK::Local(n) => format!("`{n}`"),
-                    _ => "this".to_string(),
-                };
+        if let Ty::Var(_) = self.resolve(&base.ty) {
+            let ty = self.fresh();
+            self.field_obligations.push((
+                base.ty.clone(),
+                field.to_string(),
+                ty.clone(),
+                line,
+            ));
+            return Ok(TExpr {
+                ty,
+                line,
+                kind: TK::FieldNamed { base: Box::new(base), name: field.to_string() },
+            });
+        }
+        let (adt, index) = self.settled_field(&base.ty, field, line, &describe(&base))?;
+        let targs = match self.resolve(&base.ty) {
+            Ty::Adt(_, targs) => targs,
+            _ => Vec::new(),
+        };
+        let ty = subst_gen(&self.adts[adt].ctors[0].fields[index], &targs);
+        Ok(TExpr { ty, line, kind: TK::FieldGet { base: Box::new(base), adt, ctor: 0, index } })
+    }
+
+    /// Which field `.x` is, for a type that is known. The single-constructor
+    /// rule lives here: with two, a field name does not say which.
+    fn settled_field(
+        &self,
+        base_ty: &Ty,
+        field: &str,
+        line: usize,
+        what: &str,
+    ) -> Result<(usize, usize), TypeError> {
+        let adt = match self.resolve(base_ty) {
+            Ty::Adt(i, _) => i,
+            // Inference finished and never found out. Two types may both have
+            // an `x`, and nothing here can work backwards from the name, so
+            // this is one of the few places an annotation is not optional.
+            Ty::Var(_) | Ty::Gen(_) => {
+                let name = what.trim_matches('`');
+                let name = if name == "this" { "x" } else { name };
                 return Err(TypeError::new(
                     line,
                     format!(
-                        "the type of {what} is not known here, so `.{field}` cannot say \
-                         which field it is — annotate it (`{}: SomeType`)",
-                        match &base.kind {
-                            TK::Local(n) => n.clone(),
-                            _ => "x".to_string(),
-                        }
+                        "the type of {what} is never known, so `.{field}` cannot say which \
+                         field it is — annotate it (`{name}: SomeType`)"
                     ),
-                ));
+                ))
             }
             other => {
                 return Err(TypeError::new(
@@ -2045,7 +2145,7 @@ impl Checker {
                 line,
                 format!(
                     "`{}` has more than one constructor ({}), so `.{field}` cannot say \
-                     which — `match` is how a type like this is taken apart",
+                     which field it is",
                     def.name,
                     names.join(", ")
                 ),
@@ -2064,8 +2164,7 @@ impl Checker {
                 format!("`{}` has no field `{field}` — {has}", def.name),
             ));
         };
-        let ty = subst_gen(&ctor.fields[index], &targs);
-        Ok(TExpr { ty, line, kind: TK::FieldGet { base: Box::new(base), adt, ctor: 0, index } })
+        Ok((adt, index))
     }
 
     /// `{ p | x = 9 }` — every field `p` had, with those named replaced.
@@ -3442,11 +3541,21 @@ pub fn show_signature(f: &TFn, adts: &[AdtDef]) -> String {
     s
 }
 
+/// How to speak about the thing a `.x` was read from, for an error that has to
+/// tell somebody which annotation to write.
+fn describe(e: &TExpr) -> String {
+    match &e.kind {
+        TK::Local(n) => format!("`{n}`"),
+        _ => "this".to_string(),
+    }
+}
+
 /// Applies `f` to every immediate sub-expression of a checked expression.
 /// Written here rather than beside its one user because more than one thing
 /// wants to walk a body now: codegen, and whatever is answering an editor.
 pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
     match &e.kind {
+        TK::FieldNamed { base, .. } => f(base),
         TK::Int(_) | TK::Float(_) | TK::Str(_) | TK::Bool(_) | TK::Local(_) | TK::FnRef { .. } => {}
         TK::MapNew => {}
         TK::Builtin { args, .. }

@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — a field is answered at the end, not where it was written
+
+`p.x` used to be resolved the moment it was read, so it depended on the order
+the statements were in: `a = uzak(p)` then `p.x` compiled, and the same two
+lines the other way round did not, though the second line says exactly as much
+about `p` as the first. Reordering two lines changed whether a function
+compiled.
+
+- **`.x` is deferred.** The field name is carried on the node and an obligation
+  is recorded against the type; both are settled once the whole dependency group
+  is inferred, which is the first moment the answer can exist. Settling happens
+  before the numeric and ordering requirements are discharged, since `a = p.x`
+  followed by `a + 1` leaves a requirement on whatever `a` is and only the field
+  says what that is.
+- **The annotation is still needed** where inference never learns the type — a
+  function meant to work on any record — and that is what the error says now,
+  at the end, having actually looked.
+- Record update is *not* deferred: it needs the whole field list, and the shape
+  of its expansion depends on the answer, so `{ p | x = 1 }` still wants the
+  type known where it is written.
+
 ## Unreleased — three things a match could not say
 
 - **`1 | 2 -> ...`**: arms that go the same way say so once. `lift` turns one

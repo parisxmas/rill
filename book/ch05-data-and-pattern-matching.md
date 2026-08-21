@@ -349,6 +349,23 @@ The rule about constructors is the one `.x` has, for the same reason: a field
 name only says which field when the type has a single constructor for it to
 belong to.
 
+There is one difference between them worth knowing. `p.x` is answered at the end
+of checking rather than where it is written, so it is enough that the type of
+`p` becomes known *somewhere* in the function:
+
+```rill
+fn f(p) =
+  a = p.x        # nothing has said what p is yet
+  a + uzak(p)    # this does, and that is soon enough
+```
+
+An update is not deferred like that — it needs the whole field list, and the
+shape of what it expands to depends on the answer — so `{ p | x = 1 }` still
+wants the type known where it is written. When inference never learns the type
+at all, which is the case for a function meant to work on any record, both ask
+for the annotation, and there is no way around it: two types may both have an
+`x`, and nothing can work backwards from the name.
+
 ---
 
 ## 5.9 Designing with sum types

@@ -284,6 +284,69 @@ fn string_builders_accumulate() {
     assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
 }
 
+/// `.x` used to be answered where it was written, which made it depend on the
+/// order the statements were in: reading a field before some later line pinned
+/// the type was an error, and the same two lines the other way round compiled.
+/// It is deferred now and settled once the whole dependency group is inferred.
+#[test]
+fn a_field_can_be_read_before_its_type_is_known() {
+    let head = "type Nokta\n  \
+                  Nokta(x: Int, y: Int)\n\n\
+                fn uzak(p: Nokta) = p.x + p.y\n\n";
+    // The line that says what `p` is comes after the line that reads a field.
+    let after = format!(
+        "{head}fn f(p) =\n  \
+           a = p.x\n  \
+           a + uzak(p)\n\n\
+         fn main() = println(int_to_str(f(Nokta(1, 2))))\n"
+    );
+    assert_eq!(run_source("fieldafter", &after), "4\n");
+
+    // And before, which always worked.
+    let before = format!(
+        "{head}fn f(p) =\n  \
+           a = uzak(p)\n  \
+           a + p.x\n\n\
+         fn main() = println(int_to_str(f(Nokta(1, 2))))\n"
+    );
+    assert_eq!(run_source("fieldbefore", &before), "4\n");
+}
+
+/// The annotation is still needed where inference genuinely never learns the
+/// type, and that is what the error says now — at the end, having looked.
+#[test]
+fn a_field_on_a_type_never_learned_still_asks() {
+    let src = "fn f(p) = p.x\n\n\
+               fn main() = println(\"x\")\n";
+    let err = compile_error(src);
+    assert!(
+        err.contains("the type of `p` is never known") && err.contains("`p: SomeType`"),
+        "{err}"
+    );
+}
+
+/// Deferring must not lose the ordinary complaints.
+#[test]
+fn field_errors_still_land() {
+    let two = "type Sekil\n  \
+                 Daire(r: Int)\n  \
+                 Kare(k: Int)\n\n\
+               fn f(s: Sekil) = s.r\n\n\
+               fn main() = println(int_to_str(f(Daire(1))))\n";
+    assert!(compile_error(two).contains("more than one constructor"));
+
+    let missing = "type Nokta\n  \
+                     Nokta(x: Int, y: Int)\n\n\
+                   fn f(p: Nokta) = p.z\n\n\
+                   fn main() = println(int_to_str(f(Nokta(1, 2))))\n";
+    let err = compile_error(missing);
+    assert!(err.contains("no field `z`") && err.contains("it has x, y"), "{err}");
+
+    let nofields = "fn f(n: Int) = n.x\n\n\
+                    fn main() = println(int_to_str(f(1)))\n";
+    assert!(compile_error(nofields).contains("`Int` has no fields"));
+}
+
 /// `{ p | x = 9 }` — everything `p` had, apart from these. It becomes a call
 /// to the constructor: the named fields take the new values, and every other
 /// one is read off the base. `p` itself does not change; nothing in Rill does.
