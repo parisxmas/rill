@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=300";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=300";
+import { load } from "./world.js?v=302";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=302";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=300";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "300";
+const V = "302";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -3305,7 +3305,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.draw(crystalVerts, shardCap - magCount, 0, magCount);
 
     pass.setPipeline(tracerPipe); pass.setVertexBuffer(0, bulletBuf); pass.draw(6, bulletCap);
-    pass.setPipeline(firePipe); pass.setVertexBuffer(0, fireInst); pass.draw(6 * 80, fireCap);
+    // A hundred and twenty parcels, which is what a rocket's trail wants; a
+    // meteor's own runs out at eighty and the rest come out past the end of it
+    // and are discarded. See PUFFS in fireball.wgsl.
+    pass.setPipeline(firePipe); pass.setVertexBuffer(0, fireInst); pass.draw(6 * 120, fireCap);
     // The stone goes down after the flames, not before: drawn first it sat
     // under an additive fire that simply burned it out, and the leading face —
     // the one thing that says there is something solid in there — was the part

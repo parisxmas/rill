@@ -41,8 +41,20 @@
   // the count has to go up with the length, not just the length. It is set by
   // the rate, in fact, not chosen: RATE parcels a second for TRAIL seconds is
   // how many exist, and any fewer means the far end of the trail is missing.
-  const PUFFS  = 80u;
-  const TRAIL  = 2.90;            // seconds of it behind the head
+  // A hundred and twenty, which is what a rocket needs and a crystal's fire
+  // does not: the extra forty sit past the end of a meteor's trail, come out
+  // at age one, and are discarded on their first fragment.
+  const PUFFS  = 120u;
+  const TRAIL  = 2.90;            // seconds of it behind the head, for fire
+  // A rocket's own two. It goes five times as fast, and a trail spaced by time
+  // is spaced by distance too: twenty-seven parcels a second at seventy metres
+  // a second is one every two and a half metres, drawn at two thirds of a
+  // metre across — a dotted line, which is what it looked like. Seventy a
+  // second puts one every metre, and a hundred and twenty of them reach one
+  // and seven tenths of a second back, which is a hundred and twenty metres of
+  // smoke behind the thing.
+  const RATE_R  = 70.0;
+  const TRAIL_R = 1.70;
   // What the constants below were tuned against, so that changing TRAIL moves
   // only the length and leaves the near end of the trail exactly as it was.
   const WAS    = 1.75;
@@ -96,9 +108,20 @@
     // its own drift, its own size — the whole way. Its age is real time since
     // it was made, so it grows and cools rather than inheriting the look of
     // whatever is now that far behind.
-    let slot = floor(flown * RATE) - f32(n);
-    let t = clamp(flown - slot / RATE, 0.0, TRAIL);
-    let age = t / TRAIL;
+    let rate = select(RATE, RATE_R, rocket);
+    let span = select(TRAIL, TRAIL_R, rocket);
+    let slot = floor(flown * rate) - f32(n);
+    let raw = flown - slot / rate;
+    // Past the end of this kind's trail. A meteor's runs out at eighty parcels
+    // and the draw asks for a hundred and twenty, which is what a rocket wants;
+    // the difference is sent past the far plane here rather than left to come
+    // out at age one and be discarded a fragment at a time.
+    if (raw > span) {
+      o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
+      return o;
+    }
+    let t = clamp(raw, 0.0, span);
+    let age = t / span;
     let born = slot >= 0.0;              // not made yet, at the start of a shot
 
     // Three numbers that belong to this parcel and to no other.
@@ -181,7 +204,12 @@
     // the square it used to be: squared was indistinguishable over 1.75 seconds
     // and reaches three-metre puffs over 2.9, which is a cloud, not a trail.
     let old = t / WAS;
-    let size = BALL * (0.55 + 1.7 * old + 0.45 * max(1.0 - old, 0.0)) * (0.72 + 0.55 * hC);
+    // Half again as big for a rocket, and it has to be: the puffs are a metre
+    // apart at that speed and anything smaller than that is a row of beads
+    // rather than a column of smoke. A motor also makes a great deal more of
+    // it than a stone dragging through the air does.
+    let fat = select(1.0, 1.75, rocket);
+    let size = BALL * fat * (0.55 + 1.7 * old + 0.45 * max(1.0 - old, 0.0)) * (0.72 + 0.55 * hC);
 
     let yaw = u.cam.x; let pitch = u.cam.y;
     let cp = cos(pitch);
@@ -262,7 +290,11 @@
     // opaque; one out at the shoulder is half that; one behind the stone is
     // just the trail, and gets none of it.
     let hot = pow(clamp(1.0 - v.secs / WAS, 0.0, 1.0), 4.0) + v.windward * v.windward * 1.6;
-    let cover = clamp(glow * v.fade * mix(0.95, 0.34, smoke) * (1.0 + 0.7 * v.windward),
+    // A third of a pixel each is right for a meteor's wake, which is thin soot
+    // seen against the sky. A motor lays down something you are meant to follow
+    // across a valley, so a rocket's parcels claim two thirds.
+    let thick = mix(0.34, 0.66, v.rocket);
+    let cover = clamp(glow * v.fade * mix(0.95, thick, smoke) * (1.0 + 0.7 * v.windward),
                       0.0, 1.0) * clear;
     return vec4f(col * (0.6 + 2.4 * hot) * cover, cover);
   }

@@ -878,9 +878,18 @@
   // agree with it exactly: the two meshes came out of one file and the rocket
   // was authored sitting in the muzzle, so drawing it through the same
   // transform puts it where the artist had it and nothing has to be measured.
-  const RPG_AT    = vec3f(0.048, -0.105, 0.30);
-  const RPG_YAW   = -0.13;
-  const RPG_PITCH =  0.045;
+  const RPG_AT    = vec3f(0.062, -0.098, 0.30);
+  // Very nearly along the view axis, and that is the point. A rifle may sit at
+  // an angle because you are looking down its sights and its barrel is thin;
+  // a launcher is a metre and two thirds of tube and its axis is the most
+  // obvious line on the screen. At seven degrees off — which is where this
+  // was — the tube pointed five metres wide of where the rocket went at forty,
+  // and the smoke came out of somewhere the weapon plainly was not aimed. The
+  // rocket leaves along the eye's own axis, because that is the one thing the
+  // browser and the server can both agree on without measuring a viewmodel, so
+  // the tube is what has to come to it.
+  const RPG_YAW   = -0.03;
+  const RPG_PITCH =  0.0;
   const RPG_ROLL  = -0.05;
   const RPG_SCALE = 0.26;
 

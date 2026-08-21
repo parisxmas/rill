@@ -540,6 +540,15 @@ Raising the launcher costs a third of a second rather than a whole reload. It
 was a whole reload, and you stood there with a visibly empty tube having
 changed weapons rather than fired.
 
+The trail is spaced by time, which for a crystal's fire at fourteen metres a
+second puts a parcel every half metre and reads as smoke. The same twenty-seven
+a second behind a rocket at seventy is one every two and a half metres, drawn
+two thirds of a metre across — a dotted line. A rocket makes seventy a second
+instead, three quarters again as big, and twice as opaque, over a hundred and
+twenty parcels rather than eighty: one every metre for a hundred and twenty
+metres. The extra forty are past the end of a meteor's own trail and are sent
+past the far plane rather than drawn.
+
 Seventy metres a second against the crystals' fourteen, which is eight tenths
 of a metre of drop at fifty and three and a third at a hundred: a weapon you
 lead with at range and point at anything close. Three in the tube, filled by
