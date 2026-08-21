@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=330";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=330";
+import { load } from "./world.js?v=331";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=331";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=330";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "330";
+const V = "331";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1848,6 +1848,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       else if (e.kind === "y") E.put_fell(world, BigInt(n[0]));
       // And every pine already down, one frame at the door.
       else if (e.kind === "pines") for (const i of e.n) E.put_fell(world, BigInt(i));
+      // A crystal bit somebody. Applying it moves the ring and the counter,
+      // and the watcher in the frame loop draws the light and plays the sound
+      // from there — the same road a bite this world decided takes.
+      else if (e.kind === "z") E.put_zap(world, BigInt(n[0]), BigInt(n[1]));
       // The wall's whole history, one line at the door: every stone broken
       // before this client arrived. Each lands exactly where it did for
       // everybody else, because the resting place is computed from the index.
