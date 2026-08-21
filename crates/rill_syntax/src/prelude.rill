@@ -213,6 +213,110 @@ fn trim(s) =
   b = trim_to(s, str_len(s))
   if a < b then str_sub(s, a, b - a) else ""
 
+# -- characters, where a byte is not one ------------------------------------
+#
+# `#s`, `s[i]` and `s[i:j]` are bytes and stay bytes. A lexer wants bytes, a
+# wire protocol wants bytes, and the compiler that compiles this file is one of
+# them: changing what `#` means would change what every one of them counts.
+#
+# What bytes are not is characters. "günaydın" is ten bytes and eight letters,
+# and `s[0:2]` cuts the ü in half and hands back something that is not text at
+# all. So the characters live here, on top of the bytes, and say so in their
+# names. UTF-8 is self-describing — the top bits of a byte say whether it
+# begins a character and how many bytes that character takes — so none of this
+# needs anything the runtime does not already have.
+#
+# All of it walks, because UTF-8 gives no other way to find the nth character.
+# For a name or a line of a menu that is nothing; for a loop over a long string
+# use `char_decode` and `char_wide` together, which step through byte offsets
+# without counting from the beginning each time.
+
+# How many bytes the character beginning with this byte takes. A continuation
+# byte does not begin one; it counts as a single byte so that a walk over
+# malformed input keeps moving instead of standing still forever.
+fn char_wide(b) =
+  if b < 128 then 1 else if b < 192 then 1 else if b < 224 then 2 else if b < 240 then 3 else 4
+
+# One continuation byte's six bits.
+fn char_cont(s, at) = str_get(s, at) - 128
+
+# The character at a byte offset, as a codepoint. A character that runs off the
+# end of the string is truncated rather than whole, and what comes back is the
+# byte itself: enough to tell that something is wrong, and it cannot read past
+# the end to find out what.
+fn char_decode(s, at) =
+  b = str_get(s, at)
+  w = char_wide(b)
+  if at + w > str_len(s) then b else if w == 1 then b else if w == 2 then (b - 192) * 64 + char_cont(s, at + 1) else if w == 3 then (b - 224) * 4096 + char_cont(s, at + 1) * 64 + char_cont(s, at + 2) else (b - 240) * 262144 + char_cont(s, at + 1) * 4096 + char_cont(s, at + 2) * 64 + char_cont(s, at + 3)
+
+# The byte offset n characters on from a byte offset, stopping at the end.
+fn char_walk(s, n, at) =
+  if n <= 0 || at >= str_len(s) then at else char_walk(s, n - 1, at + char_wide(str_get(s, at)))
+
+# Where the ith character starts, in bytes.
+fn char_offset(s, i) = char_walk(s, i, 0)
+
+# How many characters, as against how many bytes.
+fn char_count(s) = char_count_from(s, 0, 0)
+
+fn char_count_from(s, at, n) =
+  if at >= str_len(s) then n else char_count_from(s, at + char_wide(str_get(s, at)), n + 1)
+
+# The ith character.
+fn char_at(s, i) = char_decode(s, char_offset(s, i))
+
+# `n` characters from character `i`, in the shape `str_sub` has: a start and a
+# count rather than two ends.
+fn char_sub(s, i, n) =
+  a = char_offset(s, i)
+  str_sub(s, a, char_walk(s, n, a) - a)
+
+# The first `n` characters — a name that has to fit a field. Cutting by bytes
+# is the thing that corrupts it, because the cut lands inside a character.
+fn char_take(s, n) = char_sub(s, 0, n)
+
+fn char_drop(s, n) =
+  a = char_offset(s, n)
+  str_sub(s, a, str_len(s) - a)
+
+# Every character, in order.
+fn chars(s) = reverse(chars_onto(s, 0, Nil))
+
+fn chars_onto(s, at, acc) =
+  if at >= str_len(s) then acc else chars_onto(s, at + char_wide(str_get(s, at)), Cons(char_decode(s, at), acc))
+
+# A codepoint as the one to four bytes UTF-8 spells it with. `chr` is not this
+# and is not meant to be: it writes a low byte and nothing else, which is right
+# for building bytes and wrong for every character above 127.
+fn from_char(c) = strbuf_str(char_onto(strbuf(), c))
+
+fn char_onto(b, c) =
+  if c < 128 then
+    strbuf_byte(b, c)
+    b
+  else if c < 2048 then
+    strbuf_byte(b, 192 + c / 64)
+    strbuf_byte(b, 128 + c % 64)
+    b
+  else if c < 65536 then
+    strbuf_byte(b, 224 + c / 4096)
+    strbuf_byte(b, 128 + c / 64 % 64)
+    strbuf_byte(b, 128 + c % 64)
+    b
+  else
+    strbuf_byte(b, 240 + c / 262144)
+    strbuf_byte(b, 128 + c / 4096 % 64)
+    strbuf_byte(b, 128 + c / 64 % 64)
+    strbuf_byte(b, 128 + c % 64)
+    b
+
+fn from_chars(cs) = strbuf_str(chars_into(strbuf(), cs))
+
+fn chars_into(b, cs) =
+  match cs
+    Nil -> b
+    Cons(c, rest) -> chars_into(char_onto(b, c), rest)
+
 # -- process and file IO (shaping the raw builtins) --------------------------
 
 fn args_from(i, acc) = if i < 0 then acc else args_from(i - 1, Cons(arg(i), acc))

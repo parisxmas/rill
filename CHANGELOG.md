@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — a byte is not a character
+
+`#s` is ten for `"günaydın"`, which is eight letters, and `s[0:2]` cut the `ü`
+in half and handed back something that was not text. Bytes were all there were.
+
+- **A character layer in the prelude**: `char_count`, `char_at`, `char_sub`,
+  `char_take`, `char_drop`, `chars`, `from_char`, `from_chars`, and
+  `char_decode` / `char_wide` / `char_offset` for stepping through byte offsets
+  without counting from the start each time.
+- **`#s`, `s[i]` and `s[i:j]` still mean bytes**, deliberately. A lexer wants
+  bytes and a wire protocol wants bytes, and the compiler that compiles the
+  prelude is one of them: changing what `#` counts would change what all of
+  them count. The characters say what they are in their names instead.
+- **`from_char` spells a codepoint in UTF-8**, one to four bytes. `chr` writes a
+  single low byte and still does — right for building bytes, wrong for every
+  character past 127.
+- Written in Rill on top of `str_get` and `str_sub`, so the runtime is
+  unchanged; malformed input terminates and never reads past the end of the
+  string; and nothing that does not call it pays for it — a wasm build of the
+  valley came out byte-identical.
+
 ## Unreleased — a tail call is a jump, and now it is a promise
 
 The valley server segfaulted three times in two hours, disconnecting everybody

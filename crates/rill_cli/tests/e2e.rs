@@ -272,6 +272,54 @@ fn string_builders_accumulate() {
     assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
 }
 
+/// A byte is not a character. `#s` counts bytes and stays counting bytes —
+/// a lexer wants that, and so does the compiler that compiles the prelude —
+/// so the characters are their own layer on top, and the point of it is that
+/// cutting a string no longer lands in the middle of one.
+#[test]
+fn characters_are_not_bytes() {
+    let src = "fn main() =\n  \
+                 s = \"günaydın\"\n  \
+                 println(#s)\n  \
+                 println(char_count(s))\n  \
+                 println(char_take(s, 2))\n  \
+                 println(char_sub(s, 3, 2))\n  \
+                 println(char_drop(s, 6))\n  \
+                 println(from_chars(chars(s)) == s)\n";
+    assert_eq!(run_source("chars", src), "10\n8\ngü\nay\nın\ntrue\n");
+}
+
+/// All four widths UTF-8 has, decoded and encoded again — and `from_char` is
+/// the one that spells a codepoint properly, which `chr` does not: `chr` writes
+/// a low byte, which is right for bytes and wrong for every character past 127.
+#[test]
+fn every_utf8_width_round_trips() {
+    let src = "fn main() =\n  \
+                 s = \"aβ✓🚀\"\n  \
+                 println(#s)\n  \
+                 println(char_count(s))\n  \
+                 println(join(map(chars(s), \\c -> int_to_str(c)), \" \"))\n  \
+                 println(from_char(97) + from_char(946) + from_char(10003) + from_char(128640))\n";
+    assert_eq!(run_source("widths", src), "10\n4\n97 946 10003 128640\naβ✓🚀\n");
+}
+
+/// Malformed input is what arrives over a socket, and none of it may hang: a
+/// string cut in the middle of a character — which is what byte slicing makes
+/// — still counts, still decodes, and never reads past its own end.
+#[test]
+fn broken_utf8_terminates() {
+    let src = "fn main() =\n  \
+                 s = \"günaydın\"\n  \
+                 broken = s[0:2]\n  \
+                 println(char_count(broken))\n  \
+                 println(char_at(broken, 1))\n  \
+                 println(char_count(\"\"))\n  \
+                 println(char_take(s, 99))\n  \
+                 println(\"[\" + char_drop(s, 99) + \"]\")\n  \
+                 println(\"[\" + char_take(s, 0 - 2) + \"]\")\n";
+    assert_eq!(run_source("broken", src), "2\n195\n0\ngünaydın\n[]\n[]\n");
+}
+
 /// `scan_int` scans a number straight out of the input buffer: no line, no
 /// split, no list of strings, nothing allocated. It stops on the delimiter it
 /// finds without swallowing it, so the rest of the line is still there.

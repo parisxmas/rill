@@ -183,9 +183,48 @@ operations are byte-indexed:
 | `str_find(s, needle)` | index, or -1 |
 | `chr(byte)` | a one-byte string |
 
-"Byte-indexed" is the honest limitation: Rill 0.2 has no Unicode-aware string
-handling. ASCII text is fine; anything else needs care, and `str_len` counts
-bytes rather than characters.
+"Byte-indexed" is the truth about all of these, and it stays the truth: a lexer
+wants bytes, a wire protocol wants bytes, and the compiler that compiles the
+prelude is one of them. `#s` counts bytes, `s[i]` is a byte, `s[i:j]` cuts
+between bytes.
+
+What bytes are not is characters, and the difference shows the moment the text
+is not ASCII. `"günaydın"` is ten bytes and eight letters, so `#s` says ten, and
+`s[0:2]` cuts the `ü` in half and gives back something that is not text at all.
+
+So the characters are their own layer on top, and they say so in their names:
+
+| | |
+|---|---|
+| `char_count(s)` | how many characters |
+| `char_at(s, i)` | the `i`th character, as a codepoint |
+| `char_sub(s, i, n)` | `n` characters from character `i` |
+| `char_take(s, n)` / `char_drop(s, n)` | the first `n`, or the rest |
+| `chars(s)` | every codepoint, as a `List(Int)` |
+| `from_char(c)` / `from_chars(cs)` | back to a string |
+
+```rill
+fn main() =
+  s = "günaydın"
+  println(int_to_str(#s))              # 10 — bytes
+  println(int_to_str(char_count(s)))   # 8  — letters
+  println(char_take(s, 2))             # gü
+  println(s[0:2])                      # g<broken> — the byte cut
+```
+
+Note that `from_char` is the one that spells a codepoint properly. `chr` is not
+it and is not meant to be: `chr` writes a single low byte, which is right for
+building bytes and wrong for every character past 127.
+
+All of it walks the string, because UTF-8 gives no other way to find the `n`th
+character — a character's position is the sum of the widths before it. For a
+name or a line of a menu that costs nothing. For a loop over a long string, use
+`char_decode(s, at)` and `char_wide(b)` together: they step through byte offsets
+without counting from the beginning each time.
+
+Malformed input never hangs and never reads past the end. A string cut in the
+middle of a character — which is exactly what byte slicing makes — still counts
+and still decodes; what comes back for the broken character is the byte itself.
 
 Notice that `split` returns a `List(Str)`, so the list functions apply to it
 directly — `len(split(s, " "))` is a word count, and `join` puts it back
