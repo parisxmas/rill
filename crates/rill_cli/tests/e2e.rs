@@ -284,6 +284,79 @@ fn string_builders_accumulate() {
     assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
 }
 
+/// Every program that ships with the repository still compiles.
+///
+/// The tests around this one are all sources written inside them, which says
+/// nothing about the corpus in `book/code` and `examples` — and that corpus
+/// rots quietly. `examples/gl/hud.rill` returned a `Batch(vao, vbo)` of a type
+/// that was never declared anywhere, and called a `clampf` that only exists in
+/// a different example; the gl README tells you to run it. Nothing had
+/// compiled it in a long time.
+///
+/// What each file is, is read off the file rather than listed here, so an
+/// example added tomorrow is covered without anybody remembering to say so: a
+/// file with `export fn` is built for wasm, one with `fn main(` is built for
+/// the host, and anything else is a module and is reached through whoever
+/// imports it.
+#[test]
+fn every_example_in_the_repository_compiles() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // Two programs in the book are meant not to compile: they are what the
+    // chapter is showing. If either ever builds, the chapter is wrong.
+    let must_fail = ["book/code/ch03/mixing.rill", "book/code/ch05/missing.rill"];
+
+    let mut files = Vec::new();
+    for dir in ["book/code", "examples"] {
+        collect_rill(&root.join(dir), &mut files);
+    }
+    files.sort();
+    assert!(files.len() > 50, "found only {} sources — is the walk right?", files.len());
+
+    let out_dir = std::env::temp_dir().join(bad_name("corpus"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    let mut broken = Vec::new();
+    let mut compiled = 0;
+    for path in &files {
+        let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let src = std::fs::read_to_string(path).unwrap();
+        let wasm = src.lines().any(|l| l.starts_with("export fn"));
+        let host = src.lines().any(|l| l.starts_with("fn main("));
+        if !wasm && !host {
+            continue; // a module; its importers cover it
+        }
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rill"));
+        cmd.arg("build").arg(path).arg("-o").arg(out_dir.join("out"));
+        if wasm {
+            cmd.arg("--target").arg("wasm32-wasip1");
+        }
+        let build = cmd.output().expect("failed to spawn rill");
+        let expected_to_fail = must_fail.contains(&rel.as_str());
+        if build.status.success() == expected_to_fail {
+            let said = String::from_utf8_lossy(&build.stderr);
+            broken.push(if expected_to_fail {
+                format!("{rel}: compiled, and the book says it does not")
+            } else {
+                format!("{rel}: {}", said.lines().next().unwrap_or("(nothing said)"))
+            });
+        }
+        compiled += 1;
+    }
+    assert!(broken.is_empty(), "{} of {compiled} did not do as expected:\n{}", broken.len(), broken.join("\n"));
+}
+
+fn collect_rill(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_rill(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rill") {
+            out.push(p);
+        }
+    }
+}
+
 /// `.x` used to be answered where it was written, which made it depend on the
 /// order the statements were in: reading a field before some later line pinned
 /// the type was an error, and the same two lines the other way round compiled.

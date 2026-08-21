@@ -36,7 +36,11 @@ fn hud_quad() =
   glBufferData(gl_array_buffer(), 6 * 2 * 4, data, gl_static_draw())
   glVertexAttribPointer(0, 2, gl_float(), 0, 8, null_ptr())
   glEnableVertexAttribArray(0)
-  Batch(vao, vbo)
+  vao
+
+# Kept here rather than reached for: this file is a leaf, and the only other
+# copy in the tree belongs to a different example.
+fn clampf(x, lo, hi) = if x < lo then lo else if x > hi then hi else x
 
 fn corner(p: Buf(F32), i, x, y) =
   buf_set(p, i * 2 + 0, x)
