@@ -1,7 +1,13 @@
 # WebSocket (RFC 6455) on top of the socket builtins: the handshake, and text
-# frames in both directions. Scope is deliberate — text frames up to 64 KiB,
-# no fragmentation, no extensions — but it is the real protocol, and browsers
-# and `websocat` talk to it.
+# or binary frames in both directions. Scope is deliberate — frames up to
+# 64 KiB, no fragmentation, no extensions — but it is the real protocol, and
+# browsers and `websocat` talk to it.
+#
+# Reading does not care which kind a frame is: `ws_take` hands back the payload
+# bytes whatever the opcode, and a Rill string is a byte string. Writing says
+# which — `ws_write` sends text, `ws_write_bin` binary — because the receiver
+# on the other side is usually a browser, and a browser hands the two to its
+# page as different things.
 
 import "sha1"
 
@@ -122,12 +128,19 @@ fn unmask(body, key) =
 
   strbuf_str(b)
 
-# A frame the *server* sends: text, final, unmasked.
-fn ws_frame(text) =
-  n = str_len(text)
-  if n < 126 then chr(129) + chr(n) + text else chr(129) + chr(126) + chr(bit_and(shr(n, 8), 255)) + chr(bit_and(n, 255)) + text
+# A frame the *server* sends: final, unmasked. 129 is FIN+text, 130 FIN+binary;
+# the length walk is the same either way.
+fn ws_frame_op(op, body) =
+  n = str_len(body)
+  if n < 126 then chr(op) + chr(n) + body else chr(op) + chr(126) + chr(bit_and(shr(n, 8), 255)) + chr(bit_and(n, 255)) + body
+
+fn ws_frame(text) = ws_frame_op(129, text)
+
+fn ws_frame_bin(body) = ws_frame_op(130, body)
 
 fn ws_write(conn, text) = sock_write(conn, ws_frame(text))
+
+fn ws_write_bin(conn, body) = sock_write(conn, ws_frame_bin(body))
 
 fn ws_close(conn) =
   sock_write(conn, chr(136) + chr(0))
@@ -138,6 +151,9 @@ fn ws_close(conn) =
 # Clients must mask; a fixed key is fine, the point is XOR not secrecy.
 fn client_frame(text) =
   chr(129) + chr(bit_or(128, str_len(text))) + "abcd" + unmask(text, "abcd")
+
+fn client_frame_bin(body) =
+  chr(130) + chr(bit_or(128, str_len(body))) + "abcd" + unmask(body, "abcd")
 
 fn ws_handshake_request(host, path) =
   "GET " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n" + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" + "Sec-WebSocket-Version: 13\r\n\r\n"

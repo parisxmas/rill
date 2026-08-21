@@ -1945,6 +1945,10 @@ fn break_wall_blocks(w, bb, k, x, y, z, seed) =
 
   for j in 0..wall_blocks()
     maybe_break_block(w, bb, base + j, x, y, z, seed)
+  # Only after the whole blast has had its say. Settling a column while the
+  # loop is still inside it feeds the survivors downward into the blast sphere
+  # one course at a time, and one rocket eats the column to the top.
+  settle_wall(w, bb, base)
   0
 
 fn maybe_break_block(w, bb, i, x, y, z, seed) =
@@ -2030,6 +2034,7 @@ fn scatter_block(w, bb, i) =
   poke_f32(w, 61, to_float(k0 + 2))
   fall_to_ground(bb, i, sc)
   mark_broken(w, i)
+  settle_column(w, bb, i)
   1
 
 # What a warhead does that a stone does not, and only a warhead: a meteor comes
@@ -2397,6 +2402,48 @@ fn fall_to_ground(bb, i, sc) =
   poke_f32(bb, i * 8 + 1, height(x, z) + sc * 0.3)
   poke_f32(bb, i * 8 + 2, z)
   poke_f32(bb, i * 8 + 3, sc * 0.8)
+  1
+
+# What still stands, stands on something. A blast takes the middle out of a
+# column and the stones above it kept their height — hanging in the air where
+# the wall used to be under them. So after every break the column packs down:
+# each unbroken stone drops to sit on however many unbroken stones are left
+# below it, on the ground if there are none.
+#
+# Same rule the rubble obeys: computable from the broken set alone. A client is
+# told which stones went and nothing else, so where the survivors settle has to
+# fall out of that — count the standing courses below, multiply by the course
+# height — and a late joiner replaying an hour of `w <i>` ends at the same wall
+# as everyone who watched it come down. It also makes the settling idempotent:
+# a blast that takes three stones out of one column settles it three times and
+# the last word is the same as the first.
+fn settle_wall(w, bb, base) =
+  for j in 0..wall_arm_max() * 2
+    settle_column(w, bb, base + j * wall_tall())
+  1
+
+fn settle_column(w, bb, i) =
+  c = i - i % wall_tall()
+
+  for k in 0..wall_tall()
+    settle_block(w, bb, c, k)
+  1
+
+# Broken stones are rubble and lie where `fall_to_ground` put them; a slot an
+# arm never filled has size nought and is nobody's to move. Only what stands
+# settles.
+fn settle_block(w, bb, c, k) =
+  if block_broken(w, c + k) > 0 then 0 else if block_live(bb, c + k) then drop_to_course(bb, c + k, standing_below(w, c, k, 0)) else 0
+
+fn stands(w, i) = if block_broken(w, i) > 0 then 0 else 1
+
+fn standing_below(w, c, k, n) =
+  if k <= 0 then n else standing_below(w, c, k - 1, n + stands(w, c + k - 1))
+
+fn drop_to_course(bb, i, r) =
+  x = block_f(bb, i, 0)
+  z = block_f(bb, i, 2)
+  poke_f32(bb, i * 8 + 1, height(x, z) + block_size() * (0.5 + to_float(r)))
   1
 
 fn fill_chunk(cs, x, y, z, sc, r, g, b) =

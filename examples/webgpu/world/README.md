@@ -127,12 +127,18 @@ after it and never inside one. Twenty ticks a second, with `sleep_ms` parking
 the ticker rather than holding a worker; the deadline is carried rather than
 recomputed, so a tick that woke up late is followed by one that sleeps less.
 
-What goes over the wire is text, and deliberately: the whole exchange is
-legible in a terminal with `websocat`, which was worth more while it was being
-got right than the bytes were. Twenty times a second every client is told the
-world clock, where the shark is, and where everybody stands; and as they
-happen, every round fired, every fireball thrown, every crater and every
-crystal that came apart. Those events are not recorded twice — each of those
+What goes over the wire is binary: one message per frame, little-endian, and
+the first byte says which message it is. It was text while the protocol was
+being got right — the whole exchange legible in a terminal with `websocat`,
+which was worth more than the bytes were — and the binary kept the letters as
+its opcodes when it took over, so a hexdump still reads: a snapshot still
+starts with an `s`. The layouts live in one place, the "bytes on the wire"
+section of `server.rill`, and `net.js` mirrors them field for field. A
+snapshot is 31 bytes and 37 a player against roughly 70 and 70 as text, and
+neither end pays for `float_to_str` or the parse back. Twenty times a second
+every client is told the world clock, where the shark is, and where everybody
+stands; and as they happen, every round fired, every fireball thrown, every
+crater and every crystal that came apart. Those events are not recorded twice — each of those
 things already lives in a ring with a cursor that counts up, so what a client
 has not been told is exactly the difference between the cursor now and the
 cursor at the start of the tick.

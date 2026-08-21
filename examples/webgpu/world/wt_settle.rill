@@ -1,0 +1,93 @@
+# A wt-style native run for the walls: blast the foot of one column and check
+# that nothing above the hole is left hanging in the air. Every stone still
+# standing must sit at exactly the course its rank among the survivors says,
+# starting on the ground — the rule `settle_column` promises.
+import "valley" as v
+
+extern fn sqrt(x: Float) -> Float
+
+fn tall() = 8
+
+# The first column of the first wall that was actually laid.
+fn first_base(w) = 0
+
+fn col_x(bb) = peek_f32(bb, 0)
+
+fn col_z(bb) = peek_f32(bb, 2)
+
+fn standing(w, i) = if v.block_broken(w, i) > 0 then 0 else 1
+
+fn count_standing(w, c) = count_up(w, c, 0, 0)
+
+fn count_up(w, c, k, n) = if k >= tall() then n else count_up(w, c, k + 1, n + standing(w, c + k))
+
+# The worst offence: a standing stone whose height over the ground is more
+# courses up than there are standing stones below it — a floater.
+fn floaters(w, bb, c) = float_up(w, bb, c, 0, 0)
+
+fn float_up(w, bb, c, k, n) =
+  if k >= tall() then n else float_up(w, bb, c, k + 1, n + floats(w, bb, c, k))
+
+# A slot the arm never filled has size nought: not a stone, not a floater.
+fn floats(w, bb, c, k) =
+  if v.block_broken(w, c + k) > 0 then 0 else if peek_f32(bb, (c + k) * 8 + 3) < 0.01 then 0 else floats_where(w, bb, c + k, below(w, c, k, 0))
+
+fn below(w, c, k, n) = if k <= 0 then n else below(w, c, k - 1, n + standing(w, c + k - 1))
+
+fn floats_where(w, bb, i, r) =
+  x = peek_f32(bb, i * 8)
+  z = peek_f32(bb, i * 8 + 2)
+  y = peek_f32(bb, i * 8 + 1)
+  want = v.height(x, z) + 0.3 * (0.5 + to_float(r))
+  if y - want > 0.01 || want - y > 0.01 then 1 else 0
+
+# Every column of the whole valley, not just the one that was shot at: a
+# blast reaches sideways into the neighbours too.
+fn all_floaters(w, bb) = wf_up(w, bb, 0, 0)
+
+fn wf_up(w, bb, c, n) =
+  if c >= v.block_count(w) then n else wf_up(w, bb, c + tall(), n + floaters(w, bb, c))
+
+# The survivors must stand in the same place in both valleys, to the float.
+fn same_wall(w, bb, bb2, c) = same_up(w, bb, bb2, c, 0)
+
+fn same_up(w, bb, bb2, c, k) =
+  if k >= tall() then 1 else if same_one(w, bb, bb2, c + k) > 0 then same_up(w, bb, bb2, c, k + 1) else 0
+
+fn same_one(w, bb, bb2, i) =
+  if v.block_broken(w, i) > 0 then 1 else if peek_f32(bb, i * 8 + 1) == peek_f32(bb2, i * 8 + 1) then 1 else 0
+
+fn main() =
+  w = v.init(48, 400, 300, 900)
+  bb = v.blocks_ptr(w)
+  n = v.block_count(w)
+  println("blocks laid: " + int_to_str(n))
+  c = first_base(w)
+  x = col_x(bb)
+  z = col_z(bb)
+  g = v.height(x, z)
+  println("column stands " + int_to_str(count_standing(w, c)) + " tall, floaters in the valley: " + int_to_str(all_floaters(w, bb)))
+
+  # A warhead against the foot of the column. Negative seed is what a rocket
+  # sends; a positive one is a meteor and leaves the stone alone.
+  v.break_blocks(w, x, g + 0.3, z, 0.0 - 1.0)
+  println("after the blast it stands " + int_to_str(count_standing(w, c)) + ", floaters in the valley: " + int_to_str(all_floaters(w, bb)))
+
+  # The late joiner's path, taken at half time: a fresh valley told only which
+  # stones went must end with the same wall — same survivors, same heights.
+  w2 = v.init(48, 400, 300, 900)
+  replay(w, w2, 0)
+  bb2 = v.blocks_ptr(w2)
+  println("replayed valley stands " + int_to_str(count_standing(w2, c)) + ", floaters: " + int_to_str(all_floaters(w2, bb2)) + ", same wall: " + int_to_str(same_wall(w, bb, bb2, c)))
+
+  # And again, higher, to knock a new hole under whatever settled.
+  v.break_blocks(w, x, g + 0.9, z, 0.0 - 2.0)
+  println("after the second it stands " + int_to_str(count_standing(w, c)) + ", floaters in the valley: " + int_to_str(all_floaters(w, bb)))
+  println("done")
+
+fn replay(w, w2, k) =
+  if k >= v.blocks_gone(w) then 0 else replay_one(w, w2, k)
+
+fn replay_one(w, w2, k) =
+  v.drop_block(w2, v.block_which(w, k))
+  replay(w, w2, k + 1)

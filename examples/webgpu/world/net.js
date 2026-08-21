@@ -1,39 +1,51 @@
 // The connection to a valley somebody else is running.
 //
 // This file knows nothing about drawing and nothing about wasm. It opens the
-// socket, turns the server's lines into calls, and turns key presses back into
-// lines — so the renderer can be read without the protocol in it, and the
-// protocol can be read without the renderer.
+// socket, turns the server's frames into calls, and turns key presses back
+// into frames — so the renderer can be read without the protocol in it, and
+// the protocol can be read without the renderer.
 //
-// The protocol is text, one message per frame, numbers separated by spaces.
-// That is not the cheapest thing it could be and it is deliberate: the whole
-// exchange is legible in a terminal with `websocat`, which is worth more
-// during the week you are getting it right than the bytes are. A valley with
-// eight people in it is under three kilobytes a second either way.
+// The protocol is binary: one message per frame, little-endian, first byte
+// says which message. The byte is the letter the old text protocol used, so a
+// hexdump of the wire still reads — a snapshot still starts with an `s`. The
+// layouts live in one place, `server.rill`'s "bytes on the wire" section, and
+// this file mirrors them exactly:
 //
-//   in     hello <id> <pines> <crystals> <grass> <clock> <token>
-//          gone <i>...                     crystals already shot
-//          s <clock> <shark x y z heading mode> | <id x y z yaw pitch health pose hit shot seen ammo>...
-//          r <x y z vx vy vz owner>        a round left somebody's rifle
-//          t <x y z vx vy vz seed life>    a crystal threw
-//          k <x y z seed>                  one landed
-//          b <i>                           crystal i came apart
-//          m <i> <times>                   ammunition box i has been taken
-//                                          that many times, which is where
-//                                          it is — sent once each at the
-//                                          door, and after that when one moves
-//          x <who> <by whom> <how much> <down>   a round found somebody
+//   in     h  u16 id, u32 pines, u32 crystals, u32 grass, f32 clock, token…
+//          g  u16 crystal indices    crystals already shot
+//          W  u16 stone indices      stones already broken
+//          s  f32 clock, f32 shark x y z heading mode, u8 phase, f32 left,
+//             u8 count, then 37 bytes a player: u16 id, f32 x y z yaw pitch
+//             health, u8 pose, u16 hit, u16 shot, u8 seen, i8 ammo,
+//             u16 kills, u16 deaths
+//          r  f32 ×7                 a round left somebody's rifle
+//          t  f32 ×8                 a crystal threw
+//          k  f32 ×4                 one landed
+//          b  u16                    crystal i came apart
+//          w  u16                    stone i left a wall
+//          d  u16                    a meteor was shot out of the air
+//          m  u8 box, u32 times     where a box of ammunition is, as a count
+//          x  u16 who, u16 by whom, f32 how much, u8 down
+//          u  u16 id, name…          what to call somebody
+//          p  the ping token, straight back
+//          n  the words of a refusal
 //
-//          who <id> <name>                 what to call somebody
+//   out    n  name…                  what to call this one
+//          i  u8 keys, f32 yaw, f32 pitch — and the eighth bit of keys is
+//             not a key, it is which weapon is up
+//          f  f32 dx dy dz           and where they just fired
 //
-//   out    n <name>                        what to call this one
-//          i <keys> <yaw> <pitch>          what this player is doing — and the
-//                                          eighth bit of <keys> is not a key,
-//                                          it is which weapon is up
-//          f <dx> <dy> <dz>                and where they just fired
-//
-// A name is sent once and comes back as a `who`, rather than riding in every
+// A name is sent once and comes back as a `u`, rather than riding in every
 // snapshot: it changes about as often as a person arrives.
+
+const OP = {
+  hello: 104, no: 110, gone: 103, wall: 87, mag: 109, who: 117, pong: 112,
+  snap: 115, round: 114, thrown: 116, crater: 107, hurt: 120,
+  downed: 100, stone: 119, broke: 98,
+  input: 105, fire: 102, name: 110, ping: 112,
+};
+
+const utf8 = { enc: new TextEncoder(), dec: new TextDecoder() };
 
 export function join(url, name) {
   const sock = new WebSocket(url);
@@ -66,29 +78,42 @@ export function join(url, name) {
     // Round trip to the hub and back, in milliseconds, smoothed. Null until
     // the first one comes home. See the ping below for what it is measuring.
     ping: null,
-    send(line) { if (sock.readyState === 1) sock.send(line); },
+    send(buf) { if (sock.readyState === 1) sock.send(buf); },
     input(keys, yaw, pitch) {
       look = [yaw, pitch];
-      net.send(`i ${keys} ${yaw.toFixed(4)} ${pitch.toFixed(4)}`);
+      const dv = new DataView(new ArrayBuffer(10));
+      dv.setUint8(0, OP.input);
+      dv.setUint8(1, keys);
+      dv.setFloat32(2, yaw, true);
+      dv.setFloat32(6, pitch, true);
+      net.send(dv.buffer);
     },
-    fired(dx, dy, dz) { net.send(`f ${dx.toFixed(4)} ${dy.toFixed(4)} ${dz.toFixed(4)}`); },
+    fired(dx, dy, dz) { net.send(floats(OP.fire, [dx, dy, dz])); },
     take() { const e = net.events; net.events = []; return e; },
     close() { sock.close(); },
   };
 
-  sock.addEventListener("open", () => { if (name) net.send(`n ${name}`); });
+  sock.addEventListener("open", () => {
+    if (!name) return;
+    const bytes = utf8.enc.encode(name);
+    const out = new Uint8Array(1 + bytes.length);
+    out[0] = OP.name;
+    out.set(bytes, 1);
+    net.send(out.buffer);
+  });
 
   sock.addEventListener("message", (ev) => {
-    const line = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data);
-    const sp = line.indexOf(" ");
-    const kind = sp < 0 ? line : line.slice(0, sp);
-    if (kind === "s") { snapshot(net, line); return; }
-    if (kind === "hello") { hello(net, line, ready); return; }
-    if (kind === "gone") { net.events.push({ kind: "gone", which: nums(line, 1) }); return; }
-    if (kind === "who") { const p = line.split(" "); net.names.set(+p[1], p[2] ?? ""); return; }
-    if (kind === "p") {
-      const sent = +line.slice(sp + 1);
-      const rtt = performance.now() - sent;
+    // This wire is binary; a text frame on it is not ours to guess about.
+    if (typeof ev.data === "string") return;
+    const dv = new DataView(ev.data);
+    const op = dv.getUint8(0);
+    if (op === OP.snap) { snapshot(net, dv); return; }
+    if (op === OP.hello) { hello(net, dv, ready); return; }
+    if (op === OP.gone) { net.events.push({ kind: "gone", which: u16s(dv, 1) }); return; }
+    if (op === OP.wall) { net.events.push({ kind: "wall", n: u16s(dv, 1) }); return; }
+    if (op === OP.who) { net.names.set(dv.getUint16(1, true), text(dv, 3)); return; }
+    if (op === OP.pong) {
+      const rtt = performance.now() - dv.getFloat64(1, true);
       // A quarter weight on each new one. Enough to show a link going bad
       // within a couple of seconds and not so much that one late packet
       // behind a scheduler makes the number jump about while it is read.
@@ -96,15 +121,13 @@ export function join(url, name) {
       return;
     }
     // A refusal, and the only one the server sends: there is no room. What
-    // arrives is protocol — `no the valley is full` — and the person who just
-    // clicked join is not reading protocol, so it becomes a sentence here
-    // rather than being shown as the line it came in on. Anything else the
-    // server ever refuses with is passed through with its `no ` taken off,
-    // which is worse to read than a written answer and better than nothing.
-    if (kind === "no") {
-      const why = line === "no the valley is full"
+    // arrives is protocol — the words behind an `n` — and the person who just
+    // clicked join is not reading protocol, so it becomes a sentence here.
+    if (op === OP.no) {
+      const said = text(dv, 1);
+      const why = said === "the valley is full"
         ? "the valley is full — try again in a minute"
-        : line.slice(3);
+        : said;
       const e = new Error(why);
       // Marked as the server's own answer rather than something guessed at
       // from a socket that went quiet: a page may show this to the person who
@@ -113,8 +136,19 @@ export function join(url, name) {
       failed(e);
       return;
     }
-    // r, t, k, b — one line each, applied in the order they arrived.
-    net.events.push({ kind, n: nums(line, 1) });
+    // r, t, k — a handful of floats each, applied in the order they arrived.
+    if (op === OP.round) { net.events.push({ kind: "r", n: f32s(dv, 1, 7) }); return; }
+    if (op === OP.thrown) { net.events.push({ kind: "t", n: f32s(dv, 1, 8) }); return; }
+    if (op === OP.crater) { net.events.push({ kind: "k", n: f32s(dv, 1, 4) }); return; }
+    // b, w, d — one index each.
+    if (op === OP.broke) { net.events.push({ kind: "b", n: [dv.getUint16(1, true)] }); return; }
+    if (op === OP.stone) { net.events.push({ kind: "w", n: [dv.getUint16(1, true)] }); return; }
+    if (op === OP.downed) { net.events.push({ kind: "d", n: [dv.getUint16(1, true)] }); return; }
+    if (op === OP.mag) { net.events.push({ kind: "m", n: [dv.getUint8(1), dv.getUint32(2, true)] }); return; }
+    if (op === OP.hurt) {
+      net.events.push({ kind: "x", n: [dv.getUint16(1, true), dv.getUint16(3, true), dv.getFloat32(5, true), dv.getUint8(9)] });
+      return;
+    }
   });
 
   // A heartbeat, on a timer rather than on the frame loop.
@@ -129,17 +163,22 @@ export function join(url, name) {
   // away — otherwise a tab hidden mid-stride would keep walking, because the
   // server walks from the last input it was given until it is given another.
   let look = [0, 0];
-  const beat = setInterval(() => net.send(`i 0 ${look[0].toFixed(4)} ${look[1].toFixed(4)}`), 2000);
+  const beat = setInterval(() => net.input(0, look[0], look[1]), 2000);
 
-  // The ping. The token is this browser's own clock, sent out and handed
-  // straight back, so nothing has to be remembered here and two pings in the
-  // air at once cannot be confused for each other.
+  // The ping. The token is this browser's own clock as eight bytes, sent out
+  // and handed straight back, so nothing has to be remembered here and two
+  // pings in the air at once cannot be confused for each other.
   //
   // Once a second: a round trip that is worth knowing about does not change
   // faster than that, and the reply is queued behind the ticks like everything
   // else, so asking ten times a second would measure the queue this ping
   // added.
-  const pulse = setInterval(() => net.send(`p ${Math.round(performance.now())}`), 1000);
+  const pulse = setInterval(() => {
+    const dv = new DataView(new ArrayBuffer(9));
+    dv.setUint8(0, OP.ping);
+    dv.setFloat64(1, performance.now(), true);
+    net.send(dv.buffer);
+  }, 1000);
   const stop = () => { clearInterval(beat); clearInterval(pulse); };
 
   sock.addEventListener("error", () => { stop(); net.lost = true; failed(new Error(`cannot reach ${url}`)); });
@@ -148,73 +187,94 @@ export function join(url, name) {
   return net;
 }
 
-// The first `from` words are the kind; everything after it is a number.
-function nums(line, from) {
-  const parts = line.split(" ");
+// An opcode and a run of little-endian f32s, which is most of what goes out.
+function floats(op, nums) {
+  const dv = new DataView(new ArrayBuffer(1 + nums.length * 4));
+  dv.setUint8(0, op);
+  for (let i = 0; i < nums.length; i++) dv.setFloat32(1 + i * 4, nums[i], true);
+  return dv.buffer;
+}
+
+// Every u16 from `at` to the end of the frame.
+function u16s(dv, at) {
   const out = [];
-  for (let i = from; i < parts.length; i++) out.push(+parts[i]);
+  for (let o = at; o + 2 <= dv.byteLength; o += 2) out.push(dv.getUint16(o, true));
   return out;
 }
 
-function hello(net, line, ready) {
-  const p = line.split(" ");
-  net.id = +p[1];
-  net.world = { pines: +p[2], crystals: +p[3], grass: +p[4], clock: +p[5] };
+function f32s(dv, at, count) {
+  const out = [];
+  for (let i = 0; i < count; i++) out.push(dv.getFloat32(at + i * 4, true));
+  return out;
+}
+
+// Everything from `at` to the end of the frame, as words.
+function text(dv, at) {
+  return utf8.dec.decode(new Uint8Array(dv.buffer, dv.byteOffset + at, dv.byteLength - at));
+}
+
+function hello(net, dv, ready) {
+  net.id = dv.getUint16(1, true);
+  net.world = {
+    pines: dv.getUint32(3, true),
+    crystals: dv.getUint32(7, true),
+    grass: dv.getUint32(11, true),
+    clock: dv.getFloat32(15, true),
+  };
   // Who this browser is. Sent back in the query next time, which is what makes
   // the name it took stay its own. Stored only when it looks like one of the
-  // server's — sixteen hex characters — so a line from something else cannot
+  // server's — sixteen hex characters — so a frame from something else cannot
   // put anything it likes in this browser's storage under that key.
-  const token = p[6] ?? "";
+  const token = text(dv, 19);
   if (/^[0-9a-f]{16}$/.test(token)) {
     try { localStorage.setItem("valley.who", token); } catch {}
   }
   ready(net.world);
 }
 
-// `s <clock> <shark×5> | <id x y z yaw pitch health> | ...`
-//
 // Kept as two snapshots and a time, because a twentieth of a second of stale
 // position drawn as if it were current is a walk that arrives in steps. What
 // the renderer asks for is the point between them.
-function snapshot(net, line) {
-  const [head, ...people] = line.split(" | ");
-  const h = nums(head, 1);
-  const snap = {
-    at: performance.now(),
-    clock: h[0],
-    shark: { x: h[1], y: h[2], z: h[3], heading: h[4], mode: h[5] },
-    // Which part of the round, and how many seconds of it are left. A server
-    // old enough not to send them looks like a match that never ends, which is
-    // what it is.
-    phase: h.length > 6 ? h[6] | 0 : 0,
-    left: h.length > 7 ? h[7] : null,
-    players: people.map((p) => {
-      const n = p.split(" ").map(Number);
-      // The pose is what the server says they are doing — standing, walking,
-      // running, crouching, down — rather than something guessed here from how
-      // fast the figure seems to be sliding.
-      // `hit` is how many rounds this player has landed on other people and
-      // `shot` how many they have taken. Both are the server's count: a client
-      // can see somebody flinch but has no way of knowing whose round it was.
-      // `seen` is whether this snapshot says where they are. The server works
-      // out what each player can actually look at and blanks the rest — so a
-      // zero here is not "they left", it is "there is no line to them from
-      // where you are standing", and the position fields are zeros. They stay
-      // in the roster; they are simply not drawn. Older servers do not send
-      // it, and everybody being visible is the right reading of its absence.
-      return { id: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], pitch: n[5], health: n[6],
-               pose: n[7] | 0, hit: n[8] | 0, shot: n[9] | 0,
-               seen: n.length > 10 ? n[10] !== 0 : true,
-               // Rounds left, for your own block only — everybody else's says
-               // minus one, and so does every block from a server old enough
-               // not to send it at all. Both mean the same thing here: this
-               // snapshot does not know, so do not touch the count.
-               ammo: n.length > 11 && n[11] >= 0 ? n[11] | 0 : null,
-               // What the board at the end of a round is made of.
-               kills: n.length > 12 ? n[12] | 0 : 0,
-               deaths: n.length > 13 ? n[13] | 0 : 0 };
-    }),
-  };
+function snapshot(net, dv) {
+  let o = 1;
+  const f = () => { const v = dv.getFloat32(o, true); o += 4; return v; };
+  const clock = f();
+  const shark = { x: f(), y: f(), z: f(), heading: f(), mode: f() };
+  // Which part of the round, and how many seconds of it are left.
+  const phase = dv.getUint8(o); o += 1;
+  const left = f();
+  const count = dv.getUint8(o); o += 1;
+  const players = [];
+  for (let i = 0; i < count; i++) {
+    const id = dv.getUint16(o, true); o += 2;
+    const x = f(), y = f(), z = f(), yaw = f(), pitch = f();
+    // The pose is what the server says they are doing — standing, walking,
+    // running, crouching, down — rather than something guessed here from how
+    // fast the figure seems to be sliding.
+    // `hit` is how many rounds this player has landed on other people and
+    // `shot` how many they have taken. Both are the server's count: a client
+    // can see somebody flinch but has no way of knowing whose round it was.
+    // `seen` is whether this snapshot says where they are. The server works
+    // out what each player can actually look at and blanks the rest — so a
+    // zero here is not "they left", it is "there is no line to them from
+    // where you are standing", and the position fields are zeros. They stay
+    // in the roster; they are simply not drawn.
+    const health = f();
+    const pose = dv.getUint8(o); o += 1;
+    const hit = dv.getUint16(o, true); o += 2;
+    const shot = dv.getUint16(o, true); o += 2;
+    const seen = dv.getUint8(o) !== 0; o += 1;
+    // Rounds left, for your own block only — everybody else's byte says minus
+    // one, which means the same thing null does here: this snapshot does not
+    // know, so do not touch the count.
+    const ammoRaw = dv.getInt8(o); o += 1;
+    // What the board at the end of a round is made of.
+    const kills = dv.getUint16(o, true); o += 2;
+    const deaths = dv.getUint16(o, true); o += 2;
+    players.push({ id, x, y, z, yaw, pitch, health, pose, hit, shot, seen,
+                   ammo: ammoRaw >= 0 ? ammoRaw : null, kills, deaths });
+  }
+  const snap = { at: performance.now(), clock, shark, phase, left, players };
   // How long one takes to arrive, smoothed. It is the length of the walk
   // between two of them, and one late packet should not make everybody sprint
   // to catch up — nor one early one leave them standing.

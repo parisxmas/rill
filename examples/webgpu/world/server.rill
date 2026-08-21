@@ -221,7 +221,10 @@ fn take_in(w, conns, out, token) =
   if is_null(s) then refuse(conns, out) else welcome(w, conns, s, out, token)
 
 fn refuse(conns, out) =
-  send(out, "no the valley is full")
+  b = strbuf()
+  put_u8(b, op_no())
+  strbuf_add(b, "the valley is full")
+  send(out, strbuf_str(b))
   conns
 
 # What a client needs before it can draw anything: which player it is, and how
@@ -232,7 +235,7 @@ fn welcome(w, conns, s, out, token) =
   # wearing it this second — two people cannot both be `ada`, whoever owns it.
   mine = name_of(read_file_raw(who_file()), token)
   name = if str_len(mine) > 0 && !taken(conns, id, mine) then mine else called(id)
-  send(out, "hello " + int_to_str(id) + " " + int_to_str(n_pines()) + " " + int_to_str(n_crystals()) + " " + int_to_str(n_grass()) + " " + float_to_str(v.world_time(w)) + " " + token)
+  send(out, hello_msg(w, id, token))
   send(out, gone_list(w))
   send(out, stones_list(w))
   send_mags(w, out, 0)
@@ -248,8 +251,27 @@ fn welcome(w, conns, s, out, token) =
 # name anybody could have on arrival, and saying it now would announce
 # `player7` and then correct itself to `ada` a moment later.
 fn joined(conns, id, name) =
-  tell_all(conns, "who " + int_to_str(id) + " " + name)
+  tell_all(conns, who_msg(id, name))
   conns
+
+fn hello_msg(w, id, token) =
+  b = strbuf()
+  sc = alloc_bytes(8)
+  put_u8(b, op_hello())
+  put_u16(b, id)
+  put_u32(b, n_pines())
+  put_u32(b, n_crystals())
+  put_u32(b, n_grass())
+  put_f32(b, sc, v.world_time(w))
+  strbuf_add(b, token)
+  strbuf_str(b)
+
+fn who_msg(id, name) =
+  b = strbuf()
+  put_u8(b, op_who())
+  put_u16(b, id)
+  strbuf_add(b, name)
+  strbuf_str(b)
 
 # Which crystals are already gone. A break is an event from here on, but
 # somebody arriving an hour in has missed several hundred of them, and a
@@ -261,7 +283,7 @@ fn joined(conns, id, name) =
 # a function of the index, which is the whole reason it could be.
 fn stones_list(w) =
   b = strbuf()
-  strbuf_add(b, "wall")
+  put_u8(b, op_wall())
 
   for i in 0..v.block_count(w)
     if_broken(w, b, i)
@@ -272,7 +294,7 @@ fn if_broken(w, b, i) = if v.block_broken(w, i) > 0 then note_gone(b, i) else 0
 
 fn gone_list(w) =
   b = strbuf()
-  strbuf_add(b, "gone")
+  put_u8(b, op_gone())
 
   for i in 0..v.crystal_count(w)
     if_gone(w, b, i)
@@ -288,11 +310,18 @@ fn send_mags(w, out, i) =
   if i >= v.mag_count() then 0 else say_mag(w, out, i)
 
 fn say_mag(w, out, i) =
-  send(out, "m " + int_to_str(i) + " " + int_to_str(v.mag_times(w, i)))
+  send(out, mag_msg(i, v.mag_times(w, i)))
   send_mags(w, out, i + 1)
 
+fn mag_msg(i, times) =
+  b = strbuf()
+  put_u8(b, op_mag())
+  put_u8(b, i)
+  put_u32(b, times)
+  strbuf_str(b)
+
 fn note_gone(b, i) =
-  strbuf_add(b, " " + int_to_str(i))
+  put_u16(b, i)
   1
 
 fn find(conns, id) = match conns
@@ -313,6 +342,96 @@ fn conn_name(c) = match c
 
 fn conn_token(c) = match c
   Conn(_, _, _, _, t) -> t
+
+# ---- bytes on the wire ------------------------------------------------------
+#
+# The protocol is binary: one message per frame, little-endian, and the first
+# byte says which message it is. The byte chosen is the letter the old text
+# protocol used, so a hexdump of the wire still reads — a snapshot still
+# starts with an `s`.
+#
+# Down:  h  u16 id, u32 pines, u32 crystals, u32 grass, f32 clock, token…
+#        n  the words of a refusal
+#        g  u16 crystal indices, one per pair to the end of the frame
+#        W  u16 stone indices, likewise
+#        m  u8 box, u32 times taken
+#        u  u16 id, name…                        (the text protocol's `who`)
+#        p  the ping token, handed straight back
+#        s  f32 clock, f32 shark x y z heading mode, u8 phase, f32 left,
+#           u8 count, then 37 bytes a player: u16 id, f32 x y z yaw pitch
+#           health, u8 pose, u16 hit, u16 shot, u8 seen, i8 ammo,
+#           u16 kills, u16 deaths
+#        r  f32 x y z vx vy vz owner
+#        t  f32 x y z vx vy vz seed life
+#        k  f32 x y z seed
+#        x  u16 who, u16 by whom, f32 how much, u8 down
+#        d/w/b  u16 index
+#
+# Up:    i  u8 keys, f32 yaw, f32 pitch
+#        f  f32 dx dy dz
+#        n  the name
+#        p  the ping token
+#
+# A float travels through a scratch buffer: `poke_f32` lays the four bytes
+# down and `peek_u8` picks them back up, which moves the bit pattern and
+# nothing else. Both ends of this wire are little-endian and so is the wire.
+
+fn op_hello() = 104
+fn op_no() = 110
+fn op_gone() = 103
+fn op_wall() = 87
+fn op_mag() = 109
+fn op_who() = 117
+fn op_pong() = 112
+fn op_snap() = 115
+fn op_round() = 114
+fn op_throw() = 116
+fn op_crater() = 107
+fn op_hurt() = 120
+fn op_downed() = 100
+fn op_stone() = 119
+fn op_break() = 98
+fn op_input() = 105
+fn op_fire() = 102
+fn op_name() = 110
+fn op_ping() = 112
+
+fn put_u8(b, n) = strbuf_byte(b, bit_and(n, 255))
+
+fn put_u16(b, n) =
+  strbuf_byte(b, bit_and(n, 255))
+  strbuf_byte(b, bit_and(shr(n, 8), 255))
+
+fn put_u32(b, n) =
+  put_u16(b, n)
+  put_u16(b, shr(n, 16))
+
+fn put_f32(b, sc, v) =
+  poke_f32(sc, 0, v)
+  strbuf_byte(b, peek_u8(sc, 0))
+  strbuf_byte(b, peek_u8(sc, 1))
+  strbuf_byte(b, peek_u8(sc, 2))
+  strbuf_byte(b, peek_u8(sc, 3))
+
+fn u16_at(msg, i) = bit_or(str_get(msg, i), shl(str_get(msg, i + 1), 8))
+
+fn f32_at(msg, sc, i) =
+  poke_i8(sc, 0, str_get(msg, i))
+  poke_i8(sc, 1, str_get(msg, i + 1))
+  poke_i8(sc, 2, str_get(msg, i + 2))
+  poke_i8(sc, 3, str_get(msg, i + 3))
+  peek_f32(sc, 0)
+
+# Everything after the opcode byte, for the messages that carry words.
+fn rest_of(msg) = str_sub(msg, 1, str_len(msg) - 1)
+
+# The messages that are an opcode and one index, which is most of the ring
+# traffic: a stone, a crystal, a downed meteor.
+fn index_msg(op, i) =
+  b = strbuf()
+  put_u8(b, op)
+  put_u16(b, i)
+  strbuf_str(b)
 
 # ---- who everyone is -------------------------------------------------------
 #
@@ -407,7 +526,7 @@ fn rename(w, conns, c, id, name, book) =
   v.renamed(conn_block(c), v.world_time(w))
   remember(book, conn_token(c), name)
   next = replace(conns, id, Conn(id, conn_block(c), conn_out(c), name, conn_token(c)))
-  tell_all(next, "who " + int_to_str(id) + " " + name)
+  tell_all(next, who_msg(id, name))
   next
 
 fn replace(conns, id, c2) = match conns
@@ -432,28 +551,20 @@ fn tell_one(c, rest, line) =
 # server to get round to you.
 #
 # The token itself is never read here, only handed back. It is the client's
-# clock, and the server has no business having an opinion about it; it is
-# passed through the same cleaner a name is so that a client cannot make the
-# server emit an arbitrary line to itself.
+# clock, and the server has no business having an opinion about it. On a text
+# wire it went through the same cleaner a name did, so a client could not make
+# the server emit an arbitrary line to itself; on a binary one the token is
+# payload and nothing parses it, so the only guard it needs is a length.
 fn pong(conns, id, token) = match find(conns, id)
   None -> conns
   Some(c) -> ponged(conns, c, token)
 
 fn ponged(conns, c, token) =
-  offer(conn_out(c), "p " + str_sub(clean_token(token), 0, 20))
-  conns
-
-fn clean_token(raw) =
   b = strbuf()
-
-  for i in 0..str_len(raw)
-    keep_digit(b, raw, i)
-
-  strbuf_str(b)
-
-fn keep_digit(b, raw, i) = if is_digit(str_get(raw, i)) then took(b, str_get(raw, i)) else 0
-
-fn is_digit(c) = c >= 48 && c <= 57
+  put_u8(b, op_pong())
+  strbuf_add(b, str_sub(token, 0, 20))
+  offer(conn_out(c), strbuf_str(b))
+  conns
 
 # Everyone already here, for somebody who has just walked in.
 fn roster(conns, out) = match conns
@@ -461,7 +572,7 @@ fn roster(conns, out) = match conns
   Cons(c, rest) -> roster_one(c, rest, out)
 
 fn roster_one(c, rest, out) =
-  offer(out, "who " + int_to_str(conn_id(c)) + " " + conn_name(c))
+  offer(out, who_msg(conn_id(c), conn_name(c)))
   roster(rest, out)
 
 # An input is a look and a set of keys, and the walk is run at the tick rate
@@ -574,7 +685,7 @@ fn moved_mag(w, conns, said, i) =
 
 fn tell_moved(w, conns, said, i, now) =
   poke_i64(said, i, now)
-  broadcast(w, conns, "m " + int_to_str(i) + " " + int_to_str(now))
+  broadcast(w, conns, mag_msg(i, now))
   send_mag_moves(w, conns, said, i + 1)
 
 # Whoever is still talking. The socket is deliberately not closed here: a
@@ -620,9 +731,12 @@ fn send_shots(w, conns, from) =
 
 fn send_shot(w, conns, k) =
   b = strbuf()
-  strbuf_add(b, "r " + float_to_str(v.bullet_f(w, k, 0)) + " " + float_to_str(v.bullet_f(w, k, 1)) + " " + float_to_str(v.bullet_f(w, k, 2)))
-  strbuf_add(b, " " + float_to_str(v.bullet_f(w, k, 3)) + " " + float_to_str(v.bullet_f(w, k, 4)) + " " + float_to_str(v.bullet_f(w, k, 5)))
-  strbuf_add(b, " " + float_to_str(v.bullet_f(w, k, 6)))
+  sc = alloc_bytes(8)
+  put_u8(b, op_round())
+
+  for j in 0..7
+    put_f32(b, sc, v.bullet_f(w, k, j))
+
   broadcast(w, conns, strbuf_str(b))
   send_shots(w, conns, k + 1)
 
@@ -631,9 +745,12 @@ fn send_throws(w, conns, from) =
 
 fn send_throw(w, conns, k) =
   b = strbuf()
-  strbuf_add(b, "t " + float_to_str(v.fireball_f(w, k, 0)) + " " + float_to_str(v.fireball_f(w, k, 1)) + " " + float_to_str(v.fireball_f(w, k, 2)))
-  strbuf_add(b, " " + float_to_str(v.fireball_f(w, k, 3)) + " " + float_to_str(v.fireball_f(w, k, 4)) + " " + float_to_str(v.fireball_f(w, k, 5)))
-  strbuf_add(b, " " + float_to_str(v.fireball_f(w, k, 6)) + " " + float_to_str(v.fireball_f(w, k, 7)))
+  sc = alloc_bytes(8)
+  put_u8(b, op_throw())
+
+  for j in 0..8
+    put_f32(b, sc, v.fireball_f(w, k, j))
+
   broadcast(w, conns, strbuf_str(b))
   send_throws(w, conns, k + 1)
 
@@ -642,8 +759,12 @@ fn send_craters(w, conns, from) =
 
 fn send_crater(w, conns, k) =
   b = strbuf()
-  strbuf_add(b, "k " + float_to_str(v.blast_f(w, k, 0)) + " " + float_to_str(v.blast_f(w, k, 1)) + " " + float_to_str(v.blast_f(w, k, 2)))
-  strbuf_add(b, " " + float_to_str(v.blast_f(w, k, 3)))
+  sc = alloc_bytes(8)
+  put_u8(b, op_crater())
+
+  for j in 0..4
+    put_f32(b, sc, v.blast_f(w, k, j))
+
   broadcast(w, conns, strbuf_str(b))
   send_craters(w, conns, k + 1)
 
@@ -656,8 +777,12 @@ fn send_hurts(w, conns, from) =
 
 fn send_hurt(w, conns, k) =
   b = strbuf()
-  strbuf_add(b, "x " + int_to_str(to_int(v.hurt_f(w, k, 0))) + " " + int_to_str(to_int(v.hurt_f(w, k, 1))))
-  strbuf_add(b, " " + float_to_str(v.hurt_f(w, k, 2)) + " " + int_to_str(to_int(v.hurt_f(w, k, 3))))
+  sc = alloc_bytes(8)
+  put_u8(b, op_hurt())
+  put_u16(b, to_int(v.hurt_f(w, k, 0)))
+  put_u16(b, to_int(v.hurt_f(w, k, 1)))
+  put_f32(b, sc, v.hurt_f(w, k, 2))
+  put_u8(b, to_int(v.hurt_f(w, k, 3)))
   broadcast(w, conns, strbuf_str(b))
   send_hurts(w, conns, k + 1)
 
@@ -671,21 +796,21 @@ fn send_downed(w, conns, from) =
   if from == v.fires_down(w) then 0 else send_down(w, conns, from)
 
 fn send_down(w, conns, k) =
-  broadcast(w, conns, "d " + int_to_str(v.down_which(w, k)))
+  broadcast(w, conns, index_msg(op_downed(), v.down_which(w, k)))
   send_downed(w, conns, k + 1)
 
 fn send_stones(w, conns, from) =
   if from == v.blocks_gone(w) then 0 else send_stone(w, conns, from)
 
 fn send_stone(w, conns, k) =
-  broadcast(w, conns, "w " + int_to_str(v.block_which(w, k)))
+  broadcast(w, conns, index_msg(op_stone(), v.block_which(w, k)))
   send_stones(w, conns, k + 1)
 
 fn send_breaks(w, conns, from) =
   if from == v.breaks(w) then 0 else send_break(w, conns, from)
 
 fn send_break(w, conns, k) =
-  broadcast(w, conns, "b " + int_to_str(v.break_which(w, k)))
+  broadcast(w, conns, index_msg(op_break(), v.break_which(w, k)))
   send_breaks(w, conns, k + 1)
 
 fn walk_all(conns) = match conns
@@ -743,51 +868,73 @@ fn pick_one(c, rest) =
 # nicely not to look.
 fn snapshot(w, conns, eye) =
   b = strbuf()
-  strbuf_add(b, "s " + float_to_str(v.world_time(w)))
-  strbuf_add(b, " " + float_to_str(v.shark_x(w)) + " " + float_to_str(v.shark_y(w)) + " " + float_to_str(v.shark_z(w)))
-  strbuf_add(b, " " + float_to_str(v.shark_heading(w)) + " " + float_to_str(v.shark_mode(w)))
+  sc = alloc_bytes(8)
+  put_u8(b, op_snap())
+  put_f32(b, sc, v.world_time(w))
+  put_f32(b, sc, v.shark_x(w))
+  put_f32(b, sc, v.shark_y(w))
+  put_f32(b, sc, v.shark_z(w))
+  put_f32(b, sc, v.shark_heading(w))
+  put_f32(b, sc, v.shark_mode(w))
   # Which part of the round this is, and how much of it is left. On the header
   # rather than per player: it is the same for everybody in the valley.
-  strbuf_add(b, " " + int_to_str(v.match_phase(w)) + " " + float_to_str(v.match_left(w)))
-  add_players(b, conns, eye)
+  put_u8(b, v.match_phase(w))
+  put_f32(b, sc, v.match_left(w))
+  put_u8(b, count_conns(conns, 0))
+  add_players(b, sc, conns, eye)
   strbuf_str(b)
 
-fn add_players(b, conns, eye) = match conns
-  Nil -> 0
-  Cons(c, rest) -> add_player(b, c, rest, eye)
+fn count_conns(conns, n) = match conns
+  Nil -> n
+  Cons(_, rest) -> count_conns(rest, n + 1)
 
-fn add_player(b, c, rest, eye) =
+fn add_players(b, sc, conns, eye) = match conns
+  Nil -> 0
+  Cons(c, rest) -> add_player(b, sc, c, rest, eye)
+
+fn add_player(b, sc, c, rest, eye) =
   s = conn_block(c)
   # Themselves always, and `can_see` of a block with itself would be a line of
   # length zero: two pointers are not compared here because they cannot be, so
   # it goes by the id the world gave them.
   seen = if v.player_id(s) == v.player_id(eye) then 1 else v.can_see(eye, s)
-  strbuf_add(b, " | " + int_to_str(conn_id(c)))
-  place(b, s, seen)
-  strbuf_add(b, " " + float_to_str(v.health(s)) + " " + int_to_str(pose_of(s)))
-  strbuf_add(b, " " + int_to_str(v.hits_given(s)) + " " + int_to_str(v.hits_taken(s)))
-  strbuf_add(b, " " + int_to_str(seen))
+  put_u16(b, conn_id(c))
+  place(b, sc, s, seen)
+  put_f32(b, sc, v.health(s))
+  put_u8(b, pose_of(s))
+  put_u16(b, v.hits_given(s))
+  put_u16(b, v.hits_taken(s))
+  put_u8(b, seen)
   # How many rounds are in the rifle, and only ever your own. Whether the man
   # behind the rock is reloading is the sort of thing a client should have to
-  # watch for rather than read off the wire, so everybody else's block says
+  # watch for rather than read off the wire, so everybody else's byte says
   # minus one, which is not a count and cannot be mistaken for an empty one.
-  strbuf_add(b, " " + int_to_str(if v.player_id(s) == v.player_id(eye) then v.rounds(s) else 0 - 1))
+  put_u8(b, if v.player_id(s) == v.player_id(eye) then v.rounds(s) else 0 - 1)
   # Kills and deaths, everybody's. Unlike the rifle's count these are meant to
   # be read about other people — that is what the board at the end of a round
   # is — and they are the server's to say.
-  strbuf_add(b, " " + int_to_str(v.kills(s)) + " " + int_to_str(v.deaths(s)))
-  add_players(b, rest, eye)
+  put_u16(b, v.kills(s))
+  put_u16(b, v.deaths(s))
+  add_players(b, sc, rest, eye)
 
 # Zeros where the numbers would be. Not the last place they were seen, which
 # would be a slower leak of the same thing, and not a plausible-looking guess,
 # which would put a figure where nobody is — this says nothing, and the client
 # draws nobody.
-fn place(b, s, seen) =
-  if seen == 1 then
-    strbuf_add(b, " " + float_to_str(v.player_x(s)) + " " + float_to_str(v.player_y(s)) + " " + float_to_str(v.player_z(s)))
-    strbuf_add(b, " " + float_to_str(v.player_yaw(s)) + " " + float_to_str(v.player_pitch(s)))
-  else
-    strbuf_add(b, " 0 0 0 0 0")
+fn place(b, sc, s, seen) =
+  if seen == 1 then placed(b, sc, s) else blanked(b)
+
+fn placed(b, sc, s) =
+  put_f32(b, sc, v.player_x(s))
+  put_f32(b, sc, v.player_y(s))
+  put_f32(b, sc, v.player_z(s))
+  put_f32(b, sc, v.player_yaw(s))
+  put_f32(b, sc, v.player_pitch(s))
+  0
+
+fn blanked(b) =
+  for j in 0..20
+    strbuf_byte(b, 0)
   0
 
 # What somebody looks like they are doing, for whoever has to draw them.
@@ -1081,13 +1228,12 @@ fn play(conn, inbox, token) =
   # The first thing in the outbox is the welcome, and it carries the id
   # everything else is in terms of.
   first = recv(out)
-  ws_write(conn, first)
-  parts = split(first, " ")
+  ws_write_bin(conn, first)
   # By what it is, not by reading a number out of whatever turned up. The
-  # refusal a full valley sends is words, and `str_to_int` of a word is zero —
-  # so a client that had been turned away used to decide it was player zero
-  # and start driving whoever that was.
-  if unwrap_or(nth(parts, 0), "") == "hello" then both_ways(conn, inbox, out, num_at(parts, 1)) else sock_close(conn)
+  # refusal a full valley sends is words behind an `n`, and reading an id out
+  # of words is how a client that had been turned away used to decide it was
+  # player zero and start driving whoever that was.
+  if str_len(first) >= 3 && str_get(first, 0) == op_hello() then both_ways(conn, inbox, out, u16_at(first, 1)) else sock_close(conn)
 
 fn both_ways(conn, inbox, out, id) =
   spawn writer(conn, out)
@@ -1111,7 +1257,7 @@ fn writer(conn, out) =
   if str_len(line) == 0 then 0 else keep_writing(conn, out, line)
 
 fn keep_writing(conn, out, line) =
-  if ws_write(conn, line) < 0 then 0 else writer(conn, out)
+  if ws_write_bin(conn, line) < 0 then 0 else writer(conn, out)
 
 # One frame is one message, so a read that comes back empty is the end of the
 # connection and nothing else.
@@ -1155,20 +1301,26 @@ fn hush(conn, inbox, id, until, rest) =
   reader(conn, inbox, id, heard_per_second(), now_nanos() + 1000000000, rest)
 
 fn handle_line(conn, inbox, id, budget, until, msg, rest) =
-  parts = split(msg, " ")
-  route(inbox, id, unwrap_or(nth(parts, 0), ""), parts)
+  route(inbox, id, msg)
   reader(conn, inbox, id, budget - 1, until, rest)
 
-fn route(inbox, id, kind, parts) =
-  if kind == "i" then tell(inbox, Moved(id, num_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "f" then tell(inbox, Shot(id, fnum_at(parts, 1), fnum_at(parts, 2), fnum_at(parts, 3))) else if kind == "n" then tell(inbox, Named(id, unwrap_or(nth(parts, 1), ""))) else if kind == "p" then tell(inbox, Pinged(id, unwrap_or(nth(parts, 1), ""))) else 0
+# A message shorter than its own layout is dropped whole rather than read off
+# the end of: `str_get` past the end is not a guard, the length is.
+fn route(inbox, id, msg) =
+  k = str_get(msg, 0)
+  if k == op_input() && str_len(msg) >= 10 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
+
+fn moved(inbox, id, msg) =
+  sc = alloc_bytes(8)
+  tell(inbox, Moved(id, str_get(msg, 1), f32_at(msg, sc, 2), f32_at(msg, sc, 6)))
+
+fn fired(inbox, id, msg) =
+  sc = alloc_bytes(8)
+  tell(inbox, Shot(id, f32_at(msg, sc, 1), f32_at(msg, sc, 5), f32_at(msg, sc, 9)))
 
 fn tell(inbox, m) =
   send(inbox, m)
   1
-
-fn num_at(parts, i) = str_to_int(unwrap_or(nth(parts, i), "0"))
-
-fn fnum_at(parts, i) = str_to_float(unwrap_or(nth(parts, i), "0"))
 
 # ---- and the door ----------------------------------------------------------
 
