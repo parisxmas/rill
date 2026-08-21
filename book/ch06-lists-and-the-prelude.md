@@ -203,14 +203,24 @@ So the characters are their own layer on top, and they say so in their names:
 | `chars(s)` | every codepoint, as a `List(Int)` |
 | `from_char(c)` / `from_chars(cs)` | back to a string |
 
-```rill
-fn main() =
-  s = "günaydın"
-  println(int_to_str(#s))              # 10 — bytes
-  println(int_to_str(char_count(s)))   # 8  — letters
-  println(char_take(s, 2))             # gü
-  println(s[0:2])                      # g<broken> — the byte cut
+`book/code/ch06/characters.rill` puts the two side by side:
+
 ```
+$ rill run characters.rill
+10
+g?
+8
+gü
+ay
+231 287
+üğ
+10 bytes, 4 characters
+```
+
+The first two lines are the bytes — ten of them, and a slice that cut the `ü`
+in half and produced something no terminal can print. The next three are the
+characters. The last line is `"aβ✓🚀"`, which uses all four widths UTF-8
+spells with, and is four characters in ten bytes.
 
 Note that `from_char` is the one that spells a codepoint properly. `chr` is not
 it and is not meant to be: `chr` writes a single low byte, which is right for

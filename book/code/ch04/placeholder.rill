@@ -1,0 +1,22 @@
+fn add(a, b) = a + b
+
+fn divide(a, b) = a / b
+
+fn between(lo, x, hi) = if x < lo then lo else if x > hi then hi else x
+
+fn main() =
+  # An underscore where the argument would go.
+  add_two = add(2, _)
+  println(int_to_str(add_two(5)))
+
+  # Any position, not only the last: this divides *by* two.
+  halve = divide(_, 2)
+  println(int_to_str(halve(10)))
+
+  # Two of them make a function of two arguments, in the order they were left.
+  clamp01 = between(0, _, _)
+  println(int_to_str(clamp01(7, 5)))
+
+  # Anything that is called: a builtin here, which is not a value on its own.
+  l = Cons(1, Cons(2, Cons(3, Nil)))
+  println(join(map(map(l, add(10, _)), int_to_str(_)), ", "))

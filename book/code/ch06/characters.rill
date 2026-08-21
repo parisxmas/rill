@@ -1,0 +1,15 @@
+fn main() =
+  s = "günaydın"
+  # `#s` and `s[i:j]` are bytes, and stay bytes.
+  println(int_to_str(#s))
+  println(s[0:2])
+  # The characters are their own layer on top.
+  println(int_to_str(char_count(s)))
+  println(char_take(s, 2))
+  println(char_sub(s, 3, 2))
+  # Every codepoint, and back again.
+  println(join(map(chars("çğ"), \c -> int_to_str(c)), " "))
+  println(from_chars(Cons(252, Cons(287, Nil))))
+  # All four widths UTF-8 spells with.
+  e = "aβ✓🚀"
+  println(int_to_str(#e) + " bytes, " + int_to_str(char_count(e)) + " characters")

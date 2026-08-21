@@ -325,6 +325,19 @@ equal value, built again, where the one you already had would do. Unlike `|`,
 `@` nests: `Cons(bir @ 1, _)` is a field that must be `1` and is also called
 `bir`.
 
+Both of them in one program, `book/code/ch05/alternatives.rill`:
+
+```
+$ rill run alternatives.rill
+vertical horizontal
+4
+20
+starts with 1, empty
+```
+
+The second line is a circle of radius 2 doubled; the third is one of radius 20
+handed straight back, because the guard took the `@` arm.
+
 ## 5.8 Changing one field
 
 A record with six fields, one of which you want different, is tedious to write
@@ -348,6 +361,21 @@ calls `f` once — so it is safe to update the result of a call.
 The rule about constructors is the one `.x` has, for the same reason: a field
 name only says which field when the type has a single constructor for it to
 belong to.
+
+`book/code/ch05/update.rill` shows both of those — that the original is
+untouched, and that the base is read once:
+
+```
+$ rill run update.rill
+(9, 2, a)
+(9, 2, new)
+(1, 2, a)
+built once
+(5, 0, o)
+```
+
+"built once" is printed from inside the function whose result is being updated.
+Two of that record's three fields are carried over, and it still appears once.
 
 There is one difference between them worth knowing. `p.x` is answered at the end
 of checking rather than where it is written, so it is enough that the type of

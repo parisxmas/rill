@@ -1,0 +1,18 @@
+type Point
+  Point(x: Int, y: Int, name: Str)
+
+fn render(p: Point) =
+  "(" + int_to_str(p.x) + ", " + int_to_str(p.y) + ", " + p.name + ")"
+
+fn origin(n) =
+  println("built once")
+  Point(n, n, "o")
+
+fn main() =
+  a = Point(1, 2, "a")
+  println(render({ a | x = 9 }))
+  println(render({ a | x = 9, name = "new" }))
+  # Nothing was mutated: `a` is what it always was.
+  println(render(a))
+  # The base is read once, however many fields are carried over.
+  println(render({ origin(5) | y = 0 }))

@@ -243,6 +243,16 @@ One thing you cannot do yet is call the result immediately: `add(2, _)(5)` does
 not parse, because calling what a call returned is not a shape the parser has.
 Bind it to a name first.
 
+All of it together is `book/code/ch04/placeholder.rill`:
+
+```
+$ rill run placeholder.rill
+7
+5
+5
+11, 12, 13
+```
+
 ---
 
 ## 4.6 The three combinators
