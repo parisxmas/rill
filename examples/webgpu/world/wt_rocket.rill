@@ -60,4 +60,14 @@ fn main() =
   run_ticks(w, 12)
   gone2 = v.blocks_gone(w)
   println("second rocket: " + int_to_str(gone2 - gone1) + " more stones gone" + (if gone2 > gone1 then " — good" else " — WRONG"))
+
+  # A warhead against a trunk takes the tree: blast at pine nought's foot.
+  pb = v.pines(w)
+  v.add_blast(w, peek_f32(pb, 0), peek_f32(pb, 1) + 0.5, peek_f32(pb, 2), 0.0 - 3.0)
+  println("a blast at pine 0's foot: felled " + int_to_str(v.pine_felled(w, 0)) + ", pines down " + int_to_str(v.pines_down(w)) + (if v.pine_felled(w, 0) > 0 then " — good" else " — WRONG"))
+
+  # And told to a client that had no blast of its own to work it out from.
+  w2 = v.init(48, 400, 300, 900)
+  v.put_fell(w2, v.fell_which(w, 0))
+  println("replayed: felled " + int_to_str(v.pine_felled(w2, 0)) + (if v.pine_felled(w2, 0) > 0 then " — good" else " — WRONG"))
   0

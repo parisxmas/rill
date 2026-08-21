@@ -248,6 +248,15 @@ export fn deaths(s: Ptr) -> Int = v.deaths(s)
 
 export fn blocks_gone(w: Ptr) -> Int = v.blocks_gone(w)
 
+# The pines a warhead has taken: how many, which, and the applying of one.
+export fn pines_down(w: Ptr) -> Int = v.pines_down(w)
+
+export fn fell_which(w: Ptr, k: Int) -> Int = v.fell_which(w, k)
+
+export fn put_fell(w: Ptr, i: Int) -> Int = v.put_fell(w, i)
+
+export fn pine_felled(w: Ptr, i: Int) -> Int = v.pine_felled(w, i)
+
 export fn block_broken(w: Ptr, i: Int) -> Int = v.block_broken(w, i)
 
 export fn block_which(w: Ptr, k: Int) -> Int = v.block_which(w, k)

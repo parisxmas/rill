@@ -10,14 +10,32 @@
     @location(2) ipos: vec3f, @location(3) scale: f32,
     @location(4) rot: f32, @location(5) icol: vec3f,
   ) -> VOut {
-    let c = cos(rot); let s = sin(rot);
-    var p = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * scale + ipos;
+    // A negative scale is a felled pine. The yaw slot carries the moment it
+    // fell rather than a yaw — its work was done — so the heading, like the
+    // way it lies, is hashed from where it stands, and every client lays the
+    // same tree the same way. It goes down over a second and a bit, eased,
+    // pivoting at the base.
+    let felled = scale < 0.0;
+    let sc = abs(scale);
+    let h1 = fract(sin(dot(ipos.xz, vec2f(127.1, 311.7))) * 43758.5453);
+    let yaw = select(rot, h1 * 6.28318, felled);
+    let c = cos(yaw); let s = sin(yaw);
+    var m = vec3f(pos.x * c - pos.z * s, pos.y, pos.x * s + pos.z * c) * sc;
+    var nr = vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c);
+    let k0 = clamp((u.eye.w - rot) / 1.3, 0.0, 1.0);
+    let k = select(0.0, k0 * k0 * (3.0 - 2.0 * k0), felled);
+    let fd = h1 * 251.0;
+    let ax = vec3f(-sin(fd), 0.0, cos(fd));
+    let ca = cos(k * 1.5); let sa = sin(k * 1.5);
+    m = m * ca + cross(ax, m) * sa + ax * dot(ax, m) * (1.0 - ca);
+    nr = nr * ca + cross(ax, nr) * sa + ax * dot(ax, nr) * (1.0 - ca);
+    var p = m + ipos;
     let hgt = max(pos.y, 0.0) / 3.6;
     let dirn = vec2f(cos(u.cam.z), sin(u.cam.z));
     let flutter = sin(u.wind.x * 1.6 + ipos.x * 1.31 + ipos.z * 0.97);
-    let sway = (u.cam.w * hgt * hgt * 0.45 + flutter * 0.09 * u.cam.w * hgt) * scale;
+    // A tree on the ground is out of the wind.
+    let sway = (u.cam.w * hgt * hgt * 0.45 + flutter * 0.09 * u.cam.w * hgt) * sc * (1.0 - k);
     p = vec3f(p.x + dirn.x * sway, p.y, p.z + dirn.y * sway);
-    let nr = vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c);
     var o: VOut;
     o.clip = u.vp * vec4f(p, 1.0);
     o.world = p; o.normal = nr; o.color = icol; o.uv = uv;

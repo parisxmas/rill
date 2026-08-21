@@ -362,7 +362,7 @@ fn block_size() = 0.3
 # what it is for.
 fn wall_tall() = 8
 
-fn wall_cap() = 16
+fn wall_cap() = 40
 
 # The most blocks one L can want: two arms of nineteen, eight courses high.
 fn wall_arm_max() = 26
@@ -424,20 +424,22 @@ fn block_live(bb, i) = block_f(bb, i, 3) > 0.01
 # The levelness test is unchanged and still does the real work: four samples
 # three metres out and four more at six, because a wall that starts halfway
 # down a slope has one end buried and the other in the air.
-# One point two to eight metres — the shore and the meadows, not the slopes.
-# The three-and-a-half-to-twelve band read as "in the valley" on paper and put
-# every wall inside the pine belt in practice, where a grey knee-high L among
-# four hundred trees is a thing nobody found. Below one point two is the
-# water's edge; below eight is where the crystals, the boxes and the people
-# actually are, and the shoreline is bare because the pines refuse to grow
-# under a metre — a wall there is visible from across the lake.
-# Two bands: the shore and the meadows below eight metres, and the bare flats
-# above twelve. What is skipped is the belt between them, which is where the
-# four hundred pines live — a knee-high grey L inside a forest is a thing
-# nobody finds, and nobody found them.
+#
+# No bands any more. Shore, meadow, pine belt, bare tops — a wall may stand
+# anywhere the ground is dry and level enough to take it, which is the whole
+# of the valley except the lake. The one rule left is the water: the corner
+# has to be properly above it, and so does a ring of ground an arm's reach
+# out, because an L's arms run eight metres and an arm that walks down the
+# beach into the shallows is a wall standing in the lake. A pine through the
+# middle of one is allowed and looks like what it is — a wall built round the
+# tree that was there first.
 fn good_site(x, z) =
   h = height(x, z)
-  if h < 1.2 then false else if h > 8.0 && h < 12.0 then false else level_at(x, z, h, 3.0) && level_at(x, z, h, 6.0)
+  if h < 1.6 then false else level_at(x, z, h, 3.0) && level_at(x, z, h, 6.0) && dry_at(x, z, 8.0)
+
+# The four points an arm could reach, all of them clear of the water line.
+fn dry_at(x, z, d) =
+  height(x + d, z) > 0.4 && height(x - d, z) > 0.4 && height(x, z + d) > 0.4 && height(x, z - d) > 0.4
 
 fn level_at(x, z, h, d) =
   a = absf(height(x + d, z) - h)
@@ -459,26 +461,26 @@ fn place_walls(w, bb) =
   n
 
 fn wall_try(w, bb, i, made) =
-  # Four thousand tries, not six hundred. The shore band is the slope of a
-  # bowl, and level ground there is rarer than it was on the tops — at six
-  # hundred tries the valley came up with five walls of the sixteen it wanted.
-  # This runs once, at init, and a failed try is two hashes and five heights.
-  if i >= 4000 || made >= wall_cap() then made
+  # Twelve thousand tries for forty walls, over the whole map rather than a
+  # band of it. This runs once, at init, and a failed try is two hashes and
+  # nine heights.
+  if i >= 12000 || made >= wall_cap() then made
   else
-    x = (hash2(to_float(i), 17.0) - 0.5) * 150.0
-    z = (hash2(to_float(i), 29.0) - 0.5) * 150.0
+    x = (hash2(to_float(i), 17.0) - 0.5) * 170.0
+    z = (hash2(to_float(i), 29.0) - 0.5) * 170.0
     if good_site(x, z) && far_from_walls(wall_box(w), 0, made, x, z) then wall_try(w, bb, i + 1, made + lay_wall(bb, wall_box(w), made, x, z, to_float(i))) else wall_try(w, bb, i + 1, made)
 
-# Eighteen metres from every wall already laid. Without this the first decent
+# Fifteen metres from every wall already laid. Without this the first decent
 # flat in the hash sequence collects half the walls in the valley — nine of
-# sixteen stood within a few metres of one another on the north-shore meadow,
-# a quarry where cover was wanted.
+# sixteen once stood within a few metres of one another on the north-shore
+# meadow, a quarry where cover was wanted. Fifteen rather than eighteen,
+# because forty walls have to fit where sixteen used to.
 fn far_from_walls(wb, k, made, x, z) =
   if k >= made then true
   else
     dx = peek_f32(wb, k * 4) - x
     dz = peek_f32(wb, k * 4 + 2) - z
-    if dx * dx + dz * dz < 324.0 then false else far_from_walls(wb, k + 1, made, x, z)
+    if dx * dx + dz * dz < 225.0 then false else far_from_walls(wb, k + 1, made, x, z)
 
 # One L. Two arms meeting at a corner, each a run of blocks, each run three
 # high. The turn is always a right angle — that is what makes it an L and not a
@@ -1900,6 +1902,7 @@ fn add_blast(w, x, y, z, seed) =
   poke_f32(w, 61, to_float(k0 + 18))
   warhead_debris(w, x, y, z, seed)
   smash_walls(w, x, y, z, seed)
+  fell_pines(w, x, y, z, seed)
 
 # What a warhead does to a wall. Only a warhead — a meteor landing on the tops
 # would quietly take the walls apart over an afternoon with nobody there.
@@ -1919,12 +1922,12 @@ fn add_blast(w, x, y, z, seed) =
 # an L rather than two.
 #
 # Then back up to 1.6, because 1.2 was small enough that anything but a dead
-# centre hit did nothing at all: a warhead that goes off against the foot of a
-# wall, or a hand's width wide of it, was leaving a crater in the dirt and not
-# a mark on the stone. Which reads as the wall being indestructible rather than
-# as a miss. At 1.6 a hit takes about thirty-two of a wall's three hundred, so
-# it is still ten rockets to an L.
-fn blast_stone() = 1.6
+# centre hit did nothing at all — but that was measured while the blast was
+# quietly going off metres *behind* the wall it had struck. With the burst
+# put back on the face it hit, 1.6 took thirty-plus stones a rocket and an L
+# fell in four. Half the hole: 1.15 reaches about seventeen stones — a
+# doorway, not a missing wall — and a wall is worth eight or nine rockets.
+fn blast_stone() = 1.15
 
 fn smash_walls(w, x, y, z, seed) =
   if seed > 0.0 then 0 else break_blocks(w, x, y, z, seed)
@@ -2036,6 +2039,84 @@ fn scatter_block(w, bb, i) =
   mark_broken(w, i)
   settle_column(w, bb, i)
   1
+
+# ---- the pines a warhead takes ---------------------------------------------
+#
+# A rocket that goes off against a trunk takes the tree. Only a rocket — the
+# same sign-of-the-seed gate the walls use, or the crystals' own fire would
+# slowly clear the forest by itself — and only very close: a warhead two
+# metres from a trunk is a felled tree, three metres is a scorched one.
+#
+# A felled pine is not killed, it is *turned*: the scale goes negative, which
+# is the mark every reader tests, and the yaw slot — whose work is done — is
+# rewritten with the moment it fell, so the renderer can lay it down over a
+# second rather than on a frame. Deterministic like everything else on this
+# wire: a client is told which pine went and computes the same lie from the
+# same numbers.
+fn fell_reach() = 2.2
+
+fn fell_ring() = 32
+
+fn fell_pines(w, x, y, z, seed) =
+  if seed > 0.0 then 0 else fell_scan(w, x, y, z)
+
+fn fell_scan(w, x, y, z) =
+  pb = peek_ptr(w, 65)
+
+  for i in 0..to_int(peek_f32(w, 57))
+    try_fell(w, pb, i, x, y, z)
+  1
+
+fn try_fell(w, pb, i, x, y, z) =
+  if peek_f32(pb, i * 8 + 3) <= 0.01 then 0 else fell_near(w, pb, i, x, y, z)
+
+fn fell_near(w, pb, i, x, y, z) =
+  dx = peek_f32(pb, i * 8) - x
+  dz = peek_f32(pb, i * 8 + 2) - z
+  g = peek_f32(pb, i * 8 + 1)
+  if dx * dx + dz * dz > fell_reach() * fell_reach() then 0 else if y < g - 2.0 || y > g + 12.0 then 0 else drop_pine(w, pb, i)
+
+fn drop_pine(w, pb, i) =
+  at = i * 8
+  poke_f32(pb, at + 4, world_time(w))
+  poke_f32(pb, at + 3, 0.0 - peek_f32(pb, at + 3))
+  burst_pine(w, pb, at)
+  note_fell(w, i)
+  1
+
+# Bark and splinters off the trunk, thrown up and out — the same shards
+# everything else that breaks leaves, in wood's own brown.
+fn burst_pine(w, pb, at) =
+  sb = peek_ptr(w, 69)
+  k0 = to_int(peek_f32(w, 61))
+  cs = seg_of(w)
+  fill_chunk(cs, peek_f32(pb, at), peek_f32(pb, at + 1) + 1.1, peek_f32(pb, at + 2), 0.42, 0.30, 0.20, 0.11)
+  fill_kick(cs, 0.0, 5.5, 0.0)
+  sbase = peek_f32(pb, at) * 13.7
+
+  for j in 0..6
+    spawn_chunk(sb, k0 + j, cs, sbase + to_float(j))
+
+  poke_f32(w, 61, to_float(k0 + 6))
+  1
+
+fn note_fell(w, i) =
+  n = to_int(peek_f32(w, 93))
+  poke_f32(peek_ptr(w, 121), n % fell_ring(), to_float(i))
+  poke_f32(w, 93, peek_f32(w, 93) + 1.0)
+  1
+
+fn pines_down(w: Ptr) -> Int = to_int(peek_f32(w, 93))
+
+fn fell_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 121), k % fell_ring()))
+
+# Being told which pine went, with no blast of our own to work it out from —
+# and the whole standing history for whoever walks in late.
+fn put_fell(w: Ptr, i: Int) =
+  pb = peek_ptr(w, 65)
+  if i < 0 || i >= to_int(peek_f32(w, 57)) then 0 else if peek_f32(pb, i * 8 + 3) <= 0.01 then 0 else drop_pine(w, pb, i)
+
+fn pine_felled(w: Ptr, i: Int) -> Int = if peek_f32(peek_ptr(w, 65), i * 8 + 3) < 0.0 then 1 else 0
 
 # What a warhead does that a stone does not, and only a warhead: a meteor comes
 # down somewhere every few seconds and the valley would be full of columns.
@@ -2863,6 +2944,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   grid_buf = alloc_bytes((257 + ncrys + 1) * 4)
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
   hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
+  fell_buf = alloc_bytes(fell_ring() * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -2885,6 +2967,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 118, seg_buf)
   poke_ptr(s, 119, grid_buf)
   poke_ptr(s, 120, mark_buf)
+  poke_ptr(s, 121, fell_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
@@ -2896,6 +2979,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 73, 0.0)
   poke_f32(s, 79, 1.0)
   poke_f32(s, 80, 0.0)
+  poke_f32(s, 93, 0.0)
   poke_f32(s, 53, 1.0)
   clear_bullets(bullet_buf)
   clear_shards(shard_buf)
@@ -3531,10 +3615,17 @@ fn collide_all(s, buf, n, factor) =
   for i in 0..n
     collide_one(s, buf, i, factor)
 
+# Nothing under a hundredth of scale stops anybody: a broken crystal is a heap
+# of glass, not a post, and a felled pine — whose mark is a *negative* scale —
+# is a log you step over rather than a trunk you walk into.
 fn collide_one(s, buf, i, factor) =
+  sc = peek_f32(buf, i * 8 + 3)
+  if sc <= 0.01 then 1 else collide_live(s, buf, i, factor, sc)
+
+fn collide_live(s, buf, i, factor, sc) =
   ix = peek_f32(buf, i * 8)
   iz = peek_f32(buf, i * 8 + 2)
-  r = factor * peek_f32(buf, i * 8 + 3) + 0.35
+  r = factor * sc + 0.35
   dx = peek_f32(s, 21) - ix
   dz = peek_f32(s, 23) - iz
   d2 = dx * dx + dz * dz
@@ -3772,6 +3863,8 @@ fn new_match(w) =
   clear_marks(w)
   place_walls(w, blocks_ptr(w))
   place_mags(w)
+  raise_pines(peek_ptr(w, 65), to_int(peek_f32(w, 57)))
+  poke_f32(w, 93, 0.0)
   poke_f32(w, 121, peek_f32(w, 121))
   poke_f32(w, 122, 0.0)
   poke_f32(w, 123, 0.0)
@@ -3780,6 +3873,24 @@ fn new_match(w) =
 
   for i in 0..player_count(w)
     new_match_player(player_at(w, i))
+  1
+
+# The felled stand back up. The exact yaw each tree had is not recoverable —
+# it was hashed from a candidate index nobody kept — so a raised pine faces a
+# way hashed from where it stands, which every client computes identically,
+# and a tree facing a new way after the world began again is the least of
+# what changed.
+fn raise_pines(pb, n) =
+  for i in 0..n
+    raise_pine(pb, i)
+
+fn raise_pine(pb, i) =
+  sc = peek_f32(pb, i * 8 + 3)
+  if sc < 0.0 then stood_up(pb, i, sc) else 0
+
+fn stood_up(pb, i, sc) =
+  poke_f32(pb, i * 8 + 3, 0.0 - sc)
+  poke_f32(pb, i * 8 + 4, hash2(peek_f32(pb, i * 8) * 3.7, peek_f32(pb, i * 8 + 2) * 1.3) * 6.28)
   1
 
 fn new_match_player(s) =

@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=326";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=326";
+import { load } from "./world.js?v=327";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=327";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=326";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "326";
+const V = "327";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1803,6 +1803,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // it, so the pieces are spawned from the same call the shooter's world
       // made.
       else if (e.kind === "d") E.down_fire(world, BigInt(n[0]));
+      // A pine a warhead took. The instance buffer goes up with every frame,
+      // so applying it to the world is the whole of the work.
+      else if (e.kind === "y") E.put_fell(world, BigInt(n[0]));
+      // And every pine already down, one frame at the door.
+      else if (e.kind === "pines") for (const i of e.n) E.put_fell(world, BigInt(i));
       // The wall's whole history, one line at the door: every stone broken
       // before this client arrived. Each lands exactly where it did for
       // everybody else, because the resting place is computed from the index.
@@ -3275,6 +3280,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       device.queue.writeBuffer(W.blockInst, 0,
         new Float32Array(E.memory.buffer, Number(E.blocks(state)), W.blocks * 8));
     }
+    // And the pines, now that a warhead can fell one: the scale flips negative
+    // and the yaw slot starts carrying the moment it fell, and the shader lays
+    // the tree down from those two numbers.
+    device.queue.writeBuffer(W.pineInst, 0,
+      new Float32Array(E.memory.buffer, Number(E.pines(state)), W.counts.pines * 8));
     // Health, straight off Rill: it is the world that decides what a blast
     // does to you, not the renderer. Only touched when it actually moves,
     // for the same reason the tally is.

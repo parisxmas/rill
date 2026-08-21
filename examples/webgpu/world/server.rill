@@ -145,7 +145,7 @@ fn per_address() = 16
 # and this is not that: it is what this server chooses to let in, and it can be
 # lowered without touching the file the client shares. Eight is what a tick of
 # fifty milliseconds carries comfortably, everybody being told about everybody.
-fn max_players() = 8
+fn max_players() = 16
 
 # Whether the crystals throw fire in the shared valley. On: what a meteor is
 # aimed at is where somebody is standing, and standing about is most of what
@@ -238,6 +238,7 @@ fn welcome(w, conns, s, out, token) =
   send(out, hello_msg(w, id, token))
   send(out, gone_list(w))
   send(out, stones_list(w))
+  send(out, fells_list(w))
   send_mags(w, out, 0)
   roster(conns, out)
   println("player " + int_to_str(id) + " arrived as " + name + ", " + int_to_str(v.players(w)) + " in the valley")
@@ -289,6 +290,18 @@ fn stones_list(w) =
     if_broken(w, b, i)
 
   strbuf_str(b)
+
+# And the pines already down, by the same door and the same means.
+fn fells_list(w) =
+  b = strbuf()
+  put_u8(b, op_pinelist())
+
+  for i in 0..v.pine_count(w)
+    if_felled(w, b, i)
+
+  strbuf_str(b)
+
+fn if_felled(w, b, i) = if v.pine_felled(w, i) > 0 then note_gone(b, i) else 0
 
 fn if_broken(w, b, i) = if v.block_broken(w, i) > 0 then note_gone(b, i) else 0
 
@@ -366,6 +379,8 @@ fn conn_token(c) = match c
 #        k  f32 x y z seed
 #        x  u16 who, u16 by whom, f32 how much, u8 down
 #        d/w/b  u16 index
+#        y  u16 pine index, felled by a warhead
+#        P  u16 pine indices already down, for whoever walks in late
 #
 # Up:    i  u8 keys, f32 yaw, f32 pitch
 #        f  f32 dx dy dz
@@ -391,6 +406,8 @@ fn op_hurt() = 120
 fn op_downed() = 100
 fn op_stone() = 119
 fn op_break() = 98
+fn op_fell() = 121
+fn op_pinelist() = 80
 fn op_input() = 105
 fn op_fire() = 102
 fn op_name() = 110
@@ -629,6 +646,7 @@ fn tick(w, conns, said) =
   stones0 = v.blocks_gone(w)
   downed0 = v.fires_down(w)
   hurts0 = v.hurts(w)
+  fells0 = v.pines_down(w)
   walk_all(conns)
   fire_all(w, conns)
   v.step_world(w, dt())
@@ -642,6 +660,7 @@ fn tick(w, conns, said) =
   send_stones(w, left, since(stones0, v.blocks_gone(w)))
   send_downed(w, left, since(downed0, v.fires_down(w)))
   send_hurts(w, left, since(hurts0, v.hurts(w)))
+  send_fells(w, left, since(fells0, v.pines_down(w)))
   again(said)
   send_mag_moves(w, left, said, 0)
   tell_each(w, left, left)
@@ -824,6 +843,14 @@ fn send_breaks(w, conns, from) =
 fn send_break(w, conns, k) =
   broadcast(w, conns, index_msg(op_break(), v.break_which(w, k)))
   send_breaks(w, conns, k + 1)
+
+# Which pines a warhead took, one index each, like the stones.
+fn send_fells(w, conns, from) =
+  if from == v.pines_down(w) then 0 else send_fell(w, conns, from)
+
+fn send_fell(w, conns, k) =
+  broadcast(w, conns, index_msg(op_fell(), v.fell_which(w, k)))
+  send_fells(w, conns, k + 1)
 
 fn walk_all(conns) = match conns
   Nil -> 0

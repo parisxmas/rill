@@ -24,6 +24,8 @@
 //          b  u16                    crystal i came apart
 //          w  u16                    stone i left a wall
 //          d  u16                    a meteor was shot out of the air
+//          y  u16                    pine i was felled by a warhead
+//          P  u16 pine indices       pines already down, at the door
 //          m  u8 box, u32 times     where a box of ammunition is, as a count
 //          x  u16 who, u16 by whom, f32 how much, u8 down
 //          u  u16 id, name…          what to call somebody
@@ -41,7 +43,7 @@
 const OP = {
   hello: 104, no: 110, gone: 103, wall: 87, mag: 109, who: 117, pong: 112,
   snap: 115, round: 114, thrown: 116, crater: 107, hurt: 120,
-  downed: 100, stone: 119, broke: 98,
+  downed: 100, stone: 119, broke: 98, fell: 121, pineList: 80,
   input: 105, fire: 102, name: 110, ping: 112,
 };
 
@@ -144,6 +146,9 @@ export function join(url, name) {
     if (op === OP.broke) { net.events.push({ kind: "b", n: [dv.getUint16(1, true)] }); return; }
     if (op === OP.stone) { net.events.push({ kind: "w", n: [dv.getUint16(1, true)] }); return; }
     if (op === OP.downed) { net.events.push({ kind: "d", n: [dv.getUint16(1, true)] }); return; }
+    // A pine a warhead took, and at the door the whole list of them.
+    if (op === OP.fell) { net.events.push({ kind: "y", n: [dv.getUint16(1, true)] }); return; }
+    if (op === OP.pineList) { net.events.push({ kind: "pines", n: u16s(dv, 1) }); return; }
     if (op === OP.mag) { net.events.push({ kind: "m", n: [dv.getUint8(1), dv.getUint32(2, true)] }); return; }
     if (op === OP.hurt) {
       net.events.push({ kind: "x", n: [dv.getUint16(1, true), dv.getUint16(3, true), dv.getFloat32(5, true), dv.getUint8(9)] });
