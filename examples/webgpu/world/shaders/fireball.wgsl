@@ -260,19 +260,27 @@
     // Flame becomes smoke after about a third of a second and is all smoke by
     // a second, however long the trail behind it has been made.
     //
-    // A rocket's is smoke from the first parcel and paler than a meteor's: what
-    // comes off a motor is unburnt propellant and it hangs about white, where
-    // what comes off a stone at four hundred degrees is soot. It is the one
-    // thing anybody watching a rocket actually follows, so it is not left dark.
+    // A rocket's is smoke from the first parcel, and black. It was pale here
+    // once, on the argument that a motor throws unburnt propellant rather than
+    // soot — true of some motors and not of this one, which is the thing on
+    // the shoulder of somebody in a valley, and what that leaves behind is a
+    // dirty black column you can follow from the far side.
+    //
+    // Darker than the stone's, not lighter: the stone is at four hundred
+    // degrees and glowing through its own smoke, and the motor is not.
     let smoke = max(smoothstep(0.22 * WAS, 0.62 * WAS, v.secs), v.rocket);
-    let ash = mix(vec3f(0.30, 0.27, 0.26), vec3f(0.72, 0.71, 0.70), v.rocket);
+    let ash = mix(vec3f(0.30, 0.27, 0.26), vec3f(0.085, 0.082, 0.080), v.rocket);
     col = mix(col, ash, smoke);
 
     // The head is a hard little sun; the smoke is a soft blob that mostly is
     // not there at all.
     let core = (1.0 - k * k) * (1.0 - k * k) + 0.9 * exp(-k * k * 7.0);
     let soft = (1.0 - k * k) * 0.55;
-    var glow = mix(core, soft, smoke) * (1.0 - 0.72 * smoke);
+    // Smoke claims much less of a pixel than a burning head does, and a
+    // meteor's thin soot should. A motor's does not: the whole point of it is
+    // that you can follow it across a valley, and knocking it down by
+    // seven tenths left a smear you had to be told was there.
+    var glow = mix(core, soft, smoke) * (1.0 - mix(0.72, 0.30, v.rocket) * smoke);
 
     // Premultiplied alpha, not additive. Additive is right for a spark and
     // wrong for a column of smoke: forty-eight puffs seen end-on — which is
@@ -292,8 +300,9 @@
     let hot = pow(clamp(1.0 - v.secs / WAS, 0.0, 1.0), 4.0) + v.windward * v.windward * 1.6;
     // A third of a pixel each is right for a meteor's wake, which is thin soot
     // seen against the sky. A motor lays down something you are meant to follow
-    // across a valley, so a rocket's parcels claim two thirds.
-    let thick = mix(0.34, 0.66, v.rocket);
+    // across a valley, and black smoke is only black because it is opaque —
+    // thin black is not dark, it is nothing.
+    let thick = mix(0.34, 0.88, v.rocket);
     let cover = clamp(glow * v.fade * mix(0.95, thick, smoke) * (1.0 + 0.7 * v.windward),
                       0.0, 1.0) * clear;
     return vec4f(col * (0.6 + 2.4 * hot) * cover, cover);

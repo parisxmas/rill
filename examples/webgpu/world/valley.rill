@@ -338,6 +338,20 @@ fn bullet_speed() = 120.0
 fn bullet_life() = 3.2
 
 # Ground or water, whichever the bullet would meet first.
+# Out of the world, rather than out of ammunition.
+#
+# The valley is a hundred and fifty across and everything in it is placed
+# inside that. A round fired at the sky is not coming back to anything: it
+# holds a slot in a ring of thirty-two for the three and a bit seconds its
+# life says, and a rocket holds one of a much smaller ring for six, which is
+# three shots' worth of tube spent on something that left. So they are let go
+# when they leave, and the slot is free for the next one immediately.
+#
+# Generously outside, not tightly: a shot arcing over the far ridge is still
+# in play, and the ceiling is well above anything the terrain reaches.
+fn gone_from_world(x, y, z) =
+  if y > 320.0 then 1.0 else if x < 0.0 - 200.0 || x > 200.0 then 1.0 else if z < 0.0 - 200.0 || z > 200.0 then 1.0 else 0.0
+
 fn stop_height(x, z) =
   h = height(x, z)
   if h < 0.0 then 0.0 else h
@@ -387,7 +401,8 @@ fn step_bullet(w, b, at, dt, decide) =
   poke_f32(b, at + 3, vx)
   poke_f32(b, at + 4, vy)
   poke_f32(b, at + 5, vz)
-  poke_f32(b, at + 7, if landed > 0.5 then 0.0 else if peek_f32(b, at + 7) < 0.001 then 0.0 else life)
+  away = gone_from_world(px, py, pz)
+  poke_f32(b, at + 7, if landed > 0.5 || away > 0.5 then 0.0 else if peek_f32(b, at + 7) < 0.001 then 0.0 else life)
 
 # ---- who a client can see, for rounds to stop on ----------------------------
 #
@@ -631,6 +646,40 @@ fn seg_dist2(ax, ay, az, bx, by, bz, cx, cy, cz) =
   py = ay + dy * t - cy
   pz = az + dz * t - cz
   px * px + py * py + pz * pz
+
+# A piece thrown with the up and the out said separately.
+#
+# `spawn_shard` ties them together through one `throw`, which is right for
+# something coming apart where it stood — it goes up half again as far as it
+# goes sideways, whatever you scale it by. A warhead does not do that. What
+# goes straight up is the ground it lifted, and what goes sideways is the case
+# it tore itself out of, and those are different speeds rather than one speed
+# with a ratio.
+fn spawn_piece(sb, k, x, y, z, sc, r, g, b, up, out, seed) =
+  at = (mag_count() + k % shard_ring()) * shard_stride()
+  h1 = hash2(seed, 11.0)
+  h2 = hash2(seed, 23.0)
+  h3 = hash2(seed, 37.0)
+  h4 = hash2(seed, 51.0)
+  a = h1 * 6.28318
+  poke_f32(sb, at, x + (h1 - 0.5) * sc * 0.5)
+  poke_f32(sb, at + 1, y + h2 * sc * 1.6)
+  poke_f32(sb, at + 2, z + (h3 - 0.5) * sc * 0.5)
+  poke_f32(sb, at + 3, cos(a) * out)
+  poke_f32(sb, at + 4, up)
+  poke_f32(sb, at + 5, sin(a) * out)
+  poke_f32(sb, at + 6, h1 * 6.28318)
+  poke_f32(sb, at + 7, h2 * 6.28318)
+  poke_f32(sb, at + 8, h3 * 6.28318)
+  poke_f32(sb, at + 9, (h2 - 0.5) * 22.0)
+  poke_f32(sb, at + 10, (h3 - 0.5) * 22.0)
+  poke_f32(sb, at + 11, (h4 - 0.5) * 22.0)
+  poke_f32(sb, at + 12, sc * (0.14 + h4 * 0.16))
+  poke_f32(sb, at + 13, r)
+  poke_f32(sb, at + 14, g)
+  poke_f32(sb, at + 15, b)
+  poke_f32(sb, at + 16, 0.0)
+  1
 
 fn spawn_shard(sb, k, x, y, z, sc, r, g, b, throw, heals, seed) =
   at = (mag_count() + k % shard_ring()) * shard_stride()
@@ -1566,7 +1615,41 @@ fn add_blast(w, x, y, z, seed) =
     spawn_shard(sb, k0 + j, x, y, z, 1.1, 0.34, 0.13, 0.05, 1.9, 0.0, seed * 97.0 + to_float(j))
 
   poke_f32(w, 61, to_float(k0 + 18))
+  warhead_debris(w, x, y, z, seed)
+
+# What a warhead does that a stone does not, and only a warhead: a meteor comes
+# down somewhere every few seconds and the valley would be full of columns.
+fn warhead_debris(w, x, y, z, seed) =
+  if seed > 0.0 then 0 else pillar_and_shrapnel(w, x, y, z, seed)
+
+fn pillar_and_shrapnel(w, x, y, z, seed) =
+  sb = peek_ptr(w, 69)
+  k0 = to_int(peek_f32(w, 61))
+
+  # The column. Straight up and hardly out at all — twenty-odd metres a second
+  # against gravity's twenty-four is a good two seconds of it standing there,
+  # which is what makes the shape read as vertical rather than as a wider
+  # version of the crater it already had.
+  for j in 0..14
+    pillar_piece(sb, k0 + j, x, y, z, seed * 131.0 + to_float(j))
+
+  # And the case, which is the other half of what a warhead is: small, fast,
+  # and outward in every direction, gone before the column has finished rising.
+  for j in 0..22
+    shrapnel_piece(sb, k0 + 14 + j, x, y, z, seed * 179.0 + to_float(j))
+
+  poke_f32(w, 61, to_float(k0 + 36))
   1
+
+fn pillar_piece(sb, k, x, y, z, seed) =
+  h = hash2(seed, 67.0)
+  g = hash2(seed, 83.0)
+  spawn_piece(sb, k, x, y, z, 0.95, 0.14, 0.115, 0.1, 17.0 + h * 13.0, g * 2.2, seed)
+
+fn shrapnel_piece(sb, k, x, y, z, seed) =
+  h = hash2(seed, 71.0)
+  g = hash2(seed, 89.0)
+  spawn_piece(sb, k, x, y, z, 0.34, 0.32, 0.3, 0.28, 1.5 + g * 7.0, 13.0 + h * 14.0, seed)
 
 fn step_blast(bb, at, dt) =
   a = peek_f32(bb, at + 4)
@@ -1626,7 +1709,9 @@ fn step_fireball(w, fb, at, dt, decide) =
   poke_f32(fb, at + 3, vx)
   poke_f32(fb, at + 4, vy)
   poke_f32(fb, at + 5, vz)
-  poke_f32(fb, at + 7, if landed > 0.5 then 0.0 else if struck > 0 then 0.0 else life)
+  # Out of the world is not an arrival: no crater, nothing to hear, just gone.
+  away = gone_from_world(px, py, pz)
+  poke_f32(fb, at + 7, if landed > 0.5 then 0.0 else if struck > 0 then 0.0 else if away > 0.5 then 0.0 else life)
   poke_f32(fb, at + 8, peek_f32(fb, at + 8) + dt * on)
   # It touched the ground while it was still flying, or it touched glass: that
   # is an arrival, not an expiry, and only an arrival makes a crater.

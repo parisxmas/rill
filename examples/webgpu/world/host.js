@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=302";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=302";
+import { load } from "./world.js?v=305";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=305";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=302";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "302";
+const V = "305";
 
 // ---- what the machine can afford -------------------------------------------
 
