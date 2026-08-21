@@ -331,6 +331,27 @@ fn place(buf, i, count, cap, lim, kind) =
 # is the way a piece leaves: the size goes to zero and the renderer stops
 # drawing it, which is one number to change and one number to send.
 
+# A note on where these live, paid for the hard way.
+#
+# `peek_f32(p, i)` reads the byte at `4i`. `peek_ptr(p, i)` reads the byte at
+# `8i` — a pointer's index is in pointers, not in floats. So float slot 128 and
+# pointer slot 64 are *the same eight bytes*, and this block's pointers start at
+# 64. Everything a float wants has to live below 128; everything a pointer wants
+# has to live at 64 or above and inside the 1024 bytes, which is pointer slot
+# 127.
+#
+# On wasm32 a pointer is four bytes, so `8i` is `4i` and none of this bites. All
+# of it was tested on wasm. The server segfaulted on the first player to move,
+# because the round's clock at float 128 was sitting on top of the terrain mesh
+# pointer at ptr 64 and writing a time into it.
+#
+#   floats   121 how many blocks      124 the round's clock
+#            122 stones gone          125 the round's phase
+#            123 fire shot down       126 how long a round is
+#            111 kills  112 deaths    127 how long the board is up
+#
+#   pointers 114 the blocks           116 the ring of downed fire
+#            115 the ring of stones   117 each wall's sphere
 fn block_size() = 0.3
 
 # Eight courses of three tenths is the same two and a bit metres the wall was
@@ -354,7 +375,7 @@ fn block_cap() = wall_cap() * wall_blocks()
 # rounds against three and a half thousand blocks is a hundred thousand tests a
 # frame for walls that are almost all on the other side of the map. One sphere
 # a wall throws nearly all of it away before touching a block.
-fn wall_box(w) = peek_ptr(w, 127)
+fn wall_box(w) = peek_ptr(w, 117)
 
 fn wall_near(wb, k, x, y, z, reach) =
   dx = peek_f32(wb, k * 4) - x
@@ -363,7 +384,7 @@ fn wall_near(wb, k, x, y, z, reach) =
   r = peek_f32(wb, k * 4 + 3) + reach
   dx * dx + dy * dy + dz * dz < r * r
 
-fn blocks_ptr(w) = peek_ptr(w, 122)
+fn blocks_ptr(w) = peek_ptr(w, 114)
 
 fn block_count(w) = to_int(peek_f32(w, 121))
 
@@ -1896,14 +1917,14 @@ fn burst_block(w, bb, i, dx, dy, dz, d2, seed) =
 fn block_ring() = 64
 
 fn note_block(w, i) =
-  n = to_int(peek_f32(w, 123))
-  poke_f32(peek_ptr(w, 124), n % block_ring(), to_float(i))
-  poke_f32(w, 123, peek_f32(w, 123) + 1.0)
+  n = to_int(peek_f32(w, 122))
+  poke_f32(peek_ptr(w, 115), n % block_ring(), to_float(i))
+  poke_f32(w, 122, peek_f32(w, 122) + 1.0)
   1
 
-fn blocks_gone(w: Ptr) -> Int = to_int(peek_f32(w, 123))
+fn blocks_gone(w: Ptr) -> Int = to_int(peek_f32(w, 122))
 
-fn block_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 124), k % block_ring()))
+fn block_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 115), k % block_ring()))
 
 # Taking one out because the server said so, with no blast to work it out from.
 fn drop_block(w: Ptr, i: Int) =
@@ -2115,14 +2136,14 @@ fn shatter_fire(w, fb, fat) =
 fn down_ring() = 32
 
 fn note_down(w, i) =
-  n = to_int(peek_f32(w, 125))
-  poke_f32(peek_ptr(w, 126), n % down_ring(), to_float(i))
-  poke_f32(w, 125, peek_f32(w, 125) + 1.0)
+  n = to_int(peek_f32(w, 123))
+  poke_f32(peek_ptr(w, 116), n % down_ring(), to_float(i))
+  poke_f32(w, 123, peek_f32(w, 123) + 1.0)
   1
 
-fn fires_down(w: Ptr) -> Int = to_int(peek_f32(w, 125))
+fn fires_down(w: Ptr) -> Int = to_int(peek_f32(w, 123))
 
-fn down_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 126), k % down_ring()))
+fn down_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 116), k % down_ring()))
 
 # Being told which one went, with no round of our own to have done it.
 fn down_fire(w: Ptr, i: Int) =
@@ -2505,10 +2526,10 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 69, shard_buf)
   poke_ptr(s, 106, ghost_buf)
   poke_ptr(s, 113, hurt_buf)
-  poke_ptr(s, 122, block_buf)
-  poke_ptr(s, 124, gone_buf)
-  poke_ptr(s, 126, down_buf)
-  poke_ptr(s, 127, wallbox_buf)
+  poke_ptr(s, 114, block_buf)
+  poke_ptr(s, 115, gone_buf)
+  poke_ptr(s, 116, down_buf)
+  poke_ptr(s, 117, wallbox_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
@@ -2540,12 +2561,12 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   # it and a brand new valley opens on ROUND OVER with a counter that never
   # reaches nought, because the twenty seconds it is counting started before
   # the world existed. Which is exactly what shipped.
+  poke_f32(s, 122, 0.0)
   poke_f32(s, 123, 0.0)
+  poke_f32(s, 124, 0.0)
   poke_f32(s, 125, 0.0)
-  poke_f32(s, 128, 0.0)
-  poke_f32(s, 129, 0.0)
-  poke_f32(s, 132, 0.0)
-  poke_f32(s, 133, 0.0)
+  poke_f32(s, 126, 0.0)
+  poke_f32(s, 127, 0.0)
   # The world points at itself, so `wd` works on it exactly as it works on a
   # player and nothing below has to ask which kind of block it was given. It
   # starts with nobody in it: even the browser with the valley to itself asks
@@ -3348,37 +3369,37 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
 # rather than as constants, because a server is told them on the command line
 # and a browser alone in its valley should be able to differ. Nought means
 # nobody said, which is the ten minutes and twenty seconds it always was.
-fn match_len(w) = if peek_f32(w, 132) > 0.5 then peek_f32(w, 132) else 600.0
+fn match_len(w) = if peek_f32(w, 126) > 0.5 then peek_f32(w, 126) else 600.0
 
-fn report_len(w) = if peek_f32(w, 133) > 0.5 then peek_f32(w, 133) else 20.0
+fn report_len(w) = if peek_f32(w, 127) > 0.5 then peek_f32(w, 127) else 20.0
 
 fn set_match_len(w: Ptr, secs: Int, report: Int) =
-  poke_f32(w, 132, to_float(secs))
-  poke_f32(w, 133, to_float(report))
+  poke_f32(w, 126, to_float(secs))
+  poke_f32(w, 127, to_float(report))
   1
 
-fn match_clock(w: Ptr) -> Float = peek_f32(w, 128)
+fn match_clock(w: Ptr) -> Float = peek_f32(w, 124)
 
-fn match_phase(w: Ptr) -> Int = if peek_f32(w, 129) > 0.5 then 1 else 0
+fn match_phase(w: Ptr) -> Int = if peek_f32(w, 125) > 0.5 then 1 else 0
 
 # What the clock counts *down* to, which is what anybody wants to read: how
 # long is left of the match, or of the twenty seconds before the next one.
 fn match_left(w: Ptr) -> Float =
-  if match_phase(w) > 0 then report_len(w) - peek_f32(w, 128) else match_len(w) - peek_f32(w, 128)
+  if match_phase(w) > 0 then report_len(w) - peek_f32(w, 124) else match_len(w) - peek_f32(w, 124)
 
 fn step_match(w, dt) =
-  t = peek_f32(w, 128) + dt
+  t = peek_f32(w, 124) + dt
   if match_phase(w) > 0 then
     if t >= report_len(w) then new_match(w) else tick_clock(w, t)
   else if t >= match_len(w) then
-    poke_f32(w, 129, 1.0)
-    poke_f32(w, 128, 0.0)
+    poke_f32(w, 125, 1.0)
+    poke_f32(w, 124, 0.0)
     1
   else
     tick_clock(w, t)
 
 fn tick_clock(w, t) =
-  poke_f32(w, 128, t)
+  poke_f32(w, 124, t)
   1
 
 # Everything that was, gone. The valley comes back whole — every crystal
@@ -3394,18 +3415,18 @@ fn new_match(w) =
   place_walls(w, blocks_ptr(w))
   place_mags(w)
   poke_f32(w, 121, peek_f32(w, 121))
+  poke_f32(w, 122, 0.0)
   poke_f32(w, 123, 0.0)
+  poke_f32(w, 124, 0.0)
   poke_f32(w, 125, 0.0)
-  poke_f32(w, 128, 0.0)
-  poke_f32(w, 129, 0.0)
 
   for i in 0..player_count(w)
     new_match_player(player_at(w, i))
   1
 
 fn new_match_player(s) =
-  poke_f32(s, 130, 0.0)
-  poke_f32(s, 131, 0.0)
+  poke_f32(s, 111, 0.0)
+  poke_f32(s, 112, 0.0)
   poke_f32(s, 109, 0.0)
   poke_f32(s, 110, 0.0)
   place_player(s)
@@ -3415,18 +3436,18 @@ fn new_match_player(s) =
 # crosses the wire, because that is what anybody reads; the clock itself is how
 # far into the phase we are, which is the other end of the same number.
 fn set_match(w: Ptr, phase: Int, left: Float) =
-  poke_f32(w, 129, if phase > 0 then 1.0 else 0.0)
-  poke_f32(w, 128, clampf(if phase > 0 then report_len(w) - left else match_len(w) - left, 0.0, match_len(w)))
+  poke_f32(w, 125, if phase > 0 then 1.0 else 0.0)
+  poke_f32(w, 124, clampf(if phase > 0 then report_len(w) - left else match_len(w) - left, 0.0, match_len(w)))
   1
 
-fn kills(s: Ptr) -> Int = to_int(peek_f32(s, 130))
+fn kills(s: Ptr) -> Int = to_int(peek_f32(s, 111))
 
-fn deaths(s: Ptr) -> Int = to_int(peek_f32(s, 131))
+fn deaths(s: Ptr) -> Int = to_int(peek_f32(s, 112))
 
 # One place knows a death happened, and it already knows both names.
 fn tally_end(w, victim, shooter) =
-  add_to(w, victim, 131)
-  if shooter == victim then 0 else add_to(w, shooter, 130)
+  add_to(w, victim, 112)
+  if shooter == victim then 0 else add_to(w, shooter, 111)
   1
 
 fn add_to(w, id, slot) =
