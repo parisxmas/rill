@@ -352,6 +352,9 @@ fn place(buf, i, count, cap, lim, kind) =
 #
 #   pointers 114 the blocks           116 the ring of downed fire
 #            115 the ring of stones   117 each wall's sphere
+#            118 the scratch a segment or a chunk's numbers travel in,
+#                because more than eight float arguments go to the stack and
+#                stack arguments in a loop are what took the server down
 fn block_size() = 0.3
 
 # Eight courses of three tenths is the same two and a bit metres the wall was
@@ -861,7 +864,20 @@ fn spawn_piece(sb, k, x, y, z, sc, r, g, b, up, out, seed) =
 # where it stands. A wall does not do that: it comes apart *away* from the
 # thing that hit it, and which way that is is the whole difference between
 # stone blown off a wall and stone that happened to fall over.
-fn spawn_chunk(sb, k, x, y, z, sc, r, g, b, vx, vy, vz, seed) =
+# The thirteen numbers a chunk wants come through the same scratch block the
+# sweep uses, for the same reason the sweep uses it: thirteen arguments is
+# five past what the registers hold, and stack arguments in a loop are the
+# thing that took the server down. Slots 0-2 the place, 3 the size, 4-6 the
+# colour, 7-9 the velocity. The seed stays an argument because it is the one
+# thing that differs between the pieces of one burst.
+fn spawn_chunk(sb, k, cs, seed) =
+  x = peek_f32(cs, 0)
+  y = peek_f32(cs, 1)
+  z = peek_f32(cs, 2)
+  sc = peek_f32(cs, 3)
+  r = peek_f32(cs, 4)
+  g = peek_f32(cs, 5)
+  b = peek_f32(cs, 6)
   at = (mag_count() + k % shard_ring()) * shard_stride()
   h1 = hash2(seed, 11.0)
   h2 = hash2(seed, 23.0)
@@ -870,9 +886,9 @@ fn spawn_chunk(sb, k, x, y, z, sc, r, g, b, vx, vy, vz, seed) =
   poke_f32(sb, at, x + (h1 - 0.5) * sc)
   poke_f32(sb, at + 1, y + (h2 - 0.5) * sc)
   poke_f32(sb, at + 2, z + (h3 - 0.5) * sc)
-  poke_f32(sb, at + 3, vx + (h1 - 0.5) * 6.0)
-  poke_f32(sb, at + 4, vy + h2 * 4.0)
-  poke_f32(sb, at + 5, vz + (h3 - 0.5) * 6.0)
+  poke_f32(sb, at + 3, peek_f32(cs, 7) + (h1 - 0.5) * 6.0)
+  poke_f32(sb, at + 4, peek_f32(cs, 8) + h2 * 4.0)
+  poke_f32(sb, at + 5, peek_f32(cs, 9) + (h3 - 0.5) * 6.0)
   poke_f32(sb, at + 6, h1 * 6.28318)
   poke_f32(sb, at + 7, h2 * 6.28318)
   poke_f32(sb, at + 8, h3 * 6.28318)
@@ -1903,8 +1919,13 @@ fn burst_block(w, bb, i, dx, dy, dz, d2, seed) =
   # a fifth of the size read as dust coming off a wall; what should come off it
   # is the stones themselves, thrown up and then falling like anything with
   # weight — which `step_shard` already gives them.
+  cs = seg_of(w)
+  fill_chunk(cs, bx, by, bz, sc * 0.85, r, g, b)
+  fill_kick(cs, dx * n * push, dy * n * push + 7.0, dz * n * push)
+  sbase = seed * 53.0 + to_float(i) * 7.3
+
   for j in 0..2
-    spawn_chunk(sb, k0 + j, bx, by, bz, sc * 0.85, r, g, b, dx * n * push, dy * n * push + 7.0, dz * n * push, seed * 53.0 + to_float(i) * 7.3 + to_float(j))
+    spawn_chunk(sb, k0 + j, cs, sbase + to_float(j))
 
   poke_f32(w, 61, to_float(k0 + 2))
   poke_f32(bb, i * 8 + 3, 0.0)
@@ -1936,8 +1957,13 @@ fn scatter_block(w, bb, i) =
   k0 = to_int(peek_f32(w, 61))
   sc = block_f(bb, i, 3)
 
+  cs = seg_of(w)
+  fill_chunk(cs, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2), sc * 0.85, block_f(bb, i, 5), block_f(bb, i, 6), block_f(bb, i, 7))
+  fill_kick(cs, 0.0, 7.0, 0.0)
+  sbase = to_float(i) * 31.7
+
   for j in 0..2
-    spawn_chunk(sb, k0 + j, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2), sc * 0.85, block_f(bb, i, 5), block_f(bb, i, 6), block_f(bb, i, 7), 0.0, 7.0, 0.0, to_float(i) * 31.7 + to_float(j))
+    spawn_chunk(sb, k0 + j, cs, sbase + to_float(j))
 
   poke_f32(w, 61, to_float(k0 + 2))
   poke_f32(bb, i * 8 + 3, 0.0)
@@ -2126,8 +2152,13 @@ fn shatter_fire(w, fb, fat) =
   sb = peek_ptr(w, 69)
   k0 = to_int(peek_f32(w, 61))
 
+  cs = seg_of(w)
+  fill_chunk(cs, peek_f32(fb, fat), peek_f32(fb, fat + 1), peek_f32(fb, fat + 2), 0.5, 0.36, 0.16, 0.07)
+  fill_kick(cs, peek_f32(fb, fat + 3) * 0.3, peek_f32(fb, fat + 4) * 0.3 + 2.0, peek_f32(fb, fat + 5) * 0.3)
+  sbase = to_float(fat) * 17.3
+
   for j in 0..9
-    spawn_chunk(sb, k0 + j, peek_f32(fb, fat), peek_f32(fb, fat + 1), peek_f32(fb, fat + 2), 0.5, 0.36, 0.16, 0.07, peek_f32(fb, fat + 3) * 0.3, peek_f32(fb, fat + 4) * 0.3 + 2.0, peek_f32(fb, fat + 5) * 0.3, to_float(fat) * 17.3 + to_float(j))
+    spawn_chunk(sb, k0 + j, cs, sbase + to_float(j))
 
   poke_f32(w, 61, to_float(k0 + 9))
   poke_f32(fb, fat + 7, 0.0)
@@ -2164,35 +2195,75 @@ fn hits_stone(w, fb, at, ax, ay, az, bx, by, bz) =
 # frame, and there are a great many more stones than there were: thirty-two
 # rounds against three and a half thousand blocks is a hundred thousand tests a
 # frame, for walls almost all of which are on the other side of the map.
+# The segment travels in a scratch block on the world rather than as nine
+# arguments, and the reason is the native ABI rather than taste. A function
+# with more than eight integer or eight floating arguments takes the rest on
+# the stack, and a call like that from inside a loop helper miscompiles under
+# tailcc: the callee pops the caller's argument space, the caller goes on
+# reading its frame at the old offsets, and twelve walls later the return
+# address comes off somewhere in the heap. Every test was wasm, where pointers
+# are four bytes and nothing spills, so the whole thing looked correct until
+# the first rocket flew on the server. Registers only, in this whole chain.
+fn seg_of(w) = peek_ptr(w, 118)
+
+fn fill_chunk(cs, x, y, z, sc, r, g, b) =
+  poke_f32(cs, 0, x)
+  poke_f32(cs, 1, y)
+  poke_f32(cs, 2, z)
+  poke_f32(cs, 3, sc)
+  poke_f32(cs, 4, r)
+  poke_f32(cs, 5, g)
+  poke_f32(cs, 6, b)
+  1
+
+fn fill_kick(cs, vx, vy, vz) =
+  poke_f32(cs, 7, vx)
+  poke_f32(cs, 8, vy)
+  poke_f32(cs, 9, vz)
+  1
+
 fn sweep_walls(w, p, at, ax, ay, az, bx, by, bz) =
+  sg = seg_of(w)
+  poke_f32(sg, 0, ax)
+  poke_f32(sg, 1, ay)
+  poke_f32(sg, 2, az)
+  poke_f32(sg, 3, bx)
+  poke_f32(sg, 4, by)
+  poke_f32(sg, 5, bz)
+  poke_f32(sg, 6, (ax + bx) * 0.5)
+  poke_f32(sg, 7, (ay + by) * 0.5)
+  poke_f32(sg, 8, (az + bz) * 0.5)
+  poke_f32(sg, 9, sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az)) * 0.5)
   wb = wall_box(w)
   bb = blocks_ptr(w)
-  mx = (ax + bx) * 0.5
-  my = (ay + by) * 0.5
-  mz = (az + bz) * 0.5
-  reach = sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az)) * 0.5
 
   for k in 0..wall_cap()
-    sweep_one_wall(wb, bb, k, p, at, mx, my, mz, reach, ax, ay, az, bx, by, bz)
+    sweep_one_wall(wb, bb, sg, p, at, k)
   0
 
-fn sweep_one_wall(wb, bb, k, p, at, mx, my, mz, reach, ax, ay, az, bx, by, bz) =
-  if wall_near(wb, k, mx, my, mz, reach) then wall_blocks_hit(bb, k, p, at, ax, ay, az, bx, by, bz) else 0
+fn sweep_one_wall(wb, bb, sg, p, at, k) =
+  if wall_near(wb, k, peek_f32(sg, 6), peek_f32(sg, 7), peek_f32(sg, 8), peek_f32(sg, 9)) then wall_blocks_hit(bb, k, p, at, sg) else 0
 
-fn wall_blocks_hit(bb, k, p, at, ax, ay, az, bx, by, bz) =
+fn wall_blocks_hit(bb, k, p, at, sg) =
   base = k * wall_blocks()
 
   for j in 0..wall_blocks()
-    stop_on_block(bb, base + j, p, at, ax, ay, az, bx, by, bz)
+    stop_on_block(bb, base + j, p, at, sg)
   0
 
-fn stop_on_block(bb, i, p, at, ax, ay, az, bx, by, bz) =
-  if block_live(bb, i) then cross_block(bb, i, p, at, ax, ay, az, bx, by, bz) else 0
+fn stop_on_block(bb, i, p, at, sg) =
+  if block_live(bb, i) then cross_block(bb, i, p, at, sg) else 0
 
 # A sphere round the block rather than the box itself. A block is very nearly
 # as wide as it is tall and the difference is a few centimetres of corner,
 # which nobody aiming a rocket is going to miss by.
-fn cross_block(bb, i, p, at, ax, ay, az, bx, by, bz) =
+fn cross_block(bb, i, p, at, sg) =
+  ax = peek_f32(sg, 0)
+  ay = peek_f32(sg, 1)
+  az = peek_f32(sg, 2)
+  bx = peek_f32(sg, 3)
+  by = peek_f32(sg, 4)
+  bz = peek_f32(sg, 5)
   r = block_f(bb, i, 3) * 0.62
   d2 = seg_dist2(ax, ay, az, bx, by, bz, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2))
   if d2 > r * r then 0
@@ -2509,6 +2580,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   gone_buf = alloc_bytes(block_ring() * 4)
   down_buf = alloc_bytes(down_ring() * 4)
   wallbox_buf = alloc_bytes(wall_cap() * 4 * 4)
+  seg_buf = alloc_bytes(64)
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
   hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
   step = cell_step(grid)
@@ -2530,6 +2602,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 115, gone_buf)
   poke_ptr(s, 116, down_buf)
   poke_ptr(s, 117, wallbox_buf)
+  poke_ptr(s, 118, seg_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
