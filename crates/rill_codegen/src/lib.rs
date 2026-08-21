@@ -464,6 +464,12 @@ fn collect_rebound(e: &TExpr, out: &mut HashSet<String>) {
 fn collect_pattern_binds(p: &Pattern, out: &mut HashSet<String>) {
     match p {
         Pattern::Or(..) => unreachable!("`lift` expands `|` patterns"),
+        // The name stands at the position the pattern itself is at, and what
+        // is under it is still matched and still binds.
+        Pattern::As(n, inner, _) => {
+            out.insert(n.clone());
+            collect_pattern_binds(inner, out);
+        }
         Pattern::Var(n) => {
             out.insert(n.clone());
         }
@@ -655,7 +661,18 @@ enum Tree {
 }
 
 fn is_wild(p: &Pattern) -> bool {
-    matches!(p, Pattern::Wildcard | Pattern::Var(_))
+    matches!(peel(p), Pattern::Wildcard | Pattern::Var(_))
+}
+
+/// What a pattern tests for, with any `@` names taken off the front. A name is
+/// a binding, not a test: `whole @ Circle(r)` tests exactly what `Circle(r)`
+/// tests. The names are picked up separately, by `collect_bindings`, which
+/// walks the pattern whole and knows the position each one stands at.
+fn peel(p: &Pattern) -> &Pattern {
+    match p {
+        Pattern::As(_, inner, _) => peel(inner),
+        other => other,
+    }
 }
 
 /// Rows that survive once the first column is known to be `head`, with the
@@ -671,7 +688,7 @@ fn specialize(
         let mut pats = if is_wild(&r.pats[0]) {
             vec![Pattern::Wildcard; arity]
         } else if head_of(&r.pats[0]) == Some(head) {
-            match &r.pats[0] {
+            match peel(&r.pats[0]) {
                 Pattern::Ctor { args, .. } => args.clone(),
                 _ => Vec::new(),
             }
@@ -695,6 +712,10 @@ fn collect_bindings(
 ) {
     match p {
         Pattern::Var(n) => out.push((n.clone(), occ)),
+        Pattern::As(n, inner, _) => {
+            out.push((n.clone(), occ.clone()));
+            collect_bindings(inner, occ, ctors, out);
+        }
         Pattern::Ctor { name, args, .. } => {
             let ci = ctors[name].1;
             for (i, sub) in args.iter().enumerate() {
@@ -5234,6 +5255,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // in registers by now, so writing over it cannot lose them.
             if tail.is_some() {
                 if let (Some(sv), TK::Local(sname)) = (scrut, &scrutinee.kind) {
+                    // Deliberately not peeled. `whole @ Circle(r)` is exactly
+                    // the case the condition above rules out: the arm can
+                    // still say the box's name, because that is what the name
+                    // is. Reading through the `@` here would let the arm build
+                    // over a box it is still holding.
                     let ctor = match &arm.pattern {
                         Pattern::Ctor { name, .. } => self.tmod.ctors.get(name).map(|&(_, c)| c),
                         _ => None,
@@ -5291,7 +5317,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     fn pat_head(&self, p: &Pattern) -> Option<Head> {
-        match p {
+        match peel(p) {
             Pattern::Int(v) => Some(Head::Int(*v)),
             Pattern::Ctor { name, .. } => self.tmod.ctors.get(name).map(|&(_, ci)| Head::Ctor(ci)),
             _ => None,

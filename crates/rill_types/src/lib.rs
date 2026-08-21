@@ -2715,6 +2715,18 @@ impl Checker {
             // `lift` turned one arm holding alternatives into one arm per
             // alternative before this ran; there is nothing left to check.
             Pattern::Or(..) => unreachable!("`lift` expands `|` patterns"),
+            // The name is the whole of what the inner pattern matched, so it
+            // has that pattern's own type, and both are bound.
+            Pattern::As(n, inner, aline) => {
+                if !bound.insert(n.clone()) {
+                    return Err(TypeError::new(
+                        *aline,
+                        format!("name `{n}` is bound twice in this pattern"),
+                    ));
+                }
+                env.insert(n.clone(), ty.clone());
+                self.check_pattern(inner, ty, line, env, bound)
+            }
             Pattern::Wildcard => Ok(()),
             Pattern::Var(n) => {
                 if !bound.insert(n.clone()) {
@@ -2755,7 +2767,7 @@ impl Checker {
 
     /// The constructor a pattern tests for, if it tests for one.
     fn head_of(&self, p: &Pattern) -> Option<Head> {
-        match p {
+        match peel(p) {
             Pattern::Int(v) => Some(Head::Int(*v)),
             Pattern::Ctor { name, .. } => self.ctors.get(name).map(|&(_, ci)| Head::Ctor(ci)),
             _ => None,
@@ -2779,7 +2791,7 @@ impl Checker {
     fn specialize(&self, matrix: &[Vec<Pattern>], h: Head, arity: usize) -> Vec<Vec<Pattern>> {
         let mut out = Vec::new();
         for row in matrix {
-            let mut new = match (&row[0], h) {
+            let mut new = match (peel(&row[0]), h) {
                 (Pattern::Wildcard, _) | (Pattern::Var(_), _) => {
                     vec![Pattern::Wildcard; arity]
                 }
@@ -2800,7 +2812,7 @@ impl Checker {
     fn default_matrix(&self, matrix: &[Vec<Pattern>]) -> Vec<Vec<Pattern>> {
         matrix
             .iter()
-            .filter(|row| matches!(row[0], Pattern::Wildcard | Pattern::Var(_)))
+            .filter(|row| matches!(peel(&row[0]), Pattern::Wildcard | Pattern::Var(_)))
             .map(|row| row[1..].to_vec())
             .collect()
     }
@@ -2948,9 +2960,25 @@ enum Head {
     Int(i64),
 }
 
+/// What a pattern tests for, with any `@` names taken off the front.
+///
+/// A name is a binding and not a test: `whole @ Circle(r)` matches exactly what
+/// `Circle(r)` matches. Everything that asks a pattern what it tests for has to
+/// ask through this, and the reason is sharp — `head_of` has a `_ => None`
+/// arm, and an `As` reaching it would be read as "tests for nothing", which is
+/// what a wildcard says. The arm would then appear to match everything, and a
+/// `match` that is not exhaustive would compile.
+fn peel(p: &Pattern) -> &Pattern {
+    match p {
+        Pattern::As(_, inner, _) => peel(inner),
+        other => other,
+    }
+}
+
 fn show_pattern(p: &Pattern) -> String {
     match p {
         Pattern::Or(..) => unreachable!("`lift` expands `|` patterns"),
+        Pattern::As(n, inner, _) => format!("{n} @ {}", show_pattern(inner)),
         Pattern::Wildcard => "_".to_string(),
         Pattern::Var(n) => n.clone(),
         Pattern::Int(v) => v.to_string(),

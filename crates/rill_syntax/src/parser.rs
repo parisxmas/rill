@@ -1198,7 +1198,19 @@ impl Parser {
                 )),
             },
             Tok::Ident(name) if name == "_" => Ok(Pattern::Wildcard),
-            Tok::Ident(name) if !starts_upper(&name) => Ok(Pattern::Var(name)),
+            Tok::Ident(name) if !starts_upper(&name) => {
+                // `whole @ Circle(r)`: a name, and then the pattern it is the
+                // whole of. Unlike `|` this nests, because it asks nothing of
+                // the arm — it is one more binding at a position that is
+                // already being matched.
+                if matches!(self.peek(), Tok::At) {
+                    self.bump();
+                    let inner = self.pattern()?;
+                    Ok(Pattern::As(name, Box::new(inner), line))
+                } else {
+                    Ok(Pattern::Var(name))
+                }
+            }
             Tok::Ident(name) => {
                 let mut args = Vec::new();
                 if matches!(self.peek(), Tok::LParen) {

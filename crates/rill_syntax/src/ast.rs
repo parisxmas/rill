@@ -228,6 +228,10 @@ pub enum Pattern {
     Int(i64),
     /// `Circle(r)` — sub-patterns are limited to `_` and variables in M1.
     Ctor { name: String, args: Vec<Pattern>, line: usize },
+    /// `whole @ Circle(r)` — matches what follows the `@` and names the whole
+    /// of it as well. The name binds the value at the position the pattern is
+    /// at, which for an arm's own pattern is the scrutinee.
+    As(String, Box<Pattern>, usize),
     /// `1 | 2 | 3` — any one of these. Never survives `lift`, which turns one
     /// arm holding it into one arm per alternative; nothing downstream of that
     /// pass knows it was written. It exists in the tree at all so that the

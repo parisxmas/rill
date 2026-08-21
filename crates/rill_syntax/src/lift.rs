@@ -1172,6 +1172,10 @@ fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
                 pattern_names(a, out);
             }
         }
+        Pattern::As(n, inner, _) => {
+            out.push(n.clone());
+            pattern_names(inner, out);
+        }
         Pattern::Or(alts, _) => {
             // Every alternative binds the same names, so the first speaks for
             // all of them — and by the time anything else asks, the arm has

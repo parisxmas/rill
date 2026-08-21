@@ -108,7 +108,7 @@ fn run_source(name: &str, src: &str) -> String {
 /// codegen, so this stops before anything has to be linked and needs no wasm
 /// toolchain to be installed.
 fn compile_error_for_wasm(src: &str) -> String {
-    let out_dir = std::env::temp_dir().join(format!("rill-e2e-wasm-{}", std::process::id()));
+    let out_dir = std::env::temp_dir().join(bad_name("wasm"));
     std::fs::create_dir_all(&out_dir).unwrap();
     let path = out_dir.join("bad.rill");
     std::fs::write(&path, src).unwrap();
@@ -125,10 +125,22 @@ fn compile_error_for_wasm(src: &str) -> String {
     String::from_utf8_lossy(&build.stderr).into_owned()
 }
 
+/// A number no other test in this process will use. The rejected-source
+/// helpers all wrote to one `bad.rill` per process, which is a race the moment
+/// two of them run at once — and they do, because the harness runs tests in
+/// parallel. One would read back the other's source and be told the compiler
+/// had accepted it.
+static NEXT_BAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn bad_name(kind: &str) -> String {
+    let n = NEXT_BAD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("bad-{kind}-{}-{n}", std::process::id())
+}
+
 /// Compiles a source that is expected to be rejected, and gives back what the
 /// compiler said.
 fn compile_error(src: &str) -> String {
-    let out_dir = std::env::temp_dir().join(format!("rill-e2e-err-{}", std::process::id()));
+    let out_dir = std::env::temp_dir().join(bad_name("err"));
     std::fs::create_dir_all(&out_dir).unwrap();
     let path = out_dir.join("bad.rill");
     std::fs::write(&path, src).unwrap();
@@ -270,6 +282,59 @@ fn string_builders_accumulate() {
                  println(#big)\n  \
                  println(#strbuf_str(big))\n";
     assert_eq!(run_source("strbuf", src), "merhaba!\n8\n1000000\n1000000\n");
+}
+
+/// `whole @ Circle(r)` matches what follows the `@` and names all of it too.
+/// Nests, unlike `|`, because it asks nothing of the arm.
+#[test]
+fn as_patterns_name_the_whole() {
+    let src = "type Sekil\n  \
+                 Daire(r: Float)\n  \
+                 Kare(k: Float)\n\n\
+               fn buyut(s) = match s\n  \
+                 hepsi @ Daire(r) if r > 10.0 -> hepsi\n  \
+                 Daire(r) -> Daire(r * 2.0)\n  \
+                 hepsi @ Kare(_) -> hepsi\n\n\
+               fn yan(s) = match s\n  \
+                 Daire(r) -> r\n  \
+                 Kare(k) -> k\n\n\
+               fn inner(l) = match l\n  \
+                 Cons(bir @ 1, _) -> int_to_str(bir)\n  \
+                 Cons(n, _) -> \"baska \" + int_to_str(n)\n  \
+                 Nil -> \"bos\"\n\n\
+               fn main() =\n  \
+                 println(float_to_str(yan(buyut(Daire(2.0)))))\n  \
+                 println(float_to_str(yan(buyut(Daire(20.0)))))\n  \
+                 println(float_to_str(yan(buyut(Kare(3.0)))))\n  \
+                 println(inner(Cons(1, Nil)) + \" \" + inner(Cons(5, Nil)))\n";
+    assert_eq!(run_source("aspat", src), "4\n20\n3\n1 baska 5\n");
+}
+
+/// A name is a binding and not a test, and everything that asks what a pattern
+/// tests for has to read through the `@` to find out. Miss one and the arm
+/// looks like a wildcard — which is what `head_of`'s `_ => None` says — and a
+/// `match` that is not exhaustive compiles.
+#[test]
+fn as_patterns_are_transparent_to_exhaustiveness() {
+    let src = "type Sekil\n  \
+                 Daire(r: Float)\n  \
+                 Kare(k: Float)\n\n\
+               fn f(s) = match s\n  \
+                 hepsi @ Daire(r) -> 1\n\n\
+               fn main() = println(int_to_str(f(Kare(1.0))))\n";
+    let err = compile_error(src);
+    assert!(err.contains("not exhaustive") && err.contains("Kare"), "{err}");
+}
+
+/// The box an arm took apart can be built over — unless the arm is still
+/// holding it, which is exactly what an `@` name does.
+#[test]
+fn as_pattern_keeps_the_box_alive() {
+    let src = "fn topla(l, acc) = match l\n  \
+                 Nil -> acc\n  \
+                 hepsi @ Cons(h, t) -> topla(t, acc + h + len(hepsi))\n\n\
+               fn main() = println(int_to_str(topla(Cons(1, Cons(2, Cons(3, Nil))), 0)))\n";
+    assert_eq!(run_source("asreuse", src), "12\n");
 }
 
 /// Several patterns, one arm. `lift` turns it into one arm per alternative

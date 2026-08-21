@@ -43,6 +43,8 @@ pub enum Tok {
     Eq,
     /// `|` on its own, which separates the alternatives of one pattern.
     Pipe,
+    /// `@`, which names the whole of what a pattern matched.
+    At,
     PipeGt,
     Arrow,
     Colon,
@@ -101,6 +103,7 @@ impl std::fmt::Display for Tok {
             Tok::Gt => write!(f, "`>`"),
             Tok::Ge => write!(f, "`>=`"),
             Tok::Eq => write!(f, "`=`"),
+            Tok::At => write!(f, "`@`"),
             Tok::Pipe => write!(f, "`|`"),
             Tok::PipeGt => write!(f, "`|>`"),
             Tok::Arrow => write!(f, "`->`"),
@@ -450,6 +453,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                         }
                     }
                     '%' => Tok::Percent,
+                    '@' => Tok::At,
                     ',' => Tok::Comma,
                     ':' => Tok::Colon,
                     '\\' => Tok::Backslash,
