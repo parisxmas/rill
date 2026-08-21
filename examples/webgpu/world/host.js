@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=333";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=333";
+import { load } from "./world.js?v=334";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=334";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=333";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "333";
+const V = "334";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2958,7 +2958,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     } else if (wantShot && boltT >= cycleNow() && !wading) {
       const st0 = stateF32();
       const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
-      const dx = Math.sin(yaw) * cp, dy = Math.sin(pit), dz = -Math.cos(yaw) * cp;
+      let dx = Math.sin(yaw) * cp, dy = Math.sin(pit), dz = -Math.cos(yaw) * cp;
+      // The AK does not shoot down a line. Every round leaves a little wide of
+      // the last, and the longer the trigger is held the wider it walks — a
+      // cone that opens from about two thirds of a degree to two and a half
+      // over a magazine. The scattered direction is the one that crosses the
+      // wire, so everybody sees the round go where it actually went.
+      if (held === 2) {
+        const spread = 0.012 + Math.min(akBurst, 20) * 0.0012;
+        dx += (Math.random() * 2 - 1) * spread;
+        dy += (Math.random() * 2 - 1) * spread;
+        dz += (Math.random() * 2 - 1) * spread;
+        const l = Math.hypot(dx, dy, dz);
+        dx /= l; dy /= l; dz /= l;
+      }
       // Fired here for the tracer and the bang, and asked for there for what it
       // hits. A rifle whose report waits for a round trip is a rifle that fires
       // when you have stopped pulling the trigger; a round that decides what it

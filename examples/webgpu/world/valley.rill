@@ -1258,8 +1258,32 @@ fn try_break(w, cb, ci, b, at, ax, ay, az, bx, by, bz) =
     n6 = hit_at(cb, cat, sc, 2.25, 0.18, ax, ay, az, bx, by, bz)
     if n1 + n2 + n3 + n4 + n5 + n6 < 0.5 then 0
     else
+      # The round stops in the glass either way. What it did to the glass is
+      # the ledger's: a rifle round is a whole crystal, an AK round a fifth of
+      # one — five of the fast little rounds to what one aimed shot does.
       poke_f32(b, at + 7, 0.0)
-      break_crystal(w, cb, cat, ci)
+      hpb = peek_ptr(w, 123)
+      worn = peek_f32(hpb, ci) + (if round_scale(b, at) < 0.5 then 0.2 else 1.0)
+      if worn > 0.99 then break_crystal(w, cb, cat, ci)
+      else
+        poke_f32(hpb, ci, worn)
+        chip_crystal(w, cb, cat)
+
+# A round that wore the glass without breaking it: two chips off the surface,
+# in the crystal's own colour, so five shots read as five bites rather than
+# four nothings and a surprise.
+fn chip_crystal(w, cb, cat) =
+  sb = peek_ptr(w, 69)
+  k0 = to_int(peek_f32(w, 61))
+  cs = seg_of(w)
+  fill_chunk(cs, peek_f32(cb, cat), peek_f32(cb, cat + 1) + peek_f32(cb, cat + 3) * 0.8, peek_f32(cb, cat + 2), 0.2, peek_f32(cb, cat + 5), peek_f32(cb, cat + 6), peek_f32(cb, cat + 7))
+  fill_kick(cs, 0.0, 3.0, 0.0)
+
+  for j in 0..2
+    spawn_chunk(sb, k0 + j, cs, peek_f32(cb, cat) * 7.7 + to_float(j))
+
+  poke_f32(w, 61, to_float(k0 + 2))
+  1
 
 fn hit_crystals(w, b, at, ax, ay, az, bx, by, bz) =
   sg = seg_of(w)
@@ -1292,6 +1316,17 @@ fn hit_crystals(w, b, at, ax, ay, az, bx, by, bz) =
 # shot and a sequence. A body hit is still deliberately worse than a fireball
 # — one of those takes an eighth — because the fireballs are weather and the
 # rifle is somebody deciding.
+# The AK's round arrives at a third of the rifle's speed and lands at a third
+# of its worth — read off the round itself, because the ring has no field to
+# spare and the speed already says which gun it left. Drag never brings a
+# rifle round under a hundred, and an AK's never starts above forty-five, so
+# sixty metres a second splits them cleanly.
+fn round_scale(b, at) =
+  vx = peek_f32(b, at + 3)
+  vy = peek_f32(b, at + 4)
+  vz = peek_f32(b, at + 5)
+  if vx * vx + vy * vy + vz * vz < 3600.0 then 1.0 / 3.0 else 1.0
+
 fn head_hurt() = 1.0
 
 fn body_hurt() = 0.3
@@ -1311,7 +1346,7 @@ fn try_hit_player(w, s, owner, b, at, ax, ay, az, bx, by, bz) =
 # Top down: the head is inside the body's sphere as far as a segment test is
 # concerned, so asking about the body first would give away every head shot.
 fn hit_where(w, s, owner, b, at, ax, ay, az, bx, by, bz) =
-  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, head_hurt()) else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, body_hurt()) else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, leg_hurt()) else 0
+  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, head_hurt() * round_scale(b, at)) else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, body_hurt() * round_scale(b, at)) else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, leg_hurt() * round_scale(b, at)) else 0
 
 # Both halves of a hit are written down: one for whoever was hit and one for
 # whoever fired, because the second is the interesting number and cannot be
@@ -1872,6 +1907,10 @@ fn reset_world(w) =
 
   for i in 0..to_int(peek_f32(w, 58))
     restore_crystal(cb, i)
+
+  # And the wear on the glass goes with the breaks.
+  for i in 0..to_int(peek_f32(w, 58))
+    poke_f32(peek_ptr(w, 123), i, 0.0)
 
   poke_f32(w, 62, 0.0)
   clear_bullets(peek_ptr(w, 68))
@@ -3054,6 +3093,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
   fell_buf = alloc_bytes(fell_ring() * 4)
   zap_buf = alloc_bytes(zap_ring() * 2 * 4)
+  glass_buf = alloc_bytes(ncrys * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -3078,6 +3118,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 120, mark_buf)
   poke_ptr(s, 121, fell_buf)
   poke_ptr(s, 122, zap_buf)
+  poke_ptr(s, 123, glass_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
