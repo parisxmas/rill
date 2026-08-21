@@ -112,15 +112,37 @@
     let span = select(TRAIL, TRAIL_R, rocket);
     let slot = floor(flown * rate) - f32(n);
     let raw = flown - slot / rate;
+
+    // How long since the rocket arrived, and nothing if it is still flying.
+    // A negative life is the world saying this slot holds smoke rather than a
+    // rocket; `flown` stopped where it stopped, so `raw` is frozen with it.
+    let since = max(0.0, -life);
+
+    // Two ages, and the whole of the lingering is that they are two.
+    //
+    // Where a parcel *sits* is decided by how far back along the flight it
+    // was made — and once the rocket has arrived that must stop changing, or
+    // the column slides backwards along a path nothing is travelling any more.
+    // How old it *is* keeps running, because smoke goes on spreading, drifting
+    // and thinning after the thing that made it has gone.
+    //
+    // Freezing both was the obvious thing and it is wrong: the trail hangs
+    // there unchanged for as long as the slot lasts and then blinks out.
+    // Running both is what happened before, which is that the trail is thrown
+    // away at the moment of impact — the head is what the position is measured
+    // from, and there is no longer a head.
+    let tp = clamp(raw, 0.0, span);
+    let t = clamp(raw + since, 0.0, span);
+
     // Past the end of this kind's trail. A meteor's runs out at eighty parcels
     // and the draw asks for a hundred and twenty, which is what a rocket wants;
     // the difference is sent past the far plane here rather than left to come
-    // out at age one and be discarded a fragment at a time.
-    if (raw > span) {
+    // out at age one and be discarded a fragment at a time. Smoke that has
+    // finished fading goes the same way.
+    if (raw > span || raw + since > span) {
       o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
       return o;
     }
-    let t = clamp(raw, 0.0, span);
     let age = t / span;
     let born = slot >= 0.0;              // not made yet, at the start of a shot
 
@@ -133,7 +155,9 @@
     // Backwards along the flight. The gravity term comes back with a minus,
     // which is what makes the trail sag below the straight line back from the
     // head by exactly what the head has already climbed.
-    let back = pos - vel * t - vec3f(0.0, 0.5 * FIRE_G * t * t, 0.0);
+    // `tp`, not `t`: this is where along the flight the parcel was made, and
+    // that is a fact about a path already travelled.
+    let back = pos - vel * tp - vec3f(0.0, 0.5 * FIRE_G * tp * tp, 0.0);
     o.age = age;
     // Real seconds as well as the fraction. Everything that is a fact about
     // the smoke — how long the wind has had it, how long it takes a flame to

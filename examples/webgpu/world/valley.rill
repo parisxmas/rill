@@ -1672,7 +1672,33 @@ fn blasts_cap(s: Ptr) -> Int = blast_cap()
 # landing happens inside a frame it only calls.
 fn blasts_fired(s: Ptr) -> Int = to_int(peek_f32(wd(s), 80))
 
+# How long a rocket's smoke stands after the rocket is gone. The same number
+# the trail is drawn over, in `fireball.wgsl` — the parcels fade to nothing
+# across exactly this, and the slot is let go on the frame they reach it.
+fn smoke_after() = 1.7
+
+# A slot holds one of two things. A rocket in the air, which has a positive
+# life counting down; or the smoke it left, which has a negative one counting
+# up from the moment it went off.
+#
+# There was nowhere else to put that clock. The stride is nine floats and every
+# one is spoken for, and widening it reaches the ring, the instance buffer, the
+# vertex layout and the wire. `life` is the one field that means nothing once a
+# rocket has arrived, so it is what the smoke counts on: the sign says which of
+# the two the slot is, and the magnitude says how far through.
 fn step_fireball(w, fb, at, dt, decide) =
+  held = peek_f32(fb, at + 7)
+  if held < 0.0 then linger(fb, at, held, dt) else fly_fireball(w, fb, at, dt, decide)
+
+# Nothing moves. The trail is drawn from the position and the velocity the
+# rocket had when it arrived, which are still in the slot and are not touched
+# again — that is the whole point of leaving them there.
+fn linger(fb, at, held, dt) =
+  n = held - dt
+  poke_f32(fb, at + 7, if n < 0.0 - smoke_after() then 0.0 else n)
+  0
+
+fn fly_fireball(w, fb, at, dt, decide) =
   life = peek_f32(fb, at + 7) - dt
   on = if life > 0.0 then 1.0 else 0.0
   vx0 = peek_f32(fb, at + 3)
@@ -1711,7 +1737,13 @@ fn step_fireball(w, fb, at, dt, decide) =
   poke_f32(fb, at + 5, vz)
   # Out of the world is not an arrival: no crater, nothing to hear, just gone.
   away = gone_from_world(px, py, pz)
-  poke_f32(fb, at + 7, if landed > 0.5 then 0.0 else if struck > 0 then 0.0 else if away > 0.5 then 0.0 else life)
+  # A rocket that arrived leaves its smoke behind: the life goes just negative
+  # and starts counting the other way. A crystal's thrown fire does not — that
+  # is a stone, and what it leaves is already drawn as the wake it had. Nor
+  # does anything that left the world, which is not an arrival at all.
+  ended = if landed > 0.5 || struck > 0 then 1.0 else 0.0
+  smokes = if ended > 0.5 && peek_f32(fb, at + 6) < 0.0 then 1.0 else 0.0
+  poke_f32(fb, at + 7, if smokes > 0.5 then 0.0 - 0.0001 else if ended > 0.5 then 0.0 else if away > 0.5 then 0.0 else life)
   poke_f32(fb, at + 8, peek_f32(fb, at + 8) + dt * on)
   # It touched the ground while it was still flying, or it touched glass: that
   # is an arrival, not an expiry, and only an arrival makes a crater.
