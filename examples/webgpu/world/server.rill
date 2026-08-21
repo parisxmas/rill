@@ -1052,7 +1052,15 @@ fn ip_from(s, i, acc, part) =
   if c >= 48 && c <= 57 then ip_from(s, i + 1, acc * 10 + (c - 48), part) else if c == 46 then ip_from(s, i + 1, 0, shl(part, 8) + acc) else shl(part, 8) + acc
 
 fn play(conn, inbox, token) =
-  out = channel(4)
+  # A hundred and twenty-eight, not four. `offer` drops a line when this is
+  # full rather than stall the hub on a slow reader, which is right — but four
+  # was sized for the steady state of one snapshot a tick, and a rocket into a
+  # wall is not the steady state: one tick emits the snapshot, the rocket, the
+  # crater and sixteen stones, and at four deep, twelve of those stones were
+  # silently thrown away. The client never learned they had died, and a wall
+  # that keeps stones the server has broken looks exactly like a wall that
+  # cannot be broken.
+  out = channel(128)
   send(inbox, Arrived(out, token))
   # The first thing in the outbox is the welcome, and it carries the id
   # everything else is in terms of.

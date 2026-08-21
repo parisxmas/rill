@@ -2264,7 +2264,15 @@ fn cross_block(bb, i, p, at, sg) =
   bx = peek_f32(sg, 3)
   by = peek_f32(sg, 4)
   bz = peek_f32(sg, 5)
-  r = block_f(bb, i, 3) * 0.62
+  # 0.75, not 0.62. The stones sit on a 0.3-metre grid and the test is a
+  # sphere per stone: at 0.62 the radius is 0.186 and the point where four
+  # stones meet is 0.212 from every one of their centres — so a rocket that
+  # crossed the wall near a junction threaded the gap between the spheres and
+  # cratered the dirt behind. It looked like an indestructible wall, and it
+  # only looked that way for shots that were not squarely on a stone, which is
+  # why every aimed test passed while every player missed. 0.75 puts the
+  # radius past the far corner with a margin.
+  r = block_f(bb, i, 3) * 0.75
   d2 = seg_dist2(ax, ay, az, bx, by, bz, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2))
   if d2 > r * r then 0
   else
