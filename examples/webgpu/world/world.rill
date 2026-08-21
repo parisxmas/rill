@@ -240,6 +240,8 @@ export fn match_phase(w: Ptr) -> Int = v.match_phase(w)
 
 export fn set_match(w: Ptr, phase: Int, left: Float) -> Int = v.set_match(w, phase, left)
 
+export fn set_match_len(w: Ptr, secs: Int, report: Int) -> Int = v.set_match_len(w, secs, report)
+
 export fn kills(s: Ptr) -> Int = v.kills(s)
 
 export fn deaths(s: Ptr) -> Int = v.deaths(s)

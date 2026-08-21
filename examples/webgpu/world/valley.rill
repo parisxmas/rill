@@ -1819,7 +1819,14 @@ fn add_blast(w, x, y, z, seed) =
 # not a hole in a wall, it is the wall. At 1.2 it is two and a half across and
 # leaves stone standing either side, and it takes twenty-odd rockets to finish
 # an L rather than two.
-fn blast_stone() = 1.2
+#
+# Then back up to 1.6, because 1.2 was small enough that anything but a dead
+# centre hit did nothing at all: a warhead that goes off against the foot of a
+# wall, or a hand's width wide of it, was leaving a crater in the dirt and not
+# a mark on the stone. Which reads as the wall being indestructible rather than
+# as a miss. At 1.6 a hit takes about thirty-two of a wall's three hundred, so
+# it is still ten rockets to an L.
+fn blast_stone() = 1.6
 
 fn smash_walls(w, x, y, z, seed) =
   if seed > 0.0 then 0 else break_blocks(w, x, y, z, seed)
@@ -2537,6 +2544,8 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 125, 0.0)
   poke_f32(s, 128, 0.0)
   poke_f32(s, 129, 0.0)
+  poke_f32(s, 132, 0.0)
+  poke_f32(s, 133, 0.0)
   # The world points at itself, so `wd` works on it exactly as it works on a
   # player and nothing below has to ask which kind of block it was given. It
   # starts with nobody in it: even the browser with the valley to itself asks
@@ -3335,9 +3344,18 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
 # else. The clock lives on the world and not on the server, so a browser alone
 # in its own valley plays the same rounds a shared one does, and a client can
 # put the number on the screen without being told it every tick.
-fn match_len() = 600.0
+# How long a round is, and how long the board is up afterwards. On the world
+# rather than as constants, because a server is told them on the command line
+# and a browser alone in its valley should be able to differ. Nought means
+# nobody said, which is the ten minutes and twenty seconds it always was.
+fn match_len(w) = if peek_f32(w, 132) > 0.5 then peek_f32(w, 132) else 600.0
 
-fn report_len() = 20.0
+fn report_len(w) = if peek_f32(w, 133) > 0.5 then peek_f32(w, 133) else 20.0
+
+fn set_match_len(w: Ptr, secs: Int, report: Int) =
+  poke_f32(w, 132, to_float(secs))
+  poke_f32(w, 133, to_float(report))
+  1
 
 fn match_clock(w: Ptr) -> Float = peek_f32(w, 128)
 
@@ -3346,13 +3364,13 @@ fn match_phase(w: Ptr) -> Int = if peek_f32(w, 129) > 0.5 then 1 else 0
 # What the clock counts *down* to, which is what anybody wants to read: how
 # long is left of the match, or of the twenty seconds before the next one.
 fn match_left(w: Ptr) -> Float =
-  if match_phase(w) > 0 then report_len() - peek_f32(w, 128) else match_len() - peek_f32(w, 128)
+  if match_phase(w) > 0 then report_len(w) - peek_f32(w, 128) else match_len(w) - peek_f32(w, 128)
 
 fn step_match(w, dt) =
   t = peek_f32(w, 128) + dt
   if match_phase(w) > 0 then
-    if t >= report_len() then new_match(w) else tick_clock(w, t)
-  else if t >= match_len() then
+    if t >= report_len(w) then new_match(w) else tick_clock(w, t)
+  else if t >= match_len(w) then
     poke_f32(w, 129, 1.0)
     poke_f32(w, 128, 0.0)
     1
@@ -3398,7 +3416,7 @@ fn new_match_player(s) =
 # far into the phase we are, which is the other end of the same number.
 fn set_match(w: Ptr, phase: Int, left: Float) =
   poke_f32(w, 129, if phase > 0 then 1.0 else 0.0)
-  poke_f32(w, 128, clampf(if phase > 0 then report_len() - left else match_len() - left, 0.0, match_len()))
+  poke_f32(w, 128, clampf(if phase > 0 then report_len(w) - left else match_len(w) - left, 0.0, match_len(w)))
   1
 
 fn kills(s: Ptr) -> Int = to_int(peek_f32(s, 130))

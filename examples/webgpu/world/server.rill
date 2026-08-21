@@ -33,7 +33,37 @@ import "ws"
 # lived only in the binary running on the box for a while, which meant the
 # thing in production could not be rebuilt from what is written down here. Now
 # it is an argument, and the source is the whole story again.
-fn port() = if arg_count() > 1 then str_to_int(arg(1)) else 8091
+# ---- settings ---------------------------------------------------------------
+#
+# What this valley is, said on the command line rather than in this file:
+#
+#     ./valleyd 8291 meteors=off crystals=180 match=300
+#
+# A setting is `name=value`, anywhere after the port, in any order. The port
+# stays where it was — first argument, bare — because every script that starts
+# this server already passes it that way, and `port=8291` works too.
+#
+# The point is not the three settings that exist today. It is that turning
+# something off no longer means editing a constant, rebuilding, and shipping a
+# binary to find out.
+
+fn setting(key, dflt) = setting_from(args(), key, dflt)
+
+fn setting_from(l, key, dflt) = match l
+  Nil -> dflt
+  Cons(a, rest) -> if starts_with(a, key + "=") then str_sub(a, #key + 1, #a - #key - 1) else setting_from(rest, key, dflt)
+
+fn setting_int(key, dflt) =
+  v = setting(key, "")
+  if #v == 0 then dflt else str_to_int(v)
+
+# `off`, `no`, `false` and `0` are all off, because whoever is typing it at four
+# in the morning should not have to remember which one this program wanted.
+fn setting_on(key, dflt) =
+  v = setting(key, "")
+  if #v == 0 then dflt else if v == "off" || v == "no" || v == "false" || v == "0" then 0 else 1
+
+fn port() = setting_int("port", if arg_count() > 1 then str_to_int(arg(1)) else 8091)
 
 # Fifty milliseconds. Fast enough that a walk looks like a walk once the
 # client interpolates between two of them, slow enough that a valley with
@@ -48,11 +78,11 @@ fn dt() = 0.05
 # places. The grid is *not* here: it is the terrain mesh's resolution and
 # nothing else samples it, so a slow machine may draw a coarser valley and
 # still stand on exactly the same ground.
-fn n_pines() = 400
+fn n_pines() = setting_int("pines", 400)
 
-fn n_crystals() = 300
+fn n_crystals() = setting_int("crystals", 300)
 
-fn n_grass() = 900
+fn n_grass() = setting_int("grass", 900)
 
 # A bolt action, enforced where it matters. The animation is the browser's,
 # but a client that simply did not play it could otherwise send five hundred
@@ -124,7 +154,15 @@ fn max_players() = 8
 # something that makes standing about dangerous is the point. The throws and
 # the craters were already on the wire, one line each per tick, so a browser
 # sees this valley's meteors exactly as it sees its own.
-fn meteors() = 1
+# Off by default here. A browser alone in its own valley was what the thrown
+# fire was written for; a shared one is a place people are trying to stand
+# about in and shoot each other, and being shelled from the hillside while
+# doing it is somebody else's game. `meteors=on` puts them back.
+fn meteors() = setting_on("meteors", 0)
+
+fn match_secs() = setting_int("match", 600)
+
+fn report_secs() = setting_int("report", 20)
 
 # How many addresses are tracked at once. One row per connection is more than
 # enough: a row is only in use while at least one connection from that address
@@ -1203,6 +1241,8 @@ fn run(server) =
 
   w = v.init(64, n_pines(), n_crystals(), n_grass())
   v.set_meteors(w, meteors())
+  v.set_match_len(w, match_secs(), report_secs())
+  println("settings: meteors=" + (if meteors() > 0 then "on" else "off") + " crystals=" + int_to_str(n_crystals()) + " pines=" + int_to_str(n_pines()) + " grass=" + int_to_str(n_grass()) + " match=" + int_to_str(match_secs()) + "s report=" + int_to_str(report_secs()) + "s")
   println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
   # What this server has last told anybody about each ammunition box. Zeros,
   # which is where `v.init` put them.
