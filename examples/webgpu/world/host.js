@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=306";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=306";
+import { load } from "./world.js?v=307";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=307";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=306";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "306";
+const V = "307";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -3048,8 +3048,18 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[36] = sunX; uf[37] = sunY; uf[38] = sunZ;
     uf[39] = canvas.width / canvas.height;
     uf[40] = st[19]; uf[41] = st[20];     // yaw, pitch
-    uf[42] = st[26]; uf[43] = st[27];     // wind angle, wind strength
-    uf[44] = st[29];                      // the wind's integrated phase
+    // Off the *world*, not the player. `step_wind` writes the valley's weather
+    // into the world block, and these read slots 26, 27 and 29 of the player —
+    // which are not the wind and are not anything, so every shader that sways
+    // has been given an angle of zero, a strength of zero and a phase that
+    // never moves. The pines stood still, the grass stood still, the water lay
+    // flat, and the smoke went nowhere. One letter's worth of difference, and
+    // it was there for as long as the wind has been.
+    // (`wind` is taken further down for the player's breath, which is a
+    // different thing wearing the same word.)
+    const weather = new Float32Array(E.memory.buffer, Number(world), 32);
+    uf[42] = weather[26]; uf[43] = weather[27]; // wind angle, wind strength
+    uf[44] = weather[29];                       // the wind's integrated phase
     // How fast the player is going, and a phase integrated from it. The gun's
     // bob reads both: the speed sets how far it swings, the phase where it is
     // in the swing — a bob driven by the clock alone jumps whenever the speed
