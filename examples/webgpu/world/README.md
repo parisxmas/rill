@@ -514,6 +514,17 @@ not soot — `meteor.wgsl` skips the stone, and `rocket.wgsl` draws the tube of
 steel at the head, nose along its velocity. No field was added to the ring and
 no message to the protocol.
 
+A rocket goes off on the first solid thing it meets rather than only on the
+ground: it flew straight through a stand of crystals and cratered the hill
+behind, which is not what a warhead does. The rounds' own crystal test does the
+work unchanged — a bullet and a fireball agree about where the life is, so
+`try_break` kills whichever hit by writing a nought in the same slot. And the
+blast takes the glass within six metres with it, which measures three and a
+third crystals a rocket. A crystal's own thrown fire keeps flying and breaks
+nothing: those come *from* the crystals, and a valley that shelled itself would
+be over without anybody in it. The sign of the seed tells the two apart, the
+same way it tells the renderer what to draw.
+
 Seventy metres a second against the crystals' fourteen, which is eight tenths
 of a metre of drop at fifty and three and a third at a hundred: a weapon you
 lead with at range and point at anything close. Three in the tube, filled by

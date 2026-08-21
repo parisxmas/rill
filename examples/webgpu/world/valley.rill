@@ -1494,6 +1494,42 @@ fn hurt_everyone(w, x, y, z) =
   for i in 0..player_count(w)
     blast_hurt(player_at(w, i), x, y, z)
 
+# What a warhead does to the glass around it.
+#
+# Six metres. Nine was measured rather than reasoned about and came to six
+# crystals a rocket with seventeen on the best shot, which is a tube that
+# clears hillsides — and seventeen breaks in one tick is over half the
+# thirty-two the break ring holds, so a client could have missed some. They do
+# not spread evenly: they crowd the waterline, and a rocket into a stand of
+# them catches far more than the average density says it should.
+#
+# Six comes to three and a third a rocket over fourteen aimed shots, ten on the
+# best of them, and one that broke nothing at all because it missed.
+fn blast_glass() = 6.0
+
+# And only a rocket's blast. A meteor comes down somewhere every few seconds
+# and a valley that shelled its own crystals would be over without anybody in
+# it — the crystals are the thing the game is about, and what breaks them is
+# meant to be somebody deciding to. The sign of the seed says which blast this
+# was, the same way it says which thing to draw.
+fn glass_near(w, x, y, z, seed) =
+  if seed > 0.0 then 0 else break_near(w, x, y, z)
+
+fn break_near(w, x, y, z) =
+  cb = peek_ptr(w, 66)
+
+  for ci in 0..to_int(peek_f32(w, 58))
+    break_if_near(w, cb, ci, x, y, z)
+
+fn break_if_near(w, cb, ci, x, y, z) =
+  cat = ci * 8
+  if peek_f32(cb, cat + 3) < 0.01 then 0
+  else
+    dx = peek_f32(cb, cat) - x
+    dy = peek_f32(cb, cat + 1) - y
+    dz = peek_f32(cb, cat + 2) - z
+    if dx * dx + dy * dy + dz * dz > blast_glass() * blast_glass() then 0 else break_crystal(w, cb, cat, ci)
+
 fn add_blast(w, x, y, z, seed) =
   bb = peek_ptr(w, 81)
   k = to_int(peek_f32(w, 80))
@@ -1505,6 +1541,7 @@ fn add_blast(w, x, y, z, seed) =
   poke_f32(bb, at + 4, 0.0)
   poke_f32(w, 80, to_float(k + 1))
   hurt_everyone(w, x, y, z)
+  glass_near(w, x, y, z, seed)
 
   # Eighteen pieces of what it hit, thrown nearly twice as hard as a crystal
   # coming apart. The fireball above them reaches twelve metres now and the
@@ -1558,17 +1595,40 @@ fn step_fireball(w, fb, at, dt, decide) =
   py = peek_f32(fb, at + 1) + vy * dt * on
   pz = peek_f32(fb, at + 2) + vz * dt * on
   landed = if py < stop_height(px, pz) then 1.0 else 0.0
+  # A rocket goes off on the first solid thing it meets, not only on the
+  # ground. Without this it flew through a crystal — through the whole stand of
+  # them — and cratered the hillside behind, which is not what a warhead does
+  # and is not what anybody aiming one expects.
+  #
+  # A crystal's own fire keeps flying: those are thrown *by* the crystals, and
+  # one that took out the next crystal along would have the valley shelling
+  # itself. The sign of the seed is what tells the two apart, the same way the
+  # renderer does.
+  struck = if peek_f32(fb, at + 6) < 0.0 && on > 0.5 && decide > 0 then
+    hits_glass(w, fb, at, peek_f32(fb, at), peek_f32(fb, at + 1), peek_f32(fb, at + 2), px, py, pz)
+  else
+    0
+
   poke_f32(fb, at, px)
   poke_f32(fb, at + 1, py)
   poke_f32(fb, at + 2, pz)
   poke_f32(fb, at + 3, vx)
   poke_f32(fb, at + 4, vy)
   poke_f32(fb, at + 5, vz)
-  poke_f32(fb, at + 7, if landed > 0.5 then 0.0 else life)
+  poke_f32(fb, at + 7, if landed > 0.5 then 0.0 else if struck > 0 then 0.0 else life)
   poke_f32(fb, at + 8, peek_f32(fb, at + 8) + dt * on)
-  # It touched the ground while it was still flying: that is an arrival, not an
-  # expiry, and only an arrival makes a crater.
-  if landed * on > 0.5 && decide > 0 then add_blast(w, px, py, pz, peek_f32(fb, at + 6)) else 0
+  # It touched the ground while it was still flying, or it touched glass: that
+  # is an arrival, not an expiry, and only an arrival makes a crater.
+  if (landed * on > 0.5 || struck > 0) && decide > 0 then add_blast(w, px, py, pz, peek_f32(fb, at + 6)) else 0
+
+# The rounds' own crystal test, run against a rocket. It works unchanged
+# because a fireball and a bullet agree about where the life is — slot 7 in
+# both — and `try_break` kills what hit by writing a nought there. So whether
+# anything was struck is read back out of the same slot rather than returned
+# through another path.
+fn hits_glass(w, fb, at, ax, ay, az, bx, by, bz) =
+  hit_crystals(w, fb, at, ax, ay, az, bx, by, bz)
+  if peek_f32(fb, at + 7) < 0.001 then 1 else 0
 
 fn step_fireballs(w, fb, dt, decide) =
   for i in 0..fireball_cap()
