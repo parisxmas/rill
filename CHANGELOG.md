@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — the evening the valley would not answer
+
+Two production faults in one evening, each found by somebody standing at the
+door of a live server.
+
+- **A ring cursor outlived its match.** The server's tick reads every ring
+  cursor before the world steps and sends the difference after; `new_match`
+  empties the rings. When the step that ends a match falls between those two,
+  the old cursor is a count the new match may never reach, and the send loop —
+  which walks upward until it *equals* the cursor — walks for ever,
+  broadcasting as it goes. The hub never comes back: nobody new is admitted,
+  nobody quiet is dropped, and the process reads as one pegged core with no
+  syscalls, which is how `perf` found it (`broadcast`, `strbuf_byte`, `offer`,
+  round and round). `since(from, now)` clamps a cursor from behind a reset to
+  nought, where the new match's events genuinely begin.
+- **`ws.rill` read header names with their case on.** Header names are
+  case-insensitive (RFC 7230) and always were; what changed is who was asking.
+  HTTP/2 lowercases every header it carries, and a handshake that has been
+  through Cloudflare or an h2-fronted nginx arrives as `sec-websocket-key:` —
+  which a case-sensitive `str_find` does not find, so the upgrade was refused
+  by silence and nginx turned the silence into a 502. The name is now matched
+  case-blind and the value still read from the original bytes, because a
+  base64 key is exactly the kind of value case matters to.
+
 ## 0.5.0 — the words a program reaches for
 
 The release where the language grew its everyday vocabulary. `Map(k, v)`,

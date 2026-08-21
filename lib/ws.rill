@@ -15,9 +15,25 @@ fn ws_guid() = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 # -- handshake ----------------------------------------------------------------
 
+# Header names are case-insensitive (RFC 7230), and that is not a courtesy:
+# HTTP/2 sends every header lowercased, and anything that has been through a
+# proxy speaking it — Cloudflare, nginx with an h2 front — arrives as
+# `sec-websocket-key:`. Finding the name case-blind cost a production valley
+# an evening of 502s; the *value* is read from the original bytes at the same
+# offset, because a base64 key is exactly the kind of value case matters to.
 fn header_value(raw, name) =
-  i = str_find(raw, name)
+  i = str_find(ascii_lower(raw), ascii_lower(name))
   if i < 0 then "" else header_tail(raw, i + str_len(name))
+
+fn ascii_lower(s) =
+  b = strbuf()
+
+  for i in 0..str_len(s)
+    strbuf_byte(b, lower_byte(str_get(s, i)))
+
+  strbuf_str(b)
+
+fn lower_byte(c) = if c >= 65 && c <= 90 then c + 32 else c
 
 fn header_tail(raw, from) =
   rest = str_sub(raw, from, str_len(raw))

@@ -635,17 +635,29 @@ fn tick(w, conns, said) =
   pick_all(conns)
   v.rise_all(w)
   left = drop_quiet(w, conns, v.world_time(w))
-  send_shots(w, left, shots0)
-  send_throws(w, left, throws0)
-  send_craters(w, left, craters0)
-  send_breaks(w, left, breaks0)
-  send_stones(w, left, stones0)
-  send_downed(w, left, downed0)
-  send_hurts(w, left, hurts0)
+  send_shots(w, left, since(shots0, v.shots(w)))
+  send_throws(w, left, since(throws0, v.throws(w)))
+  send_craters(w, left, since(craters0, v.blasts_fired(w)))
+  send_breaks(w, left, since(breaks0, v.breaks(w)))
+  send_stones(w, left, since(stones0, v.blocks_gone(w)))
+  send_downed(w, left, since(downed0, v.fires_down(w)))
+  send_hurts(w, left, since(hurts0, v.hurts(w)))
   again(said)
   send_mag_moves(w, left, said, 0)
   tell_each(w, left, left)
   left
+
+# A ring cursor read before the world stepped, made safe against that step
+# having been the one that ended the match. `new_match` empties the rings —
+# stones, breaks, downed fire back to nought — so a cursor carried over from
+# the old match is a count the new one may never reach, and a send loop that
+# walks `from` upward until it *equals* the cursor walks for ever, broadcasting
+# as it goes. The hub never comes back from that tick: nobody new can be
+# admitted, nobody quiet can be dropped, and the whole server reads as one
+# spinning core. Behind a reset the honest place to start is nought — the new
+# match's events begin there, and whatever the old match had not yet said died
+# with it.
+fn since(from, now) = if from > now then 0 else from
 
 # One box said again every second, whether it moved or not.
 #
