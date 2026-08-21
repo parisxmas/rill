@@ -4017,7 +4017,7 @@ fn step_world(w: Ptr, dt: Float) =
 # who was bitten and by which crystal, one `z` each. The damage arrives the
 # way all server damage does, in the snapshot; the ring is for the light and
 # the sound, which every browser draws from the same two numbers.
-fn zap_reach() = 2.4
+fn zap_reach() = 1.8
 
 fn zap_bite() = 0.10
 
@@ -4035,17 +4035,22 @@ fn zap_check(w, s) =
 fn zap_scan(w, s, cb, n, i) =
   if i >= n then 0 else if near_glass(s, cb, i) > 0 then zap(w, s, cb, i) else zap_scan(w, s, cb, n, i + 1)
 
-# Near the glass: within arm-and-a-step of the crystal's foot, and at its
-# height. The smallest shards of standing crystal do not bite — a thing that
-# reaches your knee is not a thing you were warned about.
+# Near the glass: within arm-and-a-step of the crystal's *surface*, and at
+# its height. From the surface, not the centre — the body already cannot walk
+# nearer a big prism than about 0.55 of its scale, so a reach measured from
+# the centre left the giants unable to bite the one thing standing hard
+# against them. The smallest shards of standing crystal do not bite — a thing
+# that reaches your knee is not a thing you were warned about.
 fn near_glass(s, cb, i) =
   at = i * 8
-  if peek_f32(cb, at + 3) < 0.35 then 0
+  sc = peek_f32(cb, at + 3)
+  if sc < 0.35 then 0
   else
     dx = peek_f32(cb, at) - peek_f32(s, 21)
     dz = peek_f32(cb, at + 2) - peek_f32(s, 23)
     dy = peek_f32(cb, at + 1) - peek_f32(s, 22)
-    if dx * dx + dz * dz > zap_reach() * zap_reach() then 0 else if dy > 2.0 || dy < 0.0 - 4.0 then 0 else 1
+    r = 0.55 * sc + zap_reach()
+    if dx * dx + dz * dz > r * r then 0 else if dy > 2.0 || dy < 0.0 - 4.0 then 0 else 1
 
 fn zap(w, s, cb, i) =
   poke_f32(s, 105, world_time(w))
@@ -4068,16 +4073,18 @@ fn note_zap(w, who, ci) =
   poke_f32(w, 95, peek_f32(w, 95) + 1.0)
   1
 
-fn zaps(w: Ptr) -> Int = to_int(peek_f32(w, 95))
+# `wd`, like every counter a host reads: the browser hands these its own
+# player block, and the world is one hop from either kind.
+fn zaps(s: Ptr) -> Int = to_int(peek_f32(wd(s), 95))
 
-fn zap_who(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 122), k % zap_ring() * 2))
+fn zap_who(s: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(wd(s), 122), k % zap_ring() * 2))
 
-fn zap_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 122), k % zap_ring() * 2 + 1))
+fn zap_which(s: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(wd(s), 122), k % zap_ring() * 2 + 1))
 
 # Being told about a bite this browser did not decide: the ring and the
 # counter move, the light and the sound follow, and the health arrives in the
 # snapshot the way it always does.
-fn put_zap(w: Ptr, who: Int, ci: Int) = note_zap(w, who, ci)
+fn put_zap(s: Ptr, who: Int, ci: Int) = note_zap(wd(s), who, ci)
 
 # The wind is a function of the clock and of nothing else, which is why a
 # client can run it without being told anything: give two machines the same

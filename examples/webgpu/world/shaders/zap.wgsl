@@ -17,7 +17,11 @@
   }
 
   const ZAP_LIFE = 0.35;
-  const HALFW = 0.009;
+  // Wide, because the quad is the canvas and the bolt lives inside it: the
+  // fragment draws a jagged core wandering about the centre line and a soft
+  // halo across the whole width, so the strip has to be as wide as the
+  // wander plus the glow.
+  const HALFW = 0.032;
 
   @vertex fn vs(
     @builtin(vertex_index) vi: u32,
@@ -67,11 +71,29 @@
   @fragment fn fs(v: VOut) -> @location(0) vec4f {
     if (v.len <= 0.0) { discard; }
     let x = clamp(v.local.x, 0.0, v.len);
-    let d = length(vec2f(v.local.x - x, v.local.y)) / HALFW;
-    let glow = pow(clamp(1.0 - d, 0.0, 1.0), 2.0);
-    // A hot white core inside the crystal's own colour, and the whole thing
-    // dying with the fade — a discharge, not a searchlight.
-    let col = mix(v.tint * 2.4, vec3f(1.0, 1.0, 1.0), pow(clamp(1.0 - d, 0.0, 1.0), 5.0));
+    let t = u.eye.w;
+
+    // Lightning, not a laser: the core zigzags about the centre line, two
+    // frequencies of it, reshuffled every few frames — which is the whole of
+    // what makes electricity read as electricity. The envelope pins both ends
+    // to the endpoints, because a bolt that misses the crystal it came from
+    // is a bolt drawn next to the story.
+    let s = x / max(v.len, 0.000001);
+    let env = clamp(s * (1.0 - s) * 5.0, 0.0, 1.0);
+    let jolt = floor(t * 24.0);
+    let wig = (sin(x * 130.0 + jolt * 37.7) * 0.55
+             + sin(x * 313.0 - jolt * 91.3 + 1.7) * 0.30) * HALFW * 0.62 * env;
+
+    // The bolt: a thin bright vein along the wander. The halo: the crystal's
+    // own colour, wide and soft over the whole strip — the blend the eye
+    // reads as air lit by the discharge rather than as a drawn line.
+    let across = v.local.y - wig;
+    let endcap = length(vec2f(v.local.x - x, across));
+    let vein = pow(clamp(1.0 - endcap / (HALFW * 0.16), 0.0, 1.0), 1.4);
+    let halo = pow(clamp(1.0 - abs(v.local.y) / HALFW, 0.0, 1.0), 2.2);
+    let flick = 0.75 + 0.25 * sin(jolt * 17.9);
+
+    let col = v.tint * (halo * 1.5) + vec3f(1.0, 1.0, 1.0) * (vein * 2.6);
     let view = v.world - u.eye.xyz;
-    return vec4f(col * glow * 3.2 * v.fade * v.fade * (1.0 - fogAt(v.world, length(view))), 1.0);
+    return vec4f(col * flick * 2.2 * v.fade * v.fade * (1.0 - fogAt(v.world, length(view))), 1.0);
   }
