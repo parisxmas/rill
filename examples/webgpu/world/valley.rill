@@ -331,16 +331,37 @@ fn place(buf, i, count, cap, lim, kind) =
 # is the way a piece leaves: the size goes to zero and the renderer stops
 # drawing it, which is one number to change and one number to send.
 
-fn block_size() = 0.8
+fn block_size() = 0.3
 
-fn wall_tall() = 3
+# Eight courses of three tenths is the same two and a bit metres the wall was
+# when it was three courses of eight tenths: a bit over head height, which is
+# what it is for.
+fn wall_tall() = 8
 
 fn wall_cap() = 12
 
-# The most blocks one L can want: two arms of seven, three high.
-fn wall_blocks() = 42
+# The most blocks one L can want: two arms of nineteen, eight courses high.
+fn wall_arm_max() = 19
+
+fn wall_blocks() = wall_arm_max() * 2 * wall_tall()
 
 fn block_cap() = wall_cap() * wall_blocks()
+
+# Where each L stands and how far it reaches, four floats to a wall.
+#
+# Without this every round in the air tests every stone in the valley on every
+# frame, and there are a great many more stones than there were: thirty-two
+# rounds against three and a half thousand blocks is a hundred thousand tests a
+# frame for walls that are almost all on the other side of the map. One sphere
+# a wall throws nearly all of it away before touching a block.
+fn wall_box(w) = peek_ptr(w, 127)
+
+fn wall_near(wb, k, x, y, z, reach) =
+  dx = peek_f32(wb, k * 4) - x
+  dy = peek_f32(wb, k * 4 + 1) - y
+  dz = peek_f32(wb, k * 4 + 2) - z
+  r = peek_f32(wb, k * 4 + 3) + reach
+  dx * dx + dy * dy + dz * dz < r * r
 
 fn blocks_ptr(w) = peek_ptr(w, 122)
 
@@ -367,6 +388,11 @@ fn level_at(x, z, h, d) =
 fn absf(v) = if v < 0.0 then 0.0 - v else v
 
 fn place_walls(w, bb) =
+  wb = wall_box(w)
+
+  for k in 0..wall_cap()
+    set_wall_box(wb, k, 0.0, 0.0 - 1000.0, 0.0, 0.0)
+
   n = wall_try(w, bb, 0, 0)
   poke_f32(w, 121, to_float(n * wall_blocks()))
   n
@@ -376,15 +402,15 @@ fn wall_try(w, bb, i, made) =
   else
     x = (hash2(to_float(i), 17.0) - 0.5) * 150.0
     z = (hash2(to_float(i), 29.0) - 0.5) * 150.0
-    if good_site(x, z) then wall_try(w, bb, i + 1, made + lay_wall(bb, made, x, z, to_float(i))) else wall_try(w, bb, i + 1, made)
+    if good_site(x, z) then wall_try(w, bb, i + 1, made + lay_wall(bb, wall_box(w), made, x, z, to_float(i))) else wall_try(w, bb, i + 1, made)
 
 # One L. Two arms meeting at a corner, each a run of blocks, each run three
 # high. The turn is always a right angle — that is what makes it an L and not a
 # bent line — but which way it faces and how long each arm runs is the site's.
-fn lay_wall(bb, wi, x, z, seed) =
+fn lay_wall(bb, wb, wi, x, z, seed) =
   yaw = hash2(seed, 41.0) * 6.28318
-  la = 4 + to_int(hash2(seed, 53.0) * 3.9)
-  lb = 3 + to_int(hash2(seed, 67.0) * 3.9)
+  la = 11 + to_int(hash2(seed, 53.0) * 8.9)
+  lb = 8 + to_int(hash2(seed, 67.0) * 8.9)
   base = wi * wall_blocks()
 
   # Nothing is drawn until it is written, so the whole slice starts empty and
@@ -394,6 +420,26 @@ fn lay_wall(bb, wi, x, z, seed) =
 
   arm(bb, base, x, z, sin(yaw), cos(yaw), la, seed)
   arm(bb, base + la * wall_tall(), x + sin(yaw) * block_size() * to_float(la - 1), z + cos(yaw) * block_size() * to_float(la - 1), cos(yaw), 0.0 - sin(yaw), lb, seed + 3.0)
+  # The sphere that holds this L: the start, the corner and the far end, and
+  # the radius is whichever reaches furthest from the middle of the three.
+  cx = x + sin(yaw) * block_size() * to_float(la - 1)
+  cz = z + cos(yaw) * block_size() * to_float(la - 1)
+  ex = cx + cos(yaw) * block_size() * to_float(lb - 1)
+  ez = cz - sin(yaw) * block_size() * to_float(lb - 1)
+  mx = (x + cx + ex) / 3.0
+  mz = (z + cz + ez) / 3.0
+  r1 = sqrt((x - mx) * (x - mx) + (z - mz) * (z - mz))
+  r2 = sqrt((cx - mx) * (cx - mx) + (cz - mz) * (cz - mz))
+  r3 = sqrt((ex - mx) * (ex - mx) + (ez - mz) * (ez - mz))
+  far = if r1 > r2 then if r1 > r3 then r1 else r3 else if r2 > r3 then r2 else r3
+  set_wall_box(wb, wi, mx, height(mx, mz) + block_size() * to_float(wall_tall()) * 0.5, mz, far + 2.0)
+  1
+
+fn set_wall_box(wb, wi, x, y, z, r) =
+  poke_f32(wb, wi * 4, x)
+  poke_f32(wb, wi * 4 + 1, y)
+  poke_f32(wb, wi * 4 + 2, z)
+  poke_f32(wb, wi * 4 + 3, r)
   1
 
 fn arm(bb, base, x, z, dx, dz, len, seed) =
@@ -1757,17 +1803,33 @@ fn add_blast(w, x, y, z, seed) =
 
 # What a warhead does to a wall. Only a warhead — a meteor landing on the tops
 # would quietly take the walls apart over an afternoon with nobody there.
-fn blast_stone() = 3.4
+# Two thirds off what a warhead takes out of a wall. It was three and a half
+# metres when a block was eight tenths of a metre; the blocks are three tenths
+# now, so the same reach would have taken far more of the wall rather than the
+# same amount in smaller pieces. Volume goes as the cube, so a third of the
+# damage is the cube root of a third off the radius.
+fn blast_stone() = 2.35
 
 fn smash_walls(w, x, y, z, seed) =
   if seed > 0.0 then 0 else break_blocks(w, x, y, z, seed)
 
 fn break_blocks(w, x, y, z, seed) =
+  wb = wall_box(w)
   bb = blocks_ptr(w)
 
-  for i in 0..block_count(w)
-    maybe_break_block(w, bb, i, x, y, z, seed)
+  for k in 0..wall_cap()
+    break_in_wall(w, wb, bb, k, x, y, z, seed)
   1
+
+fn break_in_wall(w, wb, bb, k, x, y, z, seed) =
+  if wall_near(wb, k, x, y, z, blast_stone()) then break_wall_blocks(w, bb, k, x, y, z, seed) else 0
+
+fn break_wall_blocks(w, bb, k, x, y, z, seed) =
+  base = k * wall_blocks()
+
+  for j in 0..wall_blocks()
+    maybe_break_block(w, bb, base + j, x, y, z, seed)
+  0
 
 fn maybe_break_block(w, bb, i, x, y, z, seed) =
   if block_live(bb, i) then try_break_block(w, bb, i, x, y, z, seed) else 0
@@ -1798,10 +1860,14 @@ fn burst_block(w, bb, i, dx, dy, dz, d2, seed) =
   g = block_f(bb, i, 6)
   b = block_f(bb, i, 7)
 
-  for j in 0..5
-    spawn_chunk(sb, k0 + j, bx, by, bz, sc * 0.5, r, g, b, dx * n * push, dy * n * push + 5.0, dz * n * push, seed * 53.0 + to_float(i) * 7.3 + to_float(j))
+  # Two pieces, near enough the size of the stone that stood there. Five chips
+  # a fifth of the size read as dust coming off a wall; what should come off it
+  # is the stones themselves, thrown up and then falling like anything with
+  # weight — which `step_shard` already gives them.
+  for j in 0..2
+    spawn_chunk(sb, k0 + j, bx, by, bz, sc * 0.85, r, g, b, dx * n * push, dy * n * push + 7.0, dz * n * push, seed * 53.0 + to_float(i) * 7.3 + to_float(j))
 
-  poke_f32(w, 61, to_float(k0 + 5))
+  poke_f32(w, 61, to_float(k0 + 2))
   poke_f32(bb, i * 8 + 3, 0.0)
   note_block(w, i)
   1
@@ -1831,10 +1897,10 @@ fn scatter_block(w, bb, i) =
   k0 = to_int(peek_f32(w, 61))
   sc = block_f(bb, i, 3)
 
-  for j in 0..5
-    spawn_chunk(sb, k0 + j, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2), sc * 0.5, block_f(bb, i, 5), block_f(bb, i, 6), block_f(bb, i, 7), 0.0, 6.0, 0.0, to_float(i) * 31.7 + to_float(j))
+  for j in 0..2
+    spawn_chunk(sb, k0 + j, block_f(bb, i, 0), block_f(bb, i, 1), block_f(bb, i, 2), sc * 0.85, block_f(bb, i, 5), block_f(bb, i, 6), block_f(bb, i, 7), 0.0, 7.0, 0.0, to_float(i) * 31.7 + to_float(j))
 
-  poke_f32(w, 61, to_float(k0 + 5))
+  poke_f32(w, 61, to_float(k0 + 2))
   poke_f32(bb, i * 8 + 3, 0.0)
   1
 
@@ -1983,12 +2049,36 @@ fn rocket_stop(w, fb, at, ax, ay, az, bx, by, bz) =
 # behind it is the same wrong that flying through a crystal was. The answer is
 # read back out of slot 7 the way the others are.
 fn hits_stone(w, fb, at, ax, ay, az, bx, by, bz) =
-  bb = blocks_ptr(w)
-
-  for i in 0..block_count(w)
-    stop_on_block(bb, i, fb, at, ax, ay, az, bx, by, bz)
-
+  sweep_walls(w, fb, at, ax, ay, az, bx, by, bz)
   if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+
+# Every wall the segment could reach, and only then the stones in it.
+#
+# Without this every round in the air tests every stone in the valley on every
+# frame, and there are a great many more stones than there were: thirty-two
+# rounds against three and a half thousand blocks is a hundred thousand tests a
+# frame, for walls almost all of which are on the other side of the map.
+fn sweep_walls(w, p, at, ax, ay, az, bx, by, bz) =
+  wb = wall_box(w)
+  bb = blocks_ptr(w)
+  mx = (ax + bx) * 0.5
+  my = (ay + by) * 0.5
+  mz = (az + bz) * 0.5
+  reach = sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az)) * 0.5
+
+  for k in 0..wall_cap()
+    sweep_one_wall(wb, bb, k, p, at, mx, my, mz, reach, ax, ay, az, bx, by, bz)
+  0
+
+fn sweep_one_wall(wb, bb, k, p, at, mx, my, mz, reach, ax, ay, az, bx, by, bz) =
+  if wall_near(wb, k, mx, my, mz, reach) then wall_blocks_hit(bb, k, p, at, ax, ay, az, bx, by, bz) else 0
+
+fn wall_blocks_hit(bb, k, p, at, ax, ay, az, bx, by, bz) =
+  base = k * wall_blocks()
+
+  for j in 0..wall_blocks()
+    stop_on_block(bb, base + j, p, at, ax, ay, az, bx, by, bz)
+  0
 
 fn stop_on_block(bb, i, p, at, ax, ay, az, bx, by, bz) =
   if block_live(bb, i) then cross_block(bb, i, p, at, ax, ay, az, bx, by, bz) else 0
@@ -2006,26 +2096,8 @@ fn cross_block(bb, i, p, at, ax, ay, az, bx, by, bz) =
 
 # The same test for a round, which stops on a wall rather than passing through
 # it. It does not take the block with it: a rifle does not knock stone out.
-fn hit_stone(w, b, at, ax, ay, az, bx, by, bz) =
-  bb = blocks_ptr(w)
+fn hit_stone(w, b, at, ax, ay, az, bx, by, bz) = sweep_walls(w, b, at, ax, ay, az, bx, by, bz)
 
-  for i in 0..block_count(w)
-    stop_on_block(bb, i, b, at, ax, ay, az, bx, by, bz)
-  0
-
-# A direct hit goes off on the person rather than somewhere behind them. It
-# does them no damage of its own: the blast is what a rocket does to somebody,
-# and a warhead that took a round's worth off you *and* the crater's would be
-# two weapons in one. What this decides is only where the thing detonates.
-#
-# Whoever fired it is skipped, which is what the owner in the seed is for. Not
-# a nicety: the rocket leaves the tube a metre and a tenth in front of the eye,
-# and anybody firing at their own feet would otherwise be standing inside their
-# own blast before the frame was out.
-#
-# Whether anything was struck comes back the way the crystals' answer does —
-# through the nought `try_break` would have written in slot 7 — because a `for`
-# here is run for its effects and has nothing to hand back.
 fn hits_body(w, fb, at, ax, ay, az, bx, by, bz) =
   owner = rocket_owner(peek_f32(fb, at + 6))
 
@@ -2329,6 +2401,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   break_buf = alloc_bytes(break_ring() * 4)
   block_buf = alloc_bytes(block_cap() * 32)
   gone_buf = alloc_bytes(block_ring() * 4)
+  wallbox_buf = alloc_bytes(wall_cap() * 4 * 4)
   ghost_buf = alloc_bytes(ghost_cap() * 3 * 4)
   hurt_buf = alloc_bytes(hurt_ring() * 4 * 4)
   step = cell_step(grid)
@@ -2348,6 +2421,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 113, hurt_buf)
   poke_ptr(s, 122, block_buf)
   poke_ptr(s, 124, gone_buf)
+  poke_ptr(s, 127, wallbox_buf)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
@@ -2989,6 +3063,52 @@ fn collide_one(s, buf, i, factor) =
   d2 = dx * dx + dz * dz
   if d2 < r * r && d2 > 0.0001 then push_out(s, ix, iz, dx, dz, sqrt(d2), r) else 1
 
+# Stone is solid to walk into as well as to shoot at, and it needs two things
+# the trunks and the crystals do not.
+#
+# A block that has been shot has its size set to nought, and the general test
+# adds 0.35 to whatever the size is — so a destroyed block would go on stopping
+# people with a thirty-five centimetre post standing where it used to be.
+#
+# And a wall is stacked. The blocks are laid three high, so a test that only
+# looks at x and z stops you at every height at once: blow the bottom out of a
+# wall and you would still be walking into the one left floating above the
+# hole. This asks whether the block is where the body is, which is what lets
+# somebody through a breach and under an overhang.
+fn collide_walls(s, w) =
+  wb = wall_box(w)
+  bb = blocks_ptr(w)
+
+  for k in 0..wall_cap()
+    collide_one_wall(s, wb, bb, k)
+
+fn collide_one_wall(s, wb, bb, k) =
+  if wall_near(wb, k, peek_f32(s, 21), peek_f32(s, 22) + 1.0, peek_f32(s, 23), 1.5) then wall_blocks_push(s, bb, k) else 0
+
+fn wall_blocks_push(s, bb, k) =
+  base = k * wall_blocks()
+
+  for j in 0..wall_blocks()
+    collide_block(s, bb, base + j)
+  0
+
+fn collide_block(s, bb, i) =
+  sc = block_f(bb, i, 3)
+  if sc < 0.01 then 0
+  else
+    feet = peek_f32(s, 22)
+    by = block_f(bb, i, 1)
+    if by + sc * 0.5 < feet + 0.25 then 0 else if by - sc * 0.5 > feet + 1.7 then 0 else block_push(s, bb, i, sc)
+
+fn block_push(s, bb, i, sc) =
+  ix = block_f(bb, i, 0)
+  iz = block_f(bb, i, 2)
+  r = sc * 0.72 + 0.35
+  dx = peek_f32(s, 21) - ix
+  dz = peek_f32(s, 23) - iz
+  d2 = dx * dx + dz * dz
+  if d2 < r * r && d2 > 0.0001 then push_out(s, ix, iz, dx, dz, sqrt(d2), r) else 1
+
 fn push_out(s, ix, iz, dx, dz, d, r) =
   poke_f32(s, 21, ix + dx / d * r)
   poke_f32(s, 23, iz + dz / d * r)
@@ -3094,6 +3214,7 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   poke_f32(s, 23, pz0)
   collide_all(s, peek_ptr(w, 65), to_int(peek_f32(w, 57)), 0.3)
   collide_all(s, peek_ptr(w, 66), to_int(peek_f32(w, 58)), 0.55)
+  collide_walls(s, w)
   px = peek_f32(s, 21)
   pz = peek_f32(s, 23)
   gnd = height(px, pz)
