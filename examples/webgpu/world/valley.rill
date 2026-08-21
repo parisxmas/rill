@@ -488,6 +488,17 @@ fn fire_bullet(s, dx, dy, dz) =
 # smoke trail instead of a ball of fire, and the sign survives the wire without
 # a field being added to it. The same trick the mesh uses for "no texture here"
 # and the shard pool uses for "nothing in this slot".
+# A rocket's seed carries three things in one float. The sign says it is a
+# rocket rather than a crystal's thrown fire; the fraction is the randomness
+# every fireball wants for its smoke and its crater; and the whole part is who
+# fired it, so that a warhead leaving the tube does not go off on the shoulder
+# it left. Nothing had to be added to the ring or to the protocol — the seed
+# was already crossing both, and a hash does not care how big its input is.
+fn rocket_seed(s, w) =
+  0.0 - (to_float(player_id(s)) + 0.01 + hash2(peek_f32(w, 28), 61.0) * 0.98)
+
+fn rocket_owner(seed) = floor(0.0 - seed)
+
 fn fire_rocket(s, dx, dy, dz) =
   if peek_f32(s, 120) < 0.5 then 0 else launch(s, dx, dy, dz)
 
@@ -506,7 +517,7 @@ fn launch(s, dx, dy, dz) =
   poke_f32(fb, at + 3, dx * v)
   poke_f32(fb, at + 4, dy * v)
   poke_f32(fb, at + 5, dz * v)
-  poke_f32(fb, at + 6, 0.0 - (0.01 + hash2(peek_f32(w, 28), 61.0) * 0.98))
+  poke_f32(fb, at + 6, rocket_seed(s, w))
   poke_f32(fb, at + 7, 6.0)
   poke_f32(fb, at + 8, 0.0)
   poke_f32(w, 63, to_float(k + 1))
@@ -1605,7 +1616,7 @@ fn step_fireball(w, fb, at, dt, decide) =
   # itself. The sign of the seed is what tells the two apart, the same way the
   # renderer does.
   struck = if peek_f32(fb, at + 6) < 0.0 && on > 0.5 && decide > 0 then
-    hits_glass(w, fb, at, peek_f32(fb, at), peek_f32(fb, at + 1), peek_f32(fb, at + 2), px, py, pz)
+    rocket_stop(w, fb, at, peek_f32(fb, at), peek_f32(fb, at + 1), peek_f32(fb, at + 2), px, py, pz)
   else
     0
 
@@ -1626,9 +1637,44 @@ fn step_fireball(w, fb, at, dt, decide) =
 # both — and `try_break` kills what hit by writing a nought there. So whether
 # anything was struck is read back out of the same slot rather than returned
 # through another path.
-fn hits_glass(w, fb, at, ax, ay, az, bx, by, bz) =
+fn rocket_stop(w, fb, at, ax, ay, az, bx, by, bz) =
   hit_crystals(w, fb, at, ax, ay, az, bx, by, bz)
+  if peek_f32(fb, at + 7) < 0.001 then 1 else hits_body(w, fb, at, ax, ay, az, bx, by, bz)
+
+# A direct hit goes off on the person rather than somewhere behind them. It
+# does them no damage of its own: the blast is what a rocket does to somebody,
+# and a warhead that took a round's worth off you *and* the crater's would be
+# two weapons in one. What this decides is only where the thing detonates.
+#
+# Whoever fired it is skipped, which is what the owner in the seed is for. Not
+# a nicety: the rocket leaves the tube a metre and a tenth in front of the eye,
+# and anybody firing at their own feet would otherwise be standing inside their
+# own blast before the frame was out.
+#
+# Whether anything was struck comes back the way the crystals' answer does —
+# through the nought `try_break` would have written in slot 7 — because a `for`
+# here is run for its effects and has nothing to hand back.
+fn hits_body(w, fb, at, ax, ay, az, bx, by, bz) =
+  owner = rocket_owner(peek_f32(fb, at + 6))
+
+  for i in 0..player_count(w)
+    stop_on_body(fb, at, player_at(w, i), owner, ax, ay, az, bx, by, bz)
+
   if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+
+fn stop_on_body(fb, at, s, owner, ax, ay, az, bx, by, bz) =
+  if peek_f32(s, 99) == owner then 0
+  else if peek_f32(s, 82) < 0.001 then 0
+  else if crossed(s, ax, ay, az, bx, by, bz) == 0 then 0
+  else
+    poke_f32(fb, at + 7, 0.0)
+    1
+
+# The same three spheres a round is tested against — a head, a body and the
+# legs. Which one it was does not matter here: a rocket is not interested in
+# where it hit you.
+fn crossed(s, ax, ay, az, bx, by, bz) =
+  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then 1 else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then 1 else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then 1 else 0
 
 fn step_fireballs(w, fb, dt, decide) =
   for i in 0..fireball_cap()

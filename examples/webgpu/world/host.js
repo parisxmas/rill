@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=297";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=297";
+import { load } from "./world.js?v=300";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=300";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=297";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "297";
+const V = "300";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -98,7 +98,7 @@ const SHADERS = {
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common",
-  launcher: "common", rocket: "common",
+  launcher: "common", rocket: "common", warhead: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
   "firefly-sim": null,
@@ -168,6 +168,7 @@ async function loadShaders(step) {
     SHARK: whole("shark"),
     PROP: whole("prop"),
     LAUNCHER: whole("launcher"),
+    WARHEAD: whole("warhead"),
     ROCKET: whole("rocket"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
     SHADOW_INST: whole("shadow-instanced"),
@@ -1090,6 +1091,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // The launcher in the hands: the rifle's vertex layout, its own frustum, and
   // no instances — there is only ever one pair of hands.
   const rpgPipe = pipe("launcher", S.LAUNCHER, vmLayout);
+  // What is loaded in it, drawn through the launcher's own transform.
+  const warheadPipe = pipe("warhead", S.WARHEAD, vmLayout);
   // And the rocket in the air, one instance per slot of the fireballs' ring.
   const rocketPipe = pipe("rocket", S.ROCKET, [
     { arrayStride: 16, attributes: [
@@ -2038,7 +2041,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // because `buildWorld` reads it, and `buildWorld` runs while the page is
   // still starting up — a `let` further down is in its dead zone at that
   // point and the first frame throws.
-  let held = 0, wantHeld = 0, swap = 0, swapping = 0;
+  let held = 0, wantHeld = 0, swap = 0, swapping = 0, loadedTube = false;
 
   function buildWorld(idx) {
     T = TIERS[idx];
@@ -2739,7 +2742,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       if (swap >= 1) {
         held = wantHeld;
         E.set_weapon(state, BigInt(held));
-        boltT = 0;                       // it takes a moment to be ready
+        // A moment to be ready, not a whole reload. Setting this to nought
+        // meant raising the launcher cost the two and a half seconds it takes
+        // to load one — you stood there with a visibly empty tube, having
+        // changed weapons rather than fired. What a swap costs is the third of
+        // a second it takes to get the thing up.
+        boltT = Math.max(0, cycleNow() - 0.35);
         swapping = 2;
       }
     } else if (swapping === 2) {
@@ -3134,6 +3142,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // down, so it is compared rather than eased: nothing here moves unless a
     // round left or a magazine arrived.
     const ammo = held ? Number(E.rockets(state)) : Number(E.rounds(state));
+    // A warhead is in the tube when there is one left to load and the reload
+    // has finished. `boltT` is the same clock the trigger is gated on, so what
+    // you see and what the trigger will do cannot disagree.
+    loadedTube = held === 1 && ammo > 0 && boltT >= RPG_CYCLE;
     const shown = held ? Number(E.rocket_full()) : Number(E.mag_full());
     if (ammo !== lastAmmo || held !== lastHeld) {
       lastAmmo = ammo; lastHeld = held;
@@ -3323,6 +3335,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         pass.setVertexBuffer(0, rpg.vb);
         pass.setIndexBuffer(rpg.ib, "uint16");
         pass.drawIndexed(rpg.count);
+        // And the round in the tube, when there is one in it. It goes at the
+        // shot and comes back when the tube is loaded again, which is the only
+        // thing on screen that says what the two and a half seconds are for.
+        if (loadedTube) {
+          pass.setPipeline(warheadPipe);
+          pass.setVertexBuffer(0, rocket.vb);
+          pass.setIndexBuffer(rocket.ib, "uint16");
+          pass.drawIndexed(rocket.count);
+        }
       } else {
         pass.setPipeline(vmPipe);
         pass.setVertexBuffer(0, rifleVB);

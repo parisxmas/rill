@@ -525,6 +525,21 @@ nothing: those come *from* the crystals, and a valley that shelled itself would
 be over without anybody in it. The sign of the seed tells the two apart, the
 same way it tells the renderer what to draw.
 
+There is a warhead in the tube, and it goes when you fire it. The launcher and
+the rocket came out of one file as two nodes, and the rocket was authored where
+a loaded one sits — 0.277 to 1.234 along the launcher's own axis, overlapping
+the last 29 cm of the tube and standing two thirds of a metre out of the muzzle
+— so it is drawn through the launcher's own transform and lands exactly where
+the artist put it. Nothing was measured into a constant and nothing can drift:
+move the launcher and the warhead moves with it, because it is the same
+arithmetic rather than a copy of it. It is there when the tube is loaded and
+gone from the shot until the next one is in, which is the only thing on screen
+that says what the two and a half seconds are for.
+
+Raising the launcher costs a third of a second rather than a whole reload. It
+was a whole reload, and you stood there with a visibly empty tube having
+changed weapons rather than fired.
+
 Seventy metres a second against the crystals' fourteen, which is eight tenths
 of a metre of drop at fifty and three and a third at a hundred: a weapon you
 lead with at range and point at anything close. Three in the tube, filled by
