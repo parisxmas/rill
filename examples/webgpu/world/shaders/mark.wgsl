@@ -43,11 +43,12 @@
       return o;
     }
 
-    // A frame square to the incoming line. `up` is whichever axis the line is
-    // least parallel to, so the cross product never collapses.
+    // A frame square to the incoming line. `other` is whichever axis the line
+    // is least parallel to, so the cross product never collapses. (Not `ref`:
+    // WGSL keeps that word, the way it keeps `from`.)
     let n = normalize(dir);
-    let ref = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.9);
-    let rgt = normalize(cross(ref, n));
+    let other = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.9);
+    let rgt = normalize(cross(other, n));
     let upv = cross(n, rgt);
     // Turned by its own position, so two chips side by side are not the same
     // stamp twice.
