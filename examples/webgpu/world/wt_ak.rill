@@ -22,7 +22,7 @@ fn main() =
   b = v.bullets(w)
   vx = peek_f32(b, 3)
   vz = peek_f32(b, 5)
-  println("muzzle speed " + float_to_str(sqrt(vx * vx + vz * vz)) + " (want 40 = a third of 120)")
+  println("muzzle speed " + float_to_str(sqrt(vx * vx + vz * vz)) + " (want 80 = two thirds of 120)")
   println("spare magazines on the belt: " + int_to_str(v.ak_mags(s)) + " (want 4)")
   hold_until_change(w, s, 0)
   println("the change: rounds " + int_to_str(v.ak_rounds(s)) + " (want 30, fresh magazine), belt " + int_to_str(v.ak_mags(s)) + " (want 3)")

@@ -793,10 +793,10 @@ fn fire_round(s, dx, dy, dz) =
 #
 # The default arm: thirty rounds, held-trigger automatic at five rounds a
 # second — quick enough to be a burst and slow enough that the climb can be
-# fought — and a bullet at a third of the rifle's speed — forty a
-# second instead of a hundred and twenty, which is a weapon you hose with at
-# thirty metres and lead like a garden sprinkler at eighty. Same rounds in the
-# same ring; only the muzzle velocity and the magazine differ.
+# fought — and a bullet at two thirds of the rifle's speed: eighty metres a
+# second against a hundred and twenty, so it is still led at distance but no
+# longer lobbed. Same rounds in the same ring; only the muzzle velocity and
+# the magazine differ.
 fn ak_full() = 30
 
 fn ak_gap() = 0.2
@@ -829,7 +829,7 @@ fn fire_ak_round(s, dx, dy, dz) =
   b = peek_ptr(w, 68)
   k = to_int(peek_f32(w, 60))
   at = k % bullet_cap() * 8
-  v = bullet_speed() / 3.0
+  v = bullet_speed() * 2.0 / 3.0
   poke_f32(b, at, peek_f32(s, 16) + dx * 0.9)
   poke_f32(b, at + 1, peek_f32(s, 17) + dy * 0.9)
   poke_f32(b, at + 2, peek_f32(s, 18) + dz * 0.9)
@@ -1338,16 +1338,22 @@ fn hit_crystals(w, b, at, ax, ay, az, bx, by, bz) =
 # shot and a sequence. A body hit is still deliberately worse than a fireball
 # — one of those takes an eighth — because the fireballs are weather and the
 # rifle is somebody deciding.
-# The AK's round arrives at a third of the rifle's speed and lands at a third
-# of its worth — read off the round itself, because the ring has no field to
-# spare and the speed already says which gun it left. Drag never brings a
-# rifle round under a hundred, and an AK's never starts above forty-five, so
-# sixty metres a second splits them cleanly.
+# The AK's round arrives slower than the rifle's and lands at a third of its
+# worth — read off the round itself, because the ring has no field to spare
+# and the speed already says which gun it left.
+#
+# A hundred metres a second is the line, and the drag is what makes it safe.
+# The rounds lose speed as `dv/dt = -0.00011 v²`, which over a whole 3.2
+# second life takes the rifle's from 120 to 115 and the AK's from 80 to 78:
+# the two bands never come near each other, let alone meet. Sixty was the
+# line while the AK left the muzzle at forty; the day its speed doubled, a
+# threshold left where it was would have handed it the rifle's damage in
+# silence, which is the sort of thing a number in a comment is for.
 fn round_scale(b, at) =
   vx = peek_f32(b, at + 3)
   vy = peek_f32(b, at + 4)
   vz = peek_f32(b, at + 5)
-  if vx * vx + vy * vy + vz * vz < 3600.0 then 1.0 / 3.0 else 1.0
+  if vx * vx + vy * vy + vz * vz < 10000.0 then 1.0 / 3.0 else 1.0
 
 fn head_hurt() = 1.0
 
