@@ -184,6 +184,10 @@
       transition: background 120ms linear, box-shadow 120ms linear;
     }
     .ammo i.out { background: rgba(255, 255, 255, 0.1); box-shadow: none; }
+    /* The belt: the AK's spare magazines, fatter and set a step apart from
+       the rounds, gone entirely when another weapon is up. */
+    .ammo i.mag { width: 8px; border-radius: 2px; }
+    .ammo i.mag:nth-of-type(31) { margin-left: 8px; }
     /* Empty is the one state worth interrupting for: the trigger does nothing
        now, and the row says so rather than simply being dark. */
     .ammo.dry i { background: rgba(226, 74, 60, 0.5); animation: dry 900ms ease-in-out infinite; }
@@ -568,7 +572,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=335";
+    import { run } from "./host.js?v=336";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -647,7 +651,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=335", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=336", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

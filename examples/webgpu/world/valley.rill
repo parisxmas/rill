@@ -799,12 +799,29 @@ fn fire_round(s, dx, dy, dz) =
 # same ring; only the muzzle velocity and the magazine differ.
 fn ak_full() = 30
 
-fn ak_gap() = 0.05
+fn ak_gap() = 0.1
 
 fn ak_rounds(s: Ptr) -> Int = to_int(peek_f32(s, 106))
 
+# The spare magazines on the belt: four beside the one in the gun, five in
+# all. When the loaded one runs dry the next pull of the trigger is not a
+# shot, it is the change — a second and a half with the gun down, run through
+# the same fire clock the shots are, so the browser and the server sit out
+# the same pause.
+fn ak_mag_count() = 5
+
+fn ak_mags(s: Ptr) -> Int = to_int(peek_f32(s, 117))
+
+fn ak_reload(s) =
+  if peek_f32(s, 117) < 0.5 then 0
+  else
+    poke_f32(s, 117, peek_f32(s, 117) - 1.0)
+    poke_f32(s, 106, to_float(ak_full()))
+    poke_f32(s, 52, world_time(wd(s)) + 1.4)
+    0
+
 fn fire_ak(s, dx, dy, dz) =
-  if peek_f32(s, 106) < 0.5 then 0 else fire_ak_round(s, dx, dy, dz)
+  if peek_f32(s, 106) < 0.5 then ak_reload(s) else fire_ak_round(s, dx, dy, dz)
 
 fn fire_ak_round(s, dx, dy, dz) =
   poke_f32(s, 106, peek_f32(s, 106) - 1.0)
@@ -829,6 +846,11 @@ fn fire_ak_round(s, dx, dy, dz) =
 # n" and both ends agree about which weapon that is.
 fn held_ammo(s: Ptr) -> Int =
   if weapon(s) == 1 then rockets(s) else if weapon(s) == 2 then ak_rounds(s) else rounds(s)
+
+# Whether a pull of the trigger has anything to become: a shot, or — for an
+# AK with an empty magazine and spares on the belt — the change.
+fn may_fire(s) =
+  if weapon(s) == 2 then (if ak_rounds(s) > 0 || ak_mags(s) > 0 then 1 else 0) else held_ammo(s)
 
 fn set_held_ammo(s: Ptr, n: Int) =
   if weapon(s) == 1 then poke_f32(s, 120, to_float(n)) else if weapon(s) == 2 then poke_f32(s, 106, to_float(n)) else poke_f32(s, 118, to_float(n))
@@ -1868,7 +1890,7 @@ fn gather_shard(s, sb, i, mend) =
 # enough that losing a fraction of one is not something anybody is counting.
 fn wanted(s, sb, at) =
   kind = peek_f32(sb, at + 16)
-  if kind < 1.5 then 1 else if kind > 2.5 then (if rockets(s) < rocket_full() then 1 else 0) else if rounds(s) < mag_size() || ak_rounds(s) < ak_full() then 1 else 0
+  if kind < 1.5 then 1 else if kind > 2.5 then (if rockets(s) < rocket_full() then 1 else 0) else if rounds(s) < mag_size() || ak_rounds(s) < ak_full() || ak_mags(s) < ak_mag_count() - 1 then 1 else 0
 
 fn gather(s, sb, mend) =
   for i in 0..shard_cap()
@@ -3235,6 +3257,7 @@ fn place_player(s) =
   poke_f32(s, 119, 2.0)
   poke_f32(s, 120, to_float(rocket_full()))
   poke_f32(s, 106, to_float(ak_full()))
+  poke_f32(s, 117, to_float(ak_mag_count() - 1))
   poke_f32(s, 84, 0.0)
   poke_f32(s, 85, 0.0)
   poke_f32(s, 107, 0.0)
@@ -3556,7 +3579,7 @@ fn take_fire(s, tnow, gap) =
   if tnow - peek_f32(s, 52) < (if weapon(s) == 2 then ak_gap() else gap) then 0
   else if in_water(s) > 0 then 0
   else if peek_f32(s, 82) < 0.001 then 0
-  else if held_ammo(s) < 1 then 0
+  else if may_fire(s) < 1 then 0
   else
     # An empty magazine is the one refusal that is not about the shot being
     # wrong, so it does not count against the wild-shot allowance either: the
@@ -4248,6 +4271,7 @@ fn worth_of(s, sb, i, at, mend) =
     # agree about where it went without either telling the other.
     poke_f32(s, 118, to_float(mag_size()))
     poke_f32(s, 106, to_float(ak_full()))
+    poke_f32(s, 117, to_float(ak_mag_count() - 1))
     place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else if mend < 1 then 1

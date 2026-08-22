@@ -18,14 +18,24 @@ fn main() =
   v.set_look(s, 0.0, 0.0)
   run_ticks(w, s, 20)
   fired = v.ak_full() - v.ak_rounds(s)
-  println("one second of held trigger: " + int_to_str(fired) + " rounds gone (want ~19-20), rifle still " + int_to_str(v.rounds(s)))
+  println("one second of held trigger: " + int_to_str(fired) + " rounds gone (want ~9-10), rifle still " + int_to_str(v.rounds(s)))
   b = v.bullets(w)
   vx = peek_f32(b, 3)
   vz = peek_f32(b, 5)
   println("muzzle speed " + float_to_str(sqrt(vx * vx + vz * vz)) + " (want 40 = a third of 120)")
-  run_ticks(w, s, 40)
-  println("after the magazine: " + int_to_str(v.ak_rounds(s)) + " left, held ammo says " + int_to_str(v.held_ammo(s)))
+  println("spare magazines on the belt: " + int_to_str(v.ak_mags(s)) + " (want 4)")
+  hold_until_change(w, s, 0)
+  println("the change: rounds " + int_to_str(v.ak_rounds(s)) + " (want 30, fresh magazine), belt " + int_to_str(v.ak_mags(s)) + " (want 3)")
+  run_ticks(w, s, 20)
+  println("one second into the pause: " + int_to_str(30 - v.ak_rounds(s)) + " fired (want 0 — the hands are busy)")
   crystal_test()
+
+fn hold_until_change(w, s, guard) =
+  if v.ak_mags(s) < 4 then 0 else if guard > 300 then 0 else hold_step(w, s, guard)
+
+fn hold_step(w, s, guard) =
+  run_ticks(w, s, 1)
+  hold_until_change(w, s, guard + 1)
 
 # What the rounds are worth: a crystal takes one rifle round or five of the
 # AK's, and a body hit lands at a third.

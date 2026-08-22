@@ -206,6 +206,10 @@ export fn ak_rounds(s: Ptr) -> Int = v.ak_rounds(s)
 
 export fn ak_full() -> Int = v.ak_full()
 
+export fn ak_mags(s: Ptr) -> Int = v.ak_mags(s)
+
+export fn ak_mag_count() -> Int = v.ak_mag_count()
+
 # What the held weapon has left — the snapshot's one ammo number — and the
 # writing of it back when the server disagrees.
 export fn held_ammo(s: Ptr) -> Int = v.held_ammo(s)

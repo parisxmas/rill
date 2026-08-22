@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=335";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=335";
+import { load } from "./world.js?v=336";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=336";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=335";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "335";
+const V = "336";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2649,9 +2649,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // whole of the propellant leaves the front of it and there is a tube to
   // reload. Two and a half seconds is what stops a rocket being a rifle.
   const RPG_CYCLE = 2.5;
-  const AK_CYCLE = 0.05;
+  const AK_CYCLE = 0.1;
   const cycleNow = () => (held === 1 ? RPG_CYCLE : held === 2 ? AK_CYCLE : BOLT_CYCLE);
-  let wantShot = false, fireHeld = false, akBurst = 0, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
+  let wantShot = false, fireHeld = false, akBurst = 0, lastAkLoaded = -1, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
@@ -2717,6 +2717,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     ammoEl.appendChild(pip);
     pips.push(pip);
   }
+  // And the belt: the spare magazines beside the rounds, drawn as the fatter
+  // pips at the end of the row, only while the AK is up.
+  const magPips = [];
+  for (let i = 0; i < Number(E.ak_mag_count()) - 1; i++) {
+    const pip = document.createElement("i");
+    pip.className = "mag";
+    ammoEl.appendChild(pip);
+    magPips.push(pip);
+  }
   // And the tube's row above it, as long as the tube holds. Two rows that
   // never change shape, because a rocket count you can only see while holding
   // the launcher is a count you learn about one warhead too late.
@@ -2727,7 +2736,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     rocketsEl.appendChild(pip);
     rpips.push(pip);
   }
-  let lastAmmo = -1, lastRockets = -1, lastHeld = -1;
+  let lastAmmo = -1, lastRockets = -1, lastHeld = -1, lastAkMags = -1;
   let wasDown = false;
   let lastHp = -1, hurtUntil = 0;
   // The sights. `wantAim` is the button; `aim` is how far through the move,
@@ -2943,14 +2952,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     const loaded = held === 1 ? Number(E.rockets(state))
                  : held === 2 ? Number(E.ak_rounds(state))
                  : Number(E.rounds(state));
+    const akMags = Number(E.ak_mags(state));
+    // The change, seen from here: the world swapped magazines on a pull, the
+    // count jumped from nothing back to thirty, and the crosshair owes the
+    // second and a half the hands are busy.
+    if (held === 2 && lastAkLoaded === 0 && loaded > 0) boltT = cycleNow() - 1.45;
+    lastAkLoaded = held === 2 ? loaded : -1;
     // The AK is automatic: while the trigger is held and there is anything in
     // the magazine, every twentieth millisecond is a shot. The press itself
     // set wantShot; this keeps setting it for as long as the button is down.
-    if (held === 2 && fireHeld && !wading && loaded > 0 && boltT >= cycleNow()) wantShot = true;
+    if (held === 2 && fireHeld && !wading && (loaded > 0 || akMags > 0) && boltT >= cycleNow()) wantShot = true;
     // The end of a burst is what the valley answers: let the echo go when the
     // trigger lifts or the magazine runs out.
     if (akBurst > 0 && (!fireHeld || loaded === 0 || held !== 2)) { akEcho(); akBurst = 0; }
-    if (wantShot && boltT >= cycleNow() && !wading && loaded === 0) {
+    if (wantShot && boltT >= cycleNow() && !wading && loaded === 0 && !(held === 2 && akMags > 0)) {
       warn.textContent = held === 1 ? "the tube is empty" : "the magazine is empty";
       warn.classList.add("on");
       warnUntil = t + 1.9;
@@ -3471,16 +3486,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // eased: nothing here moves unless a round left or a magazine arrived.
     const rounds = held === 2 ? Number(E.ak_rounds(state)) : Number(E.rounds(state));
     const gunCap = held === 2 ? Number(E.ak_full()) : Number(E.mag_full());
+    const akMagsNow = Number(E.ak_mags(state));
     const rkts = Number(E.rockets(state));
     // A warhead is in the tube when there is one left to load and the reload
     // has finished. `boltT` is the same clock the trigger is gated on, so what
     // you see and what the trigger will do cannot disagree.
     loadedTube = held === 1 && rkts > 0 && boltT >= RPG_CYCLE;
-    if (rounds !== lastAmmo || rkts !== lastRockets || held !== lastHeld) {
-      lastAmmo = rounds; lastRockets = rkts; lastHeld = held;
+    if (rounds !== lastAmmo || rkts !== lastRockets || held !== lastHeld || akMagsNow !== lastAkMags) {
+      lastAmmo = rounds; lastRockets = rkts; lastHeld = held; lastAkMags = akMagsNow;
       for (let i = 0; i < pips.length; i++) {
         pips[i].hidden = i >= gunCap;
         pips[i].classList.toggle("out", i >= rounds);
+      }
+      for (let i = 0; i < magPips.length; i++) {
+        magPips[i].hidden = held !== 2;
+        magPips[i].classList.toggle("out", i >= akMagsNow);
       }
       for (let i = 0; i < rpips.length; i++) rpips[i].classList.toggle("out", i >= rkts);
       // The held weapon's row burns full and the other dims — which is up is
