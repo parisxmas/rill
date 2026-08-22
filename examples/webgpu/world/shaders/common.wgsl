@@ -955,12 +955,20 @@
   fn vmCam(m: vec3f) -> vec3f {
     // Recoil: one at the shot, most of it gone in a fifth of a second. A rifle
     // does not simply move back — the impulse runs along the bore, which is
-    // above the shoulder holding it, so the muzzle climbs as well. That is the
+    // above the shoulder holding it, so the muzzle climbs as well.
+    //
+    // Minus, and the sign is the whole of it. `Rx` is built from columns, so
+    // it takes the barrel — +z once the model's axes are shuffled — to
+    // (0, -sin a, cos a): a *positive* angle points the muzzle at the ground.
+    // It was written with a plus and read as the stock rising while the
+    // barrel dug in, which is the one thing recoil never does. Invisible on a
+    // bolt gun at one shot every second and a half; unmissable on an AK at
+    // five. That is the
     // whole of what a shot looks like from behind the sights.
     let rc = u.wind.w;
     let held = 1.0 - u.vmSize.w;
     let cy = cos(VM_YAW * held);        let sy = sin(VM_YAW * held);
-    let cp = cos(VM_PITCH + 0.11 * rc); let sp = sin(VM_PITCH + 0.11 * rc);
+    let cp = cos(VM_PITCH - 0.11 * rc); let sp = sin(VM_PITCH - 0.11 * rc);
     let cr = cos(VM_ROLL * held);       let sr = sin(VM_ROLL * held);
     let Ry = mat3x3f(vec3f(cy, 0.0, -sy), vec3f(0.0, 1.0, 0.0), vec3f(sy, 0.0, cy));
     let Rx = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, cp, sp), vec3f(0.0, -sp, cp));
@@ -999,7 +1007,7 @@
     let rc = u.wind.w;
     let held = 1.0 - u.vmSize.w;
     let cy = cos(VM_YAW * held);        let sy = sin(VM_YAW * held);
-    let cp = cos(VM_PITCH + 0.11 * rc); let sp = sin(VM_PITCH + 0.11 * rc);
+    let cp = cos(VM_PITCH - 0.11 * rc); let sp = sin(VM_PITCH - 0.11 * rc);
     let cr = cos(VM_ROLL * held);       let sr = sin(VM_ROLL * held);
     let Ry = mat3x3f(vec3f(cy, 0.0, -sy), vec3f(0.0, 1.0, 0.0), vec3f(sy, 0.0, cy));
     let Rx = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, cp, sp), vec3f(0.0, -sp, cp));
@@ -1037,7 +1045,7 @@
 
   fn rpgRot(rc: f32) -> mat3x3f {
     let cy = cos(RPG_YAW);               let sy = sin(RPG_YAW);
-    let cp = cos(RPG_PITCH + 0.16 * rc); let sp = sin(RPG_PITCH + 0.16 * rc);
+    let cp = cos(RPG_PITCH - 0.16 * rc); let sp = sin(RPG_PITCH - 0.16 * rc);
     let cr = cos(RPG_ROLL);              let sr = sin(RPG_ROLL);
     let Ry = mat3x3f(vec3f(cy, 0.0, -sy), vec3f(0.0, 1.0, 0.0), vec3f(sy, 0.0, cy));
     let Rx = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, cp, sp), vec3f(0.0, -sp, cp));

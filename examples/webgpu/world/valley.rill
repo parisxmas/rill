@@ -791,15 +791,15 @@ fn fire_round(s, dx, dy, dz) =
 
 # ---- the AK ----------------------------------------------------------------
 #
-# The default arm: thirty rounds, held-trigger automatic at three rounds a
-# second — slow enough that each one is a decision and the climb has time to
-# be fought — and a bullet at a third of the rifle's speed — forty a
+# The default arm: thirty rounds, held-trigger automatic at five rounds a
+# second — quick enough to be a burst and slow enough that the climb can be
+# fought — and a bullet at a third of the rifle's speed — forty a
 # second instead of a hundred and twenty, which is a weapon you hose with at
 # thirty metres and lead like a garden sprinkler at eighty. Same rounds in the
 # same ring; only the muzzle velocity and the magazine differ.
 fn ak_full() = 30
 
-fn ak_gap() = 0.3333
+fn ak_gap() = 0.2
 
 fn ak_rounds(s: Ptr) -> Int = to_int(peek_f32(s, 106))
 

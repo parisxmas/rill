@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=337";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=337";
+import { load } from "./world.js?v=340";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=340";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=337";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "337";
+const V = "340";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1517,21 +1517,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   function akReload() {
     ensureAudio(() => playAt(akReloadBuf, 0, 0, 0.5, 0, 1.556 / 1.4));
   }
-  // And the valley answering when the burst stops: the same report, three
-  // times off the far slopes, quieter and later each time.
-  function akEcho() {
-    ensureAudio(() => {
-      for (const [d, g, p] of [[0.22, 0.2, -0.55], [0.5, 0.1, 0.55], [0.85, 0.05, 0]]) {
-        const src = audio.createBufferSource();
-        src.buffer = akBuf;
-        src.playbackRate.value = 0.88;
-        const gn = audio.createGain(); gn.gain.value = g;
-        const pn = audio.createStereoPanner(); pn.pan.value = p;
-        src.connect(gn).connect(pn).connect(audio.destination);
-        src.start(audio.currentTime + d);
-      }
-    });
-  }
   // A hammer falling on nothing. Not a sample: it is thirty milliseconds of
   // noise with no tail, and a file for that would be mostly silence and one
   // more thing to fetch. Quiet, because it is the sound of an absence — loud
@@ -2660,7 +2645,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // whole of the propellant leaves the front of it and there is a tube to
   // reload. Two and a half seconds is what stops a rocket being a rifle.
   const RPG_CYCLE = 2.5;
-  const AK_CYCLE = 0.3333;
+  const AK_CYCLE = 0.2;
   const cycleNow = () => (held === 1 ? RPG_CYCLE : held === 2 ? AK_CYCLE : BOLT_CYCLE);
   let wantShot = false, fireHeld = false, akBurst = 0, lastAkLoaded = -1, kickUp = 0, kickSide = 0, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
@@ -2973,9 +2958,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // the magazine, every twentieth millisecond is a shot. The press itself
     // set wantShot; this keeps setting it for as long as the button is down.
     if (held === 2 && fireHeld && !wading && (loaded > 0 || akMags > 0) && boltT >= cycleNow()) wantShot = true;
-    // The end of a burst is what the valley answers: let the echo go when the
-    // trigger lifts or the magazine runs out.
-    if (akBurst > 0 && (!fireHeld || loaded === 0 || held !== 2)) { akEcho(); akBurst = 0; }
+    // The burst ends when the trigger lifts or the magazine does. The count
+    // is what the climb and the cone are measured from, so it resets here.
+    if (akBurst > 0 && (!fireHeld || loaded === 0 || held !== 2)) akBurst = 0;
     if (wantShot && boltT >= cycleNow() && !wading && loaded === 0 && !(held === 2 && akMags > 0)) {
       warn.textContent = held === 1 ? "the tube is empty" : "the magazine is empty";
       warn.classList.add("on");

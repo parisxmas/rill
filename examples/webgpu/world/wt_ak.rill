@@ -18,7 +18,7 @@ fn main() =
   v.set_look(s, 0.0, 0.0)
   run_ticks(w, s, 20)
   fired = v.ak_full() - v.ak_rounds(s)
-  println("one second of held trigger: " + int_to_str(fired) + " rounds gone (want 3), rifle still " + int_to_str(v.rounds(s)))
+  println("one second of held trigger: " + int_to_str(fired) + " rounds gone (want 5), rifle still " + int_to_str(v.rounds(s)))
   b = v.bullets(w)
   vx = peek_f32(b, 3)
   vz = peek_f32(b, 5)
