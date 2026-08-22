@@ -47,11 +47,10 @@
   }
 
   @fragment fn fs(v: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
-    // The sheet holds the rifle's materials across the top and the AK's skin
-    // in the lower left; each pipeline reads its own half.
-    let tuv = select(vec2f(v.uv.x, v.uv.y * 0.5),
-                     vec2f(v.uv.x * 0.5, v.uv.y * 0.5 + 0.5), AKV > 0.5);
-    let albedo = textureSample(rifleTex, barkSamp, tuv).rgb;
+    // The top half of the sheet: the lower half was the AK's skin until the
+    // AK got a shader of its own, and the image is left at its full height so
+    // the rifle's own coordinates do not have to move.
+    let albedo = textureSample(rifleTex, barkSamp, vec2f(v.uv.x, v.uv.y * 0.5)).rgb;
     let nn = normalize(v.normal);
     var col = lit(albedo, select(-nn, nn, front), v.world);
     // The flash lights what is holding it. A rifle firing in the dark is the

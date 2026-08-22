@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=353";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=353";
+import { load } from "./world.js?v=356";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=356";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=353";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "353";
+const V = "356";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -98,7 +98,7 @@ const SHADERS = {
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
-  mark: "common",
+  mark: "common", ak: "common",
   launcher: "common", rocket: "common", warhead: "common", stone: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
@@ -172,6 +172,7 @@ async function loadShaders(step) {
     CRATE: whole("crate"),
     ZAP: whole("zap"),
     MARK: whole("mark"),
+    AK: whole("ak"),
     STONE: whole("stone"),
     LAUNCHER: whole("launcher"),
     WARHEAD: whole("warhead"),
@@ -1082,9 +1083,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // cut open by the near plane, and a culled interior reads as "not there"
   // where an unculled one reads as a dark wall across the bottom of the screen.
   const vmPipe = pipe("viewmodel", S.VIEWMODEL, vmLayout);
-  // The same shader with one constant flipped: unpack against the AK's box
-  // and sample the lower half of the sheet.
-  const akPipe = pipe("viewmodel", S.VIEWMODEL, vmLayout, { constants: { AKV: 1 } });
+  // Its own shader: the model came without texture coordinates, so the wood
+  // and the steel are worked out from where a point sits on the weapon.
+  const akPipe = pipe("ak", S.AK, vmLayout);
   // The shark. Culled normally, depth-tested and depth-writing like any solid
   // — it is only unusual in when it is drawn at all, which is decided in the
   // frame rather than here.
