@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=340";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=340";
+import { load } from "./world.js?v=342";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=342";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=340";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "340";
+const V = "342";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -3475,24 +3475,32 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
           ? "linear-gradient(90deg, #3f7fb8, #4aa3d8)"
           : "linear-gradient(90deg, #2f5f8c, #3f7fb8)";
       windfill.classList.toggle("spent", E.winded(state) === 1);
-      // The round's clock and, between rounds, the board. Here rather than
-      // beside the roster because the roster only exists when there is a
-      // server, and a browser alone in its valley plays rounds too.
-      // The world's own clock is what is read, on both sides: it runs in
-      // `step_visuals` now, so it counts down smoothly between snapshots
-      // rather than stepping twenty times a second. A snapshot only corrects
-      // it, and only when a new one has actually arrived.
-      const snap = net && net.last;
-      if (snap && snap.left != null && snap.at !== syncedAt) {
-        syncedAt = snap.at;
-        // `phase` is an `Int` on the other side, which is an i64 here: a plain
-        // number will not cross.
-        E.set_match(world, BigInt(snap.phase | 0), snap.left);
-      }
-      if (world) {
-        drawRound(Number(E.match_phase(world)), E.match_left(world),
-                  snap ? everyone(net) : soloBoard(), net && net.id);
-      }
+    }
+
+    // The round's clock and, between rounds, the board. Here rather than
+    // beside the roster because the roster only exists when there is a
+    // server, and a browser alone in its valley plays rounds too.
+    //
+    // Every frame, and not — as it was — inside the breath bar's own test for
+    // having moved. Nested there it only redrew while somebody was running or
+    // getting their wind back: stand still with a full bar and the clock
+    // stopped, which read as a match that had frozen rather than as a HUD
+    // that was not being asked. The two have nothing to do with each other.
+    //
+    // The world's own clock is what is read, on both sides: it runs in
+    // `step_visuals` now, so it counts down smoothly between snapshots rather
+    // than stepping twenty times a second. A snapshot only corrects it, and
+    // only when a new one has actually arrived.
+    const snap = net && net.last;
+    if (snap && snap.left != null && snap.at !== syncedAt) {
+      syncedAt = snap.at;
+      // `phase` is an `Int` on the other side, which is an i64 here: a plain
+      // number will not cross.
+      E.set_match(world, BigInt(snap.phase | 0), snap.left);
+    }
+    if (world) {
+      drawRound(Number(E.match_phase(world)), E.match_left(world),
+                snap ? everyone(net) : soloBoard(), net && net.id);
     }
     // The rifle and the tube, each its own row. Whole numbers that change on
     // the frame the trigger goes down, so they are compared rather than
