@@ -208,6 +208,11 @@ export fn ak_full() -> Int = v.ak_full()
 
 export fn ak_mags(s: Ptr) -> Int = v.ak_mags(s)
 
+# Where the AK's rounds have stopped, for the chips the renderer draws there.
+export fn marks(s: Ptr) -> Ptr = v.marks(s)
+
+export fn marks_cap() -> Int = v.marks_cap()
+
 export fn ak_mag_count() -> Int = v.ak_mag_count()
 
 # What the held weapon has left — the snapshot's one ammo number — and the

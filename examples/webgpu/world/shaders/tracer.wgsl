@@ -55,6 +55,12 @@
     // turn back, and it is where the physics put it, the length the physics
     // made it. The near-plane case the eye term was guarding is handled below
     // by the clamp on the tail's own w.
+    // The AK's rounds are not drawn. Five streaks a second from one weapon
+    // reads as a lit rope rather than as gunfire, and what it leaves at the
+    // far end — see `mark.wgsl` — says where it went better than a line
+    // across the valley does. Told apart by speed, the same eighty against a
+    // hundred and twenty the damage is told apart by.
+    let akRound = dot(vel, vel) < 10000.0;
     let flown = max(BULLET_LIFE - life, 0.0);
     let reach = min(TRAIL, flown);
     let tail = pos - vel * reach;
@@ -66,7 +72,7 @@
     o.world = mix(tail, head, cx);
     // The head behind the eye, or the slot empty, and there is nothing honest
     // to draw: put it past the far plane and let the clipper have it.
-    if (hc.w <= 0.02 || life <= 0.0) {
+    if (hc.w <= 0.02 || life <= 0.0 || akRound) {
       o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
       o.local = vec2f(0.0, 0.0);
       o.len = 0.0;

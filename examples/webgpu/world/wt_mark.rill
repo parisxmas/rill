@@ -1,0 +1,36 @@
+# An AK round that stops leaves a chip: where it stopped, the line it came in
+# on, and the moment. A rifle round leaves none — it is drawn on the way.
+import "valley" as v
+
+fn step(w, s, n) =
+  if n == 0 then 0 else step_one(w, s, n)
+
+fn step_one(w, s, n) =
+  v.step_world(w, 0.05)
+  step(w, s, n - 1)
+
+fn marks_used(w, mb, i, n) =
+  if i >= v.marks_cap() then n else marks_used(w, mb, i + 1, n + (if peek_f32(mb, i * 8 + 6) > 0.0 then 1 else 0))
+
+fn main() =
+  w = v.init(48, 400, 300, 900)
+  s = v.join(w)
+  mb = v.marks(w)
+  println("marks at the start: " + int_to_str(marks_used(w, mb, 0, 0)) + " (want 0)")
+
+  # Straight down into the ground from where the player stands.
+  v.set_look(s, 0.0, 0.0 - 1.45)
+  v.want_fire(s, 0.0, 0.0 - 0.9927, 0.0 - 0.1205)
+  v.try_fire(s, v.world_time(w), 0.55)
+  step(w, s, 20)
+  n1 = marks_used(w, mb, 0, 0)
+  println("after one AK round into the ground: " + int_to_str(n1) + " mark(s) (want 1)")
+  println("  at " + float_to_str(peek_f32(mb, 0)) + " " + float_to_str(peek_f32(mb, 1)) + " " + float_to_str(peek_f32(mb, 2)) + ", ground there is " + float_to_str(v.ground(peek_f32(mb, 0), peek_f32(mb, 2))))
+  println("  came in along " + float_to_str(peek_f32(mb, 3)) + " " + float_to_str(peek_f32(mb, 4)) + " " + float_to_str(peek_f32(mb, 5)) + ", born " + float_to_str(peek_f32(mb, 6)))
+
+  # And the rifle leaves none.
+  v.set_weapon(s, 0)
+  v.want_fire(s, 0.0, 0.0 - 0.9927, 0.0 - 0.1205)
+  v.try_fire(s, v.world_time(w), 0.55)
+  step(w, s, 20)
+  println("after a rifle round: " + int_to_str(marks_used(w, mb, 0, 0)) + " mark(s) (want still " + int_to_str(n1) + ")")

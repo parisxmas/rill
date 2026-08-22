@@ -628,6 +628,16 @@ fn step_bullet(w, b, at, dt, decide) =
     hit_players(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
   else if on > 0.5 then stop_on_ghosts(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz) else 0
 
+  # Struck something, or reached the ground: either way this is where it
+  # stopped, and an AK's round leaves a chip there. The hits above end a round
+  # by writing nought into its life, so the slot is the answer to "did it hit
+  # anything" — and the ground is the `landed` test. Only the AK's, because
+  # the rifle's rounds are still drawn on the way and do not need saying twice.
+  struck = if peek_f32(b, at + 7) < 0.001 then 1.0 else 0.0
+  if on > 0.5 && (landed > 0.5 || struck > 0.5) && sp < 100.0 then
+    note_mark(w, px, if landed > 0.5 then stop_height(px, pz) else py, pz, vx0, vy0, vz0)
+  else 0
+
   poke_f32(b, at, px)
   poke_f32(b, at + 1, py)
   poke_f32(b, at + 2, pz)
@@ -797,6 +807,46 @@ fn fire_round(s, dx, dy, dz) =
 # second against a hundred and twenty, so it is still led at distance but no
 # longer lobbed. Same rounds in the same ring; only the muzzle velocity and
 # the magazine differ.
+# ---- what a round leaves behind ---------------------------------------------
+#
+# The AK's rounds are not drawn on the way — a streak from a weapon fired five
+# times a second is a lit rope across the valley — so where they arrive is the
+# only evidence there is. Each one writes a chip: where it stopped, the line
+# it came in on, and the moment, in a ring the renderer walks every frame.
+#
+# It is decoration, and it is recorded on whichever machine stepped the round
+# — the shooter's browser, everybody else's, and the server, which keeps the
+# ring and never reads it. Nothing crosses the wire for it: a mark is where a
+# round ended, and every client already steps every round it can see.
+fn mark_ring() = 48
+
+fn mark_life() = 10.0
+
+fn note_mark(w, x, y, z, vx, vy, vz) =
+  n = to_int(peek_f32(w, 94))
+  mb = peek_ptr(w, 124)
+  at = n % mark_ring() * 8
+  l = sqrt(vx * vx + vy * vy + vz * vz)
+  d = if l < 0.001 then 1.0 else 1.0 / l
+  poke_f32(mb, at, x)
+  poke_f32(mb, at + 1, y)
+  poke_f32(mb, at + 2, z)
+  poke_f32(mb, at + 3, vx * d)
+  poke_f32(mb, at + 4, vy * d)
+  poke_f32(mb, at + 5, vz * d)
+  poke_f32(mb, at + 6, world_time(w))
+  poke_f32(mb, at + 7, 0.0)
+  poke_f32(w, 94, to_float(n + 1))
+  1
+
+fn marks(s: Ptr) -> Ptr = peek_ptr(wd(s), 124)
+
+fn marks_cap() -> Int = mark_ring()
+
+fn clear_marks_ring(mb) =
+  for i in 0..mark_ring()
+    poke_f32(mb, i * 8 + 6, 0.0)
+
 fn ak_full() = 30
 
 fn ak_gap() = 0.2
@@ -1939,6 +1989,8 @@ fn reset_world(w) =
   # And the wear on the glass goes with the breaks.
   for i in 0..to_int(peek_f32(w, 58))
     poke_f32(peek_ptr(w, 123), i, 0.0)
+
+  clear_marks_ring(peek_ptr(w, 124))
 
   poke_f32(w, 62, 0.0)
   clear_bullets(peek_ptr(w, 68))
@@ -3122,6 +3174,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   fell_buf = alloc_bytes(fell_ring() * 4)
   zap_buf = alloc_bytes(zap_ring() * 2 * 4)
   glass_buf = alloc_bytes(ncrys * 4)
+  mark_buf2 = alloc_bytes(mark_ring() * 8 * 4)
   step = cell_step(grid)
   hs = buf_float((grid + 1) * (grid + 1))
   gen_heights(hs, grid, step)
@@ -3147,6 +3200,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 121, fell_buf)
   poke_ptr(s, 122, zap_buf)
   poke_ptr(s, 123, glass_buf)
+  poke_ptr(s, 124, mark_buf2)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
@@ -3159,9 +3213,11 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 79, 1.0)
   poke_f32(s, 80, 0.0)
   poke_f32(s, 93, 0.0)
+  poke_f32(s, 94, 0.0)
   poke_f32(s, 95, 0.0)
   poke_f32(s, 53, 1.0)
   clear_bullets(bullet_buf)
+  clear_marks_ring(mark_buf2)
   clear_shards(shard_buf)
   # After the clearing, because the magazines live in the same buffer and are
   # the one thing in it that is there from the start.
