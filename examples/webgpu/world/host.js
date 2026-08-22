@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=336";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=336";
+import { load } from "./world.js?v=337";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=337";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=336";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "336";
+const V = "337";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -627,7 +627,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 15 + Object.keys(SHADERS).length + TEXTURES.length + 10 + (server ? 1 : 0);
+  const TOTAL = 15 + Object.keys(SHADERS).length + TEXTURES.length + 12 + (server ? 1 : 0);
   let done = 0;
   // Never past the end. This is a count kept by hand of steps taken elsewhere,
   // and the two drift every time something is added — a bar that says 104% is
@@ -1312,7 +1312,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
-  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, akBuf = null, musicStarted = false;
+  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, akBuf = null, akReloadBuf = null, musicStarted = false;
   let musicGain = null, musicOn = true;
   const shotBytes = await (await fetch(`./rifle-shot.mp3?v=${V}`)).arrayBuffer();
   step("rifle-shot.mp3");
@@ -1366,6 +1366,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // One real AK-47 report, cut from the Free Firearm Sound Library (CC0).
   const akSndBytes = await (await fetch(`./ak-shot.m4a?v=${V}`)).arrayBuffer();
   step("ak-shot.m4a");
+  // The magazine change: SpringySpringo's assault rifle reload, CC0. A second
+  // and a half of it, which is the pause it is played over.
+  const akReloadBytes = await (await fetch(`./ak-reload.m4a?v=${V}`)).arrayBuffer();
+  step("ak-reload.m4a");
   // One node per sound, built and thrown away: cheaper than it looks, and the
   // only way to have two of the same sample overlapping.
   function playAt(buf, offset, dur, gain, pan, rate) {
@@ -1401,7 +1405,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       step(label);
       return b;
     };
-    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf, akBuf] = await Promise.all([
+    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf, akBuf, akReloadBuf] = await Promise.all([
       one(shotBytes, "decoding rifle-shot"),
       one(breakBytes, "decoding crystal-break"),
       one(blastBytes, "decoding meteor-blast"),
@@ -1411,6 +1415,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       one(musicBytes, "decoding valley-theme"),
       one(zapBytes, "decoding crystal-zap"),
       one(akSndBytes, "decoding ak-shot"),
+      one(akReloadBytes, "decoding ak-reload"),
     ]);
   }
 
@@ -1505,6 +1510,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   function akBang() {
     ensureAudio(() => playAt(akBuf, 0, 0, 0.42 + Math.random() * 0.08, 0,
                              0.95 + Math.random() * 0.1));
+  }
+  // The magazine change. Played a shade fast — the clip is a second and a
+  // half and the pause is 1.4 — so the click of the magazine seating lands on
+  // the frame the gun is ready again rather than a breath after it.
+  function akReload() {
+    ensureAudio(() => playAt(akReloadBuf, 0, 0, 0.5, 0, 1.556 / 1.4));
   }
   // And the valley answering when the burst stops: the same report, three
   // times off the far slopes, quieter and later each time.
@@ -2649,9 +2660,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // whole of the propellant leaves the front of it and there is a tube to
   // reload. Two and a half seconds is what stops a rocket being a rifle.
   const RPG_CYCLE = 2.5;
-  const AK_CYCLE = 0.1;
+  const AK_CYCLE = 0.3333;
   const cycleNow = () => (held === 1 ? RPG_CYCLE : held === 2 ? AK_CYCLE : BOLT_CYCLE);
-  let wantShot = false, fireHeld = false, akBurst = 0, lastAkLoaded = -1, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
+  let wantShot = false, fireHeld = false, akBurst = 0, lastAkLoaded = -1, kickUp = 0, kickSide = 0, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
@@ -2956,7 +2967,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The change, seen from here: the world swapped magazines on a pull, the
     // count jumped from nothing back to thirty, and the crosshair owes the
     // second and a half the hands are busy.
-    if (held === 2 && lastAkLoaded === 0 && loaded > 0) boltT = cycleNow() - 1.45;
+    if (held === 2 && lastAkLoaded === 0 && loaded > 0) { boltT = cycleNow() - 1.45; akReload(); }
     lastAkLoaded = held === 2 ? loaded : -1;
     // The AK is automatic: while the trigger is held and there is anything in
     // the magazine, every twentieth millisecond is a shot. The press itself
@@ -2980,7 +2991,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // over a magazine. The scattered direction is the one that crosses the
       // wire, so everybody sees the round go where it actually went.
       if (held === 2) {
-        const spread = 0.012 + Math.min(akBurst, 20) * 0.0012;
+        const spread = 0.007 + Math.min(akBurst, 12) * 0.0007;
         dx += (Math.random() * 2 - 1) * spread;
         dy += (Math.random() * 2 - 1) * spread;
         dz += (Math.random() * 2 - 1) * spread;
@@ -2995,8 +3006,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       E.fire(state, dx, dy, dz);
       if (net) net.fired(dx, dy, dz);
       boltT = 0;
-      recoil = held === 2 ? 0.45 : 1;
-      if (held === 2) { akBang(); akBurst++; } else { bang(); }
+      recoil = 1;
+      if (held === 2) {
+        akBang();
+        akBurst++;
+        // The climb. Not a wobble painted on the screen — it is fed to the
+        // same look the mouse drives, so the muzzle really is pointing higher
+        // afterwards and the shot after it goes where the barrel now is. The
+        // first rounds of a burst climb hardest and it eases off as the
+        // shoulder catches up, which is what a held trigger actually does.
+        const ease = 1 - Math.min(akBurst, 8) / 16;
+        kickUp += (5.5 + Math.random() * 2.5) * ease;
+        kickSide += (Math.random() * 2 - 1) * 2.6;
+      } else bang();
     }
     wantShot = false;
     recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
@@ -3042,6 +3064,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // movement of the hand has to cover the same angle on the screen, and the
     // screen is showing a narrower slice of the world.
     mdx /= zoom; mdy /= zoom;
+    // And the weapon's own kick on top, in the same pixels the mouse speaks —
+    // after the zoom, because a scope magnifies the world and not the rifle's
+    // objection to being fired. `mdy` is positive downward, so the climb is a
+    // subtraction.
+    mdy -= kickUp; mdx += kickSide;
+    kickUp = 0; kickSide = 0;
 
     if (net) {
       // Sixty times a second at most, whatever the screen is doing. That is

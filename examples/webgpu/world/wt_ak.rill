@@ -18,7 +18,7 @@ fn main() =
   v.set_look(s, 0.0, 0.0)
   run_ticks(w, s, 20)
   fired = v.ak_full() - v.ak_rounds(s)
-  println("one second of held trigger: " + int_to_str(fired) + " rounds gone (want ~9-10), rifle still " + int_to_str(v.rounds(s)))
+  println("one second of held trigger: " + int_to_str(fired) + " rounds gone (want 3), rifle still " + int_to_str(v.rounds(s)))
   b = v.bullets(w)
   vx = peek_f32(b, 3)
   vz = peek_f32(b, 5)
@@ -31,7 +31,7 @@ fn main() =
   crystal_test()
 
 fn hold_until_change(w, s, guard) =
-  if v.ak_mags(s) < 4 then 0 else if guard > 300 then 0 else hold_step(w, s, guard)
+  if v.ak_mags(s) < 4 then 0 else if guard > 400 then 0 else hold_step(w, s, guard)
 
 fn hold_step(w, s, guard) =
   run_ticks(w, s, 1)
@@ -55,7 +55,9 @@ fn crystal_test() =
   poke_f32(s, 18, cz)
   v.set_look(s, 1.5708, 0.0)
   b0 = v.breaks(s)
-  shots = pump(w, s, cb, 0, b0, 0)
+  a0 = v.ak_rounds(s)
+  pump(w, s, cb, 0, b0, 0)
+  shots = a0 - v.ak_rounds(s)
   println("the AK against crystal 0: broke after " + int_to_str(shots) + " rounds (want 5)")
   println("  debug: scale " + float_to_str(sc) + ", wear " + float_to_str(peek_f32(peek_ptr(w, 123), 0)) + ", ak left " + int_to_str(v.ak_rounds(s)) + ", crystal now " + float_to_str(peek_f32(cb, 3)))
   v.set_weapon(s, 0)
@@ -63,7 +65,7 @@ fn crystal_test() =
   0
 
 fn pump(w, s, cb, n, b0, guard) =
-  if v.breaks(s) > b0 then n else if guard > 40 then 0 - 1 else pump_one(w, s, cb, n, b0, guard)
+  if v.breaks(s) > b0 then n else if guard > 120 then 0 - 1 else pump_one(w, s, cb, n, b0, guard)
 
 fn pump_one(w, s, cb, n, b0, guard) =
   v.want_fire(s, 1.0, 0.0, 0.0)
