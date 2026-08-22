@@ -16,7 +16,10 @@
     @location(4) tint: vec3f,
   }
 
-  const ZAP_LIFE = 0.35;
+  // Half a second, not a third. A discharge is quick, but one that is over
+  // before the eye has found it is a hit with no cause on screen — and the
+  // crystal that bit you is as often beside you as in front.
+  const ZAP_LIFE = 0.5;
   // Wide, because the quad is the canvas and the bolt lives inside it: the
   // fragment draws a jagged core wandering about the centre line and a soft
   // halo across the whole width, so the strip has to be as wide as the

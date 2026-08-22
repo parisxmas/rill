@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=342";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=342";
+import { load } from "./world.js?v=348";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=348";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=342";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "342";
+const V = "348";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1967,7 +1967,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // Both conversions are load-bearing: an `Int` across the wasm boundary is
     // an i64, which arrives as a BigInt and will not be subtracted from a
     // number, and will not be passed back as one either.
-    if (m.ammo !== null && Math.abs(m.ammo - Number(E.held_ammo(state))) > 2) E.set_held_ammo(state, BigInt(m.ammo));
+    // A correction may not undo a magazine change this browser has just
+    // made. Without the pause the two fought: the client's magazine ran out
+    // and it changed to a fresh one, the next snapshot still had the server
+    // three rounds from the end and pulled the count back down, the client
+    // changed again — and again, twenty times a second, eating the belt and
+    // playing the reload over and over. The server is making the same change
+    // a round trip behind; it is given that long to catch up.
+    if (m.ammo !== null && performance.now() > reloadHold
+        && Math.abs(m.ammo - Number(E.held_ammo(state))) > 2) {
+      E.set_held_ammo(state, BigInt(m.ammo));
+    }
     const x = E.player_x(state), y = E.player_y(state), z = E.player_z(state);
     const d = Math.hypot(x - m.x, y - m.y, z - m.z);
     if (d > 4) E.set_at(state, m.x, m.y, m.z);
@@ -2647,7 +2657,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const RPG_CYCLE = 2.5;
   const AK_CYCLE = 0.2;
   const cycleNow = () => (held === 1 ? RPG_CYCLE : held === 2 ? AK_CYCLE : BOLT_CYCLE);
-  let wantShot = false, fireHeld = false, akBurst = 0, lastAkLoaded = -1, kickUp = 0, kickSide = 0, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
+  let wantShot = false, fireHeld = false, akBurst = 0, lastAkLoaded = -1, reloadHold = 0, kickUp = 0, kickSide = 0, recoil = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
   let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
   const warn = document.getElementById("warn");
   const cut = document.getElementById("cut");
@@ -2952,7 +2962,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The change, seen from here: the world swapped magazines on a pull, the
     // count jumped from nothing back to thirty, and the crosshair owes the
     // second and a half the hands are busy.
-    if (held === 2 && lastAkLoaded === 0 && loaded > 0) { boltT = cycleNow() - 1.45; akReload(); }
+    if (held === 2 && lastAkLoaded === 0 && loaded > 0) { boltT = cycleNow() - 1.45; akReload(); reloadHold = performance.now() + 900; }
     lastAkLoaded = held === 2 ? loaded : -1;
     // The AK is automatic: while the trigger is held and there is anything in
     // the magazine, every twentieth millisecond is a shot. The press itself
@@ -2988,11 +2998,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // when you have stopped pulling the trigger; a round that decides what it
       // hit locally is a client deciding whether it shot somebody. So both, and
       // the server's copy of this round is dropped on the way back in.
+      // An empty magazine turns this pull into the change rather than a
+      // shot — the world decides that inside `fire` — so the report below
+      // belongs to the rounds that leave and not to the magazine that
+      // arrives.
+      const changing = held === 2 && loaded === 0;
       E.fire(state, dx, dy, dz);
       if (net) net.fired(dx, dy, dz);
       boltT = 0;
-      recoil = 1;
-      if (held === 2) {
+      // What the *model* does, as against what the aim does. The rifle's own
+      // 0.11 radians and five centimetres were measured on a gun fired once
+      // every second and a half; at five a second they swing the AK's muzzle
+      // clean out of the frame and take the sights with it. A third of that
+      // still reads as a kick and leaves the barrel where it can be seen.
+      // The climb the aim takes is untouched — that is `kickUp`, above.
+      recoil = held === 2 ? 0.34 : 1;
+      if (held === 2 && !changing) {
         akBang();
         akBurst++;
         // The climb. Not a wobble painted on the screen — it is fed to the
@@ -3003,7 +3024,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         const ease = 1 - Math.min(akBurst, 8) / 16;
         kickUp += (5.5 + Math.random() * 2.5) * ease;
         kickSide += (Math.random() * 2 - 1) * 2.6;
-      } else bang();
+      } else if (held !== 2) bang();
     }
     wantShot = false;
     recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
@@ -3320,7 +3341,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         const ca = zci * 8;
         let tx, ty, tz;
         const sf = stateF32();
-        if (!net || zwho === net.id) { tx = sf[16]; ty = sf[17] - 0.25; tz = sf[18]; }
+        // Your own chest, not your eye. Ending it at the camera put the
+        // last stretch of the bolt behind the near plane, so a hit you were
+        // not already looking at arrived as damage with nothing on screen.
+        // Half a metre down and it strikes into the bottom of the view,
+        // which is where a thing hitting you belongs.
+        if (!net || zwho === net.id) { tx = sf[16]; ty = sf[17] - 0.5; tz = sf[18]; }
         else {
           const q = net.last && net.last.players.find(p => p.id === zwho && p.seen);
           if (!q) continue;
@@ -3699,7 +3725,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The crystals' light, on the same additive terms the tracers get.
     let zn = 0;
     for (const zp of zapsLive) {
-      if (sky - zp.born > 0.4 || zn >= ZAP_MAX) continue;
+      if (sky - zp.born > 0.55 || zn >= ZAP_MAX) continue;
       zapData.set([zp.ax, zp.ay, zp.az, zp.bx, zp.by, zp.bz, zp.r, zp.g, zp.b, zp.born], zn * 10);
       zn++;
     }
