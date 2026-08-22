@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=356";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=356";
+import { load } from "./world.js?v=357";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=357";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=356";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "356";
+const V = "357";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -114,7 +114,7 @@ const TEXTURES = [
   ["./plants.png", 512, 512],        // the undergrowth atlas, 2x2
   ["./rock-face.jpg", 256, 256],
   ["./shore-sand.jpg", 256, 256],
-  ["./rifle-atlas.jpg", 1024, 1024], // rifle materials on top, the AK's skin below
+  ["./rifle-atlas.jpg", 1024, 512],  // the rifle's two materials, side by side
   ["./meteor.jpg", 256, 256],        // the stone inside a fireball
   // Jupiter, equirectangular: Cassini's imagery by way of Solar System Scope,
   // CC BY 4.0. A thousand across for a disc four hundred pixels wide — the

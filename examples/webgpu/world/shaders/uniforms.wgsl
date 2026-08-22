@@ -35,7 +35,7 @@
     // The rocket crate's, for the second kind of box on the ground.
     crateMin:   vec4f,
     crateSize:  vec4f,
-    // The AK's, for the viewmodel pipeline built with AKV set.
+    // The AK's, which `ak.wgsl` unpacks against — it has a shader of its own.
     akMin:      vec4f,
     akSize:     vec4f,
   }

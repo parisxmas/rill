@@ -1,5 +1,3 @@
-  override AKV: f32 = 0.0;
-
   // The rifle in the hands. It lives in the world — same sun, same shadow map,
   // same haze — but it is placed relative to the eye rather than to the valley,
   // and it is projected through its own frustum. Where it sits and how it is
@@ -18,11 +16,7 @@
   ) -> VOut {
     // Unpack: position is unorm16 across the model's own bounding box, normal
     // is snorm8. Sixteen bytes a vertex instead of thirty-two.
-    // Which gun this pipeline was built for: 0 the rifle, 1 the AK. Baked in
-    // as a constant, so it is two pipelines off one shader rather than a
-    // branch every vertex pays for.
-    let m0 = select(u.vmMin.xyz + qpos.xyz * u.vmSize.xyz,
-                    u.akMin.xyz + qpos.xyz * u.akSize.xyz, AKV > 0.5);
+    let m0 = u.vmMin.xyz + qpos.xyz * u.vmSize.xyz;
     // `qpos.w` says which part a vertex belongs to: one for the bolt, three
     // quarters for the bullet, a half for its case, zero for the rifle proper.
     // A flag baked into the spare component of a position that was already
@@ -47,10 +41,10 @@
   }
 
   @fragment fn fs(v: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
-    // The top half of the sheet: the lower half was the AK's skin until the
-    // AK got a shader of its own, and the image is left at its full height so
-    // the rifle's own coordinates do not have to move.
-    let albedo = textureSample(rifleTex, barkSamp, vec2f(v.uv.x, v.uv.y * 0.5)).rgb;
+    // The whole sheet. Its lower half carried a painted AK for a while; the
+    // AK is shaded from where it is now — see `ak.wgsl` — so the image went
+    // back to the rifle's own two materials and the coordinates with it.
+    let albedo = textureSample(rifleTex, barkSamp, v.uv).rgb;
     let nn = normalize(v.normal);
     var col = lit(albedo, select(-nn, nn, front), v.world);
     // The flash lights what is holding it. A rifle firing in the dark is the
