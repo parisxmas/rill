@@ -355,6 +355,21 @@ fn place(buf, i, count, cap, lim, kind) =
 #            118 the scratch a segment or a chunk's numbers travel in,
 #                because more than eight float arguments go to the stack and
 #                stack arguments in a loop are what took the server down
+#             76 the pines a warhead took    83 the wear on the glass
+#             78 the crystals' bites         75 where rounds have stopped
+#
+# Those last four are down at seventy rather than up beside the others, and
+# the reason is the second half of the trap above. `peek_ptr(p, i)` reads the
+# byte at `i * sizeof(void*)`: eight on the server, **four in the browser**.
+# So on wasm32 pointer slot i and float slot i are the same four bytes, and a
+# buffer parked on a pointer slot whose float twin this block already uses is
+# a buffer a counter writes over — in the browser only, silently, while the
+# server and every test go on working. 121 to 124 are the round's own floats,
+# and the marks' cursor sat on 94, which is `wd`: the pointer back to the
+# world. Seventy to seventy-two are where the last crystal stood, which is
+# how the second attempt at a home for these went wrong as well.
+# `tools/slots.py` counts the pairs now, and it is the only reliable way to
+# pick a slot in this file.
 fn block_size() = 0.3
 
 # Eight courses of three tenths is the same two and a bit metres the wall was
@@ -823,8 +838,8 @@ fn mark_ring() = 48
 fn mark_life() = 10.0
 
 fn note_mark(w, x, y, z, vx, vy, vz) =
-  n = to_int(peek_f32(w, 94))
-  mb = peek_ptr(w, 124)
+  n = to_int(peek_f32(w, 55))
+  mb = peek_ptr(w, 75)
   at = n % mark_ring() * 8
   l = sqrt(vx * vx + vy * vy + vz * vz)
   d = if l < 0.001 then 1.0 else 1.0 / l
@@ -836,10 +851,10 @@ fn note_mark(w, x, y, z, vx, vy, vz) =
   poke_f32(mb, at + 5, vz * d)
   poke_f32(mb, at + 6, world_time(w))
   poke_f32(mb, at + 7, 0.0)
-  poke_f32(w, 94, to_float(n + 1))
+  poke_f32(w, 55, to_float(n + 1))
   1
 
-fn marks(s: Ptr) -> Ptr = peek_ptr(wd(s), 124)
+fn marks(s: Ptr) -> Ptr = peek_ptr(wd(s), 75)
 
 fn marks_cap() -> Int = mark_ring()
 
@@ -1334,7 +1349,7 @@ fn try_break(w, cb, ci, b, at, ax, ay, az, bx, by, bz) =
       # the ledger's: a rifle round is a whole crystal, an AK round a fifth of
       # one — five of the fast little rounds to what one aimed shot does.
       poke_f32(b, at + 7, 0.0)
-      hpb = peek_ptr(w, 123)
+      hpb = peek_ptr(w, 83)
       worn = peek_f32(hpb, ci) + (if round_scale(b, at) < 0.5 then 0.2 else 1.0)
       if worn > 0.99 then break_crystal(w, cb, cat, ci)
       else
@@ -1988,9 +2003,9 @@ fn reset_world(w) =
 
   # And the wear on the glass goes with the breaks.
   for i in 0..to_int(peek_f32(w, 58))
-    poke_f32(peek_ptr(w, 123), i, 0.0)
+    poke_f32(peek_ptr(w, 83), i, 0.0)
 
-  clear_marks_ring(peek_ptr(w, 124))
+  clear_marks_ring(peek_ptr(w, 75))
 
   poke_f32(w, 62, 0.0)
   clear_bullets(peek_ptr(w, 68))
@@ -2281,13 +2296,13 @@ fn burst_pine(w, pb, at) =
 
 fn note_fell(w, i) =
   n = to_int(peek_f32(w, 93))
-  poke_f32(peek_ptr(w, 121), n % fell_ring(), to_float(i))
+  poke_f32(peek_ptr(w, 76), n % fell_ring(), to_float(i))
   poke_f32(w, 93, peek_f32(w, 93) + 1.0)
   1
 
 fn pines_down(w: Ptr) -> Int = to_int(peek_f32(w, 93))
 
-fn fell_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 121), k % fell_ring()))
+fn fell_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 76), k % fell_ring()))
 
 # Being told which pine went, with no blast of our own to work it out from —
 # and the whole standing history for whoever walks in late.
@@ -3197,10 +3212,10 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_ptr(s, 118, seg_buf)
   poke_ptr(s, 119, grid_buf)
   poke_ptr(s, 120, mark_buf)
-  poke_ptr(s, 121, fell_buf)
-  poke_ptr(s, 122, zap_buf)
-  poke_ptr(s, 123, glass_buf)
-  poke_ptr(s, 124, mark_buf2)
+  poke_ptr(s, 76, fell_buf)
+  poke_ptr(s, 78, zap_buf)
+  poke_ptr(s, 83, glass_buf)
+  poke_ptr(s, 75, mark_buf2)
   poke_ptr(s, 74, fire_buf)
   poke_ptr(s, 77, charge_buf)
   poke_ptr(s, 81, blast_buf)
@@ -3213,7 +3228,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 79, 1.0)
   poke_f32(s, 80, 0.0)
   poke_f32(s, 93, 0.0)
-  poke_f32(s, 94, 0.0)
+  poke_f32(s, 55, 0.0)
   poke_f32(s, 95, 0.0)
   poke_f32(s, 53, 1.0)
   clear_bullets(bullet_buf)
@@ -4245,7 +4260,7 @@ fn zap(w, s, cb, i) =
 
 fn note_zap(w, who, ci) =
   n = to_int(peek_f32(w, 95))
-  zb = peek_ptr(w, 122)
+  zb = peek_ptr(w, 78)
   poke_f32(zb, n % zap_ring() * 2, to_float(who))
   poke_f32(zb, n % zap_ring() * 2 + 1, to_float(ci))
   poke_f32(w, 95, peek_f32(w, 95) + 1.0)
@@ -4255,9 +4270,9 @@ fn note_zap(w, who, ci) =
 # player block, and the world is one hop from either kind.
 fn zaps(s: Ptr) -> Int = to_int(peek_f32(wd(s), 95))
 
-fn zap_who(s: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(wd(s), 122), k % zap_ring() * 2))
+fn zap_who(s: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(wd(s), 78), k % zap_ring() * 2))
 
-fn zap_which(s: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(wd(s), 122), k % zap_ring() * 2 + 1))
+fn zap_which(s: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(wd(s), 78), k % zap_ring() * 2 + 1))
 
 # Being told about a bite this browser did not decide: the ring and the
 # counter move, the light and the sound follow, and the health arrives in the
