@@ -15,6 +15,7 @@
 import "valley" as v
 import "hud" as hud
 import "wire" as wire
+import "hand" as hand
 
 # ---- the valley, and who is in it ------------------------------------------
 
@@ -474,6 +475,20 @@ export fn wire_out_ping(b: Ptr, now: Float) -> Int = wire.out_ping(b, now)
 # The page wrote the text at OUT+1; this stamps the letter and says how long
 # the frame is.
 export fn wire_out_text(b: Ptr, op: Int, len: Int) -> Int = wire.out_text(b, op, len)
+
+# ---- the hands --------------------------------------------------------------
+#
+# The input-to-trigger machine — hand.rill. The page pushes each frame's raw
+# inputs and reads back the adjusted mouse, the uniform values and the sound
+# cues, all at fixed indices in the hand block (mirrored once in host.js as
+# `HAND`).
+
+export fn hand_init(s: Ptr) -> Ptr = hand.make(s)
+
+export fn hand_ptr(s: Ptr) -> Ptr = peek_ptr(s, 96)
+
+export fn hand_frame(s: Ptr, dt: Float, now: Float, t: Float, mdx: Float, mdy: Float, flags: Int, want: Int) -> Int =
+  hand.frame(s, dt, now, t, mdx, mdy, flags, want)
 
 # Called once when the module is instantiated, and there is nothing to set up:
 # the valley is built when the host has measured the machine and knows how much

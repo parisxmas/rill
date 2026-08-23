@@ -1,0 +1,314 @@
+# The hands, in the engine.
+#
+# Everything between a pressed key and a fired round used to live in the
+# page's frame loop: the weapon-swap machine, the bolt clock, the sights'
+# ease and the zoom it drives, the AK's cone and its climb, the recoil debt
+# the settle gives back, the empty-magazine change, the refusals. All of it is
+# view-state the server never runs — but it is *game* state, and it moved here
+# for the same reason the HUD and the wire did: one place, testable, and the
+# page keeps only what only it can do, which is play the sounds.
+#
+# The page pushes the frame's inputs — mouse deltas, the trigger, the keys —
+# and reads back the adjusted deltas, the uniform values, and a little ring of
+# sound cues. The refusals go straight onto the HUD from here.
+#
+# The block hangs off the player at ptr slot 96:
+#
+#   f32  0 held          4 boltT        8 kickUp      12 akBurst
+#        1 wantHeld      5 aim          9 kickSide    13 lastAkLoaded
+#        2 swap          6 recoil      10 owedUp      14 holdUntil (ms)
+#        3 swapping      7 flash       11 owedSide    15 changeAt (t secs)
+#       16 zoom (out)   17 mdx (out)  18 mdy (out)    19 events waiting
+#       20..35 the event ring, 8 x [kind, spare]
+#       36 ready (the crosshair's cycling flag, out)
+#       40..42 the last shot's direction, for the page to send
+#       37 changePhase (out — how far through the magazine change)
+#       38 boltFrac (out)
+#
+# Event kinds: 1 rifle bang, 2 AK bang, 3 launcher bang, 4 magazine change,
+# 5 dry click, 6 send the shot (the direction is in the player block),
+# 7 send the reload.
+
+import "valley" as v
+import "hud" as hud
+
+fn hand_bytes() = 256
+
+fn swap_secs() = 0.19
+
+fn change_secs() = 1.45
+
+fn bolt_cycle() = 1.15
+
+fn rpg_cycle() = 2.5
+
+fn ak_cycle() = 0.1
+
+fn aim_zoom() = 5.0
+
+fn iron_zoom() = 2.0
+
+fn make(s) =
+  b = alloc_bytes(hand_bytes())
+
+  for i in 0..64
+    poke_f32(b, i, 0.0)
+
+  poke_f32(b, 0, to_float(v.weapon(s)))
+  poke_f32(b, 1, to_float(v.weapon(s)))
+  poke_f32(b, 4, bolt_cycle())
+  poke_f32(b, 13, 0.0 - 1.0)
+  poke_f32(b, 15, 0.0 - 1000000.0)
+  poke_ptr(s, 96, b)
+  b
+
+fn held(b) = to_int(peek_f32(b, 0))
+
+fn cycle_of(w) = if w == 1 then rpg_cycle() else if w == 2 then ak_cycle() else bolt_cycle()
+
+fn cycle_now(b) = cycle_of(held(b))
+
+fn zoom_of(b) = if held(b) == 0 then aim_zoom() else iron_zoom()
+
+fn event(b, kind) =
+  n = to_int(peek_f32(b, 19))
+  if n >= 8 then 0
+  else
+    poke_f32(b, 20 + n * 2, kind)
+    poke_f32(b, 19, to_float(n + 1))
+    1
+
+extern fn exp(x: Float) -> Float
+extern fn sin(x: Float) -> Float
+extern fn cos(x: Float) -> Float
+extern fn sqrt(x: Float) -> Float
+
+fn clampf(x, lo, hi) = if x < lo then lo else if x > hi then hi else x
+
+fn maxf(a, c) = if a > c then a else c
+
+fn minf(a, c) = if a < c then a else c
+
+# A cheap unit noise off the clock and a churn counter, for the cone and the
+# kick. The page used Math.random(); this is v.hash2 fed a moving seed, which
+# is as random as a shoulder needs.
+fn noise(b, t, k) = v.hash2(t * 37.7 + k * 13.1, peek_f32(b, 12) * 7.3 + k) * 2.0 - 1.0
+
+# One frame of the hands. Flags: bit 0 the trigger's edge, bit 1 the trigger
+# held, bit 2 the sights asked for, bit 3 a reload asked for. Returns how many
+# sound cues wait in the ring.
+fn setf(b, i, x) =
+  poke_f32(b, i, x)
+  1
+
+fn frame(s, dt, now, t, mdx0, mdy0, flags, want) =
+  b = peek_ptr(s, 96)
+  h = peek_ptr(s, 95)
+  # The ring is this frame's: cleared here, filled below, drained by the page
+  # right after — a page that forgot to reset it must not hear last frame's
+  # bangs again.
+  poke_f32(b, 19, 0.0)
+  poke_f32(b, 1, to_float(want))
+  want_shot0 = flags % 2 == 1
+  fire_held = flags / 2 % 2 == 1
+  want_aim = flags / 4 % 2 == 1
+  want_reload = flags / 8 % 2 == 1
+  poke_f32(b, 4, peek_f32(b, 4) + dt)
+
+  wading = v.wading(s) > 0
+  if want_shot0 && wading then warn(h, "YOU CANNOT FIRE FROM THE WATER", now) else 0
+
+  if want_reload then reload_asked(b, s, h, now, t) else 0
+
+  loaded = loaded_now(b, s)
+  mags = v.ak_mags(s)
+  came_back(b, now, t, loaded)
+  auto = held(b) == 2 && fire_held && !wading && (loaded > 0 || mags > 0) && peek_f32(b, 4) >= cycle_now(b)
+  want_shot = want_shot0 || auto
+  if peek_f32(b, 12) > 0.5 && (!fire_held || loaded == 0 || held(b) != 2) then setf(b, 12, 0.0) else 0
+
+  if want_shot && peek_f32(b, 4) >= cycle_now(b) && !wading then
+    if loaded == 0 && !(held(b) == 2 && mags > 0) then dry(b, h, now)
+    else shot(b, s, t)
+  else 0
+
+  poke_f32(b, 6, peek_f32(b, 6) * exp(0.0 - 3.912 * dt))
+  poke_f32(b, 7, peek_f32(b, 7) * exp(0.0 - 27.38 * dt))
+  swap_step(b, s, dt)
+  aim_step(b, s, dt, want_aim)
+  deltas(b, dt, mdx0, mdy0, fire_held, loaded)
+  outs(b, t)
+  to_int(peek_f32(b, 19))
+
+fn warn(h, text, now) =
+  sl = hud.sl_warn()
+  hud.slot_set(h, sl, hud.c_orange(), text, now)
+  poke_f32(h, hud.h_warn_at(), now)
+  1
+
+# The reload key. The world answers whether it took — a full magazine, the
+# wrong weapon, the water, the ground, no spare — and only a yes starts the
+# animation, the sound, and the same request to the server.
+fn reload_asked(b, s, h, now, t) =
+  if held(b) == 2 && v.ask_reload(s) > 0 then
+    change_starts(b, now, t)
+    event(b, 7.0)
+    1
+  else 0
+
+fn change_starts(b, now, t) =
+  poke_f32(b, 4, cycle_now(b) - change_secs())
+  poke_f32(b, 14, now + 900.0)
+  poke_f32(b, 15, t)
+  event(b, 4.0)
+  1
+
+fn loaded_now(b, s) =
+  if held(b) == 1 then v.rockets(s) else if held(b) == 2 then v.ak_rounds(s) else v.rounds(s)
+
+# The change, seen from here: the world swapped magazines on a pull, the count
+# jumped from nothing back to thirty, and the crosshair owes the second and a
+# half the hands are busy.
+fn came_back(b, now, t, loaded) =
+  if held(b) == 2 && to_int(peek_f32(b, 13)) == 0 && loaded > 0 then change_starts(b, now, t) else 0
+  poke_f32(b, 13, if held(b) == 2 then to_float(loaded) else 0.0 - 1.0)
+  1
+
+fn dry(b, h, now) =
+  warn(h, if held(b) == 1 then "THE TUBE IS EMPTY" else "THE MAGAZINE IS EMPTY", now)
+  event(b, 5.0)
+  1
+
+# A round leaves. The direction is the look, and on the AK a cone that opens
+# with the burst — the scattered direction is the one that crosses the wire,
+# so everybody sees the round go where it actually went.
+fn shot(b, s, t) =
+  yaw = peek_f32(s, 19)
+  pit = peek_f32(s, 20)
+  cp = cos(pit)
+  dx0 = sin(yaw) * cp
+  dy0 = sin(pit)
+  dz0 = 0.0 - cos(yaw) * cp
+  ak = held(b) == 2
+  spread = if ak then 0.007 + minf(peek_f32(b, 12), 24.0) * 0.00035 else 0.0
+  dx1 = dx0 + noise(b, t, 1.0) * spread
+  dy1 = dy0 + noise(b, t, 2.0) * spread
+  dz1 = dz0 + noise(b, t, 3.0) * spread
+  l = sqrt(dx1 * dx1 + dy1 * dy1 + dz1 * dz1)
+  dx = dx1 / l
+  dy = dy1 / l
+  dz = dz1 / l
+  loaded = loaded_now(b, s)
+  changing = ak && loaded == 0
+  v.fire(s, dx, dy, dz)
+  # The direction the page sends to the server — the world's own 48..50 are
+  # the server's copy of `want_fire` and this side never writes them.
+  poke_f32(b, 40, dx)
+  poke_f32(b, 41, dy)
+  poke_f32(b, 42, dz)
+  event(b, 6.0)
+  poke_f32(b, 4, 0.0)
+  poke_f32(b, 6, if ak then 0.5 else 1.0)
+  if !changing then setf(b, 7, 1.0) else 0
+  if ak && !changing then ak_shot(b, t)
+  else if held(b) == 1 then event(b, 3.0)
+  else if held(b) == 0 then event(b, 1.0)
+  else 0
+
+# The AK's report, and the climb: fed to the same look the mouse drives, so
+# the muzzle really is pointing higher afterwards. The first rounds of a
+# burst climb hardest and it eases off as the shoulder catches up.
+fn ak_shot(b, t) =
+  event(b, 2.0)
+  poke_f32(b, 12, peek_f32(b, 12) + 1.0)
+  ease = 1.0 - minf(peek_f32(b, 12), 16.0) / 32.0
+  poke_f32(b, 8, peek_f32(b, 8) + (5.5 + (noise(b, t, 4.0) * 0.5 + 0.5) * 2.5) * ease)
+  poke_f32(b, 9, peek_f32(b, 9) + noise(b, t, 5.0) * 2.6)
+  1
+
+# Changing hands: down over SWAP_SECS, over at the bottom, up again — the
+# weapon going away is drawn on the way down and the new one on the way up.
+fn swap_step(b, s, dt) =
+  st = to_int(peek_f32(b, 3))
+  if st == 0 && to_int(peek_f32(b, 1)) != held(b) then setf(b, 3, 1.0) else 0
+  st1 = to_int(peek_f32(b, 3))
+  if st1 == 1 then
+    sw = minf(1.0, peek_f32(b, 2) + dt / swap_secs())
+    poke_f32(b, 2, sw)
+    if sw >= 1.0 then swap_bottom(b, s) else 0
+  else if st1 == 2 then
+    sw = maxf(0.0, peek_f32(b, 2) - dt / swap_secs())
+    poke_f32(b, 2, sw)
+    if sw <= 0.0 then setf(b, 3, 0.0) else 0
+  else 0
+
+# The changeover, at the bottom of the dip. A moment to be ready rather than a
+# whole reload: what a swap costs is the third of a second it takes to get the
+# thing up.
+fn swap_bottom(b, s) =
+  poke_f32(b, 0, peek_f32(b, 1))
+  v.set_weapon(s, to_int(peek_f32(b, 1)))
+  poke_f32(b, 4, maxf(0.0, cycle_now(b) - 0.35))
+  poke_f32(b, 3, 2.0)
+  1
+
+# The sights: nine tenths of the way in about seventy milliseconds, settled
+# inside an eighth of a second — an ease, not a cut, but over before it is
+# noticed. Nobody aims from the ground.
+fn aim_step(b, s, dt, want_aim) =
+  target = if want_aim && v.health(s) > 0.001 then 1.0 else 0.0
+  a0 = peek_f32(b, 5)
+  a1 = a0 + (target - a0) * (1.0 - exp(0.0 - dt / 0.024))
+  poke_f32(b, 5, if a1 < 0.001 then 0.0 else a1)
+  zoom = 1.0 + (zoom_of(b) - 1.0) * peek_f32(b, 5)
+  poke_f32(b, 16, zoom)
+  v.set_zoom(s, zoom)
+
+# The mouse, through the sights and the shoulder: slowed by the zoom, the
+# climb added after it, the debt the recoil ran up paid back by the hand
+# first and the settle second — and only as far as nought, because a pull
+# further than the recoil pushed is aiming, not correcting.
+fn deltas(b, dt, mdx0, mdy0, fire_held, loaded) =
+  zoom = peek_f32(b, 16)
+  mdx1 = mdx0 / zoom
+  mdy1 = mdy0 / zoom
+  ou = peek_f32(b, 10)
+  os = peek_f32(b, 11)
+  ou1 = if mdy1 > 0.0 && ou > 0.0 then maxf(0.0, ou - mdy1) else ou
+  os1 = if os > 0.0 && mdx1 < 0.0 then maxf(0.0, os + mdx1) else if os < 0.0 && mdx1 > 0.0 then minf(0.0, os + mdx1) else os
+  ku = peek_f32(b, 8)
+  ks = peek_f32(b, 9)
+  mdy2 = mdy1 - ku
+  mdx2 = mdx1 + ks
+  ou2 = ou1 + ku
+  os2 = os1 + ks
+  poke_f32(b, 8, 0.0)
+  poke_f32(b, 9, 0.0)
+  bursting = held(b) == 2 && fire_held && loaded > 0
+  if !bursting && (ou2 != 0.0 || os2 != 0.0) then settle(b, dt, mdx2, mdy2, ou2, os2) else park(b, mdx2, mdy2, ou2, os2)
+
+# Settling back, once the burst is over. A hundredth left after a second, so
+# two thirds of the climb is returned in a quarter of one — framerate
+# independent, like the sights, or the gun settles at a different speed on a
+# different screen.
+fn settle(b, dt, mdx, mdy, ou, os) =
+  back = 1.0 - exp(0.0 - 4.605 * dt)
+  gu = ou * back
+  gs = os * back
+  park(b, mdx - gs, mdy + gu, ou - gu, os - gs)
+
+fn park(b, mdx, mdy, ou, os) =
+  poke_f32(b, 17, mdx)
+  poke_f32(b, 18, mdy)
+  poke_f32(b, 10, ou)
+  poke_f32(b, 11, os)
+  1
+
+# What the uniforms read: whether the bolt would fire, how far through the
+# magazine change the hands are, and the bolt's throw as a fraction.
+fn outs(b, t) =
+  poke_f32(b, 36, if peek_f32(b, 4) >= minf(cycle_now(b), bolt_cycle()) then 1.0 else 0.0)
+  cph = (t - peek_f32(b, 15)) / change_secs()
+  poke_f32(b, 37, if held(b) == 2 && cph >= 0.0 && cph < 1.0 then maxf(cph, 0.0001) else 0.0)
+  poke_f32(b, 38, if held(b) == 2 then 0.0 else peek_f32(b, 4) / bolt_cycle())
+  1

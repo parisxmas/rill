@@ -1,0 +1,66 @@
+# A native run for the hands: a player, a hand block, and frames fed the way
+# the page feeds them — the trigger held, the keys pressed — with the counts
+# and the machine's outputs checked against what the page used to compute.
+import "valley" as v
+import "hand" as hd
+import "hud" as hud
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+# Sixty frames a second for `n` frames, with the given flags.
+fn run(s, n, flags, want, t0) =
+  if n == 0 then t0
+  else
+    hd.frame(s, 1.0 / 60.0, t0 * 1000.0, t0, 0.0, 0.0, flags, want)
+    step_world_too(s)
+    run(s, n - 1, flags, want, t0 + 1.0 / 60.0)
+
+fn step_world_too(s) =
+  v.step_world(v.wd(s), 1.0 / 60.0)
+
+fn main() =
+  w = v.init(48, 50, 40, 50)
+  s = v.join(w)
+  poke_ptr(s, 95, hud.make())
+  b = hd.make(s)
+  v.set_look(s, 0.0, 0.3)
+
+  say("the hand starts on the AK", hd.held(b), 2)
+  say("with a full magazine", v.ak_rounds(s), 30)
+
+  # A second of held trigger: ten rounds a second.
+  t1 = run(s, 60, 2, 2, 1.0)
+  say("a second of trigger spends", 30 - v.ak_rounds(s), 10)
+
+  # Hold until past empty: the change runs by itself and takes a spare.
+  mags0 = v.ak_mags(s)
+  t2 = run(s, 60 * 5, 2, 2, t1)
+  say("the empty magazine changed itself", if v.ak_rounds(s) > 0 then 1 else 0, 1)
+  say("and a spare went", mags0 - v.ak_mags(s), 1)
+
+  # Let go: the burst counter clears, and a second and a half returns all but
+  # a fraction of the climb — the same tenth-per-half-second the page ran.
+  t3 = run(s, 90, 0, 2, t2)
+  say("the burst is over", to_int(peek_f32(b, 12)), 0)
+  say("the debt is settled", if peek_f32(b, 10) < 1.0 then 1 else 0, 1)
+
+  # The sights: a quarter second of the button is all the ease needs.
+  t4 = run(s, 15, 4, 2, t3)
+  say("the sights are up", if peek_f32(b, 5) > 0.95 then 1 else 0, 1)
+  say("the AK magnifies twice", to_int(peek_f32(b, 16) + 0.5), 2)
+
+  # Change hands to the rifle: the swap dips and comes back.
+  t5 = run(s, 40, 0, 0, t4)
+  say("the rifle is up", hd.held(b), 0)
+  say("and the world agrees", v.weapon(s), 0)
+  t6 = run(s, 15, 4, 0, t5)
+  say("the scope magnifies five times", to_int(peek_f32(b, 16) + 0.5), 5)
+
+  # One shot from the rifle: one round, a bolt to work, a bang in the ring.
+  poke_f32(b, 19, 0.0)
+  r0 = v.rounds(s)
+  t7 = run(s, 1, 1, 0, t6)
+  say("one pull, one round", r0 - v.rounds(s), 1)
+  say("the bolt is open", if peek_f32(b, 36) < 0.5 then 1 else 0, 1)
+  println("done")

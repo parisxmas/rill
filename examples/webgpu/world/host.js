@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=391";   // keep in step with V below
-import { join, WH } from "./net.js?v=391";
+import { load } from "./world.js?v=392";   // keep in step with V below
+import { join, WH } from "./net.js?v=392";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=391";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "391";
+const V = "392";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -867,6 +867,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
   // The world, from Rill; the generated loader does the ceremony.
   const E = await load(wasmURL);
+  // A developer's handle on the engine, for the console and for nothing else:
+  // every state block is reachable through it, which is what debugging a
+  // wasm-side game needs and what module scope otherwise forbids.
+  window.rill = { E, get state() { return state; }, get world() { return world; }, get net() { return net; } };
   step("world.wasm");
   const S = await loadShaders(step);
 
@@ -2229,7 +2233,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // because `buildWorld` reads it, and `buildWorld` runs while the page is
   // still starting up — a `let` further down is in its dead zone at that
   // point and the first frame throws.
-  let held = 2, wantHeld = 2, swap = 0, swapping = 0, loadedTube = false;
+  let held = 2, wantHeld = 2, swap = 0, loadedTube = false;
 
   function buildWorld(idx) {
     T = TIERS[idx];
@@ -2254,6 +2258,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // A new player block means a new HUD block hanging off it: the atlas
     // survives a re-tier, the metrics are written again into the fresh block.
     hudWire(state);
+    // And a fresh hand for the fresh player block; the weapon carries over
+    // because `set_weapon` ran just above and `make` reads it back.
+    E.hand_init(state);
     // A re-tier is a new valley and a new player block in it, and `join` hands
     // out a player carrying the rifle. What is in the hands is the page's
     // business and did not change because the terrain got coarser — without
@@ -2698,32 +2705,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // captures it, and firing on that one would put a round downrange before
   // anyone had a chance to aim.
   // A bolt action fires once and then has to be worked. `boltT` runs from zero
-  // to BOLT_CYCLE after every shot; while it is running the rifle is open and
-  // the trigger does nothing, which is the whole of what a bolt action is.
-  const BOLT_CYCLE = 1.15;
   // The launcher is slower to bring back on target than a bolt is to work: the
   // whole of the propellant leaves the front of it and there is a tube to
   // reload. Two and a half seconds is what stops a rocket being a rifle.
   const RPG_CYCLE = 2.5;
-  // Ten rounds a second, which is about what the gun really cycles at and
-  // empties the magazine in three. Must stay in step with `ak_gap` in
-  // valley.rill — that is the gate the world holds every client to, and a
-  // browser that asked for rounds faster than this would simply be refused
-  // them.
-  const AK_CYCLE = 0.1;
-  const cycleNow = () => (held === 1 ? RPG_CYCLE : held === 2 ? AK_CYCLE : BOLT_CYCLE);
-  let wantShot = false, wantReload = false, fireHeld = false, akBurst = 0, lastAkLoaded = -1, reloadHold = 0, kickUp = 0, kickSide = 0, recoil = 0, flash = 0, boltT = BOLT_CYCLE, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
-  // What the climb has taken off the aim and not yet handed back. `kickUp` and
-  // `kickSide` are this frame's kick and are spent every frame; these are the
-  // running total across a burst, and they are what the settle gives back.
-  let owedUp = 0, owedSide = 0;
-  // How long the hands are busy changing an AK's magazine, and when they last
-  // started. The number is the fire clock's own — the trigger is dead for
-  // exactly this long — and `ak.wgsl` animates against the same one, so the
-  // magazine is home on the frame the rifle will fire again and not a moment
-  // either side of it.
-  const CHANGE_SECS = 1.45;
-  let changeAt = -1e9;
+  let wantShot = false, wantReload = false, fireHeld = false, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
+  // The hand block's fixed indices, hand.rill's own — mirrored once.
+  const HAND = { held: 0, swap: 2, bolt: 4, aim: 5, recoil: 6, flash: 7,
+                 hold: 14, zoom: 16, mdx: 17, mdy: 18, evN: 19, ev0: 20,
+                 ready: 36, cph: 37, boltFrac: 38 };
+  const handF = () => new Float32Array(E.memory.buffer, Number(E.hand_ptr(state)), 64);
+  // Mirrored out of the hand each frame — everything below that keys off the
+  // weapon or the sights reads these.
+  let recoil = 0, flash = 0, boltT = 0;
   let ended = false, lastStanding = -1, wantRestart = false, lastOver = 0;
 
 
@@ -2739,34 +2733,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // eased, because a field of view that changes between one frame and the next
   // reads as a cut rather than as somebody raising a rifle.
   let wantAim = false, aim = 0;
-  const SWAP_SECS = 0.19;
-  // What the scope does to the world. Five times: the far ridge is four
-  // hundred metres off and somebody standing on it is a figure rather than a
-  // suggestion. It is a lot of magnification for a rifle, and the mouse is
-  // divided by the same number, so what it costs is how fast you can swing —
-  // which is what a scope costs.
-  const AIM_ZOOM = 5;
-  // And what the AK's sights do to it, which is very little. There is no glass
-  // on that one — there is a notch and a post — and a notch magnified five
-  // times is a scope with a strange reticle rather than a rifle held properly.
-  //
-  // Twice. Dead flat is the honest number for a notch and a post and it reads
-  // as the button doing nothing at all: the weapon comes up, the picture does
-  // not change, and the hand goes looking for what it just pressed. This is
-  // the number that came out of trying it, by halves and then by wholes.
-  //
-  // Two things follow from it being this large. The mouse is divided by it, so
-  // the swing halves while the button is down — the AK now costs something to
-  // aim, where at a fifth it cost almost nothing. And the weapon does not grow
-  // with the world: the viewmodel has a frustum of its own, so the sights stay
-  // the size they were while what is behind them doubles. That is what a
-  // magnified sight picture looks like and it is the right way round — the
-  // post is a post, and it is the valley that has come closer.
-  const IRON_ZOOM = 2.0;
-  // The launcher takes the same number for the same reason: its sight is a
-  // post and a ladder, not glass. Five times behind an iron post was a scope
-  // that happened to have a rocket in front of it.
-  const zoomNow = () => (held === 0 ? AIM_ZOOM : IRON_ZOOM);
   // When this player last told the server anything. See the send below.
   let lastSent = -1e9;
   // Left to fire, right held to aim. Both while the mouse is captured, and
@@ -2918,22 +2884,33 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The shot, before the frame that will fly it. Only with the bolt closed,
     // and only on a press: holding the button does nothing, because `wantShot`
     // is set by the event rather than read from the state.
-    boltT = Math.min(boltT + dt, cycleNow());
-    // Say so on the page. The bolt itself is the honest indicator, but it is
-    // off to the right of where anyone aiming is looking, so the crosshair
-    // goes quiet while the rifle is open and comes back when it will fire.
-    const ready = boltT >= Math.min(cycleNow(), BOLT_CYCLE);
-    if (ready !== wasReady) { document.body.classList.toggle("cycling", !ready); wasReady = ready; }
-    // Nothing fires from in the lake. Refused here rather than inside `fire`
-    // so the bolt does not cycle and the bang does not play: a rifle that goes
-    // off and does nothing is worse than one that will not go off.
-    // Space starts again once it is over. The same key jumps while you are
-    // alive, which is why this is gated on `ended` rather than being a key of
-    // its own: at the end of it there is nothing to jump for, and the one key
-    // anyone presses when a screen says GAME OVER is the big one.
-    // Only alone. In somebody else's valley there is nothing here to restart:
-    // the crystals are the server's and it is the one that decides whether a
-    // valley that has run out of them begins again.
+    // The hands, in the engine: the swap machine, the bolt clock, the aim
+    // and its zoom, the cone, the climb and its debt, the refusals — one call.
+    // What comes back is the adjusted mouse, the uniform values, and a ring
+    // of sound cues, each the page's only remaining share of the trigger.
+    {
+      const flags = (wantShot ? 1 : 0) | (fireHeld ? 2 : 0) | (wantAim ? 4 : 0) | (wantReload ? 8 : 0);
+      const evn = Number(E.hand_frame(state, dt, performance.now(), t, mdx, mdy, BigInt(flags), BigInt(wantHeld)));
+      wantShot = false; wantReload = false;
+      const hf = handF();
+      held = hf[HAND.held];
+      aim = hf[HAND.aim]; swap = hf[HAND.swap];
+      recoil = hf[HAND.recoil]; flash = hf[HAND.flash]; boltT = hf[HAND.bolt];
+      mdx = hf[HAND.mdx]; mdy = hf[HAND.mdy];
+      const ready = hf[HAND.ready] > 0.5;
+      if (ready !== wasReady) { document.body.classList.toggle("cycling", !ready); wasReady = ready; }
+      for (let i = 0; i < evn; i++) {
+        const kind = hf[HAND.ev0 + i * 2];
+        if (kind === 1) bang();
+        else if (kind === 2) akBang();
+        else if (kind === 3) rpgBang();
+        else if (kind === 4) akReload();
+        else if (kind === 5) dryClick();
+        else if (kind === 6 && net) net.fired(hf[40], hf[41], hf[42]);
+        else if (kind === 7 && net) net.reloaded();
+      }
+    }
+
     if (ended && wantRestart && !net) {
       // A new valley deserves a new corner of it. `restart` resets the world's
       // clock along with everything else, so without a fresh roll the second
@@ -2949,252 +2926,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       hudHead(HH.over, 0);
     }
     wantRestart = false;
+    wantRestart = false;
 
-    // Nothing fires from in the lake — and it says so. A control that silently
-    // does nothing is indistinguishable from a broken one: you pull the
-    // trigger, get no bolt, no bang and no round, and the only conclusion
-    // available is that the game has stopped working. One line turns a fault
-    // into a rule.
-    const wading = Number(E.wading(state));
-    if (wantShot && wading) sayWarn("you cannot fire from the water");
-
-    // An empty rifle is the same kind of fault as one held under water: the
-    // trigger is pulled and nothing happens, and without a word for it the only
-    // conclusion available is that the game has stopped working. `fire` refuses
-    // on its own — it is the one gate both the browser and the server come
-    // through — but the bang, the recoil, the bolt and the message to the
-    // server all live out here and were happening anyway, so a rifle with
-    // nothing in it went off in every way except the one that counted.
-    // Asked for by hand, before the counts below are read — so the number on
-    // the screen is the one the key just made rather than the one it replaced.
-    //
-    // The world answers whether it took. A full magazine, no spare on the belt,
-    // the wrong weapon up, in the water, on the ground, or the hands already
-    // busy all come back as no, and then the key does nothing at all: no sound,
-    // no animation, and nothing sent. Starting a change that is not happening
-    // is worse than a key that appears dead, because the second one is honest.
-    if (wantReload) {
-      wantReload = false;
-      if (held === 2 && Number(E.ask_reload(state))) {
-        boltT = cycleNow() - CHANGE_SECS;
-        akReload();
-        reloadHold = performance.now() + 900;
-        changeAt = t;
-        // And the same request to the server, whose copy of the magazine is
-        // the one that decides whether a round leaves. It runs the same
-        // `ask_reload`, so the two cannot disagree about whether it took.
-        if (net) net.reloaded();
-      }
-    }
-    const loaded = held === 1 ? Number(E.rockets(state))
-                 : held === 2 ? Number(E.ak_rounds(state))
-                 : Number(E.rounds(state));
-    const akMags = Number(E.ak_mags(state));
-    // The change, seen from here: the world swapped magazines on a pull, the
-    // count jumped from nothing back to thirty, and the crosshair owes the
-    // second and a half the hands are busy.
-    if (held === 2 && lastAkLoaded === 0 && loaded > 0) { boltT = cycleNow() - CHANGE_SECS; akReload(); reloadHold = performance.now() + 900; changeAt = t; }
-    lastAkLoaded = held === 2 ? loaded : -1;
-    // The AK is automatic: while the trigger is held and there is anything in
-    // the magazine, every twentieth millisecond is a shot. The press itself
-    // set wantShot; this keeps setting it for as long as the button is down.
-    if (held === 2 && fireHeld && !wading && (loaded > 0 || akMags > 0) && boltT >= cycleNow()) wantShot = true;
-    // The burst ends when the trigger lifts or the magazine does. The count
-    // is what the climb and the cone are measured from, so it resets here.
-    if (akBurst > 0 && (!fireHeld || loaded === 0 || held !== 2)) akBurst = 0;
-    if (wantShot && boltT >= cycleNow() && !wading && loaded === 0 && !(held === 2 && akMags > 0)) {
-      sayWarn(held === 1 ? "the tube is empty" : "the magazine is empty");
-      dryClick();
-    } else if (wantShot && boltT >= cycleNow() && !wading) {
-      const st0 = stateF32();
-      const yaw = st0[19], pit = st0[20], cp = Math.cos(pit);
-      let dx = Math.sin(yaw) * cp, dy = Math.sin(pit), dz = -Math.cos(yaw) * cp;
-      // The AK does not shoot down a line. Every round leaves a little wide of
-      // the last, and the longer the trigger is held the wider it walks — a
-      // cone that opens from about two thirds of a degree to two and a half
-      // over a magazine. The scattered direction is the one that crosses the
-      // wire, so everybody sees the round go where it actually went.
-      if (held === 2) {
-        // Per round, not per second — so when the rate doubled these had to
-        // halve to keep the cone opening at the same speed on a clock. It
-        // still reaches two and a half degrees, and it still takes about two
-        // and a half seconds of held trigger to get there; there are simply
-        // twice as many rounds inside that.
-        const spread = 0.007 + Math.min(akBurst, 24) * 0.00035;
-        dx += (Math.random() * 2 - 1) * spread;
-        dy += (Math.random() * 2 - 1) * spread;
-        dz += (Math.random() * 2 - 1) * spread;
-        const l = Math.hypot(dx, dy, dz);
-        dx /= l; dy /= l; dz /= l;
-      }
-      // Fired here for the tracer and the bang, and asked for there for what it
-      // hits. A rifle whose report waits for a round trip is a rifle that fires
-      // when you have stopped pulling the trigger; a round that decides what it
-      // hit locally is a client deciding whether it shot somebody. So both, and
-      // the server's copy of this round is dropped on the way back in.
-      // An empty magazine turns this pull into the change rather than a
-      // shot — the world decides that inside `fire` — so the report below
-      // belongs to the rounds that leave and not to the magazine that
-      // arrives.
-      const changing = held === 2 && loaded === 0;
-      E.fire(state, dx, dy, dz);
-      if (net) net.fired(dx, dy, dz);
-      boltT = 0;
-      // What the *model* does, as against what the aim does. The rifle's own
-      // 0.11 radians and five centimetres were measured on a gun fired once
-      // every second and a half; at five a second they swing the AK's muzzle
-      // clean out of the frame and take the sights with it. A third of that
-      // still reads as a kick and leaves the barrel where it can be seen.
-      //
-      // Half rather than a third now, with the climb. What the shoulder does
-      // and what the gun does have to agree — an aim that walks thirteen
-      // degrees up a magazine over a barrel that barely stirs reads as the
-      // screen drifting rather than as a rifle being fired. It does not go
-      // to the rifle's whole amount: the decay is most of it gone in a fifth
-      // of a second and rounds arrive every tenth, so the AK's jolt stacks
-      // on itself in a way a bolt gun's never does.
-      // The climb the aim takes is separate — that is `kickUp`, below.
-      recoil = held === 2 ? 0.5 : 1;
-      // And the flash, which is not the model's business and is lit whole
-      // whatever the weapon damps its kick to. The magazine change is not a
-      // shot and nothing comes out of the muzzle for it.
-      if (!changing) flash = 1;
-      if (held === 2 && !changing) {
-        akBang();
-        akBurst++;
-        // The climb. Not a wobble painted on the screen — it is fed to the
-        // same look the mouse drives, so the muzzle really is pointing higher
-        // afterwards and the shot after it goes where the barrel now is. The
-        // first rounds of a burst climb hardest and it eases off as the
-        // shoulder catches up, which is what a held trigger actually does.
-        //
-        // These were halved when the rate doubled, to hold the climb per
-        // second where it had been tuned. That was the cautious answer and it
-        // was the wrong one: a gun that empties a magazine in three seconds
-        // and asks no more of the shoulder than one that took six does not
-        // feel like it is doing anything. Back to what they were.
-        //
-        // In pixels of the same look the mouse drives, so 0.0018 radians
-        // each. Over a magazine, ease and all, that is 127 pixels — the
-        // muzzle climbs about thirteen degrees across thirty rounds, against
-        // six and a half before. It is fought by pulling down, and three
-        // seconds is long enough to learn to.
-        //
-        // The ease keeps its stretched shape. It eases off over sixteen
-        // rounds rather than eight because what the shoulder catches up with
-        // is a span of time, not a count, and sixteen rounds at ten a second
-        // is the second and a half that eight at five used to be.
-        const ease = 1 - Math.min(akBurst, 16) / 32;
-        kickUp += (5.5 + Math.random() * 2.5) * ease;
-        kickSide += (Math.random() * 2 - 1) * 2.6;
-      } else if (held === 1) rpgBang();
-      // The bolt rifle, named rather than left as the end of a chain. It was
-      // `else`, and that `else` had a hole in it: the pull that changes an
-      // AK's magazine is not a shot, so it failed the first test above, and
-      // `held === 1` is false for an AK — so it fell through to here and
-      // fired the *rifle's* report out of an AK. Once a magazine, which at
-      // five rounds a second was every six seconds and easy to miss; at ten
-      // it is every three and quite plain.
-      //
-      // The change has a sound of its own and it is played elsewhere, off the
-      // magazine count rather than off the trigger — see `akReload` above. So
-      // there is nothing to play here, and the answer is to say which weapon
-      // this branch belongs to instead of catching whatever is left.
-      else if (held === 0) bang();
-    }
-    wantShot = false;
-    recoil *= Math.pow(0.02, dt);   // most of it gone in a fifth of a second
-    // And the flash on its own clock. The same curve it always had — the
-    // recoil's seventh power, written here as the seventh of the same decay —
-    // but lit at one for every weapon rather than at whatever that weapon
-    // damps its model kick to. See `fx` in uniforms.wgsl for what the old way
-    // did to the AK.
-    flash *= Math.pow(0.02, 7 * dt);
-
-    // Changing hands. Down over `SWAP_SECS`, over at the bottom, up again — so
-    // the weapon that is going away is the one that is drawn on the way down
-    // and the new one is drawn on the way up. Firing is refused throughout by
-    // the bolt clock, which is set to the new weapon's cycle at the changeover.
-    if (swapping === 0 && wantHeld !== held) { swapping = 1; }
-    if (swapping === 1) {
-      swap = Math.min(1, swap + dt / SWAP_SECS);
-      if (swap >= 1) {
-        held = wantHeld;
-        E.set_weapon(state, BigInt(held));
-        // A moment to be ready, not a whole reload. Setting this to nought
-        // meant raising the launcher cost the two and a half seconds it takes
-        // to load one — you stood there with a visibly empty tube, having
-        // changed weapons rather than fired. What a swap costs is the third of
-        // a second it takes to get the thing up.
-        boltT = Math.max(0, cycleNow() - 0.35);
-        swapping = 2;
-      }
-    } else if (swapping === 2) {
-      swap = Math.max(0, swap - dt / SWAP_SECS);
-      if (swap <= 0) swapping = 0;
-    }
-
-    // The sights, eased both ways and framerate independent so they take the
-    // same time on every screen.
-    //
-    // Nine tenths of the way in about seventy milliseconds and settled inside
-    // an eighth of a second, measured at sixty and at a hundred and
-    // forty-four. That is about as fast as a rifle can be brought up and is
-    // what the hand expects; the ease that was here before took four times as
-    // long and felt like the game thinking about it. Still an ease and not a
-    // cut — the field of view has to travel, or it reads as an edit — but the
-    // travelling is over before it is noticed.
-    aim += ((wantAim && E.health(state) > 0.001 ? 1 : 0) - aim) * (1 - Math.exp(-dt / 0.024));
-    if (aim < 0.001) aim = 0;
-    const zoom = 1 + (zoomNow() - 1) * aim;
-    E.set_zoom(state, zoom);
-    // And the mouse slows with it, or the sights are unusable: the same
-    // movement of the hand has to cover the same angle on the screen, and the
-    // screen is showing a narrower slice of the world.
-    mdx /= zoom; mdy /= zoom;
-    // The shooter's own hand, before the gun's kick is mixed in, and what it
-    // does to what the recoil owes.
-    //
-    // The climb moves the aim and it is meant to: the round after it goes
-    // where the barrel now is. But a rifle does not stay pointing at the sky
-    // once the trigger is let go, and this one did — a burst left the muzzle
-    // thirteen degrees up and there it stayed until you pulled it down
-    // yourself. So the climb is now a debt: taken while firing, given back
-    // when the firing stops.
-    //
-    // The hand pays first, and this is the part that cannot be left out. A
-    // shooter who rides a burst down onto the target has already returned
-    // what the recoil took; if the settle below then also ran, letting go of
-    // the trigger would sink the muzzle *below* where the burst began — the
-    // gun would fight you for having fought it. So downward movement clears
-    // the debt, and only as far as nought: a pull further than the recoil
-    // pushed is aiming, not correcting.
-    if (mdy > 0 && owedUp > 0) owedUp = Math.max(0, owedUp - mdy);
-    if (owedSide > 0 && mdx < 0) owedSide = Math.max(0, owedSide + mdx);
-    else if (owedSide < 0 && mdx > 0) owedSide = Math.min(0, owedSide + mdx);
-    // And the weapon's own kick on top, in the same pixels the mouse speaks —
-    // after the zoom, because a scope magnifies the world and not the rifle's
-    // objection to being fired. `mdy` is positive downward, so the climb is a
-    // subtraction.
-    mdy -= kickUp; mdx += kickSide;
-    owedUp += kickUp; owedSide += kickSide;
-    kickUp = 0; kickSide = 0;
-    // Settling back, once the burst is over. Not between rounds: at ten a
-    // second a settle that ran in the gaps would give the climb back as fast
-    // as it was made, which is the same as not having a climb. An empty
-    // magazine counts as over — the hands are busy for a second and a half
-    // and the muzzle comes down while they are.
-    //
-    // A hundredth left after a second, so two thirds of it is back in a
-    // quarter of a second and it is done inside half of one. Framerate
-    // independent, like the sights and the recoil, or the gun settles at a
-    // different speed on a different screen.
-    if (!(held === 2 && fireHeld && loaded > 0) && (owedUp !== 0 || owedSide !== 0)) {
-      const back = 1 - Math.pow(0.01, dt);
-      const giveUp = owedUp * back, giveSide = owedSide * back;
-      owedUp -= giveUp; owedSide -= giveSide;
-      mdy += giveUp; mdx -= giveSide;
-    }
 
     if (net) {
       // Sixty times a second at most, whatever the screen is doing. That is
@@ -3227,7 +2960,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // arrived into the world, squares this player with the newest snapshot,
       // interpolates everybody and fills the HUD's rows.
       wireN = Number(E.wire_tick(net.wire, world, state, now,
-                                 performance.now() < reloadHold ? 1n : 0n));
+                                 performance.now() < handF()[HAND.hold] ? 1n : 0n));
       // Walked here as well as there, so that turning and walking answer the
       // key rather than the round trip. What the server made of it arrives a
       // moment later and is eased in.
@@ -3548,8 +3281,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // shader tests. Floored a hair above nought on the first frame so that
     // "just started" is never mistaken for "not happening"; nothing has moved
     // at that phase anyway.
-    const cph = (t - changeAt) / CHANGE_SECS;
-    uf[111] = (held === 2 && cph >= 0 && cph < 1) ? Math.max(cph, 1e-4) : 0;
+    uf[111] = handF()[HAND.cph];          // how far through the magazine change
     // The shark: which way it faces, where the tail is in its beat, how wide
     // the jaw is, and where it is. Straight out of Rill — the renderer is told
     // where the animal is, it does not decide.
@@ -3574,7 +3306,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[95] = swap;
     // The bolt's throw, as a fraction. The shot itself is the first instant of
     // it, so the recoil and the lift start together the way they do in a hand.
-    uf[51] = held === 2 ? 0 : boltT / BOLT_CYCLE;   // the AK has no bolt to work
+    uf[51] = handF()[HAND.boltFrac];      // the AK has no bolt to work
     uf[55] = aim;                         // how far behind the sights
 
     // This player's lamp, and then everybody else's whose is lit.

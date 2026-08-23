@@ -127,7 +127,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=391";
+    import { run } from "./host.js?v=392";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -207,7 +207,7 @@
     // The HUD — the stat corner included — is the engine's now: host.js
     // pushes the lines straight into the wasm display list, so there is no
     // element here to fill and nothing to do twice a second.
-    run(document.getElementById("c"), "./world.wasm?v=391", () => {}, (done, total, label) => {
+    run(document.getElementById("c"), "./world.wasm?v=392", () => {}, (done, total, label) => {
       bar.style.width = `${(done / total * 100).toFixed(0)}%`;
       pct.textContent = `${Math.round(done / total * 100)}%`;
       what.textContent = label;
