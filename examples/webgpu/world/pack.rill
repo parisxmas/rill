@@ -1,0 +1,222 @@
+# The packer: every asset the valley fetches, in one file, in a format of
+# our own — so the page makes one request instead of sixty-two, and the
+# unpacking is the engine's (pak.rill), not the browser's.
+#
+# ---- the format: RPAK, version 1 --------------------------------------------
+#
+# Everything little-endian.
+#
+#    0  "RPAK"                     the magic, four bytes
+#    4  u32  version = 1
+#    8  u32  entry count
+#   12  u32  directory size in bytes
+#   16  the directory, one entry after another:
+#          u8   name length
+#          ...  the name, as served ("shaders/ak.wgsl", "pine-bark.jpg")
+#          u8   method: 0 stored, 1 packed
+#          u32  raw size
+#          u32  packed size
+#          u32  offset into the data section
+#   16+D the data section, each entry's bytes back to back
+#
+# ---- the compression: a plain LZ --------------------------------------------
+#
+# A byte-oriented LZSS. The stream is groups of up to eight tokens behind one
+# control byte, lowest bit first: a 0 bit is a literal byte, a 1 bit is a
+# match — u16 distance back into what was already written (1..65535), then
+# u8 length-4 (so 4..259). Matches may overlap themselves, which is how a
+# run of one byte is said. The output length is in the directory, so the
+# stream needs no terminator.
+#
+# A file that refuses to shrink — a jpg, an mp3, anything already
+# entropy-coded — is stored as it is; the method byte says which. The point
+# of the format is one request and one clean unpacking loop in the engine,
+# not squeezing photographs a second time.
+#
+# Run from examples/webgpu/world:  ../../../target/release/rill run pack.rill
+# Writes valley.rpak. Run it again whenever an asset is added or changed —
+# the deploy carries the result up with everything else.
+
+fn version() = 1
+
+# Every asset host.js asks for, one name per line in assets.list, exactly as
+# served. A new asset is one line there and its use over here; the loader
+# throws by name if the two ever disagree, which is the manifest checking
+# itself.
+fn names() = match read_file("assets.list")
+  Err(e) ->
+    println("no assets.list: " + e)
+    Nil
+  Ok(text) -> filter(map(lines(text), \l -> trim(l)), \l -> str_len(l) > 0)
+
+# ---- the compressor ---------------------------------------------------------
+#
+# Greedy, one candidate per position: a 64k hash table of the last place each
+# four-byte prefix stood. Enough to fold the meshes' quantized repetition and
+# the shaders' prose; a photograph walks straight through and is stored.
+
+fn hash4(s, i) =
+  x = str_get(s, i) + shl(str_get(s, i + 1), 8) + shl(str_get(s, i + 2), 16) + shl(str_get(s, i + 3), 24)
+  bit_and(shr(x * 2654435761, 16), 65535)
+
+# The state block the loop carries, so no loop function needs more than six
+# arguments and every call stays a jump:
+#   i32 0 position   1 tokens in the group   2 the group's flags
+#   bytes 16..47 the group's token bytes     i32 12 bytes used of those
+fn st_i(st) = peek_i32(st, 0)
+
+fn st_n(st) = peek_i32(st, 1)
+
+# How far a match at `i` against `at` runs, capped at 259.
+fn run_len(s, n, at, i, l) =
+  if l == 259 || i + l >= n then l
+  else if str_get(s, at + l) == str_get(s, i + l) then run_len(s, n, at, i, l + 1)
+  else l
+
+# The group flushes at eight tokens: control byte first, then the tokens.
+fn flush(out, st) =
+  k = peek_i32(st, 12)
+  if peek_i32(st, 1) == 0 then 0
+  else
+    strbuf_byte(out, peek_i32(st, 2))
+    spill(out, st, 0, k)
+    poke_i32(st, 1, 0)
+    poke_i32(st, 2, 0)
+    poke_i32(st, 12, 0)
+    1
+
+fn spill(out, st, j, k) =
+  if j == k then 0
+  else
+    strbuf_byte(out, peek_u8(st, 16 + j))
+    spill(out, st, j + 1, k)
+
+fn put_lit(out, st, byte) =
+  poke_i8(st, 16 + peek_i32(st, 12), byte)
+  poke_i32(st, 12, peek_i32(st, 12) + 1)
+  poke_i32(st, 1, st_n(st) + 1)
+  if st_n(st) == 8 then flush(out, st) else 0
+
+fn put_match(out, st, dist, l) =
+  k = peek_i32(st, 12)
+  poke_i8(st, 16 + k, bit_and(dist, 255))
+  poke_i8(st, 16 + k + 1, shr(dist, 8))
+  poke_i8(st, 16 + k + 2, l - 4)
+  poke_i32(st, 12, k + 3)
+  poke_i32(st, 2, bit_or(peek_i32(st, 2), shl(1, st_n(st))))
+  poke_i32(st, 1, st_n(st) + 1)
+  if st_n(st) == 8 then flush(out, st) else 0
+
+# Remember where this four-byte prefix stood, position kept plus one so that
+# zero can mean never.
+fn note(tbl, s, n, i) =
+  if i + 4 > n then 0
+  else
+    poke_i32(tbl, hash4(s, i), i + 1)
+    1
+
+# Every position a match covers goes into the table too, or the file's own
+# repetition hides from itself.
+fn note_span(tbl, s, n, i, l) =
+  if l == 0 then 0
+  else
+    note(tbl, s, n, i)
+    note_span(tbl, s, n, i + 1, l - 1)
+
+fn crush_from(s, n, tbl, out, st) =
+  i = st_i(st)
+  if i >= n then flush(out, st)
+  else if i + 4 > n then
+    put_lit(out, st, str_get(s, i))
+    poke_i32(st, 0, i + 1)
+    crush_from(s, n, tbl, out, st)
+  else
+    cand = peek_i32(tbl, hash4(s, i)) - 1
+    l = if cand >= 0 && i - cand <= 65535 && cand < i then run_len(s, n, cand, i, 0) else 0
+    if l >= 4 then
+      put_match(out, st, i - cand, l)
+      note_span(tbl, s, n, i, l)
+      poke_i32(st, 0, i + l)
+      crush_from(s, n, tbl, out, st)
+    else
+      put_lit(out, st, str_get(s, i))
+      note(tbl, s, n, i)
+      poke_i32(st, 0, i + 1)
+      crush_from(s, n, tbl, out, st)
+
+fn crush(s) =
+  n = str_len(s)
+  tbl = alloc_bytes(65536 * 4)
+  st = alloc_bytes(64)
+  out = strbuf()
+  crush_from(s, n, tbl, out, st)
+  free_ptr(tbl)
+  free_ptr(st)
+  strbuf_str(out)
+
+# ---- writing the file -------------------------------------------------------
+
+fn le32(b, v) =
+  strbuf_byte(b, bit_and(v, 255))
+  strbuf_byte(b, bit_and(shr(v, 8), 255))
+  strbuf_byte(b, bit_and(shr(v, 16), 255))
+  strbuf_byte(b, bit_and(shr(v, 24), 255))
+
+# An entry: the file read, crushed, and the smaller of the two kept.
+fn load_one(name) = match read_file(name)
+  Err(e) ->
+    println("  MISSING " + name + ": " + e)
+    Packed(name, "", 0, "")
+  Ok(raw) -> pick(name, raw, crush(raw))
+
+fn pick(name, raw, packed) =
+  if str_len(packed) * 100 < str_len(raw) * 98 then Packed(name, raw, 1, packed)
+  else Packed(name, raw, 0, raw)
+
+type Entry
+  Packed(name: Str, raw: Str, method: Int, data: Str)
+
+fn dir_size(es, at) = match es
+  Nil -> at
+  Cons(Packed(name, _, _, _), rest) -> dir_size(rest, at + 14 + str_len(name))
+
+fn write_dir(b, es, off) = match es
+  Nil -> 0
+  Cons(Packed(name, raw, method, data), rest) ->
+    strbuf_byte(b, str_len(name))
+    strbuf_add(b, name)
+    strbuf_byte(b, method)
+    le32(b, str_len(raw))
+    le32(b, str_len(data))
+    le32(b, off)
+    write_dir(b, rest, off + str_len(data))
+
+fn write_data(b, es) = match es
+  Nil -> 0
+  Cons(Packed(_, _, _, data), rest) ->
+    strbuf_add(b, data)
+    write_data(b, rest)
+
+fn report(es, raw, packed) = match es
+  Nil ->
+    println("  " + int_to_str(raw) + " -> " + int_to_str(packed) + " bytes")
+  Cons(Packed(name, eraw, method, data), rest) ->
+    println("  " + name + ": " + int_to_str(str_len(eraw)) + " -> " +
+            int_to_str(str_len(data)) + (if method == 1 then "" else " (stored)"))
+    report(rest, raw + str_len(eraw), packed + str_len(data))
+
+fn main() =
+  es = map(names(), \n -> load_one(n))
+  b = strbuf()
+  strbuf_add(b, "RPAK")
+  le32(b, version())
+  le32(b, len(es))
+  le32(b, dir_size(es, 0))
+  write_dir(b, es, 0)
+  write_data(b, es)
+  out = strbuf_str(b)
+  report(es, 0, 0)
+  if write_file("valley.rpak", out) then
+    println("valley.rpak written: " + int_to_str(str_len(out)) + " bytes, " +
+            int_to_str(len(es)) + " assets")
+  else println("could not write valley.rpak")

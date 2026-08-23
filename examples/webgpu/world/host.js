@@ -16,7 +16,7 @@
 // `rill build` generates beside the module.
 
 import { load } from "./world.js?v=393";   // keep in step with V below
-import { join, WH } from "./net.js?v=394";
+import { join, WH } from "./net.js?v=395";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=394";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "394";
+const V = "395";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -146,16 +146,12 @@ const TEXTURES = [
   ["./rpg7.jpg", 512, 512],
 ];
 
-async function loadShaders(step) {
-  const src = Object.fromEntries(await Promise.all(
-    Object.keys(SHADERS).map(async name => {
-      const r = await fetch(`./shaders/${name}.wgsl?v=${V}`);
-      if (!r.ok) throw new Error(`shaders/${name}.wgsl: ${r.status}`);
-      const text = await r.text();
-      step(`shaders/${name}.wgsl`);
-      return [name, text];
-    })
-  ));
+function loadShaders(step, pakText) {
+  const src = Object.fromEntries(Object.keys(SHADERS).map(name => {
+    const text = pakText(`shaders/${name}.wgsl`);
+    step(`shaders/${name}.wgsl`);
+    return [name, text];
+  }));
   // Each one preceded by whatever it was written against.
   const whole = name => (SHADERS[name] ? whole(SHADERS[name]) : "") + src[name];
   return {
@@ -453,8 +449,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // texture, and the valley itself. `run` does not resolve until a frame has
   // actually been submitted, so whatever is covering the canvas comes off over
   // a painted one rather than over black.
-  // Nine fetch/build steps, one per shader, one per texture, and six decodes.
-  const TOTAL = 15 + Object.keys(SHADERS).length + TEXTURES.length + 14 + (server ? 1 : 0);
+  // Nine fetch/build steps, one per shader, one per texture, six decodes —
+  // and one for the bundle the assets all arrive in.
+  const TOTAL = 16 + Object.keys(SHADERS).length + TEXTURES.length + 14 + (server ? 1 : 0);
   let done = 0;
   // Never past the end. This is a count kept by hand of steps taken elsewhere,
   // and the two drift every time something is added — a bar that says 104% is
@@ -691,7 +688,66 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // wasm-side game needs and what module scope otherwise forbids.
   window.rill = { E, get state() { return state; }, get world() { return world; }, get net() { return net; } };
   step("world.wasm");
-  const S = await loadShaders(step);
+
+  // Every texture, mesh, sound and shader in one request: valley.rpak, the
+  // format pack.rill writes. The fetch is streamed so the bar moves through
+  // the one big file the way it used to move through sixty small ones; the
+  // unpacking itself — the LZ — is the engine's (pak.rill), not the page's.
+  const pakBytes = await (async () => {
+    const r = await fetch(`./valley.rpak?v=${V}`);
+    if (!r.ok) throw new Error(`valley.rpak: ${r.status}`);
+    const size = +(r.headers.get("Content-Length") || 0);
+    const reader = r.body.getReader();
+    const parts = [];
+    let got = 0;
+    for (;;) {
+      const { done: over, value } = await reader.read();
+      if (over) break;
+      parts.push(value);
+      got += value.length;
+      // A proxy may be re-compressing the stream, in which case the count on
+      // the wire is not the count in hand — clamp rather than overrun the bar.
+      if (size) progress(Math.min(done + got / size, done + 1), TOTAL,
+                         `valley.rpak ${Math.min(100, Math.round(got / size * 100))}%`);
+    }
+    const all = new Uint8Array(got);
+    let o = 0;
+    for (const c of parts) { all.set(c, o); o += c.length; }
+    return all;
+  })();
+  // Into the engine's memory, once; the directory is read back out of it by
+  // name, and each asset is pulled as fresh bytes and copied out at once, so
+  // the wasm heap holds one decompressed asset at a time and not the pile.
+  const pakP = Number(E.pak_alloc(BigInt(pakBytes.length)));
+  new Uint8Array(E.memory.buffer, pakP, pakBytes.length).set(pakBytes);
+  if (!Number(E.pak_ok(pakP))) throw new Error("valley.rpak is not an RPAK file this build reads");
+  const PAK = new Map();
+  let pakRawTotal = 0;
+  {
+    const dec = new TextDecoder();
+    const nPak = Number(E.pak_count(pakP));
+    for (let i = 0; i < nPak; i++) {
+      PAK.set(dec.decode(new Uint8Array(E.memory.buffer,
+        Number(E.pak_name_ptr(pakP, BigInt(i))), Number(E.pak_name_len(pakP, BigInt(i))))), i);
+      pakRawTotal += Number(E.pak_raw(pakP, BigInt(i)));
+    }
+  }
+  const pakWire = pakBytes.length;
+  const pak = (name) => {
+    const i = PAK.get(name);
+    if (i === undefined) throw new Error(`${name} is not in valley.rpak — add it to assets.list and re-run pack.rill`);
+    const raw = Number(E.pak_raw(pakP, BigInt(i)));
+    const ptr = Number(E.pak_unpack(pakP, BigInt(i)));
+    const out = new Uint8Array(raw);
+    out.set(new Uint8Array(E.memory.buffer, ptr, raw));
+    E.pak_free(ptr);
+    return out;
+  };
+  const pakBuf = (name) => pak(name).buffer;
+  const pakText = (name) => new TextDecoder().decode(pak(name));
+  step("valley.rpak");
+
+  const S = loadShaders(step, pakText);
 
   // How big the module is, read off the browser's own record of the request
   // the loader already made — no second one. `decodedBodySize` rather than
@@ -740,7 +796,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // tested foliage without mips shimmers the moment it is more than a few
   // trees away.
   async function mipped(url, w0, h0) {
-    const bytes = await (await fetch(url)).arrayBuffer();
+    const bytes = pakBuf(url.slice(2));
     const levels = [];
     for (let w = w0, h = h0; w >= 1 && h >= 1; w >>= 1, h >>= 1) {
       levels.push(await createImageBitmap(new Blob([bytes]),
@@ -761,7 +817,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView,
          jupiterView, saturnView, moonsView, sharkView, propView, rpgView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
-      mipped(`${url}?v=${V}`, w, h).then(v => { step(url.slice(2)); return v; })));
+      mipped(url, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
     magFilter: "linear", minFilter: "linear", mipmapFilter: "linear",
     addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
@@ -1198,14 +1254,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
   // The rifle: one file, its own header. Two counts, then the bounding box the
   // positions were quantized against, then the vertices, then the indices.
-  const rifleBytes = await (await fetch(`./rifle.mesh?v=${V}`)).arrayBuffer();
+  const rifleBytes = pakBuf("rifle.mesh");
   const rifleHead = new DataView(rifleBytes, 0, 32);
   const rifleVerts = rifleHead.getUint32(0, true);
   const rifleIdx = rifleHead.getUint32(4, true);
   const rifleBox = new Float32Array(rifleBytes, 8, 6);
   // The AK: GGBotNet's soviet assault rifle, CC0, baked from its OBJ into the
   // rifle's own sixteen-byte format with the barrel turned onto +x.
-  const akBytes = await (await fetch(`./ak47.mesh?v=${V}`)).arrayBuffer();
+  const akBytes = pakBuf("ak47.mesh");
   const akHead = new DataView(akBytes, 0, 32);
   const akVerts = akHead.getUint32(0, true);
   const akIdx = akHead.getUint32(4, true);
@@ -1232,7 +1288,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // The ammunition box, in the rifle's own format and read by the same six
   // lines. Poly Haven's `ammo_box`, CC0, welded out of its five nodes by
   // `tools/bake_prop.py`: 3,978 vertices and 4,382 triangles in 88 KB.
-  const propBytes = await (await fetch(`./ammo-box.mesh?v=${V}`)).arrayBuffer();
+  const propBytes = pakBuf("ammo-box.mesh");
   const propHead = new DataView(propBytes, 0, 32);
   const propVerts = propHead.getUint32(0, true);
   const propIdx = propHead.getUint32(4, true);
@@ -1249,7 +1305,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // The rocket crate: Poly Haven's `old_military_crate`, CC0, the `a` crate
   // of the pair welded by the same baker, recentred so its footprint sits on
   // the instance point. Same format, same six lines.
-  const crateBytes = await (await fetch(`./rocket-crate.mesh?v=${V}`)).arrayBuffer();
+  const crateBytes = pakBuf("rocket-crate.mesh");
   const crateHead = new DataView(crateBytes, 0, 32);
   const crateVerts = crateHead.getUint32(0, true);
   const crateIdx = crateHead.getUint32(4, true);
@@ -1267,7 +1323,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // rifle's own format — so this is the same six lines a third and a fourth
   // time, which is what a format earns you.
   const oneMesh = async (url) => {
-    const bytes = await (await fetch(`${url}?v=${V}`)).arrayBuffer();
+    const bytes = pakBuf(url.slice(2));
     const head = new DataView(bytes, 0, 32);
     const verts = head.getUint32(0, true);
     const count = head.getUint32(4, true);
@@ -1291,7 +1347,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // Twenty bytes a vertex — position in unorm16 across that box, normal in
   // snorm8, texture coordinate in snorm16, and a flat colour for the parts
   // the skin does not cover. 2,396 vertices and 2,816 triangles in 64 KB.
-  const sharkBytes = await (await fetch(`./shark.mesh?v=${V}`)).arrayBuffer();
+  const sharkBytes = pakBuf("shark.mesh");
   const sharkHead = new DataView(sharkBytes, 0, 40);
   const sharkVerts = sharkHead.getUint32(4, true);
   const sharkIdx = sharkHead.getUint32(8, true);
@@ -1311,7 +1367,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // triangles and 389 KB, of which the animation is a third: nothing is scaled
   // and only the hips translate, so a frame is a root position and a rotation
   // per joint in snorm16.
-  const figBytes = await (await fetch(`./figure.mesh?v=${V}`)).arrayBuffer();
+  const figBytes = pakBuf("figure.mesh");
   const figure = readFigure(figBytes);
   const figVB = gpuBuf(new Uint8Array(figBytes, figure.vertexAt, figure.verts * 20));
   const figIdxBytes = new Uint8Array((figure.indices * 2 + 3) & ~3);
@@ -1343,12 +1399,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // like a valley; the theme is something you put on, not something that is
   // put on you. `M` turns it up, and the HUD has said so all along.
   let musicGain = null, musicOn = false;
-  const shotBytes = await (await fetch(`./rifle-shot.mp3?v=${V}`)).arrayBuffer();
+  const shotBytes = pakBuf("rifle-shot.mp3");
   step("rifle-shot.mp3");
-  const breakBytes = await (await fetch(`./crystal-break.mp3?v=${V}`)).arrayBuffer();
+  const breakBytes = pakBuf("crystal-break.mp3");
   step("crystal-break.mp3");
   // Two explosions, 1.9 seconds each, laid end to end and played by offset.
-  const blastBytes = await (await fetch(`./meteor-blast.mp3?v=${V}`)).arrayBuffer();
+  const blastBytes = pakBuf("meteor-blast.mp3");
   step("meteor-blast.mp3");
   // What something falling through the sky sounds like from underneath.
   //
@@ -1370,27 +1426,27 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // by construction and the join is a step of 4046 against a mean sample-to-
   // sample step of 2437 — indistinguishable from the noise's own motion, with
   // no crossfade needed anywhere.
-  const roarBytes = await (await fetch(`./meteor-air.mp3?v=${V}`)).arrayBuffer();
+  const roarBytes = pakBuf("meteor-air.mp3");
   step("meteor-air.mp3");
   // A chip of crystal going in. Three quarters of a second off the front of a
   // CC0 harp figure by Julie Damsgaard — the rest of it is a two-second tail,
   // which is a lovely thing to have and the wrong shape entirely for a sound
   // that fires four times while you cross a patch of debris.
-  const pickBytes = await (await fetch(`./pickup.mp3?v=${V}`)).arrayBuffer();
+  const pickBytes = pakBuf("pickup.mp3");
   step("pickup.mp3");
   // What it sounds like to be shot. Four of qubodup's CC0 recordings of
   // himself straining, a second each end to end and played by offset like the
   // glass — four is enough that a burst does not sound like a loop of one man.
-  const hurtBytes = await (await fetch(`./hurt.mp3?v=${V}`)).arrayBuffer();
+  const hurtBytes = pakBuf("hurt.mp3");
   step("hurt.mp3");
   // The theme. Eighty seconds that begin and end in silence, which is what
   // makes it loop without a seam: no crossfade, no loop points, just the tail
   // running into the head the way the piece was already written.
-  const musicBytes = await (await fetch(`./valley-theme.mp3?v=${V}`)).arrayBuffer();
+  const musicBytes = pakBuf("valley-theme.mp3");
   step("valley-theme.mp3");
   // A crystal's bite. Kenney's digital SFX set by way of OpenGameArt, CC0 —
   // the same shelf half this valley's sounds came off.
-  const zapBytes = await (await fetch(`./crystal-zap.mp3?v=${V}`)).arrayBuffer();
+  const zapBytes = pakBuf("crystal-zap.mp3");
   step("crystal-zap.mp3");
   // Four real AK-47 reports, a second each end to end and played by offset
   // like the glass and the hurt — at five rounds a second one sample on
@@ -1407,18 +1463,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   //
   // The transient sits 7 ms into each slot and the hills have finished
   // answering by 600, so a slot is a second and the offset is just the index.
-  const akSndBytes = await (await fetch(`./ak-shot.m4a?v=${V}`)).arrayBuffer();
+  const akSndBytes = pakBuf("ak-shot.m4a");
   step("ak-shot.m4a");
   // The magazine change: SpringySpringo's assault rifle reload, CC0. A second
   // and a half of it, which is the pause it is played over.
-  const akReloadBytes = await (await fetch(`./ak-reload.m4a?v=${V}`)).arrayBuffer();
+  const akReloadBytes = pakBuf("ak-reload.m4a");
   step("ak-reload.m4a");
   // The launcher going off. A rocket motor lighting, from OpenGameArt's CC0
   // `rocket-launch`, cut to the ignition and given a decay: what the pack
   // holds is four seconds of sustained burn, which is a rocket leaving a pad
   // rather than a tube leaving a shoulder.
-  const rpgSndBytes = await (await fetch(`./rpg-launch.m4a?v=${V}`)).arrayBuffer();
+  const rpgSndBytes = pakBuf("rpg-launch.m4a");
   step("rpg-launch.m4a");
+  // The last asset is out; the bundle's three megabytes go back to the
+  // engine's heap before the valley is built in it.
+  E.pak_free(pakP);
+  PAK.clear();
   // One node per sound, built and thrown away: cheaper than it looks, and the
   // only way to have two of the same sample overlapping.
   function playAt(buf, offset, dur, gain, pan, rate) {
@@ -2552,16 +2612,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   //
   // Recomputed on each HUD tick rather than cached, because it costs a walk
   // over forty entries twice a second and it catches anything that loads late.
-  const IMG = /\.(jpg|png)(\?|$)/;
-  function weights() {
-    let raw = 0, wire = 0, tex = 0;
-    for (const e of performance.getEntriesByType("resource")) {
-      raw += e.decodedBodySize || 0;
-      wire += e.transferSize || 0;
-      if (IMG.test(e.name)) tex += e.decodedBodySize || 0;
-    }
-    return { raw, wire, tex };
-  }
 
   let last = performance.now(), fps = 0, frames = 0, fpsT = last, startT = 0;
 
@@ -3373,7 +3423,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // The stat corner, twice a second, straight into the slots the engine
       // right-aligns. The words the old innerHTML carried, in segments: the
       // values gold, the rest quiet.
-      const wt = weights();
       const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
       const here = net ? Number(E.wire_here(net.wire)) || null : null;
       const ping = net ? net.ping : null;
@@ -3389,8 +3438,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       hudSlot(HSLOT.stat + 2, [[D, "terrain, placement, physics, matrices: "], [G, "valley.rill"],
         [D, " → "], [G, `${(wasmSize() / 1024).toFixed(1)} KB`], [D, " of wasm"]]);
       hudSlot(HSLOT.stat + 3, [[D, "shadows · MSAA 4x · instancing · gerstner water · compute particles"]]);
-      hudSlot(HSLOT.stat + 4, [[D, "textures "], [G, kb(wt.tex)], [D, " · all assets "], [G, kb(wt.raw)],
-        [D, " → "], [G, kb(wt.wire)], [D, wt.wire < wt.raw ? " deflated" : " over the wire"]]);
+      hudSlot(HSLOT.stat + 4, [[D, "assets "], [G, kb(pakRawTotal)], [D, " → "], [G, kb(pakWire)],
+        [D, " in one file, unpacked in wasm"]]);
       const agree = sv === Number(V);
       hudSlot(HSLOT.stat + 5, sv === null && ping === null
         ? [[D, "build "], [G, V]]

@@ -1,0 +1,64 @@
+# A native run for the bundle: the real valley.rpak, read back through the
+# same unpacker the browser runs, and every entry compared byte for byte
+# against the file it was packed from. The packer and unpacker are separate
+# programs sharing nothing but the format comment — this is where they meet.
+import "pak" as pk
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+# The bundle into a buffer, which is a Ptr where a Ptr is asked for.
+fn slurp(s, b: Buf(U8), n) =
+  for i in 0..n
+    b[i] = str_get(s, i)
+  b
+
+fn name_of(p, i) =
+  q = pk.name_ptr(p, i)
+  read_name(q, 0, pk.name_len(p, i), "")
+
+fn read_name(q, j, n, acc) =
+  if j == n then acc else read_name(q, j + 1, n, acc + chr(peek_u8(q, j)))
+
+fn mismatch_at(s, d, j, n) =
+  if j == n then 0 - 1
+  else if str_get(s, j) != peek_u8(d, j) then j
+  else mismatch_at(s, d, j + 1, n)
+
+# One entry: unpacked size right, and not a byte different anywhere.
+fn check(p, i, bad) =
+  name = name_of(p, i)
+  match read_file(name)
+    Err(e) ->
+      println("  " + name + ": cannot read the source: " + e)
+      bad + 1
+    Ok(src) -> weigh(p, i, name, src, bad)
+
+fn weigh(p, i, name, src, bad) =
+  raw = pk.raw_size(p, i)
+  d = pk.unpack(p, i)
+  at = if raw == str_len(src) then mismatch_at(src, d, 0, raw) else 0 - 2
+  free_ptr(d)
+  if at == 0 - 1 then bad else moan(name, raw, str_len(src), at) + bad
+
+fn moan(name, raw, want, at) =
+  if at == 0 - 2 then
+    println("  " + name + ": size " + int_to_str(raw) + " (want " + int_to_str(want) + ")")
+  else
+    println("  " + name + ": differs at byte " + int_to_str(at))
+  1
+
+fn sweep(p, i, n, bad) =
+  if i == n then bad else sweep(p, i + 1, n, check(p, i, bad))
+
+fn main() = match read_file("valley.rpak")
+  Err(e) -> println("no valley.rpak — run pack.rill first: " + e)
+  Ok(s) ->
+    n = str_len(s)
+    b = buf_u8(n)
+    slurp(s, b, n)
+    say("the magic is good", pk.ok(b), 1)
+    say("all the assets are in it", pk.count(b), 69)
+    bad = sweep(b, 0, pk.count(b), 0)
+    say("entries that came back changed", bad, 0)
+    println("done")

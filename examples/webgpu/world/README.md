@@ -23,9 +23,20 @@ what a frame actually costs the GPU.
 
 ```sh
 rill build world.rill -o world --target wasm32-wasip1   # writes world.wasm + world.js
+rill run pack.rill                 # writes valley.rpak — every asset in one file
 python3 -m http.server 8000        # from this directory
 # open http://localhost:8000 in a browser with WebGPU
 ```
+
+The textures, meshes, sounds and shaders all travel in `valley.rpak`, a
+format of this directory's own: `pack.rill` reads the names in `assets.list`,
+LZ-compresses what shrinks and stores what does not (a jpg does not), and
+writes one file; `pak.rill`, compiled into `world.wasm`, reads the directory
+back and undoes the LZ in the engine — the page makes one request and never
+decompresses anything itself. Adding or changing an asset is a line in
+`assets.list` and a re-run of `pack.rill`; the loader throws by name if the
+bundle and the page ever disagree. `wt_pak.rill` unpacks the real bundle and
+compares every entry byte for byte against the file it was packed from.
 
 The valley itself is `valley.rill`, and it is compiled twice. `world.rill` is
 fifty-six exports over it and becomes `world.wasm` for the browser;

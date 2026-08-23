@@ -43,3 +43,7 @@ node_modules/
 # The valley server writes the names people gave it, beside itself. It is a
 # running program leaving state where it stands, and a local test creates one.
 /examples/webgpu/world/who.txt
+
+# The asset bundle is written by pack.rill from the files beside it — the
+# deploy rsyncs it from the working directory and the repo keeps the sources.
+*.rpak

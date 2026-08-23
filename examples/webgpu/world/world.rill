@@ -18,6 +18,7 @@ import "wire" as wire
 import "hand" as hand
 import "skin" as skin
 import "ears" as ears
+import "pak" as pak
 
 # ---- the valley, and who is in it ------------------------------------------
 
@@ -542,6 +543,29 @@ export fn ears_hush(s: Ptr) = ears.hush(s)
 export fn ears_cues_at() -> Int = ears.t_cues()
 
 export fn ears_roar_at() -> Int = ears.t_roar()
+
+# ---- the asset bundle -------------------------------------------------------
+#
+# valley.rpak — every texture, mesh, sound and shader in one fetch, in the
+# format pack.rill writes and pak.rill reads. The page copies the file into a
+# block from pak_alloc, reads the names out of the directory, and pulls each
+# asset as fresh bytes; the unpacking — the LZ itself — runs here, in wasm.
+
+export fn pak_alloc(n: Int) -> Ptr = alloc_bytes(n)
+
+export fn pak_ok(p: Ptr) -> Int = pak.ok(p)
+
+export fn pak_count(p: Ptr) -> Int = pak.count(p)
+
+export fn pak_name_ptr(p: Ptr, i: Int) -> Ptr = pak.name_ptr(p, i)
+
+export fn pak_name_len(p: Ptr, i: Int) -> Int = pak.name_len(p, i)
+
+export fn pak_raw(p: Ptr, i: Int) -> Int = pak.raw_size(p, i)
+
+export fn pak_unpack(p: Ptr, i: Int) -> Ptr = pak.unpack(p, i)
+
+export fn pak_free(p: Ptr) = free_ptr(p)
 
 # Called once when the module is instantiated, and there is nothing to set up:
 # the valley is built when the host has measured the machine and knows how much
