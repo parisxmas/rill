@@ -1,0 +1,928 @@
+# The client's end of the wire, in the engine.
+#
+# The page used to keep a second copy of the protocol: net.js parsed every
+# frame the server sent and host.js walked the parsed events into the world,
+# while server.rill wrote the same layouts from the other side. Two mirrors of
+# one wire is a standing invitation to the bug where they disagree — the world
+# clock spent a week comparing itself against a field that was never there —
+# so the parsing, the applying, the snapshot ring, the interpolation, the
+# names, the ping and the announcements all live here now. The page's share of
+# the protocol is a socket: bytes in, bytes out, and nothing about what any of
+# them mean.
+#
+# The layouts mirror server.rill's "bytes on the wire" section exactly, and
+# nothing else mirrors them anywhere.
+#
+# ---- the block --------------------------------------------------------------
+#
+#   f32     0..63     header — the h_* indices below
+#   bytes  256..511   OUT: the frame being built to send
+#   bytes  512..575   the identity token out of `hello`
+#   bytes  576..767   the words of a refusal
+#   bytes  768..2815  names: 64 slots of 32 — u8 len, u16 id, pad, 28 bytes
+#   f32   1024..2071  two snapshots — see SNAP below
+#   f32   2080..2463  interpolated players, 32 x 12 — see wire_interp
+#   f32   2464..2527  page events, 16 x 4 — sounds the page still plays
+#   f32   2528..2591  ids already announced (the told table)
+#   f32   2600..4647  crystals gone, for replay across a tier rebuild
+#   bytes 65536..131071  the event queue: [u16 len][frame bytes] ...
+#   bytes 131072..172031 IN: the frame the page just received
+#
+# A snapshot record: 12 header floats — at, clock, shark x y z heading mode,
+# phase, left, count — then 32 players of 16: id, x, y, z, yaw, pitch, health,
+# pose, torch, hit, shot, seen, ammo, kills, deaths, spare.
+
+import "valley" as v
+import "hud" as hud
+
+fn wire_bytes() = 172032
+
+fn out_at() = 256
+fn token_at() = 512
+fn refuse_at() = 576
+fn names_at() = 768
+fn name_cap() = 64
+fn snap_at(which) = 1024 + which * 524
+fn interp_at() = 2080
+fn pev_at() = 2464
+fn told_at() = 2528
+fn gone_at() = 2600
+fn gone_cap() = 2048
+fn evq_at() = 65536
+fn evq_cap() = 65536
+fn in_at() = 131072
+fn in_cap() = 40960
+
+# ---- the header -------------------------------------------------------------
+
+fn h_id() = 0          # my id, -1 until hello
+fn h_hello() = 1
+fn h_pines() = 2
+fn h_crystals() = 3
+fn h_grass() = 4
+fn h_clock0() = 5
+fn h_ping() = 6        # ms, -1 until the first pong
+fn h_ver() = 7         # -1 until said
+fn h_span() = 8        # ms between snapshots, smoothed
+fn h_last_at() = 9
+fn h_prev_at() = 10
+fn h_which() = 11      # which snap slot is the newest
+fn h_have() = 12       # how many snapshots have ever landed
+fn h_refused() = 13    # length of the refusal, 0 for none
+fn h_token_len() = 14
+fn h_out_len() = 15
+fn h_evw() = 16        # event queue write offset
+fn h_evr() = 17        # and read
+fn h_pev_n() = 18      # page events waiting
+fn h_interp_n() = 19
+fn h_told_n() = 20
+fn h_first_roster() = 21
+fn h_gone_n() = 22
+fn h_synced_at() = 23  # the snapshot the match clock was last set from
+fn h_applied_at() = 24 # and the one reconcile last ran against
+fn h_shark_x() = 25    # ..29: the shark, interpolated at the last tick
+fn h_evq_dropped() = 30
+fn h_now() = 60       # the page's clock in ms, stamped before frame() and tick()
+
+fn make() =
+  b = alloc_bytes(wire_bytes())
+
+  for i in 0..wire_bytes() / 4
+    poke_f32(b, i, 0.0)
+
+  poke_f32(b, h_id(), 0.0 - 1.0)
+  poke_f32(b, h_ping(), 0.0 - 1.0)
+  poke_f32(b, h_ver(), 0.0 - 1.0)
+  poke_f32(b, h_first_roster(), 1.0)
+  b
+
+# ---- reading the wire's own integers ---------------------------------------
+
+fn u8_at(b, at) = peek_u8(b, at)
+
+fn u16_at(b, at) = peek_u8(b, at) + peek_u8(b, at + 1) * 256
+
+fn u32_at(b, at) = u16_at(b, at) + u16_at(b, at + 2) * 65536
+
+# A little-endian f32 out of raw bytes: the four bytes are already lying in
+# the block, so reading them as a float is one aligned peek away — except the
+# wire's floats are not aligned. Copied through the scratch corner of the
+# header instead, byte by byte.
+fn f32_at(b, at) =
+  poke_i8(b, 252, peek_u8(b, at))
+  poke_i8(b, 253, peek_u8(b, at + 1))
+  poke_i8(b, 254, peek_u8(b, at + 2))
+  poke_i8(b, 255, peek_u8(b, at + 3))
+  peek_f32(b, 63)
+
+# ---- one frame arrives ------------------------------------------------------
+#
+# The page copied `len` bytes into IN and calls this. Frames that touch the
+# world go into the queue for the next tick — the world may not even exist
+# yet, and the door lists arrive before it does. Frames that are pure state —
+# names, the ping, the version, `hello` — land at once.
+
+fn frame(b, len) =
+  if len < 1 then 0
+  else
+    k = u8_at(b, in_at())
+    if k == 104 then hello(b, len)
+    else if k == 117 then who(b, len)
+    else if k == 118 then said_ver(b)
+    else if k == 112 then pong(b)
+    else if k == 110 then refused(b, len)
+    else if k == 115 then snapshot(b, len)
+    else queue(b, len)
+
+fn hello(b, len) =
+  poke_f32(b, h_id(), to_float(u16_at(b, in_at() + 1)))
+  poke_f32(b, h_pines(), to_float(u32_at(b, in_at() + 3)))
+  poke_f32(b, h_crystals(), to_float(u32_at(b, in_at() + 7)))
+  poke_f32(b, h_grass(), to_float(u32_at(b, in_at() + 11)))
+  poke_f32(b, h_clock0(), f32_at(b, in_at() + 15))
+  n = if len - 19 > 63 then 63 else len - 19
+
+  for i in 0..n
+    poke_i8(b, token_at() + i, u8_at(b, in_at() + 19 + i))
+
+  poke_f32(b, h_token_len(), to_float(n))
+  poke_f32(b, h_hello(), 1.0)
+  1
+
+fn who(b, len) =
+  id = u16_at(b, in_at() + 1)
+  s = name_slot(b, id)
+  n = if len - 3 > 28 then 28 else len - 3
+  poke_i8(b, names_at() + s * 32, n)
+  poke_i8(b, names_at() + s * 32 + 1, id % 256)
+  poke_i8(b, names_at() + s * 32 + 2, id / 256)
+
+  for i in 0..n
+    poke_i8(b, names_at() + s * 32 + 4 + i, u8_at(b, in_at() + 3 + i))
+  1
+
+# The slot this id already holds, or a free one, or slot zero worn out.
+fn name_slot(b, id) = ns_find(b, id, 0, 0 - 1)
+
+fn ns_find(b, id, i, free) =
+  if i >= name_cap() then if free >= 0 then free else 0
+  else if u8_at(b, names_at() + i * 32) > 0 && name_id(b, i) == id then i
+  else if u8_at(b, names_at() + i * 32) == 0 && free < 0 then ns_find(b, id, i + 1, i)
+  else ns_find(b, id, i + 1, free)
+
+fn name_id(b, i) = u8_at(b, names_at() + i * 32 + 1) + u8_at(b, names_at() + i * 32 + 2) * 256
+
+fn name_len(b, id) = nl_go(b, id, 0)
+
+fn nl_go(b, id, i) =
+  if i >= name_cap() then 0
+  else if u8_at(b, names_at() + i * 32) > 0 && name_id(b, i) == id then u8_at(b, names_at() + i * 32)
+  else nl_go(b, id, i + 1)
+
+fn name_bytes(b, id) = nb_go(b, id, 0)
+
+fn nb_go(b, id, i) =
+  if i >= name_cap() then names_at()
+  else if u8_at(b, names_at() + i * 32) > 0 && name_id(b, i) == id then names_at() + i * 32 + 4
+  else nb_go(b, id, i + 1)
+
+fn said_ver(b) =
+  poke_f32(b, h_ver(), to_float(u16_at(b, in_at() + 1)))
+  1
+
+# The token is this page's own clock as eight bytes; the difference is the
+# round trip. Smoothed a quarter at a time, the way it always was.
+fn pong(b) =
+  poke_i8(b, 248, u8_at(b, in_at() + 1))
+  poke_i8(b, 249, u8_at(b, in_at() + 2))
+  poke_i8(b, 250, u8_at(b, in_at() + 3))
+  poke_i8(b, 251, u8_at(b, in_at() + 4))
+  poke_i8(b, 252, u8_at(b, in_at() + 5))
+  poke_i8(b, 253, u8_at(b, in_at() + 6))
+  poke_i8(b, 254, u8_at(b, in_at() + 7))
+  poke_i8(b, 255, u8_at(b, in_at() + 8))
+  0
+
+# The pong carries an f64 the page must difference against its own clock — the
+# page hands `now` in when it feeds the frame. See wire_pong in world.rill.
+fn pong_took(b, now) =
+  rtt = now - peek_f64(b, 31)
+  old = peek_f32(b, h_ping())
+  poke_f32(b, h_ping(), if old < 0.0 then rtt else old * 0.75 + rtt * 0.25)
+  1
+
+fn refused(b, len) =
+  n = if len - 1 > 191 then 191 else len - 1
+
+  for i in 0..n
+    poke_i8(b, refuse_at() + i, u8_at(b, in_at() + 1 + i))
+
+  poke_f32(b, h_refused(), to_float(n))
+  1
+
+# ---- the snapshot ring ------------------------------------------------------
+
+fn snapshot(b, len) =
+  if len < 27 then 0
+  else
+    at = peek_f32(b, h_now())
+    prev_at = peek_f32(b, h_last_at())
+    which = 1 - to_int(peek_f32(b, h_which()))
+    s = snap_at(which)
+    poke_f32(b, s, at)
+    poke_f32(b, s + 1, f32_at(b, in_at() + 1))
+
+    for i in 0..5
+      poke_f32(b, s + 2 + i, f32_at(b, in_at() + 5 + i * 4))
+
+    poke_f32(b, s + 7, to_float(u8_at(b, in_at() + 25)))
+    poke_f32(b, s + 8, f32_at(b, in_at() + 26))
+    count = u8_at(b, in_at() + 30)
+    n = if count > 32 then 32 else count
+    poke_f32(b, s + 9, to_float(n))
+
+    for i in 0..n
+      snap_player(b, s + 12 + i * 16, in_at() + 31 + i * 37)
+
+    poke_f32(b, h_which(), to_float(which))
+    poke_f32(b, h_prev_at(), prev_at)
+    poke_f32(b, h_last_at(), at)
+    gap = at - prev_at
+    if peek_f32(b, h_have()) > 0.5 && gap > 1.0 && gap < 500.0 then span_learn(b, gap) else 0
+    poke_f32(b, h_have(), peek_f32(b, h_have()) + 1.0)
+    1
+
+fn span_learn(b, gap) =
+  old = peek_f32(b, h_span())
+  poke_f32(b, h_span(), if old > 0.5 then old * 0.8 + gap * 0.2 else gap)
+  1
+
+fn snap_player(b, p, src) =
+  poke_f32(b, p, to_float(u16_at(b, src)))
+
+  for i in 0..6
+    poke_f32(b, p + 1 + i, f32_at(b, src + 2 + i * 4))
+
+  pose = u8_at(b, src + 26)
+  poke_f32(b, p + 7, to_float(pose % 8))
+  poke_f32(b, p + 8, if pose / 8 % 2 == 1 then 1.0 else 0.0)
+  poke_f32(b, p + 9, to_float(u16_at(b, src + 27)))
+  poke_f32(b, p + 10, to_float(u16_at(b, src + 29)))
+  poke_f32(b, p + 11, to_float(u8_at(b, src + 31)))
+  ammo = u8_at(b, src + 32)
+  poke_f32(b, p + 12, if ammo > 127 then 0.0 - 1.0 else to_float(ammo))
+  poke_f32(b, p + 13, to_float(u16_at(b, src + 33)))
+  poke_f32(b, p + 14, to_float(u16_at(b, src + 35)))
+  1
+
+# ---- the event queue --------------------------------------------------------
+#
+# World frames wait here as raw bytes until a tick has a world to apply them
+# to. Flat, not a ring: the read chases the write and both go back to nought
+# when they meet, which they do every frame in practice.
+
+fn queue(b, len) =
+  w = to_int(peek_f32(b, h_evw()))
+  if w + 2 + len > evq_cap() then
+    poke_f32(b, h_evq_dropped(), peek_f32(b, h_evq_dropped()) + 1.0)
+    0
+  else
+    poke_i8(b, evq_at() + w, len % 256)
+    poke_i8(b, evq_at() + w + 1, len / 256)
+
+    for i in 0..len
+      poke_i8(b, evq_at() + w + 2 + i, u8_at(b, in_at() + i))
+
+    poke_f32(b, h_evw(), to_float(w + 2 + len))
+    1
+
+# ---- one tick ---------------------------------------------------------------
+#
+# Everything the page used to do between taking events and drawing: drain the
+# queue into the world, square this player with the newest snapshot, work out
+# where everybody is right now, and say all of it to the HUD.
+
+fn tick(b, w, s, h, now, hold_ammo) =
+  drain(b, w, s, h, now)
+  reconcile(b, w, s, hold_ammo)
+  interp(b, now)
+  shark(b, now)
+  announce(b, h, now)
+  hud_rows(b, h, now)
+  to_int(peek_f32(b, h_interp_n()))
+
+fn drain(b, w, s, h, now) =
+  r = to_int(peek_f32(b, h_evr()))
+  wr = to_int(peek_f32(b, h_evw()))
+  if r >= wr then
+    poke_f32(b, h_evr(), 0.0)
+    poke_f32(b, h_evw(), 0.0)
+    0
+  else
+    len = u8_at(b, evq_at() + r) + u8_at(b, evq_at() + r + 1) * 256
+    apply(b, w, s, h, evq_at() + r + 2, len, now)
+    poke_f32(b, h_evr(), to_float(r + 2 + len))
+    drain(b, w, s, h, now)
+
+# One world frame, by its letter — the same letters server.rill sends.
+fn apply(b, w, s, h, at, len, now) =
+  k = u8_at(b, at)
+  if k == 103 then gone_list(b, w, at, len)
+  else if k == 87 then stone_list(w, b, at, len)
+  else if k == 114 then put_round(b, w, at)
+  else if k == 116 then put_thrown(b, w, at)
+  else if k == 107 then put_crater(b, w, at)
+  else if k == 98 then took_break(b, w, at)
+  else if k == 119 then ap_stone(w, u16_at(b, at + 1))
+  else if k == 100 then ap_down(w, u16_at(b, at + 1))
+  else if k == 121 then ap_fell(w, u16_at(b, at + 1))
+  else if k == 80 then fell_list(w, b, at, len)
+  else if k == 122 then ap_zap(w, u16_at(b, at + 1), u16_at(b, at + 3))
+  else if k == 109 then ap_mag(w, u8_at(b, at + 1), u32_at(b, at + 2))
+  else if k == 67 then said_line(b, h, at, len, now)
+  else if k == 120 then hurt_line(b, h, at, now)
+  else 0
+
+fn ap_stone(w, i) =
+  v.drop_block(w, i)
+  1
+
+fn ap_down(w, i) =
+  v.down_fire(w, i)
+  1
+
+fn ap_fell(w, i) =
+  v.put_fell(w, i)
+  1
+
+fn ap_zap(w, who0, ci) =
+  v.put_zap(w, who0, ci)
+  1
+
+fn ap_mag(w, i, times) =
+  v.set_mag(w, i, times)
+  1
+
+fn gone_list(b, w, at, len) = gl_go(b, w, at + 1, len - 1)
+
+fn gl_go(b, w, at, left) =
+  if left < 2 then 0
+  else
+    i = u16_at(b, at)
+    v.put_gone(w, i)
+    remember_gone(b, i)
+    gl_go(b, w, at + 2, left - 2)
+
+fn stone_list(w, b, at, len) = sl_go(w, b, at + 1, len - 1)
+
+fn sl_go(w, b, at, left) =
+  if left < 2 then 0
+  else
+    ap_stone(w, u16_at(b, at))
+    sl_go(w, b, at + 2, left - 2)
+
+fn fell_list(w, b, at, len) = fl_go(w, b, at + 1, len - 1)
+
+fn fl_go(w, b, at, left) =
+  if left < 2 then 0
+  else
+    ap_fell(w, u16_at(b, at))
+    fl_go(w, b, at + 2, left - 2)
+
+# A break that arrives as an event joins the replay list too, so a tier
+# rebuild — a fresh world mid-round — can be told everything at once.
+fn took_break(b, w, at) =
+  i = u16_at(b, at + 1)
+  v.put_break(w, i)
+  remember_gone(b, i)
+  1
+
+fn remember_gone(b, i) =
+  n = to_int(peek_f32(b, h_gone_n()))
+  if n >= gone_cap() then 0
+  else
+    poke_f32(b, gone_at() + n, to_float(i))
+    poke_f32(b, h_gone_n(), to_float(n + 1))
+    1
+
+# A round of this player's own is already in the air — it was fired here the
+# moment the mouse went down. Everybody else's goes into the ring, and the
+# owner's shot is a page event either way: the sound and the figure's flinch
+# are the page's.
+fn put_round(b, w, at) =
+  owner = f32_at(b, at + 25)
+  if to_int(owner) != to_int(peek_f32(b, h_id())) then ap_round(b, w, at, owner) else 0
+  page_event(b, 1.0, owner, 0.0, 0.0)
+
+fn ap_round(b, w, at, owner) =
+  v.put_bullet(w, f32_at(b, at + 1), f32_at(b, at + 5), f32_at(b, at + 9), f32_at(b, at + 13), f32_at(b, at + 17), f32_at(b, at + 21), owner)
+  1
+
+fn put_thrown(b, w, at) =
+  v.put_fireball(w, f32_at(b, at + 1), f32_at(b, at + 5), f32_at(b, at + 9), f32_at(b, at + 13), f32_at(b, at + 17), f32_at(b, at + 21), f32_at(b, at + 25), f32_at(b, at + 29))
+  1
+
+fn put_crater(b, w, at) =
+  v.put_blast(w, f32_at(b, at + 1), f32_at(b, at + 5), f32_at(b, at + 9), f32_at(b, at + 13))
+  1
+
+fn page_event(b, kind, a, c, d) =
+  n = to_int(peek_f32(b, h_pev_n()))
+  if n >= 16 then 0
+  else
+    poke_f32(b, pev_at() + n * 4, kind)
+    poke_f32(b, pev_at() + n * 4 + 1, a)
+    poke_f32(b, pev_at() + n * 4 + 2, c)
+    poke_f32(b, pev_at() + n * 4 + 3, d)
+    poke_f32(b, h_pev_n(), to_float(n + 1))
+    1
+
+# Somebody said something: the name in green, the words as they came, into
+# the HUD's log ring — as text, never as anything else.
+fn said_line(b, h, at, len, now) =
+  who0 = u16_at(b, at + 1)
+  sl = hud.log_push_start(h, true, now)
+  add_name(b, h, sl, who0, 5)
+  hud.slot_add(h, sl, 9, " ")
+  hud.slot_add_bytes(h, sl, 9, b, at + 3, len - 3)
+  1
+
+fn add_name(b, h, sl, id, color) =
+  n = name_len(b, id)
+  if n > 0 then hud.slot_add_bytes(h, sl, color, b, name_bytes(b, id), n)
+  else hud.slot_add(h, sl, color, "somebody")
+
+# A round found somebody, and the two people it concerns each get their own
+# sentence. The page's only share is the sound, which goes out as an event.
+fn hurt_line(b, h, at, now) =
+  who0 = u16_at(b, at + 1)
+  by = u16_at(b, at + 3)
+  much = f32_at(b, at + 5)
+  down = u8_at(b, at + 9)
+  myid = to_int(peek_f32(b, h_id()))
+  if who0 != myid && by != myid then 0
+  else
+    mine = by == myid
+    if !mine then page_event(b, 2.0, much, 0.0, 0.0) else 0
+    took_words(b, h, mine, if mine then who0 else by, much, down, now)
+    log_words(b, h, mine, if mine then who0 else by, much, down, now)
+    1
+
+fn took_words(b, h, mine, them, much, down, now) =
+  sl = hud.sl_took()
+  m = hud.slot_meta(sl)
+  poke_f32(h, m, 0.0)
+  pct = int_to_str(to_int(much * 100.0 + 0.5))
+  if mine && down > 0 then
+    hud.slot_add(h, sl, 0, "† you killed ")
+    add_name(b, h, sl, them, 1)
+  else if mine then
+    hud.slot_add(h, sl, 0, "you hit ")
+    add_name(b, h, sl, them, 1)
+    hud.slot_add(h, sl, 0, " for ")
+    hud.slot_add(h, sl, 8, pct)
+  else
+    add_name(b, h, sl, them, 1)
+    hud.slot_add(h, sl, 0, " hit you for ")
+    hud.slot_add(h, sl, 8, pct)
+  poke_f32(h, hud.h_took_at(), now)
+  poke_f32(h, hud.h_took_mine(), if mine then 1.0 else 0.0)
+  1
+
+fn log_words(b, h, mine, them, much, down, now) =
+  sl = hud.log_push_start(h, false, now)
+  if mine then hud.slot_add(h, sl, 1, "you") else add_name(b, h, sl, them, 1)
+  hud.slot_add(h, sl, 2, if down > 0 then " † " else " → ")
+  if mine then add_name(b, h, sl, them, 0) else hud.slot_add(h, sl, 0, "you")
+  if down > 0 then 0
+  else hud.slot_add(h, sl, 6, " " + int_to_str(to_int(much * 100.0 + 0.5)))
+  1
+
+# ---- squaring this player with the server ----------------------------------
+
+fn last_snap(b) = snap_at(to_int(peek_f32(b, h_which())))
+
+fn prev_snap(b) = snap_at(1 - to_int(peek_f32(b, h_which())))
+
+fn my_row(b) =
+  s = last_snap(b)
+  mr_go(b, s, to_int(peek_f32(b, s + 9)), to_int(peek_f32(b, h_id())), 0)
+
+fn mr_go(b, s, n, id, i) =
+  if i >= n then 0 - 1
+  else if to_int(peek_f32(b, s + 12 + i * 16)) == id then s + 12 + i * 16
+  else mr_go(b, s, n, id, i + 1)
+
+fn reconcile(b, w, s, hold_ammo) =
+  at = peek_f32(b, h_last_at())
+  if peek_f32(b, h_have()) < 0.5 || at == peek_f32(b, h_applied_at()) then 0
+  else
+    poke_f32(b, h_applied_at(), at)
+    sn = last_snap(b)
+    v.set_match(w, to_int(peek_f32(b, sn + 7)), peek_f32(b, sn + 8))
+    clock = peek_f32(b, sn + 1)
+    dc = v.world_time(w) - clock
+    if dc > 0.5 || dc < 0.0 - 0.5 then v.set_world_time(w, clock) else 0
+    m = my_row(b)
+    if m < 0 then 0
+    else
+      v.set_health(s, peek_f32(b, m + 6))
+      ammo = to_int(peek_f32(b, m + 12))
+      held = v.held_ammo(s)
+      gap = if ammo > held then ammo - held else held - ammo
+      if ammo >= 0 && hold_ammo == 0 && gap > 2 then v.set_held_ammo(s, ammo) else 0
+      x = v.player_x(s)
+      y = v.player_y(s)
+      z = v.player_z(s)
+      dx = peek_f32(b, m + 1) - x
+      dy = peek_f32(b, m + 2) - y
+      dz = peek_f32(b, m + 3) - z
+      d = sqrt(dx * dx + dy * dy + dz * dz)
+      if d > 4.0 then v.set_at(s, peek_f32(b, m + 1), peek_f32(b, m + 2), peek_f32(b, m + 3))
+      else if d > 0.03 then v.set_at(s, x + dx * 0.35, y + dy * 0.35, z + dz * 0.35)
+      else 0
+      1
+
+extern fn sqrt(x: Float) -> Float
+
+# ---- where everybody is right now ------------------------------------------
+#
+# Between the last two snapshots, a snapshot behind — the point that arrives
+# just as the next one lands. Yaw takes the short way round.
+
+fn lerp_t(b, now) =
+  span = if peek_f32(b, h_span()) > 0.5 then peek_f32(b, h_span()) else peek_f32(b, h_last_at()) - peek_f32(b, h_prev_at())
+  if span <= 1.0 then 1.0
+  else clampf((now - peek_f32(b, h_last_at())) / span, 0.0, 1.0)
+
+fn clampf(x, lo, hi) = if x < lo then lo else if x > hi then hi else x
+
+fn wrap_pi(a) =
+  if a > 3.14159265 then wrap_pi(a - 6.2831853)
+  else if a < 0.0 - 3.14159265 then wrap_pi(a + 6.2831853)
+  else a
+
+fn interp(b, now) =
+  if peek_f32(b, h_have()) < 0.5 then no_interp(b) else do_interp(b, now)
+
+fn no_interp(b) =
+  poke_f32(b, h_interp_n(), 0.0)
+  0
+
+fn do_interp(b, now) =
+  t = lerp_t(b, now)
+  sn = last_snap(b)
+  n = to_int(peek_f32(b, sn + 9))
+  poke_f32(b, h_interp_n(), 0.0)
+
+  for i in 0..n
+    interp_one(b, sn + 12 + i * 16, t)
+  0
+
+fn interp_one(b, p, t) =
+  id = to_int(peek_f32(b, p))
+  if id == to_int(peek_f32(b, h_id())) || peek_f32(b, p + 11) < 0.5 then 0
+  else
+    q = prev_row(b, id)
+    src = if q >= 0 then q else p
+    k = to_int(peek_f32(b, h_interp_n()))
+    o = interp_at() + k * 12
+    poke_f32(b, o, to_float(id))
+    poke_f32(b, o + 1, peek_f32(b, src + 1) + (peek_f32(b, p + 1) - peek_f32(b, src + 1)) * t)
+    poke_f32(b, o + 2, peek_f32(b, src + 2) + (peek_f32(b, p + 2) - peek_f32(b, src + 2)) * t)
+    poke_f32(b, o + 3, peek_f32(b, src + 3) + (peek_f32(b, p + 3) - peek_f32(b, src + 3)) * t)
+    poke_f32(b, o + 4, peek_f32(b, src + 4) + wrap_pi(peek_f32(b, p + 4) - peek_f32(b, src + 4)) * t)
+    poke_f32(b, o + 5, peek_f32(b, src + 5) + (peek_f32(b, p + 5) - peek_f32(b, src + 5)) * t)
+    poke_f32(b, o + 6, peek_f32(b, p + 6))
+    poke_f32(b, o + 7, peek_f32(b, p + 7))
+    poke_f32(b, o + 8, peek_f32(b, p + 8))
+    hue(b, o, id)
+    poke_f32(b, h_interp_n(), to_float(k + 1))
+    1
+
+fn prev_row(b, id) =
+  s = prev_snap(b)
+  pr_go(b, s, to_int(peek_f32(b, s + 9)), id, 0)
+
+fn pr_go(b, s, n, id, i) =
+  if i >= n then 0 - 1
+  else if to_int(peek_f32(b, s + 12 + i * 16)) == id && peek_f32(b, s + 12 + i * 16 + 11) > 0.5 then s + 12 + i * 16
+  else pr_go(b, s, n, id, i + 1)
+
+# A colour per player, off the golden angle round the hue circle — the same
+# arithmetic hueOf ran in the page, at full health: the figure pales with
+# health in its own shader.
+fn hue(b, o, id) =
+  hh = fract(to_float(id) * 0.61803398875) * 6.0
+  sat = 0.75
+  val = 0.9
+  poke_f32(b, o + 9, hsv_f(5.0, hh, sat, val))
+  poke_f32(b, o + 10, hsv_f(3.0, hh, sat, val))
+  poke_f32(b, o + 11, hsv_f(1.0, hh, sat, val))
+
+fn fract(x) = x - floor(x)
+
+extern fn floor(x: Float) -> Float
+
+fn hsv_f(n, hh, sat, val) =
+  k = fmod_f(n + hh, 6.0)
+  m = minf(minf(k, 4.0 - k), 1.0)
+  val - val * sat * maxf(0.0, m)
+
+fn fmod_f(a, m) = a - floor(a / m) * m
+
+fn minf(a, c) = if a < c then a else c
+
+fn maxf(a, c) = if a > c then a else c
+
+fn shark(b, now) =
+  if peek_f32(b, h_have()) < 1.5 then 0
+  else
+    t = lerp_t(b, now)
+    a = prev_snap(b)
+    c = last_snap(b)
+    poke_f32(b, h_shark_x(), peek_f32(b, a + 2) + (peek_f32(b, c + 2) - peek_f32(b, a + 2)) * t)
+    poke_f32(b, h_shark_x() + 1, peek_f32(b, a + 3) + (peek_f32(b, c + 3) - peek_f32(b, a + 3)) * t)
+    poke_f32(b, h_shark_x() + 2, peek_f32(b, a + 4) + (peek_f32(b, c + 4) - peek_f32(b, a + 4)) * t)
+    poke_f32(b, h_shark_x() + 3, peek_f32(b, a + 5) + wrap_pi(peek_f32(b, c + 5) - peek_f32(b, a + 5)) * t)
+    poke_f32(b, h_shark_x() + 4, peek_f32(b, c + 6))
+    1
+
+# ---- who arrived and who left ----------------------------------------------
+#
+# Announced off the snapshot rather than off a message of its own: somebody is
+# announced once their name has arrived, and never this player. The told table
+# holds the ids already said.
+
+fn announce(b, h, now) =
+  if peek_f32(b, h_have()) < 0.5 then 0
+  else
+    sn = last_snap(b)
+    n = to_int(peek_f32(b, sn + 9))
+
+    for i in 0..n
+      maybe_hello(b, h, to_int(peek_f32(b, sn + 12 + i * 16)), now)
+
+    sweep_told(b, h, sn, n, now)
+    poke_f32(b, h_first_roster(), 0.0)
+    1
+
+fn maybe_hello(b, h, id, now) =
+  if id == to_int(peek_f32(b, h_id())) then 0
+  else if told_has(b, id) then 0
+  else if name_len(b, id) == 0 then 0
+  else
+    n = to_int(peek_f32(b, h_told_n()))
+    if n >= 64 then 0
+    else
+      poke_f32(b, told_at() + n, to_float(id))
+      poke_f32(b, h_told_n(), to_float(n + 1))
+      if peek_f32(b, h_first_roster()) > 0.5 then 0
+      else
+        crier_line(b, h, id, " joined", false, now)
+        sl = hud.log_push_start(h, false, now)
+        add_name(b, h, sl, id, 1)
+        hud.slot_add(h, sl, 2, " joined")
+        1
+
+fn told_has(b, id) = th_go(b, id, 0)
+
+fn th_go(b, id, i) =
+  if i >= to_int(peek_f32(b, h_told_n())) then false
+  else if to_int(peek_f32(b, told_at() + i)) == id then true
+  else th_go(b, id, i + 1)
+
+fn sweep_told(b, h, sn, n, now) =
+  st_go(b, h, sn, n, now, 0)
+
+fn st_go(b, h, sn, n, now, i) =
+  if i >= to_int(peek_f32(b, h_told_n())) then 0
+  else
+    id = to_int(peek_f32(b, told_at() + i))
+    if in_snap(b, sn, n, id) then st_go(b, h, sn, n, now, i + 1)
+    else
+      crier_line(b, h, id, " left", true, now)
+      sl = hud.log_push_start(h, false, now)
+      add_name(b, h, sl, id, 3)
+      hud.slot_add(h, sl, 3, " left")
+      drop_told(b, i)
+      st_go(b, h, sn, n, now, i)
+
+fn in_snap(b, sn, n, id) = is_go(b, sn, n, id, 0)
+
+fn is_go(b, sn, n, id, i) =
+  if i >= n then false
+  else if to_int(peek_f32(b, sn + 12 + i * 16)) == id then true
+  else is_go(b, sn, n, id, i + 1)
+
+fn drop_told(b, i) =
+  n = to_int(peek_f32(b, h_told_n()))
+  poke_f32(b, told_at() + i, peek_f32(b, told_at() + n - 1))
+  poke_f32(b, h_told_n(), to_float(n - 1))
+  1
+
+fn crier_line(b, h, id, what, out, now) =
+  sl = hud.sl_crier()
+  m = hud.slot_meta(sl)
+  poke_f32(h, m, 0.0)
+  add_name(b, h, sl, id, if out then 2 else 1)
+  hud.slot_add(h, sl, if out then 3 else 0, what)
+  poke_f32(h, hud.h_crier_at(), now)
+  poke_f32(h, hud.h_crier_out(), if out then 1.0 else 0.0)
+  1
+
+# ---- the HUD's rows ---------------------------------------------------------
+#
+# The roster, the board and the tags, straight out of the snapshot — what the
+# page used to assemble from three exported views of the same list.
+
+fn hud_rows(b, h, now) =
+  if peek_f32(b, h_have()) < 0.5 then 0
+  else
+    roster_rows(b, h)
+    board_rows(b, h)
+    tag_rows(b, h)
+    1
+
+fn roster_rows(b, h) =
+  sn = last_snap(b)
+  n = to_int(peek_f32(b, sn + 9))
+  rows = if n > 16 then 16 else n
+
+  for i in 0..rows
+    roster_row(b, h, sn + 12 + i * 16, hud.sl_roster0() + i, i)
+
+  poke_f32(h, hud.h_roster_n(), to_float(rows))
+
+fn roster_row(b, h, p, sl, i) =
+  id = to_int(peek_f32(b, p))
+  m = hud.slot_meta(sl)
+  poke_f32(h, m, 0.0)
+  add_name(b, h, sl, id, 0)
+  scratch_hue(b, id)
+  hp = peek_f32(b, p + 6)
+  poke_f32(h, m + 1, peek_f32(b, 56))
+  poke_f32(h, m + 2, peek_f32(b, 57))
+  poke_f32(h, m + 3, peek_f32(b, 58))
+  poke_f32(h, m + 4, if id == to_int(peek_f32(b, h_id())) then 0.0 - maxf(hp, 0.001) else hp)
+  poke_f32(h, m + 5, peek_f32(b, p + 9))
+  poke_f32(h, m + 6, peek_f32(b, p + 10))
+  poke_f32(h, m + 7, if hp <= 0.001 then 1.0 else 0.0)
+  1
+
+# The hue again, into the header's scratch corner this time — the roster's
+# meta wants three floats and `hue` writes to the interp layout.
+fn scratch_hue(b, id) =
+  hh = fract(to_float(id) * 0.61803398875) * 6.0
+  poke_f32(b, 56, hsv_f(5.0, hh, 0.75, 0.9))
+  poke_f32(b, 57, hsv_f(3.0, hh, 0.75, 0.9))
+  poke_f32(b, 58, hsv_f(1.0, hh, 0.75, 0.9))
+
+# Most kills first, then fewest deaths, then whoever arrived first. Sixteen
+# rows picked by selection each time the board is up — it is up twenty
+# seconds every ten minutes, and n is at most thirty-two.
+fn board_rows(b, h) =
+  sn = last_snap(b)
+  if peek_f32(b, sn + 7) < 0.5 then poke_f32(h, hud.h_board_n(), 0.0)
+  else
+    n = to_int(peek_f32(b, sn + 9))
+    rows = if n > 16 then 16 else n
+
+    for i in 0..rows
+      board_row(b, h, sn, n, i)
+
+    poke_f32(h, hud.h_board_n(), to_float(rows))
+
+fn board_row(b, h, sn, n, rank) =
+  p = pick_rank(b, sn, n, rank)
+  if p < 0 then 0
+  else
+    id = to_int(peek_f32(b, p))
+    sl = hud.sl_board0() + rank
+    m = hud.slot_meta(sl)
+    poke_f32(h, m, 0.0)
+    add_name(b, h, sl, id, 0)
+    poke_f32(h, m + 1, peek_f32(b, p + 13))
+    poke_f32(h, m + 2, peek_f32(b, p + 14))
+    poke_f32(h, m + 3, if id == to_int(peek_f32(b, h_id())) then 1.0 else 0.0)
+    1
+
+# The row with rank `r`: better than exactly r others, by kills then deaths
+# then id — computed by counting rather than sorting in place, because the
+# snapshot is read-only here.
+fn pick_rank(b, sn, n, r) = prk_go(b, sn, n, r, 0)
+
+fn prk_go(b, sn, n, r, i) =
+  if i >= n then 0 - 1
+  else
+    p = sn + 12 + i * 16
+    if rank_of(b, sn, n, p, i) == r then p else prk_go(b, sn, n, r, i + 1)
+
+fn rank_of(b, sn, n, p, self0) = ro_go(b, sn, n, p, self0, 0, 0)
+
+fn ro_go(b, sn, n, p, self0, i, better) =
+  if i >= n then better
+  else if i == self0 then ro_go(b, sn, n, p, self0, i + 1, better)
+  else
+    q = sn + 12 + i * 16
+    ahead = beats(b, q, p)
+    ro_go(b, sn, n, p, self0, i + 1, if ahead then better + 1 else better)
+
+fn beats(b, q, p) =
+  qk = peek_f32(b, q + 13)
+  pk = peek_f32(b, p + 13)
+  if qk > pk then true
+  else if qk < pk then false
+  else
+    qd = peek_f32(b, q + 14)
+    pd = peek_f32(b, p + 14)
+    if qd < pd then true
+    else if qd > pd then false
+    else peek_f32(b, q) < peek_f32(b, p)
+
+# The tags ride the interpolated positions, so a name is over the head the
+# figure is actually drawn at.
+fn tag_rows(b, h) =
+  n = to_int(peek_f32(b, h_interp_n()))
+  rows = if n > 16 then 16 else n
+
+  for i in 0..rows
+    tag_row(b, h, interp_at() + i * 12, hud.sl_tag0() + i)
+
+  poke_f32(h, hud.h_tag_n(), to_float(rows))
+
+fn tag_row(b, h, o, sl) =
+  id = to_int(peek_f32(b, o))
+  m = hud.slot_meta(sl)
+  poke_f32(h, m, 0.0)
+  n = name_len(b, id)
+  if n == 0 then 0
+  else
+    add_name(b, h, sl, id, 0)
+    poke_f32(h, m + 1, peek_f32(b, o + 1))
+    poke_f32(h, m + 2, peek_f32(b, o + 2))
+    poke_f32(h, m + 3, peek_f32(b, o + 3))
+    poke_f32(h, m + 4, peek_f32(b, o + 6))
+    1
+
+# ---- what goes out ----------------------------------------------------------
+
+fn out_input(b, keys, yaw, pitch) =
+  poke_i8(b, out_at(), 105)
+  poke_i8(b, out_at() + 1, keys % 256)
+  poke_i8(b, out_at() + 2, keys / 256 % 256)
+  out_f32(b, out_at() + 3, yaw)
+  out_f32(b, out_at() + 7, pitch)
+  11
+
+fn out_fire(b, dx, dy, dz) =
+  poke_i8(b, out_at(), 102)
+  out_f32(b, out_at() + 1, dx)
+  out_f32(b, out_at() + 5, dy)
+  out_f32(b, out_at() + 9, dz)
+  13
+
+fn out_reload(b) =
+  poke_i8(b, out_at(), 82)
+  1
+
+fn out_ping(b, now) =
+  poke_i8(b, out_at(), 112)
+  poke_f64(b, 30, now)
+
+  for i in 0..8
+    poke_i8(b, out_at() + 1 + i, peek_u8(b, 240 + i))
+  9
+
+# The page put the text at OUT+1 already; this stamps the letter in front.
+fn out_text(b, op, len) =
+  poke_i8(b, out_at(), op)
+  len + 1
+
+fn out_f32(b, at, v) =
+  poke_f32(b, 63, v)
+
+  for i in 0..4
+    poke_i8(b, at + i, peek_u8(b, 252 + i))
+  0
+
+# Replays what a fresh world has to be told — a tier change rebuilds the
+# valley mid-round, and the crystals shot before it have to stay shot.
+fn replay(b, w) =
+  n = to_int(peek_f32(b, h_gone_n()))
+
+  for i in 0..n
+    v.put_gone(w, to_int(peek_f32(b, gone_at() + i)))
+
+  if peek_f32(b, h_have()) > 0.5 then
+    v.set_world_time(w, peek_f32(b, last_snap(b) + 1))
+    v.set_match(w, to_int(peek_f32(b, last_snap(b) + 7)), peek_f32(b, last_snap(b) + 8))
+    1
+  else
+    v.set_world_time(w, peek_f32(b, h_clock0()))
+    1
+
+
+# How many stood in the last snapshot — the corner's "N people in the valley".
+fn here(b) =
+  if peek_f32(b, h_have()) < 0.5 then 0 else to_int(peek_f32(b, last_snap(b) + 9))

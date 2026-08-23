@@ -427,6 +427,80 @@ fn sl_over1() = 71
 fn sl_over2() = 72
 fn sl_over3() = 73
 
+# The log is a ring the writers push into — slot `h_log_next` is the oldest
+# and the next to be overwritten. `log_walk` below still draws slots 0..11 in
+# order; the ring is turned into that order by the copy-down in `log_push`,
+# which shifts eleven slots once per line. Lines arrive a few a minute; the
+# shuffle is nothing, and every writer — a kill, an arrival, a chat line —
+# stays four calls with no bookkeeping of its own.
+fn log_push_start(h, said, born) =
+  shift_logs(h, 0)
+  sl = sl_log0() + 11
+  m = slot_meta(sl)
+  poke_f32(h, m, 0.0)
+  poke_f32(h, m + 1, if said then 1.0 else 0.0)
+  poke_f32(h, m + 2, born)
+  sl
+
+fn shift_logs(h, i) =
+  if i >= 11 then 0
+  else
+    copy_slot(h, sl_log0() + i + 1, sl_log0() + i)
+    shift_logs(h, i + 1)
+
+fn copy_slot(h, from0, to0) =
+  fm = slot_meta(from0)
+  tm = slot_meta(to0)
+
+  for k in 0..8
+    poke_f32(h, tm + k, peek_f32(h, fm + k))
+
+  n = to_int(peek_f32(h, fm))
+
+  for k in 0..n
+    poke_i8(h, slot_at(to0) + k, peek_u8(h, slot_at(from0) + k))
+  1
+
+# Appends bytes to a slot being built: first a colour code, then the text.
+fn slot_add(h, sl, k, s) =
+  m = slot_meta(sl)
+  n = to_int(peek_f32(h, m))
+  if n + 1 + str_len(s) > slot_bytes() then 0
+  else
+    poke_i8(h, slot_at(sl) + n, k + 1)
+    add_bytes(h, slot_at(sl) + n + 1, s, 0)
+    poke_f32(h, m, to_float(n + 1 + str_len(s)))
+    1
+
+# The same, from bytes living in another block — a name or a chat line the
+# wire holds. The source pointer rides separately from the offset, because a
+# HUD offset and a wire offset are numbers in two different worlds.
+fn slot_add_bytes(h, sl, k, src, from0, len) =
+  m = slot_meta(sl)
+  n = to_int(peek_f32(h, m))
+  if n + 1 + len > slot_bytes() then 0
+  else
+    poke_i8(h, slot_at(sl) + n, k + 1)
+
+    for i in 0..len
+      poke_i8(h, slot_at(sl) + n + 1 + i, peek_u8(src, from0 + i))
+
+    poke_f32(h, m, to_float(n + 1 + len))
+    1
+
+fn add_bytes(h, at, s, i) =
+  if i >= str_len(s) then 0
+  else
+    poke_i8(h, at + i, str_get(s, i))
+    add_bytes(h, at, s, i + 1)
+
+# One line into a slot, whole: meta reset then one coloured segment.
+fn slot_set(h, sl, k, s, born) =
+  m = slot_meta(sl)
+  poke_f32(h, m, 0.0)
+  poke_f32(h, m + 2, born)
+  slot_add(h, sl, k, s)
+
 fn slot_text(h, i, x, y, strip, track, k, alpha) =
   text_bytes(h, x, y, strip, track, k, slot_at(i), slot_len(h, i), alpha, 1.0)
 

@@ -14,6 +14,7 @@
 # that pointer.
 import "valley" as v
 import "hud" as hud
+import "wire" as wire
 
 # ---- the valley, and who is in it ------------------------------------------
 
@@ -414,6 +415,65 @@ fn project_tag(s, h, m) =
     1
 
 extern fn sqrt(x: Float) -> Float
+
+# ---- the wire ---------------------------------------------------------------
+#
+# The client's whole share of the protocol lives in wire.rill; these are the
+# page's handles on it. The page's job is reduced to a socket: copy the bytes
+# of each inbound frame to `wire_in`, call `wire_frame`; read the outbound
+# builders' bytes back off `wire_out` and send them. The header field indices
+# the page reads directly are wire.rill's h_* constants, mirrored once in
+# host.js as `WH`.
+
+export fn wire_new() -> Ptr = wire.make()
+
+export fn wire_in(b: Ptr) -> Int = wire.in_at()
+
+export fn wire_in_cap() -> Int = wire.in_cap()
+
+export fn wire_out(b: Ptr) -> Int = wire.out_at()
+
+export fn wire_interp_at() -> Int = wire.interp_at()
+
+export fn wire_pev_at() -> Int = wire.pev_at()
+
+export fn wire_token_at() -> Int = wire.token_at()
+
+export fn wire_refuse_at() -> Int = wire.refuse_at()
+
+export fn wire_frame(b: Ptr, len: Int, now: Float) =
+  poke_f32(b, 60, now)
+  if peek_u8(b, wire.in_at()) == 112 then took_pong(b, now) else wire.frame(b, len)
+
+fn took_pong(b, now) =
+  wire.pong(b)
+  wire.pong_took(b, now)
+
+# One tick: drain what arrived into the world, square this player with the
+# newest snapshot, interpolate everybody, and fill the HUD's rows. Returns how
+# many interpolated players the figure renderer should draw.
+export fn wire_tick(b: Ptr, w: Ptr, s: Ptr, now: Float, hold: Int) -> Int =
+  poke_f32(b, 60, now)
+  wire.tick(b, w, s, peek_ptr(s, 95), now / 1000.0, hold)
+
+# A fresh world mid-round — a tier rebuild — told everything the old one knew.
+export fn wire_replay(b: Ptr, w: Ptr) = wire.replay(b, w)
+
+export fn wire_here(b: Ptr) -> Int = wire.here(b)
+
+export fn wire_out_input(b: Ptr, keys: Int, yaw: Float, pitch: Float) -> Int =
+  wire.out_input(b, keys, yaw, pitch)
+
+export fn wire_out_fire(b: Ptr, dx: Float, dy: Float, dz: Float) -> Int =
+  wire.out_fire(b, dx, dy, dz)
+
+export fn wire_out_reload(b: Ptr) -> Int = wire.out_reload(b)
+
+export fn wire_out_ping(b: Ptr, now: Float) -> Int = wire.out_ping(b, now)
+
+# The page wrote the text at OUT+1; this stamps the letter and says how long
+# the frame is.
+export fn wire_out_text(b: Ptr, op: Int, len: Int) -> Int = wire.out_text(b, op, len)
 
 # Called once when the module is instantiated, and there is nothing to set up:
 # the valley is built when the host has measured the machine and knows how much

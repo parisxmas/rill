@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=390";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=390";
+import { load } from "./world.js?v=391";   // keep in step with V below
+import { join, WH } from "./net.js?v=391";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=390";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "390";
+const V = "391";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2112,175 +2112,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // Everything in this block is only reached with a server. Without one it is
   // dead code and the valley below runs exactly as it did.
 
-  // The snapshot this player's own position was last squared with, so that a
-  // twentieth of a second's answer is not applied sixty times.
-  let appliedSnap = null;
 
-  // What has happened since the last frame, in the order it happened. Each of
-  // these is the same write the world made where it happened: a round entering
-  // the ring, a crystal coming apart, a crater. The sounds need no help —
-  // `blasts_fired` and `breaks` are counters the frame already watches, and
-  // these push them along exactly as the real thing does.
-  function applyEvents(evs) {
-    for (const e of evs) {
-      const n = e.n;
-      if (e.kind === "gone") { net.gone = e.which; for (const i of e.which) E.put_gone(world, BigInt(i)); }
-      // A round of this player's own is already in the air: it was fired here
-      // the moment the mouse went down, because a tracer that waits for the
-      // server is a rifle that fires late. This is the same round coming back.
-      else if (e.kind === "r") {
-        if (n[6] !== net.id) E.put_bullet(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6]);
-        // Whoever fired it plays the shot, this player included: their own
-        // round never comes back, but the tag over their head is not the only
-        // thing other people see of them.
-        const c = clocks.get(n[6]);
-        if (c) c.firedAt = performance.now();
-      }
-      else if (e.kind === "t") E.put_fireball(world, n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]);
-      else if (e.kind === "k") E.put_blast(world, n[0], n[1], n[2], n[3]);
-      else if (e.kind === "b") E.put_break(world, BigInt(n[0]));
-      // A stone off a wall. The blast that did it arrives as its own `k`; this
-      // says which block went, because nothing on this side decided it.
-      else if (e.kind === "w") E.drop_block(world, BigInt(n[0]));
-      // A meteor somebody shot out of the air. Nothing on this side decided
-      // it, so the pieces are spawned from the same call the shooter's world
-      // made.
-      else if (e.kind === "d") E.down_fire(world, BigInt(n[0]));
-      // A pine a warhead took. The instance buffer goes up with every frame,
-      // so applying it to the world is the whole of the work.
-      else if (e.kind === "y") E.put_fell(world, BigInt(n[0]));
-      // And every pine already down, one frame at the door.
-      else if (e.kind === "pines") for (const i of e.n) E.put_fell(world, BigInt(i));
-      // A crystal bit somebody. Applying it moves the ring and the counter,
-      // and the watcher in the frame loop draws the light and plays the sound
-      // from there — the same road a bite this world decided takes.
-      else if (e.kind === "z") E.put_zap(world, BigInt(n[0]), BigInt(n[1]));
-      // Somebody said something. Nothing in the valley moves because of it;
-      // it goes on the screen and that is all it does.
-      else if (e.kind === "say") sayLine(net.names.get(e.who) ?? "somebody", e.text);
-      // The wall's whole history, one line at the door: every stone broken
-      // before this client arrived. Each lands exactly where it did for
-      // everybody else, because the resting place is computed from the index.
-      else if (e.kind === "wall") for (const i of e.n) E.drop_block(world, BigInt(i));
-      // A box of ammunition is somewhere else. What arrives is how many times
-      // box `i` has been taken, not where it now is: where that puts it is the
-      // valley's own arithmetic, run identically here and on the server, so
-      // the wire carries a count rather than a position. Said as a total and
-      // not a step, which is what makes it safe to hear twice — and this
-      // player hears their own pickup come back exactly once too many.
-      else if (e.kind === "m") E.set_mag(world, BigInt(n[0]), BigInt(n[1]));
-      // A round found somebody. Everybody is told, and the two people it
-      // concerns each get their own sentence: one of them has been shot and
-      // the other has hit something, which are not the same news.
-      else if (e.kind === "x" && (n[0] === net.id || n[1] === net.id)) {
-        const mine = n[1] === net.id;
-        const them = net.names.get(mine ? n[0] : n[1]) ?? "somebody";
-        const much = Math.round(n[2] * 100);
-        if (!mine) {
-          // Out loud as well, and only for the one being shot. Louder for a
-          // bigger hit and a hair of detune each time, because the same file
-          // twice in a row is what gives a sample away.
-          if (audio && hurtBuf) {
-            playAt(hurtBuf, Math.floor(Math.random() * 4), 0.95,
-                   0.55 + 0.45 * Math.min(1, n[2] * 2), 0, 0.94 + Math.random() * 0.12);
-          }
-        }
-        // A kill is not something the shooter could work out: the snapshot
-        // that says somebody is down says nothing about who put them there,
-        // so the server says it here. The engine pops and fades it on the
-        // timestamps; this side only says the words.
-        hudSlot(HSLOT.took, mine
-          ? (n[3]
-              ? [[-1, "† you killed "], [HC.gold, them]]
-              : [[-1, "you hit "], [HC.gold, them], [-1, " for "], [HC.white, much]])
-          : [[HC.gold, them], [-1, " hit you for "], [HC.white, much]]);
-        hudHead(HH.tookAt, performance.now() / 1000);
-        hudHead(HH.tookMine, mine ? 1 : 0);
-        // And into the log, from whoever's point of view it is not.
-        const shooter = mine ? "you" : (net.names.get(n[1]) ?? "somebody");
-        const hitWho = mine ? them : "you";
-        note(n[3]
-          ? [[HC.gold, shooter], [HC.sub, " † "], [HC.text, hitWho]]
-          : [[HC.gold, shooter], [HC.sub, " → "], [HC.text, hitWho], [HC.red, " " + much]]);
-      }
-    }
-  }
 
-  // The server's word against this browser's guess.
-  //
-  // Both ran the same `walk` on the same keys, so they mostly agree, and what
-  // is left is the tenth of a second the answer took to come back. Snapping to
-  // it would be a walk that stutters twenty times a second; ignoring it would
-  // be a player who is somewhere else as far as everyone else is concerned. So
-  // it is eased toward, once per snapshot rather than once per frame — unless
-  // it is far enough out that easing would take seconds, which is what being
-  // thrown by a blast or respawning looks like from here, and then it is taken
-  // as given.
-  function reconcile() {
-    const m = me(net);
-    if (!m || net.last === appliedSnap) return;
-    appliedSnap = net.last;
-    E.set_health(state, m.health);
-    // The count is the browser's own between snapshots, or it would jump back
-    // up for the tenth of a second between pulling the trigger and hearing
-    // about it. Two rounds of slack covers everything in flight; past that the
-    // two have genuinely disagreed — a magazine one side walked over and the
-    // other did not — and the server is the one that is right.
-    // Both conversions are load-bearing: an `Int` across the wasm boundary is
-    // an i64, which arrives as a BigInt and will not be subtracted from a
-    // number, and will not be passed back as one either.
-    // A correction may not undo a magazine change this browser has just
-    // made. Without the pause the two fought: the client's magazine ran out
-    // and it changed to a fresh one, the next snapshot still had the server
-    // three rounds from the end and pulled the count back down, the client
-    // changed again — and again, twenty times a second, eating the belt and
-    // playing the reload over and over. The server is making the same change
-    // a round trip behind; it is given that long to catch up.
-    if (m.ammo !== null && performance.now() > reloadHold
-        && Math.abs(m.ammo - Number(E.held_ammo(state))) > 2) {
-      E.set_held_ammo(state, BigInt(m.ammo));
-    }
-    const x = E.player_x(state), y = E.player_y(state), z = E.player_z(state);
-    const d = Math.hypot(x - m.x, y - m.y, z - m.z);
-    if (d > 4) E.set_at(state, m.x, m.y, m.z);
-    else if (d > 0.03) E.set_at(state, x + (m.x - x) * 0.35, y + (m.y - y) * 0.35, z + (m.z - z) * 0.35);
-    // The clock is let run locally and only pulled back when it has drifted
-    // further than the wind can notice. Writing it every snapshot would step
-    // the weather backwards and forwards twenty times a second.
-    //
-    // `net.last.clock` and not `m.clock`. The clock is on the snapshot's
-    // header — it is the same fact for everybody in the valley — and `m` is
-    // this player's own record, which has never carried one. So the comparison
-    // was against `undefined`, which makes a NaN, and `NaN > 0.5` is false:
-    // the correction had never once run. Every browser was keeping its own
-    // time from the moment it joined.
-    //
-    // That drifts, and only one way. `dt` is clamped to a twentieth of a
-    // second a frame, so every frame slower than twenty a second — every
-    // stutter, every alt-tab, every minute in a background tab where the frame
-    // loop stops altogether — is time the valley does not get back. A day here
-    // is six minutes long. Two people who joined an hour apart, or one of whom
-    // looked away for a while, were standing in the same valley at different
-    // hours of it: one in daylight, one at night, watching the same sun from
-    // opposite sides of the sky.
-    const clock = net.last.clock;
-    if (Math.abs(E.world_time(world) - clock) > 0.5) E.set_world_time(world, clock);
-  }
 
-  // ---- names over heads ----------------------------------------------------
-  //
-  // Names over heads: who and where go into the tag slots, and the engine
-  // does the projecting with the same matrix it drew the valley by. What used
-  // to be one DOM element per player is now sixteen floats per player.
-  function drawTags(seen) {
-    let n = 0;
-    for (const p of seen) {
-      if (!p.name || n >= 16) continue;
-      hudSlot(HSLOT.tag + n, [[-1, p.name]], p.x, p.y, p.z, p.health);
-      n++;
-    }
-    hudHead(HH.tagN, n);
-  }
 
   // ---- the roster ----------------------------------------------------------
   //
@@ -2295,40 +2129,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // goes straight onto the element it belongs to and the browser is left to
   // ease it; rewriting the markup twenty times a second would restart every
   // one of those transitions and the bars would step instead of slide.
-  function drawRoster(list) {
-    // Somebody is announced once their name has arrived, which is a moment
-    // after they have: the id comes in the snapshot and the name follows on a
-    // `who` line, and "somebody joined" is not worth saying. Never about this
-    // player — you know when you arrived.
-    for (const p of list) {
-      if (!p.name || told.has(p.id)) continue;
-      told.set(p.id, p.name);
-      if (!firstRoster && p.id !== net.id) { cry(p.name, "joined", "in"); note([[HC.gold, p.name], [HC.sub, " joined"]]); }
-    }
-    for (const [id, name] of told) {
-      if (list.some(p => p.id === id)) continue;
-      told.delete(id);
-      if (id !== net.id) { cry(name, "left", "out"); note([[HC.dim, name + " left"]]); }
-    }
-    firstRoster = false;
-    // What they have done and what has been done to them. Two numbers rather
-    // than a ratio: a ratio hides how much has happened, and in a valley of
-    // four people that is most of the story. Sixteen floats a row and the
-    // engine draws the dot, the bar and the strike-through.
-    let n = 0;
-    for (const p of list) {
-      if (n >= 16) break;
-      const c = hueOf(p.id, 1);
-      hudSlot(HSLOT.roster + n, [[-1, p.name || `player ${p.id}`]],
-              c[0], c[1], c[2],
-              // Self rides in the health's sign — a slot only has eight
-              // floats and the engine reads the magnitude.
-              p.self ? -Math.max(0.001, p.health) : p.health,
-              p.hit, p.shot, p.health <= 0.001 ? 1 : 0);
-      n++;
-    }
-    hudHead(HH.rosterN, n);
-  }
 
   // ---- the round -----------------------------------------------------------
   //
@@ -2336,44 +2136,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // numbers off the world — the phase and the seconds remaining — so a browser
   // alone in its own valley shows exactly what a shared one does, without a
   // server having to be there to say so.
-  // Which snapshot the round's clock was last set from, so it is corrected
-  // once per arrival rather than every frame.
-  let syncedAt = -1;
 
-  // A browser alone in its valley still has a round, and one player in it.
-  const soloBoard = () => [{
-    id: (net && net.id) ?? 0, name: "you",
-    kills: Number(E.kills(state)), deaths: Number(E.deaths(state)),
-  }];
-
-  // The clock and the dark sheet are the engine's — it holds the phase and
-  // the seconds itself — so the page's whole share of the board is the rows.
-  function drawRound(phase, left, list, myId) {
+  // The board's rows. In somebody else's valley the wire fills them; alone,
+  // the one row there is comes from here.
+  function drawRound(phase) {
+    if (net) return;
     if (phase !== 1) { hudHead(HH.boardN, 0); return; }
-    // Most kills first, then fewest deaths, then whoever arrived first — a
-    // board that reordered itself every tick would be unreadable.
-    const rank = list.slice().sort((a, b) =>
-      (b.kills | 0) - (a.kills | 0) || (a.deaths | 0) - (b.deaths | 0) || a.id - b.id);
-    let n = 0;
-    for (const p of rank) {
-      if (n >= 16) break;
-      hudSlot(HSLOT.board + n, [[-1, p.name ?? ("player" + p.id)]],
-              p.kills | 0, p.deaths | 0, p.id === myId ? 1 : 0);
-      n++;
-    }
-    hudHead(HH.boardN, n);
+    hudSlot(HSLOT.board, [[-1, "you"]],
+            Number(E.kills(state)), Number(E.deaths(state)), 1);
+    hudHead(HH.boardN, 1);
   }
 
-  // A colour per player, off the golden angle round the hue circle: the second
-  // person to arrive is a different colour rather than a slightly different
-  // green. It pales as they run out of health, which is the only tell there is
-  // that somebody across the meadow is nearly down.
-  function hueOf(id, health) {
-    const h = (id * 0.61803398875) % 1, s = 0.35 + 0.4 * Math.max(health, 0), v = 0.55 + 0.35 * Math.max(health, 0);
-    const k = (n) => (n + h * 6) % 6;
-    const f = (n) => v - v * s * Math.max(0, Math.min(Math.min(k(n) , 4 - k(n)), 1));
-    return [f(5), f(3), f(1)];
-  }
 
   // ---- everything the tier decides, rebuilt when the tier changes ----------
 
@@ -2400,6 +2173,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // How many instances the engine's HUD emitted this frame — settled before
   // the pass begins, drawn at its end.
   let hudCount = 0;
+  // How many interpolated players the wire handed over this frame, and the
+  // little per-player objects the animation clocks key off.
+  let wireN = 0;
+  const seenNow = [];
+  const wireF32 = () => new Float32Array(E.memory.buffer, Number(net.wire), 64);
+  const wireInterp = () => new Float32Array(E.memory.buffer, Number(net.wire) + Number(E.wire_interp_at()) * 4, 32 * 12);
+  const wirePev = () => new Float32Array(E.memory.buffer, Number(net.wire) + Number(E.wire_pev_at()) * 4, 16 * 4);
   let W = null;       // tier-dependent GPU resources
   const stateF32 = () => new Float32Array(E.memory.buffer, Number(state), 64);
   // The world's own block, which is not the player's. The shark lives here —
@@ -2485,9 +2265,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // clock and the crystals already shot have to be right before the first
       // frame — otherwise the wind jumps and three hundred crystals stand back
       // up for a twentieth of a second.
-      E.set_world_time(world, net.last ? net.last.clock : net.world.clock);
-      for (const i of net.gone ?? []) E.put_gone(world, BigInt(i));
-      appliedSnap = null;
+      E.wire_replay(net.wire, world);
     }
     if (cam) stateF32().set(cam, 19);
 
@@ -2687,9 +2465,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   if (server) {
     step("asking to join");
     try {
-      net = join(server, name);
+      net = join(server, name, E);
       await net.arrival;
-      net.gone = [];
     } catch (e) {
       // A valley that cannot be reached is not a reason to show nothing: the
       // single-player one is right here and works. But it has to say so, and
@@ -2948,42 +2725,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const CHANGE_SECS = 1.45;
   let changeAt = -1e9;
   let ended = false, lastStanding = -1, wantRestart = false, lastOver = 0;
-  // Arrivals and departures, across the middle. Announced from the roster
-  // rather than from a message of their own: the roster already knows, and a
-  // valley that has to be told twice about the same fact will one day be told
-  // once.
-  const told = new Map();
-  let firstRoster = true;
 
-  // The log, bottom left: everything that happened, in the order it happened,
-  // oldest at the top. Lines are segments of [colourIndex, text] now rather
-  // than markup — the engine draws them, this side only keeps the ring. A
-  // line somebody typed goes in as one plain segment: whatever is in it is
-  // bytes to the atlas, never markup to anything.
-  const LOG_KEEP = 12;
-  const logRing = [];
 
-  function pushLog(segs, said) {
-    logRing.push({ segs, said, born: performance.now() / 1000 });
-    // Drop what has both scrolled off and faded; the engine fades by age, so
-    // the ring only has to stay short.
-    while (logRing.length > LOG_KEEP) logRing.shift();
-    for (let i = 0; i < LOG_KEEP; i++) {
-      const l = logRing[i];
-      if (l) hudSlot(HSLOT.log + i, l.segs, l.said ? 1 : 0, l.born);
-      else hudClear(HSLOT.log + i);
-    }
-  }
-  const note = (segs) => pushLog(segs, false);
-  const sayLine = (who, text) => pushLog([[HC.green, who], [HC.lav, " " + text]], true);
-
-  function cry(who, what, kind) {
-    hudSlot(HSLOT.crier, kind === "in"
-      ? [[HC.gold, who], [HC.text, " " + what]]
-      : [[HC.sub, who], [HC.dim, " " + what]]);
-    hudHead(HH.crierAt, performance.now() / 1000);
-    hudHead(HH.crierOut, kind === "out" ? 1 : 0);
-  }
   // A refusal, and the hit line: pushed once, timed by the engine.
   function sayWarn(text) {
     hudSlot(HSLOT.warn, [[HC.orange, text.toUpperCase()]]);
@@ -3479,7 +3222,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // of the two ends disagreeing about whether it is on.
         net.input(keys | (held << 7) | (torchOn ? 512 : 0), look[19], look[20]);
       }
-      applyEvents(net.take());
+      // One call is the whole of what used to be applyEvents + reconcile +
+      // the shark + the roster + the tags + the board: the wire drains what
+      // arrived into the world, squares this player with the newest snapshot,
+      // interpolates everybody and fills the HUD's rows.
+      wireN = Number(E.wire_tick(net.wire, world, state, now,
+                                 performance.now() < reloadHold ? 1n : 0n));
       // Walked here as well as there, so that turning and walking answer the
       // key rather than the round trip. What the server made of it arrives a
       // moment later and is eased in.
@@ -3494,12 +3242,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // drop, and a drop is how the world decides somebody has been shot. Every
       // chip threw the player's head.
       E.pick_up_quiet(state);
-      reconcile();
-      // The shark is the server's too, and it only speaks twenty times a
-      // second — so it is drawn at a point between the last two, like a
-      // player.
-      const sk = sharkNow(net, now);
-      if (sk) E.set_shark(world, sk.x, sk.y, sk.z, sk.heading, sk.mode, sk.mode > 2.5 ? 0.0 : (sk.mode > 0.5 ? 0.85 : 0.0));
+      // The shark is the server's too, interpolated by the wire alongside the
+      // players; the header carries where it is right now.
+      const wf = wireF32();
+      if (wf[WH.hello] > 0.5) {
+        const mode = wf[WH.sharkX + 4];
+        E.set_shark(world, wf[WH.sharkX], wf[WH.sharkX + 1], wf[WH.sharkX + 2],
+                    wf[WH.sharkX + 3], mode, mode > 2.5 ? 0.0 : (mode > 0.5 ? 0.85 : 0.0));
+      }
       E.look(state, canvas.width / canvas.height);
     } else {
       E.frame(state, dt, mdx, mdy, BigInt(keys), canvas.width / canvas.height);
@@ -3510,15 +3260,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // are facing, and their colour. Written every frame because it is a
     // kilobyte and they are always moving.
     if (net) {
-      const seen = others(net, now);
-      figureCount = Math.min(seen.length, FIGURE_CAP);
+      // Straight off the wire's interpolation: twelve floats a player — id,
+      // x, y, z, yaw, pitch, health, pose, torch, and the hue the engine
+      // rolled for them. The little objects exist for clipFor, which keys its
+      // animation clocks off them.
+      const wi = wireInterp();
+      figureCount = Math.min(wireN, FIGURE_CAP);
+      seenNow.length = 0;
       for (let i = 0; i < figureCount; i++) {
-        const p = seen[i], o = i * 8;
-        const c = hueOf(p.id, p.health);
+        const o12 = i * 12, o = i * 8;
+        const p = { id: wi[o12], x: wi[o12 + 1], y: wi[o12 + 2], z: wi[o12 + 3],
+                    yaw: wi[o12 + 4], pitch: wi[o12 + 5], health: wi[o12 + 6],
+                    pose: wi[o12 + 7], torch: wi[o12 + 8] > 0.5 };
+        seenNow.push(p);
         figures[o] = p.x; figures[o + 1] = p.y; figures[o + 2] = p.z;
         figures[o + 3] = 1;
         figures[o + 4] = p.yaw;
-        figures[o + 5] = c[0]; figures[o + 6] = c[1]; figures[o + 7] = c[2];
+        figures[o + 5] = wi[o12 + 9]; figures[o + 6] = wi[o12 + 10]; figures[o + 7] = wi[o12 + 11];
         const clock = clipFor(p, now);
         const clip = figure.clips.get(clock.name) ?? figure.clips.get("idle");
         // The armed idle runs on its own clock rather than on the walk's, so
@@ -3530,15 +3288,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // ground and the rifle would have followed it there still gripped,
         // which is a body holding its weapon at attention while lying dead.
         if (p.health < 0.001) skinner.drop(i, p.x, p.y, p.z, p.yaw, 0.7 + (p.id % 5) * 0.4);
-      }
-      // And the same positions again, into the world this time, so that a
-      // round stops at the body it hit instead of carrying on through it.
-      // Only the drawing knows where anybody is on a client — everybody but
-      // this player arrives as a snapshot — so this is the only place that
-      // can say. This player goes in as well: a round of somebody else's
-      // ought to stop at their chest too, even if the chest is the camera.
-      for (let i = 0; i < figureCount; i++) {
-        const p = seen[i];
+        // And the same position into the world, so a round stops at the body
+        // it hit instead of carrying on through it.
         E.set_ghost(world, BigInt(i), p.x, p.y, p.z);
       }
       if (figureCount < FIGURE_CAP) {
@@ -3548,8 +3299,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
       // Whoever has gone is forgotten, or the map grows for the life of the
       // page in a valley people keep passing through.
-      if (clocks.size > seen.length) {
-        const here = new Set(seen.map(p => p.id));
+      if (clocks.size > figureCount) {
+        const here = new Set(seenNow.map(p => p.id));
         for (const id of clocks.keys()) if (!here.has(id)) clocks.delete(id);
       }
       // And this player's own, once they are on the ground: the only rifle in
@@ -3565,8 +3316,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         device.queue.writeBuffer(poseBuf, 0, skinner.matrices, 0, figureCount * figure.joints * 16);
       }
       if (heldCount) device.queue.writeBuffer(heldBuf, 0, skinner.held, 0, heldCount * 16);
-      drawTags(seen, stateF32());
-      drawRoster(everyone(net));
+
+      // What the wire left for the page's ears: a shot fired (the figure's
+      // flinch clock), and this player being hit (the sound).
+      const pev = wirePev();
+      const pn = wireF32()[18];
+      for (let i = 0; i < pn; i++) {
+        const kind = pev[i * 4];
+        if (kind === 1) {
+          const c = clocks.get(pev[i * 4 + 1]);
+          if (c) c.firedAt = performance.now();
+        } else if (kind === 2 && audio && hurtBuf) {
+          playAt(hurtBuf, Math.floor(Math.random() * 4), 0.95,
+                 0.55 + 0.45 * Math.min(1, pev[i * 4 + 1] * 2), 0, 0.94 + Math.random() * 0.12);
+        }
+      }
+      if (pn) wireF32()[18] = 0;
     }
 
     // The socket went. Said in the middle and in the largest letters on the
@@ -3712,7 +3477,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // this is right in the air as well as on the ground.
         if (!net || zwho === net.id) { tx = sf[16]; ty = sf[22] + 0.12; tz = sf[18]; }
         else {
-          const q = net.last && net.last.players.find(p => p.id === zwho && p.seen);
+          const q = seenNow.find(p => p.id === zwho);
           if (!q) continue;
           tx = q.x; ty = q.y + 0.12; tz = q.z;
         }
@@ -3827,7 +3592,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[120] = torchOn ? 1 : 0;
     uf.fill(0, 124, 124 + LAMP_CAP * 8);
     if (net) {
-      const lit = others(net, performance.now()).filter(p => p.torch && p.health > 0.001);
+      const lit = seenNow.filter(p => p.torch && p.health > 0.001);
       if (lit.length > LAMP_CAP) {
         const ex = st[16], ey = st[17], ez = st[18];
         lit.sort((a, b) => ((a.x - ex) ** 2 + (a.y - ey) ** 2 + (a.z - ez) ** 2)
@@ -3905,17 +3670,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // `step_visuals` now, so it counts down smoothly between snapshots rather
     // than stepping twenty times a second. A snapshot only corrects it, and
     // only when a new one has actually arrived.
-    const snap = net && net.last;
-    if (snap && snap.left != null && snap.at !== syncedAt) {
-      syncedAt = snap.at;
-      // `phase` is an `Int` on the other side, which is an i64 here: a plain
-      // number will not cross.
-      E.set_match(world, BigInt(snap.phase | 0), snap.left);
-    }
-    if (world) {
-      drawRound(Number(E.match_phase(world)), E.match_left(world),
-                snap ? everyone(net) : soloBoard(), net && net.id);
-    }
+    if (world) drawRound(Number(E.match_phase(world)));
     // The rifle and the tube, each its own row. Whole numbers that change on
     // the frame the trigger goes down, so they are compared rather than
     // eased: nothing here moves unless a round left or a magazine arrived.
@@ -4250,7 +4005,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // values gold, the rest quiet.
       const wt = weights();
       const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
-      const here = net && net.last ? net.last.players.length : null;
+      const here = net ? Number(E.wire_here(net.wire)) || null : null;
       const ping = net ? net.ping : null;
       const sv = net ? net.serverVersion : null;
       const D = HC.dim, G = HC.gold;
