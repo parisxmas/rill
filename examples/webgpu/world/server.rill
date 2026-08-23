@@ -1440,16 +1440,35 @@ fn keep_writing(conn, out, line) =
 # arrive in two — so the leftovers are carried rather than thrown away, which
 # is what keeps the rest of a connection from turning into noise the first time
 # a message is split.
+# The message and the leftovers travel through this loop as the tuple
+# `ws_take` handed back, not as two arguments — and that is load-bearing, not
+# style. Seven parameters is one more than x86-64 has integer argument
+# registers, and a Rill function whose arguments would touch the stack is
+# quietly given the C calling convention, under which a call in tail position
+# is a hint rather than the promise. LLVM kept the hint for shapes it could
+# turn into loops and dropped it here, where a channel send sits in the body:
+# every message left two frames on the strand's stack, and after forty-odd
+# thousand messages — half an hour of one person playing — the stack walked
+# down into the heap and the next `malloc` anywhere killed the server. The
+# core read `reader → gate_on → reader`, 87,385 frames deep.
+#
+# One tuple is one pointer, so at six parameters the whole chain is `tailcc`
+# and every one of these calls is the jump it reads as. The tuple is the very
+# one `ws_take` allocated — nothing extra is built per message.
 fn reader(conn, inbox, id, budget, until, acc) =
-  (msg, rest) = ws_take(conn, acc)
-  if str_len(msg) == 0 then 0 else gate(conn, inbox, id, budget, until, msg, rest)
+  gate(conn, inbox, id, budget, until, ws_take(conn, acc))
 
-fn gate(conn, inbox, id, budget, until, msg, rest) =
+fn gate(conn, inbox, id, budget, until, pair) =
+  (msg, _) = pair
+  if str_len(msg) == 0 then 0 else on_clock(conn, inbox, id, budget, until, pair)
+
+fn on_clock(conn, inbox, id, budget, until, pair) =
   now = now_nanos()
-  if now > until then gate_on(conn, inbox, id, heard_per_second(), now + 1000000000, msg, rest) else gate_on(conn, inbox, id, budget, until, msg, rest)
+  if now > until then gate_on(conn, inbox, id, heard_per_second(), now + 1000000000, pair) else gate_on(conn, inbox, id, budget, until, pair)
 
-fn gate_on(conn, inbox, id, budget, until, msg, rest) =
-  if budget <= 0 then hush(conn, inbox, id, until, rest) else handle_line(conn, inbox, id, budget, until, msg, rest)
+fn gate_on(conn, inbox, id, budget, until, pair) =
+  (_, rest) = pair
+  if budget <= 0 then hush(conn, inbox, id, until, rest) else handle_line(conn, inbox, id, budget, until, pair)
 
 # Over the allowance, stop listening rather than listen and throw away.
 #
@@ -1469,7 +1488,8 @@ fn hush(conn, inbox, id, until, rest) =
   sleep_ms(if left < 1 then 1 else left)
   reader(conn, inbox, id, heard_per_second(), now_nanos() + 1000000000, rest)
 
-fn handle_line(conn, inbox, id, budget, until, msg, rest) =
+fn handle_line(conn, inbox, id, budget, until, pair) =
+  (msg, rest) = pair
   route(inbox, id, msg)
   reader(conn, inbox, id, budget - 1, until, rest)
 
