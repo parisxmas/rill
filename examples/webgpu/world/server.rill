@@ -240,6 +240,7 @@ fn welcome(w, conns, s, out, token) =
   mine = name_of(read_file_raw(who_file()), token)
   name = if str_len(mine) > 0 && !taken(conns, id, mine) then mine else called(id)
   send(out, hello_msg(w, id, token))
+  send(out, ver_msg())
   send(out, gone_list(w))
   send(out, stones_list(w))
   send(out, fells_list(w))
@@ -274,6 +275,12 @@ fn hello_msg(w, id, token) =
   put_f32(b, sc, v.world_time(w))
   strbuf_add(b, token)
   free_ptr(sc)
+  strbuf_str(b)
+
+fn ver_msg() =
+  b = strbuf()
+  put_u8(b, op_ver())
+  put_u16(b, version())
   strbuf_str(b)
 
 fn who_msg(id, name) =
@@ -419,6 +426,19 @@ fn op_reload() = 82
 # to nobody.
 fn op_say() = 99
 fn op_said() = 67
+
+# `v`, once, at the door: which build this server is. Its own message rather
+# than a field grown onto `hello`, because the token rides at hello's tail and
+# anything inserted before it would shift what an old page reads as its
+# identity — a new message an old client quietly drops costs nobody anything.
+#
+# The number is the same one `V` is in host.js, bumped in the same breath at
+# every deploy. That is the point of showing both ends: a page left open
+# across a deploy reads `valley 388 · server 389` and knows the fix it is
+# missing is one reload away.
+fn op_ver() = 118
+
+fn version() = 389
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115

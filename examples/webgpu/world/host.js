@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=388";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=388";
+import { load } from "./world.js?v=389";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=389";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=388";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "388";
+const V = "389";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -4307,6 +4307,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
             // How far away the server is, in milliseconds, or null when there
             // is not one or the first reply has not come back yet.
             ping: net ? net.ping : null,
+            // Which build each end is. The client's is `V`; the server says
+            // its own at the door, and the page shows both so a tab left open
+            // across a deploy can see that its fix is one reload away.
+            ver: Number(V),
+            serverVer: net ? net.serverVersion : null,
             wasmBytes: wasmSize(), ...weights() });
     }
     requestAnimationFrame(tick);

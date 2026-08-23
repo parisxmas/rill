@@ -50,6 +50,9 @@ const OP = {
   // The one pair: `c` goes up, `C` comes back down with an id on it. See
   // `op_say` in server.rill for why chat is the message that needs both.
   say: 99, said: 67,
+  // `v`, once at the door: which build the server is. See `op_ver` in
+  // server.rill for why it is not a field on `hello`.
+  ver: 118,
 };
 
 const utf8 = { enc: new TextEncoder(), dec: new TextDecoder() };
@@ -85,6 +88,9 @@ export function join(url, name) {
     // Round trip to the hub and back, in milliseconds, smoothed. Null until
     // the first one comes home. See the ping below for what it is measuring.
     ping: null,
+    // Which build the server said it is, at the door. Null against a server
+    // old enough not to say — which is itself worth showing.
+    serverVersion: null,
     send(buf) { if (sock.readyState === 1) sock.send(buf); },
     input(keys, yaw, pitch) {
       look = [yaw, pitch];
@@ -137,6 +143,7 @@ export function join(url, name) {
     // on the screen as text — never as markup. A name is alphanumeric because
     // the server makes it so; a line of chat is whatever somebody typed, and
     // the page is where that stops being dangerous.
+    if (op === OP.ver) { net.serverVersion = dv.getUint16(1, true); return; }
     if (op === OP.said) {
       net.events.push({ kind: "say", who: dv.getUint16(1, true), text: text(dv, 3) });
       return;

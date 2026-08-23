@@ -604,7 +604,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=388";
+    import { run } from "./host.js?v=389";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -683,7 +683,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=388", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=389", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""
@@ -705,7 +705,16 @@
         // nothing is compressed and `transferSize` counts response headers, so
         // the wire figure comes out *larger* than the payload — true, and a lie
         // if it is labelled as compression.
-        `<b>${kb(h.wire)}</b> ${h.wire < h.raw ? "deflated" : "over the wire"}`;
+        `<b>${kb(h.wire)}</b> ${h.wire < h.raw ? "deflated" : "over the wire"}` +
+        // Which build each end is. Green when they agree; the mismatch — a
+        // page left open across a deploy — is in the colour everything urgent
+        // on this page is, because the fix is one reload away and nothing on
+        // the page will say so otherwise. A server too old to say gets a
+        // question mark rather than a guess.
+        (h.serverVer === null && h.ping === null
+          ? `<br>build <b>${h.ver}</b>`
+          : `<br>build <b style="color:${h.serverVer === h.ver ? "#57c26a" : "#e0503a"}">${h.ver}</b>` +
+            ` · server <b style="color:${h.serverVer === h.ver ? "#57c26a" : "#e0503a"}">${h.serverVer ?? "?"}</b>`);
     }, (done, total, label) => {
       bar.style.width = `${(done / total * 100).toFixed(0)}%`;
       pct.textContent = `${Math.round(done / total * 100)}%`;
