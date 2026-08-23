@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>Rill · Valley</title>
-  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=395">
+  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=396">
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #05060c; }
     canvas { width: 100vw; height: 100vh; display: block; cursor: crosshair; }
@@ -121,14 +121,87 @@
     </div>
   </div>
   <script type="module">
-    // Versioned because the CDN in front of this holds .js for a week; bump it
-    // when host.js changes. index.html itself is never cached.
+    // Versioned because the CDN in front of this holds files for a week; bump
+    // it when anything changes. index.html itself is never cached.
     //
     // The wasm carries the same number, and that is not decoration: a rebuilt
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=395";
+    const AV = "396";
+
+    // The page's own modules — host.js, net.js, world.js — ride inside
+    // valley.rpak with everything else, so the first and only asset request
+    // this boot makes is the bundle. The three are *stored*, never
+    // compressed: the LZ half of the format belongs to the engine, and the
+    // engine is inside world.wasm, which world.js has to load first. The
+    // boot only reads the directory — name, method, offset — and slices.
+    const bar0 = document.getElementById("bar");
+    const what0 = document.getElementById("what");
+    const pct0 = document.getElementById("pct");
+    const pakBytes = await (async () => {
+      const r = await fetch(`./valley.rpak?v=${AV}`);
+      if (!r.ok) throw new Error(`valley.rpak: ${r.status}`);
+      const size = +(r.headers.get("Content-Length") || 0);
+      const reader = r.body.getReader();
+      const parts = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        got += value.length;
+        if (size) {
+          const f = Math.min(1, got / size);
+          // A sliver of the bar: the loader proper restarts the count when
+          // it takes over, and a bar that ran to 100 and snapped back reads
+          // as a crash. The percent in the corner tells the real story.
+          bar0.style.width = `${(f * 4).toFixed(1)}%`;
+          what0.textContent = "valley.rpak";
+          pct0.textContent = `${Math.round(f * 100)}%`;
+        }
+      }
+      const all = new Uint8Array(got);
+      let o = 0;
+      for (const c of parts) { all.set(c, o); o += c.length; }
+      return all;
+    })();
+
+    // The directory, by hand: u8 name length, the name, u8 method, then
+    // raw/packed/offset as little-endian u32s. Enough to find a stored file;
+    // anything packed is the engine's business later.
+    const takeStored = (want) => {
+      const dv = new DataView(pakBytes.buffer, pakBytes.byteOffset, pakBytes.byteLength);
+      if (dv.getUint32(0, false) !== 0x5250414b) throw new Error("valley.rpak is not an RPAK file");
+      const count = dv.getUint32(8, true);
+      const dataAt = 16 + dv.getUint32(12, true);
+      const dec = new TextDecoder();
+      let o = 16;
+      for (let i = 0; i < count; i++) {
+        const nl = dv.getUint8(o);
+        const name = dec.decode(pakBytes.subarray(o + 1, o + 1 + nl));
+        const method = dv.getUint8(o + 1 + nl);
+        const packed = dv.getUint32(o + 6 + nl, true);
+        const off = dv.getUint32(o + 10 + nl, true);
+        if (name === want) {
+          if (method !== 0) throw new Error(`${want} is compressed — the boot cannot read it`);
+          return pakBytes.subarray(dataAt + off, dataAt + off + packed);
+        }
+        o += 14 + nl;
+      }
+      throw new Error(`${want} is not in valley.rpak`);
+    };
+
+    // Modules out of bytes: blob URLs, with host.js's own import lines
+    // rewritten to point at them — a blob module cannot resolve "./net.js".
+    const asModule = (bytes) =>
+      URL.createObjectURL(new Blob([bytes], { type: "text/javascript" }));
+    const netURL = asModule(takeStored("net.js"));
+    const worldURL = asModule(takeStored("world.js"));
+    const hostSrc = new TextDecoder().decode(takeStored("host.js"))
+      .replace(/["']\.\/world\.js[^"']*["']/, JSON.stringify(worldURL))
+      .replace(/["']\.\/net\.js[^"']*["']/, JSON.stringify(netURL));
+    const { run } = await import(asModule(hostSrc));
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -208,11 +281,11 @@
     // The HUD — the stat corner included — is the engine's now: host.js
     // pushes the lines straight into the wasm display list, so there is no
     // element here to fill and nothing to do twice a second.
-    run(document.getElementById("c"), "./world.wasm?v=395", () => {}, (done, total, label) => {
+    run(document.getElementById("c"), `./world.wasm?v=${AV}`, () => {}, (done, total, label) => {
       bar.style.width = `${(done / total * 100).toFixed(0)}%`;
       pct.textContent = `${Math.round(done / total * 100)}%`;
       what.textContent = label;
-    }, door, name).then(() => {
+    }, door, name, pakBytes).then(() => {
       // `run` resolves on the first submitted frame, so the fade is over
       // something rather than over nothing.
       boot.classList.add("gone");

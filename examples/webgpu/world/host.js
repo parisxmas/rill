@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=393";   // keep in step with V below
-import { join, WH } from "./net.js?v=395";
+import { load } from "./world.js?v=396";   // keep in step with V below
+import { join, WH } from "./net.js?v=396";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=395";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "395";
+const V = "396";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -443,7 +443,7 @@ function grassMesh() {
 // changes — which is the version that goes on a static page, where there is
 // no server to talk to. `name` is what the others will see over this player's
 // head.
-export async function run(canvas, wasmURL, hud, progress = () => {}, server = null, name = "") {
+export async function run(canvas, wasmURL, hud, progress = () => {}, server = null, name = "", pakBytes = null) {
   // Everything the first frame needs, counted up front so the loader can say
   // how far along it is: the adapter, the module, one step per shader, one per
   // texture, and the valley itself. `run` does not resolve until a frame has
@@ -689,32 +689,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   window.rill = { E, get state() { return state; }, get world() { return world; }, get net() { return net; } };
   step("world.wasm");
 
-  // Every texture, mesh, sound and shader in one request: valley.rpak, the
-  // format pack.rill writes. The fetch is streamed so the bar moves through
-  // the one big file the way it used to move through sixty small ones; the
-  // unpacking itself — the LZ — is the engine's (pak.rill), not the page's.
-  const pakBytes = await (async () => {
-    const r = await fetch(`./valley.rpak?v=${V}`);
-    if (!r.ok) throw new Error(`valley.rpak: ${r.status}`);
-    const size = +(r.headers.get("Content-Length") || 0);
-    const reader = r.body.getReader();
-    const parts = [];
-    let got = 0;
-    for (;;) {
-      const { done: over, value } = await reader.read();
-      if (over) break;
-      parts.push(value);
-      got += value.length;
-      // A proxy may be re-compressing the stream, in which case the count on
-      // the wire is not the count in hand — clamp rather than overrun the bar.
-      if (size) progress(Math.min(done + got / size, done + 1), TOTAL,
-                         `valley.rpak ${Math.min(100, Math.round(got / size * 100))}%`);
-    }
-    const all = new Uint8Array(got);
-    let o = 0;
-    for (const c of parts) { all.set(c, o); o += c.length; }
-    return all;
-  })();
+  // Every texture, mesh, sound, shader — and this very file — in one
+  // request: valley.rpak, the format pack.rill writes. The boot in
+  // index.html fetched it before this module existed (it was sliced out of
+  // the same bytes) and hands it in; the unpacking — the LZ — is the
+  // engine's (pak.rill), never the page's.
+  if (!pakBytes) throw new Error("run() needs the valley.rpak bytes the boot fetched");
   // Into the engine's memory, once; the directory is read back out of it by
   // name, and each asset is pulled as fresh bytes and copied out at once, so
   // the wasm heap holds one decompressed asset at a time and not the pile.

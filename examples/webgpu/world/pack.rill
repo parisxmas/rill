@@ -169,8 +169,15 @@ fn load_one(name) = match read_file(name)
     Packed(name, "", 0, "")
   Ok(raw) -> pick(name, raw, crush(raw))
 
+# The page's own modules ride in the bundle too, and they are the bootstrap:
+# index.html slices them out of the directory before world.wasm exists, so
+# they must be readable without the unpacker — stored, never crushed. The
+# LZ stays something only the engine ever runs.
+fn boot_file(name) = str_len(name) > 3 && str_sub(name, str_len(name) - 3, 3) == ".js"
+
 fn pick(name, raw, packed) =
-  if str_len(packed) * 100 < str_len(raw) * 98 then Packed(name, raw, 1, packed)
+  if boot_file(name) then Packed(name, raw, 0, raw)
+  else if str_len(packed) * 100 < str_len(raw) * 98 then Packed(name, raw, 1, packed)
   else Packed(name, raw, 0, raw)
 
 type Entry
