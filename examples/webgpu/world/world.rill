@@ -17,6 +17,7 @@ import "hud" as hud
 import "wire" as wire
 import "hand" as hand
 import "skin" as skin
+import "ears" as ears
 
 # ---- the valley, and who is in it ------------------------------------------
 
@@ -524,6 +525,23 @@ export fn skin_upper_at() -> Int = skin.t_upper()
 export fn skin_bindt_at() -> Int = skin.t_bindt()
 
 export fn skin_inv_at() -> Int = skin.t_inv()
+
+# ---- the ears ---------------------------------------------------------------
+#
+# The audio decisions — ears.rill. Each frame the engine watches the world's
+# counters, places every event against the listener, and leaves a ring of
+# fully decided cues plus three roar-voice targets; the page's whole part is
+# a buffer per kind and a play call per cue.
+
+export fn ears_init(s: Ptr) -> Ptr = ears.make(s)
+
+export fn ears_frame(s: Ptr, wb: Ptr, now: Float) -> Int = ears.frame(s, wb, now)
+
+export fn ears_hush(s: Ptr) = ears.hush(s)
+
+export fn ears_cues_at() -> Int = ears.t_cues()
+
+export fn ears_roar_at() -> Int = ears.t_roar()
 
 # Called once when the module is instantiated, and there is nothing to set up:
 # the valley is built when the host has measured the machine and knows how much

@@ -16,7 +16,7 @@
 // `rill build` generates beside the module.
 
 import { load } from "./world.js?v=393";   // keep in step with V below
-import { join, WH } from "./net.js?v=393";
+import { join, WH } from "./net.js?v=394";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=393";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "393";
+const V = "394";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1503,7 +1503,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // half-second impact carries across a valley and should, so `boom` rolls off
   // over a hundred and ten metres. Continuous and distant is noise; loud and
   // brief and distant is an event.
-  const REACH = 28.0;
+  // The twenty-eight-metre edge itself now lives with the rest of the
+  // arithmetic in ears.rill (`roar_reach`); the voices are all that is here.
   function startRoars() {
     roars = [0, 1, 2].map(() => {
       const src = audio.createBufferSource();
@@ -1607,91 +1608,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       src.start();
     });
   }
-  // Where a sound is, from the ear's point of view: how loud, and how far round
-  // to the side. `near` is the distance at which it is half as loud, which is
-  // the only number that distinguishes a crystal breaking at your feet from a
-  // meteor coming down across the valley.
-  function place(x, y, z, near) {
-    const st = stateF32();
-    const dx = x - st[16], dy = y - st[17], dz = z - st[18];
-    const d = Math.hypot(dx, dy, dz);
-    const yaw = st[19];
-    const pan = Math.max(-1, Math.min(1,
-      (Math.cos(yaw) * dx + Math.sin(yaw) * dz) / Math.max(d, 0.001)));
-    return { d, gain: near / (near + d), pan: pan * 0.8 };
-  }
-  // A crystal going. Quieter with distance and set where it happened: which
-  // one broke is worth hearing when there are three of them in front of you.
-  function shatter(x, y, z) {
-    ensureAudio(() => {
-      const p = place(x, y, z, 12);
-      playAt(breakBuf, Math.floor(Math.random() * 3), 0.95, 0.75 * p.gain, p.pan,
-             0.94 + Math.random() * 0.14);
-    });
-  }
-  // Picking one up. This is called from the health going up, which is a test
-  // made every frame, so walking over a fresh break — where the chips come in
-  // one after another for as long as it takes to cross them — used to play a
-  // note *per frame*. Sixty a second is not a run, it is a buzz, and it was
-  // worst exactly where there was most to pick up.
-  //
-  // The answer is a count and not a rate. Two chips are two notes, a semitone
-  // apart, which is the little rising figure a pickup should be; past two the
-  // chips still count, they simply stop speaking. Slowing the notes down was
-  // tried first and it is the wrong lever — a heap spread thinner is still a
-  // heap of notes, and what there is too much of is the number of them.
-  //
-  // A run ends after three quarters of a second with nothing picked up, and
-  // not before: `chimeAt` is pushed forward on every chip whether it is
-  // sounded or not, so crossing a long trail is one run of two notes rather
-  // than two notes every time the trail thins for a frame.
-  const CHIME_MOST = 2;
-  let chimeStep = 0, chimeAt = -9, chimeSaid = 0;
-  function chime(now) {
-    ensureAudio(() => {
-      const fresh = now - chimeAt >= 0.75;
-      chimeAt = now;
-      if (fresh) { chimeStep = 0; chimeSaid = 0; }
-      else if (chimeSaid >= CHIME_MOST) return;
-      else chimeStep = Math.min(chimeStep + 1, 7);
-      chimeSaid++;
-      // Half the amplitude it had, which is six decibels down. It was sitting
-      // at 0.46, level with the AK's own report — a great deal of sound for a
-      // chip of crystal going in, and the one sound in the valley that fires
-      // while you are doing something else. It is a note under the walking
-      // now rather than an announcement over it.
-      playAt(pickBuf, 0, 0, 0.23, 0, Math.pow(2, chimeStep / 12));
-    });
-  }
-
-  // How far an impact carries, and nothing past it.
-  //
-  // Thirty-two metres, which is close. Measured over half a minute of play the
-  // impacts land between one and forty-four metres out — they are aimed at you,
-  // so they all land somewhere near — and at fifty-eight every single one was
-  // audible. That is a continuous distant bombardment with nothing to look at,
-  // and it flattens the ones that matter. Cut to thirty-two, about half of them
-  // go quiet and the near ones land.
-  //
-  // Still wider than the roar's, because a bang does travel further than a
-  // rush of air.
-  const BOOM_REACH = 32.0;
-  // A fireball landing. Squared falloff inside the cutoff, so nearly all of the
-  // loudness is in the last twenty metres — and slower and deeper the further
-  // off it is, which is most of what makes a big noise sound far away.
-  function boom(x, y, z) {
-    ensureAudio(() => {
-      const p = place(x, y, z, 40);
-      const k = Math.max(0, 1 - p.d / BOOM_REACH);
-      // Not worth a node: past the cutoff there is nothing to hear, and an
-      // explosion a hundred metres off would otherwise still allocate a source,
-      // a panner and a gain to play silence for two seconds.
-      if (k <= 0.02) return;
-      const far = Math.min(p.d / BOOM_REACH, 1);
-      playAt(blastSnd, Math.floor(Math.random() * 2) * 1.9, 1.85,
-             0.95 * k * k, p.pan, 1.06 - 0.22 * far);
-    });
-  }
+  // Where a sound is — how loud, how far round to the side, which variant and
+  // at what pitch — is the engine's now (ears.rill). What used to be decided
+  // here arrives each frame as a ring of finished cues, kind mapped to buffer:
+  //   1 a crystal breaking   2 a fireball landing   3 a crystal's bite
+  //   4 a chip picked up     5 this player hurt over the wire
 
   const bulletCap = Number(E.bullets_cap(0));
   const bulletBuf = device.createBuffer({
@@ -1971,6 +1892,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     return out;
   };
   const wireF32 = () => new Float32Array(E.memory.buffer, Number(net.wire), 64);
+  const earsF32 = () => new Float32Array(E.memory.buffer, Number(earsPtr), 256);
+  const EARS = { n: 0, roar: Number(E.ears_roar_at()), cues: Number(E.ears_cues_at()) };
   const wireInterp = () => new Float32Array(E.memory.buffer, Number(net.wire) + Number(E.wire_interp_at()) * 4, 32 * 12);
   const wirePev = () => new Float32Array(E.memory.buffer, Number(net.wire) + Number(E.wire_pev_at()) * 4, 16 * 4);
   let W = null;       // tier-dependent GPU resources
@@ -2023,6 +1946,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // still starting up — a `let` further down is in its dead zone at that
   // point and the first frame throws.
   let held = 2, wantHeld = 2, swap = 0, loadedTube = false;
+  // The ears block, remade with each player block it hangs off.
+  let earsPtr = 0n;
 
   function buildWorld(idx) {
     T = TIERS[idx];
@@ -2051,6 +1976,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // because `set_weapon` ran just above and `make` reads it back.
     E.hand_init(state);
     skinWire(state);
+    earsPtr = E.ears_init(state);
     // A re-tier is a new valley and a new player block in it, and `join` hands
     // out a player carrying the rifle. What is in the hands is the page's
     // business and did not change because the terrain got coarser — without
@@ -2499,7 +2425,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // whole of the propellant leaves the front of it and there is a tube to
   // reload. Two and a half seconds is what stops a rocket being a rifle.
   const RPG_CYCLE = 2.5;
-  let wantShot = false, wantReload = false, fireHeld = false, wasReady = true, breaks = 0, blastsHeard = 0, zapSeen = 0;
+  let wantShot = false, wantReload = false, fireHeld = false, wasReady = true, zapSeen = 0;
   // The hand block's fixed indices, hand.rill's own — mirrored once.
   const HAND = { held: 0, swap: 2, bolt: 4, aim: 5, recoil: 6, flash: 7,
                  hold: 14, zoom: 16, mdx: 17, mdy: 18, evN: 19, ev0: 20,
@@ -2710,8 +2636,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       E.restart(state);
       ended = false;
       lastHp = -1; lastStanding = -1;
-      breaks = Number(E.breaks(state));
-      blastsHeard = Number(E.blasts_fired(state));
+      E.ears_hush(state);
       zapSeen = Number(E.zaps(state));
       hudHead(HH.over, 0);
     }
@@ -2798,20 +2723,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         device.queue.writeBuffer(heldBuf, 0,
           new Float32Array(E.memory.buffer, sb + Number(E.skin_held_at()) * 4, heldCount * 16));
       }
-
-      // What the wire left for the page's ears — and for the skinner's
-      // flinch clock, which lives in the engine too now.
-      const pev = wirePev();
-      const pn = wireF32()[18];
-      for (let i = 0; i < pn; i++) {
-        const kind = pev[i * 4];
-        if (kind === 1) E.skin_fired(state, BigInt(pev[i * 4 + 1]), now / 1000);
-        else if (kind === 2 && audio && hurtBuf) {
-          playAt(hurtBuf, Math.floor(Math.random() * 4), 0.95,
-                 0.55 + 0.45 * Math.min(1, pev[i * 4 + 1] * 2), 0, 0.94 + Math.random() * 0.12);
-        }
-      }
-      if (pn) wireF32()[18] = 0;
     }
 
     // The socket went. Said in the middle and in the largest letters on the
@@ -2850,64 +2761,47 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     wasDown = downNow;
 
-    // Anything break in there? Rill counts them; the host only has to notice.
-    // Not `>`: a tier change rebuilds the world and puts the tally back to
-    // zero, and a mirror that only ever climbs would go deaf until it caught
-    // up again.
-    // The roar of whatever is in the air. Air swallows the top of a sound
-    // before it swallows the bottom, so the filter opens as a round gets
-    // closer: near ones hiss, far ones are only a rumble. That is most of what
-    // makes distance audible, more than loudness is.
-    if (roars) {
-      const fb = new Float32Array(E.memory.buffer, Number(E.fireballs(state)), fireCap * 9);
-      const flying = [];
-      for (let i = 0; i < fireCap; i++) {
-        if (fb[i * 9 + 7] > 0) flying.push(place(fb[i * 9], fb[i * 9 + 1], fb[i * 9 + 2], 34));
+    // The ears. Everything the page used to work out before playing a sound —
+    // watching the world's counters, measuring each event against the
+    // listener, choosing gain, pan, pitch and variant, tracking the three
+    // nearest rounds in the air — is the engine's (ears.rill). One call, then
+    // two reads: a ring of finished cues to play verbatim, and per-voice
+    // targets for the roars to ease toward.
+    E.ears_frame(state, net ? net.wire : 0, t);
+    const ears = earsF32();
+    const cueN = ears[EARS.n];
+    if (cueN) ensureAudio(() => {
+      const bufs = [null, breakBuf, blastSnd, zapSndBuf, pickBuf, hurtBuf];
+      for (let i = 0; i < cueN; i++) {
+        const a = EARS.cues + i * 8;
+        playAt(bufs[ears[a] | 0], ears[a + 1], ears[a + 2],
+               ears[a + 3], ears[a + 4], ears[a + 5]);
       }
-      flying.sort((a, b) => a.d - b.d);
-      const now = audio.currentTime;
+    });
+    if (roars) {
+      const rnow = audio.currentTime;
       for (let v = 0; v < roars.length; v++) {
-        const f = flying[v];
-        // Nothing at all at the far end, and climbing steeply as it closes.
-        //
-        // Not the inverse-distance curve the impacts and the crystals use. That
-        // one never reaches zero, so a round launched forty-five metres out is
-        // already faintly audible the instant it leaves, and three of them at
-        // that range are a constant hiss with nothing to attach it to. Silence
-        // is the whole point of a sound that arrives: you notice a meteor
-        // because you did not hear it a moment ago.
-        //
-        // Squared, so almost all of the loudness is spent in the last fifteen
-        // metres — which is also the physically honest shape, being what an
-        // inverse-square law looks like once you have said where it ends.
-        const k = f ? Math.max(0, 1 - f.d / REACH) : 0;
-        const near = k * k * k;
-        roars[v].gain.gain.setTargetAtTime(0.62 * near, now, 0.10);
-        if (f) {
-          roars[v].pan.pan.setTargetAtTime(f.pan, now, 0.10);
-          roars[v].filt.frequency.setTargetAtTime(500 + 5200 * near, now, 0.15);
+        const a = EARS.roar + v * 4;
+        roars[v].gain.gain.setTargetAtTime(ears[a], rnow, 0.10);
+        // A voice with nothing to follow keeps its last pan and filter while
+        // its gain falls, exactly as before: easing toward a default is
+        // audible, easing toward silence is not.
+        if (ears[a + 3] > 0) {
+          roars[v].pan.pan.setTargetAtTime(ears[a + 1], rnow, 0.10);
+          roars[v].filt.frequency.setTargetAtTime(ears[a + 2], rnow, 0.15);
         }
       }
     }
-
-    // Anything land? Same trick as the breaks: Rill counts, the host notices,
-    // and the newest entry in the ring says where.
-    const nbl = Number(E.blasts_fired(state));
-    if (nbl !== blastsHeard) {
-      const grew = nbl > blastsHeard;
-      blastsHeard = nbl;
-      if (grew) {
-        const b = new Float32Array(E.memory.buffer, Number(E.blasts(state)), blastCap * 8);
-        const at = ((nbl - 1 + blastCap) % blastCap) * 8;
-        boom(b[at], b[at + 1], b[at + 2]);
+    // What the wire left as page events: the ears have read theirs above (the
+    // hurt), the skinner's flinch clock takes its own here, and only then is
+    // the ring cleared.
+    if (net) {
+      const pev = wirePev();
+      const pn = wireF32()[18];
+      for (let i = 0; i < pn; i++) {
+        if (pev[i * 4] === 1) E.skin_fired(state, BigInt(pev[i * 4 + 1]), now / 1000);
       }
-    }
-
-    const nb = Number(E.breaks(state));
-    if (nb !== breaks) {
-      const broke = nb > breaks;
-      breaks = nb;
-      if (broke) shatter(E.break_x(state), E.break_y(state), E.break_z(state));
+      if (pn) wireF32()[18] = 0;
     }
 
     // The valley is on a planet and the planet turns. Around the world's own
@@ -2965,8 +2859,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
                         bx: tx, by: ty, bz: tz,
                         r: cryF[ca + 5], g: cryF[ca + 6], b: cryF[ca + 7], born: sky });
         if (zapsLive.length > ZAP_MAX) zapsLive.shift();
-        const pl = place(cryF[ca], cryF[ca + 1], cryF[ca + 2], 10);
-        ensureAudio(() => playAt(zapSndBuf, 0, 0, 0.15 + 0.8 * pl.gain, pl.pan, 0.96 + Math.random() * 0.1));
       }
       zapSeen = nz;
     }
@@ -3163,7 +3055,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     loadedTube = held === 1 && rkts > 0 && boltT >= RPG_CYCLE;
     const hp = E.health(state);
     if (Math.abs(hp - lastHp) > 0.002) {
-      if (hp > lastHp + 0.001 && lastHp >= 0) chime(t);
       lastHp = hp;
       // Alone, running out of health is the end of the thing and there is a
       // screen for it. In somebody else's valley it is five seconds on your
