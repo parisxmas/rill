@@ -1,0 +1,950 @@
+# The HUD, laid out by the engine.
+#
+# Every readout the page used to build out of DOM elements — the title, the
+# stat corner, the bars, the pips, the log, the board, the names over heads —
+# is emitted here as a display list: one 16-float instance per rectangle or
+# glyph, written into a block the renderer draws in a single instanced pass.
+# The browser's remaining share of the work is exactly two things: rasterizing
+# the page's own monospace font into an atlas once (the *same* CSS stack, so
+# nothing about the letterforms changed), and issuing the draw.
+#
+# Everything visual is parametric. The theme table below carries every colour
+# and every layout number the old CSS did, readable and writable through the
+# `hud_theme` exports in world.rill — change an entry and the whole HUD obeys
+# on the next frame, which is the point of moving it into the engine.
+#
+# This module knows nothing about the valley. `world.rill` is the glue: each
+# frame it copies the live numbers (health, breath, rounds, the match clock)
+# into this block's header and calls `build`. Text that only the page knows —
+# the GPU's name, the log, who is in the valley — arrives through string
+# slots the page fills when they change, as raw bytes it writes straight into
+# wasm memory.
+#
+# ---- the block --------------------------------------------------------------
+#
+# One allocation, laid out in fixed regions. All offsets are exported through
+# world.rill so the renderer computes nothing:
+#
+#   f32   0..255     header — see the H_* indices below
+#   f32 256..511     theme — 64 entries of four floats (colours are RGBA 0..1;
+#                    scalars ride in the first float of an entry)
+#   f32 512..6911    glyph metrics — 16 strips x 100 cells x (u, v, w, h),
+#                    written by the page after it bakes the atlas
+#   f32 6912..7679   string slot meta — 96 slots x 8 floats
+#   bytes 30720..46079   string slot bytes — 96 slots x 160
+#   f32 11520..77055     instances — 4096 x 16 floats
+#
+# An instance is: x, y, w, h (CSS pixels, top-left origin), u, v, uw, vh
+# (atlas), r, g, b, a (straight alpha; the shader premultiplies), kind, and
+# three params. Kinds: 0 solid, 1 glyph, 2 scope vignette, 3 ring, 4 gradient
+# rect (params are the second colour), 5 radial dim, 6 rocket pip.
+
+fn hud_bytes() = 46080 + 262144
+
+fn inst_cap() = 4096
+
+fn inst_at() = 11520
+
+fn strips() = 12
+
+fn met_at() = 512
+
+fn slot_cap() = 96
+
+fn slot_bytes() = 160
+
+fn meta_at() = 6912
+
+fn bytes_at() = 30720
+
+# ---- the header -------------------------------------------------------------
+#
+# Written by world.rill (the live numbers) and by the page (screen, clock,
+# and everything the wasm cannot know) just before `build` runs.
+
+fn h_count() = 0
+fn h_sw() = 1
+fn h_sh() = 2
+fn h_dpr() = 3
+fn h_now() = 4
+fn h_aim() = 5
+fn h_fps() = 6
+fn h_ping() = 7
+fn h_net() = 8
+fn h_warn_at() = 9
+fn h_took_at() = 10
+fn h_crier_at() = 11
+fn h_over() = 12
+fn h_chat() = 13
+fn h_took_mine() = 14
+fn h_crier_out() = 15
+fn h_cycling() = 16
+fn h_health() = 17
+fn h_breath() = 18
+fn h_spent() = 19
+fn h_weapon() = 20
+fn h_rounds() = 21
+fn h_mag_cap() = 22
+fn h_ak_mags() = 23
+fn h_rockets() = 24
+fn h_phase() = 25
+fn h_left() = 26
+fn h_down_for() = 27
+fn h_dead_secs() = 28
+fn h_tally_stand() = 29
+fn h_tally_broke() = 30
+fn h_tally_all() = 31
+fn h_roster_n() = 32
+fn h_board_n() = 33
+fn h_tag_n() = 34
+fn h_hurt_at() = 35
+fn h_cross() = 36
+fn h_board_left() = 37
+
+# ---- the theme --------------------------------------------------------------
+#
+# Entry k lives at f32 256 + k*4. Colours carry all four floats; scalars use
+# the first. The numbers are the CSS this replaced, to the pixel.
+
+fn t_at(k) = 256 + k * 4
+
+# Colours.
+fn c_text() = 0        # e8e4da — body text
+fn c_gold() = 1        # f6c02e — the valley's amber
+fn c_sub() = 2         # 9a94b8 — subtitles
+fn c_dim() = 3         # 6f6a8c — the quiet parts
+fn c_bright() = 4      # c9c3e4 — key names
+fn c_green() = 5       # 57c26a — what you did
+fn c_red() = 6         # e0503a — what was done to you
+fn c_orange() = 7      # f6832e — refusals
+fn c_white() = 8
+fn c_lav() = 9         # cfc9e8 — chat, clock
+fn c_bhead() = 10      # 6f6a92 — board headings
+fn c_barbg() = 11      # rgba(8,7,14,.72) — bar troughs
+fn c_brass() = 12      # f0b64a — rounds
+fn c_socket() = 13     # rgba(255,255,255,.10) — a round that left
+fn c_blue() = 14       # 4aa3d8 — breath
+fn c_blue2() = 15      # 7fd7f2
+fn c_spent() = 16      # 6b5f7a — winded
+fn c_spent2() = 17     # 9d8fb0
+fn c_dry() = 18        # rgba(226,74,60,.5) — an empty magazine
+fn c_you() = 19        # ffd08a — your row on the board
+fn c_btext() = 20      # efeaff — board numbers
+fn c_clock_low() = 21  # ffb96b — the last half minute
+fn c_whohead() = 22    # 565273 — the roster's heading
+fn c_barrow() = 23     # 1b1a2c — the roster's little bars
+fn c_vit2() = 24       # 8fd14f — the healthy end of the bar
+fn c_black() = 25
+fn c_boardbg() = 26    # rgba(11,10,20,.91)
+fn c_vit1() = 27       # f6c02e — the hurt end (same gold, its own knob)
+
+# Layout scalars.
+fn s_margin() = 40     # 20 — the HUD's left/right inset
+fn s_top() = 41        # 18 — and its top
+fn s_bar_h() = 42      # 14 — each bottom bar
+fn s_log_w() = 43      # 320
+fn s_log_b() = 44      # 74 — the log's bottom inset
+fn s_pip_gap() = 45    # 3
+fn s_roster_top() = 46 # 118
+fn s_tag_rise() = 47   # 2.05 — metres over a head
+
+# Type. One entry per strip: size in CSS px, weight, and the tracking each
+# role uses rides with the call, not the strip.
+fn s_strip0() = 48     # 48..59: [size, weight] x 12 strips
+
+fn strip_size(h, i) = peek_f32(h, t_at(s_strip0() + i))
+
+fn strip_weight(h, i) = peek_f32(h, t_at(s_strip0() + i) + 1)
+
+# The strips, by role. Sizes and weights out of the CSS.
+fn st_11() = 0         # 11/400 — over small, board th, roster heading
+fn st_12() = 1         # 12/400 — the workhorse: stat, log, keys, tally
+fn st_12b() = 2        # 12/600 — its bold
+fn st_13() = 3         # 13/400 — the subtitle
+fn st_13b() = 4        # 13/600 — key names
+fn st_15b() = 5        # 15/700 — the title
+fn st_20() = 6         # 20/500 — the round clock
+fn st_22() = 7         # 22/400 — board numbers
+fn st_44() = 8         # 44/400 — the board's countdown
+fn st_44b() = 9        # 44/600 — the crier
+fn st_30b() = 10       # 30/600 — the hit line
+fn st_96b() = 11       # 96/800 — the big overlays
+
+fn set_color(h, k, r, g, b, a) =
+  at = t_at(k)
+  poke_f32(h, at, r / 255.0)
+  poke_f32(h, at + 1, g / 255.0)
+  poke_f32(h, at + 2, b / 255.0)
+  poke_f32(h, at + 3, a)
+  1
+
+fn set_scalar(h, k, v) =
+  poke_f32(h, t_at(k), v)
+  1
+
+fn set_strip(h, i, size, weight) =
+  poke_f32(h, t_at(s_strip0() + i), size)
+  poke_f32(h, t_at(s_strip0() + i) + 1, weight)
+  1
+
+fn theme_defaults(h) =
+  set_color(h, c_text(), 232.0, 228.0, 218.0, 1.0)
+  set_color(h, c_gold(), 246.0, 192.0, 46.0, 1.0)
+  set_color(h, c_sub(), 154.0, 148.0, 184.0, 1.0)
+  set_color(h, c_dim(), 111.0, 106.0, 140.0, 1.0)
+  set_color(h, c_bright(), 201.0, 195.0, 228.0, 1.0)
+  set_color(h, c_green(), 87.0, 194.0, 106.0, 1.0)
+  set_color(h, c_red(), 224.0, 80.0, 58.0, 1.0)
+  set_color(h, c_orange(), 246.0, 131.0, 46.0, 1.0)
+  set_color(h, c_white(), 255.0, 255.0, 255.0, 1.0)
+  set_color(h, c_lav(), 207.0, 201.0, 232.0, 1.0)
+  set_color(h, c_bhead(), 111.0, 106.0, 146.0, 1.0)
+  set_color(h, c_barbg(), 8.0, 7.0, 14.0, 0.72)
+  set_color(h, c_brass(), 240.0, 182.0, 74.0, 1.0)
+  set_color(h, c_socket(), 255.0, 255.0, 255.0, 0.10)
+  set_color(h, c_blue(), 74.0, 163.0, 216.0, 1.0)
+  set_color(h, c_blue2(), 127.0, 215.0, 242.0, 1.0)
+  set_color(h, c_spent(), 107.0, 95.0, 122.0, 1.0)
+  set_color(h, c_spent2(), 157.0, 143.0, 176.0, 1.0)
+  set_color(h, c_dry(), 226.0, 74.0, 60.0, 0.5)
+  set_color(h, c_you(), 255.0, 208.0, 138.0, 1.0)
+  set_color(h, c_btext(), 239.0, 234.0, 255.0, 1.0)
+  set_color(h, c_clock_low(), 255.0, 185.0, 107.0, 1.0)
+  set_color(h, c_whohead(), 86.0, 82.0, 115.0, 1.0)
+  set_color(h, c_barrow(), 27.0, 26.0, 44.0, 1.0)
+  set_color(h, c_vit2(), 143.0, 209.0, 79.0, 1.0)
+  set_color(h, c_black(), 0.0, 0.0, 0.0, 1.0)
+  set_color(h, c_boardbg(), 11.0, 10.0, 20.0, 0.91)
+  set_color(h, c_vit1(), 246.0, 192.0, 46.0, 1.0)
+  set_scalar(h, s_margin(), 20.0)
+  set_scalar(h, s_top(), 18.0)
+  set_scalar(h, s_bar_h(), 14.0)
+  set_scalar(h, s_log_w(), 320.0)
+  set_scalar(h, s_log_b(), 74.0)
+  set_scalar(h, s_pip_gap(), 3.0)
+  set_scalar(h, s_roster_top(), 118.0)
+  set_scalar(h, s_tag_rise(), 2.05)
+  set_strip(h, st_11(), 11.0, 400.0)
+  set_strip(h, st_12(), 12.0, 400.0)
+  set_strip(h, st_12b(), 12.0, 600.0)
+  set_strip(h, st_13(), 13.0, 400.0)
+  set_strip(h, st_13b(), 13.0, 600.0)
+  set_strip(h, st_15b(), 15.0, 700.0)
+  set_strip(h, st_20(), 20.0, 500.0)
+  set_strip(h, st_22(), 22.0, 400.0)
+  set_strip(h, st_44(), 44.0, 400.0)
+  set_strip(h, st_44b(), 44.0, 600.0)
+  set_strip(h, st_30b(), 30.0, 600.0)
+  set_strip(h, st_96b(), 96.0, 800.0)
+
+fn make() =
+  h = alloc_bytes(hud_bytes())
+
+  for i in 0..hud_bytes() / 4
+    poke_f32(h, i, 0.0)
+
+  theme_defaults(h)
+  h
+
+# ---- emitting ---------------------------------------------------------------
+
+fn emit(h, x, y, w, ww, hh, u, v, uw, vh, cr, cg, cb, ca, kind, p0, p1, p2) =
+  # `w` is unused padding in the name only: the arguments are x, y, then the
+  # size. Kept flat because sixteen pokes a glyph is the whole cost model.
+  n = to_int(peek_f32(h, h_count()))
+  if n >= inst_cap() then 0
+  else
+    at = inst_at() + n * 16
+    poke_f32(h, at, x)
+    poke_f32(h, at + 1, y)
+    poke_f32(h, at + 2, ww)
+    poke_f32(h, at + 3, hh)
+    poke_f32(h, at + 4, u)
+    poke_f32(h, at + 5, v)
+    poke_f32(h, at + 6, uw)
+    poke_f32(h, at + 7, vh)
+    poke_f32(h, at + 8, cr)
+    poke_f32(h, at + 9, cg)
+    poke_f32(h, at + 10, cb)
+    poke_f32(h, at + 11, ca)
+    poke_f32(h, at + 12, kind)
+    poke_f32(h, at + 13, p0)
+    poke_f32(h, at + 14, p1)
+    poke_f32(h, at + 15, p2)
+    poke_f32(h, h_count(), to_float(n + 1))
+    1
+
+# A solid rectangle in theme colour k, at an alpha of its own times the
+# colour's.
+fn rect(h, x, y, w, hh, k, alpha) =
+  at = t_at(k)
+  emit(h, x, y, 0.0, w, hh, 0.0, 0.0, 0.0, 0.0, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), peek_f32(h, at + 3) * alpha, 0.0, 0.0, 0.0, 0.0)
+
+# A horizontal gradient from colour k1 to k2 — the health and breath bars.
+fn grad(h, x, y, w, hh, k1, k2, alpha) =
+  a1 = t_at(k1)
+  a2 = t_at(k2)
+  emit(h, x, y, 0.0, w, hh, 0.0, 0.0, 0.0, 0.0, peek_f32(h, a1), peek_f32(h, a1 + 1), peek_f32(h, a1 + 2), peek_f32(h, a1 + 3) * alpha, 4.0, peek_f32(h, a2), peek_f32(h, a2 + 1), peek_f32(h, a2 + 2))
+
+# ---- text -------------------------------------------------------------------
+#
+# Monospace makes layout a multiplication: every cell of a strip shares one
+# advance, kept in the metrics of cell zero's width... no — the advance is the
+# atlas cell's `w` in CSS pixels, uniform across the strip, so measuring a run
+# is chars x (advance + tracking x size). Colour switches ride *in* the text:
+# a byte under 32 selects theme colour (byte - 1) for everything after it,
+# which is how one pushed line carries the gold name and the grey words the
+# way the old markup did.
+#
+# The atlas has 100 cells a strip: ASCII 32..126 in 0..94, then the four
+# non-ASCII guests the HUD actually uses — 95 '·', 96 '→', 97 '†', 98 '…'.
+
+# Cell 99 of each strip is not a glyph: it carries the strip's metadata —
+# the advance, the padding baked around every cell (room for the shadow), and
+# two spares. The advance is what layout steps by; the padding is what the
+# quad reaches beyond it.
+fn adv_of(h, strip) = peek_f32(h, met_at() + (strip * 100 + 99) * 4)
+
+fn pad_of(h, strip) = peek_f32(h, met_at() + (strip * 100 + 99) * 4 + 1)
+
+# The width one run of n visible cells takes.
+fn run_w(h, strip, track, n) = to_float(n) * (adv_of(h, strip) + track * strip_size(h, strip))
+
+# Visible cells in a slot's bytes: colour codes and UTF-8 lead bytes are free.
+fn vis_count(h, at, len, i, n) =
+  if i >= len then n
+  else
+    b = peek_u8(h, at + i)
+    if b < 32 then vis_count(h, at, len, i + 1, n)
+    else if b == 194 then vis_count(h, at, len, i + 1, n)
+    else if b == 226 then vis_count(h, at, len, i + 3, n + 1)
+    else if b >= 128 then vis_count(h, at, len, i + 1, n + 1)
+    else vis_count(h, at, len, i + 1, n + 1)
+
+# One glyph at x, from strip cell c, in the colour at theme entry k. The
+# metrics hold the cell's texel origin and its CSS-pixel size; the quad is
+# that size times the run's scale, and the uv span is the size times the
+# ratio the atlas was baked at, which is the device pixel ratio.
+fn glyph(h, x, y, strip, c, k, alpha, scale) =
+  m = met_at() + (strip * 100 + c) * 4
+  at = t_at(k)
+  dpr = peek_f32(h, h_dpr())
+  pad = pad_of(h, strip)
+  cw = peek_f32(h, m + 2)
+  ch = peek_f32(h, m + 3)
+  emit(h, x - pad * scale, y - pad * scale, 0.0, cw * scale, ch * scale, peek_f32(h, m), peek_f32(h, m + 1), cw * dpr, ch * dpr, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), peek_f32(h, at + 3) * alpha, 1.0, to_float(strip), 0.0, 0.0)
+
+# The three-byte guests: which cell, or -1.
+fn guest_cell(b2, b3) =
+  if b2 == 134 && b3 == 146 then 96 else if b2 == 128 && b3 == 160 then 97 else if b2 == 128 && b3 == 166 then 98 else 0 - 1
+
+# Emits the bytes at `at..at+len` starting at x, in strip, tracking `track`
+# (an em fraction, the CSS letter-spacing), starting colour k. Returns the x
+# it ended at. `scale` stretches the whole run — the big overlays use it.
+fn text_bytes(h, x, y, strip, track, k, at, len, alpha, scale) =
+  tb_go(h, x, y, strip, (adv_of(h, strip) + track * strip_size(h, strip)) * scale, k, at, len, 0, alpha, scale)
+
+fn tb_go(h, x, y, strip, step, k, at, len, i, alpha, scale) =
+  if i >= len then x
+  else
+    b = peek_u8(h, at + i)
+    if b < 32 then tb_go(h, x, y, strip, step, b - 1, at, len, i + 1, alpha, scale)
+    else if b == 194 then tb_dot(h, x, y, strip, step, k, at, len, i, alpha, scale)
+    else if b == 226 then tb_guest(h, x, y, strip, step, k, at, len, i, alpha, scale)
+    else if b > 126 then tb_go(h, x, y, strip, step, k, at, len, i + 1, alpha, scale)
+    else
+      glyph(h, x, y, strip, b - 32, k, alpha, scale)
+      tb_go(h, x + step, y, strip, step, k, at, len, i + 1, alpha, scale)
+
+fn tb_dot(h, x, y, strip, step, k, at, len, i, alpha, scale) =
+  b2 = if i + 1 < len then peek_u8(h, at + i + 1) else 0
+  if b2 == 183 then
+    glyph(h, x, y, strip, 95, k, alpha, scale)
+    tb_go(h, x + step, y, strip, step, k, at, len, i + 2, alpha, scale)
+  else tb_go(h, x, y, strip, step, k, at, len, i + 2, alpha, scale)
+
+fn tb_guest(h, x, y, strip, step, k, at, len, i, alpha, scale) =
+  c = if i + 2 < len then guest_cell(peek_u8(h, at + i + 1), peek_u8(h, at + i + 2)) else 0 - 1
+  if c >= 0 then
+    glyph(h, x, y, strip, c, k, alpha, scale)
+    tb_go(h, x + step, y, strip, step, k, at, len, i + 3, alpha, scale)
+  else tb_go(h, x, y, strip, step, k, at, len, i + 3, alpha, scale)
+
+# The same, from a Rill string — the fixed furniture.
+fn text(h, x, y, strip, track, k, s, alpha) =
+  t_go(h, x, y, strip, adv_of(h, strip) + track * strip_size(h, strip), k, s, 0, alpha)
+
+fn t_go(h, x, y, strip, step, k, s, i, alpha) =
+  if i >= str_len(s) then x
+  else
+    b = str_get(s, i)
+    if b < 32 then t_go(h, x, y, strip, step, b - 1, s, i + 1, alpha)
+    else if b == 194 then t_dot(h, x, y, strip, step, k, s, i, alpha)
+    else if b > 126 then t_go(h, x, y, strip, step, k, s, i + 1, alpha)
+    else
+      glyph(h, x, y, strip, b - 32, k, alpha, 1.0)
+      t_go(h, x + step, y, strip, step, k, s, i + 1, alpha)
+
+fn t_dot(h, x, y, strip, step, k, s, i, alpha) =
+  b2 = if i + 1 < str_len(s) then str_get(s, i + 1) else 0
+  if b2 == 183 then
+    glyph(h, x, y, strip, 95, k, alpha, 1.0)
+    t_go(h, x + step, y, strip, step, k, s, i + 2, alpha)
+  else t_go(h, x, y, strip, step, k, s, i + 2, alpha)
+
+fn str_w(h, strip, track, s) = run_w(h, strip, track, vis_str(s, 0, 0))
+
+fn vis_str(s, i, n) =
+  if i >= str_len(s) then n
+  else
+    b = str_get(s, i)
+    if b < 32 then vis_str(s, i + 1, n)
+    else if b == 194 then vis_str(s, i + 1, n)
+    else if b >= 128 && b < 194 then vis_str(s, i + 1, n + 1)
+    else if b > 194 then vis_str(s, i + 3, n + 1)
+    else vis_str(s, i + 1, n + 1)
+
+# ---- slots ------------------------------------------------------------------
+
+fn slot_at(i) = bytes_at() + i * slot_bytes()
+
+fn slot_meta(i) = meta_at() + i * 8
+
+fn slot_len(h, i) = to_int(peek_f32(h, slot_meta(i)))
+
+fn slot_f(h, i, k) = peek_f32(h, slot_meta(i) + k)
+
+# The slot map. The page writes bytes and meta; nothing here allocates.
+fn sl_stat0() = 0      # ..7   the stat corner, one line each, right-aligned
+fn sl_log0() = 8       # ..19  the log; meta: len, said?, born, wrap
+fn sl_roster0() = 20   # ..35  meta: len, r, g, b, health, hit, shot, out
+fn sl_board0() = 36    # ..51  meta: len, kills, deaths, you?
+fn sl_tag0() = 52      # ..67  meta: len, x, y, z, health
+fn sl_warn() = 68
+fn sl_took() = 69
+fn sl_crier() = 70
+fn sl_over1() = 71
+fn sl_over2() = 72
+fn sl_over3() = 73
+
+fn slot_text(h, i, x, y, strip, track, k, alpha) =
+  text_bytes(h, x, y, strip, track, k, slot_at(i), slot_len(h, i), alpha, 1.0)
+
+fn slot_text_s(h, i, x, y, strip, track, k, alpha, scale) =
+  text_bytes(h, x, y, strip, track, k, slot_at(i), slot_len(h, i), alpha, scale)
+
+fn slot_w(h, i, strip, track) = run_w(h, strip, track, vis_count(h, slot_at(i), slot_len(h, i), 0, 0))
+
+# ---- the sections -----------------------------------------------------------
+
+fn th(h, k) = peek_f32(h, t_at(k))
+
+fn build(h) =
+  poke_f32(h, h_count(), 0.0)
+  sw = peek_f32(h, h_sw())
+  sh = peek_f32(h, h_sh())
+  bars(h, sw, sh)
+  pips(h, sw, sh)
+  tally(h, sh)
+  title(h)
+  stat(h, sw)
+  clock(h, sw)
+  roster(h)
+  logs(h, sh)
+  warn(h, sw, sh)
+  took(h, sw, sh)
+  crier(h, sw, sh)
+  tags(h, sw, sh)
+  sights(h, sw, sh)
+  board(h, sw, sh)
+  overlays(h, sw, sh)
+  to_int(peek_f32(h, h_count()))
+
+# The health bar across the whole bottom, and the breath bar on top of it.
+# The gradients, the trough and the winded grey are the CSS's own.
+fn bars(h, sw, sh) =
+  bh = th(h, s_bar_h())
+  hp = peek_f32(h, h_health())
+  br = peek_f32(h, h_breath())
+  rect(h, 0.0, sh - bh, sw, bh, c_barbg(), 1.0)
+  grad(h, 0.0, sh - bh, sw * clampf(hp, 0.0, 1.0), bh, c_vit1(), c_vit2(), 1.0)
+  rect(h, 0.0, sh - bh * 2.0, sw, bh, c_barbg(), 1.0)
+  if peek_f32(h, h_spent()) > 0.5 then grad(h, 0.0, sh - bh * 2.0, sw * clampf(br, 0.0, 1.0), bh, c_spent(), c_spent2(), 1.0)
+  else grad(h, 0.0, sh - bh * 2.0, sw * clampf(br, 0.0, 1.0), bh, c_blue(), c_blue2(), 1.0)
+
+fn clampf(v, lo, hi) = if v < lo then lo else if v > hi then hi else v
+
+# The rounds bottom right — sockets always, brass over them — the AK's belt a
+# step apart, and the rockets on their own row above, exactly where the CSS
+# kept them. Dry rows pulse on the block's own clock.
+fn pips(h, sw, sh) =
+  m = th(h, s_margin())
+  gap = th(h, s_pip_gap())
+  held = to_int(peek_f32(h, h_weapon()))
+  rounds = to_int(peek_f32(h, h_rounds()))
+  cap = to_int(peek_f32(h, h_mag_cap()))
+  mags = to_int(peek_f32(h, h_ak_mags()))
+  rkts = to_int(peek_f32(h, h_rockets()))
+  dimmed = if held == 1 then 0.4 else 1.0
+  dry = held != 1 && rounds == 0 && (held != 2 || mags == 0)
+  pulse = if dry then 0.33 + 0.67 * absf(sin(peek_f32(h, h_now()) * 3.5)) else 1.0
+  belt = if held == 2 && mags > 0 then mags else 0
+  beltw = if belt > 0 then to_float(belt) * (8.0 + gap) + 8.0 else 0.0
+  total = to_float(cap) * (4.0 + gap) - gap + beltw
+  x0 = sw - m - total
+  y0 = sh - 26.0 - 13.0
+
+  for i in 0..cap
+    pip(h, x0 + to_float(i) * (4.0 + gap), y0, 4.0, 13.0, i < rounds, dry, dimmed * pulse)
+
+  for i in 0..belt
+    pip(h, x0 + to_float(cap) * (4.0 + gap) + 8.0 + to_float(i) * (8.0 + gap), y0, 8.0, 13.0, true, false, dimmed)
+
+  rdim = if held == 1 then 1.0 else 0.4
+  rdry = held == 1 && rkts == 0
+  rpulse = if rdry then 0.33 + 0.67 * absf(sin(peek_f32(h, h_now()) * 3.5)) else 1.0
+  rx0 = sw - m - 3.0 * (8.0 + 5.0) + 5.0
+  ry0 = sh - 46.0 - 15.0
+
+  for i in 0..3
+    rocket_pip(h, rx0 + to_float(i) * (8.0 + 5.0), ry0, i < rkts, rdry, rdim * rpulse)
+
+fn pip(h, x, y, w, hh, lit, dry, alpha) =
+  if dry then rect(h, x, y, w, hh, c_dry(), alpha)
+  else if lit then rect(h, x, y, w, hh, c_brass(), alpha)
+  else rect(h, x, y, w, hh, c_socket(), alpha)
+
+fn rocket_pip(h, x, y, lit, dry, alpha) =
+  k = if dry then c_dry() else if lit then c_brass() else c_socket()
+  at = t_at(k)
+  emit(h, x, y, 0.0, 8.0, 15.0, 0.0, 0.0, 0.0, 0.0, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), peek_f32(h, at + 3) * alpha, 6.0, 0.0, 0.0, 0.0)
+
+fn absf(v) = if v < 0.0 then 0.0 - v else v
+
+extern fn sin(x: Float) -> Float
+
+# The count, bottom left. The numbers change colour; the words never do.
+fn tally(h, sh) =
+  m = th(h, s_margin())
+  y = sh - 26.0 - 15.0
+  x = text(h, m, y, st_12b(), 0.0, c_gold(), int_str(to_int(peek_f32(h, h_tally_stand()))), 1.0)
+  x2 = text(h, x, y, st_12(), 0.0, c_dim(), " standing · ", 1.0)
+  x3 = text(h, x2, y, st_12b(), 0.0, c_gold(), int_str(to_int(peek_f32(h, h_tally_broke()))), 1.0)
+  x4 = text(h, x3, y, st_12(), 0.0, c_dim(), " broken · ", 1.0)
+  x5 = text(h, x4, y, st_12b(), 0.0, c_gold(), int_str(to_int(peek_f32(h, h_tally_all()))), 1.0)
+  text(h, x5, y, st_12(), 0.0, c_dim(), " in the valley", 1.0)
+
+fn int_str(n) = int_to_str(n)
+
+# The title block, top left: the name, the subtitle, and the keys line — the
+# one block that never changes and lives here whole.
+fn title(h) =
+  m = th(h, s_margin())
+  top = th(h, s_top())
+  text(h, m, top, st_15b(), 0.28, c_gold(), "R I L L   V A L L E Y", 1.0)
+  text(h, m, top + 23.0, st_13(), 0.0, c_sub(), "the world below is computed by a functional language", 1.0)
+  keys(h, m, top + 23.0 + 20.0 + 8.0)
+
+fn keys(h, x, y) =
+  x1 = key_pair(h, x, y, "click", " to look")
+  x2 = key_pair(h, sep(h, x1, y), y, "WASD", " walk")
+  x3 = key_pair(h, sep(h, x2, y), y, "space", " jump")
+  x4 = key_pair(h, sep(h, x3, y), y, "shift", " sprint")
+  x5 = key_pair(h, sep(h, x4, y), y, "C", " crouch")
+  x6 = key_pair(h, sep(h, x5, y), y, "left mouse", " fire")
+  x7 = key_pair(h, sep(h, x6, y), y, "1", " rifle")
+  x8 = key_pair(h, sep(h, x7, y), y, "2", " launcher")
+  x9 = key_pair(h, sep(h, x8, y), y, "3", " ak")
+  xa = key_pair(h, sep(h, x9, y), y, "R", " reload")
+  xb = key_pair(h, sep(h, xa, y), y, "F", " torch")
+  xc = key_pair(h, sep(h, xb, y), y, "M", " music")
+  key_pair(h, sep(h, xc, y), y, "enter", " say")
+
+fn sep(h, x, y) = text(h, x, y, st_12(), 0.0, c_dim(), " · ", 1.0)
+
+fn key_pair(h, x, y, key, what) =
+  x1 = text(h, x, y, st_12b(), 0.0, c_bright(), key, 1.0)
+  text(h, x1, y, st_12(), 0.0, c_dim(), what, 1.0)
+
+# The stat corner: whatever lines the page pushed, right-aligned, 19px apart —
+# the CSS's 12px over 1.6.
+fn stat(h, sw) =
+  m = th(h, s_margin())
+  top = th(h, s_top())
+
+  for i in 0..8
+    stat_line(h, sw - m, top + to_float(i) * 19.2, i)
+
+fn stat_line(h, xr, y, i) =
+  if slot_len(h, sl_stat0() + i) > 0 then slot_text(h, sl_stat0() + i, xr - slot_w(h, sl_stat0() + i, st_12(), 0.0), y, st_12(), 0.0, c_dim(), 1.0) else 0.0
+
+# The round clock, centre top. The engine has the phase and the seconds; the
+# last half minute goes amber, and during the report the board takes over.
+fn clock(h, sw) =
+  left = peek_f32(h, h_left())
+  if peek_f32(h, h_net()) < 0.5 && left <= 0.0 then 0.0
+  else if peek_f32(h, h_phase()) > 0.5 then 0.0
+  else if left < 0.0 || left > 4000.0 then 0.0
+  else
+    s = mmss(to_int(ceil(left)))
+    k = if left <= 30.0 then c_clock_low() else c_lav()
+    text(h, (sw - str_w(h, st_20(), 0.10, s)) / 2.0, 14.0, st_20(), 0.10, k, s, 0.82)
+
+extern fn ceil(x: Float) -> Float
+
+fn mmss(t0) =
+  t = if t0 < 0 then 0 else t0
+  int_to_str(t / 60) + ":" + pad2(t % 60)
+
+fn pad2(n) = if n < 10 then "0" + int_to_str(n) else int_to_str(n)
+
+# Who is in the valley, down the left: the dot in their colour, the name, the
+# little health bar, and the two counts in the two colours they always were.
+fn roster(h) =
+  n = to_int(peek_f32(h, h_roster_n()))
+  if n == 0 then 0
+  else
+    m = th(h, s_margin())
+    top = th(h, s_roster_top())
+    text(h, m, top, st_11(), 0.22, c_whohead(), "IN THE VALLEY", 1.0)
+
+    for i in 0..n
+      roster_row(h, m, top + 18.0 + to_float(i) * 18.0, sl_roster0() + i)
+    1
+
+fn roster_row(h, x, y, sl) =
+  if slot_len(h, sl) == 0 then 0
+  else
+    out = slot_f(h, sl, 7) > 0.5
+    a = if out then 0.42 else 1.0
+    emit(h, x, y + 3.0, 0.0, 7.0, 7.0, 0.0, 0.0, 0.0, 0.0, slot_f(h, sl, 1), slot_f(h, sl, 2), slot_f(h, sl, 3), a, 7.0, 0.0, 0.0, 0.0)
+    me = slot_f(h, sl, 4) < 0.0
+    hp = absf(slot_f(h, sl, 4))
+    nx = slot_text(h, sl, x + 14.0, y, st_12(), 0.08, if me then c_gold() else c_bright(), a)
+    if out then rect(h, x + 14.0, y + 6.0, nx - x - 14.0, 1.0, c_bright(), 0.6) else 0
+    hit = to_int(slot_f(h, sl, 5))
+    shot = to_int(slot_f(h, sl, 6))
+    bx = x + 108.0
+    rect(h, bx, y + 4.0, 54.0, 4.0, c_barrow(), a)
+    # Green while it is fine, amber on the way down, red at the end — the same
+    # three stops the old CSS gave the fill. The dot keeps the player's hue;
+    # the bar keeps the health's colour.
+    bk = if hp > 0.55 then c_green() else if hp > 0.25 then c_gold() else c_red()
+    rect(h, bx, y + 4.0, 54.0 * clampf(hp, 0.0, 1.0), 4.0, bk, a)
+    tx = bx + 62.0
+    t1 = text(h, tx, y, st_12(), 0.0, c_green(), int_to_str(hit), a)
+    text(h, t1 + 6.0, y, st_12(), 0.0, c_red(), int_to_str(shot), a)
+    1
+
+# The log, bottom left: the lines the page pushed, oldest at the top, each
+# fading on its own clock. Chat wraps at the panel; the rest never does.
+fn logs(h, sh) =
+  m = th(h, s_margin())
+  n = live_logs(h, 0, 0)
+  if n == 0 then 0
+  else
+    lh = 20.4
+    y0 = sh - th(h, s_log_b()) - to_float(rows_of(h, 0, 0)) * lh
+    log_walk(h, m, y0, lh, 0, 0)
+
+fn live_logs(h, i, n) =
+  if i >= 12 then n else live_logs(h, i + 1, if slot_len(h, sl_log0() + i) > 0 then n + 1 else n)
+
+# Chat lines wrap; how many rows each slot takes decides where the column
+# starts so the newest line still ends at the same bottom edge.
+fn rows_of(h, i, n) =
+  if i >= 12 then n
+  else
+    sl = sl_log0() + i
+    if slot_len(h, sl) == 0 then rows_of(h, i + 1, n)
+    else rows_of(h, i + 1, n + slot_rows(h, sl))
+
+fn slot_rows(h, sl) =
+  if slot_f(h, sl, 1) < 0.5 then 1
+  else
+    w = vis_count(h, slot_at(sl), slot_len(h, sl), 0, 0)
+    per = chars_per_log(h)
+    (w + per - 1) / per
+
+fn chars_per_log(h) =
+  per = to_int(th(h, s_log_w()) / (adv_of(h, st_12()) + 0.06 * 12.0))
+  if per < 8 then 8 else per
+
+fn log_walk(h, x, y, lh, i, row) =
+  if i >= 12 then 0
+  else
+    sl = sl_log0() + i
+    if slot_len(h, sl) == 0 then log_walk(h, x, y, lh, i + 1, row)
+    else
+      born = slot_f(h, sl, 2)
+      life = if slot_f(h, sl, 1) > 0.5 then 30.0 else 9.0
+      age = peek_f32(h, h_now()) - born
+      a = clampf((life + 0.8 - age) / 0.8, 0.0, 1.0)
+      said = slot_f(h, sl, 1) > 0.5
+      if a > 0.001 then log_lines(h, x, y + to_float(row) * lh, lh, sl, said, a) else 0
+      log_walk(h, x, y, lh, i + 1, row + slot_rows(h, sl))
+
+fn log_lines(h, x, y, lh, sl, said, a) =
+  if !said then
+    slot_text(h, sl, x, y, st_12(), 0.06, c_sub(), a)
+    1
+  else
+    wrap_said(h, x, y, lh, sl, a, 0, 0)
+
+# Said lines re-run the byte walk per row, taking `per` visible cells a row.
+fn wrap_said(h, x, y, lh, sl, a, from, row) =
+  len = slot_len(h, sl)
+  if from >= len then 1
+  else
+    per = chars_per_log(h)
+    upto = row_end(h, sl, from, per, 0)
+    text_bytes(h, x, y + to_float(row) * lh, st_12(), 0.06, c_lav(), slot_at(sl) + from, upto - from, a, 1.0)
+    wrap_said(h, x, y, lh, sl, a, upto, row + 1)
+
+fn row_end(h, sl, i, left, guard) =
+  len = slot_len(h, sl)
+  if i >= len || left <= 0 || guard > 200 then i
+  else
+    b = peek_u8(h, slot_at(sl) + i)
+    if b < 32 then row_end(h, sl, i + 1, left, guard + 1)
+    else if b == 194 then row_end(h, sl, i + 2, left - 1, guard + 1)
+    else if b == 226 then row_end(h, sl, i + 3, left - 1, guard + 1)
+    else row_end(h, sl, i + 1, left - 1, guard + 1)
+
+# A refusal, low and centred: in fast, out slow, the way the CSS timed it.
+fn warn(h, sw, sh) =
+  at = peek_f32(h, h_warn_at())
+  age = peek_f32(h, h_now()) - at
+  if at <= 0.0 || age > 2.2 then 0.0
+  else
+    a = if age < 0.09 then age / 0.09 else clampf((2.2 - age) / 0.42, 0.0, 1.0)
+    w = slot_w(h, sl_warn(), st_12(), 0.22)
+    slot_text(h, sl_warn(), (sw - w) / 2.0, sh - 52.0 - 19.0, st_12(), 0.22, c_orange(), a)
+
+# The hit line: lands big and settles, green for what you did, red for what
+# was done to you. The scale runs the pop the CSS animation did.
+fn took(h, sw, sh) =
+  at = peek_f32(h, h_took_at())
+  age = peek_f32(h, h_now()) - at
+  if at <= 0.0 || age > 1.7 then 0.0
+  else
+    a = if age < 0.07 then age / 0.07 else clampf((1.7 - age) / 0.17, 0.0, 1.0)
+    sc = if age < 0.17 then 1.75 - 0.75 * (age / 0.17) else 1.0
+    k = if peek_f32(h, h_took_mine()) > 0.5 then c_green() else c_red()
+    size = clampf(sw * 0.021, 20.0, 30.0) / 30.0 * sc
+    w = slot_w(h, sl_took(), st_30b(), 0.08) * size
+    slot_text_s(h, sl_took(), (sw - w) / 2.0, sh - 92.0 - 42.0 * size, st_30b(), 0.08, k, a, size)
+
+# Who arrived and who left, across the middle.
+fn crier(h, sw, sh) =
+  at = peek_f32(h, h_crier_at())
+  age = peek_f32(h, h_now()) - at
+  if at <= 0.0 || age > 1.8 then 0.0
+  else
+    a = if age < 0.08 then age / 0.08 else clampf((1.8 - age) / 0.24, 0.0, 1.0)
+    sc = if age < 0.22 then 1.55 - 0.55 * (age / 0.22) else 1.0
+    k = if peek_f32(h, h_crier_out()) > 0.5 then c_dim() else c_text()
+    size = clampf(sw * 0.03, 24.0, 44.0) / 44.0 * sc
+    w = slot_w(h, sl_crier(), st_44b(), 0.10) * size
+    slot_text_s(h, sl_crier(), (sw - w) / 2.0, sh * 0.28, st_44b(), 0.10, k, a, size)
+
+# Names over heads. The page pushes who; where comes out of the engine's own
+# view matrix — `hud_frame` in world.rill projects each tag's world position
+# and parks the screen point in the slot's meta before `build` runs. Meta:
+# len, sx, sy, dist, health — and sx under -9000 means behind the eye.
+fn tags(h, sw, sh) =
+  n = to_int(peek_f32(h, h_tag_n()))
+
+  for i in 0..n
+    tag(h, sw, sh, sl_tag0() + i)
+
+fn tag(h, sw, sh, sl) =
+  if slot_len(h, sl) == 0 then 0
+  else
+    sx = slot_f(h, sl, 1)
+    sy = slot_f(h, sl, 2)
+    d = slot_f(h, sl, 3)
+    if sx < 0.0 - 9000.0 || d > 90.0 then 0
+    else if sx < 0.0 - 80.0 || sx > sw + 80.0 || sy < 0.0 - 40.0 || sy > sh + 40.0 then 0
+    else
+      a = clampf((90.0 - d) / 20.0, 0.0, 1.0)
+      k = if slot_f(h, sl, 4) > 0.35 then c_text() else c_orange()
+      w = slot_w(h, sl, st_12(), 0.12)
+      slot_text(h, sl, sx - w / 2.0, sy, st_12(), 0.12, k, a)
+      1
+
+# The crosshair — four strokes and the dot, opened out while the bolt is
+# working — and the scope: the vignette, then the reticle drawn as the SVG
+# drew it, twice per stroke so black stays visible over a dark valley.
+fn sights(h, sw, sh) =
+  aim = peek_f32(h, h_aim())
+  cross = peek_f32(h, h_cross())
+  cx = sw / 2.0
+  cy = sh / 2.0
+  cyc = peek_f32(h, h_cycling()) > 0.5
+  off = if cyc then 16.0 else 11.0
+  ca = if cyc then 0.28 else 1.0
+  if cross > 0.01 then cross_draw(h, cx, cy, off, ca * cross, cyc) else 0
+  vmin = if sw < sh then sw else sh
+  r = aim * aim * 34.0 / 100.0 * vmin
+  if peek_f32(h, h_weapon()) < 0.5 && aim > 0.01 then
+    emit(h, 0.0, 0.0, 0.0, sw, sh, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, aim, 2.0, r, vmin / 100.0, 0.0)
+    ret = clampf((aim - 0.7) / 0.25, 0.0, 1.0)
+    if ret > 0.01 then reticle(h, cx, cy, r, ret) else 0
+  else 0
+
+fn cross_draw(h, cx, cy, off, a, cyc) =
+  stroke(h, cx - off - 10.0, cy - 1.0, 10.0, 2.0, a)
+  stroke(h, cx + off, cy - 1.0, 10.0, 2.0, a)
+  stroke(h, cx - 1.0, cy - off - 10.0, 2.0, 10.0, a)
+  stroke(h, cx - 1.0, cy + off, 2.0, 10.0, a)
+  if !cyc then rect(h, cx - 1.0, cy - 1.0, 2.0, 2.0, c_gold(), a) else 0
+
+fn stroke(h, x, y, w, hh, a) =
+  rect(h, x - 1.0, y - 1.0, w + 2.0, hh + 2.0, c_black(), a * 0.55)
+  rect(h, x, y, w, hh, c_white(), a)
+
+# The reticle, in the SVG's own -100..100 units scaled to the sight picture.
+fn reticle(h, cx, cy, r, a) =
+  u = r / 100.0
+  ret_cross(h, cx, cy, u, 3.4, 0.32, a, 52.0, 100.0)
+  ret_cross(h, cx, cy, u, 2.6, 0.9, a, 52.0, 100.0)
+  ret_cross(h, cx, cy, u, 1.9, 0.32, a, 5.0, 52.0)
+  ret_cross(h, cx, cy, u, 1.1, 0.9, a, 5.0, 52.0)
+  ticks(h, cx, cy, u, 1.9, 0.32, a)
+  ticks(h, cx, cy, u, 1.1, 0.9, a)
+  ring(h, cx, cy, 1.6 * u, 0.8 * u, 0.32 * a)
+
+fn ret_cross(h, cx, cy, u, wu, dark, a, from, to0) =
+  w = wu * u
+  l = (to0 - from) * u
+  kk = if dark > 0.5 then c_black() else c_white()
+  rect(h, cx - to0 * u, cy - w / 2.0, l, w, kk, dark * a)
+  rect(h, cx + from * u, cy - w / 2.0, l, w, kk, dark * a)
+  rect(h, cx - w / 2.0, cy - to0 * u, w, l, kk, dark * a)
+  rect(h, cx - w / 2.0, cy + from * u, w, l, kk, dark * a)
+
+fn ticks(h, cx, cy, u, wu, dark, a) =
+  tick_pair(h, cx, cy, u, wu, dark, a, 40.0, 4.0)
+  tick_pair(h, cx, cy, u, wu, dark, a, 28.0, 3.0)
+  tick_pair(h, cx, cy, u, wu, dark, a, 16.0, 3.0)
+
+fn tick_pair(h, cx, cy, u, wu, dark, a, d, half) =
+  w = wu * u
+  kk = if dark > 0.5 then c_black() else c_white()
+  rect(h, cx - d * u - w / 2.0, cy - half * u, w, half * 2.0 * u, kk, dark * a)
+  rect(h, cx + d * u - w / 2.0, cy - half * u, w, half * 2.0 * u, kk, dark * a)
+  rect(h, cx - half * u, cy - d * u - w / 2.0, half * 2.0 * u, w, kk, dark * a)
+  rect(h, cx - half * u, cy + d * u - w / 2.0, half * 2.0 * u, w, kk, dark * a)
+
+fn ring(h, cx, cy, radius, thick, a) =
+  d = radius + thick
+  emit(h, cx - d, cy - d, 0.0, d * 2.0, d * 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, a, 3.0, radius, thick, 0.0)
+
+# The board between rounds: the dark sheet, the heading, the rows the page
+# pushed, the countdown. Everything centred the way the flex column was.
+fn board(h, sw, sh) =
+  if peek_f32(h, h_phase()) < 0.5 then 0.0
+  else
+    n = to_int(peek_f32(h, h_board_n()))
+    emit(h, 0.0, 0.0, 0.0, sw, sh, 0.0, 0.0, 0.0, 0.0, peek_f32(h, t_at(c_boardbg())), peek_f32(h, t_at(c_boardbg()) + 1), peek_f32(h, t_at(c_boardbg()) + 2), peek_f32(h, t_at(c_boardbg()) + 3), 0.0, 0.0, 0.0, 0.0)
+    rowh = 33.0
+    blockh = 22.0 + 26.0 + to_float(n) * rowh + 18.0 + 48.0 + 18.0 + 14.0
+    y0 = (sh - blockh) / 2.0
+    hw = str_w(h, st_13(), 0.30, "ROUND OVER")
+    text(h, (sw - hw) / 2.0, y0, st_13(), 0.30, c_bhead(), "ROUND OVER", 1.0)
+    heads(h, sw, y0 + 34.0)
+
+    for i in 0..n
+      board_row(h, sw, y0 + 60.0 + to_float(i) * rowh, sl_board0() + i)
+
+    cnt = int_to_str(to_int(ceil(peek_f32(h, h_board_left()))))
+    cw = str_w(h, st_44(), 0.04, cnt)
+    text(h, (sw - cw) / 2.0, y0 + 60.0 + to_float(n) * rowh + 18.0, st_44(), 0.04, c_btext(), cnt, 1.0)
+    uw = str_w(h, st_12(), 0.22, "NEXT ROUND")
+    text(h, (sw - uw) / 2.0, y0 + 60.0 + to_float(n) * rowh + 18.0 + 56.0, st_12(), 0.22, c_bhead(), "NEXT ROUND", 1.0)
+
+fn board_cols(h, sw) = (sw - 380.0) / 2.0
+
+fn heads(h, sw, y) =
+  x0 = board_cols(h, sw)
+  text(h, x0, y, st_11(), 0.20, c_bhead(), "PLAYER", 1.0)
+  kw = str_w(h, st_11(), 0.20, "KILLS")
+  text(h, x0 + 250.0 - kw, y, st_11(), 0.20, c_bhead(), "KILLS", 1.0)
+  dw = str_w(h, st_11(), 0.20, "DEATHS")
+  text(h, x0 + 380.0 - dw, y, st_11(), 0.20, c_bhead(), "DEATHS", 1.0)
+
+fn board_row(h, sw, y, sl) =
+  if slot_len(h, sl) == 0 then 0.0
+  else
+    x0 = board_cols(h, sw)
+    you = slot_f(h, sl, 3) > 0.5
+    k = if you then c_you() else c_btext()
+    slot_text(h, sl, x0, y, st_22(), 0.0, k, 1.0)
+    ks = int_to_str(to_int(slot_f(h, sl, 1)))
+    kw = str_w(h, st_22(), 0.0, ks)
+    text(h, x0 + 250.0 - kw, y, st_22(), 0.0, k, ks, 1.0)
+    ds = int_to_str(to_int(slot_f(h, sl, 2)))
+    dw2 = str_w(h, st_22(), 0.0, ds)
+    text(h, x0 + 380.0 - dw2, y, st_22(), 0.0, k, ds, 1.0)
+
+# Down, disconnected, or the valley gone dark. The engine knows about being
+# down all by itself; the other two the page raises with `hud_over`.
+fn overlays(h, sw, sh) =
+  hp = peek_f32(h, h_health())
+  if peek_f32(h, h_net()) > 0.5 && hp < 0.001 then dead(h, sw, sh)
+  else over_kind(h, sw, sh)
+
+fn dead(h, sw, sh) =
+  left = peek_f32(h, h_dead_secs()) - peek_f32(h, h_down_for())
+  dim(h, sw, sh)
+  big(h, sw, sh * 0.30, "YOU ARE DEAD", c_red(), sw * 0.15 / 96.0 * 0.35)
+  cnt = int_to_str(to_int(ceil(clampf(left, 0.0, 99.0))))
+  big(h, sw, sh * 0.42, cnt, c_gold(), sw * 0.22 / 96.0 * 0.35)
+  small_line(h, sw, sh * 0.72, "BACK ON YOUR FEET IN A MOMENT", c_red())
+
+fn over_kind(h, sw, sh) =
+  k = to_int(peek_f32(h, h_over()))
+  if k == 0 then 0.0
+  else
+    dim(h, sw, sh)
+    kk = if k == 1 then c_gold() else c_red()
+    sc = sw * 0.15 / 96.0 * 0.35
+    if slot_len(h, sl_over1()) > 0 then big_slot(h, sw, sh * 0.34, sl_over1(), kk, sc) else 0.0
+    if slot_len(h, sl_over2()) > 0 then mid_slot(h, sw, sh * 0.56, sl_over2()) else 0.0
+    if slot_len(h, sl_over3()) > 0 then small_slot(h, sw, sh * 0.62, sl_over3(), kk) else 0.0
+
+fn dim(h, sw, sh) =
+  emit(h, 0.0, 0.0, 0.0, sw, sh, 0.0, 0.0, 0.0, 0.0, 4.0 / 255.0, 3.0 / 255.0, 8.0 / 255.0, 0.8, 5.0, 0.0, 0.0, 0.0)
+
+fn big(h, sw, y, s, k, scale) =
+  w = str_w(h, st_96b(), 0.06, s) * scale
+  text_str_scaled(h, (sw - w) / 2.0, y, s, k, scale)
+
+fn text_str_scaled(h, x, y, s, k, scale) =
+  tss_go(h, x, y, (adv_of(h, st_96b()) + 0.06 * 96.0) * scale, k, s, 0, scale)
+
+fn tss_go(h, x, y, step, k, s, i, scale) =
+  if i >= str_len(s) then x
+  else
+    b = str_get(s, i)
+    if b >= 32 && b <= 126 then
+      glyph(h, x, y, st_96b(), b - 32, k, 1.0, scale)
+      tss_go(h, x + step, y, step, k, s, i + 1, scale)
+    else tss_go(h, x, y, step, k, s, i + 1, scale)
+
+fn big_slot(h, sw, y, sl, k, scale) =
+  w = slot_w(h, sl, st_96b(), 0.06) * scale
+  slot_text_s(h, sl, (sw - w) / 2.0, y, st_96b(), 0.06, k, 1.0, scale)
+
+fn mid_slot(h, sw, y, sl) =
+  w = slot_w(h, sl, st_12(), 0.28)
+  slot_text(h, sl, (sw - w) / 2.0, y, st_12(), 0.28, c_sub(), 0.6)
+
+fn small_slot(h, sw, y, sl, k) =
+  w = slot_w(h, sl, st_11(), 0.22)
+  slot_text(h, sl, (sw - w) / 2.0, y, st_11(), 0.22, k, 0.72)
+
+fn small_line(h, sw, y, s, k) =
+  w = str_w(h, st_11(), 0.22, s)
+  text(h, (sw - w) / 2.0, y, st_11(), 0.22, k, s, 0.72)

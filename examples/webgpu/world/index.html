@@ -6,20 +6,6 @@
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #05060c; }
     canvas { width: 100vw; height: 100vh; display: block; cursor: crosshair; }
-    .hud {
-      position: fixed; left: 20px; top: 18px; color: #e8e4da;
-      font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
-      user-select: none; pointer-events: none;
-    }
-    .hud h1 { margin: 0; font-size: 15px; letter-spacing: 0.28em; color: #f6c02e; }
-    .hud .sub { color: #9a94b8; }
-    .hud .keys { margin-top: 8px; color: #6f6a8c; }
-    .hud .keys b { color: #c9c3e4; font-weight: 600; }
-    .stat {
-      position: fixed; right: 20px; top: 18px; text-align: right; color: #6f6a8c;
-      font: 12px/1.6 ui-monospace, monospace; pointer-events: none;
-    }
-    .stat b { color: #f6c02e; }
     /* Left-aligned and pre-wrapped, not centred. What lands here is no longer
        one short line: the no-adapter message names two settings pages and a
        diagnostic one, and centring a block of instructions makes every line
@@ -30,335 +16,16 @@
            color: #c9c3e4; font: 13px/1.7 ui-monospace, monospace;
            white-space: pre-wrap; }
 
-    /* The crosshair: four strokes with a gap in the middle, so it marks the
-       point without covering it. Each carries a dark rim, which is what keeps
-       it readable over the pale peaks and over the dark water both. */
-    .aim { position: fixed; inset: 0; pointer-events: none;
-           display: grid; place-items: center;
-           transition: opacity 70ms ease; }
-    /* Halfway up, the rifle's own sight and this one are both on screen and
-       two at once is one too many; at the top there is a reticle in the scope
-       and this one has no business there at all. Driven from the frame loop
-       rather than by a class, because it has three states. */
 
-    /* The sight picture.
-       Looking down the tube of the rifle's own scope was honest and useless:
-       the far lens is a centimetre across and two hundred away, so what you
-       could see through it was a keyhole. Every rifle game does the same thing
-       instead — as the sights settle, the weapon goes and the scope becomes
-       the screen. So this is the scope: a clear circle that opens as the aim
-       comes up, black outside it, and the crosshair in the middle of it is the
-       reticle.
-       Drawn here rather than in the valley because it is not in the valley, it
-       is in the eye — and a radial gradient over the canvas costs nothing next
-       to a pass that would have to touch every pixel. */
-    .scope {
-      position: fixed; inset: 0; pointer-events: none; opacity: 0;
-      --r: 0vmin;
-      --ret: 0;
-      background: radial-gradient(circle at center,
-        rgba(0,0,0,0) var(--r),
-        rgba(0,0,0,0.45) calc(var(--r) + 1.2vmin),
-        rgba(0,0,0,0.97) calc(var(--r) + 6vmin),
-        #000 calc(var(--r) + 12vmin));
-      display: grid; place-items: center;
-    }
 
-    /* The reticle: a duplex with a mil scale, which is what a rifle scope has
-       and what makes one useful for anything but pointing. The thick posts
-       carry the eye to the middle from any background; the thin cross is what
-       you actually aim with; the ticks are the ruler — two mils apart, so a
-       figure of a metre eight subtends one of them at nine hundred metres and
-       four of them at two hundred, and holding over is counting rather than
-       guessing.
-       Black glass with a thin light edge, because a reticle that is only black
-       vanishes against dark water and one that is only white vanishes against
-       the ridge. It is sized against the sight picture, so it opens with it. */
-    .reticle {
-      width: calc(var(--r) * 2); height: calc(var(--r) * 2);
-      opacity: var(--ret);
-    }
-    .reticle .glass { fill: none; stroke: #000; stroke-opacity: 0.9; }
-    .reticle .edge  { fill: none; stroke: #fff; stroke-opacity: 0.32; }
-    .aim i { position: absolute; background: #fff;
-             box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55); }
-    .aim .h { width: 10px; height: 2px; }
-    .aim .v { width: 2px; height: 10px; }
-    .aim .l { transform: translateX(-11px); }
-    .aim .r { transform: translateX(11px); }
-    .aim .u { transform: translateY(-11px); }
-    .aim .d { transform: translateY(11px); }
-    .aim .dot { width: 2px; height: 2px; background: #f6c02e; }
-    /* While the bolt is being worked the rifle will not fire, and the
-       crosshair says so: dimmed and opened out, back when it is ready. */
-    .aim i { transition: opacity 140ms ease, transform 220ms ease; }
-    body.cycling .aim i { opacity: 0.28; }
-    body.cycling .aim .l { transform: translateX(-16px); }
-    body.cycling .aim .r { transform: translateX(16px); }
-    body.cycling .aim .u { transform: translateY(-16px); }
-    body.cycling .aim .d { transform: translateY(16px); }
-    body.cycling .aim .dot { opacity: 0; }
 
-    /* Refusals. Low and centred, over the health bar and under everything
-       else: near enough the crosshair to be seen without looking away, far
-       enough not to sit on top of what you are aiming at. It comes in fast
-       and leaves slowly, which is the way round that reads as an answer to
-       something you just did rather than as an alert arriving on its own. */
-    .warn {
-      position: fixed; left: 0; right: 0; bottom: 52px; z-index: 8;
-      text-align: center; pointer-events: none;
-      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.22em; text-transform: uppercase;
-      color: #f6832e; text-shadow: 0 0 12px rgba(0, 0, 0, 0.9);
-      opacity: 0; transform: translateY(6px);
-      transition: opacity 420ms ease, transform 420ms ease;
-    }
-    .warn.on { opacity: 1; transform: none; transition-duration: 90ms; }
 
-    /* Health, across the whole bottom of the screen. Big, because it is the
-       one number you have to read without looking at it — a bar you have to
-       find is a bar you check after you are dead. It sits under everything and
-       takes no input. */
-    .vit {
-      position: fixed; left: 0; right: 0; bottom: 0; height: 14px;
-      background: rgba(8, 7, 14, 0.72); pointer-events: none;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    }
-    .vit i {
-      display: block; height: 100%; width: 100%;
-      /* Green while it is fine, amber as it goes, red at the end — carried by
-         the fill's own colour rather than by a number beside it, so it is
-         read peripherally. */
-      background: linear-gradient(90deg, #f6c02e, #8fd14f);
-      transition: width 260ms ease, background 600ms ease, box-shadow 260ms ease;
-    }
-    /* A shove of light when it drops, so a hit registers even if you were
-       looking at the sky when it landed. */
-    .vit i.hurt { box-shadow: 0 0 22px rgba(255, 120, 80, 0.85); }
 
-    /* Breath, stacked straight on top of the vital bar and read the same way:
-       a width that empties and a colour that says how near empty it is. Blue
-       rather than green so the two are told apart at a glance, and the same
-       height, because two bars of different sizes read as one bar and a
-       decoration.
 
-       The width moves quickly — it empties in six seconds and the eye follows
-       the key, not a lag — and the colour takes its time, as the vital bar's
-       does. */
-    .wind {
-      position: fixed; left: 0; right: 0; bottom: 14px; height: 14px;
-      background: rgba(8, 7, 14, 0.72); pointer-events: none;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    }
-    .wind i {
-      display: block; height: 100%; width: 100%;
-      background: linear-gradient(90deg, #4aa3d8, #7fd7f2);
-      transition: width 90ms linear, background 600ms ease;
-    }
-    /* Winded: the bar is filling and still will not let you run, which is a
-       different thing from being empty and has to look like one. */
-    .wind i.spent { background: linear-gradient(90deg, #6b5f7a, #9d8fb0); }
 
-    /* The count, bottom left, opposite the frame stats. Same voice as the rest
-       of the HUD: small, monospaced, out of the way, and the only thing in
-       colour is the number that changed. */
-    .tally {
-      position: fixed; left: 20px; bottom: 26px; color: #6f6a8c;
-      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
-      pointer-events: none; font-variant-numeric: tabular-nums;
-    }
-    .tally b { color: #f6c02e; font-weight: 600; }
 
-    /* What is in the rifle, bottom right, opposite the count. Ten pips rather
-       than a numeral: how many are left is a thing to know without reading,
-       and a row that is visibly half gone says it before a "5" would. Brass
-       for a round that is there, and the socket it left behind for one that is
-       not, so the row keeps its shape and only the fill moves. */
-    .ammo {
-      position: fixed; right: 20px; bottom: 26px; display: flex; gap: 3px;
-      pointer-events: none;
-    }
-    .ammo i {
-      display: block; width: 4px; height: 13px; border-radius: 1px;
-      background: #f0b64a; box-shadow: 0 0 6px rgba(240, 182, 74, 0.45);
-      transition: background 120ms linear, box-shadow 120ms linear;
-    }
-    .ammo i.out { background: rgba(255, 255, 255, 0.1); box-shadow: none; }
-    /* The belt: the AK's spare magazines, fatter and set a step apart from
-       the rounds, gone entirely when another weapon is up. */
-    .ammo i.mag { width: 8px; border-radius: 2px; }
-    .ammo i.mag:nth-of-type(31) { margin-left: 8px; }
-    /* Empty is the one state worth interrupting for: the trigger does nothing
-       now, and the row says so rather than simply being dark. */
-    .ammo.dry i { background: rgba(226, 74, 60, 0.5); animation: dry 900ms ease-in-out infinite; }
-    @keyframes dry { 50% { background: rgba(226, 74, 60, 0.16); } }
-    /* The rockets, above the rounds and always there: what used to be one row
-       that changed shape with the weapon is two rows that never move, because
-       a count you only see while holding the tube is a count you learn about
-       one warhead too late. */
-    .rockets {
-      position: fixed; right: 20px; bottom: 46px; display: flex; gap: 5px;
-      pointer-events: none;
-    }
-    /* A body with a nose, which is all a rocket is at eight pixels. The glow
-       is a filter rather than a shadow so the clip does not cut it off. */
-    .rockets i {
-      display: block; width: 8px; height: 15px; background: #f0b64a;
-      clip-path: polygon(50% 0%, 100% 32%, 100% 100%, 0% 100%, 0% 32%);
-      filter: drop-shadow(0 0 4px rgba(240, 182, 74, 0.45));
-      transition: background 120ms linear, filter 120ms linear;
-    }
-    .rockets i.out { background: rgba(255, 255, 255, 0.12); filter: none; }
-    .rockets.dry i { background: rgba(226, 74, 60, 0.5); animation: dry 900ms ease-in-out infinite; }
-    /* The held weapon's row burns full; the other waits at half light. */
-    .ammo.dim, .rockets.dim { opacity: 0.4; }
 
-    /* When the last crystal is gone. Not a dialogue and not a button — there
-       is nothing left to decide, so it is two lines over the valley and the
-       valley keeps running behind them. Pointer-events stay off so looking
-       around still works: the ending is a caption, not a wall. */
-    .over {
-      position: fixed; inset: 0; z-index: 9; display: grid; place-content: center;
-      justify-items: center; gap: 0.6rem; pointer-events: none;
-      opacity: 0; transition: opacity 1600ms ease;
-      background: radial-gradient(ellipse at center, rgba(4, 3, 8, 0.62), rgba(4, 3, 8, 0.92));
-    }
-    .over.on { opacity: 1; }
-    .over span {
-      font: 800 clamp(3rem, 15vw, 11rem)/0.9 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.06em; color: #f6c02e;
-      text-shadow: 0 0 40px rgba(246, 192, 46, 0.35), 0 0 4px rgba(0, 0, 0, 0.9);
-      /* It arrives rather than appearing: the letters ease in from wide, which
-         is the difference between an ending and a popup. */
-      transform: scale(1.18); transition: transform 2200ms cubic-bezier(.16,.8,.28,1);
-    }
-    .over.on span { transform: scale(1); }
-    .over small {
-      font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.22em; text-transform: uppercase; color: #f6c02e;
-      opacity: 0.72;
-    }
-    .over em {
-      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-style: normal; letter-spacing: 0.28em; text-transform: uppercase;
-      color: rgba(255, 255, 255, 0.42);
-    }
 
-    /* Down, in somebody else's valley — where running out of health is not the
-       end of anything, it is five seconds on your back. The count is the whole
-       point of the screen: without it, being dead is indistinguishable from
-       being broken. It is the largest thing on the page for the same reason
-       the letters above it are. */
-    .over.dead span { color: #e0503a; text-shadow: 0 0 40px rgba(224, 80, 58, 0.3), 0 0 4px rgba(0, 0, 0, 0.9); }
-    .over.dead { transition-duration: 260ms; }
-    .over.dead span.tick {
-      font-size: clamp(4rem, 22vw, 16rem); color: #f6c02e;
-      text-shadow: 0 0 60px rgba(246, 192, 46, 0.3), 0 0 4px rgba(0, 0, 0, 0.9);
-      font-variant-numeric: tabular-nums; transform: none; transition: none;
-    }
-
-    /* The same caption, for the socket rather than the crystals. Red instead
-       of amber and it arrives in a fifth of a second rather than easing in
-       over a second and a half: an ending is something to sit with, a dropped
-       connection is something to be told at once. */
-    .over.cut { transition-duration: 220ms; }
-    .over.cut span { color: #e0503a; text-shadow: 0 0 40px rgba(224, 80, 58, 0.35), 0 0 4px rgba(0, 0, 0, 0.9); transition-duration: 320ms; }
-    .over.cut small { color: #e0503a; }
-
-    /* Who else is in the valley, down the left under the keys. A row apiece:
-       the colour they are drawn in, what they are called, and how much of
-       them is left. The bar is the honest one — a health number in a corner
-       is something you read, a bar is something you see out of the side of
-       your eye while you are busy being shot at. Only shown when there is a
-       server to have a roster of. */
-    /* How much of the round is left, over the middle of the screen where it can
-       be read without looking away from anything. */
-    .clock {
-      position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
-      font: 500 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.10em; color: #cfc9e8; text-shadow: 0 1px 3px #000a;
-      user-select: none; pointer-events: none; opacity: 0.82;
-    }
-    .clock.low { color: #ffb96b; }
-
-    /* The board between rounds. Deliberately large and deliberately over
-       everything: the twenty seconds it is up are not for playing. */
-    .board {
-      position: fixed; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 18px;
-      background: #0b0a14e8; z-index: 40;
-      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-      color: #cfc9e8; user-select: none; pointer-events: none;
-    }
-    /* `display: flex` above beats the browser's own `[hidden] { display: none }`
-       — author styles win over the user agent's — so without this the board is
-       never hidden by setting the attribute, and ROUND OVER sits over the
-       valley from the first frame to the last. */
-    .board[hidden] { display: none; }
-    .board h2 {
-      margin: 0; font-size: 13px; font-weight: 400; letter-spacing: 0.3em;
-      text-transform: uppercase; color: #6f6a92;
-    }
-    .board table { border-collapse: collapse; font-size: 22px; }
-    .board th {
-      font-size: 11px; font-weight: 400; letter-spacing: 0.2em; color: #6f6a92;
-      text-transform: uppercase; padding: 0 18px 10px; text-align: right;
-    }
-    .board th:first-child { text-align: left; }
-    .board td { padding: 5px 18px; text-align: right; font-variant-numeric: tabular-nums; }
-    .board td:first-child { text-align: left; color: #efeaff; }
-    .board tr.you td { color: #ffd08a; }
-    .board .count {
-      font-size: 44px; letter-spacing: 0.04em; color: #efeaff;
-      font-variant-numeric: tabular-nums;
-    }
-    .board .until { font-size: 12px; letter-spacing: 0.22em; color: #6f6a92; text-transform: uppercase; }
-
-    .who-list {
-      position: fixed; left: 20px; top: 118px; width: 216px;
-      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-      user-select: none; pointer-events: none; color: #9a94b8;
-    }
-    .who-list h2 {
-      margin: 0 0 7px; font-size: 11px; font-weight: 400; letter-spacing: 0.22em;
-      text-transform: uppercase; color: #565273;
-    }
-    .who-list .row { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
-    .who-list .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; }
-    .who-list .nm {
-      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-      white-space: nowrap; letter-spacing: 0.08em; color: #c9c3e4;
-    }
-    .who-list .row.self .nm { color: #f6c02e; }
-    /* Rounds landed and rounds taken. Green for what you did, red for what
-       was done to you — the same two colours the health bar uses, so neither
-       needs a label. */
-    .who-list .hit, .who-list .shot {
-      flex: none; width: 15px; text-align: right;
-      font-variant-numeric: tabular-nums; letter-spacing: 0;
-    }
-    .who-list .hit { color: #57c26a; }
-    .who-list .shot { color: #e0503a; }
-    .who-list .bar {
-      width: 54px; height: 4px; flex: none; background: #1b1a2c;
-      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
-    }
-    .who-list .bar i { display: block; height: 100%; width: 0; transition: width 160ms linear; }
-    .who-list .row.out { opacity: 0.42; }
-    .who-list .row.out .nm { text-decoration: line-through; }
-
-    /* Names over heads. One element per player, moved by transform every
-       frame — the browser's own text engine does the hinting and the kerning,
-       which is worth more than a glyph atlas would be. They take no input and
-       are never wider than the name. */
-    .tags { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
-    .tags span {
-      position: absolute; top: 0; left: 0; white-space: nowrap;
-      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.12em; color: #e8e4da;
-      text-shadow: 0 0 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.95);
-      will-change: transform;
-    }
 
     /* Who are you. Only asked when joining somebody else's valley, and it is
        part of the loading screen rather than a dialogue in front of it —
@@ -380,68 +47,7 @@
     .who small { display: block; margin-top: 8px; color: #6f6a8c;
                  font: 11px/1.5 ui-monospace, monospace; letter-spacing: 0.1em; }
 
-    /* Who just shot you, low and in the middle, where the eye goes when
-       something has happened to you rather than in front of you. It says the
-       name and what it cost, because "hit" is a different thing to be told
-       than "hit for a third of you" — and because a valley where four people
-       are firing is one where you cannot otherwise tell whether the round that
-       took you down was aimed. */
-    .took {
-      position: fixed; left: 0; right: 0; bottom: 92px; text-align: center;
-      pointer-events: none; opacity: 0;
-      /* It arrives big and lands, and it leaves by shrinking: a line that
-         simply appears is read a beat later than one that moves, and a beat is
-         what there is. */
-      transform: scale(0.8);
-      transition: opacity 170ms ease, transform 170ms ease;
-      font: 600 clamp(20px, 2.1vw, 30px)/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.08em; color: #e0503a;
-      text-shadow: 0 0 14px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.95);
-    }
-    .took.on {
-      opacity: 1; transform: scale(1); transition-duration: 70ms;
-      animation: took-pop 170ms cubic-bezier(.15, .9, .25, 1);
-    }
-    @keyframes took-pop { from { transform: scale(1.75); } to { transform: scale(1); } }
-    /* The name in the valley's own amber, and what it cost bigger than the
-       words around it — that is the part you read while something else is
-       shooting at you. */
-    .took b { color: #f6c02e; }
-    .took i { font-style: normal; font-size: 1.35em; color: #fff; }
-    /* What you did, rather than what was done to you: the same line in the
-       other direction and in the other colour, so which of the two it is does
-       not have to be read to be known. */
-    .took.gave { color: #57c26a; }
-    .took em { font-style: normal; font-size: 1.5em; }
 
-    /* The log. Bottom left, above the tally, oldest at the top — the order
-       things happened in, which is the order they are read in. Each line fades
-       on its own clock rather than the list scrolling, because a line still
-       being read should not move because a new one arrived. */
-    .log {
-      position: fixed; left: 20px; bottom: 74px; width: 320px;
-      pointer-events: none; user-select: none;
-      font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.06em; color: #9a94b8;
-      text-shadow: 0 0 6px rgba(0,0,0,0.95);
-    }
-    .log div {
-      opacity: 1; transition: opacity 800ms ease;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .log div.gone { opacity: 0; }
-    .log b { color: #f6c02e; font-weight: 600; }   /* who did it */
-    .log i { color: #e8e4da; font-style: normal; } /* who it happened to */
-    .log s { color: #e0503a; text-decoration: none; }  /* what it cost */
-    .log u { color: #6f6a8c; text-decoration: none; }  /* somebody leaving */
-    .log em { font-style: normal; }
-    /* A line somebody typed, in the same column as the things that happened to
-       them. Brighter than the log around it and allowed to wrap, because a
-       sentence cut off at the width of the panel is a sentence nobody can
-       read — and it stays up four times as long, since the valley chooses when
-       to say something happened and a person chooses when to speak. */
-    .log div.said { white-space: normal; color: #cfc9e8; }
-    .log div.said b { color: #57c26a; }
 
     /* Where you type. Underneath the log rather than over it, and only there
        while you are actually typing: a text field on screen at all times is a
@@ -465,28 +71,6 @@
       font: inherit; letter-spacing: inherit;
     }
 
-    /* Who has arrived and who has gone, across the middle. Bigger than the hit
-       line and higher up, because it is about the valley rather than about you
-       — and it comes in from half again its size and leaves by shrinking, so
-       it is read while it moves rather than after it has settled. */
-    .crier {
-      position: fixed; left: 0; right: 0; top: 28%; text-align: center;
-      pointer-events: none; opacity: 0; transform: scale(0.85);
-      transition: opacity 240ms ease, transform 240ms ease;
-      font: 600 clamp(24px, 3vw, 44px)/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: 0.1em; color: #e8e4da;
-      text-shadow: 0 0 18px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,0.95);
-    }
-    .crier.on {
-      opacity: 1; transform: scale(1); transition-duration: 80ms;
-      animation: crier-pop 220ms cubic-bezier(.15, .9, .25, 1);
-    }
-    @keyframes crier-pop { from { transform: scale(1.55); } to { transform: scale(1); } }
-    /* Arriving is the valley's amber; leaving is the colour of everything else
-       that has stopped. */
-    .crier.in b { color: #f6c02e; }
-    .crier.out { color: #6f6a8c; }
-    .crier.out b { color: #9a94b8; }
 
     /* The loader. It covers the canvas until a frame has actually been drawn
        on it, so nobody watches a black rectangle wondering whether it works. */
@@ -517,69 +101,8 @@
 </head>
 <body>
   <canvas id="c"></canvas>
-  <div class="hud">
-    <h1>RILL &nbsp;VALLEY</h1>
-    <div class="sub">the world below is computed by a functional language</div>
-    <div class="keys"><b>click</b> to look &nbsp;·&nbsp; <b>WASD</b> walk &nbsp;·&nbsp;
-      <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint &nbsp;·&nbsp;
-      <b>C</b> crouch &nbsp;·&nbsp;
-      <b>left mouse</b> fire &nbsp;·&nbsp; <b>1</b> rifle &nbsp;·&nbsp; <b>2</b> launcher &middot; <b>3</b> ak
-      &nbsp;·&nbsp; <b>R</b> reload &nbsp;·&nbsp; <b>F</b> torch &nbsp;·&nbsp; <b>M</b> music
-      &nbsp;·&nbsp; <b>enter</b> say</div>
-  </div>
-  <div class="stat" id="stat"></div>
-  <div class="who-list" id="roster" hidden><h2>in the valley</h2><div id="rosterRows"></div></div>
-  <div class="scope" id="scope">
-    <svg class="reticle" viewBox="-100 -100 200 200" aria-hidden="true">
-      <!-- Each group is drawn twice: a pale wide stroke under a black narrow
-           one, which is how a black line stays visible over a dark valley. -->
-      <g class="edge" stroke-width="3.4" stroke-linecap="butt">
-        <path d="M-100 0H-52M52 0H100M0-100V-52M0 52V100"/>
-      </g>
-      <g class="glass" stroke-width="2.6" stroke-linecap="butt">
-        <path d="M-100 0H-52M52 0H100M0-100V-52M0 52V100"/>
-      </g>
-      <g class="edge" stroke-width="1.9">
-        <path d="M-52 0H-5M5 0H52M0-52V-5M0 5V52"/>
-        <path d="M-40 -4V4M-28 -3V3M-16 -3V3M16 -3V3M28 -3V3M40 -4V4"/>
-        <path d="M-4 -40H4M-3 -28H3M-3 -16H3M-3 16H3M-3 28H3M-4 40H4"/>
-      </g>
-      <g class="glass" stroke-width="1.1">
-        <path d="M-52 0H-5M5 0H52M0-52V-5M0 5V52"/>
-        <path d="M-40 -4V4M-28 -3V3M-16 -3V3M16 -3V3M28 -3V3M40 -4V4"/>
-        <path d="M-4 -40H4M-3 -28H3M-3 -16H3M-3 16H3M-3 28H3M-4 40H4"/>
-      </g>
-      <!-- The centre: a gap rather than a dot, so what is being aimed at is
-           not the one thing covered up. -->
-      <circle class="edge" r="1.6" stroke-width="0.8"/>
-    </svg>
-  </div>
-  <div class="aim">
-    <i class="h l"></i><i class="h r"></i><i class="v u"></i><i class="v d"></i>
-    <i class="dot"></i>
-  </div>
-  <div class="warn" id="warn"></div>
-  <div class="took" id="took"></div>
-  <div class="crier" id="crier"></div>
-  <div class="log" id="log"></div>
   <div class="chat" id="chat"><span>say</span><input id="chatin" maxlength="120"
        autocomplete="off" autocapitalize="off" spellcheck="false"></div>
-  <div class="clock" id="clock" hidden></div>
-  <div class="board" id="board" hidden>
-    <h2>round over</h2>
-    <table><thead><tr><th>player</th><th>kills</th><th>deaths</th></tr></thead>
-      <tbody id="boardRows"></tbody></table>
-    <div class="count" id="boardCount">20</div>
-    <div class="until">next round</div>
-  </div>
-  <div class="tally" id="tally"></div>
-  <div class="vit" id="vit"><i id="vitfill"></i></div>
-  <div class="wind" id="wind"><i id="windfill"></i></div>
-  <div class="ammo" id="ammo"></div>
-  <div class="rockets" id="rockets"></div>
-  <div class="over dead" id="dead"><span>YOU ARE DEAD</span><span class="tick" id="tick">5</span><small>back on your feet in a moment</small></div>
-  <div class="over cut" id="cut"><span>DISCONNECTED</span><em>the valley went on without you</em><small>reload to go back</small></div>
-  <div class="over" id="over"><span>GAME OVER</span><em>the valley is dark</em><small>space to begin again</small></div>
   <div class="boot" id="boot">
     <div class="inner">
       <h1>RILL &nbsp;VALLEY</h1>
@@ -604,7 +127,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=389";
+    import { run } from "./host.js?v=390";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -676,46 +199,15 @@
     const door = server && query
       ? server + (server.includes("?") ? "&" : "?") + query
       : server;
-    const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
-    const stat = document.getElementById("stat");
     const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=389", (h) => {
-      const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
-      const lock = h.locked ? "" : " (measuring…)";
-      const here = h.here === null ? ""
-        : ` · <b>${h.here}</b> ${h.here === 1 ? "person" : "people"} in the valley`;
-      // Round trip to the server's own tick loop, not to its socket. Coloured
-      // at the thresholds a player would notice one: under 60 ms nothing is
-      // wrong, over 150 ms a shot that looked like it landed may not have.
-      const ping = h.ping == null ? ""
-        : ` · <b style="color:${h.ping < 60 ? "#57c26a" : h.ping < 150 ? "#f6c02e" : "#e0503a"}">` +
-          `${Math.round(h.ping)}</b> ms to the server`;
-      stat.innerHTML =
-        `<b>${h.gpuName}</b> · quality <b>${h.tier}</b>${lock}${here}<br>` +
-        `<b>${h.fps}</b> fps${gpu} · ${Math.round(h.tris / 1000)}k triangles${ping}<br>` +
-        `terrain, placement, physics, matrices: <b>valley.rill</b> → ` +
-        `<b>${h.wasmBytes ? (h.wasmBytes / 1024).toFixed(1) + " KB" : "?"}</b> of wasm<br>` +
-        `shadows · MSAA 4x · instancing · gerstner water · compute particles<br>` +
-        `textures <b>${kb(h.tex)}</b> · all assets <b>${kb(h.raw)}</b> → ` +
-        // "deflated" only when it actually was. Served off a plain local server
-        // nothing is compressed and `transferSize` counts response headers, so
-        // the wire figure comes out *larger* than the payload — true, and a lie
-        // if it is labelled as compression.
-        `<b>${kb(h.wire)}</b> ${h.wire < h.raw ? "deflated" : "over the wire"}` +
-        // Which build each end is. Green when they agree; the mismatch — a
-        // page left open across a deploy — is in the colour everything urgent
-        // on this page is, because the fix is one reload away and nothing on
-        // the page will say so otherwise. A server too old to say gets a
-        // question mark rather than a guess.
-        (h.serverVer === null && h.ping === null
-          ? `<br>build <b>${h.ver}</b>`
-          : `<br>build <b style="color:${h.serverVer === h.ver ? "#57c26a" : "#e0503a"}">${h.ver}</b>` +
-            ` · server <b style="color:${h.serverVer === h.ver ? "#57c26a" : "#e0503a"}">${h.serverVer ?? "?"}</b>`);
-    }, (done, total, label) => {
+    // The HUD — the stat corner included — is the engine's now: host.js
+    // pushes the lines straight into the wasm display list, so there is no
+    // element here to fill and nothing to do twice a second.
+    run(document.getElementById("c"), "./world.wasm?v=390", () => {}, (done, total, label) => {
       bar.style.width = `${(done / total * 100).toFixed(0)}%`;
       pct.textContent = `${Math.round(done / total * 100)}%`;
       what.textContent = label;

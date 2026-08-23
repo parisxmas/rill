@@ -13,6 +13,7 @@
 # player, because a player block knows which world it is in and these follow
 # that pointer.
 import "valley" as v
+import "hud" as hud
 
 # ---- the valley, and who is in it ------------------------------------------
 
@@ -318,6 +319,101 @@ export fn restart(s: Ptr) = v.restart(s)
 export fn set_meteors(w: Ptr, on: Int) = v.set_meteors(w, on)
 
 export fn meteors_on(w: Ptr) -> Int = v.meteors_on(w)
+
+# ---- the HUD ----------------------------------------------------------------
+#
+# The display list lives in hud.rill and knows nothing about the valley; this
+# is the glue that copies the live numbers into its header each frame and
+# hands the page the offsets it draws from. The page's own share — the atlas,
+# the pushed strings — goes straight into the block through `hud_ptr`.
+
+export fn hud_init(s: Ptr) -> Ptr =
+  h = hud.make()
+  poke_ptr(s, 95, h)
+  h
+
+export fn hud_ptr(s: Ptr) -> Ptr = peek_ptr(s, 95)
+
+export fn hud_inst_at() -> Int = hud.inst_at()
+
+export fn hud_inst_cap() -> Int = hud.inst_cap()
+
+export fn hud_met_at() -> Int = hud.met_at()
+
+export fn hud_meta_at() -> Int = hud.meta_at()
+
+export fn hud_bytes_at() -> Int = hud.bytes_at()
+
+export fn hud_slot_bytes() -> Int = hud.slot_bytes()
+
+export fn hud_strips() -> Int = hud.strips()
+
+export fn hud_strip_size(s: Ptr, i: Int) -> Float = hud.strip_size(peek_ptr(s, 95), i)
+
+export fn hud_strip_weight(s: Ptr, i: Int) -> Float = hud.strip_weight(peek_ptr(s, 95), i)
+
+# The theme, one float at a time, indexed from its base — colours and layout
+# both. What the numbers mean is written at the top of hud.rill; the point of
+# the export is that they can be changed without touching it.
+export fn hud_theme(s: Ptr, i: Int) -> Float = peek_f32(peek_ptr(s, 95), 256 + i)
+
+export fn set_hud_theme(s: Ptr, i: Int, v: Float) =
+  poke_f32(peek_ptr(s, 95), 256 + i, v)
+  1
+
+# One frame: the live numbers into the header, the tags through the view
+# matrix, then the layout. Returns how many instances to draw.
+export fn hud_frame(s: Ptr, w: Ptr) -> Int =
+  h = peek_ptr(s, 95)
+  if is_null(h) then 0
+  else
+    poke_f32(h, hud.h_health(), v.health(s))
+    poke_f32(h, hud.h_breath(), v.breath(s))
+    poke_f32(h, hud.h_spent(), to_float(v.winded(s)))
+    held = v.weapon(s)
+    poke_f32(h, hud.h_weapon(), to_float(held))
+    poke_f32(h, hud.h_rounds(), to_float(if held == 2 then v.ak_rounds(s) else v.rounds(s)))
+    poke_f32(h, hud.h_mag_cap(), to_float(if held == 2 then v.ak_full() else v.mag_full()))
+    poke_f32(h, hud.h_ak_mags(), to_float(v.ak_mags(s)))
+    poke_f32(h, hud.h_rockets(), to_float(v.rockets(s)))
+    poke_f32(h, hud.h_phase(), to_float(v.match_phase(w)))
+    poke_f32(h, hud.h_left(), v.match_left(w))
+    poke_f32(h, hud.h_board_left(), v.match_left(w))
+    poke_f32(h, hud.h_down_for(), v.down_for(s))
+    poke_f32(h, hud.h_dead_secs(), v.dead_secs())
+    project_tags(s, h)
+    hud.build(h)
+
+# Each tag's world position — pushed by the page into the slot's meta — through
+# the same view-projection the valley was just drawn with, so a name sits over
+# a head by the engine's own arithmetic. Behind the eye becomes an x no screen
+# has, which is what the layout tests for.
+fn project_tags(s, h) =
+  n = to_int(peek_f32(h, hud.h_tag_n()))
+
+  for i in 0..n
+    project_tag(s, h, hud.slot_meta(hud.sl_tag0() + i))
+
+fn project_tag(s, h, m) =
+  x = peek_f32(h, m + 1)
+  y = peek_f32(h, m + 2) + peek_f32(h, hud.t_at(hud.s_tag_rise()))
+  z = peek_f32(h, m + 3)
+  cw = peek_f32(s, 3) * x + peek_f32(s, 7) * y + peek_f32(s, 11) * z + peek_f32(s, 15)
+  if cw <= 0.05 then
+    poke_f32(h, m + 1, 0.0 - 99999.0)
+    1
+  else
+    cx = peek_f32(s, 0) * x + peek_f32(s, 4) * y + peek_f32(s, 8) * z + peek_f32(s, 12)
+    cy = peek_f32(s, 1) * x + peek_f32(s, 5) * y + peek_f32(s, 9) * z + peek_f32(s, 13)
+    dx = x - peek_f32(s, 16)
+    dy = y - peek_f32(s, 17)
+    dz = z - peek_f32(s, 18)
+    poke_f32(h, m + 1, (cx / cw * 0.5 + 0.5) * peek_f32(h, hud.h_sw()))
+    poke_f32(h, m + 2, (1.0 - (cy / cw * 0.5 + 0.5)) * peek_f32(h, hud.h_sh()))
+    poke_f32(h, m + 3, sqrt(dx * dx + dy * dy + dz * dz))
+    1
+
+extern fn sqrt(x: Float) -> Float
 
 # Called once when the module is instantiated, and there is nothing to set up:
 # the valley is built when the host has measured the machine and knows how much

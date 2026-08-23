@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=389";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=389";
+import { load } from "./world.js?v=390";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=390";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=389";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "389";
+const V = "390";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -99,6 +99,9 @@ const SHADERS = {
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
   mark: "common", spark: "common", ak: "common",
+  // The HUD stands alone: it has a uniform block of its own, and giving it
+  // `uniforms.wgsl` would declare group 0 binding 0 twice.
+  hud: null,
   launcher: "common", rocket: "common", warhead: "common", stone: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
@@ -173,6 +176,7 @@ async function loadShaders(step) {
     ZAP: whole("zap"),
     MARK: whole("mark"),
     SPARK: whole("spark"),
+    HUD: whole("hud"),
     AK: whole("ak"),
     STONE: whole("stone"),
     LAUNCHER: whole("launcher"),
@@ -1142,6 +1146,169 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   const markInst = device.createBuffer({ size: markCap * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
 
+  // ---- the HUD ---------------------------------------------------------------
+  //
+  // The layout lives in the engine now — hud.rill emits a display list of
+  // 16-float instances and this side does exactly two jobs: bake the page's
+  // own monospace font into an atlas once, and draw whatever the wasm said.
+  // The font stack is the same string the CSS carried, so the letterforms
+  // did not change when the DOM went.
+  const HUD_FONT = "ui-monospace, SFMono-Regular, Menlo, monospace";
+  // Cells 0..94 are ASCII; then the four non-ASCII guests the HUD uses.
+  const HUD_CHARS = [...Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)),
+                     "·", "→", "†", "…"];
+  const hudDpr = Math.min(devicePixelRatio || 1, 2);
+
+  // One strip per (size, weight) the theme asks for. Each cell is the glyph
+  // drawn white over transparent with the CSS text-shadow baked in: the red
+  // channel is the letter, the alpha is letter plus halo, and hud.wgsl
+  // separates them again. Cell 99 carries the strip's advance and padding.
+  function bakeHudAtlas(stripDefs) {
+    const pad = 3;
+    const rows = stripDefs.map(([size, weight]) => {
+      const c = document.createElement("canvas").getContext("2d");
+      c.font = `${weight} ${size * hudDpr}px ${HUD_FONT}`;
+      const adv = c.measureText("M").width / hudDpr;
+      const cellW = Math.ceil((adv + pad * 2) * hudDpr);
+      const cellH = Math.ceil((size * 1.35 + pad * 2) * hudDpr);
+      return { size, weight, adv, cellW, cellH };
+    });
+    const texW = 2048;
+    // Cells wrap into as many texture rows as a strip needs.
+    let y = 0;
+    for (const r of rows) {
+      r.perRow = Math.max(1, Math.floor(texW / r.cellW));
+      r.y0 = y;
+      y += Math.ceil(HUD_CHARS.length / r.perRow) * r.cellH;
+    }
+    const texH = y;
+    const cv = document.createElement("canvas");
+    cv.width = texW; cv.height = texH;
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    ctx.clearRect(0, 0, texW, texH);
+    ctx.fillStyle = "#fff";
+    ctx.textBaseline = "top";
+    ctx.shadowColor = "rgba(0,0,0,0.95)";
+    for (const r of rows) {
+      ctx.font = `${r.weight} ${r.size * hudDpr}px ${HUD_FONT}`;
+      ctx.shadowBlur = 2.5 * hudDpr;
+      for (let i = 0; i < HUD_CHARS.length; i++) {
+        const cx = (i % r.perRow) * r.cellW, cy = r.y0 + Math.floor(i / r.perRow) * r.cellH;
+        ctx.fillText(HUD_CHARS[i], cx + pad * hudDpr, cy + pad * hudDpr);
+      }
+    }
+    const tex = device.createTexture({
+      label: "hud atlas", size: [texW, texH],
+      format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture({ texture: tex },
+      ctx.getImageData(0, 0, texW, texH).data, { bytesPerRow: texW * 4 }, [texW, texH]);
+    // The metrics hud.rill lays out by: per cell, texel origin and CSS-pixel
+    // cell size; cell 99 is the strip's advance and pad.
+    const metrics = new Float32Array(stripDefs.length * 100 * 4);
+    rows.forEach((r, s) => {
+      for (let i = 0; i < HUD_CHARS.length && i < 99; i++) {
+        const at = (s * 100 + i) * 4;
+        metrics[at] = (i % r.perRow) * r.cellW;
+        metrics[at + 1] = r.y0 + Math.floor(i / r.perRow) * r.cellH;
+        metrics[at + 2] = r.cellW / hudDpr;
+        metrics[at + 3] = r.cellH / hudDpr;
+      }
+      const meta = (s * 100 + 99) * 4;
+      metrics[meta] = r.adv;
+      metrics[meta + 1] = pad;
+    });
+    return { tex, metrics, texW, texH };
+  }
+
+  const hudUni = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const HUD_CAP = 4096;
+  const hudInst = device.createBuffer({ size: HUD_CAP * 64, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  const hudBGL = device.createBindGroupLayout({ entries: [
+    { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} },
+    { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+  ]});
+  const hudLayout = [{ arrayStride: 64, stepMode: "instance", attributes: [
+    { shaderLocation: 0, offset: 0, format: "float32x4" },
+    { shaderLocation: 1, offset: 16, format: "float32x4" },
+    { shaderLocation: 2, offset: 32, format: "float32x4" },
+    { shaderLocation: 3, offset: 48, format: "float32x4" },
+  ]}];
+  const hudPipe = watched("hud", () => device.createRenderPipeline({
+    label: "hud",
+    layout: device.createPipelineLayout({ bindGroupLayouts: [hudBGL] }),
+    vertex: { module: mod(S.HUD, "hud"), buffers: hudLayout },
+    fragment: { module: mod(S.HUD, "hud"),
+                targets: [{ format, blend: overPre }] },
+    primitive: { cullMode: "none" },
+    depthStencil: { ...depth, depthWriteEnabled: false, depthCompare: "always" },
+    multisample: MS,
+  }));
+  const hudSampler = device.createSampler({ magFilter: "linear", minFilter: "linear" });
+  let hudAtlas = null, hudBG = null, hudOff = null;
+
+  // Wired after every (re)join: the block is new, the atlas is not.
+  function hudWire(st) {
+    E.hud_init(st);
+    if (!hudAtlas) {
+      const defs = [];
+      for (let i = 0; i < Number(E.hud_strips()); i++) {
+        defs.push([E.hud_strip_size(st, BigInt(i)), E.hud_strip_weight(st, BigInt(i))]);
+      }
+      hudAtlas = bakeHudAtlas(defs);
+      hudBG = device.createBindGroup({ layout: hudBGL, entries: [
+        { binding: 0, resource: { buffer: hudUni } },
+        { binding: 1, resource: hudAtlas.tex.createView() },
+        { binding: 2, resource: hudSampler },
+      ]});
+      device.queue.writeBuffer(hudUni, 16, new Float32Array([hudAtlas.texW, hudAtlas.texH, 0, 0]));
+    }
+    hudOff = {
+      base: Number(E.hud_ptr(st)),
+      inst: Number(E.hud_inst_at()), meta: Number(E.hud_meta_at()),
+      bytes: Number(E.hud_bytes_at()), slotB: Number(E.hud_slot_bytes()),
+      met: Number(E.hud_met_at()),
+    };
+    new Float32Array(E.memory.buffer, hudOff.base + hudOff.met * 4, hudAtlas.metrics.length)
+      .set(hudAtlas.metrics);
+  }
+
+  // The push side: text becomes bytes in a slot, colour switches become the
+  // control codes hud.rill reads (a byte under 32 selects theme colour
+  // byte - 1). `hudText` takes segments of [colourIndex, string].
+  const hudEnc = new TextEncoder();
+  function hudSlot(slot, segs, ...meta) {
+    const view = new Uint8Array(E.memory.buffer, hudOff.base + hudOff.bytes + slot * hudOff.slotB, hudOff.slotB);
+    let n = 0;
+    for (const [color, text] of segs) {
+      if (color >= 0 && n < hudOff.slotB) view[n++] = 1 + color;
+      const b = hudEnc.encode(text);
+      view.set(b.subarray(0, hudOff.slotB - n), n);
+      n = Math.min(hudOff.slotB, n + b.length);
+    }
+    const m = new Float32Array(E.memory.buffer, hudOff.base + (hudOff.meta + slot * 8) * 4, 8);
+    m[0] = n;
+    for (let i = 0; i < meta.length && i < 7; i++) m[i + 1] = meta[i];
+  }
+  const hudClear = (slot) => {
+    new Float32Array(E.memory.buffer, hudOff.base + (hudOff.meta + slot * 8) * 4, 1)[0] = 0;
+  };
+  const hudHead = (idx, v) => {
+    new Float32Array(E.memory.buffer, hudOff.base + idx * 4, 1)[0] = v;
+  };
+  // Theme colour indices, hud.rill's own — for building coloured segments.
+  const HC = { text: 0, gold: 1, sub: 2, dim: 3, bright: 4, green: 5, red: 6,
+               orange: 7, white: 8, lav: 9 };
+  // Header indices, hud.rill's own.
+  const HH = { sw: 1, sh: 2, dpr: 3, now: 4, aim: 5, fps: 6, ping: 7, net: 8,
+               warnAt: 9, tookAt: 10, crierAt: 11, over: 12, chat: 13,
+               tookMine: 14, crierOut: 15, cycling: 16,
+               tallyStand: 29, tallyBroke: 30, tallyAll: 31,
+               rosterN: 32, boardN: 33, tagN: 34, cross: 36 };
+  const HSLOT = { stat: 0, log: 8, roster: 20, board: 36, tag: 52,
+                  warn: 68, took: 69, crier: 70, over1: 71, over2: 72, over3: 73 };
+
   const ZAP_MAX = 16;
   const zapGpu = device.createBuffer({ size: ZAP_MAX * 40, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
   const zapData = new Float32Array(ZAP_MAX * 10);
@@ -2020,27 +2187,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         }
         // A kill is not something the shooter could work out: the snapshot
         // that says somebody is down says nothing about who put them there,
-        // so the server says it here.
-        tookEl.innerHTML = mine
+        // so the server says it here. The engine pops and fades it on the
+        // timestamps; this side only says the words.
+        hudSlot(HSLOT.took, mine
           ? (n[3]
-              ? `<em>💀</em> you killed <b>${them}</b>`
-              : `you hit <b>${them}</b> for <i>${much}</i>`)
-          : `<b>${them}</b> hit you for <i>${much}</i>`;
-        tookEl.classList.toggle("gave", mine);
+              ? [[-1, "† you killed "], [HC.gold, them]]
+              : [[-1, "you hit "], [HC.gold, them], [-1, " for "], [HC.white, much]])
+          : [[HC.gold, them], [-1, " hit you for "], [HC.white, much]]);
+        hudHead(HH.tookAt, performance.now() / 1000);
+        hudHead(HH.tookMine, mine ? 1 : 0);
         // And into the log, from whoever's point of view it is not.
         const shooter = mine ? "you" : (net.names.get(n[1]) ?? "somebody");
         const hitWho = mine ? them : "you";
         note(n[3]
-          ? `<b>${shooter}</b> <em>💀</em> <i>${hitWho}</i>`
-          : `<b>${shooter}</b> → <i>${hitWho}</i> <s>${much}</s>`);
-        // Off, reflow, on: a second round while the first line is still up has
-        // to restart the animation, and a class that is already there does not.
-        tookEl.classList.remove("on");
-        void tookEl.offsetWidth;
-        tookEl.classList.add("on");
-        // Long enough to read and no longer: it is one line about something
-        // that has already happened, and it is over the middle of the screen.
-        tookUntil = performance.now() + (mine && n[3] ? 1700 : 1100);
+          ? [[HC.gold, shooter], [HC.sub, " † "], [HC.text, hitWho]]
+          : [[HC.gold, shooter], [HC.sub, " → "], [HC.text, hitWho], [HC.red, " " + much]]);
       }
     }
   }
@@ -2108,57 +2269,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
   // ---- names over heads ----------------------------------------------------
   //
-  // Drawn as elements over the canvas rather than as geometry in it. Text in a
-  // 3D scene means an atlas, a quad per glyph and a pipeline to put them
-  // through; the browser already has a text engine that hints and kerns and
-  // knows about every script there is, and the tags want to face the camera
-  // and stay legible at any distance, which is exactly what it is good at.
-  //
-  // Where a tag goes is the only part that is ours: the world position of a
-  // point above their head, through the same view-projection the valley was
-  // drawn with, which is sitting in the first sixteen floats of the state.
-  const tags = document.createElement("div");
-  tags.className = "tags";
-  canvas.parentElement.appendChild(tags);
-  const tagFor = new Map();
-
-  function drawTags(seen, st) {
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    const live = new Set();
+  // Names over heads: who and where go into the tag slots, and the engine
+  // does the projecting with the same matrix it drew the valley by. What used
+  // to be one DOM element per player is now sixteen floats per player.
+  function drawTags(seen) {
+    let n = 0;
     for (const p of seen) {
-      if (!p.name) continue;
-      // Column-major, so a row of the matrix is a stride of four.
-      const x = p.x, y = p.y + 2.05, z = p.z;
-      const cw = st[3] * x + st[7] * y + st[11] * z + st[15];
-      // Behind the eye. Not "off screen" — behind it, where the projection
-      // turns round and would put the tag back on the far side.
-      if (cw <= 0.05) continue;
-      const cx = st[0] * x + st[4] * y + st[8] * z + st[12];
-      const cy = st[1] * x + st[5] * y + st[9] * z + st[13];
-      const sx = (cx / cw * 0.5 + 0.5) * w;
-      const sy = (1 - (cy / cw * 0.5 + 0.5)) * h;
-      if (sx < -80 || sx > w + 80 || sy < -40 || sy > h + 40) continue;
-      // The eye is in the state too, so distance costs nothing.
-      const d = Math.hypot(x - st[16], y - st[17], z - st[18]);
-      if (d > 90) continue;
-      let el = tagFor.get(p.id);
-      if (!el) {
-        el = document.createElement("span");
-        tags.appendChild(el);
-        tagFor.set(p.id, el);
-      }
-      if (el.textContent !== p.name) el.textContent = p.name;
-      // Fades out over the last twenty metres rather than vanishing, and goes
-      // amber as they run out of health — the same tell their colour carries,
-      // for when they are too far off to see the colour.
-      el.style.opacity = `${Math.min(1, (90 - d) / 20).toFixed(2)}`;
-      el.style.color = p.health > 0.35 ? "#e8e4da" : "#f6832e";
-      el.style.transform = `translate(${Math.round(sx)}px, ${Math.round(sy)}px) translate(-50%, -100%)`;
-      live.add(p.id);
+      if (!p.name || n >= 16) continue;
+      hudSlot(HSLOT.tag + n, [[-1, p.name]], p.x, p.y, p.z, p.health);
+      n++;
     }
-    for (const [id, el] of tagFor) {
-      if (!live.has(id)) { el.remove(); tagFor.delete(id); }
-    }
+    hudHead(HH.tagN, n);
   }
 
   // ---- the roster ----------------------------------------------------------
@@ -2174,13 +2295,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // goes straight onto the element it belongs to and the browser is left to
   // ease it; rewriting the markup twenty times a second would restart every
   // one of those transitions and the bars would step instead of slide.
-  const rosterEl = document.querySelector("#roster");
-  const rowsEl = document.querySelector("#rosterRows");
-  const rowFor = new Map();
-  let rosterShape = "";
-
   function drawRoster(list) {
-    if (rosterEl.hidden) rosterEl.hidden = false;
     // Somebody is announced once their name has arrived, which is a moment
     // after they have: the id comes in the snapshot and the name follows on a
     // `who` line, and "somebody joined" is not worth saying. Never about this
@@ -2188,58 +2303,31 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     for (const p of list) {
       if (!p.name || told.has(p.id)) continue;
       told.set(p.id, p.name);
-      if (!firstRoster && p.id !== net.id) { cry(p.name, "joined", "in"); note(`<b>${p.name}</b> joined`); }
+      if (!firstRoster && p.id !== net.id) { cry(p.name, "joined", "in"); note([[HC.gold, p.name], [HC.sub, " joined"]]); }
     }
     for (const [id, name] of told) {
       if (list.some(p => p.id === id)) continue;
       told.delete(id);
-      if (id !== net.id) { cry(name, "left", "out"); note(`<u>${name}</u> left`); }
+      if (id !== net.id) { cry(name, "left", "out"); note([[HC.dim, name + " left"]]); }
     }
     firstRoster = false;
-    const shape = list.map(p => `${p.id}:${p.name}`).join(",");
-    if (shape !== rosterShape) {
-      rosterShape = shape;
-      rowsEl.textContent = "";
-      rowFor.clear();
-      for (const p of list) {
-        const row = document.createElement("div");
-        row.className = p.self ? "row self" : "row";
-        const dot = document.createElement("i");
-        dot.className = "dot";
-        const c = hueOf(p.id, 1);
-        dot.style.background = `rgb(${c.map(v => Math.round(v * 255)).join(",")})`;
-        const nm = document.createElement("span");
-        nm.className = "nm";
-        nm.textContent = p.name || `player ${p.id}`;
-        // What they have done and what has been done to them. Two numbers
-        // rather than a ratio: a ratio hides how much has happened, and in a
-        // valley of four people that is most of the story.
-        const hit = document.createElement("span");
-        hit.className = "hit";
-        const shot = document.createElement("span");
-        shot.className = "shot";
-        const bar = document.createElement("span");
-        bar.className = "bar";
-        const fill = document.createElement("i");
-        bar.appendChild(fill);
-        row.append(dot, nm, hit, shot, bar);
-        rowsEl.appendChild(row);
-        rowFor.set(p.id, { row, fill, hit, shot });
-      }
-    }
+    // What they have done and what has been done to them. Two numbers rather
+    // than a ratio: a ratio hides how much has happened, and in a valley of
+    // four people that is most of the story. Sixteen floats a row and the
+    // engine draws the dot, the bar and the strike-through.
+    let n = 0;
     for (const p of list) {
-      const r = rowFor.get(p.id);
-      if (!r) continue;
-      if (r.hit.textContent !== `${p.hit}`) r.hit.textContent = `${p.hit}`;
-      if (r.shot.textContent !== `${p.shot}`) r.shot.textContent = `${p.shot}`;
-      const frac = Math.max(0, Math.min(1, p.health));
-      r.fill.style.width = `${(frac * 100).toFixed(0)}%`;
-      // Green while it is fine, amber on the way down, red at the end — and
-      // the row itself goes quiet once there is nothing left, so somebody
-      // waiting to come back is still on the list but plainly not in it.
-      r.fill.style.background = frac > 0.55 ? "#57c26a" : frac > 0.25 ? "#f6c02e" : "#e0503a";
-      r.row.classList.toggle("out", frac <= 0.001);
+      if (n >= 16) break;
+      const c = hueOf(p.id, 1);
+      hudSlot(HSLOT.roster + n, [[-1, p.name || `player ${p.id}`]],
+              c[0], c[1], c[2],
+              // Self rides in the health's sign — a slot only has eight
+              // floats and the engine reads the magnitude.
+              p.self ? -Math.max(0.001, p.health) : p.health,
+              p.hit, p.shot, p.health <= 0.001 ? 1 : 0);
+      n++;
     }
+    hudHead(HH.rosterN, n);
   }
 
   // ---- the round -----------------------------------------------------------
@@ -2248,11 +2336,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // numbers off the world — the phase and the seconds remaining — so a browser
   // alone in its own valley shows exactly what a shared one does, without a
   // server having to be there to say so.
-  const clockEl = document.querySelector("#clock");
-  const boardEl = document.querySelector("#board");
-  const boardRows = document.querySelector("#boardRows");
-  const boardCount = document.querySelector("#boardCount");
-  let boardShape = "";
   // Which snapshot the round's clock was last set from, so it is corrected
   // once per arrival rather than every frame.
   let syncedAt = -1;
@@ -2263,49 +2346,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     kills: Number(E.kills(state)), deaths: Number(E.deaths(state)),
   }];
 
-  const mmss = (secs) => {
-    const t = Math.max(0, Math.ceil(secs));
-    return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0");
-  };
-
+  // The clock and the dark sheet are the engine's — it holds the phase and
+  // the seconds itself — so the page's whole share of the board is the rows.
   function drawRound(phase, left, list, myId) {
-    // Nothing at all until there is a round to talk about. Reading the phase
-    // off a world that does not exist yet gives whatever was in that memory,
-    // and a stray bit in it puts ROUND OVER over the loading screen with a
-    // counter that never reaches nought — which is what shipped, because the
-    // valley is asked about before it is built.
-    if (left == null || !Number.isFinite(left) || left < 0 || left > 4000) {
-      clockEl.hidden = true;
-      boardEl.hidden = true;
-      return;
-    }
-    const over = phase === 1;
-    clockEl.hidden = over;
-    if (!over) {
-      clockEl.textContent = mmss(left);
-      // The last half minute in the colour everything urgent on this page is.
-      clockEl.classList.toggle("low", left <= 30);
-    }
-    if (boardEl.hidden !== !over) boardEl.hidden = !over;
-    if (!over) return;
-    boardCount.textContent = String(Math.max(0, Math.ceil(left)));
+    if (phase !== 1) { hudHead(HH.boardN, 0); return; }
     // Most kills first, then fewest deaths, then whoever arrived first — a
     // board that reordered itself every tick would be unreadable.
     const rank = list.slice().sort((a, b) =>
       (b.kills | 0) - (a.kills | 0) || (a.deaths | 0) - (b.deaths | 0) || a.id - b.id);
-    const shape = rank.map(p => `${p.id}:${p.name ?? ""}:${p.kills | 0}:${p.deaths | 0}`).join("|");
-    if (shape === boardShape) return;
-    boardShape = shape;
-    boardRows.replaceChildren(...rank.map((p) => {
-      const tr = document.createElement("tr");
-      if (p.id === myId) tr.className = "you";
-      for (const v of [p.name ?? ("player" + p.id), p.kills | 0, p.deaths | 0]) {
-        const td = document.createElement("td");
-        td.textContent = String(v);
-        tr.append(td);
-      }
-      return tr;
-    }));
+    let n = 0;
+    for (const p of rank) {
+      if (n >= 16) break;
+      hudSlot(HSLOT.board + n, [[-1, p.name ?? ("player" + p.id)]],
+              p.kills | 0, p.deaths | 0, p.id === myId ? 1 : 0);
+      n++;
+    }
+    hudHead(HH.boardN, n);
   }
 
   // A colour per player, off the golden angle round the hue circle: the second
@@ -2341,6 +2397,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // change of quality — which rebuilds the valley and rejoins — does not
   // teleport anybody, and rolled again when a finished valley is started over.
   let spawnRoll = Math.random() * 4096;
+  // How many instances the engine's HUD emitted this frame — settled before
+  // the pass begins, drawn at its end.
+  let hudCount = 0;
   let W = null;       // tier-dependent GPU resources
   const stateF32 = () => new Float32Array(E.memory.buffer, Number(state), 64);
   // The world's own block, which is not the player's. The shark lives here —
@@ -2412,6 +2471,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // spawn is the server's, and a client that moved itself would be corrected
     // by the next snapshot anyway.
     if (!net) { E.spawn_salt(state, spawnRoll); E.respawn(state); }
+    // A new player block means a new HUD block hanging off it: the atlas
+    // survives a re-tier, the metrics are written again into the fresh block.
+    hudWire(state);
     // A re-tier is a new valley and a new player block in it, and `join` hands
     // out a player carrying the rifle. What is in the hands is the page's
     // business and did not change because the terrain got coarser — without
@@ -2885,121 +2947,51 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // either side of it.
   const CHANGE_SECS = 1.45;
   let changeAt = -1e9;
-  let ended = false, lastStanding = -1, wantRestart = false, warnUntil = 0;
-  const warn = document.getElementById("warn");
-  const cut = document.getElementById("cut");
-  const tookEl = document.getElementById("took");
-  let tookUntil = 0;
+  let ended = false, lastStanding = -1, wantRestart = false, lastOver = 0;
   // Arrivals and departures, across the middle. Announced from the roster
   // rather than from a message of their own: the roster already knows, and a
   // valley that has to be told twice about the same fact will one day be told
   // once.
-  const crierEl = document.getElementById("crier");
   const told = new Map();
-  let crierUntil = 0, firstRoster = true;
+  let firstRoster = true;
 
   // The log, bottom left: everything that happened, in the order it happened,
-  // oldest at the top. The middle of the screen says the one thing that is
-  // happening *now* and then gets out of the way; this is where it goes to be
-  // read a moment later — who has been shooting whom while you were busy
-  // somewhere else, and who arrived behind you.
-  const logEl = document.getElementById("log");
-  const LOG_KEEP = 7;
+  // oldest at the top. Lines are segments of [colourIndex, text] now rather
+  // than markup — the engine draws them, this side only keeps the ring. A
+  // line somebody typed goes in as one plain segment: whatever is in it is
+  // bytes to the atlas, never markup to anything.
+  const LOG_KEEP = 12;
+  const logRing = [];
 
-  function note(html) {
-    const line = document.createElement("div");
-    line.innerHTML = html;
-    logEl.appendChild(line);
-    while (logEl.children.length > LOG_KEEP) logEl.firstChild.remove();
-    // Each line fades on its own clock rather than the list scrolling: a line
-    // that is still being read should not move because a new one arrived.
-    setTimeout(() => line.classList.add("gone"), 9000);
-    setTimeout(() => line.remove(), 9800);
+  function pushLog(segs, said) {
+    logRing.push({ segs, said, born: performance.now() / 1000 });
+    // Drop what has both scrolled off and faded; the engine fades by age, so
+    // the ring only has to stay short.
+    while (logRing.length > LOG_KEEP) logRing.shift();
+    for (let i = 0; i < LOG_KEEP; i++) {
+      const l = logRing[i];
+      if (l) hudSlot(HSLOT.log + i, l.segs, l.said ? 1 : 0, l.born);
+      else hudClear(HSLOT.log + i);
+    }
   }
-
-  // A line somebody typed, into the same column as everything else that has
-  // happened — because to whoever is reading it, it *is* one of the things
-  // that happened, in the order it happened.
-  //
-  // Built out of nodes rather than out of a string of HTML, and that is not a
-  // style: `note` sets `innerHTML`, and every other line it is given was
-  // written here. This one was written by somebody else, over a socket, on a
-  // server anybody can connect to. A name is safe because the server allows it
-  // nothing but letters and digits; a sentence cannot be held to that and has
-  // to be put on the screen as text. `textContent` is what makes it text.
-  //
-  // Half a minute rather than the log's nine seconds: the valley decides when
-  // to say a stone went, and a person decides when to speak. The second is
-  // worth waiting on.
-  const SAID_KEEP = 30000;
-
-  function sayLine(who, text) {
-    const line = document.createElement("div");
-    line.className = "said";
-    const b = document.createElement("b");
-    b.textContent = who;
-    line.append(b, document.createTextNode(" " + text));
-    logEl.appendChild(line);
-    while (logEl.children.length > LOG_KEEP) logEl.firstChild.remove();
-    setTimeout(() => line.classList.add("gone"), SAID_KEEP);
-    setTimeout(() => line.remove(), SAID_KEEP + 800);
-  }
+  const note = (segs) => pushLog(segs, false);
+  const sayLine = (who, text) => pushLog([[HC.green, who], [HC.lav, " " + text]], true);
 
   function cry(who, what, kind) {
-    crierEl.innerHTML = `<b>${who}</b> ${what}`;
-    crierEl.className = `crier ${kind}`;
-    // Off, reflow, on, so a second arrival while the first is still up
-    // restarts the movement rather than sitting there.
-    void crierEl.offsetWidth;
-    crierEl.classList.add("on");
-    crierUntil = performance.now() + 1800;
+    hudSlot(HSLOT.crier, kind === "in"
+      ? [[HC.gold, who], [HC.text, " " + what]]
+      : [[HC.sub, who], [HC.dim, " " + what]]);
+    hudHead(HH.crierAt, performance.now() / 1000);
+    hudHead(HH.crierOut, kind === "out" ? 1 : 0);
   }
-  const crosshair = document.querySelector(".aim");
-  const scopeEl = document.getElementById("scope");
-  let sighted = 1, saidScope = -1;
-
-  const deadEl = document.getElementById("dead");
-  const tickEl = document.getElementById("tick");
-  // How long the valley leaves somebody on the ground. Asked of Rill rather
-  // than written here twice: the number that matters is the one the server
-  // counts against, and this only says it out loud.
-  const DOWN_FOR = E.dead_secs();
-  let saidDown = "";
-  const tally = document.getElementById("tally");
-  const vitfill = document.getElementById("vitfill");
-  const windfill = document.getElementById("windfill");
-  let lastWind = -1;
-  // The pips are built once out of what a magazine holds, so the row is the
-  // world's number and not a ten written into the page.
-  const ammoEl = document.getElementById("ammo");
-  const pips = [];
-  for (let i = 0; i < Number(E.ak_full()); i++) {
-    const pip = document.createElement("i");
-    ammoEl.appendChild(pip);
-    pips.push(pip);
-  }
-  // And the belt: the spare magazines beside the rounds, drawn as the fatter
-  // pips at the end of the row, only while the AK is up.
-  const magPips = [];
-  for (let i = 0; i < Number(E.ak_mag_count()) - 1; i++) {
-    const pip = document.createElement("i");
-    pip.className = "mag";
-    ammoEl.appendChild(pip);
-    magPips.push(pip);
-  }
-  // And the tube's row above it, as long as the tube holds. Two rows that
-  // never change shape, because a rocket count you can only see while holding
-  // the launcher is a count you learn about one warhead too late.
-  const rocketsEl = document.getElementById("rockets");
-  const rpips = [];
-  for (let i = 0; i < Number(E.rocket_full()); i++) {
-    const pip = document.createElement("i");
-    rocketsEl.appendChild(pip);
-    rpips.push(pip);
+  // A refusal, and the hit line: pushed once, timed by the engine.
+  function sayWarn(text) {
+    hudSlot(HSLOT.warn, [[HC.orange, text.toUpperCase()]]);
+    hudHead(HH.warnAt, performance.now() / 1000);
   }
   let lastAmmo = -1, lastRockets = -1, lastHeld = -1, lastAkMags = -1;
   let wasDown = false;
-  let lastHp = -1, hurtUntil = 0;
+  let lastHp = -1;
   // The sights. `wantAim` is the button; `aim` is how far through the move,
   // eased, because a field of view that changes between one frame and the next
   // reads as a cut rather than as somebody raising a rifle.
@@ -3211,8 +3203,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       breaks = Number(E.breaks(state));
       blastsHeard = Number(E.blasts_fired(state));
       zapSeen = Number(E.zaps(state));
-      document.getElementById("over").classList.remove("on");
-      document.querySelector("#over em").textContent = "the valley is dark";
+      hudHead(HH.over, 0);
     }
     wantRestart = false;
 
@@ -3222,12 +3213,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // available is that the game has stopped working. One line turns a fault
     // into a rule.
     const wading = Number(E.wading(state));
-    if (wantShot && wading) {
-      warn.textContent = "you cannot fire from the water";
-      warn.classList.add("on");
-      warnUntil = t + 1.9;
-    }
-    if (warnUntil && t > warnUntil) { warn.classList.remove("on"); warnUntil = 0; }
+    if (wantShot && wading) sayWarn("you cannot fire from the water");
 
     // An empty rifle is the same kind of fault as one held under water: the
     // trigger is pulled and nothing happens, and without a word for it the only
@@ -3274,9 +3260,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // is what the climb and the cone are measured from, so it resets here.
     if (akBurst > 0 && (!fireHeld || loaded === 0 || held !== 2)) akBurst = 0;
     if (wantShot && boltT >= cycleNow() && !wading && loaded === 0 && !(held === 2 && akMags > 0)) {
-      warn.textContent = held === 1 ? "the tube is empty" : "the magazine is empty";
-      warn.classList.add("on");
-      warnUntil = t + 1.9;
+      sayWarn(held === 1 ? "the tube is empty" : "the magazine is empty");
       dryClick();
     } else if (wantShot && boltT >= cycleNow() && !wading) {
       const st0 = stateF32();
@@ -3596,34 +3580,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The page's crosshair is for the hip. It steps back as the rifle comes up
     // and is gone by the time the scope has the screen, which has a reticle of
     // its own and no room for a second opinion about where the middle is.
-    const cross = aim > 0.9 ? 0 : aim > 0.35 ? 0.3 : 1;
-    if (cross !== sighted) { sighted = cross; crosshair.style.opacity = `${cross}`; }
-    // The sight picture opening. Written at a fiftieth of the way rather than
-    // every frame, because these are style properties and the compositor has
-    // better things to do with a hundred and forty of them a second.
-    // Only the weapon that has glass in it, which is the rifle and nothing
-    // else. The vignette and the reticle are what an eye pressed to an
-    // eyepiece sees; an eye behind a notch sees the whole room, and closing
-    // the screen down to a circle around the AK's sights — or the launcher's —
-    // would be drawing an optic that is not on the weapon.
-    const shade = Math.round((held === 0 ? aim : 0) * 50);
-    if (shade !== saidScope) {
-      saidScope = shade;
-      const a = shade / 50;
-      scopeEl.style.opacity = `${a}`;
-      // Nothing at the hip, a keyhole halfway, and most of the screen at the
-      // top — the circle opens as the weapon comes out of the way.
-      scopeEl.style.setProperty("--r", `${(a * a * 34).toFixed(1)}vmin`);
-      // The reticle is the scope's glass, so it arrives with the scope rather
-      // than with the movement: nothing until the rifle is most of the way up,
-      // then all of it.
-      scopeEl.style.setProperty("--ret", `${Math.max(0, (a - 0.7) / 0.25).toFixed(2)}`);
+
+
+    // The socket went. The engine keeps the caption up; this only raises it.
+    if (net && net.lost && lastOver !== 2) {
+      lastOver = 2;
+      hudSlot(HSLOT.over1, [[-1, "DISCONNECTED"]]);
+      hudSlot(HSLOT.over2, [[-1, "THE VALLEY WENT ON WITHOUT YOU"]]);
+      hudSlot(HSLOT.over3, [[-1, "RELOAD TO GO BACK"]]);
+      hudHead(HH.over, 2);
     }
-
-    if (tookUntil && now > tookUntil) { tookEl.classList.remove("on"); tookUntil = 0; }
-    if (crierUntil && now > crierUntil) { crierEl.classList.remove("on"); crierUntil = 0; }
-
-    if (net && net.lost && !cut.classList.contains("on")) cut.classList.add("on");
 
     // Down, and how long for. The clock is Rill's — the same one the server
     // counts against to decide when somebody may stand up — so the number on
@@ -3638,15 +3604,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
                E.player_yaw(state), BigInt(E.player_id(state)));
     }
     wasDown = downNow;
-    if (net) {
-      const down = E.health(state) <= 0.001;
-      if (down) {
-        const left = Math.max(0, Math.ceil(DOWN_FOR - E.down_for(state)));
-        const say = `${left}`;
-        if (say !== saidDown) { tickEl.textContent = say; saidDown = say; }
-      }
-      if (down !== deadEl.classList.contains("on")) deadEl.classList.toggle("on", down);
-    }
 
     // Anything break in there? Rill counts them; the host only has to notice.
     // Not `>`: a tier change rebuilds the world and puts the tally back to
@@ -3933,20 +3890,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // costs is the world's business and not the renderer's. It moves every
     // frame you are running, so the threshold is tighter than the vital bar's
     // and the transition on it is short enough not to lag the key.
-    const wind = E.breath(state);
-    if (Math.abs(wind - lastWind) > 0.002) {
-      lastWind = wind;
-      windfill.style.width = `${(wind * 100).toFixed(1)}%`;
-      // The same two stops the vital bar has, for the same reason: a bar that
-      // only changes width reads as a quantity when you look at it, and one
-      // that changes colour reads as a quantity out of the corner of an eye.
-      windfill.style.background = wind > 0.55
-        ? "linear-gradient(90deg, #4aa3d8, #7fd7f2)"
-        : wind > 0.28
-          ? "linear-gradient(90deg, #3f7fb8, #4aa3d8)"
-          : "linear-gradient(90deg, #2f5f8c, #3f7fb8)";
-      windfill.classList.toggle("spent", E.winded(state) === 1);
-    }
 
     // The round's clock and, between rounds, the board. Here rather than
     // beside the roster because the roster only exists when there is a
@@ -3984,38 +3927,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // has finished. `boltT` is the same clock the trigger is gated on, so what
     // you see and what the trigger will do cannot disagree.
     loadedTube = held === 1 && rkts > 0 && boltT >= RPG_CYCLE;
-    if (rounds !== lastAmmo || rkts !== lastRockets || held !== lastHeld || akMagsNow !== lastAkMags) {
-      lastAmmo = rounds; lastRockets = rkts; lastHeld = held; lastAkMags = akMagsNow;
-      for (let i = 0; i < pips.length; i++) {
-        pips[i].hidden = i >= gunCap;
-        pips[i].classList.toggle("out", i >= rounds);
-      }
-      for (let i = 0; i < magPips.length; i++) {
-        magPips[i].hidden = held !== 2;
-        magPips[i].classList.toggle("out", i >= akMagsNow);
-      }
-      for (let i = 0; i < rpips.length; i++) rpips[i].classList.toggle("out", i >= rkts);
-      // The held weapon's row burns full and the other dims — which is up is
-      // said by light rather than by shape. Empty only interrupts on the row
-      // whose trigger would do nothing right now.
-      ammoEl.classList.toggle("dim", held === 1);
-      rocketsEl.classList.toggle("dim", held !== 1);
-      ammoEl.classList.toggle("dry", held !== 1 && rounds === 0);
-      rocketsEl.classList.toggle("dry", held === 1 && rkts === 0);
-    }
     const hp = E.health(state);
     if (Math.abs(hp - lastHp) > 0.002) {
-      if (hp < lastHp - 0.004) { vitfill.classList.add("hurt"); hurtUntil = t + 0.45; }
-      else if (hp > lastHp + 0.001 && lastHp >= 0) chime(t);
+      if (hp > lastHp + 0.001 && lastHp >= 0) chime(t);
       lastHp = hp;
-      vitfill.style.width = `${(hp * 100).toFixed(1)}%`;
-      // Amber through to red as it goes. Two stops rather than one so the bar
-      // reads as a quantity even at a glance, which a flat block does not.
-      vitfill.style.background = hp > 0.55
-        ? "linear-gradient(90deg, #f6c02e, #8fd14f)"
-        : hp > 0.28
-          ? "linear-gradient(90deg, #f6832e, #f6c02e)"
-          : "linear-gradient(90deg, #d92d2d, #f6642e)";
       // Alone, running out of health is the end of the thing and there is a
       // screen for it. In somebody else's valley it is five seconds on your
       // back, so it gets a different screen and a number counting down — being
@@ -4023,11 +3938,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // thing on the page that can do it.
       if (hp <= 0.001 && !ended && !net) {
         ended = true;
-        document.querySelector("#over em").textContent = "the valley kept its crystals";
-        document.getElementById("over").classList.add("on");
+        hudSlot(HSLOT.over1, [[-1, "GAME OVER"]]);
+        hudSlot(HSLOT.over2, [[-1, "THE VALLEY KEPT ITS CRYSTALS"]]);
+        hudSlot(HSLOT.over3, [[-1, "SPACE TO BEGIN AGAIN"]]);
+        hudHead(HH.over, 1);
       }
     }
-    if (hurtUntil && t > hurtUntil) { vitfill.classList.remove("hurt"); hurtUntil = 0; }
 
     // The tally, and with it the end of the thing. A crystal that has been shot
     // has its scale set to zero, so counting the ones that still have a size is
@@ -4040,15 +3956,35 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // times a second is how a text node ends up costing more than the valley.
     let standing = 0;
     for (let i = 0; i < W.counts.crystals; i++) if (cry[i * 8 + 3] > 0.001) standing++;
-    if (standing !== lastStanding) {
-      lastStanding = standing;
-      const gone = W.counts.crystals - standing;
-      tally.innerHTML =
-        `<b>${standing}</b> standing &nbsp;·&nbsp; <b>${gone}</b> broken ` +
-        `&nbsp;·&nbsp; ${W.counts.crystals} in the valley`;
-      if (!standing && !ended) { ended = true; document.getElementById("over").classList.add("on"); }
+    if (!standing && !ended) {
+      ended = true;
+      hudSlot(HSLOT.over1, [[-1, "GAME OVER"]]);
+      hudSlot(HSLOT.over2, [[-1, "THE VALLEY IS DARK"]]);
+      hudSlot(HSLOT.over3, [[-1, "SPACE TO BEGIN AGAIN"]]);
+      hudHead(HH.over, 1);
     }
     device.queue.writeBuffer(flyTime, 0, new Float32Array([t, dt, 0, 0]));
+
+    // The HUD's frame: the live numbers into the block's header, the engine
+    // lays everything out, and whatever it emitted goes up as one buffer.
+    hudCount = 0;
+    if (hudOff) {
+      hudHead(HH.sw, canvas.clientWidth); hudHead(HH.sh, canvas.clientHeight);
+      hudHead(HH.dpr, hudDpr); hudHead(HH.now, now / 1000);
+      hudHead(HH.aim, aim); hudHead(HH.cross, aim > 0.9 ? 0 : aim > 0.35 ? 0.3 : 1);
+      hudHead(HH.net, net ? 1 : 0);
+      hudHead(HH.cycling, document.body.classList.contains("cycling") ? 1 : 0);
+      hudHead(HH.tallyStand, standing);
+      hudHead(HH.tallyBroke, W.counts.crystals - standing);
+      hudHead(HH.tallyAll, W.counts.crystals);
+      hudCount = Math.min(Number(E.hud_frame(state, world)), HUD_CAP);
+      if (hudCount > 0) {
+        device.queue.writeBuffer(hudInst, 0,
+          new Float32Array(E.memory.buffer, hudOff.base + hudOff.inst * 4, hudCount * 16));
+      }
+      device.queue.writeBuffer(hudUni, 0,
+        new Float32Array([canvas.clientWidth, canvas.clientHeight, 0, 0]));
+    }
 
     const enc = device.createCommandEncoder();
 
@@ -4256,6 +4192,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         pass.setPipeline(muzzlePipe); pass.draw(12);
       }
     }
+
+    // The HUD, over everything: whatever the engine laid out this frame,
+    // one instanced draw. `hudCount` was settled before the pass began.
+    if (hudCount > 0) {
+      pass.setPipeline(hudPipe);
+      pass.setBindGroup(0, hudBG);
+      pass.setVertexBuffer(0, hudInst);
+      pass.draw(6, hudCount);
+    }
     pass.end();
 
     if (qs) {
@@ -4297,22 +4242,35 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
 
     frames++;
-    if (now - fpsT > 500) {
+    if (now - fpsT > 500 && hudOff) {
       fps = Math.round(frames * 1000 / (now - fpsT));
       frames = 0; fpsT = now;
-      hud({ fps, gpuMs: qs ? gpuMs : null, tier: T.name, gpuName, tris: W.tris, locked,
-            // How many people are in it, which is null when this valley is
-            // nobody else's business.
-            here: net && net.last ? net.last.players.length : null,
-            // How far away the server is, in milliseconds, or null when there
-            // is not one or the first reply has not come back yet.
-            ping: net ? net.ping : null,
-            // Which build each end is. The client's is `V`; the server says
-            // its own at the door, and the page shows both so a tab left open
-            // across a deploy can see that its fix is one reload away.
-            ver: Number(V),
-            serverVer: net ? net.serverVersion : null,
-            wasmBytes: wasmSize(), ...weights() });
+      // The stat corner, twice a second, straight into the slots the engine
+      // right-aligns. The words the old innerHTML carried, in segments: the
+      // values gold, the rest quiet.
+      const wt = weights();
+      const kb = n => `${(n / 1024).toLocaleString("en", { maximumFractionDigits: 0 })} KB`;
+      const here = net && net.last ? net.last.players.length : null;
+      const ping = net ? net.ping : null;
+      const sv = net ? net.serverVersion : null;
+      const D = HC.dim, G = HC.gold;
+      hudSlot(HSLOT.stat + 0, [[G, gpuName], [D, " · quality "], [G, T.name],
+        [D, locked ? "" : " (measuring…)"],
+        ...(here === null ? [] : [[D, " · "], [G, `${here}`], [D, ` ${here === 1 ? "person" : "people"} in the valley`]])]);
+      hudSlot(HSLOT.stat + 1, [[G, `${fps}`], [D, " fps"],
+        [D, qs && gpuMs ? ` · GPU ${gpuMs.toFixed(1)} ms` : ""],
+        [D, ` · ${Math.round(W.tris / 1000)}k triangles`],
+        ...(ping === null ? [] : [[ping < 60 ? HC.green : ping < 150 ? HC.gold : HC.red, ` · ${Math.round(ping)}`], [D, " ms to the server"]])]);
+      hudSlot(HSLOT.stat + 2, [[D, "terrain, placement, physics, matrices: "], [G, "valley.rill"],
+        [D, " → "], [G, `${(wasmSize() / 1024).toFixed(1)} KB`], [D, " of wasm"]]);
+      hudSlot(HSLOT.stat + 3, [[D, "shadows · MSAA 4x · instancing · gerstner water · compute particles"]]);
+      hudSlot(HSLOT.stat + 4, [[D, "textures "], [G, kb(wt.tex)], [D, " · all assets "], [G, kb(wt.raw)],
+        [D, " → "], [G, kb(wt.wire)], [D, wt.wire < wt.raw ? " deflated" : " over the wire"]]);
+      const agree = sv === Number(V);
+      hudSlot(HSLOT.stat + 5, sv === null && ping === null
+        ? [[D, "build "], [G, V]]
+        : [[D, "build "], [agree ? HC.green : HC.red, V], [D, " · server "],
+           [agree ? HC.green : HC.red, `${sv ?? "?"}`]]);
     }
     requestAnimationFrame(tick);
   }
@@ -4324,10 +4282,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // nobody would have seen it. Six seconds is long enough to read twice, and
   // then it goes: what is behind it is a valley that works.
   if (turnedAway) {
-    cut.querySelector("span").textContent = "NOT IN";
-    cut.querySelector("em").textContent = turnedAway;
-    cut.querySelector("small").textContent = "this valley is yours alone";
-    cut.classList.add("on");
-    setTimeout(() => cut.classList.remove("on"), 6000);
+    hudSlot(HSLOT.over1, [[-1, "NOT IN"]]);
+    hudSlot(HSLOT.over2, [[-1, turnedAway.toUpperCase()]]);
+    hudSlot(HSLOT.over3, [[-1, "THIS VALLEY IS YOURS ALONE"]]);
+    hudHead(HH.over, 3);
+    setTimeout(() => hudHead(HH.over, 0), 6000);
   }
 }

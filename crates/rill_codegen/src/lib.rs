@@ -2958,10 +2958,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     && self.llvm_type(ret_ty).is_some()
                 {
                     call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
-                } else if !(callee_tailcc && caller_tailcc)
+                } else if !self.wasm
+                    && !(callee_tailcc && caller_tailcc)
                     && *fn_idx != self.cur_fn
                     && self.call_goes_round(*fn_idx)
                 {
+                    // Not on wasm: there the C convention is universal by
+                    // design — the tail-call proposal may not be available to
+                    // declare — so this would flag every mutual loop in every
+                    // module while naming a fix that does not apply.
                     // The promise is quietly absent exactly here: a call in
                     // tail position that can come back around, made under the
                     // C convention because one signature or the other did not
