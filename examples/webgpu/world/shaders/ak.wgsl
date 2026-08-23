@@ -21,18 +21,148 @@
     @location(0) world: vec3f,
     @location(1) normal: vec3f,
     @location(2) model: vec3f,
+    // Whether this vertex belongs to the magazine. Flat, not interpolated: it
+    // is a yes or a no per piece of geometry and a half of one, along the edge
+    // where the magazine meets the well, would be a seam of the wrong metal.
+    @location(3) @interpolate(flat) mag: f32,
+  }
+
+  // ---- changing the magazine ------------------------------------------------
+  //
+  // `u.akMin.w` runs from nought to one across the second and a half the hands
+  // are busy, and is nought at every other moment — so for all but that second
+  // and a half none of this does anything at all.
+  //
+  // Which vertices are the magazine is a flag the mesh carries in the spare
+  // fourth component of its quantized position, the way the rifle's mesh says
+  // which vertices are its bolt. It has to be a flag and not a test on where a
+  // vertex is: the magazine's two side plates are each one piece running from
+  // the floor of the magazine up inside the receiver, so any test that cuts
+  // through the middle of the gun leaves half a plate hanging in the well
+  // while the other half falls away. `tools/mark_ak_magazine.py` decides it
+  // per connected piece, which cannot do that.
+  //
+  // An AK's magazine rocks. The lug at the front of it hooks into the front of
+  // the well and a catch behind holds the rear down; it goes in nose-first and
+  // is turned back until the catch takes it, and it comes out the same way
+  // round. So this turns about that lug rather than sliding straight down,
+  // which is the whole difference between a rifle and a drawer.
+  const CHANGE_SECS = 1.45;   // must match `CHANGE_SECS` in host.js
+  const MAG_HOOK = vec3f(-0.005, 0.017, -0.012);
+  const MAG_TURN = 0.55;      // radians off the lug, about thirty degrees
+  const MAG_OFF  = 0.11;      // when the old one comes free
+  const MAG_GONE = 0.34;      // and when it is far enough down to stop drawing
+  const MAG_BACK = 0.46;      // the new one is in the hand
+  const MAG_SEAT = 0.80;      // and home
+
+  fn zRot(a: f32) -> mat3x3f {
+    let c = cos(a); let s = sin(a);
+    return mat3x3f(vec3f(c, s, 0.0), vec3f(-s, c, 0.0), vec3f(0.0, 0.0, 1.0));
+  }
+
+  fn xRot(a: f32) -> mat3x3f {
+    let c = cos(a); let s = sin(a);
+    return mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, c, s), vec3f(0.0, -s, c));
+  }
+
+  // How far the magazine is turned off its lug.
+  fn akMagTurn(p: f32) -> f32 {
+    if (p < MAG_GONE) { return MAG_TURN * smoothstep(0.0, 0.13, p); }
+    return MAG_TURN * (1.0 - smoothstep(MAG_BACK, MAG_SEAT, p));
+  }
+
+  // And where it has got to. Once it is off the lug it is not turning about
+  // anything any more — it is falling, and the fall is the real one: a second
+  // and a half of phase is a second and a half of clock, so `t` is seconds and
+  // the term below is gravity in the model's own units.
+  fn akMagShift(p: f32) -> vec3f {
+    if (p < MAG_GONE) {
+      let t = max(p - MAG_OFF, 0.0) * CHANGE_SECS;
+      return vec3f(0.30 * t, -4.9 * t * t, 0.0);
+    }
+    let u = smoothstep(MAG_BACK, MAG_SEAT, p);
+    return vec3f(0.035, -0.32, 0.0) * (1.0 - u);
+  }
+
+  // The weapon under it. Brought down and rolled so the well turns toward the
+  // hand that is feeding it — a positive roll about the barrel takes the well
+  // to the left, which is where that hand is. This is the half that reads as
+  // somebody reloading; a magazine moving on its own in front of a gun held
+  // rock steady reads as a bug. Up again by the end, so the sights are back
+  // before the trigger is.
+  fn akSwing(p: f32) -> f32 {
+    return smoothstep(0.0, 0.30, p) * (1.0 - smoothstep(0.72, 1.0, p));
   }
 
   @vertex fn vs(
     @location(0) qpos: vec4f, @location(1) qn: vec4f, @location(2) uv: vec2f,
   ) -> VOut {
-    let m = u.akMin.xyz + qpos.xyz * u.akSize.xyz;
-    let cam = vmCam(m);
+    // Where the vertex belongs on the weapon, which is what the fragment
+    // shades from. It is kept whatever the hands are doing: a magazine that
+    // turned to wood on the way out of the well would be a fine joke and the
+    // wrong one.
+    let rest = u.akMin.xyz + qpos.xyz * u.akSize.xyz;
+    let p = u.akMin.w;
+
+    var m = rest;
+    var R = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), vec3f(0.0, 0.0, 1.0));
     var o: VOut;
+    if (p > 0.0) {
+      if (qpos.w > 0.5) {
+        // Between the two magazines there is no magazine. Behind the far
+        // plane rather than merely a long way down: a card at nine metres is
+        // still a card somebody could catch sight of.
+        if (p >= MAG_GONE && p < MAG_BACK) {
+          o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
+          o.world = vec3f(0.0);
+          o.normal = vec3f(0.0, 1.0, 0.0);
+          o.model = rest;
+          o.mag = 1.0;
+          return o;
+        }
+        R = zRot(akMagTurn(p));
+        m = MAG_HOOK + R * (m - MAG_HOOK) + akMagShift(p);
+      }
+      // The gun's own swing, applied over whatever the magazine just did — so
+      // the magazine that has left the well still rides the weapon down for
+      // the moment it is in front of it.
+      let sw = akSwing(p);
+      let G = xRot(0.62 * sw) * zRot(-0.20 * sw);
+      R = G * R;
+      m = G * m + vec3f(-0.03, -0.075, 0.0) * sw;
+    }
+
+    // Behind the sights, when the right button is down.
+    //
+    // The shared aim pose was built for the rifle, and what it puts on the
+    // view axis is that one's optical axis — 0.0859 above the model's floor
+    // and dead on its centreline. The AK has no optic. What it has is a post
+    // and a notch, and the line they make is the top of the front post: this
+    // model carries it at y +0.0825 on a centreline of z -0.0120, both read
+    // off the muzzle's own cross-section and off the sight tower.
+    //
+    // So the AK is nudged until its iron line lies where the rifle's glass
+    // line does, and then the pose that was already right for one is right for
+    // the other. Three and a half millimetres up and twelve across, in the
+    // model's units — small, because the two were nearly on top of each other
+    // to begin with. `u.vmSize.w` is how far through the move the hands are,
+    // so it arrives with the weapon rather than snapping on at the end.
+    //
+    // And pushed forward along its own barrel while it is up. The shared pose
+    // brings the weapon to within fifteen centimetres because that is where an
+    // eye goes behind an eyepiece; behind a notch it is too near, and the back
+    // of the receiver rose up and took the bottom half of the screen with it.
+    // Forward is free here — sliding along the barrel does not move the sight
+    // line off the axis, only the distance to it — so the notch and the post
+    // both get smaller together and the picture stays true.
+    m = m + vec3f(0.085, 0.0034, 0.0120) * u.vmSize.w;
+
+    let cam = vmCam(m);
     o.clip = vmClip(cam);
     o.world = camToWorld(cam);
-    o.normal = camDirToWorld(vmDir(qn.xyz));
-    o.model = m;
+    o.normal = camDirToWorld(vmDir(R * qn.xyz));
+    o.model = rest;
+    o.mag = qpos.w;
     return o;
   }
 
@@ -54,9 +184,17 @@
 
   @fragment fn fs(v: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
     let m = v.model;
-    let wood = (m.x < -0.26)
+    // The magazine is steel, all of it, and it has to be said rather than left
+    // to the rules below. Those decide a material from where a point sits, and
+    // the second of them — the one that means the pistol grip — reaches across
+    // the top half of the magazine as well, so the magazine came out of the
+    // mesh painted wood at the back and steel at the front. That never showed
+    // because the two-tone half was up inside the well; now that it comes out
+    // of the well it would be the first thing anybody noticed.
+    let mag = v.mag > 0.5;
+    let wood = !mag && ((m.x < -0.26)
             || (m.x > -0.06 && m.x < 0.035 && m.y < -0.02)
-            || (m.x > 0.11 && m.x < 0.31 && m.y > -0.01);
+            || (m.x > 0.11 && m.x < 0.31 && m.y > -0.01));
     let albedo = select(akSteel(m), akWood(m), wood);
 
     let nn = normalize(v.normal);
@@ -86,7 +224,7 @@
     }
 
     // The flash lights what is holding it, the same way the rifle's does.
-    let flash = pow(clamp(u.wind.w, 0.0, 1.0), 7.0);
+    let flash = clamp(u.fx.x, 0.0, 1.0);
     col += albedo * vec3f(1.0, 0.62, 0.26) * flash * 2.2;
     return vec4f(col, 1.0);
   }

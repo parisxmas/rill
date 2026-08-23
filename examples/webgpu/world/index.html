@@ -495,7 +495,7 @@
       <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint &nbsp;·&nbsp;
       <b>C</b> crouch &nbsp;·&nbsp;
       <b>left mouse</b> fire &nbsp;·&nbsp; <b>1</b> rifle &nbsp;·&nbsp; <b>2</b> launcher &middot; <b>3</b> ak
-      &nbsp;·&nbsp; <b>M</b> music</div>
+      &nbsp;·&nbsp; <b>R</b> reload &nbsp;·&nbsp; <b>F</b> torch &nbsp;·&nbsp; <b>M</b> music</div>
   </div>
   <div class="stat" id="stat"></div>
   <div class="who-list" id="roster" hidden><h2>in the valley</h2><div id="rosterRows"></div></div>
@@ -572,7 +572,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=357";
+    import { run } from "./host.js?v=386";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -651,7 +651,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=357", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=386", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

@@ -16,7 +16,8 @@
 //          W  u16 stone indices      stones already broken
 //          s  f32 clock, f32 shark x y z heading mode, u8 phase, f32 left,
 //             u8 count, then 37 bytes a player: u16 id, f32 x y z yaw pitch
-//             health, u8 pose, u16 hit, u16 shot, u8 seen, i8 ammo,
+//             health, u8 pose (bits 0-2 what they are doing, bit 3 their
+//             lamp), u16 hit, u16 shot, u8 seen, i8 ammo,
 //             u16 kills, u16 deaths
 //          r  f32 ×7                 a round left somebody's rifle
 //          t  f32 ×8                 a crystal threw
@@ -36,6 +37,7 @@
 //          i  u16 keys, f32 yaw, f32 pitch — bits 7-8 of keys are not keys,
 //             they are which weapon is up: 0 rifle, 1 launcher, 2 AK
 //          f  f32 dx dy dz           and where they just fired
+//          R  nothing                 a fresh magazine, asked for by hand
 //
 // A name is sent once and comes back as a `u`, rather than riding in every
 // snapshot: it changes about as often as a person arrives.
@@ -44,7 +46,7 @@ const OP = {
   hello: 104, no: 110, gone: 103, wall: 87, mag: 109, who: 117, pong: 112,
   snap: 115, round: 114, thrown: 116, crater: 107, hurt: 120,
   downed: 100, stone: 119, broke: 98, fell: 121, pineList: 80, zap: 122,
-  input: 105, fire: 102, name: 110, ping: 112,
+  input: 105, fire: 102, name: 110, ping: 112, reload: 82,
 };
 
 const utf8 = { enc: new TextEncoder(), dec: new TextDecoder() };
@@ -91,6 +93,10 @@ export function join(url, name) {
       net.send(dv.buffer);
     },
     fired(dx, dy, dz) { net.send(floats(OP.fire, [dx, dy, dz])); },
+    // The `R` key. One byte and no payload: the world holds both ends to the
+    // same rule about whether a magazine may be changed, so there is nothing
+    // to say beyond that it was asked for.
+    reloaded() { net.send(floats(OP.reload, [])); },
     take() { const e = net.events; net.events = []; return e; },
     close() { sock.close(); },
   };
@@ -278,7 +284,11 @@ function snapshot(net, dv) {
     // What the board at the end of a round is made of.
     const kills = dv.getUint16(o, true); o += 2;
     const deaths = dv.getUint16(o, true); o += 2;
-    players.push({ id, x, y, z, yaw, pitch, health, pose, hit, shot, seen,
+    // Bit three of the pose byte is their lamp, not part of what they are
+    // doing — see `pose_of` in server.rill. Split here rather than at every
+    // reader, so nothing downstream has to remember that the pose is masked.
+    players.push({ id, x, y, z, yaw, pitch, health, pose: pose & 7,
+                   torch: (pose & 8) !== 0, hit, shot, seen,
                    ammo: ammoRaw >= 0 ? ammoRaw : null, kills, deaths });
   }
   const snap = { at: performance.now(), clock, shark, phase, left, players };
@@ -331,6 +341,9 @@ export function others(net, now) {
       pitch: q.pitch + (p.pitch - q.pitch) * t,
       health: p.health,
       pose: p.pose,
+      // Not interpolated: a light is on or it is off, and half a lamp between
+      // two snapshots is not a thing anybody has ever seen.
+      torch: p.torch,
       name: net.names.get(p.id) ?? "",
     });
   }

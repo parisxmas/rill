@@ -180,6 +180,7 @@ type Msg
   Named(id: Int, name: Str)
   Moved(id: Int, keys: Int, yaw: Float, pitch: Float)
   Shot(id: Int, dx: Float, dy: Float, dz: Float)
+  Reloaded(id: Int)
   Pinged(id: Int, token: Str)
   Left(id: Int)
   Tick
@@ -209,6 +210,7 @@ fn handle(w, conns, inbox, joins, m, said) = match m
   Named(id, name) -> name_one(w, conns, id, name)
   Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
   Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
+  Reloaded(id) -> reload_one(w, conns, id)
   Pinged(id, token) -> pong(conns, id, token)
   Left(id) -> drop_one(w, conns, id)
   Tick -> tick(w, conns, said)
@@ -402,6 +404,11 @@ fn op_no() = 110
 fn op_gone() = 103
 fn op_wall() = 87
 fn op_mag() = 109
+
+# `R`, and it only ever comes inward: somebody has asked for a fresh magazine
+# with rounds still in the old one. Free in the table — the letters the server
+# sends are all elsewhere in it.
+fn op_reload() = 82
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -619,6 +626,18 @@ fn shoot_one(w, conns, id, dx, dy, dz) = match find(conns, id)
 
 fn asked_to_fire(w, conns, s, dx, dy, dz) =
   v.want_fire(s, dx, dy, dz)
+  v.heard(s, v.world_time(w))
+  conns
+
+# The world decides whether it takes — `ask_reload` holds both ends to the same
+# rule — and this only says who asked. `heard` for the same reason a shot does
+# it: a message is a sign of life and the timeout is watching.
+fn reload_one(w, conns, id) = match find(conns, id)
+  None -> conns
+  Some(c) -> asked_to_reload(w, conns, conn_block(c))
+
+fn asked_to_reload(w, conns, s) =
+  v.ask_reload(s)
   v.heard(s, v.world_time(w))
   conns
 
@@ -1011,7 +1030,16 @@ fn blanked(b) =
 # watching the same person should not disagree about whether they are running.
 #
 #   0 standing   1 walking   2 running   3 crouching   4 down
-fn pose_of(s) =
+#
+# And the lamp above them, on bit three of the same byte. It goes here rather
+# than in a byte of its own because a byte of its own is a change to the length
+# of every player's record on the wire, and the pose is a number that reaches
+# four and is carried in something that reaches two hundred and fifty-five. The
+# far end masks: `pose & 7` is what they are doing, `pose & 8` is whether their
+# light is on.
+fn pose_of(s) = bit_or(doing(s), if v.torch(s) > 0 then 8 else 0)
+
+fn doing(s) =
   k = v.keys_of(s)
   if v.health(s) < 0.001 then 4 else if bit_and(k, 64) == 64 then 3 else if bit_and(k, 15) == 0 then 0 else if bit_and(k, 32) == 32 then 2 else 1
 
@@ -1375,7 +1403,7 @@ fn handle_line(conn, inbox, id, budget, until, msg, rest) =
 # the end of: `str_get` past the end is not a guard, the length is.
 fn route(inbox, id, msg) =
   k = str_get(msg, 0)
-  if k == op_input() && str_len(msg) >= 11 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
+  if k == op_input() && str_len(msg) >= 11 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_reload() then tell(inbox, Reloaded(id)) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
 
 fn moved(inbox, id, msg) =
   sc = alloc_bytes(8)

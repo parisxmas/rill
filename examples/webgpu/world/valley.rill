@@ -49,6 +49,8 @@
 #   f32 111      how much the sights are magnifying, 1 when they are not
 #   f32 115      breath, one to zero        116  out of it, until 115 comes back
 #   f32 118      rounds left in the magazine
+#   f32 123      whether their lamp is lit — see `set_keys`
+#   f32 124      what the caller adds to a spawn's seed — see `spawn_salt`
 #   f32 102..104 what being shot did to their head: a clock, how hard, which way
 #   f32 99       this player's id, which outlives its place in the table
 #   ptr 94       the world it is in; in the world's own block, itself
@@ -602,6 +604,25 @@ fn stop_height(x, z) =
   h = height(x, z)
   if h < 0.0 then 0.0 else h
 
+# Everything that can stop a round which is not the ground and not a wall, and
+# whether one of them did. A hit ends a round by writing nought into its life,
+# so all this has to do is look at that number either side of the four calls.
+#
+# One function rather than four lines in `step_bullet` because a binding cannot
+# be given an `if` block, and the answer has to be a value: it decides whether
+# a chip is left behind, and a chip stuck to something that is about to stop
+# existing is the bug this exists to stop.
+fn hit_a_thing(w, b, at, ax, ay, az, px, py, pz, decide, on) =
+  if on < 0.5 then 0.0
+  else
+    alive = peek_f32(b, at + 7)
+    if decide > 0 then
+      hit_fire(w, b, at, 0 - 1, ax, ay, az, px, py, pz)
+      hit_crystals(w, b, at, ax, ay, az, px, py, pz)
+      hit_players(w, b, at, ax, ay, az, px, py, pz)
+    else stop_on_ghosts(w, b, at, ax, ay, az, px, py, pz)
+    if alive > 0.001 && peek_f32(b, at + 7) < 0.001 then 1.0 else 0.0
+
 fn step_bullet(w, b, at, dt, decide) =
   life = peek_f32(b, at + 7) - dt
   on = if life > 0.0 then 1.0 else 0.0
@@ -636,12 +657,21 @@ fn step_bullet(w, b, at, dt, decide) =
   # It looked like crystals shattering on their own, and it got worse the more
   # often they fired, which is the sort of thing that sends you looking at the
   # charge animation. It was one missing guard.
-  if on > 0.5 && decide > 0 then
-    hit_stone(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
-    hit_fire(w, b, at, 0 - 1, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
-    hit_crystals(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
-    hit_players(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz)
-  else if on > 0.5 then stop_on_ghosts(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz) else 0
+  # A chip belongs where a round hit a *place*: the ground, or a wall. What
+  # else stops one is a thing — a crystal that is a second away from being
+  # shards, a fireball, somebody standing there — and a chip stuck to a thing
+  # that then leaves is a chip hanging in mid-air. Break a crystal with the AK
+  # and the burst that broke it stayed behind, floating where the glass had
+  # been.
+  #
+  # So the walls are asked first and on their own, and `hit_a_thing` watches
+  # the round across everything else. The order the four run in has not moved:
+  # a round that crosses both a crystal and a player is still the crystal's.
+  if on > 0.5 && decide > 0 then hit_stone(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz) else 0
+  # Read straight after the sweep and before anything else touches the
+  # scratch: which block stopped it, or less than nought for the ground.
+  wall_i = if on > 0.5 && decide > 0 then to_int(peek_f32(seg_of(w), 14)) else 0 - 1
+  on_a_thing = hit_a_thing(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz, decide, on)
 
   # Struck something, or reached the ground: either way this is where it
   # stopped, and an AK's round leaves a chip there. The hits above end a round
@@ -649,8 +679,8 @@ fn step_bullet(w, b, at, dt, decide) =
   # anything" — and the ground is the `landed` test. Only the AK's, because
   # the rifle's rounds are still drawn on the way and do not need saying twice.
   struck = if peek_f32(b, at + 7) < 0.001 then 1.0 else 0.0
-  if on > 0.5 && (landed > 0.5 || struck > 0.5) && sp < 100.0 then
-    note_mark(w, px, if landed > 0.5 then stop_height(px, pz) else py, pz, vx0, vy0, vz0)
+  if on > 0.5 && (landed > 0.5 || struck > 0.5) && sp < 100.0 && on_a_thing < 0.5 then
+    note_mark(w, px, if landed > 0.5 then stop_height(px, pz) else py, pz, if landed > 0.5 then 0 - 1 else wall_i)
   else 0
 
   poke_f32(b, at, px)
@@ -816,15 +846,15 @@ fn fire_round(s, dx, dy, dz) =
 
 # ---- the AK ----------------------------------------------------------------
 #
-# The default arm: thirty rounds, held-trigger automatic at five rounds a
-# second — quick enough to be a burst and slow enough that the climb can be
-# fought — and a bullet at two thirds of the rifle's speed: eighty metres a
+# The default arm: thirty rounds, held-trigger automatic at ten rounds a
+# second — the gun's own cyclic rate, near enough, which empties a magazine in
+# three — and a bullet at two thirds of the rifle's speed: eighty metres a
 # second against a hundred and twenty, so it is still led at distance but no
 # longer lobbed. Same rounds in the same ring; only the muzzle velocity and
 # the magazine differ.
 # ---- what a round leaves behind ---------------------------------------------
 #
-# The AK's rounds are not drawn on the way — a streak from a weapon fired five
+# The AK's rounds are not drawn on the way — a streak from a weapon fired ten
 # times a second is a lit rope across the valley — so where they arrive is the
 # only evidence there is. Each one writes a chip: where it stopped, the line
 # it came in on, and the moment, in a ring the renderer walks every frame.
@@ -837,18 +867,50 @@ fn mark_ring() = 48
 
 fn mark_life() = 10.0
 
-fn note_mark(w, x, y, z, vx, vy, vz) =
+# How far apart the two samples of the ground are taken, for its slope.
+fn mark_step() = 0.25
+
+# A chip, and the face it is stuck to.
+#
+# What the ring used to carry here was the round's own flight, which is what a
+# card square to the incoming line needs. That was wrong twice over: a card
+# built on the flight faces whoever fired the round, so it turned to follow
+# them as they walked round it — a sticker hanging in the air rather than a
+# hole in something — and the sparks that come off the same ring went back up
+# the barrel instead of off the wall.
+#
+# So it carries the surface instead, pointing out of it. Two surfaces can be
+# hit. A wall block was a sphere as far as the round was concerned, so out of
+# it is out from its centre. The ground is a height field, so out of it is its
+# gradient: four samples of the same `height` the walking uses, which is
+# nothing at the handful of chips a second this runs at. Under the waterline
+# the ground the round stopped on is the flat of the lake rather than the bed
+# below it, and the answer there is simply up.
+fn note_mark(w, x, y, z, wall_i) =
   n = to_int(peek_f32(w, 55))
   mb = peek_ptr(w, 75)
   at = n % mark_ring() * 8
-  l = sqrt(vx * vx + vy * vy + vz * vz)
+  bb = blocks_ptr(w)
+  e = mark_step()
+  wall = if wall_i >= 0 then 1 else 0
+  # Never a negative index into the block buffer, whichever way the `if` below
+  # is evaluated.
+  wi = if wall > 0 then wall_i else 0
+  flat = if wall < 1 && height(x, z) < 0.0 then 1 else 0
+  gx = if flat > 0 then 0.0 else height(x - e, z) - height(x + e, z)
+  gy = if flat > 0 then 1.0 else e * 2.0
+  gz = if flat > 0 then 0.0 else height(x, z - e) - height(x, z + e)
+  ex = if wall > 0 then x - block_f(bb, wi, 0) else gx
+  ey = if wall > 0 then y - block_f(bb, wi, 1) else gy
+  ez = if wall > 0 then z - block_f(bb, wi, 2) else gz
+  l = sqrt(ex * ex + ey * ey + ez * ez)
   d = if l < 0.001 then 1.0 else 1.0 / l
   poke_f32(mb, at, x)
   poke_f32(mb, at + 1, y)
   poke_f32(mb, at + 2, z)
-  poke_f32(mb, at + 3, vx * d)
-  poke_f32(mb, at + 4, vy * d)
-  poke_f32(mb, at + 5, vz * d)
+  poke_f32(mb, at + 3, ex * d)
+  poke_f32(mb, at + 4, ey * d)
+  poke_f32(mb, at + 5, ez * d)
   poke_f32(mb, at + 6, world_time(w))
   poke_f32(mb, at + 7, 0.0)
   poke_f32(w, 55, to_float(n + 1))
@@ -864,7 +926,10 @@ fn clear_marks_ring(mb) =
 
 fn ak_full() = 30
 
-fn ak_gap() = 0.2
+# A hundred milliseconds between rounds. This is the wire's gate rather than
+# the trigger's: the browser holds itself to the same number in `AK_CYCLE`,
+# and a client that simply did not would be refused here.
+fn ak_gap() = 0.1
 
 fn ak_rounds(s: Ptr) -> Int = to_int(peek_f32(s, 106))
 
@@ -887,6 +952,33 @@ fn ak_reload(s) =
 
 fn fire_ak(s, dx, dy, dz) =
   if peek_f32(s, 106) < 0.5 then ak_reload(s) else fire_ak_round(s, dx, dy, dz)
+
+# Changing the magazine because somebody asked for it, rather than because the
+# last round has gone.
+#
+# The change itself is `ak_reload` either way — the same second and a half, the
+# same spare off the belt. What a manual one needs on top is the refusals, and
+# they are all of them the same question: is there anything to do, and is this
+# a moment to do it in. A full magazine has nothing to change. A player with no
+# spare has nothing to change to. And the last of them is the fire clock the
+# trigger is already gated on: `ak_reload` pushes slot 52 into the future, so a
+# second press inside the change is asking for something that is happening.
+#
+# Both ends run this. The browser asks so that the count and the hands answer
+# the key rather than the round trip; the server asks because the magazine it
+# keeps is the one that decides whether a round leaves, and a client that could
+# fill its own would be a client with an inexhaustible rifle.
+fn ask_reload(s: Ptr) -> Int =
+  tnow = world_time(wd(s))
+  if weapon(s) != 2 then 0
+  else if peek_f32(s, 82) < 0.001 then 0
+  else if in_water(s) > 0 then 0
+  else if ak_mags(s) < 1 then 0
+  else if ak_rounds(s) >= ak_full() then 0
+  else if tnow - peek_f32(s, 52) < ak_gap() then 0
+  else
+    ak_reload(s)
+    1
 
 fn fire_ak_round(s, dx, dy, dz) =
   poke_f32(s, 106, peek_f32(s, 106) - 1.0)
@@ -1783,8 +1875,12 @@ fn step_pass(w, cbuf, dt, tnow) =
 # A switch on the world rather than a constant in this file, because the two
 # valleys want different answers: a browser alone in one is the demo the
 # fireballs were written for, and a shared one is a place people are trying to
-# stand about in and shoot each other. `init` turns them on; a server may turn
-# them off.
+# stand about in and shoot each other. `init` leaves them off and either end
+# may turn them on — a server with `meteors=on`, a browser with `set_meteors`.
+#
+# Off is the default now. A sky that drops a fireball every few seconds is a
+# fine thing to watch and a poor thing to be shot at in, and the valley has
+# become the second of those.
 #
 # Only the *starting* is gated. Whatever is already winding up finishes its
 # swell, throws and settles back, because a crystal cut off mid-swell would
@@ -1835,20 +1931,35 @@ fn blast_stride() = 8
 # which is where this started, three landed in eleven seconds and killed a
 # player who had not yet finished looking around. Punishing the mistake is the
 # point, but it has to be a mistake you get to notice you are making.
-fn blast_hurt(s, x, y, z) =
+# How far a blast is felt, and it is not one number any more. A meteor is
+# weather — it comes down where it likes and the radius is what makes standing
+# still the mistake — but a rocket is aimed, and a rocket that reaches
+# twenty-two metres is a weapon you do not have to hit anybody with. Thirty per
+# cent off the rocket's: 15.75 against the sky's 22.5.
+#
+# It is only the reach that moves. The cube below is unchanged, so a direct hit
+# takes the same bite it always did and what has gone is the outer ring — the
+# hits that were landing on somebody a stone's throw from where the warhead
+# went. At ten metres a rocket now does a fifth of what it did.
+fn meteor_reach() = 22.5
+
+fn rocket_reach() = 15.75
+
+fn blast_hurt(s, x, y, z, reach) =
   dx = peek_f32(s, 21) - x
   dy = peek_f32(s, 22) + 1.0 - y
   dz = peek_f32(s, 23) - z
   d = sqrt(dx * dx + dy * dy + dz * dz)
-  k = clampf(1.0 - d / 22.5, 0.0, 1.0)
-  # Cubed, and out to twenty-two and a half metres. Squared over a short radius
-  # meant every impact either missed entirely or took the same bite out of you,
-  # because these are thrown at where you are standing and so nearly all of
-  # them land within a few metres.
+  k = clampf(1.0 - d / reach, 0.0, 1.0)
+  # Cubed, and out to whatever `reach` the caller handed down. Squared over a
+  # short radius meant every impact either missed entirely or took the same
+  # bite out of you, because these are thrown at where you are standing and so
+  # nearly all of them land within a few metres.
   #
-  # The cube is what stops a radius from meaning everything hurts equally: full
-  # at your feet, a third of it at seven and a half metres, a twenty-seventh at
-  # fifteen, and under the floor below — nothing at all past about seventeen.
+  # The cube is what stops a radius from meaning everything hurts equally: at a
+  # meteor's reach, full at your feet, a third of it at seven and a half
+  # metres, a twenty-seventh at fifteen, and under the floor below — nothing at
+  # all past about seventeen. A rocket's is the same shape over a shorter run.
   # What it buys is that a near miss is felt at all, so the one that lands a
   # few paces away is still part of the weather rather than being either lethal
   # or nothing.
@@ -2027,9 +2138,13 @@ fn restart(s: Ptr) =
   place_player(s)
   1
 
-fn hurt_everyone(w, x, y, z) =
+# The sign of the seed says which blast this is, the way it does for the glass
+# and the stone: negative is somebody's rocket, positive is the sky's.
+fn hurt_everyone(w, x, y, z, seed) =
+  reach = if seed > 0.0 then meteor_reach() else rocket_reach()
+
   for i in 0..player_count(w)
-    blast_hurt(player_at(w, i), x, y, z)
+    blast_hurt(player_at(w, i), x, y, z, reach)
 
 # What a warhead does to the glass around it.
 #
@@ -2079,7 +2194,7 @@ fn add_blast(w, x, y, z, seed) =
   poke_f32(bb, at + 3, seed)
   poke_f32(bb, at + 4, 0.0)
   poke_f32(w, 80, to_float(k + 1))
-  hurt_everyone(w, x, y, z)
+  hurt_everyone(w, x, y, z, seed)
   glass_near(w, x, y, z, seed)
 
   # Eighteen pieces of what it hit, thrown nearly twice as hard as a crystal
@@ -2121,7 +2236,19 @@ fn add_blast(w, x, y, z, seed) =
 # put back on the face it hit, 1.6 took thirty-plus stones a rocket and an L
 # fell in four. Half the hole: 1.15 reaches about seventeen stones — a
 # doorway, not a missing wall — and a wall is worth eight or nine rockets.
-fn blast_stone() = 1.15
+#
+# And half of it again. The square law is what sets the number: half the
+# stones is the square root of a half off the reach, so 1.15 becomes 0.81.
+# Counted rather than trusted — a blast laid in the face of a wall takes 26
+# stones at 1.15 and 13 at 0.81, which is the halving asked for exactly.
+#
+# The disc is a metre and six across against blocks three tenths of a metre
+# on a side: five stones wide, so it is still a gap somebody can get through,
+# and a wall now costs the better part of twenty rockets. The stone at the
+# centre is still thrown as hard as it ever was — `burst_block` scales the
+# push by the fraction of the reach, not by the reach — so what changed is
+# how much goes, not how it leaves.
+fn blast_stone() = 0.81
 
 fn smash_walls(w, x, y, z, seed) =
   if seed > 0.0 then 0 else break_blocks(w, x, y, z, seed)
@@ -2142,10 +2269,6 @@ fn break_wall_blocks(w, bb, k, x, y, z, seed) =
 
   for j in 0..wall_blocks()
     maybe_break_block(w, bb, base + j, x, y, z, seed)
-  # Only after the whole blast has had its say. Settling a column while the
-  # loop is still inside it feeds the survivors downward into the blast sphere
-  # one course at a time, and one rocket eats the column to the top.
-  settle_wall(w, bb, base)
   0
 
 fn maybe_break_block(w, bb, i, x, y, z, seed) =
@@ -2231,7 +2354,6 @@ fn scatter_block(w, bb, i) =
   poke_f32(w, 61, to_float(k0 + 2))
   fall_to_ground(bb, i, sc)
   mark_broken(w, i)
-  settle_column(w, bb, i)
   1
 
 # ---- the pines a warhead takes ---------------------------------------------
@@ -2731,47 +2853,24 @@ fn fall_to_ground(bb, i, sc) =
   poke_f32(bb, i * 8 + 3, sc * 0.8)
   1
 
-# What still stands, stands on something. A blast takes the middle out of a
-# column and the stones above it kept their height — hanging in the air where
-# the wall used to be under them. So after every break the column packs down:
-# each unbroken stone drops to sit on however many unbroken stones are left
-# below it, on the ground if there are none.
+# A stone that was not hit does not move. There is no settling here and there
+# used to be: every break packed its column down, each survivor dropping to sit
+# on however many unbroken stones were left below it.
 #
-# Same rule the rubble obeys: computable from the broken set alone. A client is
-# told which stones went and nothing else, so where the survivors settle has to
-# fall out of that — count the standing courses below, multiply by the course
-# height — and a late joiner replaying an hour of `w <i>` ends at the same wall
-# as everyone who watched it come down. It also makes the settling idempotent:
-# a blast that takes three stones out of one column settles it three times and
-# the last word is the same as the first.
-fn settle_wall(w, bb, base) =
-  for j in 0..wall_arm_max() * 2
-    settle_column(w, bb, base + j * wall_tall())
-  1
-
-fn settle_column(w, bb, i) =
-  c = i - i % wall_tall()
-
-  for k in 0..wall_tall()
-    settle_block(w, bb, c, k)
-  1
-
-# Broken stones are rubble and lie where `fall_to_ground` put them; a slot an
-# arm never filled has size nought and is nobody's to move. Only what stands
-# settles.
-fn settle_block(w, bb, c, k) =
-  if block_broken(w, c + k) > 0 then 0 else if block_live(bb, c + k) then drop_to_course(bb, c + k, standing_below(w, c, k, 0)) else 0
-
-fn stands(w, i) = if block_broken(w, i) > 0 then 0 else 1
-
-fn standing_below(w, c, k, n) =
-  if k <= 0 then n else standing_below(w, c, k - 1, n + stands(w, c + k - 1))
-
-fn drop_to_course(bb, i, r) =
-  x = block_f(bb, i, 0)
-  z = block_f(bb, i, 2)
-  poke_f32(bb, i * 8 + 1, height(x, z) + block_size() * (0.5 + to_float(r)))
-  1
+# It was the wrong rule, and the way to see it is to put a rocket into the foot
+# of a wall. Four courses go, and the four above them — which the warhead never
+# reached, which nothing touched — sink four courses into the ground. The wall
+# gets shorter. What you shot at was the bottom and what changed was the top,
+# which is the one thing a player did not ask for and cannot undo.
+#
+# These are mortared stones and not a stack of crates. A hole blown through the
+# base of a wall leaves the wall standing over it, which is what a wall is: the
+# stones above carry across the gap because they are stuck to their neighbours,
+# not because there is something under each one. So the hole stays a hole.
+#
+# The determinism the settling was written for costs nothing now — a client is
+# told which stones went and nothing else, and a stone that never moves needs
+# no rule at all to end up where everyone else has it.
 
 fn fill_chunk(cs, x, y, z, sc, r, g, b) =
   poke_f32(cs, 0, x)
@@ -2801,6 +2900,12 @@ fn fill_kick(cs, vx, vy, vz) =
 fn sweep_walls(w, p, at, ax, ay, az, bx, by, bz, wide) =
   sg = seg_of(w)
   poke_f32(sg, 10, wide)
+  # Which block answered, for whoever wants the face the round arrived on —
+  # `note_mark` does, and a sphere's face is the line out of its centre. The
+  # segment scratch is already this round's, and slots 14 and 15 are the two
+  # the grid bounds and the width leave alone. Cleared here so a stale index
+  # cannot outlive the sweep that set it.
+  poke_f32(sg, 14, 0.0 - 1.0)
   poke_f32(sg, 0, ax)
   poke_f32(sg, 1, ay)
   poke_f32(sg, 2, az)
@@ -2870,6 +2975,7 @@ fn stopped_on(bb, i, p, at, sg) =
   poke_f32(p, at + 1, ay + dy * t)
   poke_f32(p, at + 2, az + dz * t)
   poke_f32(p, at + 7, 0.0)
+  poke_f32(sg, 14, to_float(i))
   1
 
 # The same test for a round, which stops on a wall rather than passing through
@@ -3230,7 +3336,8 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 93, 0.0)
   poke_f32(s, 55, 0.0)
   poke_f32(s, 95, 0.0)
-  poke_f32(s, 53, 1.0)
+  # The meteors, off. `set_meteors` is what puts them back.
+  poke_f32(s, 53, 0.0)
   clear_bullets(bullet_buf)
   clear_marks_ring(mark_buf2)
   clear_shards(shard_buf)
@@ -3310,9 +3417,18 @@ fn spawn_try(seed, t) =
 fn good_spot(h) = h > 0.6 && h < 9.0
 
 fn place_player(s) =
-  # Who, and when: without the clock every respawn is the same spot for the
-  # same person, which is the old problem with extra steps.
-  seed = peek_f32(s, 99) * 1.618 + peek_f32(wd(s), 28) * 0.37
+  # Who, when, and whatever the caller has stirred in: without the clock every
+  # respawn is the same spot for the same person, which is the old problem with
+  # extra steps.
+  #
+  # The clock is enough for a *re*spawn and not for a first one. A browser on
+  # its own is player nought in a valley whose clock has not started, so both
+  # terms are nought and the seed is the same number every time the page is
+  # opened: the same tree, the same view, every single run. Slot 124 is what
+  # the caller may add — the page rolls one before it places anybody, see
+  # `spawn_salt` — and it is nought on the server, where spawns are already
+  # spread by an id that counts up and a clock that has been running.
+  seed = peek_f32(s, 99) * 1.618 + peek_f32(wd(s), 28) * 0.37 + peek_f32(s, 124)
   t = spawn_try(seed, 0)
   x = if t >= 8 then 0.0 - 14.0 else spawn_x(seed, t)
   z = if t >= 8 then 0.0 - 34.0 else spawn_z(seed, t)
@@ -3341,6 +3457,14 @@ fn place_player(s) =
   poke_f32(s, 30, 0.0)
   poke_f32(s, 31, 0.0)
   poke_f32(s, 52, 0.0 - 99.0)
+  1
+
+# What the caller adds to a spawn's seed, and it stays on the block: set it
+# once and every place this player is put afterwards is drawn from the same
+# roll. Nought until somebody sets it, which is the server's case and leaves
+# its spawns exactly where they were.
+fn spawn_salt(s: Ptr, v: Float) =
+  poke_f32(s, 124, v)
   1
 
 # A block for one more person, or null when the valley is full. The id it
@@ -3520,6 +3644,22 @@ fn set_keys(s: Ptr, keys: Int) =
   # launcher, two the AK. One bit held two weapons; the third cost the keys
   # their eighth bit and the wire a byte.
   poke_f32(s, 119, to_float(bit_and(shr(keys, 7), 3)))
+  # And the tenth bit is the lamp. It rides here for the reason the weapon
+  # does — the message is already going and this is part of what somebody is
+  # doing — and it is a *state* rather than a press, so a packet that goes
+  # missing costs a frame of somebody else's light and nothing more. A press
+  # sent once would leave the two ends disagreeing about a light for the rest
+  # of the round.
+  poke_f32(s, 123, to_float(bit_and(shr(keys, 9), 1)))
+  1
+
+# Whether this player's lamp is lit. The world does not care — it lights
+# nothing here and costs nothing to carry — but everybody else's client does,
+# so it goes out in the snapshot beside the pose.
+fn torch(s: Ptr) -> Int = to_int(peek_f32(s, 123))
+
+fn set_torch(s: Ptr, on: Int) =
+  poke_f32(s, 123, to_float(on))
   1
 
 # Which weapon is up: nought the rifle, one the launcher, two the AK.
@@ -3650,7 +3790,7 @@ fn try_fire(s: Ptr, tnow: Float, gap: Float) =
 
 fn take_fire(s, tnow, gap) =
   poke_f32(s, 31, 0.0)
-  # The bolt's gap for the rifle, its own twenty milliseconds for the AK. The
+  # The bolt's gap for the rifle, its own hundred milliseconds for the AK. The
   # launcher rides the rifle's — its real cycle is the client's animation and
   # the tube's own count.
   if tnow - peek_f32(s, 52) < (if weapon(s) == 2 then ak_gap() else gap) then 0
@@ -4212,7 +4352,11 @@ fn step_world(w: Ptr, dt: Float) =
 # the sound, which every browser draws from the same two numbers.
 fn zap_reach() = 1.8
 
-fn zap_bite() = 0.10
+# A twentieth of a bar, halved from a tenth. Standing against the glass was
+# costing a third of a life for every ten seconds of it, which made the
+# crystals a wall you could not go near rather than one you crossed with care.
+# It is still a wager and now it is one worth taking.
+fn zap_bite() = 0.05
 
 fn zap_every() = 3.0
 

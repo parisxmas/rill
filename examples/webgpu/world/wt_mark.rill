@@ -1,6 +1,24 @@
-# An AK round that stops leaves a chip: where it stopped, the line it came in
-# on, and the moment. A rifle round leaves none — it is drawn on the way.
+# An AK round that stops leaves a chip: where it stopped, the face it stopped
+# on, and the moment. A rifle round leaves none — it is drawn on the way — and
+# nor does one that stopped on something which is about to stop existing.
 import "valley" as v
+
+extern fn sqrt(x: Float) -> Float
+
+extern fn sin(x: Float) -> Float
+
+extern fn cos(x: Float) -> Float
+
+extern fn atan2(y: Float, x: Float) -> Float
+
+# The valley refuses a shot whose direction disagrees with where the player is
+# looking — that is what stops a client shooting round corners — so a test has
+# to build the one out of the other rather than pick both.
+fn aim_x(yaw, pitch) = sin(yaw) * cos(pitch)
+
+fn aim_y(yaw, pitch) = sin(pitch)
+
+fn aim_z(yaw, pitch) = 0.0 - cos(yaw) * cos(pitch)
 
 fn step(w, s, n) =
   if n == 0 then 0 else step_one(w, s, n)
@@ -9,8 +27,46 @@ fn step_one(w, s, n) =
   v.step_world(w, 0.05)
   step(w, s, n - 1)
 
+# A held trigger: a round, a fifth of a second, and again. Long enough apart
+# that the world's own fire gate lets each one through.
+fn spray(w, s, dx, dy, dz, n) =
+  if n == 0 then 0 else spray_one(w, s, dx, dy, dz, n)
+
+fn spray_one(w, s, dx, dy, dz, n) =
+  v.want_fire(s, dx, dy, dz)
+  v.try_fire(s, v.world_time(w), 0.55)
+  step(w, s, 4)
+  spray(w, s, dx, dy, dz, n - 1)
+
 fn marks_used(w, mb, i, n) =
   if i >= v.marks_cap() then n else marks_used(w, mb, i + 1, n + (if peek_f32(mb, i * 8 + 6) > 0.0 then 1 else 0))
+
+# Chips standing within `r` of a point. The whole of the crystal question is
+# this number: rounds that broke the glass must leave nothing where the glass
+# was, while rounds that carried on past it into the hillside behind are
+# perfectly entitled to their chips.
+fn marks_near(mb, x, y, z, r, i, n) =
+  if i >= v.marks_cap() then n
+  else marks_near(mb, x, y, z, r, i + 1, n + mark_within(mb, i, x, y, z, r))
+
+fn mark_within(mb, i, x, y, z, r) =
+  at = i * 8
+  dx = peek_f32(mb, at) - x
+  dy = peek_f32(mb, at + 1) - y
+  dz = peek_f32(mb, at + 2) - z
+  if peek_f32(mb, at + 6) <= 0.0 then 0
+  else if dx * dx + dy * dy + dz * dz < r * r then 1
+  else 0
+
+# The slope of the ground, worked out here rather than asked of the valley, so
+# that what the chip carries is checked against something and not against
+# itself.
+fn ground_up_y(x, z) =
+  e = 0.25
+  gx = v.ground(x - e, z) - v.ground(x + e, z)
+  gy = e * 2.0
+  gz = v.ground(x, z - e) - v.ground(x, z + e)
+  gy / sqrt(gx * gx + gy * gy + gz * gz)
 
 fn main() =
   w = v.init(48, 400, 300, 900)
@@ -26,11 +82,80 @@ fn main() =
   n1 = marks_used(w, mb, 0, 0)
   println("after one AK round into the ground: " + int_to_str(n1) + " mark(s) (want 1)")
   println("  at " + float_to_str(peek_f32(mb, 0)) + " " + float_to_str(peek_f32(mb, 1)) + " " + float_to_str(peek_f32(mb, 2)) + ", ground there is " + float_to_str(v.ground(peek_f32(mb, 0), peek_f32(mb, 2))))
-  println("  came in along " + float_to_str(peek_f32(mb, 3)) + " " + float_to_str(peek_f32(mb, 4)) + " " + float_to_str(peek_f32(mb, 5)) + ", born " + float_to_str(peek_f32(mb, 6)))
+
+  # The chip lies in the surface, not square to the flight.
+  #
+  # What the ring carries is the outward normal of what was hit, so a chip in
+  # level ground points up whichever way the round came in on. Under the old
+  # scheme this was the round's own velocity: for the shot above that is very
+  # nearly straight *down*, so the sign of y alone tells the two apart.
+  ny = peek_f32(mb, 4)
+  want = ground_up_y(peek_f32(mb, 0), peek_f32(mb, 2))
+  println("  face " + float_to_str(peek_f32(mb, 3)) + " " + float_to_str(ny) + " " + float_to_str(peek_f32(mb, 5)) + ", born " + float_to_str(peek_f32(mb, 6)))
+  println("  its y is " + float_to_str(ny) + ", the ground's own is " + float_to_str(want) + " (want the same, and both above nought)")
+
+  # Now the same patch of ground from a quite different line. Two chips a
+  # couple of metres apart, shot from angles that have nothing in common,
+  # have to agree about which way is out of the hill — that is the whole of
+  # what "in the surface" means, and it is what a card built on the flight
+  # could never do.
+  px = peek_f32(s, 21)
+  pz = peek_f32(s, 23)
+  v.set_at(s, px + 6.0, v.ground(px + 6.0, pz), pz)
+  # `set_at` moves the feet; the eye the muzzle fires from is published by
+  # `walk`, so without a step here the round would leave from where the player
+  # used to be standing.
+  v.walk(s, 0.05, 0.0, 0.0, 0)
+  yaw2 = 0.9
+  pit2 = 0.0 - 0.5
+  v.set_look(s, yaw2, pit2)
+  v.want_fire(s, aim_x(yaw2, pit2), aim_y(yaw2, pit2), aim_z(yaw2, pit2))
+  v.try_fire(s, v.world_time(w) + 1.0, 0.55)
+  step(w, s, 40)
+  n2 = marks_used(w, mb, 0, 0)
+  println("a second round, from another line: " + int_to_str(n2) + " mark(s) (want 2)")
+  println("  its face is " + float_to_str(peek_f32(mb, 11)) + " " + float_to_str(peek_f32(mb, 12)) + " " + float_to_str(peek_f32(mb, 13)))
+  println("  the ground's own y there is " + float_to_str(ground_up_y(peek_f32(mb, 8), peek_f32(mb, 10))))
+
+  # A round that stopped on a crystal leaves nothing behind. The glass is a
+  # second from being shards and a chip stuck to it would be left hanging in
+  # the air the moment it went.
+  cb = v.crystals(s)
+  cx = peek_f32(cb, 0)
+  cy = peek_f32(cb, 1) + peek_f32(cb, 3) * 0.5
+  cz = peek_f32(cb, 2)
+  # Stand four metres off it and aim at its middle.
+  ax = cx - 4.0
+  az = cz
+  v.set_at(s, ax, v.ground(ax, az), az)
+  v.walk(s, 0.05, 0.0, 0.0, 0)
+  ex = cx - ax
+  ey = cy - peek_f32(s, 17)
+  ez = cz - az
+  # Turned into a look and then back into a line, rather than fired down the
+  # line directly: the two have to agree exactly or the valley calls it a wild
+  # shot and refuses it.
+  yaw3 = atan2(ex, 0.0 - ez)
+  pit3 = atan2(ey, sqrt(ex * ex + ez * ez))
+  v.set_look(s, yaw3, pit3)
+  broke0 = v.breaks(s)
+  println("  crystal 0 record: " + float_to_str(peek_f32(cb, 0)) + " " + float_to_str(peek_f32(cb, 1)) + " " + float_to_str(peek_f32(cb, 2)) + " scale " + float_to_str(peek_f32(cb, 3)))
+  println("  from an eye at " + float_to_str(peek_f32(s, 16)) + " " + float_to_str(peek_f32(s, 17)) + " " + float_to_str(peek_f32(s, 18)))
+  spray(w, s, aim_x(yaw3, pit3), aim_y(yaw3, pit3), aim_z(yaw3, pit3), 6)
+  step(w, s, 30)
+  n3 = marks_used(w, mb, 0, 0)
+  # Both halves matter. That the glass went is what says the rounds really did
+  # reach it rather than being refused or sailing past; that nothing is left
+  # standing where it stood is the thing being tested. Chips further out are
+  # the rounds that carried on into the hillside once the glass was gone, and
+  # those are entitled to theirs.
+  println("a burst into a crystal: " + int_to_str(v.breaks(s) - broke0) + " broken (want 1), "
+    + int_to_str(marks_near(mb, cx, cy, cz, 1.5, 0, 0)) + " chip(s) left where it stood (want 0)")
+  println("  " + int_to_str(n3 - n2) + " chip(s) in all from the burst, the ones that went past it")
 
   # And the rifle leaves none.
   v.set_weapon(s, 0)
   v.want_fire(s, 0.0, 0.0 - 0.9927, 0.0 - 0.1205)
-  v.try_fire(s, v.world_time(w), 0.55)
+  v.try_fire(s, v.world_time(w) + 3.0, 0.55)
   step(w, s, 20)
-  println("after a rifle round: " + int_to_str(marks_used(w, mb, 0, 0)) + " mark(s) (want still " + int_to_str(n1) + ")")
+  println("after a rifle round: " + int_to_str(marks_used(w, mb, 0, 0)) + " mark(s) (want still " + int_to_str(n3) + ")")

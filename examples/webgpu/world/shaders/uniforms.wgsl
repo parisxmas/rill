@@ -36,8 +36,36 @@
     crateMin:   vec4f,
     crateSize:  vec4f,
     // The AK's, which `ak.wgsl` unpacks against — it has a shader of its own.
+    // `akMin.w` is not a bound either: it is how far through a magazine change
+    // the hands are, nought when there is none, which is what animates the
+    // magazine out of the well and a new one back into it.
     akMin:      vec4f,
     akSize:     vec4f,
+    // Things that are not anybody's bounding box.
+    //
+    //   x  the muzzle flash, one at the shot and gone in eighty milliseconds
+    //
+    // The flash used to be the recoil raised to the seventh — one number
+    // serving both, the faster of the two given the steeper curve — and that
+    // held only while every weapon kicked the same amount. The AK damps its
+    // model kick so the barrel stays in frame, and a half raised to the
+    // seventh is a hundred and twenty-eighth: its muzzle flash went out.
+    // The flash has its own number now and what a weapon does with the kick
+    // is no longer any of its business. y, z and w are spare.
+    fx:         vec4f,
+    // The lamp on this player's head: x is one while it is lit and nought
+    // while it is not, and it starts at nought. It used to come on by itself
+    // once the sun went under the world, which meant every player carried the
+    // same light and nobody could turn theirs off to stop being the brightest
+    // thing on a dark hillside. `F` is the switch now. y, z and w are spare.
+    lamp:       vec4f,
+    // And everybody else's, six at a time: two vectors each, `xyz` where the
+    // lamp is with `w` saying whether it is lit, then `xyz` which way it is
+    // pointed. Six because that is what a light in a shared valley is worth —
+    // the beams are gathered nearest-first in host.js and the seventh player
+    // in a heap simply does not cast one. A slot with `w` at nought costs the
+    // fragment a compare and nothing else, so an empty valley pays nothing.
+    lamps:      array<vec4f, 12>,
   }
   @group(0) @binding(0) var<uniform> u: U;
 

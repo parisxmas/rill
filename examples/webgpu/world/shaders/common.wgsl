@@ -776,17 +776,18 @@
   const LAMP_COS_IN  = 0.965;      // ~15°, the hot middle
   const LAMP_COS_OUT = 0.855;      // ~31°, where the beam gives out
 
-  fn headlamp(n: vec3f, world: vec3f, day: f32) -> vec3f {
+  // One beam, wherever it is standing and whichever way it is pointed. Both
+  // the lamp on your own head and everybody else's go through here: a light is
+  // a light, and the only thing that made this player's special was that the
+  // shader could read the camera and had nothing to read for anyone else.
+  // (`lampAt` and not `from`: WGSL keeps that word, the way it keeps `ref`.)
+  fn beamAt(n: vec3f, world: vec3f, lampAt: vec3f, fwd: vec3f, day: f32) -> vec3f {
     let on = 1.0 - day;
     if (on <= 0.001) { return vec3f(0.0); }
-    let toEye = u.eye.xyz - world;
-    let d = length(toEye);
+    let toLamp = lampAt - world;
+    let d = length(toLamp);
     if (d > LAMP_RANGE) { return vec3f(0.0); }
-    let L = toEye / max(d, 0.0001);
-
-    let yaw = u.cam.x; let pitch = u.cam.y;
-    let cp = cos(pitch);
-    let fwd = vec3f(sin(yaw) * cp, sin(pitch), -cos(yaw) * cp);
+    let L = toLamp / max(d, 0.0001);
 
     // How far off the axis of the beam this point is.
     let c = dot(-L, fwd);
@@ -808,6 +809,36 @@
 
     let ndl = max(dot(n, L), 0.0);
     return vec3f(1.0, 0.955, 0.88) * (1.25 * ndl * beam * fall * reach * on);
+  }
+
+  fn headlamp(n: vec3f, world: vec3f, day: f32) -> vec3f {
+    // Off unless somebody has pressed `F`. It used to come on by itself at
+    // dusk, which is a fine default for one person walking through a valley
+    // and the wrong one for six: a light nobody chose is a light nobody can
+    // put out, and on a dark hillside the thing that gives you away should be
+    // something you decided to switch on.
+    if (u.lamp.x < 0.5) { return vec3f(0.0); }
+    let yaw = u.cam.x; let pitch = u.cam.y;
+    let cp = cos(pitch);
+    let fwd = vec3f(sin(yaw) * cp, sin(pitch), -cos(yaw) * cp);
+    return beamAt(n, world, u.eye.xyz, fwd, day);
+  }
+
+  // And the other people's, which is the whole point of a switch: a lamp you
+  // can see coming over the ridge before its owner does. Six slots, gathered
+  // nearest-first by the page — `w` is nought in a slot nobody is using, and
+  // the loop is fixed-length because a uniform-length one costs the same and
+  // reads worse.
+  fn otherLamps(n: vec3f, world: vec3f, day: f32) -> vec3f {
+    var sum = vec3f(0.0);
+
+    for (var i = 0u; i < 6u; i = i + 1u) {
+      let at = u.lamps[i * 2u];
+      if (at.w > 0.5) {
+        sum = sum + beamAt(n, world, at.xyz, u.lamps[i * 2u + 1u].xyz, day);
+      }
+    }
+    return sum;
   }
 
   // Distance haze, thickest along the valley floor. The exponential alone
@@ -909,6 +940,7 @@
     // moves because the deck does.
     var col = albedo * (SUN_COL * 1.25 * nl * sh * day * cloudShadow(world, u.eye.w)
                         + moon + amb + headlamp(n, world, day)
+                        + otherLamps(n, world, day)
                         + blastLight(n, world));
     let view = world - u.eye.xyz;
     return mix(col, fogColor(view), fogAt(world, length(view)));
@@ -1042,11 +1074,32 @@
   const RPG_PITCH =  0.0;
   const RPG_ROLL  = -0.05;
   const RPG_SCALE = 0.26;
+  // And where it goes when the sights come up.
+  //
+  // This one has no glass either. The screen used to close down to a circle
+  // around it — the rifle's scope, borrowed — which was drawing an optic that
+  // is not on the weapon: an RPG-7's sight is a post at the muzzle and a
+  // ladder behind it, both bolted to the *left* of the tube because the tube
+  // is carried on the right shoulder and the eye has to see past it.
+  //
+  // So the launcher does what the AK does: it comes to the eye and the sights
+  // do the work. The numbers are the model's own. The front post tops out at
+  // y +0.2443 on a centreline of z -0.044, read off the mesh, and this is what
+  // puts that point on the view axis: 0.2443 and -0.044 through the same
+  // scale, negated. The tube axis sits at y +0.14, so it ends up two and a
+  // half centimetres *below* the line — you look over it, which is how the
+  // weapon is actually aimed and why the sights stand as tall as they do.
+  //
+  // The distance is left alone. Bringing it nearer would make the post bigger
+  // and would also pull the back of the tube — which reaches to model -1.097,
+  // a centimetre and a half in front of the eye as it is — through the near
+  // plane, and a launcher cut open along its length is worse than a small post.
+  const RPG_AIM   = vec3f(0.0114, -0.0635, 0.30);
 
-  fn rpgRot(rc: f32) -> mat3x3f {
-    let cy = cos(RPG_YAW);               let sy = sin(RPG_YAW);
+  fn rpgRot(rc: f32, held: f32) -> mat3x3f {
+    let cy = cos(RPG_YAW * held);        let sy = sin(RPG_YAW * held);
     let cp = cos(RPG_PITCH - 0.16 * rc); let sp = sin(RPG_PITCH - 0.16 * rc);
-    let cr = cos(RPG_ROLL);              let sr = sin(RPG_ROLL);
+    let cr = cos(RPG_ROLL * held);       let sr = sin(RPG_ROLL * held);
     let Ry = mat3x3f(vec3f(cy, 0.0, -sy), vec3f(0.0, 1.0, 0.0), vec3f(sy, 0.0, cy));
     let Rx = mat3x3f(vec3f(1.0, 0.0, 0.0), vec3f(0.0, cp, sp), vec3f(0.0, -sp, cp));
     let Rz = mat3x3f(vec3f(cr, sr, 0.0), vec3f(-sr, cr, 0.0), vec3f(0.0, 0.0, 1.0));
@@ -1055,26 +1108,32 @@
 
   fn rpgCam(m: vec3f) -> vec3f {
     let rc = u.wind.w;
+    // How far through the move to the sights the hands are — the same number
+    // the rifle and the AK ride, so all three weapons come up together.
+    let held = 1.0 - u.vmSize.w;
     // The walk, at the rifle's amplitude: it is the same shoulders carrying it.
     let amp = clamp(u.wind.y / 5.5, 0.0, 1.0);
     let bp = u.wind.z;
     let t = u.eye.w;
+    // A quarter of it behind the sights, for the rifle's reason: a sway that
+    // reads as life at the hip reads as a shake along a sight line.
     let bob = vec3f(
       sin(bp) * 0.0060 * amp + sin(t * 0.7) * 0.0014,
       -abs(cos(bp)) * 0.0050 * amp + sin(t * 0.9 + 1.1) * 0.0011,
       -0.004 * amp,
-    );
+    ) * (1.0 - 0.75 * u.vmSize.w);
     // Backwards and up when it goes off, harder than the rifle: the whole of
     // the propellant leaves the front of this one.
     let kick = vec3f(0.0, 0.014 * rc, -0.075 * rc);
     // And out of frame while the hands are changing weapons.
     let stow = vec3f(0.0, -0.42 * u.rpgMin.w, 0.10 * u.rpgMin.w);
     // The model's axes to the camera's, the same shuffle the rifle does.
-    return rpgRot(rc) * vec3f(m.z, m.y, m.x) * RPG_SCALE + RPG_AT + bob + kick + stow;
+    return rpgRot(rc, held) * vec3f(m.z, m.y, m.x) * RPG_SCALE
+         + mix(RPG_AT, RPG_AIM, u.vmSize.w) + bob + kick + stow;
   }
 
   fn rpgDir(d: vec3f) -> vec3f {
-    return rpgRot(u.wind.w) * vec3f(d.z, d.y, d.x);
+    return rpgRot(u.wind.w, 1.0 - u.vmSize.w) * vec3f(d.z, d.y, d.x);
   }
 
   // The camera's axes in the world, rebuilt from the same yaw and pitch Rill

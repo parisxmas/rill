@@ -34,8 +34,22 @@
     // A fixed mip rather than whatever the derivatives ask for. Two reasons and
     // they are both the point of this pass: it needs no derivatives, and the
     // needle detail that a full-resolution fetch brings back is exactly the
-    // high-frequency edge that flips on and off as the sun turns. Level two is
-    // blurred enough that the half-way cut moves smoothly.
-    let a = textureSampleLevel(foliage, foliageSamp, v.uv, 2.0).a;
-    if (v.uv.x >= 0.0 && a < 0.45) { discard; }
+    // high-frequency edge that flips on and off as the sun turns. A blurred
+    // level is what lets the cut move smoothly instead of crawling.
+    //
+    // The level and the cut together are how much light a branch keeps off the
+    // ground, and they were set to draw the needles honestly: level two at a
+    // half-way cut shadows 13.3% of the card, against the twig's own 12.2%
+    // coverage. Faithful, and far too bright — a pine is 85% holes by area, so
+    // a canopy of them let seven eighths of the sun straight through and
+    // standing under a tree was no darker than standing beside it.
+    //
+    // A branch is not a lattice you can see the sky through, it is a mass. So:
+    // blurrier, and a cut low enough that anywhere with foliage near it counts.
+    // Level four at 0.06 shadows 27.5% of the card — a little over double —
+    // and the compounding is where it is felt: four overlapping branches used
+    // to pass 57% of the light and now pass 28%. Sixteen texels square still
+    // carries the shape of a branch, which eight does not.
+    let a = textureSampleLevel(foliage, foliageSamp, v.uv, 4.0).a;
+    if (v.uv.x >= 0.0 && a < 0.06) { discard; }
   }

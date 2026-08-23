@@ -208,6 +208,11 @@ export fn ak_full() -> Int = v.ak_full()
 
 export fn ak_mags(s: Ptr) -> Int = v.ak_mags(s)
 
+# Asking for the magazine to be changed with rounds still in it — the `R` key.
+# Answers whether it took, so the browser can leave the key alone when there
+# was nothing to do rather than starting an animation for a refusal.
+export fn ask_reload(s: Ptr) -> Int = v.ask_reload(s)
+
 # Where the AK's rounds have stopped, for the chips the renderer draws there.
 export fn marks(s: Ptr) -> Ptr = v.marks(s)
 
@@ -301,6 +306,10 @@ export fn drop_block(w: Ptr, i: Int) -> Int = v.drop_block(w, i)
 export fn wading(s: Ptr) -> Int = v.wading(s)
 
 export fn respawn(s: Ptr) = v.respawn(s)
+
+# What a page on its own stirs into where it puts this player. See `place_player`
+# in valley.rill: with no server and no clock the seed was the same every run.
+export fn spawn_salt(s: Ptr, v0: Float) = v.spawn_salt(s, v0)
 
 export fn restart(s: Ptr) = v.restart(s)
 

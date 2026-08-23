@@ -51,7 +51,7 @@
     // brightest thing for a hundred metres, and none of that reaches the world
     // here — but the barrel and the hand are twenty centimetres from it, and
     // leaving them unlit is what makes a muzzle flash look like a decal.
-    let flash = pow(clamp(u.wind.w, 0.0, 1.0), 7.0);
+    let flash = clamp(u.fx.x, 0.0, 1.0);
     col += albedo * vec3f(1.0, 0.62, 0.26) * flash * 2.2;
     return vec4f(col, 1.0);
   }

@@ -24,7 +24,9 @@
     let cx = select(-1.0, 1.0, q == 1u || q == 2u || q == 4u);
     let cy = select(-1.0, 1.0, q == 2u || q == 4u || q == 5u);
 
-    let flash = pow(clamp(u.wind.w, 0.0, 1.0), 7.0);
+    // Its own number, not the recoil raised to the seventh: see `fx` in
+    // uniforms.wgsl for what that cost the AK.
+    let flash = clamp(u.fx.x, 0.0, 1.0);
 
     var o: VOut;
     o.uv = vec2f(cx, cy);
