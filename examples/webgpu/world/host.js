@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=392";   // keep in step with V below
-import { join, WH } from "./net.js?v=392";
+import { load } from "./world.js?v=393";   // keep in step with V below
+import { join, WH } from "./net.js?v=393";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=392";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "392";
+const V = "393";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -403,187 +403,6 @@ function readFigure(bytes) {
   return { joints, verts, indices, box, hand, grip, upper, parent, bindT, bindR, invBind, clips, vertexAt, indexAt };
 }
 
-// A pose, worked out on the page and handed over as one matrix per joint.
-//
-// The alternative is to send the skeleton and the clips to the GPU and skin in
-// a compute pass, which is what a game with a hundred people on screen does.
-// Eight of them is fifty-three small matrix products each, which is nothing,
-// and it keeps the whole animation in one place where it can be read.
-function makeSkinner(figure, capacity) {
-  const J = figure.joints;
-  const local = new Float32Array(J * 16);
-  const world = new Float32Array(J * 16);
-  const out = new Float32Array(capacity * J * 16);
-  // Where each person's rifle is. The hand's world matrix rather than its
-  // skinning matrix: what a weapon wants is where the hand *is*, not the
-  // difference between where it is and where it was bound.
-  // One spare: everybody else's rifle is held in their hand, and the extra is
-  // this player's own once they have dropped it. There is no figure for
-  // yourself — you are the camera — so there is no hand to hang it off.
-  const held = new Float32Array((capacity + 1) * 16);
-
-  // Column-major, as WGSL wants it: o = a * b.
-  const mul = (o, oi, a, ai, b, bi) => {
-    for (let c = 0; c < 4; c++) {
-      for (let r = 0; r < 4; r++) {
-        o[oi + c * 4 + r] = a[ai + r] * b[bi + c * 4]
-                          + a[ai + 4 + r] * b[bi + c * 4 + 1]
-                          + a[ai + 8 + r] * b[bi + c * 4 + 2]
-                          + a[ai + 12 + r] * b[bi + c * 4 + 3];
-      }
-    }
-  };
-
-  // A rotation and a translation straight into a matrix; nothing in this rig
-  // is ever scaled, which the bake checks rather than assumes.
-  const trs = (m, at, x, y, z, qx, qy, qz, qw) => {
-    const x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
-    const xx = qx * x2, xy = qx * y2, xz = qx * z2;
-    const yy = qy * y2, yz = qy * z2, zz = qz * z2;
-    const wx = qw * x2, wy = qw * y2, wz = qw * z2;
-    m[at] = 1 - (yy + zz); m[at + 1] = xy + wz; m[at + 2] = xz - wy; m[at + 3] = 0;
-    m[at + 4] = xy - wz; m[at + 5] = 1 - (xx + zz); m[at + 6] = yz + wx; m[at + 7] = 0;
-    m[at + 8] = xz + wy; m[at + 9] = yz - wx; m[at + 10] = 1 - (xx + yy); m[at + 11] = 0;
-    m[at + 12] = x; m[at + 13] = y; m[at + 14] = z; m[at + 15] = 1;
-  };
-
-  // Where the player is, as a matrix: turned about the vertical, then put down
-  // on the ground.
-  //
-  // The angle is not the yaw and not the yaw plus half a turn. This rotation
-  // takes the model's forward — the mannequin faces +z, which its toes and its
-  // nose agree about — to (sin a, 0, cos a), and Rill's `walk` means
-  // (sin yaw, 0, -cos yaw) by a yaw. Those meet at a = π - yaw, and π + yaw
-  // meets them nowhere: it mirrors rather than turns, so everybody walked
-  // sideways-on to the way they were looking, and worse, the mirror is
-  // invisible on a figure that is roughly symmetric until it moves.
-  const place = (m, x, y, z, yaw) => {
-    const a = Math.PI - yaw, c = Math.cos(a), s = Math.sin(a);
-    m[0] = c; m[1] = 0; m[2] = -s; m[3] = 0;
-    m[4] = 0; m[5] = 1; m[6] = 0; m[7] = 0;
-    m[8] = s; m[9] = 0; m[10] = c; m[11] = 0;
-    m[12] = x; m[13] = y; m[14] = z; m[15] = 1;
-  };
-
-  const model = new Float32Array(16);
-  const rooted = new Float32Array(16);
-  // Two quaternions of scratch: the clip somebody is doing, and the armed pose
-  // being mixed into it.
-  const qa = new Float32Array(4), qb = new Float32Array(4);
-
-  // One joint out of one clip: the two frames either side of the moment, the
-  // short way round between them.
-  const sample = (k, j, out) => {
-    const a = (k.f0 * J + j) * 4, b = (k.f1 * J + j) * 4;
-    const ax = k.rot[a] / 32767, ay = k.rot[a + 1] / 32767;
-    const az = k.rot[a + 2] / 32767, aw = k.rot[a + 3] / 32767;
-    let bx = k.rot[b] / 32767, by = k.rot[b + 1] / 32767;
-    let bz = k.rot[b + 2] / 32767, bw = k.rot[b + 3] / 32767;
-    if (ax * bx + ay * by + az * bz + aw * bw < 0) { bx = -bx; by = -by; bz = -bz; bw = -bw; }
-    out[0] = ax + (bx - ax) * k.t; out[1] = ay + (by - ay) * k.t;
-    out[2] = az + (bz - az) * k.t; out[3] = aw + (bw - aw) * k.t;
-  };
-
-  // `a` moves `w` of the way to `b`, the short way round. Straight lerp and a
-  // normalise rather than a proper slerp: these two are never far apart — one
-  // is a man running and the other is the same man holding a rifle — and at
-  // that separation the difference is a fraction of a degree in the middle of
-  // the arc, which nothing on a screen can tell.
-  const mix = (a, b, w) => {
-    if (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] < 0) {
-      b[0] = -b[0]; b[1] = -b[1]; b[2] = -b[2]; b[3] = -b[3];
-    }
-    for (let i = 0; i < 4; i++) a[i] += (b[i] - a[i]) * w;
-  };
-
-  return {
-    matrices: out,
-    held,
-    // A rifle lying on the ground, on its side, pointing the way whoever was
-    // holding it was facing and turned a little off it — a weapon that landed
-    // square with its owner reads as placed rather than dropped.
-    //
-    // The scale comes off the grip, which is where the bake put the only
-    // opinion about how long a rifle is. Nothing here has a second one.
-    drop(slot, x, y, z, yaw, spin) {
-      const s = Math.hypot(figure.grip[0], figure.grip[1], figure.grip[2]);
-      const a = yaw + spin;
-      const dx = Math.sin(a), dz = -Math.cos(a);
-      const at = slot * 16;
-      // A pace out in front of where they went down, rather than under them.
-      // For everybody else that is the difference between a rifle on the grass
-      // and a rifle inside a body; for this player it is the difference
-      // between seeing it and not, because the camera they are left with lies
-      // at their own feet looking where they were last looking.
-      x += Math.sin(yaw) * 0.9;
-      z -= Math.cos(yaw) * 0.9;
-      // Barrel along the facing, the rifle's own up laid across it — so it is
-      // on its side — and the third axis falls out pointing at the ground.
-      held[at] = dx * s; held[at + 1] = 0; held[at + 2] = dz * s; held[at + 3] = 0;
-      held[at + 4] = -dz * s; held[at + 5] = 0; held[at + 6] = dx * s; held[at + 7] = 0;
-      held[at + 8] = 0; held[at + 9] = -s; held[at + 10] = 0; held[at + 11] = 0;
-      held[at + 12] = x; held[at + 13] = y + 0.05; held[at + 14] = z; held[at + 15] = 1;
-    },
-    // One person: their clip, how far into it, and where they are standing.
-    //
-    // `over` is a second clip for the upper body, and it exists because the
-    // library has a walk and an armed idle and no armed walk. The legs take
-    // the clip somebody is actually doing; the spine and everything above it
-    // takes the one where they are holding the rifle. The hips are below the
-    // split, so the pelvis still sways with the stride and the torso is
-    // carried by it rather than nailed to the world — which is the whole
-    // reason a mask is done on the skeleton and not by playing two clips and
-    // fading between them.
-    pose(slot, clip, time, x, y, z, yaw, over = null, overTime = 0) {
-      const cut = (c, s) => {
-        const f = c.loops
-          ? (Math.max(s, 0) * c.fps) % (c.frames - 1)
-          : Math.min(Math.max(s, 0) * c.fps, c.frames - 1);
-        const f0 = Math.floor(f);
-        return { rot: c.rot, f0, f1: Math.min(f0 + 1, c.frames - 1), t: f - f0 };
-      };
-      const low = cut(clip, time);
-      const up = over ? cut(over, overTime) : low;
-      const { f0, f1, t } = low;
-
-      for (let j = 0; j < J; j++) {
-        // What they are doing, and then however much of the armed pose this
-        // joint is asked to carry — all of it in the hands, none of it in the
-        // legs, and a proportion in between. A weight and not a flag: taken as
-        // a flag the whole torso came from the idle and the legs pumped
-        // underneath a body that did not move.
-        sample(low, j, qa);
-        const w = over ? figure.upper[j] / 255 : 0;
-        if (w > 0.001) { sample(up, j, qb); mix(qa, qb, w); }
-        let qx = qa[0], qy = qa[1], qz = qa[2], qw = qa[3];
-        const n = Math.hypot(qx, qy, qz, qw) || 1;
-        qx /= n; qy /= n; qz /= n; qw /= n;
-
-        let tx = figure.bindT[j * 3], ty = figure.bindT[j * 3 + 1], tz = figure.bindT[j * 3 + 2];
-        if (j === clip.root) {
-          const r0 = f0 * 3, r1 = f1 * 3;
-          tx = clip.rootT[r0] + (clip.rootT[r1] - clip.rootT[r0]) * t;
-          ty = clip.rootT[r0 + 1] + (clip.rootT[r1 + 1] - clip.rootT[r0 + 1]) * t;
-          tz = clip.rootT[r0 + 2] + (clip.rootT[r1 + 2] - clip.rootT[r0 + 2]) * t;
-        }
-        trs(local, j * 16, tx, ty, tz, qx, qy, qz, qw);
-      }
-
-      place(model, x, y, z, yaw);
-      for (let j = 0; j < J; j++) {
-        const p = figure.parent[j];
-        if (p < 0) mul(world, j * 16, model, 0, local, j * 16);
-        else mul(world, j * 16, world, p * 16, local, j * 16);
-      }
-      for (let j = 0; j < J; j++) {
-        mul(rooted, 0, world, j * 16, figure.invBind, j * 16);
-        out.set(rooted, (slot * J + j) * 16);
-      }
-      mul(rooted, 0, world, figure.hand * 16, figure.grip, 0);
-      held.set(rooted, slot * 16);
-    },
-  };
-}
 
 function crystalMesh() {
   const tris = [];
@@ -1987,7 +1806,40 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // handed over whole. Thirty-two people is a hundred and eight kilobytes,
   // which is a sixth of what the terrain is.
   const FIGURE_CAP = 32;
-  const skinner = makeSkinner(figure, FIGURE_CAP);
+  // The rig and the clips go into the engine once per (re)join; the skinner
+  // itself is skin.rill. Clip roles ride in a fixed order the block knows.
+  const SKIN_ROLES = ["idle", "run", "crouch", "die", "hit", "fire"];
+  function skinWire(st) {
+    E.skin_init(st);
+    const base = Number(E.skin_ptr(st));
+    const F = (at, arr) => new Float32Array(E.memory.buffer, base + at * 4, arr.length).set(arr);
+    const J = figure.joints;
+    const head = new Float32Array(E.memory.buffer, base, 16);
+    head[0] = J; head[2] = figure.hand;
+    F(Number(E.skin_grip_at()), figure.grip);
+    F(Number(E.skin_parent_at()), Float32Array.from(figure.parent));
+    F(Number(E.skin_upper_at()), Float32Array.from(figure.upper, v => v / 255));
+    F(Number(E.skin_bindt_at()), figure.bindT);
+    F(Number(E.skin_inv_at()), figure.invBind);
+    // The pool: each clip's root track as floats, its rotations as the same
+    // int16s the file carried.
+    let poolF = Number(E.skin_pool_at());          // f32 index for root tracks
+    const names = [...figure.clips.keys()];
+    head[1] = names.length;
+    names.forEach((name, c) => {
+      const k = figure.clips.get(name);
+      const t = new Float32Array(E.memory.buffer, base + Number(E.skin_clip_at(BigInt(c))) * 4, 16);
+      t[0] = k.frames; t[1] = k.fps; t[2] = k.loops ? 1 : 0; t[3] = k.root;
+      t[4] = poolF; t[6] = k.seconds;
+      F(poolF, k.rootT); poolF += k.rootT.length;
+      // Rotations start at the next even f32 so the int16 view stays aligned.
+      poolF = (poolF + 1) & ~1;
+      t[5] = poolF * 4;                            // byte index
+      new Int16Array(E.memory.buffer, base + poolF * 4, k.rot.length).set(k.rot);
+      poolF += (k.rot.length + 1) >> 1;
+    });
+    SKIN_ROLES.forEach((r, i) => { head[4 + i] = Math.max(0, names.indexOf(r)); });
+  }
   const poseBuf = device.createBuffer({
     size: FIGURE_CAP * figure.joints * 64,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -2025,80 +1877,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // when they are down and have no figure to hang it off.
   let heldCount = 0;
 
-  // Where each person is in their animation, and what they were doing last
-  // time. Kept here rather than sent, because a clock is exactly the sort of
-  // thing that should not go over a network: everybody's legs can be at a
-  // different point in the same walk without anybody disagreeing about
-  // anything that matters.
-  const clocks = new Map();
-  // What the server says somebody is doing, as a clip.
-  //
-  // Nobody in this valley walks. Moving without the sprint key is seven and a
-  // half metres a second, which is faster than anybody has ever run, and the
-  // walk clip under it made the legs stroll while the body flew — the thing
-  // that reads as broken, more than any amount of jitter. So the run clip
-  // covers both, at two rates.
-  const CLIP_FOR = ["idle", "run", "run", "crouch", "die"];
-
-  // How fast to play it, which is not one.
-  //
-  // The clip is a run at about four metres a second — two steps in seven tenths
-  // of a second, which is what a person does. This valley moves at five and a
-  // half, and at twelve with the sprint key, so played at its own speed the
-  // feet skate: the body covers more ground than the legs are asking for.
-  //
-  // Cadence goes about as the square root of speed — most of the rest is a
-  // longer stride, which is why a sprinter does not pedal twice as fast as a
-  // jogger. √(5.625/4) and √(12/4) are these two numbers, and they put the
-  // feet near enough under the body at both speeds.
-  const CLIP_RATE = [1, 1.19, 1.73, 1, 1];
-  // The clips that only have legs worth keeping. Quaternius' library has a
-  // walk, a run and a crouch, and an armed idle, and no armed anything else —
-  // so in these three the arms swing like the empty arms they were animated
-  // as, and a rifle swung with them. The upper body comes from the armed idle
-  // instead, from the spine up; see `pose`. Firing, being hit and going down
-  // are whole-body and are left alone, and so is the idle, which is where the
-  // upper body is coming from.
-  const LEGS_ONLY = new Set(["walk", "run", "crouch"]);
-
-  // Firing and being hit are events rather than states, so they play over
-  // whatever the legs are doing for as long as their clip lasts.
-  //
-  // A hit is noticed rather than announced: health only ever goes down for one
-  // reason at a time and the snapshot carries it, so a drop since the last one
-  // is somebody having just been shot — which also covers the shark and a
-  // crater without either needing to say anything. The cost is that it arrives
-  // a tick late, which is the same tick the health bar moves on.
-  function clipFor(p, now) {
-    const c = clocks.get(p.id) ?? { name: "idle", since: now, at: 0, seen: now, firedAt: -9, hitAt: -9, health: p.health };
-    if (p.health < c.health - 0.001 && p.health > 0.001) c.hitAt = now;
-    // And coming apart, on the one tick their health reaches zero. The pieces
-    // are the world's own — the same ones a crystal breaks into — so nothing
-    // is sent for this and nothing new is drawn: the snapshot is where a death
-    // is learned, and this is the moment it is learned on.
-    if (p.health < 0.001 && c.health >= 0.001 && world) {
-      E.gib_at(world, p.x, p.y, p.z, p.yaw, BigInt(p.id));
-    }
-    c.health = p.health;
-    const shooting = now - c.firedAt < figure.clips.get("fire").seconds * 1000;
-    const hurt = now - c.hitAt < figure.clips.get("hit").seconds * 1000;
-    // Down first: somebody on the ground is not flinching or shooting.
-    const want = p.health < 0.001 ? "die" : hurt ? "hit" : shooting ? "fire" : (CLIP_FOR[p.pose] ?? "idle");
-    // How far into the clip, kept as a running total rather than worked out
-    // from when it started. The two agree until the rate changes, and then the
-    // subtraction jumps: somebody who has been running for ten seconds and
-    // presses sprint would be thrown four and a half seconds down the clip
-    // mid-stride. Adding up the frames cannot do that.
-    //
-    // The step is capped, because a tab that was in the background comes back
-    // with a gap of minutes in its hand.
-    const step = Math.min((now - c.seen) / 1000, 0.1);
-    c.seen = now;
-    const rate = want === "run" ? (CLIP_RATE[p.pose] ?? 1) : 1;
-    if (want !== c.name) { c.name = want; c.since = now; c.at = 0; } else c.at += step * rate;
-    clocks.set(p.id, c);
-    return c;
-  }
 
   const pineData = pineMesh(false), crystalData = crystalMesh(), grassData = grassMesh();
   const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
@@ -2178,9 +1956,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // the pass begins, drawn at its end.
   let hudCount = 0;
   // How many interpolated players the wire handed over this frame, and the
-  // little per-player objects the animation clocks key off.
+  // little per-player objects the two remaining consumers — the zap beam's
+  // target and the head-lamps — build on demand.
   let wireN = 0;
-  const seenNow = [];
+  const wireSeen = () => {
+    const wi = wireInterp();
+    const out = [];
+    for (let i = 0; i < wireN; i++) {
+      const o = i * 12;
+      out.push({ id: wi[o], x: wi[o + 1], y: wi[o + 2], z: wi[o + 3],
+                 yaw: wi[o + 4], pitch: wi[o + 5], health: wi[o + 6],
+                 torch: wi[o + 8] > 0.5 });
+    }
+    return out;
+  };
   const wireF32 = () => new Float32Array(E.memory.buffer, Number(net.wire), 64);
   const wireInterp = () => new Float32Array(E.memory.buffer, Number(net.wire) + Number(E.wire_interp_at()) * 4, 32 * 12);
   const wirePev = () => new Float32Array(E.memory.buffer, Number(net.wire) + Number(E.wire_pev_at()) * 4, 16 * 4);
@@ -2261,6 +2050,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // And a fresh hand for the fresh player block; the weapon carries over
     // because `set_weapon` ran just above and `make` reads it back.
     E.hand_init(state);
+    skinWire(state);
     // A re-tier is a new valley and a new player block in it, and `join` hands
     // out a player carrying the rifle. What is in the hands is the page's
     // business and did not change because the terrain got coarser — without
@@ -2993,73 +2783,30 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // are facing, and their colour. Written every frame because it is a
     // kilobyte and they are always moving.
     if (net) {
-      // Straight off the wire's interpolation: twelve floats a player — id,
-      // x, y, z, yaw, pitch, health, pose, torch, and the hue the engine
-      // rolled for them. The little objects exist for clipFor, which keys its
-      // animation clocks off them.
-      const wi = wireInterp();
-      figureCount = Math.min(wireN, FIGURE_CAP);
-      seenNow.length = 0;
-      for (let i = 0; i < figureCount; i++) {
-        const o12 = i * 12, o = i * 8;
-        const p = { id: wi[o12], x: wi[o12 + 1], y: wi[o12 + 2], z: wi[o12 + 3],
-                    yaw: wi[o12 + 4], pitch: wi[o12 + 5], health: wi[o12 + 6],
-                    pose: wi[o12 + 7], torch: wi[o12 + 8] > 0.5 };
-        seenNow.push(p);
-        figures[o] = p.x; figures[o + 1] = p.y; figures[o + 2] = p.z;
-        figures[o + 3] = 1;
-        figures[o + 4] = p.yaw;
-        figures[o + 5] = wi[o12 + 9]; figures[o + 6] = wi[o12 + 10]; figures[o + 7] = wi[o12 + 11];
-        const clock = clipFor(p, now);
-        const clip = figure.clips.get(clock.name) ?? figure.clips.get("idle");
-        // The armed idle runs on its own clock rather than on the walk's, so
-        // the rifle keeps breathing at its own rate instead of bobbing once
-        // per footfall.
-        const over = LEGS_ONLY.has(clock.name) ? figure.clips.get("idle") : null;
-        skinner.pose(i, clip, clock.at, p.x, p.y, p.z, p.yaw, over, now / 1000);
-        // Whoever is down has let go of it. The die clip puts the hand on the
-        // ground and the rifle would have followed it there still gripped,
-        // which is a body holding its weapon at attention while lying dead.
-        if (p.health < 0.001) skinner.drop(i, p.x, p.y, p.z, p.yaw, 0.7 + (p.id % 5) * 0.4);
-        // And the same position into the world, so a round stops at the body
-        // it hit instead of carrying on through it.
-        E.set_ghost(world, BigInt(i), p.x, p.y, p.z);
-      }
-      if (figureCount < FIGURE_CAP) {
-        E.set_ghost(world, BigInt(figureCount), E.player_x(state), E.player_y(state), E.player_z(state));
-        E.set_ghosts(world, BigInt(figureCount + 1));
-      } else E.set_ghosts(world, BigInt(figureCount));
-
-      // Whoever has gone is forgotten, or the map grows for the life of the
-      // page in a valley people keep passing through.
-      if (clocks.size > figureCount) {
-        const here = new Set(seenNow.map(p => p.id));
-        for (const id of clocks.keys()) if (!here.has(id)) clocks.delete(id);
-      }
-      // And this player's own, once they are on the ground: the only rifle in
-      // the valley with nobody to hang it off, drawn after the others in the
-      // spare slot the skinner keeps for it.
-      heldCount = figureCount;
-      if (E.health(state) <= 0.001) {
-        skinner.drop(figureCount, E.player_x(state), E.player_y(state), E.player_z(state), stateF32()[19], 1.1);
-        heldCount = figureCount + 1;
-      }
+      // The whole figure pass is the engine's now: clocks, poses, drops,
+      // ghosts and instance floats in one call, three regions to upload.
+      figureCount = Number(E.skin_frame(state, net.wire, now / 1000));
+      const sb = Number(E.skin_ptr(state));
+      heldCount = new Float32Array(E.memory.buffer, sb + 11 * 4, 1)[0];
       if (figureCount) {
-        device.queue.writeBuffer(figureInst, 0, figures, 0, figureCount * 8);
-        device.queue.writeBuffer(poseBuf, 0, skinner.matrices, 0, figureCount * figure.joints * 16);
+        device.queue.writeBuffer(figureInst, 0,
+          new Float32Array(E.memory.buffer, sb + Number(E.skin_inst_at()) * 4, figureCount * 8));
+        device.queue.writeBuffer(poseBuf, 0,
+          new Float32Array(E.memory.buffer, sb + Number(E.skin_out_at()) * 4, figureCount * figure.joints * 16));
       }
-      if (heldCount) device.queue.writeBuffer(heldBuf, 0, skinner.held, 0, heldCount * 16);
+      if (heldCount) {
+        device.queue.writeBuffer(heldBuf, 0,
+          new Float32Array(E.memory.buffer, sb + Number(E.skin_held_at()) * 4, heldCount * 16));
+      }
 
-      // What the wire left for the page's ears: a shot fired (the figure's
-      // flinch clock), and this player being hit (the sound).
+      // What the wire left for the page's ears — and for the skinner's
+      // flinch clock, which lives in the engine too now.
       const pev = wirePev();
       const pn = wireF32()[18];
       for (let i = 0; i < pn; i++) {
         const kind = pev[i * 4];
-        if (kind === 1) {
-          const c = clocks.get(pev[i * 4 + 1]);
-          if (c) c.firedAt = performance.now();
-        } else if (kind === 2 && audio && hurtBuf) {
+        if (kind === 1) E.skin_fired(state, BigInt(pev[i * 4 + 1]), now / 1000);
+        else if (kind === 2 && audio && hurtBuf) {
           playAt(hurtBuf, Math.floor(Math.random() * 4), 0.95,
                  0.55 + 0.45 * Math.min(1, pev[i * 4 + 1] * 2), 0, 0.94 + Math.random() * 0.12);
         }
@@ -3210,7 +2957,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // this is right in the air as well as on the ground.
         if (!net || zwho === net.id) { tx = sf[16]; ty = sf[22] + 0.12; tz = sf[18]; }
         else {
-          const q = seenNow.find(p => p.id === zwho);
+          const q = wireSeen().find(p => p.id === zwho);
           if (!q) continue;
           tx = q.x; ty = q.y + 0.12; tz = q.z;
         }
@@ -3324,7 +3071,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[120] = torchOn ? 1 : 0;
     uf.fill(0, 124, 124 + LAMP_CAP * 8);
     if (net) {
-      const lit = seenNow.filter(p => p.torch && p.health > 0.001);
+      const lit = wireSeen().filter(p => p.torch && p.health > 0.001);
       if (lit.length > LAMP_CAP) {
         const ex = st[16], ey = st[17], ez = st[18];
         lit.sort((a, b) => ((a.x - ex) ** 2 + (a.y - ey) ** 2 + (a.z - ez) ** 2)

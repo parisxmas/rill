@@ -16,6 +16,7 @@ import "valley" as v
 import "hud" as hud
 import "wire" as wire
 import "hand" as hand
+import "skin" as skin
 
 # ---- the valley, and who is in it ------------------------------------------
 
@@ -489,6 +490,40 @@ export fn hand_ptr(s: Ptr) -> Ptr = peek_ptr(s, 96)
 
 export fn hand_frame(s: Ptr, dt: Float, now: Float, t: Float, mdx: Float, mdy: Float, flags: Int, want: Int) -> Int =
   hand.frame(s, dt, now, t, mdx, mdy, flags, want)
+
+# ---- the skinner ------------------------------------------------------------
+#
+# The figures' animation — skin.rill. The page parses figure.mesh, pushes the
+# rig and the clips into the block once, and uploads three regions per frame;
+# every quaternion and every joint matrix is the engine's.
+
+export fn skin_init(s: Ptr) -> Ptr = skin.make(s)
+
+export fn skin_ptr(s: Ptr) -> Ptr = peek_ptr(s, 97)
+
+export fn skin_frame(s: Ptr, wb: Ptr, now: Float) -> Int = skin.frame(s, wb, now)
+
+export fn skin_fired(s: Ptr, id: Int, now: Float) = skin.fired(peek_ptr(s, 97), id, now)
+
+export fn skin_inst_at() -> Int = skin.t_inst()
+
+export fn skin_held_at() -> Int = skin.t_held()
+
+export fn skin_out_at() -> Int = skin.t_out()
+
+export fn skin_pool_at() -> Int = skin.pool()
+
+export fn skin_clip_at(c: Int) -> Int = skin.t_clip(c)
+
+export fn skin_grip_at() -> Int = skin.t_grip()
+
+export fn skin_parent_at() -> Int = skin.t_parent()
+
+export fn skin_upper_at() -> Int = skin.t_upper()
+
+export fn skin_bindt_at() -> Int = skin.t_bindt()
+
+export fn skin_inv_at() -> Int = skin.t_inv()
 
 # Called once when the module is instantiated, and there is nothing to set up:
 # the valley is built when the host has measured the machine and knows how much

@@ -438,7 +438,7 @@ fn op_said() = 67
 # missing is one reload away.
 fn op_ver() = 118
 
-fn version() = 392
+fn version() = 393
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
