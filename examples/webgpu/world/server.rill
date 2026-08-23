@@ -181,6 +181,7 @@ type Msg
   Moved(id: Int, keys: Int, yaw: Float, pitch: Float)
   Shot(id: Int, dx: Float, dy: Float, dz: Float)
   Reloaded(id: Int)
+  Said(id: Int, text: Str)
   Pinged(id: Int, token: Str)
   Left(id: Int)
   Tick
@@ -211,6 +212,7 @@ fn handle(w, conns, inbox, joins, m, said) = match m
   Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
   Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
   Reloaded(id) -> reload_one(w, conns, id)
+  Said(id, text) -> say_one(w, conns, id, text)
   Pinged(id, token) -> pong(conns, id, token)
   Left(id) -> drop_one(w, conns, id)
   Tick -> tick(w, conns, said)
@@ -409,6 +411,14 @@ fn op_mag() = 109
 # with rounds still in the old one. Free in the table — the letters the server
 # sends are all elsewhere in it.
 fn op_reload() = 82
+
+# Chat, and the one thing in the table that needs a letter each way: `c` is
+# somebody saying something, `C` is the valley being told who said it. The
+# other messages are one direction each and could share, and these cannot —
+# a client that echoed its own `c` back at itself would be a client talking
+# to nobody.
+fn op_say() = 99
+fn op_said() = 67
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -640,6 +650,70 @@ fn asked_to_reload(w, conns, s) =
   v.ask_reload(s)
   v.heard(s, v.world_time(w))
   conns
+
+# ---- somebody said something -----------------------------------------------
+#
+# The only message a client can put in front of every other player's eyes with
+# words of its own choosing, so it is the one that has to be read carefully:
+# what arrives is bytes from a socket and what goes out is a line on fifteen
+# screens.
+#
+# Three things stand between them. The text is cut to printable ASCII, which
+# takes out the control bytes that would otherwise walk across somebody's log —
+# and every byte that survives is one the far end renders as *text* rather than
+# as markup, which is where the real defence is and why it is written down at
+# both ends. It is cut to a length. And nobody may do it faster than once every
+# second and a half.
+#
+# An empty line is not news and does not go out. Nor is it an error: it is what
+# pressing return twice looks like.
+fn say_cap() = 120
+
+fn say_one(w, conns, id, raw) = match find(conns, id)
+  None -> conns
+  Some(c) -> maybe_say(w, conns, c, id, clean_say(raw))
+
+fn maybe_say(w, conns, c, id, text) =
+  s = conn_block(c)
+  v.heard(s, v.world_time(w))
+  if str_len(text) == 0 then conns else if v.may_say(s, v.world_time(w)) == 0 then conns else spoke(w, conns, s, id, text)
+
+fn spoke(w, conns, s, id, text) =
+  v.said_at(s, v.world_time(w))
+  broadcast(w, conns, said_msg(id, text))
+  conns
+
+fn said_msg(id, text) =
+  b = strbuf()
+  put_u8(b, op_said())
+  put_u16(b, id)
+  strbuf_add(b, text)
+  strbuf_str(b)
+
+# Space to tilde, and nothing else. A tab would be a tab in somebody's log, a
+# newline would be two lines where one was sent, and a byte under thirty-two is
+# neither of those things and has no business on a screen at all.
+fn clean_say(raw) =
+  b = strbuf()
+
+  for i in 0..str_len(raw)
+    keep_said(b, raw, i)
+
+  trim_run(str_sub(strbuf_str(b), 0, say_cap()))
+
+fn keep_said(b, raw, i) = if said_char(str_get(raw, i)) then took(b, str_get(raw, i)) else 0
+
+fn said_char(c) = c >= 32 && c <= 126
+
+# A line of nothing but spaces is a line of nothing. Trimmed from the front and
+# then from the back, which between them make one of the two the same as none.
+fn trim_run(s) = trim_end(trim_front(s, 0))
+
+fn trim_front(s, i) =
+  if i >= str_len(s) then "" else if str_get(s, i) == 32 then trim_front(s, i + 1) else str_sub(s, i, str_len(s) - i)
+
+fn trim_end(s) =
+  if str_len(s) == 0 then s else if str_get(s, str_len(s) - 1) == 32 then trim_end(str_sub(s, 0, str_len(s) - 1)) else s
 
 fn drop_one(w, conns, id) = match find(conns, id)
   None -> conns
@@ -1403,7 +1477,7 @@ fn handle_line(conn, inbox, id, budget, until, msg, rest) =
 # the end of: `str_get` past the end is not a guard, the length is.
 fn route(inbox, id, msg) =
   k = str_get(msg, 0)
-  if k == op_input() && str_len(msg) >= 11 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_reload() then tell(inbox, Reloaded(id)) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
+  if k == op_input() && str_len(msg) >= 11 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_reload() then tell(inbox, Reloaded(id)) else if k == op_say() then tell(inbox, Said(id, rest_of(msg))) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
 
 fn moved(inbox, id, msg) =
   sc = alloc_bytes(8)

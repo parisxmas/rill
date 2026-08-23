@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=386";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=386";
+import { load } from "./world.js?v=387";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=387";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=386";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "386";
+const V = "387";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1988,6 +1988,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       // and the watcher in the frame loop draws the light and plays the sound
       // from there — the same road a bite this world decided takes.
       else if (e.kind === "z") E.put_zap(world, BigInt(n[0]), BigInt(n[1]));
+      // Somebody said something. Nothing in the valley moves because of it;
+      // it goes on the screen and that is all it does.
+      else if (e.kind === "say") sayLine(net.names.get(e.who) ?? "somebody", e.text);
       // The wall's whole history, one line at the door: every stone broken
       // before this client arrived. Each lands exactly where it did for
       // everybody else, because the resting place is computed from the index.
@@ -2760,6 +2763,72 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // thing about you — see `lamps` in uniforms.wgsl for who else can see it.
   let torchOn = false;
   addEventListener("keydown", e => { if (e.code === "KeyF" && !e.repeat) torchOn = !torchOn; });
+
+  // ---- saying something ------------------------------------------------------
+  //
+  // Return opens the field, return sends what is in it, escape gives up on it.
+  // Only where there is somebody to hear: alone in a valley the key does
+  // nothing, because a chat box with one person in it is a diary.
+  //
+  // The guard is one listener in the *capture* phase rather than a test at the
+  // top of each of the eight keydown handlers below. Every one of those is on
+  // the window and so runs in the bubble phase; this one sees the key first
+  // and, while the field is open, stops it there. Without it, typing "was"
+  // walks you forward and left, "f" puts your lamp on and off, and "3" changes
+  // weapons — all while the letters are also going into the box.
+  const chatEl = document.getElementById("chat");
+  const chatIn = document.getElementById("chatin");
+  let chatting = false;
+
+  function openChat() {
+    chatting = true;
+    chatEl.classList.add("on");
+    chatIn.value = "";
+    // The keys that were down stay down otherwise: open the box with a foot on
+    // W and you type a sentence while walking into the lake.
+    keys = 0;
+    // And the mouse comes back, which is what makes the caret real. The
+    // `pointerlockchange` handler below takes the aim and the trigger off with
+    // it, so leaving the box does not leave a held button behind.
+    document.exitPointerLock();
+    chatIn.focus();
+  }
+
+  function closeChat() {
+    chatting = false;
+    chatEl.classList.remove("on");
+    chatIn.blur();
+    // Back to the valley. A key press is a gesture, so the browser will
+    // usually give the lock straight back; when it will not, the canvas is
+    // still one click away and the page already says `click to look`.
+    canvas.requestPointerLock?.();
+  }
+
+  addEventListener("keydown", e => {
+    const enter = e.code === "Enter" || e.code === "NumpadEnter";
+    if (chatting) {
+      if (enter) {
+        const text = chatIn.value.trim();
+        // Empty is what pressing return twice looks like, and it closes the
+        // box rather than sending nothing. What may actually be said, and how
+        // often, is the server's — see `say_one` in server.rill.
+        if (text && net) net.say(text);
+        closeChat();
+      } else if (e.code === "Escape") closeChat();
+      // Everything else belongs to the field and to nothing else.
+      e.stopImmediatePropagation();
+      return;
+    }
+    if (enter && net && !e.repeat) {
+      openChat();
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
+  // A click anywhere else is a change of mind: the canvas takes the lock back
+  // on its own click handler, and a field left open behind it would swallow
+  // the next thing typed.
+  canvas.addEventListener("mousedown", () => { if (chatting) closeChat(); });
   addEventListener("keyup", e => { if (bit[e.code]) keys &= ~bit[e.code]; });
   canvas.addEventListener("click", () => {
     canvas.requestPointerLock();
@@ -2829,6 +2898,34 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // that is still being read should not move because a new one arrived.
     setTimeout(() => line.classList.add("gone"), 9000);
     setTimeout(() => line.remove(), 9800);
+  }
+
+  // A line somebody typed, into the same column as everything else that has
+  // happened — because to whoever is reading it, it *is* one of the things
+  // that happened, in the order it happened.
+  //
+  // Built out of nodes rather than out of a string of HTML, and that is not a
+  // style: `note` sets `innerHTML`, and every other line it is given was
+  // written here. This one was written by somebody else, over a socket, on a
+  // server anybody can connect to. A name is safe because the server allows it
+  // nothing but letters and digits; a sentence cannot be held to that and has
+  // to be put on the screen as text. `textContent` is what makes it text.
+  //
+  // Half a minute rather than the log's nine seconds: the valley decides when
+  // to say a stone went, and a person decides when to speak. The second is
+  // worth waiting on.
+  const SAID_KEEP = 30000;
+
+  function sayLine(who, text) {
+    const line = document.createElement("div");
+    line.className = "said";
+    const b = document.createElement("b");
+    b.textContent = who;
+    line.append(b, document.createTextNode(" " + text));
+    logEl.appendChild(line);
+    while (logEl.children.length > LOG_KEEP) logEl.firstChild.remove();
+    setTimeout(() => line.classList.add("gone"), SAID_KEEP);
+    setTimeout(() => line.remove(), SAID_KEEP + 800);
   }
 
   function cry(who, what, kind) {

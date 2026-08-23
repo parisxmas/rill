@@ -47,6 +47,9 @@ const OP = {
   snap: 115, round: 114, thrown: 116, crater: 107, hurt: 120,
   downed: 100, stone: 119, broke: 98, fell: 121, pineList: 80, zap: 122,
   input: 105, fire: 102, name: 110, ping: 112, reload: 82,
+  // The one pair: `c` goes up, `C` comes back down with an id on it. See
+  // `op_say` in server.rill for why chat is the message that needs both.
+  say: 99, said: 67,
 };
 
 const utf8 = { enc: new TextEncoder(), dec: new TextDecoder() };
@@ -97,6 +100,16 @@ export function join(url, name) {
     // same rule about whether a magazine may be changed, so there is nothing
     // to say beyond that it was asked for.
     reloaded() { net.send(floats(OP.reload, [])); },
+    // Something to say. Sent as it was typed — what may be said and how often
+    // is the server's to decide, and a client that trimmed it first would only
+    // be disagreeing with the far end about what an empty line is.
+    say(text) {
+      const bytes = utf8.enc.encode(text);
+      const out = new Uint8Array(1 + bytes.length);
+      out[0] = OP.say;
+      out.set(bytes, 1);
+      net.send(out.buffer);
+    },
     take() { const e = net.events; net.events = []; return e; },
     close() { sock.close(); },
   };
@@ -120,6 +133,14 @@ export function join(url, name) {
     if (op === OP.gone) { net.events.push({ kind: "gone", which: u16s(dv, 1) }); return; }
     if (op === OP.wall) { net.events.push({ kind: "wall", n: u16s(dv, 1) }); return; }
     if (op === OP.who) { net.names.set(dv.getUint16(1, true), text(dv, 3)); return; }
+    // Who said it and what they said. The text is carried as text and is put
+    // on the screen as text — never as markup. A name is alphanumeric because
+    // the server makes it so; a line of chat is whatever somebody typed, and
+    // the page is where that stops being dangerous.
+    if (op === OP.said) {
+      net.events.push({ kind: "say", who: dv.getUint16(1, true), text: text(dv, 3) });
+      return;
+    }
     if (op === OP.pong) {
       const rtt = performance.now() - dv.getFloat64(1, true);
       // A quarter weight on each new one. Enough to show a link going bad

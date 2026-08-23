@@ -435,6 +435,35 @@
     .log s { color: #e0503a; text-decoration: none; }  /* what it cost */
     .log u { color: #6f6a8c; text-decoration: none; }  /* somebody leaving */
     .log em { font-style: normal; }
+    /* A line somebody typed, in the same column as the things that happened to
+       them. Brighter than the log around it and allowed to wrap, because a
+       sentence cut off at the width of the panel is a sentence nobody can
+       read — and it stays up four times as long, since the valley chooses when
+       to say something happened and a person chooses when to speak. */
+    .log div.said { white-space: normal; color: #cfc9e8; }
+    .log div.said b { color: #57c26a; }
+
+    /* Where you type. Underneath the log rather than over it, and only there
+       while you are actually typing: a text field on screen at all times is a
+       text field the eye keeps checking, and this is a game that is mostly
+       played with the mouse. Return opens it, return sends, escape gives up. */
+    .chat {
+      position: fixed; left: 20px; bottom: 50px; width: 320px;
+      display: none; align-items: baseline; gap: 8px;
+      font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.06em;
+    }
+    .chat.on { display: flex; }
+    .chat span { color: #57c26a; }
+    /* Its own field rather than a contenteditable: an input is what a browser
+       already knows how to put a cursor in, and the border is the only thing
+       here that says the keys are going somewhere other than the valley. */
+    .chat input {
+      flex: 1; min-width: 0; background: rgba(8, 7, 14, 0.78);
+      border: 1px solid rgba(87, 194, 106, 0.55); border-radius: 2px;
+      padding: 3px 6px; color: #e8e4da; outline: none;
+      font: inherit; letter-spacing: inherit;
+    }
 
     /* Who has arrived and who has gone, across the middle. Bigger than the hit
        line and higher up, because it is about the valley rather than about you
@@ -495,7 +524,8 @@
       <b>space</b> jump &nbsp;·&nbsp; <b>shift</b> sprint &nbsp;·&nbsp;
       <b>C</b> crouch &nbsp;·&nbsp;
       <b>left mouse</b> fire &nbsp;·&nbsp; <b>1</b> rifle &nbsp;·&nbsp; <b>2</b> launcher &middot; <b>3</b> ak
-      &nbsp;·&nbsp; <b>R</b> reload &nbsp;·&nbsp; <b>F</b> torch &nbsp;·&nbsp; <b>M</b> music</div>
+      &nbsp;·&nbsp; <b>R</b> reload &nbsp;·&nbsp; <b>F</b> torch &nbsp;·&nbsp; <b>M</b> music
+      &nbsp;·&nbsp; <b>enter</b> say</div>
   </div>
   <div class="stat" id="stat"></div>
   <div class="who-list" id="roster" hidden><h2>in the valley</h2><div id="rosterRows"></div></div>
@@ -532,6 +562,8 @@
   <div class="took" id="took"></div>
   <div class="crier" id="crier"></div>
   <div class="log" id="log"></div>
+  <div class="chat" id="chat"><span>say</span><input id="chatin" maxlength="120"
+       autocomplete="off" autocapitalize="off" spellcheck="false"></div>
   <div class="clock" id="clock" hidden></div>
   <div class="board" id="board" hidden>
     <h2>round over</h2>
@@ -572,7 +604,7 @@
     // world.wasm behind an unversioned URL is served from cache, and what you
     // get is new renderer against old world — which looks exactly like the fix
     // you just made not working.
-    import { run } from "./host.js?v=386";
+    import { run } from "./host.js?v=387";
 
     // Whose valley. `?join` takes the one this page is served from,
     // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -651,7 +683,7 @@
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
 
-    run(document.getElementById("c"), "./world.wasm?v=386", (h) => {
+    run(document.getElementById("c"), "./world.wasm?v=387", (h) => {
       const gpu = h.gpuMs ? ` · GPU ${h.gpuMs.toFixed(1)} ms` : "";
       const lock = h.locked ? "" : " (measuring…)";
       const here = h.here === null ? ""

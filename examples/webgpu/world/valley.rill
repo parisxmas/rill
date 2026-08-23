@@ -51,6 +51,7 @@
 #   f32 118      rounds left in the magazine
 #   f32 123      whether their lamp is lit — see `set_keys`
 #   f32 124      what the caller adds to a spawn's seed — see `spawn_salt`
+#   f32 125      when they last said something — see `may_say`
 #   f32 102..104 what being shot did to their head: a clock, how hard, which way
 #   f32 99       this player's id, which outlives its place in the table
 #   ptr 94       the world it is in; in the world's own block, itself
@@ -4564,6 +4565,21 @@ fn may_rename(s: Ptr, t: Float) -> Int = if t - peek_f32(s, 108) > rename_gap() 
 
 fn renamed(s: Ptr, t: Float) =
   poke_f32(s, 108, t)
+  1
+
+# And how often they may say something, which is the same problem wearing
+# different clothes: a line of chat is the other thing one client can make the
+# server repeat to everybody in the valley, and it is longer than a name.
+#
+# A second and a half. Slower than anybody types a sentence and fast enough for
+# an argument — and a refusal rather than a disconnection, because somebody
+# leaning on the return key is impatient and not hostile.
+fn say_gap() = 1.5
+
+fn may_say(s: Ptr, t: Float) -> Int = if t - peek_f32(s, 125) > say_gap() then 1 else 0
+
+fn said_at(s: Ptr, t: Float) =
+  poke_f32(s, 125, t)
   1
 
 fn may_rise(s: Ptr) -> Int =
