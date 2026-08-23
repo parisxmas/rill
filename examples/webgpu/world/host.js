@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=387";   // keep in step with V below
-import { join, others, me, sharkNow, everyone } from "./net.js?v=387";
+import { load } from "./world.js?v=388";   // keep in step with V below
+import { join, others, me, sharkNow, everyone } from "./net.js?v=388";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, others, me, sharkNow, everyone } from "./net.js?v=387";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "387";
+const V = "388";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2086,7 +2086,24 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The clock is let run locally and only pulled back when it has drifted
     // further than the wind can notice. Writing it every snapshot would step
     // the weather backwards and forwards twenty times a second.
-    if (Math.abs(E.world_time(world) - m.clock) > 0.5) E.set_world_time(world, m.clock);
+    //
+    // `net.last.clock` and not `m.clock`. The clock is on the snapshot's
+    // header — it is the same fact for everybody in the valley — and `m` is
+    // this player's own record, which has never carried one. So the comparison
+    // was against `undefined`, which makes a NaN, and `NaN > 0.5` is false:
+    // the correction had never once run. Every browser was keeping its own
+    // time from the moment it joined.
+    //
+    // That drifts, and only one way. `dt` is clamped to a twentieth of a
+    // second a frame, so every frame slower than twenty a second — every
+    // stutter, every alt-tab, every minute in a background tab where the frame
+    // loop stops altogether — is time the valley does not get back. A day here
+    // is six minutes long. Two people who joined an hour apart, or one of whom
+    // looked away for a while, were standing in the same valley at different
+    // hours of it: one in daylight, one at night, watching the same sun from
+    // opposite sides of the sky.
+    const clock = net.last.clock;
+    if (Math.abs(E.world_time(world) - clock) > 0.5) E.set_world_time(world, clock);
   }
 
   // ---- names over heads ----------------------------------------------------
