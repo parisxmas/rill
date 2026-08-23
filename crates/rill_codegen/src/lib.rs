@@ -785,9 +785,13 @@ struct Codegen<'ctx, 'a> {
     /// The function being generated, for spotting a tail call that goes round.
     cur_fn: usize,
     /// Who calls whom, and the memoised answer to "what can this one reach".
-    /// Both empty in a program with no strands, which never asks.
+    /// Built for every program: preemption asks it only when there are
+    /// strands, but the untailed-recursion warning asks it everywhere.
     callgraph: Vec<Vec<usize>>,
     reaches: HashMap<usize, HashSet<usize>>,
+    /// Caller/callee pairs already warned about, so a generic instantiated
+    /// five times complains once.
+    warned_untailed: HashSet<(usize, usize)>,
     /// The program has strands in it, so tail calls carry a preemption check.
     /// Decided up front by `uses_scheduler`; see `emit_preempt_check`.
     preempt: bool,
@@ -841,8 +845,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             debug: None,
             cur_line: 0,
             cur_fn: usize::MAX,
-            callgraph: if preempt { call_graph(tmod) } else { Vec::new() },
+            callgraph: call_graph(tmod),
             reaches: HashMap::new(),
+            warned_untailed: HashSet::new(),
             preempt,
             wasm: target.is_some_and(|t| t.starts_with("wasm")),
         };
@@ -2946,12 +2951,33 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .get_insert_block()
                     .and_then(|b| b.get_parent())
                     .is_some_and(|f| f.get_call_conventions() == Self::TAILCC);
-                if callee.get_call_conventions() == Self::TAILCC
+                let callee_tailcc = callee.get_call_conventions() == Self::TAILCC;
+                if callee_tailcc
                     && caller_tailcc
                     && out_ty == *ret_ty
                     && self.llvm_type(ret_ty).is_some()
                 {
                     call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
+                } else if !(callee_tailcc && caller_tailcc)
+                    && *fn_idx != self.cur_fn
+                    && self.call_goes_round(*fn_idx)
+                {
+                    // The promise is quietly absent exactly here: a call in
+                    // tail position that can come back around, made under the
+                    // C convention because one signature or the other did not
+                    // fit the registers. LLVM keeps such calls flat when it
+                    // happens to turn the loop into one and lets the stack
+                    // grow when it does not — the valley's reader leaked two
+                    // frames per message for weeks and died at 87,385, so
+                    // this is said out loud rather than left to the core dump.
+                    //
+                    // A function calling *itself* is exempt: a same-signature
+                    // self call is the one shape LLVM's sibling-call pass
+                    // reliably folds whatever the convention — verified five
+                    // million deep — and it is also what every `for` loop
+                    // desugars to, so warning on it would bury the real
+                    // finding under compiler-made helpers nobody can fix.
+                    self.warn_untailed(*fn_idx, e.line);
                 }
                 let out = match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
@@ -3044,6 +3070,43 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let answer = seen.contains(&caller);
         self.reaches.insert(callee, seen);
         answer
+    }
+
+    /// Says, once per caller/callee pair, that a recursive call in tail
+    /// position is not the jump it reads as.
+    ///
+    /// The shape this catches is the one that took the valley server down: a
+    /// function whose arguments do not all fit the registers is quietly given
+    /// the C convention (see `cc_for`), under which a tail call is a hint the
+    /// optimizer may keep or drop — and whether it drops it turns on things as
+    /// far away as a channel send in the body. A loop like that leaks frames
+    /// only under load and only on native, which is the worst possible place
+    /// to learn about it. The fix is always the same and is named here: carry
+    /// the extra arguments as one tuple, which is one pointer.
+    fn warn_untailed(&mut self, callee_idx: usize, line: usize) {
+        let caller_idx = self.cur_fn;
+        if !self.warned_untailed.insert((caller_idx, callee_idx)) {
+            return;
+        }
+        let iregs: usize =
+            std::env::var("RILL_CC_INT_REGS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+        let over = |i: usize| -> Option<String> {
+            let f = &self.tmod.fns[i];
+            let floats = f.params.iter().filter(|(_, t)| matches!(t, Ty::Float)).count();
+            let ints = f.params.len() - floats;
+            (ints > iregs).then(|| format!("`{}` carries {ints} non-float arguments", f.name))
+        };
+        let culprit = over(caller_idx)
+            .or_else(|| over(callee_idx))
+            .unwrap_or_else(|| "a signature in this loop does not fit the registers".to_string());
+        eprintln!(
+            "warning at line {line}: `{}` calls `{}` in tail position, and the call can come back \
+             around — but it is not guaranteed to be a jump: {culprit}, and past {iregs} the \
+             arguments spill to the stack, where the tail-call promise cannot be kept. A loop \
+             through this call may grow the stack without bound. Pack the extra arguments into \
+             one tuple (a tuple is one pointer).",
+            self.tmod.fns[caller_idx].name, self.tmod.fns[callee_idx].name,
+        );
     }
 
     fn emit_preempt_check(&mut self, func: FunctionValue<'ctx>) {
