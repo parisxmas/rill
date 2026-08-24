@@ -583,7 +583,11 @@ fn pips(h, sw, sh) =
   beltw = if belt > 0 then to_float(belt) * (8.0 + gap) + 8.0 else 0.0
   total = to_float(cap) * (4.0 + gap) - gap + beltw
   x0 = sw - m - total
-  y0 = sh - 26.0 - 13.0
+  # A bar's worth higher than the two rows this corner was laid out over,
+  # because there are three now — the pack's tank sits above the breath. The
+  # room is kept whether or not the tank is on screen: a magazine that stepped
+  # up and down as the pack filled would be a worse thing than the gap.
+  y0 = sh - 26.0 - 13.0 - th(h, s_bar_h())
 
   for i in 0..cap
     pip(h, x0 + to_float(i) * (4.0 + gap), y0, 4.0, 13.0, i < rounds, dry, dimmed * pulse)
@@ -595,7 +599,7 @@ fn pips(h, sw, sh) =
   rdry = held == 1 && rkts == 0
   rpulse = if rdry then 0.33 + 0.67 * absf(sin(peek_f32(h, h_now()) * 3.5)) else 1.0
   rx0 = sw - m - 3.0 * (8.0 + 5.0) + 5.0
-  ry0 = sh - 46.0 - 15.0
+  ry0 = sh - 46.0 - 15.0 - th(h, s_bar_h())
 
   for i in 0..3
     rocket_pip(h, rx0 + to_float(i) * (8.0 + 5.0), ry0, i < rkts, rdry, rdim * rpulse)
@@ -617,7 +621,7 @@ extern fn sin(x: Float) -> Float
 # The count, bottom left. The numbers change colour; the words never do.
 fn tally(h, sh) =
   m = th(h, s_margin())
-  y = sh - 26.0 - 15.0
+  y = sh - 26.0 - 15.0 - th(h, s_bar_h())
   x = text(h, m, y, st_12b(), 0.0, c_gold(), int_str(to_int(peek_f32(h, h_tally_stand()))), 1.0)
   x2 = text(h, x, y, st_12(), 0.0, c_dim(), " standing · ", 1.0)
   x3 = text(h, x2, y, st_12b(), 0.0, c_gold(), int_str(to_int(peek_f32(h, h_tally_broke()))), 1.0)

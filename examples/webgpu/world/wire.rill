@@ -82,6 +82,7 @@ fn h_synced_at() = 23  # the snapshot the match clock was last set from
 fn h_applied_at() = 24 # and the one reconcile last ran against
 fn h_shark_x() = 25    # ..29: the shark, interpolated at the last tick
 fn h_evq_dropped() = 30
+fn h_pull() = 31       # what the server says this planet pulls with, 0 unsaid
 fn h_now() = 60       # the page's clock in ms, stamped before frame() and tick()
 
 fn make() =
@@ -344,7 +345,31 @@ fn apply(b, w, s, h, at, len, now) =
   else if k == 109 then ap_mag(w, u8_at(b, at + 1), u32_at(b, at + 2))
   else if k == 67 then said_line(b, h, at, len, now)
   else if k == 120 then hurt_line(b, h, at, now)
+  # What this planet pulls with. Through the queue rather than applied on
+  # arrival, because it is about the world and the world may not be built
+  # yet — the same reason the door lists wait here.
+  else if k == 71 then ap_pull(b, w, at)
   else 0
+
+# The pull this connection was told about, put back on a valley that has just
+# been rebuilt under it.
+fn pull_again(b, w) =
+  g = peek_f32(b, h_pull())
+  if g > 0.001 then setg(w, g) else 0
+
+fn setg(w, g) =
+  v.set_gravity(w, g)
+  1
+
+fn ap_pull(b, w, at) =
+  g = f32_at(b, at + 1)
+  # Kept as well as applied: a tier change builds a new valley out of the same
+  # connection, and the server says this once, on arrival. Without somewhere
+  # to remember it, a browser that re-tiered mid-round would go back to
+  # predicting against the default while the server went on using the setting
+  # — which is a jump that starts right and lands wrong.
+  poke_f32(b, h_pull(), g)
+  setg(w, g)
 
 fn ap_stone(w, i) =
   v.drop_block(w, i)
@@ -912,6 +937,7 @@ fn out_f32(b, at, v) =
 # Replays what a fresh world has to be told — a tier change rebuilds the
 # valley mid-round, and the crystals shot before it have to stay shot.
 fn replay(b, w) =
+  pull_again(b, w)
   n = to_int(peek_f32(b, h_gone_n()))
 
   for i in 0..n

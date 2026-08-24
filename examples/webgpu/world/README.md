@@ -48,6 +48,16 @@ directory by hand, slices `page.js` out and imports it as a blob module, and
 that module reads `world.wasm` out of the same bytes and hands them straight
 to the loader. A visitor fetches two things: `index.html` and `valley.rpak`.
 
+The planet's gravity is a setting rather than a constant. On the server it is
+`gravity=T` in tenths of a metre per second squared — `gravity=260` is the
+valley as it has always been, `gravity=98` is Earth, `gravity=16` is the Moon —
+and it is announced to every client on arrival so both ends predict the same
+fall. Everything answers to it on its own terms: the legs push at the same nine
+and a half metres a second, so a weaker planet does not make them stronger, it
+lets the same push carry further; the jetpack's thrust is a multiple of gravity
+rather than a figure that happens to beat one particular fall. Alone in a
+valley there is no server and `set_gravity` is yours to call.
+
 The valley itself is `valley.rill`, and it is compiled twice. `world.rill` is
 fifty-six exports over it and becomes `world.wasm` for the browser;
 `server.rill` is a WebSocket server around it and becomes a native binary that

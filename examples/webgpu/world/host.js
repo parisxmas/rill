@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=402";   // keep in step with V below
-import { join, WH } from "./net.js?v=402";
+import { load } from "./world.js?v=403";   // keep in step with V below
+import { join, WH } from "./net.js?v=403";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=402";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "402";
+const V = "403";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2974,7 +2974,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     const fx = st[21], fz = st[23];
     const inst = Math.hypot(fx - lastX, fz - lastZ) / Math.max(dt, 0.0001);
     lastX = fx; lastZ = fz;
-    speed += (Math.min(inst, 12) - speed) * 0.15;
+    // Only what the feet are doing. The bob is a stride — the weapon swinging
+    // because a leg swung — and there is no stride in the air: flying across
+    // the valley on the pack moved the gun exactly as walking across it did,
+    // which read as running on nothing. Slot 25 is the world's own word for
+    // whether the feet are down, so a jump stills it too. Eased rather than
+    // cut, or the gun would stop dead the frame you left the ground.
+    const onFoot = st[25] > 0.5;
+    speed += ((onFoot ? Math.min(inst, 12) : 0) - speed) * 0.15;
     bobPhase += speed * dt * 2.4;
     uf[45] = speed; uf[46] = bobPhase; uf[47] = recoil;
     uf[116] = flash;                      // and the muzzle's own, see `fx`

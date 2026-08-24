@@ -63,7 +63,25 @@ fn setting_on(key, dflt) =
   v = setting(key, "")
   if #v == 0 then dflt else if v == "off" || v == "no" || v == "false" || v == "0" then 0 else 1
 
-fn port() = setting_int("port", if arg_count() > 1 then str_to_int(arg(1)) else 8091)
+# The first argument is the port, for the keeper's sake — `./valleyd 8291`.
+# Only if it looks like one: everything else on the line is `key=value`, and
+# `str_to_int` reads `gravity=60` as nought, which is a port nothing can
+# listen on and a puzzling way to find out you have a setting.
+fn positional_port() =
+  if arg_count() > 1 && str_find(arg(1), "=") < 0 then str_to_int(arg(1)) else 8091
+
+fn port() = setting_int("port", positional_port())
+
+# What this planet pulls with, in tenths of a metre per second squared —
+# `gravity=26` is the valley as it has always been, `gravity=6` is a moon to
+# jump about on. Tenths because a setting is an integer and a planet is not:
+# `gravity=98` is Earth to the nearest tenth.
+#
+# Physics is the server's here, so this is the only place it can be set for a
+# shared valley: a browser that turned its own gravity down would predict a
+# jump the server never made and be pulled back down by the next snapshot.
+# It goes out in `hello` so every client predicts against the same number.
+fn gravity_tenths() = setting_int("gravity", 260)
 
 # Fifty milliseconds. Fast enough that a walk looks like a walk once the
 # client interpolates between two of them, slow enough that a valley with
@@ -241,6 +259,7 @@ fn welcome(w, conns, s, out, token) =
   name = if str_len(mine) > 0 && !taken(conns, id, mine) then mine else called(id)
   send(out, hello_msg(w, id, token))
   send(out, ver_msg())
+  send(out, pull_msg(w))
   send(out, gone_list(w))
   send(out, stones_list(w))
   send(out, fells_list(w))
@@ -274,6 +293,15 @@ fn hello_msg(w, id, token) =
   put_u32(b, n_grass())
   put_f32(b, sc, v.world_time(w))
   strbuf_add(b, token)
+  free_ptr(sc)
+  strbuf_str(b)
+
+# One float: what everybody in this valley falls at.
+fn pull_msg(w) =
+  b = strbuf()
+  sc = alloc_bytes(8)
+  put_u8(b, op_pull())
+  put_f32(b, sc, v.gravity(w))
   free_ptr(sc)
   strbuf_str(b)
 
@@ -438,7 +466,12 @@ fn op_said() = 67
 # missing is one reload away.
 fn op_ver() = 118
 
-fn version() = 402
+# What the planet pulls with, said once on arrival. Its own message rather
+# than four more bytes on the end of `hello`, because `hello` is followed by a
+# token whose offset a client of any age knows.
+fn op_pull() = 71
+
+fn version() = 403
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -1634,7 +1667,11 @@ fn run(server) =
   w = v.init(64, n_pines(), n_crystals(), n_grass())
   v.set_meteors(w, meteors())
   v.set_match_len(w, match_secs(), report_secs())
-  println("settings: meteors=" + (if meteors() > 0 then "on" else "off") + " crystals=" + int_to_str(n_crystals()) + " pines=" + int_to_str(n_pines()) + " grass=" + int_to_str(n_grass()) + " match=" + int_to_str(match_secs()) + "s report=" + int_to_str(report_secs()) + "s")
+  # A rebuilt valley is a new world block, and `reset_world` puts the pull
+  # back to nought — which reads as the default. `again` sets it there too,
+  # so a round change does not quietly return everybody to Earth-and-a-half.
+  v.set_gravity(w, to_float(gravity_tenths()) / 10.0)
+  println("settings: meteors=" + (if meteors() > 0 then "on" else "off") + " crystals=" + int_to_str(n_crystals()) + " pines=" + int_to_str(n_pines()) + " grass=" + int_to_str(n_grass()) + " match=" + int_to_str(match_secs()) + "s report=" + int_to_str(report_secs()) + "s gravity=" + int_to_str(gravity_tenths()) + "/10")
   println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
   # What this server has last told anybody about each ammunition box. Zeros,
   # which is where `v.init` put them.

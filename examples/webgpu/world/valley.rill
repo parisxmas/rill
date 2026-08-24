@@ -3266,6 +3266,10 @@ fn light_vp(s, dx, dy, dz) =
 # what the GPU keeps up with and asks again. The terrain function is the same
 # at every grid size, so a denser mesh is the same valley drawn finer, and
 # the physics — which sample the function, not the mesh — never notice.
+# Nought where the pull is kept means "whatever this valley has always used",
+# which is what `gravity` reads it as. Cleared here, at the one moment the
+# world block comes out of the allocator, and never again: `reset_world` runs
+# at every round change and a planet does not change its mind that often.
 fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   # A kilobyte for what wasm fits in four hundred bytes. A slot number means a
   # different byte offset for a pointer than for a number once pointers are
@@ -3274,6 +3278,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   # 512, which is exactly enough for the wasm build and writes off the end of
   # the allocation for the native one.
   s = alloc_bytes(1024)
+  poke_f32(s, 250, 0.0)
   m = alloc_bytes(grid * grid * 54 * 4)
   pine_buf = alloc_bytes(npine * 32)
   crystal_buf = alloc_bytes(ncrys * 32)
@@ -3367,9 +3372,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 125, 0.0)
   poke_f32(s, 126, 0.0)
   poke_f32(s, 127, 0.0)
-  # What this planet pulls with. Nought means the default, which is what
-  # `gravity` reads it as, so a rebuilt valley starts where it always did.
-  poke_f32(s, 250, 0.0)
+
   # The world points at itself, so `wd` works on it exactly as it works on a
   # player and nothing below has to ask which kind of block it was given. It
   # starts with nobody in it: even the browser with the valley to itself asks
