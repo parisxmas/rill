@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=403";   // keep in step with V below
-import { join, WH } from "./net.js?v=403";
+import { load } from "./world.js?v=404";   // keep in step with V below
+import { join, WH } from "./net.js?v=404";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=403";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "403";
+const V = "404";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -98,7 +98,7 @@ const SHADERS = {
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
-  mark: "common", spark: "common", ak: "common",
+  mark: "common", spark: "common", ak: "common", jet: "common",
   // The HUD stands alone: it has a uniform block of its own, and giving it
   // `uniforms.wgsl` would declare group 0 binding 0 twice.
   hud: null,
@@ -172,6 +172,7 @@ function loadShaders(step, pakText) {
     ZAP: whole("zap"),
     MARK: whole("mark"),
     SPARK: whole("spark"),
+    JET: whole("jet"),
     HUD: whole("hud"),
     AK: whole("ak"),
     STONE: whole("stone"),
@@ -960,6 +961,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       depth: { depthWriteEnabled: false } });
   const grassPipe = pipe("grass", S.GRASS, [pineLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // The pack's flame, on the crystals' own instance layout — where it starts,
+  // how hard it is burning, a seed, and a colour it does not read. Additive
+  // and depth-tested but not depth-writing, because it is light.
+  const jetPipe = pipe("jet", S.JET, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  const JET_CAP = 33;
+  const jetBuf = device.createBuffer({
+    size: JET_CAP * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  let jetCount = 0;
   // Backfaces culled, unlike the foliage: the butt sits behind the eye and is
   // cut open by the near plane, and a culled interior reads as "not there"
   // where an unculled one reads as a dark wall across the bottom of the screen.
@@ -2828,6 +2838,18 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     wasDown = downNow;
 
+    // The packs that are burning — whoever the wire says, and this player,
+    // whom no snapshot mentions. Gathered in both kinds of valley, because a
+    // browser on its own has no figures and still has a pack.
+    {
+      const jb = Number(E.skin_ptr(state));
+      jetCount = Math.min(Number(E.skin_jets(state, net ? net.wire : 0, t)), JET_CAP);
+      if (jetCount) {
+        device.queue.writeBuffer(jetBuf, 0,
+          new Float32Array(E.memory.buffer, jb + Number(E.skin_jets_at()) * 4, jetCount * 8));
+      }
+    }
+
     // The ears. Everything the page used to work out before playing a sound —
     // watching the world's counters, measuring each event against the
     // listener, choosing gain, pan, pitch and variant, tracking the three
@@ -3270,6 +3292,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(crystalPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
     pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);
+    if (jetCount) {
+      pass.setPipeline(jetPipe);
+      pass.setVertexBuffer(0, jetBuf);
+      pass.draw(6, jetCount);
+    }
     pass.setPipeline(flyDrawPipe); pass.setBindGroup(1, W.flyDrawBg); pass.draw(6, T.flies);
 
     // The shark, and only from in the water.

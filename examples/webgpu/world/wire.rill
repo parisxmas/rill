@@ -266,10 +266,10 @@ fn snap_player(b, p, src) =
 
   pose = u8_at(b, src + 26)
   poke_f32(b, p + 7, to_float(pose % 8))
-  # Slot 8 carries two small facts in one float: bit nought the lamp, the
-  # next two which weapon is in their hands. Exact in an f32, and the row
-  # stays twelve wide.
-  poke_f32(b, p + 8, to_float(pose / 8 % 2 + pose / 16 % 4 * 2))
+  # Slot 8 carries three small facts in one float: bit nought the lamp, the
+  # next two which weapon is in their hands, the one above that whether their
+  # pack is burning. Exact in an f32, and the row stays twelve wide.
+  poke_f32(b, p + 8, to_float(pose / 8 % 2 + pose / 16 % 4 * 2 + pose / 64 % 2 * 8))
   poke_f32(b, p + 9, to_float(u16_at(b, src + 27)))
   poke_f32(b, p + 10, to_float(u16_at(b, src + 29)))
   poke_f32(b, p + 11, to_float(u8_at(b, src + 31)))

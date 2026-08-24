@@ -61,6 +61,10 @@ fn t_qb() = 31528
 # so the page can put the right mesh on the right matrix. One float a slot,
 # in the gap between the scratch and the clip pool.
 fn t_heldk() = 31600
+# The pack's flame, one instance per figure and one more for this player's
+# own — the same eight floats the crystals' glow is drawn from: where it
+# starts, how hard it is burning, a seed to flicker on, and a colour.
+fn t_jets() = 31680
 fn pool() = 32768
 
 fn make(s) =
@@ -423,6 +427,55 @@ fn frame(s, wb, now) =
   poke_f32(b, 11, to_float(hn))
   n
 
+# ---- the packs that are burning ---------------------------------------------
+#
+# Its own pass rather than a line inside the figure walk, because a browser
+# alone in a valley has no figures at all — no wire, no snapshots, nobody to
+# animate — and its own pack still burns. So this is called every frame in
+# both, walks whatever the wire has when there is one, and always ends with
+# this player's own.
+fn jets(s, wb, now) =
+  b = peek_ptr(s, 97)
+  poke_f32(b, 13, 0.0)
+  if is_null(wb) then 0 else others(b, wb)
+  if v.jet_on(s) > 0 then flame(b, 0, v.player_x(s), v.player_y(s), v.player_z(s), peek_f32(s, 19), 7.0) else 0
+  to_int(peek_f32(b, 13))
+
+fn others(b, wb) =
+  n0 = to_int(peek_f32(wb, wire.h_interp_n()))
+  n = if n0 > cap() then cap() else n0
+
+  for i in 0..n
+    maybe_flame(b, wb, i)
+  1
+
+fn maybe_flame(b, wb, i) =
+  o = wire.interp_at() + i * 12
+  bits = to_int(peek_f32(wb, o + 8))
+  if bits / 8 % 2 == 1 && peek_f32(wb, o + 6) > 0.001 then
+    flame(b, i, peek_f32(wb, o + 1), peek_f32(wb, o + 2), peek_f32(wb, o + 3), peek_f32(wb, o + 4), peek_f32(wb, o))
+  else 0
+
+# Where the pack burns: under the small of the back, pointing down. The count
+# is kept in header slot 13 and the instances are laid down in order, so a
+# valley where nobody is flying uploads nothing at all.
+fn flame(b, i, x, y, z, yaw, seed) =
+  n = to_int(peek_f32(b, 13))
+  at = t_jets() + n * 8
+  # A quarter of a metre behind them, because the pack is on their back —
+  # which is also what keeps it out of your own eye in the first person,
+  # where the camera stands exactly where this player does.
+  poke_f32(b, at, x - sin(yaw) * 0.28)
+  poke_f32(b, at + 1, y + 0.95)
+  poke_f32(b, at + 2, z + cos(yaw) * 0.28)
+  poke_f32(b, at + 3, 1.0)
+  poke_f32(b, at + 4, seed)
+  poke_f32(b, at + 5, 1.0)
+  poke_f32(b, at + 6, 0.62)
+  poke_f32(b, at + 7, 0.22)
+  poke_f32(b, 13, to_float(n + 1))
+  1
+
 fn own_drop(b, s, n) =
   poke_f32(b, t_heldk() + n, to_float(v.weapon(s)))
   drop(b, n, v.player_x(s), v.player_y(s), v.player_z(s), peek_f32(s, 19), 1.1)
@@ -456,7 +509,7 @@ fn one(b, s, wb, i, now) =
   # Slot 8 is the wire's little bitfield: the lamp in bit nought, what they
   # are holding above it. The kind rides beside the held matrix so the page
   # knows which weapon this slot's matrix is carrying.
-  poke_f32(b, t_heldk() + i, to_float(to_int(peek_f32(wb, o + 8)) / 2))
+  poke_f32(b, t_heldk() + i, to_float(to_int(peek_f32(wb, o + 8)) / 2 % 4))
   if health < 0.001 then drop(b, i, x, y, z, yaw, 0.7 + to_float(id % 5) * 0.4) else 0
   v.set_ghost(v.wd(s), i, x, y, z)
   1
