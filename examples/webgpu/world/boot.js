@@ -1,30 +1,25 @@
-// The boot, out of the bundle. index.html is a stub now: it streams
-// valley.rpak, reads the directory by hand, slices this file out and imports
-// it as a blob module — everything after that moment, this file does. It is
-// stored in the bundle rather than compressed for the same reason host.js and
-// world.js are: the LZ belongs to the engine, the engine is in world.wasm,
-// and world.wasm is itself an entry in the directory this file slices it from.
+// The boot: the last part of page.js, and the part that runs.
+//
+// This file is not loaded on its own. `pack.rill` concatenates world.js,
+// net.js, host.js and this one into a single module — page.js — stripping the
+// import lines that joined them, because inside one module they are already
+// in each other's scope. So `run` and `load` below are simply here. The stub
+// in index.html streams valley.rpak, reads the directory by hand, slices out
+// that one module and imports it; everything after that moment happens here.
+//
+// The four are stored in the bundle rather than compressed, for the same
+// reason world.wasm is: the LZ belongs to the engine, and the engine is what
+// the bundle is being opened to reach.
 //
 // `takeStored` is the stub's directory reader, handed over so there is
 // exactly one implementation of the format on the page.
 
 export async function boot(pakBytes, takeStored) {
-  // Modules out of bytes: blob URLs, with host.js's own import lines
-  // rewritten to point at them — a blob module cannot resolve "./net.js".
-  const asModule = (bytes) =>
-    URL.createObjectURL(new Blob([bytes], { type: "text/javascript" }));
-  const netURL = asModule(takeStored("net.js"));
-  const worldURL = asModule(takeStored("world.js"));
-  const hostSrc = new TextDecoder().decode(takeStored("host.js"))
-    .replace(/["']\.\/world\.js[^"']*["']/, JSON.stringify(worldURL))
-    .replace(/["']\.\/net\.js[^"']*["']/, JSON.stringify(netURL));
-  const { run } = await import(asModule(hostSrc));
-  // The engine itself, out of the same file. `load` in world.js does a plain
-  // fetch and a compile, and a blob URL is a thing fetch can be pointed at —
-  // so the module that unpacks the bundle is booted from bytes the bundle
-  // carried, and nothing here asks the network for it.
-  const wasmURL = URL.createObjectURL(
-    new Blob([takeStored("world.wasm")], { type: "application/wasm" }));
+  // The engine itself, out of the same file — as bytes, not as a URL. The
+  // generated loader takes either, so the module that unpacks the bundle is
+  // handed memory the bundle is already holding and the network is never
+  // asked for anything again.
+  const wasmBytes = takeStored("world.wasm");
 
   // Whose valley. `?join` takes the one this page is served from,
   // `?join=wss://box/valley` somebody else's, and no `join` at all is the
@@ -104,7 +99,7 @@ export async function boot(pakBytes, takeStored) {
   // The HUD — the stat corner included — is the engine's now: host.js
   // pushes the lines straight into the wasm display list, so there is no
   // element here to fill and nothing to do twice a second.
-  return run(document.getElementById("c"), wasmURL, () => {}, (done, total, label) => {
+  return run(document.getElementById("c"), wasmBytes, () => {}, (done, total, label) => {
     bar.style.width = `${(done / total * 100).toFixed(0)}%`;
     pct.textContent = `${Math.round(done / total * 100)}%`;
     what.textContent = label;

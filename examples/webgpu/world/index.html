@@ -130,7 +130,7 @@
     // including the boot logic, the page's modules and world.wasm itself.
     // What is left here is the one thing that cannot come out of a file the
     // page has not fetched yet: fetching the file.
-    const AV = "399";
+    const AV = "400";
 
     const bar = document.getElementById("bar");
     const what = document.getElementById("what");
@@ -189,8 +189,13 @@
         throw new Error(`${want} is not in valley.rpak`);
       };
 
+      // One module out of the bundle: page.js, which pack.rill built by
+      // concatenating world.js, net.js, host.js and boot.js with the imports
+      // that joined them stripped out. A blob module cannot resolve
+      // "./net.js", and four of them was four entries in the network panel
+      // for code that never crossed a network; this is one.
       const { boot } = await import(URL.createObjectURL(
-        new Blob([takeStored("boot.js")], { type: "text/javascript" })));
+        new Blob([takeStored("page.js")], { type: "text/javascript" })));
       await boot(pakBytes, takeStored);
     } catch (e) {
       console.error("SETUP FAILED", e.stack || e);

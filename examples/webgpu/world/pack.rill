@@ -49,6 +49,60 @@ fn names() = match read_file("assets.list")
     Nil
   Ok(text) -> filter(map(lines(text), \l -> trim(l)), \l -> str_len(l) > 0)
 
+# ---- the page, as one module ------------------------------------------------
+#
+# world.js, net.js, host.js and boot.js are four files on disk and one module
+# in the bundle. They are concatenated in dependency order with their import
+# lines dropped and their `export` keywords stripped: inside one module the
+# four are already in each other's scope, and a blob module cannot resolve
+# `./net.js` anyway — which is why this used to be four blob URLs with host's
+# import specifiers rewritten to point at them. One file is one blob, and the
+# page's own code stops being a small module graph the browser has to walk.
+#
+# Only `boot` is exported, because the stub calls exactly one thing.
+
+fn page_parts() = Cons("world.js", Cons("net.js", Cons("host.js", Cons("boot.js", Nil))))
+
+fn begins(s, p) = str_len(s) >= str_len(p) && str_sub(s, 0, str_len(p)) == p
+
+fn page_source() =
+  b = strbuf()
+  add_parts(b, page_parts())
+  strbuf_add(b, "\nexport { boot };\n")
+  strbuf_str(b)
+
+fn add_parts(b, ps) = match ps
+  Nil -> 0
+  Cons(name, rest) ->
+    add_one(b, name)
+    add_parts(b, rest)
+
+fn add_one(b, name) = match read_file(name)
+  Err(e) ->
+    println("  MISSING " + name + ": " + e)
+    0
+  Ok(text) ->
+    strbuf_add(b, "\n// ==== " + name + " ====\n")
+    add_lines(b, lines(text))
+    1
+
+fn add_lines(b, ls) = match ls
+  Nil -> 0
+  Cons(l, rest) ->
+    keep_line(b, l)
+    add_lines(b, rest)
+
+# An import line joined two of these files and has nothing left to say; an
+# export keyword named something for a module boundary that is no longer
+# there. Both are decided on the start of a line, which is where they are:
+# nothing in these four files begins a line with either word in any other way.
+fn keep_line(b, l) =
+  if begins(l, "import ") then 0
+  else
+    strbuf_add(b, if begins(l, "export ") then str_sub(l, 7, str_len(l) - 7) else l)
+    strbuf_byte(b, 10)
+    1
+
 # ---- the compressor ---------------------------------------------------------
 #
 # Greedy, one candidate per position: a 64k hash table of the last place each
@@ -217,7 +271,8 @@ fn report(es, raw, packed) = match es
     report(rest, raw + str_len(eraw), packed + str_len(data))
 
 fn main() =
-  es = map(names(), \n -> load_one(n))
+  page = page_source()
+  es = append(map(names(), \n -> load_one(n)), Cons(Packed("page.js", page, 0, page), Nil))
   b = strbuf()
   strbuf_add(b, "RPAK")
   le32(b, version())

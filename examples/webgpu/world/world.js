@@ -37,9 +37,15 @@ function wasiShim(getMemory, print) {
   };
 }
 
-export async function load(url, env = {}, opts = {}) {
+export async function load(src, env = {}, opts = {}) {
   const print = opts.print ?? (line => console.log(`[rill] ${line}`));
-  const bytes = await (await fetch(url, { cache: "no-store" })).arrayBuffer();
+  // A URL to fetch, or the module's bytes if the caller already has them —
+  // a page that ships its wasm inside a bundle of its own has nothing left
+  // to fetch, and making it invent a blob URL to hand back to `fetch` is a
+  // round trip through the network stack to reach memory it is holding.
+  const bytes = (src instanceof ArrayBuffer || ArrayBuffer.isView(src))
+    ? src
+    : await (await fetch(src, { cache: "no-store" })).arrayBuffer();
   const module = await WebAssembly.compile(bytes);
   let instance;
   instance = await WebAssembly.instantiate(module, {
