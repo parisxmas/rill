@@ -70,3 +70,5 @@ rpg-launch.m4a
 host.js
 net.js
 world.js
+boot.js
+world.wasm

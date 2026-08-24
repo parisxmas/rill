@@ -191,16 +191,24 @@ fn sample(b, c, f, j, q) =
   f0 = to_int(floor(f))
   f1 = if f0 + 1 > c_frames(b, c) - 1 then c_frames(b, c) - 1 else f0 + 1
   t = f - floor(f)
-  a = c_rot(b, c) + (f0 * jn + j) * 8
-  a2 = c_rot(b, c) + (f1 * jn + j) * 8
+  # `peek_i16` counts in sixteen-bit elements, not in bytes — every peek in
+  # this language does, and this is the one place in the valley where a byte
+  # offset meets one of them. The clip table carries where the rotations
+  # start as a byte offset, because that is what the page had to write; it is
+  # halved here, and a joint's four components are four elements apart rather
+  # than eight bytes. Read as bytes it does not crash and it does not read
+  # nothing: it reads real numbers from the wrong quarter of the clip, which
+  # is a figure that is wrong in every frame and says nothing about why.
+  a = c_rot(b, c) / 2 + (f0 * jn + j) * 4
+  a2 = c_rot(b, c) / 2 + (f1 * jn + j) * 4
   ax = to_float(peek_i16(b, a)) / 32767.0
-  ay = to_float(peek_i16(b, a + 2)) / 32767.0
-  az = to_float(peek_i16(b, a + 4)) / 32767.0
-  aw = to_float(peek_i16(b, a + 6)) / 32767.0
+  ay = to_float(peek_i16(b, a + 1)) / 32767.0
+  az = to_float(peek_i16(b, a + 2)) / 32767.0
+  aw = to_float(peek_i16(b, a + 3)) / 32767.0
   bx0 = to_float(peek_i16(b, a2)) / 32767.0
-  by0 = to_float(peek_i16(b, a2 + 2)) / 32767.0
-  bz0 = to_float(peek_i16(b, a2 + 4)) / 32767.0
-  bw0 = to_float(peek_i16(b, a2 + 6)) / 32767.0
+  by0 = to_float(peek_i16(b, a2 + 1)) / 32767.0
+  bz0 = to_float(peek_i16(b, a2 + 2)) / 32767.0
+  bw0 = to_float(peek_i16(b, a2 + 3)) / 32767.0
   flip = if ax * bx0 + ay * by0 + az * bz0 + aw * bw0 < 0.0 then 0.0 - 1.0 else 1.0
   poke_f32(b, q, ax + (bx0 * flip - ax) * t)
   poke_f32(b, q + 1, ay + (by0 * flip - ay) * t)

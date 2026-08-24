@@ -3,7 +3,10 @@
 <head>
   <meta charset="utf-8">
   <title>Rill · Valley</title>
-  <link rel="icon" type="image/x-icon" href="./favicon.ico?v=396">
+  <!-- Inline, so the icon costs no request: the page is index.html and
+       valley.rpak and nothing else. Regenerate with tools of the packer's
+       era if the mark ever changes — it is favicon.ico, base64. -->
+  <link rel="icon" type="image/x-icon" href="data:image/x-icon;base64,AAABAAMAEBAAAAAAIADeAAAANgAAACAgAAAAACAAagEAABQBAAAwMAAAAAAgAOUBAAB+AgAAiVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAApUlEQVR4nGNkgAJufqn/DCSCrx+fMTKSqxkGmLBpVg5UIN4ABhyaiTWEiWiriDFAGc1WbK74crOGchdIyipgGqCMw8+4xGGGMBGy7e76B3D2l61qYPr2DDZMF+ACMJuQnY0sx0IoyrhMGBgkGaDyKmEY8kwgU76dYSAbMMFswQdA8sj+BgEYH+wFZBeosb0A07d+SaCakoLdcEYJBTmyMxIIUJyUAXpXIcVtF9hcAAAAAElFTkSuQmCCiVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABMUlEQVR4nGNkQAPc/FL/GWgIvn58xojMZ6Kn5djsYKKn5djsYqK35eiOYCLWcuVABZo4gokUy2nhCCaqm0htByij+ZraocBEVdOo7QBlHL6lZigwMdAYfLlZQ54DlAn4klqhwEQVU6jtAGUifUdI3ZetanBaUlZh4ENAEosjmCiNW7zqVcIIOoIFXcHd9Q+IdghMLakA5Ijnjx/QLg1IyirA4x8Gbs9gw1CD1QGURgGuxIbLoUwk2YbHIFItx5oGlMksXLhMGBgkGcjTy4Ls8m9nEAYSC2B68MU3srhqxi8UMSb0YCPFcnLUowMmahiGVR+WMoCgAwYCMFErKGH6ccU/DKDLs+BLTCCgxvYChX/rlwQDNQELVU1jYEBK5UuGRhpglFCQo3uvaFCFANNAOwAA8W9D5Ji8DsYAAAAASUVORK5CYIKJUE5HDQoaCgAAAA1JSERSAAAAMAAAADAIBgAAAFcC+YcAAAGsSURBVHic5VY7TsNAEB2PrBSkoMVIkSxhcgIuQsMZOAQH4QD0VNwC0YMViQIhWiRDkQaEFMPa2c+M1+PNhNdEsXdm35t5s+sMPJgfHn9BYny8v2a+99muEqcKyXadeEgIaiJv4/krQCtQU/VbmHyjOnByXkJq4NDqt+RTiZhveO/HDHDRr3pKKyEoB3IDXNVO1QUE5UDO4lCVU3QBQTmQupBa3dguNI9X4wvgkprSSgjKgVLVHBLX3C07v+o7UCzKOAGxXmbHVxdb5EMidroDLXwiUPokoeZper6vr2ckEbkr4er2mU3CFa/yFJJAYemC2BBTY4tFSTptzPWTDXFIRLEh0/d7C9dzU4T4ELvAqbovHqXJ23JZyVd/dwAHk9wDps9jKx8UIGGdgzNwkq8dPqe+79wDPxt83ts3H4J+LgnkvrbGkG/jpUWgFPmx87CGeOxNXfnqgL8p61R8jfqAU7Xcm7cadgdsCZD2q0T+3PxDOTGWszfr86f1EWtjqv/N9aeXa9i7GchTbdyt5s3gPOo7gKAcedO8sAIenG94ecYCgnIgKAemJgD/Hd9iLls1aYNoFAAAAABJRU5ErkJggg==">
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #05060c; }
     canvas { width: 100vw; height: 100vh; display: block; cursor: crosshair; }
@@ -122,195 +125,86 @@
   </div>
   <script type="module">
     // Versioned because the CDN in front of this holds files for a week; bump
-    // it when anything changes. index.html itself is never cached.
-    //
-    // The wasm carries the same number, and that is not decoration: a rebuilt
-    // world.wasm behind an unversioned URL is served from cache, and what you
-    // get is new renderer against old world — which looks exactly like the fix
-    // you just made not working.
-    const AV = "396";
+    // it when anything changes. index.html itself is never cached — and it is
+    // deliberately a stub: everything that can live in the bundle does,
+    // including the boot logic, the page's modules and world.wasm itself.
+    // What is left here is the one thing that cannot come out of a file the
+    // page has not fetched yet: fetching the file.
+    const AV = "398";
 
-    // The page's own modules — host.js, net.js, world.js — ride inside
-    // valley.rpak with everything else, so the first and only asset request
-    // this boot makes is the bundle. The three are *stored*, never
-    // compressed: the LZ half of the format belongs to the engine, and the
-    // engine is inside world.wasm, which world.js has to load first. The
-    // boot only reads the directory — name, method, offset — and slices.
-    const bar0 = document.getElementById("bar");
-    const what0 = document.getElementById("what");
-    const pct0 = document.getElementById("pct");
-    const pakBytes = await (async () => {
-      const r = await fetch(`./valley.rpak?v=${AV}`);
-      if (!r.ok) throw new Error(`valley.rpak: ${r.status}`);
-      const size = +(r.headers.get("Content-Length") || 0);
-      const reader = r.body.getReader();
-      const parts = [];
-      let got = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        parts.push(value);
-        got += value.length;
-        if (size) {
-          const f = Math.min(1, got / size);
-          // A sliver of the bar: the loader proper restarts the count when
-          // it takes over, and a bar that ran to 100 and snapped back reads
-          // as a crash. The percent in the corner tells the real story.
-          bar0.style.width = `${(f * 4).toFixed(1)}%`;
-          what0.textContent = "valley.rpak";
-          pct0.textContent = `${Math.round(f * 100)}%`;
-        }
-      }
-      const all = new Uint8Array(got);
-      let o = 0;
-      for (const c of parts) { all.set(c, o); o += c.length; }
-      return all;
-    })();
-
-    // The directory, by hand: u8 name length, the name, u8 method, then
-    // raw/packed/offset as little-endian u32s. Enough to find a stored file;
-    // anything packed is the engine's business later.
-    const takeStored = (want) => {
-      const dv = new DataView(pakBytes.buffer, pakBytes.byteOffset, pakBytes.byteLength);
-      if (dv.getUint32(0, false) !== 0x5250414b) throw new Error("valley.rpak is not an RPAK file");
-      const count = dv.getUint32(8, true);
-      const dataAt = 16 + dv.getUint32(12, true);
-      const dec = new TextDecoder();
-      let o = 16;
-      for (let i = 0; i < count; i++) {
-        const nl = dv.getUint8(o);
-        const name = dec.decode(pakBytes.subarray(o + 1, o + 1 + nl));
-        const method = dv.getUint8(o + 1 + nl);
-        const packed = dv.getUint32(o + 6 + nl, true);
-        const off = dv.getUint32(o + 10 + nl, true);
-        if (name === want) {
-          if (method !== 0) throw new Error(`${want} is compressed — the boot cannot read it`);
-          return pakBytes.subarray(dataAt + off, dataAt + off + packed);
-        }
-        o += 14 + nl;
-      }
-      throw new Error(`${want} is not in valley.rpak`);
-    };
-
-    // Modules out of bytes: blob URLs, with host.js's own import lines
-    // rewritten to point at them — a blob module cannot resolve "./net.js".
-    const asModule = (bytes) =>
-      URL.createObjectURL(new Blob([bytes], { type: "text/javascript" }));
-    const netURL = asModule(takeStored("net.js"));
-    const worldURL = asModule(takeStored("world.js"));
-    const hostSrc = new TextDecoder().decode(takeStored("host.js"))
-      .replace(/["']\.\/world\.js[^"']*["']/, JSON.stringify(worldURL))
-      .replace(/["']\.\/net\.js[^"']*["']/, JSON.stringify(netURL));
-    const { run } = await import(asModule(hostSrc));
-
-    // Whose valley. `?join` takes the one this page is served from,
-    // `?join=wss://box/valley` somebody else's, and no `join` at all is the
-    // valley this tab has to itself — which is what a static page gets,
-    // because there is no server behind one.
-    //
-    // The default follows the page it is on. A page served over TLS may not
-    // open a plain socket, so it asks for `wss://` on the same host and lets
-    // whatever is in front of it hand the connection on — one path, no port,
-    // and the certificate is the one the page already came over. Served over
-    // plain http, which is how this runs while it is being worked on, it goes
-    // straight at the port the server listens on.
-    const q = new URLSearchParams(location.search);
-    const here = location.protocol === "https:"
-      ? `wss://${location.host}/valley`
-      : `ws://${location.hostname || "localhost"}:8091/`;
-    const server = q.has("join") ? (q.get("join") || here) : null;
-
-    // Who to put over this player's head. Only asked when there is somebody to
-    // see it; the answer is kept, because nobody wants to type their own name
-    // every time they reload.
-    const askName = async () => {
-      if (!server) return "";
-      const form = document.getElementById("who");
-      const field = document.getElementById("name");
-      const word = document.getElementById("word");
-      form.style.display = "flex";
-      document.getElementById("whonote").style.display = "block";
-      field.value = localStorage.getItem("valley.name") ?? "";
-      field.focus();
-      field.select();
-      const given = await new Promise((res) => {
-        form.addEventListener("submit", (e) => { e.preventDefault(); res(field.value.trim()); }, { once: true });
-      });
-      // The word travels in the query of the socket's own address, where the
-      // server can refuse it before it answers the handshake — no protocol, no
-      // round trip, and nothing allocated for somebody who does not have it.
-      // Not kept: a name is worth remembering between visits and a shared word
-      // is not.
-      pass = word.value.trim();
-      form.style.display = "none";
-      document.getElementById("whonote").style.display = "none";
-      // The same rule the server applies, applied here so that what somebody
-      // types is what they see over their own head. The server still checks
-      // it — this field is not where the rule lives, it is only where it is
-      // polite about it — and the server may still hand back a number on the
-      // end if the name was already somebody else's.
-      const name = given.replace(/[^A-Za-z0-9]/g, "").slice(0, 8);
-      if (name) localStorage.setItem("valley.name", name);
-      return name;
-    };
-    let pass = "";
-    const name = await askName();
-    // Who this browser is, as far as the valley is concerned. The server mints
-    // it on the first visit and hands it back in `hello`; from then on it
-    // travels in the query beside the word, and it is what makes a name stay
-    // yours between visits — see `who somebody is` in server.rill.
-    //
-    // Not a password: it is never typed, it cannot be recovered, and anybody
-    // who copies it out of this browser is this player. It is kept here rather
-    // than in a cookie because nothing else needs to see it, least of all
-    // whatever is proxying the socket.
-    const who = localStorage.getItem("valley.who") ?? "";
-    // `?join` may already carry a query of its own.
-    const query = [
-      pass ? "p=" + encodeURIComponent(pass) : "",
-      who ? "who=" + encodeURIComponent(who) : "",
-    ].filter(Boolean).join("&");
-    const door = server && query
-      ? server + (server.includes("?") ? "&" : "?") + query
-      : server;
-    const boot = document.getElementById("boot");
     const bar = document.getElementById("bar");
     const what = document.getElementById("what");
     const pct = document.getElementById("pct");
+    try {
+      const pakBytes = await (async () => {
+        const r = await fetch(`./valley.rpak?v=${AV}`);
+        if (!r.ok) throw new Error(`valley.rpak: ${r.status}`);
+        const size = +(r.headers.get("Content-Length") || 0);
+        const reader = r.body.getReader();
+        const parts = [];
+        let got = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          parts.push(value);
+          got += value.length;
+          if (size) {
+            const f = Math.min(1, got / size);
+            // A sliver of the bar: the loader proper restarts the count when
+            // it takes over, and a bar that ran to 100 and snapped back reads
+            // as a crash. The percent in the corner tells the real story.
+            bar.style.width = `${(f * 4).toFixed(1)}%`;
+            what.textContent = "valley.rpak";
+            pct.textContent = `${Math.round(f * 100)}%`;
+          }
+        }
+        const all = new Uint8Array(got);
+        let o = 0;
+        for (const c of parts) { all.set(c, o); o += c.length; }
+        return all;
+      })();
 
-    // The HUD — the stat corner included — is the engine's now: host.js
-    // pushes the lines straight into the wasm display list, so there is no
-    // element here to fill and nothing to do twice a second.
-    run(document.getElementById("c"), `./world.wasm?v=${AV}`, () => {}, (done, total, label) => {
-      bar.style.width = `${(done / total * 100).toFixed(0)}%`;
-      pct.textContent = `${Math.round(done / total * 100)}%`;
-      what.textContent = label;
-    }, door, name, pakBytes).then(() => {
-      // `run` resolves on the first submitted frame, so the fade is over
-      // something rather than over nothing.
-      boot.classList.add("gone");
-      // Removed on the transition, or on a timer if that never comes.
-      //
-      // A background tab does not run transitions, and it does not run
-      // requestAnimationFrame either — so switching away during the load and
-      // coming back left the curtain frozen half-faded over a running valley,
-      // for ever, because the one event that was going to remove it had already
-      // been missed. The timer is the same 700ms the CSS is, with room.
-      const drop = () => boot.remove();
-      boot.addEventListener("transitionend", drop, { once: true });
-      setTimeout(drop, 1200);
-    }).catch(e => {
+      // The directory, by hand: u8 name length, the name, u8 method, then
+      // raw/packed/offset as little-endian u32s. Enough to find a stored
+      // file; anything packed is the engine's business later.
+      const takeStored = (want) => {
+        const dv = new DataView(pakBytes.buffer, pakBytes.byteOffset, pakBytes.byteLength);
+        if (dv.getUint32(0, false) !== 0x5250414b) throw new Error("valley.rpak is not an RPAK file");
+        const count = dv.getUint32(8, true);
+        const dataAt = 16 + dv.getUint32(12, true);
+        const dec = new TextDecoder();
+        let o = 16;
+        for (let i = 0; i < count; i++) {
+          const nl = dv.getUint8(o);
+          const name = dec.decode(pakBytes.subarray(o + 1, o + 1 + nl));
+          const method = dv.getUint8(o + 1 + nl);
+          const packed = dv.getUint32(o + 6 + nl, true);
+          const off = dv.getUint32(o + 10 + nl, true);
+          if (name === want) {
+            if (method !== 0) throw new Error(`${want} is compressed — the boot cannot read it`);
+            return pakBytes.subarray(dataAt + off, dataAt + off + packed);
+          }
+          o += 14 + nl;
+        }
+        throw new Error(`${want} is not in valley.rpak`);
+      };
+
+      const { boot } = await import(URL.createObjectURL(
+        new Blob([takeStored("boot.js")], { type: "text/javascript" })));
+      await boot(pakBytes, takeStored);
+    } catch (e) {
       console.error("SETUP FAILED", e.stack || e);
-      boot.remove();
+      document.getElementById("boot")?.remove();
       // textContent, not an interpolated string: the message is now several
-      // lines with slashes and quotes in it, and putting that through innerHTML
-      // both eats the newlines and hands the page's own error text to the HTML
-      // parser, which is a habit worth not having whatever the source.
+      // lines with slashes and quotes in it, and putting that through
+      // innerHTML both eats the newlines and hands the page's own error text
+      // to the HTML parser, which is a habit worth not having whatever the
+      // source.
       const box = document.createElement("div");
       box.className = "err";
       box.textContent = e.message;
       document.body.appendChild(box);
-    });
+    }
   </script>
 </body>
 </html>

@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=396";   // keep in step with V below
-import { join, WH } from "./net.js?v=396";
+import { load } from "./world.js?v=398";   // keep in step with V below
+import { join, WH } from "./net.js?v=398";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=396";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "396";
+const V = "398";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -702,14 +702,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   new Uint8Array(E.memory.buffer, pakP, pakBytes.length).set(pakBytes);
   if (!Number(E.pak_ok(pakP))) throw new Error("valley.rpak is not an RPAK file this build reads");
   const PAK = new Map();
-  let pakRawTotal = 0;
+  let pakRawTotal = 0, pakWasmRaw = 0;
   {
     const dec = new TextDecoder();
     const nPak = Number(E.pak_count(pakP));
     for (let i = 0; i < nPak; i++) {
-      PAK.set(dec.decode(new Uint8Array(E.memory.buffer,
-        Number(E.pak_name_ptr(pakP, BigInt(i))), Number(E.pak_name_len(pakP, BigInt(i))))), i);
-      pakRawTotal += Number(E.pak_raw(pakP, BigInt(i)));
+      const name = dec.decode(new Uint8Array(E.memory.buffer,
+        Number(E.pak_name_ptr(pakP, BigInt(i))), Number(E.pak_name_len(pakP, BigInt(i)))));
+      PAK.set(name, i);
+      const raw = Number(E.pak_raw(pakP, BigInt(i)));
+      pakRawTotal += raw;
+      // The engine's own size, noted here: the module arrives from a blob
+      // URL now, so the browser's resource log never hears of it.
+      if (name === "world.wasm") pakWasmRaw = raw;
     }
   }
   const pakWire = pakBytes.length;
@@ -737,6 +742,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let wasmBytes = 0;
   const wasmSize = () => {
     if (wasmBytes) return wasmBytes;
+    if (pakWasmRaw) { wasmBytes = pakWasmRaw; return wasmBytes; }
     const e = performance.getEntriesByType("resource").find(r => r.name.includes(".wasm"));
     wasmBytes = e ? e.decodedBodySize || e.encodedBodySize || 0 : 0;
     return wasmBytes;
