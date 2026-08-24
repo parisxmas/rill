@@ -25,8 +25,9 @@
 #        1 breaks seen           5 chimeAt (s)
 #        2 blasts seen           6 chimeSaid
 #        3 zaps seen             7 lastHp
-#       12..23 roar voices, 3 x [gain, pan, freq, on]
-#       24..29 scratch: the three nearest rounds' distance and pan
+#       12..27 roar voices, 4 x [gain, pan, freq, on] — three for the rounds
+#              in the air and a fourth for the pack on this player's back
+#       28..33 scratch: the three nearest rounds' distance and pan
 #       32..  the cue ring, 12 x [kind, offset, dur, gain, pan, rate, 0, 0]
 #
 # Cue kinds: 1 a crystal breaking, 2 a fireball landing, 3 a crystal's bite,
@@ -125,6 +126,7 @@ fn frame(s: Ptr, wb: Ptr, now: Float) =
   e = peek_ptr(s, 98)
   poke_f32(e, 0, 0.0)
   watch_roars(e, s)
+  watch_jet(e, s)
   watch_blasts(e, s)
   watch_breaks(e, s)
   watch_zaps(e, s)
@@ -145,23 +147,23 @@ fn roar_reach() = 28.0
 # The three nearest, kept sorted in the scratch slots by insertion: each
 # flying round either pushes in at its place or falls off the end.
 fn consider(e, d, pan) =
-  if d < peek_f32(e, 24) then
-    poke_f32(e, 26, peek_f32(e, 25))
+  if d < peek_f32(e, 28) then
+    poke_f32(e, 30, peek_f32(e, 29))
+    poke_f32(e, 33, peek_f32(e, 32))
     poke_f32(e, 29, peek_f32(e, 28))
-    poke_f32(e, 25, peek_f32(e, 24))
-    poke_f32(e, 28, peek_f32(e, 27))
-    poke_f32(e, 24, d)
-    poke_f32(e, 27, pan)
+    poke_f32(e, 32, peek_f32(e, 31))
+    poke_f32(e, 28, d)
+    poke_f32(e, 31, pan)
     1
-  else if d < peek_f32(e, 25) then
-    poke_f32(e, 26, peek_f32(e, 25))
-    poke_f32(e, 29, peek_f32(e, 28))
-    poke_f32(e, 25, d)
-    poke_f32(e, 28, pan)
+  else if d < peek_f32(e, 29) then
+    poke_f32(e, 30, peek_f32(e, 29))
+    poke_f32(e, 33, peek_f32(e, 32))
+    poke_f32(e, 29, d)
+    poke_f32(e, 32, pan)
     1
-  else if d < peek_f32(e, 26) then
-    poke_f32(e, 26, d)
-    poke_f32(e, 29, pan)
+  else if d < peek_f32(e, 30) then
+    poke_f32(e, 30, d)
+    poke_f32(e, 33, pan)
     1
   else 0
 
@@ -175,13 +177,13 @@ fn weigh(e, s, fb, i) =
 
 fn watch_roars(e, s) =
   for k in 0..3
-    poke_f32(e, 24 + k, 1000000.0)
-    poke_f32(e, 27 + k, 0.0)
+    poke_f32(e, 28 + k, 1000000.0)
+    poke_f32(e, 31 + k, 0.0)
   fb = v.fireballs(s)
   for i in 0..v.fireballs_cap(s)
     weigh(e, s, fb, i)
   for k2 in 0..3
-    set_roar(e, k2, peek_f32(e, 24 + k2), peek_f32(e, 27 + k2))
+    set_roar(e, k2, peek_f32(e, 28 + k2), peek_f32(e, 31 + k2))
 
 fn set_roar(e, k, d, pan) =
   at = t_roar() + k * 4
@@ -195,6 +197,26 @@ fn set_roar(e, k, d, pan) =
     poke_f32(e, at + 1, pan)
     poke_f32(e, at + 2, 500.0 + 5200.0 * near)
     poke_f32(e, at + 3, 1.0)
+
+# ---- the pack, while it burns -----------------------------------------------
+#
+# A fourth voice on the same looping rush of air the rounds use, because that
+# is what it is: a body forcing air past itself, only this time the body is
+# the one listening. Dead centre and unfiltered — it is strapped to your back,
+# so nothing about it is far away — and it comes up and goes quiet with the
+# thrust rather than being started and stopped, which is what would click.
+fn jet_voice() = 3
+
+fn watch_jet(e, s) =
+  at = t_roar() + jet_voice() * 4
+  on = v.jet_on(s)
+  poke_f32(e, at, if on > 0 then 0.42 else 0.0)
+  poke_f32(e, at + 1, 0.0)
+  # Opening a little as the tank empties, so a pack running out is audible as
+  # something thinning rather than as a level that drops off a cliff.
+  poke_f32(e, at + 2, 900.0 + 2600.0 * v.jet_fuel(s))
+  poke_f32(e, at + 3, 1.0)
+  1
 
 # ---- a fireball landing -----------------------------------------------------
 #

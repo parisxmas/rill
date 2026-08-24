@@ -259,6 +259,23 @@ export fn set_rounds(s: Ptr, n: Int) = v.set_rounds(s, n)
 
 export fn breath(s: Ptr) -> Float = v.breath(s)
 
+# ---- the planet, and the pack that fights it -------------------------------
+#
+# Gravity is the world's, a number and not a constant: everything that falls
+# reads it, the legs' jump carries further under a weaker one, and the pack's
+# thrust is a multiple of it rather than a figure that happens to beat this
+# particular fall.
+
+export fn gravity(w: Ptr) -> Float = v.gravity(w)
+
+export fn set_gravity(w: Ptr, g: Float) = v.set_gravity(w, g)
+
+export fn jet_fuel(s: Ptr) -> Float = v.jet_fuel(s)
+
+export fn jet_on(s: Ptr) -> Int = v.jet_on(s)
+
+export fn jet_dry(s: Ptr) -> Int = v.jet_dry(s)
+
 export fn winded(s: Ptr) -> Int = v.winded(s)
 
 # ---- the stone walls --------------------------------------------------------
@@ -375,6 +392,8 @@ export fn hud_frame(s: Ptr, w: Ptr) -> Int =
     poke_f32(h, hud.h_health(), v.health(s))
     poke_f32(h, hud.h_breath(), v.breath(s))
     poke_f32(h, hud.h_spent(), to_float(v.winded(s)))
+    poke_f32(h, hud.h_fuel(), v.jet_fuel(s))
+    poke_f32(h, hud.h_jet(), to_float(v.jet_on(s)))
     held = v.weapon(s)
     poke_f32(h, hud.h_weapon(), to_float(held))
     poke_f32(h, hud.h_rounds(), to_float(if held == 2 then v.ak_rounds(s) else v.rounds(s)))

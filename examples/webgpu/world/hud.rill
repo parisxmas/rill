@@ -81,6 +81,8 @@ fn h_crier_out() = 15
 fn h_cycling() = 16
 fn h_health() = 17
 fn h_breath() = 18
+fn h_fuel() = 38       # what is left in the pack, 0..1
+fn h_jet() = 39        # and whether it is alight
 fn h_spent() = 19
 fn h_weapon() = 20
 fn h_rounds() = 21
@@ -545,6 +547,21 @@ fn bars(h, sw, sh) =
   rect(h, 0.0, sh - bh * 2.0, sw, bh, c_barbg(), 1.0)
   if peek_f32(h, h_spent()) > 0.5 then grad(h, 0.0, sh - bh * 2.0, sw * clampf(br, 0.0, 1.0), bh, c_spent(), c_spent2(), 1.0)
   else grad(h, 0.0, sh - bh * 2.0, sw * clampf(br, 0.0, 1.0), bh, c_blue(), c_blue2(), 1.0)
+  fuel_bar(h, sw, sh, bh)
+
+# The pack's tank, a third row up — and only when there is something to say
+# about it. A bar that is full and has been full for ten minutes is furniture;
+# this one appears while it is burning and stays while it fills, which is
+# exactly the span anybody cares what is in it.
+fn fuel_bar(h, sw, sh, bh) =
+  f = peek_f32(h, h_fuel())
+  if f >= 0.999 && peek_f32(h, h_jet()) < 0.5 then 0
+  else
+    rect(h, 0.0, sh - bh * 3.0, sw, bh, c_barbg(), 1.0)
+    grad(h, 0.0, sh - bh * 3.0, sw * clampf(f, 0.0, 1.0), bh,
+         if peek_f32(h, h_jet()) > 0.5 then c_orange() else c_dim(),
+         if peek_f32(h, h_jet()) > 0.5 then c_vit1() else c_blue(), 1.0)
+    1
 
 fn clampf(v, lo, hi) = if v < lo then lo else if v > hi then hi else v
 
@@ -622,7 +639,7 @@ fn title(h) =
 fn keys(h, x, y) =
   x1 = key_pair(h, x, y, "click", " to look")
   x2 = key_pair(h, sep(h, x1, y), y, "WASD", " walk")
-  x3 = key_pair(h, sep(h, x2, y), y, "space", " jump")
+  x3 = key_pair(h, sep(h, x2, y), y, "space", " jump · hold to fly")
   x4 = key_pair(h, sep(h, x3, y), y, "shift", " sprint")
   x5 = key_pair(h, sep(h, x4, y), y, "C", " crouch")
   x6 = key_pair(h, sep(h, x5, y), y, "left mouse", " fire")

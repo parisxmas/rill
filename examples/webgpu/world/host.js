@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=401";   // keep in step with V below
-import { join, WH } from "./net.js?v=401";
+import { load } from "./world.js?v=402";   // keep in step with V below
+import { join, WH } from "./net.js?v=402";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=401";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "401";
+const V = "402";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1552,7 +1552,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // The twenty-eight-metre edge itself now lives with the rest of the
   // arithmetic in ears.rill (`roar_reach`); the voices are all that is here.
   function startRoars() {
-    roars = [0, 1, 2].map(() => {
+    // Four, not three: the last one is the pack on this player's back, which
+    // the engine drives out of the same block of targets. Same construction,
+    // because it is the same sound — a body forcing air past itself.
+    roars = [0, 1, 2, 3].map(() => {
       const src = audio.createBufferSource();
       src.buffer = roarBuf;
       src.loop = true;

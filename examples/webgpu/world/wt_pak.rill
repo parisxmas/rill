@@ -26,13 +26,19 @@ fn mismatch_at(s, d, j, n) =
   else mismatch_at(s, d, j + 1, n)
 
 # One entry: unpacked size right, and not a byte different anywhere.
+# `page.js` is the one entry with no file behind it: pack.rill builds it out
+# of the four the page used to be, so there is nothing on disk to compare it
+# against. It is checked by being imported — a browser that boots is the
+# assertion — and skipped here rather than counted as a difference.
 fn check(p, i, bad) =
   name = name_of(p, i)
-  match read_file(name)
-    Err(e) ->
-      println("  " + name + ": cannot read the source: " + e)
-      bad + 1
-    Ok(src) -> weigh(p, i, name, src, bad)
+  if name == "page.js" then bad else check_file(p, i, name, bad)
+
+fn check_file(p, i, name, bad) = match read_file(name)
+  Err(e) ->
+    println("  " + name + ": cannot read the source: " + e)
+    bad + 1
+  Ok(src) -> weigh(p, i, name, src, bad)
 
 fn weigh(p, i, name, src, bad) =
   raw = pk.raw_size(p, i)
@@ -58,7 +64,7 @@ fn main() = match read_file("valley.rpak")
     b = buf_u8(n)
     slurp(s, b, n)
     say("the magic is good", pk.ok(b), 1)
-    say("all the assets are in it", pk.count(b), 74)
+    say("all the assets are in it", pk.count(b), 71)
     bad = sweep(b, 0, pk.count(b), 0)
     say("entries that came back changed", bad, 0)
     println("done")

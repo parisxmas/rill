@@ -1,0 +1,90 @@
+# A native run for the planet's pull and the pack that fights it.
+#
+# Both ends run `walk`, so this is the arithmetic the server does and the
+# browser predicts — which is the whole reason the pack lives in the valley
+# and not in the page.
+#
+# The key is one key. A press is a jump; the same key held, once the feet are
+# off the ground, is thrust. So a test of the legs has to let go of it, and
+# that is not a detail of the test — it is the control.
+import "valley" as v
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+fn cm(x) = to_int(x * 100.0 + if x < 0.0 then 0.0 - 0.5 else 0.5)
+
+fn run(s, n, keys, top) =
+  if n == 0 then top
+  else
+    v.walk(s, 1.0 / 60.0, 0.0, 0.0, keys)
+    run(s, n - 1, keys, if v.player_y(s) > top then v.player_y(s) else top)
+
+fn ground_at(s) = v.ground(v.player_x(s), v.player_z(s))
+
+# Somewhere new, on the floor, with a full tank — which is what `place_player`
+# promises and what every stage below starts from.
+fn fresh(s) =
+  v.respawn(s)
+  run(s, 30, 0, 0.0 - 1000.0)
+  1
+
+# One press, then the key up: the legs alone.
+fn hop(s) =
+  g0 = ground_at(s)
+  run(s, 1, 16, 0.0 - 1000.0)
+  run(s, 600, 0, 0.0 - 1000.0) - g0
+
+fn main() =
+  w = v.init(48, 20, 20, 20)
+  s = v.join(w)
+  fresh(s)
+
+  say("the planet pulls at the old constant", to_int(v.gravity(w) + 0.5), 26)
+  say("and the tank starts full", cm(v.jet_fuel(s)), 100)
+
+  # v squared over twice g: nine and a half metres a second against
+  # twenty-six is a metre and three quarters, which is what this valley has
+  # always jumped.
+  # A hundred and seventy-three is the arithmetic; a hundred and sixty-six is
+  # what sixty samples a second sees of it, because the apex falls between two
+  # frames and neither of them is it.
+  say("a jump clears, cm", cm(hop(s)), 166)
+
+  # The same legs on a tenth of the pull carry ten times as far. Nothing about
+  # the jump was rewritten to make this happen — it falls out of the number.
+  v.set_gravity(w, 2.6)
+  fresh(s)
+  say("the same jump on a tenth of it, cm", cm(hop(s)), 1728)
+  v.set_gravity(w, 26.0)
+
+  # Held, the pack takes over the moment the feet leave the ground and holds
+  # the climb at six and a half a second until the tank is out.
+  fresh(s)
+  g1 = ground_at(s)
+  top = run(s, 180, 16, 0.0 - 1000.0)
+  say("the pack lifts a pine's worth, m", to_int(top - g1), 15)
+  say("and empties the tank", cm(v.jet_fuel(s)), 0)
+  say("the pack is out", v.jet_on(s), 0)
+
+  # Nothing holds it up now: the key is still down and it is still a fall.
+  run(s, 240, 16, 0.0 - 1000.0)
+  # Down again — near the floor it left rather than exactly on it, because
+  # what it lands on may be a stone or a crystal it flew up beside.
+  say("what goes up comes down", if v.player_y(s) < g1 + 2.0 then 1 else 0, 1)
+
+  # Standing fills it, at half the rate it burned — four and a half seconds
+  # for the whole tank, and nothing at all while falling.
+  say("the tank is all but empty on landing", if v.jet_fuel(s) < 0.1 then 1 else 0, 1)
+  run(s, 270, 0, 0.0 - 1000.0)
+  say("standing fills it", cm(v.jet_fuel(s)), 100)
+
+  # A tank that has just run dry does not relight on the first drop back in:
+  # a quarter has to be there, or a held key is one frame of thrust for every
+  # frame of fall.
+  fresh(s)
+  run(s, 180, 16, 0.0 - 1000.0)
+  say("dry after the burn", cm(v.jet_fuel(s)), 0)
+  run(s, 6, 0, 0.0 - 1000.0)
+  say("and a sip is not enough to relight", v.jet_dry(s), 1)
+  println("done")

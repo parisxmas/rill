@@ -3367,6 +3367,9 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 125, 0.0)
   poke_f32(s, 126, 0.0)
   poke_f32(s, 127, 0.0)
+  # What this planet pulls with. Nought means the default, which is what
+  # `gravity` reads it as, so a rebuilt valley starts where it always did.
+  poke_f32(s, 250, 0.0)
   # The world points at itself, so `wd` works on it exactly as it works on a
   # player and nothing below has to ask which kind of block it was given. It
   # starts with nobody in it: even the browser with the valley to itself asks
@@ -3418,6 +3421,11 @@ fn spawn_try(seed, t) =
 fn good_spot(h) = h > 0.6 && h < 9.0
 
 fn place_player(s) =
+  # Standing somewhere new with a full pack: a respawn is not the moment to
+  # find out the last flight emptied it.
+  poke_f32(s, 244, 1.0)
+  poke_f32(s, 245, 0.0)
+  poke_f32(s, 246, 0.0)
   # Who, when, and whatever the caller has stirred in: without the clock every
   # respawn is the same spot for the same person, which is the old problem with
   # extra steps.
@@ -4103,8 +4111,114 @@ fn walk_axis(keys, plus, minus) =
 # magnification already, so the far shot was the one that suffered.
 fn look_per_pixel() = 0.0018
 
+# ---- what the planet pulls with ---------------------------------------------
+#
+# Twenty-six metres a second squared, which is not Earth and never was: this
+# valley was tuned by eye long before anything here asked what a planet is,
+# and two and a half gravities is what a jump that reads as a jump felt like
+# at these walking speeds. It lives on the world now rather than inside the
+# fall, so it can be turned — and everything that answers to it answers on
+# its own terms rather than by a second number somebody has to remember to
+# change too.
+#
+# What follows from it, and what does not:
+#
+#   The legs push the same. `jump_vel` is a speed, not a height — nine and a
+#   half metres a second out of a standing start — so lowering gravity does
+#   not make the legs stronger, it makes the same push carry further. At the
+#   default that is a jump of one metre and three quarters; at a tenth of it,
+#   seventeen.
+#
+#   The pack pushes proportionally. Its thrust is a multiple of gravity, so
+#   it lifts on any planet rather than being a number that happens to beat
+#   one particular fall. What it cannot do is exceed its own climb rate — see
+#   `jet_climb` — so a weak planet gets you up no faster, only for longer.
+fn gravity_default() = 26.0
+
+fn gravity(w: Ptr) -> Float =
+  g = peek_f32(w, 250)
+  if g > 0.001 then g else gravity_default()
+
+fn set_gravity(w: Ptr, g: Float) =
+  poke_f32(w, 250, clampf(g, 0.5, 120.0))
+
 fn jump_vel(keys, grounded, vy) =
   if bit_and(keys, 16) == 16 then if grounded > 0.5 then 9.5 else vy else vy
+
+# ---- the pack ---------------------------------------------------------------
+#
+# The same key the legs use. On the ground it is a jump; in the air, held, it
+# is thrust — so taking off is one press held rather than a second control,
+# and the moment the tank runs out the fall is the one that was always going
+# to happen.
+#
+# Two and a bit seconds of burn, which is height enough to clear the pines and
+# not enough to cross the valley: the point of it is to get somewhere a moment
+# sooner and to be somewhere nobody expected, not to leave the ground behind.
+# It fills only while standing, at half the rate it empties, so a flight is
+# something you spend and then wait for.
+fn jet_secs() = 2.2
+
+fn jet_fill_secs() = 4.4
+
+# Relit only after a quarter of the tank is back, for the reason the sprint is
+# gated on a third: at nought exactly, held, it would be one frame of thrust
+# for every frame of fall, which reads as a broken pack rather than an empty
+# one.
+fn jet_back() = 0.25
+
+# Thrust as a multiple of the planet's own pull. Seventeen tenths, so what is
+# left after the fall is seven tenths of a gravity going up — brisk, and slow
+# enough that the climb rate below is what decides how fast you rise rather
+# than a number nobody set.
+fn jet_thrust() = 1.7
+
+# And the ceiling on the climb: six and a half metres a second, whatever the
+# planet. A pack that accelerated for the whole burn would leave at forty
+# metres a second on this world and at ten on a small one, which is two
+# different toys wearing one name.
+fn jet_climb() = 6.5
+
+fn jet_fuel(s: Ptr) -> Float = peek_f32(s, 244)
+
+fn jet_on(s: Ptr) -> Int = if peek_f32(s, 245) > 0.5 then 1 else 0
+
+fn jet_dry(s: Ptr) -> Int = if peek_f32(s, 246) > 0.5 then 1 else 0
+
+# Whether the pack is alight this frame: the key held, off the ground, fuel in
+# it, not still dry from the last time it emptied, and alive.
+fn wants_jet(s, keys, grounded, fuel) =
+  if bit_and(keys, 16) != 16 then 0.0
+  else if grounded > 0.5 then 0.0
+  else if fuel <= 0.0 then 0.0
+  else if peek_f32(s, 246) > 0.5 then 0.0
+  else 1.0
+
+# The tank: spent while burning, filled while standing, and untouched in the
+# air with the key up — a fall is not a rest.
+fn fuel_after(f0, dt, burning, grounded) =
+  if burning > 0.5 then f0 - dt / jet_secs()
+  else if grounded > 0.5 then f0 + dt / jet_fill_secs()
+  else f0
+
+fn spend_fuel(s, dt, burning, grounded) =
+  f0 = peek_f32(s, 244)
+  f = clampf(fuel_after(f0, dt, burning, grounded), 0.0, 1.0)
+  poke_f32(s, 244, f)
+  poke_f32(s, 245, burning)
+  poke_f32(s, 246, if f <= 0.0 then 1.0 else if f >= jet_back() then 0.0 else peek_f32(s, 246))
+  f
+
+# What the thrust does to a rising or falling body: it moves the climb toward
+# `jet_climb` and stops there. Written as a move toward a target rather than
+# as an acceleration with a clamp, so arresting a long fall takes exactly as
+# long as it should — the pack has one thrust and a fall of thirty metres a
+# second is simply further from the target than a standing start.
+fn jet_vy(vy, g, dt) =
+  step = jet_thrust() * g * dt
+  if vy >= jet_climb() then vy
+  else if vy + step > jet_climb() then jet_climb()
+  else vy + step
 
 # Whether the sprint key does anything this frame: it is held, there is
 # somewhere to go, there is breath left, and the last time it ran out is far
@@ -4186,7 +4300,12 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   px = peek_f32(s, 21)
   pz = peek_f32(s, 23)
   gnd = height(px, pz)
-  vy = jump_vel(k, peek_f32(s, 25), peek_f32(s, 24)) - 26.0 * dt
+  g = gravity(w)
+  grounded = peek_f32(s, 25)
+  burning = wants_jet(s, k, grounded, peek_f32(s, 244))
+  spend_fuel(s, dt, burning, grounded)
+  fell = jump_vel(k, grounded, peek_f32(s, 24)) - g * dt
+  vy = if burning > 0.5 then jet_vy(fell, g, dt) else fell
   py0 = peek_f32(s, 22) + vy * dt
   py = if py0 < gnd then gnd else py0
   poke_f32(s, 19, yaw)
