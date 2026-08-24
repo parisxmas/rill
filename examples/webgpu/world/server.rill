@@ -438,7 +438,7 @@ fn op_said() = 67
 # missing is one reload away.
 fn op_ver() = 118
 
-fn version() = 398
+fn version() = 399
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -1131,7 +1131,10 @@ fn blanked(b) =
 # four and is carried in something that reaches two hundred and fifty-five. The
 # far end masks: `pose & 7` is what they are doing, `pose & 8` is whether their
 # light is on.
-fn pose_of(s) = bit_or(doing(s), if v.torch(s) > 0 then 8 else 0)
+# Bits 0-2 what they are doing, bit 3 the lamp, bits 4-5 what is in their
+# hands — so the far end can put the right weapon in the right fists. A
+# client old enough not to know masks the low bits and sees no change.
+fn pose_of(s) = bit_or(bit_or(doing(s), if v.torch(s) > 0 then 8 else 0), shl(v.weapon(s), 4))
 
 fn doing(s) =
   k = v.keys_of(s)

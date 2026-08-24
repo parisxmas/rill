@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=398";   // keep in step with V below
-import { join, WH } from "./net.js?v=398";
+import { load } from "./world.js?v=399";   // keep in step with V below
+import { join, WH } from "./net.js?v=399";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=398";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "398";
+const V = "399";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1816,8 +1816,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   const heldBuf = device.createBuffer({
     // One more than there are people: the spare is this player's own, on the
-    // ground, once they have been knocked off their feet.
-    size: (FIGURE_CAP + 1) * 64, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    // ground, once they have been knocked off their feet. Ninety-six bytes an
+    // entry now, not sixty-four: the matrix, then the mesh's own quantization
+    // box, because three different weapons were each baked against their own.
+    size: (FIGURE_CAP + 1) * 96, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
   const heldBg = device.createBindGroup({
     layout: poseBgl, entries: [{ binding: 0, resource: { buffer: heldBuf } }],
@@ -1843,6 +1845,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // Rifles to draw. One per person, plus one on the ground for this player
   // when they are down and have no figure to hang it off.
   let heldCount = 0;
+  // Where each weapon's run of instances ends in the grouped upload:
+  // [rifles, rifles+launchers, all]. The draw walks these with firstInstance.
+  let heldSplit = [0, 0, 0];
 
 
   const pineData = pineMesh(false), crystalData = crystalMesh(), grassData = grassMesh();
@@ -1933,7 +1938,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       const o = i * 12;
       out.push({ id: wi[o], x: wi[o + 1], y: wi[o + 2], z: wi[o + 3],
                  yaw: wi[o + 4], pitch: wi[o + 5], health: wi[o + 6],
-                 torch: wi[o + 8] > 0.5 });
+                 torch: (wi[o + 8] % 2) >= 1 });
     }
     return out;
   };
@@ -2756,8 +2761,31 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
           new Float32Array(E.memory.buffer, sb + Number(E.skin_out_at()) * 4, figureCount * figure.joints * 16));
       }
       if (heldCount) {
-        device.queue.writeBuffer(heldBuf, 0,
-          new Float32Array(E.memory.buffer, sb + Number(E.skin_held_at()) * 4, heldCount * 16));
+        // The engine leaves one matrix and one kind per slot; the page groups
+        // them — rifles, then launchers, then AKs — so each mesh is one draw
+        // with a firstInstance, and lays the right quantization box beside
+        // each matrix on the way through.
+        const mats = new Float32Array(E.memory.buffer, sb + Number(E.skin_held_at()) * 4, heldCount * 16);
+        const kinds = new Float32Array(E.memory.buffer, sb + Number(E.skin_heldk_at()) * 4, heldCount);
+        const boxes = [rifleBox, rpg.box, akBox];
+        const grouped = new Float32Array(heldCount * 24);
+        let at = 0;
+        for (let k = 0; k < 3; k++) {
+          for (let i = 0; i < heldCount; i++) {
+            const ki = kinds[i] | 0;
+            if ((ki === k) || (k === 0 && (ki < 0 || ki > 2))) {
+              const o = at * 24;
+              grouped.set(mats.subarray(i * 16, i * 16 + 16), o);
+              const box = boxes[k];
+              grouped[o + 16] = box[0]; grouped[o + 17] = box[1]; grouped[o + 18] = box[2];
+              grouped[o + 19] = k;
+              grouped[o + 20] = box[3]; grouped[o + 21] = box[4]; grouped[o + 22] = box[5];
+              at++;
+            }
+          }
+          heldSplit[k] = at;
+        }
+        device.queue.writeBuffer(heldBuf, 0, grouped);
       }
     }
 
@@ -3205,9 +3233,18 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (heldCount) {
       pass.setPipeline(heldPipe);
       pass.setBindGroup(1, heldBg);
-      pass.setVertexBuffer(0, rifleVB);
-      pass.setIndexBuffer(rifleIB, "uint16");
-      pass.drawIndexed(rifleIdx, heldCount);
+      const runs = [
+        [rifleVB, rifleIB, rifleIdx, 0, heldSplit[0]],
+        [rpg.vb, rpg.ib, rpg.count, heldSplit[0], heldSplit[1]],
+        [akVB, akIB, akIdx, heldSplit[1], heldSplit[2]],
+      ];
+      for (const [vb, ib, count, a, b] of runs) {
+        if (b > a) {
+          pass.setVertexBuffer(0, vb);
+          pass.setIndexBuffer(ib, "uint16");
+          pass.drawIndexed(count, b - a, 0, 0, a);
+        }
+      }
     }
     pass.setPipeline(skyPipe); pass.draw(3);
     pass.setPipeline(W.waterPipe); pass.setVertexBuffer(0, W.waterBuf); pass.draw(W.waterVerts);

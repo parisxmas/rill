@@ -57,6 +57,10 @@ fn t_model() = 31492
 fn t_rooted() = 31508
 fn t_qa() = 31524
 fn t_qb() = 31528
+# What each held slot is holding — 0 the rifle, 1 the launcher, 2 the AK —
+# so the page can put the right mesh on the right matrix. One float a slot,
+# in the gap between the scratch and the clip pool.
+fn t_heldk() = 31600
 fn pool() = 32768
 
 fn make(s) =
@@ -420,6 +424,7 @@ fn frame(s, wb, now) =
   n
 
 fn own_drop(b, s, n) =
+  poke_f32(b, t_heldk() + n, to_float(v.weapon(s)))
   drop(b, n, v.player_x(s), v.player_y(s), v.player_z(s), peek_f32(s, 19), 1.1)
   n + 1
 
@@ -448,6 +453,10 @@ fn one(b, s, wb, i, now) =
   poke_f32(b, inst + 5, peek_f32(wb, o + 9))
   poke_f32(b, inst + 6, peek_f32(wb, o + 10))
   poke_f32(b, inst + 7, peek_f32(wb, o + 11))
+  # Slot 8 is the wire's little bitfield: the lamp in bit nought, what they
+  # are holding above it. The kind rides beside the held matrix so the page
+  # knows which weapon this slot's matrix is carrying.
+  poke_f32(b, t_heldk() + i, to_float(to_int(peek_f32(wb, o + 8)) / 2))
   if health < 0.001 then drop(b, i, x, y, z, yaw, 0.7 + to_float(id % 5) * 0.4) else 0
   v.set_ghost(v.wd(s), i, x, y, z)
   1

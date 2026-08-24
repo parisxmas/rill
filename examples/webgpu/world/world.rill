@@ -511,6 +511,8 @@ export fn skin_inst_at() -> Int = skin.t_inst()
 
 export fn skin_held_at() -> Int = skin.t_held()
 
+export fn skin_heldk_at() -> Int = skin.t_heldk()
+
 export fn skin_out_at() -> Int = skin.t_out()
 
 export fn skin_pool_at() -> Int = skin.pool()
