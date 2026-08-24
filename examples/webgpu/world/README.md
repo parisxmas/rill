@@ -38,12 +38,15 @@ decompresses anything itself. Adding or changing an asset is a line in
 bundle and the page ever disagree. `wt_pak.rill` unpacks the real bundle and
 compares every entry byte for byte against the file it was packed from.
 
-The page's own modules — `host.js`, `net.js`, `world.js` — ride in the bundle
-too, stored rather than compressed, because they are the bootstrap: the inline
-script in `index.html` fetches `valley.rpak`, reads the directory by hand,
-slices the three out and imports them as blob modules (rewriting the import
-specifiers, since a blob cannot resolve `./net.js`). The whole page is three
-requests: `index.html`, `valley.rpak`, `world.wasm`.
+The page's own code rides in the bundle too. `pack.rill` concatenates
+`world.js`, `net.js`, `host.js` and `boot.js` into one module — `page.js` —
+dropping the import lines that joined them and the `export` keywords for a
+boundary that no longer exists; inside one module the four are already in each
+other's scope. It is stored rather than compressed, because it is the
+bootstrap: the inline script in `index.html` fetches `valley.rpak`, reads the
+directory by hand, slices `page.js` out and imports it as a blob module, and
+that module reads `world.wasm` out of the same bytes and hands them straight
+to the loader. A visitor fetches two things: `index.html` and `valley.rpak`.
 
 The valley itself is `valley.rill`, and it is compiled twice. `world.rill` is
 fifty-six exports over it and becomes `world.wasm` for the browser;
