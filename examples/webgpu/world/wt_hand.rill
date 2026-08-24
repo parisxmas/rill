@@ -63,4 +63,21 @@ fn main() =
   t7 = run(s, 1, 1, 0, t6)
   say("one pull, one round", r0 - v.rounds(s), 1)
   say("the bolt is open", if peek_f32(b, 36) < 0.5 then 1 else 0, 1)
+
+  # And the view went with it. The kick is spent into the debt in the same
+  # frame, so what is left to look at is slot 10 — a degree or so of climb,
+  # not nothing and not a spin.
+  say("the rifle moved the aim", if peek_f32(b, 10) > 6.0 then 1 else 0, 1)
+  say("by something a scope can hold", if peek_f32(b, 10) < 16.0 then 1 else 0, 1)
+
+  # A second of nobody touching the mouse hands nearly all of it back.
+  t8 = run(s, 60, 0, 0, t7)
+  say("the shoulder gave it back", if peek_f32(b, 10) < 0.2 then 1 else 0, 1)
+
+  # Through the sights it is a shade less at the barrel — the scope is what
+  # makes it look like more.
+  t9 = run(s, 30, 4, 0, t8)
+  poke_f32(b, 10, 0.0)
+  t10 = run(s, 1, 5, 0, t9)
+  say("a braced shot climbs less", if peek_f32(b, 10) < 11.0 then 1 else 0, 1)
   println("done")

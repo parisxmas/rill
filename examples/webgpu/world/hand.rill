@@ -212,7 +212,7 @@ fn shot(b, s, t) =
   if !changing then setf(b, 7, 1.0) else 0
   if ak && !changing then ak_shot(b, t)
   else if held(b) == 1 then event(b, 3.0)
-  else if held(b) == 0 then event(b, 1.0)
+  else if held(b) == 0 then rifle_shot(b, t)
   else 0
 
 # The AK's report, and the climb: fed to the same look the mouse drives, so
@@ -224,6 +224,29 @@ fn ak_shot(b, t) =
   ease = 1.0 - minf(peek_f32(b, 12), 16.0) / 32.0
   poke_f32(b, 8, peek_f32(b, 8) + (5.5 + (noise(b, t, 4.0) * 0.5 + 0.5) * 2.5) * ease)
   poke_f32(b, 9, peek_f32(b, 9) + noise(b, t, 5.0) * 2.6)
+  1
+
+# The bolt rifle's, which it never had: the weapon rocked in its own frame —
+# that is slot 6, the viewmodel's — and the view it was aimed through did not
+# move at all. So a round left and the crosshair was still exactly where it
+# had been, which is the one thing a rifle cannot do, and through five times
+# glass it was the difference between firing a rifle and clicking a mouse.
+#
+# One push rather than a climb. There is no burst to ease off over: the bolt
+# takes a second and the shoulder has the whole of it to give the aim back,
+# so this is a single jump of about a degree and a quarter — twelve of the
+# same look-pixels the AK's climb is counted in — with a little side to it
+# so two shots are never the same.
+#
+# Aiming takes a quarter off it. A rifle held to the cheek is braced against
+# the shoulder in a way a rifle at the hip is not; the scope still magnifies
+# what is left, which is why a scoped shot jumps further up the screen than a
+# hip shot while the barrel moves less.
+fn rifle_shot(b, t) =
+  event(b, 1.0)
+  braced = 1.0 - 0.25 * peek_f32(b, 5)
+  poke_f32(b, 8, peek_f32(b, 8) + (10.0 + (noise(b, t, 6.0) * 0.5 + 0.5) * 3.5) * braced)
+  poke_f32(b, 9, peek_f32(b, 9) + noise(b, t, 7.0) * 2.2)
   1
 
 # Changing hands: down over SWAP_SECS, over at the bottom, up again — the
