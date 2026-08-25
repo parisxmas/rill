@@ -47,7 +47,7 @@ fn main() =
   # Untouched, the carved floor is the base ground everywhere.
   say("before a swing the floor is the ground, cm", cm(v.floor_at(w, rx, rz) - v.height(rx, rz)), 0)
 
-  # One swing: rock out, stones in, floor down. The centre cell loses 44
+  # One swing: rock out, stones in, floor down. The centre cell loses 78
   # units of 0.02 m — the crater formula at distance nought — and the bowl
   # around it a little less, so the bilinear floor under the eye drops close
   # to the centre's 88 cm.
@@ -56,7 +56,7 @@ fn main() =
   say("a swing pays stones", if got > 0 then 1 else 0, 1)
   say("and the pocket holds them", v.stones_of(s), got)
   fell = v.height(rx, rz) - v.floor_at(w, rx, rz)
-  say("the floor fell half a metre or so", if cm(fell) > 40 && cm(fell) < 110 then 1 else 0, 1)
+  say("the floor fell a metre or so", if cm(fell) > 60 && cm(fell) < 170 then 1 else 0, 1)
   say("one crater on the ring", v.carves(w), 1)
 
   # Swing until the byte runs out of room: the floor stops at three metres
