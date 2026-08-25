@@ -51,7 +51,12 @@
     // model kick so the barrel stays in frame, and a half raised to the
     // seventh is a hundred and twenty-eighth: its muzzle flash went out.
     // The flash has its own number now and what a weapon does with the kick
-    // is no longer any of its business. y, z and w are spare.
+    // is no longer any of its business.
+    //
+    //   y  how far down on one knee the body is — the weapon ducks with it
+    //   z  which tool is up: 1 the pick, 2 a stone, 0 neither (pick.wgsl)
+    //
+    // w is spare.
     fx:         vec4f,
     // The lamp on this player's head: x is one while it is lit and nought
     // while it is not, and it starts at nought. It used to come on by itself

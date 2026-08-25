@@ -1,0 +1,4 @@
+pick.mesh is Kenney's pickaxe — "tool-pickaxe" from the Survival Kit (2.0),
+www.kenney.nl, Creative Commons Zero (CC0). The kit's colormap.png was read
+into the vertex colours at bake time by tools/bake_pickaxe.py, so the mesh
+carries its own paint and the image itself does not ship.

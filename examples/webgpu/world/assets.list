@@ -74,4 +74,7 @@ weapon-icons.png
 world.wasm
 shaders/jet.wgsl
 shaders/magma.wgsl
+shaders/pick.wgsl
+shaders/stonehand.wgsl
+pick.mesh
 shaders/flower.wgsl

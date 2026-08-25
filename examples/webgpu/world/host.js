@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "463";
+const V = "472";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -99,6 +99,7 @@ const SHADERS = {
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
   mark: "common", spark: "common", ak: "common", jet: "common", magma: "common",
+  pick: "common", stonehand: "common",
   flower: "common",
   // The HUD stands alone: it has a uniform block of its own, and giving it
   // `uniforms.wgsl` would declare group 0 binding 0 twice.
@@ -198,6 +199,8 @@ function loadShaders(step, pakText) {
     SHADOW_FIGURE: whole("shadow-figure"),
     SKY: whole("sky"),
     MAGMA: whole("magma"),
+    PICK: whole("pick"),
+    STONEHAND: whole("stonehand"),
     WATER: whole("water"),
     FIREFLY_SIM: whole("firefly-sim"),
     FIREFLY_DRAW: whole("firefly-draw"),
@@ -1126,6 +1129,24 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // cut open by the near plane, and a culled interior reads as "not there"
   // where an unculled one reads as a dark wall across the bottom of the screen.
   const vmPipe = pipe("viewmodel", S.VIEWMODEL, vmLayout);
+  // The pick in the hands — Kenney's Survival Kit model, CC0, baked with its
+  // palette read into the vertices (see tools/bake_pickaxe.py) — and the
+  // stone the other tool holds, which is one indexless box.
+  const pickLayout = [{ arrayStride: 16, attributes: [
+    { shaderLocation: 0, offset: 0, format: "unorm16x4" },
+    { shaderLocation: 1, offset: 8, format: "snorm8x4" },
+    { shaderLocation: 2, offset: 12, format: "unorm8x4" },
+  ]}];
+  const pickPipe = pipe("pick", S.PICK, pickLayout);
+  const stoneHandPipe = pipe("stonehand", S.STONEHAND, []);
+  const pickMeshBytes = pakBuf("pick.mesh");
+  const [pickVerts, pickIdx] = new Uint32Array(pickMeshBytes, 0, 2);
+  const pickVB = gpuBuf(new Uint8Array(pickMeshBytes, 32, pickVerts * 16));
+  const pickIdxBytes = new Uint8Array(pickMeshBytes, 32 + pickVerts * 16, ((pickIdx * 2 + 3) & ~3));
+  const pickIB = device.createBuffer({
+    size: pickIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(pickIB, 0, pickIdxBytes);
   // Its own shader: the model came without texture coordinates, so the wood
   // and the steel are worked out from where a point sits on the weapon.
   const akPipe = pipe("ak", S.AK, vmLayout);
@@ -3577,6 +3598,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[116] = flash;                      // and the muzzle's own, see `fx`
     // How far down on one knee, for the weapon in the hands — see `vmCam`.
     uf[117] = E.crouch_of(state);
+    // Which tool is up, for pick.wgsl: 1 the pick, 2 the stone, 0 neither.
+    uf[118] = held === 3 ? 1 : held === 4 ? 2 : 0;
     uf.set(rifleBox.subarray(0, 3), 48);  // the rifle's bounding box, to unquantize against
     uf.set(rifleBox.subarray(3, 6), 52);
     uf.set(akBox.subarray(0, 3), 108);    // and the AK's, for its own pipeline
@@ -4040,10 +4063,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         pass.setIndexBuffer(akIB, "uint16");
         pass.drawIndexed(akIdx);
         pass.setPipeline(muzzlePipe); pass.draw(12);
-      } else if (held >= 3) {
-        // The tools have no first-person model yet: the hands are empty and
-        // the inventory row says which of the two they are holding. A pick
-        // mesh goes here when there is one worth looking at.
+      } else if (held === 3) {
+        pass.setPipeline(pickPipe);
+        pass.setVertexBuffer(0, pickVB);
+        pass.setIndexBuffer(pickIB, "uint16");
+        pass.drawIndexed(pickIdx);
+      } else if (held === 4) {
+        pass.setPipeline(stoneHandPipe);
+        pass.draw(36);
       } else {
         pass.setPipeline(vmPipe);
         pass.setVertexBuffer(0, rifleVB);
