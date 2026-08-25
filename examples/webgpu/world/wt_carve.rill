@@ -102,4 +102,24 @@ fn main() =
   say("the told valley grew too", v.blocks_total(w2) - n0, 1)
   v.set_stones(s, 3)
   say("three stones build nothing", v.try_build(s), 0)
+
+  # And a hosted valley — a client being told — does not swing for itself:
+  # `pick_used` raises the ask and touches nothing, which is what keeps a
+  # predicted crater from doubling when the server's own copy arrives.
+  aim_down(s, rx, rz)
+  c0 = v.carves(w)
+  v.set_hosted(w, 1)
+  say("a hosted pick acts on nothing", v.pick_used(s), 0)
+  say("and dug no crater of its own", v.carves(w), c0)
+  v.set_hosted(w, 0)
+  say("its own valley again, it digs", if v.pick_used(s) > 0 then 1 else 0, 1)
+
+  # The crosshair's answer is the swing's answer: gold exactly where a swing
+  # would land.
+  aim_down(s, rx, rz)
+  say("rock under the crosshair reads gold", v.can_mine(s), 1)
+  # Straight up, not a little up: a little up from inside a pit is the pit's
+  # own wall, which is rock and rightly gold.
+  poke_f32(s, 20, 1.4)
+  say("and the sky does not", v.can_mine(s), 0)
   println("done")

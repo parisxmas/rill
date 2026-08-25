@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "462";
+const V = "463";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -2542,6 +2542,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     world = E.init(BigInt(T.grid), BigInt(pines), BigInt(crystals), BigInt(grass));
     state = E.join(world);
     if (carveKeep) E.carve_load(state, carveKeep);
+    // The tools ask rather than act from here on — see `hosted` in valley.rill.
+    if (net) E.set_hosted(world, 1n);
     // `join` has already placed them; this stirs the roll in and places them
     // again. Only when there is nobody else — in somebody else's valley the
     // spawn is the server's, and a client that moved itself would be corrected
@@ -3224,12 +3226,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         else if (kind === 4) akReload();
         else if (kind === 5) dryClick();
         else if (kind === 6 && net) net.fired(hf[40], hf[41], hf[42]);
-        // 7 is the pick landing, 8 a rock going down. Alone, the browser is
-        // its own server and does the thing; joined, it asks, and what comes
-        // back through the rings is the same event everybody else gets.
-        else if (kind === 7) { if (net) net.mined(); else E.swing_pick(state); }
-        else if (kind === 8) { if (net) net.builds(); else E.try_build(state); }
         else if (kind === 7 && net) net.reloaded();
+        // 9 is the pick asking, 10 a rock: the engine has already acted when
+        // the valley is its own, and these only cross the wire when it is not.
+        else if (kind === 9 && net) net.mined();
+        else if (kind === 10 && net) net.builds();
       }
     }
 

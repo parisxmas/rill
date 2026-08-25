@@ -222,10 +222,16 @@ fn shot(b, s, t) =
   # else's valley the decision is not this browser's to make. Event 7 is a
   # swing and 8 a rock going down; the page routes each to the world it is
   # actually in — the local one, or the far end of a socket.
-  if held(b) >= 3 then tool_used(b) else shot_fired(b, s, dx, dy, dz, ak, changing, t)
+  if held(b) >= 3 then tool_used(b, s) else shot_fired(b, s, dx, dy, dz, ak, changing, t)
 
-fn tool_used(b) =
-  event(b, if held(b) == 3 then 7.0 else 8.0)
+# 9 and 10, not 7 and 8: 7 was already the reload's event, and giving the
+# pick the same number meant a magazine change swung a pickaxe in one mode
+# and never reached the server in the other. The act itself happens here in
+# the engine — the page's whole part is to carry the ask when the world is
+# somebody else's.
+fn tool_used(b, s) =
+  if held(b) == 3 then v.pick_used(s) else v.build_used(s)
+  event(b, if held(b) == 3 then 9.0 else 10.0)
   poke_f32(b, 4, 0.0)
   poke_f32(b, 6, 0.8)
   setf(b, 7, 1.0)

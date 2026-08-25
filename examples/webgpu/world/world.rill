@@ -351,6 +351,10 @@ export fn carve_save(w: Ptr) -> Ptr = v.carve_save(w)
 
 export fn carve_load(s: Ptr, keep: Ptr) = v.carve_load(s, keep)
 
+# Told once by the page when a socket is live: the tools then ask instead of
+# acting, and the rings bring back what the server decided.
+export fn set_hosted(w: Ptr, n: Int) = v.set_hosted(w, n)
+
 export fn jet_on(s: Ptr) -> Int = v.jet_on(s)
 
 export fn jet_dry(s: Ptr) -> Int = v.jet_dry(s)
@@ -490,6 +494,7 @@ export fn hud_frame(s: Ptr, w: Ptr) -> Int =
     poke_f32(h, hud.h_inv_rifle_cap(), to_float(v.mag_full()))
     poke_f32(h, hud.h_inv_ak_cap(), to_float(v.ak_full()))
     poke_f32(h, hud.h_stones(), to_float(v.stones_of(s)))
+    poke_f32(h, hud.h_mine(), to_float(if v.weapon(s) == 3 then v.can_mine(s) else 0))
     poke_f32(h, hud.h_phase(), to_float(v.match_phase(w)))
     poke_f32(h, hud.h_left(), v.match_left(w))
     poke_f32(h, hud.h_board_left(), v.match_left(w))

@@ -115,6 +115,7 @@ fn h_inv_ak() = 43
 fn h_inv_rifle_cap() = 44
 fn h_inv_ak_cap() = 45
 fn h_stones() = 46      # what the pick has paid out and the walls not yet taken back
+fn h_mine() = 47        # rock under the crosshair, in the pick's reach
 
 # ---- the theme --------------------------------------------------------------
 #
@@ -938,16 +939,19 @@ fn sights(h, sw, sh) =
     if ret > 0.01 then reticle(h, cx, cy, r, ret) else 0
   else 0
 
+# Gold over rock the pick can reach, white everywhere else: the crosshair is
+# the pick's whole sight, so it is the thing that says "here works".
 fn cross_draw(h, cx, cy, off, a, cyc) =
-  stroke(h, cx - off - 10.0, cy - 1.0, 10.0, 2.0, a)
-  stroke(h, cx + off, cy - 1.0, 10.0, 2.0, a)
-  stroke(h, cx - 1.0, cy - off - 10.0, 2.0, 10.0, a)
-  stroke(h, cx - 1.0, cy + off, 2.0, 10.0, a)
+  k = if peek_f32(h, h_mine()) > 0.5 then c_gold() else c_white()
+  stroke(h, cx - off - 10.0, cy - 1.0, 10.0, 2.0, a, k)
+  stroke(h, cx + off, cy - 1.0, 10.0, 2.0, a, k)
+  stroke(h, cx - 1.0, cy - off - 10.0, 2.0, 10.0, a, k)
+  stroke(h, cx - 1.0, cy + off, 2.0, 10.0, a, k)
   if !cyc then rect(h, cx - 1.0, cy - 1.0, 2.0, 2.0, c_gold(), a) else 0
 
-fn stroke(h, x, y, w, hh, a) =
+fn stroke(h, x, y, w, hh, a, k) =
   rect(h, x - 1.0, y - 1.0, w + 2.0, hh + 2.0, c_black(), a * 0.55)
-  rect(h, x, y, w, hh, c_white(), a)
+  rect(h, x, y, w, hh, k, a)
 
 # The reticle, in the SVG's own -100..100 units scaled to the sight picture.
 fn reticle(h, cx, cy, r, a) =

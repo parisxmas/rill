@@ -3721,8 +3721,14 @@ fn dc_row(cb, cx0, cz0, iz, dx, acc) =
 # From the eye, along the look, a quarter-metre at a time out to three and a
 # half: the first step under the carved floor is where the pick lands. Rock
 # only — a swing at the meadow hits nothing, loudly.
+# How far the pick reaches. Six metres, not arm's length: the swing lands
+# where the crosshair rests, and a reach shorter than the width of one
+# crater made every second swing a silent miss — which read as the key not
+# working at all.
+fn mine_reach() = 6.0
+
 fn mine_spot(w, s, t) =
-  if t > 3.5 then 0 - 1
+  if t > mine_reach() then 0 - 1
   else
     yaw = peek_f32(s, 19)
     pitch = peek_f32(s, 20)
@@ -3876,6 +3882,26 @@ fn dirty_at(w: Ptr, j: Int) -> Int = to_int(peek_f32(cv(w), 6 + j))
 # Magma burns by the cell: your own cell and the four beside it, and only down
 # in the pit — a metre and a half over the floor is a ledge, not a bath. A
 # fifth of a bar a second, which is time to climb out and not much more.
+# Whether this world is somebody else's — a client being told — in which case
+# the tools ask instead of acting. On the server and in a browser playing
+# alone this stays nought and the swing lands where it is swung.
+fn hosted(w: Ptr) -> Int = to_int(peek_f32(w, 255))
+
+fn set_hosted(w: Ptr, n: Int) = poke_f32(w, 255, to_float(n))
+
+# Is there rock under the crosshair, in reach, right now? The HUD turns the
+# crosshair gold on this, so the answer has to be exactly the swing's own —
+# it calls the same ray with the same reach.
+fn can_mine(s: Ptr) -> Int = if mine_spot(wd(s), s, 0.5) < 0 then 0 else 1
+
+# The two tools, from the hand: decided in the engine, not on the page. A
+# hosted world only raises the event — the page carries the one-byte ask to
+# the server, and the answer comes back through the rings like anybody
+# else's swing.
+fn pick_used(s: Ptr) -> Int = if hosted(wd(s)) > 0 then 0 else swing_pick(s)
+
+fn build_used(s: Ptr) -> Int = if hosted(wd(s)) > 0 then 0 else try_build(s)
+
 fn magma_bite() = 0.22
 
 fn on_magma(w, s, py) =
