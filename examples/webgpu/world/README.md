@@ -48,6 +48,16 @@ directory by hand, slices `page.js` out and imports it as a blob module, and
 that module reads `world.wasm` out of the same bytes and hands them straight
 to the loader. A visitor fetches two things: `index.html` and `valley.rpak`.
 
+Two trees grow here. The pines take the slopes; the poplars take the water's
+edge, which is the one band of the valley nothing else wants — a pine will not
+stand below a metre and the crystals thin out under one, so the shore was bare
+ground between the lake and the treeline. They are the opposite silhouette on
+purpose: tall, narrow and pale against a dark cone, because a valley of two
+cones is a valley of one tree drawn twice. Nothing about them travels on the
+wire — the count is a third of the pines, worked out on both sides from the one
+number that does, and the placement is the same deterministic walk over the
+same hash.
+
 The planet's gravity is a setting rather than a constant. On the server it is
 `gravity=T` in tenths of a metre per second squared — `gravity=260` is the
 valley as it has always been, `gravity=98` is Earth, `gravity=16` is the Moon —
@@ -89,7 +99,12 @@ flat x/z alone smears stone into vertical streaks down exactly the cliffs it
 was meant to describe. All six come from Poly Haven's CC0 library —
 `pine_tree_01`, `pine_bark`, `leafy_grass`, `rock_face_03`, `coast_sand_03`,
 and `grass_medium_01` / `fern_02` / `nettle_plant` for the plant atlas — 197 KB
-between them against 30 KB of wasm. Mip levels are made at load by decoding
+between them against 30 KB of wasm. `pine-twig.png` is two cells side by side
+now: the needle spray on the left and, on the right, a spray of poplar leaves
+cut from ambientCG's `LeafSet004` (CC0) and arranged into a branch by
+`tools/bake_poplar.py`. Two trees share one texture because sixteen sampled
+textures a stage is exactly what this scene already spends and there is no
+seventeenth binding to give. Mip levels are made at load by decoding
 each file again at each size, because alpha tested foliage without them
 shimmers from a few trees away.
 

@@ -276,17 +276,45 @@ fn keep_crystal(h, seed) = if h < 0.7 then false else if h > 3.5 then seed < 0.0
 
 fn keep_grass(h, seed) = if h < 0.9 then false else if h > 8.5 then false else seed < 0.85
 
+# Poplars take the water's edge, which is the one band of this valley nothing
+# else wants: a pine will not stand below a metre and the crystals thin out
+# under one, so the shore was bare ground between the lake and the treeline.
+# It is also where a poplar belongs — they follow water, and a line of them
+# along a shore is a thing anybody who has seen one recognises without being
+# told. So the belt is not a decoration on top of the forest; it is the
+# forest ending and something else beginning, which is what a second tree is
+# for.
+fn keep_poplar(h, seed) = if h < 0.35 then false else if h > 2.9 then false else seed < 0.30
+
+# The tint each thing carries. A poplar is the pale end of the scale in every
+# channel — the leaves are a yellow-green that catches the low sun where the
+# pines go black, and the same number lifts the bark, which the shader reads
+# as how far to brighten it. That is most of what separates the two trees at
+# a distance: one is a dark cone, the other a pale column.
 fn inst_r(c, kind) =
-  if kind == 0 then 0.1 + c * 0.05 else if kind == 2 then 0.11 + c * 0.07 else if c < 0.6 then 1.0 else if c < 0.85 then 0.25 else 0.75
+  if kind == 0 then 0.1 + c * 0.05
+  else if kind == 2 then 0.11 + c * 0.07
+  else if kind == 3 then 0.34 + c * 0.18
+  else if c < 0.6 then 1.0 else if c < 0.85 then 0.25 else 0.75
 
 fn inst_g(c, kind) =
-  if kind == 0 then 0.3 + c * 0.1 else if kind == 2 then 0.3 + c * 0.16 else if c < 0.6 then 0.72 else if c < 0.85 then 0.95 else 0.45
+  if kind == 0 then 0.3 + c * 0.1
+  else if kind == 2 then 0.3 + c * 0.16
+  else if kind == 3 then 0.50 + c * 0.20
+  else if c < 0.6 then 0.72 else if c < 0.85 then 0.95 else 0.45
 
 fn inst_b(c, kind) =
-  if kind == 0 then 0.2 + c * 0.06 else if kind == 2 then 0.13 + c * 0.09 else if c < 0.6 then 0.18 else if c < 0.85 then 0.85 else 1.0
+  if kind == 0 then 0.2 + c * 0.06
+  else if kind == 2 then 0.13 + c * 0.09
+  else if kind == 3 then 0.24 + c * 0.14
+  else if c < 0.6 then 0.18 else if c < 0.85 then 0.85 else 1.0
 
+# Taller than a pine and much narrower, which is the whole silhouette.
 fn inst_scale(sd, kind) =
-  if kind == 0 then 0.85 + sd * 0.9 else if kind == 2 then 0.55 + sd * 0.8 else 0.5 + sd * 1.1
+  if kind == 0 then 0.85 + sd * 0.9
+  else if kind == 2 then 0.55 + sd * 0.8
+  else if kind == 3 then 1.0 + sd * 0.7
+  else 0.5 + sd * 1.1
 
 fn emit_inst(buf, at, x, y, z, i, kind) =
   s = hash2(to_float(i), 500.0)
@@ -304,7 +332,7 @@ fn emit_inst(buf, at, x, y, z, i, kind) =
 # The loosest seed any of the three tests can accept. Above it nothing stands
 # whatever the ground is like, and asking costs nothing — where sampling the
 # terrain costs twelve sines. Most candidates end here.
-fn seed_cap(kind) = if kind == 0 then 0.22 else if kind == 2 then 0.85 else 0.11
+fn seed_cap(kind) = if kind == 0 then 0.22 else if kind == 2 then 0.85 else if kind == 3 then 0.30 else 0.11
 
 # Tries candidate `i`; returns 1 if something now stands there.
 fn placed(buf, count, i, kind) =
@@ -314,7 +342,7 @@ fn placed(buf, count, i, kind) =
     x = (hash2(to_float(i), 7.0 + to_float(kind)) - 0.5) * 152.0
     z = (hash2(to_float(i), 113.0 + to_float(kind)) - 0.5) * 152.0
     h = height(x, z)
-    keep = if kind == 0 then keep_pine(h, seed) else if kind == 2 then keep_grass(h, seed) else keep_crystal(h, seed)
+    keep = if kind == 0 then keep_pine(h, seed) else if kind == 2 then keep_grass(h, seed) else if kind == 3 then keep_poplar(h, seed) else keep_crystal(h, seed)
     if near_spawn(x, z) then 0 else if keep then emit_inst(buf, count * 8, x, h, z, i, kind) else 0
 
 fn place(buf, i, count, cap, lim, kind) =
@@ -3281,6 +3309,11 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 250, 0.0)
   m = alloc_bytes(grid * grid * 54 * 4)
   pine_buf = alloc_bytes(npine * 32)
+  # A third as many poplars as pines, and no number of its own on the wire:
+  # both ends work it out from the pine count they were already told, and the
+  # placement is the same deterministic walk over the same hash. A valley that
+  # agrees about its pines agrees about its poplars for nothing.
+  poplar_buf = alloc_bytes(poplar_cap(npine) * 32)
   crystal_buf = alloc_bytes(ncrys * 32)
   grass_buf = alloc_bytes(ngrass * 32)
   bullet_buf = alloc_bytes(bullet_cap() * 32)
@@ -3309,8 +3342,10 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   np = place(pine_buf, 0, 0, npine, 20000, 0)
   nc = place(crystal_buf, 0, 0, ncrys, 20000, 1)
   ng = place(grass_buf, 0, 0, ngrass, 20000, 2)
+  npo = place(poplar_buf, 0, 0, poplar_cap(npine), 20000, 3)
   poke_ptr(s, 64, m)
   poke_ptr(s, 65, pine_buf)
+  poke_ptr(s, 70, poplar_buf)
   poke_ptr(s, 66, crystal_buf)
   poke_ptr(s, 67, grass_buf)
   poke_ptr(s, 68, bullet_buf)
@@ -3358,6 +3393,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   clear_blasts(blast_buf)
   poke_f32(s, 56, to_float(grid * grid * 6))
   poke_f32(s, 57, to_float(np))
+  poke_f32(s, 54, to_float(npo))
   poke_f32(s, 58, to_float(nc))
   poke_f32(s, 59, to_float(ng))
   # Everything the walls, the wire rings and the round keep, set to nought
@@ -3948,6 +3984,15 @@ fn terrain(s: Ptr) -> Ptr = peek_ptr(wd(s), 64)
 fn terrain_verts(s: Ptr) -> Int = to_int(peek_f32(wd(s), 56))
 
 fn pines(s: Ptr) -> Ptr = peek_ptr(wd(s), 65)
+
+# How many poplars a valley of this many pines has. A third, which came out
+# of looking at it: fewer and the shore reads as a few stray trees, more and
+# the belt closes into a second forest and the lake stops being open.
+fn poplar_cap(npine: Int) -> Int = npine / 3
+
+fn poplars(s: Ptr) -> Ptr = peek_ptr(wd(s), 70)
+
+fn poplar_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 54))
 
 fn pine_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 57))
 

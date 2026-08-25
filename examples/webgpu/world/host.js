@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=407";   // keep in step with V below
-import { join, WH } from "./net.js?v=407";
+import { load } from "./world.js?v=408";   // keep in step with V below
+import { join, WH } from "./net.js?v=408";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=407";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "407";
+const V = "408";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -111,7 +111,11 @@ const SHADERS = {
 // The images, and the square they are decoded to. Listed here rather than at
 // the point of use so that the loader can count them before it starts.
 const TEXTURES = [
-  ["./pine-twig.png", 256, 256],     // the needle atlas
+  // Two cells side by side: the pine's needle spray on the left, a poplar's
+  // leaves on the right. One texture for both trees because sixteen sampled
+  // textures a stage is exactly what this scene already spends and there is
+  // no seventeenth binding to give — see the note on `boxes-atlas`.
+  ["./pine-twig.png", 512, 256],
   ["./pine-bark.jpg", 256, 256],
   ["./grass-ground.jpg", 256, 256],
   ["./plants.png", 512, 512],        // the undergrowth atlas, 2x2
@@ -309,8 +313,12 @@ function pineMesh(coarse) {
         const p00 = at(base, -1, hIn), p01 = at(base, 1, hIn);
         const p10 = at(tip, -1, hOut), p11 = at(tip, 1, hOut);
         // v = 1 at the stem, 0 at the tip: the atlas has the twig pointing up.
-        push(p00, n, [0, 1]); push(p01, n, [1, 1]); push(p11, n, [1, 0]);
-        push(p00, n, [0, 1]); push(p11, n, [1, 0]); push(p10, n, [0, 0]);
+        // The left half of the foliage atlas, inset a little so the sampler
+        // cannot reach across the seam into the poplar's leaves at the
+        // coarser mips.
+        const nu0 = 0.004, nu1 = 0.496;
+        push(p00, n, [nu0, 1]); push(p01, n, [nu1, 1]); push(p11, n, [nu1, 0]);
+        push(p00, n, [nu0, 1]); push(p11, n, [nu1, 0]); push(p10, n, [nu0, 0]);
       }
     }
   }
@@ -400,6 +408,93 @@ function readFigure(bytes) {
   return { joints, verts, indices, box, hand, grip, upper, parent, bindT, bindR, invBind, clips, vertexAt, indexAt };
 }
 
+
+// A poplar: a pale post with a narrow column of leaves up it.
+//
+// The opposite silhouette to the pine, which is the only reason to have a
+// second tree at all — a valley of two cones is a valley of one tree drawn
+// twice. This one is tall and vertical and mostly empty air at the edges, so
+// a stand of them reads as a line rather than as a mass, and the lake behind
+// still shows through.
+//
+// It rides the pine's own pipeline: the same vertex layout, the same shader,
+// so it inherits the wind, the shadow pass and the way a tree lies down when
+// it is felled without any of that being written twice. Two conventions come
+// from there — a negative u means "this is bark, not foliage", and the
+// instance colour is a tint the shader applies to both.
+//
+// The leaves are cards pointed at the plant atlas's nettle cell, which is a
+// single broad leaf. At this size and this distance that is what poplar
+// foliage looks like: not needles, and not a texture anybody has to make.
+function poplarMesh(coarse) {
+  const out = [];
+  const push = (p, n, uv) => out.push(p[0], p[1], p[2], n[0], n[1], n[2], uv[0], uv[1]);
+
+  // The trunk, thinner and half again as tall as the pine's, and barely
+  // tapered: a poplar goes up like a mast.
+  const top = 4.9, r0 = 0.085, r1 = 0.040, seg = 6;
+  for (let i = 0; i < seg; i++) {
+    const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+    const ring = (a, r, y) => [Math.cos(a) * r, y, Math.sin(a) * r];
+    const p00 = ring(a0, r0, 0), p10 = ring(a1, r0, 0);
+    const p01 = ring(a0, r1, top), p11 = ring(a1, r1, top);
+    const u0 = -2 + i / seg, u1 = -2 + (i + 1) / seg;
+    const nOf = a => [Math.cos(a), 0.12, Math.sin(a)];
+    const n0 = nOf(a0), n1 = nOf(a1);
+    push(p00, n0, [u0, 0]); push(p01, n0, [u0, 1]); push(p10, n1, [u1, 0]);
+    push(p10, n1, [u1, 0]); push(p01, n0, [u0, 1]); push(p11, n1, [u1, 1]);
+  }
+
+  // The column. Rings of upright cards hugging the trunk, widest a little
+  // under half way and closing to a point at the top — the lens shape a
+  // poplar cuts against the sky. The cards face outward and are drawn from
+  // both sides, like the pine's.
+  //
+  // The right cell of the foliage atlas: a spray of poplar leaves, cut from
+  // ambientCG's LeafSet004 (CC0) and arranged into a branch by
+  // `tools/bake_poplar.py`. Inset from the seam for the mips' sake.
+  //
+  // A spray and not a single leaf. The plant atlas's nettle was tried first
+  // and a tree built from eighty separate leaves is eighty separate leaves —
+  // you can count them. A branch's worth per card is what a crown is made of,
+  // and it is also fewer cards for more foliage.
+  const CU = 0.504, CV = 0.004, SPAN = 0.492;
+  const rings = coarse ? 4 : 9;
+  const perRing = coarse ? 2 : 4;
+  for (let i = 0; i < rings; i++) {
+    const u = rings === 1 ? 0 : i / (rings - 1);   // 0 at the lowest ring, 1 at the tip
+    const y = 1.15 + u * 3.60;
+    // Widest at two fifths up, nothing at the very top.
+    const lens = 1 - Math.pow(Math.abs(u - 0.40) / 0.62, 1.7);
+    const rad = Math.max(0.06, 0.46 * lens);
+    // Wider than the ring they stand on, so one ring's leaves reach past its
+    // neighbours' and the column reads as a mass with gaps in it rather than
+    // as a spiral staircase of cards.
+    const w = (1.05 + 0.65 * lens) * (coarse ? 2.0 : 1.0);
+    const hgt = (1.05 + 0.60 * lens) * (coarse ? 2.1 : 1.0);
+    for (let j = 0; j < perRing; j++) {
+      // Turned ring by ring by an angle that never repeats, so the column
+      // does not stack into visible columns of card.
+      const a = (j / perRing) * Math.PI * 2 + i * 0.9;
+      const ox = Math.cos(a), oz = Math.sin(a);
+      const tx = -Math.sin(a), tz = Math.cos(a);
+      const cx = ox * rad, cz = oz * rad;
+      const n = [ox * 0.6, 0.72, oz * 0.6];
+      const half = w * 0.5;
+      const yb = y - hgt * 0.5, yt = y + hgt * 0.5;
+      const p00 = [cx - tx * half, yb, cz - tz * half];
+      const p10 = [cx + tx * half, yb, cz + tz * half];
+      const p01 = [cx - tx * half, yt, cz - tz * half];
+      const p11 = [cx + tx * half, yt, cz + tz * half];
+      // v runs 1 at the bottom, as the atlas has each plant standing on its
+      // cell floor.
+      const uv = (s, t) => [CU + s * SPAN, CV + (1 - t) * (1 - 2 * CV)];
+      push(p00, n, uv(0, 0)); push(p10, n, uv(1, 0)); push(p11, n, uv(1, 1));
+      push(p00, n, uv(0, 0)); push(p11, n, uv(1, 1)); push(p01, n, uv(0, 1));
+    }
+  }
+  return new Float32Array(out);
+}
 
 function crystalMesh() {
   const tris = [];
@@ -1882,6 +1977,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const pineData = pineMesh(false), crystalData = crystalMesh(), grassData = grassMesh();
   const pineBuf = gpuBuf(pineData), crystalBuf = gpuBuf(crystalData), grassBuf = gpuBuf(grassData);
   const pineVerts = pineData.length / 8, crystalVerts = crystalData.length / 6, grassVerts = grassData.length / 8;
+  const poplarData = poplarMesh(false);
+  const poplarBuf = gpuBuf(poplarData);
+  const poplarVerts = poplarData.length / 8;
+  const poplarShadowData = poplarMesh(true);
+  const poplarShadowBuf = gpuBuf(poplarShadowData);
+  const poplarShadowVerts = poplarShadowData.length / 8;
   // The same tree with a fifth of the cards, for casting only.
   const blockData = blockMesh();
   const blockBuf = gpuBuf(blockData);
@@ -2072,18 +2173,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     if (cam) stateF32().set(cam, 19);
 
-    if (W) for (const k of ["terrainBuf", "pineInst", "crystalInst", "grassInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
+    if (W) for (const k of ["terrainBuf", "pineInst", "poplarInst", "crystalInst", "grassInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
     const counts = {
       terrain: Number(E.terrain_verts(state)),
       pines: Number(E.pine_count(state)),
       crystals: Number(E.crystal_count(state)),
       grass: Number(E.grass_count(state)),
+      poplars: Number(E.poplar_count(state)),
     };
     W = { counts };
     W.terrainBuf = gpuBuf(new Float32Array(E.memory.buffer, Number(E.terrain(state)), counts.terrain * 9));
     W.blocks = Number(E.blocks_count(state));
     W.blockInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.blocks(state)), Math.max(W.blocks, 1) * 8));
     W.pineInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.pines(state)), counts.pines * 8));
+    W.poplarInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.poplars(state)),
+                                           Math.max(counts.poplars, 1) * 8));
     W.crystalInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.crystals(state)), counts.crystals * 8));
     W.grassInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.grass(state)), counts.grass * 8));
     W.waterBuf = gpuBuf(waterMesh(86, T.water));
@@ -2255,7 +2359,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     W.envBaked = false;
     W.envWhen = -99;   // not `envAt`: that is where the probe stands
 
-    W.tris = Math.round((counts.terrain + pineVerts * counts.pines + crystalVerts * counts.crystals
+    W.tris = Math.round((counts.terrain + pineVerts * counts.pines + poplarVerts * counts.poplars
+                         + crystalVerts * counts.crystals
                        + grassVerts * counts.grass + rifleIdx) / 3);
   }
   // The valley someone else is running, if this page was pointed at one. The
@@ -2365,6 +2470,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       p.setVertexBuffer(0, W.terrainBuf); p.draw(W.counts.terrain);
       p.setPipeline(W.envPipes.pine);
       p.setVertexBuffer(0, pineBuf); p.setVertexBuffer(1, W.pineInst); p.draw(pineVerts, W.counts.pines);
+      if (W.counts.poplars) {
+        p.setVertexBuffer(0, poplarBuf); p.setVertexBuffer(1, W.poplarInst);
+        p.draw(poplarVerts, W.counts.poplars);
+      }
       p.setPipeline(W.envPipes.crystal);
       p.setVertexBuffer(0, crystalBuf); p.setVertexBuffer(1, W.crystalInst); p.draw(crystalVerts, W.counts.crystals);
       p.setPipeline(W.envPipes.water);
@@ -3239,6 +3348,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     sh.setPipeline(shTerrain); sh.setVertexBuffer(0, W.terrainBuf); sh.draw(W.counts.terrain);
     sh.setPipeline(shPine);
     sh.setVertexBuffer(0, pineShadowBuf); sh.setVertexBuffer(1, W.pineInst); sh.draw(pineShadowVerts, W.counts.pines);
+    if (W.counts.poplars) {
+      sh.setVertexBuffer(0, poplarShadowBuf); sh.setVertexBuffer(1, W.poplarInst);
+      sh.draw(poplarShadowVerts, W.counts.poplars);
+    }
     sh.setPipeline(shInst);
     if (W.blocks > 0) {
       sh.setVertexBuffer(0, blockBuf); sh.setVertexBuffer(1, W.blockInst); sh.draw(blockVerts, W.blocks);
@@ -3269,6 +3382,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(terrainPipe); pass.setVertexBuffer(0, W.terrainBuf); pass.draw(W.counts.terrain);
     pass.setPipeline(pinePipe);
     pass.setVertexBuffer(0, pineBuf); pass.setVertexBuffer(1, W.pineInst); pass.draw(pineVerts, W.counts.pines);
+    if (W.counts.poplars) {
+      pass.setVertexBuffer(0, poplarBuf); pass.setVertexBuffer(1, W.poplarInst);
+      pass.draw(poplarVerts, W.counts.poplars);
+    }
     pass.setPipeline(grassPipe);
     pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.grassInst); pass.draw(grassVerts, W.counts.grass);
     if (figureCount > 0) {

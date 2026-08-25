@@ -47,6 +47,13 @@ export fn pines(s: Ptr) -> Ptr = v.pines(s)
 
 export fn pine_count(s: Ptr) -> Int = v.pine_count(s)
 
+# The poplars along the water. No count of their own arrives from anywhere:
+# it is a third of the pines, worked out on both sides of the wire from the
+# one number that does.
+export fn poplars(s: Ptr) -> Ptr = v.poplars(s)
+
+export fn poplar_count(s: Ptr) -> Int = v.poplar_count(s)
+
 export fn crystals(s: Ptr) -> Ptr = v.crystals(s)
 
 export fn crystal_count(s: Ptr) -> Int = v.crystal_count(s)
