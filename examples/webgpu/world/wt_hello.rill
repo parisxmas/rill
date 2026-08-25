@@ -1,0 +1,139 @@
+# A native run for the line that says somebody walked in.
+#
+# The clock here is the one `wire_tick` hands the wire: seconds, not the
+# page's milliseconds. That is not a detail of the test — the first version of
+# this waited five hundred of them and shipped, because five hundred is half a
+# second in the unit nobody was counting in and eight minutes in the one that
+# reaches this code.
+#
+# The order the wire really sees it in: a player appears in a snapshot under
+# the name the server had for them at the door, which on a first visit is not
+# the name they chose — that arrives a round trip later, in a `who` of its
+# own. The log is a record of a moment and cannot correct itself the way the
+# roster does, so the moment is allowed to settle first. This is that wait,
+# and the two things it must not break: the people already in the valley are
+# never announced, and a name that never improves is announced anyway.
+import "wire" as wr
+import "hud" as hud
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+fn put(b, i, v) = poke_i8(b, wr.in_at() + i, v)
+
+fn put16(b, i, v) =
+  put(b, i, v % 256)
+  put(b, i + 1, v / 256)
+
+fn put32(b, i, v) =
+  put16(b, i, v % 65536)
+  put16(b, i + 2, v / 65536)
+
+fn putf(b, i, v) =
+  poke_f32(b, 63, v)
+  put(b, i, peek_u8(b, 252))
+  put(b, i + 1, peek_u8(b, 253))
+  put(b, i + 2, peek_u8(b, 254))
+  put(b, i + 3, peek_u8(b, 255))
+
+fn hello(b, id) =
+  put(b, 0, 104)
+  put16(b, 1, id)
+  put32(b, 3, 400)
+  put32(b, 7, 300)
+  put32(b, 11, 900)
+  putf(b, 15, 12.5)
+  wr.frame(b, 19)
+
+# `who`: an id and the letters of a name.
+fn who(b, id, name) =
+  put(b, 0, 117)
+  put16(b, 1, id)
+  put_name(b, name, 0)
+  wr.frame(b, 3 + str_len(name))
+
+fn put_name(b, name, i) =
+  if i >= str_len(name) then 0
+  else
+    put(b, 3 + i, str_get(name, i))
+    put_name(b, name, i + 1)
+
+# A snapshot with `n` players in it, ids taken from the two given.
+fn snap(b, n, id0, id1) =
+  put(b, 0, 115)
+  putf(b, 1, 13.0)
+
+  for i in 0..5
+    putf(b, 5 + i * 4, 0.0)
+
+  put(b, 25, 0)
+  putf(b, 26, 90.0)
+  put(b, 30, n)
+  snap_row(b, 31, id0)
+  if n > 1 then snap_row(b, 68, id1) else 0
+  wr.frame(b, 31 + n * 37)
+
+fn snap_row(b, at, id) =
+  put16(b, at, id)
+  putf(b, at + 2, 1.0)
+  putf(b, at + 6, 2.0)
+  putf(b, at + 10, 3.0)
+  putf(b, at + 14, 0.0)
+  putf(b, at + 18, 0.0)
+  putf(b, at + 22, 1.0)
+  put(b, at + 26, 0)
+  put16(b, at + 27, 0)
+  put16(b, at + 29, 0)
+  put(b, at + 31, 1)
+  put(b, at + 32, 0)
+  put16(b, at + 33, 0)
+  put16(b, at + 35, 0)
+  1
+
+# How long the newest line in the log is. The words either side of the name
+# never change, so the length is the name's length and nothing else: "xmas
+# joined" and "player12 joined" differ by exactly the four letters.
+fn log_len(h) = hud.slot_len(h, hud.sl_log0() + 11)
+
+fn main() =
+  b = wr.make()
+  h = hud.make()
+  poke_f32(b, wr.h_now(), 1000.0)   # the page clock, in ms, as the page writes it
+  hello(b, 7)
+
+  # Somebody is already here when we arrive, and they are not news.
+  who(b, 9, "Ada")
+  snap(b, 2, 7, 9)
+  wr.announce(b, h, 1.0)
+  say("the valley we walked into says nothing", to_int(peek_f32(b, wr.h_told_n())), 1)
+  say("and the one already here is written down", if wr.told_has(b, 9) then 1 else 0, 1)
+
+  # Now a real arrival, under the name the door gave them.
+  who(b, 12, "player12")
+  snap(b, 2, 7, 12)
+  wr.announce(b, h, 1.1)
+  say("a fresh arrival is not announced at once", if wr.told_has(b, 12) then 1 else 0, 0)
+
+  # Their own name lands a round trip later, well inside the wait.
+  who(b, 12, "xmas")
+  wr.announce(b, h, 1.2)
+  say("still holding at a tenth of a second", if wr.told_has(b, 12) then 1 else 0, 0)
+
+  # And once the wait is up they are announced — under the name they chose,
+  # which is four letters and not eight.
+  wr.announce(b, h, 1.7)
+  say("announced once the name has settled", if wr.told_has(b, 12) then 1 else 0, 1)
+  # "xmas joined" — eleven letters and the two colour marks the line carries.
+  say("under the name they chose", log_len(h), 13)
+
+  # Somebody who never says what they would rather be called is announced
+  # anyway, under whatever the door gave them.
+  who(b, 15, "player15")
+  snap(b, 2, 7, 15)
+  wr.announce(b, h, 1.8)
+  say("a nameless arrival waits too", if wr.told_has(b, 15) then 1 else 0, 0)
+  wr.announce(b, h, 2.4)
+  say("but is announced in the end", if wr.told_has(b, 15) then 1 else 0, 1)
+  # "player15 joined", which is the same line four letters longer.
+  say("under the name the door gave", log_len(h), 17)
+  println("done")
