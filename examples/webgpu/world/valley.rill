@@ -3807,30 +3807,50 @@ fn dirty_grow(cb, x, z, m) =
 # ---- one bite ----------------------------------------------------------------
 #
 # Everything below runs from a cell index and nothing else, which is the whole
-# of how the wire stays small: a bite is two bytes on the ring, and both ends
-# take the same one stone out of the same one cell. No shoulder cells, no
-# graded crater — the roundness of the old bowls was exactly that grading,
-# and a bite that is one whole cell one whole metre deep is what carves in
-# squares.
-# What a swing opens, and what it is worth, are two different numbers now.
+# of how the wire stays small: a bite is four bytes on the ring, and both ends
+# open the same square from them.
 #
-# It opens two stones — a cell taken down twice, six centimetres shy of a
-# knee — because at one stone a swing a shaft to the magma was two hundred
-# and seventy of them and the digging read as scraping. It pays one, because
-# what the hillside gives up and what a pocket is owed do not have to agree:
-# half of what comes out is spoil. Fifteen courses to the bottom, and a wall
-# still costs eight honest swings.
-fn dig_bite() = 2
+# The square is three stones across and one stone deep. Not one stone, which
+# is what it was, and which could not be dug with: a stone is thirty
+# centimetres, the terrain lattice that draws it is a metre, and a head
+# looking down from a standing height wanders a good part of a metre between
+# swings. Aim at the same place twice at that size and the second swing lands
+# on the stone next door — so the hole spread into a saucer and stopped
+# getting deeper, which is exactly what it looked like. Ninety centimetres is
+# wide enough that where the crosshair actually falls stops mattering: swing
+# at the same place and the same floor goes down, thirty centimetres a time,
+# thirty swings to the magma.
+#
+# It still pays one stone. What the hillside gives up and what a pocket is
+# owed do not have to agree — most of what comes out of a quarry is spoil —
+# and a wall still costs eight honest swings.
+fn dig_arm() = 1
 
 fn dig_write(cb, i, v) =
   if v == magma_v() then 0
-  else if v + dig_bite() >= carve_cap() then
+  else if v + 1 >= carve_cap() then
     cell_put(cb, i, magma_v())
     note_magma(cb, i)
     1
   else
-    cell_put(cb, i, v + dig_bite())
+    cell_put(cb, i, v + 1)
     1
+
+# The square around a struck cell, only where the ground under it is rock —
+# so a swing at the band's edge takes the half of the square that is stone
+# and leaves the meadow alone.
+fn dig_square(cb, ix, iz, dz, got) =
+  if dz > dig_arm() then got
+  else dig_square(cb, ix, iz, dz + 1, got + dig_row(cb, ix, iz + dz, 0 - dig_arm(), 0))
+
+fn dig_row(cb, ix, iz, dx, got) =
+  if dx > dig_arm() then got
+  else dig_row(cb, ix, iz, dx + 1, got + dig_one(cb, cell_at(ix + dx, iz)))
+
+fn dig_one(cb, i) =
+  if i < 0 then 0
+  else if height(cell_x(i), cell_z(i)) < rock_line() then 0
+  else dig_write(cb, i, cell_v(cb, i))
 
 # A cell that has just burned through. Once, ever — dig_write only comes this
 # way on the crossing itself — so the list never carries a cell twice.
@@ -3854,7 +3874,8 @@ fn apply_carve(w, ci) =
   cb = cv(w)
   if height(cell_x(ci), cell_z(ci)) < rock_line() then 0
   else
-    got = dig_write(cb, ci, cell_v(cb, ci))
+    # One stone in the pocket however many the square gave up.
+    got = if dig_square(cb, ci % carve_n(), ci / carve_n(), 0 - dig_arm(), 0) > 0 then 1 else 0
     # A margin of a metre and a half, not of a cell: the terrain lattice is
     # metres wide and a thirty-centimetre bite still moves the vertex beside
     # it, which has to be rebaked or the stone comes out of a picture that
