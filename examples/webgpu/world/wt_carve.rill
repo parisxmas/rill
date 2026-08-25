@@ -47,7 +47,7 @@ fn main() =
   # Untouched, the carved floor is the base ground everywhere.
   say("before a swing the floor is the ground, cm", cm(v.floor_at(w, rx, rz) - v.height(rx, rz)), 0)
 
-  # One swing: rock out, stones in, floor down. The centre cell loses 78
+  # One swing: rock out, stones in, floor down. The centre cell loses 50
   # units of 0.02 m — the crater formula at distance nought — and the bowl
   # around it a little less, so the bilinear floor under the eye drops close
   # to the centre's 88 cm.
@@ -56,13 +56,16 @@ fn main() =
   say("a swing pays stones", if got > 0 then 1 else 0, 1)
   say("and the pocket holds them", v.stones_of(s), got)
   fell = v.height(rx, rz) - v.floor_at(w, rx, rz)
-  say("the floor fell a metre or so", if cm(fell) > 60 && cm(fell) < 170 then 1 else 0, 1)
+  say("the floor fell a stone's worth", if cm(fell) > 25 && cm(fell) < 110 then 1 else 0, 1)
   say("one crater on the ring", v.carves(w), 1)
 
   # Swing until the byte runs out of room: the floor stops at three metres
   # and the cell is magma now, not rock.
   swings(s, rx, rz, 14, 0)
-  deep = v.height(rx, rz) - v.floor_at(w, rx, rz)
+  # Measured at the struck cell's centre, not the lattice corner: the bite is
+  # one cell wide now, and a corner is the average of four cells of which the
+  # diagonal one is never dug.
+  deep = v.height(rx + 0.5, rz + 0.5) - v.floor_at(w, rx + 0.5, rz + 0.5)
   say("the pit stops at the cap, cm", cm(deep), 300)
   say("and the bottom is magma", if v.magmas(w) > 0 then 1 else 0, 1)
 
@@ -106,7 +109,10 @@ fn main() =
   # And a hosted valley — a client being told — does not swing for itself:
   # `pick_used` raises the ask and touches nothing, which is what keeps a
   # predicted crater from doubling when the server's own copy arrives.
-  aim_down(s, rx, rz)
+  # On fresh rock, well clear of the pit above: its centre is magma by now,
+  # and magma rightly pays a swing nothing.
+  (r2x, r2z) = find_rock(rz + 7.0)
+  aim_down(s, r2x, r2z)
   c0 = v.carves(w)
   v.set_hosted(w, 1)
   say("a hosted pick acts on nothing", v.pick_used(s), 0)
@@ -116,7 +122,7 @@ fn main() =
 
   # The crosshair's answer is the swing's answer: gold exactly where a swing
   # would land.
-  aim_down(s, rx, rz)
+  aim_down(s, r2x, r2z)
   say("rock under the crosshair reads gold", v.can_mine(s), 1)
   # Straight up, not a little up: a little up from inside a pit is the pit's
   # own wall, which is rock and rightly gold.

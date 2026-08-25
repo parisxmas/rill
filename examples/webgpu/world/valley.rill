@@ -3671,13 +3671,17 @@ fn dirty_grow(cb, x, z, m) =
 # The shape: the middle goes down most of a metre, the ring around it less,
 # out to a radius of two cells — and only cells whose own base ground is rock.
 # A swing at the band's edge digs half a crater, which is what a band edge is.
-# The bowl one swing takes: a metre and a half in the middle, falling off to
-# nothing at three cells out. It was (2.2 - d) * 20 — under a metre at the
-# centre, gone by two cells — and at the mesh resolutions the tiers actually
-# run, that is one or two cells of dimple: mathematically present, invisible
-# in the rock's own noise, and doubly so at night. A pick in a game that
-# calls itself destructive has to leave a hole you can fall in.
-fn crater_add(d) = to_int((3.0 - d) * 26.0)
+# The bite one swing takes: about a stone's worth. A metre straight down in
+# the struck cell, a shoulder on the four beside it, nothing past that — so
+# three swings in one spot are a pit and a wall of them is a trench, and one
+# swing is one stone out of the hillside rather than a shell crater. It went
+# up to a three-cell bowl for a while in the name of visibility; the dug
+# tint and the flying chips carry that job now, and the size went back to
+# what the tool is.
+fn crater_add(d) =
+  if d < 0.5 then 50
+  else if d < 1.1 then 18
+  else 0
 
 fn dig_cell(cb, cx0, cz0, ix, iz) =
   i = cell_at(ix, iz)
@@ -3719,7 +3723,7 @@ fn apply_carve(w, ci) =
   cx0 = ci % carve_n()
   cz0 = ci / carve_n()
   got = dc_rows(cb, cx0, cz0, 0 - 2, 0)
-  dirty_grow(cb, cell_x(ci), cell_z(ci), 4.5)
+  dirty_grow(cb, cell_x(ci), cell_z(ci), 2.5)
   if got > 0 then carve_chips(w, ci) else 0
   got
 
@@ -3741,11 +3745,11 @@ fn carve_chips(w, ci) =
   1
 
 fn dc_rows(cb, cx0, cz0, dz, acc) =
-  if dz > 3 then acc
-  else dc_rows(cb, cx0, cz0, dz + 1, acc + dc_row(cb, cx0, cz0, cz0 + dz, 0 - 3, 0))
+  if dz > 1 then acc
+  else dc_rows(cb, cx0, cz0, dz + 1, acc + dc_row(cb, cx0, cz0, cz0 + dz, 0 - 1, 0))
 
 fn dc_row(cb, cx0, cz0, iz, dx, acc) =
-  if dx > 3 then acc
+  if dx > 1 then acc
   else dc_row(cb, cx0, cz0, iz, dx + 1, acc + dig_cell(cb, cx0, cz0, cx0 + dx, iz))
 
 # ---- the swing ---------------------------------------------------------------
@@ -3762,16 +3766,21 @@ fn dc_row(cb, cx0, cz0, iz, dx, acc) =
 # far side of the valley.
 fn mine_reach() = 9.0
 
-# The landing rule is "the ray passes within an arm of the ground", not "the
-# ray goes under it". The difference is every hillside in this valley:
-# looking down a slope the ground falls away almost along the look, the ray
-# and the surface run parallel for ten metres, and a strict crossing test
-# never fires — swing after swing over rock the player is staring at, all
-# silent. Within 1.1 m the pick is at the ground for any honest purpose, and
-# straight-down digging behaves exactly as before because the first step
-# inside the band is still the first step near the floor.
-fn mine_spot(w, s, t) =
-  if t > mine_reach() then 0 - 1
+# The landing rule: the point along the look where the ray runs closest to
+# the ground, provided it comes within arm's reach there. Not "where the ray
+# crosses under the floor" — on this valley's hillsides that is a test that
+# can simply never fire, because looking down a slope the ground falls away
+# almost along the look and the two run parallel for ten metres. Every look
+# has a closest approach; if that approach is inside 1.6 m the pick lands
+# there, which is exactly the "the ground I am looking at" a player means.
+# Arm'''s reach is 2.2 m — half a body of tolerance — because at 1.6 the
+# steepest hillsides still slipped just out of it at the reach'''s end.
+# Straight down, the closest approach is the floor itself and nothing about
+# the old behaviour changes.
+fn mine_spot(w, s, t0) = ms_walk(w, s, 0.5, 9.0, 0.0)
+
+fn ms_walk(w, s, t, bt, bd) =
+  if t > mine_reach() then ms_done(w, s, bt, bd)
   else
     yaw = peek_f32(s, 19)
     pitch = peek_f32(s, 20)
@@ -3779,8 +3788,20 @@ fn mine_spot(w, s, t) =
     x = peek_f32(s, 16) + sin(yaw) * cp * t
     y = peek_f32(s, 17) + sin(pitch) * t
     z = peek_f32(s, 18) - cos(yaw) * cp * t
-    if y <= floor_at(w, x, z) + 1.1 then (if height(x, z) >= rock_line() then carve_cell(x, z) else 0 - 1)
-    else mine_spot(w, s, t + 0.25)
+    d = y - floor_at(w, x, z)
+    if d <= 0.0 then ms_done(w, s, t, 0.0)
+    else if bt > 8.9 || d < bd then ms_walk(w, s, t + 0.25, t, d)
+    else ms_walk(w, s, t + 0.25, bt, bd)
+
+fn ms_done(w, s, bt, bd) =
+  if bd > 2.2 then 0 - 1
+  else
+    yaw = peek_f32(s, 19)
+    pitch = peek_f32(s, 20)
+    cp = cos(pitch)
+    x = peek_f32(s, 16) + sin(yaw) * cp * bt
+    z = peek_f32(s, 18) - cos(yaw) * cp * bt
+    if height(x, z) >= rock_line() then carve_cell(x, z) else 0 - 1
 
 # What one swing does, and what it pays. The event goes on the ring whether
 # this is the server deciding or a lone browser being its own server; a
@@ -3795,7 +3816,7 @@ fn swing_pick(s: Ptr) -> Int =
     poke_f32(cb, carve_ring_at(k), to_float(ci))
     poke_f32(cb, 0, to_float(k + 1))
     got = apply_carve(w, ci)
-    stones = (got + 54) / 55
+    stones = (got + 14) / 15
     poke_f32(s, 251, peek_f32(s, 251) + to_float(stones))
     stones
 
