@@ -45,7 +45,7 @@ fn inst_cap() = 4096
 
 fn inst_at() = 11520
 
-fn strips() = 12
+fn strips() = 14
 
 fn met_at() = 512
 
@@ -102,6 +102,18 @@ fn h_tag_n() = 34
 fn h_hurt_at() = 35
 fn h_cross() = 36
 fn h_board_left() = 37
+# 38 and 39 are the pack's, up beside the health it sits under.
+fn h_brief() = 40      # the orders: 0 nothing, else how far they are up, 0..1
+fn h_brief_cur() = 41  # which line the typing has reached, -1 for none
+# The inventory shows all three at once, so it needs all three counts —
+# `h_rounds` only ever carries whichever weapon is up. Caps come through as
+# well rather than being written down here: what a magazine holds is the
+# valley's number, and a HUD that keeps its own copy of it is a HUD that will
+# one day disagree.
+fn h_inv_rifle() = 42
+fn h_inv_ak() = 43
+fn h_inv_rifle_cap() = 44
+fn h_inv_ak_cap() = 45
 
 # ---- the theme --------------------------------------------------------------
 #
@@ -139,6 +151,7 @@ fn c_vit2() = 24       # 8fd14f — the healthy end of the bar
 fn c_black() = 25
 fn c_boardbg() = 26    # rgba(11,10,20,.91)
 fn c_vit1() = 27       # f6c02e — the hurt end (same gold, its own knob)
+fn c_glass() = 28      # the briefing's panel, which the sheet is tinted by
 
 # Layout scalars.
 fn s_margin() = 40     # 20 — the HUD's left/right inset
@@ -158,6 +171,8 @@ fn strip_size(h, i) = peek_f32(h, t_at(s_strip0() + i))
 
 fn strip_weight(h, i) = peek_f32(h, t_at(s_strip0() + i) + 1)
 
+fn strip_font(h, i) = peek_f32(h, t_at(s_strip0() + i) + 2)
+
 # The strips, by role. Sizes and weights out of the CSS.
 fn st_11() = 0         # 11/400 — over small, board th, roster heading
 fn st_12() = 1         # 12/400 — the workhorse: stat, log, keys, tally
@@ -171,6 +186,11 @@ fn st_44() = 8         # 44/400 — the board's countdown
 fn st_44b() = 9        # 44/600 — the crier
 fn st_30b() = 10       # 30/600 — the hit line
 fn st_96b() = 11       # 96/800 — the big overlays
+# The orders, and only the orders. Their own face — see `strip_font` — because
+# a briefing from a company that sent you across the solar system should not
+# arrive in the same letters as the frame counter.
+fn st_tech() = 12      # 30/400 — the body of the briefing
+fn st_tech_big() = 13  # 96/400 — its heading
 
 fn set_color(h, k, r, g, b, a) =
   at = t_at(k)
@@ -184,9 +204,17 @@ fn set_scalar(h, k, v) =
   poke_f32(h, t_at(k), v)
   1
 
-fn set_strip(h, i, size, weight) =
+fn set_strip(h, i, size, weight) = set_strip_f(h, i, size, weight, 0.0)
+
+# The third number in a strip's entry: which face to bake it in. Nought is the
+# page's own monospace, which is what every readout in this HUD was drawn in
+# and still is; one is the file the bundle carries. The page reads this when
+# it bakes the atlas — see `strip_font` — so adding a face is a number here
+# and a name there, not a rewrite of either.
+fn set_strip_f(h, i, size, weight, fam) =
   poke_f32(h, t_at(s_strip0() + i), size)
   poke_f32(h, t_at(s_strip0() + i) + 1, weight)
+  poke_f32(h, t_at(s_strip0() + i) + 2, fam)
   1
 
 fn theme_defaults(h) =
@@ -224,11 +252,14 @@ fn theme_defaults(h) =
   set_color(h, c_black(), 0.0, 0.0, 0.0, 1.0)
   set_color(h, c_boardbg(), 11.0, 10.0, 20.0, 0.91)
   set_color(h, c_vit1(), 246.0, 192.0, 46.0, 1.0)
+  # A cold, dark blue at four fifths: glass over a valley rather than a
+  # painted rectangle on top of one.
+  set_color(h, c_glass(), 24.0, 34.0, 58.0, 0.82)
   set_scalar(h, s_margin(), 20.0)
   set_scalar(h, s_top(), 18.0)
   set_scalar(h, s_bar_h(), 14.0)
   set_scalar(h, s_log_w(), 320.0)
-  set_scalar(h, s_log_b(), 74.0)
+  set_scalar(h, s_log_b(), 220.0)
   set_scalar(h, s_pip_gap(), 3.0)
   set_scalar(h, s_roster_top(), 118.0)
   set_scalar(h, s_tag_rise(), 2.05)
@@ -244,6 +275,8 @@ fn theme_defaults(h) =
   set_strip(h, st_44b(), 44.0, 600.0)
   set_strip(h, st_30b(), 30.0, 600.0)
   set_strip(h, st_96b(), 96.0, 800.0)
+  set_strip_f(h, st_tech(), 30.0, 400.0, 1.0)
+  set_strip_f(h, st_tech_big(), 96.0, 400.0, 1.0)
 
 fn make() =
   h = alloc_bytes(hud_bytes())
@@ -435,6 +468,11 @@ fn sl_over1() = 71
 fn sl_over2() = 72
 fn sl_over3() = 73
 
+# The orders: twelve lines of them, and the page fills in as much of each line as
+# has been said out loud so far. See `briefing`.
+fn sl_brief0() = 74    # ..85
+fn brief_lines() = 12
+
 # The log is a ring the writers push into — slot `h_log_next` is the oldest
 # and the next to be overwritten. `log_walk` below still draws slots 0..11 in
 # order; the ring is turned into that order by the copy-down in `log_push`,
@@ -539,7 +577,12 @@ fn build(h) =
   tags(h, sw, sh)
   sights(h, sw, sh)
   board(h, sw, sh)
+  inventory(h, sw, sh)
   overlays(h, sw, sh)
+  # Last, so the orders are over everything — including the overlays, which is
+  # right: if you managed to die inside the first half-minute, the briefing is
+  # still the thing being said to you.
+  briefing(h, sw, sh)
   to_int(peek_f32(h, h_count()))
 
 # The health bar across the whole bottom, and the breath bar on top of it.
@@ -649,7 +692,7 @@ fn title(h) =
 fn keys(h, x, y) =
   x1 = key_pair(h, x, y, "click", " to look")
   x2 = key_pair(h, sep(h, x1, y), y, "WASD", " walk")
-  x3 = key_pair(h, sep(h, x2, y), y, "space", " jump · hold to fly")
+  x3 = key_pair(h, sep(h, x2, y), y, "space", " jump · twice to fly")
   x4 = key_pair(h, sep(h, x3, y), y, "shift", " sprint")
   x5 = key_pair(h, sep(h, x4, y), y, "C", " crouch")
   x6 = key_pair(h, sep(h, x5, y), y, "left mouse", " fire")
@@ -1015,24 +1058,238 @@ fn over_kind(h, sw, sh) =
     if slot_len(h, sl_over2()) > 0 then mid_slot(h, sw, sh * 0.56, sl_over2()) else 0.0
     if slot_len(h, sl_over3()) > 0 then small_slot(h, sw, sh * 0.62, sl_over3(), kk) else 0.0
 
-fn dim(h, sw, sh) =
-  emit(h, 0.0, 0.0, 0.0, sw, sh, 0.0, 0.0, 0.0, 0.0, 4.0 / 255.0, 3.0 / 255.0, 8.0 / 255.0, 0.8, 5.0, 0.0, 0.0, 0.0)
+fn dim(h, sw, sh) = dim_a(h, sw, sh, 0.8)
 
-fn big(h, sw, y, s, k, scale) =
-  w = str_w(h, st_96b(), 0.06, s) * scale
-  text_str_scaled(h, (sw - w) / 2.0, y, s, k, scale)
+fn dim_a(h, sw, sh, a) =
+  emit(h, 0.0, 0.0, 0.0, sw, sh, 0.0, 0.0, 0.0, 0.0, 4.0 / 255.0, 3.0 / 255.0, 8.0 / 255.0, a, 5.0, 0.0, 0.0, 0.0)
 
-fn text_str_scaled(h, x, y, s, k, scale) =
-  tss_go(h, x, y, (adv_of(h, st_96b()) + 0.06 * 96.0) * scale, k, s, 0, scale)
+# ---- the orders ---------------------------------------------------------------
+#
+# What the company sent you here for, said once and to one person: whoever is
+# in this valley for the first time. It is spoken aloud — half a minute of it
+# — and typed out at the same time, a letter at a time as it is said.
+#
+# Both, and not either. Spoken only, it is missed by everyone playing with the
+# sound off, which on a page somebody opened at work is most of them. Written
+# only, it is a wall of text over a game that has just started, and a wall of
+# text at that moment is a thing to click past. Arriving a letter at a time it
+# is neither: it reads at the speed it is being said, and it is over before it
+# has outstayed its welcome.
+#
+# Nothing here knows about the sound. The page has the clip and the clock; it
+# writes as much of each line as has been spoken into the slots and says which
+# line the typing has reached; this draws whatever is in them, and puts the
+# cursor at the end of that line.
+fn briefing(h, sw, sh) =
+  a = peek_f32(h, h_brief())
+  if a < 0.001 then 0.0
+  else
+    # A touch of dark over the whole valley, and the rest of the separation
+    # done by the panel itself. The first version put the weight here and the
+    # first thing anybody saw of the place they had been sent to was a black
+    # rectangle.
+    dim_a(h, sw, sh, a * 0.30)
+    panel9(h, brief_px(sw), brief_py(sh), brief_pw(sw), brief_ph(sh), c_glass(), a)
+    # The heading is fixed and belongs here rather than in a slot: it is not
+    # part of what is being said, it is the thing saying it.
+    big_in(h, st_tech_big(), sw, sh * 0.175, "ORDERS", c_gold(), sw * 0.05 / 96.0)
+    rule(h, sw, sh * 0.253, a)
+    brief_lines_go(h, sw, sh, a, 0)
+    cursor(h, sw, sh, a)
 
-fn tss_go(h, x, y, step, k, s, i, scale) =
+# Where the sheet sits. Everything the briefing draws is placed against these
+# four numbers, so the panel and what is written on it cannot drift apart.
+fn brief_px(sw) = sw * 0.145
+fn brief_py(sh) = sh * 0.105
+fn brief_pw(sw) = sw * 0.71
+fn brief_ph(sh) = sh * 0.78
+
+# ---- what you are carrying ----------------------------------------------------
+#
+# Three weapons, always all three, in the bottom corner: the one in your hands
+# lit and the two you are not holding dim but legible. The number beside each
+# is what it has, not what it would have — a launcher with no rockets says so
+# without being picked up first.
+#
+# The pips along the bottom right stay: they are the round-by-round reading of
+# the weapon actually up, which is what you look at while firing. This is the
+# other question — *what else is there* — and it is asked between fights.
+fn inv_w() = 292.0
+
+fn inv_h() = 126.0
+
+fn inv_row() = 35.0
+
+fn inv_x(h) = th(h, s_margin())
+
+fn inv_y(h, sh) = sh - 78.0 - inv_h()
+
+fn inventory(h, sw, sh) =
+  x = inv_x(h)
+  y = inv_y(h, sh)
+  panel9(h, x, y, inv_w(), inv_h(), c_glass(), 0.9)
+  held = to_int(peek_f32(h, h_weapon()))
+  inv_row_draw(h, x, y + 18.0, 0, held, "RIFLE", "1",
+               int_str(to_int(peek_f32(h, h_inv_rifle()))) + "/" + int_str(to_int(peek_f32(h, h_inv_rifle_cap()))))
+  inv_row_draw(h, x, y + 18.0 + inv_row(), 1, held, "LAUNCHER", "2",
+               int_str(to_int(peek_f32(h, h_rockets()))))
+  inv_row_draw(h, x, y + 18.0 + inv_row() * 2.0, 2, held, "AK", "3",
+               int_str(to_int(peek_f32(h, h_inv_ak()))) + "/" + int_str(to_int(peek_f32(h, h_inv_ak_cap()))) +
+               "  x" + int_str(to_int(peek_f32(h, h_ak_mags()))))
+
+# The strip is rifle, AK, launcher — the order they were drawn in, not the
+# order they are carried in — so the cell is looked up rather than assumed.
+fn inv_cell(w) = if w == 0 then 0.0 else if w == 1 then 2.0 else 1.0
+
+fn inv_row_draw(h, x, y, w, held, name, key, ammo) =
+  on = w == held
+  k = if on then c_gold() else c_dim()
+  a = if on then 1.0 else 0.72
+  # A bar down the left of the row you are holding: the eye finds a moved edge
+  # faster than it finds a changed colour, and this reads at a glance.
+  if on then rect(h, x + 7.0, y - 6.0, 3.0, 26.0, c_gold(), 0.95) else 0
+  # The silhouette carries the recognition, so it is never dimmed as far as
+  # the writing is: a weapon you are not holding is still a weapon you have to
+  # be able to pick out of three at a glance.
+  icon(h, inv_cell(w), x + 18.0, y - 8.0, 30.0, 30.0, if on then c_gold() else c_bright(), if on then 1.0 else 0.62)
+  text(h, x + 56.0, y, st_12(), 0.10, c_dim(), key, 0.8)
+  text(h, x + 74.0, y, if on then st_12b() else st_12(), 0.06, k, name, a)
+  aw = str_w(h, st_12b(), 0.06, ammo)
+  text(h, x + inv_w() - 14.0 - aw, y, st_12b(), 0.06, k, ammo, a)
+
+fn icon(h, cell, x, y, w, hh, k, a) =
+  at = t_at(k)
+  emit(h, x, y, 0.0, w, hh, cell / 3.0, 0.0, 1.0 / 3.0, 1.0, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), peek_f32(h, at + 3) * a, 9.0, 0.0, 0.0, 0.0)
+
+# ---- nine slices ------------------------------------------------------------
+#
+# The sheet is a hundred and twenty-eight pixels square with a notch cut off
+# each corner, and it has to cover most of the screen. Stretched whole, the
+# notches stretch with it and it stops looking like a machined edge and starts
+# looking like a photograph of one that has been pulled about.
+#
+# So it goes down as nine pieces: four corners at a fixed size, four edges
+# stretched along one axis only, and the middle stretched both ways. The
+# source fractions and the destination sizes are the same numbers on the two
+# axes because the image is square and so is the corner it carries.
+fn slice_f() = 0.30           # how much of the image a corner takes
+
+fn corner_px(sw) = sw * 0.045 # and how big that corner is drawn
+
+fn panel9(h, x, y, w, hh, k, a) =
+  c = corner_px(sw_of(w))
+  f = slice_f()
+  # Columns: left, middle, right. Rows the same. Nine calls rather than a loop
+  # because the middle is not the corners and a loop would need a table to say
+  # so, which is more to read than the nine lines are.
+  quad(h, k, a, x,         y,          c,         c,       0.0,       0.0,     f,       f)
+  quad(h, k, a, x + c,     y,          w - c - c, c,       f,         0.0,     1.0 - f - f, f)
+  quad(h, k, a, x + w - c, y,          c,         c,       1.0 - f,   0.0,     f,       f)
+  quad(h, k, a, x,         y + c,      c,         hh - c - c, 0.0,    f,       f,       1.0 - f - f)
+  quad(h, k, a, x + c,     y + c,      w - c - c, hh - c - c, f,      f,       1.0 - f - f, 1.0 - f - f)
+  quad(h, k, a, x + w - c, y + c,      c,         hh - c - c, 1.0 - f, f,      f,       1.0 - f - f)
+  quad(h, k, a, x,         y + hh - c, c,         c,       0.0,       1.0 - f, f,       f)
+  quad(h, k, a, x + c,     y + hh - c, w - c - c, c,       f,         1.0 - f, 1.0 - f - f, f)
+  quad(h, k, a, x + w - c, y + hh - c, c,         c,       1.0 - f,   1.0 - f, f,       f)
+
+# The panel's width is a fraction of the screen's and the corner is a fraction
+# of the screen's too, so one can be recovered from the other rather than
+# threading the screen width through every call.
+fn sw_of(w) = w / 0.71
+
+fn quad(h, k, a, x, y, w, hh, u, v, uw, vh) =
+  at = t_at(k)
+  emit(h, x, y, 0.0, w, hh, u, v, uw, vh, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), peek_f32(h, at + 3) * a, 8.0, 0.0, 0.0, 0.0)
+
+# The block at the end of what has been typed.
+#
+# A rectangle rather than an underscore, and the width of one cell: the strip
+# is monospaced, so a cell is exactly what a letter is about to occupy, and a
+# block that is the size of the next letter is the only cursor that does not
+# jump when that letter arrives.
+#
+# It blinks on a two-thirds-of-a-second cycle and it blinks *always*, not only
+# when the typing pauses. A cursor that holds steady while letters arrive and
+# starts blinking when they stop is what a terminal does and it is wrong here:
+# the pauses in this are the speaker drawing breath, a second at most, and a
+# cursor that changes behaviour every second reads as a fault rather than as a
+# rhythm.
+fn cursor(h, sw, sh, a) =
+  li = to_int(peek_f32(h, h_brief_cur()))
+  if li < 0 then 0.0
+  else if blink_off(peek_f32(h, h_now()) * 1.5) then 0.0
+  else to_float(cursor_at(h, sw, sh, a, li))
+
+# Where in the cycle we are: the clock less its whole turns. There is no
+# `fract` in the prelude, and no `floor` either that this module can reach —
+# the one the valley uses is its own. Truncation is the same thing here,
+# because the clock this is handed never runs backwards past nought.
+fn blink_off(t) = t - to_float(to_int(t)) > 0.55
+
+fn cursor_at(h, sw, sh, a, li) =
+  sc = brief_scale(sw)
+  step = (adv_of(h, st_tech()) + 0.10 * strip_size(h, st_tech())) * sc
+  x = brief_x(sw) + slot_w(h, sl_brief0() + li, st_tech(), 0.10) * sc
+  y = sh * 0.315 + to_float(li) * sh * 0.048
+  # A capital's height, starting at the cap line — which is what the `y` a
+  # line is drawn at already is. Sized off the strip rather than measured:
+  # the em box a font reports carries room for a descender, and there is not
+  # a descender on any line of this briefing.
+  ch = strip_size(h, st_tech()) * sc * 0.72
+  at = t_at(c_gold())
+  emit(h, x, y, 0.0, step * 0.82, ch, 0.0, 0.0, 0.0, 0.0, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), a * 0.9, 0.0, 0.0, 0.0, 0.0)
+
+# A hairline under the heading, the width of the widest line of orders — a
+# sheet of paper's rule, and the one thing that makes this read as a document
+# rather than as a caption.
+fn rule(h, sw, y, a) =
+  w = sw * 0.52
+  at = t_at(c_gold())
+  emit(h, (sw - w) / 2.0, y, 0.0, w, 1.0, 0.0, 0.0, 0.0, 0.0, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), a * 0.55, 0.0, 0.0, 0.0, 0.0)
+
+fn brief_lines_go(h, sw, sh, a, i) =
+  if i >= brief_lines() then 0.0
+  else
+    brief_one(h, sw, sh, a, i)
+    brief_lines_go(h, sw, sh, a, i + 1)
+
+# Left-aligned as a block, not centred line by line. A briefing is read down
+# the left edge; centring twelve lines of orders gives every one of them a
+# different starting point and turns a document into a poem.
+#
+# And the margin is a fraction of the width rather than a measurement of the
+# text, because the text grows a letter at a time: a block centred on what is
+# currently visible would walk sideways across the screen as it was typed.
+# The size is the same fraction, so the two agree at any window — the widest
+# line here is forty-one characters, which at this scale is about three fifths
+# of the screen, and the margin is half of what is left.
+fn brief_x(sw) = sw * 0.205
+
+fn brief_scale(sw) = sw / 1400.0
+
+fn brief_one(h, sw, sh, a, i) =
+  sl = sl_brief0() + i
+  if slot_len(h, sl) == 0 then 0.0
+  else slot_text_s(h, sl, brief_x(sw), sh * 0.315 + to_float(i) * sh * 0.048, st_tech(), 0.10, c_text(), a, brief_scale(sw))
+
+fn big(h, sw, y, s, k, scale) = big_in(h, st_96b(), sw, y, s, k, scale)
+
+# The same, in whichever face is asked for.
+fn big_in(h, strip, sw, y, s, k, scale) =
+  w = str_w(h, strip, 0.06, s) * scale
+  text_str_scaled(h, strip, (sw - w) / 2.0, y, s, k, scale)
+
+fn text_str_scaled(h, strip, x, y, s, k, scale) =
+  tss_go(h, x, y, strip, (adv_of(h, strip) + 0.06 * strip_size(h, strip)) * scale, k, s, 0, scale)
+
+fn tss_go(h, x, y, strip, step, k, s, i, scale) =
   if i >= str_len(s) then x
   else
     b = str_get(s, i)
     if b >= 32 && b <= 126 then
-      glyph(h, x, y, st_96b(), b - 32, k, 1.0, scale)
-      tss_go(h, x + step, y, step, k, s, i + 1, scale)
-    else tss_go(h, x, y, step, k, s, i + 1, scale)
+      glyph(h, x, y, strip, b - 32, k, 1.0, scale)
+      tss_go(h, x + step, y, strip, step, k, s, i + 1, scale)
+    else tss_go(h, x, y, strip, step, k, s, i + 1, scale)
 
 fn big_slot(h, sw, y, sl, k, scale) =
   w = slot_w(h, sl, st_96b(), 0.06) * scale

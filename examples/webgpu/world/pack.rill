@@ -270,9 +270,39 @@ fn report(es, raw, packed) = match es
             int_to_str(str_len(data)) + (if method == 1 then "" else " (stored)"))
     report(rest, raw + str_len(eraw), packed + str_len(data))
 
+# What actually goes in as `page.js`.
+#
+# The four modules concatenated is what the page *means*; `page.min.js` is
+# that same thing with the comments taken out and the names shortened, and it
+# is what the page is *given*. Two hundred and twenty-eight kilobytes become
+# seventy-two, which matters twice: it is the one entry in the bundle that
+# cannot be compressed — the stub in index.html has to read it before the
+# engine that holds the decompressor exists — so every byte of it is a byte on
+# the wire, and it is also the file a reader sees if they open the blob.
+#
+# The minified file is never made here. `build.sh` deletes it, runs this to
+# write out the concatenation, minifies that, and runs this again; so if it is
+# on disk it was made from the source that is on disk, and if it is missing
+# the concatenation goes in and this says so.
+fn say_no_page() =
+  println("could not write page.js")
+  0
+
+fn page_out(page) = match read_file("page.min.js")
+  Ok(min) ->
+    println("  page.js: minified, " + int_to_str(str_len(page)) + " -> " + int_to_str(str_len(min)))
+    min
+  Err(_) ->
+    println("  page.js: NOT minified — run build.sh, or npx esbuild page.js --minify")
+    page
+
 fn main() =
   page = page_source()
-  es = append(map(names(), \n -> load_one(n)), Cons(Packed("page.js", page, 0, page), Nil))
+  # Written out whether or not it is what gets packed: it is the input the
+  # minifier reads, and the only readable copy of what the page runs.
+  if write_file("page.js", page) then 0 else say_no_page()
+  out_page = page_out(page)
+  es = append(map(names(), \n -> load_one(n)), Cons(Packed("page.js", out_page, 0, out_page), Nil))
   b = strbuf()
   strbuf_add(b, "RPAK")
   le32(b, version())

@@ -168,6 +168,24 @@
 
   fn skyHash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453); }
 
+  // Four separate calls, and they have to stay separate. It is tempting to
+  // project the cell once and reach the other three corners by adding the
+  // constants the projection would have added — the arithmetic is the same, and
+  // it turns four sines into one on a vector. It was tried, and the clouds came
+  // apart into squares.
+  //
+  // The reason is the thing this hash is built on: `fract(sin(x) * 43758)` is
+  // chaotic, so two values of `x` that differ in their last bit give unrelated
+  // answers. A corner is shared by four cells, and interpolated noise is only
+  // continuous because all four agree about it. Projecting once and adding
+  // reaches that corner by a different route than the neighbouring cell does,
+  // the two disagree in the last bit, and every cell becomes its own little
+  // patch with a seam round it — which is exactly what a cell boundary looks
+  // like when you can see it.
+  //
+  // The shared corner must therefore be computed the same way from either side:
+  // as the projection of the corner itself. That is what `skyHash` does, and
+  // why it is called four times.
   fn skyNoise(p: vec2f) -> f32 {
     let i = floor(p); let f = fract(p);
     let u = f * f * (3.0 - 2.0 * f);
@@ -307,6 +325,33 @@
   // over whatever the sky was without having to know what is in it.
   fn nightSky(dirWorld: vec3f, t: f32) -> vec4f {
     let dir = skySpace(dirWorld, t);
+
+    // Is this pixel near any of them at all? One question, asked before any of
+    // the three bodies is looked at, and it is the difference between a sky
+    // that costs four milliseconds and one that costs half of one.
+    //
+    // Measured, because it was not what anyone would have guessed: with the
+    // bodies removed entirely the sky pass went from 12.4 ms to 8.0, on a full
+    // screen of sky at the top tier. The moon, Jupiter and Saturn together
+    // cover something under a fiftieth of the sky — and the other forty-nine
+    // fiftieths were paying for all three of them, every frame.
+    //
+    // Each body's own `if` was already there, so the *bodies* were not being
+    // drawn; what was being paid was everything in front of those tests, three
+    // times over, in a function the compiler flattens into one long stretch of
+    // straight-line arithmetic. The way out is a single early return, so that
+    // a warp with no lane near anything leaves at once.
+    //
+    // The bounds are the bodies' own. `diskAt` returns the cosine of the angle
+    // to the body in `z`, so each test here is exactly the radius test further
+    // down, written as the cosine it already is: 1.35 moon-radii, Jupiter plus
+    // eleven and a half degrees to Jupiter's own limb, and Saturn out past
+    // the rings.
+    let nearMoon = dot(dirWorld, normalize(MOON_AT)) > 0.9975;
+    let nearJup  = dot(dir, normalize(JUP_AT)) > 0.97;
+    let nearSat  = dot(dir, normalize(SAT_AT)) > 0.975;
+    if (!nearMoon && !nearJup && !nearSat) { return vec4f(0.0); }
+
     var out = vec4f(0.0);
 
     // ---- the moon
@@ -347,15 +392,23 @@
         // rather than a dim disc.
         out += vec4f(mc * mix(vec3f(0.045, 0.050, 0.090), SUN_COL * sunlightAt(AU_MOON), day) * a, a);
         // And the glow it puts on the air around it.
-        out += vec4f(vec3f(0.30, 0.32, 0.40) * pow(clamp(1.35 - r, 0.0, 1.0), 3.0) * 0.30, 0.0);
+        let hz = clamp(1.35 - r, 0.0, 1.0);
+        out += vec4f(vec3f(0.30, 0.32, 0.40) * (hz * hz * hz) * 0.30, 0.0);
       }
     }
 
     // ---- Jupiter: bands, and the spot
+    //
+    // The frame is built once here. It used to be shared with the four moons
+    // that went round it; they are gone — see below — and it is Jupiter's
+    // alone again.
+    let jupAt = normalize(JUP_AT);
+    let fJ = diskAt(dir, jupAt);
+    let rJ = length(fJ.xy);
     {
-      let at = normalize(JUP_AT);
-      let f = diskAt(dir, at);
-      let r = length(f.xy) / JUP_R;
+      let at = jupAt;
+      let f = fJ;
+      let r = rJ / JUP_R;
       if (f.z > 0.0 && r < 1.0) {
         let q = f.xy / JUP_R;
         let nrm = vec3f(q, -sqrt(max(1.0 - r * r, 0.0)));   // the sign: see the moon, above
@@ -402,75 +455,22 @@
       }
     }
 
-    // ---- the Galileans, going round
+    // ---- the Galileans: not drawn
     //
-    // Four of them, on real orbits seen nearly edge-on — which is how they are
-    // always seen from anywhere but above Jupiter's pole, and why in a
-    // telescope they are a line of dots strung out either side rather than a
-    // ring. Each runs its own circle at its own rate, and a moon on the far
-    // half of its orbit goes behind the planet and is gone until it comes out
-    // the other side.
+    // Io, Europa, Ganymede and Callisto were here, on compressed but real
+    // orbits, and they were taken out for what they cost rather than for how
+    // they looked. Measured on a full screen of sky at the top tier, the loop
+    // that placed them was between three and six milliseconds — about half of
+    // everything the sky spent — and no guard would shift it: the branch that
+    // was supposed to skip them is one the compiler flattens, so the work was
+    // being done for every pixel and thrown away for all but a few hundred.
+    // Four dots a few pixels across is not worth half a sky.
     //
-    // The orbits are compressed, hard. Io really sits six Jupiter-radii out and
-    // Callisto twenty-seven; at the size Jupiter is drawn here — eleven and a
-    // half degrees of sky to its radius — that would put Callisto fifty-eight
-    // degrees away, which is not in the same view as the planet, let alone the
-    // same photograph. One and a third out to two and two thirds keeps all four
-    // beside it in one look, and keeps what the numbers are for: the order, and
-    // Io tight and quick against Callisto wide and slow.
-    //
-    // The periods are real in ratio: Io 1.77 days, Europa 3.55, Ganymede 7.15,
-    // Callisto 16.7 — each about twice the last, which is the Laplace
-    // resonance and is why they line up and spread out again the way they do.
-    for (var m = 0u; m < 4u; m++) {
-      let fm = f32(m);
-      let at = normalize(JUP_AT);
-      let f = diskAt(dir, at);
+    // What is left of them: `moons.png` is still in the bundle and still
+    // bound, and the arithmetic is in the history of this file. Putting them
+    // back means drawing them in their own small pass rather than inside the
+    // one that covers the screen.
 
-      let orbit = array<f32, 4>(1.42, 1.80, 2.28, 2.85)[m];
-      let rate  = array<f32, 4>(0.0940, 0.0470, 0.0234, 0.0100)[m];
-      let size  = array<f32, 4>(0.098, 0.086, 0.140, 0.130)[m];
-      let phase = array<f32, 4>(0.0, 2.20, 4.05, 5.60)[m];
-
-      let th = t * rate * 6.2831853 + phase;
-      // Barely tilted, so the orbits read as lines rather than as ellipses.
-      let ox = cos(th) * orbit;
-      let oy = sin(th) * orbit * 0.14;
-      let oz = sin(th);                       // + is the far half of the circle
-
-      // Where the moon sits on Jupiter's own disc, in Jupiter-radii.
-      let q = f.xy / JUP_R - vec2f(ox, oy);
-      let rm = length(q) / size;
-      // Behind the planet: on the far half of the orbit and inside its edge.
-      let hidden = oz > 0.0 && length(vec2f(ox, oy)) < 1.0;
-
-      if (f.z > 0.0 && rm < 1.0 && !hidden) {
-        let p = q / size;
-        let nrm = vec3f(p, -sqrt(max(1.0 - rm * rm, 0.0)));
-        let lam = mix(clamp(dot(nrm, sunInFrame(at, skySpace(-normalize(u.sun.xyz), t))), 0.0, 1.0), 1.0, 0.04);
-        // Out of the 2x2 atlas: Io and Europa across the top, Ganymede and
-        // Callisto below. The half-cell inset keeps a sample at the edge of one
-        // map from picking up the next one along.
-        let lonV = fract(atan2(nrm.x, -nrm.z) / 6.2831853 + t * rate * 2.0);
-        let latV = 0.5 - asin(clamp(nrm.y, -1.0, 1.0)) / 3.14159265;
-        let cell = vec2f(f32(m % 2u), f32(m / 2u)) * 0.5;
-        let uv = cell + clamp(vec2f(lonV, latV), vec2f(0.004), vec2f(0.996)) * 0.5;
-        let mc = textureSampleLevel(moonsTex, foliageSamp, uv, 0.0).rgb;
-        // Opaque, with only enough softness at the very rim to keep the edge
-        // from stepping. A tenth of the radius was being faded before, which
-        // over a moon ten pixels across is most of it, and made four solid
-        // bodies look like four smudges of gas.
-        let a = 1.0 - smoothstep(0.965, 1.0, rm);
-        // And composited OVER what is already there rather than added to it.
-        // Everything in this sky is disjoint except these — a moon crossing the
-        // face of Jupiter is the one place two bodies share a pixel — and added,
-        // the planet showed straight through it. That is not what a rock in
-        // front of a planet does. `out` is premultiplied, so the over-operator
-        // is one multiply: keep the moon whole and let through what is left.
-        let lay = vec4f(mc * sunTint(lam) * sunlightAt(AU_JUP), 1.0) * a;
-        out = lay + out * (1.0 - a);
-      }
-    }
 
     // ---- Saturn: the disc, and the rings across it
     {
@@ -591,7 +591,14 @@
   fn cloudWindow(t: f32) -> f32 { return 0.68 - 0.26 * cloudCover(t); }
 
   fn cloudDensity(uv: vec2f, t: f32) -> f32 {
-    let cw = cloudWindow(t);
+    return smoothstep(cloudWindow(t), cloudWindow(t) + 0.30, cloudField(uv));
+  }
+
+  // The same, when the caller already knows where the window is. `cloudWindow`
+  // is two sines of the clock — the same two for every pixel on the screen —
+  // and `cloudsAt` was asking for it twice per pixel, once for the deck and
+  // once for the step toward the sun.
+  fn cloudDensityAt(uv: vec2f, cw: f32) -> f32 {
     return smoothstep(cw, cw + 0.30, cloudField(uv));
   }
 
@@ -605,8 +612,9 @@
   // The deck as seen along `dir`: a colour and how much of it there is.
   fn cloudsAt(org: vec3f, dir: vec3f, t: f32) -> vec4f {
     if (dir.y < 0.015) { return vec4f(0.0); }
+    let cw = cloudWindow(t);
     let uv = cloudUv(org, dir, t);
-    let den = cloudDensity(uv, t);
+    let den = cloudDensityAt(uv, cw);
     if (den <= 0.003) { return vec4f(0.0); }
 
     let day = dayness();
@@ -617,7 +625,7 @@
     // Cheap self-shadow: the field again, a step toward the sun. Where the
     // step finds thinner cloud the sun is getting in, and that face is the
     // bright one; where it finds thicker, this is the underside of a pile.
-    let denS = cloudDensity(uv + normalize(L.xz + vec2f(0.0001)) * 0.055, t);
+    let denS = cloudDensityAt(uv + normalize(L.xz + vec2f(0.0001)) * 0.055, cw);
     let face = clamp(0.5 + 0.9 * (denS - den), 0.0, 1.0);   // 0 sunlit, 1 shaded
 
     // Lit tops by day; by night the deck goes to a dark slate that still
@@ -631,10 +639,16 @@
     // The sunset on their undersides. It outlives the sun the way the sky's
     // own afterglow does, and it lands hardest on the thin outlying scraps —
     // a solid deck is its own shadow and stays grey while the wisps burn.
-    c += SUN_WARM * pow(sa, 3.0) * glow * (1.0 - 0.75 * day) * (1.0 - 0.62 * den) * 1.35;
+    let s2 = sa * sa;
+    let s3 = s2 * sa;
+    c += SUN_WARM * s3 * glow * (1.0 - 0.75 * day) * (1.0 - 0.62 * den) * 1.35;
     // And the silver lining, which is the sun getting through the last metre
     // of a cloud's edge: strongest where the deck is neither absent nor thick.
-    c += SUN_COL * pow(sa, 24.0) * den * (1.0 - den) * 3.2 * glow;
+    // Twenty-four is sixteen and eight, which is four squarings and a multiply
+    // — cheaper than the log and the exp a `pow` costs, and the same number.
+    let s4 = s2 * s2;
+    let s8 = s4 * s4;
+    c += SUN_COL * (s8 * s8 * s8) * den * (1.0 - den) * 3.2 * glow;
 
     // Swallowed by the horizon haze rather than cut: the far edge of a cloud
     // deck sinks into the air long before it reaches the ground.
@@ -665,9 +679,26 @@
     return smoothstep(-0.20, 0.14, -normalize(u.sun.xyz).y);
   }
 
+  // Every sky pixel in the valley comes through here — the fullscreen pass, and
+  // the lake, which asks it again for what it is reflecting. So this function
+  // is the one place in the renderer where a wasted transcendental is worth
+  // going after by hand, and there were four kinds of waste in it:
+  //
+  //   * `pow` with a whole-number exponent, which is a log and an exp for what
+  //     is three multiplies;
+  //   * the sun's disc and halo, computed for every pixel in the sky when they
+  //     are nothing at all beyond a few degrees of the sun;
+  //   * the star lattice, whose hash was paid at noon to be multiplied by the
+  //     nought that daylight leaves;
+  //   * and the bodies, which is where most of it was — see `nightSky`.
+  //
+  // None of it changes the picture. What is gated is gated at a threshold
+  // where the term it guards is smaller than a thousandth, and the rest is the
+  // same arithmetic said in fewer instructions.
   fn skyColor(dir: vec3f, t: f32) -> vec3f {
     let up = max(dir.y, 0.0);
     let day = dayness();
+    let sun = -normalize(u.sun.xyz);
     let grad = pow(up, 0.55);
     var col = mix(mix(NIGHT_HORIZON, NIGHT_ZENITH, grad),
                   mix(SKY_HORIZON, SKY_ZENITH, grad), day);
@@ -676,15 +707,25 @@
     // that air scatters the day back at you: the horizon whitens toward a
     // milk the zenith never reaches, and at night it holds the faint lift
     // that keeps a ridge legible against the sky.
-    let airy = pow(1.0 - up, 5.0);
+    let a1 = 1.0 - up;
+    let a2 = a1 * a1;
+    let airy = a2 * a2 * a1;                          // (1 - up)^5, in multiplies
     col = mix(col, mix(vec3f(0.034, 0.040, 0.066), vec3f(0.315, 0.305, 0.355), day), airy * 0.55);
-    let sa = max(dot(dir, -normalize(u.sun.xyz)), 0.0);
+    let sa = max(dot(dir, sun), 0.0);
     // The warm side of the sky outlives the sun itself — that is what an
     // afterglow is — so it fades on a later, wider curve than the disc.
-    let glow = smoothstep(-0.34, 0.06, -normalize(u.sun.xyz).y);
-    col += SUN_WARM * pow(sa, 5.0) * 0.5 * glow;
-    col += SUN_COL * pow(sa, 900.0) * 20.0 * day;     // the disc
-    col += SUN_WARM * pow(sa, 60.0) * 1.2 * glow;     // its halo
+    let glow = smoothstep(-0.34, 0.06, sun.y);
+    let s2 = sa * sa;
+    col += SUN_WARM * (s2 * s2 * sa) * 0.5 * glow;    // sa^5, likewise
+    // The disc and its halo, only where they are anything. At the threshold the
+    // halo is already down to a ten-thousandth of its strength and the disc to
+    // a number with sixty noughts in front of it; the branch turns off with the
+    // sun's own angular size and is the same for every pixel in a wavefront
+    // except along one small ring, so it costs nothing to take.
+    if (sa > 0.86) {
+      col += SUN_COL * pow(sa, 900.0) * 20.0 * day;   // the disc
+      col += SUN_WARM * pow(sa, 60.0) * 1.2 * glow;   // its halo
+    }
     // Stars, on the sky's frame rather than the world's, so they wheel with
     // the moon and the planets instead of hanging while everything else moves.
     //
@@ -694,19 +735,25 @@
     // of ordinary ones and a handful that carry, and the brightest get a touch
     // of colour, because the bright ones are the only ones an eye can see any
     // colour in at all.
-    let sdir = skySpace(dir, t);
-    let cell = floor(sdir * 240.0);
-    let h = fract(sin(dot(cell, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
-    if (h > 0.9955 && dir.y > 0.04) {
-      let mag = (h - 0.9955) / 0.0045;                 // 0 faint, 1 the brightest
-      let twinkle = 0.62 + 0.38 * sin(t * 2.4 + h * 400.0);
-      // Warm at one end of the scale and blue at the other, the way real ones
-      // sort themselves — and the tint only shows on the bright ones.
-      let tint = mix(vec3f(1.0), mix(vec3f(1.0, 0.78, 0.62), vec3f(0.72, 0.82, 1.0),
-                                     fract(h * 733.0)), mag);
-      // Out entirely in daylight and full once the sun is down. Stars do not
-      // go anywhere at noon; the sky in front of them does.
-      col += tint * up * twinkle * (0.55 + 2.6 * mag * mag) * (1.0 - day);
+    // The two cheap facts first: below the horizon there are no stars, and in
+    // daylight there is nothing left of them to add. Both were being tested
+    // after the lattice hash rather than before it, so noon paid a sine per
+    // pixel for a term it then multiplied by nought.
+    if (dir.y > 0.04 && day < 0.999) {
+      let sdir = skySpace(dir, t);
+      let cell = floor(sdir * 240.0);
+      let h = fract(sin(dot(cell, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
+      if (h > 0.9955) {
+        let mag = (h - 0.9955) / 0.0045;               // 0 faint, 1 the brightest
+        let twinkle = 0.62 + 0.38 * sin(t * 2.4 + h * 400.0);
+        // Warm at one end of the scale and blue at the other, the way real ones
+        // sort themselves — and the tint only shows on the bright ones.
+        let tint = mix(vec3f(1.0), mix(vec3f(1.0, 0.78, 0.62), vec3f(0.72, 0.82, 1.0),
+                                       fract(h * 733.0)), mag);
+        // Out entirely in daylight and full once the sun is down. Stars do not
+        // go anywhere at noon; the sky in front of them does.
+        col += tint * up * twinkle * (0.55 + 2.6 * mag * mag) * (1.0 - day);
+      }
     }
     // The moon and the two planets, over the stars and under nothing: they are
     // the furthest things in the world beyond the air.
@@ -1028,10 +1075,20 @@
     // what is held goes down, the draw switches to the other mesh at the
     // bottom, and it runs back to nought as that one comes up.
     let stow = vec3f(0.0, -0.42 * u.rpgMin.w, 0.10 * u.rpgMin.w);
+    // Down on one knee. `fx.y` is how far into the crouch the body is, and
+    // the weapon has to go with it or the whole thing reads as the world
+    // sinking rather than the person: the eye drops sixty centimetres, and a
+    // rifle that stayed exactly where it was on the screen while that
+    // happened would be a rifle floating at chest height above a crouching
+    // man. It comes down and in — the elbows tuck, which is what anyone does
+    // going down — and a little of the muzzle rises, because the near hand
+    // drops further than the far one.
+    let crouch = clamp(u.fx.y, 0.0, 1.0);
+    let duck = vec3f(0.004, -0.030, 0.020) * crouch;
     // The model is built with +x down the barrel, +y up and +z out to the
     // right, so reaching the camera's axes is a shuffle and then the rotations.
     return (Ry * Rx * Rz) * vec3f(m.z, m.y, m.x) * VM_SCALE
-         + mix(VM_AT, VM_AIM, u.vmSize.w) + bob + kick + stow;
+         + mix(VM_AT, VM_AIM, u.vmSize.w) + bob + kick + stow + duck;
   }
 
   // A direction, by the same rotation but without the offsets.
@@ -1127,6 +1184,16 @@
     let kick = vec3f(0.0, 0.014 * rc, -0.075 * rc);
     // And out of frame while the hands are changing weapons.
     let stow = vec3f(0.0, -0.42 * u.rpgMin.w, 0.10 * u.rpgMin.w);
+    // Down on one knee. `fx.y` is how far into the crouch the body is, and
+    // the weapon has to go with it or the whole thing reads as the world
+    // sinking rather than the person: the eye drops sixty centimetres, and a
+    // rifle that stayed exactly where it was on the screen while that
+    // happened would be a rifle floating at chest height above a crouching
+    // man. It comes down and in — the elbows tuck, which is what anyone does
+    // going down — and a little of the muzzle rises, because the near hand
+    // drops further than the far one.
+    let crouch = clamp(u.fx.y, 0.0, 1.0);
+    let duck = vec3f(0.004, -0.030, 0.020) * crouch;
     // The model's axes to the camera's, the same shuffle the rifle does.
     return rpgRot(rc, held) * vec3f(m.z, m.y, m.x) * RPG_SCALE
          + mix(RPG_AT, RPG_AIM, u.vmSize.w) + bob + kick + stow;

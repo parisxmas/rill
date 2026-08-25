@@ -1,0 +1,78 @@
+# A native run for where the valley puts somebody down.
+#
+# The rule under test is not a distance the spawn code invented. It is
+# `near_glass` — the predicate the crystals themselves use to decide whether
+# you are standing against one — asked of every spot the placer picked. That
+# is deliberate: a spawn guard written against its own idea of "near" drifts
+# away from the bite it was meant to prevent the first time either number is
+# touched, and nobody notices, because the only symptom is health that goes
+# missing three seconds after a respawn.
+#
+# The other half is the one that is easy to forget. A guard that turns down
+# too much is not free: every rejection falls through to the next try, and
+# past the last one everybody lands in the same corner. So the corner is
+# counted too, and it has to stay rare.
+import "valley" as v
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+# The valley the ultra tier builds, which is the one with the most glass in
+# it: three hundred and eighty crystals is the hardest this guard is ever
+# asked to work in.
+fn crystals() = 380
+
+fn runs() = 400
+
+# Is this player standing where a crystal would answer them? Asked of the
+# world's own crystal buffer, with the world's own count.
+fn bitten(s, cb, n, i) =
+  if i >= n then 0 else if v.near_glass(s, cb, i) > 0 then 1 else bitten(s, cb, n, i + 1)
+
+fn on_glass(w, s) = bitten(s, peek_ptr(w, 66), to_int(peek_f32(w, 58)), 0)
+
+# The fallback spot, which is a corner nothing was ever placed on.
+fn about(a, b) = a > b - 0.001 && a < b + 0.001
+
+fn cornered(s) =
+  if about(v.player_x(s), 0.0 - 14.0) && about(v.player_z(s), 0.0 - 34.0) then 1 else 0
+
+fn trial(w, s, i, bad, corner, wet) =
+  if i >= runs() then finish(w, s, bad, corner, wet)
+  else
+    v.spawn_salt(s, to_float(i) * 0.1373)
+    v.respawn(s)
+    trial(w, s, i + 1,
+      bad + on_glass(w, s),
+      corner + cornered(s),
+      wet + (if v.height(v.player_x(s), v.player_z(s)) > 0.6 then 0 else 1))
+
+fn finish(w, s, bad, corner, wet) =
+  say("nobody is put inside a crystal's reach", bad, 0)
+  say("and nobody is put in the lake", wet, 0)
+  # Twenty-four tries against a guard that turns down perhaps a third of the
+  # meadow: the corner should be all but unreachable. It is not asserted at
+  # nought, because the number that matters is "rare", and pinning it to zero
+  # would make an honest tweak to the crystal count look like a bug.
+  say("and the corner stays a last resort", if corner < 8 then 1 else 0, 1)
+  println("  (" + int_to_str(corner) + " of " + int_to_str(runs()) + " fell back to the corner)")
+  1
+
+fn main() =
+  w = v.init(64, 400, crystals(), 900)
+  s = v.join(w)
+  say("the valley really is full of glass", if to_int(peek_f32(w, 58)) > 300 then 1 else 0, 1)
+  trial(w, s, 0, 0, 0, 0)
+
+  # The guard reads the buffer live, so a crystal that has been broken is not
+  # a crystal any more: its scale goes to nought, exactly as it does for the
+  # renderer, and the ground it stood on is a spawn again. Asked of that one
+  # crystal rather than of the spot, because the crystals stand close enough
+  # together that a neighbour usually covers the same metre.
+  cb = peek_ptr(w, 66)
+  x = peek_f32(cb, 0)
+  z = peek_f32(cb, 2)
+  say("a standing crystal keeps its ground clear", if v.inside_glass(cb, 0, x, z) then 1 else 0, 1)
+  poke_f32(cb, 3, 0.0)
+  say("and a broken one gives it back", if v.inside_glass(cb, 0, x, z) then 0 else 1, 1)
+  println("done")

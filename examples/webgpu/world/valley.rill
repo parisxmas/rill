@@ -3543,14 +3543,73 @@ fn spawn_x(seed, t) = (hash2(seed * 12.9898 + to_float(t) * 7.13, 78.233) - 0.5)
 
 fn spawn_z(seed, t) = (hash2(seed * 39.3467 + to_float(t) * 3.71, 11.135) - 0.5) * 150.0
 
-# Which try landed somewhere worth standing, or eight if none did. Dry, and
-# below the rocks: the band between the waterline and nine metres is the grass
-# the pines grow on, and putting somebody down on a peak thirty metres up is
-# not a spawn, it is a punishment.
-fn spawn_try(seed, t) =
-  if t >= 8 then 8 else if good_spot(height(spawn_x(seed, t), spawn_z(seed, t))) then t else spawn_try(seed, t + 1)
+# Which try landed somewhere worth standing, or `spawn_tries` if none did. Dry,
+# and below the rocks: the band between the waterline and nine metres is the
+# grass the pines grow on, and putting somebody down on a peak thirty metres up
+# is not a spawn, it is a punishment.
+#
+# Eight tries were not enough when the ground was the only question either,
+# which is worth writing down because it was never noticed. Measured over
+# twenty thousand candidates in the valley the ultra tier builds: a quarter of
+# them stand on ground a spawn is allowed — the rest are the lake and the
+# peaks — so eight tries missed nine times in a hundred, and nine spawns in a
+# hundred were the same corner. The spread the hash was there to give was
+# quietly not being given.
+#
+# The glass takes that quarter down to a ninth: three hundred and eighty
+# crystals with four and a half metres kept clear of each cover most of the
+# band they stand in, which is the same band the ground test likes.
+#
+# Sixty-four tries put the corner at two in a thousand. What it costs is
+# sixty-four terrain samples in the worst case — twelve sines each — once, on
+# the frame somebody is being put down. Nothing that happens on a respawn is
+# measured in sines.
+fn spawn_tries() = 64
+
+fn spawn_try(w, seed, t) =
+  if t >= spawn_tries() then spawn_tries()
+  else if fine_spot(w, spawn_x(seed, t), spawn_z(seed, t)) then t
+  else spawn_try(w, seed, t + 1)
+
+fn fine_spot(w, x, z) = good_spot(height(x, z)) && off_the_glass(w, x, z)
 
 fn good_spot(h) = h > 0.6 && h < 9.0
+
+# ---- and clear of the glass -------------------------------------------------
+#
+# A crystal answers whatever stands against it: a twentieth of a bar every
+# three seconds, out to `zap_reach` from its surface — see "the crystals bite
+# back". Being *put* inside that ring is not a wager anybody made. It cost
+# health before the screen had finished fading in, and it was not rare: the
+# crystals are thickest between the waterline and three and a half metres,
+# which is most of the ground a spawn is allowed to land on.
+#
+# So the reach is the second half of what makes a spot good, with a stride of
+# clearance on top. At the exact edge one step in the wrong direction is a
+# bite, and a spawn you have to walk away from carefully is the same bug with
+# a smaller radius.
+#
+# The rule is `near_glass`'s own, read off the same buffer: the same surface
+# offset, and the same indifference to anything under 0.35, which is both the
+# shards too small to bite and every crystal somebody has already broken.
+fn spawn_clear() = 2.0
+
+fn off_the_glass(w, x, z) =
+  cb = peek_ptr(w, 66)
+  if is_null(cb) then true else glass_scan(cb, to_int(peek_f32(w, 58)), x, z, 0)
+
+fn glass_scan(cb, n, x, z, i) =
+  if i >= n then true else if inside_glass(cb, i, x, z) then false else glass_scan(cb, n, x, z, i + 1)
+
+fn inside_glass(cb, i, x, z) =
+  at = i * 8
+  sc = peek_f32(cb, at + 3)
+  if sc < 0.35 then false
+  else
+    dx = peek_f32(cb, at) - x
+    dz = peek_f32(cb, at + 2) - z
+    r = 0.55 * sc + zap_reach() + spawn_clear()
+    dx * dx + dz * dz < r * r
 
 fn place_player(s) =
   # Standing somewhere new with a full pack: a respawn is not the moment to
@@ -3558,6 +3617,12 @@ fn place_player(s) =
   poke_f32(s, 244, 1.0)
   poke_f32(s, 245, 0.0)
   poke_f32(s, 246, 0.0)
+  # No key behind them, and no press to be the second of: somebody put down
+  # here with the space bar already held does not take off on the first frame.
+  poke_f32(s, jet_was(), 1.0)
+  poke_f32(s, jet_since(), 99.0)
+  poke_f32(s, jet_armed(), 0.0)
+  poke_f32(s, h_crouch(), 0.0)
   # Who, when, and whatever the caller has stirred in: without the clock every
   # respawn is the same spot for the same person, which is the old problem with
   # extra steps.
@@ -3569,10 +3634,14 @@ fn place_player(s) =
   # the caller may add — the page rolls one before it places anybody, see
   # `spawn_salt` — and it is nought on the server, where spawns are already
   # spread by an id that counts up and a clock that has been running.
-  seed = peek_f32(s, 99) * 1.618 + peek_f32(wd(s), 28) * 0.37 + peek_f32(s, 124)
-  t = spawn_try(seed, 0)
-  x = if t >= 8 then 0.0 - 14.0 else spawn_x(seed, t)
-  z = if t >= 8 then 0.0 - 34.0 else spawn_z(seed, t)
+  w = wd(s)
+  seed = peek_f32(s, 99) * 1.618 + peek_f32(w, 28) * 0.37 + peek_f32(s, 124)
+  t = spawn_try(w, seed, 0)
+  # The old corner, which is the one patch of this valley nothing was ever
+  # placed on: `placed` turns down every candidate inside `near_spawn`, so the
+  # fallback is nine metres clear of the nearest crystal by construction.
+  x = if t >= spawn_tries() then 0.0 - 14.0 else spawn_x(seed, t)
+  z = if t >= spawn_tries() then 0.0 - 34.0 else spawn_z(seed, t)
   y = height(x, z)
   poke_f32(s, 19, 2.75)
   poke_f32(s, 20, 0.0 - 0.1)
@@ -4288,19 +4357,25 @@ fn jump_vel(keys, grounded, vy) =
 
 # ---- the pack ---------------------------------------------------------------
 #
-# The same key the legs use. On the ground it is a jump; in the air, held, it
-# is thrust — so taking off is one press held rather than a second control,
-# and the moment the tank runs out the fall is the one that was always going
-# to happen.
+# The same key the legs use — a press is a jump, a second press soon after it
+# is the pack. See `jet_watch` for which is which.
 #
 # Two and a bit seconds of burn, which is height enough to clear the pines and
 # not enough to cross the valley: the point of it is to get somewhere a moment
 # sooner and to be somewhere nobody expected, not to leave the ground behind.
-# It fills only while standing, at half the rate it empties, so a flight is
-# something you spend and then wait for.
+#
+# And it fills only while standing, at a sixth of the rate it empties. Two
+# seconds of flight now costs thirteen on the ground.
+#
+# It was four and a half — half the burn rate — and at that price the pack was
+# not a resource, it was a cooldown: by the time anybody had walked anywhere it
+# was full again, so there was never a moment of choosing to keep it. At a
+# sixth, spending it is a decision, and somebody who has just landed is
+# somebody who cannot leave again for a while, which is worth something to the
+# person watching them land.
 fn jet_secs() = 2.2
 
-fn jet_fill_secs() = 4.4
+fn jet_fill_secs() = 13.2
 
 # Relit only after a quarter of the tank is back, for the reason the sprint is
 # gated on a third: at nought exactly, held, it would be one frame of thrust
@@ -4326,10 +4401,85 @@ fn jet_on(s: Ptr) -> Int = if peek_f32(s, 245) > 0.5 then 1 else 0
 
 fn jet_dry(s: Ptr) -> Int = if peek_f32(s, 246) > 0.5 then 1 else 0
 
-# Whether the pack is alight this frame: the key held, off the ground, fuel in
-# it, not still dry from the last time it emptied, and alive.
+# ---- the pack is asked for twice ---------------------------------------------
+#
+# One key does two things, and which one it is doing is now decided by how it
+# was pressed rather than by where the feet are.
+#
+# It used to be that a press jumped and the same key *held* lit the pack the
+# moment the feet left the ground. That is one gesture doing both, and it
+# meant nobody could jump over a rock without taking off: the hold is what
+# jumping feels like, and half a second of pack is what it cost.
+#
+# So: a press is a jump and only a jump, however long it is held. A second
+# press soon after the first arms the pack, and the pack then burns for as
+# long as that press lasts. Tap to jump, tap-and-hold to fly — which is the
+# gesture every game with a double jump already taught everybody.
+#
+# Three numbers on the block, all of them above 242 where a float slot and a
+# pointer slot cannot collide on either target — see the note by `spawn_salt`.
+fn jet_gap() = 0.45        # how soon the second press has to come
+
+# The bit a client sets once its own pair has landed.
+#
+# The edge is the thing being detected and an edge is exactly what a tick
+# loses. The page runs `walk` sixty times a second and sees both presses; the
+# server runs it twenty times a second on whatever mask arrived last, so a tap
+# two frames long stands a fair chance of falling entirely between two ticks —
+# and then the server sees one press where the player made two, does not arm,
+# and pulls a flying player back to the ground. It is worst on the first
+# attempt, which is the one nobody has found their rhythm on yet.
+#
+# So the pair is detected where it can be seen and the *state* is what
+# travels. A client that has armed its pack says so on every frame it stays
+# armed, and a tick that lands anywhere inside the burn reads it correctly.
+# This is the same trust the other keys already get: the server believes what
+# is held, and decides for itself what holding it is worth.
+fn jet_told() = 1024
+
+fn jet_was() = 247         # the key, as it was on the frame before
+fn jet_since() = 248       # and how long since it last went down
+fn jet_armed() = 249       # whether that press was the second of a pair
+
+# Run once a frame, before anything asks whether the pack is alight. Every
+# branch here is an edge — the key going down, the key coming up — so it has
+# to see every frame exactly once, which is why it lives in `walk` and not in
+# `wants_jet`.
+fn jet_watch(s, keys, dt) =
+  down = if bit_and(keys, 16) == 16 then 1.0 else 0.0
+  was = peek_f32(s, jet_was())
+  since = peek_f32(s, jet_since()) + dt
+  poke_f32(s, jet_was(), down)
+  n = if down > 0.5 && was < 0.5 then jet_pressed(s, since) else jet_held(s, down, since)
+  # And the far end's word, if it sent one — see `jet_told`.
+  jet_hear(s, bit_and(keys, jet_told()) == jet_told())
+  n
+
+fn jet_hear(s, told) =
+  if told then poke_f32(s, jet_armed(), 1.0) else poke_f32(s, jet_armed(), peek_f32(s, jet_armed()))
+  1
+
+# The key went down. If the last one was recent this is the second of a pair
+# and the pack is armed; otherwise it is an ordinary jump and the pack is not.
+fn jet_pressed(s, since) =
+  poke_f32(s, jet_armed(), if since < jet_gap() then 1.0 else 0.0)
+  poke_f32(s, jet_since(), 0.0)
+  1
+
+# The key is where it was. Letting go disarms: the burn lasts as long as the
+# press that started it and no longer, so coming down is releasing the key
+# rather than waiting for a tank to empty.
+fn jet_held(s, down, since) =
+  poke_f32(s, jet_since(), since)
+  if down < 0.5 then poke_f32(s, jet_armed(), 0.0) else poke_f32(s, jet_armed(), peek_f32(s, jet_armed()))
+  1
+
+# Whether the pack is alight this frame: armed by a double press, the key
+# still held, off the ground, fuel in it, not still dry from the last time it
+# emptied, and alive.
 fn wants_jet(s, keys, grounded, fuel) =
-  if bit_and(keys, 16) != 16 then 0.0
+  if peek_f32(s, jet_armed()) < 0.5 then 0.0
+  else if bit_and(keys, 16) != 16 then 0.0
   else if grounded > 0.5 then 0.0
   else if fuel <= 0.0 then 0.0
   else if peek_f32(s, 246) > 0.5 then 0.0
@@ -4360,6 +4510,67 @@ fn jet_vy(vy, g, dt) =
   if vy >= jet_climb() then vy
   else if vy + step > jet_climb() then jet_climb()
   else vy + step
+
+# ---- crouching ---------------------------------------------------------------
+#
+# `C` used to be a key that changed what other people saw of you and nothing
+# else: the server put a 3 in the pose byte, the far end played the crouch
+# clip, and the person pressing it saw their own view exactly where it had
+# been. It read as a key that did not work, which is what it was from the
+# only seat that mattered.
+#
+# So it comes down here, in `walk`, which is the arithmetic both ends run: the
+# eye drops six tenths of a metre and the walk loses nearly half its speed,
+# and because it is `walk` the server agrees about both — a shot taken from a
+# crouch leaves from where the crouched eye is, and the position it is taken
+# from is one nobody had to be told about separately.
+#
+# Eased rather than switched. Six tenths of a metre is a long way for a head
+# to move and a cut is a flinch; a fifth of a second of it is a person going
+# down on one knee.
+fn crouch_drop() = 0.62
+
+fn crouch_rate() = 6.0     # per second, so a fifth of a second down or up
+
+# What it costs to move: nearly four fifths of the walk, so a crouch is a
+# crawl — a metre and a quarter a second against five and a half. That is the
+# whole of the trade the key offers. Down there you are a metre lower, your
+# name is not over your head, and crossing the meadow takes four times as
+# long; a crouch that moved at anything like walking pace would simply be a
+# better walk, and everyone would spend the match on one knee.
+fn crouch_slow() = 0.78    # how much of the walk it costs
+
+fn h_crouch() = 250        # how far down, 0..1, on the player's own block
+
+fn crouch_of(s: Ptr) -> Float = peek_f32(s, h_crouch())
+
+fn jet_armed_now(s: Ptr) -> Int = if peek_f32(s, jet_armed()) > 0.5 then 1 else 0
+
+# It follows the key and nothing else.
+#
+# It was gated on being on the ground, which sounds right and is not: walking
+# down any slope in this valley takes the feet off it for a frame at a time,
+# so the gate flickered and the eye bobbed up and down the whole way down a
+# hill. Worse, it was silently doing nothing at all — a crouch measured while
+# walking never engaged, because walking is when the gate is open least.
+#
+# In the air it costs nothing to allow: the speed it slows is the walk, and
+# the eye it lowers is lowered relative to a body that is where it is either
+# way.
+fn crouch_step(s, keys, grounded, dt) =
+  want = if bit_and(keys, 64) == 64 then 1.0 else 0.0
+  a = peek_f32(s, h_crouch())
+  d = crouch_rate() * dt
+  # Toward `want`, and stopping there. It was written as `if want > a then a +
+  # d else a - d` clamped to nought and one, which is the same thing to read
+  # and not the same thing to run: once the two are equal the first test is
+  # false, so a key still held took the second branch and the crouch slid back
+  # down — then rose again on the next frame, and shook at three tenths a step
+  # for as long as the key was down. Standing hid it, because a value already
+  # at nought clamps to nought whichever way it is pushed.
+  n = if a < want then clampf(a + d, 0.0, want) else clampf(a - d, want, 1.0)
+  poke_f32(s, h_crouch(), n)
+  n
 
 # Whether the sprint key does anything this frame: it is held, there is
 # somewhere to go, there is breath left, and the last time it ran out is far
@@ -4416,13 +4627,16 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   # nothing. Without that, running at zero would be a stutter — one frame of
   # sprint for every frame of standing — which reads as a bug rather than as
   # being winded.
-  sprinting = wants_run(s, k, wl)
+  crouched = crouch_step(s, k, peek_f32(s, 25), dt)
+  # You cannot sprint on one knee. Asked here rather than inside `wants_run`
+  # because that one is about breath and this is about posture.
+  sprinting = if crouched > 0.5 then 0.0 else wants_run(s, k, wl)
   spend_breath(s, dt, sprinting, wl)
   # Five and a half metres a second, and twelve with the sprint key. Both were
   # a quarter faster and it read as skating: at seven and a half the valley
   # went past faster than anything on the ground in it could account for, and
   # a shot at somebody crossing the meadow was a lead nobody could judge.
-  step = (if sprinting > 0.5 then 12.0 else 5.625) * dt
+  step = (if sprinting > 0.5 then 12.0 else 5.625) * (1.0 - crouch_slow() * crouched) * dt
   # What a blast is still pushing you by, spent down over about a fifth of a
   # second. It goes in beside the walk rather than instead of it, so you can
   # walk against it and the collisions below still run on where you end up.
@@ -4443,6 +4657,7 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   gnd = height(px, pz)
   g = gravity(w)
   grounded = peek_f32(s, 25)
+  jet_watch(s, k, dt)
   burning = wants_jet(s, k, grounded, peek_f32(s, 244))
   spend_fuel(s, dt, burning, grounded)
   fell = jump_vel(k, grounded, peek_f32(s, 24)) - g * dt
@@ -4459,7 +4674,7 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   # must agree about it, or a shot leaves from somewhere other than where the
   # person taking it was standing.
   poke_f32(s, 16, px)
-  poke_f32(s, 17, py + 1.75)
+  poke_f32(s, 17, py + 1.75 - crouch_drop() * crouched)
   note_hit(s, dt)
   poke_f32(s, 18, pz)
 
@@ -4920,8 +5135,16 @@ fn zoom_of(s) = if peek_f32(s, 111) < 1.0 then 1.0 else peek_f32(s, 111)
 
 fn look(s: Ptr, aspect: Float) = aimed(s, aspect, kick_at(s), peek_f32(s, 104), fell(s))
 
+# The eye's height is the one `walk` wrote, less whatever the fall is doing to
+# it. It used to be a plain `+ 1.75` here, which is where the crouch went to
+# die: `walk` was lowering slot 17 — the eye every shot leaves from, every tag
+# hangs off and the lamp sits at — and this was building the view matrix from
+# the standing height regardless, so a crouch moved everything about a player
+# except what they could see.
+fn eye_y(s, f) = peek_f32(s, 22) + 1.75 - crouch_drop() * crouch_of(s) - 1.4 * f
+
 fn aimed(s, aspect, k, side, f) =
-  camera(s, peek_f32(s, 21), peek_f32(s, 22) + 1.75 - 1.4 * f, peek_f32(s, 23), peek_f32(s, 19) + k * side * 0.05, clampf(peek_f32(s, 20) + k * 0.075 - 0.45 * f, 0.0 - 1.55, 1.55), k * side * 0.14 + fall_side(s) * 1.3 * f, aspect)
+  camera(s, peek_f32(s, 21), eye_y(s, f), peek_f32(s, 23), peek_f32(s, 19) + k * side * 0.05, clampf(peek_f32(s, 20) + k * 0.075 - 0.45 * f, 0.0 - 1.55, 1.55), k * side * 0.14 + fall_side(s) * 1.3 * f, aspect)
 
 # The view-projection matrix, written straight into the state.
 #

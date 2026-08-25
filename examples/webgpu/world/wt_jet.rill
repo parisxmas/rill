@@ -4,9 +4,11 @@
 # browser predicts — which is the whole reason the pack lives in the valley
 # and not in the page.
 #
-# The key is one key. A press is a jump; the same key held, once the feet are
-# off the ground, is thrust. So a test of the legs has to let go of it, and
-# that is not a detail of the test — it is the control.
+# The key is one key, and which of its two jobs it is doing is decided by how
+# it was pressed: a press is a jump however long it is held, and a second
+# press soon after the first is what lights the pack. So the legs are tested
+# by pressing once and the pack by pressing twice, and the difference between
+# those two runs is the whole of what this file is about.
 import "valley" as v
 
 fn say(what, got, want) =
@@ -27,6 +29,12 @@ fn ground_at(s) = v.ground(v.player_x(s), v.player_z(s))
 fn fresh(s) =
   v.respawn(s)
   run(s, 30, 0, 0.0 - 1000.0)
+  1
+
+# A tap: down for a frame, up for a frame.
+fn tap(s) =
+  run(s, 1, 16, 0.0 - 1000.0)
+  run(s, 1, 0, 0.0 - 1000.0)
   1
 
 # One press, then the key up: the legs alone.
@@ -58,11 +66,22 @@ fn main() =
   say("the same jump on a tenth of it, cm", cm(hop(s)), 1728)
   v.set_gravity(w, 26.0)
 
-  # Held, the pack takes over the moment the feet leave the ground and holds
-  # the climb at six and a half a second until the tank is out.
+  # Held from a single press, the pack stays where it is: this is a jump and
+  # nothing else, whatever the key does afterwards. It is the case the old
+  # gesture got wrong — nobody could clear a rock without taking off.
+  fresh(s)
+  g0 = ground_at(s)
+  held = run(s, 600, 16, 0.0 - 1000.0) - g0
+  say("holding one press is still a jump, cm", cm(held), 166)
+  say("and the tank is untouched", cm(v.jet_fuel(s)), 100)
+
+  # Tapped, then pressed again and held: the pack takes over the moment the
+  # feet are off the ground and holds the climb at six and a half a second
+  # until the tank is out.
   fresh(s)
   g1 = ground_at(s)
-  top = run(s, 180, 16, 0.0 - 1000.0)
+  tap(s)
+  top = run(s, 178, 16, 0.0 - 1000.0)
   say("the pack lifts a pine's worth, m", to_int(top - g1), 15)
   say("and empties the tank", cm(v.jet_fuel(s)), 0)
   say("the pack is out", v.jet_on(s), 0)
@@ -73,18 +92,63 @@ fn main() =
   # what it lands on may be a stone or a crystal it flew up beside.
   say("what goes up comes down", if v.player_y(s) < g1 + 2.0 then 1 else 0, 1)
 
-  # Standing fills it, at half the rate it burned — four and a half seconds
-  # for the whole tank, and nothing at all while falling.
+  # Standing fills it, at a sixth of the rate it burned — thirteen seconds for
+  # the whole tank, and nothing at all while falling. Both halves are asserted:
+  # that four and a half seconds is now a third of a tank rather than all of
+  # it, and that thirteen and a half is the lot.
   say("the tank is all but empty on landing", if v.jet_fuel(s) < 0.1 then 1 else 0, 1)
   run(s, 270, 0, 0.0 - 1000.0)
-  say("standing fills it", cm(v.jet_fuel(s)), 100)
+  # Thirty-four is the arithmetic — four and a half over thirteen and a fifth
+  # — and thirty-three is what it comes to from here, because the frame the
+  # feet touch down on is still a frame of falling and fills nothing.
+  say("four and a half seconds is a third", cm(v.jet_fuel(s)), 33)
+  run(s, 540, 0, 0.0 - 1000.0)
+  say("thirteen and a half fills it", cm(v.jet_fuel(s)), 100)
 
   # A tank that has just run dry does not relight on the first drop back in:
   # a quarter has to be there, or a held key is one frame of thrust for every
   # frame of fall.
   fresh(s)
-  run(s, 180, 16, 0.0 - 1000.0)
+  tap(s)
+  run(s, 178, 16, 0.0 - 1000.0)
   say("dry after the burn", cm(v.jet_fuel(s)), 0)
   run(s, 6, 0, 0.0 - 1000.0)
   say("and a sip is not enough to relight", v.jet_dry(s), 1)
+
+  # And a second tap that comes too late is not a pair, it is two jumps. The
+  # gap is a third of a second; this waits a whole one.
+  fresh(s)
+  g2 = ground_at(s)
+  tap(s)
+  run(s, 60, 0, 0.0 - 1000.0)
+  late = run(s, 300, 16, 0.0 - 1000.0) - g2
+  say("a late second press does not arm it", cm(v.jet_fuel(s)), 100)
+
+  # And what a slow tick makes of the pair. The server walks twenty times a
+  # second on whatever mask arrived last, so a tap two frames long can fall
+  # between two of its ticks — it would see one press where the player made
+  # two, refuse to arm, and pull a flying player back down. So the page sends
+  # the answer rather than the presses: bit ten says the pack is armed, and a
+  # tick landing anywhere inside the burn reads it. Held here with no pair at
+  # all, which is precisely the case the server is left with.
+  fresh(s)
+  run(s, 120, 16 + 1024, 0.0 - 1000.0)
+  say("a told pack lights without a pair", if v.jet_fuel(s) < 0.9 then 1 else 0, 1)
+
+  # And the crouch, which is the other thing one key does to a body.
+  #
+  # It is here because of how it broke: the ease was written as "if the target
+  # is above you go up, otherwise go down", which is right until you arrive —
+  # and then a key still held takes the second branch and slides back. It read
+  # as the whole view shaking, three tenths a frame, for as long as C was
+  # down. So what is asserted is not that it gets there but that it *stays*.
+  fresh(s)
+  run(s, 60, 64, 0.0 - 1000.0)
+  a = cm(v.crouch_of(s))
+  run(s, 60, 64, 0.0 - 1000.0)
+  b = cm(v.crouch_of(s))
+  say("held, it goes all the way down", a, 100)
+  say("and stays there", b, 100)
+  run(s, 60, 0, 0.0 - 1000.0)
+  say("let go, it comes all the way up", cm(v.crouch_of(s)), 0)
   println("done")

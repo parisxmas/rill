@@ -285,6 +285,15 @@ export fn set_gravity(w: Ptr, g: Float) = v.set_gravity(w, g)
 
 export fn jet_fuel(s: Ptr) -> Float = v.jet_fuel(s)
 
+# Whether this browser's own double press has armed the pack. The page puts it
+# on the wire — see `jet_told` in valley.rill — because a tick cannot see an
+# edge that happened between two of them.
+export fn jet_armed_now(s: Ptr) -> Int = v.jet_armed_now(s)
+
+# How far down on one knee, nought to one. The page hands it to the weapon in
+# the hands; the eye it lowers is `walk`'s own business.
+export fn crouch_of(s: Ptr) -> Float = v.crouch_of(s)
+
 export fn jet_on(s: Ptr) -> Int = v.jet_on(s)
 
 export fn jet_dry(s: Ptr) -> Int = v.jet_dry(s)
@@ -387,6 +396,10 @@ export fn hud_strip_size(s: Ptr, i: Int) -> Float = hud.strip_size(peek_ptr(s, 9
 
 export fn hud_strip_weight(s: Ptr, i: Int) -> Float = hud.strip_weight(peek_ptr(s, 95), i)
 
+# Which face a strip is baked in: nought the page's monospace, one the file the
+# bundle carries. See `set_strip_f` in hud.rill.
+export fn hud_strip_font(s: Ptr, i: Int) -> Float = hud.strip_font(peek_ptr(s, 95), i)
+
 # The theme, one float at a time, indexed from its base — colours and layout
 # both. What the numbers mean is written at the top of hud.rill; the point of
 # the export is that they can be changed without touching it.
@@ -413,6 +426,12 @@ export fn hud_frame(s: Ptr, w: Ptr) -> Int =
     poke_f32(h, hud.h_mag_cap(), to_float(if held == 2 then v.ak_full() else v.mag_full()))
     poke_f32(h, hud.h_ak_mags(), to_float(v.ak_mags(s)))
     poke_f32(h, hud.h_rockets(), to_float(v.rockets(s)))
+    # And all three at once, for the inventory: `h_rounds` above is whichever
+    # weapon is up, which is the wrong question for a panel that shows the lot.
+    poke_f32(h, hud.h_inv_rifle(), to_float(v.rounds(s)))
+    poke_f32(h, hud.h_inv_ak(), to_float(v.ak_rounds(s)))
+    poke_f32(h, hud.h_inv_rifle_cap(), to_float(v.mag_full()))
+    poke_f32(h, hud.h_inv_ak_cap(), to_float(v.ak_full()))
     poke_f32(h, hud.h_phase(), to_float(v.match_phase(w)))
     poke_f32(h, hud.h_left(), v.match_left(w))
     poke_f32(h, hud.h_board_left(), v.match_left(w))

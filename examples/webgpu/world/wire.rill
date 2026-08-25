@@ -932,11 +932,24 @@ fn tag_rows(b, h) =
 
   poke_f32(h, hud.h_tag_n(), to_float(rows))
 
+# A name over a head, unless that head has gone down.
+#
+# Crouching is the one thing in this valley that is *for* not being seen, and
+# a name floating over a bush is the loudest thing on the screen — brighter
+# than the body it belongs to and readable at ninety metres, which is further
+# than the figure itself is legible. So the tag goes with the posture: slot
+# seven of the interpolated row is what the server says they are doing, and
+# three is down on one knee.
+#
+# It hides the name and nothing else. The body is still drawn, still lit, and
+# still shot at — this is cover, not invisibility.
+fn crouching(b, o) = to_int(peek_f32(b, o + 7)) == 3
+
 fn tag_row(b, h, o, sl) =
   id = to_int(peek_f32(b, o))
   m = hud.slot_meta(sl)
   poke_f32(h, m, 0.0)
-  n = name_len(b, id)
+  n = if crouching(b, o) then 0 else name_len(b, id)
   if n == 0 then 0
   else
     add_name(b, h, sl, id, 0)

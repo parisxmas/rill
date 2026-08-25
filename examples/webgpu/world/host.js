@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "412";
+const V = "456";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -574,7 +574,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, six decodes —
   // and one for the bundle the assets all arrive in.
-  const TOTAL = 16 + Object.keys(SHADERS).length + TEXTURES.length + 14 + (server ? 1 : 0);
+  const TOTAL = 16 + Object.keys(SHADERS).length + TEXTURES.length + 19 + (server ? 1 : 0);
   let done = 0;
   // Never past the end. This is a count kept by hand of steps taken elsewhere,
   // and the two drift every time something is added — a bar that says 104% is
@@ -809,7 +809,24 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // A developer's handle on the engine, for the console and for nothing else:
   // every state block is reachable through it, which is what debugging a
   // wasm-side game needs and what module scope otherwise forbids.
-  window.rill = { E, get state() { return state; }, get world() { return world; }, get net() { return net; } };
+  // A developer's handle on the engine, and on what the renderer is holding
+  // this frame: every state block is reachable through the first, and `W` and
+  // `T` are what a frame is actually made of — the instance counts each draw
+  // is given and the tier's own numbers. Both are there so a question like
+  // "which of these is costing the milliseconds" can be answered by setting a
+  // count to nought for a second rather than by guessing.
+  window.rill = { E, get state() { return state; }, get world() { return world; },
+                  get net() { return net; }, get W() { return W; }, get T() { return T; },
+                  // Draw a frame on demand, which is the only way to measure
+                  // this renderer honestly. A tab that is not the one in front
+                  // gets no `requestAnimationFrame` at all — Chrome simply
+                  // stops calling it — so every number the HUD shows freezes,
+                  // and a profile taken through the automation tools is a
+                  // profile of a still picture. This drives the same frame the
+                  // clock would have.
+                  frame: (n = 1) => { for (let i = 0; i < n; i++) tick(performance.now()); },
+                  // How long the orders sat blank waiting for the audio to wake.
+                  get briefWait() { return briefWait; } };
   step("world.wasm");
 
   // Every texture, mesh, sound, shader — and this very file — in one
@@ -1155,6 +1172,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // The font stack is the same string the CSS carried, so the letterforms
   // did not change when the DOM went.
   const HUD_FONT = "ui-monospace, SFMono-Regular, Menlo, monospace";
+  // The second face, and the only thing in this HUD not drawn in the page's
+  // own monospace: Share Tech Mono, by Ralph du Carrois, under the SIL Open
+  // Font License — the file is in the bundle and the licence beside it in the
+  // repository. Monospaced on purpose. The briefing types itself out with a
+  // block cursor that has to sit exactly where the next letter will land, and
+  // a proportional face makes that a measurement rather than a multiplication.
+  const TECH_FONT = "ShareTechMono, ui-monospace, monospace";
+  const HUD_FACES = [HUD_FONT, TECH_FONT];
   // Cells 0..94 are ASCII; then the four non-ASCII guests the HUD uses.
   const HUD_CHARS = [...Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)),
                      "·", "→", "†", "…"];
@@ -1166,13 +1191,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // separates them again. Cell 99 carries the strip's advance and padding.
   function bakeHudAtlas(stripDefs) {
     const pad = 3;
-    const rows = stripDefs.map(([size, weight]) => {
+    const rows = stripDefs.map(([size, weight, fam]) => {
       const c = document.createElement("canvas").getContext("2d");
-      c.font = `${weight} ${size * hudDpr}px ${HUD_FONT}`;
+      c.font = `${weight} ${size * hudDpr}px ${HUD_FACES[fam] ?? HUD_FONT}`;
       const adv = c.measureText("M").width / hudDpr;
       const cellW = Math.ceil((adv + pad * 2) * hudDpr);
       const cellH = Math.ceil((size * 1.35 + pad * 2) * hudDpr);
-      return { size, weight, adv, cellW, cellH };
+      return { size, weight, fam, adv, cellW, cellH };
     });
     const texW = 2048;
     // Cells wrap into as many texture rows as a strip needs.
@@ -1191,7 +1216,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     ctx.textBaseline = "top";
     ctx.shadowColor = "rgba(0,0,0,0.95)";
     for (const r of rows) {
-      ctx.font = `${r.weight} ${r.size * hudDpr}px ${HUD_FONT}`;
+      ctx.font = `${r.weight} ${r.size * hudDpr}px ${HUD_FACES[r.fam] ?? HUD_FONT}`;
       // Wider than the CSS's own two and a half. A halo is what makes small
       // text survive a bright hillside behind it, and the atlas is where it
       // has to be decided: the shader can only spread what was baked.
@@ -1245,6 +1270,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} },
     { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
     { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+    { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+    { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: {} },
   ]});
   const hudLayout = [{ arrayStride: 64, stepMode: "instance", attributes: [
     { shaderLocation: 0, offset: 0, format: "float32x4" },
@@ -1263,6 +1290,26 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     multisample: MS,
   }));
   const hudSampler = device.createSampler({ magFilter: "linear", minFilter: "linear" });
+  // The briefing's sheet of glass. Kenney's sci-fi UI pack, CC0 — a hundred
+  // and twenty-eight pixels square with notched corners, drawn nine-sliced so
+  // it stretches to any panel without the notches stretching with it. No mip
+  // chain: it is only ever drawn larger than it is stored.
+  const flatTex = async (name) => {
+    const bmp = await createImageBitmap(new Blob([pakBuf(name)]));
+    const tex = device.createTexture({
+      label: name, size: [bmp.width, bmp.height], format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [bmp.width, bmp.height]);
+    return tex.createView();
+  };
+  const panelView = await flatTex("panel-glass.png");
+  step("panel-glass.png");
+  // The three weapons, drawn by game-icons.net under CC BY 3.0 — skoll's
+  // Winchester and AK47, delapouite's missile launcher — rendered out of
+  // their SVGs into one strip by tools/bake_icons.py.
+  const iconView = await flatTex("weapon-icons.png");
+  step("weapon-icons.png");
   let hudAtlas = null, hudBG = null, hudOff = null;
 
   // Wired after every (re)join: the block is new, the atlas is not.
@@ -1271,13 +1318,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (!hudAtlas) {
       const defs = [];
       for (let i = 0; i < Number(E.hud_strips()); i++) {
-        defs.push([E.hud_strip_size(st, BigInt(i)), E.hud_strip_weight(st, BigInt(i))]);
+        defs.push([E.hud_strip_size(st, BigInt(i)), E.hud_strip_weight(st, BigInt(i)),
+                   Math.round(E.hud_strip_font(st, BigInt(i)))]);
       }
       hudAtlas = bakeHudAtlas(defs);
       hudBG = device.createBindGroup({ layout: hudBGL, entries: [
         { binding: 0, resource: { buffer: hudUni } },
         { binding: 1, resource: hudAtlas.tex.createView() },
         { binding: 2, resource: hudSampler },
+        { binding: 3, resource: panelView },
+        { binding: 4, resource: iconView },
       ]});
       device.queue.writeBuffer(hudUni, 16, new Float32Array([hudAtlas.texW, hudAtlas.texH, 0, 0]));
     }
@@ -1322,9 +1372,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
                warnAt: 9, tookAt: 10, crierAt: 11, over: 12, chat: 13,
                tookMine: 14, crierOut: 15, cycling: 16,
                tallyStand: 29, tallyBroke: 30, tallyAll: 31,
-               rosterN: 32, boardN: 33, tagN: 34, cross: 36 };
+               rosterN: 32, boardN: 33, tagN: 34, cross: 36, brief: 40, briefCur: 41 };
   const HSLOT = { stat: 0, log: 8, roster: 20, board: 36, tag: 52,
-                  warn: 68, took: 69, crier: 70, over1: 71, over2: 72, over3: 73 };
+                  warn: 68, took: 69, crier: 70, over1: 71, over2: 72, over3: 73,
+                  brief0: 74 };
 
   const ZAP_MAX = 16;
   const zapGpu = device.createBuffer({ size: ZAP_MAX * 40, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
@@ -1531,7 +1582,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // The shatter is three glass breaks laid end to end in one file, a second
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
-  let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null;
+  let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null, welcomeBuf = null;
   let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, akBuf = null, akReloadBuf = null, rpgBuf = null, musicStarted = false;
   // Off to begin with. A valley somebody has just walked into should sound
   // like a valley; the theme is something you put on, not something that is
@@ -1613,6 +1664,29 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // rather than a tube leaving a shoulder.
   const rpgSndBytes = pakBuf("rpg-launch.m4a");
   step("rpg-launch.m4a");
+  // The welcome, spoken once and only to somebody who has never been here.
+  // Whether they have is a cookie — see `firstVisit` — and the line plays on
+  // the click that starts the game, because that is the gesture a browser
+  // wants before it will let anything be heard at all.
+  const welcomeBytes = pakBuf("welcome.mp3");
+  step("welcome.mp3");
+  // The briefing's face, out of the bundle and into the page's font list, so
+  // that a canvas can be asked to draw in it when the HUD atlas is baked.
+  //
+  // Awaited here rather than left to load in its own time: the atlas is baked
+  // once, and a face that arrives after the baking is a face nothing is ever
+  // drawn in. If it fails — and this is the only asset the page hands to a
+  // subsystem that may refuse it — the stack behind it is the monospace
+  // everything else uses, so the orders come out in the HUD's own letters
+  // rather than not at all.
+  try {
+    const face = new FontFace("ShareTechMono", pakBuf("share-tech-mono.ttf"));
+    await face.load();
+    document.fonts.add(face);
+  } catch (e) {
+    console.warn("the briefing's face did not load; falling back", e);
+  }
+  step("share-tech-mono.ttf");
   // The last asset is out; the bundle's three megabytes go back to the
   // engine's heap before the valley is built in it.
   E.pak_free(pakP);
@@ -1652,7 +1726,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       step(label);
       return b;
     };
-    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf, akBuf, akReloadBuf, rpgBuf] = await Promise.all([
+    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf, akBuf, akReloadBuf, rpgBuf,
+     welcomeBuf] = await Promise.all([
       one(shotBytes, "decoding rifle-shot"),
       one(breakBytes, "decoding crystal-break"),
       one(blastBytes, "decoding meteor-blast"),
@@ -1664,7 +1739,282 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       one(akSndBytes, "decoding ak-shot"),
       one(akReloadBytes, "decoding ak-reload"),
       one(rpgSndBytes, "decoding rpg-launch"),
+      one(welcomeBytes, "decoding welcome"),
     ]);
+  }
+
+  // ---- the welcome ----------------------------------------------------------
+  //
+  // Half a minute of somebody saying hello, played once in a person's life
+  // rather than once a session — so what remembers it has to outlive the tab.
+  // A cookie does; `sessionStorage` would forget on every reload and
+  // `localStorage` would be per-origin-per-browser with no expiry to reason
+  // about. Ten years is "never again" written in the only unit a cookie has.
+  //
+  // `SameSite=Lax` because nothing about this needs to travel on a request
+  // somebody else's page made, and no `Secure`, because this is served over
+  // plain http while it is being worked on and a Secure cookie would simply
+  // never be set there — which would mean the line played every single time
+  // on the development build and never told anyone why.
+  const SEEN = "valley.seen";
+  const firstVisit = () => !document.cookie.split("; ").some(c => c.startsWith(SEEN + "="));
+  const markVisited = () => {
+    document.cookie = `${SEEN}=1; max-age=${60 * 60 * 24 * 365 * 10}; path=/; SameSite=Lax`;
+  };
+  // Asked once, here, and not at the click: `sayWelcome` sets the cookie, so
+  // by the time the click comes round the answer to "is this their first
+  // time" would already be no.
+  const newcomer = firstVisit();
+  let welcomed = false;
+  // The voice while it is playing, so the left button can stop it.
+  let welcomeSrc = null, welcomeGain = null;
+  // Straight to the destination and at nearly full level: this is speech, and
+  // speech mixed down to where a rifle shot sits is speech nobody makes out.
+  // It does not go through `musicGain`, which starts at nought and is the
+  // player's own switch — the greeting is not the music and must not be
+  // silenced by it being off.
+  //
+  // The cookie is written when the sound actually starts, not when it is
+  // asked for. A browser that has not yet allowed audio would otherwise have
+  // the greeting marked as heard by somebody who heard nothing, and there is
+  // no second chance at a first visit — so if the context will not wake, this
+  // does nothing and the next gesture tries again.
+  async function sayWelcome() {
+    if (welcomed || !welcomeBuf || !audio) return;
+    if (audio.state === "suspended") { try { await audio.resume(); } catch { return; } }
+    if (audio.state !== "running") return;
+    welcomed = true;
+    markVisited();
+    const src = audio.createBufferSource();
+    src.buffer = welcomeBuf;
+    const g = audio.createGain();
+    g.gain.value = 0.9;
+    src.connect(g).connect(audio.destination);
+    src.start();
+    // Kept so the left button can stop it — see `cutBriefing`. The gain goes
+    // with it: a source stopped dead is a click, and the last thing a welcome
+    // should do is make a noise on the way out.
+    welcomeSrc = src;
+    welcomeGain = g;
+    // The clock the words are read off. The context's own, not the page's:
+    // it is the one the sound is actually playing against, so the two cannot
+    // drift apart however the frames go.
+    briefAt = audio.currentTime;
+    // How long the sheet sat there with nothing on it, for the record — see
+    // `briefOpen`. Anything but a few frames means the resume was slow.
+    if (briefOpen >= 0) briefWait = performance.now() / 1000 - briefOpen;
+  }
+
+  // Enough of that. The voice fades over a fifth of a second and the card
+  // goes with it; the cookie stays set, because they were told — they simply
+  // decided they had heard enough, and being made to sit through it a second
+  // time is not what that means.
+  function cutBriefing() {
+    if (welcomeSrc) {
+      const now = audio.currentTime;
+      welcomeGain.gain.cancelScheduledValues(now);
+      welcomeGain.gain.setValueAtTime(welcomeGain.gain.value, now);
+      welcomeGain.gain.linearRampToValueAtTime(0, now + 0.2);
+      try { welcomeSrc.stop(now + 0.25); } catch { /* already done */ }
+      welcomeSrc = null;
+      welcomeGain = null;
+    }
+    endBriefing();
+  }
+
+  // The orders, as they are spoken. Wrapped by hand rather than by a measuring
+  // routine, because where a briefing breaks its lines is a thing to decide,
+  // not to compute: nothing here runs past the edge and no sentence starts on
+  // the last word of a line.
+  const BRIEF = [
+    "YOU HAVE BEEN SENT TO AN UNKNOWN PLANET",
+    "THAT HAS ENTERED THE SOLAR SYSTEM.",
+    "",
+    "YOUR MISSION, ASSIGNED BY THE COMPANY,",
+    "IS TO DESTROY CRYSTALS BELIEVED TO POSE",
+    "A HOSTILE THREAT TO EARTH.",
+    "",
+    "REMEMBER, OTHER COMPANIES HAVE BEEN GIVEN",
+    "THE SAME MISSION, AND YOU MAY ENCOUNTER",
+    "AGENTS FROM RIVAL COMPANIES.",
+    "",
+    "GOOD LUCK.",
+  ];
+  // A letter at a time, so the count that matters is letters. A blank line
+  // costs nothing and is skipped over in no time at all, which is what a
+  // paragraph break should do: it is a breath, not a pause to be typed.
+  const BRIEF_CHARS = BRIEF.reduce((n, l) => n + l.length, 0);
+
+  // Where every letter of the briefing is, as one run: which line and which
+  // column. The typing works in this flat stream and the drawing works in
+  // lines, and this is the one place that knows both.
+  const BRIEF_FLAT = [];
+  BRIEF.forEach((l, li) => { for (let c = 0; c < l.length; c++) BRIEF_FLAT.push([li, c]); });
+
+  // Somewhere the typing is allowed to stop. The end of the text, the start of
+  // a line, or a space — which is to say, never in the middle of a word.
+  //
+  // This is the whole of what keeps a half-typed word off the screen. The
+  // voice pauses ten times in half a minute, for the better part of a second
+  // each; without this the letters stop wherever the pause found them and the
+  // reader is left staring at ENTER with a cursor after it, which reads as
+  // something having gone wrong rather than as somebody drawing breath.
+  const briefStops = new Uint32Array(BRIEF_CHARS + 1);
+  {
+    const isStop = (p) => {
+      if (p >= BRIEF_CHARS) return true;
+      const [li, c] = BRIEF_FLAT[p];
+      return c === 0 || BRIEF[li][c] === " ";
+    };
+    let next = BRIEF_CHARS;
+    for (let p = BRIEF_CHARS; p >= 0; p--) { if (isStop(p)) next = p; briefStops[p] = next; }
+  }
+
+  // Which sentence is spoken when.
+  //
+  // The silences come out of `ffmpeg -af silencedetect=noise=-35dB:d=0.20`,
+  // and the four long ones in the middle of them are where the reading stops
+  // for a full stop — so the clip divides into four sentences and the text
+  // divides into the same four, and each one is typed over its own stretch of
+  // speech rather than all of them over the average.
+  //
+  // The difference is not small and it is not constant, which is what made it
+  // worth doing properly: spread evenly, "GOOD LUCK" was given the seven
+  // tenths of a second its ten letters are worth out of the whole, when the
+  // voice actually spends a second and a fifth on it — and every sentence
+  // before it borrowed a little of that, so the writing arrived later and
+  // later the further in it got. Anchored a sentence at a time, the two
+  // cannot drift: each one starts and finishes where the voice does.
+  const BRIEF_PARTS = [
+    { lines: [0, 1],       said: [[0.00, 2.85], [3.26, 5.37]] },
+    { lines: [3, 4, 5],    said: [[6.25, 7.05], [7.36, 8.80], [9.36, 14.43]] },
+    { lines: [7, 8, 9],    said: [[15.30, 15.96], [16.66, 19.37], [20.02, 21.28], [21.48, 24.30]] },
+    { lines: [11],         said: [[25.10, 26.29]] },
+  ];
+  const BRIEF_END = 26.29;
+  // Each part, worked out once: where its letters start and end in the flat
+  // stream, and how many seconds of speech it has.
+  for (const part of BRIEF_PARTS) {
+    let at = 0;
+    for (let li = 0; li < part.lines[0]; li++) at += BRIEF[li].length;
+    part.from = at;
+    part.to = at + part.lines.reduce((n, li) => n + BRIEF[li].length, 0);
+    part.total = part.said.reduce((n, [a, b]) => n + (b - a), 0);
+    part.start = part.said[0][0];
+  }
+  // How much of one part has been spoken by `t`: its own clock, with its own
+  // silences taken out.
+  const spokenIn = (part, t) => {
+    let s = 0;
+    for (const [a, b] of part.said) { if (t <= a) break; s += Math.min(t, b) - a; }
+    return s;
+  };
+  // And where the writing has got to, in letters.
+  const lettersBy = (t) => {
+    let n = 0;
+    for (const part of BRIEF_PARTS) {
+      if (t <= part.start) break;
+      n = part.from + (part.to - part.from) * Math.min(1, spokenIn(part, t) / part.total);
+    }
+    return n;
+  };
+
+  // Letters a second, once a word has been started. Well above the reading
+  // itself — which averages fourteen — because this is not the pace of the
+  // briefing, it is the pace of finishing the word the briefing has reached.
+  // The pace of the briefing is the voice, and it is in `lettersBy`.
+  const BRIEF_RATE = 40;
+
+  // How far ahead of the voice the typing runs.
+  //
+  // Without it the text lands late, and the reason is worth writing down: a
+  // word's letters are spread over the time that word is being *said*, so the
+  // word is not finished on screen until the voice has finished saying it.
+  // Reading and hearing the same word at the same moment therefore means the
+  // writing has to start first. Half a second is about a word at this pace,
+  // which is what a caption is normally cut to and what stops the two feeling
+  // like two different readings of the same sentence.
+  const BRIEF_LEAD = 0.4;
+
+  // Two clocks, and they are not the same one.
+  //
+  // `briefOpen` is when the card was *asked* for — the page's own clock, set
+  // the instant the button goes down. `briefAt` is when the voice actually
+  // started, on the audio context's clock, which is the only clock the typing
+  // can be run off.
+  //
+  // They are apart because waking an audio context takes as long as it takes:
+  // the browser will not start one until a gesture, and then the resume is a
+  // promise that may resolve in a millisecond or may not. Nothing visible
+  // should be waiting on it. So the sheet comes up on the click, with its
+  // heading and a cursor waiting on the first line, and the words begin when
+  // the voice does — which is also what the thing is: a device coming on, and
+  // then somebody talking.
+  //
+  // The other half of arriving late was the fade, which was six tenths of a
+  // second and is now a quarter: the first words used to be typed while the
+  // card was still coming up, so what you saw first was faint text on faint
+  // glass rather than a screen that had opened.
+  let briefOpen = -1;        // when the card was asked for, on the page clock
+  let briefAt = -1;          // when the reading started, on the audio clock
+  let briefLast = -1;        // that clock at the frame before this one
+  let briefWait = 0;         // and how long the card waited for the voice
+  let briefShown = 0;        // letters on screen, carried across frames
+  let briefDrawn = -1;       // and how many were last written into the slots
+
+  // Called every frame while the orders are up. Everything it decides is a
+  // letter count, a cursor line and a fade; the HUD draws the rest.
+  function stepBriefing() {
+    if (briefOpen < 0 && briefAt < 0) return;
+    // Up on the click, whatever the voice is doing.
+    if (briefAt < 0) {
+      const up = Math.min(1, (performance.now() / 1000 - briefOpen) / 0.25);
+      hudHead(HH.brief, up);
+      hudHead(HH.briefCur, 0);
+      return;
+    }
+    if (!audio) return;
+    const t = audio.currentTime - briefAt;
+    const dt = briefLast < 0 ? 0 : Math.max(0, t - briefLast);
+    briefLast = t;
+    // A second and a half of fade at each end, and then it is gone for good.
+    const a = Math.min(1, t / 0.25) * (1 - Math.min(1, Math.max(0, (t - BRIEF_END) / 1.5)));
+    if (t > BRIEF_END + 1.6) { endBriefing(); return; }
+    hudHead(HH.brief, Math.max(0, a));
+    // Where the voice has got to, rounded on to the end of the word it is in
+    // the middle of, and then typed towards at a steady clip.
+    const want = lettersBy(Math.max(0, t + BRIEF_LEAD));
+    const target = briefStops[Math.min(BRIEF_CHARS, Math.round(want))];
+    briefShown = Math.min(target, briefShown + dt * BRIEF_RATE);
+    const n = Math.floor(briefShown);
+    if (n === briefDrawn) return;
+    briefDrawn = n;
+    let left = n, cur = -1;
+    for (let li = 0; li < BRIEF.length; li++) {
+      const take = Math.max(0, Math.min(BRIEF[li].length, left));
+      // The cursor sits at the end of whatever line is being typed — the first
+      // one that is not yet full. A finished line does not hold it and a line
+      // that has not started does not either, which together mean it steps to
+      // the next line on the letter that fills the last one.
+      if (cur < 0 && take < BRIEF[li].length && BRIEF[li].length > 0) cur = li;
+      left -= take;
+      if (take === 0) hudClear(HSLOT.brief0 + li);
+      else hudSlot(HSLOT.brief0 + li, [[HC.text, BRIEF[li].slice(0, take)]]);
+    }
+    hudHead(HH.briefCur, cur);
+  }
+
+  function endBriefing() {
+    briefOpen = -1;
+    briefAt = -1;
+    briefLast = -1;
+    briefShown = 0;
+    briefDrawn = -1;
+    welcomeSrc = null;
+    welcomeGain = null;
+    hudHead(HH.brief, 0);
+    hudHead(HH.briefCur, -1);
+    for (let i = 0; i < BRIEF.length; i++) hudClear(HSLOT.brief0 + i);
   }
 
   // The gesture only has to wake it up now, and start the one thing that runs
@@ -2634,7 +2984,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   addEventListener("keyup", e => { if (bit[e.code]) keys &= ~bit[e.code]; });
   canvas.addEventListener("click", () => {
     canvas.requestPointerLock();
-    ensureAudio(() => {});     // the first gesture: a browser will start audio on it
+    // Cutting the orders short is the same click that takes the pointer, so
+    // the lock is asked for first and this comes after it: one press both
+    // stops the briefing and puts you in the valley.
+    //
+    // The same cut lives on `mousedown` as well, for the ordinary case where
+    // the pointer is already locked — there it also has to swallow the shot.
+    // Here it does not: with no lock there is no trigger to swallow, and this
+    // is the path a click takes when the browser refused the lock.
+    if (briefOpen >= 0 || briefAt >= 0) { cutBriefing(); return; }
+    // The card, now — before the audio is so much as asked to wake up, which
+    // is the whole point: see the two clocks by `briefOpen`.
+    if (newcomer && !welcomed) briefOpen = performance.now() / 1000;
+    // The first gesture: a browser will start audio on it, and if this is
+    // somebody's first time in the valley it is also when they are greeted.
+    ensureAudio(() => { if (newcomer) sayWelcome(); });
   });
   addEventListener("mousemove", e => {
     if (document.pointerLockElement === canvas) { mdx += e.movementX; mdy += e.movementY; }
@@ -2679,6 +3043,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // left one while it is down.
   addEventListener("mousedown", e => {
     if (document.pointerLockElement !== canvas) return;
+    // The orders are read to you, not at you: the left button cuts them off
+    // and hands the valley over. It swallows that click rather than also
+    // firing, because the button was pressed to stop the briefing and a round
+    // going downrange as well would be a second thing nobody asked for.
+    if (e.button === 0 && (briefOpen >= 0 || briefAt >= 0)) { cutBriefing(); return; }
     if (e.button === 0) { wantShot = true; fireHeld = true; }
     if (e.button === 2) { wantAim = true; e.preventDefault(); }
   });
@@ -2881,7 +3250,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // And the tenth is the lamp, on the same reasoning: state rather than
         // a press, so a dropped packet costs a frame of light and not a round
         // of the two ends disagreeing about whether it is on.
-        net.input(keys | (held << 7) | (torchOn ? 512 : 0), look[19], look[20]);
+        // And the eleventh is the pack, for the same reason again and more
+        // sharply: arming it is a *pair* of presses, and a pair is two edges,
+        // and an edge is exactly what a twenty-a-second tick drops. The page
+        // sees both at sixty and sends the answer — see `jet_told` in
+        // valley.rill.
+        net.input(keys | (held << 7) | (torchOn ? 512 : 0)
+                       | (Number(E.jet_armed_now(state)) ? 1024 : 0),
+                  look[19], look[20]);
       }
       // One call is the whole of what used to be applyEvents + reconcile +
       // the shark + the roster + the tags + the board: the wire drains what
@@ -3166,6 +3542,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     bobPhase += speed * dt * 2.4;
     uf[45] = speed; uf[46] = bobPhase; uf[47] = recoil;
     uf[116] = flash;                      // and the muzzle's own, see `fx`
+    // How far down on one knee, for the weapon in the hands — see `vmCam`.
+    uf[117] = E.crouch_of(state);
     uf.set(rifleBox.subarray(0, 3), 48);  // the rifle's bounding box, to unquantize against
     uf.set(rifleBox.subarray(3, 6), 52);
     uf.set(akBox.subarray(0, 3), 108);    // and the AK's, for its own pipeline
@@ -3357,6 +3735,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       hudHead(HH.tallyStand, standing);
       hudHead(HH.tallyBroke, W.counts.crystals - standing);
       hudHead(HH.tallyAll, W.counts.crystals);
+      // The orders, if they are being read: which words are out, and how far
+      // the card is up. Before the layout runs, so the frame that draws them
+      // is the frame they were decided in.
+      stepBriefing();
       hudCount = Math.min(Number(E.hud_frame(state, world)), HUD_CAP);
       if (hudCount > 0) {
         device.queue.writeBuffer(hudInst, 0,
@@ -3643,7 +4025,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         const [a, b] = new BigInt64Array(qStage.getMappedRange());
         qStage.unmap();
         const ms = Number(b - a) / 1e6;
-        if (ms > 0 && ms < 100) gpuMs = gpuMs * 0.9 + ms * 0.1;
+        if (ms > 0 && ms < 100) {
+          gpuMs = gpuMs * 0.9 + ms * 0.1;
+          // A hook for measuring the renderer against itself. The smoothed
+          // figure is the right one for the HUD and the wrong one to profile
+          // with: it needs a second of frames to answer, and a tab that is not
+          // in front is not producing frames. Set `window.__gpuRaw = []` and
+          // every frame's own number lands in it, to be taken a median of.
+          if (window.__gpuRaw) window.__gpuRaw.push(ms);
+        }
         qPending = false;
       }).catch(() => { qPending = false; });
     }

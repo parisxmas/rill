@@ -1,4 +1,4 @@
-# Stand against a crystal for nine seconds and it bites three times, a tenth
+# Stand against a crystal and it bites every three seconds, a twentieth
 # each, down its own ring — and a browser that was only told about the bite
 # ends with the same ring.
 import "valley" as v
@@ -23,9 +23,12 @@ fn main() =
   poke_f32(s, 23, cz)
   h0 = v.health(s)
   run_ticks(w, 20)
-  println("after 1s at the glass: health " + float_to_str(v.health(s)) + " (want 0.9), zaps " + int_to_str(v.zaps(w)))
+  # Nothing yet: the first bite is not owed until three seconds have passed,
+  # which is what makes leaning on the glass a wager rather than a wall.
+  println("after 1s at the glass: health " + float_to_str(v.health(s)) + " (want 1), zaps " + int_to_str(v.zaps(w)) + " (want 0)")
   run_ticks(w, 130)
-  println("after 7.5s: health " + float_to_str(v.health(s)) + " (want 0.7), zaps " + int_to_str(v.zaps(w)) + ", who " + int_to_str(v.zap_who(w, 0)) + " by crystal " + int_to_str(v.zap_which(w, 0)))
+  # Three seconds and six: two bites at a twentieth each.
+  println("after 7.5s: health " + float_to_str(v.health(s)) + " (want 0.9), zaps " + int_to_str(v.zaps(w)) + ", who " + int_to_str(v.zap_who(w, 0)) + " by crystal " + int_to_str(v.zap_which(w, 0)))
   w2 = v.init(48, 400, 300, 900)
   v.put_zap(w2, v.zap_who(w, 0), v.zap_which(w, 0))
   println("replayed: zaps " + int_to_str(v.zaps(w2)) + ", which " + int_to_str(v.zap_which(w2, 0)))

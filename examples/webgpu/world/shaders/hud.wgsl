@@ -16,6 +16,15 @@
   @group(0) @binding(0) var<uniform> hu: HudU;
   @group(0) @binding(1) var hudAtlas: texture_2d<f32>;
   @group(0) @binding(2) var hudSamp: sampler;
+  // The briefing's panel — a sheet of sci-fi glass with notched corners, drawn
+  // nine-sliced so the notches keep their size whatever the panel is stretched
+  // to. Its own binding rather than a corner of the glyph atlas: the atlas is
+  // baked from a font at load and this is a file, and putting a picture in a
+  // texture that is rebuilt whenever the type changes is a way to lose it.
+  @group(0) @binding(3) var hudPanel: texture_2d<f32>;
+  // The three weapons, side by side in one strip: rifle, AK, launcher. White
+  // silhouettes on nothing, so the HUD tints them like anything else it draws.
+  @group(0) @binding(4) var hudIcons: texture_2d<f32>;
 
   struct VOut {
     @builtin(position) clip: vec4f,
@@ -130,6 +139,26 @@
       }
       let out = v.color.a * inside;
       return vec4f(v.color.rgb * out, out);
+    }
+
+    // One slice of the panel. `uv` arrives already normalized — the nine
+    // pieces are fractions of one small image, and there is no second atlas
+    // size to divide by.
+    if (k == 8u) {
+      let t = textureSampleLevel(hudPanel, hudSamp, v.uv, 0.0);
+      // Tinted rather than drawn as it is: the sheet is a pale grey and this
+      // is a valley at night on the far side of the solar system.
+      let a = t.a * v.color.a;
+      return vec4f(v.color.rgb * t.r * a, a);
+    }
+
+    // One of the weapon silhouettes. `uv` is normalized, as the panel's is:
+    // the strip is three cells across and the instance carries the one it
+    // wants. Only the coverage is read — the colour is the HUD's.
+    if (k == 9u) {
+      let t = textureSampleLevel(hudIcons, hudSamp, v.uv, 0.0);
+      let a = t.a * v.color.a;
+      return vec4f(v.color.rgb * a, a);
     }
 
     // A solid.

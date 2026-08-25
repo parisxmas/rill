@@ -47,3 +47,9 @@ node_modules/
 # The asset bundle is written by pack.rill from the files beside it — the
 # deploy rsyncs it from the working directory and the repo keeps the sources.
 *.rpak
+
+# The page, concatenated and then minified — both written by the packer and
+# build.sh out of world.js, net.js, host.js and boot.js, which are the files
+# that are actually edited and tracked.
+/examples/webgpu/world/page.js
+/examples/webgpu/world/page.min.js

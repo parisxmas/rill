@@ -67,6 +67,10 @@ crystal-zap.mp3
 ak-shot.m4a
 ak-reload.m4a
 rpg-launch.m4a
+welcome.mp3
+share-tech-mono.ttf
+panel-glass.png
+weapon-icons.png
 world.wasm
 shaders/jet.wgsl
 shaders/flower.wgsl
