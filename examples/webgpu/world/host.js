@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=408";   // keep in step with V below
-import { join, WH } from "./net.js?v=408";
+import { load } from "./world.js?v=409";   // keep in step with V below
+import { join, WH } from "./net.js?v=409";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=408";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "408";
+const V = "409";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -459,19 +459,24 @@ function poplarMesh(coarse) {
   // you can count them. A branch's worth per card is what a crown is made of,
   // and it is also fewer cards for more foliage.
   const CU = 0.504, CV = 0.004, SPAN = 0.492;
-  const rings = coarse ? 4 : 9;
-  const perRing = coarse ? 2 : 4;
+  const rings = coarse ? 4 : 14;
+  const perRing = coarse ? 2 : 7;
   for (let i = 0; i < rings; i++) {
     const u = rings === 1 ? 0 : i / (rings - 1);   // 0 at the lowest ring, 1 at the tip
     const y = 1.15 + u * 3.60;
     // Widest at two fifths up, nothing at the very top.
     const lens = 1 - Math.pow(Math.abs(u - 0.40) / 0.62, 1.7);
-    const rad = Math.max(0.06, 0.46 * lens);
-    // Wider than the ring they stand on, so one ring's leaves reach past its
-    // neighbours' and the column reads as a mass with gaps in it rather than
-    // as a spiral staircase of cards.
-    const w = (1.05 + 0.65 * lens) * (coarse ? 2.0 : 1.0);
-    const hgt = (1.05 + 0.60 * lens) * (coarse ? 2.1 : 1.0);
+    const rad = Math.max(0.06, 0.42 * lens);
+    // Half a metre of card, near enough, which is what puts the leaves on it
+    // at five to ten centimetres — a poplar leaf. The first pass had cards
+    // most of two metres across and hung the tree with dinner plates: the
+    // texture was not wrong, the scale it was drawn at was.
+    //
+    // Small cards mean more of them, and more of them is what makes a crown
+    // out of a column: one ring's leaves reach past its neighbours' and the
+    // gaps stop being holes.
+    const w = (0.42 + 0.26 * lens) * (coarse ? 3.6 : 1.0);
+    const hgt = (0.44 + 0.26 * lens) * (coarse ? 3.8 : 1.0);
     for (let j = 0; j < perRing; j++) {
       // Turned ring by ring by an angle that never repeats, so the column
       // does not stack into visible columns of card.
