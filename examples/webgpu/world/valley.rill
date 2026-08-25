@@ -3575,9 +3575,12 @@ fn carve_n() = 170
 
 fn carve_bytes() = 34816
 
-fn carve_q() = 0.02        # metres per unit in a cell's byte
+fn carve_q() = 0.04        # metres per unit in a cell's byte
 
-fn carve_cap() = 150       # three metres, and under three metres is magma
+# Nine metres, and under nine metres is magma. It was three, and three was a
+# floor you tripped into; nine is a shaft you commit to — the pack barely
+# clears it from the bottom. The unit doubled to keep 225 of them in a byte.
+fn carve_cap() = 225
 
 fn magma_v() = 255
 
@@ -3679,8 +3682,8 @@ fn dirty_grow(cb, x, z, m) =
 # tint and the flying chips carry that job now, and the size went back to
 # what the tool is.
 fn crater_add(d) =
-  if d < 0.5 then 50
-  else if d < 1.1 then 18
+  if d < 0.5 then 25
+  else if d < 1.1 then 9
   else 0
 
 fn dig_cell(cb, cx0, cz0, ix, iz) =
@@ -3724,25 +3727,12 @@ fn apply_carve(w, ci) =
   cz0 = ci / carve_n()
   got = dc_rows(cb, cx0, cz0, 0 - 2, 0)
   dirty_grow(cb, cell_x(ci), cell_z(ci), 2.5)
-  if got > 0 then carve_chips(w, ci) else 0
   got
 
-# The moment made visible: four chips of rock thrown up out of the crater,
-# through the same shard pool everything else that breaks uses. Cosmetic,
-# deterministic — both ends run this off the same ring event, so both see
-# the same stones fly.
-fn carve_chips(w, ci) =
-  sb = peek_ptr(w, 69)
-  k0 = to_int(peek_f32(w, 61))
-  x = cell_x(ci)
-  z = cell_z(ci)
-  y = floor_at(w, x, z) + 0.25
-
-  for j in 0..4
-    spawn_shard(sb, k0 + j, x, y, z, 0.55, 0.48, 0.44, 0.40, 1.6, 0.0, to_float(ci * 4 + j))
-
-  poke_f32(w, 61, to_float(k0 + 4))
-  1
+# There used to be four chips of rock thrown out of every crater here. They
+# flew through the shard pool, which draws crystal fragments — and from the
+# swinging end they read as the pick *making* crystals, which is a worse
+# story than no chips at all. The hole and the dug tint carry the feedback.
 
 fn dc_rows(cb, cx0, cz0, dz, acc) =
   if dz > 1 then acc
@@ -3816,7 +3806,7 @@ fn swing_pick(s: Ptr) -> Int =
     poke_f32(cb, carve_ring_at(k), to_float(ci))
     poke_f32(cb, 0, to_float(k + 1))
     got = apply_carve(w, ci)
-    stones = (got + 14) / 15
+    stones = (got + 6) / 7
     poke_f32(s, 251, peek_f32(s, 251) + to_float(stones))
     stones
 

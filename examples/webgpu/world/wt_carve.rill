@@ -23,7 +23,7 @@ fn find_rock(z) =
 
 # Stand at (x, z) looking straight down, one settled frame, then swing.
 fn aim_down(s, x, z) =
-  v.set_at(s, x, v.floor_at(v.wd(s), x, z) + 0.1, z)
+  v.set_at(s, x + 0.5, v.floor_at(v.wd(s), x + 0.5, z + 0.5) + 0.1, z + 0.5)
   poke_f32(s, 19, 0.0)
   poke_f32(s, 20, 0.0 - 1.45)
   v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
@@ -47,7 +47,7 @@ fn main() =
   # Untouched, the carved floor is the base ground everywhere.
   say("before a swing the floor is the ground, cm", cm(v.floor_at(w, rx, rz) - v.height(rx, rz)), 0)
 
-  # One swing: rock out, stones in, floor down. The centre cell loses 50
+  # One swing: rock out, stones in, floor down. The centre cell loses 25
   # units of 0.02 m — the crater formula at distance nought — and the bowl
   # around it a little less, so the bilinear floor under the eye drops close
   # to the centre's 88 cm.
@@ -59,14 +59,14 @@ fn main() =
   say("the floor fell a stone's worth", if cm(fell) > 25 && cm(fell) < 110 then 1 else 0, 1)
   say("one crater on the ring", v.carves(w), 1)
 
-  # Swing until the byte runs out of room: the floor stops at three metres
+  # Swing until the byte runs out of room: the floor stops at nine metres
   # and the cell is magma now, not rock.
-  swings(s, rx, rz, 14, 0)
+  swings(s, rx, rz, 24, 0)
   # Measured at the struck cell's centre, not the lattice corner: the bite is
   # one cell wide now, and a corner is the average of four cells of which the
   # diagonal one is never dug.
   deep = v.height(rx + 0.5, rz + 0.5) - v.floor_at(w, rx + 0.5, rz + 0.5)
-  say("the pit stops at the cap, cm", cm(deep), 300)
+  say("the pit stops at the cap, cm", cm(deep), 900)
   say("and the bottom is magma", if v.magmas(w) > 0 then 1 else 0, 1)
 
   # Standing in it burns: a fifth of a bar a second, from full.
