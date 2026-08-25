@@ -3714,7 +3714,25 @@ fn apply_carve(w, ci) =
   cz0 = ci / carve_n()
   got = dc_rows(cb, cx0, cz0, 0 - 2, 0)
   dirty_grow(cb, cell_x(ci), cell_z(ci), 3.5)
+  if got > 0 then carve_chips(w, ci) else 0
   got
+
+# The moment made visible: four chips of rock thrown up out of the crater,
+# through the same shard pool everything else that breaks uses. Cosmetic,
+# deterministic — both ends run this off the same ring event, so both see
+# the same stones fly.
+fn carve_chips(w, ci) =
+  sb = peek_ptr(w, 69)
+  k0 = to_int(peek_f32(w, 61))
+  x = cell_x(ci)
+  z = cell_z(ci)
+  y = floor_at(w, x, z) + 0.25
+
+  for j in 0..4
+    spawn_shard(sb, k0 + j, x, y, z, 0.55, 0.48, 0.44, 0.40, 1.6, 0.0, to_float(ci * 4 + j))
+
+  poke_f32(w, 61, to_float(k0 + 4))
+  1
 
 fn dc_rows(cb, cx0, cz0, dz, acc) =
   if dz > 2 then acc
@@ -3729,11 +3747,14 @@ fn dc_row(cb, cx0, cz0, iz, dx, acc) =
 # From the eye, along the look, a quarter-metre at a time out to three and a
 # half: the first step under the carved floor is where the pick lands. Rock
 # only — a swing at the meadow hits nothing, loudly.
-# How far the pick reaches. Six metres, not arm's length: the swing lands
-# where the crosshair rests, and a reach shorter than the width of one
-# crater made every second swing a silent miss — which read as the key not
-# working at all.
-fn mine_reach() = 6.0
+# How far the pick reaches. Nine metres, and the number is about slopes, not
+# arms: looking down a hillside the ground falls away almost along the look,
+# and a ray that gives up at six metres passes half a metre over rock the
+# player is staring straight at — every swing a silent miss, which reads as
+# the key not working at all. At nine the everyday stances all land; past it
+# the crosshair stays white, which is the honest answer for aiming at the
+# far side of the valley.
+fn mine_reach() = 9.0
 
 fn mine_spot(w, s, t) =
   if t > mine_reach() then 0 - 1
@@ -3817,6 +3838,19 @@ fn ch(w, ix, iz, st) =
   lz = lattice(iz, st)
   height(lx, lz) - carve_depth(w, lx, lz)
 
+# The colour of rock that has been opened. The band colours are the weathered
+# skin; under a pick the inside shows — darker, warmer, unmistakably worked.
+# It deepens with the cut, and it is decided per corner from the same carve
+# field the height came from, so the paint and the bowl cannot disagree. This
+# is most of what makes one swing *visible*: a metre of depression hides in
+# the rock's own noise, a colour change does not.
+fn dug_tint(w, lx, lz, r0, g0, b0) =
+  d = carve_depth(w, lx, lz)
+  if d < 0.04 then (r0, g0, b0)
+  else
+    k = if d * 0.55 > 0.75 then 0.75 else d * 0.55
+    (r0 + (0.46 - r0) * k, g0 + (0.33 - g0) * k, b0 + (0.24 - b0) * k)
+
 fn rb_corner(w, m, at, n, st, ix0, iz0, j) =
   ix = if ix0 < 0 then 0 else if ix0 > n then n else ix0
   iz = if iz0 < 0 then 0 else if iz0 > n then n else iz0
@@ -3827,7 +3861,16 @@ fn rb_corner(w, m, at, n, st, ix0, iz0, j) =
   sx = (ch(w, b, iz, st) - ch(w, a, iz, st)) / (to_float(b - a) * st)
   sz = (ch(w, ix, d, st) - ch(w, ix, c, st)) / (to_float(d - c) * st)
   il = 1.0 / sqrt(sx * sx + 1.0 + sz * sz)
-  emit_vert(m, at, lattice(ix, st), ch(w, ix, iz, st), lattice(iz, st), (0.0 - sx) * il, il, (0.0 - sz) * il, j)
+  rb_vert(w, m, at, lattice(ix, st), ch(w, ix, iz, st), lattice(iz, st), (0.0 - sx) * il, il, (0.0 - sz) * il, j)
+
+# `emit_vert` computes the band colours from height and slope; this replaces
+# them with the dug tint where the ground has been opened.
+fn rb_vert(w, m, at, x, y, z, nx, ny, nz, j) =
+  emit_vert(m, at, x, y, z, nx, ny, nz, j)
+  (r, g, b) = dug_tint(w, x, z, peek_f32(m, at + 6), peek_f32(m, at + 7), peek_f32(m, at + 8))
+  poke_f32(m, at + 6, r)
+  poke_f32(m, at + 7, g)
+  poke_f32(m, at + 8, b)
 
 fn rb_tri(w, m, at, n, st, ia, ja, ib, jb, ic, jc) =
   j = 0.965 + 0.07 * hash2(floor(lattice(ia, st) * 3.1), floor(lattice(ja, st) * 3.1))
@@ -4124,11 +4167,12 @@ fn fine_spot(w, x, z) = good_spot(height(x, z)) && off_the_glass(w, x, z) && on_
 fn on_magma_xz(w, x, z) =
   if cell_v(cv(w), carve_cell(x, z)) == magma_v() then 1 else 0
 
-# Up to twenty rather than nine. The nine kept everybody off the bare tops
-# back when there was nothing up there to be; the tops are where the rock is
-# now, and a digger should be able to start on it. Twenty still keeps the
-# spawn off the rim wall, which is a ledge, not a place.
-fn good_spot(h) = h > 0.6 && h < 20.0
+# The rock band and nothing else, for now: everybody starts where the pick
+# works, which while the digging is the new thing is where the game is. The
+# meadow spawns can come back when there is a reason to start in the meadow.
+# Twenty still keeps the spawn off the rim wall, which is a ledge, not a
+# place.
+fn good_spot(h) = h > 10.0 && h < 20.0
 
 # ---- and clear of the glass -------------------------------------------------
 #
