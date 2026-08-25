@@ -355,31 +355,64 @@ fn if_felled(w, b, i) = if v.pine_felled(w, i) > 0 then note_gone(b, i) else 0
 
 fn if_broken(w, b, i) = if v.block_broken(w, i) > 0 then note_gone(b, i) else 0
 
-# The carve field for somebody at the door: op, the two cursors, then
-# (value, run) pairs over all 28900 cells. An untouched valley is one pair —
-# three bytes — and a cratered one grows only where it was dug.
+# The carve field for somebody at the door: op, the two cursors, then one
+# entry per dug 16 x 16 patch — the engine keeps the field as pages and this
+# walks only the pages that exist. Each entry is (u8 patch, u8 n) and either
+# n sparse (cell, level) byte pairs or, past 64 dug cells, the page raw as
+# 128 nibble bytes, whichever is smaller. An untouched valley is nine bytes.
 fn carve_field_msg(w) =
   b = strbuf()
   put_u8(b, op_carvefield())
   put_u32(b, v.carves(w))
   put_u32(b, v.built(w))
-  cf_write(w, b, 0)
+  cf_pages(w, b, 0)
   strbuf_str(b)
 
-fn cf_write(w, b, i) =
-  if i >= 28900 then 0
+fn cf_pages(w, b, sx) =
+  if sx >= 121 then 0
   else
-    vv = v.carve_byte(w, i)
-    run = cf_run(w, i + 1, vv, 1)
-    put_u8(b, vv)
-    put_u16(b, run)
-    cf_write(w, b, i + run)
+    if v.carve_page_at(w, sx) > 0 then cf_page(w, b, sx) else 0
+    cf_pages(w, b, sx + 1)
 
-fn cf_run(w, i, vv, n) =
-  if n >= 65535 then n
-  else if i >= 28900 then n
-  else if v.carve_byte(w, i) != vv then n
-  else cf_run(w, i + 1, vv, n + 1)
+fn cf_page(w, b, sx) =
+  n = cf_count(w, sx, 0, 0)
+  if n == 0 then 0
+  else if n > 64 then
+    put_u8(b, sx)
+    put_u8(b, 0)
+    cf_raw(w, b, sx, 0)
+  else
+    put_u8(b, sx)
+    put_u8(b, n)
+    cf_sparse(w, b, sx, 0)
+
+fn cf_cell(sx, c) = (sx / 11 * 16 + c / 16) * 170 + sx % 11 * 16 + c % 16
+
+fn cf_ok(sx, c) = sx % 11 * 16 + c % 16 < 170 && sx / 11 * 16 + c / 16 < 170
+
+fn cf_lv(w, sx, c) =
+  if cf_ok(sx, c) then v.carve_byte(w, cf_cell(sx, c)) else 0
+
+fn cf_count(w, sx, c, n) =
+  if c >= 256 then n
+  else cf_count(w, sx, c + 1, if cf_lv(w, sx, c) > 0 then n + 1 else n)
+
+fn cf_raw(w, b, sx, c) =
+  if c >= 256 then 0
+  else
+    put_u8(b, cf_lv(w, sx, c) + cf_lv(w, sx, c + 1) * 16)
+    cf_raw(w, b, sx, c + 2)
+
+fn cf_sparse(w, b, sx, c) =
+  if c >= 256 then 0
+  else
+    if cf_lv(w, sx, c) > 0 then cf_pair(b, c, cf_lv(w, sx, c)) else 0
+    cf_sparse(w, b, sx, c + 1)
+
+fn cf_pair(b, c, lvl) =
+  put_u8(b, c)
+  put_u8(b, lvl)
+  1
 
 fn send_built_list(w, out, k) =
   if k >= v.built(w) then 0
@@ -509,7 +542,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 474
+fn version() = 475
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115

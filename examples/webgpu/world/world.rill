@@ -339,6 +339,10 @@ export fn dirty_at(w: Ptr, j: Int) -> Int = v.dirty_at(w, j)
 # The whole field byte by byte, for the door.
 export fn carve_byte(w: Ptr, i: Int) -> Int = v.carve_byte(w, i)
 
+export fn carve_page_at(w: Ptr, sx: Int) -> Int = v.carve_page_at(w, sx)
+
+export fn carve_pages(w: Ptr) -> Int = v.carve_pages(w)
+
 export fn put_carve_byte(s: Ptr, i: Int, vv: Int) = v.put_carve_byte(s, i, vv)
 
 export fn set_carves(s: Ptr, n: Int) = v.set_carves(s, n)
