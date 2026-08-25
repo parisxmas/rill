@@ -393,27 +393,22 @@ fn cf_pages(w, b, p, end) =
   else
     sx = u16_at(b, p)
     n = u16_at(b, p + 2)
-    if n == 0 then
-      cf_raw(w, b, p + 4, sx, 0)
-      cf_pages(w, b, p + 4 + v.carve_page_cells(), end)
-    else
-      cf_sparse(w, b, p + 4, sx, n)
-      cf_pages(w, b, p + 4 + n * 3, end)
+    cf_cols(w, b, p + 4, sx, n)
+    cf_pages(w, b, p + 4 + n * (2 + v.carve_col_bytes()), end)
 
-fn cf_put(w, sx, c, lvl) =
-  if lvl > 0 then v.ap_carve_page(w, sx, c, lvl) else 0
-
-fn cf_raw(w, b, p, sx, c) =
-  if c >= v.carve_page_cells() then 0
-  else
-    cf_put(w, sx, c, u8_at(b, p + c))
-    cf_raw(w, b, p, sx, c + 1)
-
-fn cf_sparse(w, b, p, sx, n) =
+fn cf_cols(w, b, p, sx, n) =
   if n <= 0 then 0
   else
-    cf_put(w, sx, u16_at(b, p), u8_at(b, p + 2))
-    cf_sparse(w, b, p + 3, sx, n - 1)
+    c = u16_at(b, p)
+    cf_mask(w, b, p + 2, sx, c, 0)
+    v.ap_carve_col_done(w, sx, c)
+    cf_cols(w, b, p + 2 + v.carve_col_bytes(), sx, n - 1)
+
+fn cf_mask(w, b, p, sx, c, i) =
+  if i >= v.carve_col_bytes() then 0
+  else
+    v.ap_carve_col(w, sx, c, i, u8_at(b, p + i))
+    cf_mask(w, b, p, sx, c, i + 1)
 
 # The pocket is not applied to the world — it is this player's own count, and
 # it lands on the block the page reads the HUD from.

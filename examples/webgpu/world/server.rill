@@ -357,10 +357,11 @@ fn if_broken(w, b, i) = if v.block_broken(w, i) > 0 then note_gone(b, i) else 0
 
 # The carve field for somebody at the door: op, the two cursors, then one
 # entry per dug patch — the engine keeps the field as pages and this walks
-# only the pages that exist. Each entry is (u16 patch, u16 n) and either n
-# sparse (u16 cell, u8 level) triples or, once a patch is more than a third
-# dug, its whole page raw, whichever is smaller. An untouched valley is nine
-# bytes and a valley is downloaded in proportion to what was taken out of it.
+# only the pages that exist. A patch entry is (u16 patch, u16 n) and then n
+# columns of (u16 cell, sixteen bytes of mask), which is what a column is
+# now: a bit for every thirty-centimetre slab of it that has been taken out.
+# An untouched valley is nine bytes, a sunk shaft is a few hundred, and a
+# valley is downloaded in proportion to what was dug out of it.
 fn carve_field_msg(w) =
   b = strbuf()
   put_u8(b, op_carvefield())
@@ -377,36 +378,31 @@ fn cf_pages(w, b, sx) =
 
 fn cf_page(w, b, sx) =
   n = cf_count(w, sx, 0, 0)
-  cells = v.carve_page_cells()
   if n == 0 then 0
-  else if n * 3 > cells then
-    put_u16(b, sx)
-    put_u16(b, 0)
-    cf_raw(w, b, sx, 0)
   else
     put_u16(b, sx)
     put_u16(b, n)
-    cf_sparse(w, b, sx, 0)
+    cf_cols(w, b, sx, 0)
 
 fn cf_count(w, sx, c, n) =
   if c >= v.carve_page_cells() then n
-  else cf_count(w, sx, c + 1, if v.carve_page_lv(w, sx, c) > 0 then n + 1 else n)
+  else cf_count(w, sx, c + 1, if v.carve_col_any(w, sx, c) > 0 then n + 1 else n)
 
-fn cf_raw(w, b, sx, c) =
+fn cf_cols(w, b, sx, c) =
   if c >= v.carve_page_cells() then 0
   else
-    put_u8(b, v.carve_page_lv(w, sx, c))
-    cf_raw(w, b, sx, c + 1)
+    if v.carve_col_any(w, sx, c) > 0 then cf_col(w, b, sx, c) else 0
+    cf_cols(w, b, sx, c + 1)
 
-fn cf_sparse(w, b, sx, c) =
-  if c >= v.carve_page_cells() then 0
-  else
-    if v.carve_page_lv(w, sx, c) > 0 then cf_pair(b, c, v.carve_page_lv(w, sx, c)) else 0
-    cf_sparse(w, b, sx, c + 1)
-
-fn cf_pair(b, c, lvl) =
+fn cf_col(w, b, sx, c) =
   put_u16(b, c)
-  put_u8(b, lvl)
+  cf_mask(w, b, sx, c, 0)
+
+fn cf_mask(w, b, sx, c, i) =
+  if i >= v.carve_col_bytes() then 0
+  else
+    put_u8(b, v.carve_col_byte(w, sx, c, i))
+    cf_mask(w, b, sx, c, i + 1)
   1
 
 fn send_built_list(w, out, k) =
@@ -537,7 +533,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 479
+fn version() = 483
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115

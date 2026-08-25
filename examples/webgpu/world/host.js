@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "479";
+const V = "483";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -99,7 +99,7 @@ const SHADERS = {
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
   mark: "common", spark: "common", ak: "common", jet: "common", magma: "common",
-  pick: "common", stonehand: "common",
+  pick: "common", stonehand: "common", rockface: "common",
   flower: "common",
   // The HUD stands alone: it has a uniform block of its own, and giving it
   // `uniforms.wgsl` would declare group 0 binding 0 twice.
@@ -199,6 +199,7 @@ function loadShaders(step, pakText) {
     SHADOW_FIGURE: whole("shadow-figure"),
     SKY: whole("sky"),
     MAGMA: whole("magma"),
+    ROCKFACE: whole("rockface"),
     PICK: whole("pick"),
     STONEHAND: whole("stonehand"),
     WATER: whole("water"),
@@ -1121,6 +1122,19 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const magmaBuf = device.createBuffer({
     size: 512 * 16, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
   let magmaN = 0, magmaSeen = -1;
+  // The inside of the tunnels: one quad per face of rock that has air against
+  // it. A height field cannot draw a roof, so where somebody has cut one the
+  // terrain blanks its own cells and these take over — see `faces_build` in
+  // valley.rill. Eight floats a face, and the engine writes them.
+  const FACE_STRIDE = 32;
+  const faceCap = 60000;
+  const facePipe = pipe("rockface", S.ROCKFACE, [{ arrayStride: FACE_STRIDE, stepMode: "instance", attributes: [
+    { shaderLocation: 0, offset: 0, format: "float32x4" },
+    { shaderLocation: 1, offset: 16, format: "float32x4" },
+  ]}], { cull: "back" });
+  const faceBuf = device.createBuffer({
+    size: faceCap * FACE_STRIDE, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  let faceN = 0;
   const jetBuf = device.createBuffer({
     size: JET_CAP * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
@@ -3784,7 +3798,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // whatever craters arrived this frame — from this player's own pick or
     // off the wire, it cannot tell and does not care — and reports the cell
     // rect; each touched row is one small writeBuffer, not the mountain.
-    if (Number(E.rebake(state))) {
+    const dug = Number(E.rebake(state));
+    if (dug) {
       const n = Math.round(Math.sqrt(W.counts.terrain / 6));
       const ix0 = Number(E.dirty_at(world, 0n)), iz0 = Number(E.dirty_at(world, 1n));
       const ix1 = Number(E.dirty_at(world, 2n)), iz1 = Number(E.dirty_at(world, 3n));
@@ -3793,6 +3808,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         const off = (iz * n + ix0) * 54;
         device.queue.writeBuffer(W.terrainBuf, off * 4,
           new Float32Array(E.memory.buffer, base + off * 4, (ix1 - ix0 + 1) * 54));
+      }
+    }
+    // The tunnels' faces, rebuilt whenever the digging moved. `rebake` has
+    // just told us whether anything did, and it is the same answer.
+    if (dug) {
+      faceN = Math.min(Number(E.faces_build(state)), faceCap);
+      if (faceN) {
+        device.queue.writeBuffer(faceBuf, 0,
+          new Float32Array(E.memory.buffer, Number(E.face_buf(world)), faceN * 8));
       }
     }
     // The magma list only ever grows, so the count is the whole diff.
@@ -3932,6 +3956,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(crystalPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
     pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);
+    if (faceN) {
+      pass.setPipeline(facePipe);
+      pass.setVertexBuffer(0, faceBuf);
+      pass.draw(6, faceN);
+    }
     if (magmaN) {
       pass.setPipeline(magmaPipe);
       pass.setVertexBuffer(0, magmaBuf);

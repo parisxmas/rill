@@ -336,22 +336,52 @@ export fn rebake(s: Ptr) -> Int = v.rebake(s)
 
 export fn dirty_at(w: Ptr, j: Int) -> Int = v.dirty_at(w, j)
 
+# The tunnels' own geometry: one quad per face of rock with air against it,
+# rebuilt whenever the digging has moved and drawn instanced. The height field
+# blanks itself wherever these take over.
+export fn faces_build(s: Ptr) -> Int = v.faces_build(s)
+
+export fn rock_faces(w: Ptr) -> Int = v.rock_faces(w)
+
+export fn face_buf(w: Ptr) -> Ptr = v.face_buf(w)
+
+export fn face_stride() -> Int = v.face_stride()
+
 # The whole field byte by byte, for the door.
-export fn carve_byte(w: Ptr, i: Int) -> Int = v.carve_byte(w, i)
+
 
 export fn carve_page_at(w: Ptr, sx: Int) -> Int = v.carve_page_at(w, sx)
 
 export fn carve_pages(w: Ptr) -> Int = v.carve_pages(w)
 
+# Whether there is anything molten under this spot, which is a question about
+# the valley rather than about the digging: both ends work it out and it never
+# crosses the wire.
+export fn magma_under(x: Float, z: Float) -> Int = if v.magma_under(x, z) then 1 else 0
+
 export fn carve_supers() -> Int = v.carve_supers()
 
 export fn carve_page_cells() -> Int = v.carve_page_cells()
 
-export fn carve_page_lv(w: Ptr, sx: Int, c: Int) -> Int = v.carve_page_lv(w, sx, c)
+# The door speaks in columns and their masks now, sixteen bytes a column.
+export fn carve_col_any(w: Ptr, sx: Int, c: Int) -> Int = v.carve_col_any(w, sx, c)
 
-export fn ap_carve_page(w: Ptr, sx: Int, c: Int, lvl: Int) = v.ap_carve_page(w, sx, c, lvl)
+export fn carve_col_byte(w: Ptr, sx: Int, c: Int, b: Int) -> Int = v.carve_col_byte(w, sx, c, b)
 
-export fn put_carve_byte(s: Ptr, i: Int, vv: Int) = v.put_carve_byte(s, i, vv)
+export fn carve_col_bytes() -> Int = v.carve_col_bytes()
+
+export fn ap_carve_col(w: Ptr, sx: Int, c: Int, b: Int, val: Int) = v.ap_carve_col(w, sx, c, b, val)
+
+export fn ap_carve_col_done(w: Ptr, sx: Int, c: Int) = v.ap_carve_col_done(w, sx, c)
+
+# Rock or air at a point, which is the whole of what the world now is.
+export fn solid_at(w: Ptr, x: Float, y: Float, z: Float) -> Int = v.solid_at(w, x, y, z)
+
+export fn ground_under(w: Ptr, x: Float, y: Float, z: Float) -> Float = v.ground_under(w, x, y, z)
+
+export fn roof_over(w: Ptr, x: Float, y: Float, z: Float) -> Float = v.roof_over(w, x, y, z)
+
+
 
 export fn set_carves(s: Ptr, n: Int) = v.set_carves(s, n)
 

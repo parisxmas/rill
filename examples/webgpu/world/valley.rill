@@ -3423,6 +3423,8 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   # Room for what gets built as well as what was placed: the walls' own
   # blocks first, and `built_cap` more behind them for the players'.
   block_buf = alloc_bytes((block_cap() + built_cap()) * 32)
+  face_buf = alloc_bytes(face_cap() * face_stride() * 4)
+  poke_ptr(s, 85, face_buf)
   carve_buf = alloc_bytes(carve_bytes())
 
   for ci in 0..carve_bytes() / 4
@@ -3609,15 +3611,50 @@ fn carve_bytes() = 3584
 
 fn page_side() = 32
 
-fn page_bytes() = 1024
+# Sixteen bytes a column, because a column is no longer a number — it is a
+# hundred and twenty-eight bits, one for each thirty-centimetre slab of world
+# between four metres under the lake and thirty-four above it, saying whether
+# that slab has been taken out.
+#
+# This is the change that makes it a digging engine rather than a quarrying
+# one. A single depth per column can only ever mean "this whole column is cut
+# down to here": strike a wall at chest height and the only thing the field
+# can express is the column dropping from the top, which is why hitting the
+# rock above you made the ground under you fall away. A bit per slab can say
+# "this bit of the wall is gone and the roof over it is not", and that is a
+# tunnel, an overhang, a doorway and a cave.
+fn vox_bytes() = 16
+
+fn vox_slabs() = 128
+
+fn vox_y0() = 0.0 - 4.0
+
+fn page_bytes() = page_side() * page_side() * vox_bytes()
 
 fn super_n() = 18
 
-# Thirty stones down is nine metres, and under it is magma. A level fits a
-# byte with the magma mark well clear of it at 255.
-fn carve_cap() = 30
+# How far under the original ground the rock can be taken at all. Below this
+# is bedrock: it does not come out, whatever it is struck with.
+fn dig_floor() = 12.0
 
-fn magma_v() = 255
+fn slab_of(y) = to_int(floor((y - vox_y0()) / carve_q()))
+
+fn slab_y(k) = vox_y0() + to_float(k) * carve_q()
+
+# Twelve metres down the rock stops being rock: either it is bedrock, which
+# nothing gets through, or it is the roof of something molten. Which one it is
+# depends on where you are standing — magma used to be the floor under *every*
+# hole in the valley, which made the deepest thing in this world the least
+# interesting. Now most shafts bottom out on stone and stop, and a few break
+# through.
+# Where the molten ground is. A slow field over the valley — patches a good
+# thirty metres across, so it is a place you are in or out of rather than a
+# speckle — thresholded high enough that most of the rock band has plain
+# bedrock under it. Both ends compute it from the same two numbers they
+# already agree about, so nothing about it crosses the wire.
+fn magma_under(x, z) =
+  n = vnoise(x * 0.031 + 17.0, z * 0.031 + 5.0) * 0.7 + vnoise(x * 0.077, z * 0.077 + 23.0) * 0.3
+  n > 0.68
 
 fn magma_cap() = 512
 
@@ -3681,16 +3718,39 @@ fn page_of(cb, sx) =
   if peek_u8(cb, 64 + sx) > 0 then peek_ptr(peek_ptr(cb, 0), sx)
   else page_new(cb, sx)
 
-# A cell's level. The dir byte answers the common case — this patch was never
-# dug — in one read, without touching the page table.
-fn cell_v(cb, i) =
+# One byte of a column's mask. The dir byte answers the common case — this
+# patch was never dug — in one read, without touching the page table.
+fn col_byte(cb, i, b) =
   if i < 0 then 0
   else if peek_u8(cb, 64 + super_of(i)) == 0 then 0
-  else peek_u8(peek_ptr(peek_ptr(cb, 0), super_of(i)), cell_in(i))
+  else peek_u8(peek_ptr(peek_ptr(cb, 0), super_of(i)), cell_in(i) * vox_bytes() + b)
 
-fn cell_put(cb, i, v) =
-  poke_i8(page_of(cb, super_of(i)), cell_in(i), v)
+fn col_put_byte(cb, i, b, val) =
+  poke_i8(page_of(cb, super_of(i)), cell_in(i) * vox_bytes() + b, val)
   1
+
+fn bit_of(k) = if k % 8 == 0 then 1 else if k % 8 == 1 then 2 else if k % 8 == 2 then 4 else if k % 8 == 3 then 8 else if k % 8 == 4 then 16 else if k % 8 == 5 then 32 else if k % 8 == 6 then 64 else 128
+
+# Has the slab `k` of column `i` been taken out?
+fn vox_gone(cb, i, k) =
+  if k < 0 || k >= vox_slabs() then 0
+  else if col_byte(cb, i, k / 8) / bit_of(k) % 2 == 1 then 1 else 0
+
+fn vox_take(cb, i, k) =
+  b = k / 8
+  old = col_byte(cb, i, b)
+  if old / bit_of(k) % 2 == 1 then 0
+  else
+    col_put_byte(cb, i, b, old + bit_of(k))
+    1
+
+# Anything at all out of this column?
+fn col_any(cb, i) = ca_go(cb, i, 0)
+
+fn ca_go(cb, i, b) =
+  if b >= vox_bytes() then 0
+  else if col_byte(cb, i, b) > 0 then 1
+  else ca_go(cb, i, b + 1)
 
 # For the door: which patches have pages, and how many. The server's welcome
 # message walks these instead of the whole lattice.
@@ -3712,15 +3772,93 @@ fn page_cell(sx, c) =
   iz = sx / super_n() * page_side() + c / page_side()
   cell_at(ix, iz)
 
-fn carve_page_lv(w: Ptr, sx: Int, c: Int) -> Int = cell_v(cv(w), page_cell(sx, c))
+# What the door sends: a column's mask, byte by byte, and whether it is worth
+# sending at all.
+fn carve_col_any(w: Ptr, sx: Int, c: Int) -> Int = col_any(cv(w), page_cell(sx, c))
 
-fn ap_carve_page(w: Ptr, sx: Int, c: Int, lvl: Int) = ap_carve_byte(w, page_cell(sx, c), lvl)
+fn carve_col_byte(w: Ptr, sx: Int, c: Int, b: Int) -> Int = col_byte(cv(w), page_cell(sx, c), b)
 
-# A cell's depth in metres: its level, one metre a stone. Magma reads as the
-# cap — the floor stops there.
-fn cell_m(cb, i) =
-  v = cell_v(cb, i)
-  to_float(if v == magma_v() then carve_cap() else v) * carve_q()
+fn ap_carve_col(w: Ptr, sx: Int, c: Int, b: Int, val: Int) =
+  i = page_cell(sx, c)
+  if i < 0 then 0
+  else
+    col_put_byte(cv(w), i, b, val)
+    1
+
+fn carve_col_bytes() -> Int = vox_bytes()
+
+# Once a whole column has arrived, the ground it stands on has to be redrawn.
+fn ap_carve_col_done(w: Ptr, sx: Int, c: Int) =
+  i = page_cell(sx, c)
+  if i < 0 then 0
+  else
+    cb = cv(w)
+    if magma_under(cell_x(i), cell_z(i)) && vox_gone(cb, i, slab_of(height(cell_x(i), cell_z(i)) - dig_floor() + carve_q() * 0.5)) > 0 then note_magma(cb, i) else 0
+    dirty_grow(cb, cell_x(i), cell_z(i), 1.5)
+    1
+
+# ---- what is rock and what is air -------------------------------------------
+#
+# The one question the whole engine asks. Above the original ground: air, and
+# always was. Below the bedrock line: rock, and nothing takes it out. Between
+# the two it is rock unless somebody has taken that slab.
+fn solid_at(w, x, y, z) =
+  h = height(x, z)
+  if y >= h then 0
+  else if y < h - dig_floor() then 1
+  else
+    i = carve_cell(x, z)
+    if i < 0 then 1
+    else if vox_gone(cv(w), i, slab_of(y)) > 0 then 0
+    else 1
+
+fn solid_cell(cb, i, k, h) =
+  y = slab_y(k)
+  if y >= h then 0
+  else if y < h - dig_floor() then 1
+  else if vox_gone(cb, i, k) > 0 then 0
+  else 1
+
+# The top of the rock in a column: the original ground, unless slabs have been
+# taken out of the top of it, in which case the first one still standing.
+fn top_solid(w, x, z) =
+  h = height(x, z)
+  i = carve_cell(x, z)
+  cb = cv(w)
+  if i < 0 then h
+  else if col_any(cb, i) == 0 then h
+  else ts_down(cb, i, h, slab_of(h - 0.001))
+
+fn ts_down(cb, i, h, k) =
+  if k < 0 then h - dig_floor()
+  else if solid_cell(cb, i, k, h) > 0 then slab_y(k + 1)
+  else ts_down(cb, i, h, k - 1)
+
+# What is under your feet: the top of the first rock at or below `y`. This is
+# what a cave is made of — the answer depends on where you are, not only on
+# where you are standing over.
+fn ground_under(w, x, y, z) =
+  h = height(x, z)
+  i = carve_cell(x, z)
+  cb = cv(w)
+  if i < 0 then h
+  else if col_any(cb, i) == 0 then h
+  else if y >= h then top_solid(w, x, z)
+  else ts_down(cb, i, h, slab_of(y - 0.001))
+
+# And what is over your head: the underside of the first rock above `y`, or
+# the sky.
+fn roof_over(w, x, y, z) =
+  h = height(x, z)
+  i = carve_cell(x, z)
+  cb = cv(w)
+  if i < 0 || col_any(cb, i) == 0 || y >= h then 9999.0
+  else ro_up(cb, i, h, slab_of(y) + 1)
+
+fn ro_up(cb, i, h, k) =
+  if k >= vox_slabs() || slab_y(k) >= h then 9999.0
+  else if solid_cell(cb, i, k, h) > 0 then slab_y(k)
+  else ro_up(cb, i, h, k + 1)
 
 # The carved depth under (x, z): the deepest of the four cells around it, and
 # no blending at all.
@@ -3736,7 +3874,10 @@ fn cell_m(cb, i) =
 # uses to decide what a swing hits. Everything that walks, falls, aims and
 # lands reads this, so where you can stand and where you can dig are the same
 # question asked once.
-fn carve_depth(w, x, z) = cell_m(cv(w), carve_cell(x, z))
+# What the terrain mesh draws: how far the *top* of a column has come down.
+# A tunnel under standing rock does not change this at all, which is right —
+# from outside, a hill with a tunnel in it is still a hill.
+fn carve_depth(w, x, z) = height(x, z) - top_solid(w, x, z)
 
 # The deepest cell within `r` of a point. This is for the mesh alone.
 #
@@ -3758,13 +3899,22 @@ fn carve_deep_r(w, x, z, r) =
   cb = cv(w)
   dr_rows(cb, cell_ix(x - r), cell_ix(x + r), cell_ix(z - r), cell_ix(z + r), 0.0)
 
+fn dr_cell(cb, ix, iz) =
+  i = cell_at(ix, iz)
+  if i < 0 || col_any(cb, i) == 0 then 0.0
+  else
+    x = cell_x(i)
+    z = cell_z(i)
+    h = height(x, z)
+    h - ts_down(cb, i, h, slab_of(h - 0.001))
+
 fn dr_rows(cb, x0, x1, iz, z1, best) =
   if iz > z1 then best
   else dr_rows(cb, x0, x1, iz + 1, z1, dr_row(cb, x0, x1, iz, best))
 
 fn dr_row(cb, ix, x1, iz, best) =
   if ix > x1 then best
-  else dr_row(cb, ix + 1, x1, iz, maxf(best, cell_m(cb, cell_at(ix, iz))))
+  else dr_row(cb, ix + 1, x1, iz, maxf(best, dr_cell(cb, ix, iz)))
 
 fn cell_at(ix, iz) =
   if ix < 0 || iz < 0 || ix >= carve_n() || iz >= carve_n() then 0 - 1 else iz * carve_n() + ix
@@ -3810,56 +3960,54 @@ fn dirty_grow(cb, x, z, m) =
 # of how the wire stays small: a bite is four bytes on the ring, and both ends
 # open the same square from them.
 #
-# The bite is a cube four stones on a side: four across, four along, four
-# down. A metre and twenty each way.
+# The bite is a cube four stones on a side: four across, four along and four
+# *down from where it was struck*. That last word is the whole of the
+# difference. It used to be four down from the top of the column, because the
+# column only had a top; strike a wall at chest height and everything above
+# the strike came away too, which from inside a shaft looked like the ground
+# collapsing rather than the wall breaking.
 #
-# One stone could not be dug with. A stone is thirty centimetres, the terrain
-# lattice that draws it is a metre, and a head at standing height wanders a
-# good part of a metre between one swing and the next — so aiming at the same
-# place twice landed the second swing on the stone next door, the hole spread
-# into a saucer, and the floor under the crosshair never moved. Four stones
-# is wider than that wander in every direction, which is what makes a hole
-# a hole: swing at the same spot and the same floor drops a metre and twenty
-# each time, eight swings from standing to the magma.
-#
-# It still pays one stone. What the hillside gives up and what a pocket is
-# owed do not have to agree — most of what comes out of a quarry is spoil —
-# and a wall still costs eight honest swings.
-#
-# Four is even, so the square cannot be centred on the struck stone: it runs
-# one back and two on, which is a choice made once here and made the same way
-# by every end that replays the cell number.
+# Four is even, so the square cannot be centred on the struck stone: across
+# and along it runs one back and two on. Downward it does not straddle at
+# all — the cube hangs from the strike, taking the slab struck and the three
+# under it. A pick bites down from where it lands, and more to the point the
+# rock *above* the strike is exactly what has to stay if a wall is going to
+# open into a tunnel rather than sluice away from the top.
 fn dig_lo() = 0 - 1
 
 fn dig_hi() = 2
 
-fn dig_deep() = 4
+fn dig_dn() = 0 - 3
 
-fn dig_write(cb, i, v) =
-  if v == magma_v() then 0
-  else if v + dig_deep() >= carve_cap() then
-    cell_put(cb, i, magma_v())
-    note_magma(cb, i)
-    1
-  else
-    cell_put(cb, i, v + dig_deep())
-    1
+fn dig_up() = 0
 
-# The square around a struck cell, only where the ground under it is rock —
-# so a swing at the band's edge takes the part of the square that is stone
-# and leaves the meadow alone.
-fn dig_square(cb, ix, iz, dz, got) =
-  if dz > dig_hi() then got
-  else dig_square(cb, ix, iz, dz + 1, got + dig_row(cb, ix, iz + dz, dig_lo(), 0))
-
-fn dig_row(cb, ix, iz, dx, got) =
-  if dx > dig_hi() then got
-  else dig_row(cb, ix, iz, dx + 1, got + dig_one(cb, cell_at(ix + dx, iz)))
-
-fn dig_one(cb, i) =
+# A slab of one column, if there is anything there to take. Bedrock is not,
+# and neither is air.
+fn dig_one(cb, i, k, h) =
   if i < 0 then 0
-  else if height(cell_x(i), cell_z(i)) < rock_line() then 0
-  else dig_write(cb, i, cell_v(cb, i))
+  else if solid_cell(cb, i, k, h) == 0 then 0
+  else
+    got = vox_take(cb, i, k)
+    # The bottom slab of a column is the roof of whatever is under it. Where
+    # the field says something molten, taking it opens the roof.
+    if got > 0 && slab_y(k - 1) < h - dig_floor() && magma_under(cell_x(i), cell_z(i)) then note_magma(cb, i) else 0
+    got
+
+fn dig_col(cb, i, k0, dk, got) =
+  if dk > dig_up() then got
+  else if i < 0 then got
+  else
+    h = height(cell_x(i), cell_z(i))
+    if h < rock_line() then got
+    else dig_col(cb, i, k0, dk + 1, got + dig_one(cb, i, k0 + dk, h))
+
+fn dig_square(cb, ix, iz, k0, dz, got) =
+  if dz > dig_hi() then got
+  else dig_square(cb, ix, iz, k0, dz + 1, got + dig_row(cb, ix, iz + dz, k0, dig_lo(), 0))
+
+fn dig_row(cb, ix, iz, k0, dx, got) =
+  if dx > dig_hi() then got
+  else dig_row(cb, ix, iz, k0, dx + 1, got + dig_col(cb, cell_at(ix + dx, iz), k0, dig_dn(), 0))
 
 # A cell that has just burned through. Once, ever — dig_write only comes this
 # way on the crossing itself — so the list never carries a cell twice.
@@ -3873,24 +4021,40 @@ fn note_magma(cb, i) =
 
 fn magma_cell(w, k) = peek_i32(cv(w), 98 + k)
 
+# Is this column open onto the magma? Its lowest diggable slab gone, and the
+# field saying there is something under it.
+fn col_magma(cb, i) =
+  if i < 0 then 0
+  else
+    x = cell_x(i)
+    z = cell_z(i)
+    if magma_under(x, z) == false then 0
+    else if vox_gone(cb, i, slab_of(height(x, z) - dig_floor() + carve_q() * 0.5)) > 0 then 1
+    else 0
+
 # The bite, from its ring entry. Returns the stones that came out — one, or
 # nought where the cell is already magma or the ground under it is not rock.
 # There used to be four chips of rock thrown out of every crater here. They
 # flew through the shard pool, which draws crystal fragments — and from the
 # swinging end they read as the pick *making* crystals, which is a worse
 # story than no chips at all. The hole and the dug tint carry the feedback.
-fn apply_carve(w, ci) =
+# A bite carries where as well as what: the column and the slab, packed into
+# the one number the ring and the wire already had room for. A cell is under
+# nineteen bits and a slab is seven, which is twenty-six of a thirty-two-bit
+# word — so a swing still costs the wire four bytes and still replays the
+# same way at both ends.
+fn bite_code(i, k) = i * vox_slabs() + k
+
+fn apply_carve(w, code) =
   cb = cv(w)
-  if height(cell_x(ci), cell_z(ci)) < rock_line() then 0
+  ci = code / vox_slabs()
+  k = code % vox_slabs()
+  if ci < 0 || height(cell_x(ci), cell_z(ci)) < rock_line() then 0
   else
-    # One stone in the pocket however many the square gave up.
-    got = if dig_square(cb, ci % carve_n(), ci / carve_n(), dig_lo(), 0) > 0 then 1 else 0
-    # A margin of a metre and a half, not of a cell: the terrain lattice is
-    # metres wide and a thirty-centimetre bite still moves the vertex beside
-    # it, which has to be rebaked or the stone comes out of a picture that
-    # does not change.
-    # A margin that covers the square itself and the lattice vertex beyond
-    # it: sixty centimetres of bite and a metre of terrain grid.
+    # One stone in the pocket however many the cube gave up.
+    got = if dig_square(cb, ci % carve_n(), ci / carve_n(), k, dig_lo(), 0) > 0 then 1 else 0
+    # A margin that covers the cube itself and the lattice vertex beyond it:
+    # sixty centimetres of bite and a metre of terrain grid.
     dirty_grow(cb, cell_x(ci), cell_z(ci), 1.8)
     got
 
@@ -3906,13 +4070,23 @@ fn apply_carve(w, ci) =
 # the key not working at all. At nine the everyday stances all land; past it
 # the crosshair stays white, which is the honest answer for aiming at the
 # far side of the valley.
-# Twelve, and the number is the shaft. A pit stops at nine metres, and
-# someone standing on its rim has their eye most of two metres above the
-# original ground — so a reach of nine could never touch the bottom of a
-# finished shaft, and the last stones of every hole in this valley were
-# unmineable from anywhere you could stand. Twelve reaches the floor of a
-# full-depth pit from its edge with a little to spare.
-fn mine_reach() = 12.0
+# How far the pick reaches: an arm and a haft and a lean into it. Three
+# metres, which is generous for a hand tool and mean compared to what it
+# was.
+#
+# It was twelve, and twelve was a workaround. A pit stops at nine metres, and
+# when a bite was one stone wide nobody could climb down into their own
+# shaft — so the only way to reach the bottom was to stand on the rim and
+# swing at ground four storeys below, which is not a pick, it is a
+# bombardment. A bite is a metre and twenty across now and the digger drops
+# into the hole as it deepens, standing on the floor they are cutting the
+# whole way down. Nothing needs to be struck at a distance any more, so
+# nothing is allowed to be.
+fn mine_reach() = 3.0
+
+# How much head a standing body needs. The eye sits 1.75 up; the crown is a
+# little over it.
+fn stand_tall() = 1.85
 
 # How far down you are allowed to look. It was 1.45 — eighty-three degrees —
 # and eighty-three degrees is not "straight down": the look runs twelve
@@ -3936,10 +4110,16 @@ fn pitch_max() = 1.53
 # steepest hillsides still slipped just out of it at the reach'''s end.
 # Straight down, the closest approach is the floor itself and nothing about
 # the old behaviour changes.
-fn mine_spot(w, s, t0) = ms_walk(w, s, 0.5, 99.0, 0.0)
+# Where the crosshair is pointing, and nothing cleverer than that: walk the
+# look out from the eye a tenth of a metre at a time and stop at the first
+# place that is rock. The first place — not the nearest approach to a floor,
+# which is what it had to be when the world was a height field and "the
+# floor" was the only thing a column had. Now a wall is as strikeable as a
+# floor, and the pick takes what the crosshair is on.
+fn mine_spot(w, s, t0) = ms_walk(w, s, 0.4)
 
-fn ms_walk(w, s, t, bt, bd) =
-  if t > mine_reach() then ms_done(w, s, bt, bd)
+fn ms_walk(w, s, t) =
+  if t > mine_reach() then 0 - 1
   else
     yaw = peek_f32(s, 19)
     pitch = peek_f32(s, 20)
@@ -3947,23 +4127,14 @@ fn ms_walk(w, s, t, bt, bd) =
     x = peek_f32(s, 16) + sin(yaw) * cp * t
     y = peek_f32(s, 17) + sin(pitch) * t
     z = peek_f32(s, 18) - cos(yaw) * cp * t
-    d = y - floor_at(w, x, z)
-    # A tenth of a metre a step, because a cell is three tenths across: a
-    # quarter-metre stride could pass over a cell's whole width and land the
-    # pick in its neighbour.
-    if d <= 0.0 then ms_done(w, s, t, 0.0)
-    else if bt > 98.0 || d < bd then ms_walk(w, s, t + 0.1, t, d)
-    else ms_walk(w, s, t + 0.1, bt, bd)
-
-fn ms_done(w, s, bt, bd) =
-  if bd > 2.2 then 0 - 1
-  else
-    yaw = peek_f32(s, 19)
-    pitch = peek_f32(s, 20)
-    cp = cos(pitch)
-    x = peek_f32(s, 16) + sin(yaw) * cp * bt
-    z = peek_f32(s, 18) - cos(yaw) * cp * bt
-    if height(x, z) >= rock_line() then carve_cell(x, z) else 0 - 1
+    # A tenth of a metre a step, because a stone is three tenths across: a
+    # longer stride could pass clean through one.
+    if solid_at(w, x, y, z) == 0 then ms_walk(w, s, t + 0.1)
+    else if height(x, z) < rock_line() then 0 - 1
+    else if y < height(x, z) - dig_floor() then 0 - 1
+    else
+      i = carve_cell(x, z)
+      if i < 0 then 0 - 1 else bite_code(i, slab_of(y))
 
 # What one swing does, and what it pays. The event goes on the ring whether
 # this is the server deciding or a lone browser being its own server; a
@@ -4000,12 +4171,6 @@ fn carve_ev(w: Ptr, k: Int) -> Int = cr_get(cv(w), k)
 fn stones_of(s: Ptr) -> Int = to_int(peek_f32(s, 251))
 
 fn set_stones(s: Ptr, n: Int) = poke_f32(s, 251, to_float(n))
-
-# The field, for the door: cell i's level, so a late joiner can be handed the
-# valley as dug. The page-walk encoding lives at the wire's edge, not here.
-fn carve_byte(w: Ptr, i: Int) -> Int = cell_v(cv(w), i)
-
-fn put_carve_byte(s: Ptr, i: Int, v: Int) = ap_carve_byte(wd(s), i, v)
 
 fn set_carves(s: Ptr, n: Int) = poke_f32(cv(wd(s)), 2, to_float(n))
 
@@ -4074,8 +4239,22 @@ fn rb_tri(w, m, at, n, st, ia, ja, ib, jb, ic, jc) =
 
 fn rb_cell(w, m, n, st, ix, iz) =
   at = (iz * n + ix) * 54
-  rb_tri(w, m, at, n, st, ix, iz, ix, iz + 1, ix + 1, iz + 1)
-  rb_tri(w, m, at + 27, n, st, ix, iz, ix + 1, iz + 1, ix + 1, iz)
+  # A cell with a roof under it is not the height field's to draw. Written out
+  # as six copies of one corner it has no area, draws nothing, and leaves the
+  # hillside open where the tunnel goes in — which is the only way a mouth in
+  # a cliff can exist at all in a world made of heights.
+  if mcell_roofed(w, st, ix, iz) > 0 then rb_blank(w, m, at, n, st, ix, iz)
+  else
+    rb_tri(w, m, at, n, st, ix, iz, ix, iz + 1, ix + 1, iz + 1)
+    rb_tri(w, m, at + 27, n, st, ix, iz, ix + 1, iz + 1, ix + 1, iz)
+    1
+
+fn rb_blank(w, m, at, n, st, ix, iz) =
+  y = ch(w, ix, iz, st)
+
+  for j in 0..6
+    emit_vert(m, at + j * 9, lattice(ix, st), y, lattice(iz, st), 0.0, 1.0, 0.0, 1.0)
+
   1
 
 fn rb_span(w, m, n, st, ix0, ix1, iz) =
@@ -4121,6 +4300,185 @@ fn rebake(s: Ptr) -> Int =
 
 fn dirty_at(w: Ptr, j: Int) -> Int = to_int(peek_f32(cv(w), 8 + j))
 
+# ---- drawing what the height field cannot -----------------------------------
+#
+# A terrain mesh is a lattice of heights, so it can draw a pit — a pit is
+# just lower ground — and it cannot draw a roof. The moment somebody cuts
+# sideways into a wall and leaves the rock above it standing, there is a
+# surface in this world with rock over it and air under it, and no height
+# anywhere says so.
+#
+# So the tunnels get geometry of their own: one quad per face of rock that
+# has air against it, built here and drawn instanced. And where they do, the
+# terrain mesh has to get out of the way — a height field laid over a tunnel
+# mouth is a ramp of hillside sealing the entrance — so any mesh cell holding
+# a roofed column is written out as zero-area triangles and the faces below
+# take over the drawing of it entirely, its untouched columns included.
+#
+# Only roofed columns pull this in. An open pit is still the height field's
+# to draw, which is both cheaper and free of two surfaces fighting over the
+# same millimetre.
+fn face_cap() = 60000
+
+fn face_stride() = 8
+
+fn rock_faces(w: Ptr) -> Int = to_int(peek_f32(cv(w), 14))
+
+fn face_buf(w) = peek_ptr(w, 85)
+
+fn face_at(w: Ptr, k: Int, j: Int) -> Float = peek_f32(face_buf(w), k * face_stride() + j)
+
+# Is there anywhere in this column with rock over air? That is the whole test
+# for "the height field has lost this one".
+fn col_roofed(cb, i) =
+  if i < 0 || col_any(cb, i) == 0 then 0
+  else
+    h = height(cell_x(i), cell_z(i))
+    cr_go(cb, i, h, slab_of(h - dig_floor()), 0)
+
+fn cr_go(cb, i, h, k, seen) =
+  if k >= vox_slabs() || slab_y(k) >= h then 0
+  else if solid_cell(cb, i, k, h) == 0 then cr_go(cb, i, h, k + 1, 1)
+  else if seen > 0 then 1
+  else cr_go(cb, i, h, k + 1, 0)
+
+# Does any column of this terrain mesh cell have a roof in it?
+fn mcell_roofed(w, st, ix, iz) =
+  cb = cv(w)
+  x0 = lattice(ix, st)
+  z0 = lattice(iz, st)
+  mr_rows(cb, cell_ix(x0), cell_ix(x0 + st), cell_ix(z0), cell_ix(z0 + st))
+
+fn mr_rows(cb, x0, x1, iz, z1) =
+  if iz > z1 then 0
+  else if mr_row(cb, x0, x1, iz) > 0 then 1
+  else mr_rows(cb, x0, x1, iz + 1, z1)
+
+fn mr_row(cb, ix, x1, iz) =
+  if ix > x1 then 0
+  else if col_roofed(cb, cell_at(ix, iz)) > 0 then 1
+  else mr_row(cb, ix + 1, x1, iz)
+
+# ---- the faces themselves ----------------------------------------------------
+#
+# One quad per face of rock with air against it. Six directions, numbered so
+# the shader can build the corners from the number alone: 0 and 1 are the two
+# faces across x, 2 and 3 up and down, 4 and 5 across z. The position written
+# is the low corner of the face.
+fn put_face(w, x, y, z, dir, r, g, b) =
+  cb = cv(w)
+  n = to_int(peek_f32(cb, 14))
+  if n >= face_cap() then 0
+  else
+    at = n * face_stride()
+    fb = face_buf(w)
+    poke_f32(fb, at, x)
+    poke_f32(fb, at + 1, y)
+    poke_f32(fb, at + 2, z)
+    poke_f32(fb, at + 3, to_float(dir))
+    poke_f32(fb, at + 4, r)
+    poke_f32(fb, at + 5, g)
+    poke_f32(fb, at + 6, b)
+    poke_f32(cb, 14, to_float(n + 1))
+    1
+
+# The colour of opened rock. The band colours are the weathered skin; under a
+# pick the inside shows, and a face that has never seen the sky shows it more
+# than one just under the surface does.
+fn face_grey(y, h, up) =
+  d = clampf((h - y) / dig_floor(), 0.0, 1.0)
+  k = 0.62 - d * 0.20
+  (k, k * 0.88, k * 0.74)
+
+# One column's faces. Walks its slabs from the bedrock to the sky and asks, of
+# every solid one, which of its six neighbours is air.
+fn col_faces(w, cb, ix, iz) =
+  i = cell_at(ix, iz)
+  if i < 0 then 0
+  else
+    x = cell_x(i) - carve_q() * 0.5
+    z = cell_z(i) - carve_q() * 0.5
+    h = height(cell_x(i), cell_z(i))
+    cf_slab(w, cb, i, ix, iz, x, z, h, slab_of(h - dig_floor()))
+
+fn cf_slab(w, cb, i, ix, iz, x, z, h, k) =
+  if k >= vox_slabs() || slab_y(k) >= h then 0
+  else
+    if solid_cell(cb, i, k, h) > 0 then cf_sides(w, cb, i, ix, iz, x, z, h, k) else 0
+    cf_slab(w, cb, i, ix, iz, x, z, h, k + 1)
+
+fn cf_sides(w, cb, i, ix, iz, x, z, h, k) =
+  q = carve_q()
+  y = slab_y(k)
+  # The top of the topmost slab is the real ground, not the slab's ceiling:
+  # a column nobody has touched has to meet the terrain mesh exactly where the
+  # terrain mesh puts it, or the seam between the two shows as a step.
+  yt = if slab_y(k + 1) > h then h else slab_y(k + 1)
+  (rt, gt, bt) = face_grey(y, h, 1)
+  if nb_air(cb, ix - 1, iz, k) then put_face(w, x, y, z, 0, rt, gt, bt) else 0
+  if nb_air(cb, ix + 1, iz, k) then put_face(w, x + q, y, z, 1, rt, gt, bt) else 0
+  if nb_air(cb, ix, iz - 1, k) then put_face(w, x, y, z, 4, rt, gt, bt) else 0
+  if nb_air(cb, ix, iz + 1, k) then put_face(w, x, y, z + q, 5, rt, gt, bt) else 0
+  if solid_cell(cb, i, k - 1, h) == 0 then put_face(w, x, y, z, 3, rt, gt, bt) else 0
+  if solid_cell(cb, i, k + 1, h) == 0 || slab_y(k + 1) > h then top_face(w, x, yt, z, h) else 0
+  1
+
+# The top of a column takes the band colour the terrain mesh would have given
+# it, so the ground reads as ground where it is ground and as broken stone
+# where it has been opened.
+fn top_face(w, x, y, z, h) =
+  if h - y < 0.05 then put_face(w, x, y, z, 2, band_r(y, 1.0), band_g(y, 1.0), band_b(y, 1.0))
+  else
+    (r, g, b) = face_grey(y, h, 1)
+    put_face(w, x, y, z, 2, r, g, b)
+
+fn nb_air(cb, ix, iz, k) =
+  i = cell_at(ix, iz)
+  if i < 0 then false
+  else solid_cell(cb, i, k, height(cell_x(i), cell_z(i))) == 0
+
+# Every column of every terrain mesh cell that has lost its roof to a tunnel.
+# The mesh cell is the unit because the mesh cell is what gets blanked, and a
+# blanked cell has to be filled edge to edge — untouched columns included, or
+# the hole in the hillside is a hole in the picture as well.
+fn faces_build(s: Ptr) -> Int =
+  w = wd(s)
+  cb = cv(w)
+  poke_f32(cb, 14, 0.0)
+  n = mesh_n(w)
+  st = cell_step(n)
+  fb_rows(w, cb, n, st, 0)
+  rock_faces(w)
+
+fn fb_rows(w, cb, n, st, iz) =
+  if iz >= n then 0
+  else
+    fb_row(w, cb, n, st, 0, iz)
+    fb_rows(w, cb, n, st, iz + 1)
+
+fn fb_row(w, cb, n, st, ix, iz) =
+  if ix >= n then 0
+  else
+    if mcell_roofed(w, st, ix, iz) > 0 then fb_cell(w, cb, st, ix, iz) else 0
+    fb_row(w, cb, n, st, ix + 1, iz)
+
+fn fb_cell(w, cb, st, ix, iz) =
+  x0 = lattice(ix, st)
+  z0 = lattice(iz, st)
+  fb_cols(w, cb, cell_ix(x0), cell_ix(x0 + st) - 1, cell_ix(z0), cell_ix(z0 + st) - 1)
+
+fn fb_cols(w, cb, x0, x1, iz, z1) =
+  if iz > z1 then 0
+  else
+    fb_colrow(w, cb, x0, x1, iz)
+    fb_cols(w, cb, x0, x1, iz + 1, z1)
+
+fn fb_colrow(w, cb, ix, x1, iz) =
+  if ix > x1 then 0
+  else
+    col_faces(w, cb, ix, iz)
+    fb_colrow(w, cb, ix + 1, x1, iz)
+
 # ---- standing in it ----------------------------------------------------------
 #
 # Magma burns by the cell: your own cell and the four beside it, and only down
@@ -4165,7 +4523,7 @@ fn om_rows(cb, x0, x1, iz, z1) =
 
 fn om_row(cb, ix, x1, iz) =
   if ix > x1 then 0
-  else if cell_v(cb, cell_at(ix, iz)) == magma_v() then 1
+  else if col_magma(cb, cell_at(ix, iz)) > 0 then 1
   else om_row(cb, ix + 1, x1, iz)
 
 fn magma_burn(w, s, py, gnd, dt) =
@@ -4251,13 +4609,6 @@ fn put_built(s: Ptr, x: Float, y: Float, z: Float, yaw: Float) -> Int =
   place_built(wd(s), x, y, z, yaw)
 
 fn ap_built(w: Ptr, x: Float, y: Float, z: Float, yaw: Float) -> Int = place_built(w, x, y, z, yaw)
-
-fn ap_carve_byte(w: Ptr, i: Int, vv: Int) =
-  cb = cv(w)
-  cell_put(cb, i, vv)
-  if vv == magma_v() then note_magma(cb, i) else 0
-  dirty_grow(cb, cell_x(i), cell_z(i), 1.5)
-  1
 
 fn ap_set_carves(w: Ptr, n: Int) = poke_f32(cv(w), 2, to_float(n))
 
@@ -4368,8 +4719,7 @@ fn spawn_try(w, seed, t) =
 
 fn fine_spot(w, x, z) = good_spot(height(x, z)) && off_the_glass(w, x, z) && on_magma_xz(w, x, z) == 0
 
-fn on_magma_xz(w, x, z) =
-  if cell_v(cv(w), carve_cell(x, z)) == magma_v() then 1 else 0
+fn on_magma_xz(w, x, z) = col_magma(cv(w), carve_cell(x, z))
 
 # The rock band and nothing else, for now: everybody starts where the pick
 # works, which while the digging is the new thing is where the game is. The
@@ -5002,6 +5352,7 @@ fn free_world(s: Ptr) =
   free_ptr(peek_ptr(w, 77))
   free_ptr(peek_ptr(w, 81))
   free_ptr(peek_ptr(w, 97))
+  free_ptr(peek_ptr(w, 85))
   free_ptr(w)
 
 # ---- wind -------------------------------------------------------------------
@@ -5460,7 +5811,10 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   collide_walls(s, w)
   px = peek_f32(s, 21)
   pz = peek_f32(s, 23)
-  gnd = floor_at(w, px, pz)
+  # The ground under the feet, not the ground under the map square: in a
+  # world with roofs in it those are different questions, and only the first
+  # one lets somebody stand in a tunnel instead of on the hill above it.
+  gnd = ground_under(w, px, peek_f32(s, 22) + 0.05, pz)
   g = gravity(w)
   grounded = peek_f32(s, 25)
   jet_watch(s, k, dt)
@@ -5469,11 +5823,15 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   fell = jump_vel(k, grounded, peek_f32(s, 24)) - g * dt
   vy = if burning > 0.5 then jet_vy(fell, g, dt) else fell
   py0 = peek_f32(s, 22) + vy * dt
-  py = if py0 < gnd then gnd else py0
+  # And the roof over the head. Rising into rock stops at it — without this
+  # a jump inside a tunnel goes straight up through the hill.
+  roof = roof_over(w, px, peek_f32(s, 22) + 0.05, pz) - stand_tall()
+  pyr = if py0 > roof then roof else py0
+  py = if pyr < gnd then gnd else pyr
   poke_f32(s, 19, yaw)
   poke_f32(s, 20, pitch)
   poke_f32(s, 22, py)
-  poke_f32(s, 24, if py0 < gnd then 0.0 else vy)
+  poke_f32(s, 24, if py0 < gnd then 0.0 else if py0 > roof then 0.0 else vy)
   poke_f32(s, 25, if py0 < gnd then 1.0 else 0.0)
   # Where the eye is, written down rather than left to the camera. The rifle
   # fires from here and a server has no camera to work it out — and the two
