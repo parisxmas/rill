@@ -178,7 +178,7 @@ fn max_players() = 16
 # doing it is somebody else's game. `meteors=on` puts them back.
 fn meteors() = setting_on("meteors", 0)
 
-fn match_secs() = setting_int("match", 600)
+fn match_secs() = setting_int("match", 1800)
 
 fn report_secs() = setting_int("report", 20)
 
@@ -356,10 +356,11 @@ fn if_felled(w, b, i) = if v.pine_felled(w, i) > 0 then note_gone(b, i) else 0
 fn if_broken(w, b, i) = if v.block_broken(w, i) > 0 then note_gone(b, i) else 0
 
 # The carve field for somebody at the door: op, the two cursors, then one
-# entry per dug 16 x 16 patch — the engine keeps the field as pages and this
-# walks only the pages that exist. Each entry is (u8 patch, u8 n) and either
-# n sparse (cell, level) byte pairs or, past 64 dug cells, the page raw as
-# 128 nibble bytes, whichever is smaller. An untouched valley is nine bytes.
+# entry per dug patch — the engine keeps the field as pages and this walks
+# only the pages that exist. Each entry is (u16 patch, u16 n) and either n
+# sparse (u16 cell, u8 level) triples or, once a patch is more than a third
+# dug, its whole page raw, whichever is smaller. An untouched valley is nine
+# bytes and a valley is downloaded in proportion to what was taken out of it.
 fn carve_field_msg(w) =
   b = strbuf()
   put_u8(b, op_carvefield())
@@ -369,48 +370,42 @@ fn carve_field_msg(w) =
   strbuf_str(b)
 
 fn cf_pages(w, b, sx) =
-  if sx >= 121 then 0
+  if sx >= v.carve_supers() then 0
   else
     if v.carve_page_at(w, sx) > 0 then cf_page(w, b, sx) else 0
     cf_pages(w, b, sx + 1)
 
 fn cf_page(w, b, sx) =
   n = cf_count(w, sx, 0, 0)
+  cells = v.carve_page_cells()
   if n == 0 then 0
-  else if n > 64 then
-    put_u8(b, sx)
-    put_u8(b, 0)
+  else if n * 3 > cells then
+    put_u16(b, sx)
+    put_u16(b, 0)
     cf_raw(w, b, sx, 0)
   else
-    put_u8(b, sx)
-    put_u8(b, n)
+    put_u16(b, sx)
+    put_u16(b, n)
     cf_sparse(w, b, sx, 0)
 
-fn cf_cell(sx, c) = (sx / 11 * 16 + c / 16) * 170 + sx % 11 * 16 + c % 16
-
-fn cf_ok(sx, c) = sx % 11 * 16 + c % 16 < 170 && sx / 11 * 16 + c / 16 < 170
-
-fn cf_lv(w, sx, c) =
-  if cf_ok(sx, c) then v.carve_byte(w, cf_cell(sx, c)) else 0
-
 fn cf_count(w, sx, c, n) =
-  if c >= 256 then n
-  else cf_count(w, sx, c + 1, if cf_lv(w, sx, c) > 0 then n + 1 else n)
+  if c >= v.carve_page_cells() then n
+  else cf_count(w, sx, c + 1, if v.carve_page_lv(w, sx, c) > 0 then n + 1 else n)
 
 fn cf_raw(w, b, sx, c) =
-  if c >= 256 then 0
+  if c >= v.carve_page_cells() then 0
   else
-    put_u8(b, cf_lv(w, sx, c) + cf_lv(w, sx, c + 1) * 16)
-    cf_raw(w, b, sx, c + 2)
+    put_u8(b, v.carve_page_lv(w, sx, c))
+    cf_raw(w, b, sx, c + 1)
 
 fn cf_sparse(w, b, sx, c) =
-  if c >= 256 then 0
+  if c >= v.carve_page_cells() then 0
   else
-    if cf_lv(w, sx, c) > 0 then cf_pair(b, c, cf_lv(w, sx, c)) else 0
+    if v.carve_page_lv(w, sx, c) > 0 then cf_pair(b, c, v.carve_page_lv(w, sx, c)) else 0
     cf_sparse(w, b, sx, c + 1)
 
 fn cf_pair(b, c, lvl) =
-  put_u8(b, c)
+  put_u16(b, c)
   put_u8(b, lvl)
   1
 
@@ -542,7 +537,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 475
+fn version() = 476
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -601,6 +596,15 @@ fn f32_at(msg, sc, i) =
 
 # Everything after the opcode byte, for the messages that carry words.
 fn rest_of(msg) = str_sub(msg, 1, str_len(msg) - 1)
+
+# A cell number, which no longer fits the two bytes the other indices use:
+# the field is 568 cells square now that a cell is a wall stone, so a bite is
+# an opcode and four bytes. Still the whole of what a swing costs the wire.
+fn cell_msg(op, i) =
+  b = strbuf()
+  put_u8(b, op)
+  put_u32(b, i)
+  strbuf_str(b)
 
 # The messages that are an opcode and one index, which is most of the ring
 # traffic: a stone, a crystal, a downed meteor.
@@ -1134,7 +1138,7 @@ fn send_carves(w, conns, from) =
   if from >= v.carves(w) then 0 else send_carve(w, conns, from)
 
 fn send_carve(w, conns, k) =
-  broadcast(w, conns, index_msg(op_carve(), v.carve_ev(w, k)))
+  broadcast(w, conns, cell_msg(op_carve(), v.carve_ev(w, k)))
   send_carves(w, conns, k + 1)
 
 fn send_builts(w, conns, from) =

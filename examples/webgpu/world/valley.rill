@@ -3430,9 +3430,9 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
 
   # The page table rides along, its pointer in the buffer's own first slot.
   # Sized for eight-byte pointers on either target, zeroed the same way.
-  page_tab = alloc_bytes(968)
+  page_tab = alloc_bytes(super_n() * super_n() * 8)
 
-  for ci in 0..242
+  for ci in 0..super_n() * super_n() * 2
     poke_i32(page_tab, ci, 0)
 
   poke_ptr(carve_buf, 0, page_tab)
@@ -3555,51 +3555,69 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
 # which is what the walls further down are built back out of.
 #
 # The ground is a height field, so what digging changes is a second field laid
-# over the first: a lattice of one-metre cells across the whole valley, each
-# carrying how many whole stones have been taken out of that metre — nought
-# to nine in a nibble, and fifteen for magma. A swing removes exactly one
-# stone, so the ground carves in flat metre steps, and because both ends run
-# the same base function and replay the same carve events, the two agree
-# about the new ground the way they already agree about the old one.
+# over the first: a lattice of cells across the whole valley, each carrying
+# how many stones have come out of it. A swing takes exactly one, and a stone
+# is a cube of `block_size()` — thirty centimetres, the same stone the walls
+# are built of. That is the whole scale of the thing: what the pick takes out
+# and what a wall is made of are one object, so a hole in the hillside is
+# measured in the units of the courses somebody stacks beside it. A cell was
+# a metre once, which made one swing take twenty-seven stones of hillside in
+# a single blow and made the tool read as a charge rather than a pick.
 #
-# The field is sparse, because the valley mostly is not dug. The 170 x 170
-# cells are grouped into 121 patches of 16 x 16 metres, and a patch has no
-# storage at all until somebody digs in it — then it gets a 128-byte page,
-# allocated on the spot and pointed at from a table. Sixty-four players over
-# a whole match touch a few dozen patches; a pristine valley pays for none.
-# The wire's door message walks the same pages, so what a newcomer downloads
-# is also proportional to what was dug, not to the map.
+# Because both ends run the same base function and replay the same carve
+# events, the two agree about the new ground the way they already agree about
+# the old one.
 #
-# There is a bottom. Nine metres down the nibble runs out of room on purpose,
-# and the cell becomes magma: the floor stops falling, the pit glows, and
-# standing in it burns. A cap with nothing under it would just be a rule; a
-# cap with magma under it is a place.
+# The field is sparse, because the valley mostly is not dug. The 568 x 568
+# cells are grouped into 324 patches of 32 x 32 cells — nine and a half
+# metres square — and a patch has no storage at all until somebody digs in
+# it, when it gets a kilobyte page allocated on the spot and pointed at from
+# a table. Sixty-four players over a whole match touch a few dozen patches; a
+# pristine valley pays for none of them. The wire's door message walks the
+# same pages, so what a newcomer downloads is proportional to what was dug
+# rather than to the size of the map.
+#
+# There is a bottom. Thirty stones down is nine metres, and there the cell
+# becomes magma: the floor stops falling, the pit glows, and standing in it
+# burns. A cap with nothing under it would just be a rule; a cap with magma
+# under it is a place.
 #
 # The buffer at world ptr 84, all offsets in one place:
 #
-#   ptr  0   the page table: 121 pointers, one per 16 x 16 m patch, live
-#            only where the dir below says so
+#   ptr  0   the page table: 324 pointers, one per patch, live only where
+#            the dir below says so
 #   f32  2   how many bites have ever been dug — the carve ring's cursor
 #   f32  3   how many cells have turned to magma
-#   f32  4..7  dirty rect in world metres (minx, minz, maxx, maxz; 4 > 7 clean)
+#   f32  4..7  dirty rect in world metres (minx, minz, maxx, maxz; 4 > 6 empty)
 #   f32  8..11 the same rect in this build's mesh cells, written by rebake
 #   f32  12  how many blocks have ever been built — the build ring's cursor
 #   f32  13  how many pages have been allocated
-#   u8   bytes 64..184        page dir: 1 where a patch has a page
-#   u16  bytes 186..1209      magma list: 512 x cell index
-#   u16  bytes 1210..1401     carve ring: 96 x cell index
-#   f32  351..510             build ring: 32 x (slot, x, y, z, yaw)
+#   u8   bytes 64..387        page dir: 1 where a patch has a page
+#   i32  98..609              magma list: 512 x cell index
+#   i32  610..705             carve ring: 96 x cell index
+#   f32  706..865             build ring: 32 x (slot, x, y, z, yaw)
 
-fn carve_n() = 170
+# One cell is one stone of the wall, and the field is the valley plus the
+# rounding: 568 of them at thirty centimetres is 170.4 m across.
+fn carve_q() = block_size()
 
-fn carve_bytes() = 2048
+fn carve_n() = 568
 
-# Nine metres, and under nine metres is magma. Nine also fits a nibble with
-# the magma mark beside it, which is not a coincidence: the cap, the stone
-# and the cell were sized together.
-fn carve_cap() = 9
+fn carve_org() = 85.2
 
-fn magma_v() = 15
+fn carve_bytes() = 3584
+
+fn page_side() = 32
+
+fn page_bytes() = 1024
+
+fn super_n() = 18
+
+# Thirty stones down is nine metres, and under it is magma. A level fits a
+# byte with the magma mark well clear of it at 255.
+fn carve_cap() = 30
+
+fn magma_v() = 255
 
 fn magma_cap() = 512
 
@@ -3621,42 +3639,37 @@ fn carve_ring() = 96
 
 fn build_ring() = 32
 
-fn carve_ring_at(k) = 1210 + k % carve_ring() * 2
+fn carve_ring_at(k) = 610 + k % carve_ring()
 
-# Two-byte little-endian words, by hand: the field's lists are u16 cells and
-# every place that keeps one goes through this pair.
-fn u16_put(p, at, v) =
-  poke_i8(p, at, v % 256)
-  poke_i8(p, at + 1, v / 256)
+fn cr_put(cb, k, ci) =
+  poke_i32(cb, carve_ring_at(k), ci)
   1
 
-fn u16_get(p, at) = peek_u8(p, at) + peek_u8(p, at + 1) * 256
+fn cr_get(cb, k) = peek_i32(cb, carve_ring_at(k))
 
-fn cr_put(cb, k, ci) = u16_put(cb, carve_ring_at(k), ci)
+fn build_ring_at(k) = 706 + k % build_ring() * 5
 
-fn cr_get(cb, k) = u16_get(cb, carve_ring_at(k))
-
-fn build_ring_at(k) = 351 + k % build_ring() * 5
+# The one place a world metre becomes a cell number. Everything that digs,
+# stands, falls or draws comes through here, so there is one grid rather than
+# two that nearly agree.
+fn cell_ix(v) = to_int(floor((v + carve_org()) / carve_q()))
 
 # A cell by its world position, or -1 outside the field.
-fn carve_cell(x, z) =
-  ix = to_int(floor(x + 85.0))
-  iz = to_int(floor(z + 85.0))
-  if ix < 0 || iz < 0 || ix >= carve_n() || iz >= carve_n() then 0 - 1 else iz * carve_n() + ix
+fn carve_cell(x, z) = cell_at(cell_ix(x), cell_ix(z))
 
-fn cell_x(i) = to_float(i % carve_n()) - 84.5
+fn cell_x(i) = to_float(i % carve_n()) * carve_q() - carve_org() + carve_q() * 0.5
 
-fn cell_z(i) = to_float(i / carve_n()) - 84.5
+fn cell_z(i) = to_float(i / carve_n()) * carve_q() - carve_org() + carve_q() * 0.5
 
-# Which 16 x 16 patch a cell is in, and where inside its page.
-fn super_of(i) = i / 170 / 16 * 11 + i % 170 / 16
+# Which patch a cell is in, and where inside its page.
+fn super_of(i) = i / carve_n() / page_side() * super_n() + i % carve_n() / page_side()
 
-fn cell_in(i) = i / 170 % 16 * 16 + i % 170 % 16
+fn cell_in(i) = i / carve_n() % page_side() * page_side() + i % carve_n() % page_side()
 
 fn page_new(cb, sx) =
-  pg = alloc_bytes(128)
+  pg = alloc_bytes(page_bytes())
 
-  for k in 0..32
+  for k in 0..page_bytes() / 4
     poke_i32(pg, k, 0)
 
   poke_ptr(peek_ptr(cb, 0), sx, pg)
@@ -3673,17 +3686,10 @@ fn page_of(cb, sx) =
 fn cell_v(cb, i) =
   if i < 0 then 0
   else if peek_u8(cb, 64 + super_of(i)) == 0 then 0
-  else
-    pg = peek_ptr(peek_ptr(cb, 0), super_of(i))
-    c = cell_in(i)
-    b = peek_u8(pg, c / 2)
-    if c % 2 == 0 then b % 16 else b / 16
+  else peek_u8(peek_ptr(peek_ptr(cb, 0), super_of(i)), cell_in(i))
 
 fn cell_put(cb, i, v) =
-  pg = page_of(cb, super_of(i))
-  c = cell_in(i)
-  b = peek_u8(pg, c / 2)
-  poke_i8(pg, c / 2, if c % 2 == 0 then b - b % 16 + v else b % 16 + v * 16)
+  poke_i8(page_of(cb, super_of(i)), cell_in(i), v)
   1
 
 # For the door: which patches have pages, and how many. The server's welcome
@@ -3692,11 +3698,29 @@ fn carve_page_at(w: Ptr, sx: Int) -> Int = peek_u8(cv(w), 64 + sx)
 
 fn carve_pages(w: Ptr) -> Int = to_int(peek_f32(cv(w), 13))
 
+# How many patches there are, and how many cells in each: the wire's door
+# message walks both and neither is a number it should be told twice.
+fn carve_supers() -> Int = super_n() * super_n()
+
+fn carve_page_cells() -> Int = page_side() * page_side()
+
+# A cell of a patch, by its number inside the page. The patch grid overhangs
+# the world — 18 x 32 is 576 against 568 cells — so the last columns and rows
+# of the edge patches are outside the valley and answer nought.
+fn page_cell(sx, c) =
+  ix = sx % super_n() * page_side() + c % page_side()
+  iz = sx / super_n() * page_side() + c / page_side()
+  cell_at(ix, iz)
+
+fn carve_page_lv(w: Ptr, sx: Int, c: Int) -> Int = cell_v(cv(w), page_cell(sx, c))
+
+fn ap_carve_page(w: Ptr, sx: Int, c: Int, lvl: Int) = ap_carve_byte(w, page_cell(sx, c), lvl)
+
 # A cell's depth in metres: its level, one metre a stone. Magma reads as the
 # cap — the floor stops there.
 fn cell_m(cb, i) =
   v = cell_v(cb, i)
-  to_float(if v == magma_v() then carve_cap() else v)
+  to_float(if v == magma_v() then carve_cap() else v) * carve_q()
 
 # The carved depth under (x, z): the deepest of the four cells around it, and
 # no blending at all.
@@ -3712,8 +3736,7 @@ fn cell_m(cb, i) =
 # uses to decide what a swing hits. Everything that walks, falls, aims and
 # lands reads this, so where you can stand and where you can dig are the same
 # question asked once.
-fn carve_depth(w, x, z) =
-  cell_m(cv(w), cell_at(to_int(floor(x + 85.0)), to_int(floor(z + 85.0))))
+fn carve_depth(w, x, z) = cell_m(cv(w), carve_cell(x, z))
 
 # The deepest cell within `r` of a point. This is for the mesh alone.
 #
@@ -3733,12 +3756,15 @@ fn carve_depth(w, x, z) =
 # instead of running straight.
 fn carve_deep_r(w, x, z, r) =
   cb = cv(w)
-  x0 = to_int(floor(x - r + 85.0))
-  x1 = to_int(floor(x + r + 85.0))
-  z0 = to_int(floor(z - r + 85.0))
-  z1 = to_int(floor(z + r + 85.0))
-  maxf(maxf(cell_m(cb, cell_at(x0, z0)), cell_m(cb, cell_at(x1, z0))),
-       maxf(cell_m(cb, cell_at(x0, z1)), cell_m(cb, cell_at(x1, z1))))
+  dr_rows(cb, cell_ix(x - r), cell_ix(x + r), cell_ix(z - r), cell_ix(z + r), 0.0)
+
+fn dr_rows(cb, x0, x1, iz, z1, best) =
+  if iz > z1 then best
+  else dr_rows(cb, x0, x1, iz + 1, z1, dr_row(cb, x0, x1, iz, best))
+
+fn dr_row(cb, ix, x1, iz, best) =
+  if ix > x1 then best
+  else dr_row(cb, ix + 1, x1, iz, maxf(best, cell_m(cb, cell_at(ix, iz))))
 
 fn cell_at(ix, iz) =
   if ix < 0 || iz < 0 || ix >= carve_n() || iz >= carve_n() then 0 - 1 else iz * carve_n() + ix
@@ -3802,11 +3828,11 @@ fn note_magma(cb, i) =
   n = to_int(peek_f32(cb, 3))
   if n >= magma_cap() then 0
   else
-    u16_put(cb, 186 + n * 2, i)
+    poke_i32(cb, 98 + n, i)
     poke_f32(cb, 3, to_float(n + 1))
     1
 
-fn magma_cell(w, k) = u16_get(cv(w), 186 + k * 2)
+fn magma_cell(w, k) = peek_i32(cv(w), 98 + k)
 
 # The bite, from its ring entry. Returns the stones that came out — one, or
 # nought where the cell is already magma or the ground under it is not rock.
@@ -3819,7 +3845,11 @@ fn apply_carve(w, ci) =
   if height(cell_x(ci), cell_z(ci)) < rock_line() then 0
   else
     got = dig_write(cb, ci, cell_v(cb, ci))
-    dirty_grow(cb, cell_x(ci), cell_z(ci), 1.6)
+    # A margin of a metre and a half, not of a cell: the terrain lattice is
+    # metres wide and a thirty-centimetre bite still moves the vertex beside
+    # it, which has to be rebaked or the stone comes out of a picture that
+    # does not change.
+    dirty_grow(cb, cell_x(ci), cell_z(ci), 1.5)
     got
 
 # ---- the swing ---------------------------------------------------------------
@@ -3834,7 +3864,24 @@ fn apply_carve(w, ci) =
 # the key not working at all. At nine the everyday stances all land; past it
 # the crosshair stays white, which is the honest answer for aiming at the
 # far side of the valley.
-fn mine_reach() = 9.0
+# Twelve, and the number is the shaft. A pit stops at nine metres, and
+# someone standing on its rim has their eye most of two metres above the
+# original ground — so a reach of nine could never touch the bottom of a
+# finished shaft, and the last stones of every hole in this valley were
+# unmineable from anywhere you could stand. Twelve reaches the floor of a
+# full-depth pit from its edge with a little to spare.
+fn mine_reach() = 12.0
+
+# How far down you are allowed to look. It was 1.45 — eighty-three degrees —
+# and eighty-three degrees is not "straight down": the look runs twelve
+# centimetres sideways for every metre it runs deep. A stone is thirty
+# centimetres wide, so a shaft cut from one stance walked out of its own
+# column after a couple of metres and the pick started eating the stone next
+# door instead of the one it was on. At 1.53 the drift is four centimetres a
+# metre, which keeps a swing in its column the whole depth of a pit, and it
+# is still short of the pole where a camera's up-vector stops meaning
+# anything.
+fn pitch_max() = 1.53
 
 # The landing rule: the point along the look where the ray runs closest to
 # the ground, provided it comes within arm's reach there. Not "where the ray
@@ -3847,7 +3894,7 @@ fn mine_reach() = 9.0
 # steepest hillsides still slipped just out of it at the reach'''s end.
 # Straight down, the closest approach is the floor itself and nothing about
 # the old behaviour changes.
-fn mine_spot(w, s, t0) = ms_walk(w, s, 0.5, 9.0, 0.0)
+fn mine_spot(w, s, t0) = ms_walk(w, s, 0.5, 99.0, 0.0)
 
 fn ms_walk(w, s, t, bt, bd) =
   if t > mine_reach() then ms_done(w, s, bt, bd)
@@ -3859,9 +3906,12 @@ fn ms_walk(w, s, t, bt, bd) =
     y = peek_f32(s, 17) + sin(pitch) * t
     z = peek_f32(s, 18) - cos(yaw) * cp * t
     d = y - floor_at(w, x, z)
+    # A tenth of a metre a step, because a cell is three tenths across: a
+    # quarter-metre stride could pass over a cell's whole width and land the
+    # pick in its neighbour.
     if d <= 0.0 then ms_done(w, s, t, 0.0)
-    else if bt > 8.9 || d < bd then ms_walk(w, s, t + 0.25, t, d)
-    else ms_walk(w, s, t + 0.25, bt, bd)
+    else if bt > 98.0 || d < bd then ms_walk(w, s, t + 0.1, t, d)
+    else ms_walk(w, s, t + 0.1, bt, bd)
 
 fn ms_done(w, s, bt, bd) =
   if bd > 2.2 then 0 - 1
@@ -3885,7 +3935,10 @@ fn swing_pick(s: Ptr) -> Int =
     k = to_int(peek_f32(cb, 2))
     cr_put(cb, k, ci)
     poke_f32(cb, 2, to_float(k + 1))
-    stones = apply_carve(w, ci) * 9
+    # One stone a swing, because one swing is one stone: the cell it takes
+    # out is the cube a wall is built of, so what goes in the pocket is the
+    # thing itself rather than a conversion.
+    stones = apply_carve(w, ci)
     poke_f32(s, 251, peek_f32(s, 251) + to_float(stones))
     stones
 
@@ -4053,18 +4106,25 @@ fn build_used(s: Ptr) -> Int = if hosted(wd(s)) > 0 then 0 else try_build(s)
 
 fn magma_bite() = 0.22
 
+# Magma within a metre of where you stand, in any direction. By the metre
+# rather than by the cell: cells are thirty centimetres now, so "mine and the
+# four beside it" would be a bath you could stand in the middle of and stay
+# dry.
 fn on_magma(w, s, py) =
   cb = cv(w)
   x = peek_f32(s, 21)
   z = peek_f32(s, 23)
-  ix = to_int(floor(x + 85.0))
-  iz = to_int(floor(z + 85.0))
-  if cell_v(cb, cell_at(ix, iz)) == magma_v() then 1
-  else if cell_v(cb, cell_at(ix + 1, iz)) == magma_v() then 1
-  else if cell_v(cb, cell_at(ix - 1, iz)) == magma_v() then 1
-  else if cell_v(cb, cell_at(ix, iz + 1)) == magma_v() then 1
-  else if cell_v(cb, cell_at(ix, iz - 1)) == magma_v() then 1
-  else 0
+  om_rows(cb, cell_ix(x - 1.0), cell_ix(x + 1.0), cell_ix(z - 1.0), cell_ix(z + 1.0))
+
+fn om_rows(cb, x0, x1, iz, z1) =
+  if iz > z1 then 0
+  else if om_row(cb, x0, x1, iz) > 0 then 1
+  else om_rows(cb, x0, x1, iz + 1, z1)
+
+fn om_row(cb, ix, x1, iz) =
+  if ix > x1 then 0
+  else if cell_v(cb, cell_at(ix, iz)) == magma_v() then 1
+  else om_row(cb, ix + 1, x1, iz)
 
 fn magma_burn(w, s, py, gnd, dt) =
   if on_magma(w, s, py) == 0 then 0
@@ -4509,7 +4569,7 @@ fn player_pitch(s: Ptr) -> Float = peek_f32(s, 20)
 # `sin` and `cos` do the rest.
 fn set_look(s: Ptr, yaw: Float, pitch: Float) =
   poke_f32(s, 19, clamped(yaw, 0.0 - 100.0, 100.0))
-  poke_f32(s, 20, clamped(pitch, 0.0 - 1.45, 1.45))
+  poke_f32(s, 20, clamped(pitch, 0.0 - pitch_max(), pitch_max()))
   1
 
 fn set_at(s: Ptr, x: Float, y: Float, z: Float) =
@@ -5312,7 +5372,7 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   live = 1.0 - dead
   k = if dead > 0.5 then 0 else keys
   yaw = peek_f32(s, 19) + mdx * look_per_pixel() * live
-  pitch = clampf(peek_f32(s, 20) - mdy * look_per_pixel() * live, 0.0 - 1.45, 1.45)
+  pitch = clampf(peek_f32(s, 20) - mdy * look_per_pixel() * live, 0.0 - pitch_max(), pitch_max())
   fx = sin(yaw)
   fz = 0.0 - cos(yaw)
   wx = walk_axis(k, 1, 2) * fx + walk_axis(k, 8, 4) * (0.0 - fz)
@@ -5396,8 +5456,10 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
 # How long a round is, and how long the board is up afterwards. On the world
 # rather than as constants, because a server is told them on the command line
 # and a browser alone in its valley should be able to differ. Nought means
-# nobody said, which is the ten minutes and twenty seconds it always was.
-fn match_len(w) = if peek_f32(w, 126) > 0.5 then peek_f32(w, 126) else 600.0
+# nobody said, which is half an hour and twenty seconds. It was ten minutes,
+# and ten minutes was a round of shooting; a valley you can quarry wants
+# time to quarry it in.
+fn match_len(w) = if peek_f32(w, 126) > 0.5 then peek_f32(w, 126) else 1800.0
 
 fn report_len(w) = if peek_f32(w, 127) > 0.5 then peek_f32(w, 127) else 20.0
 

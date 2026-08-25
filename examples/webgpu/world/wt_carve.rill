@@ -24,22 +24,70 @@ fn find_rock_from(x0, z) =
   x = rocky(x0, z)
   if x > 0.0 - 999.0 then (x, z) else find_rock_from(x0, z + 3.0)
 
-# Stand at (x, z) looking straight down, one settled frame, then swing.
-fn aim_down(s, x, z) =
-  v.set_at(s, x + 0.5, v.floor_at(v.wd(s), x + 0.5, z + 0.5) + 0.1, z + 0.5)
+# Stand on the middle of the cell (x, z) falls in, looking dead down, one
+# settled frame, then swing.
+#
+# Dead down, not nearly: a cell is thirty centimetres across and a look four
+# degrees off vertical wanders a whole cell sideways over the couple of
+# metres to the floor, so "nearly down" digs the stone next door. And the
+# middle of the cell rather than the point asked for, because a test that
+# stands on a cell's edge is a test about floating point.
+fn cell_mid_x(x, z) = v.cell_x(v.carve_cell(x, z))
+
+fn cell_mid_z(x, z) = v.cell_z(v.carve_cell(x, z))
+
+# The cell the last swing actually took. Which is not the cell the feet are
+# on: the ray leaves the eye, and a head stands the better part of a stone's
+# width from where the boots are. That is the pick landing under the
+# crosshair, which is what it should do — so what a test measures is the
+# stone that came out, read off the ring, rather than the one it guessed.
+fn last_cell(w) = v.carve_ev(w, v.carves(w) - 1)
+
+fn aim_down(s, x0, z0) =
+  x = cell_mid_x(x0, z0)
+  z = cell_mid_z(x0, z0)
+  v.set_at(s, x, v.floor_at(v.wd(s), x, z) + 0.1, z)
   poke_f32(s, 19, 0.0)
-  poke_f32(s, 20, 0.0 - 1.45)
+  poke_f32(s, 20, 0.0 - v.pitch_max())
   v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
   1
 
-# Each swing from down in the pit, the way a digger actually digs: the pick
-# reaches three and a half metres, and a three-metre hole is dug from inside
-# it, not from the rim.
+# Standing still and swinging, which is how a shaft gets dug. Take the stance
+# once and leave it: the ray leaves the eye, and re-planting the feet between
+# swings — on a floor that is dropping as you cut it — walks the eye about
+# and the crosshair with it, so what came out was a wide scrape rather than a
+# shaft. A player who holds still cuts one stone all the way down.
 fn swings(s, x, z, n, acc) =
+  aim_down(s, x, z)
+  swing_on(s, n, acc)
+
+fn swing_on(s, n, acc) =
   if n == 0 then acc
+  else swing_on(s, n - 1, acc + v.swing_pick(s))
+
+# Sinking a pit: a three-by-three floor of stones, one course at a time,
+# standing on the floor you are cutting and dropping into it as it goes. This
+# is the whole mining loop — a single stone's shaft is narrower than a body
+# and cannot be followed down.
+fn sink(s, x, z, courses) =
+  if courses == 0 then 0
   else
-    aim_down(s, x, z)
-    swings(s, x, z, n - 1, acc + v.swing_pick(s))
+    course(s, x, z, 0)
+    settle(s, 30)
+    sink(s, x, z, courses - 1)
+
+fn course(s, x, z, k) =
+  if k >= 9 then 0
+  else
+    q = v.carve_q()
+    dig_cell_deep(s, x + to_float(k % 3 - 1) * q, z + to_float(k / 3 - 1) * q, 1)
+    course(s, x, z, k + 1)
+
+fn settle(s, n) =
+  if n == 0 then 0
+  else
+    v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
+    settle(s, n - 1)
 
 # The lowest terrain vertex within half a metre of (x, z), or a big number if
 # the mesh has none there. The mesh is 54 floats a cell, nine a vertex:
@@ -55,25 +103,31 @@ fn mesh_low(m, i, n, x, z, best) =
 
 fn absf(x) = if x < 0.0 then 0.0 - x else x
 
-fn dig_cell_deep(s, x, z, n) =
-  if n == 0 then 0
+# The door's way: patch by patch, cell by cell inside the page, which is the
+# only shape the welcome message speaks in.
+fn hand_page(w, s, sx, c) =
+  if c >= v.carve_page_cells() then 0
   else
-    aim_down(s, x, z)
-    v.swing_pick(s)
-    dig_cell_deep(s, x, z, n - 1)
+    lv = v.carve_page_lv(w, sx, c)
+    if lv > 0 then v.ap_carve_page(v.wd(s), sx, c, lv) else 0
+    hand_page(w, s, sx, c + 1)
 
 # How many of six cells in a line came out dug, and how deep the deepest is.
 fn trench_len(w, x, z, i, n) =
   if i >= 6 then n
-  else trench_len(w, x, z, i + 1, if cell_level(w, x, z + to_float(i)) > 0 then n + 1 else n)
+  else trench_len(w, x, z, i + 1, if cell_level(w, x, z + to_float(i) * v.carve_q()) > 0 then n + 1 else n)
 
 fn trench_max(w, x, z, i, best) =
   if i >= 6 then best
   else
-    lv = cell_level(w, x, z + to_float(i))
+    lv = cell_level(w, x, z + to_float(i) * v.carve_q())
     trench_max(w, x, z, i + 1, if lv > best then lv else best)
 
-fn cell_level(w, x, z) = v.carve_byte(w, v.carve_cell(x + 0.5, z + 0.5))
+fn cell_level(w, x, z) = v.carve_byte(w, v.carve_cell(x, z))
+
+fn dig_cell_deep(s, x, z, n) =
+  aim_down(s, x, z)
+  swing_on(s, n, 0)
 
 fn main() =
   w = v.init(48, 60, 40, 60)
@@ -84,43 +138,38 @@ fn main() =
   # Untouched, the carved floor is the base ground everywhere.
   say("before a swing the floor is the ground, cm", cm(v.floor_at(w, rx, rz) - v.height(rx, rz)), 0)
 
-  # One swing: one stone out of one cell — a metre-square block, a metre
-  # deep, nine pocket stones. Measured at the struck cell's centre, where
-  # the bilinear floor sits exactly on the knot.
+  # One swing: one stone out of one cell — and the stone is the wall's own,
+  # thirty centimetres of cube, one in the pocket.
   aim_down(s, rx, rz)
   got = v.swing_pick(s)
-  say("a swing pays nine stones", got, 9)
-  say("and the pocket holds them", v.stones_of(s), got)
-  fell = v.height(rx + 0.5, rz + 0.5) - v.floor_at(w, rx + 0.5, rz + 0.5)
-  say("the floor fell exactly a metre, cm", cm(fell), 100)
+  say("a swing pays one stone", got, 1)
+  say("and the pocket holds it", v.stones_of(s), got)
+  ci = last_cell(w)
+  mx = v.cell_x(ci)
+  mz = v.cell_z(ci)
+  fell = v.height(mx, mz) - v.floor_at(w, mx, mz)
+  say("the floor fell one stone, cm", cm(fell), 30)
   say("one bite on the ring", v.carves(w), 1)
-  # Flat across the bite and square at its edge: the same metre everywhere
-  # inside the cell, not a rounded dish that is deepest in the middle. This
-  # is the whole of "don't make the dug shape round" as an assertion.
-  fn drop(dx, dz) = cm(v.height(rx + dx, rz + dz) - v.floor_at(w, rx + dx, rz + dz))
-  say("flat at the near corner, cm", drop(0.1, 0.1), 100)
-  say("flat at the far corner, cm", drop(0.9, 0.9), 100)
-  say("and flat off the middle, cm", drop(0.5, 0.15), 100)
+  # Flat across the bite and square at its edge: the same depth everywhere
+  # inside the cell, not a dish that is deepest in the middle. This is the
+  # whole of "don't make the dug shape round" as an assertion.
+  fn drop(dx, dz) = cm(v.height(mx + dx, mz + dz) - v.floor_at(w, mx + dx, mz + dz))
+  say("flat one side of the cell, cm", drop(0.0 - 0.1, 0.0 - 0.1), 30)
+  say("flat the other, cm", drop(0.1, 0.1), 30)
+  # And no wider than the stone: a step out of the cell is untouched ground.
+  say("the next stone along is untouched, cm", drop(0.3, 0.0), 0)
+  say("and the one behind it too, cm", drop(0.0, 0.0 - 0.3), 0)
   # And the field paid for exactly one 128-byte page, not a lattice.
   say("one page holds the pit", v.carve_pages(w), 1)
 
-  # Swing until the nibble runs out of room: the floor stops at nine metres
-  # and the cell is magma now, not rock.
-  swings(s, rx, rz, 24, 0)
-  deep = v.height(rx + 0.5, rz + 0.5) - v.floor_at(w, rx + 0.5, rz + 0.5)
-  say("the pit stops at the cap, cm", cm(deep), 900)
-  say("and the bottom is magma", if v.magmas(w) > 0 then 1 else 0, 1)
-
-  # Standing in it burns: a fifth of a bar a second, from full.
-  v.set_at(s, rx, v.floor_at(w, rx, rz), rz)
-  for i in 0..60
-    v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
-  say("a second in the pit costs a fifth", if v.health(s) < 0.85 && v.health(s) > 0.65 then 1 else 0, 1)
-  # And on the rim above it, nothing: height matters, not the map square.
-  v.set_at(s, rx, v.height(rx, rz) + 2.0, rz)
-  h0 = v.health(s)
-  v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
-  say("hovering over it is free", cm(h0 - v.health(s)), 0)
+  # A stance held is a column cut. The look stops short of the pole — see
+  # `pitch_max` — so a ray still runs a few centimetres sideways for every
+  # metre it runs deep, and past a couple of metres the crosshair genuinely
+  # covers the next stone along. Down to six stones it does not, which is
+  # what makes a shaft a shaft rather than a scrape.
+  swings(s, rx, rz, 5, 0)
+  say("six swings, one column", if last_cell(w) == ci then 1 else 0, 1)
+  say("and it is six stones deep, cm", cm(v.height(mx, mz) - v.floor_at(w, mx, mz)), 180)
 
   # A second valley, fed the same ring, digs the same holes: the two floors
   # agree to the centimetre without a byte of field crossing between them.
@@ -128,17 +177,42 @@ fn main() =
   s2 = v.join(w2)
   for k in 0..v.carves(w)
     v.put_carve(s2, v.carve_ev(w, k))
-  say("a replayed valley has the same floor, cm", cm(v.floor_at(w2, rx, rz)), cm(v.floor_at(w, rx, rz)))
+  say("a replayed valley has the same floor, cm", cm(v.floor_at(w2, mx, mz)), cm(v.floor_at(w, mx, mz)))
   say("and the same magma", v.magmas(w2), v.magmas(w))
+
+  # All the way to the bottom, the way a pit is actually sunk: a floor a
+  # stone wider than a body, taken a course at a time, standing in it and
+  # dropping with it. Thirty courses is nine metres and nine metres is magma.
+  (dx, dz) = find_rock(rz + 9.0)
+  sink(s, cell_mid_x(dx, dz), cell_mid_z(dx, dz), 30)
+  px = cell_mid_x(dx, dz)
+  pz = cell_mid_z(dx, dz)
+  say("the pit stops at the cap, cm", cm(v.height(px, pz) - v.floor_at(w, px, pz)), 900)
+  say("and the bottom is magma", if v.magmas(w) > 0 then 1 else 0, 1)
+
+  # Standing in it burns: a fifth of a bar a second, from full. From full
+  # said plainly, because sinking thirty courses is thirty small falls and a
+  # digger arrives at the bottom already bruised.
+  v.set_health(s, 1.0)
+  v.set_at(s, px, v.floor_at(w, px, pz), pz)
+  for i in 0..60
+    v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
+  say("a second in the pit costs a fifth", if v.health(s) < 0.85 && v.health(s) > 0.65 then 1 else 0, 1)
+  # And on the rim above it, nothing: height matters, not the map square.
+  v.set_at(s, px, v.height(px, pz) + 2.0, pz)
+  h0 = v.health(s)
+  v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
+  say("hovering over it is free", cm(h0 - v.health(s)), 0)
+
 
   # The door's way, in miniature: a third valley handed only levels — cell
   # and nibble, the pairs the welcome message carries — stands on the same
   # floor over the same magma.
   w3 = v.init(48, 60, 40, 60)
   s3 = v.join(w3)
-  for i in 0..28900
-    if v.carve_byte(w, i) > 0 then v.put_carve_byte(s3, i, v.carve_byte(w, i)) else 0
-  say("a valley handed levels has the same floor, cm", cm(v.floor_at(w3, rx + 0.5, rz + 0.5)), cm(v.floor_at(w, rx + 0.5, rz + 0.5)))
+  for sx in 0..v.carve_supers()
+    hand_page(w, s3, sx, 0)
+  say("a valley handed levels has the same floor, cm", cm(v.floor_at(w3, mx, mz)), cm(v.floor_at(w, mx, mz)))
   say("with the same magma", v.magmas(w3), v.magmas(w))
 
   # The meadow is not for digging: a swing over grass hits nothing and pays
@@ -168,7 +242,7 @@ fn main() =
   c0 = v.carves(w)
   v.set_hosted(w, 1)
   say("a hosted pick acts on nothing", v.pick_used(s), 0)
-  say("and dug no crater of its own", v.carves(w), c0)
+  say("and dug no bite of its own", v.carves(w), c0)
   v.set_hosted(w, 0)
   say("its own valley again, it digs", if v.pick_used(s) > 0 then 1 else 0, 1)
 
@@ -189,11 +263,13 @@ fn main() =
   s4 = v.join(w4)
   (qx, qz) = find_rock_from(2.0, 0.0 - 55.0)
   say("a rock in the east-and-north quadrant", if qx > 0.0 && qz < 0.0 then 1 else 0, 1)
-  swings(s4, qx, qz, 3, 0)
-  say("the field says three metres, cm", cm(v.height(qx + 0.5, qz + 0.5) - v.floor_at(w4, qx + 0.5, qz + 0.5)), 300)
+  swings(s4, qx, qz, 5, 0)
+  qmx = v.cell_x(last_cell(w4))
+  qmz = v.cell_z(last_cell(w4))
+  say("the field says five stones, cm", cm(v.height(qmx, qmz) - v.floor_at(w4, qmx, qmz)), 150)
   say("and the rebake had work to do", v.rebake(s4), 1)
-  low = mesh_low(v.terrain(s4), 0, v.terrain_verts(s4), qx + 0.5, qz + 0.5, 9999.0)
-  say("the mesh came down with it, cm", if cm(v.height(qx + 0.5, qz + 0.5) - low) > 100 then 1 else 0, 1)
+  low = mesh_low(v.terrain(s4), 0, v.terrain_verts(s4), qmx, qmz, 9999.0)
+  say("the mesh came down with it, cm", if cm(v.height(qmx, qmz) - low) > 100 then 1 else 0, 1)
 
   # A trench: six stand-points a metre apart, one swing each, and six cells
   # a metre deep in a straight line. This is the assertion that the digging
@@ -205,11 +281,19 @@ fn main() =
 # Three metres a cell, because a shallow trench hides the fault: it is the
 # depth beside you that pulls a widened floor, and the ray with it, out of
 # the cell you are aiming at.
-  (tx, tz) = find_rock_from(2.0, 0.0 - 40.0)
+  (tx0, tz0) = find_rock_from(2.0, 0.0 - 40.0)
+  tx = cell_mid_x(tx0, tz0)
+  tz = cell_mid_z(tx0, tz0)
+  c0 = v.carves(w4)
   for i in 0..6
-    dig_cell_deep(s4, tx, tz + to_float(i), 3)
-  say("six cells of trench, cut in line", trench_len(w4, tx, tz, 0, 0), 6)
-  say("each of them three deep, no more", trench_max(w4, tx, tz, 0, 0), 3)
+    dig_cell_deep(s4, tx, tz + to_float(i) * v.carve_q(), 3)
+  # Where the trench really starts: the first stone the ring says came out,
+  # not the spot the feet were put on. The two differ by the same eye's
+  # width every time, which is why the line is still a line.
+  lx = v.cell_x(v.carve_ev(w4, c0))
+  lz = v.cell_z(v.carve_ev(w4, c0))
+  say("six stones of trench, cut in line", trench_len(w4, lx, lz, 0, 0), 6)
+  say("each of them three deep, no more", trench_max(w4, lx, lz, 0, 0), 3)
 
   # The crosshair's answer is the swing's answer: gold exactly where a swing
   # would land.

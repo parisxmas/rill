@@ -343,6 +343,14 @@ export fn carve_page_at(w: Ptr, sx: Int) -> Int = v.carve_page_at(w, sx)
 
 export fn carve_pages(w: Ptr) -> Int = v.carve_pages(w)
 
+export fn carve_supers() -> Int = v.carve_supers()
+
+export fn carve_page_cells() -> Int = v.carve_page_cells()
+
+export fn carve_page_lv(w: Ptr, sx: Int, c: Int) -> Int = v.carve_page_lv(w, sx, c)
+
+export fn ap_carve_page(w: Ptr, sx: Int, c: Int, lvl: Int) = v.ap_carve_page(w, sx, c, lvl)
+
 export fn put_carve_byte(s: Ptr, i: Int, vv: Int) = v.put_carve_byte(s, i, vv)
 
 export fn set_carves(s: Ptr, n: Int) = v.set_carves(s, n)

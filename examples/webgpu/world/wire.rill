@@ -364,7 +364,7 @@ fn apply(b, w, s, h, at, len, now) =
   # its place; 85 the whole carve field at the door, walked by dug patch, with
   # the two cursors that make later events land in step; 93 how many stones
   # this player's own pocket holds, which only the server counts.
-  else if k == 84 then ap_carve_ev(w, u16_at(b, at + 1))
+  else if k == 84 then ap_carve_ev(w, u32_at(b, at + 1))
   else if k == 86 then ap_built_ev(w, b, at)
   else if k == 85 then ap_carve_field(w, b, at, len)
   else if k == 93 then ap_pocket(b, u16_at(b, at + 1))
@@ -378,51 +378,42 @@ fn ap_built_ev(w, b, at) =
   v.ap_built(w, f32_at(b, at + 1), f32_at(b, at + 5), f32_at(b, at + 9), f32_at(b, at + 13))
   1
 
-# The field: op, u32 carves-so-far, u32 built-so-far, then one entry per
-# dug 16 x 16 patch — (u8 patch, u8 n) and either n (cell-in-patch, level)
-# byte pairs, or, where a patch is more dug than not (n == 0 marks it), its
-# whole page raw as 128 nibble bytes. A pristine valley is nine bytes; a
-# valley is downloaded in proportion to how much of it was dug.
+# The field: op, u32 carves-so-far, u32 built-so-far, then one entry per dug
+# patch — (u16 patch, u16 n) and either n (u16 cell-in-patch, u8 level)
+# triples, or, where a patch is more than a third dug (n == 0 marks it), its
+# whole page raw, a byte a cell. A pristine valley is nine bytes; a valley is
+# downloaded in proportion to how much of it was dug.
 fn ap_carve_field(w, b, at, len) =
   v.ap_set_carves(w, u32_at(b, at + 1))
   v.ap_set_built(w, u32_at(b, at + 5))
   cf_pages(w, b, at + 9, at + len)
 
 fn cf_pages(w, b, p, end) =
-  if p + 1 >= end then 1
+  if p + 3 >= end then 1
   else
-    sx = u8_at(b, p)
-    n = u8_at(b, p + 1)
+    sx = u16_at(b, p)
+    n = u16_at(b, p + 2)
     if n == 0 then
-      cf_raw(w, b, p + 2, sx, 0)
-      cf_pages(w, b, p + 130, end)
+      cf_raw(w, b, p + 4, sx, 0)
+      cf_pages(w, b, p + 4 + v.carve_page_cells(), end)
     else
-      cf_sparse(w, b, p + 2, sx, n)
-      cf_pages(w, b, p + 2 + n * 2, end)
-
-# A patch's cell back to the lattice, and only where the lattice really has
-# it: the supergrid is 11 x 16 = 176 wide against 170 cells, so a page's
-# last columns and rows overhang the world and stay zero.
-fn cf_cell(sx, c) = (sx / 11 * 16 + c / 16) * 170 + sx % 11 * 16 + c % 16
-
-fn cf_ok(sx, c) = sx % 11 * 16 + c % 16 < 170 && sx / 11 * 16 + c / 16 < 170
+      cf_sparse(w, b, p + 4, sx, n)
+      cf_pages(w, b, p + 4 + n * 3, end)
 
 fn cf_put(w, sx, c, lvl) =
-  if lvl > 0 && cf_ok(sx, c) then v.ap_carve_byte(w, cf_cell(sx, c), lvl) else 0
+  if lvl > 0 then v.ap_carve_page(w, sx, c, lvl) else 0
 
 fn cf_raw(w, b, p, sx, c) =
-  if c >= 256 then 0
+  if c >= v.carve_page_cells() then 0
   else
-    two = u8_at(b, p + c / 2)
-    cf_put(w, sx, c, two % 16)
-    cf_put(w, sx, c + 1, two / 16)
-    cf_raw(w, b, p, sx, c + 2)
+    cf_put(w, sx, c, u8_at(b, p + c))
+    cf_raw(w, b, p, sx, c + 1)
 
 fn cf_sparse(w, b, p, sx, n) =
   if n <= 0 then 0
   else
-    cf_put(w, sx, u8_at(b, p), u8_at(b, p + 1))
-    cf_sparse(w, b, p + 2, sx, n - 1)
+    cf_put(w, sx, u16_at(b, p), u8_at(b, p + 2))
+    cf_sparse(w, b, p + 3, sx, n - 1)
 
 # The pocket is not applied to the world — it is this player's own count, and
 # it lands on the block the page reads the HUD from.
