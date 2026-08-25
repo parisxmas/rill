@@ -1491,7 +1491,16 @@ fn at_the_door(conn, inbox, live, request) =
 # that for this location — a password in an access log outlives the password.
 fn word() = "135"
 
+# The gate is open for now: the word cost more friction than it bought while
+# the valley is being built in the open — a blank or mistyped word dropped
+# people silently into a single-player world, which read as every multiplayer
+# feature being broken at once. The machinery stays; opening it is one line,
+# and closing it again is deleting that line.
 fn said_the_word(request) =
+  if 1 == 1 then 1
+  else said_the_word_really(request)
+
+fn said_the_word_really(request) =
   line = str_sub(request, 0, headline(request))
   at = str_find(line, "p=" + word())
   if at < 0 then 0 else ends_there(line, at + 2 + str_len(word()))

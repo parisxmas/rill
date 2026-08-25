@@ -117,10 +117,10 @@
       </div>
       <form class="who" id="who" style="display:none">
         <input id="name" maxlength="8" placeholder="WHO ARE YOU" autocomplete="off" spellcheck="false">
-        <input id="word" maxlength="16" placeholder="WORD" autocomplete="off" spellcheck="false" style="flex:0 0 5.5rem">
+        <input id="word" maxlength="16" placeholder="WORD" autocomplete="off" spellcheck="false" style="flex:0 0 5.5rem;display:none">
         <button type="submit">enter</button>
       </form>
-      <small id="whonote" style="display:none">a name of letters and digits, eight at most — and the word you were given</small>
+      <small id="whonote" style="display:none">a name of letters and digits, eight at most</small>
     </div>
   </div>
   <script type="module">
@@ -130,7 +130,7 @@
     // including the boot logic, the page's modules and world.wasm itself.
     // What is left here is the one thing that cannot come out of a file the
     // page has not fetched yet: fetching the file.
-    const AV = "473";
+    const AV = "474";
 
     const bar = document.getElementById("bar");
     const what = document.getElementById("what");
