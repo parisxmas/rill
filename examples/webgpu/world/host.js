@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "456";
+const V = "462";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -98,7 +98,7 @@ const SHADERS = {
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
-  mark: "common", spark: "common", ak: "common", jet: "common",
+  mark: "common", spark: "common", ak: "common", jet: "common", magma: "common",
   flower: "common",
   // The HUD stands alone: it has a uniform block of its own, and giving it
   // `uniforms.wgsl` would declare group 0 binding 0 twice.
@@ -197,6 +197,7 @@ function loadShaders(step, pakText) {
     HELD: whole("held"),
     SHADOW_FIGURE: whole("shadow-figure"),
     SKY: whole("sky"),
+    MAGMA: whole("magma"),
     WATER: whole("water"),
     FIREFLY_SIM: whole("firefly-sim"),
     FIREFLY_DRAW: whole("firefly-draw"),
@@ -1109,6 +1110,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // and depth-tested but not depth-writing, because it is light.
   const jetPipe = pipe("jet", S.JET, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   const JET_CAP = 33;
+  // The melt at the bottom of dug-through pits: premultiplied over, no depth
+  // write — it is a glow lying on the floor, and the floor is already there.
+  const magmaPipe = pipe("magma", S.MAGMA, [{ arrayStride: 16, stepMode: "instance", attributes: [
+    { shaderLocation: 0, offset: 0, format: "float32x4" },
+  ]}], { blend: overPre, cull: "none", depth: { depthWriteEnabled: false } });
+  const magmaBuf = device.createBuffer({
+    size: 512 * 16, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+  let magmaN = 0, magmaSeen = -1;
   const jetBuf = device.createBuffer({
     size: JET_CAP * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
@@ -2515,7 +2524,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     T = TIERS[idx];
     // The camera survives the world being rebuilt around it.
     let cam = null;
-    if (state) { cam = stateF32().slice(19, 26); E.free_world(world); }
+    let carveKeep = 0n;
+    if (state) {
+      cam = stateF32().slice(19, 26);
+      // The dug ground survives the rebuild — see `carve_save` in valley.rill.
+      carveKeep = E.carve_save(world);
+      E.free_world(world);
+    }
     // How many pines and crystals is the server's to decide when there is one.
     // The grid is not: it is the terrain mesh's resolution and nothing else
     // samples it, so a slow machine draws a coarser valley and still stands on
@@ -2526,6 +2541,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     const grass = net ? net.world.grass : T.grass;
     world = E.init(BigInt(T.grid), BigInt(pines), BigInt(crystals), BigInt(grass));
     state = E.join(world);
+    if (carveKeep) E.carve_load(state, carveKeep);
     // `join` has already placed them; this stirs the roll in and places them
     // again. Only when there is nobody else — in somebody else's valley the
     // spawn is the server's, and a client that moved itself would be corrected
@@ -2565,8 +2581,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     };
     W = { counts };
     W.terrainBuf = gpuBuf(new Float32Array(E.memory.buffer, Number(E.terrain(state)), counts.terrain * 9));
-    W.blocks = Number(E.blocks_count(state));
-    W.blockInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.blocks(state)), Math.max(W.blocks, 1) * 8));
+    W.blocks = Number(E.blocks_total(world));
+    W.blockCap = Number(E.blocks_count(state)) + 256;
+    W.blockInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.blocks(state)), Math.max(W.blockCap, 1) * 8));
     W.pineInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.pines(state)), counts.pines * 8));
     W.poplarInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.poplars(state)),
                                            Math.max(counts.poplars, 1) * 8));
@@ -2899,6 +2916,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (e.code === "Digit1" || e.code === "Numpad1") wantHeld = 0;
     if (e.code === "Digit2" || e.code === "Numpad2") wantHeld = 1;
     if (e.code === "Digit3" || e.code === "Numpad3") wantHeld = 2;
+    if (e.code === "Digit4" || e.code === "Numpad4") wantHeld = 3;
+    if (e.code === "Digit5" || e.code === "Numpad5") wantHeld = 4;
   });
   // On the press, not held: read from the event rather than from the key mask,
   // so leaning on space at the end does not restart over and over.
@@ -3205,6 +3224,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         else if (kind === 4) akReload();
         else if (kind === 5) dryClick();
         else if (kind === 6 && net) net.fired(hf[40], hf[41], hf[42]);
+        // 7 is the pick landing, 8 a rock going down. Alone, the browser is
+        // its own server and does the thing; joined, it asks, and what comes
+        // back through the rings is the same event everybody else gets.
+        else if (kind === 7) { if (net) net.mined(); else E.swing_pick(state); }
+        else if (kind === 8) { if (net) net.builds(); else E.try_build(state); }
         else if (kind === 7 && net) net.reloaded();
       }
     }
@@ -3287,6 +3311,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         E.set_shark(world, wf[WH.sharkX], wf[WH.sharkX + 1], wf[WH.sharkX + 2],
                     wf[WH.sharkX + 3], mode, mode > 2.5 ? 0.0 : (mode > 0.5 ? 0.85 : 0.0));
       }
+      // The pocket is the server's ledger: whatever it last said, the HUD
+      // shows. Predicted locally it would drift the first time a swing was
+      // refused, and a count that can drift is a count nobody trusts.
+      const pk = net.pocket;
+      if (pk >= 0) E.set_stones(state, BigInt(pk));
       E.look(state, canvas.width / canvas.height);
     } else {
       E.frame(state, dt, mdx, mdy, BigInt(keys), canvas.width / canvas.height);
@@ -3321,7 +3350,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         for (let k = 0; k < 3; k++) {
           for (let i = 0; i < heldCount; i++) {
             const ki = kinds[i] | 0;
-            if ((ki === k) || (k === 0 && (ki < 0 || ki > 2))) {
+            // Kind 3 is a tool — a pick or a handful of stones — and there
+            // is no mesh for either yet: those hands are drawn empty rather
+            // than holding a rifle they do not have.
+            if ((ki === k) || (k === 0 && ki < 0)) {
               const o = at * 24;
               grouped.set(mats.subarray(i * 16, i * 16 + 16), o);
               const box = boxes[k];
@@ -3643,6 +3675,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     device.queue.writeBuffer(W.crystalInst, 0, cry);
     // The walls go the same way the crystals do — a block that has been shot
     // has its size set to nought — so they are re-uploaded for the same reason.
+    W.blocks = Math.min(Number(E.blocks_total(world)), W.blockCap);
     if (W.blocks > 0) {
       device.queue.writeBuffer(W.blockInst, 0,
         new Float32Array(E.memory.buffer, Number(E.blocks(state)), W.blocks * 8));
@@ -3722,6 +3755,35 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       hudHead(HH.over, 1);
     }
     device.queue.writeBuffer(flyTime, 0, new Float32Array([t, dt, 0, 0]));
+
+    // The digging, onto the picture. `rebake` rewrites the mesh cells under
+    // whatever craters arrived this frame — from this player's own pick or
+    // off the wire, it cannot tell and does not care — and reports the cell
+    // rect; each touched row is one small writeBuffer, not the mountain.
+    if (Number(E.rebake(state))) {
+      const n = Math.round(Math.sqrt(W.counts.terrain / 6));
+      const ix0 = Number(E.dirty_at(world, 0n)), iz0 = Number(E.dirty_at(world, 1n));
+      const ix1 = Number(E.dirty_at(world, 2n)), iz1 = Number(E.dirty_at(world, 3n));
+      const base = Number(E.terrain(state));
+      for (let iz = iz0; iz <= iz1; iz++) {
+        const off = (iz * n + ix0) * 54;
+        device.queue.writeBuffer(W.terrainBuf, off * 4,
+          new Float32Array(E.memory.buffer, base + off * 4, (ix1 - ix0 + 1) * 54));
+      }
+    }
+    // The magma list only ever grows, so the count is the whole diff.
+    magmaN = Math.min(Number(E.magmas(world)), 512);
+    if (magmaN !== magmaSeen) {
+      magmaSeen = magmaN;
+      const inst = new Float32Array(magmaN * 4);
+      for (let i = 0; i < magmaN; i++) {
+        const mx = E.magma_x(world, BigInt(i)), mz = E.magma_z(world, BigInt(i));
+        inst[i * 4] = mx; inst[i * 4 + 2] = mz;
+        inst[i * 4 + 1] = E.floor_at(world, mx, mz) + 0.03;
+        inst[i * 4 + 3] = (i * 37 % 101) / 101;
+      }
+      if (magmaN) device.queue.writeBuffer(magmaBuf, 0, inst);
+    }
 
     // The HUD's frame: the live numbers into the block's header, the engine
     // lays everything out, and whatever it emitted goes up as one buffer.
@@ -3846,6 +3908,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(crystalPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
     pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);
+    if (magmaN) {
+      pass.setPipeline(magmaPipe);
+      pass.setVertexBuffer(0, magmaBuf);
+      pass.draw(6, magmaN);
+    }
     if (jetCount) {
       pass.setPipeline(jetPipe);
       pass.setVertexBuffer(0, jetBuf);
@@ -3972,6 +4039,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         pass.setIndexBuffer(akIB, "uint16");
         pass.drawIndexed(akIdx);
         pass.setPipeline(muzzlePipe); pass.draw(12);
+      } else if (held >= 3) {
+        // The tools have no first-person model yet: the hands are empty and
+        // the inventory row says which of the two they are holding. A pick
+        // mesh goes here when there is one worth looking at.
       } else {
         pass.setPipeline(vmPipe);
         pass.setVertexBuffer(0, rifleVB);

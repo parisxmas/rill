@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The three weapon icons, out of game-icons.net and into one strip.
 
-Rifle and AK by Skoll, the launcher by Delapouite, all from game-icons.net
+Rifle and AK by Skoll; the launcher, the war pick and the stone wall by
+Delapouite — all from game-icons.net
 under CC BY 3.0 — the credit is in host.js where the strip is bound and in
 weapon-icons.license.txt beside the image.
 
@@ -23,6 +24,8 @@ ICONS = [
     ("skoll/winchester-rifle", "rifle"),
     ("skoll/ak47", "ak"),
     ("delapouite/missile-launcher", "launcher"),
+    ("delapouite/war-pick", "pick"),
+    ("delapouite/stone-wall", "wall"),
 ]
 CELL = 192
 

@@ -73,4 +73,5 @@ panel-glass.png
 weapon-icons.png
 world.wasm
 shaders/jet.wgsl
+shaders/magma.wgsl
 shaders/flower.wgsl

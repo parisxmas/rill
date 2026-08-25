@@ -1,0 +1,105 @@
+# A native run for the pickaxe: the rock comes out, the floor goes down, the
+# bottom is magma, and a second valley fed the same ring digs the same holes.
+#
+# The spot is found by scanning, not written down: the terrain is a function,
+# and a test pinned to (34, -8) is a test that breaks when an octave moves.
+# What is asserted is arithmetic — how far a floor fell, what a swing paid,
+# where the cap is — against the constants in valley.rill.
+import "valley" as v
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+fn cm(x) = to_int(x * 100.0 + if x < 0.0 then 0.0 - 0.5 else 0.5)
+
+# Somewhere properly rocky: high enough that the whole crater sits above the
+# rock line, so no cell of it is refused.
+fn rocky(x, z) =
+  if v.height(x, z) > 11.0 then x else if x > 80.0 then 0.0 - 1000.0 else rocky(x + 1.0, z)
+
+fn find_rock(z) =
+  x = rocky(0.0 - 80.0, z)
+  if x > 0.0 - 999.0 then (x, z) else find_rock(z + 3.0)
+
+# Stand at (x, z) looking straight down, one settled frame, then swing.
+fn aim_down(s, x, z) =
+  v.set_at(s, x, v.floor_at(v.wd(s), x, z) + 0.1, z)
+  poke_f32(s, 19, 0.0)
+  poke_f32(s, 20, 0.0 - 1.45)
+  v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
+  1
+
+# Each swing from down in the pit, the way a digger actually digs: the pick
+# reaches three and a half metres, and a three-metre hole is dug from inside
+# it, not from the rim.
+fn swings(s, x, z, n, acc) =
+  if n == 0 then acc
+  else
+    aim_down(s, x, z)
+    swings(s, x, z, n - 1, acc + v.swing_pick(s))
+
+fn main() =
+  w = v.init(48, 60, 40, 60)
+  s = v.join(w)
+  (rx, rz) = find_rock(0.0 - 60.0)
+  say("found rock to stand on", if v.height(rx, rz) > 11.0 then 1 else 0, 1)
+
+  # Untouched, the carved floor is the base ground everywhere.
+  say("before a swing the floor is the ground, cm", cm(v.floor_at(w, rx, rz) - v.height(rx, rz)), 0)
+
+  # One swing: rock out, stones in, floor down. The centre cell loses 44
+  # units of 0.02 m — the crater formula at distance nought — and the bowl
+  # around it a little less, so the bilinear floor under the eye drops close
+  # to the centre's 88 cm.
+  aim_down(s, rx, rz)
+  got = v.swing_pick(s)
+  say("a swing pays stones", if got > 0 then 1 else 0, 1)
+  say("and the pocket holds them", v.stones_of(s), got)
+  fell = v.height(rx, rz) - v.floor_at(w, rx, rz)
+  say("the floor fell half a metre or so", if cm(fell) > 40 && cm(fell) < 110 then 1 else 0, 1)
+  say("one crater on the ring", v.carves(w), 1)
+
+  # Swing until the byte runs out of room: the floor stops at three metres
+  # and the cell is magma now, not rock.
+  swings(s, rx, rz, 14, 0)
+  deep = v.height(rx, rz) - v.floor_at(w, rx, rz)
+  say("the pit stops at the cap, cm", cm(deep), 300)
+  say("and the bottom is magma", if v.magmas(w) > 0 then 1 else 0, 1)
+
+  # Standing in it burns: a fifth of a bar a second, from full.
+  v.set_at(s, rx, v.floor_at(w, rx, rz), rz)
+  for i in 0..60
+    v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
+  say("a second in the pit costs a fifth", if v.health(s) < 0.85 && v.health(s) > 0.65 then 1 else 0, 1)
+  # And on the rim above it, nothing: height matters, not the map square.
+  v.set_at(s, rx, v.height(rx, rz) + 2.0, rz)
+  h0 = v.health(s)
+  v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
+  say("hovering over it is free", cm(h0 - v.health(s)), 0)
+
+  # A second valley, fed the same ring, digs the same holes: the two floors
+  # agree to the centimetre without a byte of field crossing between them.
+  w2 = v.init(48, 60, 40, 60)
+  s2 = v.join(w2)
+  for k in 0..v.carves(w)
+    v.put_carve(s2, v.carve_ev(w, k))
+  say("a replayed valley has the same floor, cm", cm(v.floor_at(w2, rx, rz)), cm(v.floor_at(w, rx, rz)))
+  say("and the same magma", v.magmas(w2), v.magmas(w))
+
+  # The meadow is not for digging: a swing over grass hits nothing and pays
+  # nothing.
+  aim_down(s, 0.0 - 14.0, 0.0 - 34.0)
+  say("the meadow refuses the pick", v.swing_pick(s), 0)
+
+  # Building: eight stones become a rock in the block table, and a valley
+  # told about it draws the same rock in the same place.
+  v.set_stones(s, 20)
+  n0 = v.blocks_total(w)
+  say("a rock goes down", v.try_build(s), 1)
+  say("the table grew by one", v.blocks_total(w) - n0, 1)
+  say("and the stones were paid", v.stones_of(s), 12)
+  v.put_built(s2, v.built_ev(w, 0, 1), v.built_ev(w, 0, 2), v.built_ev(w, 0, 3), v.built_ev(w, 0, 4))
+  say("the told valley grew too", v.blocks_total(w2) - n0, 1)
+  v.set_stones(s, 3)
+  say("three stones build nothing", v.try_build(s), 0)
+  println("done")

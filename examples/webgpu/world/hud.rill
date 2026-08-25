@@ -114,6 +114,7 @@ fn h_inv_rifle() = 42
 fn h_inv_ak() = 43
 fn h_inv_rifle_cap() = 44
 fn h_inv_ak_cap() = 45
+fn h_stones() = 46      # what the pick has paid out and the walls not yet taken back
 
 # ---- the theme --------------------------------------------------------------
 #
@@ -1116,13 +1117,15 @@ fn brief_ph(sh) = sh * 0.78
 # other question — *what else is there* — and it is asked between fights.
 fn inv_w() = 292.0
 
-fn inv_h() = 126.0
+fn inv_h() = 196.0
 
 fn inv_row() = 35.0
 
 fn inv_x(h) = th(h, s_margin())
 
 fn inv_y(h, sh) = sh - 78.0 - inv_h()
+
+fn inv_rows() = 5
 
 fn inventory(h, sw, sh) =
   x = inv_x(h)
@@ -1136,10 +1139,22 @@ fn inventory(h, sw, sh) =
   inv_row_draw(h, x, y + 18.0 + inv_row() * 2.0, 2, held, "AK", "3",
                int_str(to_int(peek_f32(h, h_inv_ak()))) + "/" + int_str(to_int(peek_f32(h, h_inv_ak_cap()))) +
                "  x" + int_str(to_int(peek_f32(h, h_ak_mags()))))
+  # The tools carry the same number — the stones in the pocket — because it is
+  # the one number both of them are about: what the pick has earned is what
+  # the wall can spend.
+  inv_row_draw(h, x, y + 18.0 + inv_row() * 3.0, 3, held, "PICK", "4",
+               int_str(to_int(peek_f32(h, h_stones()))))
+  inv_row_draw(h, x, y + 18.0 + inv_row() * 4.0, 4, held, "WALL", "5",
+               int_str(to_int(peek_f32(h, h_stones()))))
 
-# The strip is rifle, AK, launcher — the order they were drawn in, not the
-# order they are carried in — so the cell is looked up rather than assumed.
-fn inv_cell(w) = if w == 0 then 0.0 else if w == 1 then 2.0 else 1.0
+# The strip is rifle, AK, launcher, pick, wall — the order they were baked
+# in, not the order they are carried in — so the cell is looked up.
+fn inv_cell(w) =
+  if w == 0 then 0.0
+  else if w == 1 then 2.0
+  else if w == 2 then 1.0
+  else if w == 3 then 3.0
+  else 4.0
 
 fn inv_row_draw(h, x, y, w, held, name, key, ammo) =
   on = w == held
@@ -1159,7 +1174,7 @@ fn inv_row_draw(h, x, y, w, held, name, key, ammo) =
 
 fn icon(h, cell, x, y, w, hh, k, a) =
   at = t_at(k)
-  emit(h, x, y, 0.0, w, hh, cell / 3.0, 0.0, 1.0 / 3.0, 1.0, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), peek_f32(h, at + 3) * a, 9.0, 0.0, 0.0, 0.0)
+  emit(h, x, y, 0.0, w, hh, cell / 5.0, 0.0, 1.0 / 5.0, 1.0, peek_f32(h, at), peek_f32(h, at + 1), peek_f32(h, at + 2), peek_f32(h, at + 3) * a, 9.0, 0.0, 0.0, 0.0)
 
 # ---- nine slices ------------------------------------------------------------
 #

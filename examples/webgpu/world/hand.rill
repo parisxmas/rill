@@ -64,7 +64,18 @@ fn make(s) =
 
 fn held(b) = to_int(peek_f32(b, 0))
 
-fn cycle_of(w) = if w == 1 then rpg_cycle() else if w == 2 then ak_cycle() else bolt_cycle()
+# Three shots and two tools: the pick swings twice a second, a rock goes down
+# a little faster than that.
+fn pick_cycle() = 0.55
+
+fn build_cycle() = 0.4
+
+fn cycle_of(w) =
+  if w == 1 then rpg_cycle()
+  else if w == 2 then ak_cycle()
+  else if w == 3 then pick_cycle()
+  else if w == 4 then build_cycle()
+  else bolt_cycle()
 
 fn cycle_now(b) = cycle_of(held(b))
 
@@ -163,8 +174,15 @@ fn change_starts(b, now, t) =
   event(b, 4.0)
   1
 
+# What "loaded" means changes with what is held: rounds, rockets, or — for
+# the tools — whether the thing can act at all. A pick is always loaded; a
+# hand of stones is loaded when there are enough of them to pay for a rock.
 fn loaded_now(b, s) =
-  if held(b) == 1 then v.rockets(s) else if held(b) == 2 then v.ak_rounds(s) else v.rounds(s)
+  if held(b) == 1 then v.rockets(s)
+  else if held(b) == 2 then v.ak_rounds(s)
+  else if held(b) == 3 then 1
+  else if held(b) == 4 then (if v.stones_of(s) >= v.build_cost() then 1 else 0)
+  else v.rounds(s)
 
 # The change, seen from here: the world swapped magazines on a pull, the count
 # jumped from nothing back to thirty, and the crosshair owes the second and a
@@ -200,6 +218,19 @@ fn shot(b, s, t) =
   dz = dz1 / l
   loaded = loaded_now(b, s)
   changing = ak && loaded == 0
+  # The tools are not guns: nothing leaves the muzzle, and in somebody
+  # else's valley the decision is not this browser's to make. Event 7 is a
+  # swing and 8 a rock going down; the page routes each to the world it is
+  # actually in — the local one, or the far end of a socket.
+  if held(b) >= 3 then tool_used(b) else shot_fired(b, s, dx, dy, dz, ak, changing, t)
+
+fn tool_used(b) =
+  event(b, if held(b) == 3 then 7.0 else 8.0)
+  poke_f32(b, 4, 0.0)
+  poke_f32(b, 6, 0.8)
+  setf(b, 7, 1.0)
+
+fn shot_fired(b, s, dx, dy, dz, ak, changing, t) =
   v.fire(s, dx, dy, dz)
   # The direction the page sends to the server — the world's own 48..50 are
   # the server's copy of `want_fire` and this side never writes them.

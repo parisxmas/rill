@@ -294,6 +294,63 @@ export fn jet_armed_now(s: Ptr) -> Int = v.jet_armed_now(s)
 # the hands; the eye it lowers is `walk`'s own business.
 export fn crouch_of(s: Ptr) -> Float = v.crouch_of(s)
 
+# ---- the pickaxe and what it leaves ------------------------------------------
+#
+# A browser with the valley to itself swings and builds directly; a client in
+# somebody else's valley asks, and the `put_*` half is what being told looks
+# like. The counters and rings mirror the crystals' pattern exactly.
+export fn swing_pick(s: Ptr) -> Int = v.swing_pick(s)
+
+export fn stones_of(s: Ptr) -> Int = v.stones_of(s)
+
+export fn set_stones(s: Ptr, n: Int) = v.set_stones(s, n)
+
+export fn try_build(s: Ptr) -> Int = v.try_build(s)
+
+export fn put_carve(s: Ptr, ci: Int) -> Int = v.put_carve(s, ci)
+
+export fn put_built(s: Ptr, x: Float, y: Float, z: Float, yaw: Float) -> Int = v.put_built(s, x, y, z, yaw)
+
+export fn carves(w: Ptr) -> Int = v.carves(w)
+
+export fn carve_ev(w: Ptr, k: Int) -> Int = v.carve_ev(w, k)
+
+export fn built(w: Ptr) -> Int = v.built(w)
+
+export fn built_ev(w: Ptr, k: Int, j: Int) -> Float = v.built_ev(w, k, j)
+
+export fn blocks_total(w: Ptr) -> Int = v.blocks_total(w)
+
+export fn magmas(w: Ptr) -> Int = v.magmas(w)
+
+export fn magma_x(w: Ptr, k: Int) -> Float = v.magma_x(w, k)
+
+export fn magma_z(w: Ptr, k: Int) -> Float = v.magma_z(w, k)
+
+# The floor with the digging in it, for anything the page stands on the ground.
+export fn floor_at(w: Ptr, x: Float, z: Float) -> Float = v.floor_at(w, x, z)
+
+# Rewrites the mesh under whatever carves arrived since the last call; the
+# touched cell rect is read back through `dirty_at` (ix0, iz0, ix1, iz1).
+export fn rebake(s: Ptr) -> Int = v.rebake(s)
+
+export fn dirty_at(w: Ptr, j: Int) -> Int = v.dirty_at(w, j)
+
+# The whole field byte by byte, for the door.
+export fn carve_byte(w: Ptr, i: Int) -> Int = v.carve_byte(w, i)
+
+export fn put_carve_byte(s: Ptr, i: Int, vv: Int) = v.put_carve_byte(s, i, vv)
+
+export fn set_carves(s: Ptr, n: Int) = v.set_carves(s, n)
+
+export fn set_built(s: Ptr, n: Int) = v.set_built(s, n)
+
+# The field over a rebuild: save off the old world before it is freed, load
+# into the new one once a player block exists to reach it through.
+export fn carve_save(w: Ptr) -> Ptr = v.carve_save(w)
+
+export fn carve_load(s: Ptr, keep: Ptr) = v.carve_load(s, keep)
+
 export fn jet_on(s: Ptr) -> Int = v.jet_on(s)
 
 export fn jet_dry(s: Ptr) -> Int = v.jet_dry(s)
@@ -432,6 +489,7 @@ export fn hud_frame(s: Ptr, w: Ptr) -> Int =
     poke_f32(h, hud.h_inv_ak(), to_float(v.ak_rounds(s)))
     poke_f32(h, hud.h_inv_rifle_cap(), to_float(v.mag_full()))
     poke_f32(h, hud.h_inv_ak_cap(), to_float(v.ak_full()))
+    poke_f32(h, hud.h_stones(), to_float(v.stones_of(s)))
     poke_f32(h, hud.h_phase(), to_float(v.match_phase(w)))
     poke_f32(h, hud.h_left(), v.match_left(w))
     poke_f32(h, hud.h_board_left(), v.match_left(w))
@@ -518,6 +576,13 @@ export fn wire_here(b: Ptr) -> Int = wire.here(b)
 
 export fn wire_out_input(b: Ptr, keys: Int, yaw: Float, pitch: Float) -> Int =
   wire.out_input(b, keys, yaw, pitch)
+
+export fn wire_out_mine(b: Ptr) -> Int = wire.out_mine(b)
+
+export fn wire_out_build(b: Ptr) -> Int = wire.out_build(b)
+
+# What the server last said this pocket holds, or -1 if it never has.
+export fn wire_pocket(b: Ptr) -> Int = wire.pocket(b)
 
 export fn wire_out_fire(b: Ptr, dx: Float, dy: Float, dz: Float) -> Int =
   wire.out_fire(b, dx, dy, dz)

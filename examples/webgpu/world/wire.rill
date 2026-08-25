@@ -87,7 +87,13 @@ fn h_synced_at() = 23  # the snapshot the match clock was last set from
 fn h_applied_at() = 24 # and the one reconcile last ran against
 fn h_shark_x() = 25    # ..29: the shark, interpolated at the last tick
 fn h_evq_dropped() = 30
-fn h_pull() = 31       # what the server says this planet pulls with, 0 unsaid
+fn h_pull() = 31
+
+# The stones the server says this player holds, plus one — nought means
+# nothing has been said yet, so a rejoin does not wipe a real count with a 0.
+fn h_pocket() = 33
+
+fn pocket(b: Ptr) -> Int = to_int(peek_f32(b, h_pocket())) - 1       # what the server says this planet pulls with, 0 unsaid
 fn h_now() = 60       # the page's clock in ms, stamped before frame() and tick()
 
 fn make() =
@@ -354,7 +360,50 @@ fn apply(b, w, s, h, at, len, now) =
   # arrival, because it is about the world and the world may not be built
   # yet — the same reason the door lists wait here.
   else if k == 71 then ap_pull(b, w, at)
+  # The pickaxe's traffic. 84 is one crater by its cell; 86 a built rock by
+  # its place; 85 the whole carve field at the door, run-length coded, with
+  # the two cursors that make later events land in step; 93 how many stones
+  # this player's own pocket holds, which only the server counts.
+  else if k == 84 then ap_carve_ev(w, u16_at(b, at + 1))
+  else if k == 86 then ap_built_ev(w, b, at)
+  else if k == 85 then ap_carve_field(w, b, at, len)
+  else if k == 93 then ap_pocket(b, u16_at(b, at + 1))
   else 0
+
+fn ap_carve_ev(w, ci) =
+  v.ap_carve(w, ci)
+  1
+
+fn ap_built_ev(w, b, at) =
+  v.ap_built(w, f32_at(b, at + 1), f32_at(b, at + 5), f32_at(b, at + 9), f32_at(b, at + 13))
+  1
+
+# The field: op, u32 carves-so-far, u32 built-so-far, then (u8 value,
+# u16 run) pairs until the valley's 28900 cells are covered.
+fn ap_carve_field(w, b, at, len) =
+  v.ap_set_carves(w, u32_at(b, at + 1))
+  v.ap_set_built(w, u32_at(b, at + 5))
+  cf_runs(w, b, at + 9, at + len, 0)
+
+fn cf_runs(w, b, p, end, cell) =
+  if p >= end then 1
+  else
+    vv = u8_at(b, p)
+    run = u16_at(b, p + 1)
+    cf_span(w, cell, cell + run, vv)
+    cf_runs(w, b, p + 3, end, cell + run)
+
+fn cf_span(w, i, end, vv) =
+  if i >= end then 0
+  else
+    if vv > 0 then v.ap_carve_byte(w, i, vv) else 0
+    cf_span(w, i + 1, end, vv)
+
+# The pocket is not applied to the world — it is this player's own count, and
+# it lands on the block the page reads the HUD from.
+fn ap_pocket(b, n) =
+  poke_f32(b, h_pocket(), to_float(n) + 1.0)
+  1
 
 # The pull this connection was told about, put back on a valley that has just
 # been rebuilt under it.
@@ -968,6 +1017,16 @@ fn out_input(b, keys, yaw, pitch) =
   out_f32(b, out_at() + 3, yaw)
   out_f32(b, out_at() + 7, pitch)
   11
+
+# The tools ask with one byte: everything the server needs — where this player
+# stands, where they look — it already has.
+fn out_mine(b) =
+  poke_i8(b, out_at(), 77)
+  1
+
+fn out_build(b) =
+  poke_i8(b, out_at(), 78)
+  1
 
 fn out_fire(b, dx, dy, dz) =
   poke_i8(b, out_at(), 102)

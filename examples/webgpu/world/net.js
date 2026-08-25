@@ -66,6 +66,12 @@ export function join(url, name, E) {
       sendOut(E.wire_out_input(wire, BigInt(keys), yaw, pitch));
     },
     fired(dx, dy, dz) { sendOut(E.wire_out_fire(wire, dx, dy, dz)); },
+    // The tools: one byte each. The server has this player's stance and look
+    // already — the ask carries nothing because nothing else is needed.
+    mined() { sendOut(E.wire_out_mine(wire)); },
+    builds() { sendOut(E.wire_out_build(wire)); },
+    // What the server last said the pocket holds; -1 until it ever has.
+    get pocket() { return Number(E.wire_pocket(wire)); },
     reloaded() { sendOut(E.wire_out_reload(wire)); },
     say(text) { sendText(99, text); },
     close() { sock.close(); },

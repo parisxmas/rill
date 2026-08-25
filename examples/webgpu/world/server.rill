@@ -199,6 +199,8 @@ type Msg
   Moved(id: Int, keys: Int, yaw: Float, pitch: Float)
   Shot(id: Int, dx: Float, dy: Float, dz: Float)
   Reloaded(id: Int)
+  Mined(id: Int)
+  Built(id: Int)
   Said(id: Int, text: Str)
   Pinged(id: Int, token: Str)
   Left(id: Int)
@@ -230,6 +232,8 @@ fn handle(w, conns, inbox, joins, m, said) = match m
   Moved(id, keys, yaw, pitch) -> move_one(w, conns, id, keys, yaw, pitch)
   Shot(id, dx, dy, dz) -> shoot_one(w, conns, id, dx, dy, dz)
   Reloaded(id) -> reload_one(w, conns, id)
+  Mined(id) -> mine_one(w, conns, id)
+  Built(id) -> build_one(w, conns, id)
   Said(id, text) -> say_one(w, conns, id, text)
   Pinged(id, token) -> pong(conns, id, token)
   Left(id) -> drop_one(w, conns, id)
@@ -263,6 +267,8 @@ fn welcome(w, conns, s, out, token) =
   send(out, gone_list(w))
   send(out, stones_list(w))
   send(out, fells_list(w))
+  send(out, carve_field_msg(w))
+  send_built_list(w, out, 0)
   send_mags(w, out, 0)
   roster(conns, out)
   println("player " + int_to_str(id) + " arrived as " + name + ", " + int_to_str(v.players(w)) + " in the valley")
@@ -348,6 +354,38 @@ fn fells_list(w) =
 fn if_felled(w, b, i) = if v.pine_felled(w, i) > 0 then note_gone(b, i) else 0
 
 fn if_broken(w, b, i) = if v.block_broken(w, i) > 0 then note_gone(b, i) else 0
+
+# The carve field for somebody at the door: op, the two cursors, then
+# (value, run) pairs over all 28900 cells. An untouched valley is one pair —
+# three bytes — and a cratered one grows only where it was dug.
+fn carve_field_msg(w) =
+  b = strbuf()
+  put_u8(b, op_carvefield())
+  put_u32(b, v.carves(w))
+  put_u32(b, v.built(w))
+  cf_write(w, b, 0)
+  strbuf_str(b)
+
+fn cf_write(w, b, i) =
+  if i >= 28900 then 0
+  else
+    vv = v.carve_byte(w, i)
+    run = cf_run(w, i + 1, vv, 1)
+    put_u8(b, vv)
+    put_u16(b, run)
+    cf_write(w, b, i + run)
+
+fn cf_run(w, i, vv, n) =
+  if n >= 65535 then n
+  else if i >= 28900 then n
+  else if v.carve_byte(w, i) != vv then n
+  else cf_run(w, i + 1, vv, n + 1)
+
+fn send_built_list(w, out, k) =
+  if k >= v.built(w) then 0
+  else
+    send(out, built_msg(w, k))
+    send_built_list(w, out, k + 1)
 
 fn gone_list(w) =
   b = strbuf()
@@ -471,7 +509,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 456
+fn version() = 457
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -487,6 +525,18 @@ fn op_pinelist() = 80
 fn op_zap() = 122
 fn op_input() = 105
 fn op_fire() = 102
+
+fn op_mine() = 77
+
+fn op_build() = 78
+
+fn op_carve() = 84
+
+fn op_carvefield() = 85
+
+fn op_built() = 86
+
+fn op_pocket() = 93
 fn op_name() = 110
 fn op_ping() = 112
 
@@ -704,6 +754,40 @@ fn asked_to_reload(w, conns, s) =
   v.heard(s, v.world_time(w))
   conns
 
+# A swing or a rock, asked for by one byte. The world holds every rule — the
+# reach, the rock line, the price — so the server's whole part is to run it
+# on the asker's block and, when the pocket moved, say so to the one pocket
+# it belongs to. The craters and the rocks reach everybody through the tick's
+# rings, like every other change to the world.
+fn mine_one(w, conns, id) = match find(conns, id)
+  None -> conns
+  Some(c) -> did_mine(w, conns, c)
+
+fn did_mine(w, conns, c) =
+  s = conn_block(c)
+  got = v.swing_pick(s)
+  v.heard(s, v.world_time(w))
+  if got > 0 then say_pocket(c, s) else 0
+  conns
+
+fn build_one(w, conns, id) = match find(conns, id)
+  None -> conns
+  Some(c) -> did_build(w, conns, c)
+
+fn did_build(w, conns, c) =
+  s = conn_block(c)
+  ok = v.try_build(s)
+  v.heard(s, v.world_time(w))
+  if ok > 0 then say_pocket(c, s) else 0
+  conns
+
+fn say_pocket(c, s) =
+  b = strbuf()
+  put_u8(b, op_pocket())
+  put_u16(b, v.stones_of(s))
+  offer(conn_out(c), strbuf_str(b))
+  1
+
 # ---- somebody said something -----------------------------------------------
 #
 # The only message a client can put in front of every other player's eyes with
@@ -812,6 +896,9 @@ fn tick(w, conns, said) =
   send_craters(w, left, since(craters0, v.blasts_fired(w)))
   send_breaks(w, left, since(breaks0, v.breaks(w)))
   send_stones(w, left, since(stones0, v.blocks_gone(w)))
+  send_carves(w, left, v.carve_sent(w))
+  send_builts(w, left, v.built_sent(w))
+  v.mark_carves_sent(w)
   send_downed(w, left, since(downed0, v.fires_down(w)))
   send_hurts(w, left, since(hurts0, v.hurts(w)))
   send_fells(w, left, since(fells0, v.pines_down(w)))
@@ -1003,6 +1090,38 @@ fn send_break(w, conns, k) =
   broadcast(w, conns, index_msg(op_break(), v.break_which(w, k)))
   send_breaks(w, conns, k + 1)
 
+# One crater per message, by its cell; one rock per message, by its place.
+# The counters were read before the tick walked anybody, so a swing that
+# landed inside this tick is exactly what the difference holds.
+# Unlike every counter above, these two move *between* ticks — a swing is a
+# one-byte ask handled the moment it arrives, not a flag walked at the tick —
+# so the tick cannot bracket them by reading before and after. The world
+# keeps a sent-up-to cursor instead, and the tick drains from there.
+fn send_carves(w, conns, from) =
+  if from >= v.carves(w) then 0 else send_carve(w, conns, from)
+
+fn send_carve(w, conns, k) =
+  broadcast(w, conns, index_msg(op_carve(), v.carve_ev(w, k)))
+  send_carves(w, conns, k + 1)
+
+fn send_builts(w, conns, from) =
+  if from >= v.built(w) then 0 else send_built(w, conns, from)
+
+fn send_built(w, conns, k) =
+  broadcast(w, conns, built_msg(w, k))
+  send_builts(w, conns, k + 1)
+
+fn built_msg(w, k) =
+  b = strbuf()
+  sc = alloc_bytes(8)
+  put_u8(b, op_built())
+  put_f32(b, sc, v.built_ev(w, k, 1))
+  put_f32(b, sc, v.built_ev(w, k, 2))
+  put_f32(b, sc, v.built_ev(w, k, 3))
+  put_f32(b, sc, v.built_ev(w, k, 4))
+  free_ptr(sc)
+  strbuf_str(b)
+
 # Which pines a warhead took, one index each, like the stones.
 fn send_fells(w, conns, from) =
   if from == v.pines_down(w) then 0 else send_fell(w, conns, from)
@@ -1172,9 +1291,15 @@ fn blanked(b) =
 # a small number rather than a position, in the one byte that was already
 # being sent. A client old enough not to know masks the low bits and sees no
 # change.
+# The weapon field is two bits and there are five things a hand can hold now:
+# both tools go out as 3, which the far end draws as empty hands. A 4 would
+# carry into bit six and light everybody's jet, which is the kind of bug that
+# gets found in production at night.
 fn pose_of(s) =
-  bit_or(bit_or(bit_or(doing(s), if v.torch(s) > 0 then 8 else 0), shl(v.weapon(s), 4)),
+  bit_or(bit_or(bit_or(doing(s), if v.torch(s) > 0 then 8 else 0), shl(pose_w(s), 4)),
          if v.jet_on(s) > 0 then 64 else 0)
+
+fn pose_w(s) = if v.weapon(s) > 3 then 3 else v.weapon(s)
 
 fn doing(s) =
   k = v.keys_of(s)
@@ -1560,7 +1685,7 @@ fn handle_line(conn, inbox, id, budget, until, pair) =
 # the end of: `str_get` past the end is not a guard, the length is.
 fn route(inbox, id, msg) =
   k = str_get(msg, 0)
-  if k == op_input() && str_len(msg) >= 11 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_reload() then tell(inbox, Reloaded(id)) else if k == op_say() then tell(inbox, Said(id, rest_of(msg))) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
+  if k == op_input() && str_len(msg) >= 11 then moved(inbox, id, msg) else if k == op_fire() && str_len(msg) >= 13 then fired(inbox, id, msg) else if k == op_reload() then tell(inbox, Reloaded(id)) else if k == op_mine() then tell(inbox, Mined(id)) else if k == op_build() then tell(inbox, Built(id)) else if k == op_say() then tell(inbox, Said(id, rest_of(msg))) else if k == op_name() then tell(inbox, Named(id, rest_of(msg))) else if k == op_ping() then tell(inbox, Pinged(id, rest_of(msg))) else 0
 
 fn moved(inbox, id, msg) =
   sc = alloc_bytes(8)
