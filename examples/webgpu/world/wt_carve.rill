@@ -138,8 +138,9 @@ fn main() =
   # Untouched, the carved floor is the base ground everywhere.
   say("before a swing the floor is the ground, cm", cm(v.floor_at(w, rx, rz) - v.height(rx, rz)), 0)
 
-  # One swing: one stone out of one cell — and the stone is the wall's own,
-  # thirty centimetres of cube, one in the pocket.
+  # One swing: two stones out of one cell, one of them into the pocket. The
+  # cell is the wall's own stone, thirty centimetres of cube, and a swing
+  # takes it twice.
   aim_down(s, rx, rz)
   got = v.swing_pick(s)
   say("a swing pays one stone", got, 1)
@@ -148,14 +149,14 @@ fn main() =
   mx = v.cell_x(ci)
   mz = v.cell_z(ci)
   fell = v.height(mx, mz) - v.floor_at(w, mx, mz)
-  say("the floor fell one stone, cm", cm(fell), 30)
+  say("the floor fell two stones, cm", cm(fell), 60)
   say("one bite on the ring", v.carves(w), 1)
   # Flat across the bite and square at its edge: the same depth everywhere
   # inside the cell, not a dish that is deepest in the middle. This is the
   # whole of "don't make the dug shape round" as an assertion.
   fn drop(dx, dz) = cm(v.height(mx + dx, mz + dz) - v.floor_at(w, mx + dx, mz + dz))
-  say("flat one side of the cell, cm", drop(0.0 - 0.1, 0.0 - 0.1), 30)
-  say("flat the other, cm", drop(0.1, 0.1), 30)
+  say("flat one side of the cell, cm", drop(0.0 - 0.1, 0.0 - 0.1), 60)
+  say("flat the other, cm", drop(0.1, 0.1), 60)
   # And no wider than the stone: a step out of the cell is untouched ground.
   say("the next stone along is untouched, cm", drop(0.3, 0.0), 0)
   say("and the one behind it too, cm", drop(0.0, 0.0 - 0.3), 0)
@@ -167,8 +168,8 @@ fn main() =
   # metre it runs deep, and past a couple of metres the crosshair genuinely
   # covers the next stone along. Down to six stones it does not, which is
   # what makes a shaft a shaft rather than a scrape.
-  swings(s, rx, rz, 5, 0)
-  say("six swings, one column", if last_cell(w) == ci then 1 else 0, 1)
+  swings(s, rx, rz, 2, 0)
+  say("three swings, one column", if last_cell(w) == ci then 1 else 0, 1)
   say("and it is six stones deep, cm", cm(v.height(mx, mz) - v.floor_at(w, mx, mz)), 180)
 
   # A second valley, fed the same ring, digs the same holes: the two floors
@@ -182,9 +183,9 @@ fn main() =
 
   # All the way to the bottom, the way a pit is actually sunk: a floor a
   # stone wider than a body, taken a course at a time, standing in it and
-  # dropping with it. Thirty courses is nine metres and nine metres is magma.
+  # dropping with it. Fifteen courses is nine metres and nine metres is magma.
   (dx, dz) = find_rock(rz + 9.0)
-  sink(s, cell_mid_x(dx, dz), cell_mid_z(dx, dz), 30)
+  sink(s, cell_mid_x(dx, dz), cell_mid_z(dx, dz), 15)
   px = cell_mid_x(dx, dz)
   pz = cell_mid_z(dx, dz)
   say("the pit stops at the cap, cm", cm(v.height(px, pz) - v.floor_at(w, px, pz)), 900)
@@ -263,10 +264,10 @@ fn main() =
   s4 = v.join(w4)
   (qx, qz) = find_rock_from(2.0, 0.0 - 55.0)
   say("a rock in the east-and-north quadrant", if qx > 0.0 && qz < 0.0 then 1 else 0, 1)
-  swings(s4, qx, qz, 5, 0)
+  swings(s4, qx, qz, 2, 0)
   qmx = v.cell_x(last_cell(w4))
   qmz = v.cell_z(last_cell(w4))
-  say("the field says five stones, cm", cm(v.height(qmx, qmz) - v.floor_at(w4, qmx, qmz)), 150)
+  say("the field says four stones, cm", cm(v.height(qmx, qmz) - v.floor_at(w4, qmx, qmz)), 120)
   say("and the rebake had work to do", v.rebake(s4), 1)
   low = mesh_low(v.terrain(s4), 0, v.terrain_verts(s4), qmx, qmz, 9999.0)
   say("the mesh came down with it, cm", if cm(v.height(qmx, qmz) - low) > 100 then 1 else 0, 1)
@@ -286,14 +287,14 @@ fn main() =
   tz = cell_mid_z(tx0, tz0)
   c0 = v.carves(w4)
   for i in 0..6
-    dig_cell_deep(s4, tx, tz + to_float(i) * v.carve_q(), 3)
+    dig_cell_deep(s4, tx, tz + to_float(i) * v.carve_q(), 2)
   # Where the trench really starts: the first stone the ring says came out,
   # not the spot the feet were put on. The two differ by the same eye's
   # width every time, which is why the line is still a line.
   lx = v.cell_x(v.carve_ev(w4, c0))
   lz = v.cell_z(v.carve_ev(w4, c0))
   say("six stones of trench, cut in line", trench_len(w4, lx, lz, 0, 0), 6)
-  say("each of them three deep, no more", trench_max(w4, lx, lz, 0, 0), 3)
+  say("each of them four stones, no more", trench_max(w4, lx, lz, 0, 0), 4)
 
   # The crosshair's answer is the swing's answer: gold exactly where a swing
   # would land.
@@ -301,6 +302,6 @@ fn main() =
   say("rock under the crosshair reads gold", v.can_mine(s), 1)
   # Straight up, not a little up: a little up from inside a pit is the pit's
   # own wall, which is rock and rightly gold.
-  poke_f32(s, 20, 1.4)
+  poke_f32(s, 20, v.pitch_max())
   say("and the sky does not", v.can_mine(s), 0)
   println("done")

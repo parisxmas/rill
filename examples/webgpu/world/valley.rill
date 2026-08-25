@@ -3812,14 +3812,24 @@ fn dirty_grow(cb, x, z, m) =
 # graded crater — the roundness of the old bowls was exactly that grading,
 # and a bite that is one whole cell one whole metre deep is what carves in
 # squares.
+# What a swing opens, and what it is worth, are two different numbers now.
+#
+# It opens two stones — a cell taken down twice, six centimetres shy of a
+# knee — because at one stone a swing a shaft to the magma was two hundred
+# and seventy of them and the digging read as scraping. It pays one, because
+# what the hillside gives up and what a pocket is owed do not have to agree:
+# half of what comes out is spoil. Fifteen courses to the bottom, and a wall
+# still costs eight honest swings.
+fn dig_bite() = 2
+
 fn dig_write(cb, i, v) =
   if v == magma_v() then 0
-  else if v + 1 >= carve_cap() then
+  else if v + dig_bite() >= carve_cap() then
     cell_put(cb, i, magma_v())
     note_magma(cb, i)
     1
   else
-    cell_put(cb, i, v + 1)
+    cell_put(cb, i, v + dig_bite())
     1
 
 # A cell that has just burned through. Once, ever — dig_write only comes this
