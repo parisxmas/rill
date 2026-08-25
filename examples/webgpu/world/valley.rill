@@ -286,6 +286,82 @@ fn keep_grass(h, seed) = if h < 0.9 then false else if h > 8.5 then false else s
 # for.
 fn keep_poplar(h, seed) = if h < 0.35 then false else if h > 2.9 then false else seed < 0.30
 
+# ---- the flowers ------------------------------------------------------------
+#
+# Everything else in this valley is scattered: a candidate, a hash, a rule
+# about the ground, and whatever survives stands where it fell. Flowers are
+# not scattered. They come in patches, because a plant that seeds itself
+# seeds itself next to its parent, and a meadow with an even sprinkling of
+# flowers over it is a meadow nobody has ever walked in.
+#
+# So the walk picks *patches* — the same hash, the same kind of rule — and
+# each one puts a dozen or two plants inside a couple of metres of itself.
+# What that buys is somewhere to walk towards, which an even sprinkle never
+# gives you.
+#
+# They collide with nothing. There is no sphere, no entry in the walk's
+# collision lists, nothing in any ring: they are drawn and that is all. You
+# walk through them.
+fn flower_patches(npine: Int) -> Int = npine / 8
+
+fn flowers_per_patch() = 18
+
+fn flower_cap(npine: Int) -> Int = flower_patches(npine) * flowers_per_patch()
+
+# Open ground, and lower than the pines like to stand: the meadow between the
+# shore and the treeline, and the flats above it. Not on the bare tops, where
+# nothing else grows either.
+fn keep_flowers(h, seed) = if h < 0.9 then false else if h > 7.5 then false else seed < 0.16
+
+fn flowers(s: Ptr) -> Ptr = peek_ptr(wd(s), 71)
+
+# Slot 251, which is above every pointer this block has on either target —
+# and that is not a preference, it is the only stretch that works twice. A
+# pointer is eight bytes natively and four under wasm, so float slot 64 and
+# pointer slot 64 are the same bytes in the browser and thirty-two apart on
+# the server: the count went in at 64, sat on top of the terrain mesh, and
+# came back as a hundred and ten thousand flowers on wasm and two thousand
+# on the server. Pointers here stop at 120; floats from 242 up are clear on
+# both, which is where gravity and the jetpack's tank already live.
+fn flower_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 251))
+
+# One patch: a centre, and a couple of dozen plants around it. The spread is
+# not even either — `r * r` crowds them towards the middle, which is what a
+# patch looks like from above.
+fn patch(buf, at, cx, cz, seed) =
+  for j in 0..flowers_per_patch()
+    one_flower(buf, (at + j) * 8, cx, cz, seed + to_float(j) * 3.7)
+  flowers_per_patch()
+
+fn one_flower(buf, k, cx, cz, seed) =
+  a = hash2(seed, 19.0) * 6.28318
+  r = hash2(seed, 31.0)
+  d = r * r * 2.4
+  x = cx + cos(a) * d
+  z = cz + sin(a) * d
+  sd = hash2(seed, 57.0)
+  c = hash2(seed, 83.0)
+  poke_f32(buf, k, x)
+  poke_f32(buf, k + 1, height(x, z))
+  poke_f32(buf, k + 2, z)
+  poke_f32(buf, k + 3, 0.42 + sd * 0.34)
+  poke_f32(buf, k + 4, hash2(seed, 97.0) * 6.28318)
+  poke_f32(buf, k + 5, 0.30 + c * 0.22)
+  poke_f32(buf, k + 6, 0.34 + c * 0.20)
+  poke_f32(buf, k + 7, 0.28 + c * 0.18)
+  1
+
+fn sow_flowers(buf, i, made, patches, lim) =
+  if i >= lim || made >= patches then made * flowers_per_patch()
+  else
+    seed = hash2(to_float(i), 401.0)
+    x = (hash2(to_float(i), 137.0) - 0.5) * 152.0
+    z = (hash2(to_float(i), 211.0) - 0.5) * 152.0
+    if keep_flowers(height(x, z), seed) && !near_spawn(x, z) then
+      patch(buf, made * flowers_per_patch(), x, z, seed * 313.0)
+      sow_flowers(buf, i + 1, made + 1, patches, lim)
+    else sow_flowers(buf, i + 1, made, patches, lim)
+
 # The tint each thing carries. A poplar is the pale end of the scale in every
 # channel — the leaves are a yellow-green that catches the low sun where the
 # pines go black, and the same number lifts the bark, which the shader reads
@@ -3327,6 +3403,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   # placement is the same deterministic walk over the same hash. A valley that
   # agrees about its pines agrees about its poplars for nothing.
   poplar_buf = alloc_bytes(poplar_cap(npine) * 32)
+  flower_buf = alloc_bytes(flower_cap(npine) * 32)
   crystal_buf = alloc_bytes(ncrys * 32)
   grass_buf = alloc_bytes(ngrass * 32)
   bullet_buf = alloc_bytes(bullet_cap() * 32)
@@ -3356,9 +3433,11 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   nc = place(crystal_buf, 0, 0, ncrys, 20000, 1)
   ng = place(grass_buf, 0, 0, ngrass, 20000, 2)
   npo = place(poplar_buf, 0, 0, poplar_cap(npine), 20000, 3)
+  nfl = sow_flowers(flower_buf, 0, 0, flower_patches(npine), 20000)
   poke_ptr(s, 64, m)
   poke_ptr(s, 65, pine_buf)
   poke_ptr(s, 70, poplar_buf)
+  poke_ptr(s, 71, flower_buf)
   poke_ptr(s, 66, crystal_buf)
   poke_ptr(s, 67, grass_buf)
   poke_ptr(s, 68, bullet_buf)
@@ -3406,7 +3485,8 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   clear_blasts(blast_buf)
   poke_f32(s, 56, to_float(grid * grid * 6))
   poke_f32(s, 57, to_float(np))
-  poke_f32(s, 54, to_float(npo))
+  poke_f32(s, 252, to_float(npo))
+  poke_f32(s, 251, to_float(nfl))
   poke_f32(s, 58, to_float(nc))
   poke_f32(s, 59, to_float(ng))
   # Everything the walls, the wire rings and the round keep, set to nought
@@ -4005,7 +4085,7 @@ fn poplar_cap(npine: Int) -> Int = npine / 3
 
 fn poplars(s: Ptr) -> Ptr = peek_ptr(wd(s), 70)
 
-fn poplar_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 54))
+fn poplar_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 252))
 
 fn pine_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 57))
 

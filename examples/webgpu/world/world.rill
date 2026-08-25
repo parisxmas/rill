@@ -54,6 +54,12 @@ export fn poplars(s: Ptr) -> Ptr = v.poplars(s)
 
 export fn poplar_count(s: Ptr) -> Int = v.poplar_count(s)
 
+# The flowers, in patches on the open ground. They collide with nothing and
+# nothing collides with them: this is a buffer to draw and no more than that.
+export fn flowers(s: Ptr) -> Ptr = v.flowers(s)
+
+export fn flower_count(s: Ptr) -> Int = v.flower_count(s)
+
 export fn crystals(s: Ptr) -> Ptr = v.crystals(s)
 
 export fn crystal_count(s: Ptr) -> Int = v.crystal_count(s)

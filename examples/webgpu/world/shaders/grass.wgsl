@@ -21,7 +21,13 @@
     let alt  = select(0.0, 1.0, fract(r * 17.0) < 0.5);
     // Inset a hair: the cells share edges, and a bilinear tap on the boundary
     // would fetch the neighbouring plant.
-    let cell = uv * 0.49 + 0.005 + vec2f(alt, tall) * 0.5;
+    //
+    // The atlas is four cells across and two down now — the undergrowth in
+    // the left half, the meadow's flowers in the right — so a cell is a
+    // quarter across and a half down, and the four this shader draws from are
+    // the left two columns.
+    let cell = uv * vec2f(0.2450, 0.4900) + vec2f(0.0025, 0.0050)
+             + vec2f(alt * 0.25, tall * 0.5);
 
     // What is in a cell is not all the same size in life. The nettle cell
     // holds one leaf, and one leaf at the scale of a clump of grass is a leaf

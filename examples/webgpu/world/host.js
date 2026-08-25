@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=411";   // keep in step with V below
-import { join, WH } from "./net.js?v=411";
+import { load } from "./world.js?v=412";   // keep in step with V below
+import { join, WH } from "./net.js?v=412";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=411";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "411";
+const V = "412";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -99,6 +99,7 @@ const SHADERS = {
   sky: "common", water: "common", glow: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
   mark: "common", spark: "common", ak: "common", jet: "common",
+  flower: "common",
   // The HUD stands alone: it has a uniform block of its own, and giving it
   // `uniforms.wgsl` would declare group 0 binding 0 twice.
   hud: null,
@@ -120,7 +121,10 @@ const TEXTURES = [
   ["./pine-twig.png", 1024, 512],
   ["./pine-bark.jpg", 256, 256],
   ["./grass-ground.jpg", 256, 256],
-  ["./plants.png", 512, 512],        // the undergrowth atlas, 2x2
+  // Eight cells: the undergrowth's four on the left — two tufts, a fern, a
+  // nettle — and the meadow's four flowers on the right, white, yellow, pink
+  // and blue. One texture because there is no seventeenth binding to give.
+  ["./plants.png", 1024, 512],
   ["./rock-face.jpg", 256, 256],
   ["./shore-sand.jpg", 256, 256],
   ["./rifle-atlas.jpg", 1024, 512],  // the rifle's two materials, side by side
@@ -179,6 +183,7 @@ function loadShaders(step, pakText) {
     MARK: whole("mark"),
     SPARK: whole("spark"),
     JET: whole("jet"),
+    FLOWER: whole("flower"),
     HUD: whole("hud"),
     AK: whole("ak"),
     STONE: whole("stone"),
@@ -1077,6 +1082,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     { constants: { emissive: 0.72 }, blend: overPre, cull: "none",
       depth: { depthWriteEnabled: false } });
   const grassPipe = pipe("grass", S.GRASS, [pineLayout, instLayout], { cull: "none" });
+  // The flowers, on the undergrowth's own mesh and layout — two crossed cards
+  // — and its own shader, which draws from the other half of the atlas and
+  // leans further in the wind.
+  const flowerPipe = pipe("flower", S.FLOWER, [pineLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   // The pack's flame, on the crystals' own instance layout — where it starts,
   // how hard it is burning, a seed, and a colour it does not read. Additive
@@ -2195,13 +2204,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     if (cam) stateF32().set(cam, 19);
 
-    if (W) for (const k of ["terrainBuf", "pineInst", "poplarInst", "crystalInst", "grassInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
+    if (W) for (const k of ["terrainBuf", "pineInst", "poplarInst", "flowerInst", "crystalInst", "grassInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
     const counts = {
       terrain: Number(E.terrain_verts(state)),
       pines: Number(E.pine_count(state)),
       crystals: Number(E.crystal_count(state)),
       grass: Number(E.grass_count(state)),
       poplars: Number(E.poplar_count(state)),
+      flowers: Number(E.flower_count(state)),
     };
     W = { counts };
     W.terrainBuf = gpuBuf(new Float32Array(E.memory.buffer, Number(E.terrain(state)), counts.terrain * 9));
@@ -2210,6 +2220,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     W.pineInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.pines(state)), counts.pines * 8));
     W.poplarInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.poplars(state)),
                                            Math.max(counts.poplars, 1) * 8));
+    W.flowerInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.flowers(state)),
+                                           Math.max(counts.flowers, 1) * 8));
     W.crystalInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.crystals(state)), counts.crystals * 8));
     W.grassInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.grass(state)), counts.grass * 8));
     W.waterBuf = gpuBuf(waterMesh(86, T.water));
@@ -3410,6 +3422,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     pass.setPipeline(grassPipe);
     pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.grassInst); pass.draw(grassVerts, W.counts.grass);
+    if (W.counts.flowers) {
+      pass.setPipeline(flowerPipe);
+      pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.flowerInst);
+      pass.draw(grassVerts, W.counts.flowers);
+    }
     if (figureCount > 0) {
       pass.setPipeline(figurePipe);
       pass.setBindGroup(1, poseBg);

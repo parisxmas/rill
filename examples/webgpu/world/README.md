@@ -48,6 +48,21 @@ directory by hand, slices `page.js` out and imports it as a blob module, and
 that module reads `world.wasm` out of the same bytes and hands them straight
 to the loader. A visitor fetches two things: `index.html` and `valley.rpak`.
 
+Flowers come in patches. Everything else in the valley is scattered — a
+candidate, a hash, a rule about the ground, and whatever survives stands where
+it fell — but a plant that seeds itself seeds itself next to its parent, and a
+meadow with an even sprinkling of flowers over it is a meadow nobody has ever
+walked in. So the walk picks patches and each one puts eighteen plants inside
+a couple of metres of itself, crowded towards the middle. What that buys is
+somewhere to walk towards. They collide with nothing: no sphere, no entry in
+any of the world's rings, drawn and no more than that. The heads are
+ambientCG's `FlowerSet001` and the blades its `Foliage001`, both CC0, built
+into four plants — white, yellow, pink and blue — by `tools/bake_flowers.py`;
+the tint is applied in proportion to how unsaturated a pixel is, so the petals
+turn and the yellow centre does not. They lean further and slower than the
+grass does, squared in the height, because the head is the heaviest thing on
+the plant and it is at the top of it.
+
 Two trees grow here. The pines take the slopes; the poplars take the water's
 edge, which is the one band of the valley nothing else wants — a pine will not
 stand below a metre and the crystals thin out under one, so the shore was bare
