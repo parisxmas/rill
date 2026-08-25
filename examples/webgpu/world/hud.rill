@@ -193,14 +193,20 @@ fn theme_defaults(h) =
   set_color(h, c_text(), 232.0, 228.0, 218.0, 1.0)
   set_color(h, c_gold(), 246.0, 192.0, 46.0, 1.0)
   set_color(h, c_sub(), 154.0, 148.0, 184.0, 1.0)
-  set_color(h, c_dim(), 111.0, 106.0, 140.0, 1.0)
+  # Was 111, 106, 140 — a muted violet that reads on the CSS's own near-black
+  # and disappears entirely over the pale end of this valley. The HUD lies
+  # over a world, not over a page: sand, snow-lit rock and the sky at noon are
+  # all brighter than that grey, and a quiet colour is only quiet if it can
+  # still be read. Raised to sit between the sub and the bright, which is
+  # where "quiet" was always meant to be.
+  set_color(h, c_dim(), 168.0, 163.0, 196.0, 1.0)
   set_color(h, c_bright(), 201.0, 195.0, 228.0, 1.0)
   set_color(h, c_green(), 87.0, 194.0, 106.0, 1.0)
   set_color(h, c_red(), 224.0, 80.0, 58.0, 1.0)
   set_color(h, c_orange(), 246.0, 131.0, 46.0, 1.0)
   set_color(h, c_white(), 255.0, 255.0, 255.0, 1.0)
   set_color(h, c_lav(), 207.0, 201.0, 232.0, 1.0)
-  set_color(h, c_bhead(), 111.0, 106.0, 146.0, 1.0)
+  set_color(h, c_bhead(), 158.0, 153.0, 190.0, 1.0)
   set_color(h, c_barbg(), 8.0, 7.0, 14.0, 0.72)
   set_color(h, c_brass(), 240.0, 182.0, 74.0, 1.0)
   set_color(h, c_socket(), 255.0, 255.0, 255.0, 0.10)
@@ -212,7 +218,7 @@ fn theme_defaults(h) =
   set_color(h, c_you(), 255.0, 208.0, 138.0, 1.0)
   set_color(h, c_btext(), 239.0, 234.0, 255.0, 1.0)
   set_color(h, c_clock_low(), 255.0, 185.0, 107.0, 1.0)
-  set_color(h, c_whohead(), 86.0, 82.0, 115.0, 1.0)
+  set_color(h, c_whohead(), 132.0, 127.0, 165.0, 1.0)
   set_color(h, c_barrow(), 27.0, 26.0, 44.0, 1.0)
   set_color(h, c_vit2(), 143.0, 209.0, 79.0, 1.0)
   set_color(h, c_black(), 0.0, 0.0, 0.0, 1.0)

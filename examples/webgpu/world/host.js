@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=406";   // keep in step with V below
-import { join, WH } from "./net.js?v=406";
+import { load } from "./world.js?v=407";   // keep in step with V below
+import { join, WH } from "./net.js?v=407";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=406";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "406";
+const V = "407";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1066,10 +1066,26 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     ctx.shadowColor = "rgba(0,0,0,0.95)";
     for (const r of rows) {
       ctx.font = `${r.weight} ${r.size * hudDpr}px ${HUD_FONT}`;
-      ctx.shadowBlur = 2.5 * hudDpr;
+      // Wider than the CSS's own two and a half. A halo is what makes small
+      // text survive a bright hillside behind it, and the atlas is where it
+      // has to be decided: the shader can only spread what was baked.
+      ctx.shadowBlur = 3.4 * hudDpr;
       for (let i = 0; i < HUD_CHARS.length; i++) {
         const cx = (i % r.perRow) * r.cellW, cy = r.y0 + Math.floor(i / r.perRow) * r.cellH;
+        // Three passes, then a fourth with the shadow off.
+        //
+        // One pass gives what a CSS text-shadow gives, which was right when
+        // this HUD lay over a page and is not right over a valley: a letter
+        // in quiet grey on sunlit rock has a soft grey edge against a bright
+        // background and cannot be read at all. Drawing it again and again
+        // accumulates the halo's alpha into something closer to an outline —
+        // the letter keeps its own shape and gains a dark rim it carries
+        // wherever it goes. The last pass is clean, so the core stays crisp
+        // rather than being three blurs deep.
+        for (let k = 0; k < 3; k++) ctx.fillText(HUD_CHARS[i], cx + pad * hudDpr, cy + pad * hudDpr);
+        ctx.shadowColor = "transparent";
         ctx.fillText(HUD_CHARS[i], cx + pad * hudDpr, cy + pad * hudDpr);
+        ctx.shadowColor = "rgba(0,0,0,0.95)";
       }
     }
     const tex = device.createTexture({

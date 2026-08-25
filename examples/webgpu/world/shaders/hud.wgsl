@@ -65,7 +65,11 @@
       let t = textureSampleLevel(hudAtlas, hudSamp, v.uv / hu.atlas.xy, 0.0);
       let glyph = t.a * t.r;
       let shadow = t.a * (1.0 - t.r);
-      let a = v.color.a * (glyph + shadow * 0.85);
+      // The halo, at full strength rather than a little under it. It is the
+      // only thing separating a letter from whatever it is lying over, and
+      // what it is lying over is a valley — hillsides in full sun as often as
+      // the near-black the palette was picked against.
+      let a = v.color.a * (glyph + shadow);
       return vec4f(v.color.rgb * glyph * v.color.a, a);
     }
 
