@@ -37,7 +37,7 @@ for r in range(2):
 
 # Drawn at four times the size and reduced at the end, which is the cheapest
 # antialiasing there is.
-S = 1024
+S = 2048
 spray = Image.new("RGBA", (S, S), (0, 0, 0, 0))
 random.seed(11)
 
@@ -46,33 +46,36 @@ random.seed(11)
 # what the first spray had and which drew a tree hung with dinner plates. The
 # density then has to come from the count, and the count is what a photograph
 # of a branch actually has on it.
-def put(i, t, side, scale_mul=1.0):
+# A card is a piece of crown now, not a twig: a few hundred leaves scattered
+# over it, thinning towards the edges so the card's own rectangle never shows.
+# The thinning is the whole trick — a leaf that touches the border is a
+# straight cut, and a straight cut is what gives cards away.
+def put(i, cx, cy, scale_mul=1.0):
     leaf = leaves[i % len(leaves)]
-    scale = (0.15 - 0.05 * t) * scale_mul * S / max(leaf.size)
-    l = leaf.resize((max(8, int(leaf.size[0] * scale)), max(8, int(leaf.size[1] * scale))),
+    scale = 0.062 * scale_mul * S / max(leaf.size)
+    l = leaf.resize((max(6, int(leaf.size[0] * scale)), max(6, int(leaf.size[1] * scale))),
                     Image.LANCZOS)
-    # Hanging, turned, and never twice the same: two leaves at one angle read
-    # as a pattern, and a pattern is what gives a texture away.
-    ang = side * (48 + random.uniform(-40, 40)) + 180 + random.uniform(-25, 25)
-    l = l.rotate(ang, expand=True, resample=Image.BICUBIC)
-    cx = S * 0.5 + side * (0.04 + 0.26 * (1 - t)) * S + random.uniform(-0.10 * S, 0.10 * S)
-    cy = S * (0.05 + 0.88 * t) + random.uniform(-0.05 * S, 0.05 * S)
+    # Turned every which way: two leaves at one angle read as a pattern, and a
+    # pattern is what gives a texture away.
+    l = l.rotate(random.uniform(0, 360), expand=True, resample=Image.BICUBIC)
     spray.alpha_composite(l, (max(0, min(S - l.size[0], int(cx - l.size[0] / 2))),
                               max(0, min(S - l.size[1], int(cy - l.size[1] / 2)))))
 
-# Something over a hundred leaves to a card. That is not extravagance: at a
-# tenth of the card each, fewer than this is a branch you can see daylight
-# through from every angle, and a poplar in leaf is not a see-through thing.
-n = 42
-for i in range(n):
-    t = i / (n - 1)
-    put(i, t, -1)
-    put(i + 3, t, 1)
-    put(i + 5, t, -1, 0.86)
-    put(i + 1, t, 1, 0.86)
-# And a run down the middle, so the card has no hole in it.
-for i in range(30):
-    put(i + 1, 0.03 + i * 0.032, 0, 0.88)
+# Rejection sampling against a soft mask: densest down the middle and through
+# the middle of the height, nothing at the corners.
+kept = 0
+tries = 0
+while kept < 620 and tries < 40000:
+    tries += 1
+    x = random.random()
+    y = random.random()
+    edge = min(x, 1 - x, y, 1 - y) * 2.0            # 0 at a border, 1 at the middle
+    across = 1.0 - abs(x - 0.5) * 1.5               # a little denser down the spine
+    if random.random() > min(1.0, edge * 1.6) * max(0.35, across):
+        continue
+    put(kept, x * S, y * S, 0.8 + random.random() * 0.5)
+    kept += 1
+print("leaves:", kept)
 
-spray.resize((256, 256), Image.LANCZOS).save("poplar-spray.png")
+spray.resize((512, 512), Image.LANCZOS).save("poplar-spray.png")
 print("poplar-spray.png written")

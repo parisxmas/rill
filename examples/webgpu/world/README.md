@@ -104,7 +104,15 @@ now: the needle spray on the left and, on the right, a spray of poplar leaves
 cut from ambientCG's `LeafSet004` (CC0) and arranged into a branch by
 `tools/bake_poplar.py`. Two trees share one texture because sixteen sampled
 textures a stage is exactly what this scene already spends and there is no
-seventeenth binding to give. Mip levels are made at load by decoding
+seventeenth binding to give.
+
+That poplar cell is six hundred leaves deep, and it is deep on purpose: a leaf
+costs pixels and a card costs triangles, so the leaves belong in the picture
+and the cards should be as few as will still turn as you walk round them. One
+card is a piece of crown rather than a twig — twenty of them, fifty-two
+triangles a tree. It was ninety-eight cards and two hundred and eight
+triangles, which is what paying in geometry for something a texture can say
+looks like. Mip levels are made at load by decoding
 each file again at each size, because alpha tested foliage without them
 shimmers from a few trees away.
 

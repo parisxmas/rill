@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=409";   // keep in step with V below
-import { join, WH } from "./net.js?v=409";
+import { load } from "./world.js?v=410";   // keep in step with V below
+import { join, WH } from "./net.js?v=410";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=409";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "409";
+const V = "410";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -111,11 +111,13 @@ const SHADERS = {
 // The images, and the square they are decoded to. Listed here rather than at
 // the point of use so that the loader can count them before it starts.
 const TEXTURES = [
-  // Two cells side by side: the pine's needle spray on the left, a poplar's
-  // leaves on the right. One texture for both trees because sixteen sampled
-  // textures a stage is exactly what this scene already spends and there is
-  // no seventeenth binding to give — see the note on `boxes-atlas`.
-  ["./pine-twig.png", 512, 256],
+  // Both trees' foliage in one texture, because sixteen sampled textures a
+  // stage is exactly what this scene already spends and there is no
+  // seventeenth binding to give — see the note on `boxes-atlas`. The pine's
+  // needle spray is the 256 square at the top left; the poplar's is the 512
+  // square beside it, four times the area because it carries four times the
+  // leaves and is stretched over a card four times the size.
+  ["./pine-twig.png", 768, 512],
   ["./pine-bark.jpg", 256, 256],
   ["./grass-ground.jpg", 256, 256],
   ["./plants.png", 512, 512],        // the undergrowth atlas, 2x2
@@ -313,12 +315,12 @@ function pineMesh(coarse) {
         const p00 = at(base, -1, hIn), p01 = at(base, 1, hIn);
         const p10 = at(tip, -1, hOut), p11 = at(tip, 1, hOut);
         // v = 1 at the stem, 0 at the tip: the atlas has the twig pointing up.
-        // The left half of the foliage atlas, inset a little so the sampler
-        // cannot reach across the seam into the poplar's leaves at the
-        // coarser mips.
-        const nu0 = 0.004, nu1 = 0.496;
-        push(p00, n, [nu0, 1]); push(p01, n, [nu1, 1]); push(p11, n, [nu1, 0]);
-        push(p00, n, [nu0, 1]); push(p11, n, [nu1, 0]); push(p10, n, [nu0, 0]);
+        // The needle cell: the 256 square at the top left of a 768 by 512
+        // atlas, inset a little so the sampler cannot reach across a seam at
+        // the coarser mips.
+        const nu0 = 0.004, nu1 = 0.329, nv0 = 0.004, nv1 = 0.496;
+        push(p00, n, [nu0, nv1]); push(p01, n, [nu1, nv1]); push(p11, n, [nu1, nv0]);
+        push(p00, n, [nu0, nv1]); push(p11, n, [nu1, nv0]); push(p10, n, [nu0, nv0]);
       }
     }
   }
@@ -450,33 +452,31 @@ function poplarMesh(coarse) {
   // poplar cuts against the sky. The cards face outward and are drawn from
   // both sides, like the pine's.
   //
-  // The right cell of the foliage atlas: a spray of poplar leaves, cut from
-  // ambientCG's LeafSet004 (CC0) and arranged into a branch by
-  // `tools/bake_poplar.py`. Inset from the seam for the mips' sake.
+  // The poplar cell: the 512 square beside the needles, six hundred leaves
+  // deep, cut from ambientCG's LeafSet004 (CC0) and scattered by
+  // `tools/bake_poplar.py` with the density thinning towards the edges so the
+  // card's own rectangle never shows.
   //
-  // A spray and not a single leaf. The plant atlas's nettle was tried first
-  // and a tree built from eighty separate leaves is eighty separate leaves —
-  // you can count them. A branch's worth per card is what a crown is made of,
-  // and it is also fewer cards for more foliage.
-  const CU = 0.504, CV = 0.004, SPAN = 0.492;
-  const rings = coarse ? 4 : 14;
-  const perRing = coarse ? 2 : 7;
+  // One card is a piece of crown, not a twig. Twenty of them make this tree.
+  // It was ninety-eight, which is the mistake of paying in geometry for
+  // something a texture can say: a leaf costs pixels and a card costs
+  // triangles, so the leaves belong in the picture and the cards should be as
+  // few as will still turn as you walk round them.
+  const CU = 0.336, CV = 0.003, SPAN = 0.661, VSPAN = 0.994;
+  const rings = coarse ? 2 : 5;
+  const perRing = coarse ? 2 : 4;
   for (let i = 0; i < rings; i++) {
     const u = rings === 1 ? 0 : i / (rings - 1);   // 0 at the lowest ring, 1 at the tip
     const y = 1.15 + u * 3.60;
     // Widest at two fifths up, nothing at the very top.
     const lens = 1 - Math.pow(Math.abs(u - 0.40) / 0.62, 1.7);
-    const rad = Math.max(0.06, 0.42 * lens);
-    // Half a metre of card, near enough, which is what puts the leaves on it
-    // at five to ten centimetres — a poplar leaf. The first pass had cards
-    // most of two metres across and hung the tree with dinner plates: the
-    // texture was not wrong, the scale it was drawn at was.
-    //
-    // Small cards mean more of them, and more of them is what makes a crown
-    // out of a column: one ring's leaves reach past its neighbours' and the
-    // gaps stop being holes.
-    const w = (0.42 + 0.26 * lens) * (coarse ? 3.6 : 1.0);
-    const hgt = (0.44 + 0.26 * lens) * (coarse ? 3.8 : 1.0);
+    const rad = Math.max(0.05, 0.30 * lens);
+    // A card a metre and a bit across in the world, which is what puts the
+    // leaves painted on it at five to ten centimetres — a poplar leaf. Wide
+    // enough that four to a ring close the column, and five rings cover its
+    // height.
+    const w = (0.78 + 0.34 * lens) * (coarse ? 1.7 : 1.0);
+    const hgt = (0.92 + 0.42 * lens) * (coarse ? 1.9 : 1.0);
     for (let j = 0; j < perRing; j++) {
       // Turned ring by ring by an angle that never repeats, so the column
       // does not stack into visible columns of card.
@@ -493,7 +493,7 @@ function poplarMesh(coarse) {
       const p11 = [cx + tx * half, yt, cz + tz * half];
       // v runs 1 at the bottom, as the atlas has each plant standing on its
       // cell floor.
-      const uv = (s, t) => [CU + s * SPAN, CV + (1 - t) * (1 - 2 * CV)];
+      const uv = (s, t) => [CU + s * SPAN, CV + (1 - t) * VSPAN];
       push(p00, n, uv(0, 0)); push(p10, n, uv(1, 0)); push(p11, n, uv(1, 1));
       push(p00, n, uv(0, 0)); push(p11, n, uv(1, 1)); push(p01, n, uv(0, 1));
     }
