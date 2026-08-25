@@ -3395,7 +3395,15 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   # 512, which is exactly enough for the wasm build and writes off the end of
   # the allocation for the native one.
   s = alloc_bytes(1024)
+  # `alloc_bytes` hands back whatever was there. Every slot the world reads
+  # before something writes it has to be cleared here — 250 always was, and
+  # the pick brought three more: the two sent-up-to cursors and the hosted
+  # flag, which as inherited garbage once read "somebody else's valley" and
+  # quietly refused every swing this browser made in its own.
   poke_f32(s, 250, 0.0)
+  poke_f32(s, 253, 0.0)
+  poke_f32(s, 254, 0.0)
+  poke_f32(s, 255, 0.0)
   m = alloc_bytes(grid * grid * 54 * 4)
   pine_buf = alloc_bytes(npine * 32)
   # A third as many poplars as pines, and no number of its own on the wire:
