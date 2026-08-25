@@ -15,8 +15,8 @@
 // The plumbing — WASI shim, instantiation, init — is `world.js`, which
 // `rill build` generates beside the module.
 
-import { load } from "./world.js?v=410";   // keep in step with V below
-import { join, WH } from "./net.js?v=410";
+import { load } from "./world.js?v=411";   // keep in step with V below
+import { join, WH } from "./net.js?v=411";
 
 // One number, appended to every asset URL.
 //
@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=410";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "410";
+const V = "411";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -113,11 +113,11 @@ const SHADERS = {
 const TEXTURES = [
   // Both trees' foliage in one texture, because sixteen sampled textures a
   // stage is exactly what this scene already spends and there is no
-  // seventeenth binding to give — see the note on `boxes-atlas`. The pine's
-  // needle spray is the 256 square at the top left; the poplar's is the 512
-  // square beside it, four times the area because it carries four times the
-  // leaves and is stretched over a card four times the size.
-  ["./pine-twig.png", 768, 512],
+  // seventeenth binding to give — see the note on `boxes-atlas`. Two 512
+  // cells side by side: a mass of needles and a mass of leaves. Both are
+  // deep — thirty-odd sprays, six hundred leaves — because that is what lets
+  // a tree be made of a handful of cards instead of a hundred.
+  ["./pine-twig.png", 1024, 512],
   ["./pine-bark.jpg", 256, 256],
   ["./grass-ground.jpg", 256, 256],
   ["./plants.png", 512, 512],        // the undergrowth atlas, 2x2
@@ -279,18 +279,29 @@ function pineMesh(coarse) {
   // its length reaches outward, with the twig's stem at the trunk and its tip
   // at the far end. A card lying flat would vanish when you look at it from
   // the side, which is where a walking camera looks at a tree from.
+  // Seven whorls of five, not twelve of eight.
+  //
+  // A branch here is two quads crossed about its own axis — four triangles —
+  // so eighty-four branches was three hundred and fifty triangles a tree and
+  // three hundred thousand across nine hundred of them: the largest thing in
+  // the valley by a long way, and all of it paying in geometry for cover a
+  // texture can give. The needle cell carries thirty-odd sprays now, so one
+  // card is a branch's worth of needles rather than a twig's, and half as
+  // many of them at a third again the size cover the same cone.
   const tiers = [];
-  const whorls = coarse ? 4 : 12;
+  const whorls = coarse ? 4 : 7;
   for (let i = 0; i < whorls; i++) {
     const u = whorls === 1 ? 0 : i / (whorls - 1);  // 0 at the lowest whorl, 1 at the spire
     tiers.push({
       y: 0.95 + u * 1.60,
-      len: 0.22 + 1.05 * (1 - u) ** 1.1,
+      len: 0.26 + 1.18 * (1 - u) ** 1.1,
       // Taller cards when there are fewer of them, so the canopy still covers
-      // the ground it used to rather than turning into four thin discs.
-      tall: (0.30 + 0.75 * (1 - u)) * (coarse ? 2.1 : 1.0),
+      // the ground it used to rather than turning into four thin discs — but
+      // a branch is longer than it is deep, and a card taller than it is long
+      // stops being one.
+      tall: (0.34 + 0.86 * (1 - u)) * (coarse ? 2.1 : 1.0),
       drop: 0.10 + 0.22 * (1 - u),
-      n: coarse ? 4 : Math.round(9 - 4 * u),
+      n: coarse ? 4 : Math.round(6 - 2 * u),
     });
   }
   for (const [ti, t] of tiers.entries()) {
@@ -315,10 +326,9 @@ function pineMesh(coarse) {
         const p00 = at(base, -1, hIn), p01 = at(base, 1, hIn);
         const p10 = at(tip, -1, hOut), p11 = at(tip, 1, hOut);
         // v = 1 at the stem, 0 at the tip: the atlas has the twig pointing up.
-        // The needle cell: the 256 square at the top left of a 768 by 512
-        // atlas, inset a little so the sampler cannot reach across a seam at
-        // the coarser mips.
-        const nu0 = 0.004, nu1 = 0.329, nv0 = 0.004, nv1 = 0.496;
+        // The needle cell: the left half of the atlas, inset a little so the
+        // sampler cannot reach across the seam at the coarser mips.
+        const nu0 = 0.003, nu1 = 0.497, nv0 = 0.003, nv1 = 0.997;
         push(p00, n, [nu0, nv1]); push(p01, n, [nu1, nv1]); push(p11, n, [nu1, nv0]);
         push(p00, n, [nu0, nv1]); push(p11, n, [nu1, nv0]); push(p10, n, [nu0, nv0]);
       }
@@ -462,21 +472,28 @@ function poplarMesh(coarse) {
   // something a texture can say: a leaf costs pixels and a card costs
   // triangles, so the leaves belong in the picture and the cards should be as
   // few as will still turn as you walk round them.
-  const CU = 0.336, CV = 0.003, SPAN = 0.661, VSPAN = 0.994;
+  const CU = 0.503, CV = 0.003, SPAN = 0.494, VSPAN = 0.994;
   const rings = coarse ? 2 : 5;
   const perRing = coarse ? 2 : 4;
   for (let i = 0; i < rings; i++) {
     const u = rings === 1 ? 0 : i / (rings - 1);   // 0 at the lowest ring, 1 at the tip
     const y = 1.15 + u * 3.60;
     // Widest at two fifths up, nothing at the very top.
-    const lens = 1 - Math.pow(Math.abs(u - 0.40) / 0.62, 1.7);
+    // Widest two fifths up, nothing at all at the tip — `u` reaches one on
+    // the last ring, and one is where this has to be zero or the spire is
+    // blunt.
+    const lens = Math.max(0, 1 - Math.pow(Math.abs(u - 0.40) / 0.60, 1.6));
     const rad = Math.max(0.05, 0.30 * lens);
-    // A card a metre and a bit across in the world, which is what puts the
-    // leaves painted on it at five to ten centimetres — a poplar leaf. Wide
-    // enough that four to a ring close the column, and five rings cover its
-    // height.
-    const w = (0.78 + 0.34 * lens) * (coarse ? 1.7 : 1.0);
-    const hgt = (0.92 + 0.42 * lens) * (coarse ? 1.9 : 1.0);
+    // The cards shrink with the column, which the first pass forgot: the
+    // radius tapered towards the tip and the cards did not, so the last ring
+    // was four full-sized squares of leaves sitting on a point — a tree with
+    // a box on top. A poplar ends in a spire, and a spire is what a card that
+    // narrows with its ring draws for nothing.
+    //
+    // A card a metre and a bit across at the widest, which is what puts the
+    // leaves painted on it at five to ten centimetres — a poplar leaf.
+    const w = (0.26 + 0.86 * lens) * (coarse ? 1.7 : 1.0);
+    const hgt = (0.30 + 1.05 * lens) * (coarse ? 1.9 : 1.0);
     for (let j = 0; j < perRing; j++) {
       // Turned ring by ring by an angle that never repeats, so the column
       // does not stack into visible columns of card.

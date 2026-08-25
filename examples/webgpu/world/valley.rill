@@ -568,17 +568,30 @@ fn set_wall_box(wb, wi, x, y, z, r) =
   poke_f32(wb, wi * 4 + 3, r)
   1
 
+# The stones of one arm, laid along it — and turned to face the way it runs.
+#
+# They used to be laid along the arm and left pointing north. A wall on any
+# other heading was then a row of square stones standing at an angle to their
+# own wall, and what you saw was not a face but a saw: every stone's corner
+# out past its neighbour's side, all the way up. The jitter on top of it made
+# it worse rather than looser.
+#
+# So the arm's own heading goes down to the stone, and what is left of the
+# jitter is a degree and a half — enough that no two stones sit exactly alike,
+# little enough that the face stays a face.
 fn arm(bb, base, x, z, dx, dz, len, seed) =
-  for j in 0..len
-    column(bb, base + j * wall_tall(), x + dx * block_size() * to_float(j), z + dz * block_size() * to_float(j), seed + to_float(j))
+  a = atan2_like(dx, dz)
 
-fn column(bb, base, x, z, seed) =
+  for j in 0..len
+    column(bb, base + j * wall_tall(), x + dx * block_size() * to_float(j), z + dz * block_size() * to_float(j), a, seed + to_float(j))
+
+fn column(bb, base, x, z, a, seed) =
   g = height(x, z)
 
   for k in 0..wall_tall()
-    emit_block(bb, base + k, x, g + block_size() * (0.5 + to_float(k)), z, seed + to_float(k) * 7.0)
+    emit_block(bb, base + k, x, g + block_size() * (0.5 + to_float(k)), z, a, seed + to_float(k) * 7.0)
 
-fn emit_block(bb, i, x, y, z, seed) =
+fn emit_block(bb, i, x, y, z, a, seed) =
   at = i * 8
   # A stone is not the stone next to it: the size wobbles a little and so does
   # the grey, which is what keeps a run of them from reading as one extruded
@@ -587,8 +600,8 @@ fn emit_block(bb, i, x, y, z, seed) =
   poke_f32(bb, at, x)
   poke_f32(bb, at + 1, y)
   poke_f32(bb, at + 2, z)
-  poke_f32(bb, at + 3, block_size() * (0.92 + hash2(seed, 13.0) * 0.12))
-  poke_f32(bb, at + 4, (hash2(seed, 71.0) - 0.5) * 0.25)
+  poke_f32(bb, at + 3, block_size() * (0.94 + hash2(seed, 13.0) * 0.09))
+  poke_f32(bb, at + 4, a + (hash2(seed, 71.0) - 0.5) * 0.05)
   poke_f32(bb, at + 5, v)
   poke_f32(bb, at + 6, v * (0.97 + hash2(seed, 29.0) * 0.05))
   poke_f32(bb, at + 7, v * (0.93 + hash2(seed, 47.0) * 0.07))

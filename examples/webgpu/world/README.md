@@ -106,13 +106,19 @@ cut from ambientCG's `LeafSet004` (CC0) and arranged into a branch by
 textures a stage is exactly what this scene already spends and there is no
 seventeenth binding to give.
 
-That poplar cell is six hundred leaves deep, and it is deep on purpose: a leaf
-costs pixels and a card costs triangles, so the leaves belong in the picture
-and the cards should be as few as will still turn as you walk round them. One
-card is a piece of crown rather than a twig — twenty of them, fifty-two
-triangles a tree. It was ninety-eight cards and two hundred and eight
-triangles, which is what paying in geometry for something a texture can say
-looks like. Mip levels are made at load by decoding
+Both cells are deep on purpose: six hundred leaves in one, twenty-odd needle
+sprays in the other. A leaf costs pixels and a card costs triangles, so the
+foliage belongs in the picture and the cards should be as few as will still
+turn as you walk round them. A poplar is twenty cards — fifty-two triangles —
+where it was ninety-eight; a pine is thirty-five branches where it was
+eighty-four, and since a branch is two quads crossed about its own axis that
+took the forest from three hundred thousand triangles to a hundred and forty.
+
+The two cells are baked differently and the difference is the whole of what a
+card means. The poplar's is a scatter at every angle, thinning towards the
+edges, because one card is a piece of crown. The pine's runs all one way, stem
+to tip, because one card is a branch — scattered, it stopped having a
+direction, and what came out was a cloud of loose twigs. Mip levels are made at load by decoding
 each file again at each size, because alpha tested foliage without them
 shimmers from a few trees away.
 
