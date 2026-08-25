@@ -26,10 +26,13 @@
   ) -> VOut {
     var m = (PICK_MIN + qpos.xyz * PICK_SIZE) * PICK_SCALE;
     var n = qn.xyz;
-    // A quarter turn about the haft first, so the head points down the swing
-    // — at what is being dug — rather than lying across the view.
-    m = vec3f(m.z, m.y, -m.x);
-    n = vec3f(n.z, n.y, -n.x);
+    // Seventy degrees about the haft first, so the head points down the swing
+    // — at what is being dug — while keeping a sliver of its profile in view.
+    // A full quarter turn put it exactly edge-on and the head read as a lump;
+    // twenty degrees short of it is where it stays legibly a pick.
+    let ch = 0.34202; let sh = 0.93969;
+    m = vec3f(m.x * ch + m.z * sh, m.y, -m.x * sh + m.z * ch);
+    n = vec3f(n.x * ch + n.z * sh, n.y, -n.x * sh + n.z * ch);
     // The kit authors the head across x and the haft up y. The head stays in
     // the screen plane — no turn about the handle's own axis, which is what
     // put the head at a false angle to the haft: any rotation that carries
