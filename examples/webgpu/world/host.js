@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "483";
+const V = "484";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -106,6 +106,7 @@ const SHADERS = {
   hud: null,
   launcher: "common", rocket: "common", warhead: "common", stone: "common",
   "shadow-terrain": "uniforms", "shadow-instanced": "uniforms",
+  "shadow-rockface": "uniforms",
   "shadow-pine": "uniforms", "shadow-figure": "uniforms",
   "firefly-sim": null,
 };
@@ -192,6 +193,7 @@ function loadShaders(step, pakText) {
     WARHEAD: whole("warhead"),
     ROCKET: whole("rocket"),
     SHADOW_TERRAIN: whole("shadow-terrain"),
+    SHADOW_ROCKFACE: whole("shadow-rockface"),
     SHADOW_INST: whole("shadow-instanced"),
     SHADOW_PINE: whole("shadow-pine"),
     FIGURE: whole("figure"),
@@ -1126,12 +1128,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // it. A height field cannot draw a roof, so where somebody has cut one the
   // terrain blanks its own cells and these take over — see `faces_build` in
   // valley.rill. Eight floats a face, and the engine writes them.
-  const FACE_STRIDE = 32;
+  const FACE_STRIDE = 64;
   const faceCap = 60000;
-  const facePipe = pipe("rockface", S.ROCKFACE, [{ arrayStride: FACE_STRIDE, stepMode: "instance", attributes: [
+  const faceLayout = { arrayStride: FACE_STRIDE, stepMode: "instance", attributes: [
     { shaderLocation: 0, offset: 0, format: "float32x4" },
     { shaderLocation: 1, offset: 16, format: "float32x4" },
-  ]}], { cull: "back" });
+    { shaderLocation: 2, offset: 32, format: "float32x4" },
+    { shaderLocation: 3, offset: 48, format: "float32x4" },
+  ]};
+  const facePipe = pipe("rockface", S.ROCKFACE, [faceLayout], { cull: "back" });
   const faceBuf = device.createBuffer({
     size: faceCap * FACE_STRIDE, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
   let faceN = 0;
@@ -2253,7 +2258,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   }));
 
   const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bglShadow] });
-  const shadowPipe = (label, code, buffers, cutout = false) => watched(label, () => device.createRenderPipeline({
+  const shadowPipe = (label, code, buffers, cutout = false, bias = null) => watched(label, () => device.createRenderPipeline({
     label, layout: shadowLayout,
     vertex: { module: mod(code, label), buffers },
     // Depth only, unless the thing being drawn is mostly holes.
@@ -2261,9 +2266,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       ? { module: mod(code, label), entryPoint: "fs", targets: [] }
       : undefined,
     primitive: { cullMode: "none" },
-    depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
+    depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less", ...bias },
   }));
   const shTerrain = shadowPipe("shadow-terrain", S.SHADOW_TERRAIN, terrainLayout);
+  // Pushed back in the map, which the terrain does not need and these do.
+  // Every one of these faces is axis-aligned, so a great many of them stand
+  // nearly edge-on to the sun — and a caster edge-on to the light lands on
+  // its own shadow. Without the bias a mine mouth came out as a chequerboard
+  // of lit and unlit stones, which is not a mine mouth, it is acne.
+  const shFace = shadowPipe("shadow-rockface", S.SHADOW_ROCKFACE, [faceLayout], false,
+    { depthBias: 24, depthBiasSlopeScale: 4, depthBiasClamp: 0.01 });
   const shInst = shadowPipe("shadow-inst", S.SHADOW_INST, [meshLayout, instLayout]);
   const shPine = shadowPipe("shadow-pine", S.SHADOW_PINE, [pineLayout, instLayout], true);
 
@@ -3816,7 +3828,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       faceN = Math.min(Number(E.faces_build(state)), faceCap);
       if (faceN) {
         device.queue.writeBuffer(faceBuf, 0,
-          new Float32Array(E.memory.buffer, Number(E.face_buf(world)), faceN * 8));
+          new Float32Array(E.memory.buffer, Number(E.face_buf(world)), faceN * 16));
       }
     }
     // The magma list only ever grows, so the count is the whole diff.
@@ -3872,6 +3884,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     });
     sh.setBindGroup(0, bgShadow);
     sh.setPipeline(shTerrain); sh.setVertexBuffer(0, W.terrainBuf); sh.draw(W.counts.terrain);
+    // The dug faces do not cast. They are small, axis-aligned and mostly
+    // edge-on to the sun, and a caster edge-on to the light lands on its own
+    // shadow: with them in the map a mine mouth came out as a chequerboard of
+    // lit and unlit stones. What they stand in for — the hillside that was
+    // there — is still cast by the terrain around them.
+    if (false && faceN) { sh.setPipeline(shFace); sh.setVertexBuffer(0, faceBuf); sh.draw(6, faceN); }
     sh.setPipeline(shPine);
     sh.setVertexBuffer(0, pineShadowBuf); sh.setVertexBuffer(1, W.pineInst); sh.draw(pineShadowVerts, W.counts.pines);
     if (W.counts.poplars) {

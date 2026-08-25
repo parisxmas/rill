@@ -3879,43 +3879,6 @@ fn ro_up(cb, i, h, k) =
 # from outside, a hill with a tunnel in it is still a hill.
 fn carve_depth(w, x, z) = height(x, z) - top_solid(w, x, z)
 
-# The deepest cell within `r` of a point. This is for the mesh alone.
-#
-# The terrain is a lattice with a step of its own — 170/grid metres, 1.06 on
-# the tier a fast machine picks and 1.77 on a slow one — and it does not line
-# up with the one-metre cells. A vertex that asks only about the cell it sits
-# in leaves whole bites undrawn wherever the lattice steps over one, which is
-# "I dig and nothing happens" all over again. Asking for the deepest cell
-# within half a lattice step catches every bite at every tier, and at the
-# common tier that half-step is 0.53 m, so a hole is drawn within a few
-# centimetres of its true edge.
-#
-# Only the mesh does this. Collision does not, because a floor widened by
-# half a lattice step is a floor you fall through at the rim — and worse, a
-# swing aimed beside a pit would find the pit's own floor under the ray and
-# dig it again, so a trench dug cell by cell piled into every other cell
-# instead of running straight.
-fn carve_deep_r(w, x, z, r) =
-  cb = cv(w)
-  dr_rows(cb, cell_ix(x - r), cell_ix(x + r), cell_ix(z - r), cell_ix(z + r), 0.0)
-
-fn dr_cell(cb, ix, iz) =
-  i = cell_at(ix, iz)
-  if i < 0 || col_any(cb, i) == 0 then 0.0
-  else
-    x = cell_x(i)
-    z = cell_z(i)
-    h = height(x, z)
-    h - ts_down(cb, i, h, slab_of(h - 0.001))
-
-fn dr_rows(cb, x0, x1, iz, z1, best) =
-  if iz > z1 then best
-  else dr_rows(cb, x0, x1, iz + 1, z1, dr_row(cb, x0, x1, iz, best))
-
-fn dr_row(cb, ix, x1, iz, best) =
-  if ix > x1 then best
-  else dr_row(cb, ix + 1, x1, iz, maxf(best, dr_cell(cb, ix, iz)))
-
 fn cell_at(ix, iz) =
   if ix < 0 || iz < 0 || ix >= carve_n() || iz >= carve_n() then 0 - 1 else iz * carve_n() + ix
 
@@ -4192,10 +4155,20 @@ fn magma_z(w: Ptr, k: Int) -> Float = cell_z(magma_cell(w, k))
 # few hundred sines, once per swing.
 fn mesh_n(w) = to_int(peek_f32(w, 54))
 
+# The mesh corner takes the exact top of the column it stands on, with no
+# reaching about for the deepest thing nearby.
+#
+# It used to reach half a lattice step, from the days when a bite was one
+# stone across and a lattice metres wide could step clean over it. A bite is
+# a metre and twenty now — wider than the lattice — so nothing needs finding,
+# and the reaching had a cost that showed: it pulled the terrain down around
+# every hole by as much as a whole bite, while the voxel columns beside it
+# stood at their true height, and the excavation came out as a blocky lump
+# standing proud of a dented hillside instead of a hole in a whole one.
 fn ch(w, ix, iz, st) =
   lx = lattice(ix, st)
   lz = lattice(iz, st)
-  height(lx, lz) - carve_deep_r(w, lx, lz, st * 0.5)
+  height(lx, lz) - carve_depth(w, lx, lz)
 
 # The colour of rock that has been opened. The band colours are the weathered
 # skin; under a pick the inside shows — darker, warmer, unmistakably worked.
@@ -4204,7 +4177,7 @@ fn ch(w, ix, iz, st) =
 # is most of what makes one swing *visible*: a metre of depression hides in
 # the rock's own noise, a colour change does not.
 fn dug_tint(w, lx, lz, st, r0, g0, b0) =
-  d = carve_deep_r(w, lx, lz, st * 0.5)
+  d = carve_depth(w, lx, lz)
   if d < 0.04 then (r0, g0, b0)
   else
     k = if d * 0.7 > 0.9 then 0.9 else d * 0.7
@@ -4320,7 +4293,7 @@ fn dirty_at(w: Ptr, j: Int) -> Int = to_int(peek_f32(cv(w), 8 + j))
 # same millimetre.
 fn face_cap() = 60000
 
-fn face_stride() = 8
+fn face_stride() = 16
 
 fn rock_faces(w: Ptr) -> Int = to_int(peek_f32(cv(w), 14))
 
@@ -4365,10 +4338,36 @@ fn mr_row(cb, ix, x1, iz) =
 # the shader can build the corners from the number alone: 0 and 1 are the two
 # faces across x, 2 and 3 up and down, 4 and 5 across z. The position written
 # is the low corner of the face.
-fn put_face(w, x, y, z, dir, r, g, b) =
+fn put_face(w, x, y, z, dir, r, g, b) = put_tall(w, x, y, z, dir, carve_q(), r, g, b)
+
+# A face with a light of its own. The top of a column sits flat, and a flat
+# top on a hillside catches the sun straight on while the slope around it is
+# in shadow — so a dug patch read as a bright blocky lump stuck on a dark
+# hill even when its height matched to the centimetre. Given the slope's own
+# normal it lights the way the hillside does and the steps go back to being
+# steps.
+fn put_lit(w, x, y, z, dir, tall, nx, ny, nz, r, g, b) =
+  ok = put_tall(w, x, y, z, dir, tall, r, g, b)
+  if ok == 0 then 0
+  else
+    cb = cv(w)
+    at = (to_int(peek_f32(cb, 14)) - 1) * face_stride()
+    fb = face_buf(w)
+    poke_f32(fb, at + 8, nx)
+    poke_f32(fb, at + 9, ny)
+    poke_f32(fb, at + 10, nz)
+    1
+
+# A face is a stone wide and, usually, a stone tall. Usually: the top of a
+# column has to reach the ground the terrain mesh draws beside it, and the
+# ground is where the ground is rather than on a slab boundary, so the side
+# faces at the top of a column are given whatever height closes that gap. A
+# face of fixed height leaves a slot of daylight all round the edge of a
+# tunnel mouth, which is a crack you can see the void through.
+fn put_tall(w, x, y, z, dir, tall, r, g, b) =
   cb = cv(w)
   n = to_int(peek_f32(cb, 14))
-  if n >= face_cap() then 0
+  if n >= face_cap() || tall < 0.001 then 0
   else
     at = n * face_stride()
     fb = face_buf(w)
@@ -4379,16 +4378,26 @@ fn put_face(w, x, y, z, dir, r, g, b) =
     poke_f32(fb, at + 4, r)
     poke_f32(fb, at + 5, g)
     poke_f32(fb, at + 6, b)
+    poke_f32(fb, at + 7, tall)
+    # Nought for a normal means "the one your own direction implies", which
+    # is what every face of the inside of a tunnel wants.
+    poke_f32(fb, at + 8, 0.0)
+    poke_f32(fb, at + 9, 0.0)
+    poke_f32(fb, at + 10, 0.0)
     poke_f32(cb, 14, to_float(n + 1))
     1
 
 # The colour of opened rock. The band colours are the weathered skin; under a
-# pick the inside shows, and a face that has never seen the sky shows it more
-# than one just under the surface does.
+# pick the inside shows — warmer, and a little darker the deeper it was.
+#
+# It was 0.62 at the surface, which is two thirds brighter than the hillside
+# the cut is made in, and at any hour but noon a mine mouth came out as a
+# pale scar stuck on a dark slope. Broken stone is not brighter than the hill
+# it came out of; it is the same stone with the weather off it.
 fn face_grey(y, h, up) =
   d = clampf((h - y) / dig_floor(), 0.0, 1.0)
-  k = 0.62 - d * 0.20
-  (k, k * 0.88, k * 0.74)
+  k = 0.40 - d * 0.16
+  (k, k * 0.90, k * 0.78)
 
 # One column's faces. Walks its slabs from the bedrock to the sky and asks, of
 # every solid one, which of its six neighbours is air.
@@ -4399,38 +4408,120 @@ fn col_faces(w, cb, ix, iz) =
     x = cell_x(i) - carve_q() * 0.5
     z = cell_z(i) - carve_q() * 0.5
     h = height(cell_x(i), cell_z(i))
-    cf_slab(w, cb, i, ix, iz, x, z, h, slab_of(h - dig_floor()))
+    st = cell_step(mesh_n(w))
+    cx = cell_x(i)
+    cz = cell_z(i)
+    sx = (mesh_h(w, cx + st, cz) - mesh_h(w, cx - st, cz)) / (st * 2.0)
+    sz = (mesh_h(w, cx, cz + st) - mesh_h(w, cx, cz - st)) / (st * 2.0)
+    il = 1.0 / sqrt(sx * sx + 1.0 + sz * sz)
+    cf_slab(w, cb, i, ix, iz, x, z, h, mesh_h(w, cx, cz),
+            (0.0 - sx) * il, il, (0.0 - sz) * il, slab_of(h - dig_floor()))
 
-fn cf_slab(w, cb, i, ix, iz, x, z, h, k) =
+fn cf_slab(w, cb, i, ix, iz, x, z, h, ht, nx, ny, nz, k) =
   if k >= vox_slabs() || slab_y(k) >= h then 0
   else
-    if solid_cell(cb, i, k, h) > 0 then cf_sides(w, cb, i, ix, iz, x, z, h, k) else 0
-    cf_slab(w, cb, i, ix, iz, x, z, h, k + 1)
+    if solid_cell(cb, i, k, h) > 0 then cf_sides(w, cb, i, ix, iz, x, z, h, ht, nx, ny, nz, k) else 0
+    cf_slab(w, cb, i, ix, iz, x, z, h, ht, nx, ny, nz, k + 1)
 
-fn cf_sides(w, cb, i, ix, iz, x, z, h, k) =
+# The height the terrain mesh would have drawn at this point: its lattice
+# corners, blended the way a triangle blends them. The voxel surface has to
+# agree with it exactly where the two meet, and `height` sampled per column
+# does not — the mesh only knows its corners, and between them it is a plane.
+fn mesh_h(w, x, z) =
+  n = mesh_n(w)
+  st = cell_step(n)
+  ix = to_int(floor((x + world_w() * 0.5) / st))
+  iz = to_int(floor((z + world_w() * 0.5) / st))
+  ux = (x - lattice(ix, st)) / st
+  uz = (z - lattice(iz, st)) / st
+  a = ch(w, ix, iz, st)
+  b = ch(w, ix + 1, iz, st)
+  c = ch(w, ix, iz + 1, st)
+  d = ch(w, ix + 1, iz + 1, st)
+  a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz
+
+fn cf_sides(w, cb, i, ix, iz, x, z, h, ht, nx, ny, nz, k) =
   q = carve_q()
   y = slab_y(k)
-  # The top of the topmost slab is the real ground, not the slab's ceiling:
-  # a column nobody has touched has to meet the terrain mesh exactly where the
-  # terrain mesh puts it, or the seam between the two shows as a step.
-  yt = if slab_y(k + 1) > h then h else slab_y(k + 1)
+  # The topmost slab of a standing column ends at the ground, not at the
+  # slab's ceiling — and the ground it has to end at is the one the terrain
+  # mesh draws, interpolated across its lattice, or the two surfaces meet at
+  # a step and the step is a hole.
+  cap = slab_y(k + 1) > h
+  yt = if cap then ht else slab_y(k + 1)
+  tall = yt - y
+  # The cap slab is hillside, and everything about it — its top, and the
+  # risers between it and its neighbours — is lit by the hillside's own
+  # slope. Light those by the faces they are and the staircase that stands in
+  # for a slope catches the sun broadside on every step, which is the whole of
+  # why a dug patch read as a bright blocky lump.
+  (rc, gc, bc) = (band_r(y, ny), band_g(y, ny), band_b(y, ny))
   (rt, gt, bt) = face_grey(y, h, 1)
-  if nb_air(cb, ix - 1, iz, k) then put_face(w, x, y, z, 0, rt, gt, bt) else 0
-  if nb_air(cb, ix + 1, iz, k) then put_face(w, x + q, y, z, 1, rt, gt, bt) else 0
-  if nb_air(cb, ix, iz - 1, k) then put_face(w, x, y, z, 4, rt, gt, bt) else 0
-  if nb_air(cb, ix, iz + 1, k) then put_face(w, x, y, z + q, 5, rt, gt, bt) else 0
+  (fr, fg, fb) = if cap then (rc, gc, bc) else (rt, gt, bt)
+  # A riser is only wanted where the neighbour is a hole, not merely lower:
+  # two pieces of untouched hillside share their corner heights and meet
+  # without one.
+  if nb_open(cb, ix - 1, iz, k, cap) then cf_put(w, x, y, z, 0, tall, cap, nx, ny, nz, fr, fg, fb) else 0
+  if nb_open(cb, ix + 1, iz, k, cap) then cf_put(w, x + q, y, z, 1, tall, cap, nx, ny, nz, fr, fg, fb) else 0
+  if nb_open(cb, ix, iz - 1, k, cap) then cf_put(w, x, y, z, 4, tall, cap, nx, ny, nz, fr, fg, fb) else 0
+  if nb_open(cb, ix, iz + 1, k, cap) then cf_put(w, x, y, z + q, 5, tall, cap, nx, ny, nz, fr, fg, fb) else 0
   if solid_cell(cb, i, k - 1, h) == 0 then put_face(w, x, y, z, 3, rt, gt, bt) else 0
-  if solid_cell(cb, i, k + 1, h) == 0 || slab_y(k + 1) > h then top_face(w, x, yt, z, h) else 0
+  if solid_cell(cb, i, k + 1, h) == 0 || cap then cf_top(w, x, yt, z, h, cap, nx, ny, nz) else 0
   1
+
+fn cf_put(w, x, y, z, dir, tall, cap, nx, ny, nz, r, g, b) =
+  if cap then put_lit(w, x, y, z, dir, tall, nx, ny, nz, r, g, b)
+  else put_tall(w, x, y, z, dir, tall, r, g, b)
+
+# The top of a column of untouched ground is not a flat lid. It is the piece
+# of hillside that was there, and it is drawn as that: four corner heights off
+# the same lattice the terrain mesh uses, so neighbouring columns share their
+# corners exactly and the surface is continuous.
+#
+# Flat lids were what made a blanked patch read as a staircase glued to a
+# smooth slope — thirty-centimetre treads catching the sun and thirty-
+# centimetre risers in shadow, over and over, where there had been a hillside.
+# Sharing corners also means no risers are needed between them at all, which
+# is most of the faces gone as well.
+fn cf_top(w, x, y, z, h, cap, nx, ny, nz) =
+  if cap then ground_quad(w, x, z, nx, ny, nz)
+  else top_face(w, x, y, z, h)
+
+fn ground_quad(w, x, z, nx, ny, nz) =
+  q = carve_q()
+  a = mesh_h(w, x, z)
+  b = mesh_h(w, x + q, z)
+  c = mesh_h(w, x, z + q)
+  d = mesh_h(w, x + q, z + q)
+  ok = put_lit(w, x, a, z, 6, q, nx, ny, nz, band_r(a, ny), band_g(a, ny), band_b(a, ny))
+  if ok == 0 then 0
+  else
+    cb = cv(w)
+    at = (to_int(peek_f32(cb, 14)) - 1) * face_stride()
+    fb = face_buf(w)
+    poke_f32(fb, at + 12, a)
+    poke_f32(fb, at + 13, b)
+    poke_f32(fb, at + 14, c)
+    poke_f32(fb, at + 15, d)
+    1
 
 # The top of a column takes the band colour the terrain mesh would have given
 # it, so the ground reads as ground where it is ground and as broken stone
 # where it has been opened.
 fn top_face(w, x, y, z, h) =
-  if h - y < 0.05 then put_face(w, x, y, z, 2, band_r(y, 1.0), band_g(y, 1.0), band_b(y, 1.0))
+  if 1 == 0 then 0
   else
     (r, g, b) = face_grey(y, h, 1)
     put_face(w, x, y, z, 2, r, g, b)
+
+# Air because somebody took it out, rather than air because the hill is lower
+# over there. Only the first wants a face standing between them.
+fn nb_open(cb, ix, iz, k, cap) =
+  i = cell_at(ix, iz)
+  if i < 0 then false
+  else if nb_air(cb, ix, iz, k) == false then false
+  else if cap == false then true
+  else vox_gone(cb, i, k) > 0
 
 fn nb_air(cb, ix, iz, k) =
   i = cell_at(ix, iz)
