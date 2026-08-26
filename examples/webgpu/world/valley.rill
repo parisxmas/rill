@@ -4579,13 +4579,34 @@ fn faces_build(s: Ptr) -> Int =
 
   rock_faces(w)
 
+# The columns of one blanked terrain cell — and every one of them, which is
+# less obvious than it sounds. A terrain cell is 170/grid metres across and a
+# column is thirty centimetres, and the one does not divide by the other: a
+# loop from the column at the cell's near edge to the column at its far edge
+# stops short by up to a column, and what it stops short of is a strip of
+# hillside nobody draws. Fifteen per cent of every blanked cell was a hole you
+# could see the lake through.
+#
+# Every column the cell *touches*, not every column that starts inside it.
+# Assigning each column to one cell — by its near corner, or by its middle —
+# leaves the ones that straddle the boundary drawn by whichever cell claimed
+# them, and if that cell is not blanked they are drawn by nobody: a sliver of
+# hillside missing along every edge.
+#
+# A column claimed by two blanked cells is written twice, and twice is
+# harmless: the two quads are the same quad, and the depth test keeps the
+# first and drops the second.
+fn col_lo(ix) = to_float(ix) * carve_q() - carve_org()
+
+fn overlaps(ix, lo, len) = col_lo(ix) < lo + len && col_lo(ix) + carve_q() > lo
+
 fn cell_faces(w, cb, st, mx, mz) =
   x0 = lattice(mx, st)
   z0 = lattice(mz, st)
 
-  for iz in cell_ix(z0)..cell_ix(z0 + st)
-    for ix in cell_ix(x0)..cell_ix(x0 + st)
-      col_faces(w, cb, ix, iz)
+  for iz in cell_ix(z0) - 1..cell_ix(z0 + st) + 2
+    for ix in cell_ix(x0) - 1..cell_ix(x0 + st) + 2
+      if overlaps(ix, x0, st) && overlaps(iz, z0, st) then col_faces(w, cb, ix, iz) else 0
 
   1
 

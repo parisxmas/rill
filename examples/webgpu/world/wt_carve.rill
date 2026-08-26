@@ -102,6 +102,58 @@ fn sink(s, x, z, n) =
 
 fn solid(w, x, y, z) = v.solid_at(w, x, y, z)
 
+# ---- nothing is missing from the picture -------------------------------------
+#
+# A terrain cell that has a roof under it draws nothing and leaves the ground
+# to the voxel faces. If a column of such a cell gets no face, there is a hole
+# in the hillside you can see the lake through — and there was one along every
+# edge, because a terrain cell is 170/grid metres and a column is thirty
+# centimetres and the one does not divide by the other.
+fn has_face(w, ix, iz) =
+  x = v.col_lo(ix)
+  z = v.col_lo(iz)
+
+  for k in 0..v.rock_faces(w) with found = 0
+    d = v.face_at(w, k, 3)
+    up = d > 1.5 && d < 2.5 || d > 5.5
+    if found > 0 then 1
+    else if up && absf(v.face_at(w, k, 0) - x) < 0.01 && absf(v.face_at(w, k, 2) - z) < 0.01 then 1
+    else 0
+
+# What the cell needs covered, said here rather than borrowed from the engine:
+# a test that asks the code under test what the answer is cannot fail with it.
+fn touches(ix, lo, len) =
+  a = to_float(ix) * v.carve_q() - v.carve_org()
+  a < lo + len && a + v.carve_q() > lo
+
+fn cell_gaps(w, x0, z0, st) =
+  for iz in v.cell_ix(z0) - 1..v.cell_ix(z0 + st) + 2 with g = 0
+    for ix in v.cell_ix(x0) - 1..v.cell_ix(x0 + st) + 2 with h = g
+      if touches(ix, x0, st) && touches(iz, z0, st) then h + 1 - has_face(w, ix, iz) else h
+
+fn blanked_cells(w, s) =
+  m = v.terrain(s)
+  n = v.mesh_n(w)
+
+  for c in 0..n * n with seen = 0
+    at = c * 54
+    x0 = peek_f32(m, at)
+    z0 = peek_f32(m, at + 2)
+    flat = peek_f32(m, at + 9) == x0 && peek_f32(m, at + 18) == x0 && peek_f32(m, at + 45) == x0 && peek_f32(m, at + 11) == z0 && peek_f32(m, at + 47) == z0
+    seen + v.yes(flat)
+
+fn blank_gaps(w, s) =
+  m = v.terrain(s)
+  n = v.mesh_n(w)
+  st = v.cell_step(n)
+
+  for c in 0..n * n with gaps = 0
+    at = c * 54
+    x0 = peek_f32(m, at)
+    z0 = peek_f32(m, at + 2)
+    flat = peek_f32(m, at + 9) == x0 && peek_f32(m, at + 18) == x0 && peek_f32(m, at + 45) == x0 && peek_f32(m, at + 11) == z0 && peek_f32(m, at + 47) == z0
+    if flat then gaps + cell_gaps(w, x0, z0, st) else gaps
+
 # The first of the boxes lying somewhere the pick works.
 fn box_on_rock(w, sb, i) =
   if i >= v.mag_count() then 0 - 1
@@ -363,6 +415,18 @@ fn main() =
   qd = cm(v.height(qmx, qmz) - v.floor_at(w4, qmx, qmz))
   say("the field says most of four stones", if qd > 90 && qd <= 120 then 1 else 0, 1)
   say("and the rebake had work to do", v.rebake(s4), 1)
+
+  # And the picture has no holes in it. A pit alone will not do for this: a
+  # terrain cell only steps aside where something is roofed, so the test has
+  # to sink a shaft and drive out of its wall before there is anything for the
+  # voxel faces to be responsible for.
+  sink(s4, qmx, qmz, 5)
+  stance(s4, qmx, qmz, 0.0, 0.0)
+  swing_on(s4, 6, 0)
+  v.rebake(s4)
+  v.faces_build(s4)
+  say("the tunnel blanked some terrain", if blanked_cells(w4, s4) > 0 then 1 else 0, 1)
+  say("and nothing is missing from it", blank_gaps(w4, s4), 0)
   low = mesh_low(v.terrain(s4), v.terrain_verts(s4), qmx, qmz)
   say("the mesh came down with it, cm", if cm(v.height(qmx, qmz) - low) > 100 then 1 else 0, 1)
 
