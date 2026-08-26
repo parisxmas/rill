@@ -357,7 +357,7 @@ export fn carve_pages(w: Ptr) -> Int = v.carve_pages(w)
 # Whether there is anything molten under this spot, which is a question about
 # the valley rather than about the digging: both ends work it out and it never
 # crosses the wire.
-export fn magma_under(x: Float, z: Float) -> Int = if v.magma_under(x, z) then 1 else 0
+export fn magma_under(x: Float, z: Float) -> Int = v.yes(v.magma_under(x, z))
 
 export fn carve_supers() -> Int = v.carve_supers()
 

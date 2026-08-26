@@ -614,7 +614,7 @@ fn fuel_bar(h, sw, sh, bh) =
          if peek_f32(h, h_jet()) > 0.5 then c_vit1() else c_blue(), 1.0)
     1
 
-fn clampf(v, lo, hi) = if v < lo then lo else if v > hi then hi else v
+fn clampf(v, lo, hi) = max(lo, min(hi, v))
 
 # The rounds bottom right — sockets always, brass over them — the AK's belt a
 # step apart, and the rockets on their own row above, exactly where the CSS

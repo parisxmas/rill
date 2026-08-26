@@ -268,7 +268,7 @@ fn welcome(w, conns, s, out, token) =
   send(out, stones_list(w))
   send(out, fells_list(w))
   send(out, carve_field_msg(w))
-  send_built_list(w, out, 0)
+  send_built_list(w, out)
   send_mags(w, out, 0)
   roster(conns, out)
   println("player " + int_to_str(id) + " arrived as " + name + ", " + int_to_str(v.players(w)) + " in the valley")
@@ -367,49 +367,47 @@ fn carve_field_msg(w) =
   put_u8(b, op_carvefield())
   put_u32(b, v.carves(w))
   put_u32(b, v.built(w))
-  cf_pages(w, b, 0)
+  cf_pages(w, b)
   strbuf_str(b)
 
-fn cf_pages(w, b, sx) =
-  if sx >= v.carve_supers() then 0
-  else
+fn cf_pages(w, b) =
+  for sx in 0..v.carve_supers()
     if v.carve_page_at(w, sx) > 0 then cf_page(w, b, sx) else 0
-    cf_pages(w, b, sx + 1)
+
+  1
 
 fn cf_page(w, b, sx) =
-  n = cf_count(w, sx, 0, 0)
+  n = cf_count(w, sx)
   if n == 0 then 0
   else
     put_u16(b, sx)
     put_u16(b, n)
-    cf_cols(w, b, sx, 0)
+    cf_cols(w, b, sx)
 
-fn cf_count(w, sx, c, n) =
-  if c >= v.carve_page_cells() then n
-  else cf_count(w, sx, c + 1, if v.carve_col_any(w, sx, c) > 0 then n + 1 else n)
+fn cf_count(w, sx) =
+  for c in 0..v.carve_page_cells() with n = 0
+    n + v.yes(v.carve_col_any(w, sx, c) > 0)
 
-fn cf_cols(w, b, sx, c) =
-  if c >= v.carve_page_cells() then 0
-  else
+fn cf_cols(w, b, sx) =
+  for c in 0..v.carve_page_cells()
     if v.carve_col_any(w, sx, c) > 0 then cf_col(w, b, sx, c) else 0
-    cf_cols(w, b, sx, c + 1)
+
+  1
 
 fn cf_col(w, b, sx, c) =
   put_u16(b, c)
-  cf_mask(w, b, sx, c, 0)
 
-fn cf_mask(w, b, sx, c, i) =
-  if i >= v.carve_col_bytes() then 0
-  else
+  for i in 0..v.carve_col_bytes()
     put_u8(b, v.carve_col_byte(w, sx, c, i))
-    cf_mask(w, b, sx, c, i + 1)
+
+  1
   1
 
-fn send_built_list(w, out, k) =
-  if k >= v.built(w) then 0
-  else
+fn send_built_list(w, out) =
+  for k in 0..v.built(w)
     send(out, built_msg(w, k))
-    send_built_list(w, out, k + 1)
+
+  1
 
 fn gone_list(w) =
   b = strbuf()
@@ -533,7 +531,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 484
+fn version() = 485
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -924,18 +922,18 @@ fn tick(w, conns, said) =
   pick_all(conns)
   v.rise_all(w)
   left = drop_quiet(w, conns, v.world_time(w))
-  send_shots(w, left, since(shots0, v.shots(w)))
-  send_throws(w, left, since(throws0, v.throws(w)))
-  send_craters(w, left, since(craters0, v.blasts_fired(w)))
-  send_breaks(w, left, since(breaks0, v.breaks(w)))
-  send_stones(w, left, since(stones0, v.blocks_gone(w)))
-  send_carves(w, left, v.carve_sent(w))
-  send_builts(w, left, v.built_sent(w))
+  drain(w, left, since(shots0, v.shots(w)), v.shots(w), \k -> shot_msg(w, k))
+  drain(w, left, since(throws0, v.throws(w)), v.throws(w), \k -> throw_msg(w, k))
+  drain(w, left, since(craters0, v.blasts_fired(w)), v.blasts_fired(w), \k -> crater_msg(w, k))
+  drain(w, left, since(breaks0, v.breaks(w)), v.breaks(w), \k -> index_msg(op_break(), v.break_which(w, k)))
+  drain(w, left, since(stones0, v.blocks_gone(w)), v.blocks_gone(w), \k -> index_msg(op_stone(), v.block_which(w, k)))
+  drain(w, left, v.carve_sent(w), v.carves(w), \k -> cell_msg(op_carve(), v.carve_ev(w, k)))
+  drain(w, left, v.built_sent(w), v.built(w), \k -> built_msg(w, k))
   v.mark_carves_sent(w)
-  send_downed(w, left, since(downed0, v.fires_down(w)))
-  send_hurts(w, left, since(hurts0, v.hurts(w)))
-  send_fells(w, left, since(fells0, v.pines_down(w)))
-  send_zaps(w, left, since(zaps0, v.zaps(w)))
+  drain(w, left, since(downed0, v.fires_down(w)), v.fires_down(w), \k -> index_msg(op_downed(), v.down_which(w, k)))
+  drain(w, left, since(hurts0, v.hurts(w)), v.hurts(w), \k -> hurt_msg(w, k))
+  drain(w, left, since(fells0, v.pines_down(w)), v.pines_down(w), \k -> index_msg(op_fell(), v.fell_which(w, k)))
+  drain(w, left, since(zaps0, v.zaps(w)), v.zaps(w), \k -> zap_msg(w, k))
   again(said)
   send_mag_moves(w, left, said, 0)
   tell_each(w, left, left)
@@ -1032,10 +1030,18 @@ fn gone_quiet(w, c, rest) =
 # now, one line each. They go out before the snapshot, so a client applies what
 # happened and then is told where everyone ended up.
 
-fn send_shots(w, conns, from) =
-  if from == v.shots(w) then 0 else send_shot(w, conns, from)
+# Every ring is drained the same way: from where the cursor was to where it
+# is now, one message each. That was eleven pairs of functions — twenty-two
+# of them, each the same four lines with a different noun — and it is one
+# loop and a lambda now. The message a ring makes is the only thing that
+# differs, so the message is the only thing passed.
+fn drain(w, conns, from, upto, msg) =
+  for k in from..upto
+    broadcast(w, conns, msg(k))
 
-fn send_shot(w, conns, k) =
+  1
+
+fn shot_msg(w, k) =
   b = strbuf()
   sc = alloc_bytes(8)
   put_u8(b, op_round())
@@ -1044,13 +1050,9 @@ fn send_shot(w, conns, k) =
     put_f32(b, sc, v.bullet_f(w, k, j))
 
   free_ptr(sc)
-  broadcast(w, conns, strbuf_str(b))
-  send_shots(w, conns, k + 1)
+  strbuf_str(b)
 
-fn send_throws(w, conns, from) =
-  if from == v.throws(w) then 0 else send_throw(w, conns, from)
-
-fn send_throw(w, conns, k) =
+fn throw_msg(w, k) =
   b = strbuf()
   sc = alloc_bytes(8)
   put_u8(b, op_throw())
@@ -1059,13 +1061,9 @@ fn send_throw(w, conns, k) =
     put_f32(b, sc, v.fireball_f(w, k, j))
 
   free_ptr(sc)
-  broadcast(w, conns, strbuf_str(b))
-  send_throws(w, conns, k + 1)
+  strbuf_str(b)
 
-fn send_craters(w, conns, from) =
-  if from == v.blasts_fired(w) then 0 else send_crater(w, conns, from)
-
-fn send_crater(w, conns, k) =
+fn crater_msg(w, k) =
   b = strbuf()
   sc = alloc_bytes(8)
   put_u8(b, op_crater())
@@ -1074,17 +1072,13 @@ fn send_crater(w, conns, k) =
     put_f32(b, sc, v.blast_f(w, k, j))
 
   free_ptr(sc)
-  broadcast(w, conns, strbuf_str(b))
-  send_craters(w, conns, k + 1)
+  strbuf_str(b)
 
 # Who hit whom, and for how much. Sent to everybody rather than to the one it
 # happened to: it costs three numbers, and a client that knows what happened to
 # the person beside it can say so — which is the difference between a valley
 # where things happen and one where they happen to you.
-fn send_hurts(w, conns, from) =
-  if from == v.hurts(w) then 0 else send_hurt(w, conns, from)
-
-fn send_hurt(w, conns, k) =
+fn hurt_msg(w, k) =
   b = strbuf()
   sc = alloc_bytes(8)
   put_u8(b, op_hurt())
@@ -1093,56 +1087,7 @@ fn send_hurt(w, conns, k) =
   put_f32(b, sc, v.hurt_f(w, k, 2))
   put_u8(b, to_int(v.hurt_f(w, k, 3)))
   free_ptr(sc)
-  broadcast(w, conns, strbuf_str(b))
-  send_hurts(w, conns, k + 1)
-
-# Which stones went. A client cannot work out which blocks a warhead took —
-# it does not decide what a rocket hit — so it is told, one index at a time,
-# the same way it is told which crystal broke.
-# Which of the crystals' fire was shot out of the air. A client fires its own
-# rounds but is not told what they hit, and it certainly does not know what
-# anybody else's did, so the ones that went are named.
-fn send_downed(w, conns, from) =
-  if from == v.fires_down(w) then 0 else send_down(w, conns, from)
-
-fn send_down(w, conns, k) =
-  broadcast(w, conns, index_msg(op_downed(), v.down_which(w, k)))
-  send_downed(w, conns, k + 1)
-
-fn send_stones(w, conns, from) =
-  if from == v.blocks_gone(w) then 0 else send_stone(w, conns, from)
-
-fn send_stone(w, conns, k) =
-  broadcast(w, conns, index_msg(op_stone(), v.block_which(w, k)))
-  send_stones(w, conns, k + 1)
-
-fn send_breaks(w, conns, from) =
-  if from == v.breaks(w) then 0 else send_break(w, conns, from)
-
-fn send_break(w, conns, k) =
-  broadcast(w, conns, index_msg(op_break(), v.break_which(w, k)))
-  send_breaks(w, conns, k + 1)
-
-# One crater per message, by its cell; one rock per message, by its place.
-# The counters were read before the tick walked anybody, so a swing that
-# landed inside this tick is exactly what the difference holds.
-# Unlike every counter above, these two move *between* ticks — a swing is a
-# one-byte ask handled the moment it arrives, not a flag walked at the tick —
-# so the tick cannot bracket them by reading before and after. The world
-# keeps a sent-up-to cursor instead, and the tick drains from there.
-fn send_carves(w, conns, from) =
-  if from >= v.carves(w) then 0 else send_carve(w, conns, from)
-
-fn send_carve(w, conns, k) =
-  broadcast(w, conns, cell_msg(op_carve(), v.carve_ev(w, k)))
-  send_carves(w, conns, k + 1)
-
-fn send_builts(w, conns, from) =
-  if from >= v.built(w) then 0 else send_built(w, conns, from)
-
-fn send_built(w, conns, k) =
-  broadcast(w, conns, built_msg(w, k))
-  send_builts(w, conns, k + 1)
+  strbuf_str(b)
 
 fn built_msg(w, k) =
   b = strbuf()
@@ -1155,27 +1100,15 @@ fn built_msg(w, k) =
   free_ptr(sc)
   strbuf_str(b)
 
-# Which pines a warhead took, one index each, like the stones.
-fn send_fells(w, conns, from) =
-  if from == v.pines_down(w) then 0 else send_fell(w, conns, from)
-
-fn send_fell(w, conns, k) =
-  broadcast(w, conns, index_msg(op_fell(), v.fell_which(w, k)))
-  send_fells(w, conns, k + 1)
-
 # Who a crystal bit, and which crystal: the light and the sound are drawn
 # from these two numbers in every browser, and the hurt itself rides the
 # snapshot like all the server's hurts do.
-fn send_zaps(w, conns, from) =
-  if from == v.zaps(w) then 0 else send_zap(w, conns, from)
-
-fn send_zap(w, conns, k) =
+fn zap_msg(w, k) =
   b = strbuf()
   put_u8(b, op_zap())
   put_u16(b, v.zap_who(w, k))
   put_u16(b, v.zap_which(w, k))
-  broadcast(w, conns, strbuf_str(b))
-  send_zaps(w, conns, k + 1)
+  strbuf_str(b)
 
 fn walk_all(conns) = match conns
   Nil -> 0
@@ -1544,7 +1477,7 @@ fn said_the_word_really(request) =
 # everything — the sort of hole nobody looks for until the word is short.
 fn ends_there(line, i) =
   c = if i < str_len(line) then str_get(line, i) else 32
-  if c == 32 || c == 38 then 1 else 0
+  v.yes(c == 32 || c == 38)
 
 # Only the request line: a word further down would be a header, and a header is
 # somebody else's to write.

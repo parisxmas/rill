@@ -112,9 +112,9 @@ fn make() =
 
 fn u8_at(b, at) = peek_u8(b, at)
 
-fn u16_at(b, at) = peek_u8(b, at) + peek_u8(b, at + 1) * 256
+fn u16_at(b, at) = bit_or(peek_u8(b, at), shl(peek_u8(b, at + 1), 8))
 
-fn u32_at(b, at) = u16_at(b, at) + u16_at(b, at + 2) * 65536
+fn u32_at(b, at) = bit_or(u16_at(b, at), shl(u16_at(b, at + 2), 16))
 
 # A little-endian f32 out of raw bytes: the four bytes are already lying in
 # the block, so reading them as a float is one aligned peek away — except the
@@ -166,8 +166,8 @@ fn who(b, len) =
   s = name_slot(b, id)
   n = if len - 3 > 28 then 28 else len - 3
   poke_i8(b, names_at() + s * 32, n)
-  poke_i8(b, names_at() + s * 32 + 1, id % 256)
-  poke_i8(b, names_at() + s * 32 + 2, id / 256)
+  poke_i8(b, names_at() + s * 32 + 1, bit_and(id, 255))
+  poke_i8(b, names_at() + s * 32 + 2, shr(id, 8))
 
   for i in 0..n
     poke_i8(b, names_at() + s * 32 + 4 + i, u8_at(b, in_at() + 3 + i))
@@ -302,8 +302,8 @@ fn queue(b, len) =
     poke_f32(b, h_evq_dropped(), peek_f32(b, h_evq_dropped()) + 1.0)
     0
   else
-    poke_i8(b, evq_at() + w, len % 256)
-    poke_i8(b, evq_at() + w + 1, len / 256)
+    poke_i8(b, evq_at() + w, bit_and(len, 255))
+    poke_i8(b, evq_at() + w + 1, shr(len, 8))
 
     for i in 0..len
       poke_i8(b, evq_at() + w + 2 + i, u8_at(b, in_at() + i))
@@ -396,19 +396,19 @@ fn cf_pages(w, b, p, end) =
     cf_cols(w, b, p + 4, sx, n)
     cf_pages(w, b, p + 4 + n * (2 + v.carve_col_bytes()), end)
 
-fn cf_cols(w, b, p, sx, n) =
-  if n <= 0 then 0
-  else
-    c = u16_at(b, p)
-    cf_mask(w, b, p + 2, sx, c, 0)
-    v.ap_carve_col_done(w, sx, c)
-    cf_cols(w, b, p + 2 + v.carve_col_bytes(), sx, n - 1)
+fn cf_cols(w, b, p0, sx, n) =
+  wide = 2 + v.carve_col_bytes()
 
-fn cf_mask(w, b, p, sx, c, i) =
-  if i >= v.carve_col_bytes() then 0
-  else
-    v.ap_carve_col(w, sx, c, i, u8_at(b, p + i))
-    cf_mask(w, b, p, sx, c, i + 1)
+  for j in 0..n
+    p = p0 + j * wide
+    c = u16_at(b, p)
+
+    for i in 0..v.carve_col_bytes()
+      v.ap_carve_col(w, sx, c, i, u8_at(b, p + 2 + i))
+
+    v.ap_carve_col_done(w, sx, c)
+
+  1
 
 # The pocket is not applied to the world — it is this player's own count, and
 # it lands on the block the page reads the HUD from.
@@ -646,9 +646,7 @@ extern fn sqrt(x: Float) -> Float
 fn lerp_t(b, now) =
   span = if peek_f32(b, h_span()) > 0.5 then peek_f32(b, h_span()) else peek_f32(b, h_last_at()) - peek_f32(b, h_prev_at())
   if span <= 1.0 then 1.0
-  else clampf((now - peek_f32(b, h_last_at())) / span, 0.0, 1.0)
-
-fn clampf(x, lo, hi) = if x < lo then lo else if x > hi then hi else x
+  else v.clampf((now - peek_f32(b, h_last_at())) / span, 0.0, 1.0)
 
 fn wrap_pi(a) =
   if a > 3.14159265 then wrap_pi(a - 6.2831853)
@@ -719,14 +717,10 @@ extern fn floor(x: Float) -> Float
 
 fn hsv_f(n, hh, sat, val) =
   k = fmod_f(n + hh, 6.0)
-  m = minf(minf(k, 4.0 - k), 1.0)
-  val - val * sat * maxf(0.0, m)
+  m = min(min(k, 4.0 - k), 1.0)
+  val - val * sat * max(0.0, m)
 
 fn fmod_f(a, m) = a - floor(a / m) * m
-
-fn minf(a, c) = if a < c then a else c
-
-fn maxf(a, c) = if a > c then a else c
 
 fn shark(b, now) =
   if peek_f32(b, h_have()) < 1.5 then 0
@@ -905,7 +899,7 @@ fn roster_row(b, h, p, sl, i) =
   poke_f32(h, m + 1, peek_f32(b, 56))
   poke_f32(h, m + 2, peek_f32(b, 57))
   poke_f32(h, m + 3, peek_f32(b, 58))
-  poke_f32(h, m + 4, if id == to_int(peek_f32(b, h_id())) then 0.0 - maxf(hp, 0.001) else hp)
+  poke_f32(h, m + 4, if id == to_int(peek_f32(b, h_id())) then 0.0 - max(hp, 0.001) else hp)
   poke_f32(h, m + 5, peek_f32(b, p + 9))
   poke_f32(h, m + 6, peek_f32(b, p + 10))
   poke_f32(h, m + 7, if hp <= 0.001 then 1.0 else 0.0)
@@ -1023,8 +1017,8 @@ fn tag_row(b, h, o, sl) =
 
 fn out_input(b, keys, yaw, pitch) =
   poke_i8(b, out_at(), 105)
-  poke_i8(b, out_at() + 1, keys % 256)
-  poke_i8(b, out_at() + 2, keys / 256 % 256)
+  poke_i8(b, out_at() + 1, bit_and(keys, 255))
+  poke_i8(b, out_at() + 2, bit_and(shr(keys, 8), 255))
   out_f32(b, out_at() + 3, yaw)
   out_f32(b, out_at() + 7, pitch)
   11

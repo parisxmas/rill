@@ -110,7 +110,7 @@ fn player_at(w, i) = peek_ptr(peek_ptr(w, 96), i)
 
 fn fract(x) = x - floor(x)
 
-fn clampf(x, lo, hi) = if x < lo then lo else if x > hi then hi else x
+fn clampf(x, lo, hi) = max(lo, min(hi, x))
 
 # One pseudo-random number per lattice point; the classic sine hash.
 fn hash2(ix, iz) = fract(sin(ix * 127.1 + iz * 311.7) * 43758.5453)
@@ -144,7 +144,7 @@ fn height(x, z) =
 # the whole test — no flag to keep, and nothing that can get out of step with
 # where they actually are.
 fn in_water(s) =
-  if height(peek_f32(s, 21), peek_f32(s, 23)) < 0.0 then 1 else 0
+  yes(height(peek_f32(s, 21), peek_f32(s, 23)) < 0.0)
 
 # The host asks too, so that a shot taken while wading is refused before the
 # bolt cycles and the bang plays rather than after: a rifle that goes off and
@@ -207,7 +207,7 @@ fn emit_vert(m, at, x, y, z, nx, ny, nz, j) =
   poke_f32(m, at + 7, band_g(y, ny) * j)
   poke_f32(m, at + 8, band_b(y, ny) * j)
 
-fn clampi(v, hi) = if v < 0 then 0 else if v > hi then hi else v
+fn clampi(v, hi) = max(0, min(hi, v))
 
 # The slope at a lattice corner, from the two heights either side of it. The
 # terrain is a height field, so this is a subtraction rather than a cross
@@ -522,7 +522,7 @@ fn mark_broken(w, i) =
   poke_f32(broken_mark(w), i, 1.0)
   1
 
-fn block_broken(w: Ptr, i: Int) -> Int = if peek_f32(broken_mark(w), i) > 0.5 then 1 else 0
+fn block_broken(w: Ptr, i: Int) -> Int = yes(peek_f32(broken_mark(w), i) > 0.5)
 
 fn clear_marks(w) =
   mb = broken_mark(w)
@@ -571,6 +571,9 @@ fn level_at(x, z, h, d) =
   a < 1.3 && b < 1.3 && c < 1.3 && e < 1.3
 
 fn absf(v) = if v < 0.0 then 0.0 - v else v
+
+# A Bool where an Int is wanted, which is most of the wire and half the HUD.
+fn yes(b) = if b then 1 else 0
 
 fn place_walls(w, bb) =
   wb = wall_box(w)
@@ -847,9 +850,9 @@ fn ghost_hit(g, i, ax, ay, az, bx, by, bz) =
   x = peek_f32(g, i * 3)
   y = peek_f32(g, i * 3 + 1)
   z = peek_f32(g, i * 3 + 2)
-  head = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 1.62, z) < 0.09 then 1 else 0
-  body = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 1.05, z) < 0.1764 then 1 else 0
-  legs = if seg_dist2(ax, ay, az, bx, by, bz, x, y + 0.45, z) < 0.1296 then 1 else 0
+  head = yes(seg_dist2(ax, ay, az, bx, by, bz, x, y + 1.62, z) < 0.09)
+  body = yes(seg_dist2(ax, ay, az, bx, by, bz, x, y + 1.05, z) < 0.1764)
+  legs = yes(seg_dist2(ax, ay, az, bx, by, bz, x, y + 0.45, z) < 0.1296)
   head + body + legs
 
 fn stop_on_ghosts(w, b, at, ax, ay, az, bx, by, bz) =
@@ -1010,11 +1013,11 @@ fn note_mark(w, x, y, z, wall_i) =
   at = n % mark_ring() * 8
   bb = blocks_ptr(w)
   e = mark_step()
-  wall = if wall_i >= 0 then 1 else 0
+  wall = yes(wall_i >= 0)
   # Never a negative index into the block buffer, whichever way the `if` below
   # is evaluated.
   wi = if wall > 0 then wall_i else 0
-  flat = if wall < 1 && height(x, z) < 0.0 then 1 else 0
+  flat = yes(wall < 1 && height(x, z) < 0.0)
   gx = if flat > 0 then 0.0 else height(x - e, z) - height(x + e, z)
   gy = if flat > 0 then 1.0 else e * 2.0
   gz = if flat > 0 then 0.0 else height(x, z - e) - height(x, z + e)
@@ -1125,7 +1128,7 @@ fn held_ammo(s: Ptr) -> Int =
 # Whether a pull of the trigger has anything to become: a shot, or — for an
 # AK with an empty magazine and spares on the belt — the change.
 fn may_fire(s) =
-  if weapon(s) == 2 then (if ak_rounds(s) > 0 || ak_mags(s) > 0 then 1 else 0) else held_ammo(s)
+  if weapon(s) == 2 then yes(ak_rounds(s) > 0 || ak_mags(s) > 0) else held_ammo(s)
 
 fn set_held_ammo(s: Ptr, n: Int) =
   if weapon(s) == 1 then poke_f32(s, 120, to_float(n)) else if weapon(s) == 2 then poke_f32(s, 106, to_float(n)) else poke_f32(s, 118, to_float(n))
@@ -1500,9 +1503,7 @@ fn break_crystal(w, cb, cat, ci) =
   # The tally is also the cursor of a small ring of which crystal it was. A
   # server reads back the ones a client has not heard about yet; the count and
   # the log are the same number, so they cannot come apart.
-  n = to_int(peek_f32(w, 62))
-  poke_f32(peek_ptr(w, 97), n % break_ring(), to_float(ci))
-  poke_f32(w, 62, peek_f32(w, 62) + 1.0)
+  ring_push(w, 97, 62, break_ring(), ci)
   poke_f32(w, 70, x)
   poke_f32(w, 71, y)
   poke_f32(w, 72, z)
@@ -1897,7 +1898,7 @@ fn player_by_id_at(w, id, i, s) =
 # Two chargers must not take the same crystal. Written out rather than looped
 # because a `for` here would have nothing to accumulate into.
 fn taken_at(cbuf, at, i) =
-  if peek_f32(cbuf, at + 2) < 0.5 then 0 else if to_int(peek_f32(cbuf, at)) == i then 1 else 0
+  if peek_f32(cbuf, at + 2) < 0.5 then 0 else yes(to_int(peek_f32(cbuf, at)) == i)
 
 fn taken(cbuf, i) =
   st = charger_stride()
@@ -2003,7 +2004,7 @@ fn step_pass(w, cbuf, dt, tnow) =
 # Only the *starting* is gated. Whatever is already winding up finishes its
 # swell, throws and settles back, because a crystal cut off mid-swell would
 # stay at two and a half times its size with nothing left to bring it down.
-fn meteors_on(w: Ptr) -> Int = if peek_f32(w, 53) > 0.5 then 1 else 0
+fn meteors_on(w: Ptr) -> Int = yes(peek_f32(w, 53) > 0.5)
 
 fn set_meteors(w: Ptr, on: Int) =
   poke_f32(w, 53, if on > 0 then 1.0 else 0.0)
@@ -2190,7 +2191,7 @@ fn gather_shard(s, sb, i, mend) =
 # enough that losing a fraction of one is not something anybody is counting.
 fn wanted(s, sb, at) =
   kind = peek_f32(sb, at + 16)
-  if kind < 1.5 then 1 else if kind > 2.5 then (if rockets(s) < rocket_full() then 1 else 0) else if rounds(s) < mag_size() || ak_rounds(s) < ak_full() || ak_mags(s) < ak_mag_count() - 1 then 1 else 0
+  if kind < 1.5 then 1 else if kind > 2.5 then yes(rockets(s) < rocket_full()) else yes(rounds(s) < mag_size() || ak_rounds(s) < ak_full() || ak_mags(s) < ak_mag_count() - 1)
 
 fn gather(s, sb, mend) =
   for i in 0..shard_cap()
@@ -2209,7 +2210,7 @@ fn breath(s: Ptr) -> Float = peek_f32(s, 115)
 
 # And whether they are winded, which is the difference between an empty bar
 # and a bar that is filling but will not let you run yet.
-fn winded(s: Ptr) -> Int = if peek_f32(s, 116) > 0.5 then 1 else 0
+fn winded(s: Ptr) -> Int = yes(peek_f32(s, 116) > 0.5)
 
 # Start again, without rebuilding the valley.
 #
@@ -2439,17 +2440,29 @@ fn burst_block(w, bb, i, dx, dy, dz, d2, seed) =
 # A ring the server reads back, the same shape the crystals' is: a count that
 # only goes up, and where it points is which block it was. A client cannot work
 # out on its own which stone went, so it is told.
+# ---- rings of indices --------------------------------------------------------
+#
+# Four of these: which crystal broke, which stone went, which pine fell, which
+# of the crystals' fire was shot down. Each is a tally that doubles as the
+# cursor of a small ring — the count and the log are the same number, so they
+# cannot come apart — and each was written out three times over: read the
+# tally, write at the tally modulo the ring, bump the tally. It is one line
+# each now.
+fn ring_push(w, buf, tally, ring, i) =
+  n = to_int(peek_f32(w, tally))
+  poke_f32(peek_ptr(w, buf), n % ring, to_float(i))
+  poke_f32(w, tally, to_float(n + 1))
+  1
+
+fn ring_at(w, buf, ring, k) = to_int(peek_f32(peek_ptr(w, buf), k % ring))
+
 fn block_ring() = 64
 
-fn note_block(w, i) =
-  n = to_int(peek_f32(w, 122))
-  poke_f32(peek_ptr(w, 115), n % block_ring(), to_float(i))
-  poke_f32(w, 122, peek_f32(w, 122) + 1.0)
-  1
+fn note_block(w, i) = ring_push(w, 115, 122, block_ring(), i)
 
 fn blocks_gone(w: Ptr) -> Int = to_int(peek_f32(w, 122))
 
-fn block_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 115), k % block_ring()))
+fn block_which(w: Ptr, k: Int) -> Int = ring_at(w, 115, block_ring(), k)
 
 # Taking one out because the server said so, with no blast to work it out from.
 fn drop_block(w: Ptr, i: Int) =
@@ -2534,15 +2547,11 @@ fn burst_pine(w, pb, at) =
   poke_f32(w, 61, to_float(k0 + 6))
   1
 
-fn note_fell(w, i) =
-  n = to_int(peek_f32(w, 93))
-  poke_f32(peek_ptr(w, 76), n % fell_ring(), to_float(i))
-  poke_f32(w, 93, peek_f32(w, 93) + 1.0)
-  1
+fn note_fell(w, i) = ring_push(w, 76, 93, fell_ring(), i)
 
 fn pines_down(w: Ptr) -> Int = to_int(peek_f32(w, 93))
 
-fn fell_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 76), k % fell_ring()))
+fn fell_which(w: Ptr, k: Int) -> Int = ring_at(w, 76, fell_ring(), k)
 
 # Being told which pine went, with no blast of our own to work it out from —
 # and the whole standing history for whoever walks in late.
@@ -2550,7 +2559,7 @@ fn put_fell(w: Ptr, i: Int) =
   pb = peek_ptr(w, 65)
   if i < 0 || i >= to_int(peek_f32(w, 57)) then 0 else if peek_f32(pb, i * 8 + 3) <= 0.01 then 0 else drop_pine(w, pb, i)
 
-fn pine_felled(w: Ptr, i: Int) -> Int = if peek_f32(peek_ptr(w, 65), i * 8 + 3) < 0.0 then 1 else 0
+fn pine_felled(w: Ptr, i: Int) -> Int = yes(peek_f32(peek_ptr(w, 65), i * 8 + 3) < 0.0)
 
 # What a warhead does that a stone does not, and only a warhead: a meteor comes
 # down somewhere every few seconds and the valley would be full of columns.
@@ -2717,7 +2726,7 @@ fn hits_trunk(w, fb, at, ax, ay, az, bx, by, bz) =
   for i in 0..to_int(peek_f32(w, 57))
     trunk_stop(fb, at, pb, i, ax, ay, az, bx, by, bz)
 
-  if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+  yes(peek_f32(fb, at + 7) < 0.001)
 
 fn trunk_stop(fb, at, pb, i, ax, ay, az, bx, by, bz) =
   if peek_f32(fb, at + 7) < 0.001 then 0 else if peek_f32(pb, i * 8 + 3) <= 0.01 then 0 else trunk_cross(fb, at, pb, i, ax, ay, az, bx, by, bz)
@@ -2747,7 +2756,7 @@ fn trunk_tall(fb, at, pb, i, ay, by, t, cx, cz) =
 
 fn hits_fire(w, fb, at, ax, ay, az, bx, by, bz) =
   hit_fire(w, fb, at, at, ax, ay, az, bx, by, bz)
-  if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+  yes(peek_f32(fb, at + 7) < 0.001)
 
 # ---- shooting the sky down --------------------------------------------------
 #
@@ -2801,15 +2810,11 @@ fn shatter_fire(w, fb, fat) =
 
 fn down_ring() = 32
 
-fn note_down(w, i) =
-  n = to_int(peek_f32(w, 123))
-  poke_f32(peek_ptr(w, 116), n % down_ring(), to_float(i))
-  poke_f32(w, 123, peek_f32(w, 123) + 1.0)
-  1
+fn note_down(w, i) = ring_push(w, 116, 123, down_ring(), i)
 
 fn fires_down(w: Ptr) -> Int = to_int(peek_f32(w, 123))
 
-fn down_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 116), k % down_ring()))
+fn down_which(w: Ptr, k: Int) -> Int = ring_at(w, 116, down_ring(), k)
 
 # Being told which one went, with no round of our own to have done it.
 fn down_fire(w: Ptr, i: Int) =
@@ -2822,7 +2827,7 @@ fn down_fire(w: Ptr, i: Int) =
 # read back out of slot 7 the way the others are.
 fn hits_stone(w, fb, at, ax, ay, az, bx, by, bz) =
   sweep_walls(w, fb, at, ax, ay, az, bx, by, bz, 1.15)
-  if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+  yes(peek_f32(fb, at + 7) < 0.001)
 
 # Every wall the segment could reach, and only then the stones in it.
 #
@@ -3106,7 +3111,7 @@ fn hits_body(w, fb, at, ax, ay, az, bx, by, bz) =
   for i in 0..player_count(w)
     stop_on_body(fb, at, player_at(w, i), owner, ax, ay, az, bx, by, bz)
 
-  if peek_f32(fb, at + 7) < 0.001 then 1 else 0
+  yes(peek_f32(fb, at + 7) < 0.001)
 
 fn stop_on_body(fb, at, s, owner, ax, ay, az, bx, by, bz) =
   if peek_f32(s, 99) == owner then 0
@@ -3120,7 +3125,9 @@ fn stop_on_body(fb, at, s, owner, ax, ay, az, bx, by, bz) =
 # legs. Which one it was does not matter here: a rocket is not interested in
 # where it hit you.
 fn crossed(s, ax, ay, az, bx, by, bz) =
-  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then 1 else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then 1 else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then 1 else 0
+  yes(player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5
+      || player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5
+      || player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5)
 
 fn step_fireballs(w, fb, dt, decide) =
   for i in 0..fireball_cap()
@@ -3174,7 +3181,7 @@ fn shark_depth(x, z) =
   if lo > hi then hi else lo
 
 # Where the water is deep enough to be worth swimming in.
-fn deep_at(x, z) = if height(x, z) < 0.0 - 2.2 then 1 else 0
+fn deep_at(x, z) = yes(height(x, z) < 0.0 - 2.2)
 
 # Turn toward `want`, no faster than it can. The wrap keeps the difference in
 # (-π, π] so it always takes the short way round rather than unwinding the long
@@ -3289,7 +3296,7 @@ fn shark_step(w, dt, tnow) =
 
   dpx = px - ox
   dpz = pz - oz
-  near = if dpx * dpx + dpz * dpz < shark_reach() * shark_reach() then 1 else 0
+  near = yes(dpx * dpx + dpz * dpz < shark_reach() * shark_reach())
 
   # roam -> charge when it sees you; charge -> bite on contact; bite is one
   # instant; then it turns away for a few seconds before it will come again.
@@ -3297,7 +3304,7 @@ fn shark_step(w, dt, tnow) =
 
   # The bite itself, once, on the frame the mode turns over, and only if
   # whoever it was biting is still there to bite.
-  bit = if mode > 1.5 && mode < 2.5 then 1 else 0
+  bit = yes(mode > 1.5 && mode < 2.5)
   if bit > 0 && ti >= 0 then
     poke_f32(target, 82, clampf(peek_f32(target, 82) - shark_bite(), 0.0, 1.0))
     0
@@ -3414,28 +3421,25 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   flower_buf = alloc_bytes(flower_cap(npine) * 32)
   crystal_buf = alloc_bytes(ncrys * 32)
   grass_buf = alloc_bytes(ngrass * 32)
-  bullet_buf = alloc_bytes(bullet_cap() * 32)
-  shard_buf = alloc_bytes(shard_cap() * shard_stride() * 4)
-  fire_buf = alloc_bytes(fireball_cap() * fireball_stride() * 4)
-  charge_buf = alloc_bytes(charger_cap() * charger_stride() * 4)
-  blast_buf = alloc_bytes(blast_cap() * blast_stride() * 4)
+  # A pool is a count and a stride, and every one of them was spelling out
+  # the same multiplication by four.
+  fn pool(cap, stride) = alloc_bytes(cap * stride * 4)
+
+  bullet_buf = pool(bullet_cap(), 8)
+  shard_buf = pool(shard_cap(), shard_stride())
+  fire_buf = pool(fireball_cap(), fireball_stride())
+  charge_buf = pool(charger_cap(), charger_stride())
+  blast_buf = pool(blast_cap(), blast_stride())
   break_buf = alloc_bytes(break_ring() * 4)
   # Room for what gets built as well as what was placed: the walls' own
   # blocks first, and `built_cap` more behind them for the players'.
   block_buf = alloc_bytes((block_cap() + built_cap()) * 32)
-  face_buf = alloc_bytes(face_cap() * face_stride() * 4)
+  face_buf = pool(face_cap(), face_stride())
   poke_ptr(s, 85, face_buf)
-  carve_buf = alloc_bytes(carve_bytes())
-
-  for ci in 0..carve_bytes() / 4
-    poke_i32(carve_buf, ci, 0)
-
+  carve_buf = cleared(carve_bytes())
   # The page table rides along, its pointer in the buffer's own first slot.
   # Sized for eight-byte pointers on either target, zeroed the same way.
-  page_tab = alloc_bytes(super_n() * super_n() * 8)
-
-  for ci in 0..super_n() * super_n() * 2
-    poke_i32(page_tab, ci, 0)
+  page_tab = cleared(super_n() * super_n() * 8)
 
   poke_ptr(carve_buf, 0, page_tab)
   # An empty dirty rect is minx above maxx.
@@ -3660,9 +3664,15 @@ fn magma_cap() = 512
 
 fn rock_line() = 9.5       # where the pines stop is where the digging starts
 
-fn minf(a, c) = if a < c then a else c
+# `alloc_bytes` is malloc: it hands back whatever was in that memory last.
+# Anything read before it is written wants this instead.
+fn cleared(n) =
+  p = alloc_bytes(n)
 
-fn maxf(a, c) = if a > c then a else c
+  for i in 0..n / 4
+    poke_i32(p, i, 0)
+
+  p
 
 fn cv(w) = peek_ptr(w, 84)
 
@@ -3704,10 +3714,7 @@ fn super_of(i) = i / carve_n() / page_side() * super_n() + i % carve_n() / page_
 fn cell_in(i) = i / carve_n() % page_side() * page_side() + i % carve_n() % page_side()
 
 fn page_new(cb, sx) =
-  pg = alloc_bytes(page_bytes())
-
-  for k in 0..page_bytes() / 4
-    poke_i32(pg, k, 0)
+  pg = cleared(page_bytes())
 
   poke_ptr(peek_ptr(cb, 0), sx, pg)
   poke_i8(cb, 64 + sx, 1)
@@ -3729,19 +3736,19 @@ fn col_put_byte(cb, i, b, val) =
   poke_i8(page_of(cb, super_of(i)), cell_in(i) * vox_bytes() + b, val)
   1
 
-fn bit_of(k) = if k % 8 == 0 then 1 else if k % 8 == 1 then 2 else if k % 8 == 2 then 4 else if k % 8 == 3 then 8 else if k % 8 == 4 then 16 else if k % 8 == 5 then 32 else if k % 8 == 6 then 64 else 128
+fn bit_of(k) = shl(1, k % 8)
 
 # Has the slab `k` of column `i` been taken out?
 fn vox_gone(cb, i, k) =
   if k < 0 || k >= vox_slabs() then 0
-  else if col_byte(cb, i, k / 8) / bit_of(k) % 2 == 1 then 1 else 0
+  else yes(bit_and(col_byte(cb, i, k / 8), bit_of(k)) != 0)
 
 fn vox_take(cb, i, k) =
   b = k / 8
   old = col_byte(cb, i, b)
-  if old / bit_of(k) % 2 == 1 then 0
+  if bit_and(old, bit_of(k)) != 0 then 0
   else
-    col_put_byte(cb, i, b, old + bit_of(k))
+    col_put_byte(cb, i, b, bit_or(old, bit_of(k)))
     1
 
 # Anything at all out of this column?
@@ -3911,10 +3918,10 @@ fn dirty_grow(cb, x, z, m) =
     poke_f32(cb, 7, z + m)
     1
   else
-    poke_f32(cb, 4, minf(peek_f32(cb, 4), x - m))
-    poke_f32(cb, 5, minf(peek_f32(cb, 5), z - m))
-    poke_f32(cb, 6, maxf(peek_f32(cb, 6), x + m))
-    poke_f32(cb, 7, maxf(peek_f32(cb, 7), z + m))
+    poke_f32(cb, 4, min(peek_f32(cb, 4), x - m))
+    poke_f32(cb, 5, min(peek_f32(cb, 5), z - m))
+    poke_f32(cb, 6, max(peek_f32(cb, 6), x + m))
+    poke_f32(cb, 7, max(peek_f32(cb, 7), z + m))
     1
 
 # ---- one bite ----------------------------------------------------------------
@@ -3956,21 +3963,25 @@ fn dig_one(cb, i, k, h) =
     if got > 0 && slab_y(k - 1) < h - dig_floor() && magma_under(cell_x(i), cell_z(i)) then note_magma(cb, i) else 0
     got
 
-fn dig_col(cb, i, k0, dk, got) =
-  if dk > dig_up() then got
-  else if i < 0 then got
+# The cube, as the three counted walks it is. A loop that carries something
+# says so — `with got` — and the count comes back out of the loop rather than
+# down a chain of accumulator parameters.
+fn dig_square(cb, ix, iz, k0) =
+  for dz in dig_lo()..dig_hi() + 1 with got = 0
+    got + dig_row(cb, ix, iz + dz, k0)
+
+fn dig_row(cb, ix, iz, k0) =
+  for dx in dig_lo()..dig_hi() + 1 with got = 0
+    got + dig_col(cb, cell_at(ix + dx, iz), k0)
+
+fn dig_col(cb, i, k0) =
+  if i < 0 then 0
   else
     h = height(cell_x(i), cell_z(i))
-    if h < rock_line() then got
-    else dig_col(cb, i, k0, dk + 1, got + dig_one(cb, i, k0 + dk, h))
-
-fn dig_square(cb, ix, iz, k0, dz, got) =
-  if dz > dig_hi() then got
-  else dig_square(cb, ix, iz, k0, dz + 1, got + dig_row(cb, ix, iz + dz, k0, dig_lo(), 0))
-
-fn dig_row(cb, ix, iz, k0, dx, got) =
-  if dx > dig_hi() then got
-  else dig_row(cb, ix, iz, k0, dx + 1, got + dig_col(cb, cell_at(ix + dx, iz), k0, dig_dn(), 0))
+    if h < rock_line() then 0
+    else
+      for dk in dig_dn()..dig_up() + 1 with got = 0
+        got + dig_one(cb, i, k0 + dk, h)
 
 # A cell that has just burned through. Once, ever — dig_write only comes this
 # way on the crossing itself — so the list never carries a cell twice.
@@ -4015,7 +4026,7 @@ fn apply_carve(w, code) =
   if ci < 0 || height(cell_x(ci), cell_z(ci)) < rock_line() then 0
   else
     # One stone in the pocket however many the cube gave up.
-    got = if dig_square(cb, ci % carve_n(), ci / carve_n(), k, dig_lo(), 0) > 0 then 1 else 0
+    got = yes(dig_square(cb, ci % carve_n(), ci / carve_n(), k) > 0)
     # A margin that covers the cube itself and the lattice vertex beyond it:
     # sixty centimetres of bite and a metre of terrain grid.
     dirty_grow(cb, cell_x(ci), cell_z(ci), 1.8)
@@ -4405,23 +4416,64 @@ fn col_faces(w, cb, ix, iz) =
   i = cell_at(ix, iz)
   if i < 0 then 0
   else
-    x = cell_x(i) - carve_q() * 0.5
-    z = cell_z(i) - carve_q() * 0.5
-    h = height(cell_x(i), cell_z(i))
-    st = cell_step(mesh_n(w))
+    q = carve_q()
     cx = cell_x(i)
     cz = cell_z(i)
+    x = cx - q * 0.5
+    z = cz - q * 0.5
+    h = height(cx, cz)
+    # The hillside's own slope at this column, off the same lattice the
+    # terrain mesh uses, so a cap face lights the way the hill does.
+    st = cell_step(mesh_n(w))
     sx = (mesh_h(w, cx + st, cz) - mesh_h(w, cx - st, cz)) / (st * 2.0)
     sz = (mesh_h(w, cx, cz + st) - mesh_h(w, cx, cz - st)) / (st * 2.0)
     il = 1.0 / sqrt(sx * sx + 1.0 + sz * sz)
-    cf_slab(w, cb, i, ix, iz, x, z, h, mesh_h(w, cx, cz),
-            (0.0 - sx) * il, il, (0.0 - sz) * il, slab_of(h - dig_floor()))
+    nx = (0.0 - sx) * il
+    ny = il
+    nz = (0.0 - sz) * il
+    ht = mesh_h(w, cx, cz)
 
-fn cf_slab(w, cb, i, ix, iz, x, z, h, ht, nx, ny, nz, k) =
-  if k >= vox_slabs() || slab_y(k) >= h then 0
-  else
-    if solid_cell(cb, i, k, h) > 0 then cf_sides(w, cb, i, ix, iz, x, z, h, ht, nx, ny, nz, k) else 0
-    cf_slab(w, cb, i, ix, iz, x, z, h, ht, nx, ny, nz, k + 1)
+    # Everything below is one column's business, so it is written inside the
+    # column rather than passed to it. A local function sees the names around
+    # it and still compiles to a jump — thirteen parameters of unchanging
+    # context went away without anything being allocated to replace them.
+    fn put_side(px, py, pz, dir, tall, cap, r, g, b) =
+      if cap then put_lit(w, px, py, pz, dir, tall, nx, ny, nz, r, g, b)
+      else put_tall(w, px, py, pz, dir, tall, r, g, b)
+
+    fn top(py, cap) =
+      if cap then ground_quad(w, x, z, nx, ny, nz)
+      else
+        (r, g, b) = face_grey(py, h, 1)
+        put_face(w, x, py, z, 2, r, g, b)
+
+    fn slab(k) =
+      y = slab_y(k)
+      # The topmost slab of a standing column ends at the ground, not at the
+      # slab's ceiling — and the ground it ends at is the one the terrain mesh
+      # draws, or the two surfaces meet at a step and the step is a hole.
+      cap = slab_y(k + 1) > h
+      yt = if cap then ht else slab_y(k + 1)
+      tall = yt - y
+      # A cap slab is hillside: its faces take the band colour and the slope.
+      # Anything under it is broken stone.
+      (gr, gg, gb) = face_grey(y, h, 1)
+      (fr, fg, fb) = if cap then (band_r(y, ny), band_g(y, ny), band_b(y, ny)) else (gr, gg, gb)
+      # A riser is only wanted where the neighbour is a hole, not merely
+      # lower: two pieces of untouched hillside share their corner heights
+      # and meet without one.
+      if nb_open(cb, ix - 1, iz, k, cap) then put_side(x, y, z, 0, tall, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix + 1, iz, k, cap) then put_side(x + q, y, z, 1, tall, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix, iz - 1, k, cap) then put_side(x, y, z, 4, tall, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix, iz + 1, k, cap) then put_side(x, y, z + q, 5, tall, cap, fr, fg, fb) else 0
+      if solid_cell(cb, i, k - 1, h) == 0 then put_face(w, x, y, z, 3, gr, gg, gb) else 0
+      if solid_cell(cb, i, k + 1, h) == 0 || cap then top(yt, cap) else 0
+      1
+
+    for k in slab_of(h - dig_floor())..slab_of(h) + 1
+      if solid_cell(cb, i, k, h) > 0 then slab(k) else 0
+
+    1
 
 # The height the terrain mesh would have drawn at this point: its lattice
 # corners, blended the way a triangle blends them. The voxel surface has to
@@ -4440,53 +4492,6 @@ fn mesh_h(w, x, z) =
   d = ch(w, ix + 1, iz + 1, st)
   a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz
 
-fn cf_sides(w, cb, i, ix, iz, x, z, h, ht, nx, ny, nz, k) =
-  q = carve_q()
-  y = slab_y(k)
-  # The topmost slab of a standing column ends at the ground, not at the
-  # slab's ceiling — and the ground it has to end at is the one the terrain
-  # mesh draws, interpolated across its lattice, or the two surfaces meet at
-  # a step and the step is a hole.
-  cap = slab_y(k + 1) > h
-  yt = if cap then ht else slab_y(k + 1)
-  tall = yt - y
-  # The cap slab is hillside, and everything about it — its top, and the
-  # risers between it and its neighbours — is lit by the hillside's own
-  # slope. Light those by the faces they are and the staircase that stands in
-  # for a slope catches the sun broadside on every step, which is the whole of
-  # why a dug patch read as a bright blocky lump.
-  (rc, gc, bc) = (band_r(y, ny), band_g(y, ny), band_b(y, ny))
-  (rt, gt, bt) = face_grey(y, h, 1)
-  (fr, fg, fb) = if cap then (rc, gc, bc) else (rt, gt, bt)
-  # A riser is only wanted where the neighbour is a hole, not merely lower:
-  # two pieces of untouched hillside share their corner heights and meet
-  # without one.
-  if nb_open(cb, ix - 1, iz, k, cap) then cf_put(w, x, y, z, 0, tall, cap, nx, ny, nz, fr, fg, fb) else 0
-  if nb_open(cb, ix + 1, iz, k, cap) then cf_put(w, x + q, y, z, 1, tall, cap, nx, ny, nz, fr, fg, fb) else 0
-  if nb_open(cb, ix, iz - 1, k, cap) then cf_put(w, x, y, z, 4, tall, cap, nx, ny, nz, fr, fg, fb) else 0
-  if nb_open(cb, ix, iz + 1, k, cap) then cf_put(w, x, y, z + q, 5, tall, cap, nx, ny, nz, fr, fg, fb) else 0
-  if solid_cell(cb, i, k - 1, h) == 0 then put_face(w, x, y, z, 3, rt, gt, bt) else 0
-  if solid_cell(cb, i, k + 1, h) == 0 || cap then cf_top(w, x, yt, z, h, cap, nx, ny, nz) else 0
-  1
-
-fn cf_put(w, x, y, z, dir, tall, cap, nx, ny, nz, r, g, b) =
-  if cap then put_lit(w, x, y, z, dir, tall, nx, ny, nz, r, g, b)
-  else put_tall(w, x, y, z, dir, tall, r, g, b)
-
-# The top of a column of untouched ground is not a flat lid. It is the piece
-# of hillside that was there, and it is drawn as that: four corner heights off
-# the same lattice the terrain mesh uses, so neighbouring columns share their
-# corners exactly and the surface is continuous.
-#
-# Flat lids were what made a blanked patch read as a staircase glued to a
-# smooth slope — thirty-centimetre treads catching the sun and thirty-
-# centimetre risers in shadow, over and over, where there had been a hillside.
-# Sharing corners also means no risers are needed between them at all, which
-# is most of the faces gone as well.
-fn cf_top(w, x, y, z, h, cap, nx, ny, nz) =
-  if cap then ground_quad(w, x, z, nx, ny, nz)
-  else top_face(w, x, y, z, h)
-
 fn ground_quad(w, x, z, nx, ny, nz) =
   q = carve_q()
   a = mesh_h(w, x, z)
@@ -4504,15 +4509,6 @@ fn ground_quad(w, x, z, nx, ny, nz) =
     poke_f32(fb, at + 14, c)
     poke_f32(fb, at + 15, d)
     1
-
-# The top of a column takes the band colour the terrain mesh would have given
-# it, so the ground reads as ground where it is ground and as broken stone
-# where it has been opened.
-fn top_face(w, x, y, z, h) =
-  if 1 == 0 then 0
-  else
-    (r, g, b) = face_grey(y, h, 1)
-    put_face(w, x, y, z, 2, r, g, b)
 
 # Air because somebody took it out, rather than air because the hill is lower
 # over there. Only the first wants a face standing between them.
@@ -4538,37 +4534,25 @@ fn faces_build(s: Ptr) -> Int =
   poke_f32(cb, 14, 0.0)
   n = mesh_n(w)
   st = cell_step(n)
-  fb_rows(w, cb, n, st, 0)
+
+  # Four nested walks over two grids — mesh cells, and the columns inside the
+  # ones that have lost their roof. As five functions passing `w, cb, n, st`
+  # to each other this was thirty lines that said nothing about what it did.
+  for iz in 0..n
+    for ix in 0..n
+      if mcell_roofed(w, st, ix, iz) > 0 then cell_faces(w, cb, st, ix, iz) else 0
+
   rock_faces(w)
 
-fn fb_rows(w, cb, n, st, iz) =
-  if iz >= n then 0
-  else
-    fb_row(w, cb, n, st, 0, iz)
-    fb_rows(w, cb, n, st, iz + 1)
+fn cell_faces(w, cb, st, mx, mz) =
+  x0 = lattice(mx, st)
+  z0 = lattice(mz, st)
 
-fn fb_row(w, cb, n, st, ix, iz) =
-  if ix >= n then 0
-  else
-    if mcell_roofed(w, st, ix, iz) > 0 then fb_cell(w, cb, st, ix, iz) else 0
-    fb_row(w, cb, n, st, ix + 1, iz)
+  for iz in cell_ix(z0)..cell_ix(z0 + st)
+    for ix in cell_ix(x0)..cell_ix(x0 + st)
+      col_faces(w, cb, ix, iz)
 
-fn fb_cell(w, cb, st, ix, iz) =
-  x0 = lattice(ix, st)
-  z0 = lattice(iz, st)
-  fb_cols(w, cb, cell_ix(x0), cell_ix(x0 + st) - 1, cell_ix(z0), cell_ix(z0 + st) - 1)
-
-fn fb_cols(w, cb, x0, x1, iz, z1) =
-  if iz > z1 then 0
-  else
-    fb_colrow(w, cb, x0, x1, iz)
-    fb_cols(w, cb, x0, x1, iz + 1, z1)
-
-fn fb_colrow(w, cb, ix, x1, iz) =
-  if ix > x1 then 0
-  else
-    col_faces(w, cb, ix, iz)
-    fb_colrow(w, cb, ix + 1, x1, iz)
+  1
 
 # ---- standing in it ----------------------------------------------------------
 #
@@ -4646,19 +4630,15 @@ fn build_spot_y(w, x, z) =
   top = stack_top(w, x, z, block_count(w), 0.0 - 999.0)
   if top > 0.0 - 998.0 then top else floor_at(w, x, z)
 
-fn stack_top(w, x, z, i0, best) =
+fn stack_top(w, x, z, i0, floor0) =
   bb = peek_ptr(w, 114)
-  n = i0 + built(w)
-  st_go(bb, x, z, i0, n, best)
 
-fn st_go(bb, x, z, i, n, best) =
-  if i >= n then best
-  else
+  for i in i0..i0 + built(w) with best = floor0
     dx = peek_f32(bb, i * 8) - x
     dz = peek_f32(bb, i * 8 + 2) - z
     sc = peek_f32(bb, i * 8 + 3)
     near = dx * dx + dz * dz < 0.81 && sc > 0.01
-    st_go(bb, x, z, i + 1, n, if near then maxf(best, peek_f32(bb, i * 8 + 1) + 0.6 * sc) else best)
+    if near then max(best, peek_f32(bb, i * 8 + 1) + 0.6 * sc) else best
 
 fn try_build(s: Ptr) -> Int =
   w = wd(s)
@@ -5209,7 +5189,7 @@ fn wild_limit() = 12
 
 # For the server, which drops them the way it drops anyone who has gone quiet.
 fn shooting_wild(s: Ptr) -> Int =
-  if peek_f32(s, 114) >= to_float(wild_limit()) then 1 else 0
+  yes(peek_f32(s, 114) >= to_float(wild_limit()))
 
 # A shot has to go roughly where its owner says they are looking.
 #
@@ -5228,7 +5208,7 @@ fn faces(s, dx, dy, dz) =
   fx = sin(peek_f32(s, 19)) * cp
   fy = sin(peek_f32(s, 20))
   fz = (0.0 - cos(peek_f32(s, 19))) * cp
-  if fx * dx + fy * dy + fz * dz > 0.94 then 1 else 0
+  yes(fx * dx + fy * dy + fz * dz > 0.94)
 
 fn asked(s, dx, dy, dz) =
   poke_f32(s, 114, 0.0)
@@ -5308,7 +5288,7 @@ fn crystal_scale(w: Ptr, i: Int) -> Float = peek_f32(peek_ptr(w, 66), i * 8 + 3)
 
 # Which crystal the k'th break was. Only the last thirty-two are recoverable,
 # which is a second and a half of the busiest the valley gets.
-fn break_which(w: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(w, 97), k % break_ring()))
+fn break_which(w: Ptr, k: Int) -> Int = ring_at(w, 97, break_ring(), k)
 
 # ---- putting one back ------------------------------------------------------
 #
@@ -5645,9 +5625,9 @@ fn jet_climb() = 6.5
 
 fn jet_fuel(s: Ptr) -> Float = peek_f32(s, 244)
 
-fn jet_on(s: Ptr) -> Int = if peek_f32(s, 245) > 0.5 then 1 else 0
+fn jet_on(s: Ptr) -> Int = yes(peek_f32(s, 245) > 0.5)
 
-fn jet_dry(s: Ptr) -> Int = if peek_f32(s, 246) > 0.5 then 1 else 0
+fn jet_dry(s: Ptr) -> Int = yes(peek_f32(s, 246) > 0.5)
 
 # ---- the pack is asked for twice ---------------------------------------------
 #
@@ -5792,7 +5772,7 @@ fn h_crouch() = 250        # how far down, 0..1, on the player's own block
 
 fn crouch_of(s: Ptr) -> Float = peek_f32(s, h_crouch())
 
-fn jet_armed_now(s: Ptr) -> Int = if peek_f32(s, jet_armed()) > 0.5 then 1 else 0
+fn jet_armed_now(s: Ptr) -> Int = yes(peek_f32(s, jet_armed()) > 0.5)
 
 # It follows the key and nothing else.
 #
@@ -5961,7 +5941,7 @@ fn set_match_len(w: Ptr, secs: Int, report: Int) =
 
 fn match_clock(w: Ptr) -> Float = peek_f32(w, 124)
 
-fn match_phase(w: Ptr) -> Int = if peek_f32(w, 125) > 0.5 then 1 else 0
+fn match_phase(w: Ptr) -> Int = yes(peek_f32(w, 125) > 0.5)
 
 # What the clock counts *down* to, which is what anybody wants to read: how
 # long is left of the match, or of the twenty seconds before the next one.
@@ -6294,7 +6274,7 @@ fn down_for(s: Ptr) -> Float = peek_f32(s, 107)
 # thing one client can make the server say to all the others.
 fn rename_gap() = 3.0
 
-fn may_rename(s: Ptr, t: Float) -> Int = if t - peek_f32(s, 108) > rename_gap() then 1 else 0
+fn may_rename(s: Ptr, t: Float) -> Int = yes(t - peek_f32(s, 108) > rename_gap())
 
 fn renamed(s: Ptr, t: Float) =
   poke_f32(s, 108, t)
@@ -6309,14 +6289,14 @@ fn renamed(s: Ptr, t: Float) =
 # leaning on the return key is impatient and not hostile.
 fn say_gap() = 1.5
 
-fn may_say(s: Ptr, t: Float) -> Int = if t - peek_f32(s, 125) > say_gap() then 1 else 0
+fn may_say(s: Ptr, t: Float) -> Int = yes(t - peek_f32(s, 125) > say_gap())
 
 fn said_at(s: Ptr, t: Float) =
   poke_f32(s, 125, t)
   1
 
 fn may_rise(s: Ptr) -> Int =
-  if peek_f32(s, 82) < 0.001 && peek_f32(s, 107) > dead_secs() then 1 else 0
+  yes(peek_f32(s, 82) < 0.001 && peek_f32(s, 107) > dead_secs())
 
 fn lie(s, dead, dt) =
   poke_f32(s, 107, if dead > 0.5 then peek_f32(s, 107) + dt else 0.0)

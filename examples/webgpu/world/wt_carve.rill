@@ -18,7 +18,7 @@ fn say(what, got, want) =
 
 fn cm(x) = to_int(x * 100.0 + if x < 0.0 then 0.0 - 0.5 else 0.5)
 
-fn absf(x) = if x < 0.0 then 0.0 - x else x
+fn absf(x) = v.absf(x)
 
 # Somewhere properly rocky, and the same scan from a chosen edge so a test can
 # insist on a quadrant.
@@ -43,9 +43,9 @@ fn find_ground(z, want) =
   x = rocky_where(0.0 - 80.0, z, want)
   if x > 0.0 - 999.0 then (x, z) else find_ground(z + 3.0, want)
 
-fn molten_of(x, i, n) =
-  if i >= 40 then n
-  else molten_of(x + 4.0, i + 1, n + molten_at(x, 0.0 - 20.0))
+fn molten_of(x0) =
+  for i in 0..40 with n = 0
+    n + molten_at(x0 + to_float(i) * 4.0, 0.0 - 20.0)
 
 # The middle of the column a point falls in, so a test never stands on a
 # boundary and asks floating point to break a tie.
@@ -75,8 +75,8 @@ fn aim_down(s, x0, z0) =
   stance(s, x, z, 0.0, 0.0 - v.pitch_max())
 
 fn swing_on(s, n, acc) =
-  if n == 0 then acc
-  else swing_on(s, n - 1, acc + v.swing_pick(s))
+  for i in 0..n with got = acc
+    got + v.swing_pick(s)
 
 # Standing still and swinging, which is how a shaft gets sunk. Take the stance
 # once and leave it.
@@ -85,58 +85,59 @@ fn swings(s, x, z, n, acc) =
   swing_on(s, n, acc)
 
 fn settle(s, n) =
-  if n == 0 then 0
-  else
+  for i in 0..n
     v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
-    settle(s, n - 1)
+
+  1
 
 # Sink a pit by standing in it and swinging at the same spot, dropping with
 # the floor as it goes.
 fn sink(s, x, z, n) =
-  if n == 0 then 0
-  else
+  for i in 0..n
     aim_down(s, x, z)
     v.swing_pick(s)
     settle(s, 30)
-    sink(s, x, z, n - 1)
+
+  1
 
 fn solid(w, x, y, z) = v.solid_at(w, x, y, z)
 
 # The lowest terrain vertex within half a metre of (x, z). The mesh is 54
 # floats a cell, nine a vertex: position, normal, colour.
-fn mesh_low(m, i, n, x, z, best) =
-  if i >= n then best
-  else
+fn mesh_low(m, n, x, z) =
+  for i in 0..n with best = 9999.0
     vx = peek_f32(m, i * 9)
     vy = peek_f32(m, i * 9 + 1)
     vz = peek_f32(m, i * 9 + 2)
     near = absf(vx - x) < 0.6 && absf(vz - z) < 0.6
-    mesh_low(m, i + 1, n, x, z, if near && vy < best then vy else best)
+    if near && vy < best then vy else best
 
 # The door's way: patch by patch, column by column, mask byte by mask byte,
 # which is the only shape the welcome message speaks in.
-fn hand_all(w, s, sx) =
-  if sx >= v.carve_supers() then 0
-  else
-    if v.carve_page_at(w, sx) > 0 then hand_page(w, s, sx, 0) else 0
-    hand_all(w, s, sx + 1)
+fn hand_all(w, s) =
+  for sx in 0..v.carve_supers()
+    if v.carve_page_at(w, sx) > 0 then hand_page(w, s, sx) else 0
 
-fn hand_page(w, s, sx, c) =
-  if c >= v.carve_page_cells() then 0
-  else
-    if v.carve_col_any(w, sx, c) > 0 then hand_col(w, s, sx, c, 0) else 0
-    hand_page(w, s, sx, c + 1)
+  1
 
-fn hand_col(w, s, sx, c, i) =
-  if i >= v.carve_col_bytes() then v.ap_carve_col_done(v.wd(s), sx, c)
-  else
+fn hand_page(w, s, sx) =
+  for c in 0..v.carve_page_cells()
+    if v.carve_col_any(w, sx, c) > 0 then hand_col(w, s, sx, c) else 0
+
+  1
+
+fn hand_col(w, s, sx, c) =
+  for i in 0..v.carve_col_bytes()
     v.ap_carve_col(v.wd(s), sx, c, i, v.carve_col_byte(w, sx, c, i))
-    hand_col(w, s, sx, c, i + 1)
+
+  v.ap_carve_col_done(v.wd(s), sx, c)
 
 # How many slabs of a column are open between two heights.
-fn open_between(w, x, z, y0, y1, n) =
-  if y0 >= y1 then n
-  else open_between(w, x, z, y0 + v.carve_q(), y1, n + if solid(w, x, y0, z) == 0 then 1 else 0)
+fn open_between(w, x, z, y0, y1) =
+  steps = to_int((y1 - y0) / v.carve_q())
+
+  for i in 0..steps with n = 0
+    n + v.yes(solid(w, x, y0 + to_float(i) * v.carve_q(), z) == 0)
 
 fn main() =
   w = v.init(48, 60, 40, 60)
@@ -232,11 +233,11 @@ fn main() =
   # And a third, handed the masks the way the door hands them.
   w3 = v.init(48, 60, 40, 60)
   s3 = v.join(w3)
-  hand_all(w, s3, 0)
+  hand_all(w, s3)
   say("a valley handed masks has the same floor, cm", cm(v.floor_at(w3, mx, mz)), cm(v.floor_at(w, mx, mz)))
   say("and the same open slabs",
-      open_between(w3, tx, tz, eye - 1.0, eye + 1.0, 0),
-      open_between(w, tx, tz, eye - 1.0, eye + 1.0, 0))
+      open_between(w3, tx, tz, eye - 1.0, eye + 1.0),
+      open_between(w, tx, tz, eye - 1.0, eye + 1.0))
 
   # ---- the bottom ------------------------------------------------------------
   #
@@ -262,7 +263,7 @@ fn main() =
   pd = cm(v.height(px, pz) - v.floor_at(w, px, pz))
   say("that pit stops at the cap too", if pd > 1170 && pd <= 1200 then 1 else 0, 1)
   say("and the bottom is magma", if v.magmas(w) > m0 then 1 else 0, 1)
-  say("most of the band is bedrock", if molten_of(0.0 - 80.0, 0, 0) * 4 < 40 then 1 else 0, 1)
+  say("most of the band is bedrock", v.yes(molten_of(0.0 - 80.0) * 4 < 40), 1)
 
   # ---- the reach -------------------------------------------------------------
   #
@@ -332,7 +333,7 @@ fn main() =
   qd = cm(v.height(qmx, qmz) - v.floor_at(w4, qmx, qmz))
   say("the field says most of four stones", if qd > 90 && qd <= 120 then 1 else 0, 1)
   say("and the rebake had work to do", v.rebake(s4), 1)
-  low = mesh_low(v.terrain(s4), 0, v.terrain_verts(s4), qmx, qmz, 9999.0)
+  low = mesh_low(v.terrain(s4), v.terrain_verts(s4), qmx, qmz)
   say("the mesh came down with it, cm", if cm(v.height(qmx, qmz) - low) > 100 then 1 else 0, 1)
 
   # ---- the crosshair ---------------------------------------------------------
