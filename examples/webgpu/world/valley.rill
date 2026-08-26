@@ -721,9 +721,12 @@ fn bullet_life() = 3.2
 fn gone_from_world(x, y, z) =
   if y > 320.0 then 1.0 else if x < 0.0 - 200.0 || x > 200.0 then 1.0 else if z < 0.0 - 200.0 || z > 200.0 then 1.0 else 0.0
 
-fn stop_height(x, z) =
-  h = height(x, z)
-  if h < 0.0 then 0.0 else h
+# Where a thing that falls comes to rest. The dug floor, not the ground the
+# valley was born with: everything that lands — a round, a chip of rock, a box
+# put down — was landing on the original hillside, so a crate over a shaft sat
+# in the air where the rock used to be and a bullet stopped a few metres above
+# the floor of a pit.
+fn stop_height(w, x, z) = max(0.0, floor_at(w, x, z))
 
 # Everything that can stop a round which is not the ground and not a wall, and
 # whether one of them did. A hit ends a round by writing nought into its life,
@@ -762,7 +765,7 @@ fn step_bullet(w, b, at, dt, decide) =
   px = peek_f32(b, at) + vx * dt * on
   py = peek_f32(b, at + 1) + vy * dt * on
   pz = peek_f32(b, at + 2) + vz * dt * on
-  landed = if py < stop_height(px, pz) then 1.0 else 0.0
+  landed = if py < stop_height(w, px, pz) then 1.0 else 0.0
   # Anything solid on the way there, before the position is committed — and
   # only if there is a round to do the hitting.
   #
@@ -801,7 +804,7 @@ fn step_bullet(w, b, at, dt, decide) =
   # the rifle's rounds are still drawn on the way and do not need saying twice.
   struck = if peek_f32(b, at + 7) < 0.001 then 1.0 else 0.0
   if on > 0.5 && (landed > 0.5 || struck > 0.5) && sp < 100.0 && on_a_thing < 0.5 then
-    note_mark(w, px, if landed > 0.5 then stop_height(px, pz) else py, pz, if landed > 0.5 then 0 - 1 else wall_i)
+    note_mark(w, px, if landed > 0.5 then stop_height(w, px, pz) else py, pz, if landed > 0.5 then 0 - 1 else wall_i)
   else 0
 
   poke_f32(b, at, px)
@@ -1430,7 +1433,7 @@ fn hue_b(id: Float, hp: Float) = hue_ch(hue_h(id), hue_s(hp), hue_v(hp), 1.0)
 fn place_mags(w: Ptr) =
   sb = peek_ptr(w, 69)
   for i in 0..mag_count()
-    place_mag(sb, i, 0)
+    place_mag(w, sb, i, 0)
 
 # Where box `i` lies once it has been taken `n` times. A pure function of the
 # two, which is the whole of how the valley stays in step: nobody has to be
@@ -1447,11 +1450,11 @@ fn mag_spot(seed: Float, tries: Int) =
 # floats and this is the one place that wanted a pair.
 fn pack_spot(x: Float, z: Float) = (x, z)
 
-fn place_mag(sb, i, times) =
+fn place_mag(w, sb, i, times) =
   (x, z) = mag_spot(mag_seed(i, times), 0)
   at = i * shard_stride()
   poke_f32(sb, at, x)
-  poke_f32(sb, at + 1, stop_height(x, z))
+  poke_f32(sb, at + 1, stop_height(w, x, z))
   poke_f32(sb, at + 2, z)
   poke_f32(sb, at + 3, 0.0)
   poke_f32(sb, at + 4, 0.0)
@@ -1484,7 +1487,7 @@ fn place_mag(sb, i, times) =
 # rather than stepped, so a client that missed the message before it, or heard
 # one twice, still ends up in the same place as everybody else.
 fn set_mag(w: Ptr, i: Int, times: Int) =
-  place_mag(peek_ptr(w, 69), i, times)
+  place_mag(w, peek_ptr(w, 69), i, times)
   1
 
 # And what a server reads off its own world to know there is anything to say.
@@ -1717,7 +1720,7 @@ fn hit_players(w, b, at, ax, ay, az, bx, by, bz) =
   for i in 0..player_count(w)
     try_hit_player(w, player_at(w, i), owner, b, at, ax, ay, az, bx, by, bz)
 
-fn step_shard(sb, at, dt) =
+fn step_shard(w, sb, at, dt) =
   sc = peek_f32(sb, at + 12)
   # Every piece falls, whatever it is worth. The test for that — slot 16, the
   # flag that says a chip came off a crystal you shot and not out of a crater —
@@ -1733,7 +1736,7 @@ fn step_shard(sb, at, dt) =
     x = peek_f32(sb, at) + peek_f32(sb, at + 3) * dt
     y = peek_f32(sb, at + 1) + vy * dt
     z = peek_f32(sb, at + 2) + peek_f32(sb, at + 5) * dt
-    g = stop_height(x, z)
+    g = stop_height(w, x, z)
     down = if y < g then 1.0 else 0.0
     keep = 1.0 - down
     poke_f32(sb, at, x)
@@ -1750,9 +1753,20 @@ fn step_shard(sb, at, dt) =
     poke_f32(sb, at + 11, peek_f32(sb, at + 11) * keep)
     1
 
-fn step_shards(sb, dt) =
+fn step_shards(w, sb, dt) =
+  # The boxes stand on the ground and the ground can be taken out from under
+  # them. They were placed on the hillside the valley was born with, so a
+  # crate over somebody's shaft hung in the air where the rock used to be —
+  # which is the one thing in this world that could be seen to be wrong from
+  # across the valley. They fall now, like everything else that is standing on
+  # something.
+  for i in 0..mag_count()
+    at = i * shard_stride()
+    g = stop_height(w, peek_f32(sb, at), peek_f32(sb, at + 2))
+    if peek_f32(sb, at + 1) > g then poke_f32(sb, at + 1, g) else poke_f32(sb, at + 1, peek_f32(sb, at + 1))
+
   for i in 0..shard_cap()
-    step_shard(sb, i * shard_stride(), dt)
+    step_shard(w, sb, i * shard_stride(), dt)
 
 fn clear_shards(sb) =
   for i in 0..shard_cap()
@@ -2155,7 +2169,7 @@ fn blast_hurt(s, x, y, z, reach) =
 # that matters: the medicine has to be worth less than a hit costs, or there is
 # nothing to weigh. It was three and a half a chip once, which made one crystal
 # worth twenty-eight and turned a lucky shot into a full heal.
-fn gather_shard(s, sb, i, mend) =
+fn gather_shard(w, s, sb, i, mend) =
   at = i * shard_stride()
   sc = peek_f32(sb, at + 12)
   if sc < 0.0001 then 0
@@ -2177,7 +2191,7 @@ fn gather_shard(s, sb, i, mend) =
     else if wanted(s, sb, at) == 0 then 0
     else
       poke_f32(sb, at + 12, 0.0)
-      worth_of(s, sb, i, at, mend)
+      worth_of(w, s, sb, i, at, mend)
 
 # Whether this is worth anything to whoever is standing on it. Somebody
 # carrying a full rifle walks over a magazine: taking it would put ten rounds
@@ -2193,9 +2207,9 @@ fn wanted(s, sb, at) =
   kind = peek_f32(sb, at + 16)
   if kind < 1.5 then 1 else if kind > 2.5 then yes(rockets(s) < rocket_full()) else yes(rounds(s) < mag_size() || ak_rounds(s) < ak_full() || ak_mags(s) < ak_mag_count() - 1)
 
-fn gather(s, sb, mend) =
+fn gather(w, s, sb, mend) =
   for i in 0..shard_cap()
-    gather_shard(s, sb, i, mend)
+    gather_shard(w, s, sb, i, mend)
 
 fn health(s: Ptr) -> Float = peek_f32(s, 82)
 
@@ -2658,7 +2672,7 @@ fn fly_fireball(w, fb, at, dt, decide) =
   px = peek_f32(fb, at) + vx * dt * on
   py = peek_f32(fb, at + 1) + vy * dt * on
   pz = peek_f32(fb, at + 2) + vz * dt * on
-  landed = if py < stop_height(px, pz) then 1.0 else 0.0
+  landed = if py < stop_height(w, px, pz) then 1.0 else 0.0
   # A rocket goes off on the first solid thing it meets, not only on the
   # ground. Without this it flew through a crystal — through the whole stand of
   # them — and cratered the hillside behind, which is not what a warhead does
@@ -4019,6 +4033,26 @@ fn col_magma(cb, i) =
 # same way at both ends.
 fn bite_code(i, k) = i * vox_slabs() + k
 
+# What was standing on the rock a bite just took. A pine rooted in it comes
+# down and a crystal growing out of it breaks — through the same rings the
+# rest of the valley already uses, so a client is told about it the way it is
+# told about a warhead's felling.
+#
+# The boxes fall of their own accord, because a box is a thing that falls;
+# these two are rooted, and rooted things do not sink quietly into a hole.
+fn undermine(w, x, z) =
+  fell_scan(w, x, floor_at(w, x, z) + 1.0, z)
+  cb = peek_ptr(w, 66)
+
+  for i in 0..to_int(peek_f32(w, 58))
+    at = i * 8
+    dx = peek_f32(cb, at) - x
+    dz = peek_f32(cb, at + 2) - z
+    rooted = dx * dx + dz * dz < 0.8 && peek_f32(cb, at + 3) > 0.01
+    if rooted && peek_f32(cb, at + 1) > floor_at(w, x, z) + 0.6 then break_crystal(w, cb, at, i) else 0
+
+  1
+
 fn apply_carve(w, code) =
   cb = cv(w)
   ci = code / vox_slabs()
@@ -4030,6 +4064,7 @@ fn apply_carve(w, code) =
     # A margin that covers the cube itself and the lattice vertex beyond it:
     # sixty centimetres of bite and a metre of terrain grid.
     dirty_grow(cb, cell_x(ci), cell_z(ci), 1.8)
+    if got > 0 then undermine(w, cell_x(ci), cell_z(ci)) else 0
     got
 
 # ---- the swing ---------------------------------------------------------------
@@ -6044,7 +6079,7 @@ fn step_world(w: Ptr, dt: Float) =
   step_match(w, dt)
   t = step_wind(w, dt)
   step_bullets(w, peek_ptr(w, 68), dt, 1)
-  step_shards(peek_ptr(w, 69), dt)
+  step_shards(w, peek_ptr(w, 69), dt)
   step_fireballs(w, peek_ptr(w, 74), dt, 1)
   step_blasts(peek_ptr(w, 81), dt)
   run_charge(w, dt, t)
@@ -6165,7 +6200,7 @@ fn step_visuals(w: Ptr, dt: Float) =
   swim_on(w, dt)
   step_wind(w, dt)
   step_bullets(w, peek_ptr(w, 68), dt, 0)
-  step_shards(peek_ptr(w, 69), dt)
+  step_shards(w, peek_ptr(w, 69), dt)
   step_fireballs(w, peek_ptr(w, 74), dt, 0)
   step_blasts(peek_ptr(w, 81), dt)
 
@@ -6188,13 +6223,13 @@ fn rise_one(s) = if may_rise(s) > 0 then respawn(s) else 0
 # What one was worth. A chip off a crystal still has the light in it and mends
 # you a little; a magazine fills the rifle and says when it will be back.
 # Anything else is scenery and does not reach here.
-fn worth_of(s, sb, i, at, mend) =
+fn worth_of(w, s, sb, i, at, mend) =
   if peek_f32(sb, at + 16) > 2.5 then
     # A crate of rockets fills the tube and nothing else. `wanted` has already
     # said the tube has room, which is the whole of "only if you carry the
     # launcher" in a valley where everybody does: a full tube walks past it.
     poke_f32(s, 120, to_float(rocket_full()))
-    place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
+    place_mag(w, sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else if peek_f32(sb, at + 16) > 1.5 then
     # And a magazine fills the guns that take rounds — the rifle and the AK —
@@ -6207,14 +6242,14 @@ fn worth_of(s, sb, i, at, mend) =
     poke_f32(s, 118, to_float(mag_size()))
     poke_f32(s, 106, to_float(ak_full()))
     poke_f32(s, 117, to_float(ak_mag_count() - 1))
-    place_mag(sb, i, to_int(peek_f32(sb, at + 17)) + 1)
+    place_mag(w, sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else if mend < 1 then 1
   else
     poke_f32(s, 82, clampf(peek_f32(s, 82) + peek_f32(sb, at + 16), 0.0, 1.0))
     1
 
-fn pick_up(s: Ptr) = gather(s, peek_ptr(wd(s), 69), 1)
+fn pick_up(s: Ptr) = gather(wd(s), s, peek_ptr(wd(s), 69), 1)
 
 # Sweeping up without the mending, which is what a browser in somebody else's
 # valley does.
@@ -6230,7 +6265,7 @@ fn pick_up(s: Ptr) = gather(s, peek_ptr(wd(s), 69), 1)
 # The pieces still vanish and the boxes still move and still fill the rifle,
 # for the same reason walking is done locally: those answer the key. Only the
 # fraction of a per cent is left to the one that owns it.
-fn pick_up_quiet(s: Ptr) = gather(s, peek_ptr(wd(s), 69), 0)
+fn pick_up_quiet(s: Ptr) = gather(wd(s), s, peek_ptr(wd(s), 69), 0)
 
 # The three of them and a camera, which is a browser with the valley to itself.
 # The order is the one this file has always had: the player moves, then the

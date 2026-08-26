@@ -102,6 +102,16 @@ fn sink(s, x, z, n) =
 
 fn solid(w, x, y, z) = v.solid_at(w, x, y, z)
 
+# The first of the boxes lying somewhere the pick works.
+fn box_on_rock(w, sb, i) =
+  if i >= v.mag_count() then 0 - 1
+  else
+    at = i * v.shard_stride()
+    x = peek_f32(sb, at)
+    z = peek_f32(sb, at + 2)
+    if v.height(x, z) > 12.0 && v.height(x, z) < 22.0 then i
+    else box_on_rock(w, sb, i + 1)
+
 # The lowest terrain vertex within half a metre of (x, z). The mesh is 54
 # floats a cell, nine a vertex: position, normal, colour.
 fn mesh_low(m, n, x, z) =
@@ -287,6 +297,26 @@ fn main() =
   h0 = v.health(s)
   v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
   say("hovering over it is free", cm(h0 - v.health(s)), 0)
+
+  # ---- what is standing on the ground goes down with it ----------------------
+  #
+  # A box was put down on the hillside the valley was born with and left
+  # there. Dig the shaft out from under one and it hung in the air where the
+  # rock used to be — the one thing wrong with this world that could be seen
+  # from across the valley.
+  sb = v.shards(s)
+  bi = box_on_rock(w, sb, 0)
+  say("a box standing on rock", if bi >= 0 then 1 else 0, 1)
+  bx = peek_f32(sb, bi * v.shard_stride())
+  bz = peek_f32(sb, bi * v.shard_stride() + 2)
+  say("it starts on the ground, cm", cm(peek_f32(sb, bi * v.shard_stride() + 1) - v.height(bx, bz)), 0)
+  sink(s, cell_mid_x(bx, bz), cell_mid_z(bx, bz), 4)
+  v.step_world(w, 1.0 / 60.0)
+  fell = v.height(bx, bz) - peek_f32(sb, bi * v.shard_stride() + 1)
+  say("the shaft went down under it", if cm(v.height(bx, bz) - v.floor_at(w, bx, bz)) > 100 then 1 else 0, 1)
+  say("and the box went down with it", if cm(fell) > 100 then 1 else 0, 1)
+  say("landing on the floor, not in the air, cm",
+      cm(peek_f32(sb, bi * v.shard_stride() + 1) - v.floor_at(w, bx, bz)), 0)
 
   # ---- what the pick will not do ---------------------------------------------
   aim_down(s, 0.0 - 14.0, 0.0 - 34.0)
