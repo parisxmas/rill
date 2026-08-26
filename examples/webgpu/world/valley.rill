@@ -4347,21 +4347,19 @@ fn face_buf(w) = peek_ptr(w, 85)
 
 fn face_at(w: Ptr, k: Int, j: Int) -> Float = peek_f32(face_buf(w), k * face_stride() + j)
 
-# Is there anywhere in this column with rock over air? That is the whole test
-# for "the height field has lost this one".
-fn col_roofed(cb, i) =
-  if i < 0 || col_any(cb, i) == 0 then 0
-  else
-    h = height(cell_x(i), cell_z(i))
-    cr_go(cb, i, h, slab_of(h - dig_floor()), 0)
+# Has anything at all been taken out of this column?
+#
+# It used to ask a narrower question — is there rock over air in it, a roof —
+# on the grounds that an open pit is just lower ground and a height field can
+# draw lower ground perfectly well. It cannot. A terrain cell is a metre
+# across and a pit's wall is vertical, so what the height field drew was a
+# funnel: a wide smooth apron sloping from the rim to the floor, with the
+# actual shaft a black hole in the middle of it. The voxels can draw a
+# vertical wall and the height field never will, so the voxels get every cell
+# that has been dug in, roofed or not.
+fn col_dug(cb, i) = if i < 0 then 0 else col_any(cb, i)
 
-fn cr_go(cb, i, h, k, seen) =
-  if k >= vox_slabs() || slab_y(k) >= h then 0
-  else if solid_cell(cb, i, k, h) == 0 then cr_go(cb, i, h, k + 1, 1)
-  else if seen > 0 then 1
-  else cr_go(cb, i, h, k + 1, 0)
-
-# Does any column of this terrain mesh cell have a roof in it?
+# Has any column of this terrain mesh cell been dug?
 fn mcell_roofed(w, st, ix, iz) =
   cb = cv(w)
   x0 = lattice(ix, st)
@@ -4375,7 +4373,7 @@ fn mr_rows(cb, x0, x1, iz, z1) =
 
 fn mr_row(cb, ix, x1, iz) =
   if ix > x1 then 0
-  else if col_roofed(cb, cell_at(ix, iz)) > 0 then 1
+  else if col_dug(cb, cell_at(ix, iz)) > 0 then 1
   else mr_row(cb, ix + 1, x1, iz)
 
 # ---- the faces themselves ----------------------------------------------------
@@ -4442,8 +4440,13 @@ fn put_tall(w, x, y, z, dir, tall, r, g, b) =
 # it came out of; it is the same stone with the weather off it.
 fn face_grey(y, h, up) =
   d = clampf((h - y) / dig_floor(), 0.0, 1.0)
-  k = 0.40 - d * 0.16
+  k = 0.50 - d * 0.14
   (k, k * 0.90, k * 0.78)
+
+# The speckle the terrain gives itself, per stone rather than per triangle.
+# Without it a dug patch is a smooth plate laid on a mottled hillside, which
+# is a seam the eye finds long before it finds the geometry.
+fn face_jitter(x, z) = 0.94 + 0.12 * hash2(floor(x * 3.1), floor(z * 3.1))
 
 # One column's faces. Walks its slabs from the bedrock to the sky and asks, of
 # every solid one, which of its six neighbours is air.
@@ -4493,7 +4496,8 @@ fn col_faces(w, cb, ix, iz) =
       # A cap slab is hillside: its faces take the band colour and the slope.
       # Anything under it is broken stone.
       (gr, gg, gb) = face_grey(y, h, 1)
-      (fr, fg, fb) = if cap then (band_r(y, ny), band_g(y, ny), band_b(y, ny)) else (gr, gg, gb)
+      jj = face_jitter(x, z + slab_y(k))
+      (fr, fg, fb) = if cap then (band_r(y, ny) * jj, band_g(y, ny) * jj, band_b(y, ny) * jj) else (gr * jj, gg * jj, gb * jj)
       # A riser is only wanted where the neighbour is a hole, not merely
       # lower: two pieces of untouched hillside share their corner heights
       # and meet without one.
@@ -4533,7 +4537,8 @@ fn ground_quad(w, x, z, nx, ny, nz) =
   b = mesh_h(w, x + q, z)
   c = mesh_h(w, x, z + q)
   d = mesh_h(w, x + q, z + q)
-  ok = put_lit(w, x, a, z, 6, q, nx, ny, nz, band_r(a, ny), band_g(a, ny), band_b(a, ny))
+  j = face_jitter(x, z)
+  ok = put_lit(w, x, a, z, 6, q, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
   if ok == 0 then 0
   else
     cb = cv(w)

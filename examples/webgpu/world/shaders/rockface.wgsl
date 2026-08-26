@@ -96,9 +96,10 @@
     let nn = normalize(v.normal);
     let col = lit(v.color, select(-nn, nn, front), v.world);
     // A little of the rock's own colour underneath whatever the sun does.
-    // Without it a mouth in a hillside is not a dark opening, it is a hole
-    // cut out of the picture: `lit` has nothing to give a ceiling, so every
-    // face under the hill came out at nought and the entrance read as a
-    // rectangle of pure black rather than as somewhere you could walk into.
-    return vec4f(max(col, v.color * 0.22), 1.0);
+    // `lit` has a sky term, but a shaft sees almost none of the sky and its
+    // walls face each other: against a hillside in full sun the inside came
+    // out at nought, and a hole that renders at nought is not dark, it is
+    // absent — a rectangle cut out of the picture. A little over a third of
+    // the rock's own colour is enough to read as stone in shadow.
+    return vec4f(max(col, v.color * 0.38), 1.0);
   }
