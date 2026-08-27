@@ -268,6 +268,337 @@ fn worst_drift(w, s) =
     dd = absf(v.mesh_h(w, x, z) - drawn_at(w, s, x, z))
     if cm(dd) > worst then cm(dd) else worst
 
+# The steepest rock in the valley, which is the only place worth asking these
+# questions. A cell's crease is as deep as the cell's twist, and on the gentle
+# shelf the other tests stand on the whole defect hides behind a millimetre —
+# a guard that reads one is a guard that will not notice being broken again.
+fn slope_at(x, z) =
+  a = absf(v.height(x + 1.0, z) - v.height(x - 1.0, z))
+  b = absf(v.height(x, z + 1.0) - v.height(x, z - 1.0))
+  if a > b then a else b
+
+fn grid_n() = 1600
+
+fn grid_x(i) = 0.0 - 78.0 + to_float(i % 40) * 4.0
+
+fn grid_z(i) = 0.0 - 78.0 + to_float(i / 40) * 4.0
+
+fn steep_of(i) =
+  x = grid_x(i)
+  z = grid_z(i)
+  if v.height(x, z) > 14.0 then slope_at(x, z) else 0.0
+
+fn steepest_slope() =
+  for i in 0..grid_n() with b = 0.0
+    s = steep_of(i)
+    if s > b then s else b
+
+fn steepest_at(target) =
+  for i in 0..grid_n() with found = 0 - 1
+    if found >= 0 then found else if steep_of(i) >= target then i else 0 - 1
+
+# A cap riser is drawn as one quad with a height at each end, so its top edge
+# is a straight chord. The ground it has to meet is not straight: a mesh cell
+# is drawn as two triangles and creases along the diagonal between them, and
+# `mesh_h` follows that crease exactly. Where a run crosses the crease, a chord
+# from end to end passes under it, and the wedge left open between the two is
+# the triangle of lake that has been showing through dug pits.
+#
+# Only the risers that actually cap are asked: a face whose two ends already
+# sit on the ground is one, and one whose top is a slab ceiling is not.
+fn riser_miss(w, s) =
+  n = v.faces_build(s)
+  fb = v.face_buf(w)
+  st = v.face_stride()
+  for i in 0..n with worst = 0
+    at = i * st
+    dir = to_int(peek_f32(fb, at + 3))
+    if dir == 2 || dir == 3 || dir == 6 then worst
+    else
+      x = peek_f32(fb, at)
+      y = peek_f32(fb, at + 1)
+      z = peek_f32(fb, at + 2)
+      tall = peek_f32(fb, at + 7)
+      tall2 = peek_f32(fb, at + 12)
+      wide = peek_f32(fb, at + 13)
+      alongz = dir < 2
+      x1 = if alongz then x else x + wide
+      z1 = if alongz then z + wide else z
+      ta = v.mesh_h(w, x, z)
+      tb = v.mesh_h(w, x1, z1)
+      caps = absf(y + tall - ta) < 0.001 && absf(y + tall2 - tb) < 0.001
+      if !caps then worst
+      else
+        tm = v.mesh_h(w, (x + x1) * 0.5, (z + z1) * 0.5)
+        e = to_int(absf(y + (tall + tall2) * 0.5 - tm) * 1000.0)
+        if e > worst then e else worst
+
+
+# Every wall the body runs into, the eye can see.
+#
+# The expectation here is not taken from the meshing — writing the same
+# sentence twice proves nothing — but from `solid_at`, which is the rock a
+# walk collides with and a pick reads. Where rock stands against air and
+# somebody has dug there, something has to be drawn on that boundary, or you
+# are looking through a wall you cannot walk through, and what is behind it is
+# the lake.
+#
+# Only the four lateral faces. A floor and a ceiling have their own rules and
+# their own test above; a side is a plane of constant x or constant z, running
+# along the other, and that is all this needs to know.
+# Has the terrain given this point up to the voxels?
+fn blanked(w, x, z) =
+  n = v.mesh_n(w)
+  st = v.cell_step(n)
+  ix = to_int(floor((x + 85.0) / st))
+  iz = to_int(floor((z + 85.0) / st))
+  if v.mcell_roofed(w, st, ix, iz) > 0 then 1 else 0
+
+fn wall_seen(w, n, dir, plane, py, runp) =
+  for k in 0..n with found = 0
+    if found > 0 then 1
+    else if to_int(v.face_at(w, k, 3)) != dir then 0
+    else
+      alongz = dir < 2
+      want = if alongz then v.face_at(w, k, 0) else v.face_at(w, k, 2)
+      run0 = if alongz then v.face_at(w, k, 2) else v.face_at(w, k, 0)
+      wide = v.face_at(w, k, 13)
+      t1 = v.face_at(w, k, 7)
+      t2 = v.face_at(w, k, 12)
+      hi = if t1 > t2 then t1 else t2
+      fy = v.face_at(w, k, 1)
+      on = absf(want - plane) < 0.02 && runp > run0 - 0.02 && runp < run0 + wide + 0.02
+      if on && py > fy - 0.02 && py < fy + hi + 0.02 then 1 else 0
+
+# `want` picks what is counted: 0 the boundaries that exist, 1 the ones with
+# nothing drawn on them.
+fn wall_gap(w, n, dir, x, y, z, nx, nz, plane, want) =
+  if v.solid_at(w, x, y, z) == 0 then 0
+  else if v.solid_at(w, nx, y, nz) > 0 then 0
+  # Air over the ground *as it is drawn* is not a hole, it is the sky. Asked of
+  # `mesh_h` and not `height`: at the rim of a pit the two are a cell's slope
+  # apart, and the picture cannot owe a wall on rock it does not draw.
+  else if y >= v.mesh_h(w, nx, nz) then 0
+  else if y >= v.mesh_h(w, x, z) then 0
+  # And only where the terrain has stepped aside. Outside a blanked cell the
+  # hillside is still the height field's to draw, and no voxel face is owed.
+  else if blanked(w, x, z) == 0 then 0
+  else if want == 0 then 1
+  else wall_short(w, n, dir, plane, y, if dir < 2 then z else x, v.carve_q())
+
+# Not "is there a face on this boundary" but "is the boundary covered end to
+# end". A face that stops short of the column it stands on leaves a slot, and
+# a slot seen along a slope is a band of lake several pixels wide — asked at
+# the middle of the run only, every one of these passes.
+fn wall_short(w, n, dir, plane, y, mid, q) =
+  for j in 0..9 with bad = 0
+    r = mid - q * 0.5 + q * (to_float(j) + 0.5) / 9.0
+    bad + 1 - wall_seen(w, n, dir, plane, y, r)
+
+fn col_gaps(w, n, x, z, q, want, only) =
+  i = v.carve_cell(x, z)
+  if i < 0 then 0
+  else
+    x0 = v.cell_x(i) - q * 0.5
+    z0 = v.cell_z(i) - q * 0.5
+    h = v.height(x, z)
+    for k in 0..30 with miss = 0
+      y = h - to_float(k) * q - q * 0.5
+      g0 = if only >= 0 && only != 0 then 0 else wall_gap(w, n, 0, x, y, z, x - q, z, x0, want)
+      g1 = if only >= 0 && only != 1 then 0 else wall_gap(w, n, 1, x, y, z, x + q, z, x0 + q, want)
+      g4 = if only >= 0 && only != 4 then 0 else wall_gap(w, n, 4, x, y, z, x, z - q, z0, want)
+      g5 = if only >= 0 && only != 5 then 0 else wall_gap(w, n, 5, x, y, z, x, z + q, z0 + q, want)
+      miss + g0 + g1 + g4 + g5
+
+fn open_walls(w, s, cx, cz, r, want, only) =
+  n = v.faces_build(s)
+  q = v.carve_q()
+  for iz in 0 - r..r + 1 with miss = 0
+    for ix in 0 - r..r + 1 with m2 = miss
+      m2 + col_gaps(w, n, cx + to_float(ix) * q, cz + to_float(iz) * q, q, want, only)
+
+# The same question asked downwards: where rock has air over it, something has
+# to be lying on top of it, and it has to reach the whole of the column — not
+# just the middle. An up-facing quad is either a stone square at a slab
+# boundary (dir 2) or a piece of hillside (dir 6), and the piece of hillside
+# carries its own width and depth and a height at each corner.
+fn floor_seen(w, n, px, py, pz) =
+  for k in 0..n with found = 0
+    if found > 0 then 1
+    else
+      d = to_int(v.face_at(w, k, 3))
+      if d != 2 && d != 6 then 0
+      else
+        fx = v.face_at(w, k, 0)
+        fz = v.face_at(w, k, 2)
+        wx = if d == 6 then v.face_at(w, k, 7) else v.face_at(w, k, 12)
+        wz = if d == 6 then v.face_at(w, k, 11) else v.face_at(w, k, 13)
+        inside = px > fx - 0.002 && px < fx + wx + 0.002 && pz > fz - 0.002 && pz < fz + wz + 0.002
+        if inside == false then 0
+        else
+          fy = if d == 2 then v.face_at(w, k, 1) else corner_y(w, k, fx, fz, wx, wz, px, pz)
+          if absf(fy - py) < 0.05 then 1 else 0
+
+fn corner_y(w, k, fx, fz, wx, wz, px, pz) =
+  ux = (px - fx) / wx
+  uz = (pz - fz) / wz
+  a = v.face_at(w, k, 12)
+  b = v.face_at(w, k, 13)
+  c = v.face_at(w, k, 14)
+  d = v.face_at(w, k, 15)
+  (a + (b - a) * ux) + ((c + (d - c) * ux) - (a + (b - a) * ux)) * uz
+
+# Is any up-facing quad over this point at all, whatever height it sits at?
+fn floor_any(w, n, px, pz) =
+  for k in 0..n with found = 0
+    if found > 0 then 1
+    else
+      d = to_int(v.face_at(w, k, 3))
+      if d != 2 && d != 6 then 0
+      else
+        fx = v.face_at(w, k, 0)
+        fz = v.face_at(w, k, 2)
+        wx = if d == 6 then v.face_at(w, k, 7) else v.face_at(w, k, 12)
+        wz = if d == 6 then v.face_at(w, k, 11) else v.face_at(w, k, 13)
+        if px > fx - 0.002 && px < fx + wx + 0.002 && pz > fz - 0.002 && pz < fz + wz + 0.002 then 1 else 0
+
+fn floor_nowhere(w, n, x, z, q) =
+  for j in 0..25 with bad = 0
+    px = x - q * 0.5 + q * (to_float(j % 5) + 0.5) / 5.0
+    pz = z - q * 0.5 + q * (to_float(j / 5) + 0.5) / 5.0
+    bad + 1 - floor_any(w, n, px, pz)
+
+fn floor_short(w, n, x, z, py, q) =
+  for j in 0..25 with bad = 0
+    px = x - q * 0.5 + q * (to_float(j % 5) + 0.5) / 5.0
+    pz = z - q * 0.5 + q * (to_float(j / 5) + 0.5) / 5.0
+    bad + 1 - floor_seen(w, n, px, py, pz)
+
+fn col_floor_gaps(w, n, x, z, q, want) =
+  h = v.height(x, z)
+  for k in 0..30 with miss = 0
+    y = h - to_float(k) * q - q * 0.5
+    if v.solid_at(w, x, y, z) == 0 then miss
+    else if v.solid_at(w, x, y + q, z) > 0 then miss
+    else if y + q * 0.5 >= h then miss
+    else if want == 0 then miss + 1
+    else if want == 1 then miss + (if floor_short(w, n, x, z, y + q * 0.5, q) > 0 then 1 else 0)
+    else if want == 2 then miss + floor_short(w, n, x, z, y + q * 0.5, q)
+    else miss + floor_nowhere(w, n, x, z, q)
+
+fn open_floors(w, s, cx, cz, r, want) =
+  n = v.faces_build(s)
+  q = v.carve_q()
+  for iz in 0 - r..r + 1 with miss = 0
+    for ix in 0 - r..r + 1 with m2 = miss
+      m2 + col_floor_gaps(w, n, cx + to_float(ix) * q, cz + to_float(iz) * q, q, want)
+
+# A face standing clear of the hillside: the ground at both of its ends is
+# under the slab it stands on, so nothing the eye can see joins it and it hangs
+# in the air. `want` 0 counts them, 1 is the worst overhang in centimetres.
+fn fins(w, s, want) =
+  n = v.faces_build(s)
+  fb = v.face_buf(w)
+  st = v.face_stride()
+  for i in 0..n with acc = 0
+    at = i * st
+    dir = to_int(peek_f32(fb, at + 3))
+    if dir == 2 || dir == 3 || dir == 6 then acc
+    else
+      x = peek_f32(fb, at)
+      y = peek_f32(fb, at + 1)
+      z = peek_f32(fb, at + 2)
+      wide = peek_f32(fb, at + 13)
+      tall = peek_f32(fb, at + 7)
+      tall2 = peek_f32(fb, at + 12)
+      hiT = if tall > tall2 then tall else tall2
+      alongz = dir < 2
+      x1 = if alongz then x else x + wide
+      z1 = if alongz then z + wide else z
+      m1 = v.mesh_h(w, x, z)
+      m2 = v.mesh_h(w, x1, z1)
+      hi = if m1 > m2 then m1 else m2
+      if hi > y + 0.001 then acc
+      else if want == 0 then acc + 1
+      else
+        e = cm(y + hiT - hi)
+        if e > acc then e else acc
+
+# A flat square standing over the hillside: a shelf with nothing under it and
+# nothing beside it, because its own sides were trimmed to a ground that is
+# below it. One per slab between the middle of a column and its highest
+# corner, and the daylight between them is what a rim of thin slivers is.
+#
+# Up-facing only. Sixty ceilings still hang over the hillside at a rim — rock
+# with dug air under it and the drawn ground below both — and they are the
+# same disagreement as everything else here: what the body walks into is the
+# rock, what the eye sees is the lattice, and at a rim those are a cell's
+# slope apart. They are seen only from underneath, which is why they are named
+# here and not asserted away.
+fn shelves(w, s) =
+  n = v.faces_build(s)
+  fb = v.face_buf(w)
+  st = v.face_stride()
+  for i in 0..n with c = 0
+    at = i * st
+    d = to_int(peek_f32(fb, at + 3))
+    if d != 2 then c
+    else
+      x = peek_f32(fb, at) + v.carve_q() * 0.5
+      y = peek_f32(fb, at + 1)
+      z = peek_f32(fb, at + 2) + v.carve_q() * 0.5
+      if y > v.mesh_h(w, x, z) + 0.02 then c + 1 else c
+
+# A piece of hillside with nothing under it.
+#
+# A ground quad is laid at `mesh_h`, which is the lattice ramp between a cell's
+# four corners. A pit dug in the middle of a cell moves no corner of it, so the
+# ramp stays where it was and every quad in that cell is drawn at hillside
+# height — over columns that have been taken two metres down. What is left is a
+# lid over the hole with its edges hanging in the air.
+#
+# Asked of `solid_at`, a hand's breadth under the quad's own middle.
+fn lids(w, s, want) =
+  n = v.faces_build(s)
+  fb = v.face_buf(w)
+  st = v.face_stride()
+  for i in 0..n with acc = 0
+    at = i * st
+    d = to_int(peek_f32(fb, at + 3))
+    if d != 6 && d != 2 then acc
+    else
+      x = peek_f32(fb, at)
+      z = peek_f32(fb, at + 2)
+      wx = if d == 6 then peek_f32(fb, at + 7) else peek_f32(fb, at + 12)
+      wz = if d == 6 then peek_f32(fb, at + 11) else peek_f32(fb, at + 13)
+      mid = if d == 6 then (peek_f32(fb, at + 12) + peek_f32(fb, at + 13) + peek_f32(fb, at + 14) + peek_f32(fb, at + 15)) * 0.25 else peek_f32(fb, at + 1)
+      px = x + wx * 0.5
+      pz = z + wz * 0.5
+      if v.solid_at(w, px, mid - 0.05, pz) > 0 then acc
+      else if want == 6 then (if d == 6 then acc + 1 else acc)
+      else if want == 2 then (if d == 2 then acc + 1 else acc)
+      else if want == 0 then acc + 1
+      else
+        drop = cm(mid - v.floor_at(w, px, pz))
+        if drop > acc then drop else acc
+
+fn quad_over(w, s, mm) =
+  n = v.faces_build(s)
+  fb = v.face_buf(w)
+  st = v.face_stride()
+  for i in 0..n with c = 0
+    at = i * st
+    if to_int(peek_f32(fb, at + 3)) != 6 then c
+    else
+      x = peek_f32(fb, at)
+      z = peek_f32(fb, at + 2)
+      wx = peek_f32(fb, at + 7)
+      wz = peek_f32(fb, at + 11)
+      mid = (peek_f32(fb, at + 12) + peek_f32(fb, at + 13) + peek_f32(fb, at + 14) + peek_f32(fb, at + 15)) * 0.25
+      e = to_int(absf(mid - v.mesh_h(w, x + wx * 0.5, z + wz * 0.5)) * 1000.0)
+      if e > mm then c + 1 else c
+
+
 fn main() =
   w = v.init(48, 60, 40, 60)
   s = v.join(w)
@@ -290,17 +621,20 @@ fn main() =
   ci = code_col(last_code(w))
   mx = v.cell_x(ci)
   mz = v.cell_z(ci)
-  # The first bite off a fresh hillside is only part of a stone: the ground is
-  # where the ground is, and the slab it lands in is part rock and part air.
-  # Every bite after it is exactly one, because the floor it strikes is a slab
-  # boundary by then.
+  # The bite is two stones on a side, and the first one off a fresh hillside is
+  # short of the full two: the ground is where the ground is, and the top slab
+  # it lands in is part rock and part air. Every bite after it is exactly two,
+  # because the floor it strikes is a slab boundary by then.
   fn drop(dx, dz) = cm(v.height(mx + dx, mz + dz) - v.floor_at(w, mx + dx, mz + dz))
   d1 = drop(0.0, 0.0)
-  say("the first bite is part of one stone", if d1 > 0 && d1 <= 30 then 1 else 0, 1)
-  say("the stone beside it is untouched, cm", drop(0.3, 0.0), 0)
-  say("and the one behind it too, cm", drop(0.0, 0.0 - 0.3), 0)
+  say("the first bite is most of two stones", if d1 > 30 && d1 <= 60 then 1 else 0, 1)
+  # Two across is even, so the square cannot straddle: it runs from the stone
+  # struck to the one after it, and not back to the one before.
+  say("the stone in front of it went too, cm", drop(0.3, 0.0) - d1, 0)
+  say("and the one behind it did not, cm", drop(0.0 - 0.3, 0.0), 0)
+  say("nor the one behind that way, cm", drop(0.0, 0.0 - 0.3), 0)
   swings(s, mx, mz, 1, 0)
-  say("and the next one is exactly one, cm", drop(0.0, 0.0) - d1, 30)
+  say("and the next one is exactly two, cm", drop(0.0, 0.0) - d1, 60)
   say("two bites on the ring", v.carves(w), 2)
   say("one page holds them", v.carve_pages(w), 1)
 
@@ -311,10 +645,15 @@ fn main() =
   # the rock above the strike stays where it is — so what is left is a roof,
   # which under a height field could not exist at all.
   # Deep enough to have a wall worth striking: eye level from the floor of a
-  # shallow scrape is over the rim and hits nothing. Twelve stones is three and
-  # a half metres, which puts an eye at 1.75 well under the rim. It was four
-  # swings when four swings were four cubes.
-  swings(s, mx, mz, 12, 0)
+  # shallow scrape is over the rim and hits nothing. Twelve bites is seven
+  # metres, which puts an eye at 1.75 well under the rim.
+  #
+  # Sunk, not swung: `swings` takes its stance once and strikes twelve times
+  # from it, and the floor runs away from the eye as it goes. That worked only
+  # because a swing used to carry twelve metres. An arm's reach is two, so a
+  # digger goes down with the floor they are cutting, which is what `sink`
+  # does and what a digger does.
+  sink(s, mx, mz, 12)
   fy = v.floor_at(w, mx, mz)
   stance(s, mx, mz, 0.0, 0.0)
   eye = peek_f32(s, 17)
@@ -406,7 +745,10 @@ fn main() =
   # An arm's, not a siege engine's.
   stance(s, mx, mz, 0.0, 0.0 - v.pitch_max())
   say("underfoot is within reach", v.can_mine(s), 1)
-  v.set_at(s, mx, v.floor_at(w, mx, mz) + 14.0, mz)
+  # From the ground, not from the floor of the pit the tests above sank here.
+  # Off the floor it read fourteen and the ground was only seven away, so this
+  # line was measuring how much the tests dug rather than how far an arm goes.
+  v.set_at(s, mx, v.height(mx, mz) + 14.0, mz)
   v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
   say("fourteen metres up it is not", v.can_mine(s), 0)
   # And bedrock is not for mining, which is the whole of what bedrock is.
@@ -487,10 +829,33 @@ fn main() =
   qmx = v.cell_x(code_col(last_code(w4)))
   qmz = v.cell_z(code_col(last_code(w4)))
   qd = cm(v.height(qmx, qmz) - v.floor_at(w4, qmx, qmz))
-  say("the field says part of one stone", if qd > 0 && qd <= 30 then 1 else 0, 1)
+  say("the field says most of two stones", if qd > 30 && qd <= 60 then 1 else 0, 1)
   say("and the rebake had work to do", v.rebake(s4), 1)
   # And what the voxels read is what the terrain draws, to the centimetre.
   say("the height the voxels read is the one the terrain draws, cm", worst_drift(w4, s4), 0)
+
+  # ---- the shape of a dug rim ------------------------------------------------
+  #
+  # On the steepest rock there is, where a cell's ground and a column's ground
+  # are furthest apart and every one of these has shown up first.
+  si = steepest_at(steepest_slope())
+  sx = cell_mid_x(grid_x(si), grid_z(si))
+  sz = cell_mid_z(grid_x(si), grid_z(si))
+  say("the steepest rock in the valley, dm per metre", to_int(steepest_slope() * 5.0), 14)
+  sink_patch(s4, sx, sz, 4, 9)
+  # Every wall the body runs into, the eye can see. Read off `solid_at` — the
+  # rock a walk collides with — and not off the meshing, so this is a second
+  # opinion and not the same sentence twice. Thirty-three of it are open along
+  # the -x rim of the digging, which is the band of lake in the photographs.
+  say("every wall you cannot walk through is drawn", open_walls(w4, s4, sx, sz, 7, 1, 0 - 1), 0)
+  say("and every floor you can stand on", open_floors(w4, s4, sx, sz, 7, 3), 0)
+  # Nothing drawn stands clear of the ground beside it. A face whose hillside
+  # is under it at both ends has nothing to join and hangs in the air — four
+  # hundred and forty-nine of them at one pit, the worst seven metres up.
+  say("nothing is left standing in the air", fins(w4, s4, 0), 0)
+  say("and nothing over the hillside at all, cm", fins(w4, s4, 1), 0)
+  say("no shelf stands over the hillside", shelves(w4, s4), 0)
+  say("every piece of hillside has rock under it", lids(w4, s4, 0), 0)
 
   # And the picture has no holes in it. A pit alone will not do for this: a
   # terrain cell only steps aside where something is roofed, so the test has

@@ -62,6 +62,43 @@ def main():
     uv = accessor(gltf, blob, prim["attributes"]["TEXCOORD_0"])
     idx = accessor(gltf, blob, prim["indices"])
 
+    # The haft, carried through the head.
+    #
+    # CreativeTrio's pickaxe is authored with the haft butting the underside of
+    # the iron rather than passing through its eye, and a separate stub sitting
+    # on top of it. On the screen that reads exactly as what it is — a handle
+    # stuck under a lump — and no amount of posing fixes it. The shaft's top
+    # ring is carried up to the head's crown here, so the haft runs the whole
+    # way and the stub becomes the end of it coming out the other side. It is
+    # hidden inside the iron for the length of the eye, which is where a haft
+    # is supposed to be.
+    #
+    # The model lies along z with the head at the near end, and the shaft is
+    # the only thing within a hair of the axis, so both are found rather than
+    # written down: any tighter and it depends on this one file's numbers.
+    # The iron is the wide part; the shaft is what runs down the axis. Both are
+    # found from the geometry rather than written down, so this survives the
+    # model being re-exported.
+    # Height up the tool, so the arithmetic reads the way the thing stands. The
+    # model lies along z with the head at the near end, so height runs the
+    # other way.
+    top_z = max(p[2] for p in pos)
+    up = [top_z - p[2] for p in pos]
+    wide = [up[i] for i, p in enumerate(pos) if abs(p[0]) > 2e-3]
+    axis = [i for i, p in enumerate(pos) if abs(p[0]) < 7e-4 and abs(p[1]) < 7e-4]
+    if wide and axis:
+        band_lo, band_hi = min(wide), max(wide)   # where the iron starts and ends
+        below = [up[i] for i in axis if up[i] < band_lo - 1e-4]
+        if below:
+            shaft_top = max(below)                # where the shaft stops short
+            moved = 0
+            for i in axis:
+                if abs(up[i] - shaft_top) < 3e-4:
+                    pos[i] = (pos[i][0], pos[i][1], top_z - band_hi)
+                    moved += 1
+            print(f"haft carried through the head: {moved} vertices, "
+                  f"{shaft_top * 1000:.2f} mm -> {band_hi * 1000:.2f} mm")
+
     lo = [min(p[i] for p in pos) for i in range(3)]
     hi = [max(p[i] for p in pos) for i in range(3)]
     size = [max(hi[i] - lo[i], 1e-6) for i in range(3)]

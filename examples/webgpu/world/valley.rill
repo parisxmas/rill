@@ -3964,28 +3964,32 @@ fn dirty_grow(cb, x, z, m) =
 # of how the wire stays small: a bite is four bytes on the ring, and both ends
 # open the same square from them.
 #
-# The bite is the stone that was struck, and nothing else: three tenths of a
-# metre on a side, which is exactly a wall block. A swing that took a cube four
-# stones across took sixty-four of them, and a tool whose every use removes
-# sixty-four times what the same valley's other stone unit is does not read as
-# a pick — it reads as a shovel with the ground on easy.
+# The bite is two stones on a side — six tenths of a metre, eight wall blocks.
 #
-# It cost the shape of the bite to say so, and the shape was not nothing. Four
-# was even, so the square could not be centred on the struck stone and ran one
-# back and two on; downward it did not straddle at all, hanging from the strike
-# so that the rock *above* stayed and a wall opened into a tunnel rather than
-# sluicing away from the top. One stone is centred on itself and hangs from
-# itself, so all four numbers are nought and every one of those arguments is
-# answered by arithmetic instead of by a convention.
+# It was four stones, which is sixty-four blocks, and a tool whose every use
+# removes sixty-four times the valley's other stone unit does not read as a
+# pick; it reads as a shovel with the ground on easy. Then it was one, which
+# reads right but digs like a needle. Two is the shape that says "a bite" and
+# still moves rock.
 #
-# What one stone does not answer: nobody fits down a shaft three tenths of a
-# metre across. See `mine_reach`, which is now the whole of how deep a pit can
-# get, because a digger can no longer climb into their own.
+# Two is even, so the square cannot be centred on the struck stone: across and
+# along it runs from the stone struck to the one after. Downward it does not
+# straddle either — the cube hangs from the strike, taking the slab struck and
+# the one under it. That last word is the whole of the difference from an
+# earlier version that took four *down from the top of the column*: strike a
+# wall at chest height and everything above the strike came away too, which
+# from inside a shaft read as the ground collapsing rather than the wall
+# breaking. The rock above a strike is exactly what has to stay if a wall is
+# going to open into a tunnel.
+#
+# What two stones does not answer: nobody fits down a shaft six tenths of a
+# metre across either. See `mine_reach`, which is the whole of how deep a pit
+# can get, because a digger cannot climb into their own.
 fn dig_lo() = 0
 
-fn dig_hi() = 0
+fn dig_hi() = 1
 
-fn dig_dn() = 0
+fn dig_dn() = 0 - 1
 
 fn dig_up() = 0
 
@@ -4148,13 +4152,18 @@ fn apply_carve(w, code) =
 # into — and a digger standing on the floor they are cutting has nothing left
 # to strike at a distance, so nothing was allowed to be.
 #
-# The bite is one stone again, so this is twelve again. The two numbers are one
-# decision written twice, and the failure they trade between is not subtle in
-# either direction: three metres under a one-stone bite is a pick that cannot
-# dig a hole deeper than your knee, because the eye is at 1.75 and the floor
-# runs away from it. Twelve reaches the bedrock at twelve, which is exactly as
-# far as there is anything to reach.
-fn mine_reach() = 12.0
+# Three metres, which is an arm and a pick and a step of lean. It was twelve —
+# far enough to stand on a rim and quarry the floor of a shaft four storeys
+# down, which is not a pick, it is artillery. What paid for twelve was the
+# one-stone bite: a shaft three tenths of a metre across is one nobody can
+# climb into, so reach was the only thing left that decided how deep a pit
+# could get.
+#
+# The bite is two stones now — six tenths, wide enough to drop into — so the
+# depth looks after itself: a digger stands on the floor they just cut and
+# cuts the next one. Two metres is then only about how far away a swing lands,
+# and a swing should land where you are standing.
+fn mine_reach() = 3.0
 
 # How much head a standing body needs. The eye sits 1.75 up; the crown is a
 # little over it.
@@ -4461,12 +4470,18 @@ fn put_face(w, x, y, z, dir, r, g, b) = put_tall(w, x, y, z, dir, carve_q(), car
 # normal it lights the way the hillside does and the steps go back to being
 # steps.
 fn put_lit(w, x, y, z, dir, tall, tall2, wide, nx, ny, nz, r, g, b) =
-  ok = put_tall(w, x, y, z, dir, tall, wide, r, g, b)
+  # The taller end decides whether there is a face here at all. `put_tall`
+  # throws away anything with no height, and it was being shown only the
+  # first end — so a wall that ran out to nothing where the hillside dipped
+  # under it was thrown away whole instead of drawn as the triangle it is.
+  hi = if tall > tall2 then tall else tall2
+  ok = put_tall(w, x, y, z, dir, hi, wide, r, g, b)
   if ok == 0 then 0
   else
     cb = cv(w)
     at = (to_int(peek_f32(cb, 14)) - 1) * face_stride()
     fb = face_buf(w)
+    poke_f32(fb, at + 7, tall)
     poke_f32(fb, at + 8, nx)
     poke_f32(fb, at + 9, ny)
     poke_f32(fb, at + 10, nz)
@@ -4551,7 +4566,9 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
     cz = cell_z(i)
     x = cx - q * 0.5
     z = cz - q * 0.5
-    h = height(cx, cz)
+    # The ground this column is drawn against — the same surface the hillside
+    # beside it is drawn on, or the two part company.
+    h = mesh_h(w, cx, cz)
     # The hillside's own slope at this column, off the same lattice the
     # terrain mesh uses, so a cap face lights the way the hill does.
     st = cell_step(mesh_n(w))
@@ -4574,6 +4591,8 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
     cc = mesh_h(w, x, z + q)
     cd = mesh_h(w, x + q, z + q)
 
+    hc = mesh_h(w, cx, cz)
+
     # A cap face is given the two heights its run ends at rather than one for
     # the whole of it; anything under a cap is a stone tall from end to end and
     # takes the plain one.
@@ -4586,7 +4605,36 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
     # which is the shape this bug is recognisable by. Where an end is clamped,
     # the full-stone face under it already covers that corner and a little
     # above it, which is over-draw and costs nothing.
-    fn rise(t, py) = if t > py then t - py else 0.0
+    # How much of this slab the ground leaves standing.
+    #
+    # The ground here is `mesh_h`, the hillside as it is drawn, and it is not
+    # the same surface the rock is decided by: `ch` takes `carve_depth` off
+    # every lattice corner, so a corner that sits inside a pit drags the drawn
+    # hillside down across the whole cell — a metre and a half of it, measured
+    # at the rim of a shaft, under a column nobody had dug.
+    #
+    # This used to answer nought whenever the ground came out under the slab,
+    # and nought is a face with no height, and a face with no height is thrown
+    # away by `put_tall`. So along the rim of every pit stood columns the body
+    # collided with and the eye went straight through — thirty-three of them in
+    # one seven-column patch, and what was behind them was the lake. It is the
+    # band along the bottom of a dug edge in every photograph of this.
+    #
+    # Under the slab means the rock is exposed for the whole of it, which is
+    # `tall`, not nothing.
+    # Under the slab means the rock is exposed for the whole of it, which is
+    # `tall`, not nothing. Above the slab it means the hillside is drawn higher
+    # than the rock the column is made of, and then the face has to *follow it
+    # up*: the ground quad beside it is a ramp between the same corner heights,
+    # and a face that stopped at the rock instead left exactly the triangle
+    # between the two — which is what capping this at `tall` put back.
+    # How high the ground stands over this slab's base at one end of a run.
+    # Nought is a real answer: where the hillside dips under the slab the face
+    # simply runs out, and a face that is a stone tall at one end and nothing
+    # at the other is a triangle, which is exactly the shape a wall meeting a
+    # slope wants. It takes two heights to say that and the buffer has carried
+    # two since the ramped caps went in.
+    fn rise(t, py, tall) = if t <= py then 0.0 else if t - py > tall then tall else t - py
 
     # A riser, split where it crosses a lattice cell's edge — not clipped to
     # the cell, which is what a ground quad gets and what this had first.
@@ -4623,16 +4671,49 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
         ez = if alongz then a1 else pz
         ta = mesh_h(w, qx, qz)
         tb = mesh_h(w, ex, ez)
-        if cap then put_lit(w, qx, py, qz, dir, rise(ta, py), rise(tb, py), wide, nx, ny, nz, r, g, b)
-        else put_tall(w, qx, py, qz, dir, tall, wide, r, g, b)
+        put_lit(w, qx, py, qz, dir, rise(ta, py, tall), rise(tb, py, tall), wide, nx, ny, nz, r, g, b)
 
+    # Where a run crosses a diagonal of the lattice.
+    #
+    # The edge is not the only place the ground bends. A cell is drawn as two
+    # triangles cut from its low corner to its high one — see `rb_cell` — so
+    # the surface creases along that cut as well, and `mesh_h` follows the
+    # crease exactly. A riser capped with one straight chord from end to end
+    # therefore cuts the corner off the crease, and what is left open under the
+    # chord is bounded by the crease above and the two quads either side: a
+    # triangle, sitting wherever a wall happens to cross a cell's diagonal.
+    # `mesh_h` already says this in its own comment. It was only ever half
+    # fixed — the *samples* were put on the triangulation and the *chord*
+    # between two of them was left as it was.
+    #
+    # Taken off the lattice, not off `gx0`: a column at the edge of a cell
+    # hangs over into the next one, and the piece that hangs over crosses that
+    # cell's diagonal, not this one's. A run is three tenths of a metre and a
+    # cell is 170/grid, so at most one diagonal falls inside it.
+    fn diag_at(fixed, s0, s1) =
+      f = (fixed + world_w() * 0.5) / gst
+      fr = f - floor(f)
+      k = floor((s0 + world_w() * 0.5) / gst)
+      d0 = (k + fr) * gst - world_w() * 0.5
+      d1 = (k + 1.0 + fr) * gst - world_w() * 0.5
+      if d0 > s0 && d0 < s1 then d0 else if d1 > s0 && d1 < s1 then d1 else s0
+
+    # A riser, split where it crosses either of the two lines the ground bends
+    # on. Both can fall inside one run, so three pieces are laid out and the
+    # empty ones fall out on `side_piece`'s own width guard.
     fn put_side(px, py, pz, dir, tall, cap, r, g, b) =
       s0 = if dir < 2 then pz else px
       s1 = s0 + q
       e0 = if dir < 2 then gz0 else gx0
       e1 = e0 + gst
-      cut = if e0 > s0 && e0 < s1 then e0 else if e1 > s0 && e1 < s1 then e1 else s0
-      if cut > s0 then side_piece(px, py, pz, dir, tall, cap, s0, cut, r, g, b) + side_piece(px, py, pz, dir, tall, cap, cut, s1, r, g, b) else side_piece(px, py, pz, dir, tall, cap, s0, s1, r, g, b)
+      ce = if e0 > s0 && e0 < s1 then e0 else if e1 > s0 && e1 < s1 then e1 else s0
+      cd = diag_at(if dir < 2 then px else pz, s0, s1)
+      c1 = if ce < cd then ce else cd
+      c2 = if ce < cd then cd else ce
+      n1 = side_piece(px, py, pz, dir, tall, cap, s0, c1, r, g, b)
+      n2 = side_piece(px, py, pz, dir, tall, cap, c1, c2, r, g, b)
+      n3 = side_piece(px, py, pz, dir, tall, cap, c2, s1, r, g, b)
+      n1 + n2 + n3
 
     fn top(py, cap) =
       if cap then ground_quad(w, x, z, nx, ny, nz, gx0, gz0, gst)
@@ -4645,8 +4726,21 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
       # The topmost slab of a standing column ends at the ground, not at the
       # slab's ceiling — and the ground it ends at is the one the terrain mesh
       # draws, or the two surfaces meet at a step and the step is a hole.
-      cap = slab_y(k + 1) > h
-      yt = if cap then ht else slab_y(k + 1)
+      cap = slab_y(k + 1) > hc
+      # To the rock's own top, and then trimmed *down* to the hillside by
+      # `rise`, one end at a time.
+      #
+      # This used to go straight to `ht`, the hillside as it is drawn — and the
+      # two are not the same surface. `ch` takes `carve_depth` off every
+      # lattice corner, so a corner sitting inside a pit drags the drawn ground
+      # down across the whole cell; at the rim of a shaft the hillside came out
+      # a metre and a half *under* the slab, `ht - y` was negative, and
+      # `put_tall` threw the face away for having no height. The rock stayed
+      # where it was — a body still walks into it, a pick still reads it — and
+      # nothing at all was drawn on its side. That is the band of lake along
+      # the bottom of every dug edge: not a crack, the top fifth of a stone,
+      # and it stood open on every column round the rim.
+      yt = slab_y(k + 1)
       tall = yt - y
       # A cap slab is hillside: its faces take the band colour and the slope.
       # Anything under it is broken stone.
@@ -4665,16 +4759,22 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
       # Which two corners a face runs between is decided by which way it
       # points: a face on the low-x side runs along z from the (x, z) corner to
       # the (x, z+q) one, and so on round the column.
-      if nb_open(cb, ix - 1, iz, k, cap) then put_side(x, y, z, 0, tall, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix + 1, iz, k, cap) then put_side(x + q, y, z, 1, tall, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix, iz - 1, k, cap) then put_side(x, y, z, 4, tall, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix, iz + 1, k, cap) then put_side(x, y, z + q, 5, tall, cap, fr, fg, fb) else 0
-      if solid_cell(cb, i, k - 1, h) == 0 then put_face(w, x, y, z, 3, gr, gg, gb) else 0
-      if solid_cell(cb, i, k + 1, h) == 0 || cap then top(yt, cap) else 0
+      if nb_open(w, cb, ix - 1, iz, k, cap) then put_side(x, y, z, 0, tall, cap, fr, fg, fb) else 0
+      if nb_open(w, cb, ix + 1, iz, k, cap) then put_side(x + q, y, z, 1, tall, cap, fr, fg, fb) else 0
+      if nb_open(w, cb, ix, iz - 1, k, cap) then put_side(x, y, z, 4, tall, cap, fr, fg, fb) else 0
+      if nb_open(w, cb, ix, iz + 1, k, cap) then put_side(x, y, z + q, 5, tall, cap, fr, fg, fb) else 0
+      # Against the same ground the walk uses. Asked of the middle of the
+      # column while the walk ran to its highest corner, every slab between
+      # the two believed it had sky over it and laid a floor there: a stack of
+      # shelves standing over the hillside, with their sides trimmed away to
+      # nothing because the hillside really is below them. What shows between
+      # the shelves is daylight, one thin sliver per slab.
+      if solid_cell(cb, i, k - 1, hc) == 0 then put_face(w, x, y, z, 3, gr, gg, gb) else 0
+      if solid_cell(cb, i, k + 1, hc) == 0 || cap then top(yt, cap) else 0
       1
 
-    for k in slab_of(h - dig_floor())..slab_of(h) + 1
-      if solid_cell(cb, i, k, h) > 0 then slab(k) else 0
+    for k in slab_of(h - dig_floor())..slab_of(hc) + 1
+      if solid_cell(cb, i, k, hc) > 0 then slab(k) else 0
 
     1
 
@@ -4736,35 +4836,68 @@ fn mesh_h(w, x, z) =
 # The clipped width and depth travel in the face record: the height slot,
 # which a flat quad has no use for, and the stone slot, which for a piece of
 # hillside is nought by definition and the shader can say so itself.
+# One piece of hillside, laid down as it stands.
+fn gq_put(w, lx, lz, hx, hz, nx, ny, nz, j) =
+  wx = hx - lx
+  wz = hz - lz
+  a = mesh_h(w, lx, lz)
+  b = mesh_h(w, hx, lz)
+  c = mesh_h(w, lx, hz)
+  d = mesh_h(w, hx, hz)
+  ok = put_lit(w, lx, a, lz, 6, wx, wx, wx, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
+  if ok == 0 then 0
+  else
+    cb = cv(w)
+    at = (to_int(peek_f32(cb, 14)) - 1) * face_stride()
+    fb = face_buf(w)
+    poke_f32(fb, at + 11, wz)
+    poke_f32(fb, at + 12, a)
+    poke_f32(fb, at + 13, b)
+    poke_f32(fb, at + 14, c)
+    poke_f32(fb, at + 15, d)
+    1
+
+# How far the piece as drawn misses the ground it stands for, at its middle.
+#
+# The shader stretches the four corner heights across the piece bilinearly, so
+# the middle of a piece is the mean of its corners. The ground is not a
+# bilinear patch: a cell is two triangles and creases along the diagonal
+# between them. Where a piece straddles that crease the two part company, and
+# on the steepest rock in the valley they parted by sixty-six centimetres.
+fn gq_miss(w, lx, lz, hx, hz) =
+  a = mesh_h(w, lx, lz)
+  b = mesh_h(w, hx, lz)
+  c = mesh_h(w, lx, hz)
+  d = mesh_h(w, hx, hz)
+  absf((a + b + c + d) * 0.25 - mesh_h(w, (lx + hx) * 0.5, (lz + hz) * 0.5))
+
+# A crease cannot be cut out of an axis-aligned rectangle — the line runs at
+# forty-five degrees to both its sides — so the piece is quartered instead,
+# and quartered again, until what is left is flat enough to draw.
+fn gq_split(w, lx, lz, hx, hz, nx, ny, nz, j, depth) =
+  if depth <= 0 || gq_miss(w, lx, lz, hx, hz) < 0.01 then gq_put(w, lx, lz, hx, hz, nx, ny, nz, j)
+  else
+    mx = (lx + hx) * 0.5
+    mz = (lz + hz) * 0.5
+    n1 = gq_split(w, lx, lz, mx, mz, nx, ny, nz, j, depth - 1)
+    n2 = gq_split(w, mx, lz, hx, mz, nx, ny, nz, j, depth - 1)
+    n3 = gq_split(w, lx, mz, mx, hz, nx, ny, nz, j, depth - 1)
+    n4 = gq_split(w, mx, mz, hx, hz, nx, ny, nz, j, depth - 1)
+    if n1 + n2 + n3 + n4 > 0 then 1 else 0
+
+# A piece of hillside, cut to the terrain cell that asked for it.
 fn ground_quad(w, x, z, nx, ny, nz, gx0, gz0, gst) =
   q = carve_q()
   lx = max(x, gx0)
   lz = max(z, gz0)
   hx = min(x + q, gx0 + gst)
   hz = min(z + q, gz0 + gst)
-  wx = hx - lx
-  wz = hz - lz
-  if wx < 0.0005 || wz < 0.0005 then 0
+  if hx - lx < 0.0005 || hz - lz < 0.0005 then 0
   else
-    a = mesh_h(w, lx, lz)
-    b = mesh_h(w, hx, lz)
-    c = mesh_h(w, lx, hz)
-    d = mesh_h(w, hx, hz)
     # The speckle keeps the column's own seed, not the clipped piece's, so a
     # column split between two cells does not come out as two colours.
     j = face_jitter(x, z)
-    ok = put_lit(w, lx, a, lz, 6, wx, wx, wx, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
-    if ok == 0 then 0
-    else
-      cb = cv(w)
-      at = (to_int(peek_f32(cb, 14)) - 1) * face_stride()
-      fb = face_buf(w)
-      poke_f32(fb, at + 11, wz)
-      poke_f32(fb, at + 12, a)
-      poke_f32(fb, at + 13, b)
-      poke_f32(fb, at + 14, c)
-      poke_f32(fb, at + 15, d)
-      1
+    gq_split(w, lx, lz, hx, hz, nx, ny, nz, j, 7)
 
 # Air because somebody took it out, rather than air because the hill is lower
 # over there. Only the first wants a face standing between them: two pieces of
@@ -4785,17 +4918,17 @@ fn ground_quad(w, x, z, nx, ny, nz, gx0, gz0, gst) =
 # What decides it is whether the neighbour is a hole at all. A column somebody
 # has dug is no longer hillside, and the shared-corner argument that makes a
 # riser unnecessary does not hold against it at any height.
-fn nb_open(cb, ix, iz, k, cap) =
+fn nb_open(w, cb, ix, iz, k, cap) =
   i = cell_at(ix, iz)
   if i < 0 then false
-  else if nb_air(cb, ix, iz, k) == false then false
+  else if nb_air(w, cb, ix, iz, k) == false then false
   else if cap == false then true
   else vox_gone(cb, i, k) > 0 || col_dug(cb, i) > 0
 
-fn nb_air(cb, ix, iz, k) =
+fn nb_air(w, cb, ix, iz, k) =
   i = cell_at(ix, iz)
   if i < 0 then false
-  else solid_cell(cb, i, k, height(cell_x(i), cell_z(i))) == 0
+  else solid_cell(cb, i, k, mesh_h(w, cell_x(i), cell_z(i))) == 0
 
 # Every column of every terrain mesh cell that has lost its roof to a tunnel.
 # The mesh cell is the unit because the mesh cell is what gets blanked, and a
