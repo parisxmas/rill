@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "489";
+const V = "500";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -3825,6 +3825,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The tunnels' faces, rebuilt whenever the digging moved. `rebake` has
     // just told us whether anything did, and it is the same answer.
     if (dug) {
+      // The grass that was growing where the rock has gone. Its instances are
+      // uploaded once at build, so unlike the pines and the crystals it has to
+      // be re-sent by hand — and only on a frame where somebody dug, which is
+      // this one.
+      device.queue.writeBuffer(W.grassInst, 0,
+        new Float32Array(E.memory.buffer, Number(E.grass(state)), W.counts.grass * 8));
       faceN = Math.min(Number(E.faces_build(state)), faceCap);
       if (faceN) {
         device.queue.writeBuffer(faceBuf, 0,

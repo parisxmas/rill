@@ -100,6 +100,19 @@ fn sink(s, x, z, n) =
 
   1
 
+# A pit wide enough for the height field to notice one. A bite is three tenths
+# of a metre and a mesh cell in the fine valley below is 170/160: a shaft
+# narrower than the lattice moves no vertex of it at all — what draws such a
+# shaft is the voxel faces, which is the whole point of them. So where a test
+# wants to see the *mesh* follow the digging it has to open more than a
+# lattice's worth, and `r` stones each way is what that takes.
+fn sink_patch(s, x, z, r, n) =
+  for dz in 0 - r..r + 1
+    for dx in 0 - r..r + 1
+      sink(s, x + to_float(dx) * v.carve_q(), z + to_float(dz) * v.carve_q(), n)
+
+  1
+
 fn solid(w, x, y, z) = v.solid_at(w, x, y, z)
 
 # ---- nothing is missing from the picture -------------------------------------
@@ -212,8 +225,10 @@ fn main() =
 
   # ---- one bite --------------------------------------------------------------
   #
-  # A cube four stones on a side — a metre and twenty each way — and one
-  # stone of it into the pocket.
+  # One stone — three tenths of a metre each way, which is exactly a wall
+  # block — and that stone into the pocket. It was a cube four stones on a
+  # side, and a tool that takes sixty-four of the valley's own stone unit per
+  # swing is not a pick.
   aim_down(s, rx, rz)
   got = v.swing_pick(s)
   say("a swing pays one stone", got, 1)
@@ -221,19 +236,17 @@ fn main() =
   ci = code_col(last_code(w))
   mx = v.cell_x(ci)
   mz = v.cell_z(ci)
-  # The first bite off a fresh hillside is a little short of four stones: the
-  # ground is where the ground is, and the top slab it lands in is only part
-  # rock. Every bite after it is exactly four, because the floor it strikes is
-  # a slab boundary by then.
+  # The first bite off a fresh hillside is only part of a stone: the ground is
+  # where the ground is, and the slab it lands in is part rock and part air.
+  # Every bite after it is exactly one, because the floor it strikes is a slab
+  # boundary by then.
   fn drop(dx, dz) = cm(v.height(mx + dx, mz + dz) - v.floor_at(w, mx + dx, mz + dz))
   d1 = drop(0.0, 0.0)
-  say("the first bite is most of four stones", if d1 > 90 && d1 <= 120 then 1 else 0, 1)
-  say("flat at one corner of the bite, cm", drop(0.0 - 0.3, 0.0 - 0.3), d1)
-  say("flat at the far one, cm", drop(0.6, 0.6), d1)
-  say("a stone past the square is untouched, cm", drop(0.9, 0.0), 0)
-  say("and behind it too, cm", drop(0.0, 0.0 - 0.6), 0)
+  say("the first bite is part of one stone", if d1 > 0 && d1 <= 30 then 1 else 0, 1)
+  say("the stone beside it is untouched, cm", drop(0.3, 0.0), 0)
+  say("and the one behind it too, cm", drop(0.0, 0.0 - 0.3), 0)
   swings(s, mx, mz, 1, 0)
-  say("and the next one is exactly four, cm", drop(0.0, 0.0) - d1, 120)
+  say("and the next one is exactly one, cm", drop(0.0, 0.0) - d1, 30)
   say("two bites on the ring", v.carves(w), 2)
   say("one page holds them", v.carve_pages(w), 1)
 
@@ -244,8 +257,10 @@ fn main() =
   # the rock above the strike stays where it is — so what is left is a roof,
   # which under a height field could not exist at all.
   # Deep enough to have a wall worth striking: eye level from the floor of a
-  # shallow scrape is over the rim and hits nothing.
-  swings(s, mx, mz, 4, 0)
+  # shallow scrape is over the rim and hits nothing. Twelve stones is three and
+  # a half metres, which puts an eye at 1.75 well under the rim. It was four
+  # swings when four swings were four cubes.
+  swings(s, mx, mz, 12, 0)
   fy = v.floor_at(w, mx, mz)
   stance(s, mx, mz, 0.0, 0.0)
   eye = peek_f32(s, 17)
@@ -265,7 +280,7 @@ fn main() =
   #
   # Keep swinging level and the hole runs into the hill. What makes it a
   # tunnel rather than a trench is that it is roofed for its whole length.
-  swing_on(s, 6, 0)
+  swing_on(s, 8, 0)
   tx = mx
   tz = mz - 1.5
   say("a metre and a half in, it is hollow", solid(w, tx, eye, tz), 0)
@@ -277,8 +292,13 @@ fn main() =
   say("just over head height", if roof > eye && roof < eye + 1.5 then 1 else 0, 1)
   say("with rock standing on that roof", solid(w, tx, roof + 0.15, tz), 1)
   say("and the hillside still over all of it", solid(w, tx, v.height(tx, tz) - 0.15, tz), 1)
+  # Lower than the hillside over it by the stone that was taken out: the floor
+  # in a tunnel is the tunnel's own. This used to ask for half a metre, which
+  # it could when a bite was four stones deep. One stone leaves exactly one
+  # stone of difference — measured, 33.5 against a hillside at 34.0 — and half
+  # a metre is a tie the test loses.
   say("and the floor in there is the tunnel's",
-      if v.ground_under(w, tx, eye, tz) < v.height(tx, tz) - 0.5 then 1 else 0, 1)
+      if v.ground_under(w, tx, eye, tz) < v.height(tx, tz) - v.carve_q() then 1 else 0, 1)
 
   # ---- replay ----------------------------------------------------------------
   #
@@ -309,7 +329,7 @@ fn main() =
   bx = cell_mid_x(bxx, bzz)
   bz = cell_mid_z(bxx, bzz)
   m0 = v.magmas(w)
-  sink(s, bx, bz, 14)
+  sink(s, bx, bz, 45)
   bd = cm(v.height(bx, bz) - v.floor_at(w, bx, bz))
   say("a shaft stops at the bedrock", if bd > 1170 && bd <= 1200 then 1 else 0, 1)
   say("and there is nothing molten under it", v.magmas(w) - m0, 0)
@@ -321,7 +341,7 @@ fn main() =
   (mxx, mzz) = find_ground(rz + 9.0, 1)
   px = cell_mid_x(mxx, mzz)
   pz = cell_mid_z(mxx, mzz)
-  sink(s, px, pz, 14)
+  sink(s, px, pz, 45)
   pd = cm(v.height(px, pz) - v.floor_at(w, px, pz))
   say("that pit stops at the cap too", if pd > 1170 && pd <= 1200 then 1 else 0, 1)
   say("and the bottom is magma", if v.magmas(w) > m0 then 1 else 0, 1)
@@ -332,9 +352,9 @@ fn main() =
   # An arm's, not a siege engine's.
   stance(s, mx, mz, 0.0, 0.0 - v.pitch_max())
   say("underfoot is within reach", v.can_mine(s), 1)
-  v.set_at(s, mx, v.floor_at(w, mx, mz) + 5.0, mz)
+  v.set_at(s, mx, v.floor_at(w, mx, mz) + 14.0, mz)
   v.walk(s, 1.0 / 60.0, 0.0, 0.0, 0)
-  say("five metres up it is not", v.can_mine(s), 0)
+  say("fourteen metres up it is not", v.can_mine(s), 0)
   # And bedrock is not for mining, which is the whole of what bedrock is.
   stance(s, px, pz, 0.0, 0.0 - v.pitch_max())
   say("the bedrock floor reads as no", v.can_mine(s), 0)
@@ -362,7 +382,7 @@ fn main() =
   bx = peek_f32(sb, bi * v.shard_stride())
   bz = peek_f32(sb, bi * v.shard_stride() + 2)
   say("it starts on the ground, cm", cm(peek_f32(sb, bi * v.shard_stride() + 1) - v.height(bx, bz)), 0)
-  sink(s, cell_mid_x(bx, bz), cell_mid_z(bx, bz), 4)
+  sink(s, cell_mid_x(bx, bz), cell_mid_z(bx, bz), 6)
   v.step_world(w, 1.0 / 60.0)
   fell = v.height(bx, bz) - peek_f32(sb, bi * v.shard_stride() + 1)
   say("the shaft went down under it", if cm(v.height(bx, bz) - v.floor_at(w, bx, bz)) > 100 then 1 else 0, 1)
@@ -413,20 +433,25 @@ fn main() =
   qmx = v.cell_x(code_col(last_code(w4)))
   qmz = v.cell_z(code_col(last_code(w4)))
   qd = cm(v.height(qmx, qmz) - v.floor_at(w4, qmx, qmz))
-  say("the field says most of four stones", if qd > 90 && qd <= 120 then 1 else 0, 1)
+  say("the field says part of one stone", if qd > 0 && qd <= 30 then 1 else 0, 1)
   say("and the rebake had work to do", v.rebake(s4), 1)
 
   # And the picture has no holes in it. A pit alone will not do for this: a
   # terrain cell only steps aside where something is roofed, so the test has
   # to sink a shaft and drive out of its wall before there is anything for the
   # voxel faces to be responsible for.
-  sink(s4, qmx, qmz, 5)
+  sink(s4, qmx, qmz, 12)
   stance(s4, qmx, qmz, 0.0, 0.0)
-  swing_on(s4, 6, 0)
+  swing_on(s4, 8, 0)
   v.rebake(s4)
   v.faces_build(s4)
   say("the tunnel blanked some terrain", if blanked_cells(w4, s4) > 0 then 1 else 0, 1)
   say("and nothing is missing from it", blank_gaps(w4, s4), 0)
+  # And the lattice itself comes down, once what has been opened is wider than
+  # the lattice is. Two stones each way is a metre and a half, which always
+  # swallows a corner of a cell a metre and six across.
+  sink_patch(s4, qmx, qmz, 2, 6)
+  v.rebake(s4)
   low = mesh_low(v.terrain(s4), v.terrain_verts(s4), qmx, qmz)
   say("the mesh came down with it, cm", if cm(v.height(qmx, qmz) - low) > 100 then 1 else 0, 1)
 

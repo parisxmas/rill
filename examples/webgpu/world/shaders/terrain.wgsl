@@ -18,13 +18,13 @@
     let g0 = textureSample(groundTex, barkSamp, v.world.xz * 0.32).rgb;
     let g1 = textureSample(groundTex, barkSamp, v.world.xz * 0.08).rgb;
     let g = g0 * 0.65 + g1 * 0.35;
-    // Rock, projected two ways and chosen between by how steep the ground is.
-    // Flat x/z alone would smear the stone into vertical streaks down every
-    // cliff, which is the one place the texture is meant to be doing work.
+    // Rock, on the plane the ground lies in and at two rates — `rockGrain` in
+    // common.wgsl, which the faces of a dug tunnel read out of as well, so a
+    // hole and the hillside it is cut into are the same stone by construction
+    // rather than by two shaders agreeing.
     let n0 = normalize(v.normal);
-    let rFlat = textureSample(rockTex, barkSamp, v.world.xz * 0.16).rgb;
-    let rWall = textureSample(rockTex, barkSamp, vec2f(v.world.x + v.world.z, v.world.y) * 0.13).rgb;
-    let rock = mix(rWall, rFlat, smoothstep(0.35, 0.80, abs(n0.y)));
+    let grain = rockGrain(v.world, n0);
+    let rock = grain.rgb;
     // The beach. Two tilings again, and finer than the meadow's — a shore is
     // the one surface here you are always standing right on top of.
     let sand = textureSample(sandTex, barkSamp, v.world.xz * 0.55).rgb * 0.6
@@ -60,7 +60,11 @@
     // it — cracks and ledges are what makes a cliff read as rock rather than
     // as a painted slope — and grass only a little, because blades of grass at
     // this distance are texture, not relief.
-    let h = lum * wMeadow + rlum * wStone + slum * wSand;
+    //
+    // The stone's height is the coarse layer alone (`grain.w`), not the two
+    // layers the colour uses: see `rockGrain`. Relief wants the ledges and not
+    // the grit.
+    let h = lum * wMeadow + grain.w * wStone + slum * wSand;
     let strength = 0.12 * wMeadow + 0.55 * wStone + 0.25 * wSand;
     return vec4f(lit(albedo, bumped(n0, v.world, h, strength), v.world), 1.0);
   }

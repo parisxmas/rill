@@ -82,6 +82,44 @@
     return normalize(max(abs(det), 0.00000001) * n - strength * g);
   }
 
+  // Stone, projected on whichever plane the face most nearly lies in.
+  //
+  // It used to be flat x/z, beaten against `(x + z, y)` for anything steep.
+  // `x + z` is constant along a cliff that runs north-east: across such a face
+  // the texture stopped changing altogether and came out as vertical streaks —
+  // on the one surface the photograph was there to do work on. Three planes,
+  // weighted by the normal, costs one sample more and has no direction it
+  // fails in. On a face that is square to an axis — which is every face of a
+  // tunnel — the weights pick a single plane and nothing is blended at all.
+  fn rockAt(world: vec3f, n: vec3f, s: f32) -> vec3f {
+    let a = abs(n);
+    let w = a / max(a.x + a.y + a.z, 0.0001);
+    return textureSample(rockTex, barkSamp, vec2f(world.z, world.y) * s).rgb * w.x
+         + textureSample(rockTex, barkSamp, world.xz * s).rgb * w.y
+         + textureSample(rockTex, barkSamp, world.xy * s).rgb * w.z;
+  }
+
+  // The same stone at two rates, the finer one four times over. The photograph
+  // is 256 pixels across and a tile of it is six metres, which is forty texels
+  // to the metre: enough for a hillside you look at across a valley, and not
+  // nearly enough for a wall you are standing against — and a shaft is nothing
+  // but walls you are standing against. Averaged rather than chosen between,
+  // the way the meadow already beats its two tilings, so the mean brightness
+  // is the photograph's and only the grain changes.
+  //
+  // The fourth channel is the coarse layer's brightness on its own, and it is
+  // there because relief and colour do not want the same thing. `bumped` takes
+  // screen-space derivatives of the height it is handed: put a texture four
+  // times finer into that and the derivatives come out four times larger, and
+  // the strength the hillside was tuned at turns a slope into a field of
+  // scratches. So the fine layer is allowed into the colour, where it reads as
+  // grain, and kept out of the relief, where it reads as damage.
+  fn rockGrain(world: vec3f, n: vec3f) -> vec4f {
+    let c = rockAt(world, n, 0.16);
+    let f = rockAt(world, n, 0.64);
+    return vec4f(c * 0.62 + f * 0.38, dot(c, vec3f(0.34, 0.5, 0.16)));
+  }
+
   // No early return: textureSampleCompare demands uniform control flow, so
   // the samples always run and the out-of-map case is selected afterwards.
   //

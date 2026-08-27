@@ -2514,28 +2514,34 @@ fn scatter_block(w, bb, i) =
 # second rather than on a frame. Deterministic like everything else on this
 # wire: a client is told which pine went and computes the same lie from the
 # same numbers.
+# A warhead's reach. The pick has its own and it is much smaller — the two used
+# to share this one, which was a warhead's number doing a pick's work: a chip
+# three tenths of a metre wide brought down every pine within two and a fifth
+# metres of it, and the ground under those was untouched. Two things fell
+# pines for two different reasons, so the reason travels with the call.
 fn fell_reach() = 2.2
 
 fn fell_ring() = 32
 
 fn fell_pines(w, x, y, z, seed) =
-  if seed > 0.0 then 0 else fell_scan(w, x, y, z)
+  if seed > 0.0 then 0 else fell_scan(w, x, y, z, fell_reach())
 
-fn fell_scan(w, x, y, z) =
+fn fell_scan(w, x, y, z, reach) =
   pb = peek_ptr(w, 65)
+  r2 = reach * reach
 
   for i in 0..to_int(peek_f32(w, 57))
-    try_fell(w, pb, i, x, y, z)
+    try_fell(w, pb, i, x, y, z, r2)
   1
 
-fn try_fell(w, pb, i, x, y, z) =
-  if peek_f32(pb, i * 8 + 3) <= 0.01 then 0 else fell_near(w, pb, i, x, y, z)
+fn try_fell(w, pb, i, x, y, z, r2) =
+  if peek_f32(pb, i * 8 + 3) <= 0.01 then 0 else fell_near(w, pb, i, x, y, z, r2)
 
-fn fell_near(w, pb, i, x, y, z) =
+fn fell_near(w, pb, i, x, y, z, r2) =
   dx = peek_f32(pb, i * 8) - x
   dz = peek_f32(pb, i * 8 + 2) - z
   g = peek_f32(pb, i * 8 + 1)
-  if dx * dx + dz * dz > fell_reach() * fell_reach() then 0 else if y < g - 2.0 || y > g + 12.0 then 0 else drop_pine(w, pb, i)
+  if dx * dx + dz * dz > r2 then 0 else if y < g - 2.0 || y > g + 12.0 then 0 else drop_pine(w, pb, i)
 
 fn drop_pine(w, pb, i) =
   at = i * 8
@@ -3944,24 +3950,28 @@ fn dirty_grow(cb, x, z, m) =
 # of how the wire stays small: a bite is four bytes on the ring, and both ends
 # open the same square from them.
 #
-# The bite is a cube four stones on a side: four across, four along and four
-# *down from where it was struck*. That last word is the whole of the
-# difference. It used to be four down from the top of the column, because the
-# column only had a top; strike a wall at chest height and everything above
-# the strike came away too, which from inside a shaft looked like the ground
-# collapsing rather than the wall breaking.
+# The bite is the stone that was struck, and nothing else: three tenths of a
+# metre on a side, which is exactly a wall block. A swing that took a cube four
+# stones across took sixty-four of them, and a tool whose every use removes
+# sixty-four times what the same valley's other stone unit is does not read as
+# a pick — it reads as a shovel with the ground on easy.
 #
-# Four is even, so the square cannot be centred on the struck stone: across
-# and along it runs one back and two on. Downward it does not straddle at
-# all — the cube hangs from the strike, taking the slab struck and the three
-# under it. A pick bites down from where it lands, and more to the point the
-# rock *above* the strike is exactly what has to stay if a wall is going to
-# open into a tunnel rather than sluice away from the top.
-fn dig_lo() = 0 - 1
+# It cost the shape of the bite to say so, and the shape was not nothing. Four
+# was even, so the square could not be centred on the struck stone and ran one
+# back and two on; downward it did not straddle at all, hanging from the strike
+# so that the rock *above* stayed and a wall opened into a tunnel rather than
+# sluicing away from the top. One stone is centred on itself and hangs from
+# itself, so all four numbers are nought and every one of those arguments is
+# answered by arithmetic instead of by a convention.
+#
+# What one stone does not answer: nobody fits down a shaft three tenths of a
+# metre across. See `mine_reach`, which is now the whole of how deep a pit can
+# get, because a digger can no longer climb into their own.
+fn dig_lo() = 0
 
-fn dig_hi() = 2
+fn dig_hi() = 0
 
-fn dig_dn() = 0 - 3
+fn dig_dn() = 0
 
 fn dig_up() = 0
 
@@ -4040,16 +4050,55 @@ fn bite_code(i, k) = i * vox_slabs() + k
 #
 # The boxes fall of their own accord, because a box is a thing that falls;
 # these two are rooted, and rooted things do not sink quietly into a hole.
+
+# One blade, gone. A `poke` is Unit and the arm it stands against is Int, so
+# the taking-out gets a name rather than the branches getting a cast.
+fn cut_grass(gb, gat) =
+  poke_f32(gb, gat + 3, 0.0)
+  1
+
+# How wide a bite is, and how far from the middle of one a thing has to be to
+# have been standing on it — the square of that, because that is how it is
+# asked. Both come off the bite's own bounds rather than being written down,
+# which they used to be: the reach was 0.8, and 0.8 is the half-diagonal of a
+# cube four stones across. Shrink the bite and leave the literal and a swing
+# that takes three tenths of a metre of rock clears the grass off a metre and
+# three quarters of hillside — a chip out of a wall, and a bald patch you could
+# see from the lake. The margin on the end is a stone's half-width: what stands
+# on the edge of the bite stands half in it.
+fn bite_side() = to_float(dig_hi() - dig_lo() + 1) * carve_q()
+
+fn undermine_r2() =
+  r = bite_side() * 0.70710678 + carve_q() * 0.5
+  r * r
+
 fn undermine(w, x, z) =
-  fell_scan(w, x, floor_at(w, x, z) + 1.0, z)
+  # A pine comes down when the rock it is rooted in goes, and its roots are the
+  # width of the bite and not the width of a warhead's blast.
+  fell_scan(w, x, floor_at(w, x, z) + 1.0, z, sqrt(undermine_r2()))
+  # The grass goes with the ground it grew in. A blade standing in the middle
+  # of a shaft is the same floating-scenery bug the boxes had, in miniature —
+  # and nothing about a tuft of grass wants a falling animation, so it is
+  # simply not there any more. Size to nought, which is how a crystal and a
+  # wall block leave too, and the renderer stops drawing it.
+  gb = peek_ptr(w, 67)
+  floor = floor_at(w, x, z)
+  r2 = undermine_r2()
+
+  for i in 0..to_int(peek_f32(w, 59))
+    gat = i * 8
+    gx = peek_f32(gb, gat) - x
+    gz = peek_f32(gb, gat + 2) - z
+    if gx * gx + gz * gz < r2 && peek_f32(gb, gat + 1) > floor + 0.4 then cut_grass(gb, gat) else 0
+
   cb = peek_ptr(w, 66)
 
   for i in 0..to_int(peek_f32(w, 58))
     at = i * 8
     dx = peek_f32(cb, at) - x
     dz = peek_f32(cb, at + 2) - z
-    rooted = dx * dx + dz * dz < 0.8 && peek_f32(cb, at + 3) > 0.01
-    if rooted && peek_f32(cb, at + 1) > floor_at(w, x, z) + 0.6 then break_crystal(w, cb, at, i) else 0
+    rooted = dx * dx + dz * dz < r2 && peek_f32(cb, at + 3) > 0.01
+    if rooted && peek_f32(cb, at + 1) > floor + 0.6 then break_crystal(w, cb, at, i) else 0
 
   1
 
@@ -4069,29 +4118,29 @@ fn apply_carve(w, code) =
 
 # ---- the swing ---------------------------------------------------------------
 #
-# From the eye, along the look, a quarter-metre at a time out to three and a
-# half: the first step under the carved floor is where the pick lands. Rock
-# only — a swing at the meadow hits nothing, loudly.
-# How far the pick reaches. Nine metres, and the number is about slopes, not
-# arms: looking down a hillside the ground falls away almost along the look,
-# and a ray that gives up at six metres passes half a metre over rock the
-# player is staring straight at — every swing a silent miss, which reads as
-# the key not working at all. At nine the everyday stances all land; past it
-# the crosshair stays white, which is the honest answer for aiming at the
-# far side of the valley.
-# How far the pick reaches: an arm and a haft and a lean into it. Three
-# metres, which is generous for a hand tool and mean compared to what it
-# was.
+# From the eye, along the look: the first step that is rock is where the pick
+# lands. Rock only — a swing at the meadow hits nothing, loudly. The stride and
+# the range are in `mine_spot` and `mine_reach` below, which is where the two
+# paragraphs that used to stand here had gone stale.
 #
-# It was twelve, and twelve was a workaround. A pit stops at nine metres, and
-# when a bite was one stone wide nobody could climb down into their own
-# shaft — so the only way to reach the bottom was to stand on the rim and
-# swing at ground four storeys below, which is not a pick, it is a
-# bombardment. A bite is a metre and twenty across now and the digger drops
-# into the hole as it deepens, standing on the floor they are cutting the
-# whole way down. Nothing needs to be struck at a distance any more, so
-# nothing is allowed to be.
-fn mine_reach() = 3.0
+# How far the pick reaches. Twelve metres, and the number is not about arms —
+# it is the other half of how wide a bite is, and it has now been round the
+# loop twice.
+#
+# Twelve, first, because a bite was one stone wide and nobody fits down a shaft
+# three tenths of a metre across: the only way to reach the bottom of your own
+# pit was to stand on the rim and swing at ground four storeys below. Then
+# three, because the bite grew to a metre and twenty — wide enough to drop
+# into — and a digger standing on the floor they are cutting has nothing left
+# to strike at a distance, so nothing was allowed to be.
+#
+# The bite is one stone again, so this is twelve again. The two numbers are one
+# decision written twice, and the failure they trade between is not subtle in
+# either direction: three metres under a one-stone bite is a pick that cannot
+# dig a hole deeper than your knee, because the eye is at 1.75 and the floor
+# runs away from it. Twelve reaches the bedrock at twelve, which is exactly as
+# far as there is anything to reach.
+fn mine_reach() = 12.0
 
 # How much head a standing body needs. The eye sits 1.75 up; the crown is a
 # little over it.
@@ -4206,11 +4255,18 @@ fn mesh_n(w) = to_int(peek_f32(w, 54))
 #
 # It used to reach half a lattice step, from the days when a bite was one
 # stone across and a lattice metres wide could step clean over it. A bite is
-# a metre and twenty now — wider than the lattice — so nothing needs finding,
-# and the reaching had a cost that showed: it pulled the terrain down around
-# every hole by as much as a whole bite, while the voxel columns beside it
-# stood at their true height, and the excavation came out as a blocky lump
-# standing proud of a dented hillside instead of a hole in a whole one.
+# one stone again — narrower than the lattice — and the reaching is still not
+# wanted: it pulled the terrain down around every hole by as much as a whole
+# bite, while the voxel columns beside it stood at their true height, and the
+# excavation came out as a blocky lump standing proud of a dented hillside
+# instead of a hole in a whole one.
+#
+# A shaft narrower than the lattice moves no corner at all, and that is not a
+# gap in the picture: a cell with anything dug in it is blanked and the voxel
+# faces draw every column of it. Measured, with a shaft sunk on a corner
+# exactly: no cell that still draws sits a centimetre below the hillside,
+# because the blanking scan is inclusive at a cell's edges and so all four
+# cells around a dropped corner are blanked together.
 fn ch(w, ix, iz, st) =
   lx = lattice(ix, st)
   lz = lattice(iz, st)
@@ -4390,7 +4446,7 @@ fn put_face(w, x, y, z, dir, r, g, b) = put_tall(w, x, y, z, dir, carve_q(), r, 
 # hill even when its height matched to the centimetre. Given the slope's own
 # normal it lights the way the hillside does and the steps go back to being
 # steps.
-fn put_lit(w, x, y, z, dir, tall, nx, ny, nz, r, g, b) =
+fn put_lit(w, x, y, z, dir, tall, tall2, nx, ny, nz, r, g, b) =
   ok = put_tall(w, x, y, z, dir, tall, r, g, b)
   if ok == 0 then 0
   else
@@ -4400,6 +4456,8 @@ fn put_lit(w, x, y, z, dir, tall, nx, ny, nz, r, g, b) =
     poke_f32(fb, at + 8, nx)
     poke_f32(fb, at + 9, ny)
     poke_f32(fb, at + 10, nz)
+    poke_f32(fb, at + 11, 0.0)
+    poke_f32(fb, at + 12, tall2)
     1
 
 # A face is a stone wide and, usually, a stone tall. Usually: the top of a
@@ -4424,10 +4482,19 @@ fn put_tall(w, x, y, z, dir, tall, r, g, b) =
     poke_f32(fb, at + 6, b)
     poke_f32(fb, at + 7, tall)
     # Nought for a normal means "the one your own direction implies", which
-    # is what every face of the inside of a tunnel wants.
+    # is what every face of the inside of a tunnel wants. And one for the
+    # eleventh: this is rock somebody opened, and it takes the stone texture
+    # whatever the band under it would have been. `put_lit` writes nought
+    # there, because what it draws is hillside that was always hillside.
     poke_f32(fb, at + 8, 0.0)
     poke_f32(fb, at + 9, 0.0)
     poke_f32(fb, at + 10, 0.0)
+    poke_f32(fb, at + 11, 1.0)
+    # How tall the face is at its far end. The same by default, because a slab
+    # in the middle of a column is a stone tall from one side of it to the
+    # other; it is the *cap* faces that are not, and `put_lit` writes over
+    # this. See `slab` in `col_faces` for what a flat top cost.
+    poke_f32(fb, at + 12, tall)
     poke_f32(cb, 14, to_float(n + 1))
     1
 
@@ -4438,10 +4505,17 @@ fn put_tall(w, x, y, z, dir, tall, r, g, b) =
 # the cut is made in, and at any hour but noon a mine mouth came out as a
 # pale scar stuck on a dark slope. Broken stone is not brighter than the hill
 # it came out of; it is the same stone with the weather off it.
+#
+# And barely warmer, where it used to be a great deal warmer: 0.90 and 0.78 on
+# the green and the blue is a brown, and the stone photograph the shader folds
+# in is itself a brown, so the two agreed with each other all the way down a
+# shaft until the inside of the hill read as clay. The hillside's own stone
+# band is (0.38, 0.38, 0.46) — if anything cool — and what a pick opens should
+# sit beside it, a shade of warmth away, at the same brightness.
 fn face_grey(y, h, up) =
   d = clampf((h - y) / dig_floor(), 0.0, 1.0)
-  k = 0.50 - d * 0.14
-  (k, k * 0.90, k * 0.78)
+  k = 0.40 - d * 0.11
+  (k * 1.04, k, k * 0.99)
 
 # The speckle the terrain gives itself, per stone rather than per triangle.
 # Without it a dug patch is a smooth plate laid on a mottled hillside, which
@@ -4475,8 +4549,29 @@ fn col_faces(w, cb, ix, iz) =
     # column rather than passed to it. A local function sees the names around
     # it and still compiles to a jump — thirteen parameters of unchanging
     # context went away without anything being allocated to replace them.
-    fn put_side(px, py, pz, dir, tall, cap, r, g, b) =
-      if cap then put_lit(w, px, py, pz, dir, tall, nx, ny, nz, r, g, b)
+    # The four corners of this column's top, which is what its ground quad is
+    # a ramp between — and what its side faces have to reach.
+    ca = mesh_h(w, x, z)
+    cbb = mesh_h(w, x + q, z)
+    cc = mesh_h(w, x, z + q)
+    cd = mesh_h(w, x + q, z + q)
+
+    # A cap face is given the two heights its run ends at rather than one for
+    # the whole of it; anything under a cap is a stone tall from end to end and
+    # takes the plain one.
+    # Never below nought. A cap face now reaches a *corner* height at each end
+    # rather than one height for the whole run, and on a slope one of those two
+    # corners can sit under the bottom of the slab the face stands on — the
+    # centre is inside the slab, which is what made it the cap, and a corner
+    # need not be. A negative height turns the quad inside out and the
+    # rasteriser drops the half of it that inverted: a triangle of daylight,
+    # which is the shape this bug is recognisable by. Where an end is clamped,
+    # the full-stone face under it already covers that corner and a little
+    # above it, which is over-draw and costs nothing.
+    fn rise(t, py) = if t > py then t - py else 0.0
+
+    fn put_side(px, py, pz, dir, tall, ta, tb, cap, r, g, b) =
+      if cap then put_lit(w, px, py, pz, dir, rise(ta, py), rise(tb, py), nx, ny, nz, r, g, b)
       else put_tall(w, px, py, pz, dir, tall, r, g, b)
 
     fn top(py, cap) =
@@ -4501,10 +4596,19 @@ fn col_faces(w, cb, ix, iz) =
       # A riser is only wanted where the neighbour is a hole, not merely
       # lower: two pieces of untouched hillside share their corner heights
       # and meet without one.
-      if nb_open(cb, ix - 1, iz, k, cap) then put_side(x, y, z, 0, tall, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix + 1, iz, k, cap) then put_side(x + q, y, z, 1, tall, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix, iz - 1, k, cap) then put_side(x, y, z, 4, tall, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix, iz + 1, k, cap) then put_side(x, y, z + q, 5, tall, cap, fr, fg, fb) else 0
+      # A cap face reaches the ground at *both* ends of its run, and the two
+      # ends are two corners of the column: which two is decided by which way
+      # the face points. A single height here was a flat line meeting a ramp,
+      # and every slope opened a triangle between them that you could see the
+      # lake through — measured at five centimetres on a gentle slope and a
+      # good twenty on the steep ground the digging actually happens on.
+      # Which two corners a face runs between is decided by which way it
+      # points: a face on the low-x side runs along z from the (x, z) corner to
+      # the (x, z+q) one, and so on round the column.
+      if nb_open(cb, ix - 1, iz, k, cap) then put_side(x, y, z, 0, tall, ca, cc, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix + 1, iz, k, cap) then put_side(x + q, y, z, 1, tall, cbb, cd, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix, iz - 1, k, cap) then put_side(x, y, z, 4, tall, ca, cbb, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix, iz + 1, k, cap) then put_side(x, y, z + q, 5, tall, cc, cd, cap, fr, fg, fb) else 0
       if solid_cell(cb, i, k - 1, h) == 0 then put_face(w, x, y, z, 3, gr, gg, gb) else 0
       if solid_cell(cb, i, k + 1, h) == 0 || cap then top(yt, cap) else 0
       1
@@ -4538,7 +4642,7 @@ fn ground_quad(w, x, z, nx, ny, nz) =
   c = mesh_h(w, x, z + q)
   d = mesh_h(w, x + q, z + q)
   j = face_jitter(x, z)
-  ok = put_lit(w, x, a, z, 6, q, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
+  ok = put_lit(w, x, a, z, 6, q, q, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
   if ok == 0 then 0
   else
     cb = cv(w)
@@ -4551,13 +4655,30 @@ fn ground_quad(w, x, z, nx, ny, nz) =
     1
 
 # Air because somebody took it out, rather than air because the hill is lower
-# over there. Only the first wants a face standing between them.
+# over there. Only the first wants a face standing between them: two pieces of
+# untouched hillside share their corner heights and meet without a riser, and
+# putting one in anyway is a fin standing along every contour of the hill.
+#
+# The test for that used to be, at a cap slab, whether the neighbour's slab
+# *k* had been dug — and that is the wrong question by exactly one slab. On a
+# slope the uphill column's cap slab sits above the downhill column's original
+# ground: there was never any rock there to take out, so `vox_gone` says no and
+# no riser is built. But the downhill column is a hole, and the riser under the
+# cap stops at a slab boundary, so what is left between that boundary and the
+# uphill ground is open — six centimetres on gentle ground, a whole stone on
+# steep. It is the last of the slots you could see the lake through, and the
+# hardest to find, because the face it wanted was never counted as missing:
+# nothing had asked for it.
+#
+# What decides it is whether the neighbour is a hole at all. A column somebody
+# has dug is no longer hillside, and the shared-corner argument that makes a
+# riser unnecessary does not hold against it at any height.
 fn nb_open(cb, ix, iz, k, cap) =
   i = cell_at(ix, iz)
   if i < 0 then false
   else if nb_air(cb, ix, iz, k) == false then false
   else if cap == false then true
-  else vox_gone(cb, i, k) > 0
+  else vox_gone(cb, i, k) > 0 || col_dug(cb, i) > 0
 
 fn nb_air(cb, ix, iz, k) =
   i = cell_at(ix, iz)

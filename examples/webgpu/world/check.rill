@@ -132,7 +132,15 @@ fn shoot_straight_again(w, a, b) =
   v.want_fire(a, dx / l, dy / l, dz / l)
   println("  one honest shot and they are welcome again: " + int_to_str(v.shooting_wild(a)))
 
-fn shoot_at(w, a, b, up) =
+fn shoot_at(w, a, b, up) = shoot_at_over(w, a, b, up, 12)
+
+# The same shot, stepped a stated number of ticks rather than the twelve that
+# are enough for any lane in this file to land. The one caller that wants
+# fewer is the camera: what a hit puts on the head is a spring that is spent
+# inside half a second, and twelve ticks reads the very tail of it — it passed
+# by five thousandths of a radian, and the day the spawn moved a few metres it
+# stopped passing while the throw itself was exactly as it had always been.
+fn shoot_at_over(w, a, b, up, n) =
   # The bolt rifle, whatever the spawn handed out: these lanes were measured
   # with a 120 m/s round, and the AK's forty would land in a different tick.
   v.set_weapon(a, 0)
@@ -149,7 +157,7 @@ fn shoot_at(w, a, b, up) =
   # bolt, the water and the shooter's own aim are checked.
   v.want_fire(a, dx / l, dy / l, dz / l)
   v.try_fire(a, v.world_time(w), 0.55)
-  tick(w, 12)
+  tick(w, n)
   println("  they are on " + float_to_str(v.health(b)) + ", the shooter still on " + float_to_str(v.health(a)))
 
 # One round, fired at a point, and stepped the way a client steps — far enough
@@ -248,7 +256,7 @@ fn main() =
   # Being shot throws the head about. The throw goes on the camera and not on
   # the yaw and pitch, so the way to see it is the matrix rather than the look.
   before = tilt(b)
-  shoot_at(w, a, b, 1.05)
+  shoot_at_over(w, a, b, 1.05, 6)
   hit = tilt(b)
   tick(w, 14)
   println("the camera was " + before + ", then " + hit + ", and " + tilt(b) + " again")
