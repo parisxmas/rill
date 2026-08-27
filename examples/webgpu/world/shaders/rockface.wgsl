@@ -133,7 +133,9 @@
     // of every hole, measured at five centimetres on gentle ground and more
     // than that on the steep ground the digging happens on.
     let hgt = mix(col.w, hs.x, uvw.x);
-    let p = lo.xyz + t1 * (uvw.x * RF_Q) + t2 * (uvw.y * hgt);
+    // A stone wide, unless the face was cut to the cell that asked for it:
+    // `hs.y` is how far it actually runs. See `put_side` in valley.rill.
+    let p = lo.xyz + t1 * (uvw.x * hs.y) + t2 * (uvw.y * hgt);
     // The inside of a tunnel lights by the face it is; the top of an
     // untouched column lights by the hillside it belongs to, or a dug patch
     // reads as a bright lump stuck on a dark slope.

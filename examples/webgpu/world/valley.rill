@@ -4452,7 +4452,7 @@ fn mr_row(cb, ix, x1, iz) =
 # the shader can build the corners from the number alone: 0 and 1 are the two
 # faces across x, 2 and 3 up and down, 4 and 5 across z. The position written
 # is the low corner of the face.
-fn put_face(w, x, y, z, dir, r, g, b) = put_tall(w, x, y, z, dir, carve_q(), r, g, b)
+fn put_face(w, x, y, z, dir, r, g, b) = put_tall(w, x, y, z, dir, carve_q(), carve_q(), r, g, b)
 
 # A face with a light of its own. The top of a column sits flat, and a flat
 # top on a hillside catches the sun straight on while the slope around it is
@@ -4460,8 +4460,8 @@ fn put_face(w, x, y, z, dir, r, g, b) = put_tall(w, x, y, z, dir, carve_q(), r, 
 # hill even when its height matched to the centimetre. Given the slope's own
 # normal it lights the way the hillside does and the steps go back to being
 # steps.
-fn put_lit(w, x, y, z, dir, tall, tall2, nx, ny, nz, r, g, b) =
-  ok = put_tall(w, x, y, z, dir, tall, r, g, b)
+fn put_lit(w, x, y, z, dir, tall, tall2, wide, nx, ny, nz, r, g, b) =
+  ok = put_tall(w, x, y, z, dir, tall, wide, r, g, b)
   if ok == 0 then 0
   else
     cb = cv(w)
@@ -4480,10 +4480,10 @@ fn put_lit(w, x, y, z, dir, tall, tall2, nx, ny, nz, r, g, b) =
 # faces at the top of a column are given whatever height closes that gap. A
 # face of fixed height leaves a slot of daylight all round the edge of a
 # tunnel mouth, which is a crack you can see the void through.
-fn put_tall(w, x, y, z, dir, tall, r, g, b) =
+fn put_tall(w, x, y, z, dir, tall, wide, r, g, b) =
   cb = cv(w)
   n = to_int(peek_f32(cb, 14))
-  if n >= face_cap() || tall < 0.001 then 0
+  if n >= face_cap() || tall < 0.001 || wide < 0.0005 then 0
   else
     at = n * face_stride()
     fb = face_buf(w)
@@ -4509,6 +4509,10 @@ fn put_tall(w, x, y, z, dir, tall, r, g, b) =
     # other; it is the *cap* faces that are not, and `put_lit` writes over
     # this. See `slab` in `col_faces` for what a flat top cost.
     poke_f32(fb, at + 12, tall)
+    # How wide the face runs. A stone, unless it has been cut to the cell that
+    # asked for it — see `put_side` in `col_faces`. A ground quad writes over
+    # this with a corner height and carries its own width in slot 7.
+    poke_f32(fb, at + 13, wide)
     poke_f32(cb, 14, to_float(n + 1))
     1
 
@@ -4584,9 +4588,36 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
     # above it, which is over-draw and costs nothing.
     fn rise(t, py) = if t > py then t - py else 0.0
 
-    fn put_side(px, py, pz, dir, tall, ta, tb, cap, r, g, b) =
-      if cap then put_lit(w, px, py, pz, dir, rise(ta, py), rise(tb, py), nx, ny, nz, r, g, b)
-      else put_tall(w, px, py, pz, dir, tall, r, g, b)
+    # A riser, cut to the cell that asked for it — exactly as a ground quad is,
+    # and for one reason more than the quad had.
+    #
+    # The ends of a cap riser's top are the hillside at the two ends of its run.
+    # `mesh_h` is bilinear inside a lattice cell and *kinks* at the edge between
+    # two of them, so a run that crosses such an edge has a straight chord for a
+    # top while the ground quad above it — which is cut, and therefore does not
+    # cross — follows the kink. Where the surface is convex the chord passes
+    # under it. Measured on a rim: the quad at 15.4675 and the chord at 15.4626,
+    # a slot of five millimetres, which is nothing on the ground and a wedge
+    # several pixels wide when you look along it.
+    #
+    # Cut, the two halves are emitted by the two cells that share the column —
+    # `cell_faces` visits it from both — and each stays inside one cell, where
+    # the surface is one smooth piece.
+    fn put_side(px, py, pz, dir, tall, cap, r, g, b) =
+      alongz = dir < 2
+      s0 = if alongz then pz else px
+      c0 = if alongz then gz0 else gx0
+      lo2 = max(s0, c0)
+      hi2 = min(s0 + q, c0 + gst)
+      wide = hi2 - lo2
+      qx = if alongz then px else lo2
+      qz = if alongz then lo2 else pz
+      ex = if alongz then px else hi2
+      ez = if alongz then hi2 else pz
+      ta = mesh_h(w, qx, qz)
+      tb = mesh_h(w, ex, ez)
+      if cap then put_lit(w, qx, py, qz, dir, rise(ta, py), rise(tb, py), wide, nx, ny, nz, r, g, b)
+      else put_tall(w, qx, py, qz, dir, tall, wide, r, g, b)
 
     fn top(py, cap) =
       if cap then ground_quad(w, x, z, nx, ny, nz, gx0, gz0, gst)
@@ -4619,10 +4650,10 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
       # Which two corners a face runs between is decided by which way it
       # points: a face on the low-x side runs along z from the (x, z) corner to
       # the (x, z+q) one, and so on round the column.
-      if nb_open(cb, ix - 1, iz, k, cap) then put_side(x, y, z, 0, tall, ca, cc, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix + 1, iz, k, cap) then put_side(x + q, y, z, 1, tall, cbb, cd, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix, iz - 1, k, cap) then put_side(x, y, z, 4, tall, ca, cbb, cap, fr, fg, fb) else 0
-      if nb_open(cb, ix, iz + 1, k, cap) then put_side(x, y, z + q, 5, tall, cc, cd, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix - 1, iz, k, cap) then put_side(x, y, z, 0, tall, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix + 1, iz, k, cap) then put_side(x + q, y, z, 1, tall, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix, iz - 1, k, cap) then put_side(x, y, z, 4, tall, cap, fr, fg, fb) else 0
+      if nb_open(cb, ix, iz + 1, k, cap) then put_side(x, y, z + q, 5, tall, cap, fr, fg, fb) else 0
       if solid_cell(cb, i, k - 1, h) == 0 then put_face(w, x, y, z, 3, gr, gg, gb) else 0
       if solid_cell(cb, i, k + 1, h) == 0 || cap then top(yt, cap) else 0
       1
@@ -4689,7 +4720,7 @@ fn ground_quad(w, x, z, nx, ny, nz, gx0, gz0, gst) =
     # The speckle keeps the column's own seed, not the clipped piece's, so a
     # column split between two cells does not come out as two colours.
     j = face_jitter(x, z)
-    ok = put_lit(w, lx, a, lz, 6, wx, wx, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
+    ok = put_lit(w, lx, a, lz, 6, wx, wx, wx, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
     if ok == 0 then 0
     else
       cb = cv(w)
