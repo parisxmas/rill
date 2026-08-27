@@ -4693,7 +4693,25 @@ fn mesh_h(w, x, z) =
   b = ch(w, ix + 1, iz, st)
   c = ch(w, ix, iz + 1, st)
   d = ch(w, ix + 1, iz + 1, st)
-  a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz
+  # The *triangulation*, not the bilinear over the four corners.
+  #
+  # This used to be `a + (b-a)ux + (c-a)uz + (a-b-c+d)ux·uz`, which is the
+  # smooth patch those four corners define. The terrain does not draw that
+  # patch. It draws two triangles — see `rb_cell`, which cuts the cell from
+  # (0,0) to (1,1) — and a triangle is flat. The two surfaces agree at the
+  # corners and along the cell's edges and nowhere else in between, by up to a
+  # quarter of the cell's twist.
+  #
+  # Everything the voxels build reads this: the top of a riser, the corners of
+  # a piece of hillside. So a wall's top followed the smooth patch while the
+  # ground beside it was drawn as flats, the two crossed somewhere over the
+  # cell, and what was left open was bounded by the cut — which is why every
+  # one of these has been a *triangle* and why they sat where they sat.
+  #
+  # The diagonal runs from the low corner to the high one. Above it the
+  # triangle is (a, c, d); below it, (a, d, b).
+  if uz > ux then a + (uz - ux) * (c - a) + ux * (d - a)
+  else a + uz * (d - a) + (ux - uz) * (b - a)
 
 # A piece of hillside, cut to the terrain cell that asked for it.
 #

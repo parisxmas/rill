@@ -219,6 +219,55 @@ fn open_between(w, x, z, y0, y1) =
   for i in 0..steps with n = 0
     n + v.yes(solid(w, x, y0 + to_float(i) * v.carve_q(), z) == 0)
 
+# What the terrain actually draws at a point, read out of the mesh it hands the
+# GPU: the cell, then whichever of its two triangles covers the point, then that
+# triangle's own plane. Not the smooth patch the four corners define — a
+# triangle is flat, and the two differ everywhere except at the corners and
+# along the cell's edges.
+#
+# Everything the voxels build reads `mesh_h`: the top of a riser, the corners of
+# a piece of hillside. If it answers with the patch while the terrain draws the
+# flats, the two surfaces cross somewhere over the cell and what is left open is
+# bounded by the cut between the triangles — a triangle of daylight, which is
+# what these were. Measured before it was fixed: two and a half centimetres.
+fn drawn_at(w, s, x, z) =
+  m = v.terrain(s)
+  n = v.mesh_n(w)
+  st = v.cell_step(n)
+  ix = to_int(floor((x + 85.0) / st))
+  iz = to_int(floor((z + 85.0) / st))
+  ux = (x - v.lattice(ix, st)) / st
+  uz = (z - v.lattice(iz, st)) / st
+  at = (iz * n + ix) * 54 + (if uz > ux then 0 else 27)
+  plane_at(m, at, x, z)
+
+# The height of one triangle's plane at a point, by its own three corners.
+fn plane_at(m, at, x, z) =
+  ax = peek_f32(m, at)
+  ay = peek_f32(m, at + 1)
+  az = peek_f32(m, at + 2)
+  bx = peek_f32(m, at + 9)
+  by = peek_f32(m, at + 10)
+  bz = peek_f32(m, at + 11)
+  cx2 = peek_f32(m, at + 18)
+  cy = peek_f32(m, at + 19)
+  cz2 = peek_f32(m, at + 20)
+  det = (bz - cz2) * (ax - cx2) + (cx2 - bx) * (az - cz2)
+  if absf(det) < 0.000001 then ay
+  else
+    l1 = ((bz - cz2) * (x - cx2) + (cx2 - bx) * (z - cz2)) / det
+    l2 = ((cz2 - az) * (x - cx2) + (ax - cx2) * (z - cz2)) / det
+    l1 * ay + l2 * by + (1.0 - l1 - l2) * cy
+
+# The worst that `mesh_h` and the drawn triangle disagree, over a scatter of
+# points inside cells the terrain still draws.
+fn worst_drift(w, s) =
+  for i in 0..400 with worst = 0
+    x = 0.0 - 70.0 + to_float(i * 37 % 140) + 0.137
+    z = 0.0 - 70.0 + to_float(i * 53 % 140) + 0.211
+    dd = absf(v.mesh_h(w, x, z) - drawn_at(w, s, x, z))
+    if cm(dd) > worst then cm(dd) else worst
+
 fn main() =
   w = v.init(48, 60, 40, 60)
   s = v.join(w)
@@ -440,6 +489,8 @@ fn main() =
   qd = cm(v.height(qmx, qmz) - v.floor_at(w4, qmx, qmz))
   say("the field says part of one stone", if qd > 0 && qd <= 30 then 1 else 0, 1)
   say("and the rebake had work to do", v.rebake(s4), 1)
+  # And what the voxels read is what the terrain draws, to the centimetre.
+  say("the height the voxels read is the one the terrain draws, cm", worst_drift(w4, s4), 0)
 
   # And the picture has no holes in it. A pit alone will not do for this: a
   # terrain cell only steps aside where something is roofed, so the test has
