@@ -4588,36 +4588,51 @@ fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
     # above it, which is over-draw and costs nothing.
     fn rise(t, py) = if t > py then t - py else 0.0
 
-    # A riser, cut to the cell that asked for it — exactly as a ground quad is,
-    # and for one reason more than the quad had.
+    # A riser, split where it crosses a lattice cell's edge — not clipped to
+    # the cell, which is what a ground quad gets and what this had first.
     #
-    # The ends of a cap riser's top are the hillside at the two ends of its run.
-    # `mesh_h` is bilinear inside a lattice cell and *kinks* at the edge between
-    # two of them, so a run that crosses such an edge has a straight chord for a
-    # top while the ground quad above it — which is cut, and therefore does not
-    # cross — follows the kink. Where the surface is convex the chord passes
-    # under it. Measured on a rim: the quad at 15.4675 and the chord at 15.4626,
-    # a slot of five millimetres, which is nothing on the ground and a wedge
-    # several pixels wide when you look along it.
+    # Two things want the split. `mesh_h` is bilinear *inside* a cell and kinks
+    # at the edge between two of them, so the top of a run that crosses an edge
+    # is a straight chord under a surface that bends, and the ground quad above
+    # it — which is cut at the edge, and so does not bend across it — sits above
+    # the chord. Measured on a rim: the quad at 15.4675 against a chord at
+    # 15.4626, five millimetres of daylight, a wedge several pixels wide seen
+    # along the slope.
     #
-    # Cut, the two halves are emitted by the two cells that share the column —
-    # `cell_faces` visits it from both — and each stays inside one cell, where
-    # the surface is one smooth piece.
-    fn put_side(px, py, pz, dir, tall, cap, r, g, b) =
+    # But *clipping* a riser is wrong where a quad may be clipped freely. The
+    # half of a quad beyond the line is drawn by whoever owns that ground —
+    # another blanked cell, or the terrain itself. There is nothing vertical in
+    # the terrain: the half of a riser beyond the line is drawn by nobody, and
+    # if the cell over there has nothing dug in it, it never visits this column
+    # to draw it. Measured: a run covering 0.0875 of its three tenths, and a
+    # slit of lake along the bottom of a wall.
+    #
+    # So both halves are emitted here, by whichever cell is asking. A column is
+    # three tenths and a cell is a metre, so at most one edge falls inside a
+    # run and there are never more than two pieces. The pieces are written twice
+    # when two blanked cells share the column, and twice is harmless: the same
+    # quad at the same depth.
+    fn side_piece(px, py, pz, dir, tall, cap, a0, a1, r, g, b) =
       alongz = dir < 2
-      s0 = if alongz then pz else px
-      c0 = if alongz then gz0 else gx0
-      lo2 = max(s0, c0)
-      hi2 = min(s0 + q, c0 + gst)
-      wide = hi2 - lo2
-      qx = if alongz then px else lo2
-      qz = if alongz then lo2 else pz
-      ex = if alongz then px else hi2
-      ez = if alongz then hi2 else pz
-      ta = mesh_h(w, qx, qz)
-      tb = mesh_h(w, ex, ez)
-      if cap then put_lit(w, qx, py, qz, dir, rise(ta, py), rise(tb, py), wide, nx, ny, nz, r, g, b)
-      else put_tall(w, qx, py, qz, dir, tall, wide, r, g, b)
+      wide = a1 - a0
+      if wide < 0.0005 then 0
+      else
+        qx = if alongz then px else a0
+        qz = if alongz then a0 else pz
+        ex = if alongz then px else a1
+        ez = if alongz then a1 else pz
+        ta = mesh_h(w, qx, qz)
+        tb = mesh_h(w, ex, ez)
+        if cap then put_lit(w, qx, py, qz, dir, rise(ta, py), rise(tb, py), wide, nx, ny, nz, r, g, b)
+        else put_tall(w, qx, py, qz, dir, tall, wide, r, g, b)
+
+    fn put_side(px, py, pz, dir, tall, cap, r, g, b) =
+      s0 = if dir < 2 then pz else px
+      s1 = s0 + q
+      e0 = if dir < 2 then gz0 else gx0
+      e1 = e0 + gst
+      cut = if e0 > s0 && e0 < s1 then e0 else if e1 > s0 && e1 < s1 then e1 else s0
+      if cut > s0 then side_piece(px, py, pz, dir, tall, cap, s0, cut, r, g, b) + side_piece(px, py, pz, dir, tall, cap, cut, s1, r, g, b) else side_piece(px, py, pz, dir, tall, cap, s0, s1, r, g, b)
 
     fn top(py, cap) =
       if cap then ground_quad(w, x, z, nx, ny, nz, gx0, gz0, gst)
