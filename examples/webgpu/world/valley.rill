@@ -3856,9 +3856,23 @@ fn top_solid(w, x, z) =
   else if col_any(cb, i) == 0 then h
   else ts_down(cb, i, h, slab_of(h - 0.001))
 
+# Never above the ground. A slab's ceiling is where the rock in it stops, and
+# for every slab but one that is below the hillside; the exception is the slab
+# the ground itself falls inside, whose ceiling is up in the air. Returning it
+# put the top of the rock a quarter of a metre over the top of the hill —
+# measured, 23.00 against a hillside at 22.75 — and everything that reads
+# `floor_at` believed it: the terrain lattice rose into a bump there, a body
+# stood on nothing, and the drawn faces, which take a column's height from its
+# own centre, did not follow any of it. That last disagreement is what you
+# could see through.
+#
+# It was hidden for as long as a bite was four stones across, because a hole
+# that wide always took the slab the ground was in and the walk went past it.
+# A one-stone bite on a slope leaves a sliver at the up-hill edge of every dug
+# column where it does not.
 fn ts_down(cb, i, h, k) =
   if k < 0 then h - dig_floor()
-  else if solid_cell(cb, i, k, h) > 0 then slab_y(k + 1)
+  else if solid_cell(cb, i, k, h) > 0 then (if slab_y(k + 1) > h then h else slab_y(k + 1))
   else ts_down(cb, i, h, k - 1)
 
 # What is under your feet: the top of the first rock at or below `y`. This is
