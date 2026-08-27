@@ -100,15 +100,22 @@
       // RF_UV, where the same mistake had already been paid for once. This
       // seventh case was added afterwards and did not inherit the lesson.
       let uv6 = RF_UV[5u - (vi % 6u)];
-      let gx = lo.x + uv6.x * RF_Q;
-      let gz = lo.z + uv6.y * RF_Q;
+      // And not a whole stone wide, necessarily: a piece of hillside is cut to
+      // the terrain cell that handed it over, because a column at a cell's edge
+      // hangs over into the next one and the next one may still be drawing its
+      // own ground. `col.w` carries the width and `nrm.w` the depth — a flat
+      // quad has no height to put in the one, and its stone is nought by
+      // definition, which is why the other is free and why this says so here
+      // rather than reading it.
+      let gx = lo.x + uv6.x * col.w;
+      let gz = lo.z + uv6.y * nrm.w;
       let gy = mix(mix(hs.x, hs.y, uv6.x), mix(hs.z, hs.w, uv6.x), uv6.y);
       var g: VOut;
       g.clip = u.vp * vec4f(gx, gy, gz, 1.0);
       g.world = vec3f(gx, gy, gz);
       g.normal = nrm.xyz;
       g.color = col.rgb;
-      g.stone = nrm.w;
+      g.stone = 0.0;
       return g;
     }
     let flip = rfFlip(dir);

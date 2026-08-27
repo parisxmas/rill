@@ -4538,7 +4538,7 @@ fn face_jitter(x, z) = 0.94 + 0.12 * hash2(floor(x * 3.1), floor(z * 3.1))
 
 # One column's faces. Walks its slabs from the bedrock to the sky and asks, of
 # every solid one, which of its six neighbours is air.
-fn col_faces(w, cb, ix, iz) =
+fn col_faces(w, cb, ix, iz, gx0, gz0, gst) =
   i = cell_at(ix, iz)
   if i < 0 then 0
   else
@@ -4589,7 +4589,7 @@ fn col_faces(w, cb, ix, iz) =
       else put_tall(w, px, py, pz, dir, tall, r, g, b)
 
     fn top(py, cap) =
-      if cap then ground_quad(w, x, z, nx, ny, nz)
+      if cap then ground_quad(w, x, z, nx, ny, nz, gx0, gz0, gst)
       else
         (r, g, b) = face_grey(py, h, 1)
         put_face(w, x, py, z, 2, r, g, b)
@@ -4649,24 +4649,58 @@ fn mesh_h(w, x, z) =
   d = ch(w, ix + 1, iz + 1, st)
   a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz
 
-fn ground_quad(w, x, z, nx, ny, nz) =
+# A piece of hillside, cut to the terrain cell that asked for it.
+#
+# The cut is the whole of this. A mesh cell is 170/grid metres and a column is
+# three tenths, and the one does not divide by the other, so a column at the
+# edge of a cell hangs over into the next one. `cell_faces` draws every column
+# its cell *touches*, because drawing only the ones that start inside leaves a
+# strip of hillside along every edge that nobody draws — that hole has been
+# paid for once already. But the overhang is not free either: if the cell next
+# door has nothing dug in it, the terrain is still drawing that ground, and
+# then two surfaces are on the same millimetre. Measured: seventeen of
+# sixty-five ground quads. They are computed differently — this one samples
+# the lattice at three-tenths steps, the terrain interpolates its own triangle
+# — so along the terrain's diagonal one wins by a hair and along the rim the
+# other does, and where they part company you see the lake through the seam.
+#
+# So the quad is clipped to the cell instead. Two blanked cells sharing a
+# column each draw their own half of it and together cover it exactly; a
+# blanked cell beside a drawn one stops at the line the terrain starts on.
+# Neither a gap nor an overlap, because both sides now end at the same edge.
+#
+# The clipped width and depth travel in the face record: the height slot,
+# which a flat quad has no use for, and the stone slot, which for a piece of
+# hillside is nought by definition and the shader can say so itself.
+fn ground_quad(w, x, z, nx, ny, nz, gx0, gz0, gst) =
   q = carve_q()
-  a = mesh_h(w, x, z)
-  b = mesh_h(w, x + q, z)
-  c = mesh_h(w, x, z + q)
-  d = mesh_h(w, x + q, z + q)
-  j = face_jitter(x, z)
-  ok = put_lit(w, x, a, z, 6, q, q, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
-  if ok == 0 then 0
+  lx = max(x, gx0)
+  lz = max(z, gz0)
+  hx = min(x + q, gx0 + gst)
+  hz = min(z + q, gz0 + gst)
+  wx = hx - lx
+  wz = hz - lz
+  if wx < 0.0005 || wz < 0.0005 then 0
   else
-    cb = cv(w)
-    at = (to_int(peek_f32(cb, 14)) - 1) * face_stride()
-    fb = face_buf(w)
-    poke_f32(fb, at + 12, a)
-    poke_f32(fb, at + 13, b)
-    poke_f32(fb, at + 14, c)
-    poke_f32(fb, at + 15, d)
-    1
+    a = mesh_h(w, lx, lz)
+    b = mesh_h(w, hx, lz)
+    c = mesh_h(w, lx, hz)
+    d = mesh_h(w, hx, hz)
+    # The speckle keeps the column's own seed, not the clipped piece's, so a
+    # column split between two cells does not come out as two colours.
+    j = face_jitter(x, z)
+    ok = put_lit(w, lx, a, lz, 6, wx, wx, nx, ny, nz, band_r(a, ny) * j, band_g(a, ny) * j, band_b(a, ny) * j)
+    if ok == 0 then 0
+    else
+      cb = cv(w)
+      at = (to_int(peek_f32(cb, 14)) - 1) * face_stride()
+      fb = face_buf(w)
+      poke_f32(fb, at + 11, wz)
+      poke_f32(fb, at + 12, a)
+      poke_f32(fb, at + 13, b)
+      poke_f32(fb, at + 14, c)
+      poke_f32(fb, at + 15, d)
+      1
 
 # Air because somebody took it out, rather than air because the hill is lower
 # over there. Only the first wants a face standing between them: two pieces of
@@ -4746,7 +4780,7 @@ fn cell_faces(w, cb, st, mx, mz) =
 
   for iz in cell_ix(z0) - 1..cell_ix(z0 + st) + 2
     for ix in cell_ix(x0) - 1..cell_ix(x0 + st) + 2
-      if overlaps(ix, x0, st) && overlaps(iz, z0, st) then col_faces(w, cb, ix, iz) else 0
+      if overlaps(ix, x0, st) && overlaps(iz, z0, st) then col_faces(w, cb, ix, iz, x0, z0, st) else 0
 
   1
 

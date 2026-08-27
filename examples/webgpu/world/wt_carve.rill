@@ -122,27 +122,32 @@ fn solid(w, x, y, z) = v.solid_at(w, x, y, z)
 # in the hillside you can see the lake through — and there was one along every
 # edge, because a terrain cell is 170/grid metres and a column is thirty
 # centimetres and the one does not divide by the other.
-fn has_face(w, ix, iz) =
-  x = v.col_lo(ix)
-  z = v.col_lo(iz)
-
+# Is any upward-facing quad standing over this point? Asked of the point and
+# not of the column, because a piece of hillside is cut to the cell that handed
+# it over and no longer starts where its column does — see `ground_quad`. A
+# ground quad carries its own width and depth; everything else is a stone
+# square.
+fn covers(w, px, pz) =
   for k in 0..v.rock_faces(w) with found = 0
     d = v.face_at(w, k, 3)
     up = d > 1.5 && d < 2.5 || d > 5.5
-    if found > 0 then 1
-    else if up && absf(v.face_at(w, k, 0) - x) < 0.01 && absf(v.face_at(w, k, 2) - z) < 0.01 then 1
-    else 0
+    fx = v.face_at(w, k, 0)
+    fz = v.face_at(w, k, 2)
+    wx = if d > 5.5 then v.face_at(w, k, 7) else v.carve_q()
+    wz = if d > 5.5 then v.face_at(w, k, 11) else v.carve_q()
+    inside = px > fx - 0.002 && px < fx + wx + 0.002 && pz > fz - 0.002 && pz < fz + wz + 0.002
+    if found > 0 then 1 else if up && inside then 1 else 0
 
-# What the cell needs covered, said here rather than borrowed from the engine:
-# a test that asks the code under test what the answer is cannot fail with it.
-fn touches(ix, lo, len) =
-  a = to_float(ix) * v.carve_q() - v.carve_org()
-  a < lo + len && a + v.carve_q() > lo
-
+# The cell's own rectangle, sampled. What has to be true is that the cell the
+# terrain stepped aside for is covered edge to edge — not that any particular
+# column was drawn by any particular cell, which is what this used to ask and
+# is no longer the same question.
 fn cell_gaps(w, x0, z0, st) =
-  for iz in v.cell_ix(z0) - 1..v.cell_ix(z0 + st) + 2 with g = 0
-    for ix in v.cell_ix(x0) - 1..v.cell_ix(x0 + st) + 2 with h = g
-      if touches(ix, x0, st) && touches(iz, z0, st) then h + 1 - has_face(w, ix, iz) else h
+  for j in 0..6 with g = 0
+    for i in 0..6 with h = g
+      px = x0 + st * (to_float(i) + 0.5) / 6.0
+      pz = z0 + st * (to_float(j) + 0.5) / 6.0
+      h + 1 - covers(w, px, pz)
 
 fn blanked_cells(w, s) =
   m = v.terrain(s)
