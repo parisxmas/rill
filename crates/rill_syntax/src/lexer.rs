@@ -163,6 +163,42 @@ fn comment_here(s: &Scanner<'_>) -> bool {
     matches!(ahead.peek(), None | Some(' ') | Some('\n') | Some('\r'))
 }
 
+/// Whether the token about to be lexed can only continue an expression, never
+/// begin a statement. A line that starts with one of these is a continuation
+/// of the line before it, however it is indented, and gets no layout tokens
+/// at all — the indent stack never sees it, so the enclosing block is exactly
+/// as balanced as if the whole expression had been written on one line.
+///
+/// The set is what it is because of two prefixes that look like members and
+/// are not: `-` begins a unary negation and `!` a logical not, so a line may
+/// legitimately *start* with either — `-y` alone on the last line of a body
+/// is that body's result — and including them would silently glue such a
+/// statement onto the line above. Everything here is a token with no prefix
+/// reading: a binary operator, a pattern alternative, a pipeline, a field
+/// access, or the `then`/`else` of an `if` that ran long.
+fn continuation_ahead(s: &Scanner<'_>) -> bool {
+    let mut ahead = s.chars.clone();
+    match ahead.next() {
+        Some('+') | Some('*') | Some('/') | Some('%') | Some('.') | Some('|') => true,
+        Some('<') | Some('>') => true,
+        Some('&') => ahead.next() == Some('&'),
+        Some('=') => ahead.next() == Some('='),
+        Some('!') => ahead.next() == Some('='),
+        Some(c) if c == 't' || c == 'e' => {
+            let mut word = String::from(c);
+            for n in ahead {
+                if n.is_ascii_alphanumeric() || n == '_' {
+                    word.push(n);
+                } else {
+                    break;
+                }
+            }
+            word == "then" || word == "else"
+        }
+        _ => false,
+    }
+}
+
 struct Scanner<'a> {
     chars: std::iter::Peekable<std::str::Chars<'a>>,
     line: usize,
@@ -249,7 +285,17 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
 
         // Layout: first token of a new line (outside parens) decides
         // Newline/Indent/Dedent relative to the indent stack.
+        //
+        // Unless the line opens with a token that can only continue an
+        // expression — then it is the same line as far as layout goes, with
+        // one exception that cost the prelude its parse the first time: a
+        // continuation may swallow an Indent or a Newline, but never a
+        // Dedent. A dedent is a block genuinely closing — an `else` standing
+        // further left than its `then`-block's body still has to close that
+        // body — and an expression cannot be continued out of a block it
+        // helped to close, only met again at the level it lives on.
         if paren_depth == 0 && line != last_tok_line {
+            let continues = last_tok_line != 0 && continuation_ahead(&s);
             let top = *indents.last().unwrap();
             if last_tok_line == 0 {
                 if col != 0 {
@@ -260,8 +306,10 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                     ));
                 }
             } else if col > top {
-                indents.push(col);
-                toks.push(Token { tok: Tok::Indent, line, col });
+                if !continues {
+                    indents.push(col);
+                    toks.push(Token { tok: Tok::Indent, line, col });
+                }
             } else {
                 // Dedents come before the end-of-line marker so that a block
                 // closing here consumes only its Dedent, leaving the Newline
@@ -277,7 +325,9 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                         "indentation does not match any enclosing block".to_string(),
                     ));
                 }
-                toks.push(Token { tok: Tok::Newline, line, col });
+                if !continues {
+                    toks.push(Token { tok: Tok::Newline, line, col });
+                }
             }
         }
         last_tok_line = line;

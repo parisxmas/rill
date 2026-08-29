@@ -841,6 +841,79 @@ pub unsafe extern "C" fn rill_now_nanos() -> i64 {
     0
 }
 
+// ---- randomness -----------------------------------------------------------
+//
+// Eight bytes nobody can guess, which is a different thing from eight bytes
+// nobody can predict *cheaply*. `now_nanos` gives the second and not the
+// first: a token minted at a knowable moment is a token that can be searched
+// for, and the clock is knowable to anybody who watched when the request was
+// answered. Session tokens, salts and anything else standing between a person
+// and their account need the operating system's pool, which is seeded from
+// physical noise and is the only source on the machine that qualifies.
+//
+// One `i64` at a time rather than a buffer: it needs no allocation and no
+// ownership question, and a caller wanting a longer secret calls it again.
+// Sixty-four bits of real entropy per call composes into whatever is wanted.
+
+/// Eight bytes from the operating system's cryptographic pool.
+///
+/// Linux has `getrandom`, which draws on the same pool as `/dev/urandom` but
+/// cannot fail for want of a file descriptor. It blocks only before the pool
+/// is first seeded, which on a running server has long since happened.
+#[cfg(target_os = "linux")]
+#[no_mangle]
+pub unsafe extern "C" fn rill_random_i64() -> i64 {
+    extern "C" {
+        fn getrandom(buf: *mut u8, buflen: usize, flags: u32) -> isize;
+    }
+    let mut out: i64 = 0;
+    let p = &mut out as *mut i64 as *mut u8;
+    let mut got = 0usize;
+    // Short reads are legal. A caller that treated one as a full one would be
+    // handing out secrets with known bytes in them, so this insists.
+    while got < 8 {
+        let n = getrandom(p.add(got), 8 - got, 0);
+        if n <= 0 {
+            // There is no safe fallback for this. Returning the clock would
+            // look like it worked and quietly make every secret guessable.
+            panic!("getrandom failed: no entropy for a secret that needs it");
+        }
+        got += n as usize;
+    }
+    out
+}
+
+/// The BSDs and macOS have `arc4random_buf`, which cannot fail and needs no
+/// loop — it is documented to always deliver the whole buffer.
+#[cfg(all(unix, not(target_os = "linux")))]
+#[no_mangle]
+pub unsafe extern "C" fn rill_random_i64() -> i64 {
+    extern "C" {
+        fn arc4random_buf(buf: *mut u8, nbytes: usize);
+    }
+    let mut out: i64 = 0;
+    arc4random_buf(&mut out as *mut i64 as *mut u8, 8);
+    out
+}
+
+/// Windows keeps its pool behind `bcrypt`, and nothing that builds for Windows
+/// here opens a socket to need a token. Refusing is honest; a weak answer
+/// would not be.
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_random_i64() -> i64 {
+    panic!("random_i64 is not wired up on Windows");
+}
+
+/// Under wasm the host holds the entropy, and this build's wasm target is the
+/// browser, where secrets are made with `crypto.getRandomValues` on the other
+/// side of the boundary. Nothing in the valley's wasm asks for this.
+#[cfg(target_family = "wasm")]
+#[no_mangle]
+pub unsafe extern "C" fn rill_random_i64() -> i64 {
+    panic!("random_i64 is not available under wasm");
+}
+
 /// Windows has no poller here — it has no sockets here either — so there is
 /// nothing to park on and the wait is the worker's. A program that needs a
 /// tick and a connection at the same time is not a Windows program yet, and
@@ -3408,6 +3481,11 @@ pub unsafe extern "C" fn rill_select(
 const AF_INET: i32 = 2;
 const SOCK_STREAM: i32 = 1;
 const F_SETFL: i32 = 4;
+// These two do agree, and unusually the agreement is worth writing down: every
+// Unix took them from the same header and none of them renumbered. `SOL_SOCKET`
+// above is the cautionary tale for the ones that did.
+const IPPROTO_TCP: i32 = 6;
+const TCP_NODELAY: i32 = 1;
 
 #[cfg(not(target_os = "linux"))]
 const SOL_SOCKET: i32 = 0xffff;
@@ -4122,6 +4200,38 @@ mod net {
         }
         let a = addr.addr;
         ((a[0] as i64) << 24) | ((a[1] as i64) << 16) | ((a[2] as i64) << 8) | (a[3] as i64)
+    }
+
+    /// Turns Nagle's algorithm off on `fd`, so a small write goes out at once
+    /// instead of waiting for the last one to be acknowledged. Returns 1 if
+    /// the kernel took it and 0 if it did not.
+    ///
+    /// Nagle exists to stop a program that writes a byte at a time from
+    /// filling the network with headers, and it does that by holding a small
+    /// segment until the previous one is acknowledged. That is the right trade
+    /// for a file being copied and the wrong one for a server that sends a
+    /// small message on a clock: the moment the clock is faster than the round
+    /// trip, every message waits on the one before it, and the wait is the
+    /// difference between the two — which is a delay nobody can see in the
+    /// code and nothing in the program can measure.
+    ///
+    /// It is a call rather than a default because it is a real trade and the
+    /// caller is the one who knows: a program that writes in small pieces and
+    /// does not care when they land is better off leaving it on.
+    ///
+    /// # Safety
+    /// `fd` must be an open socket.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_sock_nodelay(fd: i64) -> i64 {
+        let one: i32 = 1;
+        let ok = setsockopt(
+            fd as i32,
+            IPPROTO_TCP,
+            TCP_NODELAY,
+            &one as *const i32 as *const u8,
+            4,
+        );
+        i64::from(ok >= 0)
     }
 
     /// Waits until `fd` has something to say or `ms` milliseconds have gone

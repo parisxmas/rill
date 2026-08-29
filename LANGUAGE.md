@@ -823,6 +823,8 @@ fn serve(server) =
 | `sock_read(fd) -> Str` | whatever has arrived; `""` means the peer closed |
 | `sock_wait(fd, ms) -> Bool` | wait for something to read, or give up after `ms` |
 | `sock_write(fd, s) -> Int` | writes all of it, parking as needed |
+| `sock_peer(fd) -> Int` | the address at the far end, packed into one number |
+| `sock_nodelay(fd) -> Int` | Nagle off; 1 if the kernel took it |
 | `sock_close(fd)` | |
 
 The prelude wraps the three that can fail: `listen_on`, `accept_on` and
@@ -844,6 +846,20 @@ fn greet(conn) =
 
 Underneath it the descriptor and a deadline are armed together and whichever
 arrives first wakes the strand; a peek at the socket then says which it was.
+
+`sock_nodelay` is for a server that sends small messages on a clock. Nagle's
+algorithm holds a small segment until the previous one has been acknowledged,
+which is the right trade for a file being copied and the wrong one the moment
+the clock is faster than the round trip: every message then waits on the one
+before it, and the wait is the difference between the two. It is a call rather
+than a default because it is a real trade — a program that writes in small
+pieces and does not care when they land is better off leaving it on.
+
+```
+fn serve(conn) =
+  sock_nodelay(conn)
+  greet(conn)
+```
 
 Everything above TCP is ordinary Rill: `lib/http.rill` is an HTTP/1.1
 server in about a hundred lines — request parsing, routing, responses, and

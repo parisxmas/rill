@@ -1345,6 +1345,55 @@ fn wasm_refuses_sleep_ms() {
     assert!(err.contains("`sleep_ms` needs the scheduler"), "{err}");
 }
 
+/// Nagle can be turned off, and the answer says whether the kernel took it.
+///
+/// The delay itself cannot be shown here — over loopback the acknowledgement
+/// comes back before the next write is even built, which is exactly why a
+/// server that looks fine on one machine can be a tenth of a second slow
+/// across the sea. What is pinned is that the option reaches the socket on
+/// both platforms and that a descriptor which is not a socket is refused
+/// rather than reported as success.
+#[test]
+fn a_socket_can_have_nagle_turned_off() {
+    let out = run_source(
+        "sock_nodelay",
+        "fn serve(conn) =\n  \
+           println(\"server took it: \" + int_to_str(sock_nodelay(conn)))\n  \
+           sock_write(conn, sock_read(conn))\n  \
+           sock_close(conn)\n\
+         \n\
+         fn accept_loop(server) =\n  \
+           conn = tcp_accept(server)\n  \
+           spawn serve(conn)\n  \
+           sock_close(server)\n\
+         \n\
+         fn talker(port) = match connect_to(\"127.0.0.1\", port)\n  \
+           Err(e) -> println(e)\n  \
+           Ok(fd) -> say(fd)\n\
+         \n\
+         fn say(fd) =\n  \
+           println(\"client took it: \" + int_to_str(sock_nodelay(fd)))\n  \
+           sock_write(fd, \"ping\")\n  \
+           println(\"echo [\" + sock_read(fd) + \"]\")\n  \
+           sock_close(fd)\n\
+         \n\
+         fn main() = match listen_on(8098)\n  \
+           Err(e) -> println(e)\n  \
+           Ok(server) -> run(server)\n\
+         \n\
+         fn run(server) =\n  \
+           spawn accept_loop(server)\n  \
+           sleep_ms(100)\n  \
+           println(\"not a socket: \" + int_to_str(sock_nodelay(0 - 1)))\n  \
+           talker(8098)\n  \
+           sleep_ms(200)\n",
+    );
+    assert_eq!(
+        out,
+        "not a socket: 0\nclient took it: 1\nserver took it: 1\necho [ping]\n"
+    );
+}
+
 /// A read can be given a deadline, so a connection that says nothing is not a
 /// connection held for ever.
 #[test]

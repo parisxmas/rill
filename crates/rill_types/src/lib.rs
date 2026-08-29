@@ -2621,6 +2621,7 @@ impl Checker {
             // not for telling the time, and a wall clock that an administrator
             // can set backwards is the wrong instrument for that.
             "now_nanos" => Some(("rill_now_nanos", vec![], Ty::Int)),
+            "random_i64" => Some(("rill_random_i64", vec![], Ty::Int)),
             // Waiting, without a worker standing still to do it: the strand
             // goes into the same poller a socket would have parked it in.
             "sleep_ms" => Some(("rill_sleep_ms", vec![Ty::Int], Ty::Unit)),
@@ -2669,6 +2670,10 @@ impl Checker {
             // server that wants to know how many connections it already has
             // from there.
             "sock_peer" => Some(("rill_sock_peer", vec![Ty::Int], Ty::Int)),
+            // Nagle off, for a server whose clock is faster than the round
+            // trip: without it every small write waits on the last one's
+            // acknowledgement. 1 if the kernel took it.
+            "sock_nodelay" => Some(("rill_sock_nodelay", vec![Ty::Int], Ty::Int)),
             "sock_write" => Some(("rill_sock_write", vec![Ty::Int, Ty::Str], Ty::Int)),
             "sock_close" => Some(("rill_sock_close", vec![Ty::Int], Ty::Unit)),
             _ => None,
@@ -3716,6 +3721,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "str_to_float"
             | "chr"
             | "now_nanos"
+            | "random_i64"
             | "sleep_ms"
             | "bit_and"
             | "bit_or"
@@ -3785,6 +3791,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "sock_read"
             | "sock_wait"
             | "sock_peer"
+            | "sock_nodelay"
             | "sock_write"
             | "sock_close"
     )

@@ -170,13 +170,14 @@ fn type_label(t: &Ty, adts: &[rill_types::AdtDef]) -> String {
 }
 
 /// The socket builtins, by the runtime symbol each becomes.
-const SOCKET_RT: [&str; 8] = [
+const SOCKET_RT: [&str; 9] = [
     "rill_tcp_listen",
     "rill_tcp_accept",
     "rill_tcp_connect",
     "rill_sock_read",
     "rill_sock_wait",
     "rill_sock_peer",
+    "rill_sock_nodelay",
     "rill_sock_write",
     "rill_sock_close",
 ];
@@ -1300,6 +1301,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         self.module.add_function("rill_preempt_yield", void.fn_type(&[], false), None);
         self.module.add_function("rill_now_nanos", i64t.fn_type(&[], false), None);
+        self.module.add_function("rill_random_i64", i64t.fn_type(&[], false), None);
         self.module.add_function("rill_sleep_ms", void.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_tcp_listen", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_tcp_accept", i64t.fn_type(&[i64t.into()], false), None);
@@ -1315,6 +1317,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_sock_peer", i64t.fn_type(&[i64t.into()], false), None);
+        self.module
+            .add_function("rill_sock_nodelay", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function(
             "rill_sock_write",
             i64t.fn_type(&[i64t.into(), ptrt.into()], false),

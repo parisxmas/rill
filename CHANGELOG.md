@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — a socket that does not wait to be asked twice
+
+`sock_nodelay(fd)` turns Nagle's algorithm off, and says whether the kernel
+took it. It is a call rather than a default because it is a real trade: Nagle
+holds a small segment until the previous one has been acknowledged, which is
+right for a file being copied and wrong the moment a program sends small
+messages on a clock faster than the round trip — every message then waits on
+the one before it, and the wait is the difference between the two.
+
+Found while measuring a game server: nothing in the language could reach the
+option, so the delay was neither visible in the code nor measurable from
+inside the program. On the valley's own numbers it costs nothing today — the
+tick is fifty milliseconds and the round trip thirty-six, so each write is
+acknowledged before the next is built — and it starts costing the moment the
+tick goes under the round trip, which is exactly the change that was being
+considered.
+
+The two constants agree across the Unixes and are written out once, unlike
+`SOL_SOCKET` and its neighbours; the call is verified on macOS and on Linux,
+where a descriptor that is not a socket answers 0 rather than reporting
+success.
+
 ## Unreleased — a scratch handed back
 
 The binary wire's float-to-bytes conversion took an eight-byte `alloc_bytes`
