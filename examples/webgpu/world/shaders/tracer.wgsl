@@ -20,15 +20,22 @@
     @location(3) life: f32,
   }
 
-  // How much of the flight the streak covers, and how wide it is on screen.
+  // How long the streak is, and how wide it is on screen.
   //
-  // Three tenths of a second is far longer than the smear a camera would
-  // actually record — that would be one frame, seven metres, and from behind
-  // the rifle it projects to a dot. This is a tracer as a tracer is meant to
-  // read: a line you can follow to where the round went. The width is
-  // angular, a fixed slice of the frame, so a round two hundred metres out is
-  // still a couple of pixels wide rather than nothing.
-  const TRAIL = 0.30;
+  // A length, in metres, and not a duration. It was three tenths of a second
+  // — which is not a length at all until it is multiplied by a speed, and the
+  // speeds here are enormous: the rifle's round leaves at two hundred and
+  // forty metres a second, so three tenths of it drew a seventy-two metre
+  // streak, and the MG3's fifty-four. Ropes, not tracers, and every rise in a
+  // muzzle speed made them longer without anyone touching this file.
+  //
+  // Twelve metres is still far longer than the smear a camera would record —
+  // that is one frame, four metres, and from behind the rifle it projects to
+  // a dot. This is a tracer as a tracer is meant to read: a line you can
+  // follow to where the round went, the same length whichever gun sent it.
+  // The width is angular, a fixed slice of the frame, so a round two hundred
+  // metres out is still a couple of pixels wide rather than nothing.
+  const TRAIL = 12.0;
   const HALFW = 0.005;
   const BULLET_LIFE = 3.2;        // must match `bullet_life` in world.rill
 
@@ -71,9 +78,13 @@
     // its belt is a tracer — which is how the real belt is loaded and what
     // makes sixteen a second legible instead of solid.
     let dark = shotBy == 1.0 || shotBy == 2.0;
-    let flown = max(BULLET_LIFE - life, 0.0);
+    // The streak reaches back along the flight for TRAIL metres, or for as
+    // far as the round has actually come if it has only just left — which is
+    // what keeps a fresh round from drawing a tail through the shooter.
+    let speed = length(vel);
+    let flown = max(BULLET_LIFE - life, 0.0) * speed;
     let reach = min(TRAIL, flown);
-    let tail = pos - vel * reach;
+    let tail = pos - vel / max(speed, 0.000001) * reach;
     let hc = u.vp * vec4f(head, 1.0);
     let tc = u.vp * vec4f(tail, 1.0);
 
