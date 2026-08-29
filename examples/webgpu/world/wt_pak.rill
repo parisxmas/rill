@@ -7,6 +7,14 @@ import "pak" as pk
 fn say(what, got, want) =
   println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
 
+# How many assets the manifest asks for — the packer reads the same file the
+# same way, so this is the question rather than a copy of last week's answer.
+fn manifest() = match read_file("assets.list")
+  Err(e) ->
+    println("  no assets.list: " + e)
+    0
+  Ok(text) -> len(filter(map(lines(text), \l -> trim(l)), \l -> str_len(l) > 0))
+
 # The bundle into a buffer, which is a Ptr where a Ptr is asked for.
 fn slurp(s, b: Buf(U8), n) =
   for i in 0..n
@@ -64,9 +72,13 @@ fn main() = match read_file("valley.rpak")
     b = buf_u8(n)
     slurp(s, b, n)
     say("the magic is good", pk.ok(b), 1)
-    # Eighty-four since the crystals were given a light to climb: one more
-    # shader, and `assets.list` is what decides.
-    say("all the assets are in it", pk.count(b), 86)
+    # `assets.list` is what decides — so it is what is asked, rather than a
+    # number written down here. It was a number, and the number went stale
+    # the way every frozen count does: six assets were added over a week of
+    # work and this line said 86 to a bundle of 92, which is a test reporting
+    # a bug that is not there and staying quiet about the one that would be.
+    # The bundle is every line of the manifest plus the page itself.
+    say("all the assets are in it", pk.count(b), manifest() + 1)
     bad = sweep(b, 0, pk.count(b), 0)
     say("entries that came back changed", bad, 0)
     println("done")

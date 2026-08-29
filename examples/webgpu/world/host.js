@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "585";
+const V = "587";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -97,7 +97,7 @@ const SHADERS = {
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", halo: "common", weed: "common", lamp: "common", "firefly-draw": "common",
-  figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
+  figure: "common", held: "common", prop: "common", crate: "common", belt: "common", zap: "common",
   mark: "common", spark: "common", ak: "common", mg: "common", mgfx: "common", jet: "common", magma: "common",
   pick: "common", stonehand: "common", rockface: "common",
   flower: "common",
@@ -197,6 +197,7 @@ function loadShaders(step, pakText) {
     SHARK: whole("shark"),
     PROP: whole("prop"),
     CRATE: whole("crate"),
+    BELT: whole("belt"),
     ZAP: whole("zap"),
     MARK: whole("mark"),
     SPARK: whole("spark"),
@@ -1524,6 +1525,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   ];
   const propPipe = pipe("prop", S.PROP, propLayout);
   const cratePipe = pipe("crate", S.CRATE, propLayout);
+  const beltPipe = pipe("belt", S.BELT, propLayout);
   // The launcher in the hands: the rifle's vertex layout, its own frustum, and
   // no instances — there is only ever one pair of hands.
   const rpgPipe = pipe("launcher", S.LAUNCHER, vmLayout);
@@ -1667,6 +1669,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   device.queue.writeBuffer(crateIB, 0, crateIdxBytes);
   step("rocket-crate.mesh");
+  // And the third kind: a belt of machine-gun rounds. Not a scan of anything
+  // — twenty-two copies of `cartridge.mesh`'s own cartridge laid along a
+  // shallow S and baked as one mesh, so what is lying in the grass is the
+  // round that will be on the belt once it is picked up.
+  const beltBytes = pakBuf("mg-belt.mesh");
+  const beltHead = new DataView(beltBytes, 0, 32);
+  const beltVerts = beltHead.getUint32(0, true);
+  const beltIdx = beltHead.getUint32(4, true);
+  const beltVB = gpuBuf(new Uint8Array(beltBytes, 32, beltVerts * 16));
+  const beltIdxBytes = new Uint8Array((beltIdx * 2 + 3) & ~3);
+  beltIdxBytes.set(new Uint8Array(beltBytes, 32 + beltVerts * 16, beltIdx * 2));
+  const beltIB = device.createBuffer({
+    size: beltIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(beltIB, 0, beltIdxBytes);
+  step("mg-belt.mesh");
 
   // The launcher and its rocket. One file, one texture, two meshes, all in the
   // rifle's own format — so this is the same six lines a third and a fourth
@@ -2377,6 +2395,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // decides; the renderer only needs to know where the line is.
   const magCount = Number(E.mag_count());
   const magsOnly = Number(E.mags_only());
+  const crateEnd = Number(E.crate_end());
   const shardBuf = device.createBuffer({
     size: shardCap * 80, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
@@ -4124,7 +4143,14 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(cratePipe);
     pass.setVertexBuffer(0, crateVB); pass.setVertexBuffer(1, shardBuf);
     pass.setIndexBuffer(crateIB, "uint16");
-    pass.drawIndexed(crateIdx, magCount - magsOnly, 0, 0, magsOnly);
+    pass.drawIndexed(crateIdx, crateEnd - magsOnly, 0, 0, magsOnly);
+
+    // And the belts: the last range of the same slots, copper rather than
+    // steel or olive wood, and the same trick a third time.
+    pass.setPipeline(beltPipe);
+    pass.setVertexBuffer(0, beltVB); pass.setVertexBuffer(1, shardBuf);
+    pass.setIndexBuffer(beltIB, "uint16");
+    pass.drawIndexed(beltIdx, magCount - crateEnd, 0, 0, crateEnd);
 
     pass.setPipeline(shardPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, shardBuf);

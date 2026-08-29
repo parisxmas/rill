@@ -43,6 +43,32 @@ fn main() =
   say("ten rounds and a spare changes", v.ask_reload(s), 1)
   say("and the short belt is gone with the swap", v.mg_rounds(s), 75)
 
+  println("the belts on the ground")
+  # The third kind of box, and the three ranges it makes of the one index.
+  # A belt is what fills this gun now: it used to come out of a rifle
+  # magazine, which made four hundred and fifty belted rounds a free rider on
+  # a box of ten and gave `wanted` a question it could not answer.
+  sb = peek_ptr(v.wd(s), 69)
+  belt_at = (v.mag_count() - 1) * v.shard_stride()
+  mag_at = 0
+  say("a magazine is a magazine", to_int(peek_f32(sb, mag_at + 16)), 2)
+  say("and the last boxes are belts", to_int(peek_f32(sb, belt_at + 16)), 4)
+
+  poke_f32(s, 252, 0.0)
+  poke_f32(s, 254, 0.0)
+  poke_f32(s, 118, 0.0)
+  poke_f32(s, 106, 0.0)
+  say("empty of everything, a magazine is wanted", v.wanted(s, sb, mag_at), 1)
+  v.worth_of(v.wd(s), s, sb, 0, mag_at, 0)
+  say("and it fills the rifle", v.rounds(s), 10)
+  say("but leaves the belt where it was", v.mg_rounds(s), 0)
+
+  say("and the belt is wanted", v.wanted(s, sb, belt_at), 1)
+  v.worth_of(v.wd(s), s, sb, v.mag_count() - 1, belt_at, 0)
+  say("which loads the gun", v.mg_rounds(s), 75)
+  say("and hands over a spare", v.mg_belts(s), 1)
+  say("full, the next one is walked past", v.wanted(s, sb, belt_at), 0)
+
   println("the cone and the knee")
   poke_f32(s, 250, 0.0)
   say("standing, the cone in mils", mils(v.mg_cone(s)), 52)

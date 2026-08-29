@@ -23,6 +23,7 @@ shaders/figure.wgsl
 shaders/held.wgsl
 shaders/prop.wgsl
 shaders/crate.wgsl
+shaders/belt.wgsl
 shaders/zap.wgsl
 shaders/mark.wgsl
 shaders/spark.wgsl
@@ -59,6 +60,7 @@ mg3.mesh
 cartridge.mesh
 ammo-box.mesh
 rocket-crate.mesh
+mg-belt.mesh
 rpg7.mesh
 rocket.mesh
 shark.mesh

@@ -292,6 +292,10 @@ export fn set_held_ammo(s: Ptr, n: Int) = v.set_held_ammo(s, n)
 # this is where the ranges split.
 export fn mags_only() -> Int = v.mag_only()
 
+# Where the rocket crates stop and the belts begin — the renderer draws each
+# kind as its own range of the one instance buffer.
+export fn crate_end() -> Int = v.crate_end()
+
 # The crystals' bites: how many, who and which crystal, and the applying of
 # one this browser was told about rather than decided.
 export fn zaps(w: Ptr) -> Int = v.zaps(w)
