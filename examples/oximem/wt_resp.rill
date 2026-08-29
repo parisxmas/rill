@@ -1,0 +1,225 @@
+# The RESP client against a real OxiMem.
+#
+# `lib/oxiresp.rill` writes the protocol Redis speaks, so nothing on the other
+# side can tell it from a Redis client — which is exactly why it has to be run
+# against the real engine rather than against a mock: a mock would agree with
+# whatever this file believes, including the parts it believes wrongly.
+#
+# What is exercised: every RESP2 reply shape (simple, error, integer, bulk,
+# null bulk, array, null array, nested array), the five value families OxiMem
+# keeps (strings, hashes, lists, sets, sorted sets), expiry, transactions, and
+# the two things a hand-written decoder gets wrong — a reply split across two
+# reads, and a payload with the terminator's own bytes inside it.
+#
+#   OXIDB_OXIMEM_PORT=6399 oxidb-server &
+#   rill run wt_resp.rill [port]
+import "oxiresp"
+
+fn say(what, got, want) =
+  println("  " + what + ": " + got + " (want " + want + ")")
+
+fn sayi(what, got, want) = say(what, int_to_str(got), int_to_str(want))
+
+fn port() = if arg_count() > 1 then str_to_int(arg(1)) else 6399
+
+# ---- the shapes a reply can take -------------------------------------------
+
+fn shapes(fd) =
+  println("reply shapes")
+  say("PING answers a simple string", kv_text(kv_or(kv_ping(fd), RNil)), "PONG")
+  say("SET answers OK", kv_text(kv_or(kv_set(fd, "wt:a", "ada"), RNil)), "OK")
+  say("GET answers a bulk string", kv_text(kv_or(kv_get(fd, "wt:a"), RNil)), "ada")
+  sayi("DEL answers an integer", kv_int(kv_or(kv_del(fd, "wt:a"), RNil)), 1)
+  # A key that is not there is a null bulk, which is not the same as "" —
+  # a client that flattens the two cannot tell an empty value from no value.
+  sayi("a missing key is nil, not empty", if kv_missing(kv_or(kv_get(fd, "wt:gone"), RNil)) then 1 else 0, 1)
+  say("and an empty value is not nil", kv_text(kv_or(kv_set(fd, "wt:empty", ""), RNil)), "OK")
+  sayi("really not nil", if kv_missing(kv_or(kv_get(fd, "wt:empty"), RNil)) then 1 else 0, 0)
+  # An error reply is a value, not an exception: the engine says what was
+  # wrong and the caller decides.
+  bad = kv_command(fd, kv_args2("INCR", "wt:empty"))
+  sayi("a wrong type is refused", if str_len(kv_why(bad)) > 0 then 1 else 0, 1)
+  kv_del(fd, "wt:empty")
+  0
+
+# ---- the awkward payloads ---------------------------------------------------
+
+fn awkward(fd) =
+  println("payloads a decoder trips on")
+  # RESP is length-prefixed, so a value may contain the terminator. A decoder
+  # that scans for \r\n instead of counting bytes reads half of this and then
+  # every reply after it from the wrong offset.
+  crlf = "one\r\ntwo\r\n"
+  kv_set(fd, "wt:crlf", crlf)
+  say("a value carrying CRLF comes back whole", int_to_str(str_len(kv_text(kv_or(kv_get(fd, "wt:crlf"), RNil)))), int_to_str(str_len(crlf)))
+  # And one larger than a single read, which is what makes `RMore` earn its
+  # keep: the reply arrives in pieces and the decoder has to wait.
+  big = repeat_str("0123456789", 4000)
+  kv_set(fd, "wt:big", big)
+  say("a 40 KB value survives the socket", int_to_str(str_len(kv_text(kv_or(kv_get(fd, "wt:big"), RNil)))), int_to_str(str_len(big)))
+  say("and is the same bytes", if kv_text(kv_or(kv_get(fd, "wt:big"), RNil)) == big then "yes" else "no", "yes")
+  kv_del(fd, "wt:crlf")
+  kv_del(fd, "wt:big")
+  0
+
+fn repeat_str(s, n) = repeat_into(strbuf(), s, n)
+
+fn repeat_into(b, s, n) =
+  if n <= 0 then strbuf_str(b)
+  else
+    strbuf_add(b, s)
+    repeat_into(b, s, n - 1)
+
+# ---- the families OxiMem keeps ---------------------------------------------
+
+fn families(fd) =
+  println("the five families")
+  kv_del(fd, "wt:h")
+  kv_hset(fd, "wt:h", "here", "3")
+  kv_hset(fd, "wt:h", "max", "16")
+  say("a hash field", kv_text(kv_or(kv_hget(fd, "wt:h", "here"), RNil)), "3")
+  sayi("and how many fields", kv_int(kv_or(kv_hlen(fd, "wt:h"), RNil)), 2)
+  sayi("HGETALL is a flat array of pairs", len(kv_list(kv_or(kv_hgetall(fd, "wt:h"), RNil))), 4)
+
+  kv_del(fd, "wt:l")
+  kv_rpush(fd, "wt:l", "a")
+  kv_rpush(fd, "wt:l", "b")
+  kv_lpush(fd, "wt:l", "z")
+  sayi("a list keeps its order", len(kv_texts(kv_or(kv_lrange(fd, "wt:l", 0, 0 - 1), RNil))), 3)
+  say("with the pushed-left one first", kv_text(kv_or(kv_lpop(fd, "wt:l"), RNil)), "z")
+
+  kv_del(fd, "wt:s")
+  kv_sadd(fd, "wt:s", "one")
+  kv_sadd(fd, "wt:s", "one")
+  sayi("a set holds one of each", kv_int(kv_or(kv_scard(fd, "wt:s"), RNil)), 1)
+
+  kv_del(fd, "wt:z")
+  kv_zadd(fd, "wt:z", 2.5, "mid")
+  kv_zadd(fd, "wt:z", 1.0, "low")
+  say("a sorted set sorts", kv_text(first_of(kv_or(kv_zrange(fd, "wt:z", 0, 0), RNil))), "low")
+  say("and keeps the score", kv_text(kv_or(kv_zscore(fd, "wt:z", "mid"), RNil)), "2.5")
+  0
+
+fn first_of(v) = match kv_list(v)
+  Nil -> RNil
+  Cons(x, _) -> x
+
+# ---- the keyspace, whatever is in it ----------------------------------------
+#
+# `KEYS`, `DBSIZE` and `SCAN` are three ways of asking the same question and
+# they have to answer the same way. In 0.43.0 the first two looked only at the
+# string keyspace, so a valley that wrote itself down as a hash was invisible
+# to `KEYS valley:*` while `HGETALL` on the very same key answered in full —
+# a directory that reported nothing while every entry was there. Fixed in
+# 0.43.2; pinned here because a client that enumerates cannot see the
+# difference between "no keys" and "no keys of this kind".
+fn keyspace(fd) =
+  println("the keyspace holds every kind")
+  kv_command(fd, kv_args1("FLUSHDB"))
+  kv_set(fd, "wt:k:string", "v")
+  kv_hset(fd, "wt:k:hash", "f", "v")
+  kv_rpush(fd, "wt:k:list", "v")
+  kv_sadd(fd, "wt:k:set", "v")
+  kv_zadd(fd, "wt:k:zset", 1.0, "v")
+  sayi("KEYS sees all five", len(kv_texts(kv_or(kv_keys(fd, "wt:k:*"), RNil))), 5)
+  sayi("DBSIZE counts all five", kv_int(kv_or(kv_dbsize(fd), RNil)), 5)
+  sayi("and SCAN agrees", len(kv_scan_all(fd, "wt:k:*")), 5)
+  kv_command(fd, kv_args1("FLUSHDB"))
+  0
+
+# ---- time, and all-or-nothing ----------------------------------------------
+
+fn timing(fd) =
+  println("expiry and transactions")
+  kv_set(fd, "wt:t", "soon")
+  kv_expire(fd, "wt:t", 100)
+  sayi("a ttl is set", if kv_int(kv_or(kv_ttl(fd, "wt:t"), RNil)) > 0 then 1 else 0, 1)
+  kv_persist(fd, "wt:t")
+  sayi("and taken off again", kv_int(kv_or(kv_ttl(fd, "wt:t"), RNil)), 0 - 1)
+  kv_del(fd, "wt:t")
+
+  # Queued commands answer +QUEUED and the answers arrive together at EXEC,
+  # as an array — one reply carrying several.
+  kv_del(fd, "wt:n")
+  kv_multi(fd)
+  say("a queued command says so", kv_text(kv_or(kv_incr(fd, "wt:n"), RNil)), "QUEUED")
+  kv_incr(fd, "wt:n")
+  sayi("EXEC answers one array for the lot", len(kv_list(kv_or(kv_exec(fd), RNil))), 2)
+  sayi("and it really ran", kv_int(kv_or(kv_get(fd, "wt:n"), RNil)), 2)
+
+  # A discarded transaction leaves nothing behind.
+  kv_multi(fd)
+  kv_incr(fd, "wt:n")
+  kv_discard(fd)
+  sayi("a discarded one does not", kv_int(kv_or(kv_get(fd, "wt:n"), RNil)), 2)
+  kv_del(fd, "wt:n")
+  0
+
+# ---- one socket listening, another talking ----------------------------------
+#
+# The awkward part of RESP: a subscribed connection is handed to a loop of its
+# own and never gives the reply/command rhythm back, so the reader has to tell
+# a message it asked for from one it did not, and one read may carry two
+# messages — the second of which is not going to be sent again. That is why a
+# `Sub` carries its leftovers.
+# Every arm of a match has to answer the same kind of thing, and `println`
+# answers nothing at all.
+fn moan(why) =
+  println("  " + why)
+  0
+
+fn pubsub(port) = match kv_connect("127.0.0.1", port)
+  Err(e) -> moan("cannot open the listener: " + e)
+  Ok(ear) -> listening(ear, port)
+
+fn listening(ear, port) = match kv_subscribe(ear, Cons("wt:news", Nil))
+  Err(e) -> moan("cannot subscribe: " + e)
+  Ok(sub) -> also_pattern(sub, port)
+
+fn also_pattern(sub, port) = match kv_psubscribe_more(sub, Cons("wt:sport.*", Nil))
+  Err(e) -> moan("cannot add a pattern: " + e)
+  Ok(sub2) -> talking(sub2, port)
+
+fn talking(sub, port) = match kv_connect("127.0.0.1", port)
+  Err(e) -> moan("cannot open the talker: " + e)
+  Ok(mouth) -> shout(sub, mouth)
+
+fn shout(sub, mouth) =
+  # Two at once, on purpose: they land in the same read, and a reader that
+  # keeps nothing between calls loses the second.
+  kv_publish(mouth, "wt:news", "one")
+  kv_publish(mouth, "wt:news", "two")
+  kv_publish(mouth, "wt:sport.football", "three")
+  heard(sub, 0, "")
+
+fn heard(sub, n, acc) =
+  if n >= 3 then done_hearing(acc)
+  else one_heard(sub, n, acc, kv_next(sub))
+
+fn one_heard(sub, n, acc, delivery) = match delivery
+  Message(s, ch, payload) -> heard(s, n + 1, acc + payload + " ")
+  PatternMessage(s, _, ch, payload) -> heard(s, n + 1, acc + payload + " ")
+  Note(s, _, _, _) -> heard(s, n, acc)
+  Ended(why) -> done_hearing(acc + "[ended: " + why + "]")
+
+fn done_hearing(acc) =
+  say("three published, three heard", trim(acc), "one two three")
+  0
+
+fn main() =
+  println("oxiresp against a live OxiMem on " + int_to_str(port()))
+  match kv_connect("127.0.0.1", port())
+    Err(e) -> moan("cannot reach it: " + e)
+    Ok(fd) -> run_all(fd)
+
+fn run_all(fd) =
+  shapes(fd)
+  awkward(fd)
+  families(fd)
+  keyspace(fd)
+  timing(fd)
+  kv_hang_up(fd)
+  println("publish and subscribe")
+  pubsub(port())
+  println("done")
+  0

@@ -20,6 +20,8 @@
 # is the whole point: a server that reimplemented the walk would be a server
 # that disagreed with it.
 import "valley" as v
+import "oxiresp"
+import "door" as door
 import "ws"
 
 # ---- what it costs to be here ----------------------------------------------
@@ -37,7 +39,7 @@ import "ws"
 #
 # What this valley is, said on the command line rather than in this file:
 #
-#     ./valleyd 8291 meteors=off crystals=180 match=300
+#     ./valleyd 8291 meteors=off crystals=180 match=300 time=night
 #
 # A setting is `name=value`, anywhere after the port, in any order. The port
 # stays where it was — first argument, bare — because every script that starts
@@ -96,6 +98,63 @@ fn dt() = 0.05
 # places. The grid is *not* here: it is the terrain mesh's resolution and
 # nothing else samples it, so a slow machine may draw a coarser valley and
 # still stand on exactly the same ground.
+# What the clock says when the doors open, in seconds into the day.
+#
+# A day here is three hundred and sixty seconds — the sky turns once per that,
+# see SKY_SPIN in host.js — and the sun is under the world for the third of it
+# that runs from about 230 to 320. So `time=night` opens the valley in the
+# middle of the dark, `time=dusk` just as the light goes, and `time=180` puts
+# it wherever that lands.
+#
+# Testing anything that only happens after dark — a head lamp, the fireflies,
+# how much of a person you can see at fifty paces — otherwise means waiting up
+# to four minutes for the sun to come round, in every session, every time.
+fn day_secs() = 360
+
+fn start_time() =
+  s = setting("time", "")
+  if #s == 0 then 0.0 else named_time(s)
+
+fn named_time(s) =
+  # Near the beginning of the dark rather than the middle of it: the sun is
+  # under the world from about 230 to 320, and opening at 276 would leave
+  # three quarters of a minute of night before the sky came up again.
+  if s == "night" then 238.0 else if s == "dusk" then 222.0 else if s == "dawn" then 314.0 else if s == "noon" then 96.0 else to_float(str_to_int(s))
+
+# ---- the valleys, told apart --------------------------------------------------
+#
+# Several of these run on one box now, and a player picking one from a list
+# needs to know which is which and how full each is. They cannot ask each other
+# — nothing joins them — so they each write themselves down in a place they all
+# share, and the list is read from there.
+#
+# `mem` is where that place is, `name` is what this valley calls itself, and
+# `path` is the address a browser should open to reach it. Nothing here is
+# required: with no `mem` a valley simply never registers, which is what a
+# single server on somebody's laptop wants.
+fn mem_at() = setting("mem", "")
+
+fn mem_host() =
+  a = mem_at()
+  i = str_find(a, ":")
+  if i < 0 then a else str_sub(a, 0, i)
+
+fn mem_port() =
+  a = mem_at()
+  i = str_find(a, ":")
+  if i < 0 then 6379 else str_to_int(str_sub(a, i + 1, str_len(a) - i - 1))
+
+fn valley_name() =
+  n = setting("name", "")
+  if str_len(n) == 0 then "valley-" + int_to_str(port()) else n
+
+fn valley_path() = setting("path", "")
+
+# How long a registration lives without being renewed. Written every second, so
+# a valley that has stopped is off the list within a few — which is the whole
+# reason this is a key with a life and not a row in a table.
+fn valley_ttl() = 8
+
 fn n_pines() = setting_int("pines", 400)
 
 fn n_crystals() = setting_int("crystals", 300)
@@ -160,10 +219,14 @@ fn per_address() = 16
 
 # How many people this valley admits. The world itself has room for thirty-two
 # — `player_cap` in `valley.rill`, which is a shape the browser compiles too —
-# and this is not that: it is what this server chooses to let in, and it can be
-# lowered without touching the file the client shares. Eight is what a tick of
-# fifty milliseconds carries comfortably, everybody being told about everybody.
-fn max_players() = 16
+# and this is not that: it is what this server chooses to let in.
+#
+# A setting because it is now on the page: the list of valleys carries a count
+# against a cap, and a full one cannot be entered. That behaviour could not be
+# tried at all while the cap was a constant of sixteen — filling a valley meant
+# sixteen clients — and something that cannot be tried is something nobody
+# knows the shape of. `players=2` and it can be seen in a minute.
+fn max_players() = setting_int("players", 16)
 
 # Whether the crystals throw fire in the shared valley. On: what a meteor is
 # aimed at is where somebody is standing, and standing about is most of what
@@ -215,10 +278,11 @@ type Conn
 
 # ---- the hub ---------------------------------------------------------------
 
-fn hub(w, conns, inbox, joins, said) =
+fn hub(w, conns, inbox, joins, said, live) =
   m = recv(inbox)
   next = handle(w, conns, inbox, joins, m, said)
-  hub(w, next, inbox, if_arrived(m, joins), said)
+  poke_i64(live, here_at(), v.players(w))
+  hub(w, next, inbox, if_arrived(m, joins), said, live)
 
 # The id to hand out next. It comes off the world's own counter rather than
 # being kept here, so a player's id and their block agree about who they are.
@@ -531,7 +595,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 524
+fn version() = 585
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -1265,7 +1329,10 @@ fn pose_of(s) =
   bit_or(bit_or(bit_or(doing(s), if v.torch(s) > 0 then 8 else 0), shl(pose_w(s), 4)),
          if v.jet_on(s) > 0 then 64 else 0)
 
-fn pose_w(s) = if v.weapon(s) > 3 then 3 else v.weapon(s)
+# The MG3 goes out as the AK: the pose field is two bits and the far end has
+# no third-person machine-gun mesh yet, and an automatic gun in the hands is
+# a truer picture than the empty hands 3 would draw.
+fn pose_w(s) = if v.weapon(s) == 5 then 2 else if v.weapon(s) > 3 then 3 else v.weapon(s)
 
 fn doing(s) =
   k = v.keys_of(s)
@@ -1432,8 +1499,204 @@ fn keep_line(l, token) = str_len(l) > 0 && str_sub(l, 0, token_len()) != token
 # still taken at the door, so a flood of half-open handshakes cannot get past
 # `max_connections()` however it dresses them up.
 fn serve(conn, inbox, live) =
-  request = fill_until(conn, "", 4, now_nanos() + handshake_ms() * 1000000)
+  request = read_request(conn, now_nanos() + handshake_ms() * 1000000)
+  if asking_only(request) then say_how_full(conn, live, request) else knocking(conn, inbox, live, request)
+
+# The whole of the request, or as much of it as arrives before the deadline.
+#
+# `fill_until(conn, "", 4, …)` stops at four bytes — enough to know something
+# was said and not enough to know what. Every question asked of a request here
+# is asked of a header: the word is on the first line, the key is further down,
+# and the difference between a browser and a monitor is whether one particular
+# header is there at all. A partial read answers all three wrongly and each of
+# them silently: this one turned every WebSocket away as though it were a
+# monitor, because the key had not arrived yet.
+#
+# One segment carries the whole thing in practice. This is for the times it
+# does not.
+fn read_request(conn, until) = grow_request(conn, fill_until(conn, "", 4, until), until)
+
+fn grow_request(conn, buf, until) =
+  if str_find(buf, "\r\n\r\n") >= 0 then buf
+  else if now_nanos() > until then buf
+  else keep_reading(conn, buf, until)
+
+fn keep_reading(conn, buf, until) =
+  more = fill_until(conn, buf, str_len(buf) + 1, until)
+  if str_len(more) == str_len(buf) then buf else grow_request(conn, more, until)
+
+fn knocking(conn, inbox, live, request) =
   if said_the_word(request) == 0 then no_entry(conn, live) else past_the_word(conn, inbox, live, request)
+
+# ---- writing this valley down -----------------------------------------------
+#
+# A strand of its own, once a second, and it never touches the world: the count
+# it publishes is the one the hub leaves in the shared block, so the only thing
+# crossing between them is a number. That is deliberate — one strand owns the
+# world and nothing else reads it — and it is also what makes this safe to
+# leave running while the valley is busy.
+#
+# It reconnects by falling out of the loop and starting again. A key that stops
+# being renewed expires, so a valley that has died leaves the list on its own
+# and nothing has to notice.
+fn registrar(live) =
+  if str_len(mem_at()) == 0 then 0 else registrar_on(live)
+
+fn registrar_on(live) = match kv_connect(mem_host(), mem_port())
+  Err(_) -> registrar_wait(live)
+  Ok(fd) -> registrar_wrote(live, fd, register_once(fd, live))
+
+fn registrar_wait(live) =
+  sleep_ms(2000)
+  registrar_on(live)
+
+fn registrar_wrote(live, fd, ok) =
+  if ok == 0 then registrar_dropped(live, fd) else registrar_again(live, fd)
+
+fn registrar_dropped(live, fd) =
+  kv_hang_up(fd)
+  registrar_wait(live)
+
+fn registrar_again(live, fd) =
+  sleep_ms(1000)
+  registrar_wrote(live, fd, register_once(fd, live))
+
+# One hash a valley, with a life on it. `HSET` then `EXPIRE`, and both have to
+# land: if the connection went while we were writing, say so and the caller
+# opens a new one.
+fn register_once(fd, live) =
+  key = "valley:" + valley_name()
+  wrote = kv_hset(fd, key, "here", int_to_str(peek_i64(live, here_at())))
+  ok1 = if str_len(kv_why(wrote)) == 0 then 1 else 0
+  more = register_rest(fd, key)
+  if ok1 == 1 && more == 1 then 1 else 0
+
+fn register_rest(fd, key) =
+  kv_hset(fd, key, "max", int_to_str(max_players()))
+  kv_hset(fd, key, "name", valley_name())
+  kv_hset(fd, key, "path", valley_path())
+  kv_hset(fd, key, "port", int_to_str(port()))
+  last = kv_expire(fd, key, valley_ttl())
+  if str_len(kv_why(last)) == 0 then 1 else 0
+
+# ---- how full this valley is ------------------------------------------------
+#
+# A request with no `Sec-WebSocket-Key` is not a browser opening a socket; it
+# is something asking a question. The only question worth answering here is how
+# many people are in, and the page asks it once for each valley before anybody
+# picks one — a list of doors with nothing written on them is a list of doors
+# nobody can choose between.
+#
+# Answered by the same process that holds the valley, because anything else is
+# a second source of truth about a number that changes twenty times a second.
+# It is one line of JSON and the socket closes: no keep-alive, no routing, no
+# second port to firewall.
+fn asking_only(request) =
+  str_len(request) > 0 && ws_wanted(request) == false
+
+fn say_how_full(conn, live, sofar) =
+  request = whole_request(conn, sofar)
+  path = door.path_of(request)
+  if str_sub(path, 0, 5) == "/api/" then say_through_door(conn, live, request)
+  else
+    sock_write(conn, status_reply(directory(live)))
+    drop_slot(live)
+    sock_close(conn)
+    0
+
+# The rest of a request whose headers are already here: `read_request` stops
+# at the blank line, and a POST's body is `Content-Length` bytes past it. The
+# deadline is the handshake's — a body that dawdles longer than a handshake
+# may is a body nobody is waiting for.
+fn whole_request(conn, sofar) = request_rest(conn, sofar, now_nanos() + handshake_ms() * 1000000)
+
+fn request_rest(conn, request, until) =
+  blank = str_find(request, "\r\n\r\n")
+  want = if blank < 0 then 0 else blank + 4 + door.content_len(request)
+  if want <= 0 || str_len(request) >= want then request
+  else if now_nanos() > until then request
+  else request_rest(conn, fill_until(conn, request, str_len(request) + 1, until), until)
+
+# Registering, signing in, making a valley. All of it lives in `door.rill`;
+# what this side owns is the sockets — one to the asker, one to the store —
+# and the store's is opened per question because these arrive a few times per
+# person, not per second.
+fn say_through_door(conn, live, request) =
+  body = door.body_of(request)
+  answer = if str_len(mem_at()) == 0 then door.no_json("this valley keeps no accounts")
+    else asked_the_store(door.method_of(request), door.path_of(request), body)
+  sock_write(conn, status_reply(answer))
+  drop_slot(live)
+  sock_close(conn)
+  0
+
+fn asked_the_store(method, path, body) = match kv_connect(mem_host(), mem_port())
+  Err(_) -> door.no_json("the store is not answering")
+  Ok(fd) ->
+    out = door.answer(fd, method, path, body)
+    kv_hang_up(fd)
+    out
+
+# What the page shows on the way in: every valley that has written itself down,
+# and this one whether or not it has.
+#
+# Read here rather than kept, and over a connection of its own: the question is
+# asked a few times per player rather than a few times per second, and a socket
+# held open for it would be a socket to look after. If the shared store cannot
+# be reached the answer is still this valley — a list of one is a working page,
+# and an error is not.
+fn directory(live) =
+  mine = one_valley(valley_name(), peek_i64(live, here_at()), max_players(), valley_path())
+  if str_len(mem_at()) == 0 then "[" + mine + "]" else asked_around(mine)
+
+fn asked_around(mine) = match kv_connect(mem_host(), mem_port())
+  Err(_) -> "[" + mine + "]"
+  Ok(fd) -> read_directory(fd, mine)
+
+# `SCAN` rather than `KEYS`, and not only because a scan is the kinder way to
+# walk a keyspace: in OxiMem before 0.43.2 `KEYS` looked at the string
+# keyspace alone, and a valley writes itself down as a hash — so the directory
+# came back empty while every entry was sitting there, answering `HGETALL` in
+# full. Fixed upstream; this stays because a client should not need the engine
+# to be new.
+fn read_directory(fd, mine) =
+  body = walk_valleys(fd, kv_scan_all(fd, "valley:*"), "")
+  kv_hang_up(fd)
+  if str_len(body) == 0 then "[" + mine + "]" else "[" + body + "]"
+
+fn walk_valleys(fd, keys, acc) = match keys
+  Nil -> acc
+  Cons(k, rest) -> walk_valleys(fd, rest, comma_joined(acc, one_of_them(fd, k)))
+
+fn comma_joined(acc, one) =
+  if str_len(one) == 0 then acc else if str_len(acc) == 0 then one else acc + "," + one
+
+# A hash comes back flat — field, value, field, value — so it is read by
+# walking pairs rather than by asking for each field, which would be four round
+# trips a valley.
+fn one_of_them(fd, key) =
+  flat = kv_texts(kv_or(kv_hgetall(fd, key), RNil))
+  one_valley(pair_of(flat, "name"), str_to_int(pair_of(flat, "here")), str_to_int(pair_of(flat, "max")), pair_of(flat, "path"))
+
+fn pair_of(flat, want) = match flat
+  Nil -> ""
+  Cons(k, rest) -> pair_tail(k, rest, want)
+
+fn pair_tail(k, rest, want) = match rest
+  Nil -> ""
+  Cons(v, more) -> if k == want then v else pair_of(more, want)
+
+fn one_valley(name, here, most, path) =
+  head = "{\"name\":\"" + name + "\",\"here\":" + int_to_str(here)
+  head + ",\"max\":" + int_to_str(most) + ",\"path\":\"" + path + "\"}"
+
+# Cross-origin on purpose: the page may be served from one host and the valley
+# answered from another — that is what `?join=` has always been for — and a
+# count nobody can read is a count not worth sending.
+fn status_reply(body) =
+  head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + int_to_str(str_len(body))
+  rest = "\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+  head + rest + body
 
 # A ban is checked before the address gate and before the handshake, and it
 # reads the list every time rather than at boot: a ban that needs a restart to
@@ -1491,6 +1754,18 @@ fn no_entry(conn, live) =
   0
 
 fn admitted(conn, inbox, live, addr, request) =
+  # Nagle off, before a word is exchanged.
+  #
+  # This server writes on a clock — a snapshot every fifty milliseconds, and
+  # whatever events happened in between — and Nagle holds a small write until
+  # the last one has been acknowledged. At fifty milliseconds against a
+  # thirty-six millisecond round trip it never bites: the acknowledgement is
+  # always back before the next tick. It bites the moment two writes fall in
+  # the same tick, which is a snapshot and a shot fired in the same fiftieth
+  # of a second, and it will bite every tick if the tick is ever taken under
+  # the round trip. Neither is a delay anything here could measure, which is
+  # the argument for not leaving it to chance.
+  sock_nodelay(conn)
   if ws_accept(conn, request) then play(conn, inbox, known_or_new(request)) else sock_close(conn)
   drop_slot(live)
   drop_addr(live, addr)
@@ -1689,6 +1964,16 @@ fn tell(inbox, m) =
 # Row zero of the number space is the total, so the rows start at one.
 fn total_at() = 0
 
+# How many are standing in the valley, written by the hub every tick and read
+# by whoever answers the door.
+#
+# The door and the world are different strands: `serve` runs on the connection
+# that just arrived and has no world pointer, and the hub has the world and
+# never sees a new socket until it is already a player. One number in the block
+# they do share is the whole of what is needed, and it is written by exactly
+# one writer — so there is nothing to race over.
+fn here_at() = 1 + address_rows() * 2
+
 fn row_addr(i) = 1 + i * 2
 
 fn row_count(i) = 2 + i * 2
@@ -1766,9 +2051,9 @@ fn main() = match listen_on(port())
 
 fn run(server) =
   # The total, then two numbers per address row.
-  live = alloc_bytes((1 + address_rows() * 2) * 8)
+  live = alloc_bytes((2 + address_rows() * 2) * 8)
 
-  for i in 0..1 + address_rows() * 2
+  for i in 0..2 + address_rows() * 2
     poke_i64(live, i, 0)
 
   w = v.init(64, n_pines(), n_crystals(), n_grass())
@@ -1778,7 +2063,10 @@ fn run(server) =
   # back to nought — which reads as the default. `again` sets it there too,
   # so a round change does not quietly return everybody to Earth-and-a-half.
   v.set_gravity(w, to_float(gravity_tenths()) / 10.0)
-  println("settings: meteors=" + (if meteors() > 0 then "on" else "off") + " crystals=" + int_to_str(n_crystals()) + " pines=" + int_to_str(n_pines()) + " grass=" + int_to_str(n_grass()) + " match=" + int_to_str(match_secs()) + "s report=" + int_to_str(report_secs()) + "s gravity=" + int_to_str(gravity_tenths()) + "/10")
+  # And what hour it is. The clock is the server's — it rides on every
+  # snapshot — so setting it here sets it for everybody who walks in.
+  v.set_world_time(w, start_time())
+  println("settings: meteors=" + (if meteors() > 0 then "on" else "off") + " crystals=" + int_to_str(n_crystals()) + " pines=" + int_to_str(n_pines()) + " grass=" + int_to_str(n_grass()) + " match=" + int_to_str(match_secs()) + "s report=" + int_to_str(report_secs()) + "s gravity=" + int_to_str(gravity_tenths()) + "/10 time=" + int_to_str(to_int(start_time())))
   println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
   # What this server has last told anybody about each ammunition box. Zeros,
   # which is where `v.init` put them.
@@ -1791,4 +2079,7 @@ fn run(server) =
   inbox = channel()
   spawn accept_loop(server, inbox, live)
   spawn ticker(inbox, now_nanos() + tick_ms() * 1000000)
-  hub(w, Nil, inbox, 0, said)
+  # Writes this valley down where the others can see it, once a second, and
+  # does nothing at all when there is nowhere to write.
+  spawn registrar(live)
+  hub(w, Nil, inbox, 0, said, live)

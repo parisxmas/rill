@@ -168,6 +168,19 @@
     let hv = normalize(L - vdir);
     col += SUN_COL * pow(max(dot(n, hv), 0.0), 240.0) * 2.4 * sh * cloudShadow(v.world, t);
 
+    // And the moon's, which is the same image of the same kind of thing and is
+    // most of what says the valley is lit at all after dark. A wider lobe than
+    // the sun's: the moon here is drawn several times life size, and the width
+    // of a glitter path is the width of what is being reflected in it — so a
+    // tight lobe would put a single hard dot on the lake where there should be
+    // a road running out towards the shore.
+    //
+    // Cut by the phase, like everything else the moon does, and gone by day.
+    let mdir = normalize(MOON_AT);
+    let mh = normalize(mdir - vdir);
+    col += MOON_COL * pow(max(dot(n, mh), 0.0), 90.0)
+                    * 1.5 * moonPhase() * (1.0 - dayness());
+
     // Foam: at the shoreline, where the depth runs out, and on the crests,
     // where the trochoids pinch.
     //

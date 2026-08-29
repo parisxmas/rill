@@ -1,0 +1,118 @@
+# The lakebed's weed and the meadow's fireflies, now that the engine places
+# them.
+#
+# They were the last two things in this world scattered with `Math.random` in
+# host.js. What that cost was not correctness — nothing in the simulation
+# touches a frond — but agreement: two people standing on the same shore saw
+# two different lakebeds, and there was no way to say which was right, or even
+# to notice they differed.
+#
+# So the thing worth pinning here is the thing that changed: **twice is the
+# same**. After that, the two rules that make it weed rather than confetti —
+# it stands in water, and it grows in beds rather than sprinkled.
+import "valley" as v
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+fn absf(x) = v.absf(x)
+
+fn cap() = v.weed_cap()
+
+# Two buffers, filled by two separate calls, compared float by float.
+fn differ(a, b, n, i, d) =
+  if i >= n then d
+  else differ(a, b, n, i + 1, d + (if peek_f32(a, i) == peek_f32(b, i) then 0 else 1))
+
+# Every frond has to be standing in water: the bottom under it between one
+# metre and eleven down. The instance carries y a little under the sand, so
+# the test allows the five centimetres it was rooted by.
+fn dry(buf, n, i, bad) =
+  if i >= n then bad
+  else
+    x = peek_f32(buf, i * 8)
+    y = peek_f32(buf, i * 8 + 1)
+    z = peek_f32(buf, i * 8 + 2)
+    g = v.ground(x, z)
+    ok = g < 0.0 - 0.9 && g > 0.0 - 11.0 && absf(y - (g - 0.05)) < 0.001
+    dry(buf, n, i + 1, bad + (if ok then 0 else 1))
+
+# How many of the others are within a couple of metres of this one. In beds,
+# a frond has neighbours; sprinkled over a lake this size, it has none.
+fn near_count(buf, n, i, j, r2, k) =
+  if j >= n then k
+  else
+    dx = peek_f32(buf, i * 8) - peek_f32(buf, j * 8)
+    dz = peek_f32(buf, i * 8 + 2) - peek_f32(buf, j * 8 + 2)
+    near_count(buf, n, i, j + 1, r2, k + (if i != j && dx * dx + dz * dz < r2 then 1 else 0))
+
+fn lonely(buf, n, i, k) =
+  if i >= n then k
+  else lonely(buf, n, i + 1, k + (if near_count(buf, n, i, 0, 4.0, 0) == 0 then 1 else 0))
+
+# The scale, the turn and the three colour floats all have to be inside the
+# ranges the shader was written against — a frond of scale nought is a hole
+# in the bed and a frond of scale forty is a tree.
+fn out_of_range(buf, n, i, bad) =
+  if i >= n then bad
+  else
+    sc = peek_f32(buf, i * 8 + 3)
+    rot = peek_f32(buf, i * 8 + 4)
+    r = peek_f32(buf, i * 8 + 5)
+    ok = sc >= 0.85 && sc <= 2.35 && rot >= 0.0 && rot <= 6.2832 && r >= 0.12 && r <= 0.34
+    out_of_range(buf, n, i + 1, bad + (if ok then 0 else 1))
+
+# The fireflies start in a ring over the meadow and off the ground.
+fn fly_bad(buf, n, i, bad) =
+  if i >= n then bad
+  else
+    x = peek_f32(buf, i * 8)
+    y = peek_f32(buf, i * 8 + 1)
+    z = peek_f32(buf, i * 8 + 2)
+    r = sqrt(x * x + z * z)
+    ok = r >= 11.99 && r <= 44.01 && y >= 1.0 && y <= 4.5
+    fly_bad(buf, n, i + 1, bad + (if ok then 0 else 1))
+
+fn main() =
+  w = v.init(32, 4, 4, 4)
+  a = alloc_bytes(cap() * 8 * 4)
+  b = alloc_bytes(cap() * 8 * 4)
+
+  println("the lakebed")
+  n = v.weed_build(a, cap())
+  n2 = v.weed_build(b, cap())
+
+  # The whole point of the move. Same world, same call, same lakebed —
+  # which is what every other thing in this valley already promised.
+  say("the same valley twice, fronds", if n == n2 then 1 else 0, 1)
+  say("and not one float apart", differ(a, b, n * 8, 0, 0), 0)
+
+  # It has to actually grow something, and not fill the buffer either: a
+  # scatter that hits the cap is a scatter that was never asked to choose.
+  say("it grew something", if n > 200 then 1 else 0, 1)
+  say("and did not fill the buffer", if n < cap() then 1 else 0, 1)
+
+  # Every frond in water, rooted to the bottom under it.
+  say("fronds standing on dry land", dry(a, n, 0, 0), 0)
+
+  # In beds, and this is the line that would catch a return to sprinkling.
+  #
+  # Not nought. A bed whose centre sits near the shore has most of its fronds
+  # thrown out by the depth test, and one of them comes back with a single
+  # survivor standing on its own — which is what a real patch does at the
+  # water's edge. What cannot happen is *many* of them alone: scattered evenly
+  # over a lake this size, nearly every frond would be.
+  say("fronds standing alone", lonely(a, n, 0, 0), 1)
+  say("and that is a handful, not the bed", if lonely(a, n, 0, 0) * 20 < n then 1 else 0, 1)
+
+  # And nothing outside what the shader was written for.
+  say("fronds outside their ranges", out_of_range(a, n, 0, 0), 0)
+
+  println("the fireflies")
+  f = alloc_bytes(600 * 8 * 4)
+  g = alloc_bytes(600 * 8 * 4)
+  v.fly_seed(f, 600)
+  v.fly_seed(g, 600)
+  say("the same swarm twice", differ(f, g, 600 * 8, 0, 0), 0)
+  say("flies outside the ring or off the height", fly_bad(f, 600, 0, 0), 0)
+  println("done")

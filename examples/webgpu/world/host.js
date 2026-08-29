@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "524";
+const V = "585";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -96,9 +96,9 @@ const SHADERS = {
   terrain: "common", instanced: "common", pine: "common", grass: "common",
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
-  sky: "common", water: "common", glow: "common", "firefly-draw": "common",
+  sky: "common", water: "common", glow: "common", halo: "common", weed: "common", lamp: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", zap: "common",
-  mark: "common", spark: "common", ak: "common", jet: "common", magma: "common",
+  mark: "common", spark: "common", ak: "common", mg: "common", mgfx: "common", jet: "common", magma: "common",
   pick: "common", stonehand: "common", rockface: "common",
   flower: "common",
   // The HUD stands alone: it has a uniform block of its own, and giving it
@@ -129,16 +129,23 @@ const TEXTURES = [
   ["./plants.png", 1024, 512],
   ["./rock-face.jpg", 256, 256],
   ["./shore-sand.jpg", 256, 256],
-  ["./rifle-atlas.jpg", 1024, 512],  // the rifle's two materials, side by side
+  // Both guns' photographs in one sheet, because sixteen sampled textures is
+  // the hard limit and the sixteenth is already spoken for. The rifle's own
+  // atlas — its wood and its steel side by side — sits in the top-left
+  // quarter at the size it always was; the M60's square sheet fills the right
+  // half. Two shaders halve their coordinates and nothing else changed.
+  ["./gun-atlas.jpg", 2048, 1024],
   ["./meteor.jpg", 256, 256],        // the stone inside a fireball
-  // Jupiter, equirectangular: Cassini's imagery by way of Solar System Scope,
-  // CC BY 4.0. A thousand across for a disc four hundred pixels wide — the
-  // visible hemisphere is half the map, so five hundred texels cover four
-  // hundred pixels and it is still oversampled. Two thousand was 219 KB for
-  // detail that never reached the screen; this is 62.
-  ["./jupiter.jpg", 1024, 512],
-  // Saturn's globe. Half Jupiter's width on screen, so half the map does.
-  ["./saturn.jpg", 1024, 512],
+  // Jupiter over Saturn in one 1024-square atlas: Cassini imagery by way of
+  // Solar System Scope, CC BY 4.0, and Saturn's globe beneath it.
+  //
+  // They were two textures until the bullet decal arrived and there was no
+  // seventeenth sampled texture to give it — the limit this file warns about
+  // twice above is a real sixteen, and asking for a seventeenth does not
+  // degrade, it refuses the whole bind group layout and the valley does not
+  // start. Two equirectangular maps stack with no UV arithmetic worth the
+  // name: the top half is one planet, the bottom half the other.
+  ["./planets.jpg", 1024, 1024],
   // The four Galileans in one 2x2 atlas — Io and Europa on the top row,
   // Ganymede and Callisto beneath. USGS and Voyager/Galileo mosaics by way of
   // the Celestia project. Twenty pixels of moon does not need five hundred and
@@ -156,6 +163,15 @@ const TEXTURES = [
   // The launcher and the rocket it fires, off one sheet — they came out of one
   // file and they are the same object a moment apart.
   ["./rpg7.jpg", 512, 512],
+  // What a round leaves behind: musdasch's bullet decal (OpenGameArt, CC0),
+  // one ragged hole on transparency. The marks were drawn with arithmetic
+  // before — a circle, a bruised rim and a sine for the ragged edge — which
+  // read as a stamp; this is a photograph of a hole.
+  //
+  // Last on purpose: this list's order is the order the views are pulled out
+  // of in one destructure below, so a new entry anywhere but the end silently
+  // renames every texture after it.
+  ["./bullet-hole.png", 512, 512],
 ];
 
 function loadShaders(step, pakText) {
@@ -188,6 +204,8 @@ function loadShaders(step, pakText) {
     FLOWER: whole("flower"),
     HUD: whole("hud"),
     AK: whole("ak"),
+    MG: whole("mg"),
+    MGFX: whole("mgfx"),
     STONE: whole("stone"),
     LAUNCHER: whole("launcher"),
     WARHEAD: whole("warhead"),
@@ -208,6 +226,9 @@ function loadShaders(step, pakText) {
     FIREFLY_SIM: whole("firefly-sim"),
     FIREFLY_DRAW: whole("firefly-draw"),
     GLOW: whole("glow"),
+    HALO: whole("halo"),
+    WEED: whole("weed"),
+    LAMP: whole("lamp"),
   };
 }
 
@@ -581,7 +602,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // a painted one rather than over black.
   // Nine fetch/build steps, one per shader, one per texture, six decodes —
   // and one for the bundle the assets all arrive in.
-  const TOTAL = 16 + Object.keys(SHADERS).length + TEXTURES.length + 19 + (server ? 1 : 0);
+  const TOTAL = 17 + Object.keys(SHADERS).length + TEXTURES.length + 20 + (server ? 1 : 0);
   let done = 0;
   // Never past the end. This is a count kept by hand of steps taken elsewhere,
   // and the two drift every time something is added — a bar that says 104% is
@@ -823,6 +844,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // "which of these is costing the milliseconds" can be answered by setting a
   // count to nought for a second rather than by guessing.
   window.rill = { E, get state() { return state; }, get world() { return world; },
+                  get gpuMs() { return gpuMs; },
                   get net() { return net; }, get W() { return W; }, get T() { return T; },
                   // Draw a frame on demand, which is the only way to measure
                   // this renderer honestly. A tab that is not the one in front
@@ -947,8 +969,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // the decodes are the browser's work rather than ours; done one after
   // another they were the longest thing between the page opening and the
   // valley appearing.
-  const [foliageView, barkView, groundView, plantView, rockView, sandView, rifleView, meteorView,
-         jupiterView, saturnView, moonsView, sharkView, propView, rpgView] =
+  const [foliageView, barkView, groundView, plantView, rockView, sandView, gunView, meteorView,
+         planetsView, moonsView, sharkView, propView, rpgView, holeView] =
     await Promise.all(TEXTURES.map(([url, w, h]) =>
       mipped(url, w, h).then(v => { step(url.slice(2)); return v; })));
   const foliageSamp = device.createSampler({
@@ -1022,11 +1044,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     { shaderLocation: 2, offset: 12, format: "unorm16x2" },
   ]}];
   // One bullet per instance: position, velocity, a spare, and the life left.
-  const bulletLayout = [{ arrayStride: 32, stepMode: "instance", attributes: [
+  // Nine floats a round since the MG3 arrived: the ninth says which gun
+  // fired it, which is what the tracer draws off — see `bullet_stride` in
+  // valley.rill for why that is a field and not a speed test any more.
+  const bulletLayout = [{ arrayStride: 36, stepMode: "instance", attributes: [
     { shaderLocation: 0, offset: 0, format: "float32x3" },
     { shaderLocation: 1, offset: 12, format: "float32x3" },
     { shaderLocation: 2, offset: 24, format: "float32" },
     { shaderLocation: 3, offset: 28, format: "float32" },
+    { shaderLocation: 4, offset: 32, format: "float32" },
   ]}];
   // A shard: twenty floats in Rill's pool, of which the renderer wants four —
   // where it is, how it is turned, how big it is, and what colour it was.
@@ -1106,11 +1132,23 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     { constants: { emissive: 0.72 }, blend: overPre, cull: "none",
       depth: { depthWriteEnabled: false } });
   const grassPipe = pipe("grass", S.GRASS, [pineLayout, instLayout], { cull: "none" });
+  // What grows on the lakebed: the meadow's card and the meadow's atlas, moved
+  // by a swell instead of a wind. Two-sided like the grass — a frond seen from
+  // behind is still a frond.
+  const weedPipe = pipe("weed", S.WEED, [pineLayout, instLayout], { cull: "none" });
   // The flowers, on the undergrowth's own mesh and layout — two crossed cards
   // — and its own shader, which draws from the other half of the atlas and
   // leans further in the wind.
   const flowerPipe = pipe("flower", S.FLOWER, [pineLayout, instLayout], { cull: "none" });
   const glowPipe = pipe("glow", S.GLOW, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // The light that climbs a crystal. On the crystals' own instances, and drawn
+  // the way the glow is — additive, depth-tested so the hill hides it, and no
+  // depth write, because it is light and there is nothing behind it to lose.
+  const haloPipe = pipe("halo", S.HALO, [instLayout], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // The bulbs on other people's heads. No buffers at all: the six lamp slots
+  // are already in the uniform block, so this is six quads and an index.
+  const lampPipe = pipe("lamp", S.LAMP, [], { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  const HALO_VERTS = 28 * 6;
   // The pack's flame, on the crystals' own instance layout — where it starts,
   // how hard it is burning, a seed, and a colour it does not read. Additive
   // and depth-tested but not depth-writing, because it is light.
@@ -1169,6 +1207,21 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // Its own shader: the model came without texture coordinates, so the wood
   // and the steel are worked out from where a point sits on the weapon.
   const akPipe = pipe("ak", S.AK, vmLayout);
+  // Two-sided, unlike the AK beside it. This mesh came through a conversion
+  // from FBX and its grip is a shell rather than a solid: culled, its inside
+  // faces are dropped and the grip is drawn half. Nothing here is seen from
+  // behind except that, so drawing both faces costs one weapon's triangles.
+  const mgPipe = pipe("mg", S.MG, vmLayout, { cull: "none" });
+  // The belt and the brass: no vertex buffer at all — everything is built
+  // from the vertex index, like the muzzle. 7 belt cartridges + 6 casings,
+  // 36 verts each.
+  const mgfxPipe = pipe("mgfx", S.MGFX, vmLayout);
+  // How far the MG3 is moved from where the rifle sits, in model units. One
+  // bias for both the gun and its flash: they were separate once and the
+  // flash drifted off the barrel the moment either was touched.
+  // x pulled back from 0.10 and the mesh baked a fifth longer, both by
+  // request; y and z are where they always were.
+  const MG_BIAS = [0.06, -0.13, 0.11];
   // The shark. Culled normally, depth-tested and depth-writing like any solid
   // — it is only unusual in when it is drawn at all, which is decided in the
   // frame rather than here.
@@ -1428,8 +1481,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
   const ZAP_MAX = 16;
   const zapGpu = device.createBuffer({ size: ZAP_MAX * 40, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-  const zapData = new Float32Array(ZAP_MAX * 10);
-  const zapsLive = [];
+  // The engine's room for the bolts: the ring it keeps them in, the run it
+  // packs the burning ones into, and a cursor. Asked for once — a picture is
+  // the page's memory, the same way the weed's is.
+  const zapRing = E.pak_alloc(BigInt(Number(E.zap_room()) * 4));
+  const zapOut = Number(E.zap_out_off());
   // Same treatment as the tracers: additive, depth-tested so the land hides
   // them, never writing depth of their own.
   const firePipe = pipe("fireball", S.FIREBALL, fireLayout,
@@ -1512,6 +1568,61 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   device.queue.writeBuffer(akIB, 0, akIdxBytes);
   step("ak47.mesh");
+  // The MG3: mightydinosaurcol's M60 (OpenGameArt, CC-BY 4.0), standing in
+  // for the German gun, baked the same way the AK was.
+  const mgBytes = pakBuf("mg3.mesh");
+  const mgHead = new DataView(mgBytes, 0, 32);
+  const mgVerts = mgHead.getUint32(0, true);
+  const mgIdx = mgHead.getUint32(4, true);
+  const mgBox = new Float32Array(mgBytes, 8, 6);
+  const mgVB = gpuBuf(new Uint8Array(mgBytes, 32, mgVerts * 16));
+  const mgIdxBytes = new Uint8Array((mgIdx * 2 + 3) & ~3);
+  mgIdxBytes.set(new Uint8Array(mgBytes, 32 + mgVerts * 16, mgIdx * 2));
+  const mgIB = device.createBuffer({
+    size: mgIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(mgIB, 0, mgIdxBytes);
+  step("mg3.mesh");
+  // The round itself: one 7.62x54mmR pulled out of Kutejnikov's SVD magazine
+  // (OpenGameArt, CC-BY 4.0) and baked alone. mgfx.wgsl draws it thirteen
+  // times by instance — seven on the belt, six as flying brass — so the
+  // whole animation is one small indexed draw.
+  const cartBytes = pakBuf("cartridge.mesh");
+  const cartHead = new DataView(cartBytes, 0, 32);
+  const cartVerts = cartHead.getUint32(0, true);
+  const cartIdx = cartHead.getUint32(4, true);
+  const cartVB = gpuBuf(new Uint8Array(cartBytes, 32, cartVerts * 16));
+  const cartIdxBytes = new Uint8Array((cartIdx * 2 + 3) & ~3);
+  cartIdxBytes.set(new Uint8Array(cartBytes, 32 + cartVerts * 16, cartIdx * 2));
+  const cartIB = device.createBuffer({
+    size: cartIdxBytes.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(cartIB, 0, cartIdxBytes);
+  step("cartridge.mesh");
+  // And where its muzzle is before that move — read out of the mesh here
+  // rather than written down.
+  //
+  // It was a constant, and a constant is wrong twice over: the baker is told
+  // a bore height it does not honour (it centres on the last six per cent of
+  // the model, which on this gun has the bipod in it), and any rebake at a
+  // different scale moves the tip anyway. Both of those cost a round of
+  // "the flash is under the barrel". The mesh is the only thing that knows,
+  // so it is asked: the centre of the last two centimetres of barrel.
+  const MG_MUZZLE = (() => {
+    const dv = new DataView(mgBytes);
+    const lo = [dv.getFloat32(8, true), dv.getFloat32(12, true), dv.getFloat32(16, true)];
+    const sp = [dv.getFloat32(20, true), dv.getFloat32(24, true), dv.getFloat32(28, true)];
+    const at = (i, k) => lo[k] + dv.getUint16(32 + i * 16 + k * 2, true) / 65535 * sp[k];
+    let xmax = -Infinity;
+    for (let i = 0; i < mgVerts; i++) xmax = Math.max(xmax, at(i, 0));
+    let ylo = Infinity, yhi = -Infinity, zlo = Infinity, zhi = -Infinity;
+    for (let i = 0; i < mgVerts; i++) {
+      if (at(i, 0) <= xmax - 0.02) continue;
+      ylo = Math.min(ylo, at(i, 1)); yhi = Math.max(yhi, at(i, 1));
+      zlo = Math.min(zlo, at(i, 2)); zhi = Math.max(zhi, at(i, 2));
+    }
+    return [xmax, (ylo + yhi) / 2, (zlo + zhi) / 2];
+  })();
   const rifleVB = gpuBuf(new Uint8Array(rifleBytes, 32, rifleVerts * 16));
   // An odd triangle count leaves an odd number of uint16s, and `writeBuffer`
   // wants a multiple of four bytes either way, so the tail is padded.
@@ -1632,7 +1743,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null, welcomeBuf = null;
-  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, akBuf = null, akReloadBuf = null, rpgBuf = null, musicStarted = false;
+  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, clackBuf = null, mgSndBuf = null, akBuf = null, akReloadBuf = null, rpgBuf = null, musicStarted = false;
   // Off to begin with. A valley somebody has just walked into should sound
   // like a valley; the theme is something you put on, not something that is
   // put on you. `M` turns it up, and the HUD has said so all along.
@@ -1677,6 +1788,29 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // glass — four is enough that a burst does not sound like a loop of one man.
   const hurtBytes = pakBuf("hurt.mp3");
   step("hurt.mp3");
+  // The clack of a magazine coming off the ground — Kenney's CC0 metal tap.
+  // The crate plays the same sample at three quarters speed; see ears.rill.
+  const clackBytes = pakBuf("pickup-clack.mp3");
+  step("pickup-clack.mp3");
+  // The MG3's report: a PPSh, from the Free Firearm Sound Library (CC0),
+  // pitched down about four semitones for the weight a belt gun has.
+  //
+  // It was a Mosin Nagant first, on the reasoning that 7.62x54 is the
+  // nearest cartridge in the library to the 7.62x51 this gun fires. That
+  // reasoning was right about the cartridge and wrong about the recording: a
+  // bolt-action barrel rings, and measured against the median of its own
+  // spectrum the Mosin's crack peaks seventeen to one where the PPSh's peaks
+  // ten to one. Sixteen of those rings a second stacked into an audible
+  // pitch — a bell under the gun. The PPSh is broadband where the Mosin is
+  // tuned, and dropping it a few semitones buys back the mass its 7.62x25
+  // does not have.
+  //
+  // Seventy-five milliseconds: the crack and its decay, stopping before any
+  // room in the recording answers back. An earlier cut ran to three hundred
+  // and carried the echo off the hillside with it, and every round dragged
+  // that echo across the next four.
+  const mgSndBytes = pakBuf("mg-shot.mp3");
+  step("mg-shot.mp3");
   // The theme. Eighty seconds that begin and end in silence, which is what
   // makes it loop without a seam: no crossfade, no loop points, just the tail
   // running into the head the way the piece was already written.
@@ -1775,7 +1909,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       step(label);
       return b;
     };
-    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf, akBuf, akReloadBuf, rpgBuf,
+    [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf, clackBuf, mgSndBuf, akBuf, akReloadBuf, rpgBuf,
      welcomeBuf] = await Promise.all([
       one(shotBytes, "decoding rifle-shot"),
       one(breakBytes, "decoding crystal-break"),
@@ -1785,6 +1919,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       one(hurtBytes, "decoding hurt"),
       one(musicBytes, "decoding valley-theme"),
       one(zapBytes, "decoding crystal-zap"),
+      one(clackBytes, "decoding pickup-clack"),
+      one(mgSndBytes, "decoding mg-shot"),
       one(akSndBytes, "decoding ak-shot"),
       one(akReloadBytes, "decoding ak-reload"),
       one(rpgSndBytes, "decoding rpg-launch"),
@@ -2173,6 +2309,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
                              0.42 + Math.random() * 0.08, 0,
                              0.95 + Math.random() * 0.1));
   }
+  // The MG3, sixteen times a second. One clip, played whole — it is already
+  // cut to a quarter second — and detuned a little each time so that a long
+  // burst is a roar with texture in it rather than one sample stuttering.
+  // Quieter per shot than the AK for the obvious reason: there are three
+  // times as many of them.
+  function mgBang() {
+    ensureAudio(() => playAt(mgSndBuf, 0, 0.075,
+                             0.36 + Math.random() * 0.05, 0,
+                             0.78 + Math.random() * 0.10));
+  }
   // The magazine change. Played a shade fast — the clip is a second and a
   // half and the pause is 1.4 — so the click of the magazine seating lands on
   // the frame the gun is ready again rather than a breath after it.
@@ -2216,7 +2362,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
   const bulletCap = Number(E.bullets_cap(0));
   const bulletBuf = device.createBuffer({
-    size: bulletCap * 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    size: bulletCap * 36, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
   const fireCap = Number(E.fireballs_cap(0));
   const fireInst = device.createBuffer({
@@ -2495,8 +2641,9 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // the pass begins, drawn at its end.
   let hudCount = 0;
   // How many interpolated players the wire handed over this frame, and the
-  // little per-player objects the two remaining consumers — the zap beam's
-  // target and the head-lamps — build on demand.
+  // one consumer left that wants them as objects: the zap beam, which needs
+  // to find one player by id and take a position off them. The head lamps
+  // used to be the other, and are `wire_lamps` in wire.rill now.
   let wireN = 0;
   const wireSeen = () => {
     const wi = wireInterp();
@@ -2504,8 +2651,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     for (let i = 0; i < wireN; i++) {
       const o = i * 12;
       out.push({ id: wi[o], x: wi[o + 1], y: wi[o + 2], z: wi[o + 3],
-                 yaw: wi[o + 4], pitch: wi[o + 5], health: wi[o + 6],
-                 torch: (wi[o + 8] % 2) >= 1 });
+                 yaw: wi[o + 4], pitch: wi[o + 5], health: wi[o + 6] });
     }
     return out;
   };
@@ -2619,7 +2765,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     if (cam) stateF32().set(cam, 19);
 
-    if (W) for (const k of ["terrainBuf", "pineInst", "poplarInst", "flowerInst", "crystalInst", "grassInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
+    if (W) for (const k of ["terrainBuf", "pineInst", "poplarInst", "flowerInst", "crystalInst", "grassInst", "weedInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
     const counts = {
       terrain: Number(E.terrain_verts(state)),
       pines: Number(E.pine_count(state)),
@@ -2643,15 +2789,30 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     W.waterBuf = gpuBuf(waterMesh(86, T.water));
     W.waterVerts = T.water * T.water * 6;
 
-    // Fireflies at this tier's density.
-    const flyData = new Float32Array(T.flies * 8);
-    for (let i = 0; i < T.flies; i++) {
-      const a = Math.random() * Math.PI * 2, r = 12 + Math.random() * 32;
-      flyData[i * 8] = Math.cos(a) * r;
-      flyData[i * 8 + 1] = 1.0 + Math.random() * 3.5;
-      flyData[i * 8 + 2] = Math.sin(a) * r;
-      flyData[i * 8 + 3] = Math.random();
+    // Weed on the lakebed, and where it is decided.
+    //
+    // In the engine — see `weed_beds` in valley.rill — because it was the last
+    // thing in this world scattered with `Math.random`, which meant every
+    // browser grew a different lakebed on the same lake. Nothing in the
+    // simulation touches a frond, so nothing was broken by it; but the picture
+    // is part of the world, and a part of the world nobody can reproduce is a
+    // part nobody can talk about.
+    //
+    // The buffer is the page's: asked for when the renderer is built, thrown
+    // away when the tier changes. The engine only fills it.
+    {
+      const cap = Number(E.weed_cap());
+      const at = E.pak_alloc(BigInt(cap * 8 * 4));
+      W.weedCount = Number(E.weed_build(at, BigInt(cap)));
+      if (W.weedCount > 0) {
+        W.weedInst = gpuBuf(new Float32Array(E.memory.buffer, Number(at), W.weedCount * 8));
+      }
     }
+
+    // Fireflies at this tier's density, seeded the same way.
+    const flyAt = E.pak_alloc(BigInt(T.flies * 8 * 4));
+    E.fly_seed(flyAt, BigInt(T.flies));
+    const flyData = new Float32Array(E.memory.buffer, Number(flyAt), T.flies * 8);
     W.flyBuf = device.createBuffer({ size: flyData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(W.flyBuf, 0, flyData);
     W.flyDrawBg = device.createBindGroup({ layout: flyBgl, entries: [{ binding: 0, resource: { buffer: W.flyBuf } }] });
@@ -2720,11 +2881,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       { binding: 8, resource: rockView },
       { binding: 9, resource: sandView },
       { binding: 10, resource: plantView },
-      { binding: 11, resource: rifleView },
+      { binding: 11, resource: gunView },
       { binding: 12, resource: meteorView },
       { binding: 13, resource: W.envView },
-      { binding: 14, resource: jupiterView },
-      { binding: 15, resource: saturnView },
+      { binding: 14, resource: planetsView },
+      { binding: 15, resource: holeView },
       { binding: 16, resource: moonsView },
       { binding: 17, resource: sharkView },
       { binding: 18, resource: propView },
@@ -2757,11 +2918,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       { binding: 8, resource: rockView },
       { binding: 9, resource: sandView },
       { binding: 10, resource: plantView },
-      { binding: 11, resource: rifleView },
+      { binding: 11, resource: gunView },
       { binding: 12, resource: meteorView },
       { binding: 13, resource: blankCube },
-      { binding: 14, resource: jupiterView },
-      { binding: 15, resource: saturnView },
+      { binding: 14, resource: planetsView },
+      { binding: 15, resource: holeView },
       { binding: 16, resource: moonsView },
       { binding: 17, resource: sharkView },
       { binding: 18, resource: propView },
@@ -2966,7 +3127,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (e.code === "Digit2" || e.code === "Numpad2") wantHeld = 1;
     if (e.code === "Digit3" || e.code === "Numpad3") wantHeld = 2;
     if (e.code === "Digit4" || e.code === "Numpad4") wantHeld = 3;
-    if (e.code === "Digit5" || e.code === "Numpad5") wantHeld = 4;
+    if (e.code === "Digit5" || e.code === "Numpad5") wantHeld = 5;
+    if (e.code === "Digit6" || e.code === "Numpad6") wantHeld = 4;
   });
   // On the press, not held: read from the event rather than from the key mask,
   // so leaning on space at the end does not restart over and over.
@@ -3080,7 +3242,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // whole of the propellant leaves the front of it and there is a tube to
   // reload. Two and a half seconds is what stops a rocket being a rifle.
   const RPG_CYCLE = 2.5;
-  let wantShot = false, wantReload = false, fireHeld = false, wasReady = true, zapSeen = 0;
+  let wantShot = false, wantReload = false, fireHeld = false, wasReady = true;
   // The hand block's fixed indices, hand.rill's own — mirrored once.
   const HAND = { held: 0, swap: 2, bolt: 4, aim: 5, recoil: 6, flash: 7,
                  hold: 14, zoom: 16, mdx: 17, mdy: 18, evN: 19, ev0: 20,
@@ -3136,69 +3298,15 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   let refresh = 1000 / 60, warm = 0, changes = 0, stable = 0, locked = false;
   const median = a => [...a].sort((x, y) => x - y)[a.length >> 1];
 
-  // The sun's path across the sky, and how fast the world runs along it: one
-  // turn in a minute and a half.
+  // The sun's path across the sky is the engine's — `sun_theta` and what
+  // follows it in valley.rill — because it is a function of the world clock
+  // and nothing else, and the clock belongs to whoever is holding the world.
+  // It lived here for a long time, which meant a server could hand down the
+  // hour and still have no way to say where the light was coming from.
   //
-  // This is a small planet. Not a decision about the terrain — the valley is
-  // the size it always was — but about how long it takes to carry you round,
-  // and that is the only way the size of a world is visible from standing on
-  // it. A day and a night in ninety seconds means the sun comes up while you
-  // are still working out where you are, and the whole cycle is something you
-  // watch rather than something you wait for. It was four minutes, which was
-  // long enough that most of a visit happened under one lighting. `shaders/common.wgsl` carries the same axis and the
-  // same rate, because the stars and the planets wheel about the same pole.
-  //
-  // The pole is very nearly horizontal, so the sun's path is a great circle
-  // that passes near enough overhead: it rises on one side, stands at the top
-  // of the sky at midday, and sets on the other. That is what a day is on a
-  // planet whose axis is not leaning much and whose observer is not far from
-  // its equator — which is to say, it is Earth's, at the equinox.
-  //
-  // Turned about the vertical instead the sun would keep its height and the
-  // evening would never end, which is what this did at first: a fair trade for
-  // holding the golden hour, until it was obvious that a world where the sun
-  // goes round and round at a fixed altitude is not a world with a sky, it is
-  // a world with a lamp on a turntable. Then thirty-five degrees, which bought
-  // a night but capped the sun a third of the way up, so it was permanently
-  // late afternoon and never actually daytime.
-  //
-  // Eighty-two rather than a clean ninety for one arithmetic reason: at exactly
-  // ninety the sun passes through the zenith, and a light straight overhead has
-  // no horizontal component for the shadow matrix to build its basis from. Eight
-  // degrees off is invisible and keeps that term away from zero. `light_vp`
-  // guards it as well, because a constant here and an assumption there is how
-  // this sort of thing comes back.
-  const SKY_TILT = 82 * Math.PI / 180;
-  // The axis, and the two directions that span the plane the sun runs round in.
-  const SKY_AXIS = [Math.sin(SKY_TILT), Math.cos(SKY_TILT), 0];
-  const SUN_E1 = [0, 0, 1];
-  const SUN_E2 = [Math.cos(SKY_TILT), -Math.sin(SKY_TILT), 0];
-  // Where in the day it starts: a few degrees below the horizon and climbing,
-  // so the first thing that happens is sunrise. The sky is still dawn-blue when
-  // the curtain lifts, the ridge lights up within a couple of seconds, and the
-  // shadows swing out across the meadow while you are still working out which
-  // way you are facing.
-  //
-  // π minus a tenth. y = -sin(θ) on this path, so θ = π is the horizon exactly
-  // and cos(θ) < 0 there is what makes it the rising crossing rather than the
-  // setting one — the same y, the other side of the day.
-  const SUN_PHASE = Math.PI - 0.10;
-  // A day, in seconds. Ninety was a good number for somebody who would look at
-  // this for a minute; it is a poor one for somebody living in it, because the
-  // shadows visibly crawl and the sun sets while you are crossing the meadow.
-  // Six minutes is still nothing like a day and still shows a whole one inside
-  // a session somebody stays in, and the sky has stopped being something you
-  // can watch move — the light changes while you are busy and you notice it
-  // afterwards, which is what daylight does.
-  const SKY_SPIN = 2 * Math.PI / 360;
-  // The sun's circle is lifted by half its amplitude, which is the geometry of
-  // a wider world: on a planet fat enough, the day arc runs long and the sun
-  // dips under the horizon for exactly a third of the turn instead of half.
-  // sin(30°) of the amplitude is what makes the split 2/3 to 1/3 — solve
-  // elevation = A·sin(θ) + A/2 > 0 and θ spends 240 of 360 degrees above.
-  const SUN_LIFT = Math.sin(SKY_TILT) * 0.5;
+  // `shaders/common.wgsl` carries the same axis and the same rate, because the
+  // stars and the planets wheel about the same pole.
   const uf = new Float32Array(UNI_FLOATS);
-  let lastX = 0, lastZ = 0, speed = 0, bobPhase = 0;
   // Resolved by the frame loop the first time it actually submits, so `run`
   // does not return on a canvas that has nothing on it yet.
   let painted = null;
@@ -3278,6 +3386,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // the valley is its own, and these only cross the wire when it is not.
         else if (kind === 9 && net) net.mined();
         else if (kind === 10 && net) net.builds();
+        else if (kind === 11) mgBang();
       }
     }
 
@@ -3291,7 +3400,6 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       ended = false;
       lastHp = -1; lastStanding = -1;
       E.ears_hush(state);
-      zapSeen = Number(E.zaps(state));
       hudHead(HH.over, 0);
     }
     wantRestart = false;
@@ -3327,7 +3435,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         // and an edge is exactly what a twenty-a-second tick drops. The page
         // sees both at sixty and sends the answer — see `jet_told` in
         // valley.rill.
-        net.input(keys | (held << 7) | (torchOn ? 512 : 0)
+        net.input(keys | ((held & 3) << 7) | ((held >> 2) << 11) | (torchOn ? 512 : 0)
                        | (Number(E.jet_armed_now(state)) ? 1024 : 0),
                   look[19], look[20]);
       }
@@ -3430,7 +3538,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // its own and no room for a second opinion about where the middle is.
 
 
-    // The socket went. The engine keeps the caption up; this only raises it.
+    // The socket went — or the valley did, which is not the same thing and
+    // used to be indistinguishable from still playing. A dropped player keeps
+    // a live socket and a stale ping; what stops is the snapshots, so that is
+    // what is watched. See `silent` in net.js.
+    if (net && !net.lost && net.silent) net.lost = true;
+    // The engine keeps the caption up; this only raises it.
     if (net && net.lost && lastOver !== 2) {
       lastOver = 2;
       hudSlot(HSLOT.over1, [[-1, "DISCONNECTED"]]);
@@ -3475,7 +3588,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     const ears = earsF32();
     const cueN = ears[EARS.n];
     if (cueN) ensureAudio(() => {
-      const bufs = [null, breakBuf, blastSnd, zapSndBuf, pickBuf, hurtBuf];
+      const bufs = [null, breakBuf, blastSnd, zapSndBuf, pickBuf, hurtBuf, clackBuf];
       for (let i = 0; i < cueN; i++) {
         const a = EARS.cues + i * 8;
         playAt(bufs[ears[a] | 0], ears[a + 1], ears[a + 2],
@@ -3529,60 +3642,31 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // of the frames it has drawn, which is what it always was: a day does not
     // pass while a tab is hidden and nobody is watching it.
     const sky = E.world_time(world);
-    // The crystals' bites. The counter moves — whether this world decided the
-    // bite (alone) or was told about one (`z`) — and the light and the sound
-    // follow from the ring: which crystal, in its own colour, to whom.
-    const nz = Number(E.zaps(state));
-    if (nz !== zapSeen) {
-      const cryF = new Float32Array(E.memory.buffer, Number(E.crystals(state)), Number(E.crystal_count(state)) * 8);
-      for (let k = Math.max(zapSeen, nz - 8); k < nz; k++) {
-        const zwho = Number(E.zap_who(state, BigInt(k)));
-        const zci = Number(E.zap_which(state, BigInt(k)));
-        const ca = zci * 8;
-        let tx, ty, tz;
-        const sf = stateF32();
-        // Your foot, not your chest and certainly not your eye. Ending it at
-        // the camera put the last stretch of the bolt behind the near plane,
-        // so a hit you were not already looking at arrived as damage with
-        // nothing on screen; the chest fixed that and left the bolt reaching
-        // out of the middle of the view, from nowhere, at nothing.
-        //
-        // The ground is where it belongs. A discharge goes to earth, and what
-        // you are standing on is the earth — so it runs from the crystal down
-        // to where you are touching it, crosses the whole bottom of the view
-        // on the way, and reads as something arriving rather than something
-        // emitted. Slot 22 is the foot the world walks on, jump and all, so
-        // this is right in the air as well as on the ground.
-        if (!net || zwho === net.id) { tx = sf[16]; ty = sf[22] + 0.12; tz = sf[18]; }
-        else {
-          const q = wireSeen().find(p => p.id === zwho);
-          if (!q) continue;
-          tx = q.x; ty = q.y + 0.12; tz = q.z;
-        }
-        zapsLive.push({ ax: cryF[ca], ay: cryF[ca + 1] + cryF[ca + 3] * 1.05, az: cryF[ca + 2],
-                        bx: tx, by: ty, bz: tz,
-                        r: cryF[ca + 5], g: cryF[ca + 6], b: cryF[ca + 7], born: sky });
-        if (zapsLive.length > ZAP_MAX) zapsLive.shift();
-      }
-      zapSeen = nz;
-    }
-    // Where the sun is now: a point on the tilted circle. What goes into the
-    // uniform and into the shadow matrix is the direction the light travels,
-    // which is the other way round from where the sun is.
-    const th = SUN_PHASE + sky * SKY_SPIN;
-    const cs = Math.cos(th), sn = Math.sin(th);
-    let sunX = -(SUN_E1[0] * cs + SUN_E2[0] * sn);
-    let sunY = -(SUN_E1[1] * cs + SUN_E2[1] * sn) - SUN_LIFT;
-    let sunZ = -(SUN_E1[2] * cs + SUN_E2[2] * sn);
-    // Lifted, so no longer unit; everything downstream — the shadow basis,
-    // the sky, the fog — assumes a direction of length one.
-    const sl = Math.hypot(sunX, sunY, sunZ);
-    sunX /= sl; sunY /= sl; sunZ /= sl;
-    // Into the shadow matrix first, so what is copied out of the state below is
-    // this frame's sun and not the last one's. There is one sun in this world:
-    // the disc in the sky, the direction `lit` shades from and the matrix the
+    // The crystals' bites, turned into beams by `wire_zaps` in wire.rill: the
+    // world keeps the ring of who was bitten by which crystal, and that file
+    // reads the crystal's own instance, finds the target among the
+    // interpolated rows and stamps the clock. The endpoints are captured at
+    // the strike and never recomputed — a bolt that followed its target would
+    // be dragged across the valley by somebody walking away.
+    //
+    // What is left here is the buffer write and the draw, below.
+    // A pointer crosses this wall as a number and a count as a BigInt, which
+    // is the binding's own rule and not a choice here.
+    const zapN = Number(E.zap_beams(
+      state, zapRing,
+      net ? Number(net.wire) + Number(E.wire_interp_at()) * 4 : 0,
+      BigInt(net ? wireN : 0), sky));
+    // Where the sun is now. The path is the engine's — see `sun_theta` in
+    // valley.rill — because it is a function of the clock and nothing else,
+    // and a sun that only the page knew how to place was a sun nothing else
+    // could agree with.
+    //
+    // The matrix first, so what is copied out of the state below is this
+    // frame's sun and not the last one's. There is one sun in this world: the
+    // disc in the sky, the direction `lit` shades from and the matrix the
     // shadows are cast with are all the same three numbers.
-    E.set_sun(state, sunX, sunY, sunZ);
+    E.step_sun(state);
+    const sunX = E.sun_x(world), sunY = E.sun_y(world), sunZ = E.sun_z(world);
 
     const st = stateF32();
     uf.set(st.subarray(0, 16), 0);        // vp
@@ -3604,23 +3688,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     const weather = new Float32Array(E.memory.buffer, Number(world), 32);
     uf[42] = weather[26]; uf[43] = weather[27]; // wind angle, wind strength
     uf[44] = weather[29];                       // the wind's integrated phase
-    // How fast the player is going, and a phase integrated from it. The gun's
-    // bob reads both: the speed sets how far it swings, the phase where it is
-    // in the swing — a bob driven by the clock alone jumps whenever the speed
-    // changes, which is every time you start or stop walking.
-    const fx = st[21], fz = st[23];
-    const inst = Math.hypot(fx - lastX, fz - lastZ) / Math.max(dt, 0.0001);
-    lastX = fx; lastZ = fz;
-    // Only what the feet are doing. The bob is a stride — the weapon swinging
-    // because a leg swung — and there is no stride in the air: flying across
-    // the valley on the pack moved the gun exactly as walking across it did,
-    // which read as running on nothing. Slot 25 is the world's own word for
-    // whether the feet are down, so a jump stills it too. Eased rather than
-    // cut, or the gun would stop dead the frame you left the ground.
-    const onFoot = st[25] > 0.5;
-    speed += ((onFoot ? Math.min(inst, 12) : 0) - speed) * 0.15;
-    bobPhase += speed * dt * 2.4;
-    uf[45] = speed; uf[46] = bobPhase; uf[47] = recoil;
+    // The stride the gun rides on — `step_bob` in valley.rill. It was two
+    // variables here, which made it the last piece of a player's motion kept
+    // outside the world and the one thing about them that did not survive a
+    // renderer rebuild.
+    E.step_bob(state, dt);
+    uf[45] = E.bob_speed(state); uf[46] = E.bob_phase(state); uf[47] = recoil;
     uf[116] = flash;                      // and the muzzle's own, see `fx`
     // How far down on one knee, for the weapon in the hands — see `vmCam`.
     uf[117] = E.crouch_of(state);
@@ -3628,13 +3701,41 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     uf[118] = held === 3 ? 1 : held === 4 ? 2 : 0;
     uf.set(rifleBox.subarray(0, 3), 48);  // the rifle's bounding box, to unquantize against
     uf.set(rifleBox.subarray(3, 6), 52);
-    uf.set(akBox.subarray(0, 3), 108);    // and the AK's, for its own pipeline
-    uf.set(akBox.subarray(3, 6), 112);
-    // How far through a magazine change the hands are, in the box's spare
-    // fourth slot — nought when there is nothing going on, which is what the
-    // shader tests. Floored a hair above nought on the first frame so that
-    // "just started" is never mistaken for "not happening"; nothing has moved
-    // at that phase anyway.
+    // Where this weapon's flash is born, in its own model coordinates. The
+    // rifle and the AK share a length and kept a constant in the shader for
+    // years; the MG3 is shorter and sits further forward, so the constant put
+    // its flash out past the barrel and — a point straight ahead projecting
+    // to the middle of the screen — onto the crosshair.
+    //
+    // The MG's is measured off its mesh rather than reasoned about. The first
+    // attempt derived it: the baker is told where to put the bore and it was
+    // told 0.0497, so that plus the box's floor ought to be the barrel. It
+    // was not, twice over — the bore figure is an absolute height and not an
+    // offset from the floor, and the baker never honoured it anyway, because
+    // it centres on the last six per cent of the model's length and on this
+    // gun that stretch has the bipod in it. The flash came out under the
+    // barrel. `MG_MUZZLE` below is what the mesh actually says: the centre of
+    // the last two centimetres of it.
+    if (held === 5) {
+      uf[119] = MG_MUZZLE[0] + MG_BIAS[0];
+      uf[121] = MG_MUZZLE[1] + MG_BIAS[1];
+      uf[122] = MG_MUZZLE[2] + MG_BIAS[2];
+    } else {
+      uf[119] = 0.60; uf[121] = 0.050; uf[122] = 0.0;
+    }
+    // The automatic gun's box, which the AK and the MG3 share: only one
+    // viewmodel draws per frame, so one pair of slots does for both. The MG
+    // carries `MG_BIAS` here exactly as its muzzle does above — one bias, two
+    // readers, and they cannot drift apart.
+    if (held === 5) {
+      uf[108] = mgBox[0] + MG_BIAS[0];
+      uf[109] = mgBox[1] + MG_BIAS[1];
+      uf[110] = mgBox[2] + MG_BIAS[2];
+      uf.set(mgBox.subarray(3, 6), 112);
+    } else {
+      uf.set(akBox.subarray(0, 3), 108);
+      uf.set(akBox.subarray(3, 6), 112);
+    }
     uf[111] = handF()[HAND.cph];          // how far through the magazine change
     // The shark: which way it faces, where the tail is in its beat, how wide
     // the jaw is, and where it is. Straight out of Rill — the renderer is told
@@ -3665,54 +3766,40 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
     // This player's lamp, and then everybody else's whose is lit.
     //
-    // Nearest first and only six, because the beams are summed per fragment
-    // over the whole world and a valley of thirty-two people would be paying
-    // for lights that are a hundred metres behind them. The ones that are cut
-    // are the ones furthest from this eye, which are also the ones whose light
-    // is most likely already past its twenty-six metre reach.
-    //
-    // A lamp is at the eye and not at the feet: 1.75 above the ground, the
-    // same figure `place_player` uses, so a beam leaves somebody's head rather
-    // than their boots. The direction is their own yaw and pitch, built the
-    // way `camToWorld` builds this player's.
+    // The six are gathered by `wire_lamps` in wire.rill, off the same
+    // interpolated rows everybody else is drawn from, and left in the wire
+    // block ready for the uniform. This used to be a filter, a sort and a
+    // loop here — a second copy of that file's row layout, written in another
+    // language against offsets it had to be told.
     uf[120] = torchOn ? 1 : 0;
-    uf.fill(0, 124, 124 + LAMP_CAP * 8);
+    // The belt, for mgfx.wgsl: rounds left drive the scroll, and the belt
+    // drawn is only as long as what is on it.
+    uf[123] = held === 5 ? Number(E.mg_rounds(state)) : 0;
     if (net) {
-      const lit = wireSeen().filter(p => p.torch && p.health > 0.001);
-      if (lit.length > LAMP_CAP) {
-        const ex = st[16], ey = st[17], ez = st[18];
-        lit.sort((a, b) => ((a.x - ex) ** 2 + (a.y - ey) ** 2 + (a.z - ez) ** 2)
-                         - ((b.x - ex) ** 2 + (b.y - ey) ** 2 + (b.z - ez) ** 2));
-      }
-      for (let i = 0; i < Math.min(lit.length, LAMP_CAP); i++) {
-        const p = lit[i], o = 124 + i * 8, cp = Math.cos(p.pitch);
-        uf[o] = p.x; uf[o + 1] = p.y + 1.75; uf[o + 2] = p.z; uf[o + 3] = 1;
-        uf[o + 4] = Math.sin(p.yaw) * cp;
-        uf[o + 5] = Math.sin(p.pitch);
-        uf[o + 6] = -Math.cos(p.yaw) * cp;
-      }
+      E.wire_lamps(net.wire, state);
+      uf.set(new Float32Array(E.memory.buffer,
+                              Number(net.wire) + Number(E.wire_lamps_at()) * 4,
+                              LAMP_CAP * 8), 124);
+    } else {
+      uf.fill(0, 124, 124 + LAMP_CAP * 8);
     }
 
-    // The impact that is lighting the valley: the youngest one still burning.
-    // Rill keeps the ages, so this is a scan of eight floats and not a clock of
-    // the host's own — which matters on the frame after a restart, when every
-    // blast is cleared and a host-side timer would still be counting one down.
+    // The impact that is lighting the valley: the youngest one still burning,
+    // chosen by `blast_lit` in valley.rill. The rule — how long a crater goes
+    // on giving light — used to be written here as well, beside a second copy
+    // of the ring's stride.
     {
-      const bl = new Float32Array(E.memory.buffer, Number(E.blasts(state)), blastCap * 8);
-      let best = -1;
-      for (let i = 0; i < blastCap; i++) {
-        const a = bl[i * 8 + 4];
-        if (a >= 0 && a < 2.6 && (best < 0 || a < bl[best * 8 + 4])) best = i;
-      }
+      const best = Number(E.blast_lit(state));
       if (best < 0) { uf[75] = -1; }
       else {
+        const bl = new Float32Array(E.memory.buffer, Number(E.blasts(state)), blastCap * 8);
         uf[72] = bl[best * 8]; uf[73] = bl[best * 8 + 1]; uf[74] = bl[best * 8 + 2];
         uf[75] = bl[best * 8 + 4];
       }
     }
     device.queue.writeBuffer(uni, 0, uf);
     device.queue.writeBuffer(bulletBuf, 0,
-      new Float32Array(E.memory.buffer, Number(E.bullets(state)), bulletCap * 8));
+      new Float32Array(E.memory.buffer, Number(E.bullets(state)), bulletCap * 9));
     device.queue.writeBuffer(shardBuf, 0,
       new Float32Array(E.memory.buffer, Number(E.shards(state)), shardCap * 20));
     device.queue.writeBuffer(fireInst, 0,
@@ -3761,8 +3848,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // The rifle and the tube, each its own row. Whole numbers that change on
     // the frame the trigger goes down, so they are compared rather than
     // eased: nothing here moves unless a round left or a magazine arrived.
-    const rounds = held === 2 ? Number(E.ak_rounds(state)) : Number(E.rounds(state));
-    const gunCap = held === 2 ? Number(E.ak_full()) : Number(E.mag_full());
+    const rounds = held === 2 ? Number(E.ak_rounds(state))
+                 : held === 5 ? Number(E.mg_rounds(state)) : Number(E.rounds(state));
+    const gunCap = held === 2 ? Number(E.ak_full())
+                 : held === 5 ? Number(E.mg_full()) : Number(E.mag_full());
     const akMagsNow = Number(E.ak_mags(state));
     const rkts = Number(E.rockets(state));
     // A warhead is in the tube when there is one left to load and the reload
@@ -3938,6 +4027,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     pass.setPipeline(grassPipe);
     pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.grassInst); pass.draw(grassVerts, W.counts.grass);
+    if (W.weedCount) {
+      pass.setPipeline(weedPipe);
+      pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.weedInst); pass.draw(grassVerts, W.weedCount);
+    }
     if (W.counts.flowers) {
       pass.setPipeline(flowerPipe);
       pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.flowerInst);
@@ -3980,6 +4073,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(crystalPipe);
     pass.setVertexBuffer(0, crystalBuf); pass.setVertexBuffer(1, W.crystalInst); pass.draw(crystalVerts, W.counts.crystals);
     pass.setPipeline(glowPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(6, W.counts.crystals);
+    pass.setPipeline(haloPipe); pass.setVertexBuffer(0, W.crystalInst); pass.draw(HALO_VERTS, W.counts.crystals);
+    if (net) { pass.setPipeline(lampPipe); pass.draw(6, LAMP_CAP); }
     if (faceN) {
       pass.setPipeline(facePipe);
       pass.setVertexBuffer(0, faceBuf);
@@ -4050,14 +4145,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.setPipeline(sparkPipe);
     pass.draw(6 * SPARKS_PER_MARK, markCap);
     // The crystals' light, on the same additive terms the tracers get.
-    let zn = 0;
-    for (const zp of zapsLive) {
-      if (sky - zp.born > 0.55 || zn >= ZAP_MAX) continue;
-      zapData.set([zp.ax, zp.ay, zp.az, zp.bx, zp.by, zp.bz, zp.r, zp.g, zp.b, zp.born], zn * 10);
-      zn++;
-    }
+    const zn = Math.min(zapN, ZAP_MAX);
     if (zn > 0) {
-      device.queue.writeBuffer(zapGpu, 0, zapData, 0, zn * 10);
+      device.queue.writeBuffer(zapGpu, 0,
+        new Float32Array(E.memory.buffer, Number(zapRing) + zapOut * 4, zn * 10));
       pass.setPipeline(zapPipe);
       pass.setVertexBuffer(0, zapGpu);
       pass.draw(6, zn);
@@ -4115,6 +4206,16 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
         pass.setVertexBuffer(0, akVB);
         pass.setIndexBuffer(akIB, "uint16");
         pass.drawIndexed(akIdx);
+        pass.setPipeline(muzzlePipe); pass.draw(12);
+      } else if (held === 5) {
+        pass.setPipeline(mgPipe);
+        pass.setVertexBuffer(0, mgVB);
+        pass.setIndexBuffer(mgIB, "uint16");
+        pass.drawIndexed(mgIdx);
+        pass.setPipeline(mgfxPipe);
+        pass.setVertexBuffer(0, cartVB);
+        pass.setIndexBuffer(cartIB, "uint16");
+        pass.drawIndexed(cartIdx, 7 + 6);
         pass.setPipeline(muzzlePipe); pass.draw(12);
       } else if (held === 3) {
         pass.setPipeline(pickPipe);

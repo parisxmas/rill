@@ -89,7 +89,43 @@ export fn blasts_cap(s: Ptr) -> Int = v.blasts_cap(s)
 # is rather than where a 32-bit re-derivation guesses it might be.
 export fn ground(x: Float, z: Float) -> Float = v.ground(x, z)
 
+# The lakebed's weed and the meadow's fireflies, into a buffer the page owns.
+# They were the last two things scattered with `Math.random` in host.js, which
+# meant every browser grew a different lakebed on the same lake — see the
+# comment above `weed_beds` in valley.rill for why that was worth ending.
+export fn weed_build(out: Ptr, cap: Int) -> Int = v.weed_build(out, cap)
+
+export fn weed_cap() -> Int = v.weed_cap()
+
+export fn fly_seed(out: Ptr, n: Int) -> Int = v.fly_seed(out, n)
+
 export fn set_sun(s: Ptr, dx: Float, dy: Float, dz: Float) = v.set_sun(s, dx, dy, dz)
+
+# Where the clock has the sun, and the shadow matrix that follows from it. The
+# page used to own the path — the tilt, the phase, the lift, the length of a
+# day — and hand the answer back in through `set_sun`, which meant the one
+# thing every renderer and every server needs to agree about lived in a file
+# only a browser reads. Now it asks.
+export fn step_sun(s: Ptr) = v.step_sun(s)
+
+# Which crater is lighting the valley — the youngest still burning, or minus
+# one. The rule (how long a burn lasts) lived in host.js beside a copy of the
+# ring's stride; the ages are the world's, so the choosing is too.
+export fn blast_lit(s: Ptr) -> Int = v.blast_lit(s)
+
+# The stride the weapon rides on: the player's own speed, eased, and a phase
+# integrated from it. Stepped once a frame by whoever is drawing, and kept in
+# the hand's block — it is the gun's swing, and the gun's block had room where
+# the player's did not.
+export fn step_bob(s: Ptr, dt: Float) = hand.step_bob(s, dt)
+
+export fn bob_speed(s: Ptr) -> Float = hand.bob_speed(s)
+
+export fn bob_phase(s: Ptr) -> Float = hand.bob_phase(s)
+
+export fn sun_x(w: Ptr) -> Float = v.sun_x(w)
+export fn sun_y(w: Ptr) -> Float = v.sun_y(w)
+export fn sun_z(w: Ptr) -> Float = v.sun_z(w)
 
 # ---- one step of time ------------------------------------------------------
 #
@@ -224,6 +260,12 @@ export fn rocket_full() -> Int = v.rocket_full()
 export fn ak_rounds(s: Ptr) -> Int = v.ak_rounds(s)
 
 export fn ak_full() -> Int = v.ak_full()
+
+export fn mg_rounds(s: Ptr) -> Int = v.mg_rounds(s)
+
+export fn took_count(s: Ptr) -> Int = v.took_count(s)
+
+export fn mg_full() -> Int = v.mg_full()
 
 export fn ak_mags(s: Ptr) -> Int = v.ak_mags(s)
 
@@ -525,8 +567,8 @@ export fn hud_frame(s: Ptr, w: Ptr) -> Int =
     poke_f32(h, hud.h_jet(), to_float(v.jet_on(s)))
     held = v.weapon(s)
     poke_f32(h, hud.h_weapon(), to_float(held))
-    poke_f32(h, hud.h_rounds(), to_float(if held == 2 then v.ak_rounds(s) else v.rounds(s)))
-    poke_f32(h, hud.h_mag_cap(), to_float(if held == 2 then v.ak_full() else v.mag_full()))
+    poke_f32(h, hud.h_rounds(), to_float(if held == 2 then v.ak_rounds(s) else if held == 5 then v.mg_rounds(s) else v.rounds(s)))
+    poke_f32(h, hud.h_mag_cap(), to_float(if held == 2 then v.ak_full() else if held == 5 then v.mg_full() else v.mag_full()))
     poke_f32(h, hud.h_ak_mags(), to_float(v.ak_mags(s)))
     poke_f32(h, hud.h_rockets(), to_float(v.rockets(s)))
     # And all three at once, for the inventory: `h_rounds` above is whichever
@@ -535,6 +577,9 @@ export fn hud_frame(s: Ptr, w: Ptr) -> Int =
     poke_f32(h, hud.h_inv_ak(), to_float(v.ak_rounds(s)))
     poke_f32(h, hud.h_inv_rifle_cap(), to_float(v.mag_full()))
     poke_f32(h, hud.h_inv_ak_cap(), to_float(v.ak_full()))
+    poke_f32(h, hud.h_inv_mg(), to_float(v.mg_rounds(s)))
+    poke_f32(h, hud.h_inv_mg_cap(), to_float(v.mg_full()))
+    poke_f32(h, hud.h_mg_belts(), to_float(v.mg_belts(s)))
     poke_f32(h, hud.h_stones(), to_float(v.stones_of(s)))
     poke_f32(h, hud.h_mine(), to_float(if v.weapon(s) == 3 then v.can_mine(s) else 0))
     poke_f32(h, hud.h_phase(), to_float(v.match_phase(w)))
@@ -596,6 +641,34 @@ export fn wire_out(b: Ptr) -> Int = wire.out_at()
 export fn wire_interp_at() -> Int = wire.interp_at()
 
 export fn wire_pev_at() -> Int = wire.pev_at()
+
+# The six nearest lit head lamps, gathered off the interpolated rows and left
+# in the wire block for the page to copy straight into the uniform. The page
+# used to do the gathering itself against offsets it had to be told about,
+# which is a second copy of this file's layout written in another language.
+export fn wire_lamps(b: Ptr, s: Ptr) -> Int = wire.wire_lamps(b, s)
+
+export fn wire_lamps_at() -> Int = wire.lamps_at()
+
+# The crystals' bolts. The world keeps a ring of who was bitten by which
+# crystal; this turns it into beams — from the crystal's tip to the foot of
+# whoever it struck, in the crystal's colour, stamped with the clock — and
+# says how many are still burning. The page used to do all of it, including
+# holding the list and the rule for how long a bolt lasts.
+#
+# The memory is the page's, `zap_room` floats of it: the ring, then the run to
+# draw at `zap_out_off`, then a cursor. `rows` is the interpolated players and
+# `n` how many, nought when nobody else is here.
+export fn zap_beams(s: Ptr, r: Ptr, rows: Ptr, n: Int, now: Float) -> Int =
+  v.zap_beams(s, r, rows, n, now)
+
+export fn zap_room() -> Int = v.zap_room()
+
+export fn zap_out_off() -> Int = v.zap_out_off()
+
+export fn zap_floats() -> Int = v.zap_floats()
+
+export fn wire_lamp_floats() -> Int = wire.lamp_floats()
 
 export fn wire_token_at() -> Int = wire.token_at()
 

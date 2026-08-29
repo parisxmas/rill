@@ -45,6 +45,15 @@ fn accept_key(key) = base64(sha1(key + ws_guid()))
 fn handshake_reply(key) =
   "HTTP/1.1 101 Switching Protocols\r\n" + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n" + "Sec-WebSocket-Accept: " + accept_key(key) + "\r\n\r\n"
 
+# Is this somebody opening a socket, or somebody asking a question?
+#
+# The key is what says so, and the name has to be looked for without regard to
+# case: HTTP/2 and every proxy in front of it — and Node's own client — carry
+# header names in lower case, while curl and the browsers send them capitalised.
+# A server that looks for one spelling turns half the world away, and does it
+# silently, which is how this was found.
+fn ws_wanted(request_raw) = str_len(header_value(request_raw, "Sec-WebSocket-Key: ")) > 0
+
 # Answers a client's upgrade request. Returns whether it was one.
 fn ws_accept(conn, request_raw) =
   key = header_value(request_raw, "Sec-WebSocket-Key: ")

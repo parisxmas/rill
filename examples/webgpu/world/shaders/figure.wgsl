@@ -69,6 +69,30 @@
   @fragment fn fs(v: VOut) -> @location(0) vec4f {
     let n = normalize(v.normal);
     let view = v.world - u.eye.xyz;
-    let base = lit(v.color, n, v.world);
+    // Findable after dark. Nothing by day.
+    //
+    // A tenth was tried first and did nothing, for a reason worth writing
+    // down: the night ambient in `lit` is (0.040, 0.048, 0.082), so a figure
+    // with an albedo of 0.6 lands around 0.03 — eight of two hundred and
+    // fifty-five. A tenth of that is another eight thousandths, and a player
+    // stayed a name floating over nothing. Ten per cent of invisible is
+    // invisible; what was wanted was a floor, not a percentage.
+    //
+    // So: a light of its own that only exists in the dark. Not `lit` scaled —
+    // `lit` returns with the haze already mixed in, and scaling that lifts the
+    // air in front of a player as much as the player.
+    let dark = 1.0 - dayness();
+    var base = lit(v.color, n, v.world);
+    base += v.color * 0.16 * dark;
+    // And a rim, because a floor alone makes a flat grey cut-out. Light along
+    // the silhouette is what separates a body from the rock behind it when
+    // there is no key light to model it with — and the edge is exactly where a
+    // player needs to be told there is somebody.
+    let rim = pow(1.0 - max(dot(n, -normalize(view)), 0.0), 3.0);
+    base += v.color * rim * 0.30 * dark;
+    // And their own lamp on their own head. See `lampSpill`: the cone points
+    // away from the wearer, so without this the one person a torch never lit
+    // was the one carrying it.
+    base += v.color * lampSpill(v.world, 1.0 - dark);
     return vec4f(mix(base, fogColor(view), fogAt(v.world, length(view))), 1.0);
   }

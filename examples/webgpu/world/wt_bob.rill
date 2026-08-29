@@ -1,0 +1,165 @@
+# Two things that used to be worked out in host.js against copies of this
+# file's own numbers: which crater is lighting the valley, and the stride the
+# weapon rides on.
+#
+# Neither was wrong. Both were a second place to write down a rule that lives
+# here — the length of a burn, the stride of a walk — and a second place is
+# where the two drift apart.
+import "valley" as v
+import "hand" as hand
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+fn cm(x) = to_int(x * 100.0 + if x < 0.0 then 0.0 - 0.5 else 0.5)
+
+# Put a crater in the ring by hand: where it landed, and how long ago.
+fn set_blast(s, i, x, age) =
+  bb = v.blasts(s)
+  poke_f32(bb, i * 8, x)
+  poke_f32(bb, i * 8 + 1, 5.0)
+  poke_f32(bb, i * 8 + 2, 0.0)
+  poke_f32(bb, i * 8 + 4, age)
+  0
+
+fn clear_blasts(s, i) =
+  if i >= v.blasts_cap(s) then 0
+  else
+    poke_f32(v.blasts(s), i * 8 + 4, 0.0 - 1.0)
+    clear_blasts(s, i + 1)
+
+# The stride is what `walk` says the legs did, so the test walks: it presses
+# the key the way a player does and lets the world move them. Teleporting the
+# position would prove nothing now — that is exactly the number the swing
+# stopped listening to, because in a shared valley it is a stride plus the
+# server's corrections.
+fn feet_down(s) =
+  poke_f32(s, 25, 1.0)
+  0
+
+fn hold_still(s, n) =
+  if n <= 0 then 0
+  else
+    v.walk(s, 0.016, 0.0, 0.0, 0)
+    hand.step_bob(s, 0.016)
+    hold_still(s, n - 1)
+
+# Back where they joined, standing, still. The position is poked rather than
+# walked because the stride does not read the position — that is the whole of
+# what this file is pinning.
+fn home(s, x, y, z) =
+  poke_f32(s, 21, x)
+  poke_f32(s, 22, y)
+  poke_f32(s, 23, z)
+  poke_f32(s, 24, 0.0)
+  poke_f32(s, 25, 1.0)
+  0
+
+# One airborne frame: the flag off, no walking, the swing stepped.
+fn air_step(s) =
+  poke_f32(s, 25, 0.0)
+  hand.step_bob(s, 0.016)
+  0
+
+# Walking while the ground comes and goes under alternate frames, which is
+# what a slope does to the grounded flag.
+fn flicker_walk(s, n) =
+  if n <= 0 then 0
+  else
+    v.walk(s, 0.016, 0.0, 0.0, 1)
+    poke_f32(s, 25, if n % 2 == 0 then 0.0 else 1.0)
+    hand.step_bob(s, 0.016)
+    flicker_walk(s, n - 1)
+
+# `1` is the forward key — see `walk_axis`. No sprint, so this is the walk.
+fn walk_on(s, n) =
+  if n <= 0 then 0
+  else
+    v.walk(s, 0.016, 0.0, 0.0, 1)
+    hand.step_bob(s, 0.016)
+    walk_on(s, n - 1)
+
+fn main() =
+  w = v.init(32, 4, 4, 4)
+  s = v.join(w)
+  # The stride is kept in the hand's block, which the page makes when it opens
+  # the valley. A test that joins without one is a player with no hands.
+  hand.make(s)
+
+  println("the crater that lights the valley")
+  clear_blasts(s, 0)
+  say("nothing burning, nothing lit", v.blast_lit(s), 0 - 1)
+
+  # Three craters of different ages. The youngest wins — it is the one whose
+  # light is still worth having — and it is not simply the last slot written.
+  set_blast(s, 3, 30.0, 2.0)
+  set_blast(s, 5, 50.0, 0.4)
+  set_blast(s, 6, 60.0, 1.2)
+  say("the youngest is chosen", v.blast_lit(s), 5)
+
+  # And a crater older than the burn is out, however recently it was written.
+  clear_blasts(s, 0)
+  set_blast(s, 2, 20.0, 2.59)
+  say("just inside the burn still counts", v.blast_lit(s), 2)
+  set_blast(s, 2, 20.0, 2.61)
+  say("just past it does not", v.blast_lit(s), 0 - 1)
+
+  # A round restart clears the ring, and the light has to go out with it —
+  # this is the frame the old host-side clock got wrong.
+  set_blast(s, 1, 10.0, 0.1)
+  say("something is lit", v.blast_lit(s), 1)
+  clear_blasts(s, 0)
+  say("and out again the moment the ring is cleared", v.blast_lit(s), 0 - 1)
+
+  println("the stride")
+  # Where they joined, to come back to between stretches: four walks laid end
+  # to end are forty-odd metres, which is enough to pin anybody against a
+  # pine — and a player against a tree has a stride of nought, honestly.
+  hx = peek_f32(s, 21)
+  hy = peek_f32(s, 22)
+  hz = peek_f32(s, 23)
+  # Standing still, the speed eases to nothing and the phase stops moving.
+  # This is the one that shipped broken: the swing kept running while its
+  # owner stood still, because three of its slots were the jetpack's.
+  hold_still(s, 200)
+  say("standing still, speed in cm/s", cm(hand.bob_speed(s)), 0)
+  p0 = hand.bob_phase(s)
+  hold_still(s, 30)
+  say("and the phase does not move", cm(hand.bob_phase(s) - p0), 0)
+
+  # Walking forward. The eased speed climbs to the world's own walk — 5.625
+  # metres a second — and the phase advances with it.
+  walk_on(s, 300)
+  say("walking reads the world's walk, cm/s", cm(hand.bob_speed(s)), 563)
+  p1 = hand.bob_phase(s)
+  walk_on(s, 60)
+  say("and the swing turns with it", if hand.bob_phase(s) - p1 > 10.0 then 1 else 0, 1)
+
+  # A stride is what the legs did, not what happened to the position. The
+  # server's corrections arrive as a change in position with no walk behind
+  # it, and the swing must not answer them.
+  hold_still(s, 200)
+  poke_f32(s, 21, peek_f32(s, 21) + 2.0)
+  hand.step_bob(s, 0.016)
+  say("a shove of two metres is not a step, cm/s", cm(hand.bob_speed(s)), 0)
+
+  # Downhill, the grounded flag flickers: every step the slope falls away and
+  # gravity takes a frame or two to catch up. The swing must ride through
+  # that — gated on the raw flag it flickered with it, which was the shake,
+  # and averaged near nothing for the whole descent, which was the gun going
+  # still while its owner walked.
+  home(s, hx, hy, hz)
+  walk_on(s, 60)
+  flicker_walk(s, 120)
+  say("a flickering footing still swings, cm/s", if cm(hand.bob_speed(s)) > 500 then 1 else 0, 1)
+
+  # In the air there is no stride, whatever the ground speed says. A real
+  # jump is most of a second off the ground; the footing drains in three
+  # tenths, so two hundred airborne frames leave nothing.
+  home(s, hx, hy, hz)
+  walk_on(s, 120)
+  poke_f32(s, 25, 0.0)
+  for i in 0..200
+    air_step(s)
+  say("off the ground the stride stills, cm/s", cm(hand.bob_speed(s)), 0)
+  println("done")

@@ -83,18 +83,25 @@
   @fragment fn fs(v: VOut) -> @location(0) vec4f {
     let r = length(v.local);
     if (r > 1.0) { discard; }
-    // A dark hole with a bruised rim and a ragged edge: the hole is what the
-    // round took out, the rim is the dust it drove into the surface, and the
-    // ragged edge is what keeps forty-eight of them from reading as forty-
-    // eight identical circles.
-    let ragged = 0.78 + 0.22 * sin(atan2(v.local.y, v.local.x) * 7.0 + v.seed * 5.0);
-    let hole = 1.0 - smoothstep(0.30 * ragged, 0.52 * ragged, r);
-    let rim = (1.0 - smoothstep(0.45, 1.0, r)) * (1.0 - hole);
-    let a = clamp(hole * 0.88 + rim * 0.34, 0.0, 1.0) * v.fade;
+    // A photograph of a hole rather than a drawing of one.
+    //
+    // What was here was arithmetic: a disc, a smoothstepped rim and a sine
+    // around the edge to keep forty-eight of them from being forty-eight
+    // identical circles. It read as a stamp, because it was one. The card is
+    // turned by its own position — see `seed` above — so the same image lands
+    // at a different angle every time and the repetition never shows.
+    let uv = v.local * 0.5 + vec2f(0.5);
+    let tex = textureSample(holeTex, barkSamp, uv);
+    // The decal is black on transparency; its alpha is the whole of the
+    // shape. Softened at the card's own rim so a hole never ends on a
+    // straight edge if the image runs to it.
+    let edge = 1.0 - smoothstep(0.86, 1.0, r);
+    let a = tex.a * edge * v.fade;
     if (a < 0.01) { discard; }
-    // Nearly black in the middle, pale grey dust around it, and the whole
-    // thing under the same fog the surface it is stuck to is under.
-    let col = mix(vec3f(0.44, 0.41, 0.37), vec3f(0.03, 0.028, 0.025), hole);
+    // The dust the round drove into the surface is the pale part of the
+    // image; the hole itself is the dark. Both under the fog the surface
+    // they are stuck to is under.
+    let col = mix(vec3f(0.44, 0.41, 0.37), vec3f(0.03, 0.028, 0.025), tex.a);
     let view = v.world - u.eye.xyz;
     return vec4f(mix(col, fogColor(view), fogAt(v.world, length(view))), a);
   }

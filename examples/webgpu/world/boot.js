@@ -21,10 +21,18 @@ export async function boot(pakBytes, takeStored) {
   // asked for anything again.
   const wasmBytes = takeStored("world.wasm");
 
-  // Whose valley. `?join` takes the one this page is served from,
-  // `?join=wss://box/valley` somebody else's, and no `join` at all is the
-  // valley this tab has to itself — which is what a static page gets,
-  // because there is no server behind one.
+  // Whose valley. The one this page is served from, unless told otherwise:
+  // `?join=wss://box/valley` points at somebody else's, and `?solo` asks for
+  // the valley this tab has to itself.
+  //
+  // Shared is the default because it is what the address is for. It used to
+  // need `?join`, which meant the plain link — the one people paste to each
+  // other — dropped everybody into a private world where nobody else ever
+  // appeared, and there was nothing on screen to say why.
+  //
+  // A static copy with no server behind it is not a problem: the socket fails
+  // to open, and `run` says so and plays alone. That path was already there
+  // for a valley that is full or a word that was wrong.
   //
   // The default follows the page it is on. A page served over TLS may not
   // open a plain socket, so it asks for `wss://` on the same host and lets
@@ -36,12 +44,72 @@ export async function boot(pakBytes, takeStored) {
   const here = location.protocol === "https:"
     ? `wss://${location.host}/valley`
     : `ws://${location.hostname || "localhost"}:8091/`;
-  const server = q.has("join") ? (q.get("join") || here) : null;
+  const server = q.has("solo") ? null : (q.get("join") || here);
 
   // Who to put over this player's head. Only asked when there is somebody to
   // see it; the answer is kept, because nobody wants to type their own name
   // every time they reload.
   let pass = "";
+
+  // ---- which valley ---------------------------------------------------------
+  //
+  // Several of them run behind one address now, and they write themselves down
+  // in a store they share — see `registrar` in server.rill. Any of them will
+  // read the list back, so the page asks the one it was going to open anyway.
+  //
+  // A list that cannot be fetched is not an error: it means one valley, the
+  // one this page is served from, which is exactly what a single server is.
+  // So the picker is shown when there is something to pick between and stays
+  // out of the way when there is not.
+  let chosen = null;
+  let asking = false;
+  const askValley = async () => {
+    if (!server || asking) return;
+    asking = true;
+    try { await askValleyNow(); } finally { asking = false; }
+  };
+  const askValleyNow = async () => {
+    let list = [];
+    try {
+      // From the root, not from beside the page: the valleys are at `/valley1`
+      // and the list of them belongs with them, not in whatever directory this
+      // page happens to be served out of. Relative, it asked for
+      // `/rillwebgpu/valleys` and got a 404 — and a 404 here reads exactly
+      // like "there is only one valley".
+      const r = await fetch(new URL("/valleys", location.origin), { cache: "no-store" });
+      list = await r.json();
+    } catch (e) { return; }
+    if (!Array.isArray(list) || list.length < 2) return;
+    // Full first is the wrong order: what somebody wants is the one they can
+    // get into, and after that the busiest, because an empty valley is a
+    // lonely one.
+    list.sort((a, b) => (a.here >= a.max) - (b.here >= b.max) || b.here - a.here);
+    const box = document.getElementById("valleys");
+    box.style.display = "flex";
+    // Redrawn whenever the account panel changes what exists, so start clean:
+    // appending twice would show every valley as its own ghost.
+    box.innerHTML = "";
+    const last = localStorage.getItem("valley.pick");
+    const rows = list.map((v) => {
+      const full = v.here >= v.max;
+      const row = document.createElement("b");
+      row.className = full ? "full" : "";
+      row.innerHTML = `<span>${v.name}</span><i>${v.here}/${v.max}${full ? " — full" : ""}</i>`;
+      if (!full) row.addEventListener("click", () => pick(v, row));
+      box.appendChild(row);
+      return { v, row, full };
+    });
+    const pick = (v, row) => {
+      chosen = v;
+      localStorage.setItem("valley.pick", v.name);
+      for (const r of rows) r.row.classList.toggle("on", r.row === row);
+    };
+    // The one they were in last time, or the emptiest that is open.
+    const want = rows.find((r) => !r.full && r.v.name === last)
+              || rows.find((r) => !r.full);
+    if (want) pick(want.v, want.row);
+  };
+
   const askName = async () => {
     if (!server) return "";
     const form = document.getElementById("who");
@@ -72,7 +140,32 @@ export async function boot(pakBytes, takeStored) {
     if (name) localStorage.setItem("valley.name", name);
     return name;
   };
+  // The account panel, beside the doors. It can change what doors exist —
+  // making a valley adds one — so it is handed the way to redraw them; the
+  // new door registers itself only once its container is up, hence the
+  // patient second and third look.
+  //
+  // No import: pack.rill concatenates account.js into this same module.
+  if (server) {
+    mountAccount(() => {
+      let looks = 0;
+      const again = async () => {
+        await askValley();
+        if (++looks < 3) setTimeout(again, 4000);
+      };
+      again();
+    });
+  }
+  await askValley();
+  // The counts are alive: somebody joining `guney` while this card is up
+  // should turn its 0/16 into 1/16 without a reload — the list was fetched
+  // once and then stood still, which read as nobody ever being anywhere.
+  // Every three seconds is one small JSON per open entry card, and it stops
+  // the moment a name is given, because after that the player is looking at
+  // the valley itself.
+  const doorsAlive = setInterval(askValley, 3000);
   const name = await askName();
+  clearInterval(doorsAlive);
   // Who this browser is, as far as the valley is concerned. The server mints
   // it on the first visit and hands it back in `hello`; from then on it
   // travels in the query beside the word, and it is what makes a name stay
@@ -88,9 +181,14 @@ export async function boot(pakBytes, takeStored) {
     pass ? "p=" + encodeURIComponent(pass) : "",
     who ? "who=" + encodeURIComponent(who) : "",
   ].filter(Boolean).join("&");
-  const door = server && query
-    ? server + (server.includes("?") ? "&" : "?") + query
+  // A picked valley has its own address; without one this is the valley the
+  // page is served from, which is what `server` already is.
+  const where = chosen && chosen.path
+    ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${chosen.path}`
     : server;
+  const door = where && query
+    ? where + (where.includes("?") ? "&" : "?") + query
+    : where;
   const shroud = document.getElementById("boot");
   const bar = document.getElementById("bar");
   const what = document.getElementById("what");

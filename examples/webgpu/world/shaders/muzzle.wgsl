@@ -15,8 +15,13 @@
     @location(2) kind: f32,      // 0 the fireball, 1 the jet
   }
 
-  // Just past the crown of the barrel, in model coordinates.
-  const MUZZLE = vec3f(0.60, 0.050, 0.0);
+  // Just past the crown of the barrel, in model coordinates — and which
+  // barrel that is comes from the page, because the three weapons are not the
+  // same length. It was a constant tuned to the rifle: on the MG3, whose
+  // model is shorter and sits further forward, the flash was born past the
+  // end of the gun, and a point out in front of you projects onto the middle
+  // of the screen. It read as a flash on the crosshair.
+  fn muzzleAt() -> vec3f { return vec3f(u.fx.w, u.lamp.y, u.lamp.z); }
 
   @vertex fn vs(@builtin(vertex_index) vi: u32) -> VOut {
     let q = vi % 6u;
@@ -42,12 +47,12 @@
     var cam: vec3f;
     if (kind < 0.5) {
       // Square to the camera: the fireball, at the muzzle.
-      cam = vmCam(MUZZLE) + vec3f(cx, cy, 0.0) * grow;
+      cam = vmCam(muzzleAt()) + vec3f(cx, cy, 0.0) * grow;
     } else {
       // Along the bore: the jet, reaching out ahead of the muzzle and thin
       // across it. Built from the barrel's own axis so it points where the
       // barrel does, not where the camera does.
-      let base = vmCam(MUZZLE);
+      let base = vmCam(muzzleAt());
       let ax = vmDir(vec3f(1.0, 0.0, 0.0));          // down the bore
       let up = vmDir(vec3f(0.0, 1.0, 0.0));
       cam = base + ax * ((cx * 0.5 + 0.5) * 0.30 * flash) + up * (cy * grow * 0.55);

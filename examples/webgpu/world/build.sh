@@ -14,7 +14,12 @@
 # of one. If a real bundle graph ever comes back, so should webpack.
 set -e
 cd "$(dirname "$0")"
-RILL=../../../target/release/rill
+# The compiler this checkout builds, wherever cargo was told to put it.
+# `CARGO_TARGET_DIR` is set on this machine, so `../../../target/release/rill`
+# is a stale copy from whenever it was last built without it — and a stale
+# compiler is a silent failure: it does not know the newest builtins and says
+# "unknown function" about code that is correct.
+RILL=${RILL:-${CARGO_TARGET_DIR:-../../../target}/release/rill}
 
 rm -f page.min.js
 "$RILL" build world.rill -o world --target wasm32-wasip1

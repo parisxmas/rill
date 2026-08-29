@@ -24,6 +24,7 @@
 #       40..42 the last shot's direction, for the page to send
 #       37 changePhase (out — how far through the magazine change)
 #       38 boltFrac (out)
+#       43 footing       44 stride speed  45 stride phase
 #
 # Event kinds: 1 rifle bang, 2 AK bang, 3 launcher bang, 4 magazine change,
 # 5 dry click, 6 send the shot (the direction is in the player block),
@@ -62,6 +63,57 @@ fn make(s) =
   poke_ptr(s, 96, b)
   b
 
+# ---- the stride the gun rides on --------------------------------------------
+#
+# How fast this player is going, and a phase integrated from it. The weapon's
+# bob reads both: the speed says how far it swings, the phase where it is in
+# the swing. A bob driven by the clock alone jumps every time the speed
+# changes, which is every time somebody starts or stops walking.
+#
+# It lives here, in the block that is already about what is in the hands,
+# rather than on the player — where it first went, into three slots the
+# jetpack was already using for its double-tap. Two writers, one slot, and
+# every frame each undid the other: the gun kept walking while its owner stood
+# still, because what it read back was not the speed it had written. The room
+# here is honest room — this block is sixty-four floats and uses forty-three.
+fn bob_speed(s: Ptr) -> Float = peek_f32(peek_ptr(s, 96), 44)
+
+fn bob_phase(s: Ptr) -> Float = peek_f32(peek_ptr(s, 96), 45)
+
+fn step_bob(s: Ptr, dt: Float) =
+  b = peek_ptr(s, 96)
+  # Only what the feet are doing. The bob is a stride — the weapon swinging
+  # because a leg swung — and there is no stride in the air: crossing the
+  # valley on the pack moved the gun exactly as walking across it did, which
+  # read as running on nothing. Eased rather than cut, or the gun would stop
+  # dead the frame you left the ground.
+  #
+  # From what `walk` says the legs did, not from where the player ended up.
+  # In a shared valley those are different numbers: the position is predicted
+  # forward every frame and pulled back toward the server's twenty times a
+  # second, and a stride measured off it is a stride plus that correction —
+  # which is what made the gun shake while walking online and hold perfectly
+  # still alone.
+  #
+  # The footing is eased, not read. Walking down a slope, the ground falls
+  # away under every step and gravity takes a frame or two to catch up, so
+  # the grounded flag flickers between one and nought for the whole descent —
+  # and gated on it raw, the swing's amplitude flickered with it, which was
+  # the shake, and averaged near nothing downhill, which was the gun going
+  # still. So contact plants the foot at once, and the air drains it over
+  # three tenths of a second: a stride's own airborne moments never show,
+  # while a real jump — most of a second off the ground — stills the gun on
+  # the way up, and the jetpack likewise.
+  f = if v.grounded(s) > 0.5 then 1.0 else max(peek_f32(b, 43) - dt / 0.3, 0.0)
+  poke_f32(b, 43, f)
+  # Capped at twelve, which is the sprint, so nothing a shove or a rejoin does
+  # to the position can throw the swing.
+  inst = min(v.stride_speed(s), 12.0) * f
+  sp = peek_f32(b, 44) + (inst - peek_f32(b, 44)) * 0.15
+  poke_f32(b, 44, sp)
+  poke_f32(b, 45, peek_f32(b, 45) + sp * dt * 2.4)
+  1
+
 fn held(b) = to_int(peek_f32(b, 0))
 
 # Three shots and two tools: the pick swings twice a second, a rock goes down
@@ -70,11 +122,16 @@ fn pick_cycle() = 0.55
 
 fn build_cycle() = 0.4
 
+# The hands keep the same gap the world does — see `mg_gap` in valley.rill for
+# why it is a whole tick and not a rounder-sounding number.
+fn mg_cycle() = 0.05
+
 fn cycle_of(w) =
   if w == 1 then rpg_cycle()
   else if w == 2 then ak_cycle()
   else if w == 3 then pick_cycle()
   else if w == 4 then build_cycle()
+  else if w == 5 then mg_cycle()
   else bolt_cycle()
 
 fn cycle_now(b) = cycle_of(held(b))
@@ -132,14 +189,15 @@ fn frame(s, dt, now, t, mdx0, mdy0, flags, want) =
   if want_reload then reload_asked(b, s, h, now, t) else 0
 
   loaded = loaded_now(b, s)
-  mags = v.ak_mags(s)
+  mags = if held(b) == 5 then v.mg_belts(s) else v.ak_mags(s)
   came_back(b, now, t, loaded)
-  auto = held(b) == 2 && fire_held && !wading && (loaded > 0 || mags > 0) && peek_f32(b, 4) >= cycle_now(b)
+  full_auto = held(b) == 2 || held(b) == 5
+  auto = full_auto && fire_held && !wading && (loaded > 0 || mags > 0) && peek_f32(b, 4) >= cycle_now(b)
   want_shot = want_shot0 || auto
-  if peek_f32(b, 12) > 0.5 && (!fire_held || loaded == 0 || held(b) != 2) then setf(b, 12, 0.0) else 0
+  if peek_f32(b, 12) > 0.5 && (!fire_held || loaded == 0 || !full_auto) then setf(b, 12, 0.0) else 0
 
   if want_shot && peek_f32(b, 4) >= cycle_now(b) && !wading then
-    if loaded == 0 && !(held(b) == 2 && mags > 0) then dry(b, h, now)
+    if loaded == 0 && !(full_auto && mags > 0) then dry(b, h, now)
     else shot(b, s, t)
   else 0
 
@@ -182,14 +240,16 @@ fn loaded_now(b, s) =
   else if held(b) == 2 then v.ak_rounds(s)
   else if held(b) == 3 then 1
   else if held(b) == 4 then (if v.stones_of(s) >= v.build_cost() then 1 else 0)
+  else if held(b) == 5 then v.mg_rounds(s)
   else v.rounds(s)
 
 # The change, seen from here: the world swapped magazines on a pull, the count
 # jumped from nothing back to thirty, and the crosshair owes the second and a
 # half the hands are busy.
 fn came_back(b, now, t, loaded) =
-  if held(b) == 2 && to_int(peek_f32(b, 13)) == 0 && loaded > 0 then change_starts(b, now, t) else 0
-  poke_f32(b, 13, if held(b) == 2 then to_float(loaded) else 0.0 - 1.0)
+  fed = held(b) == 2 || held(b) == 5
+  if fed && to_int(peek_f32(b, 13)) == 0 && loaded > 0 then change_starts(b, now, t) else 0
+  poke_f32(b, 13, if fed then to_float(loaded) else 0.0 - 1.0)
   1
 
 fn dry(b, h, now) =
@@ -208,7 +268,12 @@ fn shot(b, s, t) =
   dy0 = sin(pit)
   dz0 = 0.0 - cos(yaw) * cp
   ak = held(b) == 2
-  spread = if ak then 0.007 + minf(peek_f32(b, 12), 24.0) * 0.00035 else 0.0
+  # The MG's cone comes from the stance — `mg_cone` in the valley, three
+  # degrees standing and a quarter of that on a knee — plus its own heat.
+  # The AK's stays the small fixed wander it always was.
+  spread = if ak then 0.007 + minf(peek_f32(b, 12), 24.0) * 0.00035
+    else if held(b) == 5 then v.mg_cone(s) + minf(peek_f32(b, 12), 40.0) * 0.0004
+    else 0.0
   dx1 = dx0 + noise(b, t, 1.0) * spread
   dy1 = dy0 + noise(b, t, 2.0) * spread
   dz1 = dz0 + noise(b, t, 3.0) * spread
@@ -217,12 +282,12 @@ fn shot(b, s, t) =
   dy = dy1 / l
   dz = dz1 / l
   loaded = loaded_now(b, s)
-  changing = ak && loaded == 0
+  changing = (ak || held(b) == 5) && loaded == 0
   # The tools are not guns: nothing leaves the muzzle, and in somebody
   # else's valley the decision is not this browser's to make. Event 7 is a
   # swing and 8 a rock going down; the page routes each to the world it is
   # actually in — the local one, or the far end of a socket.
-  if held(b) >= 3 then tool_used(b, s) else shot_fired(b, s, dx, dy, dz, ak, changing, t)
+  if held(b) == 3 || held(b) == 4 then tool_used(b, s) else shot_fired(b, s, dx, dy, dz, ak, changing, t)
 
 # 9 and 10, not 7 and 8: 7 was already the reload's event, and giving the
 # pick the same number meant a magazine change swung a pickaxe in one mode
@@ -248,9 +313,33 @@ fn shot_fired(b, s, dx, dy, dz, ak, changing, t) =
   poke_f32(b, 6, if ak then 0.5 else 1.0)
   if !changing then setf(b, 7, 1.0) else 0
   if ak && !changing then ak_shot(b, t)
+  else if held(b) == 5 && !changing then mg_shot(b, s, t)
   else if held(b) == 1 then event(b, 3.0)
   else if held(b) == 0 then rifle_shot(b, t)
   else 0
+
+# The MG3's climb, and the knee that tames it.
+#
+# Standing, this gun is the loudest argument in the valley: nearly twice the
+# AK's rise, wide side-to-side wander, and an ease-off that takes twice as
+# long to arrive — a long burst walks up and off the target, which is what a
+# thousand rounds a minute from the shoulder honestly does. On one knee the
+# whole of that is cut to a third: the bipod stance the real gun was built
+# around, and the reason the key next to `crouch` suddenly matters to
+# whoever is holding this.
+#
+# The report is its own — event 11, a Mosin's 7.62x54 out of the CC0 firearm
+# library, which is the nearest thing in it to the 7.62x51 this gun fires.
+# Cut to a quarter of a second and faded, because sixteen a second want to
+# stack into a roar rather than into a pile of tails.
+fn mg_shot(b, s, t) =
+  event(b, 11.0)
+  poke_f32(b, 12, peek_f32(b, 12) + 1.0)
+  brace = if v.crouch_of(s) > 0.5 then 0.33 else 1.0
+  ease = 1.0 - minf(peek_f32(b, 12), 32.0) / 64.0
+  poke_f32(b, 8, peek_f32(b, 8) + (9.0 + (noise(b, t, 4.0) * 0.5 + 0.5) * 4.0) * ease * brace)
+  poke_f32(b, 9, peek_f32(b, 9) + noise(b, t, 5.0) * 5.2 * brace)
+  1
 
 # The AK's report, and the climb: fed to the same look the mouse drives, so
 # the muzzle really is pointing higher afterwards. The first rounds of a
@@ -344,7 +433,7 @@ fn deltas(b, dt, mdx0, mdy0, fire_held, loaded) =
   os2 = os1 + ks
   poke_f32(b, 8, 0.0)
   poke_f32(b, 9, 0.0)
-  bursting = held(b) == 2 && fire_held && loaded > 0
+  bursting = (held(b) == 2 || held(b) == 5) && fire_held && loaded > 0
   if !bursting && (ou2 != 0.0 || os2 != 0.0) then settle(b, dt, mdx2, mdy2, ou2, os2) else park(b, mdx2, mdy2, ou2, os2)
 
 # Settling back, once the burst is over. A hundredth left after a second, so
@@ -369,6 +458,7 @@ fn park(b, mdx, mdy, ou, os) =
 fn outs(b, t) =
   poke_f32(b, 36, if peek_f32(b, 4) >= minf(cycle_now(b), bolt_cycle()) then 1.0 else 0.0)
   cph = (t - peek_f32(b, 15)) / change_secs()
-  poke_f32(b, 37, if held(b) == 2 && cph >= 0.0 && cph < 1.0 then maxf(cph, 0.0001) else 0.0)
-  poke_f32(b, 38, if held(b) == 2 then 0.0 else peek_f32(b, 4) / bolt_cycle())
+  fed2 = held(b) == 2 || held(b) == 5
+  poke_f32(b, 37, if fed2 && cph >= 0.0 && cph < 1.0 then maxf(cph, 0.0001) else 0.0)
+  poke_f32(b, 38, if fed2 then 0.0 else peek_f32(b, 4) / bolt_cycle())
   1

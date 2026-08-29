@@ -177,9 +177,20 @@
   // Steel, blued. Nearly black to look at and almost entirely what the light
   // does to it — which is why the barrel needs the specular below to exist at
   // all, and why a photograph of one is mostly a photograph of the room.
+  // Chrome, which is not a colour.
+  //
+  // The blued finish this had was a dark grey and nothing else, and that is
+  // honest for parkerised steel: what such a surface does with light is
+  // scatter a little of it. Plating changes the question. A chromed part is
+  // almost a mirror — its own colour is a faint blue-grey and nearly all of
+  // what you see in it is the world reflected — so brightening the albedo
+  // would only have made a pale plastic. What is added below in `fs` is the
+  // reflection; this is the little that is left over, and the lathe's grain
+  // is still in it because plating follows the metal under it rather than
+  // hiding it. Half the depth it had, because polishing is what plating is.
   fn akSteel(m: vec3f) -> vec3f {
     let mill = sin(m.x * 900.0) * 0.5 + 0.5;      // the turn of the lathe
-    return vec3f(0.048, 0.050, 0.056) + vec3f(0.016) * mill;
+    return vec3f(0.062, 0.066, 0.076) + vec3f(0.006) * mill;
   }
 
   @fragment fn fs(v: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
@@ -221,6 +232,36 @@
       let rim = pow(1.0 - max(dot(n, toEye), 0.0), 5.0);
       col += SUN_COL * sun;
       col += mix(vec3f(0.10, 0.11, 0.17), vec3f(0.30, 0.32, 0.42), day) * rim * 0.10;
+
+      // And the plating: the sky, in the metal.
+      //
+      // This is the whole of what makes chrome read as chrome. A mirror shows
+      // what is in front of it, so the barrel carries the sky down its top and
+      // the ground up its underside, and it changes as the weapon turns —
+      // which is the thing a brighter grey can never do, however bright.
+      //
+      // What is reflected is a whole world, not half of one. Folding the ray
+      // up to the sky — the way the water does, because a lake only ever
+      // reflects upward — made the barrel one even blue, and an even anything
+      // is the one thing chrome never is. What sells it is the horizon: sky
+      // down the top of the barrel, ground up its underside, and a hard line
+      // between them that travels as the weapon turns.
+      //
+      // The ground is a colour rather than a lookup. There is no cubemap here
+      // and nothing to sample the valley with; what a chromed part actually
+      // catches from below is the sand a metre under it, which is warm, dim
+      // and — this is the part worth having — much darker than the sky.
+      //
+      // Fresnel, so the grazing edges are brightest. Metal reflects at every
+      // angle: chrome's normal-incidence reflectance is about 0.55, not the
+      // 0.04 of a dielectric, so this leans on a high floor rather than the
+      // usual near-zero one.
+      let refl = reflect(-toEye, n);
+      let sky = skyColor(vec3f(refl.x, max(refl.y, 0.0), refl.z), u.eye.w);
+      let below = mix(vec3f(0.030, 0.032, 0.042), vec3f(0.26, 0.22, 0.17), day);
+      let env = mix(below, sky, smoothstep(-0.22, 0.10, refl.y));
+      let fres = 0.55 + 0.45 * pow(1.0 - max(dot(n, toEye), 0.0), 4.0);
+      col += env * fres * 0.85;
     }
 
     // The flash lights what is holding it, the same way the rifle's does.

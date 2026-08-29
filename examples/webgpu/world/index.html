@@ -107,6 +107,35 @@
   <canvas id="c"></canvas>
   <div class="chat" id="chat"><span>say</span><input id="chatin" maxlength="120"
        autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <style>
+    /* The valleys, on the way in. A row is a door: what it is called, and how
+       many are already inside. A full one is not a door, so it does not
+       light up and cannot be pressed. */
+    .valleys { display: flex; flex-direction: column; gap: .25rem; margin: .6rem 0 .2rem; }
+    .valleys b { display: flex; justify-content: space-between; gap: 1rem;
+                 padding: .3rem .5rem; border: 1px solid #2b2a40; cursor: pointer;
+                 color: #c9c3e4; font-weight: normal; letter-spacing: .04em; }
+    .valleys b:hover { border-color: #6f6a8c; }
+    .valleys b.on { border-color: #f6c02e; color: #f6c02e; }
+    .valleys b.full { opacity: .45; cursor: not-allowed; border-style: dashed; }
+    .valleys b.full:hover { border-color: #2b2a40; }
+    .valleys i { font-style: normal; opacity: .7; }
+    /* The account, under the doors: same cloth as the rest of the card. */
+    .acct { margin-top: 14px; border-top: 1px solid #2b2a40; padding-top: 10px;
+            font: 12px/1.6 ui-monospace, monospace; color: #c9c3e4; text-align: left; }
+    .acct .acctrow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+    .acct input, .acct select { background: #141326; border: 1px solid #2b2a40; color: #c9c3e4;
+            font: inherit; padding: 4px 6px; min-width: 0; }
+    .acct input[type=number] { width: 4.5rem; }
+    .acct input:focus, .acct select:focus { border-color: #f6c02e; outline: none; }
+    .acct button { background: none; border: 1px solid #2b2a40; color: #c9c3e4;
+            font: inherit; padding: 4px 10px; cursor: pointer; }
+    .acct button:hover { border-color: #f6c02e; color: #f6c02e; }
+    .acct label { display: flex; gap: 4px; align-items: center; opacity: .9; }
+    .acct small { display: block; color: #6f6a8c; margin-top: 4px; }
+    .acct .me { color: #f6c02e; }
+    .acct .minerow i { font-style: normal; opacity: .6; margin-left: auto; }
+  </style>
   <div class="boot" id="boot">
     <div class="inner">
       <h1>RILL &nbsp;VALLEY</h1>
@@ -115,12 +144,14 @@
         <span class="what" id="what">asking for a GPU</span>
         <span class="pct" id="pct">0%</span>
       </div>
+      <div class="valleys" id="valleys" style="display:none"></div>
       <form class="who" id="who" style="display:none">
         <input id="name" maxlength="8" placeholder="WHO ARE YOU" autocomplete="off" spellcheck="false">
         <input id="word" maxlength="16" placeholder="WORD" autocomplete="off" spellcheck="false" style="flex:0 0 5.5rem;display:none">
         <button type="submit">enter</button>
       </form>
       <small id="whonote" style="display:none">a name of letters and digits, eight at most</small>
+      <div class="acct" id="acct" style="display:none"></div>
     </div>
   </div>
   <script type="module">
@@ -130,7 +161,7 @@
     // including the boot logic, the page's modules and world.wasm itself.
     // What is left here is the one thing that cannot come out of a file the
     // page has not fetched yet: fetching the file.
-    const AV = "524";
+    const AV = "585";
 
     const bar = document.getElementById("bar");
     const what = document.getElementById("what");

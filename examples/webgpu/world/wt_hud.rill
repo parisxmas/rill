@@ -62,6 +62,22 @@ fn main() =
   println("a bare frame emits " + int_to_str(n0) + " instances")
   say("more than the furniture alone", if n0 > 120 then 1 else 0, 1)
 
+  # A name over a head carries its bar now: three glyphs, plus the trough and
+  # the fill — five instances over the bare frame. The health rides in the
+  # tag's own meta, one slot past where `push` reaches.
+  poke_f32(h, hud.h_tag_n(), 1.0)
+  push(h, hud.sl_tag0(), "ada", 600.0, 300.0, 40.0)
+  poke_f32(h, hud.slot_meta(hud.sl_tag0()) + 4, 0.8)
+  nt = hud.build(h)
+  say("a tag is its letters and its bar", nt - n0, 5)
+  # Emptied, the fill goes but the trough stays: dead is still a bar.
+  poke_f32(h, hud.slot_meta(hud.sl_tag0()) + 4, 0.0)
+  say("an empty bar keeps its trough", hud.build(h) - n0, 4)
+  # Behind the eye, the whole tag holds its tongue.
+  poke_f32(h, hud.slot_meta(hud.sl_tag0()) + 1, 0.0 - 9999.0)
+  say("behind the eye, nothing", hud.build(h) - n0, 0)
+  poke_f32(h, hud.h_tag_n(), 0.0)
+
   # Text measure: "abc" is three cells of 7px advance.
   say("three characters at zero tracking, in px", to_int(hud.str_w(h, hud.st_12(), 0.0, "abc")), 21)
   # The middle dot is one visible cell, whatever its byte count.

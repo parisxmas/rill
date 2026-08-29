@@ -620,21 +620,101 @@ fn reconcile(b, w, s, hold_ammo) =
     if m < 0 then 0
     else
       v.set_health(s, peek_f32(b, m + 6))
+      # The ammunition, and the two directions are not the same question.
+      #
+      # A snapshot is half a round trip old, and in that time the trigger has
+      # gone on emptying the gun — so the server always says *more* than the
+      # client has, by about as many rounds as the gun fires in that gap.
+      # A bolt gun fires one round a second and the difference never reached
+      # the old threshold of two; a machine gun fires sixteen, and the count
+      # was written back up two or three every snapshot, twenty times a
+      # second. On screen the belt refilled itself while the trigger was
+      # down.
+      #
+      # So: the server saying *fewer* is obeyed at once — that is the client
+      # having fired something the server refused, and the server owns the
+      # magazine. The server saying *more* is ordinary flight time and is
+      # left alone, unless it is more than any latency could account for,
+      # which is a reload or a box this client missed entirely.
       ammo = to_int(peek_f32(b, m + 12))
       held = v.held_ammo(s)
-      gap = if ammo > held then ammo - held else held - ammo
-      if ammo >= 0 && hold_ammo == 0 && gap > 2 then v.set_held_ammo(s, ammo) else 0
+      if ammo >= 0 && hold_ammo == 0 then ammo_agrees(s, ammo, held) else 0
       x = v.player_x(s)
       y = v.player_y(s)
       z = v.player_z(s)
-      dx = peek_f32(b, m + 1) - x
-      dy = peek_f32(b, m + 2) - y
-      dz = peek_f32(b, m + 3) - z
+      # The snapshot is old, and while falling that is not an error.
+      #
+      # It left the server half a round trip ago, so during any fast vertical
+      # motion it shows this player where they *were* — above, when falling —
+      # and comparing it raw against the current position manufactures a
+      # mismatch of speed times latency. Blended at 35% twenty times a second
+      # that was a sawtooth the whole screen rode: pulled up each snapshot,
+      # dropped by gravity between them, 58 upward jerks measured in one
+      # eleven-metre fall. Past eleven metres a second of fall the fabricated
+      # gap crossed the four-metre line and the sawtooth became a teleport.
+      #
+      # Both ends run the same gravity, so the foreseeable part of the lag is
+      # subtracted before anything is judged: the client's own vertical
+      # velocity times the snapshot's age. Vertical only — walking is five
+      # metres a second and its lag is centimetres, but a long fall is fifty
+      # and its lag is metres. `span` alone stands in for the age when the
+      # ping has not been measured yet.
+      age = age_of(b)
+      # All three axes, not one: the vertical alone fixed the fall and left
+      # the flight — crossing the valley under the jetpack at five metres a
+      # second, the horizontal trail read as an error and yanked the flier
+      # backward eighteen centimetres a tick, twenty times a second. The
+      # ground velocities are what `walk` says the step did (slots 243 and
+      # 255), so a wall that stopped the legs stops the compensation too.
+      dx = peek_f32(b, m + 1) - x + peek_f32(s, 243) * age
+      dy = peek_f32(b, m + 2) - y + peek_f32(s, 24) * age
+      dz = peek_f32(b, m + 3) - z + peek_f32(s, 255) * age
       d = sqrt(dx * dx + dy * dy + dz * dz)
-      if d > 4.0 then v.set_at(s, peek_f32(b, m + 1), peek_f32(b, m + 2), peek_f32(b, m + 3))
-      else if d > 0.03 then v.set_at(s, x + dx * 0.35, y + dy * 0.35, z + dz * 0.35)
+      if d > 4.0 then v.set_at(s, x + dx, y + dy, z + dz)
+      else if d > 0.03 then eased_in(s, x, y, z, dx, dy, dz)
       else 0
       1
+
+# The ordinary correction, and the vertical is not like the other two.
+#
+# Sideways, a gap between here and the server's answer is a mistake that was
+# already made — blend 35% a tick and it is gone. Vertically a gap can be
+# *alive*: let go of the jetpack and the server burns on for the width of the
+# wire before it hears, which leaves it climbing about two metres a second
+# faster for the whole fall that follows. A position-only blend cannot close
+# a gap that is being refilled — it settles into pulling a quarter metre up
+# every tick, twenty times a second, which is the shudder that arrived the
+# day the pack's numbers doubled and its transitions got twice as sharp.
+#
+# So the vertical correction is split: the *velocity* absorbs the persistent
+# part — nudged toward the server a bounded step per snapshot, so the two
+# trajectories agree within a third of a second — and the position takes a
+# sip small enough to be invisible. The horizontal keeps the old blend; a
+# walk has no throttle to disagree about.
+# Eight, because the smallest thing that can honestly appear in a magazine
+# out of nowhere is a pickup, and the smallest pickup is a rifle's ten. Below
+# that, a server that is ahead of the client is a server that has not heard
+# the last few shots yet.
+fn ammo_slack() = 8
+
+fn ammo_agrees(s, ammo, held) =
+  if ammo < held - 2 then v.set_held_ammo(s, ammo)
+  else if ammo > held + ammo_slack() then v.set_held_ammo(s, ammo)
+  else 0
+
+fn eased_in(s, x, y, z, dx, dy, dz) =
+  poke_f32(s, 24, peek_f32(s, 24) + clampf(dy * 1.5, 0.0 - 0.6, 0.6))
+  v.set_at(s, x + dx * 0.35, y + dy * 0.15, z + dz * 0.35)
+
+fn clampf(v, lo, hi) = if v < lo then lo else if v > hi then hi else v
+
+# How old the snapshot being reconciled against is, in seconds: half the round
+# trip to send it, plus the tick it waited to be built. Clamped, because a ping
+# spike is not a licence to trust prediction for a quarter of a minute.
+fn age_of(b) =
+  ping = peek_f32(b, h_ping())
+  half = if ping > 0.0 then ping * 0.5 else 0.0
+  v.clampf((half + peek_f32(b, h_span())) / 1000.0, 0.0, 0.25)
 
 extern fn sqrt(x: Float) -> Float
 
@@ -1085,3 +1165,109 @@ fn replay(b, w) =
 # How many stood in the last snapshot — the corner's "N people in the valley".
 fn here(b) =
   if peek_f32(b, h_have()) < 0.5 then 0 else to_int(peek_f32(b, last_snap(b) + 9))
+
+# ---- who else is carrying a light ------------------------------------------
+#
+# The six lamp slots the shaders read, filled from the interpolated rows this
+# file already builds. It was in host.js: a filter, a sort and a loop over the
+# same twelve floats, written a second time in another language against
+# offsets it had to be told. The data is here, so the loop is here.
+#
+# Six because that is what a light in a shared valley is worth — the beams are
+# summed per fragment over the whole world, and a valley of thirty-two people
+# would be paying for lights a hundred metres behind them. Nearest first, so
+# the ones that are cut are the ones furthest from this eye, which are also
+# the ones most likely already past the beam's twenty-six metre reach.
+fn lamps_at() = 4832
+fn lamp_cap() = 6
+fn lamp_floats() = lamp_cap() * 8
+
+# A lamp is at the eye and not at the feet: 1.75 up, the same figure
+# `place_player` puts a body's eye at. A beam has to leave somebody's head
+# rather than their boots.
+fn lamp_high() = 1.75
+
+fn wire_lamps(b: Ptr, s: Ptr) -> Int =
+  for i in 0..lamp_floats()
+    poke_f32(b, lamps_at() + i, 0.0)
+  gather_lamps(b, s, to_int(peek_f32(b, h_interp_n())), 0, 0)
+
+# One pass over everybody, inserting each lit lamp into the six by distance.
+# Insertion rather than a sort because the list is six long and the input is
+# at most thirty-two: sorting everybody to keep the front of the list is work
+# nobody asked for.
+fn gather_lamps(b, s, n, i, held) =
+  if i >= n then held
+  else if lamp_lit(b, interp_at() + i * 12) then
+    gather_lamps(b, s, n, i + 1, insert_lamp(b, s, interp_at() + i * 12, held))
+  else gather_lamps(b, s, n, i + 1, held)
+
+# Lit and alive. The torch rides the low bit of the row's flag float — see
+# `interp_one` — and a light on somebody who has been shot is a light nobody
+# is carrying.
+fn lamp_lit(b, o) =
+  peek_f32(b, o + 6) > 0.001 && to_int(peek_f32(b, o + 8)) % 2 == 1
+
+fn lamp_far(b, s, o) =
+  dx = peek_f32(b, o + 1) - peek_f32(s, 16)
+  dy = peek_f32(b, o + 2) + lamp_high() - peek_f32(s, 17)
+  dz = peek_f32(b, o + 3) - peek_f32(s, 18)
+  dx * dx + dy * dy + dz * dz
+
+fn insert_lamp(b, s, o, held) =
+  k = lamp_slot(b, s, lamp_far(b, s, o), held, 0)
+  if k >= lamp_cap() then held
+  else
+    shift_lamps(b, if held < lamp_cap() then held else lamp_cap() - 1, k)
+    write_lamp(b, o, k)
+    if held < lamp_cap() then held + 1 else held
+
+# Where this one belongs: the first slot holding a lamp further off than it is,
+# or the end of what is held.
+fn lamp_slot(b, s, d, held, k) =
+  if k >= held then k
+  else if slot_far(b, s, k) > d then k
+  else lamp_slot(b, s, d, held, k + 1)
+
+fn slot_far(b, s, k) =
+  at = lamps_at() + k * 8
+  dx = peek_f32(b, at) - peek_f32(s, 16)
+  dy = peek_f32(b, at + 1) - peek_f32(s, 17)
+  dz = peek_f32(b, at + 2) - peek_f32(s, 18)
+  dx * dx + dy * dy + dz * dz
+
+# Everything from `k` down one slot, last first so nothing is overwritten
+# before it has been moved.
+fn shift_lamps(b, from, k) =
+  if from <= k then 0
+  else
+    copy_lamp(b, from - 1, from)
+    shift_lamps(b, from - 1, k)
+
+fn copy_lamp(b, src, dst) =
+  for i in 0..8
+    poke_f32(b, lamps_at() + dst * 8 + i, peek_f32(b, lamps_at() + src * 8 + i))
+  0
+
+# The slot itself: where the lamp is with `w` saying it is lit, then which way
+# it is pointed — their own yaw and pitch, built the way the camera builds
+# this player's.
+fn write_lamp(b, o, k) =
+  at = lamps_at() + k * 8
+  yaw = peek_f32(b, o + 4)
+  pitch = peek_f32(b, o + 5)
+  cp = cos(pitch)
+  poke_f32(b, at, peek_f32(b, o + 1))
+  poke_f32(b, at + 1, peek_f32(b, o + 2) + lamp_high())
+  poke_f32(b, at + 2, peek_f32(b, o + 3))
+  poke_f32(b, at + 3, 1.0)
+  poke_f32(b, at + 4, sin(yaw) * cp)
+  poke_f32(b, at + 5, sin(pitch))
+  poke_f32(b, at + 6, 0.0 - cos(yaw) * cp)
+  poke_f32(b, at + 7, 0.0)
+  0
+
+extern fn sin(x: Float) -> Float
+
+extern fn cos(x: Float) -> Float
+

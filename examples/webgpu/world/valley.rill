@@ -702,7 +702,40 @@ fn emit_block(bb, i, x, y, z, a, seed) =
 
 fn bullet_cap() = 32
 
-fn bullet_speed() = 120.0
+# Nine floats a round: position, velocity, whose it is, its life — and, since
+# 2026-08-29, which gun fired it.
+#
+# That last one is here because three separate things wanted to know it and
+# all three were asking the *speed* instead, which is a proxy that rots. The
+# tracer's fence was drawn at 100 when the AK flew at 80 and quietly let the
+# AK's streaks back the day it went to 120; the chip-on-the-wall fence was
+# drawn at 100 too and quietly stopped every weapon leaving a mark the day
+# the AK passed it; and the machine gun broke the idea outright by wanting
+# tracers at the same speed the AK wants none. A round now says what it came
+# out of, and none of those questions can rot again.
+#
+#   0 the rifle    1 the AK    2 the MG3
+fn bullet_stride() = 9
+
+fn from_rifle() = 0.0
+
+fn from_ak() = 1.0
+
+fn from_mg() = 2.0
+
+# Every fifth round off the belt: it leaves a chip like the rest of them and
+# it is the only one drawn on the way.
+fn from_mg_lit() = 3.0
+
+# Doubled from 120 on 2026-08-29, by request. What it buys is flatness and
+# lead: across the whole valley a round now falls a quarter of what it did,
+# and the lead on a sprinting man at a hundred metres drops from a body
+# length to half a step — the rifle reads as the precision instrument its
+# glass always promised. The AK keeps its own number below; the two are
+# different weapons again, this time in the right direction.
+# If this number moves, check the tracer's fence in `tracer.wgsl`: rifle
+# rounds must stay above it or their streaks vanish too.
+fn bullet_speed() = 240.0
 
 fn bullet_life() = 3.2
 
@@ -803,7 +836,12 @@ fn step_bullet(w, b, at, dt, decide) =
   # anything" — and the ground is the `landed` test. Only the AK's, because
   # the rifle's rounds are still drawn on the way and do not need saying twice.
   struck = if peek_f32(b, at + 7) < 0.001 then 1.0 else 0.0
-  if on > 0.5 && (landed > 0.5 || struck > 0.5) && sp < 100.0 && on_a_thing < 0.5 then
+  # `bullet_stride`'s ninth float, not the speed: this line read `sp < 100.0`
+  # when the AK flew at 80, and the day it went to 120 every weapon in the
+  # valley silently stopped leaving chips — the marks and the sparks that
+  # burst with them had been dead ever since.
+  leaves_a_chip = peek_f32(b, at + 8) > 0.5
+  if on > 0.5 && (landed > 0.5 || struck > 0.5) && leaves_a_chip && on_a_thing < 0.5 then
     note_mark(w, px, if landed > 0.5 then stop_height(w, px, pz) else py, pz, if landed > 0.5 then 0 - 1 else wall_i)
   else 0
 
@@ -872,13 +910,13 @@ fn poked_out(b, at) =
 
 fn step_bullets(w, b, dt, decide) =
   for i in 0..bullet_cap()
-    step_bullet(w, b, i * 8, dt, decide)
+    step_bullet(w, b, i * bullet_stride(), dt, decide)
 
 # `alloc_bytes` hands back whatever was there; a slot with life left in it
 # would draw a streak the moment the world appeared.
 fn clear_bullets(b) =
   for i in 0..bullet_cap()
-    poke_f32(b, i * 8 + 7, 0.0)
+    poke_f32(b, i * bullet_stride() + 7, 0.0)
 
 # `d` is where the sights point; the host works it out from the same yaw and
 # pitch this file wrote. The round starts a little ahead of the eye so its
@@ -896,7 +934,7 @@ fn clear_bullets(b) =
 # count is spent in the same instruction on both, which is what keeps the
 # number on the screen and the number the server is enforcing the same one.
 fn fire(s: Ptr, dx: Float, dy: Float, dz: Float) =
-  if weapon(s) == 1 then fire_rocket(s, dx, dy, dz) else if weapon(s) == 2 then fire_ak(s, dx, dy, dz) else fire_bullet(s, dx, dy, dz)
+  if weapon(s) == 1 then fire_rocket(s, dx, dy, dz) else if weapon(s) == 2 then fire_ak(s, dx, dy, dz) else if weapon(s) == 5 then fire_mg(s, dx, dy, dz) else fire_bullet(s, dx, dy, dz)
 
 fn fire_bullet(s, dx, dy, dz) =
   if peek_f32(s, 118) < 0.5 then 0 else fire_round(s, dx, dy, dz)
@@ -955,7 +993,7 @@ fn fire_round(s, dx, dy, dz) =
   w = wd(s)
   b = peek_ptr(w, 68)
   k = to_int(peek_f32(w, 60))
-  at = k % bullet_cap() * 8
+  at = k % bullet_cap() * bullet_stride()
   v = bullet_speed()
   poke_f32(b, at, peek_f32(s, 16) + dx * 0.9)
   poke_f32(b, at + 1, peek_f32(s, 17) + dy * 0.9)
@@ -965,6 +1003,7 @@ fn fire_round(s, dx, dy, dz) =
   poke_f32(b, at + 5, dz * v)
   poke_f32(b, at + 6, peek_f32(s, 99))
   poke_f32(b, at + 7, bullet_life())
+  poke_f32(b, at + 8, from_rifle())
   poke_f32(w, 60, to_float(k + 1))
   1
 
@@ -1074,6 +1113,111 @@ fn ak_reload(s) =
     poke_f32(s, 52, world_time(wd(s)) + 1.4)
     0
 
+# ---- the MG3 --------------------------------------------------------------
+#
+# Weapon five. A belt-fed gun whose whole character is the trade the user
+# asked for in one sentence: standing, it fires wide and climbs hard; on one
+# knee it settles into something you can hold on a target. The knee is read
+# from `crouch_of`, which the walk already keeps, so the machine gun costs no
+# new state to know how it is being held.
+#
+# Its rounds fly at the AK's speed on purpose — inside the tracer fence in
+# `tracer.wgsl` — so a thousand rounds a minute does not put a lit rope
+# across the valley.
+fn mg_full() = 75
+
+fn mg_belt_count() = 2
+
+# A round every tick, which is twelve hundred a minute — the top of what the
+# real gun does, and the only rate near it that both ends can agree on.
+#
+# It was 0.06, meaning a thousand a minute, and that number was chosen for the
+# gun rather than for the machinery: the server's clock advances in fifty
+# millisecond steps, so a gate of sixty lets it fire on every *other* step and
+# no faster. The client, whose clock is the frame, managed its full sixteen a
+# second. The two spent the belt at different rates — six or seven rounds a
+# second apart — and every second or two the gap grew past what reconciliation
+# tolerates and the server's higher count was written back: on screen the
+# rounds refilled themselves while the trigger was down.
+#
+# The AK never showed this because a tenth of a second is exactly two ticks.
+# Any weapon added here wants a gap that is a whole number of them.
+fn mg_gap() = 0.05
+
+fn mg_speed() = 180.0
+
+fn mg_rounds(s: Ptr) -> Int = to_int(peek_f32(s, 252))
+
+fn mg_belts(s: Ptr) -> Int = to_int(peek_f32(s, 254))
+
+# How wide the cone is, in radians, and the whole of the stance trade: about
+# three degrees standing, under three quarters of one on a knee. The knee is
+# read as a threshold rather than blended — half-way down is not braced.
+fn mg_cone(s) = if crouch_of(s) > 0.5 then 0.012 else 0.052
+
+fn fire_mg(s, dx, dy, dz) =
+  if peek_f32(s, 252) < 0.5 then mg_reload(s) else mg_spat(s, dx, dy, dz)
+
+fn mg_spat(s, dx, dy, dz) =
+  # The spend lives here, beside the round it pays for. It was in a wrapper
+  # once, and the day the wrapper was simplified away the belt stopped
+  # counting down — an infinite belt, caught by the first line of the test
+  # that was written the same hour.
+  poke_f32(s, 252, peek_f32(s, 252) - 1.0)
+  w = wd(s)
+  b = peek_ptr(w, 68)
+  k = to_int(peek_f32(w, 60))
+  at = k % bullet_cap() * bullet_stride()
+  v = mg_speed()
+  poke_f32(b, at, peek_f32(s, 16) + dx * 0.9)
+  poke_f32(b, at + 1, peek_f32(s, 17) + dy * 0.9)
+  poke_f32(b, at + 2, peek_f32(s, 18) + dz * 0.9)
+  poke_f32(b, at + 3, dx * v)
+  poke_f32(b, at + 4, dy * v)
+  poke_f32(b, at + 5, dz * v)
+  poke_f32(b, at + 6, peek_f32(s, 99))
+  poke_f32(b, at + 7, bullet_life())
+  # One round in five, which is how a belt for this gun is actually loaded —
+  # and the reason sixteen a second reads as a machine gun rather than as a
+  # lit rope: the four dark rounds between are what make the fifth a line you
+  # can follow. The other four still leave chips, so `from_mg` for them and a
+  # third kind for the ones that are drawn.
+  poke_f32(b, at + 8, if to_int(peek_f32(s, 253)) % 5 == 0 then from_mg_lit() else from_mg())
+  poke_f32(w, 60, to_float(k + 1))
+  1
+
+# A new belt, on the AK's clock: the fire gate is pushed out while the feed
+# cover is open, and a spare comes off the shoulder.
+fn mg_reload(s) =
+  if to_int(peek_f32(s, 254)) < 1 then 0
+  else
+    poke_f32(s, 254, peek_f32(s, 254) - 1.0)
+    poke_f32(s, 252, to_float(mg_full()))
+    # The AK's 1.4, not a longer one of this gun's own.
+    #
+    # Three seconds looked right for a belt — it is a heavier thing to load
+    # than a magazine — and it broke the gun in a shared valley. Three
+    # numbers have to agree about how long a change takes: the hands animate
+    # for `change_secs` (1.45), the page holds the ammunition against the
+    # server's figure for 900 milliseconds, and this pushes the fire gate.
+    # Set past the other two, the hold expired while the server still had the
+    # old belt, `reconcile` wrote its nought back over the fresh seventy-five,
+    # the trigger found an empty gun and loaded it again — a reload that
+    # restarted forever, and only ever in a valley with a server in it.
+    poke_f32(s, 52, world_time(wd(s)) + 1.4)
+    1
+
+# The belt change somebody asked for. The same refusals as the AK's manual
+# magazine: nothing to change, nothing to change to, or a change already
+# under way behind the fire gate.
+fn ask_belt(s, tnow) =
+  if peek_f32(s, 82) < 0.001 then 0
+  else if in_water(s) > 0 then 0
+  else if mg_belts(s) < 1 then 0
+  else if mg_rounds(s) >= mg_full() then 0
+  else if tnow - peek_f32(s, 52) < mg_gap() then 0
+  else mg_reload(s)
+
 fn fire_ak(s, dx, dy, dz) =
   if peek_f32(s, 106) < 0.5 then ak_reload(s) else fire_ak_round(s, dx, dy, dz)
 
@@ -1094,7 +1238,8 @@ fn fire_ak(s, dx, dy, dz) =
 # fill its own would be a client with an inexhaustible rifle.
 fn ask_reload(s: Ptr) -> Int =
   tnow = world_time(wd(s))
-  if weapon(s) != 2 then 0
+  if weapon(s) == 5 then ask_belt(s, tnow)
+  else if weapon(s) != 2 then 0
   else if peek_f32(s, 82) < 0.001 then 0
   else if in_water(s) > 0 then 0
   else if ak_mags(s) < 1 then 0
@@ -1104,13 +1249,33 @@ fn ask_reload(s: Ptr) -> Int =
     ak_reload(s)
     1
 
+# What the AK sends downrange, and it is its own number now.
+#
+# It was `bullet_speed() * 2 / 3` — eighty metres a second against the rifle's
+# hundred and twenty — which read as "two thirds of a rifle" and tied the two
+# together for good. Reach is what that fraction was really setting: a round
+# fired level falls 4.9 metres in the first second whatever it left the barrel
+# at, so how far it gets before it is into the ground is its speed times the
+# time it can afford to fall, and that is linear in the speed. Half again as
+# far therefore wants half again the speed.
+#
+# Which brought it level with the old rifle at the muzzle. Raised half again
+# on 2026-08-29, the day after the rifle doubled to 240: the two are still
+# not the same weapon — the rifle is one aimed round at a time through glass
+# and this is thirty in four seconds — and now their speeds say so too, 180
+# against 240. The AK shoots flatter than it did and still asks more lead
+# than the rifle, which is the right order for an unscoped gun.
+# If this number moves, move the tracer's fence with it: `tracer.wgsl` hides
+# the AK's streaks by speed, and the fence has been left behind once before.
+fn ak_speed() = 180.0
+
 fn fire_ak_round(s, dx, dy, dz) =
   poke_f32(s, 106, peek_f32(s, 106) - 1.0)
   w = wd(s)
   b = peek_ptr(w, 68)
   k = to_int(peek_f32(w, 60))
-  at = k % bullet_cap() * 8
-  v = bullet_speed() * 2.0 / 3.0
+  at = k % bullet_cap() * bullet_stride()
+  v = ak_speed()
   poke_f32(b, at, peek_f32(s, 16) + dx * 0.9)
   poke_f32(b, at + 1, peek_f32(s, 17) + dy * 0.9)
   poke_f32(b, at + 2, peek_f32(s, 18) + dz * 0.9)
@@ -1119,6 +1284,7 @@ fn fire_ak_round(s, dx, dy, dz) =
   poke_f32(b, at + 5, dz * v)
   poke_f32(b, at + 6, peek_f32(s, 99))
   poke_f32(b, at + 7, bullet_life())
+  poke_f32(b, at + 8, from_ak())
   poke_f32(w, 60, to_float(k + 1))
   1
 
@@ -1126,15 +1292,15 @@ fn fire_ak_round(s, dx, dy, dz) =
 # wire whatever is in the hands, because the snapshot says "your weapon holds
 # n" and both ends agree about which weapon that is.
 fn held_ammo(s: Ptr) -> Int =
-  if weapon(s) == 1 then rockets(s) else if weapon(s) == 2 then ak_rounds(s) else rounds(s)
+  if weapon(s) == 1 then rockets(s) else if weapon(s) == 2 then ak_rounds(s) else if weapon(s) == 5 then mg_rounds(s) else rounds(s)
 
 # Whether a pull of the trigger has anything to become: a shot, or — for an
 # AK with an empty magazine and spares on the belt — the change.
 fn may_fire(s) =
-  if weapon(s) == 2 then yes(ak_rounds(s) > 0 || ak_mags(s) > 0) else held_ammo(s)
+  if weapon(s) == 2 then yes(ak_rounds(s) > 0 || ak_mags(s) > 0) else if weapon(s) == 5 then yes(mg_rounds(s) > 0 || mg_belts(s) > 0) else held_ammo(s)
 
 fn set_held_ammo(s: Ptr, n: Int) =
-  if weapon(s) == 1 then poke_f32(s, 120, to_float(n)) else if weapon(s) == 2 then poke_f32(s, 106, to_float(n)) else poke_f32(s, 118, to_float(n))
+  if weapon(s) == 1 then poke_f32(s, 120, to_float(n)) else if weapon(s) == 2 then poke_f32(s, 106, to_float(n)) else if weapon(s) == 5 then poke_f32(s, 252, to_float(n)) else poke_f32(s, 118, to_float(n))
   1
 
 # ---- what a round does when it arrives -------------------------------------
@@ -1211,15 +1377,20 @@ fn worth_rockets() = 3.0
 # eight ways across the chips a crystal leaves, so sweeping up every piece of
 # one is worth exactly that and there is no way to get more out of it.
 #
-# It averages 5.19 per cent a crystal over the three hundred, against the flat
-# five every crystal was worth before this, so what the valley hands out in a
-# minute has not moved — only where it comes from.
+# It averaged 5.19 per cent a crystal over the three hundred when it was
+# half this — the flat five every crystal was worth at first, redistributed
+# by colour. Doubled 2026-08-29 because the valley got harder to live in
+# than the medicine could keep up with: six, twelve and twenty-four by
+# colour now, 10.4 a crystal on average, and a violet worth crossing the
+# whole valley for. Still short of what one hit costs, which is the line
+# that matters — see `gather_shard` on why the medicine must stay cheaper
+# than the wound.
 #
 # The colour is read once, here, out of the crystal that is coming apart. The
 # chips carry a number from then on: a palette that changes should change what
 # the valley looks like and not what it heals.
 fn chip_heal(r: Float, g: Float, b: Float) =
-  if r < 0.5 then 0.0075 else if b > 0.9 then 0.015 else 0.00375
+  if r < 0.5 then 0.015 else if b > 0.9 then 0.03 else 0.0075
 
 # Debris goes round the ring above the magazines, so a busy minute of breaking
 # crystals cannot write over them.
@@ -1623,11 +1794,13 @@ fn hit_crystals(w, b, at, ax, ay, az, bx, by, bz) =
 #
 # A hundred metres a second is the line, and the drag is what makes it safe.
 # The rounds lose speed as `dv/dt = -0.00011 v²`, which over a whole 3.2
-# second life takes the rifle's from 120 to 115 and the AK's from 80 to 78:
-# the two bands never come near each other, let alone meet. Sixty was the
-# line while the AK left the muzzle at forty; the day its speed doubled, a
-# threshold left where it was would have handed it the rifle's damage in
-# silence, which is the sort of thing a number in a comment is for.
+# second life takes the rifle's from 240 to about 221 and the AK's from 180
+# to about 169: both stay far above the hundred this line is drawn at, so
+# neither ever pays the slow-round third. Sixty was the line while the AK left the
+# muzzle at forty; the day its speed doubled, a threshold left where it was
+# would have handed it the rifle's damage in silence — and the day the
+# rifle's doubled again, this comment was re-read before the number moved,
+# which is the sort of thing a number in a comment is for.
 fn round_scale(b, at) =
   vx = peek_f32(b, at + 3)
   vy = peek_f32(b, at + 4)
@@ -2164,11 +2337,13 @@ fn blast_hurt(s, x, y, z, reach) =
 # "empty slot" the pool already understands, so the piece simply is not drawn
 # any more and no flag has to be invented for it.
 #
-# What a crystal is worth depends on which one it was — three per cent, six or
-# twelve, by colour; see `chip_heal`. It averages five, and five is the number
-# that matters: the medicine has to be worth less than a hit costs, or there is
-# nothing to weigh. It was three and a half a chip once, which made one crystal
-# worth twenty-eight and turned a lucky shot into a full heal.
+# What a crystal is worth depends on which one it was — six per cent, twelve
+# or twenty-four, by colour; see `chip_heal`. It averages ten, and staying
+# under what a hit costs is the number that matters: the medicine has to be
+# worth less than the wound, or there is nothing to weigh. It was three and a
+# half a chip once, which made one crystal worth twenty-eight and turned a
+# lucky shot into a full heal — twenty-four for the rarest colour is as close
+# as this has been allowed back to that line.
 fn gather_shard(w, s, sb, i, mend) =
   at = i * shard_stride()
   sc = peek_f32(sb, at + 12)
@@ -2630,6 +2805,28 @@ fn clear_blasts(bb) =
 fn blasts(s: Ptr) -> Ptr = peek_ptr(wd(s), 81)
 
 fn blasts_cap(s: Ptr) -> Int = blast_cap()
+
+# How long a crater goes on lighting the valley. One light for all of them —
+# two blasts close enough together to both matter is rare enough that the
+# second taking over is not something anybody sees, and a light per blast
+# would put a loop in every fragment in the world.
+fn blast_light_s() = 2.6
+
+# Which crater is lighting the valley: the youngest that is still burning, or
+# minus one if none is. The page used to walk the ring itself and hold the
+# rule — the length of a burn — in a second place; the ages are kept here, so
+# the choosing belongs here too. It matters most on the frame after a round
+# restart, when every blast is cleared and a rule written down anywhere else
+# is still counting one down.
+fn blast_lit(s: Ptr) -> Int = pick_blast(blasts(s), 0, 0 - 1)
+
+fn pick_blast(bb, i, best) =
+  if i >= blast_cap() then best
+  else
+    a = peek_f32(bb, i * blast_stride() + 4)
+    burning = a >= 0.0 && a < blast_light_s()
+    younger = best < 0 || a < peek_f32(bb, best * blast_stride() + 4)
+    pick_blast(bb, i + 1, if burning && younger then i else best)
 
 # How many have gone off since the world was built. The host watches this the
 # way it watches the breaks: it has no other way of knowing, because the
@@ -3362,6 +3559,74 @@ fn shark_gape(w) =
   m = peek_f32(w, 90)
   if m > 2.5 then clampf(1.0 - peek_f32(w, 91) * 1.8, 0.0, 1.0) else if m > 0.5 then 0.85 else 0.0
 
+# ---- where the sun is ------------------------------------------------------
+#
+# The path the sun runs, which used to live in host.js and is a function of the
+# clock and nothing else — so it belongs beside the clock. It was moved because
+# a constant that only the page knows is a constant nobody else can agree with:
+# the server holds the world time and hands it down, and until this moved there
+# was no way for anything but a browser to say where the light was coming from.
+# `wt_sun.rill` can ask now, too, which is the other half of the reason.
+#
+# The circle is tilted eighty-two degrees off the vertical rather than a clean
+# ninety, for one arithmetic reason: at exactly ninety the sun passes through
+# the zenith, and a light straight overhead has no horizontal component for
+# `light_vp` to build its basis from. Eight degrees is invisible and keeps that
+# term away from zero — and `light_vp` has a floor of its own as well, because
+# a constant in one place guarding a division in another is how a black screen
+# at noon gets shipped.
+fn sky_tilt() = 1.43116999
+
+# A day, in seconds. Ninety was a good number for somebody who would look at
+# this for a minute and a poor one for somebody living in it: the shadows
+# visibly crawled and the sun set while you crossed the meadow. Six minutes is
+# still nothing like a day and still shows a whole one inside a session.
+fn day_secs() = 360.0
+
+# Where in the day it starts. π minus a tenth, which is a tenth of a radian
+# past the rising crossing of the *unlifted* circle — cos(θ) < 0 there is what
+# makes it the rising side rather than the setting one.
+#
+# It is not dawn, whatever host.js said about this for years. The lift applies
+# at θ as much as anywhere, so a valley opens with the sun a fifth of the way
+# up and the shadows already short: mid-morning, not sunrise. `wt_sun.rill`
+# measures it and writes the number down.
+fn sun_phase() = 3.04159265
+
+# The circle is lifted by half its amplitude, which is the geometry of a wider
+# world: the day arc runs long and the sun dips under for exactly a third of
+# the turn instead of half. sin(30°) of the amplitude is what splits it 2 to 1
+# — solve elevation = A·sin(θ) + A/2 > 0 and θ spends 240 of 360 above.
+fn sun_lift() = sin(sky_tilt()) * 0.5
+
+fn sun_theta(w: Ptr) -> Float =
+  sun_phase() + world_time(w) * 6.28318531 / day_secs()
+
+# The two directions spanning the plane the sun runs round in are (0,0,1) and
+# (cos tilt, -sin tilt, 0), and what comes out of them is where the sun *is*.
+# What every caller wants is the other thing — the direction its light travels
+# — so these are already negated, and lifted, and of length one.
+fn sun_raw_x(w) = 0.0 - cos(sky_tilt()) * sin(sun_theta(w))
+fn sun_raw_y(w) = sin(sky_tilt()) * sin(sun_theta(w)) - sun_lift()
+fn sun_raw_z(w) = 0.0 - cos(sun_theta(w))
+
+fn sun_len(w) =
+  x = sun_raw_x(w)
+  y = sun_raw_y(w)
+  z = sun_raw_z(w)
+  sqrt(x * x + y * y + z * z)
+
+fn sun_x(w: Ptr) -> Float = sun_raw_x(w) / sun_len(w)
+fn sun_y(w: Ptr) -> Float = sun_raw_y(w) / sun_len(w)
+fn sun_z(w: Ptr) -> Float = sun_raw_z(w) / sun_len(w)
+
+# The one call a frame makes: swing the light to wherever the clock has it and
+# rebuild the shadow matrix from there. The host used to do the swinging and
+# hand the answer back in; now it asks.
+fn step_sun(s: Ptr) =
+  w = wd(s)
+  light_vp(s, sun_x(w), sun_y(w), sun_z(w))
+
 # ---- the sun's matrix ------------------------------------------------------
 #
 # The sun. Orthographic view-projection over the whole valley for the shadow
@@ -3369,7 +3634,7 @@ fn shark_gape(w) =
 # light travels; the shader's "toward the sun" is its negation.
 #
 # No longer fixed: the world turns, so the direction is an argument and this is
-# recomputed every frame from whatever the host has swung it to. That matters
+# recomputed every frame from whatever the clock has swung it to. That matters
 # more than it sounds like it should — with the matrix baked at load and the
 # sky's sun moving, the shadows would keep pointing at where the sun used to
 # be, and there would be two suns in the world with only one of them visible.
@@ -3445,7 +3710,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   # the same multiplication by four.
   fn pool(cap, stride) = alloc_bytes(cap * stride * 4)
 
-  bullet_buf = pool(bullet_cap(), 8)
+  bullet_buf = pool(bullet_cap(), bullet_stride())
   shard_buf = pool(shard_cap(), shard_stride())
   fire_buf = pool(fireball_cap(), fireball_stride())
   charge_buf = pool(charger_cap(), charger_stride())
@@ -5315,6 +5580,8 @@ fn place_player(s) =
   poke_f32(s, 120, to_float(rocket_full()))
   poke_f32(s, 106, to_float(ak_full()))
   poke_f32(s, 117, to_float(ak_mag_count() - 1))
+  poke_f32(s, 252, to_float(mg_full()))
+  poke_f32(s, 254, to_float(mg_belt_count() - 1))
   poke_f32(s, 84, 0.0)
   poke_f32(s, 85, 0.0)
   poke_f32(s, 107, 0.0)
@@ -5439,6 +5706,14 @@ fn clear_to(ax, ay, az, bx, by, bz, n, i) =
 fn blocked_at(ax, ay, az, bx, by, bz, t) =
   height(ax + (bx - ax) * t, az + (bz - az) * t) > ay + (by - ay) * t + sight_slack()
 
+# Whether the feet are down. One while standing on something, nought in the
+# air — the world's own word for it, and the only thing the weapon's stride
+# needs to know about jumping.
+fn grounded(s: Ptr) -> Float = peek_f32(s, 25)
+
+# What the legs did on the last step, in metres a second. Written by `walk`.
+fn stride_speed(s: Ptr) -> Float = peek_f32(s, 242)
+
 fn player_x(s: Ptr) -> Float = peek_f32(s, 21)
 
 fn player_y(s: Ptr) -> Float = peek_f32(s, 22)
@@ -5504,10 +5779,14 @@ fn set_rounds(s: Ptr, n: Int) =
 # the message had to change and an old server simply masks it off.
 fn set_keys(s: Ptr, keys: Int) =
   poke_f32(s, 30, to_float(bit_and(keys, 127)))
-  # Two bits of weapon above the seven of movement: nought the rifle, one the
-  # launcher, two the AK. One bit held two weapons; the third cost the keys
-  # their eighth bit and the wire a byte.
-  poke_f32(s, 119, to_float(bit_and(shr(keys, 7), 3)))
+  # Two bits of weapon above the seven of movement, and a third parked out at
+  # bit eleven: nought the rifle, one the launcher, two the AK, five the MG3.
+  # The pair filled up the day the machine gun arrived, and the next bit in
+  # line — nine — was already the lamp, ten already the pack, so the high bit
+  # lives past both. An encoder that shifted five whole bits left would have
+  # lit the lamp instead, which was checked before it was shipped rather than
+  # after.
+  poke_f32(s, 119, to_float(bit_or(bit_and(shr(keys, 7), 3), shl(bit_and(shr(keys, 11), 1), 2))))
   # And the tenth bit is the lamp. It rides here for the reason the weapon
   # does — the message is already going and this is part of what somebody is
   # doing — and it is a *state* rather than a press, so a packet that goes
@@ -5657,7 +5936,7 @@ fn take_fire(s, tnow, gap) =
   # The bolt's gap for the rifle, its own hundred milliseconds for the AK. The
   # launcher rides the rifle's — its real cycle is the client's animation and
   # the tube's own count.
-  if tnow - peek_f32(s, 52) < (if weapon(s) == 2 then ak_gap() else gap) then 0
+  if tnow - peek_f32(s, 52) < (if weapon(s) == 2 then ak_gap() else if weapon(s) == 5 then mg_gap() else gap) then 0
   else if in_water(s) > 0 then 0
   else if peek_f32(s, 82) < 0.001 then 0
   else if may_fire(s) < 1 then 0
@@ -5703,7 +5982,7 @@ fn shots(w: Ptr) -> Int = to_int(peek_f32(w, 60))
 fn throws(w: Ptr) -> Int = to_int(peek_f32(w, 63))
 
 fn bullet_f(w: Ptr, k: Int, j: Int) -> Float =
-  peek_f32(peek_ptr(w, 68), k % bullet_cap() * 8 + j)
+  peek_f32(peek_ptr(w, 68), k % bullet_cap() * bullet_stride() + j)
 
 fn fireball_f(w: Ptr, k: Int, j: Int) -> Float =
   peek_f32(peek_ptr(w, 74), k % fireball_cap() * fireball_stride() + j)
@@ -5726,7 +6005,7 @@ fn break_which(w: Ptr, k: Int) -> Int = ring_at(w, 97, break_ring(), k)
 fn put_bullet(w: Ptr, x: Float, y: Float, z: Float, vx: Float, vy: Float, vz: Float, owner: Float) =
   b = peek_ptr(w, 68)
   k = to_int(peek_f32(w, 60))
-  at = k % bullet_cap() * 8
+  at = k % bullet_cap() * bullet_stride()
   poke_f32(b, at, x)
   poke_f32(b, at + 1, y)
   poke_f32(b, at + 2, z)
@@ -5824,6 +6103,102 @@ fn grass_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 59))
 # the exact depth under every vertex, so the shore foam sits where the shore
 # is rather than where a 32-bit re-derivation guesses it might be.
 fn ground(x: Float, z: Float) -> Float = height(x, z)
+
+# ---- what grows on the bottom of the lake, and what flies over the meadow ---
+#
+# Both of these were scattered in host.js with `Math.random`, and they were
+# the last two things in this world placed that way. Everything else — the
+# pines, the poplars, the crystals, the grass, the flowers, the walls — is a
+# deterministic walk over a hash, which is what lets a server say "four
+# hundred pines" and every browser grow the same forest from it.
+#
+# So every player had *different* weed on the same lakebed, and the difference
+# could not be talked about: not on the wire, not in a test, not between two
+# people looking at the same patch of sand. Nothing in the simulation touches
+# a frond, so nothing broke — but "nothing depends on it" is a reason to keep
+# it cheap, not a reason to keep it unrepeatable.
+#
+# They are filled into a buffer the caller owns rather than into the world,
+# because that is what they are: a picture, asked for when the renderer is
+# built and thrown away when the tier changes.
+
+fn weed_beds() = 110
+fn weed_per() = 16
+fn weed_cap() = weed_beds() * weed_per()
+# Most of the valley is not lakebed, so most candidate centres are thrown
+# away. Thirty tries a bed is what it takes to find a hundred and ten.
+fn weed_tries() = weed_beds() * 30
+
+# Where a frond will stand, or a number no depth can be. Off the shallows as
+# well as off the land: a plant in ten centimetres of water sticks out of it,
+# which reads as weed growing on a beach.
+fn weed_deep(x, z) =
+  y = height(x, z)
+  if y < 0.0 - 0.9 && y > 0.0 - 11.0 then y else 999.0
+
+fn weed_build(out: Ptr, cap: Int) -> Int = weed_bed(out, cap, 0, 0, 0)
+
+# In beds, not sprinkled. Weed spreads from where weed already is, so an even
+# scatter over a lakebed is the one arrangement it never takes: what it makes
+# is patches, thick in the middle and thinning at the edge, with clear sand
+# between them.
+fn weed_bed(out, cap, try, beds, n) =
+  if try >= weed_tries() || beds >= weed_beds() || n >= cap then n
+  else
+    cx = (hash2(to_float(try), 11.0) - 0.5) * 156.0
+    cz = (hash2(to_float(try), 29.0) - 0.5) * 156.0
+    if weed_deep(cx, cz) > 900.0 then weed_bed(out, cap, try + 1, beds, n)
+    else weed_bed(out, cap, try + 1, beds + 1,
+                  weed_fill(out, cap, try, cx, cz,
+                            1.1 + hash2(to_float(try), 47.0) * 2.4, 0, n))
+
+# Every frond is put to the depth test again, so a bed that runs over the
+# shoreline stops at the shoreline instead of climbing out of the water.
+fn weed_fill(out, cap, try, cx, cz, spread, k, n) =
+  if k >= weed_per() || n >= cap then n
+  else
+    sd = to_float(try * 32 + k)
+    # Square-rooted, so a bed is dense at its middle and thins outward rather
+    # than being a disc of even scatter.
+    a = hash2(sd, 3.0) * 6.28318
+    r = sqrt(hash2(sd, 7.0)) * spread
+    x = cx + cos(a) * r
+    z = cz + sin(a) * r
+    y = weed_deep(x, z)
+    if y > 900.0 then weed_fill(out, cap, try, cx, cz, spread, k + 1, n)
+    else weed_fill(out, cap, try, cx, cz, spread, k + 1,
+                   n + weed_one(out, n * 8, x, y, z, sd))
+
+fn weed_one(out, at, x, y, z, sd) =
+  poke_f32(out, at, x)
+  # Rooted a little under the sand, so the base of the card is not a visible
+  # edge where it meets the bottom.
+  poke_f32(out, at + 1, y - 0.05)
+  poke_f32(out, at + 2, z)
+  poke_f32(out, at + 3, 0.85 + hash2(sd, 13.0) * 1.5)
+  poke_f32(out, at + 4, hash2(sd, 19.0) * 6.28318)
+  poke_f32(out, at + 5, 0.12 + hash2(sd, 23.0) * 0.22)
+  poke_f32(out, at + 6, 0.30 + hash2(sd, 29.0) * 0.30)
+  poke_f32(out, at + 7, 0.18 + hash2(sd, 31.0) * 0.22)
+  1
+
+# The fireflies' starting places. The compute shader takes them from here and
+# never asks again — it is a seed, not a state — so this is the one moment
+# their arrangement is decided, and it may as well be decided the same way
+# twice.
+fn fly_seed(out: Ptr, n: Int) -> Int = fly_one(out, n, 0)
+
+fn fly_one(out, n, i) =
+  if i >= n then n
+  else
+    sd = to_float(i)
+    a = hash2(sd, 5.0) * 6.28318
+    r = 12.0 + hash2(sd, 17.0) * 32.0
+    poke_f32(out, i * 8, cos(a) * r)
+    poke_f32(out, i * 8 + 1, 1.0 + hash2(sd, 23.0) * 3.5)
+    poke_f32(out, i * 8 + 2, sin(a) * r)
+    poke_f32(out, i * 8 + 3, hash2(sd, 37.0))
+    fly_one(out, n, i + 1)
 
 # Hands a world back. `alloc_bytes` is malloc, so `free_ptr` is its pair;
 # the host calls this before asking for the valley at another resolution.
@@ -5998,6 +6373,8 @@ fn look_per_pixel() = 0.0018
 #   it lifts on any planet rather than being a number that happens to beat
 #   one particular fall. What it cannot do is exceed its own climb rate — see
 #   `jet_climb` — so a weak planet gets you up no faster, only for longer.
+#   Both of the pack's numbers doubled on 2026-08-29; the shape of that rule
+#   did not.
 fn gravity_default() = 26.0
 
 fn gravity(w: Ptr) -> Float =
@@ -6018,6 +6395,11 @@ fn jump_vel(keys, grounded, vy) =
 # Two and a bit seconds of burn, which is height enough to clear the pines and
 # not enough to cross the valley: the point of it is to get somewhere a moment
 # sooner and to be somewhere nobody expected, not to leave the ground behind.
+# The doubling of 2026-08-29 raised what one tank buys from fifteen metres of
+# climb to thirty-two — measured, not predicted: it is a shade over twice
+# because the faster wind-up also spends less of the burn getting there, so
+# more of the tank is flown at the ceiling. The tank itself was left where it
+# was, so the pack is twice as strong and not one second longer.
 #
 # And it fills only while standing, at a sixth of the rate it empties. Two
 # seconds of flight now costs thirteen on the ground.
@@ -6038,17 +6420,29 @@ fn jet_fill_secs() = 13.2
 # one.
 fn jet_back() = 0.25
 
-# Thrust as a multiple of the planet's own pull. Seventeen tenths, so what is
-# left after the fall is seven tenths of a gravity going up — brisk, and slow
-# enough that the climb rate below is what decides how fast you rise rather
-# than a number nobody set.
-fn jet_thrust() = 1.7
+# Thrust as a multiple of the planet's own pull. Thirty-four tenths, so what
+# is left after the fall is two and two fifths of a gravity going up — and
+# still quick enough to reach the ceiling below well inside a burn, so that
+# the climb rate is what decides how fast you rise rather than a number
+# nobody set. It was 1.7, a net seven tenths, doubled 2026-08-29 by request.
+#
+# What this half buys is authority rather than height: at the default pull it
+# arrests a thirty-metre-a-second fall in half a second where it used to take
+# a second and a half. Falling onto the pack is now a save; it used to be a
+# negotiation.
+fn jet_thrust() = 3.4
 
-# And the ceiling on the climb: six and a half metres a second, whatever the
-# planet. A pack that accelerated for the whole burn would leave at forty
-# metres a second on this world and at ten on a small one, which is two
+# And the ceiling on the climb: thirteen metres a second, whatever the
+# planet. A pack that accelerated for the whole burn would leave at eighty
+# metres a second on this world and at twenty on a small one, which is two
 # different toys wearing one name.
-fn jet_climb() = 6.5
+#
+# This is the half that is felt as height, and it had to move with the thrust
+# rather than instead of it. Raising the ceiling alone is a promise the burn
+# cannot keep: the pack would spend a longer share of its two and a fifth
+# seconds still winding up to a speed it reaches just as the tank runs out,
+# and the difference nobody sees is the same as no difference.
+fn jet_climb() = 13.0
 
 fn jet_fuel(s: Ptr) -> Float = peek_f32(s, 244)
 
@@ -6300,8 +6694,12 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   keep = 1.0 / (1.0 + dt * 5.0)
   poke_f32(s, 84, shx * keep)
   poke_f32(s, 85, shz * keep)
-  px0 = clampf(peek_f32(s, 21) + (if wl > 0.01 then wx / wl * step else 0.0) + shx * dt, 0.0 - 80.0, 80.0)
-  pz0 = clampf(peek_f32(s, 23) + (if wl > 0.01 then wz / wl * step else 0.0) + shz * dt, 0.0 - 80.0, 80.0)
+  # Where they were before this step, so that what the legs did can be told
+  # apart from what the network did. See `stride_speed`.
+  px_was = peek_f32(s, 21)
+  pz_was = peek_f32(s, 23)
+  px0 = clampf(px_was + (if wl > 0.01 then wx / wl * step else 0.0) + shx * dt, 0.0 - 80.0, 80.0)
+  pz0 = clampf(pz_was + (if wl > 0.01 then wz / wl * step else 0.0) + shz * dt, 0.0 - 80.0, 80.0)
   poke_f32(s, 21, px0)
   poke_f32(s, 23, pz0)
   collide_all(s, peek_ptr(w, 65), to_int(peek_f32(w, 57)), 0.3)
@@ -6309,6 +6707,27 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   collide_walls(s, w)
   px = peek_f32(s, 21)
   pz = peek_f32(s, 23)
+  # How fast the feet carried this player over the ground on this step, in
+  # metres a second — after the collisions, so walking into a hillside is not
+  # walking, and before anything else touches the position.
+  #
+  # This is written for the weapon's stride and it exists because the obvious
+  # source is wrong: a browser in a shared valley predicts its own walk every
+  # frame and is corrected toward the server's answer twenty times a second,
+  # so the *change in position* is a stride plus a correction, and the
+  # correction arrives in lumps. Measured that way the gun shook while walking
+  # in a shared valley and was perfectly steady alone — which is the shape of
+  # a bug that hides until the day multiplayer becomes the default.
+  #
+  # A blast's shove is in here too. It is brief and it does move the feet, and
+  # separating it would cost a slot to save an eyeblink.
+  poke_f32(s, 242, sqrt((px - px_was) * (px - px_was) + (pz - pz_was) * (pz - pz_was)) / max(dt, 0.0001))
+  # And the same thing as a vector, for the reconciler: what the legs (or the
+  # jetpack's forward lean) did this step on each ground axis, which is what
+  # lets a stale snapshot's trail be told apart from a disagreement. The
+  # vertical twin is slot 24, which the fall already keeps.
+  poke_f32(s, 243, (px - px_was) / max(dt, 0.0001))
+  poke_f32(s, 255, (pz - pz_was) / max(dt, 0.0001))
   # The ground under the feet, not the ground under the map square: in a
   # world with roofs in it those are different questions, and only the first
   # one lets somebody stand in a tunnel instead of on the hill above it.
@@ -6553,6 +6972,110 @@ fn note_zap(w, who, ci) =
 
 # `wd`, like every counter a host reads: the browser hands these its own
 # player block, and the world is one hop from either kind.
+# ---- the crystals' light ----------------------------------------------------
+#
+# A crystal bites whoever stands against it, and the bolt is drawn from the
+# crystal's tip down to that player's foot. The world keeps the bites in a ring
+# — which crystal, and whom — and the page used to turn that ring into beams
+# itself: reading the crystal's instance, finding the target, stamping the
+# clock, and holding a list with a cap and a lifetime.
+#
+# All of that is arithmetic over things kept here, so it is here. What is left
+# in the page is the buffer write and the draw.
+#
+# The endpoints are captured when the bolt strikes and never recomputed, which
+# is the one thing that has to be got right: a beam that followed its target
+# would be dragged across the valley by somebody walking away, and a discharge
+# does not follow anybody.
+#
+# The memory is the caller's — ring, then the run it draws, then a cursor —
+# because a beam is a picture and pictures belong to whoever is drawing. The
+# same reason the weed's buffer is the page's.
+fn zap_cap() = 16
+fn zap_floats() = 10
+fn zap_life() = 0.55
+fn zap_out_off() = zap_cap() * zap_floats()
+fn zap_cursor_off() = zap_cap() * zap_floats() * 2
+fn zap_room() = zap_cap() * zap_floats() * 2 + 1
+
+# `rows` is the interpolated players, twelve floats each, and `n` how many —
+# nought when nobody is sharing this valley, which is when every bolt is aimed
+# at the only person in it.
+fn zap_beams(s: Ptr, r: Ptr, rows: Ptr, n: Int, now: Float) -> Int =
+  end = zaps(s)
+  seen = to_int(peek_f32(r, zap_cursor_off()))
+  # A client that has been away — a tier rebuild, a round change — comes back
+  # to a cursor the world has run on past. Only the last few are worth drawing;
+  # the rest happened while there was nothing on screen.
+  from = if seen < end - zap_cap() then end - zap_cap() else seen
+  take_zaps(s, r, rows, n, from, end, now)
+  poke_f32(r, zap_cursor_off(), to_float(end))
+  live_zaps(r, now, 0, 0)
+
+fn take_zaps(s, r, rows, n, k, end, now) =
+  if k >= end then 0
+  else
+    one_zap(s, r, rows, n, k, now)
+    take_zaps(s, r, rows, n, k + 1, end, now)
+
+fn one_zap(s, r, rows, n, k, now) =
+  ci = zap_which(s, k)
+  cb = crystals(s)
+  at = (k % zap_cap()) * zap_floats()
+  # From the tip: the instance says where the crystal stands and how big it is,
+  # and the point is a shade over its own height.
+  poke_f32(r, at, peek_f32(cb, ci * 8))
+  poke_f32(r, at + 1, peek_f32(cb, ci * 8 + 1) + peek_f32(cb, ci * 8 + 3) * 1.05)
+  poke_f32(r, at + 2, peek_f32(cb, ci * 8 + 2))
+  aim_zap(s, r, rows, n, at, zap_who(s, k))
+  # In the crystal's own colour, stamped with the clock it struck on.
+  poke_f32(r, at + 6, peek_f32(cb, ci * 8 + 5))
+  poke_f32(r, at + 7, peek_f32(cb, ci * 8 + 6))
+  poke_f32(r, at + 8, peek_f32(cb, ci * 8 + 7))
+  poke_f32(r, at + 9, now)
+  0
+
+# To the foot. Ending it at the camera put the last stretch of the bolt behind
+# the near plane, so a hit you were not already looking at arrived as damage
+# with nothing on screen; the chest left it reaching out of the middle of the
+# view, from nowhere. A discharge goes to earth, and what you are standing on
+# is the earth — slot 22 is the foot the world walks on, jump and all.
+fn aim_zap(s, r, rows, n, at, who) =
+  if who == to_int(peek_f32(s, 99)) then land_zap(r, at, peek_f32(s, 16), peek_f32(s, 22), peek_f32(s, 18))
+  else zap_at_other(r, rows, n, at, who, 0)
+
+fn land_zap(r, at, x, y, z) =
+  poke_f32(r, at + 3, x)
+  poke_f32(r, at + 4, y + 0.12)
+  poke_f32(r, at + 5, z)
+  0
+
+# Somebody else, off the interpolated rows. If they are not on them — behind a
+# hill, and blanked — the bolt is left standing at the crystal, which draws as
+# nothing rather than as a beam to the origin.
+fn zap_at_other(r, rows, n, at, who, i) =
+  if i >= n then land_zap(r, at, peek_f32(r, at), peek_f32(r, at + 1) - 0.12, peek_f32(r, at + 2))
+  else if to_int(peek_f32(rows, i * 12)) == who then
+    land_zap(r, at, peek_f32(rows, i * 12 + 1), peek_f32(rows, i * 12 + 2), peek_f32(rows, i * 12 + 3))
+  else zap_at_other(r, rows, n, at, who, i + 1)
+
+# How many are still burning, copied into one run so the page writes that many
+# and draws them. The ring itself is left alone: it is addressed by the world's
+# own event number, and compacting it would move a beam out from under the slot
+# the next strike is about to write.
+fn live_zaps(r, now, i, k) =
+  if i >= zap_cap() then k
+  else
+    born = peek_f32(r, i * zap_floats() + 9)
+    age = now - born
+    if born > 0.0 && age >= 0.0 && age < zap_life() then live_zaps(r, now, i + 1, k + copy_zap(r, i, k))
+    else live_zaps(r, now, i + 1, k)
+
+fn copy_zap(r, i, k) =
+  for j in 0..zap_floats()
+    poke_f32(r, zap_out_off() + k * zap_floats() + j, peek_f32(r, i * zap_floats() + j))
+  1
+
 fn zaps(s: Ptr) -> Int = to_int(peek_f32(wd(s), 95))
 
 fn zap_who(s: Ptr, k: Int) -> Int = to_int(peek_f32(peek_ptr(wd(s), 78), k % zap_ring() * 2))
@@ -6615,12 +7138,39 @@ fn rise_one(s) = if may_rise(s) > 0 then respawn(s) else 0
 # What one was worth. A chip off a crystal still has the light in it and mends
 # you a little; a magazine fills the rifle and says when it will be back.
 # Anything else is scenery and does not reach here.
+# How many boxes this player has lifted off the ground, ever. Only a pickup
+# writes it, which is the whole point of it existing.
+#
+# The ears used to work this out by watching the ammunition count and calling
+# any rise a pickup. That is true in a valley of one and false in a shared
+# one: the server's figure arrives twenty times a second and is written back
+# whenever it differs by more than two, and a gun firing sixteen rounds a
+# second is always more than two ahead of what the server last said. So the
+# count jumped *up* twenty times a second while the trigger was down, the
+# ears called every jump a pickup, and a magazine's metal tap twenty times a
+# second is a bell. A counter that only a pickup can raise cannot be lied to
+# that way.
+# 113 on the player's own block. The world's block uses 112..113 for the hurt
+# ring, and the two never share a block — the layout note at the top of this
+# file is the authority, and it lists nothing for the player between 111 and
+# 115. Deliberately not near 242, where the jetpack and the machine gun have
+# already taken everything: this session lost an afternoon to slot 247 and
+# very nearly repeated it here on 249.
+fn took_at() = 113
+
+fn took_count(s: Ptr) -> Int = to_int(peek_f32(s, took_at()))
+
+fn note_took(s) =
+  poke_f32(s, took_at(), peek_f32(s, took_at()) + 1.0)
+  1
+
 fn worth_of(w, s, sb, i, at, mend) =
   if peek_f32(sb, at + 16) > 2.5 then
     # A crate of rockets fills the tube and nothing else. `wanted` has already
     # said the tube has room, which is the whole of "only if you carry the
     # launcher" in a valley where everybody does: a full tube walks past it.
     poke_f32(s, 120, to_float(rocket_full()))
+    note_took(s)
     place_mag(w, sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else if peek_f32(sb, at + 16) > 1.5 then
@@ -6634,6 +7184,9 @@ fn worth_of(w, s, sb, i, at, mend) =
     poke_f32(s, 118, to_float(mag_size()))
     poke_f32(s, 106, to_float(ak_full()))
     poke_f32(s, 117, to_float(ak_mag_count() - 1))
+    poke_f32(s, 252, to_float(mg_full()))
+    poke_f32(s, 254, to_float(mg_belt_count() - 1))
+    note_took(s)
     place_mag(w, sb, i, to_int(peek_f32(sb, at + 17)) + 1)
     1
   else if mend < 1 then 1

@@ -25,6 +25,7 @@ node_modules/
 /.claude/
 
 # Build output that does have an extension.
+__pycache__/
 *.o
 *.wasm
 *.vsix

@@ -54,6 +54,12 @@ export function join(url, name, E) {
     wire,
     arrival,
     lost: false,
+    heardAt: performance.now(),
+    // Snapshots come twenty a second and the heartbeat every two, so four
+    // seconds of silence is not a slow moment, it is the valley gone. Long
+    // enough that a stall on a bad connection does not cry wolf; short
+    // enough that nobody plays a dead session for a minute.
+    get silent() { return performance.now() - this.heardAt > 4000; },
     get id() { return hf(WH.id); },
     get ping() { const p = hf(WH.ping); return p < 0 ? null : p; },
     get serverVersion() { const v = hf(WH.ver); return v < 0 ? null : v; },
@@ -80,6 +86,16 @@ export function join(url, name, E) {
   sock.addEventListener("open", () => { if (name) sendText(110, name); });
 
   sock.addEventListener("message", (ev) => {
+    // When anything last arrived. The valley can be lost without the socket
+    // noticing: a client that goes quiet for long enough — a backgrounded
+    // tab stops its animation frames, and with them its input — is taken out
+    // of the valley by the server, which deliberately leaves the socket open
+    // (see `drop_quiet` in server.rill: a strand is parked on that descriptor
+    // and closing it from the tick would be worse than holding it). So there
+    // is no `close` event to hear, the ping goes on reading whatever it last
+    // read, and the page sits there looking connected while nothing it sends
+    // is applied to anybody. This timestamp is how that is noticed.
+    net.heardAt = performance.now();
     // This wire is binary; a text frame on it is not ours to guess about.
     if (typeof ev.data === "string") return;
     const bytes = new Uint8Array(ev.data);

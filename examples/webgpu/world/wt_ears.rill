@@ -13,6 +13,20 @@ fn cues(e) = to_int(peek_f32(e, 0))
 
 fn cue(e, n, k) = peek_f32(e, 32 + n * 8 + k)
 
+# What `reconcile` does to a firing gun: the count runs down as rounds leave
+# and is shoved back up by the snapshot. Twenty of these in a row is what the
+# valley sounded like.
+fn ammo_jumps(s, e, t) =
+  v.set_held_ammo(s, v.held_ammo(s) - 3)
+  er.frame(s, null_ptr(), t)
+  v.set_held_ammo(s, v.held_ammo(s) + 5)
+  er.frame(s, null_ptr(), t + 0.02)
+  0
+
+fn drained(e) =
+  poke_f32(e, 0, 0.0)
+  0
+
 fn main() =
   w = v.init(48, 10, 10, 10)
   s = v.join(w)
@@ -76,4 +90,54 @@ fn main() =
   say("its gain, an eighth of full", milli(peek_f32(e, 12)), 78)
   say("its filter, opened to match", to_int(peek_f32(e, 14)), 1150)
   say("voice one stays silent", milli(peek_f32(e, 16)), 0)
+  println("the pockets")
+  # The bug this replaced: in a shared valley the server's ammunition figure
+  # lands twenty times a second and is written back whenever it differs by
+  # more than two, so a gun firing sixteen a second sees its count leap
+  # upward constantly. Watching the count, the ears called every leap a
+  # pickup and played a metal tap twenty times a second — heard as a bell
+  # under the gun. Nothing but a hand closing on a box may speak now.
+  s3 = v.join(w)
+  e3 = er.make(s3)
+  er.frame(s3, null_ptr(), 70.0)
+  er.frame(s3, null_ptr(), 70.1)
+  v.set_weapon(s3, 5)
+  drained(e3)
+  for i in 0..20
+    ammo_jumps(s3, e3, 70.2 + to_float(i) * 0.05)
+  say("the server writing ammunition back is silent", cues(e3), 0)
+
+  # A second player, and their own ears. The first frame both writes the
+  # pockets down and drains whatever of the world's history this fresh block
+  # had not seen — so the quiet is asserted on the second frame, where only
+  # the pockets could speak.
+  s2 = v.join(w)
+  e2 = er.make(s2)
+  er.frame(s2, null_ptr(), 60.0)
+  er.frame(s2, null_ptr(), 60.1)
+  say("being born is quiet", cues(e2), 0)
+  # A box lifted off the ground: one clack, at the player, no pan. Poked
+  # rather than walked onto, because what is being pinned is the ears' rule
+  # and not the gather's geometry — `wt_crate` owns that.
+  v.note_took(s2)
+  er.frame(s2, null_ptr(), 60.2)
+  say("a box off the ground speaks once", cues(e2), 1)
+  say("as the clack", to_int(cue(e2, 0, 0)), 6)
+  say("at the player, no pan", milli(cue(e2, 0, 4)), 0)
+  # And nothing more until another box is taken.
+  er.frame(s2, null_ptr(), 60.3)
+  say("and once only", cues(e2), 0)
+  # Spending ammunition is not picking anything up.
+  v.set_held_ammo(s2, v.held_ammo(s2) - 10)
+  er.frame(s2, null_ptr(), 60.4)
+  say("spending is quiet", cues(e2), 0)
+  # Two boxes inside one frame are still one clack. The cue answers "a hand
+  # closed on something this frame", not "how many" — two boxes are metres
+  # apart and cannot really be taken in the same sixtieth of a second, and
+  # two identical taps at the same instant is one louder tap anyway.
+  v.note_took(s2)
+  v.note_took(s2)
+  er.frame(s2, null_ptr(), 60.5)
+  say("two in one frame is still one clack", cues(e2), 1)
+
   println("done")

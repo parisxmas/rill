@@ -1,0 +1,321 @@
+# The door: what a browser can ask this server that is not "let me in to play".
+#
+# Registering, signing in, and making a valley of your own. It is written apart
+# from `server.rill` because none of it is about the valley this process is
+# holding — it reads and writes the shared store and hands back a line of JSON,
+# and the valley it happens to be running inside is not consulted.
+#
+# On the shape of a request: a line-oriented body, `key=value` a line, with
+# every value drawn from a narrow alphabet. Not JSON, and the reason is not
+# laziness — the replies here are built by joining strings, the valley
+# directory the page reads is built the same way in `server.rill`, and a name
+# with a quotation mark in it would break that JSON for every player looking at
+# the list, not only for the one who typed it. So the alphabet is checked at
+# the door and nothing downstream has to escape anything.
+import "oxiresp"
+import "accounts" as a
+
+# libc's, because Rill's own clock is monotonic and this wants a date. See the
+# same trick in `oxirec.rill`.
+extern fn time(p: Ptr) -> Int
+
+fn epoch() = time(null_ptr())
+
+# -- reading the request ------------------------------------------------------
+
+fn first_line(r) =
+  e = str_find(r, "\r\n")
+  if e < 0 then r else str_sub(r, 0, e)
+
+fn method_of(r) =
+  l = first_line(r)
+  s = str_find(l, " ")
+  if s < 0 then "" else str_sub(l, 0, s)
+
+fn path_of(r) =
+  l = first_line(r)
+  s = str_find(l, " ")
+  if s < 0 then ""
+  else
+    rest = str_sub(l, s + 1, str_len(l) - s - 1)
+    e = str_find(rest, " ")
+    if e < 0 then rest else str_sub(rest, 0, e)
+
+# The body is whatever follows the blank line. `server.rill` has already read
+# to that line; how the rest of it gets here is that file's business.
+fn body_of(r) =
+  e = str_find(r, "\r\n\r\n")
+  if e < 0 then "" else str_sub(r, e + 4, str_len(r) - e - 4)
+
+# `Content-Length`, or nought. Header names are matched without case because
+# nothing in HTTP promises one — the lesson cost a whole afternoon once, when a
+# `Sec-WebSocket-Key` check turned away every Node client in the world.
+fn content_len(r) = str_to_int(header_of(r, "content-length"))
+
+fn header_of(r, name) = header_scan(lower_all(r), r, name, 0)
+
+fn header_scan(low, raw, name, i) =
+  at = str_find_from(low, "\r\n" + name + ":", i)
+  if at < 0 then ""
+  else
+    from = at + str_len(name) + 3
+    e = str_find_from(raw, "\r\n", from)
+    trimmed(str_sub(raw, from, (if e < 0 then str_len(raw) else e) - from))
+
+fn str_find_from(s, needle, i) =
+  if i >= str_len(s) then 0 - 1
+  else
+    at = str_find(str_sub(s, i, str_len(s) - i), needle)
+    if at < 0 then 0 - 1 else at + i
+
+fn lower_all(s) = lower_from(s, 0, strbuf())
+
+fn lower_from(s, i, out) =
+  if i >= str_len(s) then strbuf_str(out)
+  else
+    c = str_get(s, i)
+    strbuf_add(out, chr(if c >= 65 && c <= 90 then c + 32 else c))
+    lower_from(s, i + 1, out)
+
+fn trimmed(s) = trim_end(trim_start(s))
+
+fn trim_start(s) =
+  if str_len(s) > 0 && (str_get(s, 0) == 32 || str_get(s, 0) == 9) then trim_start(str_sub(s, 1, str_len(s) - 1)) else s
+
+fn trim_end(s) =
+  n = str_len(s)
+  if n > 0 && (str_get(s, n - 1) == 32 || str_get(s, n - 1) == 9 || str_get(s, n - 1) == 13 || str_get(s, n - 1) == 10) then trim_end(str_sub(s, 0, n - 1)) else s
+
+# -- reading the body ---------------------------------------------------------
+
+# The value for `key` among lines of `key=value`, or nothing. A key that is not
+# there and a key that is there and empty are the same answer, which is what
+# every caller here wants.
+fn body_val(body, key) = body_line(body, key, 0)
+
+fn body_line(body, key, i) =
+  if i >= str_len(body) then ""
+  else
+    e = line_end(body, i)
+    line = str_sub(body, i, e - i)
+    eq = str_find(line, "=")
+    if eq >= 0 && str_sub(line, 0, eq) == key then trim_end(str_sub(line, eq + 1, str_len(line) - eq - 1))
+    else if e >= str_len(body) then ""
+    else body_line(body, key, e + 1)
+
+fn line_end(s, i) =
+  if i >= str_len(s) then i
+  else if str_get(s, i) == 10 then i
+  else line_end(s, i + 1)
+
+fn body_int(body, key, dflt) =
+  v = body_val(body, key)
+  if str_len(v) == 0 then dflt else str_to_int(v)
+
+# Between `lo` and `hi`, always. Every number a stranger can set arrives here
+# first: this server runs in a container with two hundred and fifty-six
+# megabytes, and `pines=1000000` is not a valley, it is a way of taking the box
+# down from a form field.
+fn clampi(v, lo, hi) = if v < lo then lo else if v > hi then hi else v
+
+# -- writing the answer -------------------------------------------------------
+
+fn ok_json(rest) = "{\"ok\":true" + rest + "}"
+
+fn no_json(why) = "{\"ok\":false,\"why\":\"" + safe_text(why) + "\"}"
+
+# Nothing reaches a reply without passing this. The replies are joined strings
+# and a stray quotation mark would end the string early — so anything outside
+# letters, digits, space and a few marks of punctuation is dropped rather than
+# escaped. What is being protected is the page's parser, and the reasons a
+# refusal is phrased are all this file's own words anyway.
+fn safe_text(s) = safe_from(s, 0, strbuf())
+
+fn safe_from(s, i, out) =
+  if i >= str_len(s) then strbuf_str(out)
+  else
+    c = str_get(s, i)
+    strbuf_add(out, if writable(c) == 1 then chr(c) else "")
+    safe_from(s, i + 1, out)
+
+# Letters, digits, and the handful of marks a refusal is written with. A
+# quotation mark is not among them, which is the point.
+fn writable(c) =
+  if c >= 97 && c <= 122 then 1 else if c >= 65 && c <= 90 then 1 else if c >= 48 && c <= 57 then 1 else if c == 32 || c == 45 || c == 44 || c == 46 || c == 39 || c == 58 then 1 else 0
+
+# -- what a valley definition is ----------------------------------------------
+
+# One string, colon-separated, because that is what `SETNX` can claim in a
+# single indivisible step — see `claim_slot`. Every field is digits or a name
+# from the same narrow alphabet as an account, so no field can contain the
+# separator.
+#
+#   name : owner : players : time : gravity : pines : crystals : grass
+#        : meteors : match : report : made
+fn vdef_of(name, owner, body, made) =
+  players = int_to_str(clampi(body_int(body, "players", 16), 2, 32))
+  gravity = int_to_str(clampi(body_int(body, "gravity", 260), 40, 900))
+  pines = int_to_str(clampi(body_int(body, "pines", 400), 0, 1200))
+  crystals = int_to_str(clampi(body_int(body, "crystals", 300), 0, 800))
+  grass = int_to_str(clampi(body_int(body, "grass", 900), 0, 3000))
+  meteors = int_to_str(if body_int(body, "meteors", 0) > 0 then 1 else 0)
+  match_secs = int_to_str(clampi(body_int(body, "match", 1800), 60, 7200))
+  report = int_to_str(clampi(body_int(body, "report", 20), 5, 120))
+  head = name + ":" + owner + ":" + players + ":" + time_of(body) + ":" + gravity
+  scatter = pines + ":" + crystals + ":" + grass
+  head + ":" + scatter + ":" + meteors + ":" + match_secs + ":" + report + ":" + int_to_str(made)
+
+# The hour the doors open. Either one of the four words `server.rill` already
+# knows or a number of seconds into a three-hundred-and-sixty-second day;
+# anything else becomes noon, because a valley that will not start is a worse
+# answer than a valley that starts in daylight.
+fn time_of(body) =
+  v = body_val(body, "time")
+  if v == "night" || v == "dusk" || v == "dawn" || v == "noon" then v
+  else if str_len(v) == 0 then "noon"
+  else if all_digits(v, 0) == 1 then int_to_str(clampi(str_to_int(v), 0, 359))
+  else "noon"
+
+fn all_digits(s, i) =
+  if str_len(s) == 0 then 0
+  else if i >= str_len(s) then 1
+  else if str_get(s, i) < 48 || str_get(s, i) > 57 then 0
+  else all_digits(s, i + 1)
+
+# -- making one ---------------------------------------------------------------
+
+# Valleys people make live on ports 8310 to 8399, which is where the number in
+# their address comes from: `/valley42` is port 8342. Two digits, so that one
+# line of nginx routes every one of them without knowing which exist — a valley
+# that needed a reload to become reachable would be a valley nobody could open
+# for the ten seconds that takes, and a reload per valley is a reload somebody
+# eventually gets wrong.
+fn slot_low() = 10
+fn slot_high() = 99
+
+# `SETNX` down the range until one is free. Two people making a valley in the
+# same instant cannot take the same slot: the loser's write returns nought and
+# it moves on to the next.
+fn claim_slot(fd, i, rec) =
+  if i > slot_high() then 0 - 1
+  else match kv_command(fd, kv_args3("SETNX", a.vdef_key(i), rec))
+    Ok(v) -> if kv_int(v) == 1 then i else claim_slot(fd, i + 1, rec)
+    Err(_) -> 0 - 1
+
+# How many a person may have running at once. Not a matter of fairness: each
+# one is a container with a quarter of a gigabyte set aside for it, and ninety
+# slots divided by everybody is how the box stays up.
+fn each_may_have() = 3
+
+fn mine_count(fd, who) = count_mine(fd, kv_scan_all(fd, "vdef:*"), who, 0)
+
+fn count_mine(fd, keys, who, acc) = match keys
+  Nil -> acc
+  Cons(k, rest) -> count_mine(fd, rest, who, acc + (if owner_of(text_at(fd, k)) == who then 1 else 0))
+
+fn owner_of(rec) = a.field(rec, 1)
+
+fn text_at(fd, key) = match kv_get(fd, key)
+  Ok(v) -> kv_text(v)
+  Err(_) -> ""
+
+# -- the endpoints ------------------------------------------------------------
+
+fn answer(fd, method, path, body) =
+  if path == "/api/register" && method == "POST" then did_register(fd, body)
+  else if path == "/api/login" && method == "POST" then did_login(fd, body)
+  else if path == "/api/make" && method == "POST" then did_make(fd, body)
+  else if path == "/api/shut" && method == "POST" then did_shut(fd, body)
+  else if path == "/api/mine" && method == "POST" then did_mine(fd, body)
+  else no_json("no such door")
+
+fn did_register(fd, body) =
+  who = body_val(body, "who")
+  why = a.acct_make(fd, who, body_val(body, "key"), epoch())
+  if str_len(why) > 0 then no_json(why) else signed_in(fd, who)
+
+fn did_login(fd, body) =
+  who = body_val(body, "who")
+  # One answer for a name that does not exist and a word that is wrong. Telling
+  # them apart would turn this endpoint into a way of asking which names are
+  # taken, one guess at a time.
+  if a.acct_admits(fd, who, body_val(body, "key")) == 0 then no_json("that name and word do not go together")
+  else signed_in(fd, who)
+
+fn signed_in(fd, who) =
+  token = a.sess_open(fd, who)
+  if str_len(token) == 0 then no_json("the store would not keep the sign-in")
+  else ok_json(",\"who\":\"" + safe_text(who) + "\",\"token\":\"" + safe_text(token) + "\"")
+
+fn did_make(fd, body) =
+  who = a.sess_whose(fd, body_val(body, "token"))
+  if str_len(who) == 0 then no_json("sign in first")
+  else make_for(fd, who, body)
+
+fn make_for(fd, who, body) =
+  name = body_val(body, "name")
+  bad = a.who_wrong(name)
+  if str_len(bad) > 0 then no_json("a valley's name follows a person's rules: " + bad)
+  else if mine_count(fd, who) >= each_may_have() then no_json("you already have three valleys")
+  else if name_taken(fd, name) == 1 then no_json("a valley is already called that")
+  else made_at(fd, name, claim_slot(fd, slot_low(), vdef_of(name, who, body, epoch())))
+
+fn name_taken(fd, name) = taken_walk(fd, kv_scan_all(fd, "vdef:*"), name)
+
+fn taken_walk(fd, keys, name) = match keys
+  Nil -> 0
+  Cons(k, rest) -> if a.field(text_at(fd, k), 0) == name then 1 else taken_walk(fd, rest, name)
+
+fn made_at(fd, name, id) =
+  if id < 0 then no_json("every valley slot is taken just now")
+  else ok_json(",\"name\":\"" + safe_text(name) + "\",\"path\":\"/valley" + int_to_str(id) + "\",\"id\":" + int_to_str(id))
+
+# Shutting one down is deleting its definition; the keeper on the host notices
+# the container has nothing to be and stops it. Only the person who made it may
+# do so, which is checked here and not taken on the client's word.
+fn did_shut(fd, body) =
+  who = a.sess_whose(fd, body_val(body, "token"))
+  if str_len(who) == 0 then no_json("sign in first")
+  else shut_walk(fd, kv_scan_all(fd, "vdef:*"), who, body_val(body, "name"))
+
+fn shut_walk(fd, keys, who, name) = match keys
+  Nil -> no_json("you have no valley by that name")
+  Cons(k, rest) ->
+    rec = text_at(fd, k)
+    if a.field(rec, 0) == name && a.field(rec, 1) == who then dropped(fd, k)
+    else shut_walk(fd, rest, who, name)
+
+fn dropped(fd, key) = match kv_del(fd, key)
+  Ok(_) -> ok_json("")
+  Err(e) -> no_json("the store said: " + e)
+
+fn did_mine(fd, body) =
+  who = a.sess_whose(fd, body_val(body, "token"))
+  if str_len(who) == 0 then no_json("sign in first")
+  else listed(safe_text(who), mine_walk(fd, kv_scan_all(fd, "vdef:*"), who, ""))
+
+fn listed(who, body) = ok_json(",\"who\":\"" + who + "\",\"valleys\":[" + body + "]")
+
+fn mine_walk(fd, keys, who, acc) = match keys
+  Nil -> acc
+  Cons(k, rest) ->
+    rec = text_at(fd, k)
+    one = if a.field(rec, 1) == who then as_json(rec, k) else ""
+    mine_walk(fd, rest, who, joined_by_comma(acc, one))
+
+fn joined_by_comma(acc, one) =
+  if str_len(one) == 0 then acc else if str_len(acc) == 0 then one else acc + "," + one
+
+# A definition, as the page reads it back. The slot number lives in the key —
+# `vdef:42` — so the address is recovered from there rather than stored twice.
+fn as_json(rec, key) =
+  id = str_sub(key, 5, str_len(key) - 5)
+  head = "{\"name\":\"" + safe_text(a.field(rec, 0)) + "\",\"path\":\"/valley" + safe_text(id) + "\""
+  who = head + ",\"players\":" + num(rec, 2) + ",\"time\":\"" + safe_text(a.field(rec, 3)) + "\""
+  how = ",\"gravity\":" + num(rec, 4) + ",\"pines\":" + num(rec, 5) + ",\"crystals\":" + num(rec, 6)
+  more = ",\"grass\":" + num(rec, 7) + ",\"meteors\":" + num(rec, 8)
+  who + how + more + ",\"match\":" + num(rec, 9) + ",\"report\":" + num(rec, 10) + "}"
+
+# A field read back as a number and written again, so that whatever is in the
+# store lands in the reply as digits and not as whatever it happens to be.
+fn num(rec, i) = int_to_str(str_to_int(a.field(rec, i)))

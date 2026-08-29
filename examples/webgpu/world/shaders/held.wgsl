@@ -71,7 +71,7 @@
     // Both photographs are read whatever the kind: a textureSample inside a
     // branch on a per-instance value is exactly the non-uniform control flow
     // WGSL forbids, and two small samples cost less than being clever.
-    let aRifle = textureSample(rifleTex, barkSamp, v.uv).rgb;
+    let aRifle = textureSample(gunTex, barkSamp, rifleUV(v.uv)).rgb;
     let aRpg = textureSample(rpgTex, barkSamp, v.uv).rgb;
     let m = v.model;
     let wood = (m.x < -0.26)

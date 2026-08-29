@@ -61,7 +61,7 @@ fn names() = match read_file("assets.list")
 #
 # Only `boot` is exported, because the stub calls exactly one thing.
 
-fn page_parts() = Cons("world.js", Cons("net.js", Cons("host.js", Cons("boot.js", Nil))))
+fn page_parts() = Cons("world.js", Cons("net.js", Cons("host.js", Cons("account.js", Cons("boot.js", Nil)))))
 
 fn begins(s, p) = str_len(s) >= str_len(p) && str_sub(s, 0, str_len(p)) == p
 

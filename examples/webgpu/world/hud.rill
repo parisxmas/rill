@@ -116,6 +116,9 @@ fn h_inv_rifle_cap() = 44
 fn h_inv_ak_cap() = 45
 fn h_stones() = 46      # what the pick has paid out and the walls not yet taken back
 fn h_mine() = 47        # rock under the crosshair, in the pick's reach
+fn h_inv_mg() = 48      # the MG3's belt, for the inventory row
+fn h_inv_mg_cap() = 49
+fn h_mg_belts() = 50    # spare belts on the shoulder
 
 # ---- the theme --------------------------------------------------------------
 #
@@ -701,7 +704,8 @@ fn keys(h, x, y) =
   x7 = key_pair(h, sep(h, x6, y), y, "1", " rifle")
   x8 = key_pair(h, sep(h, x7, y), y, "2", " launcher")
   x9 = key_pair(h, sep(h, x8, y), y, "3", " ak")
-  xa = key_pair(h, sep(h, x9, y), y, "R", " reload")
+  x9b = key_pair(h, sep(h, x9, y), y, "5", " mg3")
+  xa = key_pair(h, sep(h, x9b, y), y, "R", " reload")
   xb = key_pair(h, sep(h, xa, y), y, "F", " torch")
   xc = key_pair(h, sep(h, xb, y), y, "M", " music")
   key_pair(h, sep(h, xc, y), y, "enter", " say")
@@ -904,19 +908,47 @@ fn tags(h, sw, sh) =
   for i in 0..n
     tag(h, sw, sh, sl_tag0() + i)
 
+# How far a name carries. Ninety metres in the naked eye, and much further
+# down the rifle's scope — because that is what a scope is for. A figure at
+# two hundred metres is four pixels across without it and half the screen with
+# it, and being unable to tell whose four pixels those are is the whole
+# question the sight is being raised to answer.
+#
+# Only the rifle: `h_weapon` under a half is the bolt gun, and it is the only
+# thing here with glass on it. And by `aim`, not as a switch, so the names come
+# up as the sight does rather than snapping in at the top of the move.
+fn tag_reach(h) =
+  scope = if peek_f32(h, h_weapon()) < 0.5 then peek_f32(h, h_aim()) else 0.0
+  90.0 + scope * 260.0
+
 fn tag(h, sw, sh, sl) =
   if slot_len(h, sl) == 0 then 0
   else
     sx = slot_f(h, sl, 1)
     sy = slot_f(h, sl, 2)
     d = slot_f(h, sl, 3)
-    if sx < 0.0 - 9000.0 || d > 90.0 then 0
+    far = tag_reach(h)
+    if sx < 0.0 - 9000.0 || d > far then 0
     else if sx < 0.0 - 80.0 || sx > sw + 80.0 || sy < 0.0 - 40.0 || sy > sh + 40.0 then 0
     else
-      a = clampf((90.0 - d) / 20.0, 0.0, 1.0)
+      # The fade grows with the reach, so a name at three hundred metres does
+      # not appear at full strength the moment it comes inside.
+      a = clampf((far - d) / (20.0 + (far - 90.0) * 0.23), 0.0, 1.0)
       k = if slot_f(h, sl, 4) > 0.35 then c_text() else c_orange()
       w = slot_w(h, sl, st_12(), 0.12)
       slot_text(h, sl, sx - w / 2.0, sy, st_12(), 0.12, k, a)
+      # And under the name, the same little bar the roster keeps: trough,
+      # then the three-stop fill — green while it is fine, amber on the way
+      # down, red at the end. The health has ridden in this slot's meta all
+      # along; until now it only turned the letters orange, which said
+      # "somebody is hurt" without saying how much. Fixed width, like the
+      # letters: a bar that shrank with distance would read as health lost.
+      hp = clampf(slot_f(h, sl, 4), 0.0, 1.0)
+      bw = 44.0
+      by = sy + 15.0
+      rect(h, sx - bw / 2.0, by, bw, 3.0, c_barrow(), a)
+      bk = if hp > 0.55 then c_green() else if hp > 0.25 then c_gold() else c_red()
+      if hp > 0.01 then rect(h, sx - bw / 2.0, by, bw * hp, 3.0, bk, a) else 0
       1
 
 # The crosshair — four strokes and the dot, opened out while the bolt is
@@ -1121,7 +1153,7 @@ fn brief_ph(sh) = sh * 0.78
 # other question — *what else is there* — and it is asked between fights.
 fn inv_w() = 292.0
 
-fn inv_h() = 196.0
+fn inv_h() = 231.0
 
 fn inv_row() = 35.0
 
@@ -1129,7 +1161,7 @@ fn inv_x(h) = th(h, s_margin())
 
 fn inv_y(h, sh) = sh - 78.0 - inv_h()
 
-fn inv_rows() = 5
+fn inv_rows() = 6
 
 fn inventory(h, sw, sh) =
   x = inv_x(h)
@@ -1148,7 +1180,12 @@ fn inventory(h, sw, sh) =
   # the wall can spend.
   inv_row_draw(h, x, y + 18.0 + inv_row() * 3.0, 3, held, "PICK", "4",
                int_str(to_int(peek_f32(h, h_stones()))))
-  inv_row_draw(h, x, y + 18.0 + inv_row() * 4.0, 4, held, "WALL", "5",
+  # The MG3 wears the AK's icon for now: the icon strip was baked with five
+  # weapons on it, and a sixth cell is a rebake this row does not wait for.
+  inv_row_draw(h, x, y + 18.0 + inv_row() * 4.0, 5, held, "MG3", "5",
+               int_str(to_int(peek_f32(h, h_inv_mg()))) + "/" + int_str(to_int(peek_f32(h, h_inv_mg_cap()))) +
+               "  x" + int_str(to_int(peek_f32(h, h_mg_belts()))))
+  inv_row_draw(h, x, y + 18.0 + inv_row() * 5.0, 4, held, "WALL", "6",
                int_str(to_int(peek_f32(h, h_stones()))))
 
 # The strip is rifle, AK, launcher, pick, wall — the order they were baked
@@ -1158,6 +1195,7 @@ fn inv_cell(w) =
   else if w == 1 then 2.0
   else if w == 2 then 1.0
   else if w == 3 then 3.0
+  else if w == 5 then 1.0
   else 4.0
 
 fn inv_row_draw(h, x, y, w, held, name, key, ammo) =

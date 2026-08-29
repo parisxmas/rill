@@ -22,7 +22,7 @@
 # The block hangs off the player at ptr slot 98:
 #
 #   f32  0 cues waiting          4 chimeStep      8 rng counter
-#        1 breaks seen           5 chimeAt (s)
+#        1 breaks seen           5 chimeAt (s)    9 boxes taken, last seen
 #        2 blasts seen           6 chimeSaid
 #        3 zaps seen             7 lastHp
 #       12..27 roar voices, 4 x [gain, pan, freq, on] — three for the rounds
@@ -31,7 +31,8 @@
 #       32..  the cue ring, 12 x [kind, offset, dur, gain, pan, rate, 0, 0]
 #
 # Cue kinds: 1 a crystal breaking, 2 a fireball landing, 3 a crystal's bite,
-# 4 a chip picked up, 5 this player hurt over the wire.
+# 4 a chip picked up, 5 this player hurt over the wire, 6 a magazine or a
+# crate lifted off the ground.
 
 import "valley" as v
 import "wire" as wire
@@ -67,6 +68,8 @@ fn make(s: Ptr) -> Ptr =
   e = alloc_bytes(1024)
   for i in 0..256
     poke_f32(e, i, 0.0)
+  # The pockets start unseen — see `watch_pockets`.
+  poke_f32(e, 9, 0.0 - 1.0)
   # Long before the first frame, so the first chip is always a fresh run.
   poke_f32(e, 5, 0.0 - 9.0)
   # Below any health the world hands out: the first reading is a baseline,
@@ -131,6 +134,7 @@ fn frame(s: Ptr, wb: Ptr, now: Float) =
   watch_breaks(e, s)
   watch_zaps(e, s)
   watch_health(e, s, now)
+  watch_pockets(e, s)
   if is_null(wb) then 0 else watch_wire(e, wb)
 
 # ---- the roar of whatever is in the air -------------------------------------
@@ -307,6 +311,35 @@ fn zap_from(e, s, k0, nz) =
 # notes rather than two notes every time the trail thins for a frame.
 
 fn chime_most() = 2.0
+
+# The clack of something real coming off the ground. Health rising is the
+# chips' chime above; this is the other kind of pickup — a magazine into a
+# pocket, a crate of rockets onto a shoulder.
+#
+# It watches the count of boxes taken, which only a pickup can raise. It used
+# to watch the ammunition itself and call any rise a pickup, and that was
+# true alone and false in a shared valley: the server's figure lands twenty
+# times a second and is written back whenever it differs by more than two,
+# and a gun firing sixteen a second is always further ahead than that. So the
+# count leapt *upward* twenty times a second while the trigger was down and
+# the tap played twenty times a second, which is not a tap, it is a bell.
+# `took_count` in valley.rill cannot be moved by anything but a hand closing
+# on a box.
+#
+# The Kenney impact sample this plays (CC0) is a single metal tap; the crate
+# is the same tap dropped a fifth, because a wooden box of warheads is not a
+# tin of rounds. Both at the player, so no pan and no distance arithmetic.
+#
+# The first look only writes the counters down: a player arrives with a full
+# rifle, and being born is not a pickup either. Minus one marks "never
+# looked", which no pocket can hold.
+fn watch_pockets(e, s) =
+  took = to_float(v.took_count(s))
+  was = peek_f32(e, 9)
+  poke_f32(e, 9, took)
+  if was < 0.0 - 0.5 then 0
+  else if took > was + 0.5 then emit(e, 6.0, 0.0, 0.0, 0.5, 0.0, 0.90 + rnd(e) * 0.14)
+  else 0
 
 fn watch_health(e, s, now) =
   hp = v.health(s)

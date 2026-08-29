@@ -19,7 +19,20 @@
   // Shares the needle atlas's sampler, which clamps rather than repeats.
   @group(0) @binding(10) var plants: texture_2d<f32>;
   // The rifle's two materials side by side: accessories left, rifle right.
-  @group(0) @binding(11) var rifleTex: texture_2d<f32>;
+  // Both guns' sheets in one. The rifle's is the top-left quarter and the
+  // M60's the right half; `gunUV` below is what keeps every reader honest
+  // about which half it is asking for.
+  @group(0) @binding(11) var gunTex: texture_2d<f32>;
+
+  // The rifle's own coordinates, into its quarter of the sheet.
+  fn rifleUV(uv: vec2f) -> vec2f { return uv * 0.5; }
+
+  // And the MG3's, into its half.
+  fn mgUV(uv: vec2f) -> vec2f { return vec2f(uv.x * 0.5 + 0.5, uv.y); }
+
+  // And the copper sheet's, into the bottom-left quarter — ambientCG's
+  // Metal008 (CC0), which the belt's cartridges wear (mgfx.wgsl).
+  fn cuUV(uv: vec2f) -> vec2f { return vec2f(uv.x * 0.5, uv.y * 0.5 + 0.5); }
   // The stone inside a fireball. Dark and pitted; the glow in its cracks is
   // worked out from the texture rather than painted into it.
   @group(0) @binding(12) var meteorTex: texture_2d<f32>;
@@ -41,12 +54,12 @@
   // actually up there is in it: the belts and zones with the right widths in
   // the right places, the festoons hanging off the equatorial band, the white
   // ovals, and a Great Red Spot that is where the Great Red Spot is.
-  @group(0) @binding(14) var jupiterTex: texture_2d<f32>;
+  @group(0) @binding(14) var planetsTex: texture_2d<f32>;
   // Saturn's globe, the same way. Its rings stay drawn rather than sampled:
   // they are an annulus seen at a tilt, and the shape is the whole of what
   // reads at this size — a map of them would be a hundred pixels of gradient
   // doing what two smoothsteps already do.
-  @group(0) @binding(15) var saturnTex: texture_2d<f32>;
+  @group(0) @binding(15) var holeTex: texture_2d<f32>;
   // The four Galileans in a 2x2 atlas: Io and Europa across the top, Ganymede
   // and Callisto below. USGS and Voyager/Galileo mosaics — Io's sulphur
   // yellows, Europa's cracked ice, Ganymede's grooves, Callisto's craters, all
@@ -481,7 +494,7 @@
         // blurs the sliver where the map is being sampled at fifty texels a
         // pixel and would otherwise crawl with aliasing.
         let lod = 6.5 * pow(r, 6.0);
-        var jc = textureSampleLevel(jupiterTex, barkSamp, vec2f(lonV, latV), lod).rgb;
+        var jc = textureSampleLevel(planetsTex, barkSamp, vec2f(lonV, latV * 0.5), lod).rgb;
         // Limb darkening — a gas giant has no edge, it just goes away.
         let limb = pow(clamp(1.0 - r * r, 0.0, 1.0), 0.22);
         let a = 1.0 - smoothstep(0.965, 1.0, r);
@@ -526,7 +539,7 @@
         let lonV = atan2(nrm.x, -nrm.z) / 6.2831853 + t * (1.0 / 115.0);
         let latV = 0.5 - asin(clamp(nrm.y, -1.0, 1.0)) / 3.14159265;
         let lod = 5.5 * pow(min(r, 1.0), 6.0);
-        let sc = textureSampleLevel(saturnTex, barkSamp, vec2f(lonV, latV), lod).rgb;
+        let sc = textureSampleLevel(planetsTex, barkSamp, vec2f(lonV, latV * 0.5 + 0.5), lod).rgb;
         let limb = pow(clamp(1.0 - r * r, 0.0, 1.0), 0.22);
         let planet = 1.0 - smoothstep(0.965, 1.0, r);
 
@@ -926,12 +939,93 @@
     return sum;
   }
 
+  // What a lamp spills on whatever is right at it.
+  //
+  // `otherLamps` sends a cone forward, which is what a torch does — and it
+  // means the one face a head torch never lights is the head it is strapped
+  // to: the wearer sits at the apex of their own cone, behind it. So a player
+  // with their light on came over a ridge as a bright patch of rock with a
+  // black shape in front of it.
+  //
+  // This is the spill: the housing is not a perfect reflector, and everything
+  // within a hand's breadth of a working lamp is lit by it. Falling off over
+  // half a metre, which is a head.
+  fn lampSpill(world: vec3f, day: f32) -> vec3f {
+    var sum = 0.0;
+
+    for (var i = 0u; i < 6u; i = i + 1u) {
+      let at = u.lamps[i * 2u];
+      if (at.w > 0.5) {
+        let d = world - at.xyz;
+        let r = length(d);
+        let near = 1.0 - smoothstep(0.12, 0.60, r);
+        // Brow and cheek, not the back of the skull. A sphere of light around
+        // the lamp lit a head evenly from every side, which is a halo and not a
+        // torch; leaning it down the beam puts the brightness on the face
+        // somebody is looking at you with. Not to nought behind — a housing this
+        // close leaks — but a third of it.
+        let front = select(1.0,
+                           0.35 + 0.65 * max(dot(d / r, u.lamps[i * 2u + 1u].xyz), 0.0),
+                           r > 0.001);
+        sum = sum + near * front;
+      }
+    }
+    return vec3f(1.0, 0.94, 0.80) * sum * (1.0 - day * 0.7) * 0.85;
+  }
+
   // Distance haze, thickest along the valley floor. The exponential alone
   // fogs a mountaintop as hard as the water in front of it, which is wrong in
   // both directions: the peaks lose their shape and the far shore never quite
   // recedes. Squaring it holds the near ground clear and lets the far end go,
   // and the height term keeps the air above the lake thicker than the air
   // around the summits.
+  // ---- the light that climbs a crystal --------------------------------------
+  //
+  // Three things read this and they have to agree, so it is written once here
+  // rather than three times with the same numbers in it. `halo.wgsl` draws the
+  // climb; the crystal's own pulse and the glow round it flare when the light
+  // arrives at the top, which is the only moment in the cycle worth having a
+  // brightest one at. They used to run on clocks of their own — the body off
+  // its x in the world, the glow off how far away you were standing, which
+  // meant the pulse changed when you walked.
+  //
+  // Nought at the crystal's foot, one at its tip, and round again. The
+  // rotation each crystal already carries does duty as a phase, so a hillside
+  // of them does not breathe in step.
+  // How fast, between these two: a climb in three and a half seconds at the
+  // slowest and in a little over one at the quickest.
+  const CRYSTAL_RATE_MIN = 0.29;
+  const CRYSTAL_RATE_MAX = 0.88;
+
+  // Each stone at its own speed, drawn from the rotation it already carries.
+  // Measured on the valley: three hundred and twenty-eight crystals, three
+  // hundred and twenty-eight distinct rotations spread over a whole turn, so
+  // it is a seed and not a coincidence — and it costs nothing, because the
+  // number is already in the vertex.
+  fn crystalRate(rot: f32) -> f32 {
+    let h = fract(sin(rot * 91.7) * 43758.5453);
+    return mix(CRYSTAL_RATE_MIN, CRYSTAL_RATE_MAX, h);
+  }
+
+  fn crystalClimb(rot: f32) -> f32 {
+    return fract(u.eye.w * crystalRate(rot) + rot * 0.159);
+  }
+
+  // The stone lights *when the light gets there*, and not before.
+  //
+  // This was a cosine centred on the top of the climb, which is symmetrical:
+  // the crystal spent the whole ascent brightening, so by the time the ribbon
+  // arrived the flash had already happened and there was nothing to arrive at.
+  // A flare has an onset. It catches over the last breath of the climb, as the
+  // head comes up to the tip, and then falls away through the beginning of the
+  // next one — so the beat is climb, arrive, flash, dark, climb.
+  fn crystalFlare(rot: f32) -> f32 {
+    let c = crystalClimb(rot);
+    let onset = smoothstep(0.96, 1.0, c);
+    let decay = pow(max(0.0, 1.0 - c * 3.2), 2.2);
+    return max(onset, decay);
+  }
+
   fn fogAt(world: vec3f, dist: f32) -> f32 {
     let d = 1.0 - exp(-dist * 0.019);
     let lift = mix(1.0, 0.30, smoothstep(2.0, 16.0, world.y));
@@ -987,6 +1081,74 @@
     return vec3f(1.0, 0.44, 0.13) * face * fall * burn * 2.1;
   }
 
+  // ---- under the water --------------------------------------------------------
+  //
+  // The lake surface is at zero, and until now nothing below it was drawn any
+  // differently from anything above: you could swim to the bottom and the
+  // valley looked like a valley on a dry afternoon. Two things say water, and
+  // they both belong here rather than in one shader, because everything under
+  // the surface reads `lit` — the bottom, the rocks standing in it, the grass,
+  // a crystal somebody rolled in.
+  const WATER_TOP = 0.0;
+
+  // The light the surface throws down. Three crossing waves, sharpened hard:
+  // what makes a caustic read is that it is thin bright filaments with dark
+  // between them, and a gentle ripple pattern comes out as a texture on the
+  // floor instead of as light moving over it. The rates and headings are the
+  // shape of the surface's own spectrum — short, fast, crossing — rather than
+  // its exact sum, which lives in the water's vertex shader and would cost a
+  // Gerstner solve per pixel of lakebed to reproduce.
+  // Value noise, for the caustics. `water.wgsl` has its own pair of these and
+  // they are named apart on purpose: it comes after this file, so two `fhash`
+  // would be a redefinition rather than a sharing.
+  fn chash(p: vec2f) -> f32 {
+    return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453);
+  }
+
+  fn cnoise(p: vec2f) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let w = f * f * (3.0 - 2.0 * f);
+    return mix(mix(chash(i), chash(i + vec2f(1.0, 0.0)), w.x),
+               mix(chash(i + vec2f(0.0, 1.0)), chash(i + vec2f(1.0, 1.0)), w.x), w.y);
+  }
+
+  // The light the surface throws down.
+  //
+  // Built out of noise, and it took three goes to understand why it had to be.
+  // Sines were the obvious thing: three of them crossing at sixty degrees make
+  // cells, which is the right shape. But three crossing waves are a *lattice* —
+  // the same cell repeated to the horizon — and the eye finds a lattice in
+  // about a second. Multiplying two of them together does not help, because a
+  // product of periodic things is periodic; nor does warping the sample point,
+  // if the warp is itself made of sines, because then the period is only
+  // longer. Every version of that came out as a ruled page: first of identical
+  // dashes, then of identical blurred ovals.
+  //
+  // Ridged noise has no period to find. `1 - abs(2n - 1)` is bright exactly
+  // where the field crosses its own middle, which is a thin closed curve — a
+  // filament — and two octaves of it, the second *carried* by the first rather
+  // than merely added to it, is what makes those filaments branch and knot and
+  // leave bare sand between. Which is what light through a wavy surface does.
+  fn caustic(world: vec3f) -> f32 {
+    let t = u.eye.w;
+    // The whole field drifts, the way the surface it falls from does.
+    let p = world.xz * 1.55 + vec2f(t * 0.11, -t * 0.08);
+    let n1 = cnoise(p + vec2f(sin(t * 0.51), cos(t * 0.43)) * 0.7);
+    let r1 = 1.0 - abs(n1 * 2.0 - 1.0);
+    // Advected by the first: this is the whole difference between a texture
+    // and something that looks like it is being made by moving water.
+    let n2 = cnoise(p * 2.15 + r1 * 1.8 + vec2f(-t * 0.14, t * 0.12));
+    let r2 = 1.0 - abs(n2 * 2.0 - 1.0);
+    let v = r1 * 0.58 + r2 * 0.42;
+    // The gain is the whole of how loud this is, and it was set while the
+    // pattern was still wrong — a lattice needs contrast to read as anything,
+    // and filaments do not. Together with the term that applies it below this
+    // is a peak a shade under one, which lifts the sand rather than bleaching
+    // it.
+    return pow(v, 6.5) * 1.5;
+  }
+
   fn lit(albedo: vec3f, n: vec3f, world: vec3f) -> vec3f {
     let L = -normalize(u.sun.xyz);
     let day = dayness();
@@ -1017,8 +1179,23 @@
     // genuinely darker than one near full — the moon is fixed and the sun is
     // not, so that cycle comes for free. And gone by day: it is up there at
     // noon too, but a hundredth of what the sun is putting down.
+    // Wrapped rather than clipped, and stronger than it was. A hard `max(dot,
+    // 0)` puts everything past ninety degrees of the moon at exactly nought, so
+    // half the valley went to the flat ambient and the night had a lit side and
+    // a dead one. Reflected light off a body that big does not stop at the
+    // terminator: the falloff is long and there is something on the far slope.
+    // Raised to a power so the moonward faces still lead — a straight wrap
+    // flattens into an ambient of its own and undoes the point of having a
+    // direction at all.
+    //
+    // The floor under the phase is earthshine, and it is the same thing the sky
+    // already draws: a new moon here is not black, it is a dark disc with a rim,
+    // because this world is throwing light back at it. Without the floor the
+    // valley went absolutely flat for the quarter of the cycle around new moon,
+    // which is a long time to stand in a night with no shape in it.
     let M = normalize(MOON_AT);
-    let moon = MOON_COL * max(dot(n, M), 0.0) * moonPhase() * 0.55 * (1.0 - day);
+    let wrap = pow(0.5 + 0.5 * dot(n, M), 1.7);
+    let moon = MOON_COL * wrap * (0.22 + 0.78 * moonPhase()) * 0.95 * (1.0 - day);
 
     // The sun through the weather: a fragment under a cloud gets what the
     // cloud lets past, and the ambient stands in for the rest. The shadow
@@ -1028,7 +1205,25 @@
                         + otherLamps(n, world, day)
                         + blastLight(n, world));
     let view = world - u.eye.xyz;
-    return mix(col, fogColor(view), fogAt(world, length(view)));
+    let dist = length(view);
+
+    // Under the surface, and looking from under it. The test is on the eye as
+    // well as on the fragment: from a boat the lakebed is seen *through* the
+    // surface, which is the water shader's business, not this one's. And it is
+    // a branch rather than a multiply so that a valley in the sun pays one
+    // comparison for it — the condition is the same for every pixel of a draw,
+    // so it costs nothing to take.
+    if (u.eye.y < WATER_TOP && world.y < WATER_TOP) {
+      // Brightest on faces turned up to the surface, because that is where the
+      // light is coming from.
+      col += albedo * caustic(world) * (0.30 + 0.70 * max(n.y, 0.0)) * 0.6;
+      // And the water's own fog in place of the air's: green, and thick enough
+      // that the far side of the lake is gone. Losing the distance is most of
+      // what tells you where you are.
+      let wf = clamp(1.0 - exp(-dist * 0.15), 0.0, 0.93);
+      return mix(col, vec3f(0.045, 0.135, 0.165), wf);
+    }
+    return mix(col, fogColor(view), fogAt(world, dist));
   }
 
   // ---- where the rifle is held ----------------------------------------------

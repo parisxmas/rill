@@ -187,6 +187,55 @@ fn kv_keys(fd, pattern) = kv_command(fd, kv_args2("KEYS", pattern))
 
 fn kv_dbsize(fd) = kv_command(fd, kv_args1("DBSIZE"))
 
+# One page of the keyspace: the cursor to carry on from, and the keys on it.
+#
+# `KEYS` builds the whole answer in one go and holds the engine while it does,
+# which is fine for a handful of keys and wrong for a million. `SCAN` is the
+# same question asked a page at a time, and the cursor is opaque — it is not a
+# count and not an index, and the only thing to do with it is hand it back.
+#
+# A walk sees every key that was there for the whole of it. One that arrives
+# during the walk may or may not turn up, and one that goes may still be
+# listed; that is what a scan costs, and it is the trade every keyspace this
+# size makes.
+fn kv_scan(fd, cursor, pattern, count) =
+  kv_command(fd, kv_scan_args(cursor, pattern, count))
+
+fn kv_scan_args(cursor, pattern, count) =
+  Cons("SCAN", Cons(cursor, Cons("MATCH", Cons(pattern, Cons("COUNT", Cons(int_to_str(count), Nil))))))
+
+# A page is a two-element array: the cursor, then the keys.
+fn kv_page_cursor(v) = match kv_list(v)
+  Nil -> "0"
+  Cons(c, _) -> kv_text(c)
+
+fn kv_page_keys(v) = match kv_list(v)
+  Nil -> Nil
+  Cons(_, rest) -> kv_page_rest(rest)
+
+fn kv_page_rest(rest) = match rest
+  Nil -> Nil
+  Cons(page, _) -> kv_texts(page)
+
+# Every key that matches, by walking the cursor to its end.
+#
+# The guard is not decoration: a cursor that never reaches "0" — an engine
+# with a bug in it, or a page that answers with the cursor it was given — is
+# an endless loop inside a caller that only asked for a list of keys.
+fn kv_scan_all(fd, pattern) = kv_scan_walk(fd, pattern, "0", Nil, 0)
+
+fn kv_scan_walk(fd, pattern, cursor, acc, seen) =
+  if seen > 10000 then acc
+  else kv_scan_page(fd, pattern, cursor, acc, seen, kv_scan(fd, cursor, pattern, 200))
+
+fn kv_scan_page(fd, pattern, cursor, acc, seen, answer) = match answer
+  Err(_) -> acc
+  Ok(v) -> kv_scan_more(fd, pattern, cursor, append(acc, kv_page_keys(v)), seen, kv_page_cursor(v))
+
+fn kv_scan_more(fd, pattern, was, acc, seen, cursor) =
+  if cursor == "0" || cursor == was then acc
+  else kv_scan_walk(fd, pattern, cursor, acc, seen + 1)
+
 fn kv_flushdb(fd) = kv_command(fd, kv_args1("FLUSHDB"))
 
 fn kv_select(fd, n) = kv_command(fd, kv_args2("SELECT", int_to_str(n)))
@@ -293,6 +342,33 @@ fn kv_list(v) = match v
   _ -> Nil
 
 fn kv_texts(v) = map(kv_list(v), \x -> kv_text(x))
+
+# A refusal that arrived *inside* a reply.
+#
+# A command that fails answers `Err` — `resp_answer` lifts the engine's `-ERR`
+# out of the value and into the Result, so the ordinary caller never sees one.
+# `EXEC` is where they survive: it answers one array holding the answer to
+# every queued command, and any of those may have failed on its own while the
+# transaction as a whole did not. Walking that array is the only place this is
+# the question, and there it is the only way to ask it.
+#
+# `kv_text` of one is the engine's own words: `WRONGTYPE Operation against a
+# key holding the wrong kind of value`.
+fn kv_failed(v) = match v
+  RError(_) -> true
+  _ -> false
+
+# The value, for a caller that has already decided a broken connection is not
+# worth branching on — a counter it can live without, a line on a status page.
+fn kv_or(r, fallback) = match r
+  Ok(v) -> v
+  Err(_) -> fallback
+
+# Why it failed, or "" if it did not. The engine's message, or this file's
+# when the socket was the thing that broke.
+fn kv_why(r) = match r
+  Ok(_) -> ""
+  Err(e) -> e
 
 # A key that is not there. Distinct from the empty string, which is a value.
 fn kv_missing(v) = match v

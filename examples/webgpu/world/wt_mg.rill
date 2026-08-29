@@ -1,0 +1,98 @@
+# The MG3: the belt, the cone, the knee, and the wire bits that carry it.
+#
+# The gun's whole design is one trade — standing it sprays, kneeling it
+# groups — so that trade is what this file pins, along with the two places a
+# five could quietly become something else: the key bits on the way up and
+# the pose bits on the way down.
+import "valley" as v
+import "hand" as hand
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+fn mils(x) = to_int(x * 1000.0 + 0.5)
+
+fn main() =
+  w = v.init(32, 4, 4, 4)
+  s = v.join(w)
+
+  println("the belt")
+  say("a spawn carries a full belt", v.mg_rounds(s), 75)
+  say("and one spare", v.mg_belts(s), 1)
+  v.set_weapon(s, 5)
+  v.fire(s, 1.0, 0.0, 0.0)
+  say("a shot spends a round", v.mg_rounds(s), 74)
+
+  # Run it dry: the next pull opens the feed cover instead of firing.
+  poke_f32(s, 252, 0.0)
+  v.fire(s, 1.0, 0.0, 0.0)
+  say("dry, the pull takes the spare belt", v.mg_belts(s), 0)
+  say("and loads it whole", v.mg_rounds(s), 75)
+  # The same 1.4 the AK's magazine takes. It must not exceed the 900 ms the
+  # page holds the ammunition for, or the server's older figure is written
+  # back over the fresh belt and the gun reloads for ever — see `mg_reload`.
+  gate = peek_f32(s, 52) - v.world_time(v.wd(s))
+  say("and the gate matches the AK's, in tenths", to_int(gate * 10.0 + 0.5), 14)
+
+  println("asking for a fresh belt")
+  poke_f32(s, 52, 0.0 - 100.0)
+  say("a full belt has nothing to change", v.ask_reload(s), 0)
+  poke_f32(s, 252, 10.0)
+  say("no spare, nothing to change to", v.ask_reload(s), 0)
+  poke_f32(s, 254, 1.0)
+  say("ten rounds and a spare changes", v.ask_reload(s), 1)
+  say("and the short belt is gone with the swap", v.mg_rounds(s), 75)
+
+  println("the cone and the knee")
+  poke_f32(s, 250, 0.0)
+  say("standing, the cone in mils", mils(v.mg_cone(s)), 52)
+  poke_f32(s, 250, 1.0)
+  say("kneeling, the cone in mils", mils(v.mg_cone(s)), 12)
+  poke_f32(s, 250, 0.3)
+  say("half-way down is not braced", mils(v.mg_cone(s)), 52)
+
+  println("the climb and the knee")
+  b = hand.make(s)
+  poke_f32(b, 0, 5.0)
+  poke_f32(s, 250, 0.0)
+  poke_f32(b, 8, 0.0)
+  poke_f32(b, 12, 0.0)
+  hand.mg_shot(b, s, 1.0)
+  up_stand = peek_f32(b, 8)
+  say("standing, one shot climbs hard", if up_stand > 8.0 then 1 else 0, 1)
+  poke_f32(s, 250, 1.0)
+  poke_f32(b, 8, 0.0)
+  poke_f32(b, 12, 0.0)
+  hand.mg_shot(b, s, 1.0)
+  up_knee = peek_f32(b, 8)
+  say("kneeling cuts it to a third", if up_knee * 2.5 < up_stand then 1 else 0, 1)
+
+  println("the bits on the wire")
+  # Up: two low bits at seven, the third out at eleven — past the lamp at
+  # nine and the pack at ten. Shifting five whole bits left was the bug this
+  # line is here to keep dead: it would have lit the lamp.
+  v.set_keys(s, bit_or(shl(bit_and(5, 3), 7), shl(shr(5, 2), 11)))
+  say("a five arrives as a five", v.weapon(s), 5)
+  say("and does not light the lamp", to_int(peek_f32(s, 123)), 0)
+  v.set_keys(s, shl(2, 7))
+  say("an AK still arrives as an AK", v.weapon(s), 2)
+  v.set_keys(s, bit_or(shl(2, 7), 512))
+  say("and the lamp is still the lamp", to_int(peek_f32(s, 123)), 1)
+
+  println("the gate keeps the server's own step")
+  # The server's clock moves in fifty millisecond steps — `tick_ms` in
+  # server.rill — and it can only fire on a step. A gap that is not a whole
+  # number of them is a gap the server cannot keep: it fires slower than the
+  # client does, the two spend the belt at different rates, and the count is
+  # written back up every second or two. This is the line that keeps the next
+  # weapon out of that hole.
+  say("the gap is a whole number of ticks", to_int(v.mg_gap() * 20.0 + 0.5), 1)
+  say("and so is the AK's", to_int(v.ak_gap() * 20.0 + 0.5), 2)
+  say("the hands agree with the world", if hand.mg_cycle() == v.mg_gap() then 1 else 0, 1)
+
+  println("the gate")
+  v.set_weapon(s, 5)
+  poke_f32(s, 52, v.world_time(v.wd(s)))
+  say("inside the gap the gate holds", v.take_fire(s, v.world_time(v.wd(s)) + 0.02, 1.5), 0)
+  say("past it the gate opens", v.take_fire(s, v.world_time(v.wd(s)) + 0.06, 1.5), 1)
+  println("done")

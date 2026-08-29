@@ -4,6 +4,7 @@
     @location(0) world: vec3f,
     @location(1) normal: vec3f,
     @location(2) color: vec3f,
+    @location(3) phase: f32,
   }
   @vertex fn vs(
     @location(0) pos: vec3f, @location(1) n: vec3f,
@@ -15,7 +16,7 @@
     let nr = vec3f(n.x * c - n.z * s, n.y, n.x * s + n.z * c);
     var o: VOut;
     o.clip = u.vp * vec4f(p, 1.0);
-    o.world = p; o.normal = nr; o.color = icol;
+    o.world = p; o.normal = nr; o.color = icol; o.phase = rot;
     return o;
   }
   @fragment fn fs(v: VOut) -> @location(0) vec4f {
@@ -23,7 +24,8 @@
     let view = v.world - u.eye.xyz;
     let V = normalize(view);
     let base = lit(v.color, n, v.world);
-    let pulse = 0.75 + 0.25 * sin(u.eye.w * 2.1 + v.world.x * 3.0);
+    // Brightest as the light reaches the crystal's tip. See `crystalFlare`.
+    let pulse = 0.68 + 0.62 * crystalFlare(v.phase);
     let glow = v.color * (1.35 * pulse);
     let glowFogged = mix(glow, fogColor(view), fogAt(v.world, length(view)));
     var col = mix(base, glowFogged, emissive);

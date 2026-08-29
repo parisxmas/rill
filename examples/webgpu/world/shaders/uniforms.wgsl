@@ -55,14 +55,19 @@
     //
     //   y  how far down on one knee the body is — the weapon ducks with it
     //   z  which tool is up: 1 the pick, 2 a stone, 0 neither (pick.wgsl)
-    //
-    // w is spare.
+    //   w  how far along its own barrel the weapon's muzzle is, in the model
+    //      coordinates that weapon is unquantised into — see `muzzle.wgsl`.
+    //      A constant would do for one gun and there are three, and they are
+    //      not the same length: the flash sat a hand past the MG3's barrel,
+    //      which from behind the sights is a flash floating on the crosshair.
     fx:         vec4f,
     // The lamp on this player's head: x is one while it is lit and nought
     // while it is not, and it starts at nought. It used to come on by itself
     // once the sun went under the world, which meant every player carried the
     // same light and nobody could turn theirs off to stop being the brightest
-    // thing on a dark hillside. `F` is the switch now. y, z and w are spare.
+    // thing on a dark hillside. `F` is the switch now. y and z carry the
+    // muzzle's height and its offset across the bore, which go with `fx.w`
+    // above; w is the rounds left on the MG3's belt, for `mgfx.wgsl`.
     lamp:       vec4f,
     // And everybody else's, six at a time: two vectors each, `xyz` where the
     // lamp is with `w` saying whether it is lit, then `xyz` which way it is

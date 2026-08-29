@@ -36,6 +36,7 @@
     @builtin(vertex_index) vi: u32,
     @location(0) pos: vec3f, @location(1) vel: vec3f,
     @location(2) spare: f32, @location(3) life: f32,
+    @location(4) shotBy: f32,
   ) -> VOut {
     // Two triangles over the four corners, without an array to index.
     let cx = select(0.0, 1.0, vi == 1u || vi == 2u || vi == 4u);
@@ -55,12 +56,21 @@
     // turn back, and it is where the physics put it, the length the physics
     // made it. The near-plane case the eye term was guarding is handled below
     // by the clamp on the tail's own w.
-    // The AK's rounds are not drawn. Five streaks a second from one weapon
-    // reads as a lit rope rather than as gunfire, and what it leaves at the
-    // far end — see `mark.wgsl` — says where it went better than a line
-    // across the valley does. Told apart by speed, the same eighty against a
-    // hundred and twenty the damage is told apart by.
-    let akRound = dot(vel, vel) < 10000.0;
+    // Which rounds are drawn, asked of the round rather than of its speed.
+    //
+    // This line was a speed fence twice and rotted twice: drawn at 100 when
+    // the AK flew at 80, it let the AK's streaks back the day the AK went to
+    // 120; moved to 200, it was about to fail again the moment the MG3
+    // arrived at the AK's own 180 wanting the opposite answer. So a round
+    // now carries the gun that fired it — `bullet_stride` in valley.rill —
+    // and this cannot be broken by changing anybody's muzzle speed.
+    //
+    // The AK's are still dark: ten streaks a second from one weapon reads as
+    // a lit rope, and the chip it leaves says where it went. The MG3 fires
+    // faster still and is drawn anyway, because only every fifth round off
+    // its belt is a tracer — which is how the real belt is loaded and what
+    // makes sixteen a second legible instead of solid.
+    let dark = shotBy == 1.0 || shotBy == 2.0;
     let flown = max(BULLET_LIFE - life, 0.0);
     let reach = min(TRAIL, flown);
     let tail = pos - vel * reach;
@@ -72,7 +82,7 @@
     o.world = mix(tail, head, cx);
     // The head behind the eye, or the slot empty, and there is nothing honest
     // to draw: put it past the far plane and let the clipper have it.
-    if (hc.w <= 0.02 || life <= 0.0 || akRound) {
+    if (hc.w <= 0.02 || life <= 0.0 || dark) {
       o.clip = vec4f(0.0, 0.0, 2.0, 1.0);
       o.local = vec2f(0.0, 0.0);
       o.len = 0.0;

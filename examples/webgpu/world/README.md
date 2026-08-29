@@ -186,11 +186,13 @@ covers the whole surface, and no amount of spectrum saves that.
 ```sh
 rill build server.rill -o valleyd && ./valleyd          # holds one valley
 python3 -m http.server 8000                             # and the page beside it
-# open http://localhost:8000/?join   — or ?join=ws://a.box:8091/ for someone else's
+# open http://localhost:8000/   — or ?join=ws://a.box:8091/ for someone else's
 ```
 
-Without `?join` nothing below happens and the valley is this tab's alone, which
-is what a static page gets. With it, the world belongs to the server: the
+The page joins the valley it is served from. `?solo` asks for the one this tab
+has to itself, and a static copy with no server behind it gets that anyway —
+the socket fails to open and it says so. Shared, the world belongs to the
+server: the
 crystals, the rounds in the air, the craters and the shark are that process's,
 and a browser is told about them.
 

@@ -37,6 +37,29 @@ fn tap(s) =
   run(s, 1, 0, 0.0 - 1000.0)
   1
 
+# How many frames the pack needs to stop a fall of `vy`, with the key held
+# and the pack already armed. Counted rather than reasoned about: the thrust
+# is written as a move toward the climb rate, so what it does to a body that
+# is already moving fast the wrong way is a question for a measurement.
+fn arrest(s, vy) =
+  v.respawn(s)
+  run(s, 30, 0, 0.0 - 1000.0)
+  tap(s)
+  run(s, 2, 16, 0.0 - 1000.0)
+  # Two hundred metres up, because the question is how long the pack takes
+  # and not how far it is to the floor: dropped at thirty a second from where
+  # a respawn stands, the answer was two frames and the ground, which is a
+  # measurement of the terrain rather than of the pack.
+  poke_f32(s, 22, ground_at(s) + 200.0)
+  poke_f32(s, 24, vy)
+  arrest_count(s, 0)
+
+fn arrest_count(s, n) =
+  if peek_f32(s, 24) >= 0.0 || n > 600 then n
+  else
+    v.walk(s, 1.0 / 60.0, 0.0, 0.0, 16)
+    arrest_count(s, n + 1)
+
 # One press, then the key up: the legs alone.
 fn hop(s) =
   g0 = ground_at(s)
@@ -76,15 +99,19 @@ fn main() =
   say("and the tank is untouched", cm(v.jet_fuel(s)), 100)
 
   # Tapped, then pressed again and held: the pack takes over the moment the
-  # feet are off the ground and holds the climb at six and a half a second
+  # feet are off the ground and holds the climb at thirteen metres a second
   # until the tank is out.
   fresh(s)
   g1 = ground_at(s)
   tap(s)
   top = run(s, 178, 16, 0.0 - 1000.0)
-  say("the pack lifts a pine's worth, m", to_int(top - g1), 15)
+  # Thirty-two metres on one tank, which is twice the pine it used to be —
+  # and a shade over twice the old fifteen, because a pack that reaches its
+  # ceiling sooner flies more of its burn at that ceiling.
+  say("the pack lifts twice a pine's worth, m", to_int(top - g1), 32)
   say("and empties the tank", cm(v.jet_fuel(s)), 0)
   say("the pack is out", v.jet_on(s), 0)
+
 
   # Nothing holds it up now: the key is still down and it is still a fall.
   run(s, 240, 16, 0.0 - 1000.0)
@@ -151,4 +178,16 @@ fn main() =
   say("and stays there", b, 100)
   run(s, 60, 0, 0.0 - 1000.0)
   say("let go, it comes all the way up", cm(v.crouch_of(s)), 0)
+
+  # And the other half of the doubling, which is not height but authority:
+  # what the pack does to somebody already falling. At the default pull the
+  # net thrust is two and two fifths of a gravity, so thirty metres a second
+  # of fall is turned around in about half of one. It was 97 frames before —
+  # a second and two thirds, long enough to reach the ground while the pack
+  # is still arguing with the fall.
+  #
+  # Last in the file on purpose: it parks somebody two hundred metres up with
+  # an empty tank, and a stage that started from there would be measuring the
+  # fall rather than itself.
+  say("thirty a second of fall is turned in frames", arrest(s, 0.0 - 30.0), 29)
   println("done")
