@@ -163,6 +163,32 @@ fn main() =
   fire_across(w, me, 0)
   say("and a person's does not", if v.breaks(me) - broke1 > 0 then 1 else 0, 1)
 
+  println("and it does not jump")
+  # A guardian keeps a post and crosses ground at half your pace; a thing that
+  # bunny-hops across one reads as a game character rather than as something
+  # standing watch. The hop was drawn from the same clock the strafe and the
+  # sprint are, and fired about one window in sixteen, so the sweep is over
+  # ten minutes of that clock and all three distance bands — without the fix
+  # it lands about forty times, which is teeth enough.
+  say("no jump at any range, over ten minutes of the clock",
+      hopped(w, b, 0, 0), 0)
+
+  println("a tenth of you wherever it lands")
+  # The head-body-legs table is a thing between people: it pays for an aim
+  # somebody chose. A guardian points at the middle of you with an error drawn
+  # from its skill and the range, so which sphere the round passes through is
+  # the dice — and a guardian that killed outright on a dice roll is a coin,
+  # not a difficulty. Ten rounds on target, however they land.
+  say("a guardian's round to the head takes, in per cent", took(w, b, me, 1.62), 10)
+  say("to the chest, the same", took(w, b, me, 1.05), 10)
+  say("to the legs, the same", took(w, b, me, 0.45), 10)
+  # And nothing of the table between people has moved: a head shot is still
+  # the whole of somebody and a leg is still a tenth. This half is what an
+  # edit meant for the guardians will break by accident.
+  say("a person's to the head still takes all of them", took(w, me, b, 1.62), 100)
+  say("to the chest, thirty", took(w, me, b, 1.05), 30)
+  say("to the legs, ten", took(w, me, b, 0.45), 10)
+
   println("and the planet does not bite it")
   # The other side of the same bargain. A guardian is posted and then stands
   # still for minutes, and the glass bites whatever leans on it every three
@@ -230,6 +256,45 @@ fn fire_across(w, s, decide) =
   poke_f32(bb, 8, v.from_ak())
   v.step_bullets(w, bb, 1.0 / 60.0, 1)
   1
+
+# One round put through `victim` at a given height above their feet, fired by
+# `shooter`, and how much of them it took in per cent. Started three metres
+# short and flown four in the step, so it passes through whichever sphere that
+# height belongs to and stops in it.
+fn took(w, shooter, victim, up) =
+  poke_f32(victim, 82, 1.0)
+  bb = peek_ptr(w, 68)
+
+  for i in 0..v.bullet_cap()
+    poke_f32(bb, i * v.bullet_stride() + 7, 0.0)
+
+  poke_f32(bb, 0, peek_f32(victim, 21) - 3.0)
+  poke_f32(bb, 1, peek_f32(victim, 22) + up)
+  poke_f32(bb, 2, peek_f32(victim, 23))
+  poke_f32(bb, 3, 240.0)
+  poke_f32(bb, 4, 0.0)
+  poke_f32(bb, 5, 0.0)
+  poke_f32(bb, 6, peek_f32(shooter, 99))
+  poke_f32(bb, 7, v.bullet_life())
+  poke_f32(bb, 8, v.from_ak())
+  v.step_bullets(w, bb, 1.0 / 60.0, 1)
+  to_int((1.0 - v.health(victim)) * 100.0 + 0.5)
+
+# The clock wound forward by hand rather than by stepping the world six
+# hundred times: what is being swept is the hash `bot_keys` draws its strafe
+# and its sprint out of, and that reads slot 28 and nothing else.
+fn hopped(w, s, n, acc) =
+  if n >= 600 then acc
+  else
+    poke_f32(w, 28, to_float(n))
+    hopped(w, s, n + 1,
+      acc + jump_bit(v.bot_keys(w, s, 40.0, 0.8))
+          + jump_bit(v.bot_keys(w, s, 15.0, 0.8))
+          + jump_bit(v.bot_keys(w, s, 4.0, 0.8))
+          + jump_bit(v.bot_keys(w, s, 15.0, 0.3))
+          + jump_bit(v.bot_keys(w, s, 4.0, 0.3)))
+
+fn jump_bit(k) = if bit_and(k, 16) != 0 then 1 else 0
 
 # Body and eye together, which is what every other mover does and what a test
 # poking one of them by hand keeps forgetting.

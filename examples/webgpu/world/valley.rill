@@ -2144,7 +2144,26 @@ fn try_hit_player(w, s, owner, b, at, ax, ay, az, bx, by, bz) =
 # Top down: the head is inside the body's sphere as far as a segment test is
 # concerned, so asking about the body first would give away every head shot.
 fn hit_where(w, s, owner, b, at, ax, ay, az, bx, by, bz) =
-  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, head_hurt() * round_scale(b, at)) else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, body_hurt() * round_scale(b, at)) else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, leg_hurt() * round_scale(b, at)) else 0
+  if player_sphere(s, 1.62, 0.3, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, zone_hurt(w, b, at, head_hurt())) else if player_sphere(s, 1.05, 0.42, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, zone_hurt(w, b, at, body_hurt())) else if player_sphere(s, 0.45, 0.36, ax, ay, az, bx, by, bz) > 0.5 then landed(w, s, owner, b, at, zone_hurt(w, b, at, leg_hurt())) else 0
+
+# A tenth of you, wherever it lands, if a guardian fired it.
+#
+# The head-body-legs table is a thing between people: it rewards an aim that
+# somebody chose, and the whole of it is that a head shot is worth taking a
+# risk for. A guardian does not choose an aim in that sense — it points at
+# the middle of you with an error drawn from its skill and the range, so
+# which sphere the round happens to pass through is the dice and nothing else,
+# and a guardian that killed outright on a dice roll is not difficulty, it is
+# a coin. So a tenth flat: ten rounds on target, however they land, and the
+# error and the range are the whole of how hard it is.
+#
+# It is asked of the round rather than of the shooter's block because the
+# round is the thing that survives the trip: this runs on both ends, and only
+# one of them has the shooter still standing where the shot came from.
+fn bot_hurt() = 0.1
+
+fn zone_hurt(w, b, at, part) =
+  if shot_by_bot(w, b, at) > 0 then bot_hurt() else part * round_scale(b, at)
 
 # Both halves of a hit are written down: one for whoever was hit and one for
 # whoever fired, because the second is the interesting number and cannot be
@@ -6636,7 +6655,15 @@ fn turn_toward(now, want, most) =
 fn bot_keys(w, s, d, skill) =
   t = world_time(w)
   side = if hash2(floor(t * 0.31) + peek_f32(s, 99) * 7.0, 401.0) > 0.5 then 8 else 4
-  hop = if hash2(floor(t * 0.7) + peek_f32(s, 99) * 3.0, 211.0) > 0.94 then 16 else 0
+  # No jumping. It was here to make them harder to lead a shot at, and it is
+  # the one thing a person does that a guardian should not: a thing that keeps
+  # a post and moves at half your pace does not bunny-hop across it. It read
+  # as a game character rather than as something standing watch, and hopping
+  # while strafing is exactly the tell.
+  #
+  # Taken out at the source rather than masked in `bot_wants`, so that nothing
+  # downstream has to know that bit 16 is special for some players — the same
+  # reason the crouch is cleared where it is decided.
   # Sprinting only in bursts, and only from a long way off. Held down it is
   # twelve metres a second — a guardian crossing a meadow at a flat sprint
   # with a walking animation under it was the thing that read as "too fast",
@@ -6644,8 +6671,8 @@ fn bot_keys(w, s, d, skill) =
   # minute. Two seconds in seven, on the same clock the strafe turns on.
   dash = if skill > 0.55 && hash2(floor(t * 0.5) + peek_f32(s, 99) * 11.0, 617.0) > 0.72 then 32 else 0
   if d > 26.0 then bit_or(1, dash)
-  else if d > 9.0 then bit_or(bit_or(1, side), hop)
-  else bit_or(bit_or(2, side), hop)
+  else if d > 9.0 then bit_or(1, side)
+  else bit_or(2, side)
 
 # The movement keys a bot has decided on, written where a person's arrive.
 #
