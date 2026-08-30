@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "605";
+const V = "607";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -34,17 +34,17 @@ const TIERS = [
   { name: "low",    grid:  72, pines: 300, crystals: 120, grass:  800, flies:  500, shadow: 1024, water:  48, dpr: 1.0, waves: 5, ripples: 2 },
   { name: "medium", grid:  96, pines: 420, crystals: 200, grass: 1500, flies: 1200, shadow: 2048, water:  72, dpr: 1.5, waves: 6, ripples: 3 },
   { name: "high",   grid: 128, pines: 650, crystals: 300, grass: 3000, flies: 2500, shadow: 2048, water:  96, dpr: 2.0, waves: 7, ripples: 3 },
-  { name: "ultra",  grid: 160, pines: 900, crystals: 380, grass: 5000, flies: 4000, shadow: 4096, water: 128, dpr: 3.0, waves: 8, ripples: 4 },
+  { name: "ultra",  grid: 160, pines: 900, crystals: 380, grass: 5000, flies: 4000, shadow: 4096, water: 128, dpr: 2.0, waves: 8, ripples: 4 },
 ];
 
 // iPadOS and iOS, which need a ceiling the measurements are not allowed to
 // lift. Safari on an iPad reports itself as a Mac and gives the adapter Apple's
 // own name, so `guessTier` matched `/apple/` and handed a tablet the desktop
 // tier — after which the tuner, seeing a perfectly good sixty frames, climbed
-// it to `ultra`. That means a device pixel ratio of three and a 4096 shadow
-// map. At three, a 12.9" iPad's canvas is 4096x3072, and MSAA 4x colour plus a
-// 4x depth buffer over that is around four hundred megabytes of render target
-// alone. Safari does not fail that allocation with an error you can read; it
+// it to `ultra`. That used to mean a device pixel ratio of three and a 4096
+// shadow map. At three, a 12.9" iPad's canvas is 4096x3072, and multisampled
+// colour plus depth over that was around four hundred megabytes of render
+// target alone. Safari does not fail that allocation with an error you can read; it
 // takes the GPU back, and every call after that is silently dropped. Black
 // screen, no console, nothing in the page.
 //
@@ -52,7 +52,9 @@ const TIERS = [
 // anything, so the ceiling is on tier and the ratio separately: `high` keeps
 // the geometry and the 2048 shadow map, and the ratio is held at 1.5, which on
 // a retina panel is still more pixels than the screen has points and is a
-// quarter of the memory that three was asking for.
+// quarter of the memory that three was asking for. `ultra` asks for two now
+// rather than three, for the same reason and on every machine: three is more
+// pixels than any panel has points, and this scene pays for each of them.
 //
 // The Mac test is the standard one: iPadOS Safari says "MacIntel" and reports
 // five touch points, where a real Mac reports none.
@@ -1089,6 +1091,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   ]};
 
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bglMain] });
+  // Four, and there is no choice about it.
+  //
+  // This scene is fill-bound rather than triangle-bound — a quarter of a
+  // million triangles is nothing to a modern GPU, but every pixel of them
+  // pays for ten texture samples of terrain and twenty-one shadow
+  // comparisons, and MSAA multiplies the lot — so two samples looked like the
+  // obvious saving. WebGPU does not have two. The spec requires exactly one
+  // and four; everything else is optional and Dawn implements neither, so a
+  // count of 2 is refused at pipeline creation and *every* pipeline in the
+  // valley fails validation at once. There is no partial failure to notice: a
+  // black page and a wall of "Multisample count (2) is not supported".
+  //
+  // So the lever here is on or off, not a dial. The pixel ratio is the dial —
+  // see `TIERS`.
   const MS = { count: 4 };
   const depth = { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" };
   const additive = { color: { srcFactor: "one", dstFactor: "one" }, alpha: { srcFactor: "one", dstFactor: "one" } };
@@ -2927,12 +2943,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     // existing pipelines rather than building unsampled copies of every one of
     // them costs a 128-pixel scratch target and saves four pipelines.
     const envMs = device.createTexture({
-      size: [ENV, ENV], sampleCount: 4, format: "rgba8unorm",
+      size: [ENV, ENV], sampleCount: MS.count, format: "rgba8unorm",
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     const envMsView = envMs.createView();
     const envDepth = device.createTexture({
-      size: [ENV, ENV], sampleCount: 4, format: "depth24plus",
+      size: [ENV, ENV], sampleCount: MS.count, format: "depth24plus",
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     }).createView();
     // The bake cannot read the cube it is writing, so it gets a black one.
@@ -3180,8 +3196,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (w !== canvas.width || h !== canvas.height) {
       canvas.width = w; canvas.height = h;
       msaaTex?.destroy(); depthTex?.destroy();
-      msaaTex = device.createTexture({ size: [w, h], sampleCount: 4, format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
-      depthTex = device.createTexture({ size: [w, h], sampleCount: 4, format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      msaaTex = device.createTexture({ size: [w, h], sampleCount: MS.count, format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      depthTex = device.createTexture({ size: [w, h], sampleCount: MS.count, format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
     }
   }
   resize();

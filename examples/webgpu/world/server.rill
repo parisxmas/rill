@@ -595,7 +595,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 605
+fn version() = 607
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
