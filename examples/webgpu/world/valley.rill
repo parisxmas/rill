@@ -6728,25 +6728,70 @@ fn bot_awake(w, s, dt) =
   if is_null(o) || far > 0 then bot_guard(w, s, dt, px, pz)
   else bot_hunt(w, s, o, dt, skill)
 
-# Nobody about: keep the post. Stand in it when it is reached, and walk back
-# to it at a watchman's pace when it is not — crouched, which this valley
-# already knows how to slow somebody down by, and which reads from a distance
-# as a man who is looking rather than a man who is going somewhere.
+# ---- the beat ---------------------------------------------------------------
+#
+# A guardian that reaches its post and never leaves it again is a statue. It
+# was one: down on one knee against the same stone for the whole of a round,
+# which is not keeping a place, it is decorating it.
+#
+# So the post is the middle of a beat rather than the whole of it. A ring of
+# stations round the wall it keeps, one every eighth of a turn, and it walks
+# to the next one every so often, stands its watch there, and moves on. The
+# station is drawn from the clock and the wall, so there is no route to store
+# and nothing to keep in step across a restart — the same trick the strafe and
+# the sprint use, and it means two guardians on the same wall are on opposite
+# sides of it rather than treading on each other.
+#
+# Eight metres out from the sphere, which is far enough that the walk is worth
+# watching and near enough that the wall is still the thing being kept.
+fn bot_beat() = 13.0
+
+fn bot_round() = 8.0
+
+# The station this guardian should be standing at now. Blocked ones are
+# stepped past exactly as `post_spot` steps past them, and if the whole ring
+# is stone — a wall in a gully — it falls back to the post itself, which is
+# the old behaviour and is at least somewhere it can stand.
+fn patrol_spot(w, k, id, beat, try) =
+  wb = wall_box(w)
+  cx = peek_f32(wb, k * 4)
+  cz = peek_f32(wb, k * 4 + 2)
+  r = peek_f32(wb, k * 4 + 3) * 0.5 + bot_round()
+  a = (to_float(try) + beat + fract(id * 0.618) * 8.0) * 0.7853982
+  x = cx + cos(a) * r
+  z = cz + sin(a) * r
+  if try >= 8 then post_spot(w, k, id, 0)
+  else if clear_of_wall(w, k, x, z) then pack_spot(x, z)
+  else patrol_spot(w, k, id, beat, try + 1)
+
+fn bot_station(w, s) =
+  patrol_spot(w, bot_post(w, s), peek_f32(s, 99),
+              floor(world_time(w) / bot_beat()), 0)
+
+# Nobody about: walk the beat. Stand the watch at the station when it is
+# reached, and walk to it at a watchman's pace when it is not.
 fn bot_guard(w, s, dt, px, pz) =
-  dx = px - peek_f32(s, 16)
-  dz = pz - peek_f32(s, 18)
+  (sx, sz) = bot_station(w, s)
+  dx = sx - peek_f32(s, 16)
+  dz = sz - peek_f32(s, 18)
   gap = sqrt(dx * dx + dz * dz)
   # A slow turn, so a guardian on watch sweeps rather than snaps.
   t = world_time(w)
+  beat = floor(t / bot_beat())
   sweep = hash2(floor(t / 5.0) + peek_f32(s, 99) * 3.0, 89.0) * 6.28318
   want = if gap > bot_at_cover() then atan2_like(dx, 0.0 - dz) else sweep
   poke_f32(s, 19, turn_toward(peek_f32(s, 19), want, 1.1 * dt))
   poke_f32(s, 20, turn_toward(peek_f32(s, 20), 0.0, 1.5 * dt))
-  # Crouched is for standing watch, not for covering eighty metres: at
-  # twenty-two per cent of a walk it is a minute and a half back to the post,
-  # which is most of a round spent walking. Coming back is an ordinary walk;
-  # arriving is when it goes down on one knee.
-  if gap > bot_at_cover() then bot_wants(s, 1) else bot_wants(s, 64)
+  # And not always on one knee. Half the stations are stood at rather than
+  # knelt at — a man who is only ever crouching reads as a man who is stuck,
+  # and from a distance the difference between the two poses is most of what
+  # says the thing is alive.
+  #
+  # Crouched is for standing watch, not for covering ground: at twenty-two per
+  # cent of a walk the beat would take longer than the beat. Walking there is
+  # an ordinary walk; arriving is when it may go down.
+  kneel = if hash2(beat + peek_f32(s, 99) * 5.0, 137.0) > 0.5 then 64 else 0
+  if gap > bot_at_cover() then bot_wants(s, 1) else bot_wants(s, kneel)
 
 fn bot_hunt(w, s, o, dt, skill) =
   # Where the chest is, not where the feet are.

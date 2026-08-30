@@ -69,17 +69,37 @@ fn main() =
   # A name and a health bar floating against stone with no figure under them
   # and nothing to shoot at is what that looked like.
   say("and clear of the stone", if v.clear_of_wall(w, pk, sx, sz) then 1 else 0, 1)
-  # And standing there is standing, not being shoved. A guardian wedged in the
-  # stone is pushed out by `collide_walls` every tick and walks back in every
-  # tick, and what that looks like from the outside is a name and a health bar
-  # against a wall with no figure under them and nothing you can shoot. So the
-  # test is not where it was put but whether it stays put.
-  hx = v.player_x(b)
-  hz = v.player_z(b)
-  walk_them(w, b, 20)
-  say("and it stays there rather than being shoved, in cm",
-      to_int(sqrt((v.player_x(b) - hx) * (v.player_x(b) - hx)
-                + (v.player_z(b) - hz) * (v.player_z(b) - hz)) * 100.0), 0)
+  # And then it walks a beat around it. A guardian that reaches its post and
+  # kneels there for the rest of the round is a statue: what was asked for is
+  # something keeping a place, and keeping a place is walking round it.
+  #
+  # Ninety seconds of it, with the world's clock wound on by hand — the
+  # station is drawn from that clock and `walk` does not touch it, so a test
+  # that only ticks the legs watches a guardian walk to one spot and stop. The
+  # clock is put back afterwards, because the stages below were written
+  # against the one it had.
+  t0 = peek_f32(w, 28)
+  rr = peek_f32(wb, pk * 4 + 3) * 0.5 + v.bot_round()
+  (path, worst, inside, still) = walk_beat(w, b, pk, sx, sz, 1800, 1.0 / 20.0, 0.0, 0.0, 0, 0)
+  poke_f32(w, 28, t0)
+  # Sixty-nine metres in a minute and a half, measured: seven or so to each
+  # station and the rest of the beat spent standing at it.
+  say("it walks its beat", if path > 20.0 then 1 else 0, 1)
+  # But only round the thing it is keeping. A guardian that wanders off is one
+  # more bot roaming the valley, which is the behaviour this whole design
+  # exists to be the opposite of.
+  say("and never leaves the ground it keeps",
+      if worst < rr + 4.0 then 1 else 0, 1)
+  # And never inside it. A guardian wedged in the stone is pushed out by
+  # `collide_walls` every tick and walks back in every tick, and what that
+  # looks like from outside is a name and a health bar against a wall with no
+  # figure under them and nothing you can shoot. Asked every tick of the walk,
+  # because a beat takes it round places a single reading would never visit.
+  say("and is never inside the stone it keeps", inside, 0)
+  # It walks and it stops. Both halves: a beat with no pauses in it is a
+  # patrol nobody could ever catch standing, and one with no walking is the
+  # statue again.
+  say("and stands its watch as well as walking it", if still > 0 then 1 else 0, 1)
   # Somebody the far side of the valley is not its business. This is the whole
   # of "they should not hunt you across the map": three guardians converging
   # on the one person in it from seventy metres took a motionless man down in
@@ -90,7 +110,6 @@ fn main() =
   poke_f32(b, 127, 0.0)
   think(w, b, 20)
   say("somebody far from it is not its business", to_int(peek_f32(b, 31)), 0)
-  say("and it stays crouched at its post", bit_and(to_int(peek_f32(b, 30)), 64), 64)
   say("never crouched while walking",
       if bit_and(to_int(peek_f32(b, 30)), 15) != 0 && bit_and(to_int(peek_f32(b, 30)), 64) == 64
       then 0 else 1, 1)
@@ -256,6 +275,27 @@ fn fire_across(w, s, decide) =
   poke_f32(bb, 8, v.from_ak())
   v.step_bullets(w, bb, 1.0 / 60.0, 1)
   1
+
+# A stretch of the beat, tick by tick, with the world's clock wound on beside
+# it. What comes back is how far it walked, how far from its post it ever got,
+# how many ticks it spent standing inside the stone, and how many it spent not
+# walking at all.
+fn walk_beat(w, s, k, px, pz, n, dt, path, worst, inside, still) =
+  if n == 0 then (path, worst, inside, still)
+  else
+    x0 = v.player_x(s)
+    z0 = v.player_z(s)
+    poke_f32(w, 28, peek_f32(w, 28) + dt)
+    v.bot_think(w, s, dt)
+    v.walk(s, dt, 0.0, 0.0, to_int(peek_f32(s, 30)))
+    x = v.player_x(s)
+    z = v.player_z(s)
+    g = sqrt((x - px) * (x - px) + (z - pz) * (z - pz))
+    walk_beat(w, s, k, px, pz, n - 1, dt,
+      path + sqrt((x - x0) * (x - x0) + (z - z0) * (z - z0)),
+      if g > worst then g else worst,
+      inside + if v.clear_of_wall(w, k, x, z) then 0 else 1,
+      still + if bit_and(to_int(peek_f32(s, 30)), 15) == 0 then 1 else 0)
 
 # One round put through `victim` at a given height above their feet, fired by
 # `shooter`, and how much of them it took in per cent. Started three metres
