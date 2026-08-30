@@ -60,6 +60,13 @@ export fn flowers(s: Ptr) -> Ptr = v.flowers(s)
 
 export fn flower_count(s: Ptr) -> Int = v.flower_count(s)
 
+# The boulders, in outcrops on the stony slopes. Placed at init from the same
+# hash on both ends, so nothing about them is ever sent — and unlike the
+# flowers, they are solid: `collide_all` is given them too.
+export fn rocks(s: Ptr) -> Ptr = v.rocks(s)
+
+export fn rock_count(s: Ptr) -> Int = v.rock_count(s)
+
 export fn crystals(s: Ptr) -> Ptr = v.crystals(s)
 
 export fn crystal_count(s: Ptr) -> Int = v.crystal_count(s)

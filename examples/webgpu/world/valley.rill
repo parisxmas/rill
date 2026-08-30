@@ -424,6 +424,219 @@ fn placed(buf, count, i, kind) =
 fn place(buf, i, count, cap, lim, kind) =
   if i >= lim then count else if count >= cap then count else place(buf, i + 1, count + placed(buf, count, i, kind), cap, lim, kind)
 
+# ---- the boulders -----------------------------------------------------------
+#
+# Rocks do not grow one at a time and they are not scattered evenly. A slope
+# sheds them, and what is left is an outcrop: a handful of stones lying within
+# a few metres of one another, then thirty metres of nothing, then another
+# handful. So this is placed in two passes rather than one — where a cluster
+# is, and then where each of its stones is around that centre — which is the
+# whole difference between a rockfall and a lawn with pebbles on it.
+#
+# The kinds above are scattered by one hash over the whole map because that is
+# what a forest is. This is the one thing in the valley that is not.
+
+fn rock_clusters() = 26
+
+# Between four and eleven to a cluster, so no two outcrops are the same size
+# and none of them is a ring.
+fn rock_most() = 11
+
+fn rock_cap() = rock_clusters() * rock_most()
+
+# How far a stone lies from the middle of its own outcrop. Four metres: close
+# enough to read as one thing at fifty metres, loose enough that walking into
+# one is not walking into all of them.
+fn rock_spread() = 4.0
+
+# How steeply the ground tips, as a gradient: metres of rise over metres of
+# run. Measured across three metres rather than as a derivative, because a
+# boulder is a metre across and what matters is whether the ground tilts under
+# a thing that size, not what the surface is doing at a point.
+fn rock_tilt(x, z) =
+  dx = height(x + 1.5, z) - height(x - 1.5, z)
+  dz = height(x, z + 1.5) - height(x, z - 1.5)
+  sqrt(dx * dx + dz * dz) / 3.0
+
+# The one number that decides where a boulder may lie, and it is about what
+# the ground can hold rather than about what it is made of.
+#
+# A gradient of 0.62 is a slope of thirty-two degrees, which is roughly where
+# loose material stops staying put. Nothing rests above that: a boulder on a
+# steeper face has not come to a stop there, it is glued to it, and it reads
+# as glued from fifty metres away.
+#
+# There is deliberately no lower bound. There was one — stones were kept to
+# ground the terrain draws grey, on the reasoning that boulders belong to rock
+# faces — and it was wrong twice over. It put every stone on the steepest
+# ground in the valley, which is exactly where they look stuck; and a boulder
+# lying in a meadow is not an error, it is the commonest boulder there is.
+fn rock_steep() = 0.62
+
+# Where an outcrop may start: gentler still, so that a cluster can scatter its
+# stones outward and stay inside the limit rather than losing half of them to
+# it.
+fn rock_face() = 0.46
+
+fn stony(x, z) =
+  h = height(x, z)
+  # Above the waterline: a stone on the lakebed is a stone nobody will see.
+  if h < 0.6 then false else if h > 30.0 then false else rock_tilt(x, z) < rock_steep()
+
+# How upright the ground is under a stone, which is what the terrain's own
+# colour bands are asked in — `band_r` and its neighbours take a normal's
+# upward part, and a height field's is one over the root of one plus its
+# gradient squared.
+fn rock_up(x, z) =
+  t = rock_tilt(x, z)
+  1.0 / sqrt(1.0 + t * t)
+
+# Where cluster `c` sits: tried a few times, because most of a valley is not
+# a rock face and a first guess usually lands in the meadow or the lake.
+fn rock_spot(c, tries) =
+  x = (hash2(to_float(c) * 2.9 + to_float(tries) * 17.7, 61.0) - 0.5) * 150.0
+  z = (hash2(to_float(c) * 4.3 + to_float(tries) * 13.1, 83.0) - 0.5) * 150.0
+  h = height(x, z)
+  if h > 0.9 && h < 30.0 && rock_tilt(x, z) < rock_face() then pack_spot(x, z)
+  else if tries > 40 then pack_spot(x, z)
+  else rock_spot(c, tries + 1)
+
+# One stone of one cluster, if the ground under it will have it. A stone is
+# dropped rather than made to fit: the ones that land on the meadow below the
+# outcrop or in the water are simply not there, which is what gives a cluster
+# a ragged edge instead of a circular one.
+fn rock_one(buf, count, c, j) =
+  (cx, cz) = rock_spot(c, 0)
+  a = hash2(to_float(c) * 7.1 + to_float(j), 131.0) * 6.28318
+  r = rock_spread() * sqrt(hash2(to_float(c) * 3.3 + to_float(j), 149.0))
+  x = cx + cos(a) * r
+  z = cz + sin(a) * r
+  h = height(x, z)
+  if near_spawn(x, z) then 0
+  else if stony(x, z) then emit_rock(buf, count * 8, x, h, z, c, j)
+  else 0
+
+# Eight floats, the same stride every instanced thing in this valley uses —
+# but the last three are not a colour. A rock takes its colour from the
+# terrain's own photograph, so what those slots carry instead is the shape:
+# how much this stone is squashed on each axis, and how dark it is against
+# its neighbours. One mesh and a sign, and no two boulders alike.
+fn emit_rock(buf, at, x, y, z, c, j) =
+  s = hash2(to_float(c) * 11.0 + to_float(j), 211.0)
+  q = hash2(to_float(c) * 5.0 + to_float(j), 307.0)
+  p = hash2(to_float(c) * 13.0 + to_float(j), 401.0)
+  # The last three slots are the colour of the ground this stone is lying on
+  # — the same `band_r`, `band_g`, `band_b` the terrain's own corners are
+  # painted with, asked at this spot.
+  #
+  # They carried the stone's squash at first, with the choice of mesh in the
+  # sign of one of them, and the boulder's colour was a constant: the stone
+  # band, on the reasoning that a boulder only ever stands on stony ground.
+  # Once it could stand anywhere that reasoning went, and it had been shaky
+  # before — the high slopes are painted with the *snow* band and textured
+  # with rock, which comes out a warm pale tan, and a boulder in the stone
+  # band's grey-blue sat on it looking like a hole in the hillside.
+  #
+  # So the colour goes where every other instanced thing in this valley keeps
+  # its colour, and the shape comes out of the angle instead: the renderer
+  # hashes the rotation for the squash and for which of the two meshes this
+  # is. Nothing is lost — the angle was a hash to begin with.
+  size = 0.55 + s * 1.75
+  ny = rock_up(x, z)
+  poke_f32(buf, at, x)
+  poke_f32(buf, at + 1, y - 0.10 * size)
+  poke_f32(buf, at + 2, z)
+  poke_f32(buf, at + 3, size)
+  poke_f32(buf, at + 4, p * 6.28318)
+  poke_f32(buf, at + 5, band_r(y, ny))
+  poke_f32(buf, at + 6, band_g(y, ny))
+  poke_f32(buf, at + 7, band_b(y, ny))
+  1
+
+# ---- standing on one ---------------------------------------------------------
+#
+# A boulder is not a tree. A trunk is two metres of nothing-you-can-do and the
+# only sensible answer to walking into one is to be stopped; a stone is knee
+# to waist high and the only sensible answer is to climb it — which is half of
+# what an outcrop is for, since a rock you can get on top of is a rock you can
+# see over and shoot from.
+#
+# So a boulder is two things at two heights, and which one it is depends on
+# where the feet are. Below its top it is a wall to be pushed out of; at or
+# above its top it is ground to stand on. Handed to `collide_all` and nothing
+# else — which is what it was at first — it was a wall at every height,
+# including the height of somebody standing on top of it, and the top could
+# never be reached because the push happens before the jump ever lands.
+
+# How tall a stone of this size is, over the point it is anchored at. Both
+# meshes are about nine tenths as tall as they are wide once their own squash
+# is in, and this is deliberately a little under that: sinking two centimetres
+# into a rock you are standing on is invisible, and floating two above one is
+# not.
+fn rock_tall(size) = 0.42 * size
+
+# How far from its centre the top of a stone will hold you. Smaller than the
+# radius that pushes you out, because the top of a rounded thing is narrower
+# than its middle — you should step off the edge a little before the point
+# where you could no longer have walked into it.
+fn rock_stand(size) = 0.40 * size + 0.20
+
+fn rock_reach(size) = 0.45 * size + 0.35
+
+# The height a stone can be climbed by walking rather than jumping. The same
+# distance the ground may rise under a step without anybody thinking about it.
+fn rock_step() = 0.55
+
+# The top of the highest boulder under (x, z) that these feet are high enough
+# to be standing on, or a long way down if there is none.
+fn rock_floor(w, x, y, z) =
+  rf_scan(peek_ptr(w, 99), to_int(peek_f32(w, 249)), 0, x, y, z, 0.0 - 1000.0)
+
+fn rf_scan(b, n, i, x, y, z, best) =
+  if i >= n then best
+  else
+    at = i * 8
+    size = peek_f32(b, at + 3)
+    top = peek_f32(b, at + 1) + rock_tall(size)
+    dx = x - peek_f32(b, at)
+    dz = z - peek_f32(b, at + 2)
+    r = rock_stand(size)
+    on = dx * dx + dz * dz < r * r && y > top - rock_step() && top > best
+    rf_scan(b, n, i + 1, x, y, z, if on then top else best)
+
+# And the wall half: pushed out of a stone, but only while below its top. The
+# margin is the same step, so the frame you clear the edge on is a frame that
+# stops shoving you sideways rather than one that fights the landing.
+fn collide_rocks(s, w) =
+  b = peek_ptr(w, 99)
+  n = to_int(peek_f32(w, 249))
+  for i in 0..n
+    collide_rock(s, b, i)
+
+fn collide_rock(s, b, i) =
+  at = i * 8
+  size = peek_f32(b, at + 3)
+  top = peek_f32(b, at + 1) + rock_tall(size)
+  if peek_f32(s, 22) > top - rock_step() then 1
+  else
+    ix = peek_f32(b, at)
+    iz = peek_f32(b, at + 2)
+    r = rock_reach(size)
+    dx = peek_f32(s, 21) - ix
+    dz = peek_f32(s, 23) - iz
+    d2 = dx * dx + dz * dz
+    if d2 < r * r && d2 > 0.0001 then push_out(s, ix, iz, dx, dz, sqrt(d2), r) else 1
+
+fn rock_cluster(buf, count, c, j, n) =
+  if j >= n then count
+  else rock_cluster(buf, count + rock_one(buf, count, c, j), c, j + 1, n)
+
+fn place_rocks(buf, c, count) =
+  if c >= rock_clusters() then count
+  else
+    n = 4 + to_int(hash2(to_float(c), 173.0) * to_float(rock_most() - 3))
+    place_rocks(buf, c + 1, rock_cluster(buf, count, c, 0, n))
+
 # ---- the walls on the tops --------------------------------------------------
 #
 # Stone, laid in an L, on the bare flats above the treeline. Pines stop at 9.5
@@ -3772,10 +3985,13 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   ng = place(grass_buf, 0, 0, ngrass, 20000, 2)
   npo = place(poplar_buf, 0, 0, poplar_cap(npine), 20000, 3)
   nfl = sow_flowers(flower_buf, 0, 0, flower_patches(npine), 20000)
+  rock_buf = alloc_bytes(rock_cap() * 32)
+  nrk = place_rocks(rock_buf, 0, 0)
   poke_ptr(s, 64, m)
   poke_ptr(s, 65, pine_buf)
   poke_ptr(s, 70, poplar_buf)
   poke_ptr(s, 71, flower_buf)
+  poke_ptr(s, 99, rock_buf)
   poke_ptr(s, 66, crystal_buf)
   poke_ptr(s, 67, grass_buf)
   poke_ptr(s, 68, bullet_buf)
@@ -3827,6 +4043,7 @@ fn init(grid: Int, npine: Int, ncrys: Int, ngrass: Int) -> Ptr =
   poke_f32(s, 57, to_float(np))
   poke_f32(s, 252, to_float(npo))
   poke_f32(s, 251, to_float(nfl))
+  poke_f32(s, 249, to_float(nrk))
   poke_f32(s, 58, to_float(nc))
   poke_f32(s, 59, to_float(ng))
   # Everything the walls, the wire rings and the round keep, set to nought
@@ -6112,6 +6329,21 @@ fn poplar_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 252))
 
 fn pine_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 57))
 
+# The boulders, and where their two slots came from.
+#
+# The world block is full below a hundred and twenty-eight, which is where
+# `tools/slots.py` looks — so both of these are picked the way the note above
+# `block_size` says they have to be: a pointer whose float twin belongs to a
+# *player* and never to the world, and a count high enough that no pointer
+# reaches it. Pointer ninety-nine is a player's own id, which no world block
+# has; float two hundred and forty-nine is a player's jetpack arming flag,
+# and its native pointer twin is slot a hundred and twenty-four, unclaimed.
+# Neither block is ever the other, which is the whole of why this is safe —
+# the same reason the nine pairs in `slots.py`'s own list are safe.
+fn rocks(s: Ptr) -> Ptr = peek_ptr(wd(s), 99)
+
+fn rock_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 249))
+
 fn crystals(s: Ptr) -> Ptr = peek_ptr(wd(s), 66)
 
 fn crystal_count(s: Ptr) -> Int = to_int(peek_f32(wd(s), 58))
@@ -6754,6 +6986,10 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   poke_f32(s, 23, pz0)
   collide_all(s, peek_ptr(w, 65), to_int(peek_f32(w, 57)), 0.3)
   collide_all(s, peek_ptr(w, 66), to_int(peek_f32(w, 58)), 0.55)
+  # And the boulders, which are a wall only up to their own top — see
+  # `collide_rocks`. Half the point of an outcrop is that it is something to
+  # put between you and a rifle, and the other half is that you can get on it.
+  collide_rocks(s, w)
   collide_walls(s, w)
   px = peek_f32(s, 21)
   pz = peek_f32(s, 23)
@@ -6781,7 +7017,11 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   # The ground under the feet, not the ground under the map square: in a
   # world with roofs in it those are different questions, and only the first
   # one lets somebody stand in a tunnel instead of on the hill above it.
-  gnd = ground_under(w, px, peek_f32(s, 22) + 0.05, pz)
+  # The ground under the feet, and the top of any boulder they are over: a
+  # stone is something to stand on, and standing on one is being held up by it
+  # rather than by the hillside it is lying on.
+  gnd = max(ground_under(w, px, peek_f32(s, 22) + 0.05, pz),
+            rock_floor(w, px, peek_f32(s, 22), pz))
   g = gravity(w)
   grounded = peek_f32(s, 25)
   fell = jump_vel(k, grounded, peek_f32(s, 24)) - g * dt

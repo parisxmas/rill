@@ -93,7 +93,7 @@ function guessTier(info) {
 
 const SHADERS = {
   uniforms: null, common: "uniforms",
-  terrain: "common", instanced: "common", pine: "common", grass: "common",
+  terrain: "common", instanced: "common", pine: "common", grass: "common", rock: "common",
   viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", halo: "common", weed: "common", lamp: "common", "firefly-draw": "common",
@@ -198,6 +198,7 @@ function loadShaders(step, pakText) {
     PROP: whole("prop"),
     CRATE: whole("crate"),
     BELT: whole("belt"),
+    ROCK: whole("rock"),
     ZAP: whole("zap"),
     MARK: whole("mark"),
     SPARK: whole("spark"),
@@ -1526,6 +1527,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   const propPipe = pipe("prop", S.PROP, propLayout);
   const cratePipe = pipe("crate", S.CRATE, propLayout);
   const beltPipe = pipe("belt", S.BELT, propLayout);
+  // The boulders' mesh takes locations 0 and 1 and leaves 2 to 5 to the same
+  // eight-float instance the pines and the crystals ride on. No texture
+  // coordinate: they are drawn triplanar off the terrain's own stone.
+  const rockLayout = { arrayStride: 16, attributes: [
+    { shaderLocation: 0, offset: 0, format: "unorm16x4" },
+    { shaderLocation: 1, offset: 8, format: "snorm8x4" },
+  ]};
   // The launcher in the hands: the rifle's vertex layout, its own frustum, and
   // no instances — there is only ever one pair of hands.
   const rpgPipe = pipe("launcher", S.LAUNCHER, vmLayout);
@@ -1685,6 +1693,40 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   });
   device.queue.writeBuffer(beltIB, 0, beltIdxBytes);
   step("mg-belt.mesh");
+  // The boulders. Two scans, the same six lines again, and their quantization
+  // boxes handed to the pipeline as constants rather than to a uniform — one
+  // shader draws both and the only thing that differs between the pipelines
+  // is six numbers off these headers and which sign of an instance they take.
+  const rockMesh = (name) => {
+    const bytes = pakBuf(name);
+    const head = new DataView(bytes, 0, 32);
+    const verts = head.getUint32(0, true);
+    const idx = head.getUint32(4, true);
+    const box = new Float32Array(bytes, 8, 6);
+    const vb = gpuBuf(new Uint8Array(bytes, 32, verts * 16));
+    const pad = new Uint8Array((idx * 2 + 3) & ~3);
+    pad.set(new Uint8Array(bytes, 32 + verts * 16, idx * 2));
+    const ib = device.createBuffer({
+      size: pad.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(ib, 0, pad);
+    step(name);
+    return { vb, ib, idx, box };
+  };
+  const rockA = rockMesh("rock-a.mesh");
+  const rockB = rockMesh("rock-b.mesh");
+  // Built here rather than up with the others because their constants are
+  // read out of the files above: a pipeline that unpacks a mesh has to be
+  // made after the mesh it unpacks, or the six numbers are a guess.
+  const rockPipe = (m, second) => pipe("rock", S.ROCK, [rockLayout, instLayout], {
+    constants: {
+      boxLoX: m.box[0], boxLoY: m.box[1], boxLoZ: m.box[2],
+      boxSpX: m.box[3], boxSpY: m.box[4], boxSpZ: m.box[5],
+      wantSecond: second,
+    },
+  });
+  const rockPipeA = rockPipe(rockA, 0);
+  const rockPipeB = rockPipe(rockB, 1);
 
   // The launcher and its rocket. One file, one texture, two meshes, all in the
   // rifle's own format — so this is the same six lines a third and a fourth
@@ -2784,7 +2826,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     }
     if (cam) stateF32().set(cam, 19);
 
-    if (W) for (const k of ["terrainBuf", "pineInst", "poplarInst", "flowerInst", "crystalInst", "grassInst", "weedInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
+    if (W) for (const k of ["terrainBuf", "pineInst", "poplarInst", "flowerInst", "crystalInst", "rockInst", "grassInst", "weedInst", "waterBuf", "flyBuf", "shadowTex"]) W[k]?.destroy?.();
     const counts = {
       terrain: Number(E.terrain_verts(state)),
       pines: Number(E.pine_count(state)),
@@ -2792,6 +2834,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       grass: Number(E.grass_count(state)),
       poplars: Number(E.poplar_count(state)),
       flowers: Number(E.flower_count(state)),
+      rocks: Number(E.rock_count(state)),
     };
     W = { counts };
     W.terrainBuf = gpuBuf(new Float32Array(E.memory.buffer, Number(E.terrain(state)), counts.terrain * 9));
@@ -2803,6 +2846,8 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
                                            Math.max(counts.poplars, 1) * 8));
     W.flowerInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.flowers(state)),
                                            Math.max(counts.flowers, 1) * 8));
+    W.rockInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.rocks(state)),
+                                        Math.max(counts.rocks, 1) * 8));
     W.crystalInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.crystals(state)), counts.crystals * 8));
     W.grassInst = gpuBuf(new Float32Array(E.memory.buffer, Number(E.grass(state)), counts.grass * 8));
     W.waterBuf = gpuBuf(waterMesh(86, T.water));
@@ -2991,7 +3036,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
 
     W.tris = Math.round((counts.terrain + pineVerts * counts.pines + poplarVerts * counts.poplars
                          + crystalVerts * counts.crystals
-                       + grassVerts * counts.grass + rifleIdx) / 3);
+                       + grassVerts * counts.grass + rifleIdx) / 3)
+             // The boulders. Each instance is drawn by whichever of the two
+             // pipelines owns its shape, so the honest figure is half of both
+             // meshes rather than the sum — the other half leaves the vertex
+             // shader without a triangle to its name.
+             + Math.round(counts.rocks * (rockA.idx + rockB.idx) / 6);
   }
   // The valley someone else is running, if this page was pointed at one. The
   // welcome has to arrive before the world is built: how much valley there is
@@ -4044,6 +4094,20 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       pass.setVertexBuffer(0, poplarBuf); pass.setVertexBuffer(1, W.poplarInst);
       pass.draw(poplarVerts, W.counts.poplars);
     }
+    // The boulders: one instance buffer, two meshes, each pipeline folding
+    // away the stones that are not its own shape.
+    if (W.counts.rocks) {
+      pass.setVertexBuffer(1, W.rockInst);
+      pass.setPipeline(rockPipeA);
+      pass.setVertexBuffer(0, rockA.vb);
+      pass.setIndexBuffer(rockA.ib, "uint16");
+      pass.drawIndexed(rockA.idx, W.counts.rocks);
+      pass.setPipeline(rockPipeB);
+      pass.setVertexBuffer(0, rockB.vb);
+      pass.setIndexBuffer(rockB.ib, "uint16");
+      pass.drawIndexed(rockB.idx, W.counts.rocks);
+    }
+
     pass.setPipeline(grassPipe);
     pass.setVertexBuffer(0, grassBuf); pass.setVertexBuffer(1, W.grassInst); pass.draw(grassVerts, W.counts.grass);
     if (W.weedCount) {

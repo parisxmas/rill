@@ -24,7 +24,13 @@ import re
 import sys
 
 # pointer on the world, float on a player: different blocks, never met
-KNOWN = {106, 113, 114, 115, 116, 117, 118, 119, 120}
+#
+# 99 is the boulders' buffer. Its float twin is a player's own id, which no
+# world block has one of — and on the server, where a pointer is eight bytes,
+# slot 99 lands on floats 198 and 199, which nothing uses at all. The count
+# that goes with it is float 249, chosen the same way: a player's jetpack
+# arming flag, and its native pointer twin is 124, unclaimed.
+KNOWN = {99, 106, 113, 114, 115, 116, 117, 118, 119, 120}
 
 
 def scan(path):
