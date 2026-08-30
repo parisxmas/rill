@@ -768,20 +768,49 @@ fn block_live(bb, i) = block_f(bb, i, 3) > 0.01
 # beach into the shallows is a wall standing in the lake. A pine through the
 # middle of one is allowed and looks like what it is — a wall built round the
 # tree that was there first.
+# How far from the middle of the map a wall may be sited.
+#
+# Not the whole of it, which is what it was. The lattice runs from minus half
+# `world_w` to plus half of it — eighty-five metres either way — and the sites
+# were drawn from exactly that range, so a wall could start on the last row of
+# ground in the valley and run its two arms out past the edge of the world.
+# What you saw then was an L hanging in the sky over nothing, which is the
+# screenshot this line was written from.
+#
+# Twelve metres of margin: an arm is at most twenty-six stones of thirty
+# centimetres, the corner turns a right angle, and the furthest a block can
+# get from the site is a little under eleven.
+fn wall_span() = world_w() - 24.0
+
+# Where a wall may stand.
+#
+# It wanted level ground and it wanted rather a lot of it: within one and a
+# third metres over a six-metre reach, in every direction. That is a flat, and
+# the valley's flats are its tops and its meadows — so every wall in it stood
+# on one, and a hillside, which is where cover is worth most, never had any.
+#
+# A wall on a slope is not a problem to be avoided. Each column already stands
+# on its own ground, so a wall crossing a hillside steps down it course by
+# course, the way a dry-stone wall actually does. What is left to refuse is
+# ground too steep to have built on: `rock_tilt` is the same gradient the
+# boulders are placed by, and seven tenths of it is a slope of thirty-five
+# degrees.
 fn good_site(x, z) =
   h = height(x, z)
-  if h < 1.6 then false else level_at(x, z, h, 3.0) && level_at(x, z, h, 6.0) && dry_at(x, z, 8.0)
+  if h < 1.6 then false
+  else rock_tilt(x, z) < 0.7 && not_cliff_near(x, z) && dry_at(x, z, 8.0)
+
+# And the same question asked at the reach of an arm, because the middle of a
+# site says nothing about what the far end of it is standing on: a wall that
+# starts on a shoulder and ends over a drop is the floating wall again, in
+# miniature.
+fn not_cliff_near(x, z) =
+  rock_tilt(x + 6.0, z) < 0.9 && rock_tilt(x - 6.0, z) < 0.9
+    && rock_tilt(x, z + 6.0) < 0.9 && rock_tilt(x, z - 6.0) < 0.9
 
 # The four points an arm could reach, all of them clear of the water line.
 fn dry_at(x, z, d) =
   height(x + d, z) > 0.4 && height(x - d, z) > 0.4 && height(x, z + d) > 0.4 && height(x, z - d) > 0.4
-
-fn level_at(x, z, h, d) =
-  a = absf(height(x + d, z) - h)
-  b = absf(height(x - d, z) - h)
-  c = absf(height(x, z + d) - h)
-  e = absf(height(x, z - d) - h)
-  a < 1.3 && b < 1.3 && c < 1.3 && e < 1.3
 
 fn absf(v) = if v < 0.0 then 0.0 - v else v
 
@@ -804,8 +833,8 @@ fn wall_try(w, bb, i, made) =
   # nine heights.
   if i >= 12000 || made >= wall_cap() then made
   else
-    x = (hash2(to_float(i), 17.0) - 0.5) * 170.0
-    z = (hash2(to_float(i), 29.0) - 0.5) * 170.0
+    x = (hash2(to_float(i), 17.0) - 0.5) * wall_span()
+    z = (hash2(to_float(i), 29.0) - 0.5) * wall_span()
     if good_site(x, z) && far_from_walls(wall_box(w), 0, made, x, z) then wall_try(w, bb, i + 1, made + lay_wall(bb, wall_box(w), made, x, z, to_float(i))) else wall_try(w, bb, i + 1, made)
 
 # Fifteen metres from every wall already laid. Without this the first decent
@@ -877,8 +906,31 @@ fn arm(bb, base, x, z, dx, dz, len, seed) =
   for j in 0..len
     column(bb, base + j * wall_tall(), x + dx * block_size() * to_float(j), z + dz * block_size() * to_float(j), a, seed + to_float(j))
 
+# How far a wall is set into the hillside it stands on. Twenty centimetres of
+# a thirty-centimetre stone, so the bottom course is mostly earth and what
+# shows of it is a lip.
+#
+# Nothing was buried at first and every column sat exactly on the ground under
+# its own centre, which is right on a flat and wrong on everything else: a
+# stone is thirty centimetres across and the ground under its downhill edge is
+# lower than the ground under its middle, so a wall crossing a slope stood on
+# a row of little arches. Sinking it is half the answer and the other half is
+# below — the ground has to be asked about the whole footprint, not a point.
+fn wall_sink() = 0.2
+
+# The lowest ground under a stone laid at (x, z): the four corners of the
+# square that contains it however it is turned. Twenty-one centimetres is half
+# the diagonal of a thirty-centimetre block, so this covers every yaw without
+# knowing which one it has.
+fn under_block(x, z) =
+  a = height(x - 0.21, z - 0.21)
+  b = height(x + 0.21, z - 0.21)
+  c = height(x - 0.21, z + 0.21)
+  d = height(x + 0.21, z + 0.21)
+  min(min(a, b), min(c, d))
+
 fn column(bb, base, x, z, a, seed) =
-  g = height(x, z)
+  g = under_block(x, z) - wall_sink()
 
   for k in 0..wall_tall()
     emit_block(bb, base + k, x, g + block_size() * (0.5 + to_float(k)), z, a, seed + to_float(k) * 7.0)

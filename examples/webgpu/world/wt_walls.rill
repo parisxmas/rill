@@ -1,0 +1,113 @@
+# The stone walls: that every one of them is standing on something.
+#
+# One was not. The sites were drawn from the whole width of the map — the
+# lattice runs to eighty-five metres either way and so did the hash — so a
+# wall could start on the very last row of ground and run its arms out over
+# the edge of the world. An L hanging in the sky, seen from a hillside that
+# stopped underneath it.
+#
+# What is checked here is the property that failure broke, and it is checked
+# of every stone rather than of every wall: a wall whose middle is on the map
+# can still put its far arm off it, which is the same bug at a scale a
+# screenshot would not show.
+import "valley" as v
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+fn at(bb, i, k) = peek_f32(bb, i * 8 + k)
+
+# Centimetres, rounded the way a number that can be negative has to be: adding
+# a half and truncating turns minus twenty into minus nineteen.
+fn cm(x) = to_int(x * 100.0 + if x < 0.0 then 0.0 - 0.5 else 0.5)
+
+# How far the bottom of a column sits above the lowest ground under its own
+# footprint. Above zero is a stone with daylight under it; the wall is set
+# into the hill by `wall_sink`, so the honest reading is negative and this is
+# looking for the worst case across every wall in the valley.
+fn floating(bb, i, n, worst) =
+  if i >= n then worst
+  else if at(bb, i, 3) < 0.01 then floating(bb, i + 1, n, worst)
+  # The bottom course of each column, which is the one the ground has to be
+  # under. A column is `wall_tall` stones laid from its own ground upward, so
+  # the bottom of one is every `wall_tall`th block — and the seven above it
+  # are meant to be in the air.
+  else if i % v.wall_tall() != 0 then floating(bb, i + 1, n, worst)
+  else
+    x = at(bb, i, 0)
+    z = at(bb, i, 2)
+    # The lowest course only: the ones above it are meant to be up in the air.
+    base = at(bb, i, 1) - v.block_size() * 0.5
+    g = v.under_block(x, z)
+    d = base - g
+    floating(bb, i + 1, n, if d > worst then d else worst)
+
+fn lowest(bb, i, n, worst) =
+  if i >= n then worst
+  else if at(bb, i, 3) < 0.01 then lowest(bb, i + 1, n, worst)
+  else if i % v.wall_tall() != 0 then lowest(bb, i + 1, n, worst)
+  else
+    d = v.under_block(at(bb, i, 0), at(bb, i, 2)) - (at(bb, i, 1) - v.block_size() * 0.5)
+    lowest(bb, i + 1, n, if d > worst then d else worst)
+
+# How far the furthest stone is from the middle of the map, which is the
+# number that went wrong: the ground stops at half the world's width.
+fn furthest(bb, i, n, worst) =
+  if i >= n then worst
+  else if at(bb, i, 3) < 0.01 then furthest(bb, i + 1, n, worst)
+  else
+    ax = if at(bb, i, 0) < 0.0 then 0.0 - at(bb, i, 0) else at(bb, i, 0)
+    az = if at(bb, i, 2) < 0.0 then 0.0 - at(bb, i, 2) else at(bb, i, 2)
+    m = if ax > az then ax else az
+    furthest(bb, i + 1, n, if m > worst then m else worst)
+
+# How much ground a wall crosses from one end to the other. A valley whose
+# walls are all on flats has nothing here above a metre; one that puts them on
+# hillsides has walls that step.
+fn spread(bb, base, j, n, lo, hi) =
+  if j >= n then hi - lo
+  else
+    g = v.ground(at(bb, base + j, 0), at(bb, base + j, 2))
+    spread(bb, base, j + 1, n, if g < lo then g else lo, if g > hi then g else hi)
+
+fn stepping(bb, k, n, acc) =
+  if k >= n then acc
+  else
+    base = k * v.wall_blocks()
+    d = spread(bb, base, 0, v.wall_blocks(), 100000.0, 0.0 - 100000.0)
+    stepping(bb, k + 1, n, acc + if d > 1.5 then 1 else 0)
+
+fn main() =
+  w = v.init(48, 400, 300, 900)
+  bb = v.blocks_ptr(w)
+  n = v.blocks_total(w)
+
+  println("standing on the ground")
+  say("there are walls", if n > 1000 then 1 else 0, 1)
+  # Not one stone anywhere with daylight under it. The measurement is against
+  # the lowest of the block's four corners rather than the ground under its
+  # middle, because that is where the gap opened: a thirty-centimetre stone on
+  # a slope has ground under its middle and none under its downhill edge, and
+  # a wall crossing a hillside stood on a row of little arches.
+  say("no stone has daylight under it, in cm",
+      cm(floating(bb, 0, n, 0.0 - 1000.0)), 0 - 20)
+  # And no more buried than it is meant to be: `wall_sink` plus what a slope
+  # adds across a block, which cannot reach another twenty centimetres at any
+  # gradient this valley sites a wall on.
+  say("nor is any of it swallowed, in cm",
+      if lowest(bb, 0, n, 0.0) < 0.42 then 1 else 0, 1)
+
+  println("inside the map")
+  # The ground stops at half the world's width. A stone past that is a stone
+  # over the void, whatever its own column thought the height was.
+  say("the furthest stone is inside the world, in m",
+      if furthest(bb, 0, n, 0.0) < v.world_w() * 0.5 - 1.0 then 1 else 0, 1)
+
+  println("and on the hillsides")
+  # The point of the second half of this change: a wall crossing sloping
+  # ground steps down it, and there should be walls doing that. All of them on
+  # flats is what the old levelness test guaranteed, and a flat is the one
+  # place cover is worth least.
+  say("some of them cross more than a metre and a half of fall",
+      if stepping(bb, 0, v.wall_cap(), 0) > 3 then 1 else 0, 1)
+  println("done")
