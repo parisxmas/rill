@@ -228,9 +228,28 @@ fn reload_asked(b, s, h, now, t) =
     1
   else 0
 
+# How long the page holds its own ammunition figure against the server's.
+#
+# The change plus six hundred milliseconds, so the far end has both heard the
+# reload and answered before this end starts listening again. It was a flat
+# nine hundred, which is shorter than the change itself — and the half second
+# between them is a window where `reconcile` can write back a server that has
+# not reloaded yet, which takes a fresh magazine to nought and then back to
+# full and runs the whole animation a second time.
+fn hold_secs() = change_secs() + 0.6
+
 fn change_starts(b, now, t) =
   poke_f32(b, 4, cycle_now(b) - change_secs())
-  poke_f32(b, 14, now + 900.0)
+  # The page holds its own figure for the whole change and a round trip after
+  # it, not for nine hundred milliseconds.
+  #
+  # Nine hundred was shorter than the change itself, and the half second
+  # between them is a window in which `reconcile` is free to write back a
+  # server that has not reloaded yet — so the fresh magazine went to nought
+  # and then back to full, and the whole animation ran a second time. Held
+  # for the change plus six hundred milliseconds, the far end has both heard
+  # the reload and answered before this end starts listening again.
+  poke_f32(b, 14, now + hold_secs() * 1000.0)
   poke_f32(b, 15, t)
   event(b, 4.0)
   1
@@ -249,9 +268,25 @@ fn loaded_now(b, s) =
 # The change, seen from here: the world swapped magazines on a pull, the count
 # jumped from nothing back to thirty, and the crosshair owes the second and a
 # half the hands are busy.
+# Whether a change is already playing: slot 15 is when the last one began and
+# `change_secs` is how long one takes, which is the same pair `outs` turns
+# into the phase the renderer animates.
+fn changing_now(b, t) = t - peek_f32(b, 15) < change_secs()
+
 fn came_back(b, now, t, loaded) =
   fed = held(b) == 2 || held(b) == 5
-  if fed && to_int(peek_f32(b, 13)) == 0 && loaded > 0 then change_starts(b, now, t) else 0
+  # And not one already under way.
+  #
+  # This watches the count go from nothing back to a full magazine, which is
+  # what a change looks like from here. In a shared valley the count can make
+  # that journey twice for one change: this end reloads and has thirty, the
+  # server is still holding the old nought for half a round trip, and once the
+  # page's hold expires `reconcile` writes that nought back — then the
+  # server's own reload lands and the count climbs to thirty a second time.
+  # The second climb is not a second change, but it looked like one, and the
+  # animation started again from the top: the magazine that dropped out twice.
+  if fed && to_int(peek_f32(b, 13)) == 0 && loaded > 0 && !changing_now(b, t)
+  then change_starts(b, now, t) else 0
   poke_f32(b, 13, if fed then to_float(loaded) else 0.0 - 1.0)
   1
 

@@ -16,6 +16,13 @@ fn run(s, n, flags, want, t0) =
     step_world_too(s)
     run(s, n - 1, flags, want, t0 + 1.0 / 60.0)
 
+# How many cues of one kind are waiting in the ring.
+fn cues_of(b, kind) = count_cues(b, 0, to_int(peek_f32(b, 19)), kind, 0)
+
+fn count_cues(b, i, n, kind, acc) =
+  if i >= n then acc
+  else count_cues(b, i + 1, n, kind, acc + if to_int(peek_f32(b, 20 + i * 2)) == kind then 1 else 0)
+
 fn step_world_too(s) =
   v.step_world(v.wd(s), 1.0 / 60.0)
 
@@ -50,6 +57,31 @@ fn main() =
   say("the sights are up", if peek_f32(b, 5) > 0.95 then 1 else 0, 1)
   say("the AK magnifies twice", to_int(peek_f32(b, 16) + 0.5), 2)
 
+  println("a magazine change does not start itself twice")
+  # The count going from nothing back to a full magazine is what a change
+  # looks like from here — and in a shared valley it can make that journey
+  # twice for one change. This end reloads and has thirty; the server is still
+  # holding the old nought for half a round trip, and if the page's hold has
+  # expired by then `reconcile` writes that nought back. When the server's own
+  # reload lands the count climbs to thirty a second time, and the animation
+  # used to run again from the top.
+  #
+  # Two things now stop it, and both are checked. The hold has to outlast the
+  # change, or there is a window at all; and a climb that arrives while a
+  # change is still playing is not a second change.
+  say("the hold outlasts the change", if hd.hold_secs() > hd.change_secs() then 1 else 0, 1)
+
+  poke_f32(b, 19, 0.0)
+  poke_f32(s, 106, 0.0)
+  t3a = run(s, 1, 8, 2, t4)
+  say("the reload key starts one", cues_of(b, 4), 1)
+  # The server's older figure, and then its answer — both inside the change.
+  poke_f32(b, 19, 0.0)
+  poke_f32(b, 13, 0.0)
+  poke_f32(s, 106, 30.0)
+  t3b = run(s, 1, 0, 2, t3a)
+  say("and a second climb inside it starts none", cues_of(b, 4), 0)
+
   println("the two that are out of play")
   # The pick and the wall are gone from the game and not from the code — see
   # `weapon_off` in valley.rill. Asked for by key, they change nothing: what
@@ -60,7 +92,7 @@ fn main() =
   # rather than against a number, so this keeps saying the right thing when
   # the row above it moves.
   was = hd.held(b)
-  t4a = run(s, 20, 0, 3, t4)
+  t4a = run(s, 20, 0, 3, t3b)
   say("the pick cannot be taken up", hd.held(b), was)
   t4b = run(s, 20, 0, 4, t4a)
   say("nor the wall", hd.held(b), was)

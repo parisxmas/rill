@@ -2056,7 +2056,26 @@ fn chip_crystal(w, cb, cat) =
   poke_f32(w, 61, to_float(k0 + 2))
   1
 
+# Whose round this is, and whether they are one of the guardians. A dead slot
+# or an owner who has left answers no, which is the safe way round: a round
+# with nobody behind it is treated as a person's.
+fn shot_by_bot(w, b, at) =
+  o = player_by_id(w, peek_f32(b, at + 6), 0)
+  if is_null(o) then 0 else is_bot(o)
+
 fn hit_crystals(w, b, at, ax, ay, az, bx, by, bz) =
+  # Not by a guardian. They are here to keep the crystals, and a keeper who
+  # shoots the thing it is keeping every time somebody stands in front of one
+  # would empty this valley of them in an afternoon — the crystals are what
+  # heals people and what throws the meteors, and nothing puts them back
+  # inside a round.
+  #
+  # The round passes through rather than stopping: it is refused the crystal,
+  # not stopped by it, so a guardian firing across a field of glass still hits
+  # whoever is behind it.
+  if shot_by_bot(w, b, at) > 0 then 0 else crystals_hit(w, b, at, ax, ay, az, bx, by, bz)
+
+fn crystals_hit(w, b, at, ax, ay, az, bx, by, bz) =
   sg = seg_of(w)
   poke_f32(sg, 0, ax)
   poke_f32(sg, 1, ay)
@@ -3142,6 +3161,12 @@ fn pick_blast(bb, i, best) =
 # way it watches the breaks: it has no other way of knowing, because the
 # landing happens inside a frame it only calls.
 fn blasts_fired(s: Ptr) -> Int = to_int(peek_f32(wd(s), 80))
+
+# And how many rounds have left a barrel, for the same reason: the ears turn
+# the new ones into other people's gunfire. The cursor of the ring itself, so
+# it counts every round in the valley whoever fired it — the reader takes its
+# own out.
+fn shots_fired(s: Ptr) -> Int = to_int(peek_f32(wd(s), 60))
 
 # How long a rocket's smoke stands after the rocket is gone. The same number
 # the trail is drawn over, in `fireball.wgsl` — the parcels fade to nothing
@@ -6090,6 +6115,17 @@ fn player_id(s: Ptr) -> Int = to_int(peek_f32(s, 99))
 
 fn players(w: Ptr) -> Int = player_count(w)
 
+# How many of them are people. The guardians sit in the same table and are
+# counted by `players` along with everybody else, which is right for anything
+# that walks the table and wrong for the one number on the door: a valley with
+# two guardians and nobody in it should read as empty, or the list of doors
+# says the quiet valleys are the busy ones.
+fn people(w: Ptr) -> Int = people_from(w, 0, 0)
+
+fn people_from(w, i, n) =
+  if i >= player_count(w) then n
+  else people_from(w, i + 1, n + if is_bot(player_at(w, i)) > 0 then 0 else 1)
+
 fn player_block(w: Ptr, i: Int) -> Ptr = player_at(w, i)
 
 # ---- reading it from outside -----------------------------------------------
@@ -6350,6 +6386,435 @@ fn refused(s) =
 fn wild_limit() = 12
 
 # For the server, which drops them the way it drops anyone who has gone quiet.
+# ---- the ones nobody is driving ---------------------------------------------
+#
+# A bot is a player. Not a player-like thing with its own table and its own
+# message and its own half of every rule — a block in the same player table,
+# with an id, health, a magazine and a place to stand. Everything that already
+# knows what a player is therefore knows what a bot is: rounds hit it, blasts
+# push it, it bleeds, it goes down, it gets up again five seconds later, it is
+# in the snapshot, it is on the scoreboard, and a client draws it with the
+# figure it draws everybody else with. None of that is written twice.
+#
+# What is different is only this: nobody is sending it keys. So once a tick
+# the server asks it what it wants, and what comes back is the same keys, the
+# same look and the same fire message a browser would have sent. It walks
+# through `walk` and it shoots through `want_fire`, which means every rule
+# that holds a person also holds a bot — the fire gate, the ammunition, the
+# refusal to shoot from water, the twenty degrees `faces` allows between where
+# you are looking and where you say you shot.
+#
+# The skill lives on the block, in the slot that also says it is a bot at all:
+# nought is a person, anything above it is a bot of that skill. A player block
+# has never used 126 or 127 — the world does, and no block is ever both.
+
+fn bot_skill(s: Ptr) -> Float = peek_f32(s, 126)
+
+fn is_bot(s: Ptr) -> Int = yes(peek_f32(s, 126) > 0.0)
+
+# When it may next decide to start shooting. A bot that asks every tick is a
+# turret; the pause is most of what makes one feel like somebody.
+fn bot_clock(s) = peek_f32(s, 127)
+
+fn make_bot(s: Ptr, skill: Float) =
+  poke_f32(s, 126, clampf(skill, 0.05, 1.0))
+  poke_f32(s, 127, 0.0)
+  # And standing at its post, not wherever a spawn happened to put it.
+  #
+  # A garrison starts on the wall it is keeping. Left to walk there from a
+  # random corner it does not arrive: measured, they spawned seventy-seven and
+  # a hundred and three metres out, and thirty seconds later were still
+  # sixty-seven and forty-four away — which is a valley where nothing is
+  # guarded and the guardians are all in transit.
+  to_post(s)
+
+# Where a guardian actually stands, for the wall it keeps.
+#
+# Not the middle of it. The sphere `wall_box` holds is the whole L — its
+# centre is the middle of the corner and there is *stone* there, so a bot sent
+# to it walks into the wall, gets pushed out by `collide_walls`, walks back
+# in, and wedges. What that looks like from the outside is a name and a health
+# bar floating against a wall with no figure under them and nothing you can
+# shoot; which is how it was found.
+#
+# So the spot is beside the wall: eight directions round the sphere at half
+# its radius, and the first with no stone within a metre of it wins. A metre
+# because a person is two thirds of one across and the push-out wants room.
+fn post_spot(w, k, id, try) =
+  wb = wall_box(w)
+  cx = peek_f32(wb, k * 4)
+  cz = peek_f32(wb, k * 4 + 2)
+  r = peek_f32(wb, k * 4 + 3) * 0.5
+  a = (to_float(try) + fract(id * 0.618) * 8.0) * 0.7853982
+  x = cx + cos(a) * r
+  z = cz + sin(a) * r
+  if try >= 8 then pack_spot(cx + r, cz)
+  else if clear_of_wall(w, k, x, z) then pack_spot(x, z)
+  else post_spot(w, k, id, try + 1)
+
+# No live stone of this wall within a metre of the spot, and no water under it.
+fn clear_of_wall(w, k, x, z) =
+  if height(x, z) < 0.6 then false
+  else clear_from(blocks_ptr(w), k * wall_blocks(), 0, x, z)
+
+fn clear_from(bb, base, j, x, z) =
+  if j >= wall_blocks() then true
+  else if block_live(bb, base + j)
+       && (block_f(bb, base + j, 0) - x) * (block_f(bb, base + j, 0) - x)
+        + (block_f(bb, base + j, 2) - z) * (block_f(bb, base + j, 2) - z) < 1.0
+  then false
+  else clear_from(bb, base, j + 1, x, z)
+
+fn to_post(s) =
+  w = wd(s)
+  k = bot_post(w, s)
+  (x, z) = post_spot(w, k, peek_f32(s, 99), 0)
+  set_at(s, x, stop_height(w, x, z), z)
+  1
+
+# ---- a guardian keeps a place, not a valley ---------------------------------
+#
+# Each one is posted at a wall and stays there. It is asleep until somebody
+# comes near enough to *its post* to be its business, it fights within a leash
+# of that post, and when whoever it was fighting leaves it goes back.
+#
+# This is what turns three guardians from a pack into a garrison. Hunting by
+# the bot's own position meant all three converging on the one person in the
+# valley from seventy metres out, from three directions, in the open —
+# measured, that took a motionless man down in eight and a half seconds and
+# left the rest of the map empty. Posted, the valley has places that are
+# dangerous and places that are not, and walking into one is a decision.
+#
+# The post is a wall, because the walls are the cover: `wall_box` already has
+# forty of them with a centre each, and a guardian standing at one has
+# something to stand behind. Which wall is its id, so it needs no slot and two
+# guardians are never posted together.
+# Half of what a person's legs do, and applied to the step rather than to the
+# keys, so that everything downstream still reads a guardian as walking: the
+# animation is driven off `stride_speed`, which is measured from the ground it
+# actually covered, and so it slows with them instead of skating.
+#
+# Twice this and they crossed open ground faster than anybody could lead a
+# shot at them. A guardian is meant to be come upon, not outrun.
+fn bot_pace(s) = if is_bot(s) > 0 then 0.5 else 1.0
+
+fn bot_post(w, s) =
+  wb = wall_box(w)
+  post_from(wb, to_int(peek_f32(s, 99)) % wall_cap(), 0)
+
+fn post_from(wb, k, tries) =
+  if tries >= wall_cap() then 0
+  else if peek_f32(wb, k * 4 + 1) > 0.0 - 900.0 then k
+  else post_from(wb, (k + 1) % wall_cap(), tries + 1)
+
+# How near the post somebody has to come before it is a guardian's business,
+# and how far from the post it will follow them before it turns back.
+fn bot_wake() = 38.0
+
+fn bot_leash() = 52.0
+
+# How far a bot notices somebody, and how far it will shoot at them.
+fn bot_sight() = 70.0
+
+fn bot_range() = 45.0
+
+# How wide it misses by, in radians — and it grows with the range.
+#
+# A flat cone is what made the guardians murderous: two and a half degrees is
+# a metre at twenty and it is *still* a metre at forty, so a bot that could
+# see you at all could hit you, and three of them standing in the open took a
+# motionless man down in eighteen seconds. Nobody shoots like that, and a
+# valley where the danger is the same everywhere is a valley with nowhere to
+# stand.
+#
+# So the cone opens with distance: near enough to see the whites, a good
+# guardian is deadly; at forty metres the same one is suppressing fire. The
+# skill decides where on that curve it sits, not whether it is on it.
+fn bot_wobble(skill, d) = (0.075 * (1.0 - skill) + 0.009) * (0.55 + d / 24.0)
+
+# How fast it can bring the gun round, in radians a second. A low skill turns
+# like a man in a fog and can be walked around; a high one tracks you.
+fn bot_turn(skill) = 1.6 + 4.4 * skill
+
+# How long it waits between deciding to fire and firing, and between bursts.
+fn bot_pause(skill) = 1.35 - 0.75 * skill
+
+# Where it stops walking at somebody and starts using the valley: past this,
+# a guardian goes and stands behind something instead of crossing open ground
+# at you.
+fn bot_reach_cover() = 30.0
+
+# How close it has to be to a wall to call itself behind it, and how close
+# somebody has to come before it will break cover and shoot.
+fn bot_at_cover() = 3.5
+
+fn bot_spring() = 32.0
+
+# Whether this one is being patient just now.
+#
+# An ambush that never ends is a statue. Measured: with the cover rule and
+# nothing else, three guardians sat behind three walls for forty-five seconds
+# and fired nothing at all, because the man they were waiting for never came
+# — which is a valley that has stopped happening.
+#
+# So patience is a phase rather than a personality. Nine-second windows, about
+# two in three of them spent holding, keyed off the clock and the guardian's
+# own id so that three of them are never all waiting or all advancing. It
+# needs no slot to remember: the same trick the strafe and the hop already
+# use.
+fn bot_patient(w, s) =
+  hash2(floor(world_time(w) / 9.0) + peek_f32(s, 99) * 13.0, 733.0) > 0.34
+
+# The wall it would rather be behind: the one nearest the line between it and
+# whoever it is watching, so it ends up between them rather than behind them.
+#
+# The valley's walls already carry a sphere each — centre and radius, kept for
+# throwing rounds at rather than for standing behind — and that is exactly
+# what is wanted here. Forty of them, scanned per guardian per tick, which is
+# a hundred and twenty tests a tick for a valley of three and beneath
+# measuring.
+fn bot_cover(w, s, tx, tz, k, best, bestd) =
+  if k >= wall_cap() then best
+  else
+    wb = wall_box(w)
+    y = peek_f32(wb, k * 4 + 1)
+    if y < 0.0 - 900.0 then bot_cover(w, s, tx, tz, k + 1, best, bestd)
+    else
+      wx = peek_f32(wb, k * 4)
+      wz = peek_f32(wb, k * 4 + 2)
+      # Near me, and on my side of whoever I am watching: a wall behind the
+      # target is cover for them, not for me.
+      dm = (wx - peek_f32(s, 16)) * (wx - peek_f32(s, 16)) + (wz - peek_f32(s, 18)) * (wz - peek_f32(s, 18))
+      dt2 = (wx - tx) * (wx - tx) + (wz - tz) * (wz - tz)
+      mine = (peek_f32(s, 16) - tx) * (peek_f32(s, 16) - tx) + (peek_f32(s, 18) - tz) * (peek_f32(s, 18) - tz)
+      if dt2 > mine then bot_cover(w, s, tx, tz, k + 1, best, bestd)
+      else if dm < bestd then bot_cover(w, s, tx, tz, k + 1, k, dm)
+      else bot_cover(w, s, tx, tz, k + 1, best, bestd)
+
+# The nearest living player that is not this one, by the square of the
+# distance so nothing has to take a root to be compared.
+fn bot_target(w, s, px, pz, i, best, bestd) =
+  if i >= player_count(w) then best
+  else
+    o = player_at(w, i)
+    if peek_f32(o, 99) == peek_f32(s, 99) then bot_target(w, s, px, pz, i + 1, best, bestd)
+    # Nor each other. They are keepers of the same planet, and a valley where
+    # they spend the round shooting one another is a valley where whoever
+    # walks into it is the only one still at full health. Measured before this
+    # line: three of them, twenty-five seconds, and they had each other down
+    # to a quarter and four fifths.
+    else if is_bot(o) > 0 then bot_target(w, s, px, pz, i + 1, best, bestd)
+    else if peek_f32(o, 82) < 0.001 then bot_target(w, s, px, pz, i + 1, best, bestd)
+    else
+      # Measured to the post rather than to the guardian: what wakes one is
+      # somebody walking into the place it is keeping, and what it does after
+      # that is `bot_leash`'s business.
+      dx = peek_f32(o, 16) - px
+      dz = peek_f32(o, 18) - pz
+      d2 = dx * dx + dz * dz
+      if d2 < bestd then bot_target(w, s, px, pz, i + 1, o, d2)
+      else bot_target(w, s, px, pz, i + 1, best, bestd)
+
+# The shortest way round from one angle to another, so a bot turning from just
+# west of north to just east of it goes the short way rather than the long.
+fn wrap_pi(a) =
+  if a > 3.14159265 then wrap_pi(a - 6.2831853)
+  else if a < 0.0 - 3.14159265 then wrap_pi(a + 6.2831853)
+  else a
+
+fn turn_toward(now, want, most) =
+  d = wrap_pi(want - now)
+  now + clampf(d, 0.0 - most, most)
+
+# What the keys would be if somebody were pressing them.
+#
+# Three distances and three things to do about them: come at somebody who is
+# far off, circle one who is in front of you, and back away from one who is
+# close enough to knife. The strafe direction comes out of the clock rather
+# than out of a slot — it changes every few seconds, which is what stops two
+# bots from mirroring each other for ever.
+fn bot_keys(w, s, d, skill) =
+  t = world_time(w)
+  side = if hash2(floor(t * 0.31) + peek_f32(s, 99) * 7.0, 401.0) > 0.5 then 8 else 4
+  hop = if hash2(floor(t * 0.7) + peek_f32(s, 99) * 3.0, 211.0) > 0.94 then 16 else 0
+  # Sprinting only in bursts, and only from a long way off. Held down it is
+  # twelve metres a second — a guardian crossing a meadow at a flat sprint
+  # with a walking animation under it was the thing that read as "too fast",
+  # and even with the animation right it is not how anybody moves for a whole
+  # minute. Two seconds in seven, on the same clock the strafe turns on.
+  dash = if skill > 0.55 && hash2(floor(t * 0.5) + peek_f32(s, 99) * 11.0, 617.0) > 0.72 then 32 else 0
+  if d > 26.0 then bit_or(1, dash)
+  else if d > 9.0 then bit_or(bit_or(1, side), hop)
+  else bit_or(bit_or(2, side), hop)
+
+# The movement keys a bot has decided on, written where a person's arrive.
+#
+# Slot 30 is what a server was last told somebody is pressing, and everything
+# downstream reads it: `walk_all` moves people by it once a tick, and
+# `pose_of` turns it into the walk, run or crouch the far end animates. A bot
+# that moved itself and left this at nought was a figure sliding across the
+# valley playing the standing-still clip — which is exactly what a walk with
+# no animation under it looks like.
+#
+# Only the seven movement bits. The weapon and the lamp ride the upper ones
+# and are nobody's business here: `set_keys` would decode a bare 1 as "this
+# player is holding the rifle" and take the AK out of its hands.
+fn bot_wants(s, k) =
+  # And never crouched while moving. A knee is for holding a place — it costs
+  # seventy-eight per cent of the walk, so a guardian crouch-walking anywhere
+  # takes a minute and a half to get there and reads, from across the valley,
+  # as a man shuffling. Any movement bit clears it, which makes it a rule
+  # rather than a thing that happens to be true of the keys today.
+  moving = bit_and(k, 15) != 0
+  bits = if moving then bit_and(k, 127 - 64) else bit_and(k, 127)
+  poke_f32(s, 30, to_float(bits))
+  1
+
+# One bot, one tick.
+#
+# It decides and it does not move. What comes out is the same three things a
+# browser sends — where it is looking, which keys are down, and whether it
+# pulled the trigger — and the walking is done afterwards by `walk_all`, with
+# everybody else's, through the one path that knows about slopes, collisions,
+# breath and the pack. A bot that walked itself walked twice as many code
+# paths as a person and animated like neither.
+fn bot_think(w: Ptr, s: Ptr, dt: Float) =
+  if is_bot(s) < 1 then 0
+  else
+    # It is alive as far as the server is concerned whatever it is doing, or
+    # the timeout that watches for a client that has stopped talking would
+    # come for it. It is not a client and it never goes quiet.
+    heard(s, world_time(w))
+    if peek_f32(s, 82) < 0.001 then bot_wants(s, 0) else bot_awake(w, s, dt)
+
+fn bot_awake(w, s, dt) =
+  skill = bot_skill(s)
+  k = bot_post(w, s)
+  (px, pz) = post_spot(w, k, peek_f32(s, 99), 0)
+  o = bot_target(w, s, px, pz, 0, null_ptr(), bot_wake() * bot_wake())
+  # And it lets go: somebody it has chased past the leash is somebody who has
+  # left, and a guardian that keeps going is a guardian who has abandoned the
+  # thing it was keeping.
+  far = if is_null(o) then 0
+        else yes((peek_f32(s, 16) - px) * (peek_f32(s, 16) - px)
+               + (peek_f32(s, 18) - pz) * (peek_f32(s, 18) - pz) > bot_leash() * bot_leash())
+  if is_null(o) || far > 0 then bot_guard(w, s, dt, px, pz)
+  else bot_hunt(w, s, o, dt, skill)
+
+# Nobody about: keep the post. Stand in it when it is reached, and walk back
+# to it at a watchman's pace when it is not — crouched, which this valley
+# already knows how to slow somebody down by, and which reads from a distance
+# as a man who is looking rather than a man who is going somewhere.
+fn bot_guard(w, s, dt, px, pz) =
+  dx = px - peek_f32(s, 16)
+  dz = pz - peek_f32(s, 18)
+  gap = sqrt(dx * dx + dz * dz)
+  # A slow turn, so a guardian on watch sweeps rather than snaps.
+  t = world_time(w)
+  sweep = hash2(floor(t / 5.0) + peek_f32(s, 99) * 3.0, 89.0) * 6.28318
+  want = if gap > bot_at_cover() then atan2_like(dx, 0.0 - dz) else sweep
+  poke_f32(s, 19, turn_toward(peek_f32(s, 19), want, 1.1 * dt))
+  poke_f32(s, 20, turn_toward(peek_f32(s, 20), 0.0, 1.5 * dt))
+  # Crouched is for standing watch, not for covering eighty metres: at
+  # twenty-two per cent of a walk it is a minute and a half back to the post,
+  # which is most of a round spent walking. Coming back is an ordinary walk;
+  # arriving is when it goes down on one knee.
+  if gap > bot_at_cover() then bot_wants(s, 1) else bot_wants(s, 64)
+
+fn bot_hunt(w, s, o, dt, skill) =
+  # Where the chest is, not where the feet are.
+  tx = peek_f32(o, 16)
+  ty = peek_f32(o, 17) - 0.2
+  tz = peek_f32(o, 18)
+  dx = tx - peek_f32(s, 16)
+  dy = ty - peek_f32(s, 17)
+  dz = tz - peek_f32(s, 18)
+  flat = sqrt(dx * dx + dz * dz)
+  d = sqrt(flat * flat + dy * dy)
+  # Where it *thinks* the chest is. The error is in the aim rather than in the
+  # shot: a bot fires exactly down its own look, the way a person does, and
+  # misses because it was looking slightly wrong. Firing straight and adding
+  # error to the bullet would also have been refused — `faces` allows twenty
+  # degrees between the two and would have caught a wide enough miss.
+  #
+  # It wanders slowly rather than jumping every tick, or the gun shakes.
+  t = world_time(w)
+  wob = bot_wobble(skill, d)
+  ax = atan2_like(dx, 0.0 - dz) + (hash2(floor(t * 2.7) + peek_f32(s, 99), 131.0) - 0.5) * wob * 2.0
+  ay = atan2_like(dy, flat) + (hash2(floor(t * 2.7) + peek_f32(s, 99), 179.0) - 0.5) * wob
+  most = bot_turn(skill) * dt
+  yaw = turn_toward(peek_f32(s, 19), ax, most)
+  pit = clampf(turn_toward(peek_f32(s, 20), ay, most), 0.0 - pitch_max(), pitch_max())
+  poke_f32(s, 19, yaw)
+  poke_f32(s, 20, pit)
+  # Far off, it goes and stands behind something and waits for you to come to
+  # it. Close, it fights.
+  if d > bot_reach_cover() && bot_patient(w, s) then bot_lie_up(w, s, tx, tz, d, skill, t)
+  else
+    bot_wants(s, bot_keys(w, s, d, skill))
+    bot_shoot(w, s, d, skill, t)
+
+# Behind a wall, waiting.
+#
+# This is the whole of the ambush and it is deliberately simple: walk to the
+# nearest wall that is on your side of whoever you are watching, and when you
+# are behind it, stop. Keep facing them — the head turns above, before this —
+# and hold your fire until they are inside `bot_spring`.
+#
+# What it buys is not cleverness, it is *position*. Three guardians crossing
+# open ground at you is a shooting gallery in both directions and was over in
+# eighteen seconds; three of them settled behind the stone with their guns
+# already pointed at the gap you are about to walk through is a valley you
+# have to think about. And a bot that walks nowhere while it waits is a bot
+# whose animation is standing still, which is what it is doing.
+fn bot_lie_up(w, s, tx, tz, d, skill, t) =
+  k = bot_cover(w, s, tx, tz, 0, 0 - 1, 1000000.0)
+  if k < 0 then
+    # No wall on this side of them: come on anyway, the old way.
+    bot_wants(s, bot_keys(w, s, d, skill))
+    bot_shoot(w, s, d, skill, t)
+  else
+    # Beside the wall, not inside it — the same standoff a post uses, and for
+    # the same reason.
+    (wx, wz) = post_spot(w, k, peek_f32(s, 99), 0)
+    gap = sqrt((wx - peek_f32(s, 16)) * (wx - peek_f32(s, 16))
+             + (wz - peek_f32(s, 18)) * (wz - peek_f32(s, 18)))
+    if gap < bot_at_cover() then bot_hold(s, d, skill, t, w)
+    else bot_go_to(w, s, wx, wz)
+
+# Walking somewhere that is not the enemy: the keys are worked out from the
+# heading it is already facing, because the head is aimed at whoever it is
+# watching and the feet have somewhere else to be.
+fn bot_go_to(w, s, wx, wz) =
+  want = atan2_like(wx - peek_f32(s, 16), peek_f32(s, 18) - wz)
+  off = wrap_pi(want - peek_f32(s, 19))
+  fwd = if off > 0.0 - 1.2 && off < 1.2 then 1 else if off > 2.0 || off < 0.0 - 2.0 then 2 else 0
+  side = if off > 0.6 then 8 else if off < 0.0 - 0.6 then 4 else 0
+  bot_wants(s, bit_or(fwd, side))
+
+# Still, with the gun up. It will not start shooting until somebody is close
+# enough that shooting is worth doing — which is also the range its cone is
+# still tight at.
+fn bot_hold(s, d, skill, t, w) =
+  bot_wants(s, 0)
+  if d < bot_spring() then bot_shoot(w, s, d, skill, t) else 0
+
+# And the trigger. Down its own look, which is what `faces` is going to
+# measure it against, and only when the gun is nearly on the target: a bot
+# that fires while still turning empties a magazine into the scenery.
+fn bot_shoot(w, s, d, skill, t) =
+  if d > bot_range() then 0
+  else if t < bot_clock(s) then 0
+  else
+    cp = cos(peek_f32(s, 20))
+    fx = sin(peek_f32(s, 19)) * cp
+    fy = sin(peek_f32(s, 20))
+    fz = (0.0 - cos(peek_f32(s, 19))) * cp
+    # Half the wobble: it will not start a burst until it is at least that
+    # close, which is what keeps the spray in front of you rather than behind.
+    poke_f32(s, 127, t + bot_pause(skill))
+    want_fire(s, fx, fy, fz)
+
 fn shooting_wild(s: Ptr) -> Int =
   yes(peek_f32(s, 114) >= to_float(wild_limit()))
 
@@ -7293,7 +7758,8 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   # than a way of getting anywhere.
   step = (if sprinting > 0.5 then 12.0 else 5.625)
     * (if burning > 0.5 then jet_lean() else 1.0)
-    * (1.0 - crouch_slow() * crouched) * dt
+    * (1.0 - crouch_slow() * crouched)
+    * bot_pace(s) * dt
   # What a blast is still pushing you by, spent down over about a fifth of a
   # second. It goes in beside the walk rather than instead of it, so you can
   # walk against it and the collisions below still run on where you end up.
@@ -7539,8 +8005,18 @@ fn step_zaps(w) =
   for i in 0..player_count(w)
     zap_check(w, player_at(w, i))
 
+# The glass does not bite the ones who are keeping it. A guardian stands where
+# it was posted and does not move for minutes at a time, and a bite is every
+# three seconds — so a post that happened to be beside a crystal was a death
+# sentence on a loop, and every one of those bites went out on the wire as a
+# bolt of light that the whole valley drew. Eight guardians on watch turned the
+# place into a lightning storm nobody had shot at, which is what "the crystals
+# are lasering me from a long way off" was: not a bite with too long a reach —
+# that was measured at two and a half metres and is right — but somebody
+# else's bite, drawn where you could see it.
 fn zap_check(w, s) =
-  if world_time(w) - peek_f32(s, 105) < zap_every() then 0 else if peek_f32(s, 82) < 0.001 then 0 else zap_scan(w, s, peek_ptr(w, 66), to_int(peek_f32(w, 58)), 0)
+  if is_bot(s) > 0 then 0
+  else if world_time(w) - peek_f32(s, 105) < zap_every() then 0 else if peek_f32(s, 82) < 0.001 then 0 else zap_scan(w, s, peek_ptr(w, 66), to_int(peek_f32(w, 58)), 0)
 
 fn zap_scan(w, s, cb, n, i) =
   if i >= n then 0 else if near_glass(s, cb, i) > 0 then zap(w, s, cb, i) else zap_scan(w, s, cb, n, i + 1)

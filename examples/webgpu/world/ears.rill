@@ -134,6 +134,7 @@ fn frame(s: Ptr, wb: Ptr, now: Float) =
   watch_downs(e, s)
   watch_breaks(e, s)
   watch_zaps(e, s)
+  watch_guns(e, s)
   watch_health(e, s, now)
   watch_pockets(e, s)
   if is_null(wb) then 0 else watch_wire(e, wb)
@@ -318,6 +319,65 @@ fn shatter(e, s) =
 # one — and the sound comes from the ring: which crystal, at its own place.
 # The light show stays with the page, which is the one that knows where the
 # other players are drawn.
+
+# ---- somebody else's gun ----------------------------------------------------
+#
+# Until now the only report in the valley was your own. Your hands make a
+# noise when you pull the trigger and everybody else's rounds arrived as the
+# hiss of something going past — which is what `watch_roars` is — and nothing
+# at all if they missed you by more than the width of the meadow. In a valley
+# where the only other people are guardians standing watch, that means being
+# shot at in silence, and the first you know of it is the health bar.
+#
+# So a round leaving somebody else's barrel is a cue like any other. The ring
+# of rounds is the world's, and its cursor only ever climbs, so the same
+# newest-since-last-frame reading the blasts use works here: every round from
+# what we had seen to what there is now, minus our own — the hands have
+# already banged for those, and doubling them is a flam on every shot.
+#
+# Sixty metres, squared falloff. A rifle is audible a great deal further than
+# that in life, but a valley is a hundred and sixty across and a report that
+# carries corner to corner is a valley where you can never tell whether the
+# shooting is near you.
+fn shot_reach() = 60.0
+
+fn watch_guns(e, s) =
+  n = v.shots_fired(s)
+  seen = to_int(peek_f32(e, 11))
+  if n == seen then 0
+  else
+    poke_f32(e, 11, to_float(n))
+    # A tier change rebuilds the world and puts the cursor back to nought;
+    # and more rounds than the ring holds may have gone by since the last
+    # frame, in which case only the ones still in it can be placed.
+    if n > seen then bangs(e, s, maxi(seen, n - v.bullets_cap(s)), n) else 0
+
+fn maxi(a, c) = if a > c then a else c
+
+fn bangs(e, s, k, n) =
+  if k >= n then 0
+  else
+    one_bang(e, s, k)
+    bangs(e, s, k + 1, n)
+
+fn one_bang(e, s, k) =
+  b = v.bullets(s)
+  at = k % v.bullets_cap(s) * v.bullet_stride()
+  if to_int(peek_f32(b, at + 6)) == v.player_id(s) then 0
+  else
+    x = peek_f32(b, at)
+    y = peek_f32(b, at + 1)
+    z = peek_f32(b, at + 2)
+    d = dist_to(s, x, y, z)
+    kk = maxf(0.0, 1.0 - d / shot_reach())
+    if kk <= 0.02 then 0
+    else
+      # One of the four in the clip, and pitched down a little with distance
+      # the way the blasts are: what comes back off the far side of a valley
+      # is duller than what goes off beside you.
+      far = minf(d / shot_reach(), 1.0)
+      emit(e, 8.0, floor(rnd(e) * 4.0), 0.95, 0.8 * kk * kk,
+           pan_to(s, x, z, d), (0.95 + rnd(e) * 0.1) - 0.12 * far)
 
 fn watch_zaps(e, s) =
   nz = v.zaps(s)

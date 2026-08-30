@@ -53,6 +53,14 @@ fn feed_ammo(b, s, ammo, tick) =
   poke_f32(b, wr.snap_at(0) + 12 + 12, to_float(ammo))
   0
 
+# A snapshot whose age this client will misjudge by `err` seconds: the row is
+# built from where the player truly was `lag + err` ago, and the client will
+# compensate for `lag`. That difference is what network jitter is.
+fn feed_off(b, s, cx, cy, cz, vy, lag, err, tick) =
+  feed(b, s, cx, cy, cz, vy, lag, tick)
+  poke_f32(b, wr.snap_at(0) + 12 + 2, cy - vy * (lag + err))
+  0
+
 fn place(s, x, y, z, vy) = place3(s, x, y, z, 0.0, vy, 0.0)
 
 fn place3(s, x, y, z, vx, vy, vz) =
@@ -116,6 +124,34 @@ fn main() =
   feed(b, s, 10.0, 60.0, 10.0, 6.5, 0.09, 5)
   wr.reconcile(b, w, s, 1)
   say("a climb is not corrected downward, cm", cm(v.player_y(s) - 60.0), 0)
+
+  println("timing noise is not an error")
+  # What the compensation cannot know, and what that costs when it guesses.
+  #
+  # The age of a snapshot is half a smoothed round trip plus a smoothed gap,
+  # and the truth wanders around that by however much the network jittered.
+  # The compensation subtracts speed times age, so an error in the age comes
+  # straight back out as an error in position of speed times *that* — nothing
+  # on foot, twenty centimetres at thirteen metres a second under thrust.
+  #
+  # Blended, that was three centimetres of camera and twenty-nine centimetres
+  # a second injected into the fall, twenty times a second, with whatever sign
+  # the jitter had: the shake people reported in the air and never on the
+  # ground. Nothing here is corrected toward now, because there is nothing in
+  # it to correct toward.
+  place(s, 10.0, 70.0, 10.0, 13.0)
+  feed_off(b, s, 10.0, 70.0, 10.0, 13.0, 0.09, 0.010, 30)
+  wr.reconcile(b, w, s, 1)
+  say("ten milliseconds of jitter at a climb moves nothing, cm", cm(v.player_y(s) - 70.0), 0)
+  say("and injects nothing into the fall, cm per s", cm(peek_f32(s, 24) - 13.0), 0)
+
+  # And the other half, which is the half that must not be lost: a gap too big
+  # to be timing is still healed, at the same speed and in the same way.
+  place(s, 10.0, 70.0, 10.0, 13.0)
+  feed_off(b, s, 10.0, 70.0, 10.0, 13.0, 0.09, 0.0, 31)
+  poke_f32(b, wr.snap_at(0) + 12 + 2, peek_f32(b, wr.snap_at(0) + 12 + 2) + 1.0)
+  wr.reconcile(b, w, s, 1)
+  say("a metre of real disagreement still heals, cm", cm(v.player_y(s) - 70.0), 15)
 
   println("the magazine, and which way the server is wrong")
   # A snapshot is old, so the server always says more rounds than a firing

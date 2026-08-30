@@ -280,7 +280,10 @@ fn snap_player(b, p, src) =
   # Slot 8 carries three small facts in one float: bit nought the lamp, the
   # next two which weapon is in their hands, the one above that whether their
   # pack is burning. Exact in an f32, and the row stays twelve wide.
-  poke_f32(b, p + 8, to_float(pose / 8 % 2 + pose / 16 % 4 * 2 + pose / 64 % 2 * 8))
+  # And bit four of it is a guardian — the fifth small fact in the same float,
+  # still exact, still twelve wide.
+  poke_f32(b, p + 8, to_float(pose / 8 % 2 + pose / 16 % 4 * 2 + pose / 64 % 2 * 8
+                              + pose / 128 % 2 * 16))
   poke_f32(b, p + 9, to_float(u16_at(b, src + 27)))
   poke_f32(b, p + 10, to_float(u16_at(b, src + 29)))
   poke_f32(b, p + 11, to_float(u8_at(b, src + 31)))
@@ -709,9 +712,48 @@ fn ammo_agrees(s, ammo, held) =
   else if ammo > held + ammo_slack() then v.set_held_ammo(s, ammo)
   else 0
 
+# How wrong the snapshot's age may be, in seconds.
+#
+# `age_of` is half a smoothed round trip plus a smoothed gap between
+# snapshots, and neither is the truth — the truth wanders around them by
+# however much the network jittered on the way. Fifteen milliseconds is a
+# quiet connection; a busy one is worse.
+fn age_slack() = 0.015
+
+# What a gap on one axis has to beat before it is believed: whatever a wrong
+# age could have manufactured on that axis, plus five centimetres of floor.
+#
+# This is not a tuning knob, it is a statement about what is knowable. The
+# compensation subtracts speed times age, so an error in the age comes back
+# out as an error in position of speed times *that* — and a body doing
+# thirteen metres a second under thrust turns fifteen milliseconds of timing
+# noise into twenty centimetres of position that nothing is actually wrong
+# with. Below that line there is no signal to correct toward.
+fn believable(speed) = absf(speed) * age_slack() + 0.05
+
+fn absf(x) = if x < 0.0 then 0.0 - x else x
+
+fn past(d, speed) = if absf(d) < believable(speed) then 0.0 else d
+
+# The ordinary correction, with the timing noise taken out of it first.
+#
+# Measured, before and after: standing still nothing moved either way, but at
+# thirteen metres a second of climb, ten milliseconds of error in the age put
+# three centimetres into the camera and — far worse — twenty-nine centimetres
+# a second into the vertical velocity, twenty times a second, with whatever
+# sign the jitter happened to have. That is the shake people reported in the
+# air and never on the ground: the fabricated part of the gap is proportional
+# to how fast you are going, so on foot there is nothing to fabricate.
+#
+# What is left is the healing. A real gap — a jetpack the server has not
+# heard let go of, a landing it disagrees about — is metres, not centimetres,
+# and passes this line untouched.
 fn eased_in(s, x, y, z, dx, dy, dz) =
-  poke_f32(s, 24, peek_f32(s, 24) + clampf(dy * 1.5, 0.0 - 0.6, 0.6))
-  v.set_at(s, x + dx * 0.35, y + dy * 0.15, z + dz * 0.35)
+  ry = past(dy, peek_f32(s, 24))
+  rx = past(dx, peek_f32(s, 243))
+  rz = past(dz, peek_f32(s, 255))
+  poke_f32(s, 24, peek_f32(s, 24) + clampf(ry * 1.5, 0.0 - 0.6, 0.6))
+  v.set_at(s, x + rx * 0.35, y + ry * 0.15, z + rz * 0.35)
 
 fn clampf(v, lo, hi) = if v < lo then lo else if v > hi then hi else v
 
@@ -791,12 +833,27 @@ fn pr_go(b, s, n, id, i) =
 # arithmetic hueOf ran in the page, at full health: the figure pales with
 # health in its own shader.
 fn hue(b, o, id) =
-  hh = fract(to_float(id) * 0.61803398875) * 6.0
-  sat = 0.75
-  val = 0.9
-  poke_f32(b, o + 9, hsv_f(5.0, hh, sat, val))
-  poke_f32(b, o + 10, hsv_f(3.0, hh, sat, val))
-  poke_f32(b, o + 11, hsv_f(1.0, hh, sat, val))
+  if to_int(peek_f32(b, o + 8)) / 16 % 2 == 1 then guardian_hue(b, o)
+  else
+    hh = fract(to_float(id) * 0.61803398875) * 6.0
+    sat = 0.75
+    val = 0.9
+    poke_f32(b, o + 9, hsv_f(5.0, hh, sat, val))
+    poke_f32(b, o + 10, hsv_f(3.0, hh, sat, val))
+    poke_f32(b, o + 11, hsv_f(1.0, hh, sat, val))
+
+# The ones nobody is driving are all one colour, and it is not on the circle
+# the others are spread around: they are not another player to be told apart
+# from the rest, they are a different kind of thing in the valley.
+#
+# The red comes out negative, which is how the figure shader is told to draw
+# this one see-through. It is the same trick the fireballs use for a rocket
+# and the shard pool uses for an empty slot: a sign nothing else could
+# reasonably have, carried on a number that had to travel anyway.
+fn guardian_hue(b, o) =
+  poke_f32(b, o + 9, 0.0 - 0.96)
+  poke_f32(b, o + 10, 0.82)
+  poke_f32(b, o + 11, 0.20)
 
 fn fract(x) = x - floor(x)
 

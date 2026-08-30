@@ -1,0 +1,244 @@
+# The ones nobody is driving.
+#
+# A bot is a player — the same block, the same table, the same rules — and
+# almost everything this file could assert is therefore already asserted
+# somewhere else: that a round hits it, that a blast pushes it, that it goes
+# down and gets up. What is its own is the handful of decisions it makes for
+# itself, and the two promises that were asked for by name: it shoots people,
+# and it does not shoot the planet it is keeping.
+import "valley" as v
+
+fn say(what, got, want) =
+  println("  " + what + ": " + int_to_str(got) + " (want " + int_to_str(want) + ")")
+
+fn cm(x) = to_int(x * 100.0 + if x < 0.0 then 0.0 - 0.5 else 0.5)
+
+fn absf(x) = if x < 0.0 then 0.0 - x else x
+
+# The server's own tick order: decide, then walk by what was decided.
+fn walk_them(w, s, n) =
+  if n == 0 then 1
+  else
+    v.bot_think(w, s, 1.0 / 20.0)
+    v.walk(s, 1.0 / 20.0, 0.0, 0.0, to_int(peek_f32(s, 30)))
+    walk_them(w, s, n - 1)
+
+fn think(w, s, n) =
+  if n == 0 then 1
+  else
+    v.bot_think(w, s, 1.0 / 20.0)
+    think(w, s, n - 1)
+
+# Where a bot is looking, as a direction.
+fn look_x(s) = sin(peek_f32(s, 19)) * cos(peek_f32(s, 20))
+
+fn look_z(s) = (0.0 - cos(peek_f32(s, 19))) * cos(peek_f32(s, 20))
+
+extern fn sin(x: Float) -> Float
+extern fn cos(x: Float) -> Float
+extern fn sqrt(x: Float) -> Float
+
+fn main() =
+  w = v.init(48, 40, 200, 40)
+  me = v.join(w)
+  b = v.join(w)
+  v.make_bot(b, 0.6)
+
+  println("what it is")
+  say("a person is not a bot", v.is_bot(me), 0)
+  say("and a bot is", v.is_bot(b), 1)
+  say("carrying the skill it was given, in per cent", to_int(v.bot_skill(b) * 100.0 + 0.5), 60)
+
+  println("it keeps a place")
+  # A guardian starts on the wall it is keeping, and stays there. Left to walk
+  # to it from wherever a spawn put it, it does not arrive: measured, they
+  # began seventy-seven and a hundred and three metres out and were still
+  # forty-four and sixty-seven away half a minute later.
+  wb = v.wall_box(w)
+  pk = v.bot_post(w, b)
+  (sx, sz) = v.post_spot(w, pk, peek_f32(b, 99), 0)
+  gap = sqrt((sx - v.player_x(b)) * (sx - v.player_x(b))
+           + (sz - v.player_z(b)) * (sz - v.player_z(b)))
+  # Within the distance it calls "at my post", or it will spend the round
+  # walking to a place it is already standing at — which is what four
+  # centimetres too far cost the first draft of this.
+  say("it is standing on its post", if gap < v.bot_at_cover() then 1 else 0, 1)
+  # And the post is beside the wall, not in it. The sphere `wall_box` holds is
+  # the whole L and its centre is the corner, where the stones are: a guardian
+  # sent there walks into the wall, is pushed out, walks back in and wedges.
+  # A name and a health bar floating against stone with no figure under them
+  # and nothing to shoot at is what that looked like.
+  say("and clear of the stone", if v.clear_of_wall(w, pk, sx, sz) then 1 else 0, 1)
+  # And standing there is standing, not being shoved. A guardian wedged in the
+  # stone is pushed out by `collide_walls` every tick and walks back in every
+  # tick, and what that looks like from the outside is a name and a health bar
+  # against a wall with no figure under them and nothing you can shoot. So the
+  # test is not where it was put but whether it stays put.
+  hx = v.player_x(b)
+  hz = v.player_z(b)
+  walk_them(w, b, 20)
+  say("and it stays there rather than being shoved, in cm",
+      to_int(sqrt((v.player_x(b) - hx) * (v.player_x(b) - hx)
+                + (v.player_z(b) - hz) * (v.player_z(b) - hz)) * 100.0), 0)
+  # Somebody the far side of the valley is not its business. This is the whole
+  # of "they should not hunt you across the map": three guardians converging
+  # on the one person in it from seventy metres took a motionless man down in
+  # eight and a half seconds.
+  poke_f32(me, 16, sx + 60.0)
+  poke_f32(me, 18, sz)
+  poke_f32(b, 31, 0.0)
+  poke_f32(b, 127, 0.0)
+  think(w, b, 20)
+  say("somebody far from it is not its business", to_int(peek_f32(b, 31)), 0)
+  say("and it stays crouched at its post", bit_and(to_int(peek_f32(b, 30)), 64), 64)
+  say("never crouched while walking",
+      if bit_and(to_int(peek_f32(b, 30)), 15) != 0 && bit_and(to_int(peek_f32(b, 30)), 64) == 64
+      then 0 else 1, 1)
+
+  println("it moves")
+  # Put them far apart, so the bot has to come. Standing still for a second
+  # of ticks is the failure this catches: a bot that thinks but never walks.
+  v.set_at(me, 40.0, v.ground(40.0, 40.0) + 0.1, 40.0)
+  poke_f32(me, 16, 40.0)
+  poke_f32(me, 17, v.ground(40.0, 40.0) + 1.75)
+  poke_f32(me, 18, 40.0)
+  v.set_at(b, 0.0, v.ground(0.0, 0.0) + 0.1, 0.0)
+  poke_f32(b, 16, 0.0)
+  poke_f32(b, 17, v.ground(0.0, 0.0) + 1.75)
+  poke_f32(b, 18, 0.0)
+  # Thinking is not moving. A bot decides what a browser would have sent —
+  # where it is looking and which keys are down — and then `walk_all` walks it
+  # with everybody else, through the one path that knows about slopes,
+  # collisions and breath. So what is checked here is both halves: that it
+  # asks to go forward, and that asking carries it.
+  x0 = v.player_x(b)
+  z0 = v.player_z(b)
+  think(w, b, 1)
+  say("it asks to walk forward", bit_and(to_int(peek_f32(b, 30)), 1), 1)
+  say("and not by moving itself", cm(v.player_x(b) - x0), 0)
+  walk_them(w, b, 40)
+  moved = sqrt((v.player_x(b) - x0) * (v.player_x(b) - x0) + (v.player_z(b) - z0) * (v.player_z(b) - z0))
+  say("two seconds of it carries it somewhere", if moved > 1.0 then 1 else 0, 1)
+
+  println("it looks at people")
+  # From a standing start facing nowhere in particular, it should come round
+  # to face the one person in the valley. Not exactly — it is allowed to miss
+  # — but within a quarter turn.
+  # Inside the place it is keeping, which is the only place it looks at
+  # anybody: see `bot_wake`.
+  poke_f32(me, 16, sx + 14.0)
+  poke_f32(me, 18, sz + 14.0)
+  poke_f32(me, 17, v.ground(peek_f32(me, 16), peek_f32(me, 18)) + 1.75)
+  poke_f32(b, 19, 3.0)
+  think(w, b, 30)
+  dx = peek_f32(me, 16) - peek_f32(b, 16)
+  dz = peek_f32(me, 18) - peek_f32(b, 18)
+  d = sqrt(dx * dx + dz * dz)
+  dot = (look_x(b) * dx + look_z(b) * dz) / d
+  say("and comes round to face them", if dot > 0.7 then 1 else 0, 1)
+
+  println("it shoots them")
+  # Close enough to be worth shooting at. What is asserted is the ask, not the
+  # round: the ask is the bot's decision and the round is the world's answer
+  # to it, and the world's answer is `wt_rate`'s business.
+  poke_f32(b, 16, peek_f32(me, 16) - 12.0)
+  poke_f32(b, 18, peek_f32(me, 18))
+  poke_f32(b, 17, peek_f32(me, 17))
+  v.set_at(b, peek_f32(me, 16) - 12.0, peek_f32(me, 22), peek_f32(me, 18))
+  poke_f32(b, 16, peek_f32(me, 16) - 12.0)
+  poke_f32(b, 17, peek_f32(me, 17))
+  poke_f32(b, 18, peek_f32(me, 18))
+  poke_f32(b, 31, 0.0)
+  poke_f32(b, 127, 0.0)
+  think(w, b, 30)
+  say("it pulls the trigger", if peek_f32(b, 31) > 0.5 then 1 else 0, 1)
+
+  println("it does not shoot the planet")
+  # The promise this file exists for. A guardian's round passes through the
+  # crystals; anybody else's breaks them.
+  broke0 = v.breaks(me)
+  fire_across(w, b, 1)
+  say("a guardian's round leaves the crystals standing", v.breaks(me) - broke0, 0)
+  broke1 = v.breaks(me)
+  fire_across(w, me, 0)
+  say("and a person's does not", if v.breaks(me) - broke1 > 0 then 1 else 0, 1)
+
+  println("and the planet does not bite it")
+  # The other side of the same bargain. A guardian is posted and then stands
+  # still for minutes, and the glass bites whatever leans on it every three
+  # seconds — so a post that landed beside a crystal killed its guardian on a
+  # loop, and every bite was broadcast as a bolt the whole valley drew. What
+  # that looked like from inside was crystals firing at people from across the
+  # map. The reach itself is right: measured, nothing is bitten past two and a
+  # half metres.
+  cb2 = peek_ptr(w, 66)
+  ci = live_crystal(cb2, 0, to_int(peek_f32(w, 58)))
+  gx = peek_f32(cb2, ci * 8)
+  gz = peek_f32(cb2, ci * 8 + 2)
+  stand_at(b, gx, peek_f32(cb2, ci * 8 + 1), gz)
+  stand_at(me, gx, peek_f32(cb2, ci * 8 + 1), gz)
+  poke_f32(b, 82, 1.0)
+  poke_f32(me, 82, 1.0)
+  poke_f32(b, 105, 0.0 - 100.0)
+  poke_f32(me, 105, 0.0 - 100.0)
+  v.step_zaps(w)
+  say("a guardian leaning on the glass is left alone", cm(1.0 - v.health(b)), 0)
+  # And it is still a wager for everybody else, or the stage above passes on a
+  # valley whose crystals have simply stopped biting.
+  say("and a person in the same spot is not",
+      if v.health(me) < 0.999 then 1 else 0, 1)
+
+  println("it leaves its own kind alone")
+  c = v.join(w)
+  v.make_bot(c, 0.6)
+  # The other bot is put right beside it and the person is taken far away, so
+  # the only thing within reach is one of its own.
+  v.set_at(c, peek_f32(b, 16) + 3.0, peek_f32(b, 22), peek_f32(b, 18))
+  poke_f32(c, 16, peek_f32(b, 16) + 3.0)
+  poke_f32(c, 17, peek_f32(b, 17))
+  poke_f32(c, 18, peek_f32(b, 18))
+  poke_f32(me, 82, 0.0)
+  poke_f32(b, 31, 0.0)
+  poke_f32(b, 127, 0.0)
+  think(w, b, 30)
+  say("with nobody but another guardian about, it holds its fire",
+      to_int(peek_f32(b, 31)), 0)
+  println("done")
+
+# Sweep a round through the crystal field from `s`, whoever `s` is, and let
+# the world decide what it hit.
+fn fire_across(w, s, decide) =
+  bb = peek_ptr(w, 68)
+
+  for i in 0..v.bullet_cap()
+    poke_f32(bb, i * v.bullet_stride() + 7, 0.0)
+
+  cb = peek_ptr(w, 66)
+  # The first crystal still standing, and a round put right through it.
+  i = live_crystal(cb, 0, to_int(peek_f32(w, 58)))
+  cx = peek_f32(cb, i * 8)
+  cy = peek_f32(cb, i * 8 + 1)
+  cz = peek_f32(cb, i * 8 + 2)
+  poke_f32(bb, 0, cx - 3.0)
+  poke_f32(bb, 1, cy + 0.6)
+  poke_f32(bb, 2, cz)
+  poke_f32(bb, 3, 240.0)
+  poke_f32(bb, 4, 0.0)
+  poke_f32(bb, 5, 0.0)
+  poke_f32(bb, 6, peek_f32(s, 99))
+  poke_f32(bb, 7, v.bullet_life())
+  poke_f32(bb, 8, v.from_ak())
+  v.step_bullets(w, bb, 1.0 / 60.0, 1)
+  1
+
+# Body and eye together, which is what every other mover does and what a test
+# poking one of them by hand keeps forgetting.
+fn stand_at(s, x, y, z) =
+  v.set_at(s, x, y, z)
+  poke_f32(s, 16, x)
+  poke_f32(s, 17, y + 1.75)
+  poke_f32(s, 18, z)
+  1
+
+fn live_crystal(cb, i, n) =
+  if i >= n then 0 else if peek_f32(cb, i * 8 + 3) > 0.01 then i else live_crystal(cb, i + 1, n)

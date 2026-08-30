@@ -157,6 +157,20 @@ fn valley_ttl() = 8
 
 fn n_pines() = setting_int("pines", 400)
 
+# ---- the ones nobody is driving --------------------------------------------
+#
+# How many bots stand in this valley, and how good they are. Skill is given in
+# per cent because a command line is a poor place for a fraction, and it is
+# one number for all of them only in the sense that it is the *middle* one:
+# `spawn_bots` spreads them around it, so a valley of five is not five copies
+# of the same shot.
+#
+# Off by default. A valley with people in it does not want company it did not
+# ask for, and a valley with nobody in it is where this earns its place.
+fn n_bots() = setting_int("bots", 0)
+
+fn bot_skill_pct() = setting_int("skill", 50)
+
 fn n_crystals() = setting_int("crystals", 300)
 
 fn n_grass() = setting_int("grass", 900)
@@ -281,7 +295,7 @@ type Conn
 fn hub(w, conns, inbox, joins, said, live) =
   m = recv(inbox)
   next = handle(w, conns, inbox, joins, m, said)
-  poke_i64(live, here_at(), v.players(w))
+  poke_i64(live, here_at(), v.people(w))
   hub(w, next, inbox, if_arrived(m, joins), said, live)
 
 # The id to hand out next. It comes off the world's own counter rather than
@@ -595,7 +609,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 607
+fn version() = 613
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -980,6 +994,11 @@ fn tick(w, conns, said) =
   hurts0 = v.hurts(w)
   fells0 = v.pines_down(w)
   zaps0 = v.zaps(w)
+  # Deciding comes first, and only the ones nobody is driving have anything to
+  # decide: a person's keys arrived on the wire between the last tick and this
+  # one and are already on their block. Then everybody walks by the keys they
+  # are holding, and then the triggers that were pulled are taken.
+  think_all(w, conns)
   walk_all(conns)
   fire_all(w, conns)
   v.step_world(w, dt())
@@ -1068,7 +1087,14 @@ fn drop_quiet(w, conns, now) = match conns
   Cons(c, rest) -> keep_or_drop(w, c, drop_quiet(w, rest, now), now)
 
 fn keep_or_drop(w, c, rest, now) =
-  if v.shooting_wild(conn_block(c)) > 0 then shooting_wild(w, c, rest) else if now - v.last_heard(conn_block(c)) < quiet_s() then Cons(c, rest) else gone_quiet(w, c, rest)
+  # A bot is never dropped and never suspected. It has no socket to fall
+  # silent on and no client to be replaced by something hand-driven — and it
+  # does keep its own `heard` fresh, so this would not have come for it
+  # anyway; the line is here to say so out loud.
+  if v.is_bot(conn_block(c)) > 0 then Cons(c, rest)
+  else if v.shooting_wild(conn_block(c)) > 0 then shooting_wild(w, c, rest)
+  else if now - v.last_heard(conn_block(c)) < quiet_s() then Cons(c, rest)
+  else gone_quiet(w, c, rest)
 
 # Out the same door as anyone who has gone quiet, and for a related reason:
 # whatever is on the other end of that socket, it is not the client we ship.
@@ -1196,6 +1222,56 @@ fn fire_all(w, conns) = match conns
 fn fire_one(w, c, rest) =
   v.try_fire(conn_block(c), v.world_time(w), reload_s())
   fire_all(w, rest)
+
+# What a bot would have sent, if a bot had a keyboard. Before the world steps,
+# in the same place a client's keys would already have been applied: the walk
+# it asks for is this tick's, not last tick's.
+# The bots this valley was started with, standing in the player table before
+# anybody arrives.
+#
+# Each one is a `Conn` like everybody else — that is the whole trick. The
+# snapshot walks the connection list, so a bot without one would be invisible;
+# with one it is in every snapshot, on the roster, in the scoreboard, and
+# solid to a round, and not a line of any of that had to be written. Its
+# channel is real and nobody reads it, which is why `broadcast_one` skips it.
+#
+# The skills fan out around the setting rather than all sitting on it: five
+# bots at fifty per cent should be five different opponents, not the same one
+# five times. A tenth either side, clamped, so `skill=100` still gives a spread
+# of hard ones and `skill=10` does not go negative.
+fn spawn_bots(w, conns, i) =
+  if i >= n_bots() then conns
+  else
+    s = v.join(w)
+    if is_null(s) then conns
+    else
+      spread = (to_float(i) - to_float(n_bots() - 1) * 0.5) * 0.12
+      skill = v.clampf(to_float(bot_skill_pct()) / 100.0 + spread, 0.05, 1.0)
+      v.make_bot(s, skill)
+      id = v.player_id(s)
+      println("bot " + int_to_str(id) + " " + bot_name(i)
+        + " joins at skill " + int_to_str(to_int(skill * 100.0)))
+      spawn_bots(w, Cons(Conn(id, s, channel(), bot_name(i), "bot"), conns), i + 1)
+
+# Names that read as people rather than as machinery, so a scoreboard with
+# three of them on it is a scoreboard you can talk about.
+fn bot_name(i) =
+  if i % 8 == 0 then "kekik"
+  else if i % 8 == 1 then "yosun"
+  else if i % 8 == 2 then "cinar"
+  else if i % 8 == 3 then "kavak"
+  else if i % 8 == 4 then "ardic"
+  else if i % 8 == 5 then "mese"
+  else if i % 8 == 6 then "kizilcik"
+  else "sogut"
+
+fn think_all(w, conns) = match conns
+  Nil -> 0
+  Cons(c, rest) -> think_one(w, c, rest)
+
+fn think_one(w, c, rest) =
+  v.bot_think(w, conn_block(c), dt())
+  think_all(w, rest)
 
 fn pick_all(conns) = match conns
   Nil -> 0
@@ -1331,9 +1407,15 @@ fn blanked(b) =
 # both tools go out as 3, which the far end draws as empty hands. A 4 would
 # carry into bit six and light everybody's jet, which is the kind of bug that
 # gets found in production at night.
+# Bit seven, which was the one bit of this byte nobody had spent: whether the
+# figure being described is one of the ones nobody is driving. The client
+# paints those differently — see `hue` — and it is worth a bit rather than a
+# field, because a byte with a spare bit in it is cheaper than a byte more on
+# every player of every snapshot.
 fn pose_of(s) =
-  bit_or(bit_or(bit_or(doing(s), if v.torch(s) > 0 then 8 else 0), shl(pose_w(s), 4)),
-         if v.jet_on(s) > 0 then 64 else 0)
+  bit_or(bit_or(bit_or(bit_or(doing(s), if v.torch(s) > 0 then 8 else 0), shl(pose_w(s), 4)),
+         if v.jet_on(s) > 0 then 64 else 0),
+         if v.is_bot(s) > 0 then 128 else 0)
 
 # The MG3 goes out as the AK: the pose field is two bits and the far end has
 # no third-person machine-gun mesh yet, and an automatic gun in the hands is
@@ -1353,7 +1435,10 @@ fn broadcast(w, conns, line) = match conns
   Cons(c, rest) -> broadcast_one(w, c, rest, line)
 
 fn broadcast_one(w, c, rest, line) =
-  offer(conn_out(c), line)
+  # Not to the ones nobody is driving. A bot has a channel because a `Conn`
+  # has one, and nothing is ever going to read it: every line offered to it is
+  # a line built, copied and dropped, twenty times a second, per bot.
+  if v.is_bot(conn_block(c)) > 0 then 0 else offer(conn_out(c), line)
   broadcast(w, rest, line)
 
 # The snapshot is built once per reader, because what is in it depends on where
@@ -1586,6 +1671,9 @@ fn register_rest(fd, key) =
   # falls under fire is a different game from one that does not, and choosing
   # between doors with nothing written on them is not choosing.
   kv_hset(fd, key, "meteors", if meteors() > 0 then "on" else "off")
+  # And how many of the ones nobody is driving stand in it, which is the other
+  # thing worth knowing before you pick a door.
+  kv_hset(fd, key, "bots", int_to_str(n_bots()))
   last = kv_expire(fd, key, valley_ttl())
   if str_len(kv_why(last)) == 0 then 1 else 0
 
@@ -1657,7 +1745,7 @@ fn asked_the_store(method, path, body) = match kv_connect(mem_host(), mem_port()
 # and an error is not.
 fn directory(live) =
   mine = one_valley(valley_name(), peek_i64(live, here_at()), max_players(), valley_path(),
-                    if meteors() > 0 then "on" else "off")
+                    if meteors() > 0 then "on" else "off", n_bots())
   if str_len(mem_at()) == 0 then "[" + mine + "]" else asked_around(mine)
 
 fn asked_around(mine) = match kv_connect(mem_host(), mem_port())
@@ -1687,7 +1775,7 @@ fn comma_joined(acc, one) =
 # trips a valley.
 fn one_of_them(fd, key) =
   flat = kv_texts(kv_or(kv_hgetall(fd, key), RNil))
-  one_valley(pair_of(flat, "name"), str_to_int(pair_of(flat, "here")), str_to_int(pair_of(flat, "max")), pair_of(flat, "path"), pair_of(flat, "meteors"))
+  one_valley(pair_of(flat, "name"), str_to_int(pair_of(flat, "here")), str_to_int(pair_of(flat, "max")), pair_of(flat, "path"), pair_of(flat, "meteors"), str_to_int(pair_of(flat, "bots")))
 
 fn pair_of(flat, want) = match flat
   Nil -> ""
@@ -1697,10 +1785,10 @@ fn pair_tail(k, rest, want) = match rest
   Nil -> ""
   Cons(v, more) -> if k == want then v else pair_of(more, want)
 
-fn one_valley(name, here, most, path, meteors) =
+fn one_valley(name, here, most, path, meteors, bots) =
   head = "{\"name\":\"" + name + "\",\"here\":" + int_to_str(here)
   head + ",\"max\":" + int_to_str(most) + ",\"path\":\"" + path
-       + "\",\"meteors\":\"" + meteors + "\"}"
+       + "\",\"meteors\":\"" + meteors + "\",\"bots\":" + int_to_str(bots) + "}"
 
 # Cross-origin on purpose: the page may be served from one host and the valley
 # answered from another — that is what `?join=` has always been for — and a
@@ -2078,6 +2166,7 @@ fn run(server) =
   # And what hour it is. The clock is the server's — it rides on every
   # snapshot — so setting it here sets it for everybody who walks in.
   v.set_world_time(w, start_time())
+  println("bots: " + int_to_str(n_bots()) + " at skill " + int_to_str(bot_skill_pct()))
   println("settings: meteors=" + (if meteors() > 0 then "on" else "off") + " crystals=" + int_to_str(n_crystals()) + " pines=" + int_to_str(n_pines()) + " grass=" + int_to_str(n_grass()) + " match=" + int_to_str(match_secs()) + "s report=" + int_to_str(report_secs()) + "s gravity=" + int_to_str(gravity_tenths()) + "/10 time=" + int_to_str(to_int(start_time())))
   println("the valley is up on " + int_to_str(port()) + ": " + int_to_str(v.crystal_count(w)) + " crystals, " + int_to_str(v.pine_count(w)) + " pines")
   # What this server has last told anybody about each ammunition box. Zeros,
@@ -2094,4 +2183,4 @@ fn run(server) =
   # Writes this valley down where the others can see it, once a second, and
   # does nothing at all when there is nowhere to write.
   spawn registrar(live)
-  hub(w, Nil, inbox, 0, said, live)
+  hub(w, spawn_bots(w, Nil, 0), inbox, 0, said, live)

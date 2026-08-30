@@ -98,7 +98,8 @@ export async function boot(pakBytes, takeStored) {
       // difference is written: every valley saying "no meteors" is a column of
       // noise, and what somebody is choosing between is the one that is not
       // like the others.
-      const note = v.meteors === "on" ? " · meteors" : "";
+      const note = (v.meteors === "on" ? " · meteors" : "")
+                 + (v.bots > 0 ? ` · ${v.bots} guardians` : "");
       row.innerHTML = `<span>${v.name}${note ? `<em>${note}</em>` : ""}</span>`
                     + `<i>${v.here}/${v.max}${full ? " — full" : ""}</i>`;
       if (!full) row.addEventListener("click", () => pick(v, row));

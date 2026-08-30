@@ -140,4 +140,36 @@ fn main() =
   er.frame(s2, null_ptr(), 60.5)
   say("two in one frame is still one clack", cues(e2), 1)
 
+  println("somebody else's gun")
+  # Until this, the only report in the valley was your own: your hands bang
+  # when you pull the trigger and everybody else fired in silence, which in a
+  # valley whose opponents are guardians in cover means being shot at with
+  # nothing to say from where.
+  er.frame(s2, null_ptr(), 61.0)
+  shoot(w, 1000, s2)
+  er.frame(s2, null_ptr(), 61.1)
+  say("a round from somebody else is heard", cues(e2), 1)
+  say("as a gun", to_int(cue(e2, 0, 0)), 8)
+  # And your own is not: the hands have already banged for it, and a second
+  # report on the same round is a flam on every shot.
+  shoot(w, v.player_id(s2), s2)
+  er.frame(s2, null_ptr(), 61.2)
+  say("and your own is left to your hands", cues(e2), 0)
+  # Nor is one from the far side of the valley — a report that carries corner
+  # to corner is a valley where you can never tell whether it is near you.
+  poke_f32(s2, 16, 0.0)
+  poke_f32(s2, 17, 2.0)
+  poke_f32(s2, 18, 0.0)
+  far_shoot(w, 1000, s2, 120.0)
+  er.frame(s2, null_ptr(), 61.3)
+  say("and one from a long way off is not", cues(e2), 0)
+
   println("done")
+
+# A round put into the world's ring by hand, right beside the listener.
+fn shoot(w, owner, s) = far_shoot(w, owner, s, 6.0)
+
+fn far_shoot(w, owner, s, away) =
+  v.put_bullet(w, peek_f32(s, 16) + away, peek_f32(s, 17), peek_f32(s, 18),
+               0.0 - 240.0, 0.0, 0.0, to_float(owner))
+  1

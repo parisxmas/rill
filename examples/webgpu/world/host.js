@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "607";
+const V = "613";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -96,7 +96,7 @@ function guessTier(info) {
 const SHADERS = {
   uniforms: null, common: "uniforms",
   terrain: "common", instanced: "common", pine: "common", grass: "common", rock: "common",
-  viewmodel: "common", tracer: "common", muzzle: "common", shard: "common",
+  viewmodel: "common", tracer: "common", muzzle: "common", flash: "common", shard: "common",
   fireball: "common", blast: "common", meteor: "common", shark: "common",
   sky: "common", water: "common", glow: "common", halo: "common", weed: "common", lamp: "common", "firefly-draw": "common",
   figure: "common", held: "common", prop: "common", crate: "common", belt: "common", zap: "common",
@@ -192,6 +192,7 @@ function loadShaders(step, pakText) {
     VIEWMODEL: whole("viewmodel"),
     TRACER: whole("tracer"),
     MUZZLE: whole("muzzle"),
+    FLASH: whole("flash"),
     SHARD: whole("shard"),
     FIREBALL: whole("fireball"),
     BLAST: whole("blast"),
@@ -1254,6 +1255,11 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // air, so the ground hides it and it hides nothing.
   const tracerPipe = pipe("tracer", S.TRACER, bulletLayout,
     { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
+  // And the flash at the barrel it left, off the very same ring — see
+  // flash.wgsl. Nothing to upload: the buffer is already there for the
+  // tracers and this is a second reading of it.
+  const flashPipe = pipe("flash", S.FLASH, bulletLayout,
+    { blend: additive, cull: "none", depth: { depthWriteEnabled: false } });
   // The crystals' bites: a handful of pinned beams, uploaded fresh each frame.
   const zapLayout = [{ arrayStride: 40, stepMode: "instance", attributes: [
     { shaderLocation: 0, offset: 0, format: "float32x3" },
@@ -1860,12 +1866,22 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // no crossfade needed anywhere.
   const roarBytes = pakBuf("meteor-air.mp3");
   step("meteor-air.mp3");
-  // A chip of crystal going in. Three quarters of a second off the front of a
-  // CC0 harp figure by Julie Damsgaard — the rest of it is a two-second tail,
-  // which is a lovely thing to have and the wrong shape entirely for a sound
-  // that fires four times while you cross a patch of debris.
-  const pickBytes = pakBuf("pickup.mp3");
-  step("pickup.mp3");
+  // A chip of crystal going in, and the health that comes with it.
+  //
+  // wobbleboxx's `Rise02`, CC0, cut to the first four and a half tenths of a
+  // second — which is where ninety-nine per cent of its energy is; the rest
+  // is a long quiet tail, and a tail is the wrong shape entirely for a sound
+  // that fires eight times while you cross a patch of debris.
+  //
+  // Chosen by looking at it rather than by ear alone. `speak` in ears.rill
+  // plays this same sample up a semitone ladder, one step per chip, so what
+  // it has to survive is being stacked on transposed copies of itself. The
+  // pack's other risers are single notes; this one is two, 829 Hz and 1244 —
+  // a perfect fifth, which stays consonant with itself however far up the
+  // ladder it is moved. The harp that was here before was one note and a
+  // straight cut, and it sounded like one.
+  const pickBytes = pakBuf("heal-up.mp3");
+  step("heal-up.mp3");
   // What it sounds like to be shot. Four of qubodup's CC0 recordings of
   // himself straining, a second each end to end and played by offset like the
   // glass — four is enough that a burst does not sound like a loop of one man.
@@ -1998,7 +2014,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       one(breakBytes, "decoding crystal-break"),
       one(blastBytes, "decoding meteor-blast"),
       one(roarBytes, "decoding meteor-air"),
-      one(pickBytes, "decoding pickup"),
+      one(pickBytes, "decoding heal-up"),
       one(hurtBytes, "decoding hurt"),
       one(musicBytes, "decoding valley-theme"),
       one(zapBytes, "decoding crystal-zap"),
@@ -2535,7 +2551,17 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     label: "figure",
     layout: device.createPipelineLayout({ bindGroupLayouts: [bglMain, poseBgl] }),
     vertex: { module: mod(S.FIGURE, "figure", figConst), buffers: [figLayout, figInstLayout] },
-    fragment: { module: mod(S.FIGURE, "figure", figConst), targets: [{ format }] },
+    // Blended, on premultiplied terms, because one kind of figure is drawn
+    // see-through — the guardians; see `guardian_hue` in wire.rill. A person
+    // hands over an alpha of one and is unaffected by the blend, so this
+    // costs nothing but the state.
+    //
+    // The depth stays as it was. Figures are drawn after the terrain and the
+    // trees, so a guardian blends against a valley that is already there,
+    // which is what makes it look like a thing you can see through rather
+    // than a hole.
+    fragment: { module: mod(S.FIGURE, "figure", figConst),
+                targets: [{ format, blend: overPre }] },
     primitive: { cullMode: "back" },
     depthStencil: depth,
     multisample: MS,
@@ -3684,7 +3710,10 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     const ears = earsF32();
     const cueN = ears[EARS.n];
     if (cueN) ensureAudio(() => {
-      const bufs = [null, breakBuf, blastSnd, zapSndBuf, pickBuf, hurtBuf, clackBuf, burstSnd];
+      // 8 is somebody else's rifle — see `watch_guns`. The AK's clip holds
+      // four reports a second apart and the cue picks one by offset, which is
+      // why it is that buffer and not the single-shot rifle's.
+      const bufs = [null, breakBuf, blastSnd, zapSndBuf, pickBuf, hurtBuf, clackBuf, burstSnd, akBuf];
       for (let i = 0; i < cueN; i++) {
         const a = EARS.cues + i * 8;
         playAt(bufs[ears[a] | 0], ears[a + 1], ears[a + 2],
@@ -4248,6 +4277,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     pass.draw(crystalVerts, shardCap - magCount, 0, magCount);
 
     pass.setPipeline(tracerPipe); pass.setVertexBuffer(0, bulletBuf); pass.draw(6, bulletCap);
+    pass.setPipeline(flashPipe); pass.draw(6, bulletCap);
     // The chips, over the surfaces they are stuck to and under everything
     // that flies: blended rather than added, because a hole is darker than
     // what it is in and not brighter.

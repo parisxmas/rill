@@ -27,6 +27,7 @@
     @location(0) world: vec3f,
     @location(1) normal: vec3f,
     @location(2) color: vec3f,
+    @location(3) see: f32,        // one for a person, less for a guardian
   }
 
   fn skin(inst: u32, j: vec4u, w: vec4f) -> mat4x4f {
@@ -62,7 +63,15 @@
     // and the second is kept as a darker version of whatever colour this
     // player was given, so the figure reads as jointed rather than as one
     // block of colour.
-    o.color = select(icol, icol * 0.45, qn.w > 0.001);
+    // A negative red is one of the guardians — see `guardian_hue` in
+    // wire.rill. The colour is the same number without its sign; what the
+    // sign buys is a figure you can see the valley through, on a wire that
+    // had no room for another field and a vertex that had no room for
+    // another attribute.
+    let guard = icol.r < 0.0;
+    let c = abs(icol);
+    o.color = select(c, c * 0.45, qn.w > 0.001);
+    o.see = select(1.0, 0.55, guard);
     return o;
   }
 
@@ -94,5 +103,9 @@
     // away from the wearer, so without this the one person a torch never lit
     // was the one carrying it.
     base += v.color * lampSpill(v.world, 1.0 - dark);
-    return vec4f(mix(base, fogColor(view), fogAt(v.world, length(view))), 1.0);
+    let col = mix(base, fogColor(view), fogAt(v.world, length(view)));
+    // Premultiplied, because that is the blend this pass is set up for: a
+    // colour already multiplied by its own coverage, so what it claims of the
+    // pixel is exactly what it covers.
+    return vec4f(col * v.see, v.see);
   }

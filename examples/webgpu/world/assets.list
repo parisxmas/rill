@@ -6,6 +6,7 @@ shaders/pine.wgsl
 shaders/grass.wgsl
 shaders/viewmodel.wgsl
 shaders/tracer.wgsl
+shaders/flash.wgsl
 shaders/muzzle.wgsl
 shaders/shard.wgsl
 shaders/fireball.wgsl
@@ -73,7 +74,7 @@ crystal-break.mp3
 meteor-blast.mp3
 meteor-burst.mp3
 meteor-air.mp3
-pickup.mp3
+heal-up.mp3
 pickup-clack.mp3
 hurt.mp3
 valley-theme.mp3
