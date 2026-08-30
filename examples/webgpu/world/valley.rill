@@ -2174,6 +2174,10 @@ fn landed(w, s, owner, b, at, hurt) =
   was = peek_f32(s, 82)
   poke_f32(s, 82, clampf(was - hurt, 0.0, 1.0))
   poke_f32(s, 109, peek_f32(s, 109) + 1.0)
+  # A guardian remembers being shot at. Nobody else does — a person has eyes
+  # and a screen and does not need the world to tell them — so this is written
+  # only where something is going to read it back.
+  if is_bot(s) > 0 then note_struck(w, s, owner) else 0
   credit(w, owner)
   put_hurt(w, peek_f32(s, 99), owner, was - peek_f32(s, 82), if peek_f32(s, 82) < 0.001 then 1.0 else 0.0)
   1
@@ -6438,6 +6442,13 @@ fn bot_clock(s) = peek_f32(s, 127)
 fn make_bot(s: Ptr, skill: Float) =
   poke_f32(s, 126, clampf(skill, 0.05, 1.0))
   poke_f32(s, 127, 0.0)
+  # Nobody has shot it, and that has to be said rather than left at nought.
+  # A world's clock starts at nought too, so a fresh block reads as "hit a
+  # moment ago by whoever has id nought" — which is a real person — and every
+  # guardian in the valley spent its first eight seconds running from a man
+  # who had not fired. Long ago, not never, because `struck_by` asks how long
+  # it has been and not whether it happened.
+  poke_f32(s, 129, 0.0 - 1000.0)
   # And standing at its post, not wherever a spawn happened to put it.
   #
   # A garrison starts on the wall it is keeping. Left to walk there from a
@@ -6714,7 +6725,169 @@ fn bot_think(w: Ptr, s: Ptr, dt: Float) =
     heard(s, world_time(w))
     if peek_f32(s, 82) < 0.001 then bot_wants(s, 0) else bot_awake(w, s, dt)
 
+# ---- being shot at ----------------------------------------------------------
+#
+# A round out of nowhere used to mean nothing at all. A guardian's whole world
+# was `bot_wake` — somebody inside the ground it keeps — so a man standing
+# sixty metres off with a rifle was not in its world, and it walked its beat
+# and was shot off it one round at a time without ever turning round.
+#
+# So it remembers who hit it and when, and for the next few seconds that is
+# the thing it is thinking about. What it does about it is its own: if the
+# shooter is near enough to answer, it answers; if they are not, it gets out
+# of the open — behind the stone if there is stone, into the pines if there is
+# not — and waits there facing where the round came from. Which is the honest
+# thing either way: a bot that charges eighty metres of open ground at a rifle
+# is not brave, it is a target, and one that stands in the open being shot is
+# scenery.
+#
+# Eight seconds. Long enough to break for cover and settle; short enough that
+# a guardian is back on its beat rather than nursing a grudge all round.
+fn bot_startle() = 8.0
+
+# And it picks its cover here, once, at the moment the round lands — not every
+# tick on the way there.
+#
+# Recomputing it per tick looked right and does not work: "the nearest thing
+# to get behind" is measured from where the guardian is standing, so it
+# changes under it as it runs. Measured, it chased three different walls in
+# six seconds and arrived at none of them — twenty-three metres of running
+# that ended in the open, which is worse than not running at all. A decision
+# is a thing you make once and then carry out; being hit again is what makes
+# you reconsider, and being hit again comes back through here.
+fn note_struck(w, s, owner) =
+  poke_f32(s, 128, owner)
+  poke_f32(s, 129, world_time(w))
+  o = player_by_id(w, owner, 0)
+  if is_null(o) then keep_still(s)
+  else
+    (hx, hz) = hide_spot(w, s, peek_f32(o, 16), peek_f32(o, 18))
+    poke_f32(s, 130, hx)
+    poke_f32(s, 131, hz)
+    1
+
+# Nowhere to go, because there is nobody to go away from: stand.
+fn keep_still(s) =
+  poke_f32(s, 130, peek_f32(s, 16))
+  poke_f32(s, 131, peek_f32(s, 18))
+  1
+
+# Whoever it was, if it was lately and they are still worth minding. Their own
+# kind cannot hit it and a corpse is not a threat, so both come back as
+# nobody and it goes on with its beat.
+fn struck_by(w, s) =
+  if world_time(w) - peek_f32(s, 129) > bot_startle() then null_ptr()
+  else
+    o = player_by_id(w, peek_f32(s, 128), 0)
+    if is_null(o) then null_ptr()
+    else if peek_f32(o, 82) < 0.001 then null_ptr()
+    else if is_bot(o) > 0 then null_ptr()
+    else o
+
+# Answer it or leave. The line is the range its own gun is worth firing at:
+# inside it there is something to be done about the man, and `bot_hunt` is
+# already the whole of how a guardian does it — close, take the stone on the
+# way, shoot when the gun is on him. Outside it there is nothing to be done
+# except not be standing there.
+fn bot_answer(w, s, o, dt, skill) =
+  dx = peek_f32(o, 16) - peek_f32(s, 16)
+  dz = peek_f32(o, 18) - peek_f32(s, 18)
+  d = sqrt(dx * dx + dz * dz)
+  if d < bot_range() then bot_hunt(w, s, o, dt, skill)
+  else bot_break(w, s, o, dt, d, skill)
+
+# Out of the open, eyes on where it came from.
+fn bot_break(w, s, o, dt, d, skill) =
+  tx = peek_f32(o, 16)
+  tz = peek_f32(o, 18)
+  want = atan2_like(tx - peek_f32(s, 16), peek_f32(s, 18) - tz)
+  poke_f32(s, 19, turn_toward(peek_f32(s, 19), want, 2.2 * dt))
+  poke_f32(s, 20, turn_toward(peek_f32(s, 20), 0.0, 1.5 * dt))
+  # The one it chose when it was hit — see `note_struck`.
+  hx = peek_f32(s, 130)
+  hz = peek_f32(s, 131)
+  gap = sqrt((hx - peek_f32(s, 16)) * (hx - peek_f32(s, 16))
+           + (hz - peek_f32(s, 18)) * (hz - peek_f32(s, 18)))
+  # Arrived: down behind it, and the gun still up in case he closes.
+  if gap < bot_at_cover() then bot_hold(s, d, skill, world_time(w), w)
+  # Getting there is a scramble, not a stroll — the one time a guardian runs
+  # without being asked whether it feels like it.
+  else bot_go_to(w, s, hx, hz, 32)
+
+# Stone first, then trees, then simply not here.
+fn hide_spot(w, s, tx, tz) =
+  k = bot_refuge(w, s, tx, tz, 0, 0 - 1, 1000000.0)
+  if k >= 0 then post_spot(w, k, peek_f32(s, 99), 0)
+  else
+    i = bot_thicket(w, s, tx, tz, 0, 0 - 1, 1000000.0)
+    if i >= 0 then behind_tree(w, i, tx, tz)
+    else away_from(s, tx, tz)
+
+# A wall to get behind, which is not the same scan as a wall to advance under.
+# `bot_cover` wants stone *between* it and a man it is walking towards, so it
+# keeps the ones nearer him than itself. Running away, that test sends it
+# past the rifle to reach the cover. So this one keeps the walls no nearer him
+# than it already is, and the nearest of those wins.
+fn bot_refuge(w, s, tx, tz, k, best, bestd) =
+  if k >= wall_cap() then best
+  else
+    wb = wall_box(w)
+    y = peek_f32(wb, k * 4 + 1)
+    if y < 0.0 - 900.0 then bot_refuge(w, s, tx, tz, k + 1, best, bestd)
+    else
+      wx = peek_f32(wb, k * 4)
+      wz = peek_f32(wb, k * 4 + 2)
+      dm = (wx - peek_f32(s, 16)) * (wx - peek_f32(s, 16)) + (wz - peek_f32(s, 18)) * (wz - peek_f32(s, 18))
+      dt2 = (wx - tx) * (wx - tx) + (wz - tz) * (wz - tz)
+      mine = (peek_f32(s, 16) - tx) * (peek_f32(s, 16) - tx) + (peek_f32(s, 18) - tz) * (peek_f32(s, 18) - tz)
+      if dt2 < mine then bot_refuge(w, s, tx, tz, k + 1, best, bestd)
+      else if dm < bestd && dm < bot_reach_cover() * bot_reach_cover() then bot_refuge(w, s, tx, tz, k + 1, k, dm)
+      else bot_refuge(w, s, tx, tz, k + 1, best, bestd)
+
+# The pines, on the same terms. A felled one is a log and hides nobody: the
+# sign of the scale is what says so — see `pine_felled`.
+fn bot_thicket(w, s, tx, tz, i, best, bestd) =
+  if i >= to_int(peek_f32(w, 57)) then best
+  else
+    pb = peek_ptr(w, 65)
+    if peek_f32(pb, i * 8 + 3) < 0.0 then bot_thicket(w, s, tx, tz, i + 1, best, bestd)
+    else
+      px = peek_f32(pb, i * 8)
+      pz = peek_f32(pb, i * 8 + 2)
+      dm = (px - peek_f32(s, 16)) * (px - peek_f32(s, 16)) + (pz - peek_f32(s, 18)) * (pz - peek_f32(s, 18))
+      dt2 = (px - tx) * (px - tx) + (pz - tz) * (pz - tz)
+      mine = (peek_f32(s, 16) - tx) * (peek_f32(s, 16) - tx) + (peek_f32(s, 18) - tz) * (peek_f32(s, 18) - tz)
+      if dt2 < mine then bot_thicket(w, s, tx, tz, i + 1, best, bestd)
+      else if dm < bestd && dm < bot_reach_cover() * bot_reach_cover() then bot_thicket(w, s, tx, tz, i + 1, i, dm)
+      else bot_thicket(w, s, tx, tz, i + 1, best, bestd)
+
+# The far side of the trunk, a pace out from it: standing *on* a pine is
+# standing where `collide_all` is about to push you off it.
+fn behind_tree(w, i, tx, tz) =
+  pb = peek_ptr(w, 65)
+  px = peek_f32(pb, i * 8)
+  pz = peek_f32(pb, i * 8 + 2)
+  dx = px - tx
+  dz = pz - tz
+  n = sqrt(dx * dx + dz * dz)
+  if n < 0.001 then pack_spot(px, pz)
+  else pack_spot(px + dx / n * 0.9, pz + dz / n * 0.9)
+
+# Nothing to get behind: put ground between them instead. Twelve metres
+# straight back, which is a second and a half of running and enough that the
+# cone at that range is a different cone.
+fn away_from(s, tx, tz) =
+  dx = peek_f32(s, 16) - tx
+  dz = peek_f32(s, 18) - tz
+  n = sqrt(dx * dx + dz * dz)
+  if n < 0.001 then pack_spot(peek_f32(s, 16), peek_f32(s, 18))
+  else pack_spot(peek_f32(s, 16) + dx / n * 12.0, peek_f32(s, 18) + dz / n * 12.0)
+
 fn bot_awake(w, s, dt) =
+  a = struck_by(w, s)
+  if is_null(a) then bot_on_watch(w, s, dt) else bot_answer(w, s, a, dt, bot_skill(s))
+
+fn bot_on_watch(w, s, dt) =
   skill = bot_skill(s)
   k = bot_post(w, s)
   (px, pz) = post_spot(w, k, peek_f32(s, 99), 0)
@@ -6852,17 +7025,21 @@ fn bot_lie_up(w, s, tx, tz, d, skill, t) =
     gap = sqrt((wx - peek_f32(s, 16)) * (wx - peek_f32(s, 16))
              + (wz - peek_f32(s, 18)) * (wz - peek_f32(s, 18)))
     if gap < bot_at_cover() then bot_hold(s, d, skill, t, w)
-    else bot_go_to(w, s, wx, wz)
+    else bot_go_to(w, s, wx, wz, 0)
 
 # Walking somewhere that is not the enemy: the keys are worked out from the
 # heading it is already facing, because the head is aimed at whoever it is
 # watching and the feet have somewhere else to be.
-fn bot_go_to(w, s, wx, wz) =
+# `extra` is the sprint bit or nothing. Walking to a wall you have chosen to
+# fight from is a walk; running to one because somebody is shooting at you
+# from further than you can shoot back is not, and it is the one time a
+# guardian runs without being asked whether the clock says it may.
+fn bot_go_to(w, s, wx, wz, extra) =
   want = atan2_like(wx - peek_f32(s, 16), peek_f32(s, 18) - wz)
   off = wrap_pi(want - peek_f32(s, 19))
   fwd = if off > 0.0 - 1.2 && off < 1.2 then 1 else if off > 2.0 || off < 0.0 - 2.0 then 2 else 0
   side = if off > 0.6 then 8 else if off < 0.0 - 0.6 then 4 else 0
-  bot_wants(s, bit_or(fwd, side))
+  bot_wants(s, bit_or(bit_or(fwd, side), extra))
 
 # Still, with the gun up. It will not start shooting until somebody is close
 # enough that shooting is worth doing — which is also the range its cone is

@@ -48,6 +48,12 @@ fn main() =
   say("a person is not a bot", v.is_bot(me), 0)
   say("and a bot is", v.is_bot(b), 1)
   say("carrying the skill it was given, in per cent", to_int(v.bot_skill(b) * 100.0 + 0.5), 60)
+  # And nothing has shot it. A world's clock starts at nought and so does an
+  # unwritten slot, so a fresh guardian read as "hit a moment ago by whoever
+  # has id nought" — a real person — and spent its first eight seconds running
+  # for cover from a man who had not fired. It cost three other stages of this
+  # file, which is how it was found.
+  say("and nothing has shot it yet", if is_null(v.struck_by(w, b)) then 1 else 0, 1)
 
   println("it keeps a place")
   # A guardian starts on the wall it is keeping, and stays there. Left to walk
@@ -233,6 +239,61 @@ fn main() =
   say("and a person in the same spot is not",
       if v.health(me) < 0.999 then 1 else 0, 1)
 
+  println("shot at from further than it can answer, it gets out of the open")
+  # A round out of nowhere used to mean nothing at all: a guardian's world was
+  # whoever had walked into the ground it keeps, so a man sixty metres off
+  # with a rifle was not in it, and it walked its beat and was shot off it one
+  # round at a time without ever turning round.
+  stand_at(b, sx, v.ground(sx, sz), sz)
+  stand_at(me, sx + 60.0, v.ground(sx + 60.0, sz), sz)
+  poke_f32(me, 82, 1.0)
+  # Stamped with somebody who does not exist first: the man's own id here is
+  # nought, and an assertion that nought came back would pass just as happily
+  # on a slot nothing had ever written.
+  poke_f32(b, 128, 77.0)
+  fire_at(w, me, b)
+  poke_f32(b, 31, 0.0)
+  poke_f32(b, 127, 0.0)
+  say("it knows who hit it", to_int(peek_f32(b, 128)), to_int(peek_f32(me, 99)))
+  # The cover is chosen once, at the moment the round lands, and then run to.
+  # Recomputing "the nearest thing to get behind" every tick looked right and
+  # does not work — it is measured from where the guardian is standing, so it
+  # moves as it runs: measured, three different walls in six seconds and it
+  # arrived at none of them, which is twenty-three metres of running that ends
+  # in the open.
+  hx = peek_f32(b, 130)
+  hz = peek_f32(b, 131)
+  g0 = sqrt((hx - v.player_x(b)) * (hx - v.player_x(b))
+          + (hz - v.player_z(b)) * (hz - v.player_z(b)))
+  say("and it has picked somewhere to be instead", if g0 > 1.0 then 1 else 0, 1)
+  d0 = apart(b, me)
+  walk_them(w, b, 120)
+  g1 = sqrt((hx - v.player_x(b)) * (hx - v.player_x(b))
+          + (hz - v.player_z(b)) * (hz - v.player_z(b)))
+  say("and it gets there", if g1 < v.bot_at_cover() then 1 else 0, 1)
+  say("without walking towards the man", if apart(b, me) > d0 - 1.0 then 1 else 0, 1)
+  say("and does not fire at one it cannot reach", to_int(peek_f32(b, 31)), 0)
+  # But it is watching where the round came from, not the wall.
+  dx2 = peek_f32(me, 16) - peek_f32(b, 16)
+  dz2 = peek_f32(me, 18) - peek_f32(b, 18)
+  d2 = sqrt(dx2 * dx2 + dz2 * dz2)
+  say("while looking his way",
+      if (look_x(b) * dx2 + look_z(b) * dz2) / d2 > 0.7 then 1 else 0, 1)
+
+  println("and from close, it shoots back")
+  # The other half, and the one an edit meant for the running away will break:
+  # a guardian that hides from everything is as useless as one that hides from
+  # nothing. Turned away from him first, so what is asserted is that being hit
+  # brought it round.
+  stand_at(b, sx, v.ground(sx, sz), sz)
+  stand_at(me, sx + 18.0, v.ground(sx + 18.0, sz), sz)
+  poke_f32(b, 19, 3.0)
+  fire_at(w, me, b)
+  poke_f32(b, 31, 0.0)
+  poke_f32(b, 127, 0.0)
+  think(w, b, 60)
+  say("it answers", if peek_f32(b, 31) > 0.5 then 1 else 0, 1)
+
   println("it leaves its own kind alone")
   c = v.join(w)
   v.make_bot(c, 0.6)
@@ -275,6 +336,15 @@ fn fire_across(w, s, decide) =
   poke_f32(bb, 8, v.from_ak())
   v.step_bullets(w, bb, 1.0 / 60.0, 1)
   1
+
+fn apart(a, c) =
+  sqrt((peek_f32(a, 16) - peek_f32(c, 16)) * (peek_f32(a, 16) - peek_f32(c, 16))
+     + (peek_f32(a, 18) - peek_f32(c, 18)) * (peek_f32(a, 18) - peek_f32(c, 18)))
+
+# One round through `victim`'s chest, fired by `shooter` — the path that makes
+# a guardian remember being shot at, which is `landed` and nothing shorter.
+fn fire_at(w, shooter, victim) =
+  took(w, shooter, victim, 1.05)
 
 # A stretch of the beat, tick by tick, with the world's clock wound on beside
 # it. What comes back is how far it walked, how far from its post it ever got,
