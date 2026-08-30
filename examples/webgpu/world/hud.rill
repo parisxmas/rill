@@ -704,7 +704,7 @@ fn keys(h, x, y) =
   x7 = key_pair(h, sep(h, x6, y), y, "1", " rifle")
   x8 = key_pair(h, sep(h, x7, y), y, "2", " launcher")
   x9 = key_pair(h, sep(h, x8, y), y, "3", " ak")
-  x9b = key_pair(h, sep(h, x9, y), y, "5", " mg3")
+  x9b = key_pair(h, sep(h, x9, y), y, "4", " mg3")
   xa = key_pair(h, sep(h, x9b, y), y, "R", " reload")
   xb = key_pair(h, sep(h, xa, y), y, "F", " torch")
   xc = key_pair(h, sep(h, xb, y), y, "M", " music")
@@ -1153,7 +1153,10 @@ fn brief_ph(sh) = sh * 0.78
 # other question — *what else is there* — and it is asked between fights.
 fn inv_w() = 292.0
 
-fn inv_h() = 231.0
+# Four rows now rather than six: 231 was 18 above the first, six rows of 35,
+# and 3 below the last. Two rows out is seventy pixels of glass out with them,
+# or the panel keeps a hole where the tools were.
+fn inv_h() = 161.0
 
 fn inv_row() = 35.0
 
@@ -1161,7 +1164,7 @@ fn inv_x(h) = th(h, s_margin())
 
 fn inv_y(h, sh) = sh - 78.0 - inv_h()
 
-fn inv_rows() = 6
+fn inv_rows() = 4
 
 fn inventory(h, sw, sh) =
   x = inv_x(h)
@@ -1175,18 +1178,17 @@ fn inventory(h, sw, sh) =
   inv_row_draw(h, x, y + 18.0 + inv_row() * 2.0, 2, held, "AK", "3",
                int_str(to_int(peek_f32(h, h_inv_ak()))) + "/" + int_str(to_int(peek_f32(h, h_inv_ak_cap()))) +
                "  x" + int_str(to_int(peek_f32(h, h_ak_mags()))))
-  # The tools carry the same number — the stones in the pocket — because it is
-  # the one number both of them are about: what the pick has earned is what
-  # the wall can spend.
-  inv_row_draw(h, x, y + 18.0 + inv_row() * 3.0, 3, held, "PICK", "4",
-               int_str(to_int(peek_f32(h, h_stones()))))
+  # Four rows, not six. The pick and the wall are out of play — see
+  # `weapon_off` in valley.rill — and a row for a thing no key can reach is a
+  # row that teaches somebody a key that does nothing. The two lines that drew
+  # them are gone from here and from nowhere else: the tools are still built,
+  # still drawn, still swung, and one line brings the whole of it back.
+  #
   # The MG3 wears the AK's icon for now: the icon strip was baked with five
   # weapons on it, and a sixth cell is a rebake this row does not wait for.
-  inv_row_draw(h, x, y + 18.0 + inv_row() * 4.0, 5, held, "MG3", "5",
+  inv_row_draw(h, x, y + 18.0 + inv_row() * 3.0, 5, held, "MG3", "4",
                int_str(to_int(peek_f32(h, h_inv_mg()))) + "/" + int_str(to_int(peek_f32(h, h_inv_mg_cap()))) +
                "  x" + int_str(to_int(peek_f32(h, h_mg_belts()))))
-  inv_row_draw(h, x, y + 18.0 + inv_row() * 5.0, 4, held, "WALL", "6",
-               int_str(to_int(peek_f32(h, h_stones()))))
 
 # The strip is rifle, AK, launcher, pick, wall — the order they were baked
 # in, not the order they are carried in — so the cell is looked up.

@@ -50,8 +50,27 @@ fn main() =
   say("the sights are up", if peek_f32(b, 5) > 0.95 then 1 else 0, 1)
   say("the AK magnifies twice", to_int(peek_f32(b, 16) + 0.5), 2)
 
+  println("the two that are out of play")
+  # The pick and the wall are gone from the game and not from the code — see
+  # `weapon_off` in valley.rill. Asked for by key, they change nothing: what
+  # is held stays held, which is the difference between a weapon that is out
+  # of play and a weapon that leaves you empty-handed.
+  #
+  # Both are asked for here, and the answer is checked against what was up
+  # rather than against a number, so this keeps saying the right thing when
+  # the row above it moves.
+  was = hd.held(b)
+  t4a = run(s, 20, 0, 3, t4)
+  say("the pick cannot be taken up", hd.held(b), was)
+  t4b = run(s, 20, 0, 4, t4a)
+  say("nor the wall", hd.held(b), was)
+  # And the same from the far end, which is the door a modified page would
+  # come through: the wire says a pick, the valley keeps what it had.
+  v.set_keys(s, shl(3, 7))
+  say("nor by a far end saying so", v.weapon(s), was)
+
   # Change hands to the rifle: the swap dips and comes back.
-  t5 = run(s, 40, 0, 0, t4)
+  t5 = run(s, 40, 0, 0, t4b)
   say("the rifle is up", hd.held(b), 0)
   say("and the world agrees", v.weapon(s), 0)
   t6 = run(s, 15, 4, 0, t5)

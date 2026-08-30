@@ -176,7 +176,10 @@ fn frame(s, dt, now, t, mdx0, mdy0, flags, want) =
   # right after — a page that forgot to reset it must not hear last frame's
   # bangs again.
   poke_f32(b, 19, 0.0)
-  poke_f32(b, 1, to_float(want))
+  # The first of the three doors the two weapons that are out of play are
+  # kept behind — see `weapon_off` in valley.rill. A key that asks for one is
+  # a key that asks for nothing: what is held stays held.
+  poke_f32(b, 1, if v.weapon_off(want) > 0 then to_float(held(b)) else to_float(want))
   want_shot0 = flags % 2 == 1
   fire_held = flags / 2 % 2 == 1
   want_aim = flags / 4 % 2 == 1

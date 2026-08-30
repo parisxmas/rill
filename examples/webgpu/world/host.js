@@ -3195,9 +3195,12 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     if (e.code === "Digit1" || e.code === "Numpad1") wantHeld = 0;
     if (e.code === "Digit2" || e.code === "Numpad2") wantHeld = 1;
     if (e.code === "Digit3" || e.code === "Numpad3") wantHeld = 2;
-    if (e.code === "Digit4" || e.code === "Numpad4") wantHeld = 3;
-    if (e.code === "Digit5" || e.code === "Numpad5") wantHeld = 5;
-    if (e.code === "Digit6" || e.code === "Numpad6") wantHeld = 4;
+    // Four is the machine gun. It was five, beside a pick on four and a wall
+    // on six; the two tools are out of play — `weapon_off` in valley.rill —
+    // and leaving a gap in the middle of the row a player reaches for without
+    // looking is worse than moving one key. Five and six now ask for nothing,
+    // and the hands refuse the tools' own numbers whoever sends them.
+    if (e.code === "Digit4" || e.code === "Numpad4") wantHeld = 5;
   });
   // On the press, not held: read from the event rather than from the key mask,
   // so leaning on space at the end does not restart over and over.

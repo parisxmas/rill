@@ -6024,7 +6024,8 @@ fn set_keys(s: Ptr, keys: Int) =
   # lives past both. An encoder that shifted five whole bits left would have
   # lit the lamp instead, which was checked before it was shipped rather than
   # after.
-  poke_f32(s, 119, to_float(bit_or(bit_and(shr(keys, 7), 3), shl(bit_and(shr(keys, 11), 1), 2))))
+  said = bit_or(bit_and(shr(keys, 7), 3), shl(bit_and(shr(keys, 11), 1), 2))
+  poke_f32(s, 119, if weapon_off(said) > 0 then peek_f32(s, 119) else to_float(said))
   # And the tenth bit is the lamp. It rides here for the reason the weapon
   # does — the message is already going and this is part of what somebody is
   # doing — and it is a *state* rather than a press, so a packet that goes
@@ -6049,6 +6050,22 @@ fn weapon(s: Ptr) -> Int = to_int(peek_f32(s, 119))
 fn set_weapon(s: Ptr, n: Int) =
   poke_f32(s, 119, to_float(n))
   1
+
+# The two that are out of play: the pick and the wall.
+#
+# Taken out rather than deleted. Everything they are made of is still here —
+# the digging, the voxels the pick opens, the courses a wall is built in, the
+# stones in a pocket that pay for both — and none of it is reachable, because
+# reaching it goes through one of three doors and all three ask this first:
+# the key that chooses a weapon, the wheel that cycles through them, and the
+# weapon a far end says it is holding. Deleting the code would have cost a
+# week to write again; this costs one line to undo.
+#
+# It is asked of the far end too, and not only of this browser's keys. A
+# player who is out of play here would otherwise be in play for everybody
+# watching them, which is the sort of disagreement that only ever shows up in
+# somebody else's screenshot.
+fn weapon_off(n: Int) -> Int = yes(n == 3 || n == 4)
 
 # How many rockets are left, and how many the tube holds. Fewer than the rifle
 # has rounds by a long way: one of these is a meteor you aimed.
