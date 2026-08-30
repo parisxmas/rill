@@ -1582,6 +1582,10 @@ fn register_rest(fd, key) =
 # ---- how full this valley is ------------------------------------------------
 #
 # A request with no `Sec-WebSocket-Key` is not a browser opening a socket; it
+  # What is different about this one, for the list of doors. A valley that
+  # falls under fire is a different game from one that does not, and choosing
+  # between doors with nothing written on them is not choosing.
+  kv_hset(fd, key, "meteors", if meteors() > 0 then "on" else "off")
 # is something asking a question. The only question worth answering here is how
 # many people are in, and the page asks it once for each valley before anybody
 # picks one — a list of doors with nothing written on them is a list of doors
@@ -1646,7 +1650,8 @@ fn asked_the_store(method, path, body) = match kv_connect(mem_host(), mem_port()
 # be reached the answer is still this valley — a list of one is a working page,
 # and an error is not.
 fn directory(live) =
-  mine = one_valley(valley_name(), peek_i64(live, here_at()), max_players(), valley_path())
+  mine = one_valley(valley_name(), peek_i64(live, here_at()), max_players(), valley_path(),
+                    if meteors() > 0 then "on" else "off")
   if str_len(mem_at()) == 0 then "[" + mine + "]" else asked_around(mine)
 
 fn asked_around(mine) = match kv_connect(mem_host(), mem_port())
@@ -1676,7 +1681,7 @@ fn comma_joined(acc, one) =
 # trips a valley.
 fn one_of_them(fd, key) =
   flat = kv_texts(kv_or(kv_hgetall(fd, key), RNil))
-  one_valley(pair_of(flat, "name"), str_to_int(pair_of(flat, "here")), str_to_int(pair_of(flat, "max")), pair_of(flat, "path"))
+  one_valley(pair_of(flat, "name"), str_to_int(pair_of(flat, "here")), str_to_int(pair_of(flat, "max")), pair_of(flat, "path"), pair_of(flat, "meteors"))
 
 fn pair_of(flat, want) = match flat
   Nil -> ""
@@ -1686,9 +1691,10 @@ fn pair_tail(k, rest, want) = match rest
   Nil -> ""
   Cons(v, more) -> if k == want then v else pair_of(more, want)
 
-fn one_valley(name, here, most, path) =
+fn one_valley(name, here, most, path, meteors) =
   head = "{\"name\":\"" + name + "\",\"here\":" + int_to_str(here)
-  head + ",\"max\":" + int_to_str(most) + ",\"path\":\"" + path + "\"}"
+  head + ",\"max\":" + int_to_str(most) + ",\"path\":\"" + path
+       + "\",\"meteors\":\"" + meteors + "\"}"
 
 # Cross-origin on purpose: the page may be served from one host and the valley
 # answered from another — that is what `?join=` has always been for — and a

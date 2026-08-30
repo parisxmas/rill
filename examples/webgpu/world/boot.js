@@ -94,7 +94,13 @@ export async function boot(pakBytes, takeStored) {
       const full = v.here >= v.max;
       const row = document.createElement("b");
       row.className = full ? "full" : "";
-      row.innerHTML = `<span>${v.name}</span><i>${v.here}/${v.max}${full ? " — full" : ""}</i>`;
+      // What is different about this door as well as how full it is. Only the
+      // difference is written: every valley saying "no meteors" is a column of
+      // noise, and what somebody is choosing between is the one that is not
+      // like the others.
+      const note = v.meteors === "on" ? " · meteors" : "";
+      row.innerHTML = `<span>${v.name}${note ? `<em>${note}</em>` : ""}</span>`
+                    + `<i>${v.here}/${v.max}${full ? " — full" : ""}</i>`;
       if (!full) row.addEventListener("click", () => pick(v, row));
       box.appendChild(row);
       return { v, row, full };
