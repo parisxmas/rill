@@ -26,7 +26,7 @@ import { join, WH } from "./net.js?v=412";
 // and there is no purging it without a token. A version in the query string
 // makes a new file a new URL, which is the only cache invalidation that needs
 // nobody's permission. Bump it with `?v=` in index.html.
-const V = "595";
+const V = "605";
 
 // ---- what the machine can afford -------------------------------------------
 
@@ -1803,7 +1803,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // each, played by offset. One fetch and one decode for three, and three is
   // enough that a row of crystals does not sound like a loop.
   let audio = null, shotBuf = null, breakBuf = null, blastSnd = null, musicBuf = null, welcomeBuf = null;
-  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, clackBuf = null, mgSndBuf = null, akBuf = null, akReloadBuf = null, rpgBuf = null, musicStarted = false;
+  let roarBuf = null, roars = null, pickBuf = null, hurtBuf = null, zapSndBuf = null, clackBuf = null, mgSndBuf = null, akBuf = null, akReloadBuf = null, rpgBuf = null, burstSnd = null, musicStarted = false;
   // Off to begin with. A valley somebody has just walked into should sound
   // like a valley; the theme is something you put on, not something that is
   // put on you. `M` turns it up, and the HUD has said so all along.
@@ -1815,6 +1815,13 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
   // Two explosions, 1.9 seconds each, laid end to end and played by offset.
   const blastBytes = pakBuf("meteor-blast.mp3");
   step("meteor-blast.mp3");
+  // And what one sounds like when it does not arrive: broken over your head
+  // rather than landed at your feet. Julie Damsgaard's `dull_explosion`, CC0
+  // — the same collection the harp in the theme came out of — cut to its
+  // first two and a half seconds and played a little sharp, because a crack
+  // in the air is not the thud a crater makes.
+  const burstBytes = pakBuf("meteor-burst.mp3");
+  step("meteor-burst.mp3");
   // What something falling through the sky sounds like from underneath.
   //
   // Not a recording of a fire. That was the first attempt at this and it was
@@ -1970,7 +1977,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       return b;
     };
     [shotBuf, breakBuf, blastSnd, roarBuf, pickBuf, hurtBuf, musicBuf, zapSndBuf, clackBuf, mgSndBuf, akBuf, akReloadBuf, rpgBuf,
-     welcomeBuf] = await Promise.all([
+     welcomeBuf, burstSnd] = await Promise.all([
       one(shotBytes, "decoding rifle-shot"),
       one(breakBytes, "decoding crystal-break"),
       one(blastBytes, "decoding meteor-blast"),
@@ -1985,6 +1992,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
       one(akReloadBytes, "decoding ak-reload"),
       one(rpgSndBytes, "decoding rpg-launch"),
       one(welcomeBytes, "decoding welcome"),
+      one(burstBytes, "decoding meteor-burst"),
     ]);
   }
 
@@ -3660,7 +3668,7 @@ export async function run(canvas, wasmURL, hud, progress = () => {}, server = nu
     const ears = earsF32();
     const cueN = ears[EARS.n];
     if (cueN) ensureAudio(() => {
-      const bufs = [null, breakBuf, blastSnd, zapSndBuf, pickBuf, hurtBuf, clackBuf];
+      const bufs = [null, breakBuf, blastSnd, zapSndBuf, pickBuf, hurtBuf, clackBuf, burstSnd];
       for (let i = 0; i < cueN; i++) {
         const a = EARS.cues + i * 8;
         playAt(bufs[ears[a] | 0], ears[a + 1], ears[a + 2],

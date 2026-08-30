@@ -70,10 +70,23 @@
     let rgt = vec3f(cos(yaw), 0.0, sin(yaw));
     let up  = cross(rgt, fwd);
 
+    // A tenth of that for an ember — a piece of a meteor that was shot apart,
+    // seeded at two and above; see `ember_seed` in valley.rill.
+    //
+    // This is the stone, and it is the thing that was actually big. The fire
+    // around it was cut three times over and the pieces went on looking like
+    // meteors, because what a meteor looks like from any distance is this
+    // sixty-centimetre rock and not the flame it is wrapped in. Nothing had
+    // told this shader that some of what comes through the ring is wreckage.
+    let core = select(CORE, CORE * 0.28, seed >= 2.0);
+
     // Ahead of the fire's own head, so the flames stream off behind and around
-    // it rather than sitting on top of it.
-    let nose = pos + normalize(vel + vec3f(0.0, 0.0001, 0.0)) * 0.34;
-    let world = nose + (rgt * spun.x + up * spun.y) * CORE;
+    // it rather than sitting on top of it. An ember's nose is drawn in
+    // proportion too, or the rock sits a third of a metre in front of a flame
+    // five centimetres across.
+    let ahead = select(0.34, 0.10, seed >= 2.0);
+    let nose = pos + normalize(vel + vec3f(0.0, 0.0001, 0.0)) * ahead;
+    let world = nose + (rgt * spun.x + up * spun.y) * core;
 
     o.world = world;
     o.clip = u.vp * vec4f(world, 1.0);

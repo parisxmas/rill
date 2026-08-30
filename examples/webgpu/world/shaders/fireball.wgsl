@@ -232,7 +232,20 @@
     // apart at that speed and anything smaller than that is a row of beads
     // rather than a column of smoke. A motor also makes a great deal more of
     // it than a stone dragging through the air does.
-    let fat = select(1.0, 1.75, rocket);
+    //
+    // And a sixth the size for an ember — a piece of a meteor that was shot
+    // apart, seeded at two and above; see `ember_seed` in valley.rill. Five
+    // of them fall together, and five meteors' worth of fire coming down
+    // where one meteor was is a sky on fire rather than wreckage.
+    //
+    // Sized by walking it in from both ends. A third still read as meteors —
+    // but that was measured while every client drew each ember twice and the
+    // full sixty-centimetre stone core inside it, so the number took the
+    // blame for two other bugs. With those gone, the twelfth it had been cut
+    // to was a spark: a fist of burning rock, which is what a piece of a
+    // broken meteor is, sits at about a third of the head.
+    let ember = sd >= 2.0;
+    let fat = select(select(1.0, 1.75, rocket), 0.30, ember);
     let size = BALL * fat * (0.55 + 1.7 * old + 0.45 * max(1.0 - old, 0.0)) * (0.72 + 0.55 * hC);
 
     let yaw = u.cam.x; let pitch = u.cam.y;

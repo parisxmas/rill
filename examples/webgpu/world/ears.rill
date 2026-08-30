@@ -23,7 +23,7 @@
 #
 #   f32  0 cues waiting          4 chimeStep      8 rng counter
 #        1 breaks seen           5 chimeAt (s)    9 boxes taken, last seen
-#        2 blasts seen           6 chimeSaid
+#        2 blasts seen           6 chimeSaid      10 meteors shot down, seen
 #        3 zaps seen             7 lastHp
 #       12..27 roar voices, 4 x [gain, pan, freq, on] — three for the rounds
 #              in the air and a fourth for the pack on this player's back
@@ -32,7 +32,7 @@
 #
 # Cue kinds: 1 a crystal breaking, 2 a fireball landing, 3 a crystal's bite,
 # 4 a chip picked up, 5 this player hurt over the wire, 6 a magazine or a
-# crate lifted off the ground.
+# crate lifted off the ground, 7 a meteor broken in the air.
 
 import "valley" as v
 import "wire" as wire
@@ -131,6 +131,7 @@ fn frame(s: Ptr, wb: Ptr, now: Float) =
   watch_roars(e, s)
   watch_jet(e, s)
   watch_blasts(e, s)
+  watch_downs(e, s)
   watch_breaks(e, s)
   watch_zaps(e, s)
   watch_health(e, s, now)
@@ -254,6 +255,42 @@ fn boom_newest(e, s, nbl) =
     far = minf(d / boom_reach(), 1.0)
     emit(e, 2.0, floor(rnd(e) * 2.0) * 1.9, 1.85, 0.95 * kk * kk,
          pan_to(s, peek_f32(b, at), peek_f32(b, at + 2), d), 1.06 - 0.22 * far)
+
+# ---- a meteor broken in the air ---------------------------------------------
+#
+# Its own sound rather than the one a landing makes, and it wants to be: a
+# fireball arriving is a thud in the ground you feel through your feet, and
+# one coming apart forty metres up is a crack over your head with nothing
+# under it. The same cue machinery, a different buffer, and the distance is
+# measured to where it broke rather than to where the pieces will come down.
+fn watch_downs(e, s) =
+  nd = v.downs(s)
+  seen = to_int(peek_f32(e, 10))
+  if nd == seen then 0
+  else
+    poke_f32(e, 10, to_float(nd))
+    if nd > seen then burst(e, s, nd) else 0
+
+# Further than a landing carries, and it has to be: a crater is a thud in the
+# ground thirty metres away and gone, but a meteor comes apart forty metres
+# straight up, and thirty-two metres of reach makes the one thing you did on
+# purpose the quietest thing in the valley. Ninety, which is most of the way
+# across it — you should hear somebody else shoot one down.
+fn burst_reach() = 90.0
+
+fn burst(e, s, nd) =
+  x = v.down_x(s)
+  y = v.down_y(s)
+  z = v.down_z(s)
+  d = dist_to(s, x, y, z)
+  kk = maxf(0.0, 1.0 - d / burst_reach())
+  if kk <= 0.02 then 0
+  else
+    far = minf(d / burst_reach(), 1.0)
+    # Up the octave a little and further with distance, which is what a crack
+    # in the air does against a thud in the ground.
+    emit(e, 7.0, 0.0, 2.4, 0.95 * kk,
+         pan_to(s, x, z, d), 1.14 - 0.20 * far)
 
 # ---- a crystal going --------------------------------------------------------
 #

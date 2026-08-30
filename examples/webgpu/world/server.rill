@@ -595,7 +595,7 @@ fn op_ver() = 118
 # token whose offset a client of any age knows.
 fn op_pull() = 71
 
-fn version() = 595
+fn version() = 605
 fn op_who() = 117
 fn op_pong() = 112
 fn op_snap() = 115
@@ -1124,6 +1124,12 @@ fn throw_msg(w, k) =
   for j in 0..8
     put_f32(b, sc, v.fireball_f(w, k, j))
 
+  # Which slot of the ring this is, so that every end agrees about the name of
+  # a fireball. `down` and everything else that points at one points by slot,
+  # and a client whose counter is behind the server's — anybody who joined
+  # after the first meteor — otherwise reads every one of those as a different
+  # fireball entirely.
+  put_u16(b, k % v.fireball_cap())
   free_ptr(sc)
   strbuf_str(b)
 
@@ -1576,16 +1582,16 @@ fn register_rest(fd, key) =
   kv_hset(fd, key, "name", valley_name())
   kv_hset(fd, key, "path", valley_path())
   kv_hset(fd, key, "port", int_to_str(port()))
+  # What is different about this one, for the list of doors. A valley that
+  # falls under fire is a different game from one that does not, and choosing
+  # between doors with nothing written on them is not choosing.
+  kv_hset(fd, key, "meteors", if meteors() > 0 then "on" else "off")
   last = kv_expire(fd, key, valley_ttl())
   if str_len(kv_why(last)) == 0 then 1 else 0
 
 # ---- how full this valley is ------------------------------------------------
 #
 # A request with no `Sec-WebSocket-Key` is not a browser opening a socket; it
-  # What is different about this one, for the list of doors. A valley that
-  # falls under fire is a different game from one that does not, and choosing
-  # between doors with nothing written on them is not choosing.
-  kv_hset(fd, key, "meteors", if meteors() > 0 then "on" else "off")
 # is something asking a question. The only question worth answering here is how
 # many people are in, and the page asks it once for each valley before anybody
 # picks one — a list of doors with nothing written on them is a list of doors

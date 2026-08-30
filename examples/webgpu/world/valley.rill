@@ -2318,7 +2318,15 @@ fn charge_swell() = 1.5
 # once. Three point two is that: half as many, each of which means something.
 # Measured against the running server with somebody standing in it: seventeen
 # throws a minute became nine.
-fn fireball_every() = 3.2  # seconds between attempts
+# Seconds between attempts, and every one of them is one crystal winding up
+# somewhere in the valley.
+#
+# Doubled from three and a fifth. Meteors are a thing that happens *to* you
+# rather than something you take part in, and at one every three seconds the
+# sky was the loudest argument in the valley — you spent the round reading it
+# instead of the people in it. Six and a half is still often enough that
+# nobody forgets they are there.
+fn fireball_every() = 6.4
 
 fn fireball_reach() = 70.0  # nothing nearer than this throws
 
@@ -3214,7 +3222,13 @@ fn fly_fireball(w, fb, at, dt, decide) =
   # is an arrival, not an expiry, and only an arrival makes a crater. The
   # crater goes where the slot says the rocket is, which for a strike is the
   # face it struck and not the far side of it.
-  if (landed * on > 0.5 || struck > 0) && decide > 0 then add_blast(w, peek_f32(fb, at), peek_f32(fb, at + 1), peek_f32(fb, at + 2), peek_f32(fb, at + 6)) else 0
+  # An ember is the one thing that arrives without arriving: it is a piece of
+  # something already broken, falling because it has to go somewhere, and a
+  # valley where the wreckage of a meteor you shot down hurts you as much as
+  # the meteor would have is a valley where shooting one is not worth doing.
+  if (landed * on > 0.5 || struck > 0) && decide > 0 && is_ember(peek_f32(fb, at + 6)) < 1
+  then add_blast(w, peek_f32(fb, at), peek_f32(fb, at + 1), peek_f32(fb, at + 2), peek_f32(fb, at + 6))
+  else 0
 
 fn glide(fb, at, px, py, pz) =
   poke_f32(fb, at, px)
@@ -3298,25 +3312,45 @@ fn hit_fire(w, p, at, skip, ax, ay, az, bx, by, bz) =
 
 fn try_down_fire(w, fb, i, p, at, skip, ax, ay, az, bx, by, bz) =
   fat = i * fireball_stride()
-  if fat == skip then 0 else if peek_f32(fb, fat + 7) <= 0.0 then 0 else if peek_f32(fb, fat + 6) < 0.0 then 0 else if peek_f32(p, at + 7) < 0.001 then 0 else cross_fire(w, fb, i, fat, p, at, ax, ay, az, bx, by, bz)
+  if fat == skip then 0
+  else if peek_f32(fb, fat + 7) <= 0.0 then 0
+  else if peek_f32(fb, fat + 6) < 0.0 then 0
+  # Nor an ember: it is already what is left of one, and a piece that breaks
+  # into five more pieces is a meteor that never stops arriving.
+  else if is_ember(peek_f32(fb, fat + 6)) > 0 then 0
+  else if peek_f32(p, at + 7) < 0.001 then 0
+  else cross_fire(w, fb, i, fat, p, at, ax, ay, az, bx, by, bz)
 
 fn cross_fire(w, fb, i, fat, p, at, ax, ay, az, bx, by, bz) =
   d2 = seg_dist2(ax, ay, az, bx, by, bz, peek_f32(fb, fat), peek_f32(fb, fat + 1), peek_f32(fb, fat + 2))
   if d2 > meteor_r() * meteor_r() then 0
   else
     poke_f32(p, at + 7, 0.0)
-    shatter_fire(w, fb, fat)
+    shatter_fire(w, fb, fat, 1)
     note_down(w, i)
     1
 
 # Down and outward, because it was on its way down. Pieces that leapt upward
 # would read as something going off; this is something being broken.
-fn shatter_fire(w, fb, fat) =
+# `burn` says whether this end also makes the embers, and only the end that
+# decided the hit may. They go through the same ring the meteors fly in, and
+# everything pushed through that ring since the last tick is broadcast as a
+# throw — so the server's five embers arrive at every client as five messages,
+# and a client that spawned five of its own on top has a fireball ring five
+# slots ahead of the server's from then on. Every later "shot down" message
+# carries a slot index into a ring that no longer lines up, lands on a dead
+# slot, and is silently dropped: the first meteor of the match made a sound
+# and none after it did, and every broken meteor rained twice the wreckage.
+fn shatter_fire(w, fb, fat, burn) =
   sb = peek_ptr(w, 69)
   k0 = to_int(peek_f32(w, 61))
 
   cs = seg_of(w)
-  fill_chunk(cs, peek_f32(fb, fat), peek_f32(fb, fat + 1), peek_f32(fb, fat + 2), 0.5, 0.36, 0.16, 0.07)
+  # A quarter, not a half. What a meteor throws when it is broken is gravel,
+  # not boulders: nine half-metre lumps coming down where it was read as the
+  # meteor having multiplied rather than come apart, which is the same thing
+  # the fire was doing before it was cut to a twelfth.
+  fill_chunk(cs, peek_f32(fb, fat), peek_f32(fb, fat + 1), peek_f32(fb, fat + 2), 0.22, 0.36, 0.16, 0.07)
   fill_kick(cs, peek_f32(fb, fat + 3) * 0.3, peek_f32(fb, fat + 4) * 0.3 + 2.0, peek_f32(fb, fat + 5) * 0.3)
   sbase = to_float(fat) * 17.3
 
@@ -3324,22 +3358,121 @@ fn shatter_fire(w, fb, fat) =
     spawn_chunk(sb, k0 + j, cs, sbase + to_float(j))
 
   poke_f32(w, 61, to_float(k0 + 9))
+
+  # And the burning half of it. Spawned before the meteor's own slot is
+  # cleared, because every one of them is worked out from what it was doing —
+  # and only when this end owns the decision; a told end hears its embers as
+  # throws on the wire.
+  if burn > 0 then
+    for j in 0..ember_count()
+      spawn_ember(w, fb, fat, j)
+    1
+  else 0
+
   poke_f32(fb, fat + 7, 0.0)
   1
 
+# ---- what falls out of a meteor that was shot ------------------------------
+#
+# The rock it throws is already there — nine chunks, thrown down and outward,
+# because a thing that was coming down does not leap up when it breaks. What
+# was missing is that a meteor is on fire, and so are its pieces: they should
+# come down burning.
+#
+# So a handful of them are fireballs rather than stones. That buys the trail
+# and the smoke for nothing — it is the same thing a crystal throws and the
+# same shader draws it — and it costs one number to keep them from doing what
+# a fireball does when it lands.
+#
+# The seed is that number. Its sign already says rocket or crystal-fire, so
+# there is no third sign to be had; two and above is the third kind. Nothing
+# else in the valley makes a seed that big — a rocket's is negative and a
+# crystal's is a hash between nought and one — and the renderer, which only
+# ever asks for the sign and the fraction, draws an ember exactly as it draws
+# any other burning thing.
+fn ember_seed(r) = 2.0 + r
+
+fn is_ember(seed) = yes(seed >= 2.0)
+
+fn ember_count() = 5
+
+# Long enough to reach the ground from where a meteor is broken, which is
+# usually thirty or forty metres up.
+fn ember_life() = 5.0
+
+fn spawn_ember(w, fb, fat, j) =
+  r = hash2(to_float(fat) * 3.7 + to_float(j), 613.0)
+  q = hash2(to_float(fat) * 5.1 + to_float(j), 727.0)
+  # Out and down, from the meteor's own flight: the same spread the chunks
+  # get, so the fire and the rock come apart together rather than as two
+  # separate events that happen to share a moment.
+  put_fireball(w,
+    peek_f32(fb, fat), peek_f32(fb, fat + 1), peek_f32(fb, fat + 2),
+    peek_f32(fb, fat + 3) * 0.35 + (r - 0.5) * 9.0,
+    peek_f32(fb, fat + 4) * 0.35 + q * 2.5,
+    peek_f32(fb, fat + 5) * 0.35 + (q - 0.5) * 9.0,
+    ember_seed(r), ember_life())
+
 fn down_ring() = 32
 
-fn note_down(w, i) = ring_push(w, 116, 123, down_ring(), i)
+# Counted, and remembered where.
+#
+# The place used to be looked up afterwards, out of the fireball's own slot —
+# and that slot is not the meteor's for long. Five embers go into the ring the
+# instant it breaks, so within a few meteors the cursor has come round and
+# somebody else is living there; what the ears then measured the distance to
+# was whatever had moved in, and a burst measured from the wrong place is a
+# burst too far away to hear. Written down at the moment it happens instead,
+# which is the only moment anybody knows it for certain.
+#
+# Three floats on the world, picked the way `slots.py`'s note says they have
+# to be: a hundred and one to a hundred and three are a player's own — their
+# health of last frame and what being shot did to their head — and no world
+# block has any of those.
+fn note_down(w, i) =
+  fb = peek_ptr(w, 74)
+  fat = i * fireball_stride()
+  poke_f32(w, 101, peek_f32(fb, fat))
+  poke_f32(w, 102, peek_f32(fb, fat + 1))
+  poke_f32(w, 103, peek_f32(fb, fat + 2))
+  ring_push(w, 116, 123, down_ring(), i)
 
 fn fires_down(w: Ptr) -> Int = to_int(peek_f32(w, 123))
+
+# The same count and the same place, asked of a player rather than a world,
+# because the ears hold a player and everything else they watch is asked that
+# way. The place is still in the fireball's slot: `shatter_fire` puts the life
+# to nought and leaves the position where it was, which is exactly what the
+# smoke and now the bang are drawn from.
+fn downs(s: Ptr) -> Int = fires_down(wd(s))
+
+fn down_x(s: Ptr) -> Float = peek_f32(wd(s), 101)
+
+fn down_y(s: Ptr) -> Float = peek_f32(wd(s), 102)
+
+fn down_z(s: Ptr) -> Float = peek_f32(wd(s), 103)
 
 fn down_which(w: Ptr, k: Int) -> Int = ring_at(w, 116, down_ring(), k)
 
 # Being told which one went, with no round of our own to have done it.
+#
+# And counted here as well as in `cross_fire`, which is the end that shot it.
+# The count is not only the server's log of what to send — the ears watch it,
+# and a browser in somebody else's valley never runs `cross_fire` at all,
+# because deciding what a round hit is the server's. So a meteor broken over
+# your head made no sound whatsoever in the one place people actually play:
+# the pieces fell, the fire fell with them, and none of it was heard.
+#
+# Pushing from both ends is safe because only one of them ever drains the
+# ring: a client has nobody to tell.
 fn down_fire(w: Ptr, i: Int) =
   fb = peek_ptr(w, 74)
   fat = i * fireball_stride()
-  if i < 0 || i >= fireball_cap() then 0 else if peek_f32(fb, fat + 7) <= 0.0 then 0 else shatter_fire(w, fb, fat)
+  if i < 0 || i >= fireball_cap() then 0
+  else if peek_f32(fb, fat + 7) <= 0.0 then 0
+  else
+    shatter_fire(w, fb, fat, 0)
+    note_down(w, i)
 
 # Stone is solid, and a warhead that flew through a wall to crater the hill
 # behind it is the same wrong that flying through a crystal was. The answer is
@@ -6412,7 +6545,40 @@ fn put_bullet(w: Ptr, x: Float, y: Float, z: Float, vx: Float, vy: Float, vz: Fl
   poke_f32(b, at + 5, vz)
   poke_f32(b, at + 6, owner)
   poke_f32(b, at + 7, bullet_life())
+  # Which gun it came out of, which the wire does not carry and this slot
+  # therefore has to be told. Left unwritten it kept whatever the last round
+  # in this ring slot was — so somebody else's rifle shot could be drawn as a
+  # lit machine-gun tracer, or the other way about. The AK's is the honest
+  # default for a round heard rather than fired: it is the gun most rounds in
+  # this valley come out of, and it is the dark one.
+  poke_f32(b, at + 8, from_ak())
   poke_f32(w, 60, to_float(k + 1))
+  1
+
+# A fireball into the slot the far end put it in, rather than into whichever
+# one this end's own counter happens to point at.
+#
+# The two used to be assumed equal, and they are equal only for a client that
+# has heard every throw since the valley began. Anybody who joined late — or
+# in the middle of a burst — has a counter behind the server's and keeps it
+# for ever, and from then on every message that names a fireball by its slot
+# names the wrong one. That is what left a shot meteor burning in the sky:
+# `down` killed some other slot, and the meteor it was meant for flew on.
+fn put_fireball_at(w: Ptr, slot: Int, x: Float, y: Float, z: Float, vx: Float, vy: Float, vz: Float, seed: Float, life: Float) =
+  fb = peek_ptr(w, 74)
+  at = slot % fireball_cap() * fireball_stride()
+  poke_f32(fb, at, x)
+  poke_f32(fb, at + 1, y)
+  poke_f32(fb, at + 2, z)
+  poke_f32(fb, at + 3, vx)
+  poke_f32(fb, at + 4, vy)
+  poke_f32(fb, at + 5, vz)
+  poke_f32(fb, at + 6, seed)
+  poke_f32(fb, at + 7, life)
+  poke_f32(fb, at + 8, 0.0)
+  # And the counter follows the far end's, so a client that missed the first
+  # ten throws of a match is in step from the eleventh rather than never.
+  poke_f32(w, 63, to_float(slot + 1))
   1
 
 fn put_fireball(w: Ptr, x: Float, y: Float, z: Float, vx: Float, vy: Float, vz: Float, seed: Float, life: Float) =
@@ -6545,13 +6711,6 @@ fn weed_tries() = weed_beds() * 30
 # Where a frond will stand, or a number no depth can be. Off the shallows as
 # well as off the land: a plant in ten centimetres of water sticks out of it,
 # which reads as weed growing on a beach.
-  # Which gun it came out of, which the wire does not carry and this slot
-  # therefore has to be told. Left unwritten it kept whatever the last round
-  # in this ring slot was — so somebody else's rifle shot could be drawn as a
-  # lit machine-gun tracer, or the other way about. The AK's is the honest
-  # default for a round heard rather than fired: it is the gun most rounds in
-  # this valley come out of, and it is the dark one.
-  poke_f32(b, at + 8, from_ak())
 fn weed_deep(x, z) =
   y = height(x, z)
   if y < 0.0 - 0.9 && y > 0.0 - 11.0 then y else 999.0

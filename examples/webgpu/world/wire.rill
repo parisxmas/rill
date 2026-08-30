@@ -511,8 +511,15 @@ fn ap_round(b, w, at, owner) =
   v.put_bullet(w, f32_at(b, at + 1), f32_at(b, at + 5), f32_at(b, at + 9), f32_at(b, at + 13), f32_at(b, at + 17), f32_at(b, at + 21), owner)
   1
 
+# The slot rides with it — see `put_fireball_at`. Without it a client that
+# joined late names every fireball differently from the server for the rest
+# of the match, and the message that says one has been shot down lands on
+# whatever else is living at that number.
 fn put_thrown(b, w, at) =
-  v.put_fireball(w, f32_at(b, at + 1), f32_at(b, at + 5), f32_at(b, at + 9), f32_at(b, at + 13), f32_at(b, at + 17), f32_at(b, at + 21), f32_at(b, at + 25), f32_at(b, at + 29))
+  v.put_fireball_at(w, u16_at(b, at + 33),
+    f32_at(b, at + 1), f32_at(b, at + 5), f32_at(b, at + 9),
+    f32_at(b, at + 13), f32_at(b, at + 17), f32_at(b, at + 21),
+    f32_at(b, at + 25), f32_at(b, at + 29))
   1
 
 fn put_crater(b, w, at) =
