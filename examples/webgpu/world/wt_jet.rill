@@ -24,6 +24,8 @@ fn run(s, n, keys, top) =
 
 fn ground_at(s) = v.ground(v.player_x(s), v.player_z(s))
 
+fn dist(dx, dz) = sqrt(dx * dx + dz * dz)
+
 # Somewhere new, on the floor, with a full tank — which is what `place_player`
 # promises and what every stage below starts from.
 fn fresh(s) =
@@ -161,6 +163,45 @@ fn main() =
   fresh(s)
   run(s, 120, 16 + 1024, 0.0 - 1000.0)
   say("a told pack lights without a pair", if v.jet_fuel(s) < 0.9 then 1 else 0, 1)
+
+  # The lean: what the pack does to the ground speed, which is a separate
+  # question from what it does to the climb.
+  #
+  # Measured over the ground rather than read off the constant, because the
+  # constant is applied in the middle of a function that also collides, and a
+  # doubling that the hillside eats is not a doubling. Run in the air on both
+  # counts — the walking figure is taken from a body that has jumped and not
+  # lit the pack, so the only difference between the two runs is the thrust.
+  fresh(s)
+  poke_f32(s, 22, ground_at(s) + 120.0)
+  poke_f32(s, 24, 0.0)
+  x0 = v.player_x(s)
+  z0 = v.player_z(s)
+  run(s, 30, 1, 0.0 - 1000.0)
+  fell_far = cm(dist(v.player_x(s) - x0, v.player_z(s) - z0))
+
+  fresh(s)
+  tap(s)
+  run(s, 2, 16, 0.0 - 1000.0)
+  poke_f32(s, 22, ground_at(s) + 120.0)
+  x1 = v.player_x(s)
+  z1 = v.player_z(s)
+  run(s, 30, 1 + 16, 0.0 - 1000.0)
+  flew_far = cm(dist(v.player_x(s) - x1, v.player_z(s) - z1))
+
+  # Two hundred and eighty-one is half a second at five and a half a second,
+  # rounded down from 281.25; twice that is 562 and not 563, because what is
+  # doubled is the distance and not the rounded figure printed here.
+  say("half a second of walking, in cm", fell_far, 281)
+  say("and the same under thrust", flew_far, 562)
+  say("which is the lean, in tenths", to_int(v.jet_lean() * 10.0 + 0.5), 20)
+
+  # And the ground is untouched: the pack is what doubles it, not the key.
+  fresh(s)
+  x2 = v.player_x(s)
+  z2 = v.player_z(s)
+  run(s, 30, 1, 0.0 - 1000.0)
+  say("on foot it is still five and a half, in cm", cm(dist(v.player_x(s) - x2, v.player_z(s) - z2)), 281)
 
   # And the crouch, which is the other thing one key does to a body.
   #

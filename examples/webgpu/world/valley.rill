@@ -6465,6 +6465,15 @@ fn jet_thrust() = 3.4
 # and the difference nobody sees is the same as no difference.
 fn jet_climb() = 13.0
 
+# What the pack does to the ground speed, on top of what it does to the climb
+# — the lean a flier puts into it. Eleven metres a second under thrust
+# against five and a half on foot, and twenty-four with the sprint key.
+#
+# The whole of the doubling is here, and it is here rather than in `walk` so
+# that the number can be asked for by a test and read by anybody wondering
+# why the valley goes past so much faster with the pack lit.
+fn jet_lean() = 2.0
+
 fn jet_fuel(s: Ptr) -> Float = peek_f32(s, 244)
 
 fn jet_on(s: Ptr) -> Int = yes(peek_f32(s, 245) > 0.5)
@@ -6702,11 +6711,31 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   # because that one is about breath and this is about posture.
   sprinting = if crouched > 0.5 then 0.0 else wants_run(s, k, wl)
   spend_breath(s, dt, sprinting, wl)
+  # Whether the pack is alight, asked before the legs rather than after them.
+  #
+  # It used to be worked out further down, next to the fall it feeds, which
+  # was fine while the pack only ever changed which way was up. It decides
+  # how fast you cross the valley now as well — see `jet_lean` — and that is
+  # a question the horizontal step has to have answered before it takes one.
+  # Nothing here reads anything the step writes: the grounded flag and the
+  # tank are both last frame's until the very end of this function, which is
+  # exactly what they were when this ran twenty lines lower down.
+  jet_watch(s, k, dt)
+  burning = wants_jet(s, k, peek_f32(s, 25), peek_f32(s, 244))
+  spend_fuel(s, dt, burning, peek_f32(s, 25))
   # Five and a half metres a second, and twelve with the sprint key. Both were
   # a quarter faster and it read as skating: at seven and a half the valley
   # went past faster than anything on the ground in it could account for, and
   # a shot at somebody crossing the meadow was a lead nobody could judge.
-  step = (if sprinting > 0.5 then 12.0 else 5.625) * (1.0 - crouch_slow() * crouched) * dt
+  #
+  # Under thrust it is doubled. What the ground could not account for, the air
+  # can: there is nothing under you to read the speed against, the pack is
+  # loud and visible and lasts four and a half seconds, and a flight that
+  # crossed the ground no faster than a walk was a climb with a view rather
+  # than a way of getting anywhere.
+  step = (if sprinting > 0.5 then 12.0 else 5.625)
+    * (if burning > 0.5 then jet_lean() else 1.0)
+    * (1.0 - crouch_slow() * crouched) * dt
   # What a blast is still pushing you by, spent down over about a fifth of a
   # second. It goes in beside the walk rather than instead of it, so you can
   # walk against it and the collisions below still run on where you end up.
@@ -6755,9 +6784,6 @@ fn walk(s: Ptr, dt: Float, mdx: Float, mdy: Float, keys: Int) =
   gnd = ground_under(w, px, peek_f32(s, 22) + 0.05, pz)
   g = gravity(w)
   grounded = peek_f32(s, 25)
-  jet_watch(s, k, dt)
-  burning = wants_jet(s, k, grounded, peek_f32(s, 244))
-  spend_fuel(s, dt, burning, grounded)
   fell = jump_vel(k, grounded, peek_f32(s, 24)) - g * dt
   vy = if burning > 0.5 then jet_vy(fell, g, dt) else fell
   py0 = peek_f32(s, 22) + vy * dt
