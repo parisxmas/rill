@@ -1089,10 +1089,21 @@ fn step_bullet(w, b, at, dt, decide) =
   # So the walls are asked first and on their own, and `hit_a_thing` watches
   # the round across everything else. The order the four run in has not moved:
   # a round that crosses both a crystal and a player is still the crystal's.
-  if on > 0.5 && decide > 0 then hit_stone(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz) else 0
+  # The walls are asked by both ends, and this one is not behind `decide`.
+  #
+  # It was, and it should never have been: `decide` is the right to change the
+  # world, and stopping on a stone changes nothing but the round — a rifle
+  # does not knock stone out, which is what the note on `hit_stone` says. What
+  # the gate actually did was leave a browser in somebody else's valley
+  # ignorant of every wall: its own predicted rounds flew through them, and
+  # since a chip is recorded where a round stopped, nothing was ever recorded
+  # on one. Shoot the ground and it sparks; shoot a wall and nothing happens
+  # at all. The marks are local — no message carries them — so a client that
+  # is not allowed to work this out for itself simply never sees it.
+  if on > 0.5 then hit_stone(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz) else 0
   # Read straight after the sweep and before anything else touches the
   # scratch: which block stopped it, or less than nought for the ground.
-  wall_i = if on > 0.5 && decide > 0 then to_int(peek_f32(seg_of(w), 14)) else 0 - 1
+  wall_i = if on > 0.5 then to_int(peek_f32(seg_of(w), 14)) else 0 - 1
   on_a_thing = hit_a_thing(w, b, at, peek_f32(b, at), peek_f32(b, at + 1), peek_f32(b, at + 2), px, py, pz, decide, on)
 
   # Struck something, or reached the ground: either way this is where it
@@ -1101,12 +1112,17 @@ fn step_bullet(w, b, at, dt, decide) =
   # anything" — and the ground is the `landed` test. Only the AK's, because
   # the rifle's rounds are still drawn on the way and do not need saying twice.
   struck = if peek_f32(b, at + 7) < 0.001 then 1.0 else 0.0
-  # `bullet_stride`'s ninth float, not the speed: this line read `sp < 100.0`
-  # when the AK flew at 80, and the day it went to 120 every weapon in the
-  # valley silently stopped leaving chips — the marks and the sparks that
-  # burst with them had been dead ever since.
-  leaves_a_chip = peek_f32(b, at + 8) > 0.5
-  if on > 0.5 && (landed > 0.5 || struck > 0.5) && leaves_a_chip && on_a_thing < 0.5 then
+  # Every round leaves one now.
+  #
+  # This was a test on the ninth float — the gun that fired it — and before
+  # that, worse, a test on the speed: written `sp < 100.0` when the AK flew at
+  # eighty, it killed every chip in the valley the day the AK went to a
+  # hundred and twenty. The gun test was honest but it kept the rifle out, on
+  # the reasoning that a rifle's round is drawn all the way in and does not
+  # need to say twice where it stopped. That is an argument about the streak.
+  # The chip and the sparks are about the *stone*, and a rifle round striking
+  # a wall throws sparks off it exactly as anything else does.
+  if on > 0.5 && (landed > 0.5 || struck > 0.5) && on_a_thing < 0.5 then
     note_mark(w, px, if landed > 0.5 then stop_height(w, px, pz) else py, pz, if landed > 0.5 then 0 - 1 else wall_i)
   else 0
 
@@ -6529,6 +6545,13 @@ fn weed_tries() = weed_beds() * 30
 # Where a frond will stand, or a number no depth can be. Off the shallows as
 # well as off the land: a plant in ten centimetres of water sticks out of it,
 # which reads as weed growing on a beach.
+  # Which gun it came out of, which the wire does not carry and this slot
+  # therefore has to be told. Left unwritten it kept whatever the last round
+  # in this ring slot was — so somebody else's rifle shot could be drawn as a
+  # lit machine-gun tracer, or the other way about. The AK's is the honest
+  # default for a round heard rather than fired: it is the gun most rounds in
+  # this valley come out of, and it is the dark one.
+  poke_f32(b, at + 8, from_ak())
 fn weed_deep(x, z) =
   y = height(x, z)
   if y < 0.0 - 0.9 && y > 0.0 - 11.0 then y else 999.0
