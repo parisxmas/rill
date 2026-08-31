@@ -41,16 +41,6 @@ __pycache__/
 # puts it back. `site/rill.pdf`, which index.html does link, stays in.
 /site/*.zip
 
-# The valley server writes the names people gave it, beside itself. It is a
-# running program leaving state where it stands, and a local test creates one.
-/examples/webgpu/world/who.txt
-
-# The asset bundle is written by pack.rill from the files beside it — the
-# deploy rsyncs it from the working directory and the repo keeps the sources.
-*.rpak
-
-# The page, concatenated and then minified — both written by the packer and
-# build.sh out of world.js, net.js, host.js and boot.js, which are the files
-# that are actually edited and tracked.
-/examples/webgpu/world/page.js
-/examples/webgpu/world/page.min.js
+# The four rules that used to be here — who.txt, *.rpak, page.js and
+# page.min.js — were all the valley's build output, and went with it when it
+# moved to its own repository.

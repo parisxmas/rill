@@ -1483,56 +1483,10 @@ fn a_select_loop_runs_in_constant_stack() {
     assert_eq!(out, "the loop held\n");
 }
 
-/// The valley with several people in it. `valley.rill` is the file the browser
-/// compiles to wasm and the server compiles for a Linux box, and this runs the
-/// same arithmetic with neither: three players join one world, one of them
-/// walks, one shoots another down, and one leaves.
-#[test]
-fn shared_valley() {
-    assert_eq!(
-        compile_and_run("webgpu/world/check.rill"),
-        concat!(
-            "300 crystals and 400 pines, nobody in it yet: 0\n",
-            "three arrive: 3, with ids 0 1 2\n",
-            "  the first came in at -7, -56, on ground 147 decimetres up\n",
-            "  the second came in at 51, 28, on ground 148 decimetres up\n",
-            "  the third came in at 22, 54, on ground 128 decimetres up\n",
-            "the first is at -40, -40 on 1\n",
-            "the third is at -29, -41 on 1\n",
-            "the first shoots the second in the leg, the body and the head:\n",
-            "  they are on 0.9, the shooter still on 1\n",
-            "  they are on 0.6, the shooter still on 1\n",
-            "  they are on 0, the shooter still on 1\n",
-            "  the first has landed 3 and taken 0\n",
-            "  the second has landed 0 and taken 3\n",
-            "after a respawn they are on 1\n",
-            "  with the shooter looking away, they are still on 1\n",
-            "  and after one of those the server does not want them gone yet: 0\n",
-            "  after 12 of them, drop this connection: 1\n",
-            "  one honest shot and they are welcome again: 0\n",
-            "  they are on 0.7, the shooter still on 1\n",
-            "the camera was level, then thrown, and level again\n",
-            "with nobody drawn there, the round is still flying ten metres on\n",
-            "with somebody drawn there, it is stopped at the same point\n",
-            "  they are on 0, the shooter still on 1\n",
-            "shot down: down, camera thrown, eye at 0.8428\n",
-            "six seconds later: down, camera thrown, eye at 0.35\n",
-            "eleven seconds later: on their feet, camera level, eye at 1.75\n",
-            "three metres apart on the same ground: yes, and the other way yes\n",
-            "forty metres away: yes; a hundred and thirty: no\n",
-            "across the valley, 11 of 16 places are in sight of the middle\n",
-            "one leaves: 2 remain, ids 0 2\n",
-            "the valley is put away\n",
-        )
-    );
-}
-
-/// And the server in front of it — compiled rather than run, because it holds
-/// a port and a world and does not stop.
-#[test]
-fn valley_server_compiles() {
-    compile_only("webgpu/world/server.rill");
-}
+// The valley used to be checked from here — `webgpu/world/check.rill` played a
+// round of it and `server.rill` was compiled for a Linux box. It lives in its
+// own repository now, and runs both against whichever compiler it is pointed
+// at; there is nothing left in this tree for these tests to open.
 
 /// Calls into libm and libc, including the string bridge and a null check.
 #[test]

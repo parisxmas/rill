@@ -160,7 +160,14 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `blocks.rill` | block bodies in match arms, select arms and `if` branches |
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
-| `webgpu/world/` | a walkable low-poly valley — terrain, physics and matrices in Rill; shadows, MSAA and compute particles on the GPU — and `server.rill`, which is the same valley compiled for a Linux box so that several browsers can walk about in it at once |
+
+The largest thing written in Rill is not in this table. Rill Valley — a
+walkable low-poly valley with terrain, physics and matrices in Rill, shadows,
+MSAA and compute particles on the GPU, and a `server.rill` that is the same
+valley compiled for a Linux box so several browsers can walk about in it at
+once — outgrew the examples directory and lives in its own repository. Point
+its `build.sh` at a `rill` binary and it builds against whatever compiler you
+give it.
 
 `lib/` is what the examples above are written on, and is written in Rill
 itself: `json.rill` and `yaml.rill`, `http.rill` for HTTP/1.1, `ws.rill` for
