@@ -108,6 +108,17 @@ fn expand_for(
     // pool the lifted function names come from, so each is its own.
     let hi = pick_name("for", "hi", used);
     let go = pick_name("for", "go", used);
+    let lo = pick_name("for", "lo", used);
+    // `v[i]` with `i` the loop's own variable is in bounds for the whole
+    // loop if `lo >= 0` and `hi <= #v`, and that can be asked once, before
+    // the loop, instead of at every element: `for.check(v, lo, hi)` goes in
+    // front and each such access becomes `for.at`/`for.set`, which the
+    // checker turns into an unchecked read or write when `v` is a buffer (a
+    // map is looked up as before). Only where neither name is rebound in the
+    // body, so the `v` and `i` inside are the ones the check saw. A buffer
+    // never changes length, so the check holds however late the access runs.
+    let hoisted = hoistable_bases(&body, &var);
+    let body = if hoisted.is_empty() { body } else { hoist_indexes(body, &var, &hoisted, &go) };
     let next = Expr::Binary {
         op: BinOp::Add,
         lhs: Box::new(Expr::Var(var.clone(), line)),
@@ -120,7 +131,7 @@ fn expand_for(
             Expr::Var(name, line),
             // The body is the next value, so the call takes it directly.
             Expr::Call { name: go.clone(), args: vec![next, body], line, piped: false },
-            vec![from, *init],
+            vec![Expr::Var(lo.clone(), line), *init],
         ),
         None => (
             vec![Param { name: var.clone(), ann: None }],
@@ -134,7 +145,7 @@ fn expand_for(
                     piped: false,
                 }),
             ]),
-            vec![from],
+            vec![Expr::Var(lo.clone(), line)],
         ),
     };
     let loop_fn = FnDef {
@@ -155,11 +166,381 @@ fn expand_for(
         line,
         lifted_from: None,
     };
-    Expr::Block(vec![
-        Stmt::Bind { name: hi, value: to, line },
-        Stmt::Fn(Box::new(loop_fn)),
-        Stmt::Expr(Expr::Call { name: go, args: call_args, line, piped: false }),
-    ])
+    let mut stmts = vec![
+        Stmt::Bind { name: lo.clone(), value: from, line },
+        Stmt::Bind { name: hi.clone(), value: to, line },
+    ];
+    for b in &hoisted {
+        stmts.push(Stmt::Expr(Expr::Call {
+            name: "for.check".to_string(),
+            args: vec![
+                Expr::Var(b.clone(), line),
+                Expr::Var(lo.clone(), line),
+                Expr::Var(hi.clone(), line),
+                Expr::Str(go.clone()),
+            ],
+            line,
+            piped: false,
+        }));
+    }
+    stmts.push(Stmt::Fn(Box::new(loop_fn)));
+    stmts.push(Stmt::Expr(Expr::Call { name: go, args: call_args, line, piped: false }));
+    Expr::Block(stmts)
+}
+
+/// The names indexed by the loop variable itself — `v[i]`, `v[i] = x`,
+/// `v[i] += x` — where neither `v` nor `i` is bound again anywhere in the
+/// body.
+fn hoistable_bases(body: &Expr, var: &str) -> Vec<String> {
+    let mut bases = Vec::new();
+    collect_indexed_by(body, var, &mut bases);
+    let mut bound = HashSet::new();
+    collect_bound_names(body, &mut bound);
+    if bound.contains(var) {
+        return Vec::new();
+    }
+    dedup(bases).into_iter().filter(|b| b != var && !bound.contains(b)).collect()
+}
+
+fn collect_indexed_by(e: &Expr, var: &str, out: &mut Vec<String>) {
+    match e {
+        Expr::Index { base, index, .. }
+        | Expr::IndexSet { base, index, .. }
+        | Expr::IndexOp { base, index, .. } => {
+            if let (Expr::Var(b, _), Expr::Var(i, _)) = (base.as_ref(), index.as_ref()) {
+                if i == var {
+                    out.push(b.clone());
+                }
+            }
+        }
+        _ => {}
+    }
+    each_child_all(e, &mut |c| collect_indexed_by(c, var, out));
+}
+
+/// Every name an expression binds: block bindings, patterns, local
+/// functions and their parameters, lambda parameters, loop variables.
+fn collect_bound_names(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Block(stmts) => {
+            for st in stmts {
+                match st {
+                    Stmt::Bind { name, .. } => {
+                        out.insert(name.clone());
+                    }
+                    Stmt::PatBind { pattern, .. } => {
+                        let mut names = Vec::new();
+                        pattern_names(pattern, &mut names);
+                        out.extend(names);
+                    }
+                    Stmt::Fn(f) => {
+                        out.insert(f.name.clone());
+                        out.extend(f.params.iter().map(|p| p.name.clone()));
+                    }
+                    Stmt::Expr(_) => {}
+                }
+            }
+        }
+        Expr::Match { arms, .. } => {
+            for a in arms {
+                let mut names = Vec::new();
+                pattern_names(&a.pattern, &mut names);
+                out.extend(names);
+            }
+        }
+        Expr::Lambda { params, .. } => out.extend(params.iter().cloned()),
+        Expr::For { var, acc, .. } => {
+            out.insert(var.clone());
+            if let Some((a, _)) = acc {
+                out.insert(a.clone());
+            }
+        }
+        Expr::Select { arms, .. } => {
+            for a in arms {
+                if let SelectOp::Recv { bind: Some(n), .. } = &a.op {
+                    out.insert(n.clone());
+                }
+            }
+        }
+        _ => {}
+    }
+    each_child_all(e, &mut |c| collect_bound_names(c, out));
+}
+
+/// Rewrites `v[i]`, `v[i] = x` and `v[i] op= x` over the hoisted bases into
+/// `for.at`/`for.set` calls, everywhere in the body.
+fn hoist_indexes(e: Expr, var: &str, bases: &[String], go: &str) -> Expr {
+    let is_hit = |base: &Expr, index: &Expr| -> Option<String> {
+        if let (Expr::Var(b, _), Expr::Var(i, _)) = (base, index) {
+            if i == var && bases.iter().any(|x| x == b) {
+                return Some(b.clone());
+            }
+        }
+        None
+    };
+    let at = |b: &str, line: usize| Expr::Call {
+        name: "for.at".to_string(),
+        args: vec![
+            Expr::Var(b.to_string(), line),
+            Expr::Var(var.to_string(), line),
+            Expr::Str(go.to_string()),
+        ],
+        line,
+        piped: false,
+    };
+    match e {
+        Expr::Index { base, index, line } => match is_hit(&base, &index) {
+            Some(b) => at(&b, line),
+            None => Expr::Index {
+                base: Box::new(hoist_indexes(*base, var, bases, go)),
+                index: Box::new(hoist_indexes(*index, var, bases, go)),
+                line,
+            },
+        },
+        Expr::IndexSet { base, index, value, line } => match is_hit(&base, &index) {
+            Some(b) => Expr::Call {
+                name: "for.set".to_string(),
+                args: vec![
+                    Expr::Var(b, line),
+                    Expr::Var(var.to_string(), line),
+                    hoist_indexes(*value, var, bases, go),
+                    Expr::Str(go.to_string()),
+                ],
+                line,
+                piped: false,
+            },
+            None => Expr::IndexSet {
+                base: Box::new(hoist_indexes(*base, var, bases, go)),
+                index: Box::new(hoist_indexes(*index, var, bases, go)),
+                value: Box::new(hoist_indexes(*value, var, bases, go)),
+                line,
+            },
+        },
+        Expr::IndexOp { op, base, index, value, line } => match is_hit(&base, &index) {
+            Some(b) => Expr::Call {
+                name: "for.set".to_string(),
+                args: vec![
+                    Expr::Var(b.clone(), line),
+                    Expr::Var(var.to_string(), line),
+                    Expr::Binary {
+                        op,
+                        lhs: Box::new(at(&b, line)),
+                        rhs: Box::new(hoist_indexes(*value, var, bases, go)),
+                        line,
+                    },
+                    Expr::Str(go.to_string()),
+                ],
+                line,
+                piped: false,
+            },
+            None => Expr::IndexOp {
+                op,
+                base: Box::new(hoist_indexes(*base, var, bases, go)),
+                index: Box::new(hoist_indexes(*index, var, bases, go)),
+                value: Box::new(hoist_indexes(*value, var, bases, go)),
+                line,
+            },
+        },
+        other => map_children(other, &mut |c| hoist_indexes(c, var, bases, go)),
+    }
+}
+
+/// Visits every immediate sub-expression, blocks and local function bodies
+/// included — unlike `each_child`, which stops at a block.
+fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
+    match e {
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(..) => {}
+        Expr::Call { args, .. } => args.iter().for_each(f),
+        Expr::Unary { expr, .. } | Expr::Len { expr, .. } | Expr::Try { expr, .. } => f(expr),
+        Expr::Spawn { body, .. } | Expr::Lambda { body, .. } => f(body),
+        Expr::Binary { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        Expr::If { cond, then, els } => {
+            f(cond);
+            f(then);
+            f(els);
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            f(scrutinee);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    f(g);
+                }
+                f(&a.body);
+            }
+        }
+        Expr::Select { arms, default, .. } => {
+            for a in arms {
+                match &a.op {
+                    SelectOp::Recv { chan, .. } => f(chan),
+                    SelectOp::Send { chan, value } => {
+                        f(chan);
+                        f(value);
+                    }
+                }
+                f(&a.body);
+            }
+            if let Some(d) = default {
+                f(d);
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            f(base);
+            f(index);
+        }
+        Expr::Field { base, .. } => f(base),
+        Expr::Update { base, fields, .. } => {
+            f(base);
+            for (_, v, _) in fields {
+                f(v);
+            }
+        }
+        Expr::Slice { base, from, to, .. } => {
+            f(base);
+            if let Some(x) = from {
+                f(x);
+            }
+            if let Some(x) = to {
+                f(x);
+            }
+        }
+        Expr::IndexSet { base, index, value, .. } | Expr::IndexOp { base, index, value, .. } => {
+            f(base);
+            f(index);
+            f(value);
+        }
+        Expr::Append { target, value, .. } => {
+            f(target);
+            f(value);
+        }
+        Expr::For { from, to, acc, body, .. } => {
+            f(from);
+            f(to);
+            if let Some((_, init)) = acc {
+                f(init);
+            }
+            f(body);
+        }
+        Expr::Block(stmts) => {
+            for st in stmts {
+                match st {
+                    Stmt::Bind { value, .. } | Stmt::PatBind { value, .. } => f(value),
+                    Stmt::Fn(fd) => f(&fd.body),
+                    Stmt::Expr(x) => f(x),
+                }
+            }
+        }
+    }
+}
+
+/// Rebuilds an expression with `f` applied to each immediate sub-expression.
+fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
+    match e {
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(..) => e,
+        Expr::Call { name, args, line, piped } => {
+            Expr::Call { name, args: args.into_iter().map(|a| f(a)).collect(), line, piped }
+        }
+        Expr::Unary { op, expr } => Expr::Unary { op, expr: Box::new(f(*expr)) },
+        Expr::Len { expr, line } => Expr::Len { expr: Box::new(f(*expr)), line },
+        Expr::Try { expr, line } => Expr::Try { expr: Box::new(f(*expr)), line },
+        Expr::Spawn { body, line } => Expr::Spawn { body: Box::new(f(*body)), line },
+        Expr::Lambda { params, body, line } => {
+            Expr::Lambda { params, body: Box::new(f(*body)), line }
+        }
+        Expr::Binary { op, lhs, rhs, line } => {
+            Expr::Binary { op, lhs: Box::new(f(*lhs)), rhs: Box::new(f(*rhs)), line }
+        }
+        Expr::If { cond, then, els } => {
+            Expr::If { cond: Box::new(f(*cond)), then: Box::new(f(*then)), els: Box::new(f(*els)) }
+        }
+        Expr::Match { scrutinee, arms, line } => Expr::Match {
+            scrutinee: Box::new(f(*scrutinee)),
+            arms: arms
+                .into_iter()
+                .map(|a| Arm {
+                    pattern: a.pattern,
+                    guard: a.guard.map(|g| f(g)),
+                    body: f(a.body),
+                    line: a.line,
+                })
+                .collect(),
+            line,
+        },
+        Expr::Select { arms, default, line } => Expr::Select {
+            arms: arms
+                .into_iter()
+                .map(|a| SelectArm {
+                    op: match a.op {
+                        SelectOp::Recv { chan, bind } => SelectOp::Recv { chan: f(chan), bind },
+                        SelectOp::Send { chan, value } => {
+                            SelectOp::Send { chan: f(chan), value: f(value) }
+                        }
+                    },
+                    body: f(a.body),
+                    line: a.line,
+                })
+                .collect(),
+            default: default.map(|d| Box::new(f(*d))),
+            line,
+        },
+        Expr::Index { base, index, line } => {
+            Expr::Index { base: Box::new(f(*base)), index: Box::new(f(*index)), line }
+        }
+        Expr::Field { base, name, line } => Expr::Field { base: Box::new(f(*base)), name, line },
+        Expr::Update { base, fields, line } => Expr::Update {
+            base: Box::new(f(*base)),
+            fields: fields.into_iter().map(|(n, v, l)| (n, f(v), l)).collect(),
+            line,
+        },
+        Expr::Slice { base, from, to, line } => Expr::Slice {
+            base: Box::new(f(*base)),
+            from: from.map(|x| Box::new(f(*x))),
+            to: to.map(|x| Box::new(f(*x))),
+            line,
+        },
+        Expr::IndexSet { base, index, value, line } => Expr::IndexSet {
+            base: Box::new(f(*base)),
+            index: Box::new(f(*index)),
+            value: Box::new(f(*value)),
+            line,
+        },
+        Expr::IndexOp { op, base, index, value, line } => Expr::IndexOp {
+            op,
+            base: Box::new(f(*base)),
+            index: Box::new(f(*index)),
+            value: Box::new(f(*value)),
+            line,
+        },
+        Expr::Append { target, value, line } => {
+            Expr::Append { target: Box::new(f(*target)), value: Box::new(f(*value)), line }
+        }
+        Expr::For { var, from, to, acc, body, line } => Expr::For {
+            var,
+            from: Box::new(f(*from)),
+            to: Box::new(f(*to)),
+            acc: acc.map(|(n, init)| (n, Box::new(f(*init)))),
+            body: Box::new(f(*body)),
+            line,
+        },
+        Expr::Block(stmts) => Expr::Block(
+            stmts
+                .into_iter()
+                .map(|st| match st {
+                    Stmt::Bind { name, value, line } => Stmt::Bind { name, value: f(value), line },
+                    Stmt::PatBind { pattern, value, line } => {
+                        Stmt::PatBind { pattern, value: f(value), line }
+                    }
+                    Stmt::Fn(mut fd) => {
+                        fd.body = f(fd.body);
+                        Stmt::Fn(fd)
+                    }
+                    Stmt::Expr(x) => Stmt::Expr(f(x)),
+                })
+                .collect(),
+        ),
+    }
 }
 
 fn walk(

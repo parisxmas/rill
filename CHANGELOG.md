@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased — as fast as the C
+
+A day spent putting nineteen programs beside their C twins
+(`benchmarks/c/`) and closing what it found. The morning's table was three
+wins, four ties and twelve losses; the evening's is eight wins and eleven
+within run-to-run noise, nothing behind. What changed, each measured alone:
+
+- Every Rill function but `main` and a wasm export is `internal` to its
+  module, so LLVM inlines it freely — which is what let a matrix multiply's
+  inner loop lose its bounds checks and vectorize (65 ms → 20, C's 20).
+- **Borrowed parameters.** A buffer, string, builder or map parameter that a
+  function only reads is passed without a reference of its own and released
+  by nobody; the retain the call took and the release its callee made were a
+  load, a compare and a store each on the same header, in the inner loop of
+  every sort and heap. Tail calls stay tail calls: only a borrowed parameter
+  of the calling function may go through a borrowed position there, and
+  anything else forces the callee's parameter back to owned.
+- **Pipeline fusion.** `range |> filter |> map |> sum` (and `len`, `fold`),
+  over lambdas written in place and scalar types, is one loop with no list:
+  83 ms and 154 MB became 5 ms and 1 MB.
+- **Flat records.** A type with one constructor and only scalar fields is a
+  struct in registers — no box, no count, no tag. A function returning
+  `(q, r)` used to allocate; 100 million of them ran in 559 ms and now in
+  288, exactly C's. Such a value is boxed only at the edge of a table or a
+  channel.
+- **The allocator's fast path is generated inline**: a free-list pop or push,
+  three instructions, with the runtime asked only when a list is empty.
+- **Tables** know when their key is an `Int` and their value a scalar, hash
+  and compare in place, probe once on insert, and answer `map_or` in a single
+  call — for `Int` keys, in generated code with no call at all. The `Int`
+  hash is one multiply and a fold. Two million inserts and lookups: 193 ms →
+  97, against a hand-written C table's 105.
+- `b += int_to_str(n)` writes the digits straight into the builder, and the
+  decimal formatter behind every `int_to_str` and `println` counts digits by
+  comparison and writes two at a time; `b += byte` is inline when there is
+  room. A buffer's length is written where LLVM can read it, so loops it can
+  relate to `n` lose their checks. A closure call no longer retains and
+  releases its callee.
+- A lambda written in place for a parameter that never escapes — the
+  prelude's `map`, `filter`, `fold` — borrows its captures: its environment
+  holds no reference of its own, since the frame that made it outlives the
+  call. Not in tail position, where the frame has already let go.
+- **Bounds checks hoisted out of `for`.** A body that indexes `v[i]` by the
+  loop's own variable gets one test in front of the loop — `lo >= 0` and
+  `hi <= #v` — and none on the elements. The check is emitted only when `v`
+  is a buffer; a string keeps its per-byte test, since `s[i]` past the end
+  is `-1` by contract. An out-of-range loop now stops before it starts, with
+  the index it would have reached.
+- `strbuf_str(b)` hands the builder's block over as the string when `b` is
+  never named again in its block, instead of copying it; the builder is left
+  empty and usable. A builder read twice is copied as before.
+- `rill build --unchecked` (and `rill run --unchecked`): no bounds test on
+  buffer accesses, for a program that has been run checked first. The trade
+  Zig's ReleaseFast and Swift's -Ounchecked make; off by default.
+- **A buffer value is the address of its first element**; its count and
+  length sit in the sixteen bytes before it. `v[i]` is one register-indexed
+  load, where the header in front cost an `add` on every element of every
+  scan. Foreign code that took a buffer as a `Ptr` sees exactly what it saw.
+- **Borrowed data parameters.** A list or record parameter that a function
+  only matches on or reads fields of — and whose type the body never builds,
+  so in-place reuse has nothing to lose — is passed without a count of its
+  own; so is a binding a `match` takes out of it. Walking a tree or a list
+  no longer touches a count per node.
+- **`map(xs, \\x -> …)` over numbers or flat records is a loop**: no
+  closure, no call per element, the result built forward with no second pass.
+- `rill fmt` lost the body of `v[i] = for … with …` — it printed `...`. Found
+  when it ate a benchmark. Fixed.
+
 ## Unreleased — a socket that does not wait to be asked twice
 
 `sock_nodelay(fd)` turns Nagle's algorithm off, and says whether the kernel

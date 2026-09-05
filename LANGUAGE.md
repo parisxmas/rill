@@ -560,6 +560,19 @@ next constructor of exactly that shape is built **in that box** rather than in
 a fresh one — so `map`, `filter`, `reverse` and `split` walk a list without
 allocating anything, writing each link over the link they read it from.
 
+A type with one constructor and nothing but numbers and booleans in it — a
+pair, a point, a body with seven coordinates — is not a box at all: it lives
+in registers, passed and returned by value, with no count and no allocation.
+`(q, r) = divmod(a, b)` costs what returning two numbers costs in C. Such a
+value is boxed only when it is put into a map or sent down a channel, which
+store words, and read back out on the other side.
+
+A pipeline over a range — `range(1, n) |> filter(p) |> map(f) |> sum`, and
+`len` and `fold` the same way — is generated as one loop with no list in it,
+when the functions are written in place as lambdas and the elements are
+numbers or booleans. The prelude's `map` and `filter` are what is recognized;
+a program that defines its own gets what it wrote.
+
 Run any program with `RILL_DEBUG_ALLOC=1` to have the runtime print the number
 of live allocations at exit.
 
@@ -975,7 +988,8 @@ one assignment the language has, and only to a buffer element.
 
 Where a `Ptr` is wanted — a foreign parameter, a `peek`/`poke`, a Rill
 parameter annotated `Ptr` — a buffer written there **is** its first element's
-address. This is C's own rule for an array, and it is the only place in the
+address (which is also what the value is underneath: the count and the
+length live in the sixteen bytes before the elements). This is C's own rule for an array, and it is the only place in the
 language where a value is not the type it was written as. Nothing about the
 buffer changes: it stays counted, stays the caller's, and a buffer built in
 the argument itself is released after the call rather than before, so the
@@ -991,7 +1005,11 @@ peek_u8(b, 1)               # so are peek and poke
 Three things follow from the width living in the type. Reading gives back the
 Rill type that width stands for, so `Buf(U8)` yields 200 where `Buf(I8)` yields
 -56 for the same byte. An index outside the buffer ends the program with the
-index and the length, rather than reading whatever was next in memory. And a
+index and the length, rather than reading whatever was next in memory. A
+`for` loop that indexes a buffer by its own variable — `v[i]` for `i` in
+`lo..hi` — is tested once, before the loop, for `lo >= 0` and `hi <= #v`,
+and not again at any element; an out-of-range loop stops before it starts,
+naming the index it would have reached. And a
 buffer is **reference counted like a string** — it is released when the last
 reference goes, so there is no `free` to forget.
 
@@ -1149,6 +1167,7 @@ traps mid-run.
 ```sh
 rill build main.rill -o main    # compile (LLVM -O3, stripped)
 rill build main.rill --debug    # no optimization, DWARF line info for lldb
+rill build main.rill --unchecked  # no bounds test on buffers: run it checked first
 rill build main.rill --emit-ir  # print LLVM IR
 rill run main.rill              # compile and run
 rill check main.rill            # type-check only, saying everything it finds

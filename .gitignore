@@ -44,3 +44,6 @@ __pycache__/
 # The four rules that used to be here — who.txt, *.rpak, page.js and
 # page.min.js — were all the valley's build output, and went with it when it
 # moved to its own repository.
+/benchmarks/c/bin/
+/benchmarks/c/last_run.md
+/benchmarks/strands/bin/

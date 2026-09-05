@@ -1,0 +1,28 @@
+# Fifty stages in a row, each adding one and passing it on; twenty thousand
+# numbers through the whole line — a million hand-offs between strands.
+fn stage(inp, out) =
+  x = recv(inp)
+  send(out, x + 1)
+  stage(inp, out)
+
+fn build(inp, k) =
+  if k == 0 then inp
+  else
+    out = channel()
+    spawn stage(inp, out)
+    build(out, k - 1)
+
+fn feed(ch, i, n) =
+  if i == n then 0
+  else
+    send(ch, i)
+    feed(ch, i + 1, n)
+
+fn drain(ch, n, acc) = if n == 0 then acc else drain(ch, n - 1, acc + recv(ch))
+
+fn main() =
+  n = 20000
+  first = channel()
+  last = build(first, 50)
+  spawn feed(first, 0, n)
+  println(drain(last, n, 0))

@@ -1,0 +1,20 @@
+fn main() =
+  n = 50000000
+  f = buf_u8(n + 1)
+
+  fn mark(j, i) =
+    if j <= n then
+      f[j] = 1
+      mark(j + i, i)
+    else 0
+
+  fn outer(i) =
+    if i * i <= n then
+      if f[i] == 0 then mark(i * i, i) else 0
+      outer(i + 1)
+    else 0
+
+  outer(2)
+  c = for i in 2..n + 1 with acc = 0
+    if f[i] == 0 then acc + 1 else acc
+  println(c)

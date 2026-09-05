@@ -168,7 +168,10 @@ unsafe fn copy_small(src: *const u8, dst: *mut u8, n: usize) {
 /// # Safety
 /// `p` must be a live builder holding `len` bytes in a block of `cap`.
 unsafe fn sb_grow(p: *mut u8, len: usize, cap: usize, want: usize) {
-    let fresh = rill_alloc(want as u64);
+    // Sixteen bytes in front of the text are kept free, in the shape of a
+    // string's header, so that `rill_strbuf_take` can turn the block into the
+    // string itself instead of copying it out. `data` points at the text.
+    let fresh = rill_alloc(16 + want as u64).add(16);
     // The block is raw bytes, not an object with a count: the allocation
     // ledger must not see it, or every live builder would look like a leak.
     live_add(-1);
@@ -176,7 +179,7 @@ unsafe fn sb_grow(p: *mut u8, len: usize, cap: usize, want: usize) {
     if !old.is_null() {
         core::ptr::copy_nonoverlapping(old, fresh, len);
         live_add(1);
-        rill_free_sized(old, cap as u64);
+        rill_free_sized(old.sub(16), 16 + cap as u64);
     }
     *(p as *mut *mut u8).add(1) = fresh;
     *(p as *mut i64).add(3) = want as i64;
@@ -217,6 +220,28 @@ pub unsafe extern "C" fn rill_strbuf_byte(p: *mut u8, c: i64) {
     *(p as *mut i64).add(2) = (len + 1) as i64;
 }
 
+/// `b += int_to_str(n)` without the string in between: the digits go straight
+/// into the builder. Five million numbers through a fresh `Str` each cost 54
+/// ms of allocating, copying and freeing; this is the copy alone.
+///
+/// # Safety
+/// `p` must be a live builder.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_int(p: *mut u8, v: i64) {
+    let total = dec_len(v);
+    let len = sb_len(p);
+    let cap = *(p as *const i64).add(3) as usize;
+    if len + total > cap {
+        let mut want = if cap == 0 { 32 } else { cap };
+        while want < len + total {
+            want *= 2;
+        }
+        sb_grow(p, len, cap, want);
+    }
+    dec_into(v, sb_data(p).add(len), total);
+    *(p as *mut i64).add(2) = (len + total) as i64;
+}
+
 /// # Safety
 /// `p` must be a live builder; hands back a new owned string.
 #[no_mangle]
@@ -227,6 +252,34 @@ pub unsafe extern "C" fn rill_strbuf_str(p: *const u8) -> *mut u8 {
         copy_small(sb_data(p), out.add(16), len);
     }
     out
+}
+
+/// `strbuf_str` for a builder nobody reads again: the block the text is in
+/// becomes the string, header written in the room kept for it, and the
+/// builder is left empty and usable. Only for a block beyond the pool —
+/// under that the copy is cheap and the pool wants blocks back in the size
+/// class they came from, which a string freed by its length would not do.
+/// The compiler calls this where it can see the builder's last use.
+///
+/// # Safety
+/// `p` must be a live builder.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_take(p: *mut u8) -> *mut u8 {
+    let len = sb_len(p);
+    let cap = *(p as *const i64).add(3) as usize;
+    let d = sb_data(p);
+    if d.is_null() || 16 + cap <= POOL_MAX {
+        return rill_strbuf_str(p);
+    }
+    let block = d.sub(16);
+    *(block as *mut i64) = 1;
+    *(block as *mut i64).add(1) = len as i64;
+    // The block joins the ledger as a string; the builder's text is gone.
+    live_add(1);
+    *(p as *mut *mut u8).add(1) = core::ptr::null_mut();
+    *(p as *mut i64).add(2) = 0;
+    *(p as *mut i64).add(3) = 0;
+    block
 }
 
 /// # Safety
@@ -244,7 +297,7 @@ pub unsafe extern "C" fn rill_strbuf_release(p: *mut u8) {
         let d = sb_data(p);
         if !d.is_null() {
             live_add(1);
-            rill_free_sized(d, *(p as *const i64).add(3) as u64);
+            rill_free_sized(d.sub(16), 16 + *(p as *const i64).add(3) as u64);
         }
         rill_free_sized(p, 32);
     }
@@ -265,35 +318,108 @@ pub unsafe extern "C" fn rill_str_len(s: *const u8) -> i64 {
 /// string, consults the locale (taking a lock to do it), and runs the whole
 /// of `vfprintf` to produce at most twenty digits. A program that prints a
 /// million numbers spends real time there.
+/// Two digits at a time from a table, and the digit count decided by a
+/// ladder of comparisons rather than a division per digit: a number is
+/// formatted in about half the divisions the obvious loop takes, and the
+/// loop was what five million `int_to_str`s in a row were paying for.
+const DIGITS2: &[u8; 200] = b"0001020304050607080910111213141516171819\
+2021222324252627282930313233343536373839\
+4041424344454647484950515253545556575859\
+6061626364656667686970717273747576777879\
+8081828384858687888990919293949596979899";
+
 #[inline]
-fn dec(v: i64, buf: &mut [u8; 24]) -> usize {
-    let mut i = 24;
-    // Negated rather than made positive, so that i64::MIN works.
-    let mut n = if v < 0 { v } else { -v };
-    loop {
-        i -= 1;
-        buf[i] = b'0' + (-(n % 10)) as u8;
-        n /= 10;
-        if n == 0 {
-            break;
+fn digit_count(u: u64) -> usize {
+    if u < 10_000 {
+        if u < 100 {
+            if u < 10 { 1 } else { 2 }
+        } else if u < 1_000 {
+            3
+        } else {
+            4
         }
+    } else if u < 100_000_000 {
+        if u < 1_000_000 {
+            if u < 100_000 { 5 } else { 6 }
+        } else if u < 10_000_000 {
+            7
+        } else {
+            8
+        }
+    } else if u < 1_000_000_000_000 {
+        if u < 10_000_000_000 {
+            if u < 1_000_000_000 { 9 } else { 10 }
+        } else if u < 100_000_000_000 {
+            11
+        } else {
+            12
+        }
+    } else if u < 10_000_000_000_000_000 {
+        if u < 100_000_000_000_000 {
+            if u < 10_000_000_000_000 { 13 } else { 14 }
+        } else if u < 1_000_000_000_000_000 {
+            15
+        } else {
+            16
+        }
+    } else if u < 1_000_000_000_000_000_000 {
+        if u < 100_000_000_000_000_000 { 17 } else { 18 }
+    } else if u < 10_000_000_000_000_000_000 {
+        19
+    } else {
+        20
+    }
+}
+
+/// Writes the decimal form of `v` into `out[..n]`, where `n` is what
+/// `dec_len` said; `out` must have that much room.
+///
+/// # Safety
+/// `out` must be writable for `dec_len(v)` bytes.
+#[inline]
+unsafe fn dec_into(v: i64, out: *mut u8, n: usize) {
+    let mut u = v.unsigned_abs();
+    let mut i = n;
+    while u >= 100 {
+        let pair = (u % 100) as usize * 2;
+        u /= 100;
+        i -= 2;
+        *out.add(i) = DIGITS2[pair];
+        *out.add(i + 1) = DIGITS2[pair + 1];
+    }
+    if u >= 10 {
+        let pair = u as usize * 2;
+        i -= 2;
+        *out.add(i) = DIGITS2[pair];
+        *out.add(i + 1) = DIGITS2[pair + 1];
+    } else {
+        i -= 1;
+        *out.add(i) = b'0' + u as u8;
     }
     if v < 0 {
-        i -= 1;
-        buf[i] = b'-';
+        *out = b'-';
     }
-    i
+}
+
+#[inline]
+fn dec_len(v: i64) -> usize {
+    digit_count(v.unsigned_abs()) + (v < 0) as usize
+}
+
+#[inline]
+fn dec(v: i64, buf: &mut [u8; 24]) -> usize {
+    let n = dec_len(v);
+    unsafe { dec_into(v, buf.as_mut_ptr().add(24 - n), n) };
+    24 - n
 }
 
 /// # Safety
 /// Returns a new owned string.
 #[no_mangle]
 pub unsafe extern "C" fn rill_int_to_str(v: i64) -> *mut u8 {
-    let mut buf = [0u8; 24];
-    let i = dec(v, &mut buf);
-    let n = 24 - i;
+    let n = dec_len(v);
     let p = str_new(n);
-    copy_small(buf.as_ptr().add(i), p.add(16), n);
+    dec_into(v, p.add(16), n);
     p
 }
 
@@ -1013,18 +1139,43 @@ unsafe fn out_dec(v: i64) {
 }
 
 /// Zeroed room for `n` elements of `size` bytes. The count is in elements.
+/// One bounds test for a whole loop: `v[i]` for every `i` in `lo..hi` is in
+/// range when `lo >= 0` and `hi <= #v`; an empty range asks nothing. The
+/// compiler puts this in front of a `for` whose body indexes `v` by the loop
+/// variable and drops the test from every element.
+///
+/// # Safety
+/// `p` must be a live buffer.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_check(p: *const u8, lo: i64, hi: i64) {
+    if lo >= hi {
+        return;
+    }
+    let len = *(p as *const i64).sub(1);
+    if lo < 0 {
+        rill_buf_oob(lo, len);
+    }
+    if hi > len {
+        rill_buf_oob(hi - 1, len);
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rill_buf_new(n: i64, size: i64) -> *mut u8 {
     if n < 0 {
         rill_buf_oob(n, 0);
     }
+    // A buffer value is the address of its first element; the count and
+    // the length sit in the sixteen bytes before it, so that an element is
+    // one register-indexed load with nothing added.
     let bytes = (n as u64).saturating_mul(size as u64);
-    let p = rill_alloc(16 + bytes);
-    *(p as *mut i64) = 1;
-    *(p as *mut i64).add(1) = n;
+    let block = rill_alloc(16 + bytes);
+    *(block as *mut i64) = 1;
+    *(block as *mut i64).add(1) = n;
+    let p = block.add(16);
     let mut i = 0u64;
     while i < bytes {
-        *p.add(16 + i as usize) = 0;
+        *p.add(i as usize) = 0;
         i += 1;
     }
     p
@@ -1034,9 +1185,10 @@ pub unsafe extern "C" fn rill_buf_new(n: i64, size: i64) -> *mut u8 {
 /// `p` must be a live buffer whose elements are `size` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn rill_buf_release(p: *mut u8, size: i64) {
-    let n = *(p as *const i64).add(1);
-    if rc_dec(p as *mut i64) == 0 {
-        rill_free_sized(p, 16 + (n as u64) * (size as u64));
+    let block = p.sub(16);
+    let n = *(block as *const i64).add(1);
+    if rc_dec(block as *mut i64) == 0 {
+        rill_free_sized(block, 16 + (n as u64) * (size as u64));
     }
 }
 
@@ -1118,6 +1270,76 @@ pub struct MapVt {
     /// 1 for every value type but a closure, which needs its code and its
     /// environment.
     vwords: i64,
+    /// What the two types are, when it lets the table skip the calls above:
+    /// `KIND_INT_KEY` hashes and compares the key here instead of through
+    /// `hash` and `eq` (the same mix the compiler emits, so a table grown
+    /// here and probed there agree), and `KIND_SCALAR_VAL` says the value
+    /// has no count to touch. Two indirect calls per probe and one per read
+    /// were most of what made a lookup 2.4× a hand-written C table's.
+    kind: i64,
+}
+
+const KIND_INT_KEY: i64 = 1;
+const KIND_SCALAR_VAL: i64 = 2;
+
+/// The compiler's `hash_int`, bit for bit.
+#[inline]
+fn hash_int(k: u64) -> u64 {
+    let m = k.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    m ^ (m >> 29)
+}
+
+#[inline]
+unsafe fn map_hash(m: *const Map, k: i64) -> u64 {
+    let vt = (*m).vt;
+    if (*vt).kind & KIND_INT_KEY != 0 {
+        hash_int(k as u64)
+    } else {
+        ((*vt).hash)(k) as u64
+    }
+}
+
+#[inline]
+unsafe fn map_key_eq(m: *const Map, stored: i64, k: i64) -> bool {
+    let vt = (*m).vt;
+    if (*vt).kind & KIND_INT_KEY != 0 {
+        stored == k
+    } else {
+        ((*vt).eq)(stored, k) != 0
+    }
+}
+
+#[inline]
+unsafe fn map_vretain(m: *const Map, v0: i64, v1: i64) {
+    let vt = (*m).vt;
+    if (*vt).kind & KIND_SCALAR_VAL == 0 {
+        ((*vt).vretain)(v0, v1);
+    }
+}
+
+#[inline]
+unsafe fn map_vrelease(m: *const Map, v0: i64, v1: i64) {
+    let vt = (*m).vt;
+    if (*vt).kind & KIND_SCALAR_VAL == 0 {
+        ((*vt).vrelease)(v0, v1);
+    }
+}
+
+#[inline]
+unsafe fn map_krelease(m: *const Map, k: i64) {
+    let vt = (*m).vt;
+    if (*vt).kind & KIND_INT_KEY == 0 {
+        ((*vt).krelease)(k);
+    }
+}
+
+#[inline]
+unsafe fn map_val1(m: *const Map, slot: *const i64) -> i64 {
+    if (*m).stride > 2 {
+        *slot.add(2)
+    } else {
+        0
+    }
 }
 
 #[repr(C)]
@@ -1169,14 +1391,13 @@ unsafe fn map_lookup(m: *const Map, h: u64, k: i64) -> isize {
     }
     let mask = cap - 1;
     let want = ctrl_of(h);
-    let eq = (*(*m).vt).eq;
     let mut i = (h as usize) & mask;
     loop {
         let c = *(*m).ctrl.add(i);
         if c == CTRL_EMPTY {
             return -1;
         }
-        if c == want && eq(*map_key(m, i), k) != 0 {
+        if c == want && map_key_eq(m, *map_key(m, i), k) {
             return i as isize;
         }
         i = (i + 1) & mask;
@@ -1195,13 +1416,12 @@ unsafe fn map_grow(m: *mut Map, want: usize) {
     let (octrl, oslots, ocap) = ((*m).ctrl, (*m).slots, (*m).cap);
     let stride = (*m).stride;
     map_alloc_block(m, cap);
-    let hash = (*(*m).vt).hash;
     let mask = cap - 1;
     let mut i = 0;
     while i < ocap {
         if is_full(*octrl.add(i)) {
             let from = oslots.add(i * stride);
-            let h = hash(*from) as u64;
+            let h = map_hash(m, *from);
             let mut j = (h as usize) & mask;
             while *(*m).ctrl.add(j) != CTRL_EMPTY {
                 j = (j + 1) & mask;
@@ -1254,39 +1474,64 @@ pub unsafe extern "C" fn rill_map_new(vt: *const MapVt) -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn rill_map_set(p: *mut u8, k: i64, v0: i64, v1: i64) {
     let m = p as *mut Map;
-    let vt = (*m).vt;
-    let h = ((*vt).hash)(k) as u64;
-    let at = map_lookup(m, h, k);
-    if at >= 0 {
-        let slot = map_key(m, at as usize);
-        ((*vt).vrelease)(*slot.add(1), if (*m).stride > 2 { *slot.add(2) } else { 0 });
-        *slot.add(1) = v0;
-        if (*m).stride > 2 {
-            *slot.add(2) = v1;
+    let h = map_hash(m, k);
+    // One probe finds the key, or the place it would go: the first
+    // tombstone passed, else the empty slot the probe ended on.
+    if (*m).cap != 0 {
+        let mask = (*m).cap - 1;
+        let want = ctrl_of(h);
+        let mut i = (h as usize) & mask;
+        let mut tomb: isize = -1;
+        loop {
+            let c = *(*m).ctrl.add(i);
+            if c == CTRL_EMPTY {
+                break;
+            }
+            if c == CTRL_TOMB {
+                if tomb < 0 {
+                    tomb = i as isize;
+                }
+            } else if c == want && map_key_eq(m, *map_key(m, i), k) {
+                let slot = map_key(m, i);
+                map_vrelease(m, *slot.add(1), map_val1(m, slot));
+                *slot.add(1) = v0;
+                if (*m).stride > 2 {
+                    *slot.add(2) = v1;
+                }
+                map_krelease(m, k);
+                return;
+            }
+            i = (i + 1) & mask;
         }
-        ((*vt).krelease)(k);
-        return;
+        if ((*m).used + 1) * 4 < (*m).cap * 3 {
+            let at = if tomb >= 0 {
+                tomb as usize
+            } else {
+                (*m).used += 1;
+                i
+            };
+            *(*m).ctrl.add(at) = ctrl_of(h);
+            let slot = map_key(m, at);
+            *slot = k;
+            *slot.add(1) = v0;
+            if (*m).stride > 2 {
+                *slot.add(2) = v1;
+            }
+            (*m).len += 1;
+            return;
+        }
     }
-    // Three quarters full counting tombstones, so a probe stays short and
-    // always meets an empty slot. A table that is three quarters tombstone
-    // is rebuilt at the same size rather than doubled.
-    if ((*m).used + 1) * 4 >= (*m).cap * 3 {
-        let want = if ((*m).len + 1) * 4 >= (*m).cap * 3 { (*m).cap * 2 } else { (*m).cap };
-        map_grow(m, want);
-    }
+    // Too full, or no room yet: rebuild — which also clears the tombstones
+    // — and place the key in the fresh table, where every slot it passes is
+    // live or empty.
+    let want = if ((*m).len + 1) * 4 >= (*m).cap * 3 { (*m).cap * 2 } else { (*m).cap };
+    map_grow(m, want);
     let mask = (*m).cap - 1;
     let mut i = (h as usize) & mask;
-    loop {
-        let c = *(*m).ctrl.add(i);
-        if c == CTRL_EMPTY {
-            (*m).used += 1;
-            break;
-        }
-        if c == CTRL_TOMB {
-            break;
-        }
+    while *(*m).ctrl.add(i) != CTRL_EMPTY {
         i = (i + 1) & mask;
     }
+    (*m).used += 1;
     *(*m).ctrl.add(i) = ctrl_of(h);
     let slot = map_key(m, i);
     *slot = k;
@@ -1297,6 +1542,24 @@ pub unsafe extern "C" fn rill_map_set(p: *mut u8, k: i64, v0: i64, v1: i64) {
     (*m).len += 1;
 }
 
+/// The value under `k`, or `d`: `map_find` and `map_val_at` in one call, for
+/// the one-word values the prelude's `map_or` is asked about most.
+///
+/// # Safety
+/// `p` must be a live map whose values are one word.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_get_or(p: *mut u8, k: i64, d: i64) -> i64 {
+    let m = p as *mut Map;
+    let h = map_hash(m, k);
+    let at = map_lookup(m, h, k);
+    if at < 0 {
+        return d;
+    }
+    let v = *map_key(m, at as usize).add(1);
+    map_vretain(m, v, 0);
+    v
+}
+
 /// The slot holding `k`, or -1. The key is borrowed.
 ///
 /// # Safety
@@ -1304,7 +1567,7 @@ pub unsafe extern "C" fn rill_map_set(p: *mut u8, k: i64, v0: i64, v1: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn rill_map_find(p: *mut u8, k: i64) -> i64 {
     let m = p as *mut Map;
-    let h = ((*(*m).vt).hash)(k) as u64;
+    let h = map_hash(m, k);
     map_lookup(m, h, k) as i64
 }
 
@@ -1316,15 +1579,14 @@ pub unsafe extern "C" fn rill_map_find(p: *mut u8, k: i64) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rill_map_del(p: *mut u8, k: i64) -> i8 {
     let m = p as *mut Map;
-    let vt = (*m).vt;
-    let h = ((*vt).hash)(k) as u64;
+    let h = map_hash(m, k);
     let at = map_lookup(m, h, k);
     if at < 0 {
         return 0;
     }
     let slot = map_key(m, at as usize);
-    ((*vt).krelease)(*slot);
-    ((*vt).vrelease)(*slot.add(1), if (*m).stride > 2 { *slot.add(2) } else { 0 });
+    map_krelease(m, *slot);
+    map_vrelease(m, *slot.add(1), map_val1(m, slot));
     *(*m).ctrl.add(at as usize) = CTRL_TOMB;
     (*m).len -= 1;
     1
@@ -1387,20 +1649,20 @@ pub unsafe extern "C" fn rill_map_val_at(p: *mut u8, i: i64) -> TwoWords {
     let m = p as *const Map;
     let slot = map_slot(m, i);
     let (v0, v1) = (*slot.add(1), if (*m).stride > 2 { *slot.add(2) } else { 0 });
-    ((*(*m).vt).vretain)(v0, v1);
+    map_vretain(m, v0, v1);
     TwoWords { a: v0 as u64, b: v1 as u64 }
 }
 
 /// Releases every entry and leaves an empty table of the same capacity, which
 /// is what a map reused round a loop wants instead of a fresh one.
 unsafe fn map_drop_entries(m: *mut Map) {
-    let vt = (*m).vt;
+    let _ = (*m).vt;
     let mut i = 0;
     while i < (*m).cap {
         if is_full(*(*m).ctrl.add(i)) {
             let slot = map_key(m, i);
-            ((*vt).krelease)(*slot);
-            ((*vt).vrelease)(*slot.add(1), if (*m).stride > 2 { *slot.add(2) } else { 0 });
+            map_krelease(m, *slot);
+            map_vrelease(m, *slot.add(1), map_val1(m, slot));
         }
         *(*m).ctrl.add(i) = CTRL_EMPTY;
         i += 1;
@@ -1621,7 +1883,10 @@ pub extern "C" fn rill_println_bool(v: i8) {
 // sharing (which will promote shared values to atomic counts).
 
 /// Live allocation counter used to prove leak-freedom in tests.
-static mut LIVE_ALLOCS: i64 = 0;
+/// Allocations minus frees. Named for the compiler, which keeps it itself on
+/// the allocation fast path it lays into generated code (see `rill_pools`).
+#[no_mangle]
+pub static mut rill_live_allocs: i64 = 0;
 
 /// Strands that had started running and had not finished when `main` returned.
 /// Counted so that what they left behind can be told apart from a mistake.
@@ -1652,9 +1917,9 @@ unsafe fn rc_inc(p: *mut i64) {
 #[inline(always)]
 unsafe fn live_add(delta: i64) {
     if rill_mt == 0 {
-        LIVE_ALLOCS += delta;
+        rill_live_allocs += delta;
     } else {
-        (*(&raw const LIVE_ALLOCS as *const core::sync::atomic::AtomicI64))
+        (*(&raw const rill_live_allocs as *const core::sync::atomic::AtomicI64))
             .fetch_add(delta, core::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -1687,7 +1952,12 @@ const POOL_CHUNK: usize = 16 * 1024 * 1024;
 /// One worker's share of the pool. Per worker rather than global so that
 /// several workers can allocate at once without a lock — a block freed on a
 /// different worker than it came from simply joins that worker's free list.
-struct Pool {
+/// `repr(C)` and exported because the compiler reaches into the first pool
+/// directly: a single-threaded build pops and pushes `free[class]` in
+/// generated code and only calls in here when a list is empty. The free
+/// lists have to stay the first field for that.
+#[repr(C)]
+pub struct Pool {
     free: [*mut u8; POOL_CLASSES],
     next: usize,
     end: usize,
@@ -1699,16 +1969,17 @@ const POOL_INIT: Pool = Pool {
     end: 0,
 };
 
-static mut POOLS: [Pool; MAX_WORKERS] = [POOL_INIT; MAX_WORKERS];
+#[no_mangle]
+pub static mut rill_pools: [Pool; MAX_WORKERS] = [POOL_INIT; MAX_WORKERS];
 
 /// The pool belonging to the calling thread. A single-worker program skips
 /// the thread-local lookup, which is the case that has to stay fast.
 #[inline(always)]
 unsafe fn my_pool() -> *mut Pool {
     if rill_mt == 0 {
-        &raw mut POOLS[0]
+        &raw mut rill_pools[0]
     } else {
-        &raw mut POOLS[(*me()).index]
+        &raw mut rill_pools[(*me()).index]
     }
 }
 
@@ -1828,13 +2099,13 @@ pub unsafe extern "C" fn rill_alloc_report() {
     }
     let mut buf = [0u8; 128];
     let n = if ABANDONED == 0 {
-        snprintf(buf.as_mut_ptr(), 127, b"live allocations: %lld\n\0".as_ptr(), LIVE_ALLOCS)
+        snprintf(buf.as_mut_ptr(), 127, b"live allocations: %lld\n\0".as_ptr(), rill_live_allocs)
     } else {
         snprintf(
             buf.as_mut_ptr(),
             127,
             b"live allocations: %lld (%lld strand(s) were still running at exit)\n\0".as_ptr(),
-            LIVE_ALLOCS,
+            rill_live_allocs,
             ABANDONED,
         )
     };

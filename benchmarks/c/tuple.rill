@@ -1,0 +1,8 @@
+fn step(a, b) = (b, (a + b) % 1000000007)
+
+fn main() =
+  r = for i in 0..100000000 with s = (1, 1)
+    (a, b) = s
+    step(a, b)
+  (a, _) = r
+  println(a)

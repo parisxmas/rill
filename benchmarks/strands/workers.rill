@@ -1,0 +1,28 @@
+# Eight workers over a job queue: a million small jobs in, a million
+# results out.
+fn worker(jobs, results) =
+  j = recv(jobs)
+  send(results, j * j % 7)
+  worker(jobs, results)
+
+fn hire(jobs, results, k) =
+  if k == 0 then 0
+  else
+    spawn worker(jobs, results)
+    hire(jobs, results, k - 1)
+
+fn feed(jobs, i, n) =
+  if i == n then 0
+  else
+    send(jobs, i)
+    feed(jobs, i + 1, n)
+
+fn collect(results, n, acc) = if n == 0 then acc else collect(results, n - 1, acc + recv(results))
+
+fn main() =
+  n = 1000000
+  jobs = channel(1000)
+  results = channel(1000)
+  hire(jobs, results, 8)
+  spawn feed(jobs, 0, n)
+  println(collect(results, n, 0))

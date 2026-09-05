@@ -1,0 +1,19 @@
+fn main() =
+  m = map_new()
+  n = 2000000
+
+  for i in 0..n with x = 12345
+    y = bit_and(x * 1103515245 + 12345, 2147483647)
+    m[y] = i
+    y
+
+  # the same stream again, every other key nudged so half the lookups miss
+  fn look(i, y, sum) =
+    if i == n then sum
+    else
+      y2 = bit_and(y * 1103515245 + 12345, 2147483647)
+      k = if i % 2 == 0 then y2 else y2 + 1
+      look(i + 1, y2, sum + map_or(m, k, 0))
+
+  println(#m)
+  println(look(0, 12345, 0))

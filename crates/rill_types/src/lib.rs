@@ -322,8 +322,10 @@ pub enum TK {
     /// `p.x` — one field of a box, read by the position its name has. The
     /// value comes back owned, as everything a program holds does.
     FieldGet { base: Box<TExpr>, adt: usize, ctor: usize, index: usize },
-    BufGet { buf: Box<TExpr>, idx: Box<TExpr> },
-    BufSet { buf: Box<TExpr>, idx: Box<TExpr>, val: Box<TExpr> },
+    /// `unchecked`: the index was proved in range by a `for.check` in front
+    /// of the loop, so no bounds test is generated.
+    BufGet { buf: Box<TExpr>, idx: Box<TExpr>, unchecked: bool },
+    BufSet { buf: Box<TExpr>, idx: Box<TExpr>, val: Box<TExpr>, unchecked: bool },
     BufLen { buf: Box<TExpr> },
     /// The address of the first element, for handing to C.
     BufPtr { buf: Box<TExpr> },
@@ -484,6 +486,13 @@ struct Checker {
     lifted: Vec<Option<String>>,
     /// Carried through to `TModule`; see the field there.
     prelude_fns: usize,
+    /// The function whose body is being inferred.
+    cur_fn_name: String,
+    /// `(loop function, buffer)` pairs a `for.check` has vouched for: the
+    /// buffer was known to be one when the check was typed, so `for.at` and
+    /// `for.set` inside that loop may skip their bounds tests. Typed the
+    /// other way round — loop first — they stay checked, which is safe.
+    hoisted: HashSet<(String, String)>,
     /// Per function: the inference-var id behind each `Gen` index, recorded at
     /// generalization time. Used to rebuild substitutions for calls that were
     /// made while the callee's signature was still provisional (recursion and
@@ -512,6 +521,8 @@ impl Checker {
             expanded_fns: Vec::new(),
             lifted: Vec::new(),
             prelude_fns: 0,
+            cur_fn_name: String::new(),
+            hoisted: HashSet::new(),
             gen_vars: Vec::new(),
         };
 
@@ -1227,6 +1238,80 @@ impl Checker {
 
     /// Infers a function body against its provisional signature, leaving
     /// generalization to the caller.
+    /// The three calls `expand_for` writes for a `v[i]` indexed by the loop
+    /// variable. `for.check(v, lo, hi, go)` is one bounds test before the
+    /// loop when `v` is a buffer, and nothing otherwise; `for.at(v, i, go)`
+    /// and `for.set(v, i, x, go)` are the accesses inside loop function `go`,
+    /// unchecked when the check vouched for exactly this buffer in exactly
+    /// this loop, and the ordinary checked (or map) access otherwise.
+    fn infer_for_index(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        line: usize,
+        env: &mut HashMap<String, Ty>,
+    ) -> Result<TExpr, TypeError> {
+        let go = match args.last() {
+            Some(Expr::Str(g)) => g.clone(),
+            _ => unreachable!("expand_for names the loop"),
+        };
+        let base_name = match &args[0] {
+            Expr::Var(n, _) => n.clone(),
+            _ => unreachable!("expand_for hoists only named buffers"),
+        };
+        if name == "for.check" {
+            let b = self.infer(&args[0], env)?;
+            let lo = self.infer(&args[1], env)?;
+            let hi = self.infer(&args[2], env)?;
+            self.unify(&Ty::Int, &lo.ty, line, "a loop bound")?;
+            self.unify(&Ty::Int, &hi.ty, line, "a loop bound")?;
+            // Only a buffer: a string index past the end is `-1` by contract,
+            // and a loop may lean on that, so a string keeps its per-byte test.
+            if matches!(self.resolve(&b.ty), Ty::Buf(_)) {
+                self.hoisted.insert((go, base_name));
+                return Ok(TExpr {
+                    ty: Ty::Unit,
+                    line,
+                    kind: TK::Builtin { rt: "rill_buf_check", args: vec![b, lo, hi] },
+                });
+            }
+            return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Block(Vec::new()) });
+        }
+        // The loop function is lifted under its parent's name — `for.go`
+        // becomes `main.for.go` — and the names `pick_name` hands out are
+        // unique across the module, so the suffix identifies the loop.
+        let vouched = self.hoisted.iter().any(|(g, b)| {
+            *b == base_name && (self.cur_fn_name == *g || self.cur_fn_name.ends_with(&format!(".{g}")))
+        });
+        if name == "for.at" {
+            let plain = Expr::Index {
+                base: Box::new(args[0].clone()),
+                index: Box::new(args[1].clone()),
+                line,
+            };
+            let mut t = self.infer(&plain, env)?;
+            if vouched {
+                if let TK::BufGet { unchecked, .. } = &mut t.kind {
+                    *unchecked = true;
+                }
+            }
+            return Ok(t);
+        }
+        let plain = Expr::IndexSet {
+            base: Box::new(args[0].clone()),
+            index: Box::new(args[1].clone()),
+            value: Box::new(args[2].clone()),
+            line,
+        };
+        let mut t = self.infer(&plain, env)?;
+        if vouched {
+            if let TK::BufSet { unchecked, .. } = &mut t.kind {
+                *unchecked = true;
+            }
+        }
+        Ok(t)
+    }
+
     fn infer_fn_body(&mut self, f: &FnDef, idx: usize) -> Result<TExpr, TypeError> {
         let (sig_params, sig_ret) = match self.sigs[idx].clone() {
             SigState::Provisional { params, ret } => (params, ret),
@@ -1242,7 +1327,10 @@ impl Checker {
                 ));
             }
         }
-        let body = self.infer(&f.body, &mut env)?;
+        let saved_name = std::mem::replace(&mut self.cur_fn_name, f.name.clone());
+        let body = self.infer(&f.body, &mut env);
+        self.cur_fn_name = saved_name;
+        let body = body?;
         if f.name != "main" {
             self.unify(&sig_ret, &body.ty, f.line, "function body type")?;
         }
@@ -1463,11 +1551,11 @@ impl Checker {
                     self.zonk_expr(t, genmap, defaults);
                 }
             }
-            TK::BufGet { buf, idx } => {
+            TK::BufGet { buf, idx, .. } => {
                 self.zonk_expr(buf, genmap, defaults);
                 self.zonk_expr(idx, genmap, defaults);
             }
-            TK::BufSet { buf, idx, val } => {
+            TK::BufSet { buf, idx, val, .. } => {
                 self.zonk_expr(buf, genmap, defaults);
                 self.zonk_expr(idx, genmap, defaults);
                 self.zonk_expr(val, genmap, defaults);
@@ -1615,6 +1703,11 @@ impl Checker {
                 self.field_of(b, name, *line)
             }
             Expr::Update { base, fields, line } => self.infer_update(base, fields, *line, env),
+            Expr::Call { name, args, line, .. }
+                if name == "for.check" || name == "for.at" || name == "for.set" =>
+            {
+                self.infer_for_index(name, args, *line, env)
+            }
             Expr::Call { name, args, line, .. } => self.infer_call(name, args, *line, env),
             Expr::Unary { op: UnOp::Neg, expr } => {
                 let inner = self.infer(expr, env)?;
@@ -1857,7 +1950,7 @@ impl Checker {
                     Ty::Buf(w) => Ok(TExpr {
                         ty: w.rill_ty(),
                         line: *line,
-                        kind: TK::BufGet { buf: Box::new(b), idx: Box::new(idx) },
+                        kind: TK::BufGet { buf: Box::new(b), idx: Box::new(idx), unchecked: false },
                     }),
                     // A base still open here cannot be a buffer — a `Buf`
                     // width is never inferred, so one would have had to be
@@ -1945,6 +2038,7 @@ impl Checker {
                         buf: Box::new(b),
                         idx: Box::new(idx),
                         val: Box::new(val),
+                        unchecked: false,
                     },
                 })
             }
@@ -2456,7 +2550,7 @@ impl Checker {
                 return Ok(TExpr {
                     ty: width.rill_ty(),
                     line,
-                    kind: TK::BufGet { buf: Box::new(b), idx: Box::new(idx) },
+                    kind: TK::BufGet { buf: Box::new(b), idx: Box::new(idx), unchecked: false },
                 });
             }
             let val = self.infer(&args[2], env)?;
@@ -2468,6 +2562,7 @@ impl Checker {
                     buf: Box::new(b),
                     idx: Box::new(idx),
                     val: Box::new(val),
+                    unchecked: false,
                 },
             });
         }
@@ -3602,7 +3697,7 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         | TK::MapClear { map: ch }
         | TK::FieldGet { base: ch, .. } => f(ch),
         TK::BufNew { count, .. } => f(count),
-        TK::BufGet { buf: a, idx: b }
+        TK::BufGet { buf: a, idx: b, .. }
         | TK::MapFind { map: a, key: b }
         | TK::MapDel { map: a, key: b }
         | TK::MapNext { map: a, from: b }
@@ -3612,7 +3707,7 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(a);
             f(b);
         }
-        TK::BufSet { buf: a, idx: b, val: c } | TK::MapSet { map: a, key: b, val: c } => {
+        TK::BufSet { buf: a, idx: b, val: c, .. } | TK::MapSet { map: a, key: b, val: c } => {
             f(a);
             f(b);
             f(c);

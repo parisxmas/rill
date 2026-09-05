@@ -16,7 +16,7 @@ fn main() =
   hn = buf_int(m + 1)
   hs = buf_int(1)
 
-  fn swap(b, i, j) =
+  fn swap(b: Buf(Int), i, j) =
     x = b[i]
     b[i] = b[j]
     b[j] = x

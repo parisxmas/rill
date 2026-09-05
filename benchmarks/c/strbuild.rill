@@ -1,0 +1,11 @@
+fn main() =
+  n = 5000000
+  b = strbuf()
+  for i in 0..n
+    b += int_to_str(i)
+    b += 10
+  s = strbuf_str(b)
+  println(#s)
+  nl = for i in 0..#s with acc = 0
+    if s[i] == 10 then acc + 1 else acc
+  println(nl)

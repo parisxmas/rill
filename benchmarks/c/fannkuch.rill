@@ -1,0 +1,58 @@
+fn main() =
+  n = 10
+  perm = buf_i32(16)
+  perm1 = buf_i32(16)
+  count = buf_i32(16)
+
+  for i in 0..n
+    perm1[i] = i
+
+  fn flip(i, j) =
+    if i < j then
+      t = perm[i]
+      perm[i] = perm[j]
+      perm[j] = t
+      flip(i + 1, j - 1)
+    else 0
+
+  fn flips(k, acc) =
+    if k == 0 then acc
+    else
+      flip(0, k)
+      flips(perm[0], acc + 1)
+
+  fn fill(r) =
+    if r == 1 then 1
+    else
+      count[r - 1] = r
+      fill(r - 1)
+
+  fn rotate(i, r) =
+    if i < r then
+      perm1[i] = perm1[i + 1]
+      rotate(i + 1, r)
+    else 0
+
+  # next permutation; hands back the new r, or -1 when there are no more
+  fn next(r) =
+    if r == n then 0 - 1
+    else
+      p0 = perm1[0]
+      rotate(0, r)
+      perm1[r] = p0
+      count[r] -= 1
+      if count[r] > 0 then r else next(r + 1)
+
+  fn go(r, permcount, checksum, maxflips) =
+    r1 = fill(r)
+    for i in 0..n
+      perm[i] = perm1[i]
+    f = flips(perm[0], 0)
+    mf = if f > maxflips then f else maxflips
+    cs = if permcount % 2 == 0 then checksum + f else checksum - f
+    r2 = next(r1)
+    if r2 < 0 then (cs, mf) else go(r2, permcount + 1, cs, mf)
+
+  (cs, mf) = go(n, 0, 0, 0)
+  println(cs)
+  println(mf)

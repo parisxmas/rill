@@ -29,6 +29,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::debug_info::{
     AsDIScope, DICompileUnit, DIFlagsConstants, DISubprogram, DWARFEmissionKind,
@@ -91,10 +92,12 @@ pub fn compile_to_object(
     parallel: bool,
     source: &Path,
     target: Option<&str>,
+    unchecked: bool,
 ) -> Result<(), CodegenError> {
     let context = Context::create();
     check_exports(tmod, target)?;
-    let cg = Codegen::build_module(&context, tmod, parallel, debug.then_some(source), target)?;
+    let cg =
+        Codegen::build_module(&context, tmod, parallel, debug.then_some(source), target, unchecked)?;
     if cg.wasm {
         cg.check_wasm_supported()?;
     }
@@ -295,7 +298,7 @@ fn find_unsupported(e: &TExpr) -> Option<(usize, &'static str)> {
 /// Compile and return the (unoptimized) LLVM IR as text.
 pub fn compile_to_ir(tmod: &TModule) -> Result<String, CodegenError> {
     let context = Context::create();
-    let cg = Codegen::build_module(&context, tmod, false, None, None)?;
+    let cg = Codegen::build_module(&context, tmod, false, None, None, false)?;
     Ok(cg.module.print_to_string().to_string())
 }
 
@@ -406,6 +409,294 @@ fn static_params(tmod: &TModule) -> Vec<Vec<bool>> {
         }
         if !changed {
             return need;
+        }
+    }
+}
+
+/// Parameters a function only ever *reads* — indexes, measures, slices, hands
+/// to a builtin or to another function's borrowed parameter — and never
+/// binds, returns, boxes, captures or sends. Such a parameter is passed
+/// without a reference of its own: the caller keeps the one it holds for the
+/// length of the call and the callee releases nothing. The retain a call used
+/// to take and the release its callee made were a load, a compare and a store
+/// each on the same header, in the inner loop of every sort and every heap
+/// (10% of quicksort, 15% of a Dijkstra).
+///
+/// Only storage is considered — buffers, strings, builders and maps —
+/// because those are what hot loops pass, and none of them is taken apart by
+/// a `match`. Impl methods stay owned: `call_impl` hands them owned arguments
+/// from places that never consult this table. Solved as a fixpoint from
+/// "everything borrowed" downward, since an argument in another function's
+/// parameter position borrows only if that parameter does.
+fn borrowed_params(tmod: &TModule) -> Vec<Vec<bool>> {
+    let impls: HashSet<usize> = tmod.impl_methods.values().copied().collect();
+    let mut borrowed: Vec<Vec<bool>> = tmod
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(fi, f)| {
+            let mut rebound = HashSet::new();
+            collect_rebound(&f.body, &mut rebound);
+            f.params
+                .iter()
+                .map(|(n, t)| {
+                    // A data value is a candidate too — a list walked by a
+                    // `match` — unless the body builds values of that same
+                    // type: then the box being taken apart may be the box the
+                    // next one is built in, and that reuse needs ownership.
+                    // `map_onto` keeps its list; `kick` walking the bodies
+                    // does not.
+                    let candidate = match t {
+                        Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..) => true,
+                        Ty::Adt(adt, _) => !constructs_adt(&f.body, *adt),
+                        _ => false,
+                    };
+                    candidate
+                        && !impls.contains(&fi)
+                        && !f.exported
+                        && !rebound.contains(n.as_str())
+                })
+                .collect()
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for fi in 0..tmod.fns.len() {
+            for pi in 0..tmod.fns[fi].params.len() {
+                if borrowed[fi][pi]
+                    && !borrows_only(&tmod.fns[fi].body, &tmod.fns[fi].params[pi].0, &borrowed)
+                {
+                    borrowed[fi][pi] = false;
+                    changed = true;
+                }
+            }
+            let held = HashSet::new();
+            owned_at_tail(&tmod.fns[fi].body, fi, tmod, &mut borrowed, &mut changed, &held);
+        }
+        if !changed {
+            return borrowed;
+        }
+    }
+}
+
+/// A call in tail position jumps: the frame releases everything it owns
+/// first, so a borrowed argument must be something an *earlier* frame holds
+/// — a borrowed parameter of the calling function — or the callee reads
+/// freed memory. Any other argument in a borrowed position of a tail call
+/// makes that parameter owned, which keeps the call a tail call: passing it
+/// by an ordinary call and releasing afterwards would be safe, but it would
+/// also cost a stack frame per iteration of every loop written that way
+/// (`join_onto` overflowed at half a million links before this rule).
+fn owned_at_tail(
+    e: &TExpr,
+    fi: usize,
+    tmod: &TModule,
+    borrowed: &mut Vec<Vec<bool>>,
+    changed: &mut bool,
+    held: &HashSet<String>,
+) {
+    // A name some earlier frame holds: a borrowed parameter, or a binding a
+    // `match` took out of one — the box it came from is held there too.
+    let held_above = |n: &str, borrowed: &Vec<Vec<bool>>| -> bool {
+        held.contains(n)
+            || tmod.fns[fi]
+                .params
+                .iter()
+                .position(|(p, _)| p == n)
+                .is_some_and(|p| borrowed[fi][p])
+    };
+    match &e.kind {
+        TK::Block(stmts) => {
+            if let Some(TStmt::Expr(last)) = stmts.last() {
+                owned_at_tail(last, fi, tmod, borrowed, changed, held);
+            }
+        }
+        TK::If { then, els, .. } => {
+            owned_at_tail(then, fi, tmod, borrowed, changed, held);
+            owned_at_tail(els, fi, tmod, borrowed, changed, held);
+        }
+        TK::Match { scrutinee, arms } => {
+            let from_held = matches!(&scrutinee.kind, TK::Local(n) if held_above(n, borrowed));
+            for a in arms {
+                let mut inner = held.clone();
+                if from_held {
+                    collect_pattern_binds(&a.pattern, &mut inner);
+                }
+                owned_at_tail(&a.body, fi, tmod, borrowed, changed, &inner);
+            }
+        }
+        TK::CallFn { fn_idx, args, .. } => {
+            for (i, a) in args.iter().enumerate() {
+                if borrowed[*fn_idx].get(i) != Some(&true) {
+                    continue;
+                }
+                let held_above = match &a.kind {
+                    TK::Local(n) => held_above(n, borrowed),
+                    _ => false,
+                };
+                if !held_above {
+                    borrowed[*fn_idx][i] = false;
+                    *changed = true;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Function-typed parameters that never leave the function they are passed
+/// to: only ever called, or handed to another function's parameter of the
+/// same kind. The prelude's `map`, `filter` and `fold` are the point — `f`
+/// is called on each element and passed along the recursion, and that is
+/// all. A lambda written in place for such a position is built with its
+/// captures *borrowed*: the environment holds no reference of its own, since
+/// the frame that made it outlives the call and holds every capture already.
+/// That is also what lets `map(xs, \\x -> g(x, xs))` reuse the cells of `xs`
+/// in place — the environment used to be a second holder of `xs`.
+///
+/// A fixpoint from "everything non-escaping" downward, like
+/// `borrowed_params`; impl methods are excluded for the same reason.
+fn nonescaping_fn_params(tmod: &TModule) -> Vec<Vec<bool>> {
+    let impls: HashSet<usize> = tmod.impl_methods.values().copied().collect();
+    let mut table: Vec<Vec<bool>> = tmod
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(fi, f)| {
+            let mut rebound = HashSet::new();
+            collect_rebound(&f.body, &mut rebound);
+            f.params
+                .iter()
+                .map(|(n, t)| {
+                    matches!(t, Ty::Fn(..))
+                        && !impls.contains(&fi)
+                        && !f.exported
+                        && !rebound.contains(n.as_str())
+                })
+                .collect()
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for fi in 0..tmod.fns.len() {
+            for pi in 0..tmod.fns[fi].params.len() {
+                if table[fi][pi]
+                    && !only_called(&tmod.fns[fi].body, &tmod.fns[fi].params[pi].0, &table)
+                {
+                    table[fi][pi] = false;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return table;
+        }
+    }
+}
+
+/// Whether every appearance of `name` in `e` is as the callee of a call or
+/// as an argument in a non-escaping position of one.
+fn only_called(e: &TExpr, name: &str, table: &[Vec<bool>]) -> bool {
+    let is_name = |x: &TExpr| matches!(&x.kind, TK::Local(n) if n == name);
+    match &e.kind {
+        TK::Local(n) => n != name,
+        TK::CallClosure { callee, args } => {
+            (is_name(callee) || only_called(callee, name, table))
+                && args.iter().all(|a| only_called(a, name, table))
+        }
+        TK::CallFn { fn_idx, args, .. } => args.iter().enumerate().all(|(i, a)| {
+            if is_name(a) {
+                table[*fn_idx].get(i) == Some(&true)
+            } else {
+                only_called(a, name, table)
+            }
+        }),
+        TK::Lambda { captures, .. } | TK::Spawn { captures, .. } => {
+            !captures.iter().any(|(n, _)| n == name)
+        }
+        _ => {
+            let mut ok = true;
+            walk_children(e, &mut |c| {
+                if ok {
+                    ok = only_called(c, name, table);
+                }
+            });
+            ok
+        }
+    }
+}
+
+/// Whether the body builds any value of the ADT `adt` with fields.
+fn constructs_adt(e: &TExpr, adt: usize) -> bool {
+    if matches!(&e.kind, TK::CallCtor { adt: a, args, .. } if *a == adt && !args.is_empty()) {
+        return true;
+    }
+    let mut found = false;
+    walk_children(e, &mut |c| {
+        if !found {
+            found = constructs_adt(c, adt);
+        }
+    });
+    found
+}
+
+/// Whether every appearance of `name` in `e` is in a position that borrows
+/// it — the positions `gen_borrowed` serves, or the borrowed parameter of a
+/// call. A lambda or spawn that captures it keeps it, so that is an owned use.
+fn borrows_only(e: &TExpr, name: &str, borrowed: &[Vec<bool>]) -> bool {
+    let operand = |x: &TExpr, borrowing: bool| -> bool {
+        match &x.kind {
+            TK::Local(n) if n == name => borrowing,
+            _ => borrows_only(x, name, borrowed),
+        }
+    };
+    match &e.kind {
+        TK::Local(n) => n != name,
+        TK::Builtin { args, .. } => args.iter().all(|a| operand(a, true)),
+        TK::BufGet { buf, idx, .. } => operand(buf, true) && operand(idx, false),
+        TK::BufSet { buf, idx, val, .. } => {
+            operand(buf, true) && operand(idx, false) && operand(val, false)
+        }
+        // Standing alone or as a `Ptr` argument, the buffer is held for the
+        // call and released by whoever made it.
+        TK::BufLen { buf } | TK::BufPtr { buf } => operand(buf, true),
+        TK::Slice { base, from, to } => {
+            operand(base, true)
+                && operand(from, false)
+                && to.as_deref().map_or(true, |t| operand(t, false))
+        }
+        TK::MapFind { map, key: k } | TK::MapNext { map, from: k } => {
+            operand(map, true) && operand(k, false)
+        }
+        TK::MapSet { map, key, val } => {
+            operand(map, true) && operand(key, false) && operand(val, false)
+        }
+        TK::MapLen { map } => operand(map, true),
+        // Taking a value apart, or reading one field, holds it only for the
+        // look; what comes out is retained where it is kept.
+        TK::FieldGet { base, .. } => operand(base, true),
+        TK::Match { scrutinee, arms } => {
+            operand(scrutinee, true)
+                && arms.iter().all(|a| {
+                    a.guard.as_ref().map_or(true, |g| borrows_only(g, name, borrowed))
+                        && borrows_only(&a.body, name, borrowed)
+                })
+        }
+        TK::CallFn { fn_idx, args, .. } => args
+            .iter()
+            .enumerate()
+            .all(|(i, a)| operand(a, borrowed[*fn_idx].get(i) == Some(&true))),
+        TK::Lambda { captures, .. } | TK::Spawn { captures, .. } => {
+            !captures.iter().any(|(n, _)| n == name)
+        }
+        _ => {
+            let mut ok = true;
+            walk_children(e, &mut |c| {
+                if ok {
+                    ok = borrows_only(c, name, borrowed);
+                }
+            });
+            ok
         }
     }
 }
@@ -580,11 +871,11 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(val);
         }
         TK::BufNew { count, .. } => f(count),
-        TK::BufGet { buf, idx } => {
+        TK::BufGet { buf, idx, .. } => {
             f(buf);
             f(idx);
         }
-        TK::BufSet { buf, idx, val } => {
+        TK::BufSet { buf, idx, val, .. } => {
             f(buf);
             f(idx);
             f(val);
@@ -750,6 +1041,21 @@ struct Codegen<'ctx, 'a> {
     /// Which parameters of each function have to be a compile-time function,
     /// because they reach a C callback position. See `static_params`.
     static_params: Vec<Vec<bool>>,
+    /// Which parameters of each function are borrowed: passed without a
+    /// reference of their own and released by nobody. See `borrowed_params`.
+    borrowed_params: Vec<Vec<bool>>,
+    /// Which function-typed parameters never escape their function. See
+    /// `nonescaping_fn_params`.
+    nonescaping_fn_params: Vec<Vec<bool>>,
+    /// Set for the one lambda about to be built for a non-escaping position:
+    /// its environment borrows its captures rather than holding them.
+    borrow_captures: bool,
+    /// `--unchecked`: no bounds test on any buffer access. The trade Zig's
+    /// ReleaseFast and Swift's -Ounchecked make; off by default.
+    unchecked: bool,
+    /// Names bound by a `match` on a borrowed parameter (or on one of these):
+    /// held by an earlier frame, like the parameter itself. See `borrowed_here`.
+    held_above: HashSet<String>,
     /// Those parameters of the instance being generated, resolved: the name a
     /// callback travels under, and the function it actually is.
     bound_fns: HashMap<String, FnVal>,
@@ -819,6 +1125,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         parallel: bool,
         source: Option<&Path>,
         target: Option<&str>,
+        unchecked: bool,
     ) -> Result<Codegen<'ctx, 'a>, CodegenError> {
         let module = ctx.create_module("rill");
         let builder = ctx.create_builder();
@@ -831,6 +1138,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             instances: HashMap::new(),
             shims: HashMap::new(),
             static_params: static_params(tmod),
+            borrowed_params: borrowed_params(tmod),
+            nonescaping_fn_params: nonescaping_fn_params(tmod),
+            borrow_captures: false,
+            unchecked,
+            held_above: HashSet::new(),
             bound_fns: HashMap::new(),
             callbacks: HashMap::new(),
             queue: VecDeque::new(),
@@ -932,6 +1244,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Ty::Int => Some(self.ctx.i64_type().into()),
             Ty::Float => Some(self.ctx.f64_type().into()),
             Ty::Bool => Some(self.ctx.bool_type().into()),
+            Ty::Adt(..) if self.is_flat(ty) => Some(self.flat_struct(ty).into()),
             Ty::Str | Ty::StrBuf | Ty::Adt(..) | Ty::Chan(..) | Ty::Ptr | Ty::Buf(_)
             | Ty::Map(..) => Some(self.ctx.ptr_type(Default::default()).into()),
             Ty::Fn(..) => Some(self.closure_type().into()),
@@ -1020,11 +1333,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     /// `{ i64 rc, i64 len, elements... }` — the length sits where a string
     /// keeps its byte count.
+    /// A buffer value points at its first element; its count sits sixteen
+    /// bytes before it and its length eight, so that `v[i]` is one
+    /// register-indexed load with nothing added — the header's offset used
+    /// to cost an `add` per element in every scan.
     fn buf_len(&self, p: PointerValue<'ctx>) -> IntValue<'ctx> {
         let i64t = self.ctx.i64_type();
         let slot = unsafe {
             self.builder
-                .build_gep(i64t, p, &[i64t.const_int(1, false)], "len.ptr")
+                .build_gep(i64t, p, &[i64t.const_int(-1i64 as u64, true)], "len.ptr")
                 .expect("LLVM builder error")
         };
         let load = self.builder.build_load(i64t, slot, "len").expect("LLVM builder error");
@@ -1047,16 +1364,41 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     /// The first element's address, which is also what C is handed.
     fn buf_data(&self, p: PointerValue<'ctx>) -> PointerValue<'ctx> {
-        let i8t = self.ctx.i8_type();
+        p
+    }
+
+    /// The count of a buffer: sixteen bytes before its first element.
+    fn buf_rc_ptr(&self, p: PointerValue<'ctx>) -> PointerValue<'ctx> {
         unsafe {
             self.builder
-                .build_gep(i8t, p, &[self.ctx.i64_type().const_int(16, false)], "data")
+                .build_gep(self.ctx.i64_type(), p, &[self.ctx.i64_type().const_int(-2i64 as u64, true)], "rc.ptr")
                 .expect("LLVM builder error")
         }
     }
 
     /// The address of element `i`, after checking it is one. The comparison is
     /// unsigned, so a negative index fails the same test as one off the end.
+    /// The slot, with the bounds test unless the checker proved it in front
+    /// of the loop (`unchecked`) or the build asked for none (`--unchecked`).
+    fn buf_slot_at(
+        &mut self,
+        p: PointerValue<'ctx>,
+        i: IntValue<'ctx>,
+        w: &CTy,
+        func: FunctionValue<'ctx>,
+        unchecked: bool,
+    ) -> PointerValue<'ctx> {
+        if unchecked || self.unchecked {
+            let data = self.buf_data(p);
+            return unsafe {
+                self.builder
+                    .build_gep(self.c_type(w).expect("a width"), data, &[i], "slot")
+                    .expect("LLVM builder error")
+            };
+        }
+        self.buf_slot(p, i, w, func)
+    }
+
     fn buf_slot(
         &mut self,
         p: PointerValue<'ctx>,
@@ -1102,15 +1444,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// Allocates a heap object of the given layout with refcount 1.
     fn alloc_object(&mut self, struct_ty: StructType<'ctx>, name: &str) -> PointerValue<'ctx> {
         let size = struct_ty.size_of().expect("sized struct");
-        let alloc = self.module.get_function("rill_alloc").unwrap();
-        let call = self
-            .builder
-            .build_call(alloc, &[size.into()], name)
-            .expect("LLVM builder error");
-        let ptr = match call.try_as_basic_value() {
-            inkwell::values::ValueKind::Basic(v) => v.into_pointer_value(),
-            _ => unreachable!(),
-        };
+        let ptr = self.emit_alloc(size, name);
         let rc_ptr = self
             .builder
             .build_struct_gep(struct_ty, ptr, 0, "rc.init")
@@ -1119,6 +1453,137 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .build_store(rc_ptr, self.ctx.i64_type().const_int(1, false))
             .expect("LLVM builder error");
         ptr
+    }
+
+    /// The pool's free lists and the live-allocation counter, as the
+    /// runtime exports them, declared on first use.
+    fn pool_globals(&mut self) -> (PointerValue<'ctx>, PointerValue<'ctx>) {
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let pools = match self.module.get_global("rill_pools") {
+            Some(g) => g,
+            None => self.module.add_global(ptrt.array_type(16), None, "rill_pools"),
+        };
+        let live = match self.module.get_global("rill_live_allocs") {
+            Some(g) => g,
+            None => self.module.add_global(self.ctx.i64_type(), None, "rill_live_allocs"),
+        };
+        (pools.as_pointer_value(), live.as_pointer_value())
+    }
+
+    /// `rill_alloc(size)`, with the pool's fast path laid down here: a block
+    /// of the right size class is popped off its free list without a call,
+    /// and the runtime is asked only when that list is empty (or the object
+    /// is too big for the pool). Object sizes are constants, so LLVM folds
+    /// the class and drops whichever branch cannot be taken. A program that
+    /// is nothing but building and dropping — five cons cells and a closure
+    /// per step of an n-body — spent half its time in these two calls.
+    ///
+    /// Only where one strand's pool is *the* pool: a parallel build has one
+    /// per worker and asks the runtime which, and wasm keeps the call.
+    fn emit_alloc(&mut self, size: IntValue<'ctx>, name: &str) -> PointerValue<'ctx> {
+        let alloc = self.module.get_function("rill_alloc").unwrap();
+        let slow_call = |cg: &mut Self| -> PointerValue<'ctx> {
+            let call = cg.builder.build_call(alloc, &[size.into()], name).expect("LLVM builder error");
+            match call.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(v) => v.into_pointer_value(),
+                _ => unreachable!(),
+            }
+        };
+        if self.parallel || self.wasm {
+            return slow_call(self);
+        }
+        let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
+        let i64t = self.ctx.i64_type();
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let (pools, live) = self.pool_globals();
+        let fast_bb = self.ctx.append_basic_block(func, "alloc.fast");
+        let take_bb = self.ctx.append_basic_block(func, "alloc.take");
+        let slow_bb = self.ctx.append_basic_block(func, "alloc.slow");
+        let done_bb = self.ctx.append_basic_block(func, "alloc.done");
+        let small = self
+            .builder
+            .build_int_compare(IntPredicate::ULE, size, i64t.const_int(256, false), "small")
+            .expect("LLVM builder error");
+        self.builder.build_conditional_branch(small, fast_bb, slow_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(fast_bb);
+        let class = self.pool_class(size);
+        let slot = unsafe {
+            self.builder
+                .build_in_bounds_gep(ptrt.array_type(16), pools, &[i64t.const_zero(), class], "free.slot")
+                .expect("LLVM builder error")
+        };
+        let head = self.builder.build_load(ptrt, slot, "head").expect("LLVM builder error").into_pointer_value();
+        let empty = self.builder.build_is_null(head, "empty").expect("LLVM builder error");
+        self.builder.build_conditional_branch(empty, slow_bb, take_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(take_bb);
+        let next = self.builder.build_load(ptrt, head, "next").expect("LLVM builder error");
+        self.builder.build_store(slot, next).expect("LLVM builder error");
+        let n = self.builder.build_load(i64t, live, "live").expect("LLVM builder error").into_int_value();
+        let n1 = self.builder.build_int_add(n, i64t.const_int(1, false), "live.inc").expect("LLVM builder error");
+        self.builder.build_store(live, n1).expect("LLVM builder error");
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(slow_bb);
+        let p = slow_call(self);
+        let slow_end = self.builder.get_insert_block().unwrap();
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(done_bb);
+        let phi = self.builder.build_phi(ptrt, name).expect("LLVM builder error");
+        phi.add_incoming(&[(&head, take_bb), (&p, slow_end)]);
+        phi.as_basic_value().into_pointer_value()
+    }
+
+    /// `rill_free_sized(p, size)` with the same fast path: the block goes
+    /// back on its class's free list in three instructions.
+    fn emit_free(&mut self, p: PointerValue<'ctx>, size: IntValue<'ctx>) {
+        if self.parallel || self.wasm {
+            self.call_rt("rill_free_sized", &[p.into(), size.into()]);
+            return;
+        }
+        let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
+        let i64t = self.ctx.i64_type();
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let (pools, live) = self.pool_globals();
+        let fast_bb = self.ctx.append_basic_block(func, "free.fast");
+        let slow_bb = self.ctx.append_basic_block(func, "free.slow");
+        let done_bb = self.ctx.append_basic_block(func, "free.done");
+        let small = self
+            .builder
+            .build_int_compare(IntPredicate::ULE, size, i64t.const_int(256, false), "small")
+            .expect("LLVM builder error");
+        self.builder.build_conditional_branch(small, fast_bb, slow_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(fast_bb);
+        let class = self.pool_class(size);
+        let slot = unsafe {
+            self.builder
+                .build_in_bounds_gep(ptrt.array_type(16), pools, &[i64t.const_zero(), class], "free.slot")
+                .expect("LLVM builder error")
+        };
+        let head = self.builder.build_load(ptrt, slot, "head").expect("LLVM builder error");
+        self.builder.build_store(p, head).expect("LLVM builder error");
+        self.builder.build_store(slot, p).expect("LLVM builder error");
+        let n = self.builder.build_load(i64t, live, "live").expect("LLVM builder error").into_int_value();
+        let n1 = self.builder.build_int_sub(n, i64t.const_int(1, false), "live.dec").expect("LLVM builder error");
+        self.builder.build_store(live, n1).expect("LLVM builder error");
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(slow_bb);
+        self.call_rt("rill_free_sized", &[p.into(), size.into()]);
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(done_bb);
+    }
+
+    /// `(size + 15) / 16 - 1`: the runtime's `pool_class`.
+    fn pool_class(&self, size: IntValue<'ctx>) -> IntValue<'ctx> {
+        let i64t = self.ctx.i64_type();
+        let up = self.builder.build_int_add(size, i64t.const_int(15, false), "sz15").expect("LLVM builder error");
+        let q = self.builder.build_int_unsigned_div(up, i64t.const_int(16, false), "sz16").expect("LLVM builder error");
+        self.builder.build_int_sub(q, i64t.const_int(1, false), "class").expect("LLVM builder error")
     }
 
     fn fn_llvm_type(&self, params: &[Ty], ret: &Ty, with_env: bool) -> FunctionType<'ctx> {
@@ -1224,14 +1689,25 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.module.add_function("rill_free_ptr", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_null_ptr", ptrt.fn_type(&[], false), None);
         self.module.add_function("rill_is_null", i8t.fn_type(&[ptrt.into()], false), None);
-        self.module.add_function(
+        let buf_new = self.module.add_function(
             "rill_buf_new",
             ptrt.fn_type(&[i64t.into(), i64t.into()], false),
             None,
         );
+        // A fresh buffer aliases nothing, which is what lets LLVM carry the
+        // length `BufNew` stores through to the checks that read it.
+        buf_new.add_attribute(
+            AttributeLoc::Return,
+            self.ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("noalias"), 0),
+        );
         self.module.add_function(
             "rill_buf_release",
             void.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_buf_check",
+            void.fn_type(&[ptrt.into(), i64t.into(), i64t.into()], false),
             None,
         );
         self.module.add_function("rill_strbuf_new", ptrt.fn_type(&[], false), None);
@@ -1241,11 +1717,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function(
+            "rill_strbuf_int",
+            void.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
             "rill_strbuf_byte",
             void.fn_type(&[ptrt.into(), i64t.into()], false),
             None,
         );
         self.module.add_function("rill_strbuf_str", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_strbuf_take", ptrt.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_strbuf_len", i64t.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_strbuf_release", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function(
@@ -1342,6 +1824,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function(
+            "rill_map_get_or",
+            i64t.fn_type(&[ptrt.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
             "rill_map_del",
             i8t.fn_type(&[ptrt.into(), i64t.into()], false),
             None,
@@ -1380,7 +1867,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             };
             self.module.add_function(name, fn_ty, None);
         }
-        self.module.add_function("rill_alloc", ptrt.fn_type(&[i64t.into()], false), None);
+        let alloc = self.module.add_function("rill_alloc", ptrt.fn_type(&[i64t.into()], false), None);
+        alloc.add_attribute(
+            AttributeLoc::Return,
+            self.ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("noalias"), 0),
+        );
         self.module.add_function(
             "rill_free_sized",
             void.fn_type(&[ptrt.into(), i64t.into()], false),
@@ -1427,6 +1918,30 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     ) -> (IntValue<'ctx>, IntValue<'ctx>) {
         let i64t = self.ctx.i64_type();
         let zero = i64t.const_zero();
+        if let Some(fields) = self.flat_fields(ty) {
+            // A flat value becomes a word by being boxed, in the layout a
+            // counted constructor has, so the table's thunks can hold and
+            // let go of it like any other.
+            let (adt, targs) = match ty {
+                Ty::Adt(a, t) => (*a, t.clone()),
+                _ => unreachable!("flat types are ADTs"),
+            };
+            let st = self.ctor_struct(adt, 0, &targs);
+            let p = self.alloc_object(st, "flat.box");
+            let tag = self.tmod.adts[adt].ctors[0].tag;
+            let tag_ptr = self.builder.build_struct_gep(st, p, 1, "tag").expect("LLVM builder error");
+            self.builder.build_store(tag_ptr, i64t.const_int(tag, false)).expect("LLVM builder error");
+            for fi in 0..fields.len() {
+                let fv = self.extract_field(v, fi as u32);
+                let fp = self
+                    .builder
+                    .build_struct_gep(st, p, (fi + 2) as u32, "field")
+                    .expect("LLVM builder error");
+                self.builder.build_store(fp, fv).expect("LLVM builder error");
+            }
+            let w = self.builder.build_ptr_to_int(p, i64t, "w").expect("LLVM builder error");
+            return (w, zero);
+        }
         let b = &self.builder;
         match ty {
             Ty::Int => (v.into_int_value(), zero),
@@ -1465,6 +1980,34 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         bw: IntValue<'ctx>,
         ty: &Ty,
     ) -> BasicValueEnum<'ctx> {
+        if let Some(fields) = self.flat_fields(ty) {
+            // Read back out of the box — only read: whoever handed the word
+            // over says whether the box is theirs or ours.
+            let (adt, targs) = match ty {
+                Ty::Adt(x, t) => (*x, t.clone()),
+                _ => unreachable!("flat types are ADTs"),
+            };
+            let st = self.ctor_struct(adt, 0, &targs);
+            let ptrt = self.ctx.ptr_type(Default::default());
+            let p = self.builder.build_int_to_ptr(a, ptrt, "fbox").expect("LLVM builder error");
+            let mut agg = self.flat_struct(ty).get_undef();
+            for (fi, cf) in fields.iter().enumerate() {
+                let fp = self
+                    .builder
+                    .build_struct_gep(st, p, (fi + 2) as u32, "field")
+                    .expect("LLVM builder error");
+                let fv = self
+                    .builder
+                    .build_load(self.llvm_type(cf).expect("a scalar"), fp, "fv")
+                    .expect("LLVM builder error");
+                agg = self
+                    .builder
+                    .build_insert_value(agg, fv, fi as u32, "f")
+                    .expect("LLVM builder error")
+                    .into_struct_value();
+            }
+            return agg.into();
+        }
         let b = &self.builder;
         let ptrt = self.ctx.ptr_type(Default::default());
         match ty {
@@ -1496,7 +2039,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     // ---- reference counting ---------------------------------------------
 
-    fn is_heap(ty: &Ty) -> bool {
+    fn is_heap(&self, ty: &Ty) -> bool {
+        if self.is_flat(ty) {
+            return false;
+        }
         matches!(
             ty,
             Ty::Adt(..)
@@ -1507,6 +2053,78 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 | Ty::Buf(_)
                 | Ty::Map(..)
         )
+    }
+
+    /// A value kept in registers rather than in a box: a type with one
+    /// constructor, at least one field, and nothing but scalars in it — a
+    /// pair of numbers, a point, an n-body's body. Its LLVM shape is the
+    /// struct of its fields, passed and returned by value; it has no count,
+    /// no tag and no allocation, and `p.x` is an `extractvalue`. A function
+    /// returning `(q, r)` used to allocate a box the caller took apart and
+    /// freed a moment later — 100 million times in one benchmark.
+    ///
+    /// The one place such a value has to become a word is a table or a
+    /// channel, which store words: `pack_words` boxes it there in the layout
+    /// a counted constructor has, and `unpack_words` reads it back out.
+    fn flat_fields(&self, ty: &Ty) -> Option<Vec<Ty>> {
+        let Ty::Adt(adt, targs) = ty else { return None };
+        let ctors = &self.tmod.adts[*adt].ctors;
+        if ctors.len() != 1 || ctors[0].fields.is_empty() {
+            return None;
+        }
+        let fields: Vec<Ty> = ctors[0].fields.iter().map(|f| subst_gen(f, targs)).collect();
+        if fields.iter().all(|f| matches!(f, Ty::Int | Ty::Float | Ty::Bool)) {
+            Some(fields)
+        } else {
+            None
+        }
+    }
+
+    fn is_flat(&self, ty: &Ty) -> bool {
+        self.flat_fields(ty).is_some()
+    }
+
+    fn flat_struct(&self, ty: &Ty) -> StructType<'ctx> {
+        let fields = self.flat_fields(ty).expect("a flat type");
+        let members: Vec<BasicTypeEnum> =
+            fields.iter().map(|f| self.llvm_type(f).expect("a scalar")).collect();
+        self.ctx.struct_type(&members, false)
+    }
+
+    fn extract_field(&self, agg: BasicValueEnum<'ctx>, i: u32) -> BasicValueEnum<'ctx> {
+        self.builder
+            .build_extract_value(agg.into_struct_value(), i, "f")
+            .expect("LLVM builder error")
+    }
+
+    /// Lets go of the box a flat value travelled in through a table or a
+    /// channel: one fewer holder, and freed when that was the last.
+    fn release_flat_box(&mut self, word: IntValue<'ctx>, ty: &Ty) {
+        let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let i64t = self.ctx.i64_type();
+        let p = self.builder.build_int_to_ptr(word, ptrt, "fbox").expect("LLVM builder error");
+        let rc_ptr = self
+            .builder
+            .build_struct_gep(self.header_struct(), p, 0, "rc.ptr")
+            .expect("LLVM builder error");
+        let dec = self.emit_rc_dec(rc_ptr, func);
+        let dead = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, dec, i64t.const_zero(), "dead")
+            .expect("LLVM builder error");
+        let free_bb = self.ctx.append_basic_block(func, "fbox.free");
+        let done_bb = self.ctx.append_basic_block(func, "fbox.done");
+        self.builder.build_conditional_branch(dead, free_bb, done_bb).expect("LLVM builder error");
+        self.builder.position_at_end(free_bb);
+        let (adt, targs) = match ty {
+            Ty::Adt(a, t) => (*a, t.clone()),
+            _ => unreachable!("flat types are ADTs"),
+        };
+        let size = self.ctor_struct(adt, 0, &targs).size_of().expect("sized");
+        self.emit_free(p, size);
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+        self.builder.position_at_end(done_bb);
     }
 
     /// The `{ i64 rc, i64 tag }` header shared by all ADT boxes.
@@ -1601,12 +2219,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     fn emit_retain(&mut self, v: BasicValueEnum<'ctx>, ty: &Ty) {
+        if self.is_flat(ty) {
+            return;
+        }
         match ty {
             // Boxes, channels and strings are never null; closure
             // environments can be, so those keep the null-safe runtime call.
-            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Buf(_) | Ty::Map(..) => {
-                self.emit_rc_inc(v)
+            Ty::Buf(_) => {
+                let rc = self.buf_rc_ptr(v.into_pointer_value());
+                self.emit_rc_inc(rc.into())
             }
+            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Map(..) => self.emit_rc_inc(v),
             Ty::Fn(..) => {
                 let env = self
                     .builder
@@ -1651,6 +2274,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     fn emit_release_call(&mut self, v: BasicValueEnum<'ctx>, ty: &Ty, tail: bool) {
+        if self.is_flat(ty) {
+            return;
+        }
         // Counted values whose release is a runtime call get the last step of
         // that call laid down here instead: the count is nearly always about
         // to go from something to something, not to zero, and a load, a
@@ -1660,7 +2286,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         if !self.parallel && matches!(ty, Ty::Buf(_) | Ty::Str | Ty::StrBuf) {
             if let Some(func) = self.builder.get_insert_block().and_then(|b| b.get_parent()) {
                 let i64t = self.ctx.i64_type();
-                let p = v.into_pointer_value();
+                // Where the count lives: at the object for a string or a
+                // builder, sixteen bytes before the elements for a buffer.
+                let p = match ty {
+                    Ty::Buf(_) => self.buf_rc_ptr(v.into_pointer_value()),
+                    _ => v.into_pointer_value(),
+                };
                 let rc = self
                     .builder
                     .build_load(i64t, p, "rc")
@@ -1848,6 +2479,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let fn_ty = self.ctx.void_type().fn_type(&[ptrt.into()], false);
         let name = format!("drop${}", mangle(ty, &self.tmod.adts));
         let f = self.module.add_function(&name, fn_ty, None);
+        f.set_linkage(inkwell::module::Linkage::Internal);
         // Cache before generating the body so recursive types terminate.
         self.adt_drops.insert(ty.clone(), f);
 
@@ -1909,7 +2541,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             let mut heap = Vec::new();
             for (fi, ft) in fields.iter().enumerate() {
                 let cf = subst_gen(ft, &targs);
-                if Self::is_heap(&cf) {
+                if self.is_heap(&cf) {
                     let fp = self
                         .builder
                         .build_struct_gep(struct_ty, ptr, (fi + 2) as u32, "f")
@@ -1926,7 +2558,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.emit_release(fv, &cf);
             }
             let size = struct_ty.size_of().expect("sized struct");
-            self.call_rt("rill_free_sized", &[ptr.into(), size.into()]);
+            self.emit_free(ptr, size);
             match last {
                 Some((fv, cf)) => {
                     self.emit_release_tail(fv, &cf);
@@ -1998,6 +2630,34 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         match ty {
             Ty::Str => Ok(v),
+            Ty::Adt(adt, _) if self.is_flat(ty) => {
+                let fields = self.flat_fields(ty).expect("flat");
+                let c = &self.tmod.adts[*adt].ctors[0];
+                let head = if is_tuple_ctor(&c.name, c.fields.len()) {
+                    "(".to_string()
+                } else {
+                    format!("{}(", c.name)
+                };
+                let mut acc: BasicValueEnum<'ctx> = self.const_str(&head).into();
+                for (fi, cf) in fields.iter().enumerate() {
+                    if fi > 0 {
+                        let sep: BasicValueEnum<'ctx> = self.const_str(", ").into();
+                        let next = self.call_concat(acc, sep);
+                        self.emit_release(acc, &Ty::Str);
+                        acc = next;
+                    }
+                    let fv = self.extract_field(v, fi as u32);
+                    let fs = self.gen_show_of(fv, cf, line)?;
+                    let next = self.call_concat(acc, fs);
+                    self.emit_release(acc, &Ty::Str);
+                    self.emit_release(fs, &Ty::Str);
+                    acc = next;
+                }
+                let close: BasicValueEnum<'ctx> = self.const_str(")").into();
+                let out = self.call_concat(acc, close);
+                self.emit_release(acc, &Ty::Str);
+                Ok(out)
+            }
             Ty::Adt(..) => {
                 let f = self.adt_show(ty, line)?;
                 let call = self.builder.build_call(f, &[v.into()], "shown").expect("builder");
@@ -2029,6 +2689,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let fn_ty = ptrt.fn_type(&[ptrt.into()], false);
         let name = format!("show${}", mangle(ty, &self.tmod.adts));
         let f = self.module.add_function(&name, fn_ty, None);
+        f.set_linkage(inkwell::module::Linkage::Internal);
         self.adt_shows.insert(ty.clone(), f);
 
         let saved = self.builder.get_insert_block();
@@ -2094,7 +2755,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .builder
                     .build_load(self.llvm_type(&cf).unwrap(), fp, "fv")
                     .expect("LLVM builder error");
-                if Self::is_heap(&cf) {
+                if self.is_heap(&cf) {
                     self.emit_retain(fv, &cf);
                 }
                 let fs = self.gen_show_of(fv, &cf, line)?;
@@ -2157,6 +2818,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     )
                     .expect("LLVM builder error"))
             }
+            Ty::Adt(..) if self.is_flat(ty) => {
+                let fields = self.flat_fields(ty).expect("flat");
+                let mut acc = self.ctx.bool_type().const_int(1, false);
+                for (fi, cf) in fields.iter().enumerate() {
+                    let fa = self.extract_field(a, fi as u32);
+                    let fb = self.extract_field(b, fi as u32);
+                    let e = self.gen_eq_of(fa, fb, cf, line)?;
+                    acc = self.builder.build_and(acc, e, "eq").expect("LLVM builder error");
+                }
+                Ok(acc)
+            }
             Ty::Adt(..) => {
                 let f = self.adt_eq(ty, line)?;
                 let call =
@@ -2189,6 +2861,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let fn_ty = self.ctx.bool_type().fn_type(&[ptrt.into(), ptrt.into()], false);
         let name = format!("eq${}", mangle(ty, &self.tmod.adts));
         let f = self.module.add_function(&name, fn_ty, None);
+        f.set_linkage(inkwell::module::Linkage::Internal);
         self.adt_eqs.insert(ty.clone(), f);
 
         let saved = self.builder.get_insert_block();
@@ -2283,6 +2956,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// splitmix64's finaliser. A key's own bits are rarely spread evenly —
     /// small integers and pointers least of all — and the table takes the low
     /// ones to pick a bucket with, so every bit is made to depend on the rest.
+    /// An `Int` key's hash: one multiply by the golden ratio and a fold of
+    /// the high half into the low, which is what a hand-written C table does
+    /// and a third of what `mix64` costs. The table takes its slot from the
+    /// low bits and its control byte from the top seven, and both are well
+    /// stirred by this for the keys tables see. Must agree with the
+    /// runtime's `hash_int`, which probes `Int`-keyed tables itself.
+    fn hash_int(&self, x: IntValue<'ctx>) -> IntValue<'ctx> {
+        let i64t = self.ctx.i64_type();
+        let b = &self.builder;
+        let m = b.build_int_mul(x, i64t.const_int(0x9e37_79b9_7f4a_7c15, false), "hm").expect("builder");
+        let s = b.build_right_shift(m, i64t.const_int(29, false), false, "hs").expect("builder");
+        b.build_xor(m, s, "h").expect("builder")
+    }
+
     fn mix64(&self, x: IntValue<'ctx>) -> IntValue<'ctx> {
         let i64t = self.ctx.i64_type();
         let b = &self.builder;
@@ -2309,7 +2996,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     ) -> Result<IntValue<'ctx>, CodegenError> {
         let i64t = self.ctx.i64_type();
         match ty {
-            Ty::Int => Ok(self.mix64(v.into_int_value())),
+            Ty::Int => Ok(self.hash_int(v.into_int_value())),
             Ty::Bool => {
                 let w = self
                     .builder
@@ -2348,6 +3035,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     inkwell::values::ValueKind::Basic(x) => x.into_int_value(),
                     _ => unreachable!("rill_str_hash returns a number"),
                 })
+            }
+            Ty::Adt(..) if self.is_flat(ty) => {
+                let fields = self.flat_fields(ty).expect("flat");
+                let mut acc = self.mix64(i64t.const_zero());
+                for (fi, cf) in fields.iter().enumerate() {
+                    let fv = self.extract_field(v, fi as u32);
+                    let fh = self.gen_hash_of(fv, cf, line)?;
+                    let x = self.builder.build_xor(acc, fh, "mixin").expect("LLVM builder error");
+                    acc = self.mix64(x);
+                }
+                Ok(acc)
             }
             Ty::Adt(..) => {
                 let f = self.adt_hash(ty, line)?;
@@ -2517,7 +3215,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let saved = self.builder.get_insert_block();
         let entry = self.ctx.append_basic_block(f, "entry");
         self.builder.position_at_end(entry);
-        if Self::is_heap(ty) {
+        if self.is_flat(ty) {
+            let a = f.get_nth_param(0).unwrap().into_int_value();
+            if retain {
+                let ptrt = self.ctx.ptr_type(Default::default());
+                let p = self.builder.build_int_to_ptr(a, ptrt, "fbox").expect("LLVM builder error");
+                self.emit_rc_inc(p.into());
+            } else {
+                self.release_flat_box(a, ty);
+            }
+        } else if self.is_heap(ty) {
             let a = f.get_nth_param(0).unwrap().into_int_value();
             let b = if words > 1 {
                 f.get_nth_param(1).unwrap().into_int_value()
@@ -2572,10 +3279,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let (ptrt, i64t) = (self.ctx.ptr_type(Default::default()), self.ctx.i64_type());
         let mut fields: Vec<BasicTypeEnum> = vec![ptrt.into(); 6];
         fields.push(i64t.into());
+        fields.push(i64t.into());
         let vt_ty = self.ctx.struct_type(&fields, false);
         let mut values: Vec<BasicValueEnum> =
             entries.iter().map(|f| f.as_global_value().as_pointer_value().into()).collect();
         values.push(i64t.const_int(vwords as u64, false).into());
+        // What the runtime may do itself rather than call back for: an `Int`
+        // key it hashes and compares in place, a scalar value it never
+        // retains or releases. The flags match the runtime's `KIND_*`.
+        let kind = (if *kty == Ty::Int { 1 } else { 0 })
+            | (if matches!(vty, Ty::Int | Ty::Float | Ty::Bool) { 2 } else { 0 });
+        values.push(i64t.const_int(kind, false).into());
         let init = vt_ty.const_named_struct(&values);
         let g = self.module.add_global(vt_ty, None, &name);
         g.set_initializer(&init);
@@ -2645,11 +3359,27 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// `extra_ints` is for the closure paths, whose LLVM signature carries an
     /// environment pointer the `Ty` list does not mention. The budgets read
     /// an env override so the boundary can be probed without a rebuild.
-    fn cc_for(params: &[Ty], extra_ints: usize) -> Option<u32> {
+    fn cc_for(&self, params: &[Ty], extra_ints: usize) -> Option<u32> {
         let iregs: usize = std::env::var("RILL_CC_INT_REGS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
         let fregs: usize = std::env::var("RILL_CC_FLOAT_REGS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
-        let floats = params.iter().filter(|t| matches!(t, Ty::Float)).count();
-        let ints = params.len() - floats + extra_ints;
+        // A flat value is passed as its fields, and each takes a register.
+        let mut floats = 0;
+        let mut ints = extra_ints;
+        for t in params {
+            match self.flat_fields(t) {
+                Some(fields) => {
+                    for f in fields {
+                        if f == Ty::Float {
+                            floats += 1;
+                        } else {
+                            ints += 1;
+                        }
+                    }
+                }
+                None if *t == Ty::Float => floats += 1,
+                None => ints += 1,
+            }
+        }
         if ints > iregs || floats > fregs {
             None
         } else {
@@ -2690,9 +3420,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // a tail call needs a feature the module may not be allowed to
         // declare, so there the C convention stays.
         if !self.wasm && self.tmod.fns[fn_idx].name != "main" {
-            if let Some(cc) = Self::cc_for(&params, 0) {
+            if let Some(cc) = self.cc_for(&params, 0) {
                 v.set_call_conventions(cc);
             }
+        }
+        // Nothing outside this module calls a Rill function except `main`
+        // and a wasm export, so every other one is `internal`. That is not
+        // cosmetic: LLVM inlines an external function warily, since it must
+        // keep the out-of-line copy and cannot specialize it on its callers,
+        // and a local `fn` that is a hot loop's helper pays for it —
+        // fannkuch ran 15% slower and n-body 20% slower with them exported.
+        if self.tmod.fns[fn_idx].name != "main" && !self.tmod.fns[fn_idx].exported {
+            v.set_linkage(inkwell::module::Linkage::Internal);
         }
         self.instances.insert(key.clone(), v);
         self.queue.push_back(key);
@@ -2819,7 +3558,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             raw.set_name(pname);
             scope.insert(pname.clone(), Some(raw));
             let cty = subst_gen(pty, subst);
-            if Self::is_heap(&cty) {
+            // A borrowed parameter is the caller's to release, not this
+            // frame's: nothing here retained it and nothing here lets it go.
+            if self.is_heap(&cty) && !self.borrowed_params[*fn_idx][i] {
                 self.cleanup.push((raw, cty));
             }
         }
@@ -2856,15 +3597,19 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // so a name that meant one function inside cannot be taken
                 // for it outside.
                 let saved_bound = self.bound_fns.clone();
-                for stmt in init {
+                for (si, stmt) in init.iter().enumerate() {
                     match stmt {
                         TStmt::Bind { name, value } => {
-                            let v = self.gen_expr(value, scope, subst, func)?;
+                            let rest = &stmts[si + 1..];
+                            let v = match self.take_builder(value, rest, scope) {
+                                Some(v) => Some(v),
+                                None => self.gen_expr(value, scope, subst, func)?,
+                            };
                             scope.insert(name.clone(), v);
                             self.rebind_known_fn(name, value, subst);
                             if let Some(v) = v {
                                 let ty = self.concrete(&value.ty, subst);
-                                if Self::is_heap(&ty) {
+                                if self.is_heap(&ty) {
                                     self.cleanup.push((v, ty));
                                 }
                             }
@@ -2873,7 +3618,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                             let out = self.gen_expr(v, scope, subst, func)?;
                             if let Some(out) = out {
                                 let ty = self.concrete(&v.ty, subst);
-                                if Self::is_heap(&ty) {
+                                if self.is_heap(&ty) {
                                     self.emit_release(out, &ty);
                                 }
                             }
@@ -2881,7 +3626,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     }
                 }
                 let out = match last {
-                    Some(last) => self.gen_tail(last, scope, subst, func, ret_ty),
+                    Some(last) => match self.take_builder(last, &[], scope) {
+                        Some(v) => self.finish_leaf(Some(v), &Ty::Str, ret_ty),
+                        None => self.gen_tail(last, scope, subst, func, ret_ty),
+                    },
                     None => self.finish_leaf(None, &Ty::Unit, ret_ty),
                 };
                 self.bound_fns = saved_bound;
@@ -2909,6 +3657,34 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.gen_tail_match(scrutinee, arms, scope, subst, func, ret_ty)
             }
             TK::CallFn { fn_idx, subst: inner, args } => {
+                if let Some(v) = self.try_fuse(e, scope, subst, func)? {
+                    let ty = self.concrete(&e.ty, subst);
+                    return self.finish_leaf(Some(v), &ty, ret_ty);
+                }
+                if let Some(v) = self.try_map_or(e, scope, subst, func)? {
+                    let ty = self.concrete(&e.ty, subst);
+                    return self.finish_leaf(Some(v), &ty, ret_ty);
+                }
+                if let Some(v) = self.try_map_list(e, scope, subst, func)? {
+                    let ty = self.concrete(&e.ty, subst);
+                    return self.finish_leaf(Some(v), &ty, ret_ty);
+                }
+                // A borrowed parameter is kept alive by its caller, and a
+                // frame in tail position releases everything it owns before
+                // it jumps. So only what some *earlier* frame holds — a
+                // borrowed parameter of this very function — can go through
+                // a borrowed position as a tail call; a value this frame owns
+                // or makes goes by an ordinary call and is released after.
+                let borrowed = self.borrowed_params[*fn_idx].clone();
+                let fits_tail = args
+                    .iter()
+                    .enumerate()
+                    .all(|(i, a)| borrowed.get(i) != Some(&true) || self.borrowed_here(a));
+                if !fits_tail {
+                    let ty = self.concrete(&e.ty, subst);
+                    let out = self.gen_expr(e, scope, subst, func)?;
+                    return self.finish_leaf(out, &ty, ret_ty);
+                }
                 // Before the arguments, so there is as little live across the
                 // yield as possible.
                 if self.preempt && self.call_goes_round(*fn_idx) {
@@ -2919,7 +3695,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let bound = self.bind_static_args(*fn_idx, args, subst, e.line)?;
                 let callee = self.request_instance(*fn_idx, inner, bound);
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
-                for a in args {
+                for (i, a) in args.iter().enumerate() {
+                    if borrowed.get(i) == Some(&true) {
+                        let (v, _) = self.gen_borrowed(a, scope, subst, func)?;
+                        argv.push(v.into());
+                        continue;
+                    }
                     // A binding this frame owns and hands to the call is
                     // moved, not copied: the retain a use would take and the
                     // release that follows it cancel exactly, and every loop
@@ -3007,6 +3788,540 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// A local whose one reference this frame owns and is about to give away.
     /// Taking it out of the cleanup list is the whole move: nothing retains it
     /// and nothing releases it here.
+    /// `range(a, b) |> filter(p) |> map(f) |> sum` — and `len`, and `fold`
+    /// — as the one loop it describes, with no list in between.
+    ///
+    /// Written as the prelude has it, that pipeline builds every element of
+    /// the range as a box, then walks the list once per stage: five million
+    /// numbers were 154 MB and 70 ms against a C loop's 5. The rewrite here
+    /// is the classic one — the consumer at the end folds each element as
+    /// the range produces it, each `map` becomes an assignment and each
+    /// `filter` a branch back to the loop — and it fires only when the whole
+    /// chain is visible at once: the prelude's own functions (a program that
+    /// redefines `map` gets what it wrote), lambdas written in place, and
+    /// scalar element and accumulator types, so no reference count is ever
+    /// in play. Anything else is generated as the calls it is.
+    fn try_fuse(
+        &mut self,
+        e: &TExpr,
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        enum Consumer<'e> {
+            Sum,
+            Len,
+            Fold(&'e TExpr, &'e TExpr),
+        }
+        enum Stage<'e> {
+            Map(&'e TExpr),
+            Filter(&'e TExpr),
+        }
+        let TK::CallFn { fn_idx, args, .. } = &e.kind else { return Ok(None) };
+        let (consumer, chain) = if self.is_prelude(*fn_idx, "sum") && args.len() == 1 {
+            (Consumer::Sum, &args[0])
+        } else if self.is_prelude(*fn_idx, "len") && args.len() == 1 {
+            (Consumer::Len, &args[0])
+        } else if self.is_prelude(*fn_idx, "fold") && args.len() == 3 {
+            (Consumer::Fold(&args[1], &args[2]), &args[0])
+        } else {
+            return Ok(None);
+        };
+        // Peel the chain down to the range it starts from.
+        let mut stages: Vec<Stage> = Vec::new();
+        let mut cur = chain;
+        let (lo, hi) = loop {
+            let TK::CallFn { fn_idx: f, args: a, .. } = &cur.kind else { return Ok(None) };
+            if self.is_prelude(*f, "map") && a.len() == 2 {
+                stages.push(Stage::Map(&a[1]));
+                cur = &a[0];
+            } else if self.is_prelude(*f, "filter") && a.len() == 2 {
+                stages.push(Stage::Filter(&a[1]));
+                cur = &a[0];
+            } else if self.is_prelude(*f, "range") && a.len() == 2 {
+                break (&a[0], &a[1]);
+            } else {
+                return Ok(None);
+            }
+        };
+        // The stages were collected from the outside in; they run inside out.
+        stages.reverse();
+        for st in &stages {
+            let (f, n) = match st {
+                Stage::Map(f) | Stage::Filter(f) => (*f, 1),
+            };
+            if self.fusible_lambda(f, n, subst).is_none() {
+                return Ok(None);
+            }
+        }
+        if let Consumer::Fold(init, f) = &consumer {
+            if !Self::is_scalar(&self.concrete(&init.ty, subst))
+                || self.fusible_lambda(f, 2, subst).is_none()
+            {
+                return Ok(None);
+            }
+        }
+        if !Self::is_scalar(&self.concrete(&e.ty, subst)) {
+            return Ok(None);
+        }
+
+        let i64t = self.ctx.i64_type();
+        let lo_v = self.gen_expr(lo, scope, subst, func)?.expect("value").into_int_value();
+        let hi_v = self.gen_expr(hi, scope, subst, func)?.expect("value").into_int_value();
+        let init_v: BasicValueEnum<'ctx> = match &consumer {
+            Consumer::Sum | Consumer::Len => i64t.const_zero().into(),
+            Consumer::Fold(init, _) => self.gen_expr(init, scope, subst, func)?.expect("value"),
+        };
+        let pre_bb = self.builder.get_insert_block().unwrap();
+        let head_bb = self.ctx.append_basic_block(func, "fuse.head");
+        let body_bb = self.ctx.append_basic_block(func, "fuse.body");
+        let latch_bb = self.ctx.append_basic_block(func, "fuse.latch");
+        let exit_bb = self.ctx.append_basic_block(func, "fuse.exit");
+        self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(head_bb);
+        let i_phi = self.builder.build_phi(i64t, "fuse.i").expect("LLVM builder error");
+        let acc_phi =
+            self.builder.build_phi(init_v.get_type(), "fuse.acc").expect("LLVM builder error");
+        i_phi.add_incoming(&[(&lo_v, pre_bb)]);
+        acc_phi.add_incoming(&[(&init_v, pre_bb)]);
+        // `range(a, b)` is a..=b: `range(1, n)` has n elements.
+        let more = self
+            .builder
+            .build_int_compare(IntPredicate::SLE, i_phi.as_basic_value().into_int_value(), hi_v, "more")
+            .expect("LLVM builder error");
+        self.builder.build_conditional_branch(more, body_bb, exit_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(body_bb);
+        let mut x: BasicValueEnum<'ctx> = i_phi.as_basic_value();
+        // Blocks that leave for the latch with the accumulator unchanged.
+        let mut skips: Vec<BasicBlock<'ctx>> = Vec::new();
+        for st in &stages {
+            match st {
+                Stage::Map(f) => {
+                    x = self.gen_inline_lambda(f, &[x], scope, subst, func)?;
+                }
+                Stage::Filter(p) => {
+                    let keep = self.gen_inline_lambda(p, &[x], scope, subst, func)?.into_int_value();
+                    let here = self.builder.get_insert_block().unwrap();
+                    let next_bb = self.ctx.append_basic_block(func, "fuse.kept");
+                    self.builder
+                        .build_conditional_branch(keep, next_bb, latch_bb)
+                        .expect("LLVM builder error");
+                    skips.push(here);
+                    self.builder.position_at_end(next_bb);
+                }
+            }
+        }
+        let acc_cur = acc_phi.as_basic_value();
+        let acc_new: BasicValueEnum<'ctx> = match &consumer {
+            Consumer::Sum => self
+                .builder
+                .build_int_add(acc_cur.into_int_value(), x.into_int_value(), "sum")
+                .expect("LLVM builder error")
+                .into(),
+            Consumer::Len => self
+                .builder
+                .build_int_add(acc_cur.into_int_value(), i64t.const_int(1, false), "len")
+                .expect("LLVM builder error")
+                .into(),
+            Consumer::Fold(_, f) => self.gen_inline_lambda(f, &[acc_cur, x], scope, subst, func)?,
+        };
+        let body_end = self.builder.get_insert_block().unwrap();
+        self.builder.build_unconditional_branch(latch_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(latch_bb);
+        let acc_next =
+            self.builder.build_phi(init_v.get_type(), "fuse.acc.next").expect("LLVM builder error");
+        acc_next.add_incoming(&[(&acc_new, body_end)]);
+        for bb in &skips {
+            acc_next.add_incoming(&[(&acc_cur, *bb)]);
+        }
+        // A loop is where a strand has to be interruptible, as at a tail call.
+        if self.preempt {
+            self.emit_preempt_check(func);
+        }
+        let i_next = self
+            .builder
+            .build_int_add(i_phi.as_basic_value().into_int_value(), i64t.const_int(1, false), "fuse.i.next")
+            .expect("LLVM builder error");
+        let latch_end = self.builder.get_insert_block().unwrap();
+        self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+        i_phi.add_incoming(&[(&i_next, latch_end)]);
+        acc_phi.add_incoming(&[(&acc_next.as_basic_value(), latch_end)]);
+
+        self.builder.position_at_end(exit_bb);
+        Ok(Some(acc_cur))
+    }
+
+    /// The prelude's `map_or(m, k, d)` on a table of scalar values, as the
+    /// one runtime call it is: a find and a read used to be two calls, each
+    /// hashing and comparing through the table's function pointers.
+    fn try_map_or(
+        &mut self,
+        e: &TExpr,
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let TK::CallFn { fn_idx, args, .. } = &e.kind else { return Ok(None) };
+        if !self.is_prelude(*fn_idx, "map_or") || args.len() != 3 {
+            return Ok(None);
+        }
+        let mty = self.concrete(&args[0].ty, subst);
+        let (kty, vty) = self.map_kv(&mty, e.line)?;
+        if !Self::is_scalar(&vty) {
+            return Ok(None);
+        }
+        let (m, mowned) = self.gen_borrowed(&args[0], scope, subst, func)?;
+        let (kv, kowned) = self.gen_borrowed(&args[1], scope, subst, func)?;
+        let dv = self.gen_expr(&args[2], scope, subst, func)?.expect("value");
+        let (k0, _) = self.pack_words(kv, &kty);
+        let (d0, _) = self.pack_words(dv, &vty);
+        let w = if kty == Ty::Int && !self.parallel {
+            self.inline_int_probe(m.into_pointer_value(), k0, d0, func)
+        } else {
+            let call = self.call_rt("rill_map_get_or", &[m.into(), k0.into(), d0.into()]);
+            match call.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+                _ => unreachable!("rill_map_get_or returns a word"),
+            }
+        };
+        let out = self.unpack_words(w, self.ctx.i64_type().const_zero(), &vty);
+        if kowned {
+            self.emit_release(kv, &kty);
+        }
+        if mowned {
+            self.emit_release(m, &mty);
+        }
+        Ok(Some(out))
+    }
+
+    /// The table's probe for an `Int` key, laid down in place: the hash,
+    /// the walk along the control bytes, the one key compare, and the value
+    /// word — or the default when an empty control byte ends the walk. This
+    /// is the runtime's `map_lookup` for the case its `KIND_INT_KEY` flag
+    /// covers, so the two must agree on the layout of `Map` (`ctrl` at word
+    /// 2, `slots` at 3, `cap` at 4, `stride` at 5), on `ctrl_of` and on the
+    /// sentinels. A million lookups were a runtime call each; C inlines its.
+    fn inline_int_probe(
+        &mut self,
+        m: PointerValue<'ctx>,
+        k: IntValue<'ctx>,
+        d: IntValue<'ctx>,
+        func: FunctionValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        let i64t = self.ctx.i64_type();
+        let i8t = self.ctx.i8_type();
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let b = &self.builder;
+        let word = |i: u64| -> PointerValue<'ctx> {
+            unsafe { b.build_in_bounds_gep(i64t, m, &[i64t.const_int(i, false)], "m.w").expect("builder") }
+        };
+        let ctrl = b.build_load(ptrt, word(2), "ctrl").expect("builder").into_pointer_value();
+        let slots = b.build_load(ptrt, word(3), "slots").expect("builder").into_pointer_value();
+        let cap = b.build_load(i64t, word(4), "cap").expect("builder").into_int_value();
+        let stride = b.build_load(i64t, word(5), "stride").expect("builder").into_int_value();
+        let empty_tbl = b.build_int_compare(IntPredicate::EQ, cap, i64t.const_zero(), "nocap").expect("builder");
+        let h = self.hash_int(k);
+        let b = &self.builder;
+        let mask = b.build_int_sub(cap, i64t.const_int(1, false), "mask").expect("builder");
+        let want = b
+            .build_int_truncate(
+                b.build_right_shift(h, i64t.const_int(57, false), false, "h57").expect("builder"),
+                i8t,
+                "want",
+            )
+            .expect("builder");
+        let i0 = b.build_and(h, mask, "i0").expect("builder");
+        let pre = b.get_insert_block().unwrap();
+        let loop_bb = self.ctx.append_basic_block(func, "probe");
+        let key_bb = self.ctx.append_basic_block(func, "probe.key");
+        let next_bb = self.ctx.append_basic_block(func, "probe.next");
+        let hit_bb = self.ctx.append_basic_block(func, "probe.hit");
+        let done_bb = self.ctx.append_basic_block(func, "probe.done");
+        b.build_conditional_branch(empty_tbl, done_bb, loop_bb).expect("builder");
+
+        b.position_at_end(loop_bb);
+        let i = b.build_phi(i64t, "i").expect("builder");
+        i.add_incoming(&[(&i0, pre)]);
+        let iv = i.as_basic_value().into_int_value();
+        let cp = unsafe { b.build_in_bounds_gep(i8t, ctrl, &[iv], "c.p").expect("builder") };
+        let c = b.build_load(i8t, cp, "c").expect("builder").into_int_value();
+        let is_empty = b.build_int_compare(IntPredicate::EQ, c, i8t.const_int(0xFF, false), "empty").expect("builder");
+        let same = b.build_int_compare(IntPredicate::EQ, c, want, "same").expect("builder");
+        let miss_now_bb = self.ctx.append_basic_block(func, "probe.miss");
+        b.build_conditional_branch(is_empty, miss_now_bb, key_bb).expect("builder");
+
+        b.position_at_end(key_bb);
+        let off = b.build_int_mul(iv, stride, "off").expect("builder");
+        let kp = unsafe { b.build_in_bounds_gep(i64t, slots, &[off], "k.p").expect("builder") };
+        let same_key = b.build_and(
+            same,
+            b.build_int_compare(IntPredicate::EQ, b.build_load(i64t, kp, "k").expect("builder").into_int_value(), k, "keq").expect("builder"),
+            "found",
+        ).expect("builder");
+        b.build_conditional_branch(same_key, hit_bb, next_bb).expect("builder");
+
+        b.position_at_end(next_bb);
+        let i1 = b.build_and(b.build_int_add(iv, i64t.const_int(1, false), "i1").expect("builder"), mask, "i1m").expect("builder");
+        i.add_incoming(&[(&i1, next_bb)]);
+        b.build_unconditional_branch(loop_bb).expect("builder");
+
+        b.position_at_end(hit_bb);
+        let vp = unsafe { b.build_in_bounds_gep(i64t, kp, &[i64t.const_int(1, false)], "v.p").expect("builder") };
+        let v = b.build_load(i64t, vp, "v").expect("builder").into_int_value();
+        b.build_unconditional_branch(done_bb).expect("builder");
+
+        b.position_at_end(miss_now_bb);
+        b.build_unconditional_branch(done_bb).expect("builder");
+
+        b.position_at_end(done_bb);
+        let out = b.build_phi(i64t, "got").expect("builder");
+        out.add_incoming(&[(&d, pre), (&v, hit_bb), (&d, miss_now_bb)]);
+        out.as_basic_value().into_int_value()
+    }
+
+    /// `strbuf_str(b)` where `b` is a builder this frame owns and never
+    /// names again: the string is taken out of the builder's block instead
+    /// of copied — 39 MB in the string-building benchmark, and every
+    /// `render` that ends with the string it built.
+    fn take_builder(
+        &mut self,
+        value: &TExpr,
+        rest: &[TStmt],
+        scope: &Scope<'ctx>,
+    ) -> Option<BasicValueEnum<'ctx>> {
+        let TK::Builtin { rt, args } = &value.kind else { return None };
+        if *rt != "rill_strbuf_str" {
+            return None;
+        }
+        let TK::Local(b) = &args[0].kind else { return None };
+        let bv = (*scope.get(b)?)?;
+        if !self.cleanup.iter().any(|(c, _)| *c == bv) {
+            return None;
+        }
+        let used_later = rest.iter().any(|st| match st {
+            TStmt::Bind { value, .. } | TStmt::Expr(value) => names_local(value, b),
+        });
+        if used_later {
+            return None;
+        }
+        let call = self.call_rt("rill_strbuf_take", &[bv.into()]);
+        match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => Some(v),
+            _ => unreachable!("rill_strbuf_take returns a string"),
+        }
+    }
+
+    /// `map(xs, \x -> …)` over a list of numbers or flat records, as the
+    /// loop it is: walk `xs`, lay the lambda's body over each element, and
+    /// build the result *forward*, each new cell written into the tail of the
+    /// one before, so there is no closure, no indirect call per element and
+    /// no second pass to turn the list round. Elements of those types carry
+    /// no count, which is what keeps this simple: the only heap objects in
+    /// play are the cells. The five-body list an n-body rebuilds each step was
+    /// spending more on the machinery of `map` than on the physics.
+    fn try_map_list(
+        &mut self,
+        e: &TExpr,
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let TK::CallFn { fn_idx, args, .. } = &e.kind else { return Ok(None) };
+        if !self.is_prelude(*fn_idx, "map") || args.len() != 2 {
+            return Ok(None);
+        }
+        let in_ty = self.concrete(&args[0].ty, subst);
+        let out_ty = self.concrete(&e.ty, subst);
+        let (Ty::Adt(adt, in_targs), Ty::Adt(adt2, out_targs)) = (&in_ty, &out_ty) else {
+            return Ok(None);
+        };
+        if adt != adt2 || in_targs.len() != 1 || out_targs.len() != 1 {
+            return Ok(None);
+        }
+        let def = &self.tmod.adts[*adt];
+        let nil_ci = def.ctors.iter().position(|c| c.name == "Nil" && c.fields.is_empty());
+        let cons_ci = def.ctors.iter().position(|c| c.name == "Cons" && c.fields.len() == 2);
+        let (Some(nil_ci), Some(cons_ci)) = (nil_ci, cons_ci) else { return Ok(None) };
+        if def.name != "List" || def.ctors.len() != 2 {
+            return Ok(None);
+        }
+        let plain = |cg: &Self, t: &Ty| Self::is_scalar(t) || cg.is_flat(t);
+        if !plain(self, &in_targs[0]) || !plain(self, &out_targs[0]) {
+            return Ok(None);
+        }
+        let TK::Lambda { params, body, .. } = &args[1].kind else { return Ok(None) };
+        if params.len() != 1
+            || !plain(self, &self.concrete(&params[0].1, subst))
+            || !plain(self, &self.concrete(&body.ty, subst))
+            || !self.registers_only(body, subst)
+        {
+            return Ok(None);
+        }
+        let (adt, in_targs, out_targs) = (*adt, in_targs.clone(), out_targs.clone());
+        let nil_tag = self.tmod.adts[adt].ctors[nil_ci].tag;
+        let cons_tag = self.tmod.adts[adt].ctors[cons_ci].tag;
+
+        let (xs, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+        let xs = xs.into_pointer_value();
+        let i64t = self.ctx.i64_type();
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let in_st = self.ctor_struct(adt, cons_ci, &in_targs);
+        let out_st = self.ctor_struct(adt, cons_ci, &out_targs);
+        let nil = self
+            .gen_ctor(adt, nil_ci, &out_targs, &[], scope, subst, func, false)?
+            .expect("a constructor")
+            .into_pointer_value();
+        // Where the next cell's address goes: the result's head to begin
+        // with, then each cell's tail. A stack slot, so that the loop needs no
+        // branch on "is this the first".
+        let entry = func.get_first_basic_block().expect("a function has an entry");
+        let here = self.builder.get_insert_block().unwrap();
+        match entry.get_first_instruction() {
+            Some(i) => self.builder.position_before(&i),
+            None => self.builder.position_at_end(entry),
+        }
+        let head_slot = self.builder.build_alloca(ptrt, "map.head").expect("LLVM builder error");
+        self.builder.position_at_end(here);
+        self.builder.build_store(head_slot, nil).expect("LLVM builder error");
+
+        let loop_bb = self.ctx.append_basic_block(func, "map.loop");
+        let body_bb = self.ctx.append_basic_block(func, "map.body");
+        let exit_bb = self.ctx.append_basic_block(func, "map.exit");
+        let pre = self.builder.get_insert_block().unwrap();
+        self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(loop_bb);
+        let cur = self.builder.build_phi(ptrt, "map.cur").expect("LLVM builder error");
+        let slot = self.builder.build_phi(ptrt, "map.slot").expect("LLVM builder error");
+        cur.add_incoming(&[(&xs, pre)]);
+        slot.add_incoming(&[(&head_slot, pre)]);
+        let curp = cur.as_basic_value().into_pointer_value();
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(self.header_struct(), curp, 1, "tag.p")
+            .expect("LLVM builder error");
+        let tag = self.builder.build_load(i64t, tag_ptr, "tag").expect("LLVM builder error").into_int_value();
+        let done = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, tag, i64t.const_int(nil_tag, false), "done")
+            .expect("LLVM builder error");
+        self.builder.build_conditional_branch(done, exit_bb, body_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(body_bb);
+        let xp = self.builder.build_struct_gep(in_st, curp, 2, "x.p").expect("LLVM builder error");
+        let x = self
+            .builder
+            .build_load(self.llvm_type(&in_targs[0]).expect("an element"), xp, "x")
+            .expect("LLVM builder error");
+        let np = self.builder.build_struct_gep(in_st, curp, 3, "next.p").expect("LLVM builder error");
+        let next = self.builder.build_load(ptrt, np, "next").expect("LLVM builder error");
+        let y = self.gen_inline_lambda(&args[1], &[x], scope, subst, func)?;
+        let cell = self.alloc_object(out_st, "map.cell");
+        let ct = self.builder.build_struct_gep(out_st, cell, 1, "cell.tag").expect("LLVM builder error");
+        self.builder.build_store(ct, i64t.const_int(cons_tag, false)).expect("LLVM builder error");
+        let ch = self.builder.build_struct_gep(out_st, cell, 2, "cell.head").expect("LLVM builder error");
+        self.builder.build_store(ch, y).expect("LLVM builder error");
+        let ctail = self.builder.build_struct_gep(out_st, cell, 3, "cell.tail").expect("LLVM builder error");
+        self.builder.build_store(ctail, nil).expect("LLVM builder error");
+        self.builder
+            .build_store(slot.as_basic_value().into_pointer_value(), cell)
+            .expect("LLVM builder error");
+        if self.preempt {
+            self.emit_preempt_check(func);
+        }
+        let body_end = self.builder.get_insert_block().unwrap();
+        self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+        cur.add_incoming(&[(&next, body_end)]);
+        slot.add_incoming(&[(&ctail, body_end)]);
+
+        self.builder.position_at_end(exit_bb);
+        let out = self.builder.build_load(ptrt, head_slot, "map.out").expect("LLVM builder error");
+        if held {
+            self.emit_release(xs.into(), &in_ty);
+        }
+        Ok(Some(out))
+    }
+
+    fn is_prelude(&self, fn_idx: usize, name: &str) -> bool {
+        fn_idx < self.tmod.prelude_fns && self.tmod.fns[fn_idx].name == name
+    }
+
+    fn is_scalar(ty: &Ty) -> bool {
+        matches!(ty, Ty::Int | Ty::Float | Ty::Bool)
+    }
+
+    /// A lambda written in place, of `n` scalar parameters and a scalar
+    /// result, whose body binds nothing on the heap — one that can be laid
+    /// into a loop body with its parameters bound to registers.
+    fn fusible_lambda<'e>(
+        &self,
+        f: &'e TExpr,
+        n: usize,
+        subst: &[Ty],
+    ) -> Option<(&'e [(String, Ty)], &'e TExpr)> {
+        let TK::Lambda { params, body, .. } = &f.kind else { return None };
+        if params.len() != n
+            || !params.iter().all(|(_, t)| Self::is_scalar(&self.concrete(t, subst)))
+            || !Self::is_scalar(&self.concrete(&body.ty, subst))
+            || !self.registers_only(body, subst)
+        {
+            return None;
+        }
+        Some((params, body))
+    }
+
+    /// Whether an expression can be generated in the middle of a loop body:
+    /// nothing it binds lives on the heap (a block's heap bindings are
+    /// released at function exit, which is once, not once per iteration),
+    /// and it makes no closure, strand or select of its own.
+    fn registers_only(&self, e: &TExpr, subst: &[Ty]) -> bool {
+        match &e.kind {
+            TK::Lambda { .. } | TK::Spawn { .. } | TK::Select { .. } => return false,
+            TK::Block(stmts) => {
+                for s in stmts {
+                    if let TStmt::Bind { value, .. } = s {
+                        if self.is_heap(&self.concrete(&value.ty, subst)) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            TK::Match { scrutinee, .. } => {
+                if self.is_heap(&self.concrete(&scrutinee.ty, subst)) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        let mut ok = true;
+        walk_children(e, &mut |c| {
+            if ok {
+                ok = self.registers_only(c, subst);
+            }
+        });
+        ok
+    }
+
+    /// Generates a lambda's body here, with its parameters bound to `args`.
+    fn gen_inline_lambda(
+        &mut self,
+        f: &TExpr,
+        args: &[BasicValueEnum<'ctx>],
+        scope: &Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let TK::Lambda { params, body, .. } = &f.kind else { unreachable!("checked by fusible_lambda") };
+        let mut inner = scope.clone();
+        for ((name, _), v) in params.iter().zip(args) {
+            inner.insert(name.clone(), Some(*v));
+        }
+        Ok(self.gen_expr(body, &mut inner, subst, func)?.expect("a scalar"))
+    }
+
     fn take_owned(
         &mut self,
         e: &TExpr,
@@ -3017,6 +4332,25 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let i = self.cleanup.iter().position(|(c, _)| *c == v)?;
         self.cleanup.remove(i);
         Some(v)
+    }
+
+    /// Whether `e` names a borrowed parameter of the function being
+    /// generated — a value an earlier frame holds, so one that outlives
+    /// anything this frame does, including a tail call.
+    fn borrowed_here(&self, e: &TExpr) -> bool {
+        let TK::Local(name) = &e.kind else { return false };
+        self.name_held_above(name)
+    }
+
+    fn name_held_above(&self, name: &str) -> bool {
+        if self.held_above.contains(name) {
+            return true;
+        }
+        let Some(f) = self.tmod.fns.get(self.cur_fn) else { return false };
+        f.params
+            .iter()
+            .position(|(n, _)| n == name)
+            .is_some_and(|i| self.borrowed_params[self.cur_fn][i])
     }
 
     fn flush_cleanup(&mut self) {
@@ -3162,7 +4496,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         match self.llvm_type(ret_ty) {
             None => {
                 if let Some(v) = out {
-                    if Self::is_heap(out_ty) {
+                    if self.is_heap(out_ty) {
                         self.emit_release(v, out_ty);
                     }
                 }
@@ -3205,11 +4539,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let shim_ty = self.fn_llvm_type(&params, &ret, true);
         let name = format!("{}$shim", self.instance_name(key.0, &key.1));
         let shim = self.module.add_function(&name, shim_ty, None);
+        shim.set_linkage(inkwell::module::Linkage::Internal);
         // A shim is reached through a closure value, so it is called however
         // lambdas are called — one more integer argument than the type says,
         // for the environment pointer.
         if !self.wasm {
-            if let Some(cc) = Self::cc_for(&params, 1) {
+            if let Some(cc) = self.cc_for(&params, 1) {
                 shim.set_call_conventions(cc);
             }
         }
@@ -3221,6 +4556,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             (1..shim.count_params()).map(|i| shim.get_nth_param(i).unwrap().into()).collect();
         let call = self.builder.build_call(target, &args, "").expect("LLVM builder error");
         self.match_cc(call, target);
+        // A closure call hands its arguments over owned; a borrowed parameter
+        // of the target releases nothing, so the shim lets those go itself.
+        let borrowed = self.borrowed_params[key.0].clone();
+        for (i, pty) in params.iter().enumerate() {
+            if borrowed.get(i) == Some(&true) && self.is_heap(pty) {
+                self.emit_release(shim.get_nth_param(i as u32 + 1).unwrap(), pty);
+            }
+        }
         match call.try_as_basic_value() {
             inkwell::values::ValueKind::Basic(v) => {
                 self.builder.build_return(Some(&v)).expect("LLVM builder error");
@@ -3270,7 +4613,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
         let f = &self.tmod.fns[fn_idx];
         let ret = subst_gen(&f.ret, &inner);
-        if Self::is_heap(&ret) {
+        if self.is_heap(&ret) {
             return Err(CodegenError::new(
                 arg.line,
                 format!(
@@ -3687,6 +5030,66 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // test is unsigned, which folds `i < 0` into the same compare, and
             // it picks the address rather than branching on it: the loaded
             // byte is thrown away when the index is out of range.
+            // `b += int_to_str(n)`: the digits go straight into the builder
+            // rather than through a string that exists only to be copied.
+            TK::Builtin { rt, args }
+                if *rt == "rill_strbuf_add"
+                    && matches!(&args[1].kind, TK::Builtin { rt: inner, .. } if *inner == "rill_int_to_str") =>
+            {
+                let TK::Builtin { args: inner, .. } = &args[1].kind else { unreachable!() };
+                let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let n = self.gen_expr(&inner[0], scope, subst, func)?.expect("value");
+                let f = self.module.get_function("rill_strbuf_int").unwrap();
+                self.builder.build_call(f, &[b.into(), n.into()], "").expect("LLVM builder error");
+                if held {
+                    self.emit_release(b, &Ty::StrBuf);
+                }
+                Ok(None)
+            }
+            // `b += byte`: when the builder has room, the store and the new
+            // length are laid down here; the runtime is asked only to grow.
+            TK::Builtin { rt, args } if *rt == "rill_strbuf_byte" => {
+                let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let c = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_int_value();
+                let i64t = self.ctx.i64_type();
+                let ptrt = self.ctx.ptr_type(Default::default());
+                let sb = self.ctx.struct_type(&[i64t.into(), ptrt.into(), i64t.into(), i64t.into()], false);
+                let bp = b.into_pointer_value();
+                let len_ptr = self.builder.build_struct_gep(sb, bp, 2, "sb.len.p").expect("LLVM builder error");
+                let cap_ptr = self.builder.build_struct_gep(sb, bp, 3, "sb.cap.p").expect("LLVM builder error");
+                let len = self.builder.build_load(i64t, len_ptr, "sb.len").expect("LLVM builder error").into_int_value();
+                let cap = self.builder.build_load(i64t, cap_ptr, "sb.cap").expect("LLVM builder error").into_int_value();
+                let fits = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, len, cap, "fits")
+                    .expect("LLVM builder error");
+                let fast_bb = self.ctx.append_basic_block(func, "sb.fast");
+                let slow_bb = self.ctx.append_basic_block(func, "sb.slow");
+                let done_bb = self.ctx.append_basic_block(func, "sb.done");
+                self.builder.build_conditional_branch(fits, fast_bb, slow_bb).expect("LLVM builder error");
+                self.builder.position_at_end(fast_bb);
+                let data_ptr = self.builder.build_struct_gep(sb, bp, 1, "sb.data.p").expect("LLVM builder error");
+                let data = self.builder.build_load(ptrt, data_ptr, "sb.data").expect("LLVM builder error").into_pointer_value();
+                let at = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(self.ctx.i8_type(), data, &[len], "sb.at")
+                        .expect("LLVM builder error")
+                };
+                let byte = self.builder.build_int_truncate(c, self.ctx.i8_type(), "byte").expect("LLVM builder error");
+                self.builder.build_store(at, byte).expect("LLVM builder error");
+                let len1 = self.builder.build_int_add(len, i64t.const_int(1, false), "sb.len1").expect("LLVM builder error");
+                self.builder.build_store(len_ptr, len1).expect("LLVM builder error");
+                self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                self.builder.position_at_end(slow_bb);
+                let f = self.module.get_function("rill_strbuf_byte").unwrap();
+                self.builder.build_call(f, &[b.into(), c.into()], "").expect("LLVM builder error");
+                self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                self.builder.position_at_end(done_bb);
+                if held {
+                    self.emit_release(b, &Ty::StrBuf);
+                }
+                Ok(None)
+            }
             TK::Builtin { rt, args } if (*rt == "rill_str_len" || *rt == "rill_str_get") => {
                 let (s, owned) = self.gen_borrowed(&args[0], scope, subst, func)?;
                 let s = s.into_pointer_value();
@@ -3799,7 +5202,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         v
                     };
                     argv.push(passed.into());
-                    if held && Self::is_heap(&ty) {
+                    if held && self.is_heap(&ty) {
                         owned.push((v, ty));
                     }
                 }
@@ -3862,17 +5265,51 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Ok(Some(agg.into()))
             }
             TK::CallFn { fn_idx, subst: inner, args } => {
+                if let Some(v) = self.try_fuse(e, scope, subst, func)? {
+                    return Ok(Some(v));
+                }
+                if let Some(v) = self.try_map_or(e, scope, subst, func)? {
+                    return Ok(Some(v));
+                }
+                if let Some(v) = self.try_map_list(e, scope, subst, func)? {
+                    return Ok(Some(v));
+                }
                 let inner: Vec<Ty> = inner.iter().map(|t| self.concrete(t, subst)).collect();
                 let bound = self.bind_static_args(*fn_idx, args, subst, e.line)?;
                 let callee = self.request_instance(*fn_idx, inner, bound);
+                let borrowed = self.borrowed_params[*fn_idx].clone();
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
-                for a in args {
-                    let v = self.gen_expr(a, scope, subst, func)?;
-                    argv.push(v.expect("arguments are never Unit").into());
+                // A value made for a borrowed position has no owner but this
+                // frame, which lets it go once the call is over. A local goes
+                // in as it stands: the frame holds it for the duration.
+                let mut held: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
+                let nonescaping = self.nonescaping_fn_params[*fn_idx].clone();
+                for (i, a) in args.iter().enumerate() {
+                    if borrowed.get(i) == Some(&true) {
+                        let (v, owned) = self.gen_borrowed(a, scope, subst, func)?;
+                        if owned {
+                            held.push((v, self.concrete(&a.ty, subst)));
+                        }
+                        argv.push(v.into());
+                    } else {
+                        // A lambda written here for a parameter that never
+                        // escapes borrows its captures: this frame holds them
+                        // for the whole call. Not in tail position — there the
+                        // frame lets go before the jump.
+                        if nonescaping.get(i) == Some(&true) && matches!(a.kind, TK::Lambda { .. }) {
+                            self.borrow_captures = true;
+                        }
+                        let v = self.gen_expr(a, scope, subst, func)?;
+                        self.borrow_captures = false;
+                        argv.push(v.expect("arguments are never Unit").into());
+                    }
                 }
                 let call =
                     self.builder.build_call(callee, &argv, "call").expect("LLVM builder error");
                 self.match_cc(call, callee);
+                for (v, ty) in held {
+                    self.emit_release(v, &ty);
+                }
                 Ok(match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,
@@ -3886,10 +5323,29 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .builder
                     .build_call(f, &[n.into(), size.into()], "buf")
                     .expect("LLVM builder error");
-                Ok(match call.try_as_basic_value() {
-                    inkwell::values::ValueKind::Basic(v) => Some(v),
+                let p = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
                     _ => unreachable!("rill_buf_new returns a pointer"),
-                })
+                };
+                // The runtime has just written this same length into the
+                // header; writing it again here, where LLVM can see it, is
+                // what lets the optimizer prove `i < #v` for a loop whose
+                // bound it can relate to `n` — and drop the check, and then
+                // vectorize the loop, which the check's extra exit forbade.
+                // A negative `n` never gets here: the runtime stops on it.
+                let i64t = self.ctx.i64_type();
+                let len_ptr = unsafe {
+                    self.builder
+                        .build_gep(
+                            i64t,
+                            p.into_pointer_value(),
+                            &[i64t.const_int(-1i64 as u64, true)],
+                            "len.ptr",
+                        )
+                        .expect("LLVM builder error")
+                };
+                self.builder.build_store(len_ptr, n).expect("LLVM builder error");
+                Ok(Some(p))
             }
             TK::BufLen { buf } => {
                 let (b, owned) = self.gen_borrowed(buf, scope, subst, func)?;
@@ -3907,7 +5363,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 Ok(Some(data.into()))
             }
-            TK::BufGet { buf, idx } => {
+            TK::BufGet { buf, idx, unchecked } => {
                 let bty = self.concrete(&buf.ty, subst);
                 let w = match &bty {
                     Ty::Buf(w) => w.clone(),
@@ -3915,7 +5371,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 };
                 let (b, owned) = self.gen_borrowed(buf, scope, subst, func)?;
                 let i = self.gen_expr(idx, scope, subst, func)?.expect("value").into_int_value();
-                let slot = self.buf_slot(b.into_pointer_value(), i, &w, func);
+                let slot = self.buf_slot_at(b.into_pointer_value(), i, &w, func, *unchecked);
                 let loaded = self
                     .builder
                     .build_load(self.c_type(&w).expect("a width"), slot, "bget")
@@ -3926,7 +5382,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 Ok(Some(out))
             }
-            TK::BufSet { buf, idx, val } => {
+            TK::BufSet { buf, idx, val, unchecked } => {
                 let bty = self.concrete(&buf.ty, subst);
                 let w = match &bty {
                     Ty::Buf(w) => w.clone(),
@@ -3935,7 +5391,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let (b, owned) = self.gen_borrowed(buf, scope, subst, func)?;
                 let i = self.gen_expr(idx, scope, subst, func)?.expect("value").into_int_value();
                 let v = self.gen_expr(val, scope, subst, func)?.expect("value");
-                let slot = self.buf_slot(b.into_pointer_value(), i, &w, func);
+                let slot = self.buf_slot_at(b.into_pointer_value(), i, &w, func, *unchecked);
                 let narrowed = self.to_c(v, &w);
                 self.builder.build_store(slot, narrowed).expect("LLVM builder error");
                 if owned {
@@ -3954,6 +5410,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     other => unreachable!("field of {other:?}"),
                 };
                 let (b, owned) = self.gen_borrowed(base, scope, subst, func)?;
+                if self.is_flat(&bty) {
+                    return Ok(Some(self.extract_field(b, *index as u32)));
+                }
                 let struct_ty = self.ctor_struct(*adt, *ctor, &targs);
                 let fty = subst_gen(&self.tmod.adts[*adt].ctors[*ctor].fields[*index], &targs);
                 let fp = self
@@ -4018,6 +5477,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 if kowned {
                     self.emit_release(kv, &kty);
                 }
+                // A flat key was boxed to be looked up with; the box was ours.
+                if self.is_flat(&kty) {
+                    self.release_flat_box(k0, &kty);
+                }
                 if owned {
                     self.emit_release(m, &mty);
                 }
@@ -4077,7 +5540,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     // what has structural equality, and a closure — the only
                     // value needing two — has none.
                     let w = got.into_int_value();
-                    self.unpack_words(w, self.ctx.i64_type().const_zero(), &kty)
+                    let k = self.unpack_words(w, self.ctx.i64_type().const_zero(), &kty);
+                    if self.is_flat(&kty) {
+                        self.release_flat_box(w, &kty);
+                    }
+                    k
                 } else {
                     let words = got.into_struct_value();
                     let w0 = self
@@ -4090,7 +5557,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         .build_extract_value(words, 1, "w1")
                         .expect("LLVM builder error")
                         .into_int_value();
-                    self.unpack_words(w0, w1, &vty)
+                    let v = self.unpack_words(w0, w1, &vty);
+                    if self.is_flat(&vty) {
+                        self.release_flat_box(w0, &vty);
+                    }
+                    v
                 };
                 if owned {
                     self.emit_release(m, &mty);
@@ -4160,10 +5631,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     Ty::Fn(p, r) => (p.clone(), (**r).clone()),
                     other => unreachable!("closure call on non-fn type {other:?}"),
                 };
-                let cv = self
-                    .gen_expr(callee, scope, subst, func)?
-                    .expect("closures are values")
-                    .into_struct_value();
+                // A closure named here is held by this frame for the length
+                // of the call, so it is not retained for it — that was two
+                // runtime calls around every `f(x)` a `map` makes.
+                let (cval, held) = self.gen_borrowed(callee, scope, subst, func)?;
+                let cv = cval.into_struct_value();
                 let code = self
                     .builder
                     .build_extract_value(cv, 0, "code")
@@ -4188,7 +5660,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // so an indirect call computing it again lands on the same
                 // convention.
                 if !self.wasm {
-                    if let Some(cc) = Self::cc_for(&params, 1) {
+                    if let Some(cc) = self.cc_for(&params, 1) {
                         call.set_call_convention(cc);
                     }
                 }
@@ -4196,9 +5668,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,
                 };
-                // The callee expression produced an owned closure; the call
-                // itself only borrows it.
-                self.emit_release(cv.into(), &callee_ty);
+                // A callee made for this call is owned here and let go now;
+                // the call itself only borrowed it.
+                if held {
+                    self.emit_release(cv.into(), &callee_ty);
+                }
                 Ok(out)
             }
             TK::Println(arg) => {
@@ -4236,7 +5710,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 };
                 let rt = self.module.get_function(rt_name).unwrap();
                 self.builder.build_call(rt, &rt_args, "").expect("LLVM builder error");
-                if Self::is_heap(&ty) {
+                if self.is_heap(&ty) {
                     self.emit_release(v, &ty);
                 }
                 Ok(None)
@@ -4272,7 +5746,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 };
                 let rt = self.module.get_function(rt_name).unwrap();
                 self.builder.build_call(rt, &rt_args, "").expect("LLVM builder error");
-                if Self::is_heap(&ty) {
+                if self.is_heap(&ty) {
                     self.emit_release(v, &ty);
                 }
                 Ok(None)
@@ -4334,14 +5808,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 for (i, stmt) in stmts.iter().enumerate() {
                     match stmt {
                         TStmt::Bind { name, value } => {
-                            let v = self.gen_expr(value, scope, subst, func)?;
+                            let v = match self.take_builder(value, &stmts[i + 1..], scope) {
+                                Some(v) => Some(v),
+                                None => self.gen_expr(value, scope, subst, func)?,
+                            };
                             scope.insert(name.clone(), v);
                             self.rebind_known_fn(name, value, subst);
                             // The binding owns this reference; released at
                             // function exit.
                             if let Some(v) = v {
                                 let ty = self.concrete(&value.ty, subst);
-                                if Self::is_heap(&ty) {
+                                if self.is_heap(&ty) {
                                     self.cleanup.push((v, ty));
                                 }
                             }
@@ -4353,7 +5830,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                                 // Discarded statement value: release now.
                                 if let Some(out) = out {
                                     let ty = self.concrete(&v.ty, subst);
-                                    if Self::is_heap(&ty) {
+                                    if self.is_heap(&ty) {
                                         self.emit_release(out, &ty);
                                     }
                                 }
@@ -4419,6 +5896,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .expect("LLVM builder error")
                     .into_int_value();
                 let out = self.unpack_words(a, b, &elem_ty);
+                if self.is_flat(&elem_ty) {
+                    self.release_flat_box(a, &elem_ty);
+                }
                 self.emit_release(cv, &ch_ty);
                 Ok(Some(out))
             }
@@ -4523,15 +6003,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
 
         if matches!(operand_ty, Ty::Adt(..)) {
-            let eq_fn = self.adt_eq(operand_ty, line)?;
-            let call = self
-                .builder
-                .build_call(eq_fn, &[l.into(), r.into()], "eq")
-                .expect("LLVM builder error");
-            let raw = match call.try_as_basic_value() {
-                inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
-                _ => unreachable!(),
-            };
+            let raw = self.gen_eq_of(l, r, operand_ty, line)?;
             let out: BasicValueEnum<'ctx> = match op {
                 BinOp::Eq => raw.into(),
                 BinOp::Ne => self.builder.build_not(raw, "ne").expect("builder").into(),
@@ -4684,6 +6156,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         subst: &[Ty],
         discard_result: bool,
     ) -> Result<(FunctionValue<'ctx>, PointerValue<'ctx>), CodegenError> {
+        // The flag is for this closure alone, not for any written inside it.
+        let borrowed_caps = std::mem::take(&mut self.borrow_captures);
         let param_tys: Vec<Ty> = params.iter().map(|(_, t)| self.concrete(t, subst)).collect();
         let ret_ty =
             if discard_result { Ty::Unit } else { self.concrete(&body.ty, subst) };
@@ -4704,10 +6178,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.lambda_count += 1;
         let lifted_ty = self.fn_llvm_type(&param_tys, &ret_ty, true);
         let lifted = self.module.add_function(&format!("lambda${id}"), lifted_ty, None);
+        lifted.set_linkage(inkwell::module::Linkage::Internal);
         // A `spawn` body is started by the scheduler and keeps the C
         // convention; a lambda is called by Rill through a closure value.
         if !self.wasm && !discard_result {
-            if let Some(cc) = Self::cc_for(&param_tys, 1) {
+            if let Some(cc) = self.cc_for(&param_tys, 1) {
                 lifted.set_call_conventions(cc);
             }
         }
@@ -4734,7 +6209,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             let raw = lifted.get_nth_param((i + 1) as u32).unwrap();
             raw.set_name(name);
             inner_scope.insert(name.clone(), Some(raw));
-            if Self::is_heap(&param_tys[i]) {
+            if self.is_heap(&param_tys[i]) {
                 self.cleanup.push((raw, param_tys[i].clone()));
             }
         }
@@ -4753,6 +6228,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         } else {
             let drop_ty = self.ctx.void_type().fn_type(&[ptrt.into()], false);
             let d = self.module.add_function(&format!("dropenv${id}"), drop_ty, None);
+            d.set_linkage(inkwell::module::Linkage::Internal);
             let entry = self.ctx.append_basic_block(d, "entry");
             let free_bb = self.ctx.append_basic_block(d, "free");
             let done_bb = self.ctx.append_basic_block(d, "done");
@@ -4771,7 +6247,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error");
             self.builder.position_at_end(free_bb);
             for (i, cty) in cap_tys.iter().enumerate() {
-                if Self::is_heap(cty) {
+                if self.is_heap(cty) && !borrowed_caps {
                     let fp = self
                         .builder
                         .build_struct_gep(env_ty, p, (i + 2) as u32, "cap")
@@ -4784,7 +6260,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
             }
             let env_size = env_ty.size_of().expect("sized struct");
-            self.call_rt("rill_free_sized", &[p.into(), env_size.into()]);
+            self.emit_free(p, env_size);
             self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
             self.builder.position_at_end(done_bb);
             self.builder.build_return(None).expect("LLVM builder error");
@@ -4810,7 +6286,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error");
             for (i, (name, _)) in captures.iter().enumerate() {
                 let v = scope[name].expect("captures are never Unit");
-                self.emit_retain(v, &cap_tys[i]);
+                if !borrowed_caps {
+                    self.emit_retain(v, &cap_tys[i]);
+                }
                 let fp = self
                     .builder
                     .build_struct_gep(env_ty, p, (i + 2) as u32, name)
@@ -5021,7 +6499,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         for (i, sent) in sends.iter().enumerate() {
             let Some((v, ty)) = sent else { continue };
-            if !Self::is_heap(ty) {
+            if !self.is_heap(ty) {
                 continue;
             }
             let taken = self
@@ -5062,6 +6540,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             if let Some((name, ty)) = &arm.bind {
                 let ty = self.concrete(ty, subst);
                 let v = self.unpack_words(got_a, got_b, &ty);
+                if self.is_flat(&ty) {
+                    self.release_flat_box(got_a, &ty);
+                }
                 arm_scope.insert(name.clone(), Some(v));
                 self.bound_fns.remove(name);
             }
@@ -5149,7 +6630,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .map(|f| subst_gen(f, &targs))
             .collect();
         for (fi, fty) in fields.iter().enumerate() {
-            if !Self::is_heap(fty) {
+            if !self.is_heap(fty) {
                 continue;
             }
             let fp = self
@@ -5219,6 +6700,24 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     let p = g.as_pointer_value();
                     self.nullary_singletons.insert(key, p);
                     return Ok(Some(p.into()));
+                }
+                // A flat value is its fields and nothing else: no box, no
+                // count, so nothing to move into it either.
+                let whole = Ty::Adt(*adt, targs.clone());
+                if self.is_flat(&whole) {
+                    let st = self.flat_struct(&whole);
+                    let mut agg = st.get_undef();
+                    for (i, a) in args.iter().enumerate() {
+                        let v = self
+                            .gen_expr(a, scope, subst, func)?
+                            .expect("ADT fields are never Unit");
+                        agg = self
+                            .builder
+                            .build_insert_value(agg, v, i as u32, "f")
+                            .expect("LLVM builder error")
+                            .into_struct_value();
+                    }
+                    return Ok(Some(agg.into()));
                 }
                 // Evaluate fields before allocating (an argument may allocate).
                 //
@@ -5314,7 +6813,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // it again meant a retain and a release on every `match` in the
         // language, which for a list walked one link at a time is once per
         // link.
-        let borrowed = matches!(&scrutinee.kind, TK::Local(_)) && Self::is_heap(&scrut_ty);
+        let borrowed = matches!(&scrutinee.kind, TK::Local(_)) && self.is_heap(&scrut_ty);
         let scrut = if borrowed {
             let TK::Local(name) = &scrutinee.kind else { unreachable!() };
             scope[name]
@@ -5325,7 +6824,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // Each arm returns, so the scrutinee is released with the rest of
             // the frame just before the return.
             if let Some(sv) = scrut {
-                if Self::is_heap(&scrut_ty) {
+                if self.is_heap(&scrut_ty) {
                     self.cleanup.push((sv, scrut_ty.clone()));
                 }
             }
@@ -5384,6 +6883,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     }
                 }
             }
+            // Bindings out of a box an earlier frame holds are held there
+            // too, and may go through a borrowed position of a tail call.
+            let saved_held = self.held_above.clone();
+            if let TK::Local(sname) = &scrutinee.kind {
+                if self.name_held_above(sname) {
+                    for (name, _) in &binds {
+                        self.held_above.insert(name.clone());
+                    }
+                }
+            }
             for (name, occ) in &binds {
                 // Borrowed out of the box, which outlives the arm; every use
                 // of the binding retains it in the usual way.
@@ -5400,6 +6909,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             }
             self.bound_fns = saved_bound;
             self.reuse = saved_reuse;
+            self.held_above = saved_held;
         }
         self.cleanup = saved_cleanup;
 
@@ -5408,7 +6918,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         let out = self.merge_branches(func, result_ty, incoming)?;
         if let Some(sv) = scrut.filter(|_| !borrowed) {
-            if Self::is_heap(&scrut_ty) {
+            if self.is_heap(&scrut_ty) {
                 self.emit_release(sv, &scrut_ty);
             }
         }
@@ -5559,8 +7069,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Ty::Adt(adt, targs) => (*adt, targs.clone()),
                 other => unreachable!("occurrence walks into {other:?}"),
             };
-            let struct_ty = self.ctor_struct(adt, ci, &targs);
             let field_ty = subst_gen(&self.tmod.adts[adt].ctors[ci].fields[fi as usize], &targs);
+            if self.is_flat(&ty) {
+                val = self.extract_field(val, fi);
+                ty = field_ty;
+                continue;
+            }
+            let struct_ty = self.ctor_struct(adt, ci, &targs);
             let ptr = val.into_pointer_value();
             let fp = self
                 .builder
@@ -5627,7 +7142,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.builder.build_unreachable().expect("LLVM builder error");
             }
             Tree::Switch { occ, on_int, cases, default } => {
-                let (val, _) = self.value_at(root.expect("value"), root_ty, occ);
+                let (val, vty) = self.value_at(root.expect("value"), root_ty, occ);
+                // A flat value has one constructor and no tag to read: the
+                // one case is the only way on.
+                if !*on_int && self.is_flat(&vty) {
+                    let bb = self.ctx.append_basic_block(func, "m.flat");
+                    self.builder.build_unconditional_branch(bb).expect("LLVM builder error");
+                    self.builder.position_at_end(bb);
+                    let (_, sub) = &cases[0];
+                    return self.emit_tree(sub, root, root_ty, arm_blocks, func, arms, scope, subst);
+                }
                 let switch_val = if *on_int {
                     val.into_int_value()
                 } else {
@@ -5814,7 +7338,7 @@ mod tests {
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
         let context = Context::create();
-        let cg = Codegen::build_module(&context, &tmod, false, None, Some("wasm32-wasip1"))?;
+        let cg = Codegen::build_module(&context, &tmod, false, None, Some("wasm32-wasip1"), false)?;
         cg.check_wasm_supported()?;
         Ok(cg.module.print_to_string().to_string())
     }

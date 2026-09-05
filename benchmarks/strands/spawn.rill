@@ -1,0 +1,14 @@
+# 200k strands, each alive just long enough to send one number.
+fn spawn_all(i, n, ch) =
+  if i == n then 0
+  else
+    spawn send(ch, i)
+    spawn_all(i + 1, n, ch)
+
+fn collect(k, ch, acc) = if k == 0 then acc else collect(k - 1, ch, acc + recv(ch))
+
+fn main() =
+  n = 200000
+  ch = channel(1000)
+  spawn_all(0, n, ch)
+  println(collect(n, ch, 0))

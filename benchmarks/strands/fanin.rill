@@ -1,0 +1,22 @@
+# A hundred producers, ten thousand messages each, one consumer, one
+# buffered channel between them.
+fn produce(ch, v, k) =
+  if k == 0 then 0
+  else
+    send(ch, v)
+    produce(ch, v, k - 1)
+
+fn start(ch, p, np, k) =
+  if p == np then 0
+  else
+    spawn produce(ch, p, k)
+    start(ch, p + 1, np, k)
+
+fn consume(ch, n, acc) = if n == 0 then acc else consume(ch, n - 1, acc + recv(ch))
+
+fn main() =
+  np = 100
+  k = 10000
+  ch = channel(100)
+  start(ch, 0, np, k)
+  println(consume(ch, np * k, 0))

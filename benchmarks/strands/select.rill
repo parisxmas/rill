@@ -1,0 +1,29 @@
+# One consumer choosing among four producers with `select`, a million
+# messages in all.
+fn produce(ch, v, k) =
+  if k == 0 then 0
+  else
+    send(ch, v)
+    produce(ch, v, k - 1)
+
+fn consume(a, b, c, d, n, acc) =
+  if n == 0 then acc
+  else
+    x = select
+      v = recv(a) -> v
+      v = recv(b) -> v
+      v = recv(c) -> v
+      v = recv(d) -> v
+    consume(a, b, c, d, n - 1, acc + x)
+
+fn main() =
+  k = 250000
+  a = channel()
+  b = channel()
+  c = channel()
+  d = channel()
+  spawn produce(a, 1, k)
+  spawn produce(b, 2, k)
+  spawn produce(c, 3, k)
+  spawn produce(d, 4, k)
+  println(consume(a, b, c, d, 4 * k, 0))

@@ -1,0 +1,33 @@
+fn main() =
+  n = 5000000
+  a = buf_int(n)
+
+  for i in 0..n with x = 12345
+    y = bit_and(x * 1103515245 + 12345, 2147483647)
+    a[i] = y % 1000000000
+    y
+
+  fn up(i, p) = if a[i] < p then up(i + 1, p) else i
+  fn down(j, p) = if a[j] > p then down(j - 1, p) else j
+
+  fn part(i, j, p) =
+    i2 = up(i, p)
+    j2 = down(j, p)
+    if i2 >= j2 then j2
+    else
+      t = a[i2]
+      a[i2] = a[j2]
+      a[j2] = t
+      part(i2 + 1, j2 - 1, p)
+
+  fn qs(lo, hi) =
+    if lo >= hi then 0
+    else
+      j = part(lo, hi, a[(lo + hi) / 2])
+      qs(lo, j)
+      qs(j + 1, hi)
+
+  qs(0, n - 1)
+  sum = for i in 0..n with acc = 0
+    acc + a[i] * (i % 7)
+  println(sum)

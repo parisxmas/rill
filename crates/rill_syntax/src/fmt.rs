@@ -469,8 +469,24 @@ impl Fmt {
                 parts.join("\n").trim_start().to_string()
             }
             Expr::Append { target, value, .. } => {
-            format!("{} += {}", inline(target, P_INDEX), inline(value, 0))
-        }
+                format!("{} += {}", inline(target, P_INDEX), inline(value, 0))
+            }
+            // `v[i] = for ... with ...`: the value may carry a block of its
+            // own, which the inline printer cannot say (it printed `...` and
+            // lost the body).
+            Expr::IndexSet { base, index, value, .. } => format!(
+                "{}[{}] = {}",
+                inline(base, P_INDEX),
+                inline(index, 0),
+                self.render(value, cont)
+            ),
+            Expr::IndexOp { op, base, index, value, .. } => format!(
+                "{}[{}] {}= {}",
+                inline(base, P_INDEX),
+                inline(index, 0),
+                binop(*op).0,
+                self.render(value, cont)
+            ),
             Expr::For { var, from, to, acc, body, .. } => {
                 let head = format!(
                     "for {var} in {}..{}{}",

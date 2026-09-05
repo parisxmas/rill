@@ -21,7 +21,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill types <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill types <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -260,6 +260,7 @@ fn repl_compile(program: &str, tmp_src: &Path, tmp_exe: &Path) -> Result<(), Str
         source: tmp_src.to_path_buf(),
         output: tmp_exe.to_path_buf(),
         emit_ir: false,
+        unchecked: false,
         debug: true, // skip O3 for snappy iteration
         parallel: false,
     });
@@ -284,6 +285,10 @@ struct BuildOpts {
     emit_ir: bool,
     debug: bool,
     parallel: bool,
+    /// No bounds test on buffer accesses: the trade Zig's ReleaseFast and
+    /// Swift's -Ounchecked make. An index out of range is then what it is in
+    /// C, so this is for a program that has been run checked first.
+    unchecked: bool,
     /// An LLVM triple to compile for instead of this machine. The object is
     /// written and the link is left alone: the linker and the runtime for
     /// that machine are not this machine's.
@@ -295,6 +300,7 @@ impl BuildOpts {
         let mut source: Option<PathBuf> = None;
         let mut output: Option<PathBuf> = None;
         let mut emit_ir = false;
+        let mut unchecked = false;
         let mut debug = false;
         let mut parallel = false;
         let mut target: Option<String> = None;
@@ -307,6 +313,7 @@ impl BuildOpts {
                     ));
                 }
                 "--emit-ir" => emit_ir = true,
+                "--unchecked" => unchecked = true,
                 "--debug" => debug = true,
                 "--parallel" => parallel = true,
                 "--target" => {
@@ -327,7 +334,7 @@ impl BuildOpts {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("a.out"))
         });
-        Ok(BuildOpts { source, output, emit_ir, debug, parallel, target })
+        Ok(BuildOpts { source, output, emit_ir, debug, parallel, unchecked, target })
     }
 }
 
@@ -351,6 +358,7 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
         opts.parallel,
         &opts.source,
         opts.target.as_deref(),
+        opts.unchecked,
     )
     .map_err(|e| format!("{}: {e}", opts.source.display()))?;
 

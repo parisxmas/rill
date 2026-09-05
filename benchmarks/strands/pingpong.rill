@@ -1,0 +1,18 @@
+# Two strands, a million round trips over two rendezvous channels: the cost
+# of one hand-off, measured two million times.
+fn ponger(a, b) =
+  x = recv(a)
+  send(b, x + 1)
+  ponger(a, b)
+
+fn pinger(a, b, k, x) =
+  if k == 0 then x
+  else
+    send(a, x)
+    pinger(a, b, k - 1, recv(b))
+
+fn main() =
+  a = channel()
+  b = channel()
+  spawn ponger(a, b)
+  println(pinger(a, b, 1000000, 0))

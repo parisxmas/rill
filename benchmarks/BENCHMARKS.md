@@ -18,21 +18,35 @@ regression that is not there, or hide one that is.
 
 ## Time
 
+Re-measured 2026-09-05 evening, all four languages in the same run, after the
+day's compiler work (see *Against C* below). The machine was busier than on
+earlier passes — every language's absolute number is higher than the tables
+this page carried before — so the ratios are the column to read.
+
 | benchmark | what it measures | rill (ms) | go (ms) | c# (ms) | ocaml (ms) | fastest |
 |---|---|---:|---:|---:|---:|---|
-| fib | fib(35), pure recursion, no allocation | 15.9 | 22.3 | 23.3 | 23.9 | **rill, 1.40× over 2nd** |
-| trees | 10× build+drop perfect binary tree, depth 18 | 27.3 | 56.6 | 49.3 | 60.1 | **rill, 1.80× over 2nd** |
-| ring | 100k lightweight threads chained by channels | 12.1 | 97.4 | 150.5 | 64.8 | **rill, 5.34× over 2nd** |
-| lcg | 100M-iteration LCG loop (tail recursion vs `for`) | 129.8 | 279.9 | 188.8 | 305.1 | **rill, 1.45× over 2nd** |
+| fib | fib(35), pure recursion, no allocation | 19.3 | 26.1 | 27.5 | 28.9 | **rill, 1.35× over 2nd** |
+| trees | 10× build+drop perfect binary tree, depth 18 | 21.0 | 67.1 | 59.1 | 68.5 | **rill, 2.81× over 2nd** |
+| ring | 100k lightweight threads chained by channels | 15.7 | 111.5 | 200.8 | 82.2 | **rill, 5.23× over 2nd** |
+| lcg | 100M-iteration LCG loop (tail recursion vs `for`) | 148.1 | 325.4 | 215.6 | 345.9 | **rill, 1.46× over 2nd** |
+
+`trees` moved from 1.80× to 2.81× over the second place in one day: the tree
+walk no longer touches a reference count per node (borrowed data
+parameters) and every allocation and free is three inline instructions.
 
 ## Peak memory (RSS)
 
 | benchmark | rill | go | c# | ocaml | smallest |
 |---|---:|---:|---:|---:|---|
 | fib | 1.2 MB | 3.5 MB | 6.7 MB | 2.1 MB | **rill** |
-| trees | 13.2 MB | 14.9 MB | 38.2 MB | 18.3 MB | **rill** |
-| ring | 53.5 MB | 271.9 MB | 138.6 MB | 103.0 MB | **rill** |
+| trees | 13.2 MB | 14.2 MB | 38.2 MB | 18.3 MB | **rill** |
+| ring | 53.5 MB | 269.3 MB | 138.6 MB | 103.0 MB | **rill** |
 | lcg | 1.2 MB | 3.6 MB | 6.7 MB | 2.1 MB | **rill** |
+
+The same evening's run of `tokens/` (eight languages) puts Rill ahead of Go
+on every one of its five timed programs as well: json 148 ms against 309,
+dijkstra 125 against 1049, loop 36 against 40, algo 56 against 93, mandel 238
+against 260.
 
 ## Parallel scaling
 
@@ -267,3 +281,28 @@ ms, and 218 ms once the same program reads with `scanf`.
 
 See `tokens/README.md`; reproduce with `python3 benchmarks/tokens/gen_inputs.py`
 then `python3 benchmarks/tokens/run.py`.
+
+## Strands against goroutines
+
+`benchmarks/strands/` is six more programs where only the scheduler and the
+channels are being measured — spawning 200k strands, a million ping-pongs,
+a hundred producers into one channel, a worker pool, `select` over four
+producers, fifty stages in a line. Rill is ahead of Go on every one, by 1.2×
+(`fanin`) to 4.3× (`select`) over whichever of Go's two configurations is
+faster, and holds 200k parked strands in 81 MB where Go holds them in 517.
+Go on all cores is slower than Go on one in five of the six: a hand-off
+between processors is a cross-core wakeup. Numbers and the reasons in
+`benchmarks/strands/README.md`.
+
+## Against C
+
+`benchmarks/c/` holds the same question asked of C: nineteen programs, each a
+`.rill`/`.c` pair to the same algorithm and layout. On the morning of
+2026-09-05 Rill won three, tied four and lost twelve; by the evening, after
+twenty compiler changes — internal linkage, borrowed parameters, pipeline
+fusion, flat records, hoisted bounds checks, `map` as a loop, an inlined
+allocator and map probe, buffers addressed at their first element — it wins
+eight (`trees` 0.40×, `dijkstra` 0.44×, `json`, `nbody_rec`, `hashmap`,
+`mandel`, `fannkuch`, `qsort`) and is within run-to-run noise on the other
+eleven. Nothing is behind. Every step is measured in
+`benchmarks/c/README.md`. Reproduce with `python3 benchmarks/c/run.py`.
