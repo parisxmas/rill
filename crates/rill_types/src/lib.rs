@@ -2780,6 +2780,8 @@ impl Checker {
             // trip: without it every small write waits on the last one's
             // acknowledgement. 1 if the kernel took it.
             "sock_nodelay" => Some(("rill_sock_nodelay", vec![Ty::Int], Ty::Int)),
+            "sock_buffered" => Some(("rill_sock_buffered", vec![Ty::Int], Ty::Unit)),
+            "sock_flush" => Some(("rill_sock_flush", vec![Ty::Int], Ty::Int)),
             "sock_write" => Some(("rill_sock_write", vec![Ty::Int, Ty::Str], Ty::Int)),
             "sock_close" => Some(("rill_sock_close", vec![Ty::Int], Ty::Unit)),
             _ => None,
@@ -3898,6 +3900,8 @@ fn is_builtin_fn(name: &str) -> bool {
             | "sock_wait"
             | "sock_peer"
             | "sock_nodelay"
+            | "sock_buffered"
+            | "sock_flush"
             | "sock_write"
             | "sock_close"
     )

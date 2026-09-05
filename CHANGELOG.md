@@ -34,6 +34,12 @@ and what the first run found:
   because every wait follows an `EAGAIN` from the operation itself. Linux
   keeps its one-shot `epoll` registrations for now; several workers keep the
   one-shot path everywhere.
+- `sock_buffered(fd)` and `sock_flush(fd)`: an opt-in 64 KB write buffer per
+  socket. `sock_write` queues; the queue is written when it fills, on
+  `sock_flush`, whenever the strand parks (a read, a channel, a timer — so
+  nothing a program wrote waits on the program), on `sock_close`, and at
+  exit. A stream of small writes is one system call for many; an echo loop
+  is unchanged. Nothing is buffered on several workers.
 - The accept loop in the language reference spawned a strand *around* the
   accept and so never waited: `spawn handle(tcp_accept(s))` spins. It reads
   `conn = tcp_accept(s)` first now, and the concurrency section says why.

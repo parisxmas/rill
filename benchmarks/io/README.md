@@ -1,10 +1,10 @@
 # Disk and network against Go
 
-Seven programs, each written once in Rill and once in Go, that do nothing but
+Eight programs, each written once in Rill and once in Go, that do nothing but
 move bytes: a 32 MB file written and read back, five thousand small files,
 `wc` over standard input, two million lines to standard output, an echo round
-trip a hundred thousand times, five hundred connections at once, and 64 MB
-down one socket. Server and client live in one process on the loopback, so
+trip a hundred thousand times, five hundred connections at once, 64 MB down
+one socket, and a million small writes through a buffered one. Server and client live in one process on the loopback, so
 what is timed is the runtime's sockets and scheduler against Go's, not a
 network. Go is timed on one processor (`GOMAXPROCS=1`, the shape Rill runs in
 by default) and as it ships. Apple M4, Go 1.23.4; time is the median of 15
@@ -22,6 +22,7 @@ the median of 3. Reproduce with `python3 benchmarks/io/run.py` after
 | echo | 100k round trips of 64 bytes, client and server strands | 1366 | 1312 | 1320 | go 1.04× |
 | conns | 500 clients at once, 50 round trips each | 172.5 | 190.7 | 171.6 | even |
 | bulk | 64 MB down one socket in 64 KB writes | 33.7 | 33.0 | 30.5 | go 1.02× (1.08× on all cores) |
+| stream | a million 32-byte writes one way, sender buffered (`sock_buffered` / `bufio.Writer`) | 14.7 | 25.5 | 28.5 | **rill 1.7×** |
 
 | peak RSS | rill | go, 1 proc | go, all procs |
 |---|---:|---:|---:|
@@ -59,6 +60,16 @@ The first run of this suite lost four of the seven, one of them by 15×:
   every other string index keeps its `-1` past the end.
 - **`sock_read` allocated and freed a 64 KB scratch per call.** One scratch
   per worker now; the string it returns is the only allocation.
+
+## `sock_buffered`
+
+`stream` is the case the buffer exists for: a million small writes with no
+reply to wait for between them. Unbuffered, Rill takes 430 ms — a `write`
+call per message — and buffered 14.7, against Go's `bufio.Writer` at 25.5.
+The buffer is opt-in per socket and never holds anything back while the
+program waits: any park writes every pending buffer first, so `echo`, which
+writes and then reads, would behave and time exactly as before with the
+buffer on.
 
 ## Reading the three that are even
 

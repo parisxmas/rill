@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Disk and network against Go.
 
-Seven programs, each a `.rill`/`.go` pair: a 32 MB file written and read
+Eight programs, each a `.rill`/`.go` pair: a 32 MB file written and read
 back, five thousand small files, `wc` over standard input, two million lines
 to standard output, an echo round trip a hundred thousand times, five hundred
-connections at once, and 64 MB down one socket. Go is timed on one processor
+connections at once, 64 MB down one socket, and a million small writes
+through a buffered one. Go is timed on one processor
 (`GOMAXPROCS=1`, the shape Rill runs in by default) and as it ships. Time =
 median of RUNS after WARMUP; outputs cross-checked; peak RSS = median of 3.
 
@@ -34,6 +35,7 @@ BENCH = {
     "echo": (None, "port"),
     "conns": (None, "port"),
     "bulk": (None, "port"),
+    "stream": (None, "port"),
 }
 PORTS = {"rill": 19301, "go, 1 proc": 19302, "go, all procs": 19303}
 

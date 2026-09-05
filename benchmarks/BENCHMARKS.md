@@ -296,12 +296,14 @@ between processors is a cross-core wakeup. Numbers and the reasons in
 
 ## Disk and network against Go
 
-`benchmarks/io/` is seven programs that only move bytes — a 32 MB file
+`benchmarks/io/` is eight programs that only move bytes — a 32 MB file
 there and back, five thousand small files, `wc` over 31 MB of standard input,
 two million lines to standard output, an echo round trip 100k times, 500
-connections at once, 64 MB down one socket. Rill is ahead on the four disk
-and stream programs (2.1× on output, 1.3× on `wc`) and within 1–4% of Go on
-one processor on the three socket programs, which are the kernel's; the
+connections at once, 64 MB down one socket, a million small writes through a
+buffered one. Rill is ahead on the four disk and stream programs (2.1× on
+output, 1.3× on `wc`), 1.7× ahead on the buffered stream (`sock_buffered`
+against `bufio.Writer`), and within 1–4% of Go on one processor on the three
+round-trip socket programs, which are the kernel's; the
 first run of the suite had found standard output unbuffered and `read_line`
 copying twice, both fixed. 500 live connections are 1.9 MB against Go's 20.
 Numbers and the reasons in `benchmarks/io/README.md`.

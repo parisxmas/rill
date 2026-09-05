@@ -123,7 +123,11 @@ pub unsafe extern "C" fn rill_flush_out() {
 /// still held is written however the process ends — `main` returning, an
 /// `exit`, or a C callback that ran after `main` and printed.
 extern "C" fn flush_at_exit() {
-    unsafe { rill_flush_out() }
+    unsafe {
+        rill_flush_out();
+        #[cfg(not(target_os = "wasi"))]
+        net::flush_pending_at_exit();
+    }
 }
 
 /// `abort`, with standard output written out first so the message that
@@ -3126,6 +3130,9 @@ unsafe fn make_ready(g: *mut G) {
 /// Parks the current strand; the scheduler saves its stack once control
 /// returns. Callers must have released the scheduler lock.
 unsafe fn block_current() {
+    // Nothing a program has written waits on the program while it does.
+    #[cfg(not(target_os = "wasi"))]
+    net::flush_pending();
     let w = me();
     let g = (*w).current;
     ctx_switch(&mut (*g).ctx, &(*w).sched_ctx);
@@ -5014,27 +5021,186 @@ mod net {
     #[no_mangle]
     pub unsafe extern "C" fn rill_sock_write(fd: i64, s: *const u8) -> i64 {
         let total = str_len_of(s);
+        if rill_mt == 0 && (fd as usize) < WBUFS_LEN {
+            let b = WBUFS.add(fd as usize);
+            if !(*b).data.is_null() {
+                // A message wider than the buffer goes straight out, after
+                // what is already waiting; anything else is queued, and the
+                // queue is written when it fills.
+                if total >= WBUF_CAP {
+                    if rill_sock_flush(fd) < 0 || !send_all(fd as i32, str_bytes(s), total) {
+                        return -1;
+                    }
+                    return total as i64;
+                }
+                if (*b).len + total > WBUF_CAP && rill_sock_flush(fd) < 0 {
+                    return -1;
+                }
+                if (*b).len == 0 && total > 0 {
+                    PENDING += 1;
+                }
+                core::ptr::copy_nonoverlapping(str_bytes(s), (*b).data.add((*b).len), total);
+                (*b).len += total;
+                return total as i64;
+            }
+        }
+        if send_all(fd as i32, str_bytes(s), total) { total as i64 } else { -1 }
+    }
+
+    /// Writes all of `n` bytes, parking whenever the socket is full.
+    unsafe fn send_all(fd: i32, p: *const u8, n: usize) -> bool {
         let mut sent = 0usize;
-        while sent < total {
-            let n = sock_send(fd as i32, str_bytes(s).add(sent), total - sent);
-            if n > 0 {
-                sent += n as usize;
+        while sent < n {
+            let k = sock_send(fd, p.add(sent), n - sent);
+            if k > 0 {
+                sent += k as usize;
                 continue;
             }
             let e = errno();
             if e == EAGAIN {
-                park_on_fd(fd as i32, true);
+                park_on_fd(fd, true);
             } else if e != EINTR {
-                return -1;
+                return false;
             }
         }
-        sent as i64
+        true
+    }
+
+    // ---- buffered writing -------------------------------------------------
+    //
+    // `sock_buffered(fd)` gives a socket a 64 KB write buffer: `sock_write`
+    // then queues rather than calls `write`, and the queue goes out in one
+    // call when it fills, on `sock_flush`, when the strand parks — on a read,
+    // a channel, a timer, anything — and when the socket closes. A program
+    // that writes many small pieces before it waits for anything pays one
+    // system call for all of them instead of one each; a program that writes
+    // and waits, like an echo, gains nothing and loses nothing, because the
+    // wait flushes. Nothing is buffered on several workers: the table is one
+    // worker's.
+
+    const WBUF_CAP: usize = 64 * 1024;
+    struct WBuf {
+        data: *mut u8,
+        len: usize,
+    }
+    static mut WBUFS: *mut WBuf = core::ptr::null_mut();
+    static mut WBUFS_LEN: usize = 0;
+    /// How many buffers hold anything, so a park with nothing pending costs
+    /// one compare.
+    static mut PENDING: usize = 0;
+    /// Set while the pending buffers are being written out, since writing
+    /// one may park, and a park flushes.
+    static mut FLUSHING: bool = false;
+
+    unsafe fn wbuf(fd: i32) -> *mut WBuf {
+        let fd = fd as usize;
+        if fd >= WBUFS_LEN {
+            let mut want = if WBUFS_LEN == 0 { 64 } else { WBUFS_LEN };
+            while want <= fd {
+                want *= 2;
+            }
+            let fresh = calloc(want, core::mem::size_of::<WBuf>()) as *mut WBuf;
+            if fresh.is_null() {
+                out(b"rill: out of memory buffering a socket\n");
+                die();
+            }
+            if !WBUFS.is_null() {
+                core::ptr::copy_nonoverlapping(WBUFS, fresh, WBUFS_LEN);
+                free(WBUFS as *mut u8);
+            }
+            WBUFS = fresh;
+            WBUFS_LEN = want;
+        }
+        WBUFS.add(fd)
+    }
+
+    /// # Safety
+    /// `fd` must be an open socket; called from strand context.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_sock_buffered(fd: i64) {
+        if rill_mt != 0 || fd < 0 {
+            return;
+        }
+        let b = wbuf(fd as i32);
+        if (*b).data.is_null() {
+            (*b).data = malloc(WBUF_CAP);
+            (*b).len = 0;
+            if (*b).data.is_null() {
+                out(b"rill: out of memory buffering a socket\n");
+                die();
+            }
+        }
+    }
+
+    /// Writes out what `sock_write` has queued on `fd`: the number of bytes
+    /// that went, 0 for nothing waiting or an unbuffered socket, -1 on a
+    /// socket error.
+    ///
+    /// # Safety
+    /// `fd` must be an open socket; called from strand context.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_sock_flush(fd: i64) -> i64 {
+        if rill_mt != 0 || fd < 0 || (fd as usize) >= WBUFS_LEN {
+            return 0;
+        }
+        let b = WBUFS.add(fd as usize);
+        let n = (*b).len;
+        if (*b).data.is_null() || n == 0 {
+            return 0;
+        }
+        (*b).len = 0;
+        PENDING -= 1;
+        if send_all(fd as i32, (*b).data, n) { n as i64 } else { -1 }
+    }
+
+    /// Every buffer with something in it, written out. Called before a strand
+    /// parks, so nothing a program wrote waits on the program.
+    pub(super) unsafe fn flush_pending() {
+        if PENDING == 0 || FLUSHING || rill_mt != 0 {
+            return;
+        }
+        FLUSHING = true;
+        let mut fd = 0usize;
+        while fd < WBUFS_LEN && PENDING > 0 {
+            let b = WBUFS.add(fd);
+            if !(*b).data.is_null() && (*b).len > 0 {
+                rill_sock_flush(fd as i64);
+            }
+            fd += 1;
+        }
+        FLUSHING = false;
+    }
+
+    /// The same at exit, where there is no strand to park: whatever the
+    /// kernel takes at once goes, the rest is lost with the process.
+    pub(super) unsafe fn flush_pending_at_exit() {
+        if PENDING == 0 || rill_mt != 0 {
+            return;
+        }
+        let mut fd = 0usize;
+        while fd < WBUFS_LEN {
+            let b = WBUFS.add(fd);
+            if !(*b).data.is_null() && (*b).len > 0 {
+                sock_send(fd as i32, (*b).data, (*b).len);
+                (*b).len = 0;
+            }
+            fd += 1;
+        }
+        PENDING = 0;
     }
 
     /// # Safety
     /// `fd` must be an open socket.
     #[no_mangle]
     pub unsafe extern "C" fn rill_sock_close(fd: i64) {
+        if rill_mt == 0 && fd >= 0 && (fd as usize) < WBUFS_LEN {
+            let b = WBUFS.add(fd as usize);
+            if !(*b).data.is_null() {
+                rill_sock_flush(fd);
+                free((*b).data);
+                (*b).data = core::ptr::null_mut();
+            }
+        }
         poller_forget(fd as i32);
         close(fd as i32);
     }

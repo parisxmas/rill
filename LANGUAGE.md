@@ -841,6 +841,8 @@ fn serve(server) =
 | `sock_write(fd, s) -> Int` | writes all of it, parking as needed |
 | `sock_peer(fd) -> Int` | the address at the far end, packed into one number |
 | `sock_nodelay(fd) -> Int` | Nagle off; 1 if the kernel took it |
+| `sock_buffered(fd)` | give the socket a 64 KB write buffer: `sock_write` queues, and the queue goes out when it fills, on `sock_flush`, when the strand waits, and on `sock_close` |
+| `sock_flush(fd) -> Int` | write out what is queued; how many bytes went, or -1 |
 | `sock_close(fd)` | |
 
 The prelude wraps the three that can fail: `listen_on`, `accept_on` and
@@ -876,6 +878,18 @@ fn serve(conn) =
   sock_nodelay(conn)
   greet(conn)
 ```
+
+`sock_buffered` is the other half of that trade, for a program that writes
+many small pieces before it waits for anything: a reply built from a dozen
+`sock_write`s is a dozen system calls, and with a buffer it is one. The
+buffer never holds anything back while the program is waiting — a read, a
+`recv`, a `sleep_ms`, any park writes every pending buffer first — so a
+request-and-reply loop behaves exactly as before, and gains nothing; the
+gain is on the side that streams. Buffering is per socket and opt-in
+(nothing changes for a socket that has not asked), and a `--parallel` build
+with several workers writes straight through, as the buffer is one
+worker's. `sock_flush` is for the moment a program wants the bytes gone
+without waiting for anything itself.
 
 Everything above TCP is ordinary Rill: `lib/http.rill` is an HTTP/1.1
 server in about a hundred lines — request parsing, routing, responses, and

@@ -1,0 +1,21 @@
+# A million 32-byte messages one way, the sender's socket buffered: what
+# `sock_buffered` is for. The receiver counts the bytes.
+fn sink(c, got) =
+  r = sock_read(c)
+  if #r == 0 then got else sink(c, got + #r)
+
+fn pour(fd, msg, k) =
+  if k == 0 then sock_close(fd)
+  else
+    sock_write(fd, msg)
+    pour(fd, msg, k - 1)
+
+fn main() =
+  port = str_to_int(arg(1))
+  server = tcp_listen(port)
+  results = channel()
+  spawn send(results, sink(tcp_accept(server), 0))
+  fd = tcp_connect("127.0.0.1", port)
+  sock_buffered(fd)
+  pour(fd, repeat("m", 32), 1000000)
+  println(recv(results))
