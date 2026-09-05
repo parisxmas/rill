@@ -1,0 +1,21 @@
+# 64 MB down one connection in 64 KB writes; the other end counts what
+# arrives.
+fn sink(c, got) =
+  r = sock_read(c)
+  if #r == 0 then got else sink(c, got + #r)
+
+fn pour(fd, chunk, k) =
+  if k == 0 then sock_close(fd)
+  else
+    sock_write(fd, chunk)
+    pour(fd, chunk, k - 1)
+
+fn main() =
+  port = str_to_int(arg(1))
+  server = tcp_listen(port)
+  chunk = repeat("z", 65536)
+  results = channel()
+  spawn send(results, sink(tcp_accept(server), 0))
+  fd = tcp_connect("127.0.0.1", port)
+  pour(fd, chunk, 1024)
+  println(recv(results))

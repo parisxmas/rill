@@ -27,6 +27,8 @@ extern "C" {
     fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
     fn snprintf(buf: *mut u8, size: usize, fmt: *const u8, ...) -> i32;
     fn abort() -> !;
+    fn isatty(fd: i32) -> i32;
+    fn atexit(f: extern "C" fn()) -> i32;
     fn exit(code: i32) -> !;
     fn malloc(size: usize) -> *mut u8;
     fn calloc(count: usize, size: usize) -> *mut u8;
@@ -43,7 +45,7 @@ extern "C" {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    unsafe { abort() }
+    unsafe { die() }
 }
 
 /// Satisfies the linker when the staticlib is built with unwinding enabled;
@@ -51,9 +53,85 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 #[no_mangle]
 pub extern "C" fn rust_eh_personality() {}
 
+// ---- standard output ------------------------------------------------------
+//
+// Buffered, the way C's stdout is: a line at a time when it is a terminal,
+// 64 KB at a time otherwise, and flushed before anything that waits — the end
+// of the program, `exit`, a read of standard input, a strand parking on a
+// socket or a timer — so that nothing a program said is held back while it
+// stands still. Two million `println`s were four million `write` calls and
+// fifteen times Go's buffered writer.
+
+const OUT_CAP: usize = 64 * 1024;
+static mut OUT_BUF: [u8; OUT_CAP] = [0; OUT_CAP];
+static mut OUT_LEN: usize = 0;
+/// -1 until asked; 1 when standard output is a terminal (line-buffered).
+static mut OUT_TTY: i8 = -1;
+
 fn out(bytes: &[u8]) {
     unsafe {
-        write(1, bytes.as_ptr(), bytes.len());
+        // Several workers share no buffer: they write as they did.
+        if rill_mt != 0 {
+            write_all(1, bytes);
+            return;
+        }
+        if OUT_TTY < 0 {
+            OUT_TTY = (isatty(1) != 0) as i8;
+        }
+        if bytes.len() >= OUT_CAP {
+            rill_flush_out();
+            write_all(1, bytes);
+            return;
+        }
+        if OUT_LEN + bytes.len() > OUT_CAP {
+            rill_flush_out();
+        }
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), OUT_BUF.as_mut_ptr().add(OUT_LEN), bytes.len());
+        OUT_LEN += bytes.len();
+        if OUT_TTY == 1 && bytes.contains(&b'\n') {
+            rill_flush_out();
+        }
+    }
+}
+
+unsafe fn write_all(fd: i32, bytes: &[u8]) {
+    let mut done = 0usize;
+    while done < bytes.len() {
+        let n = write(fd, bytes.as_ptr().add(done), bytes.len() - done);
+        if n <= 0 {
+            return;
+        }
+        done += n as usize;
+    }
+}
+
+/// Writes out whatever standard output is holding. The compiler calls it
+/// when `main` returns; the runtime, before it waits.
+///
+/// # Safety
+/// Single-threaded standard output; harmless when there is nothing held.
+#[no_mangle]
+pub unsafe extern "C" fn rill_flush_out() {
+    if OUT_LEN > 0 {
+        let n = OUT_LEN;
+        OUT_LEN = 0;
+        write_all(1, core::slice::from_raw_parts(OUT_BUF.as_ptr(), n));
+    }
+}
+
+/// Registered with `atexit` when the runtime starts, so that whatever is
+/// still held is written however the process ends — `main` returning, an
+/// `exit`, or a C callback that ran after `main` and printed.
+extern "C" fn flush_at_exit() {
+    unsafe { rill_flush_out() }
+}
+
+/// `abort`, with standard output written out first so the message that
+/// explains the abort is not lost with it.
+fn die() -> ! {
+    unsafe {
+        rill_flush_out();
+        abort()
     }
 }
 
@@ -150,6 +228,22 @@ pub unsafe extern "C" fn rill_strbuf_new() -> *mut u8 {
 unsafe fn copy_small(src: *const u8, dst: *mut u8, n: usize) {
     if n > 16 {
         core::ptr::copy_nonoverlapping(src, dst, n);
+        return;
+    }
+    // Two overlapping words rather than a byte at a time: a fifteen-byte
+    // line is two loads and two stores, not fifteen of each.
+    if n >= 8 {
+        let a = (src as *const u64).read_unaligned();
+        let b = (src.add(n - 8) as *const u64).read_unaligned();
+        (dst as *mut u64).write_unaligned(a);
+        (dst.add(n - 8) as *mut u64).write_unaligned(b);
+        return;
+    }
+    if n >= 4 {
+        let a = (src as *const u32).read_unaligned();
+        let b = (src.add(n - 4) as *const u32).read_unaligned();
+        (dst as *mut u32).write_unaligned(a);
+        (dst.add(n - 4) as *mut u32).write_unaligned(b);
         return;
     }
     let mut i = 0;
@@ -645,7 +739,7 @@ unsafe fn cstr(s: *const u8) -> *mut u8 {
     let p = malloc(n + 1);
     if p.is_null() {
         out(b"rill: out of memory\n");
-        abort();
+        die();
     }
     core::ptr::copy_nonoverlapping(str_bytes(s), p, n);
     *p.add(n) = 0;
@@ -766,7 +860,7 @@ pub unsafe extern "C" fn rill_write_file(path: *const u8, content: *const u8) ->
 // syscall per byte is what this used to be, and on a large input that was all
 // the program did; nothing else reads this descriptor, so holding what was
 // read ahead is safe.
-const IN_CAP: usize = 1 << 16;
+const IN_CAP: usize = 1 << 18;
 static mut IN_BUF: *mut u8 = core::ptr::null_mut();
 static mut IN_POS: usize = 0;
 static mut IN_LEN: usize = 0;
@@ -777,6 +871,7 @@ unsafe fn in_byte() -> i32 {
         if IN_BUF.is_null() {
             IN_BUF = malloc(IN_CAP);
         }
+        rill_flush_out();
         let got = read(0, IN_BUF, IN_CAP);
         if got <= 0 {
             return -1;
@@ -843,6 +938,19 @@ pub unsafe extern "C" fn rill_scan_int() -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn rill_read_line() -> *mut u8 {
     IO_OK = 1;
+    // The line is usually already in the block read last time, whole: then
+    // it is one `memchr` and one copy, straight into the string.
+    if IN_POS < IN_LEN {
+        let from = IN_BUF.add(IN_POS);
+        let hit = memchr(from, b'\n' as i32, IN_LEN - IN_POS);
+        if !hit.is_null() {
+            let take = hit as usize - from as usize;
+            let p = str_new(take);
+            copy_small(from, p.add(16), take);
+            IN_POS += take + 1;
+            return p;
+        }
+    }
     let mut cap = 128usize;
     let mut buf = rill_alloc(cap as u64);
     live_add(-1);
@@ -852,7 +960,8 @@ pub unsafe extern "C" fn rill_read_line() -> *mut u8 {
             if IN_BUF.is_null() {
                 IN_BUF = malloc(IN_CAP);
             }
-            let got = read(0, IN_BUF, IN_CAP);
+            rill_flush_out();
+        let got = read(0, IN_BUF, IN_CAP);
             if got <= 0 {
                 if n == 0 {
                     IO_OK = 0;
@@ -901,6 +1010,7 @@ pub unsafe extern "C" fn rill_read_line() -> *mut u8 {
 /// Terminates the process.
 #[no_mangle]
 pub unsafe extern "C" fn rill_exit(code: i64) -> ! {
+    rill_flush_out();
     exit(code as i32)
 }
 
@@ -1202,7 +1312,7 @@ pub extern "C" fn rill_buf_oob(i: i64, len: i64) -> ! {
         out(b" out of range, length ");
         out_dec(len);
         out(b"\n");
-        abort()
+        die()
     }
 }
 
@@ -1622,7 +1732,7 @@ unsafe fn map_slot(m: *const Map, i: i64) -> *mut i64 {
         out(b"rill: map slot ");
         out_dec(i);
         out(b" holds nothing\n");
-        abort()
+        die()
     }
     map_key(m, i as usize)
 }
@@ -2009,7 +2119,7 @@ pub unsafe extern "C" fn rill_alloc(size: u64) -> *mut u8 {
             let p = mmap(core::ptr::null_mut(), POOL_CHUNK, PROT_RW, MAP_PRIVATE_ANON, -1, 0);
             if p as isize == -1 {
                 out(b"rill: out of memory\n");
-                abort();
+                die();
             }
             (*pool).next = p as usize;
             (*pool).end = p as usize + POOL_CHUNK;
@@ -2021,7 +2131,7 @@ pub unsafe extern "C" fn rill_alloc(size: u64) -> *mut u8 {
     let p = malloc(size as usize);
     if p.is_null() {
         out(b"rill: out of memory\n");
-        abort();
+        die();
     }
     p
 }
@@ -2439,7 +2549,7 @@ unsafe fn alloc_stack(usable: usize) -> *mut u8 {
     let p = mmap(core::ptr::null_mut(), total, PROT_RW, MAP_PRIVATE_ANON, -1, 0);
     if p as isize == -1 {
         out(b"rill: cannot map strand stack\n");
-        abort();
+        die();
     }
     mprotect(p, PAGE, PROT_NONE);
     p
@@ -2454,7 +2564,7 @@ unsafe fn alloc_stack(usable: usize) -> *mut u8 {
     let p = VirtualAlloc(core::ptr::null_mut(), total, MEM_COMMIT_RESERVE, PAGE_READWRITE);
     if p.is_null() {
         out(b"rill: cannot map strand stack\n");
-        abort();
+        die();
     }
     let mut was: u32 = 0;
     VirtualProtect(p, PAGE, PAGE_NOACCESS, &raw mut was);
@@ -2467,7 +2577,7 @@ unsafe fn alloc_stack(usable: usize) -> *mut u8 {
 #[cfg(target_family = "wasm")]
 unsafe fn alloc_stack(_usable: usize) -> *mut u8 {
     out(b"rill: strands are not available on wasm\n");
-    abort();
+    die();
 }
 
 /// Giving one back. Nothing does yet — a worker's stack lives as long as the
@@ -2532,6 +2642,12 @@ struct G {
     /// so an event that no longer has an owner is dropped instead of being
     /// delivered to whoever holds the record now.
     on_io: bool,
+    /// What the strand is parked on when `on_io` is set: a descriptor plus
+    /// one, or 0 for a timer alone. A descriptor's registration in the poller
+    /// now outlives the wait that made it, so an event can arrive for a
+    /// strand that has moved on to another descriptor; this is how the poller
+    /// tells that event from the one being waited for.
+    wait_ident: usize,
     /// Queue node for a plain send or receive, which never needs more than one.
     waiter: Waiter,
     /// Every strand record ever allocated, on one list. `next` cannot be used
@@ -2858,7 +2974,7 @@ unsafe extern "C" fn ctx_switch(_old: *mut Ctx, _new: *const Ctx) {
 #[cfg(target_family = "wasm")]
 unsafe extern "C" fn ctx_switch(_old: *mut Ctx, _new: *const Ctx) {
     out(b"rill: strands are not available on wasm\n");
-    abort();
+    die();
 }
 
 /// First frame of every strand: run the body, release the environment,
@@ -2932,7 +3048,7 @@ unsafe fn new_spawned_g(w: *mut Worker, code: extern "C" fn(*mut u8), env: *mut 
         let g = malloc(core::mem::size_of::<G>()) as *mut G;
         if g.is_null() {
             out(b"rill: out of memory spawning strand\n");
-            abort();
+            die();
         }
         (*g).saved = core::ptr::null_mut();
         (*g).saved_cap = 0;
@@ -2949,7 +3065,7 @@ unsafe fn new_main_g(code: extern "C" fn(*mut u8)) -> *mut G {
     let g = malloc(core::mem::size_of::<G>()) as *mut G;
     if g.is_null() {
         out(b"rill: out of memory spawning strand\n");
-        abort();
+        die();
     }
     let total = MAIN_STACK_SIZE + PAGE;
     let stack = alloc_stack(MAIN_STACK_SIZE);
@@ -2984,7 +3100,7 @@ unsafe fn save_stack(g: *mut G, exec_top: usize) {
         (*g).saved = malloc(cap);
         if (*g).saved.is_null() {
             out(b"rill: out of memory parking strand\n");
-            abort();
+            die();
         }
         (*g).saved_cap = cap;
     }
@@ -3151,7 +3267,7 @@ unsafe fn worker_loop(w: *mut Worker) {
                 // Nothing is executing and no queue holds work, round after
                 // round: nothing can ever wake the parked strands.
                 out(b"rill: deadlock - all strands are blocked\n");
-                abort();
+                die();
             }
             sched_yield();
             continue;
@@ -3318,11 +3434,13 @@ unsafe fn requested_threads() -> usize {
 pub unsafe extern "C" fn rill_rt_run_direct(code: extern "C" fn()) {
     NWORKERS = 1;
     rill_mt = 0;
+    atexit(flush_at_exit);
     code();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rill_rt_run(code: extern "C" fn(*mut u8)) {
+    atexit(flush_at_exit);
     NWORKERS = requested_threads();
     if NWORKERS > 1 && rill_parallel_build == 0 {
         // The generated code updates reference counts without synchronizing,
@@ -3691,7 +3809,7 @@ pub unsafe extern "C" fn rill_select(
     let ws = malloc(n as usize * core::mem::size_of::<Waiter>()) as *mut Waiter;
     if ws.is_null() {
         out(b"rill: out of memory in select\n");
-        abort();
+        die();
     }
     let g = (*me()).current;
     (*g).selected = -1;
@@ -3955,13 +4073,13 @@ mod net {
 
     #[cfg(not(target_os = "linux"))]
     use bsd::{
-        poller_arm, poller_arm_deadline, poller_disarm, poller_open, poller_timer, poller_wait,
-        poller_wake,
+        poller_arm, poller_arm_deadline, poller_disarm, poller_forget, poller_open, poller_timer,
+        poller_wait, poller_wake,
     };
     #[cfg(target_os = "linux")]
     use linux::{
-        poller_arm, poller_arm_deadline, poller_disarm, poller_open, poller_timer, poller_wait,
-        poller_wake,
+        poller_arm, poller_arm_deadline, poller_disarm, poller_forget, poller_open, poller_timer,
+        poller_wait, poller_wake,
     };
 
     #[cfg(not(target_os = "linux"))]
@@ -4018,7 +4136,7 @@ mod net {
             let kq = kqueue();
             if kq < 0 {
                 out(b"rill: cannot create kqueue\n");
-                abort();
+                die();
             }
             let ev = KEvent {
                 ident: WAKE_IDENT,
@@ -4050,7 +4168,83 @@ mod net {
         }
 
         /// One-shot, so nothing has to be unregistered afterwards.
+        // A descriptor's registration used to be made for one wait and
+        // consumed by it (`EV_ONESHOT`): a `kevent` call to arm before every
+        // `kevent` call to wait, which on an echo round trip was a third
+        // system call per side. On one worker a descriptor is registered
+        // once, edge-triggered (`EV_CLEAR`), for the strand that waits on it,
+        // and re-registered only when a different strand comes to wait — the
+        // table below remembers who. That is sound because every wait is made
+        // only after the operation itself said `EAGAIN`, so the next edge is
+        // the one wanted, and because `poller_wait` checks the event against
+        // what the strand is parked on now and drops one for a descriptor it
+        // has left. `rill_sock_close` forgets the descriptor, since the kernel
+        // drops its knotes with it and the number will come round again.
+        // Several workers keep the one-shot path: the table is one worker's.
+        struct Armed {
+            read: *mut G,
+            write: *mut G,
+        }
+        static mut ARMED: *mut Armed = core::ptr::null_mut();
+        static mut ARMED_LEN: usize = 0;
+
+        unsafe fn armed_slot(fd: i32) -> *mut Armed {
+            let fd = fd as usize;
+            if fd >= ARMED_LEN {
+                let mut want = if ARMED_LEN == 0 { 64 } else { ARMED_LEN };
+                while want <= fd {
+                    want *= 2;
+                }
+                let fresh = calloc(want, core::mem::size_of::<Armed>()) as *mut Armed;
+                if fresh.is_null() {
+                    out(b"rill: out of memory in the poller\n");
+                    die();
+                }
+                if !ARMED.is_null() {
+                    core::ptr::copy_nonoverlapping(ARMED, fresh, ARMED_LEN);
+                    free(ARMED as *mut u8);
+                }
+                ARMED = fresh;
+                ARMED_LEN = want;
+            }
+            ARMED.add(fd)
+        }
+
+        pub(super) unsafe fn poller_forget(fd: i32) {
+            if rill_mt == 0 && fd >= 0 && (fd as usize) < ARMED_LEN {
+                let s = ARMED.add(fd as usize);
+                (*s).read = core::ptr::null_mut();
+                (*s).write = core::ptr::null_mut();
+            }
+        }
+
+        /// Registers `fd` for `g` if it is not already; `true` when the
+        /// poller will deliver its next edge to `g`.
+        unsafe fn arm_persistent(kq: i32, fd: i32, writable: bool, g: *mut G) -> bool {
+            let s = armed_slot(fd);
+            let owner = if writable { &mut (*s).write } else { &mut (*s).read };
+            if *owner == g {
+                return true;
+            }
+            let ev = KEvent {
+                ident: fd as usize,
+                filter: if writable { EVFILT_WRITE } else { EVFILT_READ },
+                flags: EV_ADD | EV_CLEAR,
+                fflags: 0,
+                data: 0,
+                udata: g as *mut u8,
+            };
+            if kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null()) < 0 {
+                return false;
+            }
+            *owner = g;
+            true
+        }
+
         pub(super) unsafe fn poller_arm(kq: i32, fd: i32, writable: bool, g: *mut G) -> bool {
+            if rill_mt == 0 {
+                return arm_persistent(kq, fd, writable, g);
+            }
             let ev = KEvent {
                 ident: fd as usize,
                 filter: if writable { EVFILT_WRITE } else { EVFILT_READ },
@@ -4086,6 +4280,12 @@ mod net {
         /// deleted on the way out, and deleting what is no longer there is a
         /// harmless `ENOENT`.
         pub(super) unsafe fn poller_arm_deadline(kq: i32, fd: i32, writable: bool, ms: i64, g: *mut G) -> i32 {
+            if rill_mt == 0 {
+                if !arm_persistent(kq, fd, writable, g) {
+                    return -1;
+                }
+                return poller_timer(kq, ms, g);
+            }
             let evs = [
                 KEvent {
                     ident: fd as usize,
@@ -4112,6 +4312,19 @@ mod net {
 
         /// Takes both registrations back down.
         pub(super) unsafe fn poller_disarm(kq: i32, fd: i32, writable: bool, _held: i32, g: *mut G) {
+            if rill_mt == 0 {
+                // The descriptor stays registered; only the deadline goes.
+                let ev = KEvent {
+                    ident: g as usize,
+                    filter: EVFILT_TIMER,
+                    flags: EV_DELETE,
+                    fflags: 0,
+                    data: 0,
+                    udata: core::ptr::null_mut(),
+                };
+                kevent(kq, &ev, 1, core::ptr::null_mut(), 0, core::ptr::null());
+                return;
+            }
             let evs = [
                 KEvent {
                     ident: fd as usize,
@@ -4143,10 +4356,21 @@ mod net {
             let mut got = 0usize;
             for i in 0..n as usize {
                 let g = events[i].udata as *mut G;
-                if !g.is_null() {
-                    *ready.add(got) = g;
-                    got += 1;
+                if g.is_null() {
+                    continue;
                 }
+                // A registration outliving its wait may report a descriptor
+                // the strand has since left; only the one it is parked on
+                // now is news.
+                let f = events[i].filter;
+                if (f == EVFILT_READ || f == EVFILT_WRITE)
+                    && rill_mt == 0
+                    && (*g).wait_ident != events[i].ident + 1
+                {
+                    continue;
+                }
+                *ready.add(got) = g;
+                got += 1;
             }
             got
         }
@@ -4212,14 +4436,14 @@ mod net {
             let ep = epoll_create1(0);
             if ep < 0 {
                 out(b"rill: cannot create epoll\n");
-                abort();
+                die();
             }
             // The wakeup channel. Registered level-triggered and never
             // one-shot, so it stays armed for the life of the worker.
             let efd = eventfd(0, EFD_NONBLOCK);
             if efd < 0 {
                 out(b"rill: cannot create eventfd\n");
-                abort();
+                die();
             }
             let mut ev = EpollEvent { events: EPOLLIN, data: 0 };
             epoll_ctl(ep, EPOLL_CTL_ADD, efd, &mut ev);
@@ -4241,6 +4465,10 @@ mod net {
         /// in the set, so a second arm on the same descriptor is a modify and
         /// not an add. Trying the add first and falling back keeps the common
         /// case — a connection's first wait — to one syscall.
+        /// Registrations here are still one per wait, so there is nothing to
+        /// forget when a descriptor closes.
+        pub(super) unsafe fn poller_forget(_fd: i32) {}
+
         pub(super) unsafe fn poller_arm(ep: i32, fd: i32, writable: bool, g: *mut G) -> bool {
             let mut ev = EpollEvent {
                 events: (if writable { EPOLLOUT } else { EPOLLIN }) | EPOLLONESHOT,
@@ -4404,9 +4632,11 @@ mod net {
     /// Parks the current strand until `fd` is readable or writable. The
     /// registration is one-shot, so nothing has to be unregistered afterwards.
     unsafe fn park_on_fd(fd: i32, writable: bool) {
+        rill_flush_out();
         let w = me();
         let g = (*w).current;
         (*g).selected = -1;
+        (*g).wait_ident = fd as usize + 1;
         let p = ensure_poller(w);
         IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         (*g).on_io = true;
@@ -4434,6 +4664,7 @@ mod net {
         let w = me();
         let g = (*w).current;
         (*g).selected = -1;
+        (*g).wait_ident = 0;
         let p = ensure_poller(w);
         IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         (*g).on_io = true;
@@ -4526,6 +4757,7 @@ mod net {
         let w = me();
         let g = (*w).current;
         (*g).selected = -1;
+        (*g).wait_ident = fd as usize + 1;
         let p = ensure_poller(w);
         IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         (*g).on_io = true;
@@ -4558,6 +4790,7 @@ mod net {
         if ms <= 0 {
             return;
         }
+        rill_flush_out();
         park_on_timer(ms);
     }
 
@@ -4733,28 +4966,45 @@ mod net {
     /// `fd` must be an open socket; called from strand context.
     #[no_mangle]
     pub unsafe extern "C" fn rill_sock_read(fd: i64) -> *mut u8 {
-        let buf = malloc(READ_CHUNK);
+        // One scratch block for every read on the one worker: it is only
+        // used between `read` returning and the copy, with no park between,
+        // so strands cannot see each other's bytes in it. Several workers
+        // each take their own.
+        let (buf, owned) = if rill_mt == 0 {
+            if SOCK_SCRATCH.is_null() {
+                SOCK_SCRATCH = malloc(READ_CHUNK);
+            }
+            (SOCK_SCRATCH, false)
+        } else {
+            (malloc(READ_CHUNK), true)
+        };
         if buf.is_null() {
             out(b"rill: out of memory reading a socket\n");
-            abort();
+            die();
         }
         loop {
             let n = read(fd as i32, buf, READ_CHUNK);
             if n >= 0 {
                 let s = str_new(n as usize);
                 core::ptr::copy_nonoverlapping(buf, s.add(16), n as usize);
-                free(buf);
+                if owned {
+                    free(buf);
+                }
                 return s;
             }
             let e = errno();
             if e == EAGAIN {
                 park_on_fd(fd as i32, false);
             } else if e != EINTR {
-                free(buf);
+                if owned {
+                    free(buf);
+                }
                 return str_new(0);
             }
         }
     }
+
+    static mut SOCK_SCRATCH: *mut u8 = core::ptr::null_mut();
 
     /// Writes a whole string, parking whenever the socket is full.
     ///
@@ -4785,6 +5035,7 @@ mod net {
     /// `fd` must be an open socket.
     #[no_mangle]
     pub unsafe extern "C" fn rill_sock_close(fd: i64) {
+        poller_forget(fd as i32);
         close(fd as i32);
     }
 

@@ -1251,10 +1251,11 @@ impl Checker {
         line: usize,
         env: &mut HashMap<String, Ty>,
     ) -> Result<TExpr, TypeError> {
-        let go = match args.last() {
+        let go = match args.iter().rev().find(|a| matches!(a, Expr::Str(_))) {
             Some(Expr::Str(g)) => g.clone(),
             _ => unreachable!("expand_for names the loop"),
         };
+        let exact = matches!(args.last(), Some(Expr::Bool(true)));
         let base_name = match &args[0] {
             Expr::Var(n, _) => n.clone(),
             _ => unreachable!("expand_for hoists only named buffers"),
@@ -1265,15 +1266,23 @@ impl Checker {
             let hi = self.infer(&args[2], env)?;
             self.unify(&Ty::Int, &lo.ty, line, "a loop bound")?;
             self.unify(&Ty::Int, &hi.ty, line, "a loop bound")?;
-            // Only a buffer: a string index past the end is `-1` by contract,
-            // and a loop may lean on that, so a string keeps its per-byte test.
-            if matches!(self.resolve(&b.ty), Ty::Buf(_)) {
-                self.hoisted.insert((go, base_name));
-                return Ok(TExpr {
-                    ty: Ty::Unit,
-                    line,
-                    kind: TK::Builtin { rt: "rill_buf_check", args: vec![b, lo, hi] },
-                });
+            match self.resolve(&b.ty) {
+                Ty::Buf(_) => {
+                    self.hoisted.insert((go, base_name));
+                    return Ok(TExpr {
+                        ty: Ty::Unit,
+                        line,
+                        kind: TK::Builtin { rt: "rill_buf_check", args: vec![b, lo, hi] },
+                    });
+                }
+                // A string index past the end is `-1` by contract, and a loop
+                // may lean on that, so a string is only vouched for when the
+                // range is exactly `0..#s` — in range by construction, no
+                // test needed in front either.
+                Ty::Str if exact => {
+                    self.hoisted.insert((go, base_name));
+                }
+                _ => {}
             }
             return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Block(Vec::new()) });
         }
@@ -1291,8 +1300,10 @@ impl Checker {
             };
             let mut t = self.infer(&plain, env)?;
             if vouched {
-                if let TK::BufGet { unchecked, .. } = &mut t.kind {
-                    *unchecked = true;
+                match &mut t.kind {
+                    TK::BufGet { unchecked, .. } => *unchecked = true,
+                    TK::Builtin { rt, .. } if *rt == "rill_str_get" => *rt = "rill_str_at",
+                    _ => {}
                 }
             }
             return Ok(t);

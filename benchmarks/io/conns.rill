@@ -1,0 +1,49 @@
+# Five hundred clients at once, each fifty round trips of 64 bytes, against
+# one server spawning a strand per connection: the poller with many
+# descriptors in it, most of them waiting.
+fn readn(fd, need, got) =
+  if got >= need then got
+  else
+    r = sock_read(fd)
+    if #r == 0 then got else readn(fd, need, got + #r)
+
+fn echo(c) =
+  m = sock_read(c)
+  if #m == 0 then sock_close(c)
+  else
+    sock_write(c, m)
+    echo(c)
+
+fn serve(server) =
+  c = tcp_accept(server)
+  spawn echo(c)
+  serve(server)
+
+fn exchange(fd, msg, k, acc) =
+  if k == 0 then acc
+  else
+    sock_write(fd, msg)
+    exchange(fd, msg, k - 1, acc + readn(fd, #msg, 0))
+
+fn client(port, msg, done) =
+  fd = tcp_connect("127.0.0.1", port)
+  got = exchange(fd, msg, 50, 0)
+  sock_close(fd)
+  send(done, got)
+
+fn launch(port, msg, done, k) =
+  if k == 0 then 0
+  else
+    spawn client(port, msg, done)
+    launch(port, msg, done, k - 1)
+
+fn gather(done, k, acc) = if k == 0 then acc else gather(done, k - 1, acc + recv(done))
+
+fn main() =
+  port = str_to_int(arg(1))
+  server = tcp_listen(port)
+  spawn serve(server)
+  msg = repeat("y", 64)
+  done = channel(100)
+  launch(port, msg, done, 500)
+  println(gather(done, 500, 0))

@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — bytes in, bytes out
+
+Seven disk and network programs beside their Go twins (`benchmarks/io/`),
+and what the first run found:
+
+- **Standard output is buffered**, the way C's is: a line at a time when it
+  is a terminal, 64 KB at a time otherwise. It is written out before
+  anything that waits — the program ending (through `atexit`, so a C
+  callback that prints after `main` is not lost), `exit`, a read of standard
+  input, a strand parking on a socket or a timer — and before an abort, so
+  the message that explains the abort follows what the program said. Two
+  million `println`s were four million `write` calls; they are now 2× faster
+  than Go's buffered writer. A `--parallel` build with several workers
+  writes as before, unbuffered, since the workers share no buffer.
+- `read_line` no longer copies each line through a scratch block: the line is
+  nearly always whole in the block last read, so it is one `memchr` and one
+  copy. Standard input is read 256 KB at a time.
+- Copies of up to sixteen bytes are two overlapping word moves instead of a
+  byte loop; every short string in the language got quicker for it (json
+  144 → 124 ms, dijkstra 105 → 91).
+- `sock_read` keeps one 64 KB scratch per worker instead of allocating and
+  freeing one per call.
+- `s[i]` inside `for i in 0..#s` is read without its per-byte test — it is in
+  range by construction — while every other string index keeps its `-1` past
+  the end.
+- A socket's registration in the poller outlives the wait that made it. On
+  one worker a descriptor is registered once, edge-triggered, for the strand
+  that waits on it, and re-registered only when a different strand comes;
+  before, every wait was a `kevent` to arm and a `kevent` to wait. An event
+  for a descriptor the strand has since left is recognised and dropped, and a
+  closed descriptor is forgotten so its number can come round again. Sound
+  because every wait follows an `EAGAIN` from the operation itself. Linux
+  keeps its one-shot `epoll` registrations for now; several workers keep the
+  one-shot path everywhere.
+- The accept loop in the language reference spawned a strand *around* the
+  accept and so never waited: `spawn handle(tcp_accept(s))` spins. It reads
+  `conn = tcp_accept(s)` first now, and the concurrency section says why.
+
 ## Unreleased — as fast as the C
 
 A day spent putting nineteen programs beside their C twins

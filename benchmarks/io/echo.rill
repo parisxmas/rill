@@ -1,0 +1,34 @@
+# A server strand echoing, a client sending 100k 64-byte messages and
+# waiting for each echo: the round trip through the loopback, twice.
+fn readn(fd, need, got) =
+  if got >= need then got
+  else
+    r = sock_read(fd)
+    if #r == 0 then got else readn(fd, need, got + #r)
+
+fn echo(c) =
+  m = sock_read(c)
+  if #m == 0 then sock_close(c)
+  else
+    sock_write(c, m)
+    echo(c)
+
+fn serve(server) =
+  c = tcp_accept(server)
+  spawn echo(c)
+  serve(server)
+
+fn ping(fd, msg, k, acc) =
+  if k == 0 then acc
+  else
+    sock_write(fd, msg)
+    ping(fd, msg, k - 1, acc + readn(fd, #msg, 0))
+
+fn main() =
+  port = str_to_int(arg(1))
+  server = tcp_listen(port)
+  spawn serve(server)
+  fd = tcp_connect("127.0.0.1", port)
+  msg = repeat("x", 64)
+  println(ping(fd, msg, 100000, 0))
+  sock_close(fd)

@@ -1,0 +1,10 @@
+# Five thousand small files written, then read back: the metadata side of a
+# file system, one open and one close per file each way.
+fn main() =
+  n = 5000
+  dir = "/tmp/rill-io-small-" + arg(1) + "/f"
+  for i in 0..n
+    write_file(dir + int_to_str(i) + ".txt", "file " + int_to_str(i) + " holds a little text and a number: " + int_to_str(i * i))
+  total = for i in 0..n with acc = 0
+    acc + #read_file_raw(dir + int_to_str(i) + ".txt")
+  println(total)

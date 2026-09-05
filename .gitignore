@@ -47,3 +47,4 @@ __pycache__/
 /benchmarks/c/bin/
 /benchmarks/c/last_run.md
 /benchmarks/strands/bin/
+/benchmarks/io/bin/

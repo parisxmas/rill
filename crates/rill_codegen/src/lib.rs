@@ -1880,6 +1880,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.module.add_function("rill_retain", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_env_release", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_alloc_report", void.fn_type(&[], false), None);
+        self.module.add_function("rill_flush_out", void.fn_type(&[], false), None);
         self.module.add_function(
             "rill_rt_run_direct",
             void.fn_type(&[ptrt.into()], false),
@@ -4814,6 +4815,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 "",
             )
             .expect("LLVM builder error");
+        self.call_rt("rill_flush_out", &[]);
         self.call_rt("rill_alloc_report", &[]);
         self.builder.build_return(Some(&i32t.const_int(0, false))).expect("LLVM builder error");
     }
@@ -5089,6 +5091,23 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     self.emit_release(b, &Ty::StrBuf);
                 }
                 Ok(None)
+            }
+            // `s[i]` in a `for i in 0..#s`: every index is in range by
+            // construction, so the byte and nothing else.
+            TK::Builtin { rt, args } if *rt == "rill_str_at" => {
+                let (s, owned) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let s = s.into_pointer_value();
+                let i = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_int_value();
+                let i64t = self.ctx.i64_type();
+                let b = &self.builder;
+                let off = b.build_int_add(i, i64t.const_int(16, false), "off").expect("LLVM builder error");
+                let at = unsafe { b.build_gep(self.ctx.i8_type(), s, &[off], "at") }.expect("LLVM builder error");
+                let byte = b.build_load(self.ctx.i8_type(), at, "byte").expect("LLVM builder error").into_int_value();
+                let wide = b.build_int_z_extend(byte, i64t, "chr").expect("LLVM builder error");
+                if owned {
+                    self.emit_release(s.into(), &Ty::Str);
+                }
+                Ok(Some(wide.into()))
             }
             TK::Builtin { rt, args } if (*rt == "rill_str_len" || *rt == "rill_str_get") => {
                 let (s, owned) = self.gen_borrowed(&args[0], scope, subst, func)?;

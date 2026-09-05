@@ -1,0 +1,9 @@
+# Lines and bytes of standard input: `wc -lc`, line by line.
+fn count(lines, bytes) =
+  s = read_line()
+  if io_ok() then count(lines + 1, bytes + #s + 1) else (lines, bytes)
+
+fn main() =
+  (lines, bytes) = count(0, 0)
+  println(lines)
+  println(bytes)

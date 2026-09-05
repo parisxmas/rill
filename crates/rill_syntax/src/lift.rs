@@ -118,6 +118,7 @@ fn expand_for(
     // body, so the `v` and `i` inside are the ones the check saw. A buffer
     // never changes length, so the check holds however late the access runs.
     let hoisted = hoistable_bases(&body, &var);
+    let (from_shape, to_shape) = (from.clone(), to.clone());
     let body = if hoisted.is_empty() { body } else { hoist_indexes(body, &var, &hoisted, &go) };
     let next = Expr::Binary {
         op: BinOp::Add,
@@ -171,6 +172,12 @@ fn expand_for(
         Stmt::Bind { name: hi.clone(), value: to, line },
     ];
     for b in &hoisted {
+        // `for i in 0..#b`: every index is in range by construction, which
+        // is what lets a string — whose `s[i]` past the end is `-1` by
+        // contract and so cannot be checked once in front — be read without
+        // its per-byte test inside such a loop.
+        let exact = matches!(from_shape, Expr::Int(0))
+            && matches!(&to_shape, Expr::Len { expr, .. } if matches!(expr.as_ref(), Expr::Var(n, _) if n == b));
         stmts.push(Stmt::Expr(Expr::Call {
             name: "for.check".to_string(),
             args: vec![
@@ -178,6 +185,7 @@ fn expand_for(
                 Expr::Var(lo.clone(), line),
                 Expr::Var(hi.clone(), line),
                 Expr::Str(go.clone()),
+                Expr::Bool(exact),
             ],
             line,
             piped: false,

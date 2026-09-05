@@ -1,0 +1,4 @@
+# Two million lines to standard output.
+fn main() =
+  for i in 0..2000000
+    println(i)

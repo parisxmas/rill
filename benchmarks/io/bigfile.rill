@@ -1,0 +1,16 @@
+# Build 32 MB of lines, write the file, read it back, count the lines.
+fn main() =
+  n = 2000000
+  b = strbuf()
+  for i in 0..n
+    b += "line number "
+    b += int_to_str(i)
+    b += 10
+  text = strbuf_str(b)
+  path = "/tmp/rill-io-big-" + arg(1) + ".txt"
+  write_file(path, text)
+  back = read_file_raw(path)
+  lines = for i in 0..#back with acc = 0
+    if back[i] == 10 then acc + 1 else acc
+  println(#back)
+  println(lines)

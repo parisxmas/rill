@@ -694,8 +694,10 @@ fn main() =
 ```
 
 - `spawn expr` runs the expression on a new strand — all of it, so
-  `spawn handle(accept(s))` accepts on the *new* strand. Bind first if the
-  caller should do that part.
+  `spawn handle(accept(s))` accepts on the *new* strand, and a loop written
+  that way never waits: it spawns strand after strand, each parked on the
+  accept, and spins. Bind first — `conn = accept(s)` — so the loop is the one
+  that waits, and hand the connection to the strand.
 - `channel()` creates a `Chan(a)`; `send(ch, v)` and `recv(ch)` rendezvous — a
   sender blocks until a receiver arrives and vice versa.
 - `channel(n)` buffers `n` values, so a sender only blocks once the buffer is
@@ -824,7 +826,8 @@ fn reply(conn, msg) =
   handle(conn)
 
 fn serve(server) =
-  spawn handle(tcp_accept(server))
+  conn = tcp_accept(server)
+  spawn handle(conn)
   serve(server)
 ```
 
@@ -1144,7 +1147,7 @@ traps mid-run.
 
 | | |
 |---|---|
-| `println(x)` / `print(x)` | print any value type, with or without a newline |
+| `println(x)` / `print(x)` | print any value type, with or without a newline; standard output is buffered like C's — a line at a time on a terminal, 64 KB otherwise — and written out before the program ends, before `exit`, before a read of standard input and before a strand waits |
 | `show(x) -> Str` | render any value as a string |
 | `int_to_str` `float_to_str` `bool_to_str` `str_to_int` | conversions |
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
