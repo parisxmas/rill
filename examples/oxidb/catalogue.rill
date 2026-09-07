@@ -110,6 +110,10 @@ import "catview"
 import "ws"
 import "catalogue_page"
 
+# How many documents to seed when the collection is empty, unless a number is
+# given on the command line. A hundred thousand is enough to make an index the
+# difference between a page and a wait; the shape of the example does not
+# change at two million, only the numbers do.
 fn total() = 100000
 
 fn batch() = 1000
@@ -117,7 +121,7 @@ fn batch() = 1000
 fn collection() = "catalogue"
 
 fn main() = match args()
-  Cons(_, Cons(db, rest)) -> start(str_to_int(db), wanted_port(rest), asked_fresh(rest))
+  Cons(_, Cons(db, rest)) -> start(str_to_int(db), wanted_port(rest), asked_fresh(rest), asked_count(rest))
   _ -> usage()
 
 fn usage() =
@@ -134,27 +138,37 @@ fn asked_fresh(rest) = match rest
   Nil -> false
   Cons(a, more) -> a == "fresh" || asked_fresh(more)
 
+# `fresh 2000000` — how many to build. Anything else, or nothing, is the
+# usual hundred thousand.
+fn asked_count(rest) = match rest
+  Nil -> total()
+  Cons(a, more) -> if a == "fresh" then first_number(more) else asked_count(more)
+
+fn first_number(rest) = match rest
+  Nil -> total()
+  Cons(a, _) -> if str_to_int(a) > 0 then str_to_int(a) else total()
+
 # -- seeding ------------------------------------------------------------------
 
-fn start(db, want, fresh) = match dial("127.0.0.1", db)
+fn start(db, want, fresh, count) = match dial("127.0.0.1", db)
   Err(e) -> println("oxidb: " + e)
-  Ok(fd) -> seed_then_serve(fd, db, want, fresh)
+  Ok(fd) -> seed_then_serve(fd, db, want, fresh, count)
 
 # The documents outlive the server. A restart that wiped them would be a
 # restart that threw away everything anyone had edited, and would cost a
 # second and a half to say nothing new — so the collection is counted first,
 # and seeded only if it is not already there. `./catalogue 4444 8123 fresh`
 # asks for it to be built again.
-fn seed_then_serve(fd, db, want, fresh) =
+fn seed_then_serve(fd, db, want, fresh, count) =
   if !fresh && already(fd) then
-    println("catalogue is already there — " + int_to_str(total()) + " documents, left as they are")
+    println("catalogue is already there, left as it is")
     ready_to_serve(fd, db, want)
   else
     println("clearing " + collection())
     drop_all(fd)
-    println("seeding " + int_to_str(total()) + " documents")
+    println("seeding " + int_to_str(count) + " documents")
     t0 = now_nanos()
-    fill_batches(fd, 0)
+    fill_batches(fd, 0, count)
     println("seeded in " + int_to_str((now_nanos() - t0) / 1000000) + " ms")
     # An index apiece on what the routes below ask by and sort on. Without
     # them every request reads a hundred thousand documents: `/top?by=score`
@@ -172,9 +186,11 @@ fn ready_to_serve(fd, db, want) =
   hang_up(fd)
   serve_on(db, want)
 
+# Anything at all, rather than a particular number: a collection that has been
+# edited, or seeded to another size, is still a collection that is there.
 fn already(fd) = match count(fd, collection())
   Err(_) -> false
-  Ok(d) -> counted(d) == total()
+  Ok(d) -> counted(d) > 0
 
 fn drop_all(fd) = match delete(fd, collection(), JObj(Nil))
   Err(e) ->
@@ -189,12 +205,12 @@ fn index_on(fd, name) = match create_index(fd, collection(), name)
   Ok(_) -> 0
 
 # A batch at a time until the whole run is in.
-fn fill_batches(fd, from) =
-  if from >= total() then 0
+fn fill_batches(fd, from, count) =
+  if from >= count then 0
   else
-    n = if total() - from < batch() then total() - from else batch()
+    n = if count - from < batch() then count - from else batch()
     send_batch(fd, from, n)
-    fill_batches(fd, from + n)
+    fill_batches(fd, from + n, count)
 
 fn send_batch(fd, from, n) = match insert_many(fd, collection(), batch_docs(from, n))
   Err(e) ->
@@ -238,7 +254,11 @@ fn announce(server, db, port) =
   # the list on in order, outermost first.
   kept = map_new()
   watching = map_new()
-  answer = h.wrap(Cons(h.rate_limit(writes_a_second()), Nil), \req -> route(pool, kept, watching, req))
+  cell = weight_cell()
+  # Once before the doors open, so the first page has real numbers in it.
+  weigh_once(pool, cell)
+  spawn weigh_every(pool, cell)
+  answer = h.wrap(Cons(h.rate_limit(writes_a_second()), Nil), \req -> route(pool, kept, watching, cell, req))
   h.serve_taking(server, answer, \conn, raw -> live(watching, conn, raw))
 
 fn writes_a_second() = 20
@@ -265,8 +285,8 @@ fn fill_pool(ch, db, n) =
 
 # A write arrives as a POST and nothing else does: a link cannot change a
 # document, whatever it says.
-fn route(pool, kept, watching, req: h.Request) =
-  if req.method == "POST" then with_db(pool, \fd -> answer_edit(fd, watching, path_of(req.path), req.body)) else dispatch(pool, kept, path_of(req.path), query_of(req.path), h.header(req, "if-none-match"))
+fn route(pool, kept, watching, cell, req: h.Request) =
+  if req.method == "POST" then with_db(pool, \fd -> answer_edit(fd, watching, path_of(req.path), req.body)) else dispatch(pool, kept, cell, path_of(req.path), query_of(req.path), h.header(req, "if-none-match"))
 
 # `POST /doc/<sku>` with `{"field": ..., "value": ...}` — one cell of one
 # document, which is what the grid sends when a cell is edited.
@@ -383,8 +403,8 @@ fn digits_only(s, from, to) =
   for i in from..to with ok = true
     ok && str_get(s, i) >= 48 && str_get(s, i) <= 57
 
-fn dispatch(pool, kept, path, qs, asked) =
-  if path == "/" then with_db(pool, \fd -> browse(fd, qs)) else if path == "/rows" then with_db(pool, \fd -> answer_rows(fd, qs)) else if path == "/count" then with_db(pool, \fd -> answer_count(fd)) else if path == "/find" then with_db(pool, \fd -> answer_find(fd, qs)) else if path == "/top" then with_db(pool, \fd -> answer_top(fd, qs)) else if starts_with(path, "/doc/") then with_db(pool, \fd -> answer_doc(fd, str_to_int(str_sub(path, 5, str_len(path))))) else if starts_with(path, "/static/") then answer_static(kept, str_sub(path, 8, str_len(path)), asked) else h.json_response(404, "{\"error\":\"no route for " + path + "\"}")
+fn dispatch(pool, kept, cell, path, qs, asked) =
+  if path == "/" then with_db(pool, \fd -> browse(fd, qs, cell)) else if path == "/rows" then with_db(pool, \fd -> answer_rows(fd, qs)) else if path == "/count" then with_db(pool, \fd -> answer_count(fd)) else if path == "/stat" then answer_stat(cell) else if path == "/find" then with_db(pool, \fd -> answer_find(fd, qs)) else if path == "/top" then with_db(pool, \fd -> answer_top(fd, qs)) else if starts_with(path, "/doc/") then with_db(pool, \fd -> answer_doc(fd, str_to_int(str_sub(path, 5, str_len(path))))) else if starts_with(path, "/static/") then answer_static(kept, str_sub(path, 8, str_len(path)), asked) else h.json_response(404, "{\"error\":\"no route for " + path + "\"}")
 
 # -- what the page pulls in ----------------------------------------------------
 
@@ -456,6 +476,49 @@ fn with_db(pool, ask) =
   res = ask(fd)
   send(pool, fd)
   res
+
+# What the two processes are holding: this one's own resident set, and what the
+# database says about itself.
+#
+# It is read once for the whole server rather than once per client. Two words
+# of memory hold the last reading, one strand refreshes them on a fixed
+# heartbeat, and every page and every `/stat` reads those words. A hundred
+# people watching the corner of the page therefore cost exactly what one
+# person costs — and, more to the point, the database is asked about itself
+# twice a second at most, whatever the traffic, so a page about memory can
+# never become the reason there is less of it.
+fn weight_cell() = buf_int(2)
+
+fn weigh_ms() = 2000
+
+fn weigh_every(pool, cell) =
+  sleep_ms(weigh_ms())
+  weigh_once(pool, cell)
+  weigh_every(pool, cell)
+
+fn weigh_once(pool, cell) = with_db(pool, \fd -> record_weight(cell, fd))
+
+# Tenths of a megabyte, so what is shared is two whole numbers. -1 says the
+# database did not answer, which the page shows as `?` — a truer thing to put
+# in a corner about memory than a zero.
+fn record_weight(cell: Buf(Int), fd) =
+  buf_set(cell, 0, rss_bytes() * 10 / 1048576)
+  buf_set(cell, 1, db_tenths(proc_status(fd)))
+  0
+
+fn db_tenths(status) = match status
+  Err(_) -> 0 - 1
+  Ok(d) -> to_int(rss_mb(d) * 10.0)
+
+fn weight_now(cell: Buf(Int)) = Weight(tenths(buf_get(cell, 0)), tenths(buf_get(cell, 1)))
+
+fn tenths(n) = if n < 0 then "?" else int_to_str(n / 10) + "." + int_to_str(n % 10)
+
+# The corner of the page on its own, so the script can keep it current without
+# fetching the rest of the page with it. Both numbers go out as text, because
+# `?` is one of the things either can be.
+fn answer_stat(cell) = match weight_now(cell)
+  Weight(rill, db) -> h.json_response(200, "{\"rill_mb\":\"" + rill + "\",\"db_mb\":\"" + db + "\"}")
 
 fn answer_count(fd) = match count(fd, collection())
   Err(e) -> failed(e)
@@ -533,12 +596,12 @@ fn shown(label, result, render) = match result
 # `/` renders what `/find` answers, with a form in front of it and a pager
 # under it. Nothing here is JavaScript: a link carries the page number and
 # the server answers with the page.
-fn browse(fd, qs) =
+fn browse(fd, qs, cell) =
   t0 = now_nanos()
   match shape_of(fd, qs)
     (q, size, total, pages, page, skip) ->
       found = find_page(fd, collection(), q, sorted_by(qs), size, skip)
-      answer_page(qs, found, total, page, pages, size, skip, now_nanos() - t0)
+      answer_page(qs, found, total, page, pages, size, skip, now_nanos() - t0, weight_now(cell))
 
 # What `/` renders, as JSON, for the client that took the page over. It is the
 # same question asked the same way — the two answers cannot drift apart,
@@ -579,9 +642,9 @@ fn shape_of(fd, qs) =
 
 fn sorted_by(qs) = JObj(Cons(field(sort_by(qs), int(sort_dir(qs))), Nil))
 
-fn answer_page(qs, result, total, page, pages, size, skip, asked) = match result
-  Err(e) -> h.html_response(500, page_of_html(qs, Nil, 0, 1, 1, size, 0, e, asked))
-  Ok(d) -> h.html_response(200, page_of_html(qs, docs(d), total, page, pages, size, skip, "", asked))
+fn answer_page(qs, result, total, page, pages, size, skip, asked, weight) = match result
+  Err(e) -> h.html_response(500, page_of_html(qs, Nil, 0, 1, 1, size, 0, e, asked, weight))
+  Ok(d) -> h.html_response(200, page_of_html(qs, docs(d), total, page, pages, size, skip, "", asked, weight))
 
 fn matched(fd, q) = match count_where(fd, collection(), q)
   Err(_) -> 0
@@ -602,18 +665,18 @@ fn clamped(n, lo, hi) = if n < lo then lo else if n > hi then hi else n
 # is given: the form as it should come back, one row per document, and the
 # pager worked out — no markup, and no page to look at to see what a query
 # does.
-fn page_of_html(qs, list, total, page, pages, size, skip, trouble, asked) =
+fn page_of_html(qs, list, total, page, pages, size, skip, trouble, asked, weight) =
   b = strbuf()
-  catalogue_page(b, view_of(qs, list, total, page, pages, skip, trouble, asked))
+  catalogue_page(b, view_of(qs, list, total, page, pages, skip, trouble, asked, weight))
   strbuf_str(b)
 
-fn view_of(qs, list, total, page, pages, skip, trouble, asked) =
+fn view_of(qs, list, total, page, pages, skip, trouble, asked, weight) =
   dir = if sort_dir(qs) < 0 then "desc" else "asc"
   bys = choices(Cons("sku", Cons("score", Cons("stock", Cons("name", Nil)))), sort_by(qs))
   dirs = choices(Cons("asc", Cons("desc", Nil)), dir)
   seen = len(list)
   seed = in_script(rows_body(list, total, page, pages, skip, asked))
-  View(param(qs, "role"), param(qs, "region"), param(qs, "sku"), int_to_str(page_size(qs)), bys, dirs, trouble, total, page, pages, skip + 1, skip + seen, rows_of(list), steps_of(qs, page, pages), seed)
+  View(param(qs, "role"), param(qs, "region"), param(qs, "sku"), int_to_str(page_size(qs)), bys, dirs, trouble, total, page, pages, skip + 1, skip + seen, rows_of(list), steps_of(qs, page, pages), seed, weight)
 
 # JSON is put in the page as it stands, so the one byte that could end the
 # script tag early is written as an escape. Nothing else in JSON can.

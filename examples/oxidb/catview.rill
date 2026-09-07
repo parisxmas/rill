@@ -4,10 +4,17 @@
 # those go on the page.
 #
 # Splitting it this way is what makes the template readable — every `<% %>` in
-# it is a field or a list, never a call into the server — and it is what lets
-# `catalogue.rill` be tested without rendering anything.
+# it is a field, a list, or one of the small formatters below, never a call
+# into the server — and it is what lets `catalogue.rill` be tested without
+# rendering anything.
 type View
-  View(role: Str, region: Str, sku: Str, limit: Str, bys: List(Choice), dirs: List(Choice), trouble: Str, total: Int, page: Int, pages: Int, from: Int, upto: Int, rows: List(Row), steps: List(Step), seed: Str)
+  View(role: Str, region: Str, sku: Str, limit: Str, bys: List(Choice), dirs: List(Choice), trouble: Str, total: Int, page: Int, pages: Int, from: Int, upto: Int, rows: List(Row), steps: List(Step), seed: Str, weight: Weight)
+
+# What the two processes are holding in memory, in megabytes and already
+# written out — the page renders it as it came, and the script that takes the
+# page over keeps it up to date from `/stat`.
+type Weight
+  Weight(rill: Str, db: Str)
 
 # One `<option>`, and whether it is the one chosen.
 type Choice
@@ -28,3 +35,12 @@ type Step
 fn choices(names, chosen) = match names
   Nil -> Nil
   Cons(n, rest) -> Cons(Choice(n, n == chosen), choices(rest, chosen))
+
+# A number with its thousands apart. Seven digits in a row in the middle of a
+# sentence is a figure nobody reads: 2000000 has to be counted, 2,000,000 is
+# just read. Formatting is the view's business, so it lives here beside the
+# shapes rather than in the server or in the template.
+fn grouped(n) = if n < 0 then "-" + grouped(0 - n) else in_threes(int_to_str(n))
+
+fn in_threes(s) =
+  if str_len(s) <= 3 then s else in_threes(str_sub(s, 0, str_len(s) - 3)) + "," + str_sub(s, str_len(s) - 3, 3)

@@ -120,6 +120,17 @@ fn delete(fd, collection, query) =
 fn create_index(fd, collection, field_name) =
   call(fd, command("create_index", on(collection, Cons(Field("field", JStr(field_name)), Nil))))
 
+# What the server process itself is doing: how much memory it is holding, how
+# busy it is, how many threads it has, how long it has been up. Nothing about
+# the data, so a page can show it to anyone who may see the page.
+fn proc_status(fd) = call(fd, command("proc_status", Nil))
+
+fn rss_mb(data) = as_float(unwrap_or(get(data, "mem_rss_mb"), JNull))
+
+fn cpu_percent(data) = as_float(unwrap_or(get(data, "cpu_percent"), JNull))
+
+fn uptime_s(data) = as_int(unwrap_or(get(data, "uptime_s"), JNull))
+
 # `$set` is the update operator the server expects for a partial change.
 fn set(fields) = JObj(Cons(Field("$set", JObj(fields)), Nil))
 

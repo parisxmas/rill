@@ -263,7 +263,7 @@ const columns = [
 function Results() {
   return html`
     <p>
-      <b>${total}</b> documents match${() =>
+      <b>${() => total().toLocaleString("en-US")}</b> documents match${() =>
         total() > rows().length ? ` — the grid holds the first ${rows().length}` : ""}${() =>
         busy() ? " · asking…" : ""}${() =>
         failed() ? html`<span class="bad"> · ${failed()} · trying again…</span>` : ""}
@@ -294,3 +294,26 @@ hydrate(Results, region);
 // Both halves are in; the page may show what is there.
 form.classList.add("live");
 region.classList.add("live");
+
+// --- what the two processes weigh ---------------------------------------------------
+//
+// The corner of the page arrived with the two numbers as they stood when the
+// page was made; from here it keeps them current. A timer rather than a
+// signal: nothing else on the page depends on them, and a reading two seconds
+// old is what a reading of memory is anyway.
+
+const weighed = { rill: document.getElementById("rill-mb"), db: document.getElementById("db-mb") };
+const shown = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : "?");
+
+const weigh = async () => {
+  try {
+    const said = await (await fetch("/stat", { cache: "no-store" })).json();
+    if (weighed.rill) weighed.rill.textContent = shown(said.rill_mb);
+    if (weighed.db) weighed.db.textContent = shown(said.db_mb);
+  } catch {
+    // A server that is not answering is already being said so above the grid.
+  }
+};
+
+weigh();
+setInterval(weigh, 2000);

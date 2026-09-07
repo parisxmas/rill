@@ -10,7 +10,14 @@
     <title>catalogue</title>
     <style>
       body{font:14px system-ui,sans-serif;margin:2rem;color:#222}
-      h1{font-size:1.3rem}
+      h1{font-size:1.3rem;margin:0}
+      header.top{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+      .weight{display:flex;gap:.9rem;margin:0;font-size:12px;color:#888}
+      .weight b{color:#345;font-weight:600;font-variant-numeric:tabular-nums}
+      /* Twenty rows on screen. The library's grid stops at 440px, which is
+         ten of them, and this page has the room. The id is there because the
+         theme is linked after this block and would otherwise win. */
+      #results .zap-grid__scroll{max-height:785px}
       table{border-collapse:collapse;margin:1rem 0;width:100%}
       th,td{padding:.35rem .6rem;text-align:left;border-bottom:1px solid #e5e5e5}
       th{background:#fafafa;font-weight:600}
@@ -40,7 +47,13 @@
     <link rel="stylesheet" href="/static/theme.css">
   </head>
   <body class="zap">
-    <h1>catalogue</h1>
+    <header class="top">
+      <h1>catalogue</h1>
+      <p class="weight" title="resident memory, as both processes report it">
+        <span>rill <b id="rill-mb"><%= v.weight.rill %></b> MB</span>
+        <span>oxidb <b id="db-mb"><%= v.weight.db %></b> MB</span>
+      </p>
+    </header>
 <% include catalogue_form(v) -%>
     <div id="results">
     <% if #v.trouble > 0 %>
@@ -48,7 +61,7 @@
     <% elif v.total == 0 %>
     <p>nothing matches</p>
     <% else %>
-    <p><b><%= v.total %></b> documents match — showing <%= v.from %>–<%= v.upto %>, page <%= v.page %> of <%= v.pages %></p>
+    <p><b><%= grouped(v.total) %></b> documents match — showing <%= v.from %>–<%= v.upto %>, page <%= v.page %> of <%= grouped(v.pages) %></p>
     <% end %>
     <% if len(v.rows) > 0 %>
 <% include catalogue_table(v.rows) -%>
