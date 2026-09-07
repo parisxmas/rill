@@ -47,6 +47,30 @@ carries the same content on every route, the server answers the same 5,600
 requests a second at a hundred users, and the HTML is laid out to read rather
 than run together, which costs about a fifth more bytes on the wire.
 
+`lib/http.rill` is a good deal less of a toy. It reads a body that arrives in
+its own packet rather than with the headers, and one sent in pieces
+(`Transfer-Encoding: chunked`); it keeps what a read took past the end of one
+request, so a pipelined pair gets two answers rather than one; and it decides
+keep-alive from the headers of the request in hand rather than from the bytes
+in the buffer, which may hold the next one.
+
+It also says no. A connection that goes quiet for fifteen seconds is let go, a
+header block over 64 KB and a body over a megabyte are refused before they are
+read, and a request that tells two stories about its own length — a
+`Content-Length` beside a `Transfer-Encoding`, two lengths, a length that is
+not a number — is refused outright: the danger there is not that this server
+picks the wrong story but that the proxy in front picks the other one, which is
+what request smuggling is.
+
+Plus the things a server needs to be one: `Date` on every answer (which wanted
+a wall clock, so `now_millis()` is a builtin now — `now_nanos` measures how
+long something took, this says when it happened), `HEAD` answered without a
+body, twenty-four status texts instead of six, percent-decoding and query
+parsing (`path_of`, `query_of`, `param`, `params`, `decoded`, `encoded` — the
+catalogue had written five of those for itself, without the decoding, so a
+filter with a space in it did not work), cookies in and out, and a client that
+can send a method, headers and a body rather than only `GET`.
+
 `lib/http.rill` learned headers, both ways. A `Request` carries the ones it
 arrived with, folded to lower case because HTTP says the case does not matter
 and a proxy will one day disagree about it; `header(req, name)` is the lookup.

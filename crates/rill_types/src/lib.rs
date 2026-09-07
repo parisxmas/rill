@@ -2784,6 +2784,10 @@ impl Checker {
             // not for telling the time, and a wall clock that an administrator
             // can set backwards is the wrong instrument for that.
             "now_nanos" => Some(("rill_now_nanos", vec![], Ty::Int)),
+            // The wall clock, in milliseconds since 1970. `now_nanos` is for
+            // measuring how long something took; this is for saying when it
+            // happened, which is a different question and a different clock.
+            "now_millis" => Some(("rill_now_millis", vec![], Ty::Int)),
             // The workers this run has, for deciding how many strands a big
             // piece of work is worth. 1 unless `RILL_THREADS` said otherwise.
             "workers" => Some(("rill_workers", vec![], Ty::Int)),
@@ -3911,6 +3915,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "str_to_float"
             | "chr"
             | "now_nanos"
+            | "now_millis"
             | "workers"
             | "random_i64"
             | "sleep_ms"

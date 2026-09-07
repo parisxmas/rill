@@ -82,8 +82,18 @@ fn read_head(conn, acc) =
 fn most_head() = 65536
 
 fn read_more(conn, acc) =
-  chunk = sock_read(conn)
-  if str_len(chunk) == 0 then acc else read_head(conn, acc + chunk)
+  if !sock_wait(conn, quiet_ms()) then acc
+  else
+    chunk = sock_read(conn)
+    if str_len(chunk) == 0 then acc else read_head(conn, acc + chunk)
+
+# How long a connection may say nothing before it is let go, and how much a
+# request may weigh. A server with neither is one that anybody can hold open
+# with one byte and some patience: the strand waits, the string grows, and
+# nothing about it looks like an attack.
+fn quiet_ms() = 15000
+
+fn most_body() = 1048576
 
 fn first_line(raw) = unwrap_or(nth(split(raw, "\r\n"), 0), "")
 
@@ -91,7 +101,14 @@ fn first_line(raw) = unwrap_or(nth(split(raw, "\r\n"), 0), "")
 # the same connection is the next request, not part of this one.
 fn body_of(raw) =
   i = str_find(raw, "\r\n\r\n")
-  if i < 0 then "" else str_sub(raw, i + 4, at_most(body_wanted(raw), str_len(raw) - i - 4))
+  if i < 0 then "" else if chunked(raw) then str_sub(raw, i + 4, str_len(raw) - i - 4) else str_sub(raw, i + 4, at_most(body_wanted(raw), str_len(raw) - i - 4))
+
+# A client that does not know how long its body will be says so and sends it
+# in pieces, each with its length in front — `curl -T -` and most libraries
+# streaming an upload. By the time a handler sees it the pieces are one body
+# again and the framing is gone, so nothing above this line knows the
+# difference.
+fn chunked(raw) = contains(lower(header_in(headers_of(raw), "transfer-encoding")), "chunked")
 
 fn at_most(n, cap) = if n > cap then cap else n
 
@@ -100,7 +117,7 @@ fn at_most(n, cap) = if n > cap then cap else n
 # line.
 fn whole_length(raw) =
   i = str_find(raw, "\r\n\r\n")
-  if i < 0 then 0 else i + 4 + body_wanted(raw)
+  if i < 0 then 0 else if chunked(raw) then str_len(raw) else i + 4 + body_wanted(raw)
 
 fn body_wanted(raw) =
   said = header_in(headers_of(raw), "content-length")
@@ -125,17 +142,126 @@ fn named(lines, i, acc) =
     at = str_find(line, ":")
     if at < 0 then named(lines, i + 1, acc) else named(lines, i + 1, Cons(Header(lower(str_sub(line, 0, at)), trim(str_sub(line, at + 1, str_len(line)))), acc))
 
+# -- what a URL says -----------------------------------------------------------
+#
+# A path and a query string arrive as they were written, which is not what
+# they mean: a space is `%20` or `+`, and anything a filter holds may be
+# either. These four are what every server writes for itself otherwise.
+
+# The path with the query taken off.
+fn path_of(target) =
+  i = str_find(target, "?")
+  if i < 0 then target else str_sub(target, 0, i)
+
+# The query string, without the `?`.
+fn query_of(target) =
+  i = str_find(target, "?")
+  if i < 0 then "" else str_sub(target, i + 1, str_len(target))
+
+# What the query said under that name, decoded, or "".
+fn param(qs, name) = param_in(split(qs, "&"), name)
+
+fn param_in(pairs, name) = match pairs
+  Nil -> ""
+  Cons(p, rest) ->
+    at = str_find(p, "=")
+    key = if at < 0 then p else str_sub(p, 0, at)
+    if decoded(key) == name then if at < 0 then "" else decoded(str_sub(p, at + 1, str_len(p) - at - 1)) else param_in(rest, name)
+
+# Every parameter, in the order they were written, decoded.
+fn params(qs) = if str_len(qs) == 0 then Nil else pairs_in(split(qs, "&"), Nil)
+
+fn pairs_in(pairs, acc) = match pairs
+  Nil -> reverse(acc)
+  Cons(p, rest) ->
+    at = str_find(p, "=")
+    key = decoded(if at < 0 then p else str_sub(p, 0, at))
+    value = if at < 0 then "" else decoded(str_sub(p, at + 1, str_len(p) - at - 1))
+    if str_len(key) == 0 then pairs_in(rest, acc) else pairs_in(rest, Cons(Header(key, value), acc))
+
+# `%41` is an A and `+` is a space — the second only inside a query, which is
+# where this is used. A `%` that is not followed by two digits is a `%`: a
+# decoder that refuses would turn a badly written link into a 400 rather than
+# into what the reader meant.
+fn decoded(s) =
+  if str_find(s, "%") < 0 && str_find(s, "+") < 0 then s
+  else
+    b = strbuf()
+    walk_decoded(b, s, 0, str_len(s))
+    strbuf_str(b)
+
+fn walk_decoded(b: StrBuf, s, i, n) =
+  if i >= n then 0
+  else
+    c = str_get(s, i)
+    if c == 43 then
+      b += 32
+      walk_decoded(b, s, i + 1, n)
+    else if c == 37 && i + 2 < n && hex_of(str_get(s, i + 1)) >= 0 && hex_of(str_get(s, i + 2)) >= 0 then
+      b += hex_of(str_get(s, i + 1)) * 16 + hex_of(str_get(s, i + 2))
+      walk_decoded(b, s, i + 3, n)
+    else
+      b += c
+      walk_decoded(b, s, i + 1, n)
+
+# The other way, for a link a server writes itself: everything but the
+# unreserved characters becomes `%XX`, so a value with a space or an ampersand
+# in it survives being put in a query string.
+fn encoded(s) =
+  b = strbuf()
+  for i in 0..str_len(s)
+    c = str_get(s, i)
+    if plain_byte(c) then
+      b += c
+    else
+      b += "%" + hex_byte(c / 16) + hex_byte(c % 16)
+  strbuf_str(b)
+
+fn plain_byte(c) =
+  c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c == 45 || c == 46 || c == 95 || c == 126
+
+fn hex_byte(n) = str_sub("0123456789ABCDEF", n, 1)
+
+fn hex_of(c) =
+  if c >= 48 && c <= 57 then c - 48 else if c >= 97 && c <= 102 then c - 87 else if c >= 65 && c <= 70 then c - 55 else 0 - 1
+
 # -- writing ------------------------------------------------------------------
 
 fn status_text(code) = match code
   200 -> "OK"
   201 -> "Created"
-  400 -> "Bad Request"
+  202 -> "Accepted"
+  204 -> "No Content"
+  301 -> "Moved Permanently"
+  302 -> "Found"
+  303 -> "See Other"
   304 -> "Not Modified"
+  307 -> "Temporary Redirect"
+  308 -> "Permanent Redirect"
+  400 -> "Bad Request"
+  401 -> "Unauthorized"
+  403 -> "Forbidden"
   404 -> "Not Found"
+  405 -> "Method Not Allowed"
+  409 -> "Conflict"
+  413 -> "Content Too Large"
+  415 -> "Unsupported Media Type"
+  422 -> "Unprocessable Content"
   429 -> "Too Many Requests"
   500 -> "Internal Server Error"
+  501 -> "Not Implemented"
+  503 -> "Service Unavailable"
   _ -> "Unknown"
+
+# `HEAD` asks what a `GET` would answer without the answer itself: the same
+# status, the same headers, the same `Content-Length`, and no body. A server
+# that sends the body anyway is one whose HEAD costs what its GET costs.
+fn render_for(method, res: Response, keep) =
+  full = render(res, keep)
+  if method != "HEAD" then full
+  else
+    i = str_find(full, "\r\n\r\n")
+    if i < 0 then full else str_sub(full, 0, i + 4)
 
 fn render(res: Response, keep) =
   render_parts(res.status, res.content_type, res.headers, res.body, keep)
@@ -146,10 +272,60 @@ fn render_parts(status, kind, extra, body, keep) =
   b += "Content-Type: " + kind + "\r\n"
   b += "Content-Length: " + int_to_str(str_len(body)) + "\r\n"
   b += "Connection: " + (if keep then "keep-alive" else "close") + "\r\n"
+  b += "Date: " + http_date(now_millis()) + "\r\n"
   header_lines(b, extra)
   b += "\r\n"
   b += body
   strbuf_str(b)
+
+# `Sun, 06 Nov 1994 08:49:37 GMT` — the one date format every HTTP client can
+# read. The calendar is worked out rather than looked up: days since 1970
+# become a civil date by counting four-hundred-year eras, which repeat
+# exactly, so there is no table to be wrong.
+fn http_date(millis) =
+  secs = millis / 1000
+  days = floor_div(secs, 86400)
+  rest = secs - days * 86400
+  clock = two(rest / 3600) + ":" + two(rest % 3600 / 60) + ":" + two(rest % 60)
+  weekday(days) + ", " + two(day_of(days)) + " " + month_name(month_of(days)) + " " + int_to_str(year_of(days)) + " " + clock + " GMT"
+
+fn floor_div(a, b) = if a >= 0 then a / b else 0 - (0 - a + b - 1) / b
+
+fn two(n) = if n < 10 then "0" + int_to_str(n) else int_to_str(n)
+
+# 1970-01-01 was a Thursday, the fifth day of a week that starts on Sunday.
+fn weekday(days) =
+  nth_or(Cons("Sun", Cons("Mon", Cons("Tue", Cons("Wed", Cons("Thu", Cons("Fri", Cons("Sat", Nil))))))), (days + 4) % 7, "Thu")
+
+fn month_name(m) =
+  nth_or(Cons("Jan", Cons("Feb", Cons("Mar", Cons("Apr", Cons("May", Cons("Jun", Cons("Jul", Cons("Aug", Cons("Sep", Cons("Oct", Cons("Nov", Cons("Dec", Nil)))))))))))), m - 1, "Jan")
+
+fn nth_or(l, i, fallback) = unwrap_or(nth(l, i), fallback)
+
+# Howard Hinnant's civil-from-days: shift the epoch to March so that a leap
+# day falls at the end of a year rather than in the middle of one, then count
+# eras of four hundred years, which are all the same length.
+fn era_of(days) = floor_div(days + 719468, 146097)
+
+fn doe_of(days) = days + 719468 - era_of(days) * 146097
+
+fn yoe_of(days) =
+  doe = doe_of(days)
+  (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+
+fn doy_of(days) = doe_of(days) - (365 * yoe_of(days) + yoe_of(days) / 4 - yoe_of(days) / 100)
+
+fn mp_of(days) = (5 * doy_of(days) + 2) / 153
+
+fn day_of(days) = doy_of(days) - (153 * mp_of(days) + 2) / 5 + 1
+
+fn month_of(days) =
+  mp = mp_of(days)
+  if mp < 10 then mp + 3 else mp - 9
+
+fn year_of(days) =
+  y = yoe_of(days) + era_of(days) * 400
+  if month_of(days) <= 2 then y + 1 else y
 
 fn header_lines(b: StrBuf, headers: List(Header)) = match headers
   Nil -> 0
@@ -181,7 +357,39 @@ fn serve_taking(server, handler, taken) =
 # beginning of the next one rather than something to throw away.
 fn next_request(conn, handler, taken, carried) =
   head = read_head(conn, carried)
-  if !contains(head, "\r\n\r\n") then hang_up(conn) else if taken(conn, head) then 0 else answer(conn, handler, taken, read_body(conn, head))
+  if !contains(head, "\r\n\r\n") then hang_up(conn) else if taken(conn, head) then 0 else if str_len(smuggled(head)) > 0 then refuse(conn, 400, smuggled(head)) else if body_wanted(head) > most_body() then refuse(conn, 413, "the body is larger than this server takes") else answer(conn, handler, taken, read_body(conn, head))
+
+# Where a request ends has to be one answer, not two. A request carrying both
+# a `Content-Length` and a `Transfer-Encoding` has told two different stories
+# about its own length, and the danger is not that this server picks the wrong
+# one — it is that the proxy in front picks the other, so that what this server
+# reads as one request the proxy read as two, and the second one was written by
+# whoever sent the first. That is request smuggling, and the only safe answer
+# to a request that cannot say how long it is, is no answer.
+#
+# Two `Content-Length` lines are the same trick with one header, and a length
+# that is not a plain number is the same trick with none.
+fn smuggled(head) =
+  hs = headers_of(head)
+  lengths = counted_headers(hs, "content-length", 0)
+  moving = str_len(header_in(hs, "transfer-encoding")) > 0
+  if lengths > 0 && moving then "a request may say its length or send it in pieces, not both" else if lengths > 1 then "two content lengths" else if lengths == 1 && !digits_only_str(header_in(hs, "content-length")) then "a length that is not a number" else if moving && !chunked(head) then "an encoding this server does not take" else ""
+
+fn counted_headers(headers: List(Header), name, acc) = match headers
+  Nil -> acc
+  Cons(one, rest) -> counted_headers(rest, name, if one.name == name then acc + 1 else acc)
+
+fn digits_only_str(s) =
+  if str_len(s) == 0 then false
+  else
+    for i in 0..str_len(s) with ok = true
+      ok && str_get(s, i) >= 48 && str_get(s, i) <= 57
+
+# Answered without reading what was promised: a request this server will not
+# carry is one it should not spend a megabyte finding out about.
+fn refuse(conn, status, why) =
+  sock_write(conn, render(json_response(status, "{\"error\":\"" + why + "\"}"), false))
+  hang_up(conn)
 
 # The connection is done with; the number is only so that every arm of the
 # loop above is worth the same thing.
@@ -193,17 +401,53 @@ fn hang_up(conn) =
 # many do — so the head arriving is not the request arriving. Reading stops at
 # the length the headers promised, or when the peer stops talking.
 fn read_body(conn, raw) =
-  want = whole_length(raw)
-  if str_len(raw) >= want then raw else more_body(conn, raw, want)
+  if chunked(raw) then unchunked(conn, raw)
+  else
+    want = whole_length(raw)
+    if str_len(raw) >= want then raw else more_body(conn, raw, want)
+
+# The pieces, put back together. What comes out is the head as it arrived and
+# the body as it was meant, so `body_of` above hands the handler one string.
+fn unchunked(conn, raw) =
+  i = str_find(raw, "\r\n\r\n")
+  str_sub(raw, 0, i + 4) + pieces(conn, str_sub(raw, i + 4, str_len(raw) - i - 4), "")
+
+fn pieces(conn, rest, acc) =
+  j = str_find(rest, "\r\n")
+  if j < 0 then more_pieces(conn, rest, acc)
+  else
+    n = hex_int(str_sub(rest, 0, j))
+    if n <= 0 || str_len(acc) > most_body() then acc else if str_len(rest) < j + 2 + n + 2 then more_pieces(conn, rest, acc) else pieces(conn, str_sub(rest, j + 2 + n + 2, str_len(rest) - j - 4 - n), acc + str_sub(rest, j + 2, n))
+
+fn more_pieces(conn, rest, acc) =
+  if !sock_wait(conn, quiet_ms()) then acc
+  else
+    chunk = sock_read(conn)
+    if str_len(chunk) == 0 then acc else pieces(conn, rest + chunk, acc)
+
+# A chunk's length is written in hexadecimal, and may carry an extension after
+# a semicolon that nothing here needs.
+fn hex_int(line) =
+  cut = str_find(line, ";")
+  digits = trim(if cut < 0 then line else str_sub(line, 0, cut))
+  hex_walk(digits, 0, 0)
+
+fn hex_walk(s, i, acc) =
+  if i >= str_len(s) then acc
+  else
+    d = hex_of(str_get(s, i))
+    if d < 0 then acc else hex_walk(s, i + 1, acc * 16 + d)
 
 fn more_body(conn, raw, want) =
-  chunk = sock_read(conn)
-  if str_len(chunk) == 0 then raw else read_body(conn, raw + chunk)
+  if !sock_wait(conn, quiet_ms()) then raw
+  else
+    chunk = sock_read(conn)
+    if str_len(chunk) == 0 then raw else read_body(conn, raw + chunk)
 
 fn answer(conn, handler, taken, raw) =
   req = parse_request(raw)
   keep = keeps_alive(first_line(raw), req)
-  sock_write(conn, render(handler(req), keep))
+  sock_write(conn, render_for(req.method, handler(req), keep))
   if keep then next_request(conn, handler, taken, after_request(raw)) else hang_up(conn)
 
 fn after_request(raw) =
@@ -293,6 +537,7 @@ fn under_limit(seen, per_second, req: Request, next) =
   else
     key = whose(req) + " " + req.method + " " + req.path
     now = now_nanos() / 1000000000
+    forget_old(seen, now)
     count = hits_this_second(seen, key, now)
     if count > per_second then too_many(per_second) else next(req)
 
@@ -307,6 +552,20 @@ fn whose(req: Request) =
 
 # One second's worth of counting: a key holds the second it is counting and
 # how many have arrived in it, and a new second starts the count again.
+# A key is a client and a route, and clients keep arriving: a map that only
+# grows is a leak with a slow fuse. Anything counted in an earlier second can
+# never be counted again, so it goes.
+fn forget_old(seen, now) =
+  if map_len(seen) > 4096 then forget_each(map_items(seen), seen, now) else 0
+
+fn forget_each(items, seen, now) = match items
+  Nil -> 0
+  Cons(one, rest) -> match one
+    (key, when) -> match when
+      (second, _) ->
+        second < now && map_del(seen, key)
+        forget_each(rest, seen, now)
+
 fn hits_this_second(seen, key, now) = match map_get(seen, key)
   None ->
     map_set(seen, key, (now, 1))
@@ -321,6 +580,30 @@ fn too_many(per_second) =
   json_response(429, "{\"error\":\"too many writes — the limit is " + int_to_str(per_second) + " a second\"}")
 
 # -- a client, enough to talk to ourselves ------------------------------------
+
+# One request, spelled out: a method, headers of your own, a body. `get` and
+# `get_all` below are this with all three decided. The answer comes back raw,
+# for `status_of` and `response_body` to take apart.
+fn ask(host, port, method, path, headers, body) = match connect_to(host, port)
+  Err(e) -> e
+  Ok(fd) ->
+    answer = ask_on(fd, host, method, path, headers, body)
+    sock_close(fd)
+    answer
+
+fn ask_on(fd, host, method, path, headers, body) =
+  sock_write(fd, asking(host, method, path, headers, body))
+  read_response(fd, "")
+
+fn asking(host, method, path, headers, body) =
+  b = strbuf()
+  b += method + " " + path + " HTTP/1.1\r\n"
+  b += "Host: " + host + "\r\n"
+  header_lines(b, headers)
+  b += "Content-Length: " + int_to_str(str_len(body)) + "\r\n"
+  b += "Connection: close\r\n\r\n"
+  b += body
+  strbuf_str(b)
 
 fn request_text(host, path, keep) =
   "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: " + (if keep then "keep-alive" else "close") + "\r\n\r\n"

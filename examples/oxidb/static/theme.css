@@ -214,6 +214,7 @@
 .zap-grid__foot-right { display: flex; align-items: center; gap: 12px; }
 .zap-grid__per { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 12px; color: var(--zap-muted); white-space: nowrap; }
 .zap-grid__per .zap-sel { min-width: 78px; }
+.zap-pg__step { font-size: 13px; }
 .zap-grid__note { color: var(--zap-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .zap-grid__bool { display: inline-flex; }
 .zap-grid__table td:focus { outline: none; }

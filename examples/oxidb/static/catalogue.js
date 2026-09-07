@@ -76,15 +76,16 @@ const result = signal(seed);
 const failed = signal("");
 const busy = signal(false);
 let inflight = 0;
+let retry = null;
 
-effect(() => {
-  const wide = windowed();
-  nudge();
-  history.replaceState(null, "", query() ? "/?" + query() : "/");
+// A question that did not get through is asked again. A server being restarted
+// or a laptop waking up is a moment, not a verdict, and a page that gives up
+// on the first refusal has to be reloaded by hand to come back — meanwhile
+// what it is showing is still true, so it goes on showing it.
+const askFor = (wide) => {
   const mine = ++inflight;
   busy.set(true);
-  // The page arrived with its own rows and they are on the screen already;
-  // this is the rest of the window, and it lands under the same rows.
+  clearTimeout(retry);
   fetch("/rows?" + wide)
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
     .then((data) => {
@@ -97,7 +98,17 @@ effect(() => {
       if (mine !== inflight) return;
       failed.set(String(e.message || e));
       busy.set(false);
+      retry = setTimeout(() => askFor(wide), 2000);
     });
+};
+
+effect(() => {
+  const wide = windowed();
+  nudge();
+  history.replaceState(null, "", query() ? "/?" + query() : "/");
+  // The page arrived with its own rows and they are on the screen already;
+  // this is the rest of the window, and it lands under the same rows.
+  askFor(wide);
 });
 
 // --- the toolbar ---------------------------------------------------------------------
@@ -254,12 +265,11 @@ function Results() {
     <p>
       <b>${total}</b> documents match${() =>
         total() > rows().length ? ` — the grid holds the first ${rows().length}` : ""}${() =>
-        busy() ? " · asking…" : ""}
+        busy() ? " · asking…" : ""}${() =>
+        failed() ? html`<span class="bad"> · ${failed()} · trying again…</span>` : ""}
     </p>
-    ${() =>
-      failed()
-        ? html`<p class="bad">${failed}</p>`
-        : DataGrid({
+    ${(() =>
+        DataGrid({
             rows,
             columns,
             pageSize: ON_SCREEN,
@@ -267,7 +277,7 @@ function Results() {
             onCellEdit: save,
             note: took,
             apiRef: api,
-          })}
+          }))()}
     ${Toaster()}
   `;
 }

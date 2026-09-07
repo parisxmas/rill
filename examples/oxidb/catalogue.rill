@@ -7,8 +7,9 @@
 # template can lay out.
 #
 #     oxidb-server &                      # the document engine is on by default
-#     ./catalogue 4444                    # seeds, then serves on a port it prints
+#     ./catalogue 4444                    # seeds if needed, then serves
 #     ./catalogue 4444 8123               # or on the port you name
+#     ./catalogue 4444 8123 fresh         # and build the collection again
 #
 # `/` is a page a browser can use: a form for the filters, a table, and a
 # pager. Everything else answers JSON, so the same server serves both.
@@ -116,7 +117,7 @@ fn batch() = 1000
 fn collection() = "catalogue"
 
 fn main() = match args()
-  Cons(_, Cons(db, rest)) -> start(str_to_int(db), wanted_port(rest))
+  Cons(_, Cons(db, rest)) -> start(str_to_int(db), wanted_port(rest), asked_fresh(rest))
   _ -> usage()
 
 fn usage() =
@@ -127,32 +128,53 @@ fn wanted_port(rest) = match rest
   Cons(p, _) -> str_to_int(p)
   Nil -> 0
 
+# `fresh` anywhere after the ports: build the collection again even if it is
+# already there.
+fn asked_fresh(rest) = match rest
+  Nil -> false
+  Cons(a, more) -> a == "fresh" || asked_fresh(more)
+
 # -- seeding ------------------------------------------------------------------
 
-fn start(db, want) = match dial("127.0.0.1", db)
+fn start(db, want, fresh) = match dial("127.0.0.1", db)
   Err(e) -> println("oxidb: " + e)
-  Ok(fd) -> seed_then_serve(fd, db, want)
+  Ok(fd) -> seed_then_serve(fd, db, want, fresh)
 
-fn seed_then_serve(fd, db, want) =
-  println("clearing " + collection())
-  drop_all(fd)
-  println("seeding " + int_to_str(total()) + " documents")
-  t0 = now_nanos()
-  fill_batches(fd, 0)
-  t1 = now_nanos()
-  println("seeded in " + int_to_str((t1 - t0) / 1000000) + " ms")
-  # An index apiece on what the routes below ask by and sort on. Without
-  # them every request reads a hundred thousand documents: `/top?by=score`
-  # took 471 ms and takes 3 with one.
-  t2 = now_nanos()
-  index_on(fd, "sku")
-  index_on(fd, "role")
-  index_on(fd, "region")
-  index_on(fd, "score")
-  println("indexed in " + int_to_str((now_nanos() - t2) / 1000000) + " ms")
+# The documents outlive the server. A restart that wiped them would be a
+# restart that threw away everything anyone had edited, and would cost a
+# second and a half to say nothing new — so the collection is counted first,
+# and seeded only if it is not already there. `./catalogue 4444 8123 fresh`
+# asks for it to be built again.
+fn seed_then_serve(fd, db, want, fresh) =
+  if !fresh && already(fd) then
+    println("catalogue is already there — " + int_to_str(total()) + " documents, left as they are")
+    ready_to_serve(fd, db, want)
+  else
+    println("clearing " + collection())
+    drop_all(fd)
+    println("seeding " + int_to_str(total()) + " documents")
+    t0 = now_nanos()
+    fill_batches(fd, 0)
+    println("seeded in " + int_to_str((now_nanos() - t0) / 1000000) + " ms")
+    # An index apiece on what the routes below ask by and sort on. Without
+    # them every request reads a hundred thousand documents: `/top?by=score`
+    # took 471 ms and takes 3 with one.
+    t2 = now_nanos()
+    index_on(fd, "sku")
+    index_on(fd, "role")
+    index_on(fd, "region")
+    index_on(fd, "score")
+    println("indexed in " + int_to_str((now_nanos() - t2) / 1000000) + " ms")
+    ready_to_serve(fd, db, want)
+
+fn ready_to_serve(fd, db, want) =
   shown("count", count(fd, collection()), \d -> int_to_str(counted(d)))
   hang_up(fd)
   serve_on(db, want)
+
+fn already(fd) = match count(fd, collection())
+  Err(_) -> false
+  Ok(d) -> counted(d) == total()
 
 fn drop_all(fd) = match delete(fd, collection(), JObj(Nil))
   Err(e) ->
@@ -471,11 +493,13 @@ fn int_or(s, fallback) = if str_len(s) == 0 then fallback else str_to_int(s)
 # Every parameter that is not `limit` or `by` becomes a field to match on. A
 # value that reads as a number is matched as one, so `?sku=42` finds the
 # document rather than nothing.
-fn match_fields(qs) =
-  for i in 0..len(pairs_of(qs)) with acc = Nil
-    p = unwrap_or(nth(pairs_of(qs), len(pairs_of(qs)) - 1 - i), "")
-    k = before_eq(p)
-    if is_control(k) || str_len(after_eq(p)) == 0 then acc else Cons(field(k, valued(after_eq(p))), acc)
+fn match_fields(qs) = fields_of(reverse(h.params(qs)), Nil)
+
+fn fields_of(pairs: List(h.Header), acc) = match pairs
+  Nil -> acc
+  Cons(one, rest) ->
+    kept = if is_control(one.name) || str_len(one.value) == 0 then acc else Cons(field(one.name, valued(one.value)), acc)
+    fields_of(rest, kept)
 
 # The parameters that steer the page rather than filter the documents.
 fn is_control(k) = str_len(k) == 0 || k == "limit" || k == "by" || k == "dir" || k == "page"
@@ -489,29 +513,16 @@ fn looks_numeric(v) =
       ok && str_get(v, i) >= 48 && str_get(v, i) <= 57
 
 # -- the target, taken apart ---------------------------------------------------
+#
+# `path_of`, `query_of`, `param` and `params` are `http.rill`'s: every server
+# writes them once and this one used to as well, without the percent-decoding
+# that makes a filter with a space in it work.
 
-fn path_of(target) =
-  i = str_find(target, "?")
-  if i < 0 then target else str_sub(target, 0, i)
+fn path_of(target) = h.path_of(target)
 
-fn query_of(target) =
-  i = str_find(target, "?")
-  if i < 0 then "" else str_sub(target, i + 1, str_len(target))
+fn query_of(target) = h.query_of(target)
 
-fn pairs_of(qs) = if str_len(qs) == 0 then Nil else split(qs, "&")
-
-fn param(qs, key) =
-  for i in 0..len(pairs_of(qs)) with found = ""
-    p = unwrap_or(nth(pairs_of(qs), i), "")
-    if before_eq(p) == key then after_eq(p) else found
-
-fn before_eq(p) =
-  i = str_find(p, "=")
-  if i < 0 then p else str_sub(p, 0, i)
-
-fn after_eq(p) =
-  i = str_find(p, "=")
-  if i < 0 then "" else str_sub(p, i + 1, str_len(p))
+fn param(qs, key) = h.param(qs, key)
 
 fn shown(label, result, render) = match result
   Err(e) -> println(label + ": error: " + e)
@@ -631,7 +642,12 @@ fn step_of(qs, to, live, label) = Step(label, if live then with_page(qs, to) els
 # The query string as it stands, with `page` set to this one.
 fn with_page(qs, n) = join(reverse(Cons("page=" + int_to_str(n), kept_pairs(qs))), "&")
 
-fn kept_pairs(qs) =
-  for i in 0..len(pairs_of(qs)) with acc = Nil
-    p = unwrap_or(nth(pairs_of(qs), i), "")
-    if before_eq(p) == "page" || str_len(after_eq(p)) == 0 then acc else Cons(p, acc)
+# The query as it stands, minus the page and anything empty, written back out
+# with everything escaped — a name with a space in it makes a link that works.
+fn kept_pairs(qs) = kept_of(h.params(qs), Nil)
+
+fn kept_of(pairs: List(h.Header), acc) = match pairs
+  Nil -> acc
+  Cons(one, rest) ->
+    kept = if one.name == "page" || str_len(one.value) == 0 then acc else Cons(h.encoded(one.name) + "=" + h.encoded(one.value), acc)
+    kept_of(rest, kept)

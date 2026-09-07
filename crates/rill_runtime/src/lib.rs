@@ -1127,6 +1127,43 @@ pub unsafe extern "C" fn rill_now_nanos() -> i64 {
     0
 }
 
+/// Milliseconds since 1970 — the clock the world agrees on, as against
+/// `now_nanos`, which only agrees with itself. A server needs this to say what
+/// time it is, to date a cookie, and to write down anything another machine
+/// will read. `CLOCK_REALTIME` is 0 everywhere, unlike the monotonic one.
+#[cfg(unix)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_now_millis() -> i64 {
+    let mut t = Timespec { secs: 0, nanos: 0 };
+    if clock_gettime(0, &mut t) != 0 {
+        return 0;
+    }
+    t.secs.wrapping_mul(1000).wrapping_add(t.nanos / 1_000_000)
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn GetSystemTimeAsFileTime(out: *mut u64);
+}
+
+/// Windows counts hundreds of nanoseconds from 1601; 11644473600 seconds
+/// separate that year from 1970.
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_now_millis() -> i64 {
+    let mut ticks: u64 = 0;
+    GetSystemTimeAsFileTime(&mut ticks);
+    (ticks / 10_000) as i64 - 11_644_473_600_000
+}
+
+/// A host that keeps its own clock keeps this one too: on wasm the page has
+/// `Date.now`, and a chip with no operating system has nothing to say.
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+#[no_mangle]
+pub unsafe extern "C" fn rill_now_millis() -> i64 {
+    0
+}
+
 // ---- randomness -----------------------------------------------------------
 //
 // Eight bytes nobody can guess, which is a different thing from eight bytes
