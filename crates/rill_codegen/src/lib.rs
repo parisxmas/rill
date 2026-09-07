@@ -2566,6 +2566,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.module.add_function("rill_preempt_yield", void.fn_type(&[], false), None);
         self.module.add_function("rill_now_nanos", i64t.fn_type(&[], false), None);
         self.module.add_function("rill_now_millis", i64t.fn_type(&[], false), None);
+        self.module.add_function("rill_rss_bytes", i64t.fn_type(&[], false), None);
         self.module.add_function("rill_workers", i64t.fn_type(&[], false), None);
         let uninit = self.module.add_function(
             "rill_buf_new_uninit_f64",

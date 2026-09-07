@@ -1330,6 +1330,34 @@ fn sleeping_strands_do_not_hold_a_worker() {
     assert_eq!(out, "1000 woke\noverlapped\n");
 }
 
+/// A program can say how much memory it is holding — the live resident set,
+/// not the peak, so a server can report its own weight while it runs. The
+/// test takes eighty megabytes and insists the number follows, which a peak
+/// or a constant would not do.
+#[test]
+fn a_program_can_say_what_it_weighs() {
+    let out = run_source(
+        "own_weight",
+        "fn hold(sb: StrBuf, left) =\n  \
+           if left <= 0 then 0\n  \
+           else\n    \
+             strbuf_add(sb, \"0123456789\")\n    \
+             hold(sb, left - 1)\n\
+         \n\
+         fn mb() = 1048576\n\
+         \n\
+         fn main() =\n  \
+           at_rest = rss_bytes()\n  \
+           sb = strbuf()\n  \
+           hold(sb, 8000000)\n  \
+           held = rss_bytes()\n  \
+           println(if at_rest > 0 then \"has a weight\" else \"nothing at rest\")\n  \
+           println(if held - at_rest > 60 * mb() then \"and it grew\" else \"it did not grow: \" + int_to_str((held - at_rest) / mb()) + \" MB\")\n  \
+           println(int_to_str(str_len(strbuf_str(sb)) / mb()) + \" MB of it asked for\")\n",
+    );
+    assert_eq!(out, "has a weight\nand it grew\n76 MB of it asked for\n");
+}
+
 /// And the wait is the length that was asked for, within the slack any
 /// operating system takes on a timer.
 #[test]

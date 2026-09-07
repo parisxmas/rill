@@ -2788,6 +2788,10 @@ impl Checker {
             // measuring how long something took; this is for saying when it
             // happened, which is a different question and a different clock.
             "now_millis" => Some(("rill_now_millis", vec![], Ty::Int)),
+            // How many bytes of memory this process is holding right now. A
+            // server that reports its own weight can be watched without
+            // anything else being installed to watch it.
+            "rss_bytes" => Some(("rill_rss_bytes", vec![], Ty::Int)),
             // The workers this run has, for deciding how many strands a big
             // piece of work is worth. 1 unless `RILL_THREADS` said otherwise.
             "workers" => Some(("rill_workers", vec![], Ty::Int)),
@@ -3916,6 +3920,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "chr"
             | "now_nanos"
             | "now_millis"
+            | "rss_bytes"
             | "workers"
             | "random_i64"
             | "sleep_ms"

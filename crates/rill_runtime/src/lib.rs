@@ -1164,6 +1164,113 @@ pub unsafe extern "C" fn rill_now_millis() -> i64 {
     0
 }
 
+// ---- how much memory this process is holding ------------------------------
+//
+// Resident set size: the pages the process really has in memory at this
+// moment, which is the number an operator watches while a server runs and the
+// one that tells them whether it is about to be killed. Every system keeps it
+// somewhere different, and none of them anywhere a program can simply read.
+
+/// macOS keeps it in the Mach task's own accounting. `mach_task_self_` is a
+/// port held in a global rather than something to call, and flavor 20 —
+/// `MACH_TASK_BASIC_INFO` — lays out virtual size then resident size, both
+/// 64-bit, at the head of a twelve-word struct.
+#[cfg(all(unix, target_vendor = "apple"))]
+#[no_mangle]
+pub unsafe extern "C" fn rill_rss_bytes() -> i64 {
+    extern "C" {
+        static mach_task_self_: u32;
+        fn task_info(task: u32, flavor: u32, out: *mut u32, count: *mut u32) -> i32;
+    }
+    let mut info = [0u32; 12];
+    let mut words: u32 = 12;
+    if task_info(mach_task_self_, 20, info.as_mut_ptr(), &mut words) != 0 {
+        return 0;
+    }
+    ((info[2] as u64) | ((info[3] as u64) << 32)) as i64
+}
+
+/// Linux publishes it in `/proc/self/statm`, whose second field is the
+/// resident page count. Pages are not always four kilobytes — arm64 servers
+/// run sixteen and sixty-four — so the size is asked for rather than assumed.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+#[no_mangle]
+pub unsafe extern "C" fn rill_rss_bytes() -> i64 {
+    extern "C" {
+        fn sysconf(name: i32) -> i64;
+    }
+    let fd = open(b"/proc/self/statm\0".as_ptr(), 0);
+    if fd < 0 {
+        return 0; // A unix without procfs has nowhere to look.
+    }
+    let mut buf = [0u8; 64];
+    let got = read(fd, buf.as_mut_ptr(), buf.len() - 1);
+    close(fd);
+    if got <= 0 {
+        return 0;
+    }
+    let end = got as usize;
+    let mut at = 0usize;
+    while at < end && buf[at] != b' ' {
+        at += 1; // the total size, which is not the question
+    }
+    while at < end && buf[at] == b' ' {
+        at += 1;
+    }
+    let mut pages: i64 = 0;
+    while at < end && buf[at] >= b'0' && buf[at] <= b'9' {
+        pages = pages * 10 + (buf[at] - b'0') as i64;
+        at += 1;
+    }
+    let page = sysconf(30); // _SC_PAGESIZE
+    pages * if page > 0 { page } else { 4096 }
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct MemoryCounters {
+    size: u32,
+    page_faults: u32,
+    peak_working_set: usize,
+    working_set: usize,
+    peak_paged_pool: usize,
+    paged_pool: usize,
+    peak_nonpaged_pool: usize,
+    nonpaged_pool: usize,
+    pagefile: usize,
+    peak_pagefile: usize,
+}
+
+/// Windows calls it the working set. `K32GetProcessMemoryInfo` is the copy of
+/// the call that lives in kernel32, so nothing extra has to be linked.
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_rss_bytes() -> i64 {
+    extern "system" {
+        fn GetCurrentProcess() -> *mut u8;
+        fn K32GetProcessMemoryInfo(task: *mut u8, out: *mut MemoryCounters, size: u32) -> i32;
+    }
+    let mut counters: MemoryCounters = core::mem::zeroed();
+    counters.size = core::mem::size_of::<MemoryCounters>() as u32;
+    if K32GetProcessMemoryInfo(
+        GetCurrentProcess(),
+        &mut counters,
+        core::mem::size_of::<MemoryCounters>() as u32,
+    ) == 0
+    {
+        return 0;
+    }
+    counters.working_set as i64
+}
+
+/// A page's memory is the browser's business, and a chip with no operating
+/// system has one program and all of it.
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+#[no_mangle]
+pub unsafe extern "C" fn rill_rss_bytes() -> i64 {
+    0
+}
+
 // ---- randomness -----------------------------------------------------------
 //
 // Eight bytes nobody can guess, which is a different thing from eight bytes
