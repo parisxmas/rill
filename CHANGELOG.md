@@ -1,5 +1,134 @@
 # Changelog
 
+## Unreleased — a way to stop
+
+A strand parked on `recv` was parked until a value arrived. There was no other
+outcome. So tearing down whatever was going to send one left the strand where
+it was, holding its stack, for as long as the program ran — and a server with a
+strand per connection has as many of those as it has had connections. The
+language could start things and could not stop them.
+
+```
+close(ch)      # nothing more will be sent, and everyone parked on it wakes
+closed(ch)     # whether it has been
+recv_opt(ch)   # Some(v) while there is something, None once closed and empty
+```
+
+Closing is a **broadcast**, which is the thing sending a value cannot be. It
+reaches everyone parked on the channel at once, however many that is, so a
+program tearing down does not have to know the number — which is the whole
+difficulty, because the number is usually the thing it is least sure of.
+Closing twice is not an error, so a teardown that arrives from two directions
+does not have to arrange which of them gets there first. And what is already
+buffered survives the close and comes out first, so a producer may close the
+moment it has nothing more to say without the consumer losing anything in
+flight.
+
+`recv` still answers the element type, and that is a decision rather than an
+oversight. Most channels never end — a worker pool, a pipeline, a ticker — and
+making every one of them answer an `Option` would have put a `match` in front
+of every receive in the language to pay for the few that do. `recv` on a closed
+channel ends the program and says to use `recv_opt`, which is the answer an
+index outside a buffer gets and is the same reason: there is no value to hand
+back that would not be a lie about a string or a list.
+
+Sending into a closed channel ends the program too, and the rule that avoids it
+is the one Go arrived at: whoever sends is whoever closes. Where a strand
+really is parked on a send nobody will ever take, `select` is how it hears:
+
+```
+r = select
+  send(out, n) -> push(out, stop, n + 1)
+  recv(stop) -> "gave up"
+```
+
+A closed channel makes its receive arm ready, so one `close(stop)` reaches that
+strand whatever the other arm is doing. The arm binds nothing, and that is
+exactly why it works — there is no value for a closed channel to produce. An
+arm written `x = recv(stop) ->` would have to produce one, and ends the program
+saying so rather than binding a word that means nothing.
+
+`chan_wait` and `chan_taken` are the two builtins `recv_opt` is written from,
+the way `map_get` is written from `map_find` and `map_val_at`. The answer has
+two shapes and a call has one, so the wait and the value are separate calls and
+the prelude puts them back together.
+
+**`sock_shutdown(fd)`**, for the other half of the same problem. The reference
+already said that a strand parked on a read cannot be got out of it by closing
+its socket from elsewhere: the reader is inside the poller, closing does not
+wake it, and the number can be handed to the next connection while the old
+registration is still armed. Shutting down acts on the connection rather than
+on the descriptor. The number stays this program's until it closes it, and the
+socket becomes readable-at-end-of-file at once — a readiness event, so the
+poller wakes the strand and its `sock_read` answers `""`. The reader then
+closes the descriptor itself, on its own strand, where that has always been
+safe. A server putting a limit on how long it holds a connection, or dropping
+all of them on the way down, now has something to call.
+
+`examples/closing.rill` is the three shapes of it: a producer that runs out, a
+worker waiting on two things at once, and one close reaching four listeners.
+
+## Unreleased — a file it does not have to hold, and a sync that does not stop the world
+
+`read_file` and `write_file` were the whole of what a program could do with a
+file, and both of them are "all of it, now". A log is not that shape, and
+neither is a journal, or a store several readers are at different places in.
+So a file is now a descriptor — the same `Int` a socket is, deliberately, so
+that a program holding both is not holding two ideas of what an open thing is.
+
+```
+fd = file_open(path, "a")     # "r" "w" "a", and each with "+" to read as well
+at = file_size(fd)            # where this record will start
+file_write(fd, record)
+file_sync(fd)                 # now it is on the disk, and not before
+file_close(fd)
+```
+
+`file_read` and `file_write` where the descriptor is, `file_pread` at an
+offset without moving it, `file_seek`, `file_pos`, `file_size`,
+`file_truncate`, `file_remove`, `file_rename`, `file_exists`, and `dir_make`,
+`dir_list` and `dir_sync` for the directory around them. The prelude has
+`open_file` as a `Result`, `dir_names` as a list, and `replace_file` for the
+whole write-sync-rename-sync dance. §10 of the reference is the surface and
+`examples/files.rill` is it working.
+
+`file_pread` is the one worth naming twice. Reading at an offset leaves the
+descriptor where it was, so several readers of one file do not have to take
+turns, and none of them disturbs whatever is appending to the end of it. That
+is the difference between one open file answering a hundred consumers and a
+hundred open files.
+
+**The sync does not hold the worker.** This is the part that took the design
+rather than the code. A write that has returned is in the operating system's
+cache, and `fsync` is the wait for the disk to say otherwise — a millisecond
+on a good drive and ten on a bad one, which on a single worker is the whole
+program standing still. So the strand hands the request to a helper thread and
+parks on a pipe, which is the same manoeuvre a strand waiting on a socket
+makes and goes through the same poller. Four small syscalls to hide a wait a
+thousand times longer.
+
+The measurement is not how fast a sync is, because that is the disk's business
+and not the language's. It is whether anything else can run during one: a
+strand computing beside a strand syncing takes 173 ms against the 180 ms it
+takes alone, while a hundred syncs happen next to it and take about three
+hundred. Held the worker, it would have had to wait for every one of them.
+
+The rule the whole thing rests on is that the request is on the heap and not
+on the strand's stack. A parked strand's frames are copied away while it waits
+— that is how one worker runs many strands on one stack — so an address into
+them means nothing to another thread. Before the scheduler exists at all, a
+sync is simply done where it stands: there is no worker to spare and nothing
+to be an improvement on.
+
+Two smaller things that are easy to get wrong and are therefore not left to
+the caller. On macOS the sync is `F_FULLFSYNC` and not `fsync`, because
+`fsync` there hands the bytes to the drive and returns without waiting for the
+drive to keep them, which is fast and is not durability. And `dir_sync` exists
+because syncing a file says the bytes are there and does not say the *file*
+is: creating and renaming both change the directory, and that change is cached
+like any other, so a program can sync a file it has just made and come back
+after a power cut to a directory that has never heard of it.
+
 ## Unreleased — a page, and the appends underneath it
 
 `tools/tmplgen.rill` turns an HTML template into Rill, before the program that

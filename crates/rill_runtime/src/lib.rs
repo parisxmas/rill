@@ -906,6 +906,763 @@ pub unsafe extern "C" fn rill_write_file(path: *const u8, content: *const u8) ->
     1
 }
 
+// ---- files ----------------------------------------------------------------
+//
+// `read_file` and `write_file` are for a file a program has all of at once.
+// What follows is for the other kind: a file too big to hold, or one being
+// appended to for as long as the program runs — a log, a journal, a store
+// whose readers are at different places in it.
+//
+// A file is a descriptor, the same `Int` a socket is, and for the same
+// reason: the two families are then written alike, and a program that has
+// both is not holding two different ideas of what an open thing is. The
+// numbers do not overlap, because the operating system hands them out.
+//
+// Reads and writes go straight through. A read that the page cache answers
+// costs a few microseconds — about what a channel rendezvous costs — and
+// putting it on a helper thread would cost more than it saved. `file_sync` is
+// the exception and the reason this section has threads in it at all: asking
+// the disk to make what has been written durable takes milliseconds, and a
+// worker standing still for that is a worker not running any of the strands
+// that are ready. So a sync goes to a helper thread and the strand parks on a
+// pipe, exactly as a strand waiting on a socket parks on the socket.
+
+#[cfg(not(any(target_os = "linux", target_os = "wasi")))]
+const O_RDWR: i32 = 0x2;
+#[cfg(not(any(target_os = "linux", target_os = "wasi")))]
+const O_APPEND: i32 = 0x8;
+
+#[cfg(target_os = "linux")]
+const O_RDWR: i32 = 0o2;
+#[cfg(target_os = "linux")]
+const O_APPEND: i32 = 0o2000;
+
+// WASI's flags are the bits of a capability rather than a mode, so read-write
+// is the two rights together; appending is an `fdflag` the shim folds in.
+#[cfg(target_os = "wasi")]
+const O_RDWR: i32 = O_RDONLY | O_WRONLY;
+#[cfg(target_os = "wasi")]
+const O_APPEND: i32 = 0x1;
+
+#[cfg(unix)]
+extern "C" {
+    fn fsync(fd: i32) -> i32;
+    fn ftruncate(fd: i32, len: i64) -> i32;
+    fn pread(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize;
+    fn unlink(path: *const u8) -> i32;
+    fn rename(from: *const u8, to: *const u8) -> i32;
+    fn mkdir(path: *const u8, mode: u32) -> i32;
+    fn access(path: *const u8, mode: i32) -> i32;
+    fn pipe(fds: *mut i32) -> i32;
+}
+
+// Reading a directory is the one file operation whose shape is not the same on
+// both Unixes. `struct dirent` differs in its first three fields, so the name
+// is at a different offset in it; and on 64-bit Intel Macs the symbols
+// themselves carry a suffix, because the struct changed there and the old one
+// kept the plain name. Both are settled here rather than in the code that
+// walks a directory.
+#[cfg(all(unix, target_vendor = "apple"))]
+const D_NAME_OFF: usize = 21;
+#[cfg(all(unix, not(target_vendor = "apple")))]
+const D_NAME_OFF: usize = 19;
+
+#[cfg(unix)]
+extern "C" {
+    #[cfg_attr(all(target_vendor = "apple", target_arch = "x86_64"), link_name = "opendir$INODE64")]
+    fn opendir(path: *const u8) -> *mut u8;
+    #[cfg_attr(all(target_vendor = "apple", target_arch = "x86_64"), link_name = "readdir$INODE64")]
+    fn readdir(dir: *mut u8) -> *mut u8;
+    fn closedir(dir: *mut u8) -> i32;
+}
+
+// Everything a file call needs that is not a plain `open`/`read`/`write`, on
+// the platforms that do not have the Unix spelling of it. Windows has all of
+// them under other names; wasm has none and says so by failing.
+#[cfg(windows)]
+extern "C" {
+    #[link_name = "_commit"]
+    fn fsync(fd: i32) -> i32;
+    #[link_name = "_chsize_s"]
+    fn chsize_s(fd: i32, len: i64) -> i32;
+    #[link_name = "_unlink"]
+    fn unlink(path: *const u8) -> i32;
+    fn rename(from: *const u8, to: *const u8) -> i32;
+    #[link_name = "_mkdir"]
+    fn mkdir_win(path: *const u8) -> i32;
+    #[link_name = "_access"]
+    fn access(path: *const u8, mode: i32) -> i32;
+}
+
+#[cfg(windows)]
+unsafe fn ftruncate(fd: i32, len: i64) -> i32 {
+    chsize_s(fd, len)
+}
+
+#[cfg(windows)]
+unsafe fn mkdir(path: *const u8, _mode: u32) -> i32 {
+    mkdir_win(path)
+}
+
+// Windows has no `pread`; seeking there and back is the same thing for a
+// program that is not sharing the descriptor between threads, which a Rill
+// program is not — a descriptor belongs to whoever opened it.
+#[cfg(windows)]
+unsafe fn pread(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize {
+    let was = lseek(fd, 0, 1);
+    if was < 0 || lseek(fd, offset, 0) < 0 {
+        return -1;
+    }
+    let n = read(fd, buf, count);
+    lseek(fd, was, 0);
+    n
+}
+
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+unsafe fn fsync(_fd: i32) -> i32 {
+    -1
+}
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+unsafe fn ftruncate(_fd: i32, _len: i64) -> i32 {
+    -1
+}
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+unsafe fn pread(_fd: i32, _buf: *mut u8, _count: usize, _offset: i64) -> isize {
+    -1
+}
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+unsafe fn unlink(_path: *const u8) -> i32 {
+    -1
+}
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+unsafe fn rename(_from: *const u8, _to: *const u8) -> i32 {
+    -1
+}
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+unsafe fn mkdir(_path: *const u8, _mode: u32) -> i32 {
+    -1
+}
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+unsafe fn access(_path: *const u8, _mode: i32) -> i32 {
+    -1
+}
+
+/// The flags a mode string asks for, or -1 if it is not one.
+///
+/// The six C has, and no more: a mode is a thing a program writes once and
+/// reads often, and a set of flags spelled out would be longer to read and no
+/// more expressive. `"a"` is the one a log wants — every write goes to the end
+/// of the file whatever else is writing to it, which is a property of the
+/// descriptor rather than of remembering to seek.
+unsafe fn open_flags(mode: *const u8) -> i32 {
+    let n = str_len_of(mode);
+    let b = str_bytes(mode);
+    let plus = n == 2 && *b.add(1) == b'+';
+    if n != 1 && !plus {
+        return -1;
+    }
+    match *b {
+        b'r' => {
+            if plus {
+                O_RDWR
+            } else {
+                O_RDONLY
+            }
+        }
+        b'w' => (if plus { O_RDWR } else { O_WRONLY }) | O_CREAT | O_TRUNC,
+        b'a' => (if plus { O_RDWR } else { O_WRONLY }) | O_CREAT | O_APPEND,
+        _ => -1,
+    }
+}
+
+/// Opens a file and returns its descriptor, or -1.
+///
+/// # Safety
+/// Both must be live string objects.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_open(path: *const u8, mode: *const u8) -> i64 {
+    IO_OK = 1;
+    let flags = open_flags(mode);
+    if flags < 0 {
+        IO_OK = 0;
+        return -1;
+    }
+    let c = cstr(path);
+    let fd = open(c, flags, 0o644 as i32);
+    free(c);
+    if fd < 0 {
+        IO_OK = 0;
+        return -1;
+    }
+    fd as i64
+}
+
+/// Reads up to `n` bytes from where the descriptor is; `""` at the end.
+///
+/// # Safety
+/// Returns a new owned string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_read(fd: i64, n: i64) -> *mut u8 {
+    IO_OK = 1;
+    if n <= 0 {
+        return str_new(0);
+    }
+    let p = str_new(n as usize);
+    let got = read(fd as i32, p.add(16), n as usize);
+    if got < 0 {
+        IO_OK = 0;
+        *(p as *mut i64).add(1) = 0;
+        return p;
+    }
+    *(p as *mut i64).add(1) = got as i64;
+    p
+}
+
+/// Reads up to `n` bytes from `off`, without moving the descriptor.
+///
+/// This is what lets one open file answer several readers at once — a
+/// consumer reading a log from where it left off does not disturb the
+/// producer appending to it, and two consumers at different places do not
+/// disturb each other.
+///
+/// # Safety
+/// Returns a new owned string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_pread(fd: i64, off: i64, n: i64) -> *mut u8 {
+    IO_OK = 1;
+    if n <= 0 || off < 0 {
+        return str_new(0);
+    }
+    let p = str_new(n as usize);
+    let got = pread(fd as i32, p.add(16), n as usize, off);
+    if got < 0 {
+        IO_OK = 0;
+        *(p as *mut i64).add(1) = 0;
+        return p;
+    }
+    *(p as *mut i64).add(1) = got as i64;
+    p
+}
+
+/// Writes all of a string; how many bytes went, or -1.
+///
+/// # Safety
+/// `s` must be a live string object.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_write(fd: i64, s: *const u8) -> i64 {
+    IO_OK = 1;
+    let n = str_len_of(s);
+    let mut sent = 0usize;
+    while sent < n {
+        let w = write(fd as i32, str_bytes(s).add(sent), n - sent);
+        if w <= 0 {
+            IO_OK = 0;
+            return if sent == 0 { -1 } else { sent as i64 };
+        }
+        sent += w as usize;
+    }
+    sent as i64
+}
+
+/// Moves the descriptor to an absolute offset; the new offset, or -1.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_seek(fd: i64, off: i64) -> i64 {
+    IO_OK = 1;
+    let r = lseek(fd as i32, off, 0); // SEEK_SET
+    if r < 0 {
+        IO_OK = 0;
+        return -1;
+    }
+    r
+}
+
+/// Where the descriptor is now, or -1.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_pos(fd: i64) -> i64 {
+    IO_OK = 1;
+    let r = lseek(fd as i32, 0, 1); // SEEK_CUR
+    if r < 0 {
+        IO_OK = 0;
+        return -1;
+    }
+    r
+}
+
+/// How many bytes the file holds, or -1. The descriptor is left where it was.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_size(fd: i64) -> i64 {
+    IO_OK = 1;
+    let was = lseek(fd as i32, 0, 1); // SEEK_CUR
+    let end = lseek(fd as i32, 0, 2); // SEEK_END
+    if was >= 0 {
+        lseek(fd as i32, was, 0);
+    }
+    if end < 0 {
+        IO_OK = 0;
+        return -1;
+    }
+    end
+}
+
+/// Cuts the file to `n` bytes, or grows it with zeros.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_truncate(fd: i64, n: i64) -> i8 {
+    IO_OK = 1;
+    if n < 0 || ftruncate(fd as i32, n) != 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    1
+}
+
+/// Closes a descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_close(fd: i64) {
+    close(fd as i32);
+}
+
+/// Removes a name from the filesystem.
+///
+/// # Safety
+/// `path` must be a live string object.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_remove(path: *const u8) -> i8 {
+    IO_OK = 1;
+    let c = cstr(path);
+    let r = unlink(c);
+    free(c);
+    if r != 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    1
+}
+
+/// Renames a file, replacing whatever was at the new name.
+///
+/// On a Unix filesystem this is atomic: a reader sees the old file or the new
+/// one and never half of either, which is what makes "write a temporary file,
+/// sync it, rename it over the real one" the way to replace a file without a
+/// window in which it is neither.
+///
+/// # Safety
+/// Both must be live string objects.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_rename(from: *const u8, to: *const u8) -> i8 {
+    IO_OK = 1;
+    let a = cstr(from);
+    let b = cstr(to);
+    let r = rename(a, b);
+    free(a);
+    free(b);
+    if r != 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    1
+}
+
+/// Whether there is anything at that path.
+///
+/// # Safety
+/// `path` must be a live string object.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_exists(path: *const u8) -> i8 {
+    let c = cstr(path);
+    let r = access(c, 0); // F_OK
+    free(c);
+    (r == 0) as i8
+}
+
+/// Makes a directory. Says false if it is already there.
+///
+/// # Safety
+/// `path` must be a live string object.
+#[no_mangle]
+pub unsafe extern "C" fn rill_dir_make(path: *const u8) -> i8 {
+    IO_OK = 1;
+    let c = cstr(path);
+    let r = mkdir(c, 0o755);
+    free(c);
+    if r != 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    1
+}
+
+/// The names in a directory, one to a line, without `.` and `..`.
+///
+/// A line, because that is what the prelude already takes apart: `lines` and
+/// `split` are how a Rill program reads a list of anything. A name may in
+/// principle contain a newline and would then be two lines here; nothing that
+/// writes a file on purpose does that, and the alternative — a length in front
+/// of every name — would make the common case unreadable to pay for it.
+///
+/// # Safety
+/// `path` must be a live string object; returns a new owned string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_dir_list(path: *const u8) -> *mut u8 {
+    IO_OK = 1;
+    #[cfg(unix)]
+    {
+        let c = cstr(path);
+        let d = opendir(c);
+        free(c);
+        if d.is_null() {
+            IO_OK = 0;
+            return str_new(0);
+        }
+        // Two passes over the directory would mean reading it twice and
+        // trusting it not to change in between, so the names are gathered into
+        // a growing buffer and copied into a string once at the end.
+        let mut cap = 1024usize;
+        let mut len = 0usize;
+        let mut buf = malloc(cap);
+        if buf.is_null() {
+            closedir(d);
+            IO_OK = 0;
+            return str_new(0);
+        }
+        loop {
+            let e = readdir(d);
+            if e.is_null() {
+                break;
+            }
+            let name = e.add(D_NAME_OFF);
+            // `.` and `..` are in every directory and are never what a caller
+            // asking what is in one means.
+            if *name == b'.' && (*name.add(1) == 0 || (*name.add(1) == b'.' && *name.add(2) == 0)) {
+                continue;
+            }
+            let mut n = 0usize;
+            while *name.add(n) != 0 {
+                n += 1;
+            }
+            if len + n + 1 > cap {
+                while len + n + 1 > cap {
+                    cap *= 2;
+                }
+                let bigger = malloc(cap);
+                if bigger.is_null() {
+                    free(buf);
+                    closedir(d);
+                    IO_OK = 0;
+                    return str_new(0);
+                }
+                core::ptr::copy_nonoverlapping(buf, bigger, len);
+                free(buf);
+                buf = bigger;
+            }
+            core::ptr::copy_nonoverlapping(name, buf.add(len), n);
+            len += n;
+            *buf.add(len) = b'\n';
+            len += 1;
+        }
+        closedir(d);
+        let p = str_new(len);
+        core::ptr::copy_nonoverlapping(buf, p.add(16), len);
+        free(buf);
+        p
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        IO_OK = 0;
+        str_new(0)
+    }
+}
+
+// -- making it durable --------------------------------------------------------
+//
+// A write that has returned is in the operating system's cache and not on the
+// disk; a machine that loses power between the two loses it. `file_sync` is
+// the wait for the disk to say it has the bytes, and it is the one file
+// operation slow enough — a millisecond on a good drive, ten on a bad one —
+// that a worker must not stand still for it.
+//
+// So it goes to a helper thread. The strand hands over a request and parks on
+// a pipe, which is the same manoeuvre as parking on a socket and goes through
+// the same poller: the worker is free the moment the request is handed over,
+// and the strand becomes runnable again when the byte arrives. The overhead is
+// four small syscalls, against a wait a thousand times longer.
+//
+// The request itself is on the heap and not on the strand's stack. A parked
+// strand's frames are copied away while it waits — that is how one worker runs
+// many strands on one stack — so an address into them means nothing to another
+// thread. This is the one rule the whole mechanism rests on.
+
+/// How many syncs may be in flight at once. Each is a thread doing nothing but
+/// waiting on a disk, so they are cheap to have and there is no reason for
+/// many: a handful of files being synced at once is already more than a log
+/// does.
+#[cfg(unix)]
+const SYNC_HELPERS: usize = 4;
+
+/// A pooled pipe. Making one is two syscalls, and a program that syncs in a
+/// loop would make and destroy the same pair forever; they are kept instead.
+#[cfg(unix)]
+const POOLED_PIPES: usize = 64;
+
+#[cfg(unix)]
+#[repr(C)]
+struct SyncReq {
+    /// The descriptor to sync, or -1 when `path` names a directory instead.
+    fd: i32,
+    /// Where the helper says how it went.
+    result: i32,
+    /// The write end of the pipe the waiting strand is parked on.
+    notify: i32,
+    /// A directory to open, sync and close, or null.
+    path: *mut u8,
+}
+
+#[cfg(unix)]
+static mut SYNC_LOCK: PthreadMutex = PthreadMutex { sig: 0, opaque: [0; 56] };
+#[cfg(unix)]
+static mut SYNC_REQ_R: i32 = -1;
+#[cfg(unix)]
+static mut SYNC_REQ_W: i32 = -1;
+#[cfg(unix)]
+static mut SYNC_HELPERS_UP: i8 = 0;
+#[cfg(unix)]
+static mut PIPE_POOL: [[i32; 2]; POOLED_PIPES] = [[-1, -1]; POOLED_PIPES];
+#[cfg(unix)]
+static mut PIPE_POOLED: usize = 0;
+
+/// Initialised before any strand exists, from `rill_rt_run`, so that the lock
+/// below is usable without a race to create it. A program that never syncs
+/// pays one `pthread_mutex_init` for this and nothing else: the threads and
+/// the pipes are made on the first sync and not before.
+#[cfg(unix)]
+unsafe fn sync_init() {
+    pthread_mutex_init(&raw mut SYNC_LOCK, core::ptr::null());
+}
+
+#[cfg(not(unix))]
+unsafe fn sync_init() {}
+
+/// The sync itself, wherever it is being run.
+///
+/// On a Mac `fsync` is not the whole story: it hands the bytes to the drive
+/// and returns without waiting for the drive to put them on the platter, which
+/// is fast and is not durability. `F_FULLFSYNC` is the call that waits, and it
+/// is what a database on macOS uses. It is not supported on every filesystem,
+/// so a failure falls back rather than being reported as one.
+#[cfg(unix)]
+unsafe fn do_sync(fd: i32, path: *mut u8) -> i32 {
+    if !path.is_null() {
+        let d = open(path, O_RDONLY, 0);
+        if d < 0 {
+            return -1;
+        }
+        let r = fsync(d);
+        close(d);
+        return r;
+    }
+    #[cfg(target_vendor = "apple")]
+    {
+        const F_FULLFSYNC: i32 = 51;
+        extern "C" {
+            fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+        }
+        if fcntl(fd, F_FULLFSYNC, 0) == 0 {
+            return 0;
+        }
+    }
+    fsync(fd)
+}
+
+#[cfg(unix)]
+extern "C" fn sync_helper(_arg: *mut u8) -> *mut u8 {
+    unsafe {
+        loop {
+            let mut req: *mut SyncReq = core::ptr::null_mut();
+            // Every write to this pipe is exactly eight bytes and a pipe write
+            // that small is atomic, so what is in the pipe is always a whole
+            // number of requests and a reader asking for eight gets one of
+            // them — even with several helpers reading the same pipe.
+            let got = read(SYNC_REQ_R, &mut req as *mut *mut SyncReq as *mut u8, 8);
+            if got != 8 {
+                return core::ptr::null_mut();
+            }
+            (*req).result = do_sync((*req).fd, (*req).path);
+            let done = [1u8];
+            write((*req).notify, done.as_ptr(), 1);
+        }
+    }
+}
+
+/// Makes the request pipe and the helpers, once. Says whether they are there.
+#[cfg(unix)]
+unsafe fn sync_helpers_ready() -> bool {
+    if SYNC_HELPERS_UP == 1 {
+        return true;
+    }
+    if SYNC_HELPERS_UP == -1 {
+        return false;
+    }
+    let mut fds = [-1i32; 2];
+    if pipe(fds.as_mut_ptr()) != 0 {
+        SYNC_HELPERS_UP = -1;
+        return false;
+    }
+    SYNC_REQ_R = fds[0];
+    SYNC_REQ_W = fds[1];
+    let mut made = 0;
+    for _ in 0..SYNC_HELPERS {
+        let mut tid: usize = 0;
+        if pthread_create(&mut tid, core::ptr::null(), sync_helper, core::ptr::null_mut()) == 0 {
+            made += 1;
+        }
+    }
+    if made == 0 {
+        close(SYNC_REQ_R);
+        close(SYNC_REQ_W);
+        SYNC_REQ_R = -1;
+        SYNC_REQ_W = -1;
+        SYNC_HELPERS_UP = -1;
+        return false;
+    }
+    SYNC_HELPERS_UP = 1;
+    true
+}
+
+#[cfg(unix)]
+unsafe fn take_pipe() -> [i32; 2] {
+    if PIPE_POOLED > 0 {
+        PIPE_POOLED -= 1;
+        return PIPE_POOL[PIPE_POOLED];
+    }
+    let mut fds = [-1i32; 2];
+    if pipe(fds.as_mut_ptr()) != 0 {
+        return [-1, -1];
+    }
+    fds
+}
+
+#[cfg(unix)]
+unsafe fn give_back_pipe(fds: [i32; 2]) {
+    if PIPE_POOLED < POOLED_PIPES {
+        PIPE_POOL[PIPE_POOLED] = fds;
+        PIPE_POOLED += 1;
+        return;
+    }
+    net::forget_pipe(fds[0]);
+    close(fds[0]);
+    close(fds[1]);
+}
+
+/// Hands a sync to a helper thread and parks until it answers.
+///
+/// Falls back to doing it here whenever it cannot be handed over — before the
+/// scheduler exists, or if a thread or a pipe could not be made. The answer is
+/// the same either way; what is lost is only that the worker waits.
+#[cfg(unix)]
+unsafe fn sync_off_worker(fd: i32, path: *mut u8) -> i32 {
+    // No scheduler means no strand to park and no worker to spare. A program
+    // that neither spawns nor waits runs `main` on the process stack, and
+    // there is nothing for this to be an improvement on.
+    if MAIN_G.is_null() {
+        return do_sync(fd, path);
+    }
+    pthread_mutex_lock(&raw mut SYNC_LOCK);
+    let up = sync_helpers_ready();
+    let fds = if up { take_pipe() } else { [-1, -1] };
+    let req_w = SYNC_REQ_W;
+    pthread_mutex_unlock(&raw mut SYNC_LOCK);
+    if !up || fds[0] < 0 {
+        return do_sync(fd, path);
+    }
+    let req = malloc(core::mem::size_of::<SyncReq>()) as *mut SyncReq;
+    if req.is_null() {
+        pthread_mutex_lock(&raw mut SYNC_LOCK);
+        give_back_pipe(fds);
+        pthread_mutex_unlock(&raw mut SYNC_LOCK);
+        return do_sync(fd, path);
+    }
+    (*req).fd = fd;
+    (*req).result = -1;
+    (*req).notify = fds[1];
+    (*req).path = path;
+    let handed = write(req_w, &req as *const *mut SyncReq as *const u8, 8);
+    if handed != 8 {
+        free(req as *mut u8);
+        pthread_mutex_lock(&raw mut SYNC_LOCK);
+        give_back_pipe(fds);
+        pthread_mutex_unlock(&raw mut SYNC_LOCK);
+        return do_sync(fd, path);
+    }
+    // From here the request belongs to the helper, and this strand's own
+    // frames are about to be copied elsewhere. Nothing below may read anything
+    // the helper is writing until the byte has arrived.
+    net::park_on_pipe(fds[0]);
+    let mut done = [0u8; 1];
+    // Whether the poller woke this strand or the arm failed and it did not
+    // park at all, the byte is what says the sync has happened; the pipe is
+    // blocking, so this is where an unarmed wait ends up waiting. A read of a
+    // pipe this end owns fails only for having been interrupted by a signal,
+    // which is worth retrying and is not worth retrying forever.
+    let mut tries = 0;
+    while read(fds[0], done.as_mut_ptr(), 1) < 0 {
+        tries += 1;
+        if tries > 64 {
+            break;
+        }
+    }
+    let r = (*req).result;
+    free(req as *mut u8);
+    pthread_mutex_lock(&raw mut SYNC_LOCK);
+    give_back_pipe(fds);
+    pthread_mutex_unlock(&raw mut SYNC_LOCK);
+    r
+}
+
+#[cfg(not(unix))]
+unsafe fn sync_off_worker(fd: i32, path: *mut u8) -> i32 {
+    if !path.is_null() {
+        return -1;
+    }
+    fsync(fd)
+}
+
+/// Waits until everything written to the descriptor is on the disk.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_sync(fd: i64) -> i8 {
+    IO_OK = 1;
+    if sync_off_worker(fd as i32, core::ptr::null_mut()) != 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    1
+}
+
+/// Waits until the directory's own contents — which names are in it — are on
+/// the disk.
+///
+/// Syncing a file says the bytes are there. It does not say the *name* is:
+/// creating a file and renaming one both change the directory, and that change
+/// is cached like any other. A program that creates a file, syncs it, and
+/// loses power can come back to a directory that has never heard of it. This
+/// is the call that closes that gap, and the reason it is separate is that a
+/// program pays for it only where it matters — after a create or a rename, not
+/// after every write.
+///
+/// # Safety
+/// `path` must be a live string object.
+#[no_mangle]
+pub unsafe extern "C" fn rill_dir_sync(path: *const u8) -> i8 {
+    IO_OK = 1;
+    let c = cstr(path);
+    let r = sync_off_worker(-1, c);
+    free(c);
+    if r != 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    1
+}
+
 // Standard input is read in blocks and handed out a line at a time. A
 // syscall per byte is what this used to be, and on a large input that was all
 // the program did; nothing else reads this descriptor, so holding what was
@@ -2957,6 +3714,10 @@ struct G {
     next: *mut G,
     /// Channel transfer slot (two words fit every Rill value).
     item: [u64; 2],
+    /// Where `chan_wait` leaves the value it took, for the `chan_taken` that
+    /// follows it. One strand's, so nothing has to guard it: a strand cannot
+    /// be between its own two calls twice.
+    taken: [u64; 2],
     dead: bool,
     /// The main strand runs on its own stack and never copies.
     is_main: bool,
@@ -3807,6 +4568,7 @@ pub unsafe extern "C" fn rill_rt_run(code: extern "C" fn(*mut u8)) {
         NWORKERS = 1;
     }
     pthread_mutex_init(&raw mut CHAN_LOCK, core::ptr::null());
+    sync_init();
     for i in 0..NWORKERS {
         let base = alloc_stack(EXEC_STACK_SIZE);
         WORKERS[i].index = i;
@@ -3870,6 +4632,11 @@ struct Waiter {
     /// Which `select` case this node belongs to (0 for a plain send/recv).
     case: i64,
     chan: *mut Chan,
+    /// Set when this waiter was released because the channel closed rather
+    /// than because a peer arrived. Without it a woken receiver cannot tell
+    /// the two apart: a value handed over just before the close would look
+    /// like a close, and be lost.
+    freed_by_close: i64,
 }
 
 const WAITER_INIT: Waiter = Waiter {
@@ -3878,6 +4645,7 @@ const WAITER_INIT: Waiter = Waiter {
     item: [0; 2],
     case: 0,
     chan: core::ptr::null_mut(),
+    freed_by_close: 0,
 };
 
 struct WQueue {
@@ -3961,6 +4729,9 @@ struct Chan {
     head: usize,
     sendq: WQueue,
     recvq: WQueue,
+    /// Non-zero once `close` has been called. A closed channel takes no more
+    /// values; what is already buffered in it is still there to be read.
+    closed: usize,
 }
 
 unsafe fn chan_slots(c: *mut Chan) -> *mut u64 {
@@ -4016,7 +4787,15 @@ pub unsafe extern "C" fn rill_chan_new(cap: i64) -> *mut u8 {
     let c = rill_alloc(chan_size(cap)) as *mut Chan;
     core::ptr::write(
         c,
-        Chan { rc: 1, cap, len: 0, head: 0, sendq: WQueue::new(), recvq: WQueue::new() },
+        Chan {
+            rc: 1,
+            cap,
+            len: 0,
+            head: 0,
+            sendq: WQueue::new(),
+            recvq: WQueue::new(),
+            closed: 0,
+        },
     );
     c as *mut u8
 }
@@ -4031,6 +4810,78 @@ pub unsafe extern "C" fn rill_chan_release(p: *mut u8) {
     }
 }
 
+/// Closes a channel: nothing more may be sent, and everything parked on it
+/// wakes up now rather than waiting for a peer that is never coming.
+///
+/// This is what a program that has to *stop* needs and had no way to say. A
+/// strand parked on `recv` was parked until a value arrived, so tearing down
+/// the thing that was going to send one left the strand where it was, holding
+/// its stack, forever. Closing is the broadcast that reaches all of them at
+/// once, however many there are, which sending a value cannot be.
+///
+/// Closing twice is not an error. A teardown that runs from two directions
+/// should not have to arrange which of them gets there first.
+///
+/// # Safety
+/// `p` must be a live channel.
+#[no_mangle]
+pub unsafe extern "C" fn rill_chan_close(p: *mut u8) {
+    let c = p as *mut Chan;
+    lock();
+    if (*c).closed != 0 {
+        unlock();
+        return;
+    }
+    (*c).closed = 1;
+    // Everyone waiting, in both directions, and marked so that each can tell
+    // what woke it. A receiver will answer `None` or say what it was asked to
+    // do that it cannot; a sender has been sending into something that no
+    // longer takes anything, which is a mistake and is reported as one.
+    loop {
+        let w = (*c).recvq.pop_live();
+        if w.is_null() {
+            break;
+        }
+        (*w).freed_by_close = 1;
+        claim(w);
+    }
+    loop {
+        let w = (*c).sendq.pop_live();
+        if w.is_null() {
+            break;
+        }
+        (*w).freed_by_close = 1;
+        claim(w);
+    }
+    unlock();
+}
+
+/// Whether `close` has been called on this channel.
+///
+/// # Safety
+/// `p` must be a live channel.
+#[no_mangle]
+pub unsafe extern "C" fn rill_chan_closed(p: *mut u8) -> i8 {
+    let c = p as *mut Chan;
+    lock();
+    let r = ((*c).closed != 0) as i8;
+    unlock();
+    r
+}
+
+/// What a program is told when it sends into a channel nothing will ever read.
+///
+/// Ending the program is the same answer an index outside a buffer gets, and
+/// for the same reason: there is no value to return that would not be a lie,
+/// and carrying on would lose the value silently. The rule that avoids it is
+/// the one Go arrived at — whoever sends is whoever closes — and where two
+/// strands really do race, `select` on a second channel is how one of them
+/// finds out in time.
+unsafe fn die_on_closed(what: &[u8]) -> ! {
+    out(what);
+    die()
+}
+
 /// Sends one value, parking until it can be handed over or buffered.
 ///
 /// # Safety
@@ -4039,6 +4890,10 @@ pub unsafe extern "C" fn rill_chan_release(p: *mut u8) {
 pub unsafe extern "C" fn rill_chan_send(p: *mut u8, a: u64, b: u64) {
     let c = p as *mut Chan;
     lock();
+    if (*c).closed != 0 {
+        unlock();
+        die_on_closed(b"rill: send on a closed channel\n");
+    }
     // A waiting receiver takes it directly, whether or not there is a buffer.
     let r = (*c).recvq.pop_live();
     if !r.is_null() {
@@ -4054,10 +4909,13 @@ pub unsafe extern "C" fn rill_chan_send(p: *mut u8, a: u64, b: u64) {
     }
     let g = (*me()).current;
     (*g).selected = -1;
-    (*g).waiter = Waiter { next: core::ptr::null_mut(), g, item: [a, b], case: 0, chan: c };
+    (*g).waiter = Waiter { next: core::ptr::null_mut(), g, item: [a, b], case: 0, chan: c, freed_by_close: 0 };
     (*c).sendq.push(&raw mut (*g).waiter);
     unlock();
     block_current();
+    if (*g).waiter.freed_by_close != 0 {
+        die_on_closed(b"rill: send on a channel that closed while waiting\n");
+    }
 }
 
 /// Receives one value, parking until a sender or a buffered value arrives.
@@ -4080,20 +4938,108 @@ pub unsafe extern "C" fn rill_chan_recv(p: *mut u8) -> TwoWords {
         unlock();
         return TwoWords { a: item[0], b: item[1] };
     }
+    if (*c).closed != 0 {
+        unlock();
+        die_on_closed(b"rill: recv on a closed channel - use recv_opt\n");
+    }
     let g = (*me()).current;
     (*g).selected = -1;
     (*g).waiter =
-        Waiter { next: core::ptr::null_mut(), g, item: [0, 0], case: 0, chan: c };
+        Waiter { next: core::ptr::null_mut(), g, item: [0, 0], case: 0, chan: c, freed_by_close: 0 };
     (*c).recvq.push(&raw mut (*g).waiter);
     unlock();
     block_current();
+    if (*g).waiter.freed_by_close != 0 {
+        die_on_closed(b"rill: recv on a channel that closed while waiting - use recv_opt\n");
+    }
     let item = (*g).waiter.item;
     TwoWords { a: item[0], b: item[1] }
 }
 
+/// Waits for the next value and says whether there was one: true with the
+/// value left in the strand's own slot, false once the channel is closed and
+/// everything already in it has been read.
+///
+/// This and `chan_taken` are the two halves the prelude's `recv_opt` is
+/// written from, in the way `map_get` is written from `map_find` and
+/// `map_val_at`. They are split because the answer has two shapes and a
+/// runtime call has one: the value cannot be returned when there is no value,
+/// and there is no word that would stand for its absence without being a lie
+/// about a string or a list.
+///
+/// A program is expected to write `recv_opt` and not these. They are here for
+/// the same reason the map's slot readers are — a receive of a shape the
+/// prelude did not think of is written from them.
+///
+/// Buffered values survive the close and are handed out first, so a producer
+/// may close the moment it has nothing more to say without the consumer
+/// losing what is already in flight.
+///
+/// # Safety
+/// `p` must be a live channel; called from strand context.
+#[no_mangle]
+pub unsafe extern "C" fn rill_chan_wait(p: *mut u8) -> i8 {
+    let c = p as *mut Chan;
+    let g = (*me()).current;
+    lock();
+    if (*c).len > 0 {
+        let v = chan_take_buffered(c);
+        unlock();
+        (*g).taken = [v.a, v.b];
+        return 1;
+    }
+    let s = (*c).sendq.pop_live();
+    if !s.is_null() {
+        let item = (*s).item;
+        claim(s);
+        unlock();
+        (*g).taken = item;
+        return 1;
+    }
+    if (*c).closed != 0 {
+        unlock();
+        (*g).taken = [0, 0];
+        return 0;
+    }
+    (*g).selected = -1;
+    (*g).waiter =
+        Waiter { next: core::ptr::null_mut(), g, item: [0, 0], case: 0, chan: c, freed_by_close: 0 };
+    (*c).recvq.push(&raw mut (*g).waiter);
+    unlock();
+    block_current();
+    if (*g).waiter.freed_by_close != 0 {
+        (*g).taken = [0, 0];
+        return 0;
+    }
+    (*g).taken = (*g).waiter.item;
+    1
+}
+
+/// The value the last `chan_wait` on this strand took. Reading it twice hands
+/// the same value out twice, which is why it is not something to call on its
+/// own; the channel is an argument so that the type of what comes back is
+/// known, not because it is looked at.
+///
+/// # Safety
+/// Called from strand context, and only after a `chan_wait` that said true.
+#[no_mangle]
+pub unsafe extern "C" fn rill_chan_taken(_p: *mut u8) -> TwoWords {
+    let g = (*me()).current;
+    TwoWords { a: (*g).taken[0], b: (*g).taken[1] }
+}
+
 // ---- select ---------------------------------------------------------------
 
-const SEL_RECV: i64 = 0;
+// The three shapes an arm has, as generated code writes them into a case.
+// Zero is an arm that receives and throws the value away — `recv(done) ->
+// stop()` — and it has no constant here because nothing compares against it:
+// a closed channel makes it ready, and there is nothing it has to produce.
+/// An arm that sends.
+const SEL_SEND: i64 = 1;
+/// An arm that receives and binds — `x = recv(ch) -> f(x)`. A closed channel
+/// makes this ready too, and then there is no `x` to give it, which is the
+/// same dead end `recv` reaches and gets the same answer.
+const SEL_RECV_BIND: i64 = 2;
 
 /// One arm of a `select`, filled in by generated code.
 #[repr(C)]
@@ -4123,7 +5069,7 @@ pub unsafe extern "C" fn rill_select(
     for i in 0..n {
         let c = &*cases.add(i as usize);
         let ch = c.chan as *mut Chan;
-        if c.kind == SEL_RECV {
+        if c.kind != SEL_SEND {
             if (*ch).len > 0 {
                 let v = chan_take_buffered(ch);
                 unlock();
@@ -4140,7 +5086,23 @@ pub unsafe extern "C" fn rill_select(
                 *slot.add(1) = item[1];
                 return i;
             }
+            // A closed channel is ready, always. That is the whole of how a
+            // strand waiting on several things is told to stop: close the one
+            // that means stop, and every `select` watching it runs that arm.
+            if (*ch).closed != 0 {
+                unlock();
+                if c.kind == SEL_RECV_BIND {
+                    die_on_closed(
+                        b"rill: select bound a value from a closed channel - use recv_opt\n",
+                    );
+                }
+                return i;
+            }
         } else {
+            if (*ch).closed != 0 {
+                unlock();
+                die_on_closed(b"rill: select sends on a closed channel\n");
+            }
             let r = (*ch).recvq.pop_live();
             if !r.is_null() {
                 (*r).item = [c.a, c.b];
@@ -4175,9 +5137,9 @@ pub unsafe extern "C" fn rill_select(
         let w = ws.add(i as usize);
         core::ptr::write(
             w,
-            Waiter { next: core::ptr::null_mut(), g, item: [c.a, c.b], case: i, chan: ch },
+            Waiter { next: core::ptr::null_mut(), g, item: [c.a, c.b], case: i, chan: ch, freed_by_close: 0 },
         );
-        if c.kind == SEL_RECV {
+        if c.kind != SEL_SEND {
             (*ch).recvq.push(w);
         } else {
             (*ch).sendq.push(w);
@@ -4188,12 +5150,15 @@ pub unsafe extern "C" fn rill_select(
 
     lock();
     let idx = (*g).selected;
-    let item = (*ws.add(idx as usize)).item;
+    let won = ws.add(idx as usize);
+    let item = (*won).item;
+    let by_close = (*won).freed_by_close != 0;
+    let kind = (*cases.add(idx as usize)).kind;
     // Whatever is still queued elsewhere has to go before the nodes die.
     for i in 0..n {
         let w = ws.add(i as usize);
         let ch = (*w).chan;
-        if (*cases.add(i as usize)).kind == SEL_RECV {
+        if (*cases.add(i as usize)).kind != SEL_SEND {
             (*ch).recvq.remove(w);
         } else {
             (*ch).sendq.remove(w);
@@ -4201,6 +5166,18 @@ pub unsafe extern "C" fn rill_select(
     }
     unlock();
     free(ws as *mut u8);
+    // The nodes are gone before anything is said about what woke this strand,
+    // so a complaint here does not leave a dead node in a live channel.
+    if by_close {
+        if kind == SEL_SEND {
+            die_on_closed(b"rill: select sends on a channel that closed while waiting\n");
+        }
+        if kind == SEL_RECV_BIND {
+            die_on_closed(
+                b"rill: select bound a value from a closed channel - use recv_opt\n",
+            );
+        }
+    }
     *slot = item[0];
     *slot.add(1) = item[1];
     idx
@@ -4342,6 +5319,7 @@ mod net {
         fn getpeername(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
         fn getsockname(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
         fn connect(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
+        fn shutdown(fd: i32, how: i32) -> i32;
         fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
         fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
         fn fcntl(fd: i32, cmd: i32, ...) -> i32;
@@ -5005,6 +5983,21 @@ mod net {
         block_current();
     }
 
+    /// Parks the current strand until a pipe has a byte in it.
+    ///
+    /// The whole of what the file section needs from the poller, and named for
+    /// what it is used for rather than exposing `park_on_fd`: a pipe is the
+    /// only descriptor outside this module that anything parks on, and it
+    /// parks on it for exactly one byte.
+    pub(super) unsafe fn park_on_pipe(fd: i32) {
+        park_on_fd(fd, false);
+    }
+
+    /// Drops what the poller remembers about a descriptor about to be closed.
+    pub(super) unsafe fn forget_pipe(fd: i32) {
+        poller_forget(fd);
+    }
+
     /// Parks the current strand for `ms` milliseconds.
     ///
     /// This is the same manoeuvre as parking on a socket, and deliberately so:
@@ -5554,6 +6547,32 @@ mod net {
             fd += 1;
         }
         PENDING = 0;
+    }
+
+    /// Shuts a connection down in both directions without closing it, which
+    /// is the only way one strand can get another out of a read.
+    ///
+    /// The reference says why closing is not that way: the reader is parked on
+    /// the descriptor inside the poller, closing it from elsewhere does not
+    /// wake it, and the number can be handed to the next connection while the
+    /// old registration is still armed. `shutdown` is different in exactly the
+    /// place that matters. It acts on the connection rather than on the
+    /// descriptor, so the number stays this program's until it closes it, and
+    /// the socket becomes readable-at-end-of-file at once — which is a
+    /// readiness event, so the poller wakes the parked strand and its
+    /// `sock_read` answers `""`. The reader then closes the descriptor itself,
+    /// on its own strand, where it has always been safe to.
+    ///
+    /// A server that has to put a limit on how long it will hold a connection,
+    /// or drop every one of them on the way down, now has something to call.
+    ///
+    /// # Safety
+    /// `fd` must be an open socket.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_sock_shutdown(fd: i64) -> i64 {
+        // SHUT_RDWR is 2 on every Unix and on Windows, one of the few socket
+        // constants that never got renumbered.
+        shutdown(fd as i32, 2) as i64
     }
 
     /// # Safety

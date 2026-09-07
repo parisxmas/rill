@@ -755,6 +755,8 @@ fn main() =
   full and a receiver only blocks once it is empty.
 - `select` waits on several channels at once and runs whichever arm becomes
   ready first; a `default` arm turns it into a non-blocking poll.
+- `close(ch)` says nothing more will be sent, and wakes everything parked on
+  the channel at once; `closed(ch)` asks whether it has been.
 - The program exits when `main` returns; strands still running are abandoned,
   as in Go.
 - A program where every strand is blocked reports a deadlock and aborts.
@@ -780,6 +782,67 @@ fn poll(ch) =
 Arms are tried in order, so an earlier one wins a tie. Like `match`, `select`
 needs an indented block, so it goes in a body, a statement or a binding rather
 than inside parentheses.
+
+### Stopping
+
+A strand parked on `recv` is parked until a value arrives. So tearing down
+whatever was going to send one leaves the strand exactly where it is, holding
+its stack, for as long as the program runs — and a server that has a strand per
+connection has as many of those as it has had connections. `close` is what
+there was no way to say.
+
+```
+fn produce(ch, n) =
+  if n <= 0 then close(ch)
+  else
+    send(ch, n)
+    produce(ch, n - 1)
+
+fn drain(ch, acc) = match recv_opt(ch)
+  None -> acc
+  Some(v) -> drain(ch, acc + v)
+```
+
+Closing is a **broadcast**, which is the thing sending a value cannot be: it
+reaches everyone parked on the channel at once, however many that is, and a
+program tearing down does not have to know the number. Closing twice is not an
+error, so a teardown that runs from two directions does not have to arrange
+which of them gets there first. What was already buffered survives, so a
+producer may close the moment it has nothing more to say and the consumer still
+sees everything in flight.
+
+`recv_opt(ch)` is `recv` for a channel that ends: `Some(v)` while there is
+something, `None` once it is closed and empty. `recv` itself still answers the
+element type, and that is a decision rather than an oversight — most channels
+never end, and making every one of them answer an `Option` would put a `match`
+in front of every receive in the language to pay for the few that do. A `recv`
+on a closed channel ends the program and says to use `recv_opt`, which is the
+same answer an index outside a buffer gets and for the same reason: there is
+no value to hand back that would not be a lie.
+
+Sending into a closed channel ends the program too. The rule that avoids it is
+the one Go arrived at — **whoever sends is whoever closes** — and where a
+strand really is parked on a send that nobody will ever take, `select` is how
+it is told:
+
+```
+fn push(out, stop, n) =
+  r = select
+    send(out, n) -> push(out, stop, n + 1)
+    recv(stop) -> "gave up"
+  r
+```
+
+A closed channel makes its receive arm ready, so `close(stop)` reaches that
+strand whatever the other arm is doing. The arm binds nothing, and that is what
+makes it work: there is no value for a closed channel to produce. An arm
+written `x = recv(stop) ->` would have to produce one, and ends the program
+saying so.
+
+`chan_wait` and `chan_taken` are the two builtins `recv_opt` is written from,
+in the way `map_get` is written from `map_find` and `map_val_at`. They are
+there for a receive of a shape the prelude did not think of; a program that
+wants `recv_opt` should write `recv_opt`.
 
 ### Waiting on the clock
 
@@ -862,11 +925,15 @@ replaces the prelude's.
 **Maps**: `map_get` `map_or` `map_has` `map_keys` `map_values` `map_items`
 `map_of`
 
+**Channels**: `recv_opt(ch) -> Option(a)`
+
 **Numbers**: `max` `min` `abs`
 
 **Strings**: `join` `repeat` `split` `lines` `trim` `contains` `starts_with`
 
-**IO**: `args()` (program name included), `read_file(path) -> Result(Str, Str)`
+**IO**: `args()` (program name included), `read_file(path) -> Result(Str, Str)`,
+`open_file(path, mode) -> Result(Int, Str)`, `dir_names(path) -> List(Str)`,
+`replace_file(path, text) -> Result(Int, Str)`
 
 ---
 
@@ -904,6 +971,7 @@ fn serve(server) =
 | `sock_nodelay(fd) -> Int` | Nagle off; 1 if the kernel took it |
 | `sock_buffered(fd)` | give the socket a 64 KB write buffer: `sock_write` queues, and the queue goes out when it fills, on `sock_flush`, when the strand waits, and on `sock_close` |
 | `sock_flush(fd) -> Int` | write out what is queued; how many bytes went, or -1 |
+| `sock_shutdown(fd) -> Int` | end the connection without closing the descriptor — the only way one strand gets another out of a read |
 | `sock_close(fd)` | |
 
 The prelude wraps the three that can fail: `listen_on`, `accept_on` and
@@ -925,6 +993,16 @@ fn greet(conn) =
 
 Underneath it the descriptor and a deadline are armed together and whichever
 arrives first wakes the strand; a peek at the socket then says which it was.
+
+`sock_shutdown` is the other half of that, for the case a deadline cannot
+answer: one strand deciding that another strand's connection is over. Closing
+the descriptor is what does not work, for the reason above. Shutting down acts
+on the *connection* rather than on the descriptor, so the number stays this
+program's until it closes it, and the socket becomes readable-at-end-of-file at
+once — which is a readiness event, so the poller wakes the parked strand and
+its `sock_read` answers `""`. The reader closes the descriptor itself, on its
+own strand, where that has always been safe. A server dropping every connection
+on the way down now has something to call.
 
 `sock_nodelay` is for a server that sends small messages on a clock. Nagle's
 algorithm holds a small segment until the previous one has been acknowledged,
@@ -961,7 +1039,92 @@ That server outruns Go's `net/http` on the same one-route service: 214k req/s
 against 198k with keep-alive, in a 52 KB binary and 7× less memory
 (`benchmarks/http/run.sh`).
 
-## 10. Calling C
+## 10. Files
+
+`read_file` and `write_file` are for a file a program wants all of at once.
+This section is for the other kind: a file too big to hold, or one being
+appended to for as long as the program runs — a log, a journal, a store whose
+readers are at different places in it.
+
+A file is a descriptor, the same `Int` a socket is, and for the same reason:
+the two families are then written alike, and a program holding both is not
+holding two ideas of what an open thing is.
+
+```
+fn append(path, record) =
+  fd = file_open(path, "a")
+  at = file_size(fd)
+  file_write(fd, record)
+  file_sync(fd)
+  file_close(fd)
+  at
+```
+
+| | |
+|---|---|
+| `file_open(path, mode) -> Int` | a descriptor, or -1. `"r"` `"w"` `"a"`, and each with `+` for reading as well: `"w"` truncates or creates, `"a"` appends and creates |
+| `file_read(fd, n) -> Str` | up to `n` bytes from where the descriptor is; `""` at the end |
+| `file_pread(fd, off, n) -> Str` | up to `n` bytes from `off`, leaving the descriptor where it was |
+| `file_write(fd, s) -> Int` | writes all of it; how many bytes went, or -1 |
+| `file_seek(fd, off) -> Int` | move to an absolute offset |
+| `file_pos(fd) -> Int` `file_size(fd) -> Int` | where it is, and how big the file is |
+| `file_truncate(fd, n) -> Bool` | cut it to `n` bytes, or grow it with zeros |
+| `file_sync(fd) -> Bool` | wait until what has been written is on the disk |
+| `file_close(fd)` | |
+| `file_remove(path) -> Bool` `file_rename(from, to) -> Bool` `file_exists(path) -> Bool` | |
+| `dir_make(path) -> Bool` `dir_list(path) -> Str` `dir_sync(path) -> Bool` | a directory: make one, its names one to a line, and make those names durable |
+
+The prelude has `open_file`, which is `file_open` as a `Result` the way
+`listen_on` is `tcp_listen` as one; `dir_names`, which is `dir_list` as a
+list; and `replace_file`, which is the four steps below written once.
+
+**`file_pread` is what lets one file answer several readers.** A consumer
+reading a log from where it left off does not move the descriptor, so it does
+not disturb another consumer at a different place in the file, or the producer
+appending to the end of it. A program that reads with `file_read` is a program
+whose readers have to take turns.
+
+**A write that has returned is not on the disk.** It is in the operating
+system's cache, and a machine that loses power between the two loses it.
+`file_sync` is the wait for the disk to say it has the bytes, and it is the
+only file call slow enough — a millisecond on a good drive, ten on a bad one —
+to be worth thinking about. On a Mac it is `F_FULLFSYNC` rather than `fsync`,
+because `fsync` there hands the bytes to the drive and returns without waiting
+for the drive to keep them, which is fast and is not durability.
+
+**A sync does not hold the worker.** This is the one place in the section
+where the concurrency model shows through. Every other file call is a syscall
+that returns; a sync hands the work to a helper thread and parks the strand on
+a pipe, which is the same manoeuvre a strand waiting on a socket makes and
+goes through the same poller. The worker is free from the moment the request
+is handed over. A strand computing beside a strand syncing takes about as long
+as it takes on its own, which is what `a_sync_does_not_hold_the_worker`
+measures. Before
+the scheduler exists — a program that neither spawns nor waits runs `main` on
+the process stack — the sync is simply done where it stands, because there is
+no worker to spare and nothing to be an improvement on.
+
+**Syncing a file does not make its name durable.** Creating a file and
+renaming one both change the *directory*, and that change is cached like any
+other: a program that creates a file, syncs it, and loses power can come back
+to a directory that has never heard of it. `dir_sync` is the call that closes
+that gap. It is separate so that a program pays for it after a create or a
+rename rather than after every write.
+
+Those two together are how a file is replaced without a moment in which it is
+neither the old one nor the new one — write a temporary, sync it, rename it
+over, sync the directory. A rename on a Unix filesystem is atomic, so a reader
+sees one file or the other and never half of either. `replace_file` in the
+prelude is those four steps; `examples/files.rill` is the rest of this
+section.
+
+Nothing here buffers. A write is a write, so a program appending a hundred
+small records makes a hundred syscalls; build the bytes in a `StrBuf` and
+write once, which is what the language would have you do anyway.
+
+---
+
+## 11. Calling C
 
 An `extern` declaration names a C symbol and its types. The optional string is
 a library to link with; leave it out for anything already in the C runtime.
@@ -1236,7 +1399,7 @@ spelling for the browser. A C name that wasi genuinely lacks — `getpid`,
 declaration whose width disagrees with the C is one too rather than a stub that
 traps mid-run.
 
-## 11. Built-in functions
+## 12. Built-in functions
 
 | | |
 |---|---|
@@ -1245,11 +1408,12 @@ traps mid-run.
 | `int_to_str` `float_to_str` `bool_to_str` `str_to_int` | conversions |
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
 | `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_find_from(s, needle, from)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage. `str_find_from` starts partway along, so a long line can be walked field by field without slicing off the part already read; a start outside the string is clamped |
-| `channel()` `send(ch, v)` `recv(ch)` | channels |
+| `channel()` `send(ch, v)` `recv(ch)` `close(ch)` `closed(ch)` | channels; `close` wakes everything parked on one, and the prelude's `recv_opt` is written from `chan_wait` and `chan_taken` — see §7 |
 | `map_new()` `m[k] = v` (or `map_set`) `map_len` `map_del` `map_clear` | hash tables; `#m` is `map_len`, and the prelude's `map_get`, `map_or`, `map_has`, `map_keys`, `map_values` and `map_items` are written on top of these |
 | `map_find(m, k)` `map_next(m, i)` `map_key_at(m, i)` `map_val_at(m, i)` | the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |
+| `file_open` `file_read` `file_pread` `file_write` `file_seek` `file_pos` `file_size` `file_truncate` `file_sync` `file_close` `file_remove` `file_rename` `file_exists` `dir_make` `dir_list` `dir_sync` | a file as a descriptor, for one too big to hold or still being appended to; see §10 |
 | `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `strbuf_clear(b)` `#b` | building a string a piece at a time; `strbuf_clear` empties one and keeps its room |
 | `to_cstr` `from_cstr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |
@@ -1262,7 +1426,7 @@ traps mid-run.
 
 ---
 
-## 12. The toolchain
+## 13. The toolchain
 
 ```sh
 rill build main.rill -o main    # compile (LLVM -O3, stripped)
@@ -1291,7 +1455,7 @@ Neovim, Helix and Emacs need to start it.
 
 ---
 
-## 13. What Rill deliberately does not have
+## 14. What Rill deliberately does not have
 
 - **Mutation.** No mutable bindings, no mutable fields. State is threaded
   through arguments or channels. The exceptions are the two kinds of storage:

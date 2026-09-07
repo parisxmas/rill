@@ -1,0 +1,68 @@
+# Stopping: how a strand that is waiting is told there is nothing to wait for.
+#
+# A strand parked on `recv` is parked until a value arrives, so tearing down
+# whatever was going to send one used to leave the strand where it was, holding
+# its stack, for as long as the program ran. `close` is the answer, and it is a
+# broadcast rather than a value: it reaches everyone parked on the channel at
+# once, however many there are.
+fn main() =
+  # A producer that runs out. It closes when it has nothing more to say, and
+  # the consumer reads until there is nothing more to read. What was already
+  # buffered survives the close, so closing early loses nothing.
+  work = channel(4)
+  spawn produce(work, 5)
+  println("sum of everything sent: " + int_to_str(drain(work, 0)))
+
+  # A worker that is waiting on two things at once. Closing `stop` makes the
+  # arm watching it ready, whatever the other arm is doing — which is how a
+  # strand parked on a send nobody will ever take is told to give up.
+  out = channel()
+  stop = channel()
+  said = channel()
+  spawn push(out, stop, said, 0)
+  sleep_ms(20)
+  close(stop)
+  println(recv(said))
+
+  # And one close for many listeners. There is no number to know here: every
+  # strand watching the channel wakes, and a program tearing down does not
+  # have to count what it is tearing down.
+  quit = channel()
+  back = channel()
+  watchers(quit, back, 4)
+  sleep_ms(20)
+  close(quit)
+  println("woken by one close: " + int_to_str(total(back, 4, 0)))
+
+fn produce(ch, n) =
+  if n <= 0 then close(ch)
+  else
+    send(ch, n)
+    produce(ch, n - 1)
+
+# `recv_opt` is `recv` for a channel that ends: `Some` while there is
+# something, `None` once it is closed and empty. `recv` itself still answers
+# the element type, because most channels never end and a `match` in front of
+# every receive would be a high price for the few that do.
+fn drain(ch, acc) = match recv_opt(ch)
+  None -> acc
+  Some(v) -> drain(ch, acc + v)
+
+fn push(out, stop, said, n) =
+  r = select
+    send(out, n) -> push(out, stop, said, n + 1)
+    recv(stop) -> send(said, "gave up after " + int_to_str(n) + " sends nobody took")
+  r
+
+fn watchers(quit, back, n) =
+  if n <= 0 then 0
+  else
+    spawn wait_for_quit(quit, back)
+    watchers(quit, back, n - 1)
+
+fn wait_for_quit(quit, back) =
+  r = select
+    recv(quit) -> 1
+  send(back, r)
+
+fn total(ch, n, acc) = if n <= 0 then acc else total(ch, n - 1, acc + recv(ch))

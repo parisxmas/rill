@@ -40,12 +40,18 @@ fn main() =
   frees memory the moment it dies — deterministic, no pauses.
 - **Go's concurrency model.** `spawn` and typed channels over a green-thread
   scheduler — one lightweight thread is a **strand**; 100,000 strands cost ~53 MB and start in microseconds. Build
-  with `--parallel` and set `RILL_THREADS` to spread them across cores.
+  with `--parallel` and set `RILL_THREADS` to spread them across cores. `close(ch)`
+  is how a program stops: one broadcast wakes everything parked on the channel,
+  and `sock_shutdown` does the same for a strand parked on a socket read.
 - **Native code via LLVM -O3.** Generics are monomorphized, so nothing is boxed
   and trait dispatch is resolved at compile time. Hello world is 33 KB.
 - **Enough IO to write servers.** TCP sockets that fit the concurrency model: A strand waiting on a
   socket parks and the scheduler polls the OS, so one strand per connection
   costs nothing while it waits.
+- **Files that outlive a read.** A file is a descriptor like a socket, with
+  reads at an offset so several readers share one open file, and a `file_sync`
+  that hands the wait to a helper thread and parks the strand — so the worker
+  keeps running everything else while the disk takes its millisecond.
 - **Calls C directly.** `extern "m" fn sqrt(x: Float) -> Float` and it links,
   with an opaque `Ptr` type and explicit string bridging.
 - **One canonical syntax.** `rill fmt` gives every program exactly one spelling,

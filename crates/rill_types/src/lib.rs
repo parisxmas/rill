@@ -298,6 +298,13 @@ pub enum TK {
     ChanSend { ch: Box<TExpr>, val: Box<TExpr> },
     /// `recv(ch)` — receives an owned value.
     ChanRecv { ch: Box<TExpr> },
+    /// The channel calls that take a channel and answer something which is not
+    /// its element type: `close`, `closed` and `chan_wait`.
+    ChanOp { ch: Box<TExpr>, op: ChanOp },
+    /// `chan_taken(ch)` — the value the `chan_wait` before it took. Typed like
+    /// `recv` because it hands back the same thing, and lowered like it for
+    /// the same reason: two words to be unpacked into whatever the element is.
+    ChanTaken { ch: Box<TExpr> },
     /// `buf_f32(n)` and friends: a counted buffer of `n` elements.
     BufNew { width: CTy, count: Box<TExpr> },
     /// Reading and writing one element, bounds-checked.
@@ -348,6 +355,18 @@ pub enum TK {
     Match { scrutinee: Box<TExpr>, arms: Vec<TArm> },
     Block(Vec<TStmt>),
     Lambda { params: Vec<(String, Ty)>, captures: Vec<(String, Ty)>, body: Box<TExpr> },
+}
+
+/// Which of the three a `TK::ChanOp` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChanOp {
+    /// `close(ch)` — nothing more may be sent, and everything parked wakes.
+    Close,
+    /// `closed(ch)` — whether it has been.
+    Closed,
+    /// `chan_wait(ch)` — receive into the strand's slot, false once the
+    /// channel is closed and drained.
+    Wait,
 }
 
 #[derive(Debug)]
@@ -1668,6 +1687,8 @@ impl Checker {
                 self.zonk_expr(val, genmap, defaults);
             }
             TK::ChanRecv { ch } => self.zonk_expr(ch, genmap, defaults),
+            TK::ChanOp { ch, .. } => self.zonk_expr(ch, genmap, defaults),
+            TK::ChanTaken { ch } => self.zonk_expr(ch, genmap, defaults),
             TK::Spawn { captures, body } => {
                 for (_, t) in captures.iter_mut() {
                     *t = self.zonk(t, genmap, defaults);
@@ -2721,6 +2742,32 @@ impl Checker {
             self.unify(&ch.ty, &Ty::Chan(Box::new(elem.clone())), line, "`recv`")?;
             return Ok(TExpr { ty: elem, line, kind: TK::ChanRecv { ch: Box::new(ch) } });
         }
+        if name == "close" || name == "closed" || name == "chan_wait" {
+            if args.len() != 1 {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{name}` takes exactly one channel"),
+                ));
+            }
+            let ch = self.infer(&args[0], env)?;
+            let elem = self.fresh();
+            self.unify(&ch.ty, &Ty::Chan(Box::new(elem)), line, &format!("`{name}`"))?;
+            let (op, ty) = match name {
+                "close" => (ChanOp::Close, Ty::Unit),
+                "closed" => (ChanOp::Closed, Ty::Bool),
+                _ => (ChanOp::Wait, Ty::Bool),
+            };
+            return Ok(TExpr { ty, line, kind: TK::ChanOp { ch: Box::new(ch), op } });
+        }
+        if name == "chan_taken" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`chan_taken` takes exactly one channel"));
+            }
+            let ch = self.infer(&args[0], env)?;
+            let elem = self.fresh();
+            self.unify(&ch.ty, &Ty::Chan(Box::new(elem.clone())), line, "`chan_taken`")?;
+            return Ok(TExpr { ty: elem, line, kind: TK::ChanTaken { ch: Box::new(ch) } });
+        }
         if name == "show" {
             if args.len() != 1 {
                 return Err(TypeError::new(line, "`show` takes exactly one argument"));
@@ -2871,6 +2918,41 @@ impl Checker {
             "sock_flush" => Some(("rill_sock_flush", vec![Ty::Int], Ty::Int)),
             "sock_write" => Some(("rill_sock_write", vec![Ty::Int, Ty::Str], Ty::Int)),
             "sock_close" => Some(("rill_sock_close", vec![Ty::Int], Ty::Unit)),
+            // Ends a connection without closing the descriptor, which is the
+            // only way one strand gets another out of a read: the socket
+            // becomes readable-at-end-of-file at once, so the poller wakes
+            // whoever was parked on it and their `sock_read` answers "".
+            "sock_shutdown" => Some(("rill_sock_shutdown", vec![Ty::Int], Ty::Int)),
+            // Files, as descriptors — the same `Int` a socket is, so that a
+            // program holding both is not holding two ideas of what an open
+            // thing is. `read_file` and `write_file` stay what they were, for
+            // a file a program wants all of at once; these are for the other
+            // kind, a file too big to hold or one being appended to for as
+            // long as the program runs.
+            "file_open" => Some(("rill_file_open", vec![Ty::Str, Ty::Str], Ty::Int)),
+            "file_read" => Some(("rill_file_read", vec![Ty::Int, Ty::Int], Ty::Str)),
+            // Reads at an offset without moving the descriptor, which is what
+            // lets one open file answer readers that are at different places
+            // in it while something else appends to the end.
+            "file_pread" => Some(("rill_file_pread", vec![Ty::Int, Ty::Int, Ty::Int], Ty::Str)),
+            "file_write" => Some(("rill_file_write", vec![Ty::Int, Ty::Str], Ty::Int)),
+            "file_seek" => Some(("rill_file_seek", vec![Ty::Int, Ty::Int], Ty::Int)),
+            "file_pos" => Some(("rill_file_pos", vec![Ty::Int], Ty::Int)),
+            "file_size" => Some(("rill_file_size", vec![Ty::Int], Ty::Int)),
+            "file_truncate" => Some(("rill_file_truncate", vec![Ty::Int, Ty::Int], Ty::Bool)),
+            // The one file call slow enough that a worker must not stand
+            // still for it: the strand parks and a helper thread does the
+            // waiting, exactly as a strand waiting on a socket parks.
+            "file_sync" => Some(("rill_file_sync", vec![Ty::Int], Ty::Bool)),
+            "file_close" => Some(("rill_file_close", vec![Ty::Int], Ty::Unit)),
+            "file_remove" => Some(("rill_file_remove", vec![Ty::Str], Ty::Bool)),
+            "file_rename" => Some(("rill_file_rename", vec![Ty::Str, Ty::Str], Ty::Bool)),
+            "file_exists" => Some(("rill_file_exists", vec![Ty::Str], Ty::Bool)),
+            "dir_make" => Some(("rill_dir_make", vec![Ty::Str], Ty::Bool)),
+            "dir_list" => Some(("rill_dir_list", vec![Ty::Str], Ty::Str)),
+            // What makes a created or renamed file's *name* durable, which
+            // syncing the file itself does not.
+            "dir_sync" => Some(("rill_dir_sync", vec![Ty::Str], Ty::Bool)),
             _ => None,
         };
         if let Some((rt, param_tys, ret_ty)) = simple_builtin {
@@ -3792,6 +3874,8 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(val);
         }
         TK::ChanRecv { ch }
+        | TK::ChanOp { ch, .. }
+        | TK::ChanTaken { ch }
         | TK::BufLen { buf: ch }
         | TK::Unique { val: ch }
         | TK::BufPtr { buf: ch }
@@ -3900,6 +3984,10 @@ fn is_builtin_fn(name: &str) -> bool {
             | "channel"
             | "send"
             | "recv"
+            | "close"
+            | "closed"
+            | "chan_wait"
+            | "chan_taken"
             | "strbuf"
             | "strbuf_add"
             | "strbuf_byte"
@@ -4000,6 +4088,23 @@ fn is_builtin_fn(name: &str) -> bool {
             | "sock_flush"
             | "sock_write"
             | "sock_close"
+            | "sock_shutdown"
+            | "file_open"
+            | "file_read"
+            | "file_pread"
+            | "file_write"
+            | "file_seek"
+            | "file_pos"
+            | "file_size"
+            | "file_truncate"
+            | "file_sync"
+            | "file_close"
+            | "file_remove"
+            | "file_rename"
+            | "file_exists"
+            | "dir_make"
+            | "dir_list"
+            | "dir_sync"
     )
 }
 

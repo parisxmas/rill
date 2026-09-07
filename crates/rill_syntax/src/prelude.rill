@@ -340,6 +340,65 @@ fn read_file(path) =
   s = read_file_raw(path)
   if io_ok() then Ok(s) else Err("cannot read " + path)
 
+# The one file builtin that can fail before it has done anything, wrapped the
+# way `listen_on` wraps `tcp_listen`: a descriptor is a number and -1 is not a
+# descriptor, so the difference is worth saying in the type.
+fn open_file(path, mode) =
+  fd = file_open(path, mode)
+  if fd < 0 then Err("cannot open " + path + " for `" + mode + "`") else Ok(fd)
+
+# What is in a directory, as a list rather than as the newline-separated text
+# `dir_list` hands back. Empty for a directory that is not there, which
+# `io_ok()` tells apart from one that is there and empty.
+fn dir_names(path) =
+  raw = dir_list(path)
+  if str_len(raw) == 0 then Nil else without_trailing_blank(lines(raw))
+
+# Every name `dir_list` writes has a newline after it, so splitting on lines
+# leaves an empty one at the end that is not a name.
+fn without_trailing_blank(ls) = match ls
+  Nil -> Nil
+  Cons(x, Nil) -> if str_len(x) == 0 then Nil else Cons(x, Nil)
+  Cons(x, rest) -> Cons(x, without_trailing_blank(rest))
+
+# Replaces a file without a moment in which it is neither the old one nor the
+# new one: the bytes go to a temporary name, are made durable there, and are
+# then moved over the real name in one step the filesystem cannot half-do.
+# The directory is synced last, because until it is, the *name* is only in a
+# cache however durable the bytes are.
+fn replace_file(path, text) =
+  tmp = path + ".new"
+  fd = file_open(tmp, "w")
+  if fd < 0 then Err("cannot write " + tmp)
+  else
+    wrote = file_write(fd, text)
+    ok = file_sync(fd)
+    file_close(fd)
+    if wrote < str_len(text) || !ok then Err("cannot write " + tmp)
+    else if !file_rename(tmp, path) then Err("cannot rename " + tmp)
+    else
+      dir_sync(dir_of(path))
+      Ok(0)
+
+# The directory a path is in, which is what has to be synced for the path
+# itself to survive a power cut. A path with no slash in it is in this one.
+fn dir_of(path) = dir_upto(path, str_len(path) - 1)
+
+fn dir_upto(path, i) =
+  if i < 0 then "." else if str_get(path, i) == 47 then if i == 0 then "/" else path[:i] else dir_upto(path, i - 1)
+
+# -- channels ----------------------------------------------------------------
+
+# `recv` for a channel that ends. `recv` itself keeps answering the element
+# type, because most channels never end — a worker pool, a pipeline, a ticker
+# — and making every one of them answer an `Option` would put a `match` in
+# front of every receive in the language to pay for the few that need one.
+#
+# Buffered values survive the close and come out first, so a producer may close
+# the moment it has nothing more to say and the consumer still sees everything
+# that was in flight.
+fn recv_opt(ch) = if chan_wait(ch) then Some(chan_taken(ch)) else None
+
 # -- sockets -----------------------------------------------------------------
 
 fn listen_on(port) =

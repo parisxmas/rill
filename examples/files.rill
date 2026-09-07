@@ -1,0 +1,78 @@
+# Files that are too big to hold, or that are still being written to.
+#
+# `read_file` and `write_file` are for a file a program wants all of at once.
+# This is the other kind: a descriptor, opened once and used until it is
+# closed, which is what a log or a journal or a store with several readers in
+# it needs. A descriptor here is the same `Int` a socket is, so a program that
+# has both is not holding two ideas of what an open thing is.
+fn main() =
+  dir = "/tmp/rill_files_example"
+  dir_make(dir)
+  path = dir + "/journal"
+  # Start from an empty directory, so that what the listing below says is only
+  # what this program put there. `dir_names` is `dir_list` as a list.
+  clear(dir, dir_names(dir))
+
+  # "a" appends: every write goes to the end of the file, which is a property
+  # of the descriptor and not of remembering to seek.
+  log = file_open(path, "a")
+  offsets = write_records(log, Cons("alpha", Cons("beta", Cons("gamma", Nil))), Nil)
+  println("record offsets: " + show(reverse(offsets)))
+
+  # Written is not durable. `file_sync` waits for the disk to say it has the
+  # bytes — the one file call slow enough that the strand parks and a helper
+  # thread does the waiting, so the worker is free to run everything else.
+  println("synced: " + bool_to_str(file_sync(log)))
+  file_close(log)
+
+  # `file_pread` reads at an offset without moving the descriptor, so several
+  # readers at different places in one file do not disturb each other — or the
+  # writer still appending to the end of it.
+  reader = file_open(path, "r")
+  println("second record: " + read_at(reader, 6))
+  println("first record:  " + read_at(reader, 0))
+  println("whole file is " + int_to_str(file_size(reader)) + " bytes")
+  file_close(reader)
+
+  # A directory holds names, and a name is cached like anything else: syncing
+  # the file says the bytes are there and does not say the file is. This is
+  # the call that closes that gap, and it goes after a create or a rename
+  # rather than after every write.
+  dir_sync(dir)
+  println("in " + dir + ": " + show(dir_names(dir)))
+
+  # Replacing a file without a moment in which it is neither the old one nor
+  # the new one: write a temporary, sync it, rename it over. The prelude has
+  # the three steps as one.
+  match replace_file(dir + "/manifest", "generation 1\n")
+    Err(e) -> println(e)
+    Ok(_) -> println("manifest: " + show(unwrap_or(res_ok(read_file(dir + "/manifest")), "")))
+
+  file_remove(path)
+  file_remove(dir + "/manifest")
+
+# Each record is a length byte and its bytes, so a reader can find where the
+# next one starts without looking for a delimiter inside the data.
+fn write_records(fd, records, offsets) = match records
+  Nil -> offsets
+  Cons(r, rest) ->
+    at = file_size(fd)
+    b = strbuf()
+    b += str_len(r)
+    b += r
+    file_write(fd, strbuf_str(b))
+    write_records(fd, rest, Cons(at, offsets))
+
+fn clear(dir, names) = match names
+  Nil -> 0
+  Cons(n, rest) ->
+    file_remove(dir + "/" + n)
+    clear(dir, rest)
+
+fn read_at(fd, off) =
+  n = str_get(file_pread(fd, off, 1), 0)
+  file_pread(fd, off + 1, n)
+
+fn res_ok(r) = match r
+  Ok(v) -> Some(v)
+  Err(_) -> None

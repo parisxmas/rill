@@ -1886,6 +1886,146 @@ fn multi_file_program_with_imports() {
 }
 
 #[test]
+fn closing_a_channel_wakes_everything_parked_on_it() {
+    assert_eq!(
+        compile_and_run("closing.rill"),
+        "sum of everything sent: 15\n\
+         gave up after 0 sends nobody took\n\
+         woken by one close: 4\n"
+    );
+}
+
+/// Buffered values are not lost by closing early, and a `recv` that was
+/// already parked when the close happened comes back rather than staying.
+#[test]
+fn a_close_keeps_what_is_buffered_and_frees_what_is_waiting() {
+    let out = run_source(
+        "chan_close",
+        "fn waiter(ch, done) =\n  \
+           r = match recv_opt(ch)\n    \
+             None -> \"woke on close\"\n    \
+             Some(v) -> \"got \" + int_to_str(v)\n  \
+           send(done, r)\n\
+         \n\
+         fn main() =\n  \
+           b = channel(3)\n  \
+           send(b, 1)\n  \
+           send(b, 2)\n  \
+           close(b)\n  \
+           println(show(recv_opt(b)) + \" \" + show(recv_opt(b)) + \" \" + show(recv_opt(b)))\n  \
+           println(bool_to_str(closed(b)))\n  \
+           idle = channel()\n  \
+           done = channel()\n  \
+           spawn waiter(idle, done)\n  \
+           sleep_ms(20)\n  \
+           close(idle)\n  \
+           println(recv(done))\n  \
+           close(idle)\n  \
+           println(\"closing twice is not an error\")\n",
+    );
+    assert_eq!(
+        out,
+        "Some(1) Some(2) None\n\
+         true\n\
+         woke on close\n\
+         closing twice is not an error\n"
+    );
+}
+
+/// A strand parked on a read is parked in the poller, so closing its socket
+/// from another strand does not reach it. Shutting the connection down does.
+#[test]
+fn shutdown_gets_another_strand_out_of_a_read() {
+    let out = run_source(
+        "sock_shutdown",
+        "fn reader(conn, report) =\n  \
+           msg = sock_read(conn)\n  \
+           send(report, if str_len(msg) == 0 then \"reader woke, peer gone\" else \"read: \" + msg)\n  \
+           sock_close(conn)\n\
+         \n\
+         fn serve(server, report) =\n  \
+           conn = tcp_accept(server)\n  \
+           spawn reader(conn, report)\n  \
+           sleep_ms(30)\n  \
+           println(\"shutdown said: \" + int_to_str(sock_shutdown(conn)))\n\
+         \n\
+         fn quiet_client(port) = match connect_to(\"127.0.0.1\", port)\n  \
+           Err(e) -> println(e)\n  \
+           Ok(fd) ->\n    \
+             sleep_ms(400)\n    \
+             sock_close(fd)\n\
+         \n\
+         fn main() = match listen_on(0)\n  \
+           Err(e) -> println(e)\n  \
+           Ok(server) ->\n    \
+             port = sock_port(server)\n    \
+             report = channel()\n    \
+             spawn serve(server, report)\n    \
+             spawn quiet_client(port)\n    \
+             println(recv(report))\n    \
+             sock_close(server)\n",
+    );
+    assert_eq!(out, "shutdown said: 0\nreader woke, peer gone\n");
+}
+
+#[test]
+fn a_file_is_a_descriptor_read_written_and_made_durable() {
+    assert_eq!(
+        compile_and_run("files.rill"),
+        "record offsets: Cons(0, Cons(6, Cons(11, Nil)))\n\
+         synced: true\n\
+         second record: beta\n\
+         first record:  alpha\n\
+         whole file is 17 bytes\n\
+         in /tmp/rill_files_example: Cons(journal, Nil)\n\
+         manifest: generation 1\n\
+         \n"
+    );
+}
+
+/// The point of `file_sync` is not that it is fast, it is that the worker is
+/// free while it happens. A strand computing beside a strand syncing has to
+/// take about as long as it takes on its own; if the sync held the worker it
+/// would have to wait for every one of them.
+#[test]
+fn a_sync_does_not_hold_the_worker() {
+    let out = run_source(
+        "file_sync_parks",
+        "fn spin(n, acc) = if n <= 0 then acc else spin(n - 1, acc + n)\n\
+         \n\
+         fn syncer(path, n, done) =\n  \
+           fd = file_open(path, \"w\")\n  \
+           syncs(fd, n)\n  \
+           file_close(fd)\n  \
+           file_remove(path)\n  \
+           send(done, 1)\n\
+         \n\
+         fn syncs(fd, n) =\n  \
+           if n <= 0 then 0\n  \
+           else\n    \
+             file_write(fd, \"x\")\n    \
+             file_sync(fd)\n    \
+             syncs(fd, n - 1)\n\
+         \n\
+         fn timed(work) =\n  \
+           start = now_nanos()\n  \
+           spin(work, 0)\n  \
+           (now_nanos() - start) / 1000000\n\
+         \n\
+         fn main() =\n  \
+           path = \"/tmp/rill_e2e_sync_parks\"\n  \
+           spin(50000000, 0)\n  \
+           alone = timed(400000000)\n  \
+           done = channel()\n  \
+           spawn syncer(path, 200, done)\n  \
+           beside = timed(400000000)\n  \
+           println(beside < alone * 2)\n  \
+           recv(done)\n",
+    );
+    assert_eq!(out, "true\n");
+}
+
+#[test]
 fn file_io_and_text_processing() {
     assert_eq!(
         compile_and_run("io.rill"),

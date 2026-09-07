@@ -209,6 +209,11 @@ const SOCKET_RT: [&str; 11] = [
     "rill_sock_close",
 ];
 
+/// The two file builtins that wait. Every other file call is a syscall that
+/// returns; these two hand the work to a helper thread and park the strand,
+/// so they need a scheduler in exactly the way a socket does.
+const FILE_WAIT_RT: [&str; 2] = ["rill_file_sync", "rill_dir_sync"];
+
 /// `sleep_ms`, which parks a strand in the same poller a socket would have.
 /// It belongs beside the sockets in every judgement made here: it needs the
 /// scheduler, and wasm cannot run one.
@@ -286,8 +291,14 @@ fn collect_calls(e: &TExpr, out: &mut Vec<usize>, found: &mut bool, methods: &mu
         | TK::ChanNew(_)
         | TK::ChanSend { .. }
         | TK::ChanRecv { .. }
+        | TK::ChanOp { .. }
+        | TK::ChanTaken { .. }
         | TK::Select { .. } => *found = true,
-        TK::Builtin { rt, .. } if SOCKET_RT.contains(rt) || *rt == TIMER_RT => *found = true,
+        TK::Builtin { rt, .. }
+            if SOCKET_RT.contains(rt) || FILE_WAIT_RT.contains(rt) || *rt == TIMER_RT =>
+        {
+            *found = true
+        }
         TK::CallFn { fn_idx, .. } => out.push(*fn_idx),
         TK::FnRef { fn_idx, .. } => out.push(*fn_idx),
         TK::MethodCall { .. } => *methods = true,
@@ -301,10 +312,15 @@ fn collect_calls(e: &TExpr, out: &mut Vec<usize>, found: &mut bool, methods: &mu
 fn find_unsupported(e: &TExpr) -> Option<(usize, &'static str)> {
     let here = match &e.kind {
         TK::Spawn { .. } => Some("spawn"),
-        TK::ChanNew(_) | TK::ChanSend { .. } | TK::ChanRecv { .. } => Some("a channel"),
+        TK::ChanNew(_)
+        | TK::ChanSend { .. }
+        | TK::ChanRecv { .. }
+        | TK::ChanOp { .. }
+        | TK::ChanTaken { .. } => Some("a channel"),
         TK::Select { .. } => Some("select"),
         TK::Builtin { rt, .. } if SOCKET_RT.contains(rt) => Some("a socket"),
         TK::Builtin { rt, .. } if *rt == TIMER_RT => Some("`sleep_ms`"),
+        TK::Builtin { rt, .. } if FILE_WAIT_RT.contains(rt) => Some("`file_sync`"),
         _ => None,
     };
     if let Some(what) = here {
@@ -960,7 +976,11 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(ch);
             f(val);
         }
-        TK::ChanRecv { ch } | TK::BufLen { buf: ch } | TK::BufPtr { buf: ch } => f(ch),
+        TK::ChanRecv { ch }
+        | TK::ChanOp { ch, .. }
+        | TK::ChanTaken { ch }
+        | TK::BufLen { buf: ch }
+        | TK::BufPtr { buf: ch } => f(ch),
         TK::Unique { val } => f(val),
         TK::FieldGet { base, .. } => f(base),
         TK::FieldNamed { .. } => unreachable!("`zonk` names every deferred field"),
@@ -2605,6 +2625,54 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         );
         self.module.add_function("rill_sock_close", void.fn_type(&[i64t.into()], false), None);
 
+        // Files. Descriptors like the sockets above, and declared beside them
+        // for the same reason: the one that waits, `rill_file_sync`, needs the
+        // scheduler exactly as a socket call does.
+        self.module.add_function(
+            "rill_file_open",
+            i64t.fn_type(&[ptrt.into(), ptrt.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_file_read",
+            ptrt.fn_type(&[i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_file_pread",
+            ptrt.fn_type(&[i64t.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_file_write",
+            i64t.fn_type(&[i64t.into(), ptrt.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_file_seek",
+            i64t.fn_type(&[i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_file_pos", i64t.fn_type(&[i64t.into()], false), None);
+        self.module.add_function("rill_file_size", i64t.fn_type(&[i64t.into()], false), None);
+        self.module.add_function(
+            "rill_file_truncate",
+            i8t.fn_type(&[i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_file_sync", i8t.fn_type(&[i64t.into()], false), None);
+        self.module.add_function("rill_file_close", void.fn_type(&[i64t.into()], false), None);
+        self.module.add_function("rill_file_remove", i8t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_file_rename",
+            i8t.fn_type(&[ptrt.into(), ptrt.into()], false),
+            None,
+        );
+        self.module.add_function("rill_file_exists", i8t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_dir_make", i8t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_dir_list", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_dir_sync", i8t.fn_type(&[ptrt.into()], false), None);
+
         // Hash tables. The table is one piece of code for every key and value
         // type; what it cannot know about them it reads out of the vtable it
         // was made with.
@@ -2685,6 +2753,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         );
         self.module.add_function("rill_chan_new", ptrt.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_chan_release", void.fn_type(&[ptrt.into()], false), None);
+        // Closing, and the two halves the prelude's `recv_opt` is written
+        // from. `rill_chan_taken` answers two words like `rill_chan_recv`,
+        // because it hands back the same kind of thing.
+        self.module.add_function("rill_chan_close", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_chan_closed", i8t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_chan_wait", i8t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_chan_taken",
+            words.fn_type(&[ptrt.into()], false),
+            None,
+        );
+        self.module.add_function("rill_sock_shutdown", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function(
             "rill_chan_send",
             void.fn_type(&[ptrt.into(), i64t.into(), i64t.into()], false),
@@ -5657,8 +5737,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// source, so it counts what was actually emitted — a channel in a
     /// function nothing reaches does not drag a scheduler in.
     fn needs_scheduler(&self) -> bool {
-        const WAITERS: [&str; 15] = [
+        const WAITERS: [&str; 20] = [
             "rill_spawn",
+            "rill_chan_close",
+            "rill_chan_wait",
+            "rill_chan_taken",
+            "rill_file_sync",
+            "rill_dir_sync",
             "rill_sleep_ms",
             "rill_sock_wait",
             "rill_chan_new",
@@ -7210,6 +7295,61 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.emit_release(cv, &ch_ty);
                 Ok(Some(out))
             }
+            TK::ChanOp { ch, op } => {
+                let ch_ty = self.concrete(&ch.ty, subst);
+                let cv = self.gen_expr(ch, scope, subst, func)?.expect("value");
+                let rt = match op {
+                    rill_types::ChanOp::Close => "rill_chan_close",
+                    rill_types::ChanOp::Closed => "rill_chan_closed",
+                    rill_types::ChanOp::Wait => "rill_chan_wait",
+                };
+                let f = self.module.get_function(rt).unwrap();
+                let call =
+                    self.builder.build_call(f, &[cv.into()], "chanop").expect("LLVM builder error");
+                self.emit_release(cv, &ch_ty);
+                Ok(match call.try_as_basic_value() {
+                    // `closed` and `chan_wait` answer a byte at the ABI, as
+                    // every bool-returning runtime call does.
+                    inkwell::values::ValueKind::Basic(v) => Some(
+                        self.builder
+                            .build_int_truncate(
+                                v.into_int_value(),
+                                self.ctx.bool_type(),
+                                "b",
+                            )
+                            .expect("LLVM builder error")
+                            .into(),
+                    ),
+                    _ => None,
+                })
+            }
+            TK::ChanTaken { ch } => {
+                let ch_ty = self.concrete(&ch.ty, subst);
+                let elem_ty = self.concrete(&e.ty, subst);
+                let cv = self.gen_expr(ch, scope, subst, func)?.expect("value");
+                let f = self.module.get_function("rill_chan_taken").unwrap();
+                let call = self.builder.build_call(f, &[cv.into()], "taken").expect("builder");
+                let words = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v.into_struct_value(),
+                    _ => unreachable!(),
+                };
+                let a = self
+                    .builder
+                    .build_extract_value(words, 0, "w0")
+                    .expect("LLVM builder error")
+                    .into_int_value();
+                let b = self
+                    .builder
+                    .build_extract_value(words, 1, "w1")
+                    .expect("LLVM builder error")
+                    .into_int_value();
+                let out = self.unpack_words(a, b, &elem_ty);
+                if self.is_flat(&elem_ty) {
+                    self.release_flat_box(a, &elem_ty);
+                }
+                self.emit_release(cv, &ch_ty);
+                Ok(Some(out))
+            }
             TK::Select { arms, default } => {
                 self.gen_select(e, arms, default.as_deref(), scope, subst, func)
             }
@@ -7770,8 +7910,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let mut chans: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
         let mut sends: Vec<Option<(BasicValueEnum<'ctx>, Ty)>> = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
+            // A receive arm that binds is a different case from one that
+            // does not, and the runtime has to be able to tell them apart: a
+            // closed channel makes both ready, and only one of them then has
+            // a value it is expected to produce.
             let (kind, ch_expr, val) = match &arm.op {
-                TSelectOp::Recv { chan, .. } => (0u64, chan, None),
+                TSelectOp::Recv { chan, .. } => {
+                    (if arm.bind.is_some() { 2u64 } else { 0u64 }, chan, None)
+                }
                 TSelectOp::Send { chan, value } => (1u64, chan, Some(value)),
             };
             let ch_ty = self.concrete(&ch_expr.ty, subst);
