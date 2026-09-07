@@ -8,6 +8,15 @@
 //! M2 scope: printing intrinsics and string equality. Later milestones add
 //! the reference-counting allocator (M3) and the green-thread scheduler and
 //! channels (M4).
+//!
+//! Three shapes of host, not two. A hosted target has threads, mapped memory
+//! and sockets; wasm has none of the three and gets stubs instead. A bare
+//! Cortex-M target wants exactly the same stubs for exactly the same reasons —
+//! no OS to ask for a thread, no address space to map, no network — so it
+//! shares them rather than growing a second set, which is why the `wasm` arms
+//! below read `any(target_family = "wasm", target_os = "none")`. Where the two
+//! genuinely differ, they differ by name: `target_os = "none"` has 64-bit
+//! atomics missing from the instruction set, and no `mmap` to fall back on.
 
 #![no_std]
 
@@ -126,7 +135,7 @@ pub unsafe extern "C" fn rill_flush_out() {
 extern "C" fn flush_at_exit() {
     unsafe {
         rill_flush_out();
-        #[cfg(not(target_os = "wasi"))]
+        #[cfg(not(any(target_os = "wasi", target_os = "none")))]
         net::flush_pending_at_exit();
     }
 }
@@ -1076,7 +1085,7 @@ pub unsafe extern "C" fn rill_now_nanos() -> i64 {
 
 /// wasip1 has `clock_time_get`, but nothing that reaches this build uses it:
 /// the wasm target is the browser one, where the host keeps the clock.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 #[no_mangle]
 pub unsafe extern "C" fn rill_now_nanos() -> i64 {
     0
@@ -1149,7 +1158,7 @@ pub unsafe extern "C" fn rill_random_i64() -> i64 {
 /// Under wasm the host holds the entropy, and this build's wasm target is the
 /// browser, where secrets are made with `crypto.getRandomValues` on the other
 /// side of the boundary. Nothing in the valley's wasm asks for this.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 #[no_mangle]
 pub unsafe extern "C" fn rill_random_i64() -> i64 {
     panic!("random_i64 is not available under wasm");
@@ -1171,7 +1180,7 @@ pub unsafe extern "C" fn rill_sleep_ms(ms: i64) {
 /// Refused at compile time on wasm, alongside the sockets and the strands:
 /// there is no scheduler to park in, and a sleep that returned instantly
 /// would be a program that silently runs at the wrong speed.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 #[no_mangle]
 pub unsafe extern "C" fn rill_sleep_ms(_ms: i64) {}
 
@@ -2165,7 +2174,7 @@ unsafe fn rc_inc(p: *mut i64) {
     if rill_mt == 0 {
         *p += 1;
     } else {
-        (*(p as *const core::sync::atomic::AtomicI64))
+        (*(p as *const RcAtomic))
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -2175,7 +2184,7 @@ unsafe fn live_add(delta: i64) {
     if rill_mt == 0 {
         rill_live_allocs += delta;
     } else {
-        (*(&raw const rill_live_allocs as *const core::sync::atomic::AtomicI64))
+        (*(&raw const rill_live_allocs as *const RcAtomic))
             .fetch_add(delta, core::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -2190,7 +2199,7 @@ unsafe fn rc_dec(p: *mut i64) -> i64 {
         *p -= 1;
         *p
     } else {
-        (*(p as *const core::sync::atomic::AtomicI64))
+        (*(p as *const RcAtomic))
             .fetch_sub(1, core::sync::atomic::Ordering::AcqRel)
             - 1
     }
@@ -2480,7 +2489,7 @@ extern "system" {
 /// So `malloc` is not a stand-in for `mmap` here — it is the same thing. The
 /// failure value is the one `mmap` would have given, so the caller's test
 /// still reads.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn mmap(_addr: *mut u8, len: usize, _prot: i32, _flags: i32, _fd: i32, _off: i64) -> *mut u8 {
     let p = malloc(len);
     if p.is_null() { usize::MAX as *mut u8 } else { p }
@@ -2572,22 +2581,22 @@ unsafe fn sched_yield() -> i32 {
 /// lock is held by whoever asked, a thread-local is the only local there is,
 /// and starting a worker fails. Nothing here is ever called — a program that
 /// spawns is refused at compile time — but the scheduler still has to link.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn pthread_mutex_init(_m: *mut PthreadMutex, _attr: *const u8) -> i32 {
     0
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn pthread_mutex_lock(_m: *mut PthreadMutex) -> i32 {
     0
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn pthread_mutex_unlock(_m: *mut PthreadMutex) -> i32 {
     0
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn pthread_create(
     _thread: *mut usize,
     _attr: *const u8,
@@ -2597,23 +2606,23 @@ unsafe fn pthread_create(
     -1
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn pthread_key_create(_key: *mut usize, _destructor: *const u8) -> i32 {
     0
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn pthread_setspecific(_key: usize, _value: *const u8) -> i32 {
     0
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn pthread_getspecific(_key: usize) -> *mut u8 {
     core::ptr::null_mut()
 }
 
 /// There is no other thread to yield to.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn sched_yield() -> i32 {
     0
 }
@@ -2657,7 +2666,7 @@ unsafe fn sleep_nanos(nanos: i64) {
 
 /// Never called: the timer thread is started with the scheduler, and a wasm
 /// build that would reach the scheduler is refused at compile time.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn sleep_nanos(_nanos: i64) {}
 
 #[cfg(unix)]
@@ -2723,7 +2732,7 @@ unsafe fn alloc_stack(usable: usize) -> *mut u8 {
 /// Wasm's call stack is the engine's, not memory this program can address, so
 /// there is no such thing as a second one to run a strand on. Reaching here
 /// means the compile-time refusal was not applied.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn alloc_stack(_usable: usize) -> *mut u8 {
     out(b"rill: strands are not available on wasm\n");
     die();
@@ -2744,7 +2753,7 @@ unsafe fn free_stack(p: *mut u8, _usable: usize) {
     VirtualFree(p, 0, MEM_RELEASE);
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 #[allow(dead_code)]
 unsafe fn free_stack(_p: *mut u8, _usable: usize) {}
 
@@ -3129,7 +3138,7 @@ unsafe extern "C" fn ctx_switch(_old: *mut Ctx, _new: *const Ctx) {
 /// is its own linear memory, which the stack is not in. The copy-on-block
 /// model the scheduler is built around therefore has nothing to copy. Getting
 /// strands onto wasm is asyncify or JSPI, not a port of this function.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe extern "C" fn ctx_switch(_old: *mut Ctx, _new: *const Ctx) {
     out(b"rill: strands are not available on wasm\n");
     die();
@@ -3285,7 +3294,7 @@ unsafe fn make_ready(g: *mut G) {
 /// returns. Callers must have released the scheduler lock.
 unsafe fn block_current() {
     // Nothing a program has written waits on the program while it does.
-    #[cfg(not(target_os = "wasi"))]
+    #[cfg(not(any(target_os = "wasi", target_os = "none")))]
     net::flush_pending();
     let w = me();
     let g = (*w).current;
@@ -4111,17 +4120,17 @@ static STRAY_WAKES: core::sync::atomic::AtomicUsize = core::sync::atomic::Atomic
 
 /// The same silence on wasm, for a different reason: wasip1 has no sockets to
 /// offer and no worker to wake if it had.
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn wake_worker(_w: *mut Worker) {}
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn wake_a_stealer() {}
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn poll_network(_w: *mut Worker, _block: bool) -> i32 {
     0
 }
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 static IO_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_family = "wasm", target_os = "none"))]
 static STRAY_WAKES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(unix)]
@@ -5384,3 +5393,36 @@ mod net {
     }
 
 }
+
+// ---- bare metal -----------------------------------------------------------
+
+/// The reference count is atomic on a host running several workers. ARMv7-M
+/// has no 64-bit atomic instruction to be atomic with, and a Cortex-M build is
+/// single-worker by construction — `rill_mt` is never 1 there — so the arm
+/// that would have synchronized is a plain load and store, and the type it
+/// went through is this one.
+#[cfg(target_os = "none")]
+#[repr(transparent)]
+struct RcAtomic(core::cell::UnsafeCell<i64>);
+
+#[cfg(target_os = "none")]
+impl RcAtomic {
+    #[inline(always)]
+    unsafe fn fetch_add(&self, d: i64, _order: core::sync::atomic::Ordering) -> i64 {
+        let p = self.0.get();
+        let old = *p;
+        *p = old + d;
+        old
+    }
+
+    #[inline(always)]
+    unsafe fn fetch_sub(&self, d: i64, _order: core::sync::atomic::Ordering) -> i64 {
+        let p = self.0.get();
+        let old = *p;
+        *p = old - d;
+        old
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+use core::sync::atomic::AtomicI64 as RcAtomic;
