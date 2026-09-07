@@ -23,6 +23,16 @@
 // offers; the GRID holds one window of that answer and sorts, filters and
 // pages inside it without asking anything. Narrowing a filter is a question
 // for the server; sorting a column is not.
+//
+// Grouping is the other side of that line. Drag a column header onto the
+// panel above the table and the rows fold into groups — and what a group
+// says, its count and what its scores and stock come to, is about every
+// document that matches, not the window. So each level is a question the
+// grid asks `source` below and `source` asks the server: `/rows?group=role`
+// for the top, `/rows?role=eng&group=region` for what is under one group,
+// and `/rows?role=eng&region=eu` for the documents under the last — the same
+// filters the toolbar sends, with the path down the tree added to them. The
+// database does the grouping in one pipeline; nothing here counts anything.
 import { signal, computed, effect, hydrate, html } from "./index.js";
 import { DataGrid } from "./components/grid.js";
 import { Select } from "./components/select.js";
@@ -52,6 +62,10 @@ const filters = {
   limit: at("limit", ""),
 };
 const nudge = signal(0); // the search button, for asking the same thing again
+// What the table is grouped by, outermost first. It is in the URL like the
+// filters, so a reload lands on the same tree — but it is not a filter, and
+// it is not sent with the window below: a window is the flat answer.
+const groupBy = signal((params.get("group") ?? "").split(",").filter(Boolean));
 
 const query = computed(() => {
   const q = new URLSearchParams();
@@ -59,6 +73,13 @@ const query = computed(() => {
     const v = String(s()).trim();
     if (v) q.set(name, v);
   }
+  return q.toString();
+});
+
+// The URL: the filters, and the grouping when there is one.
+const address = computed(() => {
+  const q = new URLSearchParams(query());
+  if (groupBy().length) q.set("group", groupBy().join(","));
   return q.toString();
 });
 
@@ -73,6 +94,7 @@ const windowed = computed(() => {
 
 const seed = JSON.parse(document.getElementById("seed").textContent);
 const result = signal(seed);
+const cost = signal(seed); // the last answer, whichever question it was, for its timings
 const failed = signal("");
 const busy = signal(false);
 let inflight = 0;
@@ -91,6 +113,7 @@ const askFor = (wide) => {
     .then((data) => {
       if (mine !== inflight) return; // a later question has already been asked
       result.set(data);
+      cost.set(data);
       failed.set("");
       busy.set(false);
     })
@@ -105,11 +128,42 @@ const askFor = (wide) => {
 effect(() => {
   const wide = windowed();
   nudge();
-  history.replaceState(null, "", query() ? "/?" + query() : "/");
   // The page arrived with its own rows and they are on the screen already;
   // this is the rest of the window, and it lands under the same rows.
   askFor(wide);
 });
+
+effect(() => history.replaceState(null, "", address() ? "/?" + address() : "/"));
+
+// --- what the grid asks for when it is grouped ----------------------------------
+//
+// One level of the tree: the path down to it becomes filters, the field of
+// the level becomes `group`, and the page and sort are the grid's. A sort on
+// the group column is a sort on the key of the level being asked for. The
+// answer is what `/rows` says, in the shape the grid reads: group objects
+// with a `key` and a `count` and the aggregates under the columns' names, or
+// the documents themselves under the last level.
+const source = ({ groupBy: levels, keys, page, pageSize, sort }) => {
+  const q = new URLSearchParams(query());
+  for (const k of keys) q.set(k.field, String(k.value));
+  const level = levels[keys.length];
+  if (level) q.set("group", level);
+  q.set("page", String(page));
+  q.set("limit", String(pageSize || 200));
+  if (sort && (sort.field !== "key" || level)) {
+    q.set("by", sort.field === "key" ? level : sort.field);
+    q.set("dir", sort.dir < 0 ? "desc" : "asc");
+  }
+  return fetch("/rows?" + q)
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
+    .then((data) => {
+      if (data.error) throw new Error(data.error);
+      cost.set(data);
+      return level
+        ? { rows: data.groups ?? [], total: data.total ?? 0 }
+        : { rows: (data.docs ?? []).map((d) => ({ ...d, id: d.sku })), total: data.total ?? 0 };
+    });
+};
 
 // --- the toolbar ---------------------------------------------------------------------
 
@@ -159,7 +213,7 @@ const total = computed(() => result().total ?? 0);
 // it beside the row count because it is the number this whole example is
 // about — a page of a hundred thousand documents, and where its time goes.
 const took = () => {
-  const r = result();
+  const r = cost();
   if (r.db_us == null) return "";
   return `db ${ms(r.db_us)} · wrote ${ms(r.wrote_us)}`;
 };
@@ -232,24 +286,29 @@ effect(follow);
 connect();
 
 const columns = [
-  { field: "sku", header: "sku", width: 80, align: "right" },
+  { field: "sku", header: "sku", width: 80, align: "right", groupable: false },
   {
     field: "name",
     header: "name",
     width: 200,
     editable: true,
+    groupable: false,
     maxLength: 60,
     validate: (v) => (String(v).trim() ? null : "a name cannot be empty"),
   },
   { field: "role", header: "role", width: 120, editable: true, options: ["eng", "ops", "sre", "design"] },
   { field: "region", header: "region", width: 120, editable: true, options: ["eu", "us", "apac"] },
-  { field: "score", header: "score", width: 100, align: "right", format: (v) => v.toFixed(2) },
+  // A group row shows what its documents come to: the average score and the
+  // stock in total, which is what the server's pipeline answers with under
+  // the same two names. A score is a float, so nothing is grouped by it.
+  { field: "score", header: "score", width: 100, align: "right", format: (v) => v.toFixed(2), aggregate: "avg", groupable: false },
   {
     field: "stock",
     header: "stock",
     width: 90,
     align: "right",
     editable: true,
+    aggregate: "sum",
     type: "number",
     min: 0,
     max: 99999,
@@ -264,7 +323,7 @@ function Results() {
   return html`
     <p>
       <b>${() => total().toLocaleString("en-US")}</b> documents match${() =>
-        total() > rows().length ? ` — the grid holds the first ${rows().length}` : ""}${() =>
+        groupBy().length ? ` — grouped by ${groupBy().join(" › ")}` : total() > rows().length ? ` — the grid holds the first ${rows().length}` : ""}${() =>
         busy() ? " · asking…" : ""}${() =>
         failed() ? html`<span class="bad"> · ${failed()} · trying again…</span>` : ""}
     </p>
@@ -277,6 +336,9 @@ function Results() {
             onCellEdit: save,
             note: took,
             apiRef: api,
+            groupable: true,
+            groupBy,
+            source,
           }))()}
     ${Toaster()}
   `;
@@ -290,6 +352,17 @@ hydrate(Filters, form);
 
 const region = document.getElementById("results");
 hydrate(Results, region);
+
+// A grouped grid asks its own questions, and they carry the filters — so a
+// filter that changes is a tree to build again. The first run is the page
+// coming up, and the grid has just asked for itself.
+let settled = false;
+effect(() => {
+  query();
+  nudge();
+  if (settled && api.reload) api.reload();
+  settled = true;
+});
 
 // Both halves are in; the page may show what is there.
 form.classList.add("live");

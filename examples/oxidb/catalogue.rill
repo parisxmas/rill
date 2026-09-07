@@ -30,6 +30,12 @@
 # carries what it cost to make, too: the grid shows the database's time and
 # the writing's beside its row count.
 #
+# The grid groups, too: a column header dragged onto the panel above the
+# table folds the rows into groups, and every level of that tree is
+# `/rows?group=<field>` with the path down to it as filters — one pipeline in
+# the database, the count and the aggregates of every matching document, and
+# paged like the documents are. See "grouping" below.
+#
 # The table is editable. A cell opens the editor its column's type asks for —
 # a number field, the calendar, a list — and what comes out is a `POST
 # /doc/<sku>` naming one field. The rules are written twice on purpose: the
@@ -565,7 +571,8 @@ fn fields_of(pairs: List(h.Header), acc) = match pairs
     fields_of(rest, kept)
 
 # The parameters that steer the page rather than filter the documents.
-fn is_control(k) = str_len(k) == 0 || k == "limit" || k == "by" || k == "dir" || k == "page"
+fn is_control(k) =
+  str_len(k) == 0 || k == "limit" || k == "by" || k == "dir" || k == "page" || k == "group"
 
 fn valued(v) = if looks_numeric(v) then int(str_to_int(v)) else text(v)
 
@@ -605,8 +612,12 @@ fn browse(fd, qs, cell) =
 
 # What `/` renders, as JSON, for the client that took the page over. It is the
 # same question asked the same way — the two answers cannot drift apart,
-# because only the last step of each differs.
+# because only the last step of each differs. With `group=<field>` it is a
+# different question, answered below.
 fn answer_rows(fd, qs) =
+  if str_len(param(qs, "group")) > 0 then answer_groups(fd, qs) else answer_docs(fd, qs)
+
+fn answer_docs(fd, qs) =
   t0 = now_nanos()
   match shape_of(fd, qs)
     (q, size, total, pages, page, skip) ->
@@ -630,6 +641,97 @@ fn rows_body(list, total, page, pages, skip, asked) =
   head = "{\"total\":" + int_to_str(total) + ",\"page\":" + int_to_str(page) + ",\"pages\":" + int_to_str(pages)
   body = head + ",\"from\":" + int_to_str(skip + 1) + ",\"docs\":" + to_string(JArr(list))
   body + ",\"db_us\":" + int_to_str(asked / 1000) + ",\"wrote_us\":" + int_to_str((now_nanos() - t0) / 1000) + "}"
+
+# -- grouping ------------------------------------------------------------------
+#
+# `/rows?group=region&role=eng&page=2&limit=25` — the same filters, and instead
+# of the documents that match, what they come to under each value of one
+# field: how many there are, their average score, their stock in total. The
+# grid asks this when a column header has been dragged onto its group panel,
+# one level at a time: the groups under `role` first, and when one of them is
+# opened, the groups under `region` with that role added to the filters — and
+# when the last level is opened, the documents themselves, which is `/rows`
+# as it always was. A level is never more than one question, and a page of
+# groups is paged the way a page of documents is.
+#
+# It is one pipeline. `$match` is the filters, `$group` the field, and
+# `$facet` splits what comes out into the page that was asked for and the
+# count of groups, so the pager has its total without a second trip. The
+# database does all of it: nothing here reads a document.
+#
+# `by` sorts the groups: the field itself, or `count`, `score` and `stock`,
+# which are the three numbers a group carries. Anything else is the field.
+fn answer_groups(fd, qs) =
+  f = param(qs, "group")
+  if !known_field(f) then h.json_response(400, "{\"error\":\"cannot group by `" + f + "`\"}") else groups_at((fd, qs, f, page_size(qs)), page_of(qs), now_nanos())
+
+fn known_field(f) =
+  listed(Cons("sku", Cons("name", Cons("role", Cons("region", Cons("score", Cons("stock", Cons("added", Nil))))))), f)
+
+# The question is one tuple — the connection, the query, the field and the
+# page size — so that asking it again is a jump and not a deeper stack.
+fn groups_at(ask, page, t0) = match ask
+  (fd, qs, f, size) ->
+    skip = (if page < 1 then 0 else page - 1) * size
+    match aggregate(fd, collection(), group_pipeline(JObj(match_fields(qs)), f, group_sort(qs, f), skip, size))
+      Err(e) -> failed(e)
+      Ok(d) -> groups_found(ask, page, skip, t0, facet_of(docs(d)))
+
+# A page past the end — a URL kept from before an edit made the groups fewer —
+# is asked again as the last page there is.
+fn groups_found(ask, page, skip, t0, found) = match (ask, found)
+  ((_, _, f, size), (rows, total)) ->
+    pages = if total <= 0 then 1 else (total + size - 1) / size
+    if page > pages then groups_at(ask, pages, t0) else h.json_response(200, groups_body(f, rows, total, clamped(page, 1, pages), pages, skip, now_nanos() - t0))
+
+fn group_pipeline(q, f, sort, skip, size) =
+  JArr(append(match_stage(q), Cons(group_stage(f), Cons(facet_stage(sort, skip, size), Nil))))
+
+# No filters is no `$match`: the database groups the whole collection, and
+# for a count alone that is a read of the index and not of the documents.
+fn match_stage(q) = match q
+  JObj(Nil) -> Nil
+  _ -> Cons(stage_of("$match", q), Nil)
+
+fn stage_of(name, body) = JObj(Cons(field(name, body), Nil))
+
+fn group_stage(f) =
+  JObj(Cons(field("$group", JObj(Cons(field("_id", text("$" + f)), Cons(field("count", accum("$sum", int(1))), Cons(field("score", accum("$avg", text("$score"))), Cons(field("stock", accum("$sum", text("$stock"))), Nil)))))), Nil))
+
+fn accum(op, arg) = JObj(Cons(field(op, arg), Nil))
+
+fn facet_stage(sort, skip, size) =
+  page = JArr(Cons(stage_of("$sort", sort), Cons(stage_of("$skip", int(skip)), Cons(stage_of("$limit", int(size)), Nil))))
+  stage_of("$facet", JObj(Cons(field("rows", page), Cons(field("total", JArr(Cons(stage_of("$count", text("n")), Nil))), Nil))))
+
+fn group_sort(qs, f) = JObj(Cons(field(group_key(sort_by(qs), f), int(sort_dir(qs))), Nil))
+
+fn group_key(by, f) =
+  if by == f then "_id" else if by == "count" || by == "score" || by == "stock" then by else "_id"
+
+# `$facet` answers with one document: the page under `rows`, and under
+# `total` a list holding `{"n": 4}` — or nothing at all when there are no
+# groups, which is what an empty match comes to.
+fn facet_of(list) = match list
+  Nil -> (Nil, 0)
+  Cons(one, _) -> (as_arr(at_key(one, "rows")), first_n(as_arr(at_key(one, "total"))))
+
+fn first_n(items) = match items
+  Nil -> 0
+  Cons(one, _) -> as_int(at_key(one, "n"))
+
+fn at_key(doc, key) = unwrap_or(get(doc, key), JNull)
+
+fn groups_body(f, rows, total, page, pages, skip, asked) =
+  t0 = now_nanos()
+  head = "{\"total\":" + int_to_str(total) + ",\"page\":" + int_to_str(page) + ",\"pages\":" + int_to_str(pages)
+  body = head + ",\"from\":" + int_to_str(skip + 1) + ",\"field\":\"" + f + "\",\"groups\":" + to_string(JArr(map(rows, \d -> group_row(d))))
+  body + ",\"db_us\":" + int_to_str(asked / 1000) + ",\"wrote_us\":" + int_to_str((now_nanos() - t0) / 1000) + "}"
+
+# `_id` is what the database calls the value grouped under; the grid calls it
+# `key`, and the three numbers keep the names of the columns they stand in.
+fn group_row(d) =
+  JObj(Cons(field("key", at_key(d, "_id")), Cons(field("count", at_key(d, "count")), Cons(field("score", at_key(d, "score")), Cons(field("stock", at_key(d, "stock")), Nil)))))
 
 # How many match, which page of them was asked for, and where it begins.
 fn shape_of(fd, qs) =

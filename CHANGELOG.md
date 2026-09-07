@@ -146,6 +146,31 @@ they show up anywhere a program writes text: the JSON benchmark in
 `benchmarks/tokens` builds its output through a builder, and every server in
 `examples/` writes its responses through one.
 
+### The catalogue's grid groups, and the database does the grouping
+
+Drag a column header onto the panel above the catalogue's table and the rows
+fold into groups, one level per header dropped — `role › region › stock` is
+three drops, and a chip dragged back onto the table takes its level out.
+A group opens on a click to the level under it, and the last level opens to
+the documents. Every level is one question to the server and the groups are
+paged the way documents are, so a hundred thousand groups is four thousand
+pages of them, not a screen that stops answering.
+
+`/rows?group=<field>` is the question. The filters stay what they were, and
+the answer is what the matching documents come to under each value of that
+field: the count, the average score and the stock in total, as one pipeline
+in OxiDB — `$match`, `$group`, and `$facet` to split the result into the
+page asked for and the count of groups, so the pager has its total without a
+second trip. `lib/oxidb.rill` gains `aggregate`, which is the one call it
+takes. Nothing on the server reads a document, and nothing in the browser
+counts anything: what a group says is about the whole data set, not the
+window the flat grid holds.
+
+The grid's side of it is three props — `groupable`, `groupBy` and a
+`source` that answers a level given the path down to it — and a column may
+say what it shows on a group row with `aggregate`. `static/components/grid.js`
+carries the change until it goes back to zap.
+
 ## Unreleased — a shape over a buffer, and NumPy behind it
 
 `lib/grid.rill`: arrays of numbers with a shape, the way NumPy has them. A

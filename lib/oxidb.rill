@@ -117,6 +117,12 @@ fn update(fd, collection, query, changes) =
 fn delete(fd, collection, query) =
   call(fd, command("delete", on(collection, Cons(Field("query", query), Nil))))
 
+# A pipeline — a list of stages, `$match`, `$group`, `$sort`, `$facet` and the
+# rest, each a document like `{"$group": {"_id": "$role", "n": {"$sum": 1}}}` —
+# and what comes out of the end of it.
+fn aggregate(fd, collection, pipeline) =
+  call(fd, command("aggregate", on(collection, Cons(Field("pipeline", pipeline), Nil))))
+
 fn create_index(fd, collection, field_name) =
   call(fd, command("create_index", on(collection, Cons(Field("field", JStr(field_name)), Nil))))
 

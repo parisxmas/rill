@@ -263,6 +263,46 @@
 }
 .zap-grid__pager { display: flex; align-items: center; gap: 8px; }
 
+/* ── Grouping ────────────────────────────────────────────────────────────── */
+/* The panel a header is dragged onto. It lights up while something that can
+   be dropped is over it, and the chips in it are the grouping, outermost
+   first. */
+.zap-grid__groups {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  min-height: 42px; padding: 6px 10px;
+  border-bottom: 1px solid var(--zap-border);
+  background: var(--zap-elevated);
+  color: var(--zap-muted); font-size: 12px;
+}
+.zap-grid__groups.is-over { background: var(--zap-primary-soft); box-shadow: inset 0 0 0 1px var(--zap-primary); }
+.zap-grid__groups-hint { font-style: italic; user-select: none; }
+.zap-grid__chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 6px 3px 10px;
+  border: 1px solid var(--zap-border); border-radius: 999px;
+  background: var(--zap-surface); color: var(--zap-text);
+  font-weight: 600; cursor: grab; user-select: none;
+}
+.zap-grid__chip-x { border: 0; background: transparent; color: var(--zap-muted); cursor: pointer; font: inherit; line-height: 1; padding: 0 2px; }
+.zap-grid__chip-x:hover { color: var(--zap-danger, #dc2626); }
+.zap-grid__chip-sep { color: var(--zap-muted); }
+.zap-grid__th[draggable="true"] { cursor: grab; }
+/* A group row: the key with its count in front, and under the other
+   columns what the group comes to — or nothing, for a column that has no
+   aggregate. Later than the zebra rule on purpose: same specificity, and the
+   one written last wins. */
+.zap-grid__table tbody tr.zap-grid__grow td { background: var(--zap-elevated); font-weight: 600; cursor: pointer; }
+.zap-grid__table tbody tr.zap-grid__grow:hover td { background: var(--zap-primary-soft); }
+.zap-grid__twist { display: inline-block; width: 14px; color: var(--zap-primary); }
+.zap-grid__gcount { color: var(--zap-muted); font-weight: 400; margin-left: 4px; }
+.zap-grid__agg { color: var(--zap-muted); font-weight: 500; }
+.zap-grid__gutter { border-right: 1px solid var(--zap-border); }
+/* The pager under an open group's rows. */
+.zap-grid__table tbody tr.zap-grid__more td { background: var(--zap-surface); color: var(--zap-muted); font-size: 12px; padding-top: 6px; padding-bottom: 6px; }
+.zap-grid__more-range { margin-right: 12px; font-variant-numeric: tabular-nums; }
+.zap-grid__more .zap-pg { display: inline-flex; vertical-align: middle; }
+.zap-grid__bad { color: var(--zap-danger, #dc2626); font-weight: 400; }
+
 /* ── Modal ───────────────────────────────────────────────────────────────── */
 .zap-modal {
   position: fixed; inset: 0; z-index: 100;
