@@ -580,6 +580,7 @@ impl Fmt {
                         SelectOp::Send { chan, value } => {
                             format!("send({}, {})", inline(chan, 0), inline(value, 0))
                         }
+                        SelectOp::Timeout { ms } => format!("timeout({})", inline(ms, 0)),
                     };
                     if let Expr::Block(stmts) = &arm.body {
                         s.push_str(&format!("\n{}{op} ->", pad(cont)));
@@ -837,6 +838,7 @@ fn inline(e: &Expr, prec: u8) -> String {
                         SelectOp::Send { chan, value } => {
                             format!("send({}, {})", inline(chan, 0), inline(value, 0))
                         }
+                        SelectOp::Timeout { ms } => format!("timeout({})", inline(ms, 0)),
                     };
                     format!("{op} -> {}", inline(&a.body, 0))
                 })

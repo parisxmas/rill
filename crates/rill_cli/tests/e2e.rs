@@ -1886,6 +1886,80 @@ fn multi_file_program_with_imports() {
 }
 
 #[test]
+fn a_select_can_carry_a_deadline() {
+    assert_eq!(
+        compile_and_run("timeouts.rill"),
+        "gave up after 80 ms\n\
+         answered 42\n\
+         gave up after 0 ms\n\
+         still nothing after 60 ms\n\
+         waited on nothing in particular\n"
+    );
+}
+
+/// The dangerous case: a strand in a `select` with a deadline is registered in
+/// two places that can both come ready, and queueing a strand twice corrupts
+/// the run queue. Four thousand rounds with the deadline swept across the
+/// arrival, so that neither outcome is the only one taken.
+#[test]
+fn a_deadline_racing_a_value_leaves_nothing_behind() {
+    let out = run_source(
+        "select_deadline_race",
+        "fn racer(ch) =\n  \
+           sleep_ms(2)\n  \
+           send(ch, 1)\n\
+         \n\
+         fn round(n, got, late) =\n  \
+           if n <= 0 then (got, late)\n  \
+           else\n    \
+             ch = channel()\n    \
+             spawn racer(ch)\n    \
+             ms = 1 + n - (n / 4) * 4\n    \
+             r = select\n      \
+               v = recv(ch) -> 1\n      \
+               timeout(ms) -> 0\n    \
+             if r == 1 then round(n - 1, got + 1, late)\n    \
+             else\n      \
+               recv(ch)\n      \
+               round(n - 1, got, late + 1)\n\
+         \n\
+         fn main() =\n  \
+           (got, late) = round(2000, 0, 0)\n  \
+           println(got > 0 && late > 0 && got + late == 2000)\n  \
+           sleep_ms(50)\n",
+    );
+    assert_eq!(out, "true\n");
+}
+
+/// `default` means do not wait, so a deadline beside one could never be
+/// reached. Written either way round, that is refused rather than ignored.
+#[test]
+fn a_default_beside_a_timeout_is_refused() {
+    for src in [
+        "fn main() =\n  \
+           ch = channel()\n  \
+           r = select\n    \
+             v = recv(ch) -> v\n    \
+             timeout(50) -> 0\n    \
+             default -> -1\n  \
+           println(int_to_str(r))\n",
+        "fn main() =\n  \
+           ch = channel()\n  \
+           r = select\n    \
+             v = recv(ch) -> v\n    \
+             default -> -1\n    \
+             timeout(50) -> 0\n  \
+           println(int_to_str(r))\n",
+    ] {
+        let err = compile_error(src);
+        assert!(
+            err.contains("`select` with `default` never waits"),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
 fn a_signal_reaches_a_strand_and_it_stops_the_others() {
     assert_eq!(
         compile_and_run("signals.rill"),

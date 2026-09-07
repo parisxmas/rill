@@ -754,7 +754,8 @@ fn main() =
 - `channel(n)` buffers `n` values, so a sender only blocks once the buffer is
   full and a receiver only blocks once it is empty.
 - `select` waits on several channels at once and runs whichever arm becomes
-  ready first; a `default` arm turns it into a non-blocking poll.
+  ready first; a `default` arm turns it into a non-blocking poll, and a
+  `timeout(ms)` arm puts a deadline on the wait.
 - `close(ch)` says nothing more will be sent, and wakes everything parked on
   the channel at once; `closed(ch)` asks whether it has been.
 - The program exits when `main` returns; strands still running are abandoned,
@@ -782,6 +783,35 @@ fn poll(ch) =
 Arms are tried in order, so an earlier one wins a tie. Like `match`, `select`
 needs an indented block, so it goes in a body, a statement or a binding rather
 than inside parentheses.
+
+### A deadline on a wait
+
+A `timeout(ms)` arm becomes ready when nothing else has, for that long:
+
+```
+fn ask(ch, ms) =
+  r = select
+    v = recv(ch) -> "answered " + int_to_str(v)
+    timeout(ms) -> "gave up"
+  r
+```
+
+Before this a `select` that had to give up needed a strand and a channel to be
+its clock, which is the right price for a *rate* and the wrong one for a
+deadline: a server putting a limit on every request in flight would pay a
+strand and a channel per request, for a clock each of them looks at once. The
+arm parks in the poller instead, beside the channels, and costs nothing while
+it waits.
+
+The shortest deadline is the one that answers, so a wait may carry both a
+warning and a limit. A deadline already past is ready at once, which makes
+`timeout(0)` a poll — `default` by another name, and the better spelling where
+the number is the point. Writing `default` and `timeout` in the same `select`
+is refused, because `default` means "do not wait" and the deadline could then
+never be reached. With no channel arm at all it is a sleep with a body, which
+falls out of the rule rather than being a special case.
+
+`examples/timeouts.rill` is all five of those.
 
 ### Stopping
 

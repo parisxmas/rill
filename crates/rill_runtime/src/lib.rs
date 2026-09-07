@@ -4799,6 +4799,19 @@ pub unsafe extern "C" fn rill_rt_run(code: extern "C" fn(*mut u8)) {
 // already-claimed strand are skipped and dropped when encountered, and the
 // strand unlinks whatever is left when it wakes.
 
+/// Arms a deadline for a `select`, or -1 where there is no poller to arm one
+/// in. A build without sockets has no `select` that can wait either, so the
+/// arm below is never the one that runs.
+#[cfg(unix)]
+unsafe fn select_deadline(ms: i64) -> i32 {
+    net::arm_select_deadline(ms)
+}
+
+#[cfg(not(unix))]
+unsafe fn select_deadline(_ms: i64) -> i32 {
+    -1
+}
+
 /// A strand's place in one channel's queue.
 #[repr(C)]
 struct Waiter {
@@ -5213,6 +5226,18 @@ pub unsafe extern "C" fn rill_chan_taken(_p: *mut u8) -> TwoWords {
 // a closed channel makes it ready, and there is nothing it has to produce.
 /// An arm that sends.
 const SEL_SEND: i64 = 1;
+/// `timeout(ms) ->`. It queues on nothing, because there is nothing to queue
+/// on: the poller answers it.
+const SEL_TIMEOUT: i64 = 3;
+
+/// What the poller stamps on a strand it has woken.
+///
+/// It has to be a number, because `selected` is how a strand is claimed and a
+/// channel reads it to know whether anyone got there first. Positive, so a
+/// channel sees the strand as taken; and further from any case number than a
+/// `select` can have arms, so a `select` waking from its own deadline can tell
+/// that is what happened rather than reading case zero.
+const WOKEN_BY_POLLER: i64 = i64::MAX;
 /// An arm that receives and binds — `x = recv(ch) -> f(x)`. A closed channel
 /// makes this ready too, and then there is no `x` to give it, which is the
 /// same dead end `recv` reaches and gets the same answer.
@@ -5225,6 +5250,29 @@ pub struct SelectCase {
     pub chan: *mut u8,
     pub a: u64,
     pub b: u64,
+}
+
+/// Takes every node this `select` put in a channel queue back out, so that no
+/// queue is left pointing at nodes about to be freed. A timeout arm queued on
+/// nothing and has nothing to take out.
+///
+/// # Safety
+/// Called with the channel lock held; `ws` must be the `n` nodes written for
+/// `cases`.
+unsafe fn unqueue_select(cases: *const SelectCase, n: i64, ws: *mut Waiter) {
+    for i in 0..n {
+        let c = &*cases.add(i as usize);
+        if c.kind == SEL_TIMEOUT {
+            continue;
+        }
+        let w = ws.add(i as usize);
+        let ch = (*w).chan;
+        if c.kind != SEL_SEND {
+            (*ch).recvq.remove(w);
+        } else {
+            (*ch).sendq.remove(w);
+        }
+    }
 }
 
 /// Waits until one of the cases can proceed, runs exactly that one, and
@@ -5245,6 +5293,15 @@ pub unsafe extern "C" fn rill_select(
     lock();
     for i in 0..n {
         let c = &*cases.add(i as usize);
+        if c.kind == SEL_TIMEOUT {
+            // A deadline already past is ready now, which makes `timeout(0)`
+            // a poll and costs nothing anywhere else.
+            if c.a as i64 <= 0 {
+                unlock();
+                return i;
+            }
+            continue;
+        }
         let ch = c.chan as *mut Chan;
         if c.kind != SEL_SEND {
             if (*ch).len > 0 {
@@ -5308,8 +5365,28 @@ pub unsafe extern "C" fn rill_select(
     }
     let g = (*me()).current;
     (*g).selected = -1;
+    // The shortest of the deadlines is the only one that matters: a `select`
+    // answers once, and a later deadline could never be the one it answers
+    // with.
+    let mut soonest = -1i64;
+    let mut deadline_case = -1i64;
     for i in 0..n {
         let c = &*cases.add(i as usize);
+        if c.kind == SEL_TIMEOUT && (soonest < 0 || (c.a as i64) < soonest) {
+            soonest = c.a as i64;
+            deadline_case = i;
+        }
+    }
+    for i in 0..n {
+        let c = &*cases.add(i as usize);
+        if c.kind == SEL_TIMEOUT {
+            // Nothing to queue on. The poller is this arm's wait queue.
+            core::ptr::write(
+                ws.add(i as usize),
+                WAITER_INIT,
+            );
+            continue;
+        }
         let ch = c.chan as *mut Chan;
         let w = ws.add(i as usize);
         core::ptr::write(
@@ -5322,26 +5399,57 @@ pub unsafe extern "C" fn rill_select(
             (*ch).sendq.push(w);
         }
     }
+    // Armed while the lock is held, so that a deadline landing on another
+    // worker waits at `lock()` rather than claiming a strand that has not
+    // finished queueing itself.
+    let mut held = 0i32;
+    if deadline_case >= 0 {
+        (*g).wait_ident = 0;
+        IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        (*g).on_io = true;
+        held = select_deadline(soonest);
+        if held < 0 {
+            // No deadline could be armed, and waiting on the channels alone
+            // would be waiting longer than the program asked to. Answering the
+            // timeout now is early rather than never.
+            (*g).on_io = false;
+            IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+            unqueue_select(cases, n, ws);
+            unlock();
+            free(ws as *mut u8);
+            return deadline_case;
+        }
+    }
     unlock();
     block_current();
 
     lock();
     let idx = (*g).selected;
+    // The poller stamps its own mark, so this is the deadline and not a case.
+    if idx == WOKEN_BY_POLLER {
+        unqueue_select(cases, n, ws);
+        unlock();
+        if held > 0 {
+            close(held);
+        }
+        free(ws as *mut u8);
+        return deadline_case;
+    }
+    // A channel got there first, so the deadline is still armed on this
+    // strand's behalf and this is the frame that has to take it back down.
+    if deadline_case >= 0 && (*g).on_io {
+        (*g).on_io = false;
+        IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+    }
     let won = ws.add(idx as usize);
     let item = (*won).item;
     let by_close = (*won).freed_by_close != 0;
     let kind = (*cases.add(idx as usize)).kind;
-    // Whatever is still queued elsewhere has to go before the nodes die.
-    for i in 0..n {
-        let w = ws.add(i as usize);
-        let ch = (*w).chan;
-        if (*cases.add(i as usize)).kind != SEL_SEND {
-            (*ch).recvq.remove(w);
-        } else {
-            (*ch).sendq.remove(w);
-        }
-    }
+    unqueue_select(cases, n, ws);
     unlock();
+    if held > 0 {
+        close(held);
+    }
     free(ws as *mut u8);
     // The nodes are gone before anything is said about what woke this strand,
     // so a complaint here does not leave a dead node in a live channel.
@@ -6160,6 +6268,15 @@ mod net {
         block_current();
     }
 
+    /// Arms a deadline for the current strand without parking it, for a
+    /// `select` that has a `timeout` arm and has to queue on its channels as
+    /// well. What comes back is what `poller_timer` held, to be closed after.
+    pub(super) unsafe fn arm_select_deadline(ms: i64) -> i32 {
+        let w = me();
+        let p = ensure_poller(w);
+        poller_timer(p, ms, (*w).current)
+    }
+
     /// Parks the current strand until a pipe has a byte in it.
     ///
     /// The whole of what the file section needs from the poller, and named for
@@ -6382,7 +6499,7 @@ mod net {
             lock();
             if (*g).on_io && (*g).selected < 0 {
                 (*g).on_io = false;
-                (*g).selected = 0;
+                (*g).selected = WOKEN_BY_POLLER;
                 IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
                 make_ready(g);
             } else {

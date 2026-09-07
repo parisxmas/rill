@@ -210,6 +210,9 @@ pub enum SelectOp {
     Recv { chan: Expr, bind: Option<String> },
     /// `send(ch, v) ->`
     Send { chan: Expr, value: Expr },
+    /// `timeout(ms) ->` — the arm that becomes ready when nothing else has,
+    /// for long enough. Not a channel, so nothing is bound.
+    Timeout { ms: Expr },
 }
 
 #[derive(Debug, Clone, PartialEq)]

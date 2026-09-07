@@ -1,0 +1,52 @@
+# A deadline on a wait.
+#
+# Before this, a `select` that had to give up after a while needed a strand
+# and a channel to be its clock — three lines, which the reference points out
+# is all a ticker is. That is the right price for a *rate*, and the wrong one
+# for a deadline: a server that puts a limit on every request in flight would
+# be paying a strand and a channel per request, for a clock each of them looks
+# at once.
+#
+# `timeout(ms)` is an arm like the others. It becomes ready when nothing else
+# has, for that long.
+fn main() =
+  # Nothing arrives in time.
+  slow = channel()
+  spawn answer_after(slow, 300)
+  println(ask(slow, 80))
+
+  # Something does.
+  quick = channel()
+  spawn answer_after(quick, 30)
+  println(ask(quick, 500))
+
+  # A deadline already past makes it a poll, which is `default` by another
+  # name and reads better where the number is the point.
+  println(ask(channel(), 0))
+
+  # The shortest deadline is the one that answers, so a wait can carry both a
+  # warning and a limit.
+  println(two_deadlines(channel()))
+
+  # With no channel arm at all it is a sleep with a body — rarely what you
+  # want, but it falls out of the rule rather than being a special case.
+  r = select
+    timeout(40) -> "waited on nothing in particular"
+  println(r)
+
+fn answer_after(ch, ms) =
+  sleep_ms(ms)
+  send(ch, 42)
+
+fn ask(ch, ms) =
+  r = select
+    v = recv(ch) -> "answered " + int_to_str(v)
+    timeout(ms) -> "gave up after " + int_to_str(ms) + " ms"
+  r
+
+fn two_deadlines(ch) =
+  r = select
+    v = recv(ch) -> "answered " + int_to_str(v)
+    timeout(400) -> "gave up"
+    timeout(60) -> "still nothing after 60 ms"
+  r

@@ -805,6 +805,7 @@ fn collect_rebound(e: &TExpr, out: &mut HashSet<String>) {
                         collect_rebound(chan, out);
                         collect_rebound(value, out);
                     }
+                    TSelectOp::Timeout { ms } => collect_rebound(ms, out),
                 }
                 collect_rebound(&a.body, out);
             }
@@ -1019,6 +1020,7 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
                         f(chan);
                         f(value);
                     }
+                    TSelectOp::Timeout { ms } => f(ms),
                 }
                 f(&a.body);
             }
@@ -7920,13 +7922,23 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // a value it is expected to produce.
             let (kind, ch_expr, val) = match &arm.op {
                 TSelectOp::Recv { chan, .. } => {
-                    (if arm.bind.is_some() { 2u64 } else { 0u64 }, chan, None)
+                    (if arm.bind.is_some() { 2u64 } else { 0u64 }, Some(chan), None)
                 }
-                TSelectOp::Send { chan, value } => (1u64, chan, Some(value)),
+                TSelectOp::Send { chan, value } => (1u64, Some(chan), Some(value)),
+                // A timeout waits on no channel at all: the case carries the
+                // milliseconds where a send would have carried its value, and
+                // a null where the others carry a channel.
+                TSelectOp::Timeout { .. } => (3u64, None, None),
             };
-            let ch_ty = self.concrete(&ch_expr.ty, subst);
-            let ch = self.gen_expr(ch_expr, scope, subst, func)?.expect("channel value");
-            chans.push((ch, ch_ty));
+            let ch = match ch_expr {
+                Some(e) => {
+                    let ch_ty = self.concrete(&e.ty, subst);
+                    let v = self.gen_expr(e, scope, subst, func)?.expect("channel value");
+                    chans.push((v, ch_ty));
+                    v
+                }
+                None => ptrt.const_null().into(),
+            };
 
             let (wa, wb, sent) = match val {
                 Some(v) => {
@@ -7935,7 +7947,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     let (a, b) = self.pack_words(vv, &vty);
                     (a, b, Some((vv, vty)))
                 }
-                None => (i64t.const_zero(), i64t.const_zero(), None),
+                None => match &arm.op {
+                    TSelectOp::Timeout { ms } => {
+                        let n = self
+                            .gen_expr(ms, scope, subst, func)?
+                            .expect("value")
+                            .into_int_value();
+                        (n, i64t.const_zero(), None)
+                    }
+                    _ => (i64t.const_zero(), i64t.const_zero(), None),
+                },
             };
             sends.push(sent);
 

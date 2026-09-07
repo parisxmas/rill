@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased — a deadline on a wait
+
+`select` takes a `timeout(ms)` arm, ready when nothing else has been for that
+long.
+
+```
+r = select
+  v = recv(ch) -> "answered " + int_to_str(v)
+  timeout(ms) -> "gave up"
+```
+
+A `select` that had to give up needed a strand and a channel to be its clock,
+and the reference is right that a ticker is three lines — for a *rate*. For a
+deadline it is the wrong price: a server putting a limit on every request in
+flight pays a strand and a channel per request, for a clock each of them looks
+at once. The arm parks in the poller instead, beside the channels it is waiting
+with, and costs nothing while it waits.
+
+The interesting part is the race. A strand in a `select` with a deadline is
+registered in two places that can both come ready, and queueing a strand twice
+corrupts the run queue. The poller already solved this for a socket armed with
+a deadline — whoever gets there first claims the strand and the second finds
+`on_io` already false — so the deadline arm uses the same claim and nothing new
+had to be invented. What did have to change is that the poller stamped case
+zero on a strand it woke, which a `select` cannot tell from its first arm
+having won; it stamps a mark of its own now, far above any case number. Four
+thousand rounds with the deadline swept across the arrival, half answered by
+the value and half by the clock, leave no allocation behind on one worker or on
+four.
+
+The shortest deadline is the one that answers, so a wait may carry a warning
+and a limit at once. `timeout(0)` is ready immediately, which makes it a poll —
+`default` by another name, and the better spelling where the number is the
+point. Writing `default` and `timeout` in the same `select` is refused rather
+than silently ignoring the deadline. `examples/timeouts.rill` is the five
+shapes of it.
+
 ## Unreleased — and a way to be told to
 
 `wait_signal()` parks until the program is asked something and answers which:

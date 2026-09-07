@@ -40,8 +40,9 @@ fn main() =
   frees memory the moment it dies — deterministic, no pauses.
 - **Go's concurrency model.** `spawn` and typed channels over a green-thread
   scheduler — one lightweight thread is a **strand**; 100,000 strands cost ~53 MB and start in microseconds. Build
-  with `--parallel` and set `RILL_THREADS` to spread them across cores. `close(ch)`
-  is how a program stops: one broadcast wakes everything parked on the channel,
+  with `--parallel` and set `RILL_THREADS` to spread them across cores. `select`
+  takes a `timeout(ms)` arm, so a deadline costs no strand. `close(ch)` is how
+  a program stops: one broadcast wakes everything parked on the channel,
   `wait_signal()` is how it hears that it should, and `sock_shutdown` does the
   same for a strand parked on a socket read.
 - **Native code via LLVM -O3.** Generics are monomorphized, so nothing is boxed

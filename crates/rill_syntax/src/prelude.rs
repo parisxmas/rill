@@ -212,6 +212,7 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
                         collect_expr_names(chan, out);
                         collect_expr_names(value, out);
                     }
+                    SelectOp::Timeout { ms } => collect_expr_names(ms, out),
                 }
                 collect_expr_names(&a.body, out);
             }

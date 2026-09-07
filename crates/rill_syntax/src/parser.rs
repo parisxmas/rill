@@ -1132,11 +1132,21 @@ impl Parser {
                 }
                 SelectOp::Send { chan: args[0].clone(), value: args[1].clone() }
             }
+            Expr::Call { ref name, ref args, .. } if name == "timeout" && args.len() == 1 => {
+                if bind.is_some() {
+                    return Err(SyntaxError::new(
+                        line,
+                        col,
+                        "a `timeout` arm produces no value to bind".to_string(),
+                    ));
+                }
+                SelectOp::Timeout { ms: args[0].clone() }
+            }
             _ => {
                 return Err(SyntaxError::new(
                     opline,
                     opcol,
-                    "each `select` arm must be `recv(ch)`, `send(ch, v)` or `default`"
+                    "each `select` arm must be `recv(ch)`, `send(ch, v)`, `timeout(ms)` or `default`"
                         .to_string(),
                 ));
             }

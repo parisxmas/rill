@@ -443,6 +443,7 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str, scope: &mut Ve
                         qualify_expr(chan, own, alias, scope);
                         qualify_expr(value, own, alias, scope);
                     }
+                    SelectOp::Timeout { ms } => qualify_expr(ms, own, alias, scope),
                 }
                 under(scope, names, |sc| qualify_expr(&mut a.body, own, alias, sc));
             }

@@ -518,6 +518,7 @@ fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
                         f(chan);
                         f(value);
                     }
+                    SelectOp::Timeout { ms } => f(ms),
                 }
                 f(&a.body);
             }
@@ -616,6 +617,7 @@ fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
                         SelectOp::Send { chan, value } => {
                             SelectOp::Send { chan: f(chan), value: f(value) }
                         }
+                        SelectOp::Timeout { ms } => SelectOp::Timeout { ms: f(ms) },
                     },
                     body: f(a.body),
                     line: a.line,
@@ -800,6 +802,9 @@ fn walk(
                         chan: walk(chan, env, parent, used, out)?,
                         value: walk(value, env, parent, used, out)?,
                     },
+                    SelectOp::Timeout { ms } => {
+                        SelectOp::Timeout { ms: walk(ms, env, parent, used, out)? }
+                    }
                 };
                 let body = walk(a.body, env, parent, used, out)?;
                 env.truncate(depth);
@@ -1151,6 +1156,7 @@ fn each_child<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
                         f(chan);
                         f(value);
                     }
+                    SelectOp::Timeout { ms } => f(ms),
                 }
                 f(&a.body);
             }
@@ -1446,6 +1452,9 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
                             chan: rewrite(chan, locals)?,
                             value: rewrite(value, locals)?,
                         },
+                        SelectOp::Timeout { ms } => {
+                            SelectOp::Timeout { ms: rewrite(ms, locals)? }
+                        }
                     };
                     Ok(SelectArm { op, body: rewrite(a.body, locals)?, line: a.line })
                 })
@@ -1594,6 +1603,7 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
                         free_of(chan, bound, out);
                         free_of(value, bound, out);
                     }
+                    SelectOp::Timeout { ms } => free_of(ms, bound, out),
                 }
                 free_of(&a.body, bound, out);
                 bound.truncate(depth);

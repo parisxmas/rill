@@ -381,6 +381,10 @@ pub struct TSelectArm {
 pub enum TSelectOp {
     Recv { chan: TExpr, elem: Ty },
     Send { chan: TExpr, value: TExpr },
+    /// `timeout(ms) ->` — ready when nothing else has been for that long.
+    /// There is no channel, so this arm queues on nothing and is answered by
+    /// the poller instead.
+    Timeout { ms: TExpr },
 }
 
 #[derive(Debug)]
@@ -1706,6 +1710,7 @@ impl Checker {
                             self.zonk_expr(chan, genmap, defaults);
                             self.zonk_expr(value, genmap, defaults);
                         }
+                        TSelectOp::Timeout { ms } => self.zonk_expr(ms, genmap, defaults),
                     }
                     if let Some((_, t)) = a.bind.as_mut() {
                         *t = self.zonk(t, genmap, defaults);
@@ -1869,6 +1874,9 @@ impl Checker {
             Expr::Select { arms, default, line } => {
                 let result_ty = self.fresh();
                 let mut tarms = Vec::new();
+                // Where the first `timeout` arm was written, for the
+                // complaint below about one beside a `default`.
+                let mut timeout_line = None;
                 for arm in arms {
                     let mut arm_env = env.clone();
                     let (op, bind) = match &arm.op {
@@ -1898,10 +1906,32 @@ impl Checker {
                             )?;
                             (TSelectOp::Send { chan: ch, value: v }, None)
                         }
+                        SelectOp::Timeout { ms } => {
+                            timeout_line.get_or_insert(arm.line);
+                            // A `default` arm means "do not wait", so a
+                            // deadline beside one could never be reached. The
+                            // check is below, where both have been seen, since
+                            // `default` may be written after this arm.
+                            let n = self.infer(ms, env)?;
+                            self.unify(&Ty::Int, &n.ty, arm.line, "`timeout` in select")?;
+                            (TSelectOp::Timeout { ms: n }, None)
+                        }
                     };
                     let body = self.infer(&arm.body, &mut arm_env)?;
                     self.unify(&result_ty, &body.ty, arm.line, "select arms")?;
                     tarms.push(TSelectArm { op, bind, body });
+                }
+                // A `default` arm means "do not wait", so a deadline beside
+                // one could never be reached. Written either way round, that
+                // is a program meaning to wait and saying both.
+                if default.is_some() {
+                    if let Some(at) = timeout_line {
+                        return Err(TypeError::new(
+                            at,
+                            "a `select` with `default` never waits, so a `timeout` arm could not be reached"
+                                .to_string(),
+                        ));
+                    }
                 }
                 let tdefault = match default {
                     Some(d) => {
@@ -3932,6 +3962,7 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
                         f(chan);
                         f(value);
                     }
+                    TSelectOp::Timeout { ms } => f(ms),
                 }
                 f(&a.body);
             }
@@ -4323,6 +4354,7 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
                         free_vars(chan, out, seen);
                         free_vars(value, out, seen);
                     }
+                    SelectOp::Timeout { ms } => free_vars(ms, out, seen),
                 }
                 free_vars(&a.body, out, seen);
             }
