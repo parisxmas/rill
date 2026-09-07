@@ -47,6 +47,27 @@ carries the same content on every route, the server answers the same 5,600
 requests a second at a hundred users, and the HTML is laid out to read rather
 than run together, which costs about a fifth more bytes on the wire.
 
+`lib/http.rill` learned headers, both ways. A `Request` carries the ones it
+arrived with, folded to lower case because HTTP says the case does not matter
+and a proxy will one day disagree about it; `header(req, name)` is the lookup.
+A `Response` carries whatever it wants to say beyond its type, and
+`with_header` adds one. That is what the two things below are made of.
+
+**Middleware.** A handler answers a request; a middleware is one layer around
+it, handed the request and the handler underneath, free to answer without
+passing it on. `wrap` stacks them outermost first and hands back a handler
+like any other, so `serve`, `serve_n` and `accept_forever` take it unchanged.
+`rate_limit(n)` is the first: n writes a second per client, 429 for the rest,
+reads never counted — and a client is whoever `X-Forwarded-For` names, since
+that is all a server behind a proxy can see. `examples/http/middleware.rill`
+is the whole of it in forty lines.
+
+**What the catalogue serves twice, it now sends once.** The nine modules a
+page pulls in are read from disk once and kept, and go back with
+`Cache-Control` and an `ETag`; a request that already has that version is told
+304. A repeat visit that fetched 123 KB fetches nothing at all — measured in
+the browser, fifteen files, zero bytes.
+
 It is also where the template engine meets a client one. The page arrives
 whole and works with JavaScript off; `static/catalogue.js` then takes it over
 with [zap](https://github.com/barisakin/zap) — signals, no virtual DOM — and

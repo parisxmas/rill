@@ -3,19 +3,48 @@
 # strand is parked, so idle clients cost nothing.
 
 type Request
-  Request(method: Str, path: Str, body: Str)
+  Request(method: Str, path: Str, headers: List(Header), body: Str)
+
+# A name and what it was given, as they arrived. The name is folded to lower
+# case on the way in, because HTTP says the two are the same header and a
+# program that compares them itself will one day meet a proxy that disagrees
+# about the capital letters.
+type Header
+  Header(name: Str, value: Str)
 
 # A reply carries what it is as well as what it says: a browser shown
 # `text/plain` renders the tags rather than the page, so a server that can
-# only say one type can only serve one kind of thing.
+# only say one type can only serve one kind of thing. Anything else it has to
+# say — how long this may be cached, what it is a version of — goes in
+# `headers`, which the three helpers below leave empty.
 type Response
-  Response(status: Int, content_type: Str, body: Str)
+  Response(status: Int, content_type: Str, headers: List(Header), body: Str)
 
-fn text_response(status, body) = Response(status, "text/plain", body)
+fn text_response(status, body) = Response(status, "text/plain", Nil, body)
 
-fn html_response(status, body) = Response(status, "text/html; charset=utf-8", body)
+fn html_response(status, body) = Response(status, "text/html; charset=utf-8", Nil, body)
 
-fn json_response(status, body) = Response(status, "application/json", body)
+fn json_response(status, body) = Response(status, "application/json", Nil, body)
+
+# One more line on the way out.
+fn with_header(res: Response, name, value) =
+  Response(res.status, res.content_type, Cons(Header(name, value), res.headers), res.body)
+
+# What a request said under that name, or "" — the lookup a handler wants,
+# since a header that is not there and one that is empty mean the same thing
+# to almost every caller.
+fn header(req: Request, name) = header_in(req.headers, lower(name))
+
+fn header_in(headers: List(Header), name) = match headers
+  Nil -> ""
+  Cons(one, rest) -> if one.name == name then one.value else header_in(rest, name)
+
+fn lower(s) =
+  b = strbuf()
+  for i in 0..str_len(s)
+    c = str_get(s, i)
+    b += if c >= 65 && c <= 90 then c + 32 else c
+  strbuf_str(b)
 
 # -- reading ------------------------------------------------------------------
 
@@ -36,7 +65,22 @@ fn body_of(raw) =
 
 fn parse_request(raw) =
   parts = split(first_line(raw), " ")
-  Request(unwrap_or(nth(parts, 0), "GET"), unwrap_or(nth(parts, 1), "/"), body_of(raw))
+  Request(unwrap_or(nth(parts, 0), "GET"), unwrap_or(nth(parts, 1), "/"), headers_of(raw), body_of(raw))
+
+# Every line after the first, up to the blank one. A line with no colon is not
+# a header and is passed over rather than guessed at.
+fn headers_of(raw) =
+  i = str_find(raw, "\r\n\r\n")
+  head = if i < 0 then raw else str_sub(raw, 0, i)
+  lines = split(head, "\r\n")
+  named(lines, 1, Nil)
+
+fn named(lines, i, acc) =
+  if i >= len(lines) then reverse(acc)
+  else
+    line = unwrap_or(nth(lines, i), "")
+    at = str_find(line, ":")
+    if at < 0 then named(lines, i + 1, acc) else named(lines, i + 1, Cons(Header(lower(str_sub(line, 0, at)), trim(str_sub(line, at + 1, str_len(line)))), acc))
 
 # -- writing ------------------------------------------------------------------
 
@@ -44,16 +88,31 @@ fn status_text(code) = match code
   200 -> "OK"
   201 -> "Created"
   400 -> "Bad Request"
+  304 -> "Not Modified"
   404 -> "Not Found"
   429 -> "Too Many Requests"
   500 -> "Internal Server Error"
   _ -> "Unknown"
 
-fn render(res, keep) = match res
-  Response(status, kind, body) -> render_parts(status, kind, body, keep)
+fn render(res: Response, keep) =
+  render_parts(res.status, res.content_type, res.headers, res.body, keep)
 
-fn render_parts(status, kind, body, keep) =
-  "HTTP/1.1 " + int_to_str(status) + " " + status_text(status) + "\r\n" + "Content-Type: " + kind + "\r\n" + "Content-Length: " + int_to_str(str_len(body)) + "\r\n" + "Connection: " + (if keep then "keep-alive" else "close") + "\r\n\r\n" + body
+fn render_parts(status, kind, extra, body, keep) =
+  b = strbuf()
+  b += "HTTP/1.1 " + int_to_str(status) + " " + status_text(status) + "\r\n"
+  b += "Content-Type: " + kind + "\r\n"
+  b += "Content-Length: " + int_to_str(str_len(body)) + "\r\n"
+  b += "Connection: " + (if keep then "keep-alive" else "close") + "\r\n"
+  header_lines(b, extra)
+  b += "\r\n"
+  b += body
+  strbuf_str(b)
+
+fn header_lines(b: StrBuf, headers: List(Header)) = match headers
+  Nil -> 0
+  Cons(one, rest) ->
+    b += one.name + ": " + one.value + "\r\n"
+    header_lines(b, rest)
 
 # -- serving ------------------------------------------------------------------
 
@@ -151,10 +210,19 @@ fn rate_limit(per_second) =
 fn under_limit(seen, per_second, req: Request, next) =
   if req.method == "GET" || req.method == "HEAD" then next(req)
   else
-    key = req.method + " " + req.path
+    key = whose(req) + " " + req.method + " " + req.path
     now = now_nanos() / 1000000000
     count = hits_this_second(seen, key, now)
     if count > per_second then too_many(per_second) else next(req)
+
+# Who is asking, as far as this server can tell. Behind a proxy that is the
+# first name in `X-Forwarded-For` — the ones after it are the proxies. With
+# nothing in front there is no such header and every caller counts as the
+# same one, which is a limit on the route rather than on a client and is the
+# honest thing to say about a server that cannot see past its own socket.
+fn whose(req: Request) =
+  said = header(req, "x-forwarded-for")
+  if str_len(said) == 0 then "anyone" else trim(unwrap_or(nth(split(said, ","), 0), said))
 
 # One second's worth of counting: a key holds the second it is counting and
 # how many have arrived in it, and a new second starts the count again.
@@ -169,7 +237,7 @@ fn hits_this_second(seen, key, now) = match map_get(seen, key)
       count
 
 fn too_many(per_second) =
-  Response(429, "application/json", "{\"error\":\"too many writes — the limit is " + int_to_str(per_second) + " a second\"}")
+  json_response(429, "{\"error\":\"too many writes — the limit is " + int_to_str(per_second) + " a second\"}")
 
 # -- a client, enough to talk to ourselves ------------------------------------
 

@@ -2394,7 +2394,9 @@ fn templates_render_the_page_they_are_given() {
 /// A handler with layers on it. `wrap` puts them on outermost first, so the
 /// one that announces what it saw sees the answer the rate limiter gave
 /// without the handler underneath ever being called — which is the point of a
-/// middleware being able to answer for itself.
+/// middleware being able to answer for itself. The fourth write comes from
+/// another client in the same second and is let through, which is the limit
+/// being per client rather than per route.
 #[test]
 fn middleware_wraps_a_handler_and_may_answer_for_it() {
     assert_eq!(
@@ -2402,6 +2404,7 @@ fn middleware_wraps_a_handler_and_may_answer_for_it() {
         "saw POST /write -> 200\n200 wrote one\n\
          saw POST /write -> 200\n200 wrote two\n\
          saw POST /write -> 429\n429 {\"error\":\"too many writes — the limit is 2 a second\"}\n\
+         saw POST /write -> 200\n200 wrote four\n\
          saw GET /read -> 200\n200 wrote \n"
     );
 }

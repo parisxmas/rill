@@ -16,6 +16,12 @@
 # lets two writes a second through and answers 429 to the rest — so the third
 # POST is answered by the middleware and the handler under it is never called,
 # which is what the announcer's line shows.
+#
+# The limit is per client, and a client is whoever `X-Forwarded-For` says: the
+# fourth POST comes from another address in the same second and is let
+# through. With nothing in front of the server there is no such header and the
+# limit is on the route instead, which is the honest thing for a server that
+# cannot see past its own socket.
 
 import "http" as h
 
@@ -27,10 +33,12 @@ fn main() = match listen_on(0)
 
 fn run(server, port) =
   layers = Cons(\req, next -> announce(req, next), Cons(h.rate_limit(2), Nil))
-  spawn h.accept_n(server, h.wrap(layers, \req -> answer(req)), 5)
-  println(post(port, "/write", "one"))
-  println(post(port, "/write", "two"))
-  println(post(port, "/write", "three"))
+  spawn h.accept_n(server, h.wrap(layers, \req -> answer(req)), 7)
+  println(post(port, "/write", "one", "203.0.113.7"))
+  println(post(port, "/write", "two", "203.0.113.7"))
+  println(post(port, "/write", "three", "203.0.113.7"))
+  # A different client, in the same second, has its own two.
+  println(post(port, "/write", "four", "198.51.100.4"))
   println(get(port, "/read"))
   0
 
@@ -41,12 +49,14 @@ fn announce(req: h.Request, next) =
 
 fn status_of_res(res: h.Response) = res.status
 
-fn answer(req: h.Request) = h.text_response(200, "wrote " + req.body)
+# What a handler says about its answer beyond the answer itself.
+fn answer(req: h.Request) =
+  h.with_header(h.text_response(200, "wrote " + req.body), "X-Wrote-For", h.header(req, "x-forwarded-for"))
 
-fn post(port, path, body) = match connect_to("127.0.0.1", port)
+fn post(port, path, body, client) = match connect_to("127.0.0.1", port)
   Err(e) -> e
   Ok(fd) ->
-    sock_write(fd, "POST " + path + " HTTP/1.1\r\nHost: x\r\nContent-Length: " + int_to_str(#body) + "\r\nConnection: close\r\n\r\n" + body)
+    sock_write(fd, "POST " + path + " HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: " + client + "\r\nContent-Length: " + int_to_str(#body) + "\r\nConnection: close\r\n\r\n" + body)
     raw = h.read_response(fd, "")
     sock_close(fd)
     int_to_str(h.status_of(raw)) + " " + h.response_body(raw)

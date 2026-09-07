@@ -2,8 +2,7 @@
 # server runs on a strand while main plays the client.
 import "http"
 
-fn route(req) = match req
-  Request(method, path, body) -> respond(method, path, body)
+fn route(req: Request) = respond(req.method, req.path, req.body)
 
 fn respond(method, path, body) =
   if path == "/" then text_response(200, "hello from rill") else if path == "/echo" then text_response(200, method + " " + path) else if starts_with(path, "/add/") then add_route(path) else text_response(404, "no route for " + path)
