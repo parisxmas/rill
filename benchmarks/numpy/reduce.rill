@@ -1,0 +1,20 @@
+# mean, standard deviation, max and argmax of twenty million numbers.
+import "grid" as g
+
+fn work(a) = (g.mean(a), g.std(a), g.gmax(a), g.argmax(a))
+
+fn main() =
+  n = 20000000
+  a = g.from_fn1(n, \i -> to_float(i % 1000) * 0.5)
+  (wm, wsd, wmx, wam) = work(a)
+  t0 = now_nanos()
+  (m, sd, mx, am) = work(a)
+  t1 = now_nanos()
+  println(m)
+  println(sd)
+  println(mx)
+  println(am)
+  println(wm + wsd + wmx)
+  println(wam)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

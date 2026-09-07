@@ -1,0 +1,19 @@
+# c = sqrt(a) * (2a + 1) + a over ten million elements.
+import "grid" as g
+
+fn work(a) =
+  b = g.shift(g.scale(a, 2.0), 1.0)
+  c = g.add(g.mul(g.gsqrt(a), b), a)
+  g.sum(c)
+
+fn main() =
+  n = 10000000
+  a = g.arange(n)
+  warm = work(a)
+  t0 = now_nanos()
+  s = work(a)
+  t1 = now_nanos()
+  println(s)
+  println(warm)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

@@ -1,0 +1,16 @@
+# Two hundred thousand steps on a sixteen-element vector: v = v * 0.999 + 0.5.
+# The shape of a simulation's inner loop, where each step is tiny.
+import "grid" as g
+
+fn step(v, k) = if k == 0 then v else step(g.shift(g.scale(v, 0.999), 0.5), k - 1)
+
+fn main() =
+  v = g.arange(16)
+  warm = step(v, 200000)
+  t0 = now_nanos()
+  w = step(v, 200000)
+  t1 = now_nanos()
+  println(g.sum(w))
+  println(g.sum(warm))
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

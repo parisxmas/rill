@@ -191,8 +191,8 @@ fn main() =
   println(q)
 ```
 
-A tuple holds two to four values, and `(A, B)` is its type. It is an
-ordinary data type underneath — `Tuple2`, `Tuple3`, `Tuple4` in the prelude —
+A tuple holds two to eight values, and `(A, B)` is its type. It is an
+ordinary data type underneath — `Tuple2` to `Tuple8` in the prelude —
 so it compares, shows and pattern-matches like any other, and `(n, s) -> ...`
 is a pattern anywhere a pattern goes.
 
@@ -200,6 +200,32 @@ A binding may take apart any type with exactly one constructor:
 `Parsed(v, rest) = parse(s)` reads as a binding because it cannot fail. On a
 type with more than one, the compiler says the match is not exhaustive, which
 is the truth: use `match`.
+
+`==` and `!=` on floats follow IEEE 754, as C and Python do: a NaN is equal
+to nothing, itself included, so `x == x` is false for one and `x != x` is
+true — which is how a program asks whether a number is a number.
+
+### Lanes: `Float2`
+
+`Float2` is two `Float`s that travel together in one 128-bit register — what
+a kernel written with the machine's vector lanes in mind is written in:
+
+```
+p = float2(1.5, -2.0)
+q = p * splat2(4.0) + float2(0.25, 0.25)   # both lanes at once: (6.25, -7.75)
+lane0(q) + lane1(q)
+v = f2_load(buf, i)                        # buf[i] and buf[i + 1], as one
+f2_store(buf, i, fma2(a, b, v))            # a fused multiply-add on both lanes
+```
+
+`+ - * /` work lane by lane with the same one loosening as a `Float` (a
+multiply and the add that consumes it may fuse), `==` is of both lanes, and
+a `Float2` prints as a pair, goes in a map or down a channel, and sits in a
+flat record like any number. It is not a general vector type — no `Float4`,
+no lane-wise comparison — but it is what the matrix product in
+`lib/grid.rill` keeps its block of answers in, and it is why that product
+runs at the speed of a BLAS. The rest of a numeric loop needs none of this:
+a plain `for` over a buffer is vectorized by the compiler on its own.
 
 ### String builders
 
@@ -573,6 +599,19 @@ when the functions are written in place as lambdas and the elements are
 numbers or booleans. The prelude's `map` and `filter` are what is recognized;
 a program that defines its own gets what it wrote.
 
+A binding whose last use is a call is handed to the call rather than copied
+into it — the reference goes with the argument, no count taken and none given
+back — when the call is on the statement's unconditional path and the name is
+not spoken again. And a function may ask what that leaves it holding:
+`unique(x)` is true when this frame holds the only reference to `x`. The two
+together are what lets an operation write its answer into an operand's own
+storage when the operand was a temporary: `lib/grid.rill` makes `a * 2.0 +
+1.0` one grid and not two by asking `unique` of what it was given. A value
+that is asked about is passed owned, so a caller still using it keeps a
+reference of its own and the answer is `false`; a compile-time constant is
+never unique; a value with no count — a flat record, a number — cannot be
+asked.
+
 Run any program with `RILL_DEBUG_ALLOC=1` to have the runtime print the number
 of live allocations at exit.
 
@@ -782,7 +821,16 @@ live at that worker's addresses.
 
 Parallelism helps when strands compute independently. Work that is a chain
 of rendezvous — one strand handing a value to the next — has nothing to
-overlap and runs fastest on a single worker.
+overlap and runs fastest on a single worker. A library that wants to split a
+big piece of work asks `workers()` how many there are and spawns that many
+strands over ranges of it; `lib/grid.rill` does this for anything over a few
+million elements, and never spawns on a single-worker run.
+
+A program that spawns anything is compiled with a check at every recursive
+tail call, so a strand that loops forever hands the worker over now and then
+(§7 above); a `for` loop whose body calls nothing is bounded and is left
+alone, which is what keeps a loop over ten million floats in vector
+instructions.
 
 ---
 
@@ -1036,7 +1084,11 @@ why a buffer should be held by a Rill binding rather than stashed in a raw
 `Ptr` slot, which would lose the count.
 
 `examples/buffers.rill` shows all of it, and `examples/gl/scene.rill` fills
-one with the vertex data a GPU is handed.
+one with the vertex data a GPU is handed. For arrays with a shape — matrices,
+vectors, the things NumPy does — `lib/grid.rill` lays a shape and strides
+over one such buffer: `import "grid" as g`, then `g.matmul`, `g.sum_axis`,
+`g.transpose` (a view, no copy) and the rest; `benchmarks/numpy/README.md`
+lists what it has and how it measures.
 
 ### Callbacks
 
@@ -1116,7 +1168,7 @@ Two things to keep in mind: a wrong signature is a crash, not a type error —
 the compiler believes what you declare; and a C call that blocks freezes the
 worker thread running it, since the scheduler cannot preempt foreign code.
 
-### Being called: `export` and WebAssembly
+### Being called: `export`, WebAssembly and shared libraries
 
 `extern` is Rill calling out. `export` is the other direction — a function the
 embedding host may call in:
@@ -1126,19 +1178,33 @@ export fn frame(t: Float) =
   ...
 ```
 
-It only means something on a wasm target (`--target wasm32-wasip1`), because
-only there is a host present; a native build refuses the word. A module with
-any export links as a *reactor*: it has no `_start`, it stays instantiated,
-and the host drives it. `main` still runs — exported as `rill_init`, which the
-host calls once before anything else — and each `export fn` is a wasm export
-under its own name.
+It means something where there is a host: a wasm module (`--target
+wasm32-wasip1`), or a shared library (`--shared`) that a C or Python program
+loads. A native executable has neither and refuses the word. Either way the
+module links as a *reactor*: it has no entry point of its own, it stays
+loaded, and the host drives it. `main` still runs — as `rill_init`, which the
+host calls once before anything else — and each `export fn` is a symbol under
+its own name.
 
-The boundary takes what wasm can pass: parameters must be `Int`, `Float`,
-`Bool` or `Ptr`, the return those or `Unit`, and the function must be
+On wasm the boundary takes what wasm can pass: parameters must be `Int`,
+`Float`, `Bool` or `Ptr`, the return those or `Unit`, and the function must be
 concrete — an export is one entry point, not a generic family. Data wider than
 a scalar crosses through a `Buf`: build one, hand it to an import — where a
 `Ptr` is wanted a buffer is its address — and the host reads it straight out
 of the module's linear memory.
+
+A shared library's boundary is wider: a counted value — a data value, a
+buffer, a string, a map — crosses as a handle. One the host passes in is lent
+for the call and is the host's still when the call returns; one an export
+returns is the host's to keep, and for every such type the library also
+exports `rill_drop_<Type>(handle)` — `rill_drop_g_Grid` for a `Grid` imported
+as `g`, the module's dot made an underscore — for the host to let it go by.
+A buffer's handle is the address of its elements, so the host may read them
+straight through it while it holds the grid. `bindings/python/gridlib.rill`
+is a library of this kind over `lib/grid.rill`, and `bindings/python/grid`
+the `ctypes` package that makes it `import grid as g` in Python, NumPy's
+notation on Rill's loops. Strands need the scheduler a program's `main` runs
+and a library's host does not, so a library runs on one worker.
 
 On wasm an `extern fn` that no library satisfies becomes an *import* — a hole
 the host fills at instantiation. That is the whole FFI story in a browser:
@@ -1175,6 +1241,10 @@ traps mid-run.
 | `to_cstr` `from_cstr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |
 | `now_nanos()` `sleep_ms(ms)` | a monotonic clock, and a wait that parks the strand |
+| `workers()` | how many workers this run has — 1 unless `RILL_THREADS` said otherwise — for deciding how many strands a big piece of work is worth |
+| `unique(x)` | whether this frame holds the only reference to a counted value; see §6 |
+| `float2(a, b)` `splat2(x)` `lane0(v)` `lane1(v)` `f2_load(buf, i)` `f2_store(buf, i, v)` `fma2(a, b, c)` | two lanes at once; see §3 |
+| `buf_float_uninit(n)` | a buffer of floats whose elements are whatever the memory held, for a caller about to write every one — no clearing pass |
 | `exit(code)` | terminate |
 
 ---
@@ -1185,6 +1255,7 @@ traps mid-run.
 rill build main.rill -o main    # compile (LLVM -O3, stripped)
 rill build main.rill --debug    # no optimization, DWARF line info for lldb
 rill build main.rill --unchecked  # no bounds test on buffers: run it checked first
+rill build main.rill --shared   # a .dylib/.so whose `export fn`s a C or Python host calls
 rill build main.rill --emit-ir  # print LLVM IR
 rill run main.rill              # compile and run
 rill check main.rill            # type-check only, saying everything it finds

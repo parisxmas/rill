@@ -1,5 +1,138 @@
 # Changelog
 
+## Unreleased — a shape over a buffer, and NumPy behind it
+
+`lib/grid.rill`: arrays of numbers with a shape, the way NumPy has them. A
+grid is one flat `Buf(Float)` and the shape laid over it — `shape`,
+`strides`, `off` — so `transpose`, `rows`, `col` and `slice1` are views that
+cost nothing, and `copy`, `reshape` and every operation that makes a grid
+lay it out contiguously. Making: `zeros`/`ones`/`full`, `arange`,
+`linspace`, `of`, `from_fn1`/`from_fn2`, `identity`. Elementwise: `add`,
+`sub`, `mul`, `div`, `scale`, `shift`, `power`, `neg`, `gabs`, `gsqrt`,
+`gexp`, `glog`, `maximum`, `minimum`, and `map`/`zip` with a lambda.
+Comparisons make a `Mask` — a byte per element — `gt lt ge le eq ne` and
+`gtk ltk gek lek eqk nek` against one number, with `where`, `mcount`,
+`any`, `all`, `mask_and/or/not`, `to_grid`. Reductions: `sum`, `mean`,
+`prod`, `gmax`, `gmin`, `argmax`, `argmin`, `var`, `std`, `dot`, `norm`,
+`cumsum`, `sum_axis`, `mean_axis`. Linear algebra: `matmul`, `matvec`,
+`outer`, `trace`. Elements: `at1`/`at2`, `put1`/`put2` in place.
+`println(g)` prints it. On a `--parallel` build with `RILL_THREADS` set,
+anything over a few million elements is split across the workers in
+strands.
+
+`bindings/python`: the same library from Python — `import grid as g`, then
+`a = g.arange(6).reshape(2, 3)`, `a * 2.0 + 1.0`, `a @ a.T`, `a[a > 2]`,
+`.sum(axis=0)`, `np.asarray(a)`. `gridlib.rill` is a set of `export fn`s
+built with `rill build --shared`; the package is a `ctypes` layer of
+operators, indexing and shape checks. Nothing is computed in Python.
+
+The rest of what an array library is expected to have, all of it checked
+against NumPy value by value:
+
+- **The maths**: `gsin`, `gcos`, `gtan` and the inverses, the hyperbolics,
+  `gexp2`, `gexpm1`, `glog2`, `glog10`, `glog1p`, `gcbrt`, `gfloor`,
+  `gceil`, `gtrunc`, `ground` (to the even one on a half, as NumPy rounds),
+  `gsign`, `gsquare`, `greciprocal`, `gdegrees`, `gradians`, `gclip`,
+  `gmaxk`/`gmink` against one number, and `gatan2`, `ghypot`, `gfmod`,
+  `gcopysign`, `gpowg` over two grids.
+- **Shape and joining**: `zeros_like` and its family, `squeeze`, `ravel`,
+  `logspace`, `geomspace`, `concat`, `vstack`, `hstack`, `stack`, `tile`,
+  `repeat`, `diag`, `tril`, `triu`, `meshgrid`, `fliplr`, `flipud`, `flip`,
+  `roll`, `take`.
+- **Order**: `sort` (quicksort, median-of-three, the larger half left to
+  the tail call, so the stack is logarithmic), `argsort` (a stable merge
+  sort over the positions), `distinct`, `searchsorted`, `nonzero`,
+  `count_nonzero`, `median`, `percentile`, `quantile`, `ptp`, `diff`,
+  `cumprod`, and the `nan`-skipping reductions `nansum`, `nanmean`,
+  `nanmax`, `nanmin`, `nanargmax`, `nanargmin`, with `isnan`, `isinf`,
+  `isfinite` and `isclose` giving masks.
+- **Solving**: `lu` factors a matrix once with partial pivoting, sixty-four
+  columns at a time, its trailing update and the substitutions afterwards
+  going through the same `Float2` kernel `matmul` uses; `solve` (a vector or
+  a matrix of right-hand sides), `inv`, `det`, `matrix_power` (by squaring),
+  `lstsq` (through the normal equations), `norm1`, `norm_inf`, `norm_fro`,
+  `cond`, `kron`, `cross`, `inner` and `vdot` are written on it. A singular
+  matrix stops a program with a message and hands a host an empty grid
+  instead, which `grid.solve` in Python raises `LinAlgError` on.
+
+`sort` above a few thousand elements sorts by the bits rather than by
+comparing: a float's order is its bit pattern's order once the sign is
+folded in, so the numbers go into place a byte at a time, in eight counting
+passes over two buffers, with one histogram pass serving all eight. There is
+nothing to mispredict, which is what a comparison sort spends its time on,
+and it runs 2.3× faster than NumPy's sort where the quicksort it replaces
+ran 1.4× slower. Below that it is still a quicksort, since the passes and
+the two buffers are not worth it for a short range. `median` and
+`percentile` select rather than sort, as NumPy's do.
+
+`benchmarks/numpy/` measures the library against NumPy on twelve programs,
+on one core and on all of them. Rill is ahead on eleven — two hundred
+thousand small operations 11×, sorting 2.6×, reductions 2.3×, a mask and a
+`where` 1.8×, moving numbers about 1.6×, order statistics and a matrix
+product 1.1× — and level where both sides stream memory at the machine's
+limit or call the same maths library. The one loss is solving a linear
+system, at 1.5× of LAPACK. The whole process is 2–12× shorter on all
+twelve. `benchmarks/numpy/README.md` has the table and the reasoning.
+
+The language and compiler, on the way there:
+
+- **`Float2`**: two floats in one register, with `+ - * /` on both lanes,
+  `float2`, `splat2`, `lane0`/`lane1`, `f2_load`/`f2_store` and `fma2`. A
+  kernel written in it says its vectors; the grid's matrix product keeps a
+  4 × 10 block of answers in twenty of them and runs at the speed of a BLAS.
+- **`unique(x)`**: whether this frame holds the only reference. A value
+  asked about is passed owned, so a caller still using it keeps its own
+  reference and the answer is `false`. What lets an operation write into a
+  temporary's storage.
+- **A binding's last use moves it into the call** — no retain before, no
+  release after, the callee the one holder — on the statement's
+  unconditional path, when the name is not spoken again.
+- **Tuples hold up to eight** values (`Tuple5`–`Tuple8`), so a reduction can
+  carry eight partial sums in eight registers.
+- **Flat values cross a call as their fields**, one parameter each, instead
+  of one aggregate: a loop carrying a tuple of sums is a function tail-calling
+  itself with one, and LLVM's aggregate `phi` for it hid the sums from the
+  vectorizer.
+- **`sqrt`, `fabs`, `floor`, `ceil`, `trunc`, `round`, `rint`, `fma`,
+  `fmin`, `fmax`, `copysign` declared from libm are the instruction**, not
+  the call: C's `sqrt` may set `errno`, which is why a loop of them never
+  vectorized.
+- **A `for` loop whose body calls nothing is not preemption-checked**: the
+  check is a volatile load and a branch per element, and a program that
+  spawns anything had it in every loop.
+- **`workers()`**, **`buf_float_uninit(n)`** (a buffer about to be written
+  in full, no clearing pass), and a runtime cache of the last few big blocks
+  freed, so an array library's eighty-megabyte results are not page-faulted
+  in afresh every time.
+- **`rill build --shared`**: a shared library whose `export fn`s a C or
+  Python host calls. Counted values cross as handles, lent in and handed
+  out, with `rill_drop_<Type>` for the host to let go by; `main` runs as
+  `rill_init`.
+- **`--emit-ir` honours `--unchecked`.**
+- **`!=` on floats is now unordered**, as C, Python and IEEE 754 have it:
+  `x != x` is true of a NaN, where it used to be false. `==` is unchanged —
+  a NaN is equal to nothing, itself included — and nothing else about
+  comparison moved. It is how a program asks whether a number is a number.
+
+Building it found four things in the compiler:
+
+- **A record's field indexed in a loop** — `g.data[k]` — was retained and
+  released on every element, and the release's branch kept the loop from
+  vectorizing. A field of a box the frame holds is now read without a count
+  taken for the look.
+- **A `for` body that indexes a record's field** reads the field into a name
+  of its own before the loop, and **an index `v[e + i]` with a
+  loop-invariant `e`** — `a[i*n + j]` in a matrix loop — is bounds-checked
+  once for the whole loop, as `v[i]` already was.
+- **Bindings inside a non-tail `if` branch's block were released at the
+  function's exit**, on a path where they never existed. A block's bindings
+  are now released when the block ends — by identity, since a call in the
+  block may have been handed one of the frame's own.
+- **Three faults a module imported under an alias showed**: an `impl` inside
+  it did not find its own type; a type annotation in it (`g: Grid`) was taken
+  for a type parameter, the alias being lowercase; and a `for` body that read
+  a field of a captured record (`p.x`) did not capture `p`. All three fixed.
+
 ## Unreleased — bytes in, bytes out
 
 Seven disk and network programs beside their Go twins (`benchmarks/io/`),

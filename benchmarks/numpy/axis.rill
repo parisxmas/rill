@@ -1,0 +1,22 @@
+# A 2000 × 2000 grid transposed (a view), then summed along both axes: the
+# strided read a transpose leaves behind.
+import "grid" as g
+
+fn work(a, n) =
+  t = g.transpose(a)
+  cols = g.sum_axis(t, 0)
+  rws = g.sum_axis(t, 1)
+  (g.sum(g.mul(cols, g.arange(n))), g.sum(g.mul(rws, g.arange(n))))
+
+fn main() =
+  n = 2000
+  a = g.from_fn2(n, n, \i, j -> to_float(i - j))
+  (wc, wr) = work(a, n)
+  t0 = now_nanos()
+  (c, r) = work(a, n)
+  t1 = now_nanos()
+  println(c)
+  println(r)
+  println(wc + wr)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

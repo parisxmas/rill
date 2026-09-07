@@ -1,0 +1,54 @@
+# `unique(x)`: whether this frame holds the only reference to a counted
+# value. The question an array library asks before writing its answer into
+# an operand's own storage — an operand nobody else can see is a temporary,
+# and a temporary's storage is the cheapest place for the result.
+#
+# What makes the answer trustworthy is who owns what. A value passed to a
+# function that asks `unique` of it is passed owned: a caller that goes on
+# using the value keeps a reference of its own, and the count says two. A
+# caller whose last word on a binding is the call hands over the binding
+# itself, and the count says one. So `bump(bump(bump(fresh(3))))` writes
+# three times into one buffer, `b = bump(a)` with `a` still in use does not
+# touch `a`, and `t = fresh(3); u = bump(t)` — the last use of `t` — reuses
+# `t`'s storage without a copy.
+
+type Vec
+  Vec(n: Int, d: Buf(Float))
+
+fn fresh(n) =
+  d = buf_float(n)
+  for i in 0..n
+    d[i] = to_float(i)
+  Vec(n, d)
+
+# Every element plus one: in place when the vector is ours alone.
+fn bump(v: Vec) =
+  out = if unique(v) && unique(v.d) then v else copy(v)
+  for i in 0..v.n
+    out.d[i] = v.d[i] + 1.0
+  out
+
+fn copy(v: Vec) =
+  d = buf_float(v.n)
+  for i in 0..v.n
+    d[i] = v.d[i]
+  Vec(v.n, d)
+
+fn total(v: Vec) =
+  for i in 0..v.n with acc = 0.0
+    acc + v.d[i]
+
+fn main() =
+  a = fresh(3)
+  b = bump(a)
+  println(total(a))
+  println(total(b))
+  c = bump(bump(bump(fresh(3))))
+  println(total(c))
+  t = fresh(4)
+  u = bump(t)
+  println(total(u))
+  s = "abc"
+  println(unique(s))
+  w = s + "d"
+  println(unique(w))

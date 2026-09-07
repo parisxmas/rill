@@ -1,0 +1,59 @@
+# Two floats in one register, and the eight-way sums they add up to.
+#
+# `Float2` is a pair of floats the machine handles as one: `+ - * /` work on
+# both lanes at once, `fma2` is a fused multiply-add on both, `f2_load` and
+# `f2_store` move a pair between a buffer and a register. It is what a
+# kernel that has been written with lanes in mind is written in — the
+# matrix product in `lib/grid.rill` keeps its 4 × 10 block of answers in
+# twenty of them.
+#
+# A tuple holds up to eight values, and eight running sums in eight
+# registers is what keeps a reduction on the memory bus rather than the
+# adder: each sum is a chain of adds waiting on the last, and eight chains
+# overlap.
+
+# The sum of the elements, eight lanes at a time, then the tail.
+fn sum8(d: Buf(Float), n) =
+  octs = n / 8
+  (s0, s1, s2, s3, s4, s5, s6, s7) = for k in 0..octs with acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    (p0, p1, p2, p3, p4, p5, p6, p7) = acc
+    o = 8 * k
+    (p0 + d[o], p1 + d[o + 1], p2 + d[o + 2], p3 + d[o + 3], p4 + d[o + 4], p5 + d[o + 5], p6 + d[o + 6], p7 + d[o + 7])
+  tail = for k in octs * 8..n with acc = 0.0
+    acc + d[k]
+  s0 + s1 + (s2 + s3) + (s4 + s5 + (s6 + s7)) + tail
+
+# The dot product with the lanes spelled out: four pairs, each a fused
+# multiply-add per step.
+fn dot2(a: Buf(Float), b: Buf(Float), n) =
+  chunks = n / 8
+  (v0, v1, v2, v3) = for k in 0..chunks with acc = (splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0))
+    (p0, p1, p2, p3) = acc
+    o = 8 * k
+    (fma2(f2_load(a, o), f2_load(b, o), p0), fma2(f2_load(a, o + 2), f2_load(b, o + 2), p1), fma2(f2_load(a, o + 4), f2_load(b, o + 4), p2), fma2(f2_load(a, o + 6), f2_load(b, o + 6), p3))
+  v = v0 + v1 + (v2 + v3)
+  tail = for k in chunks * 8..n with acc = 0.0
+    acc + a[k] * b[k]
+  lane0(v) + lane1(v) + tail
+
+fn main() =
+  n = 1003
+  a = buf_float(n)
+  b = buf_float(n)
+  for i in 0..n
+    a[i] = to_float(i % 17)
+    b[i] = to_float(i % 5) - 2.0
+  println(sum8(a, n))
+  println(dot2(a, b, n))
+  p = float2(1.5, -2.0)
+  q = splat2(4.0)
+  println(p * q + float2(0.25, 0.25))
+  println(lane0(p) + lane1(p))
+  println(p == float2(1.5, -2.0))
+  f2_store(a, 0, p)
+  println(a[0])
+  println(a[1])
+  sums = for i in 0..4 with acc = (0, 0, 0, 0, 0, 0, 0, 0)
+    (c0, c1, c2, c3, c4, c5, c6, c7) = acc
+    (c0 + i, c1 + i * 2, c2 + i * 3, c3 + i * 4, c4 + i * 5, c5 + i * 6, c6 + i * 7, c7 + i * 8)
+  println(sums)

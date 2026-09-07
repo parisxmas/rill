@@ -1,0 +1,22 @@
+# A mask and a choice: where a > 5000, take a, else take b — ten million.
+import "grid" as g
+
+fn work(a, b) =
+  m = g.gtk(a, 5000.0)
+  c = g.where(m, a, b)
+  (g.sum(c), g.mcount(m))
+
+fn main() =
+  n = 10000000
+  a = g.from_fn1(n, \i -> to_float(i % 10000))
+  b = g.from_fn1(n, \i -> to_float(i % 3))
+  (ws, wc) = work(a, b)
+  t0 = now_nanos()
+  (s, cnt) = work(a, b)
+  t1 = now_nanos()
+  println(s)
+  println(cnt)
+  println(ws)
+  println(wc)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

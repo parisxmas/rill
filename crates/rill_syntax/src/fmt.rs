@@ -863,7 +863,7 @@ fn pattern(p: &Pattern) -> String {
 /// `Tuple2`..`Tuple4` are what the tuple notation stands for, and are printed
 /// back the way they were written.
 fn is_tuple(name: &str, n: usize) -> bool {
-    (2..=4).contains(&n) && name == format!("Tuple{n}")
+    (2..=8).contains(&n) && name == format!("Tuple{n}")
 }
 
 /// `with acc = init`, when the loop carries something.

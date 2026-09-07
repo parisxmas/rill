@@ -21,7 +21,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill types <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill types <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -261,6 +261,7 @@ fn repl_compile(program: &str, tmp_src: &Path, tmp_exe: &Path) -> Result<(), Str
         output: tmp_exe.to_path_buf(),
         emit_ir: false,
         unchecked: false,
+        shared: false,
         debug: true, // skip O3 for snappy iteration
         parallel: false,
     });
@@ -289,6 +290,10 @@ struct BuildOpts {
     /// Swift's -Ounchecked make. An index out of range is then what it is in
     /// C, so this is for a program that has been run checked first.
     unchecked: bool,
+    /// A shared library rather than a program: the `export fn`s are its
+    /// entry points, `main` runs once as `rill_init`, and every counted type
+    /// at the boundary gets a `rill_drop_<Type>` for the host to let go by.
+    shared: bool,
     /// An LLVM triple to compile for instead of this machine. The object is
     /// written and the link is left alone: the linker and the runtime for
     /// that machine are not this machine's.
@@ -303,6 +308,7 @@ impl BuildOpts {
         let mut unchecked = false;
         let mut debug = false;
         let mut parallel = false;
+        let mut shared = false;
         let mut target: Option<String> = None;
         let mut it = args.iter();
         while let Some(a) = it.next() {
@@ -316,6 +322,7 @@ impl BuildOpts {
                 "--unchecked" => unchecked = true,
                 "--debug" => debug = true,
                 "--parallel" => parallel = true,
+                "--shared" => shared = true,
                 "--target" => {
                     target = Some(it.next().ok_or("`--target` requires an LLVM triple")?.clone());
                 }
@@ -334,7 +341,12 @@ impl BuildOpts {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("a.out"))
         });
-        Ok(BuildOpts { source, output, emit_ir, debug, parallel, unchecked, target })
+        let output = if shared && output.extension().is_none() {
+            output.with_extension(if cfg!(target_os = "macos") { "dylib" } else { "so" })
+        } else {
+            output
+        };
+        Ok(BuildOpts { source, output, emit_ir, debug, parallel, unchecked, shared, target })
     }
 }
 
@@ -345,7 +357,7 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
         .map_err(|e| format!("{}: {e}", opts.source.display()))?;
 
     if opts.emit_ir {
-        let ir = rill_codegen::compile_to_ir(&tmod)
+        let ir = rill_codegen::compile_to_ir(&tmod, opts.unchecked)
             .map_err(|e| format!("{}: {e}", opts.source.display()))?;
         println!("{ir}");
     }
@@ -359,6 +371,7 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
         &opts.source,
         opts.target.as_deref(),
         opts.unchecked,
+        opts.shared,
     )
     .map_err(|e| format!("{}: {e}", opts.source.display()))?;
 
@@ -380,6 +393,11 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
     let runtime = find_runtime()?;
     let mut link_cmd = Command::new("cc");
     link_cmd.arg(&obj_path).arg(&runtime).arg("-o").arg(&opts.output);
+    // A library rather than a program: no entry point of its own, and the
+    // exports stay visible for the host to find by name.
+    if opts.shared {
+        link_cmd.arg(if cfg!(target_os = "macos") { "-dynamiclib" } else { "-shared" });
+    }
     // Libraries named by `extern "lib" fn ...`. Three forms: a bare name is a
     // library to search for, `framework:Name` is a macOS framework, and a
     // string starting with `-` is handed to the linker as written — which is
@@ -394,7 +412,7 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
             None => link_cmd.arg(format!("-l{lib}")),
         };
     }
-    if !opts.debug {
+    if !opts.debug && !opts.shared {
         link_cmd.arg("-Wl,-dead_strip");
     }
     let link = link_cmd
@@ -414,7 +432,7 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
         // debug map, so the object has to stay put for lldb to find lines.
         // `dsymutil` folds it into a .dSYM bundle when it is available.
         let _ = Command::new("dsymutil").arg(&opts.output).output();
-    } else {
+    } else if !opts.shared {
         // Strip symbols for C-like binary sizes; best-effort.
         let _ = Command::new("strip").arg(&opts.output).output();
     }

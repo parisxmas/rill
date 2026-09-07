@@ -160,6 +160,8 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `blocks.rill` | block bodies in match arms, select arms and `if` branches |
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
+| `grid_tour.rill` | arrays with a shape from `lib/grid.rill`: views, masks, reductions, a matrix product — NumPy's shapes, and faster than NumPy where there is arithmetic to do |
+| `lanes.rill`, `holders.rill` | `Float2`, two floats in one register; `unique`, the question that lets an operation reuse a temporary's storage |
 
 The largest thing written in Rill is not in this table. Rill Valley — a
 walkable low-poly valley with terrain, physics and matrices in Rill, shadows,
@@ -171,7 +173,9 @@ give it.
 
 `lib/` is what the examples above are written on, and is written in Rill
 itself: `json.rill` and `yaml.rill`, `http.rill` for HTTP/1.1, `ws.rill` for
-WebSocket, `sha1.rill` for the handshake, and a client for each of the five
+WebSocket, `sha1.rill` for the handshake, `grid.rill` for arrays with a shape
+(and `bindings/python`, which makes it `import grid as g` in Python — NumPy's
+notation on Rill's loops, through `rill build --shared`), and a client for each of the five
 engines OxiDB mounts. Four are on its native wire and share `oxiwire.rill`,
 the server's binary format — about a third larger on the wire than its JSON
 one and about 1.4 times faster to talk: `oxidb.rill` for documents,

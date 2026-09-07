@@ -25,6 +25,12 @@ use rill_syntax::{
 pub enum Ty {
     Int,
     Float,
+    /// Two `Float`s that travel together, in one 128-bit register: what a
+    /// kernel that has been written with lanes in mind is written in. The
+    /// arithmetic operators work on both lanes at once; `float2`, `splat2`,
+    /// `lane0`, `lane1`, `f2_load`, `f2_store` and `fma2` are the rest of
+    /// it.
+    Float2,
     Bool,
     Str,
     Unit,
@@ -327,6 +333,8 @@ pub enum TK {
     BufGet { buf: Box<TExpr>, idx: Box<TExpr>, unchecked: bool },
     BufSet { buf: Box<TExpr>, idx: Box<TExpr>, val: Box<TExpr>, unchecked: bool },
     BufLen { buf: Box<TExpr> },
+    /// `unique(x)`: whether this frame holds the only reference to `x`.
+    Unique { val: Box<TExpr> },
     /// The address of the first element, for handing to C.
     BufPtr { buf: Box<TExpr> },
     /// `spawn body` — runs `body` on a new green thread; like a zero-param
@@ -1121,6 +1129,7 @@ impl Checker {
             // back through this so that a variable inside one is resolved too.
             Ty::Int => "Int".into(),
             Ty::Float => "Float".into(),
+            Ty::Float2 => "Float2".into(),
             Ty::Bool => "Bool".into(),
             Ty::Str => "Str".into(),
             Ty::Unit => "Unit".into(),
@@ -1148,13 +1157,13 @@ impl Checker {
 
     fn check_need(&self, ty: &Ty, need: Constraint, line: usize, ctx: &str) -> Result<(), TypeError> {
         let ok = match need {
-            Constraint::Numeric => matches!(ty, Ty::Int | Ty::Float),
-            Constraint::Addable => matches!(ty, Ty::Int | Ty::Float | Ty::Str),
+            Constraint::Numeric => matches!(ty, Ty::Int | Ty::Float | Ty::Float2),
+            Constraint::Addable => matches!(ty, Ty::Int | Ty::Float | Ty::Float2 | Ty::Str),
             Constraint::Ordered => {
                 matches!(ty, Ty::Int | Ty::Float | Ty::Str) || self.has_impl(ORD_TRAIT, ty)
             }
             Constraint::Basic => {
-                matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Adt(..))
+                matches!(ty, Ty::Int | Ty::Float | Ty::Float2 | Ty::Bool | Ty::Str | Ty::Adt(..))
             }
         };
         if ok {
@@ -1251,14 +1260,35 @@ impl Checker {
         line: usize,
         env: &mut HashMap<String, Ty>,
     ) -> Result<TExpr, TypeError> {
-        let go = match args.iter().rev().find(|a| matches!(a, Expr::Str(_))) {
+        // for.check(base, lo, hi, go, exact); for.at(base, i, go, origin);
+        // for.set(base, i, value, go, origin). `origin` is the dotted field
+        // name a `for.base` temp stands for, or "" for a plain name.
+        let go = match args.iter().find(|a| matches!(a, Expr::Str(_))) {
             Some(Expr::Str(g)) => g.clone(),
             _ => unreachable!("expand_for names the loop"),
+        };
+        let origin = match args.last() {
+            Some(Expr::Var(n, _)) if name != "for.check" => n.clone(),
+            _ => String::new(),
         };
         let exact = matches!(args.last(), Some(Expr::Bool(true)));
         let base_name = match &args[0] {
             Expr::Var(n, _) => n.clone(),
             _ => unreachable!("expand_for hoists only named buffers"),
+        };
+        // A field read into a temp before the record's type is settled has a
+        // type nothing can look inside yet; indexing it would be guessed as a
+        // string or a map. The field itself is deferred until the type is
+        // known, so it is what gets indexed then — checked, as before.
+        let base_expr = if name != "for.check" && !origin.is_empty() {
+            let t = self.infer(&args[0], env)?;
+            if matches!(self.resolve(&t.ty), Ty::Var(_)) {
+                Expr::Var(origin.clone(), line)
+            } else {
+                args[0].clone()
+            }
+        } else {
+            args[0].clone()
         };
         if name == "for.check" {
             let b = self.infer(&args[0], env)?;
@@ -1294,7 +1324,7 @@ impl Checker {
         });
         if name == "for.at" {
             let plain = Expr::Index {
-                base: Box::new(args[0].clone()),
+                base: Box::new(base_expr),
                 index: Box::new(args[1].clone()),
                 line,
             };
@@ -1309,7 +1339,7 @@ impl Checker {
             return Ok(t);
         }
         let plain = Expr::IndexSet {
-            base: Box::new(args[0].clone()),
+            base: Box::new(base_expr),
             index: Box::new(args[1].clone()),
             value: Box::new(args[2].clone()),
             line,
@@ -1552,7 +1582,7 @@ impl Checker {
                 }
             }
             TK::BufNew { count, .. } => self.zonk_expr(count, genmap, defaults),
-            TK::BufLen { buf } | TK::BufPtr { buf } => {
+            TK::BufLen { buf } | TK::BufPtr { buf } | TK::Unique { val: buf } => {
                 self.zonk_expr(buf, genmap, defaults)
             }
             TK::Slice { base, from, to } => {
@@ -2530,6 +2560,30 @@ impl Checker {
                 kind: TK::BufNew { width, count: Box::new(n) },
             });
         }
+        if name == "unique" {
+            if args.len() != 1 {
+                return Err(TypeError::new(
+                    line,
+                    format!("`unique` takes 1 argument, but {} given", args.len()),
+                ));
+            }
+            let v = self.infer(&args[0], env)?;
+            match self.resolve(&v.ty) {
+                Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..) | Ty::Chan(..) => {}
+                Ty::Adt(..) => {}
+                other => {
+                    return Err(TypeError::new(
+                        line,
+                        format!(
+                            "`unique` asks whether a counted value has one holder, and `{}` \
+                             is not counted — a buffer, a string, a map or a data value is",
+                            self.type_name(&other)
+                        ),
+                    ))
+                }
+            }
+            return Ok(TExpr { ty: Ty::Bool, line, kind: TK::Unique { val: Box::new(v) } });
+        }
         if name == "buf_get" || name == "buf_set" || name == "buf_len" {
             let want = if name == "buf_set" { 3 } else if name == "buf_len" { 1 } else { 2 };
             if args.len() != want {
@@ -2727,6 +2781,9 @@ impl Checker {
             // not for telling the time, and a wall clock that an administrator
             // can set backwards is the wrong instrument for that.
             "now_nanos" => Some(("rill_now_nanos", vec![], Ty::Int)),
+            // The workers this run has, for deciding how many strands a big
+            // piece of work is worth. 1 unless `RILL_THREADS` said otherwise.
+            "workers" => Some(("rill_workers", vec![], Ty::Int)),
             "random_i64" => Some(("rill_random_i64", vec![], Ty::Int)),
             // Waiting, without a worker standing still to do it: the strand
             // goes into the same poller a socket would have parked it in.
@@ -2781,6 +2838,22 @@ impl Checker {
             // acknowledgement. 1 if the kernel took it.
             "sock_nodelay" => Some(("rill_sock_nodelay", vec![Ty::Int], Ty::Int)),
             "sock_buffered" => Some(("rill_sock_buffered", vec![Ty::Int], Ty::Unit)),
+            // A buffer of floats whose elements are whatever the memory
+            // held, for a caller about to write every one: `zeros` costs a
+            // clearing pass an array operation does not need.
+            "buf_float_uninit" => Some(("rill_buf_new_uninit_f64", vec![Ty::Int], Ty::Buf(CTy::F64))),
+            // Two lanes at once. `f2_load(b, i)` is `(b[i], b[i + 1])` as one
+            // register and `f2_store` puts one back; `fma2` is a fused
+            // multiply-add on both lanes.
+            "float2" => Some(("rill.f2", vec![Ty::Float, Ty::Float], Ty::Float2)),
+            "splat2" => Some(("rill.f2splat", vec![Ty::Float], Ty::Float2)),
+            "lane0" => Some(("rill.f2lane0", vec![Ty::Float2], Ty::Float)),
+            "lane1" => Some(("rill.f2lane1", vec![Ty::Float2], Ty::Float)),
+            "f2_load" => Some(("rill.f2load", vec![Ty::Buf(CTy::F64), Ty::Int], Ty::Float2)),
+            "f2_store" => {
+                Some(("rill.f2store", vec![Ty::Buf(CTy::F64), Ty::Int, Ty::Float2], Ty::Unit))
+            }
+            "fma2" => Some(("rill.f2fma", vec![Ty::Float2, Ty::Float2, Ty::Float2], Ty::Float2)),
             "sock_flush" => Some(("rill_sock_flush", vec![Ty::Int], Ty::Int)),
             "sock_write" => Some(("rill_sock_write", vec![Ty::Int, Ty::Str], Ty::Int)),
             "sock_close" => Some(("rill_sock_close", vec![Ty::Int], Ty::Unit)),
@@ -3607,6 +3680,7 @@ pub fn show_type(ty: &Ty, adts: &[AdtDef]) -> String {
     match ty {
         Ty::Int => "Int".into(),
         Ty::Float => "Float".into(),
+        Ty::Float2 => "Float2".into(),
         Ty::Bool => "Bool".into(),
         Ty::Str => "Str".into(),
         Ty::Unit => "Unit".into(),
@@ -3705,6 +3779,7 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         }
         TK::ChanRecv { ch }
         | TK::BufLen { buf: ch }
+        | TK::Unique { val: ch }
         | TK::BufPtr { buf: ch }
         | TK::MapLen { map: ch }
         | TK::MapClear { map: ch }
@@ -3788,7 +3863,7 @@ pub fn impl_targs(ty: &Ty) -> Vec<Ty> {
 }
 
 fn is_builtin_type(name: &str) -> bool {
-    matches!(name, "Int" | "Float" | "Bool" | "Str" | "StrBuf" | "Unit" | "Ptr")
+    matches!(name, "Int" | "Float" | "Float2" | "Bool" | "Str" | "StrBuf" | "Unit" | "Ptr")
 }
 
 /// How many arguments each map builtin takes, and by being `Some` at all,
@@ -3829,6 +3904,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "str_to_float"
             | "chr"
             | "now_nanos"
+            | "workers"
             | "random_i64"
             | "sleep_ms"
             | "bit_and"
@@ -3875,6 +3951,8 @@ fn is_builtin_fn(name: &str) -> bool {
             | "buf_get"
             | "buf_set"
             | "buf_len"
+            | "buf_float_uninit"
+            | "unique"
             | "map_new"
             | "map_set"
             | "map_find"
@@ -3914,7 +3992,10 @@ fn resolve_type_ref(
     params: Option<&HashMap<&str, u32>>,
 ) -> Result<Ty, TypeError> {
     // Lowercase: a type parameter (only valid inside a generic `type` def).
-    if tr.name.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
+    // A type from an aliased module is `alias.Name`, and the alias is
+    // lowercase; it is the name after the dot that says what this is.
+    let last = tr.name.rsplit('.').next().unwrap_or(&tr.name);
+    if last.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
         if !tr.args.is_empty() {
             return Err(TypeError::new(
                 tr.line,
@@ -3987,6 +4068,7 @@ fn resolve_type_ref(
         return Ok(match tr.name.as_str() {
             "Int" => Ty::Int,
             "Float" => Ty::Float,
+            "Float2" => Ty::Float2,
             "Bool" => Ty::Bool,
             "Str" => Ty::Str,
             "StrBuf" => Ty::StrBuf,

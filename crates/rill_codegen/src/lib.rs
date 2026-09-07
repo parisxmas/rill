@@ -53,7 +53,7 @@ use inkwell::{FloatPredicate, IntPredicate, OptimizationLevel};
 
 use rill_syntax::{BinOp, Pattern};
 use rill_types::{
-    CTy, Constraint, TArm, TExpr, TFn, TK, TModule, TSelectArm, TSelectOp, TStmt, Ty,
+    CTy, Constraint, ExternSig, TArm, TExpr, TFn, TK, TModule, TSelectArm, TSelectOp, TStmt, Ty,
 };
 
 #[derive(Debug, Clone)]
@@ -93,11 +93,19 @@ pub fn compile_to_object(
     source: &Path,
     target: Option<&str>,
     unchecked: bool,
+    shared: bool,
 ) -> Result<(), CodegenError> {
     let context = Context::create();
-    check_exports(tmod, target)?;
-    let cg =
-        Codegen::build_module(&context, tmod, parallel, debug.then_some(source), target, unchecked)?;
+    check_exports(tmod, target, shared)?;
+    let cg = Codegen::build_module(
+        &context,
+        tmod,
+        parallel,
+        debug.then_some(source),
+        target,
+        unchecked,
+        shared,
+    )?;
     if cg.wasm {
         cg.check_wasm_supported()?;
     }
@@ -108,26 +116,41 @@ pub fn compile_to_object(
 /// produce. That constrains the signature to the types that cross the wasm
 /// boundary as plain values — Int, Float, Bool, Ptr — and rules out type
 /// parameters, because an export is one function, not a family waiting for a
-/// call site to pick the types. And it is a wasm idea: on a native target
-/// nothing calls in, so the word is refused rather than silently meaning
+/// call site to pick the types. It is a host's idea: on a native target the
+/// host is whoever loads the shared library `--shared` makes, and there the
+/// boundary is wider — a counted value crosses as a handle, lent to the
+/// call by the host or handed to the host by a return. A native executable
+/// has no host, so there the word is refused rather than silently meaning
 /// nothing.
-fn check_exports(tmod: &TModule, target: Option<&str>) -> Result<(), CodegenError> {
+fn check_exports(tmod: &TModule, target: Option<&str>, shared: bool) -> Result<(), CodegenError> {
     let exports: Vec<&TFn> = tmod.fns.iter().filter(|f| f.exported).collect();
     if exports.is_empty() {
         return Ok(());
     }
-    if !target.is_some_and(|t| t.starts_with("wasm")) {
+    let wasm = target.is_some_and(|t| t.starts_with("wasm"));
+    if !wasm && !shared {
         return Err(CodegenError::new(
             exports[0].line,
             format!(
-                "`export fn {}` needs a wasm target: exports are functions the \
-                 embedding host calls, and a native executable has no host. \
-                 Build with `--target wasm32-wasip1`.",
+                "`export fn {}` needs a host: exports are functions the embedding \
+                 host calls, and a native executable has none. Build with \
+                 `--target wasm32-wasip1` for a wasm host, or `--shared` for a \
+                 library a C or Python program loads.",
                 exports[0].name
             ),
         ));
     }
-    let scalar = |t: &Ty| matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Ptr);
+    let scalar = |t: &Ty| {
+        matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Ptr)
+            || (!wasm
+                && matches!(t, Ty::Adt(..) | Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..)))
+    };
+    let allowed = if wasm {
+        "only Int, Float, Bool and Ptr cross the wasm boundary"
+    } else {
+        "only Int, Float, Bool, Ptr and counted values (data, buffers, strings, maps) \
+         cross to a host"
+    };
     for f in exports {
         if f.ngen > 0 {
             return Err(CodegenError::new(
@@ -144,8 +167,7 @@ fn check_exports(tmod: &TModule, target: Option<&str>) -> Result<(), CodegenErro
                 return Err(CodegenError::new(
                     f.line,
                     format!(
-                        "`export fn {}`: parameter `{pname}` is {} — only Int, Float, \
-                         Bool and Ptr cross the wasm boundary",
+                        "`export fn {}`: parameter `{pname}` is {} — {allowed}",
                         f.name,
                         type_label(pty, &tmod.adts)
                     ),
@@ -156,8 +178,7 @@ fn check_exports(tmod: &TModule, target: Option<&str>) -> Result<(), CodegenErro
             return Err(CodegenError::new(
                 f.line,
                 format!(
-                    "`export fn {}` returns {} — only Int, Float, Bool, Ptr and Unit \
-                     cross the wasm boundary",
+                    "`export fn {}` returns {} — {allowed}, and Unit",
                     f.name,
                     type_label(&f.ret, &tmod.adts)
                 ),
@@ -298,9 +319,9 @@ fn find_unsupported(e: &TExpr) -> Option<(usize, &'static str)> {
 }
 
 /// Compile and return the (unoptimized) LLVM IR as text.
-pub fn compile_to_ir(tmod: &TModule) -> Result<String, CodegenError> {
+pub fn compile_to_ir(tmod: &TModule, unchecked: bool) -> Result<String, CodegenError> {
     let context = Context::create();
-    let cg = Codegen::build_module(&context, tmod, false, None, None, false)?;
+    let cg = Codegen::build_module(&context, tmod, false, None, None, unchecked, false)?;
     Ok(cg.module.print_to_string().to_string())
 }
 
@@ -323,6 +344,7 @@ fn mangle(ty: &Ty, adts: &[rill_types::AdtDef]) -> String {
     match ty {
         Ty::Int => "Int".into(),
         Ty::Float => "Float".into(),
+        Ty::Float2 => "Float2".into(),
         Ty::Bool => "Bool".into(),
         Ty::Str => "Str".into(),
         Ty::StrBuf => "StrBuf".into(),
@@ -353,9 +375,9 @@ fn mangle(ty: &Ty, adts: &[rill_types::AdtDef]) -> String {
     }
 }
 
-/// `Tuple2`..`Tuple4` are what the tuple notation stands for.
+/// `Tuple2`..`Tuple8` are what the tuple notation stands for.
 fn is_tuple_ctor(name: &str, n: usize) -> bool {
-    (2..=4).contains(&n) && name == format!("Tuple{n}")
+    (2..=8).contains(&n) && name == format!("Tuple{n}")
 }
 
 /// A function value pinned at compile time: which top-level function, at
@@ -642,6 +664,15 @@ fn constructs_adt(e: &TExpr, adt: usize) -> bool {
     found
 }
 
+/// The variable a chain of field reads starts from, if it is one.
+fn root_local(e: &TExpr) -> Option<&str> {
+    match &e.kind {
+        TK::Local(n) => Some(n),
+        TK::FieldGet { base, .. } => root_local(base),
+        _ => None,
+    }
+}
+
 /// Whether every appearance of `name` in `e` is in a position that borrows
 /// it — the positions `gen_borrowed` serves, or the borrowed parameter of a
 /// call. A lambda or spawn that captures it keeps it, so that is an owned use.
@@ -662,6 +693,12 @@ fn borrows_only(e: &TExpr, name: &str, borrowed: &[Vec<bool>]) -> bool {
         // Standing alone or as a `Ptr` argument, the buffer is held for the
         // call and released by whoever made it.
         TK::BufLen { buf } | TK::BufPtr { buf } => operand(buf, true),
+        // `unique` reads the count as this frame holds it, which means
+        // something only if this frame is the holder: the value it inspects
+        // — through any chain of fields — is owned here, never borrowed.
+        // A borrowed parameter's count of one would be the caller's
+        // reference, and the caller may still be looking.
+        TK::Unique { val } => root_local(val) != Some(name) && operand(val, true),
         TK::Slice { base, from, to } => {
             operand(base, true)
                 && operand(from, false)
@@ -809,6 +846,69 @@ fn find_callback_locals<'a>(
 }
 
 /// Applies `f` to every immediate sub-expression.
+/// The bindings a statement is the last to speak of, and speaks of once, as
+/// a direct argument of a call on the statement's unconditional path — the
+/// ones a call may be handed outright. `x = shift(t, 1.0)` with no `t`
+/// after it hands `shift` the only reference to `t`, and `shift` may then
+/// write its answer into `t`'s own storage. A name inside an `if`, a
+/// `match`, a lambda or a loop body is never here: the move would take the
+/// reference on one path and leave the release owed on the other.
+/// Whether the expression calls through a closure value anywhere.
+fn calls_closure(e: &TExpr) -> bool {
+    if matches!(e.kind, TK::CallClosure { .. } | TK::Spawn { .. } | TK::Lambda { .. }) {
+        return true;
+    }
+    let mut found = false;
+    walk_children(e, &mut |c| {
+        if !found {
+            found = calls_closure(c);
+        }
+    });
+    found
+}
+
+fn stmt_value(stmt: &TStmt) -> &TExpr {
+    match stmt {
+        TStmt::Bind { value, .. } | TStmt::Expr(value) => value,
+    }
+}
+
+/// The names `value` speaks of exactly once and no statement in `rest`
+/// speaks of at all.
+fn free_once(value: &TExpr, rest: &[TStmt]) -> HashSet<String> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    count_locals(value, &mut counts);
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n == 1)
+        .map(|(name, _)| name)
+        .filter(|n| !rest.iter().any(|st| names_local(stmt_value(st), n)))
+        .map(String::from)
+        .collect()
+}
+
+fn count_locals<'e>(e: &'e TExpr, counts: &mut HashMap<&'e str, usize>) {
+    if let TK::Local(n) = &e.kind {
+        *counts.entry(n.as_str()).or_insert(0) += 1;
+    }
+    walk_children(e, &mut |c| count_locals(c, counts));
+}
+
+/// Names that are direct arguments of calls reached from `e` through
+/// nothing but other calls' arguments.
+fn spine_args<'e>(e: &'e TExpr, out: &mut Vec<&'e str>) {
+    let args = match &e.kind {
+        TK::CallFn { args, .. } | TK::CallCtor { args, .. } | TK::MethodCall { args, .. } => args,
+        _ => return,
+    };
+    for a in args {
+        match &a.kind {
+            TK::Local(n) => out.push(n),
+            _ => spine_args(a, out),
+        }
+    }
+}
+
 /// Whether the name is still spoken anywhere in the expression. A box can
 /// only be built over if nothing left can reach it by name; its fields have
 /// already been loaded into registers by then, so those do not count.
@@ -855,6 +955,7 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(val);
         }
         TK::ChanRecv { ch } | TK::BufLen { buf: ch } | TK::BufPtr { buf: ch } => f(ch),
+        TK::Unique { val } => f(val),
         TK::FieldGet { base, .. } => f(base),
         TK::FieldNamed { .. } => unreachable!("`zonk` names every deferred field"),
         TK::MapNew => {}
@@ -1077,6 +1178,25 @@ struct Codegen<'ctx, 'a> {
     /// Owned (value, type) pairs of the function currently being generated,
     /// released before its return.
     cleanup: Vec<(BasicValueEnum<'ctx>, Ty)>,
+    /// Which lifted loop functions are leaves (see `leaf_loop`).
+    leaf_loops: HashMap<usize, bool>,
+    /// Bindings this frame owns whose one remaining use is the statement
+    /// being generated, on its unconditional path: a call that takes one
+    /// in an owned position is handed the reference itself, with no retain
+    /// before and no release after — the callee then holds the only one,
+    /// and `unique` inside it says so. Computed per top-level statement of
+    /// a function body, empty anywhere a branch could leave the release on
+    /// one path only.
+    movable: HashSet<String>,
+    /// Every name the current top-level statement speaks of exactly once
+    /// and no later statement speaks of at all: the pool `movable` is drawn
+    /// from, for the statement itself and for any block nested in it.
+    root_free: HashSet<String>,
+    /// Whether the code being generated runs on every path through the
+    /// current statement. False inside a branch of an `if` or `match` in
+    /// value position — a move there would take the reference on one path
+    /// and leave the release owed on the other.
+    move_ok: bool,
     /// A box this frame owns, whose arm is being generated, and which the arm
     /// can no longer name: a constructor of exactly its shape may be built in
     /// it instead of in a fresh one. See `take_reuse`.
@@ -1108,6 +1228,9 @@ struct Codegen<'ctx, 'a> {
     /// here rather than at object-writing time because the name has to be
     /// chosen while the function is being created.
     wasm: bool,
+    /// A `--shared` build: a library a host loads, with `export fn`s as its
+    /// entry points and `rill_init` in place of `main`.
+    shared: bool,
 }
 
 struct DebugCtx<'ctx> {
@@ -1128,6 +1251,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         source: Option<&Path>,
         target: Option<&str>,
         unchecked: bool,
+        shared: bool,
     ) -> Result<Codegen<'ctx, 'a>, CodegenError> {
         let module = ctx.create_module("rill");
         let builder = ctx.create_builder();
@@ -1153,6 +1277,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             adt_eqs: HashMap::new(),
             nullary_singletons: HashMap::new(),
             cleanup: Vec::new(),
+            leaf_loops: HashMap::new(),
+            movable: HashSet::new(),
+            root_free: HashSet::new(),
+            move_ok: false,
             reuse: None,
             str_count: 0,
             lambda_count: 0,
@@ -1165,6 +1293,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             warned_untailed: HashSet::new(),
             preempt,
             wasm: target.is_some_and(|t| t.starts_with("wasm")),
+            shared,
         };
         if let Some(src) = source {
             let file = src.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
@@ -1245,6 +1374,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         match ty {
             Ty::Int => Some(self.ctx.i64_type().into()),
             Ty::Float => Some(self.ctx.f64_type().into()),
+            Ty::Float2 => Some(self.ctx.f64_type().vec_type(2).into()),
             Ty::Bool => Some(self.ctx.bool_type().into()),
             Ty::Adt(..) if self.is_flat(ty) => Some(self.flat_struct(ty).into()),
             Ty::Str | Ty::StrBuf | Ty::Adt(..) | Ty::Chan(..) | Ty::Ptr | Ty::Buf(_)
@@ -1602,6 +1732,125 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
+    /// The signature of a named function's instance: a flat value arrives as
+    /// its fields, one parameter each, rather than as one aggregate. The
+    /// registers are the same either way — `cc_for` counts fields — but a
+    /// loop carrying a `(Float, Float, Float, Float)` accumulator is a
+    /// function that tail-calls itself with one, and LLVM turns that into a
+    /// loop whose induction variable is an aggregate `phi`, which nothing
+    /// downstream can see through: the four independent sums never became
+    /// vector lanes. Four scalar `phi`s are what the vectorizer reads.
+    fn instance_llvm_type(&self, params: &[Ty], ret: &Ty) -> FunctionType<'ctx> {
+        let mut ps: Vec<BasicMetadataTypeEnum> = Vec::new();
+        for p in params {
+            match self.flat_fields(p) {
+                Some(fields) => {
+                    for f in &fields {
+                        ps.push(self.llvm_type(f).expect("a scalar").into());
+                    }
+                }
+                None => ps.push(self.llvm_type(p).expect("parameters are never Unit").into()),
+            }
+        }
+        match self.llvm_type(ret) {
+            None => self.ctx.void_type().fn_type(&ps, false),
+            Some(t) => t.fn_type(&ps, false),
+        }
+    }
+
+    /// Arguments for an instance's signature: every flat value taken apart
+    /// into its fields, in place.
+    fn explode_args(
+        &self,
+        argv: Vec<BasicMetadataValueEnum<'ctx>>,
+        params: &[Ty],
+    ) -> Vec<BasicMetadataValueEnum<'ctx>> {
+        let mut out: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(argv.len());
+        for (v, t) in argv.into_iter().zip(params) {
+            match self.flat_fields(t) {
+                Some(fields) => {
+                    let agg: BasicValueEnum<'ctx> = v.try_into().expect("a value argument");
+                    for i in 0..fields.len() {
+                        out.push(self.extract_field(agg, i as u32).into());
+                    }
+                }
+                None => out.push(v),
+            }
+        }
+        out
+    }
+
+    /// The two lanes of a `Float2`.
+    fn lanes(&self, v: BasicValueEnum<'ctx>) -> (inkwell::values::FloatValue<'ctx>, inkwell::values::FloatValue<'ctx>) {
+        let i64t = self.ctx.i64_type();
+        let vec = v.into_vector_value();
+        let a = self
+            .builder
+            .build_extract_element(vec, i64t.const_zero(), "lane0")
+            .expect("LLVM builder error")
+            .into_float_value();
+        let b = self
+            .builder
+            .build_extract_element(vec, i64t.const_int(1, false), "lane1")
+            .expect("LLVM builder error")
+            .into_float_value();
+        (a, b)
+    }
+
+    fn make_float2(
+        &self,
+        a: inkwell::values::FloatValue<'ctx>,
+        b: inkwell::values::FloatValue<'ctx>,
+    ) -> BasicValueEnum<'ctx> {
+        let i64t = self.ctx.i64_type();
+        let v0 = self
+            .builder
+            .build_insert_element(self.ctx.f64_type().vec_type(2).get_undef(), a, i64t.const_zero(), "f2")
+            .expect("LLVM builder error");
+        self.builder
+            .build_insert_element(v0, b, i64t.const_int(1, false), "f2")
+            .expect("LLVM builder error")
+            .into()
+    }
+
+    /// The maths functions that are one instruction on every machine Rill
+    /// runs on, as the instruction rather than the call. `sqrt` called
+    /// through libm is a call the optimizer will not vectorize, because C's
+    /// `sqrt` may set `errno`; the intrinsic has no such promise to keep,
+    /// and ten million of them become five million `fsqrt` on pairs. The
+    /// results are the same bits either way. A C signature that is not the
+    /// double-precision one goes to the library as written.
+    fn libm_intrinsic(&self, name: &str, sig: &ExternSig) -> Option<FunctionValue<'ctx>> {
+        let (iname, arity) = match name {
+            "sqrt" => ("llvm.sqrt", 1),
+            "fabs" => ("llvm.fabs", 1),
+            "floor" => ("llvm.floor", 1),
+            "ceil" => ("llvm.ceil", 1),
+            "trunc" => ("llvm.trunc", 1),
+            "round" => ("llvm.round", 1),
+            "rint" => ("llvm.rint", 1),
+            "fma" => ("llvm.fma", 3),
+            "fmin" => ("llvm.minnum", 2),
+            "fmax" => ("llvm.maxnum", 2),
+            "copysign" => ("llvm.copysign", 2),
+            _ => return None,
+        };
+        if sig.params.len() != arity
+            || sig.ret != CTy::F64
+            || sig.params.iter().any(|p| *p != CTy::F64)
+        {
+            return None;
+        }
+        let f64t = self.ctx.f64_type();
+        inkwell::intrinsics::Intrinsic::find(iname)
+            .and_then(|i| i.get_declaration(&self.module, &[f64t.into()]))
+    }
+
+    /// The concrete parameter types of an instance, for `explode_args`.
+    fn instance_params(&self, fn_idx: usize, subst: &[Ty]) -> Vec<Ty> {
+        self.tmod.fns[fn_idx].params.iter().map(|(_, t)| subst_gen(t, subst)).collect()
+    }
+
     // ---- runtime ---------------------------------------------------------
 
     fn declare_runtime(&mut self) {
@@ -1785,6 +2034,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         self.module.add_function("rill_preempt_yield", void.fn_type(&[], false), None);
         self.module.add_function("rill_now_nanos", i64t.fn_type(&[], false), None);
+        self.module.add_function("rill_workers", i64t.fn_type(&[], false), None);
+        let uninit = self.module.add_function(
+            "rill_buf_new_uninit_f64",
+            ptrt.fn_type(&[i64t.into()], false),
+            None,
+        );
+        uninit.add_attribute(
+            AttributeLoc::Return,
+            self.ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("noalias"), 0),
+        );
         self.module.add_function("rill_random_i64", i64t.fn_type(&[], false), None);
         self.module.add_function("rill_sleep_ms", void.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_tcp_listen", i64t.fn_type(&[i64t.into()], false), None);
@@ -1960,6 +2219,22 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .into_int_value(),
                 zero,
             ),
+            // Two lanes are two words.
+            Ty::Float2 => {
+                let bits = b
+                    .build_bit_cast(v.into_vector_value(), i64t.vec_type(2), "w2")
+                    .unwrap()
+                    .into_vector_value();
+                let w0 = b
+                    .build_extract_element(bits, i64t.const_zero(), "w0")
+                    .unwrap()
+                    .into_int_value();
+                let w1 = b
+                    .build_extract_element(bits, i64t.const_int(1, false), "w1")
+                    .unwrap()
+                    .into_int_value();
+                (w0, w1)
+            }
             Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_)
             | Ty::Map(..) => (
                 b.build_ptr_to_int(v.into_pointer_value(), i64t, "w").unwrap(),
@@ -2024,6 +2299,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Ty::Float => b
                 .build_bit_cast(a, self.ctx.f64_type(), "f")
                 .unwrap(),
+            Ty::Float2 => {
+                let i64t = self.ctx.i64_type();
+                let v0 = b
+                    .build_insert_element(i64t.vec_type(2).get_undef(), a, i64t.const_zero(), "l0")
+                    .unwrap();
+                let v1 = b
+                    .build_insert_element(v0, bw, i64t.const_int(1, false), "l1")
+                    .unwrap();
+                b.build_bit_cast(v1, self.ctx.f64_type().vec_type(2), "f2").unwrap()
+            }
             Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_)
             | Ty::Map(..) => {
                 let _ = bw;
@@ -2078,7 +2363,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             return None;
         }
         let fields: Vec<Ty> = ctors[0].fields.iter().map(|f| subst_gen(f, targs)).collect();
-        if fields.iter().all(|f| matches!(f, Ty::Int | Ty::Float | Ty::Bool)) {
+        if fields.iter().all(|f| matches!(f, Ty::Int | Ty::Float | Ty::Float2 | Ty::Bool)) {
             Some(fields)
         } else {
             None
@@ -2261,6 +2546,54 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         if let TK::Local(name) = &e.kind {
             if let Some(Some(v)) = scope.get(name) {
                 return Ok((*v, false));
+            }
+        }
+        // A field of a box this frame holds is held with it: `g.data[k]`
+        // reads the buffer straight out of the record, with no count taken
+        // for the look. Taking one was a retain and a release per element in
+        // every loop over a record's buffer, and the release's branch kept
+        // the loop from vectorizing.
+        if let TK::FieldGet { base, adt, ctor, index } = &e.kind {
+            let bty = self.concrete(&base.ty, subst);
+            if !self.is_flat(&bty) {
+                let (b, held) = self.gen_borrowed(base, scope, subst, func)?;
+                if !held {
+                    let targs = match &bty {
+                        Ty::Adt(_, targs) => targs.clone(),
+                        other => unreachable!("field of {other:?}"),
+                    };
+                    let struct_ty = self.ctor_struct(*adt, *ctor, &targs);
+                    let fty = subst_gen(&self.tmod.adts[*adt].ctors[*ctor].fields[*index], &targs);
+                    let fp = self
+                        .builder
+                        .build_struct_gep(struct_ty, b.into_pointer_value(), (*index + 2) as u32, "f")
+                        .expect("LLVM builder error");
+                    let v = self
+                        .builder
+                        .build_load(self.llvm_type(&fty).expect("a field is never Unit"), fp, "fv")
+                        .expect("LLVM builder error");
+                    return Ok((v, false));
+                }
+                // The base was made for this read and is owned here: finish
+                // it the ordinary way, which retains the field and lets the
+                // base go.
+                let targs = match &bty {
+                    Ty::Adt(_, targs) => targs.clone(),
+                    other => unreachable!("field of {other:?}"),
+                };
+                let struct_ty = self.ctor_struct(*adt, *ctor, &targs);
+                let fty = subst_gen(&self.tmod.adts[*adt].ctors[*ctor].fields[*index], &targs);
+                let fp = self
+                    .builder
+                    .build_struct_gep(struct_ty, b.into_pointer_value(), (*index + 2) as u32, "f")
+                    .expect("LLVM builder error");
+                let v = self
+                    .builder
+                    .build_load(self.llvm_type(&fty).expect("a field is never Unit"), fp, "fv")
+                    .expect("LLVM builder error");
+                self.emit_retain(v, &fty);
+                self.emit_release(b, &bty);
+                return Ok((v, true));
             }
         }
         Ok((self.gen_expr(e, scope, subst, func)?.expect("value"), true))
@@ -2635,6 +2968,25 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         match ty {
             Ty::Str => Ok(v),
+            // `(a, b)`, the way a pair shows.
+            Ty::Float2 => {
+                let (x, y) = self.lanes(v);
+                let sx = self.gen_show_of(x.into(), &Ty::Float, line)?;
+                let sy = self.gen_show_of(y.into(), &Ty::Float, line)?;
+                let open: BasicValueEnum<'ctx> = self.const_str("(").into();
+                let sep: BasicValueEnum<'ctx> = self.const_str(", ").into();
+                let close: BasicValueEnum<'ctx> = self.const_str(")").into();
+                let a1 = self.call_concat(open, sx);
+                self.emit_release(sx, &Ty::Str);
+                let a2 = self.call_concat(a1, sep);
+                self.emit_release(a1, &Ty::Str);
+                let a3 = self.call_concat(a2, sy);
+                self.emit_release(a2, &Ty::Str);
+                self.emit_release(sy, &Ty::Str);
+                let a4 = self.call_concat(a3, close);
+                self.emit_release(a3, &Ty::Str);
+                Ok(a4)
+            }
             Ty::Adt(adt, _) if self.is_flat(ty) => {
                 let fields = self.flat_fields(ty).expect("flat");
                 let c = &self.tmod.adts[*adt].ctors[0];
@@ -2805,6 +3157,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     "eq",
                 )
                 .expect("LLVM builder error")),
+            Ty::Float2 => {
+                let (a0, a1) = self.lanes(a);
+                let (b0, b1) = self.lanes(b);
+                let e0 = self.gen_eq_of(a0.into(), b0.into(), &Ty::Float, line)?;
+                let e1 = self.gen_eq_of(a1.into(), b1.into(), &Ty::Float, line)?;
+                Ok(self.builder.build_and(e0, e1, "eq2").expect("LLVM builder error"))
+            }
             Ty::Str => {
                 let f = self.module.get_function("rill_str_eq").unwrap();
                 let call =
@@ -3031,6 +3390,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .expect("LLVM builder error")
                     .into_int_value();
                 Ok(self.mix64(sel))
+            }
+            Ty::Float2 => {
+                let (x, y) = self.lanes(v);
+                let h0 = self.gen_hash_of(x.into(), &Ty::Float, line)?;
+                let h1 = self.gen_hash_of(y.into(), &Ty::Float, line)?;
+                let both = self.builder.build_xor(h0, h1, "h2").expect("LLVM builder error");
+                let mixed = self.mix64(both);
+                Ok(self.builder.build_xor(mixed, h1, "h2m").expect("LLVM builder error"))
             }
             Ty::Str => {
                 let f = self.module.get_function("rill_str_hash").unwrap();
@@ -3374,14 +3741,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             match self.flat_fields(t) {
                 Some(fields) => {
                     for f in fields {
-                        if f == Ty::Float {
+                        if f == Ty::Float || f == Ty::Float2 {
                             floats += 1;
                         } else {
                             ints += 1;
                         }
                     }
                 }
-                None if *t == Ty::Float => floats += 1,
+                None if *t == Ty::Float || *t == Ty::Float2 => floats += 1,
                 None => ints += 1,
             }
         }
@@ -3417,14 +3784,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         let params: Vec<Ty> = f.params.iter().map(|(_, t)| subst_gen(t, &key.1)).collect();
         let ret = subst_gen(&f.ret, &key.1);
-        let fn_type = self.fn_llvm_type(&params, &ret, false);
+        let fn_type = self.instance_llvm_type(&params, &ret);
         let name = self.key_name(&key);
         let v = self.module.add_function(&name, fn_type, None);
         // `main` is called by the scheduler, which is C. Everything else is
         // called by Rill, and Rill wants its tail calls to be jumps. On wasm
         // a tail call needs a feature the module may not be allowed to
         // declare, so there the C convention stays.
-        if !self.wasm && self.tmod.fns[fn_idx].name != "main" {
+        if !self.wasm && self.tmod.fns[fn_idx].name != "main" && !self.tmod.fns[fn_idx].exported {
             if let Some(cc) = self.cc_for(&params, 0) {
                 v.set_call_conventions(cc);
             }
@@ -3508,14 +3875,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         for (g, c, line) in &f.constraints {
             let ty = &key.1[*g as usize];
             let ok = match c {
-                Constraint::Numeric => matches!(ty, Ty::Int | Ty::Float),
-                Constraint::Addable => matches!(ty, Ty::Int | Ty::Float | Ty::Str),
+                Constraint::Numeric => matches!(ty, Ty::Int | Ty::Float | Ty::Float2),
+                Constraint::Addable => matches!(ty, Ty::Int | Ty::Float | Ty::Float2 | Ty::Str),
                 Constraint::Ordered => {
                     matches!(ty, Ty::Int | Ty::Float | Ty::Str)
                         || self.user_impl(rill_types::ORD_TRAIT, 0, ty).is_some()
                 }
                 Constraint::Basic => {
-                    matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Adt(..))
+                    matches!(ty, Ty::Int | Ty::Float | Ty::Float2 | Ty::Bool | Ty::Str | Ty::Adt(..))
                 }
             };
             if !ok {
@@ -3557,12 +3924,46 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.begin_debug_fn(&dbg_name, dbg_line, fn_val);
 
         let outer_cleanup = std::mem::take(&mut self.cleanup);
+        let outer_movable = std::mem::take(&mut self.movable);
+        let outer_free = std::mem::take(&mut self.root_free);
+        let outer_move_ok = std::mem::replace(&mut self.move_ok, true);
         let mut scope: Scope<'ctx> = HashMap::new();
+        let mut next_raw = 0u32;
         for (i, (pname, pty)) in f.params.iter().enumerate() {
-            let raw = fn_val.get_nth_param(i as u32).unwrap();
-            raw.set_name(pname);
-            scope.insert(pname.clone(), Some(raw));
             let cty = subst_gen(pty, subst);
+            // A flat value came in as its fields; put it back together, which
+            // is free once the optimizer has looked at it.
+            let raw = match self.flat_fields(&cty) {
+                Some(fields) => {
+                    let st = self.flat_struct(&cty);
+                    let mut agg: BasicValueEnum<'ctx> = st.get_undef().into();
+                    for (k, _) in fields.iter().enumerate() {
+                        let piece = fn_val.get_nth_param(next_raw).unwrap();
+                        piece.set_name(&format!("{pname}.{k}"));
+                        next_raw += 1;
+                        agg = self
+                            .builder
+                            .build_insert_value(agg.into_struct_value(), piece, k as u32, pname)
+                            .expect("LLVM builder error")
+                            .into_struct_value()
+                            .into();
+                    }
+                    agg
+                }
+                None => {
+                    let raw = fn_val.get_nth_param(next_raw).unwrap();
+                    next_raw += 1;
+                    raw.set_name(pname);
+                    raw
+                }
+            };
+            scope.insert(pname.clone(), Some(raw));
+            // A value the host lends an export is the host's: this frame
+            // takes a reference of its own for the call and lets that one
+            // go, and the host's is as it was.
+            if f.exported && self.shared && self.is_heap(&cty) {
+                self.emit_retain(raw, &cty);
+            }
             // A borrowed parameter is the caller's to release, not this
             // frame's: nothing here retained it and nothing here lets it go.
             if self.is_heap(&cty) && !self.borrowed_params[*fn_idx][i] {
@@ -3574,6 +3975,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let body = &self.tmod.fns[*fn_idx].body;
         self.gen_tail(body, &mut scope, subst, fn_val, &ret_ty)?;
         self.cleanup = outer_cleanup;
+        self.movable = outer_movable;
+        self.root_free = outer_free;
+        self.move_ok = outer_move_ok;
         self.bound_fns = outer_bound;
         self.end_debug_fn();
         Ok(())
@@ -3602,10 +4006,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // so a name that meant one function inside cannot be taken
                 // for it outside.
                 let saved_bound = self.bound_fns.clone();
+                let outer_movable = std::mem::take(&mut self.movable);
+                let outer_free = std::mem::take(&mut self.root_free);
                 for (si, stmt) in init.iter().enumerate() {
+                    let rest = &stmts[si + 1..];
+                    self.begin_statement(stmt_value(stmt), rest);
                     match stmt {
                         TStmt::Bind { name, value } => {
-                            let rest = &stmts[si + 1..];
                             let v = match self.take_builder(value, rest, scope) {
                                 Some(v) => Some(v),
                                 None => self.gen_expr(value, scope, subst, func)?,
@@ -3630,6 +4037,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         }
                     }
                 }
+                match last {
+                    Some(last) => self.begin_statement(last, &[]),
+                    None => {
+                        self.movable.clear();
+                        self.root_free.clear();
+                    }
+                }
                 let out = match last {
                     Some(last) => match self.take_builder(last, &[], scope) {
                         Some(v) => self.finish_leaf(Some(v), &Ty::Str, ret_ty),
@@ -3637,6 +4051,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     },
                     None => self.finish_leaf(None, &Ty::Unit, ret_ty),
                 };
+                self.movable = outer_movable;
+                self.root_free = outer_free;
                 self.bound_fns = saved_bound;
                 out
             }
@@ -3659,7 +4075,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.gen_tail(els, &mut else_scope, subst, func, ret_ty)
             }
             TK::Match { scrutinee, arms } => {
-                self.gen_tail_match(scrutinee, arms, scope, subst, func, ret_ty)
+                // Arms end on their own paths, but the scrutinee is held for
+                // the arm's length by the match itself: nothing moves here.
+                let saved = std::mem::replace(&mut self.move_ok, false);
+                let out = self.gen_tail_match(scrutinee, arms, scope, subst, func, ret_ty);
+                self.move_ok = saved;
+                out
             }
             TK::CallFn { fn_idx, subst: inner, args } => {
                 if let Some(v) = self.try_fuse(e, scope, subst, func)? {
@@ -3698,7 +4119,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let out_ty = self.concrete(&e.ty, subst);
                 let inner: Vec<Ty> = inner.iter().map(|t| self.concrete(t, subst)).collect();
                 let bound = self.bind_static_args(*fn_idx, args, subst, e.line)?;
-                let callee = self.request_instance(*fn_idx, inner, bound);
+                let callee = self.request_instance(*fn_idx, inner.clone(), bound);
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
                 for (i, a) in args.iter().enumerate() {
                     if borrowed.get(i) == Some(&true) {
@@ -3726,6 +4147,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // Everything this frame still owns dies before the call, which
                 // is what makes it a genuine tail call.
                 self.flush_cleanup();
+                let argv = self.explode_args(argv, &self.instance_params(*fn_idx, &inner));
                 let call =
                     self.builder.build_call(callee, &argv, "tcall").expect("LLVM builder error");
                 self.match_cc(call, callee);
@@ -4420,6 +4842,27 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         answer
     }
 
+    /// A `for` loop whose body calls nothing: it runs a bounded number of
+    /// times and then returns to a function that is checked, so it needs no
+    /// check of its own — and a check inside it is a volatile load and a
+    /// branch per element, which is what stood between a loop over ten
+    /// million floats and the vector instructions it was written for.
+    fn leaf_loop(&mut self, fi: usize) -> bool {
+        if let Some(&known) = self.leaf_loops.get(&fi) {
+            return known;
+        }
+        let f = &self.tmod.fns[fi];
+        let answer = f.name.contains(".for.go") && {
+            let mut edges: Vec<usize> = Vec::new();
+            let mut found = false;
+            let mut methods = false;
+            collect_calls(&f.body, &mut edges, &mut found, &mut methods);
+            !found && !methods && edges.iter().all(|&e| e == fi) && !calls_closure(&f.body)
+        };
+        self.leaf_loops.insert(fi, answer);
+        answer
+    }
+
     /// Says, once per caller/callee pair, that a recursive call in tail
     /// position is not the jump it reads as.
     ///
@@ -4458,7 +4901,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     fn emit_preempt_check(&mut self, func: FunctionValue<'ctx>) {
-        if !self.preempt {
+        if !self.preempt || self.leaf_loop(self.cur_fn) {
             return;
         }
         let i8t = self.ctx.i8_type();
@@ -4559,6 +5002,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.position_at_end(entry);
         let args: Vec<BasicMetadataValueEnum> =
             (1..shim.count_params()).map(|i| shim.get_nth_param(i).unwrap().into()).collect();
+        let args = self.explode_args(args, &params);
         let call = self.builder.build_call(target, &args, "").expect("LLVM builder error");
         self.match_cc(call, target);
         // A closure call hands its arguments over owned; a borrowed parameter
@@ -4652,6 +5096,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .enumerate()
             .map(|(i, c)| self.from_c(tramp.get_nth_param(i as u32).unwrap(), c).into())
             .collect();
+        let args = self.explode_args(args, &self.instance_params(fn_idx, &inner));
         let call = self.builder.build_call(target, &args, "").expect("LLVM builder error");
         self.match_cc(call, target);
         match call.try_as_basic_value() {
@@ -4766,6 +5211,36 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         ))
     }
 
+    /// A library hands its host counted values as handles, and the host has
+    /// to be able to let one go: for every counted type that crosses an
+    /// export's boundary, `rill_drop_<Type>(handle)` releases the host's
+    /// reference. The name is the type's, with the module's dot made an
+    /// underscore — `rill_drop_g_Grid` for a `Grid` imported as `g`.
+    fn gen_drop_exports(&mut self) {
+        let mut seen: Vec<Ty> = Vec::new();
+        for f in self.tmod.fns.iter().filter(|f| f.exported) {
+            for t in f.params.iter().map(|(_, t)| t).chain(std::iter::once(&f.ret)) {
+                if self.is_heap(t) && !seen.contains(t) {
+                    seen.push(t.clone());
+                }
+            }
+        }
+        let ptrt = self.ctx.ptr_type(Default::default());
+        for ty in seen {
+            let name = format!("rill_drop_{}", mangle(&ty, &self.tmod.adts).replace('.', "_"));
+            let f = self.module.add_function(&name, self.ctx.void_type().fn_type(&[ptrt.into()], false), None);
+            let entry = self.ctx.append_basic_block(f, "entry");
+            self.builder.position_at_end(entry);
+            let raw = f.get_nth_param(0).unwrap();
+            let v: BasicValueEnum<'ctx> = match self.llvm_type(&ty) {
+                Some(t) if t.is_pointer_type() => raw,
+                _ => raw,
+            };
+            self.emit_release(v, &ty);
+            self.builder.build_return(None).expect("LLVM builder error");
+        }
+    }
+
     /// The real C `main`: runs `rill_main` as the main strand under the
     /// scheduler, then reports allocations and returns 0.
     fn gen_main_wrapper(&mut self) {
@@ -4774,7 +5249,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // which an allocation report would mean anything. `main` becomes the
         // module's `init` — the host calls it once before anything else, and
         // what it sets up stays live for the exports to use.
-        if self.wasm && self.tmod.fns.iter().any(|f| f.exported) {
+        if (self.wasm || self.shared) && self.tmod.fns.iter().any(|f| f.exported) {
             let void = self.ctx.void_type();
             let init = self.module.add_function("rill_init", void.fn_type(&[], false), None);
             let entry = self.ctx.append_basic_block(init, "entry");
@@ -4785,6 +5260,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .build_call(rt_run, &[user_main.as_global_value().as_pointer_value().into()], "")
                 .expect("LLVM builder error");
             self.builder.build_return(None).expect("LLVM builder error");
+            if self.shared {
+                self.gen_drop_exports();
+            }
             return;
         }
         let i32t = self.ctx.i32_type();
@@ -4849,8 +5327,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         name: &str,
     ) -> inkwell::values::CallSiteValue<'ctx> {
         let targs = rill_types::impl_targs(recv_ty);
-        let callee = self.request_instance(fn_idx, targs, vec![]);
-        let call = self.builder.build_call(callee, args, name).expect("LLVM builder error");
+        let callee = self.request_instance(fn_idx, targs.clone(), vec![]);
+        let args = self.explode_args(args.to_vec(), &self.instance_params(fn_idx, &targs));
+        let call = self.builder.build_call(callee, &args, name).expect("LLVM builder error");
         self.match_cc(call, callee);
         call
     }
@@ -4881,6 +5360,37 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     fn gen_expr(
+        &mut self,
+        e: &TExpr,
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        // Inside a branch, a move would happen on one path only.
+        if matches!(e.kind, TK::If { .. } | TK::Match { .. } | TK::Select { .. }) {
+            let saved = std::mem::replace(&mut self.move_ok, false);
+            let out = self.gen_expr_inner(e, scope, subst, func);
+            self.move_ok = saved;
+            return out;
+        }
+        self.gen_expr_inner(e, scope, subst, func)
+    }
+
+    /// The pool and the set for one top-level statement of a function body.
+    fn begin_statement(&mut self, value: &TExpr, rest: &[TStmt]) {
+        if self.move_ok {
+            self.root_free = free_once(value, rest);
+            let mut spine: Vec<&str> = Vec::new();
+            spine_args(value, &mut spine);
+            self.movable =
+                spine.into_iter().filter(|n| self.root_free.contains(*n)).map(String::from).collect();
+        } else {
+            self.root_free.clear();
+            self.movable.clear();
+        }
+    }
+
+    fn gen_expr_inner(
         &mut self,
         e: &TExpr,
         scope: &mut Scope<'ctx>,
@@ -5173,6 +5683,105 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 };
                 Ok(Some(out))
             }
+            TK::Builtin { rt, args } if rt.starts_with("rill.f2") => {
+                let i64t = self.ctx.i64_type();
+                let f64t = self.ctx.f64_type();
+                match *rt {
+                    "rill.f2" => {
+                        let a = self.gen_expr(&args[0], scope, subst, func)?.expect("value").into_float_value();
+                        let b = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_float_value();
+                        Ok(Some(self.make_float2(a, b)))
+                    }
+                    "rill.f2splat" => {
+                        let a = self.gen_expr(&args[0], scope, subst, func)?.expect("value").into_float_value();
+                        Ok(Some(self.make_float2(a, a)))
+                    }
+                    "rill.f2lane0" | "rill.f2lane1" => {
+                        let v = self.gen_expr(&args[0], scope, subst, func)?.expect("value");
+                        let (a, b) = self.lanes(v);
+                        Ok(Some(if *rt == "rill.f2lane0" { a.into() } else { b.into() }))
+                    }
+                    "rill.f2fma" => {
+                        let a = self.gen_expr(&args[0], scope, subst, func)?.expect("value");
+                        let b = self.gen_expr(&args[1], scope, subst, func)?.expect("value");
+                        let c = self.gen_expr(&args[2], scope, subst, func)?.expect("value");
+                        let v2 = f64t.vec_type(2);
+                        let fma = inkwell::intrinsics::Intrinsic::find("llvm.fma")
+                            .and_then(|i| i.get_declaration(&self.module, &[v2.into()]))
+                            .expect("llvm.fma on a vector");
+                        let call = self
+                            .builder
+                            .build_call(fma, &[a.into(), b.into(), c.into()], "fma2")
+                            .expect("LLVM builder error");
+                        Ok(match call.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(v) => Some(v),
+                            _ => unreachable!("fma returns a value"),
+                        })
+                    }
+                    // `b[i]` and `b[i + 1]` as one register, and back. One
+                    // bounds check covers both elements; `--unchecked`
+                    // drops it as it drops every other.
+                    "rill.f2load" | "rill.f2store" => {
+                        let storing = *rt == "rill.f2store";
+                        let (bv, owned) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                        let buf = bv.into_pointer_value();
+                        let idx = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_int_value();
+                        if !self.unchecked {
+                            // Both lanes in range: `i` and `i + 1` below the
+                            // length, as unsigned, which catches a negative
+                            // `i` as well.
+                            let len = self.buf_len(buf);
+                            let next = self
+                                .builder
+                                .build_int_add(idx, i64t.const_int(1, false), "i1")
+                                .expect("LLVM builder error");
+                            let ok0 = self
+                                .builder
+                                .build_int_compare(IntPredicate::ULT, idx, len, "in0")
+                                .expect("LLVM builder error");
+                            let ok1 = self
+                                .builder
+                                .build_int_compare(IntPredicate::ULT, next, len, "in1")
+                                .expect("LLVM builder error");
+                            let ok = self.builder.build_and(ok0, ok1, "in2").expect("LLVM builder error");
+                            let good = self.ctx.append_basic_block(func, "f2.ok");
+                            let bad = self.ctx.append_basic_block(func, "f2.oob");
+                            self.builder.build_conditional_branch(ok, good, bad).expect("LLVM builder error");
+                            self.builder.position_at_end(bad);
+                            let oob = self.module.get_function("rill_buf_oob").unwrap();
+                            let which = self
+                                .builder
+                                .build_select(ok0, next, idx, "which")
+                                .expect("LLVM builder error");
+                            self.builder.build_call(oob, &[which.into(), len.into()], "").expect("LLVM builder error");
+                            self.builder.build_unreachable().expect("LLVM builder error");
+                            self.builder.position_at_end(good);
+                        }
+                        let at = unsafe { self.builder.build_gep(f64t, buf, &[idx], "f2.at") }
+                            .expect("LLVM builder error");
+                        let out = if storing {
+                            let v = self.gen_expr(&args[2], scope, subst, func)?.expect("value");
+                            let st = self.builder.build_store(at, v).expect("LLVM builder error");
+                            st.set_alignment(8).expect("alignment");
+                            None
+                        } else {
+                            let ld = self
+                                .builder
+                                .build_load(f64t.vec_type(2), at, "f2.ld")
+                                .expect("LLVM builder error");
+                            if let Some(i) = ld.as_instruction_value() {
+                                i.set_alignment(8).expect("alignment");
+                            }
+                            Some(ld)
+                        };
+                        if owned {
+                            self.emit_release(bv, &Ty::Buf(CTy::F64));
+                        }
+                        Ok(out)
+                    }
+                    other => unreachable!("unknown lane intrinsic {other}"),
+                }
+            }
             TK::Builtin { rt, args } if rt.starts_with("rill.") => {
                 let mut vals = Vec::new();
                 for a in args {
@@ -5300,7 +5909,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 let inner: Vec<Ty> = inner.iter().map(|t| self.concrete(t, subst)).collect();
                 let bound = self.bind_static_args(*fn_idx, args, subst, e.line)?;
-                let callee = self.request_instance(*fn_idx, inner, bound);
+                let callee = self.request_instance(*fn_idx, inner.clone(), bound);
                 let borrowed = self.borrowed_params[*fn_idx].clone();
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
                 // A value made for a borrowed position has no owner but this
@@ -5316,6 +5925,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         }
                         argv.push(v.into());
                     } else {
+                        // The last word this function has for a binding of
+                        // its own: the reference goes with the call, and the
+                        // callee is the one holder.
+                        if let TK::Local(n) = &a.kind {
+                            if self.movable.contains(n) {
+                                if let Some(v) = self.take_owned(a, scope) {
+                                    argv.push(v.into());
+                                    continue;
+                                }
+                            }
+                        }
                         // A lambda written here for a parameter that never
                         // escapes borrows its captures: this frame holds them
                         // for the whole call. Not in tail position — there the
@@ -5328,6 +5948,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         argv.push(v.expect("arguments are never Unit").into());
                     }
                 }
+                let argv = self.explode_args(argv, &self.instance_params(*fn_idx, &inner));
                 let call =
                     self.builder.build_call(callee, &argv, "call").expect("LLVM builder error");
                 self.match_cc(call, callee);
@@ -5378,6 +5999,27 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     self.emit_release(b, &self.concrete(&buf.ty, subst));
                 }
                 Ok(Some(len.into()))
+            }
+            TK::Unique { val } => {
+                // Borrowed for the look, so the count read is the count as
+                // held. A compile-time constant's count is zero and never
+                // one; a flat value has no count and is never asked.
+                let vty = self.concrete(&val.ty, subst);
+                let (v, owned) = self.gen_borrowed(val, scope, subst, func)?;
+                let i64t = self.ctx.i64_type();
+                let p = match &vty {
+                    Ty::Buf(_) => self.buf_rc_ptr(v.into_pointer_value()),
+                    _ => v.into_pointer_value(),
+                };
+                let rc = self.builder.build_load(i64t, p, "rc").expect("LLVM builder error").into_int_value();
+                let one = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, rc, i64t.const_int(1, false), "unique")
+                    .expect("LLVM builder error");
+                if owned {
+                    self.emit_release(v, &vty);
+                }
+                Ok(Some(one.into()))
             }
             TK::BufPtr { buf } => {
                 let (b, owned) = self.gen_borrowed(buf, scope, subst, func)?;
@@ -5594,7 +6236,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             }
             TK::CallExtern { name, args } => {
                 let sig = self.tmod.externs[name].clone();
-                let callee = self.module.get_function(name).expect("declared above");
+                let callee = match self.libm_intrinsic(name, &sig) {
+                    Some(f) => f,
+                    None => self.module.get_function(name).expect("declared above"),
+                };
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
                 let mut owned: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
                 for (a, pt) in args.iter().zip(&sig.params) {
@@ -5703,7 +6348,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let ty = self.concrete(&arg.ty, subst);
                 let v = self.gen_expr(arg, scope, subst, func)?;
                 let v = v.expect("println argument is never Unit");
-                if matches!(ty, Ty::Adt(..)) {
+                if matches!(ty, Ty::Adt(..) | Ty::Float2) {
                     // Data values print through their derived show function.
                     let s = self.gen_show_of(v, &ty, e.line)?;
                     let rt = self.module.get_function("rill_println_str").unwrap();
@@ -5829,7 +6474,36 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let mut last = None;
                 // As in tail position: the block's bindings do not outlive it.
                 let saved_bound = self.bound_fns.clone();
+                // What this block binds is released when the block ends, not
+                // at the function's exit: a block that is one branch of an
+                // `if` exists on one path only, and a release at the exit of
+                // something made on one path is not even valid code. The one
+                // exception is the block's own value, which leaves with it.
+                // What the frame held when the block began, by identity:
+                // a block may hand one of those to a call it makes (a move
+                // takes it out of the list), so the block's own bindings
+                // are whatever is left that was not there before.
+                let outer_held: Vec<BasicValueEnum<'ctx>> =
+                    self.cleanup.iter().map(|(v, _)| *v).collect();
+                let outer_movable = std::mem::take(&mut self.movable);
                 for (i, stmt) in stmts.iter().enumerate() {
+                    // A block nested in a statement draws on the statement's
+                    // pool: a name spoken once in the whole statement, on
+                    // this block's own unconditional path, and not again in
+                    // the rest of this block.
+                    self.movable = if self.move_ok {
+                        let rest = &stmts[i + 1..];
+                        let mut spine: Vec<&str> = Vec::new();
+                        spine_args(stmt_value(stmt), &mut spine);
+                        spine
+                            .into_iter()
+                            .filter(|n| self.root_free.contains(*n))
+                            .filter(|n| !rest.iter().any(|st| names_local(stmt_value(st), n)))
+                            .map(String::from)
+                            .collect()
+                    } else {
+                        HashSet::new()
+                    };
                     match stmt {
                         TStmt::Bind { name, value } => {
                             let v = match self.take_builder(value, &stmts[i + 1..], scope) {
@@ -5866,6 +6540,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     }
                 }
                 self.bound_fns = saved_bound;
+                self.movable = outer_movable;
+                let (kept, own): (Vec<_>, Vec<_>) = std::mem::take(&mut self.cleanup)
+                    .into_iter()
+                    .partition(|(v, _)| outer_held.contains(v));
+                self.cleanup = kept;
+                for (v, ty) in own.into_iter().rev() {
+                    if last == Some(v) {
+                        continue;
+                    }
+                    self.emit_release(v, &ty);
+                }
                 Ok(last)
             }
             TK::Lambda { params, captures, body } => {
@@ -6079,7 +6764,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     cmp => {
                         let pred = match cmp {
                             BinOp::Eq => FloatPredicate::OEQ,
-                            BinOp::Ne => FloatPredicate::ONE,
+                            // A NaN is equal to nothing, itself included, so
+                            // `x == x` is false for one and `x != x` is
+                            // true — which is how C, Python and IEEE 754
+                            // have it, and how a program tests for one.
+                            BinOp::Ne => FloatPredicate::UNE,
                             BinOp::Lt => FloatPredicate::OLT,
                             BinOp::Le => FloatPredicate::OLE,
                             BinOp::Gt => FloatPredicate::OGT,
@@ -6088,6 +6777,32 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         };
                         b.build_float_compare(pred, l, r, "cmp").unwrap().into()
                     }
+                }
+            }
+            // Both lanes at once, the same way and with the same one
+            // loosening as a single `Float`. Equality is of both lanes.
+            Ty::Float2 => {
+                let (l, r) = (l.into_vector_value(), r.into_vector_value());
+                let contract = |v: inkwell::values::VectorValue<'ctx>| {
+                    if let Some(i) = v.as_instruction() {
+                        let _ = i.set_fast_math_flags(inkwell::values::FastMathFlags::AllowContract);
+                    }
+                    v
+                };
+                match op {
+                    BinOp::Add => contract(b.build_float_add(l, r, "add").unwrap()).into(),
+                    BinOp::Sub => contract(b.build_float_sub(l, r, "sub").unwrap()).into(),
+                    BinOp::Mul => contract(b.build_float_mul(l, r, "mul").unwrap()).into(),
+                    BinOp::Div => b.build_float_div(l, r, "div").unwrap().into(),
+                    BinOp::Eq | BinOp::Ne => {
+                        let eq = self.gen_eq_of(l.into(), r.into(), &Ty::Float2, line)?;
+                        if op == BinOp::Eq {
+                            eq.into()
+                        } else {
+                            self.builder.build_not(eq, "ne").unwrap().into()
+                        }
+                    }
+                    _ => unreachable!("checker restricts Float2 operators"),
                 }
             }
             Ty::Bool => {
@@ -6213,6 +6928,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
         let saved = self.builder.get_insert_block();
         let outer_cleanup = std::mem::take(&mut self.cleanup);
+        let outer_movable = std::mem::take(&mut self.movable);
+        let outer_free = std::mem::take(&mut self.root_free);
+        let outer_move_ok = std::mem::replace(&mut self.move_ok, true);
         let entry = self.ctx.append_basic_block(lifted, "entry");
         self.builder.position_at_end(entry);
         let mut inner_scope: Scope<'ctx> = HashMap::new();
@@ -6244,6 +6962,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.gen_tail(body, &mut inner_scope, subst, lifted, &ret_ty)?;
         self.bound_fns = outer_bound;
         self.cleanup = outer_cleanup;
+        self.movable = outer_movable;
+        self.root_free = outer_free;
+        self.move_ok = outer_move_ok;
 
         // The environment's drop function: decrement; at zero release heap
         // captures and free.

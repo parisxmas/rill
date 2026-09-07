@@ -1,0 +1,20 @@
+# Five million numbers sorted, and a million put in order by their
+# positions — a quicksort and a stable merge sort.
+import "grid" as g
+
+fn main() =
+  n = 5000000
+  m = 1000000
+  a = g.from_fn1(n, \i -> to_float(i * 7919 % 1000003) - 500000.0)
+  b = g.from_fn1(m, \i -> to_float(i * 104729 % 999983) - 500000.0)
+  ix = g.arange(n)
+  warm = g.sum(g.sort(g.copy(a))) + g.sum(g.argsort(g.copy(b)))
+  t0 = now_nanos()
+  s = g.sort(g.copy(a))
+  o = g.argsort(g.copy(b))
+  t1 = now_nanos()
+  println(g.dot(s, ix))
+  println(g.dot(o, g.arange(m)))
+  println(warm)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

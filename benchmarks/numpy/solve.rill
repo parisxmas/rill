@@ -1,0 +1,24 @@
+# A 400 by 400 system solved, its determinant, and its inverse: an LU
+# factorisation with partial pivoting, and what is built on one.
+import "grid" as g
+
+fn work(a, b) =
+  x = g.solve(a, b)
+  d = g.det(a)
+  iv = g.inv(a)
+  (g.sum(x), d, g.sum(iv))
+
+fn main() =
+  n = 400
+  a = g.from_fn2(n, n, \i, j -> to_float((i * 37 + j * 11) % 23) * 0.0001 + (if i == j then 1.0 + to_float(i % 5) * 0.05 else 0.0))
+  b = g.from_fn1(n, \i -> to_float(i % 7) - 3.0)
+  (ws, wd, wi) = work(a, b)
+  t0 = now_nanos()
+  (s, d, iv) = work(a, b)
+  t1 = now_nanos()
+  println(s)
+  println(d)
+  println(iv)
+  println(ws + wd + wi)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

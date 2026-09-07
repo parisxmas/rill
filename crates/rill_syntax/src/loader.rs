@@ -266,6 +266,24 @@ fn qualify(m: &mut Module, alias: &str) {
         let mut scope: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
         qualify_expr(&mut f.body, &own, alias, &mut scope);
     }
+    // An impl's target is one of the module's types, renamed like the rest;
+    // its methods keep their names — a trait's methods are global — but their
+    // bodies refer to the module's own functions and types like any other.
+    for i in &mut m.impls {
+        qualify_type(&mut i.target, &own, alias);
+        for f in &mut i.fns {
+            for p in &mut f.params {
+                if let Some(t) = &mut p.ann {
+                    qualify_type(t, &own, alias);
+                }
+            }
+            if let Some(t) = &mut f.ret_ann {
+                qualify_type(t, &own, alias);
+            }
+            let mut scope: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+            qualify_expr(&mut f.body, &own, alias, &mut scope);
+        }
+    }
 }
 
 /// Names bound where this expression is, which are nobody's to rename.

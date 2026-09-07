@@ -1,0 +1,21 @@
+# The median and two percentiles of five million numbers, and the
+# reductions that skip the NaNs among them.
+import "grid" as g
+
+fn work(a, b) =
+  (g.median(a), g.percentile(a, 25.0) + g.percentile(a, 75.0), g.nansum(b) + g.nanmean(b) + g.nanmax(b))
+
+fn main() =
+  n = 5000000
+  a = g.from_fn1(n, \i -> to_float(i * 7919 % 1000003) - 500000.0)
+  b = g.from_fn1(n, \i -> if i % 5 == 0 then 0.0 / 0.0 else to_float(i % 1000) - 500.0)
+  (wm, wp, wn) = work(a, b)
+  t0 = now_nanos()
+  (m, p, nn) = work(a, b)
+  t1 = now_nanos()
+  println(m)
+  println(p)
+  println(nn)
+  println(wm + wp + wn)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

@@ -117,9 +117,34 @@ fn expand_for(
     // map is looked up as before). Only where neither name is rebound in the
     // body, so the `v` and `i` inside are the ones the check saw. A buffer
     // never changes length, so the check holds however late the access runs.
-    let hoisted = hoistable_bases(&body, &var);
+    // `g.data[i]`: the buffer is a field of a record the loop does not
+    // change (nothing changes a field), so it is read once, before the loop,
+    // into a name of its own, and the body indexes that. Read inside, the
+    // optimizer could not tell the record's slot from the elements being
+    // written and reloaded it — and refused to vectorize — every time round.
+    let mut bound_in_body = HashSet::new();
+    collect_bound_names(&body, &mut bound_in_body);
+    let mut field_bases: Vec<String> = Vec::new();
+    collect_field_bases(&body, &bound_in_body, &mut field_bases);
+    let field_bases = dedup(field_bases);
+    let mut pre: Vec<Stmt> = Vec::new();
+    // Dotted name -> the temp holding it. The body keeps naming the field,
+    // so the record stays in scope for the checker to fall back to when its
+    // type is not settled yet; the hoisted accesses name the temp.
+    let mut temps: HashMap<String, String> = HashMap::new();
+    for fb in &field_bases {
+        let tmp = pick_name("for", "base", used);
+        pre.push(Stmt::Bind { name: tmp.clone(), value: Expr::Var(fb.clone(), line), line });
+        temps.insert(fb.clone(), tmp);
+    }
+    let (hoisted, affine) = hoistable_indexes(&body, &var);
     let (from_shape, to_shape) = (from.clone(), to.clone());
-    let body = if hoisted.is_empty() { body } else { hoist_indexes(body, &var, &hoisted, &go) };
+    let body = if hoisted.is_empty() && affine.is_empty() {
+        body
+    } else {
+        hoist_indexes(body, &var, &hoisted, &affine, &go, &temps)
+    };
+    let base_of = |b: &str, line: usize| Expr::Var(temps.get(b).cloned().unwrap_or_else(|| b.to_string()), line);
     let next = Expr::Binary {
         op: BinOp::Add,
         lhs: Box::new(Expr::Var(var.clone(), line)),
@@ -167,10 +192,25 @@ fn expand_for(
         line,
         lifted_from: None,
     };
-    let mut stmts = vec![
-        Stmt::Bind { name: lo.clone(), value: from, line },
-        Stmt::Bind { name: hi.clone(), value: to, line },
-    ];
+    let mut stmts = pre;
+    stmts.push(Stmt::Bind { name: lo.clone(), value: from, line });
+    stmts.push(Stmt::Bind { name: hi.clone(), value: to, line });
+    // `v[e + i]` for a loop-invariant `e`: the range of the index is the
+    // range of `i` moved by `e`, so the one check in front is over that.
+    for (b, e) in &affine {
+        let shifted = |end: &str| Expr::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(Expr::Var(end.to_string(), line)),
+            rhs: Box::new(e.clone()),
+            line,
+        };
+        stmts.push(Stmt::Expr(Expr::Call {
+            name: "for.check".to_string(),
+            args: vec![base_of(b, line), shifted(&lo), shifted(&hi), Expr::Str(go.clone()), Expr::Bool(false)],
+            line,
+            piped: false,
+        }));
+    }
     for b in &hoisted {
         // `for i in 0..#b`: every index is in range by construction, which
         // is what lets a string — whose `s[i]` past the end is `-1` by
@@ -181,7 +221,7 @@ fn expand_for(
         stmts.push(Stmt::Expr(Expr::Call {
             name: "for.check".to_string(),
             args: vec![
-                Expr::Var(b.clone(), line),
+                base_of(b, line),
                 Expr::Var(lo.clone(), line),
                 Expr::Var(hi.clone(), line),
                 Expr::Str(go.clone()),
@@ -196,35 +236,102 @@ fn expand_for(
     Expr::Block(stmts)
 }
 
-/// The names indexed by the loop variable itself — `v[i]`, `v[i] = x`,
-/// `v[i] += x` — where neither `v` nor `i` is bound again anywhere in the
-/// body.
-fn hoistable_bases(body: &Expr, var: &str) -> Vec<String> {
-    let mut bases = Vec::new();
-    collect_indexed_by(body, var, &mut bases);
+/// The names indexed by the loop variable — `v[i]`, `v[i] = x`, `v[i] += x`
+/// — and, separately, the `(v, e)` pairs indexed by `e + i` or `i + e` for
+/// an `e` the loop leaves alone; in both, neither `v` nor `i` nor anything
+/// `e` names is bound again anywhere in the body.
+fn hoistable_indexes(body: &Expr, var: &str) -> (Vec<String>, Vec<(String, Expr)>) {
     let mut bound = HashSet::new();
     collect_bound_names(body, &mut bound);
     if bound.contains(var) {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
-    dedup(bases).into_iter().filter(|b| b != var && !bound.contains(b)).collect()
+    let mut plain = Vec::new();
+    let mut affine: Vec<(String, Expr)> = Vec::new();
+    collect_indexes(body, var, &bound, &mut plain, &mut affine);
+    let plain: Vec<String> =
+        dedup(plain).into_iter().filter(|b| b != var && !bound.contains(b)).collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    let affine: Vec<(String, Expr)> = affine
+        .into_iter()
+        .filter(|(b, e)| b != var && !bound.contains(b) && seen.insert(format!("{b}[{e:?}]")))
+        .collect();
+    (plain, affine)
 }
 
-fn collect_indexed_by(e: &Expr, var: &str, out: &mut Vec<String>) {
+/// `e + i`, `i + e` — the offset, if this index is the loop variable moved
+/// by an amount the loop does not change.
+fn affine_offset(index: &Expr, var: &str, bound: &HashSet<String>) -> Option<Expr> {
+    let Expr::Binary { op: BinOp::Add, lhs, rhs, .. } = index else { return None };
+    let (v, e) = match (lhs.as_ref(), rhs.as_ref()) {
+        (Expr::Var(i, _), e) if i == var => (i, e),
+        (e, Expr::Var(i, _)) if i == var => (i, e),
+        _ => return None,
+    };
+    let _ = v;
+    if invariant(e, var, bound) { Some(e.clone()) } else { None }
+}
+
+/// Whether an expression is the same on every trip round the loop: names
+/// the loop does not bind, numbers, arithmetic on those, and lengths — a
+/// buffer's or a string's length never changes. No reads of storage, which
+/// the loop may write, and no calls.
+fn invariant(e: &Expr, var: &str, bound: &HashSet<String>) -> bool {
+    match e {
+        Expr::Int(_) => true,
+        Expr::Var(n, _) => n != var && !bound.contains(n) && !bound.contains(n.split('.').next().unwrap_or(n)),
+        Expr::Binary { op: BinOp::Add | BinOp::Sub | BinOp::Mul, lhs, rhs, .. } => {
+            invariant(lhs, var, bound) && invariant(rhs, var, bound)
+        }
+        Expr::Unary { expr, .. } => invariant(expr, var, bound),
+        Expr::Len { expr, .. } => matches!(expr.as_ref(), Expr::Var(n, _) if n != var && !bound.contains(n)),
+        _ => false,
+    }
+}
+
+fn collect_indexes(
+    e: &Expr,
+    var: &str,
+    bound: &HashSet<String>,
+    plain: &mut Vec<String>,
+    affine: &mut Vec<(String, Expr)>,
+) {
     match e {
         Expr::Index { base, index, .. }
         | Expr::IndexSet { base, index, .. }
         | Expr::IndexOp { base, index, .. } => {
-            if let (Expr::Var(b, _), Expr::Var(i, _)) = (base.as_ref(), index.as_ref()) {
-                if i == var {
-                    out.push(b.clone());
+            if let Expr::Var(b, _) = base.as_ref() {
+                if matches!(index.as_ref(), Expr::Var(i, _) if i == var) {
+                    plain.push(b.clone());
+                } else if let Some(off) = affine_offset(index, var, bound) {
+                    affine.push((b.clone(), off));
                 }
             }
         }
         _ => {}
     }
-    each_child_all(e, &mut |c| collect_indexed_by(c, var, out));
+    each_child_all(e, &mut |c| collect_indexes(c, var, bound, plain, affine));
 }
+
+/// Dotted names — `g.data` — used as the base of an index anywhere in the
+/// body, whose record is not bound in the body.
+fn collect_field_bases(e: &Expr, bound: &HashSet<String>, out: &mut Vec<String>) {
+    match e {
+        Expr::Index { base, .. } | Expr::IndexSet { base, .. } | Expr::IndexOp { base, .. } => {
+            if let Expr::Var(b, _) = base.as_ref() {
+                if b.contains('.') {
+                    let head = b.split('.').next().unwrap_or(b);
+                    if !bound.contains(head) && !bound.contains(b) {
+                        out.push(b.clone());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    each_child_all(e, &mut |c| collect_field_bases(c, bound, out));
+}
+
 
 /// Every name an expression binds: block bindings, patterns, local
 /// functions and their parameters, lambda parameters, loop variables.
@@ -275,81 +382,105 @@ fn collect_bound_names(e: &Expr, out: &mut HashSet<String>) {
     each_child_all(e, &mut |c| collect_bound_names(c, out));
 }
 
-/// Rewrites `v[i]`, `v[i] = x` and `v[i] op= x` over the hoisted bases into
-/// `for.at`/`for.set` calls, everywhere in the body.
-fn hoist_indexes(e: Expr, var: &str, bases: &[String], go: &str) -> Expr {
-    let is_hit = |base: &Expr, index: &Expr| -> Option<String> {
-        if let (Expr::Var(b, _), Expr::Var(i, _)) = (base, index) {
-            if i == var && bases.iter().any(|x| x == b) {
+/// Rewrites `v[i]`, `v[i] = x` and `v[i] op= x` — and the same with `e + i`
+/// for a checked `(v, e)` — into `for.at`/`for.set` calls, everywhere in
+/// the body. The index expression travels as written; the check in front
+/// has already covered its range.
+fn hoist_indexes(
+    e: Expr,
+    var: &str,
+    bases: &[String],
+    affine: &[(String, Expr)],
+    go: &str,
+    temps: &HashMap<String, String>,
+) -> Expr {
+    let covered = |base: &Expr, index: &Expr| -> Option<String> {
+        let Expr::Var(b, _) = base else { return None };
+        if matches!(index, Expr::Var(i, _) if i == var) && bases.iter().any(|x| x == b) {
+            return Some(b.clone());
+        }
+        if let Expr::Binary { op: BinOp::Add, lhs, rhs, .. } = index {
+            let off = match (lhs.as_ref(), rhs.as_ref()) {
+                (Expr::Var(i, _), off) if i == var => off,
+                (off, Expr::Var(i, _)) if i == var => off,
+                _ => return None,
+            };
+            let key = format!("{b}[{off:?}]");
+            if affine.iter().any(|(ab, ae)| format!("{ab}[{ae:?}]") == key) {
                 return Some(b.clone());
             }
         }
         None
     };
-    let at = |b: &str, line: usize| Expr::Call {
+    let rec = |x: Expr| hoist_indexes(x, var, bases, affine, go, temps);
+    // The base the access names: the temp when the field has one, and then
+    // the field's own name rides along for the checker's fallback.
+    let base_of = |b: &str, line: usize| -> Expr {
+        Expr::Var(temps.get(b).cloned().unwrap_or_else(|| b.to_string()), line)
+    };
+    // Written as the name itself, not a string, so the lifter sees the
+    // record is still wanted and keeps it in scope for the fallback.
+    let origin = |b: &str, line: usize| -> Expr {
+        if temps.contains_key(b) { Expr::Var(b.to_string(), line) } else { Expr::Str(String::new()) }
+    };
+    let at = |b: &str, index: Expr, line: usize| Expr::Call {
         name: "for.at".to_string(),
-        args: vec![
-            Expr::Var(b.to_string(), line),
-            Expr::Var(var.to_string(), line),
-            Expr::Str(go.to_string()),
-        ],
+        args: vec![base_of(b, line), index, Expr::Str(go.to_string()), origin(b, line)],
         line,
         piped: false,
     };
     match e {
-        Expr::Index { base, index, line } => match is_hit(&base, &index) {
-            Some(b) => at(&b, line),
-            None => Expr::Index {
-                base: Box::new(hoist_indexes(*base, var, bases, go)),
-                index: Box::new(hoist_indexes(*index, var, bases, go)),
-                line,
-            },
+        Expr::Index { base, index, line } => match covered(&base, &index) {
+            Some(b) => at(&b, *index, line),
+            None => Expr::Index { base: Box::new(rec(*base)), index: Box::new(rec(*index)), line },
         },
-        Expr::IndexSet { base, index, value, line } => match is_hit(&base, &index) {
+        Expr::IndexSet { base, index, value, line } => match covered(&base, &index) {
             Some(b) => Expr::Call {
                 name: "for.set".to_string(),
                 args: vec![
-                    Expr::Var(b, line),
-                    Expr::Var(var.to_string(), line),
-                    hoist_indexes(*value, var, bases, go),
+                    base_of(&b, line),
+                    *index,
+                    rec(*value),
                     Expr::Str(go.to_string()),
+                    origin(&b, line),
                 ],
                 line,
                 piped: false,
             },
             None => Expr::IndexSet {
-                base: Box::new(hoist_indexes(*base, var, bases, go)),
-                index: Box::new(hoist_indexes(*index, var, bases, go)),
-                value: Box::new(hoist_indexes(*value, var, bases, go)),
+                base: Box::new(rec(*base)),
+                index: Box::new(rec(*index)),
+                value: Box::new(rec(*value)),
                 line,
             },
         },
-        Expr::IndexOp { op, base, index, value, line } => match is_hit(&base, &index) {
+        Expr::IndexOp { op, base, index, value, line } => match covered(&base, &index) {
             Some(b) => Expr::Call {
                 name: "for.set".to_string(),
                 args: vec![
-                    Expr::Var(b.clone(), line),
-                    Expr::Var(var.to_string(), line),
+                    base_of(&b, line),
+                    (*index).clone(),
                     Expr::Binary {
                         op,
-                        lhs: Box::new(at(&b, line)),
-                        rhs: Box::new(hoist_indexes(*value, var, bases, go)),
+                        lhs: Box::new(at(&b, *index, line)),
+                        rhs: Box::new(rec(*value)),
                         line,
                     },
                     Expr::Str(go.to_string()),
+                    origin(&b, line),
                 ],
                 line,
                 piped: false,
             },
             None => Expr::IndexOp {
                 op,
-                base: Box::new(hoist_indexes(*base, var, bases, go)),
-                index: Box::new(hoist_indexes(*index, var, bases, go)),
-                value: Box::new(hoist_indexes(*value, var, bases, go)),
+                base: Box::new(rec(*base)),
+                index: Box::new(rec(*index)),
+                value: Box::new(rec(*value)),
                 line,
             },
         },
-        other => map_children(other, &mut |c| hoist_indexes(c, var, bases, go)),
+        other => map_children(other, &mut |c| hoist_indexes(c, var, bases, affine, go, temps)),
     }
 }
 
@@ -1404,8 +1535,15 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
 fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
     match e {
         Expr::Var(n, _) => {
+            // `p.x` is the name `p` with a field read off it: what the body
+            // needs from outside is `p`. (A module alias in front of a dot is
+            // not a name in scope and is dropped by whoever asked.)
             if !bound.contains(n) {
                 out.push(n.clone());
+                let head = n.split('.').next().unwrap_or(n);
+                if head != n && !bound.iter().any(|b| b == head) {
+                    out.push(head.to_string());
+                }
             }
         }
         Expr::Call { name, args, .. } => {

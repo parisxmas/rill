@@ -48,3 +48,5 @@ __pycache__/
 /benchmarks/c/last_run.md
 /benchmarks/strands/bin/
 /benchmarks/io/bin/
+/benchmarks/numpy/bin/
+/bindings/python/grid/_gridlib.*

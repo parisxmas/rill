@@ -1274,9 +1274,9 @@ impl Parser {
 
 /// The prelude type a tuple of this size is written with.
 pub fn tuple_name(n: usize, line: usize, col: usize) -> Result<String, SyntaxError> {
-    if (2..=4).contains(&n) {
+    if (2..=8).contains(&n) {
         Ok(format!("Tuple{n}"))
     } else {
-        Err(SyntaxError::new(line, col, format!("a tuple holds two to four things, not {n}")))
+        Err(SyntaxError::new(line, col, format!("a tuple holds two to eight things, not {n}")))
     }
 }

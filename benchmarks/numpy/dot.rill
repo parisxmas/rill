@@ -1,0 +1,15 @@
+# The dot product of two twenty-million-element vectors.
+import "grid" as g
+
+fn main() =
+  n = 20000000
+  a = g.from_fn1(n, \i -> to_float(i % 100))
+  b = g.from_fn1(n, \i -> to_float(i % 37))
+  warm = g.dot(a, b)
+  t0 = now_nanos()
+  d = g.dot(a, b)
+  t1 = now_nanos()
+  println(d)
+  println(warm)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

@@ -1,0 +1,16 @@
+# 800 × 800 by 800 × 800, then the trace and the sum of the product.
+import "grid" as g
+
+fn main() =
+  n = 800
+  a = g.from_fn2(n, n, \i, j -> to_float(i * j % 7))
+  b = g.from_fn2(n, n, \i, j -> to_float((i + j) % 5))
+  warm = g.matmul(a, b)
+  t0 = now_nanos()
+  c = g.matmul(a, b)
+  t1 = now_nanos()
+  println(g.trace(c))
+  println(g.sum(c))
+  println(g.trace(warm))
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

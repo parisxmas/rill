@@ -2174,3 +2174,133 @@ fn type_errors_fail_the_build() {
     let stderr = String::from_utf8_lossy(&build.stderr);
     assert!(stderr.contains("type error"), "stderr was: {stderr}");
 }
+
+// ---- lanes, holders, grids, and a library a host loads -----------------------
+
+#[test]
+fn float2_lanes_and_eight_way_tuples() {
+    let out = compile_and_run("lanes.rill");
+    assert_eq!(
+        out,
+        "8024\n-32\n(6.25, -7.75)\n-0.5\ntrue\n1.5\n-2\n(6, 12, 18, 24, 30, 36, 42, 48)\n"
+    );
+}
+
+#[test]
+fn unique_sees_the_sole_holder_and_last_uses_move() {
+    let out = compile_and_run("holders.rill");
+    assert_eq!(out, "3\n6\n12\n10\nfalse\ntrue\n");
+}
+
+#[test]
+fn grid_tour_agrees_with_numpy() {
+    let out = compile_and_run("grid_tour.rill");
+    assert_eq!(
+        out,
+        "[[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]]\n\
+         [[1, 3, 5, 7], [9, 11, 13, 15], [17, 19, 21, 23]]\n\
+         450.095\n\
+         [6, 22, 38]\n\
+         [12, 15, 18, 21]\n\
+         [[14, 38, 62], [38, 126, 214], [62, 214, 366]]\n\
+         506\n\
+         5\n\
+         [0, 10, 20, 30, 40, 50, 6, 7, 8, 9, 10, 11]\n\
+         11.9167\n\
+         [0, 1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 66]\n\
+         [6, 22, 38]\n\
+         [false, false, false, false, false, false, true, true, true, true, true, true]\n\
+         6\n\
+         [false, false, false, false, false, false, true, true, true, false, false, false]\n\
+         556\n\
+         4870\n"
+    );
+}
+
+/// `--shared` makes a library whose `export fn`s a C host calls: counted
+/// values cross as handles the host drops, `main` runs as `rill_init`.
+#[test]
+fn shared_library_serves_a_c_host() {
+    require_fresh_runtime();
+    let root = workspace_root();
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-shared-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let lib = out_dir.join("gridlib");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(root.join("bindings/python/gridlib.rill"))
+        .arg("--shared")
+        .arg("-o")
+        .arg(&lib)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(build.status.success(), "rill build --shared failed:\n{}", String::from_utf8_lossy(&build.stderr));
+    let ext = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+    let lib = lib.with_extension(ext);
+    let host_src = out_dir.join("host.c");
+    std::fs::write(
+        &host_src,
+        "#include <stdio.h>\n\
+         void rill_init(void);\n\
+         void *grid_arange(long n);\n\
+         void *grid_scale(void *a, double v);\n\
+         void *grid_matmul(void *a, void *b);\n\
+         void *grid_reshape2(void *a, long r, long c);\n\
+         void *grid_transpose(void *a);\n\
+         double grid_sum(void *a);\n\
+         char *grid_show(void *a);\n\
+         void rill_free_ptr(void *p);\n\
+         void rill_drop_g_Grid(void *a);\n\
+         int main(void) {\n\
+           rill_init();\n\
+           void *a = grid_arange(6);\n\
+           void *b = grid_scale(a, 3.0);\n\
+           void *m = grid_reshape2(b, 2, 3);\n\
+           void *t = grid_transpose(m);\n\
+           void *p = grid_matmul(m, t);\n\
+           char *s = grid_show(p);\n\
+           printf(\"%s %g\\n\", s, grid_sum(a));\n\
+           rill_free_ptr(s);\n\
+           rill_drop_g_Grid(p); rill_drop_g_Grid(t); rill_drop_g_Grid(m);\n\
+           rill_drop_g_Grid(b); rill_drop_g_Grid(a);\n\
+           return 0;\n\
+         }\n",
+    )
+    .unwrap();
+    let host = out_dir.join("host");
+    let cc = Command::new("cc").arg(&host_src).arg(&lib).arg("-o").arg(&host).output().expect("cc");
+    assert!(cc.status.success(), "cc failed:\n{}", String::from_utf8_lossy(&cc.stderr));
+    let run = Command::new(&host).output().expect("failed to run the host");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "[[45, 126], [126, 450]] 15\n");
+}
+
+/// The Python package over the same library, when there is a Python to run
+/// it: `build.py` makes the library and `test_grid.py` checks it against
+/// NumPy or known answers.
+#[test]
+fn python_package_passes_its_tests() {
+    require_fresh_runtime();
+    let Some(python) = ["python3", "python"].iter().find(|p| {
+        Command::new(p).arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    }) else {
+        return;
+    };
+    let root = workspace_root();
+    let bin_dir = Path::new(env!("CARGO_BIN_EXE_rill")).parent().unwrap().to_path_buf();
+    let build = Command::new(python)
+        .arg(root.join("bindings/python/build.py"))
+        .env("RILL", env!("CARGO_BIN_EXE_rill"))
+        .env("RILL_PATH", root.join("lib"))
+        .current_dir(&bin_dir)
+        .output()
+        .expect("python");
+    assert!(build.status.success(), "build.py failed:\n{}", String::from_utf8_lossy(&build.stderr));
+    let test = Command::new(python).arg(root.join("bindings/python/test_grid.py")).output().expect("python");
+    assert!(
+        test.status.success(),
+        "test_grid.py failed:\n{}\n{}",
+        String::from_utf8_lossy(&test.stdout),
+        String::from_utf8_lossy(&test.stderr)
+    );
+}

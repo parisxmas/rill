@@ -32,6 +32,7 @@ extern "C" {
     fn exit(code: i32) -> !;
     fn malloc(size: usize) -> *mut u8;
     fn calloc(count: usize, size: usize) -> *mut u8;
+    fn memset(p: *mut u8, c: i32, n: usize) -> *mut u8;
     fn free(ptr: *mut u8);
     fn getenv(name: *const u8) -> *const u8;
     fn strtod(s: *const u8, end: *mut *const u8) -> f64;
@@ -1283,16 +1284,157 @@ pub unsafe extern "C" fn rill_buf_new(n: i64, size: i64) -> *mut u8 {
     // the length sit in the sixteen bytes before it, so that an element is
     // one register-indexed load with nothing added.
     let bytes = (n as u64).saturating_mul(size as u64);
-    let block = rill_alloc(16 + bytes);
+    // A big buffer comes from `calloc`, whose pages the kernel hands over
+    // already zero and only when touched; a small one from the pool, cleared
+    // with `memset`. Both replace a byte-at-a-time loop that took as long
+    // over eighty megabytes as the arithmetic it was making room for.
+    let block = if 16 + bytes > POOL_MAX as u64 {
+        live_add(1);
+        let b = match big_take((16 + bytes) as usize) {
+            Some(b) => {
+                memset(b.add(16), 0, bytes as usize);
+                b
+            }
+            None => calloc(1, (16 + bytes) as usize),
+        };
+        if b.is_null() {
+            out(b"rill: out of memory\n");
+            die();
+        }
+        b
+    } else {
+        let b = rill_alloc(16 + bytes);
+        memset(b.add(16), 0, bytes as usize);
+        b
+    };
     *(block as *mut i64) = 1;
     *(block as *mut i64).add(1) = n;
-    let p = block.add(16);
-    let mut i = 0u64;
-    while i < bytes {
-        *p.add(i as usize) = 0;
-        i += 1;
+    block.add(16)
+}
+
+/// A buffer whose elements are whatever the memory held: for a caller
+/// about to write every one of them, which is what an array library's
+/// operations do. Skipping the clearing is a third of the cost of an
+/// eighty-megabyte result; nothing else is skipped, and the count and
+/// length are set as for any buffer.
+///
+/// # Safety
+/// `n` and `size` describe the elements; the elements are not zero.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_new_uninit(n: i64, size: i64) -> *mut u8 {
+    if n < 0 {
+        rill_buf_oob(n, 0);
     }
-    p
+    let bytes = (n as u64).saturating_mul(size as u64);
+    let block = if 16 + bytes > POOL_MAX as u64 {
+        live_add(1);
+        let b = match big_take((16 + bytes) as usize) {
+            Some(b) => b,
+            None => malloc((16 + bytes) as usize),
+        };
+        if b.is_null() {
+            out(b"rill: out of memory\n");
+            die();
+        }
+        b
+    } else {
+        rill_alloc(16 + bytes)
+    };
+    *(block as *mut i64) = 1;
+    *(block as *mut i64).add(1) = n;
+    block.add(16)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_new_uninit_f64(n: i64) -> *mut u8 {
+    rill_buf_new_uninit(n, 8)
+}
+
+// ---- big blocks -------------------------------------------------------------
+//
+// A block of a megabyte or more that a program lets go of is the block the
+// next operation of the same shape is about to ask for: an array library
+// makes an eighty-megabyte result, consumes it, frees it, and makes the next.
+// Handing such a block back to the system and asking for it again costs a
+// page fault per page — several milliseconds per result — so the last few
+// are kept and handed out again to a request of the same size, or nearly.
+// The system's allocator does this for C programs; this does it for Rill's.
+
+const BIG_MIN: usize = 1 << 20;
+const BIG_SLOTS: usize = 8;
+static mut BIG_PTR: [*mut u8; BIG_SLOTS] = [core::ptr::null_mut(); BIG_SLOTS];
+static mut BIG_SIZE: [usize; BIG_SLOTS] = [0; BIG_SLOTS];
+static BIG_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+unsafe fn big_lock() {
+    while BIG_LOCK
+        .compare_exchange_weak(
+            false,
+            true,
+            core::sync::atomic::Ordering::Acquire,
+            core::sync::atomic::Ordering::Relaxed,
+        )
+        .is_err()
+    {}
+}
+
+unsafe fn big_unlock() {
+    BIG_LOCK.store(false, core::sync::atomic::Ordering::Release);
+}
+
+/// A kept block that fits `bytes` without wasting more than a quarter.
+unsafe fn big_take(bytes: usize) -> Option<*mut u8> {
+    if bytes < BIG_MIN {
+        return None;
+    }
+    big_lock();
+    let mut found = None;
+    for i in 0..BIG_SLOTS {
+        let have = BIG_SIZE[i];
+        if !BIG_PTR[i].is_null() && have >= bytes && have <= bytes + bytes / 4 {
+            found = Some(BIG_PTR[i]);
+            BIG_PTR[i] = core::ptr::null_mut();
+            BIG_SIZE[i] = 0;
+            break;
+        }
+    }
+    big_unlock();
+    found
+}
+
+/// Keeps a freed block for the next request, or lets it go if there is no
+/// room: the oldest kept block makes way, so the set follows the program.
+unsafe fn big_keep(ptr: *mut u8, bytes: usize) -> bool {
+    if bytes < BIG_MIN {
+        return false;
+    }
+    big_lock();
+    let mut slot = BIG_SLOTS;
+    for i in 0..BIG_SLOTS {
+        if BIG_PTR[i].is_null() {
+            slot = i;
+            break;
+        }
+    }
+    let evicted = if slot == BIG_SLOTS {
+        // All full: drop the first and shift, so the newest is last.
+        let old = BIG_PTR[0];
+        for i in 1..BIG_SLOTS {
+            BIG_PTR[i - 1] = BIG_PTR[i];
+            BIG_SIZE[i - 1] = BIG_SIZE[i];
+        }
+        slot = BIG_SLOTS - 1;
+        old
+    } else {
+        core::ptr::null_mut()
+    };
+    BIG_PTR[slot] = ptr;
+    BIG_SIZE[slot] = bytes;
+    big_unlock();
+    if !evicted.is_null() {
+        free(evicted);
+    }
+    true
 }
 
 /// # Safety
@@ -2151,6 +2293,9 @@ pub unsafe extern "C" fn rill_free_sized(ptr: *mut u8, size: u64) {
         (*pool).free[class] = ptr;
         return;
     }
+    if big_keep(ptr, size as usize) {
+        return;
+    }
     free(ptr);
 }
 
@@ -2791,6 +2936,15 @@ static mut WORKERS: [Worker; MAX_WORKERS] = [WORKER_INIT; MAX_WORKERS];
 /// Assigned by `rill_rt_run` before anything reads it; zero here keeps the
 /// table out of the binary.
 static mut NWORKERS: usize = 0;
+
+/// How many workers this run has — `RILL_THREADS` as the runtime took it,
+/// 1 when it was not set or the build was not `--parallel`. What a library
+/// asks before deciding how many strands a big piece of work is worth.
+#[no_mangle]
+pub unsafe extern "C" fn rill_workers() -> i64 {
+    let n = NWORKERS;
+    if n == 0 { 1 } else { n as i64 }
+}
 /// Strands currently executing on some worker, and strands sitting in
 /// some run queue. Both are maintained under the scheduler lock, so seeing
 /// them at zero together proves nothing can ever become runnable again —

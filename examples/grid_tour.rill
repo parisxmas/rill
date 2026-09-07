@@ -1,0 +1,28 @@
+# A tour of `lib/grid.rill`: arrays with a shape, the way NumPy has them.
+import "grid" as g
+
+fn main() =
+  a = g.arange(12)
+  m = g.reshape2(a, 3, 4)
+  println(m)
+  b = g.shift(g.scale(m, 2.0), 1.0)
+  println(b)
+  println(g.sum(g.add(g.mul(g.gsqrt(m), b), m)))
+  t = g.transpose(m)
+  println(g.sum_axis(t, 0))
+  println(g.sum_axis(t, 1))
+  println(g.matmul(m, t))
+  println(g.dot(a, a))
+  println(g.argmax(g.where(g.gtk(a, 5.0), g.neg(a), a)))
+  println(g.where(g.gtk(a, 5.0), a, g.scale(a, 10.0)))
+  println(g.var(a))
+  println(g.cumsum(a))
+  println(g.matvec(m, g.ones1(4)))
+  mk = g.gtk(a, 5.0)
+  println(mk)
+  println(g.mcount(mk))
+  println(g.mask_and(mk, g.ltk(a, 9.0)))
+  p = g.from_fn2(7, 13, \i, j -> to_float((i * 3 + j) % 5))
+  q = g.from_fn2(13, 9, \i, j -> to_float((i + 2 * j) % 7))
+  println(g.trace(g.matmul(p, q)))
+  println(g.sum(g.matmul(p, q)))

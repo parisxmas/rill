@@ -1,0 +1,397 @@
+# The grid library's face to a host: every entry point Python's `grid`
+# package calls, one `export fn` each. A grid or a mask crosses as a handle
+# the host holds and later drops (`rill_drop_g_Grid`, `rill_drop_g_Mask`);
+# a number crosses as itself; text crosses as a C string the host frees
+# with `rill_free_ptr`.
+#
+#   rill build bindings/python/gridlib.rill --shared -o bindings/python/grid/_gridlib
+#
+# The `_into` entries write into their first operand's own storage, for a
+# host that knows the operand is a temporary nobody else holds — the same
+# elision `grid` does for itself with `unique`, done by the host's count.
+import "grid" as g
+
+fn main() = 0
+
+# -- making --------------------------------------------------------------------
+
+export fn grid_zeros1(n: Int) -> g.Grid = g.zeros1(n)
+
+export fn grid_zeros2(r: Int, c: Int) -> g.Grid = g.zeros2(r, c)
+
+export fn grid_full1(n: Int, v: Float) -> g.Grid = g.full(g.shape1(n), v)
+
+export fn grid_full2(r: Int, c: Int, v: Float) -> g.Grid = g.full2(r, c, v)
+
+export fn grid_arange(n: Int) -> g.Grid = g.arange(n)
+
+export fn grid_linspace(a: Float, b: Float, n: Int) -> g.Grid = g.linspace(a, b, n)
+
+export fn grid_identity(n: Int) -> g.Grid = g.identity(n)
+
+# -- shape and storage -----------------------------------------------------------
+
+export fn grid_ndim(a: g.Grid) -> Int = g.ndim(a)
+
+export fn grid_dim(a: g.Grid, d: Int) -> Int = a.shape[d]
+
+export fn grid_size(a: g.Grid) -> Int = g.size(a)
+
+export fn grid_contiguous(a: g.Grid) -> Bool = g.contiguous(a)
+
+# The elements, contiguous and in row-major order: the grid's own buffer
+# when it is laid out that way, a copy's otherwise. The host drops the
+# handle it is given; the memory stays valid as long as the grid does.
+export fn grid_data(a: g.Grid) -> Buf(Float) = g.dense(a).data
+
+export fn grid_reshape1(a: g.Grid, n: Int) -> g.Grid = g.reshape(a, g.shape1(n))
+
+export fn grid_reshape2(a: g.Grid, r: Int, c: Int) -> g.Grid = g.reshape2(a, r, c)
+
+export fn grid_transpose(a: g.Grid) -> g.Grid = g.transpose(a)
+
+export fn grid_rows(a: g.Grid, lo: Int, hi: Int) -> g.Grid = g.rows(a, lo, hi)
+
+export fn grid_row(a: g.Grid, i: Int) -> g.Grid = g.row(a, i)
+
+export fn grid_col(a: g.Grid, j: Int) -> g.Grid = g.col(a, j)
+
+export fn grid_copy(a: g.Grid) -> g.Grid = g.copy(a)
+
+export fn grid_at1(a: g.Grid, i: Int) -> Float = g.at1(a, i)
+
+export fn grid_at2(a: g.Grid, i: Int, j: Int) -> Float = g.at2(a, i, j)
+
+export fn grid_put1(a: g.Grid, i: Int, v: Float) -> Int =
+  g.put1(a, i, v)
+  0
+
+export fn grid_put2(a: g.Grid, i: Int, j: Int, v: Float) -> Int =
+  g.put2(a, i, j, v)
+  0
+
+# -- elementwise -----------------------------------------------------------------
+
+export fn grid_add(a: g.Grid, b: g.Grid) -> g.Grid = g.add(a, b)
+
+export fn grid_sub(a: g.Grid, b: g.Grid) -> g.Grid = g.sub(a, b)
+
+export fn grid_mul(a: g.Grid, b: g.Grid) -> g.Grid = g.mul(a, b)
+
+export fn grid_div(a: g.Grid, b: g.Grid) -> g.Grid = g.div(a, b)
+
+export fn grid_maximum(a: g.Grid, b: g.Grid) -> g.Grid = g.maximum(a, b)
+
+export fn grid_minimum(a: g.Grid, b: g.Grid) -> g.Grid = g.minimum(a, b)
+
+export fn grid_scale(a: g.Grid, v: Float) -> g.Grid = g.scale(a, v)
+
+export fn grid_shift(a: g.Grid, v: Float) -> g.Grid = g.shift(a, v)
+
+export fn grid_power(a: g.Grid, v: Float) -> g.Grid = g.power(a, v)
+
+export fn grid_neg(a: g.Grid) -> g.Grid = g.neg(a)
+
+export fn grid_abs(a: g.Grid) -> g.Grid = g.gabs(a)
+
+export fn grid_sqrt(a: g.Grid) -> g.Grid = g.gsqrt(a)
+
+export fn grid_exp(a: g.Grid) -> g.Grid = g.gexp(a)
+
+export fn grid_log(a: g.Grid) -> g.Grid = g.glog(a)
+
+# In place, on a contiguous grid of the same shape: the host checked both.
+export fn grid_add_into(a: g.Grid, b: g.Grid) -> Int =
+  g.add_into(a.data, g.dense(b).data, 0, g.size(a))
+  0
+
+export fn grid_sub_into(a: g.Grid, b: g.Grid) -> Int =
+  g.sub_into(a.data, g.dense(b).data, 0, g.size(a))
+  0
+
+export fn grid_mul_into(a: g.Grid, b: g.Grid) -> Int =
+  g.mul_into(a.data, g.dense(b).data, 0, g.size(a))
+  0
+
+export fn grid_div_into(a: g.Grid, b: g.Grid) -> Int =
+  g.div_into(a.data, g.dense(b).data, 0, g.size(a))
+  0
+
+export fn grid_scale_into(a: g.Grid, v: Float) -> Int =
+  g.scale_into(a.data, v, 0, g.size(a))
+  0
+
+export fn grid_shift_into(a: g.Grid, v: Float) -> Int =
+  g.shift_into(a.data, v, 0, g.size(a))
+  0
+
+export fn grid_sqrt_into(a: g.Grid) -> Int =
+  g.gsqrt_into(a.data, 0, g.size(a))
+  0
+
+# -- the rest of the maths ---------------------------------------------------------
+
+export fn grid_sin(a: g.Grid) -> g.Grid = g.gsin(a)
+
+export fn grid_cos(a: g.Grid) -> g.Grid = g.gcos(a)
+
+export fn grid_tan(a: g.Grid) -> g.Grid = g.gtan(a)
+
+export fn grid_asin(a: g.Grid) -> g.Grid = g.gasin(a)
+
+export fn grid_acos(a: g.Grid) -> g.Grid = g.gacos(a)
+
+export fn grid_atan(a: g.Grid) -> g.Grid = g.gatan(a)
+
+export fn grid_sinh(a: g.Grid) -> g.Grid = g.gsinh(a)
+
+export fn grid_cosh(a: g.Grid) -> g.Grid = g.gcosh(a)
+
+export fn grid_tanh(a: g.Grid) -> g.Grid = g.gtanh(a)
+
+export fn grid_exp2(a: g.Grid) -> g.Grid = g.gexp2(a)
+
+export fn grid_expm1(a: g.Grid) -> g.Grid = g.gexpm1(a)
+
+export fn grid_log2(a: g.Grid) -> g.Grid = g.glog2(a)
+
+export fn grid_log10(a: g.Grid) -> g.Grid = g.glog10(a)
+
+export fn grid_log1p(a: g.Grid) -> g.Grid = g.glog1p(a)
+
+export fn grid_cbrt(a: g.Grid) -> g.Grid = g.gcbrt(a)
+
+export fn grid_floor(a: g.Grid) -> g.Grid = g.gfloor(a)
+
+export fn grid_ceil(a: g.Grid) -> g.Grid = g.gceil(a)
+
+export fn grid_trunc(a: g.Grid) -> g.Grid = g.gtrunc(a)
+
+export fn grid_round(a: g.Grid) -> g.Grid = g.ground(a)
+
+export fn grid_square(a: g.Grid) -> g.Grid = g.gsquare(a)
+
+export fn grid_reciprocal(a: g.Grid) -> g.Grid = g.greciprocal(a)
+
+export fn grid_sign(a: g.Grid) -> g.Grid = g.gsign(a)
+
+export fn grid_degrees(a: g.Grid) -> g.Grid = g.gdegrees(a)
+
+export fn grid_radians(a: g.Grid) -> g.Grid = g.gradians(a)
+
+export fn grid_atan2(a: g.Grid, b: g.Grid) -> g.Grid = g.gatan2(a, b)
+
+export fn grid_hypot(a: g.Grid, b: g.Grid) -> g.Grid = g.ghypot(a, b)
+
+export fn grid_fmod(a: g.Grid, b: g.Grid) -> g.Grid = g.gfmod(a, b)
+
+export fn grid_copysign(a: g.Grid, b: g.Grid) -> g.Grid = g.gcopysign(a, b)
+
+export fn grid_powg(a: g.Grid, b: g.Grid) -> g.Grid = g.gpowg(a, b)
+
+export fn grid_clip(a: g.Grid, lo: Float, hi: Float) -> g.Grid = g.gclip(a, lo, hi)
+
+export fn grid_maxk(a: g.Grid, v: Float) -> g.Grid = g.gmaxk(a, v)
+
+export fn grid_mink(a: g.Grid, v: Float) -> g.Grid = g.gmink(a, v)
+
+export fn grid_fmodk(a: g.Grid, v: Float) -> g.Grid = g.gfmodk(a, v)
+
+# -- masks -------------------------------------------------------------------------
+
+export fn grid_gt(a: g.Grid, b: g.Grid) -> g.Mask = g.gt(a, b)
+
+export fn grid_ge(a: g.Grid, b: g.Grid) -> g.Mask = g.ge(a, b)
+
+export fn grid_eq(a: g.Grid, b: g.Grid) -> g.Mask = g.eq(a, b)
+
+export fn grid_gtk(a: g.Grid, v: Float) -> g.Mask = g.gtk(a, v)
+
+export fn grid_ltk(a: g.Grid, v: Float) -> g.Mask = g.ltk(a, v)
+
+export fn grid_eqk(a: g.Grid, v: Float) -> g.Mask = g.eqk(a, v)
+
+export fn mask_not(m: g.Mask) -> g.Mask = g.mask_not(m)
+
+export fn mask_and(a: g.Mask, b: g.Mask) -> g.Mask = g.mask_and(a, b)
+
+export fn mask_or(a: g.Mask, b: g.Mask) -> g.Mask = g.mask_or(a, b)
+
+export fn mask_count(m: g.Mask) -> Int = g.mcount(m)
+
+export fn mask_ndim(m: g.Mask) -> Int = #m.shape
+
+export fn mask_dim(m: g.Mask, d: Int) -> Int = m.shape[d]
+
+export fn mask_bits(m: g.Mask) -> Buf(U8) = m.bits
+
+export fn mask_to_grid(m: g.Mask) -> g.Grid = g.to_grid(m)
+
+export fn grid_where(m: g.Mask, a: g.Grid, b: g.Grid) -> g.Grid = g.where(m, a, b)
+
+# -- shape, joining, sorting, order ------------------------------------------------
+
+export fn grid_zeros_like(a: g.Grid) -> g.Grid = g.zeros_like(a)
+
+export fn grid_ones_like(a: g.Grid) -> g.Grid = g.ones_like(a)
+
+export fn grid_full_like(a: g.Grid, v: Float) -> g.Grid = g.full_like(a, v)
+
+export fn grid_empty_like(a: g.Grid) -> g.Grid = g.empty_like(a)
+
+export fn grid_squeeze(a: g.Grid) -> g.Grid = g.squeeze(a)
+
+export fn grid_logspace(a: Float, b: Float, n: Int, base: Float) -> g.Grid =
+  g.logspace(a, b, n, base)
+
+export fn grid_concat(a: g.Grid, b: g.Grid, axis: Int) -> g.Grid = g.concat(a, b, axis)
+
+export fn grid_vstack(a: g.Grid, b: g.Grid) -> g.Grid = g.vstack(a, b)
+
+export fn grid_hstack(a: g.Grid, b: g.Grid) -> g.Grid = g.hstack(a, b)
+
+export fn grid_tile(a: g.Grid, k: Int) -> g.Grid = g.tile(a, k)
+
+export fn grid_repeat(a: g.Grid, k: Int) -> g.Grid = g.repeat(a, k)
+
+export fn grid_diag(a: g.Grid) -> g.Grid = g.diag(a)
+
+export fn grid_tril(a: g.Grid, k: Int) -> g.Grid = g.tril(a, k)
+
+export fn grid_triu(a: g.Grid, k: Int) -> g.Grid = g.triu(a, k)
+
+# A tuple does not cross the boundary, so the two halves of a mesh are two
+# calls.
+export fn grid_meshgrid_x(x: g.Grid, y: g.Grid) -> g.Grid =
+  (gx, gy) = g.meshgrid(x, y)
+  gx
+
+export fn grid_meshgrid_y(x: g.Grid, y: g.Grid) -> g.Grid =
+  (gx, gy) = g.meshgrid(x, y)
+  gy
+
+export fn grid_fliplr(a: g.Grid) -> g.Grid = g.fliplr(a)
+
+export fn grid_flipud(a: g.Grid) -> g.Grid = g.flipud(a)
+
+export fn grid_flip(a: g.Grid) -> g.Grid = g.flip(a)
+
+export fn grid_roll(a: g.Grid, k: Int) -> g.Grid = g.roll(a, k)
+
+export fn grid_take(a: g.Grid, idx: g.Grid) -> g.Grid = g.take(a, idx)
+
+export fn grid_sort(a: g.Grid) -> g.Grid = g.sort(a)
+
+export fn grid_argsort(a: g.Grid) -> g.Grid = g.argsort(a)
+
+export fn grid_distinct(a: g.Grid) -> g.Grid = g.distinct(a)
+
+export fn grid_searchsorted(a: g.Grid, v: Float) -> Int = g.searchsorted(a, v)
+
+export fn grid_nonzero(a: g.Grid) -> g.Grid = g.nonzero(a)
+
+export fn grid_count_nonzero(a: g.Grid) -> Int = g.count_nonzero(a)
+
+export fn grid_median(a: g.Grid) -> Float = g.median(a)
+
+export fn grid_percentile(a: g.Grid, q: Float) -> Float = g.percentile(a, q)
+
+export fn grid_quantile(a: g.Grid, q: Float) -> Float = g.quantile(a, q)
+
+export fn grid_ptp(a: g.Grid) -> Float = g.ptp(a)
+
+export fn grid_diff(a: g.Grid) -> g.Grid = g.diff(a)
+
+export fn grid_cumprod(a: g.Grid) -> g.Grid = g.cumprod(a)
+
+export fn grid_isnan(a: g.Grid) -> g.Mask = g.isnan(a)
+
+export fn grid_isinf(a: g.Grid) -> g.Mask = g.isinf(a)
+
+export fn grid_isfinite(a: g.Grid) -> g.Mask = g.isfinite(a)
+
+export fn grid_isclose(a: g.Grid, b: g.Grid, eps: Float) -> g.Mask = g.isclose(a, b, eps)
+
+export fn grid_nansum(a: g.Grid) -> Float = g.nansum(a)
+
+export fn grid_nanmean(a: g.Grid) -> Float = g.nanmean(a)
+
+export fn grid_nanmax(a: g.Grid) -> Float = g.nanmax(a)
+
+export fn grid_nanmin(a: g.Grid) -> Float = g.nanmin(a)
+
+export fn grid_nanargmax(a: g.Grid) -> Int = g.nanargmax(a)
+
+export fn grid_nanargmin(a: g.Grid) -> Int = g.nanargmin(a)
+
+# -- reductions ------------------------------------------------------------------
+
+export fn grid_sum(a: g.Grid) -> Float = g.sum(a)
+
+export fn grid_mean(a: g.Grid) -> Float = g.mean(a)
+
+export fn grid_prod(a: g.Grid) -> Float = g.prod(a)
+
+export fn grid_max(a: g.Grid) -> Float = g.gmax(a)
+
+export fn grid_min(a: g.Grid) -> Float = g.gmin(a)
+
+export fn grid_argmax(a: g.Grid) -> Int = g.argmax(a)
+
+export fn grid_argmin(a: g.Grid) -> Int = g.argmin(a)
+
+export fn grid_var(a: g.Grid) -> Float = g.var(a)
+
+export fn grid_std(a: g.Grid) -> Float = g.std(a)
+
+export fn grid_norm(a: g.Grid) -> Float = g.norm(a)
+
+export fn grid_dot(a: g.Grid, b: g.Grid) -> Float = g.dot(a, b)
+
+export fn grid_cumsum(a: g.Grid) -> g.Grid = g.cumsum(a)
+
+export fn grid_sum_axis(a: g.Grid, axis: Int) -> g.Grid = g.sum_axis(a, axis)
+
+export fn grid_mean_axis(a: g.Grid, axis: Int) -> g.Grid = g.mean_axis(a, axis)
+
+# -- linear algebra --------------------------------------------------------------
+
+export fn grid_matmul(a: g.Grid, b: g.Grid) -> g.Grid = g.matmul(a, b)
+
+export fn grid_matvec(a: g.Grid, v: g.Grid) -> g.Grid = g.matvec(a, v)
+
+export fn grid_outer(a: g.Grid, b: g.Grid) -> g.Grid = g.outer(a, b)
+
+export fn grid_trace(a: g.Grid) -> Float = g.trace(a)
+
+# -- solving -----------------------------------------------------------------------
+
+# A grid of no elements comes back when the matrix is singular: a host
+# raises where a program would stop.
+export fn grid_solve(a: g.Grid, b: g.Grid) -> g.Grid = g.try_solve(a, b)
+
+export fn grid_inv(a: g.Grid) -> g.Grid = g.try_inv(a)
+
+export fn grid_det(a: g.Grid) -> Float = g.det(a)
+
+export fn grid_matrix_power(a: g.Grid, k: Int) -> g.Grid = g.matrix_power(a, k)
+
+export fn grid_lstsq(a: g.Grid, b: g.Grid) -> g.Grid = g.try_lstsq(a, b)
+
+export fn grid_norm1(a: g.Grid) -> Float = g.norm1(a)
+
+export fn grid_norm_inf(a: g.Grid) -> Float = g.norm_inf(a)
+
+export fn grid_norm_fro(a: g.Grid) -> Float = g.norm_fro(a)
+
+export fn grid_cond(a: g.Grid) -> Float = g.cond(a)
+
+export fn grid_kron(a: g.Grid, b: g.Grid) -> g.Grid = g.kron(a, b)
+
+export fn grid_cross(a: g.Grid, b: g.Grid) -> g.Grid = g.cross(a, b)
+
+# -- text ---------------------------------------------------------------------------
+
+export fn grid_show(a: g.Grid) -> Ptr = to_cstr(show(a))
+
+export fn mask_show(m: g.Mask) -> Ptr = to_cstr(show(m))

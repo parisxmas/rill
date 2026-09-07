@@ -1,0 +1,19 @@
+# sin, exp and log over ten million: the transcendental functions, where
+# each element is a call into the maths library.
+import "grid" as g
+
+fn work(a, b, c) = g.sum(g.gsin(a)) + g.sum(g.gexp(b)) + g.sum(g.glog(c))
+
+fn main() =
+  n = 10000000
+  a = g.scale(g.arange(n), 0.0001)
+  b = g.scale(g.arange(n), -0.0000001)
+  c = g.shift(g.arange(n), 1.0)
+  warm = work(a, b, c)
+  t0 = now_nanos()
+  s = work(a, b, c)
+  t1 = now_nanos()
+  println(s)
+  println(warm)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))

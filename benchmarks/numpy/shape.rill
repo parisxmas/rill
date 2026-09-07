@@ -1,0 +1,25 @@
+# Moving ten million numbers about: joining, laying down twice, turning
+# round, rolling along, and gathering by position.
+import "grid" as g
+
+fn work(a, b, ix) =
+  j = g.concat(a, b, 0)
+  t = g.tile(b, 2)
+  f = g.flip(a)
+  r = g.roll(a, 1234567)
+  k = g.take(a, ix)
+  g.sum(j) + g.sum(t) + g.sum(f) + g.sum(r) + g.sum(k)
+
+fn main() =
+  n = 10000000
+  a = g.arange(n)
+  b = g.scale(g.arange(n / 2), 2.0)
+  ix = g.from_fn1(n / 2, \i -> to_float(i * 7919 % (n - 1)))
+  warm = work(a, b, ix)
+  t0 = now_nanos()
+  s = work(a, b, ix)
+  t1 = now_nanos()
+  println(s)
+  println(warm)
+  tenths = (t1 - t0) / 100000
+  println("ms=" + int_to_str(tenths / 10) + "." + int_to_str(tenths % 10))
