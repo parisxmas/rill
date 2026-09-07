@@ -399,6 +399,17 @@ fn dir_upto(path, i) =
 # that was in flight.
 fn recv_opt(ch) = if chan_wait(ch) then Some(chan_taken(ch)) else None
 
+# -- signals -----------------------------------------------------------------
+
+# The numbers `wait_signal` answers with. They are functions because the
+# language has no constants, and they are here rather than remembered because
+# 15 in a comparison says nothing about what it is.
+fn sig_hup() = 1
+
+fn sig_int() = 2
+
+fn sig_term() = 15
+
 # -- sockets -----------------------------------------------------------------
 
 fn listen_on(port) =

@@ -1886,6 +1886,50 @@ fn multi_file_program_with_imports() {
 }
 
 #[test]
+fn a_signal_reaches_a_strand_and_it_stops_the_others() {
+    assert_eq!(
+        compile_and_run("signals.rill"),
+        "told: SIGTERM\n\
+         worker 3 stopped\n\
+         worker 2 stopped\n\
+         worker 1 stopped\n\
+         everything stopped, and main is still the one exiting\n"
+    );
+}
+
+/// Waiting for a signal parks the strand in the poller rather than holding a
+/// worker, so a computation beside it runs at the speed it runs at alone. And
+/// a program whose only strand is waiting is not a deadlock: it is waiting on
+/// something that answers.
+#[test]
+fn waiting_for_a_signal_holds_no_worker() {
+    let out = run_source(
+        "signal_parks",
+        "extern fn raise(sig: I32) -> I32\n\
+         \n\
+         fn spin(n, acc) = if n <= 0 then acc else spin(n - 1, acc + n)\n\
+         \n\
+         fn watcher(said) = send(said, wait_signal())\n\
+         \n\
+         fn main() =\n  \
+           said = channel()\n  \
+           spawn watcher(said)\n  \
+           sleep_ms(50)\n  \
+           alone = timed(300000000)\n  \
+           raise(sig_term())\n  \
+           println(int_to_str(recv(said)))\n  \
+           beside = timed(300000000)\n  \
+           println(beside < alone * 3)\n\
+         \n\
+         fn timed(work) =\n  \
+           start = now_nanos()\n  \
+           spin(work, 0)\n  \
+           (now_nanos() - start) / 1000000\n",
+    );
+    assert_eq!(out, "15\ntrue\n");
+}
+
+#[test]
 fn closing_a_channel_wakes_everything_parked_on_it() {
     assert_eq!(
         compile_and_run("closing.rill"),

@@ -844,6 +844,43 @@ in the way `map_get` is written from `map_find` and `map_val_at`. They are
 there for a receive of a shape the prelude did not think of; a program that
 wants `recv_opt` should write `recv_opt`.
 
+### Being told to stop
+
+`wait_signal()` parks until the program is asked something, and answers which:
+`sig_hup()`, `sig_int()` or `sig_term()`, whose numbers are 1, 2 and 15 on
+every Unix. It is the other end of the same idea as `close`, and the two are
+written together:
+
+```
+fn shutdown(done) =
+  wait_signal()
+  close(done)
+```
+
+One strand waits and tells the others, so the waiter does not have to know how
+many others there are. Waiting costs a worker nothing — the strand is parked in
+the same poller a socket would have parked it in — and a program whose only
+strand is waiting for a signal is not a deadlock, because it is waiting on
+something that answers.
+
+A signal arrives on whichever thread the operating system picked, between any
+two instructions, possibly while a strand holds a lock. Nothing a program has
+written may run there, and nothing does: the handler writes one byte to a pipe
+and everything else happens on the strand.
+
+Two things follow from how signals work rather than from anything Rill decided.
+The handlers are installed by the **first** `wait_signal`, so a signal sent
+before that does what it always did — and after it, a program that catches an
+interrupt and ignores it cannot be stopped with one. And `SIGUSR1` and
+`SIGUSR2` are not here: they are 30 and 31 on a Mac and 10 and 12 on Linux, and
+a number meaning one thing where it was written and another where it runs is
+worse than not having it. `SIGHUP` is the traditional "read your configuration
+again" and covers what a server would have wanted them for.
+
+Sixteen strands may wait at once, each on a pipe of its own; the seventeenth is
+told to have one wait and close a channel the others watch, which is what it
+should have been doing.
+
 ### Waiting on the clock
 
 `sleep_ms(ms)` parks the strand for that long and hands its worker to whoever
@@ -926,6 +963,9 @@ replaces the prelude's.
 `map_of`
 
 **Channels**: `recv_opt(ch) -> Option(a)`
+
+**Signals**: `sig_hup()` `sig_int()` `sig_term()` — the numbers `wait_signal`
+answers with
 
 **Numbers**: `max` `min` `abs`
 
@@ -1418,6 +1458,7 @@ traps mid-run.
 | `to_cstr` `from_cstr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |
 | `now_nanos()` `sleep_ms(ms)` | a monotonic clock, and a wait that parks the strand |
+| `wait_signal()` | parks until the program is told something, and says which; see §7 |
 | `workers()` | how many workers this run has — 1 unless `RILL_THREADS` said otherwise — for deciding how many strands a big piece of work is worth |
 | `unique(x)` | whether this frame holds the only reference to a counted value; see §6 |
 | `float2(a, b)` `splat2(x)` `lane0(v)` `lane1(v)` `f2_load(buf, i)` `f2_store(buf, i, v)` `fma2(a, b, c)` | two lanes at once; see §3 |

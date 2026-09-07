@@ -1663,6 +1663,183 @@ pub unsafe extern "C" fn rill_dir_sync(path: *const u8) -> i8 {
     1
 }
 
+// ---- signals --------------------------------------------------------------
+//
+// A server is told to stop by a signal, and a signal arrives in the worst
+// context there is: on whichever thread the operating system picked, between
+// any two instructions, possibly while a strand holds the channel lock.
+// Nothing a Rill program has written may run there. What a handler may do is
+// write a byte to a pipe, and that is all this one does.
+//
+// The strand does the rest. It parks on the pipe through the poller — the same
+// manoeuvre a strand waiting on a socket makes — so a program waiting to be
+// told to stop costs a worker nothing while it waits, which matters because
+// waiting is the whole of what it does.
+//
+// One strand waits and tells the others, which is what `close` is for:
+//
+//     fn shutdown(done) =
+//       wait_signal()
+//       close(done)
+//
+// Several strands may still wait at once, each on a pipe of its own, because
+// two strands parked on one descriptor would be two registrations of the same
+// descriptor in the poller and only the second would be woken.
+
+/// The three a server is told things with, and the three whose numbers every
+/// Unix agrees on. `SIGUSR1` and `SIGUSR2` are not here because they are 30
+/// and 31 on a Mac and 10 and 12 on Linux, and a number that means one thing
+/// on the machine it was written on and another on the machine it runs on is
+/// worse than not having it. `SIGHUP` is the traditional "read your
+/// configuration again" and covers what a server would have used them for.
+#[cfg(unix)]
+const SIGNALS_HANDLED: [i32; 3] = [1 /* HUP */, 2 /* INT */, 15 /* TERM */];
+
+/// How many strands may wait on a signal at once.
+#[cfg(unix)]
+const SIG_SLOTS: usize = 16;
+
+#[cfg(unix)]
+const SLOT_FREE: i32 = -1;
+
+#[cfg(unix)]
+extern "C" {
+    fn signal(sig: i32, handler: usize) -> usize;
+}
+
+/// How many signals have arrived, and which the last one was. The pipe is
+/// only the wakeup; the answer is here.
+///
+/// Counting rather than queueing is what makes a byte left in a pipe harmless.
+/// A waiter notes the count before it parks and compares afterwards, so a
+/// wakeup that is not a new signal simply parks again, and no bookkeeping has
+/// to be right for that to be true.
+#[cfg(unix)]
+static SIG_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(unix)]
+static SIG_LAST: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+
+/// The write end of each waiting strand's pipe, or -1 for a free slot.
+#[cfg(unix)]
+static SIG_SLOT: [core::sync::atomic::AtomicI32; SIG_SLOTS] =
+    [const { core::sync::atomic::AtomicI32::new(SLOT_FREE) }; SIG_SLOTS];
+
+/// Both ends of each slot's pipe. Made once and never closed: a descriptor
+/// this handler might write to must not be a number the operating system can
+/// hand to something else, and a handler cannot take a lock to be sure of it.
+#[cfg(unix)]
+static mut SIG_PIPE: [[i32; 2]; SIG_SLOTS] = [[-1, -1]; SIG_SLOTS];
+#[cfg(unix)]
+static mut SIG_INSTALLED: i8 = 0;
+
+/// Everything that happens in signal context, and nothing else may be added to
+/// it: two atomic stores and a write of one byte per waiting strand. No
+/// allocation, no lock, nothing that could already be held by the thread this
+/// interrupted.
+#[cfg(unix)]
+extern "C" fn signal_landed(sig: i32) {
+    unsafe {
+        SIG_LAST.store(sig, core::sync::atomic::Ordering::Release);
+        SIG_COUNT.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        let byte = [1u8];
+        for slot in SIG_SLOT.iter() {
+            let fd = slot.load(core::sync::atomic::Ordering::Acquire);
+            if fd >= 0 {
+                write(fd, byte.as_ptr(), 1);
+            }
+        }
+    }
+}
+
+/// Installs the handlers, once, and makes the pipes. Called with `SYNC_LOCK`
+/// held, which is what makes "once" true.
+///
+/// Until this runs a program behaves as it always did: a signal it has never
+/// asked about does what the operating system does with it, so a program that
+/// never calls `wait_signal` still dies on an interrupt. After it runs, it
+/// does not — which is the point, and is also the thing to remember about a
+/// program that waits for a signal and then does nothing with it.
+#[cfg(unix)]
+unsafe fn signals_ready() -> bool {
+    if SIG_INSTALLED == 1 {
+        return true;
+    }
+    if SIG_INSTALLED == -1 {
+        return false;
+    }
+    for i in 0..SIG_SLOTS {
+        let mut fds = [-1i32; 2];
+        if pipe(fds.as_mut_ptr()) != 0 {
+            SIG_INSTALLED = -1;
+            return false;
+        }
+        SIG_PIPE[i] = fds;
+    }
+    for sig in SIGNALS_HANDLED {
+        signal(sig, signal_landed as usize);
+    }
+    SIG_INSTALLED = 1;
+    true
+}
+
+/// Parks until one of the handled signals arrives, and answers which:
+/// 1 for `SIGHUP`, 2 for `SIGINT`, 15 for `SIGTERM`.
+///
+/// # Safety
+/// Called from strand context.
+#[cfg(unix)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_wait_signal() -> i64 {
+    pthread_mutex_lock(&raw mut SYNC_LOCK);
+    let up = signals_ready();
+    let mut mine = usize::MAX;
+    if up {
+        for (i, slot) in SIG_SLOT.iter().enumerate() {
+            if slot.load(core::sync::atomic::Ordering::Acquire) == SLOT_FREE {
+                slot.store(SIG_PIPE[i][1], core::sync::atomic::Ordering::Release);
+                mine = i;
+                break;
+            }
+        }
+    }
+    pthread_mutex_unlock(&raw mut SYNC_LOCK);
+    if !up {
+        out(b"rill: cannot listen for signals\n");
+        die();
+    }
+    if mine == usize::MAX {
+        out(b"rill: too many strands waiting on a signal - have one wait and close a channel the others watch\n");
+        die();
+    }
+    let read_end = SIG_PIPE[mine][0];
+    let seen = SIG_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    let mut byte = [0u8; 1];
+    loop {
+        if SIG_COUNT.load(core::sync::atomic::Ordering::Acquire) != seen {
+            break;
+        }
+        // Before the scheduler exists there is one strand and nothing to hand
+        // the worker to, so the read is simply the wait.
+        if !MAIN_G.is_null() {
+            net::park_on_pipe(read_end);
+        }
+        // A byte may be one this signal left, or one an earlier signal left in
+        // a slot nobody was waiting on. The count above says which, so this
+        // only has to take the byte out of the way.
+        read(read_end, byte.as_mut_ptr(), 1);
+    }
+    SIG_SLOT[mine].store(SLOT_FREE, core::sync::atomic::Ordering::Release);
+    SIG_LAST.load(core::sync::atomic::Ordering::Acquire) as i64
+}
+
+/// Nothing to listen to and nothing to listen with.
+#[cfg(not(unix))]
+#[no_mangle]
+pub unsafe extern "C" fn rill_wait_signal() -> i64 {
+    out(b"rill: signals are not available on this target\n");
+    die()
+}
+
 // Standard input is read in blocks and handed out a line at a time. A
 // syscall per byte is what this used to be, and on a large input that was all
 // the program did; nothing else reads this descriptor, so holding what was

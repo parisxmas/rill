@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased — and a way to be told to
+
+`wait_signal()` parks until the program is asked something and answers which:
+`sig_hup()`, `sig_int()` or `sig_term()`. It is the other end of `close`, and
+the two are written together — one strand waits and tells the others, so the
+waiter never has to know how many others there are.
+
+```
+fn shutdown(done) =
+  wait_signal()
+  close(done)
+```
+
+A signal arrives in the worst context there is: on whichever thread the
+operating system picked, between any two instructions, possibly while a strand
+holds the channel lock. Nothing a program has written may run there. So the
+handler does one thing — writes a byte to a pipe — and `wait_signal` is a
+strand parked on that pipe, through the same poller a strand waiting on a
+socket parks in. Waiting for a signal costs a worker nothing, which is the
+whole point when waiting is all the strand does, and a program whose only
+strand is waiting is not reported as a deadlock because it is waiting on
+something that answers.
+
+The pipe is only the wakeup. Which signal it was, and whether it is a new one,
+come from a counter the handler bumps and the strand compares against what it
+noted before parking — so a byte left in a pipe by an earlier signal is
+harmless rather than something bookkeeping has to be right about. Each waiting
+strand gets a pipe of its own, because two strands parked on one descriptor
+would be two registrations of the same descriptor and only the second would
+wake; sixteen may wait at once and the seventeenth is told to have one wait and
+close a channel the others watch.
+
+`SIGUSR1` and `SIGUSR2` are deliberately absent. They are 30 and 31 on a Mac
+and 10 and 12 on Linux, and a number that means one thing where it was written
+and another where it runs is worse than not having it; `SIGHUP` is the
+traditional "read your configuration again" and is what a server would have
+used them for. `examples/signals.rill` raises one on itself so that there is
+something to catch.
+
 ## Unreleased — a way to stop
 
 A strand parked on `recv` was parked until a value arrived. There was no other

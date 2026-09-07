@@ -1,0 +1,61 @@
+# Being told to stop.
+#
+# A signal arrives in the worst context there is: on whichever thread the
+# operating system picked, between any two instructions. Nothing a Rill program
+# has written may run there, so the handler in the runtime does one thing —
+# writes a byte to a pipe — and `wait_signal` is a strand parked on that pipe,
+# through the same poller a strand waiting on a socket parks in. Waiting for a
+# signal therefore costs a worker nothing, which matters when waiting is the
+# whole of what the strand does.
+#
+# One strand waits, and tells the others by closing a channel. That is the
+# shape, and it is why `close` and this belong together: the waiter does not
+# have to know how many others there are.
+
+# This example raises the signal on itself so that it has something to catch.
+# A real server is sent one by whatever started it.
+extern fn raise(sig: I32) -> I32
+
+fn main() =
+  done = channel()
+  told = channel()
+  back = channel()
+  spawn shutdown(done, told)
+  start_workers(3, done, back)
+
+  # Give the watcher a moment to be listening. Handlers are installed by the
+  # first `wait_signal`, and a signal sent before that does what it always did.
+  sleep_ms(50)
+  raise(sig_term())
+
+  println("told: " + name_of(recv(told)))
+  gather(back, 3)
+  println("everything stopped, and main is still the one exiting")
+
+fn shutdown(done, told) =
+  sig = wait_signal()
+  send(told, sig)
+  close(done)
+
+fn name_of(sig) =
+  if sig == sig_hup() then "SIGHUP" else if sig == sig_int() then "SIGINT" else if sig == sig_term() then "SIGTERM" else "signal " + int_to_str(sig)
+
+# Every worker is parked on a `select` that watches `done`. Closing it makes
+# that arm ready for all of them at once — the arm binds nothing, which is what
+# lets a closed channel answer it.
+fn worker(n, done, back) =
+  r = select
+    recv(done) -> "worker " + int_to_str(n) + " stopped"
+  send(back, r)
+
+fn start_workers(n, done, back) =
+  if n <= 0 then 0
+  else
+    spawn worker(n, done, back)
+    start_workers(n - 1, done, back)
+
+fn gather(ch, n) =
+  if n <= 0 then 0
+  else
+    println(recv(ch))
+    gather(ch, n - 1)

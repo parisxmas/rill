@@ -42,7 +42,8 @@ fn main() =
   scheduler — one lightweight thread is a **strand**; 100,000 strands cost ~53 MB and start in microseconds. Build
   with `--parallel` and set `RILL_THREADS` to spread them across cores. `close(ch)`
   is how a program stops: one broadcast wakes everything parked on the channel,
-  and `sock_shutdown` does the same for a strand parked on a socket read.
+  `wait_signal()` is how it hears that it should, and `sock_shutdown` does the
+  same for a strand parked on a socket read.
 - **Native code via LLVM -O3.** Generics are monomorphized, so nothing is boxed
   and trait dispatch is resolved at compile time. Hello world is 33 KB.
 - **Enough IO to write servers.** TCP sockets that fit the concurrency model: A strand waiting on a

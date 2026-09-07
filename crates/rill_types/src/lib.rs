@@ -2923,6 +2923,11 @@ impl Checker {
             // becomes readable-at-end-of-file at once, so the poller wakes
             // whoever was parked on it and their `sock_read` answers "".
             "sock_shutdown" => Some(("rill_sock_shutdown", vec![Ty::Int], Ty::Int)),
+            // Parks until the program is told something: 1 for `SIGHUP`, 2
+            // for `SIGINT`, 15 for `SIGTERM`. A handler may not run anything
+            // a program has written, so it writes a byte to a pipe and the
+            // strand parked on that pipe is what wakes.
+            "wait_signal" => Some(("rill_wait_signal", vec![], Ty::Int)),
             // Files, as descriptors — the same `Int` a socket is, so that a
             // program holding both is not holding two ideas of what an open
             // thing is. `read_file` and `write_file` stay what they were, for
@@ -4089,6 +4094,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "sock_write"
             | "sock_close"
             | "sock_shutdown"
+            | "wait_signal"
             | "file_open"
             | "file_read"
             | "file_pread"

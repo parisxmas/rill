@@ -212,7 +212,8 @@ const SOCKET_RT: [&str; 11] = [
 /// The two file builtins that wait. Every other file call is a syscall that
 /// returns; these two hand the work to a helper thread and park the strand,
 /// so they need a scheduler in exactly the way a socket does.
-const FILE_WAIT_RT: [&str; 2] = ["rill_file_sync", "rill_dir_sync"];
+const FILE_WAIT_RT: [&str; 3] =
+    ["rill_file_sync", "rill_dir_sync", "rill_wait_signal"];
 
 /// `sleep_ms`, which parks a strand in the same poller a socket would have.
 /// It belongs beside the sockets in every judgement made here: it needs the
@@ -321,6 +322,7 @@ fn find_unsupported(e: &TExpr) -> Option<(usize, &'static str)> {
         TK::Builtin { rt, .. } if SOCKET_RT.contains(rt) => Some("a socket"),
         TK::Builtin { rt, .. } if *rt == TIMER_RT => Some("`sleep_ms`"),
         TK::Builtin { rt, .. } if FILE_WAIT_RT.contains(rt) => Some("`file_sync`"),
+
         _ => None,
     };
     if let Some(what) = here {
@@ -2765,6 +2767,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_sock_shutdown", i64t.fn_type(&[i64t.into()], false), None);
+        self.module.add_function("rill_wait_signal", i64t.fn_type(&[], false), None);
         self.module.add_function(
             "rill_chan_send",
             void.fn_type(&[ptrt.into(), i64t.into(), i64t.into()], false),
@@ -5737,8 +5740,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// source, so it counts what was actually emitted — a channel in a
     /// function nothing reaches does not drag a scheduler in.
     fn needs_scheduler(&self) -> bool {
-        const WAITERS: [&str; 20] = [
+        const WAITERS: [&str; 21] = [
             "rill_spawn",
+            "rill_wait_signal",
             "rill_chan_close",
             "rill_chan_wait",
             "rill_chan_taken",
