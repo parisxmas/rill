@@ -93,17 +93,27 @@ export function DataGrid(props) {
     // What is on the screen, for a host that wants to follow only these —
     // reading it inside an effect follows the page, the sort and the filter.
     props.apiRef.visible = () => paged();
-    // Say that one cell has just changed under the reader's eyes. The class
-    // goes on for as long as the animation in the theme lasts.
+    // Say that one cell has just changed under the reader's eyes.
+    //
+    // It is held as state rather than written onto the node: a cell's class is
+    // computed from what the grid knows, so a class put there by hand is wiped
+    // by the next redraw — and a table where somebody is editing redraws all
+    // the time.
+    //
+    // Two names taken in turn, because a class removed and put back inside one
+    // frame is a class that never went away as far as the browser is
+    // concerned, and the animation carries on from where it was instead of
+    // starting over. A different name is a different animation.
     props.apiRef.flash = (row, field) => {
-      const r = paged().indexOf(row);
-      const c = columns.findIndex((col) => col.field === field);
-      const td = r >= 0 && c >= 0 && cellAt(r, c);
-      if (!td) return;
-      td.classList.remove("is-fresh");
-      void td.offsetWidth; // so a second change restarts the animation
-      td.classList.add("is-fresh");
-      setTimeout(() => td.classList.remove("is-fresh"), 1400);
+      const col = columns.find((c) => c.field === field);
+      if (!col) return;
+      const had = markOf(row, col);
+      const which = had && had.fresh === 1 ? 2 : 1;
+      mark(row, col, { fresh: which });
+      setTimeout(() => {
+        const now = markOf(row, col);
+        if (now && now.fresh === which) mark(row, col, null);
+      }, 1600);
     };
   }
   const page = signal(0);
@@ -348,6 +358,8 @@ export function DataGrid(props) {
         editable(col) ? "zap-grid__editable" : "",
         m && m.saving ? "is-saving" : "",
         m && m.error ? "is-invalid" : "",
+        m && m.fresh === 1 ? "is-fresh" : "",
+        m && m.fresh === 2 ? "is-fresh-b" : "",
         here ? "is-focused" : "",
       ].filter(Boolean).join(" ");
     };

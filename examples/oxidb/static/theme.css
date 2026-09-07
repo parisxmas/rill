@@ -220,12 +220,25 @@
 .zap-grid__table td.is-focused { box-shadow: inset 0 0 0 2px var(--zap-primary); }
 .zap-grid__table td.is-saving { opacity: .55; }
 /* A value that changed while you were looking at it, because somebody else
-   changed it. Long enough to catch the eye, short enough not to nag. */
+   changed it. It holds its colour for a moment before fading, which is what
+   makes it read as a blink rather than as a slow stain — a wash of the theme's
+   own accent, strong enough to catch the eye on a white row and gone before it
+   can nag. */
 @keyframes zap-fresh {
-  from { background: var(--zap-primary-soft); }
-  to   { background: transparent; }
+  0%   { background: color-mix(in srgb, var(--zap-primary) 42%, transparent); }
+  35%  { background: color-mix(in srgb, var(--zap-primary) 42%, transparent); }
+  100% { background: transparent; }
 }
-.zap-grid__table td.is-fresh { animation: zap-fresh 1.4s ease-out; }
+/* The same thing under another name, so that a cell told twice in a row
+   starts over rather than carrying on: a browser restarts an animation when
+   its name changes, not when a class it already had comes back. */
+@keyframes zap-fresh-b {
+  0%   { background: color-mix(in srgb, var(--zap-primary) 42%, transparent); }
+  35%  { background: color-mix(in srgb, var(--zap-primary) 42%, transparent); }
+  100% { background: transparent; }
+}
+.zap-grid__table td.is-fresh { animation: zap-fresh 1.6s ease-out; }
+.zap-grid__table td.is-fresh-b { animation: zap-fresh-b 1.6s ease-out; }
 .zap-grid__table td.is-invalid { box-shadow: inset 0 0 0 2px var(--zap-danger, #dc2626); }
 .zap-grid__td-flash-up { animation: zap-flash-up .6s ease; }
 .zap-grid__td-flash-down { animation: zap-flash-down .6s ease; }
