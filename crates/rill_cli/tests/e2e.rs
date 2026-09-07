@@ -1919,6 +1919,38 @@ fn a_socket_wait_is_not_ended_by_the_write_before_it() {
     assert_eq!(out, "true\n");
 }
 
+/// A value received by a `select` arm comes out of the channel owned, and an
+/// arm that only reads it hands that ownership to nobody. It used to be
+/// dropped on the floor: a loop receiving a million strings and asking each
+/// one its length ended with a million of them still allocated.
+#[test]
+fn a_select_arm_releases_what_it_bound() {
+    let out = run_source(
+        "select_arm_release",
+        "fn taker(ch, done, n) =\n  \
+           if n <= 0 then 0\n  \
+           else\n    \
+             got = select\n      \
+               v = recv(ch) -> if str_len(v) > 0 then 1 else 1\n      \
+               recv(done) -> 0\n    \
+             if got == 0 then 0 else taker(ch, done, n - 1)\n\
+         \n\
+         fn giver(ch, i, n) =\n  \
+           if i >= n then 0\n  \
+           else\n    \
+             send(ch, \"a body of some length \" + int_to_str(i))\n    \
+             giver(ch, i + 1, n)\n\
+         \n\
+         fn main() =\n  \
+           ch = channel(64)\n  \
+           done = channel()\n  \
+           spawn giver(ch, 0, 20000)\n  \
+           taker(ch, done, 20000)\n  \
+           println(\"drained\")\n",
+    );
+    assert_eq!(out, "drained\n");
+}
+
 #[test]
 fn a_select_can_carry_a_deadline() {
     assert_eq!(

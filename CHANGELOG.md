@@ -26,6 +26,39 @@ every keep-alive connection, and any client that writes and then waits. Found
 by writing a client that sends a command and waits for the answer, which is the
 smallest program that can hit it.
 
+## Unreleased — a `select` arm that let go of what it took
+
+A value received by a `select` arm comes out of the channel owned: the channel
+has given up its reference and somebody has to have it. An arm that hands it on
+does — `x = recv(ch) -> Some(x)` moves it — but an arm that only *reads* it
+hands it to nobody, and the reference was dropped on the floor.
+
+```
+got = select
+  v = recv(ch) -> str_len(v)      # one string leaked, every time round
+  recv(done) -> 0
+```
+
+A loop receiving a million strings and asking each one its length ended with a
+million of them still allocated. So did a loop that bound a value and ignored
+it. What made it hard to see is that the obvious spelling is the safe one:
+anything that passes the value to a function or puts it in a constructor moves
+it, and moving is what most arms do.
+
+The fix is the rule a block's own bindings already follow. A block notes what
+the frame owed before it began and releases whatever is left over at the end
+that was not there before; a move takes the entry out of that list on the way
+past, so nothing is released twice. A `select` arm now does the same, and the
+arm's own answer is the one thing excused, because that leaves with the
+`select`.
+
+Found by measuring a message broker written in Rill, which was holding
+seventeen allocations per message and giving none of them back. It was this,
+all of it: with the arm releasing what it bound, twenty thousand messages
+published, delivered and acknowledged leave two allocations at exit rather
+than three hundred and forty thousand, and the broker's memory per message
+went from about eight hundred bytes to a hundred and sixty-four.
+
 ## Unreleased — a deadline on a wait
 
 `select` takes a `timeout(ms)` arm, ready when nothing else has been for that

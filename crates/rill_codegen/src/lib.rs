@@ -8060,6 +8060,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             self.builder.position_at_end(arm_blocks[i]);
             let mut arm_scope = scope.clone();
             let saved_bound = self.bound_fns.clone();
+            // What the frame already owed before this arm bound anything, by
+            // identity. Whatever is left over at the end and was not there
+            // before belongs to this arm and goes when the arm does — the
+            // same rule a block's own bindings follow, and for the same
+            // reason.
+            let outer_held: Vec<BasicValueEnum<'ctx>> =
+                self.cleanup.iter().map(|(v, _)| *v).collect();
             if let Some((name, ty)) = &arm.bind {
                 let ty = self.concrete(ty, subst);
                 let v = self.unpack_words(got_a, got_b, &ty);
@@ -8068,8 +8075,30 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 arm_scope.insert(name.clone(), Some(v));
                 self.bound_fns.remove(name);
+                // The value comes out of the channel owned — the channel has
+                // given up its reference — and an arm that only reads it hands
+                // that ownership to nobody. Without this the reference is
+                // dropped on the floor: `x = recv(ch) -> str_len(x)` leaked
+                // one string for every message it received, for as long as the
+                // loop around it ran. An arm that hands the value on instead
+                // moves it, which takes the entry back out of this list, so
+                // nothing is released twice.
+                if self.is_heap(&ty) {
+                    self.cleanup.push((v, ty));
+                }
             }
             let v = self.gen_expr(&arm.body, &mut arm_scope, subst, func)?;
+            let (kept, own): (Vec<_>, Vec<_>) = std::mem::take(&mut self.cleanup)
+                .into_iter()
+                .partition(|(c, _)| outer_held.contains(c));
+            self.cleanup = kept;
+            for (c, ty) in own.into_iter().rev() {
+                // Except the arm's own answer, which leaves with the `select`.
+                if v == Some(c) {
+                    continue;
+                }
+                self.emit_release(c, &ty);
+            }
             self.bound_fns = saved_bound;
             incoming.push((v, self.builder.get_insert_block().unwrap()));
         }
