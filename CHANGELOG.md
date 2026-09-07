@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — a wait that the write before it was ending
+
+`sock_wait(fd, ms)` answered false in under a millisecond if the same socket
+had just been written to. The deadline had not remotely passed; the wait had
+simply been woken by something that was not what it was waiting for, and
+reported that as the time running out.
+
+A descriptor is registered for reading and for writing separately, and the
+poller names a registration by the descriptor alone. A socket written to a
+moment ago is writable, and that edge is delivered to whatever strand is
+parked on that descriptor — which the runtime already knew could happen, since
+`wait_ident` exists to drop an event whose descriptor is not the one being
+waited for. It cannot tell a read from a write on the *same* descriptor, and
+that is the case that was getting through.
+
+So the wait is a loop against a deadline rather than one sleep, and only the
+clock ends it. Anything that wakes it and is not something to read puts it back
+to sleep for what is left. This is what a wait on a condition has always had to
+be, and the reason it was not is that the wake looked reliable.
+
+It is `sock_wait` that carried it, so what was affected is everything with a
+deadline on it: a server reading a request after writing a response, which is
+every keep-alive connection, and any client that writes and then waits. Found
+by writing a client that sends a command and waits for the answer, which is the
+smallest program that can hit it.
+
 ## Unreleased — a deadline on a wait
 
 `select` takes a `timeout(ms)` arm, ready when nothing else has been for that

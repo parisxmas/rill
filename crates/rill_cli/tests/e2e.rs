@@ -1885,6 +1885,40 @@ fn multi_file_program_with_imports() {
     );
 }
 
+/// A descriptor is registered for reading and for writing separately but is
+/// named in the poller by the descriptor alone, so an edge belonging to the
+/// other direction wakes a wait that was not for it. A socket written to a
+/// moment ago is writable, and that edge used to end a `sock_wait` for reading
+/// in under a millisecond with a deadline that had not remotely passed.
+#[test]
+fn a_socket_wait_is_not_ended_by_the_write_before_it() {
+    let out = run_source(
+        "sock_wait_after_write",
+        "fn quiet(server) =\n  \
+           conn = tcp_accept(server)\n  \
+           sleep_ms(3000)\n  \
+           sock_close(conn)\n\
+         \n\
+         fn main() = match listen_on(0)\n  \
+           Err(e) -> println(e)\n  \
+           Ok(server) ->\n    \
+             port = sock_port(server)\n    \
+             spawn quiet(server)\n    \
+             match connect_to(\"127.0.0.1\", port)\n      \
+               Err(e) -> println(e)\n      \
+               Ok(fd) -> ask(fd)\n\
+         \n\
+         fn ask(fd) =\n  \
+           sock_write(fd, \"anything\")\n  \
+           start = now_nanos()\n  \
+           ready = sock_wait(fd, 250)\n  \
+           took = (now_nanos() - start) / 1000000\n  \
+           println(bool_to_str(!ready && took >= 240))\n  \
+           sock_close(fd)\n",
+    );
+    assert_eq!(out, "true\n");
+}
+
 #[test]
 fn a_select_can_carry_a_deadline() {
     assert_eq!(

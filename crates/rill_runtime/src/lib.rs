@@ -6415,22 +6415,42 @@ mod net {
         if ms <= 0 {
             return 0;
         }
+        // Waking is not the same as there being something to read, and the
+        // difference is not rare. A descriptor is registered for reading and
+        // for writing separately but is named in the poller by the descriptor
+        // alone, so an edge that belongs to the other direction is delivered
+        // here and looks exactly like the one being waited for: a socket
+        // written to a moment ago is writable, and that edge wakes the read
+        // this call is. Before this, `sock_wait(fd, 200)` immediately after a
+        // `sock_write` on the same socket answered false in under a
+        // millisecond — a deadline that had not remotely passed, reported as
+        // if it had. So the wait is a loop against a deadline rather than one
+        // sleep, and only the clock ends it.
+        let deadline = rill_now_nanos() + ms * 1_000_000;
         let w = me();
         let g = (*w).current;
-        (*g).selected = -1;
-        (*g).wait_ident = fd as usize + 1;
-        let p = ensure_poller(w);
-        IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
-        (*g).on_io = true;
-        let held = poller_arm_deadline(p, fd as i32, false, ms, g);
-        if held < 0 {
-            (*g).on_io = false;
-            IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
-            return peekable(fd as i32) as i8;
+        loop {
+            let left = (deadline - rill_now_nanos()) / 1_000_000;
+            if left <= 0 {
+                return peekable(fd as i32) as i8;
+            }
+            (*g).selected = -1;
+            (*g).wait_ident = fd as usize + 1;
+            let p = ensure_poller(w);
+            IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+            (*g).on_io = true;
+            let held = poller_arm_deadline(p, fd as i32, false, left, g);
+            if held < 0 {
+                (*g).on_io = false;
+                IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+                return peekable(fd as i32) as i8;
+            }
+            block_current();
+            poller_disarm(p, fd as i32, false, held, g);
+            if peekable(fd as i32) {
+                return 1;
+            }
         }
-        block_current();
-        poller_disarm(p, fd as i32, false, held, g);
-        peekable(fd as i32) as i8
     }
 
     /// Is there anything to read? A one-byte peek, which takes nothing.
