@@ -1885,6 +1885,33 @@ fn multi_file_program_with_imports() {
     );
 }
 
+/// A connection that is refused leaves the descriptor registered in the poller
+/// unless something takes the registration back down, and the number then goes
+/// back to the operating system to hand out again. The next socket given that
+/// number, waited on by the same strand, was taken for one already registered
+/// and so was never registered at all: the wait never ended. Two refused
+/// connections in a row were enough.
+#[test]
+fn a_refused_connection_leaves_nothing_behind() {
+    let out = run_source(
+        "connect_refused_twice",
+        "fn try(port, n) =\n  \
+           if n <= 0 then 0\n  \
+           else\n    \
+             r = match connect_to(\"127.0.0.1\", port)\n      \
+               Err(e) -> 0\n      \
+               Ok(fd) ->\n        \
+                 sock_close(fd)\n        \
+                 1\n    \
+             try(port, n - 1)\n\
+         \n\
+         fn main() =\n  \
+           try(1, 4)\n  \
+           println(\"four refusals, four answers\")\n",
+    );
+    assert_eq!(out, "four refusals, four answers\n");
+}
+
 /// A descriptor is registered for reading and for writing separately but is
 /// named in the poller by the descriptor alone, so an edge belonging to the
 /// other direction wakes a wait that was not for it. A socket written to a

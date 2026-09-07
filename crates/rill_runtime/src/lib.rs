@@ -6633,6 +6633,15 @@ mod net {
             let mut len: u32 = 4;
             getsockopt(fd, SOL_SOCKET, SO_ERROR, &mut err as *mut i32 as *mut u8, &mut len);
             if err != 0 {
+                // The wait above registered this descriptor, and the number is
+                // about to go back to the operating system to hand out again.
+                // A registration left behind is worse than a leak: the next
+                // socket to be given this number, waited on by this same
+                // strand, is taken for one already registered and is never
+                // registered at all — so the wait never ends. Two refused
+                // connections in a row were enough, and the second one hung
+                // for ever.
+                poller_forget(fd);
                 close(fd);
                 return -1;
             }

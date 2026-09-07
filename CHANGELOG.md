@@ -26,6 +26,25 @@ every keep-alive connection, and any client that writes and then waits. Found
 by writing a client that sends a command and waits for the answer, which is the
 smallest program that can hit it.
 
+## Unreleased — a refused connection that left its registration behind
+
+`connect_to` to a port nothing is listening on answers `Err` and closes the
+descriptor it made. It did not take that descriptor back out of the poller
+first, and the number then goes back to the operating system to hand out
+again.
+
+The next socket given that number, waited on by the same strand, is taken for
+one already registered — on a single worker the poller keeps a table of who is
+waiting on what, and finding the same strand there already, it does not
+register anything. So the wait never ends. Two refused connections in a row
+were enough, and the second one hung for ever.
+
+Found by a broker whose nodes dial each other at startup: the first peer being
+down was fine and the second one being down was a hang.
+
+`sock_close` had always done this; a failed connect is the other path that
+closes a descriptor the poller knows about, and it now does the same.
+
 ## Unreleased — a `select` arm that let go of what it took
 
 A value received by a `select` arm comes out of the channel owned: the channel
