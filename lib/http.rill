@@ -39,6 +39,28 @@ fn header_in(headers: List(Header), name) = match headers
   Nil -> ""
   Cons(one, rest) -> if one.name == name then one.value else header_in(rest, name)
 
+# What the browser sent under that name, or "". Cookies arrive as one header
+# — `a=1; b=2` — so this is a walk over that line rather than another lookup.
+#
+# A browser's `localStorage` and `sessionStorage` are not here and cannot be:
+# they never leave the page. What a server sees is what the browser sends, and
+# that is a cookie (which it sends by itself) or whatever the page decides to
+# put in a header or a body.
+fn cookie(req: Request, name) = cookie_in(split(header(req, "cookie"), ";"), name)
+
+fn cookie_in(pairs, name) = match pairs
+  Nil -> ""
+  Cons(p, rest) ->
+    at = str_find(p, "=")
+    if at >= 0 && trim(str_sub(p, 0, at)) == name then trim(str_sub(p, at + 1, str_len(p) - at - 1)) else cookie_in(rest, name)
+
+# One `Set-Cookie` line; a response may carry several, since its headers are a
+# list rather than a table. What goes in `rest` is the browser's own language:
+#
+#     set_cookie(res, "who", id, "; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400")
+fn set_cookie(res: Response, name, value, rest) =
+  with_header(res, "Set-Cookie", name + "=" + value + rest)
+
 fn lower(s) =
   b = strbuf()
   for i in 0..str_len(s)
@@ -51,7 +73,13 @@ fn lower(s) =
 # Headers end at a blank line; keep reading until we have them (or the peer
 # gives up).
 fn read_head(conn, acc) =
-  if contains(acc, "\r\n\r\n") then acc else read_more(conn, acc)
+  if contains(acc, "\r\n\r\n") then acc else if str_len(acc) > most_head() then acc else read_more(conn, acc)
+
+# A header block that never ends is a connection that never ends: a client
+# sending one byte a second would otherwise hold a strand and a growing string
+# for as long as it liked. Sixty-four kilobytes is more than any real request
+# needs and less than any of them can hurt with.
+fn most_head() = 65536
 
 fn read_more(conn, acc) =
   chunk = sock_read(conn)
@@ -59,9 +87,24 @@ fn read_more(conn, acc) =
 
 fn first_line(raw) = unwrap_or(nth(split(raw, "\r\n"), 0), "")
 
+# The body is what `Content-Length` says it is, no more: what came after it on
+# the same connection is the next request, not part of this one.
 fn body_of(raw) =
   i = str_find(raw, "\r\n\r\n")
-  if i < 0 then "" else str_sub(raw, i + 4, str_len(raw))
+  if i < 0 then "" else str_sub(raw, i + 4, at_most(body_wanted(raw), str_len(raw) - i - 4))
+
+fn at_most(n, cap) = if n > cap then cap else n
+
+# How long this request is altogether: its head, and the body its headers
+# promise. A request with no `Content-Length` and no body ends at the blank
+# line.
+fn whole_length(raw) =
+  i = str_find(raw, "\r\n\r\n")
+  if i < 0 then 0 else i + 4 + body_wanted(raw)
+
+fn body_wanted(raw) =
+  said = header_in(headers_of(raw), "content-length")
+  if str_len(said) == 0 then 0 else str_to_int(said)
 
 fn parse_request(raw) =
   parts = split(first_line(raw), " ")
@@ -118,31 +161,69 @@ fn header_lines(b: StrBuf, headers: List(Header)) = match headers
 
 # A connection serves request after request until one side asks to stop, so a
 # client that makes many requests pays for a single accept.
-fn handle_conn(conn, handler) = next_request(conn, handler)
+fn handle_conn(conn, handler) = next_request(conn, handler, \c, raw -> false, "")
 
-fn next_request(conn, handler) =
-  raw = read_head(conn, "")
-  if contains(raw, "\r\n\r\n") then answer(conn, handler, raw) else sock_close(conn)
+# The same loop with a way out of it: `taken` is shown every request before it
+# is answered and says whether it has taken the connection for itself. That is
+# what an upgrade is — a WebSocket, a stream, anything that stops being
+# request-and-answer — and once it says yes this loop lets go: the socket
+# belongs to whoever took it, closing included.
+#
+#     h.serve_taking(server, \req -> route(req), \conn, raw ->
+#       if ws.ws_wanted(raw) then live(conn, raw) else false)
+fn serve_taking(server, handler, taken) =
+  conn = tcp_accept(server)
+  spawn next_request(conn, handler, taken, "")
+  serve_taking(server, handler, taken)
 
-fn answer(conn, handler, raw) =
-  keep = keeps_alive(raw)
-  sock_write(conn, render(handler(parse_request(raw)), keep))
-  if keep then next_request(conn, handler) else sock_close(conn)
+# `carried` is whatever the last read took past the end of the request before
+# it: a client may send two requests in one packet, and those bytes are the
+# beginning of the next one rather than something to throw away.
+fn next_request(conn, handler, taken, carried) =
+  head = read_head(conn, carried)
+  if !contains(head, "\r\n\r\n") then hang_up(conn) else if taken(conn, head) then 0 else answer(conn, handler, taken, read_body(conn, head))
+
+# The connection is done with; the number is only so that every arm of the
+# loop above is worth the same thing.
+fn hang_up(conn) =
+  sock_close(conn)
+  0
+
+# A client is free to send its headers and its body in separate packets, and
+# many do — so the head arriving is not the request arriving. Reading stops at
+# the length the headers promised, or when the peer stops talking.
+fn read_body(conn, raw) =
+  want = whole_length(raw)
+  if str_len(raw) >= want then raw else more_body(conn, raw, want)
+
+fn more_body(conn, raw, want) =
+  chunk = sock_read(conn)
+  if str_len(chunk) == 0 then raw else read_body(conn, raw + chunk)
+
+fn answer(conn, handler, taken, raw) =
+  req = parse_request(raw)
+  keep = keeps_alive(first_line(raw), req)
+  sock_write(conn, render(handler(req), keep))
+  if keep then next_request(conn, handler, taken, after_request(raw)) else hang_up(conn)
+
+fn after_request(raw) =
+  ends = whole_length(raw)
+  if ends <= 0 || ends >= str_len(raw) then "" else str_sub(raw, ends, str_len(raw) - ends)
 
 # HTTP/1.1 keeps the connection open by default and HTTP/1.0 does not; a
 # `Connection:` header from the client overrides either default.
-fn keeps_alive(raw) =
-  c = connection_header(raw)
-  if str_len(c) == 0 then contains(first_line(raw), "HTTP/1.1") else !contains(c, "close") && !contains(c, "Close")
-
-# 14 = the length of "\r\nConnection: ".
-fn connection_header(raw) =
-  i = str_find(raw, "\r\nConnection: ")
-  if i < 0 then "" else until_crlf(str_sub(raw, i + 14, str_len(raw)))
-
+#
+# It is read from the headers of THIS request rather than from the bytes in
+# hand, which may hold the one after it as well: a pipelined pair whose second
+# request said `close` used to close the connection before the first answer
+# was out of the door, and the second was never answered at all.
 fn until_crlf(rest) =
   j = str_find(rest, "\r\n")
   trim(if j < 0 then rest else str_sub(rest, 0, j))
+
+fn keeps_alive(line, req: Request) =
+  said = header(req, "connection")
+  if str_len(said) == 0 then contains(line, "HTTP/1.1") else !contains(lower(said), "close")
 
 # Serves `count` requests and then stops, which is what makes a server
 # testable. `serve` below never returns.

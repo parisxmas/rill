@@ -9,6 +9,9 @@
 // `Button` in the toolbar, `DataGrid` for the table, and the theme they all
 // read their colours from. Nothing here draws a control by hand.
 //
+// It is also live: a socket carries the skus on this screen to the server, and
+// an edit anybody makes to one of them comes back and lights the cell.
+//
 // The table is editable: double-click a cell, or land on it with the arrows
 // and press Enter. Which editor opens is the column's type — a number field
 // for `stock`, the calendar for `added`, a Select for `role` and `region` —
@@ -149,10 +152,10 @@ const took = () => {
   if (r.db_us == null) return "";
   return `db ${ms(r.db_us)} · wrote ${ms(r.wrote_us)}`;
 };
-// The grid pages by what the server put on the page, so its first screen is
-// the rows that are already there: the takeover changes how the table is
-// drawn, not what it says.
-const perPage = computed(() => Number(filters.limit()) || seed.docs?.length || 25);
+// How many rows the grid shows at a time. This is a reading setting and
+// nothing else — the menu under the table changes it, and it has nothing to
+// do with `limit`, which is how much of the answer the server hands over.
+const ON_SCREEN = 25;
 
 const ms = (us) => (us >= 1000 ? (us / 1000).toFixed(1) + " ms" : us + " µs");
 
@@ -177,6 +180,46 @@ const save = ({ row, field, value }) =>
 // they are the same Select the toolbar uses. `sku` is what a document is found
 // by and `score` is computed, so neither is editable — and the server says the
 // same, since a page is not what decides that.
+// --- what everyone else is doing ----------------------------------------------
+//
+// One socket, and it carries as little as it can. The page says which
+// documents are on its screen — not which filter it has, the documents — and
+// the server tells it about those and nothing else. A change to any of the
+// other ninety-nine thousand eight hundred never reaches this browser at all.
+const api = {};
+let live = null;
+let told = "";
+
+const follow = () => {
+  const skus = (api.visible ? api.visible() : []).map((r) => r.sku);
+  const say = JSON.stringify({ skus });
+  if (say === told || !live || live.readyState !== 1) return;
+  told = say;
+  live.send(say);
+};
+
+const connect = () => {
+  live = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/live");
+  live.onopen = () => { told = ""; follow(); };
+  live.onmessage = (e) => arrived(JSON.parse(e.data));
+  // A server that restarts, a laptop that slept: come back rather than stop.
+  live.onclose = () => setTimeout(connect, 1500);
+};
+
+// Somebody else's edit, on a row this page is showing. The row is changed
+// where it stands and the cell says so — the grid redraws that one cell and
+// nothing else.
+const arrived = (change) => {
+  const row = (api.visible ? api.visible() : []).find((r) => r.sku === change.sku);
+  if (!row) return;
+  row[change.field] = change.value;
+  api.refresh && api.refresh();
+  api.flash && api.flash(row, change.field);
+};
+
+effect(follow);
+connect();
+
 const columns = [
   { field: "sku", header: "sku", width: 80, align: "right" },
   {
@@ -219,10 +262,11 @@ function Results() {
         : DataGrid({
             rows,
             columns,
-            pageSize: perPage(),
+            pageSize: ON_SCREEN,
             pageSizes: [10, 25, 50, 100],
             onCellEdit: save,
             note: took,
+            apiRef: api,
           })}
     ${Toaster()}
   `;

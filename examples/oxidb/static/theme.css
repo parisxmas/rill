@@ -212,13 +212,20 @@
 .zap-grid__editor { display: block; margin: -4px 0; }
 .zap-grid__tally { display: flex; align-items: center; gap: 12px; }
 .zap-grid__foot-right { display: flex; align-items: center; gap: 12px; }
-.zap-grid__per { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--zap-muted); }
+.zap-grid__per { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 12px; color: var(--zap-muted); white-space: nowrap; }
 .zap-grid__per .zap-sel { min-width: 78px; }
 .zap-grid__note { color: var(--zap-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .zap-grid__bool { display: inline-flex; }
 .zap-grid__table td:focus { outline: none; }
 .zap-grid__table td.is-focused { box-shadow: inset 0 0 0 2px var(--zap-primary); }
 .zap-grid__table td.is-saving { opacity: .55; }
+/* A value that changed while you were looking at it, because somebody else
+   changed it. Long enough to catch the eye, short enough not to nag. */
+@keyframes zap-fresh {
+  from { background: var(--zap-primary-soft); }
+  to   { background: transparent; }
+}
+.zap-grid__table td.is-fresh { animation: zap-fresh 1.4s ease-out; }
 .zap-grid__table td.is-invalid { box-shadow: inset 0 0 0 2px var(--zap-danger, #dc2626); }
 .zap-grid__td-flash-up { animation: zap-flash-up .6s ease; }
 .zap-grid__td-flash-down { animation: zap-flash-down .6s ease; }

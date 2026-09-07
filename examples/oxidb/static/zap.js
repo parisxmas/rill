@@ -376,7 +376,21 @@ export function forEach(listSignal, render, empty) {
     let prev = marker;
     items.forEach((item, i) => {
       const key = item?.id ?? i;
-      const entry = rendered.get(key) || renderBranch(() => render(item, i));
+      // Same key, but a different object under it — a list refetched from a
+      // server hands back equal ids on new objects, and a row built from the
+      // old one goes on showing what that one said. The key decides whether
+      // this is the same ROW; the item decides whether it has to be drawn
+      // again.
+      let entry = rendered.get(key);
+      if (entry && !Object.is(entry.item, item)) {
+        entry.node.remove();
+        entry.dispose();
+        entry = null;
+      }
+      if (!entry) {
+        entry = renderBranch(() => render(item, i));
+        entry.item = item;
+      }
       next.set(key, entry);
       if (prev.nextSibling !== entry.node) prev.parentNode.insertBefore(entry.node, prev.nextSibling);
       prev = entry.node;

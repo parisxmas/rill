@@ -13,12 +13,30 @@
 // there is no room below, and nudged in when it would hang off the right.
 // Scrolling or resizing puts it back where it belongs. Returns the function
 // that stops watching — hand it to `onCleanup`.
+// Whether anything between here and the document would cut the panel off.
+function clipped(el) {
+  for (let p = el && el.parentElement; p && p !== document.body; p = p.parentElement) {
+    const o = getComputedStyle(p);
+    if (o.overflowX !== "visible" || o.overflowY !== "visible") return true;
+  }
+  return false;
+}
+
 export function anchor(panel, trigger) {
+  // Nothing to escape, nothing to do: a panel that is not inside anything
+  // clipping is left exactly where the stylesheet put it. Taking it out of
+  // flow when it did not need to be is how a menu ends up the width of the
+  // window — `left: 0; right: 0` means its parent while it is absolute and
+  // means the screen once it is fixed.
+  if (!clipped(trigger)) return () => {};
+
   const place = () => {
     if (!panel.isConnected || !trigger || !trigger.isConnected) return;
     const at = trigger.getBoundingClientRect();
     panel.style.position = "fixed";
     panel.style.margin = "0";
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
     if (!panel.style.minWidth) panel.style.minWidth = at.width + "px";
     const box = panel.getBoundingClientRect();
     const room = window.innerHeight - at.bottom;

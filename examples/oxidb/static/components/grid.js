@@ -42,6 +42,9 @@
 //                not (where they came from, how long they took)
 //   onSelectionChange?: (rows[]) => void
 //   onCellEdit?: ({row, field, value, oldValue}) => void | Promise
+//   apiRef?:     an object the grid fills in — `refresh()` redraws cells after
+//                the host has changed a row in place, `visible()` is the rows
+//                on the screen right now, `flash(row, field)` lights one cell
 //                a promise marks the cell as saving; a rejection puts the old
 //                value back and shows why
 
@@ -85,7 +88,24 @@ export function DataGrid(props) {
   const rev = signal(0);        // bumped after an edit so cell displays refresh
   // Optional imperative handle: let the host refresh default cells in place after it
   // mutates a row object (e.g. an API save), avoiding a full data reload/rebuild.
-  if (props.apiRef) props.apiRef.refresh = () => rev.update((n) => n + 1);
+  if (props.apiRef) {
+    props.apiRef.refresh = () => rev.update((n) => n + 1);
+    // What is on the screen, for a host that wants to follow only these —
+    // reading it inside an effect follows the page, the sort and the filter.
+    props.apiRef.visible = () => paged();
+    // Say that one cell has just changed under the reader's eyes. The class
+    // goes on for as long as the animation in the theme lasts.
+    props.apiRef.flash = (row, field) => {
+      const r = paged().indexOf(row);
+      const c = columns.findIndex((col) => col.field === field);
+      const td = r >= 0 && c >= 0 && cellAt(r, c);
+      if (!td) return;
+      td.classList.remove("is-fresh");
+      void td.offsetWidth; // so a second change restarts the animation
+      td.classList.add("is-fresh");
+      setTimeout(() => td.classList.remove("is-fresh"), 1400);
+    };
+  }
   const page = signal(0);
   const selected = signal(new Set()); // row object refs — stable across sort/filter
 

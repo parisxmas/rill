@@ -106,6 +106,7 @@
 import "oxidb"
 import "http" as h
 import "catview"
+import "ws"
 import "catalogue_page"
 
 fn total() = 100000
@@ -137,7 +138,7 @@ fn seed_then_serve(fd, db, want) =
   drop_all(fd)
   println("seeding " + int_to_str(total()) + " documents")
   t0 = now_nanos()
-  fill(fd, 0)
+  fill_batches(fd, 0)
   t1 = now_nanos()
   println("seeded in " + int_to_str((t1 - t0) / 1000000) + " ms")
   # An index apiece on what the routes below ask by and sort on. Without
@@ -166,12 +167,12 @@ fn index_on(fd, name) = match create_index(fd, collection(), name)
   Ok(_) -> 0
 
 # A batch at a time until the whole run is in.
-fn fill(fd, from) =
+fn fill_batches(fd, from) =
   if from >= total() then 0
   else
     n = if total() - from < batch() then total() - from else batch()
     send_batch(fd, from, n)
-    fill(fd, from + n)
+    fill_batches(fd, from + n)
 
 fn send_batch(fd, from, n) = match insert_many(fd, collection(), batch_docs(from, n))
   Err(e) ->
@@ -214,7 +215,9 @@ fn announce(server, db, port) =
   # are counted. A middleware is a layer around the handler and `wrap` puts
   # the list on in order, outermost first.
   kept = map_new()
-  h.accept_forever(server, h.wrap(Cons(h.rate_limit(writes_a_second()), Nil), \req -> route(pool, kept, req)))
+  watching = map_new()
+  answer = h.wrap(Cons(h.rate_limit(writes_a_second()), Nil), \req -> route(pool, kept, watching, req))
+  h.serve_taking(server, answer, \conn, raw -> live(watching, conn, raw))
 
 fn writes_a_second() = 20
 
@@ -240,27 +243,83 @@ fn fill_pool(ch, db, n) =
 
 # A write arrives as a POST and nothing else does: a link cannot change a
 # document, whatever it says.
-fn route(pool, kept, req: h.Request) =
-  if req.method == "POST" then with_db(pool, \fd -> answer_edit(fd, path_of(req.path), req.body)) else dispatch(pool, kept, path_of(req.path), query_of(req.path), h.header(req, "if-none-match"))
+fn route(pool, kept, watching, req: h.Request) =
+  if req.method == "POST" then with_db(pool, \fd -> answer_edit(fd, watching, path_of(req.path), req.body)) else dispatch(pool, kept, path_of(req.path), query_of(req.path), h.header(req, "if-none-match"))
 
 # `POST /doc/<sku>` with `{"field": ..., "value": ...}` — one cell of one
 # document, which is what the grid sends when a cell is edited.
-fn answer_edit(fd, path, body) =
-  if starts_with(path, "/doc/") then edit_doc(fd, str_to_int(str_sub(path, 5, str_len(path))), parse(body)) else h.json_response(404, "{\"error\":\"nothing to write there\"}")
+fn answer_edit(fd, watching, path, body) =
+  if starts_with(path, "/doc/") then edit_doc(fd, watching, str_to_int(str_sub(path, 5, str_len(path))), parse(body)) else h.json_response(404, "{\"error\":\"nothing to write there\"}")
 
-fn edit_doc(fd, sku, body) = match body
+fn edit_doc(fd, watching, sku, body) = match body
   Err(e) -> h.json_response(400, "{\"error\":\"" + e + "\"}")
-  Ok(j) -> apply_edit(fd, sku, as_str(unwrap_or(get(j, "field"), JNull)), unwrap_or(get(j, "value"), JNull))
+  Ok(j) -> apply_edit(fd, watching, sku, as_str(unwrap_or(get(j, "field"), JNull)), unwrap_or(get(j, "value"), JNull))
 
-fn apply_edit(fd, sku, name, value) =
+fn apply_edit(fd, watching, sku, name, value) =
   refusal = refused(name, value)
-  if str_len(refusal) > 0 then h.json_response(400, "{\"error\":\"" + refusal + "\"}") else write_field(fd, sku, name, value)
+  if str_len(refusal) > 0 then h.json_response(400, "{\"error\":\"" + refusal + "\"}") else write_field(fd, watching, sku, name, value)
 
-fn write_field(fd, sku, name, value) =
+fn write_field(fd, watching, sku, name, value) =
   t0 = now_nanos()
   match update(fd, collection(), JObj(Cons(field("sku", int(sku)), Nil)), set(Cons(Field(name, value), Nil)))
     Err(e) -> failed(e)
-    Ok(_) -> h.json_response(200, "{\"ok\":true,\"db_us\":" + int_to_str((now_nanos() - t0) / 1000) + "}")
+    Ok(_) ->
+      told(watching, sku, name, value)
+      h.json_response(200, "{\"ok\":true,\"db_us\":" + int_to_str((now_nanos() - t0) / 1000) + "}")
+
+# -- what the others are looking at -----------------------------------------------
+#
+# A page that changed a document is not the only one showing it. Every browser
+# that has this collection open holds a socket here and says which documents
+# are on its screen; when one of them is written, the change goes to exactly
+# those and to nobody else. A page looking at another part of the catalogue is
+# not told anything at all — the point is not to broadcast, it is to tell the
+# few who can see the difference.
+fn live(watching, conn, raw) =
+  if !ws_wanted(raw) then false
+  else
+    ws_accept(conn, raw)
+    map_set(watching, conn, Nil)
+    watch_loop(watching, conn)
+    true
+
+# `{"skus": [0, 12, 24]}` — what this page can see, sent again whenever it
+# changes. The socket says nothing else.
+fn watch_loop(watching, conn) =
+  msg = ws_read(conn)
+  if str_len(msg) == 0 then
+    map_del(watching, conn)
+    sock_close(conn)
+  else
+    map_set(watching, conn, skus_of(msg))
+    watch_loop(watching, conn)
+
+fn skus_of(msg) = match parse(msg)
+  Err(_) -> Nil
+  Ok(j) -> numbers(as_arr(unwrap_or(get(j, "skus"), JArr(Nil))))
+
+fn as_arr(j) = match j
+  JArr(items) -> items
+  _ -> Nil
+
+fn numbers(items) = match items
+  Nil -> Nil
+  Cons(x, rest) -> Cons(as_int(x), numbers(rest))
+
+fn told(watching, sku, name, value) =
+  text = "{\"sku\":" + int_to_str(sku) + ",\"field\":\"" + name + "\",\"value\":" + to_string(value) + "}"
+  tell_each(map_items(watching), sku, text)
+
+fn tell_each(items, sku, text) = match items
+  Nil -> 0
+  Cons(one, rest) -> match one
+    (conn, skus) ->
+      if watching_it(skus, sku) then ws_write(conn, text) else 0
+      tell_each(rest, sku, text)
+
+fn watching_it(skus, sku) = match skus
+  Nil -> false
+  Cons(x, rest) -> x == sku || watching_it(rest, sku)
 
 # What a document may be told, and what it may not. The page enforces the same
 # rules while you type, but a request need not have come from the page — so
@@ -322,9 +381,15 @@ fn is_component(name) =
 
 # Read once and kept: a page pulls in nine files, and going to disk for each
 # of them on every load is the same work over and over. What goes back says
-# how long it may be kept and which version it is, so a second visit — and the
-# proxy this will usually sit behind — asks with `If-None-Match` and is told
-# 304 rather than sent the file again.
+# which version it is, so a second visit — and the proxy this will usually sit
+# behind — asks with `If-None-Match` and is told 304 rather than sent the file
+# again.
+#
+# `no-cache` rather than `max-age`, because these URLs never change: it does
+# not mean "do not keep it", it means "ask before using what you kept". A file
+# that changes is then seen at once, which an hour of `max-age` on
+# `/static/zap.js` would hide — as it hid one from this very page while it was
+# being written.
 #
 # Run from the repository root or from the example's own directory; both are
 # tried, and a server that finds neither says so rather than serving a blank
@@ -343,8 +408,7 @@ fn module_response(name, text, asked) =
   tag = version_of(text)
   if asked == tag then keepable(h.Response(304, kind_of(name), Nil, ""), tag) else keepable(h.Response(200, kind_of(name), Nil, text), tag)
 
-fn keepable(res, tag) =
-  h.with_header(h.with_header(res, "Cache-Control", "public, max-age=3600"), "ETag", tag)
+fn keepable(res, tag) = h.with_header(h.with_header(res, "Cache-Control", "no-cache"), "ETag", tag)
 
 # A quoted version of the bytes: their length and a rolling sum. Two files
 # that differ differ in one or the other, and it is one pass over the text
