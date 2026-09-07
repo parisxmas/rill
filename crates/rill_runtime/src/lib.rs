@@ -3393,8 +3393,14 @@ unsafe fn worker_loop(w: *mut Worker) {
         lock_runq(w);
         let mut g = (*w).runq.pop();
         unlock_runq(w);
-        if g.is_null() && rill_mt != 0 {
-            // Nothing of our own: take unstarted work from another worker.
+        // Nothing of our own, and something queued somewhere: take unstarted
+        // work from another worker. The count is asked first because the
+        // scan takes every other worker's queue lock, and a worker with
+        // nothing to do would otherwise take the lock of a worker that has —
+        // over and over, on the very cache line that worker is using. Six
+        // idle workers spinning that way cost the four busy ones a quarter
+        // of their speed.
+        if g.is_null() && rill_mt != 0 && QUEUED.load(core::sync::atomic::Ordering::Acquire) > 0 {
             for i in 0..NWORKERS {
                 if i == (*w).index {
                     continue;
@@ -4145,6 +4151,7 @@ mod net {
         fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
         fn send(fd: i32, buf: *const u8, len: usize, flags: i32) -> isize;
         fn getpeername(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
+        fn getsockname(fd: i32, addr: *mut SockAddrIn, len: *mut u32) -> i32;
         fn connect(fd: i32, addr: *const SockAddrIn, len: u32) -> i32;
         fn setsockopt(fd: i32, level: i32, name: i32, val: *const u8, len: u32) -> i32;
         fn getsockopt(fd: i32, level: i32, name: i32, val: *mut u8, len: *mut u32) -> i32;
@@ -4863,6 +4870,23 @@ mod net {
         }
         let a = addr.addr;
         ((a[0] as i64) << 24) | ((a[1] as i64) << 16) | ((a[2] as i64) << 8) | (a[3] as i64)
+    }
+
+    /// The port this end of the socket is on — which is the question a
+    /// program asks after listening on port 0, where the kernel picks a free
+    /// one and only it knows which. -1 if the socket has none.
+    ///
+    /// # Safety
+    /// `fd` must be an open socket.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_sock_port(fd: i64) -> i64 {
+        let mut addr: SockAddrIn = core::mem::zeroed();
+        let mut len: u32 = core::mem::size_of::<SockAddrIn>() as u32;
+        if getsockname(fd as i32, &mut addr, &mut len) < 0 {
+            return -1;
+        }
+        // The port sits in the structure in network order.
+        ((addr.port >> 8) & 0xff) as i64 | (((addr.port & 0xff) as i64) << 8)
     }
 
     /// Turns Nagle's algorithm off on `fd`, so a small write goes out at once

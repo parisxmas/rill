@@ -96,10 +96,7 @@ fn from_hex_from(s, i, out) =
     from_hex_from(s, i + 2, out)
 
 fn hex_val(c) =
-  if c >= 48 && c <= 57 then c - 48
-  else if c >= 97 && c <= 102 then c - 87
-  else if c >= 65 && c <= 70 then c - 55
-  else 0
+  if c >= 48 && c <= 57 then c - 48 else if c >= 97 && c <= 102 then c - 87 else if c >= 65 && c <= 70 then c - 55 else 0
 
 # -- comparing them -----------------------------------------------------------
 
@@ -112,9 +109,7 @@ fn hex_val(c) =
 # differences together. Unequal lengths are refused up front: that much is
 # public, since the length of a hash is a constant of the scheme.
 fn same_secret(a, b) =
-  if str_len(a) != str_len(b) then 0
-  else if secret_diff(a, b, 0, 0) == 0 then 1 else 0
+  if str_len(a) != str_len(b) then 0 else if secret_diff(a, b, 0, 0) == 0 then 1 else 0
 
 fn secret_diff(a, b, i, acc) =
-  if i >= str_len(a) then acc
-  else secret_diff(a, b, i + 1, bit_or(acc, bit_xor(str_get(a, i), str_get(b, i))))
+  if i >= str_len(a) then acc else secret_diff(a, b, i + 1, bit_or(acc, bit_xor(str_get(a, i), str_get(b, i))))

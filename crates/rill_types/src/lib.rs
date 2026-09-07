@@ -2833,6 +2833,9 @@ impl Checker {
             // server that wants to know how many connections it already has
             // from there.
             "sock_peer" => Some(("rill_sock_peer", vec![Ty::Int], Ty::Int)),
+            // Which port this end is on: what a program asks after listening
+            // on port 0, where the kernel chose the number.
+            "sock_port" => Some(("rill_sock_port", vec![Ty::Int], Ty::Int)),
             // Nagle off, for a server whose clock is faster than the round
             // trip: without it every small write waits on the last one's
             // acknowledgement. 1 if the kernel took it.
@@ -3977,6 +3980,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "sock_read"
             | "sock_wait"
             | "sock_peer"
+            | "sock_port"
             | "sock_nodelay"
             | "sock_buffered"
             | "sock_flush"

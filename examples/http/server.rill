@@ -28,14 +28,19 @@ fn report_rest(r, rest) =
 # Listening happens here, before any client runs; only the accept loop is
 # spawned. Opening the socket inside the strand would race with the first
 # request.
-fn main() = match listen_on(8080)
+#
+# Port 0 asks the kernel for a free one and `sock_port` says which it gave.
+# A fixed port is a promise about a machine rather than about a program: on
+# a machine that already has something on 8080 this would answer with that
+# something's replies, or not bind at all.
+fn main() = match listen_on(0)
   Err(e) -> println(e)
-  Ok(server) -> run(server)
+  Ok(server) -> run(server, sock_port(server))
 
-fn run(server) =
+fn run(server, port) =
   spawn accept_n(server, \req -> route(req), 5)
-  report(get("127.0.0.1", 8080, "/"))
-  report(get("127.0.0.1", 8080, "/echo"))
-  report(get("127.0.0.1", 8080, "/add/2/40"))
-  report_all(get_all("127.0.0.1", 8080, Cons("/", Cons("/add/1/1", Nil))))
-  report(get("127.0.0.1", 8080, "/nope"))
+  report(get("127.0.0.1", port, "/"))
+  report(get("127.0.0.1", port, "/echo"))
+  report(get("127.0.0.1", port, "/add/2/40"))
+  report_all(get_all("127.0.0.1", port, Cons("/", Cons("/add/1/1", Nil))))
+  report(get("127.0.0.1", port, "/nope"))

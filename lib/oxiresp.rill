@@ -225,16 +225,14 @@ fn kv_page_rest(rest) = match rest
 fn kv_scan_all(fd, pattern) = kv_scan_walk(fd, pattern, "0", Nil, 0)
 
 fn kv_scan_walk(fd, pattern, cursor, acc, seen) =
-  if seen > 10000 then acc
-  else kv_scan_page(fd, pattern, cursor, acc, seen, kv_scan(fd, cursor, pattern, 200))
+  if seen > 10000 then acc else kv_scan_page(fd, pattern, cursor, acc, seen, kv_scan(fd, cursor, pattern, 200))
 
 fn kv_scan_page(fd, pattern, cursor, acc, seen, answer) = match answer
   Err(_) -> acc
   Ok(v) -> kv_scan_more(fd, pattern, cursor, append(acc, kv_page_keys(v)), seen, kv_page_cursor(v))
 
 fn kv_scan_more(fd, pattern, was, acc, seen, cursor) =
-  if cursor == "0" || cursor == was then acc
-  else kv_scan_walk(fd, pattern, cursor, acc, seen + 1)
+  if cursor == "0" || cursor == was then acc else kv_scan_walk(fd, pattern, cursor, acc, seen + 1)
 
 fn kv_flushdb(fd) = kv_command(fd, kv_args1("FLUSHDB"))
 

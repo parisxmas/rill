@@ -12,30 +12,19 @@ fn say(what, got, want) =
 
 fn main() =
   println("HMAC-SHA-1, RFC 2202")
-  say("case 1, twenty 0x0b bytes",
-      p.to_hex(p.hmac_sha1(repeat(chr(11), 20), "Hi There")),
-      "b617318655057264e28bc0b6fb378c8ef146be00")
-  say("case 2, a short text key",
-      p.to_hex(p.hmac_sha1("Jefe", "what do ya want for nothing?")),
-      "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79")
-  say("case 3, fifty 0xdd bytes",
-      p.to_hex(p.hmac_sha1(repeat(chr(170), 20), repeat(chr(221), 50))),
-      "125d7342b9ac11cd91a39af48aa17b4f63f175d3")
+  say("case 1, twenty 0x0b bytes", p.to_hex(p.hmac_sha1(repeat(chr(11), 20), "Hi There")), "b617318655057264e28bc0b6fb378c8ef146be00")
+  say("case 2, a short text key", p.to_hex(p.hmac_sha1("Jefe", "what do ya want for nothing?")), "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79")
+  say("case 3, fifty 0xdd bytes", p.to_hex(p.hmac_sha1(repeat(chr(170), 20), repeat(chr(221), 50))), "125d7342b9ac11cd91a39af48aa17b4f63f175d3")
   # The key here is eighty bytes: longer than HMAC's block, so it is hashed
   # down first. That branch is the one an implementation forgets.
-  say("case 6, a key longer than the block",
-      p.to_hex(p.hmac_sha1(repeat(chr(170), 80), "Test Using Larger Than Block-Size Key - Hash Key First")),
-      "aa4ae5e15272d00e95705637ce8a3b55ed402112")
+  say("case 6, a key longer than the block", p.to_hex(p.hmac_sha1(repeat(chr(170), 80), "Test Using Larger Than Block-Size Key - Hash Key First")), "aa4ae5e15272d00e95705637ce8a3b55ed402112")
 
   println("PBKDF2-HMAC-SHA-1, RFC 6070")
-  say("one round", p.to_hex(p.pbkdf2_sha1("password", "salt", 1)),
-      "0c60c80f961f0e71f3a9b524af6012062fe037a6")
+  say("one round", p.to_hex(p.pbkdf2_sha1("password", "salt", 1)), "0c60c80f961f0e71f3a9b524af6012062fe037a6")
   # Two rounds is where the fold is proved: one round returns U1 unchanged and
   # would pass even if the exclusive-or were dropped entirely.
-  say("two rounds", p.to_hex(p.pbkdf2_sha1("password", "salt", 2)),
-      "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957")
-  say("4096 rounds", p.to_hex(p.pbkdf2_sha1("password", "salt", 4096)),
-      "4b007901b765489abead49d926f721d065a429c1")
+  say("two rounds", p.to_hex(p.pbkdf2_sha1("password", "salt", 2)), "ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957")
+  say("4096 rounds", p.to_hex(p.pbkdf2_sha1("password", "salt", 4096)), "4b007901b765489abead49d926f721d065a429c1")
 
   println("writing bytes down")
   say("hex there and back", p.to_hex(p.from_hex("00ff7ea9")), "00ff7ea9")

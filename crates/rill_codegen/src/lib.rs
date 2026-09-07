@@ -2060,6 +2060,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_sock_peer", i64t.fn_type(&[i64t.into()], false), None);
+        self.module.add_function("rill_sock_port", i64t.fn_type(&[i64t.into()], false), None);
         self.module
             .add_function("rill_sock_nodelay", i64t.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_sock_buffered", void.fn_type(&[i64t.into()], false), None);

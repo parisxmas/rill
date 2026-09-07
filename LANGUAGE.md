@@ -888,6 +888,7 @@ fn serve(server) =
 | `sock_wait(fd, ms) -> Bool` | wait for something to read, or give up after `ms` |
 | `sock_write(fd, s) -> Int` | writes all of it, parking as needed |
 | `sock_peer(fd) -> Int` | the address at the far end, packed into one number |
+| `sock_port(fd) -> Int` | the port this end is on, which is what a program asks after `listen_on(0)` — the kernel picks a free one and only it knows the number |
 | `sock_nodelay(fd) -> Int` | Nagle off; 1 if the kernel took it |
 | `sock_buffered(fd)` | give the socket a 64 KB write buffer: `sock_write` queues, and the queue goes out when it fills, on `sock_flush`, when the strand waits, and on `sock_close` |
 | `sock_flush(fd) -> Int` | write out what is queued; how many bytes went, or -1 |

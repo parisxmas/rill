@@ -314,13 +314,14 @@ Numbers and the reasons in `benchmarks/io/README.md`.
 for free, masks a byte wide, a `Float2` matrix kernel, a bitwise sort, an LU
 factorisation — and `benchmarks/numpy/` puts it beside NumPy 2.4 with
 OpenBLAS on twelve programs, one core against one thread and all cores
-against all threads. On the array work alone Rill is ahead on eleven of the
-twelve: two hundred thousand small operations 11×, sorting 2.6×, reductions
-2.3×, a mask and a `where` 1.8×, moving numbers about 1.6×, order statistics
-and an 800 × 800 matrix product 1.1×. Where both sides do nothing but stream
-memory — an elementwise expression, sums along an axis, a dot product — or
-call the same maths library, they are level. The loss is solving a linear
-system, at 1.5× of LAPACK. On the whole process — Python's start and NumPy's
+against all threads. On one core Rill is ahead on eight of the twelve and
+level on the other four: two hundred thousand small operations 11×, sorting
+2.3×, reductions and moving numbers about 1.9×, a mask and a `where` 1.8×,
+order statistics and an 800 × 800 matrix product 1.1×. Where both sides do
+nothing but stream memory — an elementwise expression, sums along an axis, a
+dot product — call the same maths library, or solve a linear system, they
+are level. On all cores NumPy keeps two, its threaded matrix product and its
+threaded factorisation. On the whole process — Python's start and NumPy's
 import are 60 ms — Rill is 2–12× ahead on all twelve. Numbers and the
 compiler work they took in `benchmarks/numpy/README.md`.
 

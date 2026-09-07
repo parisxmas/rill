@@ -184,18 +184,45 @@ fn show_shape(shape: Buf(Int)) =
 # single-worker run nothing here ever spawns.
 fn par(n) = n > 4194304 && workers() > 1
 
+# The same question asked of arithmetic rather than elements: a matrix
+# multiplication moves far less memory per operation than a pass over an
+# array does, so it is worth splitting at a hundredth of the size.
+fn par_flops(f) = f > 1500000 && workers() > 1
+
+# One strand per million operations, up to what the machine has.
+fn strands_for(flops) =
+  want = flops / 1000000
+  if want > workers() then workers() else want
+
+# The same question for work that reads far more than it computes: solving
+# against many right-hand sides walks the whole triangle once per strand,
+# so past a few strands it is the memory bus that answers and another
+# strand only makes it wait. One per thirty-two million operations.
+fn strands_streaming(flops) =
+  want = flops / 32000000
+  if want > workers() then workers() else want
+
 fn chunk_job(f, lo, hi, done) =
   f(lo, hi)
   send(done, 0)
 
 # `f(lo, hi)` over [0, n) split evenly across the workers, and waits.
-fn run(n, f) =
-  w = workers()
-  done = channel()
-  for t in 0..w
-    spawn chunk_job(f, n * t / w, n * (t + 1) / w, done)
-  for t in 0..w
-    recv(done)
+fn run(n, f) = run_split(workers(), n, f)
+
+# The same over a given number of pieces. Starting ten strands and waiting
+# for them costs thirty-five microseconds; four costs five. A piece of work
+# worth eighty microseconds is worth four strands and not ten, and a
+# factorisation makes dozens of such pieces — so the count follows the work
+# rather than the machine.
+fn run_split(chunks, n, f) =
+  w = if chunks < 1 then 1 else if chunks > n then n else chunks
+  if w < 2 then f(0, n)
+  else
+    done = channel()
+    for t in 0..w
+      spawn chunk_job(f, n * t / w, n * (t + 1) / w, done)
+    for t in 0..w
+      recv(done)
 
 fn part_job(f, t, lo, hi, out) = send(out, (t, f(lo, hi)))
 
@@ -2656,7 +2683,7 @@ fn lu(a: Grid) =
   piv = buf_int(n)
   for i in 0..n
     piv[i] = i
-  (sign, ok) = lu_walk(d, n, piv, 64, 0, 1.0, true)
+  (sign, ok) = lu_walk(d, n, piv, 16, 0, 1.0, true)
   Lu(m, piv, sign, ok)
 
 # Sixty-four columns at a time. The unblocked way updates the whole
@@ -2676,31 +2703,75 @@ fn lu_walk(d: Buf(Float), n, piv: Buf(Int), nb, k, sign, ok) =
       gemm_sub(d, (k + w) * n + k + w, n, d, (k + w) * n + k, n, d, k * n + k + w, n, n - k - w, w, n - k - w)
       lu_walk(d, n, piv, nb, k + w, sg, good)
 
-# The block of columns itself, a column at a time: find the largest number
-# below the diagonal, bring its row up — the whole row, so that what is
-# already factored to the left stays with it — divide the column through by
-# the pivot, and take the multiples out of the columns still in the block.
+# The block of columns, factored in a copy of its own laid the other way
+# round: column by column is how this has to go, and a column of a
+# row-major matrix is one number per cache line, four hundred lines to
+# read four hundred numbers. Copied out transposed — the panel is a few
+# tens of kilobytes, so the copy is free beside what it saves — a column
+# becomes a run of neighbours, the pivot search and the scaling read it at
+# the speed of memory rather than of misses, and the rank-one update
+# vectorizes.
+#
+# A row exchange has to move the whole row, so the two parts outside the
+# panel are swapped where they are.
 fn panel_lu(d: Buf(Float), n, piv: Buf(Int), k, w, sign, ok) =
-  for j in k..k + w with acc = (sign, ok)
+  h = n - k
+  t = buf_float_uninit(w * h)
+  for c in 0..w
+    col = c * h
+    src = k * n + k + c
+    for r in 0..h
+      t[col + r] = d[src + r * n]
+  (sg, good) = panel_core(t, h, w, piv, d, n, k, sign, ok)
+  for c in 0..w
+    col = c * h
+    dst = k * n + k + c
+    for r in 0..h
+      d[dst + r * n] = t[col + r]
+  (sg, good)
+
+fn panel_core(t: Buf(Float), h, w, piv: Buf(Int), d: Buf(Float), n, k, sign, ok) =
+  for c in 0..w with acc = (sign, ok)
     (sg, good) = acc
-    p = pivot_row(d, n, j)
-    if fabs(d[p * n + j]) == 0.0 then (sg, false)
+    col = c * h
+    p = for r in c + 1..h with best = c
+      if fabs(t[col + r]) > fabs(t[col + best]) then r else best
+    if fabs(t[col + p]) == 0.0 then (sg, false)
     else
-      sg2 = if p != j then
-        swap_rows(d, n, j, p)
-        was = piv[j]
-        piv[j] = piv[p]
-        piv[p] = was
+      sg2 = if p != c then
+        for cc in 0..w
+          base = cc * h
+          x = t[base + c]
+          t[base + c] = t[base + p]
+          t[base + p] = x
+        swap_row_span(d, n, k + c, k + p, 0, k)
+        swap_row_span(d, n, k + c, k + p, k + w, n)
+        was = piv[k + c]
+        piv[k + c] = piv[k + p]
+        piv[k + p] = was
         0.0 - sg
       else sg
-      pivot = d[j * n + j]
-      for i in j + 1..n
-        d[i * n + j] = d[i * n + j] / pivot
-      for i in j + 1..n
-        f = d[i * n + j]
-        for c in j + 1..k + w
-          d[i * n + c] = d[i * n + c] - f * d[j * n + c]
+      # Multiplying by the reciprocal rather than dividing by the pivot: a
+      # division is ten times a multiplication and there is one of them per
+      # element under the diagonal.
+      rp = 1.0 / t[col + c]
+      for r in c + 1..h
+        t[col + r] = t[col + r] * rp
+      for cc in c + 1..w
+        f = t[cc * h + c]
+        base = cc * h
+        for r in c + 1..h
+          t[base + r] = t[base + r] - f * t[col + r]
       (sg2, good)
+
+fn swap_row_span(d: Buf(Float), n, i, j, c0, c1) =
+  ri = i * n
+  rj = j * n
+  for c in c0..c1
+    x = d[ri + c]
+    d[ri + c] = d[rj + c]
+    d[rj + c] = x
+  0
 
 # The rows of the block, worked forwards through the unit lower triangle,
 # which turns the columns to the right of the block into their part of U.
@@ -2729,21 +2800,27 @@ type Blk
 fn gemm_sub(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, m, kk, nn) =
   nr = m / 4
   nc = nn / 8
-  for bi in 0..nr
-    for bj in 0..nc
-      gemm_block(c, coff, cld, a, aoff, ald, b, boff, bld, kk, bi * 4, bj * 8)
-  # The rows past the last whole 4, across every column.
+  # Each strand takes a stripe of four-row tiles: they write to rows of
+  # their own and read what they share, so there is nothing to agree about.
+  flops = 2 * m * kk * nn
+  if par_flops(flops) then run_split(strands_for(flops), nr, \lo, hi -> gemm_rows(c, coff, cld, a, aoff, ald, b, boff, bld, kk, nc, lo, hi)) else gemm_rows(c, coff, cld, a, aoff, ald, b, boff, bld, kk, nc, 0, nr)
+
   for i in nr * 4..m
     for t in 0..kk
       f = a[aoff + i * ald + t]
       for j in 0..nn
         c[coff + i * cld + j] = c[coff + i * cld + j] - f * b[boff + t * bld + j]
-  # The columns past the last whole 8, for the rows the kernel took.
   for i in 0..nr * 4
     for t in 0..kk
       f = a[aoff + i * ald + t]
       for j in nc * 8..nn
         c[coff + i * cld + j] = c[coff + i * cld + j] - f * b[boff + t * bld + j]
+  0
+
+fn gemm_rows(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, kk, nc, lo, hi) =
+  for bi in lo..hi
+    for bj in 0..nc
+      gemm_block(c, coff, cld, a, aoff, ald, b, boff, bld, kk, bi * 4, bj * 8)
   0
 
 fn gemm_block(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, kk, i0, j0) =
@@ -2829,9 +2906,17 @@ fn lu_solve(f: Lu, b: Grid) =
   for i in 0..n
     for j in 0..kc
       o[i * kc + j] = bd[f.piv[i] * kc + j]
-  nb = 64
+  if par_flops(2 * n * n * kc) && kc > 1 then run_split(strands_streaming(2 * n * n * kc), kc, \lo, hi -> solve_cols(d, o, n, kc, lo, hi)) else solve_cols(d, o, n, kc, 0, kc)
+
+  x
+
+# The columns `j0` up to `j1` of the answer: forwards through L, then
+# backwards through U.
+fn solve_cols(d: Buf(Float), o: Buf(Float), n, kc, j0, j1) =
+  nb = 16
   blocks = (n + nb - 1) / nb
-  # Forwards through L, sixty-four rows at a time: settle the rows of one
+  width = j1 - j0
+  # Forwards through L, twenty-four rows at a time: settle the rows of one
   # block against each other, then take that block out of everything below
   # it in one multiplication. The same blocking as the factorisation, and
   # for the same reason — with one right-hand side it is arithmetic either
@@ -2843,24 +2928,63 @@ fn lu_solve(f: Lu, b: Grid) =
     for t in k..k + w
       for i in t + 1..k + w
         fct = d[i * n + t]
-        for j in 0..kc
+        for j in j0..j1
           o[i * kc + j] = o[i * kc + j] - fct * o[t * kc + j]
-    gemm_sub(o, (k + w) * kc, kc, d, (k + w) * n + k, n, o, k * kc, kc, n - k - w, w, kc)
+    gemm_sub(o, (k + w) * kc + j0, kc, d, (k + w) * n + k, n, o, k * kc + j0, kc, n - k - w, w, width)
   # Backwards through U, the same way and from the other end.
   for kb in 0..blocks
     k = (blocks - 1 - kb) * nb
     w = if n - k < nb then n - k else nb
     for tt in 0..w
       t = k + w - 1 - tt
-      pivot = d[t * n + t]
-      for j in 0..kc
-        o[t * kc + j] = o[t * kc + j] / pivot
+      rp = 1.0 / d[t * n + t]
+      for j in j0..j1
+        o[t * kc + j] = o[t * kc + j] * rp
       for i in k..t
         fct = d[i * n + t]
-        for j in 0..kc
+        for j in j0..j1
           o[i * kc + j] = o[i * kc + j] - fct * o[t * kc + j]
-    gemm_sub(o, 0, kc, d, k, n, o, k * kc, kc, k, w, kc)
-  x
+    gemm_sub(o, j0, kc, d, k, n, o, k * kc + j0, kc, k, w, width)
+  0
+
+# The columns `j0` up to `j1` of the inverse: forwards through L, then
+# backwards through U. `o` holds the identity on the way in and the answer
+# on the way out, before the columns are put back in order.
+fn inv_cols(d: Buf(Float), o: Buf(Float), n, j0, j1) =
+  nb = 16
+  blocks = (n + nb - 1) / nb
+  width = j1 - j0
+  # Forwards through L. Column j is zero above row j, so a block that ends
+  # at row k + w has nothing to say to the columns past it.
+  for kb in 0..blocks
+    k = kb * nb
+    w = if n - k < nb then n - k else nb
+    act = if k + w < n then k + w else n
+    hi = if j1 < act then j1 else act
+    if hi > j0 then
+      for t in k..k + w
+        for i in t + 1..k + w
+          fct = d[i * n + t]
+          for j in j0..hi
+            o[i * n + j] = o[i * n + j] - fct * o[t * n + j]
+      gemm_sub(o, (k + w) * n + j0, n, d, (k + w) * n + k, n, o, k * n + j0, n, n - k - w, w, hi - j0)
+    else 0
+
+  # Backwards through U, all the way across.
+  for kb in 0..blocks
+    k = (blocks - 1 - kb) * nb
+    w = if n - k < nb then n - k else nb
+    for tt in 0..w
+      t = k + w - 1 - tt
+      rp = 1.0 / d[t * n + t]
+      for j in j0..j1
+        o[t * n + j] = o[t * n + j] * rp
+      for i in k..t
+        fct = d[i * n + t]
+        for j in j0..j1
+          o[i * n + j] = o[i * n + j] - fct * o[t * n + j]
+    gemm_sub(o, j0, n, d, k, n, o, k * n + j0, n, k, w, width)
+  0
 
 # The determinant: the product down U's diagonal, with the sign the row
 # exchanges left. Zero when the matrix is singular.
@@ -2872,10 +2996,43 @@ fn det(a: Grid) =
     for i in 0..n with acc = f.sign
       acc * f.a.data[i * n + i]
 
-# The inverse, as the solution against the identity.
-fn inv(a: Grid) = solve(a, identity(rows_of(a)))
+# The inverse. Solving against the identity would do it, but a third of
+# that work is on zeros: the forward pass turns the identity into a lower
+# triangle, so a block of rows only has to touch the columns it can have
+# reached. Doing it that way needs the answer's columns put back in the
+# order the row exchanges took them out of, which is the last pass here.
+fn inv(a: Grid) =
+  x = try_inv(a)
+  if size(x) == 0 && rows_of(a) != 0 then
+    fail("inv: the matrix is singular")
+    a
+  else x
 
-fn try_inv(a: Grid) = try_solve(a, identity(rows_of(a)))
+fn try_inv(a: Grid) =
+  n = rows_of(a)
+  if n != cols_of(a) then
+    fail("inv: " + show_shape(a.shape) + " is not square")
+    a
+  else
+    f = lu(a)
+    if !f.ok then zeros1(0)
+    else
+      d = f.a.data
+      z = zeros2(n, n)
+      o = z.data
+      for i in 0..n
+        o[i * n + i] = 1.0
+      # Every column of the answer is solved on its own, so the columns are
+      # what the workers divide between them: one handing round for the
+      # whole of it, rather than one per multiplication.
+      if par_flops(2 * n * n * n) then run_split(strands_streaming(2 * n * n * n), n, \lo, hi -> inv_cols(d, o, n, lo, hi)) else inv_cols(d, o, n, 0, n)
+      # The columns, back where the exchanges took them from.
+      out = fresh(shape2(n, n))
+      for i in 0..n
+        row = i * n
+        for k in 0..n
+          out.data[row + f.piv[k]] = o[row + k]
+      out
 
 # `a` multiplied by itself `k` times, by squaring: a hundredth power is
 # seven multiplications rather than ninety-nine.

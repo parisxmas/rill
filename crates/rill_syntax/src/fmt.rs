@@ -29,7 +29,12 @@ const WIDTH: usize = 100;
 pub fn format_source(src: &str) -> Result<String, SyntaxError> {
     let (_, comments) = lex_with_comments(src)?;
     let module = parse(src)?;
-    let mut f = Fmt { out: String::new(), comments: Comments::new(comments), last_line: 0 };
+    // Line 0 does not exist, so the vector is one longer than the file and
+    // indexed by the line number as everything else counts it.
+    let mut blank = vec![false];
+    blank.extend(src.lines().map(|l| l.trim().is_empty()));
+    let mut f =
+        Fmt { out: String::new(), comments: Comments::new(comments), last_line: 0, blank };
     f.module(&module);
     Ok(f.out)
 }
@@ -127,6 +132,13 @@ struct Fmt {
     /// Highest source line already printed; used to tell whether the author
     /// left a blank line between two items (one blank is then preserved).
     last_line: usize,
+    /// Which source lines were blank. What is printed is anchored to the
+    /// line a construct *starts* on, so a statement written across three
+    /// lines leaves two behind it that nothing accounts for; without asking
+    /// whether any of them was actually blank, the next statement would be
+    /// taken for one the author had separated and a blank line invented
+    /// between them.
+    blank: Vec<bool>,
 }
 
 impl Fmt {
@@ -146,7 +158,9 @@ impl Fmt {
 
     /// True when the author left at least one blank line before `line`.
     fn had_gap(&self, line: usize) -> bool {
-        self.last_line > 0 && line > self.last_line + 1
+        self.last_line > 0
+            && line > self.last_line + 1
+            && (self.last_line + 1..line).any(|l| self.blank.get(l).copied().unwrap_or(false))
     }
 
     /// Emits a line plus the trailing comment that sat on `src_line`.

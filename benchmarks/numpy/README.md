@@ -25,35 +25,35 @@ agree to six digits. Reproduce with `python3 benchmarks/numpy/run.py`.
 
 | benchmark | what it does | rill, 1 core | rill, 10 cores | numpy, 1 thread | numpy, all threads | |
 |---|---|---:|---:|---:|---:|---|
-| small | `v = v*0.999 + 0.5` on 16 elements, 200k times | 9.2 | 14.5 | 103.0 | 104.3 | **rill 11×** |
-| sort | 5 M sorted, and 1 M put in order by position | 80.2 | 97.2 | 212.1 | 211.0 | **rill 2.6×** |
-| reduce | mean, std, max, argmax of 20 M | 11.8 | 7.5 | 27.5 | 27.3 | **rill 2.3×**, 3.6× on all cores |
-| where | `where(a > k, a, b)`, a sum and a count, 10 M | 6.6 | 4.4 | 11.8 | 11.8 | **rill 1.8×**, 2.7× on all cores |
-| shape | joining, tiling, reversing, rolling, gathering, 10 M | 43.2 | 34.5 | 70.3 | 75.9 | **rill 1.6×**, 2.0× on all cores |
-| stats | median, two percentiles, and NaN-skipping sums of 5 M | 40.6 | 43.3 | 44.8 | 46.6 | rill 1.1× |
-| matmul | 800 × 800 · 800 × 800 | 17.3 | 4.3 | 18.7 | 5.7 | rill 1.1×, 1.3× on all cores |
+| small | `v = v*0.999 + 0.5` on 16 elements, 200k times | 9.3 | 15.0 | 102.7 | 102.4 | **rill 11×** |
+| sort | 5 M sorted, and 1 M put in order by position | 89.4 | 98.2 | 209.9 | 207.5 | **rill 2.3×** |
+| reduce | mean, std, max, argmax of 20 M | 14.1 | 7.7 | 27.2 | 27.3 | **rill 1.9×**, 3.5× on all cores |
+| shape | joining, tiling, reversing, rolling, gathering, 10 M | 40.2 | 44.3 | 75.8 | 64.1 | **rill 1.9×** |
+| where | `where(a > k, a, b)`, a sum and a count, 10 M | 6.5 | 4.7 | 11.8 | 12.0 | **rill 1.8×**, 2.6× on all cores |
+| stats | median, two percentiles, and NaN-skipping sums of 5 M | 40.4 | 43.1 | 44.4 | 44.6 | rill 1.1× |
+| matmul | 800 × 800 · 800 × 800 | 17.3 | 4.5 | 18.5 | 5.7 | rill 1.07×, 1.3× on all cores |
 | axis | 2000 × 2000 transposed, summed along both axes | 0.9 | 1.0 | 1.0 | 1.0 | level |
-| dot | dot of two 20 M vectors | 4.3 | 2.8 | 4.4 | 2.9 | level |
-| elementwise | `sqrt(a)*(2a+1) + a`, 10 M | 12.0 | 11.0 | 12.1 | 12.1 | level |
-| trig | `sin`, `exp` and `log` over 10 M each | 61.8 | 18.4 | 62.2 | 62.1 | level; **3.4× on all cores** |
-| solve | a 400 × 400 system, its determinant and its inverse | 9.4 | 9.6 | 6.4 | 5.4 | numpy 1.5× |
+| dot | dot of two 20 M vectors | 4.3 | 3.0 | 4.4 | 2.9 | level |
+| elementwise | `sqrt(a)*(2a+1) + a`, 10 M | 12.0 | 11.4 | 12.1 | 12.1 | level |
+| trig | `sin`, `exp` and `log` over 10 M each | 61.7 | 18.2 | 62.2 | 62.1 | level; **3.4× on all cores** |
+| solve | a 400 × 400 system, its determinant and its inverse | 6.3 | 6.2 | 6.4 | 5.3 | level on one core; numpy 1.2× on all |
 
 ## The whole process (ms)
 
 | benchmark | rill, 1 core | rill, 10 cores | numpy, 1 thread | numpy, all threads |
 |---|---:|---:|---:|---:|
-| elementwise | 41 | 49 | 90 | 88 |
-| reduce | 42 | 34 | 151 | 151 |
-| matmul | 38 | 12 | 90 | 64 |
-| axis | 7 | 7 | 62 | 61 |
-| small | 21 | 31 | 256 | 258 |
-| dot | 59 | 59 | 141 | 139 |
-| where | 44 | 42 | 116 | 115 |
-| trig | 154 | 63 | 208 | 207 |
-| sort | 187 | 221 | 495 | 498 |
-| solve | 21 | 22 | 64 | 62 |
-| stats | 100 | 109 | 176 | 177 |
-| shape | 122 | 111 | 237 | 253 |
+| elementwise | 42 | 49 | 91 | 89 |
+| reduce | 48 | 36 | 152 | 152 |
+| matmul | 38 | 13 | 89 | 64 |
+| axis | 7 | 8 | 63 | 62 |
+| small | 21 | 32 | 256 | 255 |
+| dot | 60 | 58 | 144 | 137 |
+| where | 44 | 42 | 114 | 116 |
+| trig | 155 | 65 | 209 | 207 |
+| sort | 203 | 224 | 494 | 490 |
+| solve | 15 | 16 | 64 | 62 |
+| stats | 101 | 110 | 177 | 174 |
+| shape | 120 | 120 | 259 | 244 |
 
 Python's start and NumPy's import are about 60 ms; a Rill program is a 40 KB
 binary that starts in a millisecond. On the whole process Rill is ahead on
@@ -92,14 +92,28 @@ story with the maths library in place of the memory: both sides call the
 same `sin` once per element, so the two are level on one core, and Rill
 pulls ahead on ten only because NumPy does not thread its ufuncs.
 
-**`solve` is the one loss, and it is LAPACK's blocking against mine.** The
-factorisation is blocked sixty-four columns at a time and its trailing
-update goes through the same `Float2` kernel as `matmul`, which took this
-benchmark from eight times behind to one and a half; the substitutions are
-blocked the same way. What is left is that `inv` here does the full
-triangular solve against an identity where LAPACK's `getri` exploits the
-structure and does half the work, and that its panel factorisation is
-recursive where mine is flat.
+**`solve` is level on one core, and getting there took four things.** The
+factorisation is blocked sixteen columns at a time and its trailing update
+goes through the same `Float2` kernel as `matmul`, which runs at 51 GFLOP/s
+here — the kernel is no longer what is slow. The block of columns being
+factored is copied out transposed first, because a column of a row-major
+matrix is one number per cache line and four hundred lines to read four
+hundred numbers; transposed it is a run of neighbours, and the pivot
+search, the scaling and the rank-one update all read it at the speed of
+memory. `inv` does not solve against the identity but exploits its shape:
+the forward pass turns it into a lower triangle, so a block of rows only
+touches the columns it can have reached, which is a third of the work
+rather than all of it, and the answer's columns are put back in order at
+the end. And what remains of the factorisation — a quarter of it — is
+divided between the workers in pieces sized by the arithmetic in them
+rather than by how many workers there are, because starting ten strands
+costs thirty-five microseconds and four costs five.
+
+Where it still loses is on all cores: OpenBLAS threads its factorisation
+throughout and reaches 5.3 ms where this reaches 6.2. Splitting an even
+share to each worker is the wrong move on a machine whose cores are not
+alike — four fast and six slow here — and the even share waits for the
+slow ones.
 
 **`small` on ten cores is slower than on one**, and that is the honest cost
 of `--parallel`: every reference count becomes an atomic operation, and two
@@ -123,7 +137,7 @@ way was a compiler improvement rather than a library trick — the list is in
 - `unique(x)` and last-use moves, which is how a temporary's storage is
   reused (`elementwise` 29 → 12 ms);
 - `Float2`, so a kernel can say its vectors instead of hoping the vectorizer
-  pairs its scalars (`matmul` 64 → 17 ms, `solve` 43 → 9 ms);
+  pairs its scalars (`matmul` 64 → 17 ms, `solve` 43 → 6.3 ms);
 - `sqrt` from libm is the instruction, not the call — C's `sqrt` may set
   `errno`, which is why a loop of them never vectorized;
 - a `for` loop whose body calls nothing is not preemption-checked: once the

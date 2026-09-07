@@ -24,11 +24,14 @@ fn talk(port, what) =
   sock_close(fd)
   answer
 
-fn main() = match listen_on(7878)
+# Port 0 asks the kernel for a free one and `sock_port` says which it gave,
+# so this runs on a machine that already has something on the port a fixed
+# number would have named.
+fn main() = match listen_on(0)
   Err(e) -> println(e)
-  Ok(server) -> run(server)
+  Ok(server) -> run(server, sock_port(server))
 
-fn run(server) =
+fn run(server, port) =
   spawn serve(server, 2)
-  println(trim(talk(7878, "merhaba")))
-  println(trim(talk(7878, "dunya")))
+  println(trim(talk(port, "merhaba")))
+  println(trim(talk(port, "dunya")))

@@ -55,6 +55,20 @@ against NumPy value by value:
   matrix stops a program with a message and hands a host an empty grid
   instead, which `grid.solve` in Python raises `LinAlgError` on.
 
+`solve`, `det` and `inv` on a 400 × 400 matrix went from 43 ms to 6.3,
+which is level with LAPACK through NumPy on one thread. Four things did it,
+in the order they mattered: the trailing update of the factorisation goes
+through the same `Float2` kernel as `matmul` and runs at 51 GFLOP/s; the
+block of columns being factored is copied out transposed first, because a
+column of a row-major matrix is one number per cache line and the pivot
+search, the scaling and the rank-one update all walk one; `inv` exploits
+the identity's shape rather than solving against it, which is a third of
+the forward pass rather than all of it, at the price of putting the
+answer's columns back in order at the end; and what is left is divided
+between the workers in pieces sized by the arithmetic in them, since
+starting ten strands costs thirty-five microseconds and four costs five.
+On all cores OpenBLAS is still ahead, 5.3 ms against 6.2.
+
 `sort` above a few thousand elements sorts by the bits rather than by
 comparing: a float's order is its bit pattern's order once the sign is
 folded in, so the numbers go into place a byte at a time, in eight counting
@@ -66,13 +80,14 @@ the two buffers are not worth it for a short range. `median` and
 `percentile` select rather than sort, as NumPy's do.
 
 `benchmarks/numpy/` measures the library against NumPy on twelve programs,
-on one core and on all of them. Rill is ahead on eleven — two hundred
-thousand small operations 11×, sorting 2.6×, reductions 2.3×, a mask and a
-`where` 1.8×, moving numbers about 1.6×, order statistics and a matrix
-product 1.1× — and level where both sides stream memory at the machine's
-limit or call the same maths library. The one loss is solving a linear
-system, at 1.5× of LAPACK. The whole process is 2–12× shorter on all
-twelve. `benchmarks/numpy/README.md` has the table and the reasoning.
+on one core and on all of them. On one core Rill is ahead on eight and
+level on four: two hundred thousand small operations 11×, sorting 2.3×,
+reductions and moving numbers about 1.9×, a mask and a `where` 1.8×, order
+statistics and a matrix product 1.1×, and level where both sides stream
+memory at the machine's limit, call the same maths library, or solve a
+linear system. On all cores NumPy keeps two — a threaded matrix product and
+a threaded factorisation. The whole process is 2–12× shorter on all twelve.
+`benchmarks/numpy/README.md` has the table and the reasoning.
 
 The language and compiler, on the way there:
 
@@ -109,6 +124,22 @@ The language and compiler, on the way there:
   out, with `rill_drop_<Type>` for the host to let go by; `main` runs as
   `rill_init`.
 - **`--emit-ir` honours `--unchecked`.**
+- **A worker with nothing to do no longer takes every other worker's queue
+  lock** on every turn of its idle loop; it asks the queued count first. Six
+  idle workers were spending a busy worker's cache line on a question whose
+  answer was no.
+- **`sock_port(fd)`**: the port this end of a socket is on. `listen_on(0)`
+  asks the kernel for a free one, and until now nothing could ask which it
+  gave — so a program that wanted a port had to name one, which is a promise
+  about a machine rather than about a program. `examples/http/server.rill`
+  and `examples/echo_server.rill` now let the kernel choose; both used to
+  answer with whatever else happened to hold 8080 or 7878.
+- **`rill fmt` no longer invents a blank line after a statement written
+  across several lines.** What it prints is anchored to the line a construct
+  starts on, so the lines a multi-line statement left behind looked like a
+  gap the author had left; it now asks whether any of them was actually
+  blank. Three files in `lib/` that the formatter had been unable to leave
+  alone are formatted.
 - **`!=` on floats is now unordered**, as C, Python and IEEE 754 have it:
   `x != x` is true of a NaN, where it used to be false. `==` is unchanged —
   a NaN is equal to nothing, itself included — and nothing else about
