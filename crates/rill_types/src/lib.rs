@@ -4107,16 +4107,28 @@ fn resolve_type_ref(
 
 /// Collects free variable names of an expression in first-use order.
 fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
-    match e {
-        Expr::Var(n, _) => {
-            if seen.insert(n.clone()) {
-                out.push(n.clone());
+    let mut name_of = |n: &String, out: &mut Vec<String>| {
+        if seen.insert(n.clone()) {
+            out.push(n.clone());
+        }
+        // `p.x` arrives here as one name, because the lexer cannot tell a
+        // field from a module — see `infer_var`. What a lambda captures is
+        // `p`, and naming both is safe: the list is filtered against the
+        // enclosing scope, so a `geo.area` adds a `geo` that is not there and
+        // is dropped. Without this a lambda that reads a field of something
+        // it closes over captured nothing at all.
+        if let Some((head, _)) = n.split_once('.') {
+            let head = head.to_string();
+            if seen.insert(head.clone()) {
+                out.push(head);
             }
         }
+    };
+    match e {
+        Expr::Var(n, _) => name_of(n, out),
         Expr::Call { name, args, .. } => {
-            if seen.insert(name.clone()) {
-                out.push(name.clone());
-            }
+            name_of(name, out);
+            drop(name_of);
             for a in args {
                 free_vars(a, out, seen);
             }

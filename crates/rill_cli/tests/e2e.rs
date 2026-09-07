@@ -2439,3 +2439,30 @@ fn a_page_made_of_several_templates() {
 "#
     );
 }
+
+/// `p.x` reaches the type checker as one dotted name, because the lexer cannot
+/// tell a field from a module. A lambda that read a field of what it closed
+/// over therefore captured nothing — the name it looked for was `r.body`,
+/// which is in no scope — and the compiler walked off the end of a map while
+/// generating code for it. It captures `r`.
+#[test]
+fn a_lambda_captures_what_it_reads_a_field_of() {
+    let out = run_source(
+        "capture_field",
+        r#"type Req
+  Req(path: Str, body: Str)
+
+fn main() =
+  r = Req("/a", "b")
+  println(apply(\x -> x + r.body))
+  fn near(x) = x + r.path
+  println(near("local: "))
+  ch = channel(1)
+  spawn send(ch, r.path + r.body)
+  println(recv(ch))
+
+fn apply(f) = f("lambda: ")
+"#,
+    );
+    assert_eq!(out, "lambda: b\nlocal: /a\n/ab\n");
+}
