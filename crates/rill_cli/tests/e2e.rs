@@ -2391,6 +2391,85 @@ fn templates_render_the_page_they_are_given() {
     }
 }
 
+/// A handler with layers on it. `wrap` puts them on outermost first, so the
+/// one that announces what it saw sees the answer the rate limiter gave
+/// without the handler underneath ever being called — which is the point of a
+/// middleware being able to answer for itself.
+#[test]
+fn middleware_wraps_a_handler_and_may_answer_for_it() {
+    assert_eq!(
+        compile_and_run("http/middleware.rill"),
+        "saw POST /write -> 200\n200 wrote one\n\
+         saw POST /write -> 200\n200 wrote two\n\
+         saw POST /write -> 429\n429 {\"error\":\"too many writes — the limit is 2 a second\"}\n\
+         saw GET /read -> 200\n200 wrote \n"
+    );
+}
+
+/// `p.x` reaches the type checker as one dotted name, because the lexer cannot
+/// tell a field from a module. A lambda that read a field of what it closed
+/// over therefore captured nothing — the name it looked for was `r.body`,
+/// which is in no scope — and the compiler walked off the end of a map while
+/// generating code for it. It captures `r`.
+#[test]
+fn a_lambda_captures_what_it_reads_a_field_of() {
+    let out = run_source(
+        "capture_field",
+        r#"type Req
+  Req(path: Str, body: Str)
+
+fn main() =
+  r = Req("/a", "b")
+  println(apply(\x -> x + r.body))
+  fn near(x) = x + r.path
+  println(near("local: "))
+  ch = channel(1)
+  spawn send(ch, r.path + r.body)
+  println(recv(ch))
+
+fn apply(f) = f("lambda: ")
+"#,
+    );
+    assert_eq!(out, "lambda: b\nlocal: /a\n/ab\n");
+}
+
+/// The catalogue hands out the files its page pulls in by name, and nothing
+/// else — a URL cannot ask for a path. So the list in the source and what is
+/// on disk have to be the same list, and this is what says so.
+#[test]
+fn the_catalogue_serves_every_file_its_page_asks_for() {
+    let root = workspace_root();
+    let source = std::fs::read_to_string(root.join("examples/oxidb/catalogue.rill")).unwrap();
+    // Every file the source names, wherever the whitelist is spelled out —
+    // a quoted name, not a bare extension like the one the content type is
+    // chosen by.
+    let named: std::collections::BTreeSet<String> = source
+        .split('"')
+        .filter(|piece| piece.ends_with(".js") || piece.ends_with(".css"))
+        .filter(|piece| !piece.starts_with('.'))
+        .map(|piece| piece.to_string())
+        .collect();
+
+    let dir = root.join("examples/oxidb/static");
+    let mut found = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            for inner in std::fs::read_dir(entry.path()).unwrap() {
+                let inner = inner.unwrap();
+                found.insert(format!(
+                    "{}/{}",
+                    entry.file_name().to_string_lossy(),
+                    inner.file_name().to_string_lossy()
+                ));
+            }
+        } else {
+            found.insert(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    assert_eq!(named, found, "the files named in catalogue.rill are not the files in static/");
+}
+
 /// A page built out of four templates: `page.tmpl` includes `banner.tmpl`
 /// twice with different words and `row.tmpl` once per item, handing each one
 /// the item and where it sits in the list. An include is a call, so what one
@@ -2438,31 +2517,4 @@ fn a_page_made_of_several_templates() {
 </html>
 "#
     );
-}
-
-/// `p.x` reaches the type checker as one dotted name, because the lexer cannot
-/// tell a field from a module. A lambda that read a field of what it closed
-/// over therefore captured nothing — the name it looked for was `r.body`,
-/// which is in no scope — and the compiler walked off the end of a map while
-/// generating code for it. It captures `r`.
-#[test]
-fn a_lambda_captures_what_it_reads_a_field_of() {
-    let out = run_source(
-        "capture_field",
-        r#"type Req
-  Req(path: Str, body: Str)
-
-fn main() =
-  r = Req("/a", "b")
-  println(apply(\x -> x + r.body))
-  fn near(x) = x + r.path
-  println(near("local: "))
-  ch = channel(1)
-  spawn send(ch, r.path + r.body)
-  println(recv(ch))
-
-fn apply(f) = f("lambda: ")
-"#,
-    );
-    assert_eq!(out, "lambda: b\nlocal: /a\n/ab\n");
 }

@@ -6,9 +6,9 @@ import "catalogue_table_tmpl"
 import "catalogue_nav_tmpl"
 
 fn catalogue_page(b: StrBuf, v: View) =
-  b += "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"utf-8\">\n    <title>catalogue</title>\n    <style>\n      body{font:14px system-ui,sans-serif;margin:2rem;color:#222}\n      h1{font-size:1.3rem}\n      table{border-collapse:collapse;margin:1rem 0;width:100%}\n      th,td{padding:.35rem .6rem;text-align:left;border-bottom:1px solid #e5e5e5}\n      th{background:#fafafa;font-weight:600}\n      tr:hover td{background:#f6f9ff}\n      form{display:flex;gap:.6rem;flex-wrap:wrap;align-items:end}\n      label{display:flex;flex-direction:column;font-size:12px;color:#666}\n      input,select{font:inherit;padding:.3rem .4rem;border:1px solid #ccc;border-radius:4px}\n      button{font:inherit;padding:.35rem .9rem;border:1px solid #345;background:#345;color:#fff;border-radius:4px;cursor:pointer}\n      nav{display:flex;gap:.4rem;align-items:center}\n      nav a,nav span{padding:.3rem .6rem;border:1px solid #ddd;border-radius:4px;text-decoration:none;color:#345}\n      nav span{color:#bbb}\n      .note{color:#888;margin-top:2rem}\n      .bad{color:#a00}\n      code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}\n    </style>\n  </head>\n  <body>\n    <h1>catalogue</h1>\n"
+  b += "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"utf-8\">\n    <title>catalogue</title>\n    <style>\n      body{font:14px system-ui,sans-serif;margin:2rem;color:#222}\n      h1{font-size:1.3rem}\n      table{border-collapse:collapse;margin:1rem 0;width:100%}\n      th,td{padding:.35rem .6rem;text-align:left;border-bottom:1px solid #e5e5e5}\n      th{background:#fafafa;font-weight:600}\n      tr:hover td{background:#f6f9ff}\n      form{display:flex;gap:.6rem;flex-wrap:wrap;align-items:end}\n      label{display:flex;flex-direction:column;font-size:12px;color:#666}\n      input,select{font:inherit;padding:.3rem .4rem;border:1px solid #ccc;border-radius:4px}\n      button{font:inherit;padding:.35rem .9rem;border:1px solid #345;background:#345;color:#fff;border-radius:4px;cursor:pointer}\n      nav{display:flex;gap:.4rem;align-items:center}\n      nav a,nav span{padding:.3rem .6rem;border:1px solid #ddd;border-radius:4px;text-decoration:none;color:#345}\n      nav span{color:#bbb}\n      .note{color:#888;margin-top:2rem}\n      .bad{color:#a00}\n      code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}\n      /* With a script coming to take the results over, they are not painted\n         twice: the server's table is held back until the grid is in, and let\n         through anyway if the script never arrives. Without a script none of\n         this applies and the table is simply there. */\n      html[data-js] #results, html[data-js] #filters{visibility:hidden}\n      html[data-js] #results.live, html[data-js] #filters.live{visibility:visible}\n    </style>\n    <script>\n      // Before the first paint, so there is nothing to undo.\n      document.documentElement.dataset.js = \"1\";\n      setTimeout(function () { document.documentElement.removeAttribute(\"data-js\"); }, 1500);\n    </script>\n    <link rel=\"stylesheet\" href=\"/static/theme.css\">\n  </head>\n  <body class=\"zap\">\n    <h1>catalogue</h1>\n"
   catalogue_form(b, v)
-  b += "    "
+  b += "    <div id=\"results\">\n    "
   if #v.trouble > 0 then
     b += "\n    <p class=\"bad\">"
     render(b, v.trouble)
@@ -39,5 +39,7 @@ fn catalogue_page(b: StrBuf, v: View) =
   else 0
   b += "\n"
   catalogue_nav(b, v.steps)
-  b += "    <p class=\"note\">The same server answers <code>/count</code>, <code>/doc/&lt;sku&gt;</code>, <code>/find</code> and <code>/top</code> as JSON.</p>\n  </body>\n</html>\n"
+  b += "    </div>\n    <p class=\"note\">The same server answers <code>/count</code>, <code>/doc/&lt;sku&gt;</code>, <code>/find</code> and <code>/top</code> as JSON.</p>\n    <script type=\"application/json\" id=\"seed\">"
+  raw(b, v.seed)
+  b += "</script>\n    <script type=\"module\" src=\"/static/catalogue.js\"></script>\n  </body>\n</html>\n"
   0

@@ -13,6 +13,32 @@
 # `/` is a page a browser can use: a form for the filters, a table, and a
 # pager. Everything else answers JSON, so the same server serves both.
 #
+# The page is whole before any script runs, and works with none: a filter is a
+# form submit and a pager step is a link. `static/catalogue.js` is what makes
+# it live — zap, a signals library, takes both halves over with its own
+# components: `Select` and `Button` in the toolbar, `DataGrid` for the table,
+# which sorts, filters and pages a window of rows without asking the server
+# anything. What the server rendered is held back until they are in, so the
+# page is not painted twice, and let through anyway if the script never
+# arrives. Where the line falls is the interesting part: the DATABASE answers
+# which of a hundred thousand documents match, with an index behind every
+# field the form offers, and the GRID holds one window of that answer.
+# `/rows` is that window as JSON, and it is in the page already — the server
+# puts what it just rendered into a `<script type="application/json">`, so the
+# client starts from what is on the screen rather than asking for it again. It
+# carries what it cost to make, too: the grid shows the database's time and
+# the writing's beside its row count.
+#
+# The table is editable. A cell opens the editor its column's type asks for —
+# a number field, the calendar, a list — and what comes out is a `POST
+# /doc/<sku>` naming one field. The rules are written twice on purpose: the
+# grid stops you at sixty characters while you type, and `refused` below
+# checks the same limits again before anything is written, because a request
+# need not have come from the page. A refusal comes back as the reason, the
+# grid puts the old value back and shows it on the cell, and a write that
+# lands answers with how long the database took — which is what the little
+# notice in the corner of the page is counting.
+#
 # The page is a template rather than markup built by hand, and it is four of
 # them: `catalogue.tmpl` is the page, and it includes the form, the table and
 # the pager — `<% include catalogue_table(v.rows) %>` is the call
@@ -148,7 +174,12 @@ fn batch_docs(from, n) =
 # Made from the number alone, so a query's answer is predictable: role and
 # region cycle, the score is a scramble of the id, and the name carries it.
 fn one_doc(i) =
-  JObj(Cons(field("sku", int(i)), Cons(field("name", text("item-" + int_to_str(i))), Cons(field("role", text(role_of(i))), Cons(field("region", text(region_of(i))), Cons(field("score", JNum(score_of(i))), Cons(field("stock", int(i % 97)), Nil)))))))
+  JObj(Cons(field("sku", int(i)), Cons(field("name", text("item-" + int_to_str(i))), Cons(field("role", text(role_of(i))), Cons(field("region", text(region_of(i))), Cons(field("score", JNum(score_of(i))), Cons(field("stock", int(i % 97)), Cons(field("added", text(added_of(i))), Nil))))))))
+
+# A date apiece, cycling, so it is always a real one and always the same one.
+fn added_of(i) = "2026-" + two_digits(1 + i % 12) + "-" + two_digits(1 + i % 28)
+
+fn two_digits(n) = if n < 10 then "0" + int_to_str(n) else int_to_str(n)
 
 fn role_of(i) = nth_or(Cons("eng", Cons("ops", Cons("sre", Cons("design", Nil)))), i % 4, "eng")
 
@@ -167,7 +198,12 @@ fn serve_on(db, want) = match listen_on(want)
 fn announce(server, db, port) =
   println("http://127.0.0.1:" + int_to_str(port) + "/  — try /count, /find?role=eng&limit=3, /top?by=score&limit=5, /doc/42")
   pool = build_pool(db, connections())
-  h.accept_forever(server, \req -> route(pool, req))
+  # The writes are the ones that reach the database, so they are the ones that
+  # are counted. A middleware is a layer around the handler and `wrap` puts
+  # the list on in order, outermost first.
+  h.accept_forever(server, h.wrap(Cons(h.rate_limit(writes_a_second()), Nil), \req -> route(pool, req)))
+
+fn writes_a_second() = 20
 
 # -- routing ------------------------------------------------------------------
 
@@ -189,10 +225,103 @@ fn fill_pool(ch, db, n) =
       send(ch, fd)
       fill_pool(ch, db, n - 1)
 
-fn route(pool, req: h.Request) = dispatch(pool, path_of(req.path), query_of(req.path))
+# A write arrives as a POST and nothing else does: a link cannot change a
+# document, whatever it says.
+fn route(pool, req: h.Request) =
+  if req.method == "POST" then with_db(pool, \fd -> answer_edit(fd, path_of(req.path), req.body)) else dispatch(pool, path_of(req.path), query_of(req.path))
+
+# `POST /doc/<sku>` with `{"field": ..., "value": ...}` — one cell of one
+# document, which is what the grid sends when a cell is edited.
+fn answer_edit(fd, path, body) =
+  if starts_with(path, "/doc/") then edit_doc(fd, str_to_int(str_sub(path, 5, str_len(path))), parse(body)) else h.json_response(404, "{\"error\":\"nothing to write there\"}")
+
+fn edit_doc(fd, sku, body) = match body
+  Err(e) -> h.json_response(400, "{\"error\":\"" + e + "\"}")
+  Ok(j) -> apply_edit(fd, sku, as_str(unwrap_or(get(j, "field"), JNull)), unwrap_or(get(j, "value"), JNull))
+
+fn apply_edit(fd, sku, name, value) =
+  refusal = refused(name, value)
+  if str_len(refusal) > 0 then h.json_response(400, "{\"error\":\"" + refusal + "\"}") else write_field(fd, sku, name, value)
+
+fn write_field(fd, sku, name, value) =
+  t0 = now_nanos()
+  match update(fd, collection(), JObj(Cons(field("sku", int(sku)), Nil)), set(Cons(Field(name, value), Nil)))
+    Err(e) -> failed(e)
+    Ok(_) -> h.json_response(200, "{\"ok\":true,\"db_us\":" + int_to_str((now_nanos() - t0) / 1000) + "}")
+
+# What a document may be told, and what it may not. The page enforces the same
+# rules while you type, but a request need not have come from the page — so
+# these are the ones that count, and the answer is why it was refused or
+# nothing at all. `sku` is what a document is found by and `score` is
+# computed, so neither is here.
+fn refused(name, value) =
+  if name == "name" then text_rule(value, 60, "a name") else if name == "role" then one_of(value, Cons("eng", Cons("ops", Cons("sre", Cons("design", Nil)))), "a role") else if name == "region" then one_of(value, Cons("eu", Cons("us", Cons("apac", Nil))), "a region") else if name == "stock" then number_rule(value, 0, 99999, "stock") else if name == "added" then date_rule(value) else "`" + name + "` is not a field this page may change"
+
+fn text_rule(value, most, what) = match value
+  JStr(s) ->
+    if str_len(trim(s)) == 0 then what + " cannot be empty" else if str_len(s) > most then what + " is at most " + int_to_str(most) + " characters" else ""
+  _ -> what + " has to be text"
+
+fn one_of(value, allowed, what) = match value
+  JStr(s) -> if listed(allowed, s) then "" else what + " is one of " + join(allowed, ", ")
+  _ -> what + " has to be text"
+
+fn listed(l, s) = match l
+  Nil -> false
+  Cons(x, rest) -> x == s || listed(rest, s)
+
+fn number_rule(value, least, most, what) = match value
+  JInt(n) ->
+    if n < least then what + " is never below " + int_to_str(least) else if n > most then what + " is at most " + int_to_str(most) else ""
+  _ -> what + " has to be a whole number"
+
+# `2026-01-15` and nothing else: ten characters, dashes where dashes go, and a
+# month and a day that exist.
+fn date_rule(value) = match value
+  JStr(s) ->
+    if str_len(s) != 10 || str_get(s, 4) != 45 || str_get(s, 7) != 45 then "a date is written 2026-01-15" else if !digits_only(s, 0, 4) || !digits_only(s, 5, 7) || !digits_only(s, 8, 10) then "a date is written 2026-01-15" else month_and_day(str_to_int(str_sub(s, 5, 2)), str_to_int(str_sub(s, 8, 2)))
+  _ -> "a date has to be text"
+
+fn month_and_day(month, day) =
+  if month < 1 || month > 12 then "there is no month " + int_to_str(month) else if day < 1 || day > 31 then "there is no day " + int_to_str(day) else ""
+
+fn digits_only(s, from, to) =
+  for i in from..to with ok = true
+    ok && str_get(s, i) >= 48 && str_get(s, i) <= 57
 
 fn dispatch(pool, path, qs) =
-  if path == "/" then with_db(pool, \fd -> browse(fd, qs)) else if path == "/count" then with_db(pool, \fd -> answer_count(fd)) else if path == "/find" then with_db(pool, \fd -> answer_find(fd, qs)) else if path == "/top" then with_db(pool, \fd -> answer_top(fd, qs)) else if starts_with(path, "/doc/") then with_db(pool, \fd -> answer_doc(fd, str_to_int(str_sub(path, 5, str_len(path))))) else h.json_response(404, "{\"error\":\"no route for " + path + "\"}")
+  if path == "/" then with_db(pool, \fd -> browse(fd, qs)) else if path == "/rows" then with_db(pool, \fd -> answer_rows(fd, qs)) else if path == "/count" then with_db(pool, \fd -> answer_count(fd)) else if path == "/find" then with_db(pool, \fd -> answer_find(fd, qs)) else if path == "/top" then with_db(pool, \fd -> answer_top(fd, qs)) else if starts_with(path, "/doc/") then with_db(pool, \fd -> answer_doc(fd, str_to_int(str_sub(path, 5, str_len(path))))) else if starts_with(path, "/static/") then answer_static(str_sub(path, 8, str_len(path))) else h.json_response(404, "{\"error\":\"no route for " + path + "\"}")
+
+# -- what the page pulls in ----------------------------------------------------
+
+# The modules are named rather than joined onto a root, so nothing a URL says
+# can reach a file this server was not meant to hand out.
+fn answer_static(name) =
+  if is_module(name) then serve_module(name) else h.json_response(404, "{\"error\":\"no such file\"}")
+
+# The files the page is allowed to ask for, by name. zap and its component
+# set are vendored under `static/` so the example needs nothing installed.
+fn is_module(name) =
+  name == "catalogue.js" || name == "index.js" || name == "zap.js" || name == "html.js" || name == "router.js" || name == "theme.css" || is_component(name)
+
+fn is_component(name) =
+  name == "components/grid.js" || name == "components/pagination.js" || name == "components/select.js" || name == "components/button.js" || name == "components/switch.js" || name == "components/datepicker.js" || name == "components/calendar.js" || name == "components/anchor.js" || name == "components/toast.js"
+
+# Run from the repository root or from the example's own directory; both are
+# tried, and a server that finds neither says so rather than serving a blank
+# page that fails in the browser.
+fn serve_module(name) = match first_readable(Cons("examples/oxidb/static/" + name, Cons("static/" + name, Nil)))
+  Err(e) -> h.text_response(500, e)
+  Ok(text) -> h.Response(200, kind_of(name), text)
+
+fn kind_of(name) =
+  if str_find(name, ".css") > 0 then "text/css; charset=utf-8" else "text/javascript; charset=utf-8"
+
+fn first_readable(paths) = match paths
+  Nil -> Err("cannot find the static files — run this from the repository root")
+  Cons(p, rest) -> match read_file(p)
+    Ok(text) -> Ok(text)
+    Err(_) -> first_readable(rest)
 
 # One of the pool's connections for the length of the call, and back
 # afterwards whatever the answer was.
@@ -290,18 +419,54 @@ fn shown(label, result, render) = match result
 # under it. Nothing here is JavaScript: a link carries the page number and
 # the server answers with the page.
 fn browse(fd, qs) =
+  t0 = now_nanos()
+  match shape_of(fd, qs)
+    (q, size, total, pages, page, skip) ->
+      found = find_page(fd, collection(), q, sorted_by(qs), size, skip)
+      answer_page(qs, found, total, page, pages, size, skip, now_nanos() - t0)
+
+# What `/` renders, as JSON, for the client that took the page over. It is the
+# same question asked the same way — the two answers cannot drift apart,
+# because only the last step of each differs.
+fn answer_rows(fd, qs) =
+  t0 = now_nanos()
+  match shape_of(fd, qs)
+    (q, size, total, pages, page, skip) ->
+      found = find_page(fd, collection(), q, sorted_by(qs), size, skip)
+      rows_json(found, total, page, pages, skip, now_nanos() - t0)
+
+fn rows_json(result, total, page, pages, skip, asked) = match result
+  Err(e) -> failed(e)
+  Ok(d) -> h.json_response(200, rows_body(docs(d), total, page, pages, skip, asked))
+
+# One page of results as JSON. `/rows` answers with it and `/` carries it
+# inside the page, so the client starts from what it can already see.
+#
+# The two times are what it cost to produce: `db` is everything the database
+# was asked — the count and the page — and `wrote` is turning the answer into
+# what the grid reads. The second is measured around its own work and added at
+# the end, which is why the number is the length of the string rather than of
+# the whole reply.
+fn rows_body(list, total, page, pages, skip, asked) =
+  t0 = now_nanos()
+  head = "{\"total\":" + int_to_str(total) + ",\"page\":" + int_to_str(page) + ",\"pages\":" + int_to_str(pages)
+  body = head + ",\"from\":" + int_to_str(skip + 1) + ",\"docs\":" + to_string(JArr(list))
+  body + ",\"db_us\":" + int_to_str(asked / 1000) + ",\"wrote_us\":" + int_to_str((now_nanos() - t0) / 1000) + "}"
+
+# How many match, which page of them was asked for, and where it begins.
+fn shape_of(fd, qs) =
   q = JObj(match_fields(qs))
   size = page_size(qs)
   total = matched(fd, q)
   pages = if total <= 0 then 1 else (total + size - 1) / size
   page = clamped(page_of(qs), 1, pages)
-  skip = (page - 1) * size
-  sort = JObj(Cons(field(sort_by(qs), int(sort_dir(qs))), Nil))
-  answer_page(qs, find_page(fd, collection(), q, sort, size, skip), total, page, pages, size, skip)
+  (q, size, total, pages, page, (page - 1) * size)
 
-fn answer_page(qs, result, total, page, pages, size, skip) = match result
-  Err(e) -> h.html_response(500, page_of_html(qs, Nil, 0, 1, 1, size, 0, e))
-  Ok(d) -> h.html_response(200, page_of_html(qs, docs(d), total, page, pages, size, skip, ""))
+fn sorted_by(qs) = JObj(Cons(field(sort_by(qs), int(sort_dir(qs))), Nil))
+
+fn answer_page(qs, result, total, page, pages, size, skip, asked) = match result
+  Err(e) -> h.html_response(500, page_of_html(qs, Nil, 0, 1, 1, size, 0, e, asked))
+  Ok(d) -> h.html_response(200, page_of_html(qs, docs(d), total, page, pages, size, skip, "", asked))
 
 fn matched(fd, q) = match count_where(fd, collection(), q)
   Err(_) -> 0
@@ -322,17 +487,22 @@ fn clamped(n, lo, hi) = if n < lo then lo else if n > hi then hi else n
 # is given: the form as it should come back, one row per document, and the
 # pager worked out — no markup, and no page to look at to see what a query
 # does.
-fn page_of_html(qs, list, total, page, pages, size, skip, trouble) =
+fn page_of_html(qs, list, total, page, pages, size, skip, trouble, asked) =
   b = strbuf()
-  catalogue_page(b, view_of(qs, list, total, page, pages, skip, trouble))
+  catalogue_page(b, view_of(qs, list, total, page, pages, skip, trouble, asked))
   strbuf_str(b)
 
-fn view_of(qs, list, total, page, pages, skip, trouble) =
+fn view_of(qs, list, total, page, pages, skip, trouble, asked) =
   dir = if sort_dir(qs) < 0 then "desc" else "asc"
   bys = choices(Cons("sku", Cons("score", Cons("stock", Cons("name", Nil)))), sort_by(qs))
   dirs = choices(Cons("asc", Cons("desc", Nil)), dir)
   seen = len(list)
-  View(param(qs, "role"), param(qs, "region"), param(qs, "sku"), int_to_str(page_size(qs)), bys, dirs, trouble, total, page, pages, skip + 1, skip + seen, rows_of(list), steps_of(qs, page, pages))
+  seed = in_script(rows_body(list, total, page, pages, skip, asked))
+  View(param(qs, "role"), param(qs, "region"), param(qs, "sku"), int_to_str(page_size(qs)), bys, dirs, trouble, total, page, pages, skip + 1, skip + seen, rows_of(list), steps_of(qs, page, pages), seed)
+
+# JSON is put in the page as it stands, so the one byte that could end the
+# script tag early is written as an escape. Nothing else in JSON can.
+fn in_script(json) = join(split(json, "<"), chr(92) + "u003c")
 
 fn rows_of(list) = match list
   Nil -> Nil

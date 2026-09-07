@@ -7,7 +7,7 @@
 # it is a field or a list, never a call into the server — and it is what lets
 # `catalogue.rill` be tested without rendering anything.
 type View
-  View(role: Str, region: Str, sku: Str, limit: Str, bys: List(Choice), dirs: List(Choice), trouble: Str, total: Int, page: Int, pages: Int, from: Int, upto: Int, rows: List(Row), steps: List(Step))
+  View(role: Str, region: Str, sku: Str, limit: Str, bys: List(Choice), dirs: List(Choice), trouble: Str, total: Int, page: Int, pages: Int, from: Int, upto: Int, rows: List(Row), steps: List(Step), seed: Str)
 
 # One `<option>`, and whether it is the one chosen.
 type Choice
@@ -16,6 +16,10 @@ type Choice
 # One line of the table.
 type Row
   Row(sku: Int, name: Str, role: Str, region: Str, score: Float, stock: Int)
+
+# `seed` is what `/rows` would answer with for this very page, put into the
+# page itself: the client that takes it over starts from what is already on
+# the screen rather than asking for it again, so there is nothing to flash.
 
 # One link in the pager. A step that is not live is a word rather than a link.
 type Step

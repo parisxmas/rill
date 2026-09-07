@@ -1,0 +1,56 @@
+# Layers around a handler, and what one of them can do on its own.
+#
+# A handler answers a request; a middleware is a layer around one. It is given
+# the request and the handler underneath it, and decides what to do with both:
+# it may look at the request, answer without passing it on, change what it
+# passes, or look at the answer on the way back out.
+#
+#     fn timed(req, next) =
+#       t0 = now_nanos()
+#       res = next(req)
+#       println(req.path + " " + int_to_str((now_nanos() - t0) / 1000) + " us")
+#       res
+#
+# `wrap` stacks them, outermost first, and hands back a handler like any
+# other. Here that is an announcer over the library's own rate limiter, which
+# lets two writes a second through and answers 429 to the rest — so the third
+# POST is answered by the middleware and the handler under it is never called,
+# which is what the announcer's line shows.
+
+import "http" as h
+
+fn main() = match listen_on(0)
+  Err(e) ->
+    println(e)
+    0
+  Ok(server) -> run(server, sock_port(server))
+
+fn run(server, port) =
+  layers = Cons(\req, next -> announce(req, next), Cons(h.rate_limit(2), Nil))
+  spawn h.accept_n(server, h.wrap(layers, \req -> answer(req)), 5)
+  println(post(port, "/write", "one"))
+  println(post(port, "/write", "two"))
+  println(post(port, "/write", "three"))
+  println(get(port, "/read"))
+  0
+
+fn announce(req: h.Request, next) =
+  res = next(req)
+  println("saw " + req.method + " " + req.path + " -> " + int_to_str(status_of_res(res)))
+  res
+
+fn status_of_res(res: h.Response) = res.status
+
+fn answer(req: h.Request) = h.text_response(200, "wrote " + req.body)
+
+fn post(port, path, body) = match connect_to("127.0.0.1", port)
+  Err(e) -> e
+  Ok(fd) ->
+    sock_write(fd, "POST " + path + " HTTP/1.1\r\nHost: x\r\nContent-Length: " + int_to_str(#body) + "\r\nConnection: close\r\n\r\n" + body)
+    raw = h.read_response(fd, "")
+    sock_close(fd)
+    int_to_str(h.status_of(raw)) + " " + h.response_body(raw)
+
+fn get(port, path) = match h.get_all("127.0.0.1", port, Cons(path, Nil))
+  Nil -> "nothing"
+  Cons(raw, _) -> int_to_str(h.status_of(raw)) + " " + h.response_body(raw)

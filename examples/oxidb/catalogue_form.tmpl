@@ -1,6 +1,6 @@
 %% import "catview"
 %= catalogue_form(v: View)
-    <form method="get" action="/">
+    <form method="get" action="/" id="filters">
       <label>role<input name="role" value="<%= v.role %>" placeholder="eng, ops, sre, design"></label>
       <label>region<input name="region" value="<%= v.region %>" placeholder="eu, us, apac"></label>
       <label>sku<input name="sku" value="<%= v.sku %>" placeholder="a number"></label>

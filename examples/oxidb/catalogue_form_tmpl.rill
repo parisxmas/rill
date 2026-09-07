@@ -3,7 +3,7 @@ import "tmpl"
 import "catview"
 
 fn catalogue_form(b: StrBuf, v: View) =
-  b += "    <form method=\"get\" action=\"/\">\n      <label>role<input name=\"role\" value=\""
+  b += "    <form method=\"get\" action=\"/\" id=\"filters\">\n      <label>role<input name=\"role\" value=\""
   render(b, v.role)
   b += "\" placeholder=\"eng, ops, sre, design\"></label>\n      <label>region<input name=\"region\" value=\""
   render(b, v.region)

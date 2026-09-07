@@ -45,6 +45,7 @@ fn status_text(code) = match code
   201 -> "Created"
   400 -> "Bad Request"
   404 -> "Not Found"
+  429 -> "Too Many Requests"
   500 -> "Internal Server Error"
   _ -> "Unknown"
 
@@ -103,6 +104,72 @@ fn accept_forever(server, handler) =
   conn = tcp_accept(server)
   spawn handle_conn(conn, handler)
   accept_forever(server, handler)
+
+# -- middleware ----------------------------------------------------------------
+#
+# A handler answers a request: `Request -> Response`. A middleware is one
+# layer around that — it is handed the request and the handler underneath it,
+# and decides what to do with both:
+#
+#     fn timed(req, next) =
+#       t0 = now_nanos()
+#       res = next(req)
+#       println(req.path + " " + int_to_str((now_nanos() - t0) / 1000) + " us")
+#       res
+#
+# It may answer without calling `next` at all, which is what a rate limiter
+# and an authenticator are for; it may change the request it passes down; and
+# it may look at the answer on the way back out.
+#
+# `wrap` stacks them. The first in the list is the outermost — it sees the
+# request first and the answer last:
+#
+#     answer = wrap(Cons(rate_limit(20), Cons(timed, Nil)), \req -> route(db, req))
+#     accept_forever(server, answer)
+#
+# There is nothing else to it: what comes out of `wrap` is a handler like any
+# other, so a middleware stack can be built once and handed to `serve`,
+# `serve_n` or `accept_forever` unchanged.
+fn wrap(layers, handler) = match layers
+  Nil -> handler
+  Cons(outer, rest) ->
+    inner = wrap(rest, handler)
+    \req -> outer(req, inner)
+
+# How many requests a second a route may have, and what the rest are told.
+# Anything that only reads is let through: it is the writes that reach a
+# database, and a page that is being read has no reason to be throttled.
+#
+# The count is per method and path rather than per client, because a client is
+# not something an HTTP request carries — a real deployment keys this by
+# whatever its proxy puts in front (`X-Forwarded-For`, a session, an API key)
+# and the shape below does not change.
+fn rate_limit(per_second) =
+  seen = map_new()
+  \req, next -> under_limit(seen, per_second, req, next)
+
+fn under_limit(seen, per_second, req: Request, next) =
+  if req.method == "GET" || req.method == "HEAD" then next(req)
+  else
+    key = req.method + " " + req.path
+    now = now_nanos() / 1000000000
+    count = hits_this_second(seen, key, now)
+    if count > per_second then too_many(per_second) else next(req)
+
+# One second's worth of counting: a key holds the second it is counting and
+# how many have arrived in it, and a new second starts the count again.
+fn hits_this_second(seen, key, now) = match map_get(seen, key)
+  None ->
+    map_set(seen, key, (now, 1))
+    1
+  Some(had) -> match had
+    (second, n) ->
+      count = if second == now then n + 1 else 1
+      map_set(seen, key, (now, count))
+      count
+
+fn too_many(per_second) =
+  Response(429, "application/json", "{\"error\":\"too many writes — the limit is " + int_to_str(per_second) + " a second\"}")
 
 # -- a client, enough to talk to ourselves ------------------------------------
 

@@ -47,6 +47,24 @@ carries the same content on every route, the server answers the same 5,600
 requests a second at a hundred users, and the HTML is laid out to read rather
 than run together, which costs about a fifth more bytes on the wire.
 
+It is also where the template engine meets a client one. The page arrives
+whole and works with JavaScript off; `static/catalogue.js` then takes it over
+with [zap](https://github.com/barisakin/zap) — signals, no virtual DOM — and
+its components: `Select` and `Button` in the toolbar, `DataGrid` for the
+table, which sorts, filters and pages a window of rows with nothing leaving
+the browser, and shows what the rows cost to produce — the database's time
+and the writing's — beside its row count. The table is editable: a cell opens
+the editor its column's type asks for, and what comes out is posted back to
+the document it came from, one field at a time. The rules are written on both
+sides deliberately — the grid stops you where the column says, and the server
+checks the same limits again before it writes, because a request need not have
+come from the page — and a write that lands says how long the database took,
+in a notice that shows for three seconds. Markup the first paint needs stays in the templates, state moves
+to signals, and the JSON the server already had for that page is in the page,
+so there is nothing to fetch before the first paint and nothing to swap in
+after it. Narrowing a filter is a question for the database, which has an
+index behind every field the toolbar offers; sorting a column is not.
+
 Almost none of that is the generator. A page is a run of appends, and the
 appends are what changed:
 

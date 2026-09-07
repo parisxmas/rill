@@ -25,11 +25,24 @@
       .note{color:#888;margin-top:2rem}
       .bad{color:#a00}
       code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}
+      /* With a script coming to take the results over, they are not painted
+         twice: the server's table is held back until the grid is in, and let
+         through anyway if the script never arrives. Without a script none of
+         this applies and the table is simply there. */
+      html[data-js] #results, html[data-js] #filters{visibility:hidden}
+      html[data-js] #results.live, html[data-js] #filters.live{visibility:visible}
     </style>
+    <script>
+      // Before the first paint, so there is nothing to undo.
+      document.documentElement.dataset.js = "1";
+      setTimeout(function () { document.documentElement.removeAttribute("data-js"); }, 1500);
+    </script>
+    <link rel="stylesheet" href="/static/theme.css">
   </head>
-  <body>
+  <body class="zap">
     <h1>catalogue</h1>
 <% include catalogue_form(v) -%>
+    <div id="results">
     <% if #v.trouble > 0 %>
     <p class="bad"><%= v.trouble %></p>
     <% elif v.total == 0 %>
@@ -41,6 +54,9 @@
 <% include catalogue_table(v.rows) -%>
     <% end %>
 <% include catalogue_nav(v.steps) -%>
+    </div>
     <p class="note">The same server answers <code>/count</code>, <code>/doc/&lt;sku&gt;</code>, <code>/find</code> and <code>/top</code> as JSON.</p>
+    <script type="application/json" id="seed"><%! v.seed %></script>
+    <script type="module" src="/static/catalogue.js"></script>
   </body>
 </html>
