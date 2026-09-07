@@ -1265,6 +1265,15 @@ fn oxidb_resp_protocol() {
     );
 }
 
+/// A hundred thousand documents in OxiDB behind an HTTP server. It needs a
+/// running `oxidb-server`, which a test cannot assume, so this checks that it
+/// builds — the two libraries it joins are exercised against stand-ins by the
+/// tests above and against a real server by hand.
+#[test]
+fn catalogue_example_builds() {
+    compile_only("oxidb/catalogue.rill");
+}
+
 /// An HTTP server written in Rill, answering its own requests. Six requests
 /// arrive over five connections: the fourth and fifth share one, which is the
 /// keep-alive path.

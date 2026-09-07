@@ -6,14 +6,14 @@ fn route(req) = match req
   Request(method, path, body) -> respond(method, path, body)
 
 fn respond(method, path, body) =
-  if path == "/" then Response(200, "hello from rill") else if path == "/echo" then Response(200, method + " " + path) else if starts_with(path, "/add/") then add_route(path) else Response(404, "no route for " + path)
+  if path == "/" then text_response(200, "hello from rill") else if path == "/echo" then text_response(200, method + " " + path) else if starts_with(path, "/add/") then add_route(path) else text_response(404, "no route for " + path)
 
 # /add/2/3 -> 5
 fn add_route(path) =
   parts = split(path, "/")
   a = str_to_int(unwrap_or(nth(parts, 2), "0"))
   b = str_to_int(unwrap_or(nth(parts, 3), "0"))
-  Response(200, int_to_str(a + b))
+  text_response(200, int_to_str(a + b))
 
 fn report(raw) = println(int_to_str(status_of(raw)) + " " + response_body(raw))
 

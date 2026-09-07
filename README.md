@@ -152,6 +152,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `http/` | a server answering its own requests, and a WebSocket one |
 | `json/`, `yaml/` | reading and writing both, from `lib/` |
 | `oxidb/` | the five OxiDB clients driven, four of them against stand-in servers on strands answering the shapes a real engine answers with |
+| `oxidb/catalogue.rill` | a hundred thousand documents seeded into OxiDB and served over HTTP: a browsable page with filters and a pager at `/`, and JSON at `/count`, `/doc/42`, `/find?role=eng&limit=3`, `/top?by=score&limit=5`. Two libraries meet and neither knows about the other |
 | `maps.rill` | hash tables: data types as keys, `Option` out of every read |
 | `results.rill` | `?`: a chain of things that can fail, and the first failure out of it |
 | `records.rill` | field names read with a dot, and the building that changing one is |

@@ -5,8 +5,17 @@
 type Request
   Request(method: Str, path: Str, body: Str)
 
+# A reply carries what it is as well as what it says: a browser shown
+# `text/plain` renders the tags rather than the page, so a server that can
+# only say one type can only serve one kind of thing.
 type Response
-  Response(status: Int, body: Str)
+  Response(status: Int, content_type: Str, body: Str)
+
+fn text_response(status, body) = Response(status, "text/plain", body)
+
+fn html_response(status, body) = Response(status, "text/html; charset=utf-8", body)
+
+fn json_response(status, body) = Response(status, "application/json", body)
 
 # -- reading ------------------------------------------------------------------
 
@@ -40,10 +49,10 @@ fn status_text(code) = match code
   _ -> "Unknown"
 
 fn render(res, keep) = match res
-  Response(status, body) -> render_parts(status, body, keep)
+  Response(status, kind, body) -> render_parts(status, kind, body, keep)
 
-fn render_parts(status, body, keep) =
-  "HTTP/1.1 " + int_to_str(status) + " " + status_text(status) + "\r\n" + "Content-Type: text/plain\r\n" + "Content-Length: " + int_to_str(str_len(body)) + "\r\n" + "Connection: " + (if keep then "keep-alive" else "close") + "\r\n\r\n" + body
+fn render_parts(status, kind, body, keep) =
+  "HTTP/1.1 " + int_to_str(status) + " " + status_text(status) + "\r\n" + "Content-Type: " + kind + "\r\n" + "Content-Length: " + int_to_str(str_len(body)) + "\r\n" + "Connection: " + (if keep then "keep-alive" else "close") + "\r\n\r\n" + body
 
 # -- serving ------------------------------------------------------------------
 

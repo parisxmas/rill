@@ -52,8 +52,35 @@ fn on(collection, fields) = Cons(Field("collection", JStr(collection)), fields)
 
 fn ping(fd) = call(fd, command("ping", Nil))
 
+# The handshake, and the one command whose reply is not on the wire the
+# request was written in: the server answers `hello` before it has looked at
+# the format, so what comes back is JSON whatever went out, and it is the
+# server's own shape rather than the usual envelope — `{"ok":true,
+# "server":{...}}`. So this reads either, and hands back what the reply says
+# about the server.
 fn hello(fd) =
-  call(fd, command("hello", Cons(Field("wire_versions", JArr(Cons(JInt(1), Nil))), Nil)))
+  ow_send(fd, command("hello", Cons(Field("wire_versions", JArr(Cons(JInt(1), Nil))), Nil)))
+  hello_reply(ow_recv(fd))
+
+fn hello_reply(frame) =
+  if str_len(frame) == 0 then Err("oxidb: the server said nothing") else if str_get(frame, 0) == 219 then ow_reply(frame) else hello_json(frame)
+
+fn hello_json(frame) = match parse(frame)
+  Err(why) -> Err("oxidb: the reply is neither OxiWire nor JSON: " + why)
+  Ok(v) -> hello_server(v)
+
+fn hello_server(v) = match get(v, "server")
+  Some(info) -> Ok(info)
+  None -> Err("oxidb: the handshake answered without a `server`")
+
+# What the handshake says, for a client that wants to know before it asks.
+fn server_name(info) = as_str(unwrap_or(get(info, "name"), JNull))
+
+fn server_version(info) = as_str(unwrap_or(get(info, "version"), JNull))
+
+fn wire_version(info) = as_int(unwrap_or(get(info, "wire_version"), JNull))
+
+fn server_features(info) = map(items(unwrap_or(get(info, "features"), JArr(Nil))), \f -> as_str(f))
 
 fn list_collections(fd) = call(fd, command("list_collections", Nil))
 
@@ -73,6 +100,16 @@ fn find_sorted(fd, collection, query, sort, limit) =
 fn limit_field(limit) = if limit <= 0 then Nil else Cons(Field("limit", JInt(limit)), Nil)
 
 fn count(fd, collection) = call(fd, command("count", on(collection, Nil)))
+
+# How many match, which is what a pager needs before it can say "of 4200".
+fn count_where(fd, collection, query) =
+  call(fd, command("count", on(collection, Cons(Field("query", query), Nil))))
+
+# One page of a query: `limit` documents, the first `skip` of them passed
+# over. The sort has to be given, because a page is only a page if the order
+# is the same each time.
+fn find_page(fd, collection, query, sort, limit, skip) =
+  call(fd, command("find", on(collection, Cons(Field("query", query), Cons(Field("sort", sort), Cons(Field("skip", JInt(skip)), limit_field(limit)))))))
 
 fn update(fd, collection, query, changes) =
   call(fd, command("update", on(collection, Cons(Field("query", query), Cons(Field("update", changes), Nil)))))

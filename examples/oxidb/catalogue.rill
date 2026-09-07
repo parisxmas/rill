@@ -1,0 +1,393 @@
+# A hundred thousand documents in OxiDB, and an HTTP server in front of them.
+#
+# Two libraries meet here and neither knows about the other: `oxidb.rill`
+# speaks the database's binary wire, `http.rill` speaks HTTP/1.1, and what is
+# written below is only the joining — a URL turned into a query, an answer
+# turned into JSON.
+#
+#     oxidb-server &                      # the document engine is on by default
+#     ./catalogue 4444                    # seeds, then serves on a port it prints
+#     ./catalogue 4444 8123               # or on the port you name
+#
+# `/` is a page a browser can use: a form for the filters, a table, and a
+# pager. Everything else answers JSON, so the same server serves both.
+#
+#     open http://127.0.0.1:8123/
+#     curl 127.0.0.1:8123/count
+#     curl '127.0.0.1:8123/find?role=eng&limit=3'
+#     curl '127.0.0.1:8123/top?by=score&limit=5'
+#     curl 127.0.0.1:8123/doc/42
+#
+# Seeding is a thousand documents a frame: one round trip per batch rather
+# than per document. A hundred thousand of them go in in 624 ms and the four
+# indexes take 466 more, after which every route below answers in about a
+# third of a millisecond. Without the indexes the same routes take 15 ms to
+# find one document and 471 to sort by a field, because each is then a read
+# of all hundred thousand — which is the whole argument for an index, in two
+# numbers.
+#
+# The pager asks for a page by counting past the ones before it, which is
+# what `skip` is and what every offset pager pays: page 1 answers in 0.4 ms,
+# page 100 in 0.5, page 1000 in 1.4, and page 3900 — ninety-seven thousand
+# documents counted past — in 95. A pager that stayed fast at the end would
+# carry the last key it saw rather than a number, and ask for what comes
+# after it; this one is the shape a URL wants to be.
+#
+# The connections to the database are sixteen, handed round on a channel: a
+# request takes one, uses it, and puts it back, and a request that finds none
+# waits — which is the backpressure a server wants anyway. Opening one per
+# request is what this did first, and it survived a browser and died under
+# load: at four thousand requests a second, each leaving a closed socket in
+# TIME_WAIT for a minute, sixteen thousand of them piled up, the machine ran
+# out of ports, and nine requests in ten came back 502. Sixteen is where the
+# measurements settled — four gives 3,300 requests a second, eight 4,900,
+# sixteen 5,600, and thirty-two no more of them but a fourfold worse tail.
+#
+# The HTTP side is `http.rill`'s: one strand per connection, keep-alive, and
+# a connection parked on a slow client costs nothing. A hundred people
+# searching at once are a hundred strands on one worker: 5,600 searches a
+# second, half of them answered inside 18 ms, none failed. Five hundred at
+# once is the same 5,400 a second with the queue in the latency — 92 ms —
+# which is what saturation looks like when nothing is breaking. More workers
+# do not help: at this size the work is a round trip to the database and back,
+# not arithmetic.
+import "oxidb"
+import "http" as h
+
+fn total() = 100000
+
+fn batch() = 1000
+
+fn collection() = "catalogue"
+
+fn main() = match args()
+  Cons(_, Cons(db, rest)) -> start(str_to_int(db), wanted_port(rest))
+  _ -> usage()
+
+fn usage() =
+  println("usage: catalogue <oxidb-port> [http-port]")
+  println("  needs an oxidb-server; the document engine is on by default.")
+
+fn wanted_port(rest) = match rest
+  Cons(p, _) -> str_to_int(p)
+  Nil -> 0
+
+# -- seeding ------------------------------------------------------------------
+
+fn start(db, want) = match dial("127.0.0.1", db)
+  Err(e) -> println("oxidb: " + e)
+  Ok(fd) -> seed_then_serve(fd, db, want)
+
+fn seed_then_serve(fd, db, want) =
+  println("clearing " + collection())
+  drop_all(fd)
+  println("seeding " + int_to_str(total()) + " documents")
+  t0 = now_nanos()
+  fill(fd, 0)
+  t1 = now_nanos()
+  println("seeded in " + int_to_str((t1 - t0) / 1000000) + " ms")
+  # An index apiece on what the routes below ask by and sort on. Without
+  # them every request reads a hundred thousand documents: `/top?by=score`
+  # took 471 ms and takes 3 with one.
+  t2 = now_nanos()
+  index_on(fd, "sku")
+  index_on(fd, "role")
+  index_on(fd, "region")
+  index_on(fd, "score")
+  println("indexed in " + int_to_str((now_nanos() - t2) / 1000000) + " ms")
+  shown("count", count(fd, collection()), \d -> int_to_str(counted(d)))
+  hang_up(fd)
+  serve_on(db, want)
+
+fn drop_all(fd) = match delete(fd, collection(), JObj(Nil))
+  Err(e) ->
+    println("delete: " + e)
+    0
+  Ok(_) -> 0
+
+fn index_on(fd, name) = match create_index(fd, collection(), name)
+  Err(e) ->
+    println("create_index " + name + ": " + e)
+    0
+  Ok(_) -> 0
+
+# A batch at a time until the whole run is in.
+fn fill(fd, from) =
+  if from >= total() then 0
+  else
+    n = if total() - from < batch() then total() - from else batch()
+    send_batch(fd, from, n)
+    fill(fd, from + n)
+
+fn send_batch(fd, from, n) = match insert_many(fd, collection(), batch_docs(from, n))
+  Err(e) ->
+    println("insert_many at " + int_to_str(from) + ": " + e)
+    0
+  Ok(_) -> 0
+
+fn batch_docs(from, n) =
+  for k in 0..n with acc = Nil
+    Cons(one_doc(from + n - 1 - k), acc)
+
+# Made from the number alone, so a query's answer is predictable: role and
+# region cycle, the score is a scramble of the id, and the name carries it.
+fn one_doc(i) =
+  JObj(Cons(field("sku", int(i)), Cons(field("name", text("item-" + int_to_str(i))), Cons(field("role", text(role_of(i))), Cons(field("region", text(region_of(i))), Cons(field("score", JNum(score_of(i))), Cons(field("stock", int(i % 97)), Nil)))))))
+
+fn role_of(i) = nth_or(Cons("eng", Cons("ops", Cons("sre", Cons("design", Nil)))), i % 4, "eng")
+
+fn region_of(i) = nth_or(Cons("eu", Cons("us", Cons("apac", Nil))), i % 3, "eu")
+
+fn score_of(i) = to_float(i * 7919 % 10007) / 100.0
+
+fn nth_or(l, i, fallback) = unwrap_or(nth(l, i), fallback)
+
+# -- serving ------------------------------------------------------------------
+
+fn serve_on(db, want) = match listen_on(want)
+  Err(e) -> println(e)
+  Ok(server) -> announce(server, db, sock_port(server))
+
+fn announce(server, db, port) =
+  println("http://127.0.0.1:" + int_to_str(port) + "/  — try /count, /find?role=eng&limit=3, /top?by=score&limit=5, /doc/42")
+  pool = build_pool(db, connections())
+  h.accept_forever(server, \req -> route(pool, req))
+
+# -- routing ------------------------------------------------------------------
+
+fn connections() = 16
+
+# The pool: a buffered channel holding open connections. It is built once,
+# before the first request, and the handler closes over it.
+fn build_pool(db, n) =
+  ch = channel(n)
+  fill_pool(ch, db, n)
+  ch
+
+fn fill_pool(ch, db, n) =
+  if n <= 0 then 0 else match dial("127.0.0.1", db)
+    Err(e) ->
+      println("pool: " + e)
+      0
+    Ok(fd) ->
+      send(ch, fd)
+      fill_pool(ch, db, n - 1)
+
+fn route(pool, req: h.Request) = dispatch(pool, path_of(req.path), query_of(req.path))
+
+fn dispatch(pool, path, qs) =
+  if path == "/" then with_db(pool, \fd -> browse(fd, qs)) else if path == "/count" then with_db(pool, \fd -> answer_count(fd)) else if path == "/find" then with_db(pool, \fd -> answer_find(fd, qs)) else if path == "/top" then with_db(pool, \fd -> answer_top(fd, qs)) else if starts_with(path, "/doc/") then with_db(pool, \fd -> answer_doc(fd, str_to_int(str_sub(path, 5, str_len(path))))) else h.json_response(404, "{\"error\":\"no route for " + path + "\"}")
+
+# One of the pool's connections for the length of the call, and back
+# afterwards whatever the answer was.
+fn with_db(pool, ask) =
+  fd = recv(pool)
+  res = ask(fd)
+  send(pool, fd)
+  res
+
+fn answer_count(fd) = match count(fd, collection())
+  Err(e) -> failed(e)
+  Ok(d) -> h.json_response(200, "{\"count\":" + int_to_str(counted(d)) + "}")
+
+fn answer_doc(fd, sku) = match find(fd, collection(), JObj(Cons(field("sku", int(sku)), Nil)))
+  Err(e) -> failed(e)
+  Ok(d) -> one_or_none(docs(d))
+
+fn one_or_none(list) = match list
+  Nil -> h.json_response(404, "{\"error\":\"no such document\"}")
+  Cons(doc, _) -> h.json_response(200, to_string(doc))
+
+# `?role=eng&region=eu&limit=10` — every parameter but `limit` is a field the
+# document must match.
+fn answer_find(fd, qs) = match find_sorted(fd, collection(), JObj(match_fields(qs)), JObj(Cons(field("sku", int(1)), Nil)), limit_of(qs))
+  Err(e) -> failed(e)
+  Ok(d) -> h.json_response(200, to_string(JArr(docs(d))))
+
+# `?by=score&limit=5` — the highest by that field.
+fn answer_top(fd, qs) = match find_sorted(fd, collection(), JObj(Nil), JObj(Cons(field(by_of(qs), int(0 - 1)), Nil)), limit_of(qs))
+  Err(e) -> failed(e)
+  Ok(d) -> h.json_response(200, to_string(JArr(docs(d))))
+
+fn failed(why) = h.json_response(500, "{\"error\":\"" + why + "\"}")
+
+fn limit_of(qs) = at_most(int_or(param(qs, "limit"), 10), 1000)
+
+fn at_most(n, cap) = if n > cap then cap else if n < 1 then 1 else n
+
+fn by_of(qs) = if str_len(param(qs, "by")) == 0 then "score" else param(qs, "by")
+
+fn int_or(s, fallback) = if str_len(s) == 0 then fallback else str_to_int(s)
+
+# Every parameter that is not `limit` or `by` becomes a field to match on. A
+# value that reads as a number is matched as one, so `?sku=42` finds the
+# document rather than nothing.
+fn match_fields(qs) =
+  for i in 0..len(pairs_of(qs)) with acc = Nil
+    p = unwrap_or(nth(pairs_of(qs), len(pairs_of(qs)) - 1 - i), "")
+    k = before_eq(p)
+    if is_control(k) || str_len(after_eq(p)) == 0 then acc else Cons(field(k, valued(after_eq(p))), acc)
+
+# The parameters that steer the page rather than filter the documents.
+fn is_control(k) = str_len(k) == 0 || k == "limit" || k == "by" || k == "dir" || k == "page"
+
+fn valued(v) = if looks_numeric(v) then int(str_to_int(v)) else text(v)
+
+fn looks_numeric(v) =
+  if str_len(v) == 0 then false
+  else
+    for i in 0..str_len(v) with ok = true
+      ok && str_get(v, i) >= 48 && str_get(v, i) <= 57
+
+# -- the target, taken apart ---------------------------------------------------
+
+fn path_of(target) =
+  i = str_find(target, "?")
+  if i < 0 then target else str_sub(target, 0, i)
+
+fn query_of(target) =
+  i = str_find(target, "?")
+  if i < 0 then "" else str_sub(target, i + 1, str_len(target))
+
+fn pairs_of(qs) = if str_len(qs) == 0 then Nil else split(qs, "&")
+
+fn param(qs, key) =
+  for i in 0..len(pairs_of(qs)) with found = ""
+    p = unwrap_or(nth(pairs_of(qs), i), "")
+    if before_eq(p) == key then after_eq(p) else found
+
+fn before_eq(p) =
+  i = str_find(p, "=")
+  if i < 0 then p else str_sub(p, 0, i)
+
+fn after_eq(p) =
+  i = str_find(p, "=")
+  if i < 0 then "" else str_sub(p, i + 1, str_len(p))
+
+fn shown(label, result, render) = match result
+  Err(e) -> println(label + ": error: " + e)
+  Ok(data) -> println(label + ": " + render(data))
+
+# -- the page ------------------------------------------------------------------
+
+# `/` renders what `/find` answers, with a form in front of it and a pager
+# under it. Nothing here is JavaScript: a link carries the page number and
+# the server answers with the page.
+fn browse(fd, qs) =
+  q = JObj(match_fields(qs))
+  size = page_size(qs)
+  total = matched(fd, q)
+  pages = if total <= 0 then 1 else (total + size - 1) / size
+  page = clamped(page_of(qs), 1, pages)
+  skip = (page - 1) * size
+  sort = JObj(Cons(field(sort_by(qs), int(sort_dir(qs))), Nil))
+  answer_page(qs, find_page(fd, collection(), q, sort, size, skip), total, page, pages, size, skip)
+
+fn answer_page(qs, result, total, page, pages, size, skip) = match result
+  Err(e) -> h.html_response(500, page_of_html(qs, Nil, 0, 1, 1, size, 0, e))
+  Ok(d) -> h.html_response(200, page_of_html(qs, docs(d), total, page, pages, size, skip, ""))
+
+fn matched(fd, q) = match count_where(fd, collection(), q)
+  Err(_) -> 0
+  Ok(d) -> counted(d)
+
+fn page_size(qs) = at_most(int_or(param(qs, "limit"), 25), 200)
+
+fn page_of(qs) = int_or(param(qs, "page"), 1)
+
+fn sort_by(qs) = if str_len(param(qs, "by")) == 0 then "sku" else param(qs, "by")
+
+fn sort_dir(qs) = if param(qs, "dir") == "desc" then 0 - 1 else 1
+
+fn clamped(n, lo, hi) = if n < lo then lo else if n > hi then hi else n
+
+fn page_of_html(qs, list, total, page, pages, size, skip, trouble) =
+  b = strbuf()
+  b += "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+  b += "<title>catalogue</title>" + style()
+  b += "</head><body><h1>catalogue</h1>"
+  b += form_html(qs)
+  b += if str_len(trouble) > 0 then "<p class=\"bad\">" + esc(trouble) + "</p>" else summary_html(total, page, pages, size, skip, len(list))
+  b += table_html(list)
+  b += pager_html(qs, page, pages)
+  b += "<p class=\"note\">The same server answers <code>/count</code>, <code>/doc/&lt;sku&gt;</code>, <code>/find</code> and <code>/top</code> as JSON.</p>"
+  b += "</body></html>"
+  strbuf_str(b)
+
+fn style() =
+  "<style>body{font:14px system-ui,sans-serif;margin:2rem;color:#222}h1{font-size:1.3rem}" + "table{border-collapse:collapse;margin:1rem 0;width:100%}th,td{padding:.35rem .6rem;text-align:left;border-bottom:1px solid #e5e5e5}" + "th{background:#fafafa;font-weight:600}tr:hover td{background:#f6f9ff}form{display:flex;gap:.6rem;flex-wrap:wrap;align-items:end}" + "label{display:flex;flex-direction:column;font-size:12px;color:#666}input,select{font:inherit;padding:.3rem .4rem;border:1px solid #ccc;border-radius:4px}" + "button{font:inherit;padding:.35rem .9rem;border:1px solid #345;background:#345;color:#fff;border-radius:4px;cursor:pointer}" + "nav{display:flex;gap:.4rem;align-items:center}nav a,nav span{padding:.3rem .6rem;border:1px solid #ddd;border-radius:4px;text-decoration:none;color:#345}" + "nav span{color:#bbb}.note{color:#888;margin-top:2rem}.bad{color:#a00}code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}</style>"
+
+fn form_html(qs) =
+  b = strbuf()
+  b += "<form method=\"get\" action=\"/\">"
+  b += input_html("role", param(qs, "role"), "eng, ops, sre, design")
+  b += input_html("region", param(qs, "region"), "eu, us, apac")
+  b += input_html("sku", param(qs, "sku"), "a number")
+  b += "<label>sort by<select name=\"by\">"
+  b += options_html(Cons("sku", Cons("score", Cons("stock", Cons("name", Nil)))), sort_by(qs))
+  b += "</select></label><label>order<select name=\"dir\">"
+  b += options_html(Cons("asc", Cons("desc", Nil)), if sort_dir(qs) < 0 then "desc" else "asc")
+  b += "</select></label>"
+  b += input_html("limit", int_to_str(page_size(qs)), "per page")
+  b += "<button type=\"submit\">search</button></form>"
+  strbuf_str(b)
+
+fn input_html(name, value, hint) =
+  "<label>" + name + "<input name=\"" + name + "\" value=\"" + esc(value) + "\" placeholder=\"" + hint + "\"></label>"
+
+fn options_html(names, chosen) = match names
+  Nil -> ""
+  Cons(n, rest) -> "<option" + (if n == chosen then " selected" else "") + ">" + n + "</option>" + options_html(rest, chosen)
+
+fn summary_html(total, page, pages, size, skip, shown) =
+  if total == 0 then "<p>nothing matches</p>" else "<p><b>" + int_to_str(total) + "</b> documents match — showing " + int_to_str(skip + 1) + "–" + int_to_str(skip + shown) + ", page " + int_to_str(page) + " of " + int_to_str(pages) + "</p>"
+
+fn table_html(list) =
+  if len(list) == 0 then ""
+  else
+    b = strbuf()
+    b += "<table><thead><tr><th>sku</th><th>name</th><th>role</th><th>region</th><th>score</th><th>stock</th></tr></thead><tbody>"
+    rows_onto(b, list)
+    b += "</tbody></table>"
+    strbuf_str(b)
+
+fn rows_onto(b: StrBuf, list) = match list
+  Nil -> 0
+  Cons(doc, rest) ->
+    b += "<tr><td>" + int_to_str(field_int(doc, "sku")) + "</td><td>" + esc(field_str(doc, "name")) + "</td><td>" + esc(field_str(doc, "role")) + "</td><td>" + esc(field_str(doc, "region")) + "</td><td>" + float_to_str(field_float(doc, "score")) + "</td><td>" + int_to_str(field_int(doc, "stock")) + "</td></tr>"
+    rows_onto(b, rest)
+
+fn field_float(doc, key) = as_float(unwrap_or(get(doc, key), JNull))
+
+fn pager_html(qs, page, pages) =
+  b = strbuf()
+  b += "<nav>"
+  b += step_html(qs, 1, page > 1, "first")
+  b += step_html(qs, page - 1, page > 1, "prev")
+  b += "<span>" + int_to_str(page) + " / " + int_to_str(pages) + "</span>"
+  b += step_html(qs, page + 1, page < pages, "next")
+  b += step_html(qs, pages, page < pages, "last")
+  b += "</nav>"
+  strbuf_str(b)
+
+fn step_html(qs, to, live, label) =
+  if live then "<a href=\"/?" + esc(with_page(qs, to)) + "\">" + label + "</a>" else "<span>" + label + "</span>"
+
+# The query string as it stands, with `page` set to this one.
+fn with_page(qs, n) = join(reverse(Cons("page=" + int_to_str(n), kept_pairs(qs))), "&")
+
+fn kept_pairs(qs) =
+  for i in 0..len(pairs_of(qs)) with acc = Nil
+    p = unwrap_or(nth(pairs_of(qs), i), "")
+    if before_eq(p) == "page" || str_len(after_eq(p)) == 0 then acc else Cons(p, acc)
+
+# `&`, `<`, `>` and the quotes, so that what a document says cannot be read
+# as markup.
+fn esc(s) =
+  b = strbuf()
+  for i in 0..str_len(s)
+    b += esc_byte(str_get(s, i))
+  strbuf_str(b)
+
+fn esc_byte(c) =
+  if c == 38 then "&amp;" else if c == 60 then "&lt;" else if c == 62 then "&gt;" else if c == 34 then "&quot;" else if c == 39 then "&#39;" else chr(c)

@@ -128,6 +128,43 @@ The language and compiler, on the way there:
   lock** on every turn of its idle loop; it asks the queued count first. Six
   idle workers were spending a busy worker's cache line on a question whose
   answer was no.
+`examples/oxidb/catalogue.rill` puts the two together: a hundred thousand
+documents seeded into OxiDB's document engine and served over HTTP. `/` is a
+page a browser can use — a form for the filters, a table, and a pager that
+carries them from page to page — and the same server answers `/count`,
+`/doc/42`, `/find?role=eng&limit=3` and `/top?by=score&limit=5` as JSON. A
+thousand documents to a frame puts them in in 624 ms; four indexes take 466
+more; then a page renders in about half a millisecond, where without the
+indexes finding one document takes 15 ms and sorting by a field 471. Paging
+by offset is what a URL wants and what it costs: page 1 in 0.4 ms, page
+1000 in 1.4, page 3900 in 95. Neither library knows about the other — what
+is written is the joining.
+
+Under a hundred concurrent searchers the first version of it fell over, and
+the reason is worth the example: it opened a connection to the database per
+request, and at four thousand requests a second the closed ones piled up in
+TIME_WAIT until the machine had no ports left — nine replies in ten were
+502. The connections are now sixteen, handed round on a channel, and a
+request that finds none waits. A hundred strands on one worker then answer
+5,600 searches a second with half of them inside 18 ms and none failed; five
+hundred at once is the same throughput with the queue in the latency.
+`examples/oxidb/search.lua` is the mix `wrk` was given.
+
+`http.rill` learned what a reply is as well as what it says: `Response`
+carries a content type, and `text_response`, `html_response` and
+`json_response` name the three a small server needs. A browser shown
+`text/plain` renders the tags instead of the page. `oxidb.rill` gained
+`count_where` and `find_page` — how many match, and one page of them — both
+of which the server had all along.
+
+- **`hello` reads the reply the server actually sends.** The handshake is
+  the one command answered before the server has looked at what format the
+  request was written in, so it comes back as JSON whether or not the rest
+  of the connection is binary, and in the server's own shape rather than the
+  usual envelope. The client read it as OxiWire and refused it. It now reads
+  either, and `server_name`, `server_version`, `wire_version` and
+  `server_features` say what came back. Found by running all five clients
+  against a real `oxidb-server` rather than the stand-ins.
 - **`sock_port(fd)`**: the port this end of a socket is on. `listen_on(0)`
   asks the kernel for a free one, and until now nothing could ask which it
   gave — so a program that wanted a port had to name one, which is a promise
