@@ -2313,3 +2313,129 @@ fn python_package_passes_its_tests() {
         String::from_utf8_lossy(&test.stderr)
     );
 }
+
+/// The template generator: a template goes in, Rill comes out, and what that
+/// Rill prints is the page. The two benchmark templates are the ones checked,
+/// because their pages are kept next to them byte for byte — they are what a
+/// well-known Rust suite renders, and the whole point of the generator is that
+/// the page is the same one.
+#[test]
+fn templates_render_the_page_they_are_given() {
+    require_fresh_runtime();
+    let root = workspace_root();
+    let here = root.join("benchmarks/template");
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-tmpl-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = root.join("lib").display().to_string() + ":" + &here.display().to_string();
+
+    let build = |src: std::path::PathBuf, exe: &std::path::Path| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rill"))
+            .arg("build")
+            .arg(&src)
+            .arg("-o")
+            .arg(exe)
+            .env("RILL_PATH", &path)
+            .output()
+            .expect("failed to spawn rill");
+        assert!(
+            out.status.success(),
+            "rill build {} failed:\n{}",
+            src.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    // The generator, run over every template in the repository, writing the
+    // Rill that is checked in beside it.
+    let gen = out_dir.join("tmplgen");
+    build(root.join("tools/tmplgen.rill"), &gen);
+    for (tmpl, rill) in [
+        ("benchmarks/template/big-table.tmpl", "benchmarks/template/big_table.rill"),
+        ("benchmarks/template/teams.tmpl", "benchmarks/template/teams_tmpl.rill"),
+        ("examples/oxidb/catalogue.tmpl", "examples/oxidb/catalogue_page.rill"),
+        ("examples/oxidb/catalogue_form.tmpl", "examples/oxidb/catalogue_form_tmpl.rill"),
+        ("examples/oxidb/catalogue_table.tmpl", "examples/oxidb/catalogue_table_tmpl.rill"),
+        ("examples/oxidb/catalogue_nav.tmpl", "examples/oxidb/catalogue_nav_tmpl.rill"),
+        ("examples/template/banner.tmpl", "examples/template/banner_tmpl.rill"),
+        ("examples/template/row.tmpl", "examples/template/row_tmpl.rill"),
+        ("examples/template/page.tmpl", "examples/template/page_tmpl.rill"),
+    ] {
+        let made = out_dir.join(Path::new(rill).file_name().unwrap());
+        // From the root with a relative path, because the generator writes
+        // the name it is given into the first line of what it makes.
+        let out = Command::new(&gen)
+            .arg(tmpl)
+            .arg(&made)
+            .current_dir(&root)
+            .output()
+            .expect("tmplgen");
+        assert!(out.status.success(), "tmplgen {tmpl} failed");
+        assert_eq!(
+            std::fs::read_to_string(&made).unwrap(),
+            std::fs::read_to_string(root.join(rill)).unwrap(),
+            "the Rill generated from {tmpl} is not what is checked in"
+        );
+    }
+
+    // And the pages themselves.
+    let bench = out_dir.join("tmplbench");
+    build(here.join("bench.rill"), &bench);
+    for case in ["big-table", "teams"] {
+        let run = Command::new(&bench).arg(case).output().expect("failed to run the benchmark");
+        assert!(run.status.success(), "{case} exited with {:?}", run.status.code());
+        assert_eq!(
+            String::from_utf8(run.stdout).expect("the page was not UTF-8"),
+            std::fs::read_to_string(here.join(format!("{case}.expected"))).unwrap(),
+            "the {case} page is not the one expected"
+        );
+    }
+}
+
+/// A page built out of four templates: `page.tmpl` includes `banner.tmpl`
+/// twice with different words and `row.tmpl` once per item, handing each one
+/// the item and where it sits in the list. An include is a call, so what one
+/// template passes another is whatever it has in scope.
+#[test]
+fn a_page_made_of_several_templates() {
+    assert_eq!(
+        compile_and_run("template/shop.rill"),
+        r#"<!doctype html>
+<html lang="en">
+  <body>
+<header>
+  <h1>Ada &amp; co</h1>
+  <p>everything we have, today</p>
+</header>
+    <table>
+      <tr><th>#</th><th>what</th><th>price</th><th>note</th><th>stock</th></tr>
+<tr>
+  <td>1</td>
+  <td>tea &amp; jam</td>
+  <td>40</td>
+  <td><b>two</b> jars</td>
+  <td>12 in stock</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td>&lt;hat&gt;</td>
+  <td>1250</td>
+  <td>—</td>
+  <td>none left</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>rope</td>
+  <td>99</td>
+  <td>by the metre</td>
+  <td>only 3</td>
+</tr>
+    </table>
+<header>
+  <h1>that is all</h1>
+  <p>Ada &amp; co</p>
+</header>
+  </body>
+</html>
+"#
+    );
+}

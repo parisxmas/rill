@@ -1,0 +1,10 @@
+# What the page is given. The templates beside it take these apart; nothing
+# in them knows where the values came from.
+type Shop
+  Shop(name: Str, line: Str, items: List(Item))
+
+type Item
+  Item(name: Str, price: Int, note: Str, left: Int)
+
+fn open_shop() =
+  Shop("Ada & co", "everything we have, today", Cons(Item("tea & jam", 40, "<b>two</b> jars", 12), Cons(Item("<hat>", 1250, "", 0), Cons(Item("rope", 99, "by the metre", 3), Nil))))

@@ -47,7 +47,8 @@ use inkwell::types::{
 };
 use inkwell::values::BasicValue;
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, IntValue, PointerValue,
+    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, InstructionValue,
+    IntValue, MetadataValue, PointerValue,
 };
 use inkwell::{FloatPredicate, IntPredicate, OptimizationLevel};
 
@@ -475,10 +476,15 @@ fn borrowed_params(tmod: &TModule) -> Vec<Vec<bool>> {
                         Ty::Adt(adt, _) => !constructs_adt(&f.body, *adt),
                         _ => false,
                     };
-                    candidate
-                        && !impls.contains(&fi)
-                        && !f.exported
-                        && !rebound.contains(n.as_str())
+                    // An impl method is reached from places that hand it
+                    // owned arguments without consulting this table, so it
+                    // stays owned — except for a builder, which is only ever
+                    // written into and which every `render` in a page takes.
+                    // The retain and the release around that call were a
+                    // load, a compare and a store on the header in the middle
+                    // of the tightest loop a page has.
+                    let ok_impl = !impls.contains(&fi) || matches!(t, Ty::StrBuf);
+                    candidate && ok_impl && !f.exported && !rebound.contains(n.as_str())
                 })
                 .collect()
         })
@@ -1494,6 +1500,512 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
+    /// Two alias scopes for a builder: its header — the count, the pointer,
+    /// the length and the capacity — and the bytes that pointer leads to,
+    /// which are a block of their own. A byte written into the text can never
+    /// land on the header, and saying so is the whole difference between a
+    /// run of appends that keeps the length and the capacity in registers and
+    /// one that reads them back after every single write.
+    fn sb_scopes(&self) -> (MetadataValue<'ctx>, MetadataValue<'ctx>) {
+        let dom = self.ctx.metadata_node(&[self.ctx.metadata_string("rill.strbuf").into()]);
+        let head = self
+            .ctx
+            .metadata_node(&[self.ctx.metadata_string("rill.strbuf.head").into(), dom.into()]);
+        let data = self
+            .ctx
+            .metadata_node(&[self.ctx.metadata_string("rill.strbuf.data").into(), dom.into()]);
+        (
+            self.ctx.metadata_node(&[head.into()]),
+            self.ctx.metadata_node(&[data.into()]),
+        )
+    }
+
+    /// Says this instruction touches a builder's header and nothing else.
+    fn mark_head(&self, inst: Option<InstructionValue<'ctx>>) {
+        let Some(inst) = inst else { return };
+        let (head, data) = self.sb_scopes();
+        let _ = inst.set_metadata(head, self.ctx.get_kind_id("alias.scope"));
+        let _ = inst.set_metadata(data, self.ctx.get_kind_id("noalias"));
+    }
+
+    /// Says this instruction touches the bytes and nothing else.
+    fn mark_data(&self, inst: Option<InstructionValue<'ctx>>) {
+        let Some(inst) = inst else { return };
+        let (head, data) = self.sb_scopes();
+        let _ = inst.set_metadata(data, self.ctx.get_kind_id("alias.scope"));
+        let _ = inst.set_metadata(head, self.ctx.get_kind_id("noalias"));
+    }
+
+    /// The instruction the builder just laid down, for the two above.
+    fn last_inst(&self) -> Option<InstructionValue<'ctx>> {
+        self.builder.get_insert_block()?.get_last_instruction()
+    }
+
+    /// A builder's three fields, as addresses.
+    fn sb_fields(
+        &self,
+        bp: PointerValue<'ctx>,
+    ) -> (PointerValue<'ctx>, PointerValue<'ctx>, PointerValue<'ctx>) {
+        let i64t = self.ctx.i64_type();
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let sb = self
+            .ctx
+            .struct_type(&[i64t.into(), ptrt.into(), i64t.into(), i64t.into()], false);
+        let data = self.builder.build_struct_gep(sb, bp, 1, "sb.data.p").expect("LLVM builder error");
+        let len = self.builder.build_struct_gep(sb, bp, 2, "sb.len.p").expect("LLVM builder error");
+        let cap = self.builder.build_struct_gep(sb, bp, 3, "sb.cap.p").expect("LLVM builder error");
+        (data, len, cap)
+    }
+
+    /// Reads a builder's length or capacity, saying it is the header.
+    fn sb_load(&self, at: PointerValue<'ctx>, name: &str) -> IntValue<'ctx> {
+        let got = self.builder.build_load(self.ctx.i64_type(), at, name).expect("LLVM builder error");
+        self.mark_head(got.as_instruction_value());
+        got.into_int_value()
+    }
+
+    /// Says this instruction leaves every builder header alone.
+    fn mark_off_head(&self, inst: Option<InstructionValue<'ctx>>) {
+        let Some(inst) = inst else { return };
+        let (head, _) = self.sb_scopes();
+        let _ = inst.set_metadata(head, self.ctx.get_kind_id("noalias"));
+    }
+
+    /// Room for `need` more bytes, and the block and the length as they now
+    /// stand. Everything the header gets is written here rather than inside
+    /// the runtime, which is asked only for a bigger block: a call that took
+    /// the builder itself would cost the caller the length and the capacity
+    /// it is holding in registers, and reading those back is a store waiting
+    /// on a load in the middle of the tightest loop a page has.
+    fn sb_room(
+        &mut self,
+        bp: PointerValue<'ctx>,
+        need: IntValue<'ctx>,
+        func: FunctionValue<'ctx>,
+    ) -> (PointerValue<'ctx>, IntValue<'ctx>) {
+        let i64t = self.ctx.i64_type();
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let (data_p, len_p, cap_p) = self.sb_fields(bp);
+        let len = self.sb_load(len_p, "sb.len");
+        let cap = self.sb_load(cap_p, "sb.cap");
+        let had = self.builder.build_load(ptrt, data_p, "sb.data").expect("LLVM builder error");
+        self.mark_head(had.as_instruction_value());
+        let had = had.into_pointer_value();
+        let want = self.builder.build_int_add(len, need, "sb.want").expect("LLVM builder error");
+        let fits = self
+            .builder
+            .build_int_compare(IntPredicate::SLE, want, cap, "sb.fits")
+            .expect("LLVM builder error");
+        let grow_bb = self.ctx.append_basic_block(func, "sb.grow");
+        let on_bb = self.ctx.append_basic_block(func, "sb.room");
+        let from_bb = self.builder.get_insert_block().expect("a block");
+        self.builder
+            .build_conditional_branch(fits, on_bb, grow_bb)
+            .expect("LLVM builder error");
+
+        // Twice what it had, or what is wanted if that is more, and never
+        // less than the thirty-two a builder starts with.
+        self.builder.position_at_end(grow_bb);
+        let twice = self
+            .builder
+            .build_int_mul(cap, i64t.const_int(2, false), "sb.twice")
+            .expect("LLVM builder error");
+        let small = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, twice, i64t.const_int(32, false), "sb.small")
+            .expect("LLVM builder error");
+        let base = self
+            .builder
+            .build_select(small, i64t.const_int(32, false), twice, "sb.base")
+            .expect("LLVM builder error")
+            .into_int_value();
+        let short = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, base, want, "sb.short")
+            .expect("LLVM builder error");
+        let fresh_cap = self
+            .builder
+            .build_select(short, want, base, "sb.cap2")
+            .expect("LLVM builder error")
+            .into_int_value();
+        let f = self.module.get_function("rill_sb_grow").unwrap();
+        let got = self
+            .builder
+            .build_call(f, &[had.into(), len.into(), cap.into(), fresh_cap.into()], "sb.fresh")
+            .expect("LLVM builder error");
+        let fresh = match got.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => v.into_pointer_value(),
+            _ => unreachable!(),
+        };
+        self.mark_off_head(fresh.as_instruction_value());
+        let put = self.builder.build_store(data_p, fresh).expect("LLVM builder error");
+        self.mark_head(Some(put));
+        let put = self.builder.build_store(cap_p, fresh_cap).expect("LLVM builder error");
+        self.mark_head(Some(put));
+        self.builder.build_unconditional_branch(on_bb).expect("LLVM builder error");
+
+        self.builder.position_at_end(on_bb);
+        let which = self.builder.build_phi(ptrt, "sb.block").expect("LLVM builder error");
+        which.add_incoming(&[(&had, from_bb), (&fresh, grow_bb)]);
+        (which.as_basic_value().into_pointer_value(), len)
+    }
+
+    /// Writes the new length back, which is all an append leaves behind.
+    fn sb_wrote(&self, bp: PointerValue<'ctx>, len: IntValue<'ctx>, by: IntValue<'ctx>) {
+        let (_, len_p, _) = self.sb_fields(bp);
+        let want = self.builder.build_int_add(len, by, "sb.now").expect("LLVM builder error");
+        let put = self.builder.build_store(len_p, want).expect("LLVM builder error");
+        self.mark_head(Some(put));
+    }
+
+    /// The two tables a number is written with: every pair of digits from
+    /// "00" to "99", and the powers of ten. Both are laid down once per
+    /// module, the first time an integer is appended anywhere in it.
+    fn digit_tables(&mut self) -> (PointerValue<'ctx>, PointerValue<'ctx>) {
+        let i8t = self.ctx.i8_type();
+        let i64t = self.ctx.i64_type();
+        let pairs = match self.module.get_global("rill.pairs") {
+            Some(g) => g,
+            None => {
+                // Two hundred bytes and one to spare: a single digit is
+                // written as the halfword starting at its own byte, and that
+                // reads one past the last pair.
+                let mut text = Vec::with_capacity(202);
+                for n in 0..100u8 {
+                    text.push(b'0' + n / 10);
+                    text.push(b'0' + n % 10);
+                }
+                text.push(b'0');
+                text.push(b'0');
+                let init = self.ctx.const_string(&text, false);
+                let g = self.module.add_global(init.get_type(), None, "rill.pairs");
+                g.set_initializer(&init);
+                g.set_linkage(inkwell::module::Linkage::Private);
+                g.set_constant(true);
+                g
+            }
+        };
+        let tens = match self.module.get_global("rill.tens") {
+            Some(g) => g,
+            None => {
+                let mut vals = Vec::with_capacity(20);
+                let mut at = 1u64;
+                for i in 0..20 {
+                    vals.push(i64t.const_int(at, false));
+                    if i < 19 {
+                        at *= 10;
+                    }
+                }
+                let init = i64t.const_array(&vals);
+                let g = self.module.add_global(init.get_type(), None, "rill.tens");
+                g.set_initializer(&init);
+                g.set_linkage(inkwell::module::Linkage::Private);
+                g.set_constant(true);
+                g
+            }
+        };
+        let _ = i8t;
+        (pairs.as_pointer_value(), tens.as_pointer_value())
+    }
+
+    /// `b += int_to_str(n)`, written out here rather than called for. Almost
+    /// every number a page carries is one or two digits, and that case is a
+    /// compare, a halfword out of a table and a store, with no branch in it
+    /// past the first: the minus goes down whether or not there is one, and
+    /// the digits land on top of it when there is not. How many digits a
+    /// larger number has is read off its top bit rather than found by
+    /// dividing, and its digits go in two at a time from the end. The
+    /// magnitude is carried unsigned, which is what makes the smallest
+    /// integer — the one with no positive counterpart — need no case of its
+    /// own, and the whole append comes out with no call in it at all.
+    fn gen_strbuf_int(
+        &mut self,
+        bp: PointerValue<'ctx>,
+        v: IntValue<'ctx>,
+        func: FunctionValue<'ctx>,
+    ) {
+        let i64t = self.ctx.i64_type();
+        let i8t = self.ctx.i8_type();
+        let i16t = self.ctx.i16_type();
+        let one = i64t.const_int(1, false);
+        let two = i64t.const_int(2, false);
+        let hundred = i64t.const_int(100, false);
+        let (pairs, tens) = self.digit_tables();
+
+        let neg = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, v, i64t.const_zero(), "sb.neg")
+            .expect("LLVM builder error");
+        let flipped = self.builder.build_int_neg(v, "sb.flip").expect("LLVM builder error");
+        // Unsigned from here on, so that the smallest integer's magnitude —
+        // which no signed value can hold — is simply the bits it already has.
+        let mag = self
+            .builder
+            .build_select(neg, flipped, v, "sb.mag")
+            .expect("LLVM builder error")
+            .into_int_value();
+        let sign = self
+            .builder
+            .build_select(neg, one, i64t.const_zero(), "sb.sign")
+            .expect("LLVM builder error")
+            .into_int_value();
+
+        let small_bb = self.ctx.append_basic_block(func, "sb.small");
+        let wide_bb = self.ctx.append_basic_block(func, "sb.wide");
+        let done_bb = self.ctx.append_basic_block(func, "sb.done");
+        let is_small = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, mag, hundred, "sb.is.small")
+            .expect("LLVM builder error");
+        self.builder
+            .build_conditional_branch(is_small, small_bb, wide_bb)
+            .expect("LLVM builder error");
+
+        // One digit or two, written as a halfword either way. When there is
+        // only one, the table is read from its second byte and the byte that
+        // follows lands past the length, where nothing looks.
+        self.builder.position_at_end(small_bb);
+        let ten_up = self
+            .builder
+            .build_int_compare(IntPredicate::UGE, mag, i64t.const_int(10, false), "sb.is.two")
+            .expect("LLVM builder error");
+        let digits = self
+            .builder
+            .build_select(ten_up, two, one, "sb.digits")
+            .expect("LLVM builder error")
+            .into_int_value();
+        let need = self.builder.build_int_add(digits, sign, "sb.need").expect("LLVM builder error");
+        let spare = self.builder.build_int_add(need, one, "sb.spare").expect("LLVM builder error");
+        let (data, len) = self.sb_room(bp, spare, func);
+        self.put_minus(data, len, i8t);
+        // The halfword starts where the digits do, so it ends two past that.
+        let from = self.builder.build_int_add(len, sign, "sb.from").expect("LLVM builder error");
+        let at = self.builder.build_int_add(from, two, "sb.at").expect("LLVM builder error");
+        let base = self.builder.build_int_mul(mag, two, "sb.pair.i").expect("LLVM builder error");
+        let skip = self.builder.build_int_sub(two, digits, "sb.skip").expect("LLVM builder error");
+        let idx = self.builder.build_int_add(base, skip, "sb.idx").expect("LLVM builder error");
+        self.put_pair(pairs, data, at, idx, i16t, i8t);
+        self.sb_wrote(bp, len, need);
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+
+        // Anything larger: floor(log10) from the position of the top bit,
+        // then one comparison to settle the case the estimate is short by one.
+        self.builder.position_at_end(wide_bb);
+        let ctlz = inkwell::intrinsics::Intrinsic::find("llvm.ctlz")
+            .and_then(|i| i.get_declaration(&self.module, &[i64t.into()]))
+            .expect("llvm.ctlz");
+        let lz = self
+            .builder
+            .build_call(
+                ctlz,
+                &[mag.into(), self.ctx.bool_type().const_int(1, false).into()],
+                "sb.lz",
+            )
+            .expect("LLVM builder error");
+        let lz = match lz.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(x) => x.into_int_value(),
+            _ => unreachable!(),
+        };
+        let bits = self
+            .builder
+            .build_int_sub(i64t.const_int(64, false), lz, "sb.bits")
+            .expect("LLVM builder error");
+        let scaled = self
+            .builder
+            .build_int_mul(bits, i64t.const_int(1233, false), "sb.scaled")
+            .expect("LLVM builder error");
+        let guess = self
+            .builder
+            .build_right_shift(scaled, i64t.const_int(12, false), false, "sb.guess")
+            .expect("LLVM builder error");
+        let ten_at = unsafe {
+            self.builder
+                .build_in_bounds_gep(i64t, tens, &[guess], "sb.ten.p")
+                .expect("LLVM builder error")
+        };
+        let ten = self.builder.build_load(i64t, ten_at, "sb.ten").expect("LLVM builder error");
+        self.mark_invariant(ten);
+        let short = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, mag, ten.into_int_value(), "sb.short")
+            .expect("LLVM builder error");
+        let carry = self
+            .builder
+            .build_select(short, i64t.const_zero(), one, "sb.carry")
+            .expect("LLVM builder error")
+            .into_int_value();
+        let many = self.builder.build_int_add(guess, carry, "sb.many").expect("LLVM builder error");
+        let need = self.builder.build_int_add(many, sign, "sb.need.w").expect("LLVM builder error");
+        let (data, len) = self.sb_room(bp, need, func);
+        self.put_minus(data, len, i8t);
+        let end = self.builder.build_int_add(len, need, "sb.end").expect("LLVM builder error");
+
+        // Two digits at a time, from the end back.
+        let loop_bb = self.ctx.append_basic_block(func, "sb.pairs");
+        let body_bb = self.ctx.append_basic_block(func, "sb.pair");
+        let last_bb = self.ctx.append_basic_block(func, "sb.last");
+        let start_bb = self.builder.get_insert_block().expect("a block");
+        self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+        self.builder.position_at_end(loop_bb);
+        let at = self.builder.build_phi(i64t, "sb.at.w").expect("LLVM builder error");
+        let left = self.builder.build_phi(i64t, "sb.left").expect("LLVM builder error");
+        at.add_incoming(&[(&end, start_bb)]);
+        left.add_incoming(&[(&mag, start_bb)]);
+        let atv = at.as_basic_value().into_int_value();
+        let leftv = left.as_basic_value().into_int_value();
+        let big = self
+            .builder
+            .build_int_compare(IntPredicate::UGE, leftv, hundred, "sb.big")
+            .expect("LLVM builder error");
+        self.builder
+            .build_conditional_branch(big, body_bb, last_bb)
+            .expect("LLVM builder error");
+        self.builder.position_at_end(body_bb);
+        let q = self
+            .builder
+            .build_int_unsigned_div(leftv, hundred, "sb.q")
+            .expect("LLVM builder error");
+        let back = self.builder.build_int_mul(q, hundred, "sb.q100").expect("LLVM builder error");
+        let r = self.builder.build_int_sub(leftv, back, "sb.r").expect("LLVM builder error");
+        let idx = self.builder.build_int_mul(r, two, "sb.pair.w").expect("LLVM builder error");
+        self.put_pair(pairs, data, atv, idx, i16t, i8t);
+        let back2 = self.builder.build_int_sub(atv, two, "sb.back2").expect("LLVM builder error");
+        self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+        at.add_incoming(&[(&back2, body_bb)]);
+        left.add_incoming(&[(&q, body_bb)]);
+
+        // What is left is one digit or two. Here the two are told apart,
+        // because everything after them is already written and a byte laid
+        // down past the end would land on it.
+        self.builder.position_at_end(last_bb);
+        let two_bb = self.ctx.append_basic_block(func, "sb.tail.two");
+        let one_bb = self.ctx.append_basic_block(func, "sb.tail.one");
+        let ten_up = self
+            .builder
+            .build_int_compare(IntPredicate::UGE, leftv, i64t.const_int(10, false), "sb.tenup")
+            .expect("LLVM builder error");
+        self.builder.build_conditional_branch(ten_up, two_bb, one_bb).expect("LLVM builder error");
+        self.builder.position_at_end(two_bb);
+        let idx = self.builder.build_int_mul(leftv, two, "sb.pair.i.w").expect("LLVM builder error");
+        self.put_pair(pairs, data, atv, idx, i16t, i8t);
+        self.sb_wrote(bp, len, need);
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+        self.builder.position_at_end(one_bb);
+        let ch = self
+            .builder
+            .build_int_add(leftv, i64t.const_int(48, false), "sb.ch")
+            .expect("LLVM builder error");
+        let ch = self.builder.build_int_truncate(ch, i8t, "sb.byte").expect("LLVM builder error");
+        let where_ = self.builder.build_int_sub(atv, one, "sb.one.at").expect("LLVM builder error");
+        let slot = unsafe {
+            self.builder
+                .build_in_bounds_gep(i8t, data, &[where_], "sb.one.p")
+                .expect("LLVM builder error")
+        };
+        let put = self.builder.build_store(slot, ch).expect("LLVM builder error");
+        self.mark_data(Some(put));
+        self.sb_wrote(bp, len, need);
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+        self.builder.position_at_end(done_bb);
+    }
+
+    /// The minus, laid down whether or not the number has one: when it does
+    /// not, the first digit is written over it.
+    fn put_minus(&self, data: PointerValue<'ctx>, len: IntValue<'ctx>, i8t: IntType<'ctx>) {
+        let slot = unsafe {
+            self.builder
+                .build_in_bounds_gep(i8t, data, &[len], "sb.minus.at")
+                .expect("LLVM builder error")
+        };
+        let put = self
+            .builder
+            .build_store(slot, i8t.const_int(45, false))
+            .expect("LLVM builder error");
+        self.mark_data(Some(put));
+    }
+
+    /// Two bytes out of the table, written as one halfword ending at `at`.
+    fn put_pair(
+        &self,
+        pairs: PointerValue<'ctx>,
+        data: PointerValue<'ctx>,
+        at: IntValue<'ctx>,
+        idx: IntValue<'ctx>,
+        i16t: IntType<'ctx>,
+        i8t: IntType<'ctx>,
+    ) {
+        let i64t = self.ctx.i64_type();
+        let from = unsafe {
+            self.builder
+                .build_in_bounds_gep(i8t, pairs, &[idx], "sb.pair.p")
+                .expect("LLVM builder error")
+        };
+        let both = self.builder.build_load(i16t, from, "sb.pair").expect("LLVM builder error");
+        self.mark_invariant(both);
+        let where_ = self
+            .builder
+            .build_int_sub(at, i64t.const_int(2, false), "sb.pair.at")
+            .expect("LLVM builder error");
+        let slot = unsafe {
+            self.builder
+                .build_in_bounds_gep(i8t, data, &[where_], "sb.pair.slot")
+                .expect("LLVM builder error")
+        };
+        let put = self.builder.build_store(slot, both).expect("LLVM builder error");
+        self.mark_data(Some(put));
+    }
+
+    /// `b += s`: the bytes of a string, however it was arrived at. The length
+    /// comes out of its header, the room is taken, and the copy is the whole
+    /// of it — the same shape as the literal above, which knows its length
+    /// without looking.
+    fn gen_strbuf_str(
+        &mut self,
+        bp: PointerValue<'ctx>,
+        sp: PointerValue<'ctx>,
+        fixed: Option<usize>,
+        func: FunctionValue<'ctx>,
+    ) {
+        let i64t = self.ctx.i64_type();
+        let i8t = self.ctx.i8_type();
+        // A literal is copied in whole words: sixteen bytes at a time up to
+        // the next boundary past its end. The bytes past the text are inside
+        // the object either way, and inside the builder's room, and they sit
+        // past its length where nothing reads them.
+        let wide = fixed.map(|n| (n + 15) / 16 * 16);
+        let need = match fixed {
+            Some(n) => i64t.const_int(n as u64, false),
+            None => {
+                let at = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(i8t, sp, &[i64t.const_int(8, false)], "str.len.p")
+                        .expect("LLVM builder error")
+                };
+                let got =
+                    self.builder.build_load(i64t, at, "str.len").expect("LLVM builder error");
+                self.mark_off_head(got.as_instruction_value());
+                got.into_int_value()
+            }
+        };
+        let room = match wide {
+            Some(n) => i64t.const_int(n as u64, false),
+            None => need,
+        };
+        let (data, len) = self.sb_room(bp, room, func);
+        let at = unsafe {
+            self.builder.build_in_bounds_gep(i8t, data, &[len], "sb.at").expect("LLVM builder error")
+        };
+        // The bytes sit sixteen in, past the count and the length.
+        let from = unsafe {
+            self.builder
+                .build_in_bounds_gep(i8t, sp, &[i64t.const_int(16, false)], "str.at")
+                .expect("LLVM builder error")
+        };
+        self.builder.build_memcpy(at, 1, from, 1, room).expect("LLVM builder error");
+        self.mark_data(self.last_inst());
+        self.sb_wrote(bp, len, need);
+    }
+
     /// The first element's address, which is also what C is handed.
     fn buf_data(&self, p: PointerValue<'ctx>) -> PointerValue<'ctx> {
         p
@@ -1956,11 +2468,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             void.fn_type(&[ptrt.into(), i64t.into()], false),
             None,
         );
-        self.module.add_function(
+        // Cold: the call is what a loop makes when its range is *not* inside
+        // the buffer, and reaching it ends the program.
+        let check = self.module.add_function(
             "rill_buf_check",
             void.fn_type(&[ptrt.into(), i64t.into(), i64t.into()], false),
             None,
         );
+        let cold = Attribute::get_named_enum_kind_id("cold");
+        if cold != 0 {
+            check.add_attribute(AttributeLoc::Function, self.ctx.create_enum_attribute(cold, 0));
+        }
         self.module.add_function("rill_strbuf_new", ptrt.fn_type(&[], false), None);
         self.module.add_function(
             "rill_strbuf_add",
@@ -1978,6 +2496,19 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_strbuf_str", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_strbuf_clear", void.fn_type(&[ptrt.into()], false), None);
+        // Cold, so that the room a builder is short of is asked for out of
+        // the way: the appends stay a straight line and what is only
+        // occasionally reached is laid down elsewhere.
+        let grow = self.module.add_function(
+            "rill_sb_grow",
+            ptrt.fn_type(&[ptrt.into(), i64t.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        let cold = Attribute::get_named_enum_kind_id("cold");
+        if cold != 0 {
+            grow.add_attribute(AttributeLoc::Function, self.ctx.create_enum_attribute(cold, 0));
+        }
         self.module.add_function("rill_strbuf_take", ptrt.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_strbuf_len", i64t.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_strbuf_release", void.fn_type(&[ptrt.into()], false), None);
@@ -5557,54 +6088,106 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let TK::Builtin { args: inner, .. } = &args[1].kind else { unreachable!() };
                 let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
                 let n = self.gen_expr(&inner[0], scope, subst, func)?.expect("value");
-                let f = self.module.get_function("rill_strbuf_int").unwrap();
-                self.builder.build_call(f, &[b.into(), n.into()], "").expect("LLVM builder error");
+                self.gen_strbuf_int(b.into_pointer_value(), n.into_int_value(), func);
                 if held {
                     self.emit_release(b, &Ty::StrBuf);
                 }
                 Ok(None)
             }
-            // `b += byte`: when the builder has room, the store and the new
-            // length are laid down here; the runtime is asked only to grow.
+            // `b += s`: the room is taken and the bytes are copied here. A
+            // literal knows its own length, so that copy is a handful of
+            // stores rather than a call into the runtime with a width it has
+            // to load and branch on. A page built out of static runs is
+            // mostly this.
+            TK::Builtin { rt, args } if *rt == "rill_strbuf_add" => {
+                let fixed = match &args[1].kind {
+                    TK::Str(lit) => Some(lit.len()),
+                    _ => None,
+                };
+                let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let (sv, kept) = self.gen_borrowed(&args[1], scope, subst, func)?;
+                if fixed != Some(0) {
+                    self.gen_strbuf_str(
+                        b.into_pointer_value(),
+                        sv.into_pointer_value(),
+                        fixed,
+                        func,
+                    );
+                }
+                if kept {
+                    self.emit_release(sv, &Ty::Str);
+                }
+                if held {
+                    self.emit_release(b, &Ty::StrBuf);
+                }
+                Ok(None)
+            }
+            // `b += byte`: one store, and the length that follows it.
             TK::Builtin { rt, args } if *rt == "rill_strbuf_byte" => {
                 let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
                 let c = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_int_value();
                 let i64t = self.ctx.i64_type();
-                let ptrt = self.ctx.ptr_type(Default::default());
-                let sb = self.ctx.struct_type(&[i64t.into(), ptrt.into(), i64t.into(), i64t.into()], false);
+                let i8t = self.ctx.i8_type();
                 let bp = b.into_pointer_value();
-                let len_ptr = self.builder.build_struct_gep(sb, bp, 2, "sb.len.p").expect("LLVM builder error");
-                let cap_ptr = self.builder.build_struct_gep(sb, bp, 3, "sb.cap.p").expect("LLVM builder error");
-                let len = self.builder.build_load(i64t, len_ptr, "sb.len").expect("LLVM builder error").into_int_value();
-                let cap = self.builder.build_load(i64t, cap_ptr, "sb.cap").expect("LLVM builder error").into_int_value();
-                let fits = self
-                    .builder
-                    .build_int_compare(IntPredicate::SLT, len, cap, "fits")
-                    .expect("LLVM builder error");
-                let fast_bb = self.ctx.append_basic_block(func, "sb.fast");
-                let slow_bb = self.ctx.append_basic_block(func, "sb.slow");
-                let done_bb = self.ctx.append_basic_block(func, "sb.done");
-                self.builder.build_conditional_branch(fits, fast_bb, slow_bb).expect("LLVM builder error");
-                self.builder.position_at_end(fast_bb);
-                let data_ptr = self.builder.build_struct_gep(sb, bp, 1, "sb.data.p").expect("LLVM builder error");
-                let data = self.builder.build_load(ptrt, data_ptr, "sb.data").expect("LLVM builder error").into_pointer_value();
+                let one = i64t.const_int(1, false);
+                let (data, len) = self.sb_room(bp, one, func);
                 let at = unsafe {
                     self.builder
-                        .build_in_bounds_gep(self.ctx.i8_type(), data, &[len], "sb.at")
+                        .build_in_bounds_gep(i8t, data, &[len], "sb.at")
                         .expect("LLVM builder error")
                 };
-                let byte = self.builder.build_int_truncate(c, self.ctx.i8_type(), "byte").expect("LLVM builder error");
-                self.builder.build_store(at, byte).expect("LLVM builder error");
-                let len1 = self.builder.build_int_add(len, i64t.const_int(1, false), "sb.len1").expect("LLVM builder error");
-                self.builder.build_store(len_ptr, len1).expect("LLVM builder error");
-                self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
-                self.builder.position_at_end(slow_bb);
-                let f = self.module.get_function("rill_strbuf_byte").unwrap();
-                self.builder.build_call(f, &[b.into(), c.into()], "").expect("LLVM builder error");
+                let byte = self.builder.build_int_truncate(c, i8t, "byte").expect("LLVM builder error");
+                let put = self.builder.build_store(at, byte).expect("LLVM builder error");
+                self.mark_data(Some(put));
+                self.sb_wrote(bp, len, one);
+                if held {
+                    self.emit_release(b, &Ty::StrBuf);
+                }
+                Ok(None)
+            }
+            // The one test a `for` over a buffer makes: that the whole range
+            // it is about to walk is inside. The length never changes after
+            // the buffer is made, so the load hoists; the call is left for
+            // the case that ends the program, and is laid down out of the way.
+            TK::Builtin { rt, args } if *rt == "rill_buf_check" => {
+                let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let lo = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_int_value();
+                let hi = self.gen_expr(&args[2], scope, subst, func)?.expect("value").into_int_value();
+                let bp = b.into_pointer_value();
+                let empty = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGE, lo, hi, "check.empty")
+                    .expect("LLVM builder error");
+                let look_bb = self.ctx.append_basic_block(func, "check.look");
+                let bad_bb = self.ctx.append_basic_block(func, "check.bad");
+                let done_bb = self.ctx.append_basic_block(func, "check.ok");
+                self.builder
+                    .build_conditional_branch(empty, done_bb, look_bb)
+                    .expect("LLVM builder error");
+                self.builder.position_at_end(look_bb);
+                let len = self.buf_len(bp);
+                let under = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, lo, self.ctx.i64_type().const_zero(), "check.lo")
+                    .expect("LLVM builder error");
+                let over = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGT, hi, len, "check.hi")
+                    .expect("LLVM builder error");
+                let bad = self.builder.build_or(under, over, "check.bad?").expect("LLVM builder error");
+                self.builder
+                    .build_conditional_branch(bad, bad_bb, done_bb)
+                    .expect("LLVM builder error");
+                self.builder.position_at_end(bad_bb);
+                let f = self.module.get_function("rill_buf_check").unwrap();
+                self.builder
+                    .build_call(f, &[b.into(), lo.into(), hi.into()], "")
+                    .expect("LLVM builder error");
                 self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
                 self.builder.position_at_end(done_bb);
                 if held {
-                    self.emit_release(b, &Ty::StrBuf);
+                    let ty = self.concrete(&args[0].ty, subst);
+                    self.emit_release(b, &ty);
                 }
                 Ok(None)
             }
@@ -6281,12 +6864,25 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             TK::MethodCall { trait_id, method, recv, args } => {
                 let recv_ty = self.concrete(recv, subst);
                 let fn_idx = self.resolve_impl(*trait_id, *method, recv, subst, e.line)?;
+                let borrowed = self.borrowed_params[fn_idx].clone();
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
-                for a in args {
+                let mut held: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
+                for (i, a) in args.iter().enumerate() {
+                    if borrowed.get(i) == Some(&true) {
+                        let (v, owned) = self.gen_borrowed(a, scope, subst, func)?;
+                        if owned {
+                            held.push((v, self.concrete(&a.ty, subst)));
+                        }
+                        argv.push(v.into());
+                        continue;
+                    }
                     let v = self.gen_expr(a, scope, subst, func)?;
                     argv.push(v.expect("arguments are never Unit").into());
                 }
                 let call = self.call_impl(fn_idx, &recv_ty, &argv, "mcall");
+                for (v, ty) in held {
+                    self.emit_release(v, &ty);
+                }
                 Ok(match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,
@@ -6639,7 +7235,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let name = format!(".str{}", self.str_count);
         self.str_count += 1;
         let i64t = self.ctx.i64_type();
-        let bytes = self.ctx.const_string(s.as_bytes(), false);
+        // Padded out to sixteen so that an append may copy whole words past
+        // the end of the text without reading past the end of the object.
+        // The header still says how long the string is, so nothing else in
+        // the language can tell.
+        let mut raw = s.as_bytes().to_vec();
+        while raw.len() % 16 != 0 || raw.is_empty() {
+            raw.push(0);
+        }
+        let bytes = self.ctx.const_string(&raw, false);
         let ty = self
             .ctx
             .struct_type(&[i64t.into(), i64t.into(), bytes.get_type().into()], false);

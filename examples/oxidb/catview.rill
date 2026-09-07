@@ -1,0 +1,26 @@
+# What the page is handed. The template below it knows nothing about
+# documents, query strings or the database: it is given a form to show, rows
+# to put in a table and a pager already worked out, and its whole job is where
+# those go on the page.
+#
+# Splitting it this way is what makes the template readable — every `<% %>` in
+# it is a field or a list, never a call into the server — and it is what lets
+# `catalogue.rill` be tested without rendering anything.
+type View
+  View(role: Str, region: Str, sku: Str, limit: Str, bys: List(Choice), dirs: List(Choice), trouble: Str, total: Int, page: Int, pages: Int, from: Int, upto: Int, rows: List(Row), steps: List(Step))
+
+# One `<option>`, and whether it is the one chosen.
+type Choice
+  Choice(name: Str, on: Bool)
+
+# One line of the table.
+type Row
+  Row(sku: Int, name: Str, role: Str, region: Str, score: Float, stock: Int)
+
+# One link in the pager. A step that is not live is a word rather than a link.
+type Step
+  Step(label: Str, href: Str, live: Bool)
+
+fn choices(names, chosen) = match names
+  Nil -> Nil
+  Cons(n, rest) -> Cons(Choice(n, n == chosen), choices(rest, chosen))

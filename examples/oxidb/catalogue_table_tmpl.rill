@@ -1,0 +1,26 @@
+# Generated from examples/oxidb/catalogue_table.tmpl by tools/tmplgen.rill — do not edit.
+import "tmpl"
+import "catview"
+
+fn catalogue_table(b: StrBuf, rows: List(Row)) =
+  b += "    <table>\n      <thead>\n        <tr><th>sku</th><th>name</th><th>role</th><th>region</th><th>score</th><th>stock</th></tr>\n      </thead>\n      <tbody>\n        "
+  fn each0(l0, i0) = match l0
+    Nil -> 0
+    Cons(r, rest0) ->
+      b += "\n        <tr><td>"
+      render(b, r.sku)
+      b += "</td><td>"
+      render(b, r.name)
+      b += "</td><td>"
+      render(b, r.role)
+      b += "</td><td>"
+      render(b, r.region)
+      b += "</td><td>"
+      render(b, r.score)
+      b += "</td><td>"
+      render(b, r.stock)
+      b += "</td></tr>\n        "
+      each0(rest0, i0 + 1)
+  each0(rows, 0)
+  b += "\n      </tbody>\n    </table>\n"
+  0

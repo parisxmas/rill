@@ -2742,6 +2742,9 @@ impl Checker {
             "strbuf_add" => Some(("rill_strbuf_add", vec![Ty::StrBuf, Ty::Str], Ty::Unit)),
             "strbuf_byte" => Some(("rill_strbuf_byte", vec![Ty::StrBuf, Ty::Int], Ty::Unit)),
             "strbuf_str" => Some(("rill_strbuf_str", vec![Ty::StrBuf], Ty::Str)),
+            // Empties a builder and keeps its room, for text built over and
+            // over into the same one.
+            "strbuf_clear" => Some(("rill_strbuf_clear", vec![Ty::StrBuf], Ty::Unit)),
             "str_len" => Some(("rill_str_len", vec![Ty::Str], Ty::Int)),
             "int_to_str" => Some(("rill_int_to_str", vec![Ty::Int], Ty::Str)),
             "float_to_str" => Some(("rill_float_to_str", vec![Ty::Float], Ty::Str)),
@@ -3893,6 +3896,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "strbuf_add"
             | "strbuf_byte"
             | "strbuf_str"
+            | "strbuf_clear"
             | "str_len"
             | "int_to_str"
             | "float_to_str"

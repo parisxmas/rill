@@ -275,6 +275,32 @@ unsafe fn copy_small(src: *const u8, dst: *mut u8, n: usize) {
 ///
 /// # Safety
 /// `p` must be a live builder holding `len` bytes in a block of `cap`.
+/// A bigger block for a builder, and nothing else: the caller writes the new
+/// pointer and the new capacity into the header itself. The compiler emits
+/// the appends around this, and a call that touched the header would cost it
+/// the length and the capacity it is holding in registers — which is most of
+/// what an append costs in a loop.
+///
+/// # Safety
+/// `data` is a block this builder owns, or null, with `len` bytes of text in
+/// it and room for `cap`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_sb_grow(
+    data: *mut u8,
+    len: i64,
+    cap: i64,
+    want: i64,
+) -> *mut u8 {
+    let fresh = rill_alloc(16 + want as u64).add(16);
+    live_add(-1);
+    if !data.is_null() {
+        core::ptr::copy_nonoverlapping(data, fresh, len as usize);
+        live_add(1);
+        rill_free_sized(data.sub(16), 16 + cap as u64);
+    }
+    fresh
+}
+
 unsafe fn sb_grow(p: *mut u8, len: usize, cap: usize, want: usize) {
     // Sixteen bytes in front of the text are kept free, in the shape of a
     // string's header, so that `rill_strbuf_take` can turn the block into the
@@ -291,6 +317,16 @@ unsafe fn sb_grow(p: *mut u8, len: usize, cap: usize, want: usize) {
     }
     *(p as *mut *mut u8).add(1) = fresh;
     *(p as *mut i64).add(3) = want as i64;
+}
+
+/// Empties a builder without giving back the room it took, so that text
+/// built over and over into the same builder pays for its room once.
+///
+/// # Safety
+/// `p` must be a live builder.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_clear(p: *mut u8) {
+    *(p as *mut i64).add(2) = 0;
 }
 
 /// # Safety

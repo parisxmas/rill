@@ -1,0 +1,308 @@
+# The template compiler: a template goes in, Rill comes out.
+#
+#     rill run tools/tmplgen.rill page.tmpl page.rill
+#     rill build page.rill -o page
+#
+# What it emits is a function per template — static text as string literals,
+# a tag as the code it stands for — so that rendering a page is a run of
+# appends to a builder. Nothing is parsed at run time, no name is looked up,
+# and no branch asks what kind of tag this was, because by then there are no
+# tags. `lib/tmpl.rill` is the other half: how a value becomes text.
+#
+# The template:
+#
+#     %% import "shop"
+#     %= product(p: Item, seen)
+#     <h1><%= p.name %></h1>
+#     <% if seen > 0 %><p><%= seen %> people looked</p><% end %>
+#     <ul><% each tag, i in p.tags %><li><%= i %>: <%= tag %></li><% end %></ul>
+#
+# Lines at the top starting with `%%` are Rill, put at the head of the file
+# as they stand — imports and types the template needs. The `%=` line is the
+# template's own signature, and becomes a function whose first parameter is
+# the builder to write into.
+#
+# Tags:
+#
+#     <%= e %>            e, escaped: `&`, `<`, `>`, `"` and `'` become entities
+#     <%! e %>            e as it stands, for a value that is already markup
+#     <%# … %>            a comment, kept out of the page
+#     <% for i in a..b %> … <% end %>      Rill's own loop over a range
+#     <% each x in xs %> … <% end %>       a list, one element at a time
+#     <% each x, i in xs %> … <% end %>    the same, with the position
+#     <% if c %> … <% elif c %> … <% else %> … <% end %>
+#     <% let x = e %>     a name for the rest of the block
+#     <% include part(x) %>               another template, into this page
+#
+# `<%-` eats the whitespace before the tag and `-%>` the newline after it, so
+# that a template can be laid out to read without laying out the page.
+#
+# A template may be built out of others. `<% include row(item, i) %>` is the
+# call `row(b, item, i)` — the same builder, and whatever this template has in
+# scope handed over as arguments — and the template it names is reached with a
+# `%%` import like any other function in another file. There is no separate
+# notion of a partial or a layout: a template is a function, and a page made of
+# four of them is four calls.
+#
+# What is inside a tag is Rill: `<%= p.name %>` is the expression `p.name`,
+# and `<% if seen > 0 %>` is the condition. There is no second expression
+# language to learn and none to interpret.
+import "tmpl"
+
+# What a tag left open, so that `end` knows what it is ending. A list loop
+# keeps what it needs to write the call that starts it, which only goes in
+# once the body has been written.
+type Open
+  ForOpen
+  IfOpen
+  ElseOpen
+  EachOpen(tag: Str, idx: Str, list: Str)
+
+fn main() = match args()
+  Cons(_, Cons(src, rest)) -> run(src, first_or(rest, ""))
+  _ -> usage()
+
+fn usage() =
+  println("usage: tmplgen <template> [output.rill]")
+  println("  with no output the Rill goes to standard output.")
+
+fn first_or(l, fallback) = match l
+  Cons(x, _) -> x
+  Nil -> fallback
+
+fn run(src, out) = match read_file(src)
+  Err(e) -> println(e)
+  Ok(text) -> deliver(generate(text, src), out)
+
+fn deliver(code, out) =
+  if str_len(out) == 0 then print(code) else if write_file(out, code) then println("wrote " + out) else println("cannot write " + out)
+
+# -- the whole file --------------------------------------------------------------
+
+fn generate(text, src) =
+  o = strbuf()
+  o += "# Generated from " + src + " by tools/tmplgen.rill — do not edit.\n"
+  o += "import \"tmpl\"\n"
+  head = header_lines(text, 0, Nil)
+  body_at = head_end(text, 0)
+  emit_head(o, reverse(head))
+  o += "\n"
+  sig = signature(reverse(head))
+  o += "fn " + fn_name(sig) + "(b: StrBuf" + fn_rest(sig) + ") =\n"
+  walk(o, text, body_at, str_len(text), 1, 0, Nil)
+  pad(o, 1)
+  o += "0\n"
+  strbuf_str(o)
+
+# The `%%` and `%=` lines at the top, in order.
+fn header_lines(text, i, acc) =
+  if i >= str_len(text) then acc
+  else
+    e = line_end(text, i)
+    l = str_sub(text, i, e - i)
+    if starts_with(l, "%%") || starts_with(l, "%=") then header_lines(text, e + 1, Cons(l, acc)) else acc
+
+fn head_end(text, i) =
+  if i >= str_len(text) then i
+  else
+    e = line_end(text, i)
+    l = str_sub(text, i, e - i)
+    if starts_with(l, "%%") || starts_with(l, "%=") then head_end(text, e + 1) else i
+
+fn line_end(text, i) =
+  j = str_find_from(text, "\n", i)
+  if j < 0 then str_len(text) else j
+
+fn emit_head(o: StrBuf, lines) = match lines
+  Nil -> 0
+  Cons(l, rest) ->
+    if starts_with(l, "%%") then
+      o += trim(str_sub(l, 2, str_len(l) - 2))
+      o += "\n"
+    else
+      o += ""
+    emit_head(o, rest)
+
+fn signature(lines) = match lines
+  Nil -> "page()"
+  Cons(l, rest) -> if starts_with(l, "%=") then trim(str_sub(l, 2, str_len(l) - 2)) else signature(rest)
+
+fn fn_name(sig) =
+  i = str_find(sig, "(")
+  if i < 0 then trim(sig) else trim(str_sub(sig, 0, i))
+
+# The parameters as written, with a comma in front of them for the builder
+# that goes first. The closing bracket is the last one on the line rather
+# than the first, because a parameter may be annotated `Buf(Int)`.
+fn fn_rest(sig) =
+  i = str_find(sig, "(")
+  j = last_paren(sig, str_len(sig) - 1)
+  if i < 0 || j <= i + 1 then "" else ", " + trim(str_sub(sig, i + 1, j - i - 1))
+
+fn last_paren(sig, i) =
+  if i < 0 then -1 else if str_get(sig, i) == 41 then i else last_paren(sig, i - 1)
+
+# -- the body ---------------------------------------------------------------------
+
+# `ind` is how deep the code is, `k` numbers the local functions a list loop
+# needs, and `open` remembers what each unclosed tag was so that `end` knows
+# what it is ending.
+fn walk(o: StrBuf, s, i, n, ind, k, open) =
+  j = str_find_from(s, "<%", i)
+  if j < 0 then
+    literal(o, s, i, n, ind)
+    0
+  else
+    stop = if trim_left(s, j) then back_over_space(s, i, j) else j
+    literal(o, s, i, stop, ind)
+    e = str_find_from(s, "%>", j)
+    if e < 0 then
+      println("tmplgen: a tag is left open")
+      0
+    else
+      after = if str_get(s, e - 1) == 45 then skip_newline(s, e + 2) else e + 2
+      body = tag_body(s, j, e)
+      (ind2, k2, open2) = tag(o, body, ind, k, open)
+      walk(o, s, after, n, ind2, k2, open2)
+
+fn trim_left(s, j) = str_get(s, j + 2) == 45
+
+fn back_over_space(s, from, j) =
+  if j > from && is_space(str_get(s, j - 1)) then back_over_space(s, from, j - 1) else j
+
+fn skip_newline(s, i) =
+  if i < str_len(s) && str_get(s, i) == 13 then skip_newline(s, i + 1) else if i < str_len(s) && str_get(s, i) == 10 then i + 1 else i
+
+# What is between `<%` and `%>`, with the trim marks and the spaces off.
+fn tag_body(s, j, e) =
+  a = if str_get(s, j + 2) == 45 then j + 3 else j + 2
+  z = if str_get(s, e - 1) == 45 then e - 1 else e
+  trim(str_sub(s, a, z - a))
+
+# -- one tag ----------------------------------------------------------------------
+
+fn tag(o: StrBuf, t, ind, k, open) =
+  if starts_with(t, "=") then
+    line(o, ind, "render(b, " + trim(str_sub(t, 1, str_len(t) - 1)) + ")")
+    (ind, k, open)
+  else if starts_with(t, "!") then
+    line(o, ind, "raw(b, " + trim(str_sub(t, 1, str_len(t) - 1)) + ")")
+    (ind, k, open)
+  else if starts_with(t, "#") then (ind, k, open)
+  else if starts_with(t, "for ") then
+    line(o, ind, t)
+    (ind + 1, k, Cons(ForOpen, open))
+  else if starts_with(t, "each ") then each_tag(o, t, ind, k, open)
+  else if starts_with(t, "if ") then
+    line(o, ind, "if " + trim(str_sub(t, 3, str_len(t) - 3)) + " then")
+    (ind + 1, k, Cons(IfOpen, open))
+  else if starts_with(t, "elif ") then
+    line(o, ind, "0")
+    line(o, ind - 1, "else if " + trim(str_sub(t, 5, str_len(t) - 5)) + " then")
+    (ind, k, open)
+  else if t == "else" then
+    line(o, ind, "0")
+    line(o, ind - 1, "else")
+    (ind, k, seen_else(open))
+  else if t == "end" then close_tag(o, ind, k, open)
+  else if starts_with(t, "let ") then
+    line(o, ind, trim(str_sub(t, 4, str_len(t) - 4)))
+    (ind, k, open)
+  else if starts_with(t, "include ") then
+    line(o, ind, included(trim(str_sub(t, 8, str_len(t) - 8))))
+    (ind, k, open)
+  else
+    println("tmplgen: what is `" + t + "`?")
+    (ind, k, open)
+
+# `include part(x, y)` is the call `part(b, x, y)`: another template writes
+# into this one's builder, and what it is given is whatever is in scope here.
+# The template it names is a function like any other, so it is reached the way
+# any other function in another file is — a `%%` import at the top.
+fn included(call) =
+  i = str_find(call, "(")
+  if i < 0 then call + "(b)"
+  else
+    j = last_paren(call, str_len(call) - 1)
+    name = trim(str_sub(call, 0, i))
+    args = if j <= i then "" else trim(str_sub(call, i + 1, j - i - 1))
+    if str_len(args) == 0 then name + "(b)" else name + "(b, " + args + ")"
+
+fn seen_else(open) = match open
+  Cons(_, rest) -> Cons(ElseOpen, rest)
+  Nil -> open
+
+# `each x in xs` and `each x, i in xs` become a local function that walks the
+# list — which is what a loop over a list is in this language — and the call
+# that starts it goes in at `end`, when the body has been written.
+fn each_tag(o: StrBuf, t, ind, k, open) =
+  spec = trim(str_sub(t, 5, str_len(t) - 5))
+  at = str_find(spec, " in ")
+  if at < 0 then
+    println("tmplgen: `each` wants `x in xs`, not `" + spec + "`")
+    (ind, k, open)
+  else
+    names = trim(str_sub(spec, 0, at))
+    list = trim(str_sub(spec, at + 4, str_len(spec) - at - 4))
+    comma = str_find(names, ",")
+    item = if comma < 0 then names else trim(str_sub(names, 0, comma))
+    idx = if comma < 0 then "i" + int_to_str(k) else trim(str_sub(names, comma + 1, str_len(names) - comma - 1))
+    tag_k = int_to_str(k)
+    line(o, ind, "fn each" + tag_k + "(l" + tag_k + ", " + idx + ") = match l" + tag_k)
+    line(o, ind + 1, "Nil -> 0")
+    line(o, ind + 1, "Cons(" + item + ", rest" + tag_k + ") ->")
+    (ind + 2, k + 1, Cons(EachOpen(tag_k, idx, list), open))
+
+fn close_tag(o: StrBuf, ind, k, open) = match open
+  Nil ->
+    println("tmplgen: an `end` with nothing open")
+    (ind, k, open)
+  Cons(what, rest) -> match what
+    ForOpen -> (ind - 1, k, rest)
+    IfOpen ->
+      line(o, ind, "0")
+      line(o, ind - 1, "else 0")
+      (ind - 1, k, rest)
+    ElseOpen ->
+      line(o, ind, "0")
+      (ind - 1, k, rest)
+    EachOpen(tag_k, idx, list) ->
+      line(o, ind, "each" + tag_k + "(rest" + tag_k + ", " + idx + " + 1)")
+      line(o, ind - 2, "each" + tag_k + "(" + list + ", 0)")
+      (ind - 2, k, rest)
+
+# -- writing ---------------------------------------------------------------------
+
+fn line(o: StrBuf, ind, text) =
+  pad(o, ind)
+  o += text
+  o += "\n"
+
+fn pad(o: StrBuf, ind) =
+  for i in 0..ind
+    o += "  "
+
+# Static text becomes one append of one literal, whatever is in it.
+fn literal(o: StrBuf, s, from, to, ind) =
+  if to <= from then 0
+  else
+    pad(o, ind)
+    o += "b += \""
+    for i in from..to
+      quoted(o, str_get(s, i))
+    o += "\"\n"
+    0
+
+fn quoted(o: StrBuf, c) =
+  if c == 34 then
+    o += "\\\""
+  else if c == 92 then
+    o += "\\\\"
+  else if c == 10 then
+    o += "\\n"
+  else if c == 13 then
+    o += "\\r"
+  else if c == 9 then
+    o += "\\t"
+  else
+    o += c

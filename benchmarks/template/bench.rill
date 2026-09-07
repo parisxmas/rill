@@ -1,0 +1,80 @@
+# The two pages the Rust template benchmark renders, and what they cost.
+#
+#     rill run benchmarks/template/bench.rill big-table        # the page itself
+#     rill run benchmarks/template/bench.rill big-table 1000   # what it costs
+#
+# The data is the same as `tmpls/src/lib.rs` in the Rust suite builds: a
+# hundred rows of a hundred numbers, and four teams in 2015. The page is
+# written into one builder that is emptied between renders, which is what the
+# Rust benchmark does with its `String`. The whole round is timed once rather
+# than each render, so that the clock is not part of what is measured.
+import "big_table"
+import "teams_tmpl"
+import "teamdata"
+
+fn side() = 100
+
+fn main() = match args()
+  Cons(_, Cons(case, rest)) -> go(case, count(rest))
+  _ -> usage()
+
+fn count(l) = match l
+  Cons(s, _) -> str_to_int(s)
+  Nil -> 0
+
+fn usage() =
+  println("usage: bench <big-table|teams> [renders]")
+  println("  with no count the page goes to standard output.")
+
+fn go(case, n) =
+  if case == "big-table" then big(n) else if case == "teams" then squad(n) else usage()
+
+fn big(n) =
+  table = table_of(side() * side(), 0)
+  b = strbuf()
+  big_table(b, table, side(), side())
+  if n <= 0 then print(strbuf_str(b))
+  else
+    say("big-table", #b, n, time_big(b, table, n))
+
+fn table_of(n, i) =
+  v = buf_int(n)
+  for j in 0..n
+    v[j] = j % side()
+  v
+
+fn time_big(b: StrBuf, table, n) =
+  t0 = now_nanos()
+  spin_big(b, table, n)
+  now_nanos() - t0
+
+fn spin_big(b: StrBuf, table, left) =
+  if left <= 0 then 0
+  else
+    strbuf_clear(b)
+    big_table(b, table, side(), side())
+    spin_big(b, table, left - 1)
+
+fn squad(n) =
+  four = four_teams()
+  b = strbuf()
+  teams(b, 2015, four)
+  if n <= 0 then print(strbuf_str(b))
+  else
+    say("teams", #b, n, time_teams(b, four, n))
+
+fn time_teams(b: StrBuf, four, n) =
+  t0 = now_nanos()
+  spin_teams(b, four, n)
+  now_nanos() - t0
+
+fn spin_teams(b: StrBuf, four, left) =
+  if left <= 0 then 0
+  else
+    strbuf_clear(b)
+    teams(b, 2015, four)
+    spin_teams(b, four, left - 1)
+
+fn say(name, bytes, n, total) =
+  println(name + " " + int_to_str(bytes) + " bytes " + int_to_str(n) + " renders")
+  println("  each " + int_to_str(total / n) + " ns")

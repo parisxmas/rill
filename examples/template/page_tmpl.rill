@@ -1,0 +1,20 @@
+# Generated from examples/template/page.tmpl by tools/tmplgen.rill — do not edit.
+import "tmpl"
+import "shopdata"
+import "banner_tmpl"
+import "row_tmpl"
+
+fn page(b: StrBuf, shop: Shop) =
+  b += "<!doctype html>\n<html lang=\"en\">\n  <body>\n"
+  banner(b, shop.name, shop.line)
+  b += "    <table>\n      <tr><th>#</th><th>what</th><th>price</th><th>note</th><th>stock</th></tr>\n"
+  fn each0(l0, i) = match l0
+    Nil -> 0
+    Cons(it, rest0) ->
+      row(b, it, i + 1)
+      each0(rest0, i + 1)
+  each0(shop.items, 0)
+  b += "    </table>\n"
+  banner(b, "that is all", shop.name)
+  b += "  </body>\n</html>\n"
+  0

@@ -1,0 +1,27 @@
+# Generated from examples/oxidb/catalogue_nav.tmpl by tools/tmplgen.rill — do not edit.
+import "tmpl"
+import "catview"
+
+fn catalogue_nav(b: StrBuf, steps: List(Step)) =
+  b += "    <nav>\n      "
+  fn each0(l0, i0) = match l0
+    Nil -> 0
+    Cons(s, rest0) ->
+      b += "\n      "
+      if s.live then
+        b += "<a href=\"/?"
+        render(b, s.href)
+        b += "\">"
+        render(b, s.label)
+        b += "</a>"
+        0
+      else
+        b += "<span>"
+        render(b, s.label)
+        b += "</span>"
+        0
+      b += "\n      "
+      each0(rest0, i0 + 1)
+  each0(steps, 0)
+  b += "\n    </nav>\n"
+  0

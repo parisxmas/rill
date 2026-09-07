@@ -1,0 +1,6 @@
+# What the `teams` template is given, and what the benchmark builds.
+type Team
+  Team(name: Str, score: Int)
+
+fn four_teams() =
+  Cons(Team("Jiangsu", 43), Cons(Team("Beijing", 27), Cons(Team("Guangzhou", 22), Cons(Team("Shandong", 12), Nil))))

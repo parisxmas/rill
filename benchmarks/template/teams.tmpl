@@ -1,0 +1,17 @@
+%% import "teamdata"
+%= teams(year, teams: List(Team))
+<html>
+  <head>
+    <title><%= year %></title>
+  </head>
+  <body>
+    <h1>CSL <%= year %></h1>
+    <ul>
+    <% each team, idx in teams %>
+      <li class="<% if idx == 0 %>champion<% end %>">
+      <b><%= team.name %></b>: <%= team.score %>
+      </li>
+    <% end %>
+    </ul>
+  </body>
+</html>

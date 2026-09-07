@@ -84,6 +84,24 @@ versus Go's `net/http`, under `wrk -t4 -c50 -d10s`:
 | rill, connection per request | **41,035** | 98.5 ms | **2.0 M** | |
 | go, connection per request | 13,310 | **2.05 ms** | 20.1 M | |
 
+And the page that server would be answering with. `tools/tmplgen.rill`
+compiles an HTML template into Rill before the program is compiled, so there
+is nothing to interpret at run time. On the two pages the
+[askama-rs suite](https://github.com/askama-rs/template-benchmark) renders,
+byte for byte the same output (`python3 benchmarks/template/run.py`):
+
+| engine | 100×100 table | a small page |
+|---|---:|---:|
+| **rill** | **11.46 µs** | **29 ns** |
+| sailfish | 11.55 µs | 32 ns |
+| markup | 26.28 µs | 58 ns |
+| askama | 28.72 µs | 45 ns |
+| maud | 33.29 µs | 68 ns |
+
+Sailfish is the fastest of the Rust engines and, like this one, a compile-time
+generator. Almost none of the difference is the generator: a page is a run of
+appends, and `benchmarks/template/README.md` is about what an append costs.
+
 Rill is ahead on throughput in both modes and uses about 9× less memory, and
 with keep-alive its p99 is 3.2× tighter because nothing pauses for collection.
 The one bad-looking number, the 98 ms tail, is a rate effect rather than a
@@ -152,7 +170,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `http/` | a server answering its own requests, and a WebSocket one |
 | `json/`, `yaml/` | reading and writing both, from `lib/` |
 | `oxidb/` | the five OxiDB clients driven, four of them against stand-in servers on strands answering the shapes a real engine answers with |
-| `oxidb/catalogue.rill` | a hundred thousand documents seeded into OxiDB and served over HTTP: a browsable page with filters and a pager at `/`, and JSON at `/count`, `/doc/42`, `/find?role=eng&limit=3`, `/top?by=score&limit=5`. Two libraries meet and neither knows about the other |
+| `oxidb/catalogue.rill` | a hundred thousand documents seeded into OxiDB and served over HTTP: a browsable page with filters and a pager at `/`, and JSON at `/count`, `/doc/42`, `/find?role=eng&limit=3`, `/top?by=score&limit=5`. Three libraries meet and none knows about the others, and the page is four templates — one including the others — compiled to Rill before the program is |
 | `maps.rill` | hash tables: data types as keys, `Option` out of every read |
 | `results.rill` | `?`: a chain of things that can fail, and the first failure out of it |
 | `records.rill` | field names read with a dot, and the building that changing one is |
@@ -160,6 +178,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `loops.rill` | how repetition is written: tail recursion and folds |
 | `blocks.rill` | block bodies in match arms, select arms and `if` branches |
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
+| `template/` | a page built out of four templates: one includes the others and hands them what they need, and `tmplgen` turns all four into Rill before the program is compiled |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
 | `grid_tour.rill` | arrays with a shape from `lib/grid.rill`: views, masks, reductions, a matrix product — NumPy's shapes, and faster than NumPy where there is arithmetic to do |
 | `lanes.rill`, `holders.rill` | `Float2`, two floats in one register; `unique`, the question that lets an operation reuse a temporary's storage |
@@ -174,7 +193,9 @@ give it.
 
 `lib/` is what the examples above are written on, and is written in Rill
 itself: `json.rill` and `yaml.rill`, `http.rill` for HTTP/1.1, `ws.rill` for
-WebSocket, `sha1.rill` for the handshake, `grid.rill` for arrays with a shape
+WebSocket, `sha1.rill` for the handshake, `tmpl.rill` for HTML templates (with
+`tools/tmplgen.rill`, which compiles a template into Rill rather than
+interpreting one — its header is the syntax), `grid.rill` for arrays with a shape
 (and `bindings/python`, which makes it `import grid as g` in Python — NumPy's
 notation on Rill's loops, through `rill build --shared`), and a client for each of the five
 engines OxiDB mounts. Four are on its native wire and share `oxiwire.rill`,

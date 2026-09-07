@@ -1,0 +1,15 @@
+%% import "catview"
+%= catalogue_form(v: View)
+    <form method="get" action="/">
+      <label>role<input name="role" value="<%= v.role %>" placeholder="eng, ops, sre, design"></label>
+      <label>region<input name="region" value="<%= v.region %>" placeholder="eu, us, apac"></label>
+      <label>sku<input name="sku" value="<%= v.sku %>" placeholder="a number"></label>
+      <label>sort by<select name="by">
+        <% each o in v.bys %><option<% if o.on %> selected<% end %>><%= o.name %></option><% end %>
+      </select></label>
+      <label>order<select name="dir">
+        <% each o in v.dirs %><option<% if o.on %> selected<% end %>><%= o.name %></option><% end %>
+      </select></label>
+      <label>limit<input name="limit" value="<%= v.limit %>" placeholder="per page"></label>
+      <button type="submit">search</button>
+    </form>

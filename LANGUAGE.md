@@ -247,7 +247,19 @@ what it adds to is the storage the name points at, exactly as `v[i] = x`
 writes a buffer. `strbuf_add(b, s)` and `strbuf_byte(b, n)` are the same two
 operations spelled out. A builder is not a value type — it does not show,
 compare or cross a channel; `strbuf_str` takes the string out of it, and the
-builder stays usable.
+builder stays usable. `strbuf_clear(b)` empties one without giving back the
+room it took, which is what a page rendered over and over into the same
+builder wants.
+
+None of the three is a call. An append is written where it stands: the room
+is one compare against a capacity the compiler is holding in a register, a
+literal goes in as whole words because its length is known, and `b +=
+int_to_str(n)` writes the digits themselves rather than a string that exists
+only to be copied. The runtime is asked for one thing only, a bigger block,
+and it is handed the block rather than the builder — so the length and the
+capacity survive the call in registers, and a loop of appends reads the
+header once rather than after every write. `benchmarks/template` is what
+that adds up to on a page.
 
 ### Slices
 
@@ -1238,7 +1250,7 @@ traps mid-run.
 | `map_find(m, k)` `map_next(m, i)` `map_key_at(m, i)` `map_val_at(m, i)` | the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |
-| `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `#b` | building a string a piece at a time |
+| `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `strbuf_clear(b)` `#b` | building a string a piece at a time; `strbuf_clear` empties one and keeps its room |
 | `to_cstr` `from_cstr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |
 | `now_nanos()` `sleep_ms(ms)` | a monotonic clock, and a wait that parks the strand |

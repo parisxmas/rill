@@ -1,0 +1,12 @@
+%% import "catview"
+%= catalogue_table(rows: List(Row))
+    <table>
+      <thead>
+        <tr><th>sku</th><th>name</th><th>role</th><th>region</th><th>score</th><th>stock</th></tr>
+      </thead>
+      <tbody>
+        <% each r in rows %>
+        <tr><td><%= r.sku %></td><td><%= r.name %></td><td><%= r.role %></td><td><%= r.region %></td><td><%= r.score %></td><td><%= r.stock %></td></tr>
+        <% end %>
+      </tbody>
+    </table>

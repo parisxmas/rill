@@ -1,0 +1,43 @@
+# Generated from examples/oxidb/catalogue_form.tmpl by tools/tmplgen.rill — do not edit.
+import "tmpl"
+import "catview"
+
+fn catalogue_form(b: StrBuf, v: View) =
+  b += "    <form method=\"get\" action=\"/\">\n      <label>role<input name=\"role\" value=\""
+  render(b, v.role)
+  b += "\" placeholder=\"eng, ops, sre, design\"></label>\n      <label>region<input name=\"region\" value=\""
+  render(b, v.region)
+  b += "\" placeholder=\"eu, us, apac\"></label>\n      <label>sku<input name=\"sku\" value=\""
+  render(b, v.sku)
+  b += "\" placeholder=\"a number\"></label>\n      <label>sort by<select name=\"by\">\n        "
+  fn each0(l0, i0) = match l0
+    Nil -> 0
+    Cons(o, rest0) ->
+      b += "<option"
+      if o.on then
+        b += " selected"
+        0
+      else 0
+      b += ">"
+      render(b, o.name)
+      b += "</option>"
+      each0(rest0, i0 + 1)
+  each0(v.bys, 0)
+  b += "\n      </select></label>\n      <label>order<select name=\"dir\">\n        "
+  fn each1(l1, i1) = match l1
+    Nil -> 0
+    Cons(o, rest1) ->
+      b += "<option"
+      if o.on then
+        b += " selected"
+        0
+      else 0
+      b += ">"
+      render(b, o.name)
+      b += "</option>"
+      each1(rest1, i1 + 1)
+  each1(v.dirs, 0)
+  b += "\n      </select></label>\n      <label>limit<input name=\"limit\" value=\""
+  render(b, v.limit)
+  b += "\" placeholder=\"per page\"></label>\n      <button type=\"submit\">search</button>\n    </form>\n"
+  0

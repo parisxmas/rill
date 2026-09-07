@@ -1,0 +1,46 @@
+%% import "catview"
+%% import "catalogue_form_tmpl"
+%% import "catalogue_table_tmpl"
+%% import "catalogue_nav_tmpl"
+%= catalogue_page(v: View)
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>catalogue</title>
+    <style>
+      body{font:14px system-ui,sans-serif;margin:2rem;color:#222}
+      h1{font-size:1.3rem}
+      table{border-collapse:collapse;margin:1rem 0;width:100%}
+      th,td{padding:.35rem .6rem;text-align:left;border-bottom:1px solid #e5e5e5}
+      th{background:#fafafa;font-weight:600}
+      tr:hover td{background:#f6f9ff}
+      form{display:flex;gap:.6rem;flex-wrap:wrap;align-items:end}
+      label{display:flex;flex-direction:column;font-size:12px;color:#666}
+      input,select{font:inherit;padding:.3rem .4rem;border:1px solid #ccc;border-radius:4px}
+      button{font:inherit;padding:.35rem .9rem;border:1px solid #345;background:#345;color:#fff;border-radius:4px;cursor:pointer}
+      nav{display:flex;gap:.4rem;align-items:center}
+      nav a,nav span{padding:.3rem .6rem;border:1px solid #ddd;border-radius:4px;text-decoration:none;color:#345}
+      nav span{color:#bbb}
+      .note{color:#888;margin-top:2rem}
+      .bad{color:#a00}
+      code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}
+    </style>
+  </head>
+  <body>
+    <h1>catalogue</h1>
+<% include catalogue_form(v) -%>
+    <% if #v.trouble > 0 %>
+    <p class="bad"><%= v.trouble %></p>
+    <% elif v.total == 0 %>
+    <p>nothing matches</p>
+    <% else %>
+    <p><b><%= v.total %></b> documents match — showing <%= v.from %>–<%= v.upto %>, page <%= v.page %> of <%= v.pages %></p>
+    <% end %>
+    <% if len(v.rows) > 0 %>
+<% include catalogue_table(v.rows) -%>
+    <% end %>
+<% include catalogue_nav(v.steps) -%>
+    <p class="note">The same server answers <code>/count</code>, <code>/doc/&lt;sku&gt;</code>, <code>/find</code> and <code>/top</code> as JSON.</p>
+  </body>
+</html>

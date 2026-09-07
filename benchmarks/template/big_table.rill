@@ -1,0 +1,14 @@
+# Generated from benchmarks/template/big-table.tmpl by tools/tmplgen.rill — do not edit.
+import "tmpl"
+
+fn big_table(b: StrBuf, table: Buf(Int), rows, cols) =
+  b += "<table>\n    "
+  for r in 0..rows
+    b += "\n    <tr>\n        "
+    for c in 0..cols
+      b += "\n        <td>"
+      render(b, table[r * cols + c])
+      b += "</td>\n        "
+    b += "\n    </tr>\n    "
+  b += "\n</table>\n"
+  0

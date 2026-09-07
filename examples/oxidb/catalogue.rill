@@ -1,9 +1,10 @@
 # A hundred thousand documents in OxiDB, and an HTTP server in front of them.
 #
-# Two libraries meet here and neither knows about the other: `oxidb.rill`
-# speaks the database's binary wire, `http.rill` speaks HTTP/1.1, and what is
-# written below is only the joining — a URL turned into a query, an answer
-# turned into JSON.
+# Three libraries meet here and none of them knows about the others:
+# `oxidb.rill` speaks the database's binary wire, `http.rill` speaks HTTP/1.1,
+# `catalogue.tmpl` is the page, and what is written below is only the joining —
+# a URL turned into a query, an answer turned into JSON or into a view the
+# template can lay out.
 #
 #     oxidb-server &                      # the document engine is on by default
 #     ./catalogue 4444                    # seeds, then serves on a port it prints
@@ -11,6 +12,19 @@
 #
 # `/` is a page a browser can use: a form for the filters, a table, and a
 # pager. Everything else answers JSON, so the same server serves both.
+#
+# The page is a template rather than markup built by hand, and it is four of
+# them: `catalogue.tmpl` is the page, and it includes the form, the table and
+# the pager — `<% include catalogue_table(v.rows) %>` is the call
+# `catalogue_table(b, v.rows)`, the same builder and the rows handed over.
+# `tools/tmplgen.rill` compiles each one to the Rill checked in beside it, and
+# that Rill is compiled with the rest of this program. Nothing is parsed or
+# looked up by name while a page is being rendered:
+#
+#     rill build tools/tmplgen.rill -o tmplgen
+#     for t in catalogue catalogue_form catalogue_table catalogue_nav; do
+#       ./tmplgen examples/oxidb/$t.tmpl examples/oxidb/${t}_tmpl.rill
+#     done
 #
 #     open http://127.0.0.1:8123/
 #     curl 127.0.0.1:8123/count
@@ -53,6 +67,8 @@
 # not arithmetic.
 import "oxidb"
 import "http" as h
+import "catview"
+import "catalogue_page"
 
 fn total() = 100000
 
@@ -301,77 +317,42 @@ fn sort_dir(qs) = if param(qs, "dir") == "desc" then 0 - 1 else 1
 
 fn clamped(n, lo, hi) = if n < lo then lo else if n > hi then hi else n
 
+# The page itself is `catalogue.tmpl`, compiled to Rill by
+# `tools/tmplgen.rill` before this file is. What is left here is the shape it
+# is given: the form as it should come back, one row per document, and the
+# pager worked out — no markup, and no page to look at to see what a query
+# does.
 fn page_of_html(qs, list, total, page, pages, size, skip, trouble) =
   b = strbuf()
-  b += "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-  b += "<title>catalogue</title>" + style()
-  b += "</head><body><h1>catalogue</h1>"
-  b += form_html(qs)
-  b += if str_len(trouble) > 0 then "<p class=\"bad\">" + esc(trouble) + "</p>" else summary_html(total, page, pages, size, skip, len(list))
-  b += table_html(list)
-  b += pager_html(qs, page, pages)
-  b += "<p class=\"note\">The same server answers <code>/count</code>, <code>/doc/&lt;sku&gt;</code>, <code>/find</code> and <code>/top</code> as JSON.</p>"
-  b += "</body></html>"
+  catalogue_page(b, view_of(qs, list, total, page, pages, skip, trouble))
   strbuf_str(b)
 
-fn style() =
-  "<style>body{font:14px system-ui,sans-serif;margin:2rem;color:#222}h1{font-size:1.3rem}" + "table{border-collapse:collapse;margin:1rem 0;width:100%}th,td{padding:.35rem .6rem;text-align:left;border-bottom:1px solid #e5e5e5}" + "th{background:#fafafa;font-weight:600}tr:hover td{background:#f6f9ff}form{display:flex;gap:.6rem;flex-wrap:wrap;align-items:end}" + "label{display:flex;flex-direction:column;font-size:12px;color:#666}input,select{font:inherit;padding:.3rem .4rem;border:1px solid #ccc;border-radius:4px}" + "button{font:inherit;padding:.35rem .9rem;border:1px solid #345;background:#345;color:#fff;border-radius:4px;cursor:pointer}" + "nav{display:flex;gap:.4rem;align-items:center}nav a,nav span{padding:.3rem .6rem;border:1px solid #ddd;border-radius:4px;text-decoration:none;color:#345}" + "nav span{color:#bbb}.note{color:#888;margin-top:2rem}.bad{color:#a00}code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}</style>"
+fn view_of(qs, list, total, page, pages, skip, trouble) =
+  dir = if sort_dir(qs) < 0 then "desc" else "asc"
+  bys = choices(Cons("sku", Cons("score", Cons("stock", Cons("name", Nil)))), sort_by(qs))
+  dirs = choices(Cons("asc", Cons("desc", Nil)), dir)
+  seen = len(list)
+  View(param(qs, "role"), param(qs, "region"), param(qs, "sku"), int_to_str(page_size(qs)), bys, dirs, trouble, total, page, pages, skip + 1, skip + seen, rows_of(list), steps_of(qs, page, pages))
 
-fn form_html(qs) =
-  b = strbuf()
-  b += "<form method=\"get\" action=\"/\">"
-  b += input_html("role", param(qs, "role"), "eng, ops, sre, design")
-  b += input_html("region", param(qs, "region"), "eu, us, apac")
-  b += input_html("sku", param(qs, "sku"), "a number")
-  b += "<label>sort by<select name=\"by\">"
-  b += options_html(Cons("sku", Cons("score", Cons("stock", Cons("name", Nil)))), sort_by(qs))
-  b += "</select></label><label>order<select name=\"dir\">"
-  b += options_html(Cons("asc", Cons("desc", Nil)), if sort_dir(qs) < 0 then "desc" else "asc")
-  b += "</select></label>"
-  b += input_html("limit", int_to_str(page_size(qs)), "per page")
-  b += "<button type=\"submit\">search</button></form>"
-  strbuf_str(b)
+fn rows_of(list) = match list
+  Nil -> Nil
+  Cons(doc, rest) -> Cons(row_of(doc), rows_of(rest))
 
-fn input_html(name, value, hint) =
-  "<label>" + name + "<input name=\"" + name + "\" value=\"" + esc(value) + "\" placeholder=\"" + hint + "\"></label>"
-
-fn options_html(names, chosen) = match names
-  Nil -> ""
-  Cons(n, rest) -> "<option" + (if n == chosen then " selected" else "") + ">" + n + "</option>" + options_html(rest, chosen)
-
-fn summary_html(total, page, pages, size, skip, shown) =
-  if total == 0 then "<p>nothing matches</p>" else "<p><b>" + int_to_str(total) + "</b> documents match — showing " + int_to_str(skip + 1) + "–" + int_to_str(skip + shown) + ", page " + int_to_str(page) + " of " + int_to_str(pages) + "</p>"
-
-fn table_html(list) =
-  if len(list) == 0 then ""
-  else
-    b = strbuf()
-    b += "<table><thead><tr><th>sku</th><th>name</th><th>role</th><th>region</th><th>score</th><th>stock</th></tr></thead><tbody>"
-    rows_onto(b, list)
-    b += "</tbody></table>"
-    strbuf_str(b)
-
-fn rows_onto(b: StrBuf, list) = match list
-  Nil -> 0
-  Cons(doc, rest) ->
-    b += "<tr><td>" + int_to_str(field_int(doc, "sku")) + "</td><td>" + esc(field_str(doc, "name")) + "</td><td>" + esc(field_str(doc, "role")) + "</td><td>" + esc(field_str(doc, "region")) + "</td><td>" + float_to_str(field_float(doc, "score")) + "</td><td>" + int_to_str(field_int(doc, "stock")) + "</td></tr>"
-    rows_onto(b, rest)
+fn row_of(doc) =
+  Row(field_int(doc, "sku"), field_str(doc, "name"), field_str(doc, "role"), field_str(doc, "region"), field_float(doc, "score"), field_int(doc, "stock"))
 
 fn field_float(doc, key) = as_float(unwrap_or(get(doc, key), JNull))
 
-fn pager_html(qs, page, pages) =
-  b = strbuf()
-  b += "<nav>"
-  b += step_html(qs, 1, page > 1, "first")
-  b += step_html(qs, page - 1, page > 1, "prev")
-  b += "<span>" + int_to_str(page) + " / " + int_to_str(pages) + "</span>"
-  b += step_html(qs, page + 1, page < pages, "next")
-  b += step_html(qs, pages, page < pages, "last")
-  b += "</nav>"
-  strbuf_str(b)
+# Five steps, of which the middle one is where the page count goes: a step
+# that is not live is a word rather than a link, and that is what the counter
+# wants to be anyway.
+fn steps_of(qs, page, pages) =
+  here = int_to_str(page) + " / " + int_to_str(pages)
+  back = Cons(step_of(qs, 1, page > 1, "first"), Cons(step_of(qs, page - 1, page > 1, "prev"), Nil))
+  on = Cons(step_of(qs, page + 1, page < pages, "next"), Cons(step_of(qs, pages, page < pages, "last"), Nil))
+  append(back, Cons(Step(here, "", false), on))
 
-fn step_html(qs, to, live, label) =
-  if live then "<a href=\"/?" + esc(with_page(qs, to)) + "\">" + label + "</a>" else "<span>" + label + "</span>"
+fn step_of(qs, to, live, label) = Step(label, if live then with_page(qs, to) else "", live)
 
 # The query string as it stands, with `page` set to this one.
 fn with_page(qs, n) = join(reverse(Cons("page=" + int_to_str(n), kept_pairs(qs))), "&")
@@ -380,14 +361,3 @@ fn kept_pairs(qs) =
   for i in 0..len(pairs_of(qs)) with acc = Nil
     p = unwrap_or(nth(pairs_of(qs), i), "")
     if before_eq(p) == "page" || str_len(after_eq(p)) == 0 then acc else Cons(p, acc)
-
-# `&`, `<`, `>` and the quotes, so that what a document says cannot be read
-# as markup.
-fn esc(s) =
-  b = strbuf()
-  for i in 0..str_len(s)
-    b += esc_byte(str_get(s, i))
-  strbuf_str(b)
-
-fn esc_byte(c) =
-  if c == 38 then "&amp;" else if c == 60 then "&lt;" else if c == 62 then "&gt;" else if c == 34 then "&quot;" else if c == 39 then "&#39;" else chr(c)

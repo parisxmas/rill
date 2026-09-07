@@ -1,0 +1,9 @@
+%% import "shopdata"
+%= row(it: Item, n)
+<tr>
+  <td><%= n %></td>
+  <td><%= it.name %></td>
+  <td><%= it.price %></td>
+  <td><% if #it.note > 0 %><%! it.note %><% else %>—<% end %></td>
+  <td><% if it.left == 0 %>none left<% elif it.left < 5 %>only <%= it.left %><% else %><%= it.left %> in stock<% end %></td>
+</tr>

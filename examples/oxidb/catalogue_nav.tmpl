@@ -1,0 +1,7 @@
+%% import "catview"
+%= catalogue_nav(steps: List(Step))
+    <nav>
+      <% each s in steps %>
+      <% if s.live %><a href="/?<%= s.href %>"><%= s.label %></a><% else %><span><%= s.label %></span><% end %>
+      <% end %>
+    </nav>

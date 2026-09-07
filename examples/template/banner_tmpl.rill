@@ -1,0 +1,10 @@
+# Generated from examples/template/banner.tmpl by tools/tmplgen.rill — do not edit.
+import "tmpl"
+
+fn banner(b: StrBuf, title, line) =
+  b += "<header>\n  <h1>"
+  render(b, title)
+  b += "</h1>\n  <p>"
+  render(b, line)
+  b += "</p>\n</header>\n"
+  0

@@ -1,0 +1,17 @@
+%% import "shopdata"
+%% import "banner_tmpl"
+%% import "row_tmpl"
+%= page(shop: Shop)
+<!doctype html>
+<html lang="en">
+  <body>
+<% include banner(shop.name, shop.line) -%>
+    <table>
+      <tr><th>#</th><th>what</th><th>price</th><th>note</th><th>stock</th></tr>
+<% each it, i in shop.items -%>
+<% include row(it, i + 1) -%>
+<% end -%>
+    </table>
+<% include banner("that is all", shop.name) -%>
+  </body>
+</html>

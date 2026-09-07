@@ -1,0 +1,24 @@
+# A page built out of four templates, none of which is read at run time.
+#
+# `page.tmpl` is the page; it includes `banner.tmpl` twice with different
+# words and `row.tmpl` once per item, handing each one the item and its
+# position. `tools/tmplgen.rill` turns all three into the Rill checked in
+# beside them, and that Rill is compiled with this file:
+#
+#     rill build tools/tmplgen.rill -o tmplgen
+#     ./tmplgen examples/template/banner.tmpl examples/template/banner_tmpl.rill
+#     ./tmplgen examples/template/row.tmpl examples/template/row_tmpl.rill
+#     ./tmplgen examples/template/page.tmpl examples/template/page_tmpl.rill
+#     rill build examples/template/shop.rill -o shop && ./shop
+#
+# An include is a call: `<% include row(it, i + 1) %>` is `row(b, it, i + 1)`,
+# the same builder and whatever this template has in scope. So a partial is a
+# function, a template that takes a list is a function that takes a list, and
+# there is nothing else to learn.
+import "page_tmpl"
+import "shopdata"
+
+fn main() =
+  b = strbuf()
+  page(b, open_shop())
+  print(strbuf_str(b))

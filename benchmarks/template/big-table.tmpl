@@ -1,0 +1,10 @@
+%= big_table(table: Buf(Int), rows, cols)
+<table>
+    <% for r in 0..rows %>
+    <tr>
+        <% for c in 0..cols %>
+        <td><%= table[r * cols + c] %></td>
+        <% end %>
+    </tr>
+    <% end %>
+</table>

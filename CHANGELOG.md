@@ -1,5 +1,88 @@
 # Changelog
 
+## Unreleased — a page, and the appends underneath it
+
+`tools/tmplgen.rill` turns an HTML template into Rill, before the program that
+uses it is compiled. There is no template at run time and nothing to
+interpret: `<%= e %>` becomes a call, the text between the tags becomes
+appends, and a loop in the template becomes a loop in the language.
+
+```
+%% import "shop"
+%= product(p: Item, seen)
+<h1><%= p.name %></h1>
+<% if seen > 0 %><p><%= seen %> people looked</p><% end %>
+<ul><% each tag, i in p.tags %><li><%= i %>: <%= tag %></li><% end %></ul>
+```
+
+`<%= %>` escapes, `<%! %>` does not, `<% %>` carries `for`, `each`, `if` /
+`elif` / `else`, `let`, `include` and `end`, `<%# %>` is a comment, and `<%-` /
+`-%>` eat the whitespace around a tag so a template can be laid out to read
+rather than to print.
+
+A page may be built out of several templates. `<% include row(it, i) %>` is
+the call `row(b, it, i)` — the same builder, and whatever the including
+template has in scope handed over as arguments — and the template it names is
+reached with a `%%` import like any other function in another file. There is
+no separate notion of a partial or a layout, and nothing is looked up by name
+at run time: a template is a function, and a page made of four of them is four
+calls. `examples/template/` is that page. What is inside a tag is Rill — `<% if seen > 0 %>` is that
+expression, not a second language that happens to look like it.
+`lib/tmpl.rill` is the half that stays: the `Render` and `Raw` traits, so
+`<%= %>` works for anything with an impl, and an escape that copies the text
+whole until it meets a byte that needs a name.
+
+`benchmarks/template` measures it against the Rust engines on the two pages
+the askama-rs suite renders, byte for byte identical output: **11 455 ns**
+against sailfish's 11 546 on a 292 KB table, and **29 ns** against its 32 on a
+small page — ahead of markup, askama and maud by two to three times, and of an
+interpreted engine by sixty.
+
+`examples/oxidb/catalogue.rill` is the first thing written on it. Its page was
+markup built by hand — nine functions concatenating strings, and no way to see
+what the page looked like without reading them; it is now four templates — the
+page including the form, the table and the pager — with `catview.rill` beside
+them saying what a page is given. What comes out
+carries the same content on every route, the server answers the same 5,600
+requests a second at a hundred users, and the HTML is laid out to read rather
+than run together, which costs about a fifth more bytes on the wire.
+
+Almost none of that is the generator. A page is a run of appends, and the
+appends are what changed:
+
+- **An append is written where it stands.** `b += s` was a call into the
+  runtime that loaded the string's length out of its header and branched on a
+  width the caller already knew; a literal now goes in as whole words, its
+  length a constant, and `b += byte` and `b += int_to_str(n)` are laid down
+  the same way.
+- **The runtime is handed the block, not the builder.** `rill_sb_grow` takes
+  the text's block and gives back a bigger one; the pointer, the length and
+  the capacity are written by the caller. That is what lets a loop of appends
+  keep all three in registers instead of reading the header back after every
+  write — the store-to-load turnaround was most of what an append cost.
+- **The header and the text are told apart.** The bytes a builder holds live
+  in a block of their own, so a byte written into the text can never land on
+  the length; saying so in the IR is what makes the above hold across an
+  append that grows.
+- **Digits go in directly.** How many there are is read off the top bit rather
+  than found by dividing, and they are written two at a time out of a table.
+  The magnitude is carried unsigned, so the smallest integer needs no case of
+  its own.
+- **A builder may be borrowed by an impl method.** `render(b, x)` was taking a
+  reference and giving it back on every interpolation — a load, a compare and
+  a store on the header, in the middle of the tightest loop a page has.
+- **`strbuf_clear(b)`** empties a builder and keeps the room it took, for text
+  built over and over into the same one.
+- **The range test a `for` over a buffer makes is written out** rather than
+  called for, with the call left for the case that ends the program. Both it
+  and the growth path are marked cold, so what is laid down in the loop is the
+  appends and nothing else.
+
+Together these are about **four times** off the cost of building a page, and
+they show up anywhere a program writes text: the JSON benchmark in
+`benchmarks/tokens` builds its output through a builder, and every server in
+`examples/` writes its responses through one.
+
 ## Unreleased — a shape over a buffer, and NumPy behind it
 
 `lib/grid.rill`: arrays of numbers with a shape, the way NumPy has them. A

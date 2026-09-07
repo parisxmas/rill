@@ -1,0 +1,32 @@
+# Generated from examples/template/row.tmpl by tools/tmplgen.rill — do not edit.
+import "tmpl"
+import "shopdata"
+
+fn row(b: StrBuf, it: Item, n) =
+  b += "<tr>\n  <td>"
+  render(b, n)
+  b += "</td>\n  <td>"
+  render(b, it.name)
+  b += "</td>\n  <td>"
+  render(b, it.price)
+  b += "</td>\n  <td>"
+  if #it.note > 0 then
+    raw(b, it.note)
+    0
+  else
+    b += "—"
+    0
+  b += "</td>\n  <td>"
+  if it.left == 0 then
+    b += "none left"
+    0
+  else if it.left < 5 then
+    b += "only "
+    render(b, it.left)
+    0
+  else
+    render(b, it.left)
+    b += " in stock"
+    0
+  b += "</td>\n</tr>\n"
+  0
