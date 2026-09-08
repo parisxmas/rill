@@ -1399,8 +1399,20 @@ the boundary explicitly:
 |---|---|
 | `to_cstr(s) -> Ptr` | NUL-terminated copy; free it with `free_ptr` |
 | `from_cstr(p) -> Str` | copies a C string back into a Rill one |
+| `str_from_ptr(p, n) -> Str` | the same by length rather than by terminator, for bytes |
 | `free_ptr(p)` | frees what `to_cstr` (or C `malloc`) returned |
 | `null_ptr()` / `is_null(p)` | for APIs that use null |
+
+`from_cstr` stops at the first zero, which is right for a C string and wrong
+for everything a library hands back by filling a buffer and returning a count.
+`str_from_ptr(p, n)` takes exactly `n` bytes, zeros included, which is what a
+`read`, a decompression or an `SSL_read` gives:
+
+```
+b = buf_u8(16384)
+n = SSL_read(ssl, b, 16384)
+if n > 0 then str_from_ptr(b, n) else ""
+```
 
 ```
 fn env(name) =
@@ -1485,7 +1497,7 @@ traps mid-run.
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |
 | `file_open` `file_read` `file_pread` `file_write` `file_seek` `file_pos` `file_size` `file_truncate` `file_sync` `file_close` `file_remove` `file_rename` `file_exists` `dir_make` `dir_list` `dir_sync` | a file as a descriptor, for one too big to hold or still being appended to; see §10 |
 | `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `strbuf_clear(b)` `#b` | building a string a piece at a time; `strbuf_clear` empties one and keeps its room |
-| `to_cstr` `from_cstr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
+| `to_cstr` `from_cstr` `str_from_ptr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |
 | `now_nanos()` `sleep_ms(ms)` | a monotonic clock, and a wait that parks the strand |
 | `wait_signal()` | parks until the program is told something, and says which; see §7 |

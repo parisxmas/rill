@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — bytes back from C, and a name two libraries wanted
+
+`str_from_ptr(p, n)` copies `n` bytes out of C memory into a Rill string.
+`from_cstr` was the only way back and it stops at the first zero, which is
+right for a C string and wrong for everything a library hands back by filling
+a buffer and returning a count — a `read`, a decompression, an `SSL_read`. The
+alternative was a loop appending one byte at a time into a `StrBuf`, which is
+sixteen thousand calls for a sixteen-kilobyte read and is not what a bridge to
+C should cost.
+
+Found writing TLS for a message broker in Rill: OpenSSL is reached entirely
+through `extern`, with no runtime change at all, once there is a way to take
+the plaintext out of the buffer it decrypted into.
+
+`lib/http.rill`'s `render` is now `response_bytes`. `render` is the method
+`lib/tmpl.rill`'s `Render` trait owns, so a program that serves pages built
+from templates could not have both files at once — which is the ordinary shape
+of a web program and so the one case both libraries were written for.
+
 ## Unreleased — a wait that the write before it was ending
 
 `sock_wait(fd, ms)` answered false in under a millisecond if the same socket

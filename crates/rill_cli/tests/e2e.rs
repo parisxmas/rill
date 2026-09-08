@@ -1679,6 +1679,30 @@ fn foreign_widths_and_buffers() {
     );
 }
 
+/// Bytes back from C by length rather than by a terminator. The zero in the
+/// middle is the point: `from_cstr` would stop there and hand back two bytes,
+/// which is right for a C string and wrong for anything a library filled a
+/// buffer with. A null pointer and a length that is not positive are empty
+/// rather than a crash, because a C call that failed returns exactly those.
+#[test]
+fn bytes_come_back_from_c_by_length() {
+    assert_eq!(
+        run_source("bytes_from_c", 
+            "fn main() =\n\
+            \x20 s = \"ab\" + chr(0) + \"cd\"\n\
+            \x20 p = to_cstr(s)\n\
+            \x20 back = str_from_ptr(p, 5)\n\
+            \x20 free_ptr(p)\n\
+            \x20 println(int_to_str(str_len(back)))\n\
+            \x20 println(int_to_str(str_get(back, 2)))\n\
+            \x20 println(back[3:])\n\
+            \x20 println(int_to_str(str_len(str_from_ptr(null_ptr(), 4))))\n\
+            \x20 println(int_to_str(str_len(str_from_ptr(to_cstr(s), 0))))\n"
+        ),
+        "5\n0\ncd\n0\n0\n"
+    );
+}
+
 /// OpenGL, driven straight from Rill: a context with no window behind it, a
 /// compiled shader pair, vertex data in a raw buffer, and the pixels read
 /// back. The shape is stable because no pixel centre lands on a triangle

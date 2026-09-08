@@ -2880,6 +2880,11 @@ impl Checker {
             // caller frees with `free_ptr`.
             "to_cstr" => Some(("rill_to_cstr", vec![Ty::Str], Ty::Ptr)),
             "from_cstr" => Some(("rill_from_cstr", vec![Ty::Ptr], Ty::Str)),
+            // The same bridge for bytes rather than text: `from_cstr` stops at
+            // the first zero, which is right for a C string and wrong for
+            // everything a C library hands back by filling a buffer and saying
+            // how many bytes it wrote.
+            "str_from_ptr" => Some(("rill_str_from_ptr", vec![Ty::Ptr, Ty::Int], Ty::Str)),
             "free_ptr" => Some(("rill_free_ptr", vec![Ty::Ptr], Ty::Unit)),
             "null_ptr" => Some(("rill_null_ptr", vec![], Ty::Ptr)),
             "is_null" => Some(("rill_is_null", vec![Ty::Ptr], Ty::Bool)),
@@ -4066,6 +4071,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "exit"
             | "to_cstr"
             | "from_cstr"
+            | "str_from_ptr"
             | "free_ptr"
             | "null_ptr"
             | "is_null"

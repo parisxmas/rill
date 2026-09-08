@@ -2328,6 +2328,23 @@ pub unsafe extern "C" fn rill_from_cstr(p: *const u8) -> *mut u8 {
     out
 }
 
+/// Bytes from C memory, taken by length rather than by a terminator, which is
+/// what a library that fills a buffer and returns a count gives back.
+///
+/// # Safety
+/// `p` must point to at least `n` readable bytes; returns a new owned Rill
+/// string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_str_from_ptr(p: *const u8, n: i64) -> *mut u8 {
+    if p.is_null() || n <= 0 {
+        return str_new(0);
+    }
+    let n = n as usize;
+    let out = str_new(n);
+    copy_small(p, out.add(16), n);
+    out
+}
+
 /// # Safety
 /// `p` must come from `rill_to_cstr` or C `malloc`.
 #[no_mangle]

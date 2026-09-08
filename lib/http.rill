@@ -257,13 +257,16 @@ fn status_text(code) = match code
 # status, the same headers, the same `Content-Length`, and no body. A server
 # that sends the body anyway is one whose HEAD costs what its GET costs.
 fn render_for(method, res: Response, keep) =
-  full = render(res, keep)
+  full = response_bytes(res, keep)
   if method != "HEAD" then full
   else
     i = str_find(full, "\r\n\r\n")
     if i < 0 then full else str_sub(full, 0, i + 4)
 
-fn render(res: Response, keep) =
+# Named for what it makes rather than for the act of making it: `render` is the
+# trait method `lib/tmpl.rill` owns, and a program that serves pages built from
+# templates wants both files at once.
+fn response_bytes(res: Response, keep) =
   render_parts(res.status, res.content_type, res.headers, res.body, keep)
 
 fn render_parts(status, kind, extra, body, keep) =
@@ -388,7 +391,7 @@ fn digits_only_str(s) =
 # Answered without reading what was promised: a request this server will not
 # carry is one it should not spend a megabyte finding out about.
 fn refuse(conn, status, why) =
-  sock_write(conn, render(json_response(status, "{\"error\":\"" + why + "\"}"), false))
+  sock_write(conn, response_bytes(json_response(status, "{\"error\":\"" + why + "\"}"), false))
   hang_up(conn)
 
 # The connection is done with; the number is only so that every arm of the
