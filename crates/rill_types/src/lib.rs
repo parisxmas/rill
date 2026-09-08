@@ -250,6 +250,11 @@ pub struct TModule {
     pub externs: HashMap<String, ExternSig>,
     /// Instructions the program spells out, by the name it calls them.
     pub asms: HashMap<String, AsmSig>,
+    /// `naked asm fn` — whole functions, by symbol name, holding the
+    /// instructions that are all there is of them. Nothing in Rill calls one:
+    /// they are reached by an interrupt table, a reset vector or a linker
+    /// script, and what Rill has to do is put the name where those can find it.
+    pub naked_asms: HashMap<String, String>,
     /// Libraries those symbols come from, for the linker.
     pub libs: Vec<String>,
     /// How many leading entries of `fns` came from the prelude. Trait impl
@@ -520,6 +525,7 @@ struct Checker {
     traits: Vec<(String, Vec<MethodInfo>)>,
     externs: HashMap<String, ExternSig>,
     asms: HashMap<String, AsmSig>,
+    naked_asms: HashMap<String, String>,
     libs: Vec<String>,
     /// Method name -> (trait index, method index). Methods are global.
     method_index: HashMap<String, (usize, usize)>,
@@ -565,6 +571,7 @@ impl Checker {
             traits: Vec::new(),
             externs: HashMap::new(),
             asms: HashMap::new(),
+            naked_asms: HashMap::new(),
             libs: Vec::new(),
             method_index: HashMap::new(),
             impl_methods: HashMap::new(),
@@ -905,6 +912,50 @@ impl Checker {
                     format!("`{}` is already declared as a foreign function", a.name),
                 ));
             }
+            if c.naked_asms.contains_key(&a.name) {
+                return Err(TypeError::new(
+                    a.line,
+                    format!("`{}` is already declared as a naked function", a.name),
+                ));
+            }
+            if a.naked {
+                // A naked function is entered without a prologue, so there is
+                // no place an argument could have been left and nothing to
+                // return into. Saying otherwise would compile and then be
+                // wrong at the one moment it runs.
+                if !a.params.is_empty() {
+                    return Err(TypeError::new(
+                        a.line,
+                        format!(
+                            "`{}`: a naked function takes no parameters — it is entered \
+                             without a prologue, so there is nowhere for one to arrive",
+                            a.name
+                        ),
+                    ));
+                }
+                if a.ret.is_some() {
+                    return Err(TypeError::new(
+                        a.line,
+                        format!(
+                            "`{}`: a naked function answers with nothing — it returns the \
+                             way its instructions say to, if it returns at all",
+                            a.name
+                        ),
+                    ));
+                }
+                if a.constraints.is_some() {
+                    return Err(TypeError::new(
+                        a.line,
+                        format!(
+                            "`{}`: a naked function has no operands to constrain; the \
+                             instructions name the registers they use",
+                            a.name
+                        ),
+                    ));
+                }
+                c.naked_asms.insert(a.name.clone(), a.template.clone());
+                continue;
+            }
             let mut params = Vec::new();
             for (pname, tr) in &a.params {
                 let what = format!("parameter `{pname}`");
@@ -987,6 +1038,12 @@ impl Checker {
                 return Err(TypeError::new(
                     f.line,
                     format!("`{}` is already declared as an instruction", f.name),
+                ));
+            }
+            if c.naked_asms.contains_key(&f.name) {
+                return Err(TypeError::new(
+                    f.line,
+                    format!("`{}` is already declared as a naked function", f.name),
                 ));
             }
             if c.method_index.contains_key(&f.name) {
@@ -1162,6 +1219,7 @@ impl Checker {
             impl_methods: self.impl_methods,
             externs: self.externs,
             asms: self.asms,
+            naked_asms: self.naked_asms,
             libs: self.libs,
             prelude_fns: self.prelude_fns,
         })
@@ -3259,6 +3317,16 @@ impl Checker {
         }
         let idx = match self.fn_index.get(name) {
             Some(&idx) => idx,
+            None if self.naked_asms.contains_key(name) => {
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "`{name}` is a naked function and cannot be called: it is entered \
+                         by an interrupt, a vector or a jump, not by a caller. Its address \
+                         is what a program has use for."
+                    ),
+                ));
+            }
             None => return Err(TypeError::new(line, format!("unknown function `{name}`"))),
         };
         let (params, ret, subst) = match self.sigs[idx].clone() {

@@ -34,9 +34,24 @@ twice. The optimizer is otherwise free, and the emitted code is the
 instruction and nothing around it: `add x0, x8, x9` on arm64, `addq %rax,
 %rdi` on x86-64.
 
-This is instruction-level assembly only. A function written *in* assembly — an
-interrupt handler, a boot entry, the context switch — needs a function with no
-prologue, and that is still missing. wasm refuses an `asm fn` outright.
+`naked asm fn` is the other half: the instructions are the whole function, and
+LLVM puts the name in front of them with no prologue and no epilogue. An
+interrupt handler ends in `iretq` because that is what it is for, and there was
+never a caller to return to.
+
+```
+naked asm fn isr_timer() = "push %rax\n  ...\n  pop %rax\n  iretq"
+naked asm fn _kstart()   = "mov $0x1000, %rsp\n  call kmain\n  hlt"
+```
+
+No parameters, no result, no constraints — refused with a line number rather
+than compiled into something wrong at the one moment it runs. Nothing in Rill
+may call one, and the error says why. The address is what a program has use
+for, and taking it is an ordinary `asm fn`. Inside a naked body `$` is the
+assembler's literal rather than an operand reference, so an immediate is
+written the way the manual has it.
+
+wasm refuses either kind outright.
 
 ## Unreleased — bytes back from C, and a name two libraries wanted
 

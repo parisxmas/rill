@@ -261,10 +261,11 @@ impl Fmt {
                         Some(c) => format!(" : \"{}\"", escape(c)),
                         None => String::new(),
                     };
+                    let naked = if a.naked { "naked " } else { "" };
                     self.push_at(
                         0,
                         &format!(
-                            "asm fn {}({}){ret} = \"{}\"{cons}",
+                            "{naked}asm fn {}({}){ret} = \"{}\"{cons}",
                             a.name,
                             params.join(", "),
                             escape(&a.template)

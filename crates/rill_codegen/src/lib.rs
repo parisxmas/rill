@@ -2741,6 +2741,44 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             };
             self.module.add_function(name, fn_ty, None);
         }
+        // Naked functions: the instructions are the whole of them. No
+        // prologue, no epilogue, no operands — LLVM emits the body and puts
+        // the name in front of it, which is what an interrupt table or a
+        // linker script needs and all it needs. Sorted, so that two builds of
+        // the same program lay them out the same way.
+        let mut naked: Vec<(&String, &String)> = self.tmod.naked_asms.iter().collect();
+        naked.sort_by_key(|(n, _)| n.as_str());
+        for (name, template) in naked {
+            let f = self.module.add_function(name, void.fn_type(&[], false), None);
+            f.add_attribute(
+                AttributeLoc::Function,
+                self.ctx.create_enum_attribute(Attribute::get_named_enum_kind_id("naked"), 0),
+            );
+            let entry = self.ctx.append_basic_block(f, "entry");
+            let b = self.ctx.create_builder();
+            b.position_at_end(entry);
+            let body = void.fn_type(&[], false);
+            // A naked function has no operands, so `$` cannot be one and is
+            // always the literal the assembler wants — an x86 immediate is
+            // written `$0x1000` and reads as operand zero otherwise. Doubling
+            // it is what LLVM's template syntax calls for, and doing it here
+            // means the author writes the instruction the way the manual has
+            // it.
+            let ptr = self.ctx.create_inline_asm(
+                body,
+                template.replace('$', "$$"),
+                String::new(),
+                true,
+                false,
+                Some(inkwell::InlineAsmDialect::ATT),
+                false,
+            );
+            b.build_indirect_call(body, ptr, &[], "").expect("LLVM builder error");
+            // There is no return to emit: the instructions leave however they
+            // leave — `iretq`, `eret`, a jump, or not at all.
+            b.build_unreachable().expect("LLVM builder error");
+        }
+
         let alloc = self.module.add_function("rill_alloc", ptrt.fn_type(&[i64t.into()], false), None);
         alloc.add_attribute(
             AttributeLoc::Return,

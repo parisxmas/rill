@@ -3161,3 +3161,112 @@ fn wasm_refuses_assembly() {
     );
     assert!(err.contains("no inline") && err.contains("asm fn nap"), "{err}");
 }
+
+/// A naked function is the instructions and nothing else: no prologue saving
+/// registers a caller expected saved, no epilogue returning somewhere. What
+/// enters it is an interrupt or a vector, and what leaves is whatever the
+/// instructions say.
+/// How each machine returns from an interrupt. Only the test that reaches
+/// codegen needs it — the rest are refused before any assembler sees them.
+#[cfg(target_arch = "aarch64")]
+const NAKED_RET: &str = "eret";
+#[cfg(target_arch = "x86_64")]
+const NAKED_RET: &str = "iretq";
+
+#[test]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn a_naked_function_is_emitted_with_no_prologue() {
+    let out_dir = std::env::temp_dir().join(bad_name("naked"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("k.rill");
+    std::fs::write(
+        &path,
+        format!("naked asm fn isr_timer() = \"{NAKED_RET}\"\nfn main() = println(1)\n"),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(out_dir.join("k"))
+        .arg("--emit-ir")
+        .output()
+        .expect("failed to spawn rill");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let ir = String::from_utf8_lossy(&build.stdout);
+    assert!(ir.contains("define void @isr_timer()"), "{ir}");
+    assert!(ir.contains(NAKED_RET), "{ir}");
+    // The attribute group the definition points at has to carry `naked`, or
+    // LLVM writes the prologue back in.
+    let attrs = ir
+        .lines()
+        .find(|l| l.starts_with("define void @isr_timer()"))
+        .and_then(|l| l.split('#').nth(1))
+        .and_then(|n| n.split_whitespace().next())
+        .map(|n| format!("attributes #{n} ="))
+        .expect("the definition names an attribute group");
+    let group = ir.lines().find(|l| l.starts_with(&attrs)).unwrap_or_default();
+    assert!(group.contains("naked"), "{group}");
+}
+
+/// `$` is an operand reference in LLVM's template syntax and an immediate in
+/// the assembler's, and a naked function has no operands for it to be the
+/// first of. Writing the instruction the way the manual has it works.
+#[test]
+fn a_naked_function_may_write_an_immediate() {
+    let err = compile_error(
+        "naked asm fn boot() = \"movq $0x1000, %rsp\"\nfn main() = boot()\n",
+    );
+    // It compiled far enough to reject the *call*, which is the point: the
+    // template itself was accepted rather than read as operand zero.
+    assert!(err.contains("naked function and cannot be called"), "{err}");
+}
+
+#[test]
+fn a_naked_function_takes_no_parameters() {
+    let err = compile_error(
+        "naked asm fn boot(a: I64) = \"hlt\"\nfn main() = println(1)\n",
+    );
+    assert!(err.contains("takes no parameters"), "{err}");
+}
+
+#[test]
+fn a_naked_function_answers_with_nothing() {
+    let err = compile_error(
+        "naked asm fn boot() -> I64 = \"hlt\"\nfn main() = println(1)\n",
+    );
+    assert!(err.contains("answers with nothing"), "{err}");
+}
+
+#[test]
+fn a_naked_function_has_no_operands_to_constrain() {
+    let err = compile_error(
+        "naked asm fn boot() = \"hlt\" : \"=r\"\nfn main() = println(1)\n",
+    );
+    assert!(err.contains("no operands to constrain"), "{err}");
+}
+
+#[test]
+fn fmt_keeps_a_naked_declaration() {
+    let out_dir = std::env::temp_dir().join(bad_name("nakedfmt"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let src = out_dir.join("messy.rill");
+    std::fs::write(&src, "naked   asm fn  boot( )  =  \"hlt\"\nfn main()=println(1)\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("fmt")
+        .arg("--stdout")
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("naked asm fn boot() = \"hlt\"\n"), "{text}");
+}
+
+#[test]
+fn wasm_refuses_a_naked_function() {
+    let err = compile_error_for_wasm(
+        "naked asm fn boot() = \"hlt\"\nfn main() = println(1)\n",
+    );
+    assert!(err.contains("no inline") && err.contains("boot"), "{err}");
+}

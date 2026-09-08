@@ -44,6 +44,12 @@ pub struct AsmFn {
     pub template: String,
     /// The constraint string as written, or `None` for the generated one.
     pub constraints: Option<String>,
+    /// `naked asm fn` — the instructions are the whole function, placed under
+    /// the name with no prologue and no epilogue around them. It takes
+    /// nothing and answers nothing because there is no calling convention
+    /// left to carry either: what reaches it is an interrupt, a reset vector
+    /// or a jump somebody else wrote.
+    pub naked: bool,
     pub line: usize,
 }
 

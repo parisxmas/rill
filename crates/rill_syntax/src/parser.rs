@@ -129,7 +129,11 @@ impl Parser {
                 Tok::Trait => traits.push(self.traitdef()?),
                 Tok::Impl => impls.push(self.impldef()?),
                 Tok::Extern => externs.push(self.externdef()?),
-                Tok::Asm => asms.push(self.asmdef()?),
+                Tok::Asm => asms.push(self.asmdef(false)?),
+                Tok::Naked => {
+                    self.bump();
+                    asms.push(self.asmdef(true)?);
+                }
                 Tok::Import => {
                     let (line, col) = self.here();
                     self.bump();
@@ -210,9 +214,9 @@ impl Parser {
     ///
     /// The parameter list is `extern`'s, for the same reason: what may cross
     /// into a machine instruction is what may cross into C.
-    fn asmdef(&mut self) -> Result<AsmFn, SyntaxError> {
+    fn asmdef(&mut self, naked: bool) -> Result<AsmFn, SyntaxError> {
         let (line, col) = self.here();
-        self.expect(&Tok::Asm, "to begin an assembly declaration")?;
+        self.expect(&Tok::Asm, if naked { "after `naked`" } else { "to begin an assembly declaration" })?;
         self.expect(&Tok::Fn, "after `asm`")?;
         let name = self.ident("the function's name")?;
         self.expect(&Tok::LParen, "after the function name")?;
@@ -262,7 +266,7 @@ impl Parser {
         } else {
             None
         };
-        Ok(AsmFn { name, params, ret, template, constraints, line })
+        Ok(AsmFn { name, params, ret, template, constraints, naked, line })
     }
 
     /// `trait Name(a)` + indented method signatures `m(a, Int) -> Str`.

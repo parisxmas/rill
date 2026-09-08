@@ -361,7 +361,7 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
     // here rather than letting LLVM fail on the way to an object file.
     if let Some(t) = opts.target.as_deref() {
         if t.contains("wasm") {
-            if let Some(name) = tmod.asms.keys().min() {
+            if let Some(name) = tmod.asms.keys().chain(tmod.naked_asms.keys()).min() {
                 return Err(format!(
                     "{}: `asm fn {name}` cannot be built for {t} — wasm has no inline \
                      assembly. A module with an `export fn` in it may import the operation \

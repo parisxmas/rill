@@ -1550,9 +1550,28 @@ stay two calls, and one whose result nothing reads still runs: a device
 register read twice was meant twice, and `cli` is not there for its value.
 There is no way to ask for the other behaviour yet.
 
-What this is not is a way to write a function *in* assembly — an interrupt
-handler, a boot entry, a context switch. Those need a function with no
-prologue, which is a separate thing and not here.
+A function written *in* assembly says `naked`, and then the instructions are
+the whole of it: no prologue saving what a caller expected saved, no epilogue
+returning anywhere. This is what an interrupt handler, a reset vector and a
+context switch are.
+
+```
+naked asm fn isr_timer() = "push %rax\n  ...\n  pop %rax\n  iretq"
+naked asm fn _kstart()   = "mov $0x1000, %rsp\n  call kmain\n  hlt"
+```
+
+It takes nothing, answers nothing and has no constraints, because there is no
+calling convention left to carry any of them — what enters it is an interrupt
+or a jump somebody else wrote. Nothing in Rill may call one, and the error says
+so. What a program can use is the address, and that is an ordinary instruction:
+
+```
+asm fn isr_addr() -> Ptr = "leaq isr_timer(%rip), $0" : "=r"
+```
+
+Inside a naked function `$` is the literal the assembler wants rather than an
+operand reference, so an immediate is written `$0x1000`, the way the manual has
+it.
 
 On wasm there is no such thing: a module is verified before it runs and has no
 place for a machine's own encoding, so an `asm fn` is refused when building for
