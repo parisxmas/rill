@@ -8861,28 +8861,41 @@ mod tests {
     fn ir(src: &str) -> String {
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
-        compile_to_ir(&tmod).unwrap()
+        compile_to_ir(&tmod, false).unwrap()
     }
 
     #[test]
-    fn export_needs_wasm_and_scalars() {
-        let check = |src: &str, target| {
+    fn export_needs_a_host_and_scalars() {
+        let check = |src: &str, target, shared| {
             let m = rill_syntax::parse(src).unwrap();
             let tmod = rill_types::check(&m).unwrap();
-            check_exports(&tmod, target)
+            check_exports(&tmod, target, shared)
         };
-        let e = check("export fn f(x: Int) -> Int = x\nfn main() = 0\n", None).unwrap_err();
-        assert!(e.msg.contains("needs a wasm target"), "{e}");
-        let e = check("export fn id(x) = x\nfn main() = 0\n", Some("wasm32-wasip1")).unwrap_err();
+        // An export is what a host calls, and a native executable is not one:
+        // `--target wasm32-wasip1` and `--shared` are the two that are.
+        let e =
+            check("export fn f(x: Int) -> Int = x\nfn main() = 0\n", None, false).unwrap_err();
+        assert!(e.msg.contains("needs a host"), "{e}");
+        let e = check("export fn id(x) = x\nfn main() = 0\n", Some("wasm32-wasip1"), false)
+            .unwrap_err();
         assert!(e.msg.contains("generic"), "{e}");
+        // Only Int, Float, Bool and Ptr cross to wasm...
         let e = check(
             "export fn shout(s: Str) -> Str = s\nfn main() = 0\n",
             Some("wasm32-wasip1"),
+            false,
         )
         .unwrap_err();
         assert!(e.msg.contains("Str"), "{e}");
-        check("export fn f(x: Int) -> Float = to_float(x)\nfn main() = 0\n", Some("wasm32-wasip1"))
-            .unwrap();
+        check(
+            "export fn f(x: Int) -> Float = to_float(x)\nfn main() = 0\n",
+            Some("wasm32-wasip1"),
+            false,
+        )
+        .unwrap();
+        // ...while a shared library takes the counted values too, since the
+        // host holds a handle rather than a copy.
+        check("export fn shout(s: Str) -> Str = s\nfn main() = 0\n", None, true).unwrap();
     }
 
     /// Builds for wasm and hands back the module's IR, or what the target
@@ -8891,7 +8904,8 @@ mod tests {
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
         let context = Context::create();
-        let cg = Codegen::build_module(&context, &tmod, false, None, Some("wasm32-wasip1"), false)?;
+        let cg =
+            Codegen::build_module(&context, &tmod, false, None, Some("wasm32-wasip1"), false, false)?;
         cg.check_wasm_supported()?;
         Ok(cg.module.print_to_string().to_string())
     }
@@ -8956,7 +8970,7 @@ mod tests {
         let src = "trait D(a)\n  d(a) -> Str\n\nimpl D(Int)\n  fn d(n) = int_to_str(n)\n\nfn announce(x) = println(d(x))\n\nfn main() = announce(1.5)\n";
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
-        let err = compile_to_ir(&tmod).unwrap_err();
+        let err = compile_to_ir(&tmod, false).unwrap_err();
         assert!(err.msg.contains("no implementation of trait `D`"), "{}", err.msg);
     }
 
@@ -8965,7 +8979,7 @@ mod tests {
         let src = "trait D(a)\n  d(a) -> Str\n\nimpl D(Int)\n  fn d(n) = int_to_str(n)\n\nfn main() = println(d(7))\n";
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
-        let ir = compile_to_ir(&tmod).unwrap();
+        let ir = compile_to_ir(&tmod, false).unwrap();
         assert!(ir.contains("D.Int.d"), "{ir}");
     }
 
