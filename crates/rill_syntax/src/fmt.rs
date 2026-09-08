@@ -106,6 +106,7 @@ enum Decl<'a> {
     Trait(&'a TraitDef),
     Impl(&'a ImplDef),
     Extern(&'a ExternFn),
+    Asm(&'a AsmFn),
     Fn(&'a FnDef),
 }
 
@@ -117,6 +118,7 @@ impl Decl<'_> {
             Decl::Trait(d) => d.line,
             Decl::Impl(d) => d.line,
             Decl::Extern(d) => d.line,
+            Decl::Asm(d) => d.line,
             Decl::Fn(d) => d.line,
         }
     }
@@ -196,6 +198,7 @@ impl Fmt {
         decls.extend(m.traits.iter().map(Decl::Trait));
         decls.extend(m.impls.iter().map(Decl::Impl));
         decls.extend(m.externs.iter().map(Decl::Extern));
+        decls.extend(m.asms.iter().map(Decl::Asm));
         decls.extend(m.functions.iter().map(Decl::Fn));
         decls.sort_by_key(|d| d.line());
 
@@ -245,6 +248,28 @@ impl Fmt {
                         0,
                         &format!("extern{lib} fn {}({}){ret}", e.name, params.join(", ")),
                         e.line,
+                    );
+                }
+                Decl::Asm(a) => {
+                    let params: Vec<String> =
+                        a.params.iter().map(|(n, t)| format!("{n}: {}", type_ref(t))).collect();
+                    let ret = match &a.ret {
+                        Some(t) => format!(" -> {}", type_ref(t)),
+                        None => String::new(),
+                    };
+                    let cons = match &a.constraints {
+                        Some(c) => format!(" : \"{}\"", escape(c)),
+                        None => String::new(),
+                    };
+                    self.push_at(
+                        0,
+                        &format!(
+                            "asm fn {}({}){ret} = \"{}\"{cons}",
+                            a.name,
+                            params.join(", "),
+                            escape(&a.template)
+                        ),
+                        a.line,
                     );
                 }
                 Decl::Fn(f) => self.fndef(f, 0),

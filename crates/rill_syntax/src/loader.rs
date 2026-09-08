@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::{
-    Expr, ExternFn, FnDef, ImplDef, Module, Pattern, SelectOp, Stmt, TraitDef, TypeDef,
+    AsmFn, Expr, ExternFn, FnDef, ImplDef, Module, Pattern, SelectOp, Stmt, TraitDef, TypeDef,
     TypeRef,
 };
 use crate::parser::parse;
@@ -41,6 +41,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         traits: Vec::new(),
         impls: Vec::new(),
         externs: Vec::new(),
+        asms: Vec::new(),
         functions: Vec::new(),
     };
     loader.visit(entry, None, None)?;
@@ -50,6 +51,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         traits: loader.traits,
         impls: loader.impls,
         externs: loader.externs,
+        asms: loader.asms,
         functions: loader.functions,
         prelude_fns: 0,
     })
@@ -118,6 +120,7 @@ struct Loader {
     traits: Vec<TraitDef>,
     impls: Vec<ImplDef>,
     externs: Vec<ExternFn>,
+    asms: Vec<AsmFn>,
     functions: Vec<FnDef>,
 }
 
@@ -193,6 +196,13 @@ impl Loader {
             // is fine as long as nothing else claims the name.
             if !self.externs.iter().any(|x: &ExternFn| x.name == e.name) {
                 self.externs.push(e);
+            }
+        }
+        for a in module.asms {
+            // The same rule as a C symbol above, and for the same reason: two
+            // files may both declare the instruction they need.
+            if !self.asms.iter().any(|x: &AsmFn| x.name == a.name) {
+                self.asms.push(a);
             }
         }
         for f in module.functions {

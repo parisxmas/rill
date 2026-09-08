@@ -356,6 +356,22 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
     let tmod = rill_types::check(&module)
         .map_err(|e| format!("{}: {e}", opts.source.display()))?;
 
+    // wasm has no instructions to spell out: a module is verified before it
+    // runs and there is no place in it for a machine's own encoding. Say so
+    // here rather than letting LLVM fail on the way to an object file.
+    if let Some(t) = opts.target.as_deref() {
+        if t.contains("wasm") {
+            if let Some(name) = tmod.asms.keys().min() {
+                return Err(format!(
+                    "{}: `asm fn {name}` cannot be built for {t} — wasm has no inline \
+                     assembly. A module with an `export fn` in it may import the operation \
+                     from its host instead.",
+                    opts.source.display()
+                ));
+            }
+        }
+    }
+
     if opts.emit_ir {
         let ir = rill_codegen::compile_to_ir(&tmod, opts.unchecked)
             .map_err(|e| format!("{}: {e}", opts.source.display()))?;

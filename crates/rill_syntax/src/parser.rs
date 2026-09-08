@@ -114,6 +114,7 @@ impl Parser {
         let mut traits = Vec::new();
         let mut impls = Vec::new();
         let mut externs = Vec::new();
+        let mut asms = Vec::new();
         let mut functions = Vec::new();
         loop {
             self.skip_newlines();
@@ -128,6 +129,7 @@ impl Parser {
                 Tok::Trait => traits.push(self.traitdef()?),
                 Tok::Impl => impls.push(self.impldef()?),
                 Tok::Extern => externs.push(self.externdef()?),
+                Tok::Asm => asms.push(self.asmdef()?),
                 Tok::Import => {
                     let (line, col) = self.here();
                     self.bump();
@@ -163,7 +165,7 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { imports, types, traits, impls, externs, functions, prelude_fns: 0 })
+        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0 })
     }
 
     /// `extern ["lib"] fn name(p: T, ...) [-> T]`.
@@ -202,6 +204,65 @@ impl Parser {
         };
         let _ = col;
         Ok(ExternFn { name, lib, params, ret, line })
+    }
+
+    /// `asm fn name(p: T, ...) [-> T] = "template" [: "constraints"]`.
+    ///
+    /// The parameter list is `extern`'s, for the same reason: what may cross
+    /// into a machine instruction is what may cross into C.
+    fn asmdef(&mut self) -> Result<AsmFn, SyntaxError> {
+        let (line, col) = self.here();
+        self.expect(&Tok::Asm, "to begin an assembly declaration")?;
+        self.expect(&Tok::Fn, "after `asm`")?;
+        let name = self.ident("the function's name")?;
+        self.expect(&Tok::LParen, "after the function name")?;
+        let mut params = Vec::new();
+        if !matches!(self.peek(), Tok::RParen) {
+            loop {
+                let pname = self.ident("a parameter name")?;
+                self.expect(&Tok::Colon, "— assembly parameters must be annotated")?;
+                params.push((pname, self.type_ref("a parameter type")?));
+                if matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        self.expect(&Tok::RParen, "to close the parameter list")?;
+        let ret = if matches!(self.peek(), Tok::Arrow) {
+            self.bump();
+            Some(self.type_ref("a return type after `->`")?)
+        } else {
+            None
+        };
+        self.expect(&Tok::Eq, "before the instruction template")?;
+        let template = match self.bump() {
+            Tok::Str(t) => t,
+            other => {
+                return Err(SyntaxError::new(
+                    line,
+                    col,
+                    format!("expected the instruction template as a string, found {other}"),
+                ));
+            }
+        };
+        let constraints = if matches!(self.peek(), Tok::Colon) {
+            self.bump();
+            match self.bump() {
+                Tok::Str(c) => Some(c),
+                other => {
+                    return Err(SyntaxError::new(
+                        line,
+                        col,
+                        format!("expected the constraint string after `:`, found {other}"),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        Ok(AsmFn { name, params, ret, template, constraints, line })
     }
 
     /// `trait Name(a)` + indented method signatures `m(a, Int) -> Str`.

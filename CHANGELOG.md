@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased — instructions the machine has and C has no name for
+
+`asm fn` declares a run of instructions the way `extern fn` declares a symbol:
+
+```
+asm fn outb(port: U16, v: U8) = "outb $1, $0" : "{dx},{al}"
+asm fn read_cr3() -> U64      = "mov %cr3, $0" : "=r"
+asm fn barrier()              = "dmb sy"       : "~{memory}"
+```
+
+Found trying to say what an operating system in Rill would be missing. The
+answer was mostly this: `cli`, `lgdt`, `invlpg`, `wrmsr`, `in`/`out`, `cpuid`,
+`wfi`, and the barriers — none of which libc has a name for, and all of which
+are one instruction. A language that can reach C but not the instruction under
+it can drive a machine only as far as somebody else already wrapped it.
+
+The parameter list is `extern`'s, deliberately: the question of what may cross
+into an instruction is the question of what may cross into C, and the widths
+(`I8`…`U64`, `USize`, `Ptr`) already answer it. What is new is the constraint
+string, and it is LLVM's rather than ours — a template and its constraints go
+through as written, the way `extern "-L/opt/homebrew/lib"` goes to the linker
+as written. Omitting them asks for `=r` and `r`, which is what most
+instructions want; naming them is for the register the instruction insists on.
+
+A constraint string that does not describe the signature is a compile error
+with a line number. This is not politeness: LLVM answers a mismatched one with
+an assertion, and the compiler dies without saying where.
+
+Side effects are always assumed. Two identical calls stay two calls, and a
+result nothing reads still runs — a device register read twice was meant
+twice. The optimizer is otherwise free, and the emitted code is the
+instruction and nothing around it: `add x0, x8, x9` on arm64, `addq %rax,
+%rdi` on x86-64.
+
+This is instruction-level assembly only. A function written *in* assembly — an
+interrupt handler, a boot entry, the context switch — needs a function with no
+prologue, and that is still missing. wasm refuses an `asm fn` outright.
+
 ## Unreleased — bytes back from C, and a name two libraries wanted
 
 `str_from_ptr(p, n)` copies `n` bytes out of C memory into a Rill string.

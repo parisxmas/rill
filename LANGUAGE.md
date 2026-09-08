@@ -1518,6 +1518,46 @@ spelling for the browser. A C name that wasi genuinely lacks — `getpid`,
 declaration whose width disagrees with the C is one too rather than a stub that
 traps mid-run.
 
+### Assembly
+
+Some of what a machine can do has no C name. An `asm fn` is a run of
+instructions given the shape of a function: the same widths cross as for a C
+call, because the question is the same one — what fits in a register the way
+the machine expects to find it.
+
+```
+asm fn cli()                  = "cli"
+asm fn read_cr3() -> U64      = "mov %cr3, $0"  : "=r"
+asm fn outb(port: U16, v: U8) = "outb $1, $0"   : "{dx},{al}"
+asm fn barrier()              = "dmb sy"        : "~{memory}"
+```
+
+The template and the constraint string go to LLVM as written, the way
+`extern`'s library string goes to the linker as written: what the machine
+accepts is the machine's business, and a declaration is true of one
+architecture rather than of the language.
+
+Leaving the constraints off asks for the ordinary shape — `=r` for a result and
+`r` for each parameter, in order — which is what most instructions want.
+Writing them out is for a register the instruction names itself: `outb` reads
+`dx` and `al` and nothing else will do. `=` and `+` open an output, `~` a
+clobber, and anything else is an input; a string that does not describe the
+signature is refused with the line it is on, because LLVM's own answer to one
+is to abort the compiler.
+
+Every `asm fn` is emitted with side effects assumed. Two calls that look alike
+stay two calls, and one whose result nothing reads still runs: a device
+register read twice was meant twice, and `cli` is not there for its value.
+There is no way to ask for the other behaviour yet.
+
+What this is not is a way to write a function *in* assembly — an interrupt
+handler, a boot entry, a context switch. Those need a function with no
+prologue, which is a separate thing and not here.
+
+On wasm there is no such thing: a module is verified before it runs and has no
+place for a machine's own encoding, so an `asm fn` is refused when building for
+one.
+
 ## 12. Built-in functions
 
 | | |

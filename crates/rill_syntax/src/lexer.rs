@@ -19,6 +19,7 @@ pub enum Tok {
     Trait,
     Impl,
     Extern,
+    Asm,
     Export,
     For,
     // literals / names
@@ -87,6 +88,7 @@ impl std::fmt::Display for Tok {
             Tok::Trait => write!(f, "`trait`"),
             Tok::Impl => write!(f, "`impl`"),
             Tok::Extern => write!(f, "`extern`"),
+            Tok::Asm => write!(f, "`asm`"),
             Tok::Export => write!(f, "`export`"),
             Tok::Ident(s) => write!(f, "`{s}`"),
             Tok::Int(v) => write!(f, "`{v}`"),
@@ -443,6 +445,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                     "trait" => Tok::Trait,
                     "impl" => Tok::Impl,
                     "extern" => Tok::Extern,
+                    "asm" => Tok::Asm,
                     "export" => Tok::Export,
                     "true" => Tok::True,
                     "false" => Tok::False,

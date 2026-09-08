@@ -176,6 +176,22 @@ pub struct ExternSig {
     pub ret: CTy,
 }
 
+/// `asm fn` — a run of instructions rather than a symbol. Same shapes cross as
+/// for a C call, because the question is the same one: what fits in a register
+/// the way the machine expects to find it.
+///
+/// `constraints` is settled here rather than in codegen: written out by the
+/// author, or the ordinary `=r`/`r` shape when they left it off. LLVM aborts
+/// the process on a constraint string that does not match the signature, so
+/// the count is checked while there is still a line number to report it on.
+#[derive(Debug, Clone)]
+pub struct AsmSig {
+    pub params: Vec<CTy>,
+    pub ret: CTy,
+    pub template: String,
+    pub constraints: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct CtorSig {
     pub name: String,
@@ -232,6 +248,8 @@ pub struct TModule {
     pub impl_methods: HashMap<(usize, usize, ImplKey), usize>,
     /// C functions the program calls, by symbol name.
     pub externs: HashMap<String, ExternSig>,
+    /// Instructions the program spells out, by the name it calls them.
+    pub asms: HashMap<String, AsmSig>,
     /// Libraries those symbols come from, for the linker.
     pub libs: Vec<String>,
     /// How many leading entries of `fns` came from the prelude. Trait impl
@@ -501,6 +519,7 @@ struct Checker {
     pending: Vec<(u32, Constraint, usize, &'static str)>,
     traits: Vec<(String, Vec<MethodInfo>)>,
     externs: HashMap<String, ExternSig>,
+    asms: HashMap<String, AsmSig>,
     libs: Vec<String>,
     /// Method name -> (trait index, method index). Methods are global.
     method_index: HashMap<String, (usize, usize)>,
@@ -545,6 +564,7 @@ impl Checker {
             pending: Vec::new(),
             traits: Vec::new(),
             externs: HashMap::new(),
+            asms: HashMap::new(),
             libs: Vec::new(),
             method_index: HashMap::new(),
             impl_methods: HashMap::new(),
@@ -872,6 +892,76 @@ impl Checker {
             }
         }
 
+        for a in &module.asms {
+            if is_builtin_fn(&a.name) || c.method_index.contains_key(&a.name) {
+                return Err(TypeError::new(
+                    a.line,
+                    format!("`{}` is already a built-in or a trait method", a.name),
+                ));
+            }
+            if c.externs.contains_key(&a.name) {
+                return Err(TypeError::new(
+                    a.line,
+                    format!("`{}` is already declared as a foreign function", a.name),
+                ));
+            }
+            let mut params = Vec::new();
+            for (pname, tr) in &a.params {
+                let what = format!("parameter `{pname}`");
+                let cty = resolve_c_type(tr, &adt_index, &c.adts, &what)?;
+                if cty == CTy::Unit {
+                    return Err(TypeError::new(
+                        tr.line,
+                        format!("{what}: `Unit` is not a value an instruction can be given"),
+                    ));
+                }
+                if matches!(cty, CTy::Fn(..)) {
+                    return Err(TypeError::new(
+                        tr.line,
+                        format!(
+                            "{what}: a callback has nowhere to go in an instruction; \
+                             declare it `Ptr` if the address is what is wanted"
+                        ),
+                    ));
+                }
+                params.push(cty);
+            }
+            let ret = match &a.ret {
+                Some(tr) => {
+                    let r = resolve_c_type(tr, &adt_index, &c.adts, "return type")?;
+                    if matches!(r, CTy::Fn(..)) {
+                        return Err(TypeError::new(
+                            tr.line,
+                            "return type: an instruction cannot answer with a callback; \
+                             declare it `Ptr`"
+                                .to_string(),
+                        ));
+                    }
+                    r
+                }
+                None => CTy::Unit,
+            };
+            let outs = usize::from(ret != CTy::Unit);
+            let constraints = match &a.constraints {
+                Some(text) => {
+                    check_constraints(text, outs, params.len(), a.line, &a.name)?;
+                    text.clone()
+                }
+                None => {
+                    let mut parts: Vec<&str> = Vec::with_capacity(outs + params.len());
+                    if outs == 1 {
+                        parts.push("=r");
+                    }
+                    parts.extend(core::iter::repeat("r").take(params.len()));
+                    parts.join(",")
+                }
+            };
+            c.asms.insert(
+                a.name.clone(),
+                AsmSig { params, ret, template: a.template.clone(), constraints },
+            );
+        }
+
         // Provisional function signatures.
         let expanded = c.expanded_fns.clone();
         for f in &expanded {
@@ -891,6 +981,12 @@ impl Checker {
                 return Err(TypeError::new(
                     f.line,
                     format!("`{}` is already declared as a foreign function", f.name),
+                ));
+            }
+            if c.asms.contains_key(&f.name) {
+                return Err(TypeError::new(
+                    f.line,
+                    format!("`{}` is already declared as an instruction", f.name),
                 ));
             }
             if c.method_index.contains_key(&f.name) {
@@ -1065,6 +1161,7 @@ impl Checker {
                 .collect(),
             impl_methods: self.impl_methods,
             externs: self.externs,
+            asms: self.asms,
             libs: self.libs,
             prelude_fns: self.prelude_fns,
         })
@@ -3073,6 +3170,33 @@ impl Checker {
             });
         }
 
+        if let Some(sig) = self.asms.get(name).cloned() {
+            let params = &sig.params;
+            let ret = sig.ret.rill_ty();
+            if args.len() != params.len() {
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "`{name}` takes {} argument(s), but {} given",
+                        params.len(),
+                        args.len()
+                    ),
+                ));
+            }
+            let mut targs = Vec::new();
+            for (a, pt) in args.iter().zip(params) {
+                targs.push(self.arg_for(a, &pt.rill_ty(), env, line, "assembly argument")?);
+            }
+            // The same node a C call makes: codegen tells them apart by which
+            // table the name is in, and everything after that — narrowing an
+            // argument, widening a result — is identical.
+            return Ok(TExpr {
+                ty: ret,
+                line,
+                kind: TK::CallExtern { name: name.to_string(), args: targs },
+            });
+        }
+
         if let Some(&(tid, mid)) = self.method_index.get(name) {
             let sig = self.traits[tid].1[mid].clone();
             if args.len() != sig.params.len() {
@@ -3743,6 +3867,68 @@ fn caller_first(group: Vec<usize>, edges: &[Vec<usize>]) -> Vec<usize> {
 /// only here, so they are matched before falling back to the ordinary type
 /// namespace — which keeps `unknown type` errors and the `Str` advice intact
 /// for everything else.
+/// Checks an `asm fn`'s constraint string against its signature.
+///
+/// LLVM does not report a mismatch here — it asserts, and the compiler dies
+/// with it, taking the line number with it. So the count is done first: an
+/// output for a result and none for `Unit`, one input per parameter, and as
+/// many clobbers as the author likes.
+///
+/// The grammar is LLVM's, not ours, and only the first character of an item is
+/// read: `=` and `+` open an output, `~` a clobber, anything else an input.
+/// What follows is passed through untouched, which is what lets a register be
+/// pinned (`{dx}`) or an operand tied to an earlier one (`0`).
+fn check_constraints(
+    text: &str,
+    outs: usize,
+    ins: usize,
+    line: usize,
+    name: &str,
+) -> Result<(), TypeError> {
+    let (mut saw_out, mut saw_in) = (0usize, 0usize);
+    if !text.trim().is_empty() {
+        for item in text.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{name}`: an empty constraint between two commas"),
+                ));
+            }
+            match item.as_bytes()[0] {
+                b'=' | b'+' => saw_out += 1,
+                b'~' => {}
+                _ => saw_in += 1,
+            }
+        }
+    }
+    if saw_out != outs {
+        let wanted = if outs == 1 {
+            "one output constraint (`=r`, or a register to pin it to)"
+        } else {
+            "no output constraint"
+        };
+        return Err(TypeError::new(
+            line,
+            format!(
+                "`{name}`: the constraint string has {saw_out} output(s), but a signature \
+                 returning {} wants {wanted}",
+                if outs == 1 { "a value" } else { "nothing" }
+            ),
+        ));
+    }
+    if saw_in != ins {
+        return Err(TypeError::new(
+            line,
+            format!(
+                "`{name}`: the constraint string has {saw_in} input(s), but the function \
+                 takes {ins} parameter(s); every parameter needs one, in order"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_c_type(
     tr: &TypeRef,
     adt_index: &HashMap<String, usize>,

@@ -7,6 +7,7 @@ pub struct Module {
     pub traits: Vec<TraitDef>,
     pub impls: Vec<ImplDef>,
     pub externs: Vec<ExternFn>,
+    pub asms: Vec<AsmFn>,
     pub functions: Vec<FnDef>,
     /// How many of `functions` came from the prelude. They are first, so the
     /// program's own functions are the tail — which is what lets a diagnostic
@@ -23,6 +24,26 @@ pub struct ExternFn {
     pub lib: Option<String>,
     pub params: Vec<(String, TypeRef)>,
     pub ret: Option<TypeRef>,
+    pub line: usize,
+}
+
+/// `asm fn outb(port: U16, v: U8) = "outb $1, $0" : "{dx},{al}"` — a run of
+/// instructions rather than a symbol to link. The template and the constraint
+/// string go to LLVM as written, the way `extern`'s library string goes to the
+/// linker as written: what the machine accepts is the machine's business.
+///
+/// Omitting the constraints asks for the ordinary shape — `=r` for a result
+/// and `r` for each parameter, in order — which is what most of them want. A
+/// register the instruction names itself (`outb` wants `dx` and `al`) has to
+/// be pinned, and that is what writing them out is for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AsmFn {
+    pub name: String,
+    pub params: Vec<(String, TypeRef)>,
+    pub ret: Option<TypeRef>,
+    pub template: String,
+    /// The constraint string as written, or `None` for the generated one.
+    pub constraints: Option<String>,
     pub line: usize,
 }
 

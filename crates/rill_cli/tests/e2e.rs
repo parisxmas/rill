@@ -3038,3 +3038,126 @@ fn the_column_aggregates_agree_with_the_loops_they_replace() {
         "true\ntrue\ntrue\ntrue\ntrue\ntrue\nNone\nSome(18.5)\ntrue\n"
     );
 }
+
+
+// ---------------------------------------------------------------- assembly
+
+/// Adding two 64-bit registers, in the instruction the machine has for it.
+///
+/// The declaration is what differs between machines, not what the program does
+/// with it — which is the point of the tests below reaching for this constant
+/// rather than spelling an instruction out each time.
+#[cfg(target_arch = "aarch64")]
+const ASM_ADD: &str = "asm fn asm_add(a: I64, b: I64) -> I64 = \"add $0, $1, $2\" : \"=r,r,r\"\n";
+#[cfg(target_arch = "x86_64")]
+const ASM_ADD: &str = "asm fn asm_add(a: I64, b: I64) -> I64 = \"addq $2, $0\" : \"=r,0,r\"\n";
+
+/// An instruction takes its operands from the language and answers into it.
+#[test]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn assembly_computes_with_its_operands() {
+    let src = format!("{ASM_ADD}fn main() =\n  println(asm_add(20, 22))\n");
+    assert_eq!(run_source("asm_add", &src), "42\n");
+}
+
+/// Assembly is emitted with LLVM's `sideeffect`, so two calls that look alike
+/// stay two calls. A kernel reading a device register twice means it, and a
+/// pass that folded the second read into the first would be reading a value
+/// from before the write it was checking for.
+#[test]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+fn assembly_is_not_merged_with_the_call_before_it() {
+    let out_dir = std::env::temp_dir().join(bad_name("asmir"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("twice.rill");
+    std::fs::write(
+        &path,
+        format!("{ASM_ADD}fn main() =\n  println(asm_add(1, 2) + asm_add(1, 2))\n"),
+    )
+    .unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(out_dir.join("twice"))
+        .arg("--emit-ir")
+        .output()
+        .expect("failed to spawn rill");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let ir = String::from_utf8_lossy(&build.stdout);
+    assert_eq!(
+        ir.matches("asm sideeffect").count(),
+        2,
+        "both calls should survive the optimizer:\n{ir}"
+    );
+}
+
+/// A constraint string that does not describe the signature is caught here,
+/// with a line number. LLVM's own answer to one is an assertion that takes the
+/// compiler down with it.
+#[test]
+fn a_constraint_that_misses_a_parameter_is_refused() {
+    let err = compile_error(
+        "asm fn one(a: I64) -> I64 = \"nop\" : \"=r\"\nfn main() = println(one(1))\n",
+    );
+    assert!(err.contains("0 input(s)") && err.contains("1 parameter(s)"), "{err}");
+}
+
+#[test]
+fn a_constraint_with_no_output_for_a_result_is_refused() {
+    let err = compile_error(
+        "asm fn get() -> I64 = \"nop\" : \"\"\nfn main() = println(get())\n",
+    );
+    assert!(err.contains("output"), "{err}");
+}
+
+/// An instruction has nowhere to put a function, and says so rather than
+/// letting the trampoline that a C call would have built go somewhere odd.
+#[test]
+fn an_instruction_may_not_take_a_callback() {
+    let err = compile_error(
+        "asm fn go(f: Fn(Ptr) -> I32) = \"nop\" : \"r\"\nfn main() = println(1)\n",
+    );
+    assert!(err.contains("callback"), "{err}");
+}
+
+#[test]
+fn an_instruction_may_not_take_a_built_in_name() {
+    let err = compile_error(
+        "asm fn println(a: I64) = \"nop\" : \"r\"\nfn main() = println(1)\n",
+    );
+    assert!(err.contains("already a built-in"), "{err}");
+}
+
+/// The formatter has to know the declaration, or `rill fmt` would drop it.
+#[test]
+fn fmt_keeps_an_assembly_declaration() {
+    let out_dir = std::env::temp_dir().join(bad_name("asmfmt"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let src = out_dir.join("messy.rill");
+    std::fs::write(
+        &src,
+        "asm  fn  nap( )   =  \"nop\"\nasm fn pin(v: U64) = \"mov $0, $0\" : \"{x1}\"\nfn main()=println(1)\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("fmt")
+        .arg("--stdout")
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("asm fn nap() = \"nop\"\n"), "{text}");
+    assert!(text.contains("asm fn pin(v: U64) = \"mov $0, $0\" : \"{x1}\"\n"), "{text}");
+}
+
+/// wasm verifies a module before it runs it and has no place for a machine's
+/// own encoding, so the refusal comes before anything is emitted.
+#[test]
+fn wasm_refuses_assembly() {
+    let err = compile_error_for_wasm(
+        "asm fn nap() = \"nop\"\nfn main() =\n  nap()\n  println(1)\n",
+    );
+    assert!(err.contains("no inline") && err.contains("asm fn nap"), "{err}");
+}

@@ -849,10 +849,14 @@ fn find_callback_locals<'a>(
 ) {
     match &e.kind {
         TK::CallExtern { name, args } => {
-            let sig = &tmod.externs[name];
-            for (a, pt) in args.iter().zip(&sig.params) {
-                if let (CTy::Fn(..), TK::Local(n)) = (pt, &a.kind) {
-                    out.push(n);
+            // An `asm fn` shares this node and is in no extern table; a
+            // callback was refused at its declaration, so there is nothing
+            // here to find.
+            if let Some(sig) = tmod.externs.get(name) {
+                for (a, pt) in args.iter().zip(&sig.params) {
+                    if let (CTy::Fn(..), TK::Local(n)) = (pt, &a.kind) {
+                        out.push(n);
+                    }
                 }
             }
         }
@@ -6940,10 +6944,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Ok(Some(out))
             }
             TK::CallExtern { name, args } => {
-                let sig = self.tmod.externs[name].clone();
-                let callee = match self.libm_intrinsic(name, &sig) {
-                    Some(f) => f,
-                    None => self.module.get_function(name).expect("declared above"),
+                // Two things wear this node. A C call has a symbol to reach;
+                // an `asm fn` has a run of instructions to place here instead,
+                // and which one it is is settled by the table the name is in.
+                let asm = self.tmod.asms.get(name).cloned();
+                let sig = match &asm {
+                    Some(a) => rill_types::ExternSig {
+                        params: a.params.clone(),
+                        ret: a.ret.clone(),
+                    },
+                    None => self.tmod.externs[name].clone(),
                 };
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
                 let mut owned: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
@@ -6971,8 +6981,42 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     let v = self.gen_expr(a, scope, subst, func)?.expect("value");
                     argv.push(self.to_c(v, pt).into());
                 }
-                let call =
-                    self.builder.build_call(callee, &argv, "cffi").expect("LLVM builder error");
+                let call = match &asm {
+                    Some(a) => {
+                        let ps: Vec<BasicMetadataTypeEnum> = sig
+                            .params
+                            .iter()
+                            .map(|c| self.c_type(c).expect("a parameter is never Unit").into())
+                            .collect();
+                        let fn_ty = match self.c_type(&sig.ret) {
+                            Some(t) => t.fn_type(&ps, false),
+                            None => self.ctx.void_type().fn_type(&ps, false),
+                        };
+                        // Side effects are always assumed. A kernel's `cli` is
+                        // not there for its result, and an instruction dropped
+                        // because nothing read it is the kind of bug this
+                        // language should not be able to write.
+                        let ptr = self.ctx.create_inline_asm(
+                            fn_ty,
+                            a.template.clone(),
+                            a.constraints.clone(),
+                            true,
+                            false,
+                            Some(inkwell::InlineAsmDialect::ATT),
+                            false,
+                        );
+                        self.builder
+                            .build_indirect_call(fn_ty, ptr, &argv, "asm")
+                            .expect("LLVM builder error")
+                    }
+                    None => {
+                        let callee = match self.libm_intrinsic(name, &sig) {
+                            Some(f) => f,
+                            None => self.module.get_function(name).expect("declared above"),
+                        };
+                        self.builder.build_call(callee, &argv, "cffi").expect("LLVM builder error")
+                    }
+                };
                 let out = match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,

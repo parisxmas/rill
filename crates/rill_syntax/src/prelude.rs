@@ -41,6 +41,7 @@ fn merge(prelude: Module, user: Module) -> Module {
         .iter()
         .map(|f| f.name.as_str())
         .chain(user.externs.iter().map(|e| e.name.as_str()))
+        .chain(user.asms.iter().map(|a| a.name.as_str()))
         .collect();
 
     // Names that are no longer provided by the prelude.
@@ -108,6 +109,7 @@ fn merge(prelude: Module, user: Module) -> Module {
         traits: user.traits,
         impls: user.impls,
         externs: user.externs,
+        asms: user.asms,
         functions,
         prelude_fns,
     }
