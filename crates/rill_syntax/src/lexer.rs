@@ -362,6 +362,36 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                         }
                     }
                 }
+                // An exponent, if what follows `e` really is one: a sign is
+                // optional but a digit is not. A digit run can be followed by
+                // nothing else that means anything — an identifier may not
+                // start with one — so `1e9` is unambiguous, and a float
+                // without a dot is still a float. The canonical spelling has
+                // no exponent, so `1.0e9` formats back as `1000000000.0`.
+                if matches!(s.peek(), Some('e' | 'E')) {
+                    let mut ahead = s.chars.clone();
+                    ahead.next();
+                    if matches!(ahead.peek(), Some('+' | '-')) {
+                        ahead.next();
+                    }
+                    if ahead.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        is_float = true;
+                        text.push('e');
+                        s.bump();
+                        if let Some(sign @ ('+' | '-')) = s.peek() {
+                            text.push(sign);
+                            s.bump();
+                        }
+                        while let Some(c) = s.peek() {
+                            if c.is_ascii_digit() {
+                                text.push(c);
+                                s.bump();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
                 if is_float {
                     Tok::Float(text.parse().map_err(|_| {
                         SyntaxError::new(line, col, format!("invalid float literal `{text}`"))

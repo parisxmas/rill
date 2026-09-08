@@ -2924,3 +2924,56 @@ fn a_page_made_of_several_templates() {
 "#
     );
 }
+
+/// An exponent on a float literal, which the lexer used to refuse: a digit
+/// run may be followed by nothing else that means anything, so `1e6` is a
+/// float without needing a dot to say so.
+#[test]
+fn a_float_literal_may_carry_an_exponent() {
+    // Compared against the digits rather than printed: `println` renders a
+    // float to six significant figures, which would hide whether the literal
+    // was read correctly in the first place.
+    let out = run_source(
+        "exponents",
+        "fn main() =\n             println(bool_to_str(1.0e3 == 1000.0))\n             println(bool_to_str(2.5e-3 == 0.0025))\n             println(bool_to_str(1e6 == 1000000.0))\n             println(bool_to_str(1E6 == 1000000.0))\n             println(bool_to_str(1.0e+9 == 1000000000.0))\n             println(bool_to_str(1.0e9 + 1.0 > 1.0e9))\n             println(2.5e-3)\n",
+    );
+    assert_eq!(out, "true\ntrue\ntrue\ntrue\ntrue\ntrue\n0.0025\n");
+}
+
+/// The canonical spelling has no exponent, so the formatter writes one back
+/// as the digits it stands for. That is what keeps one program one spelling.
+#[test]
+fn an_exponent_formats_back_to_plain_digits() {
+    let out_dir = std::env::temp_dir().join(bad_name("fmt-exp"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("e.rill");
+    std::fs::write(&path, "fn main() = println(1.0e9)\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("fmt")
+        .arg(&path)
+        .arg("--stdout")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "fn main() = println(1000000000.0)\n");
+}
+
+/// A loop meant to carry something, with the `with` left off. This compiled
+/// and answered `0`: the binding in the body was thrown away every iteration
+/// and nothing said so. The error names the form that was meant.
+#[test]
+fn an_accumulator_written_in_the_body_names_the_with_form() {
+    let err = compile_error(
+        "fn main() =\n  v = buf_float(4)\n  for i in 0..4\n    v[i] = 1.0\n  acc = 0.0\n  for i in 0..4\n    acc = acc + v[i]\n  println(acc)\n",
+    );
+    assert!(err.contains("`acc`"), "{err}");
+    assert!(err.contains("with acc"), "{err}");
+}
+
+/// The same rule without the loop: a block's value is the expression it ends
+/// with, so a binding there binds a name nothing can read.
+#[test]
+fn a_binding_at_the_end_of_a_block_is_refused() {
+    let err = compile_error("fn main() =\n  x = 1\n  y = x + 1\n");
+    assert!(err.contains("`y`"), "{err}");
+    assert!(err.contains("nothing can read it"), "{err}");
+}

@@ -90,6 +90,11 @@ fn area(r: Float) -> Float = 3.14159 * r * r
 There are no implicit conversions. `1 + 2.0` is a type error; `to_float` and
 `to_int` cross between them explicitly.
 
+A float literal may carry an exponent — `1.0e9`, `2.5e-3`, `1e6`, with or
+without a dot before the `e` — since a digit run can be followed by nothing
+else that means anything. The canonical spelling has no exponent, so `rill
+fmt` writes `1.0e9` back as `1000000000.0`.
+
 Float arithmetic may be **contracted**: a multiply and the add that consumes it
 can become one fused instruction, rounding once instead of twice. The answer is
 nearer the true one, not further, but it is not the answer two separate
@@ -456,6 +461,13 @@ A loop that carries something says so, and is worth what it carried:
 total = for i in 0..#v with acc = 0
   acc + v[i]                   # the body's value is the next `acc`
 ```
+
+Writing the accumulation in the body instead — `acc = acc + v[i]`, with the
+`with` left off — is refused, and named as what it is. A binding is not a
+value, so a block ending in one has nothing to answer with and the name it
+bound can never be read: the loop would have run and thrown every iteration
+away. The error says so wherever it happens, and says `with` when the
+binding's value reads the name it is binding.
 
 Both forms are spelled out as the tail-recursive function below before
 anything else looks at them — the end of the range is evaluated once, and what

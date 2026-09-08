@@ -2214,7 +2214,8 @@ impl Checker {
             Expr::Block(stmts) => {
                 let mut out = Vec::new();
                 let mut ty = Ty::Unit;
-                for stmt in stmts {
+                for (i, stmt) in stmts.iter().enumerate() {
+                    let last = i + 1 == stmts.len();
                     match stmt {
                         // `lift` runs before the checker, so neither of these
                         // is still around by now.
@@ -2230,7 +2231,41 @@ impl Checker {
                                 format!("internal: `{}` was not lifted", f.name),
                             ))
                         }
-                        Stmt::Bind { name, value, .. } => {
+                        Stmt::Bind { name, value, line } => {
+                            // A block's value is what it ends with, and a
+                            // binding is not a value: nothing after this one
+                            // can read the name, because there is nothing
+                            // after it. The usual cause is a loop meant to
+                            // carry something — `acc = acc + v[i]` written in
+                            // the body rather than `with acc = 0` on the
+                            // loop — which used to compile and answer with
+                            // whatever the accumulator started as.
+                            if last {
+                                let mut names = Vec::new();
+                                let mut seen = HashSet::new();
+                                free_vars(value, &mut names, &mut seen);
+                                return Err(TypeError::new(
+                                    *line,
+                                    if names.contains(name) {
+                                        format!(
+                                            "`{name}` is bound to something that reads `{name}`, \
+                                             as the last thing in this block — so nothing ever \
+                                             reads what it holds, and the binding does nothing. \
+                                             A loop that carries a value says so on the loop: \
+                                             `for i in .. with {name} = <start>`, whose body's \
+                                             value is the next `{name}`."
+                                        )
+                                    } else {
+                                        format!(
+                                            "`{name}` is bound as the last thing in this block, \
+                                             so nothing can read it: a block's value is the \
+                                             expression it ends with, and a binding has none. \
+                                             Write the expression on its own, or move the \
+                                             binding above what uses it."
+                                        )
+                                    },
+                                ));
+                            }
                             let v = self.infer(value, env)?;
                             env.insert(name.clone(), v.ty.clone());
                             out.push(TStmt::Bind { name: name.clone(), value: v });
