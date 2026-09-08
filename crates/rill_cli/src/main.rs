@@ -412,8 +412,11 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
             None => link_cmd.arg(format!("-l{lib}")),
         };
     }
+    // Dropping what nothing reaches, under the name the platform's linker
+    // knows it by. `-dead_strip` is Apple's; GNU ld does not have it and says
+    // so by failing the link rather than ignoring the flag.
     if !opts.debug && !opts.shared {
-        link_cmd.arg("-Wl,-dead_strip");
+        link_cmd.arg(if cfg!(target_os = "macos") { "-Wl,-dead_strip" } else { "-Wl,--gc-sections" });
     }
     let link = link_cmd
         .output()
