@@ -1,0 +1,143 @@
+# Column aggregates, vectorized by hand.
+#
+# A plain `for` over a buffer is vectorized by the compiler on its own, and
+# for anything elementwise — a projection, a filter, a predicate count — that
+# is the end of it: the generated code is what C's would be. Reductions over
+# `Float` are the exception, and the reason is worth stating, because it is
+# not a shortcoming of the loop.
+#
+# Floating-point addition is not associative: `(a + b) + c` and `a + (b + c)`
+# round differently, so they are different numbers. Vectorizing a sum means
+# splitting it into independent partial sums and adding those at the end,
+# which is exactly that reassociation — so a compiler may only do it if it has
+# been told the program will accept a different answer. Rill does not tell it
+# that. `+` on floats is loosened for contraction and nothing else, and the
+# whole language keeps that promise, so LLVM has to keep the additions in the
+# order they were written: it loads a vector's worth, extracts each lane, and
+# adds them one at a time into a single accumulator. Every add waits on the
+# one before it, and a loop that should stream at memory speed runs at the
+# latency of `fadd`.
+#
+# What that costs, on an M4, over a range that fits in L1: about six times.
+# The answer is not to loosen the language but to write the accumulators out —
+# several of them, so the adds are independent, in `Float2` so each one holds
+# two lanes. That is the same trade `lib/grid.rill` makes for the matrix
+# product, and it lands in the same place: the kernels below run at 100 GB/s
+# and better, matching a C loop compiled with `-ffast-math`, while a program
+# that wants the strictly ordered sum still has it by writing the loop.
+#
+# The order these add in is the order eight partial sums happen to reach the
+# end, not the order the elements are in, so a sum here and a sum written as a
+# loop may differ in the last bits. That is the whole of what is being traded,
+# and it is traded per call rather than per build.
+#
+#     import "col" as c
+#     c.sum(prices, 0, #prices)
+#     c.mean(prices, 0, #prices)         # None over an empty range
+#
+# Every function takes a half-open range, `lo` up to but not `hi`, because a
+# column arrives in chunks and a scan wants one chunk at a time without
+# slicing a copy out of it. `#v` is the whole of it.
+#
+# Reductions over `Int` are not here: integer addition *is* associative, so
+# the compiler vectorizes those loops itself and a plain `for` is already as
+# fast as this. The same goes for counting a predicate, which compiles to a
+# vector compare and a subtract with no help from anyone.
+
+# -- sums ---------------------------------------------------------------------
+
+# Eight lanes at a time in four independent `Float2` accumulators, then the
+# elements past the last block of eight, added into the result the same way a
+# scalar loop would.
+fn sum(v: Buf(Float), lo, hi) =
+  blocks = if hi > lo then (hi - lo) / 8 else 0
+  z = splat2(0.0)
+  (s0, s1, s2, s3) = for k in 0..blocks with a = (z, z, z, z)
+    (a0, a1, a2, a3) = a
+    j = lo + k * 8
+    (a0 + f2_load(v, j), a1 + f2_load(v, j + 2), a2 + f2_load(v, j + 4), a3 + f2_load(v, j + 6))
+  s = s0 + s1 + (s2 + s3)
+  for i in lo + blocks * 8..hi with t = lane0(s) + lane1(s)
+    t + v[i]
+
+# The sum of squares, which is what a variance wants: one `fma2` per lane
+# pair, so the multiply and the add are one instruction and round once.
+fn sum_sq(v: Buf(Float), lo, hi) =
+  blocks = if hi > lo then (hi - lo) / 8 else 0
+  z = splat2(0.0)
+  (s0, s1, s2, s3) = for k in 0..blocks with a = (z, z, z, z)
+    (a0, a1, a2, a3) = a
+    j = lo + k * 8
+    x0 = f2_load(v, j)
+    x1 = f2_load(v, j + 2)
+    x2 = f2_load(v, j + 4)
+    x3 = f2_load(v, j + 6)
+    (fma2(x0, x0, a0), fma2(x1, x1, a1), fma2(x2, x2, a2), fma2(x3, x3, a3))
+  s = s0 + s1 + (s2 + s3)
+  for i in lo + blocks * 8..hi with t = lane0(s) + lane1(s)
+    t + v[i] * v[i]
+
+# The dot product of two columns over the same range — a weighted sum, and
+# what a covariance is made of.
+fn dot(x: Buf(Float), y: Buf(Float), lo, hi) =
+  blocks = if hi > lo then (hi - lo) / 8 else 0
+  z = splat2(0.0)
+  (s0, s1, s2, s3) = for k in 0..blocks with a = (z, z, z, z)
+    (a0, a1, a2, a3) = a
+    j = lo + k * 8
+    (fma2(f2_load(x, j), f2_load(y, j), a0), fma2(f2_load(x, j + 2), f2_load(y, j + 2), a1), fma2(f2_load(x, j + 4), f2_load(y, j + 4), a2), fma2(f2_load(x, j + 6), f2_load(y, j + 6), a3))
+  s = s0 + s1 + (s2 + s3)
+  for i in lo + blocks * 8..hi with t = lane0(s) + lane1(s)
+    t + x[i] * y[i]
+
+# -- averages -----------------------------------------------------------------
+
+# `None` over an empty range, because the mean of nothing is not a number and
+# an `Option` says so where a `0.0` would lie.
+fn mean(v: Buf(Float), lo, hi) =
+  if hi <= lo then None else Some(sum(v, lo, hi) / to_float(hi - lo))
+
+# The population variance, in one pass: `E[x²] - E[x]²`. One pass is what a
+# scan wants, and the price is the usual one — a column whose values are large
+# and whose spread is small loses precision in the subtraction. `None` over an
+# empty range.
+fn variance(v: Buf(Float), lo, hi) =
+  if hi <= lo then None
+  else
+    n = to_float(hi - lo)
+    m = sum(v, lo, hi) / n
+    Some(sum_sq(v, lo, hi) / n - m * m)
+
+# -- extremes -----------------------------------------------------------------
+#
+# `fmin2` and `fmax2` are lane-wise, so these keep their running answer in
+# eight lanes exactly as the sums do. Nothing is reassociated to make that
+# work — a minimum does not care what order it sees its candidates in — which
+# is why these need no hand-written trade the way a sum does.
+#
+# Both answer `None` over an empty range. A NaN in the column loses to a
+# number under both `<` and `fmin2`, so it never becomes the answer.
+
+fn min_of(v: Buf(Float), lo, hi) =
+  if hi <= lo then None
+  else
+    blocks = (hi - lo) / 8
+    f = splat2(v[lo])
+    (m0, m1, m2, m3) = for k in 0..blocks with a = (f, f, f, f)
+      (a0, a1, a2, a3) = a
+      j = lo + k * 8
+      (fmin2(a0, f2_load(v, j)), fmin2(a1, f2_load(v, j + 2)), fmin2(a2, f2_load(v, j + 4)), fmin2(a3, f2_load(v, j + 6)))
+    m = fmin2(fmin2(m0, m1), fmin2(m2, m3))
+    Some(for i in lo + blocks * 8..hi with t = if lane0(m) < lane1(m) then lane0(m) else lane1(m) if v[i] < t then v[i] else t)
+
+fn max_of(v: Buf(Float), lo, hi) =
+  if hi <= lo then None
+  else
+    blocks = (hi - lo) / 8
+    f = splat2(v[lo])
+    (m0, m1, m2, m3) = for k in 0..blocks with a = (f, f, f, f)
+      (a0, a1, a2, a3) = a
+      j = lo + k * 8
+      (fmax2(a0, f2_load(v, j)), fmax2(a1, f2_load(v, j + 2)), fmax2(a2, f2_load(v, j + 4)), fmax2(a3, f2_load(v, j + 6)))
+    m = fmax2(fmax2(m0, m1), fmax2(m2, m3))
+    Some(for i in lo + blocks * 8..hi with t = if lane0(m) > lane1(m) then lane0(m) else lane1(m) if v[i] > t then v[i] else t)

@@ -2985,6 +2985,11 @@ impl Checker {
                 Some(("rill.f2store", vec![Ty::Buf(CTy::F64), Ty::Int, Ty::Float2], Ty::Unit))
             }
             "fma2" => Some(("rill.f2fma", vec![Ty::Float2, Ty::Float2, Ty::Float2], Ty::Float2)),
+            // Lane-wise smaller and larger. A NaN loses to a number, the way
+            // it does under `<`, so a min or a max kept in lanes answers what
+            // the scalar loop would.
+            "fmin2" => Some(("rill.f2min", vec![Ty::Float2, Ty::Float2], Ty::Float2)),
+            "fmax2" => Some(("rill.f2max", vec![Ty::Float2, Ty::Float2], Ty::Float2)),
             "sock_flush" => Some(("rill_sock_flush", vec![Ty::Int], Ty::Int)),
             "sock_write" => Some(("rill_sock_write", vec![Ty::Int, Ty::Str], Ty::Int)),
             "sock_close" => Some(("rill_sock_close", vec![Ty::Int], Ty::Unit)),

@@ -6396,6 +6396,33 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                             _ => unreachable!("fma returns a value"),
                         })
                     }
+                    // The smaller and the larger of each lane. `llvm.minnum`
+                    // and `llvm.maxnum` are IEEE 754's `minNum`/`maxNum`:
+                    // given a NaN and a number they answer the number, which
+                    // is what `if a < b then a else b` already does — a NaN
+                    // compares false and never wins — so a reduction written
+                    // with these agrees with the scalar loop it replaces.
+                    // Neither is a loosening: nothing is reassociated and no
+                    // rounding changes, which is why min and max may have
+                    // lanes where a sum has to be written out by hand.
+                    "rill.f2min" | "rill.f2max" => {
+                        let a = self.gen_expr(&args[0], scope, subst, func)?.expect("value");
+                        let b = self.gen_expr(&args[1], scope, subst, func)?.expect("value");
+                        let v2 = f64t.vec_type(2);
+                        let name =
+                            if *rt == "rill.f2min" { "llvm.minnum" } else { "llvm.maxnum" };
+                        let f = inkwell::intrinsics::Intrinsic::find(name)
+                            .and_then(|i| i.get_declaration(&self.module, &[v2.into()]))
+                            .expect("llvm.minnum/maxnum on a vector");
+                        let call = self
+                            .builder
+                            .build_call(f, &[a.into(), b.into()], "f2minmax")
+                            .expect("LLVM builder error");
+                        Ok(match call.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(v) => Some(v),
+                            _ => unreachable!("minnum/maxnum returns a value"),
+                        })
+                    }
                     // `b[i]` and `b[i + 1]` as one register, and back. One
                     // bounds check covers both elements; `--unchecked`
                     // drops it as it drops every other.

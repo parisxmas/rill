@@ -221,16 +221,38 @@ q = p * splat2(4.0) + float2(0.25, 0.25)   # both lanes at once: (6.25, -7.75)
 lane0(q) + lane1(q)
 v = f2_load(buf, i)                        # buf[i] and buf[i + 1], as one
 f2_store(buf, i, fma2(a, b, v))            # a fused multiply-add on both lanes
+fmin2(a, b)                                # the smaller of each lane; fmax2 too
 ```
 
 `+ - * /` work lane by lane with the same one loosening as a `Float` (a
-multiply and the add that consumes it may fuse), `==` is of both lanes, and
+multiply and the add that consumes it may fuse), `==` is of both lanes,
+`fmin2` and `fmax2` are the smaller and the larger of each lane, and
 a `Float2` prints as a pair, goes in a map or down a channel, and sits in a
 flat record like any number. It is not a general vector type — no `Float4`,
-no lane-wise comparison — but it is what the matrix product in
+no lane-wise `<` — but it is what the matrix product in
 `lib/grid.rill` keeps its block of answers in, and it is why that product
 runs at the speed of a BLAS. The rest of a numeric loop needs none of this:
 a plain `for` over a buffer is vectorized by the compiler on its own.
+
+The one loop that is not is a **reduction over `Float`**, and the reason is
+the language keeping its word rather than the loop being poor. Vectorizing a
+sum means splitting it into independent partial sums and adding those at the
+end — which is reassociation, and reassociation changes the answer, so a
+compiler may only do it once told the program will accept a different one.
+Rill never tells it that. So the additions stay in the order they were
+written, each one waiting on the last, and a sum that should stream at memory
+speed runs at the latency of `fadd` — about six times slower, measured over a
+range that fits in L1. Clang with strict floating point does exactly the same
+thing, for exactly the same reason.
+
+Writing the accumulators out is what recovers it: several of them so the adds
+are independent, in `Float2` so each holds two lanes. `lib/col.rill` has the
+column aggregates already written that way — `sum`, `sum_sq`, `dot`, `mean`,
+`variance`, `min_of`, `max_of` — and they run five to eight times faster than
+the plain loop, at better than 100 GB/s, matching a C loop built with
+`-ffast-math` while leaving `+` on a `Float` meaning what it says everywhere
+else. `fmin2` and `fmax2` need none of that trade, since a minimum does not
+care what order it sees its candidates in.
 
 ### String builders
 
@@ -1342,9 +1364,12 @@ why a buffer should be held by a Rill binding rather than stashed in a raw
 `Ptr` slot, which would lose the count.
 
 `examples/buffers.rill` shows all of it, and `examples/gl/scene.rill` fills
-one with the vertex data a GPU is handed. For arrays with a shape — matrices,
-vectors, the things NumPy does — `lib/grid.rill` lays a shape and strides
-over one such buffer: `import "grid" as g`, then `g.matmul`, `g.sum_axis`,
+one with the vertex data a GPU is handed. For a buffer read as a column —
+scanned in ranges and reduced — `lib/col.rill` has the aggregates written
+with their accumulators in lanes: `import "col" as c`, then `c.sum(v, lo,
+hi)`, `c.mean`, `c.variance`, `c.min_of`, `c.max_of`, `c.dot`. For arrays
+with a shape — matrices, vectors, the things NumPy does — `lib/grid.rill`
+lays a shape and strides over one such buffer: `import "grid" as g`, then `g.matmul`, `g.sum_axis`,
 `g.transpose` (a view, no copy) and the rest; `benchmarks/numpy/README.md`
 lists what it has and how it measures.
 
@@ -1515,7 +1540,7 @@ traps mid-run.
 | `wait_signal()` | parks until the program is told something, and says which; see §7 |
 | `workers()` | how many workers this run has — 1 unless `RILL_THREADS` said otherwise — for deciding how many strands a big piece of work is worth |
 | `unique(x)` | whether this frame holds the only reference to a counted value; see §6 |
-| `float2(a, b)` `splat2(x)` `lane0(v)` `lane1(v)` `f2_load(buf, i)` `f2_store(buf, i, v)` `fma2(a, b, c)` | two lanes at once; see §3 |
+| `float2(a, b)` `splat2(x)` `lane0(v)` `lane1(v)` `f2_load(buf, i)` `f2_store(buf, i, v)` `fma2(a, b, c)` `fmin2(a, b)` `fmax2(a, b)` | two lanes at once; see §3 |
 | `buf_float_uninit(n)` | a buffer of floats whose elements are whatever the memory held, for a caller about to write every one — no clearing pass |
 | `exit(code)` | terminate |
 

@@ -2977,3 +2977,64 @@ fn a_binding_at_the_end_of_a_block_is_refused() {
     assert!(err.contains("`y`"), "{err}");
     assert!(err.contains("nothing can read it"), "{err}");
 }
+
+/// `fmin2` and `fmax2`, lane by lane. A NaN loses to a number, the way it
+/// does under `<`, which is what lets a reduction keep its answer in lanes
+/// and still agree with the scalar loop.
+#[test]
+fn fmin2_and_fmax2_are_lane_wise_and_ignore_a_nan() {
+    let out = run_source(
+        "lanes_minmax",
+        "fn main() =\n  a = float2(1.0, 8.0)\n  b = float2(5.0, 2.0)\n  lo = fmin2(a, b)\n  hi = fmax2(a, b)\n  println(lane0(lo))\n  println(lane1(lo))\n  println(lane0(hi))\n  println(lane1(hi))\n  nan = 0.0 / 0.0\n  n = fmin2(float2(nan, 3.0), float2(4.0, nan))\n  println(lane0(n))\n  println(lane1(n))\n",
+    );
+    assert_eq!(out, "1\n2\n5\n8\n4\n3\n");
+}
+
+/// `lib/col.rill` against the plain loops it replaces. The kernels keep their
+/// accumulators in lanes, so they add in a different order — over these
+/// values the answer is the same to the bit, and the point of the test is
+/// that the ranges, the tail past the last block of eight, and the empty
+/// range all land where the loop lands.
+#[test]
+fn the_column_aggregates_agree_with_the_loops_they_replace() {
+    let root = workspace_root();
+    let out_dir = std::env::temp_dir().join(bad_name("col"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let src = out_dir.join("col_check.rill");
+    std::fs::write(
+        &src,
+        "import \"col\" as c\n\n\
+         fn l_sum(v: Buf(Float), lo, hi) = for i in lo..hi with a = 0.0\n  a + v[i]\n\n\
+         fn l_min(v: Buf(Float), lo, hi) = for i in lo..hi with a = v[lo]\n  if v[i] < a then v[i] else a\n\n\
+         fn l_max(v: Buf(Float), lo, hi) = for i in lo..hi with a = v[lo]\n  if v[i] > a then v[i] else a\n\n\
+         fn main() =\n  \
+           n = 37\n  \
+           v = buf_float(n)\n  \
+           for i in 0..n\n    v[i] = to_float(i) + 0.5\n  \
+           println(bool_to_str(c.sum(v, 0, n) == l_sum(v, 0, n)))\n  \
+           println(bool_to_str(c.sum(v, 3, 29) == l_sum(v, 3, 29)))\n  \
+           println(bool_to_str(c.sum(v, 5, 5) == 0.0))\n  \
+           println(bool_to_str(c.min_of(v, 0, n) == Some(l_min(v, 0, n))))\n  \
+           println(bool_to_str(c.max_of(v, 0, n) == Some(l_max(v, 0, n))))\n  \
+           println(bool_to_str(c.min_of(v, 11, 12) == Some(11.5)))\n  \
+           println(show(c.min_of(v, 5, 5)))\n  \
+           println(show(c.mean(v, 0, n)))\n  \
+           println(bool_to_str(c.dot(v, v, 0, n) == c.sum_sq(v, 0, n)))\n",
+    )
+    .unwrap();
+    let exe = out_dir.join("col_check");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&src)
+        .arg("-o")
+        .arg(&exe)
+        .env("RILL_PATH", root.join("lib"))
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\nNone\nSome(18.5)\ntrue\n"
+    );
+}
