@@ -744,6 +744,57 @@ impl Parser {
         })
     }
 
+    /// `while cond`, with or without a state to carry.
+    fn while_loop(&mut self) -> Result<Expr, SyntaxError> {
+        let (line, _) = self.here();
+        self.bump();
+        let cond = self.expr()?;
+        let acc = match self.peek() {
+            Tok::Ident(kw) if kw == "with" => {
+                self.bump();
+                // A name, or a tuple of them — `with (lo, hi) = (0, n)` — each
+                // annotated like a parameter where it has to be.
+                let names = if matches!(self.peek(), Tok::LParen) {
+                    self.bump();
+                    let mut names = vec![self.state_name()?];
+                    while matches!(self.peek(), Tok::Comma) {
+                        self.bump();
+                        names.push(self.state_name()?);
+                    }
+                    self.expect(&Tok::RParen, "to close what the loop carries")?;
+                    if names.len() < 2 || names.len() > 8 {
+                        return Err(SyntaxError::new(
+                            line,
+                            0,
+                            format!("a loop carries two to eight things in a tuple, not {}", names.len()),
+                        ));
+                    }
+                    names
+                } else {
+                    vec![self.state_name()?]
+                };
+                self.expect(&Tok::Eq, "after the name of what the loop carries")?;
+                Some((names, Box::new(self.expr()?)))
+            }
+            _ => None,
+        };
+        let body = self.body()?;
+        Ok(Expr::While { cond: Box::new(cond), acc, body: Box::new(body), line })
+    }
+
+    /// One thing a `while` carries: a name, and a type where the body could
+    /// not tell it otherwise.
+    fn state_name(&mut self) -> Result<Param, SyntaxError> {
+        let name = self.ident("a name after `with`")?;
+        let ann = if matches!(self.peek(), Tok::Colon) {
+            self.bump();
+            Some(self.type_ref("a type after `:`")?)
+        } else {
+            None
+        };
+        Ok(Param { name, ann })
+    }
+
     fn expr(&mut self) -> Result<Expr, SyntaxError> {
         self.pipe()
     }
@@ -1014,6 +1065,10 @@ impl Parser {
             Tok::For => {
                 self.pos -= 1;
                 self.for_loop()
+            }
+            Tok::While => {
+                self.pos -= 1;
+                self.while_loop()
             }
             Tok::Spawn => {
                 let body = self.expr()?;

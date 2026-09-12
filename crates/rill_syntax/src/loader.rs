@@ -411,6 +411,22 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str, scope: &mut Ve
             }
             under(scope, names, |sc| qualify_expr(body, own, alias, sc));
         }
+        Expr::While { cond, acc, body, .. } => {
+            let mut names = Vec::new();
+            if let Some((ps, init)) = acc {
+                qualify_expr(init, own, alias, scope);
+                for p in ps.iter_mut() {
+                    if let Some(t) = &mut p.ann {
+                        qualify_type(t, own, alias);
+                    }
+                    names.push(p.name.clone());
+                }
+            }
+            under(scope, names, |sc| {
+                qualify_expr(cond, own, alias, sc);
+                qualify_expr(body, own, alias, sc);
+            });
+        }
         Expr::Unary { expr, .. } => qualify_expr(expr, own, alias, scope),
         Expr::Binary { lhs, rhs, .. } => {
             qualify_expr(lhs, own, alias, scope);

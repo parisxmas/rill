@@ -1,7 +1,7 @@
-# Rill has no `while`. Repetition is written in four ways, and all four
-# compile to the same kind of machine code — a loop, with no stack growth,
-# because a call in tail position becomes a jump. The fourth, `for`, is the
-# compiler writing the first one for you.
+# Repetition is written in five ways, and all five compile to the same kind
+# of machine code — a loop, with no stack growth, because a call in tail
+# position becomes a jump. The last two, `for` and `while`, are the compiler
+# writing the first one for you.
 
 # 1. Tail recursion with an accumulator: this is the plain loop.
 #    `go` is the loop body, `acc` is the loop variable.
@@ -47,6 +47,26 @@ fn grid(rows, cols) = for r in 0..rows with total = 0
     n + 1
   total + row
 
+# 5. `while` over a condition, for the loop that stops on the data rather
+#    than on a count. `with` names what the loop carries: the condition and
+#    the body see it, the body's value is the next one, and the loop is worth
+#    the one the condition first refused. `gcd` again, with both variables
+#    where the loop is:
+fn gcd2(a, b) =
+  (a, _) = while b != 0 with (a, b) = (a, b)
+    (b, a % b)
+  a
+
+# A scan that stops on a byte: the index of the first space, or `#s`.
+fn first_space(s) = while i < #s && s[i] != 32 with i = 0
+  i + 1
+
+# Without `with`, the body runs for its effects, like `for` without one.
+fn drain(ch, seen: Buf(Int)) =
+  while seen[0] < 3
+    seen[0] += 1
+    println(recv(ch))
+
 fn main() =
   println(sum_to(1000000))
   println(gcd(1071, 462))
@@ -56,6 +76,13 @@ fn main() =
   print_countdown(3)
   println(triangle(5))
   println(grid(3, 5))
+  println(gcd2(1071, 462))
+  println(first_space("hello world"))
+  three = channel(3)
+  send(three, 1)
+  send(three, 2)
+  send(three, 3)
+  drain(three, buf_int(1))
 
   jobs = channel()
   results = channel()

@@ -1755,16 +1755,8 @@ fn buffered_channels() {
 fn loops_are_tail_recursion() {
     assert_eq!(
         compile_and_run("loops.rill"),
-        "500000500000\n\
-         21\n\
-         5\n\
-         Cons(4, Cons(16, Cons(36, Cons(64, Cons(100, Nil)))))\n\
-         720\n\
-         3\n2\n1\n\
-         10\n\
-         15\n\
-         42\n\
-         0\n"
+        "500000500000\n21\n5\nCons(4, Cons(16, Cons(36, Cons(64, Cons(100, Nil)))))\n720\n3\n2\n1\n\
+         10\n15\n21\n5\n1\n2\n3\n42\n0\n"
     );
 }
 
@@ -3269,4 +3261,190 @@ fn wasm_refuses_a_naked_function() {
         "naked asm fn boot() = \"hlt\"\nfn main() = println(1)\n",
     );
     assert!(err.contains("no inline") && err.contains("boot"), "{err}");
+}
+
+/// `lib/str.rill`: every function once, on values checked by hand — the
+/// encodings against what Python's codecs, base64 and urllib say — and then
+/// the strand functions against the plain scans they stand in for, at
+/// several cuts, including more ranges than there are bytes of lookahead and
+/// a pattern that overlaps itself.
+const STRING_LIBRARY_TOUR: &str = r#"  HELLO, WORLD! HELLO  
+  hello, world! hello  
+AbC1
+Hello
+cba
+nıdyanüg
+Hello, World! hello  |
+  Hello, World! hello|
+a/b
+|
+a+b+c
+ba
+abc
+a+b-c
+000042
+ab...|
+**ab***
+abc
+1
+3
+-1
+1
+3
+-1
+-1
+2
+5
+true false
+true false
+2 3 0
+3
+Cons(0, Cons(3, Cons(6, Nil)))
+Some(body)
+None
+Some(file)
+Some()
+Cons(the, Cons(quick, Cons(brown, Cons(fox, Nil))))
+Nil
+Some((key, value: more))
+None
+(ab, cdef)
+abc
+0 1 2 2
+-1 1 0
+true false
+5
+-3750763034362895579
+-5808556873153909620
+3
+3
+2
+Some(42) Some(-17) Some(5)
+None None None Some(7)
+true false
+true false
+true false false
+true false
+3 104 hey
+true false 2 -1
+false false false true
+a��b��
+Some(Cons(97, Cons(231, Nil))) None
+Some(aç😀) None
+true x true false
+006100e7d83dde00 6100e7003dd800de 00000067000000fc
+Some(aç😀) Some(günaydın İstanbul) Some(ok)
+None None None
+Some(a😀) None
+Some(636166e920b1) None café
+€“x”… Some(8093789485) None
+ĞİŞğış Some(d0dddef0fdfe) None
+ÇAĞRI ÉÀ ÖÜ Ĳ ß ΑΒΓΣ ЖЯ Ѐ çağri éà öü ĳ αβγ жя ѐ
+İSTANBUL IŞIK ıstanbul ışık izmir ISTANBUL izmir
+Cagri Ozturk Sisli GUSIOC strasse OEuvre ae n y y k n s o r t u w z l d
+|Zg== Zm8= Zm9v Zm9vYmFy +/8= -_8
+Some(foobar) Some(f) Some(fo) Some(fo) Some(fbff) None None Some()
+52696c6c0a Some(Rill
+) None None ff -1000 0
+Some(255) Some(26) Some(-16) None None
+a%20b%2F%C3%A7%3Fx%3D1%26y%3D~_ a+b%2Bc Some(a b/ç) Some(a b+c) None None
+&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/a&gt; <b> &amp; "q" 's' ç ç 😀 &unknown; & x &
+tab\there \"q\" back\\ nl\n\x01\x7f Some(tab	here "q" back\ nl
+ç😀 ) None Some(plain)
+177129
+true true true true true
+13127 7175 17114 1315
+true
+true true
+true
+"#;
+
+#[test]
+fn string_library() {
+    assert_eq!(compile_and_run("strings.rill"), STRING_LIBRARY_TOUR);
+}
+
+/// The same tour built `--parallel` and run on four workers, where
+/// `par_count` and the rest really do cut the text across cores: the answers
+/// must not move.
+#[test]
+fn string_library_on_several_workers() {
+    let root = workspace_root();
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-strlib-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let exe = out_dir.join("strings");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg("--parallel")
+        .arg(root.join("examples/strings.rill"))
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    for threads in ["1", "4"] {
+        let run = Command::new(&exe).env("RILL_THREADS", threads).output().unwrap();
+        assert!(run.status.success(), "strings.rill at {threads} threads crashed");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), STRING_LIBRARY_TOUR, "at {threads} threads");
+    }
+}
+
+/// `while cond with state = init`: a single name, a tuple of numbers, a
+/// tuple carrying a list, a body that ends in an `if` with a tuple in each
+/// arm, a body that is a call (the tuple travels whole), no `with` at all,
+/// one loop inside another inside a nested function, a state that is a
+/// name rather than a tuple written in place, and an annotated buffer in
+/// the state that the code after the loop indexes. `loops.rill`, with its
+/// `while` section, is `loops_are_tail_recursion`.
+#[test]
+fn while_loops() {
+    let out = run_source(
+        "while_shapes",
+        "fn is_space(c) = c == 32 || c == 9\n\
+         \n\
+         fn main() =\n  \
+           s = \"   hello world  \"\n  \
+           a = while a < #s && is_space(s[a]) with a = 0\n    a + 1\n  \
+           println(a)\n  \
+           (i, n) = while i >= 0 with (i, n) = (str_find(s, \"o\"), 0)\n    (str_find_from(s, \"o\", i + 1), n + 1)\n  \
+           println(int_to_str(i) + \" \" + int_to_str(n))\n  \
+           (_, acc) = while j < #s with (j, acc) = (0, Nil)\n    if is_space(s[j]) then (j + 1, acc) else (j + 1, Cons(s[j], acc))\n  \
+           println(len(acc))\n  \
+           fn step(p) = match p\n    (x, y) -> (x + 1, y + x)\n  \
+           (x, y) = while x < 5 with (x, y) = (0, 0)\n    step((x, y))\n  \
+           println(int_to_str(x) + \" \" + int_to_str(y))\n  \
+           b = buf_int(1)\n  \
+           while b[0] < 10\n    b[0] += 3\n  \
+           println(b[0])\n  \
+           fn count_words(t) =\n    \
+             (_, k) = while p < #t with (p, k) = (0, 0)\n      \
+               q = while q < #t && is_space(t[q]) with q = p\n        q + 1\n      \
+               if q >= #t then (q, k)\n      \
+               else\n        \
+                 r = while r < #t && !is_space(t[r]) with r = q\n          r + 1\n        \
+                 (r, k + 1)\n    \
+             k\n  \
+           println(count_words(s))\n  \
+           init = (3, 4)\n  \
+           (u, v) = while u > 0 with (u, v) = init\n    (u - 1, v * 2)\n  \
+           println(v)\n  \
+           w0 = buf_int(4)\n  \
+           (_, w) = while i < 4 with (i, w: Buf(Int)) = (0, w0)\n    w[i] = i * 2\n    (i + 1, w)\n  \
+           println(w[3])\n",
+    );
+    assert_eq!(out, "3\n-1 2\n10\n5 10\n12\n2\n32\n6\n");
+}
+
+/// A function written inside another and handing back a buffer — which is
+/// what a `while` with an annotated state is — used to fail to check: the
+/// call to `main.go` named `main` as something `go` depends on, so the two
+/// were one inference group, the parent first, and the parent's `w[3]`
+/// took the not-yet-known result for a string.
+#[test]
+fn a_nested_function_can_hand_back_a_buffer() {
+    let out = run_source(
+        "nested_buf",
+        "fn main() =\n  v = buf_int(4)\n  fn go(i, w: Buf(Int)) =\n    if i < 4 then\n      w[i] = i * 2\n      go(i + 1, w)\n    else w\n  w = go(0, v)\n  println(w[3])\n",
+    );
+    assert_eq!(out, "6\n");
 }

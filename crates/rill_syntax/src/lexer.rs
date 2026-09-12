@@ -23,6 +23,7 @@ pub enum Tok {
     Naked,
     Export,
     For,
+    While,
     // literals / names
     Ident(String),
     Int(i64),
@@ -131,6 +132,7 @@ impl std::fmt::Display for Tok {
             Tok::DotDot => write!(f, "`..`"),
             Tok::OpEq(c) => write!(f, "`{c}=`"),
             Tok::For => write!(f, "`for`"),
+            Tok::While => write!(f, "`while`"),
             Tok::Comma => write!(f, "`,`"),
             Tok::Newline => write!(f, "end of line"),
             Tok::Indent => write!(f, "indent"),
@@ -435,6 +437,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                 }
                 match text.as_str() {
                     "for" => Tok::For,
+                    "while" => Tok::While,
                     "fn" => Tok::Fn,
                     "if" => Tok::If,
                     "then" => Tok::Then,

@@ -2447,6 +2447,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function(
+            "rill_str_find_in",
+            i64t.fn_type(&[ptrt.into(), ptrt.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
             "rill_str_cmp",
             i64t.fn_type(&[ptrt.into(), ptrt.into()], false),
             None,
@@ -2522,6 +2527,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.module.add_function(
             "rill_strbuf_byte",
             void.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_strbuf_reserve", void.fn_type(&[ptrt.into(), i64t.into()], false), None);
+        self.module.add_function("rill_str_from_buf", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_str_take_buf", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_strbuf_add_sub",
+            void.fn_type(&[ptrt.into(), ptrt.into(), i64t.into(), i64t.into()], false),
             None,
         );
         self.module.add_function("rill_strbuf_str", ptrt.fn_type(&[ptrt.into()], false), None);
@@ -5182,9 +5195,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         scope: &Scope<'ctx>,
     ) -> Option<BasicValueEnum<'ctx>> {
         let TK::Builtin { rt, args } = &value.kind else { return None };
-        if *rt != "rill_strbuf_str" {
-            return None;
-        }
+        // `str_from_buf(v)` on a byte buffer the frame owns and never names
+        // again is the same trade: the block becomes the string.
+        let take = match *rt {
+            "rill_strbuf_str" => "rill_strbuf_take",
+            "rill_str_from_buf" => "rill_str_take_buf",
+            _ => return None,
+        };
         let TK::Local(b) = &args[0].kind else { return None };
         let bv = (*scope.get(b)?)?;
         if !self.cleanup.iter().any(|(c, _)| *c == bv) {
@@ -5196,10 +5213,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         if used_later {
             return None;
         }
-        let call = self.call_rt("rill_strbuf_take", &[bv.into()]);
+        let call = self.call_rt(take, &[bv.into()]);
         match call.try_as_basic_value() {
             inkwell::values::ValueKind::Basic(v) => Some(v),
-            _ => unreachable!("rill_strbuf_take returns a string"),
+            _ => unreachable!("the hand-over returns a string"),
         }
     }
 
@@ -5463,8 +5480,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// Lets the scheduler have this worker back if it has asked for it.
     ///
     /// Emitted before a tail call, because that is where a Rill loop goes
-    /// round: the language has no `while`, so a strand that computes forever
-    /// is a function calling itself in tail position, and without this it
+    /// round: `for` and `while` are functions calling themselves in tail
+    /// position, and so is a strand that computes forever; without this it
     /// would hold its worker until the program ended. Everything already
     /// waiting on that worker would wait for good — a started strand is
     /// pinned to the stack its frames live on and cannot be picked up
@@ -5504,25 +5521,53 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         answer
     }
 
-    /// A `for` loop whose body calls nothing: it runs a bounded number of
-    /// times and then returns to a function that is checked, so it needs no
-    /// check of its own — and a check inside it is a volatile load and a
-    /// branch per element, which is what stood between a loop over ten
-    /// million floats and the vector instructions it was written for.
+    /// A `for` loop whose body calls nothing that loops: it runs a bounded
+    /// number of times, each of them bounded, and then returns to a function
+    /// that is checked, so it needs no check of its own — and a check inside
+    /// it is a volatile load and a branch per element, which is what stood
+    /// between a loop over ten million floats and the vector instructions it
+    /// was written for. A callee counts as bounded when the call graph has no
+    /// way back from it to itself: `upper_byte`, `is_lower`, a record
+    /// accessor — the small functions LLVM will inline into the body, and
+    /// exactly the ones whose check would have cost the vectorization. A
+    /// callee that loops keeps the loop checked, and so does a closure or a
+    /// method, whose body is not known here.
     fn leaf_loop(&mut self, fi: usize) -> bool {
         if let Some(&known) = self.leaf_loops.get(&fi) {
             return known;
         }
         let f = &self.tmod.fns[fi];
-        let answer = f.name.contains(".for.go") && {
+        let mut answer = f.name.contains(".for.go") || f.name.contains(".while.go");
+        if answer {
             let mut edges: Vec<usize> = Vec::new();
             let mut found = false;
             let mut methods = false;
             collect_calls(&f.body, &mut edges, &mut found, &mut methods);
-            !found && !methods && edges.iter().all(|&e| e == fi) && !calls_closure(&f.body)
-        };
+            answer = !found && !methods && !calls_closure(&f.body);
+            if answer {
+                answer = edges.iter().all(|&e| e == fi || !self.loops_itself(e));
+            }
+        }
         self.leaf_loops.insert(fi, answer);
         answer
+    }
+
+    /// Can `fi` be reached again from inside `fi`? Memoised with the same
+    /// sets `call_goes_round` builds.
+    fn loops_itself(&mut self, fi: usize) -> bool {
+        if !self.reaches.contains_key(&fi) {
+            let mut seen: HashSet<usize> = HashSet::new();
+            let mut queue = vec![fi];
+            while let Some(i) = queue.pop() {
+                for &e in &self.callgraph[i] {
+                    if seen.insert(e) {
+                        queue.push(e);
+                    }
+                }
+            }
+            self.reaches.insert(fi, seen);
+        }
+        self.reaches[&fi].contains(&fi)
     }
 
     /// Says, once per caller/callee pair, that a recursive call in tail
@@ -6351,7 +6396,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let b = &self.builder;
                 let lenp = unsafe { b.build_gep(self.ctx.i8_type(), s, &[i64t.const_int(8, false)], "lenp") }
                     .expect("LLVM builder error");
-                let len = b.build_load(i64t, lenp, "strlen").expect("LLVM builder error").into_int_value();
+                let len_load = b.build_load(i64t, lenp, "strlen").expect("LLVM builder error");
+                // A string never changes once it exists, so its length is
+                // the same on every read. Saying so lets LLVM hoist the load
+                // out of a loop that also stores — into a buffer, say — where
+                // it could not otherwise know the store left the header
+                // alone, and then prove `i < len` from the loop's own bound
+                // and vectorize the body.
+                let invariant = self.ctx.get_kind_id("invariant.load");
+                len_load
+                    .as_instruction_value()
+                    .expect("a load")
+                    .set_metadata(self.ctx.metadata_node(&[]), invariant)
+                    .expect("LLVM metadata error");
+                let len = len_load.into_int_value();
                 let out: BasicValueEnum<'ctx> = if *rt == "rill_str_len" {
                     len.into()
                 } else {

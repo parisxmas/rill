@@ -323,9 +323,10 @@ Rill is shorter in seventeen of nineteen. The two exceptions are precise:
 - **fannkuch, 469 vs 339.** Six `while` loops and a `continue`/`break`
   structure. Each `while` becomes a named local `fn` with its own parameters
   and an `else 0` for the exit branch, and each early exit becomes a return
-  value threaded back. Rill has `for … in a..b` but no `while`, no stepped
-  `for`, and no loop exit, so the program *names* six things C leaves
-  anonymous.
+  value threaded back. Rill had `for … in a..b` but no `while`, no stepped
+  `for`, and no loop exit, so the program *named* six things C leaves
+  anonymous. (`while … with` arrived on 2026-09-12; the source here predates
+  it and has not been rewritten.)
 - **algo, 834 vs 832** and **nbody, 1181 vs 1189** are ties for the same
   reason on smaller scale, plus numeric literals dominating nbody.
 

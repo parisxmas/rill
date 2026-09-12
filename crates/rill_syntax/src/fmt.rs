@@ -539,6 +539,13 @@ impl Fmt {
                     other => format!("{head} {}", self.render(other, cont)),
                 }
             }
+            Expr::While { cond, acc, body, .. } => {
+                let head = format!("while {}{}", inline(cond, 0), with_pat(acc));
+                match body.as_ref() {
+                    Expr::Block(stmts) => format!("{head}{}", self.block_lines(stmts, cont)),
+                    other => format!("{head} {}", self.render(other, cont)),
+                }
+            }
             // `if` and the prefix forms can carry a multi-line branch (a
             // `match`), which has to stay on its own lines.
             Expr::If { cond, then, els } => {
@@ -662,6 +669,7 @@ fn expr_line(e: &Expr) -> usize {
         Expr::IndexOp { line, .. } => *line,
         Expr::Append { line, .. } => *line,
         Expr::For { line, .. } => *line,
+        Expr::While { line, .. } => *line,
         Expr::Unary { expr, .. } => expr_line(expr),
         Expr::If { cond, .. } => expr_line(cond),
         Expr::Block(stmts) => stmts.first().map(stmt_line).unwrap_or(0),
@@ -792,6 +800,9 @@ fn inline(e: &Expr, prec: u8) -> String {
         Expr::For { var, from, to, acc, body, .. } => {
             format!("for {var} in {}..{}{} {}", inline(from, 0), inline(to, 0), with_str(acc), inline(body, 0))
         }
+        Expr::While { cond, acc, body, .. } => {
+            format!("while {}{} {}", inline(cond, 0), with_pat(acc), inline(body, 0))
+        }
         Expr::Unary { op: UnOp::Neg, expr } => {
             wrap(prec > P_UNARY, format!("-{}", inline(expr, P_UNARY)))
         }
@@ -912,6 +923,20 @@ fn is_tuple(name: &str, n: usize) -> bool {
 fn with_str(acc: &Option<(String, Box<Expr>)>) -> String {
     match acc {
         Some((n, e)) => format!(" with {n} = {}", inline(e, 0)),
+        None => String::new(),
+    }
+}
+
+fn with_pat(acc: &Option<(Vec<Param>, Box<Expr>)>) -> String {
+    let one = |p: &Param| match &p.ann {
+        Some(t) => format!("{}: {}", p.name, type_ref(t)),
+        None => p.name.clone(),
+    };
+    match acc {
+        Some((ps, e)) if ps.len() == 1 => format!(" with {} = {}", one(&ps[0]), inline(e, 0)),
+        Some((ps, e)) => {
+            format!(" with ({}) = {}", ps.iter().map(one).collect::<Vec<_>>().join(", "), inline(e, 0))
+        }
         None => String::new(),
     }
 }

@@ -173,6 +173,37 @@ unsafe fn str_new(len: usize) -> *mut u8 {
     p
 }
 
+/// A string with the bytes of a `Buf(U8)`, copied.
+///
+/// # Safety
+/// `v` must be a live byte buffer.
+#[no_mangle]
+pub unsafe extern "C" fn rill_str_from_buf(v: *const u8) -> *mut u8 {
+    let n = *(v.sub(16) as *const i64).add(1);
+    rill_str_from_ptr(v, n)
+}
+
+/// The same, but the block is taken over: a byte buffer's header — a count
+/// and a length, sixteen bytes before the elements — is a string's header
+/// with the same numbers in it, so a buffer that nothing will touch again
+/// *is* the string, and `upper` over forty megabytes is one loop and no
+/// copy. The compiler calls this in place of `rill_str_from_buf` when the
+/// buffer is the frame's own and never named again; the frame's release of
+/// the buffer still runs, so the block keeps one count for the string. A
+/// buffer some other holder shares is copied after all.
+///
+/// # Safety
+/// `v` must be a live byte buffer that the caller will not write again.
+#[no_mangle]
+pub unsafe extern "C" fn rill_str_take_buf(v: *const u8) -> *mut u8 {
+    let block = v.sub(16) as *mut u8;
+    if *(block as *const i64) != 1 {
+        return rill_str_from_buf(v);
+    }
+    rc_inc(block as *mut i64);
+    block
+}
+
 /// # Safety
 /// `s` must be a live string object.
 #[no_mangle]
@@ -362,6 +393,52 @@ pub unsafe extern "C" fn rill_strbuf_byte(p: *mut u8, c: i64) {
     }
     *sb_data(p).add(len) = c as u8;
     *(p as *mut i64).add(2) = (len + 1) as i64;
+}
+
+/// Room for `n` bytes more before the next append has to grow the block:
+/// `replace` knows its result is about the size of its input, and a builder
+/// that starts there is not copied at every doubling on the way up.
+///
+/// # Safety
+/// `p` must be a live builder.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_reserve(p: *mut u8, n: i64) {
+    let have = sb_len(p);
+    let cap = *(p as *const i64).add(3) as usize;
+    let want = have + n.max(0) as usize;
+    if want > cap {
+        sb_grow(p, have, cap, want);
+    }
+}
+
+/// `b += s[start:start+len]` without the string in between: the bytes go
+/// straight from `s` into the builder. `replace`, and anything else that
+/// copies a text piece by piece, was allocating and freeing a string per
+/// piece for what is one `memcpy`. The range is clamped as `str_sub` clamps
+/// it.
+///
+/// # Safety
+/// `p` must be a live builder and `s` a live string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_strbuf_add_sub(p: *mut u8, s: *const u8, start: i64, len: i64) {
+    let n = str_len_of(s) as i64;
+    let a = start.clamp(0, n);
+    let b = (a + len.max(0)).clamp(a, n);
+    let m = (b - a) as usize;
+    if m == 0 {
+        return;
+    }
+    let have = sb_len(p);
+    let cap = *(p as *const i64).add(3) as usize;
+    if have + m > cap {
+        let mut want = if cap == 0 { 32 } else { cap };
+        while want < have + m {
+            want *= 2;
+        }
+        sb_grow(p, have, cap, want);
+    }
+    copy_small(str_bytes(s).add(a as usize), sb_data(p).add(have), m);
+    *(p as *mut i64).add(2) = (have + m) as i64;
 }
 
 /// `b += int_to_str(n)` without the string in between: the digits go straight
@@ -656,15 +733,67 @@ pub unsafe extern "C" fn rill_str_find_from(s: *const u8, needle: *const u8, fro
     if m + start > n {
         return -1;
     }
-    let hay = str_bytes(s);
-    let nee = str_bytes(needle);
-    // Jump to each place the first byte occurs and compare from there. The
-    // jumping is the vectorized part and it is where the time goes: a needle's
-    // first byte is rare in ordinary text, so most of the haystack is crossed
-    // sixteen bytes at a time and never looked at again.
+    find_bytes(str_bytes(s), n, str_bytes(needle), m, start)
+}
+
+/// Where `nee` (of `m >= 1` bytes) first begins in `hay[start..end]`, with
+/// the match ending by `end`, or -1. `start + m <= end` is the caller's to
+/// check.
+///
+/// One byte is `memchr`, which is the fastest thing there is for it. For
+/// longer needles the haystack is crossed sixteen bytes at a time and a
+/// position is looked at only when the needle's first byte *and* its last
+/// byte are both where they would have to be: two rare things together are
+/// far rarer than one, so the byte-by-byte compare runs almost only on real
+/// matches. Jumping between first bytes with `memchr` and comparing at each
+/// — the earlier way — spent its time in `memcmp` on text where the first
+/// byte is common ("s" in "she sells sea shells"), and libc's `memmem` was
+/// no better; this is 20% ahead of both on that text and level on text
+/// where the first byte is rare.
+#[cfg(target_arch = "aarch64")]
+unsafe fn find_bytes(hay: *const u8, end: usize, nee: *const u8, m: usize, start: usize) -> i64 {
+    use core::arch::aarch64::*;
+    if m == 1 {
+        let hit = memchr(hay.add(start), *nee as i32, end - start);
+        return if hit.is_null() { -1 } else { (hit as usize - hay as usize) as i64 };
+    }
+    let stop = end - m;
+    let first = vdupq_n_u8(*nee);
+    let last = vdupq_n_u8(*nee.add(m - 1));
     let mut i = start;
-    while i + m <= n {
-        let hit = memchr(hay.add(i), *nee as i32, n - m - i + 1);
+    while i + 15 <= stop {
+        let a = vld1q_u8(hay.add(i));
+        let b = vld1q_u8(hay.add(i + m - 1));
+        let both = vandq_u8(vceqq_u8(a, first), vceqq_u8(b, last));
+        // Sixteen lanes of 0x00/0xFF to one bit per lane: narrow each pair
+        // of lanes to a nibble and keep the top bit of every nibble.
+        let narrowed = vshrn_n_u16::<4>(vreinterpretq_u16_u8(both));
+        let mut mask = vget_lane_u64::<0>(vreinterpret_u64_u8(narrowed)) & 0x8888_8888_8888_8888;
+        while mask != 0 {
+            let at = i + (mask.trailing_zeros() / 4) as usize;
+            if m == 2 || memcmp(hay.add(at + 1), nee.add(1), m - 2) == 0 {
+                return at as i64;
+            }
+            mask &= mask - 1;
+        }
+        i += 16;
+    }
+    while i <= stop {
+        if *hay.add(i) == *nee && *hay.add(i + m - 1) == *nee.add(m - 1) && memcmp(hay.add(i), nee, m) == 0 {
+            return i as i64;
+        }
+        i += 1;
+    }
+    -1
+}
+
+/// The same search where there are no vector registers to write for:
+/// `memchr` to each first byte, `memcmp` from there.
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn find_bytes(hay: *const u8, end: usize, nee: *const u8, m: usize, start: usize) -> i64 {
+    let mut i = start;
+    while i + m <= end {
+        let hit = memchr(hay.add(i), *nee as i32, end - m - i + 1);
         if hit.is_null() {
             return -1;
         }
@@ -675,6 +804,31 @@ pub unsafe extern "C" fn rill_str_find_from(s: *const u8, needle: *const u8, fro
         i += 1;
     }
     -1
+}
+
+/// The same search again, but bounded: the first place `needle` begins at
+/// or after `from` and ends at or before `to`, or -1. A search that must stay
+/// inside a field of a line, or inside one chunk of a text that several
+/// strands are scanning at once, wants this rather than a copy of the chunk
+/// to search in — the copy costs as much as the search.
+///
+/// The bounds are clamped to the string; `to` below `from` finds nothing. The
+/// empty needle is found at `from`, as `rill_str_find_from` finds it.
+///
+/// # Safety
+/// Both must be live string objects.
+#[no_mangle]
+pub unsafe extern "C" fn rill_str_find_in(s: *const u8, needle: *const u8, from: i64, to: i64) -> i64 {
+    let (n, m) = (str_len_of(s), str_len_of(needle));
+    let start = from.clamp(0, n as i64) as usize;
+    let end = to.clamp(start as i64, n as i64) as usize;
+    if m == 0 {
+        return start as i64;
+    }
+    if m + start > end {
+        return -1;
+    }
+    find_bytes(str_bytes(s), end, str_bytes(needle), m, start)
 }
 
 /// Lexicographic byte comparison: -1, 0 or 1.
@@ -3310,14 +3464,35 @@ unsafe fn rc_inc(p: *mut i64) {
     }
 }
 
+/// One counter per worker once there are several: every worker adding to
+/// a single atomic put the one cache line it lives on under eight cores at
+/// once, and a program that did nothing but build cons cells on eight
+/// strands ran three times slower than on one. A worker counts its own
+/// allocations and whatever it frees, wherever that came from, so the sum
+/// over the pools is still the number of live objects. A thread that is not
+/// a worker (there are none that allocate today) falls back to the global.
 #[inline(always)]
 unsafe fn live_add(delta: i64) {
     if rill_mt == 0 {
         rill_live_allocs += delta;
     } else {
-        (*(&raw const rill_live_allocs as *const RcAtomic))
-            .fetch_add(delta, core::sync::atomic::Ordering::Relaxed);
+        let w = me();
+        if w.is_null() {
+            (*(&raw const rill_live_allocs as *const RcAtomic))
+                .fetch_add(delta, core::sync::atomic::Ordering::Relaxed);
+        } else {
+            (*(&raw mut rill_pools[(*w).index])).live += delta;
+        }
     }
+}
+
+/// The live-allocation count, the global plus every worker's share.
+unsafe fn live_total() -> i64 {
+    let mut n = rill_live_allocs;
+    for i in 0..MAX_WORKERS {
+        n += (*(&raw const rill_pools[i])).live;
+    }
+    n
 }
 
 /// Decrements and returns the new value.
@@ -3357,12 +3532,14 @@ pub struct Pool {
     free: [*mut u8; POOL_CLASSES],
     next: usize,
     end: usize,
+    live: i64,
 }
 
 const POOL_INIT: Pool = Pool {
     free: [core::ptr::null_mut(); POOL_CLASSES],
     next: 0,
     end: 0,
+    live: 0,
 };
 
 #[no_mangle]
@@ -3498,13 +3675,13 @@ pub unsafe extern "C" fn rill_alloc_report() {
     }
     let mut buf = [0u8; 128];
     let n = if ABANDONED == 0 {
-        snprintf(buf.as_mut_ptr(), 127, b"live allocations: %lld\n\0".as_ptr(), rill_live_allocs)
+        snprintf(buf.as_mut_ptr(), 127, b"live allocations: %lld\n\0".as_ptr(), live_total())
     } else {
         snprintf(
             buf.as_mut_ptr(),
             127,
             b"live allocations: %lld (%lld strand(s) were still running at exit)\n\0".as_ptr(),
-            rill_live_allocs,
+            live_total(),
             ABANDONED,
         )
     };

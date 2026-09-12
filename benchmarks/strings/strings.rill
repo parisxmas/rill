@@ -1,0 +1,49 @@
+import "str" as st
+
+fn text(n) = text_onto(strbuf(), n, 12345)
+
+fn text_onto(b: StrBuf, n, x) =
+  if n == 0 then strbuf_str(b)
+  else
+    y = bit_and(x * 1103515245 + 12345, 2147483647)
+    k = y / 65536 % 7
+    b += if k == 0 then "she " else if k == 1 then "sells " else if k == 2 then "sea\n" else if k == 3 then "shells " else if k == 4 then "aaa" else if k == 5 then "\n" else "ashes "
+    text_onto(b, n - 1, y)
+
+fn ms(t0) = (now_nanos() - t0) / 1000000
+
+fn main() =
+  t = text(10000000)
+  println("bytes " + int_to_str(#t))
+  t0 = now_nanos()
+  c1 = st.count(t, "shells")
+  println("count " + int_to_str(c1) + " " + int_to_str(ms(t0)) + " ms")
+  t0 = now_nanos()
+  c2 = st.count_byte(t, 10)
+  println("count_byte " + int_to_str(c2) + " " + int_to_str(ms(t0)) + " ms")
+  t0 = now_nanos()
+  u = st.upper(t)
+  println("upper " + int_to_str(u[5]) + " " + int_to_str(ms(t0)) + " ms")
+  t0 = now_nanos()
+  r = st.replace(t, "sells", "buys")
+  println("replace " + int_to_str(#r) + " " + int_to_str(ms(t0)) + " ms")
+  t0 = now_nanos()
+  h = st.hash(t)
+  println("hash " + int_to_str(h) + " " + int_to_str(ms(t0)) + " ms")
+  t0 = now_nanos()
+  li = st.last_index_of(t, "ashes aaa")
+  println("last_index_of " + int_to_str(li) + " " + int_to_str(ms(t0)) + " ms")
+  a = t[0:4000]
+  b = t[1000:5000]
+  t0 = now_nanos()
+  d = st.edit_distance(a, b)
+  println("edit_distance " + int_to_str(d) + " " + int_to_str(ms(t0)) + " ms")
+  t0 = now_nanos()
+  w = len(st.words(t[0:8000000]))
+  println("words " + int_to_str(w) + " " + int_to_str(ms(t0)) + " ms")
+  t0 = now_nanos()
+  pc = st.par_count(t, "shells")
+  println("par_count " + int_to_str(pc) + " " + int_to_str(ms(t0)) + " ms")
+  t0 = now_nanos()
+  pl = len(st.par_lines(t, \l -> #l))
+  println("par_lines " + int_to_str(pl) + " " + int_to_str(ms(t0)) + " ms")

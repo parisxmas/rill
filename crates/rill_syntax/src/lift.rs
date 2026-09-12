@@ -236,6 +236,220 @@ fn expand_for(
     Expr::Block(stmts)
 }
 
+/// `while cond with state = init` is `fn go(state) = if cond then go(body)
+/// else state`, called once with `init`; without `with`, `fn go() = if cond
+/// then (body; go()) else 0`. The same shape `for` takes, with the range
+/// test replaced by whatever the program wrote.
+///
+/// A tuple state — `with (i, n) = (0, 0)` — is carried as one parameter per
+/// name when every way out of the body is a tuple written in place, which
+/// is how a loop over two or three numbers stays in registers and a loop
+/// over a list and an index never boxes the pair: each exit `(x, y)`
+/// becomes `go(x, y)`, and the loop's value is the tuple made once at the
+/// end. A body whose value is a tuple it got from somewhere else (a call,
+/// a name) carries the tuple whole and takes it apart on entry.
+///
+/// An annotated name — `with (i, v: Buf(Int)) = …` — types the loop's
+/// parameter, and has to type its result as well: the loop closes over the
+/// function around it, so the two are inferred together and the outer one
+/// first, and by the time it reaches `v[k]` after the loop the loop's
+/// result is still an open variable, which `[]` would take for a string.
+/// So the value comes back through `while.vouch`, a function whose
+/// parameters carry the annotations and whose body is nothing, called once
+/// on the result's parts where the loop is written: the call binds the
+/// types and the optimizer removes the rest.
+fn expand_while(
+    cond: Expr,
+    acc: Option<(Vec<Param>, Box<Expr>)>,
+    body: Expr,
+    line: usize,
+    used: &mut HashSet<String>,
+) -> Expr {
+    let go = pick_name("while", "go", used);
+    let call = |name: &str, args: Vec<Expr>| Expr::Call { name: name.to_string(), args, line, piped: false };
+    // How many things the loop carries; the loop function has that many
+    // parameters exactly when they travel separately.
+    let state_len = acc.as_ref().map(|(ps, _)| ps.len()).unwrap_or(0);
+    let acc = acc.map(|(ps, init)| {
+        if ps.len() == 1 {
+            (Pattern::Var(ps[0].name.clone()), ps, init)
+        } else {
+            let args = ps.iter().map(|p| Pattern::Var(p.name.clone())).collect();
+            (Pattern::Ctor { name: format!("Tuple{}", ps.len()), args, line }, ps, init)
+        }
+    });
+    let (loop_fn, first_call) = match acc {
+        None => (
+            FnDef {
+                name: go.clone(),
+                exported: false,
+                params: Vec::new(),
+                ret_ann: None,
+                body: Expr::If {
+                    cond: Box::new(cond),
+                    then: Box::new(Expr::Block(vec![Stmt::Expr(body), Stmt::Expr(call(&go, vec![]))])),
+                    els: Box::new(Expr::Int(0)),
+                },
+                line,
+                lifted_from: None,
+            },
+            call(&go, vec![]),
+        ),
+        Some((Pattern::Var(name), ps, init)) => (
+            FnDef {
+                name: go.clone(),
+                exported: false,
+                params: ps,
+                ret_ann: None,
+                body: Expr::If {
+                    cond: Box::new(cond),
+                    then: Box::new(call(&go, vec![body])),
+                    els: Box::new(Expr::Var(name, line)),
+                },
+                line,
+                lifted_from: None,
+            },
+            call(&go, vec![*init]),
+        ),
+        Some((pattern, ps, init)) => {
+            let names: Vec<String> = ps.iter().map(|p| p.name.clone()).collect();
+            let arity = names.len();
+            let tuple = |n: usize| format!("Tuple{n}");
+            if ends_in_tuple(&body, arity) {
+                let vars = |line: usize| names.iter().map(|n| Expr::Var(n.clone(), line)).collect::<Vec<_>>();
+                // `init` may itself be a tuple written in place, in which case
+                // the first call takes its parts as they are.
+                let first = match *init {
+                    Expr::Call { name, args, .. } if name == tuple(arity) => call(&go, args),
+                    other => Expr::Block(vec![
+                        Stmt::PatBind { pattern: pattern.clone(), value: other, line },
+                        Stmt::Expr(call(&go, vars(line))),
+                    ]),
+                };
+                (
+                    FnDef {
+                        name: go.clone(),
+                        exported: false,
+                        params: ps,
+                        ret_ann: None,
+                        body: Expr::If {
+                            cond: Box::new(cond),
+                            then: Box::new(splice_tuple_tail(body, &go, arity, line)),
+                            els: Box::new(call(&tuple(arity), vars(line))),
+                        },
+                        line,
+                        lifted_from: None,
+                    },
+                    first,
+                )
+            } else {
+                let whole = pick_name("while", "state", used);
+                (
+                    FnDef {
+                        name: go.clone(),
+                        exported: false,
+                        params: vec![Param { name: whole.clone(), ann: None }],
+                        ret_ann: None,
+                        body: Expr::Block(vec![
+                            Stmt::PatBind { pattern, value: Expr::Var(whole.clone(), line), line },
+                            Stmt::Expr(Expr::If {
+                                cond: Box::new(cond),
+                                then: Box::new(call(&go, vec![body])),
+                                els: Box::new(Expr::Var(whole, line)),
+                            }),
+                        ]),
+                        line,
+                        lifted_from: None,
+                    },
+                    call(&go, vec![*init]),
+                )
+            }
+        }
+    };
+    let annotated: Vec<&Param> = loop_fn.params.iter().filter(|p| p.ann.is_some()).collect();
+    let mut stmts = vec![Stmt::Fn(Box::new(loop_fn.clone()))];
+    if annotated.is_empty() || loop_fn.params.len() != state_len {
+        stmts.push(Stmt::Expr(first_call));
+        return Expr::Block(stmts);
+    }
+    let res = pick_name("while", "res", used);
+    let vouch = pick_name("while", "vouch", used);
+    let parts: Vec<String> = (0..state_len).map(|_| pick_name("while", "part", used)).collect();
+    stmts.push(Stmt::Bind { name: res.clone(), value: first_call, line });
+    let vouched: Vec<Expr> = loop_fn
+        .params
+        .iter()
+        .zip(&parts)
+        .filter(|(p, _)| p.ann.is_some())
+        .map(|(_, part)| Expr::Var(part.clone(), line))
+        .collect();
+    if state_len == 1 {
+        stmts.push(Stmt::Bind { name: parts[0].clone(), value: Expr::Var(res.clone(), line), line });
+    } else {
+        stmts.push(Stmt::PatBind {
+            pattern: Pattern::Ctor {
+                name: format!("Tuple{state_len}"),
+                args: parts.iter().map(|p| Pattern::Var(p.clone())).collect(),
+                line,
+            },
+            value: Expr::Var(res.clone(), line),
+            line,
+        });
+    }
+    stmts.push(Stmt::Fn(Box::new(FnDef {
+        name: vouch.clone(),
+        exported: false,
+        params: annotated.into_iter().cloned().collect(),
+        ret_ann: None,
+        body: Expr::Int(0),
+        line,
+        lifted_from: None,
+    })));
+    stmts.push(Stmt::Expr(call(&vouch, vouched)));
+    stmts.push(Stmt::Expr(Expr::Var(res, line)));
+    Expr::Block(stmts)
+}
+
+/// Does every way out of `e` end in a tuple of `arity` written in place?
+fn ends_in_tuple(e: &Expr, arity: usize) -> bool {
+    match e {
+        Expr::Call { name, args, .. } => *name == format!("Tuple{arity}") && args.len() == arity,
+        Expr::Block(stmts) => matches!(stmts.last(), Some(Stmt::Expr(last)) if ends_in_tuple(last, arity)),
+        Expr::If { then, els, .. } => ends_in_tuple(then, arity) && ends_in_tuple(els, arity),
+        Expr::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|a| ends_in_tuple(&a.body, arity)),
+        _ => false,
+    }
+}
+
+/// Every tuple `ends_in_tuple` found becomes a call of `go` on its parts.
+fn splice_tuple_tail(e: Expr, go: &str, arity: usize, line: usize) -> Expr {
+    match e {
+        Expr::Call { name, args, .. } if name == format!("Tuple{arity}") => {
+            Expr::Call { name: go.to_string(), args, line, piped: false }
+        }
+        Expr::Block(mut stmts) => {
+            if let Some(Stmt::Expr(last)) = stmts.pop() {
+                stmts.push(Stmt::Expr(splice_tuple_tail(last, go, arity, line)));
+            }
+            Expr::Block(stmts)
+        }
+        Expr::If { cond, then, els } => Expr::If {
+            cond,
+            then: Box::new(splice_tuple_tail(*then, go, arity, line)),
+            els: Box::new(splice_tuple_tail(*els, go, arity, line)),
+        },
+        Expr::Match { scrutinee, arms, line: l } => Expr::Match {
+            scrutinee,
+            arms: arms
+                .into_iter()
+                .map(|a| Arm { body: splice_tuple_tail(a.body, go, arity, line), ..a })
+                .collect(),
+            line: l,
+        },
+        other => other,
+    }
+}
+
 /// The names indexed by the loop variable — `v[i]`, `v[i] = x`, `v[i] += x`
 /// — and, separately, the `(v, e)` pairs indexed by `e + i` or `i + e` for
 /// an `e` the loop leaves alone; in both, neither `v` nor `i` nor anything
@@ -369,6 +583,9 @@ fn collect_bound_names(e: &Expr, out: &mut HashSet<String>) {
             if let Some((a, _)) = acc {
                 out.insert(a.clone());
             }
+        }
+        Expr::While { acc: Some((ps, _)), .. } => {
+            out.extend(ps.iter().map(|p| p.name.clone()));
         }
         Expr::Select { arms, .. } => {
             for a in arms {
@@ -563,6 +780,13 @@ fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             }
             f(body);
         }
+        Expr::While { cond, acc, body, .. } => {
+            f(cond);
+            if let Some((_, init)) = acc {
+                f(init);
+            }
+            f(body);
+        }
         Expr::Block(stmts) => {
             for st in stmts {
                 match st {
@@ -665,6 +889,12 @@ fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
             body: Box::new(f(*body)),
             line,
         },
+        Expr::While { cond, acc, body, line } => Expr::While {
+            cond: Box::new(f(*cond)),
+            acc: acc.map(|(p, init)| (p, Box::new(f(*init)))),
+            body: Box::new(f(*body)),
+            line,
+        },
         Expr::Block(stmts) => Expr::Block(
             stmts
                 .into_iter()
@@ -714,6 +944,9 @@ fn walk(
         },
         Expr::For { var, from, to, acc, body, line } => {
             walk(expand_for(var, *from, *to, acc, *body, line, used), env, parent, used, out)?
+        }
+        Expr::While { cond, acc, body, line } => {
+            walk(expand_while(*cond, acc, *body, line, used), env, parent, used, out)?
         }
         Expr::Block(stmts) => {
             let mut n = 0usize;
@@ -1190,6 +1423,13 @@ fn each_child<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             }
             f(body);
         }
+        Expr::While { cond, acc, body, .. } => {
+            f(cond);
+            if let Some((_, init)) = acc {
+                f(init);
+            }
+            f(body);
+        }
         Expr::Block(_) => {}
     }
 }
@@ -1514,6 +1754,15 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
             body: Box::new(rewrite(*body, locals)?),
             line,
         },
+        Expr::While { cond, acc, body, line } => Expr::While {
+            cond: Box::new(rewrite(*cond, locals)?),
+            acc: match acc {
+                Some((p, e)) => Some((p, Box::new(rewrite(*e, locals)?))),
+                None => None,
+            },
+            body: Box::new(rewrite(*body, locals)?),
+            line,
+        },
         Expr::Block(stmts) => Expr::Block(
             stmts
                 .into_iter()
@@ -1645,6 +1894,16 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
                 free_of(init, bound, out);
                 bound.push(n.clone());
             }
+            free_of(body, bound, out);
+            bound.truncate(depth);
+        }
+        Expr::While { cond, acc, body, .. } => {
+            let depth = bound.len();
+            if let Some((ps, init)) = acc {
+                free_of(init, bound, out);
+                bound.extend(ps.iter().map(|p| p.name.clone()));
+            }
+            free_of(cond, bound, out);
             free_of(body, bound, out);
             bound.truncate(depth);
         }

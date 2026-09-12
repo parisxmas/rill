@@ -1,0 +1,960 @@
+# Strings, past what the prelude gives.
+#
+# The prelude has the pieces a program cannot do without — `contains`,
+# `split`, `trim`, `join`, the character layer. This is the rest: the searches
+# that answer a position rather than a yes, the transforms, the padding, the
+# parsers that refuse instead of returning zero, a hash, an edit distance,
+# every encoding a text arrives in, and at the bottom a handful of functions
+# that hand a long text to several strands at once.
+#
+#     import "str" as s
+#     s.count(text, "the")            # non-overlapping occurrences
+#     s.replace(line, "\t", "    ")
+#     s.pad_left(int_to_str(n), 8, 32)
+#     s.parse_int(field)              # Some(42), or None for "4x2"
+#     s.utf8_lossy(bytes_from_a_socket)
+#     s.par_count(big, "GET")         # the same count, one strand per worker
+#
+# Everything here is bytes, the way `#s` and `s[i]` are bytes: a position is a
+# byte offset, a "character" argument is a byte value such as `32` or `s[0]`,
+# and `upper` folds ASCII letters and leaves every other byte alone. For text
+# that needs its characters counted there is the prelude's `char_*` layer, and
+# `rev_chars` here shows how the two combine.
+#
+# Every search rides on the runtime's `str_find_from` and `str_find_in`,
+# which cross the text sixteen bytes at a time and look at a position only
+# where the pattern's first and last bytes both sit, so `count`, `replace`,
+# `last_index_of` and the strand functions all run at memory speed. The loops
+# that must look at every byte — `upper`, `hash`, `edit_distance` — are
+# written as plain `for`s so the compiler lays them out as the C loop would
+# be; the scans that stop on the data rather than on a count are `while`s,
+# whose state is written where the loop is.
+
+# -- bytes -------------------------------------------------------------------
+#
+# A range test on a byte is written as one unsigned compare on `c - lo`,
+# taken modulo 256: `c >= 97 && c <= 122` is `(c + 159) & 255 < 26`. Both
+# are true for the same bytes, but the second stays a byte all the way, and
+# a loop over a string that uses it is vectorized sixteen bytes to a
+# register, where the pair of compares came out widened to 64 bits — four
+# times the work. `upper` over forty megabytes: 13 ms one way, 4 the other.
+
+fn is_digit(c) = bit_and(c + 208, 255) < 10
+
+fn is_upper(c) = bit_and(c + 191, 255) < 26
+
+fn is_lower(c) = bit_and(c + 159, 255) < 26
+
+fn is_alpha(c) = is_upper(c) || is_lower(c)
+
+fn is_alnum(c) = is_alpha(c) || is_digit(c)
+
+fn upper_byte(c) = if is_lower(c) then c - 32 else c
+
+fn lower_byte(c) = if is_upper(c) then c + 32 else c
+
+# Is byte `c` one of the bytes of `set`?
+fn has_byte(set, c) =
+  k = while k < #set && set[k] != c with k = 0
+    k + 1
+  k < #set
+
+# Does `p` hold for every byte of `s`?
+fn all_bytes(s, p) =
+  i = while i < #s && p(s[i]) with i = 0
+    i + 1
+  i >= #s
+
+# -- searching ---------------------------------------------------------------
+
+# Where `p` first begins, or -1. `index_from` starts partway along and
+# `index_in` also stops early: a match must end by `to`.
+fn index_of(s, p) = str_find(s, p)
+
+fn index_from(s, p, from) = str_find_from(s, p, from)
+
+fn index_in(s, p, from, to) = str_find_in(s, p, from, to)
+
+# Where `p` last begins, or -1. Found by running forward from match to match:
+# each hop is one vectorized search, which beats walking backward a byte at
+# a time even when the answer is near the end.
+fn last_index_of(s, p) =
+  (_, best) = while i >= 0 with (i, best) = (str_find(s, p), -1)
+    (str_find_from(s, p, i + 1), i)
+  best
+
+fn byte_index(s, c) = str_find(s, chr(c))
+
+fn last_byte_index(s, c) = last_index_of(s, chr(c))
+
+# Does `p` sit at byte `i` of `s`?
+fn matches_at(s, i, p) =
+  k = while k < #p && s[i + k] == p[k] with k = 0
+    k + 1
+  i >= 0 && k >= #p
+
+fn ends_with(s, p) = #p <= #s && matches_at(s, #s - #p, p)
+
+# Occurrences of `p`: `count` skips past each match it finds, so "aa" occurs
+# once in "aaa"; `count_all` steps one byte and finds it twice. Both are 0 for
+# the empty pattern.
+fn count(s, p) = if #p == 0 then 0 else count_by(s, p, #p)
+
+fn count_all(s, p) = if #p == 0 then 0 else count_by(s, p, 1)
+
+fn count_by(s, p, step) =
+  (_, n) = while i >= 0 with (i, n) = (str_find(s, p), 0)
+    (str_find_from(s, p, i + step), n + 1)
+  n
+
+fn count_byte(s, c) = for i in 0..#s with n = 0
+  if s[i] == c then n + 1 else n
+
+# Every place a non-overlapping match begins, first to last.
+fn indices(s, p) =
+  if #p == 0 then Nil
+  else
+    (_, acc) = while i >= 0 with (i, acc) = (str_find(s, p), Nil)
+      (str_find_from(s, p, i + #p), Cons(i, acc))
+    reverse(acc)
+
+# -- transforming ------------------------------------------------------------
+
+# The byte-for-byte transforms fill a buffer of the final size and hand it
+# over as the string, not a builder: a builder is a length store per byte,
+# and a loop that stores a length cannot be vectorized. Written like this
+# the loop is the one C writes, sixteen bytes at a time, and `str_from_buf`
+# on a buffer nothing names again is the block itself, uncopied.
+fn upper(s) =
+  n = #s
+  v = buf_u8(n)
+  for i in 0..n
+    v[i] = upper_byte(s[i])
+  str_from_buf(v)
+
+fn lower(s) =
+  n = #s
+  v = buf_u8(n)
+  for i in 0..n
+    v[i] = lower_byte(s[i])
+  str_from_buf(v)
+
+fn swap_case(s) =
+  n = #s
+  v = buf_u8(n)
+  for i in 0..n
+    c = s[i]
+    v[i] = if is_lower(c) then c - 32 else if is_upper(c) then c + 32 else c
+  str_from_buf(v)
+
+fn capitalize(s) = if #s == 0 then s else chr(upper_byte(s[0])) + lower(s[1:#s])
+
+# Bytes back to front. On multi-byte text use `rev_chars`, which turns the
+# characters around and keeps each one whole.
+fn rev(s) =
+  n = #s
+  v = buf_u8(n)
+  for i in 0..n
+    v[i] = s[n - 1 - i]
+  str_from_buf(v)
+
+fn rev_chars(s) = from_chars(reverse(chars(s)))
+
+# Every occurrence of `old` becomes `new`. A string that has no `old` in it is
+# handed back as it is, not copied; an empty `old` matches nothing. Each
+# piece between matches goes straight from `s` into the builder, which is
+# sized for the whole text up front.
+fn replace(s, old, new) =
+  if #old == 0 then s
+  else
+    first = str_find(s, old)
+    if first < 0 then s
+    else
+      b = strbuf()
+      strbuf_reserve(b, #s)
+      (from, _) = while i >= 0 with (from, i) = (0, first)
+        strbuf_add_sub(b, s, from, i - from)
+        b += new
+        (i + #old, str_find_from(s, old, i + #old))
+      strbuf_add_sub(b, s, from, #s - from)
+      strbuf_str(b)
+
+fn replace_first(s, old, new) =
+  i = str_find(s, old)
+  if i < 0 || #old == 0 then s else s[0:i] + new + s[i + #old:#s]
+
+# Bring `s` up to `n` bytes with byte `c`; a string already that long is
+# returned as it is.
+fn pad_left(s, n, c) =
+  if #s >= n then s
+  else
+    b = strbuf()
+    for _ in 0..n - #s
+      strbuf_byte(b, c)
+    b += s
+    strbuf_str(b)
+
+fn pad_right(s, n, c) =
+  if #s >= n then s
+  else
+    b = strbuf()
+    b += s
+    for _ in 0..n - #s
+      strbuf_byte(b, c)
+    strbuf_str(b)
+
+fn center(s, n, c) =
+  if #s >= n then s else pad_right(pad_left(s, #s + (n - #s) / 2, c), n, c)
+
+fn trim_left(s) =
+  a = trim_from(s, 0)
+  if a == 0 then s else s[a:#s]
+
+fn trim_right(s) =
+  b = trim_to(s, #s)
+  if b == #s then s else s[0:b]
+
+# Trim any of the bytes in `set` from both ends: `trim_set(path, "/")`.
+fn trim_set(s, set) =
+  a = while a < #s && has_byte(set, s[a]) with a = 0
+    a + 1
+  b = while b > a && has_byte(set, s[b - 1]) with b = #s
+    b - 1
+  if a == 0 && b == #s then s else s[a:b]
+
+# The rest of `s` once `p` has been taken off its front (or its back), or
+# `None` when `p` was not there — so a caller can tell "had no prefix" from
+# "had the prefix and nothing else".
+fn strip_prefix(s, p) = if starts_with(s, p) then Some(s[#p:#s]) else None
+
+fn strip_suffix(s, p) = if ends_with(s, p) then Some(s[0:#s - #p]) else None
+
+# -- splitting ---------------------------------------------------------------
+
+# The runs of non-space bytes, in order; no empty strings, however many
+# spaces there are.
+fn words(s) =
+  (_, acc) = while a < #s with (a, acc) = (skip_ws(s, 0), Nil)
+    b = while b < #s && !is_space(s[b]) with b = a
+      b + 1
+    (skip_ws(s, b), Cons(s[a:b], acc))
+  reverse(acc)
+
+fn skip_ws(s, i) = while j < #s && is_space(s[j]) with j = i
+  j + 1
+
+# The text before and after the first `sep`, or `None` when there is none:
+# `split_once(header, ": ")`.
+fn split_once(s, sep) =
+  i = str_find(s, sep)
+  if i < 0 || #sep == 0 then None else Some((s[0:i], s[i + #sep:#s]))
+
+fn split_at(s, i) = (s[0:i], s[i:#s])
+
+fn concat(l) = join(l, "")
+
+# What `lines` would return the length of, without building it.
+fn line_count(s) = if #s == 0 then 0 else count_byte(s, 10) + (if s[#s - 1] == 10 then 0 else 1)
+
+# -- comparing ---------------------------------------------------------------
+
+fn cmp(a, b) = str_cmp(a, b)
+
+fn eq_ignore_case(a, b) =
+  i = while i < #a && i < #b && lower_byte(a[i]) == lower_byte(b[i]) with i = 0
+    i + 1
+  #a == #b && i >= #a
+
+# Length of the longest prefix the two share.
+fn common_prefix(a, b) = while i < #a && i < #b && a[i] == b[i] with i = 0
+  i + 1
+
+# FNV-1a over the bytes, 64 bits wide. The multiply is meant to wrap.
+fn hash(s) = for i in 0..#s with h = -3750763034362895579
+  bit_xor(h, s[i]) * 1099511628211
+
+# Levenshtein distance: the fewest single-byte edits (insert, delete,
+# replace) that turn `a` into `b`. Two rows of the usual table, swapped
+# rather than copied, so it is `#b + 1` words of memory however long `a` is.
+fn edit_distance(a, b) =
+  n = #a
+  m = #b
+  if n == 0 then m
+  else if m == 0 then n
+  else
+    first = buf_int(m + 1)
+    for j in 0..m + 1
+      first[j] = j
+    (_, prev, _) = while i < n with (i, prev: Buf(Int), cur: Buf(Int)) = (0, first, buf_int(m + 1))
+      cur[0] = i + 1
+      ai = a[i]
+      for j in 0..m
+        cost = if ai == b[j] then 0 else 1
+        cur[j + 1] = min(min(prev[j + 1], cur[j]) + 1, prev[j] + cost)
+      (i + 1, cur, prev)
+    prev[m]
+
+# -- parsing -----------------------------------------------------------------
+
+# A whole decimal integer, with an optional sign, or `None`. This is the
+# strict reading `str_to_int` does not offer: "12ab" and "" are `None` here
+# rather than 12 and 0.
+fn parse_int(s) =
+  if #s == 0 then None else if s[0] == 45 then opt_map(digits(s, 1), \v -> -v) else if s[0] == 43 then digits(s, 1) else digits(s, 0)
+
+# The digits from `i` to the end of `s`, as a number; `None` if anything
+# else is there, or nothing is.
+fn digits(s, i) =
+  (j, acc) = while j < #s && is_digit(s[j]) with (j, acc) = (i, 0)
+    (j + 1, acc * 10 + s[j] - 48)
+  if j < #s || j == i then None else Some(acc)
+
+fn is_int(s) = match parse_int(s)
+  Some(_) -> true
+  None -> false
+
+fn is_blank(s) = trim_from(s, 0) >= #s
+
+fn is_alpha_str(s) = #s > 0 && all_bytes(s, \c -> is_alpha(c))
+
+fn is_digit_str(s) = #s > 0 && all_bytes(s, \c -> is_digit(c))
+
+# The bytes as a buffer, and back.
+fn bytes(s) =
+  v = buf_u8(#s)
+  for i in 0..#s
+    v[i] = s[i]
+  v
+
+fn from_bytes(v: Buf(U8)) = str_from_buf(v)
+
+# -- encodings ---------------------------------------------------------------
+#
+# Rill's strings are UTF-8 bytes and nothing checks that they are. Text that
+# arrives from a file, a socket or a C library may be anything, and this is
+# where it is looked at: `utf8_valid` says whether it is text, `utf8_lossy`
+# makes it text, and the rest move it between UTF-8 and the other encodings
+# a program meets — UTF-16 and UTF-32 in either byte order, Latin-1, the
+# Windows code pages 1252 and 1254 (Turkish) — and the transports that carry
+# bytes as characters: Base64, hex, percent-encoding, HTML entities, C-style
+# escapes. A decoder gives `None` for input that is not what it claims to be
+# rather than a string that is wrong somewhere.
+#
+# A code point is an `Int`, as the prelude's `chars` and `from_chars` have
+# it; a "byte string" is an ordinary `Str` whose bytes happen not to be
+# UTF-8, which is what `encode_utf16` returns and `decode_utf16` takes.
+#
+# A decoder that can refuse carries an `ok` beside its position: a bad byte
+# sets it false and moves the position to the end, which is how a `while`
+# with one exit reports two outcomes.
+
+# Is the byte at `i` the start of a well-formed sequence, and how long is it?
+# 1 to 4, or 0 for a stray continuation byte, an overlong form, a surrogate,
+# a code point past U+10FFFF, or a sequence the string ends inside. Reads
+# past the end are -1 and fail every test, so nothing here looks at `#s`.
+fn utf8_seq_len(s, i) =
+  b = s[i]
+  if b < 128 then 1
+  else if b < 194 then 0
+  else if b < 224 then if is_cont(s[i + 1]) then 2 else 0
+  else if b < 240 then
+    c = s[i + 1]
+    lo = if b == 224 then 160 else 128
+    hi = if b == 237 then 159 else 191
+    if c >= lo && c <= hi && is_cont(s[i + 2]) then 3 else 0
+  else if b < 245 then
+    c = s[i + 1]
+    lo = if b == 240 then 144 else 128
+    hi = if b == 244 then 143 else 191
+    if c >= lo && c <= hi && is_cont(s[i + 2]) && is_cont(s[i + 3]) then 4 else 0
+  else 0
+
+fn is_cont(b) = b >= 128 && b < 192
+
+# The offset of the first byte that is not UTF-8, or -1 when all of it is.
+fn utf8_bad_at(s) =
+  (i, _) = while i < #s && w > 0 with (i, w) = (0, utf8_seq_len(s, 0))
+    (i + w, utf8_seq_len(s, i + w))
+  if i < #s then i else -1
+
+fn utf8_valid(s) = utf8_bad_at(s) < 0
+
+# A code point that UTF-8 may encode: not a surrogate, not past the last plane.
+fn is_scalar(c) = c >= 0 && c < 1114112 && !(c >= 55296 && c < 57344)
+
+fn decode_utf8(s) = if utf8_valid(s) then Some(chars(s)) else None
+
+fn encode_utf8(cps) = if all(cps, \c -> is_scalar(c)) then Some(from_chars(cps)) else None
+
+# The text with every byte that is not part of a well-formed sequence
+# replaced by U+FFFD, one replacement per bad byte. Valid text comes back as
+# it is, uncopied.
+fn utf8_lossy(s) =
+  if utf8_valid(s) then s
+  else
+    b = strbuf()
+    while i < #s with i = 0
+      w = utf8_seq_len(s, i)
+      if w == 0 then
+        b += "�"
+        i + 1
+      else
+        strbuf_add_sub(b, s, i, w)
+        i + w
+    strbuf_str(b)
+
+fn has_bom(s) = #s >= 3 && s[0] == 239 && s[1] == 187 && s[2] == 191
+
+fn strip_bom(s) = if has_bom(s) then s[3:#s] else s
+
+fn is_ascii(s) = for i in 0..#s with ok = true
+  ok && s[i] < 128
+
+# Walk the characters of `s` from byte `i`, giving `f` each code point and
+# where it starts.
+fn each_char(s, i, f) =
+  while j < #s with j = i
+    f(char_decode(s, j), j)
+    j + char_wide(s[j])
+
+# The text with `f` applied to every code point, built without a list.
+fn map_chars(s, f) =
+  b = strbuf()
+  while i < #s with i = 0
+    put_char(b, f(char_decode(s, i)))
+    i + char_wide(s[i])
+  strbuf_str(b)
+
+# `char_onto` from the prelude, but a statement: it answers nothing, so it
+# can sit in a branch whose other arms are `b += x`.
+fn put_char(b: StrBuf, c) =
+  if c < 128 then strbuf_byte(b, c)
+  else if c < 2048 then
+    strbuf_byte(b, 192 + c / 64)
+    strbuf_byte(b, 128 + c % 64)
+  else if c < 65536 then
+    strbuf_byte(b, 224 + c / 4096)
+    strbuf_byte(b, 128 + c / 64 % 64)
+    strbuf_byte(b, 128 + c % 64)
+  else
+    strbuf_byte(b, 240 + c / 262144)
+    strbuf_byte(b, 128 + c / 4096 % 64)
+    strbuf_byte(b, 128 + c / 64 % 64)
+    strbuf_byte(b, 128 + c % 64)
+
+# -- UTF-16 and UTF-32. `big` chooses the byte order; the `le`/`be` names
+# fix it. The decoders take the length, the byte order and every surrogate
+# seriously: an odd byte, a lone surrogate or a code point past U+10FFFF is
+# `None`. `decode_utf16_bom` reads the byte order mark and drops it, taking
+# big-endian when there is none, as the RFC says to.
+
+fn encode_utf16(s, big) =
+  b = strbuf()
+  while i < #s with i = 0
+    c = char_decode(s, i)
+    if c < 65536 then unit16(b, c, big)
+    else
+      d = c - 65536
+      unit16(b, 55296 + d / 1024, big)
+      unit16(b, 56320 + d % 1024, big)
+    i + char_wide(s[i])
+  strbuf_str(b)
+
+fn encode_utf16le(s) = encode_utf16(s, false)
+
+fn encode_utf16be(s) = encode_utf16(s, true)
+
+fn unit16(b: StrBuf, u, big) =
+  b += if big then u / 256 else u % 256
+  b += if big then u % 256 else u / 256
+
+fn unit16_at(v, i, big) = if big then v[i] * 256 + v[i + 1] else v[i] + v[i + 1] * 256
+
+fn decode_utf16(v, big) =
+  if #v % 2 != 0 then None
+  else
+    b = strbuf()
+    (_, ok) = while i < #v with (i, ok) = (0, true)
+      u = unit16_at(v, i, big)
+      if u >= 55296 && u < 56320 then
+        u2 = if i + 3 < #v then unit16_at(v, i + 2, big) else 0
+        if u2 >= 56320 && u2 < 57344 then
+          put_char(b, 65536 + (u - 55296) * 1024 + (u2 - 56320))
+          (i + 4, true)
+        else (#v, false)
+      else if u >= 56320 && u < 57344 then (#v, false)
+      else
+        put_char(b, u)
+        (i + 2, true)
+    if ok then Some(strbuf_str(b)) else None
+
+fn decode_utf16le(v) = decode_utf16(v, false)
+
+fn decode_utf16be(v) = decode_utf16(v, true)
+
+fn decode_utf16_bom(v) =
+  if #v >= 2 && v[0] == 254 && v[1] == 255 then decode_utf16(v[2:#v], true) else if #v >= 2 && v[0] == 255 && v[1] == 254 then decode_utf16(v[2:#v], false) else decode_utf16(v, true)
+
+fn encode_utf32(s, big) =
+  b = strbuf()
+  while i < #s with i = 0
+    c = char_decode(s, i)
+    if big then
+      b += c / 16777216
+      b += c / 65536 % 256
+      b += c / 256 % 256
+      b += c % 256
+    else
+      b += c % 256
+      b += c / 256 % 256
+      b += c / 65536 % 256
+      b += c / 16777216
+    i + char_wide(s[i])
+  strbuf_str(b)
+
+fn decode_utf32(v, big) =
+  if #v % 4 != 0 then None
+  else
+    b = strbuf()
+    (_, ok) = while i < #v with (i, ok) = (0, true)
+      c = if big then ((v[i] * 256 + v[i + 1]) * 256 + v[i + 2]) * 256 + v[i + 3] else ((v[i + 3] * 256 + v[i + 2]) * 256 + v[i + 1]) * 256 + v[i]
+      if is_scalar(c) then
+        put_char(b, c)
+        (i + 4, true)
+      else (#v, false)
+    if ok then Some(strbuf_str(b)) else None
+
+# -- single-byte encodings. A decoder maps each byte through `f` to a code
+# point and never fails; an encoder maps each code point through `g` to a
+# byte, and a character the encoding has no byte for (`g` gives -1) makes
+# the whole result `None`.
+
+fn decode_bytes(v, f) =
+  b = strbuf()
+  for i in 0..#v
+    put_char(b, f(v[i]))
+  strbuf_str(b)
+
+fn encode_bytes(s, g) =
+  b = strbuf()
+  (_, ok) = while i < #s with (i, ok) = (0, true)
+    x = g(char_decode(s, i))
+    if x < 0 then (#s, false)
+    else
+      b += x
+      (i + char_wide(s[i]), true)
+  if ok then Some(strbuf_str(b)) else None
+
+fn decode_latin1(v) = decode_bytes(v, \b -> b)
+
+fn encode_latin1(s) = encode_bytes(s, \c -> if c < 256 then c else -1)
+
+# Windows-1252: Latin-1 with the C1 controls replaced by punctuation and a
+# few letters. The five bytes 1252 leaves undefined decode to themselves.
+fn cp1252_char(b) =
+  if b < 128 || b >= 160 then b else if b == 128 then 8364 else if b == 130 then 8218 else if b == 131 then 402 else if b == 132 then 8222 else if b == 133 then 8230 else if b == 134 then 8224 else if b == 135 then 8225 else if b == 136 then 710 else if b == 137 then 8240 else if b == 138 then 352 else if b == 139 then 8249 else if b == 140 then 338 else if b == 142 then 381 else if b == 145 then 8216 else if b == 146 then 8217 else if b == 147 then 8220 else if b == 148 then 8221 else if b == 149 then 8226 else if b == 150 then 8211 else if b == 151 then 8212 else if b == 152 then 732 else if b == 153 then 8482 else if b == 154 then 353 else if b == 155 then 8250 else if b == 156 then 339 else if b == 158 then 382 else if b == 159 then 376 else b
+
+# Windows-1254, the Turkish page: 1252 with Ğ İ Ş ğ ı ş where 1252 has
+# Ð Ý Þ ð ý þ, and without Ž ž.
+fn cp1254_char(b) =
+  if b == 208 then 286 else if b == 221 then 304 else if b == 222 then 350 else if b == 240 then 287 else if b == 253 then 305 else if b == 254 then 351 else if b == 142 || b == 158 then b else cp1252_char(b)
+
+# The byte whose character is `c` under `f`, searching the 128 high bytes.
+fn byte_for(c, f) =
+  if c < 128 then c
+  else
+    b = while b < 256 && f(b) != c with b = 128
+      b + 1
+    if b < 256 then b else -1
+
+fn decode_cp1252(v) = decode_bytes(v, \b -> cp1252_char(b))
+
+fn encode_cp1252(s) = encode_bytes(s, \c -> byte_for(c, \b -> cp1252_char(b)))
+
+fn decode_cp1254(v) = decode_bytes(v, \b -> cp1254_char(b))
+
+fn encode_cp1254(s) = encode_bytes(s, \c -> byte_for(c, \b -> cp1254_char(b)))
+
+# -- case, past ASCII. `char_upper` and `char_lower` know Latin-1, Latin
+# Extended-A, Greek and Cyrillic, which is the alphabets whose case pairs sit
+# a fixed distance apart; anything else comes back unchanged. The `_tr`
+# versions apply the Turkish rule, where i and ı are two letters: i ↔ İ and
+# ı ↔ I, so that "istanbul" comes up as "İSTANBUL" and "IŞIK" down as
+# "ışık". Without it "ISTANBUL" would lose its dotless ı.
+
+fn char_upper(c) =
+  if c < 128 then upper_byte(c) else if c == 181 then 924 else if c == 255 then 376 else if c >= 224 && c <= 254 && c != 247 then c - 32 else if c == 305 then 73 else if c == 383 then 83 else if c >= 256 && c <= 311 then c - c % 2 else if c >= 313 && c <= 328 then c - (c + 1) % 2 else if c >= 330 && c <= 375 then c - c % 2 else if c >= 377 && c <= 382 then c - (c + 1) % 2 else if c == 962 then 931 else if c >= 945 && c <= 969 then c - 32 else if c >= 1072 && c <= 1103 then c - 32 else if c >= 1104 && c <= 1119 then c - 80 else c
+
+fn char_lower(c) =
+  if c < 128 then lower_byte(c) else if c == 376 then 255 else if c >= 192 && c <= 222 && c != 215 then c + 32 else if c == 304 then 105 else if c >= 256 && c <= 311 then c + (c + 1) % 2 else if c >= 313 && c <= 328 then c + c % 2 else if c >= 330 && c <= 375 then c + (c + 1) % 2 else if c >= 377 && c <= 382 then c + c % 2 else if c >= 913 && c <= 937 && c != 930 then c + 32 else if c >= 1024 && c <= 1039 then c + 80 else if c >= 1040 && c <= 1071 then c + 32 else c
+
+fn char_upper_tr(c) = if c == 105 then 304 else if c == 305 then 73 else char_upper(c)
+
+fn char_lower_tr(c) = if c == 73 then 305 else if c == 304 then 105 else char_lower(c)
+
+fn upper_utf8(s) = map_chars(s, \c -> char_upper(c))
+
+fn lower_utf8(s) = map_chars(s, \c -> char_lower(c))
+
+fn upper_tr(s) = map_chars(s, \c -> char_upper_tr(c))
+
+fn lower_tr(s) = map_chars(s, \c -> char_lower_tr(c))
+
+# The nearest ASCII letter for an accented Latin one — ç→c, ğ→g, ı→i, İ→I,
+# ö→o, ş→s, ü→u, é→e and the rest of Latin-1 and Extended-A — with ß, æ
+# and œ opening out to two letters. Everything else is kept. For slugs,
+# file names and the search box that must find "Çağrı" when "cagri" is typed.
+fn ascii_fold(s) =
+  b = strbuf()
+  while i < #s with i = 0
+    fold_piece(b, char_decode(s, i))
+    i + char_wide(s[i])
+  strbuf_str(b)
+
+fn fold_piece(b: StrBuf, c) =
+  if c == 223 then
+    b += "ss"
+  else if c == 198 then
+    b += "AE"
+  else if c == 230 then
+    b += "ae"
+  else if c == 338 then
+    b += "OE"
+  else if c == 339 then
+    b += "oe"
+  else put_char(b, fold_char(c))
+
+fn fold_char(c) =
+  if c < 128 then c else if c >= 192 && c <= 197 then 65 else if c == 199 then 67 else if c >= 200 && c <= 203 then 69 else if c >= 204 && c <= 207 then 73 else if c == 208 then 68 else if c == 209 then 78 else if c >= 210 && c <= 214 || c == 216 then 79 else if c >= 217 && c <= 220 then 85 else if c == 221 then 89 else if c >= 224 && c <= 229 then 97 else if c == 231 then 99 else if c >= 232 && c <= 235 then 101 else if c >= 236 && c <= 239 then 105 else if c == 240 then 100 else if c == 241 then 110 else if c >= 242 && c <= 246 || c == 248 then 111 else if c >= 249 && c <= 252 then 117 else if c == 253 || c == 255 then 121 else if c == 376 then 89 else if c == 383 then 115 else if c == 312 then 107 else if c == 329 then 110 else if c >= 256 && c <= 383 then fold_ext(c) else c
+
+# Latin Extended-A runs in pairs, upper then lower; the pairs for one letter
+# are consecutive. Which letter a pair belongs to is a ladder of starts, and
+# whether it is the upper one is the parity, which flips at ĸ and again at ŉ.
+fn fold_ext(c) =
+  base = if c < 262 then 65 else if c < 270 then 67 else if c < 274 then 68 else if c < 284 then 69 else if c < 292 then 71 else if c < 296 then 72 else if c < 306 then 73 else if c < 308 then 74 else if c < 310 then 74 else if c < 313 then 75 else if c < 323 then 76 else if c < 332 then 78 else if c < 340 then 79 else if c < 346 then 82 else if c < 354 then 83 else if c < 360 then 84 else if c < 372 then 85 else if c < 374 then 87 else if c < 377 then 89 else 90
+  upper = if c < 313 then c % 2 == 0 else if c < 330 then c % 2 == 1 else if c < 377 then c % 2 == 0 else c % 2 == 1
+  if upper then base else base + 32
+
+# -- transports: bytes as printable characters and back.
+
+fn base64_encode(s) =
+  base64_with(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", true)
+
+# The URL-safe alphabet, without padding, as JWTs and the like carry it.
+fn base64url_encode(s) =
+  base64_with(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", false)
+
+fn base64_with(s, abc, pad) =
+  b = strbuf()
+  while i < #s with i = 0
+    n = #s - i
+    x = s[i] * 65536 + (if n > 1 then s[i + 1] * 256 else 0) + (if n > 2 then s[i + 2] else 0)
+    b += abc[x / 262144]
+    b += abc[x / 4096 % 64]
+    put_or_pad(b, n > 1, abc[x / 64 % 64], pad)
+    put_or_pad(b, n > 2, abc[x % 64], pad)
+    i + 3
+  strbuf_str(b)
+
+fn put_or_pad(b: StrBuf, keep, c, pad) =
+  if keep || pad then
+    b += if keep then c else 61
+  else
+    b += ""
+
+# Decodes either alphabet, with or without padding. Anything else in the
+# input — a space, a newline, a third alphabet — is `None`.
+fn base64_decode(s) =
+  n = while n > 0 && s[n - 1] == 61 && n > #s - 2 with n = #s
+    n - 1
+  b = strbuf()
+  (_, ok) = while i < n with (i, ok) = (0, true)
+    left = n - i
+    a = b64_val(s[i])
+    c = b64_val(s[i + 1])
+    d = if left > 2 then b64_val(s[i + 2]) else 0
+    e = if left > 3 then b64_val(s[i + 3]) else 0
+    if left == 1 || a < 0 || c < 0 || d < 0 || e < 0 then (n, false)
+    else
+      x = ((a * 64 + c) * 64 + d) * 64 + e
+      b += x / 65536
+      put_or_pad(b, left > 2, x / 256 % 256, false)
+      put_or_pad(b, left > 3, x % 256, false)
+      (i + 4, true)
+  if ok then Some(strbuf_str(b)) else None
+
+fn base64url_decode(s) = base64_decode(s)
+
+fn b64_val(c) =
+  if c >= 65 && c <= 90 then c - 65 else if c >= 97 && c <= 122 then c - 71 else if c >= 48 && c <= 57 then c + 4 else if c == 43 || c == 45 then 62 else if c == 47 || c == 95 then 63 else -1
+
+fn hex_encode(s) =
+  n = #s
+  v = buf_u8(2 * n)
+  for i in 0..n
+    v[2 * i] = hex_digit(s[i] / 16)
+    v[2 * i + 1] = hex_digit(s[i] % 16)
+  str_from_buf(v)
+
+fn hex_digit(d) = if d < 10 then 48 + d else 87 + d
+
+fn hex_val(c) =
+  if c >= 48 && c <= 57 then c - 48 else if c >= 97 && c <= 102 then c - 87 else if c >= 65 && c <= 70 then c - 55 else -1
+
+fn hex_decode(s) =
+  if #s % 2 != 0 then None
+  else
+    b = strbuf()
+    (_, ok) = while i < #s with (i, ok) = (0, true)
+      hi = hex_val(s[i])
+      lo = hex_val(s[i + 1])
+      if hi < 0 || lo < 0 then (#s, false)
+      else
+        b += hi * 16 + lo
+        (i + 2, true)
+    if ok then Some(strbuf_str(b)) else None
+
+fn int_to_hex(n) =
+  if n < 0 then "-" + int_to_hex(-n) else if n < 16 then chr(hex_digit(n)) else int_to_hex(n / 16) + chr(hex_digit(n % 16))
+
+# "ff", "0xFF" and "-0x1a" all read; anything else is `None`.
+fn hex_to_int(s) =
+  if #s == 0 then None else if s[0] == 45 then opt_map(hex_to_int(s[1:#s]), \v -> -v) else if #s > 2 && s[0] == 48 && (s[1] == 120 || s[1] == 88) then hex_digits(s, 2) else hex_digits(s, 0)
+
+# The hex digits from `i` to the end of `s`, as a number; `None` if anything
+# else is there.
+fn hex_digits(s, i) =
+  (j, acc) = while j < #s && hex_val(s[j]) >= 0 with (j, acc) = (i, 0)
+    (j + 1, acc * 16 + hex_val(s[j]))
+  if j < #s then None else Some(acc)
+
+# Percent-encoding as RFC 3986 has it: letters, digits and `-_.~` stand,
+# every other byte becomes `%XX`. `form_encode` is the variant HTML forms
+# use, with a space as `+`.
+fn url_encode(s) = percent(s, false)
+
+fn form_encode(s) = percent(s, true)
+
+fn percent(s, form) =
+  b = strbuf()
+  for i in 0..#s
+    c = s[i]
+    if is_alnum(c) || c == 45 || c == 95 || c == 46 || c == 126 then
+      b += c
+    else if form && c == 32 then
+      b += 43
+    else
+      b += 37
+      b += upper_byte(hex_digit(c / 16))
+      b += upper_byte(hex_digit(c % 16))
+  strbuf_str(b)
+
+# A `%` not followed by two hex digits is `None`.
+fn url_decode(s) = unpercent(s, false)
+
+fn form_decode(s) = unpercent(s, true)
+
+fn unpercent(s, form) =
+  b = strbuf()
+  (_, ok) = while i < #s with (i, ok) = (0, true)
+    c = s[i]
+    if c == 37 then
+      hi = hex_val(s[i + 1])
+      lo = hex_val(s[i + 2])
+      if hi < 0 || lo < 0 then (#s, false)
+      else
+        b += hi * 16 + lo
+        (i + 3, true)
+    else
+      b += if form && c == 43 then 32 else c
+      (i + 1, true)
+  if ok then Some(strbuf_str(b)) else None
+
+# The five characters HTML cannot show as they are. Safe for text and for
+# attribute values in either kind of quote.
+fn html_escape(s) =
+  b = strbuf()
+  for i in 0..#s
+    c = s[i]
+    if c == 38 then
+      b += "&amp;"
+    else if c == 60 then
+      b += "&lt;"
+    else if c == 62 then
+      b += "&gt;"
+    else if c == 34 then
+      b += "&quot;"
+    else if c == 39 then
+      b += "&#39;"
+    else
+      b += c
+  strbuf_str(b)
+
+# The five named entities and the numeric ones, decimal and hex. An `&` that
+# starts no entity is kept as it is, which is what browsers do.
+fn html_unescape(s) =
+  if str_find(s, "&") < 0 then s
+  else
+    b = strbuf()
+    while i < #s with i = 0
+      if s[i] != 38 then
+        j = str_find_from(s, "&", i)
+        stop = if j < 0 then #s else j
+        strbuf_add_sub(b, s, i, stop - i)
+        stop
+      else
+        j = str_find_in(s, ";", i, i + 12)
+        c = if j < 0 then -1 else entity(s[i + 1:j])
+        if c < 0 then
+          b += 38
+          i + 1
+        else
+          put_char(b, c)
+          j + 1
+    strbuf_str(b)
+
+fn entity(name) =
+  if name == "amp" then 38 else if name == "lt" then 60 else if name == "gt" then 62 else if name == "quot" then 34 else if name == "apos" then 39 else if #name > 2 && name[0] == 35 && (name[1] == 120 || name[1] == 88) then unwrap_or(hex_digits(name, 2), -1) else if #name > 1 && name[0] == 35 then unwrap_or(digits(name, 1), -1) else -1
+
+# C-style escapes: `\n \r \t \\ \"` and `\xHH` for any other control byte,
+# so that a string can be shown on one line and read back exactly.
+fn escape(s) =
+  b = strbuf()
+  for i in 0..#s
+    c = s[i]
+    if c == 10 then
+      b += "\\n"
+    else if c == 13 then
+      b += "\\r"
+    else if c == 9 then
+      b += "\\t"
+    else if c == 92 then
+      b += "\\\\"
+    else if c == 34 then
+      b += "\\\""
+    else if c < 32 || c == 127 then
+      b += "\\x"
+      b += hex_digit(c / 16)
+      b += hex_digit(c % 16)
+    else
+      b += c
+  strbuf_str(b)
+
+# Reads `escape`'s output back, plus `\'`, `\0` and `\u{...}`. A backslash
+# that starts no escape is `None`.
+fn unescape(s) =
+  if str_find(s, "\\") < 0 then Some(s)
+  else
+    b = strbuf()
+    (_, ok) = while i < #s with (i, ok) = (0, true)
+      if s[i] != 92 then
+        b += s[i]
+        (i + 1, true)
+      else
+        e = s[i + 1]
+        c = if e == 110 then 10 else if e == 114 then 13 else if e == 116 then 9 else if e == 92 then 92 else if e == 34 then 34 else if e == 39 then 39 else if e == 48 then 0 else -1
+        if c >= 0 then
+          b += c
+          (i + 2, true)
+        else if e == 120 && hex_val(s[i + 2]) >= 0 && hex_val(s[i + 3]) >= 0 then
+          b += hex_val(s[i + 2]) * 16 + hex_val(s[i + 3])
+          (i + 4, true)
+        else if e == 117 && s[i + 2] == 123 then
+          j = str_find_in(s, "}", i + 3, i + 12)
+          cp = if j < 0 then None else hex_digits(s[i + 3:j], 0)
+          match cp
+            Some(u) if is_scalar(u) ->
+              put_char(b, u)
+              (j + 1, true)
+            _ -> (#s, false)
+        else (#s, false)
+    if ok then Some(strbuf_str(b)) else None
+
+# -- strands -----------------------------------------------------------------
+#
+# A long text cut into `k` byte ranges, each handed to a strand. With
+# `RILL_THREADS` and a `--parallel` build the strands run on separate cores;
+# without, they run one after another and the answer is the same, so a
+# program may call these unconditionally. `workers()` is how many the runtime
+# was started with, and the sequential path is taken below a size where
+# spawning would cost more than it saves.
+#
+# `par_ranges` is the general shape: `f(lo, hi)` for each range, the results
+# in range order. The others are that, with the boundary handled: a match
+# that starts inside a range may end past it, so a range's search window is
+# `#p - 1` bytes longer than the range, and every match is counted by exactly
+# the range it begins in.
+
+fn par_ranges(s, k, f) =
+  ch = channel(k)
+  step = (#s + k - 1) / k
+  for i in 0..k
+    spawn run_range(ch, f, i, min(i * step, #s), min((i + 1) * step, #s))
+  rs = for _ in 0..k with acc = Nil
+    Cons(recv(ch), acc)
+  for i in 0..k with acc = Nil
+    Cons(pick(rs, k - 1 - i), acc)
+
+fn run_range(ch, f, i, lo, hi) = send(ch, (i, f(lo, hi)))
+
+fn pick(rs, i) = match rs
+  Cons((j, r), rest) -> if j == i then r else pick(rest, i)
+  Nil -> pick(rs, i)
+
+fn par_threshold() = 65536
+
+# `count_all` (every occurrence, overlapping ones included) over all the
+# workers. The overlapping count is the one that splits: whether a
+# non-overlapping scan takes a match depends on the matches before it, which
+# another strand may hold. For a pattern that cannot overlap itself the two
+# counts are the same number.
+fn par_count(s, p) = par_count_on(s, p, workers())
+
+fn par_count_on(s, p, k) =
+  if #p == 0 then 0 else if k <= 1 || #s < par_threshold() then count_all(s, p) else sum(par_ranges(s, k, \lo, hi -> count_window(s, p, lo, min(hi + #p - 1, #s))))
+
+fn count_window(s, p, from, to) =
+  (_, n) = while i >= 0 with (i, n) = (str_find_in(s, p, from, to), 0)
+    (str_find_in(s, p, i + 1, to), n + 1)
+  n
+
+# `index_of` over all the workers: each range reports the first match that
+# begins in it, and the smallest wins.
+fn par_index_of(s, p) = par_index_on(s, p, workers())
+
+fn par_index_on(s, p, k) =
+  if k <= 1 || #s < par_threshold() then str_find(s, p) else first_found(par_ranges(s, k, \lo, hi -> str_find_in(s, p, lo, min(hi + #p - 1, #s))))
+
+fn first_found(l) = match l
+  Nil -> -1
+  Cons(i, rest) -> if i >= 0 then i else first_found(rest)
+
+# `map(lines(s), f)` over all the workers: the ranges are moved forward to
+# the byte after a newline so that no line is cut, each strand maps its own
+# lines, and the pieces are joined in order. The lines are exactly those of
+# the prelude's `lines`, trailing empty one included.
+fn par_lines(s, f) = par_lines_on(s, f, workers())
+
+fn par_lines_on(s, f, k) =
+  if k <= 1 || #s < par_threshold() then map(lines(s), f) else stitch(reverse(par_ranges(s, k, \lo, hi -> lines_in(s, f, after_newline(s, lo), after_newline(s, hi)))), Nil)
+
+# The range boundary at `pos`, moved to just past the next newline; the two
+# ends of the text stay where they are.
+fn after_newline(s, pos) =
+  if pos <= 0 then 0
+  else if pos >= #s then #s
+  else
+    j = str_find_from(s, "\n", pos)
+    if j < 0 then #s else j + 1
+
+# A range's lines, last first — the order they are found in — so that the
+# pieces can be stitched into one list in a single pass, without the copy
+# an `append` per piece would make.
+fn lines_in(s, f, lo, hi) =
+  (lo, _, acc) = while j >= 0 with (lo, j, acc) = (lo, str_find_in(s, "\n", lo, hi), Nil)
+    (j + 1, str_find_in(s, "\n", j + 1, hi), Cons(f(s[lo:j]), acc))
+  if hi == #s && lo <= hi then Cons(f(s[lo:hi]), acc) else acc
+
+fn stitch(ls, acc) = match ls
+  Nil -> acc
+  Cons(l, rest) -> stitch(rest, rev_onto(l, acc))

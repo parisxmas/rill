@@ -219,6 +219,21 @@ pub enum Expr {
         body: Box<Expr>,
         line: usize,
     },
+    /// `while cond with state = init`: the loop that `for` is not, over a
+    /// condition instead of a range. The state is what the condition and the
+    /// body see, the body's value is the next state, and the loop is worth
+    /// the state the condition first refused. The state may be several
+    /// names, `with (i, n) = (0, 0)`, each annotated like a parameter if it
+    /// has to be (`v: Buf(Int)`); they are carried as separate parameters
+    /// wherever the body ends in a tuple written in place. Without `with`
+    /// the body runs for its effects and the loop is worth 0, as `for` is.
+    /// `lift` turns it into the local function a loop is.
+    While {
+        cond: Box<Expr>,
+        acc: Option<(Vec<Param>, Box<Expr>)>,
+        body: Box<Expr>,
+        line: usize,
+    },
     /// Multi-statement block; its value is the value of the last statement.
     Block(Vec<Stmt>),
 }

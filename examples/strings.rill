@@ -1,0 +1,138 @@
+# A tour of lib/str.rill: every function once, on inputs small enough to
+# check by eye, and then the ones that cut a text into strands against the
+# plain scan they must agree with.
+import "str" as st
+
+# A deterministic text: words from a small vocabulary, newlines every so
+# often, so that patterns overlap chunk boundaries however the text is cut.
+fn text(n) = text_onto(strbuf(), n, 12345)
+
+fn text_onto(b: StrBuf, n, x) =
+  if n == 0 then strbuf_str(b)
+  else
+    y = bit_and(x * 1103515245 + 12345, 2147483647)
+    k = y / 65536 % 7
+    b += if k == 0 then "she " else if k == 1 then "sells " else if k == 2 then "sea\n" else if k == 3 then "shells " else if k == 4 then "aaa" else if k == 5 then "\n" else "ashes "
+    text_onto(b, n - 1, y)
+
+# A naive Levenshtein to check the two-row one against.
+fn slow_edit(a, b) =
+  if #a == 0 then #b else if #b == 0 then #a else if a[0] == b[0] then slow_edit(a[1:#a], b[1:#b]) else 1 + min(min(slow_edit(a[1:#a], b), slow_edit(a, b[1:#b])), slow_edit(a[1:#a], b[1:#b]))
+
+fn main() =
+  s = "  Hello, World! hello  "
+  println(st.upper(s))
+  println(st.lower(s))
+  println(st.swap_case("aBc1"))
+  println(st.capitalize("hELLO"))
+  println(st.rev("abc"))
+  println(st.rev_chars("günaydın"))
+  println(st.trim_left(s) + "|")
+  println(st.trim_right(s) + "|")
+  println(st.trim_set("//a/b//", "/"))
+  println(st.trim_set("////", "/") + "|")
+  println(st.replace("a-b-c", "-", "+"))
+  println(st.replace("aaa", "aa", "b"))
+  println(st.replace("abc", "", "x"))
+  println(st.replace_first("a-b-c", "-", "+"))
+  println(st.pad_left("42", 6, 48))
+  println(st.pad_right("ab", 5, 46) + "|")
+  println(st.center("ab", 7, 42))
+  println(st.center("abc", 2, 42))
+
+  println(st.index_of("banana", "an"))
+  println(st.index_from("banana", "an", 2))
+  println(st.index_in("banana", "an", 0, 2))
+  println(st.index_in("banana", "an", 0, 3))
+  println(st.last_index_of("banana", "an"))
+  println(st.last_index_of("banana", "x"))
+  println(st.last_index_of("ab", "abc"))
+  println(st.byte_index("banana", 110))
+  println(st.last_byte_index("banana", 97))
+  println(bool_to_str(st.ends_with("banana", "ana")) + " " + bool_to_str(st.ends_with("na", "banana")))
+  println(bool_to_str(st.matches_at("banana", 2, "nan")) + " " + bool_to_str(st.matches_at("banana", 4, "nan")))
+  println(int_to_str(st.count("aaaa", "aa")) + " " + int_to_str(st.count_all("aaaa", "aa")) + " " + int_to_str(st.count("abc", "")))
+  println(st.count_byte("banana", 97))
+  println(st.indices("abcabcab", "ab"))
+  println(show(st.strip_prefix("prefix-body", "prefix-")))
+  println(show(st.strip_prefix("body", "prefix-")))
+  println(show(st.strip_suffix("file.rill", ".rill")))
+  println(show(st.strip_suffix(".rill", ".rill")))
+
+  println(st.words("  the quick\tbrown\n fox  "))
+  println(st.words("   "))
+  println(show(st.split_once("key: value: more", ": ")))
+  println(show(st.split_once("no separator", ": ")))
+  println(show(st.split_at("abcdef", 2)))
+  println(st.concat(Cons("a", Cons("b", Cons("c", Nil)))))
+  println(int_to_str(st.line_count("")) + " " + int_to_str(st.line_count("a")) + " " + int_to_str(st.line_count("a\nb\n")) + " " + int_to_str(st.line_count("a\nb")))
+
+  println(int_to_str(st.cmp("a", "b")) + " " + int_to_str(st.cmp("b", "a")) + " " + int_to_str(st.cmp("a", "a")))
+  println(bool_to_str(st.eq_ignore_case("HeLLo", "hEllO")) + " " + bool_to_str(st.eq_ignore_case("a", "ab")))
+  println(st.common_prefix("interstellar", "internet"))
+  println(st.hash(""))
+  println(st.hash("a"))
+  println(st.edit_distance("kitten", "sitting"))
+  println(st.edit_distance("", "abc"))
+  println(st.edit_distance("flaw", "lawn"))
+
+  println(show(st.parse_int("42")) + " " + show(st.parse_int("-17")) + " " + show(st.parse_int("+5")))
+  println(show(st.parse_int("")) + " " + show(st.parse_int("-")) + " " + show(st.parse_int("4x2")) + " " + show(st.parse_int("007")))
+  println(bool_to_str(st.is_int("-3")) + " " + bool_to_str(st.is_int("3.0")))
+  println(bool_to_str(st.is_blank(" \t\n")) + " " + bool_to_str(st.is_blank(" x ")))
+  println(bool_to_str(st.is_alpha_str("abcXYZ")) + " " + bool_to_str(st.is_alpha_str("ab1")) + " " + bool_to_str(st.is_alpha_str("")))
+  println(bool_to_str(st.is_digit_str("0123")) + " " + bool_to_str(st.is_digit_str("12a")))
+  v = st.bytes("hey")
+  println(int_to_str(#v) + " " + int_to_str(v[0]) + " " + st.from_bytes(v))
+
+  # encodings
+  g = "günaydın İstanbul"
+  println(bool_to_str(st.utf8_valid(g)) + " " + bool_to_str(st.utf8_valid("ab" + chr(255))) + " " + int_to_str(st.utf8_bad_at("ab" + chr(255) + "c")) + " " + int_to_str(st.utf8_bad_at(g)))
+  println(bool_to_str(st.utf8_valid(chr(237) + chr(160) + chr(128))) + " " + bool_to_str(st.utf8_valid(chr(192) + chr(128))) + " " + bool_to_str(st.utf8_valid(chr(244) + chr(144) + chr(128) + chr(128))) + " " + bool_to_str(st.utf8_valid(chr(240) + chr(159) + chr(152) + chr(128))))
+  println(st.utf8_lossy("a" + chr(255) + chr(128) + "b" + chr(226) + chr(130)))
+  println(show(st.decode_utf8("aç")) + " " + show(st.decode_utf8(chr(200))))
+  println(show(st.encode_utf8(Cons(97, Cons(231, Cons(128512, Nil))))) + " " + show(st.encode_utf8(Cons(55296, Nil))))
+  println(bool_to_str(st.has_bom(chr(239) + chr(187) + chr(191) + "x")) + " " + st.strip_bom(chr(239) + chr(187) + chr(191) + "x") + " " + bool_to_str(st.is_ascii("abc")) + " " + bool_to_str(st.is_ascii(g)))
+  u16 = st.encode_utf16be("aç😀")
+  println(st.hex_encode(u16) + " " + st.hex_encode(st.encode_utf16le("aç😀")) + " " + st.hex_encode(st.encode_utf32("gü", true)))
+  println(show(st.decode_utf16be(u16)) + " " + show(st.decode_utf16le(st.encode_utf16le(g))) + " " + show(st.decode_utf16_bom(chr(255) + chr(254) + st.encode_utf16le("ok"))))
+  println(show(st.decode_utf16be(chr(216) + chr(61))) + " " + show(st.decode_utf16be(chr(220) + chr(0) + chr(0) + chr(97))) + " " + show(st.decode_utf16be("abc")))
+  println(show(st.decode_utf32(st.encode_utf32("a😀", false), false)) + " " + show(st.decode_utf32(chr(0) + chr(17) + chr(0) + chr(0), true)))
+  l1 = st.encode_latin1("café ±")
+  println(show(l1 |> opt_map(\v -> st.hex_encode(v))) + " " + show(st.encode_latin1("ç€")) + " " + st.decode_latin1(chr(99) + chr(97) + chr(102) + chr(233)))
+  println(st.decode_cp1252(chr(128) + chr(147) + "x" + chr(148) + chr(133)) + " " + show(st.encode_cp1252("€“x”…") |> opt_map(\v -> st.hex_encode(v))) + " " + show(st.encode_cp1252("ğ")))
+  tr = st.decode_cp1254(chr(208) + chr(221) + chr(222) + chr(240) + chr(253) + chr(254))
+  println(tr + " " + show(st.encode_cp1254(tr) |> opt_map(\v -> st.hex_encode(v))) + " " + show(st.encode_cp1254("Ž")))
+  println(st.upper_utf8("çağrı éà öü ĳ ß αβγς жя ѐ") + " " + st.lower_utf8("ÇAĞRI ÉÀ ÖÜ Ĳ ΑΒΓ ЖЯ Ѐ"))
+  println(st.upper_tr("istanbul ışık") + " " + st.lower_tr("ISTANBUL IŞIK İZMİR") + " " + st.upper_utf8("istanbul") + " " + st.lower_utf8("İZMİR"))
+  println(st.ascii_fold("Çağrı Öztürk Şişli ĞÜŞİÖÇ straße Œuvre æ ñ ý ÿ ĸ ŉ ſ ő ř ţ ů ŵ ź ł đ"))
+  println(st.base64_encode("") + "|" + st.base64_encode("f") + " " + st.base64_encode("fo") + " " + st.base64_encode("foo") + " " + st.base64_encode("foobar") + " " + st.base64_encode(chr(251) + chr(255)) + " " + st.base64url_encode(chr(251) + chr(255)))
+  println(show(st.base64_decode("Zm9vYmFy")) + " " + show(st.base64_decode("Zg==")) + " " + show(st.base64_decode("Zm8=")) + " " + show(st.base64_decode("Zm8")) + " " + show(st.base64url_decode("-_8") |> opt_map(\v -> st.hex_encode(v))) + " " + show(st.base64_decode("Zm 8")) + " " + show(st.base64_decode("Z")) + " " + show(st.base64_decode("")))
+  println(st.hex_encode("Rill\n") + " " + show(st.hex_decode("52696c6c0A")) + " " + show(st.hex_decode("abc")) + " " + show(st.hex_decode("zz")) + " " + st.int_to_hex(255) + " " + st.int_to_hex(-4096) + " " + st.int_to_hex(0))
+  println(show(st.hex_to_int("ff")) + " " + show(st.hex_to_int("0x1A")) + " " + show(st.hex_to_int("-0x10")) + " " + show(st.hex_to_int("0x")) + " " + show(st.hex_to_int("g")))
+  println(st.url_encode("a b/ç?x=1&y=~_") + " " + st.form_encode("a b+c") + " " + show(st.url_decode("a%20b%2F%C3%A7")) + " " + show(st.form_decode("a+b%2Bc")) + " " + show(st.url_decode("50%")) + " " + show(st.url_decode("%zz")))
+  println(st.html_escape("<a href=\"x\">Tom & Jerry's</a>") + " " + st.html_unescape("&lt;b&gt; &amp;amp; &quot;q&quot; &#39;s&#39; &#231; &#xe7; &#x1F600; &unknown; & x &"))
+  println(st.escape("tab\there \"q\" back\\ nl\n" + chr(1) + chr(127)) + " " + show(st.unescape("tab\\there \\\"q\\\" back\\\\ nl\\n\\x01\\u{e7}\\u{1F600}\\0")) + " " + show(st.unescape("bad\\q")) + " " + show(st.unescape("plain")))
+
+  # The strand functions against the scans they stand in for, on a text long
+  # enough to be cut and at several cuts, including more ranges than there
+  # are bytes of lookahead and a pattern that overlaps itself.
+  t = text(40000)
+  println(#t)
+  fn agree(k) =
+    a = st.par_count_on(t, "she", k) == st.count_all(t, "she")
+    b = st.par_count_on(t, "aa", k) == st.count_all(t, "aa")
+    c = st.par_count_on(t, "\n", k) == st.count_byte(t, 10)
+    d = st.par_index_on(t, "sea\nsea\nsea", k) == st.index_of(t, "sea\nsea\nsea")
+    e = st.par_index_on(t, "zzz", k) == -1
+    f = st.par_lines_on(t, \l -> #l, k) == map(lines(t), \l -> #l)
+    g = st.par_lines_on(t, \l -> st.upper(l), k) == map(lines(t), \l -> st.upper(l))
+    a && b && c && d && e && f && g
+  println(bool_to_str(agree(1)) + " " + bool_to_str(agree(2)) + " " + bool_to_str(agree(3)) + " " + bool_to_str(agree(7)) + " " + bool_to_str(agree(64)))
+  println(int_to_str(st.count_all(t, "aa")) + " " + int_to_str(st.count(t, "aa")) + " " + int_to_str(st.par_count(t, "she")) + " " + int_to_str(st.par_index_of(t, "sea\nsea\nsea")))
+  println(bool_to_str(st.par_lines_on("a\nb\n", \l -> l + "!", 4) == Cons("a!", Cons("b!", Cons("!", Nil)))))
+  println(bool_to_str(st.edit_distance("sunday", "saturday") == slow_edit("sunday", "saturday")) + " " + bool_to_str(st.edit_distance("shells", "she sells") == slow_edit("shells", "she sells")))
+  println(bool_to_str(st.last_index_of(t, "ashes") == last_slow(t, "ashes", #t - 5)))
+
+fn last_slow(t, p, i) =
+  if i < 0 then -1 else if st.matches_at(t, i, p) then i else last_slow(t, p, i - 1)

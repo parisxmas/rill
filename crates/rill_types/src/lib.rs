@@ -2328,6 +2328,9 @@ impl Checker {
             Expr::For { line, .. } => {
                 Err(TypeError::new(*line, "internal: `for` was not expanded".to_string()))
             }
+            Expr::While { line, .. } => {
+                Err(TypeError::new(*line, "internal: `while` was not expanded".to_string()))
+            }
             // `s[i:j]` is `str_sub` with an end instead of a length, which
             // is what a slice means everywhere else and what makes `s[i:]`
             // and `s[:j]` sensible.
@@ -2825,6 +2828,25 @@ impl Checker {
             }
             return Ok(TExpr { ty: Ty::Bool, line, kind: TK::Unique { val: Box::new(v) } });
         }
+        if name == "str_from_buf" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`str_from_buf` takes one byte buffer"));
+            }
+            let b = self.infer(&args[0], env)?;
+            match self.resolve(&b.ty) {
+                Ty::Buf(CTy::U8) => {}
+                other => {
+                    return Err(TypeError::new(
+                        line,
+                        format!(
+                            "`str_from_buf` needs a `Buf(U8)`, but this is `{}`",
+                            self.type_name(&other)
+                        ),
+                    ))
+                }
+            }
+            return Ok(TExpr { ty: Ty::Str, line, kind: TK::Builtin { rt: "rill_str_from_buf".into(), args: vec![b] } });
+        }
         if name == "buf_get" || name == "buf_set" || name == "buf_len" {
             let want = if name == "buf_set" { 3 } else if name == "buf_len" { 1 } else { 2 };
             if args.len() != want {
@@ -3007,6 +3029,10 @@ impl Checker {
         let simple_builtin: Option<(&'static str, Vec<Ty>, Ty)> = match name {
             "strbuf" => Some(("rill_strbuf_new", vec![], Ty::StrBuf)),
             "strbuf_add" => Some(("rill_strbuf_add", vec![Ty::StrBuf, Ty::Str], Ty::Unit)),
+            "strbuf_reserve" => Some(("rill_strbuf_reserve", vec![Ty::StrBuf, Ty::Int], Ty::Unit)),
+            "strbuf_add_sub" => {
+                Some(("rill_strbuf_add_sub", vec![Ty::StrBuf, Ty::Str, Ty::Int, Ty::Int], Ty::Unit))
+            }
             "strbuf_byte" => Some(("rill_strbuf_byte", vec![Ty::StrBuf, Ty::Int], Ty::Unit)),
             "strbuf_str" => Some(("rill_strbuf_str", vec![Ty::StrBuf], Ty::Str)),
             // Empties a builder and keeps its room, for text built over and
@@ -3021,6 +3047,9 @@ impl Checker {
             "str_find" => Some(("rill_str_find", vec![Ty::Str, Ty::Str], Ty::Int)),
             "str_find_from" => {
                 Some(("rill_str_find_from", vec![Ty::Str, Ty::Str, Ty::Int], Ty::Int))
+            }
+            "str_find_in" => {
+                Some(("rill_str_find_in", vec![Ty::Str, Ty::Str, Ty::Int, Ty::Int], Ty::Int))
             }
             "str_cmp" => Some(("rill_str_cmp", vec![Ty::Str, Ty::Str], Ty::Int)),
             "str_to_int" => Some(("rill_str_to_int", vec![Ty::Str], Ty::Int)),
@@ -4328,6 +4357,9 @@ fn is_builtin_fn(name: &str) -> bool {
             | "strbuf_byte"
             | "strbuf_str"
             | "strbuf_clear"
+            | "strbuf_add_sub"
+            | "strbuf_reserve"
+            | "str_from_buf"
             | "str_len"
             | "int_to_str"
             | "float_to_str"
@@ -4337,6 +4369,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "str_sub"
             | "str_find"
             | "str_find_from"
+            | "str_find_in"
             | "str_cmp"
             | "str_to_int"
             | "str_to_float"
@@ -4578,9 +4611,16 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
     };
     match e {
         Expr::Var(n, _) => name_of(n, out),
+        // A call's name is the function and nothing else: `main.go` is the
+        // loop lifted out of `main`, not a field of it, and naming `main`
+        // here made every lifted function a dependency of its parent — so
+        // the two were inferred as one group, parent first, and a buffer
+        // the loop handed back was taken for a string by the code after it.
         Expr::Call { name, args, .. } => {
-            name_of(name, out);
             drop(name_of);
+            if seen.insert(name.clone()) {
+                out.push(name.clone());
+            }
             for a in args {
                 free_vars(a, out, seen);
             }
@@ -4640,6 +4680,13 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
         Expr::For { from, to, acc, body, .. } => {
             free_vars(from, out, seen);
             free_vars(to, out, seen);
+            if let Some((_, init)) = acc {
+                free_vars(init, out, seen);
+            }
+            free_vars(body, out, seen);
+        }
+        Expr::While { cond, acc, body, .. } => {
+            free_vars(cond, out, seen);
             if let Some((_, init)) = acc {
                 free_vars(init, out, seen);
             }

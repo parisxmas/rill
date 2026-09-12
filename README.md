@@ -183,7 +183,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `results.rill` | `?`: a chain of things that can fail, and the first failure out of it |
 | `records.rill` | field names read with a dot, and the building that changing one is |
 | `stdlib.rill` | what the prelude gives you |
-| `loops.rill` | how repetition is written: tail recursion and folds |
+| `loops.rill` | how repetition is written: tail recursion, folds, `for` and `while` |
 | `blocks.rill` | block bodies in match arms, select arms and `if` branches |
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `template/` | a page built out of four templates: one includes the others and hands them what they need, and `tmplgen` turns all four into Rill before the program is compiled |

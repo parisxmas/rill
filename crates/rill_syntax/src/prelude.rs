@@ -184,6 +184,13 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             }
             collect_expr_names(body, out);
         }
+        Expr::While { cond, acc, body, .. } => {
+            collect_expr_names(cond, out);
+            if let Some((_, init)) = acc {
+                collect_expr_names(init, out);
+            }
+            collect_expr_names(body, out);
+        }
         Expr::Unary { expr, .. } => collect_expr_names(expr, out),
         Expr::Binary { lhs, rhs, .. } => {
             collect_expr_names(lhs, out);
