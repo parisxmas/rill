@@ -7,4 +7,4 @@ license.workspace = true
 [dependencies]
 rill_syntax = { path = "../rill_syntax" }
 rill_types = { path = "../rill_types" }
-inkwell = { version = "0.10", features = ["llvm18-1"] }
+inkwell = { version = "0.10", features = ["llvm21-1"] }

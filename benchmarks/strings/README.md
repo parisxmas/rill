@@ -5,7 +5,7 @@ vocabulary from one linear congruential sequence, newlines every so often)
 and the same operations on it, each timed on its own. The C is what a
 careful C programmer writes for the job: `memmem` for the searches, a
 `realloc`-doubling buffer for `replace`, two rows for the edit distance.
-Apple M4, `cc -O3` (Apple clang 17), Rill via LLVM 18 `-O3`, 2026-09-12.
+Apple M4, `cc -O3` (Apple clang 17), Rill via LLVM 18 `-O3`, 2026-09-12 (the compiler moved to LLVM 21 the next day; these rows did not move).
 Reproduce with `benchmarks/strings/run.sh`.
 
 | operation | what it does | rill ms | c ms | rill / c |

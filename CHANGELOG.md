@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased — LLVM 21
+
+The compiler now builds against LLVM 21 (`brew install llvm@21`; the prefix is
+wired in `.cargo/config.toml`, and `inkwell`'s feature is `llvm21-1`). Not a
+line of the code generator changed: the IR Rill emits, the `tailcc` +
+`musttail` promise it rests on, and the wasm32-wasip1 target all carried over
+unchanged, and every test passes as it did.
+
+What changed is what comes out the other end. Three years of AArch64 work sit
+between LLVM 18 and 21, and the C table moved the way one would hope: spectral
+123 → 95 ms (ahead of C by 18%, where it was level), qsort 290 → 272, fannkuch
+118 → 109, lcg 128 → 122; nothing moved the other way. The idiom that started
+this — `x % 3 == 0` in `pipeline`'s filter, which LLVM 18 spelled in six
+instructions and Apple's newer clang in five — is now five in Rill too, and
+that row is a tie to the hundredth of a millisecond.
+
+## Unreleased — a string library, a `while`, and boxes that empty themselves
+
+`lib/str.rill` (`import "str" as s`): 145 functions — searching, transforming,
+padding, strict parsing, a hash, an edit distance, every encoding a text
+arrives in (UTF-8 validation and repair, UTF-16/32 in either order, Latin-1,
+cp1252, cp1254, Unicode case with the Turkish rule, `ascii_fold`, base64,
+hex, percent, HTML entities, C escapes), and `par_count` / `par_index_of` /
+`par_lines`, which cut a text across strands. Against C on a 44 MB text
+(`benchmarks/strings/`): the searches two to three times ahead, `replace`
+and `upper` ahead, the rest level.
+
+`while cond with (a, b: T) = init`: the loop that stops on the data rather
+than on a count, opened like `for` into a tail-recursive function. The state
+is what the condition and the body see, the body's value is the next state,
+and the loop is worth the state the condition first refused. A tuple state
+travels as separate parameters wherever the body ends in a tuple written in
+place; an annotated one types the loop's result as well. No `break`, on
+purpose: a loop with one exit is the loop that vectorizes. Rewriting the
+string library on it took it from 180 functions to 145 at the same speed.
+
+And the code generator learned to take a box apart without counting: an arm
+that returns empties the box it matches when the frame's reference is the
+only one, its fields become the frame's own and the box a shell for the
+answer to be built in; a tuple written as a scrutinee is never built; a
+constructor that is the answer moves what it is given. `deriv`, a symbolic
+differentiator against C, went from 94 ms to 48 — ahead of the C given a
+free-list pool, and 4.8× ahead of the C with `malloc`.
+
 ## Unreleased — instructions the machine has and C has no name for
 
 `asm fn` declares a run of instructions the way `extern fn` declares a symbol:

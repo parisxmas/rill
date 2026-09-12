@@ -1,7 +1,7 @@
 # Rill against C
 
 Twenty programs, each written once in Rill and once in C to the same
-algorithm and the same data layout, built at `-O3` (Rill's LLVM 18 pipeline,
+algorithm and the same data layout, built at `-O3` (Rill's LLVM 21 pipeline,
 Apple clang 17 for C) and timed on an Apple M4. Time is the median of 15 runs
 after 2 warmups; peak RSS is the median of 3; outputs are compared before any
 time is printed. Tokens are `o200k_base`. Reproduce with
@@ -11,34 +11,39 @@ Fifteen pairs live here; the other five (`loop`, `mandel`, `algo`,
 `dijkstra`, `json`) are the ones in `../tokens/` that already had a C twin,
 and `json` is measured against the C that frees its tree.
 
-## Results (2026-09-12; first measured 2026-09-05, after the compiler work below)
+## Results (2026-09-13, on LLVM 21; first measured 2026-09-05, after the compiler work below)
 
 | benchmark | what it exercises | rill ms | c ms | rill / c | rill RSS | c RSS | rill tok | c tok |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| trees | build + drop 5.2 M boxes | 17.6 | 47.1 | **0.37** | 13.3 M | 9.3 M | 156 | 209 |
-| deriv | symbolic differentiation, 3000 rounds of rewriting small trees (added 2026-09-12) | 47.9 | 230.9 | **0.21** | 1.3 M | 1.4 M | 828 | 1718 |
-| dijkstra | read 31 MB graph, CSR, heap | 86.9 | 213.5 | **0.41** | 83.7 M | 59 M | 743 | 836 |
-| strbuild | 5 M ints into a builder, then scan | 24.8 | 32.3 | **0.77** | 103 M | 40 M | 92 | 211 |
-| json | parse + print 11 MB | 122.3 | 157.0 | **0.78** | 208 M | 104 M | 1608 | 2133 |
-| nbody_rec | the bodies as records in a list | 31.1 | 35.1 | **0.89** | 1.3 M | 1.3 M | 1201 | 1189 |
-| mandel | float loop, data-dependent exit | 181.1 | 194.8 | **0.93** | 1.2 M | 1.2 M | 201 | 228 |
-| fannkuch | n=10, small int32 buffers, many short loops | 118.1 | 126.0 | **0.94** | 1.3 M | 1.2 M | 469 | 339 |
-| qsort | 5 M ints, in-place Hoare | 290.3 | 301.1 | **0.96** | 39.4 M | 39.5 M | 304 | 304 |
-| algo | Dijkstra core, graph built in process | 33.3 | 34.6 | **0.96** | 59 M | 59 M | 834 | 832 |
-| hashmap | 2 M inserts + 2 M lookups, Int keys | 82.4 | 82.5 | 1.00 | 138 M | 130 M | 191 | 728 |
-| matmul | 500³ float, `c[i][j] += a*b` | 17.7 | 17.7 | 1.00 | 7.0 M | 7.1 M | 180 | 250 |
-| sieve | 50 M byte buffer, strided writes | 140.5 | 140.6 | 1.00 | 49 M | 49 M | 150 | 151 |
-| loop | 100 M indexed reads | 28.8 | 28.9 | 1.00 | 1.3 M | 1.3 M | 71 | 93 |
-| tuple | 100 M calls returning a pair | 253.9 | 253.9 | 1.00 | 1.2 M | 1.2 M | 74 | 106 |
-| lcg | 100 M-step integer loop | 128.0 | 126.8 | 1.01 | 1.3 M | 1.2 M | 101 | 110 |
-| spectral | float, 2000², function per element | 123.0 | 120.8 | 1.02 | 1.3 M | 1.3 M | 329 | 414 |
-| fib | fib(35), recursion | 16.5 | 16.0 | 1.03 | 1.2 M | 1.2 M | 43 | 53 |
-| nbody | 5 bodies as 7 float buffers, 1 M steps | 37.2 | 35.4 | 1.05 | 1.3 M | 1.3 M | 1132 | 1189 |
-| pipeline | `range \|> filter \|> map \|> sum`, 5 M | 4.3 | 3.9 | 1.11 | 1.3 M | 1.2 M | 49 | 73 |
+| deriv | symbolic differentiation, 3000 rounds of rewriting small trees (added 2026-09-12) | 47.0 | 229.4 | **0.21** | 1.3 M | 1.4 M | 828 | 1718 |
+| trees | build + drop 5.2 M boxes | 16.3 | 45.2 | **0.36** | 13.3 M | 9.3 M | 156 | 209 |
+| dijkstra | read 31 MB graph, CSR, heap | 84.4 | 209.7 | **0.40** | 83.7 M | 59 M | 743 | 836 |
+| strbuild | 5 M ints into a builder, then scan | 23.9 | 31.9 | **0.75** | 103 M | 40 M | 92 | 211 |
+| json | parse + print 11 MB | 119.0 | 153.6 | **0.77** | 208 M | 104 M | 1608 | 2133 |
+| spectral | float, 2000², function per element | 95.3 | 115.7 | **0.82** | 1.3 M | 1.3 M | 329 | 414 |
+| nbody_rec | the bodies as records in a list | 30.4 | 34.2 | **0.89** | 1.3 M | 1.3 M | 1201 | 1189 |
+| fannkuch | n=10, small int32 buffers, many short loops | 109.3 | 121.5 | **0.90** | 1.3 M | 1.2 M | 469 | 339 |
+| mandel | float loop, data-dependent exit | 180.9 | 194.5 | **0.93** | 1.2 M | 1.2 M | 201 | 228 |
+| qsort | 5 M ints, in-place Hoare | 271.5 | 285.6 | **0.95** | 39.4 M | 39.5 M | 304 | 304 |
+| algo | Dijkstra core, graph built in process | 31.8 | 32.9 | **0.96** | 59 M | 59 M | 834 | 832 |
+| loop | 100 M indexed reads | 28.3 | 28.6 | 0.99 | 1.3 M | 1.3 M | 71 | 93 |
+| hashmap | 2 M inserts + 2 M lookups, Int keys | 79.6 | 80.0 | 1.00 | 138 M | 130 M | 191 | 728 |
+| lcg | 100 M-step integer loop | 121.6 | 121.1 | 1.00 | 1.3 M | 1.2 M | 101 | 110 |
+| matmul | 500³ float, `c[i][j] += a*b` | 17.4 | 17.3 | 1.00 | 7.0 M | 7.1 M | 180 | 250 |
+| sieve | 50 M byte buffer, strided writes | 138.9 | 139.1 | 1.00 | 49 M | 49 M | 150 | 151 |
+| tuple | 100 M calls returning a pair | 253.7 | 253.5 | 1.00 | 1.2 M | 1.2 M | 74 | 106 |
+| pipeline | `range \|> filter \|> map \|> sum`, 5 M | 3.1 | 3.1 | 1.00 | 1.3 M | 1.2 M | 49 | 73 |
+| fib | fib(35), recursion | 15.6 | 15.2 | 1.03 | 1.2 M | 1.2 M | 43 | 53 |
+| nbody | 5 bodies as 7 float buffers, 1 M steps | 36.7 | 34.0 | 1.08 | 1.3 M | 1.3 M | 1132 | 1189 |
 
-Ten wins and ten within noise — the run-to-run noise of a program this
-short is 2–4%, and `pipeline`'s 0.4 ms is inside it. Nothing is behind C.
-Rill is shorter than C in eighteen of twenty sources.
+Eleven wins and nine within noise — the run-to-run noise of a program this
+short is 2–4%, and `pipeline`'s 3 ms is mostly process start-up, measured
+separately at 61 runs as 3.09 against 3.05. Nothing is behind C. Rill is
+shorter than C in eighteen of twenty sources.
+
+Moving the compiler from LLVM 18 to 21 (2026-09-13, no change to what Rill
+emits) is what took spectral from level to 18% ahead and moved qsort,
+fannkuch and lcg a few percent; the C column is Apple clang 17 throughout.
 
 ### What the same table looked like before
 

@@ -4,7 +4,7 @@ The four languages here are the ones that ship lightweight concurrency, which
 is what `ring` is about; the other three benchmarks come along because the
 same four programs answer them.
 
-Apple M4, macOS. Rill via LLVM 18 `-O3` (host CPU features) with the release
+Apple M4, macOS. Rill via LLVM 21 `-O3` (host CPU features) with the release
 runtime; Go 1.23.4 (`go build`); C# 11 preview (NativeAOT, so what is timed is
 a program rather than a runtime warming up); OCaml 5.5.0 (`ocamlopt`, Homebrew
 build, non-flambda). Time = median of 25 runs (warmup 3); peak RSS = median of 3 via

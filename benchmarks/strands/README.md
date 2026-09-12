@@ -5,7 +5,7 @@ goroutines, doing nothing but spawning, handing off and choosing — the
 scheduler and the channels are what is measured, not arithmetic. Every
 workload is communication-bound on purpose, which is also why Go is timed
 twice: on one processor (`GOMAXPROCS=1`, the shape Rill runs in by default)
-and as it ships, on all of them. Apple M4, Go 1.23.4, Rill via LLVM 18 `-O3`;
+and as it ships, on all of them. Apple M4, Go 1.23.4, Rill via LLVM 21 `-O3`;
 time is the median of 25 runs after 3 warmups, outputs cross-checked, peak RSS
 the median of 3. Reproduce with `python3 benchmarks/strands/run.py`.
 

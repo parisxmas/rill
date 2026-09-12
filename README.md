@@ -124,7 +124,7 @@ measurements.
 
 ## Using it
 
-Requires Rust and LLVM 18 (`brew install llvm@18`; the path is wired up in
+Requires Rust and LLVM 21 (`brew install llvm@21`; the path is wired up in
 `.cargo/config.toml`).
 
 ```sh
