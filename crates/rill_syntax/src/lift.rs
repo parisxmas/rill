@@ -58,7 +58,7 @@ fn is_simple(e: &Expr) -> bool {
 /// what it does twice.
 fn expand_index_op(op: BinOp, base: Expr, index: Expr, value: Expr, line: usize) -> Expr {
     let mut binds = Vec::new();
-    let mut once = |e: Expr, n: &str, binds: &mut Vec<Stmt>| {
+    let once = |e: Expr, n: &str, binds: &mut Vec<Stmt>| {
         if is_simple(&e) {
             e
         } else {

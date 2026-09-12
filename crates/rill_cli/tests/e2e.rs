@@ -3467,3 +3467,81 @@ fn a_loop_inside_a_function_that_recurses_elsewhere() {
     );
     assert_eq!(out, "27\n");
 }
+
+/// A `match` arm that returns takes its box apart by emptying it: when the
+/// frame's reference is the only one, the fields become the frame's own
+/// with no count touched and the box is a shell for the arm's answer to be
+/// built in; when the box is shared, the fields are retained and the box
+/// let go. `match (simp(a), simp(b))` never builds the pair at all, and its
+/// parts are emptied the same way. The tree `main` keeps across two calls
+/// takes the shared path and must come out whole; `@` names the box, so
+/// that arm borrows as before; and the whole run frees everything.
+#[test]
+fn emptying_a_box_leaves_shared_ones_whole() {
+    let src = r#"type E
+  Num(Int)
+  X
+  Add(a: E, b: E)
+  Mul(a: E, b: E)
+
+# Every arm returns, so each takes its box apart by emptying it.
+fn simp(e) = match e
+  Add(a, b) -> match (simp(a), simp(b))
+    (Num(x), Num(y)) -> Num(x + y)
+    (Num(0), y) -> y
+    (x, Num(0)) -> x
+    (x, y) -> Add(x, y)
+  Mul(a, b) -> match (simp(a), simp(b))
+    (Num(x), Mul(Num(y), z)) | (Mul(Num(x), z), Num(y)) -> Mul(Num(x * y), z)
+    (Num(1), y) -> y
+    (x, y) -> Mul(x, y)
+  other -> other
+
+# Names the box whole, so it cannot be emptied; the fields stay borrowed.
+fn keep(e) = match e
+  m @ Mul(a, _) -> Add(m, a)
+  Add(a, b) if a == b -> a
+  other -> other
+
+fn depth(e) = match e
+  Add(a, b) | Mul(a, b) -> 1 + max(depth(a), depth(b))
+  _ -> 1
+
+fn main() =
+  # a tree held by main across two calls: shared on the first, still whole after
+  t = Mul(Num(2), Mul(Num(3), Add(X, Num(0))))
+  s1 = simp(t)
+  s2 = simp(t)
+  println(show(s1))
+  println(show(s2))
+  println(show(t))
+  # unique trees, built and dropped in place
+  println(show(simp(Add(Mul(Num(1), Add(Num(2), Num(3))), Mul(Num(4), Mul(Num(5), X))))))
+  println(show(keep(Mul(X, Num(7)))))
+  println(show(keep(Add(Num(1), Num(1)))))
+  println(show(keep(Add(Num(1), Num(2)))))
+  # a shared subtree inside a unique box
+  sub = Add(X, X)
+  println(show(simp(Mul(Num(2), Mul(Num(3), sub)))))
+  println(depth(sub))
+"#;
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-empty-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("empty.rill");
+    std::fs::write(&path, src).unwrap();
+    let exe = out_dir.join("empty");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("-o").arg(&exe).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&exe).env("RILL_DEBUG_ALLOC", "1").output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "Mul(Num(6), X)\nMul(Num(6), X)\nMul(Num(2), Mul(Num(3), Add(X, Num(0))))\n\
+         Add(Num(5), Mul(Num(20), X))\nAdd(Mul(X, Num(7)), X)\nNum(1)\nAdd(Num(1), Num(2))\n\
+         Mul(Num(6), Add(X, X))\n2\n"
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("live allocations: 0"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}

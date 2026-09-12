@@ -11,34 +11,34 @@ Fifteen pairs live here; the other five (`loop`, `mandel`, `algo`,
 `dijkstra`, `json`) are the ones in `../tokens/` that already had a C twin,
 and `json` is measured against the C that frees its tree.
 
-## Results (2026-09-05, after the compiler work below)
+## Results (2026-09-12; first measured 2026-09-05, after the compiler work below)
 
 | benchmark | what it exercises | rill ms | c ms | rill / c | rill RSS | c RSS | rill tok | c tok |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| trees | build + drop 5.2 M boxes | 20.9 | 51.9 | **0.40** | 13.2 M | 9.3 M | 156 | 209 |
-| deriv | symbolic differentiation, 3000 rounds of rewriting small trees (added 2026-09-12) | 93.6 | 225.6 | **0.42** | 1.3 M | 1.4 M | 828 | 1718 |
-| dijkstra | read 31 MB graph, CSR, heap | 104.7 | 235.8 | **0.44** | 113 M | 59 M | 743 | 836 |
-| json | parse + print 11 MB | 143.8 | 170.9 | **0.84** | 182 M | 104 M | 1608 | 2133 |
-| nbody_rec | the bodies as records in a list | 35.2 | 38.7 | **0.91** | 1.2 M | 1.2 M | 1201 | 1189 |
-| hashmap | 2 M inserts + 2 M lookups, Int keys | 98.0 | 105.6 | **0.93** | 138 M | 130 M | 191 | 728 |
-| mandel | float loop, data-dependent exit | 206.3 | 221.5 | **0.93** | 1.2 M | 1.2 M | 201 | 228 |
-| fannkuch | n=10, small int32 buffers, many short loops | 127.6 | 133.4 | **0.96** | 1.2 M | 1.2 M | 469 | 339 |
-| qsort | 5 M ints, in-place Hoare | 311.8 | 320.6 | **0.97** | 39 M | 39 M | 304 | 304 |
-| strbuild | 5 M ints into a builder, then scan | 36.2 | 36.7 | 0.98 | 103 M | 40 M | 92 | 211 |
-| matmul | 500³ float, `c[i][j] += a*b` | 20.3 | 20.5 | 0.99 | 7.1 M | 7.0 M | 180 | 250 |
-| loop | 100 M indexed reads | 31.5 | 31.8 | 0.99 | 1.3 M | 1.2 M | 71 | 93 |
-| lcg | 100 M-step integer loop | 138.9 | 138.9 | 1.00 | 1.2 M | 1.2 M | 101 | 110 |
-| sieve | 50 M byte buffer, strided writes | 175.8 | 175.6 | 1.00 | 49 M | 49 M | 150 | 151 |
-| spectral | float, 2000², function per element | 131.9 | 132.0 | 1.00 | 1.3 M | 1.3 M | 329 | 414 |
-| tuple | 100 M calls returning a pair | 287.8 | 288.4 | 1.00 | 1.2 M | 1.2 M | 74 | 106 |
-| fib | fib(35), recursion | 18.2 | 17.8 | 1.02 | 1.2 M | 1.2 M | 43 | 53 |
-| algo | Dijkstra core, graph built in process | 47.6 | 45.7 | 1.04 | 88 M | 59 M | 834 | 832 |
-| nbody | 5 bodies as 7 float buffers, 1 M steps | 40.2 | 38.6 | 1.04 | 1.3 M | 1.3 M | 1132 | 1189 |
-| pipeline | `range \|> filter \|> map \|> sum`, 5 M | 5.2 | 4.9 | 1.05 | 1.2 M | 1.2 M | 49 | 73 |
+| trees | build + drop 5.2 M boxes | 17.6 | 47.1 | **0.37** | 13.3 M | 9.3 M | 156 | 209 |
+| deriv | symbolic differentiation, 3000 rounds of rewriting small trees (added 2026-09-12) | 47.9 | 230.9 | **0.21** | 1.3 M | 1.4 M | 828 | 1718 |
+| dijkstra | read 31 MB graph, CSR, heap | 86.9 | 213.5 | **0.41** | 83.7 M | 59 M | 743 | 836 |
+| strbuild | 5 M ints into a builder, then scan | 24.8 | 32.3 | **0.77** | 103 M | 40 M | 92 | 211 |
+| json | parse + print 11 MB | 122.3 | 157.0 | **0.78** | 208 M | 104 M | 1608 | 2133 |
+| nbody_rec | the bodies as records in a list | 31.1 | 35.1 | **0.89** | 1.3 M | 1.3 M | 1201 | 1189 |
+| mandel | float loop, data-dependent exit | 181.1 | 194.8 | **0.93** | 1.2 M | 1.2 M | 201 | 228 |
+| fannkuch | n=10, small int32 buffers, many short loops | 118.1 | 126.0 | **0.94** | 1.3 M | 1.2 M | 469 | 339 |
+| qsort | 5 M ints, in-place Hoare | 290.3 | 301.1 | **0.96** | 39.4 M | 39.5 M | 304 | 304 |
+| algo | Dijkstra core, graph built in process | 33.3 | 34.6 | **0.96** | 59 M | 59 M | 834 | 832 |
+| hashmap | 2 M inserts + 2 M lookups, Int keys | 82.4 | 82.5 | 1.00 | 138 M | 130 M | 191 | 728 |
+| matmul | 500³ float, `c[i][j] += a*b` | 17.7 | 17.7 | 1.00 | 7.0 M | 7.1 M | 180 | 250 |
+| sieve | 50 M byte buffer, strided writes | 140.5 | 140.6 | 1.00 | 49 M | 49 M | 150 | 151 |
+| loop | 100 M indexed reads | 28.8 | 28.9 | 1.00 | 1.3 M | 1.3 M | 71 | 93 |
+| tuple | 100 M calls returning a pair | 253.9 | 253.9 | 1.00 | 1.2 M | 1.2 M | 74 | 106 |
+| lcg | 100 M-step integer loop | 128.0 | 126.8 | 1.01 | 1.3 M | 1.2 M | 101 | 110 |
+| spectral | float, 2000², function per element | 123.0 | 120.8 | 1.02 | 1.3 M | 1.3 M | 329 | 414 |
+| fib | fib(35), recursion | 16.5 | 16.0 | 1.03 | 1.2 M | 1.2 M | 43 | 53 |
+| nbody | 5 bodies as 7 float buffers, 1 M steps | 37.2 | 35.4 | 1.05 | 1.3 M | 1.3 M | 1132 | 1189 |
+| pipeline | `range \|> filter \|> map \|> sum`, 5 M | 4.3 | 3.9 | 1.11 | 1.3 M | 1.2 M | 49 | 73 |
 
-Eight wins and eleven within 5% — the run-to-run noise of a program this
-short is 2–4%, and none of the eleven is behind by more than that. Nothing
-is behind C. Rill is shorter than C in seventeen of nineteen sources.
+Ten wins and ten within noise — the run-to-run noise of a program this
+short is 2–4%, and `pipeline`'s 0.4 ms is inside it. Nothing is behind C.
+Rill is shorter than C in eighteen of twenty sources.
 
 ### What the same table looked like before
 
@@ -180,17 +180,47 @@ never vectorizes — half a day was lost to that.
 `(2x+1)^4` factor down to zero, simplifying each derivative by pattern
 rules, 3000 rounds. It is `trees` with rewriting in it: every node is
 built, matched and dropped, and the C twin does it with `malloc`/`free`,
-as `trees.c` does. That is where its 2.4× comes from — the same free-list
-pool C is given in a seven-line `#define` brings it to 52 ms, ahead of Rill's
-94. What Rill pays there and C does not is the tuple: `match (simp(a),
-simp(b))` boxes a pair of pointers to take it apart on the next line, one
-allocation and one free per rewritten node. A pair of *numbers* is already a
-flat struct; a pair of pointers is not, and making a scrutinee written as a
-tuple literal match its parts without ever being built is the next thing
-this benchmark asks for.
+as `trees.c` does. The first measurement was 94 ms against 226 — and
+against 52 for the same C given a seven-line free-list pool, which is the
+honest twin for a language with a pool of its own. Four changes to the
+code generator, in the order they landed, took Rill to 48 ms, ahead of
+that too (outputs unchanged, `RILL_DEBUG_ALLOC` at zero throughout):
+
+1. **A tuple written in place is never built.** `match (simp(a), simp(b))`
+   boxed a pair of pointers to take it apart on the next line — an
+   allocation and a free per rewritten node. The parts are now an LLVM
+   struct the decision tree reads with `extractvalue`, and each part is
+   released where the box would have been. 94 → 88.
+2. **A constructor that is the function's answer moves and reuses** like
+   one handed to a tail call: what the frame owns goes into it uncounted,
+   and a box the arm took apart of the same shape is written over. The
+   reuse slot became a stack, so a nested constructor finds its own. 88 →
+   83; with the parts of an unboxed tuple bound to the values the frame
+   holds, so that a use can move them, 72.
+3. **Releasing a box is inline.** `drop$Expr` was a call for every release,
+   and nearly every release is a decrement that goes from something to
+   something. The load, compare and store are laid down in place and the
+   drop function is called only for the last reference — half of `deriv`'s
+   time had been in that function doing subtractions. 72 → 63.
+4. **An arm that returns empties the box it takes apart.** If the frame's
+   reference is the only one — one load and a compare, decided at run time
+   — the fields become the frame's own with no count touched and the box
+   is a shell: written over by the arm's answer if that has the same shape,
+   given back to the pool at exit if not. If the box is shared, the fields
+   are retained and the count dropped, as before. The same is done to the
+   parts of an unboxed tuple and, recursively, to any field matched by a
+   constructor pattern, so `(Num(x), Mul(Num(y), z)) -> Mul(Num(x * y), z)`
+   over a tree nothing else holds allocates nothing and counts nothing.
+   Names an arm hands to a call once are moved there, and a local handed
+   back as the answer goes uncounted. 63 → 48. This is Perceus's
+   drop-guided reuse, and it is what a C programmer writes by hand when
+   they free the node they just consumed.
 
 The source is 55 lines against 114: the rules are one pattern each where C
 writes an `if` per field and frees exactly the nodes a rule consumed.
+
+`json` moved with it, 144 → 122, and `strbuild` 36 → 25; nothing moved the
+other way. The table above is from the run after the fourth change.
 
 ## What is left
 

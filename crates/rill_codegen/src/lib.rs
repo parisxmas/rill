@@ -924,10 +924,15 @@ fn count_locals<'e>(e: &'e TExpr, counts: &mut HashMap<&'e str, usize>) {
 }
 
 /// Names that are direct arguments of calls reached from `e` through
-/// nothing but other calls' arguments.
+/// nothing but other calls' arguments — and through the one part of a
+/// `match` or an `if` that runs whatever happens, its scrutinee or its
+/// condition: `match (simp(a), simp(b))` hands `a` and `b` on as surely as
+/// a call would.
 fn spine_args<'e>(e: &'e TExpr, out: &mut Vec<&'e str>) {
     let args = match &e.kind {
         TK::CallFn { args, .. } | TK::CallCtor { args, .. } | TK::MethodCall { args, .. } => args,
+        TK::Match { scrutinee, .. } => return spine_args(scrutinee, out),
+        TK::If { cond, .. } => return spine_args(cond, out),
         _ => return,
     };
     for a in args {
@@ -1234,7 +1239,23 @@ struct Codegen<'ctx, 'a> {
     /// A box this frame owns, whose arm is being generated, and which the arm
     /// can no longer name: a constructor of exactly its shape may be built in
     /// it instead of in a fresh one. See `take_reuse`.
-    reuse: Option<(PointerValue<'ctx>, Ty, usize)>,
+    reuse: Vec<(PointerValue<'ctx>, Ty, usize)>,
+    /// Boxes this frame has emptied: a `match` arm took the fields out of a
+    /// box the frame owned and found, at run time, that nothing else held
+    /// it. What is left is memory of a known shape — null where the box
+    /// turned out to be shared — to be built over by a constructor of that
+    /// shape, or given back at the frame's exit. See `compile_match`.
+    shells: Vec<(PointerValue<'ctx>, Ty, usize)>,
+    /// The scrutinee of the `match` being compiled, when it is a tuple
+    /// written in place — `match (simp(a), simp(b))` — and so was never
+    /// boxed: an LLVM struct of its parts, which `value_at` takes apart
+    /// with `extractvalue` where a box would be read through a pointer.
+    unboxed_root: Option<BasicValueEnum<'ctx>>,
+    /// Of the function being generated: has it a `musttail` call, and a
+    /// call to itself that is not a tail call? Both together are the shape
+    /// LLVM's tail-recursion elimination gets wrong — see `gen_instance`.
+    saw_musttail: bool,
+    saw_nontail_self: bool,
     str_count: usize,
     lambda_count: usize,
     /// Built with `--parallel`: refcount updates check `rill_mt` and go
@@ -1315,7 +1336,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             movable: HashSet::new(),
             root_free: HashSet::new(),
             move_ok: false,
-            reuse: None,
+            reuse: Vec::new(),
+            shells: Vec::new(),
+            unboxed_root: None,
+            saw_musttail: false,
+            saw_nontail_self: false,
             str_count: 0,
             lambda_count: 0,
             parallel,
@@ -3296,7 +3321,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // compare and a store say so without leaving the function. What it
         // buys is not the call — it is that a `+1` here and a `-1` there,
         // once inlining has brought them together, now cancel.
-        if !self.parallel && matches!(ty, Ty::Buf(_) | Ty::Str | Ty::StrBuf) {
+        // A boxed ADT the same way: its drop function is generated code
+        // rather than the runtime, but it was a call for every release all
+        // the same, and a tree rewriter releases several times per node —
+        // `deriv` spent half its time in `drop$Expr` doing decrements.
+        if !self.parallel && matches!(ty, Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Adt(..)) {
             if let Some(func) = self.builder.get_insert_block().and_then(|b| b.get_parent()) {
                 let i64t = self.ctx.i64_type();
                 // Where the count lives: at the object for a string or a
@@ -3329,6 +3358,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         self.call_rt("rill_buf_release", &[v.into(), size.into()])
                     }
                     Ty::Str => self.call_rt("rill_str_release", &[v.into()]),
+                    Ty::Adt(..) => {
+                        let drop_fn = self.adt_drop(ty);
+                        self.builder.build_call(drop_fn, &[v.into()], "").expect("LLVM builder error")
+                    }
                     _ => self.call_rt("rill_strbuf_release", &[v.into()]),
                 };
                 if tail {
@@ -4599,6 +4632,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.begin_debug_fn(&dbg_name, dbg_line, fn_val);
 
         let outer_cleanup = std::mem::take(&mut self.cleanup);
+        let outer_shells = std::mem::take(&mut self.shells);
         let outer_movable = std::mem::take(&mut self.movable);
         let outer_free = std::mem::take(&mut self.root_free);
         let outer_move_ok = std::mem::replace(&mut self.move_ok, true);
@@ -4648,8 +4682,30 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
         let ret_ty = subst_gen(&f.ret, subst);
         let body = &self.tmod.fns[*fn_idx].body;
+        let (outer_mt, outer_nts) = (self.saw_musttail, self.saw_nontail_self);
+        self.saw_musttail = false;
+        self.saw_nontail_self = false;
         self.gen_tail(body, &mut scope, subst, fn_val, &ret_ty)?;
+        // LLVM 18's tail-recursion elimination, given a function that calls
+        // itself somewhere that is not a tail — `eval(a) + eval(b)` — turns
+        // that recursion into a loop with an accumulator and rewrites every
+        // `ret` of the function as `ret acc + value`, a `musttail` one
+        // included, and a `musttail` whose value is added to before the
+        // return is a broken module. The attribute keeps that pass out of
+        // exactly such a function; the backend still honours `musttail`
+        // under it, and only the hinted tail calls are given up. A loop
+        // whose self-calls are all `musttail` is left alone: there the pass
+        // is what turns the calls into the loop the optimizer vectorizes.
+        if self.saw_musttail && self.saw_nontail_self {
+            fn_val.add_attribute(
+                AttributeLoc::Function,
+                self.ctx.create_string_attribute("disable-tail-calls", "true"),
+            );
+        }
+        self.saw_musttail = outer_mt;
+        self.saw_nontail_self = outer_nts;
         self.cleanup = outer_cleanup;
+        self.shells = outer_shells;
         self.movable = outer_movable;
         self.root_free = outer_free;
         self.move_ok = outer_move_ok;
@@ -4740,11 +4796,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .expect("LLVM builder error");
                 let saved_cleanup = self.cleanup.clone();
                 let saved_reuse = self.reuse.clone();
+                let saved_shells = self.shells.clone();
                 self.builder.position_at_end(then_bb);
                 let mut then_scope = scope.clone();
                 self.gen_tail(then, &mut then_scope, subst, func, ret_ty)?;
                 self.cleanup = saved_cleanup;
                 self.reuse = saved_reuse;
+                self.shells = saved_shells;
                 self.builder.position_at_end(else_bb);
                 let mut else_scope = scope.clone();
                 self.gen_tail(els, &mut else_scope, subst, func, ret_ty)
@@ -4845,22 +4903,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     && self.llvm_type(ret_ty).is_some()
                 {
                     call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
-                    // LLVM 18's tail-recursion elimination, given a function
-                    // that also calls itself somewhere that is not a tail —
-                    // `eval(a) + eval(b)` — turns that recursion into a loop
-                    // with an accumulator and rewrites every `ret` of the
-                    // function as `ret acc + value`, this one included, and
-                    // a `musttail` whose value is added to before the return
-                    // is a broken module. The attribute keeps that pass out of
-                    // such a function; the backend still honours `musttail`
-                    // under it, and only the hinted tail calls are given up.
-                    if self.callgraph[self.cur_fn].contains(&self.cur_fn) {
-                        let parent = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
-                        parent.add_attribute(
-                            AttributeLoc::Function,
-                            self.ctx.create_string_attribute("disable-tail-calls", "true"),
-                        );
-                    }
+                    self.saw_musttail = true;
                 } else if !self.wasm
                     && !(callee_tailcc && caller_tailcc)
                     && *fn_idx != self.cur_fn
@@ -4892,6 +4935,27 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     _ => None,
                 };
                 self.ret_leaf(out, &out_ty, ret_ty)
+            }
+            // A box that is the function's answer leaves the frame as
+            // surely as one handed to a tail call, on this path alone: what
+            // the frame owns may be moved into it, and a box this arm took
+            // apart may be written over to make it. `simp`'s
+            // `(Num(x), Mul(Num(y), z)) -> Mul(Num(x * y), z)` then
+            // allocates nothing.
+            TK::CallCtor { adt, ctor, targs, args } if !args.is_empty() => {
+                let ty = self.concrete(&e.ty, subst);
+                let out = self.gen_ctor(*adt, *ctor, targs, args, scope, subst, func, true)?;
+                self.finish_leaf(out, &ty, ret_ty)
+            }
+            // A local the frame owns, handed back as the answer: the frame's
+            // reference goes with it, so nothing is counted.
+            TK::Local(_) if self.is_heap(&self.concrete(&e.ty, subst)) => {
+                let ty = self.concrete(&e.ty, subst);
+                let out = match self.take_owned(e, scope) {
+                    Some(v) => Some(v),
+                    None => self.gen_expr(e, scope, subst, func)?,
+                };
+                self.finish_leaf(out, &ty, ret_ty)
             }
             _ => {
                 let ty = self.concrete(&e.ty, subst);
@@ -5480,6 +5544,28 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         for (v, ty) in items.into_iter().rev() {
             self.emit_release(v, &ty);
         }
+        let shells = self.shells.clone();
+        for (cell, ty, ctor) in shells {
+            self.free_shell(cell, &ty, ctor);
+        }
+    }
+
+    /// Gives an emptied box back, where it was not written over: nothing to
+    /// count and nothing inside, so straight to the pool — unless the box
+    /// was shared after all and the cell is null.
+    fn free_shell(&mut self, cell: PointerValue<'ctx>, ty: &Ty, ctor: usize) {
+        let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
+        let Ty::Adt(adt, targs) = ty else { unreachable!("only an ADT box is emptied") };
+        let struct_ty = self.ctor_struct(*adt, ctor, targs);
+        let size = struct_ty.size_of().expect("sized struct");
+        let some = self.builder.build_is_not_null(cell, "shell.some").expect("LLVM builder error");
+        let free_bb = self.ctx.append_basic_block(func, "shell.free");
+        let done_bb = self.ctx.append_basic_block(func, "shell.done");
+        self.builder.build_conditional_branch(some, free_bb, done_bb).expect("LLVM builder error");
+        self.builder.position_at_end(free_bb);
+        self.emit_free(cell, size);
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+        self.builder.position_at_end(done_bb);
     }
 
     /// Leaf that still owns its frame: release everything, then return.
@@ -6719,6 +6805,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Ok(Some(agg.into()))
             }
             TK::CallFn { fn_idx, subst: inner, args } => {
+                if *fn_idx == self.cur_fn {
+                    self.saw_nontail_self = true;
+                }
                 if let Some(v) = self.try_fuse(e, scope, subst, func)? {
                     return Ok(Some(v));
                 }
@@ -7865,6 +7954,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
         let saved = self.builder.get_insert_block();
         let outer_cleanup = std::mem::take(&mut self.cleanup);
+        let outer_shells = std::mem::take(&mut self.shells);
         let outer_movable = std::mem::take(&mut self.movable);
         let outer_free = std::mem::take(&mut self.root_free);
         let outer_move_ok = std::mem::replace(&mut self.move_ok, true);
@@ -7899,6 +7989,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.gen_tail(body, &mut inner_scope, subst, lifted, &ret_ty)?;
         self.bound_fns = outer_bound;
         self.cleanup = outer_cleanup;
+        self.shells = outer_shells;
         self.movable = outer_movable;
         self.root_free = outer_free;
         self.move_ok = outer_move_ok;
@@ -8320,6 +8411,95 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// Reversing a list, which is what `map`, `filter`, `split` and `reverse`
     /// all end in, allocates nothing at all this way: every link is built over
     /// the link it was read from.
+    /// Empties a box this frame owns, as an arm takes it apart — see the
+    /// note in `compile_match`. `occ` is where the box sits under the
+    /// match's root, so that the arm's names for its fields can be found;
+    /// a field that is itself matched by a constructor pattern is emptied
+    /// in turn, all the way down, so that `Mul(Num(y), z)` leaves the frame
+    /// holding `z`, a `Num` shell and a `Mul` shell. Answers whether the
+    /// box was emptied at all.
+    #[allow(clippy::too_many_arguments)]
+    fn empty_box(
+        &mut self,
+        sv: BasicValueEnum<'ctx>,
+        ty: &Ty,
+        pat: &Pattern,
+        occ: Occ,
+        binds: &[(String, Occ)],
+        arm_scope: &mut Scope<'ctx>,
+        func: FunctionValue<'ctx>,
+    ) -> bool {
+        // Not through an `@`: the name is the box, and the arm can say it.
+        let Pattern::Ctor { name: pname, args: pats, .. } = pat else { return false };
+        if pats.is_empty() || !self.is_heap(ty) || self.is_flat(ty) {
+            return false;
+        }
+        let Some(&(_, ctor)) = self.tmod.ctors.get(pname) else { return false };
+        let Some(at) = self.cleanup.iter().position(|(c, _)| *c == sv) else { return false };
+        let Ty::Adt(adt, targs) = ty else { return false };
+        let (adt, targs) = (*adt, targs.clone());
+        let struct_ty = self.ctor_struct(adt, ctor, &targs);
+        let fields: Vec<Ty> =
+            self.tmod.adts[adt].ctors[ctor].fields.iter().map(|f| subst_gen(f, &targs)).collect();
+        let sp = sv.into_pointer_value();
+        let i64t = self.ctx.i64_type();
+        self.cleanup.remove(at);
+        // Every counted field, whether the arm names it or not.
+        let mut loaded: Vec<(u32, BasicValueEnum<'ctx>, Ty)> = Vec::new();
+        for (fi, fty) in fields.iter().enumerate() {
+            if !self.is_heap(fty) {
+                continue;
+            }
+            let fp = self
+                .builder
+                .build_struct_gep(struct_ty, sp, (fi + 2) as u32, "field")
+                .expect("LLVM builder error");
+            let fv = self
+                .builder
+                .build_load(self.llvm_type(fty).expect("ADT fields are never Unit"), fp, "fv")
+                .expect("LLVM builder error");
+            loaded.push((fi as u32, fv, fty.clone()));
+        }
+        let rc = self.builder.build_load(i64t, sp, "rc").expect("LLVM builder error").into_int_value();
+        let alone = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, rc, i64t.const_int(1, false), "alone")
+            .expect("LLVM builder error");
+        let mine_bb = self.ctx.append_basic_block(func, "empty.mine");
+        let shared_bb = self.ctx.append_basic_block(func, "empty.shared");
+        let on_bb = self.ctx.append_basic_block(func, "empty.on");
+        self.builder.build_conditional_branch(alone, mine_bb, shared_bb).expect("LLVM builder error");
+        self.builder.position_at_end(mine_bb);
+        self.builder.build_unconditional_branch(on_bb).expect("LLVM builder error");
+        self.builder.position_at_end(shared_bb);
+        for (_, fv, fty) in &loaded {
+            self.emit_retain(*fv, fty);
+        }
+        let less = self.builder.build_int_sub(rc, i64t.const_int(1, false), "dec").expect("builder");
+        self.store_rc(sp, rc, less);
+        let shared_end = self.builder.get_insert_block().expect("block");
+        self.builder.build_unconditional_branch(on_bb).expect("LLVM builder error");
+        self.builder.position_at_end(on_bb);
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let cell = self.builder.build_phi(ptrt, "shell").expect("phi");
+        cell.add_incoming(&[(&sp, mine_bb), (&ptrt.const_null(), shared_end)]);
+        self.shells.push((cell.as_basic_value().into_pointer_value(), ty.clone(), ctor));
+        for (fi, fv, fty) in &loaded {
+            self.cleanup.push((*fv, fty.clone()));
+            let mut here = occ.clone();
+            here.push((ctor, *fi));
+            // The arm's own name for the field, if it has one, is this
+            // owned value.
+            for (name, o) in binds {
+                if *o == here {
+                    arm_scope.insert(name.clone(), Some(*fv));
+                }
+            }
+            self.empty_box(*fv, fty, &pats[*fi as usize], here, binds, arm_scope, func);
+        }
+        true
+    }
+
     fn take_reuse(
         &mut self,
         want: &Ty,
@@ -8327,11 +8507,33 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         struct_ty: StructType<'ctx>,
         name: &str,
     ) -> Option<PointerValue<'ctx>> {
-        let (old, old_ty, old_ctor) = self.reuse.take()?;
-        if &old_ty != want || old_ctor != ctor {
-            self.reuse = Some((old, old_ty, old_ctor));
-            return None;
+        // An emptied box of the right shape first: nothing in it to let go
+        // of, only the question of whether there is a box at all.
+        if let Some(at) = self.shells.iter().rposition(|(_, t, c)| t == want && *c == ctor) {
+            let (cell, _, _) = self.shells.remove(at);
+            let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
+            let some = self.builder.build_is_not_null(cell, "shell.some").expect("LLVM builder error");
+            let keep_bb = self.ctx.append_basic_block(func, "shell.keep");
+            let fresh_bb = self.ctx.append_basic_block(func, "shell.fresh");
+            let done_bb = self.ctx.append_basic_block(func, "shell.done");
+            self.builder.build_conditional_branch(some, keep_bb, fresh_bb).expect("LLVM builder error");
+            self.builder.position_at_end(keep_bb);
+            // The count is the one the box had, which was one.
+            self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+            self.builder.position_at_end(fresh_bb);
+            let fresh = self.alloc_object(struct_ty, name);
+            let fresh_end = self.builder.get_insert_block().expect("block");
+            self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+            self.builder.position_at_end(done_bb);
+            let phi = self.builder.build_phi(self.ctx.ptr_type(Default::default()), name).expect("phi");
+            phi.add_incoming(&[(&cell, keep_bb), (&fresh, fresh_end)]);
+            return Some(phi.as_basic_value().into_pointer_value());
         }
+        // The latest candidate of the right shape that the frame still holds.
+        let at = self.reuse.iter().rposition(|(p, t, c)| {
+            t == want && *c == ctor && self.cleanup.iter().any(|(h, _)| h.into_pointer_value() == *p)
+        })?;
+        let (old, old_ty, old_ctor) = self.reuse.remove(at);
         let i = self.cleanup.iter().position(|(c, _)| c.into_pointer_value() == old)?;
         self.cleanup.remove(i);
         let i64t = self.ctx.i64_type();
@@ -8480,7 +8682,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     let moved = if moving { self.take_owned(a, scope) } else { None };
                     match moved {
                         Some(v) => field_vals.push(Some(v)),
-                        None => field_vals.push(self.gen_expr(a, scope, subst, func)?),
+                        // A box built inside a box that is leaving is leaving
+                        // with it, so the same moves and the same reuse hold
+                        // one level down: `Mul(Num(x * y), z)` fills its
+                        // `Num` from the one it took apart too.
+                        None => match &a.kind {
+                            TK::CallCtor { adt, ctor, targs, args } if moving && !args.is_empty() => {
+                                field_vals.push(self.gen_ctor(*adt, *ctor, targs, args, scope, subst, func, true)?)
+                            }
+                            _ => field_vals.push(self.gen_expr(a, scope, subst, func)?),
+                        },
                     }
                 }
                 let struct_ty = self.ctor_struct(*adt, *ctor, &targs);
@@ -8550,7 +8761,51 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // language, which for a list walked one link at a time is once per
         // link.
         let borrowed = matches!(&scrutinee.kind, TK::Local(_)) && self.is_heap(&scrut_ty);
-        let scrut = if borrowed {
+        // `match (e1, e2)` against tuple patterns: the tuple exists only to
+        // be taken apart on the next line, so it is not built. Its parts are
+        // an LLVM struct the decision tree reads with `extractvalue`, and
+        // each part is released where the box would have been — the box was
+        // one allocation and one free per `match`, which in a tree rewriter
+        // is per node. A pair of numbers was already flat; this is the pair
+        // of anything. Only where no arm names the tuple whole (`t -> …`,
+        // `t @ (a, b) -> …`), since there is no tuple to name.
+        let parts: Option<&[TExpr]> = match &scrutinee.kind {
+            TK::CallCtor { adt, args, .. }
+                if !borrowed
+                    && self.tmod.adts[*adt].name.starts_with("Tuple")
+                    && !self.is_flat(&scrut_ty)
+                    && arms.iter().all(|a| {
+                        matches!(a.pattern, Pattern::Ctor { .. } | Pattern::Wildcard)
+                    }) =>
+            {
+                Some(args.as_slice())
+            }
+            _ => None,
+        };
+        let mut part_vals: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
+        let saved_unboxed = self.unboxed_root;
+        let scrut = if let Some(parts) = parts {
+            let mut members: Vec<BasicTypeEnum> = Vec::new();
+            let mut vals = Vec::new();
+            for a in parts {
+                let v = self.gen_expr(a, scope, subst, func)?.expect("ADT fields are never Unit");
+                let ty = self.concrete(&a.ty, subst);
+                members.push(v.get_type());
+                vals.push(v);
+                part_vals.push((v, ty));
+            }
+            let mut agg = self.ctx.struct_type(&members, false).get_undef();
+            for (i, v) in vals.into_iter().enumerate() {
+                agg = self
+                    .builder
+                    .build_insert_value(agg, v, i as u32, "part")
+                    .expect("LLVM builder error")
+                    .into_struct_value();
+            }
+            let agg: BasicValueEnum<'ctx> = agg.into();
+            self.unboxed_root = Some(agg);
+            Some(agg)
+        } else if borrowed {
             let TK::Local(name) = &scrutinee.kind else { unreachable!() };
             scope[name]
         } else {
@@ -8559,7 +8814,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         if tail.is_some() && !borrowed {
             // Each arm returns, so the scrutinee is released with the rest of
             // the frame just before the return.
-            if let Some(sv) = scrut {
+            if parts.is_some() {
+                for (v, ty) in &part_vals {
+                    if self.is_heap(ty) {
+                        self.cleanup.push((*v, ty.clone()));
+                    }
+                }
+            } else if let Some(sv) = scrut {
                 if self.is_heap(&scrut_ty) {
                     self.cleanup.push((sv, scrut_ty.clone()));
                 }
@@ -8585,21 +8846,55 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.emit_tree(&tree, scrut, &scrut_ty, &arm_blocks, func, arms, scope, subst)?;
 
         let saved_cleanup = self.cleanup.clone();
+        let saved_shells = self.shells.clone();
         let mut incoming: Vec<(Option<BasicValueEnum<'ctx>>, BasicBlock<'ctx>)> = Vec::new();
         for (i, arm) in arms.iter().enumerate() {
             self.builder.position_at_end(arm_blocks[i]);
             self.cleanup = saved_cleanup.clone();
+            self.shells = saved_shells.clone();
             let mut arm_scope = scope.clone();
             let mut binds = Vec::new();
             let tmod = self.tmod;
             collect_bindings(&arm.pattern, Vec::new(), &tmod.ctors, &mut binds);
             let saved_bound = self.bound_fns.clone();
             let saved_reuse = self.reuse.clone();
+            // A box this frame owns, taken apart by an arm that returns and
+            // never says its name again, is emptied rather than borrowed
+            // from: if nothing else holds it (one load and a compare), its
+            // fields become the frame's own with no count touched, and the
+            // box is a shell — built over by the arm's answer if that has
+            // the same shape, given back at exit if not. If it is shared,
+            // the fields are retained and the box let go, as before. Either
+            // way the arm runs once, over the same values; only the shell is
+            // null on the shared path. `simp` over a tree that nothing else
+            // holds then allocates and counts nothing at all.
+            //
+            // `owned_fields` is the arm's bindings that are whole fields,
+            // now the frame's to move; anything bound deeper is borrowed
+            // from one of those, which outlives the arm exactly as the box
+            // did.
+            let mut emptied = false;
+            if tail.is_some() {
+                if let (Some(sv), TK::Local(sname)) = (scrut, &scrutinee.kind) {
+                    let owned = self.cleanup.iter().any(|(c, _)| *c == sv);
+                    if owned && !names_local(&arm.body, sname) {
+                        emptied = self.empty_box(sv, &scrut_ty, &arm.pattern, Vec::new(), &binds, &mut arm_scope, func);
+                    }
+                }
+                // The parts of a tuple that was never built are the frame's
+                // own already, and have no name an arm could say: each one
+                // the arm takes apart is emptied the same way.
+                if let (Some(_), Pattern::Ctor { args: pats, .. }) = (parts, &arm.pattern) {
+                    for (fi, ((v, ty), pat)) in part_vals.iter().zip(pats).enumerate() {
+                        self.empty_box(*v, ty, pat, vec![(0, fi as u32)], &binds, &mut arm_scope, func);
+                    }
+                }
+            }
             // The box this arm just took apart can be built over, if this
             // frame is what holds it, the arm ends in a return, and nothing
             // left in the arm can still say its name. Its fields are already
             // in registers by now, so writing over it cannot lose them.
-            if tail.is_some() {
+            if tail.is_some() && !emptied {
                 if let (Some(sv), TK::Local(sname)) = (scrut, &scrutinee.kind) {
                     // Deliberately not peeled. `whole @ Circle(r)` is exactly
                     // the case the condition above rules out: the arm can
@@ -8613,8 +8908,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     let owned = self.cleanup.iter().any(|(c, _)| *c == sv);
                     if let Some(ctor) = ctor {
                         if owned && !names_local(&arm.body, sname) {
-                            self.reuse =
-                                Some((sv.into_pointer_value(), scrut_ty.clone(), ctor));
+                            self.reuse.push((sv.into_pointer_value(), scrut_ty.clone(), ctor));
                         }
                     }
                 }
@@ -8623,21 +8917,56 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // too, and may go through a borrowed position of a tail call.
             let saved_held = self.held_above.clone();
             if let TK::Local(sname) = &scrutinee.kind {
-                if self.name_held_above(sname) {
+                if !emptied && self.name_held_above(sname) {
                     for (name, _) in &binds {
                         self.held_above.insert(name.clone());
                     }
                 }
             }
             for (name, occ) in &binds {
+                // Already the frame's own, by emptying.
+                if arm_scope.get(name).is_some_and(|v| v.is_some()) && !scope.contains_key(name) {
+                    self.bound_fns.remove(name);
+                    continue;
+                }
                 // Borrowed out of the box, which outlives the arm; every use
-                // of the binding retains it in the usual way.
-                let (v, _) = self.value_at(scrut.expect("value"), &scrut_ty, occ);
+                // of the binding retains it in the usual way. A name for a
+                // whole part of an unboxed tuple — `(x, y) -> Mul(x, y)` —
+                // is the part itself, the value this frame holds, so that a
+                // use that takes it out of the frame finds it there and moves
+                // it instead of counting.
+                let part = match (parts, occ.as_slice()) {
+                    (Some(_), [(_, fi)]) => Some(part_vals[*fi as usize].0),
+                    _ => None,
+                };
+                let v = match part {
+                    Some(v) => v,
+                    None => self.value_at(scrut.expect("value"), &scrut_ty, occ).0,
+                };
                 arm_scope.insert(name.clone(), Some(v));
                 self.bound_fns.remove(name);
             }
             match tail {
-                Some(ret_ty) => self.gen_tail(&arm.body, &mut arm_scope, subst, func, ret_ty)?,
+                Some(ret_ty) => {
+                    // The arm is the last thing on its path: what it names
+                    // once and hands to a call can be moved there — except
+                    // the box itself, which its bindings borrow from for the
+                    // arm's length, and a name that is both a field and the
+                    // holder of bindings deeper down (`m @ Mul(y, z)`).
+                    let saved_move_ok = std::mem::replace(&mut self.move_ok, true);
+                    self.begin_statement(&arm.body, &[]);
+                    if let TK::Local(sname) = &scrutinee.kind {
+                        self.movable.remove(sname);
+                    }
+                    for (name, occ) in &binds {
+                        if binds.iter().any(|(_, o)| o.len() > occ.len() && o.starts_with(occ)) {
+                            self.movable.remove(name);
+                        }
+                    }
+                    let out = self.gen_tail(&arm.body, &mut arm_scope, subst, func, ret_ty);
+                    self.move_ok = saved_move_ok;
+                    out?
+                }
                 None => {
                     let v = self.gen_expr(&arm.body, &mut arm_scope, subst, func)?;
                     incoming.push((v, self.builder.get_insert_block().unwrap()));
@@ -8648,12 +8977,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             self.held_above = saved_held;
         }
         self.cleanup = saved_cleanup;
+        self.shells = saved_shells;
+        self.unboxed_root = saved_unboxed;
 
         if tail.is_some() {
             return Ok(None);
         }
         let out = self.merge_branches(func, result_ty, incoming)?;
-        if let Some(sv) = scrut.filter(|_| !borrowed) {
+        if parts.is_some() {
+            for (v, ty) in &part_vals {
+                if self.is_heap(ty) {
+                    self.emit_release(*v, ty);
+                }
+            }
+        } else if let Some(sv) = scrut.filter(|_| !borrowed) {
             if self.is_heap(&scrut_ty) {
                 self.emit_release(sv, &scrut_ty);
             }
@@ -8800,13 +9137,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     ) -> (BasicValueEnum<'ctx>, Ty) {
         let mut val = root;
         let mut ty = root_ty.clone();
-        for &(ci, fi) in occ {
+        for (step, &(ci, fi)) in occ.iter().enumerate() {
             let (adt, targs) = match &ty {
                 Ty::Adt(adt, targs) => (*adt, targs.clone()),
                 other => unreachable!("occurrence walks into {other:?}"),
             };
             let field_ty = subst_gen(&self.tmod.adts[adt].ctors[ci].fields[fi as usize], &targs);
-            if self.is_flat(&ty) {
+            let unboxed = step == 0 && self.unboxed_root == Some(root);
+            if unboxed || self.is_flat(&ty) {
                 val = self.extract_field(val, fi);
                 ty = field_ty;
                 continue;
@@ -8880,8 +9218,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Tree::Switch { occ, on_int, cases, default } => {
                 let (val, vty) = self.value_at(root.expect("value"), root_ty, occ);
                 // A flat value has one constructor and no tag to read: the
-                // one case is the only way on.
-                if !*on_int && self.is_flat(&vty) {
+                // one case is the only way on. So has a tuple that was never
+                // boxed.
+                let unboxed = occ.is_empty() && root.is_some() && self.unboxed_root == root;
+                if !*on_int && (unboxed || self.is_flat(&vty)) {
                     let bb = self.ctx.append_basic_block(func, "m.flat");
                     self.builder.build_unconditional_branch(bb).expect("LLVM builder error");
                     self.builder.position_at_end(bb);
