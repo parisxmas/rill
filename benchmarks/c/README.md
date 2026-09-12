@@ -1,13 +1,13 @@
 # Rill against C
 
-Nineteen programs, each written once in Rill and once in C to the same
+Twenty programs, each written once in Rill and once in C to the same
 algorithm and the same data layout, built at `-O3` (Rill's LLVM 18 pipeline,
 Apple clang 17 for C) and timed on an Apple M4. Time is the median of 15 runs
 after 2 warmups; peak RSS is the median of 3; outputs are compared before any
 time is printed. Tokens are `o200k_base`. Reproduce with
 `python3 benchmarks/c/run.py` (needs `tiktoken` for the token columns).
 
-Fourteen pairs live here; the other five (`loop`, `mandel`, `algo`,
+Fifteen pairs live here; the other five (`loop`, `mandel`, `algo`,
 `dijkstra`, `json`) are the ones in `../tokens/` that already had a C twin,
 and `json` is measured against the C that frees its tree.
 
@@ -16,6 +16,7 @@ and `json` is measured against the C that frees its tree.
 | benchmark | what it exercises | rill ms | c ms | rill / c | rill RSS | c RSS | rill tok | c tok |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | trees | build + drop 5.2 M boxes | 20.9 | 51.9 | **0.40** | 13.2 M | 9.3 M | 156 | 209 |
+| deriv | symbolic differentiation, 3000 rounds of rewriting small trees (added 2026-09-12) | 93.6 | 225.6 | **0.42** | 1.3 M | 1.4 M | 828 | 1718 |
 | dijkstra | read 31 MB graph, CSR, heap | 104.7 | 235.8 | **0.44** | 113 M | 59 M | 743 | 836 |
 | json | parse + print 11 MB | 143.8 | 170.9 | **0.84** | 182 M | 104 M | 1608 | 2133 |
 | nbody_rec | the bodies as records in a list | 35.2 | 38.7 | **0.91** | 1.2 M | 1.2 M | 1201 | 1189 |
@@ -172,6 +173,24 @@ Two smaller repairs along the way: `tokens/algo.rill` and
 parameter now defaults to `Str`), and the `--emit-ir` experiments have to be
 run through `opt` with `-mtriple`/`-mcpu`, or the cost model has no target and
 never vectorizes — half a day was lost to that.
+
+### deriv, and what a pool would do for C
+
+`deriv` (2026-09-12) differentiates a degree-12 polynomial with a
+`(2x+1)^4` factor down to zero, simplifying each derivative by pattern
+rules, 3000 rounds. It is `trees` with rewriting in it: every node is
+built, matched and dropped, and the C twin does it with `malloc`/`free`,
+as `trees.c` does. That is where its 2.4× comes from — the same free-list
+pool C is given in a seven-line `#define` brings it to 52 ms, ahead of Rill's
+94. What Rill pays there and C does not is the tuple: `match (simp(a),
+simp(b))` boxes a pair of pointers to take it apart on the next line, one
+allocation and one free per rewritten node. A pair of *numbers* is already a
+flat struct; a pair of pointers is not, and making a scrutinee written as a
+tuple literal match its parts without ever being built is the next thing
+this benchmark asks for.
+
+The source is 55 lines against 114: the rules are one pattern each where C
+writes an `if` per field and frees exactly the nodes a rule consumed.
 
 ## What is left
 

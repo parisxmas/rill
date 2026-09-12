@@ -1,0 +1,61 @@
+# Symbolic differentiation: a degree-12 polynomial with a (2x+1)^k factor is
+# differentiated to zero, each derivative simplified, printed-size and value
+# summed — 3000 rounds of building, rewriting and dropping small trees.
+type Expr
+  Num(Int)
+  X
+  Add(a: Expr, b: Expr)
+  Mul(a: Expr, b: Expr)
+  Pow(a: Expr, n: Int)
+
+fn d(e) = match e
+  Num(_) -> Num(0)
+  X -> Num(1)
+  Add(a, b) -> Add(d(a), d(b))
+  Mul(a, b) -> Add(Mul(d(a), b), Mul(a, d(b)))
+  Pow(a, n) -> Mul(Mul(Num(n), Pow(a, n - 1)), d(a))
+
+fn simp(e) = match e
+  Add(a, b) -> match (simp(a), simp(b))
+    (Num(x), Num(y)) -> Num(x + y)
+    (Num(0), y) -> y
+    (x, Num(0)) -> x
+    (x, y) -> Add(x, y)
+  Mul(a, b) -> match (simp(a), simp(b))
+    (Num(x), Num(y)) -> Num(x * y)
+    (Num(0), _) | (_, Num(0)) -> Num(0)
+    (Num(1), y) -> y
+    (x, Num(1)) -> x
+    (Num(x), Mul(Num(y), z)) | (Mul(Num(x), z), Num(y)) -> Mul(Num(x * y), z)
+    (x, y) -> Mul(x, y)
+  Pow(a, n) -> match (simp(a), n)
+    (_, 0) -> Num(1)
+    (x, 1) -> x
+    (x, k) -> Pow(x, k)
+  other -> other
+
+fn eval(e, x) = match e
+  Num(n) -> n
+  X -> x
+  Add(a, b) -> eval(a, x) + eval(b, x)
+  Mul(a, b) -> eval(a, x) * eval(b, x)
+  Pow(a, n) -> for _ in 0..n with p = 1 p * eval(a, x)
+
+fn size(e) = match e
+  Add(a, b) | Mul(a, b) -> 1 + size(a) + size(b)
+  Pow(a, _) -> 1 + size(a)
+  _ -> 1
+
+# Differentiate until nothing is left, summing each derivative's value at 1
+# and its size.
+fn chain(e, acc) = match e
+  Num(0) -> acc
+  _ -> chain(simp(d(e)), acc + eval(e, 1) + size(e))
+
+fn poly(i, acc) = if i == 0 then acc else poly(i - 1, Add(Mul(Num(i), Pow(X, i)), acc))
+
+fn main() =
+  f = Add(poly(12, Num(7)), Mul(Pow(Add(Mul(Num(2), X), Num(1)), 4), Pow(X, 3)))
+  total = for _ in 0..3000 with acc = 0
+    acc + chain(f, 0)
+  println(total)

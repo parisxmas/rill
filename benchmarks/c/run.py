@@ -41,6 +41,7 @@ BENCH = {
     "nbody_rec": ("nbody_rec.rill", "nbody.c", None, True),
     "hashmap":   ("hashmap.rill", "hashmap.c", None, False),
     "strbuild":  ("strbuild.rill", "strbuild.c", None, False),
+    "deriv":     ("deriv.rill", "deriv.c", None, False),
     # the five from tokens/ that have a C twin
     "loop":      (f"{TOK}/loop.rill", f"{TOK}/loop.c", None, False),
     "mandel":    (f"{TOK}/mandel.rill", f"{TOK}/mandel.c", None, False),
