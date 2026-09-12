@@ -4845,6 +4845,22 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     && self.llvm_type(ret_ty).is_some()
                 {
                     call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
+                    // LLVM 18's tail-recursion elimination, given a function
+                    // that also calls itself somewhere that is not a tail —
+                    // `eval(a) + eval(b)` — turns that recursion into a loop
+                    // with an accumulator and rewrites every `ret` of the
+                    // function as `ret acc + value`, this one included, and
+                    // a `musttail` whose value is added to before the return
+                    // is a broken module. The attribute keeps that pass out of
+                    // such a function; the backend still honours `musttail`
+                    // under it, and only the hinted tail calls are given up.
+                    if self.callgraph[self.cur_fn].contains(&self.cur_fn) {
+                        let parent = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
+                        parent.add_attribute(
+                            AttributeLoc::Function,
+                            self.ctx.create_string_attribute("disable-tail-calls", "true"),
+                        );
+                    }
                 } else if !self.wasm
                     && !(callee_tailcc && caller_tailcc)
                     && *fn_idx != self.cur_fn

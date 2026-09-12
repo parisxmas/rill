@@ -1,0 +1,62 @@
+# Sembolik türev: ifade ağacını türet, sadeleştir, yazdır, değerlendir
+type Expr
+  Num(Int)
+  X
+  Add(a: Expr, b: Expr)
+  Mul(a: Expr, b: Expr)
+  Pow(a: Expr, n: Int)
+
+fn d(e) = match e
+  Num(_) -> Num(0)
+  X -> Num(1)
+  Add(a, b) -> Add(d(a), d(b))
+  Mul(a, b) -> Add(Mul(d(a), b), Mul(a, d(b)))
+  Pow(a, n) -> Mul(Mul(Num(n), Pow(a, n - 1)), d(a))
+
+fn simp(e) = match e
+  Add(a, b) -> match (simp(a), simp(b))
+    (Num(x), Num(y)) -> Num(x + y)
+    (Num(0), y) -> y
+    (x, Num(0)) -> x
+    (x, y) -> Add(x, y)
+  Mul(a, b) -> match (simp(a), simp(b))
+    (Num(x), Num(y)) -> Num(x * y)
+    (Num(0), _) | (_, Num(0)) -> Num(0)
+    (Num(1), y) -> y
+    (x, Num(1)) -> x
+    (Num(x), Mul(Num(y), z)) | (Mul(Num(x), z), Num(y)) -> Mul(Num(x * y), z)
+    (x, y) -> Mul(x, y)
+  Pow(a, n) -> match (simp(a), n)
+    (_, 0) -> Num(1)
+    (x, 1) -> x
+    (x, k) -> Pow(x, k)
+  other -> other
+
+fn show_e(e) = match e
+  Num(n) -> int_to_str(n)
+  X -> "x"
+  Add(a, b) -> show_e(a) + " + " + show_e(b)
+  Mul(a, b) -> factor(a) + "*" + factor(b)
+  Pow(a, n) -> factor(a) + "^" + int_to_str(n)
+
+fn factor(e) = match e
+  Add(_, _) -> "(" + show_e(e) + ")"
+  _ -> show_e(e)
+
+fn eval(e, x) = match e
+  Num(n) -> n
+  X -> x
+  Add(a, b) -> eval(a, x) + eval(b, x)
+  Mul(a, b) -> eval(a, x) * eval(b, x)
+  Pow(a, n) -> for _ in 0..n with p = 1 p * eval(a, x)
+
+fn main() =
+  f = Add(Add(Add(Mul(Num(3), Pow(X, 3)), Mul(Num(2), Pow(X, 2))), X), Num(7))
+  f1 = simp(d(f))
+  f2 = simp(d(f1))
+  println("f   = " + show_e(f))
+  println("f'  = " + show_e(f1))
+  println("f'' = " + show_e(f2))
+  println("f'(2) = " + int_to_str(eval(f1, 2)) + ", f''(2) = " + int_to_str(eval(f2, 2)))
+  g = Pow(Add(Mul(Num(2), X), Num(1)), 3)
+  println("g'  = " + show_e(simp(d(g))))

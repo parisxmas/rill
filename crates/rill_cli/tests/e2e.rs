@@ -3448,3 +3448,22 @@ fn a_nested_function_can_hand_back_a_buffer() {
     );
     assert_eq!(out, "6\n");
 }
+
+/// A `for` in one arm of a function that also calls itself in other arms,
+/// not in tail position: `eval` over an expression tree, with `Pow` a loop.
+/// The loop is a `musttail` call, and LLVM's tail-recursion elimination,
+/// finding `eval(a) + eval(b)`, turned that recursion into an accumulator
+/// loop and rewrote every return as `acc + value` — the `musttail` one
+/// included, which is not a module LLVM accepts. The function now asks
+/// that pass to leave it alone.
+#[test]
+fn a_loop_inside_a_function_that_recurses_elsewhere() {
+    let out = run_source(
+        "loop_in_recursion",
+        "type Expr\n  Num(Int)\n  X\n  Add(a: Expr, b: Expr)\n  Pow(a: Expr, n: Int)\n\n\
+         fn eval(e, x) = match e\n  Num(n) -> n\n  X -> x\n  Add(a, b) -> eval(a, x) + eval(b, x)\n  \
+         Pow(a, n) -> for _ in 0..n with p = 1 p * eval(a, x)\n\n\
+         fn main() = println(eval(Pow(Add(X, Num(1)), 3), 2))\n",
+    );
+    assert_eq!(out, "27\n");
+}
