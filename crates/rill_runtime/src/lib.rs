@@ -4858,6 +4858,50 @@ pub unsafe extern "C" fn rill_mt_off() -> i32 {
     1
 }
 
+// ---- atomics on a buffer's words ---------------------------------------------
+//
+// For a program that keeps a protocol of its own between strands on
+// several workers — a reader's mark that a writer must see before it
+// starts a log over, say — where a channel would be a rendezvous too many.
+// Each takes the address of an `Int` in a buffer (`ptr_offset(b, 8 * i)`)
+// and is sequentially consistent, so a store on one strand and a load on
+// another cannot both miss each other's writes.
+
+/// # Safety
+/// `p` must point at an aligned 64-bit word that stays allocated.
+#[no_mangle]
+pub unsafe extern "C" fn rill_atomic_load(p: *mut u8) -> i64 {
+    core::sync::atomic::AtomicI64::from_ptr(p as *mut i64).load(core::sync::atomic::Ordering::SeqCst)
+}
+
+/// # Safety
+/// As `rill_atomic_load`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_atomic_store(p: *mut u8, v: i64) -> i64 {
+    core::sync::atomic::AtomicI64::from_ptr(p as *mut i64).store(v, core::sync::atomic::Ordering::SeqCst);
+    v
+}
+
+/// Adds `d` and answers the new value.
+///
+/// # Safety
+/// As `rill_atomic_load`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_atomic_add(p: *mut u8, d: i64) -> i64 {
+    core::sync::atomic::AtomicI64::from_ptr(p as *mut i64).fetch_add(d, core::sync::atomic::Ordering::SeqCst) + d
+}
+
+/// `old` to `new` if the word holds `old`: 1 when it did.
+///
+/// # Safety
+/// As `rill_atomic_load`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_atomic_cas(p: *mut u8, old: i64, new: i64) -> i64 {
+    core::sync::atomic::AtomicI64::from_ptr(p as *mut i64)
+        .compare_exchange(old, new, core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst)
+        .is_ok() as i64
+}
+
 /// The host strand's wait: strands are run on worker 0's execution stack,
 /// stolen from the other workers when there are none of its own, until the
 /// host is woken — by the channel operation it is parked in completing.
@@ -5387,9 +5431,13 @@ impl WQueue {
         self.tail = w;
     }
 
-    /// The next waiter whose strand is still up for grabs, dropping any
-    /// that another channel already claimed.
-    unsafe fn pop_live(&mut self) -> *mut Waiter {
+    /// The next waiter whose strand this call has claimed — for the node's
+    /// case, by a compare-and-swap on the strand's `selected` — dropping
+    /// any that another channel or the poller got to first. The claim is
+    /// made here, under this channel's lock alone, because a strand in a
+    /// `select` sits in several channels' queues, each with a lock of its
+    /// own, and two of them may reach it at once.
+    unsafe fn pop_claimed(&mut self) -> *mut Waiter {
         loop {
             let w = self.head;
             if w.is_null() {
@@ -5400,7 +5448,7 @@ impl WQueue {
                 self.tail = core::ptr::null_mut();
             }
             (*w).next = core::ptr::null_mut();
-            if (*(*w).g).selected < 0 {
+            if try_claim(w) {
                 return w;
             }
         }
@@ -5429,10 +5477,52 @@ impl WQueue {
     }
 }
 
-/// Hands a waiting strand its result and makes it runnable.
-unsafe fn claim(w: *mut Waiter) {
-    (*(*w).g).selected = (*w).case;
+/// Claims the waiter's strand for the waiter's case: true when this call
+/// got there first, false when another channel or the poller did.
+unsafe fn try_claim(w: *mut Waiter) -> bool {
+    let sel = core::sync::atomic::AtomicI64::from_ptr(&raw mut (*(*w).g).selected);
+    sel.compare_exchange(
+        -1,
+        (*w).case,
+        core::sync::atomic::Ordering::AcqRel,
+        core::sync::atomic::Ordering::Acquire,
+    )
+    .is_ok()
+}
+
+/// A claimed strand made runnable, once whatever it is to find has been
+/// written for it.
+unsafe fn wake(w: *mut Waiter) {
     make_ready((*w).g);
+}
+
+/// Each channel has a lock of its own — a spin on a word, since what it
+/// covers is a few pointer moves — so that strands on different cores
+/// working different channels do not queue up on one. Nothing on a single
+/// worker, where nothing runs at once.
+#[inline(always)]
+unsafe fn chan_lock(c: *mut Chan) {
+    if rill_mt != 0 {
+        while (*c)
+            .lk
+            .compare_exchange_weak(
+                0,
+                1,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+#[inline(always)]
+unsafe fn chan_unlock(c: *mut Chan) {
+    if rill_mt != 0 {
+        (*c).lk.store(0, core::sync::atomic::Ordering::Release);
+    }
 }
 
 /// A channel, reference-counted like every heap object. With capacity zero it
@@ -5451,6 +5541,8 @@ struct Chan {
     /// Non-zero once `close` has been called. A closed channel takes no more
     /// values; what is already buffered in it is still there to be read.
     closed: usize,
+    /// The channel's own lock; see `chan_lock`.
+    lk: core::sync::atomic::AtomicI32,
 }
 
 unsafe fn chan_slots(c: *mut Chan) -> *mut u64 {
@@ -5482,11 +5574,11 @@ unsafe fn chan_size(cap: usize) -> u64 {
 /// move in behind it.
 unsafe fn chan_take_buffered(c: *mut Chan) -> TwoWords {
     let out = chan_pop(c);
-    let s = (*c).sendq.pop_live();
+    let s = (*c).sendq.pop_claimed();
     if !s.is_null() {
         let item = (*s).item;
         chan_push(c, item[0], item[1]);
-        claim(s);
+        wake(s);
     }
     out
 }
@@ -5514,6 +5606,7 @@ pub unsafe extern "C" fn rill_chan_new(cap: i64) -> *mut u8 {
             sendq: WQueue::new(),
             recvq: WQueue::new(),
             closed: 0,
+            lk: core::sync::atomic::AtomicI32::new(0),
         },
     );
     c as *mut u8
@@ -5546,9 +5639,9 @@ pub unsafe extern "C" fn rill_chan_release(p: *mut u8) {
 #[no_mangle]
 pub unsafe extern "C" fn rill_chan_close(p: *mut u8) {
     let c = p as *mut Chan;
-    lock();
+    chan_lock(c);
     if (*c).closed != 0 {
-        unlock();
+        chan_unlock(c);
         return;
     }
     (*c).closed = 1;
@@ -5557,22 +5650,22 @@ pub unsafe extern "C" fn rill_chan_close(p: *mut u8) {
     // do that it cannot; a sender has been sending into something that no
     // longer takes anything, which is a mistake and is reported as one.
     loop {
-        let w = (*c).recvq.pop_live();
+        let w = (*c).recvq.pop_claimed();
         if w.is_null() {
             break;
         }
         (*w).freed_by_close = 1;
-        claim(w);
+        wake(w);
     }
     loop {
-        let w = (*c).sendq.pop_live();
+        let w = (*c).sendq.pop_claimed();
         if w.is_null() {
             break;
         }
         (*w).freed_by_close = 1;
-        claim(w);
+        wake(w);
     }
-    unlock();
+    chan_unlock(c);
 }
 
 /// Whether `close` has been called on this channel.
@@ -5582,9 +5675,9 @@ pub unsafe extern "C" fn rill_chan_close(p: *mut u8) {
 #[no_mangle]
 pub unsafe extern "C" fn rill_chan_closed(p: *mut u8) -> i8 {
     let c = p as *mut Chan;
-    lock();
+    chan_lock(c);
     let r = ((*c).closed != 0) as i8;
-    unlock();
+    chan_unlock(c);
     r
 }
 
@@ -5608,29 +5701,29 @@ unsafe fn die_on_closed(what: &[u8]) -> ! {
 #[no_mangle]
 pub unsafe extern "C" fn rill_chan_send(p: *mut u8, a: u64, b: u64) {
     let c = p as *mut Chan;
-    lock();
+    chan_lock(c);
     if (*c).closed != 0 {
-        unlock();
+        chan_unlock(c);
         die_on_closed(b"rill: send on a closed channel\n");
     }
     // A waiting receiver takes it directly, whether or not there is a buffer.
-    let r = (*c).recvq.pop_live();
+    let r = (*c).recvq.pop_claimed();
     if !r.is_null() {
         (*r).item = [a, b];
-        claim(r);
-        unlock();
+        wake(r);
+        chan_unlock(c);
         return;
     }
     if (*c).len < (*c).cap {
         chan_push(c, a, b);
-        unlock();
+        chan_unlock(c);
         return;
     }
     let g = (*me()).current;
     (*g).selected = -1;
     (*g).waiter = Waiter { next: core::ptr::null_mut(), g, item: [a, b], case: 0, chan: c, freed_by_close: 0 };
     (*c).sendq.push(&raw mut (*g).waiter);
-    unlock();
+    chan_unlock(c);
     block_current();
     if (*g).waiter.freed_by_close != 0 {
         die_on_closed(b"rill: send on a channel that closed while waiting\n");
@@ -5644,21 +5737,21 @@ pub unsafe extern "C" fn rill_chan_send(p: *mut u8, a: u64, b: u64) {
 #[no_mangle]
 pub unsafe extern "C" fn rill_chan_recv(p: *mut u8) -> TwoWords {
     let c = p as *mut Chan;
-    lock();
+    chan_lock(c);
     if (*c).len > 0 {
         let out = chan_take_buffered(c);
-        unlock();
+        chan_unlock(c);
         return out;
     }
-    let s = (*c).sendq.pop_live();
+    let s = (*c).sendq.pop_claimed();
     if !s.is_null() {
         let item = (*s).item;
-        claim(s);
-        unlock();
+        wake(s);
+        chan_unlock(c);
         return TwoWords { a: item[0], b: item[1] };
     }
     if (*c).closed != 0 {
-        unlock();
+        chan_unlock(c);
         die_on_closed(b"rill: recv on a closed channel - use recv_opt\n");
     }
     let g = (*me()).current;
@@ -5666,7 +5759,7 @@ pub unsafe extern "C" fn rill_chan_recv(p: *mut u8) -> TwoWords {
     (*g).waiter =
         Waiter { next: core::ptr::null_mut(), g, item: [0, 0], case: 0, chan: c, freed_by_close: 0 };
     (*c).recvq.push(&raw mut (*g).waiter);
-    unlock();
+    chan_unlock(c);
     block_current();
     if (*g).waiter.freed_by_close != 0 {
         die_on_closed(b"rill: recv on a channel that closed while waiting - use recv_opt\n");
@@ -5700,23 +5793,23 @@ pub unsafe extern "C" fn rill_chan_recv(p: *mut u8) -> TwoWords {
 pub unsafe extern "C" fn rill_chan_wait(p: *mut u8) -> i8 {
     let c = p as *mut Chan;
     let g = (*me()).current;
-    lock();
+    chan_lock(c);
     if (*c).len > 0 {
         let v = chan_take_buffered(c);
-        unlock();
+        chan_unlock(c);
         (*g).taken = [v.a, v.b];
         return 1;
     }
-    let s = (*c).sendq.pop_live();
+    let s = (*c).sendq.pop_claimed();
     if !s.is_null() {
         let item = (*s).item;
-        claim(s);
-        unlock();
+        wake(s);
+        chan_unlock(c);
         (*g).taken = item;
         return 1;
     }
     if (*c).closed != 0 {
-        unlock();
+        chan_unlock(c);
         (*g).taken = [0, 0];
         return 0;
     }
@@ -5724,7 +5817,7 @@ pub unsafe extern "C" fn rill_chan_wait(p: *mut u8) -> i8 {
     (*g).waiter =
         Waiter { next: core::ptr::null_mut(), g, item: [0, 0], case: 0, chan: c, freed_by_close: 0 };
     (*c).recvq.push(&raw mut (*g).waiter);
-    unlock();
+    chan_unlock(c);
     block_current();
     if (*g).waiter.freed_by_close != 0 {
         (*g).taken = [0, 0];
@@ -5796,11 +5889,56 @@ unsafe fn unqueue_select(cases: *const SelectCase, n: i64, ws: *mut Waiter) {
         }
         let w = ws.add(i as usize);
         let ch = (*w).chan;
+        chan_lock(ch);
         if c.kind != SEL_SEND {
             (*ch).recvq.remove(w);
         } else {
             (*ch).sendq.remove(w);
         }
+        chan_unlock(ch);
+    }
+}
+
+/// The distinct channels of a `select`'s cases, in address order — the
+/// order every `select` takes their locks in, so two can never wait on each
+/// other. Timeout arms have none.
+unsafe fn select_chans(cases: *const SelectCase, n: i64, out: &mut [*mut Chan; 64]) -> usize {
+    let mut k = 0usize;
+    for i in 0..n.min(64) {
+        let c = &*cases.add(i as usize);
+        if c.kind == SEL_TIMEOUT {
+            continue;
+        }
+        let ch = c.chan as *mut Chan;
+        let mut j = 0;
+        while j < k && out[j] != ch {
+            j += 1;
+        }
+        if j == k {
+            out[k] = ch;
+            k += 1;
+        }
+    }
+    // insertion sort: a handful of arms
+    for i in 1..k {
+        let mut j = i;
+        while j > 0 && (out[j - 1] as usize) > (out[j] as usize) {
+            out.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+    k
+}
+
+unsafe fn lock_chans(chans: &[*mut Chan; 64], k: usize) {
+    for i in 0..k {
+        chan_lock(chans[i]);
+    }
+}
+
+unsafe fn unlock_chans(chans: &[*mut Chan; 64], k: usize) {
+    for i in (0..k).rev() {
+        chan_unlock(chans[i]);
     }
 }
 
@@ -5819,14 +5957,18 @@ pub unsafe extern "C" fn rill_select(
     has_default: i8,
     slot: *mut u64,
 ) -> i64 {
-    lock();
+    // Up to sixty-four distinct channels an arm may name; the compiler
+    // never writes a `select` near that.
+    let mut chans: [*mut Chan; 64] = [core::ptr::null_mut(); 64];
+    let k = select_chans(cases, n, &mut chans);
+    lock_chans(&chans, k);
     for i in 0..n {
         let c = &*cases.add(i as usize);
         if c.kind == SEL_TIMEOUT {
             // A deadline already past is ready now, which makes `timeout(0)`
             // a poll and costs nothing anywhere else.
             if c.a as i64 <= 0 {
-                unlock();
+                unlock_chans(&chans, k);
                 return i;
             }
             continue;
@@ -5835,16 +5977,16 @@ pub unsafe extern "C" fn rill_select(
         if c.kind != SEL_SEND {
             if (*ch).len > 0 {
                 let v = chan_take_buffered(ch);
-                unlock();
+                unlock_chans(&chans, k);
                 *slot = v.a;
                 *slot.add(1) = v.b;
                 return i;
             }
-            let s = (*ch).sendq.pop_live();
+            let s = (*ch).sendq.pop_claimed();
             if !s.is_null() {
                 let item = (*s).item;
-                claim(s);
-                unlock();
+                wake(s);
+                unlock_chans(&chans, k);
                 *slot = item[0];
                 *slot.add(1) = item[1];
                 return i;
@@ -5853,7 +5995,7 @@ pub unsafe extern "C" fn rill_select(
             // strand waiting on several things is told to stop: close the one
             // that means stop, and every `select` watching it runs that arm.
             if (*ch).closed != 0 {
-                unlock();
+                unlock_chans(&chans, k);
                 if c.kind == SEL_RECV_BIND {
                     die_on_closed(
                         b"rill: select bound a value from a closed channel - use recv_opt\n",
@@ -5863,25 +6005,25 @@ pub unsafe extern "C" fn rill_select(
             }
         } else {
             if (*ch).closed != 0 {
-                unlock();
+                unlock_chans(&chans, k);
                 die_on_closed(b"rill: select sends on a closed channel\n");
             }
-            let r = (*ch).recvq.pop_live();
+            let r = (*ch).recvq.pop_claimed();
             if !r.is_null() {
                 (*r).item = [c.a, c.b];
-                claim(r);
-                unlock();
+                wake(r);
+                unlock_chans(&chans, k);
                 return i;
             }
             if (*ch).len < (*ch).cap {
                 chan_push(ch, c.a, c.b);
-                unlock();
+                unlock_chans(&chans, k);
                 return i;
             }
         }
     }
     if has_default != 0 {
-        unlock();
+        unlock_chans(&chans, k);
         return -1;
     }
 
@@ -5943,21 +6085,19 @@ pub unsafe extern "C" fn rill_select(
             // timeout now is early rather than never.
             (*g).on_io = false;
             IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+            unlock_chans(&chans, k);
             unqueue_select(cases, n, ws);
-            unlock();
             free(ws as *mut u8);
             return deadline_case;
         }
     }
-    unlock();
+    unlock_chans(&chans, k);
     block_current();
 
-    lock();
     let idx = (*g).selected;
     // The poller stamps its own mark, so this is the deadline and not a case.
     if idx == WOKEN_BY_POLLER {
         unqueue_select(cases, n, ws);
-        unlock();
         if held > 0 {
             close(held);
         }
@@ -5975,7 +6115,6 @@ pub unsafe extern "C" fn rill_select(
     let by_close = (*won).freed_by_close != 0;
     let kind = (*cases.add(idx as usize)).kind;
     unqueue_select(cases, n, ws);
-    unlock();
     if held > 0 {
         close(held);
     }
@@ -7045,16 +7184,23 @@ mod net {
             // wake to be retried but a value that was never sent. It reads as
             // a null string, and it took down the server perhaps one arrival
             // in ten.
-            lock();
-            if (*g).on_io && (*g).selected < 0 {
+            let sel = core::sync::atomic::AtomicI64::from_ptr(&raw mut (*g).selected);
+            if (*g).on_io
+                && sel
+                    .compare_exchange(
+                        -1,
+                        WOKEN_BY_POLLER,
+                        core::sync::atomic::Ordering::AcqRel,
+                        core::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_ok()
+            {
                 (*g).on_io = false;
-                (*g).selected = WOKEN_BY_POLLER;
                 IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
                 make_ready(g);
             } else {
                 STRAY_WAKES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             }
-            unlock();
         }
         n
     }
