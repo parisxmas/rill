@@ -4870,6 +4870,9 @@ unsafe fn host_pump(w: *mut Worker, host: *mut G) {
             HOST_WOKEN.store(false, core::sync::atomic::Ordering::Release);
             return;
         }
+        if IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
+            poll_network(w, false);
+        }
         lock_runq(w);
         let mut g = (*w).runq.pop();
         unlock_runq(w);
@@ -4949,6 +4952,14 @@ pub unsafe extern "C" fn rill_preempt_yield() {
     // race for this byte: losing one costs a turn taken a slice late.
     core::ptr::write_volatile(&raw mut rill_preempt, 0);
     let w = me();
+    // A strand parked on a descriptor, a timer or a sync is not in any
+    // queue; it is the poll that makes it runnable, and the poll used to
+    // run only when a worker had nothing to do — which a strand that never
+    // blocks never lets happen. So when something is parked that way the
+    // poll is made here, and a turn is given up only if it found something.
+    if IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
+        poll_network(w, false);
+    }
     lock_runq(w);
     let waiting = !(*w).runq.head.is_null();
     unlock_runq(w);
@@ -4979,7 +4990,9 @@ extern "C" fn preempt_timer(_arg: *mut u8) -> *mut u8 {
         let mut nanos = PREEMPT_SLICE_NANOS;
         while !STOP.load(core::sync::atomic::Ordering::Acquire) {
             sleep_nanos(nanos);
-            if QUEUED.load(core::sync::atomic::Ordering::Acquire) > 0 {
+            if QUEUED.load(core::sync::atomic::Ordering::Acquire) > 0
+                || IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0
+            {
                 core::ptr::write_volatile(&raw mut rill_preempt, 1);
                 nanos = PREEMPT_SLICE_NANOS;
             } else {
@@ -5021,6 +5034,15 @@ unsafe fn worker_loop(w: *mut Worker) {
         // however many of them happened to be queued.
         if STOP.load(core::sync::atomic::Ordering::Acquire) {
             return;
+        }
+        // A strand waiting on a descriptor, a timer or a sync is woken by a
+        // poll, and the poll used to run only when nothing was runnable: a
+        // strand that never blocked kept the worker from ever looking, and
+        // a writer parked on its commit's fsync starved behind a reader
+        // that loops. So the poll is made, without waiting, before every
+        // strand is taken while anything is parked that way.
+        if IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
+            poll_network(w, false);
         }
         lock_runq(w);
         let mut g = (*w).runq.pop();
