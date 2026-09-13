@@ -24,8 +24,27 @@ fn sql_connect(host, port) = connect_to(host, port)
 
 fn sql_hang_up(fd) = sock_close(fd)
 
-fn sql_request(fields) =
-  JObj(Cons(Field("engine", JStr("sql")), Cons(Field("cmd", JStr("sql")), fields)))
+fn sql_request(fields) = sql_cmd("sql", fields)
+
+fn sql_cmd(name, fields) =
+  JObj(Cons(Field("engine", JStr("sql")), Cons(Field("cmd", JStr(name)), fields)))
+
+# -- prepared statements ------------------------------------------------------
+#
+# A statement the server parses once and keeps under an id: `sql_prepare`
+# answers `Ok(id)`, `sql_exec` runs it with `params` (the `?`s in order, as
+# `sql_run_with`) and answers as `sql_run` does, `sql_close` lets it go. The
+# text is neither sent nor hashed per call, which is what a loop of one
+# statement pays for otherwise; the round trip is the same.
+
+fn sql_prepare(fd, text) = match ow_call(fd, sql_cmd("prepare", Cons(Field("sql", JStr(text)), Nil)))
+  Err(e) -> Err(e)
+  Ok(v) -> Ok(as_int(unwrap_or(get(v, "stmt"), JNull)))
+
+fn sql_exec(fd, id, params) =
+  ow_call(fd, sql_cmd("exec", Cons(Field("stmt", JInt(id)), Cons(Field("params", JArr(params)), Nil))))
+
+fn sql_close(fd, id) = ow_call(fd, sql_cmd("close_stmt", Cons(Field("stmt", JInt(id)), Nil)))
 
 fn sql_run(fd, text) =
   ow_call(fd, sql_request(Cons(Field("sql", JStr(text)), Nil)))
