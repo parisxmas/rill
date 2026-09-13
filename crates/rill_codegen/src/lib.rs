@@ -810,6 +810,12 @@ fn borrows_only(e: &TExpr, name: &str, borrowed: &[Vec<bool>], nonesc: &[Vec<boo
         TK::MapFind { map, key: k } | TK::MapNext { map, from: k } => {
             operand(map, true) && operand(k, false)
         }
+        // A slot's key or value is read through the map without a count
+        // of its own (the code generator borrows the map there), so
+        // `map_or` and `map_get` borrow theirs.
+        TK::MapValAt { map, idx } | TK::MapKeyAt { map, idx } => {
+            operand(map, true) && operand(idx, false)
+        }
         TK::MapSet { map, key, val } => {
             operand(map, true) && operand(key, false) && operand(val, false)
         }
@@ -905,6 +911,10 @@ fn borrow_breaker(e: &TExpr, name: &str, borrowed: &[Vec<bool>], nonesc: &[Vec<b
         TK::MapFind { map, key: k } | TK::MapNext { map, from: k } => {
             operand(map, true, "", why);
             operand(k, false, "a map key", why);
+        }
+        TK::MapValAt { map, idx } | TK::MapKeyAt { map, idx } => {
+            operand(map, true, "", why);
+            operand(idx, false, "a slot number", why);
         }
         TK::MapSet { map, key, val } => {
             operand(map, true, "", why);
