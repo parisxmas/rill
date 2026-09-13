@@ -507,19 +507,35 @@ fn borrowed_params(tmod: &TModule) -> Vec<Vec<bool>> {
                 .collect()
         })
         .collect();
+    let mut round = GoesRound::new(tmod);
+    let nonesc = nonescaping_fn_params(tmod);
+    // `RILL_BORROW_TRACE=name,name` says on stderr why a parameter of the
+    // named functions is passed owned: which use, or which tail call, took
+    // its borrow away.
+    let trace: Vec<String> = std::env::var("RILL_BORROW_TRACE")
+        .map(|v| v.split(',').map(|s| s.to_string()).collect())
+        .unwrap_or_default();
     loop {
         let mut changed = false;
         for fi in 0..tmod.fns.len() {
             for pi in 0..tmod.fns[fi].params.len() {
                 if borrowed[fi][pi]
-                    && !borrows_only(&tmod.fns[fi].body, &tmod.fns[fi].params[pi].0, &borrowed)
+                    && !borrows_only(&tmod.fns[fi].body, &tmod.fns[fi].params[pi].0, &borrowed, &nonesc)
                 {
+                    if trace.iter().any(|n| n == "*" || n == &tmod.fns[fi].name) {
+                        let mut why = String::new();
+                        borrow_breaker(&tmod.fns[fi].body, &tmod.fns[fi].params[pi].0, &borrowed, &nonesc, tmod, &mut why);
+                        eprintln!(
+                            "borrow: `{}` of `{}` is owned: {}",
+                            tmod.fns[fi].params[pi].0, tmod.fns[fi].name, why
+                        );
+                    }
                     borrowed[fi][pi] = false;
                     changed = true;
                 }
             }
             let held = HashSet::new();
-            owned_at_tail(&tmod.fns[fi].body, fi, tmod, &mut borrowed, &mut changed, &held);
+            owned_at_tail(&tmod.fns[fi].body, fi, tmod, &mut borrowed, &mut changed, &held, &mut round);
         }
         if !changed {
             return borrowed;
@@ -527,14 +543,56 @@ fn borrowed_params(tmod: &TModule) -> Vec<Vec<bool>> {
     }
 }
 
+/// Whether a call from `caller` to `callee` can come back around: the
+/// callee reaches the caller in the call graph. What it reaches is found
+/// once and kept.
+struct GoesRound {
+    graph: Vec<Vec<usize>>,
+    reaches: HashMap<usize, HashSet<usize>>,
+}
+
+impl GoesRound {
+    fn new(tmod: &TModule) -> GoesRound {
+        GoesRound { graph: call_graph(tmod), reaches: HashMap::new() }
+    }
+
+    fn goes_round(&mut self, caller: usize, callee: usize) -> bool {
+        if caller == callee {
+            return true;
+        }
+        if let Some(reached) = self.reaches.get(&callee) {
+            return reached.contains(&caller);
+        }
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut queue = vec![callee];
+        while let Some(i) = queue.pop() {
+            for &e in &self.graph[i] {
+                if seen.insert(e) {
+                    queue.push(e);
+                }
+            }
+        }
+        let answer = seen.contains(&caller);
+        self.reaches.insert(callee, seen);
+        answer
+    }
+}
+
 /// A call in tail position jumps: the frame releases everything it owns
 /// first, so a borrowed argument must be something an *earlier* frame holds
 /// — a borrowed parameter of the calling function — or the callee reads
 /// freed memory. Any other argument in a borrowed position of a tail call
-/// makes that parameter owned, which keeps the call a tail call: passing it
-/// by an ordinary call and releasing afterwards would be safe, but it would
-/// also cost a stack frame per iteration of every loop written that way
-/// (`join_onto` overflowed at half a million links before this rule).
+/// that can come back around makes that parameter owned, which keeps the
+/// call a tail call: passing it by an ordinary call and releasing afterwards
+/// would be safe, but it would also cost a stack frame per iteration of
+/// every loop written that way (`join_onto` overflowed at half a million
+/// links before this rule). A tail call that cannot come back around — the
+/// callee never reaches the caller — is left alone: the code generator makes
+/// it an ordinary call, which costs one frame and no loop, and the callee's
+/// parameter stays borrowed for every other caller. Before this, one
+/// `check(x, db.cache)` at the end of a function made `cache` owned in
+/// `check` and in everything `check` handed it to, and a row filter paid a
+/// retain and a release per call all the way down.
 fn owned_at_tail(
     e: &TExpr,
     fi: usize,
@@ -542,6 +600,7 @@ fn owned_at_tail(
     borrowed: &mut Vec<Vec<bool>>,
     changed: &mut bool,
     held: &HashSet<String>,
+    round: &mut GoesRound,
 ) {
     // A name some earlier frame holds: a borrowed parameter, or a binding a
     // `match` took out of one — the box it came from is held there too.
@@ -556,33 +615,53 @@ fn owned_at_tail(
     match &e.kind {
         TK::Block(stmts) => {
             if let Some(TStmt::Expr(last)) = stmts.last() {
-                owned_at_tail(last, fi, tmod, borrowed, changed, held);
+                owned_at_tail(last, fi, tmod, borrowed, changed, held, round);
             }
         }
         TK::If { then, els, .. } => {
-            owned_at_tail(then, fi, tmod, borrowed, changed, held);
-            owned_at_tail(els, fi, tmod, borrowed, changed, held);
+            owned_at_tail(then, fi, tmod, borrowed, changed, held, round);
+            owned_at_tail(els, fi, tmod, borrowed, changed, held, round);
         }
         TK::Match { scrutinee, arms } => {
-            let from_held = matches!(&scrutinee.kind, TK::Local(n) if held_above(n, borrowed));
+            let from_held = match &scrutinee.kind {
+                TK::Local(n) => held_above(n, borrowed),
+                TK::FieldGet { .. } => root_local(scrutinee).is_some_and(|n| held_above(n, borrowed)),
+                _ => false,
+            };
             for a in arms {
                 let mut inner = held.clone();
                 if from_held {
                     collect_pattern_binds(&a.pattern, &mut inner);
                 }
-                owned_at_tail(&a.body, fi, tmod, borrowed, changed, &inner);
+                owned_at_tail(&a.body, fi, tmod, borrowed, changed, &inner, round);
             }
         }
         TK::CallFn { fn_idx, args, .. } => {
+            if !round.goes_round(fi, *fn_idx) {
+                return;
+            }
             for (i, a) in args.iter().enumerate() {
                 if borrowed[*fn_idx].get(i) != Some(&true) {
                     continue;
                 }
+                // A field read out of a held box is held with it: the box
+                // is immutable and outlives this frame, so `q.ctx` in a
+                // tail call borrows as `ctx` would.
                 let held_above = match &a.kind {
                     TK::Local(n) => held_above(n, borrowed),
+                    TK::FieldGet { .. } => root_local(a).is_some_and(|n| held_above(n, borrowed)),
                     _ => false,
                 };
                 if !held_above {
+                    if std::env::var("RILL_BORROW_TRACE")
+                        .map(|v| v.split(',').any(|n| n == "*" || n == tmod.fns[*fn_idx].name))
+                        .unwrap_or(false)
+                    {
+                        eprintln!(
+                            "borrow: `{}` of `{}` is owned: a tail call from `{}` (line {}) that can come back around passes it something that frame owns",
+                            tmod.fns[*fn_idx].params[i].0, tmod.fns[*fn_idx].name, tmod.fns[fi].name, e.line
+                        );
+                    }
                     borrowed[*fn_idx][i] = false;
                     *changed = true;
                 }
@@ -700,11 +779,11 @@ fn root_local(e: &TExpr) -> Option<&str> {
 /// Whether every appearance of `name` in `e` is in a position that borrows
 /// it — the positions `gen_borrowed` serves, or the borrowed parameter of a
 /// call. A lambda or spawn that captures it keeps it, so that is an owned use.
-fn borrows_only(e: &TExpr, name: &str, borrowed: &[Vec<bool>]) -> bool {
+fn borrows_only(e: &TExpr, name: &str, borrowed: &[Vec<bool>], nonesc: &[Vec<bool>]) -> bool {
     let operand = |x: &TExpr, borrowing: bool| -> bool {
         match &x.kind {
             TK::Local(n) if n == name => borrowing,
-            _ => borrows_only(x, name, borrowed),
+            _ => borrows_only(x, name, borrowed, nonesc),
         }
     };
     match &e.kind {
@@ -741,14 +820,22 @@ fn borrows_only(e: &TExpr, name: &str, borrowed: &[Vec<bool>]) -> bool {
         TK::Match { scrutinee, arms } => {
             operand(scrutinee, true)
                 && arms.iter().all(|a| {
-                    a.guard.as_ref().map_or(true, |g| borrows_only(g, name, borrowed))
-                        && borrows_only(&a.body, name, borrowed)
+                    a.guard.as_ref().map_or(true, |g| borrows_only(g, name, borrowed, nonesc))
+                        && borrows_only(&a.body, name, borrowed, nonesc)
                 })
         }
-        TK::CallFn { fn_idx, args, .. } => args
-            .iter()
-            .enumerate()
-            .all(|(i, a)| operand(a, borrowed[*fn_idx].get(i) == Some(&true))),
+        // A lambda written in place for a parameter that never escapes may
+        // capture the name: its environment borrows the captures when the
+        // call is not a tail call — this frame holds them for the call's
+        // length, and the caller holds the parameter for this frame's — and
+        // retains them when it is, which is a count on a value still alive.
+        // `map(xs, \x -> f(x, ctx))` then leaves `ctx` borrowed.
+        TK::CallFn { fn_idx, args, .. } => args.iter().enumerate().all(|(i, a)| {
+            if matches!(a.kind, TK::Lambda { .. }) && nonesc[*fn_idx].get(i) == Some(&true) {
+                return true;
+            }
+            operand(a, borrowed[*fn_idx].get(i) == Some(&true))
+        }),
         TK::Lambda { captures, .. } | TK::Spawn { captures, .. } => {
             !captures.iter().any(|(n, _)| n == name)
         }
@@ -756,10 +843,106 @@ fn borrows_only(e: &TExpr, name: &str, borrowed: &[Vec<bool>]) -> bool {
             let mut ok = true;
             walk_children(e, &mut |c| {
                 if ok {
-                    ok = borrows_only(c, name, borrowed);
+                    ok = borrows_only(c, name, borrowed, nonesc);
                 }
             });
             ok
+        }
+    }
+}
+
+/// The first use of `name` that `borrows_only` refuses, described for the
+/// trace. The same walk as `borrows_only`, saying where it stopped.
+fn borrow_breaker(e: &TExpr, name: &str, borrowed: &[Vec<bool>], nonesc: &[Vec<bool>], tmod: &TModule, why: &mut String) {
+    if !why.is_empty() {
+        return;
+    }
+    let mut operand = |x: &TExpr, borrowing: bool, what: &str, why: &mut String| {
+        match &x.kind {
+            TK::Local(n) if n == name => {
+                if !borrowing {
+                    *why = format!("{what} (line {})", x.line);
+                }
+            }
+            _ => borrow_breaker(x, name, borrowed, nonesc, tmod, why),
+        }
+    };
+    match &e.kind {
+        TK::Local(n) => {
+            if n == name {
+                *why = format!("used as a value (line {})", e.line);
+            }
+        }
+        TK::Builtin { args, .. } => {
+            for a in args {
+                operand(a, true, "", why);
+            }
+        }
+        TK::BufGet { buf, idx, .. } => {
+            operand(buf, true, "", why);
+            operand(idx, false, "an index", why);
+        }
+        TK::BufSet { buf, idx, val, .. } => {
+            operand(buf, true, "", why);
+            operand(idx, false, "an index", why);
+            operand(val, false, "stored into a buffer", why);
+        }
+        TK::BufLen { buf } | TK::BufPtr { buf } => operand(buf, true, "", why),
+        TK::Unique { val } => {
+            if root_local(val) == Some(name) {
+                *why = format!("asked `unique` (line {})", e.line);
+            } else {
+                operand(val, true, "", why);
+            }
+        }
+        TK::Slice { base, from, to } => {
+            operand(base, true, "", why);
+            operand(from, false, "a slice bound", why);
+            if let Some(t) = to {
+                operand(t, false, "a slice bound", why);
+            }
+        }
+        TK::MapFind { map, key: k } | TK::MapNext { map, from: k } => {
+            operand(map, true, "", why);
+            operand(k, false, "a map key", why);
+        }
+        TK::MapSet { map, key, val } => {
+            operand(map, true, "", why);
+            operand(key, false, "a map key", why);
+            operand(val, false, "stored into a map", why);
+        }
+        TK::MapLen { map } => operand(map, true, "", why),
+        TK::FieldGet { base, .. } => operand(base, true, "", why),
+        TK::Match { scrutinee, arms } => {
+            operand(scrutinee, true, "", why);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    borrow_breaker(g, name, borrowed, nonesc, tmod, why);
+                }
+                borrow_breaker(&a.body, name, borrowed, nonesc, tmod, why);
+            }
+        }
+        TK::CallFn { fn_idx, args, .. } => {
+            for (i, a) in args.iter().enumerate() {
+                if matches!(a.kind, TK::Lambda { .. }) && nonesc[*fn_idx].get(i) == Some(&true) {
+                    continue;
+                }
+                let b = borrowed[*fn_idx].get(i) == Some(&true);
+                let what = format!(
+                    "passed to `{}` as `{}`, which is owned",
+                    tmod.fns[*fn_idx].name,
+                    tmod.fns[*fn_idx].params.get(i).map(|p| p.0.as_str()).unwrap_or("?")
+                );
+                operand(a, b, &what, why);
+            }
+        }
+        TK::Lambda { captures, .. } | TK::Spawn { captures, .. } => {
+            if captures.iter().any(|(n, _)| n == name) {
+                *why = format!("captured by a lambda (line {})", e.line);
+            }
+        }
+        _ => {
+            walk_children(e, &mut |c| borrow_breaker(c, name, borrowed, nonesc, tmod, why));
         }
     }
 }
@@ -5536,8 +5719,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// generated — a value an earlier frame holds, so one that outlives
     /// anything this frame does, including a tail call.
     fn borrowed_here(&self, e: &TExpr) -> bool {
-        let TK::Local(name) = &e.kind else { return false };
-        self.name_held_above(name)
+        match &e.kind {
+            TK::Local(name) => self.name_held_above(name),
+            // a field of a held box, read without a count of its own
+            TK::FieldGet { base, .. } => {
+                !self.is_flat(&self.concrete(&base.ty, &[]))
+                    && root_local(e).is_some_and(|n| self.name_held_above(n))
+            }
+            _ => false,
+        }
     }
 
     fn name_held_above(&self, name: &str) -> bool {
@@ -8772,7 +8962,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // it again meant a retain and a release on every `match` in the
         // language, which for a list walked one link at a time is once per
         // link.
-        let borrowed = matches!(&scrutinee.kind, TK::Local(_)) && self.is_heap(&scrut_ty);
+        let mut borrowed = matches!(&scrutinee.kind, TK::Local(_)) && self.is_heap(&scrut_ty);
+        // A field of a box some earlier frame holds — `match q.plan` in a
+        // function whose `q` is borrowed — is read the same way: the box is
+        // immutable and outlives this frame, so the field is alive for the
+        // match's length and what the arms bind out of it is held above too.
+        let held_field = matches!(&scrutinee.kind, TK::FieldGet { .. })
+            && self.is_heap(&scrut_ty)
+            && root_local(scrutinee).is_some_and(|n| self.name_held_above(n));
         // `match (e1, e2)` against tuple patterns: the tuple exists only to
         // be taken apart on the next line, so it is not built. Its parts are
         // an LLVM struct the decision tree reads with `extractvalue`, and
@@ -8820,6 +9017,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         } else if borrowed {
             let TK::Local(name) = &scrutinee.kind else { unreachable!() };
             scope[name]
+        } else if held_field {
+            let (v, held) = self.gen_borrowed(scrutinee, scope, subst, func)?;
+            if !held {
+                borrowed = true;
+            }
+            Some(v)
         } else {
             self.gen_expr(scrutinee, scope, subst, func)?
         };
@@ -8928,7 +9131,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // Bindings out of a box an earlier frame holds are held there
             // too, and may go through a borrowed position of a tail call.
             let saved_held = self.held_above.clone();
-            if let TK::Local(sname) = &scrutinee.kind {
+            let held_root = match &scrutinee.kind {
+                TK::Local(sname) => Some(sname.as_str()),
+                TK::FieldGet { .. } if borrowed => root_local(scrutinee),
+                _ => None,
+            };
+            if let Some(sname) = held_root {
                 if !emptied && self.name_held_above(sname) {
                     for (name, _) in &binds {
                         self.held_above.insert(name.clone());
