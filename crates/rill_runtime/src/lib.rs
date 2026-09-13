@@ -4790,7 +4790,9 @@ pub unsafe extern "C" fn rill_rt_host(code: extern "C" fn(*mut u8)) {
         pthread_key_create(&raw mut TLS_KEY, core::ptr::null());
         pthread_setspecific(TLS_KEY, &raw const WORKERS[0] as *const u8);
     }
-    rill_mt = (NWORKERS > 1) as i8;
+    // Plain counts until the host opens a parallel section (`rill_mt_on`):
+    // the workers run nothing until then.
+    rill_mt = 0;
     let g = malloc(core::mem::size_of::<G>()) as *mut G;
     if g.is_null() {
         out(b"rill: out of memory starting the host strand\n");
@@ -4816,6 +4818,44 @@ pub unsafe extern "C" fn rill_rt_host(code: extern "C" fn(*mut u8)) {
     // `main` in a library is its setup: run here, on the host's stack.
     let direct: extern "C" fn() = core::mem::transmute(code);
     direct();
+}
+
+/// Whether the library is in a parallel section: counts are atomic only
+/// while strands may be running on the other workers. A library spends
+/// most of its time on the host's thread alone, where an atomic count is a
+/// locked instruction paid for nothing, so the host says when strands are
+/// about to be spawned and when they are all done.
+///
+/// # Safety
+/// Host mode only; nothing may run on another worker while off.
+#[no_mangle]
+pub unsafe extern "C" fn rill_mt_on() -> i32 {
+    if NWORKERS > 1 && HOST_G != core::ptr::null_mut() {
+        rill_mt = 1;
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    }
+    1
+}
+
+/// Back to plain counts, once every strand has finished and no worker is
+/// running one: waits for that, since a strand's own last releases happen
+/// on its worker after its result has been received.
+///
+/// # Safety
+/// Host mode only.
+#[no_mangle]
+pub unsafe extern "C" fn rill_mt_off() -> i32 {
+    if NWORKERS > 1 && HOST_G != core::ptr::null_mut() {
+        while RUNNING.load(core::sync::atomic::Ordering::Acquire) != 0
+            || QUEUED.load(core::sync::atomic::Ordering::Acquire) != 0
+            || LIVE_STRANDS.load(core::sync::atomic::Ordering::Acquire) != 0
+        {
+            sched_yield();
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        rill_mt = 0;
+    }
+    1
 }
 
 /// The host strand's wait: strands are run on worker 0's execution stack,
@@ -5022,7 +5062,9 @@ unsafe fn worker_loop(w: *mut Worker) {
                 && QUEUED.load(core::sync::atomic::Ordering::Acquire) == 0
                 && IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) == 0;
             idle_rounds = if quiet { idle_rounds + 1 } else { 0 };
-            if idle_rounds > 1000 {
+            // In host mode the host's thread is not counted as running and
+            // may spawn at any moment, so a quiet spell is not a deadlock.
+            if idle_rounds > 1000 && HOST_G.is_null() {
                 // Nothing is executing and no queue holds work, round after
                 // round: nothing can ever wake the parked strands.
                 out(b"rill: deadlock - all strands are blocked\n");
