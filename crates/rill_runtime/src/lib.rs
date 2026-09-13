@@ -4771,6 +4771,13 @@ static mut HOST_G: *mut G = core::ptr::null_mut();
 /// slots after the strand workers.
 static HOST_THREADS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+/// Export calls in flight, over every host thread; see `rill_host_enter`.
+static HOST_ACTIVE: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
+/// Whether a second host thread has ever called in. From then on counts
+/// stay atomic: `rill_mt_off` is a no-op.
+static HOST_MULTI: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Whether a strand is a host strand: never queued, never copied, woken
 /// through its own flag.
 unsafe fn is_host(g: *mut G) -> bool {
@@ -4800,15 +4807,20 @@ unsafe fn new_host_g() -> *mut G {
 
 extern "C" fn host_nothing(_env: *mut u8) {}
 
-/// Called at the top of every export of a library that has strands: the
+/// Called on the way into every export of a library that has strands: the
 /// thread calling in becomes a host worker if it is not one yet — its own
 /// execution stack for pumping, pools, poller and host strand. The first
 /// host thread is worker 0, made by `rill_rt_host`; a later one takes a
-/// slot past the strand workers. Several host threads need counts that
-/// are atomic from the start, which is what `RILL_THREADS` of two or more
-/// asks for; a library run on one worker refuses a second thread rather
-/// than count wrongly. Nothing to do on the common call, which is a
-/// thread the runtime knows: one load of a thread-local.
+/// slot past the strand workers, which only `RILL_THREADS` of two or more
+/// has; a library run on one worker refuses a second thread.
+///
+/// Counts are plain while one host thread runs alone outside a parallel
+/// section, and that is where a library spends most of its time. The
+/// second thread's first call turns them atomic for good — and then waits
+/// for every call still in flight, counting plainly, to leave (they are
+/// counted in `HOST_ACTIVE`; `rill_host_leave` takes them off). The common
+/// call, a thread the runtime knows, is one thread-local load and one
+/// atomic add.
 ///
 /// # Safety
 /// Called from generated code, on any thread.
@@ -4822,6 +4834,7 @@ pub unsafe extern "C" fn rill_host_enter() {
         return;
     }
     if !pthread_getspecific(TLS_KEY).is_null() {
+        HOST_ACTIVE.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
         return;
     }
     // a thread the runtime has not met
@@ -4838,6 +4851,29 @@ pub unsafe extern "C" fn rill_host_enter() {
     WORKERS[i].wake_fd.store(-1, core::sync::atomic::Ordering::Release);
     WORKERS[i].current = new_host_g();
     pthread_setspecific(TLS_KEY, &raw const WORKERS[i] as *const u8);
+    // Atomic counts from here on. The flag goes up before the wait so that
+    // a call entering now counts atomically, and again after it, since a
+    // call that was leaving a parallel section may have put it down.
+    HOST_MULTI.store(true, core::sync::atomic::Ordering::SeqCst);
+    rill_mt = 1;
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    while HOST_ACTIVE.load(core::sync::atomic::Ordering::SeqCst) != 0 {
+        sched_yield();
+    }
+    rill_mt = 1;
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    HOST_ACTIVE.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+}
+
+/// The way out of an export; see `rill_host_enter`.
+///
+/// # Safety
+/// Called from generated code, after `rill_host_enter` on the same thread.
+#[no_mangle]
+pub unsafe extern "C" fn rill_host_leave() {
+    if !HOST_G.is_null() && NWORKERS >= 2 {
+        HOST_ACTIVE.fetch_sub(1, core::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Whether this is the thread that called `rill_init`, for a library run
@@ -4885,11 +4921,10 @@ pub unsafe extern "C" fn rill_rt_host(code: extern "C" fn(*mut u8)) {
         pthread_key_create(&raw mut TLS_KEY, core::ptr::null());
         pthread_setspecific(TLS_KEY, &raw const WORKERS[0] as *const u8);
     }
-    // With workers, counts are atomic from the start: a second host thread
-    // may call in at any moment, and what is counted plainly by one thread
-    // cannot be counted atomically by another. On one worker they stay
-    // plain, and a second thread is refused.
-    rill_mt = (NWORKERS > 1) as i8;
+    // Counts start plain even with workers: they turn atomic for a parallel
+    // section (`rill_mt_on`) and for good once a second host thread calls
+    // in (`rill_host_enter`).
+    rill_mt = 0;
     let g = new_host_g();
     (*g).home = 0;
     HOST_G = g;
@@ -4935,9 +4970,12 @@ pub unsafe extern "C" fn rill_mt_on() -> i32 {
 /// Host mode only.
 #[no_mangle]
 pub unsafe extern "C" fn rill_mt_off() -> i32 {
-    // Counts stay atomic in host mode with workers (see `rill_rt_host`);
-    // the call is kept for a program that turns them on and off itself.
-    if false && NWORKERS > 1 && HOST_G != core::ptr::null_mut() {
+    // Not once a second host thread has been seen: what it counts on its
+    // own thread must stay atomic.
+    if NWORKERS > 1
+        && HOST_G != core::ptr::null_mut()
+        && !HOST_MULTI.load(core::sync::atomic::Ordering::SeqCst)
+    {
         while RUNNING.load(core::sync::atomic::Ordering::Acquire) != 0
             || QUEUED.load(core::sync::atomic::Ordering::Acquire) != 0
             || LIVE_STRANDS.load(core::sync::atomic::Ordering::Acquire) != 0
@@ -6971,6 +7009,7 @@ mod net {
     /// the queue of whoever spawned them, and a worker asleep on the network would
     /// otherwise not find out there is anything to take.
     pub(super) unsafe fn wake_a_stealer() {
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         for i in 0..NWORKERS {
             let v = &raw mut WORKERS[i];
             if (*v).asleep.load(core::sync::atomic::Ordering::Acquire) {
@@ -7239,21 +7278,35 @@ mod net {
     /// Collects whatever the network has made ready and queues those strands.
     /// `wait` decides whether an idle scheduler should sleep here.
     pub(super) unsafe fn poll_network(w: *mut Worker, wait: bool) -> usize {
-        let p = (*w).kq.load(core::sync::atomic::Ordering::Acquire);
-        if p < 0 || IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) == 0 {
+        let mut p = (*w).kq.load(core::sync::atomic::Ordering::Acquire);
+        // A library's worker with nothing to do sleeps on its poller rather
+        // than spinning: the library is idle most of the time, and three
+        // workers spinning on the scheduler's counters slowed the host's
+        // thread — which writes next to them — by half.
+        let park = wait && !HOST_G.is_null();
+        if !park && (p < 0 || IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) == 0) {
             return 0;
+        }
+        if p < 0 {
+            p = ensure_poller(w);
         }
         let mut ready: [*mut G; READY_BATCH] = [core::ptr::null_mut(); READY_BATCH];
         // A short sleep rather than an indefinite one: another worker may make
         // something runnable while this one is inside the call.
         if wait {
-            (*w).asleep.store(true, core::sync::atomic::Ordering::Release);
+            (*w).asleep.store(true, core::sync::atomic::Ordering::SeqCst);
             // A worker that queued something for us a moment ago saw us awake and
-            // sent no wakeup, so look once more before going to sleep on it.
+            // sent no wakeup, so look once more before going to sleep on it —
+            // at our own queue, and at the count of what sits on anyone's,
+            // since a fresh strand is queued on its spawner's and the wake
+            // for a stealer goes only to a worker already asleep. The fence
+            // pairs with the one in `wake_a_stealer`: one side or the other
+            // sees what the other wrote.
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
             lock_runq(w);
             let pending = !(*w).runq.head.is_null();
             unlock_runq(w);
-            if pending {
+            if pending || (park && QUEUED.load(core::sync::atomic::Ordering::SeqCst) > 0) {
                 (*w).asleep.store(false, core::sync::atomic::Ordering::Release);
                 return 0;
             }

@@ -2400,7 +2400,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 _ => unreachable!(),
             }
         };
-        if self.parallel || self.wasm {
+        if self.wasm {
             return slow_call(self);
         }
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
@@ -2415,6 +2415,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .builder
             .build_int_compare(IntPredicate::ULE, size, i64t.const_int(256, false), "small")
             .expect("LLVM builder error");
+        let small = self.alone_and(small);
         self.builder.build_conditional_branch(small, fast_bb, slow_bb).expect("LLVM builder error");
 
         self.builder.position_at_end(fast_bb);
@@ -2450,7 +2451,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// `rill_free_sized(p, size)` with the same fast path: the block goes
     /// back on its class's free list in three instructions.
     fn emit_free(&mut self, p: PointerValue<'ctx>, size: IntValue<'ctx>) {
-        if self.parallel || self.wasm {
+        if self.wasm {
             self.call_rt("rill_free_sized", &[p.into(), size.into()]);
             return;
         }
@@ -2465,6 +2466,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .builder
             .build_int_compare(IntPredicate::ULE, size, i64t.const_int(256, false), "small")
             .expect("LLVM builder error");
+        let small = self.alone_and(small);
         self.builder.build_conditional_branch(small, fast_bb, slow_bb).expect("LLVM builder error");
 
         self.builder.position_at_end(fast_bb);
@@ -2487,6 +2489,26 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
 
         self.builder.position_at_end(done_bb);
+    }
+
+    /// On a parallel build the pool fast path is pool 0's, which is the
+    /// pool only while one worker runs (`rill_mt == 0`): a library run on
+    /// one host thread outside a parallel section. `cond`, and that.
+    fn alone_and(&mut self, cond: IntValue<'ctx>) -> IntValue<'ctx> {
+        if !self.parallel {
+            return cond;
+        }
+        let mt = self.mt_flag();
+        let flag = self
+            .builder
+            .build_load(self.ctx.i8_type(), mt, "mt")
+            .expect("LLVM builder error")
+            .into_int_value();
+        let alone = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, flag, self.ctx.i8_type().const_zero(), "alone")
+            .expect("LLVM builder error");
+        self.builder.build_and(cond, alone, "small.alone").expect("LLVM builder error")
     }
 
     /// `(size + 15) / 16 - 1`: the runtime's `pool_class`.
@@ -3092,6 +3114,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.module.add_function("rill_rt_run", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_rt_host", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_host_enter", void.fn_type(&[], false), None);
+        self.module.add_function("rill_host_leave", void.fn_type(&[], false), None);
         // i64 rill_select(cases*, n, has_default, out*) — the received value
         // goes through `out` rather than an oversized return value.
         self.module.add_function(
@@ -3419,7 +3442,50 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     fn emit_rc_inc(&mut self, ptr: BasicValueEnum<'ctx>) {
         if self.parallel {
-            self.call_rt("rill_retain", &[ptr.into()]);
+            // As `emit_rc_dec`: the flag read in place, an atomic add when
+            // workers share, the plain path otherwise. This was a runtime
+            // call, which on a library run on one worker cost a tenth of
+            // every lookup for a branch it would not take.
+            let func = self
+                .builder
+                .get_insert_block()
+                .and_then(|b| b.get_parent())
+                .expect("emitting outside a function");
+            let i64t = self.ctx.i64_type();
+            let p = ptr.into_pointer_value();
+            let mt = self.mt_flag();
+            let flag = self
+                .builder
+                .build_load(self.ctx.i8_type(), mt, "mt")
+                .expect("LLVM builder error")
+                .into_int_value();
+            let shared = self
+                .builder
+                .build_int_compare(IntPredicate::NE, flag, self.ctx.i8_type().const_zero(), "shared")
+                .expect("LLVM builder error");
+            let atomic_bb = self.ctx.append_basic_block(func, "inc.atomic");
+            let plain_bb = self.ctx.append_basic_block(func, "inc.plain");
+            let cont_bb = self.ctx.append_basic_block(func, "inc.cont");
+            self.builder.build_conditional_branch(shared, atomic_bb, plain_bb).expect("LLVM builder error");
+            self.builder.position_at_end(atomic_bb);
+            let seen = self.builder.build_load(i64t, p, "rc.seen").expect("LLVM builder error").into_int_value();
+            let live = self
+                .builder
+                .build_int_compare(IntPredicate::ULT, seen, i64t.const_int(Self::IMMORTAL_MIN, false), "live")
+                .expect("LLVM builder error");
+            let do_bb = self.ctx.append_basic_block(func, "inc.atomic.do");
+            self.builder.build_conditional_branch(live, do_bb, cont_bb).expect("LLVM builder error");
+            self.builder.position_at_end(do_bb);
+            self.builder
+                .build_atomicrmw(inkwell::AtomicRMWBinOp::Add, p, i64t.const_int(1, false), inkwell::AtomicOrdering::Monotonic)
+                .expect("LLVM builder error");
+            self.builder.build_unconditional_branch(cont_bb).expect("LLVM builder error");
+            self.builder.position_at_end(plain_bb);
+            let rc = self.builder.build_load(i64t, p, "rc").expect("LLVM builder error").into_int_value();
+            let inc = self.builder.build_int_add(rc, i64t.const_int(1, false), "inc").expect("LLVM builder error");
+            self.store_rc(p, rc, inc);
+            self.builder.build_unconditional_branch(cont_bb).expect("LLVM builder error");
+            self.builder.position_at_end(cont_bb);
             return;
         }
         let i64t = self.ctx.i64_type();
@@ -3553,7 +3619,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // rather than the runtime, but it was a call for every release all
         // the same, and a tree rewriter releases several times per node —
         // `deriv` spent half its time in `drop$Expr` doing decrements.
-        if !self.parallel && matches!(ty, Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Adt(..)) {
+        if matches!(ty, Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Adt(..)) {
             if let Some(func) = self.builder.get_insert_block().and_then(|b| b.get_parent()) {
                 let i64t = self.ctx.i64_type();
                 // Where the count lives: at the object for a string or a
@@ -3597,12 +3663,46 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
                 // Not the last, or not counted at all: `store_rc` leaves a
-                // compile-time constant's count alone.
+                // compile-time constant's count alone. On a parallel build
+                // the count is taken down the way `emit_rc_dec` does, and a
+                // zero coming back — another worker let go between the
+                // look above and the subtract — frees after all.
                 self.builder.position_at_end(dec_bb);
-                let less =
-                    self.builder.build_int_sub(rc, i64t.const_int(1, false), "dec").expect("builder");
-                self.store_rc(p, rc, less);
-                self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                if self.parallel {
+                    let new = self.emit_rc_dec(p, func);
+                    let zero = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, new, i64t.const_zero(), "last")
+                        .expect("LLVM builder error");
+                    let late_bb = self.ctx.append_basic_block(func, "rel.late");
+                    self.builder.build_conditional_branch(zero, late_bb, done_bb).expect("LLVM builder error");
+                    self.builder.position_at_end(late_bb);
+                    // Ours alone now: the count is put back to one and the
+                    // usual last-reference release takes it down and frees.
+                    self.builder.build_store(p, i64t.const_int(1, false)).expect("LLVM builder error");
+                    match ty {
+                        Ty::Buf(w) => {
+                            let size = self.ctx.i64_type().const_int(w.size_bytes(), false);
+                            self.call_rt("rill_buf_release", &[v.into(), size.into()]);
+                        }
+                        Ty::Str => {
+                            self.call_rt("rill_str_release", &[v.into()]);
+                        }
+                        Ty::Adt(..) => {
+                            let drop_fn = self.adt_drop(ty);
+                            self.builder.build_call(drop_fn, &[v.into()], "").expect("LLVM builder error");
+                        }
+                        _ => {
+                            self.call_rt("rill_strbuf_release", &[v.into()]);
+                        }
+                    }
+                    self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                } else {
+                    let less =
+                        self.builder.build_int_sub(rc, i64t.const_int(1, false), "dec").expect("builder");
+                    self.store_rc(p, rc, less);
+                    self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                }
                 self.builder.position_at_end(done_bb);
                 return;
             }
@@ -3636,6 +3736,19 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
+    /// The runtime's `rill_mt`: whether workers share, read where a count
+    /// is touched.
+    fn mt_flag(&mut self) -> PointerValue<'ctx> {
+        self.module
+            .get_global("rill_mt")
+            .unwrap_or_else(|| {
+                let g = self.module.add_global(self.ctx.i8_type(), None, "rill_mt");
+                g.set_linkage(inkwell::module::Linkage::External);
+                g
+            })
+            .as_pointer_value()
+    }
+
     /// Decrements a refcount in place and yields the new value. Single-worker
     /// programs take the plain path; once the runtime has been asked for more
     /// workers (`rill_mt`, fixed before any thread starts) the same code takes
@@ -3659,14 +3772,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             self.store_rc(rc_ptr, rc, dec);
             return dec;
         }
-        let mt = self.module.get_global("rill_mt").unwrap_or_else(|| {
-            let g = self.module.add_global(self.ctx.i8_type(), None, "rill_mt");
-            g.set_linkage(inkwell::module::Linkage::External);
-            g
-        });
+        let mt = self.mt_flag();
         let flag = self
             .builder
-            .build_load(self.ctx.i8_type(), mt.as_pointer_value(), "mt")
+            .build_load(self.ctx.i8_type(), mt, "mt")
             .expect("LLVM builder error")
             .into_int_value();
         let shared = self
@@ -4721,7 +4830,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let params: Vec<Ty> = f.params.iter().map(|(_, t)| subst_gen(t, &key.1)).collect();
         let ret = subst_gen(&f.ret, &key.1);
         let fn_type = self.instance_llvm_type(&params, &ret);
-        let name = self.key_name(&key);
+        let wrapped = self.host_wrapped(fn_idx);
+        let name = if wrapped { format!("{}$in", self.key_name(&key)) } else { self.key_name(&key) };
         let v = self.module.add_function(&name, fn_type, None);
         // `main` is called by the scheduler, which is C. Everything else is
         // called by Rill, and Rill wants its tail calls to be jumps. On wasm
@@ -4738,12 +4848,49 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // keep the out-of-line copy and cannot specialize it on its callers,
         // and a local `fn` that is a hot loop's helper pays for it —
         // fannkuch ran 15% slower and n-body 20% slower with them exported.
-        if self.tmod.fns[fn_idx].name != "main" && !self.tmod.fns[fn_idx].exported {
+        if wrapped || (self.tmod.fns[fn_idx].name != "main" && !self.tmod.fns[fn_idx].exported) {
             v.set_linkage(inkwell::module::Linkage::Internal);
         }
         self.instances.insert(key.clone(), v);
         self.queue.push_back(key);
         v
+    }
+
+    /// Whether an export of a library with strands is reached through a
+    /// wrapper that tells the runtime the call is in and out again (see
+    /// `gen_host_wrappers`).
+    fn host_wrapped(&self, fn_idx: usize) -> bool {
+        self.shared && self.host_strands && self.tmod.fns[fn_idx].exported
+    }
+
+    /// The public name of every export: `rill_host_enter`, the export
+    /// itself, `rill_host_leave`. The runtime counts the calls in flight so
+    /// that the moment a second host thread appears — when counts must turn
+    /// atomic — it can wait for the calls still counting plainly to leave.
+    fn gen_host_wrappers(&mut self) {
+        let keys: Vec<InstanceKey> =
+            self.instances.keys().filter(|k| self.host_wrapped(k.0)).cloned().collect();
+        let enter = self.module.get_function("rill_host_enter").unwrap();
+        let leave = self.module.get_function("rill_host_leave").unwrap();
+        for key in keys {
+            let inner = self.instances[&key];
+            let name = self.key_name(&key);
+            let f = self.module.add_function(&name, inner.get_type(), None);
+            let entry = self.ctx.append_basic_block(f, "entry");
+            self.builder.position_at_end(entry);
+            self.builder.build_call(enter, &[], "").expect("LLVM builder error");
+            let args: Vec<BasicMetadataValueEnum<'ctx>> = f.get_param_iter().map(|p| p.into()).collect();
+            let call = self.builder.build_call(inner, &args, "").expect("LLVM builder error");
+            self.builder.build_call(leave, &[], "").expect("LLVM builder error");
+            match call.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(v) => {
+                    self.builder.build_return(Some(&v)).expect("LLVM builder error");
+                }
+                _ => {
+                    self.builder.build_return(None).expect("LLVM builder error");
+                }
+            }
+        }
     }
 
     /// The compile-time function an expression stands for, if it is one: a
@@ -4858,12 +5005,6 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.position_at_end(entry);
         let (dbg_name, dbg_line) = (f.name.clone(), f.line as u32);
         self.begin_debug_fn(&dbg_name, dbg_line, fn_val);
-        // A library's export may be called on any thread of the host: the
-        // runtime is told which, so that a thread it has not met becomes a
-        // host worker of its own before it counts, allocates or waits.
-        if self.shared && f.exported && self.host_strands {
-            self.call_rt("rill_host_enter", &[]);
-        }
 
         let outer_cleanup = std::mem::take(&mut self.cleanup);
         let outer_shells = std::mem::take(&mut self.shells);
@@ -5397,7 +5538,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let dv = self.gen_expr(&args[2], scope, subst, func)?.expect("value");
         let (k0, _) = self.pack_words(kv, &kty);
         let (d0, _) = self.pack_words(dv, &vty);
-        let w = if kty == Ty::Int && !self.parallel {
+        let w = if kty == Ty::Int {
             self.inline_int_probe(m.into_pointer_value(), k0, d0, func)
         } else {
             let call = self.call_rt("rill_map_get_or", &[m.into(), k0.into(), d0.into()]);
@@ -6381,6 +6522,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             self.builder.build_return(None).expect("LLVM builder error");
             if self.shared {
                 self.gen_drop_exports();
+                self.gen_host_wrappers();
             }
             return;
         }
