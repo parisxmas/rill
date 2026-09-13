@@ -3199,6 +3199,18 @@ impl Checker {
             // lets one open file answer readers that are at different places
             // in it while something else appends to the end.
             "file_pread" => Some(("rill_file_pread", vec![Ty::Int, Ty::Int, Ty::Int], Ty::Str)),
+            "file_pread_into" => Some((
+                "rill_file_pread_into",
+                vec![Ty::Int, Ty::Int, Ty::Buf(CTy::U8), Ty::Int, Ty::Int],
+                Ty::Int,
+            )),
+            "file_pwrite" => Some((
+                "rill_file_pwrite",
+                vec![Ty::Int, Ty::Int, Ty::Buf(CTy::U8), Ty::Int, Ty::Int],
+                Ty::Int,
+            )),
+            "file_lock" => Some(("rill_file_lock", vec![Ty::Int, Ty::Bool], Ty::Bool)),
+            "file_unlock" => Some(("rill_file_unlock", vec![Ty::Int], Ty::Bool)),
             "file_write" => Some(("rill_file_write", vec![Ty::Int, Ty::Str], Ty::Int)),
             "file_seek" => Some(("rill_file_seek", vec![Ty::Int, Ty::Int], Ty::Int)),
             "file_pos" => Some(("rill_file_pos", vec![Ty::Int], Ty::Int)),
@@ -4462,6 +4474,10 @@ fn is_builtin_fn(name: &str) -> bool {
             | "file_open"
             | "file_read"
             | "file_pread"
+            | "file_pread_into"
+            | "file_pwrite"
+            | "file_lock"
+            | "file_unlock"
             | "file_write"
             | "file_seek"
             | "file_pos"

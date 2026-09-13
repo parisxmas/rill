@@ -188,6 +188,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `template/` | a page built out of four templates: one includes the others and hands them what they need, and `tmplgen` turns all four into Rill before the program is compiled |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
+| `kv_store.rill` | a key–value store on disk from `lib/kv.rill`: a B+ tree of pages, a page cache and a write-ahead log; ahead of SQLite on reads, level on the durable commit |
 | `grid_tour.rill` | arrays with a shape from `lib/grid.rill`: views, masks, reductions, a matrix product — NumPy's shapes, and faster than NumPy where there is arithmetic to do |
 | `lanes.rill`, `holders.rill` | `Float2`, two floats in one register; `unique`, the question that lets an operation reuse a temporary's storage |
 

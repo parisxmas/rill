@@ -1169,7 +1169,10 @@ fn append(path, record) =
 | `file_open(path, mode) -> Int` | a descriptor, or -1. `"r"` `"w"` `"a"`, and each with `+` for reading as well: `"w"` truncates or creates, `"a"` appends and creates |
 | `file_read(fd, n) -> Str` | up to `n` bytes from where the descriptor is; `""` at the end |
 | `file_pread(fd, off, n) -> Str` | up to `n` bytes from `off`, leaving the descriptor where it was |
+| `file_pread_into(fd, off, buf, at, n) -> Int` | the same, into `n` bytes of a `Buf(U8)` from `at`, with no string made: how many arrived, or -1 |
 | `file_write(fd, s) -> Int` | writes all of it; how many bytes went, or -1 |
+| `file_pwrite(fd, off, buf, at, n) -> Int` | `n` bytes of a `Buf(U8)` from `at` to offset `off`, leaving the descriptor where it was; all of it, or -1 |
+| `file_lock(fd, exclusive) -> Bool` `file_unlock(fd) -> Bool` | the whole-file advisory lock (`flock`), taken at once or not at all — a lock another process holds is `false`, not a wait |
 | `file_seek(fd, off) -> Int` | move to an absolute offset |
 | `file_pos(fd) -> Int` `file_size(fd) -> Int` | where it is, and how big the file is |
 | `file_truncate(fd, n) -> Bool` | cut it to `n` bytes, or grow it with zeros |
@@ -1181,6 +1184,12 @@ fn append(path, record) =
 The prelude has `open_file`, which is `file_open` as a `Result` the way
 `listen_on` is `tcp_listen` as one; `dir_names`, which is `dir_list` as a
 list; and `replace_file`, which is the four steps below written once.
+
+**`file_pread_into` and `file_pwrite` are for a page cache.** A store that
+keeps its pages in one buffer and reads the same-sized block into a slot of
+it wants no string made on the way, and writes a page back where it came
+from without moving the descriptor. `lib/kv.rill` is written on the two of
+them, and on `file_lock`, which is how it keeps a second process out.
 
 **`file_pread` is what lets one file answer several readers.** A consumer
 reading a log from where it left off does not move the descriptor, so it does
@@ -1591,7 +1600,7 @@ one.
 | `map_find(m, k)` `map_next(m, i)` `map_key_at(m, i)` `map_val_at(m, i)` | the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |
-| `file_open` `file_read` `file_pread` `file_write` `file_seek` `file_pos` `file_size` `file_truncate` `file_sync` `file_close` `file_remove` `file_rename` `file_exists` `dir_make` `dir_list` `dir_sync` | a file as a descriptor, for one too big to hold or still being appended to; see §10 |
+| `file_open` `file_read` `file_pread` `file_pread_into` `file_write` `file_pwrite` `file_seek` `file_pos` `file_size` `file_truncate` `file_sync` `file_lock` `file_unlock` `file_close` `file_remove` `file_rename` `file_exists` `dir_make` `dir_list` `dir_sync` | a file as a descriptor, for one too big to hold or still being appended to; see §10 |
 | `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `strbuf_clear(b)` `#b` | building a string a piece at a time; `strbuf_clear` empties one and keeps its room |
 | `to_cstr` `from_cstr` `str_from_ptr` `free_ptr` `null_ptr` `is_null` | the C string and pointer bridge |
 | `alloc_bytes(n)` `ptr_offset(p, bytes)` `poke_*` `peek_*` | raw buffers for C |

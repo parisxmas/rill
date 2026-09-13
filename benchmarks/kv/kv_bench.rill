@@ -1,0 +1,40 @@
+# lib/kv.rill against SQLite, the same work: N keys written in one
+# transaction and committed, every key read back, one range scan, then
+# 1000 single-key transactions each committed on its own.
+import "kv"
+
+fn nxt(x) = bit_and(x * 1103515245 + 12345, 2147483647)
+
+fn key_of(x) = "key:" + int_to_str(x)
+
+fn ms(t0) = int_to_str((now_nanos() - t0) / 1000000)
+
+fn main() =
+  n = str_to_int(arg(1))
+  path = "/tmp/kv_bench.db"
+  file_remove(path)
+  file_remove(path + ".wal")
+  match kv_open(path)
+    Err(e) -> println(e)
+    Ok(db) ->
+      t0 = now_nanos()
+      for i in 0..n with x = 42
+        y = nxt(x)
+        kv_put(db, key_of(y), "value-" + int_to_str(y))
+        y
+      kv_commit(db)
+      println("put " + int_to_str(n) + " + commit: " + ms(t0) + " ms")
+      t1 = now_nanos()
+      (_, _, hits) = while i < n with (i, x, hits) = (0, 42, 0)
+        y = nxt(x)
+        (i + 1, y, if kv_get(db, key_of(y)) == None then hits else hits + 1)
+      println("get " + int_to_str(n) + " (" + int_to_str(hits) + " hits): " + ms(t1) + " ms")
+      t2 = now_nanos()
+      c = kv_fold(db, "key:1", "key:2", 0, \a, _, _ -> a + 1)
+      println("range scan " + int_to_str(c) + " rows: " + ms(t2) + " ms")
+      t3 = now_nanos()
+      for i in 0..1000
+        kv_put(db, "tx" + int_to_str(i), "1")
+        kv_commit(db)
+      println("1000 single-put commits: " + ms(t3) + " ms")
+      kv_close(db)

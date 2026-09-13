@@ -1,0 +1,648 @@
+# A key–value store on disk: a B+ tree of 4 KB pages, a page cache, and a
+# write-ahead log — the shape SQLite's file layer has, in Rill, for one
+# process at a time.
+#
+#     import "kv"
+#     db = kv_open("/tmp/things.db")?      # Result(Db, Str)
+#     kv_put(db, "ada", "36")              # buffered until commit
+#     kv_get(db, "ada")                    # Some("36")
+#     kv_commit(db)                        # durable: in the log, synced
+#     kv_range(db, "a", "b")               # List((key, value)), in key order
+#     kv_delete(db, "ada")
+#     kv_close(db)                         # commits, checkpoints, unlocks
+#
+# Keys and values are byte strings; a key is at most 255 bytes and a value at
+# most 1500, so that a page always holds three cells. Keys sort as bytes.
+#
+# What is where. `path` is the tree: page 0 is the header, every other page a
+# node, leaves chained left to right for range scans. Nothing is written to
+# it except at a checkpoint. `path.wal` is the log: every page a transaction
+# changed, whole, with a checksum, and a marker after the last one. A commit
+# is those frames and one sync of the log. A checkpoint copies the logged
+# pages into the tree, syncs it, and empties the log — after so many frames,
+# and when the store closes. Opening a store replays what the log holds up to
+# its last marker, so a crash between any two writes loses at most the
+# transaction that was not committed, and never a page.
+#
+# The cache is 2048 slots of one page (8 MB), found through a map from page number
+# to slot and replaced by the clock rule: a slot is passed over once for
+# every hit it has had since the hand last came by, so the root and the
+# inner nodes, touched on every operation, are never the ones to go. A
+# dirty page that is evicted is written to the log first (an uncommitted
+# frame, which the marker at commit makes good, and which a crash before
+# then leaves ignored). Two maps say where the latest copy of a page is —
+# in the log since the last checkpoint, or in the log for the transaction
+# under way — and a read goes there before it goes to the tree.
+#
+# What it does not do: merge nodes that empty on delete (a leaf may sit at
+# one key, or none), reuse freed pages, or let two processes in. The
+# exclusive lock at open is what says so.
+#
+# Every page lives in the cache buffer at `base = slot * 4096`, and every
+# function below that reads or writes a node takes that base. A base is good
+# until the next `page` call — which may evict what it points at — so a step
+# that touches two pages reads what it needs of the first into a buffer of
+# its own before it asks for the second.
+
+fn page_size() = 4096
+
+fn slots() = 2048
+
+fn hdr() = 16
+
+fn max_key() = 255
+
+fn max_val() = 1500
+
+fn frame_hdr() = 12
+
+fn wal_hdr() = 16
+
+fn checkpoint_after() = 512
+
+fn marker() = 4294967295
+
+type Db
+  Db(fd: Int, wal: Int, path: Str, cache: Buf(U8), slot_pg: Buf(Int), slot_dirty: Buf(Int), slot_ref: Buf(Int), slot_map: Map(Int, Int), meta: Buf(Int), committed: Map(Int, Int), pending: Map(Int, Int), frame: Buf(U8), path_buf: Buf(Int))
+
+# meta: 0 root page, 1 page count, 2 end of the log, 3 frames since the last
+# checkpoint, 4 whether a transaction is open, 5 closed, 6 where the log
+# stood when the transaction began, 7 the clock hand.
+
+# -- bytes in a buffer -------------------------------------------------------
+
+fn u16_at(b: Buf(U8), at) = b[at] + b[at + 1] * 256
+
+fn set_u16(b: Buf(U8), at, v) =
+  b[at] = v % 256
+  b[at + 1] = v / 256 % 256
+
+fn u32_at(b: Buf(U8), at) = u16_at(b, at) + u16_at(b, at + 2) * 65536
+
+fn set_u32(b: Buf(U8), at, v) =
+  set_u16(b, at, v % 65536)
+  set_u16(b, at + 2, v / 65536 % 65536)
+
+fn copy_bytes(dst: Buf(U8), to, src: Buf(U8), from, n) =
+  for i in 0..n
+    dst[to + i] = src[from + i]
+
+fn put_str(dst: Buf(U8), to, s) =
+  for i in 0..#s
+    dst[to + i] = s[i]
+
+fn str_at(b: Buf(U8), at, n) = str_from_ptr(ptr_offset(b, at), n)
+
+# The bytes at `at` against `k`: -1, 0 or 1.
+fn cmp_bytes(b: Buf(U8), at, n, k) =
+  m = #k
+  i = while i < n && i < m && b[at + i] == k[i] with i = 0
+    i + 1
+  if i < n && i < m then if b[at + i] < k[i] then -1 else 1 else if n == m then 0 else if n < m then -1 else 1
+
+# The checksum SQLite's log uses: two 32-bit sums over the words of the
+# page, each folded into the other, so that a word dropped, moved or
+# changed shows. It reads a word at a time — `peek_u32` at a byte address
+# is one load — where a CRC would read a byte at a time through a table,
+# and a frame is written for every page a transaction touches, so this is
+# where a store spends its time when it is writing. `n` is a multiple of 8.
+# `peek_u32` counts in words, so the address is made first, in bytes.
+fn fold32(c) = bit_and(bit_xor(c, shr(c, 32)), 4294967295)
+
+fn checksum(b: Buf(U8), at, n, seed) =
+  p = ptr_offset(b, at)
+  (_, s1, s2) = while i < n / 4 with (i, s1, s2) = (0, bit_and(seed, 4294967295), shr(seed, 32))
+    a = bit_and(s1 + peek_u32(p, i) + s2, 4294967295)
+    (i + 2, a, bit_and(s2 + peek_u32(p, i + 1) + a, 4294967295))
+  s1 + s2 * 4294967296
+
+# -- nodes -------------------------------------------------------------------
+#
+# Header: +0 type (1 leaf, 2 inner), +2 key count, +4 where the cell area
+# begins (cells are laid from the end of the page downward), +8 next: a
+# leaf's right neighbour, an inner node's rightmost child. Then a slot per
+# key, two bytes each, holding the cell's offset; the slots are what is kept
+# sorted. A leaf cell is [klen u16][vlen u16][key][value]; an inner cell is
+# [klen u16][child u32][key], and the child holds the keys not above it.
+
+fn is_leaf(c: Buf(U8), base) = c[base] == 1
+
+fn nkeys(c: Buf(U8), base) = u16_at(c, base + 2)
+
+fn free_end(c: Buf(U8), base) = u16_at(c, base + 4)
+
+fn next_of(c: Buf(U8), base) = u32_at(c, base + 8)
+
+fn slot_of(c: Buf(U8), base, i) = u16_at(c, base + hdr() + 2 * i)
+
+fn klen_at(c: Buf(U8), base, i) = u16_at(c, base + slot_of(c, base, i))
+
+fn key_off(c: Buf(U8), base, i) = base + slot_of(c, base, i) + (if is_leaf(c, base) then 4 else 6)
+
+fn vlen_at(c: Buf(U8), base, i) = u16_at(c, base + slot_of(c, base, i) + 2)
+
+fn child_at(c: Buf(U8), base, i) = u32_at(c, base + slot_of(c, base, i) + 2)
+
+fn cell_size(c: Buf(U8), base, i) =
+  if is_leaf(c, base) then 4 + klen_at(c, base, i) + vlen_at(c, base, i) else 6 + klen_at(c, base, i)
+
+fn free_space(c: Buf(U8), base) = free_end(c, base) - hdr() - 2 * nkeys(c, base)
+
+fn init_node(c: Buf(U8), base, leaf, next) =
+  for i in 0..page_size()
+    c[base + i] = 0
+  c[base] = if leaf then 1 else 2
+  set_u16(c, base + 4, page_size())
+  set_u32(c, base + 8, next)
+
+# The first slot whose key is not below `k`, and whether it is `k` itself.
+fn lower_bound(c: Buf(U8), base, k) =
+  (lo, _, found) = while lo < hi with (lo, hi, found) = (0, nkeys(c, base), false)
+    mid = (lo + hi) / 2
+    r = cmp_bytes(c, key_off(c, base, mid), klen_at(c, base, mid), k)
+    if r < 0 then (mid + 1, hi, false) else if r == 0 then (mid, mid, true) else (lo, mid, false)
+  (lo, found)
+
+# Make room and write a cell at slot `i`, shifting the slots above it up.
+# The caller has checked there is room.
+fn open_slot(c: Buf(U8), base, i, size) =
+  n = nkeys(c, base)
+  for j in 0..n - i
+    at = base + hdr() + 2 * (n - 1 - j)
+    set_u16(c, at + 2, u16_at(c, at))
+  off = free_end(c, base) - size
+  set_u16(c, base + hdr() + 2 * i, off)
+  set_u16(c, base + 2, n + 1)
+  set_u16(c, base + 4, off)
+  base + off
+
+fn put_leaf_cell(c: Buf(U8), base, i, k, v) =
+  at = open_slot(c, base, i, 4 + #k + #v)
+  set_u16(c, at, #k)
+  set_u16(c, at + 2, #v)
+  put_str(c, at + 4, k)
+  put_str(c, at + 4 + #k, v)
+
+fn put_inner_cell(c: Buf(U8), base, i, k, child) =
+  at = open_slot(c, base, i, 6 + #k)
+  set_u16(c, at, #k)
+  set_u32(c, at + 2, child)
+  put_str(c, at + 6, k)
+
+# Drop slot `i`; the cell's bytes stay until a compaction.
+fn remove_slot(c: Buf(U8), base, i) =
+  n = nkeys(c, base)
+  for j in i..n - 1
+    at = base + hdr() + 2 * j
+    set_u16(c, at, u16_at(c, at + 2))
+  set_u16(c, base + 2, n - 1)
+  0
+
+# Rebuild the node with its live cells only, through a copy.
+fn compact(c: Buf(U8), base, tmp: Buf(U8)) =
+  n = nkeys(c, base)
+  leaf = is_leaf(c, base)
+  copy_bytes(tmp, 0, c, base, page_size())
+  init_node(c, base, leaf, next_of(tmp, 0))
+  for i in 0..n
+    size = cell_size(tmp, 0, i)
+    at = open_slot(c, base, i, size)
+    copy_bytes(c, at, tmp, slot_of(tmp, 0, i), size)
+
+# -- the cache and the log ---------------------------------------------------
+
+fn wal_path(path) = path + ".wal"
+
+# The slot holding page `pg`, loading it if need be, as a base offset.
+fn page(db: Db, pg) = match map_get(db.slot_map, pg)
+  Some(s) ->
+    db.slot_ref[s] = 1
+    s * page_size()
+  None ->
+    s = victim(db)
+    base = s * page_size()
+    old = db.slot_pg[s]
+    if old >= 0 then
+      if db.slot_dirty[s] == 1 then spill(db, old, base, false) else 0
+      map_del(db.slot_map, old)
+      0
+    else 0
+    load(db, pg, base)
+    db.slot_pg[s] = pg
+    db.slot_dirty[s] = 0
+    db.slot_ref[s] = 1
+    db.slot_map[pg] = s
+    base
+
+# The clock: the first slot the hand finds unreferenced, clearing the
+# reference of each one it passes.
+fn victim(db: Db) =
+  h = while db.slot_ref[h] == 1 with h = db.meta[7]
+    db.slot_ref[h] = 0
+    (h + 1) % slots()
+  db.meta[7] = (h + 1) % slots()
+  h
+
+fn load(db: Db, pg, base) =
+  at = map_or(db.pending, pg, map_or(db.committed, pg, -1))
+  if at >= 0 then
+    file_pread_into(db.wal, at, db.cache, base, page_size())
+  else
+    got = file_pread_into(db.fd, pg * page_size(), db.cache, base, page_size())
+    # a page not yet in the tree file reads as zeros
+    for i in got..page_size()
+      db.cache[base + i] = 0
+    got
+
+fn mark_dirty(db: Db, pg) =
+  db.slot_dirty[map_or(db.slot_map, pg, 0)] = 1
+
+# A page to the log, from the cache, as one frame: header and page in one
+# write, through the frame buffer.
+fn spill(db: Db, pg, base, commit) =
+  f = db.frame
+  set_u32(f, 0, pg)
+  set_u32(f, 4, if commit then 1 else 0)
+  copy_bytes(f, frame_hdr(), db.cache, base, page_size())
+  c = checksum(f, frame_hdr(), page_size(), checksum(f, 0, 8, 0))
+  set_u32(f, 8, fold32(c))
+  at = db.meta[2]
+  file_pwrite(db.wal, at, f, 0, frame_hdr() + page_size())
+  db.pending[pg] = at + frame_hdr()
+  db.meta[2] = at + frame_hdr() + page_size()
+  db.meta[3] += 1
+  0
+
+fn write_marker(db: Db) =
+  f = db.frame
+  set_u32(f, 0, marker())
+  set_u32(f, 4, 1)
+  set_u32(f, 8, fold32(checksum(f, 0, 8, 0)))
+  file_pwrite(db.wal, db.meta[2], f, 0, frame_hdr())
+  db.meta[2] += frame_hdr()
+
+# Replays the log into the maps: every frame up to the last good marker
+# counts, anything after it is forgotten.
+fn recover(db: Db) =
+  wal = db.wal
+  f = db.frame
+  size = file_size(wal)
+  (at, _) = while at + frame_hdr() <= size && ok with (at, ok) = (wal_hdr(), true)
+    file_pread_into(wal, at, f, 0, frame_hdr())
+    pg = u32_at(f, 0)
+    want = u32_at(f, 8)
+    if pg == marker() then
+      if fold32(checksum(f, 0, 8, 0)) == want then
+        promote(db)
+        db.meta[2] = at + frame_hdr()
+        (at + frame_hdr(), true)
+      else (at, false)
+    else if at + frame_hdr() + page_size() > size then (at, false)
+    else
+      got = file_pread_into(wal, at + frame_hdr(), f, frame_hdr(), page_size())
+      if got == page_size() && fold32(checksum(f, frame_hdr(), page_size(), checksum(f, 0, 8, 0))) == want then
+        db.pending[pg] = at + frame_hdr()
+        (at + frame_hdr() + page_size(), true)
+      else (at, false)
+  map_clear(db.pending)
+  at
+
+# The transaction's frames become the log's.
+fn promote(db: Db) =
+  promote_keys(db, map_keys(db.pending))
+  map_clear(db.pending)
+
+fn promote_keys(db: Db, keys) = match keys
+  Nil -> 0
+  Cons(k, rest) ->
+    db.committed[k] = map_or(db.pending, k, 0)
+    promote_keys(db, rest)
+
+# Every logged page into the tree, the tree synced, the log emptied.
+fn checkpoint(db: Db) =
+  copy_back(db, map_keys(db.committed))
+  file_sync(db.fd)
+  map_clear(db.committed)
+  file_truncate(db.wal, wal_hdr())
+  db.meta[2] = wal_hdr()
+  db.meta[3] = 0
+  0
+
+fn copy_back(db: Db, pages) = match pages
+  Nil -> 0
+  Cons(pg, rest) ->
+    at = map_or(db.committed, pg, 0)
+    file_pread_into(db.wal, at, db.frame, 0, page_size())
+    file_pwrite(db.fd, pg * page_size(), db.frame, 0, page_size())
+    copy_back(db, rest)
+
+# -- the header page ---------------------------------------------------------
+
+fn read_meta(db: Db) =
+  base = page(db, 0)
+  db.meta[0] = u32_at(db.cache, base + 12)
+  db.meta[1] = u32_at(db.cache, base + 16)
+
+fn write_meta(db: Db) =
+  base = page(db, 0)
+  c = db.cache
+  put_str(c, base, "RILLKV01")
+  set_u32(c, base + 8, page_size())
+  set_u32(c, base + 12, db.meta[0])
+  set_u32(c, base + 16, db.meta[1])
+  mark_dirty(db, 0)
+
+fn new_page(db: Db, leaf, next) =
+  pg = db.meta[1]
+  db.meta[1] = pg + 1
+  base = page(db, pg)
+  init_node(db.cache, base, leaf, next)
+  mark_dirty(db, pg)
+  write_meta(db)
+  pg
+
+# -- open, commit, close -----------------------------------------------------
+
+fn kv_open(path) =
+  fresh = !file_exists(path)
+  fd = file_open(path, if fresh then "w+" else "r+")
+  if fd < 0 then Err("cannot open " + path)
+  else if !file_lock(fd, true) then
+    file_close(fd)
+    Err(path + " is open elsewhere")
+  else
+    wal_fresh = !file_exists(wal_path(path))
+    wal = file_open(wal_path(path), if wal_fresh then "w+" else "r+")
+    if wal < 0 then
+      file_close(fd)
+      Err("cannot open " + wal_path(path))
+    else
+      slot_pg = buf_int(slots())
+      for i in 0..slots()
+        slot_pg[i] = -1
+      meta = buf_int(8)
+      db = Db(fd, wal, path, buf_u8(slots() * page_size()), slot_pg, buf_int(slots()), buf_int(slots()), map_new(), meta, map_new(), map_new(), buf_u8(frame_hdr() + page_size()), buf_int(64))
+      if wal_fresh then
+        h = buf_u8(wal_hdr())
+        put_str(h, 0, "RILLWAL1")
+        set_u32(h, 8, page_size())
+        file_pwrite(wal, 0, h, 0, wal_hdr())
+        meta[2] = wal_hdr()
+      else
+        meta[2] = recover(db)
+      if fresh then open_fresh(db) else open_existing(db)
+
+# An empty tree: a header page and one leaf, written and synced before the
+# store is handed out.
+fn open_fresh(db: Db) =
+  db.meta[1] = 1
+  page(db, 0)
+  mark_dirty(db, 0)
+  db.meta[0] = new_page(db, true, 0)
+  write_meta(db)
+  commit_now(db)
+  checkpoint(db)
+  Ok(db)
+
+# What the log holds goes into the tree first, so the header read below is
+# the latest one.
+fn open_existing(db: Db) =
+  checkpoint(db)
+  if str_at(db.cache, page(db, 0), 8) != "RILLKV01" then
+    file_close(db.fd)
+    file_close(db.wal)
+    Err(db.path + " is not a Rill key-value store")
+  else
+    read_meta(db)
+    Ok(db)
+
+fn begin(db: Db) =
+  if db.meta[4] == 0 then
+    db.meta[6] = db.meta[2]
+    db.meta[4] = 1
+    0
+  else 0
+
+# Dirty pages to the log, a marker, one sync. Nothing changed, nothing
+# written.
+fn commit_now(db: Db) =
+  n = for s in 0..slots() with n = 0
+    if db.slot_dirty[s] == 1 then
+      spill(db, db.slot_pg[s], s * page_size(), false)
+      db.slot_dirty[s] = 0
+      n + 1
+    else n
+  if n > 0 || map_len(db.pending) > 0 then
+    write_marker(db)
+    file_sync(db.wal)
+    promote(db)
+    0
+  else 0
+  db.meta[4] = 0
+
+fn kv_commit(db: Db) =
+  commit_now(db)
+  if db.meta[3] >= checkpoint_after() then checkpoint(db) else 0
+
+# Forget the transaction: dirty pages are dropped from the cache, and the
+# log is cut back to where the transaction found it, so that the frames it
+# spilled cannot ride in on the next marker.
+fn kv_rollback(db: Db) =
+  for s in 0..slots()
+    if db.slot_dirty[s] == 1 then
+      map_del(db.slot_map, db.slot_pg[s])
+      db.slot_pg[s] = -1
+      db.slot_dirty[s] = 0
+      db.slot_ref[s] = 0
+      0
+    else 0
+  map_clear(db.pending)
+  if db.meta[4] == 1 then
+    file_truncate(db.wal, db.meta[6])
+    db.meta[2] = db.meta[6]
+    0
+  else 0
+  db.meta[4] = 0
+  read_meta(db)
+
+fn kv_close(db: Db) =
+  commit_now(db)
+  checkpoint(db)
+  file_unlock(db.fd)
+  file_close(db.fd)
+  file_close(db.wal)
+  db.meta[5] = 1
+
+# -- the tree ----------------------------------------------------------------
+
+# From the root down to the leaf for `k`; `path_buf` gets page and child
+# index per level, and the depth of the leaf comes back.
+fn descend(db: Db, k) =
+  p = db.path_buf
+  (d, _, _) = while !leaf with (d, pg, leaf) = (0, db.meta[0], false)
+    base = page(db, pg)
+    c = db.cache
+    p[2 * d] = pg
+    if is_leaf(c, base) then (d, pg, true)
+    else
+      (i, _) = lower_bound(c, base, k)
+      p[2 * d + 1] = i
+      (d + 1, if i < nkeys(c, base) then child_at(c, base, i) else next_of(c, base), false)
+  d
+
+fn kv_get(db: Db, k) =
+  d = descend(db, k)
+  base = page(db, db.path_buf[2 * d])
+  c = db.cache
+  (i, found) = lower_bound(c, base, k)
+  if found then Some(str_at(c, key_off(c, base, i) + klen_at(c, base, i), vlen_at(c, base, i))) else None
+
+fn kv_delete(db: Db, k) =
+  begin(db)
+  d = descend(db, k)
+  pg = db.path_buf[2 * d]
+  base = page(db, pg)
+  (i, found) = lower_bound(db.cache, base, k)
+  if found then
+    remove_slot(db.cache, base, i)
+    mark_dirty(db, pg)
+    true
+  else false
+
+fn kv_put(db: Db, k, v) =
+  if #k == 0 || #k > max_key() || #v > max_val() then false
+  else
+    begin(db)
+    d = descend(db, k)
+    pg = db.path_buf[2 * d]
+    base = page(db, pg)
+    c = db.cache
+    (i, found) = lower_bound(c, base, k)
+    if found then remove_slot(c, base, i) else 0
+    need = 6 + #k + #v
+    if free_space(c, base) < need then
+      compact(c, base, db.frame)
+    else 0
+    if free_space(c, base) >= need then
+      put_leaf_cell(c, base, i, k, v)
+      mark_dirty(db, pg)
+    else
+      split_leaf(db, d, pg, k, v)
+    true
+
+# Half the cells to a new right neighbour, then the new key to whichever
+# half it belongs in, then the separator — the left half's last key — up.
+fn split_leaf(db: Db, d, pg, k, v) =
+  tmp = buf_u8(page_size())
+  base0 = page(db, pg)
+  copy_bytes(tmp, 0, db.cache, base0, page_size())
+  n = nkeys(tmp, 0)
+  half = n / 2
+  right = new_page(db, true, next_of(tmp, 0))
+  rb = page(db, right)
+  for i in half..n
+    size = cell_size(tmp, 0, i)
+    at = open_slot(db.cache, rb, i - half, size)
+    copy_bytes(db.cache, at, tmp, slot_of(tmp, 0, i), size)
+  mark_dirty(db, right)
+  lb = page(db, pg)
+  init_node(db.cache, lb, true, right)
+  for i in 0..half
+    size = cell_size(tmp, 0, i)
+    at = open_slot(db.cache, lb, i, size)
+    copy_bytes(db.cache, at, tmp, slot_of(tmp, 0, i), size)
+  mark_dirty(db, pg)
+  sep = str_at(tmp, slot_of(tmp, 0, half - 1) + 4, klen_at(tmp, 0, half - 1))
+  target = if str_cmp(k, sep) <= 0 then pg else right
+  tb = page(db, target)
+  (i, _) = lower_bound(db.cache, tb, k)
+  put_leaf_cell(db.cache, tb, i, k, v)
+  mark_dirty(db, target)
+  insert_up(db, d, sep, pg, right)
+
+# The parent of level `d` learns that `left` was split at `sep`, with `right`
+# now holding what is above it. At the root, a new root.
+fn insert_up(db: Db, d, sep, left, right) =
+  if d == 0 then
+    root = new_page(db, false, right)
+    rb = page(db, root)
+    put_inner_cell(db.cache, rb, 0, sep, left)
+    mark_dirty(db, root)
+    db.meta[0] = root
+    write_meta(db)
+  else
+    pg = db.path_buf[2 * (d - 1)]
+    i = db.path_buf[2 * (d - 1) + 1]
+    base = page(db, pg)
+    c = db.cache
+    # the slot that led to `left` now leads to `right`, and `left` gets a
+    # slot of its own just before it
+    if i < nkeys(c, base) then set_u32(c, base + slot_of(c, base, i) + 2, right) else set_u32(c, base + 8, right)
+    need = 8 + #sep
+    if free_space(c, base) < need then
+      compact(c, base, db.frame)
+    else 0
+    if free_space(c, base) >= need then
+      put_inner_cell(c, base, i, sep, left)
+      mark_dirty(db, pg)
+    else
+      split_inner(db, d - 1, pg, i, sep, left)
+
+# An inner node in two around its middle key, which goes up; the new cell
+# is added to the half it falls in first.
+fn split_inner(db: Db, d, pg, i, sep, left) =
+  tmp = buf_u8(page_size())
+  base0 = page(db, pg)
+  copy_bytes(tmp, 0, db.cache, base0, page_size())
+  n = nkeys(tmp, 0)
+  mid = n / 2
+  midkey = str_at(tmp, slot_of(tmp, 0, mid) + 6, klen_at(tmp, 0, mid))
+  midchild = child_at(tmp, 0, mid)
+  right = new_page(db, false, next_of(tmp, 0))
+  rb = page(db, right)
+  for j in mid + 1..n
+    size = cell_size(tmp, 0, j)
+    at = open_slot(db.cache, rb, j - mid - 1, size)
+    copy_bytes(db.cache, at, tmp, slot_of(tmp, 0, j), size)
+  mark_dirty(db, right)
+  lb = page(db, pg)
+  init_node(db.cache, lb, false, midchild)
+  for j in 0..mid
+    size = cell_size(tmp, 0, j)
+    at = open_slot(db.cache, lb, j, size)
+    copy_bytes(db.cache, at, tmp, slot_of(tmp, 0, j), size)
+  mark_dirty(db, pg)
+  # the pending cell (sep, left) sat at index i of the old node: below the
+  # middle it is the left half's, at the middle it is the left half's last
+  # (its key is below the one that went up), above it the right half's
+  if i <= mid then
+    b = page(db, pg)
+    put_inner_cell(db.cache, b, i, sep, left)
+    mark_dirty(db, pg)
+  else
+    b = page(db, right)
+    put_inner_cell(db.cache, b, i - mid - 1, sep, left)
+    mark_dirty(db, right)
+  insert_up(db, d, midkey, pg, right)
+
+# -- scans -------------------------------------------------------------------
+
+# Every (key, value) with `lo <= key <= hi`, in key order; an empty `hi`
+# means to the end.
+fn kv_range(db: Db, lo, hi) = reverse(kv_fold(db, lo, hi, Nil, \acc, k, v -> Cons((k, v), acc)))
+
+fn kv_fold(db: Db, lo, hi, acc, f) =
+  d = descend(db, lo)
+  first = db.path_buf[2 * d]
+  (_, _, acc) = while pg != 0 with (pg, from, acc) = (first, -1, acc)
+    base = page(db, pg)
+    c = db.cache
+    (s, _) = if from < 0 then lower_bound(c, base, lo) else (from, false)
+    (_, acc, stop) = while j < nkeys(c, base) && !stop with (j, acc, stop) = (s, acc, false)
+      kl = klen_at(c, base, j)
+      ko = key_off(c, base, j)
+      if #hi > 0 && cmp_bytes(c, ko, kl, hi) > 0 then (j, acc, true) else (j + 1, f(acc, str_at(c, ko, kl), str_at(c, ko + kl, vlen_at(c, base, j))), false)
+    if stop then (0, 0, acc) else (next_of(c, base), 0, acc)
+  acc
+
+fn kv_count(db: Db) = kv_fold(db, "", "", 0, \n, _, _ -> n + 1)

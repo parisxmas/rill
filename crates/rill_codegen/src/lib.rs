@@ -2691,6 +2691,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function(
+            "rill_file_pread_into",
+            i64t.fn_type(&[i64t.into(), i64t.into(), ptrt.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_file_pwrite",
+            i64t.fn_type(&[i64t.into(), i64t.into(), ptrt.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_file_lock", i8t.fn_type(&[i64t.into(), i8t.into()], false), None);
+        self.module.add_function("rill_file_unlock", i8t.fn_type(&[i64t.into()], false), None);
+        self.module.add_function(
             "rill_file_write",
             i64t.fn_type(&[i64t.into(), ptrt.into()], false),
             None,

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — a key–value store, and the three calls it asked for
+
+`lib/kv.rill` (`import "kv"`): a key–value store on disk — a B+ tree of
+4 KB pages, an 8 MB clock cache, a write-ahead log with a checksum on every
+frame, one sync per commit, checkpoints, rollback, range scans, and an
+exclusive lock so a second process is refused rather than let in. A crash
+between any two writes loses the uncommitted transaction and never a page;
+the test stages one. Against SQLite through its C API, same durability and
+same cache: reads three times ahead, the range scan three times, the bulk
+load somewhat ahead, the durable commit level — it is the drive's four
+milliseconds either way (`benchmarks/kv/`).
+
+The runtime learned three calls on the way, each a few lines: `file_pread_into`
+reads a block into a byte buffer the caller owns, at an offset in it, with
+no string made; `file_pwrite` writes from one at a file offset without
+moving the descriptor; `file_lock` and `file_unlock` are the whole-file
+advisory lock, taken at once or not at all.
+
 ## Unreleased — LLVM 21
 
 The compiler now builds against LLVM 21 (`brew install llvm@21`; the prefix is

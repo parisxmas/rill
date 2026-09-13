@@ -1103,6 +1103,7 @@ extern "C" {
     fn fsync(fd: i32) -> i32;
     fn ftruncate(fd: i32, len: i64) -> i32;
     fn pread(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize;
+    fn pwrite(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize;
     fn unlink(path: *const u8) -> i32;
     fn rename(from: *const u8, to: *const u8) -> i32;
     fn mkdir(path: *const u8, mode: u32) -> i32;
@@ -1183,6 +1184,20 @@ unsafe fn ftruncate(_fd: i32, _len: i64) -> i32 {
 #[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn pread(_fd: i32, _buf: *mut u8, _count: usize, _offset: i64) -> isize {
     -1
+}
+#[cfg(any(target_family = "wasm", target_os = "none"))]
+unsafe fn pwrite(_fd: i32, _buf: *const u8, _count: usize, _offset: i64) -> isize {
+    -1
+}
+#[cfg(windows)]
+unsafe fn pwrite(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize {
+    let was = lseek(fd, 0, 1);
+    if was < 0 || lseek(fd, offset, 0) < 0 {
+        return -1;
+    }
+    let n = write(fd, buf, count);
+    lseek(fd, was, 0);
+    n
 }
 #[cfg(any(target_family = "wasm", target_os = "none"))]
 unsafe fn unlink(_path: *const u8) -> i32 {
@@ -1296,6 +1311,112 @@ pub unsafe extern "C" fn rill_file_pread(fd: i64, off: i64, n: i64) -> *mut u8 {
     }
     *(p as *mut i64).add(1) = got as i64;
     p
+}
+
+/// Reads at an offset into `n` bytes of a byte buffer the caller owns,
+/// starting `at` bytes into it, and answers how many arrived (short at the
+/// end of the file), or -1. `rill_file_pread` makes a string of what it
+/// reads; a page cache, which reads the same-sized block into a slot of
+/// memory it has already set aside, wants no string and no copy.
+///
+/// # Safety
+/// `buf` must be a live byte buffer; the range is clamped to its length.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_pread_into(fd: i64, off: i64, buf: *mut u8, at: i64, n: i64) -> i64 {
+    IO_OK = 1;
+    let cap = *(buf.sub(16) as *const i64).add(1);
+    let at = at.clamp(0, cap);
+    let n = n.clamp(0, cap - at);
+    let buf = buf.add(at as usize);
+    if off < 0 {
+        IO_OK = 0;
+        return -1;
+    }
+    let mut got = 0usize;
+    while (got as i64) < n {
+        let r = pread(fd as i32, buf.add(got), (n as usize) - got, off + got as i64);
+        if r < 0 {
+            IO_OK = 0;
+            return -1;
+        }
+        if r == 0 {
+            break;
+        }
+        got += r as usize;
+    }
+    got as i64
+}
+
+/// Writes `n` bytes of a byte buffer, from `at` bytes into it, at an offset
+/// in the file, without moving the descriptor — so that several strands may
+/// write different pages of one file through it. All of it, or -1.
+///
+/// # Safety
+/// `buf` must be a live byte buffer; the range is clamped to its length.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_pwrite(fd: i64, off: i64, buf: *const u8, at: i64, n: i64) -> i64 {
+    IO_OK = 1;
+    let cap = *(buf.sub(16) as *const i64).add(1);
+    let at = at.clamp(0, cap);
+    let n = n.clamp(0, cap - at) as usize;
+    let buf = buf.add(at as usize);
+    if off < 0 {
+        IO_OK = 0;
+        return -1;
+    }
+    let mut sent = 0usize;
+    while sent < n {
+        let w = pwrite(fd as i32, buf.add(sent), n - sent, off + sent as i64);
+        if w <= 0 {
+            IO_OK = 0;
+            return -1;
+        }
+        sent += w as usize;
+    }
+    sent as i64
+}
+
+/// Takes the advisory lock on an open file — shared, or exclusive — and
+/// answers whether it got it, at once: a lock someone else holds is `false`
+/// rather than a wait, because a wait here would hold the worker and every
+/// strand on it. A store that must not be opened twice takes the exclusive
+/// lock when it opens and keeps it until it closes; the lock goes with the
+/// descriptor. `flock`, so it is the whole file and it is advisory: it stops
+/// other programs that ask, not ones that do not.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_lock(fd: i64, exclusive: i8) -> i8 {
+    IO_OK = 1;
+    let op = if exclusive != 0 { LOCK_EX } else { LOCK_SH } | LOCK_NB;
+    if flock(fd as i32, op) != 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    1
+}
+
+/// Lets the lock go before the file is closed.
+#[no_mangle]
+pub unsafe extern "C" fn rill_file_unlock(fd: i64) -> i8 {
+    IO_OK = 1;
+    if flock(fd as i32, LOCK_UN) != 0 {
+        IO_OK = 0;
+        return 0;
+    }
+    1
+}
+
+const LOCK_SH: i32 = 1;
+const LOCK_EX: i32 = 2;
+const LOCK_NB: i32 = 4;
+const LOCK_UN: i32 = 8;
+
+#[cfg(unix)]
+extern "C" {
+    fn flock(fd: i32, op: i32) -> i32;
+}
+#[cfg(not(unix))]
+unsafe fn flock(_fd: i32, _op: i32) -> i32 {
+    0
 }
 
 /// Writes all of a string; how many bytes went, or -1.

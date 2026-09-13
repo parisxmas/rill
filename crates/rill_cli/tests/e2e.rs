@@ -3545,3 +3545,146 @@ fn main() =
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+/// `lib/kv.rill` — the store as a program uses it, then under stress. The
+/// example puts, commits, rolls one back, deletes, scans, is refused a
+/// second open of the same file, and reads everything back after a close.
+#[test]
+fn key_value_store() {
+    assert_eq!(
+        compile_and_run("kv_store.rill"),
+        "Some(1906)\nNone\nSome(1815)\nCons((ada, 1815), Cons((barbara, 1939), Nil))\n3\n\
+         /tmp/rill_kv_example.db is open elsewhere\n\
+         Cons((ada, 1815), Cons((barbara, 1939), Cons((grace, 1906), Nil)))\n"
+    );
+}
+
+/// Twenty thousand random keys against a map, through splits at every
+/// level: puts, overwrites, deletes, a range scan that must come back
+/// sorted, a rollback, a close and a reopen — and then a commit with no
+/// close, which leaves the pages in the log and not the tree, so the second
+/// program's open has to replay them, and free everything at its close.
+#[test]
+fn key_value_store_under_stress_and_recovery() {
+    let root = workspace_root();
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-kv-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let mut outs = Vec::new();
+    for (name, src) in [("stress", STRESS), ("after", AFTER)] {
+        let path = out_dir.join(format!("{name}.rill"));
+        std::fs::write(&path, src).unwrap();
+        let exe = out_dir.join(name);
+        let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+            .arg("build")
+            .arg(&path)
+            .arg("-o")
+            .arg(&exe)
+            .env("RILL_PATH", root.join("lib"))
+            .output()
+            .unwrap();
+        assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+        let run = Command::new(&exe).env("RILL_DEBUG_ALLOC", "1").output().unwrap();
+        assert!(run.status.success(), "{name} failed: {}", String::from_utf8_lossy(&run.stderr));
+        // The first program leaves through `exit`, which is the crash being
+        // staged and prints no ledger; the second returns from `main`.
+        if name == "after" {
+            assert!(
+                String::from_utf8_lossy(&run.stderr).contains("live allocations: 0"),
+                "{name}: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+        }
+        outs.push(String::from_utf8_lossy(&run.stdout).to_string());
+    }
+    assert_eq!(
+        outs[0],
+        "inserted, count 18219 oracle 18219\nafter updates, count 20658 oracle 20658\nmismatches 0\n\
+         absent wrong 0\nrange k5..k6: 2311 sorted 2311\nafter rollback: true\n\
+         reopened, count 20658 mismatches 0\ncommitted without close\n"
+    );
+    assert_eq!(outs[1], "recovered: Some(survives)\ncount 20659\n16\n");
+}
+
+const STRESS: &str = r#"import "kv"
+
+fn key_of(x) = "k" + int_to_str(x % 100003)
+
+fn val_of(x) = "v" + int_to_str(x) + repeat("x", x % 37)
+
+fn nxt(x) = bit_and(x * 1103515245 + 12345, 2147483647)
+
+fn check(db: Db, oracle, keys, bad) = match keys
+  Nil -> bad
+  Cons(k, rest) ->
+    want = map_get(oracle, k)
+    got = kv_get(db, k)
+    check(db, oracle, rest, if want == got then bad else bad + 1)
+
+fn sorted_ok(l, prev, n) = match l
+  Nil -> n
+  Cons((k, _), rest) -> sorted_ok(rest, k, if str_cmp(prev, k) < 0 then n + 1 else n)
+
+fn main() =
+  file_remove("/tmp/rill-e2e-kv.db")
+  file_remove("/tmp/rill-e2e-kv.db.wal")
+  n = 20000
+  oracle = map_new()
+  match kv_open("/tmp/rill-e2e-kv.db")
+    Err(e) -> println(e)
+    Ok(db) ->
+      # insert
+      for i in 0..n with x = 42
+        y = nxt(x)
+        kv_put(db, key_of(y), val_of(y))
+        oracle[key_of(y)] = val_of(y)
+        y
+      kv_commit(db)
+      println("inserted, count " + int_to_str(kv_count(db)) + " oracle " + int_to_str(map_len(oracle)))
+      # overwrite and delete some
+      for i in 0..n / 4 with x = 7
+        y = nxt(x)
+        if y % 3 == 0 then
+          kv_delete(db, key_of(y))
+          map_del(oracle, key_of(y))
+          0
+        else
+          kv_put(db, key_of(y), "new" + int_to_str(y))
+          oracle[key_of(y)] = "new" + int_to_str(y)
+          0
+        y
+      kv_commit(db)
+      println("after updates, count " + int_to_str(kv_count(db)) + " oracle " + int_to_str(map_len(oracle)))
+      println("mismatches " + int_to_str(check(db, oracle, map_keys(oracle), 0)))
+      # keys that must be absent
+      absent = for i in 0..1000 with bad = 0
+        if kv_get(db, "zz" + int_to_str(i)) == None then bad else bad + 1
+      println("absent wrong " + int_to_str(absent))
+      r = kv_range(db, "k5", "k6")
+      println("range k5..k6: " + int_to_str(len(r)) + " sorted " + int_to_str(sorted_ok(r, "", 0)))
+      # uncommitted change, then rollback
+      kv_put(db, "k1", "rolled")
+      kv_rollback(db)
+      println("after rollback: " + show(kv_get(db, "k1") == map_get(oracle, "k1")))
+      kv_close(db)
+  # reopen: everything must still be there
+  match kv_open("/tmp/rill-e2e-kv.db")
+    Err(e) -> println(e)
+    Ok(db) ->
+      println("reopened, count " + int_to_str(kv_count(db)) + " mismatches " + int_to_str(check(db, oracle, map_keys(oracle), 0)))
+      kv_put(db, "crash", "survives")
+      kv_commit(db)
+      # no close: the tree file has not got the page, the log has
+      println("committed without close")
+      exit(0)
+"#;
+
+const AFTER: &str = r#"import "kv"
+fn main() =
+  match kv_open("/tmp/rill-e2e-kv.db")
+    Err(e) -> println(e)
+    Ok(db) ->
+      println("recovered: " + show(kv_get(db, "crash")))
+      println("count " + int_to_str(kv_count(db)))
+      kv_close(db)
+  println(file_size(file_open("/tmp/rill-e2e-kv.db.wal", "r")))
+"#;

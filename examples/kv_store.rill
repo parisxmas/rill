@@ -1,0 +1,39 @@
+# A key–value store on disk, from lib/kv.rill: a B+ tree of pages, a page
+# cache and a write-ahead log, in one process. Keys sort as bytes, so a
+# range scan is a walk along the leaves.
+import "kv"
+
+fn main() =
+  path = "/tmp/rill_kv_example.db"
+  file_remove(path)
+  file_remove(path + ".wal")
+  match kv_open(path)
+    Err(e) -> println(e)
+    Ok(db) ->
+      kv_put(db, "ada", "1815")
+      kv_put(db, "grace", "1906")
+      kv_put(db, "edsger", "1930")
+      kv_put(db, "barbara", "1939")
+      # buffered so far; this makes it durable — one sync of the log
+      kv_commit(db)
+      println(show(kv_get(db, "grace")))
+      println(show(kv_get(db, "linus")))
+      # a transaction that is thought better of
+      kv_put(db, "ada", "0")
+      kv_rollback(db)
+      println(show(kv_get(db, "ada")))
+      kv_delete(db, "edsger")
+      kv_commit(db)
+      println(show(kv_range(db, "a", "f")))
+      println(kv_count(db))
+      # a second open of the same file is refused while this one is alive
+      match kv_open(path)
+        Err(e) -> println(e)
+        Ok(other) -> kv_close(other)
+      kv_close(db)
+  # and everything is still there when it is opened again
+  match kv_open(path)
+    Err(e) -> println(e)
+    Ok(db) ->
+      println(show(kv_range(db, "", "")))
+      kv_close(db)
