@@ -4112,6 +4112,7 @@ extern "C" {
     fn pthread_key_create(key: *mut usize, destructor: *const u8) -> i32;
     fn pthread_setspecific(key: usize, value: *const u8) -> i32;
     fn pthread_getspecific(key: usize) -> *mut u8;
+    fn pthread_self() -> usize;
     fn sched_yield() -> i32;
 }
 
@@ -4241,6 +4242,8 @@ struct G {
     wait_ident: usize,
     /// Queue node for a plain send or receive, which never needs more than one.
     waiter: Waiter,
+    /// A host strand's wake flag (see `rill_host_enter`); 0 on any other.
+    host_woken: i64,
     /// Every strand record ever allocated, on one list. `next` cannot be used
     /// for this — it is already the link for whichever queue the strand is
     /// sitting in — and nothing else knows where the strands are: a parked one
@@ -4631,6 +4634,7 @@ unsafe fn init_g(g: *mut G, code: extern "C" fn(*mut u8), env: *mut u8) {
     (*g).home = 0;
     (*g).selected = -1;
     (*g).on_io = false;
+    (*g).host_woken = 0;
     (*g).waiter = WAITER_INIT;
     // Slot 11 is where the switch resumes: the link register on ARM, and
     // the address it jumps to on x86-64.
@@ -4712,10 +4716,11 @@ unsafe fn save_stack(g: *mut G, exec_top: usize) {
 /// pinned to the worker whose stack holds its frames; a fresh one goes to the
 /// waker's own queue, where any idle worker may steal it.
 unsafe fn make_ready(g: *mut G) {
-    // The host's own strand is never queued: it is pumping the run queues
-    // from its own stack, and looks for this flag between strands.
-    if g == HOST_G {
-        HOST_WOKEN.store(true, core::sync::atomic::Ordering::Release);
+    // A host strand is never queued: it is pumping the run queues from its
+    // own stack, and looks for its flag between strands.
+    if is_host(g) {
+        core::sync::atomic::AtomicI64::from_ptr(&raw mut (*g).host_woken)
+            .store(HOST_WAKE, core::sync::atomic::Ordering::Release);
         return;
     }
     let w = if (*g).started { &raw mut WORKERS[(*g).home] } else { me() };
@@ -4737,7 +4742,7 @@ unsafe fn block_current() {
     net::flush_pending();
     let w = me();
     let g = (*w).current;
-    if g == HOST_G {
+    if is_host(g) {
         host_pump(w, g);
         return;
     }
@@ -4757,11 +4762,101 @@ unsafe fn block_current() {
 // channels wake the host (a socket or a timer would not), which is what a
 // library that splits a piece of work across strands needs.
 
-/// The host strand, or null in a program.
+/// The first host strand, or null in a program: what says the library is
+/// in host mode at all. Every host thread has a host strand of its own,
+/// kept in its worker; see `rill_host_enter`.
 static mut HOST_G: *mut G = core::ptr::null_mut();
 
-/// Set by whoever wakes the host strand; the pump clears it.
-static HOST_WOKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// How many host threads have come in; the second and later take worker
+/// slots after the strand workers.
+static HOST_THREADS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Whether a strand is a host strand: never queued, never copied, woken
+/// through its own flag.
+unsafe fn is_host(g: *mut G) -> bool {
+    !g.is_null() && (*g).is_main && !HOST_G.is_null() && (*g).host_woken != 0
+}
+
+/// A host strand's `host_woken` word: 1 while waiting, 2 once woken. It is
+/// 1 whenever the strand exists (so `is_host` can tell it from a program's
+/// main strand), and the pump reads 2 as its wake.
+const HOST_IDLE: i64 = 1;
+const HOST_WAKE: i64 = 2;
+
+unsafe fn new_host_g() -> *mut G {
+    let g = malloc(core::mem::size_of::<G>()) as *mut G;
+    if g.is_null() {
+        out(b"rill: out of memory starting a host strand\n");
+        die();
+    }
+    (*g).saved = core::ptr::null_mut();
+    (*g).saved_cap = 0;
+    (*g).is_main = true;
+    init_g(g, host_nothing, core::ptr::null_mut());
+    (*g).started = true;
+    (*g).host_woken = HOST_IDLE;
+    g
+}
+
+extern "C" fn host_nothing(_env: *mut u8) {}
+
+/// Called at the top of every export of a library that has strands: the
+/// thread calling in becomes a host worker if it is not one yet — its own
+/// execution stack for pumping, pools, poller and host strand. The first
+/// host thread is worker 0, made by `rill_rt_host`; a later one takes a
+/// slot past the strand workers. Several host threads need counts that
+/// are atomic from the start, which is what `RILL_THREADS` of two or more
+/// asks for; a library run on one worker refuses a second thread rather
+/// than count wrongly. Nothing to do on the common call, which is a
+/// thread the runtime knows: one load of a thread-local.
+///
+/// # Safety
+/// Called from generated code, on any thread.
+#[no_mangle]
+pub unsafe extern "C" fn rill_host_enter() {
+    if HOST_G.is_null() || NWORKERS < 2 {
+        if !HOST_G.is_null() && NWORKERS < 2 && !on_first_thread() {
+            out(b"rill: a second thread called into the library; run it with RILL_THREADS=2 or more\n");
+            die();
+        }
+        return;
+    }
+    if !pthread_getspecific(TLS_KEY).is_null() {
+        return;
+    }
+    // a thread the runtime has not met
+    let i = NWORKERS + HOST_THREADS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    if i >= MAX_WORKERS {
+        out(b"rill: too many threads calling in at once\n");
+        die();
+    }
+    let base = alloc_stack(EXEC_STACK_SIZE);
+    WORKERS[i].index = i;
+    WORKERS[i].exec_top = (base as usize + EXEC_STACK_SIZE + PAGE) & !15;
+    pthread_mutex_init(&raw mut WORKERS[i].lock, core::ptr::null());
+    WORKERS[i].kq.store(-1, core::sync::atomic::Ordering::Release);
+    WORKERS[i].wake_fd.store(-1, core::sync::atomic::Ordering::Release);
+    WORKERS[i].current = new_host_g();
+    pthread_setspecific(TLS_KEY, &raw const WORKERS[i] as *const u8);
+}
+
+/// Whether this is the thread that called `rill_init`, for a library run
+/// on one worker, where no thread-local tells threads apart.
+unsafe fn on_first_thread() -> bool {
+    pthread_self_id() == FIRST_THREAD
+}
+
+#[cfg(unix)]
+unsafe fn pthread_self_id() -> usize {
+    pthread_self()
+}
+
+#[cfg(not(unix))]
+unsafe fn pthread_self_id() -> usize {
+    0
+}
+
+static mut FIRST_THREAD: usize = 0;
 
 /// The library's entry: the scheduler's tables and workers, then `code` —
 /// the library's `main` — run on the host's thread itself.
@@ -4790,22 +4885,17 @@ pub unsafe extern "C" fn rill_rt_host(code: extern "C" fn(*mut u8)) {
         pthread_key_create(&raw mut TLS_KEY, core::ptr::null());
         pthread_setspecific(TLS_KEY, &raw const WORKERS[0] as *const u8);
     }
-    // Plain counts until the host opens a parallel section (`rill_mt_on`):
-    // the workers run nothing until then.
-    rill_mt = 0;
-    let g = malloc(core::mem::size_of::<G>()) as *mut G;
-    if g.is_null() {
-        out(b"rill: out of memory starting the host strand\n");
-        die();
-    }
-    (*g).saved = core::ptr::null_mut();
-    (*g).saved_cap = 0;
-    (*g).is_main = true;
-    init_g(g, code, core::ptr::null_mut());
-    (*g).started = true;
+    // With workers, counts are atomic from the start: a second host thread
+    // may call in at any moment, and what is counted plainly by one thread
+    // cannot be counted atomically by another. On one worker they stay
+    // plain, and a second thread is refused.
+    rill_mt = (NWORKERS > 1) as i8;
+    let g = new_host_g();
     (*g).home = 0;
     HOST_G = g;
     WORKERS[0].current = g;
+    FIRST_THREAD = pthread_self_id();
+    HOST_THREADS.store(1, core::sync::atomic::Ordering::Release);
     for i in 1..NWORKERS {
         let mut tid: usize = 0;
         pthread_create(
@@ -4845,7 +4935,9 @@ pub unsafe extern "C" fn rill_mt_on() -> i32 {
 /// Host mode only.
 #[no_mangle]
 pub unsafe extern "C" fn rill_mt_off() -> i32 {
-    if NWORKERS > 1 && HOST_G != core::ptr::null_mut() {
+    // Counts stay atomic in host mode with workers (see `rill_rt_host`);
+    // the call is kept for a program that turns them on and off itself.
+    if false && NWORKERS > 1 && HOST_G != core::ptr::null_mut() {
         while RUNNING.load(core::sync::atomic::Ordering::Acquire) != 0
             || QUEUED.load(core::sync::atomic::Ordering::Acquire) != 0
             || LIVE_STRANDS.load(core::sync::atomic::Ordering::Acquire) != 0
@@ -4908,10 +5000,11 @@ pub unsafe extern "C" fn rill_atomic_cas(p: *mut u8, old: i64, new: i64) -> i64 
 unsafe fn host_pump(w: *mut Worker, host: *mut G) {
     let mut idle_rounds = 0u32;
     loop {
-        if HOST_WOKEN.load(core::sync::atomic::Ordering::Acquire)
+        let flag = core::sync::atomic::AtomicI64::from_ptr(&raw mut (*host).host_woken);
+        if flag.load(core::sync::atomic::Ordering::Acquire) == HOST_WAKE
             && (core::ptr::read_volatile(&(*host).selected) != -1 || (*host).on_io)
         {
-            HOST_WOKEN.store(false, core::sync::atomic::Ordering::Release);
+            flag.store(HOST_IDLE, core::sync::atomic::Ordering::Release);
             return;
         }
         if IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {

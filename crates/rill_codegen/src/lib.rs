@@ -236,10 +236,28 @@ fn uses_scheduler(tmod: &TModule) -> bool {
     let Some(&entry) = tmod.fn_index.get("main") else {
         return false;
     };
+    strands_reachable_from(tmod, vec![entry])
+}
+
+/// A library's strands are reached from its exports, not from its `main`,
+/// which is only its setup.
+fn library_uses_scheduler(tmod: &TModule) -> bool {
+    let mut roots: Vec<usize> = tmod.fn_index.get("main").copied().into_iter().collect();
+    for (i, f) in tmod.fns.iter().enumerate() {
+        if f.exported {
+            roots.push(i);
+        }
+    }
+    strands_reachable_from(tmod, roots)
+}
+
+fn strands_reachable_from(tmod: &TModule, roots: Vec<usize>) -> bool {
     let graph = call_graph(tmod);
     let mut seen = vec![false; tmod.fns.len()];
-    let mut queue = vec![entry];
-    seen[entry] = true;
+    let mut queue = roots;
+    for &r in &queue {
+        seen[r] = true;
+    }
     while let Some(i) = queue.pop() {
         let mut found = false;
         let mut edges: Vec<usize> = Vec::new();
@@ -1472,6 +1490,8 @@ struct Codegen<'ctx, 'a> {
     /// The program has strands in it, so tail calls carry a preemption check.
     /// Decided up front by `uses_scheduler`; see `emit_preempt_check`.
     preempt: bool,
+    /// A library whose exports reach a spawn or a channel: run in host mode.
+    host_strands: bool,
     /// Building for wasm, which spells the entry point differently. Decided
     /// here rather than at object-writing time because the name has to be
     /// chosen while the function is being created.
@@ -1544,6 +1564,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             reaches: HashMap::new(),
             warned_untailed: HashSet::new(),
             preempt,
+            host_strands: shared && library_uses_scheduler(tmod),
             wasm: target.is_some_and(|t| t.starts_with("wasm")),
             shared,
         };
@@ -3070,6 +3091,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         );
         self.module.add_function("rill_rt_run", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_rt_host", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_host_enter", void.fn_type(&[], false), None);
         // i64 rill_select(cases*, n, has_default, out*) — the received value
         // goes through `out` rather than an oversized return value.
         self.module.add_function(
@@ -4836,6 +4858,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.position_at_end(entry);
         let (dbg_name, dbg_line) = (f.name.clone(), f.line as u32);
         self.begin_debug_fn(&dbg_name, dbg_line, fn_val);
+        // A library's export may be called on any thread of the host: the
+        // runtime is told which, so that a thread it has not met becomes a
+        // host worker of its own before it counts, allocates or waits.
+        if self.shared && f.exported && self.host_strands {
+            self.call_rt("rill_host_enter", &[]);
+        }
 
         let outer_cleanup = std::mem::take(&mut self.cleanup);
         let outer_shells = std::mem::take(&mut self.shells);
@@ -6345,7 +6373,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // its workers are started here, and the host's thread — the one
             // that calls the exports — pumps them whenever it waits on a
             // channel. On wasm there is no thread to be a worker.
-            let entry = if self.shared && self.needs_scheduler() { "rill_rt_host" } else { "rill_rt_run_direct" };
+            let entry = if self.shared && self.host_strands { "rill_rt_host" } else { "rill_rt_run_direct" };
             let rt_run = self.module.get_function(entry).unwrap();
             self.builder
                 .build_call(rt_run, &[user_main.as_global_value().as_pointer_value().into()], "")
