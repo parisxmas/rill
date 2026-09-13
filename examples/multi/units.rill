@@ -9,3 +9,8 @@ fn main() =
   println(i.label(i.Feet(2.0)))
   println(m.scale(10.0))
   println(i.scale(10.0))
+  println(float_to_str(inside(m.Meters(3.0))))
+
+# A pattern names an aliased constructor the same way an expression does.
+fn inside(u) = match u
+  m.Meters(v) -> v

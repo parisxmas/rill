@@ -43,7 +43,8 @@ fn main() = println(m.label(m.Meters(1.5)) + " " + i.label(i.Feet(2.0)))
 ```
 
 `m.label` and `i.label` are different functions, and `m.Unit` and `i.Unit` are
-different types.
+different types. A pattern names an aliased constructor the same way:
+`match u m.Meters(v) -> v`.
 
 A file that is not beside the importer is looked for on the search path:
 `RILL_PATH`, a colon-separated list, and then every `lib/` from the importing

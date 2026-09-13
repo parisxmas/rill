@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — a pattern may name an aliased constructor
+
+`match v j.JStr(s) -> s` for a module imported `as j`: the parser took
+`j.JStr` for a variable, since it begins with a lowercase letter, and
+refused the parentheses after it. The segment after the last dot is
+the one that says whether a name is a constructor.
+
 ## Unreleased — a key–value store, and the three calls it asked for
 
 `lib/kv.rill` (`import "kv"`): a key–value store on disk — a B+ tree of

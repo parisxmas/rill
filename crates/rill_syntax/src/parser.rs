@@ -43,6 +43,13 @@ fn starts_upper(s: &str) -> bool {
     s.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
+/// A constructor's name, possibly behind a module alias: `Circle` or
+/// `geo.Circle`. The lexer joins the alias and the dot to the name, so the
+/// segment after the last dot is the one that says.
+fn names_ctor(s: &str) -> bool {
+    starts_upper(s.rsplit('.').next().unwrap_or(s))
+}
+
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
@@ -611,7 +618,7 @@ impl Parser {
         // `Pair(a, b) = e` and `(a, b) = e` take a value apart. Only these two
         // shapes can start one, and only an `=` after the pattern settles it.
         let starts_pattern = matches!(self.peek(), Tok::LParen)
-            || matches!(self.peek(), Tok::Ident(n) if starts_upper(n));
+            || matches!(self.peek(), Tok::Ident(n) if names_ctor(n));
         if starts_pattern && self.has_binding_eq() {
             let (line, _) = self.here();
             let pattern = self.pattern()?;
@@ -1358,7 +1365,7 @@ impl Parser {
                 )),
             },
             Tok::Ident(name) if name == "_" => Ok(Pattern::Wildcard),
-            Tok::Ident(name) if !starts_upper(&name) => {
+            Tok::Ident(name) if !names_ctor(&name) => {
                 // `whole @ Circle(r)`: a name, and then the pattern it is the
                 // whole of. Unlike `|` this nests, because it asks nothing of
                 // the arm — it is one more binding at a position that is
