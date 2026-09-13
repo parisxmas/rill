@@ -3069,6 +3069,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_rt_run", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_rt_host", void.fn_type(&[ptrt.into()], false), None);
         // i64 rill_select(cases*, n, has_default, out*) — the received value
         // goes through `out` rather than an oversized return value.
         self.module.add_function(
@@ -6282,7 +6283,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             let entry = self.ctx.append_basic_block(init, "entry");
             self.builder.position_at_end(entry);
             let user_main = self.instances[&(self.tmod.fn_index["main"], vec![], vec![])];
-            let rt_run = self.module.get_function("rill_rt_run_direct").unwrap();
+            // A shared library that spawns gets the scheduler in host mode:
+            // its workers are started here, and the host's thread — the one
+            // that calls the exports — pumps them whenever it waits on a
+            // channel. On wasm there is no thread to be a worker.
+            let entry = if self.shared && self.needs_scheduler() { "rill_rt_host" } else { "rill_rt_run_direct" };
+            let rt_run = self.module.get_function(entry).unwrap();
             self.builder
                 .build_call(rt_run, &[user_main.as_global_value().as_pointer_value().into()], "")
                 .expect("LLVM builder error");

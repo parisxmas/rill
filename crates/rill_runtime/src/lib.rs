@@ -4712,6 +4712,12 @@ unsafe fn save_stack(g: *mut G, exec_top: usize) {
 /// pinned to the worker whose stack holds its frames; a fresh one goes to the
 /// waker's own queue, where any idle worker may steal it.
 unsafe fn make_ready(g: *mut G) {
+    // The host's own strand is never queued: it is pumping the run queues
+    // from its own stack, and looks for this flag between strands.
+    if g == HOST_G {
+        HOST_WOKEN.store(true, core::sync::atomic::Ordering::Release);
+        return;
+    }
     let w = if (*g).started { &raw mut WORKERS[(*g).home] } else { me() };
     lock_runq(w);
     (*w).runq.push(g);
@@ -4731,7 +4737,151 @@ unsafe fn block_current() {
     net::flush_pending();
     let w = me();
     let g = (*w).current;
+    if g == HOST_G {
+        host_pump(w, g);
+        return;
+    }
     ctx_switch(&mut (*g).ctx, &(*w).sched_ctx);
+}
+
+// ---- host mode: a shared library's scheduler ------------------------------
+//
+// A library has no `main` strand: the host's thread calls the exports, on
+// its own stack, and that stack cannot be parked. So in a library the host
+// thread is worker 0 and its call is the *host strand* — a strand record
+// that is never queued and never copied — and whenever it waits on a channel
+// it runs the other strands itself, from its own stack, on worker 0's
+// execution stack, until what it waits for has arrived. Workers 1..N are
+// threads as in a program, started when `RILL_THREADS` asks for them; a
+// strand the host spawns is stolen by them or run by the host's pump. Only
+// channels wake the host (a socket or a timer would not), which is what a
+// library that splits a piece of work across strands needs.
+
+/// The host strand, or null in a program.
+static mut HOST_G: *mut G = core::ptr::null_mut();
+
+/// Set by whoever wakes the host strand; the pump clears it.
+static HOST_WOKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The library's entry: the scheduler's tables and workers, then `code` —
+/// the library's `main` — run on the host's thread itself.
+///
+/// # Safety
+/// Called once from the generated `rill_init`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_rt_host(code: extern "C" fn(*mut u8)) {
+    NWORKERS = requested_threads();
+    if NWORKERS > 1 && rill_parallel_build == 0 {
+        let msg = b"rill: RILL_THREADS ignored - rebuild with `rill build --parallel`\n";
+        write(2, msg.as_ptr(), msg.len());
+        NWORKERS = 1;
+    }
+    pthread_mutex_init(&raw mut CHAN_LOCK, core::ptr::null());
+    sync_init();
+    for i in 0..NWORKERS {
+        let base = alloc_stack(EXEC_STACK_SIZE);
+        WORKERS[i].index = i;
+        WORKERS[i].exec_top = (base as usize + EXEC_STACK_SIZE + PAGE) & !15;
+        pthread_mutex_init(&raw mut WORKERS[i].lock, core::ptr::null());
+        WORKERS[i].kq.store(-1, core::sync::atomic::Ordering::Release);
+        WORKERS[i].wake_fd.store(-1, core::sync::atomic::Ordering::Release);
+    }
+    if NWORKERS > 1 {
+        pthread_key_create(&raw mut TLS_KEY, core::ptr::null());
+        pthread_setspecific(TLS_KEY, &raw const WORKERS[0] as *const u8);
+    }
+    rill_mt = (NWORKERS > 1) as i8;
+    let g = malloc(core::mem::size_of::<G>()) as *mut G;
+    if g.is_null() {
+        out(b"rill: out of memory starting the host strand\n");
+        die();
+    }
+    (*g).saved = core::ptr::null_mut();
+    (*g).saved_cap = 0;
+    (*g).is_main = true;
+    init_g(g, code, core::ptr::null_mut());
+    (*g).started = true;
+    (*g).home = 0;
+    HOST_G = g;
+    WORKERS[0].current = g;
+    for i in 1..NWORKERS {
+        let mut tid: usize = 0;
+        pthread_create(
+            &mut tid,
+            core::ptr::null(),
+            worker_entry,
+            &raw mut WORKERS[i] as *mut u8,
+        );
+    }
+    // `main` in a library is its setup: run here, on the host's stack.
+    let direct: extern "C" fn() = core::mem::transmute(code);
+    direct();
+}
+
+/// The host strand's wait: strands are run on worker 0's execution stack,
+/// stolen from the other workers when there are none of its own, until the
+/// host is woken — by the channel operation it is parked in completing.
+unsafe fn host_pump(w: *mut Worker, host: *mut G) {
+    let mut idle_rounds = 0u32;
+    loop {
+        if HOST_WOKEN.load(core::sync::atomic::Ordering::Acquire)
+            && (core::ptr::read_volatile(&(*host).selected) != -1 || (*host).on_io)
+        {
+            HOST_WOKEN.store(false, core::sync::atomic::Ordering::Release);
+            return;
+        }
+        lock_runq(w);
+        let mut g = (*w).runq.pop();
+        unlock_runq(w);
+        if g.is_null() && rill_mt != 0 && QUEUED.load(core::sync::atomic::Ordering::Acquire) > 0 {
+            for i in 1..NWORKERS {
+                let v = &raw mut WORKERS[i];
+                lock_runq(v);
+                g = (*v).runq.steal_fresh();
+                unlock_runq(v);
+                if !g.is_null() {
+                    break;
+                }
+            }
+        }
+        if g.is_null() {
+            if poll_network(w, false) > 0 {
+                idle_rounds = 0;
+                continue;
+            }
+            let quiet = RUNNING.load(core::sync::atomic::Ordering::Acquire) == 0
+                && QUEUED.load(core::sync::atomic::Ordering::Acquire) == 0
+                && IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) == 0;
+            idle_rounds = if quiet { idle_rounds + 1 } else { 0 };
+            if idle_rounds > 100000 {
+                out(b"rill: deadlock - the host waits and no strand can wake it\n");
+                die();
+            }
+            sched_yield();
+            continue;
+        }
+        bump(&QUEUED, -1);
+        idle_rounds = 0;
+        if !(*g).started {
+            (*g).started = true;
+            (*g).home = (*w).index;
+            (*g).ctx.regs[12] = stack_start((*w).exec_top);
+        } else if !(*g).is_main {
+            restore_stack(g, (*w).exec_top);
+        }
+        (*w).current = g;
+        bump(&RUNNING, 1);
+        ctx_switch(&mut (*w).sched_ctx, &(*g).ctx);
+        bump(&RUNNING, -1);
+        (*w).current = host;
+        if (*g).dead {
+            bump(&LIVE_STRANDS, -1);
+            (*g).next = (*w).free;
+            (*w).free = g;
+        } else if !(*g).is_main {
+            save_stack(g, (*w).exec_top);
+        }
+    }
 }
 
 /// Set by the timer thread, read by generated code at every tail call in a
@@ -4860,7 +5010,7 @@ unsafe fn worker_loop(w: *mut Worker) {
             bump(&QUEUED, -1);
             idle_rounds = 0;
         } else {
-            if (*MAIN_G).dead {
+            if !MAIN_G.is_null() && (*MAIN_G).dead {
                 return;
             }
             // Anything the network made ready becomes runnable here.
