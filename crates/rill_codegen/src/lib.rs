@@ -4945,10 +4945,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let saved_bound = self.bound_fns.clone();
                 let outer_movable = std::mem::take(&mut self.movable);
                 let outer_free = std::mem::take(&mut self.root_free);
+                let saved_held_tail = self.held_above.clone();
                 for (si, stmt) in init.iter().enumerate() {
                     let rest = &stmts[si + 1..];
                     self.begin_statement(stmt_value(stmt), rest);
                     match stmt {
+                        TStmt::Bind { name, value } if self.try_bind_borrowed(name, value, rest, scope, subst, func)? => {}
                         TStmt::Bind { name, value } => {
                             let v = match self.take_builder(value, rest, scope) {
                                 Some(v) => Some(v),
@@ -4991,6 +4993,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.movable = outer_movable;
                 self.root_free = outer_free;
                 self.bound_fns = saved_bound;
+                self.held_above = saved_held_tail;
                 out
             }
             TK::If { cond, then, els } => {
@@ -5712,6 +5715,61 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             inner.insert(name.clone(), Some(*v));
         }
         Ok(self.gen_expr(body, &mut inner, subst, func)?.expect("a scalar"))
+    }
+
+    /// `x = q.f` where `q` is held above and every later use of `x` in the
+    /// block only borrows it: `x` is read out of the box with no count
+    /// taken and is held above too. Before this, `bt = q.db.bt` at the top
+    /// of a function was a retain and a release around the body — on a
+    /// `--parallel` build two runtime calls, and atomic ones inside a
+    /// parallel section — for a box the caller was holding all along.
+    /// Answers whether the binding was made this way.
+    fn try_bind_borrowed(
+        &mut self,
+        name: &str,
+        value: &TExpr,
+        rest: &[TStmt],
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        if !matches!(value.kind, TK::FieldGet { .. }) {
+            return Ok(false);
+        }
+        let ty = self.concrete(&value.ty, subst);
+        if !self.is_heap(&ty) {
+            return Ok(false);
+        }
+        let Some(root) = root_local(value) else { return Ok(false) };
+        if !self.name_held_above(root) {
+            return Ok(false);
+        }
+        // the base must be a box, not a flat value, at every step
+        let mut base = value;
+        while let TK::FieldGet { base: b, .. } = &base.kind {
+            if self.is_flat(&self.concrete(&b.ty, subst)) {
+                return Ok(false);
+            }
+            base = b;
+        }
+        for st in rest {
+            if let TStmt::Bind { name: n, .. } = st {
+                if n == name {
+                    return Ok(false);
+                }
+            }
+            if !borrows_only(stmt_value(st), name, &self.borrowed_params, &self.nonescaping_fn_params) {
+                return Ok(false);
+            }
+        }
+        let (v, held) = self.gen_borrowed(value, scope, subst, func)?;
+        scope.insert(name.to_string(), Some(v));
+        if held {
+            self.cleanup.push((v, ty));
+        } else {
+            self.held_above.insert(name.to_string());
+        }
+        Ok(true)
     }
 
     fn take_owned(
@@ -7655,6 +7713,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let mut last = None;
                 // As in tail position: the block's bindings do not outlive it.
                 let saved_bound = self.bound_fns.clone();
+                let saved_held_block = self.held_above.clone();
                 // What this block binds is released when the block ends, not
                 // at the function's exit: a block that is one branch of an
                 // `if` exists on one path only, and a release at the exit of
@@ -7686,6 +7745,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         HashSet::new()
                     };
                     match stmt {
+                        TStmt::Bind { name, value } if self.try_bind_borrowed(name, value, &stmts[i + 1..], scope, subst, func)? => {
+                            last = None;
+                        }
                         TStmt::Bind { name, value } => {
                             let v = match self.take_builder(value, &stmts[i + 1..], scope) {
                                 Some(v) => Some(v),
@@ -7721,6 +7783,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     }
                 }
                 self.bound_fns = saved_bound;
+                self.held_above = saved_held_block;
                 self.movable = outer_movable;
                 let (kept, own): (Vec<_>, Vec<_>) = std::mem::take(&mut self.cleanup)
                     .into_iter()
