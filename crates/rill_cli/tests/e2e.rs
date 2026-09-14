@@ -1641,8 +1641,62 @@ fn foreign_functions() {
 fn record_fields() {
     assert_eq!(
         compile_and_run("records.rill"),
-        "ada at 0,0 hp 100\n65\n100\nada at 3,4 hp 65\n5\n9\ntrue\n"
+        "ada at 0,0 hp 100\n65\n100\nada at 3,4 hp 65\n5\n9\ntrue\ntile\ncoin\n"
     );
+}
+
+/// A field every constructor has, of one type, is certainly there whichever
+/// the value is, so it reads with the dot and updates with `{ | }` — each
+/// becoming the `match` a program would have written. The positions may
+/// differ between constructors, and the type may be generic.
+#[test]
+fn a_field_every_constructor_has_reads_without_a_match() {
+    let src = "type Sekil\n  \
+                 Daire(r: Float, ad: Str)\n  \
+                 Kare(k: Float, ad: Str)\n\n\
+               type Kutu(a)\n  \
+                 Sol(v: a, n: Int)\n  \
+                 Sag(n: Int, v: a)\n\n\
+               fn ad(s) = s.ad\n\n\
+               fn adla(s, a) = { s | ad = a }\n\n\
+               fn yap(a) =\n  \
+                 println(\"built\")\n  \
+                 Kare(2.0, a)\n\n\
+               fn main() =\n  \
+                 println(ad(Daire(1.0, \"daire\")))\n  \
+                 println(ad(adla(Kare(2.0, \"kare\"), \"kutu\")))\n  \
+                 println({ yap(\"a\") | ad = \"b\" }.ad)\n  \
+                 println(Sol(\"s\", 1).v)\n  \
+                 println(show({ Sag(2, 3.5) | n = 9 }))\n";
+    assert_eq!(
+        run_source("common", src),
+        "daire\nkutu\nbuilt\nb\ns\nSag(9, 3.5)\n"
+    );
+}
+
+/// A field only some constructors have is not certainly there, and one of two
+/// types across them has no one type; both say so.
+#[test]
+fn a_field_not_in_every_constructor_still_needs_a_match() {
+    let head = "type Yarim\n  \
+                  C(n: Int)\n  \
+                  D(m: Int)\n\n\
+                type Kotu\n  \
+                  A(n: Int)\n  \
+                  B(m: Int, n: Str)\n\n";
+    let err = compile_error(&format!("{head}fn f(h: Yarim) = h.n\n\nfn main() = println(\"x\")\n"));
+    assert!(
+        err.contains("more than one constructor") && err.contains("`n` is a field of `C` but not of `D`"),
+        "{err}"
+    );
+    let err = compile_error(&format!("{head}fn f(h: Yarim) = {{ h | n = 1 }}\n\nfn main() = println(\"x\")\n"));
+    assert!(err.contains("`n` is a field of `C` but not of `D`"), "{err}");
+
+    let err = compile_error(&format!("{head}fn f(b: Kotu) = b.n\n\nfn main() = println(\"x\")\n"));
+    assert!(err.contains("`n` is `Int` in `A` and `Str` in `B`"), "{err}");
+
+    let err = compile_error(&format!("{head}fn f(h: Yarim) = h.zz\n\nfn main() = println(\"x\")\n"));
+    assert!(err.contains("no field `zz`") && err.contains("`C` has n; `D` has m"), "{err}");
 }
 
 /// `?` — a chain of things that can fail, and the first failure out of the

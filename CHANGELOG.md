@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — a field every constructor has
+
+`s.name` on a type with several constructors was refused outright: with
+two, a field name did not say which. It does when every constructor has
+it, of one type — `Circle(r, name)` and `Rect(w, h, name)` both have a
+`name`, so the field is certainly there whichever the value is, and it
+reads with the dot like any other. `{ s | name = "x" }` rebuilds
+whichever constructor `s` is. Both become the `match` a program would
+have written, one arm per constructor, so codegen learned nothing new;
+the positions may differ between constructors and the type may be
+generic. A field some constructor lacks still needs the `match`, and the
+error now names the constructor that lacks it rather than the count. The
+fields-name-the-type rule counts such types too.
+
 ## Unreleased — the fields say the type
 
 `fn dist(a, b) = a.x - b.x` used to be refused: the type of `a` was never

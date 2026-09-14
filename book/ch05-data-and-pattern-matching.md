@@ -359,8 +359,10 @@ The base is read once, however many fields are carried over — `{ f(x) | y = 0 
 calls `f` once — so it is safe to update the result of a call.
 
 The rule about constructors is the one `.x` has, for the same reason: a field
-name only says which field when the type has a single constructor for it to
-belong to.
+name says which field when there is one constructor for it to belong to — or
+when every constructor has it, of one type, in which case `.name` and
+`{ s | name = "x" }` work on a `Shape` too, and become the `match` you would
+have written. A field only some constructors have still needs the `match`.
 
 `book/code/ch05/update.rill` shows both of those — that the original is
 untouched, and that the base is read once:

@@ -1836,12 +1836,12 @@ impl Checker {
                 let name = name.clone();
                 let what = describe(base);
                 match self.settled_field(&base.ty, &name, e.line, &what) {
-                    Ok((adt, index)) => {
+                    Ok((adt, per)) => {
                         let base = std::mem::replace(
                             base,
                             Box::new(TExpr { ty: Ty::Unit, line: e.line, kind: TK::MapNew }),
                         );
-                        e.kind = TK::FieldGet { base, adt, ctor: 0, index };
+                        e.kind = self.lower_field(*base, adt, &per, e.line).kind;
                     }
                     Err(err) => self.late_errors.borrow_mut().push(err),
                 }
@@ -1853,10 +1853,10 @@ impl Checker {
                     self.zonk_expr(v, genmap, defaults);
                 }
                 let what = describe(base);
-                let mut slot: Vec<(usize, usize)> = Vec::new();
+                let mut wheres: Vec<Vec<usize>> = Vec::new();
                 for (name, _, fline) in fields.iter() {
                     match self.settled_field(&base.ty, name, *fline, &what) {
-                        Ok(at) => slot.push(at),
+                        Ok((_, per)) => wheres.push(per),
                         Err(err) => {
                             self.late_errors.borrow_mut().push(err);
                             return;
@@ -1868,12 +1868,8 @@ impl Checker {
                     base,
                     Box::new(TExpr { ty: Ty::Unit, line: e.line, kind: TK::MapNew }),
                 );
-                let mut slots: Vec<Option<TExpr>> =
-                    (0..self.adts[adt].ctors[0].fields.len()).map(|_| None).collect();
-                for ((_, index), (_, v, _)) in slot.into_iter().zip(std::mem::take(fields)) {
-                    slots[index] = Some(v);
-                }
-                e.kind = self.lower_update(adt, targs, *base, slots, e.line).kind;
+                let sets = wheres.into_iter().zip(std::mem::take(fields)).map(|(per, (_, v, _))| (per, v)).collect();
+                e.kind = self.lower_update(adt, targs, *base, sets, e.line).kind;
             }
             TK::MapNew => {}
             TK::MapLen { map } | TK::MapClear { map } => self.zonk_expr(map, genmap, defaults),
@@ -2552,24 +2548,64 @@ impl Checker {
                 kind: TK::FieldNamed { base: Box::new(base), name: field.to_string() },
             });
         }
-        let (adt, index) = self.settled_field(&base.ty, field, line, &describe(&base))?;
+        let (adt, per) = self.settled_field(&base.ty, field, line, &describe(&base))?;
+        Ok(self.lower_field(base, adt, &per, line))
+    }
+
+    /// `p.x` once the type is known: one load when there is one constructor,
+    /// and a `match` naming the field in each when there are several — which
+    /// is what a program would have written, and what codegen already knows
+    /// how to take apart.
+    fn lower_field(&self, base: TExpr, adt: usize, per: &[usize], line: usize) -> TExpr {
         let targs = match self.resolve(&base.ty) {
             Ty::Adt(_, targs) => targs,
             _ => Vec::new(),
         };
-        let ty = subst_gen(&self.adts[adt].ctors[0].fields[index], &targs);
-        Ok(TExpr { ty, line, kind: TK::FieldGet { base: Box::new(base), adt, ctor: 0, index } })
+        let ty = subst_gen(&self.adts[adt].ctors[0].fields[per[0]], &targs);
+        if per.len() == 1 {
+            let index = per[0];
+            return TExpr { ty, line, kind: TK::FieldGet { base: Box::new(base), adt, ctor: 0, index } };
+        }
+        let held = self.held_name("field");
+        let arms = self.adts[adt]
+            .ctors
+            .iter()
+            .enumerate()
+            .map(|(ci, ctor)| {
+                let args = (0..ctor.fields.len())
+                    .map(|k| if k == per[ci] { Pattern::Var(held.clone()) } else { Pattern::Wildcard })
+                    .collect();
+                TArm {
+                    pattern: Pattern::Ctor { name: ctor.name.clone(), args, line },
+                    guard: None,
+                    body: TExpr { ty: ty.clone(), line, kind: TK::Local(held.clone()) },
+                    line,
+                }
+            })
+            .collect();
+        TExpr { ty, line, kind: TK::Match { scrutinee: Box::new(base), arms } }
     }
 
-    /// Which field `.x` is, for a type that is known. The single-constructor
-    /// rule lives here: with two, a field name does not say which.
+    /// A name for a binding the checker makes: a dot keeps it out of reach
+    /// of anything a program could write.
+    fn held_name(&self, what: &str) -> String {
+        let n = self.updates.get();
+        self.updates.set(n + 1);
+        format!("{what}.{n}")
+    }
+
+    /// Which field `.x` is, for a type that is known: the type, and the
+    /// field's position in each of its constructors. With one constructor
+    /// the field is simply there or not. With several it has to be in every
+    /// one — a field some constructor lacks is not certainly there, which is
+    /// what `match` is for — and of one type across them.
     fn settled_field(
         &self,
         base_ty: &Ty,
         field: &str,
         line: usize,
         what: &str,
-    ) -> Result<(usize, usize), TypeError> {
+    ) -> Result<(usize, Vec<usize>), TypeError> {
         let adt = match self.resolve(base_ty) {
             Ty::Adt(i, _) => i,
             // Inference finished and never found out. Two types may both have
@@ -2597,32 +2633,79 @@ impl Checker {
             }
         };
         let def = &self.adts[adt];
-        if def.ctors.len() != 1 {
-            let names: Vec<&str> = def.ctors.iter().map(|c| c.name.as_str()).collect();
+        fn named(c: &CtorSig) -> Vec<&str> {
+            c.names.iter().filter_map(|n| n.as_deref()).collect()
+        }
+        let mut per = Vec::with_capacity(def.ctors.len());
+        for ctor in &def.ctors {
+            if let Some(i) = ctor.names.iter().position(|n| n.as_deref() == Some(field)) {
+                per.push(i);
+                continue;
+            }
+            if def.ctors.len() == 1 {
+                let known = named(ctor);
+                let has = if known.is_empty() {
+                    "its fields are not named, and a field is read by its name".to_string()
+                } else {
+                    format!("it has {}", known.join(", "))
+                };
+                return Err(TypeError::new(
+                    line,
+                    format!("`{}` has no field `{field}` — {has}", def.name),
+                ));
+            }
+            let in_some: Vec<String> = def
+                .ctors
+                .iter()
+                .filter(|c| c.names.iter().any(|n| n.as_deref() == Some(field)))
+                .map(|c| format!("`{}`", c.name))
+                .collect();
+            if in_some.is_empty() {
+                let each: Vec<String> = def
+                    .ctors
+                    .iter()
+                    .map(|c| {
+                        let fs = named(c);
+                        let has = if fs.is_empty() { "no named fields".to_string() } else { fs.join(", ") };
+                        format!("`{}` has {has}", c.name)
+                    })
+                    .collect();
+                return Err(TypeError::new(
+                    line,
+                    format!("`{}` has no field `{field}` — {}", def.name, each.join("; ")),
+                ));
+            }
             return Err(TypeError::new(
                 line,
                 format!(
-                    "`{}` has more than one constructor ({}), so `.{field}` cannot say \
-                     which field it is",
+                    "`{}` has more than one constructor, and `{field}` is a field of {} but not \
+                     of `{}` — on such a type a field has to be in every constructor to be \
+                     read by name; `match` is how the others are read",
                     def.name,
-                    names.join(", ")
+                    in_some.join(" and "),
+                    ctor.name
                 ),
             ));
         }
-        let ctor = &def.ctors[0];
-        let Some(index) = ctor.names.iter().position(|n| n.as_deref() == Some(field)) else {
-            let known: Vec<&str> = ctor.names.iter().filter_map(|n| n.as_deref()).collect();
-            let has = if known.is_empty() {
-                "its fields are not named, and a field is read by its name".to_string()
-            } else {
-                format!("it has {}", known.join(", "))
-            };
-            return Err(TypeError::new(
-                line,
-                format!("`{}` has no field `{field}` — {has}", def.name),
-            ));
-        };
-        Ok((adt, index))
+        let first = &def.ctors[0].fields[per[0]];
+        for (ci, ctor) in def.ctors.iter().enumerate().skip(1) {
+            let this = &ctor.fields[per[ci]];
+            if this != first {
+                return Err(TypeError::new(
+                    line,
+                    format!(
+                        "`{field}` is `{}` in `{}` and `{}` in `{}`, so `.{field}` on a `{}` \
+                         has no one type",
+                        self.type_name(first),
+                        def.ctors[0].name,
+                        self.type_name(this),
+                        ctor.name,
+                        def.name
+                    ),
+                ));
+            }
+        }
+        Ok((adt, per))
     }
 
     /// `{ p | x = 9 }` — every field `p` had, with those named replaced.
@@ -2681,122 +2764,162 @@ impl Checker {
                 ))
             }
         };
-        if self.adts[adt].ctors.len() != 1 {
-            let names: Vec<&str> = self.adts[adt].ctors.iter().map(|c| c.name.as_str()).collect();
-            return Err(TypeError::new(
-                line,
-                format!(
-                    "`{}` has more than one constructor ({}), so an update cannot say which \
-                     fields these are",
-                    self.adts[adt].name,
-                    names.join(", ")
-                ),
-            ));
-        }
-        let arity = self.adts[adt].ctors[0].fields.len();
-        let field_names: Vec<Option<String>> = self.adts[adt].ctors[0].names.clone();
-        let adt_name = self.adts[adt].name.clone();
-
         // Which field each name is, checked before anything is inferred so
         // that a misspelling is reported as one.
-        let mut slot: Vec<Option<TExpr>> = (0..arity).map(|_| None).collect();
-        for (name, value, fline) in fields {
-            let Some(index) = field_names.iter().position(|n| n.as_deref() == Some(name)) else {
-                let known: Vec<&str> = field_names.iter().filter_map(|n| n.as_deref()).collect();
-                let has = if known.is_empty() {
-                    "its fields are not named, and a field is set by its name".to_string()
-                } else {
-                    format!("it has {}", known.join(", "))
-                };
-                return Err(TypeError::new(
-                    *fline,
-                    format!("`{adt_name}` has no field `{name}` — {has}"),
-                ));
-            };
-            if slot[index].is_some() {
+        let what = describe(&b);
+        let mut wheres: Vec<Vec<usize>> = Vec::new();
+        for (i, (name, _, fline)) in fields.iter().enumerate() {
+            if fields[..i].iter().any(|(n, _, _)| n == name) {
                 return Err(TypeError::new(
                     *fline,
                     format!("field `{name}` is set twice in this update"),
                 ));
             }
-            let v = self.infer(value, env)?;
-            let want = subst_gen(&self.adts[adt].ctors[0].fields[index], &targs);
-            self.unify(&want, &v.ty, *fline, "the new value for a field")?;
-            slot[index] = Some(v);
+            wheres.push(self.settled_field(&b.ty, name, *fline, &what)?.1);
         }
-        Ok(self.lower_update(adt, targs, b, slot, line))
+        let mut sets = Vec::new();
+        for (per, (_, value, fline)) in wheres.into_iter().zip(fields) {
+            let v = self.infer(value, env)?;
+            let want = subst_gen(&self.adts[adt].ctors[0].fields[per[0]], &targs);
+            self.unify(&want, &v.ty, *fline, "the new value for a field")?;
+            sets.push((per, v));
+        }
+        Ok(self.lower_update(adt, targs, b, sets, line))
     }
 
     /// The call an update is: the constructor, given the new values where
     /// there are any and the base's own fields everywhere else. The base is
     /// bound first, so it is evaluated once however many fields it fills in.
+    /// Each new value comes with the field's position in every constructor.
+    ///
+    /// With several constructors, which one is being rebuilt is only known
+    /// at run time, so it is a `match` with an arm per constructor, each
+    /// naming the fields it keeps and calling itself again with the new
+    /// values in their places. Those are bound before the match, since one
+    /// expression cannot stand in every arm.
     fn lower_update(
         &self,
         adt: usize,
         targs: Vec<Ty>,
         b: TExpr,
-        mut slot: Vec<Option<TExpr>>,
+        sets: Vec<(Vec<usize>, TExpr)>,
         line: usize,
     ) -> TExpr {
-        let arity = slot.len();
-        let held = format!("update.{}", self.updates.get());
-        self.updates.set(self.updates.get() + 1);
+        let held = self.held_name("update");
         let ty = Ty::Adt(adt, targs.clone());
-        let args = (0..arity)
-            .map(|i| match slot[i].take() {
-                Some(v) => v,
-                None => TExpr {
-                    ty: subst_gen(&self.adts[adt].ctors[0].fields[i], &targs),
-                    line,
-                    kind: TK::FieldGet {
-                        base: Box::new(TExpr {
-                            ty: ty.clone(),
-                            line,
-                            kind: TK::Local(held.clone()),
-                        }),
-                        adt,
-                        ctor: 0,
-                        index: i,
+        let def = &self.adts[adt];
+        let local = |name: String, ty: Ty| TExpr { ty, line, kind: TK::Local(name) };
+        let field_ty = |ci: usize, k: usize| subst_gen(&def.ctors[ci].fields[k], &targs);
+        let mut stmts = vec![TStmt::Bind { name: held.clone(), value: b }];
+
+        if def.ctors.len() == 1 {
+            let mut slot: Vec<Option<TExpr>> = (0..def.ctors[0].fields.len()).map(|_| None).collect();
+            for (per, v) in sets {
+                slot[per[0]] = Some(v);
+            }
+            let args = (0..slot.len())
+                .map(|i| match slot[i].take() {
+                    Some(v) => v,
+                    None => TExpr {
+                        ty: field_ty(0, i),
+                        line,
+                        kind: TK::FieldGet {
+                            base: Box::new(local(held.clone(), ty.clone())),
+                            adt,
+                            ctor: 0,
+                            index: i,
+                        },
                     },
-                },
+                })
+                .collect();
+            stmts.push(TStmt::Expr(TExpr {
+                ty: ty.clone(),
+                line,
+                kind: TK::CallCtor { adt, ctor: 0, targs, args },
+            }));
+            return TExpr { ty, line, kind: TK::Block(stmts) };
+        }
+
+        let news: Vec<(Vec<usize>, String)> = sets
+            .into_iter()
+            .enumerate()
+            .map(|(j, (per, v))| {
+                let name = format!("{held}.{j}");
+                stmts.push(TStmt::Bind { name: name.clone(), value: v });
+                (per, name)
             })
             .collect();
-        TExpr {
+        let arms = def
+            .ctors
+            .iter()
+            .enumerate()
+            .map(|(ci, ctor)| {
+                let mut pats = Vec::new();
+                let mut args = Vec::new();
+                for k in 0..ctor.fields.len() {
+                    match news.iter().find(|(per, _)| per[ci] == k) {
+                        Some((_, name)) => {
+                            pats.push(Pattern::Wildcard);
+                            args.push(local(name.clone(), field_ty(ci, k)));
+                        }
+                        None => {
+                            let name = format!("{held}.{ci}.{k}");
+                            pats.push(Pattern::Var(name.clone()));
+                            args.push(local(name, field_ty(ci, k)));
+                        }
+                    }
+                }
+                TArm {
+                    pattern: Pattern::Ctor { name: ctor.name.clone(), args: pats, line },
+                    guard: None,
+                    body: TExpr {
+                        ty: ty.clone(),
+                        line,
+                        kind: TK::CallCtor { adt, ctor: ci, targs: targs.clone(), args },
+                    },
+                    line,
+                }
+            })
+            .collect();
+        stmts.push(TStmt::Expr(TExpr {
             ty: ty.clone(),
             line,
-            kind: TK::Block(vec![
-                TStmt::Bind { name: held, value: b },
-                TStmt::Expr(TExpr {
-                    ty,
-                    line,
-                    kind: TK::CallCtor { adt, ctor: 0, targs, args },
-                }),
-            ]),
-        }
+            kind: TK::Match { scrutinee: Box::new(local(held, ty.clone())), arms },
+        }));
+        TExpr { ty, line, kind: TK::Block(stmts) }
     }
 
-    /// Settles one obligation whose type is known: the field's type is what
+    /// Settles one obligation whose type is known    /// Settles one obligation whose type is known: the field's type is what
     /// was read from it. One the type does not have is left for `zonk`,
     /// which reports it with the right words.
     fn settle_field(&mut self, ob: &FieldObligation) -> Result<(), TypeError> {
         if let Ty::Adt(adt, targs) = self.resolve(&ob.base) {
-            if let Ok((_, index)) = self.settled_field(&ob.base, &ob.name, ob.line, "it") {
-                let ty = subst_gen(&self.adts[adt].ctors[0].fields[index], &targs);
+            if let Ok((_, per)) = self.settled_field(&ob.base, &ob.name, ob.line, "it") {
+                let ty = subst_gen(&self.adts[adt].ctors[0].fields[per[0]], &targs);
                 self.unify(&ty, &ob.result, ob.line, ob.ctx)?;
             }
         }
         Ok(())
     }
 
-    /// The types with one constructor that have every one of these fields.
+    /// The types every constructor of which has every one of these fields.
     fn types_with_fields(&self, names: &[&str]) -> Vec<usize> {
         (0..self.adts.len())
-            .filter(|&i| {
-                let d = &self.adts[i];
-                d.ctors.len() == 1
-                    && names.iter().all(|n| d.ctors[0].names.iter().any(|f| f.as_deref() == Some(n)))
-            })
+            .filter(|&i| names.iter().all(|n| self.has_field(i, n)))
             .collect()
+    }
+
+    /// Whether every constructor of a type has a field of this name — the
+    /// condition for reading it without a `match`.
+    fn has_field(&self, adt: usize, field: &str) -> bool {
+        let ctors = &self.adts[adt].ctors;
+        !ctors.is_empty() && ctors.iter().all(|c| c.names.iter().any(|n| n.as_deref() == Some(field)))
+    }
+
+    /// The field names every constructor of a type has.
+    fn common_fields(&self, adt: usize) -> Vec<&str> {
+        let ctors = &self.adts[adt].ctors;
+        ctors[0].names.iter().filter_map(|n| n.as_deref()).filter(|n| self.has_field(adt, n)).collect()
     }
 
     /// The type of a value nothing named, from the fields asked of it: the
@@ -2806,7 +2929,6 @@ impl Checker {
     fn name_type_by_fields(&mut self, v: u32, obs: &[FieldObligation]) -> Result<(), TypeError> {
         let names = fields_asked(obs);
         let candidates = self.types_with_fields(&names);
-        let has = |d: &AdtDef, n: &str| d.ctors[0].names.iter().any(|f| f.as_deref() == Some(n));
         let first = &obs[0];
         let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
         let which = if quoted.len() == 1 {
@@ -2825,14 +2947,9 @@ impl Checker {
             }
             [] => {
                 // A misspelling, most likely: say what the near misses have.
-                let near: Vec<String> = self
-                    .adts
-                    .iter()
-                    .filter(|d| d.ctors.len() == 1 && names.iter().any(|n| has(d, n)))
-                    .map(|d| {
-                        let fs: Vec<&str> = d.ctors[0].names.iter().filter_map(|n| n.as_deref()).collect();
-                        format!("`{}` has {}", d.name, fs.join(", "))
-                    })
+                let near: Vec<String> = (0..self.adts.len())
+                    .filter(|&i| names.iter().any(|n| self.has_field(i, n)))
+                    .map(|i| format!("`{}` has {}", self.adts[i].name, self.common_fields(i).join(", ")))
                     .collect();
                 let hint = if near.is_empty() { String::new() } else { format!(" ({})", near.join("; ")) };
                 Err(TypeError::new(

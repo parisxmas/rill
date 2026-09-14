@@ -19,10 +19,11 @@ type Player
   Player(name: Str, pos: Point, health: Int, kills: Int)
 
 # Several constructors: which fields there are depends on which one it is, so
-# these are read by `match` as they always were.
+# those are read by `match` as they always were. `name` is in every one, of
+# one type, so it is certainly there and reads with the dot like any other.
 type Shape
-  Circle(r: Float)
-  Rect(w: Float, h: Float)
+  Circle(r: Float, name: Str)
+  Rect(w: Float, h: Float, name: Str)
 
 # Nothing here says what `a` and `b` are but the fields read from them, and
 # that is enough: `Point` is the one type with an `x` and a `y`. Were there
@@ -48,8 +49,8 @@ fn moved(p: Player, to) = Player(p.name, to, p.health, p.kills)
 
 # Several constructors, so the fields come out of a `match`.
 fn area(s) = match s
-  Circle(r) -> 3.14159 * r * r
-  Rect(w, h) -> w * h
+  Circle(r, _) -> 3.14159 * r * r
+  Rect(w, h, _) -> w * h
 
 fn main() =
   ada = Player("ada", P(0.0, 0.0), 100, 0)
@@ -67,7 +68,9 @@ fn main() =
   println(spawn_at(9.0).y)
 
   # And the other way of taking a value apart is still there, and still the
-  # only way when there is more than one constructor.
-  println(area(Circle(1.0)) > area(Rect(1.0, 2.0)))
+  # only way for a field that is not in every constructor.
+  println(area(Circle(1.0, "disc")) > area(Rect(1.0, 2.0, "tile")))
+  println(Rect(1.0, 2.0, "tile").name)
+  println({ Circle(1.0, "disc") | name = "coin" }.name)
 
 fn spawn_at(y) = P(0.0, y)

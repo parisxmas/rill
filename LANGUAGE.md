@@ -137,9 +137,14 @@ fn dist(a: Point, b: Point) =
 
 One constructor is the whole condition, and it is the condition a binding
 already had: `P(x, y) = p` reads as a binding because it cannot fail, and
-`p.x` for the same reason. A type with several constructors has no field that
-is certainly there, so `match` is how those are read — the error names the
-constructors when a dot is tried on one.
+`p.x` for the same reason. A type with several constructors reads the same
+way for a field **every** constructor has, of one type — `s.name` on a
+`Circle(r: Float, name: Str)` / `Rect(w: Float, h: Float, name: Str)` is
+certainly there whichever it is, and becomes the `match` a program would have
+written. A field some constructor lacks is not certainly there, so `match` is
+how those are read; the error names the constructor that lacks it. Updating
+works the same way: `{ s | name = "disc" }` rebuilds whichever constructor
+`s` is.
 
 The dot works on anything, not only a name: `mk(1).y`, `p.pos.x`. What it does
 not do is change anything. A record is a value; the way to a different one is
