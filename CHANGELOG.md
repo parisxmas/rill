@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — a short string out of a long builder, and a length read in time
+
+Every JSON answer a server built in a `strbuf` and sent — between 129
+and 240 bytes long — kept 272 bytes of `malloc` for good. The builder's
+block had doubled to 256 bytes, beyond the pool, and `strbuf_str` on its
+last use handed that block over as the string; the string was then freed
+by its own length, into a pool free list the block never came from, and
+nothing takes a block off a list but a request for that size. The
+catalogue example grew from 12 MB to 290 MB over 900,000 requests for one
+row. The block is now handed over only when the string is beyond the pool
+too; otherwise it is copied, as it always was for a builder that never
+left the pool.
+
+`str_len(f())` — and `#f()` on a buffer — read the length *after* the
+value was released. The loads were marked `invariant.load`, so LLVM could
+hoist them out of loops that store into a buffer; the same mark let it
+sink them past the release. For a string or buffer beyond the pool
+`free` writes over the header, and the length came back as whatever it
+left: a thousand 300-byte strings added up to 1,010,688. The mark is
+gone; a loop that checks bounds reads the header again on each, which
+costs the engine a few percent on inserts, and a length is now read where
+the program reads it.
+
+`RILL_ALLOC_CHECK` now works for a program that never spawns, and a
+`--parallel` build under it sends every block through the runtime, checks
+and all (a plain build is told the checks cover only what the runtime
+allocates). `extern fn rill_mem_report() -> Int` writes where a program's
+memory is — blocks out, pool chunks and what sits on free lists, big
+blocks kept, strand records and their saved stacks — to standard error,
+for a server's `/stat`. `examples/short_of_long.rill` is both bugs, and
+an e2e test runs it under the checks.
+
 ## Unreleased — a shared box let go of atomically, and an allocator that says who
 
 A `match` that empties a box it owns — the in-place reuse that lets

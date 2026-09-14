@@ -477,9 +477,10 @@ pub unsafe extern "C" fn rill_strbuf_str(p: *const u8) -> *mut u8 {
 
 /// `strbuf_str` for a builder nobody reads again: the block the text is in
 /// becomes the string, header written in the room kept for it, and the
-/// builder is left empty and usable. Only for a block beyond the pool —
-/// under that the copy is cheap and the pool wants blocks back in the size
-/// class they came from, which a string freed by its length would not do.
+/// builder is left empty and usable. Only for a block beyond the pool
+/// holding a string that is beyond it too — under that the copy is cheap
+/// and the pool wants blocks back in the size class they came from, which
+/// a string freed by its length would not do.
 /// The compiler calls this where it can see the builder's last use.
 ///
 /// # Safety
@@ -489,7 +490,12 @@ pub unsafe extern "C" fn rill_strbuf_take(p: *mut u8) -> *mut u8 {
     let len = sb_len(p);
     let cap = *(p as *const i64).add(3) as usize;
     let d = sb_data(p);
-    if d.is_null() || 16 + cap <= POOL_MAX {
+    // A string is freed by its length, a builder's block by its capacity,
+    // and the two must land in the same allocator: a block beyond the
+    // pool handed to a string short enough for the pool would be pushed
+    // onto a free list it never came from, and stay there — 272 bytes of
+    // `malloc` kept for every 200-byte answer a server ever gave.
+    if d.is_null() || 16 + cap <= POOL_MAX || 16 + len <= POOL_MAX {
         return rill_strbuf_str(p);
     }
     let block = d.sub(16);
@@ -4277,6 +4283,8 @@ unsafe fn live_in(p: usize, class: usize) {
 const MAX_CHUNKS: usize = 4096;
 static mut CHUNKS: [(usize, usize); MAX_CHUNKS] = [(0, 0); MAX_CHUNKS];
 static NCHUNKS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+/// Chunks mapped by every pool, checks or not: for `rill_mem_report`.
+static NCHUNKS_ALL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 unsafe fn chunk_note(base: usize, len: usize) {
     let i = NCHUNKS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
@@ -4581,9 +4589,8 @@ pub unsafe extern "C" fn rill_alloc(size: u64) -> *mut u8 {
                 out(b"rill: out of memory\n");
                 die();
             }
-            if ALLOC_CHECK {
-                chunk_note(p as usize, POOL_CHUNK);
-            }
+            NCHUNKS_ALL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            chunk_note(p as usize, POOL_CHUNK);
             (*pool).next = p as usize;
             (*pool).end = p as usize + POOL_CHUNK;
         }
@@ -4666,6 +4673,87 @@ pub unsafe extern "C" fn rill_env_release(ptr: *mut u8) {
         let drop_fn: extern "C" fn(*mut u8) = core::mem::transmute(drop_fn);
         drop_fn(ptr);
     }
+}
+
+/// Where the program's memory is, on standard error, for a program that
+/// wants to know why it weighs what it does: blocks out, the pool's chunks
+/// and how much of them sits on free lists, the big blocks kept for reuse,
+/// and the strand records with the stacks they have saved. Every number
+/// is bytes the process holds; none of it is what `malloc` holds for
+/// itself. Returns the blocks out, for a program that wants one number.
+///
+/// # Safety
+/// Walks the pools' free lists and the strand list without locking: for a
+/// program's own diagnostics, best asked while things are quiet.
+#[no_mangle]
+pub unsafe extern "C" fn rill_mem_report() -> i64 {
+    let live = live_total();
+    let mut chunks = NCHUNKS_ALL.load(core::sync::atomic::Ordering::Relaxed);
+    let mut bumped = 0usize;
+    let mut on_lists = 0usize;
+    let mut per_class = [0usize; POOL_CLASSES];
+    for i in 0..MAX_WORKERS {
+        let pool = &raw const rill_pools[i];
+        if (*pool).end != 0 {
+            bumped += POOL_CHUNK - ((*pool).end - (*pool).next);
+        }
+        for class in 0..POOL_CLASSES {
+            let mut p = (*pool).free[class];
+            let mut n = 0usize;
+            while !p.is_null() && n < 1 << 28 {
+                n += 1;
+                p = *(p as *const *mut u8);
+            }
+            per_class[class] += n;
+            on_lists += n * (class + 1) * 16;
+        }
+    }
+    if chunks == 0 && bumped > 0 {
+        chunks = 1;
+    }
+    let mut big = 0usize;
+    for i in 0..BIG_SLOTS {
+        big += BIG_SIZE[i];
+    }
+    let mut gs = 0usize;
+    let mut saved = 0usize;
+    let mut g = ALL_GS.load(core::sync::atomic::Ordering::Acquire) as *mut G;
+    while !g.is_null() {
+        gs += 1;
+        saved += (*g).saved_cap;
+        g = (*g).all_next;
+    }
+    let mut b = [0u8; 512];
+    let n = snprintf(
+        b.as_mut_ptr(),
+        b.len(),
+        b"rill mem: %lld blocks out; pool %zu chunks of %zu MB, %zu MB handed out, %zu MB on free lists; big kept %zu MB; %zu strand records, %zu MB of saved stacks\n\0".as_ptr(),
+        live,
+        chunks,
+        POOL_CHUNK >> 20,
+        bumped >> 20,
+        on_lists >> 20,
+        big >> 20,
+        gs,
+        saved >> 20,
+    );
+    err(&b[..(n.max(0) as usize).min(b.len())]);
+    // the free lists by class, for the ones that hold anything much
+    for class in 0..POOL_CLASSES {
+        let bytes = per_class[class] * (class + 1) * 16;
+        if bytes >= 1 << 20 {
+            let n = snprintf(
+                b.as_mut_ptr(),
+                b.len(),
+                b"  free %zu-byte blocks: %zu (%zu MB)\n\0".as_ptr(),
+                (class + 1) * 16,
+                per_class[class],
+                bytes >> 20,
+            );
+            err(&b[..(n.max(0) as usize).min(b.len())]);
+        }
+    }
+    live
 }
 
 /// Called at program exit; when RILL_DEBUG_ALLOC is set, reports the number
@@ -6342,17 +6430,42 @@ pub unsafe extern "C" fn rill_rt_run_direct(code: extern "C" fn()) {
     rill_mt = 0;
     atexit(flush_at_exit);
     crash_handlers_ready();
+    alloc_checks_wanted();
+    if ALLOC_CHECK && rill_parallel_build != 0 {
+        // The checks live in the runtime's allocator, and a parallel build
+        // goes there only while `rill_mt` says workers share; the inline
+        // fast paths are skipped from here on, at the price of atomic
+        // counts, and the worker they look up is the one there is.
+        pthread_key_create(&raw mut TLS_KEY, core::ptr::null());
+        pthread_setspecific(TLS_KEY, &raw const WORKERS[0] as *const u8);
+        rill_mt = 1;
+    }
     code();
+}
+
+/// `RILL_ALLOC_CHECK`: 1 for the allocator's checks, 2 for the quarantine
+/// on top. Only a `--parallel` build can take them all the way — a plain
+/// build pops and pushes the pool's blocks inline, where no check is.
+unsafe fn alloc_checks_wanted() {
+    let check = getenv(b"RILL_ALLOC_CHECK\0".as_ptr());
+    ALLOC_CHECK = !check.is_null();
+    ALLOC_QUAR = ALLOC_CHECK && *check == b'2';
+    if ALLOC_CHECK && rill_parallel_build == 0 {
+        err(b"rill: RILL_ALLOC_CHECK covers only what the runtime allocates; build with --parallel for all of it\n");
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rill_rt_run(code: extern "C" fn(*mut u8)) {
     atexit(flush_at_exit);
     crash_handlers_ready();
-    let check = getenv(b"RILL_ALLOC_CHECK\0".as_ptr());
-    ALLOC_CHECK = !check.is_null();
-    ALLOC_QUAR = ALLOC_CHECK && *check == b'2';
+    alloc_checks_wanted();
     NWORKERS = requested_threads();
+    if ALLOC_CHECK && rill_parallel_build != 0 && NWORKERS < 2 {
+        // as in `rill_rt_run_direct`: the checks need every block to pass
+        // through the runtime, which takes `rill_mt` on
+        NWORKERS = 2;
+    }
     if NWORKERS > 1 && rill_parallel_build == 0 {
         // The generated code updates reference counts without synchronizing,
         // which is what makes single-worker programs fast. Running it on

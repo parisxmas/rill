@@ -3771,3 +3771,34 @@ fn shared_list_counts_stay_right_across_workers() {
         assert_eq!(String::from_utf8_lossy(&run.stdout), "332800000\n");
     }
 }
+
+/// A builder that grew past the pool's largest block, holding a string
+/// short enough for the pool: taking the block over as the string would
+/// free it, by the string's length, onto a pool free list it never came
+/// from — a server's every 200-byte answer kept for good. The runtime's
+/// checks report exactly that free, so a program that makes and drops
+/// such strings by the thousand under them must come through clean. The
+/// same program adds up `str_len(answer(i))` over strings beyond the
+/// pool, whose header `free` writes over: the length has to be read
+/// before the release, which `invariant.load` on it once let LLVM undo.
+#[test]
+fn short_string_in_a_big_builder_is_copied_not_taken() {
+    require_fresh_runtime();
+    let root = workspace_root();
+    let source = root.join("examples").join("short_of_long.rill");
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let exe = out_dir.join("short_of_long");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&source)
+        .arg("--parallel")
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(build.status.success(), "rill build short_of_long.rill failed:\n{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&exe).env("RILL_ALLOC_CHECK", "1").output().expect("failed to run produced executable");
+    assert!(run.status.success(), "short_of_long died:\n{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "200000\n300000\n");
+}

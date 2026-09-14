@@ -1678,7 +1678,18 @@ above is not enough. `RILL_RC_CHECK=1` in the environment of `rill build`
 compiles a program whose every count update first asks the runtime
 whether the block is out at all, and a touch of a freed block is reported
 in the toucher's frames with the block's history: every retain, release,
-hand-out and free, by worker and by frame.
+hand-out and free, by worker and by frame. The checks live in the
+runtime's allocator, and a `--parallel` build under them sends every
+block there; a plain build pops and pushes the pool's blocks inline, and
+is told the checks cover only what the runtime allocates.
+
+Where a program's memory *is*, as against where it went wrong:
+`extern fn rill_mem_report() -> Int` writes one line to standard error —
+blocks out, the pool's chunks and how much of them sits on free lists,
+the big blocks kept for reuse, the strand records and the stacks they
+have saved — and the free lists by size where one holds a megabyte or
+more. A server's `/stat` route is the place for it: the catalogue example
+found 195 MB on one free list that way.
 
 `rill types` is the answer to the question an inferring language raises: what
 did it decide? It prints every function in the file as the checker sees it,

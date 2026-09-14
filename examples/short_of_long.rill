@@ -1,0 +1,24 @@
+# Two things a server does all day, at the sizes that went wrong.
+#
+# A builder filled to 200 bytes has a block doubled up to 256 — beyond the
+# pool — while the string it becomes is short enough for the pool. Handed
+# the builder's block, the string would be freed by its own length onto a
+# pool free list the block never came from, and stay there: 272 bytes of
+# `malloc` kept for every small JSON answer. So it is copied instead, and
+# under `RILL_ALLOC_CHECK=1` the free of a block from the wrong allocator
+# is what the check reports.
+#
+# And `str_len(answer(i))`: the length is read before the string is let
+# go of, and must be — for a string beyond the pool, `free` writes over
+# the header, and a length read after it is whatever `free` left there.
+fn answer(i, n) =
+  b = strbuf()
+  for k in 0..n
+    strbuf_byte(b, 97 + (i + k) % 26)
+  strbuf_str(b)
+
+fn total(i, n, acc) = if i == 1000 then acc else total(i + 1, n, acc + str_len(answer(i, n)))
+
+fn main() =
+  println(total(0, 200, 0))
+  println(total(0, 300, 0))

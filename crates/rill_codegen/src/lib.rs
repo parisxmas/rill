@@ -1757,11 +1757,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error")
         };
         let load = self.builder.build_load(i64t, slot, "len").expect("LLVM builder error");
-        // A buffer's length is fixed when it is made, so this load may be
-        // hoisted out of a loop and shared between the bounds checks of one.
-        // Without saying so, every indexed access reads the header again,
-        // since a write to an element is not obviously disjoint from it.
-        self.mark_invariant(load);
+        // Not marked `invariant.load`, though a buffer's length never
+        // changes while the buffer lives: the mark lets LLVM move the load
+        // anywhere the pointer is, which included past the buffer's own
+        // release — `n + #make()` read the header of a freed block, and for
+        // a block beyond the pool `free` had written over it. So the load
+        // stays a plain one, ordered with the release, and a loop that
+        // stores reads the header again on each bound it checks.
         load.into_int_value()
     }
 
@@ -7062,18 +7064,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let lenp = unsafe { b.build_gep(self.ctx.i8_type(), s, &[i64t.const_int(8, false)], "lenp") }
                     .expect("LLVM builder error");
                 let len_load = b.build_load(i64t, lenp, "strlen").expect("LLVM builder error");
-                // A string never changes once it exists, so its length is
-                // the same on every read. Saying so lets LLVM hoist the load
-                // out of a loop that also stores — into a buffer, say — where
-                // it could not otherwise know the store left the header
-                // alone, and then prove `i < len` from the loop's own bound
-                // and vectorize the body.
-                let invariant = self.ctx.get_kind_id("invariant.load");
-                len_load
-                    .as_instruction_value()
-                    .expect("a load")
-                    .set_metadata(self.ctx.metadata_node(&[]), invariant)
-                    .expect("LLVM metadata error");
+                // A plain load, not an `invariant.load`, for the reason
+                // given at `buf_len`: the mark let `str_len(f())` be read
+                // after the string was released, and a string beyond the
+                // pool has its header written over by `free`.
                 let len = len_load.into_int_value();
                 let out: BasicValueEnum<'ctx> = if *rt == "rill_str_len" {
                     len.into()
