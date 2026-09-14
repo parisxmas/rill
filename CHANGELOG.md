@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — a method with a default, and a trait that requires others
+
+A trait method may come with a default body, written after its
+signature with its parameters named — `priority(x: a) -> Int = 1` —
+and an impl that leaves the method out gets it. The default is checked
+once per such impl, at that impl's type, as if the impl had written it,
+so a default that calls another method of the trait calls that impl's.
+`trait Pretty(a): Show, Describe` requires the others of any type that
+implements it, and an impl for a type that lacks one is refused naming
+it; `Ord` and `Show` may be required and are met the way `Int` and
+`Str` meet them, without an impl.
+
+A loop or a `?` inside an impl method was an internal error — "`while`
+was not expanded" — because impl bodies were never handed to the pass
+that spells those out. They are now, and default bodies with them.
+
 ## Unreleased — a requirement said in the signature
 
 A generic function's requirements were whatever its body implied — an

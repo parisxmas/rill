@@ -39,6 +39,15 @@ pub fn parse(src: &str) -> Result<Module, SyntaxError> {
     Parser { toks, pos: 0, last_line: 0 }.module()
 }
 
+fn ordinal(n: usize) -> String {
+    match n {
+        1 => "first".into(),
+        2 => "second".into(),
+        3 => "third".into(),
+        n => format!("{n}th"),
+    }
+}
+
 fn starts_upper(s: &str) -> bool {
     s.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
@@ -293,6 +302,19 @@ impl Parser {
         self.expect(&Tok::LParen, "after the trait name")?;
         let param = self.ident("the trait's type parameter")?;
         self.expect(&Tok::RParen, "to close the trait parameter")?;
+        // `: Show, Describe` — what a type must implement as well.
+        let mut supers = Vec::new();
+        if matches!(self.peek(), Tok::Colon) {
+            self.bump();
+            loop {
+                supers.push(self.upper_ident("a trait name after `:`")?);
+                if matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
         self.expect(&Tok::Indent, "— method signatures must be indented under `trait`")?;
         let mut methods = vec![self.method_sig()?];
         loop {
@@ -319,7 +341,7 @@ impl Parser {
                 }
             }
         }
-        Ok(TraitDef { name, param, methods, line })
+        Ok(TraitDef { name, param, methods, supers, line })
     }
 
     fn method_sig(&mut self) -> Result<MethodSig, SyntaxError> {
@@ -327,8 +349,18 @@ impl Parser {
         let name = self.ident("a method name")?;
         self.expect(&Tok::LParen, "after the method name")?;
         let mut params = Vec::new();
+        let mut names = Vec::new();
         if !matches!(self.peek(), Tok::RParen) {
             loop {
+                // `x: a` names the parameter, which a default body needs;
+                // a bare type is what a signature has always said.
+                let named = matches!((self.peek(), self.peek2()), (Tok::Ident(_), Tok::Colon));
+                if named {
+                    names.push(Some(self.ident("a parameter name")?));
+                    self.bump();
+                } else {
+                    names.push(None);
+                }
                 params.push(self.type_ref("a parameter type")?);
                 if matches!(self.peek(), Tok::Comma) {
                     self.bump();
@@ -340,7 +372,25 @@ impl Parser {
         self.expect(&Tok::RParen, "to close the method's parameter list")?;
         self.expect(&Tok::Arrow, "before the method's return type")?;
         let ret = self.type_ref("a return type")?;
-        Ok(MethodSig { name, params, ret, line })
+        let default = if matches!(self.peek(), Tok::Eq) {
+            if let Some(i) = names.iter().position(|n| n.is_none()) {
+                let (l, c) = self.here();
+                return Err(SyntaxError::new(
+                    l,
+                    c,
+                    format!(
+                        "a default body needs its parameters named: the {} of `{name}` has \
+                         no name to be written in terms of",
+                        ordinal(i + 1)
+                    ),
+                ));
+            }
+            self.bump();
+            Some(self.body()?)
+        } else {
+            None
+        };
+        Ok(MethodSig { name, params, names, ret, default, line })
     }
 
     /// `impl Name(Target)` + indented `fn` definitions.

@@ -733,6 +733,22 @@ impl Describe(Int)
 fn announce(x) = println(describe(x))   # works for any implementing type
 ```
 
+A method may come with a **default**, written after its signature with its
+parameters named, and an impl that leaves the method out gets it. The
+default is checked once per such impl, at that impl's type, so a default
+that calls another method of the trait calls that impl's:
+
+```
+trait Describe(a)
+  describe(a) -> Str
+  priority(x: a) -> Int = 1
+  banner(x: a) -> Str = describe(x) + " (" + int_to_str(priority(x)) + ")"
+```
+
+A trait may **require others**: `trait Pretty(a): Show, Describe` says a
+type implements `Pretty` only if it implements those too, and an impl of
+`Pretty` for a type that does not is refused, naming what is missing.
+
 A method's name belongs to its trait, and two traits may use the same one:
 `describe(x)` is settled by the type of `x`, whichever trait is implemented
 for it, and where that cannot tell — both are, or `x` is a parameter whose

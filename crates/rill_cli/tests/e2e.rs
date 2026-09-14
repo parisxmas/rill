@@ -2125,6 +2125,56 @@ fn a_where_clause_says_what_a_type_variable_must_implement() {
     assert!(compile_error(none).contains("unknown trait `Nope`"));
 }
 
+/// A trait method with a default is what an impl gets where it leaves the
+/// method out, checked at that impl's type; a trait may require others; and
+/// a loop or a `?` inside an impl method is spelled out like anywhere else.
+#[test]
+fn a_default_method_and_a_required_trait() {
+    let src = "trait Describe(a)\n  \
+                 describe(a) -> Str\n  \
+                 priority(x: a) -> Int = 1\n  \
+                 banner(x: a) -> Str =\n    \
+                   p = priority(x)\n    \
+                   describe(x) + \" (\" + int_to_str(p) + \")\"\n\n\
+               trait Pretty(a): Describe\n  \
+                 pretty(a) -> Str\n\n\
+               type Dog\n  \
+                 Dog(n: Str)\n\n\
+               type Cat\n  \
+                 Cat(n: Str)\n\n\
+               impl Describe(Dog)\n  \
+                 fn describe(d) = \"dog \" + d.n\n\n\
+               impl Describe(Cat)\n  \
+                 fn describe(c) = \"cat \" + c.n\n  \
+                 fn priority(c) =\n    \
+                   k = while k < 3 with k = 0\n      \
+                     k + 1\n    \
+                   k * 3\n\n\
+               impl Pretty(Dog)\n  \
+                 fn pretty(d) = \"*\" + banner(d) + \"*\"\n\n\
+               fn main() =\n  \
+                 println(banner(Dog(\"rex\")))\n  \
+                 println(banner(Cat(\"tom\")))\n  \
+                 println(pretty(Dog(\"rex\")))\n";
+    assert_eq!(run_source("defaults", src), "dog rex (1)\ncat tom (9)\n*dog rex (1)*\n");
+    assert_eq!(fmt_source(src), src);
+
+    let missing = "trait Describe(a)\n  \
+                     describe(a) -> Str\n\n\
+                   trait Pretty(a): Describe\n  \
+                     pretty(a) -> Str\n\n\
+                   type Dog\n  \
+                     Dog(n: Str)\n\n\
+                   impl Pretty(Dog)\n  \
+                     fn pretty(d) = d.n\n\n\
+                   fn main() = println(pretty(Dog(\"rex\")))\n";
+    let err = compile_error(missing);
+    assert!(err.contains("needs `Describe` implemented for `Dog` as well"), "{err}");
+
+    let unnamed = "trait T(a)\n  f(a) -> Int = 1\n\nfn main() = println(1)\n";
+    assert!(compile_error(unnamed).contains("a default body needs its parameters named"));
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

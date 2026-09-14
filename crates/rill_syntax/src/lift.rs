@@ -31,6 +31,24 @@ pub fn lift(module: &mut Module) -> Result<(), SyntaxError> {
         let body = std::mem::replace(&mut f.body, Expr::Bool(false));
         f.body = walk(expand_body(body)?, &mut env, &f.name, &mut used, &mut lifted)?;
     }
+    // An impl's methods are functions too, and so is a trait method's
+    // default body: a loop or a `?` in either has to be spelled out here
+    // like anywhere else.
+    for im in &mut module.impls {
+        for f in &mut im.fns {
+            let mut env: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+            let body = std::mem::replace(&mut f.body, Expr::Bool(false));
+            f.body = walk(expand_body(body)?, &mut env, &f.name, &mut used, &mut lifted)?;
+        }
+    }
+    for t in &mut module.traits {
+        for m in &mut t.methods {
+            if let Some(body) = m.default.take() {
+                let mut env: Vec<String> = m.names.iter().flatten().cloned().collect();
+                m.default = Some(walk(expand_body(body)?, &mut env, &m.name, &mut used, &mut lifted)?);
+            }
+        }
+    }
     module.functions.extend(lifted);
     Ok(())
 }

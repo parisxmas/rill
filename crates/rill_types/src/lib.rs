@@ -521,6 +521,9 @@ struct MethodInfo {
     name: String,
     params: Vec<Ty>,
     ret: Ty,
+    /// `describe(x: a) -> Str = ...`: the parameter names and the body an
+    /// impl gets where it leaves the method out.
+    default: Option<(Vec<String>, Expr)>,
 }
 
 struct Checker {
@@ -548,6 +551,8 @@ struct Checker {
     /// say why in `object_refusals`.
     trait_objects: HashMap<String, usize>,
     object_refusals: HashMap<String, String>,
+    /// For each trait, the traits a type must implement as well.
+    trait_supers: Vec<Vec<usize>>,
     externs: HashMap<String, ExternSig>,
     asms: HashMap<String, AsmSig>,
     naked_asms: HashMap<String, String>,
@@ -632,6 +637,7 @@ impl Checker {
             cur_fn_name: String::new(),
             trait_objects: HashMap::new(),
             object_refusals: HashMap::new(),
+            trait_supers: Vec::new(),
             expected_ret: Vec::new(),
             hoisted: HashSet::new(),
             gen_vars: Vec::new(),
@@ -731,6 +737,7 @@ impl Checker {
                 name: "show".to_string(),
                 params: vec![Ty::Gen(0)],
                 ret: Ty::Str,
+                default: None,
             }],
         ));
         c.traits.push((
@@ -739,6 +746,7 @@ impl Checker {
                 name: "compare".to_string(),
                 params: vec![Ty::Gen(0), Ty::Gen(0)],
                 ret: Ty::Int,
+                default: None,
             }],
         ));
         // `compare` is callable directly; `show` stays the built-in function
@@ -746,6 +754,7 @@ impl Checker {
         c.method_index.insert("compare".to_string(), (ORD_TRAIT, 0));
 
         // Traits: method signatures with Gen(0) as the trait parameter.
+        let mut supers_named: Vec<(usize, Vec<String>, usize)> = Vec::new();
         for td in &module.traits {
             if c.traits.iter().any(|(n, _)| *n == td.name) {
                 return Err(TypeError::new(
@@ -782,8 +791,11 @@ impl Checker {
                 }
                 let ret = resolve_type_ref(&m.ret, &adt_index, &c.adts, Some(&scope))?;
                 c.add_method(&td.name, &m.name, (tid, methods.len()));
-                methods.push(MethodInfo { name: m.name.clone(), params, ret });
+                let default =
+                    m.default.clone().map(|b| (m.names.iter().flatten().cloned().collect(), b));
+                methods.push(MethodInfo { name: m.name.clone(), params, ret, default });
             }
+            supers_named.push((tid, td.supers.clone(), td.line));
             // The type of the trait's objects: a record with a field per
             // method, holding the method as a function of everything but
             // the value, which the object has closed over. `infer_call`
@@ -824,9 +836,25 @@ impl Checker {
             c.traits.push((td.name.clone(), methods));
         }
 
+        // What each trait requires of a type as well, resolved once every
+        // trait has a number.
+        c.trait_supers = vec![Vec::new(); c.traits.len()];
+        for (tid, names, line) in supers_named {
+            for n in names {
+                let Some(s) = c.traits.iter().position(|(t, _)| *t == n) else {
+                    return Err(TypeError::new(line, format!("unknown trait `{n}`")));
+                };
+                if s == tid {
+                    return Err(TypeError::new(line, format!("trait `{n}` cannot require itself")));
+                }
+                c.trait_supers[tid].push(s);
+            }
+        }
+
         // Impls: each method becomes a mangled top-level function whose
         // signature is forced by the trait (v1 targets: builtins and
         // non-generic ADTs).
+        let mut impl_targets: Vec<(usize, Ty, String, usize)> = Vec::new();
         c.expanded_fns = module.functions.clone();
         c.prelude_fns = module.prelude_fns;
         for im in &module.impls {
@@ -885,8 +913,30 @@ impl Checker {
                 },
             };
             let trait_methods = c.traits[tid].1.clone();
+            impl_targets.push((tid, target_ty.clone(), im.target.name.clone(), im.line));
+            // A method the impl leaves out is the trait's default, written
+            // here as if the impl had written it — and checked at this
+            // impl's type, so a default that calls another method of the
+            // trait dispatches to this impl's.
+            let mut fns: Vec<FnDef> = im.fns.clone();
+            for m in &trait_methods {
+                if fns.iter().all(|f| f.name != m.name) {
+                    if let Some((names, body)) = &m.default {
+                        fns.push(FnDef {
+                            name: m.name.clone(),
+                            exported: false,
+                            params: names.iter().map(|n| Param { name: n.clone(), ann: None }).collect(),
+                            ret_ann: None,
+                            body: body.clone(),
+                            line: im.line,
+                            lifted_from: None,
+                            wheres: Vec::new(),
+                        });
+                    }
+                }
+            }
             let mut implemented = vec![false; trait_methods.len()];
-            for f in &im.fns {
+            for f in &fns {
                 let mid = match trait_methods.iter().position(|m| m.name == f.name) {
                     Some(m) => m,
                     None => {
@@ -951,6 +1001,27 @@ impl Checker {
                         im.trait_name, im.target.name, trait_methods[mid].name
                     ),
                 ));
+            }
+        }
+
+        // A trait that requires others: every impl of it has the others too.
+        for (tid, target_ty, target_name, line) in impl_targets {
+            for &s in &c.trait_supers[tid] {
+                let met = match s {
+                    ORD_TRAIT => c.check_need(&target_ty, Constraint::Ordered, line, "").is_ok(),
+                    SHOW_TRAIT => c.check_need(&target_ty, Constraint::Basic, line, "").is_ok(),
+                    s => c.has_impl(s, &target_ty),
+                };
+                if !met {
+                    return Err(TypeError::new(
+                        line,
+                        format!(
+                            "impl of `{}` for `{}` needs `{}` implemented for `{}` as well: `{}` \
+                             requires it",
+                            c.traits[tid].0, target_name, c.traits[s].0, target_name, c.traits[tid].0
+                        ),
+                    ));
+                }
             }
         }
 

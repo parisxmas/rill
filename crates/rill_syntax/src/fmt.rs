@@ -328,15 +328,26 @@ impl Fmt {
     }
 
     fn traitdef(&mut self, t: &TraitDef) {
-        self.push_at(0, &format!("trait {}({})", t.name, t.param), t.line);
+        let supers = if t.supers.is_empty() { String::new() } else { format!(": {}", t.supers.join(", ")) };
+        self.push_at(0, &format!("trait {}({}){supers}", t.name, t.param), t.line);
         for m in &t.methods {
             self.lead(m.line, 1);
-            let params: Vec<String> = m.params.iter().map(type_ref).collect();
-            self.push_at(
-                1,
-                &format!("{}({}) -> {}", m.name, params.join(", "), type_ref(&m.ret)),
-                m.line,
-            );
+            let params: Vec<String> = m
+                .params
+                .iter()
+                .zip(&m.names)
+                .map(|(ty, n)| match n {
+                    Some(n) => format!("{n}: {}", type_ref(ty)),
+                    None => type_ref(ty),
+                })
+                .collect();
+            let head = format!("{}({}) -> {}", m.name, params.join(", "), type_ref(&m.ret));
+            let text = match &m.default {
+                None => head,
+                Some(Expr::Block(stmts)) => format!("{head} ={}", self.block_lines(stmts, 2)),
+                Some(body) => format!("{head} = {}", self.render(body, 2)),
+            };
+            self.push_at(1, &text, m.line);
         }
     }
 

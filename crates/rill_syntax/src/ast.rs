@@ -59,6 +59,9 @@ pub struct TraitDef {
     pub name: String,
     pub param: String,
     pub methods: Vec<MethodSig>,
+    /// `trait Pretty(a): Show, Describe` — traits a type must implement
+    /// as well to implement this one.
+    pub supers: Vec<String>,
     pub line: usize,
 }
 
@@ -67,7 +70,14 @@ pub struct TraitDef {
 pub struct MethodSig {
     pub name: String,
     pub params: Vec<TypeRef>,
+    /// What each parameter is called, where it is called anything: a
+    /// default body needs names to be written in terms of.
+    pub names: Vec<Option<String>>,
     pub ret: TypeRef,
+    /// `describe(x: a) -> Str = "a thing"`: what the method is where an
+    /// impl does not say. It is checked once per impl that leaves it out,
+    /// at that impl's type, like a method the impl had written.
+    pub default: Option<Expr>,
     pub line: usize,
 }
 
