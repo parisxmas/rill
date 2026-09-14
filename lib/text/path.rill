@@ -1,0 +1,128 @@
+# File paths as text: joining, taking apart, tidying. Bytes, `/` between
+# the parts, no touching the file system — a path here is a string with a
+# shape, and what is at it is the program's business.
+#
+#     import "text/path" as path
+#     path.join_path("etc", "rill/conf.yaml")     # "etc/rill/conf.yaml"
+#     path.dir_name("/a/b/c.rill")                 # "/a/b"
+#     path.base_name("/a/b/c.rill")                # "c.rill"
+#     path.extension("archive.tar.gz")             # "gz"
+#     path.stem("archive.tar.gz")                  # "archive.tar"
+#     path.normalize("a/./b/../c//d/")             # "a/c/d"
+#     path.with_extension("notes.md", "html")      # "notes.html"
+#
+# The prelude's `dir_of` reads a directory; this never does.
+
+fn is_absolute(p) = #p > 0 && p[0] == 47
+
+# `a/b`, with one separator between however the two were written; an
+# absolute `b` is the answer on its own, as it would be at a shell.
+fn join_path(a, b) =
+  if #a == 0 then b else if #b == 0 then a else if is_absolute(b) then b else if a[#a - 1] == 47
+    then a + b
+    else a + "/" + b
+
+# Everything before the last `/`: `/a/b/c` -> `/a/b`, `c` -> `.`, `/c` -> `/`.
+fn dir_name(p) =
+  i = last_slash(p)
+  if i < 0 then "." else if i == 0 then "/" else p[0:i]
+
+# Everything after the last `/`.
+fn base_name(p) =
+  i = last_slash(p)
+  if i < 0 then p else p[i + 1:]
+
+# What follows the last `.` of the base name, or `""`; a leading dot is a
+# hidden file's name, not an extension.
+fn extension(p) =
+  b = base_name(p)
+  i = last_dot(b)
+  if i <= 0 then "" else b[i + 1:]
+
+# The base name without its extension.
+fn stem(p) =
+  b = base_name(p)
+  i = last_dot(b)
+  if i <= 0 then b else b[0:i]
+
+fn with_extension(p, ext) =
+  d = dir_name(p)
+  s = stem(p)
+  named = if #ext == 0 then s else s + "." + ext
+  if last_slash(p) < 0 then named else join_path(d, named)
+
+# The parts between separators, empty ones left out: `/a//b/` -> [a, b].
+fn parts(p) = filter(split(p, "/"), \s -> #s > 0)
+
+# `.` dropped, `..` folded into the part before it where there is one,
+# repeated and trailing separators gone; an absolute path stays absolute.
+# `..` at the start of a relative path is kept, since there is nothing
+# here to fold it into.
+fn normalize(p) =
+  kept = reverse(fold(parts(p), Nil, \acc, part -> if part == "."
+    then acc
+    else if part == ".."
+    then match acc Cons(top, rest) -> if top == ".." then Cons(part, acc) else rest Nil -> if is_absolute(p) then Nil else Cons(part, Nil)
+    else Cons(part, acc)))
+  body = join(kept, "/")
+  if is_absolute(p) then "/" + body else if #body == 0 then "." else body
+
+# `b` relative to `a`, both normalized first: `relative_to("/a/b", "/a/b/c/d")`
+# is `c/d`, and `relative_to("/a/b", "/a/x")` is `../x`.
+fn relative_to(from, to) =
+  f = parts(normalize(from))
+  t = parts(normalize(to))
+  common = common_len(f, t, 0)
+  ups = repeat_list("..", len(f) - common)
+  rest = drop(t, common)
+  body = join(append(ups, rest), "/")
+  if #body == 0 then "." else body
+
+private fn common_len(a, b, n) = match a
+  Cons(x, ra) -> match b
+    Cons(y, rb) -> if x == y then common_len(ra, rb, n + 1) else n
+    Nil -> n
+  Nil -> n
+
+private fn repeat_list(x, n) = for _ in 0..n with acc = Nil
+  Cons(x, acc)
+
+private fn last_slash(p) = last_byte(p, 47, #p - 1)
+
+private fn last_dot(p) = last_byte(p, 46, #p - 1)
+
+private fn last_byte(p, b, i) =
+  if i < 0 then -1 else if p[i] == b then i else last_byte(p, b, i - 1)
+
+# -- tests --------------------------------------------------------------------
+
+fn test_join_and_split() =
+  assert_eq(join_path("etc", "rill/conf.yaml"), "etc/rill/conf.yaml")
+  assert_eq(join_path("etc/", "x"), "etc/x")
+  assert_eq(join_path("etc", "/abs"), "/abs")
+  assert_eq(join_path("", "x"), "x")
+  assert_eq(dir_name("/a/b/c.rill"), "/a/b")
+  assert_eq(dir_name("c.rill"), ".")
+  assert_eq(dir_name("/c"), "/")
+  assert_eq(base_name("/a/b/c.rill"), "c.rill")
+  assert_eq(parts("/a//b/"), Cons("a", Cons("b", Nil)))
+
+fn test_extensions() =
+  assert_eq(extension("archive.tar.gz"), "gz")
+  assert_eq(stem("archive.tar.gz"), "archive.tar")
+  assert_eq(extension(".bashrc"), "")
+  assert_eq(stem(".bashrc"), ".bashrc")
+  assert_eq(extension("/a.b/c"), "")
+  assert_eq(with_extension("notes.md", "html"), "notes.html")
+  assert_eq(with_extension("/a/b/notes", "md"), "/a/b/notes.md")
+  assert_eq(with_extension("notes.md", ""), "notes")
+
+fn test_normalize_and_relative() =
+  assert_eq(normalize("a/./b/../c//d/"), "a/c/d")
+  assert_eq(normalize("/a/../../b"), "/b")
+  assert_eq(normalize("../../x"), "../../x")
+  assert_eq(normalize("a/.."), ".")
+  assert_eq(normalize("/"), "/")
+  assert_eq(relative_to("/a/b", "/a/b/c/d"), "c/d")
+  assert_eq(relative_to("/a/b", "/a/x"), "../x")
+  assert_eq(relative_to("/a/b", "/a/b"), ".")

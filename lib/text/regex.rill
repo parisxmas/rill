@@ -1,0 +1,418 @@
+# Regular expressions: a small backtracking matcher, written in Rill.
+#
+# What it knows: literals and the escapes `\. \\ \n \t`; `.` (anything but
+# a newline); classes `[abc]`, `[a-z0-9]`, `[^...]`, and `\d \w \s` with
+# their negations `\D \W \S`, alone or inside a class; the anchors `^` and
+# `$`; groups `(...)`, which capture, and `(?:...)`, which do not; `|`; and
+# the counts `* + ? {n} {n,} {n,m}`, each greedy, or lazy with a `?` after
+# it. A match is the leftmost one, alternatives tried in the order written
+# and counts as many as they can — Perl's answer, not POSIX's longest.
+#
+#     import "text/regex" as re
+#     date = re.compile("(\\d{4})-(\\d{2})-(\\d{2})")?
+#     re.is_match(date, "on 2026-09-14 at")            # true
+#     re.find(date, "on 2026-09-14 at")                # Some((3, 13))
+#     re.captures(date, "on 2026-09-14 at")            # Some(["2026-09-14", "2026", "09", "14"])
+#     re.replace_all(re.compile("\\s+")?, "a  b   c", " ")   # "a b c"
+#     re.split(re.compile(",\\s*")?, "a, b,c")         # ["a", "b", "c"]
+#
+# Bytes, like every string here: `.` is one byte, and a class of `é` is a
+# class of its two bytes. Backtracking keeps the matcher small and the
+# patterns familiar, and can be slow on a pattern built to defeat it —
+# `(a*)*b` on a long run of `a`s — as it is everywhere else it is used.
+
+type Node
+  Lit(byte: Int)
+  Any
+  Class(set: Buf(U8))
+  Start
+  End
+  Seq(items: List(Node))
+  Alt(branches: List(Node))
+  Group(index: Int, inner: Node)
+  Rep(inner: Node, least: Int, most: Int, greedy: Bool)
+
+# A compiled pattern: the tree and how many groups it captures.
+type Re
+  Re(node: Node, groups: Int)
+
+# -- matching -----------------------------------------------------------------
+
+fn is_match(r: Re, s) = match find(r, s)
+  Some(_) -> true
+  None -> false
+
+# Where the first match is: `Some((start, end))`, the end excluded.
+fn find(r: Re, s) = find_from(r, s, 0)
+
+fn find_from(r: Re, s, from) =
+  caps = fresh(r)
+  found = search(r, s, from, caps)
+  if found < 0 then None else Some((found, caps[1]))
+
+# Every match, left to right, none overlapping; an empty match moves on
+# by one byte so that the search always ends.
+fn find_all(r: Re, s) = reverse(all_from(r, s, 0, Nil))
+
+private fn all_from(r: Re, s, from, acc) =
+  if from > #s then acc else match find_from(r, s, from)
+    None -> acc
+    Some((a, b)) -> all_from(r, s, if b == a then b + 1 else b, Cons((a, b), acc))
+
+# The match and every group, group 0 the whole; a group that took no part
+# is `""`.
+fn captures(r: Re, s) = captures_from(r, s, 0)
+
+fn captures_from(r: Re, s, from) =
+  caps = fresh(r)
+  found = search(r, s, from, caps)
+  if found < 0 then None
+  else
+    pieces = for g in 0..r.groups + 1 with acc = Nil
+      a = caps[2 * g]
+      b = caps[2 * g + 1]
+      Cons(if a < 0 || b < 0 then "" else s[a:b], acc)
+    Some(reverse(pieces))
+
+# Every match replaced by what `f` makes of it.
+fn replace_all(r: Re, s, with) = replace_by(r, s, \m -> with)
+
+fn replace_by(r: Re, s, f) =
+  out = strbuf()
+  put = \at, span ->
+    (a, b) = span
+    strbuf_add(out, s[at:a])
+    strbuf_add(out, f(s[a:b]))
+    b
+  last = fold(find_all(r, s), 0, put)
+  strbuf_add(out, s[last:])
+  strbuf_str(out)
+
+# The pieces between the matches.
+fn split(r: Re, s) =
+  cut = \st, span ->
+    (acc, at) = st
+    (a, b) = span
+    (Cons(s[at:a], acc), b)
+  (pieces, last) = fold(find_all(r, s), (Nil, 0), cut)
+  reverse(Cons(s[last:], pieces))
+
+# -- the matcher --------------------------------------------------------------
+#
+# `walk(node, s, i, caps, k)` matches `node` at byte `i` and, where it does,
+# asks the continuation `k` to match what comes after from where it ended.
+# The answer is the end of the whole match, or -1: backtracking is the
+# continuation saying no and the caller trying its next choice. Captures
+# live in a buffer, written on the way in and put back on the way out.
+
+private fn fresh(r: Re) = map_fill(buf_int(2 * (r.groups + 1)), -1)
+
+private fn search(r: Re, s, from, caps: Buf(Int)) =
+  anchored = match r.node
+    Seq(Cons(Start, _)) -> true
+    Start -> true
+    _ -> false
+  last = if anchored then min(from, 0) else #s
+  attempt(r, s, from, last, caps)
+
+private fn attempt(r: Re, s, at, last, caps: Buf(Int)) =
+  if at > last then -1
+  else
+    reset(caps)
+    caps[0] = at
+    end = walk(r.node, s, at, caps, \j -> j)
+    if end >= 0 then
+      caps[1] = end
+      at
+    else attempt(r, s, at + 1, last, caps)
+
+private fn reset(caps: Buf(Int)) = for i in 0..#caps
+  caps[i] = -1
+
+private fn map_fill(b: Buf(Int), v) =
+  for i in 0..#b
+    b[i] = v
+  b
+
+private fn walk(n: Node, s, i, caps: Buf(Int), k) = match n
+  Lit(b) -> if i < #s && s[i] == b then k(i + 1) else -1
+  Any -> if i < #s && s[i] != 10 then k(i + 1) else -1
+  Class(set) -> if i < #s && set[s[i]] == 1 then k(i + 1) else -1
+  Start -> if i == 0 then k(i) else -1
+  End -> if i == #s then k(i) else -1
+  Seq(items) -> seq(items, s, i, caps, k)
+  Alt(branches) -> alt(branches, s, i, caps, k)
+  Group(g, inner) ->
+    was_start = caps[2 * g]
+    was_end = caps[2 * g + 1]
+    caps[2 * g] = i
+    close = \j ->
+      before = caps[2 * g + 1]
+      caps[2 * g + 1] = j
+      after = k(j)
+      caps[2 * g + 1] = if after < 0 then before else j
+      after
+    r = walk(inner, s, i, caps, close)
+    if r < 0 then
+      caps[2 * g] = was_start
+      caps[2 * g + 1] = was_end
+      r
+    else r
+  Rep(_, _, _, _) -> rep(n, s, i, caps, k, 0)
+
+private fn seq(items, s, i, caps: Buf(Int), k) = match items
+  Nil -> k(i)
+  Cons(n, rest) -> walk(n, s, i, caps, \j -> seq(rest, s, j, caps, k))
+
+private fn alt(branches, s, i, caps: Buf(Int), k) = match branches
+  Nil -> -1
+  Cons(b, rest) ->
+    r = walk(b, s, i, caps, k)
+    if r >= 0 then r else alt(rest, s, i, caps, k)
+
+# `count` done so far. Below the least, one more is the only choice; at
+# the most, the rest is the only choice; between, greedy tries one more
+# first and lazy the rest first. A repetition that matched nothing is not
+# repeated, which is what keeps `(a*)*` from looping.
+private fn rep(n: Node, s, i, caps: Buf(Int), k, count) = match n
+  Rep(inner, least, most, greedy) ->
+    more = \ -> walk(inner, s, i, caps, \j -> if j == i && count >= least then -1 else rep(n, s, j, caps, k, count + 1))
+    if count < least then more()
+    else if most >= 0 && count >= most then k(i)
+    else if greedy then
+      r = more()
+      if r >= 0 then r else k(i)
+    else
+      r = k(i)
+      if r >= 0 then r else more()
+  _ -> -1
+
+# -- compiling ----------------------------------------------------------------
+#
+# A recursive descent over the pattern's bytes. Each piece answers with
+# what it built and where it stopped; the group count is one number kept
+# in a buffer so that every piece sees the same one.
+
+fn compile(pattern) =
+  groups = buf_int(1)
+  (node, at) = parse_alt(pattern, 0, groups)?
+  if at < #pattern
+    then Err(where(pattern, at, if pattern[at] == 41 then "`)` closes nothing" else "unexpected `" + pattern[at:at + 1] + "`"))
+    else Ok(Re(node, groups[0]))
+
+private fn where(p, at, what) = "`" + p + "`: " + what + " at byte " + int_to_str(at)
+
+private fn parse_alt(p, at, groups: Buf(Int)) =
+  (first, i) = parse_seq(p, at, groups)?
+  branches = Cons(first, Nil)
+  gather_alts(p, i, groups, branches)
+
+private fn gather_alts(p, i, groups: Buf(Int), branches) =
+  if i < #p && p[i] == 124 then
+    (next, j) = parse_seq(p, i + 1, groups)?
+    gather_alts(p, j, groups, Cons(next, branches))
+  else
+    node = match branches
+      Cons(one, Nil) -> one
+      _ -> Alt(reverse(branches))
+    Ok((node, i))
+
+private fn parse_seq(p, at, groups: Buf(Int)) = gather_seq(p, at, groups, Nil)
+
+private fn gather_seq(p, i, groups: Buf(Int), items) =
+  if i >= #p || p[i] == 124 || p[i] == 41 then
+    node = match items
+      Cons(one, Nil) -> one
+      _ -> Seq(reverse(items))
+    Ok((node, i))
+  else
+    (atom, j) = parse_atom(p, i, groups)?
+    (piece, k) = parse_count(p, j, atom)?
+    gather_seq(p, k, groups, Cons(piece, items))
+
+private fn parse_atom(p, i, groups: Buf(Int)) =
+  c = p[i]
+  if c == 40 then parse_group(p, i + 1, groups) else if c == 91 then parse_class(p, i + 1) else if c == 46 then Ok((Any, i + 1)) else if c == 94 then Ok((Start, i + 1)) else if c == 36 then Ok((End, i + 1)) else if c == 92 then parse_escape(p, i + 1) else if c == 42 || c == 43 || c == 63 then Err(where(p, i, "`" + p[i:i + 1] + "` repeats nothing")) else if c == 123
+    then Err(where(p, i, "`{` repeats nothing"))
+    else Ok((Lit(c), i + 1))
+
+private fn parse_group(p, i, groups: Buf(Int)) =
+  capture = !(i + 1 < #p && p[i] == 63 && p[i + 1] == 58)
+  start = if capture then i else i + 2
+  index = if capture then
+    groups[0] = groups[0] + 1
+    groups[0]
+  else 0
+  (inner, j) = parse_alt(p, start, groups)?
+  if j >= #p || p[j] != 41
+    then Err(where(p, i - 1, "`(` is never closed"))
+    else Ok((if capture then Group(index, inner) else inner, j + 1))
+
+# After `\`: an escape that stands for one byte, or a class.
+private fn parse_escape(p, i) =
+  if i >= #p then Err(where(p, i - 1, "`\\` ends the pattern"))
+  else
+    c = p[i]
+    if c == 100 then Ok((Class(digits(false)), i + 1)) else if c == 68 then Ok((Class(digits(true)), i + 1)) else if c == 119 then Ok((Class(words(false)), i + 1)) else if c == 87 then Ok((Class(words(true)), i + 1)) else if c == 115 then Ok((Class(spaces(false)), i + 1)) else if c == 83 then Ok((Class(spaces(true)), i + 1)) else if c == 110 then Ok((Lit(10), i + 1)) else if c == 116 then Ok((Lit(9), i + 1)) else if c == 114
+      then Ok((Lit(13), i + 1))
+      else Ok((Lit(c), i + 1))
+
+# After `[`: members until `]`, ranges `a-z`, escapes, `^` first to negate.
+private fn parse_class(p, i) =
+  set = buf_u8(256)
+  negate = i < #p && p[i] == 94
+  start = if negate then i + 1 else i
+  end = class_members(p, start, set, true)?
+  if negate then flip(set) else 0
+  Ok((Class(set), end))
+
+private fn flip(set: Buf(U8)) = for b in 0..256
+  set[b] = if set[b] == 1 then 0 else 1
+
+# `first`: a `]` right at the start is a member, not the end.
+private fn class_members(p, i, set: Buf(U8), first) =
+  if i >= #p then Err(where(p, i, "`[` is never closed"))
+  else if p[i] == 93 && !first then Ok(i + 1)
+  else
+    (lo, j) = class_byte(p, i, set)?
+    if lo < 0 then class_members(p, j, set, false)
+    else if j + 1 < #p && p[j] == 45 && p[j + 1] != 93 then
+      (hi, k) = class_byte(p, j + 1, set)?
+      if hi < 0 || hi < lo then Err(where(p, i, "a range runs the wrong way"))
+      else
+        for b in lo..hi + 1
+          set[b] = 1
+        class_members(p, k, set, false)
+    else
+      set[lo] = 1
+      class_members(p, j, set, false)
+
+# One member: the byte it is and where it ends, or -1 and the end when it
+# was a class escape whose bytes went straight into the set.
+private fn class_byte(p, i, set: Buf(U8)) =
+  c = p[i]
+  if c != 92 then Ok((c, i + 1))
+  else if i + 1 >= #p then Err(where(p, i, "`\\` ends the pattern"))
+  else
+    e = p[i + 1]
+    if e == 100 || e == 68 || e == 119 || e == 87 || e == 115 || e == 83 then
+      kind = if e == 100 || e == 68 then digits(e == 68) else if e == 119 || e == 87 then words(e == 87) else spaces(e == 83)
+      for b in 0..256
+        set[b] = bit_or(set[b], kind[b])
+      Ok((-1, i + 2))
+    else if e == 110 then Ok((10, i + 2)) else if e == 116 then Ok((9, i + 2)) else if e == 114
+      then Ok((13, i + 2))
+      else Ok((e, i + 2))
+
+# The count after an atom, if any, and `?` after that for lazy.
+private fn parse_count(p, i, atom) =
+  if i >= #p then Ok((atom, i))
+  else
+    c = p[i]
+    if c == 42 then lazy(p, i + 1, Rep(atom, 0, -1, true))
+    else if c == 43 then lazy(p, i + 1, Rep(atom, 1, -1, true))
+    else if c == 63 then lazy(p, i + 1, Rep(atom, 0, 1, true))
+    else if c == 123 then
+      (lo, j) = number(p, i + 1)
+      if lo < 0 then Err(where(p, i, "`{` needs a count"))
+      else if j < #p && p[j] == 125 then lazy(p, j + 1, Rep(atom, lo, lo, true))
+      else if j < #p && p[j] == 44 then
+        (hi, k) = number(p, j + 1)
+        if k < #p && p[k] == 125 then
+          if hi >= 0 && hi < lo
+            then Err(where(p, i, "a count runs the wrong way"))
+            else lazy(p, k + 1, Rep(atom, lo, hi, true))
+        else Err(where(p, i, "`{` is never closed"))
+      else Err(where(p, i, "`{` is never closed"))
+    else Ok((atom, i))
+
+private fn lazy(p, i, r: Node) =
+  if i < #p && p[i] == 63 then
+    match r
+      Rep(inner, lo, hi, _) -> Ok((Rep(inner, lo, hi, false), i + 1))
+      other -> Ok((other, i + 1))
+  else Ok((r, i))
+
+# Digits at `i`: the number and where it ends, or -1 and `i` for none.
+private fn number(p, i) =
+  j = for k in i..#p with j = i
+    if j == k && p[k] >= 48 && p[k] <= 57 then k + 1 else j
+  if j == i then (-1, i)
+  else
+    v = for k in i..j with acc = 0
+      acc * 10 + p[k] - 48
+    (v, j)
+
+private fn digits(negated) = made(\b -> b >= 48 && b <= 57, negated)
+
+private fn words(negated) =
+  made(\b -> b >= 48 && b <= 57 || b >= 65 && b <= 90 || b >= 97 && b <= 122 || b == 95, negated)
+
+private fn spaces(negated) =
+  made(\b -> b == 32 || b == 9 || b == 10 || b == 13 || b == 12 || b == 11, negated)
+
+private fn made(f, negated) =
+  set = buf_u8(256)
+  for b in 0..256
+    set[b] = if f(b) != negated then 1 else 0
+  set
+
+# -- tests --------------------------------------------------------------------
+
+private fn re(p) = match compile(p)
+  Ok(r) -> r
+  Err(e) ->
+    assert_eq(e, "compiled")
+    Re(Any, 0)
+
+fn test_literals_classes_anchors() =
+  assert(is_match(re("cat"), "a cat sat"))
+  assert(!is_match(re("dog"), "a cat sat"))
+  assert_eq(find(re("c.t"), "a cat sat"), Some((2, 5)))
+  assert_eq(find(re("[a-c]+"), "xxabcaxx"), Some((2, 6)))
+  assert_eq(find(re("[^a-z ]+"), "ab 12 cd"), Some((3, 5)))
+  assert_eq(find(re("^ab"), "abab"), Some((0, 2)))
+  assert_eq(find(re("ab$"), "abab"), Some((2, 4)))
+  assert_eq(find(re("^$"), ""), Some((0, 0)))
+  assert(!is_match(re("^b"), "ab"))
+  assert_eq(find(re("\\d+\\.\\d+"), "pi is 3.14."), Some((6, 10)))
+  assert_eq(find(re("[\\d.]+"), "v1.2.3!"), Some((1, 6)))
+
+fn test_counts_and_groups() =
+  assert_eq(find(re("a{2,3}"), "aaaa"), Some((0, 3)))
+  assert_eq(find(re("a{2,3}?"), "aaaa"), Some((0, 2)))
+  assert_eq(find(re("a{3}"), "aa"), None)
+  assert_eq(find(re("<.+>"), "<a><b>"), Some((0, 6)))
+  assert_eq(find(re("<.+?>"), "<a><b>"), Some((0, 3)))
+  assert_eq(find(re("colou?r"), "the color"), Some((4, 9)))
+  # Leftmost-first, as Perl: `ab` then `c`, not the longer `a` then `bcd`.
+  assert_eq(find(re("(ab|a)(c|bcd)"), "abcd"), Some((0, 3)))
+  assert_eq(captures(re("(\\d{4})-(\\d{2})-(\\d{2})"), "on 2026-09-14 at"), Some(Cons("2026-09-14", Cons("2026", Cons("09", Cons("14", Nil))))))
+  assert_eq(captures(re("(a)|(b)"), "b"), Some(Cons("b", Cons("", Cons("b", Nil)))))
+  assert_eq(find(re("(?:ab)+"), "xababx"), Some((1, 5)))
+  assert_eq(find(re("(a*)*b"), "aaab"), Some((0, 4)))
+  assert_eq(find(re("(a*)*c"), "aaab"), None)
+
+fn test_all_replace_split() =
+  assert_eq(find_all(re("\\d+"), "1, 22 and 333"), Cons((0, 1), Cons((3, 5), Cons((10, 13), Nil))))
+  assert_eq(replace_all(re("\\s+"), "a  b \t c", " "), "a b c")
+  assert_eq(replace_by(re("\\w+"), "hi there", \w -> upper_first(w)), "Hi There")
+  assert_eq(split(re(",\\s*"), "a, b,c"), Cons("a", Cons("b", Cons("c", Nil))))
+  assert_eq(split(re("x"), "axbx"), Cons("a", Cons("b", Cons("", Nil))))
+  assert_eq(find_all(re("a*"), "baa"), Cons((0, 0), Cons((1, 3), Cons((3, 3), Nil))))
+
+private fn upper_first(w) =
+  if #w == 0 then w else from_char(if w[0] >= 97 && w[0] <= 122 then w[0] - 32 else w[0]) + w[1:]
+
+private fn refused(p) = match compile(p)
+  Err(e) -> e
+  Ok(_) -> "compiled"
+
+fn test_bad_patterns() =
+  assert_eq(refused("(ab"), "`(ab`: `(` is never closed at byte 0")
+  assert_eq(refused("ab)"), "`ab)`: `)` closes nothing at byte 2")
+  assert_eq(refused("[ab"), "`[ab`: `[` is never closed at byte 3")
+  assert_eq(refused("*a"), "`*a`: `*` repeats nothing at byte 0")
+  assert_eq(refused("a{3,1}"), "`a{3,1}`: a count runs the wrong way at byte 1")
+  assert_eq(refused("[z-a]"), "`[z-a]`: a range runs the wrong way at byte 1")
+  assert_eq(refused("ab\\"), "`ab\\`: `\\` ends the pattern at byte 2")
