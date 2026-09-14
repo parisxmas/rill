@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — a `\u` escape is a character
+
+`lib/json` read `\u00e9` as one byte — `chr(233)`, which is not UTF-8 —
+and everything above `\u00ff` as `?`. A `\uXXXX` is a UTF-16 unit: a
+character below 65536 outright, or one half of a surrogate pair
+spelling a character above it, `\uD83D\uDE00` for one emoji. It goes in
+as the bytes UTF-8 spells it with now, pairs joined, and a half with no
+other half as U+FFFD, the replacement character.
+
+The reference had never mentioned the character layer the prelude has
+had since August — `char_count`, `char_at`, `chars`, `from_char` and
+the rest, on top of the bytes `#s` and `s[i]` are and stay — nor that
+`chr` is a byte and not a character. It has a section for them now.
+
 ## Unreleased — what integer arithmetic does at the edges
 
 `7 / 0` was 1. So was `7 % 0`, and `to_int(1.0e30)`, and `to_int` of a

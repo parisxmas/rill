@@ -8,6 +8,8 @@ fn main() =
   println(join(map(items(unwrap_or(get(doc, "tags"), JNull)), \x -> as_str(x)), "+"))
   println(to_string(doc))
   println(show_parse("[1,\"a\\nb\",null,false,[2]]"))
+  # `\u` escapes are characters: a pair is one character, a lone half is U+FFFD.
+  println(show_parse("[\"caf\\u00e9\",\"\\ud83d\\ude00\",\"\\udc00x\"]"))
   # What a document that is not one says for itself. Each of these used to
   # come back as a value: `nonsense` as `null`, the other two as nothing at
   # all, and none of them as a complaint.

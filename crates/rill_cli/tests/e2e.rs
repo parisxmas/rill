@@ -1218,6 +1218,7 @@ fn json_module() {
         "ada\n36\ntrue\nx+y\n\
          {\"user\":{\"name\":\"ada\",\"age\":36},\"tags\":[\"x\",\"y\"],\"ok\":true,\"pi\":3.5}\n\
          [1,\"a\\nb\",null,false,[2]]\n\
+         [\"café\",\"😀\",\"\u{FFFD}x\"]\n\
          error: `null` expected, at byte 0\n\
          error: a value expected and the text ended, at byte 6\n\
          error: the text ended inside an array, at byte 4\n\

@@ -350,6 +350,33 @@ An end outside the string is clamped rather than an error, as `str_sub` has
 always been, and each part is evaluated once. Slicing is for strings; a `Buf`
 is storage and is not copied by notation this quiet.
 
+### Characters
+
+`#s`, `s[i]` and `s[i:j]` are bytes, and stay bytes: a lexer wants bytes, a
+wire protocol wants bytes, and the compiler that compiles the prelude is one
+of them. What bytes are not is characters. `"günaydın"` is ten bytes and
+eight letters, and `s[0:2]` cuts the `ü` in half. The characters live on top,
+in the prelude, and say so in their names:
+
+| | |
+|---|---|
+| `char_count(s)` | how many characters |
+| `char_at(s, i)` | the `i`th character, as a codepoint |
+| `char_sub(s, i, n)` | `n` characters from the `i`th |
+| `char_take(s, n)` / `char_drop(s, n)` | the first `n`, or all but the first `n` |
+| `chars(s)` | every character, a `List(Int)` of codepoints |
+| `from_char(c)` / `from_chars(cs)` | back to a string, one to four bytes each |
+| `char_decode(s, at)` / `char_wide(b)` | the character at a byte offset, and how many bytes the one beginning with byte `b` takes — for walking a long string without counting from the start each time |
+
+All of it walks, since UTF-8 gives no other way to the `n`th character.
+Malformed input never hangs it: a stray continuation byte counts as one
+character, and a character cut off by the end of the string comes back as
+its first byte.
+
+`chr(n)` is **a byte**, not a character: it writes the low byte of `n` and
+nothing else, which is right for building a frame or a hash and wrong for
+every character above 127. A codepoint becomes text with `from_char`.
+
 ### Blocks and bindings
 
 An indented block runs its lines in order and evaluates to the last one:
@@ -1132,6 +1159,10 @@ answers with
 **Numbers**: `max` `min` `abs`
 
 **Strings**: `join` `repeat` `split` `lines` `trim` `contains` `starts_with`
+
+**Characters**: `char_count` `char_at` `char_sub` `char_take` `char_drop`
+`chars` `from_char` `from_chars` `char_decode` `char_wide` — see
+[Characters](#characters); `chr` is a byte
 
 **IO**: `args()` (program name included), `read_file(path) -> Result(Str, Str)`,
 `open_file(path, mode) -> Result(Int, Str)`, `dir_names(path) -> List(Str)`,

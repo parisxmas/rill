@@ -78,12 +78,25 @@ fn parse_escape(s, i, acc) =
   c = str_get(s, i)
   if c < 0 then Failed("the text ended inside an escape", i) else if c == 110 then parse_string(s, i + 1, acc + "\n") else if c == 116 then parse_string(s, i + 1, acc + "\t") else if c == 114 then parse_string(s, i + 1, acc + "\r") else if c == 117 then parse_unicode(s, i + 1, acc) else parse_string(s, i + 1, acc + chr(c))
 
-# Only the Latin-1 range is turned back into a byte; anything above it becomes
-# `?`, which is honest about this being a byte-oriented string type.
+# `\uXXXX` is a UTF-16 unit: a character below 65536 outright, or one half of
+# a surrogate pair spelling one above it — `\uD83D\uDE00` is a single
+# character. Either way it goes in as the bytes UTF-8 spells it with. A half
+# with no other half is U+FFFD, the replacement character, which is what text
+# that has lost a piece is.
 fn parse_unicode(s, i, acc) =
-  if is_hex4(s, i) then parse_string(s, i + 4, acc + code_point(hex4(s, i))) else Failed("`\\u` needs four hex digits", i)
+  if !is_hex4(s, i) then Failed("`\\u` needs four hex digits", i)
+  else
+    v = hex4(s, i)
+    if v >= 55296 && v < 56320 then parse_pair(s, i + 4, acc, v) else if v >= 56320 && v < 57344
+      then parse_string(s, i + 4, acc + from_char(65533))
+      else parse_string(s, i + 4, acc + from_char(v))
 
-fn code_point(v) = if v < 256 then chr(v) else "?"
+fn parse_pair(s, i, acc, hi) =
+  if str_get(s, i) == 92 && str_get(s, i + 1) == 117 && is_hex4(s, i + 2) && is_low(hex4(s, i + 2))
+    then parse_string(s, i + 6, acc + from_char(65536 + (hi - 55296) * 1024 + hex4(s, i + 2) - 56320))
+    else parse_string(s, i, acc + from_char(65533))
+
+fn is_low(v) = v >= 56320 && v < 57344
 
 fn is_hex4(s, i) =
   is_hex(str_get(s, i)) && is_hex(str_get(s, i + 1)) && is_hex(str_get(s, i + 2)) && is_hex(str_get(s, i + 3))
