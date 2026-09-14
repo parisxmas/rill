@@ -2175,6 +2175,47 @@ fn a_default_method_and_a_required_trait() {
     assert!(compile_error(unnamed).contains("a default body needs its parameters named"));
 }
 
+/// `rill explain` is the generator's account of its memory decisions for
+/// the file's own functions: borrowed and owned parameters, constructor
+/// calls as reuse or allocation or a flat value, bindings handed over or
+/// retained, pipelines that became loops, closures and what they hold.
+#[test]
+fn explain_reports_the_memory_decisions() {
+    let src = "type P\n  \
+                 P(x: Float, y: Float)\n\n\
+               fn total(xs, acc) = match xs\n  \
+                 Nil -> acc\n  \
+                 Cons(v, rest) -> total(rest, acc + v)\n\n\
+               fn bump(xs) = match xs\n  \
+                 Nil -> Nil\n  \
+                 Cons(v, rest) -> Cons(v + 1, bump(rest))\n\n\
+               fn main() =\n  \
+                 xs = Cons(1, Cons(2, Nil))\n  \
+                 println(int_to_str(total(xs, 0)))\n  \
+                 println(int_to_str(total(bump(xs), 0)))\n  \
+                 println(show(P(1.0, 2.0)))\n  \
+                 println(int_to_str(range(1, 10) |> filter(\\v -> v > 5) |> sum))\n";
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-explain-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("explain.rill");
+    std::fs::write(&path, src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("explain").arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let report = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "fn total(xs, acc)",
+        "`xs` is borrowed",
+        "fn bump(xs)",
+        "`Cons(..)` is built in the box a match took apart: no allocation",
+        "`Cons(..)` allocates a box with 2 field(s)",
+        "`xs` is retained for the call",
+        "`P(..)` is a flat value",
+        "this pipeline is one loop: no list is built",
+    ] {
+        assert!(report.contains(want), "missing {want:?} in:\n{report}");
+    }
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

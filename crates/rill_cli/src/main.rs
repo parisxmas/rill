@@ -21,7 +21,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill types <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill types <file.rill>\n  rill explain <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -57,6 +57,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             }
         }
         "types" => types_cmd(rest),
+        "explain" => explain_cmd(rest),
         "lsp" => lsp::serve(),
         "repl" => {
             repl()?;
@@ -97,6 +98,26 @@ fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
             println!("{}", rill_types::show_signature(&tmod.fns[i], &tmod.adts, &tmod.traits));
         }
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `rill explain`: the memory decisions the code generator makes for the
+/// file's own functions, in its own words, as it makes them.
+fn explain_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let src = args.first().ok_or(USAGE)?;
+    let path = PathBuf::from(src);
+    let module = rill_syntax::load_program(&path)?;
+    let tmod = match rill_types::check_all(&module) {
+        Ok(t) => t,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("{}: {e}", path.display());
+            }
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    let report = rill_codegen::explain(&tmod).map_err(|e| format!("{}: {e}", path.display()))?;
+    print!("{report}");
     Ok(ExitCode::SUCCESS)
 }
 

@@ -106,6 +106,7 @@ pub fn compile_to_object(
         target,
         unchecked,
         shared,
+        false,
     )?;
     if cg.wasm {
         cg.check_wasm_supported()?;
@@ -356,9 +357,39 @@ fn find_unsupported(e: &TExpr) -> Option<(usize, &'static str)> {
 }
 
 /// Compile and return the (unoptimized) LLVM IR as text.
+/// The memory decisions the code generator made for a program's own
+/// functions, written out: which parameters are borrowed, which constructor
+/// calls reuse a box and which allocate, which bindings are handed to a call
+/// and which retained, which pipelines became loops, what a closure holds.
+/// The report is the generator's own account, taken while it generates —
+/// nothing is guessed after the fact.
+pub fn explain(tmod: &TModule) -> Result<String, CodegenError> {
+    let context = Context::create();
+    let cg = Codegen::build_module(&context, tmod, false, None, None, false, false, true)?;
+    let mut out = String::new();
+    let mut last_fn = usize::MAX;
+    for (fn_idx, line, text) in &cg.notes {
+        let f = &tmod.fns[*fn_idx];
+        if *fn_idx != last_fn {
+            let params: Vec<&str> = f.params.iter().map(|(n, _)| n.as_str()).collect();
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!("fn {}({})   # line {}\n", f.name, params.join(", "), f.line));
+            last_fn = *fn_idx;
+        }
+        if *line == f.line {
+            out.push_str(&format!("  {text}\n"));
+        } else {
+            out.push_str(&format!("  line {line}: {text}\n"));
+        }
+    }
+    Ok(out)
+}
+
 pub fn compile_to_ir(tmod: &TModule, parallel: bool, unchecked: bool) -> Result<String, CodegenError> {
     let context = Context::create();
-    let cg = Codegen::build_module(&context, tmod, parallel, None, None, unchecked, false)?;
+    let cg = Codegen::build_module(&context, tmod, parallel, None, None, unchecked, false, false)?;
     Ok(cg.module.print_to_string().to_string())
 }
 
@@ -1489,6 +1520,12 @@ struct Codegen<'ctx, 'a> {
     cur_line: u32,
     /// The function being generated, for spotting a tail call that goes round.
     cur_fn: usize,
+    /// `rill explain`: whether the decisions below are being written down,
+    /// where the expression being generated was written, and what has been
+    /// noted so far — (function, line, text), each once.
+    explain: bool,
+    note_line: usize,
+    notes: std::collections::BTreeSet<(usize, usize, String)>,
     /// Who calls whom, and the memoised answer to "what can this one reach".
     /// Built for every program: preemption asks it only when there are
     /// strands, but the untailed-recursion warning asks it everywhere.
@@ -1530,6 +1567,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         target: Option<&str>,
         unchecked: bool,
         shared: bool,
+        explain: bool,
     ) -> Result<Codegen<'ctx, 'a>, CodegenError> {
         let module = ctx.create_module("rill");
         let builder = ctx.create_builder();
@@ -1571,6 +1609,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             debug: None,
             cur_line: 0,
             cur_fn: usize::MAX,
+            explain,
+            note_line: 0,
+            notes: std::collections::BTreeSet::new(),
             callgraph: call_graph(tmod),
             reaches: HashMap::new(),
             warned_untailed: HashSet::new(),
@@ -5085,10 +5126,38 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         Ok(())
     }
 
+    /// One line of `rill explain`, about the function and the source line
+    /// being generated — for the program's own functions, once each.
+    fn note(&mut self, text: String) {
+        if self.explain && self.cur_fn >= self.tmod.prelude_fns && self.cur_fn < self.tmod.fns.len() {
+            self.notes.insert((self.cur_fn, self.note_line, text));
+        }
+    }
+
     fn gen_instance(&mut self, key: &InstanceKey) -> Result<(), CodegenError> {
         self.check_constraints(key)?;
         let (fn_idx, subst, bound) = key;
         self.cur_fn = *fn_idx;
+        if self.explain {
+            let (fline, params) = {
+                let f = &self.tmod.fns[*fn_idx];
+                (f.line, f.params.clone())
+            };
+            self.note_line = fline;
+            let borrowed = self.borrowed_params[*fn_idx].clone();
+            for (i, (n, t)) in params.iter().enumerate() {
+                let ty = self.concrete(t, subst);
+                if !self.is_heap(&ty) {
+                    continue;
+                }
+                let how = if borrowed.get(i) == Some(&true) {
+                    "borrowed: never kept or given away here, so the caller's reference is enough"
+                } else {
+                    "owned: the caller hands over a reference, which this function keeps, passes on or releases"
+                };
+                self.note(format!("`{n}` is {how}"));
+            }
+        }
         let fn_val = self.instances[key];
         let f = &self.tmod.fns[*fn_idx];
         // What the caller pinned, under the names the body knows them by. The
@@ -5199,6 +5268,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         func: FunctionValue<'ctx>,
         ret_ty: &Ty,
     ) -> Result<(), CodegenError> {
+        if e.line > 0 {
+            self.note_line = e.line;
+        }
         match &e.kind {
             TK::Block(stmts) => {
                 let (last, init) = match stmts.split_last() {
@@ -5294,14 +5366,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             }
             TK::CallFn { fn_idx, subst: inner, args } => {
                 if let Some(v) = self.try_fuse(e, scope, subst, func)? {
+                    self.note("this pipeline is one loop: no list is built".to_string());
                     let ty = self.concrete(&e.ty, subst);
                     return self.finish_leaf(Some(v), &ty, ret_ty);
                 }
                 if let Some(v) = self.try_map_or(e, scope, subst, func)? {
+                    self.note("`map_or` reads the table without building a `Some`".to_string());
                     let ty = self.concrete(&e.ty, subst);
                     return self.finish_leaf(Some(v), &ty, ret_ty);
                 }
                 if let Some(v) = self.try_map_list(e, scope, subst, func)? {
+                    self.note("`map` walks the list in place, writing each link over the one it read".to_string());
                     let ty = self.concrete(&e.ty, subst);
                     return self.finish_leaf(Some(v), &ty, ret_ty);
                 }
@@ -5333,6 +5408,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
                 for (i, a) in args.iter().enumerate() {
                     if borrowed.get(i) == Some(&true) {
+                        if self.explain {
+                            if let TK::Local(n) = &a.kind {
+                                self.note(format!("`{n}` is passed to the tail call borrowed: the callee never keeps it"));
+                            }
+                        }
                         let (v, _) = self.gen_borrowed(a, scope, subst, func)?;
                         argv.push(v.into());
                         continue;
@@ -5342,7 +5422,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     // release that follows it cancel exactly, and every loop
                     // written as a tail call passes its whole working set.
                     let v = match self.take_owned(a, scope) {
-                        Some(v) => v,
+                        Some(v) => {
+                            if let TK::Local(n) = &a.kind {
+                                self.note(format!("`{n}` is handed to the tail call: this frame lets go of everything before the jump, so no count is taken"));
+                            }
+                            v
+                        }
                         None => match &a.kind {
                             TK::CallCtor { adt, ctor, targs, args } if !args.is_empty() => self
                                 .gen_ctor(*adt, *ctor, targs, args, scope, subst, func, true)?
@@ -6774,6 +6859,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         subst: &[Ty],
         func: FunctionValue<'ctx>,
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        if e.line > 0 {
+            self.note_line = e.line;
+        }
         // Inside a branch, a move would happen on one path only.
         if matches!(e.kind, TK::If { .. } | TK::Match { .. } | TK::Select { .. }) {
             let saved = std::mem::replace(&mut self.move_ok, false);
@@ -7423,12 +7511,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     self.saw_nontail_self = true;
                 }
                 if let Some(v) = self.try_fuse(e, scope, subst, func)? {
+                    self.note("this pipeline is one loop: no list is built".to_string());
                     return Ok(Some(v));
                 }
                 if let Some(v) = self.try_map_or(e, scope, subst, func)? {
+                    self.note("`map_or` reads the table without building a `Some`".to_string());
                     return Ok(Some(v));
                 }
                 if let Some(v) = self.try_map_list(e, scope, subst, func)? {
+                    self.note("`map` walks the list in place, writing each link over the one it read".to_string());
                     return Ok(Some(v));
                 }
                 let inner: Vec<Ty> = inner.iter().map(|t| self.concrete(t, subst)).collect();
@@ -7455,6 +7546,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         if let TK::Local(n) = &a.kind {
                             if self.movable.contains(n) {
                                 if let Some(v) = self.take_owned(a, scope) {
+                                    self.note(format!("`{n}` is handed to the call: its last use, so the reference goes with it and no count is taken"));
                                     argv.push(v.into());
                                     continue;
                                 }
@@ -7466,6 +7558,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         // frame lets go before the jump.
                         if nonescaping.get(i) == Some(&true) && matches!(a.kind, TK::Lambda { .. }) {
                             self.borrow_captures = true;
+                        }
+                        if self.explain {
+                            if let TK::Local(n) = &a.kind {
+                                if self.is_heap(&self.concrete(&a.ty, subst)) {
+                                    self.note(format!("`{n}` is retained for the call: it is spoken again later, or this call is not on the statement's own straight path"));
+                                }
+                            }
                         }
                         let v = self.gen_expr(a, scope, subst, func)?;
                         self.borrow_captures = false;
@@ -8562,6 +8661,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         scope: &mut Scope<'ctx>,
         subst: &[Ty],
     ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        if self.explain {
+            if captures.is_empty() {
+                self.note("a closure over nothing".to_string());
+            } else {
+                let caps: Vec<String> = captures.iter().map(|(n, _)| format!("`{n}`")).collect();
+                self.note(format!("a closure is allocated, holding {}", caps.join(", ")));
+            }
+        }
         let (lifted, env_ptr) = self.build_closure(params, captures, body, scope, subst, false)?;
         let undef = self.closure_type().get_undef();
         let s0 = self
@@ -9308,6 +9415,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // count, so nothing to move into it either.
                 let whole = Ty::Adt(*adt, targs.clone());
                 if self.is_flat(&whole) {
+                    if self.explain {
+                        let cname = self.tmod.adts[*adt].ctors[*ctor].name.clone();
+                        self.note(format!("`{cname}(..)` is a flat value: in registers, no box and no count"));
+                    }
                     let st = self.flat_struct(&whole);
                     let mut agg = st.get_undef();
                     for (i, a) in args.iter().enumerate() {
@@ -9368,6 +9479,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 } else {
                     None
                 };
+                if self.explain {
+                    let cname = self.tmod.adts[*adt].ctors[*ctor].name.clone();
+                    if reused.is_some() {
+                        self.note(format!("`{cname}(..)` is built in the box a match took apart: no allocation"));
+                    } else {
+                        self.note(format!("`{cname}(..)` allocates a box with {} field(s)", args.len()));
+                    }
+                }
                 let ptr = match reused {
                     Some(p) => p,
                     None => self.alloc_object(struct_ty, &name),
@@ -10111,7 +10230,7 @@ mod tests {
         let tmod = rill_types::check(&m).unwrap();
         let context = Context::create();
         let cg =
-            Codegen::build_module(&context, &tmod, false, None, Some("wasm32-wasip1"), false, false)?;
+            Codegen::build_module(&context, &tmod, false, None, Some("wasm32-wasip1"), false, false, false)?;
         cg.check_wasm_supported()?;
         Ok(cg.module.print_to_string().to_string())
     }

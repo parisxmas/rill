@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — `rill explain`
+
+The memory model was documented and invisible: the rules said when a
+parameter is borrowed, when a constructor reuses the box a match took
+apart, when a binding is handed to a call rather than retained, when a
+pipeline is one loop — and nothing said which of them had fired where,
+so a number that came out slow was a surprise with no address.
+`rill explain file.rill` is the code generator's own account, taken as
+it generates: per function of the file, which parameters are borrowed
+and which owned, each constructor call as reuse, allocation or a flat
+value, each binding at a call as handed over or retained and why, each
+pipeline that became a loop, each closure and what it holds. Once per
+function, line by line, in the generator's words, with nothing guessed
+after the fact.
+
 ## Unreleased — a method with a default, and a trait that requires others
 
 A trait method may come with a default body, written after its

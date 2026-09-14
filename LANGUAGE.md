@@ -869,6 +869,28 @@ asked.
 Run any program with `RILL_DEBUG_ALLOC=1` to have the runtime print the number
 of live allocations at exit.
 
+Which of these rules fired where is not visible in the source, and does not
+have to be guessed: **`rill explain file.rill`** is the code generator's own
+account, written down as it generates, for the file's own functions.
+
+```
+fn total(xs, acc)   # line 6
+  `xs` is borrowed: never kept or given away here, so the caller's reference is enough
+
+fn main()   # line 15
+  line 16: `Cons(..)` allocates a box with 2 field(s)
+  line 17: `xs` is retained for the call: it is spoken again later, or this call is not on the statement's own straight path
+  line 19: `P(..)` is a flat value: in registers, no box and no count
+  line 22: this pipeline is one loop: no list is built
+```
+
+It says which parameters are borrowed and which owned, which constructor
+calls reuse the box a match took apart and which allocate, which bindings
+are handed to a call and which retained, which pipelines became loops, and
+what each closure holds. A number that came out slower than expected is
+usually a retain where a hand-over was meant, and the report says which
+binding and why.
+
 ### `List` or `Buf`
 
 `List(a)` is a cons list: `Cons` in front is free, and everything else is a
@@ -1846,6 +1868,7 @@ rill build main.rill --emit-ir  # print LLVM IR
 rill run main.rill              # compile and run
 rill check main.rill            # type-check only, saying everything it finds
 rill types main.rill            # the signature the checker worked out for each function
+rill explain main.rill          # the memory decisions the generator made, by line
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist
 rill lsp                        # a language server on stdin/stdout
