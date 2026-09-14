@@ -2335,6 +2335,28 @@ fn rill_test_runs_each_test_in_its_own_process() {
     assert!(compile_error(bad).contains("`assert`: expected Bool, found Int"));
 }
 
+/// A closure crosses into C where the signature says `Env`: boxed, handed
+/// out by the `Env` parameter, unpacked by a trampoline in the callback's
+/// `Env` slot. A callback without one still needs a named function, and
+/// an `Env` without its callback, or a callback with two, is refused.
+#[test]
+fn a_closure_crosses_into_c_by_an_env() {
+    assert_eq!(compile_and_run("callback_env.rill"), "88\nweights\n14\n606\n");
+
+    let bare = "extern fn qsort(base: Ptr, n: U64, size: U64, cmp: Fn(Ptr, Ptr) -> I32)\n\n\
+                fn main() =\n  b = buf_i32(3)\n  k = 1\n  qsort(b, 3, 4, \\p, q -> k)\n  println(\"x\")\n";
+    let err = compile_error(bare);
+    assert!(err.contains("C has nowhere to put it — unless the signature says where"), "{err}");
+
+    let lone = "extern fn oops(n: I64, arg: Env) -> I64\n\nfn main() = println(\"x\")\n";
+    assert!(compile_error(lone).contains("has exactly one callback whose `Fn(...)` has an `Env` slot"));
+    let two = "extern fn oops(n: I64, f: Fn(Env, Env) -> I64, arg: Env) -> I64\n\nfn main() = println(\"x\")\n";
+    assert!(compile_error(two).contains("in one `Env` slot, not two"));
+    let extra = "extern fn rill_sum_by(n: I64, f: Fn(I64, Env) -> I64, arg: Env) -> I64\n\n\
+                 fn main() = println(int_to_str(rill_sum_by(4, \\i -> i, 0)))\n";
+    assert!(compile_error(extra).contains("takes 2 argument(s), but 3 given"));
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

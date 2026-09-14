@@ -1,0 +1,29 @@
+# A closure handed to C. A bare code pointer has nowhere to keep an
+# environment, but most APIs that take a callback also take a pointer they
+# hand back to it unread — `qsort_r`'s `arg`, a library's "user data" — and
+# `Env` in the signature says that is where the closure goes: the parameter
+# it goes out by, and the callback's slot it comes back into. The Rill call
+# leaves the `Env` out, and the callback is written in the types that remain.
+#
+# `rill_sum_by` is the runtime standing in for such a library: `f(i, arg)`
+# for each `i` below `n`, summed.
+
+extern fn rill_sum_by(n: I64, f: Fn(I64, Env) -> I64, arg: Env) -> I64
+
+fn square(i) = i * i
+
+# A helper may pass the callback on, whatever it is: no copy per caller is
+# needed, since the closure travels as a value.
+fn twice_over(n, f) = rill_sum_by(n, f) + rill_sum_by(n, f)
+
+fn main() =
+  k = 10
+  name = "weights"
+  # A lambda closing over a number and a string: both are kept alive for
+  # the call, and the string is still here after it.
+  println(int_to_str(rill_sum_by(4, \i -> i * k + str_len(name))))
+  println(name)
+  # A named function, and a closure chosen at run time, cross the same way.
+  println(int_to_str(rill_sum_by(4, square)))
+  g = if k > 5 then \i -> i + 100 else square
+  println(int_to_str(twice_over(3, g)))

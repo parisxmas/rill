@@ -2931,6 +2931,19 @@ pub unsafe extern "C" fn rill_assert_eq_failed(got: *const u8, want: *const u8, 
     die()
 }
 
+/// What a C library that takes a callback and a user pointer looks like,
+/// for the examples and the tests: `f(i, arg)` for each `i` in `0..n`, the
+/// answers summed. Declared in Rill as `extern fn rill_sum_by(n: I64, f:
+/// Fn(I64, Env) -> I64, arg: Env) -> I64`.
+#[no_mangle]
+pub extern "C" fn rill_sum_by(n: i64, f: extern "C" fn(i64, *mut u8) -> i64, arg: *mut u8) -> i64 {
+    let mut total = 0;
+    for i in 0..n {
+        total += f(i, arg);
+    }
+    total
+}
+
 /// A copy between two buffers, or within one, that stays inside both:
 /// `n` elements of `size` bytes from `src[from..]` to `dst[to..]`. What
 /// `memmove` on two raw pointers does without asking, asked: a length that

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — a closure crosses into C
+
+A callback handed to C had to be a function known while compiling: a
+lambda or a closure has an environment, and a bare code pointer has
+nowhere to keep it. Most APIs that take a callback also take a pointer
+they hand back to it unread — `qsort_r`'s `arg`, `pthread_create`'s, a
+library's "user data" — and that is where it goes now. The signature
+says so with `Env`: `extern fn qsort_r(base: Ptr, n: U64, w: U64, cmp:
+Fn(Ptr, Ptr, Env) -> I32, arg: Env)` is the parameter the pointer goes
+out by and the slot it comes back into. The Rill call leaves the `Env`
+out, and the callback is written in the types that remain. What goes
+out is a box holding the closure — code and environment, two words —
+and what C calls is a trampoline made once per C signature, which
+unpacks the box and calls the closure the way every closure is called.
+The box and the frame's hold on the closure last the call, so this is
+for a callback C uses during the call; one C keeps is still a named
+function. The runtime has `rill_sum_by(n, f, arg)`, what such a C
+library looks like, for the example and the tests.
+
 ## Unreleased — `rill test`
 
 There was no way to say a test in Rill: the compiler's own tests are

@@ -1098,9 +1098,15 @@ fn find_callback_locals<'a>(
             // callback was refused at its declaration, so there is nothing
             // here to find.
             if let Some(sig) = tmod.externs.get(name) {
-                for (a, pt) in args.iter().zip(&sig.params) {
-                    if let (CTy::Fn(..), TK::Local(n)) = (pt, &a.kind) {
-                        out.push(n);
+                // The arguments stand for the parameters that are not `Env`;
+                // a callback whose `Fn` carries an `Env` may be any closure,
+                // so it pins nothing.
+                let visible = sig.params.iter().filter(|p| !matches!(p, CTy::Env));
+                for (a, pt) in args.iter().zip(visible) {
+                    if let (CTy::Fn(cps, _), TK::Local(n)) = (pt, &a.kind) {
+                        if !cps.iter().any(|c| matches!(c, CTy::Env)) {
+                            out.push(n);
+                        }
                     }
                 }
             }
@@ -1430,6 +1436,9 @@ struct Codegen<'ctx, 'a> {
     /// Which parameters of each function have to be a compile-time function,
     /// because they reach a C callback position. See `static_params`.
     static_params: Vec<Vec<bool>>,
+    /// The trampolines for callbacks that carry a closure, one per C
+    /// signature. See `gen_closure_trampoline`.
+    closure_tramps: HashMap<(Vec<CTy>, CTy), FunctionValue<'ctx>>,
     /// Which parameters of each function are borrowed: passed without a
     /// reference of their own and released by nobody. See `borrowed_params`.
     borrowed_params: Vec<Vec<bool>>,
@@ -1580,6 +1589,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             instances: HashMap::new(),
             shims: HashMap::new(),
             static_params: static_params(tmod),
+            closure_tramps: HashMap::new(),
             borrowed_params: borrowed_params(tmod),
             nonescaping_fn_params: nonescaping_fn_params(tmod),
             borrow_captures: false,
@@ -1748,7 +1758,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             CTy::USize | CTy::ISize => self.word_type().into(),
             CTy::F32 => self.ctx.f32_type().into(),
             CTy::F64 => self.ctx.f64_type().into(),
-            CTy::Ptr | CTy::Fn(..) => self.ctx.ptr_type(Default::default()).into(),
+            CTy::Ptr | CTy::Fn(..) | CTy::Env => self.ctx.ptr_type(Default::default()).into(),
             CTy::Unit => return None,
         })
     }
@@ -1766,7 +1776,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .build_float_trunc(v.into_float_value(), self.ctx.f32_type(), "cf")
                 .expect("LLVM builder error")
                 .into(),
-            CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Unit | CTy::Fn(..) => v,
+            CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Unit | CTy::Fn(..) | CTy::Env => v,
             // A word is already 64 bits on a 64-bit target, and `trunc` to the
             // width a value already has is not an instruction.
             CTy::USize | CTy::ISize if !self.wasm => v,
@@ -1794,7 +1804,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .build_float_ext(v.into_float_value(), self.ctx.f64_type(), "rf")
                 .expect("LLVM builder error")
                 .into(),
-            CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Unit | CTy::Fn(..) => v,
+            CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Unit | CTy::Fn(..) | CTy::Env => v,
             CTy::USize | CTy::ISize if !self.wasm => v,
             _ if c.is_signed() => b
                 .build_int_s_extend(v.into_int_value(), i64t, "rs")
@@ -5081,9 +5091,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     return Err(CodegenError::new(
                         line,
                         format!(
-                            "`{}` hands its parameter `{}` to C as a callback, so it has \
-                             to be a function known while compiling — pass a top-level \
-                             function by name, not a lambda or a value chosen at run time",
+                            "`{}` hands its parameter `{}` to C as a callback with no `Env` to \
+                             carry an environment, so it has to be a function known while \
+                             compiling — pass a top-level function by name, not a lambda or a \
+                             value chosen at run time",
                             f.name, f.params[i].0
                         ),
                     ));
@@ -6477,6 +6488,72 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// The function may be named here or have arrived as a parameter, which
     /// the caller pinned to a particular function when it asked for this
     /// instance — either way it is settled before any code is emitted.
+    /// The trampoline C calls for a callback whose `Fn` has an `Env` slot:
+    /// one per C signature, since it learns the closure at run time from
+    /// the box the `Env` slot brings back — code and environment, two
+    /// words — and calls it the way every closure is called. What C hands
+    /// over is widened to Rill's types on the way in and narrowed on the
+    /// way out, as for a named callback.
+    fn gen_closure_trampoline(&mut self, cparams: &[CTy], cret: &CTy) -> FunctionValue<'ctx> {
+        let key = (cparams.to_vec(), cret.clone());
+        if let Some(&v) = self.closure_tramps.get(&key) {
+            return v;
+        }
+        let ps: Vec<BasicMetadataTypeEnum> = cparams
+            .iter()
+            .map(|c| self.c_type(c).expect("a callback parameter is never Unit").into())
+            .collect();
+        let fty = match self.c_type(cret) {
+            Some(r) => r.fn_type(&ps, false),
+            None => self.ctx.void_type().fn_type(&ps, false),
+        };
+        let name = format!("closure$c{}", self.closure_tramps.len());
+        let tramp = self.module.add_function(&name, fty, None);
+        let saved = self.builder.get_insert_block();
+        let entry = self.ctx.append_basic_block(tramp, "entry");
+        self.builder.position_at_end(entry);
+        let slot = cparams.iter().position(|c| matches!(c, CTy::Env)).expect("an `Env` slot");
+        let bx = tramp.get_nth_param(slot as u32).unwrap().into_pointer_value();
+        let cv = self
+            .builder
+            .build_load(self.closure_type(), bx, "closure")
+            .expect("builder")
+            .into_struct_value();
+        let code = self.builder.build_extract_value(cv, 0, "code").expect("builder").into_pointer_value();
+        let env = self.builder.build_extract_value(cv, 1, "env").expect("builder");
+        let rparams: Vec<Ty> =
+            cparams.iter().filter(|c| !matches!(c, CTy::Env)).map(|c| c.rill_ty()).collect();
+        let rret = cret.rill_ty();
+        let mut args: Vec<BasicMetadataValueEnum> = vec![env.into()];
+        for (i, c) in cparams.iter().enumerate() {
+            if matches!(c, CTy::Env) {
+                continue;
+            }
+            args.push(self.from_c(tramp.get_nth_param(i as u32).unwrap(), c).into());
+        }
+        let fn_ty = self.fn_llvm_type(&rparams, &rret, true);
+        let call = self.builder.build_indirect_call(fn_ty, code, &args, "ccall").expect("builder");
+        if !self.wasm {
+            if let Some(cc) = self.cc_for(&rparams, 1) {
+                call.set_call_convention(cc);
+            }
+        }
+        match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) if self.c_type(cret).is_some() => {
+                let narrowed = self.to_c(v, cret);
+                self.builder.build_return(Some(&narrowed)).expect("builder");
+            }
+            _ => {
+                self.builder.build_return(None).expect("builder");
+            }
+        }
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        self.closure_tramps.insert(key, tramp);
+        tramp
+    }
+
     fn gen_callback(
         &mut self,
         arg: &TExpr,
@@ -6490,7 +6567,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 "a callback must be a function known while compiling — name a \
                  top-level function, or take one as a parameter and let the \
                  callers name it. A lambda or a closure carries an environment, \
-                 and C has nowhere to put it"
+                 and C has nowhere to put it — unless the signature says where: \
+                 an `Env` parameter on the `extern`, and an `Env` slot in the \
+                 callback's `Fn(...)`, is the user pointer most such APIs take"
                     .to_string(),
             ));
         };
@@ -7878,12 +7957,49 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 };
                 let mut argv: Vec<BasicMetadataValueEnum> = Vec::with_capacity(args.len());
                 let mut owned: Vec<(BasicValueEnum<'ctx>, Ty)> = Vec::new();
-                for (a, pt) in args.iter().zip(&sig.params) {
+                // A callback whose `Fn` has an `Env` slot may be any closure:
+                // the closure — code and environment, two words — is put in
+                // a box, the box's address goes out by the `Env` parameter
+                // and comes back into the slot, and a trampoline made for
+                // the C signature unpacks it and calls the closure. The box
+                // and the frame's hold on the closure last the call.
+                let carried = sig.params.iter().position(|p| {
+                    matches!(p, CTy::Fn(cps, _) if cps.iter().any(|c| matches!(c, CTy::Env)))
+                });
+                let mut env_box: Option<(PointerValue<'ctx>, BasicValueEnum<'ctx>, bool, Ty)> = None;
+                if let Some(pi) = carried {
+                    let ai = sig.params[..pi].iter().filter(|p| !matches!(p, CTy::Env)).count();
+                    let a = &args[ai];
+                    let cty = self.concrete(&a.ty, subst);
+                    let (cv, held) = self.gen_borrowed(a, scope, subst, func)?;
+                    let alloc = self.module.get_function("rill_alloc_bytes").unwrap();
+                    let size = self.ctx.i64_type().const_int(16, false);
+                    let call = self.builder.build_call(alloc, &[size.into()], "envbox").expect("builder");
+                    let bx = match call.try_as_basic_value() {
+                        inkwell::values::ValueKind::Basic(v) => v.into_pointer_value(),
+                        _ => unreachable!("rill_alloc_bytes answers a pointer"),
+                    };
+                    self.builder.build_store(bx, cv).expect("builder");
+                    env_box = Some((bx, cv, held, cty));
+                }
+                let mut ai = 0;
+                for pt in &sig.params {
+                    if let CTy::Env = pt {
+                        let (bx, ..) = env_box.as_ref().expect("an `Env` parameter has its callback");
+                        argv.push((*bx).into());
+                        continue;
+                    }
+                    let a = &args[ai];
+                    ai += 1;
                     // A callback does not evaluate to a value C can hold: the
                     // named function is wrapped in a C-ABI trampoline and it
                     // is the trampoline's address that crosses.
                     if let CTy::Fn(cps, cret) = pt {
-                        let trampoline = self.gen_callback(a, cps, cret, subst)?;
+                        let trampoline = if cps.iter().any(|c| matches!(c, CTy::Env)) {
+                            self.gen_closure_trampoline(cps, cret)
+                        } else {
+                            self.gen_callback(a, cps, cret, subst)?
+                        };
                         argv.push(trampoline.as_global_value().as_pointer_value().into());
                         continue;
                     }
@@ -7938,6 +8054,13 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         self.builder.build_call(callee, &argv, "cffi").expect("LLVM builder error")
                     }
                 };
+                if let Some((bx, cv, held, cty)) = env_box {
+                    let free = self.module.get_function("rill_free_ptr").unwrap();
+                    self.builder.build_call(free, &[bx.into()], "").expect("builder");
+                    if held {
+                        self.emit_release(cv, &cty);
+                    }
+                }
                 let out = match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Some(v),
                     _ => None,

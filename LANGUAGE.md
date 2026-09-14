@@ -655,6 +655,15 @@ LLVM's guaranteed-tail-call convention and mark the call `musttail`, so it is
 a promise the optimizer cannot take back rather than a hint it usually
 honours.
 
+One limit on the promise: it is made through the machine's registers, and a
+signature with more than six integer or pointer parameters, or more than
+eight floats, takes the C convention instead (a flat record counts by its
+fields, a closure's environment as one more). A function calling itself
+still runs in constant stack; several such functions calling each *other*
+in tail position do not, and the compiler warns, naming the two and the
+count. Pack the extras into one tuple — a tuple is one pointer — and the
+promise is back.
+
 ```
 fn sum_to(n) = go(n, 0)
 fn go(i, acc) = if i == 0 then acc else go(i - 1, acc + i)   # a loop
@@ -1719,12 +1728,38 @@ fn main() = sort_by(nums, ascending)
 
 What crosses is still a bare code pointer, so the callback has to be settled
 while compiling: the caller names it, and `sort_by` is emitted once per
-comparator it is called with, each copy with its own trampoline built in.
-A **lambda or closure cannot cross** — it has an environment and C has nowhere
-to keep it — and neither can a function chosen at run time. A helper like this
-cannot itself be used as a value, since it exists in as many copies as it has
-callers. A callback must not block on a channel, since it runs on C's call
-stack rather than on its own.
+comparator it is called with, each copy with its own trampoline built in. A
+helper like this cannot itself be used as a value, since it exists in as many
+copies as it has callers. A callback must not block on a channel, since it
+runs on C's call stack rather than on its own.
+
+A **lambda or closure** has an environment, and a bare code pointer has
+nowhere to keep it. Most APIs that take a callback also take a pointer they
+hand back to it unread — `qsort_r`'s `arg`, `pthread_create`'s, a library's
+"user data" — and that is where it goes. The signature says so with `Env`:
+the parameter the pointer goes out by, and the slot of the callback's
+`Fn(...)` it comes back into.
+
+```
+extern fn rill_sum_by(n: I64, f: Fn(I64, Env) -> I64, arg: Env) -> I64
+
+fn main() =
+  k = 10
+  println(int_to_str(rill_sum_by(4, \i -> i * k)))    # 60
+```
+
+The Rill call leaves the `Env` out — it is the compiler's to fill — and the
+callback is written in the types that remain, `(Int) -> Int` here. What
+goes out is the address of a box holding the closure, code and environment
+both; what C calls is a trampoline made for the C signature, which unpacks
+the box and calls the closure the way every closure is called. The box, and
+the frame's hold on the closure, last the call: this is for a callback C
+uses **during** the call, as a comparator or a visitor is. A callback C keeps
+after the call returns — a handler registered once and called later — is
+still a named function, since nothing here can know how long C keeps it.
+A named function or a value chosen at run time may be passed for an `Env`
+callback too. An `extern` has one `Env` parameter and one callback carrying
+it, or neither.
 
 `examples/callbacks.rill` has C calling back during `main`, after it has
 returned, and into a comparator that reaches C through such a helper.

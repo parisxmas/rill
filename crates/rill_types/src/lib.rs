@@ -89,6 +89,13 @@ pub enum CTy {
     Bool,
     Ptr,
     Unit,
+    /// Where a callback's environment travels. An `extern` with an `Env`
+    /// parameter has one callback whose `Fn(...)` has an `Env` too: the
+    /// Rill call leaves the `Env` out, the compiler hands C a pointer that
+    /// carries the closure, and C hands it back into the callback's `Env`
+    /// slot — `qsort_r`'s `arg`, `pthread_create`'s, every library's "user
+    /// data". That is what lets a lambda cross.
+    Env,
     /// A C function pointer, taking these types and returning that one
     /// (`Unit` when the callback answers with nothing). Only a top-level Rill
     /// function can be passed for one: codegen wraps it in a C-ABI trampoline,
@@ -104,11 +111,14 @@ impl CTy {
             | CTy::U64 | CTy::USize | CTy::ISize => Ty::Int,
             CTy::F32 | CTy::F64 => Ty::Float,
             CTy::Bool => Ty::Bool,
-            CTy::Ptr => Ty::Ptr,
+            CTy::Ptr | CTy::Env => Ty::Ptr,
             CTy::Unit => Ty::Unit,
-            CTy::Fn(ps, r) => {
-                Ty::Fn(ps.iter().map(|p| p.rill_ty()).collect(), Box::new(r.rill_ty()))
-            }
+            // The `Env` slot is the compiler's, not the callback's: a Rill
+            // function passed for `Fn(Ptr, Env) -> I32` takes one `Ptr`.
+            CTy::Fn(ps, r) => Ty::Fn(
+                ps.iter().filter(|p| !matches!(p, CTy::Env)).map(|p| p.rill_ty()).collect(),
+                Box::new(r.rill_ty()),
+            ),
         }
     }
 
@@ -133,7 +143,7 @@ impl CTy {
             CTy::I8 | CTy::U8 | CTy::Bool => 1,
             CTy::I16 | CTy::U16 => 2,
             CTy::I32 | CTy::U32 | CTy::F32 => 4,
-            CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Fn(..) => 8,
+            CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Fn(..) | CTy::Env => 8,
             CTy::USize | CTy::ISize => 8,
             CTy::Unit => 0,
         }
@@ -168,6 +178,7 @@ impl CTy {
             CTy::Ptr => "Ptr",
             CTy::Unit => "Unit",
             CTy::Fn(..) => "Fn",
+            CTy::Env => "Env",
         }
     }
 }
@@ -1049,9 +1060,31 @@ impl Checker {
                 }
                 params.push(cty);
             }
+            // `Env` comes in pairs: the parameter the pointer goes out by,
+            // and the slot of the one callback it comes back into.
+            let envs = params.iter().filter(|p| matches!(p, CTy::Env)).count();
+            let carried = params
+                .iter()
+                .filter(|p| matches!(p, CTy::Fn(ps, _) if ps.iter().any(|q| matches!(q, CTy::Env))))
+                .count();
+            if envs > 1 || carried > 1 || envs != carried {
+                return Err(TypeError::new(
+                    e.line,
+                    format!(
+                        "`{}`: `Env` names where a callback's environment travels — an `extern` \
+                         with an `Env` parameter has exactly one callback whose `Fn(...)` has an \
+                         `Env` slot, and the other way round; this one has {envs} `Env` \
+                         parameter(s) and {carried} such callback(s)",
+                        e.name
+                    ),
+                ));
+            }
             let ret = match &e.ret {
                 Some(tr) => {
                     let r = resolve_c_type(tr, &adt_index, &c.adts, "return type")?;
+                    if matches!(r, CTy::Env) {
+                        return Err(TypeError::new(tr.line, "return type: `Env` is a parameter's to carry".to_string()));
+                    }
                     if matches!(r, CTy::Fn(..)) {
                         return Err(TypeError::new(
                             tr.line,
@@ -4163,7 +4196,10 @@ impl Checker {
         }
 
         if let Some(sig) = self.externs.get(name).cloned() {
-            let params = &sig.params;
+            // The `Env` parameter is the compiler's to fill: the call does
+            // not write it.
+            let visible: Vec<CTy> = sig.params.iter().filter(|p| !matches!(p, CTy::Env)).cloned().collect();
+            let params = &visible;
             let ret = sig.ret.rill_ty();
             if args.len() != params.len() {
                 return Err(TypeError::new(
@@ -5207,6 +5243,12 @@ fn resolve_c_type(
     // `Fn(...)` is a C function pointer, optionally with a result: `Fn(I32) ->
     // I32`. Without the arrow it hands nothing back, which is what a plain
     // notification callback wants.
+    if tr.name == "Env" {
+        if !tr.args.is_empty() || tr.ret.is_some() {
+            return Err(TypeError::new(tr.line, format!("{what}: `Env` takes nothing")));
+        }
+        return Ok(CTy::Env);
+    }
     if tr.name == "Fn" {
         let mut params = Vec::new();
         for a in &tr.args {
@@ -5237,6 +5279,15 @@ fn resolve_c_type(
             }
             None => CTy::Unit,
         };
+        if params.iter().filter(|p| matches!(p, CTy::Env)).count() > 1 {
+            return Err(TypeError::new(
+                tr.line,
+                format!("{what}: a callback carries its environment in one `Env` slot, not two"),
+            ));
+        }
+        if matches!(ret, CTy::Env) {
+            return Err(TypeError::new(tr.line, format!("{what}: a callback cannot answer with `Env`")));
+        }
         return Ok(CTy::Fn(params, Box::new(ret)));
     }
     if let Some(r) = &tr.ret {
