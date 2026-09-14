@@ -1,0 +1,190 @@
+# Command-line arguments: what a program takes, said once, and then parsed,
+# checked and explained from that one saying.
+#
+#     import "cli/args" as cli
+#
+#     fn spec() =
+#       cli.tool("serve", "serve a directory over HTTP")
+#         |> cli.switch("verbose", "v", "say what is served")
+#         |> cli.valued("port", "p", "PORT", "8080", "the port to listen on")
+#         |> cli.slot("dir", "the directory to serve", true)
+#
+#     fn main() = match cli.parse(spec(), args())
+#       Err(why) -> println(why)                  # what was wrong, then the usage
+#       Ok(got) ->
+#         port = str_to_int(cli.value(got, "port"))
+#         serve(cli.slots(got), port, cli.on(got, "verbose"))
+#
+# `--port 80`, `--port=80` and `-p 80` all set `port`; `--verbose` and `-v`
+# set a switch; `--` ends the options and everything after it is a slot.
+# `--help` and `-h` answer with the usage text as the error, so a program
+# that prints `why` has help for free.
+
+type Item
+  Switch(long: Str, short: Str, help: Str)
+  Valued(long: Str, short: Str, meta: Str, default: Str, help: Str)
+  Slot(name: Str, help: Str, required: Bool)
+
+type Spec
+  Spec(name: Str, about: Str, items: List(Item))
+
+# What a parse found: the switches given, the values (given or defaulted),
+# and the slots in order.
+type Got
+  Got(switches: Map(Str, Int), values: Map(Str, Str), slots: List(Str))
+
+fn tool(name, about) = Spec(name, about, Nil)
+
+fn switch(s: Spec, long, short, help) =
+  { s | items = append(s.items, Cons(Switch(long, short, help), Nil)) }
+
+fn valued(s: Spec, long, short, meta, default, help) =
+  { s | items = append(s.items, Cons(Valued(long, short, meta, default, help), Nil)) }
+
+fn slot(s: Spec, name, help, required) =
+  { s | items = append(s.items, Cons(Slot(name, help, required), Nil)) }
+
+# -- reading the answer -------------------------------------------------------
+
+fn on(g: Got, long) = map_has(g.switches, long)
+
+# The value given for `long`, or its default.
+fn value(g: Got, long) = map_or(g.values, long, "")
+
+fn slots(g: Got) = g.slots
+
+# -- parsing ------------------------------------------------------------------
+
+# The program name is `args()`'s first, and is skipped.
+fn parse(s: Spec, argv) = match argv
+  Nil -> finish(s, Got(map_new(), map_new(), Nil))
+  Cons(_, rest) ->
+    got = Got(map_new(), defaults(s.items, map_new()), Nil)
+    walk(s, rest, got, false)
+
+private fn defaults(items, m) = match items
+  Nil -> m
+  Cons(Valued(long, _, _, d, _), rest) ->
+    m[long] = d
+    defaults(rest, m)
+  Cons(_, rest) -> defaults(rest, m)
+
+private fn walk(s: Spec, argv, got: Got, only_slots) = match argv
+  Nil -> finish(s, got)
+  Cons(a, rest) ->
+    if only_slots || #a == 0 || a[0] != 45 || a == "-" then walk(s, rest, { got | slots = append(got.slots, Cons(a, Nil)) }, only_slots)
+    else if a == "--" then walk(s, rest, got, true)
+    else if a == "--help" || a == "-h" then Err(usage(s))
+    else
+      (name, inline) = split_eq(a)
+      match find(s.items, name)
+        None -> Err("`" + a + "` is not an option of " + s.name + "\n" + usage(s))
+        Some(Switch(long, _, _)) ->
+          if #inline > 0 then Err("`--" + long + "` takes no value\n" + usage(s))
+          else
+            got.switches[long] = 1
+            walk(s, rest, got, false)
+        Some(Valued(long, _, meta, _, _)) ->
+          if #inline > 0 then
+            got.values[long] = inline
+            walk(s, rest, got, false)
+          else match rest
+            Cons(v, rest2) ->
+              got.values[long] = v
+              walk(s, rest2, got, false)
+            Nil -> Err("`--" + long + "` needs a " + meta + "\n" + usage(s))
+        Some(Slot(_, _, _)) -> Err("`" + a + "` is not an option of " + s.name + "\n" + usage(s))
+
+# `--name=value` -> ("name", "value"); `--name` -> ("name", ""); `-n` ->
+# ("n", "").
+private fn split_eq(a) =
+  bare = if #a > 1 && a[1] == 45 then a[2:] else a[1:]
+  match str_find(bare, "=")
+    -1 -> (bare, "")
+    i -> (bare[0:i], bare[i + 1:])
+
+# The item a long or short name means.
+private fn find(items, name) = match items
+  Nil -> None
+  Cons(it, rest) -> match it
+    Switch(long, short, _) -> if name == long || name == short then Some(it) else find(rest, name)
+    Valued(long, short, _, _, _) -> if name == long || name == short then Some(it) else find(rest, name)
+    Slot(_, _, _) -> find(rest, name)
+
+# The slots the spec requires are there; extra ones past the named slots
+# are kept, since a tool that takes files takes any number.
+private fn finish(s: Spec, got: Got) =
+  need = len(filter(s.items, \it -> match it Slot(_, _, required) -> required _ -> false))
+  if len(got.slots) < need then Err("missing " + missing_name(s.items, len(got.slots)) + "\n" + usage(s)) else Ok(got)
+
+private fn missing_name(items, have) = match items
+  Nil -> "an argument"
+  Cons(Slot(name, _, _), rest) -> if have == 0 then "<" + name + ">" else missing_name(rest, have - 1)
+  Cons(_, rest) -> missing_name(rest, have)
+
+# -- usage --------------------------------------------------------------------
+
+# The tool's line, then one line per item, aligned.
+fn usage(s: Spec) =
+  head = "usage: " + s.name + " [options]" + slot_line(s.items)
+  about = if #s.about == 0 then "" else "\n  " + s.about
+  lefts = map(s.items, left_of)
+  width = fold(lefts, 0, \w, l -> max(w, #l))
+  lines = map(s.items, \it -> "  " + pad(left_of(it), width) + "  " + help_of(it))
+  head + about + "\n\n" + join(lines, "\n") + "\n  " + pad("-h, --help", width) + "  this"
+
+private fn slot_line(items) = match items
+  Nil -> ""
+  Cons(Slot(name, _, required), rest) -> (if required then " <" + name + ">" else " [" + name + "]") + slot_line(rest)
+  Cons(_, rest) -> slot_line(rest)
+
+private fn left_of(it) = match it
+  Switch(long, short, _) -> "-" + short + ", --" + long
+  Valued(long, short, meta, _, _) -> "-" + short + ", --" + long + " " + meta
+  Slot(name, _, _) -> "<" + name + ">"
+
+private fn help_of(it) = match it
+  Switch(_, _, help) -> help
+  Valued(_, _, _, default, help) -> if #default == 0 then help else help + " (default " + default + ")"
+  Slot(_, help, _) -> help
+
+private fn pad(s, w) = if #s >= w then s else s + repeat(" ", w - #s)
+
+# -- tests --------------------------------------------------------------------
+
+private fn sample() =
+  tool("serve", "serve a directory over HTTP")
+    |> switch("verbose", "v", "say what is served")
+    |> valued("port", "p", "PORT", "8080", "the port to listen on")
+    |> slot("dir", "the directory to serve", true)
+
+private fn argv(xs) = Cons("serve", xs)
+
+fn test_options_and_slots() =
+  got = parse(sample(), argv(Cons("-v", Cons("--port=81", Cons("www", Nil)))))
+  match got
+    Err(e) -> assert(false)
+    Ok(g) ->
+      assert(on(g, "verbose"))
+      assert_eq(value(g, "port"), "81")
+      assert_eq(slots(g), Cons("www", Nil))
+  match parse(sample(), argv(Cons("www", Cons("-p", Cons("9", Cons("--", Cons("-x", Nil)))))))
+    Err(e) -> assert(false)
+    Ok(g) ->
+      assert(!on(g, "verbose"))
+      assert_eq(value(g, "port"), "9")
+      assert_eq(slots(g), Cons("www", Cons("-x", Nil)))
+
+fn test_errors_and_help() =
+  match parse(sample(), argv(Cons("--bogus", Nil)))
+    Err(e) -> assert(starts_with(e, "`--bogus` is not an option of serve"))
+    Ok(_) -> assert(false)
+  match parse(sample(), argv(Nil))
+    Err(e) -> assert(starts_with(e, "missing <dir>"))
+    Ok(_) -> assert(false)
+  match parse(sample(), argv(Cons("--port", Nil)))
+    Err(e) -> assert(starts_with(e, "`--port` needs a PORT"))
+    Ok(_) -> assert(false)
+  match parse(sample(), argv(Cons("-h", Nil)))
+    Err(e) -> assert(contains(e, "usage: serve [options] <dir>") && contains(e, "-p, --port PORT  the port to listen on (default 8080)"))
+    Ok(_) -> assert(false)
