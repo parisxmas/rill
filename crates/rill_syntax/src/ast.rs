@@ -108,6 +108,10 @@ pub struct TypeDef {
     pub name: String,
     pub params: Vec<String>,
     pub ctors: Vec<CtorDef>,
+    /// `type Meters = Float`: a name for a type, not a type. Every mention
+    /// is read as what it names before the checker sees the program, so an
+    /// alias has no constructors and is never among the types.
+    pub alias: Option<TypeRef>,
     pub line: usize,
 }
 

@@ -303,6 +303,10 @@ impl Fmt {
     fn typedef(&mut self, t: &TypeDef) {
         let params =
             if t.params.is_empty() { String::new() } else { format!("({})", t.params.join(", ")) };
+        if let Some(a) = &t.alias {
+            self.push_at(0, &format!("type {}{} = {}", t.name, params, type_ref(a)), t.line);
+            return;
+        }
         self.push_at(0, &format!("type {}{}", t.name, params), t.line);
         for c in &t.ctors {
             self.lead(c.line, 1);

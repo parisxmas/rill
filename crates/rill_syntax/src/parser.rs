@@ -482,6 +482,12 @@ impl Parser {
             }
             self.expect(&Tok::RParen, "to close the type parameter list")?;
         }
+        // `type Meters = Float`: a name for a type, with no constructors.
+        if matches!(self.peek(), Tok::Eq) {
+            self.bump();
+            let target = self.type_ref("the type the alias names")?;
+            return Ok(TypeDef { name, params, ctors: Vec::new(), alias: Some(target), line });
+        }
         self.expect(&Tok::Indent, "— constructors must be indented under `type`")?;
         let mut ctors = vec![self.ctor()?];
         loop {
@@ -508,7 +514,7 @@ impl Parser {
                 }
             }
         }
-        Ok(TypeDef { name, params, ctors, line })
+        Ok(TypeDef { name, params, ctors, alias: None, line })
     }
 
     fn ctor(&mut self) -> Result<CtorDef, SyntaxError> {

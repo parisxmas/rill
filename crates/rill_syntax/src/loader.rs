@@ -254,6 +254,9 @@ fn qualify(m: &mut Module, alias: &str) {
 
     for t in &mut m.types {
         t.name = q(&t.name);
+        if let Some(a) = &mut t.alias {
+            qualify_type(a, &own, alias);
+        }
         for c in &mut t.ctors {
             c.name = q(&c.name);
             for (_, ty) in &mut c.fields {

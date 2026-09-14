@@ -1,5 +1,6 @@
 //! rill_syntax: lexer, layout handling, parser and AST for the Rill language.
 
+pub mod alias;
 pub mod ast;
 pub mod fmt;
 pub mod lexer;

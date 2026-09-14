@@ -26,6 +26,7 @@ pub fn parse_program(src: &str) -> Result<Module, SyntaxError> {
 pub fn with_prelude(user: Module) -> Result<Module, SyntaxError> {
     let prelude = parse(PRELUDE).expect("the embedded prelude must parse");
     let mut m = merge(prelude, user);
+    crate::alias::expand(&mut m)?;
     crate::lift::lift(&mut m)?;
     Ok(m)
 }

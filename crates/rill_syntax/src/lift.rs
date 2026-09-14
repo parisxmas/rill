@@ -817,7 +817,7 @@ fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
 }
 
 /// Rebuilds an expression with `f` applied to each immediate sub-expression.
-fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
+pub fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
     match e {
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(..) => e,
         Expr::Call { name, args, line, piped, stacked } => {

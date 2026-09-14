@@ -2030,6 +2030,34 @@ fn an_object_of_a_trait_is_a_record_of_closures() {
     assert!(compile_error(c).contains("a callback C calls is written `Fn(I32) -> I32`"));
 }
 
+/// A type alias is a name for a type, read as what it names everywhere an
+/// annotation can be — a field, a parameter, a result, a loop's carried
+/// name — with parameters put in; one that names itself is refused.
+#[test]
+fn a_type_alias_is_a_name_for_a_type() {
+    let src = "type Meters = Float\n\n\
+               type Pair(a) = (a, a)\n\n\
+               type Span = Pair(Meters)\n\n\
+               type Leg\n  \
+                 Leg(from: Meters, to: Meters)\n\n\
+               fn length(l: Leg) -> Meters = l.to - l.from\n\n\
+               fn ends(s: Span) -> Meters = match s\n  \
+                 (a, b) -> a + b\n\n\
+               fn main() =\n  \
+                 println(show(length(Leg(1.5, 4.0))))\n  \
+                 println(show(ends((1.0, 2.0))))\n  \
+                 n = while n < 3.0 with n: Meters = 0.0\n    \
+                   n + 1.0\n  \
+                 println(show(n))\n";
+    assert_eq!(run_source("alias", src), "2.5\n3\n3\n");
+    assert_eq!(fmt_source(src), src);
+
+    let loops = "type A = B\n\ntype B = A\n\nfn f(x: A) = x\n\nfn main() = println(1)\n";
+    assert!(compile_error(loops).contains("names itself"));
+    let arity = "type Pair(a) = (a, a)\n\nfn f(x: Pair) = x\n\nfn main() = println(1)\n";
+    assert!(compile_error(arity).contains("takes 1 type argument(s), but 0 given"));
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

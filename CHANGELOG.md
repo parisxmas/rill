@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — a name for a type
+
+`type Meters = Float` is a type alias, and `type Pair(a) = (a, a)` one
+with parameters. It is a name and nothing more: every mention is read
+as what it names before anything else looks at the program, so an
+alias and what it names are one type, an alias prints as what it
+names, and one that names itself is refused. Where a type is to be kept
+apart from what it holds, a constructor is still the way.
+
 ## Unreleased — an object of a trait
 
 A trait's dispatch is static, so a `List(a)` held one type, and a list

@@ -106,6 +106,14 @@ fn area(r: Float) -> Float = 3.14159 * r * r
 There are no implicit conversions. `1 + 2.0` is a type error; `to_float` and
 `to_int` cross between them explicitly.
 
+A **type alias** is a name for a type: `type Meters = Float`, or with
+parameters, `type Pair(a) = (a, a)`. It is a name and nothing more — every
+mention is read as what it names before the checker sees the program, so a
+`Meters` and a `Float` are one type, an alias prints as what it names, and
+an alias that names itself is refused. A type to be kept apart from what it
+holds is a constructor instead: `type Meters` with `Meters(v: Float)` is a
+new type, and `m.v` is the number.
+
 `Int` is 64-bit two's complement and its arithmetic is the machine's: `+`,
 `-` and `*` wrap round at the ends, as they do in C, Go and a release build
 of Rust. The two cases the machine has no one answer for are decided: `/`
