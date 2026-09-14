@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.10.0 — a library to reach for, and a compiler that says why
+
+The release where Rill got a standard library worth the name, and a
+compiler that explains itself. `lib/` went from a handful of files to
+nine folders: strings, a key–value store that reads ahead of SQLite,
+arrays with a shape that NumPy's notation sits on, an HTTP server with
+middleware, regular expressions, dates, paths, random numbers, a
+program's own command line, decimals and big integers — each a `module`
+that says its name on its first line, keeps its helpers `private`, and
+carries tests that `rill test` runs. The sections below this one tell
+each of them properly.
+
+The type system learned the things a program stumbles on in its first
+week: a field names its type, a field every constructor has can be read
+without a `match`, a signature written down is taken at any type so a
+function may recurse polymorphically, `?` works on an option and carries
+an error across layers, a branch keeps what it binds, and a trait can
+have defaults, supersets, a `where` said in the signature, a method that
+belongs to it by name, an alias, and an object made from it. Integer
+arithmetic says what it does at its edges, and a `\u` escape is a
+character.
+
+Around the language, the tools were opened up. `rill explain` reports
+what codegen decided about memory, line by line. `rill check --parallel`
+refuses storage two strands could write. A ring is refused where it is
+made. An extern that blocks is `blocking`, and a `while` gives way. The
+compiler builds on LLVM 21, releases what it drops in place, and reaches
+the instructions the machine has that C has no name for — it is level
+with or ahead of the C on every benchmark in `benchmarks/c/`.
+
 ## Unreleased — `lib/`, by kind
 
 The library folder was a flat list, and grew until a name said less
