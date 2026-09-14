@@ -356,9 +356,9 @@ fn find_unsupported(e: &TExpr) -> Option<(usize, &'static str)> {
 }
 
 /// Compile and return the (unoptimized) LLVM IR as text.
-pub fn compile_to_ir(tmod: &TModule, unchecked: bool) -> Result<String, CodegenError> {
+pub fn compile_to_ir(tmod: &TModule, parallel: bool, unchecked: bool) -> Result<String, CodegenError> {
     let context = Context::create();
-    let cg = Codegen::build_module(&context, tmod, false, None, None, unchecked, false)?;
+    let cg = Codegen::build_module(&context, tmod, parallel, None, None, unchecked, false)?;
     Ok(cg.module.print_to_string().to_string())
 }
 
@@ -1472,6 +1472,11 @@ struct Codegen<'ctx, 'a> {
     /// Built with `--parallel`: refcount updates check `rill_mt` and go
     /// atomic when the program asks for more than one worker.
     parallel: bool,
+    /// `RILL_RC_CHECK` in the compiler's environment: every count update
+    /// first looks for the runtime's freed-block paint on the object, and
+    /// a touch of a freed count stops the program there, in the toucher's
+    /// own frames. Pairs with `RILL_ALLOC_CHECK=1` at run time.
+    rc_check: bool,
     /// Present in debug builds: emits DWARF so a debugger can map machine
     /// code back to Rill source lines.
     debug: Option<DebugCtx<'ctx>>,
@@ -1557,6 +1562,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             str_count: 0,
             lambda_count: 0,
             parallel,
+            rc_check: std::env::var_os("RILL_RC_CHECK").is_some(),
             debug: None,
             cur_line: 0,
             cur_fn: usize::MAX,
@@ -2804,6 +2810,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_str_take_buf", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_rc_stale", void.fn_type(&[ptrt.into(), i64t.into()], false), None);
         self.module.add_function(
             "rill_strbuf_add_sub",
             void.fn_type(&[ptrt.into(), ptrt.into(), i64t.into(), i64t.into()], false),
@@ -3419,6 +3426,43 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         v
     }
 
+    /// Lets go of one reference to a box that was found shared a moment
+    /// ago: `rc` is its count as loaded then, above one. On a single
+    /// worker that load is still the truth, and the subtract is stored
+    /// back. On a parallel build another worker may have retained or
+    /// released in between — a retain stored over would be lost, and the
+    /// box freed under its holder — so the count is taken down the way
+    /// `emit_rc_dec` does, and a zero coming back frees after all.
+    fn emit_shared_dec(&mut self, p: PointerValue<'ctx>, rc: IntValue<'ctx>, ty: &Ty) {
+        let i64t = self.ctx.i64_type();
+        if !self.parallel {
+            let less = self.builder.build_int_sub(rc, i64t.const_int(1, false), "dec").expect("builder");
+            self.store_rc(p, rc, less);
+            return;
+        }
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .expect("emitting outside a function");
+        let new = self.emit_rc_dec(p, func);
+        let zero = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, new, i64t.const_zero(), "last")
+            .expect("LLVM builder error");
+        let late_bb = self.ctx.append_basic_block(func, "shared.late");
+        let done_bb = self.ctx.append_basic_block(func, "shared.done");
+        self.builder.build_conditional_branch(zero, late_bb, done_bb).expect("LLVM builder error");
+        self.builder.position_at_end(late_bb);
+        // Ours alone now: the count is put back to one and the usual
+        // last-reference release takes it down and frees.
+        self.builder.build_store(p, i64t.const_int(1, false)).expect("LLVM builder error");
+        let drop_fn = self.adt_drop(ty);
+        self.builder.build_call(drop_fn, &[p.into()], "").expect("LLVM builder error");
+        self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+        self.builder.position_at_end(done_bb);
+    }
+
     fn store_rc(
         &mut self,
         rc_ptr: PointerValue<'ctx>,
@@ -3451,7 +3495,19 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.position_at_end(skip_bb);
     }
 
+    /// `RILL_RC_CHECK`: every count update first asks the runtime whether
+    /// the block is out at all — one that was freed is reported before the
+    /// update lands, in the toucher's own frames.
+    fn emit_stale_check(&mut self, p: PointerValue<'ctx>, kind: u64) {
+        if !self.rc_check {
+            return;
+        }
+        let k = self.ctx.i64_type().const_int(kind, false);
+        self.call_rt("rill_rc_stale", &[p.into(), k.into()]);
+    }
+
     fn emit_rc_inc(&mut self, ptr: BasicValueEnum<'ctx>) {
+        self.emit_stale_check(ptr.into_pointer_value(), 0);
         if self.parallel {
             // As `emit_rc_dec`: the flag read in place, an atomic add when
             // workers share, the plain path otherwise. This was a runtime
@@ -3639,6 +3695,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     Ty::Buf(_) => self.buf_rc_ptr(v.into_pointer_value()),
                     _ => v.into_pointer_value(),
                 };
+                self.emit_stale_check(p, 2);
                 let rc = self
                     .builder
                     .build_load(i64t, p, "rc")
@@ -3771,6 +3828,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     ) -> IntValue<'ctx> {
         let i64t = self.ctx.i64_type();
         let one = i64t.const_int(1, false);
+        self.emit_stale_check(rc_ptr, 1);
         if !self.parallel {
             // Single-worker build: a plain load, subtract and store, with no
             // check to pay for.
@@ -8970,6 +9028,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error");
             loaded.push((fi as u32, fv, fty.clone()));
         }
+        self.emit_stale_check(sp, 3);
         let rc = self.builder.build_load(i64t, sp, "rc").expect("LLVM builder error").into_int_value();
         let alone = self
             .builder
@@ -8985,8 +9044,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         for (_, fv, fty) in &loaded {
             self.emit_retain(*fv, fty);
         }
-        let less = self.builder.build_int_sub(rc, i64t.const_int(1, false), "dec").expect("builder");
-        self.store_rc(sp, rc, less);
+        self.emit_shared_dec(sp, rc, ty);
         let shared_end = self.builder.get_insert_block().expect("block");
         self.builder.build_unconditional_branch(on_bb).expect("LLVM builder error");
         self.builder.position_at_end(on_bb);
@@ -9052,6 +9110,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .get_insert_block()
             .and_then(|b| b.get_parent())
             .expect("emitting outside a function");
+        self.emit_stale_check(old, 4);
         let rc = self
             .builder
             .build_load(i64t, old, "rc")
@@ -9095,9 +9154,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
 
         self.builder.position_at_end(fresh_bb);
-        let less =
-            self.builder.build_int_sub(rc, i64t.const_int(1, false), "dec").expect("builder");
-        self.store_rc(old, rc, less);
+        self.emit_shared_dec(old, rc, &old_ty);
         let fresh = self.alloc_object(struct_ty, name);
         let fresh_end = self.builder.get_insert_block().expect("block");
         self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
@@ -9912,7 +9969,7 @@ mod tests {
     fn ir(src: &str) -> String {
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
-        compile_to_ir(&tmod, false).unwrap()
+        compile_to_ir(&tmod, false, false).unwrap()
     }
 
     #[test]
@@ -10021,7 +10078,7 @@ mod tests {
         let src = "trait D(a)\n  d(a) -> Str\n\nimpl D(Int)\n  fn d(n) = int_to_str(n)\n\nfn announce(x) = println(d(x))\n\nfn main() = announce(1.5)\n";
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
-        let err = compile_to_ir(&tmod, false).unwrap_err();
+        let err = compile_to_ir(&tmod, false, false).unwrap_err();
         assert!(err.msg.contains("no implementation of trait `D`"), "{}", err.msg);
     }
 
@@ -10030,7 +10087,7 @@ mod tests {
         let src = "trait D(a)\n  d(a) -> Str\n\nimpl D(Int)\n  fn d(n) = int_to_str(n)\n\nfn main() = println(d(7))\n";
         let m = rill_syntax::parse(src).unwrap();
         let tmod = rill_types::check(&m).unwrap();
-        let ir = compile_to_ir(&tmod, false).unwrap();
+        let ir = compile_to_ir(&tmod, false, false).unwrap();
         assert!(ir.contains("D.Int.d"), "{ir}");
     }
 

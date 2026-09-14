@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — a shared box let go of atomically, and an allocator that says who
+
+A `match` that empties a box it owns — the in-place reuse that lets
+`map` rebuild a list in the cells it was given — let go of a box that
+turned out to be *shared* with a plain load, subtract and store of its
+count, on a `--parallel` build as on any other. Another worker's retain
+landing between the load and the store was lost, the count came up one
+short, and the box was freed under a holder: a strand reading a freed
+cell of a list every strand was given, some runs and not others. Both
+places that did this (`empty_box`'s shared path and `take_reuse`'s
+fresh path) now take the count down the way every other release on a
+parallel build does — atomically, and a zero coming back frees after
+all. `examples/shared_list.rill` is the case, and an e2e test runs it
+on eight workers.
+
+`RILL_ALLOC_CHECK=1` at run time turns on the pool allocator's checks:
+every block freed is painted and its freer's frames kept (the last two
+frees of it), a block handed out or freed while its state says otherwise
+is reported, and a freed block whose count was touched before it came
+off the free list names the freer. `RILL_ALLOC_CHECK=2` adds a
+quarantine: every small block gets a page of its own that is made
+inaccessible at its free, so a stale holder faults on its own
+instruction (slow — a syscall per allocation). `RILL_RC_CHECK=1` in the
+*compiler's* environment builds a program whose every count update first
+asks the runtime whether the block is out at all — a touch of a freed
+block is reported in the toucher's frames, with the block's whole
+history of retains, releases, hand-outs and frees — which is what found
+the bug above.
+
+`rill build --emit-ir --parallel` now prints the parallel build's IR; it
+printed the single-worker one.
+
 ## Unreleased — a crash says where, and two buffer calls that ask first
 
 A fault — a bad address through an `extern` or a `Ptr`, a strand off the

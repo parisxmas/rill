@@ -1666,6 +1666,20 @@ pid, for a debugger to attach; otherwise the fault runs again under the
 system's default, so a core is written if one was asked for and the exit
 status is the one a faulting process has always had.
 
+A fault that is a *consequence* — a block freed under a holder, read later
+by whoever was handed it next — is found with the allocator's checks.
+`RILL_ALLOC_CHECK=1` at run time paints every freed block, keeps the frames
+of its last two frees, and reports a block handed out or freed twice, or
+one whose count was touched after its free, naming the freer.
+`RILL_ALLOC_CHECK=2` gives every small block a page of its own and makes
+it inaccessible at the free, so the stale holder faults on its own
+instruction — slow, a system call per allocation, for when the report
+above is not enough. `RILL_RC_CHECK=1` in the environment of `rill build`
+compiles a program whose every count update first asks the runtime
+whether the block is out at all, and a touch of a freed block is reported
+in the toucher's frames with the block's history: every retain, release,
+hand-out and free, by worker and by frame.
+
 `rill types` is the answer to the question an inferring language raises: what
 did it decide? It prints every function in the file as the checker sees it,
 including the requirements a body imposed — `fn merge(a: List('a), b: List('a))

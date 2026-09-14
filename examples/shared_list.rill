@@ -1,0 +1,29 @@
+# Eight strands, one list of boxes. Each keeps copying the same list —
+# a copy takes a count on every cell and lets it go again, on one worker
+# while another worker is doing the same to the same cells — and reports
+# what its copies added up to. Built with `--parallel` and run with
+# `RILL_THREADS=8`, this is a test of the counts staying right under
+# that; `RILL_ALLOC_CHECK=1` makes a cell freed under its holders a
+# report instead of a fault somewhere later. (The elements are boxes with a
+# string in them so that `map` is the prelude's, cell by cell, rather
+# than the fused loop a list of plain numbers gets.)
+type Item
+  Item(Int, Str)
+
+fn total(l, acc) = match l
+  Nil -> acc
+  Cons(Item(x, _), r) -> total(r, acc + x)
+
+fn spin(l, n, acc, out) =
+  if n == 0 then send(out, acc) else spin(l, n - 1, acc + total(map(l, \a -> a), 0), out)
+
+fn upto(n, acc) = if n == 0 then acc else upto(n - 1, Cons(Item(n, "box"), acc))
+
+fn gather(out, k, acc) = if k == 0 then acc else gather(out, k - 1, acc + recv(out))
+
+fn main() =
+  l = upto(64, Nil)
+  out = channel(8)
+  for k in 0..8
+    spawn spin(l, 20000, 0, out)
+  println(gather(out, 8, 0))

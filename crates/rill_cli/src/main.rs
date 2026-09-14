@@ -373,7 +373,7 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
     }
 
     if opts.emit_ir {
-        let ir = rill_codegen::compile_to_ir(&tmod, opts.unchecked)
+        let ir = rill_codegen::compile_to_ir(&tmod, opts.parallel, opts.unchecked)
             .map_err(|e| format!("{}: {e}", opts.source.display()))?;
         println!("{ir}");
     }

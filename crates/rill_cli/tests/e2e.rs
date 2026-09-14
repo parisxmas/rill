@@ -3737,3 +3737,37 @@ fn main() =
       kv_close(db)
   println(file_size(file_open("/tmp/rill-e2e-kv.db.wal", "r")))
 "#;
+
+/// Built with `--parallel` and run on eight workers with the allocator's
+/// checks on, several times over: a program whose strands share a list
+/// and keep copying it. The counts on the shared cells are taken up and
+/// down from several workers at once; one taken down with a plain store
+/// — as the in-place-reuse path of a `match` once did — loses another
+/// worker's retain, and the list is freed under its holders.
+#[test]
+fn shared_list_counts_stay_right_across_workers() {
+    require_fresh_runtime();
+    let root = workspace_root();
+    let source = root.join("examples").join("shared_list.rill");
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let exe = out_dir.join("shared_list");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&source)
+        .arg("--parallel")
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(build.status.success(), "rill build shared_list.rill failed:\n{}", String::from_utf8_lossy(&build.stderr));
+    for _ in 0..5 {
+        let run = Command::new(&exe)
+            .env("RILL_THREADS", "8")
+            .env("RILL_ALLOC_CHECK", "1")
+            .output()
+            .expect("failed to run produced executable");
+        assert!(run.status.success(), "shared_list died:\n{}", String::from_utf8_lossy(&run.stderr));
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "332800000\n");
+    }
+}

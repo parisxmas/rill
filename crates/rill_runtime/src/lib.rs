@@ -3181,7 +3181,7 @@ struct StackT {
 }
 
 #[cfg(target_os = "macos")]
-const SA_CRASH: i32 = 0x0001 /* ONSTACK */ | 0x0040 /* SIGINFO */ | 0x0004 /* RESETHAND */;
+const SA_CRASH: i32 = 0x0001 /* ONSTACK */ | 0x0040 /* SIGINFO */;
 #[cfg(target_os = "macos")]
 const SIGBUS: i32 = 10;
 #[cfg(target_os = "macos")]
@@ -3205,7 +3205,7 @@ struct StackT {
 }
 
 #[cfg(target_os = "linux")]
-const SA_CRASH: i32 = 0x08000000u32 as i32 /* ONSTACK */ | 4 /* SIGINFO */ | 0x80000000u32 as i32 /* RESETHAND */;
+const SA_CRASH: i32 = 0x08000000u32 as i32 /* ONSTACK */ | 4 /* SIGINFO */;
 #[cfg(target_os = "linux")]
 const SIGBUS: i32 = 7;
 #[cfg(target_os = "linux")]
@@ -3237,6 +3237,9 @@ unsafe fn crash_stack_here() {
 unsafe fn crash_stack_here() {}
 
 static CRASH_INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The first thread to fault reports; a second faulting while it does
+/// waits, so that the report is not cut off by the process ending.
+static CRASH_TAKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// The handlers, once per process, and a stack for them on this thread.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -3306,6 +3309,11 @@ unsafe fn fault_site(_ctx: *const u8) -> (usize, usize) {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 extern "C" fn crash_landed(sig: i32, info: *const u8, ctx: *const u8) {
     unsafe {
+        if CRASH_TAKEN.swap(true, core::sync::atomic::Ordering::AcqRel) {
+            loop {
+                sleep_nanos(1_000_000_000);
+            }
+        }
         rill_flush_out();
         let addr = *(info.add(SI_ADDR_OFFSET) as *const usize);
         err(b"rill: ");
@@ -3317,8 +3325,18 @@ extern "C" fn crash_landed(sig: i32, info: *const u8, ctx: *const u8) {
         });
         err(b" at ");
         err_hex(addr);
-        // whose stack, and was it the guard page
-        let w = me();
+        // whose stack, and was it the guard page. The worker is looked up
+        // through the thread's slot, which a fault may have found garbage
+        // in: a value that is not one of the workers is said and left alone.
+        let raw = me();
+        let first = &raw const WORKERS[0] as usize;
+        let last = &raw const WORKERS[MAX_WORKERS - 1] as usize;
+        let w = if raw as usize >= first && raw as usize <= last { raw } else { core::ptr::null_mut() };
+        if w.is_null() && !raw.is_null() {
+            err(b"\n  (the thread's worker slot holds ");
+            err_hex(raw as usize);
+            err(b", not a worker)");
+        }
         let overflow = if !w.is_null() && in_guard(addr, (*w).exec_top, EXEC_STACK_SIZE) {
             true
         } else {
@@ -3342,6 +3360,17 @@ extern "C" fn crash_landed(sig: i32, info: *const u8, ctx: *const u8) {
         }
         err(b"\n");
         let (pc, fp) = fault_site(ctx);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if !getenv(b"RILL_CRASH_REGS\0".as_ptr()).is_null() {
+            let mc = *(ctx.add(48) as *const *const u8);
+            for i in 0..29 {
+                err(b"  x");
+                err_dec(i as i64);
+                err(b" = ");
+                err_hex(*(mc.add(16 + i * 8) as *const usize));
+                err(b"\n");
+            }
+        }
         crash_where_from(pc, fp);
         let wait = getenv(b"RILL_CRASH_WAIT\0".as_ptr());
         if !wait.is_null() && *wait != 0 {
@@ -3352,8 +3381,19 @@ extern "C" fn crash_landed(sig: i32, info: *const u8, ctx: *const u8) {
                 sleep_nanos(1_000_000_000);
             }
         }
-        // the handler was one-shot: returning re-runs the faulting
-        // instruction under the default action
+        // the signal back to what the system does with it, and the
+        // faulting instruction run again under that
+        let dfl = SigAction {
+            handler: 0,
+            #[cfg(target_os = "macos")]
+            mask: 0,
+            #[cfg(target_os = "linux")]
+            mask: [0; 16],
+            flags: 0,
+            #[cfg(target_os = "linux")]
+            restorer: 0,
+        };
+        sigaction(sig, &dfl, core::ptr::null_mut());
     }
 }
 
@@ -4146,6 +4186,297 @@ const POOL_INIT: Pool = Pool {
 #[no_mangle]
 pub static mut rill_pools: [Pool; MAX_WORKERS] = [POOL_INIT; MAX_WORKERS];
 
+/// `RILL_ALLOC_CHECK=1`: every pointer that goes on a free list, and every
+/// one that comes off, is checked against the chunks the pools were
+/// given — a pointer outside them is a free of something that was never
+/// allocated here, or a list head that something wrote over after the
+/// block was freed — and the program stops there, naming the frames,
+/// rather than wherever the bad pointer is next dereferenced.
+static mut ALLOC_CHECK: bool = false;
+/// `RILL_ALLOC_CHECK=2`: on top of the above, every small block (up to
+/// `QUAR_MAX` bytes) gets a page of its own, and the page is made
+/// inaccessible the moment the block is freed. A stale holder that then
+/// touches the block faults right there, on its own instruction, and the
+/// crash report names it — instead of the fault landing on whoever pops
+/// the block next. The last `QUAR_RING` freed pages stay fenced; older
+/// ones are given back.
+static mut ALLOC_QUAR: bool = false;
+const QUAR_MAX: usize = 64;
+const QUAR_PAGE: usize = 16384;
+const QUAR_RING: usize = 8192;
+static QUAR_PAGES: [core::sync::atomic::AtomicUsize; QUAR_RING] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; QUAR_RING];
+static QUAR_NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(unix)]
+unsafe fn quar_alloc() -> *mut u8 {
+    let p = mmap(core::ptr::null_mut(), QUAR_PAGE, PROT_RW, MAP_PRIVATE_ANON, -1, 0);
+    if p as isize == -1 {
+        out(b"rill: out of memory\n");
+        die();
+    }
+    p
+}
+
+#[cfg(unix)]
+unsafe fn quar_free(ptr: *mut u8) {
+    mprotect(ptr, QUAR_PAGE, PROT_NONE);
+    let i = QUAR_NEXT.fetch_add(1, core::sync::atomic::Ordering::AcqRel) % QUAR_RING;
+    let old = QUAR_PAGES[i].swap(ptr as usize, core::sync::atomic::Ordering::AcqRel);
+    if old != 0 {
+        munmap(old as *mut u8, QUAR_PAGE);
+    }
+}
+/// One bit per 16 bytes of the first `LIVE_CHUNKS` chunks: set while the
+/// block is out, cleared at its free. A block handed out while its bit is
+/// set has been handed out twice — two owners of one block — and a free of
+/// a block whose bit is clear is a free of something not out.
+const LIVE_CHUNKS: usize = 64;
+static LIVE: [core::sync::atomic::AtomicU64; LIVE_CHUNKS * 16384] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; LIVE_CHUNKS * 16384];
+
+unsafe fn live_bit(p: usize) -> Option<(usize, u64)> {
+    let n = NCHUNKS.load(core::sync::atomic::Ordering::Acquire).min(LIVE_CHUNKS);
+    for i in 0..n {
+        let (b, l) = CHUNKS[i];
+        if p >= b && p < b + l {
+            let k = i * (POOL_CHUNK / 16) + (p - b) / 16;
+            return Some((k / 64, 1u64 << (k % 64)));
+        }
+    }
+    None
+}
+
+unsafe fn live_out(p: usize, class: usize) {
+    if let Some((w, bit)) = live_bit(p) {
+        let was = LIVE[w].fetch_or(bit, core::sync::atomic::Ordering::AcqRel);
+        if was & bit != 0 {
+            rill_flush_out();
+            err(b"rill: a block was handed out while still out: ");
+            err_hex(p);
+            err(b"\n");
+            free_site_of(p);
+            alloc_complain(b"", 0, class);
+        }
+    }
+}
+
+unsafe fn live_in(p: usize, class: usize) {
+    if let Some((w, bit)) = live_bit(p) {
+        let was = LIVE[w].fetch_and(!bit, core::sync::atomic::Ordering::AcqRel);
+        if was & bit == 0 {
+            rill_flush_out();
+            err(b"rill: a block was freed while not out: ");
+            err_hex(p);
+            err(b"\n");
+            free_site_of(p);
+            alloc_complain(b"", 0, class);
+        }
+    }
+}
+const MAX_CHUNKS: usize = 4096;
+static mut CHUNKS: [(usize, usize); MAX_CHUNKS] = [(0, 0); MAX_CHUNKS];
+static NCHUNKS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+unsafe fn chunk_note(base: usize, len: usize) {
+    let i = NCHUNKS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    if i < MAX_CHUNKS {
+        CHUNKS[i] = (base, len);
+    }
+}
+
+unsafe fn in_chunks(p: usize) -> bool {
+    let n = NCHUNKS.load(core::sync::atomic::Ordering::Acquire).min(MAX_CHUNKS);
+    for i in 0..n {
+        let (b, l) = CHUNKS[i];
+        if p >= b && p < b + l {
+            return true;
+        }
+    }
+    false
+}
+
+/// Where each block was last freed, by the block's address: the frames
+/// of the free, for a reader of a freed block to be shown its freer.
+#[no_mangle]
+pub static mut rill_free_sites: [[usize; 10]; 65536] = [[0; 10]; 65536];
+/// The free before that one, for a block that went round once between
+/// its wrongful free and the touch that showed it.
+static mut FREE_SITES_BEFORE: [[usize; 10]; 65536] = [[0; 10]; 65536];
+
+unsafe fn note_free(ptr: usize, link: usize) {
+    let slot = &mut rill_free_sites[(ptr >> 4) & 0xffff];
+    if slot[0] == ptr {
+        // freed, and not handed out again since: freed twice
+        rill_flush_out();
+        err(b"rill: a block was freed twice: ");
+        err_hex(ptr);
+        err(b"\n");
+        free_site_of(ptr);
+        err(b"  freed again by:\n");
+        crash_where();
+        die();
+    }
+    if slot[0] == ptr | 1 {
+        // the same block, handed out again since: keep that free as the one before
+        FREE_SITES_BEFORE[(ptr >> 4) & 0xffff] = *slot;
+    }
+    slot[0] = ptr;
+    slot[9] = link;
+    let mut fp = frame_here();
+    for k in 1..9 {
+        if fp == 0 || fp & 7 != 0 {
+            slot[k] = 0;
+            continue;
+        }
+        let ret = *((fp + 8) as *const usize);
+        let next = *(fp as *const usize);
+        slot[k] = ret;
+        fp = if next > fp && next - fp < 64 << 20 { next } else { 0 };
+    }
+}
+
+/// `RILL_FREE_OF=<hex address>`: at a crash, the frames of the last free
+/// of the block at that address, from the table above.
+unsafe fn free_site_of(ptr: usize) {
+    let slot = &rill_free_sites[(ptr >> 4) & 0xffff];
+    if slot[0] & !1 != ptr {
+        err(b"  (no free of that block on record)\n");
+        return;
+    }
+    err(if slot[0] & 1 != 0 { b"  last freed (and handed out again since) by:\n" } else { b"  last freed by:\n" });
+    free_frames(slot);
+    let before = &FREE_SITES_BEFORE[(ptr >> 4) & 0xffff];
+    if before[0] & !1 == ptr {
+        err(b"  and freed before that by:\n");
+        free_frames(before);
+    }
+}
+
+unsafe fn free_frames(slot: &[usize; 10]) {
+    for k in 1..9 {
+        if slot[k] == 0 {
+            break;
+        }
+        if let Some((name, off)) = sym_for(slot[k] - 1) {
+            err(b"    in ");
+            err_cstr(name);
+            err(b" +");
+            err_dec(off as i64);
+            err(b"\n");
+        }
+    }
+}
+
+/// A ring of every count update, allocation and free seen under
+/// `RILL_RC_CHECK`: the block, what was done to it (0 retain, 1 release,
+/// 2 release's last-owner test, 3 in-place reuse test, 4 reuse-keep test,
+/// 5 handed out, 6 freed), the worker, and four frames. At a report, the
+/// entries for the block in question are the block's history.
+const RC_LOG: usize = 1 << 21;
+static mut RC_EVENTS: [[usize; 6]; RC_LOG] = [[0; 6]; RC_LOG];
+static RC_NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+unsafe fn rc_log(p: usize, kind: usize) {
+    let i = RC_NEXT.fetch_add(1, core::sync::atomic::Ordering::AcqRel) & (RC_LOG - 1);
+    let e = &mut RC_EVENTS[i];
+    e[0] = p;
+    e[1] = kind | ((*me()).index << 8);
+    let mut fp = frame_here();
+    for k in 2..6 {
+        if fp == 0 || fp & 7 != 0 {
+            e[k] = 0;
+            continue;
+        }
+        e[k] = *((fp + 8) as *const usize);
+        let next = *(fp as *const usize);
+        fp = if next > fp && next - fp < 64 << 20 { next } else { 0 };
+    }
+}
+
+unsafe fn rc_history(p: usize) {
+    err(b"  the block's history, oldest first:\n");
+    let end = RC_NEXT.load(core::sync::atomic::Ordering::Acquire);
+    let start = if end > RC_LOG { end - RC_LOG } else { 0 };
+    for i in start..end {
+        let e = &RC_EVENTS[i & (RC_LOG - 1)];
+        if e[0] != p {
+            continue;
+        }
+        err(match e[1] & 0xff {
+            0 => b"    retain  ",
+            1 => b"    release ",
+            2 => b"    last?   ",
+            3 => b"    alone?  ",
+            4 => b"    keep?   ",
+            5 => b"    alloc   ",
+            _ => b"    free    ",
+        });
+        err(b"w");
+        err_dec((e[1] >> 8) as i64);
+        for k in 2..6 {
+            if e[k] == 0 {
+                break;
+            }
+            if let Some((name, off)) = sym_for(e[k] - 1) {
+                err(b" < ");
+                err_cstr(name);
+                err(b"+");
+                err_dec(off as i64);
+            }
+        }
+        err(b"\n");
+    }
+}
+
+/// From code compiled with `RILL_RC_CHECK`, before every count update:
+/// a block that is not out (freed, and not handed out since) is reported
+/// here, in the toucher's frames, which are the ones wanted.
+#[no_mangle]
+pub unsafe extern "C" fn rill_rc_stale(p: *mut u8, kind: u64) {
+    if !ALLOC_CHECK {
+        return;
+    }
+    if let Some((w, bit)) = live_bit(p as usize) {
+        rc_log(p as usize, kind as usize);
+        if LIVE[w].load(core::sync::atomic::Ordering::Acquire) & bit != 0 {
+            return;
+        }
+        // one reporter; the others would only interleave with it
+        if CRASH_TAKEN.swap(true, core::sync::atomic::Ordering::AcqRel) {
+            loop {
+                sched_yield();
+            }
+        }
+        rill_flush_out();
+        err(b"rill: the count of a freed block was touched: ");
+        err_hex(p as usize);
+        err(b" (worker ");
+        err_dec((*me()).index as i64);
+        err(b")\n");
+        free_site_of(p as usize);
+        err(b"  touched by:\n");
+        crash_where();
+        rc_history(p as usize);
+        die();
+    }
+}
+
+unsafe fn alloc_complain(what: &[u8], p: usize, class: usize) -> ! {
+    rill_flush_out();
+    err(b"rill: ");
+    err(what);
+    err(b" ");
+    err_hex(p);
+    err(b" (class ");
+    err_dec(class as i64);
+    err(b", worker ");
+    err_dec((*me()).index as i64);
+    err(b")\n");
+    crash_where();
+    die()
+}
+
 /// The pool belonging to the calling thread. A single-worker program skips
 /// the thread-local lookup, which is the case that has to stay fast.
 #[inline(always)]
@@ -4172,10 +4503,75 @@ unsafe fn pool_class(size: u64) -> Option<usize> {
 pub unsafe extern "C" fn rill_alloc(size: u64) -> *mut u8 {
     live_add(1);
     if let Some(class) = pool_class(size) {
+        #[cfg(unix)]
+        if ALLOC_QUAR && size as usize <= QUAR_MAX {
+            return quar_alloc();
+        }
         let pool = my_pool();
         let head = (*pool).free[class];
         if !head.is_null() {
+            if ALLOC_CHECK {
+                if !in_chunks(head as usize) || head as usize & 15 != 0 {
+                    rill_flush_out();
+                    err(b"rill: a free list holds a pointer that is not a block: ");
+                    err_hex(head as usize);
+                    err(b"\n");
+                    free_site_of(head as usize & !15);
+                    alloc_complain(b"", 0, class);
+                }
+                // the words after the link were painted at the free; one
+                // that changed was written after the block was let go
+                let words = (class + 1) * 2;
+                for k in 2..words {
+                    let v = *(head as *const u64).add(k);
+                    if v != 0x5EE7F5EE00000000 | class as u64 {
+                        rill_flush_out();
+                        err(b"rill: a freed block was written after its free: block ");
+                        err_hex(head as usize);
+                        err(b" word ");
+                        err_dec(k as i64);
+                        err(b" holds ");
+                        err_hex(v as usize);
+                        err(b"\n  the block:");
+                        for j in 0..words {
+                            err(b" ");
+                            err_hex(*(head as *const u64).add(j) as usize);
+                        }
+                        err(b"\n");
+                        free_site_of(head as usize);
+                        alloc_complain(b"", 0, class);
+                    }
+                }
+            }
+            if ALLOC_CHECK {
+                // the link written at the free is kept once more, masked,
+                // in the word after it: a count let go of by a stale holder
+                // lands on the link and the two no longer agree
+                let link = *(head as *const usize);
+                let kept = *(head as *const usize).add(1) ^ 0x5EE7F5EE5EE7F5EE;
+                if link != kept {
+                    rill_flush_out();
+                    err(b"rill: a freed block's count was touched after its free: block ");
+                    err_hex(head as usize);
+                    err(b" link was ");
+                    err_hex(kept);
+                    err(b", is ");
+                    err_hex(link);
+                    err(b"\n");
+                    free_site_of(head as usize);
+                    alloc_complain(b"", 0, class);
+                }
+                let slot = &mut rill_free_sites[(head as usize >> 4) & 0xffff];
+                if slot[0] == head as usize {
+                    // out again: marked, so the next free of it knows
+                    slot[0] = head as usize | 1;
+                }
+            }
             (*pool).free[class] = *(head as *const *mut u8);
+            if ALLOC_CHECK {
+                live_out(head as usize, class);
+                rc_log(head as usize, 5);
+            }
             return head;
         }
         let bytes = (class + 1) * 16;
@@ -4185,11 +4581,18 @@ pub unsafe extern "C" fn rill_alloc(size: u64) -> *mut u8 {
                 out(b"rill: out of memory\n");
                 die();
             }
+            if ALLOC_CHECK {
+                chunk_note(p as usize, POOL_CHUNK);
+            }
             (*pool).next = p as usize;
             (*pool).end = p as usize + POOL_CHUNK;
         }
         let p = (*pool).next as *mut u8;
         (*pool).next += bytes;
+        if ALLOC_CHECK {
+            live_out(p as usize, class);
+            rc_log(p as usize, 5);
+        }
         return p;
     }
     let p = malloc(size as usize);
@@ -4206,7 +4609,25 @@ pub unsafe extern "C" fn rill_alloc(size: u64) -> *mut u8 {
 pub unsafe extern "C" fn rill_free_sized(ptr: *mut u8, size: u64) {
     live_add(-1);
     if let Some(class) = pool_class(size) {
+        #[cfg(unix)]
+        if ALLOC_QUAR && size as usize <= QUAR_MAX && !in_chunks(ptr as usize) {
+            quar_free(ptr);
+            return;
+        }
         let pool = my_pool();
+        if ALLOC_CHECK {
+            if !in_chunks(ptr as usize) {
+                alloc_complain(b"free of a pointer outside every chunk:", ptr as usize, class);
+            }
+            live_in(ptr as usize, class);
+            rc_log(ptr as usize, 6);
+            let words = (class + 1) * 2;
+            for k in 2..words {
+                *(ptr as *mut u64).add(k) = 0x5EE7F5EE00000000 | class as u64;
+            }
+            *(ptr as *mut usize).add(1) = (*pool).free[class] as usize ^ 0x5EE7F5EE5EE7F5EE;
+            note_free(ptr as usize, (*pool).free[class] as usize);
+        }
         *(ptr as *mut *mut u8) = (*pool).free[class];
         (*pool).free[class] = ptr;
         return;
@@ -5928,6 +6349,9 @@ pub unsafe extern "C" fn rill_rt_run_direct(code: extern "C" fn()) {
 pub unsafe extern "C" fn rill_rt_run(code: extern "C" fn(*mut u8)) {
     atexit(flush_at_exit);
     crash_handlers_ready();
+    let check = getenv(b"RILL_ALLOC_CHECK\0".as_ptr());
+    ALLOC_CHECK = !check.is_null();
+    ALLOC_QUAR = ALLOC_CHECK && *check == b'2';
     NWORKERS = requested_threads();
     if NWORKERS > 1 && rill_parallel_build == 0 {
         // The generated code updates reference counts without synchronizing,
