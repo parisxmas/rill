@@ -1,0 +1,233 @@
+# Civil dates and times, in UTC and nothing else.
+#
+# A `Date` is a year, a month and a day on the proleptic Gregorian calendar;
+# a `DateTime` is one with a time of day. Both convert to and from a count —
+# days since 1970-01-01 for a date, seconds since 1970-01-01T00:00:00Z for a
+# date and time — and it is on the counts that arithmetic is done, so adding
+# a day never lands on the 31st of February. ISO 8601 is the one text form:
+# `2026-09-14` and `2026-09-14T21:03:00Z`, read and written.
+#
+#     import "time/date" as date
+#     today = date.today()                    # from the wall clock
+#     due = date.add_days(today, 30)
+#     println(show(due))                      # "2026-10-14"
+#     date.parse("2026-02-29")                # Err: February 2026 has 28 days
+#     date.weekday(today)                     # 0 is Sunday, 6 is Saturday
+#
+# No time zones and no leap seconds: what a machine's clock says in UTC is
+# what this handles, and a local time is the program's to make by adding an
+# offset it knows.
+
+type Date
+  Date(year: Int, month: Int, day: Int)
+
+type DateTime
+  DateTime(date: Date, hour: Int, minute: Int, second: Int)
+
+# -- making them --------------------------------------------------------------
+
+# A date that exists, or why not.
+fn make(y, m, d) =
+  if m < 1 || m > 12 then Err("month " + int_to_str(m) + " is not one of 1..12") else if d < 1 || d > days_in_month(y, m)
+    then Err(month_name(m) + " " + int_to_str(y) + " has " + int_to_str(days_in_month(y, m)) + " days, not " + int_to_str(d))
+    else Ok(Date(y, m, d))
+
+fn make_time(dt: Date, h, mi, s) =
+  if h < 0 || h > 23 then Err("hour " + int_to_str(h) + " is not one of 0..23") else if mi < 0 || mi > 59 then Err("minute " + int_to_str(mi) + " is not one of 0..59") else if s < 0 || s > 59
+    then Err("second " + int_to_str(s) + " is not one of 0..59")
+    else Ok(DateTime(dt, h, mi, s))
+
+# The date and time the wall clock says, in UTC.
+fn now() = from_seconds(now_millis() / 1000)
+
+fn today() = from_days(floor_div(now_millis() / 1000, 86400))
+
+fn is_leap(y) = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
+
+fn days_in_month(y, m) =
+  if m == 2 then if is_leap(y) then 29 else 28 else if m == 4 || m == 6 || m == 9 || m == 11
+    then 30
+    else 31
+
+fn month_name(m) = match m
+  1 -> "January"
+  2 -> "February"
+  3 -> "March"
+  4 -> "April"
+  5 -> "May"
+  6 -> "June"
+  7 -> "July"
+  8 -> "August"
+  9 -> "September"
+  10 -> "October"
+  11 -> "November"
+  _ -> "December"
+
+fn weekday_name(w) = match w
+  0 -> "Sunday"
+  1 -> "Monday"
+  2 -> "Tuesday"
+  3 -> "Wednesday"
+  4 -> "Thursday"
+  5 -> "Friday"
+  _ -> "Saturday"
+
+# -- the counts ---------------------------------------------------------------
+#
+# Howard Hinnant's algorithms: a 400-year era of 146097 days, the year taken
+# to begin in March so that the leap day is the last day of it.
+
+# Days since 1970-01-01; negative before it.
+fn to_days(d: Date) =
+  y = if d.month <= 2 then d.year - 1 else d.year
+  era = floor_div(y, 400)
+  yoe = y - era * 400
+  mp = if d.month > 2 then d.month - 3 else d.month + 9
+  doy = (153 * mp + 2) / 5 + d.day - 1
+  doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+  era * 146097 + doe - 719468
+
+fn from_days(days) =
+  z = days + 719468
+  era = floor_div(z, 146097)
+  doe = z - era * 146097
+  yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+  doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+  mp = (5 * doy + 2) / 153
+  day = doy - (153 * mp + 2) / 5 + 1
+  month = if mp < 10 then mp + 3 else mp - 9
+  year = yoe + era * 400 + (if month <= 2 then 1 else 0)
+  Date(year, month, day)
+
+# Seconds since 1970-01-01T00:00:00Z.
+fn to_seconds(t: DateTime) = to_days(t.date) * 86400 + t.hour * 3600 + t.minute * 60 + t.second
+
+fn from_seconds(secs) =
+  days = floor_div(secs, 86400)
+  rest = secs - days * 86400
+  DateTime(from_days(days), rest / 3600, rest / 60 % 60, rest % 60)
+
+# 0 is Sunday, 6 is Saturday. 1970-01-01 was a Thursday.
+fn weekday(d: Date) = floor_mod(to_days(d) + 4, 7)
+
+# 1..366.
+fn day_of_year(d: Date) = to_days(d) - to_days(Date(d.year, 1, 1)) + 1
+
+# -- arithmetic ---------------------------------------------------------------
+
+fn add_days(d: Date, n) = from_days(to_days(d) + n)
+
+fn add_seconds(t: DateTime, n) = from_seconds(to_seconds(t) + n)
+
+# `b - a` in days; negative when `b` is earlier.
+fn days_between(a: Date, b: Date) = to_days(b) - to_days(a)
+
+fn seconds_between(a: DateTime, b: DateTime) = to_seconds(b) - to_seconds(a)
+
+# The same day `n` months on, clamped to the month's length: January 31st
+# plus a month is February 28th (or 29th), as a calendar would have it.
+fn add_months(d: Date, n) =
+  total = d.year * 12 + (d.month - 1) + n
+  y = floor_div(total, 12)
+  m = floor_mod(total, 12) + 1
+  Date(y, m, min(d.day, days_in_month(y, m)))
+
+# -- text ---------------------------------------------------------------------
+
+fn iso(d: Date) = year_text(d.year) + "-" + two(d.month) + "-" + two(d.day)
+
+fn iso_time(t: DateTime) =
+  iso(t.date) + "T" + two(t.hour) + ":" + two(t.minute) + ":" + two(t.second) + "Z"
+
+# `2026-09-14`, and nothing else.
+fn parse(s) =
+  if #s != 10 || s[4] != 45 || s[7] != 45 then Err("a date is written `YYYY-MM-DD`, not `" + s + "`")
+  else
+    y = digits(s, 0, 4)?
+    m = digits(s, 5, 2)?
+    d = digits(s, 8, 2)?
+    make(y, m, d)
+
+# `2026-09-14T21:03:00Z`; the `Z` may be left off, and means UTC either way.
+fn parse_time(s) =
+  n = if #s == 20 && s[19] == 90 then 19 else #s
+  if n != 19 || s[10] != 84 || s[13] != 58 || s[16] != 58 then Err("a date and time is written `YYYY-MM-DDTHH:MM:SSZ`, not `" + s + "`")
+  else
+    d = parse(s[0:10])?
+    h = digits(s, 11, 2)?
+    mi = digits(s, 14, 2)?
+    sec = digits(s, 17, 2)?
+    make_time(d, h, mi, sec)
+
+impl Show(Date)
+  fn show(d) = iso(d)
+
+impl Show(DateTime)
+  fn show(t) = iso_time(t)
+
+impl Ord(Date)
+  fn compare(a, b) = to_days(a) - to_days(b)
+
+impl Ord(DateTime)
+  fn compare(a, b) = to_seconds(a) - to_seconds(b)
+
+# -- helpers ------------------------------------------------------------------
+
+private fn floor_div(a, b) =
+  q = a / b
+  if a % b != 0 && (a < 0) != (b < 0) then q - 1 else q
+
+private fn floor_mod(a, b) = a - floor_div(a, b) * b
+
+private fn two(n) = if n < 10 then "0" + int_to_str(n) else int_to_str(n)
+
+private fn year_text(y) =
+  s = int_to_str(abs(y))
+  padded = if #s >= 4 then s else repeat("0", 4 - #s) + s
+  if y < 0 then "-" + padded else padded
+
+# `n` digits of `s` from `at`, as a number, or why not.
+private fn digits(s, at, n) = for i in 0..n with acc = Ok(0)
+  c = s[at + i]
+  match acc
+    Err(e) -> Err(e)
+    Ok(v) -> if c < 48 || c > 57 then Err("`" + s + "`: a digit was expected at byte " + int_to_str(at + i)) else Ok(v * 10 + c - 48)
+
+# -- tests --------------------------------------------------------------------
+
+fn test_epoch_and_back() =
+  assert_eq(to_days(Date(1970, 1, 1)), 0)
+  assert_eq(to_days(Date(2000, 3, 1)), 11017)
+  assert_eq(from_days(11017), Date(2000, 3, 1))
+  assert_eq(from_days(-1), Date(1969, 12, 31))
+  assert_eq(to_days(from_days(-719468)), -719468)
+  assert_eq(from_days(-719468), Date(0, 3, 1))
+
+fn test_leap_years_and_months() =
+  assert(is_leap(2000))
+  assert(!is_leap(1900))
+  assert(is_leap(2024))
+  assert_eq(days_in_month(2026, 2), 28)
+  assert_eq(days_in_month(2024, 2), 29)
+  assert_eq(add_months(Date(2026, 1, 31), 1), Date(2026, 2, 28))
+  assert_eq(add_months(Date(2026, 11, 15), 3), Date(2027, 2, 15))
+
+fn test_weekday_and_arithmetic() =
+  assert_eq(weekday(Date(1970, 1, 1)), 4)
+  assert_eq(weekday(Date(2026, 9, 14)), 1)
+  assert_eq(day_of_year(Date(2024, 12, 31)), 366)
+  assert_eq(add_days(Date(2026, 2, 28), 1), Date(2026, 3, 1))
+  assert_eq(days_between(Date(2026, 1, 1), Date(2027, 1, 1)), 365)
+  assert(Date(2026, 9, 14) > Date(2026, 9, 13))
+
+fn test_text() =
+  assert_eq(show(Date(2026, 9, 14)), "2026-09-14")
+  assert_eq(show(DateTime(Date(2026, 9, 14), 21, 3, 0)), "2026-09-14T21:03:00Z")
+  assert_eq(parse("2026-09-14"), Ok(Date(2026, 9, 14)))
+  assert_eq(parse("2026-02-29"), Err("February 2026 has 28 days, not 29"))
+  assert_eq(parse("26-9-14"), Err("a date is written `YYYY-MM-DD`, not `26-9-14`"))
+  assert_eq(parse_time("2026-09-14T21:03:00Z"), Ok(DateTime(Date(2026, 9, 14), 21, 3, 0)))
+  assert_eq(parse_time("2026-09-14T21:03:00"), Ok(DateTime(Date(2026, 9, 14), 21, 3, 0)))
+  assert_eq(to_seconds(DateTime(Date(2026, 9, 14), 21, 3, 0)), 1789419780)
+  assert_eq(from_seconds(1789419780), DateTime(Date(2026, 9, 14), 21, 3, 0))
+  assert_eq(add_seconds(DateTime(Date(2026, 12, 31), 23, 59, 59), 1), DateTime(Date(2027, 1, 1), 0, 0, 0))

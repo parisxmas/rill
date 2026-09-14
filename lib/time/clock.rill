@@ -1,0 +1,67 @@
+# Clocks: the monotonic one for measuring, the wall one for dating.
+#
+# `now_nanos()` only ever goes forward and means nothing but differences;
+# `now_millis()` is the time of day in Unix milliseconds. This is the little
+# that turns them into something a program says: an elapsed time, a timed
+# call, a duration in words.
+#
+#     import "time/clock" as clock
+#     (answer, took) = clock.timed(\ -> work())
+#     println("took " + clock.duration(took))       # "took 1.204 s"
+#     t = clock.start()
+#     ...
+#     println(clock.duration(clock.since(t)))
+
+# A point on the monotonic clock, to measure from.
+fn start() = now_nanos()
+
+# Nanoseconds since a point `start` gave.
+fn since(t) = now_nanos() - t
+
+# A call and how long it took, in nanoseconds.
+fn timed(f) =
+  t = now_nanos()
+  v = f()
+  (v, now_nanos() - t)
+
+fn nanos_to_ms(ns) = ns / 1000000
+
+fn ms_to_nanos(ms) = ms * 1000000
+
+# A duration in the unit that reads best: `250 ns`, `12.5 us`, `3.400 ms`,
+# `1.204 s`, `2 m 03 s`, `1 h 02 m`.
+fn duration(ns) =
+  if ns < 1000 then int_to_str(ns) + " ns" else if ns < 1000000 then fixed(ns, 1000, 1) + " us" else if ns < 1000000000 then fixed(ns, 1000000, 3) + " ms" else if ns < 60000000000 then fixed(ns, 1000000000, 3) + " s" else if ns < 3600000000000
+    then int_to_str(ns / 60000000000) + " m " + two(ns / 1000000000 % 60) + " s"
+    else int_to_str(ns / 3600000000000) + " h " + two(ns / 60000000000 % 60) + " m"
+
+# `n / unit` with `places` decimals, rounded half up, no float in sight.
+private fn fixed(n, unit, places) =
+  scale = pow10(places)
+  scaled = (n * scale + unit / 2) / unit
+  whole = scaled / scale
+  frac = scaled % scale
+  if places == 0 then int_to_str(whole) else int_to_str(whole) + "." + padded(frac, places)
+
+private fn pow10(n) = for _ in 0..n with acc = 1
+  acc * 10
+
+private fn padded(n, width) =
+  s = int_to_str(n)
+  if #s >= width then s else repeat("0", width - #s) + s
+
+private fn two(n) = padded(n, 2)
+
+fn test_duration_units() =
+  assert_eq(duration(250), "250 ns")
+  assert_eq(duration(12500), "12.5 us")
+  assert_eq(duration(3400000), "3.400 ms")
+  assert_eq(duration(1204000000), "1.204 s")
+  assert_eq(duration(123000000000), "2 m 03 s")
+  assert_eq(duration(3720000000000), "1 h 02 m")
+
+fn test_timed_answers_and_measures() =
+  (v, took) = timed(\ -> 6 * 7)
+  assert_eq(v, 42)
+  assert(took >= 0)
+  assert_eq(nanos_to_ms(ms_to_nanos(7)), 7)
