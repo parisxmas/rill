@@ -181,8 +181,10 @@ impl Loader {
         }
         for t in module.traits {
             self.claim_name(&t.name, "trait", &canon)?;
+            // A method's name is its trait's: two traits may share one, so
+            // what a file claims is the qualified name.
             for m in &t.methods {
-                self.claim_name(&m.name, "method", &canon)?;
+                self.claim_name(&format!("{}.{}", t.name, m.name), "method", &canon)?;
             }
             self.traits.push(t);
         }

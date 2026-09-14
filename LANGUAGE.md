@@ -719,9 +719,13 @@ impl Describe(Int)
 fn announce(x) = println(describe(x))   # works for any implementing type
 ```
 
-Method names are global (like constructors). Dispatch is resolved statically
-during monomorphization: no dictionaries, no vtables, and a compile error if an
-implementation is missing.
+A method's name belongs to its trait, and two traits may use the same one:
+`describe(x)` is settled by the type of `x`, whichever trait is implemented
+for it, and where that cannot tell — both are, or `x` is a parameter whose
+type is not known yet — the call says which, `Describe.describe(x)`, which
+is always allowed. Constructor names stay global. Dispatch is resolved
+statically during monomorphization: no dictionaries, no vtables, and a
+compile error if an implementation is missing.
 
 An impl may target a generic type by naming its parameters, in which case it
 covers every instantiation:

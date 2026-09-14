@@ -2058,6 +2058,46 @@ fn a_type_alias_is_a_name_for_a_type() {
     assert!(compile_error(arity).contains("takes 1 type argument(s), but 0 given"));
 }
 
+/// Two traits may have a method of one name. A call by the bare name is
+/// settled by the type it is called on; where both traits are implemented
+/// for it, or the type is not known yet, the call says which trait.
+#[test]
+fn a_method_name_belongs_to_its_trait() {
+    let head = "trait Describe(a)\n  \
+                  name(a) -> Str\n\n\
+                trait Label(a)\n  \
+                  name(a) -> Str\n  \
+                  short(a) -> Str\n\n\
+                type Dog\n  \
+                  Dog(n: Str)\n\n\
+                type Tag\n  \
+                  Tag(t: Str)\n\n\
+                impl Describe(Dog)\n  \
+                  fn name(d) = \"dog \" + d.n\n\n\
+                impl Label(Dog)\n  \
+                  fn name(d) = \"label \" + d.n\n  \
+                  fn short(d) = d.n\n\n\
+                impl Label(Tag)\n  \
+                  fn name(t) = \"tag \" + t.t\n  \
+                  fn short(t) = t.t\n\n";
+    let src = format!(
+        "{head}fn main() =\n  \
+           println(name(Tag(\"x\")))\n  \
+           println(Describe.name(Dog(\"rex\")))\n  \
+           println(Label.name(Dog(\"rex\")))\n  \
+           println(short(Dog(\"rex\")))\n"
+    );
+    assert_eq!(run_source("methods", &src), "tag x\ndog rex\nlabel rex\nrex\n");
+
+    let both = format!("{head}fn main() = println(name(Dog(\"rex\")))\n");
+    let err = compile_error(&both);
+    assert!(err.contains("both implemented for `Dog`") && err.contains("`Describe.name(..)`"), "{err}");
+
+    let unknown = format!("{head}fn call(x) = name(x)\n\nfn main() = println(call(Tag(\"x\")))\n");
+    let err = compile_error(&unknown);
+    assert!(err.contains("the type it is called on is not known here"), "{err}");
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

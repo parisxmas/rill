@@ -115,9 +115,11 @@ provides `noise` and `loudness`. Each `impl` supplies them for one type.
 adds later. You did not write the constraint down; it came from the body, the
 same way `biggest` picked up its ordering requirement in Chapter 4.
 
-Method names are global, like constructor names. There is no `dog.noise()` —
-`noise` is a function, and which implementation runs is decided by the type of
-its argument.
+There is no `dog.noise()` — `noise` is a function, and which implementation
+runs is decided by the type of its argument. Two traits may both have a
+`noise`; the type of the argument settles that too, and where it cannot — a
+type that implements both, or an argument whose type is not known yet — the
+call says which trait it means: `Animal.noise(dog)`.
 
 ---
 

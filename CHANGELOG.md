@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — a method's name is its trait's
+
+A method name was global: two traits could not both have a `describe`,
+and a library that named a method had named it for every other. A
+method belongs to its trait now. `describe(x)` by the bare name is
+settled by the type of `x` — whichever of the traits is implemented for
+it — and where that cannot tell, because both are or `x` is a parameter
+whose type is not known yet, the call says which: `Describe.describe(x)`,
+which is always allowed. Constructor names stay global.
+
 ## Unreleased — a name for a type
 
 `type Meters = Float` is a type alias, and `type Pair(a) = (a, a)` one

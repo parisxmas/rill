@@ -550,8 +550,13 @@ struct Checker {
     asms: HashMap<String, AsmSig>,
     naked_asms: HashMap<String, String>,
     libs: Vec<String>,
-    /// Method name -> (trait index, method index). Methods are global.
+    /// Method name -> (trait index, method index): the qualified names,
+    /// `Describe.describe`, and the bare ones only one trait uses. A bare
+    /// name two traits share is in `method_names` instead, and a call by
+    /// it is settled by the type it is called on.
     method_index: HashMap<String, (usize, usize)>,
+    /// Every bare method name, with each trait that has it.
+    method_names: HashMap<String, Vec<(usize, usize)>>,
     impl_methods: HashMap<(usize, usize, ImplKey), usize>,
     /// Impl functions get their signature from the trait, not inference:
     /// parameter types, return type, and how many type parameters the target
@@ -609,6 +614,7 @@ impl Checker {
             naked_asms: HashMap::new(),
             libs: Vec::new(),
             method_index: HashMap::new(),
+            method_names: HashMap::new(),
             impl_methods: HashMap::new(),
             forced_sigs: HashMap::new(),
             declared: HashMap::new(),
@@ -756,10 +762,10 @@ impl Checker {
                         format!("`{}` is a built-in function and cannot be a method", m.name),
                     ));
                 }
-                if c.method_index.contains_key(&m.name) {
+                if methods.iter().any(|x: &MethodInfo| x.name == m.name) {
                     return Err(TypeError::new(
                         m.line,
-                        format!("method `{}` is already defined (method names are global)", m.name),
+                        format!("method `{}` is already in trait `{}`", m.name, td.name),
                     ));
                 }
                 let mut params = Vec::new();
@@ -767,7 +773,7 @@ impl Checker {
                     params.push(resolve_type_ref(tr, &adt_index, &c.adts, Some(&scope))?);
                 }
                 let ret = resolve_type_ref(&m.ret, &adt_index, &c.adts, Some(&scope))?;
-                c.method_index.insert(m.name.clone(), (tid, methods.len()));
+                c.add_method(&td.name, &m.name, (tid, methods.len()));
                 methods.push(MethodInfo { name: m.name.clone(), params, ret });
             }
             // The type of the trait's objects: a record with a field per
@@ -943,7 +949,7 @@ impl Checker {
         // Foreign declarations. Their types are written out, never inferred,
         // and only shapes the C ABI can carry are allowed.
         for e in &module.externs {
-            if is_builtin_fn(&e.name) || c.method_index.contains_key(&e.name) {
+            if is_builtin_fn(&e.name) || c.is_method(&e.name) {
                 return Err(TypeError::new(
                     e.line,
                     format!("`{}` is already a built-in or a trait method", e.name),
@@ -985,7 +991,7 @@ impl Checker {
         }
 
         for a in &module.asms {
-            if is_builtin_fn(&a.name) || c.method_index.contains_key(&a.name) {
+            if is_builtin_fn(&a.name) || c.is_method(&a.name) {
                 return Err(TypeError::new(
                     a.line,
                     format!("`{}` is already a built-in or a trait method", a.name),
@@ -1131,7 +1137,7 @@ impl Checker {
                     format!("`{}` is already declared as a naked function", f.name),
                 ));
             }
-            if c.method_index.contains_key(&f.name) {
+            if c.is_method(&f.name) {
                 return Err(TypeError::new(
                     f.line,
                     format!("`{}` is a trait method; functions cannot share its name", f.name),
@@ -1613,6 +1619,84 @@ impl Checker {
             }
         }
         Ok(())
+    }
+
+    /// Records a method under its qualified name, and under its bare one
+    /// while that is one trait's alone; a second trait with the same bare
+    /// name takes it out of the direct table, and calls by it are settled
+    /// by the receiver from then on.
+    fn add_method(&mut self, trait_name: &str, method: &str, at: (usize, usize)) {
+        self.method_index.insert(format!("{trait_name}.{method}"), at);
+        let bare = self.method_names.entry(method.to_string()).or_default();
+        bare.push(at);
+        if bare.len() == 1 {
+            self.method_index.insert(method.to_string(), at);
+        } else {
+            self.method_index.remove(method);
+        }
+    }
+
+    /// Whether a name is a method's, qualified or bare, of any trait.
+    fn is_method(&self, name: &str) -> bool {
+        self.method_index.contains_key(name) || self.method_names.contains_key(name)
+    }
+
+    /// Which of several traits' methods a bare name means here: the one
+    /// whose trait is implemented for the type the receiver has. Where the
+    /// receiver's type is not known yet, or more than one fits, the call
+    /// has to say — `Describe.describe(x)`.
+    fn pick_method(
+        &self,
+        name: &str,
+        fitting: &[(usize, usize)],
+        targs: &[TExpr],
+        line: usize,
+    ) -> Result<(usize, usize), TypeError> {
+        let traits: Vec<String> = fitting.iter().map(|&(t, _)| format!("`{}`", self.traits[t].0)).collect();
+        let named = traits.join(" and ");
+        let say: Vec<String> =
+            fitting.iter().map(|&(t, _)| format!("`{}.{name}(..)`", self.traits[t].0)).collect();
+        let say = say.join(" or ");
+        let mut by_impl = Vec::new();
+        let mut recv_ty = None;
+        let mut unknown = false;
+        for &(t, m) in fitting {
+            let sig = &self.traits[t].1[m];
+            let Some(pos) = sig.params.iter().position(|p| *p == Ty::Gen(0)) else { continue };
+            match self.resolve(&targs[pos].ty) {
+                Ty::Var(_) => unknown = true,
+                ty => {
+                    if impl_key(&ty).is_some_and(|k| self.impl_methods.contains_key(&(t, m, k))) {
+                        by_impl.push((t, m));
+                    }
+                    recv_ty = Some(ty);
+                }
+            }
+        }
+        match by_impl.as_slice() {
+            [one] => Ok(*one),
+            [] if unknown => Err(TypeError::new(
+                line,
+                format!(
+                    "`{name}` is a method of {named}, and the type it is called on is not known \
+                     here, so it cannot say which — write {say}"
+                ),
+            )),
+            [] => Err(TypeError::new(
+                line,
+                format!(
+                    "`{name}` is a method of {named}, and neither is implemented for `{}`",
+                    recv_ty.map(|t| self.type_name(&t)).unwrap_or_default()
+                ),
+            )),
+            _ => Err(TypeError::new(
+                line,
+                format!(
+                    "`{name}` is a method of {named}, both implemented for `{}` — write {say}",
+                    recv_ty.map(|t| self.type_name(&t)).unwrap_or_default()
+                ),
+            )),
+        }
     }
 
     /// The signature a use of a function sees. Once generalized it is
@@ -3283,7 +3367,7 @@ impl Checker {
         if let Some((head, _)) = name.split_once('.') {
             let global = self.fn_index.contains_key(name)
                 || self.ctors.contains_key(name)
-                || self.method_index.contains_key(name)
+                || self.is_method(name)
                 || self.externs.contains_key(name);
             if env.contains_key(head) && !global {
                 let callee = self.infer_var(name, line, env)?;
@@ -3947,27 +4031,45 @@ impl Checker {
             });
         }
 
-        if let Some(&(tid, mid)) = self.method_index.get(name) {
-            let sig = self.traits[tid].1[mid].clone();
-            if args.len() != sig.params.len() {
+        // A method: by its qualified name, `Describe.describe`, or by its
+        // bare one — which, where two traits have it, is settled by the type
+        // it is called on, the argument standing where the trait's type does.
+        let candidates: Vec<(usize, usize)> = match self.method_index.get(name) {
+            Some(&m) => vec![m],
+            None => self.method_names.get(name).cloned().unwrap_or_default(),
+        };
+        if !candidates.is_empty() {
+            let fitting: Vec<(usize, usize)> = candidates
+                .iter()
+                .copied()
+                .filter(|&(t, m)| self.traits[t].1[m].params.len() == args.len())
+                .collect();
+            if fitting.is_empty() {
+                let (t, m) = candidates[0];
                 return Err(TypeError::new(
                     line,
                     format!(
                         "method `{name}` of trait `{}` takes {} argument(s), but {} given",
-                        self.traits[tid].0,
-                        sig.params.len(),
+                        self.traits[t].0,
+                        self.traits[t].1[m].params.len(),
                         args.len()
                     ),
                 ));
             }
+            let mut targs = Vec::new();
+            for a in args {
+                targs.push(self.infer(a, env)?);
+            }
+            let (tid, mid) = if fitting.len() == 1 {
+                fitting[0]
+            } else {
+                self.pick_method(name, &fitting, &targs, line)?
+            };
+            let sig = self.traits[tid].1[mid].clone();
             let recv = self.fresh();
             let inst = [recv.clone()];
-            let mut targs = Vec::new();
-            for (a, pt) in args.iter().zip(&sig.params) {
-                let want = subst_gen(pt, &inst);
-                let at = self.infer(a, env)?;
-                self.unify(&want, &at.ty, line, "method argument")?;
-                targs.push(at);
+            for (at, pt) in targs.iter().zip(&sig.params) {
+                self.unify(&subst_gen(pt, &inst), &at.ty, line, "method argument")?;
             }
             let ret = subst_gen(&sig.ret, &inst);
             return Ok(TExpr {
