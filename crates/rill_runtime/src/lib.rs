@@ -4738,6 +4738,13 @@ pub unsafe extern "C" fn rill_mem_report() -> i64 {
         saved >> 20,
     );
     err(&b[..(n.max(0) as usize).min(b.len())]);
+    // the big blocks kept, by size
+    for i in 0..BIG_SLOTS {
+        if BIG_SIZE[i] > 0 {
+            let n = snprintf(b.as_mut_ptr(), b.len(), b"  big block kept: %zu KB\n\0".as_ptr(), BIG_SIZE[i] >> 10);
+            err(&b[..(n.max(0) as usize).min(b.len())]);
+        }
+    }
     // the free lists by class, for the ones that hold anything much
     for class in 0..POOL_CLASSES {
         let bytes = per_class[class] * (class + 1) * 16;
