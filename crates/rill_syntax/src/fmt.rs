@@ -861,12 +861,14 @@ fn inline(e: &Expr, prec: u8, ind: usize) -> String {
         }
         Expr::Binary { op, lhs, rhs, newline, .. } => {
             let (sym, p) = binop(*op);
-            // Comparisons don't chain, so both sides bind tighter.
-            let rp = if p == P_CMP { p } else { p + 1 };
+            // Comparisons don't chain, so a comparison on either side of one
+            // keeps its parentheses: `(a < 0) != (b < 0)` is not `a < 0 !=
+            // b < 0`, which does not parse.
+            let (lp, rp) = if p == P_CMP { (p + 1, p + 1) } else { (p, p + 1) };
             // An operator that began a line stays at the head of one, a
             // level in from the statement it continues.
             let gap = if *newline { format!("\n{}", pad(ind)) } else { " ".to_string() };
-            wrap(prec > p, format!("{}{gap}{sym} {}", inline(lhs, p, ind), inline(rhs, rp, ind)))
+            wrap(prec > p, format!("{}{gap}{sym} {}", inline(lhs, lp, ind), inline(rhs, rp, ind)))
         }
         Expr::If { cond, then, els, newline } => {
             // An operator, or a `then` and `else`, that began a line stays
