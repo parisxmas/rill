@@ -1,3 +1,5 @@
+module clock
+
 # Clocks: the monotonic one for measuring, the wall one for dating.
 #
 # `now_nanos()` only ever goes forward and means nothing but differences;

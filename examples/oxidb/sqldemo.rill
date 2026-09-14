@@ -11,7 +11,7 @@
 #
 #     OXIDB_SQL=1 oxidb-server &          # listening on 4444
 #     ./sqldemo 4444
-import "oxisql"
+import "db/oxisql"
 
 fn main() = match args()
   Cons(_, Cons(port, _)) -> report(str_to_int(port))

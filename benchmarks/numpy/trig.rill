@@ -1,6 +1,6 @@
 # sin, exp and log over ten million: the transcendental functions, where
 # each element is a call into the maths library.
-import "grid" as g
+import "num/grid" as g
 
 fn work(a, b, c) = g.sum(g.gsin(a)) + g.sum(g.gexp(b)) + g.sum(g.glog(c))
 

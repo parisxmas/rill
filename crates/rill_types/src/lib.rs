@@ -1384,8 +1384,14 @@ impl Checker {
             c.fn_index.insert(f.name.clone(), idx);
             c.sigs.push(SigState::Provisional { params, ret });
         }
-        if !c.fn_index.contains_key("main") {
-            return Err(TypeError::new(0, "no `main` function defined"));
+        // A program has a `main`; a library says `module name` at its head
+        // and has none. A file with neither is asked which it is.
+        if !c.fn_index.contains_key("main") && module.name.is_none() {
+            return Err(TypeError::new(
+                0,
+                "no `main` function defined — a program has one, and a library says `module <name>` \
+                 on its first line",
+            ));
         }
         Ok(c)
     }

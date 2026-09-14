@@ -43,7 +43,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let src = rest.iter().find(|a| !a.starts_with("--")).ok_or(USAGE)?;
             let parallel = rest.iter().any(|a| a == "--parallel");
             let path = PathBuf::from(src);
-            let module = with_main(rill_syntax::load_program(&path)?);
+            let module = rill_syntax::load_program(&path)?;
             // Everything one pass can find, rather than the first thing: a
             // file with three mistakes in it should take one run to learn
             // about three mistakes.
@@ -92,7 +92,7 @@ fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
     let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let mine: Vec<String> = own.functions.iter().map(|f| f.name.clone()).collect();
 
-    let module = with_main(rill_syntax::load_program(&path)?);
+    let module = rill_syntax::load_program(&path)?;
     let tmod = match rill_types::check_all(&module) {
         Ok(t) => t,
         Err(errors) => {
@@ -121,34 +121,13 @@ fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// A library has no `main`, and `check` and `types` are asked of libraries
-/// as much as of programs: one that does nothing stands in, so the checker
-/// has its entry point and the file's functions are checked as written.
-fn with_main(mut module: rill_syntax::ast::Module) -> rill_syntax::ast::Module {
-    use rill_syntax::ast::*;
-    if module.functions.iter().any(|f| f.name == "main") {
-        return module;
-    }
-    module.functions.push(FnDef {
-        name: "main".to_string(),
-        exported: false,
-        params: Vec::new(),
-        ret_ann: None,
-        body: Expr::Block(Vec::new()),
-        line: 0,
-        lifted_from: None,
-        wheres: Vec::new(),
-        private: false,
-    });
-    module
-}
-
 /// `rill explain`: the memory decisions the code generator makes for the
 /// file's own functions, in its own words, as it makes them.
 fn explain_cmd(args: &[String]) -> Result<ExitCode, String> {
     let src = args.first().ok_or(USAGE)?;
     let path = PathBuf::from(src);
     let module = rill_syntax::load_program(&path)?;
+    refuse_library(&module, &path)?;
     let tmod = match rill_types::check_all(&module) {
         Ok(t) => t,
         Err(errors) => {
@@ -415,7 +394,23 @@ impl BuildOpts {
 
 fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
     let module = rill_syntax::load_program(&opts.source)?;
+    refuse_library(&module, &opts.source)?;
     build_module(module, opts)
+}
+
+/// A file that says `module` and has no `main` is a library: there is
+/// nothing to build or run, and saying so beats a linker's word for it.
+fn refuse_library(module: &rill_syntax::ast::Module, source: &Path) -> Result<(), String> {
+    if let Some(name) = &module.name {
+        if !module.functions.iter().any(|f| f.name == "main") {
+            return Err(format!(
+                "{}: `{name}` is a module, and has nothing to run — import it from a program, \
+                 or `rill test` it",
+                source.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `rill test`: every function of the file named `test_...` that takes

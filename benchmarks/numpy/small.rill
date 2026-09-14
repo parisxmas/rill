@@ -1,6 +1,6 @@
 # Two hundred thousand steps on a sixteen-element vector: v = v * 0.999 + 0.5.
 # The shape of a simulation's inner loop, where each step is tiny.
-import "grid" as g
+import "num/grid" as g
 
 fn step(v, k) = if k == 0 then v else step(g.shift(g.scale(v, 0.999), 0.5), k - 1)
 

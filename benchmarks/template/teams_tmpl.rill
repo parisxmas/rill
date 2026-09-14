@@ -1,5 +1,7 @@
+module teams_tmpl
+
 # Generated from benchmarks/template/teams.tmpl by tools/tmplgen.rill — do not edit.
-import "tmpl"
+import "web/tmpl"
 import "teamdata"
 
 fn teams(b: StrBuf, year, teams: List(Team)) =

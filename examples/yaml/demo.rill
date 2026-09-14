@@ -1,6 +1,6 @@
 # Reads a configuration file and prints it as JSON: the two modules share the
 # same value type, so nothing has to be converted.
-import "yaml"
+import "data/yaml"
 
 fn config() =
   "# a service definition\nname: gateway\nport: 8080\ndebug: false\nlimits:\n  memory: 512\n  cpu: 1.5\ntags:\n  - fast\n  - \"small\"\nservers:\n  - name: alpha\n    port: 1000\n  - name: beta\n    port: 2000\n"

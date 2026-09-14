@@ -1,5 +1,5 @@
 # The HTTP server from examples/, serving one fixed route.
-import "http"
+import "web/http"
 
 fn route(req) = match req
   Request(method, path, body) -> Response(200, "Hello, World!")

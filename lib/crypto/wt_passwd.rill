@@ -5,7 +5,7 @@
 # kind of test a hash function can have: an implementation checked against
 # itself agrees with its own mistakes, and a wrong one is not wrong loudly —
 # it returns twenty plausible bytes and stores them.
-import "passwd" as p
+import "crypto/passwd" as p
 
 fn say(what, got, want) =
   println("  " + what + ": " + (if got == want then "ok" else got + " (want " + want + ")"))

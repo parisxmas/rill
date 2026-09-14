@@ -1,3 +1,5 @@
+module imperial
+
 type Unit
   Feet(Float)
 

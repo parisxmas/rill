@@ -1,8 +1,10 @@
+module kv
+
 # A key–value store on disk: a B+ tree of 4 KB pages, a page cache, and a
 # write-ahead log — the shape SQLite's file layer has, in Rill, for one
 # process at a time.
 #
-#     import "kv"
+#     import "db/kv"
 #     db = kv_open("/tmp/things.db")?      # Result(Db, Str)
 #     kv_put(db, "ada", "36")              # buffered until commit
 #     kv_get(db, "ada")                    # Some("36")

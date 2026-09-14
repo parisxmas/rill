@@ -1,5 +1,7 @@
+module catalogue_page
+
 # Generated from examples/oxidb/catalogue.tmpl by tools/tmplgen.rill — do not edit.
-import "tmpl"
+import "web/tmpl"
 import "catview"
 import "catalogue_form_tmpl"
 import "catalogue_table_tmpl"

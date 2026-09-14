@@ -1,6 +1,6 @@
 # Five million numbers sorted, and a million put in order by their
 # positions — a quicksort and a stable merge sort.
-import "grid" as g
+import "num/grid" as g
 
 fn main() =
   n = 5000000

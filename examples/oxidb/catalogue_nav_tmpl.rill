@@ -1,5 +1,7 @@
+module catalogue_nav_tmpl
+
 # Generated from examples/oxidb/catalogue_nav.tmpl by tools/tmplgen.rill — do not edit.
-import "tmpl"
+import "web/tmpl"
 import "catview"
 
 fn catalogue_nav(b: StrBuf, steps: List(Step)) =

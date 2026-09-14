@@ -1,3 +1,5 @@
+module grid
+
 # grid — arrays of numbers with a shape, the way NumPy has them.
 #
 # A grid is one flat `Buf(Float)` and the shape laid over it: `shape` says
@@ -33,7 +35,7 @@
 # with `RILL_THREADS` set, anything over a quarter of a million elements is
 # split across the workers in strands; a single-worker run never spawns.
 #
-#   import "grid" as g
+#   import "num/grid" as g
 #   a = g.arange(6) |> g.reshape2(2, 3)
 #   b = g.transpose(a)
 #   println(g.matmul(a, b))     # [[5, 14], [14, 50]]

@@ -1,6 +1,6 @@
 # grid against NumPy
 
-`lib/grid.rill` is Rill's array library — a shape laid over one flat
+`lib/num/grid.rill` is Rill's array library — a shape laid over one flat
 `Buf(Float)`, with strides and an offset so that `transpose`, `rows`, `col`
 and `slice1` are views; masks a byte wide; a matrix kernel written in
 `Float2`; an LU factorisation for solving — and this suite puts it beside

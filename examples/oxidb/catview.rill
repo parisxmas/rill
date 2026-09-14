@@ -1,3 +1,5 @@
+module catview
+
 # What the page is handed. The template below it knows nothing about
 # documents, query strings or the database: it is given a form to show, rows
 # to put in a table and a pager already worked out, and its whole job is where

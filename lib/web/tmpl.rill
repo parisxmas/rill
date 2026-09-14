@@ -1,3 +1,5 @@
+module tmpl
+
 # The runtime half of the template engine: what a generated template calls.
 #
 # A template is not read at run time. `tools/tmplgen.rill` turns it into Rill

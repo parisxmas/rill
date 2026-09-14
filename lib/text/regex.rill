@@ -1,3 +1,5 @@
+module regex
+
 # Regular expressions: a small backtracking matcher, written in Rill.
 #
 # What it knows: literals and the escapes `\. \\ \n \t`; `.` (anything but

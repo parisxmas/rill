@@ -10,7 +10,7 @@
 #
 #     oxidb-server &                 # listening on 4444
 #     ./demo 4444
-import "oxidb"
+import "db/oxidb"
 
 # `args()` includes the program's own name, so "no arguments" is a list of
 # one. Matching `Nil` here meant the stand-in never ran: every run took the

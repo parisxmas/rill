@@ -1,3 +1,5 @@
+module oxiresp
+
 # A client for OxiDB's in-memory key-value engine, written in Rill.
 #
 # This engine is not on the wire the other two clients here use. It listens on

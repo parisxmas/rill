@@ -208,6 +208,9 @@ impl Fmt {
     }
 
     fn module(&mut self, m: &Module) {
+        if let Some(n) = &m.name {
+            self.push_at(0, &format!("module {n}"), m.name_line);
+        }
         let mut decls: Vec<Decl> = Vec::new();
         decls.extend(m.imports.iter().map(Decl::Import));
         decls.extend(m.types.iter().map(Decl::Type));

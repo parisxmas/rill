@@ -1,3 +1,5 @@
+module report
+
 # Report-formatting module; depends on the geometry module.
 import "geometry"
 

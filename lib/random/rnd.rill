@@ -1,3 +1,5 @@
+module rnd
+
 # Random numbers, from a generator that is a value.
 #
 # PCG32 (O'Neill): a 64-bit state, a 32-bit output that passes the

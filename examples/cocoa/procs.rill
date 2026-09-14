@@ -1,3 +1,5 @@
+module procs
+
 # Reading the process table, through libproc.
 #
 # `proc_listpids` fills a buffer with every pid on the machine, and

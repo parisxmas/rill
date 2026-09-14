@@ -1,7 +1,7 @@
-# A tour of lib/str.rill: every function once, on inputs small enough to
+# A tour of lib/text/str.rill: every function once, on inputs small enough to
 # check by eye, and then the ones that cut a text into strands against the
 # plain scan they must agree with.
-import "str" as st
+import "text/str" as st
 
 # A deterministic text: words from a small vocabulary, newlines every so
 # often, so that patterns overlap chunk boundaries however the text is cut.

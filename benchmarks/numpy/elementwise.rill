@@ -1,5 +1,5 @@
 # c = sqrt(a) * (2a + 1) + a over ten million elements.
-import "grid" as g
+import "num/grid" as g
 
 fn work(a) =
   b = g.shift(g.scale(a, 2.0), 1.0)

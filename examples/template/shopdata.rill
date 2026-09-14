@@ -1,3 +1,5 @@
+module shopdata
+
 # What the page is given. The templates beside it take these apart; nothing
 # in them knows where the values came from.
 type Shop

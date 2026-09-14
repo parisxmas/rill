@@ -1,3 +1,5 @@
+module metric
+
 type Unit
   Meters(Float)
 

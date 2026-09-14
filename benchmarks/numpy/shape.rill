@@ -1,6 +1,6 @@
 # Moving ten million numbers about: joining, laying down twice, turning
 # round, rolling along, and gathering by position.
-import "grid" as g
+import "num/grid" as g
 
 fn work(a, b, ix) =
   j = g.concat(a, b, 0)

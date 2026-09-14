@@ -1,5 +1,7 @@
+module big_table
+
 # Generated from benchmarks/template/big-table.tmpl by tools/tmplgen.rill — do not edit.
-import "tmpl"
+import "web/tmpl"
 
 fn big_table(b: StrBuf, table: Buf(Int), rows, cols) =
   b += "<table>\n    "

@@ -1,3 +1,5 @@
+module hud
+
 # A seven-segment readout, drawn with OpenGL like everything else — there is
 # no text in this program, only rectangles. One unit quad is uploaded once and
 # every segment is a `rect` uniform that stretches it into place, so a frame

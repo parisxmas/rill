@@ -1,5 +1,7 @@
+module row_tmpl
+
 # Generated from examples/template/row.tmpl by tools/tmplgen.rill — do not edit.
-import "tmpl"
+import "web/tmpl"
 import "shopdata"
 
 fn row(b: StrBuf, it: Item, n) =

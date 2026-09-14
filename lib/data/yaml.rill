@@ -1,3 +1,5 @@
+module yaml
+
 # YAML, written in Rill — the part configuration files actually use: nested
 # mappings by indentation, `- ` sequences, scalars, comments, and lists of
 # mappings. Not supported, and deliberately so: anchors and aliases, multiple
@@ -5,7 +7,7 @@
 #
 # Values land in the JSON module's `Json` type, so a parsed document can be
 # printed as JSON without any conversion.
-import "json"
+import "data/json"
 
 # What is left to read, and the value read so far. It used to be a line
 # *number* into the list of lines, and every step then cost a walk from the

@@ -9,7 +9,7 @@
 # The `_into` entries write into their first operand's own storage, for a
 # host that knows the operand is a temporary nobody else holds — the same
 # elision `grid` does for itself with `unique`, done by the host's count.
-import "grid" as g
+import "num/grid" as g
 
 fn main() = 0
 

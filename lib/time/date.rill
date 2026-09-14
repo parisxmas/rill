@@ -1,3 +1,5 @@
+module date
+
 # Civil dates and times, in UTC and nothing else.
 #
 # A `Date` is a year, a month and a day on the proleptic Gregorian calendar;

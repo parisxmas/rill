@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — `lib/`, by kind
+
+The library folder was a flat list, and grew until a name said less
+than a folder would. It is nine folders now, each for one kind of thing:
+`cli/` (`args`), `crypto/` (`sha1`, `passwd`), `data/` (`json`, `yaml`),
+`db/` (`kv` and the OxiDB clients), `num/` (`grid`, `col`, `decimal`,
+`bigint`), `random/` (`rnd`), `text/` (`str`, `regex`, `path`), `time/`
+(`clock`, `date`) and `web/` (`http`, `ws`, `tmpl`). An import names the
+folder — `import "text/str"`, `import "db/kv"` — and the module keeps its
+own name for the alias and for `module` on its first line. Every example,
+benchmark and page that imported by the old bare name says the new one.
+
+## Unreleased — a file that says what it is
+
+A library had no way to say so: every file was a program to the
+compiler, and `rill check` on `lib/text/str.rill` ended with "no `main`
+function defined". A library begins `module date` now — its own name,
+which has to agree with the file's, so a file copied under another
+name is caught at once — and then no `main` is expected: it is
+checked, typed, formatted and `rill test`ed as it is, and `rill run`
+refuses it, saying to import it from a program. A file with neither a
+`module` line nor a `main` is asked which it is. Every library and
+every file that exists to be imported says it now; the template
+generator writes it into what it makes.
+
 ## Unreleased — eight libraries, in folders
 
 `lib/` was eighteen files in one flat list, and the things a program
@@ -487,7 +512,7 @@ the one that says whether a name is a constructor.
 
 ## Unreleased — a key–value store, and the three calls it asked for
 
-`lib/kv.rill` (`import "kv"`): a key–value store on disk — a B+ tree of
+`lib/db/kv.rill` (`import "db/kv"`): a key–value store on disk — a B+ tree of
 4 KB pages, an 8 MB clock cache, a write-ahead log with a checksum on every
 frame, one sync per commit, checkpoints, rollback, range scans, and an
 exclusive lock so a second process is refused rather than let in. A crash
@@ -521,7 +546,7 @@ that row is a tie to the hundredth of a millisecond.
 
 ## Unreleased — a string library, a `while`, and boxes that empty themselves
 
-`lib/str.rill` (`import "str" as s`): 145 functions — searching, transforming,
+`lib/text/str.rill` (`import "text/str" as s`): 145 functions — searching, transforming,
 padding, strict parsing, a hash, an edit distance, every encoding a text
 arrives in (UTF-8 validation and repair, UTF-16/32 in either order, Latin-1,
 cp1252, cp1254, Unicode case with the Turkish rule, `ascii_fold`, base64,
@@ -614,8 +639,8 @@ Found writing TLS for a message broker in Rill: OpenSSL is reached entirely
 through `extern`, with no runtime change at all, once there is a way to take
 the plaintext out of the buffer it decrypted into.
 
-`lib/http.rill`'s `render` is now `response_bytes`. `render` is the method
-`lib/tmpl.rill`'s `Render` trait owns, so a program that serves pages built
+`lib/web/http.rill`'s `render` is now `response_bytes`. `render` is the method
+`lib/web/tmpl.rill`'s `Render` trait owns, so a program that serves pages built
 from templates could not have both files at once — which is the ordinary shape
 of a web program and so the one case both libraries were written for.
 
@@ -930,7 +955,7 @@ no separate notion of a partial or a layout, and nothing is looked up by name
 at run time: a template is a function, and a page made of four of them is four
 calls. `examples/template/` is that page. What is inside a tag is Rill — `<% if seen > 0 %>` is that
 expression, not a second language that happens to look like it.
-`lib/tmpl.rill` is the half that stays: the `Render` and `Raw` traits, so
+`lib/web/tmpl.rill` is the half that stays: the `Render` and `Raw` traits, so
 `<%= %>` works for anything with an impl, and an escape that copies the text
 whole until it meets a byte that needs a name.
 
@@ -949,7 +974,7 @@ carries the same content on every route, the server answers the same 5,600
 requests a second at a hundred users, and the HTML is laid out to read rather
 than run together, which costs about a fifth more bytes on the wire.
 
-`lib/http.rill` is a good deal less of a toy. It reads a body that arrives in
+`lib/web/http.rill` is a good deal less of a toy. It reads a body that arrives in
 its own packet rather than with the headers, and one sent in pieces
 (`Transfer-Encoding: chunked`); it keeps what a read took past the end of one
 request, so a pipelined pair gets two answers rather than one; and it decides
@@ -973,7 +998,7 @@ catalogue had written five of those for itself, without the decoding, so a
 filter with a space in it did not work), cookies in and out, and a client that
 can send a method, headers and a body rather than only `GET`.
 
-`lib/http.rill` learned headers, both ways. A `Request` carries the ones it
+`lib/web/http.rill` learned headers, both ways. A `Request` carries the ones it
 arrived with, folded to lower case because HTTP says the case does not matter
 and a proxy will one day disagree about it; `header(req, name)` is the lookup.
 A `Response` carries whatever it wants to say beyond its type, and
@@ -1063,7 +1088,7 @@ the answer is what the matching documents come to under each value of that
 field: the count, the average score and the stock in total, as one pipeline
 in OxiDB — `$match`, `$group`, and `$facet` to split the result into the
 page asked for and the count of groups, so the pager has its total without a
-second trip. `lib/oxidb.rill` gains `aggregate`, which is the one call it
+second trip. `lib/db/oxidb.rill` gains `aggregate`, which is the one call it
 takes. Nothing on the server reads a document, and nothing in the browser
 counts anything: what a group says is about the whole data set, not the
 window the flat grid holds.
@@ -1075,7 +1100,7 @@ carries the change until it goes back to zap.
 
 ## Unreleased — a shape over a buffer, and NumPy behind it
 
-`lib/grid.rill`: arrays of numbers with a shape, the way NumPy has them. A
+`lib/num/grid.rill`: arrays of numbers with a shape, the way NumPy has them. A
 grid is one flat `Buf(Float)` and the shape laid over it — `shape`,
 `strides`, `off` — so `transpose`, `rows`, `col` and `slice1` are views that
 cost nothing, and `copy`, `reshape` and every operation that makes a grid

@@ -1,3 +1,5 @@
+module cocoa
+
 # Cocoa from Rill, with no Objective-C and no C.
 #
 # Two things make this possible and both are worth knowing before reading on.

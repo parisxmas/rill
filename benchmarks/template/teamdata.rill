@@ -1,3 +1,5 @@
+module teamdata
+
 # What the `teams` template is given, and what the benchmark builds.
 type Team
   Team(name: Str, score: Int)

@@ -1,6 +1,6 @@
 # The median and two percentiles of five million numbers, and the
 # reductions that skip the NaNs among them.
-import "grid" as g
+import "num/grid" as g
 
 fn work(a, b) =
   (g.median(a), g.percentile(a, 25.0) + g.percentile(a, 75.0), g.nansum(b) + g.nanmean(b) + g.nanmax(b))

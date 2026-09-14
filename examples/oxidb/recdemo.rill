@@ -10,7 +10,7 @@
 #
 #     OXIDB_REC=1 oxidb-server &          # listening on 4444
 #     ./recdemo 4444
-import "oxirec"
+import "db/oxirec"
 
 fn main() = match args()
   Cons(_, Cons(port, _)) -> report(str_to_int(port))

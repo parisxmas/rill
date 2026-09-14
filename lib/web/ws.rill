@@ -1,3 +1,5 @@
+module ws
+
 # WebSocket (RFC 6455) on top of the socket builtins: the handshake, and text
 # or binary frames in both directions. Scope is deliberate — frames up to
 # 64 KiB, no fragmentation, no extensions — but it is the real protocol, and
@@ -9,7 +11,7 @@
 # on the other side is usually a browser, and a browser hands the two to its
 # page as different things.
 
-import "sha1"
+import "crypto/sha1"
 
 fn ws_guid() = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 

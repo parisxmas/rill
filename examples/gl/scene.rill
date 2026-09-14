@@ -1,3 +1,5 @@
+module scene
+
 # The triangle itself: its shaders, its vertices, and the draw call. Kept
 # apart from the bindings so both programs next door can render the same
 # scene, one in a window and one without.

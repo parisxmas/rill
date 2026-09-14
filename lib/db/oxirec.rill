@@ -1,3 +1,5 @@
+module oxirec
+
 # A client for OxiDB's recommendation engine, written in Rill.
 #
 # The wire is `oxiwire.rill`, the same binary one the document, time-series
@@ -14,7 +16,7 @@
 # so baskets tracked with old timestamps answer with nothing at all rather
 # than with an error. If `rec_related` comes back empty, check the two clocks
 # before checking the data.
-import "oxiwire"
+import "db/oxiwire"
 
 # -- the clock ----------------------------------------------------------------
 

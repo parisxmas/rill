@@ -10,7 +10,7 @@
 #
 #     OXIDB_OXIMEM_PORT=6380 oxidb-server &
 #     ./kvdemo 6380
-import "oxiresp"
+import "db/oxiresp"
 
 fn main() = match args()
   Cons(_, Cons(port, _)) -> against_engine(str_to_int(port))

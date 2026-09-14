@@ -1,3 +1,5 @@
+module geometry
+
 # Geometry library module.
 type Shape
   Circle(r: Float)

@@ -34,6 +34,8 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
     let mut loader = Loader {
         overlay: text.map(|t| (entry.canonicalize().unwrap_or_else(|_| entry.into()), t.to_string())),
         visited: HashSet::new(),
+        name: None,
+        name_line: 0,
         stems: HashMap::new(),
         aliases: HashMap::new(),
         fn_origin: HashMap::new(),
@@ -47,6 +49,8 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
     };
     loader.visit(entry, None, None)?;
     with_prelude(Module {
+        name: loader.name.clone(),
+        name_line: loader.name_line,
         imports: Vec::new(),
         types: loader.types,
         traits: loader.traits,
@@ -109,6 +113,10 @@ fn search_path(dir: &Path) -> Vec<PathBuf> {
 
 struct Loader {
     visited: HashSet<PathBuf>,
+    /// The entry file's `module` line, if it has one: then the program is
+    /// a library, and nothing expects a `main`.
+    name: Option<String>,
+    name_line: usize,
     /// How many files of each stem have been loaded, so that the private
     /// names of two `util.rill`s do not become one.
     stems: HashMap<String, usize>,
@@ -174,6 +182,19 @@ impl Loader {
         // reaches an importer nor collides with an importer's.
         let mut module = module;
         let stem = canon.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        // A `module` line names the file, and has to name it right: a file
+        // copied under another name is caught here rather than later.
+        if let Some(n) = &module.name {
+            if *n != stem {
+                return Err(format!(
+                    "{display}: says `module {n}` but the file is `{stem}.rill` — the two have to agree"
+                ));
+            }
+        }
+        if imported_from.is_none() {
+            self.name = module.name.clone();
+            self.name_line = module.name_line;
+        }
         let seen = self.stems.entry(stem.clone()).or_insert(0);
         *seen += 1;
         let tag = if *seen == 1 { stem } else { format!("{stem}{seen}") };

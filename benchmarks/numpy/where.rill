@@ -1,5 +1,5 @@
 # A mask and a choice: where a > 5000, take a, else take b — ten million.
-import "grid" as g
+import "num/grid" as g
 
 fn work(a, b) =
   m = g.gtk(a, 5000.0)

@@ -32,6 +32,7 @@ pub fn with_prelude(user: Module) -> Result<Module, SyntaxError> {
 }
 
 fn merge(prelude: Module, user: Module) -> Module {
+    let (name, name_line) = (user.name.clone(), user.name_line);
     let user_types: HashSet<&str> = user.types.iter().map(|t| t.name.as_str()).collect();
     let user_ctors: HashSet<&str> =
         user.types.iter().flat_map(|t| t.ctors.iter().map(|c| c.name.as_str())).collect();
@@ -105,6 +106,8 @@ fn merge(prelude: Module, user: Module) -> Module {
     types.extend(user.types);
     functions.extend(user.functions);
     Module {
+        name,
+        name_line,
         imports: Vec::new(),
         types,
         traits: user.traits,

@@ -110,10 +110,10 @@
 # which is what saturation looks like when nothing is breaking. More workers
 # do not help: at this size the work is a round trip to the database and back,
 # not arithmetic.
-import "oxidb"
-import "http" as h
+import "db/oxidb"
+import "web/http" as h
 import "catview"
-import "ws"
+import "web/ws"
 import "catalogue_page"
 
 # How many documents to seed when the collection is empty, unless a number is

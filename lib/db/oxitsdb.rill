@@ -1,3 +1,5 @@
+module oxitsdb
+
 # A client for OxiDB's time-series engine, written in Rill, speaking the
 # server's binary wire rather than its JSON one.
 #
@@ -5,7 +7,7 @@
 # `oxiwire.rill`, shared with the document client. What is here is the
 # time-series surface written on top of it: what a point is, what a query may
 # ask for, and how to read the series that come back.
-import "oxiwire"
+import "db/oxiwire"
 
 # -- calling ------------------------------------------------------------------
 

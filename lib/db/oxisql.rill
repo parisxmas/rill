@@ -1,3 +1,5 @@
+module oxisql
+
 # A client for OxiDB's SQL engine, written in Rill.
 #
 # The wire is `oxiwire.rill`, the same binary one the document and time-series
@@ -16,7 +18,7 @@
 # A row is a list of values positionally matching `columns`, so reading one by
 # name means finding the column first — `sql_at` below does that once per
 # result rather than once per row.
-import "oxiwire"
+import "db/oxiwire"
 
 # -- calling ------------------------------------------------------------------
 

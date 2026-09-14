@@ -13,6 +13,11 @@ pub struct Module {
     /// program's own functions are the tail — which is what lets a diagnostic
     /// tell whether the line it found is one the author can go and look at.
     pub prelude_fns: usize,
+    /// `module name`, the first line of a file that is a library: it says
+    /// what the file is, has to match the file's own name, and means no
+    /// `main` is expected. A program says nothing and has a `main`.
+    pub name: Option<String>,
+    pub name_line: usize,
 }
 
 /// `extern "m" fn pow(x: Float, y: Float) -> Float` — a function provided by a

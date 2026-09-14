@@ -1,7 +1,7 @@
-# lib/kv.rill against SQLite, the same work: N keys written in one
+# lib/db/kv.rill against SQLite, the same work: N keys written in one
 # transaction and committed, every key read back, one range scan, then
 # 1000 single-key transactions each committed on its own.
-import "kv"
+import "db/kv"
 
 fn nxt(x) = bit_and(x * 1103515245 + 12345, 2147483647)
 

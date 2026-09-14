@@ -1,3 +1,5 @@
+module args
+
 # Command-line arguments: what a program takes, said once, and then parsed,
 # checked and explained from that one saying.
 #

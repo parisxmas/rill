@@ -1,3 +1,5 @@
+module gl
+
 # OpenGL, called straight from Rill: no C shim, no generated bindings. The
 # declarations below are the C prototypes written out, at C's own widths —
 # `U32` for a `GLenum`, `I32` for a `GLint`, `F32` for a `GLfloat` — and the

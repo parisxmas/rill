@@ -1,5 +1,7 @@
+module page_tmpl
+
 # Generated from examples/template/page.tmpl by tools/tmplgen.rill — do not edit.
-import "tmpl"
+import "web/tmpl"
 import "shopdata"
 import "banner_tmpl"
 import "row_tmpl"

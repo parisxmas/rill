@@ -1,3 +1,5 @@
+module oxiwire
+
 # OxiWire — the binary format OxiDB's native wire speaks, encoded and decoded
 # in Rill.
 #
@@ -32,7 +34,7 @@
 #
 # Values are `Json`, so a document decoded here is the same kind of thing one
 # parsed from text is, and `to_string` prints either.
-import "json"
+import "data/json"
 
 # -- bytes out ----------------------------------------------------------------
 

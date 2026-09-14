@@ -1,3 +1,5 @@
+module path
+
 # File paths as text: joining, taking apart, tidying. Bytes, `/` between
 # the parts, no touching the file system — a path here is a string with a
 # shape, and what is at it is the program's business.

@@ -1,3 +1,5 @@
+module bigint
+
 # Integers of any size, written in Rill.
 #
 # A `Big` is a sign and a buffer of limbs in base 1,000,000,000, least

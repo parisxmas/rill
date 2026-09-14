@@ -1,3 +1,5 @@
+module str
+
 # Strings, past what the prelude gives.
 #
 # The prelude has the pieces a program cannot do without — `contains`,
@@ -7,7 +9,7 @@
 # every encoding a text arrives in, and at the bottom a handful of functions
 # that hand a long text to several strands at once.
 #
-#     import "str" as s
+#     import "text/str" as s
 #     s.count(text, "the")            # non-overlapping occurrences
 #     s.replace(line, "\t", "    ")
 #     s.pad_left(int_to_str(n), 8, 32)

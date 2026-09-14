@@ -1,4 +1,4 @@
-import "str" as st
+import "text/str" as st
 
 fn text(n) = text_onto(strbuf(), n, 12345)
 

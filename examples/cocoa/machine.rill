@@ -1,3 +1,5 @@
+module machine
+
 # What the machine as a whole is doing: per-core CPU load, and memory.
 #
 # `host_processor_info` answers with four tick counters per core — time spent

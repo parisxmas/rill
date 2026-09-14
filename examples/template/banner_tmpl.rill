@@ -1,5 +1,7 @@
+module banner_tmpl
+
 # Generated from examples/template/banner.tmpl by tools/tmplgen.rill — do not edit.
-import "tmpl"
+import "web/tmpl"
 
 fn banner(b: StrBuf, title, line) =
   b += "<header>\n  <h1>"

@@ -1,6 +1,6 @@
 # The RESP client against a real OxiMem.
 #
-# `lib/oxiresp.rill` writes the protocol Redis speaks, so nothing on the other
+# `lib/db/oxiresp.rill` writes the protocol Redis speaks, so nothing on the other
 # side can tell it from a Redis client — which is exactly why it has to be run
 # against the real engine rather than against a mock: a mock would agree with
 # whatever this file believes, including the parts it believes wrongly.
@@ -13,7 +13,7 @@
 #
 #   OXIDB_OXIMEM_PORT=6399 oxidb-server &
 #   rill run wt_resp.rill [port]
-import "oxiresp"
+import "db/oxiresp"
 
 fn say(what, got, want) =
   println("  " + what + ": " + got + " (want " + want + ")")

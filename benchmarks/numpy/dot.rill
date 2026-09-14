@@ -1,5 +1,5 @@
 # The dot product of two twenty-million-element vectors.
-import "grid" as g
+import "num/grid" as g
 
 fn main() =
   n = 20000000

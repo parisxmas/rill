@@ -79,7 +79,7 @@ parallelism is opt-in per build and per run rather than the default.
 ## HTTP server
 
 `benchmarks/http/`: the same one-route service — `GET /` → `Hello, World!` —
-written on Rill's HTTP module (`lib/http.rill`, itself written in
+written on Rill's HTTP module (`lib/web/http.rill`, itself written in
 Rill on top of the socket builtins) and on Go's `net/http`. Load from `wrk
 -t4 -c50 -d10s` on the same machine. Reproduce with `benchmarks/http/run.sh`.
 Go's connection-per-request run reported 48 connect errors out of 133k
@@ -310,7 +310,7 @@ Numbers and the reasons in `benchmarks/io/README.md`.
 
 ## grid against NumPy
 
-`lib/grid.rill` is the array library — a shape over one `Buf(Float)`, views
+`lib/num/grid.rill` is the array library — a shape over one `Buf(Float)`, views
 for free, masks a byte wide, a `Float2` matrix kernel, a bitwise sort, an LU
 factorisation — and `benchmarks/numpy/` puts it beside NumPy 2.4 with
 OpenBLAS on twelve programs, one core against one thread and all cores

@@ -1,6 +1,6 @@
 # An HTTP server and the requests that exercise it, in one program: the
 # server runs on a strand while main plays the client.
-import "http"
+import "web/http"
 
 fn route(req: Request) = respond(req.method, req.path, req.body)
 

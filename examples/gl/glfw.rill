@@ -1,3 +1,5 @@
+module glfw
+
 # GLFW bindings — the C header, written out in Rill.
 #
 # Each declaration is the C prototype at C's own widths: `I32` where GLFW says

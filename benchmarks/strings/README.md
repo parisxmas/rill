@@ -1,4 +1,4 @@
-# lib/str.rill against C
+# lib/text/str.rill against C
 
 One program in each language, the same text (44 MB of a seven-word
 vocabulary from one linear congruential sequence, newlines every so often)

@@ -1,6 +1,6 @@
 # grid for Python
 
-Rill's array library, `lib/grid.rill`, used from Python the way NumPy is:
+Rill's array library, `lib/num/grid.rill`, used from Python the way NumPy is:
 
 ```python
 import grid as g

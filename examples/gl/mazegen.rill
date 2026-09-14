@@ -1,3 +1,5 @@
+module mazegen
+
 # A maze, carved by depth-first search.
 #
 # The language has no mutable variables, but a buffer is memory, and this is

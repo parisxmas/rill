@@ -7,7 +7,7 @@
 # a tag as the code it stands for — so that rendering a page is a run of
 # appends to a builder. Nothing is parsed at run time, no name is looked up,
 # and no branch asks what kind of tag this was, because by then there are no
-# tags. `lib/tmpl.rill` is the other half: how a value becomes text.
+# tags. `lib/web/tmpl.rill` is the other half: how a value becomes text.
 #
 # The template:
 #
@@ -47,7 +47,7 @@
 # What is inside a tag is Rill: `<%= p.name %>` is the expression `p.name`,
 # and `<% if seen > 0 %>` is the condition. There is no second expression
 # language to learn and none to interpret.
-import "tmpl"
+import "web/tmpl"
 
 # What a tag left open, so that `end` knows what it is ending. A list loop
 # keeps what it needs to write the call that starts it, which only goes in
@@ -72,17 +72,35 @@ fn first_or(l, fallback) = match l
 
 fn run(src, out) = match read_file(src)
   Err(e) -> println(e)
-  Ok(text) -> deliver(generate(text, src), out)
+  Ok(text) -> deliver(generate(text, src, module_name(src, out)), out)
+
+# What the generated file will be called: the output's own name, or the
+# template's with `_tmpl` when it goes to standard output. A generated file
+# is a library, and says so on its first line.
+fn module_name(src, out) =
+  if str_len(out) > 0 then stem_of(out) else stem_of(src) + "_tmpl"
+
+fn stem_of(p) =
+  base = after_last(p, 47)
+  dot = last_index(base, 46, str_len(base) - 1)
+  if dot <= 0 then base else base[0:dot]
+
+fn after_last(p, b) =
+  i = last_index(p, b, str_len(p) - 1)
+  if i < 0 then p else p[i + 1:]
+
+fn last_index(p, b, i) = if i < 0 then -1 else if p[i] == b then i else last_index(p, b, i - 1)
 
 fn deliver(code, out) =
   if str_len(out) == 0 then print(code) else if write_file(out, code) then println("wrote " + out) else println("cannot write " + out)
 
 # -- the whole file --------------------------------------------------------------
 
-fn generate(text, src) =
+fn generate(text, src, name) =
   o = strbuf()
+  o += "module " + name + "\n\n"
   o += "# Generated from " + src + " by tools/tmplgen.rill — do not edit.\n"
-  o += "import \"tmpl\"\n"
+  o += "import \"web/tmpl\"\n"
   head = header_lines(text, 0, Nil)
   body_at = head_end(text, 0)
   emit_head(o, reverse(head))

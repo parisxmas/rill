@@ -1,3 +1,5 @@
+module col
+
 # Column aggregates, vectorized by hand.
 #
 # A plain `for` over a buffer is vectorized by the compiler on its own, and
@@ -21,7 +23,7 @@
 # What that costs, on an M4, over a range that fits in L1: about six times.
 # The answer is not to loosen the language but to write the accumulators out —
 # several of them, so the adds are independent, in `Float2` so each one holds
-# two lanes. That is the same trade `lib/grid.rill` makes for the matrix
+# two lanes. That is the same trade `lib/num/grid.rill` makes for the matrix
 # product, and it lands in the same place: the kernels below run at 100 GB/s
 # and better, matching a C loop compiled with `-ffast-math`, while a program
 # that wants the strictly ordered sum still has it by writing the loop.
@@ -31,7 +33,7 @@
 # loop may differ in the last bits. That is the whole of what is being traded,
 # and it is traded per call rather than per build.
 #
-#     import "col" as c
+#     import "num/col" as c
 #     c.sum(prices, 0, #prices)
 #     c.mean(prices, 0, #prices)         # None over an empty range
 #

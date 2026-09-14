@@ -29,7 +29,12 @@ fn main() =              # the entry point
 ```
 
 Every program needs a `fn main()`. It takes no parameters and returns nothing;
-the program exits when it returns.
+the program exits when it returns. A file that is a library rather than a
+program says so on its first line — `module date` — and has no `main`: it
+is checked, typed, formatted and `rill test`ed as it is, and `rill run`
+refuses it, saying to import it from a program. The name has to be the
+file's own (`date.rill`), so a file copied under another name is caught at
+once. A file with neither a `module` line nor a `main` is asked which it is.
 
 An import brings the other file's definitions in under their own names. Adding
 an alias keeps them apart instead, which is how two modules can define the same
@@ -56,7 +61,7 @@ to use, which is the default a library written before `private` still has.
 A file that is not beside the importer is looked for on the search path:
 `RILL_PATH`, a colon-separated list, and then every `lib/` from the importing
 file's directory upwards, stopping at the one holding `.git`. So a library in
-the project's `lib/` is `import "json"` from anywhere in the project, and a
+the project's `lib/` is `import "data/json"` from anywhere in the project, and a
 program's own files still win — a file beside the importer is never taken over
 by one on the path.
 
@@ -291,7 +296,7 @@ multiply and the add that consumes it may fuse), `==` is of both lanes,
 a `Float2` prints as a pair, goes in a map or down a channel, and sits in a
 flat record like any number. It is not a general vector type — no `Float4`,
 no lane-wise `<` — but it is what the matrix product in
-`lib/grid.rill` keeps its block of answers in, and it is why that product
+`lib/num/grid.rill` keeps its block of answers in, and it is why that product
 runs at the speed of a BLAS. The rest of a numeric loop needs none of this:
 a plain `for` over a buffer is vectorized by the compiler on its own.
 
@@ -307,7 +312,7 @@ range that fits in L1. Clang with strict floating point does exactly the same
 thing, for exactly the same reason.
 
 Writing the accumulators out is what recovers it: several of them so the adds
-are independent, in `Float2` so each holds two lanes. `lib/col.rill` has the
+are independent, in `Float2` so each holds two lanes. `lib/num/col.rill` has the
 column aggregates already written that way — `sum`, `sum_sq`, `dot`, `mean`,
 `variance`, `min_of`, `max_of` — and they run five to eight times faster than
 the plain loop, at better than 100 GB/s, matching a C loop built with
@@ -875,7 +880,7 @@ back — when the call is on the statement's unconditional path and the name is
 not spoken again. And a function may ask what that leaves it holding:
 `unique(x)` is true when this frame holds the only reference to `x`. The two
 together are what lets an operation write its answer into an operand's own
-storage when the operand was a temporary: `lib/grid.rill` makes `a * 2.0 +
+storage when the operand was a temporary: `lib/num/grid.rill` makes `a * 2.0 +
 1.0` one grid and not two by asking `unique` of what it was given. A value
 that is asked about is passed owned, so a caller still using it keeps a
 reference of its own and the answer is `false`; a compile-time constant is
@@ -1257,7 +1262,7 @@ Parallelism helps when strands compute independently. Work that is a chain
 of rendezvous — one strand handing a value to the next — has nothing to
 overlap and runs fastest on a single worker. A library that wants to split a
 big piece of work asks `workers()` how many there are and spawns that many
-strands over ranges of it; `lib/grid.rill` does this for anything over a few
+strands over ranges of it; `lib/num/grid.rill` does this for anything over a few
 million elements, and never spawns on a single-worker run.
 
 A program that spawns anything is compiled with a check at every recursive
@@ -1296,7 +1301,7 @@ that this value is shared on purpose and the writes to it are kept apart —
 each strand its own range of a buffer, one writer and readers of a word, a
 closure that reads what it holds. The compiler cannot check the claim; it can
 make sure there is one to find. `spawn work(apart(f), lo, hi, done)` is how
-`lib/grid.rill` splits an operation across the workers, and how `lib/http`
+`lib/num/grid.rill` splits an operation across the workers, and how `lib/http`
 hands every connection's strand the one handler.
 
 ```
@@ -1366,12 +1371,12 @@ program in the project, imported by path and usually under a name:
 
 | | |
 |---|---|
-| `import "str" as s` | strings past the prelude: searches, transforms, parsers, every encoding, strands over a long text |
-| `import "json"`, `"yaml"` | the two formats, read and written |
-| `import "http" as h`, `"ws"` | an HTTP/1.1 server with middleware, and WebSocket over it |
-| `import "grid" as g` | arrays of numbers with a shape, as NumPy has them |
-| `import "kv"` | a key–value store on disk: a B+ tree, a page cache, a log |
-| `import "sha1"`, `"passwd"` | SHA-1 and base64; storing a password so it cannot be read back |
+| `import "text/str" as s` | strings past the prelude: searches, transforms, parsers, every encoding, strands over a long text |
+| `import "data/json"`, `"yaml"` | the two formats, read and written |
+| `import "web/http" as h`, `"ws"` | an HTTP/1.1 server with middleware, and WebSocket over it |
+| `import "num/grid" as g` | arrays of numbers with a shape, as NumPy has them |
+| `import "db/kv"` | a key–value store on disk: a B+ tree, a page cache, a log |
+| `import "crypto/sha1"`, `"passwd"` | SHA-1 and base64; storing a password so it cannot be read back |
 | `import "time/clock" as clock` | elapsed time, a timed call, a duration in words |
 | `import "time/date" as date` | civil dates and times in UTC: the counts, the calendar, ISO 8601 |
 | `import "text/regex" as re` | regular expressions: a backtracking matcher with groups |
@@ -1380,7 +1385,7 @@ program in the project, imported by path and usually under a name:
 | `import "cli/args" as cli` | what a program takes on its command line, said once, parsed and explained |
 | `import "num/decimal" as dec` | decimals with a fixed number of places, for money |
 | `import "num/bigint" as big` | integers of any size |
-| `import "oxidb"` and friends | clients for OxiDB's engines |
+| `import "db/oxidb"` and friends | clients for OxiDB's engines |
 
 Each module says at its head what it is for and how it is used, keeps its
 helpers `private`, and carries its own tests: `rill test lib/text/regex.rill`
@@ -1479,7 +1484,7 @@ with several workers writes straight through, as the buffer is one
 worker's. `sock_flush` is for the moment a program wants the bytes gone
 without waiting for anything itself.
 
-Everything above TCP is ordinary Rill: `lib/http.rill` is an HTTP/1.1
+Everything above TCP is ordinary Rill: `lib/web/http.rill` is an HTTP/1.1
 server in about a hundred lines — request parsing, routing, responses, and
 keep-alive — and it answers `curl`. Open the listening socket before spawning
 the accept loop, or the first client can arrive before the socket exists.
@@ -1533,7 +1538,7 @@ list; and `replace_file`, which is the four steps below written once.
 **`file_pread_into` and `file_pwrite` are for a page cache.** A store that
 keeps its pages in one buffer and reads the same-sized block into a slot of
 it wants no string made on the way, and writes a page back where it came
-from without moving the descriptor. `lib/kv.rill` is written on the two of
+from without moving the descriptor. `lib/db/kv.rill` is written on the two of
 them, and on `file_lock`, which is how it keeps a second process out.
 
 **`file_pread` is what lets one file answer several readers.** A consumer
@@ -1734,11 +1739,11 @@ why a buffer should be held by a Rill binding rather than stashed in a raw
 
 `examples/buffers.rill` shows all of it, and `examples/gl/scene.rill` fills
 one with the vertex data a GPU is handed. For a buffer read as a column —
-scanned in ranges and reduced — `lib/col.rill` has the aggregates written
-with their accumulators in lanes: `import "col" as c`, then `c.sum(v, lo,
+scanned in ranges and reduced — `lib/num/col.rill` has the aggregates written
+with their accumulators in lanes: `import "num/col" as c`, then `c.sum(v, lo,
 hi)`, `c.mean`, `c.variance`, `c.min_of`, `c.max_of`, `c.dot`. For arrays
-with a shape — matrices, vectors, the things NumPy does — `lib/grid.rill`
-lays a shape and strides over one such buffer: `import "grid" as g`, then `g.matmul`, `g.sum_axis`,
+with a shape — matrices, vectors, the things NumPy does — `lib/num/grid.rill`
+lays a shape and strides over one such buffer: `import "num/grid" as g`, then `g.matmul`, `g.sum_axis`,
 `g.transpose` (a view, no copy) and the rest; `benchmarks/numpy/README.md`
 lists what it has and how it measures.
 
@@ -1903,7 +1908,7 @@ exports `rill_drop_<Type>(handle)` — `rill_drop_g_Grid` for a `Grid` imported
 as `g`, the module's dot made an underscore — for the host to let it go by.
 A buffer's handle is the address of its elements, so the host may read them
 straight through it while it holds the grid. `bindings/python/gridlib.rill`
-is a library of this kind over `lib/grid.rill`, and `bindings/python/grid`
+is a library of this kind over `lib/num/grid.rill`, and `bindings/python/grid`
 the `ctypes` package that makes it `import grid as g` in Python, NumPy's
 notation on Rill's loops. Strands need the scheduler a program's `main` runs
 and a library's host does not, so a library runs on one worker.

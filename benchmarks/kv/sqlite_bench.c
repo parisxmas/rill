@@ -1,7 +1,7 @@
 /* The same work as kv_bench.rill on SQLite through its C API — prepared
    statements, no interpreter in the way. WAL mode, synchronous=FULL and
-   fullfsync=ON, which is the durability lib/kv.rill gives (a commit is on
-   the platter), and an 8 MB page cache, which is lib/kv.rill's. */
+   fullfsync=ON, which is the durability lib/db/kv.rill gives (a commit is on
+   the platter), and an 8 MB page cache, which is lib/db/kv.rill's. */
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>

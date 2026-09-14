@@ -1,6 +1,6 @@
-# lib/kv.rill against SQLite
+# lib/db/kv.rill against SQLite
 
-`lib/kv.rill` is a key–value store on disk — a B+ tree of 4 KB pages, an
+`lib/db/kv.rill` is a key–value store on disk — a B+ tree of 4 KB pages, an
 8 MB page cache, a write-ahead log with a checksum per frame — written in
 Rill on three calls added to the runtime for it: `file_pread_into`,
 `file_pwrite` and `file_lock`. This is it against SQLite 3.53.3 through the
@@ -43,7 +43,7 @@ stages one.
 
 Merge nodes that empty on delete, reuse freed pages, or let two processes
 in: the exclusive lock at open is what says so. Keys are at most 255 bytes
-and values 1500. The source is 648 lines, `lib/kv.rill`.
+and values 1500. The source is 648 lines, `lib/db/kv.rill`.
 
 ## How it got here
 

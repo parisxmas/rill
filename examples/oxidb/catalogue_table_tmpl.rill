@@ -1,5 +1,7 @@
+module catalogue_table_tmpl
+
 # Generated from examples/oxidb/catalogue_table.tmpl by tools/tmplgen.rill — do not edit.
-import "tmpl"
+import "web/tmpl"
 import "catview"
 
 fn catalogue_table(b: StrBuf, rows: List(Row)) =

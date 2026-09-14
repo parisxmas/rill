@@ -1,3 +1,5 @@
+module cgl
+
 # CGL bindings — macOS's own way to get an OpenGL context with no window
 # attached to it. Part of the OpenGL framework `gl.rill` already links, so
 # this needs nothing installed.

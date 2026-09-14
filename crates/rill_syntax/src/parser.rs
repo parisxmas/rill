@@ -141,10 +141,36 @@ impl Parser {
         let mut externs = Vec::new();
         let mut asms = Vec::new();
         let mut functions = Vec::new();
+        let mut name = None;
+        let mut name_line = 0;
         loop {
             self.skip_newlines();
             match self.peek() {
                 Tok::Eof => break,
+                // `module name`: what the file is, said first. A name, not
+                // a keyword, meaning this only here.
+                Tok::Ident(w) if w == "module" && matches!(self.peek2(), Tok::Ident(_)) => {
+                    let (line, col) = self.here();
+                    let first = name.is_none()
+                        && imports.is_empty()
+                        && types.is_empty()
+                        && traits.is_empty()
+                        && impls.is_empty()
+                        && externs.is_empty()
+                        && asms.is_empty()
+                        && functions.is_empty();
+                    if !first {
+                        return Err(SyntaxError::new(
+                            line,
+                            col,
+                            "`module` names the file and comes first, before anything else in it"
+                                .to_string(),
+                        ));
+                    }
+                    self.bump();
+                    name = Some(self.ident("the module's name")?);
+                    name_line = line;
+                }
                 Tok::Fn => functions.push(self.fndef(false)?),
                 // `private fn`: a function the file keeps to itself. A name
                 // rather than a keyword, meaning this only here, before `fn`.
@@ -202,7 +228,7 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0 })
+        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, name, name_line })
     }
 
     /// `extern ["lib"] fn name(p: T, ...) [-> T]`.

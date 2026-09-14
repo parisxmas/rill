@@ -1,4 +1,4 @@
-import "json"
+import "data/json"
 
 fn main() =
   doc = parsed_or("{\"user\":{\"name\":\"ada\",\"age\":36},\"tags\":[\"x\",\"y\"],\"ok\":true,\"pi\":3.5}", JNull)

@@ -1,3 +1,5 @@
+module http
+
 # A small HTTP/1.1 server, written in Rill on top of the socket builtins.
 # One strand per connection: while a connection has nothing to say its
 # strand is parked, so idle clients cost nothing.
@@ -264,7 +266,7 @@ fn render_for(method, res: Response, keep) =
     if i < 0 then full else str_sub(full, 0, i + 4)
 
 # Named for what it makes rather than for the act of making it: `render` is the
-# trait method `lib/tmpl.rill` owns, and a program that serves pages built from
+# trait method `lib/web/tmpl.rill` owns, and a program that serves pages built from
 # templates wants both files at once.
 fn response_bytes(res: Response, keep) =
   render_parts(res.status, res.content_type, res.headers, res.body, keep)

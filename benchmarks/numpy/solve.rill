@@ -1,6 +1,6 @@
 # A 400 by 400 system solved, its determinant, and its inverse: an LU
 # factorisation with partial pivoting, and what is built on one.
-import "grid" as g
+import "num/grid" as g
 
 fn work(a, b) =
   x = g.solve(a, b)

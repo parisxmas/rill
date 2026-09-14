@@ -1,7 +1,7 @@
 # A WebSocket echo server, with a client in the same program so the exchange
 # is self-contained. Each connection gets a strand; while it waits for the
 # next frame it is parked, not holding a worker.
-import "ws"
+import "web/ws"
 
 fn serve_ws(conn) =
   request = fill(conn, "", 4)

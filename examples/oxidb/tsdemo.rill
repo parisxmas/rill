@@ -10,7 +10,7 @@
 #
 #     OXIDB_TSDB=1 oxidb-server &      # listening on 4444
 #     ./tsdemo 4444
-import "oxitsdb"
+import "db/oxitsdb"
 
 # `args()` includes the program's own name, so "no arguments" is a list of one.
 fn main() = match args()

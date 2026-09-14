@@ -1,3 +1,5 @@
+module oxidb
+
 # A client for OxiDB's document engine, written in Rill.
 #
 # The wire is the server's native one and the payload is binary: `oxiwire.rill`
@@ -23,7 +25,7 @@
 # carries which of the two it is, so there is no `{"ok":.., "data":..}`
 # envelope to unwrap. The connection is a plain socket, so a strand waiting on
 # a reply parks and costs nothing.
-import "oxiwire"
+import "db/oxiwire"
 
 # -- calling ------------------------------------------------------------------
 

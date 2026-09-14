@@ -1,7 +1,7 @@
-# A key–value store on disk, from lib/kv.rill: a B+ tree of pages, a page
+# A key–value store on disk, from lib/db/kv.rill: a B+ tree of pages, a page
 # cache and a write-ahead log, in one process. Keys sort as bytes, so a
 # range scan is a walk along the leaves.
-import "kv"
+import "db/kv"
 
 fn main() =
   path = "/tmp/rill_kv_example.db"

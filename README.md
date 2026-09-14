@@ -188,8 +188,8 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `multi/` | a program split across files, plus aliased imports that keep colliding names apart |
 | `template/` | a page built out of four templates: one includes the others and hands them what they need, and `tmplgen` turns all four into Rill before the program is compiled |
 | `webgpu/` | a spinning triangle: Rill compiled to wasm computing frames for WebGPU |
-| `kv_store.rill` | a key–value store on disk from `lib/kv.rill`: a B+ tree of pages, a page cache and a write-ahead log; ahead of SQLite on reads, level on the durable commit |
-| `grid_tour.rill` | arrays with a shape from `lib/grid.rill`: views, masks, reductions, a matrix product — NumPy's shapes, and faster than NumPy where there is arithmetic to do |
+| `kv_store.rill` | a key–value store on disk from `lib/db/kv.rill`: a B+ tree of pages, a page cache and a write-ahead log; ahead of SQLite on reads, level on the durable commit |
+| `grid_tour.rill` | arrays with a shape from `lib/num/grid.rill`: views, masks, reductions, a matrix product — NumPy's shapes, and faster than NumPy where there is arithmetic to do |
 | `lanes.rill`, `holders.rill` | `Float2`, two floats in one register; `unique`, the question that lets an operation reuse a temporary's storage |
 
 The largest thing written in Rill is not in this table. Rill Valley — a
@@ -201,22 +201,24 @@ its `build.sh` at a `rill` binary and it builds against whatever compiler you
 give it.
 
 `lib/` is what the examples above are written on, and is written in Rill
-itself: `json.rill` and `yaml.rill`, `http.rill` for HTTP/1.1, `ws.rill` for
-WebSocket, `sha1.rill` for the handshake, `tmpl.rill` for HTML templates (with
+itself, a folder per kind (`text/`, `data/`, `web/`, `db/`, `num/`, `crypto/`,
+`time/`, `random/`, `cli/`): `data/json.rill` and `data/yaml.rill`,
+`web/http.rill` for HTTP/1.1, `web/ws.rill` for WebSocket, `crypto/sha1.rill`
+for the handshake, `web/tmpl.rill` for HTML templates (with
 `tools/tmplgen.rill`, which compiles a template into Rill rather than
-interpreting one — its header is the syntax), `grid.rill` for arrays with a shape
-(and `bindings/python`, which makes it `import grid as g` in Python — NumPy's
-notation on Rill's loops, through `rill build --shared`), and a client for each of the five
-engines OxiDB mounts. Four are on its native wire and share `oxiwire.rill`,
-the server's binary format — about a third larger on the wire than its JSON
-one and about 1.4 times faster to talk: `oxidb.rill` for documents,
-`oxisql.rill` for SQL, `oxitsdb.rill` for time series and `oxirec.rill` for
-co-occurrence recommendations. The fifth, `oxiresp.rill`, speaks RESP to the
-key-value engine on a port of its own — the protocol Redis speaks. It is not a
-standard library and nothing is promised about it between releases — the
-prelude is the part that ships with the compiler. It is a directory, so
-`import "json"` finds it from anywhere under this repository, and `RILL_PATH`
-points at it from outside.
+interpreting one — its header is the syntax), `num/grid.rill` for arrays with a
+shape (and `bindings/python`, which makes it `import grid as g` in Python —
+NumPy's notation on Rill's loops, through `rill build --shared`), and a client
+for each of the five engines OxiDB mounts. Four are on its native wire and
+share `db/oxiwire.rill`, the server's binary format — about a third larger on
+the wire than its JSON one and about 1.4 times faster to talk: `db/oxidb.rill`
+for documents, `db/oxisql.rill` for SQL, `db/oxitsdb.rill` for time series and
+`db/oxirec.rill` for co-occurrence recommendations. The fifth,
+`db/oxiresp.rill`, speaks RESP to the key-value engine on a port of its own —
+the protocol Redis speaks. It is not a standard library and nothing is promised
+about it between releases — the prelude is the part that ships with the
+compiler. It is a directory, so `import "data/json"` finds it from anywhere
+under this repository, and `RILL_PATH` points at it from outside.
 
 `selfhost/` goes further: Rill compiled by Rill. The lexer, parser and
 formatter come first, proven byte-for-byte against the Rust implementation

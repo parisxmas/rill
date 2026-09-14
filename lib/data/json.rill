@@ -1,3 +1,5 @@
+module json
+
 # JSON, written in Rill: a recursive-descent parser and a printer.
 #
 # Parsing functions return a `Parsed` — the value together with where it

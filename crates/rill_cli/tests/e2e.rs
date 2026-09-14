@@ -1081,11 +1081,15 @@ fn repository_sources_are_formatted() {
         "examples/oxidb",
         "benchmarks",
         "benchmarks/http",
-        "lib/time",
-        "lib/text",
-        "lib/random",
         "lib/cli",
+        "lib/crypto",
+        "lib/data",
+        "lib/db",
         "lib/num",
+        "lib/random",
+        "lib/text",
+        "lib/time",
+        "lib/web",
         "editors/vscode/test",
     ] {
         for entry in std::fs::read_dir(root.join(dir)).unwrap() {
@@ -1266,7 +1270,7 @@ fn sha1_and_base64() {
     let src = out_dir.join("check.rill");
     std::fs::write(
         &src,
-        "import \"sha1\"\n\nfn main() =\n  println(base64(sha1(\"abc\")))\n  println(base64(\"Man\"))\n  println(base64(sha1(\"dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11\")))\n",
+        "import \"crypto/sha1\"\n\nfn main() =\n  println(base64(sha1(\"abc\")))\n  println(base64(\"Man\"))\n  println(base64(sha1(\"dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11\")))\n",
     )
     .unwrap();
     let exe = out_dir.join("check");
@@ -2374,7 +2378,7 @@ fn a_private_function_is_the_files_own() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("helper.rill"),
-        "private fn walk(xs, n) = match xs\n  \
+        "module helper\n\nprivate fn walk(xs, n) = match xs\n  \
            Nil -> n\n  \
            Cons(x, rest) -> walk(rest, n + x)\n\n\
          fn total(xs) = walk(xs, 0)\n\n\
@@ -2560,6 +2564,39 @@ fn the_libraries_pass_their_own_tests() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+}
+
+/// `module name` on a file's first line makes it a library: no `main` is
+/// expected, `rill run` refuses it, the name must be the file's own, and it
+/// must come first. A file with neither is asked which it is.
+#[test]
+fn a_module_line_makes_a_library() {
+    let dir = std::env::temp_dir().join(format!("rill-e2e-module-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rill = |name: &str, src: &str, cmd: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, src).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg(cmd).arg(&path).output().unwrap();
+        (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout))
+    };
+    let lib = "module shapes\n\n# Shapes.\nfn area(r) = 3 * r * r\n\nfn test_area() = assert_eq(area(2), 12)\n";
+    assert!(rill("shapes.rill", lib, "check").0);
+    assert!(rill("shapes.rill", lib, "test").1.contains("1 test: 1 passed"));
+    let (ran, said) = rill("shapes.rill", lib, "run");
+    assert!(!ran && said.contains("`shapes` is a module, and has nothing to run"), "{said}");
+    assert_eq!(fmt_source(lib), lib);
+
+    let (_, said) = rill("copy.rill", lib, "check");
+    assert!(said.contains("says `module shapes` but the file is `copy.rill`"), "{said}");
+    let (_, said) = rill("late.rill", "fn f() = 1\nmodule late\n", "check");
+    assert!(said.contains("`module` names the file and comes first"), "{said}");
+    let (_, said) = rill("neither.rill", "fn f() = 1\n", "check");
+    assert!(said.contains("a library says `module <name>` on its first line"), "{said}");
+
+    // A program imports the module by its file name, as before.
+    let prog = "import \"shapes\"\n\nfn main() = println(int_to_str(area(3)))\n";
+    let (ran, said) = rill("main.rill", prog, "run");
+    assert!(ran && said.contains("27"), "{said}");
 }
 
 /// A field only some constructors have is not certainly there, and one of two
@@ -4047,7 +4084,7 @@ fn fmin2_and_fmax2_are_lane_wise_and_ignore_a_nan() {
     assert_eq!(out, "1\n2\n5\n8\n4\n3\n");
 }
 
-/// `lib/col.rill` against the plain loops it replaces. The kernels keep their
+/// `lib/num/col.rill` against the plain loops it replaces. The kernels keep their
 /// accumulators in lanes, so they add in a different order — over these
 /// values the answer is the same to the bit, and the point of the test is
 /// that the ranges, the tail past the last block of eight, and the empty
@@ -4060,7 +4097,7 @@ fn the_column_aggregates_agree_with_the_loops_they_replace() {
     let src = out_dir.join("col_check.rill");
     std::fs::write(
         &src,
-        "import \"col\" as c\n\n\
+        "import \"num/col\" as c\n\n\
          fn l_sum(v: Buf(Float), lo, hi) = for i in lo..hi with a = 0.0\n  a + v[i]\n\n\
          fn l_min(v: Buf(Float), lo, hi) = for i in lo..hi with a = v[lo]\n  if v[i] < a then v[i] else a\n\n\
          fn l_max(v: Buf(Float), lo, hi) = for i in lo..hi with a = v[lo]\n  if v[i] > a then v[i] else a\n\n\
@@ -4328,7 +4365,7 @@ fn wasm_refuses_a_naked_function() {
     assert!(err.contains("no inline") && err.contains("boot"), "{err}");
 }
 
-/// `lib/str.rill`: every function once, on values checked by hand — the
+/// `lib/text/str.rill`: every function once, on values checked by hand — the
 /// encodings against what Python's codecs, base64 and urllib say — and then
 /// the strand functions against the plain scans they stand in for, at
 /// several cuts, including more ranges than there are bytes of lookahead and
@@ -4611,7 +4648,7 @@ fn main() =
     );
 }
 
-/// `lib/kv.rill` — the store as a program uses it, then under stress. The
+/// `lib/db/kv.rill` — the store as a program uses it, then under stress. The
 /// example puts, commits, rolls one back, deletes, scans, is refused a
 /// second open of the same file, and reads everything back after a close.
 #[test]
@@ -4670,7 +4707,7 @@ fn key_value_store_under_stress_and_recovery() {
     assert_eq!(outs[1], "recovered: Some(survives)\ncount 20659\n16\n");
 }
 
-const STRESS: &str = r#"import "kv"
+const STRESS: &str = r#"import "db/kv"
 
 fn key_of(x) = "k" + int_to_str(x % 100003)
 
@@ -4743,7 +4780,7 @@ fn main() =
       exit(0)
 "#;
 
-const AFTER: &str = r#"import "kv"
+const AFTER: &str = r#"import "db/kv"
 fn main() =
   match kv_open("/tmp/rill-e2e-kv.db")
     Err(e) -> println(e)

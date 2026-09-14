@@ -1,6 +1,6 @@
 # A 2000 × 2000 grid transposed (a view), then summed along both axes: the
 # strided read a transpose leaves behind.
-import "grid" as g
+import "num/grid" as g
 
 fn work(a, n) =
   t = g.transpose(a)

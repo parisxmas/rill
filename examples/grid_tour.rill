@@ -1,5 +1,5 @@
-# A tour of `lib/grid.rill`: arrays with a shape, the way NumPy has them.
-import "grid" as g
+# A tour of `lib/num/grid.rill`: arrays with a shape, the way NumPy has them.
+import "num/grid" as g
 
 fn main() =
   a = g.arange(12)

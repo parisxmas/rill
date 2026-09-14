@@ -1,5 +1,5 @@
 #!/bin/sh
-# lib/str.rill against C, on one 44 MB text. Prints both tables and then the
+# lib/text/str.rill against C, on one 44 MB text. Prints both tables and then the
 # strand functions on eight workers. Needs `rill` on the path and `cc`.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)

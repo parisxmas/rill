@@ -25,7 +25,7 @@
 # anything in it) and everyone shares the two: the honest thing for a server
 # that cannot see past its own socket.
 
-import "http" as h
+import "web/http" as h
 
 fn main() = match listen_on(0)
   Err(e) ->

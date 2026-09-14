@@ -4,7 +4,7 @@
 # both lanes at once, `fma2` is a fused multiply-add on both, `f2_load` and
 # `f2_store` move a pair between a buffer and a register. It is what a
 # kernel that has been written with lanes in mind is written in — the
-# matrix product in `lib/grid.rill` keeps its 4 × 10 block of answers in
+# matrix product in `lib/num/grid.rill` keeps its 4 × 10 block of answers in
 # twenty of them.
 #
 # A tuple holds up to eight values, and eight running sums in eight

@@ -1,3 +1,5 @@
+module sha1
+
 # SHA-1 and base64, written in Rill. The WebSocket handshake needs both, and
 # they are a fair test of the language's bit operations: everything here is
 # 32-bit arithmetic emulated on 64-bit integers by masking after each step.
