@@ -1,0 +1,133 @@
+# Random numbers, from a generator that is a value.
+#
+# PCG32 (O'Neill): a 64-bit state, a 32-bit output that passes the
+# statistical tests, and one multiply and a few shifts a number. The
+# generator is a `Rng` value — there is no hidden state — so a function
+# that draws hands back the next generator with the number, and the same
+# seed gives the same sequence on every run and every machine.
+#
+#     import "random/rnd" as rnd
+#     r = rnd.seed(42)                      # or rnd.seed_from_os()
+#     (n, r) = rnd.int_in(r, 1, 6)          # a die
+#     (x, r) = rnd.float(r)                 # in [0, 1)
+#     (who, r) = rnd.pick(r, names)         # Some(one of them)
+#     r = rnd.shuffle(r, deck)              # a Buf(Int), in place
+#
+# Not for secrets: a PCG stream can be predicted from its output. Keys and
+# tokens come from `random_i64()`, which asks the operating system.
+
+type Rng
+  Rng(state: Int, inc: Int)
+
+# A generator from a seed; two seeds, two streams.
+fn seed(n) = seed2(n, 54)
+
+fn seed2(n, stream) =
+  inc = bit_or(shl(stream, 1), 1)
+  r0 = Rng(0, inc)
+  (_, r1) = next_int(r0)
+  (_, r2) = next_int(Rng(r1.state + n, inc))
+  r2
+
+# A generator seeded by the operating system: different every run.
+fn seed_from_os() = seed(random_i64())
+
+# The next 32-bit number, 0 .. 2^32 - 1, and the generator after it.
+fn next_int(r: Rng) =
+  old = r.state
+  next = Rng(old * 6364136223846793005 + r.inc, r.inc)
+  xorshifted = bit_and(shr(bit_xor(shr(old, 18), old), 27), 4294967295)
+  rot = shr(old, 59)
+  out = bit_and(bit_or(shr(xorshifted, rot), shl(xorshifted, bit_and(0 - rot, 31))), 4294967295)
+  (out, next)
+
+# A number in `lo..hi`, `hi` excluded, without the bias a `%` would have:
+# a draw that lands in the ragged end of the range is taken again.
+fn int_in(r: Rng, lo, hi) =
+  span = hi - lo
+  if span <= 0 then (lo, r)
+  else
+    limit = 4294967296 - 4294967296 % span
+    (v, r2) = next_int(r)
+    if v >= limit then int_in(r2, lo, hi) else (lo + v % span, r2)
+
+# A float in [0, 1), 53 random bits of it.
+fn float(r: Rng) =
+  (a, r1) = next_int(r)
+  (b, r2) = next_int(r1)
+  bits = bit_or(shl(bit_and(a, 2097151), 32), b)
+  (to_float(bits) / 9007199254740992.0, r2)
+
+fn bool(r: Rng) =
+  (v, r2) = next_int(r)
+  (bit_and(v, 1) == 1, r2)
+
+# One of a list, or `None` of an empty one.
+fn pick(r: Rng, xs) =
+  n = len(xs)
+  if n == 0 then (None, r)
+  else
+    (i, r2) = int_in(r, 0, n)
+    (nth(xs, i), r2)
+
+# Fisher–Yates over a buffer, in place; the generator after it.
+fn shuffle(r: Rng, b: Buf(Int)) = for i in 0..#b with rng = r
+  j = #b - 1 - i
+  if j > 0 then
+    (k, rng2) = int_in(rng, 0, j + 1)
+    v = b[j]
+    b[j] = b[k]
+    b[k] = v
+    rng2
+  else rng
+
+# `n` random bytes, as a string of them.
+fn bytes(r: Rng, n) =
+  sb = strbuf()
+  rng = for _ in 0..n with rng = r
+    (v, rng2) = next_int(rng)
+    strbuf_byte(sb, bit_and(v, 255))
+    rng2
+  (strbuf_str(sb), rng)
+
+# -- tests --------------------------------------------------------------------
+
+fn test_reference_stream() =
+  # PCG32 with the reference initialization, seed 42, stream 54: the first
+  # outputs published with the generator.
+  r = seed(42)
+  (a, r1) = next_int(r)
+  (b, r2) = next_int(r1)
+  (c, _) = next_int(r2)
+  assert_eq(a, 2707161783)
+  assert_eq(b, 2068313097)
+  assert_eq(c, 3122475824)
+
+fn test_ranges() =
+  r = seed(7)
+  state = for _ in 0..1000 with st = (true, r)
+    (ok, rng) = st
+    (n, rng2) = int_in(rng, 1, 7)
+    (x, rng3) = float(rng2)
+    (ok && n >= 1 && n <= 6 && x >= 0.0 && x < 1.0, rng3)
+  (fine, _) = state
+  assert(fine)
+  (same, _) = int_in(seed(1), 5, 5)
+  assert_eq(same, 5)
+
+fn test_shuffle_keeps_everything() =
+  b = buf_int(10)
+  for i in 0..10
+    b[i] = i
+  r = shuffle(seed(3), b)
+  total = for i in 0..10 with acc = 0
+    acc + b[i]
+  assert_eq(total, 45)
+  (v, _) = next_int(r)
+  assert(v >= 0)
+  (who, _) = pick(seed(9), Cons("a", Cons("b", Nil)))
+  assert(who == Some("a") || who == Some("b"))
+  (none, _) = pick(seed(9), Nil)
+  assert_eq(none, None)
+  (s, _) = bytes(seed(1), 16)
+  assert_eq(#s, 16)
