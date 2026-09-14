@@ -262,7 +262,12 @@ impl Fmt {
                     };
                     self.push_at(
                         0,
-                        &format!("extern{lib} fn {}({}){ret}", e.name, params.join(", ")),
+                        &format!(
+                            "extern{lib}{} fn {}({}){ret}",
+                            if e.blocking { " blocking" } else { "" },
+                            e.name,
+                            params.join(", ")
+                        ),
                         e.line,
                     );
                 }

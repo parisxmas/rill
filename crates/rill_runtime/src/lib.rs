@@ -1688,6 +1688,10 @@ const POOLED_PIPES: usize = 64;
 #[cfg(unix)]
 #[repr(C)]
 struct SyncReq {
+    /// A call to make instead of a sync: the wrapper a `blocking` extern's
+    /// call site made, and the slot its arguments are in. Null for a sync.
+    run: usize,
+    arg: *mut u8,
     /// The descriptor to sync, or -1 when `path` names a directory instead.
     fd: i32,
     /// Where the helper says how it went.
@@ -1767,7 +1771,13 @@ extern "C" fn sync_helper(_arg: *mut u8) -> *mut u8 {
             if got != 8 {
                 return core::ptr::null_mut();
             }
-            (*req).result = do_sync((*req).fd, (*req).path);
+            if (*req).run != 0 {
+                let run: extern "C" fn(*mut u8) = core::mem::transmute((*req).run);
+                run((*req).arg);
+                (*req).result = 0;
+            } else {
+                (*req).result = do_sync((*req).fd, (*req).path);
+            }
             let done = [1u8];
             write((*req).notify, done.as_ptr(), 1);
         }
@@ -1841,11 +1851,73 @@ unsafe fn give_back_pipe(fds: [i32; 2]) {
 /// the same either way; what is lost is only that the worker waits.
 #[cfg(unix)]
 unsafe fn sync_off_worker(fd: i32, path: *mut u8) -> i32 {
+    off_worker(0, core::ptr::null_mut(), fd, path)
+}
+
+/// A `blocking` extern's call, made on a helper thread while this strand is
+/// parked: `run(arg)` is the wrapper the call site made, over the slot its
+/// arguments are in. The worker goes on with the other strands; without a
+/// scheduler there are none, and the call is simply made here.
+///
+/// # Safety
+/// `run` must be a C function taking one pointer, and `arg` what it takes.
+#[cfg(unix)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_call_blocking(run: extern "C" fn(*mut u8), arg: *mut u8) {
+    off_worker(run as usize, arg, -1, core::ptr::null_mut());
+}
+
+#[cfg(not(unix))]
+#[no_mangle]
+pub unsafe extern "C" fn rill_call_blocking(run: extern "C" fn(*mut u8), arg: *mut u8) {
+    run(arg);
+}
+
+/// This strand's turn, given up: if another strand is waiting on this
+/// worker it runs now and this one is queued behind it; if none is, this
+/// returns at once. For a loop that has no call in it to be checked at.
+#[cfg(unix)]
+#[no_mangle]
+pub unsafe extern "C" fn rill_yield() {
+    if MAIN_G.is_null() {
+        return;
+    }
+    let w = me();
+    if IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
+        poll_network(w, false);
+    }
+    lock_runq(w);
+    let waiting = !(*w).runq.head.is_null();
+    unlock_runq(w);
+    if !waiting {
+        return;
+    }
+    make_ready((*w).current);
+    block_current();
+}
+
+#[cfg(not(unix))]
+#[no_mangle]
+pub unsafe extern "C" fn rill_yield() {}
+
+/// Either a sync or a call, handed to a helper thread while this strand is
+/// parked on a pipe the helper writes a byte to when it is done.
+#[cfg(unix)]
+unsafe fn off_worker(run: usize, arg: *mut u8, fd: i32, path: *mut u8) -> i32 {
+    let direct = |run: usize, arg: *mut u8, fd: i32, path: *mut u8| -> i32 {
+        if run != 0 {
+            let f: extern "C" fn(*mut u8) = core::mem::transmute(run);
+            f(arg);
+            0
+        } else {
+            do_sync(fd, path)
+        }
+    };
     // No scheduler means no strand to park and no worker to spare. A program
     // that neither spawns nor waits runs `main` on the process stack, and
     // there is nothing for this to be an improvement on.
     if MAIN_G.is_null() {
-        return do_sync(fd, path);
+        return direct(run, arg, fd, path);
     }
     pthread_mutex_lock(&raw mut SYNC_LOCK);
     let up = sync_helpers_ready();
@@ -1853,15 +1925,17 @@ unsafe fn sync_off_worker(fd: i32, path: *mut u8) -> i32 {
     let req_w = SYNC_REQ_W;
     pthread_mutex_unlock(&raw mut SYNC_LOCK);
     if !up || fds[0] < 0 {
-        return do_sync(fd, path);
+        return direct(run, arg, fd, path);
     }
     let req = malloc(core::mem::size_of::<SyncReq>()) as *mut SyncReq;
     if req.is_null() {
         pthread_mutex_lock(&raw mut SYNC_LOCK);
         give_back_pipe(fds);
         pthread_mutex_unlock(&raw mut SYNC_LOCK);
-        return do_sync(fd, path);
+        return direct(run, arg, fd, path);
     }
+    (*req).run = run;
+    (*req).arg = arg;
     (*req).fd = fd;
     (*req).result = -1;
     (*req).notify = fds[1];
@@ -1872,7 +1946,7 @@ unsafe fn sync_off_worker(fd: i32, path: *mut u8) -> i32 {
         pthread_mutex_lock(&raw mut SYNC_LOCK);
         give_back_pipe(fds);
         pthread_mutex_unlock(&raw mut SYNC_LOCK);
-        return do_sync(fd, path);
+        return direct(run, arg, fd, path);
     }
     // From here the request belongs to the helper, and this strand's own
     // frames are about to be copied elsewhere. Nothing below may read anything

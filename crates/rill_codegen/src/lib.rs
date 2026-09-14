@@ -2915,6 +2915,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_div_zero", void.fn_type(&[], false), None);
+        self.module.add_function("rill_yield", void.fn_type(&[], false), None);
+        self.module.add_function(
+            "rill_call_blocking",
+            void.fn_type(&[ptrt.into(), ptrt.into()], false),
+            None,
+        );
         self.module.add_function("rill_assert_failed", void.fn_type(&[i64t.into()], false), None);
         self.module.add_function(
             "rill_assert_eq_failed",
@@ -6275,12 +6281,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// exactly the ones whose check would have cost the vectorization. A
     /// callee that loops keeps the loop checked, and so does a closure or a
     /// method, whose body is not known here.
+    ///
+    /// A `while` is not a leaf, whatever it calls: nothing bounds it but its
+    /// condition, and a `while` that waits on something another strand
+    /// sets — on the same worker — would wait for it forever.
     fn leaf_loop(&mut self, fi: usize) -> bool {
         if let Some(&known) = self.leaf_loops.get(&fi) {
             return known;
         }
         let f = &self.tmod.fns[fi];
-        let mut answer = f.name.contains(".for.go") || f.name.contains(".while.go");
+        let mut answer = f.name.contains(".for.go");
         if answer {
             let mut edges: Vec<usize> = Vec::new();
             let mut found = false;
@@ -6488,6 +6498,47 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// The function may be named here or have arrived as a parameter, which
     /// the caller pinned to a particular function when it asked for this
     /// instance — either way it is settled before any code is emitted.
+    /// The function a helper thread runs for a blocking extern: takes the
+    /// slot the arguments were stored in, makes the call, stores the answer
+    /// after them. One per declaration.
+    fn blocking_wrapper(
+        &mut self,
+        name: &str,
+        sig: &rill_types::ExternSig,
+        st: StructType<'ctx>,
+    ) -> FunctionValue<'ctx> {
+        let wname = format!("{name}$blocking");
+        if let Some(f) = self.module.get_function(&wname) {
+            return f;
+        }
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let w = self.module.add_function(&wname, self.ctx.void_type().fn_type(&[ptrt.into()], false), None);
+        let saved = self.builder.get_insert_block();
+        let entry = self.ctx.append_basic_block(w, "entry");
+        self.builder.position_at_end(entry);
+        let slot = w.get_nth_param(0).unwrap().into_pointer_value();
+        let mut args: Vec<BasicMetadataValueEnum> = Vec::new();
+        for (i, c) in sig.params.iter().enumerate() {
+            let at = self.builder.build_struct_gep(st, slot, i as u32, "a").expect("LLVM builder error");
+            let ty = self.c_type(c).expect("a parameter is never Unit");
+            args.push(self.builder.build_load(ty, at, "arg").expect("LLVM builder error").into());
+        }
+        let callee = self.module.get_function(name).expect("declared above");
+        let call = self.builder.build_call(callee, &args, "").expect("LLVM builder error");
+        if let inkwell::values::ValueKind::Basic(v) = call.try_as_basic_value() {
+            let at = self
+                .builder
+                .build_struct_gep(st, slot, sig.params.len() as u32, "r")
+                .expect("LLVM builder error");
+            self.builder.build_store(at, v).expect("LLVM builder error");
+        }
+        self.builder.build_return(None).expect("LLVM builder error");
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        w
+    }
+
     /// The trampoline C calls for a callback whose `Fn` has an `Env` slot:
     /// one per C signature, since it learns the closure at run time from
     /// the box the `Env` slot brings back — code and environment, two
@@ -6641,7 +6692,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// source, so it counts what was actually emitted — a channel in a
     /// function nothing reaches does not drag a scheduler in.
     fn needs_scheduler(&self) -> bool {
-        const WAITERS: [&str; 21] = [
+        const WAITERS: [&str; 23] = [
             "rill_spawn",
             "rill_wait_signal",
             "rill_chan_close",
@@ -6663,6 +6714,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             "rill_sock_write",
             "rill_sock_flush",
             "rill_sock_close",
+            "rill_yield",
+            "rill_call_blocking",
         ];
         WAITERS.iter().any(|n| {
             self.module
@@ -7952,6 +8005,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     Some(a) => rill_types::ExternSig {
                         params: a.params.clone(),
                         ret: a.ret.clone(),
+                        blocking: false,
                     },
                     None => self.tmod.externs[name].clone(),
                 };
@@ -8045,6 +8099,53 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         self.builder
                             .build_indirect_call(fn_ty, ptr, &argv, "asm")
                             .expect("LLVM builder error")
+                    }
+                    None if sig.blocking => {
+                        // A call that blocks is made off the worker: the
+                        // arguments go into a slot on this frame, a wrapper
+                        // made once for the declaration makes the call from
+                        // the slot, and the runtime runs the wrapper on a
+                        // helper thread while this strand is parked. The
+                        // answer comes back through the same slot.
+                        let mut fields: Vec<BasicTypeEnum> = sig
+                            .params
+                            .iter()
+                            .map(|c| self.c_type(c).expect("a parameter is never Unit"))
+                            .collect();
+                        if let Some(r) = self.c_type(&sig.ret) {
+                            fields.push(r);
+                        }
+                        let st = self.ctx.struct_type(&fields, false);
+                        let slot = self.entry_alloca(func, st, "blk");
+                        for (i, a) in argv.iter().enumerate() {
+                            let v: BasicValueEnum = (*a).try_into().expect("a C argument is a value");
+                            let at = self
+                                .builder
+                                .build_struct_gep(st, slot, i as u32, "blk.arg")
+                                .expect("LLVM builder error");
+                            self.builder.build_store(at, v).expect("LLVM builder error");
+                        }
+                        let wrapper = self.blocking_wrapper(name, &sig, st);
+                        let run = self.module.get_function("rill_call_blocking").unwrap();
+                        self.builder
+                            .build_call(
+                                run,
+                                &[wrapper.as_global_value().as_pointer_value().into(), slot.into()],
+                                "",
+                            )
+                            .expect("LLVM builder error");
+                        let mut out = None;
+                        if let Some(r) = self.c_type(&sig.ret) {
+                            let at = self
+                                .builder
+                                .build_struct_gep(st, slot, sig.params.len() as u32, "blk.ret")
+                                .expect("LLVM builder error");
+                            out = Some(self.builder.build_load(r, at, "blk.out").expect("LLVM builder error"));
+                        }
+                        for (v, ty) in owned {
+                            self.emit_release(v, &ty);
+                        }
+                        return Ok(out.map(|v| self.from_c(v, &sig.ret)));
                     }
                     None => {
                         let callee = match self.libm_intrinsic(name, &sig) {

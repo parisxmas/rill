@@ -1250,9 +1250,14 @@ million elements, and never spawns on a single-worker run.
 
 A program that spawns anything is compiled with a check at every recursive
 tail call, so a strand that loops forever hands the worker over now and then
-(§7 above); a `for` loop whose body calls nothing is bounded and is left
-alone, which is what keeps a loop over ten million floats in vector
-instructions.
+(§7 above). A `for` loop whose body calls nothing is bounded by its range
+and is left alone, which is what keeps a loop over ten million floats in
+vector instructions; a `while` is bounded by nothing but its condition and
+is checked whatever it calls, so a strand waiting in one for something
+another strand sets does not wait forever. A long `for` that should share
+its worker says so itself, between chunks of the work: `yield()` gives up
+the turn if another strand is waiting on the worker, and returns at once if
+none is.
 
 ### What strands may share
 
@@ -1805,8 +1810,20 @@ fn env(name) =
 ```
 
 Two things to keep in mind: a wrong signature is a crash, not a type error —
-the compiler believes what you declare; and a C call that blocks freezes the
-worker thread running it, since the scheduler cannot preempt foreign code.
+the compiler believes what you declare; and a C call that blocks holds the
+worker thread running it, since the scheduler cannot preempt foreign code —
+every other strand on that worker waits with it. A call that may wait — a
+read, a sleep, a name lookup — is declared **`extern blocking fn`**, and is
+then made on a helper thread while the strand is parked, the worker going
+on with the others; the answer comes back as if the call had been made
+here. What it costs is a hand-over each way, a few microseconds, which is
+why it is said per declaration and not assumed. A blocking call cannot take
+a callback, since the callback would run on the helper thread, where Rill
+code cannot; a program without strands makes the call itself.
+
+```
+extern blocking fn usleep(us: U32) -> I32   # the other strands run meanwhile
+```
 
 ### Being called: `export`, WebAssembly and shared libraries
 
@@ -1935,6 +1952,7 @@ one.
 | `map_new()` `m[k] = v` (or `map_set`) `map_len` `map_del` `map_clear` | hash tables; `#m` is `map_len`, and the prelude's `map_get`, `map_or`, `map_has`, `map_keys`, `map_values` and `map_items` are written on top of these |
 | `map_find(m, k)` `map_next(m, i)` `map_key_at(m, i)` `map_val_at(m, i)` | the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
+| `yield()` | this strand's turn given up, if another is waiting on the worker — for a long `for` loop with no call to be checked at (§7) |
 | `assert(c)` `assert_eq(got, want)` | end the program where the condition is false, saying the line — and, for `assert_eq`, both values; what `rill test` is written with (§13) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |
 | `file_open` `file_read` `file_pread` `file_pread_into` `file_write` `file_pwrite` `file_seek` `file_pos` `file_size` `file_truncate` `file_sync` `file_lock` `file_unlock` `file_close` `file_remove` `file_rename` `file_exists` `dir_make` `dir_list` `dir_sync` | a file as a descriptor, for one too big to hold or still being appended to; see §10 |

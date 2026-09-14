@@ -2407,6 +2407,64 @@ fn a_private_function_is_the_files_own() {
     assert_eq!(fmt_source(&src), src);
 }
 
+/// A `while` that calls nothing is checked for preemption — another strand
+/// on the worker runs while it spins — and a long `for` gives the turn up
+/// with `yield()`.
+#[test]
+fn a_spinning_while_lets_the_other_strand_run() {
+    let spin = "fn spin(n, acc) = while i < n with (i, acc) = (0, acc)\n  \
+                  (i + 1, acc + i % 7)\n\n\
+                fn talker(ch) =\n  \
+                  println(\"talker ran\")\n  \
+                  send(ch, 1)\n\n\
+                fn main() =\n  \
+                  ch = channel()\n  \
+                  spawn talker(ch)\n  \
+                  spin(600000000, 0)\n  \
+                  println(\"spin done\")\n  \
+                  recv(ch)\n";
+    assert_eq!(run_source("spinwhile", spin), "talker ran\nspin done\n");
+
+    let yielding = "fn spin(n) = for c in 0..4 with acc = 0\n  \
+                      yield()\n  \
+                      for i in 0..n with acc2 = acc\n    \
+                        acc2 + i % 7\n\n\
+                    fn talker(ch) =\n  \
+                      println(\"talker ran\")\n  \
+                      send(ch, 1)\n\n\
+                    fn main() =\n  \
+                      ch = channel()\n  \
+                      spawn talker(ch)\n  \
+                      spin(50000000)\n  \
+                      println(\"spin done\")\n  \
+                      recv(ch)\n";
+    assert_eq!(run_source("spinyield", yielding), "talker ran\nspin done\n");
+}
+
+/// `extern blocking fn` makes the call on a helper thread while the strand
+/// is parked: another strand runs during a sleep that would otherwise hold
+/// the worker. A blocking call cannot take a callback.
+#[test]
+fn a_blocking_extern_lets_the_worker_go_on() {
+    let body = "fn talker(ch) =\n  \
+                  println(\"talker ran\")\n  \
+                  send(ch, 1)\n\n\
+                fn main() =\n  \
+                  ch = channel()\n  \
+                  spawn talker(ch)\n  \
+                  r = usleep(200000)\n  \
+                  println(\"slept \" + int_to_str(r))\n  \
+                  recv(ch)\n";
+    let blocking = format!("extern blocking fn usleep(us: U32) -> I32\n\n{body}");
+    assert_eq!(run_source("blocking", &blocking), "talker ran\nslept 0\n");
+    assert_eq!(fmt_source(&blocking), blocking);
+    let plain = format!("extern fn usleep(us: U32) -> I32\n\n{body}");
+    assert_eq!(run_source("holding", &plain), "slept 0\ntalker ran\n");
+
+    let cb = "extern blocking fn qsort(base: Ptr, n: U64, size: U64, cmp: Fn(Ptr, Ptr) -> I32)\n\nfn main() = println(\"x\")\n";
+    assert!(compile_error(cb).contains("a call that calls back is not `blocking`"));
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

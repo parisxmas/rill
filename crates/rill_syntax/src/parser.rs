@@ -216,6 +216,11 @@ impl Parser {
             },
             _ => None,
         };
+        // `blocking`: a name meaning this only here, before `fn`.
+        let blocking = matches!(self.peek(), Tok::Ident(w) if w == "blocking");
+        if blocking {
+            self.bump();
+        }
         self.expect(&Tok::Fn, "after `extern`")?;
         let name = self.ident("the C function's name")?;
         self.expect(&Tok::LParen, "after the function name")?;
@@ -240,7 +245,7 @@ impl Parser {
             None
         };
         let _ = col;
-        Ok(ExternFn { name, lib, params, ret, line })
+        Ok(ExternFn { name, lib, blocking, params, ret, line })
     }
 
     /// `asm fn name(p: T, ...) [-> T] = "template" [: "constraints"]`.

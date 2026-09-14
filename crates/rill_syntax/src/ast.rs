@@ -22,6 +22,9 @@ pub struct Module {
 pub struct ExternFn {
     pub name: String,
     pub lib: Option<String>,
+    /// `extern blocking fn`: a call that may wait — a read, a sleep, a
+    /// name lookup — made off the worker, with the strand parked.
+    pub blocking: bool,
     pub params: Vec<(String, TypeRef)>,
     pub ret: Option<TypeRef>,
     pub line: usize,

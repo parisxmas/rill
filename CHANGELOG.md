@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — a strand that waits in C, and a `while` that never gave way
+
+A C call that blocks holds the worker thread, and every strand on that
+worker with it: a server whose handler read a file, slept, or looked a
+name up stopped answering everyone while it did. `extern blocking fn`
+says a call may wait, and such a call is made on a helper thread while
+the strand is parked — the machinery `file_sync` already had, made
+general: the arguments go into a slot on the frame, a wrapper made once
+per declaration makes the call from the slot, and the answer comes back
+through it. The worker goes on with the others; a program without
+strands makes the call itself. It is said per declaration because it
+costs a hand-over each way, and a blocking call cannot take a callback,
+which would run where Rill code cannot.
+
+A `while` whose body called nothing was exempt from the preemption
+check, as a `for` is — but a `for` is bounded by its range and a
+`while` by nothing but its condition, and a strand waiting in a `while`
+for something another strand on the same worker would set waited for
+it forever. A `while` is checked now, whatever it calls. A `for` stays
+as it was, and a long one that should share its worker says so with
+`yield()`, which gives up the turn if another strand is waiting and
+returns at once if none is.
+
 ## Unreleased — a function the file keeps to itself
 
 Everything a file defined was the importer's, its helpers included, and

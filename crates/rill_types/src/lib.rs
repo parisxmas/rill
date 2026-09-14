@@ -188,6 +188,9 @@ impl CTy {
 pub struct ExternSig {
     pub params: Vec<CTy>,
     pub ret: CTy,
+    /// `extern blocking fn`: the call may wait, so it is made on a helper
+    /// thread while the strand is parked, and the worker goes on.
+    pub blocking: bool,
 }
 
 /// `asm fn` — a run of instructions rather than a symbol. Same shapes cross as
@@ -1098,7 +1101,17 @@ impl Checker {
                 }
                 None => CTy::Unit,
             };
-            c.externs.insert(e.name.clone(), ExternSig { params, ret });
+            if e.blocking && params.iter().any(|p| matches!(p, CTy::Fn(..) | CTy::Env)) {
+                return Err(TypeError::new(
+                    e.line,
+                    format!(
+                        "`{}`: a blocking call is made on a helper thread, where a callback \
+                         could not run Rill code — a call that calls back is not `blocking`",
+                        e.name
+                    ),
+                ));
+            }
+            c.externs.insert(e.name.clone(), ExternSig { params, ret, blocking: e.blocking });
             if let Some(lib) = &e.lib {
                 if !c.libs.contains(lib) {
                     c.libs.push(lib.clone());
@@ -3995,6 +4008,9 @@ impl Checker {
             });
         }
         let simple_builtin: Option<(&'static str, Vec<Ty>, Ty)> = match name {
+            // `yield()`: this strand's turn given up, if another is waiting
+            // on the worker — for a loop that has no call to be checked at.
+            "yield" => Some(("rill_yield", vec![], Ty::Unit)),
             "strbuf" => Some(("rill_strbuf_new", vec![], Ty::StrBuf)),
             "strbuf_add" => Some(("rill_strbuf_add", vec![Ty::StrBuf, Ty::Str], Ty::Unit)),
             "strbuf_reserve" => Some(("rill_strbuf_reserve", vec![Ty::StrBuf, Ty::Int], Ty::Unit)),
@@ -5585,6 +5601,7 @@ fn is_builtin_fn(name: &str) -> bool {
         "println"
             | "assert"
             | "assert_eq"
+            | "yield"
             | "print"
             | "channel"
             | "send"
