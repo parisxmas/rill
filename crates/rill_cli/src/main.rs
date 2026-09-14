@@ -21,7 +21,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill explain <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -65,6 +65,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             }
         }
         "types" => types_cmd(rest),
+        "test" => test_cmd(rest),
         "explain" => explain_cmd(rest),
         "lsp" => lsp::serve(),
         "repl" => {
@@ -381,6 +382,152 @@ impl BuildOpts {
 
 fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
     let module = rill_syntax::load_program(&opts.source)?;
+    build_module(module, opts)
+}
+
+/// `rill test`: every function of the file named `test_...` that takes
+/// nothing, each run in a process of its own so that one that dies — an
+/// assertion, a fault, a deadlock — is one test failing and not the rest.
+/// The file is built once with a `main` that runs the test its first
+/// argument names; the file's own `main`, if it has one, stands aside.
+fn test_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let src = args.iter().find(|a| !a.starts_with("--")).ok_or(USAGE)?;
+    let only: Vec<&String> =
+        args.iter().skip_while(|a| *a != src).skip(1).filter(|a| !a.starts_with("--")).collect();
+    let parallel = args.iter().any(|a| a == "--parallel");
+    let path = PathBuf::from(src);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let tests: Vec<String> = own
+        .functions
+        .iter()
+        .filter(|f| f.name.starts_with("test_") && f.params.is_empty())
+        .map(|f| f.name.clone())
+        .collect();
+    if tests.is_empty() {
+        return Err(format!(
+            "{}: no tests — a test is a function named `test_...` that takes nothing",
+            path.display()
+        ));
+    }
+    for name in &only {
+        if !tests.contains(name) {
+            return Err(format!("{}: no test named `{name}`", path.display()));
+        }
+    }
+    let mut module = rill_syntax::load_program(&path)?;
+    for f in &mut module.functions {
+        if f.name == "main" {
+            f.name = "main.aside".to_string();
+        }
+    }
+    module.functions.push(test_main(&tests));
+    let out_dir = std::env::temp_dir().join(format!("rill-test-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+    let output = out_dir.join(path.file_stem().map(|s| s.to_os_string()).unwrap_or_default());
+    let opts = BuildOpts {
+        source: path.clone(),
+        output,
+        emit_ir: false,
+        debug: false,
+        parallel,
+        unchecked: false,
+        shared: false,
+        target: None,
+    };
+    let exe = build_module(module, &opts)?;
+    let mut failed = 0;
+    let mut ran = 0;
+    for name in &tests {
+        if !only.is_empty() && !only.contains(&name) {
+            continue;
+        }
+        ran += 1;
+        let out = Command::new(&exe)
+            .arg(name)
+            .output()
+            .map_err(|e| format!("failed to run `{}`: {e}", exe.display()))?;
+        if out.status.success() {
+            println!("ok    {name}");
+        } else {
+            failed += 1;
+            println!("FAIL  {name}");
+            for line in String::from_utf8_lossy(&out.stderr).lines() {
+                println!("      {line}");
+            }
+            let printed = String::from_utf8_lossy(&out.stdout);
+            if !printed.trim().is_empty() {
+                println!("      it printed:");
+                for line in printed.lines() {
+                    println!("        {line}");
+                }
+            }
+        }
+    }
+    println!(
+        "{ran} test{}: {} passed, {failed} failed",
+        if ran == 1 { "" } else { "s" },
+        ran - failed
+    );
+    Ok(if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+/// The `main` a test build runs: the test its first argument names.
+fn test_main(tests: &[String]) -> rill_syntax::ast::FnDef {
+    use rill_syntax::ast::*;
+    let call = |name: &str, args: Vec<Expr>| Expr::Call {
+        name: name.to_string(),
+        args,
+        line: 0,
+        piped: false,
+        stacked: false,
+    };
+    let unit_block = |e: Expr| Expr::Block(vec![Stmt::Expr(e), Stmt::Expr(Expr::Int(0))]);
+    let mut chain = unit_block(call(
+        "println",
+        vec![Expr::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(Expr::Str("no such test: ".to_string())),
+            rhs: Box::new(Expr::Var("test.name".to_string(), 0)),
+            line: 0,
+            newline: false,
+        }],
+    ));
+    for t in tests.iter().rev() {
+        chain = Expr::If {
+            cond: Box::new(Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Var("test.name".to_string(), 0)),
+                rhs: Box::new(Expr::Str(t.clone())),
+                line: 0,
+                newline: false,
+            }),
+            then: Box::new(unit_block(call(t, vec![]))),
+            els: Box::new(chain),
+            newline: false,
+        };
+    }
+    let name = call(
+        "unwrap_or",
+        vec![call("nth", vec![call("args", vec![]), Expr::Int(1)]), Expr::Str(String::new())],
+    );
+    FnDef {
+        name: "main".to_string(),
+        exported: false,
+        params: Vec::new(),
+        ret_ann: None,
+        body: Expr::Block(vec![
+            Stmt::Bind { name: "test.name".to_string(), value: name, line: 0 },
+            Stmt::Expr(chain),
+        ]),
+        line: 0,
+        lifted_from: None,
+        wheres: Vec::new(),
+    }
+}
+
+fn build_module(module: rill_syntax::ast::Module, opts: &BuildOpts) -> Result<PathBuf, String> {
 
     let tmod = rill_types::check(&module)
         .map_err(|e| format!("{}: {e}", opts.source.display()))?;

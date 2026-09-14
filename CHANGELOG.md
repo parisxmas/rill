@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — `rill test`
+
+There was no way to say a test in Rill: the compiler's own tests are
+Rust, and a program's were shell scripts. A test is a function named
+`test_...` that takes nothing, and `rill test file.rill` runs every one
+the file has — each in a process of its own, so an assertion, a fault
+or a deadlock in one is one test failing and not the rest — and says
+which passed, which failed and what the failing one said and printed.
+`assert(c)` ends a test where `c` is false, saying the line; `assert_eq(got,
+want)` says both values too. Nothing is caught: a test that failed is a
+program that ended. The file is built once, with a `main` that runs the
+test its argument names, and the file's own `main` stands aside.
+
 ## Unreleased — what strands may share
 
 Nothing stopped two strands from writing one buffer. A `--parallel`

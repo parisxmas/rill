@@ -2899,6 +2899,38 @@ pub extern "C" fn rill_div_zero() -> ! {
     }
 }
 
+/// An assertion that did not hold ends the program the way a test wants it
+/// ended: saying which line, and — for `assert_eq` — what was expected and
+/// what was there. `rill test` runs each test in a process of its own, so
+/// this is one test failing, not the rest.
+#[no_mangle]
+pub extern "C" fn rill_assert_failed(line: i64) -> ! {
+    unsafe {
+        rill_flush_out();
+        err(b"rill: assertion failed at line ");
+        err_dec(line);
+        err(b"\n");
+        crash_where();
+        die()
+    }
+}
+
+/// # Safety
+/// `got` and `want` must be live strings.
+#[no_mangle]
+pub unsafe extern "C" fn rill_assert_eq_failed(got: *const u8, want: *const u8, line: i64) -> ! {
+    rill_flush_out();
+    err(b"rill: assertion failed at line ");
+    err_dec(line);
+    err(b"\n  expected: ");
+    err(core::slice::from_raw_parts(str_bytes(want), str_len_of(want)));
+    err(b"\n       got: ");
+    err(core::slice::from_raw_parts(str_bytes(got), str_len_of(got)));
+    err(b"\n");
+    crash_where();
+    die()
+}
+
 /// A copy between two buffers, or within one, that stays inside both:
 /// `n` elements of `size` bytes from `src[from..]` to `dst[to..]`. What
 /// `memmove` on two raw pointers does without asking, asked: a length that

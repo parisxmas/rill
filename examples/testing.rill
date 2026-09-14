@@ -1,0 +1,24 @@
+# Tests live beside the code they test, as functions named `test_...` that
+# take nothing, and `rill test testing.rill` runs each of them in a process
+# of its own: one that fails — an assertion, a fault, a deadlock — is one
+# test failing and not the rest. The file's own `main` stands aside.
+#
+# `assert(c)` ends the test where `c` is false, saying the line;
+# `assert_eq(got, want)` says both values too. Nothing is caught, because
+# nothing needs to be: a test that failed is a program that ended.
+
+fn add(a, b) = a + b
+
+fn rev(xs) = reverse(xs)
+
+fn test_add() = assert_eq(add(2, 2), 4)
+
+fn test_rev() =
+  assert_eq(rev(Cons(1, Cons(2, Nil))), Cons(2, Cons(1, Nil)))
+  assert(len(rev(Nil)) == 0)
+
+fn test_strings() =
+  assert_eq("a" + "b", "ab")
+  assert(starts_with("hello", "he"))
+
+fn main() = println(int_to_str(add(20, 22)))

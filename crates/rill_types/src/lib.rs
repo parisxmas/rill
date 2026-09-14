@@ -3880,6 +3880,69 @@ impl Checker {
             self.require(&a.ty, Constraint::Basic, line, "`print`")?;
             return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Print(Box::new(a)) });
         }
+        // `assert(c)` is `if c then () else <die, saying the line>`, and
+        // `assert_eq(a, b)` the same on `a == b`, saying both values as
+        // `show` does. Nothing is caught: a test that fails is a program
+        // that ends, and `rill test` runs each in a process of its own.
+        if name == "assert" || name == "assert_eq" {
+            let unit = |line: usize| TExpr { ty: Ty::Unit, line, kind: TK::Block(Vec::new()) };
+            let int = |v: i64, line: usize| TExpr { ty: Ty::Int, line, kind: TK::Int(v) };
+            if name == "assert" {
+                if args.len() != 1 {
+                    return Err(TypeError::new(line, "`assert` takes one condition"));
+                }
+                let c = self.infer(&args[0], env)?;
+                self.unify(&Ty::Bool, &c.ty, line, "`assert`")?;
+                let fail = TExpr {
+                    ty: Ty::Unit,
+                    line,
+                    kind: TK::Builtin { rt: "rill_assert_failed", args: vec![int(line as i64, line)] },
+                };
+                return Ok(TExpr {
+                    ty: Ty::Unit,
+                    line,
+                    kind: TK::If { cond: Box::new(c), then: Box::new(unit(line)), els: Box::new(fail) },
+                });
+            }
+            if args.len() != 2 {
+                return Err(TypeError::new(line, "`assert_eq` takes the value and what it should be"));
+            }
+            let a = self.infer(&args[0], env)?;
+            let b = self.infer(&args[1], env)?;
+            self.unify(&a.ty, &b.ty, line, "`assert_eq`")?;
+            self.require(&a.ty, Constraint::Basic, line, "`assert_eq`")?;
+            let held = self.held_name("assert");
+            let (ha, hb) = (format!("{held}.got"), format!("{held}.want"));
+            let ty = a.ty.clone();
+            let local = |n: &str| TExpr { ty: ty.clone(), line, kind: TK::Local(n.to_string()) };
+            let shown = |n: &str| TExpr { ty: Ty::Str, line, kind: TK::Show(Box::new(local(n))) };
+            let same = TExpr {
+                ty: Ty::Bool,
+                line,
+                kind: TK::Binary { op: BinOp::Eq, lhs: Box::new(local(&ha)), rhs: Box::new(local(&hb)) },
+            };
+            let fail = TExpr {
+                ty: Ty::Unit,
+                line,
+                kind: TK::Builtin {
+                    rt: "rill_assert_eq_failed",
+                    args: vec![shown(&ha), shown(&hb), int(line as i64, line)],
+                },
+            };
+            return Ok(TExpr {
+                ty: Ty::Unit,
+                line,
+                kind: TK::Block(vec![
+                    TStmt::Bind { name: ha.clone(), value: a },
+                    TStmt::Bind { name: hb.clone(), value: b },
+                    TStmt::Expr(TExpr {
+                        ty: Ty::Unit,
+                        line,
+                        kind: TK::If { cond: Box::new(same), then: Box::new(unit(line)), els: Box::new(fail) },
+                    }),
+                ]),
+            });
+        }
         let simple_builtin: Option<(&'static str, Vec<Ty>, Ty)> = match name {
             "strbuf" => Some(("rill_strbuf_new", vec![], Ty::StrBuf)),
             "strbuf_add" => Some(("rill_strbuf_add", vec![Ty::StrBuf, Ty::Str], Ty::Unit)),
@@ -5451,6 +5514,8 @@ fn is_builtin_fn(name: &str) -> bool {
     matches!(
         name,
         "println"
+            | "assert"
+            | "assert_eq"
             | "print"
             | "channel"
             | "send"

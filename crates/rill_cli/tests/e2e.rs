@@ -2283,6 +2283,58 @@ fn a_parallel_build_checks_what_strands_share() {
     assert!(check_parallel(sent).contains("`b` is sent down a channel and still used here after"));
 }
 
+/// `rill test`: every `test_...` function of a file, each in its own
+/// process; a failing assertion says the line and both values, a crash is
+/// one test failing, output is shown, and one test can be picked.
+#[test]
+fn rill_test_runs_each_test_in_its_own_process() {
+    let root = workspace_root();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("test")
+        .arg(root.join("examples/testing.rill"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "ok    test_add\nok    test_rev\nok    test_strings\n3 tests: 3 passed, 0 failed\n"
+    );
+
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-test-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("failing.rill");
+    std::fs::write(
+        &path,
+        "fn half(n) = n / 2\n\nfn test_half() = assert_eq(half(7), 4)\n\nfn test_ok() = assert(half(8) == 4)\n\n\
+         fn test_crash() =\n  b = buf_int(1)\n  b[3] = 1\n\nfn test_loud() =\n  println(\"some output\")\n  assert(false)\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("test").arg(&path).output().unwrap();
+    assert!(!out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    for want in [
+        "FAIL  test_half",
+        "rill: assertion failed at line 3",
+        "expected: 4",
+        "got: 3",
+        "ok    test_ok",
+        "FAIL  test_crash",
+        "buffer index 3 out of range",
+        "FAIL  test_loud",
+        "it printed:",
+        "some output",
+        "4 tests: 1 passed, 3 failed",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in:\n{text}");
+    }
+    let one = Command::new(env!("CARGO_BIN_EXE_rill")).arg("test").arg(&path).arg("test_ok").output().unwrap();
+    assert!(one.status.success());
+    assert_eq!(String::from_utf8_lossy(&one.stdout), "ok    test_ok\n1 test: 1 passed, 0 failed\n");
+
+    let bad = "fn test_x() = assert(1)\n\nfn main() = println(1)\n";
+    assert!(compile_error(bad).contains("`assert`: expected Bool, found Int"));
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

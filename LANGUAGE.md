@@ -1893,6 +1893,7 @@ one.
 | `map_new()` `m[k] = v` (or `map_set`) `map_len` `map_del` `map_clear` | hash tables; `#m` is `map_len`, and the prelude's `map_get`, `map_or`, `map_has`, `map_keys`, `map_values` and `map_items` are written on top of these |
 | `map_find(m, k)` `map_next(m, i)` `map_key_at(m, i)` `map_val_at(m, i)` | the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
+| `assert(c)` `assert_eq(got, want)` | end the program where the condition is false, saying the line — and, for `assert_eq`, both values; what `rill test` is written with (§13) |
 | `read_file_raw(path)` `write_file(path, text)` `read_line()` `scan_int()` `io_ok()` | file and stdin IO; standard input is read in blocks, and `scan_int` scans a number out of it without allocating |
 | `file_open` `file_read` `file_pread` `file_pread_into` `file_write` `file_pwrite` `file_seek` `file_pos` `file_size` `file_truncate` `file_sync` `file_lock` `file_unlock` `file_close` `file_remove` `file_rename` `file_exists` `dir_make` `dir_list` `dir_sync` | a file as a descriptor, for one too big to hold or still being appended to; see §10 |
 | `strbuf()` `b += s` (or `strbuf_add`) `b += byte` (or `strbuf_byte`) `strbuf_str(b)` `strbuf_clear(b)` `#b` | building a string a piece at a time; `strbuf_clear` empties one and keeps its room |
@@ -1920,10 +1921,45 @@ rill run main.rill              # compile and run
 rill check main.rill            # type-check only, saying everything it finds
 rill types main.rill            # the signature the checker worked out for each function
 rill explain main.rill          # the memory decisions the generator made, by line
+rill test tests.rill            # run every `test_...` function, each in its own process
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist
 rill lsp                        # a language server on stdin/stdout
 ```
+
+### Tests
+
+A test is a function named `test_...` that takes nothing, written beside
+the code it tests or in a file that imports it. `rill test file.rill` builds
+the file once, with a `main` of its own that runs the test its first
+argument names — the file's `main`, if it has one, stands aside — and runs
+each test in a process of its own, so one that fails is one test failing
+and not the rest:
+
+```
+fn test_add() = assert_eq(add(2, 2), 4)
+
+fn test_rev() =
+  assert_eq(reverse(Cons(1, Cons(2, Nil))), Cons(2, Cons(1, Nil)))
+  assert(len(reverse(Nil)) == 0)
+```
+
+```
+$ rill test testing.rill
+ok    test_add
+FAIL  test_rev
+      rill: assertion failed at line 5
+        expected: Cons(2, Cons(1, Nil))
+             got: Cons(1, Cons(2, Nil))
+2 tests: 1 passed, 1 failed
+```
+
+`assert(c)` ends the test where `c` is false, saying the line; `assert_eq(got,
+want)` says both values too, as `show` would. Nothing is caught, because
+nothing has to be: a test that failed is a program that ended, and a fault
+or a deadlock in one is reported the way any program's is, with the test
+named above it and whatever it printed below. `rill test file.rill test_rev`
+runs one; `--parallel` builds the tests as a `--parallel` program would be.
 
 ### When a program dies
 

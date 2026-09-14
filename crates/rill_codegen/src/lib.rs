@@ -2905,6 +2905,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_div_zero", void.fn_type(&[], false), None);
+        self.module.add_function("rill_assert_failed", void.fn_type(&[i64t.into()], false), None);
+        self.module.add_function(
+            "rill_assert_eq_failed",
+            void.fn_type(&[ptrt.into(), ptrt.into(), i64t.into()], false),
+            None,
+        );
         self.module.add_function("rill_alloc_bytes", ptrt.fn_type(&[i64t.into()], false), None);
         self.module.add_function(
             "rill_ptr_offset",
