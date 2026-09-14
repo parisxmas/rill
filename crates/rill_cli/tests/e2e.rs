@@ -465,15 +465,89 @@ fn a_field_can_be_read_before_its_type_is_known() {
     assert_eq!(run_source("fieldbefore", &before), "4\n");
 }
 
-/// The annotation is still needed where inference genuinely never learns the
-/// type, and that is what the error says now — at the end, having looked.
+/// A field no type has is said to be that, now that inference has looked for
+/// the type among the fields and found none to name.
 #[test]
-fn a_field_on_a_type_never_learned_still_asks() {
+fn a_field_no_type_has_is_said_so() {
     let src = "fn f(p) = p.x\n\n\
                fn main() = println(\"x\")\n";
     let err = compile_error(src);
     assert!(
-        err.contains("the type of `p` is never known") && err.contains("`p: SomeType`"),
+        err.contains("nothing says what `p` is") && err.contains("no type has a field `x`"),
+        "{err}"
+    );
+}
+
+/// When nothing in the function says the type of a value, the fields read
+/// from it do: it is the one type with one constructor that has them all.
+/// An update's fields say it the same way, and a field of a field chains.
+#[test]
+fn the_fields_read_name_the_type() {
+    let src = "type Nokta\n  \
+                 Nokta(x: Int, y: Int)\n\n\
+               type Oyuncu\n  \
+                 Oyuncu(ad: Str, yer: Nokta, can: Int)\n\n\
+               fn uzak(p) = p.x + p.y\n\n\
+               fn yara(o, n) = { o | can = o.can - n }\n\n\
+               fn nerede(o) = o.yer.x\n\n\
+               fn main() =\n  \
+                 o = Oyuncu(\"ada\", Nokta(3, 4), 100)\n  \
+                 println(int_to_str(uzak(o.yer)))\n  \
+                 println(int_to_str(yara(o, 35).can))\n  \
+                 println(int_to_str(nerede(o)))\n";
+    assert_eq!(run_source("fieldnames", src), "7\n65\n3\n");
+}
+
+/// Two types with the same field is the one case an annotation is still for,
+/// and the error names them. Reading a second field only one of them has
+/// settles it; a field no type has says which types have the others.
+#[test]
+fn two_types_with_the_field_still_ask() {
+    let head = "type Nokta\n  \
+                  Nokta(x: Int, y: Int)\n\n\
+                type Uzay\n  \
+                  Uzay(x: Int, y: Int, z: Int)\n\n";
+    let err = compile_error(&format!("{head}fn f(p) = p.x\n\nfn main() = println(\"x\")\n"));
+    assert!(
+        err.contains("`Nokta` and `Uzay` alike have a field `x`") && err.contains("`p: Nokta`"),
+        "{err}"
+    );
+
+    let src = format!("{head}fn f(p) = p.x + p.z\n\nfn main() = println(int_to_str(f(Uzay(1, 2, 3))))\n");
+    assert_eq!(run_source("fieldpair", &src), "4\n");
+
+    let err = compile_error(&format!("{head}fn f(p) = p.x + p.q\n\nfn main() = println(\"x\")\n"));
+    assert!(
+        err.contains("no type has fields `x`, `q` together") && err.contains("`Nokta` has x, y"),
+        "{err}"
+    );
+}
+
+/// An update is deferred the way a read is: `{ p | x = 9 }` before the line
+/// that says what `p` is compiles, and its complaints still land.
+#[test]
+fn an_update_can_be_written_before_its_type_is_known() {
+    let head = "type Nokta\n  \
+                  Nokta(x: Int, y: Int)\n\n\
+                fn uzak(p: Nokta) = p.x + p.y\n\n";
+    let src = format!(
+        "{head}fn f(p) =\n  \
+           q = {{ p | x = 9 }}\n  \
+           uzak(q) + uzak(p)\n\n\
+         fn main() = println(int_to_str(f(Nokta(1, 2))))\n"
+    );
+    assert_eq!(run_source("updafter", &src), "14\n");
+
+    let err = compile_error(&format!(
+        "{head}fn f(p) =\n  q = {{ p | z = 9 }}\n  uzak(q)\n\nfn main() = println(\"x\")\n"
+    ));
+    assert!(err.contains("no field `z`") && err.contains("it has x, y"), "{err}");
+
+    let err = compile_error(&format!(
+        "{head}fn f(p) =\n  q = {{ p | x = \"no\" }}\n  uzak(q)\n\nfn main() = println(\"x\")\n"
+    ));
+    assert!(
+        err.contains("the new value for a field") && err.contains("expected Int, found Str"),
         "{err}"
     );
 }

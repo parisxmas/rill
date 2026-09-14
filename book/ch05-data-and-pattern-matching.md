@@ -387,12 +387,12 @@ fn f(p) =
   a + uzak(p)    # this does, and that is soon enough
 ```
 
-An update is not deferred like that — it needs the whole field list, and the
-shape of what it expands to depends on the answer — so `{ p | x = 1 }` still
-wants the type known where it is written. When inference never learns the type
-at all, which is the case for a function meant to work on any record, both ask
-for the annotation, and there is no way around it: two types may both have an
-`x`, and nothing can work backwards from the name.
+An update is deferred the same way: `{ p | x = 1 }` is built once the type is
+known, wherever in the function that is said. And when nothing says it, the
+fields do — a value read by `.x` and `.y` is of the one type that has an `x` and
+a `y`, so `fn uzak(p) = p.x + p.y` needs no annotation while `Nokta` is the only
+type with those two. Only when two types both have them is an annotation still
+needed, and the error names the two.
 
 ---
 

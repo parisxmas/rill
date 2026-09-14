@@ -1207,6 +1207,7 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         TK::Unique { val } => f(val),
         TK::FieldGet { base, .. } => f(base),
         TK::FieldNamed { .. } => unreachable!("`zonk` names every deferred field"),
+        TK::UpdateNamed { .. } => unreachable!("`zonk` builds every deferred update"),
         TK::MapNew => {}
         TK::MapLen { map } | TK::MapClear { map } => f(map),
         TK::MapFind { map, key: other }
@@ -7536,6 +7537,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // borrowed — a name in scope is not given up by being read — and
             // what comes out is retained, since the caller owns what it holds.
             TK::FieldNamed { .. } => unreachable!("`zonk` names every deferred field"),
+            TK::UpdateNamed { .. } => unreachable!("`zonk` builds every deferred update"),
             TK::FieldGet { base, adt, ctor, index } => {
                 let bty = self.concrete(&base.ty, subst);
                 let targs = match &bty {

@@ -143,15 +143,28 @@ constructors when a dot is tried on one.
 
 The dot works on anything, not only a name: `mk(1).y`, `p.pos.x`. What it does
 not do is change anything. A record is a value; the way to a different one is
-to build it, which is what `Player(p.name, p.pos, p.health - 35, p.kills)`
-says out loud — including which fields it keeps. Writing `p.x = 3` is refused,
-and says this.
+to build it:
 
-The one thing a field read asks of a program is that the type be known where
-the dot is written. Inference does not work backwards from a field name, since
-two types may both have an `x`, so a parameter that is read this way is
-annotated — one of the few places in Rill where an annotation is not optional.
-The error says which name it needs one for.
+```
+{ p | health = p.health - 35 }
+```
+
+Everything `p` had, apart from these — read the `|` as "except". It is a call
+to the constructor, the named fields taking the new values and every other one
+read off `p`, which is evaluated once however many it fills in. Written out,
+`Player(p.name, p.pos, p.health - 35, p.kills)` builds the same value and says
+which fields it keeps as well; either way `p` is what it was. Writing `p.x = 3`
+is refused, and says this.
+
+A field read does not need the type in front of it known where the dot is
+written. It is answered once the whole function is inferred, so a parameter
+read by `.x` on one line and handed to something that says its type on the
+next needs no annotation, whichever order the lines are in. When nothing in
+the function says the type, the fields do: a value read by `.x` and `.y` is of
+the one single-constructor type that has an `x` and a `y`. Two types that both
+have them is the one case an annotation is still for, and the error names
+them; for a field no type has, it names the types that have the others. An
+update is answered the same way, by the fields it sets.
 
 A dot means one of two things and the compiler tells them apart by what the
 name in front of it is: a module alias (`geo.area`, from `import "geo" as

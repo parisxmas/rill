@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — the fields say the type
+
+`fn dist(a, b) = a.x - b.x` used to be refused: the type of `a` was never
+said, and `.x` could not say it, since two types may both have an `x`.
+Now it can, when they do not. A value nothing else names is of the one
+single-constructor type that has every field read from it — `.x` and
+`.y` together pick `Point` out from a `Vec3` that has an `x` too. Two
+types that both have all of them is the case an annotation is still for,
+and the error names them (`Point` and `Vec3` alike have a field `x`);
+a field no type has is reported as that, with what the near misses do
+have. Groups are answered in two passes, the outright ones first, since
+naming `q` can settle the `p` in `if p.x > 0 then p else q.pos`.
+
+`{ p | x = 1 }` is deferred the way `p.x` has been since August: written
+before the line that says what `p` is, it is built at the end, and the
+fields it sets name the type the way the fields a read asks do. The
+reference had never mentioned the notation; it does now, and `dist` in
+the records example has lost its annotations.
+
 ## Unreleased — a short string out of a long builder, and a length read in time
 
 Every JSON answer a server built in a `strbuf` and sent — between 129

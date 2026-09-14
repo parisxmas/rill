@@ -204,6 +204,18 @@ pub struct CtorSig {
     pub line: usize,
 }
 
+/// A field asked of a type that was not known when it was asked: the type,
+/// the field's name, the variable standing for what was read from it (or
+/// written into it), where, and how an error should call the value.
+struct FieldObligation {
+    base: Ty,
+    name: String,
+    result: Ty,
+    line: usize,
+    what: String,
+    ctx: &'static str,
+}
+
 #[derive(Debug, Clone)]
 pub struct AdtDef {
     pub name: String,
@@ -339,6 +351,11 @@ pub enum TK {
     /// until `zonk`, by which point inference has finished and the answer is
     /// there. Nothing past the checker ever sees one.
     FieldNamed { base: Box<TExpr>, name: String },
+    /// `{ p | x = 1 }` where the type of `p` was not yet known where it was
+    /// written. Which constructor it is a call to cannot be said until it
+    /// is, so the base and the new values are carried until `zonk`, which
+    /// builds the call. Nothing past the checker ever sees one.
+    UpdateNamed { base: Box<TExpr>, fields: Vec<(String, TExpr, usize)> },
     /// `map_new()` — an empty table of the expression's `Map(k, v)` type.
     MapNew,
     /// `m[k] = v` — the key and the value are moved into the table.
@@ -511,13 +528,13 @@ struct Checker {
     sigs: Vec<SigState>,
     subst: Vec<Option<Ty>>,
     /// Numbers the bindings `{ p | x = 9 }` needs for the value it is updating.
-    /// A dot keeps them out of reach of anything a program could name.
-    updates: usize,
-    /// `p.x` read before the type of `p` was known: the type it was read from,
-    /// the field name, the variable standing for the result, and where. They
-    /// are settled once the whole dependency group is inferred, which is the
-    /// first moment the answer can exist.
-    field_obligations: Vec<(Ty, String, Ty, usize)>,
+    /// A dot keeps them out of reach of anything a program could name. A
+    /// cell, since `zonk` expands the deferred ones through `&self`.
+    updates: std::cell::Cell<usize>,
+    /// `p.x` read, or `{ p | x = 1 }` written, before the type of `p` was
+    /// known. They are settled once the whole dependency group is inferred,
+    /// which is the first moment the answer can exist.
+    field_obligations: Vec<FieldObligation>,
     /// Problems found in `zonk`, which walks bodies after every signature is
     /// settled and has no way to return.
     late_errors: std::cell::RefCell<Vec<TypeError>>,
@@ -562,7 +579,7 @@ impl Checker {
             adts: Vec::new(),
             ctors: HashMap::new(),
             fn_index: HashMap::new(),
-            updates: 0,
+            updates: std::cell::Cell::new(0),
             field_obligations: Vec::new(),
             late_errors: std::cell::RefCell::new(Vec::new()),
             sigs: Vec::new(),
@@ -1576,15 +1593,46 @@ impl Checker {
         //    inferred by now, so this is the first moment the answer can
         //    exist — and it has to happen before the requirements below, since
         //    `a = p.x` followed by `a + 1` leaves a requirement on whatever
-        //    `a` is, and only this says what that is. One that still does not
-        //    resolve is left alone: it may be genuinely polymorphic, and
-        //    `zonk` says so at the end having actually looked.
+        //    `a` is, and only this says what that is.
         let obligations = std::mem::take(&mut self.field_obligations);
-        for (base_ty, name, result, line) in obligations {
-            if let Ty::Adt(adt, targs) = self.resolve(&base_ty) {
-                if let Ok((_, index)) = self.settled_field(&base_ty, &name, line, "it") {
-                    let ty = subst_gen(&self.adts[adt].ctors[0].fields[index], &targs);
-                    self.unify(&ty, &result, line, "a field")?;
+        let mut unsaid: Vec<FieldObligation> = Vec::new();
+        for ob in obligations {
+            match self.resolve(&ob.base) {
+                Ty::Var(_) => unsaid.push(ob),
+                _ => self.settle_field(&ob)?,
+            }
+        }
+        //    The ones nothing said the type of are answered by the fields
+        //    themselves: a value read by `.x` and `.y` is of the type that
+        //    has an `x` and a `y`, when there is exactly one such type. Two
+        //    that both have them is the case an annotation is for, and the
+        //    error names them; none is a field that does not exist.
+        let mut groups: Vec<(u32, Vec<FieldObligation>)> = Vec::new();
+        for ob in unsaid {
+            let Ty::Var(v) = self.resolve(&ob.base) else { unreachable!("sorted above") };
+            match groups.iter_mut().find(|(g, _)| *g == v) {
+                Some((_, obs)) => obs.push(ob),
+                None => groups.push((v, vec![ob])),
+            }
+        }
+        //    Two passes: first the groups one type answers outright, since
+        //    naming one can settle another — `if p.x > 0 then p else q.pos`
+        //    says what `p` is once `q` is known — then what is left, which
+        //    is either settled by now or has no answer.
+        let mut done = vec![false; groups.len()];
+        for pass in 0..2 {
+            for (i, (v, obs)) in groups.iter().enumerate() {
+                if done[i] {
+                    continue;
+                }
+                if !matches!(self.resolve(&Ty::Var(*v)), Ty::Var(_)) {
+                    for ob in obs {
+                        self.settle_field(ob)?;
+                    }
+                    done[i] = true;
+                } else if pass == 1 || self.types_with_fields(&fields_asked(obs)).len() == 1 {
+                    self.name_type_by_fields(*v, obs)?;
+                    done[i] = true;
                 }
             }
         }
@@ -1797,6 +1845,35 @@ impl Checker {
                     }
                     Err(err) => self.late_errors.borrow_mut().push(err),
                 }
+            }
+            // The call can be built now, for the same reason.
+            TK::UpdateNamed { base, fields } => {
+                self.zonk_expr(base, genmap, defaults);
+                for (_, v, _) in fields.iter_mut() {
+                    self.zonk_expr(v, genmap, defaults);
+                }
+                let what = describe(base);
+                let mut slot: Vec<(usize, usize)> = Vec::new();
+                for (name, _, fline) in fields.iter() {
+                    match self.settled_field(&base.ty, name, *fline, &what) {
+                        Ok(at) => slot.push(at),
+                        Err(err) => {
+                            self.late_errors.borrow_mut().push(err);
+                            return;
+                        }
+                    }
+                }
+                let Ty::Adt(adt, targs) = self.resolve(&base.ty) else { unreachable!("settled") };
+                let base = std::mem::replace(
+                    base,
+                    Box::new(TExpr { ty: Ty::Unit, line: e.line, kind: TK::MapNew }),
+                );
+                let mut slots: Vec<Option<TExpr>> =
+                    (0..self.adts[adt].ctors[0].fields.len()).map(|_| None).collect();
+                for ((_, index), (_, v, _)) in slot.into_iter().zip(std::mem::take(fields)) {
+                    slots[index] = Some(v);
+                }
+                e.kind = self.lower_update(adt, targs, *base, slots, e.line).kind;
             }
             TK::MapNew => {}
             TK::MapLen { map } | TK::MapClear { map } => self.zonk_expr(map, genmap, defaults),
@@ -2461,12 +2538,14 @@ impl Checker {
     fn field_of(&mut self, base: TExpr, field: &str, line: usize) -> Result<TExpr, TypeError> {
         if let Ty::Var(_) = self.resolve(&base.ty) {
             let ty = self.fresh();
-            self.field_obligations.push((
-                base.ty.clone(),
-                field.to_string(),
-                ty.clone(),
+            self.field_obligations.push(FieldObligation {
+                base: base.ty.clone(),
+                name: field.to_string(),
+                result: ty.clone(),
                 line,
-            ));
+                what: describe(&base),
+                ctx: "a field",
+            });
             return Ok(TExpr {
                 ty,
                 line,
@@ -2566,13 +2645,34 @@ impl Checker {
         // it to belong to.
         let (adt, targs) = match self.resolve(&b.ty) {
             Ty::Adt(i, targs) => (i, targs),
+            // Not known here. The names are carried to `zonk`, which builds
+            // the call once inference has said what the base is — and each
+            // is an obligation on its type, exactly as `p.x` is, so the
+            // fields an update sets can say the type the way the fields a
+            // read asks can.
             Ty::Var(_) => {
-                return Err(TypeError::new(
-                    line,
-                    "the type of the value being updated is not known here, so the field \
-                     names cannot say which fields they are — annotate it"
-                        .to_string(),
-                ))
+                let what = describe(&b);
+                let mut out: Vec<(String, TExpr, usize)> = Vec::new();
+                for (name, value, fline) in fields {
+                    if out.iter().any(|(n, _, _)| n == name) {
+                        return Err(TypeError::new(
+                            *fline,
+                            format!("field `{name}` is set twice in this update"),
+                        ));
+                    }
+                    let v = self.infer(value, env)?;
+                    self.field_obligations.push(FieldObligation {
+                        base: b.ty.clone(),
+                        name: name.clone(),
+                        result: v.ty.clone(),
+                        line: *fline,
+                        what: what.clone(),
+                        ctx: "the new value for a field",
+                    });
+                    out.push((name.clone(), v, *fline));
+                }
+                let ty = b.ty.clone();
+                return Ok(TExpr { ty, line, kind: TK::UpdateNamed { base: Box::new(b), fields: out } });
             }
             other => {
                 return Err(TypeError::new(
@@ -2624,9 +2724,23 @@ impl Checker {
             self.unify(&want, &v.ty, *fline, "the new value for a field")?;
             slot[index] = Some(v);
         }
+        Ok(self.lower_update(adt, targs, b, slot, line))
+    }
 
-        let held = format!("update.{}", self.updates);
-        self.updates += 1;
+    /// The call an update is: the constructor, given the new values where
+    /// there are any and the base's own fields everywhere else. The base is
+    /// bound first, so it is evaluated once however many fields it fills in.
+    fn lower_update(
+        &self,
+        adt: usize,
+        targs: Vec<Ty>,
+        b: TExpr,
+        mut slot: Vec<Option<TExpr>>,
+        line: usize,
+    ) -> TExpr {
+        let arity = slot.len();
+        let held = format!("update.{}", self.updates.get());
+        self.updates.set(self.updates.get() + 1);
         let ty = Ty::Adt(adt, targs.clone());
         let args = (0..arity)
             .map(|i| match slot[i].take() {
@@ -2647,7 +2761,7 @@ impl Checker {
                 },
             })
             .collect();
-        Ok(TExpr {
+        TExpr {
             ty: ty.clone(),
             line,
             kind: TK::Block(vec![
@@ -2658,7 +2772,94 @@ impl Checker {
                     kind: TK::CallCtor { adt, ctor: 0, targs, args },
                 }),
             ]),
-        })
+        }
+    }
+
+    /// Settles one obligation whose type is known: the field's type is what
+    /// was read from it. One the type does not have is left for `zonk`,
+    /// which reports it with the right words.
+    fn settle_field(&mut self, ob: &FieldObligation) -> Result<(), TypeError> {
+        if let Ty::Adt(adt, targs) = self.resolve(&ob.base) {
+            if let Ok((_, index)) = self.settled_field(&ob.base, &ob.name, ob.line, "it") {
+                let ty = subst_gen(&self.adts[adt].ctors[0].fields[index], &targs);
+                self.unify(&ty, &ob.result, ob.line, ob.ctx)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The types with one constructor that have every one of these fields.
+    fn types_with_fields(&self, names: &[&str]) -> Vec<usize> {
+        (0..self.adts.len())
+            .filter(|&i| {
+                let d = &self.adts[i];
+                d.ctors.len() == 1
+                    && names.iter().all(|n| d.ctors[0].names.iter().any(|f| f.as_deref() == Some(n)))
+            })
+            .collect()
+    }
+
+    /// The type of a value nothing named, from the fields asked of it: the
+    /// one type with one constructor that has them all. With none there is
+    /// no such type; with two, the names cannot choose, and that is the one
+    /// case an annotation is still for.
+    fn name_type_by_fields(&mut self, v: u32, obs: &[FieldObligation]) -> Result<(), TypeError> {
+        let names = fields_asked(obs);
+        let candidates = self.types_with_fields(&names);
+        let has = |d: &AdtDef, n: &str| d.ctors[0].names.iter().any(|f| f.as_deref() == Some(n));
+        let first = &obs[0];
+        let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+        let which = if quoted.len() == 1 {
+            format!("a field {}", quoted[0])
+        } else {
+            format!("fields {} together", quoted.join(", "))
+        };
+        match candidates.as_slice() {
+            [adt] => {
+                let targs: Vec<Ty> = (0..self.adts[*adt].nparams).map(|_| self.fresh()).collect();
+                self.unify(&Ty::Var(v), &Ty::Adt(*adt, targs), first.line, "a field")?;
+                for ob in obs {
+                    self.settle_field(ob)?;
+                }
+                Ok(())
+            }
+            [] => {
+                // A misspelling, most likely: say what the near misses have.
+                let near: Vec<String> = self
+                    .adts
+                    .iter()
+                    .filter(|d| d.ctors.len() == 1 && names.iter().any(|n| has(d, n)))
+                    .map(|d| {
+                        let fs: Vec<&str> = d.ctors[0].names.iter().filter_map(|n| n.as_deref()).collect();
+                        format!("`{}` has {}", d.name, fs.join(", "))
+                    })
+                    .collect();
+                let hint = if near.is_empty() { String::new() } else { format!(" ({})", near.join("; ")) };
+                Err(TypeError::new(
+                    first.line,
+                    format!(
+                        "nothing says what {} is, and no type has {which}{hint}",
+                        first.what
+                    ),
+                ))
+            }
+            many => {
+                let types: Vec<String> = many.iter().map(|&i| format!("`{}`", self.adts[i].name)).collect();
+                let name = first.what.trim_matches('`');
+                let name = if name == "this" { "x" } else { name };
+                Err(TypeError::new(
+                    first.line,
+                    format!(
+                        "{} and {} alike have {which}, so the field names cannot say which {} is — \
+                         annotate it (`{name}: {}`)",
+                        types[..types.len() - 1].join(", "),
+                        types[types.len() - 1],
+                        first.what,
+                        self.adts[many[0]].name,
+                    ),
+                ))
+            }
+        }
     }
 
     fn infer_var(
@@ -4258,12 +4459,30 @@ fn describe(e: &TExpr) -> String {
     }
 }
 
+/// The distinct field names a group of obligations asks of one value, in the
+/// order they were asked.
+fn fields_asked(obs: &[FieldObligation]) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for ob in obs {
+        if !names.contains(&ob.name.as_str()) {
+            names.push(&ob.name);
+        }
+    }
+    names
+}
+
 /// Applies `f` to every immediate sub-expression of a checked expression.
 /// Written here rather than beside its one user because more than one thing
 /// wants to walk a body now: codegen, and whatever is answering an editor.
 pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
     match &e.kind {
         TK::FieldNamed { base, .. } => f(base),
+        TK::UpdateNamed { base, fields } => {
+            f(base);
+            for (_, v, _) in fields {
+                f(v);
+            }
+        }
         TK::Int(_) | TK::Float(_) | TK::Str(_) | TK::Bool(_) | TK::Local(_) | TK::FnRef { .. } => {}
         TK::MapNew => {}
         TK::Builtin { args, .. }
