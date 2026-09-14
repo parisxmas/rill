@@ -165,10 +165,18 @@ pub enum Expr {
     Var(String, usize),
     /// `f(a, b)`. `piped` records that the source wrote `a |> f(b)`, which
     /// desugars to the same call; only the formatter cares.
-    Call { name: String, args: Vec<Expr>, line: usize, piped: bool },
+    /// `stacked` records that an argument began a line — or, for a
+    /// pipeline, that the `|>` did — and the formatter writes it back that
+    /// way, one argument (or stage) to a line. Only the formatter cares.
+    Call { name: String, args: Vec<Expr>, line: usize, piped: bool, stacked: bool },
     Unary { op: UnOp, expr: Box<Expr> },
-    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr>, line: usize },
-    If { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr> },
+    /// `newline` records that the operator began a line — a continuation —
+    /// and the formatter keeps it there. Only the formatter cares.
+    Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr>, line: usize, newline: bool },
+    /// `newline` records that `then` or `else` began a line — or, for the
+    /// `&&` and `||` this desugars, that the operator did — and the
+    /// formatter keeps them there. Only the formatter cares.
+    If { cond: Box<Expr>, then: Box<Expr>, els: Box<Expr>, newline: bool },
     Match { scrutinee: Box<Expr>, arms: Vec<Arm>, line: usize },
     /// `\x, y -> expr`
     Lambda { params: Vec<String>, body: Box<Expr>, line: usize },

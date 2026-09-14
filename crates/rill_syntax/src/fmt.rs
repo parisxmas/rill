@@ -83,8 +83,11 @@ impl Comments {
     }
 
     fn rest(&mut self) -> Vec<String> {
-        let out: Vec<String> = self.own[self.next..].iter().map(|(_, t)| t.clone()).collect();
+        let mut out: Vec<String> = self.own[self.next..].iter().map(|(_, t)| t.clone()).collect();
         self.next = self.own.len();
+        // A trailing comment nothing claimed — on a line the formatter
+        // folded away — is kept at the end rather than lost.
+        out.extend(std::mem::take(&mut self.trailing).into_values());
         out
     }
 
@@ -165,13 +168,26 @@ impl Fmt {
             && (self.last_line + 1..line).any(|l| self.blank.get(l).copied().unwrap_or(false))
     }
 
-    /// Emits a line plus the trailing comment that sat on `src_line`.
+    /// Emits a construct plus the trailing comments it carried.
     fn push_at(&mut self, indent: usize, text: &str, src_line: usize) {
         self.mark(src_line);
-        match self.comments.on(src_line) {
-            Some(c) => self.push(indent, &format!("{text}  {c}")),
-            None => self.push(indent, text),
+        let text = self.with_trailing(text, src_line);
+        self.push(indent, &text);
+    }
+
+    /// The trailing comments a rendered construct carries: the one on its
+    /// first line and, where it runs on over the lines the author broke it
+    /// into, the ones on those — each kept on the output line at the same
+    /// offset from the first, which is where the break was kept too.
+    fn with_trailing(&mut self, text: &str, src_line: usize) -> String {
+        let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+        for (j, line) in lines.iter_mut().enumerate() {
+            if let Some(c) = self.comments.on(src_line + j) {
+                line.push_str("  ");
+                line.push_str(&c);
+            }
         }
+        lines.join("\n")
     }
 
     /// Everything that precedes the construct at `line`: one blank line
@@ -437,10 +453,8 @@ impl Fmt {
                 Stmt::Fn(f) => self.fndef_text(f, ind),
                 Stmt::Expr(e) => self.render(e, ind + 1),
             };
+            let text = self.with_trailing(&text, line);
             s.push_str(&format!("\n{}{}", pad(ind), text));
-            if let Some(c) = self.comments.on(line) {
-                s.push_str(&format!("  {c}"));
-            }
         }
         s
     }
@@ -483,10 +497,8 @@ impl Fmt {
                         s.push_str(&self.block_lines(stmts, cont + 1));
                     } else {
                         let body = self.render(&arm.body, cont + 1);
-                        s.push_str(&format!("\n{}{head} -> {}", pad(cont), body));
-                        if let Some(c) = self.comments.on(arm.line) {
-                            s.push_str(&format!("  {c}"));
-                        }
+                        let text = self.with_trailing(&format!("{head} -> {body}"), arm.line);
+                        s.push_str(&format!("\n{}{text}", pad(cont)));
                     }
                 }
                 s
@@ -509,30 +521,30 @@ impl Fmt {
                 parts.join("\n").trim_start().to_string()
             }
             Expr::Append { target, value, .. } => {
-                format!("{} += {}", inline(target, P_INDEX), inline(value, 0))
+                format!("{} += {}", inline(target, P_INDEX, cont), inline(value, 0, cont))
             }
             // `v[i] = for ... with ...`: the value may carry a block of its
             // own, which the inline printer cannot say (it printed `...` and
             // lost the body).
             Expr::IndexSet { base, index, value, .. } => format!(
                 "{}[{}] = {}",
-                inline(base, P_INDEX),
-                inline(index, 0),
+                inline(base, P_INDEX, cont),
+                inline(index, 0, cont),
                 self.render(value, cont)
             ),
             Expr::IndexOp { op, base, index, value, .. } => format!(
                 "{}[{}] {}= {}",
-                inline(base, P_INDEX),
-                inline(index, 0),
+                inline(base, P_INDEX, cont),
+                inline(index, 0, cont),
                 binop(*op).0,
                 self.render(value, cont)
             ),
             Expr::For { var, from, to, acc, body, .. } => {
                 let head = format!(
                     "for {var} in {}..{}{}",
-                    inline(from, 0),
-                    inline(to, 0),
-                    with_str(acc)
+                    inline(from, 0, cont),
+                    inline(to, 0, cont),
+                    with_str(acc, cont)
                 );
                 match body.as_ref() {
                     Expr::Block(stmts) => format!("{head}{}", self.block_lines(stmts, cont)),
@@ -540,7 +552,7 @@ impl Fmt {
                 }
             }
             Expr::While { cond, acc, body, .. } => {
-                let head = format!("while {}{}", inline(cond, 0), with_pat(acc));
+                let head = format!("while {}{}", inline(cond, 0, cont), with_pat(acc, cont));
                 match body.as_ref() {
                     Expr::Block(stmts) => format!("{head}{}", self.block_lines(stmts, cont)),
                     other => format!("{head} {}", self.render(other, cont)),
@@ -548,11 +560,11 @@ impl Fmt {
             }
             // `if` and the prefix forms can carry a multi-line branch (a
             // `match`), which has to stay on its own lines.
-            Expr::If { cond, then, els } => {
+            Expr::If { cond, then, els, .. } => {
                 let then_blk = matches!(then.as_ref(), Expr::Block(_));
                 if then_blk || Self::else_needs_layout(els) {
                     let kw = cont.saturating_sub(1);
-                    let mut s = format!("if {} then", inline(cond, 0));
+                    let mut s = format!("if {} then", inline(cond, 0, cont));
                     match then.as_ref() {
                         Expr::Block(stmts) => s.push_str(&self.block_lines(stmts, cont)),
                         other => {
@@ -573,17 +585,23 @@ impl Fmt {
                 let t = self.render(then, cont);
                 let e = self.render(els, cont);
                 if t.contains('\n') || e.contains('\n') {
-                    format!("if {} then {t} else {e}", inline(cond, 0))
+                    format!("if {} then {t} else {e}", inline(cond, 0, cont))
                 } else {
-                    inline(expr, 0)
+                    inline(expr, 0, cont)
                 }
             }
             Expr::Lambda { params, body, .. } => {
+                // A block body goes on the lines after the `->`, as it was
+                // written; anything else that came out multi-line stays
+                // beside it.
+                if let Expr::Block(stmts) = body.as_ref() {
+                    return format!("\\{} ->{}", params.join(", "), self.block_lines(stmts, cont));
+                }
                 let b = self.render(body, cont);
                 if b.contains('\n') {
                     format!("\\{} -> {b}", params.join(", "))
                 } else {
-                    inline(expr, 0)
+                    inline(expr, 0, cont)
                 }
             }
             Expr::Spawn { body, .. } => {
@@ -591,7 +609,7 @@ impl Fmt {
                 if b.contains('\n') {
                     format!("spawn {b}")
                 } else {
-                    inline(expr, 0)
+                    inline(expr, 0, cont)
                 }
             }
             Expr::Select { arms, default, .. } => {
@@ -604,16 +622,16 @@ impl Fmt {
                     self.mark(arm.line);
                     let op = match &arm.op {
                         SelectOp::Recv { chan, bind } => {
-                            let call = format!("recv({})", inline(chan, 0));
+                            let call = format!("recv({})", inline(chan, 0, cont));
                             match bind {
                                 Some(n) => format!("{n} = {call}"),
                                 None => call,
                             }
                         }
                         SelectOp::Send { chan, value } => {
-                            format!("send({}, {})", inline(chan, 0), inline(value, 0))
+                            format!("send({}, {})", inline(chan, 0, cont), inline(value, 0, cont))
                         }
-                        SelectOp::Timeout { ms } => format!("timeout({})", inline(ms, 0)),
+                        SelectOp::Timeout { ms } => format!("timeout({})", inline(ms, 0, cont)),
                     };
                     if let Expr::Block(stmts) = &arm.body {
                         s.push_str(&format!("\n{}{op} ->", pad(cont)));
@@ -639,7 +657,7 @@ impl Fmt {
                 }
                 s
             }
-            other => inline(other, 0),
+            other => inline(other, 0, cont),
         }
     }
 }
@@ -739,7 +757,7 @@ fn float_lit(v: f64) -> String {
     }
 }
 
-fn inline(e: &Expr, prec: u8) -> String {
+fn inline(e: &Expr, prec: u8, ind: usize) -> String {
     match e {
         Expr::Int(v) => v.to_string(),
         Expr::Float(v) => float_lit(*v),
@@ -749,100 +767,115 @@ fn inline(e: &Expr, prec: u8) -> String {
         Expr::Update { base, fields, .. } => {
             let set = fields
                 .iter()
-                .map(|(n, v, _)| format!("{n} = {}", inline(v, 0)))
+                .map(|(n, v, _)| format!("{n} = {}", inline(v, 0, ind)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{{ {} | {set} }}", inline(base, 0))
+            format!("{{ {} | {set} }}", inline(base, 0, ind))
         }
-        Expr::Call { name, args, piped, .. } => {
+        Expr::Call { name, args, piped, stacked, .. } => {
             if *piped && !args.is_empty() {
-                let head = inline(&args[0], P_PIPE);
-                let rest: Vec<String> = args[1..].iter().map(|a| inline(a, 0)).collect();
+                let head = inline(&args[0], P_PIPE, ind);
+                let rest: Vec<String> = args[1..].iter().map(|a| inline(a, 0, ind)).collect();
                 let call = if rest.is_empty() {
                     name.clone()
                 } else {
                     format!("{name}({})", rest.join(", "))
                 };
-                wrap(prec > P_PIPE, format!("{head} |> {call}"))
+                // A `|>` that began a line stays at the head of one.
+                let gap = if *stacked { format!("\n{}", pad(ind)) } else { " ".to_string() };
+                wrap(prec > P_PIPE, format!("{head}{gap}|> {call}"))
+            } else if *stacked && !args.is_empty() {
+                // Arguments written one to a line stay that way: the first
+                // beside the name, the rest a level in, and what they break
+                // inside themselves a level in again.
+                let a: Vec<String> = args.iter().map(|a| inline(a, 0, ind + 1)).collect();
+                let name = if is_tuple(name, args.len()) { "" } else { name };
+                format!("{name}({})", a.join(&format!(",\n{}", pad(ind))))
             } else {
-                let a: Vec<String> = args.iter().map(|a| inline(a, 0)).collect();
+                let a: Vec<String> = args.iter().map(|a| inline(a, 0, ind)).collect();
                 format!("{}({})", if is_tuple(name, args.len()) { "" } else { name }, a.join(", "))
             }
         }
-        Expr::Len { expr, .. } => format!("#{}", inline(expr, P_UNARY)),
+        Expr::Len { expr, .. } => format!("#{}", inline(expr, P_UNARY, ind)),
         // `?` binds as tightly as a call, so nothing round it needs bracketing.
-        Expr::Try { expr, .. } => format!("{}?", inline(expr, P_INDEX)),
-        Expr::Field { base, name, .. } => format!("{}.{name}", inline(base, P_INDEX)),
+        Expr::Try { expr, .. } => format!("{}?", inline(expr, P_INDEX, ind)),
+        Expr::Field { base, name, .. } => format!("{}.{name}", inline(base, P_INDEX, ind)),
         Expr::Index { base, index, .. } => {
-            format!("{}[{}]", inline(base, P_INDEX), inline(index, 0))
+            format!("{}[{}]", inline(base, P_INDEX, ind), inline(index, 0, ind))
         }
         Expr::Slice { base, from, to, .. } => format!(
             "{}[{}:{}]",
-            inline(base, P_INDEX),
-            from.as_ref().map(|e| inline(e, 0)).unwrap_or_default(),
-            to.as_ref().map(|e| inline(e, 0)).unwrap_or_default()
+            inline(base, P_INDEX, ind),
+            from.as_ref().map(|e| inline(e, 0, ind)).unwrap_or_default(),
+            to.as_ref().map(|e| inline(e, 0, ind)).unwrap_or_default()
         ),
         Expr::IndexSet { base, index, value, .. } => {
-            format!("{}[{}] = {}", inline(base, P_INDEX), inline(index, 0), inline(value, 0))
+            format!("{}[{}] = {}", inline(base, P_INDEX, ind), inline(index, 0, ind), inline(value, 0, ind))
         }
         Expr::IndexOp { op, base, index, value, .. } => format!(
             "{}[{}] {}= {}",
-            inline(base, P_INDEX),
-            inline(index, 0),
+            inline(base, P_INDEX, ind),
+            inline(index, 0, ind),
             binop(*op).0,
-            inline(value, 0)
+            inline(value, 0, ind)
         ),
         // Nothing in an expression can consume a `..`, so neither end of the
         // range ever needs parentheses.
         Expr::Append { target, value, .. } => {
-            format!("{} += {}", inline(target, P_INDEX), inline(value, 0))
+            format!("{} += {}", inline(target, P_INDEX, ind), inline(value, 0, ind))
         }
         Expr::For { var, from, to, acc, body, .. } => {
-            format!("for {var} in {}..{}{} {}", inline(from, 0), inline(to, 0), with_str(acc), inline(body, 0))
+            format!("for {var} in {}..{}{} {}", inline(from, 0, ind), inline(to, 0, ind), with_str(acc, ind), inline(body, 0, ind))
         }
         Expr::While { cond, acc, body, .. } => {
-            format!("while {}{} {}", inline(cond, 0), with_pat(acc), inline(body, 0))
+            format!("while {}{} {}", inline(cond, 0, ind), with_pat(acc, ind), inline(body, 0, ind))
         }
         Expr::Unary { op: UnOp::Neg, expr } => {
-            wrap(prec > P_UNARY, format!("-{}", inline(expr, P_UNARY)))
+            wrap(prec > P_UNARY, format!("-{}", inline(expr, P_UNARY, ind)))
         }
-        Expr::Binary { op, lhs, rhs, .. } => {
+        Expr::Binary { op, lhs, rhs, newline, .. } => {
             let (sym, p) = binop(*op);
             // Comparisons don't chain, so both sides bind tighter.
             let rp = if p == P_CMP { p } else { p + 1 };
-            wrap(prec > p, format!("{} {sym} {}", inline(lhs, p), inline(rhs, rp)))
+            // An operator that began a line stays at the head of one, a
+            // level in from the statement it continues.
+            let gap = if *newline { format!("\n{}", pad(ind)) } else { " ".to_string() };
+            wrap(prec > p, format!("{}{gap}{sym} {}", inline(lhs, p, ind), inline(rhs, rp, ind)))
         }
-        Expr::If { cond, then, els } => {
+        Expr::If { cond, then, els, newline } => {
+            // An operator, or a `then` and `else`, that began a line stays
+            // at the head of one, a level in from the statement.
+            let gap = if *newline { format!("\n{}", pad(ind)) } else { " ".to_string() };
             // Restore the operators these shapes desugar from.
             match (then.as_ref(), els.as_ref()) {
                 (Expr::Bool(false), Expr::Bool(true)) => {
-                    wrap(prec > P_UNARY, format!("!{}", inline(cond, P_UNARY)))
+                    wrap(prec > P_UNARY, format!("!{}", inline(cond, P_UNARY, ind)))
                 }
                 // Both operators are left-associative: the left operand sits
                 // at the same level, the right one binds tighter.
                 (Expr::Bool(true), rhs) => wrap(
                     prec > P_OR,
-                    format!("{} || {}", inline(cond, P_OR), inline(rhs, P_OR + 1)),
+                    format!("{}{gap}|| {}", inline(cond, P_OR, ind), inline(rhs, P_OR + 1, ind)),
                 ),
                 (lhs, Expr::Bool(false)) => wrap(
                     prec > P_AND,
-                    format!("{} && {}", inline(cond, P_AND), inline(lhs, P_AND + 1)),
+                    format!("{}{gap}&& {}", inline(cond, P_AND, ind), inline(lhs, P_AND + 1, ind)),
                 ),
                 _ => wrap(
                     prec > 0,
                     format!(
-                        "if {} then {} else {}",
-                        inline(cond, 0),
-                        inline(then, 0),
-                        inline(els, 0)
+                        "if {}{gap}then {}{gap}else {}",
+                        inline(cond, 0, ind),
+                        inline(then, 0, ind),
+                        inline(els, 0, ind)
                     ),
                 ),
             }
         }
         Expr::Lambda { params, body, .. } => {
-            wrap(prec > 0, format!("\\{} -> {}", params.join(", "), inline(body, 0)))
+            wrap(prec > 0, format!("\\{} -> {}", params.join(", "), inline(body, 0, ind)))
         }
-        Expr::Spawn { body, .. } => wrap(prec > 0, format!("spawn {}", inline(body, 0))),
+        Expr::Spawn { body, .. } => wrap(prec > 0, format!("spawn {}", inline(body, 0, ind))),
         // Inside parentheses there is no layout, so the arms are printed on
         // one line — which is exactly the form that parses back there.
         Expr::Match { scrutinee, arms, .. } => {
@@ -852,13 +885,13 @@ fn inline(e: &Expr, prec: u8) -> String {
                     Some(g) => format!(
                         "{} if {} -> {}",
                         pattern(&a.pattern),
-                        inline(g, 0),
-                        inline(&a.body, 0)
+                        inline(g, 0, ind),
+                        inline(&a.body, 0, ind)
                     ),
-                    None => format!("{} -> {}", pattern(&a.pattern), inline(&a.body, 0)),
+                    None => format!("{} -> {}", pattern(&a.pattern), inline(&a.body, 0, ind)),
                 })
                 .collect();
-            wrap(prec > 0, format!("match {} {}", inline(scrutinee, 0), arms.join(" ")))
+            wrap(prec > 0, format!("match {} {}", inline(scrutinee, 0, ind), arms.join(" ")))
         }
         Expr::Select { arms, default, .. } => {
             let mut parts: Vec<String> = arms
@@ -866,22 +899,22 @@ fn inline(e: &Expr, prec: u8) -> String {
                 .map(|a| {
                     let op = match &a.op {
                         SelectOp::Recv { chan, bind } => {
-                            let call = format!("recv({})", inline(chan, 0));
+                            let call = format!("recv({})", inline(chan, 0, ind));
                             match bind {
                                 Some(n) => format!("{n} = {call}"),
                                 None => call,
                             }
                         }
                         SelectOp::Send { chan, value } => {
-                            format!("send({}, {})", inline(chan, 0), inline(value, 0))
+                            format!("send({}, {})", inline(chan, 0, ind), inline(value, 0, ind))
                         }
-                        SelectOp::Timeout { ms } => format!("timeout({})", inline(ms, 0)),
+                        SelectOp::Timeout { ms } => format!("timeout({})", inline(ms, 0, ind)),
                     };
-                    format!("{op} -> {}", inline(&a.body, 0))
+                    format!("{op} -> {}", inline(&a.body, 0, ind))
                 })
                 .collect();
             if let Some(d) = default {
-                parts.push(format!("default -> {}", inline(d, 0)));
+                parts.push(format!("default -> {}", inline(d, 0, ind)));
             }
             wrap(prec > 0, format!("select {}", parts.join(" ")))
         }
@@ -920,22 +953,22 @@ fn is_tuple(name: &str, n: usize) -> bool {
 }
 
 /// `with acc = init`, when the loop carries something.
-fn with_str(acc: &Option<(String, Box<Expr>)>) -> String {
+fn with_str(acc: &Option<(String, Box<Expr>)>, ind: usize) -> String {
     match acc {
-        Some((n, e)) => format!(" with {n} = {}", inline(e, 0)),
+        Some((n, e)) => format!(" with {n} = {}", inline(e, 0, ind)),
         None => String::new(),
     }
 }
 
-fn with_pat(acc: &Option<(Vec<Param>, Box<Expr>)>) -> String {
+fn with_pat(acc: &Option<(Vec<Param>, Box<Expr>)>, ind: usize) -> String {
     let one = |p: &Param| match &p.ann {
         Some(t) => format!("{}: {}", p.name, type_ref(t)),
         None => p.name.clone(),
     };
     match acc {
-        Some((ps, e)) if ps.len() == 1 => format!(" with {} = {}", one(&ps[0]), inline(e, 0)),
+        Some((ps, e)) if ps.len() == 1 => format!(" with {} = {}", one(&ps[0]), inline(e, 0, ind)),
         Some((ps, e)) => {
-            format!(" with ({}) = {}", ps.iter().map(one).collect::<Vec<_>>().join(", "), inline(e, 0))
+            format!(" with ({}) = {}", ps.iter().map(one).collect::<Vec<_>>().join(", "), inline(e, 0, ind))
         }
         None => String::new(),
     }

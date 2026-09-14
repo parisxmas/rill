@@ -181,6 +181,17 @@ fn compile_error(src: &str) -> String {
     String::from_utf8_lossy(&build.stderr).into_owned()
 }
 
+/// What `rill fmt` writes a program written here back as.
+fn fmt_source(src: &str) -> String {
+    let out_dir = std::env::temp_dir().join(bad_name("fmt"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("in.rill");
+    std::fs::write(&path, src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("fmt").arg("--stdout").arg(&path).output().unwrap();
+    assert!(out.status.success(), "rill fmt refused:\n{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+}
+
 #[test]
 fn hello() {
     assert_eq!(compile_and_run("hello.rill"), "hello, world\n");
@@ -1672,6 +1683,148 @@ fn a_field_every_constructor_has_reads_without_a_match() {
         run_source("common", src),
         "daire\nkutu\nbuilt\nb\ns\nSag(9, 3.5)\n"
     );
+}
+
+/// A whole signature with type variables in it declares the scheme up front,
+/// so a use inside the function's own dependency group can take it at any
+/// type: a group-mate used at two types, and a function calling itself at
+/// another. The body is held to the declaration.
+#[test]
+fn a_declared_signature_is_taken_at_any_type_in_its_own_group() {
+    let mates = "fn f(n) = if n == 0 then 0 else g(1, n) + #g(\"s\", n)\n\n\
+                 fn g(x: a, n: Int) -> a =\n  \
+                   h = f(n - 1)\n  \
+                   x\n\n\
+                 fn main() = println(int_to_str(f(3)))\n";
+    assert_eq!(run_source("polyrec", mates), "2\n");
+
+    let itself = "fn twice(x: a, n: Int) -> a = if n == 0 then x else twice(x, n - 1)\n\n\
+                  fn main() =\n  \
+                    println(int_to_str(twice(3, 2)))\n  \
+                    println(twice(\"s\", 2))\n";
+    assert_eq!(run_source("polyself", itself), "3\ns\n");
+
+    // Without the signature the group shares one type, as it always did.
+    let bare = "fn f(n) = if n == 0 then 0 else g(1, n) + #g(\"s\", n)\n\n\
+                fn g(x, n) =\n  \
+                  h = f(n - 1)\n  \
+                  x\n\n\
+                fn main() = println(int_to_str(f(3)))\n";
+    assert!(compile_error(bare).contains("expected Int, found Str"));
+
+    let pinned = "fn f(x: a) -> a = x + 1\n\nfn main() = println(int_to_str(f(1)))\n";
+    let err = compile_error(pinned);
+    assert!(
+        err.contains("`f` is declared `('a) -> 'a`, but its body only works as `(Int) -> Int`"),
+        "{err}"
+    );
+
+    // A type variable in a partial annotation: the same name is the same type.
+    let same = "fn same(x: a, y: a) = x\n\nfn main() = println(int_to_str(same(1, \"s\")))\n";
+    assert!(compile_error(same).contains("expected Int, found Str"));
+}
+
+/// One copy is made per type, so types that grow without end are stopped:
+/// a self-call at a bigger type each time in codegen, and a type holding
+/// itself at a bigger type where it is written.
+#[test]
+fn types_that_grow_without_end_are_refused() {
+    let growing = "fn f(x: a, n: Int) -> Int = if n == 0 then 0 else f(Cons(x, Nil), n - 1)\n\n\
+                   fn main() = println(int_to_str(f(1, 3)))\n";
+    let err = compile_error(growing);
+    assert!(err.contains("`f` is being specialized at ever bigger types"), "{err}");
+
+    let nested = "type Nest(a)\n  \
+                    Leaf(a)\n  \
+                    Deep(Nest((a, a)))\n\n\
+                  fn depth(n: Nest(a)) -> Int = match n\n  \
+                    Leaf(_) -> 0\n  \
+                    Deep(inner) -> 1 + depth(inner)\n\n\
+                  fn main() = println(int_to_str(depth(Leaf(1))))\n";
+    let err = compile_error(nested);
+    assert!(err.contains("`Nest` holds a `Nest(('a, 'a))` in its own definition"), "{err}");
+}
+
+/// A name may be bound again — `x = x + 1` reads the old one to bind a new
+/// one — and what a block binds is the block's: a name bound in one branch
+/// of an `if` is not there after it, and a rebinding inside a branch, or an
+/// arm, shadows only inside it, whatever type it gives the name.
+#[test]
+fn a_branch_binding_stays_in_its_branch() {
+    let src = "fn main() =\n  \
+                 x = 1\n  \
+                 x = x + 1\n  \
+                 f = \\y -> x + y\n  \
+                 x = 100\n  \
+                 y = if x > 50 then\n    \
+                   x = \"big\"\n    \
+                   #x\n  \
+                 else 0\n  \
+                 z = match x\n    \
+                   100 ->\n      \
+                     x = 7\n      \
+                     x\n    \
+                   _ -> 0\n  \
+                 println(int_to_str(x))\n  \
+                 println(int_to_str(y))\n  \
+                 println(int_to_str(z))\n  \
+                 println(int_to_str(f(1)))\n";
+    assert_eq!(run_source("rebind", src), "100\n3\n7\n3\n");
+
+    let leaked = "fn main() =\n  \
+                    y = if true then\n    \
+                      z = 5\n    \
+                      z\n  \
+                    else 0\n  \
+                    println(int_to_str(z))\n";
+    assert!(compile_error(leaked).contains("unknown variable `z`"));
+}
+
+/// A lambda's body may be an indented block after the `->`, and the
+/// formatter writes it back the same way.
+#[test]
+fn a_lambda_may_have_a_block_body() {
+    let src = "fn main() =\n  \
+                 x = 1\n  \
+                 f = \\y ->\n    \
+                   x = x + y\n    \
+                   x * 2\n  \
+                 println(int_to_str(f(5)))\n  \
+                 println(int_to_str(x))\n";
+    assert_eq!(run_source("lamblock", src), "12\n1\n");
+    assert_eq!(fmt_source(src), src);
+}
+
+/// Where the author broke a line, `rill fmt` keeps the break: before an
+/// operator, a `|>`, a `then` or `else`, and between a call's arguments —
+/// nested ones a level in again — with a trailing comment on the first line.
+#[test]
+fn fmt_keeps_the_breaks_the_author_wrote() {
+    let src = "fn main() =\n  \
+                 xs = Cons(1, Cons(2, Nil))\n  \
+                 n = xs  # tens\n    \
+                   |> map(\\x -> x * 10)\n    \
+                   |> sum\n  \
+                 ok = n > 10\n    \
+                   && n < 100\n    \
+                   || n == 0\n  \
+                 msg = \"a\"\n    \
+                   + \"b\"\n  \
+                 p = pair(n,\n    \
+                   describe(msg,\n      \
+                     ok))\n  \
+                 q = if ok\n    \
+                   then \"yes\"\n    \
+                   else \"no\"\n  \
+                 println(p + \" \" + q)\n\n\
+               fn pair(a, b) = int_to_str(a) + b\n\n\
+               fn describe(m, o) = m + (if o then \"!\" else \"?\")\n";
+    assert_eq!(fmt_source(src), src);
+    assert_eq!(run_source("breaks", src), "30ab! yes\n");
+
+    // And still folds what was written on one line.
+    let flat = "fn main() = println(int_to_str(1 + 2))\n";
+    assert_eq!(fmt_source(flat), flat);
 }
 
 /// A field only some constructors have is not certainly there, and one of two

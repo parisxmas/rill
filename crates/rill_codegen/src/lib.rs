@@ -377,6 +377,9 @@ fn subst_gen(ty: &Ty, args: &[Ty]) -> Ty {
     }
 }
 
+/// Nodes in an instantiation's types past which its growth is called endless.
+const TYPE_SIZE_CAP: usize = 512;
+
 fn mangle(ty: &Ty, adts: &[rill_types::AdtDef]) -> String {
     match ty {
         Ty::Int => "Int".into(),
@@ -1391,6 +1394,7 @@ struct Codegen<'ctx, 'a> {
     builder: Builder<'ctx>,
     tmod: &'a TModule,
     instances: HashMap<InstanceKey, FunctionValue<'ctx>>,
+
     shims: HashMap<FnVal, FunctionValue<'ctx>>,
     /// Which parameters of each function have to be a compile-time function,
     /// because they reach a C callback position. See `static_params`.
@@ -1622,6 +1626,24 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             }
         }
         while let Some(key) = cg.queue.pop_front() {
+            // A function whose signature was declared may call itself at
+            // another type; one that does so at a bigger type each time has
+            // no end in a compiler that makes one copy per type, and this
+            // is where that would otherwise go on forever. No type a program
+            // writes is anywhere near this big; one that is has been grown.
+            if key.1.iter().map(rill_types::ty_size).sum::<usize>() > TYPE_SIZE_CAP {
+                let f = &cg.tmod.fns[key.0];
+                return Err(CodegenError::new(
+                    f.line,
+                    format!(
+                        "`{}` is being specialized at ever bigger types: it calls itself at \
+                         a bigger one each time, and a copy is made per type. Recursion over \
+                         a type that nests without end cannot be compiled this way; keep the \
+                         growing part in a value instead",
+                        f.name
+                    ),
+                ));
+            }
             cg.gen_instance(&key)?;
         }
         cg.gen_main_wrapper();
@@ -5187,6 +5209,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let outer_movable = std::mem::take(&mut self.movable);
                 let outer_free = std::mem::take(&mut self.root_free);
                 let saved_held_tail = self.held_above.clone();
+                let saved_scope = scope.clone();
                 for (si, stmt) in init.iter().enumerate() {
                     let rest = &stmts[si + 1..];
                     self.begin_statement(stmt_value(stmt), rest);
@@ -5235,6 +5258,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.root_free = outer_free;
                 self.bound_fns = saved_bound;
                 self.held_above = saved_held_tail;
+                *scope = saved_scope;
                 out
             }
             TK::If { cond, then, els } => {
@@ -7978,12 +8002,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .build_conditional_branch(cv, then_bb, else_bb)
                     .expect("LLVM builder error");
 
+                // Each branch binds for itself, as in tail position.
                 self.builder.position_at_end(then_bb);
-                let tv = self.gen_expr(then, scope, subst, func)?;
+                let mut then_scope = scope.clone();
+                let tv = self.gen_expr(then, &mut then_scope, subst, func)?;
                 let t_end = self.builder.get_insert_block().unwrap();
 
                 self.builder.position_at_end(else_bb);
-                let ev = self.gen_expr(els, scope, subst, func)?;
+                let mut else_scope = scope.clone();
+                let ev = self.gen_expr(els, &mut else_scope, subst, func)?;
                 let e_end = self.builder.get_insert_block().unwrap();
 
                 let ty = self.concrete(&e.ty, subst);
@@ -7997,6 +8024,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // As in tail position: the block's bindings do not outlive it.
                 let saved_bound = self.bound_fns.clone();
                 let saved_held_block = self.held_above.clone();
+                // And what it binds is not in scope after it, by name either:
+                // a `z` bound in one branch of an `if`, or an `x` bound again
+                // there, is the outer one again once the branch is over.
+                let saved_scope = scope.clone();
                 // What this block binds is released when the block ends, not
                 // at the function's exit: a block that is one branch of an
                 // `if` exists on one path only, and a release at the exit of
@@ -8067,6 +8098,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 self.bound_fns = saved_bound;
                 self.held_above = saved_held_block;
+                *scope = saved_scope;
                 self.movable = outer_movable;
                 let (kept, own): (Vec<_>, Vec<_>) = std::mem::take(&mut self.cleanup)
                     .into_iter()

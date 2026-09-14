@@ -76,6 +76,7 @@ fn expand_index_op(op: BinOp, base: Expr, index: Expr, value: Expr, line: usize)
             lhs: Box::new(Expr::Index { base: Box::new(b), index: Box::new(i), line }),
             rhs: Box::new(value),
             line,
+            newline: false,
         }),
         line,
     };
@@ -150,13 +151,14 @@ fn expand_for(
         lhs: Box::new(Expr::Var(var.clone(), line)),
         rhs: Box::new(Expr::Int(1)),
         line,
+        newline: false,
     };
     let (params, done, els, call_args) = match acc {
         Some((name, init)) => (
             vec![Param { name: var.clone(), ann: None }, Param { name: name.clone(), ann: None }],
             Expr::Var(name, line),
             // The body is the next value, so the call takes it directly.
-            Expr::Call { name: go.clone(), args: vec![next, body], line, piped: false },
+            Expr::Call { name: go.clone(), args: vec![next, body], line, piped: false, stacked: false },
             vec![Expr::Var(lo.clone(), line), *init],
         ),
         None => (
@@ -169,6 +171,7 @@ fn expand_for(
                     args: vec![next],
                     line,
                     piped: false,
+                    stacked: false,
                 }),
             ]),
             vec![Expr::Var(lo.clone(), line)],
@@ -185,9 +188,11 @@ fn expand_for(
                 lhs: Box::new(Expr::Var(var, line)),
                 rhs: Box::new(Expr::Var(hi.clone(), line)),
                 line,
+                newline: false,
             }),
             then: Box::new(done),
             els: Box::new(els),
+            newline: false,
         },
         line,
         lifted_from: None,
@@ -203,12 +208,14 @@ fn expand_for(
             lhs: Box::new(Expr::Var(end.to_string(), line)),
             rhs: Box::new(e.clone()),
             line,
+            newline: false,
         };
         stmts.push(Stmt::Expr(Expr::Call {
             name: "for.check".to_string(),
             args: vec![base_of(b, line), shifted(&lo), shifted(&hi), Expr::Str(go.clone()), Expr::Bool(false)],
             line,
             piped: false,
+            stacked: false,
         }));
     }
     for b in &hoisted {
@@ -229,10 +236,11 @@ fn expand_for(
             ],
             line,
             piped: false,
+            stacked: false,
         }));
     }
     stmts.push(Stmt::Fn(Box::new(loop_fn)));
-    stmts.push(Stmt::Expr(Expr::Call { name: go, args: call_args, line, piped: false }));
+    stmts.push(Stmt::Expr(Expr::Call { name: go, args: call_args, line, piped: false, stacked: false }));
     Expr::Block(stmts)
 }
 
@@ -266,7 +274,7 @@ fn expand_while(
     used: &mut HashSet<String>,
 ) -> Expr {
     let go = pick_name("while", "go", used);
-    let call = |name: &str, args: Vec<Expr>| Expr::Call { name: name.to_string(), args, line, piped: false };
+    let call = |name: &str, args: Vec<Expr>| Expr::Call { name: name.to_string(), args, line, piped: false, stacked: false };
     // How many things the loop carries; the loop function has that many
     // parameters exactly when they travel separately.
     let state_len = acc.as_ref().map(|(ps, _)| ps.len()).unwrap_or(0);
@@ -289,6 +297,7 @@ fn expand_while(
                     cond: Box::new(cond),
                     then: Box::new(Expr::Block(vec![Stmt::Expr(body), Stmt::Expr(call(&go, vec![]))])),
                     els: Box::new(Expr::Int(0)),
+                    newline: false,
                 },
                 line,
                 lifted_from: None,
@@ -305,6 +314,7 @@ fn expand_while(
                     cond: Box::new(cond),
                     then: Box::new(call(&go, vec![body])),
                     els: Box::new(Expr::Var(name, line)),
+                    newline: false,
                 },
                 line,
                 lifted_from: None,
@@ -336,6 +346,7 @@ fn expand_while(
                             cond: Box::new(cond),
                             then: Box::new(splice_tuple_tail(body, &go, arity, line)),
                             els: Box::new(call(&tuple(arity), vars(line))),
+                            newline: false,
                         },
                         line,
                         lifted_from: None,
@@ -356,6 +367,7 @@ fn expand_while(
                                 cond: Box::new(cond),
                                 then: Box::new(call(&go, vec![body])),
                                 els: Box::new(Expr::Var(whole, line)),
+                                newline: false,
                             }),
                         ]),
                         line,
@@ -425,7 +437,7 @@ fn ends_in_tuple(e: &Expr, arity: usize) -> bool {
 fn splice_tuple_tail(e: Expr, go: &str, arity: usize, line: usize) -> Expr {
     match e {
         Expr::Call { name, args, .. } if name == format!("Tuple{arity}") => {
-            Expr::Call { name: go.to_string(), args, line, piped: false }
+            Expr::Call { name: go.to_string(), args, line, piped: false, stacked: false }
         }
         Expr::Block(mut stmts) => {
             if let Some(Stmt::Expr(last)) = stmts.pop() {
@@ -433,10 +445,11 @@ fn splice_tuple_tail(e: Expr, go: &str, arity: usize, line: usize) -> Expr {
             }
             Expr::Block(stmts)
         }
-        Expr::If { cond, then, els } => Expr::If {
+        Expr::If { cond, then, els, newline } => Expr::If {
             cond,
             then: Box::new(splice_tuple_tail(*then, go, arity, line)),
             els: Box::new(splice_tuple_tail(*els, go, arity, line)),
+            newline,
         },
         Expr::Match { scrutinee, arms, line: l } => Expr::Match {
             scrutinee,
@@ -645,6 +658,7 @@ fn hoist_indexes(
         args: vec![base_of(b, line), index, Expr::Str(go.to_string()), origin(b, line)],
         line,
         piped: false,
+        stacked: false,
     };
     match e {
         Expr::Index { base, index, line } => match covered(&base, &index) {
@@ -663,6 +677,7 @@ fn hoist_indexes(
                 ],
                 line,
                 piped: false,
+                stacked: false,
             },
             None => Expr::IndexSet {
                 base: Box::new(rec(*base)),
@@ -682,12 +697,14 @@ fn hoist_indexes(
                         lhs: Box::new(at(&b, *index, line)),
                         rhs: Box::new(rec(*value)),
                         line,
+                        newline: false,
                     },
                     Expr::Str(go.to_string()),
                     origin(&b, line),
                 ],
                 line,
                 piped: false,
+                stacked: false,
             },
             None => Expr::IndexOp {
                 op,
@@ -713,7 +730,7 @@ fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             f(lhs);
             f(rhs);
         }
-        Expr::If { cond, then, els } => {
+        Expr::If { cond, then, els, newline } => {
             f(cond);
             f(then);
             f(els);
@@ -803,8 +820,8 @@ fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
 fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
     match e {
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(..) => e,
-        Expr::Call { name, args, line, piped } => {
-            Expr::Call { name, args: args.into_iter().map(|a| f(a)).collect(), line, piped }
+        Expr::Call { name, args, line, piped, stacked } => {
+            Expr::Call { name, args: args.into_iter().map(|a| f(a)).collect(), line, piped, stacked }
         }
         Expr::Unary { op, expr } => Expr::Unary { op, expr: Box::new(f(*expr)) },
         Expr::Len { expr, line } => Expr::Len { expr: Box::new(f(*expr)), line },
@@ -813,11 +830,11 @@ fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
         Expr::Lambda { params, body, line } => {
             Expr::Lambda { params, body: Box::new(f(*body)), line }
         }
-        Expr::Binary { op, lhs, rhs, line } => {
-            Expr::Binary { op, lhs: Box::new(f(*lhs)), rhs: Box::new(f(*rhs)), line }
+        Expr::Binary { op, lhs, rhs, line, newline } => {
+            Expr::Binary { op, lhs: Box::new(f(*lhs)), rhs: Box::new(f(*rhs)), line, newline }
         }
-        Expr::If { cond, then, els } => {
-            Expr::If { cond: Box::new(f(*cond)), then: Box::new(f(*then)), els: Box::new(f(*els)) }
+        Expr::If { cond, then, els, newline } => {
+            Expr::If { cond: Box::new(f(*cond)), then: Box::new(f(*then)), els: Box::new(f(*els)), newline }
         }
         Expr::Match { scrutinee, arms, line } => Expr::Match {
             scrutinee: Box::new(f(*scrutinee)),
@@ -958,7 +975,7 @@ fn walk(
                 out,
             )?)
         }
-        Expr::Call { name, args, line, piped } => {
+        Expr::Call { name, args, line, piped, stacked } => {
             // `add(2, _)` is the function you get by leaving that argument to
             // be given later. It is written out as the lambda it means and
             // then walked as one, so everything after this pass sees an
@@ -967,22 +984,24 @@ fn walk(
                 let lam = placeholder_lambda(name, args, line, piped);
                 walk(lam, env, parent, used, out)?
             } else {
-                Expr::Call { name, args: walk_all(args, env, parent, used, out)?, line, piped }
+                Expr::Call { name, args: walk_all(args, env, parent, used, out)?, line, piped, stacked }
             }
         }
         Expr::Unary { op, expr } => {
             Expr::Unary { op, expr: Box::new(walk(*expr, env, parent, used, out)?) }
         }
-        Expr::Binary { op, lhs, rhs, line } => Expr::Binary {
+        Expr::Binary { op, lhs, rhs, line, newline } => Expr::Binary {
             op,
             lhs: Box::new(walk(*lhs, env, parent, used, out)?),
             rhs: Box::new(walk(*rhs, env, parent, used, out)?),
             line,
+            newline,
         },
-        Expr::If { cond, then, els } => Expr::If {
+        Expr::If { cond, then, els, newline } => Expr::If {
             cond: Box::new(walk(*cond, env, parent, used, out)?),
             then: Box::new(walk(*then, env, parent, used, out)?),
             els: Box::new(walk(*els, env, parent, used, out)?),
+            newline,
         },
         Expr::Match { scrutinee, arms, line } => {
             let scrutinee = Box::new(walk(*scrutinee, env, parent, used, out)?);
@@ -1202,6 +1221,7 @@ fn expand_try(stmts: Vec<Stmt>, n: &mut usize) -> Result<Vec<Stmt>, SyntaxError>
                         args: vec![Expr::Var(err, line)],
                         line,
                         piped: false,
+                        stacked: false,
                     },
                     line,
                 },
@@ -1237,7 +1257,7 @@ fn hoist(e: Expr, pre: &mut Vec<Stmt>, n: &mut usize, top: bool) -> Result<Expr,
             });
             Expr::Var(name, line)
         }
-        Expr::Call { name, args, line, piped } => Expr::Call {
+        Expr::Call { name, args, line, piped, stacked } => Expr::Call {
             name,
             args: args
                 .into_iter()
@@ -1245,18 +1265,20 @@ fn hoist(e: Expr, pre: &mut Vec<Stmt>, n: &mut usize, top: bool) -> Result<Expr,
                 .collect::<Result<Vec<_>, _>>()?,
             line,
             piped,
+            stacked,
         },
         Expr::Unary { op, expr } => {
             Expr::Unary { op, expr: Box::new(hoist(*expr, pre, n, false)?) }
         }
         // Every binary operator runs both sides: `&&` and `||` are not among
         // them, having been an `if` since the parser.
-        Expr::Binary { op, lhs, rhs, line } => {
+        Expr::Binary { op, lhs, rhs, line, newline } => {
             Expr::Binary {
                 op,
                 lhs: Box::new(hoist(*lhs, pre, n, false)?),
                 rhs: Box::new(hoist(*rhs, pre, n, false)?),
                 line,
+                newline,
             }
         }
         Expr::Len { expr, line } => {
@@ -1310,11 +1332,11 @@ fn hoist(e: Expr, pre: &mut Vec<Stmt>, n: &mut usize, top: bool) -> Result<Expr,
             }
             Expr::Match { scrutinee, arms, line }
         }
-        Expr::If { cond, then, els } => {
+        Expr::If { cond, then, els, newline } => {
             let cond = Box::new(hoist(*cond, pre, n, false)?);
             no_stray_try(&then)?;
             no_stray_try(&els)?;
-            Expr::If { cond, then, els }
+            Expr::If { cond, then, els, newline }
         }
         other => {
             no_stray_try(&other)?;
@@ -1366,7 +1388,7 @@ fn each_child<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             f(lhs);
             f(rhs);
         }
-        Expr::If { cond, then, els } => {
+        Expr::If { cond, then, els, newline } => {
             f(cond);
             f(then);
             f(els);
@@ -1631,7 +1653,7 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
             }
             Expr::Var(n, line)
         }
-        Expr::Call { name, args, line, piped } => {
+        Expr::Call { name, args, line, piped, stacked } => {
             let mut args: Vec<Expr> =
                 args.into_iter().map(|a| rewrite(a, locals)).collect::<Result<_, _>>()?;
             match locals.get(&name) {
@@ -1639,22 +1661,24 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
                     let mut all: Vec<Expr> =
                         l.caps.iter().map(|c| Expr::Var(c.clone(), line)).collect();
                     all.append(&mut args);
-                    Expr::Call { name: l.lifted.clone(), args: all, line, piped: false }
+                    Expr::Call { name: l.lifted.clone(), args: all, line, piped: false, stacked: false }
                 }
-                None => Expr::Call { name, args, line, piped },
+                None => Expr::Call { name, args, line, piped, stacked },
             }
         }
         Expr::Unary { op, expr } => Expr::Unary { op, expr: Box::new(rewrite(*expr, locals)?) },
-        Expr::Binary { op, lhs, rhs, line } => Expr::Binary {
+        Expr::Binary { op, lhs, rhs, line, newline } => Expr::Binary {
             op,
             lhs: Box::new(rewrite(*lhs, locals)?),
             rhs: Box::new(rewrite(*rhs, locals)?),
             line,
+            newline,
         },
-        Expr::If { cond, then, els } => Expr::If {
+        Expr::If { cond, then, els, newline } => Expr::If {
             cond: Box::new(rewrite(*cond, locals)?),
             then: Box::new(rewrite(*then, locals)?),
             els: Box::new(rewrite(*els, locals)?),
+            newline,
         },
         Expr::Match { scrutinee, arms, line } => Expr::Match {
             scrutinee: Box::new(rewrite(*scrutinee, locals)?),
@@ -1817,7 +1841,7 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
             free_of(lhs, bound, out);
             free_of(rhs, bound, out);
         }
-        Expr::If { cond, then, els } => {
+        Expr::If { cond, then, els, newline } => {
             free_of(cond, bound, out);
             free_of(then, bound, out);
             free_of(els, bound, out);
@@ -1968,7 +1992,7 @@ fn placeholder_lambda(name: String, args: Vec<Expr>, line: usize, piped: bool) -
             }
         })
         .collect();
-    Expr::Lambda { params, body: Box::new(Expr::Call { name, args, line, piped }), line }
+    Expr::Lambda { params, body: Box::new(Expr::Call { name, args, line, piped, stacked: false }), line }
 }
 
 /// The alternatives one arm's pattern stands for: its own, or the several an

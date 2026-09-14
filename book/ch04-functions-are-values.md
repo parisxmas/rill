@@ -191,14 +191,23 @@ integers compiles to the loop you would have written by hand.
 
 ### Two limits worth knowing now
 
-**A function used before its definition is pinned to that use.** If line 3
-calls `helper(1)` and `helper` is defined on line 40, `helper` is fixed at
-`Int` even if it would otherwise have been generic. Define first, or accept the
-narrower type.
+**A function has one type inside its own group.** Functions that call each
+other are inferred together, and while that is happening each has one type: an
+`f` that uses `g` at `Int` and at `Str` while `g` calls `f` back is refused, and
+so is a function that calls itself at another type. Writing the whole signature
+down lifts this — `fn g(x: a, n: Int) -> a` — because a declared scheme can be
+taken at any type by every use, the ones inside its own group included, and the
+body is then checked against the declaration. It is the one place a signature
+changes what compiles. Plain use before definition needs nothing: `helper` on
+line 40 is as generic on line 3 as anywhere else.
 
-**There is no polymorphic recursion.** A generic function cannot call itself at
-a different type than it was called at. This rules out a small number of exotic
-data structures and is not something you are likely to trip over by accident.
+**Types cannot grow without end.** A function that calls itself at a bigger
+type each time — `f(Cons(x, Nil))` from `f(x)` — is stopped when the types have
+grown past anything a program writes, and a type holding itself at a bigger
+type, `Nest(a)` holding a `Nest((a, a))`, is refused where it is written. One
+copy is made per type, and these would need infinitely many. This rules out a
+small number of exotic data structures and is not something you are likely to
+trip over by accident.
 
 ---
 

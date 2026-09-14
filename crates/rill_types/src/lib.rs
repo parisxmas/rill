@@ -551,6 +551,13 @@ struct Checker {
     /// parameter types, return type, and how many type parameters the target
     /// type constructor has (zero for a plain type).
     forced_sigs: HashMap<String, (Vec<Ty>, Ty, usize)>,
+    /// A function annotated on every parameter and its return, with type
+    /// variables among them: the scheme the annotation declares, by index.
+    /// A use from inside its own dependency group instantiates this rather
+    /// than sharing the provisional signature, which is what lets a function
+    /// call itself, or a group-mate, at another type. The body is held to
+    /// the declaration once the group is generalized.
+    declared: HashMap<usize, (Vec<Ty>, Ty, usize)>,
     /// All functions to check: user functions plus mangled impl methods.
     expanded_fns: Vec<FnDef>,
     /// For each function index, the name it was written inside if it was
@@ -593,6 +600,7 @@ impl Checker {
             method_index: HashMap::new(),
             impl_methods: HashMap::new(),
             forced_sigs: HashMap::new(),
+            declared: HashMap::new(),
             expanded_fns: Vec::new(),
             lifted: Vec::new(),
             prelude_fns: 0,
@@ -675,6 +683,15 @@ impl Checker {
                     line: ctor.line,
                 });
             }
+        }
+
+        // A type that holds itself at a bigger type — `Nest(a)` holding a
+        // `Nest((a, a))` — nests without end, and a compiler that makes one
+        // layout per type cannot make infinitely many. Refused here, where
+        // it is written, rather than in the code generator that would
+        // otherwise walk it forever.
+        for i in 0..c.adts.len() {
+            c.regular(i)?;
         }
 
         // Built-in traits. They are not declared anywhere: implementing
@@ -1096,11 +1113,25 @@ impl Checker {
                 c.sigs.push(SigState::Provisional { params: vec![], ret: Ty::Unit });
                 continue;
             }
+            // A lowercase name in an annotation is a type variable, and the
+            // same name is the same type throughout the signature.
+            let mut vars: Vec<String> = Vec::new();
+            for Param { ann, .. } in &f.params {
+                if let Some(tr) = ann {
+                    collect_type_vars(tr, &mut vars);
+                }
+            }
+            if let Some(tr) = &f.ret_ann {
+                collect_type_vars(tr, &mut vars);
+            }
+            let names: HashMap<&str, u32> =
+                vars.iter().enumerate().map(|(i, n)| (n.as_str(), i as u32)).collect();
             let mut params = Vec::new();
+            let mut whole = f.ret_ann.is_some();
             for Param { name, ann } in &f.params {
                 let ty = match ann {
                     Some(tr) => {
-                        let ty = resolve_type_ref(tr, &adt_index, &c.adts, None)?;
+                        let ty = resolve_type_ref(tr, &adt_index, &c.adts, Some(&names))?;
                         if ty == Ty::Unit {
                             return Err(TypeError::new(
                                 tr.line,
@@ -1109,15 +1140,30 @@ impl Checker {
                         }
                         ty
                     }
-                    None => c.fresh(),
+                    None => {
+                        whole = false;
+                        c.fresh()
+                    }
                 };
                 params.push(ty);
             }
             let ret = match &f.ret_ann {
-                Some(tr) => resolve_type_ref(tr, &adt_index, &c.adts, None)?,
+                Some(tr) => resolve_type_ref(tr, &adt_index, &c.adts, Some(&names))?,
                 None => c.fresh(),
             };
-            c.fn_index.insert(f.name.clone(), c.sigs.len());
+            let idx = c.sigs.len();
+            // A whole signature with variables in it is a scheme declared up
+            // front, and a use inside the function's own group may take it
+            // at any type. The body is still checked against inference
+            // variables standing for the declared ones, and held to the
+            // declaration at the end.
+            if whole && !vars.is_empty() {
+                c.declared.insert(idx, (params.clone(), ret.clone(), vars.len()));
+            }
+            let inst: Vec<Ty> = (0..vars.len()).map(|_| c.fresh()).collect();
+            let params = params.iter().map(|t| subst_gen(t, &inst)).collect();
+            let ret = subst_gen(&ret, &inst);
+            c.fn_index.insert(f.name.clone(), idx);
             c.sigs.push(SigState::Provisional { params, ret });
         }
         if !c.fn_index.contains_key("main") {
@@ -1215,6 +1261,33 @@ impl Checker {
                     format!(
                         "this implementation of `{trait_name}` is not general enough: it only \
                          works for some `{target}` types, but the impl covers all of them"
+                    ),
+                )]);
+            }
+        }
+
+        // A function that declared its signature was used at that scheme
+        // inside its own group, so its body has to have earned it: the
+        // scheme inference found must be the one written. Where the body
+        // pinned a variable, the one written was a promise the function
+        // does not keep.
+        let mut declared: Vec<_> = self.declared.iter().collect();
+        declared.sort_by_key(|(idx, _)| **idx);
+        for (&idx, (params, ret, _)) in declared {
+            let f = &tfns[idx];
+            let same = f.params.iter().zip(params).all(|((_, a), b)| a == b) && f.ret == *ret;
+            if !same {
+                let written: Vec<String> = params.iter().map(|t| self.type_name(t)).collect();
+                let found: Vec<String> = f.params.iter().map(|(_, t)| self.type_name(t)).collect();
+                return Err(vec![TypeError::new(
+                    f.line,
+                    format!(
+                        "`{}` is declared `({}) -> {}`, but its body only works as `({}) -> {}`",
+                        f.name,
+                        written.join(", "),
+                        self.type_name(ret),
+                        found.join(", "),
+                        self.type_name(&f.ret)
                     ),
                 )]);
             }
@@ -1330,11 +1403,16 @@ impl Checker {
             Ty::Unit => "Unit".into(),
             Ty::Ptr => "Ptr".into(),
             Ty::Adt(i, args) => {
-                if args.is_empty() {
-                    self.adts[i].name.clone()
+                let name = &self.adts[i].name;
+                let args: Vec<String> = args.iter().map(|a| self.type_name(a)).collect();
+                // A tuple is written `(a, b)`, not by the prelude's name for it.
+                let tuple = name.strip_prefix("Tuple").is_some_and(|n| n.parse::<usize>().is_ok());
+                if tuple {
+                    format!("({})", args.join(", "))
+                } else if args.is_empty() {
+                    name.clone()
                 } else {
-                    let args: Vec<String> = args.iter().map(|a| self.type_name(a)).collect();
-                    format!("{}({})", self.adts[i].name, args.join(", "))
+                    format!("{name}({})", args.join(", "))
                 }
             }
             Ty::Fn(params, ret) => {
@@ -1436,6 +1514,75 @@ impl Checker {
         let p = params.iter().map(|t| subst_gen(t, &inst)).collect();
         let r = subst_gen(ret, &inst);
         (p, r, inst)
+    }
+
+    /// Refuses a type whose definition reaches itself at a growing
+    /// instantiation. The field types are expanded through every type they
+    /// name, starting from the type at its own parameters and keeping the
+    /// instantiations seen; a regular type runs out of new ones, and one
+    /// bigger than anything a program writes has been grown.
+    fn regular(&self, adt: usize) -> Result<(), TypeError> {
+        let identity: Vec<Ty> = (0..self.adts[adt].nparams as u32).map(Ty::Gen).collect();
+        let mut seen: HashSet<Ty> = HashSet::new();
+        let mut work = vec![Ty::Adt(adt, identity.clone())];
+        // The first time the type is met at other than its own parameters,
+        // which is the thing to show; the cap catches growth by other roads.
+        let mut witness: Option<Ty> = None;
+        while let Some(t) = work.pop() {
+            if !seen.insert(t.clone()) {
+                continue;
+            }
+            let Ty::Adt(i, args) = &t else { unreachable!("only types are queued") };
+            for ctor in &self.adts[*i].ctors {
+                for field in &ctor.fields {
+                    let mut found = Vec::new();
+                    adts_in(&subst_gen(field, args), &mut found);
+                    for u in found {
+                        if witness.is_none() && matches!(&u, Ty::Adt(j, a) if *j == adt && *a != identity) {
+                            witness = Some(u.clone());
+                        }
+                        if ty_size(&u) > 64 {
+                            let shown = witness.clone().unwrap_or(u);
+                            let line = self.adts[adt].ctors.first().map(|c| c.line).unwrap_or(0);
+                            return Err(TypeError::new(
+                                line,
+                                format!(
+                                    "`{}` holds a `{}` in its own definition, so the type nests \
+                                     without end: a value of it would need a layout for every \
+                                     type it grows to, and one is made per type. Keep the \
+                                     growing part in a value — a list of them, say",
+                                    self.adts[adt].name,
+                                    self.type_name(&shown)
+                                ),
+                            ));
+                        }
+                        work.push(u);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The signature a use of a function sees. Once generalized it is
+    /// instantiated afresh. While its group is still being inferred it is
+    /// the provisional one, shared with every other use — unless the
+    /// function declared its whole signature, in which case the declared
+    /// scheme is instantiated instead, and the function can be used at
+    /// another type inside its own group: polymorphic recursion, at the
+    /// price of writing the signature down. A local function that captures
+    /// is tied to its parent and keeps the shared one.
+    fn sig_for_use(&mut self, idx: usize) -> (Vec<Ty>, Ty, Vec<Ty>) {
+        match self.sigs[idx].clone() {
+            SigState::Generalized { params, ret, ngen } => self.instantiate(&params, &ret, ngen),
+            SigState::Provisional { params, ret } => {
+                let captures = self.lifted.get(idx).is_some_and(|l| l.is_some());
+                match self.declared.get(&idx).cloned() {
+                    Some((p, r, n)) if !captures => self.instantiate(&p, &r, n),
+                    _ => (params, ret, vec![]),
+                }
+            }
+        }
     }
 
     // ---- per-function check + finalize ----------------------------------
@@ -2013,7 +2160,7 @@ impl Checker {
                     kind: TK::Neg(Box::new(inner)),
                 })
             }
-            Expr::Binary { op, lhs, rhs, line } => {
+            Expr::Binary { op, lhs, rhs, line, newline } => {
                 let l = self.infer(lhs, env)?;
                 let r = self.infer(rhs, env)?;
                 // `m[k] + 1` is the shape `m[k] += 1` expands to, and reading
@@ -2070,7 +2217,7 @@ impl Checker {
                     kind: TK::Binary { op: *op, lhs: Box::new(l), rhs: Box::new(r) },
                 })
             }
-            Expr::If { cond, then, els } => {
+            Expr::If { cond, then, els, newline } => {
                 let c = self.infer(cond, env)?;
                 self.unify(&c.ty, &Ty::Bool, c.line, "`if` condition")?;
                 let t = self.infer(then, env)?;
@@ -2261,6 +2408,7 @@ impl Checker {
                         args: vec![(**base).clone(), (**index).clone()],
                         line: *line,
                         piped: false,
+                        stacked: false,
                     };
                     return self.infer(&call, env);
                 }
@@ -2443,6 +2591,11 @@ impl Checker {
                 })
             }
             Expr::Block(stmts) => {
+                // What a block binds is the block's: a name bound in one
+                // branch of an `if` is not there after it, and one that
+                // shadows an outer name shadows it for the block's length.
+                let mut scoped = env.clone();
+                let env = &mut scoped;
                 let mut out = Vec::new();
                 let mut ty = Ty::Unit;
                 for (i, stmt) in stmts.iter().enumerate() {
@@ -3007,12 +3160,7 @@ impl Checker {
             if name == "main" {
                 return Err(TypeError::new(line, "`main` cannot be used as a value"));
             }
-            let (params, ret, subst) = match self.sigs[idx].clone() {
-                SigState::Provisional { params, ret } => (params, ret, vec![]),
-                SigState::Generalized { params, ret, ngen } => {
-                    self.instantiate(&params, &ret, ngen)
-                }
-            };
+            let (params, ret, subst) = self.sig_for_use(idx);
             return Ok(TExpr {
                 ty: Ty::Fn(params, Box::new(ret)),
                 line,
@@ -3730,10 +3878,7 @@ impl Checker {
             }
             None => return Err(TypeError::new(line, format!("unknown function `{name}`"))),
         };
-        let (params, ret, subst) = match self.sigs[idx].clone() {
-            SigState::Provisional { params, ret } => (params, ret, vec![]),
-            SigState::Generalized { params, ret, ngen } => self.instantiate(&params, &ret, ngen),
-        };
+        let (params, ret, subst) = self.sig_for_use(idx);
         if args.len() != params.len() {
             return Err(TypeError::new(
                 line,
@@ -4874,6 +5019,57 @@ fn is_builtin_fn(name: &str) -> bool {
     )
 }
 
+/// Every type constructor application inside a type, the outer ones first.
+fn adts_in(t: &Ty, out: &mut Vec<Ty>) {
+    match t {
+        Ty::Adt(_, args) => {
+            out.push(t.clone());
+            for a in args {
+                adts_in(a, out);
+            }
+        }
+        Ty::Fn(params, ret) => {
+            for p in params {
+                adts_in(p, out);
+            }
+            adts_in(ret, out);
+        }
+        Ty::Chan(e) => adts_in(e, out),
+        Ty::Map(k, v) => {
+            adts_in(k, out);
+            adts_in(v, out);
+        }
+        _ => {}
+    }
+}
+
+/// How many nodes a type has: the measure of a type growing.
+pub fn ty_size(t: &Ty) -> usize {
+    1 + match t {
+        Ty::Adt(_, args) => args.iter().map(ty_size).sum(),
+        Ty::Fn(params, ret) => params.iter().map(ty_size).sum::<usize>() + ty_size(ret),
+        Ty::Chan(e) => ty_size(e),
+        Ty::Map(k, v) => ty_size(k) + ty_size(v),
+        _ => 0,
+    }
+}
+
+/// The lowercase names in an annotation, in order of first appearance: the
+/// type variables of a signature. The order is the one `generalize` walks
+/// a type in, so a declared scheme and the inferred one number them alike.
+fn collect_type_vars(tr: &TypeRef, out: &mut Vec<String>) {
+    let last = tr.name.rsplit('.').next().unwrap_or(&tr.name);
+    if last.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && !out.contains(&tr.name) {
+        out.push(tr.name.clone());
+    }
+    for a in &tr.args {
+        collect_type_vars(a, out);
+    }
+    if let Some(r) = &tr.ret {
+        collect_type_vars(r, out);
+    }
+}
+
 fn resolve_type_ref(
     tr: &TypeRef,
     adt_index: &HashMap<String, usize>,
@@ -5026,7 +5222,7 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
             free_vars(lhs, out, seen);
             free_vars(rhs, out, seen);
         }
-        Expr::If { cond, then, els } => {
+        Expr::If { cond, then, els, newline } => {
             free_vars(cond, out, seen);
             free_vars(then, out, seen);
             free_vars(els, out, seen);
@@ -5601,10 +5797,17 @@ mod tests {
         let err = check_src(&format!("{point}fn f(p: Point) = p.z\n\nfn main() = println(1)\n"))
             .unwrap_err();
         assert!(err.msg.contains("no field `z`"), "{}", err.msg);
-        // And a base whose type nothing has settled says what to do about it.
-        let err = check_src(&format!("{point}fn f(p) = p.x\n\nfn main() = println(f(P(1, 2)))\n"))
-            .unwrap_err();
-        assert!(err.msg.contains("annotate it"), "{}", err.msg);
+        // A base whose type nothing else settles is named by the field: the
+        // one type with an `x` is `Point`. Two with an `x` cannot be told
+        // apart, and that is the one case an annotation is still for.
+        let t = check_src(&format!("{point}fn f(p) = p.x\n\nfn main() = println(f(P(1, 2)))\n"))
+            .unwrap();
+        assert_eq!(sig(&t, "f").ret, Ty::Int);
+        let err = check_src(&format!(
+            "{point}type Vec3\n  V(x: Int, y: Int, z: Int)\n\nfn f(p) = p.x\n\nfn main() = println(1)\n"
+        ))
+        .unwrap_err();
+        assert!(err.msg.contains("annotate it") && err.msg.contains("`Point` and `Vec3`"), "{}", err.msg);
     }
 
     /// `?` is a `match` whose `Ok` arm is the rest of the block, so what it

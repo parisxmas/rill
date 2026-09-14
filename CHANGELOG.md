@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased — the formatter keeps the breaks
+
+A line could continue the one above it since August — `|> sum` under
+`xs`, `+ " more"` under a string — and `rill fmt` put every such line
+back onto the one it continued, so in a repository that checks its
+formatting the continuation could not be kept. The parser now records
+where the author broke a line (`newline` on a binary operator and on
+the `if` that `&&` and `||` become, `stacked` on a call whose arguments
+began lines) and the formatter writes the break back, one level in
+from the statement: operators, `|>`, `then` and `else` at the head of
+their lines, arguments one to a line with the first beside the name.
+A trailing comment on such a statement stays on its first line.
+
+The reference's layout section said only `then` and `else` could begin
+a line; it now says what can, and shows a pipeline.
+
+## Unreleased — what a branch binds stays in the branch
+
+A name bound in one branch of an `if` was there after the `if`: `z = 5`
+inside a `then` block read as `z` further down the enclosing block, and
+`x = "str"` inside one changed what `x` was outside it — the checker
+went on with the branch's type, and where that happened to agree the
+generated code went on with the branch's value. Match arms had always
+been scoped; `if` branches and blocks in general now are, in the
+checker (a block infers in its own environment) and in codegen (a block
+puts the scope back as it found it, and the two branches of an `if` in
+expression position bind for themselves, as they already did in tail
+position). Rebinding a name in the same block — `x = x + 1` — was
+always allowed and still is; the reference says so now.
+
+A lambda's body may be an indented block on the lines after the `->`,
+the way a function body or an `if` branch may. The formatter writes it
+back that way.
+
+The middleware example asked `rate_limit(2)` to tell its clients apart by
+`X-Forwarded-For`, which the limiter stopped doing when it learned not
+to believe a header a caller can write. It asks `rate_limits(2, 0, 1)`
+now — one proxy in front, the last entry is the caller — and says why.
+
+## Unreleased — a signature written down can be taken at any type
+
+Two functions inferred together each had one type, so an `f` that used
+`g` at `Int` and at `Str` while `g` called `f` back was refused, and so
+was a function calling itself at another type. A whole signature with
+type variables in it — `fn g(x: a, n: Int) -> a` — now declares the
+scheme up front: a use inside the function's own group instantiates the
+declaration rather than sharing the provisional signature, which is
+polymorphic recursion at the price of writing the signature. The body is
+still inferred against variables standing for the declared ones and held
+to the declaration at the end; `fn f(x: a) -> a = x + 1` is refused as
+"declared `('a) -> 'a`, but its body only works as `(Int) -> Int`". A
+lowercase name in any annotation is a type variable now, the same name
+the same type throughout the signature; before it was "unknown type".
+
+What a monomorphizing compiler cannot do is make infinitely many copies.
+A call to itself at a bigger type each time is stopped in codegen when
+an instantiation's types have grown past anything a program writes, and
+a type that holds itself at a bigger type — `Nest(a)` holding a
+`Nest((a, a))` — is refused where it is written, since every structural
+walk over its layout would otherwise go on forever (it did).
+
+The reference and the book claimed a function used before its definition
+was pinned to that use. It has not been since dependency groups were
+ordered; both say what is true now.
+
 ## Unreleased — a field every constructor has
 
 `s.name` on a type with several constructors was refused outright: with

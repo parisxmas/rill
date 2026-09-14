@@ -36,7 +36,7 @@ use crate::SyntaxError;
 
 pub fn parse(src: &str) -> Result<Module, SyntaxError> {
     let toks = lex(src)?;
-    Parser { toks, pos: 0 }.module()
+    Parser { toks, pos: 0, last_line: 0 }.module()
 }
 
 fn starts_upper(s: &str) -> bool {
@@ -53,6 +53,9 @@ fn names_ctor(s: &str) -> bool {
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    /// The line of the token last taken, so that the next one can be seen
+    /// to have begun a line: the formatter keeps such breaks.
+    last_line: usize,
 }
 
 impl Parser {
@@ -69,8 +72,14 @@ impl Parser {
         (t.line, t.col)
     }
 
+    /// Whether the token at hand is the first on its line.
+    fn starts_line(&self) -> bool {
+        self.toks[self.pos].line > self.last_line
+    }
+
     fn bump(&mut self) -> Tok {
         let t = self.toks[self.pos].tok.clone();
+        self.last_line = self.toks[self.pos].line;
         if self.pos < self.toks.len() - 1 {
             self.pos += 1;
         }
@@ -810,15 +819,16 @@ impl Parser {
         let mut lhs = self.or_expr()?;
         while matches!(self.peek(), Tok::PipeGt) {
             let (line, col) = self.here();
+            let newline = self.starts_line();
             self.bump();
             let rhs = self.or_expr()?;
             lhs = match rhs {
                 Expr::Var(name, line) => {
-                    Expr::Call { name, args: vec![lhs], line, piped: true }
+                    Expr::Call { name, args: vec![lhs], line, piped: true, stacked: newline }
                 }
                 Expr::Call { name, mut args, line, .. } => {
                     args.insert(0, lhs);
-                    Expr::Call { name, args, line, piped: true }
+                    Expr::Call { name, args, line, piped: true, stacked: newline }
                 }
                 _ => {
                     return Err(SyntaxError::new(
@@ -836,12 +846,14 @@ impl Parser {
     fn or_expr(&mut self) -> Result<Expr, SyntaxError> {
         let mut lhs = self.and_expr()?;
         while matches!(self.peek(), Tok::PipePipe) {
+            let newline = self.starts_line();
             self.bump();
             let rhs = self.and_expr()?;
             lhs = Expr::If {
                 cond: Box::new(lhs),
                 then: Box::new(Expr::Bool(true)),
                 els: Box::new(rhs),
+                newline,
             };
         }
         Ok(lhs)
@@ -851,12 +863,14 @@ impl Parser {
     fn and_expr(&mut self) -> Result<Expr, SyntaxError> {
         let mut lhs = self.cmp()?;
         while matches!(self.peek(), Tok::AmpAmp) {
+            let newline = self.starts_line();
             self.bump();
             let rhs = self.cmp()?;
             lhs = Expr::If {
                 cond: Box::new(lhs),
                 then: Box::new(rhs),
                 els: Box::new(Expr::Bool(false)),
+                newline,
             };
         }
         Ok(lhs)
@@ -873,10 +887,11 @@ impl Parser {
             Tok::Ge => BinOp::Ge,
             _ => return Ok(lhs),
         };
+        let newline = self.starts_line();
         let (line, _) = self.here();
         self.bump();
         let rhs = self.add()?;
-        Ok(Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), line })
+        Ok(Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), line, newline })
     }
 
     fn add(&mut self) -> Result<Expr, SyntaxError> {
@@ -887,10 +902,11 @@ impl Parser {
                 Tok::Minus => BinOp::Sub,
                 _ => return Ok(lhs),
             };
+            let newline = self.starts_line();
             let (line, _) = self.here();
             self.bump();
             let rhs = self.mul()?;
-            lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), line };
+            lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), line, newline };
         }
     }
 
@@ -903,10 +919,11 @@ impl Parser {
                 Tok::Percent => BinOp::Mod,
                 _ => return Ok(lhs),
             };
+            let newline = self.starts_line();
             let (line, _) = self.here();
             self.bump();
             let rhs = self.unary()?;
-            lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), line };
+            lhs = Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), line, newline };
         }
     }
 
@@ -923,6 +940,7 @@ impl Parser {
                 cond: Box::new(expr),
                 then: Box::new(Expr::Bool(false)),
                 els: Box::new(Expr::Bool(true)),
+                newline: false,
             })
         } else if matches!(self.peek(), Tok::Hash) {
             let (line, _) = self.here();
@@ -1005,8 +1023,10 @@ impl Parser {
                 if matches!(self.peek(), Tok::LParen) {
                     self.bump();
                     let mut args = Vec::new();
+                    let mut stacked = false;
                     if !matches!(self.peek(), Tok::RParen) {
                         loop {
+                            stacked = stacked || self.starts_line();
                             args.push(self.expr()?);
                             if matches!(self.peek(), Tok::Comma) {
                                 self.bump();
@@ -1016,7 +1036,7 @@ impl Parser {
                         }
                     }
                     self.expect(&Tok::RParen, "to close the argument list")?;
-                    Ok(Expr::Call { name, args, line, piped: false })
+                    Ok(Expr::Call { name, args, line, piped: false, stacked })
                 } else {
                     Ok(Expr::Var(name, line))
                 }
@@ -1052,6 +1072,7 @@ impl Parser {
                 Ok(Expr::Update { base: Box::new(base), fields, line })
             }
             Tok::LParen => {
+                let mut stacked = self.starts_line();
                 let first = self.expr()?;
                 if !matches!(self.peek(), Tok::Comma) {
                     self.expect(&Tok::RParen, "to close the parenthesized expression")?;
@@ -1063,11 +1084,12 @@ impl Parser {
                 let mut args = vec![first];
                 while matches!(self.peek(), Tok::Comma) {
                     self.bump();
+                    stacked = stacked || self.starts_line();
                     args.push(self.expr()?);
                 }
                 self.expect(&Tok::RParen, "to close the tuple")?;
                 let name = tuple_name(args.len(), line, col)?;
-                Ok(Expr::Call { name, args, line, piped: false })
+                Ok(Expr::Call { name, args, line, piped: false, stacked })
             }
             Tok::For => {
                 self.pos -= 1;
@@ -1144,21 +1166,30 @@ impl Parser {
                     params.push(self.ident("a parameter name")?);
                 }
                 self.expect(&Tok::Arrow, "after the lambda parameters")?;
-                let body = self.expr()?;
+                // An inline expression, or an indented block on the lines
+                // after the `->`, as a function body or an `if` branch is.
+                let body = self.body()?;
                 Ok(Expr::Lambda { params, body: Box::new(body), line })
             }
             Tok::If => {
                 let cond = self.expr()?;
                 self.continues_with(&Tok::Then);
+                let then_nl = self.starts_line();
                 self.expect(&Tok::Then, "after the `if` condition")?;
                 // Both branches take an inline expression or an indented
                 // block; `else if` chains stay flat because an `if` right
                 // after `else` is just the expression form again.
                 let then = self.body()?;
                 self.continues_with(&Tok::Else);
+                let else_nl = self.starts_line();
                 self.expect(&Tok::Else, "after the `then` branch")?;
                 let els = self.body()?;
-                Ok(Expr::If { cond: Box::new(cond), then: Box::new(then), els: Box::new(els) })
+                Ok(Expr::If {
+                    cond: Box::new(cond),
+                    then: Box::new(then),
+                    els: Box::new(els),
+                    newline: then_nl || else_nl,
+                })
             }
             Tok::Match => {
                 let scrutinee = self.expr()?;

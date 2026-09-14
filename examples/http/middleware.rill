@@ -17,11 +17,13 @@
 # POST is answered by the middleware and the handler under it is never called,
 # which is what the announcer's line shows.
 #
-# The limit is per client, and a client is whoever `X-Forwarded-For` says: the
-# fourth POST comes from another address in the same second and is let
-# through. With nothing in front of the server there is no such header and the
-# limit is on the route instead, which is the honest thing for a server that
-# cannot see past its own socket.
+# The limit is per client. Who the client is depends on what stands in front
+# of the server: `rate_limits(2, 0, 1)` says one proxy does, so the last entry
+# of `X-Forwarded-For` is the caller — and the fourth POST, from another
+# address in the same second, is let through. `rate_limit(2)` would say
+# nothing does, and then the header is not read at all (a caller may write
+# anything in it) and everyone shares the two: the honest thing for a server
+# that cannot see past its own socket.
 
 import "http" as h
 
@@ -32,7 +34,7 @@ fn main() = match listen_on(0)
   Ok(server) -> run(server, sock_port(server))
 
 fn run(server, port) =
-  layers = Cons(\req, next -> announce(req, next), Cons(h.rate_limit(2), Nil))
+  layers = Cons(\req, next -> announce(req, next), Cons(h.rate_limits(2, 0, 1), Nil))
   spawn h.accept_n(server, h.wrap(layers, \req -> answer(req)), 7)
   println(post(port, "/write", "one", "203.0.113.7"))
   println(post(port, "/write", "two", "203.0.113.7"))

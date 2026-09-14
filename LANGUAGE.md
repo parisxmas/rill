@@ -56,9 +56,24 @@ by one on the path.
 ### Layout
 
 Blocks are written by indentation — two spaces per level, spaces only, no tabs.
-A construct may continue on the next line only where the grammar allows it
-(`then` and `else` may start a line). Inside parentheses indentation is ignored,
-so anything written there stays on one line.
+
+An expression continues on the next line when that line begins with something
+no statement can begin with: a binary operator (`+ * / % == != < <= > >= && ||
+|>`), a `|` between patterns, a `.`, or `then` or `else`. Not `-` or `!`,
+which begin a negation as readily as they continue a line. The continuation
+is indented past the line it continues:
+
+```
+total = xs
+  |> map(\x -> x * 10)
+  |> filter(\x -> x > 10)
+  |> sum
+```
+
+Inside parentheses indentation carries no meaning, so a call may spread its
+arguments over lines freely. `rill fmt` keeps what was written: an operator,
+`then` or `else` that began a line stays at the head of one, and arguments
+written one to a line stay one to a line, each a level in.
 
 Comments run from `#` to the end of the line. The `#` needs a space (or the
 line's end) after it, because written against something — `#s` — it is the
@@ -334,7 +349,11 @@ fn area_of_two() =
   a + b                     # the block's value
 ```
 
-Bindings are immutable. There is no assignment operator.
+Bindings are immutable. There is no assignment operator — but a name may be
+bound again: `x = x + 1` reads the `x` there was to bind a new one, and from
+then on `x` means the new one, while anything that captured the old one keeps
+it. What a block binds is the block's: a name bound in one branch of an `if`
+is not there after it, and a rebinding inside a branch shadows only inside it.
 
 ### Pattern matching
 
@@ -464,7 +483,18 @@ fn apply(f, x) = f(x)                   # higher-order
 ```
 
 Functions are values: pass them by name (`map(xs, double)`) or as lambdas.
-Closures capture the variables they use by value.
+Closures capture the variables they use by value. A lambda's body is an
+expression, or an indented block on the lines after the `->`:
+
+```
+nearer = \a, b ->
+  da = dist(a, origin)
+  db = dist(b, origin)
+  da < db
+```
+
+Inside parentheses layout is off, so a lambda written as an argument stays on
+one line; bind the long one first.
 
 ### Generics
 
@@ -484,8 +514,22 @@ Requirements a body imposes travel with the type. `fn biggest(a, b) = if a > b
 then a else b` works for any ordered type, and using it at a type that isn't
 ordered is a compile error naming the function and the type.
 
-Two limits worth knowing: a function used *before* its definition is pinned to
-the types of that use, and there is no polymorphic recursion.
+A lowercase name in an annotation is a type variable, and the same name is
+the same type throughout the signature: `fn same(x: a, y: a) = x` takes two
+of one type, whatever it is.
+
+A function is generic at every use, wherever in the file it is defined. The
+one thing inference will not do is give a function two types inside its own
+dependency group — `g` used at `Int` and at `Str` by an `f` that `g` calls
+back — or let it call itself at another type. Writing the whole signature
+down lifts that: `fn g(x: a, n: Int) -> a` declares the scheme, every use
+takes it at its own type, and the body is held to the declaration — one that
+only works for `Int` is refused as not keeping its promise. What stays out of
+reach is recursion whose types never stop growing: a call to itself at a
+bigger type each time is stopped when the types have grown past anything a
+program writes, since a copy is made per type; and a type that holds itself
+at a bigger type, `Nest(a)` holding a `Nest((a, a))`, is refused where it is
+written, for the same reason.
 
 ### Loops
 
