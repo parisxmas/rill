@@ -143,6 +143,17 @@ pub struct FnDef {
     /// function it was written inside. The checker keeps the two together so
     /// a captured value has the type it had where it was captured.
     pub lifted_from: Option<String>,
+    /// `where Describe(a)`: what the signature's type variables are required
+    /// to implement, said rather than left for the body to imply.
+    pub wheres: Vec<Bound>,
+}
+
+/// One requirement of a `where` clause: a trait, of a type variable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bound {
+    pub trait_name: String,
+    pub var: String,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -94,7 +94,7 @@ fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
     };
     for name in mine {
         if let Some(&i) = tmod.fn_index.get(&name) {
-            println!("{}", rill_types::show_signature(&tmod.fns[i], &tmod.adts));
+            println!("{}", rill_types::show_signature(&tmod.fns[i], &tmod.adts, &tmod.traits));
         }
     }
     Ok(ExitCode::SUCCESS)

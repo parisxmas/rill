@@ -5062,13 +5062,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Constraint::Basic => {
                     matches!(ty, Ty::Int | Ty::Float | Ty::Float2 | Ty::Bool | Ty::Str | Ty::Adt(..))
                 }
+                Constraint::Impl(t) => self.user_impl(*t, 0, ty).is_some(),
             };
             if !ok {
                 let what = match c {
-                    Constraint::Numeric => "be Int or Float",
-                    Constraint::Addable => "support `+`",
-                    Constraint::Ordered => "be ordered (Int, Float, Str or an `Ord` impl)",
-                    Constraint::Basic => "be printable",
+                    Constraint::Numeric => "be Int or Float".to_string(),
+                    Constraint::Addable => "support `+`".to_string(),
+                    Constraint::Ordered => "be ordered (Int, Float, Str or an `Ord` impl)".to_string(),
+                    Constraint::Basic => "be printable".to_string(),
+                    Constraint::Impl(t) => format!("implement `{}`", self.tmod.traits[*t].name),
                 };
                 return Err(CodegenError::new(
                     *line,

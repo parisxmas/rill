@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — a requirement said in the signature
+
+A generic function's requirements were whatever its body implied — an
+`a > b` made `a` ordered — and travelled with the scheme unseen. A
+`where` clause says them: `fn shout(x: a) -> Str where Describe(a)`
+requires an implementation of `Describe` of `a`, checked at every use
+like an implied requirement is, printed by `rill types` as "'a
+implements `Describe`", and refused at the definition where `a` is not
+one of the signature's variables or the trait does not exist. `Ord` and
+`Show` may be required the same way.
+
 ## Unreleased — a method's name is its trait's
 
 A method name was global: two traits could not both have a `describe`,

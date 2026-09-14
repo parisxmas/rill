@@ -2098,6 +2098,33 @@ fn a_method_name_belongs_to_its_trait() {
     assert!(err.contains("the type it is called on is not known here"), "{err}");
 }
 
+/// A `where` clause says what a signature's type variables must implement.
+/// It is checked at every use, printed by `rill types`, and refused at the
+/// definition where it names nothing.
+#[test]
+fn a_where_clause_says_what_a_type_variable_must_implement() {
+    let head = "trait Describe(a)\n  \
+                  describe(a) -> Str\n\n\
+                type Dog\n  \
+                  Dog(n: Str)\n\n\
+                impl Describe(Dog)\n  \
+                  fn describe(d) = \"dog \" + d.n\n\n\
+                fn shout(x: a) -> Str where Describe(a) = describe(x) + \"!\"\n\n\
+                fn biggest(a: t, b: t) -> t where Ord(t) = if a > b then a else b\n\n";
+    let src = format!("{head}fn main() =\n  println(shout(Dog(\"rex\")))\n  println(int_to_str(biggest(3, 9)))\n");
+    assert_eq!(run_source("wheres", &src), "dog rex!\n9\n");
+    assert_eq!(fmt_source(&src), src);
+
+    let wrong = format!("{head}fn main() = println(shout(1))\n");
+    let err = compile_error(&wrong);
+    assert!(err.contains("`shout` cannot be used at Int") && err.contains("implement `Describe`"), "{err}");
+
+    let stray = "fn f(x: Int) -> Int where Show(b) = x\n\nfn main() = println(1)\n";
+    assert!(compile_error(stray).contains("`b` is not a type variable of this signature"));
+    let none = "fn f(x: a) -> Int where Nope(a) = 1\n\nfn main() = println(1)\n";
+    assert!(compile_error(none).contains("unknown trait `Nope`"));
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

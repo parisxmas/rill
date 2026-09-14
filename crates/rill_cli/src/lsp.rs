@@ -456,7 +456,7 @@ fn analyze(uri: &str, text: &str) -> Analysis {
 
     for (i, f) in tmod.fns.iter().enumerate() {
         let _ = i;
-        a.sigs.insert(f.name.clone(), rill_types::show_signature(f, &tmod.adts));
+        a.sigs.insert(f.name.clone(), rill_types::show_signature(f, &tmod.adts, &tmod.traits));
     }
     for (name, &(adt, ci)) in &tmod.ctors {
         let sig = &tmod.adts[adt].ctors[ci];

@@ -196,6 +196,7 @@ fn expand_for(
         },
         line,
         lifted_from: None,
+        wheres: Vec::new(),
     };
     let mut stmts = pre;
     stmts.push(Stmt::Bind { name: lo.clone(), value: from, line });
@@ -301,6 +302,7 @@ fn expand_while(
                 },
                 line,
                 lifted_from: None,
+                wheres: Vec::new(),
             },
             call(&go, vec![]),
         ),
@@ -318,6 +320,7 @@ fn expand_while(
                 },
                 line,
                 lifted_from: None,
+                wheres: Vec::new(),
             },
             call(&go, vec![*init]),
         ),
@@ -350,6 +353,7 @@ fn expand_while(
                         },
                         line,
                         lifted_from: None,
+                        wheres: Vec::new(),
                     },
                     first,
                 )
@@ -372,6 +376,7 @@ fn expand_while(
                         ]),
                         line,
                         lifted_from: None,
+                        wheres: Vec::new(),
                     },
                     call(&go, vec![*init]),
                 )
@@ -416,6 +421,7 @@ fn expand_while(
         body: Expr::Int(0),
         line,
         lifted_from: None,
+        wheres: Vec::new(),
     })));
     stmts.push(Stmt::Expr(call(&vouch, vouched)));
     stmts.push(Stmt::Expr(Expr::Var(res, line)));
@@ -1608,6 +1614,7 @@ fn walk_block(
             // Only what closed over something has to be inferred with the
             // function it was written in; see the note at the top.
             lifted_from: (!l.caps.is_empty()).then(|| parent.to_string()),
+            wheres: Vec::new(),
         });
     }
     Ok(kept)

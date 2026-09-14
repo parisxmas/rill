@@ -362,7 +362,7 @@ impl Fmt {
             None => String::new(),
         };
         let kw = if f.exported { "export fn" } else { "fn" };
-        let header = format!("{kw} {}({}){} =", f.name, params.join(", "), ret);
+        let header = format!("{kw} {}({}){}{} =", f.name, params.join(", "), ret, wheres(f));
 
         match &f.body {
             Expr::Block(stmts) => {
@@ -425,7 +425,7 @@ impl Fmt {
             Some(t) => format!(" -> {}", type_ref(t)),
             None => String::new(),
         };
-        let header = format!("fn {}({}){} =", f.name, params.join(", "), ret);
+        let header = format!("fn {}({}){}{} =", f.name, params.join(", "), ret, wheres(f));
         match &f.body {
             Expr::Block(stmts) => {
                 let body = self.block_lines(stmts, ind + 1);
@@ -976,6 +976,15 @@ fn with_pat(acc: &Option<(Vec<Param>, Box<Expr>)>, ind: usize) -> String {
         }
         None => String::new(),
     }
+}
+
+/// ` where Describe(a), Ord(b)`, or nothing.
+fn wheres(f: &FnDef) -> String {
+    if f.wheres.is_empty() {
+        return String::new();
+    }
+    let bs: Vec<String> = f.wheres.iter().map(|b| format!("{}({})", b.trait_name, b.var)).collect();
+    format!(" where {}", bs.join(", "))
 }
 
 fn type_ref(t: &TypeRef) -> String {

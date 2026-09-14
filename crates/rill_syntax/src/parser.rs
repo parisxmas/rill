@@ -596,9 +596,30 @@ impl Parser {
         } else {
             None
         };
+        // `where Describe(a), Ord(b)`: what the type variables must implement.
+        // Not a keyword — a library has a function called `where` — but a
+        // name that means this in the one place it can stand, between a
+        // signature and its `=`.
+        let mut wheres = Vec::new();
+        if matches!(self.peek(), Tok::Ident(w) if w == "where") {
+            self.bump();
+            loop {
+                let (bline, _) = self.here();
+                let trait_name = self.upper_ident("a trait name after `where`")?;
+                self.expect(&Tok::LParen, "after the trait name in a `where`")?;
+                let var = self.ident("the type variable the trait is required of")?;
+                self.expect(&Tok::RParen, "to close the requirement")?;
+                wheres.push(Bound { trait_name, var, line: bline });
+                if matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
         self.expect(&Tok::Eq, "before the function body")?;
         let body = self.body()?;
-        Ok(FnDef { name, exported, params, ret_ann, body, line, lifted_from: None })
+        Ok(FnDef { name, exported, params, ret_ann, body, line, lifted_from: None, wheres })
     }
 
     /// Function body: inline expression, or an indented block of statements.

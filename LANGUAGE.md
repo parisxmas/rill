@@ -582,7 +582,21 @@ copy per concrete type, so there is no boxing and no dispatch overhead.
 
 Requirements a body imposes travel with the type. `fn biggest(a, b) = if a > b
 then a else b` works for any ordered type, and using it at a type that isn't
-ordered is a compile error naming the function and the type.
+ordered is a compile error naming the function and the type. A requirement
+may also be said, in a `where` clause after the signature:
+
+```
+fn shout(x: a) -> Str where Describe(a) = describe(x) + "!"
+fn sorted(xs: List(a)) -> List(a) where Ord(a) = ...
+```
+
+It names a trait of one of the signature's type variables — a user trait,
+or `Ord` or `Show` — and is checked at every use of the function like a
+requirement the body implied, naming the function, the type and the trait.
+What it adds is that the signature says it: `rill types` and a reader see
+the contract without the body, and a use at the wrong type is refused for
+the reason the author gave. The body is still inferred; a `where` says what
+is required, not what the body may do.
 
 A lowercase name in an annotation is a type variable, and the same name is
 the same type throughout the signature: `fn same(x: a, y: a) = x` takes two

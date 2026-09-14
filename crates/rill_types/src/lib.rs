@@ -485,6 +485,8 @@ pub enum Constraint {
     /// Anything with structural equality: everything except functions and
     /// channels.
     Basic,
+    /// A type with an implementation of this trait: what a `where` says.
+    Impl(usize),
 }
 
 // ---- checker --------------------------------------------------------------
@@ -569,6 +571,11 @@ struct Checker {
     /// call itself, or a group-mate, at another type. The body is held to
     /// the declaration once the group is generalized.
     declared: HashMap<usize, (Vec<Ty>, Ty, usize)>,
+    /// What a function's `where` requires of its type variables, by index:
+    /// the inference variable standing for each, the trait, and the line.
+    /// Asked of the body's group when the body is inferred, so that it
+    /// travels with the scheme like a requirement the body implied.
+    bounds: HashMap<usize, Vec<(Ty, Constraint, usize)>>,
     /// All functions to check: user functions plus mangled impl methods.
     expanded_fns: Vec<FnDef>,
     /// For each function index, the name it was written inside if it was
@@ -618,6 +625,7 @@ impl Checker {
             impl_methods: HashMap::new(),
             forced_sigs: HashMap::new(),
             declared: HashMap::new(),
+            bounds: HashMap::new(),
             expanded_fns: Vec::new(),
             lifted: Vec::new(),
             prelude_fns: 0,
@@ -909,7 +917,7 @@ impl Checker {
                         ),
                     ));
                 }
-                if f.params.iter().any(|p| p.ann.is_some()) || f.ret_ann.is_some() {
+                if f.params.iter().any(|p| p.ann.is_some()) || f.ret_ann.is_some() || !f.wheres.is_empty() {
                     return Err(TypeError::new(
                         f.line,
                         "impl methods take their types from the trait; remove the annotations"
@@ -1218,6 +1226,34 @@ impl Checker {
                 c.declared.insert(idx, (params.clone(), ret.clone(), vars.len()));
             }
             let inst: Vec<Ty> = (0..vars.len()).map(|_| c.fresh()).collect();
+            // `where Describe(a)`: `a` has to be one of the signature's
+            // variables, and the trait one there is.
+            let mut required = Vec::new();
+            for b in &f.wheres {
+                let Some(&i) = names.get(b.var.as_str()) else {
+                    return Err(TypeError::new(
+                        b.line,
+                        format!(
+                            "`where {}({})`: `{}` is not a type variable of this signature",
+                            b.trait_name, b.var, b.var
+                        ),
+                    ));
+                };
+                let Some(tid) = c.traits.iter().position(|(n, _)| *n == b.trait_name) else {
+                    return Err(TypeError::new(b.line, format!("unknown trait `{}`", b.trait_name)));
+                };
+                // `Ord` and `Show` are the built-in notions, which `Int` and
+                // `Str` meet without an impl.
+                let need = match tid {
+                    ORD_TRAIT => Constraint::Ordered,
+                    SHOW_TRAIT => Constraint::Basic,
+                    t => Constraint::Impl(t),
+                };
+                required.push((inst[i as usize].clone(), need, b.line));
+            }
+            if !required.is_empty() {
+                c.bounds.insert(idx, required);
+            }
             let params = params.iter().map(|t| subst_gen(t, &inst)).collect();
             let ret = subst_gen(&ret, &inst);
             c.fn_index.insert(f.name.clone(), idx);
@@ -1495,15 +1531,19 @@ impl Checker {
             Constraint::Basic => {
                 matches!(ty, Ty::Int | Ty::Float | Ty::Float2 | Ty::Bool | Ty::Str | Ty::Adt(..))
             }
+            Constraint::Impl(t) => self.has_impl(t, ty),
         };
         if ok {
             Ok(())
         } else {
             let allowed = match need {
-                Constraint::Numeric => "Int or Float",
-                Constraint::Addable => "Int, Float or Str",
-                Constraint::Ordered => "Int, Float, Str or a type with an `Ord` implementation",
-                Constraint::Basic => "a value type (not a function, channel or storage)",
+                Constraint::Numeric => "Int or Float".to_string(),
+                Constraint::Addable => "Int, Float or Str".to_string(),
+                Constraint::Ordered => {
+                    "Int, Float, Str or a type with an `Ord` implementation".to_string()
+                }
+                Constraint::Basic => "a value type (not a function, channel or storage)".to_string(),
+                Constraint::Impl(t) => format!("a type with a `{}` implementation", self.traits[t].0),
             };
             // Storage is the interesting refusal: a map or a buffer is a
             // thing that changes, so printing or comparing one is a question
@@ -1846,6 +1886,11 @@ impl Checker {
             }
         }
         let saved_name = std::mem::replace(&mut self.cur_fn_name, f.name.clone());
+        // What the `where` clause requires, asked now so that it is settled
+        // with the body's own requirements and travels with the scheme.
+        for (ty, need, line) in self.bounds.get(&idx).cloned().unwrap_or_default() {
+            self.require(&ty, need, line, "the `where` clause")?;
+        }
         self.expected_ret.push(sig_ret.clone());
         let body = self.infer(&f.body, &mut env);
         self.expected_ret.pop();
@@ -5134,7 +5179,7 @@ pub fn show_type(ty: &Ty, adts: &[AdtDef]) -> String {
 /// A function's signature as a program would write it, with the requirements
 /// its body imposed on each type parameter — which is the part a reader cannot
 /// work out and the checker can.
-pub fn show_signature(f: &TFn, adts: &[AdtDef]) -> String {
+pub fn show_signature(f: &TFn, adts: &[AdtDef], traits: &[TraitInfo]) -> String {
     let params: Vec<String> = f
         .params
         .iter()
@@ -5144,13 +5189,17 @@ pub fn show_signature(f: &TFn, adts: &[AdtDef]) -> String {
     let mut needs: Vec<String> = Vec::new();
     for (g, c, _) in &f.constraints {
         let what = match c {
-            Constraint::Numeric => "a number",
-            Constraint::Addable => "addable",
-            Constraint::Ordered => "ordered",
-            Constraint::Basic => "a value type",
+            Constraint::Numeric => "a number".to_string(),
+            Constraint::Addable => "addable".to_string(),
+            Constraint::Ordered => "ordered".to_string(),
+            Constraint::Basic => "a value type".to_string(),
+            Constraint::Impl(t) => format!("`{}`", traits[*t].name),
         };
         let name = show_type(&Ty::Gen(*g), adts);
-        let one = format!("{name} is {what}");
+        let one = match c {
+            Constraint::Impl(_) => format!("{name} implements {what}"),
+            _ => format!("{name} is {what}"),
+        };
         if !needs.contains(&one) {
             needs.push(one);
         }
