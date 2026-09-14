@@ -555,10 +555,14 @@ export function DataGrid(props) {
       if (n != null) td.appendChild(n instanceof Node ? n : document.createTextNode(String(n)));
       return td;
     }
+    // `td` is assigned below; the class effect runs once while it is being
+    // built, when a focused cell elsewhere (a group row just closed, say)
+    // must not reach for it.
+    let td = null;
     const classes = () => {
       const m = (rev(), markOf(row, col));
       const f = focused();
-      const here = f && f.r === Number(td.dataset.r) && f.c === ci;
+      const here = f && td && f.r === Number(td.dataset.r) && f.c === ci;
       return [
         col.align === "right" ? "zap-grid__num" : "",
         editable(col) ? "zap-grid__editable" : "",
@@ -576,7 +580,7 @@ export function DataGrid(props) {
       const e = editing();
       return !!(e && e.row === row && e.col === col);
     });
-    const td = html`<td class=${classes} tabindex=${editable(col) ? "0" : "-1"}
+    td = html`<td class=${classes} tabindex=${editable(col) ? "0" : "-1"}
       data-c=${String(ci)}
       title=${() => { const m = (rev(), markOf(row, col)); return m && m.error ? m.error : ""; }}
       onfocus=${() => focused.set({ r: Number(td.dataset.r), c: ci })}
