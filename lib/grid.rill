@@ -219,8 +219,11 @@ fn run_split(chunks, n, f) =
   if w < 2 then f(0, n)
   else
     done = channel()
+    # `f` writes its own range of the result and nothing else: the claim a
+    # `--parallel` build asks for, since what a closure holds is not in its
+    # type. See "What strands may share" in the reference.
     for t in 0..w
-      spawn chunk_job(f, n * t / w, n * (t + 1) / w, done)
+      spawn chunk_job(apart(f), n * t / w, n * (t + 1) / w, done)
     for t in 0..w
       recv(done)
 
@@ -231,8 +234,9 @@ fn part_job(f, t, lo, hi, out) = send(out, (t, f(lo, hi)))
 fn reduce_f(n, f, combine) =
   w = workers()
   out = channel()
+  # `f` only reads its range; `apart` is the claim, as above.
   for t in 0..w
-    spawn part_job(f, t, n * t / w, n * (t + 1) / w, out)
+    spawn part_job(apart(f), t, n * t / w, n * (t + 1) / w, out)
   parts = buf_float(w)
   for t in 0..w
     (i, v) = recv(out)
@@ -249,7 +253,7 @@ fn reduce_fi(n, f, combine) =
   w = workers()
   out = channel()
   for t in 0..w
-    spawn part_job2(f, t, n * t / w, n * (t + 1) / w, out)
+    spawn part_job2(apart(f), t, n * t / w, n * (t + 1) / w, out)
   ms = buf_float(w)
   is = buf_int(w)
   for t in 0..w

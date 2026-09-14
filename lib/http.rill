@@ -350,9 +350,16 @@ fn handle_conn(conn, handler) = next_request(conn, handler, \c, raw -> false, ""
 #
 #     h.serve_taking(server, \req -> route(req), \conn, raw ->
 #       if ws.ws_wanted(raw) then live(conn, raw) else false)
+#
+# Every connection's strand is handed the same `handler` and `taken`, and
+# what a closure holds is not in its type, so a `--parallel` build asks for
+# the claim `apart` makes: that what they hold is read, or written apart.
+# A handler that writes storage it closed over from every connection — a
+# counter, a table — is a race on several workers, and that is the
+# program's to keep out of a handler or to keep on one worker.
 fn serve_taking(server, handler, taken) =
   conn = tcp_accept(server)
-  spawn next_request(conn, handler, taken, "")
+  spawn next_request(conn, apart(handler), apart(taken), "")
   serve_taking(server, handler, taken)
 
 # `carried` is whatever the last read took past the end of the request before
@@ -480,7 +487,7 @@ fn serve_n(port, handler, count) = match listen_on(port)
 
 fn accept_n(server, handler, count) =
   conn = tcp_accept(server)
-  spawn handle_conn(conn, handler)
+  spawn handle_conn(conn, apart(handler))  # the claim `serve_taking` explains
   if count == 1 then sock_close(server) else accept_n(server, handler, count - 1)
 
 fn serve(port, handler) = match listen_on(port)
@@ -489,7 +496,7 @@ fn serve(port, handler) = match listen_on(port)
 
 fn accept_forever(server, handler) =
   conn = tcp_accept(server)
-  spawn handle_conn(conn, handler)
+  spawn handle_conn(conn, apart(handler))  # the claim `serve_taking` explains
   accept_forever(server, handler)
 
 # -- middleware ----------------------------------------------------------------

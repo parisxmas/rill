@@ -21,7 +21,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill>\n  rill types <file.rill>\n  rill explain <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill explain <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -40,14 +40,22 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
         }
         "check" => {
-            let src = rest.first().ok_or(USAGE)?;
+            let src = rest.iter().find(|a| !a.starts_with("--")).ok_or(USAGE)?;
+            let parallel = rest.iter().any(|a| a == "--parallel");
             let path = PathBuf::from(src);
             let module = rill_syntax::load_program(&path)?;
             // Everything one pass can find, rather than the first thing: a
             // file with three mistakes in it should take one run to learn
             // about three mistakes.
-            match rill_types::check_all(&module) {
-                Ok(_) => Ok(ExitCode::SUCCESS),
+            let shared = match rill_types::check_all(&module) {
+                // What strands share is a question only a `--parallel`
+                // build asks, and `check --parallel` asks it too.
+                Ok(tmod) if parallel => rill_types::check_shared(&tmod),
+                Ok(_) => Ok(()),
+                Err(errors) => Err(errors),
+            };
+            match shared {
+                Ok(()) => Ok(ExitCode::SUCCESS),
                 Err(errors) => {
                     for e in &errors {
                         eprintln!("{}: {e}", path.display());
@@ -376,6 +384,15 @@ fn build(opts: &BuildOpts) -> Result<PathBuf, String> {
 
     let tmod = rill_types::check(&module)
         .map_err(|e| format!("{}: {e}", opts.source.display()))?;
+    // Several workers make a race of what one worker only interleaves, so
+    // what strands share is checked for the build that has several.
+    if opts.parallel {
+        if let Err(errors) = rill_types::check_shared(&tmod) {
+            let lines: Vec<String> =
+                errors.iter().map(|e| format!("{}: {e}", opts.source.display())).collect();
+            return Err(lines.join("\n"));
+        }
+    }
 
     // wasm has no instructions to spell out: a module is verified before it
     // runs and there is no place in it for a machine's own encoding. Say so

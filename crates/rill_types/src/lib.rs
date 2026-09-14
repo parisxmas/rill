@@ -15,6 +15,9 @@
 //!   polymorphic recursion), like OCaml.
 //! - Unconstrained numeric/printable types default to Int.
 
+mod shared;
+pub use shared::check_shared;
+
 use std::collections::{HashMap, HashSet};
 
 use rill_syntax::{

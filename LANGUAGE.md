@@ -1238,6 +1238,54 @@ tail call, so a strand that loops forever hands the worker over now and then
 alone, which is what keeps a loop over ten million floats in vector
 instructions.
 
+### What strands may share
+
+Storage — a `Buf`, a `Map`, a `StrBuf`, or anything holding one — is the
+one kind of value two strands can disagree about: a write from one under a
+read or a write from another is a race, and on several workers a race is
+what the machine makes of it. So a `--parallel` build checks what strands
+share, before the program runs, and `rill check --parallel` asks the same
+question of a file:
+
+- A value handed to a strand — captured by a `spawn`, or sent down a
+  channel — and **not used afterwards** by the side that gave it is the
+  strand's alone. Anything goes.
+- One that **is** used afterwards is shared. Sharing to read is fine: three
+  strands summing thirds of one buffer while the fourth reads it too. Sharing
+  and **writing** — the strand writes it, or the strand reads it while the
+  side that kept it writes — is refused, naming the value and the line.
+- A **function value is opaque**: what it holds and writes is not in its
+  type, so a closure shared between strands is refused unless the program
+  says what it knows about it.
+
+What the program knows is said with `apart(x)`, which is `x` and a claim:
+that this value is shared on purpose and the writes to it are kept apart —
+each strand its own range of a buffer, one writer and readers of a word, a
+closure that reads what it holds. The compiler cannot check the claim; it can
+make sure there is one to find. `spawn work(apart(f), lo, hi, done)` is how
+`lib/grid.rill` splits an operation across the workers, and how `lib/http`
+hands every connection's strand the one handler.
+
+```
+fn fill(b: Buf(Int), v) = for i in 0..#b
+  b[i] = v
+
+fn main() =
+  b = buf_int(8)
+  spawn fill(b, 1)      # refused: `b` is written by this strand and still used here
+  spawn fill(b, 2)
+  println(int_to_str(b[0]))
+```
+
+The check follows a value through bindings, fields, matches and calls that
+answer with what they were given, and knows which of a function's
+parameters it writes, through every call. Where it cannot see — an extern,
+a method call, a closure, a runtime call handed storage — it assumes a
+write, so what it refuses may be safe, and what it accepts without a claim
+is: no strand writes storage another can still reach, unless `apart` says
+so somewhere in the program. A one-worker build interleaves strands only
+where they wait, so the same program is not checked there.
+
 ---
 
 ## 8. The prelude
@@ -1264,6 +1312,9 @@ answers with
 **Numbers**: `max` `min` `abs`
 
 **Strings**: `join` `repeat` `split` `lines` `trim` `contains` `starts_with`
+
+**Strands**: `apart(x)` — `x`, and the claim that strands share it on
+purpose; see [What strands may share](#what-strands-may-share)
 
 **Characters**: `char_count` `char_at` `char_sub` `char_take` `char_drop`
 `chars` `from_char` `from_chars` `char_decode` `char_wide` — see

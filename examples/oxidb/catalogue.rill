@@ -262,8 +262,10 @@ fn announce(server, db, port) =
   watching = map_new()
   cell = weight_cell()
   # Once before the doors open, so the first page has real numbers in it.
+  # The cell is two words one strand writes and every handler reads — shared
+  # on purpose, which a `--parallel` build asks the program to say.
   weigh_once(pool, cell)
-  spawn weigh_every(pool, cell)
+  spawn weigh_every(pool, apart(cell))
   answer = h.wrap(Cons(h.rate_limit(writes_a_second()), Nil), \req -> route(pool, kept, watching, cell, req))
   h.serve_taking(server, answer, \conn, raw -> live(watching, conn, raw))
 

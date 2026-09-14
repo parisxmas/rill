@@ -105,6 +105,12 @@ fn all(l, p) = match l
   Nil -> true
   Cons(x, rest) -> p(x) && all(rest, p)
 
+# The program's claim, for a `--parallel` build: this value is shared between
+# strands on purpose, and the writes to it are kept apart. `apart(x)` is `x`;
+# what it does is let `spawn work(apart(out))` compile where `spawn work(out)`
+# is refused as a race. See "Running on several cores" in the reference.
+fn apart(x) = x
+
 # -- options and results -----------------------------------------------------
 
 fn unwrap_or(o, d) = match o

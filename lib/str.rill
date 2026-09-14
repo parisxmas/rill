@@ -888,8 +888,10 @@ fn unescape(s) =
 fn par_ranges(s, k, f) =
   ch = channel(k)
   step = (#s + k - 1) / k
+  # `f` reads its range of `s` and answers: the claim a `--parallel` build
+  # asks for of a closure shared between strands.
   for i in 0..k
-    spawn run_range(ch, f, i, min(i * step, #s), min((i + 1) * step, #s))
+    spawn run_range(ch, apart(f), i, min(i * step, #s), min((i + 1) * step, #s))
   rs = for _ in 0..k with acc = Nil
     Cons(recv(ch), acc)
   for i in 0..k with acc = Nil

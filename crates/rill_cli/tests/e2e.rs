@@ -197,6 +197,17 @@ fn run_source_dies(name: &str, src: &str) -> String {
     String::from_utf8_lossy(&run.stderr).into_owned()
 }
 
+/// What `rill check --parallel` says about a program written here: empty
+/// when it passes.
+fn check_parallel(src: &str) -> String {
+    let out_dir = std::env::temp_dir().join(bad_name("par"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("par.rill");
+    std::fs::write(&path, src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("check").arg("--parallel").arg(&path).output().unwrap();
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
 /// What `rill fmt` writes a program written here back as.
 fn fmt_source(src: &str) -> String {
     let out_dir = std::env::temp_dir().join(bad_name("fmt"));
@@ -2214,6 +2225,62 @@ fn explain_reports_the_memory_decisions() {
     ] {
         assert!(report.contains(want), "missing {want:?} in:\n{report}");
     }
+}
+
+/// A `--parallel` build refuses storage that two strands could disagree
+/// about: written by a strand and still used by the side that gave it, or
+/// sent and kept. Reading is shared freely, a hand-over is the strand's
+/// own, a closure is opaque, and `apart(x)` is the program's claim.
+#[test]
+fn a_parallel_build_checks_what_strands_share() {
+    let fill = "fn fill(b: Buf(Int), v) = for i in 0..#b\n  \
+                  b[i] = v\n\n";
+    let two = format!("{fill}fn main() =\n  b = buf_int(8)\n  spawn fill(b, 1)\n  spawn fill(b, 2)\n  println(int_to_str(b[0]))\n");
+    let err = check_parallel(&two);
+    assert!(err.contains("`b` is written by this strand and still used here after the `spawn`"), "{err}");
+
+    let handed = format!("{fill}fn main() =\n  b = buf_int(8)\n  b[0] = 5\n  spawn fill(b, 1)\n  println(\"handed over\")\n");
+    assert_eq!(check_parallel(&handed), "");
+
+    let readers = "fn total(b: Buf(Int), ch) =\n  \
+                     s = for i in 0..#b with acc = 0\n    \
+                       acc + b[i]\n  \
+                     send(ch, s)\n\n\
+                   fn main() =\n  \
+                     b = buf_int(8)\n  \
+                     ch = channel()\n  \
+                     spawn total(b, ch)\n  \
+                     spawn total(b, ch)\n  \
+                     println(int_to_str(recv(ch) + recv(ch) + b[0]))\n";
+    assert_eq!(check_parallel(readers), "");
+
+    let record = "type Grid\n  Grid(n: Int, data: Buf(Float))\n\n\
+                  fn scale(g: Grid, k) = for i in 0..g.n\n  g.data[i] = g.data[i] * k\n\n\
+                  fn main() =\n  g = Grid(4, buf_float(4))\n  spawn scale(g, 2.0)\n  println(show(g.data[0]))\n";
+    assert!(check_parallel(record).contains("`g` is written by this strand"));
+
+    let worker = "fn work(f, lo, hi, done) =\n  \
+                    f(lo, hi)\n  \
+                    send(done, 1)\n\n\
+                  fn main() =\n  \
+                    done = channel()\n  \
+                    b = buf_int(8)\n  \
+                    f = \\lo, hi -> for i in lo..hi\n    \
+                      b[i] = i\n  \
+                    for t in 0..2\n    \
+                      spawn work(FF, t * 4, t * 4 + 4, done)\n  \
+                    recv(done)\n  \
+                    recv(done)\n  \
+                    println(int_to_str(b[5]))\n";
+    let bare = worker.replace("FF", "f");
+    assert!(check_parallel(&bare).contains("`f` is a function value"), "{}", check_parallel(&bare));
+    let claimed = worker.replace("FF", "apart(f)");
+    assert_eq!(check_parallel(&claimed), "");
+
+    let sent = "fn store(b: Buf(Int)) =\n  b[0] = 9\n  0\n\n\
+                fn sink(ch) =\n  store(recv(ch))\n  sink(ch)\n\n\
+                fn main() =\n  ch = channel()\n  b = buf_int(4)\n  spawn sink(ch)\n  send(ch, b)\n  b[1] = 2\n  println(int_to_str(b[0]))\n";
+    assert!(check_parallel(sent).contains("`b` is sent down a channel and still used here after"));
 }
 
 /// A field only some constructors have is not certainly there, and one of two

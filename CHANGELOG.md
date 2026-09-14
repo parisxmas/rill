@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — what strands may share
+
+Nothing stopped two strands from writing one buffer. A `--parallel`
+build checks it now, before the program runs: storage — a `Buf`, a
+`Map`, a `StrBuf`, or anything holding one — handed to a strand by a
+`spawn` or a `send` and used afterwards by the side that gave it is
+shared, and shared storage that either side writes is refused, naming
+the value and the line. Sharing to read is fine; a value not used
+afterwards is the strand's alone. A function value is opaque — what it
+holds and writes is not in its type — so a closure shared between
+strands is refused too, unless the program says what it knows: `apart(x)`
+is `x` and the claim that the writes are kept apart, which the compiler
+cannot check and a reader can find. `rill check --parallel` asks the
+same of a file; a one-worker build, which interleaves strands only where
+they wait, is not checked.
+
+The check follows a value through bindings, fields, matches and calls
+that answer with a parameter, knows which parameters a function writes
+through every call, and assumes a write wherever it cannot see. It
+found two things on the way: the catalogue's memory cell, two words one
+strand writes and every handler reads, and `lib/http`'s handler, which
+every connection's strand is handed and which the middleware example
+has closing over a rate limiter's table that every strand writes. Both
+now say `apart`, and the second says in the library what the claim
+covers and what it does not.
+
 ## Unreleased — `rill explain`
 
 The memory model was documented and invisible: the rules said when a
