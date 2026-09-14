@@ -1081,6 +1081,11 @@ fn repository_sources_are_formatted() {
         "examples/oxidb",
         "benchmarks",
         "benchmarks/http",
+        "lib/time",
+        "lib/text",
+        "lib/random",
+        "lib/cli",
+        "lib/num",
         "editors/vscode/test",
     ] {
         for entry in std::fs::read_dir(root.join(dir)).unwrap() {
@@ -1853,6 +1858,10 @@ fn fmt_keeps_the_breaks_the_author_wrote() {
     // And still folds what was written on one line.
     let flat = "fn main() = println(int_to_str(1 + 2))\n";
     assert_eq!(fmt_source(flat), flat);
+    // A comparison on either side of a comparison keeps its parentheses:
+    // comparisons do not chain, so without them the line would not parse.
+    let cmp = "fn f(a, b) = (a < 0) != (b < 0)\n\nfn main() = println(bool_to_str(f(-1, 1)))\n";
+    assert_eq!(fmt_source(cmp), cmp);
 }
 
 /// `?` on an `Option`, in a function that answers one: the value inside the
@@ -2526,6 +2535,31 @@ fn a_ring_is_refused_or_reported() {
     let run = Command::new(&exe).env("RILL_ALLOC_CHECK", "1").env("RILL_DEBUG_ALLOC", "1").output().unwrap();
     let report = String::from_utf8_lossy(&run.stderr);
     assert!(report.contains("live allocations: 300") && report.contains("300 block(s) made in make"), "{report}");
+}
+
+/// The libraries under `lib/`'s folders carry their own tests, and `rill
+/// test` runs them: every module, every test, green.
+#[test]
+fn the_libraries_pass_their_own_tests() {
+    let root = workspace_root();
+    for (module, tests) in [
+        ("lib/time/clock.rill", 2),
+        ("lib/time/date.rill", 4),
+        ("lib/text/path.rill", 3),
+        ("lib/text/regex.rill", 4),
+        ("lib/random/rnd.rill", 3),
+        ("lib/cli/args.rill", 2),
+        ("lib/num/decimal.rill", 3),
+        ("lib/num/bigint.rill", 3),
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("test").arg(root.join(module)).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && text.ends_with(&format!("{tests} tests: {tests} passed, 0 failed\n")),
+            "{module}:\n{text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 /// A field only some constructors have is not certainly there, and one of two

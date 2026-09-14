@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased — eight libraries, in folders
+
+`lib/` was eighteen files in one flat list, and the things a program
+reaches for first — a date, a regular expression, a path, a random
+number, its own command line, a decimal amount, a big integer — were not
+among them. They are now, in folders, each a module with its use at its
+head, its helpers `private`, and its own tests:
+
+- `time/clock` — elapsed time, a timed call, a duration in words;
+  `time/date` — civil dates and times in UTC, the counts, the calendar,
+  ISO 8601, with nothing invented about time zones.
+- `text/regex` — a backtracking matcher: classes, anchors, groups,
+  alternatives, greedy and lazy counts, leftmost-first as Perl has it;
+  `text/path` — join, take apart, normalize, relative.
+- `random/rnd` — PCG32 as a value handed along, its reference stream
+  reproduced to the number.
+- `cli/args` — switches, values, slots, `--help` for free.
+- `num/decimal` — a count of units and a scale, rounded four ways on
+  request; `num/bigint` — any size, base a billion, division by binary
+  search on the quotient limb.
+
+A folder is a namespace: `import "text/regex" as re`. The reference
+lists the libraries in one table. On the way, the formatter was found
+dropping the parentheses around a comparison inside a comparison —
+`(a < 0) != (b < 0)` came back as a line that does not parse — and
+keeps them now.
+
 ## Unreleased — a ring, refused where it is made
 
 Reference counting cannot let go of a value that holds itself, and a

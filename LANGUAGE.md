@@ -1359,6 +1359,33 @@ purpose; see [What strands may share](#what-strands-may-share)
 
 ---
 
+### The libraries
+
+What the prelude does not have is in `lib/`, on the search path of every
+program in the project, imported by path and usually under a name:
+
+| | |
+|---|---|
+| `import "str" as s` | strings past the prelude: searches, transforms, parsers, every encoding, strands over a long text |
+| `import "json"`, `"yaml"` | the two formats, read and written |
+| `import "http" as h`, `"ws"` | an HTTP/1.1 server with middleware, and WebSocket over it |
+| `import "grid" as g` | arrays of numbers with a shape, as NumPy has them |
+| `import "kv"` | a key–value store on disk: a B+ tree, a page cache, a log |
+| `import "sha1"`, `"passwd"` | SHA-1 and base64; storing a password so it cannot be read back |
+| `import "time/clock" as clock` | elapsed time, a timed call, a duration in words |
+| `import "time/date" as date` | civil dates and times in UTC: the counts, the calendar, ISO 8601 |
+| `import "text/regex" as re` | regular expressions: a backtracking matcher with groups |
+| `import "text/path" as path` | file paths as text: join, take apart, normalize |
+| `import "random/rnd" as rnd` | PCG32: a generator that is a value, and the draws made from it |
+| `import "cli/args" as cli` | what a program takes on its command line, said once, parsed and explained |
+| `import "num/decimal" as dec` | decimals with a fixed number of places, for money |
+| `import "num/bigint" as big` | integers of any size |
+| `import "oxidb"` and friends | clients for OxiDB's engines |
+
+Each module says at its head what it is for and how it is used, keeps its
+helpers `private`, and carries its own tests: `rill test lib/text/regex.rill`
+runs them.
+
 ## 9. Sockets
 
 TCP, with the scheduler doing the waiting. A strand blocked on a socket
