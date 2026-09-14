@@ -138,10 +138,8 @@ The consequences are worth spelling out:
   boxed trait object, no `dyn Trait`, no `interface{}`. A `List(a)` has one
   element type.
 
-That last point is a real limitation, and it is the trade for the first two. In
-Rust you would reach for `Box<dyn Speak>`; in Java, an interface reference. In
-Rill, when you need a collection of mixed things, you declare a sum type
-listing them:
+That last point is the trade for the first two, and there are two ways round
+it. One is a sum type listing the kinds:
 
 ```
 type Speaker
@@ -150,8 +148,18 @@ type Speaker
 ```
 
 Which is more work up front, and closes the set — and which the compiler will
-then check you have handled exhaustively everywhere. Chapter 5's table of the
-expression problem is the right way to think about the choice.
+then check you have handled exhaustively everywhere. The other is an *object*
+of the trait: `Speak(dog)` is a record of the trait's methods, each a closure
+over `dog`, and its type is `Speak` — so a `List(Speak)` holds a dog and a
+robot, and `s.speak()` calls whichever it is. That is what `Box<dyn Speak>`
+is in Rust, built from parts the language already had: a record and some
+closures, one allocation per method when the object is made, and an indirect
+call through each. The set stays open — any type with an `impl` can join —
+and nothing else is boxed. A trait can be the type of objects only when
+every method takes the trait's type once, and first; one that compares two
+of them cannot be, and the compiler says which method is in the way. Chapter
+5's table of the expression problem is the right way to think about the
+choice between the two.
 
 ---
 

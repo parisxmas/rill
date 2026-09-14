@@ -977,6 +977,11 @@ fn with_pat(acc: &Option<(Vec<Param>, Box<Expr>)>, ind: usize) -> String {
 fn type_ref(t: &TypeRef) -> String {
     // `Fn` keeps its parentheses even when empty: `Fn()` is a callback taking
     // nothing, not a type named `Fn`.
+    if t.name == "->" {
+        let a: Vec<String> = t.args.iter().map(type_ref).collect();
+        let r = t.ret.as_ref().expect("an arrow has a result");
+        return format!("({}) -> {}", a.join(", "), type_ref(r));
+    }
     if is_tuple(&t.name, t.args.len()) {
         let a: Vec<String> = t.args.iter().map(type_ref).collect();
         return format!("({})", a.join(", "));

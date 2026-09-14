@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — an object of a trait
+
+A trait's dispatch is static, so a `List(a)` held one type, and a list
+of things that could all speak had to be a sum type listing them. Now
+a value can be made an object of the trait: `Speak(rex)` is a record of
+the trait's methods, each a closure over `rex`, and its type is the
+trait's name, so a `List(Speak)` holds a dog and a robot and `s.speak()`
+calls whichever it is. Written out it is `Speak.obj(\ -> speak(rex))`,
+a record whose fields hold functions, made by a constructor the trait
+declares — the checker writes that and infers it as any expression.
+Each call inside dispatches statically as before; what is paid is the
+closures, one allocation per method when the object is made, and the
+indirect call through each. A trait can be the type of objects when
+every method takes the trait's type once, and first; `Speak(x)` on one
+that compares two of them, or answers with one, says which method is in
+the way.
+
+Three smaller things it needed, each a gap on its own. A function's type
+could not be written in an annotation — the reference's table said
+`(A, B) -> C` and the parser said "expected a field type" — so a record
+of closures, the functional object, could not be declared at all; it
+can now, `() -> Str` included. A field that holds a function is called
+as `s.speak()`. And `\ -> e` is a lambda that takes nothing.
+
 ## Unreleased — a `\u` escape is a character
 
 `lib/json` read `\u00e9` as one byte — `chr(233)`, which is not UTF-8 —

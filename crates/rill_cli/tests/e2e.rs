@@ -1976,6 +1976,60 @@ fn integer_arithmetic_is_decided_at_the_edges() {
     assert!(run_source_dies("remzero", dies).contains("rill: division by zero"));
 }
 
+/// An object of a trait: `Speak(x)` is a record of the trait's methods as
+/// closures over `x`, typed by the trait's name, so a list may hold a dog
+/// and a robot and `s.speak()` calls whichever it is. Underneath: a
+/// function's type in an annotation, a field that holds a function called
+/// by name, and `\ -> e`. A trait whose method takes two of the type
+/// cannot be one, and says so.
+#[test]
+fn an_object_of_a_trait_is_a_record_of_closures() {
+    let src = "trait Speak(a)\n  \
+                 speak(a) -> Str\n  \
+                 greet(a, Str) -> Str\n\n\
+               type Dog\n  \
+                 Dog(n: Str)\n\n\
+               type Robot\n  \
+                 Robot(id: Int)\n\n\
+               impl Speak(Dog)\n  \
+                 fn speak(d) = \"woof from \" + d.n\n  \
+                 fn greet(d, who) = d.n + \" licks \" + who\n\n\
+               impl Speak(Robot)\n  \
+                 fn speak(r) = \"beep \" + int_to_str(r.id)\n  \
+                 fn greet(r, who) = \"unit \" + int_to_str(r.id) + \" greets \" + who\n\n\
+               type Handler\n  \
+                 Handler(name: Str, run: () -> Str, times: (Int) -> Str)\n\n\
+               fn say(xs: List(Speak)) = match xs\n  \
+                 Nil -> 0\n  \
+                 Cons(s, rest) ->\n    \
+                   println(s.speak() + \"; \" + s.greet(\"ada\"))\n    \
+                   say(rest)\n\n\
+               fn main() =\n  \
+                 say(Cons(Speak(Dog(\"rex\")), Cons(Speak(Robot(7)), Nil)))\n  \
+                 h = Handler(\"h\", \\ -> \"ran\", \\n -> repeat(\"ho\", n))\n  \
+                 println(h.name + \" \" + h.run() + \" \" + h.times(2))\n  \
+                 f = h.run\n  \
+                 println(f())\n";
+    assert_eq!(
+        run_source("objects", src),
+        "woof from rex; rex licks ada\nbeep 7; unit 7 greets ada\nh ran hoho\nran\n"
+    );
+    assert_eq!(fmt_source(src), src);
+
+    let two = "trait Same(a)\n  \
+                 same(a, a) -> Bool\n\n\
+               type T\n  \
+                 T(n: Int)\n\n\
+               impl Same(T)\n  \
+                 fn same(a, b) = a.n == b.n\n\n\
+               fn main() = println(int_to_str(1 + Same(T(1)).n))\n";
+    let err = compile_error(two);
+    assert!(err.contains("`Same` cannot be the type of an object") && err.contains("`same` takes a second one of the type"), "{err}");
+
+    let c = "extern \"c\" fn qsort(base: Ptr, n: I64, w: I64, cmp: (Ptr, Ptr) -> I32)\n\nfn main() = println(\"x\")\n";
+    assert!(compile_error(c).contains("a callback C calls is written `Fn(I32) -> I32`"));
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

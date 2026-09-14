@@ -93,7 +93,7 @@ length operator instead.
 | `Chan(a)` | `channel()` | see [Concurrency](#7-concurrency) |
 | `Map(k, v)` | `map_new()` | a hash table; see [Maps](#maps) |
 | `StrBuf` | `strbuf()` | bytes on their way to a string |
-| `(A, B) -> C` | `\x, y -> ...` | function values |
+| `(A, B) -> C` | `\x, y -> ...` | function values; `() -> C` and `\ -> ...` take nothing |
 | user types | `Circle(1.0)` | declared with `type` |
 
 Types are inferred; annotations are optional and only ever needed to resolve an
@@ -726,6 +726,47 @@ impl Show(List(a))
 The `show(x)` on elements resolves when the element type is known, so
 `List(Box(Int))` composes both impls without any `where` clause. An impl that
 quietly works for only one instantiation is rejected.
+
+### Objects
+
+Dispatch is static, so a `List(a)` holds one type. Where a list has to hold
+a dog and a robot because both can speak, a value is made an **object** of
+the trait: `Speak(rex)` is a record of the trait's methods, each a closure
+over `rex`, and its type is the trait's name.
+
+```
+trait Speak(a)
+  speak(a) -> Str
+  greet(a, Str) -> Str
+
+fn main() =
+  all = Cons(Speak(Dog("rex")), Cons(Speak(Robot(7)), Nil))   # a List(Speak)
+  say(all)
+
+fn say(xs) = match xs
+  Nil -> 0
+  Cons(s, rest) ->
+    println(s.speak() + ", " + s.greet("ada"))
+    say(rest)
+```
+
+Written out, `Speak(rex)` is `Speak.obj(\ -> speak(rex), \o -> greet(rex, o))`:
+an ordinary record whose fields hold functions, made by a constructor the
+trait declares and a program cannot name. A field that holds a function is
+called as `s.speak()`. Each call inside the closures dispatches on the type
+of `rex`, statically, as every method call does; what is paid is the
+closures — one allocation per method when the object is made — and the
+indirect call through each. Nothing else is boxed, and no dictionary travels
+with a value.
+
+A trait is the type of objects when every method takes the trait's type
+once, and first: `same(a, a)` cannot be, since an object does not know what
+the other one is, nor can a method that answers with the type. `Speak(x)`
+on such a trait says which method is in the way. A record of functions
+written by hand — `Shape(area: () -> Float, name: Str)` — is the same thing
+with no trait at all, and a function's type is written the way a lambda
+reads: `(Int, Str) -> Bool`, or `() -> Str` for one that takes nothing,
+which is `\ -> e`.
 
 ### Built-in traits
 

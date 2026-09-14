@@ -540,6 +540,12 @@ struct Checker {
     late_errors: std::cell::RefCell<Vec<TypeError>>,
     pending: Vec<(u32, Constraint, usize, &'static str)>,
     traits: Vec<(String, Vec<MethodInfo>)>,
+    /// Trait name -> the type of its objects: a record of the trait's
+    /// methods, each a closure over one value. Only the traits whose every
+    /// method takes the trait's type once, and first, are here; the others
+    /// say why in `object_refusals`.
+    trait_objects: HashMap<String, usize>,
+    object_refusals: HashMap<String, String>,
     externs: HashMap<String, ExternSig>,
     asms: HashMap<String, AsmSig>,
     naked_asms: HashMap<String, String>,
@@ -610,6 +616,8 @@ impl Checker {
             lifted: Vec::new(),
             prelude_fns: 0,
             cur_fn_name: String::new(),
+            trait_objects: HashMap::new(),
+            object_refusals: HashMap::new(),
             expected_ret: Vec::new(),
             hoisted: HashSet::new(),
             gen_vars: Vec::new(),
@@ -761,6 +769,43 @@ impl Checker {
                 let ret = resolve_type_ref(&m.ret, &adt_index, &c.adts, Some(&scope))?;
                 c.method_index.insert(m.name.clone(), (tid, methods.len()));
                 methods.push(MethodInfo { name: m.name.clone(), params, ret });
+            }
+            // The type of the trait's objects: a record with a field per
+            // method, holding the method as a function of everything but
+            // the value, which the object has closed over. `infer_call`
+            // makes one from `Speak(x)`; the record's own constructor is
+            // kept under a name a program cannot write.
+            match object_fields(&methods) {
+                Ok(fields) => {
+                    if adt_index.contains_key(&td.name) {
+                        return Err(TypeError::new(
+                            td.line,
+                            format!(
+                                "trait `{}` shares its name with a type, and a trait's name is \
+                                 the type of its objects",
+                                td.name
+                            ),
+                        ));
+                    }
+                    let adt = c.adts.len();
+                    adt_index.insert(td.name.clone(), adt);
+                    c.adts.push(AdtDef {
+                        name: td.name.clone(),
+                        nparams: 0,
+                        ctors: vec![CtorSig {
+                            name: td.name.clone(),
+                            fields,
+                            names: methods.iter().map(|m| Some(m.name.clone())).collect(),
+                            tag: 0,
+                            line: td.line,
+                        }],
+                    });
+                    c.ctors.insert(format!("{}.obj", td.name), (adt, 0));
+                    c.trait_objects.insert(td.name.clone(), adt);
+                }
+                Err(why) => {
+                    c.object_refusals.insert(td.name.clone(), why);
+                }
             }
             c.traits.push((td.name.clone(), methods));
         }
@@ -3231,6 +3276,88 @@ impl Checker {
             });
         }
 
+        // `s.speak(x)`: a field that holds a function, called. A module
+        // alias is not a local, so `geo.area(x)` does not come this way —
+        // and where a program has both an alias `g` and a local `g`, the
+        // alias wins, as it does for every dotted name.
+        if let Some((head, _)) = name.split_once('.') {
+            let global = self.fn_index.contains_key(name)
+                || self.ctors.contains_key(name)
+                || self.method_index.contains_key(name)
+                || self.externs.contains_key(name);
+            if env.contains_key(head) && !global {
+                let callee = self.infer_var(name, line, env)?;
+                let mut targs = Vec::new();
+                for a in args {
+                    targs.push(self.infer(a, env)?);
+                }
+                let ret = self.fresh();
+                let want =
+                    Ty::Fn(targs.iter().map(|a| a.ty.clone()).collect(), Box::new(ret.clone()));
+                self.unify(&callee.ty, &want, line, &format!("calling `{name}`"))?;
+                return Ok(TExpr {
+                    ty: ret,
+                    line,
+                    kind: TK::CallClosure { callee: Box::new(callee), args: targs },
+                });
+            }
+        }
+        // `Speak(x)`: `x` as an object of the trait. Written out it is
+        // `Speak.obj(\ -> speak(x), \o -> greet(x, o))` — a record whose
+        // fields hold the methods with the value closed over — and that is
+        // what is written here, then inferred as any expression is. Each
+        // call inside dispatches on the type of `x` as every method call
+        // does; the record's type is the trait's name, so a `List(Speak)`
+        // holds a dog and a robot alike.
+        if self.trait_objects.contains_key(name) {
+            if args.len() != 1 {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{name}(x)` makes an object of one value; {} given", args.len()),
+                ));
+            }
+            let tid = self.traits.iter().position(|(n, _)| n == name).expect("a trait");
+            let held = self.held_name("obj");
+            let lambdas: Vec<Expr> = self.traits[tid]
+                .1
+                .iter()
+                .map(|m| {
+                    let params: Vec<String> =
+                        (1..m.params.len()).map(|i| format!("{held}.{i}")).collect();
+                    let mut call_args = vec![Expr::Var(held.clone(), line)];
+                    call_args.extend(params.iter().map(|p| Expr::Var(p.clone(), line)));
+                    Expr::Lambda {
+                        params,
+                        body: Box::new(Expr::Call {
+                            name: m.name.clone(),
+                            args: call_args,
+                            line,
+                            piped: false,
+                            stacked: false,
+                        }),
+                        line,
+                    }
+                })
+                .collect();
+            let make = Expr::Block(vec![
+                Stmt::Bind { name: held, value: args[0].clone(), line },
+                Stmt::Expr(Expr::Call {
+                    name: format!("{name}.obj"),
+                    args: lambdas,
+                    line,
+                    piped: false,
+                    stacked: false,
+                }),
+            ]);
+            return self.infer(&make, env);
+        }
+        if let Some(why) = self.object_refusals.get(name) {
+            return Err(TypeError::new(
+                line,
+                format!("`{name}` cannot be the type of an object: {why}"),
+            ));
+        }
+
         if name == "println" {
             if args.len() != 1 {
                 return Err(TypeError::new(line, "`println` takes exactly one argument"));
@@ -4497,6 +4624,42 @@ impl Checker {
     }
 }
 
+/// The fields of a trait's object type: each method as a function of
+/// everything but the value. A method that does not take the trait's type
+/// first, takes it again, or answers with it cannot be one — an object does
+/// not know what another one of the type is, nor how to be one.
+fn object_fields(methods: &[MethodInfo]) -> Result<Vec<Ty>, String> {
+    let mut fields = Vec::new();
+    for m in methods {
+        if m.params.first() != Some(&Ty::Gen(0)) {
+            return Err(format!("`{}` does not take the type as its first argument", m.name));
+        }
+        if m.params[1..].iter().any(mentions_gen) {
+            return Err(format!(
+                "`{}` takes a second one of the type, and an object does not know what the other is",
+                m.name
+            ));
+        }
+        if mentions_gen(&m.ret) {
+            return Err(format!("`{}` answers with the type, which an object cannot be", m.name));
+        }
+        fields.push(Ty::Fn(m.params[1..].to_vec(), Box::new(m.ret.clone())));
+    }
+    Ok(fields)
+}
+
+/// Whether a type has a type parameter anywhere in it.
+fn mentions_gen(t: &Ty) -> bool {
+    match t {
+        Ty::Gen(_) => true,
+        Ty::Adt(_, args) => args.iter().any(mentions_gen),
+        Ty::Fn(ps, r) => ps.iter().any(mentions_gen) || mentions_gen(r),
+        Ty::Chan(e) => mentions_gen(e),
+        Ty::Map(k, v) => mentions_gen(k) || mentions_gen(v),
+        _ => false,
+    }
+}
+
 /// The two arms of a `?` read for an `Option`: `Some` where `Ok` was, and
 /// `None` carried out as itself where `Err(e)` was.
 fn option_try_arms(arms: &[Arm]) -> Vec<Arm> {
@@ -4724,6 +4887,15 @@ fn resolve_c_type(
     adts: &[AdtDef],
     what: &str,
 ) -> Result<CTy, TypeError> {
+    if tr.name == "->" {
+        return Err(TypeError::new(
+            tr.line,
+            format!(
+                "{what}: a callback C calls is written `Fn(I32) -> I32`; `(A) -> B` is the type \
+                 of a Rill function, which C cannot be handed"
+            ),
+        ));
+    }
     let width = match tr.name.as_str() {
         "I8" => Some(CTy::I8),
         "U8" => Some(CTy::U8),
@@ -5266,6 +5438,20 @@ fn resolve_type_ref(
             Some(&i) => Ok(Ty::Gen(i)),
             None => Err(TypeError::new(tr.line, format!("unknown type `{}`", tr.name))),
         };
+    }
+    // `(A, B) -> C`: a function's type, as a lambda has.
+    if tr.name == "->" {
+        let mut ps = Vec::new();
+        for a in &tr.args {
+            let p = resolve_type_ref(a, adt_index, adts, params)?;
+            if p == Ty::Unit {
+                return Err(TypeError::new(a.line, "a function's parameter cannot be Unit"));
+            }
+            ps.push(p);
+        }
+        let r = tr.ret.as_ref().expect("an arrow has a result");
+        let ret = resolve_type_ref(r, adt_index, adts, params)?;
+        return Ok(Ty::Fn(ps, Box::new(ret)));
     }
     if tr.name == "Buf" {
         if tr.args.len() != 1 {

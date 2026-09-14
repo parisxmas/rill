@@ -407,12 +407,22 @@ impl Parser {
         let (line, col) = self.here();
         if matches!(self.peek(), Tok::LParen) {
             self.bump();
-            let mut args = vec![self.type_ref(ctx)?];
-            while matches!(self.peek(), Tok::Comma) {
-                self.bump();
+            let mut args = Vec::new();
+            if !matches!(self.peek(), Tok::RParen) {
                 args.push(self.type_ref(ctx)?);
+                while matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                    args.push(self.type_ref(ctx)?);
+                }
             }
             self.expect(&Tok::RParen, "to close the tuple type")?;
+            // `(A, B) -> C` is a function's type, and `()` before the arrow
+            // takes nothing; without the arrow the parentheses are a tuple.
+            if matches!(self.peek(), Tok::Arrow) {
+                self.bump();
+                let ret = self.type_ref("a function type's result after `->`")?;
+                return Ok(TypeRef { name: "->".into(), args, ret: Some(Box::new(ret)), line });
+            }
             let name = tuple_name(args.len(), line, col)?;
             return Ok(TypeRef { name, args, ret: None, line });
         }
@@ -1160,7 +1170,13 @@ impl Parser {
                 Ok(Expr::Select { arms, default, line })
             }
             Tok::Backslash => {
-                let mut params = vec![self.ident("a parameter name after `\\`")?];
+                // `\ -> e` takes nothing: a thunk, or a method of an object
+                // that needs no argument beyond the value it closed over.
+                let mut params = if matches!(self.peek(), Tok::Arrow) {
+                    Vec::new()
+                } else {
+                    vec![self.ident("a parameter name after `\\`")?]
+                };
                 while matches!(self.peek(), Tok::Comma) {
                     self.bump();
                     params.push(self.ident("a parameter name")?);
