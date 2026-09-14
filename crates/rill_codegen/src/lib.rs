@@ -2863,6 +2863,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             void.fn_type(&[i64t.into(), i64t.into()], false),
             None,
         );
+        self.module.add_function("rill_div_zero", void.fn_type(&[], false), None);
         self.module.add_function("rill_alloc_bytes", ptrt.fn_type(&[i64t.into()], false), None);
         self.module.add_function(
             "rill_ptr_offset",
@@ -7133,15 +7134,26 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         .expect("LLVM builder error")
                         .into()
                 } else {
-                    // Truncates toward zero, like C.
-                    self.builder
-                        .build_float_to_signed_int(
-                            v.into_float_value(),
-                            self.ctx.i64_type(),
-                            "toint",
-                        )
-                        .expect("LLVM builder error")
-                        .into()
+                    // Truncates toward zero, like C — and past the ends of
+                    // `Int`, or not a number, gives the nearest end, or
+                    // zero. C leaves those undefined, and the machine gave
+                    // 1 for both.
+                    let sat = inkwell::intrinsics::Intrinsic::find("llvm.fptosi.sat")
+                        .and_then(|i| {
+                            i.get_declaration(
+                                &self.module,
+                                &[self.ctx.i64_type().into(), self.ctx.f64_type().into()],
+                            )
+                        })
+                        .expect("llvm.fptosi.sat");
+                    let call = self
+                        .builder
+                        .build_call(sat, &[v.into()], "toint")
+                        .expect("LLVM builder error");
+                    match call.try_as_basic_value() {
+                        inkwell::values::ValueKind::Basic(out) => out,
+                        _ => unreachable!("fptosi.sat answers an integer"),
+                    }
                 };
                 Ok(Some(out))
             }
@@ -7278,16 +7290,34 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         self.gen_expr(a, scope, subst, func)?.expect("value").into_int_value(),
                     );
                 }
+                let i64t = self.ctx.i64_type();
                 let b = &self.builder;
                 let out = match *rt {
                     "rill.and" => b.build_and(vals[0], vals[1], "and"),
                     "rill.or" => b.build_or(vals[0], vals[1], "or"),
                     "rill.xor" => b.build_xor(vals[0], vals[1], "xor"),
                     "rill.not" => b.build_not(vals[0], "not"),
-                    "rill.shl" => b.build_left_shift(vals[0], vals[1], "shl"),
-                    // Logical: protocol code works with bit patterns, not
-                    // signed magnitudes.
-                    "rill.shr" => b.build_right_shift(vals[0], vals[1], false, "shr"),
+                    // A shift by 64 or more, or by less than nothing, is
+                    // every bit gone: zero. The machine keeps only the low
+                    // six bits of the count and LLVM calls the rest poison,
+                    // and neither is an answer a program can use — so the
+                    // count is masked for the machine and the answer chosen
+                    // by the count as written. `shr` is logical: protocol
+                    // code works with bit patterns, not signed magnitudes.
+                    "rill.shl" | "rill.shr" => {
+                        let n = vals[1];
+                        let low = b.build_and(n, i64t.const_int(63, false), "sh.n").expect("builder");
+                        let raw = if *rt == "rill.shl" {
+                            b.build_left_shift(vals[0], low, "shl")
+                        } else {
+                            b.build_right_shift(vals[0], low, false, "shr")
+                        }
+                        .expect("builder");
+                        let fits = b
+                            .build_int_compare(IntPredicate::ULT, n, i64t.const_int(64, false), "sh.fits")
+                            .expect("builder");
+                        b.build_select(fits, raw, i64t.const_zero(), "sh").map(|v| v.into_int_value())
+                    }
                     other => unreachable!("unknown intrinsic {other}"),
                 };
                 Ok(Some(out.expect("LLVM builder error").into()))
@@ -8276,6 +8306,45 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         g.as_pointer_value()
     }
 
+    /// `/` and `%` on integers, with the two cases the machine has no one
+    /// answer for decided. A divisor of zero ends the program, saying
+    /// where: the machine's answer was a wrong number with no sign it was
+    /// wrong. A divisor of `-1` is done as a negation, since the smallest
+    /// integer over `-1` is the one quotient a machine may trap on, and so
+    /// wraps like every other overflow — to itself, with a remainder of
+    /// zero. The `-1` is decided by a select rather than a branch: two
+    /// compares and two selects on a path that already waits for a divide.
+    fn int_divide(&self, op: BinOp, l: IntValue<'ctx>, r: IntValue<'ctx>) -> IntValue<'ctx> {
+        let b = &self.builder;
+        let i64t = self.ctx.i64_type();
+        let func = b.get_insert_block().unwrap().get_parent().unwrap();
+        let zero = i64t.const_zero();
+        let by_zero = b.build_int_compare(IntPredicate::EQ, r, zero, "div.zero").expect("builder");
+        let bad = self.ctx.append_basic_block(func, "div.by0");
+        let good = self.ctx.append_basic_block(func, "div.ok");
+        b.build_conditional_branch(by_zero, bad, good).expect("builder");
+        b.position_at_end(bad);
+        let die = self.module.get_function("rill_div_zero").unwrap();
+        b.build_call(die, &[], "").expect("builder");
+        b.build_unreachable().expect("builder");
+        b.position_at_end(good);
+        let minus_one = i64t.const_all_ones();
+        let by_m1 = b.build_int_compare(IntPredicate::EQ, r, minus_one, "div.m1").expect("builder");
+        let one = i64t.const_int(1, false);
+        let safe = b.build_select(by_m1, one, r, "div.safe").expect("builder").into_int_value();
+        match op {
+            BinOp::Div => {
+                let q = b.build_int_signed_div(l, safe, "div").expect("builder");
+                let neg = b.build_int_neg(l, "div.neg").expect("builder");
+                b.build_select(by_m1, neg, q, "div.out").expect("builder").into_int_value()
+            }
+            _ => {
+                let m = b.build_int_signed_rem(l, safe, "rem").expect("builder");
+                b.build_select(by_m1, zero, m, "rem.out").expect("builder").into_int_value()
+            }
+        }
+    }
+
     fn gen_binary(
         &mut self,
         op: BinOp,
@@ -8352,8 +8421,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     BinOp::Add => b.build_int_add(l, r, "add").unwrap().into(),
                     BinOp::Sub => b.build_int_sub(l, r, "sub").unwrap().into(),
                     BinOp::Mul => b.build_int_mul(l, r, "mul").unwrap().into(),
-                    BinOp::Div => b.build_int_signed_div(l, r, "div").unwrap().into(),
-                    BinOp::Mod => b.build_int_signed_rem(l, r, "rem").unwrap().into(),
+                    BinOp::Div | BinOp::Mod => self.int_divide(op, l, r).into(),
                     cmp => {
                         let pred = match cmp {
                             BinOp::Eq => IntPredicate::EQ,

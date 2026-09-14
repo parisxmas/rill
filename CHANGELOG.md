@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — what integer arithmetic does at the edges
+
+`7 / 0` was 1. So was `7 % 0`, and `to_int(1.0e30)`, and `to_int` of a
+NaN, and `shl(1, 64)`: each is undefined for the machine, LLVM folded
+the undefined into whatever came out, and what came out was a number
+with no sign it was wrong. They are decided now. `/` and `%` by zero
+end the program the way an index off the end does, saying where; the
+smallest integer over `-1` — the one quotient a machine may trap on —
+is done as a negation and wraps to itself, with a remainder of zero.
+`to_int` saturates at the ends of `Int` and gives zero for a NaN
+(`llvm.fptosi.sat`). A shift by 64 or more, or by a negative count, is
+zero: the count is masked for the machine and the answer chosen by the
+count as written. `+`, `-` and `*` wrapped before and still do; the
+reference now says so, and says that there are no narrower numbers as
+values — a byte is an `Int`, and `U8`, `I32`, `F32` name storage and C
+signatures.
+
+The divide costs two compares and two selects on a path that already
+waits for the machine's slowest arithmetic; the check is kept under
+`--unchecked` too, since a wrong quotient is not a bounds test.
+
 ## Unreleased — `?` on an option, and an error carried across layers
 
 `?` took the value out of a `Result` and nothing else. It takes the

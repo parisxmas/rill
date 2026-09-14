@@ -181,6 +181,22 @@ fn compile_error(src: &str) -> String {
     String::from_utf8_lossy(&build.stderr).into_owned()
 }
 
+/// A program written here that is expected to die: what it said on
+/// standard error.
+fn run_source_dies(name: &str, src: &str) -> String {
+    require_fresh_runtime();
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-dies-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join(format!("{name}.rill"));
+    std::fs::write(&path, src).unwrap();
+    let exe = out_dir.join(name);
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("-o").arg(&exe).output().unwrap();
+    assert!(build.status.success(), "rill build {name} failed:\n{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&exe).output().expect("failed to run produced executable");
+    assert!(!run.status.success(), "{name} was expected to die");
+    String::from_utf8_lossy(&run.stderr).into_owned()
+}
+
 /// What `rill fmt` writes a program written here back as.
 fn fmt_source(src: &str) -> String {
     let out_dir = std::env::temp_dir().join(bad_name("fmt"));
@@ -1919,6 +1935,44 @@ fn question_mark_wraps_an_error_in_the_constructor_that_takes_it() {
         "{head}fn load(p) =\n  s = read(p)?\n  n = parse(s)?\n  Ok(n)\n\nfn main() = println(1)\n"
     );
     assert!(compile_error(&unwritten).contains("the function's return type is not written"));
+}
+
+/// Integer arithmetic at the edges is decided, not left to the machine:
+/// `+ - *` wrap, the smallest integer over `-1` wraps to itself with no
+/// remainder, `to_int` saturates and gives zero for a NaN, a shift by 64 or
+/// more or by a negative count is zero — and a division by zero ends the
+/// program, saying where.
+#[test]
+fn integer_arithmetic_is_decided_at_the_edges() {
+    let src = "fn least() = -9223372036854775807 - 1\n\n\
+               fn over(a, b) = a / b\n\n\
+               fn rem(a, b) = a % b\n\n\
+               fn main() =\n  \
+                 println(int_to_str(9223372036854775807 + 1))\n  \
+                 println(int_to_str(least() * 2))\n  \
+                 println(int_to_str(over(least(), -1)))\n  \
+                 println(int_to_str(rem(least(), -1)))\n  \
+                 println(int_to_str(over(-7, 2)))\n  \
+                 println(int_to_str(rem(-7, 2)))\n  \
+                 println(int_to_str(to_int(1.0e30)))\n  \
+                 println(int_to_str(to_int(-1.0e30)))\n  \
+                 println(int_to_str(to_int(0.0 / 0.0)))\n  \
+                 println(int_to_str(to_int(-2.7)))\n  \
+                 println(int_to_str(shl(1, 64)))\n  \
+                 println(int_to_str(shr(1, -1)))\n  \
+                 println(int_to_str(shl(3, 62)))\n  \
+                 println(int_to_str(shr(-1, 60)))\n";
+    assert_eq!(
+        run_source("intedges", src),
+        "-9223372036854775808\n0\n-9223372036854775808\n0\n-3\n-1\n9223372036854775807\n\
+         -9223372036854775808\n0\n-2\n0\n0\n-4611686018427387904\n15\n"
+    );
+
+    let dies = "fn over(a, b) = a / b\n\nfn main() = println(int_to_str(over(7, 0)))\n";
+    let err = run_source_dies("divzero", dies);
+    assert!(err.contains("rill: division by zero"), "{err}");
+    let dies = "fn rem(a, b) = a % b\n\nfn main() = println(int_to_str(rem(7, 0)))\n";
+    assert!(run_source_dies("remzero", dies).contains("rill: division by zero"));
 }
 
 /// A field only some constructors have is not certainly there, and one of two

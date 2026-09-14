@@ -2886,6 +2886,19 @@ pub extern "C" fn rill_buf_oob(i: i64, len: i64) -> ! {
     }
 }
 
+/// A division by zero has no answer, and what the machine or the optimizer
+/// made of one was a number with no sign it was wrong. It ends the program
+/// the way an index off the end does, saying where.
+#[no_mangle]
+pub extern "C" fn rill_div_zero() -> ! {
+    unsafe {
+        rill_flush_out();
+        err(b"rill: division by zero\n");
+        crash_where();
+        die()
+    }
+}
+
 /// A copy between two buffers, or within one, that stays inside both:
 /// `n` elements of `size` bytes from `src[from..]` to `dst[to..]`. What
 /// `memmove` on two raw pointers does without asking, asked: a length that

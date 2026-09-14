@@ -106,6 +106,18 @@ fn area(r: Float) -> Float = 3.14159 * r * r
 There are no implicit conversions. `1 + 2.0` is a type error; `to_float` and
 `to_int` cross between them explicitly.
 
+`Int` is 64-bit two's complement and its arithmetic is the machine's: `+`,
+`-` and `*` wrap round at the ends, as they do in C, Go and a release build
+of Rust. The two cases the machine has no one answer for are decided: `/`
+and `%` by zero end the program, saying where — a number that is silently
+wrong is worse than a stop — and the smallest integer divided by `-1` wraps
+to itself, with a remainder of zero. `to_int` truncates toward zero, and past
+the ends of `Int` gives the nearest end; a NaN gives zero. A shift by 64 or
+more, or by less than nothing, is zero. There are no narrower numbers as
+values: a byte read from a string or a buffer is an `Int`, and the narrow
+names — `U8`, `I32`, `F32` and the rest — say how storage and C signatures
+are laid out; see [Buffers](#buffers) and [Calling C](#11-calling-c).
+
 A float literal may carry an exponent — `1.0e9`, `2.5e-3`, `1e6`, with or
 without a dot before the `e` — since a digit run can be followed by nothing
 else that means anything. The canonical spelling has no exponent, so `rill
@@ -1744,7 +1756,8 @@ Which signal and where, whether the address is a stack's guard page, which
 strand and which worker, and the Rill functions on the stack innermost
 first — by name, in a release build as in a debug one, from a table of every
 function's start and name the compiler leaves in the binary (two pointers a
-function). A bounds check that fails says the same about where it was. Runtime
+function). A bounds check that fails, or a division by zero, says the same
+about where it was. Runtime
 frames are left out; a recursion that ran away is one line and a count. With
 `RILL_CRASH_WAIT=1` in the environment the program then waits, saying its
 pid, for a debugger to attach; otherwise the fault runs again under the
