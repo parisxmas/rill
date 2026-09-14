@@ -915,7 +915,7 @@ fn borrow_breaker(e: &TExpr, name: &str, borrowed: &[Vec<bool>], nonesc: &[Vec<b
     if !why.is_empty() {
         return;
     }
-    let mut operand = |x: &TExpr, borrowing: bool, what: &str, why: &mut String| {
+    let operand = |x: &TExpr, borrowing: bool, what: &str, why: &mut String| {
         match &x.kind {
             TK::Local(n) if n == name => {
                 if !borrowing {

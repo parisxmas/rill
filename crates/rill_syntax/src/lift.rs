@@ -760,7 +760,7 @@ fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             f(lhs);
             f(rhs);
         }
-        Expr::If { cond, then, els, newline } => {
+        Expr::If { cond, then, els, .. } => {
             f(cond);
             f(then);
             f(els);
@@ -1418,7 +1418,7 @@ fn each_child<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
             f(lhs);
             f(rhs);
         }
-        Expr::If { cond, then, els, newline } => {
+        Expr::If { cond, then, els, .. } => {
             f(cond);
             f(then);
             f(els);
@@ -1873,7 +1873,7 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
             free_of(lhs, bound, out);
             free_of(rhs, bound, out);
         }
-        Expr::If { cond, then, els, newline } => {
+        Expr::If { cond, then, els, .. } => {
             free_of(cond, bound, out);
             free_of(then, bound, out);
             free_of(els, bound, out);

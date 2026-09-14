@@ -505,7 +505,7 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str, scope: &mut Ve
             qualify_expr(lhs, own, alias, scope);
             qualify_expr(rhs, own, alias, scope);
         }
-        Expr::If { cond, then, els, newline } => {
+        Expr::If { cond, then, els, .. } => {
             qualify_expr(cond, own, alias, scope);
             qualify_expr(then, own, alias, scope);
             qualify_expr(els, own, alias, scope);

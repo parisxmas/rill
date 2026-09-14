@@ -2490,7 +2490,7 @@ impl Checker {
                     kind: TK::Neg(Box::new(inner)),
                 })
             }
-            Expr::Binary { op, lhs, rhs, line, newline } => {
+            Expr::Binary { op, lhs, rhs, line, .. } => {
                 let l = self.infer(lhs, env)?;
                 let r = self.infer(rhs, env)?;
                 // `m[k] + 1` is the shape `m[k] += 1` expands to, and reading
@@ -2547,7 +2547,7 @@ impl Checker {
                     kind: TK::Binary { op: *op, lhs: Box::new(l), rhs: Box::new(r) },
                 })
             }
-            Expr::If { cond, then, els, newline } => {
+            Expr::If { cond, then, els, .. } => {
                 let c = self.infer(cond, env)?;
                 self.unify(&c.ty, &Ty::Bool, c.line, "`if` condition")?;
                 let t = self.infer(then, env)?;
@@ -5969,7 +5969,7 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
             free_vars(lhs, out, seen);
             free_vars(rhs, out, seen);
         }
-        Expr::If { cond, then, els, newline } => {
+        Expr::If { cond, then, els, .. } => {
             free_vars(cond, out, seen);
             free_vars(then, out, seen);
             free_vars(els, out, seen);

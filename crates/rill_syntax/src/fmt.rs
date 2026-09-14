@@ -39,16 +39,6 @@ pub fn format_source(src: &str) -> Result<String, SyntaxError> {
     Ok(f.out)
 }
 
-// ---- statement boundaries -------------------------------------------------
-
-fn stmt_expr(s: &Stmt) -> &Expr {
-    match s {
-        Stmt::Bind { value, .. } | Stmt::PatBind { value, .. } => value,
-        Stmt::Fn(f) => &f.body,
-        Stmt::Expr(e) => e,
-    }
-}
-
 // ---- comment bookkeeping ---------------------------------------------------
 
 struct Comments {

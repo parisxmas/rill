@@ -200,7 +200,7 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
             collect_expr_names(lhs, out);
             collect_expr_names(rhs, out);
         }
-        Expr::If { cond, then, els, newline } => {
+        Expr::If { cond, then, els, .. } => {
             collect_expr_names(cond, out);
             collect_expr_names(then, out);
             collect_expr_names(els, out);
