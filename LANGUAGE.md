@@ -1545,6 +1545,12 @@ write once, which is what the language would have you do anyway.
 
 ## 11. Calling C
 
+A Rill function may have any name, C's own included: `fn read`, `fn bind`,
+`fn connect` are the program's, since no Rill function is a symbol anything
+outside the object can see — only `export fn` and `main` are — and the
+runtime's calls to C reach C. The one name a program cannot give a function
+is one it also declares `extern`, which the checker refuses.
+
 An `extern` declaration names a C symbol and its types. The optional string is
 a library to link with; leave it out for anything already in the C runtime.
 A string starting with `-` is passed to the linker as written, and

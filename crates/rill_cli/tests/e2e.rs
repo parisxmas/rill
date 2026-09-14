@@ -2465,6 +2465,34 @@ fn a_blocking_extern_lets_the_worker_go_on() {
     assert!(compile_error(cb).contains("a call that calls back is not `blocking`"));
 }
 
+/// A Rill function may be named like a C function the runtime calls: no
+/// Rill function is a symbol the linker sees, so `bind`, `connect`, `read`
+/// and `write` here are the program's and the runtime's sockets still work.
+#[test]
+fn a_function_named_like_libc_is_the_programs_own() {
+    let src = "fn bind(a, b) = a + b\n\n\
+               fn connect(a) = a * 2\n\n\
+               fn read(a) = a - 1\n\n\
+               fn write(a) = a + 100\n\n\
+               fn serve(server) = match accept_on(server)\n  \
+                 Err(e) -> println(e)\n  \
+                 Ok(conn) ->\n    \
+                   sock_write(conn, \"hi\")\n    \
+                   sock_close(conn)\n\n\
+               fn main() = match listen_on(0)\n  \
+                 Err(e) -> println(e)\n  \
+                 Ok(server) ->\n    \
+                   spawn serve(server)\n    \
+                   r = match connect_to(\"127.0.0.1\", sock_port(server))\n      \
+                     Err(e) -> e\n      \
+                     Ok(fd) ->\n        \
+                       s = sock_read(fd)\n        \
+                       sock_close(fd)\n        \
+                       s\n    \
+                   println(r + \" \" + int_to_str(bind(1, 2) + connect(3) + read(10) + write(0)))\n";
+    assert_eq!(run_source("libcnames", src), "hi 118\n");
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

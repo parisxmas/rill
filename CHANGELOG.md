@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — a function named `bind`
+
+A Rill function named `bind`, `connect`, `read` or `write` used to take
+libc's place at link time, and the runtime's socket calls jumped into
+the program: a crash with the wrong frame on top, a silent exit, a
+hang. The linkage change of 5 September — every Rill function but
+`main` and an `export fn` is internal to the object — closed that
+without saying so; the reference says so now, and a test keeps it: a
+program defining all four, serving itself over a socket.
+
 ## Unreleased — a strand that waits in C, and a `while` that never gave way
 
 A C call that blocks holds the worker thread, and every strand on that
