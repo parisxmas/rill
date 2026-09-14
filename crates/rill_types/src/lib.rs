@@ -16,7 +16,7 @@
 //! - Unconstrained numeric/printable types default to Int.
 
 mod shared;
-pub use shared::check_shared;
+pub use shared::{check_rings, check_shared};
 
 use std::collections::{HashMap, HashSet};
 
@@ -518,7 +518,11 @@ pub fn check(module: &Module) -> Result<TModule, TypeError> {
 /// and what an editor wants to underline.
 pub fn check_all(module: &Module) -> Result<TModule, Vec<TypeError>> {
     match Checker::new(module) {
-        Ok(c) => c.run(module),
+        Ok(c) => {
+            let t = c.run(module)?;
+            check_rings(&t)?;
+            Ok(t)
+        }
         Err(e) => Err(vec![e]),
     }
 }

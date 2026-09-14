@@ -75,12 +75,31 @@ struct Pass<'a> {
     rest: Vec<HashSet<String>>,
     errors: Vec<TypeError>,
     report: bool,
+    /// Whether this walk is looking for rings — storage put into itself —
+    /// rather than for what strands share.
+    rings: bool,
 }
 
 /// Runtime calls that only read the storage they are handed.
 const READS: &[&str] = &["rill_strbuf_len", "rill_buf_cmp", "rill_map_len", "rill_buf_check"];
 
 pub fn check_shared(tmod: &TModule) -> Result<(), Vec<TypeError>> {
+    walk_program(tmod, false)
+}
+
+/// A ring: storage put into itself. `m[k] = v` where `v` holds `m` — a
+/// closure over it, a record with it in — is the one shape reference
+/// counting cannot let go of, and the one shape a program with immutable
+/// values can make it: a value is built from what exists before it, so
+/// nothing but storage can hold what holds it. The same for a channel
+/// sent a value that holds it. Refused where it is written; a ring made
+/// through two maps is not seen here, and is what the allocator's report
+/// at exit is for.
+pub fn check_rings(tmod: &TModule) -> Result<(), Vec<TypeError>> {
+    walk_program(tmod, true)
+}
+
+fn walk_program(tmod: &TModule, rings: bool) -> Result<(), Vec<TypeError>> {
     let n = tmod.fns.len();
     let mut pass = Pass {
         tmod,
@@ -89,6 +108,7 @@ pub fn check_shared(tmod: &TModule) -> Result<(), Vec<TypeError>> {
         rest: Vec::new(),
         errors: Vec::new(),
         report: false,
+        rings,
     };
     // The fixpoint: a function writes a parameter it hands to a function
     // that writes that position, and answers with one it hands to a
@@ -341,8 +361,11 @@ impl<'a> Pass<'a> {
     /// The walk that reports: every `spawn` and every `send`, against what
     /// the function around still uses afterwards.
     fn visit(&mut self, e: &TExpr, aliases: &mut Aliases) {
+        if self.rings {
+            self.ring_check(e, aliases);
+        }
         match &e.kind {
-            TK::Spawn { captures, body } => {
+            TK::Spawn { captures, body } if !self.rings => {
                 let written = self.writes_of(body, aliases);
                 let mut claimed = HashSet::new();
                 self.vouched(body, aliases, &mut claimed);
@@ -381,7 +404,7 @@ impl<'a> Pass<'a> {
                 self.visit(body, &mut inner);
                 return;
             }
-            TK::ChanSend { ch, val } => {
+            TK::ChanSend { ch, val } if !self.rings => {
                 self.visit(ch, aliases);
                 self.visit(val, aliases);
                 if self.share(&val.ty) != Share::No {
@@ -454,6 +477,38 @@ impl<'a> Pass<'a> {
         walk_texpr(e, &mut |c| children.push(c));
         for c in children {
             self.visit(c, aliases);
+        }
+    }
+}
+
+impl<'a> Pass<'a> {
+    /// `m[k] = v` with `v` holding `m`, or `send(ch, v)` with `v` holding
+    /// `ch`: a ring, refused.
+    fn ring_check(&mut self, e: &TExpr, aliases: &Aliases) {
+        let (holder, val, what) = match &e.kind {
+            TK::MapSet { map, val, .. } => (map, val, "map"),
+            TK::ChanSend { ch, val } => (ch, val, "channel"),
+            _ => return,
+        };
+        if self.share(&val.ty) == Share::No {
+            return;
+        }
+        let into = self.roots(holder, aliases);
+        let held = self.roots(val, aliases);
+        if let Some(n) = into.iter().filter(|r| held.contains(*r)).min() {
+            let how = if what == "map" {
+                "putting into it a value that holds it — a closure over it, or a record with it in"
+            } else {
+                "sending down it a value that holds it"
+            };
+            self.errors.push(TypeError::new(
+                e.line,
+                format!(
+                    "`{n}` would hold itself: this is {how}, and a count never lets go of a ring, \
+                     so the {what} and what it holds would live until the program ends. Keep \
+                     `{n}` out of what goes into it — hand it in as an argument instead"
+                ),
+            ));
         }
     }
 }

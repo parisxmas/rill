@@ -882,8 +882,20 @@ reference of its own and the answer is `false`; a compile-time constant is
 never unique; a value with no count — a flat record, a number — cannot be
 asked.
 
+Reference counting cannot let go of a **ring** — a value that, through
+what it holds, holds itself — and a program of immutable values can make one
+in exactly one way: a value is built from what exists before it, so only
+storage can come to hold what holds it. `m[k] = v` where `v` holds `m` — a
+closure over `m`, a record with `m` in it — is refused where it is written,
+naming `m`; so is a channel sent a value that holds it. A ring made through
+two maps, each holding what holds the other, is not seen at compile time; it
+is what the report below is for.
+
 Run any program with `RILL_DEBUG_ALLOC=1` to have the runtime print the number
-of live allocations at exit.
+of live allocations at exit. Built with `--parallel` and run with
+`RILL_ALLOC_CHECK=1` as well, it says which functions made the blocks that
+were never let go — `3000 block(s) made in make` — which is where a ring
+was closed.
 
 Which of these rules fired where is not visible in the source, and does not
 have to be guessed: **`rill explain file.rill`** is the code generator's own

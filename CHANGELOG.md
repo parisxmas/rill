@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — a ring, refused where it is made
+
+Reference counting cannot let go of a value that holds itself, and a
+program of immutable values can make one in exactly one way: a value is
+built from what exists before it, so only storage can come to hold what
+holds it. `m[k] = v` where `v` holds `m` — a closure over the map, a
+record with it in — is refused now, naming the map and what to do
+instead; so is a channel sent a value that holds it. The check follows
+what a value holds through bindings, fields, matches and calls, as the
+`--parallel` sharing check does, and runs on every build. A ring made
+through two maps, each holding what holds the other, is beyond it, and
+for that the allocator's report at exit — `RILL_DEBUG_ALLOC=1` with
+`RILL_ALLOC_CHECK=1` on a `--parallel` build — now says which functions
+made the blocks that were never let go, by walking to the innermost
+Rill frame at each allocation.
+
 ## Unreleased — a function named `bind`
 
 A Rill function named `bind`, `connect`, `read` or `write` used to take

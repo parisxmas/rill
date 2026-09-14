@@ -4445,6 +4445,7 @@ pub static mut rill_free_sites: [[usize; 10]; 65536] = [[0; 10]; 65536];
 static mut FREE_SITES_BEFORE: [[usize; 10]; 65536] = [[0; 10]; 65536];
 
 unsafe fn note_free(ptr: usize, link: usize) {
+    live_site_drop(ptr);
     let slot = &mut rill_free_sites[(ptr >> 4) & 0xffff];
     if slot[0] == ptr {
         // freed, and not handed out again since: freed twice
@@ -4637,10 +4638,137 @@ unsafe fn pool_class(size: u64) -> Option<usize> {
     }
 }
 
+/// Under `RILL_ALLOC_CHECK`, where each live block was made — the innermost
+/// Rill function on the stack at the allocation — so that a report at exit
+/// can say whose blocks were never let go. Open addressing over the block's
+/// address; a table that fills up stops recording rather than growing.
+static mut LIVE_SITES: *mut (usize, *const u8) = core::ptr::null_mut();
+const LIVE_SITES_N: usize = 1 << 20;
+static mut LIVE_SITES_FULL: bool = false;
+
+unsafe fn site_name() -> *const u8 {
+    let mut fp = frame_here();
+    let mut steps = 0;
+    while fp != 0 && fp & 7 == 0 && steps < 64 {
+        let next = *(fp as *const usize);
+        let ret = *((fp + 8) as *const usize);
+        if ret == 0 {
+            break;
+        }
+        if let Some((name, _)) = sym_for(ret - 1) {
+            return name;
+        }
+        if next <= fp || next - fp > 64 << 20 {
+            break;
+        }
+        fp = next;
+        steps += 1;
+    }
+    core::ptr::null()
+}
+
+unsafe fn live_site_add(ptr: usize) {
+    if LIVE_SITES_FULL {
+        return;
+    }
+    if LIVE_SITES.is_null() {
+        LIVE_SITES = calloc(LIVE_SITES_N, 16) as *mut (usize, *const u8);
+        if LIVE_SITES.is_null() {
+            LIVE_SITES_FULL = true;
+            return;
+        }
+    }
+    let name = site_name();
+    let mut h = (ptr >> 4) & (LIVE_SITES_N - 1);
+    for _ in 0..256 {
+        let slot = LIVE_SITES.add(h);
+        if (*slot).0 == 0 || (*slot).0 == 1 || (*slot).0 == ptr {
+            *slot = (ptr, name);
+            return;
+        }
+        h = (h + 1) & (LIVE_SITES_N - 1);
+    }
+    LIVE_SITES_FULL = true;
+}
+
+unsafe fn live_site_drop(ptr: usize) {
+    if LIVE_SITES.is_null() {
+        return;
+    }
+    let mut h = (ptr >> 4) & (LIVE_SITES_N - 1);
+    for _ in 0..256 {
+        let slot = LIVE_SITES.add(h);
+        if (*slot).0 == 0 {
+            return;
+        }
+        if (*slot).0 == ptr {
+            (*slot).0 = 1;
+            return;
+        }
+        h = (h + 1) & (LIVE_SITES_N - 1);
+    }
+}
+
+/// The live blocks by the function that made them, most first.
+unsafe fn live_sites_report() {
+    if LIVE_SITES.is_null() {
+        return;
+    }
+    let mut names: [(*const u8, usize); 64] = [(core::ptr::null(), 0); 64];
+    let mut n = 0;
+    for i in 0..LIVE_SITES_N {
+        let (p, name) = *LIVE_SITES.add(i);
+        if p <= 1 {
+            continue;
+        }
+        let mut k = 0;
+        while k < n && names[k].0 != name {
+            k += 1;
+        }
+        if k == n {
+            if n == 64 {
+                continue;
+            }
+            names[n] = (name, 0);
+            n += 1;
+        }
+        names[k].1 += 1;
+    }
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 && names[j - 1].1 < names[j].1 {
+            names.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+    for (name, count) in names.iter().take(n) {
+        err(b"  ");
+        err_dec(*count as i64);
+        err(b" block(s) made in ");
+        if name.is_null() {
+            err(b"(no Rill frame)");
+        } else {
+            err_cstr(*name);
+        }
+        err(b"\n");
+    }
+    if LIVE_SITES_FULL {
+        err(b"  (more than the table holds; the counts above are partial)\n");
+    }
+}
+
 /// # Safety
 /// Standard allocation contract; aborts on OOM.
 #[no_mangle]
 pub unsafe extern "C" fn rill_alloc(size: u64) -> *mut u8 {
+    let p = rill_alloc_raw(size);
+    if ALLOC_CHECK {
+        live_site_add(p as usize);
+    }
+    p
+}
+
+unsafe fn rill_alloc_raw(size: u64) -> *mut u8 {
     live_add(1);
     if let Some(class) = pool_class(size) {
         #[cfg(unix)]
@@ -4936,6 +5064,14 @@ pub unsafe extern "C" fn rill_alloc_report() {
     };
     let n = n.clamp(0, 127) as usize;
     write(2, buf.as_ptr(), n);
+    // Under the allocator's checks the blocks are known by the function
+    // that made them, which is what a leak needs to be found by: a count
+    // that never reached zero is, most often, a ring — a map holding a
+    // closure that holds the map — and the function that built it says
+    // where to look.
+    if ALLOC_CHECK && live_total() > 0 {
+        live_sites_report();
+    }
 }
 
 /// # Safety

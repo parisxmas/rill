@@ -2493,6 +2493,41 @@ fn a_function_named_like_libc_is_the_programs_own() {
     assert_eq!(run_source("libcnames", src), "hi 118\n");
 }
 
+/// A ring — storage put into itself — is refused where it is written, and
+/// one made through two maps is named by function in the exit report.
+#[test]
+fn a_ring_is_refused_or_reported() {
+    let closure = "fn make(i) =\n  m = map_new()\n  f = \\k -> map_len(m) + k\n  m[i] = f\n  map_len(m)\n\n\
+                   fn main() = println(int_to_str(make(1)))\n";
+    let err = compile_error(closure);
+    assert!(err.contains("`m` would hold itself") && err.contains("a count never lets go of a ring"), "{err}");
+    let record = "type Node\n  Node(name: Str, links: Map(Str, Node))\n\n\
+                  fn main() =\n  m = map_new()\n  n = Node(\"a\", m)\n  m[\"a\"] = n\n  println(\"x\")\n";
+    assert!(compile_error(record).contains("`m` would hold itself"));
+
+    // Holding a map, reading it from a closure, keeping it in a record: no ring.
+    let fine = "type Node\n  Node(name: Str, links: Map(Str, Int))\n\n\
+                fn make(i) =\n  m = map_new()\n  f = \\k -> map_len(m) + k\n  m[\"self\"] = f(1)\n  \
+                n = Node(\"n\" + int_to_str(i), m)\n  #n.name\n\n\
+                fn main() = println(int_to_str(make(7)))\n";
+    assert_eq!(run_source("noring", fine), "2\n");
+
+    let two = "fn make(i) =\n  a = map_new()\n  b = map_new()\n  a[i] = \\k -> map_len(b) + k\n  \
+               b[i] = \\k -> map_len(a) + k\n  map_len(a)\n\n\
+               fn loop(i, acc) = if i == 0 then acc else loop(i - 1, acc + make(i))\n\n\
+               fn main() = println(int_to_str(loop(50, 0)))\n";
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-ring-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let path = out_dir.join("two.rill");
+    std::fs::write(&path, two).unwrap();
+    let exe = out_dir.join("two");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("--parallel").arg("-o").arg(&exe).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&exe).env("RILL_ALLOC_CHECK", "1").env("RILL_DEBUG_ALLOC", "1").output().unwrap();
+    let report = String::from_utf8_lossy(&run.stderr);
+    assert!(report.contains("live allocations: 300") && report.contains("300 block(s) made in make"), "{report}");
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]
