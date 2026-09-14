@@ -1,0 +1,176 @@
+# Decimal numbers with a fixed number of places: money, and anything else
+# where 0.1 + 0.2 has to be 0.3.
+#
+# A `Decimal` is an integer count of units and a scale, the number of
+# places: `Decimal(1250, 2)` is 12.50. Adding and comparing align the
+# scales; multiplying keeps every place and rounds only when asked;
+# dividing takes the places to keep and how to round. The count is an
+# `Int`, so eighteen digits in all is the limit, and a result past it is
+# the wrong number rather than an error — the same as `Int` itself.
+#
+#     import "num/decimal" as dec
+#     price = dec.parse("19.99")?               # Decimal(1999, 2)
+#     total = dec.mul(price, dec.from_int(3))   # 59.97
+#     vat = dec.round_to(dec.mul(total, dec.parse("0.20")?), 2, dec.HalfEven)
+#     println(show(dec.add(total, vat)))        # "71.96"
+
+type Decimal
+  Decimal(units: Int, scale: Int)
+
+type Rounding
+  HalfUp
+  HalfEven
+  Down
+  Up
+
+fn from_int(n) = Decimal(n, 0)
+
+fn zero() = Decimal(0, 0)
+
+fn is_zero(d: Decimal) = d.units == 0
+
+fn neg(d: Decimal) = Decimal(0 - d.units, d.scale)
+
+fn abs_of(d: Decimal) = Decimal(abs(d.units), d.scale)
+
+fn sign(d: Decimal) = if d.units < 0 then -1 else if d.units > 0 then 1 else 0
+
+# The same number at `places` places — more, exactly; fewer, rounded.
+fn round_to(d: Decimal, places, how) =
+  if places >= d.scale then Decimal(d.units * pow10(places - d.scale), places)
+  else
+    div = pow10(d.scale - places)
+    Decimal(rounded(d.units, div, how), places)
+
+# `n / div`, rounded as asked; `n` may be negative, `div` is not.
+private fn rounded(n, div, how) =
+  q = n / div
+  r = n % div
+  a = abs(r)
+  twice = 2 * a
+  toward = if n < 0 then -1 else 1
+  match how
+    Down -> q
+    Up -> if r == 0 then q else q + toward
+    HalfUp -> if twice >= div then q + toward else q
+    HalfEven -> if twice > div || twice == div && q % 2 != 0 then q + toward else q
+
+# Both at the larger scale.
+private fn aligned(a: Decimal, b: Decimal) =
+  s = max(a.scale, b.scale)
+  (a.units * pow10(s - a.scale), b.units * pow10(s - b.scale), s)
+
+fn add(a: Decimal, b: Decimal) =
+  (x, y, s) = aligned(a, b)
+  Decimal(x + y, s)
+
+fn sub(a: Decimal, b: Decimal) =
+  (x, y, s) = aligned(a, b)
+  Decimal(x - y, s)
+
+# Exact: the places add up. Round afterwards where a money amount wants
+# its two.
+fn mul(a: Decimal, b: Decimal) = Decimal(a.units * b.units, a.scale + b.scale)
+
+# `a / b` to `places` places, rounded as asked; `Err` on a zero divisor.
+fn div(a: Decimal, b: Decimal, places, how) =
+  if b.units == 0 then Err("division by zero")
+  else
+    # a.units * 10^(places + b.scale - a.scale) / b.units, with one more
+    # digit of room so the rounding sees the remainder
+    shift = places + b.scale - a.scale
+    n = if shift >= 0 then a.units * pow10(shift) else a.units / pow10(0 - shift)
+    q = rounded_signed(n, b.units, how)
+    Ok(Decimal(q, places))
+
+private fn rounded_signed(n, d, how) =
+  if d < 0 then rounded(0 - n, 0 - d, how) else rounded(n, d, how)
+
+fn cmp(a: Decimal, b: Decimal) =
+  (x, y, _) = aligned(a, b)
+  if x < y then -1 else if x > y then 1 else 0
+
+fn eq(a: Decimal, b: Decimal) = cmp(a, b) == 0
+
+fn as_float(d: Decimal) = to_float(d.units) / to_float(pow10(d.scale))
+
+# -- text ---------------------------------------------------------------------
+
+# `-12.50` for `Decimal(-1250, 2)`; a scale of zero prints no point.
+fn text(d: Decimal) =
+  digits = int_to_str(abs(d.units))
+  padded = if #digits > d.scale then digits else repeat("0", d.scale - #digits + 1) + digits
+  cut = #padded - d.scale
+  body = if d.scale == 0 then padded else padded[0:cut] + "." + padded[cut:]
+  if d.units < 0 then "-" + body else body
+
+# `12`, `12.5`, `-0.75`, `+3.00`: digits with at most one point.
+fn parse(s) =
+  neg = #s > 0 && s[0] == 45
+  body = if #s > 0 && (s[0] == 45 || s[0] == 43) then s[1:] else s
+  if #body == 0 then Err("`" + s + "` is not a number")
+  else
+    point = str_find(body, ".")
+    whole = if point < 0 then body else body[0:point]
+    frac = if point < 0 then "" else body[point + 1:]
+    if point >= 0 && str_find(frac, ".") >= 0 then Err("`" + s + "` has two points")
+    else if #whole + #frac == 0 then Err("`" + s + "` has no digits")
+    else if !all_digits(whole) || !all_digits(frac) then Err("`" + s + "` is not a number")
+    else
+      units = digits_value(whole + frac)
+      Ok(Decimal(if neg then 0 - units else units, #frac))
+
+private fn all_digits(s) = for i in 0..#s with ok = true
+  ok && s[i] >= 48 && s[i] <= 57
+
+private fn digits_value(s) = for i in 0..#s with acc = 0
+  acc * 10 + s[i] - 48
+
+private fn pow10(n) = for _ in 0..n with acc = 1
+  acc * 10
+
+impl Show(Decimal)
+  fn show(d) = text(d)
+
+impl Ord(Decimal)
+  fn compare(a, b) = cmp(a, b)
+
+# -- tests --------------------------------------------------------------------
+
+fn test_text_and_parse() =
+  assert_eq(text(Decimal(1250, 2)), "12.50")
+  assert_eq(text(Decimal(-75, 2)), "-0.75")
+  assert_eq(text(Decimal(5, 3)), "0.005")
+  assert_eq(text(Decimal(42, 0)), "42")
+  assert_eq(parse("19.99"), Ok(Decimal(1999, 2)))
+  assert_eq(parse("-0.75"), Ok(Decimal(-75, 2)))
+  assert_eq(parse("+3.00"), Ok(Decimal(300, 2)))
+  assert_eq(parse("12"), Ok(Decimal(12, 0)))
+  assert_eq(parse(".5"), Ok(Decimal(5, 1)))
+  assert_eq(parse("1.2.3"), Err("`1.2.3` has two points"))
+  assert_eq(parse("abc"), Err("`abc` is not a number"))
+
+fn test_arithmetic() =
+  a = Decimal(1, 1)
+  b = Decimal(2, 1)
+  assert_eq(show(add(a, b)), "0.3")
+  assert_eq(show(sub(Decimal(100, 2), Decimal(1, 3))), "0.999")
+  assert_eq(show(mul(Decimal(1999, 2), from_int(3))), "59.97")
+  assert_eq(show(mul(Decimal(5997, 2), Decimal(20, 2))), "11.9940")
+  assert(Decimal(1, 1) < Decimal(11, 2))
+  assert(eq(Decimal(10, 1), from_int(1)))
+
+fn test_rounding() =
+  x = Decimal(12345, 3)
+  assert_eq(show(round_to(x, 2, HalfUp)), "12.35")
+  assert_eq(show(round_to(x, 2, HalfEven)), "12.34")
+  assert_eq(show(round_to(Decimal(12355, 3), 2, HalfEven)), "12.36")
+  assert_eq(show(round_to(x, 2, Down)), "12.34")
+  assert_eq(show(round_to(x, 2, Up)), "12.35")
+  assert_eq(show(round_to(Decimal(-12345, 3), 2, HalfUp)), "-12.35")
+  assert_eq(show(round_to(Decimal(-12345, 3), 2, Down)), "-12.34")
+  assert_eq(show(round_to(Decimal(7, 0), 2, HalfUp)), "7.00")
+  assert_eq(div(from_int(1), from_int(3), 4, HalfUp), Ok(Decimal(3333, 4)))
+  assert_eq(div(from_int(2), from_int(3), 2, HalfEven), Ok(Decimal(67, 2)))
+  assert_eq(div(Decimal(-1, 0), from_int(8), 2, HalfEven), Ok(Decimal(-12, 2)))
+  assert_eq(div(from_int(1), zero(), 2, Down), Err("division by zero"))

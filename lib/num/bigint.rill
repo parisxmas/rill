@@ -1,0 +1,307 @@
+# Integers of any size, written in Rill.
+#
+# A `Big` is a sign and a buffer of limbs in base 1,000,000,000, least
+# significant first — nine decimal digits a limb, so a product of two limbs
+# fits an `Int` with room for the carry, and writing one out is writing its
+# limbs. Every value is normalized: no leading zero limbs, and zero is
+# never negative, so equal numbers are equal buffers.
+#
+#     import "num/bigint" as big
+#     n = big.pow(big.from_int(2), 100)             # 1267650600228229401496703205376
+#     f = big.factorial(30)
+#     (q, r) = big.divmod(f, big.parse("1000000007")?)
+#     println(show(big.add(q, r)))
+#
+# Addition and subtraction are linear, multiplication is the schoolbook
+# quadratic, and division finds each quotient limb by binary search over
+# products — fine for hundreds of digits, slow for a hundred thousand.
+
+type Big
+  Big(negative: Bool, limbs: Buf(Int))
+
+private fn base() = 1000000000
+
+fn zero() = Big(false, buf_int(0))
+
+fn is_zero(b: Big) = #b.limbs == 0
+
+fn from_int(n) =
+  if n == 0 then zero() else if n == -9223372036854775807 - 1
+    then neg(add(from_int(9223372036854775807), from_int(1)))
+    else Big(n < 0, limbs_of(abs(n)))
+
+private fn limbs_of(n) =
+  (k, _) = while v > 0 with (c, v) = (0, n)
+    (c + 1, v / base())
+  b = buf_int(k)
+  for i in 0..k with v = n
+    b[i] = v % base()
+    v / base()
+  b
+
+# The `Int` this is, or `None` past its range.
+fn as_int(b: Big) =
+  if #b.limbs > 3 then None
+  else
+    mag = for i in 0..#b.limbs with acc = 0
+      acc + b.limbs[i] * pow_base(i)
+    if #b.limbs == 3 && b.limbs[2] > 9 then None else if mag < 0
+      then None
+      else Some(if b.negative then 0 - mag else mag)
+
+private fn pow_base(i) = for _ in 0..i with acc = 1
+  acc * base()
+
+# -- sign and comparison ------------------------------------------------------
+
+fn neg(b: Big) = if is_zero(b) then b else Big(!b.negative, b.limbs)
+
+fn abs_of(b: Big) = Big(false, b.limbs)
+
+fn sign(b: Big) = if is_zero(b) then 0 else if b.negative then -1 else 1
+
+# Negative, zero or positive as `a` is less than, equal to, or greater than `b`.
+fn cmp(a: Big, b: Big) =
+  if a.negative != b.negative then if a.negative then -1 else 1
+  else
+    m = cmp_mag(a.limbs, b.limbs)
+    if a.negative then 0 - m else m
+
+private fn cmp_mag(x: Buf(Int), y: Buf(Int)) =
+  if #x != #y then if #x < #y then -1 else 1
+  else
+    r = for k in 0..#x with r = 0
+      i = #x - 1 - k
+      if r != 0 then r else if x[i] < y[i] then -1 else if x[i] > y[i] then 1 else 0
+    r
+
+fn eq(a: Big, b: Big) = cmp(a, b) == 0
+
+# -- arithmetic ---------------------------------------------------------------
+
+fn add(a: Big, b: Big) =
+  if a.negative == b.negative then Big(a.negative, add_mag(a.limbs, b.limbs)) |> trim
+  else
+    m = cmp_mag(a.limbs, b.limbs)
+    if m == 0 then zero() else if m > 0
+      then Big(a.negative, sub_mag(a.limbs, b.limbs)) |> trim
+      else Big(b.negative, sub_mag(b.limbs, a.limbs)) |> trim
+
+fn sub(a: Big, b: Big) = add(a, neg(b))
+
+fn mul(a: Big, b: Big) =
+  if is_zero(a) || is_zero(b)
+    then zero()
+    else Big(a.negative != b.negative, mul_mag(a.limbs, b.limbs)) |> trim
+
+# `b` to the `n`th, by squaring; `n` below zero is an error, as an integer
+# power is.
+fn pow(b: Big, n) =
+  if n < 0
+    then Err("a negative power is not an integer")
+    else Ok(pow_on(b, n, from_int(1)))
+
+private fn pow_on(b: Big, n, acc: Big) =
+  if n == 0
+    then acc
+    else pow_on(mul(b, b), n / 2, if n % 2 == 1 then mul(acc, b) else acc)
+
+fn factorial(n) = for k in 1..n + 1 with acc = from_int(1)
+  mul(acc, from_int(k))
+
+# The quotient rounded toward zero and the remainder with the sign of `a`,
+# as `/` and `%` on `Int` have them; `Err` on a zero divisor.
+fn divmod(a: Big, b: Big) =
+  if is_zero(b) then Err("division by zero")
+  else
+    (q, r) = divmod_mag(a.limbs, b.limbs)
+    Ok((Big(a.negative != b.negative, q) |> trim, Big(a.negative, r) |> trim))
+
+fn div(a: Big, b: Big) = match divmod(a, b)
+  Ok((q, _)) -> Ok(q)
+  Err(e) -> Err(e)
+
+fn rem(a: Big, b: Big) = match divmod(a, b)
+  Ok((_, r)) -> Ok(r)
+  Err(e) -> Err(e)
+
+# -- limbs --------------------------------------------------------------------
+
+# Leading zero limbs cut, and zero made positive.
+private fn trim(b: Big) =
+  n = for k in 0..#b.limbs with n = #b.limbs
+    if n == #b.limbs - k && b.limbs[#b.limbs - 1 - k] == 0 then n - 1 else n
+  if n == #b.limbs then b
+  else
+    cut = buf_int(n)
+    for i in 0..n
+      cut[i] = b.limbs[i]
+    Big(if n == 0 then false else b.negative, cut)
+
+private fn add_mag(x: Buf(Int), y: Buf(Int)) =
+  n = max(#x, #y)
+  out = buf_int(n + 1)
+  carry = for i in 0..n with c = 0
+    s = limb(x, i) + limb(y, i) + c
+    out[i] = s % base()
+    s / base()
+  out[n] = carry
+  out
+
+# `x - y` for `x >= y`.
+private fn sub_mag(x: Buf(Int), y: Buf(Int)) =
+  out = buf_int(#x)
+  for i in 0..#x with borrow = 0
+    d = x[i] - limb(y, i) - borrow
+    if d < 0 then
+      out[i] = d + base()
+      1
+    else
+      out[i] = d
+      0
+  out
+
+private fn mul_mag(x: Buf(Int), y: Buf(Int)) =
+  out = buf_int(#x + #y)
+  for i in 0..#x
+    carry = for j in 0..#y with c = 0
+      t = out[i + j] + x[i] * y[j] + c
+      out[i + j] = t % base()
+      t / base()
+    out[i + #y] = out[i + #y] + carry
+  out
+
+# `x * k` for a small `k`, `0 <= k < base`.
+private fn mul_small(x: Buf(Int), k) =
+  out = buf_int(#x + 1)
+  carry = for i in 0..#x with c = 0
+    t = x[i] * k + c
+    out[i] = t % base()
+    t / base()
+  out[#x] = carry
+  out
+
+private fn limb(b: Buf(Int), i) = if i < #b then b[i] else 0
+
+# Schoolbook long division a limb at a time: the remainder so far is
+# shifted up one limb, the next limb of `x` brought down, and the largest
+# `q` with `y * q <= remainder` found by binary search on `q`, which is
+# thirty comparisons a limb.
+private fn divmod_mag(x: Buf(Int), y: Buf(Int)) =
+  q = buf_int(#x)
+  rem = for k in 0..#x with r = buf_int(0)
+    i = #x - 1 - k
+    shifted = shift_in(r, x[i])
+    d = largest(y, shifted, 0, base() - 1)
+    q[i] = d
+    trim_mag(sub_mag(shifted, mul_small(y, d)))
+  (q, rem)
+
+# `r * base + limb`, as a buffer one longer.
+private fn shift_in(r: Buf(Int), v) =
+  out = buf_int(#r + 1)
+  out[0] = v
+  for i in 0..#r
+    out[i + 1] = r[i]
+  trim_mag(out)
+
+# The largest `q` in `lo..=hi` with `y * q <= target`.
+private fn largest(y: Buf(Int), target: Buf(Int), lo, hi) =
+  if lo >= hi then lo
+  else
+    mid = (lo + hi + 1) / 2
+    if cmp_mag(trim_mag(mul_small(y, mid)), target) <= 0
+      then largest(y, target, mid, hi)
+      else largest(y, target, lo, mid - 1)
+
+private fn trim_mag(b: Buf(Int)) =
+  t = trim(Big(false, b))
+  t.limbs
+
+# -- text ---------------------------------------------------------------------
+
+fn text(b: Big) =
+  if is_zero(b) then "0"
+  else
+    out = strbuf()
+    if b.negative then strbuf_add(out, "-") else strbuf_add(out, "")
+    top = #b.limbs - 1
+    strbuf_add(out, int_to_str(b.limbs[top]))
+    for k in 0..top
+      s = int_to_str(b.limbs[top - 1 - k])
+      strbuf_add(out, repeat("0", 9 - #s))
+      strbuf_add(out, s)
+    strbuf_str(out)
+
+# Digits, with a `-` or `+` in front if wanted.
+fn parse(s) =
+  negative = #s > 0 && s[0] == 45
+  body = if #s > 0 && (s[0] == 45 || s[0] == 43) then s[1:] else s
+  if #body == 0 || !all_digits(body) then Err("`" + s + "` is not an integer")
+  else
+    n = (#body + 8) / 9
+    limbs = buf_int(n)
+    for i in 0..n
+      hi = #body - 9 * i
+      lo = max(0, hi - 9)
+      limbs[i] = chunk(body, lo, hi)
+    Ok(Big(negative, limbs) |> trim)
+
+private fn chunk(s, lo, hi) = for i in lo..hi with acc = 0
+  acc * 10 + s[i] - 48
+
+private fn all_digits(s) = for i in 0..#s with ok = true
+  ok && s[i] >= 48 && s[i] <= 57
+
+impl Show(Big)
+  fn show(b) = text(b)
+
+impl Ord(Big)
+  fn compare(a, b) = cmp(a, b)
+
+# -- tests --------------------------------------------------------------------
+
+private fn of(s) = match parse(s)
+  Ok(b) -> b
+  Err(e) ->
+    assert_eq(e, "parsed")
+    zero()
+
+fn test_text_and_ints() =
+  assert_eq(show(from_int(0)), "0")
+  assert_eq(show(from_int(-1234567890123)), "-1234567890123")
+  assert_eq(show(of("000123")), "123")
+  assert_eq(show(of("-0")), "0")
+  assert_eq(as_int(of("9223372036854775807")), Some(9223372036854775807))
+  assert_eq(as_int(of("9223372036854775808")), None)
+  assert_eq(as_int(from_int(-42)), Some(-42))
+  assert_eq(shown(parse("12x")), "error: `12x` is not an integer")
+
+fn test_arithmetic() =
+  assert_eq(show(add(of("999999999"), from_int(1))), "1000000000")
+  assert_eq(show(sub(from_int(1), of("1000000000"))), "-999999999")
+  assert_eq(show(mul(of("123456789012345678901234567890"), of("987654321098765432109876543210"))), "121932631137021795226185032733622923332237463801111263526900")
+  match pow(from_int(2), 100)
+    Ok(p) -> assert_eq(show(p), "1267650600228229401496703205376")
+    Err(_) -> assert(false)
+  assert_eq(show(factorial(30)), "265252859812191058636308480000000")
+  assert(of("-5") < of("3"))
+  assert(of("100000000000") > of("99999999999"))
+
+fn test_division() =
+  a = factorial(25)
+  b = of("1000000007")
+  match divmod(a, b)
+    Err(_) -> assert(false)
+    Ok((q, r)) ->
+      assert(eq(add(mul(q, b), r), a))
+      assert(cmp(r, b) < 0)
+      assert(!r.negative)
+  assert_eq(shown(div(of("-7"), from_int(2))), "-3")
+  assert_eq(shown(rem(of("-7"), from_int(2))), "-1")
+  assert_eq(shown(div(of("1267650600228229401496703205376"), of("1099511627776"))), "1152921504606846976")
+  assert_eq(shown(div(from_int(1), zero())), "error: division by zero")
+
+private fn shown(r) = match r
+  Ok(b) -> show(b)
+  Err(e) -> "error: " + e
