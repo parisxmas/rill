@@ -2864,16 +2864,496 @@ pub unsafe extern "C" fn rill_buf_release(p: *mut u8, size: i64) {
 }
 
 /// Nothing sensible follows an index off the end, so this ends the program
-/// the way an array bound violation should.
+/// the way an array bound violation should — saying where, since the index
+/// alone rarely says why.
 #[no_mangle]
 pub extern "C" fn rill_buf_oob(i: i64, len: i64) -> ! {
     unsafe {
-        out(b"rill: buffer index ");
-        out_dec(i);
-        out(b" out of range, length ");
-        out_dec(len);
-        out(b"\n");
+        rill_flush_out();
+        err(b"rill: buffer index ");
+        err_dec(i);
+        err(b" out of range, length ");
+        err_dec(len);
+        err(b"\n");
+        crash_where();
         die()
+    }
+}
+
+/// A copy between two buffers, or within one, that stays inside both:
+/// `n` elements of `size` bytes from `src[from..]` to `dst[to..]`. What
+/// `memmove` on two raw pointers does without asking, asked: a length that
+/// came off a corrupt page ends here with a message rather than in the
+/// memory past the buffer.
+///
+/// # Safety
+/// Both must be live buffers of elements `size` bytes wide.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_copy(dst: *mut u8, to: i64, src: *const u8, from: i64, n: i64, size: i64) {
+    let dl = *(dst.sub(16) as *const i64).add(1);
+    let sl = *(src.sub(16) as *const i64).add(1);
+    if n < 0 || to < 0 || from < 0 || to > dl - n || from > sl - n {
+        rill_flush_out();
+        err(b"rill: buffer copy of ");
+        err_dec(n);
+        err(b" at ");
+        err_dec(to);
+        err(b" from ");
+        err_dec(from);
+        err(b" out of range, lengths ");
+        err_dec(dl);
+        err(b" and ");
+        err_dec(sl);
+        err(b"\n");
+        crash_where();
+        die()
+    }
+    core::ptr::copy(src.add((from * size) as usize), dst.add((to * size) as usize), (n * size) as usize);
+}
+
+/// The same for a comparison: `n` elements of `a[at..]` against `b[bt..]`
+/// as bytes, -1, 0 or 1.
+///
+/// # Safety
+/// Both must be live buffers of elements `size` bytes wide.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_cmp(a: *const u8, at: i64, b: *const u8, bt: i64, n: i64, size: i64) -> i64 {
+    let al = *(a.sub(16) as *const i64).add(1);
+    let bl = *(b.sub(16) as *const i64).add(1);
+    if n < 0 || at < 0 || bt < 0 || at > al - n || bt > bl - n {
+        rill_flush_out();
+        err(b"rill: buffer compare of ");
+        err_dec(n);
+        err(b" at ");
+        err_dec(at);
+        err(b" and ");
+        err_dec(bt);
+        err(b" out of range, lengths ");
+        err_dec(al);
+        err(b" and ");
+        err_dec(bl);
+        err(b"\n");
+        crash_where();
+        die()
+    }
+    let r = memcmp(a.add((at * size) as usize), b.add((bt * size) as usize), (n * size) as usize);
+    if r < 0 { -1 } else if r > 0 { 1 } else { 0 }
+}
+
+// ---- crashes ---------------------------------------------------------------
+//
+// A fault the hardware reports — an address that is nobody's, a stack that
+// ran off its guard page, an instruction that is not one — used to end the
+// program with the operating system's one word about it. It still ends the
+// program: nothing in a Rill program can be resumed from the middle of a
+// write it did not finish, and a strand that faulted may hold a channel
+// the others are waiting on. But it says what happened first: which
+// signal, at what address, whether that address is a strand's guard page
+// (a stack overflow, which is what a fault in a Rill program most often
+// is), which strand, and the Rill functions on the stack — from a table the
+// compiler leaves in every binary, of every function's start and name, so
+// that a stripped release build reports the same names a debug one does.
+//
+// The handler runs on a stack of its own on every thread, since the fault
+// it most wants to report is the one that left no stack to run on. With
+// `RILL_CRASH_WAIT` set it then waits, saying its pid, for a debugger to
+// attach; otherwise the signal is put back to what it was and the fault
+// runs again, so the process ends the way the system ends a faulting
+// process — a core, if the system was asked for one, and the usual exit
+// status.
+
+/// One entry of the table the compiler emits: where a function begins, and
+/// its name as a C string. `rill_nsyms` says how many.
+#[repr(C)]
+struct RillSym {
+    addr: *const u8,
+    name: *const u8,
+}
+
+extern "C" {
+    static rill_syms: RillSym;
+    static rill_nsyms: i64;
+}
+
+/// Unbuffered, to standard error: a crash report must not sit in a buffer
+/// the crash then loses.
+fn err(bytes: &[u8]) {
+    unsafe { write_all(2, bytes) }
+}
+
+unsafe fn err_dec(v: i64) {
+    let mut buf = [0u8; 24];
+    let mut i = buf.len();
+    let neg = v < 0;
+    let mut u = v.unsigned_abs();
+    if u == 0 {
+        i -= 1;
+        buf[i] = b'0';
+    }
+    while u > 0 {
+        i -= 1;
+        buf[i] = b'0' + (u % 10) as u8;
+        u /= 10;
+    }
+    if neg {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    write_all(2, &buf[i..]);
+}
+
+unsafe fn err_hex(v: usize) {
+    let mut buf = [0u8; 18];
+    let mut i = buf.len();
+    let mut u = v;
+    if u == 0 {
+        i -= 1;
+        buf[i] = b'0';
+    }
+    while u > 0 {
+        i -= 1;
+        buf[i] = b"0123456789abcdef"[u & 15];
+        u >>= 4;
+    }
+    i -= 1;
+    buf[i] = b'x';
+    i -= 1;
+    buf[i] = b'0';
+    write_all(2, &buf[i..]);
+}
+
+unsafe fn err_cstr(p: *const u8) {
+    let mut n = 0;
+    while *p.add(n) != 0 {
+        n += 1;
+    }
+    write_all(2, core::slice::from_raw_parts(p, n));
+}
+
+/// The Rill function an address is inside, and how far in: the entry with
+/// the greatest start at or before it, provided the address is not past
+/// the next function's start. The table is not sorted — a walk of it per
+/// frame is nothing, at a time when nothing else matters.
+unsafe fn sym_for(addr: usize) -> Option<(*const u8, usize)> {
+    let n = rill_nsyms as usize;
+    let base = &raw const rill_syms;
+    let mut best: usize = 0;
+    let mut name: *const u8 = core::ptr::null();
+    let mut next: usize = usize::MAX;
+    for i in 0..n {
+        let e = &*base.add(i);
+        let a = e.addr as usize;
+        if a <= addr {
+            if a >= best {
+                best = a;
+                name = e.name;
+            }
+        } else if a < next {
+            next = a;
+        }
+    }
+    // past the nameless entry that marks the end of the program's code is
+    // the runtime, which is nobody's business here
+    if name.is_null() || *name == 0 || addr >= next {
+        None
+    } else {
+        Some((name, addr - best))
+    }
+}
+
+#[cfg(all(unix, not(target_os = "wasi")))]
+extern "C" {
+    fn getpid() -> i32;
+}
+
+/// The frame pointer as this function sees it: where the chain of frames
+/// starts when the crash is a message rather than a signal.
+#[cfg(target_arch = "aarch64")]
+unsafe fn frame_here() -> usize {
+    let fp: usize;
+    core::arch::asm!("mov {}, x29", out(reg) fp, options(nomem, nostack, preserves_flags));
+    fp
+}
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn frame_here() -> usize {
+    let fp: usize;
+    core::arch::asm!("mov {}, rbp", out(reg) fp, options(nomem, nostack, preserves_flags));
+    fp
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+unsafe fn frame_here() -> usize {
+    0
+}
+
+/// The Rill functions on the stack, innermost first: `pc`, if it is one,
+/// and then the return address of every frame up the chain of frame
+/// pointers from `fp` — each frame's saved frame pointer and return
+/// address are the two words at it, on both machines Rill runs on, and
+/// every Rill function keeps the chain. Frames the runtime or the C
+/// library own are left out: what a Rill program wants to know is which
+/// of its own functions it was in. The walk stops at a frame pointer that
+/// is not above the last, or too far above it, before it can read
+/// anything that is not a frame.
+unsafe fn crash_where_from(pc: usize, mut fp: usize) {
+    // a run of the same frame — a recursion that ran away — is said once,
+    // with its length
+    let mut shown = 0;
+    let mut last: (*const u8, usize) = (core::ptr::null(), 0);
+    let mut repeats = 0i64;
+    if pc != 0 {
+        if let Some((name, off)) = sym_for(pc) {
+            crash_frame(name, off, &mut last, &mut repeats, &mut shown);
+        }
+    }
+    let mut steps = 0;
+    while fp != 0 && fp & 7 == 0 && steps < 100_000 && shown < 40 {
+        let next = *(fp as *const usize);
+        let ret = *((fp + 8) as *const usize);
+        if ret == 0 {
+            break;
+        }
+        // a return address is one past the call; the byte before it is
+        // inside the function that called
+        if let Some((name, off)) = sym_for(ret - 1) {
+            crash_frame(name, off, &mut last, &mut repeats, &mut shown);
+        }
+        if next <= fp || next - fp > 64 << 20 {
+            break;
+        }
+        fp = next;
+        steps += 1;
+    }
+    crash_repeats(&mut repeats);
+    if shown >= 40 {
+        err(b"  ...\n");
+    }
+    if shown == 0 {
+        err(b"  (no Rill frames found)\n");
+    }
+}
+
+unsafe fn crash_frame(name: *const u8, off: usize, last: &mut (*const u8, usize), repeats: &mut i64, shown: &mut i32) {
+    if name == last.0 && off == last.1 {
+        *repeats += 1;
+        return;
+    }
+    crash_repeats(repeats);
+    *last = (name, off);
+    err(b"  in ");
+    err_cstr(name);
+    err(b" +");
+    err_dec(off as i64);
+    err(b"\n");
+    *shown += 1;
+}
+
+unsafe fn crash_repeats(repeats: &mut i64) {
+    if *repeats > 0 {
+        err(b"  ... the same, ");
+        err_dec(*repeats);
+        err(b" more times\n");
+        *repeats = 0;
+    }
+}
+
+/// From here: for the runtime's own checks, which are calls and have the
+/// frame chain at hand.
+unsafe fn crash_where() {
+    crash_where_from(0, frame_here());
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct SigAction {
+    handler: usize,
+    mask: u32,
+    flags: i32,
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct StackT {
+    sp: *mut u8,
+    size: usize,
+    flags: i32,
+}
+
+#[cfg(target_os = "macos")]
+const SA_CRASH: i32 = 0x0001 /* ONSTACK */ | 0x0040 /* SIGINFO */ | 0x0004 /* RESETHAND */;
+#[cfg(target_os = "macos")]
+const SIGBUS: i32 = 10;
+#[cfg(target_os = "macos")]
+const SI_ADDR_OFFSET: usize = 24;
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct SigAction {
+    handler: usize,
+    mask: [u64; 16],
+    flags: i32,
+    restorer: usize,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+struct StackT {
+    sp: *mut u8,
+    flags: i32,
+    size: usize,
+}
+
+#[cfg(target_os = "linux")]
+const SA_CRASH: i32 = 0x08000000u32 as i32 /* ONSTACK */ | 4 /* SIGINFO */ | 0x80000000u32 as i32 /* RESETHAND */;
+#[cfg(target_os = "linux")]
+const SIGBUS: i32 = 7;
+#[cfg(target_os = "linux")]
+const SI_ADDR_OFFSET: usize = 16;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+extern "C" {
+    fn sigaction(sig: i32, act: *const SigAction, old: *mut SigAction) -> i32;
+    fn sigaltstack(ss: *const StackT, old: *mut StackT) -> i32;
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const CRASH_STACK: usize = 128 * 1024;
+
+/// A stack for the handler on this thread. Every thread that runs Rill
+/// code gets one: the main thread, each worker, each host thread that
+/// calls in.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+unsafe fn crash_stack_here() {
+    let p = mmap(core::ptr::null_mut(), CRASH_STACK, PROT_RW, MAP_PRIVATE_ANON, -1, 0);
+    if p as isize == -1 {
+        return;
+    }
+    let ss = StackT { sp: p, size: CRASH_STACK, flags: 0 };
+    sigaltstack(&ss, core::ptr::null_mut());
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+unsafe fn crash_stack_here() {}
+
+static CRASH_INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The handlers, once per process, and a stack for them on this thread.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+unsafe fn crash_handlers_ready() {
+    crash_stack_here();
+    if CRASH_INSTALLED.swap(true, core::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    let act = SigAction {
+        handler: crash_landed as usize,
+        #[cfg(target_os = "macos")]
+        mask: 0,
+        #[cfg(target_os = "linux")]
+        mask: [0; 16],
+        flags: SA_CRASH,
+        #[cfg(target_os = "linux")]
+        restorer: 0,
+    };
+    for sig in [11 /* SEGV */, SIGBUS, 4 /* ILL */, 8 /* FPE */] {
+        sigaction(sig, &act, core::ptr::null_mut());
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+unsafe fn crash_handlers_ready() {}
+
+/// Whether `addr` lies in the guard page under a stack whose top is `top`
+/// and whose usable size is `size` — which is what a stack overflow looks
+/// like from the outside.
+unsafe fn in_guard(addr: usize, top: usize, size: usize) -> bool {
+    top != 0 && addr < top - size && addr >= top - size - PAGE - 16
+}
+
+/// The program counter and frame pointer at the fault, out of the
+/// context the signal came with. Where they lie is one thing on each
+/// system: the mcontext is pointed to on a Mac and inline on Linux, and
+/// the registers are laid out as each kernel does.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+unsafe fn fault_site(ctx: *const u8) -> (usize, usize) {
+    let mc = *(ctx.add(48) as *const *const u8);
+    (*(mc.add(16 + 32 * 8) as *const usize), *(mc.add(16 + 29 * 8) as *const usize))
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+unsafe fn fault_site(ctx: *const u8) -> (usize, usize) {
+    let mc = *(ctx.add(48) as *const *const u8);
+    (*(mc.add(16 + 16 * 8) as *const usize), *(mc.add(16 + 6 * 8) as *const usize))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+unsafe fn fault_site(ctx: *const u8) -> (usize, usize) {
+    let mc = ctx.add(176);
+    (*(mc.add(8 + 32 * 8) as *const usize), *(mc.add(8 + 29 * 8) as *const usize))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+unsafe fn fault_site(ctx: *const u8) -> (usize, usize) {
+    let gregs = ctx.add(40);
+    (*(gregs.add(16 * 8) as *const usize), *(gregs.add(10 * 8) as *const usize))
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "linux"), not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
+unsafe fn fault_site(_ctx: *const u8) -> (usize, usize) {
+    (0, 0)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+extern "C" fn crash_landed(sig: i32, info: *const u8, ctx: *const u8) {
+    unsafe {
+        rill_flush_out();
+        let addr = *(info.add(SI_ADDR_OFFSET) as *const usize);
+        err(b"rill: ");
+        err(match sig {
+            11 => b"segmentation fault".as_slice(),
+            4 => b"illegal instruction".as_slice(),
+            8 => b"arithmetic fault".as_slice(),
+            _ => b"bus error".as_slice(),
+        });
+        err(b" at ");
+        err_hex(addr);
+        // whose stack, and was it the guard page
+        let w = me();
+        let overflow = if !w.is_null() && in_guard(addr, (*w).exec_top, EXEC_STACK_SIZE) {
+            true
+        } else {
+            in_guard(addr, MAIN_STACK_TOP, MAIN_STACK_SIZE)
+        };
+        if overflow {
+            err(b" - a stack overflow: the strand ran off the end of its stack");
+        }
+        if !w.is_null() && !(*w).current.is_null() {
+            let g = (*w).current;
+            if (*g).is_main {
+                err(b"\n  in the main strand");
+            } else if let Some((name, _)) = sym_for((*g).code as usize) {
+                err(b"\n  in a strand started at ");
+                err_cstr(name);
+            }
+            if NWORKERS > 1 {
+                err(b", worker ");
+                err_dec((*w).index as i64);
+            }
+        }
+        err(b"\n");
+        let (pc, fp) = fault_site(ctx);
+        crash_where_from(pc, fp);
+        let wait = getenv(b"RILL_CRASH_WAIT\0".as_ptr());
+        if !wait.is_null() && *wait != 0 {
+            err(b"rill: waiting for a debugger, pid ");
+            err_dec(getpid() as i64);
+            err(b"\n");
+            loop {
+                sleep_nanos(1_000_000_000);
+            }
+        }
+        // the handler was one-shot: returning re-runs the faulting
+        // instruction under the default action
     }
 }
 
@@ -4406,6 +4886,9 @@ static STOP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::ne
 static WORKERS_EXITED: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 static mut MAIN_G: *mut G = core::ptr::null_mut();
+/// Where the main strand's stack ends (its highest address), for telling a
+/// fault in its guard page from any other.
+static mut MAIN_STACK_TOP: usize = 0;
 static mut TLS_KEY: usize = 0;
 /// Guards every channel's queues and the claiming of waiting strands.
 static mut CHAN_LOCK: PthreadMutex = PthreadMutex { sig: 0, opaque: [0; 56] };
@@ -4673,6 +5156,7 @@ unsafe fn new_main_g(code: extern "C" fn(*mut u8)) -> *mut G {
     }
     let total = MAIN_STACK_SIZE + PAGE;
     let stack = alloc_stack(MAIN_STACK_SIZE);
+    MAIN_STACK_TOP = stack as usize + total;
     (*g).saved = core::ptr::null_mut();
     (*g).saved_cap = 0;
     (*g).is_main = true;
@@ -4851,6 +5335,7 @@ pub unsafe extern "C" fn rill_host_enter() {
     WORKERS[i].wake_fd.store(-1, core::sync::atomic::Ordering::Release);
     WORKERS[i].current = new_host_g();
     pthread_setspecific(TLS_KEY, &raw const WORKERS[i] as *const u8);
+    crash_stack_here();
     // Atomic counts from here on. The flag goes up before the wait so that
     // a call entering now counts atomically, and again after it, since a
     // call that was leaving a parallel section may have put it down.
@@ -4901,6 +5386,7 @@ static mut FIRST_THREAD: usize = 0;
 /// Called once from the generated `rill_init`.
 #[no_mangle]
 pub unsafe extern "C" fn rill_rt_host(code: extern "C" fn(*mut u8)) {
+    crash_handlers_ready();
     NWORKERS = requested_threads();
     if NWORKERS > 1 && rill_parallel_build == 0 {
         let msg = b"rill: RILL_THREADS ignored - rebuild with `rill build --parallel`\n";
@@ -5305,6 +5791,7 @@ extern "C" fn worker_entry(arg: *mut u8) -> *mut u8 {
     unsafe {
         let w = arg as *mut Worker;
         pthread_setspecific(TLS_KEY, arg);
+        crash_stack_here();
         worker_loop(w);
         // Past this point this thread reads no strand again, which is the
         // fact `sweep_abandoned` waits for. Release so that everything this
@@ -5433,12 +5920,14 @@ pub unsafe extern "C" fn rill_rt_run_direct(code: extern "C" fn()) {
     NWORKERS = 1;
     rill_mt = 0;
     atexit(flush_at_exit);
+    crash_handlers_ready();
     code();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rill_rt_run(code: extern "C" fn(*mut u8)) {
     atexit(flush_at_exit);
+    crash_handlers_ready();
     NWORKERS = requested_threads();
     if NWORKERS > 1 && rill_parallel_build == 0 {
         // The generated code updates reference counts without synchronizing,

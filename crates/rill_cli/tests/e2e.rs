@@ -32,6 +32,32 @@ fn require_fresh_runtime() {
     );
 }
 
+/// A program expected to die: its exit status and what it said on standard
+/// error, given the arguments.
+fn compile_and_crash(example: &str, args: &[&str]) -> (Option<i32>, String) {
+    require_fresh_runtime();
+    let root = workspace_root();
+    let source = root.join("examples").join(example);
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let exe = out_dir.join(Path::new(example).file_stem().unwrap());
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(
+        build.status.success(),
+        "rill build {example} failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&exe).args(args).output().expect("failed to run produced executable");
+    assert!(!run.status.success(), "{example} {args:?} was expected to die");
+    (run.status.code(), String::from_utf8_lossy(&run.stderr).into_owned())
+}
+
 fn compile_and_run(example: &str) -> String {
     require_fresh_runtime();
     let root = workspace_root();
@@ -1886,7 +1912,30 @@ fn user_defined_traits() {
 /// define `Unit`, `label` and `scale`.
 #[test]
 fn qualified_module_names() {
-    assert_eq!(compile_and_run("multi/units.rill"), "1.5m\n2ft\n20\n30\n");
+    assert_eq!(compile_and_run("multi/units.rill"), "1.5m\n2ft\n20\n30\n3\n");
+}
+
+/// A crash says which functions were on the stack — from the table the
+/// compiler leaves in the binary, so a stripped release build names them
+/// too — and what kind of crash it was.
+#[test]
+fn crash_reports_name_the_frames() {
+    let (_, said) = compile_and_crash("crashes.rill", &["copy"]);
+    assert!(said.contains("rill: buffer copy of 4096 at 0 from 0 out of range, lengths 16 and 4096\n"), "{said}");
+    assert!(said.contains("  in bad_copy +"), "{said}");
+    let (_, said) = compile_and_crash("crashes.rill", &["cmp"]);
+    assert!(said.contains("rill: buffer compare of 16 at 8 and 0 out of range, lengths 16 and 16\n"), "{said}");
+    let (_, said) = compile_and_crash("crashes.rill", &["oob"]);
+    assert!(said.contains("rill: buffer index 20 out of range, length 16\n"), "{said}");
+    assert!(said.contains("  in bad_index +"), "{said}");
+    let (_, said) = compile_and_crash("crashes.rill", &["ptr"]);
+    assert!(said.contains("rill: segmentation fault at 0x"), "{said}");
+    assert!(said.contains("  in the main strand\n"), "{said}");
+    assert!(said.contains("  in bad_ptr +"), "{said}");
+    let (_, said) = compile_and_crash("crashes.rill", &["deep"]);
+    assert!(said.contains("a stack overflow: the strand ran off the end of its stack\n"), "{said}");
+    assert!(said.contains("  in dive +"), "{said}");
+    assert!(said.contains(" more times\n"), "{said}");
 }
 
 #[test]

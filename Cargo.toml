@@ -20,3 +20,6 @@ panic = "abort"
 lto = true
 panic = "abort"
 strip = true
+# the runtime keeps frame pointers so that a crash can walk through its
+# frames to the program's
+force-frame-pointers = true

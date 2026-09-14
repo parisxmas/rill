@@ -1618,6 +1618,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             cg.gen_instance(&key)?;
         }
         cg.gen_main_wrapper();
+        cg.gen_sym_table();
 
         if let Err(msg) = cg.module.verify() {
             return Err(CodegenError::new(
@@ -2792,6 +2793,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         );
         self.module.add_function("rill_strbuf_reserve", void.fn_type(&[ptrt.into(), i64t.into()], false), None);
         self.module.add_function("rill_str_from_buf", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_buf_copy",
+            void.fn_type(&[ptrt.into(), i64t.into(), ptrt.into(), i64t.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_buf_cmp",
+            i64t.fn_type(&[ptrt.into(), i64t.into(), ptrt.into(), i64t.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
         self.module.add_function("rill_str_take_buf", ptrt.fn_type(&[ptrt.into()], false), None);
         self.module.add_function(
             "rill_strbuf_add_sub",
@@ -6562,6 +6573,54 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.call_rt("rill_flush_out", &[]);
         self.call_rt("rill_alloc_report", &[]);
         self.builder.build_return(Some(&i32t.const_int(0, false))).expect("LLVM builder error");
+    }
+
+    /// Every function with a body, its start and its name, in a table the
+    /// runtime reads when the program crashes: a stripped binary then names
+    /// its frames as a debug one would. Two pointers a function — a few
+    /// tens of kilobytes in a big program — and the names are the ones
+    /// `--debug` would give lldb.
+    fn gen_sym_table(&mut self) {
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let i64t = self.ctx.i64_type();
+        let entry_ty = self.ctx.struct_type(&[ptrt.into(), ptrt.into()], false);
+        // One more function, empty, after every other: where the program's
+        // code ends. The runtime's own functions follow it in the binary,
+        // and a frame past it is not a Rill frame, whatever the nearest
+        // start before it says. Its entry has no name, which is how the
+        // runtime knows it.
+        let end = self.module.add_function("rill.end", self.ctx.void_type().fn_type(&[], false), None);
+        end.set_linkage(inkwell::module::Linkage::Internal);
+        let block = self.ctx.append_basic_block(end, "entry");
+        self.builder.position_at_end(block);
+        self.builder.build_unreachable().expect("LLVM builder error");
+        let fns: Vec<FunctionValue<'ctx>> =
+            self.module.get_functions().filter(|f| f.count_basic_blocks() > 0).collect();
+        // And a frame pointer in every one of them, so that the runtime can
+        // walk the stack at a crash by the chain of saved frame pointers,
+        // through its own frames and a signal's: one register on x86-64,
+        // what the ABI keeps anyway on arm64.
+        let mut entries = Vec::with_capacity(fns.len());
+        for (i, f) in fns.iter().enumerate() {
+            f.add_attribute(AttributeLoc::Function, self.ctx.create_string_attribute("frame-pointer", "all"));
+            let name = if *f == end { &b""[..] } else { f.get_name().to_bytes() };
+            let text = self.ctx.const_string(name, true);
+            let g = self.module.add_global(text.get_type(), None, &format!("rill_sym.{i}"));
+            g.set_initializer(&text);
+            g.set_constant(true);
+            g.set_linkage(inkwell::module::Linkage::Private);
+            entries.push(entry_ty.const_named_struct(&[
+                f.as_global_value().as_pointer_value().into(),
+                g.as_pointer_value().into(),
+            ]));
+        }
+        let table = entry_ty.const_array(&entries);
+        let syms = self.module.add_global(table.get_type(), None, "rill_syms");
+        syms.set_initializer(&table);
+        syms.set_constant(true);
+        let n = self.module.add_global(i64t, None, "rill_nsyms");
+        n.set_initializer(&i64t.const_int(entries.len() as u64, false));
+        n.set_constant(true);
     }
 
     // ---- expressions -----------------------------------------------------

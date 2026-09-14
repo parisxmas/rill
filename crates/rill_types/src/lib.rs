@@ -2847,6 +2847,48 @@ impl Checker {
             }
             return Ok(TExpr { ty: Ty::Str, line, kind: TK::Builtin { rt: "rill_str_from_buf".into(), args: vec![b] } });
         }
+        // `buf_copy(dst, to, src, from, n)` and `buf_cmp(a, at, b, bt, n)`:
+        // a run of elements between two buffers of one width, or within
+        // one, kept inside both — what `memmove` and `memcmp` on raw
+        // pointers do unasked. The width goes to the runtime as a sixth
+        // argument, since a buffer does not carry it.
+        if name == "buf_copy" || name == "buf_cmp" {
+            if args.len() != 5 {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{name}` takes 5 arguments (dst, to, src, from, n), but {} given", args.len()),
+                ));
+            }
+            let a = self.infer(&args[0], env)?;
+            let width = match self.resolve(&a.ty) {
+                Ty::Buf(w) => w,
+                other => {
+                    return Err(TypeError::new(
+                        line,
+                        format!(
+                            "`{name}` needs a buffer, but this is `{}` — a `Buf` \
+                             width is never inferred, so annotate the parameter",
+                            self.type_name(&other)
+                        ),
+                    ))
+                }
+            };
+            let at = self.infer(&args[1], env)?;
+            self.unify(&Ty::Int, &at.ty, line, "buffer offset")?;
+            let b = self.infer(&args[2], env)?;
+            self.unify(&Ty::Buf(width.clone()), &b.ty, line, &format!("`{name}`: both buffers"))?;
+            let bt = self.infer(&args[3], env)?;
+            self.unify(&Ty::Int, &bt.ty, line, "buffer offset")?;
+            let n = self.infer(&args[4], env)?;
+            self.unify(&Ty::Int, &n.ty, line, "element count")?;
+            let size = TExpr { ty: Ty::Int, line, kind: TK::Int(width.size_bytes() as i64) };
+            let (rt, ty) = if name == "buf_copy" { ("rill_buf_copy", Ty::Unit) } else { ("rill_buf_cmp", Ty::Int) };
+            return Ok(TExpr {
+                ty,
+                line,
+                kind: TK::Builtin { rt: rt.into(), args: vec![a, at, b, bt, n, size] },
+            });
+        }
         if name == "buf_get" || name == "buf_set" || name == "buf_len" {
             let want = if name == "buf_set" { 3 } else if name == "buf_len" { 1 } else { 2 };
             if args.len() != want {
@@ -4437,6 +4479,8 @@ fn is_builtin_fn(name: &str) -> bool {
             | "buf_get"
             | "buf_set"
             | "buf_len"
+            | "buf_copy"
+            | "buf_cmp"
             | "buf_float_uninit"
             | "unique"
             | "map_new"

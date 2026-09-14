@@ -1340,6 +1340,15 @@ one assignment the language has, and only to a buffer element.
 | `buf_i8` `buf_u8` `buf_i16` `buf_u16` `buf_i32` `buf_u32` `buf_int` `buf_f32` `buf_float` `buf_ptr` | one constructor per element width; the argument is a length in elements |
 | `b[i]` / `b[i] = v` — or `buf_get(b, i)` / `buf_set(b, i, v)` | one element, bounds-checked |
 | `#b` (or `buf_len(b)`) | how many elements |
+| `buf_copy(dst, to, src, from, n)` | `n` elements of `src` from `from` into `dst` at `to`, overlapping or not, both bounds-checked |
+| `buf_cmp(a, at, b, bt, n)` | `n` elements of each as bytes: -1, 0 or 1, both bounds-checked |
+
+`buf_copy` and `buf_cmp` are `memmove` and `memcmp` with the question asked
+first: a length that came from somewhere it should not have — a header on a
+page that is not a header — stops at the check, with a message, rather than
+in the memory past the buffer. They cost the check and nothing else, and the
+check is nothing beside the copy; a program that reaches for `ptr_offset` and
+an `extern` `memmove` to move bytes between buffers has no reason to.
 
 Where a `Ptr` is wanted — a foreign parameter, a `peek`/`poke`, a Rill
 parameter annotated `Ptr` — a buffer written there **is** its first element's
@@ -1630,6 +1639,32 @@ rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist
 rill lsp                        # a language server on stdin/stdout
 ```
+
+### When a program dies
+
+A program that faults — an address that is nobody's through an `extern` or a
+`Ptr`, a strand that runs off the end of its stack, an instruction that is
+not one — still dies: nothing in it can be resumed from the middle of a write
+it did not finish, and the strand that faulted may hold a channel the others
+wait on. But it says what happened first, on standard error:
+
+```
+rill: bus error at 0x104f27ff0 - a stack overflow: the strand ran off the end of its stack
+  in a strand started at lambda$0, worker 0
+  in dive +119
+  ... the same, 99999 more times
+```
+
+Which signal and where, whether the address is a stack's guard page, which
+strand and which worker, and the Rill functions on the stack innermost
+first — by name, in a release build as in a debug one, from a table of every
+function's start and name the compiler leaves in the binary (two pointers a
+function). A bounds check that fails says the same about where it was. Runtime
+frames are left out; a recursion that ran away is one line and a count. With
+`RILL_CRASH_WAIT=1` in the environment the program then waits, saying its
+pid, for a debugger to attach; otherwise the fault runs again under the
+system's default, so a core is written if one was asked for and the exit
+status is the one a faulting process has always had.
 
 `rill types` is the answer to the question an inferring language raises: what
 did it decide? It prints every function in the file as the checker sees it,

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — a crash says where, and two buffer calls that ask first
+
+A fault — a bad address through an `extern` or a `Ptr`, a strand off the
+end of its stack, an illegal instruction — is reported before the program
+dies: the signal and the address, whether the address is a stack's guard
+page (a stack overflow, named as one), the strand and the worker, and the
+Rill functions on the stack by name, innermost first. The names come from
+a table the compiler now leaves in every binary — each function's start
+and its name, two pointers apiece — so a stripped release build reports
+what a `--debug` one would. The handler runs on a stack of its own on
+every thread, since the fault it most wants to report is the one that
+left no stack; the stack is walked by frame pointers, which every Rill
+function now keeps (one register on x86-64; arm64 kept them anyway), and
+the runtime too. `RILL_CRASH_WAIT=1` makes the program wait for a
+debugger instead of ending. A failed bounds check reports its frames the
+same way, and to standard error now.
+
+`buf_copy(dst, to, src, from, n)` and `buf_cmp(a, at, b, bt, n)`: `memmove`
+and `memcmp` between buffers with both ends bounds-checked, for the code
+that was reaching for `ptr_offset` and an extern to move bytes — and
+finding out, when a length came off a corrupt page, what the memory past
+a buffer holds.
+
+`examples/crashes.rill` is one of each.
+
 ## Unreleased — a pattern may name an aliased constructor
 
 `match v j.JStr(s) -> s` for a module imported `as j`: the parser took

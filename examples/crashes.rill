@@ -1,0 +1,60 @@
+# Four ways a program can die, one per argument, for what the runtime says
+# when it does: a copy that runs off a buffer, an index that does, a fault
+# through a raw pointer, and a strand that runs off its stack. Each report
+# names the Rill functions on the stack, from a table the compiler leaves
+# in every binary — stripped or not.
+#
+#     rill build examples/crashes.rill -o crashes
+#     ./crashes copy | oob | ptr | deep
+extern fn memmove(d: Ptr, s: Ptr, n: USize) -> Ptr
+
+fn main() = match args()
+  Cons(_, Cons(which, _)) ->
+    if which == "copy" then bad_copy() else if which == "cmp" then bad_cmp() else if which == "deep" then deep_strand() else if which == "ptr" then bad_ptr() else if which == "oob" then bad_index() else 0
+  _ -> 0
+
+fn bad_copy() =
+  a = buf_u8(16)
+  b = buf_u8(4096)
+  buf_copy(a, 0, b, 0, 4096)
+  println("copied")
+  0
+
+fn bad_cmp() =
+  a = buf_u8(16)
+  b = buf_u8(16)
+  println(int_to_str(buf_cmp(a, 8, b, 0, 16)))
+  0
+
+fn bad_index() =
+  a = buf_u8(16)
+  i = str_len("12345678901234567890")
+  a[i] = 1
+  println("set")
+  0
+
+fn bad_ptr() =
+  a = buf_u8(16)
+  p = ptr_offset(a, 0)
+  memmove(p, ptr_offset(p, 4096 * 4096 * 16), 8)
+  println("moved")
+  0
+
+fn deep_strand() =
+  done = channel(1)
+  spawn dive(done, 1)
+  recv(done)
+  println("back")
+  0
+
+# Not a tail call — there is work after it — so every level is a frame.
+fn dive(done, n) =
+  x = buf_int(64)
+  x[0] = n
+  if n > 100000000 then
+    send(done, 1)
+    0
+  else
+    dive(done, n + x[0] - n + 1)
+    x[1] = 1
+    0
