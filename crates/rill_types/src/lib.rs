@@ -568,6 +568,11 @@ struct Checker {
     prelude_fns: usize,
     /// The function whose body is being inferred.
     cur_fn_name: String,
+    /// What the body being inferred is to answer, innermost last: the
+    /// function's declared or provisional return type, or a fresh variable
+    /// for a lambda's. A `?` looks here for the error type it carries out
+    /// to, and wraps what it met in the one constructor that takes it.
+    expected_ret: Vec<Ty>,
     /// `(loop function, buffer)` pairs a `for.check` has vouched for: the
     /// buffer was known to be one when the check was typed, so `for.at` and
     /// `for.set` inside that loop may skip their bounds tests. Typed the
@@ -605,6 +610,7 @@ impl Checker {
             lifted: Vec::new(),
             prelude_fns: 0,
             cur_fn_name: String::new(),
+            expected_ret: Vec::new(),
             hoisted: HashSet::new(),
             gen_vars: Vec::new(),
         };
@@ -1711,7 +1717,9 @@ impl Checker {
             }
         }
         let saved_name = std::mem::replace(&mut self.cur_fn_name, f.name.clone());
+        self.expected_ret.push(sig_ret.clone());
         let body = self.infer(&f.body, &mut env);
+        self.expected_ret.pop();
         self.cur_fn_name = saved_name;
         let body = body?;
         if f.name != "main" {
@@ -2232,7 +2240,11 @@ impl Checker {
             Expr::Match { scrutinee, arms, line } => self.infer_match(scrutinee, arms, *line, env),
             Expr::Spawn { body, line } => {
                 let mut inner = env.clone();
-                let tbody = self.infer(body, &mut inner)?;
+                let unknown = self.fresh();
+                self.expected_ret.push(unknown);
+                let tbody = self.infer(body, &mut inner);
+                self.expected_ret.pop();
+                let tbody = tbody?;
                 let mut free = Vec::new();
                 let mut seen = HashSet::new();
                 free_vars(body, &mut free, &mut seen);
@@ -2328,7 +2340,11 @@ impl Checker {
                 for (p, t) in params.iter().zip(&param_tys) {
                     inner.insert(p.clone(), t.clone());
                 }
-                let tbody = self.infer(body, &mut inner)?;
+                let unknown = self.fresh();
+                self.expected_ret.push(unknown);
+                let tbody = self.infer(body, &mut inner);
+                self.expected_ret.pop();
+                let tbody = tbody?;
 
                 // Captures: free variables of the body that refer to locals of
                 // the enclosing scope (not the lambda's own parameters).
@@ -3937,26 +3953,34 @@ impl Checker {
         env: &mut HashMap<String, Ty>,
     ) -> Result<TExpr, TypeError> {
         let scrut = self.infer(scrutinee, env)?;
-        // `?` is written for a `Result`, and the two arms it becomes only fit
-        // one. Anything else gets told what it is rather than being shown a
-        // pattern it never wrote.
-        if is_try_match(arms) {
-            let ok = match self.resolve(&scrut.ty) {
-                Ty::Adt(i, _) => self.adts[i].name == "Result",
-                Ty::Var(_) => true,
-                _ => false,
-            };
-            if !ok {
-                return Err(TypeError::new(
-                    line,
-                    format!(
-                        "`?` takes the value out of a `Result`, and this is `{}` — \
-                         `match` on it, or `unwrap_or` for a default",
-                        self.type_name(&scrut.ty)
-                    ),
-                ));
+        // `?` is written for a `Result`, and the two arms it becomes fit one.
+        // On an `Option` the same two arms read `Some` and `None`, the `None`
+        // going out as itself. Anything else gets told what it is rather
+        // than being shown a pattern it never wrote.
+        let try_match = is_try_match(arms);
+        let on_option: Vec<Arm>;
+        let arms: &[Arm] = if try_match {
+            match self.resolve(&scrut.ty) {
+                Ty::Adt(i, _) if self.adts[i].name == "Option" => {
+                    on_option = option_try_arms(arms);
+                    &on_option
+                }
+                Ty::Adt(i, _) if self.adts[i].name == "Result" => arms,
+                Ty::Var(_) => arms,
+                other => {
+                    return Err(TypeError::new(
+                        line,
+                        format!(
+                            "`?` takes the value out of a `Result` or an `Option`, and this \
+                             is `{}` — `match` on it",
+                            self.type_name(&other)
+                        ),
+                    ))
+                }
             }
-        }
+        } else {
+            arms
+        };
         let result_ty = self.fresh();
         let mut tarms = Vec::new();
         // Rows seen so far, for the reachability check.
@@ -3991,19 +4015,47 @@ impl Checker {
                 }
             };
 
-            let body = self.infer(&arm.body, &mut arm_env)?;
+            // The `Err` arm of a `?` in a function whose error type is
+            // another: the error it met goes out inside the one constructor
+            // of the function's that takes it.
+            let wrapped: Expr;
+            let arm_body: &Expr = if try_match && tarms.len() == 1 {
+                match self.wrap_carried_error(&scrut.ty, &result_ty, arm.line)? {
+                    Some(e) => {
+                        wrapped = e;
+                        &wrapped
+                    }
+                    None => &arm.body,
+                }
+            } else {
+                &arm.body
+            };
+            let body = self.infer(arm_body, &mut arm_env)?;
             // The one `match` a program did not write is the one `?` becomes,
             // and its arms disagreeing means only one thing: the `?` was
             // written where the block's value is not the function's. Say that
             // rather than showing the match nobody typed.
             self.unify(&result_ty, &body.ty, arm.line, "match arms").map_err(|e| {
-                if is_try_match(arms) {
+                let named = |t: &Ty| match self.resolve(t) {
+                    Ty::Adt(i, _) => self.adts[i].name.clone(),
+                    _ => String::new(),
+                };
+                if try_match && named(&scrut.ty) == "Option" && named(&result_ty) == "Result" {
+                    // The one crossing `?` does not make: an absence is not
+                    // an error until the program says which.
+                    TypeError::new(
+                        arm.line,
+                        "`?` on an `Option` leaves the function with `None`, and this function \
+                         answers a `Result`. Say what the absence is an error of: `ok_or(o, e)?`"
+                            .to_string(),
+                    )
+                } else if try_match {
                     TypeError::new(
                         arm.line,
                         format!(
-                            "`?` leaves the function with an `Err`, so the block it is in \
-                             has to be what the function returns — and this one is worth \
-                             `{}` instead. Take the `?` out to a block that is.",
+                            "`?` leaves the function with an `Err` — or a `None` — so the block \
+                             it is in has to be what the function returns — and this one is \
+                             worth `{}` instead. Take the `?` out to a block that is.",
                             self.type_name(&result_ty)
                         ),
                     )
@@ -4333,6 +4385,129 @@ fn is_try_match(arms: &[Arm]) -> bool {
                 if name == "Err"
                     && matches!(args.as_slice(), [Pattern::Var(v)] if v == "try.e")
         )
+}
+
+impl Checker {
+    /// What the `Err` arm of a `?` carries out when the error it met is not
+    /// the one the function answers with: `Err(Io(try.e))` for an `IoErr`
+    /// met in a function that answers `Result(_, AppErr)` and has a
+    /// constructor `Io(IoErr)` — the match a program would have written.
+    /// The function's error type is what the match is worth where that is
+    /// already known, else what the function declared. `None` where the
+    /// two agree, or nothing says what the function answers; an error where
+    /// nothing of the function's takes what was met, or two things do.
+    fn wrap_carried_error(
+        &mut self,
+        scrut_ty: &Ty,
+        result_ty: &Ty,
+        line: usize,
+    ) -> Result<Option<Expr>, TypeError> {
+        let err_of = |this: &Self, t: &Ty| match this.resolve(t) {
+            Ty::Adt(i, args) if this.adts[i].name == "Result" && args.len() == 2 => {
+                Some(this.resolve(&args[1]))
+            }
+            _ => None,
+        };
+        let Some(met) = err_of(self, scrut_ty) else { return Ok(None) };
+        let declared = self.expected_ret.last().cloned().and_then(|r| err_of(self, &r));
+        let target = match err_of(self, result_ty) {
+            Some(t @ Ty::Adt(..)) => t,
+            _ => match &declared {
+                Some(t @ Ty::Adt(..)) => t.clone(),
+                _ => return Ok(None),
+            },
+        };
+        // Where the function's return type is not written, the error type
+        // is whatever the block settled on first, which is worth saying.
+        let unwritten = if matches!(declared, Some(Ty::Adt(..))) {
+            ""
+        } else {
+            " (the function's return type is not written, so this is the error type its \
+             block settled on; `-> Result(_, T)` would say which to wrap in)"
+        };
+        if matches!(met, Ty::Var(_)) || met == target {
+            return Ok(None);
+        }
+        let Ty::Adt(adt, targs) = &target else { unreachable!("matched above") };
+        let takes: Vec<&CtorSig> = self.adts[*adt]
+            .ctors
+            .iter()
+            .filter(|c| c.fields.len() == 1 && self.same_type(&subst_gen(&c.fields[0], targs), &met))
+            .collect();
+        match takes.as_slice() {
+            [ctor] => {
+                let e = Expr::Var("try.e".to_string(), line);
+                let inner = Expr::Call {
+                    name: ctor.name.clone(),
+                    args: vec![e],
+                    line,
+                    piped: false,
+                    stacked: false,
+                };
+                Ok(Some(Expr::Call {
+                    name: "Err".to_string(),
+                    args: vec![inner],
+                    line,
+                    piped: false,
+                    stacked: false,
+                }))
+            }
+            [] => Err(TypeError::new(
+                line,
+                format!(
+                    "`?` met an `{}` in a function that answers `Result(_, {})`, and no \
+                     constructor of `{}` takes one — `map_err(r, f)?` says how it crosses{unwritten}",
+                    self.type_name(&met),
+                    self.type_name(&target),
+                    self.adts[*adt].name
+                ),
+            )),
+            two => {
+                let names: Vec<String> = two.iter().map(|c| format!("`{}`", c.name)).collect();
+                Err(TypeError::new(
+                    line,
+                    format!(
+                        "`?` met an `{}` in a function that answers `Result(_, {})`, and {} \
+                         all take one, so it cannot say which — `map_err(r, f)?` does",
+                        self.type_name(&met),
+                        self.type_name(&target),
+                        names.join(", ")
+                    ),
+                ))
+            }
+        }
+    }
+
+    /// Whether two types are the same once resolved, variables included —
+    /// a comparison, not a unification: nothing is bound by asking.
+    fn same_type(&self, a: &Ty, b: &Ty) -> bool {
+        match (self.resolve(a), self.resolve(b)) {
+            (Ty::Adt(i, x), Ty::Adt(j, y)) => {
+                i == j && x.len() == y.len() && x.iter().zip(&y).all(|(p, q)| self.same_type(p, q))
+            }
+            (Ty::Fn(p, r), Ty::Fn(q, s)) => {
+                p.len() == q.len()
+                    && p.iter().zip(&q).all(|(a, b)| self.same_type(a, b))
+                    && self.same_type(&r, &s)
+            }
+            (Ty::Chan(a), Ty::Chan(b)) => self.same_type(&a, &b),
+            (Ty::Map(k, v), Ty::Map(l, w)) => self.same_type(&k, &l) && self.same_type(&v, &w),
+            (a, b) => a == b,
+        }
+    }
+}
+
+/// The two arms of a `?` read for an `Option`: `Some` where `Ok` was, and
+/// `None` carried out as itself where `Err(e)` was.
+fn option_try_arms(arms: &[Arm]) -> Vec<Arm> {
+    let mut out: Vec<Arm> = arms.to_vec();
+    if let Pattern::Ctor { name, .. } = &mut out[0].pattern {
+        *name = "Some".to_string();
+    }
+    let line = out[1].line;
+    out[1].pattern = Pattern::Ctor { name: "None".to_string(), args: vec![], line };
+    out[1].body = Expr::Var("None".to_string(), line);
+    out
 }
 
 /// Substitutes `Gen(i)` -> `args[i]` in a type.
@@ -5828,12 +6003,15 @@ mod tests {
         ))
         .unwrap_err();
         assert!(err.msg.contains("has to be what the function returns"), "{}", err.msg);
-        // And on anything but a `Result`, it says what to write instead.
-        let err = check_std(
-            "fn first(l) =\n  x = nth(l, 0)?\n  Some(x)\n\nfn main() = println(1)\n",
-        )
-        .unwrap_err();
-        assert!(err.msg.contains("takes the value out of a `Result`"), "{}", err.msg);
+        // On an `Option`, in a function that answers one, it is the same
+        // two arms reading `Some` and `None`.
+        let t = check_std("fn first(l) =\n  x = nth(l, 0)?\n  Some(x)\n\nfn main() = println(1)\n")
+            .unwrap();
+        assert!(matches!(&sig(&t, "first").ret, Ty::Adt(i, _) if t.adts[*i].name == "Option"));
+        // And on anything else, it says what it takes the value out of.
+        let err = check_std("fn first(n: Int) =\n  x = n?\n  Some(x)\n\nfn main() = println(1)\n")
+            .unwrap_err();
+        assert!(err.msg.contains("takes the value out of a `Result` or an `Option`"), "{}", err.msg);
     }
 
     /// Where a `Ptr` is wanted, a buffer is its first element's address —

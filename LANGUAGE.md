@@ -466,11 +466,34 @@ and says what that something else is.
 
 Nothing is added at run time: the `match` is the one that would have been
 written, an error travels no further than it did, and a tail call after a `?`
-is still a tail call. The error types have to agree, since `Err(e) -> Err(e)`
-carries the same value out; there is no conversion, and one is not wanted.
+is still a tail call.
 
-`?` is for `Result`. On an `Option`, `match` on it or `unwrap_or` for a
-default — and the error says so if it is tried.
+Layers have their own kinds of error, and the function's error type says how
+the lower ones are carried: a sum type with a constructor per kind.
+
+```
+type AppErr
+  Io(IoErr)
+  Parse(ParseErr)
+
+fn load(path) -> Result(Config, AppErr) =
+  text = read(path)?         # Err(e) -> Err(Io(e))
+  Ok(parse(text)?)           # Err(e) -> Err(Parse(e))
+```
+
+Where the error a `?` meets is not the function's, it goes out inside the one
+constructor of the function's error type that takes it — still the `match`
+that would have been written, only with the wrapping in it. Nothing converts
+that the type did not declare: two constructors that take it, or none, and the
+`?` says so and asks for `map_err(r, f)?`, which rewrites the error before the
+`?` carries it. The function's error type has to be known for this: written
+as its return type, or settled already by the block. `ok_or(m[k], "no such
+key")?` gives an absence the error it should be.
+
+`?` works on an `Option` the same way, in a function that answers one: the
+value inside the `Some`, or else `None`. It does not cross between the two —
+an `Option` in a function that answers a `Result` is `ok_or(o, e)?`, the
+error being something only the program can say, and the error says so.
 
 ---
 
@@ -1084,7 +1107,7 @@ replaces the prelude's.
 **Lists**: `map` `filter` `fold` `len` `sum` `range` `reverse` `append` `take`
 `drop` `nth` `any` `all`
 
-**Option/Result**: `unwrap_or` `opt_map` `res_map`
+**Option/Result**: `unwrap_or` `opt_map` `res_map` `ok_or` `map_err`
 
 **Maps**: `map_get` `map_or` `map_has` `map_keys` `map_values` `map_items`
 `map_of`

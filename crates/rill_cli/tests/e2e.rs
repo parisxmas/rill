@@ -1827,6 +1827,100 @@ fn fmt_keeps_the_breaks_the_author_wrote() {
     assert_eq!(fmt_source(flat), flat);
 }
 
+/// `?` on an `Option`, in a function that answers one: the value inside the
+/// `Some`, or else `None`. The crossings are written: `ok_or` gives an
+/// absence its error, `map_err` rewrites one before the `?` carries it, and
+/// an `Option` in a function that answers a `Result` is told to say which.
+#[test]
+fn question_mark_takes_the_value_out_of_an_option() {
+    let src = "fn find_pos(xs, n) = match xs\n  \
+                 Nil -> None\n  \
+                 Cons(x, rest) -> if x == n then Some(0) else opt_map(find_pos(rest, n), \\i -> i + 1)\n\n\
+               fn both(xs) =\n  \
+                 a = find_pos(xs, 2)?\n  \
+                 b = find_pos(xs, 3)?\n  \
+                 Some(a + b)\n\n\
+               fn check(n) = if n > 1 then Ok(n * 10) else Err(\"small\")\n\n\
+               fn named(xs) =\n  \
+                 p = ok_or(find_pos(xs, 3), \"no 3\")?\n  \
+                 q = map_err(check(p), \\e -> \"check: \" + e)?\n  \
+                 Ok(q)\n\n\
+               fn main() =\n  \
+                 xs = Cons(1, Cons(2, Cons(3, Nil)))\n  \
+                 println(show(both(xs)))\n  \
+                 println(show(both(Cons(2, Nil))))\n  \
+                 println(show(named(xs)))\n  \
+                 println(show(named(Cons(3, Nil))))\n  \
+                 println(show(named(Nil)))\n";
+    assert_eq!(
+        run_source("optry", src),
+        "Some(3)\nNone\nOk(20)\nErr(check: small)\nErr(no 3)\n"
+    );
+
+    let crossing = "fn f(o: Option(Int)) =\n  \
+                      x = o?\n  \
+                      Ok(x + 1)\n\n\
+                    fn main() = println(show(f(Some(1))))\n";
+    let err = compile_error(crossing);
+    assert!(err.contains("`?` on an `Option` leaves the function with `None`") && err.contains("ok_or(o, e)?"), "{err}");
+
+    let neither = "fn f(n: Int) =\n  \
+                     x = n?\n  \
+                     Some(x)\n\n\
+                   fn main() = println(show(f(1)))\n";
+    assert!(compile_error(neither).contains("`Result` or an `Option`, and this is `Int`"));
+}
+
+/// An error of another layer's kind crosses at the `?`: where the function
+/// answers `Result(_, AppErr)`, an `IoErr` goes out as `Err(Io(e))`, through
+/// the one constructor that takes it. Two that take it, or none, is an error
+/// that asks for `map_err`; a function whose return type is not written gets
+/// the error type its block settled on, and is told so.
+#[test]
+fn question_mark_wraps_an_error_in_the_constructor_that_takes_it() {
+    let head = "type IoErr\n  \
+                  NotFound(Str)\n\n\
+                type ParseErr\n  \
+                  Bad(Int)\n\n\
+                type AppErr\n  \
+                  Io(IoErr)\n  \
+                  Parse(ParseErr)\n  \
+                  Other(Str)\n\n\
+                fn read(p) = if p == \"ok\" then Ok(\"42\") else Err(NotFound(p))\n\n\
+                fn parse(s) = if s == \"42\" then Ok(42) else Err(Bad(#s))\n\n";
+    let layered = format!(
+        "{head}fn load(p) -> Result(Int, AppErr) =\n  \
+           s = read(p)?\n  \
+           n = parse(s)?\n  \
+           Ok(n + 1)\n\n\
+         fn settled(p) =\n  \
+           s = read(p)?\n  \
+           if #s > 0 then Ok(s) else Err(Other(\"empty\"))\n\n\
+         fn main() =\n  \
+           println(show(load(\"ok\")))\n  \
+           println(show(load(\"nope\")))\n  \
+           println(show(settled(\"zz\")))\n"
+    );
+    assert_eq!(run_source("wraperr", &layered), "Ok(43)\nErr(Io(NotFound(nope)))\nErr(Io(NotFound(zz)))\n");
+
+    let none = format!(
+        "{head}fn load(p) -> Result(Str, ParseErr) =\n  s = read(p)?\n  Ok(s)\n\nfn main() = println(1)\n"
+    );
+    let err = compile_error(&none);
+    assert!(err.contains("no constructor of `ParseErr` takes one") && err.contains("map_err"), "{err}");
+
+    let two = format!(
+        "{head}type Two\n  A(IoErr)\n  B(IoErr)\n\n\
+         fn load(p) -> Result(Str, Two) =\n  s = read(p)?\n  Ok(s)\n\nfn main() = println(1)\n"
+    );
+    assert!(compile_error(&two).contains("`A`, `B` all take one"));
+
+    let unwritten = format!(
+        "{head}fn load(p) =\n  s = read(p)?\n  n = parse(s)?\n  Ok(n)\n\nfn main() = println(1)\n"
+    );
+    assert!(compile_error(&unwritten).contains("the function's return type is not written"));
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

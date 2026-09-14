@@ -119,6 +119,18 @@ fn res_map(r, f) = match r
   Ok(x) -> Ok(f(x))
   Err(e) -> Err(e)
 
+# An option as a result: the value, or the error its absence is. This is how
+# a lookup joins a chain of `?`: `ok_or(m[k], "no such key")?`.
+fn ok_or(o, e) = match o
+  None -> Err(e)
+  Some(x) -> Ok(x)
+
+# A result with its error rewritten, which is how an error crosses from one
+# layer's kind to another's: `map_err(read(path), \e -> Io(e))?`.
+fn map_err(r, f) = match r
+  Ok(x) -> Ok(x)
+  Err(e) -> Err(f(e))
+
 # -- maps --------------------------------------------------------------------
 
 # Everything a program asks a map goes through its slots: `map_find` says

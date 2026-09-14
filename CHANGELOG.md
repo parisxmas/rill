@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — `?` on an option, and an error carried across layers
+
+`?` took the value out of a `Result` and nothing else. It takes the
+value out of an `Option` now, in a function that answers one: the two
+arms it becomes read `Some` and `None`, and the `None` goes out as
+itself — the same `match`, the same nothing at run time. It does not
+cross between the two kinds, and the error for an `Option` in a
+function that answers a `Result` says what to write instead.
+
+An error of another layer's kind crosses at the `?` now: where a
+function answers `Result(_, AppErr)` and the `?` meets an `IoErr`, the
+error goes out inside the one constructor of `AppErr` that takes an
+`IoErr` — `Err(e) -> Err(Io(e))`, the match a program wrote by hand
+before. The sum type is the declaration; nothing converts that it did
+not declare, and two constructors that take the error, or none, is an
+error that asks for `map_err`. The function's error type has to be
+known — written as its return type, or settled by the block — and the
+error says so where it is not.
+
+The prelude has the crossings written out for the rest: `ok_or(o, e)`
+is an option as a result, the error being what the program says its
+absence is, and `map_err(r, f)` is a result with its error rewritten.
+
 ## Unreleased — the formatter keeps the breaks
 
 A line could continue the one above it since August — `|> sum` under
