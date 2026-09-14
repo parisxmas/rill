@@ -523,40 +523,93 @@ fn wrap(layers, handler) = match layers
     inner = wrap(rest, handler)
     \req -> outer(req, inner)
 
-# How many requests a second a route may have, and what the rest are told.
-# Anything that only reads is let through: it is the writes that reach a
-# database, and a page that is being read has no reason to be throttled.
+# How many requests a second one caller may have, and what the rest are told.
 #
-# The count is per method and path rather than per client, because a client is
-# not something an HTTP request carries — a real deployment keys this by
-# whatever its proxy puts in front (`X-Forwarded-For`, a session, an API key)
-# and the shape below does not change.
-fn rate_limit(per_second) =
-  seen = map_new()
-  \req, next -> under_limit(seen, per_second, req, next)
+# Three things decide whether a limiter is worth having, and all three are
+# easy to get wrong:
+#
+# **Who is counted.** Not the route. A limit of twenty a second on
+# `POST /doc/<id>` is no limit at all when there are a million ids: the
+# caller simply moves along them and never meets the count. The bucket is
+# the caller, so what is bounded is what a caller can make this server do,
+# which is the thing worth bounding.
+#
+# **Whether the caller can be believed.** A caller names itself in
+# `X-Forwarded-For`, and a caller that writes its own name has no limit —
+# a fresh name is a fresh bucket, one header away. So the header is
+# ignored unless this server is told how many proxies stand in front of
+# it, and then only their entries are read; see `client_of`.
+#
+# **Reads as well as writes.** A read that groups a million rows costs more
+# than a write of one cell. Reads are counted too, in a bucket of their own
+# so that browsing and editing do not crowd each other out, and usually at a
+# looser rate — a page fetches a handful of things at once, which is one
+# person behaving normally.
+#
+# `rate_limit(n)` is writes only and trusts nothing, which is what a server
+# reached directly should do. `rate_limits(writes, reads, hops)` is the whole
+# of it.
+#
+# The window is a whole second that everyone shares rather than one per
+# caller, so a burst that straddles the boundary can be twice the limit. It
+# is a guard against a caller that will not stop, not a token bucket.
+fn rate_limit(per_second) = rate_limits(per_second, 0, 0)
 
-fn under_limit(seen, per_second, req: Request, next) =
-  if req.method == "GET" || req.method == "HEAD" then next(req)
+fn rate_limits(writes, reads, hops) =
+  seen = map_new()
+  \req, next -> under_limit(seen, writes, reads, hops, req, next)
+
+fn under_limit(seen, writes, reads, hops, req: Request, next) =
+  reading = req.method == "GET" || req.method == "HEAD"
+  most = if reading then reads else writes
+  if most <= 0 then next(req)
   else
-    key = whose(req) + " " + req.method + " " + req.path
+    key = client_of(req, hops) + (if reading then " r" else " w")
     now = now_nanos() / 1000000000
     forget_old(seen, now)
     count = hits_this_second(seen, key, now)
-    if count > per_second then too_many(per_second) else next(req)
+    if count > most then too_many(most) else next(req)
 
-# Who is asking, as far as this server can tell. Behind a proxy that is the
-# first name in `X-Forwarded-For` — the ones after it are the proxies. With
-# nothing in front there is no such header and every caller counts as the
-# same one, which is a limit on the route rather than on a client and is the
-# honest thing to say about a server that cannot see past its own socket.
-fn whose(req: Request) =
-  said = header(req, "x-forwarded-for")
-  if str_len(said) == 0 then "anyone" else trim(unwrap_or(nth(split(said, ","), 0), said))
+# Which name in `X-Forwarded-For` is the caller, given how many proxies
+# stand in front of this server.
+#
+# Every hop appends the address it saw to the end of the header, so the
+# entries at the end are the ones written by the proxies and the entries at
+# the front are whatever the caller sent — which is anything it likes. With
+# `hops` proxies in front, the caller is `hops` from the right: the last
+# entry is what the nearest proxy saw, and the one before it is what the
+# proxy before that saw.
+#
+#     X-Forwarded-For: 9.9.9.9, 203.0.113.7, 172.68.1.1
+#                      ^ sent    ^ the caller  ^ seen by the last proxy
+#                                  (hops = 2)
+#
+# `hops` of 0 says there is no proxy, and then the header is not read at
+# all: every caller counts as the same one, which is a limit on the server
+# rather than on a client and is the honest thing to say about a server that
+# can only see its own socket. A header with fewer entries than there are
+# proxies has been stripped or the count is wrong — either way it cannot be
+# read, and everyone shares a bucket again rather than being let through.
+#
+# A proxy that overwrites the header instead of appending — `proxy_set_header
+# X-Forwarded-For $remote_addr` in nginx, where `$remote_addr` is already the
+# real caller — leaves exactly one entry, and `hops` is 1. That is the
+# arrangement to prefer: nothing the caller sends survives it.
+fn client_of(req: Request, hops) =
+  if hops <= 0 then "anyone"
+  else
+    said = split(header(req, "x-forwarded-for"), ",")
+    n = len(said)
+    if n < hops then "anyone" else somebody(trim(unwrap_or(nth(said, n - hops), "")))
+
+# An empty entry is a header that says nothing, and nothing is not a caller:
+# it shares the bucket with everyone else rather than having one of its own.
+fn somebody(who) = if str_len(who) == 0 then "anyone" else who
 
 # One second's worth of counting: a key holds the second it is counting and
 # how many have arrived in it, and a new second starts the count again.
-# A key is a client and a route, and clients keep arriving: a map that only
-# grows is a leak with a slow fuse. Anything counted in an earlier second can
+# A key is a client and whether it was reading, and clients keep arriving: a
+# map that only grows is a leak with a slow fuse. Anything counted in an earlier second can
 # never be counted again, so it goes.
 fn forget_old(seen, now) =
   if map_len(seen) > 4096 then forget_each(map_items(seen), seen, now) else 0
