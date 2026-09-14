@@ -46,6 +46,13 @@ fn main() = println(m.label(m.Meters(1.5)) + " " + i.label(i.Feet(2.0)))
 different types. A pattern names an aliased constructor the same way:
 `match u m.Meters(v) -> v`.
 
+A function the file keeps to itself is written `private fn`. An importer
+does not see it, cannot call it — the error names the file — and may have a
+function of the same name, since the two never meet: the loader renames a
+private function to a spelling no program can write and rewrites the file's
+own references to match. Everything else a file defines is the importer's
+to use, which is the default a library written before `private` still has.
+
 A file that is not beside the importer is looked for on the search path:
 `RILL_PATH`, a colon-separated list, and then every `lib/` from the importing
 file's directory upwards, stopping at the one holding `.git`. So a library in

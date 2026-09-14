@@ -146,6 +146,14 @@ impl Parser {
             match self.peek() {
                 Tok::Eof => break,
                 Tok::Fn => functions.push(self.fndef(false)?),
+                // `private fn`: a function the file keeps to itself. A name
+                // rather than a keyword, meaning this only here, before `fn`.
+                Tok::Ident(w) if w == "private" && matches!(self.peek2(), Tok::Fn) => {
+                    self.bump();
+                    let mut f = self.fndef(false)?;
+                    f.private = true;
+                    functions.push(f);
+                }
                 Tok::Export => {
                     self.bump();
                     functions.push(self.fndef(true)?);
@@ -669,7 +677,7 @@ impl Parser {
         }
         self.expect(&Tok::Eq, "before the function body")?;
         let body = self.body()?;
-        Ok(FnDef { name, exported, params, ret_ann, body, line, lifted_from: None, wheres })
+        Ok(FnDef { name, exported, params, ret_ann, body, line, lifted_from: None, wheres, private: false })
     }
 
     /// Function body: inline expression, or an indented block of statements.

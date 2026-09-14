@@ -43,7 +43,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let src = rest.iter().find(|a| !a.starts_with("--")).ok_or(USAGE)?;
             let parallel = rest.iter().any(|a| a == "--parallel");
             let path = PathBuf::from(src);
-            let module = rill_syntax::load_program(&path)?;
+            let module = with_main(rill_syntax::load_program(&path)?);
             // Everything one pass can find, rather than the first thing: a
             // file with three mistakes in it should take one run to learn
             // about three mistakes.
@@ -92,7 +92,7 @@ fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
     let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let mine: Vec<String> = own.functions.iter().map(|f| f.name.clone()).collect();
 
-    let module = rill_syntax::load_program(&path)?;
+    let module = with_main(rill_syntax::load_program(&path)?);
     let tmod = match rill_types::check_all(&module) {
         Ok(t) => t,
         Err(errors) => {
@@ -103,11 +103,44 @@ fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
         }
     };
     for name in mine {
-        if let Some(&i) = tmod.fn_index.get(&name) {
-            println!("{}", rill_types::show_signature(&tmod.fns[i], &tmod.adts, &tmod.traits));
+        // A `private fn` is in the table under the loader's name for it.
+        let suffix = format!("..{name}");
+        let found = tmod.fn_index.get(&name).copied().or_else(|| {
+            tmod.fn_index.iter().find(|(k, _)| k.ends_with(&suffix)).map(|(_, &i)| i)
+        });
+        if let Some(i) = found {
+            let sig = rill_types::show_signature(&tmod.fns[i], &tmod.adts, &tmod.traits);
+            if tmod.fns[i].name == name {
+                println!("{sig}");
+            } else {
+                let shown = format!("fn {}(", tmod.fns[i].name);
+                println!("{}", sig.replacen(&shown, &format!("private fn {name}("), 1));
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// A library has no `main`, and `check` and `types` are asked of libraries
+/// as much as of programs: one that does nothing stands in, so the checker
+/// has its entry point and the file's functions are checked as written.
+fn with_main(mut module: rill_syntax::ast::Module) -> rill_syntax::ast::Module {
+    use rill_syntax::ast::*;
+    if module.functions.iter().any(|f| f.name == "main") {
+        return module;
+    }
+    module.functions.push(FnDef {
+        name: "main".to_string(),
+        exported: false,
+        params: Vec::new(),
+        ret_ann: None,
+        body: Expr::Block(Vec::new()),
+        line: 0,
+        lifted_from: None,
+        wheres: Vec::new(),
+        private: false,
+    });
+    module
 }
 
 /// `rill explain`: the memory decisions the code generator makes for the
@@ -524,6 +557,7 @@ fn test_main(tests: &[String]) -> rill_syntax::ast::FnDef {
         line: 0,
         lifted_from: None,
         wheres: Vec::new(),
+        private: false,
     }
 }
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — a function the file keeps to itself
+
+Everything a file defined was the importer's, its helpers included, and
+two files could not both have a `walk`. `private fn` is a function the
+file keeps to itself: an importer does not see it, cannot call it — the
+error names the file and says to call what it offers — and may have a
+function of the same name. The loader renames a private function to
+`stem..name`, a spelling no program can write since `..` is the range
+operator, and rewrites the file's own references to match, its impl
+methods and trait defaults included; a second file of the same stem
+gets a number. `rill fmt` writes it back, `rill types` shows it as the
+`private fn` it is, and the default stays as it was: a library written
+before this keeps offering everything.
+
 ## Unreleased — a closure crosses into C
 
 A callback handed to C had to be a function known while compiling: a

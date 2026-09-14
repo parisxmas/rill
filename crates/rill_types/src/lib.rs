@@ -945,6 +945,7 @@ impl Checker {
                             line: im.line,
                             lifted_from: None,
                             wheres: Vec::new(),
+                            private: false,
                         });
                     }
                 }
@@ -1843,6 +1844,23 @@ impl Checker {
                     recv_ty.map(|t| self.type_name(&t)).unwrap_or_default()
                 ),
             )),
+        }
+    }
+
+    /// "unknown function" — unless a file has it as a `private fn`, which
+    /// is worth saying, since the name is right and the file is keeping it.
+    fn unknown_name(&self, name: &str, what: &str) -> String {
+        let suffix = format!("..{name}");
+        match self.fn_index.keys().find(|k| k.ends_with(&suffix)) {
+            Some(k) => {
+                let file = &k[..k.len() - suffix.len()];
+                let file = file.rsplit('.').next().unwrap_or(file);
+                format!(
+                    "`{name}` is private to `{file}.rill`: a function that file keeps to itself. \
+                     Call one the file offers, or drop the `private`"
+                )
+            }
+            None => format!("unknown {what} `{name}`"),
         }
     }
 
@@ -3485,7 +3503,7 @@ impl Checker {
                     .to_string(),
             ));
         }
-        Err(TypeError::new(line, format!("unknown variable `{name}`")))
+        Err(TypeError::new(line, self.unknown_name(name, "variable")))
     }
 
     fn infer_call(
@@ -4339,7 +4357,7 @@ impl Checker {
                     ),
                 ));
             }
-            None => return Err(TypeError::new(line, format!("unknown function `{name}`"))),
+            None => return Err(TypeError::new(line, self.unknown_name(name, "function"))),
         };
         let (params, ret, subst) = self.sig_for_use(idx);
         if args.len() != params.len() {

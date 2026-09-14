@@ -372,7 +372,13 @@ impl Fmt {
             Some(t) => format!(" -> {}", type_ref(t)),
             None => String::new(),
         };
-        let kw = if f.exported { "export fn" } else { "fn" };
+        let kw = if f.exported {
+            "export fn"
+        } else if f.private {
+            "private fn"
+        } else {
+            "fn"
+        };
         let header = format!("{kw} {}({}){}{} =", f.name, params.join(", "), ret, wheres(f));
 
         match &f.body {

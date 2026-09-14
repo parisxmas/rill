@@ -156,6 +156,10 @@ pub struct FnDef {
     /// `where Describe(a)`: what the signature's type variables are required
     /// to implement, said rather than left for the body to imply.
     pub wheres: Vec<Bound>,
+    /// `private fn`: the file's own. The loader renames it to a name no
+    /// program can write, and the file's references with it, so it neither
+    /// reaches an importer nor collides with an importer's.
+    pub private: bool,
 }
 
 /// One requirement of a `where` clause: a trait, of a type variable.

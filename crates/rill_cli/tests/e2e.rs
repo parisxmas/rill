@@ -2357,6 +2357,56 @@ fn a_closure_crosses_into_c_by_an_env() {
     assert!(compile_error(extra).contains("takes 2 argument(s), but 3 given"));
 }
 
+/// `private fn` is the file's own: an importer cannot call it, is told which
+/// file keeps it, and may have a function of the same name.
+#[test]
+fn a_private_function_is_the_files_own() {
+    let dir = std::env::temp_dir().join(format!("rill-e2e-private-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("helper.rill"),
+        "private fn walk(xs, n) = match xs\n  \
+           Nil -> n\n  \
+           Cons(x, rest) -> walk(rest, n + x)\n\n\
+         fn total(xs) = walk(xs, 0)\n\n\
+         trait Sized(a)\n  \
+           size(x: a) -> Int = walk(Cons(1, Nil), 0)\n",
+    )
+    .unwrap();
+    let run = |name: &str, src: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, src).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_rill")).arg("run").arg(&path).output().unwrap()
+    };
+    // The importer's own `walk` and the helper's never meet.
+    let ok = run(
+        "main.rill",
+        "import \"helper\"\n\nfn walk(s) = s + \"!\"\n\nfn main() =\n  \
+           println(int_to_str(total(Cons(1, Cons(2, Nil)))))\n  \
+           println(walk(\"own\"))\n",
+    );
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    assert_eq!(String::from_utf8_lossy(&ok.stdout), "3\nown!\n");
+
+    let no = run("no.rill", "import \"helper\"\n\nfn main() = println(int_to_str(walk(Nil, 0)))\n");
+    assert!(!no.status.success());
+    let err = String::from_utf8_lossy(&no.stderr);
+    assert!(err.contains("`walk` is private to `helper.rill`"), "{err}");
+
+    let aliased = run(
+        "al.rill",
+        "import \"helper\" as h\n\nfn main() = println(int_to_str(h.total(Cons(5, Nil))))\n",
+    );
+    assert!(aliased.status.success(), "{}", String::from_utf8_lossy(&aliased.stderr));
+    assert_eq!(String::from_utf8_lossy(&aliased.stdout), "5\n");
+
+    let types = Command::new(env!("CARGO_BIN_EXE_rill")).arg("types").arg(dir.join("helper.rill")).output().unwrap();
+    let shown = String::from_utf8_lossy(&types.stdout);
+    assert!(shown.contains("private fn walk(") && shown.contains("fn total("), "{shown}");
+    let src = std::fs::read_to_string(dir.join("helper.rill")).unwrap();
+    assert_eq!(fmt_source(&src), src);
+}
+
 /// A field only some constructors have is not certainly there, and one of two
 /// types across them has no one type; both say so.
 #[test]

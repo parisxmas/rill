@@ -34,6 +34,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
     let mut loader = Loader {
         overlay: text.map(|t| (entry.canonicalize().unwrap_or_else(|_| entry.into()), t.to_string())),
         visited: HashSet::new(),
+        stems: HashMap::new(),
         aliases: HashMap::new(),
         fn_origin: HashMap::new(),
         name_origin: HashMap::new(),
@@ -108,6 +109,9 @@ fn search_path(dir: &Path) -> Vec<PathBuf> {
 
 struct Loader {
     visited: HashSet<PathBuf>,
+    /// How many files of each stem have been loaded, so that the private
+    /// names of two `util.rill`s do not become one.
+    stems: HashMap<String, usize>,
     /// Function name -> defining file.
     fn_origin: HashMap<String, PathBuf>,
     /// Type, constructor, trait, method or impl key -> defining file.
@@ -165,9 +169,17 @@ impl Loader {
             self.visit(&child, imp.alias.as_deref(), Some((path, imp.line)))?;
         }
 
+        // A `private fn` is the file's own: renamed to a name no program
+        // can write, and every reference in the file with it, so it neither
+        // reaches an importer nor collides with an importer's.
+        let mut module = module;
+        let stem = canon.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let seen = self.stems.entry(stem.clone()).or_insert(0);
+        *seen += 1;
+        let tag = if *seen == 1 { stem } else { format!("{stem}{seen}") };
+        privatize(&mut module, &tag);
         // An aliased module keeps its names to itself: everything it defines
         // is renamed `alias.name`, and its own references are renamed with it.
-        let mut module = module;
         if let Some(a) = alias {
             qualify(&mut module, a);
         }
@@ -236,6 +248,41 @@ impl Loader {
         }
         self.name_origin.insert(key, file.to_path_buf());
         Ok(())
+    }
+}
+
+/// Renames a file's `private fn`s to `stem..name` — a spelling no program
+/// can write, since `..` is the range operator — and every reference to them
+/// in the file: its functions, its impl methods, its trait defaults.
+fn privatize(m: &mut Module, stem: &str) {
+    let own: HashSet<String> =
+        m.functions.iter().filter(|f| f.private).map(|f| f.name.clone()).collect();
+    if own.is_empty() {
+        return;
+    }
+    // `qualify_expr` writes `{tag}.{name}`; a tag ending in a dot makes
+    // that `stem..name`.
+    let tag = format!("{stem}.");
+    for f in &mut m.functions {
+        if own.contains(&f.name) {
+            f.name = format!("{tag}.{}", f.name);
+        }
+        let mut scope: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+        qualify_expr(&mut f.body, &own, &tag, &mut scope);
+    }
+    for i in &mut m.impls {
+        for f in &mut i.fns {
+            let mut scope: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+            qualify_expr(&mut f.body, &own, &tag, &mut scope);
+        }
+    }
+    for t in &mut m.traits {
+        for ms in &mut t.methods {
+            if let Some(b) = &mut ms.default {
+                let mut scope: Vec<String> = ms.names.iter().flatten().cloned().collect();
+                qualify_expr(b, &own, &tag, &mut scope);
+            }
+        }
     }
 }
 
