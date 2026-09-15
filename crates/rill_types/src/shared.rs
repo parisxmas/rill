@@ -75,16 +75,13 @@ struct Pass<'a> {
     rest: Vec<HashSet<String>>,
     errors: Vec<TypeError>,
     report: bool,
-    /// Whether this walk is looking for rings — storage put into itself —
-    /// rather than for what strands share.
-    rings: bool,
 }
 
 /// Runtime calls that only read the storage they are handed.
 const READS: &[&str] = &["rill_strbuf_len", "rill_buf_cmp", "rill_map_len", "rill_buf_check"];
 
 pub fn check_shared(tmod: &TModule) -> Result<(), Vec<TypeError>> {
-    walk_program(tmod, false)
+    walk_program(tmod)
 }
 
 /// A ring: storage put into itself. `m[k] = v` where `v` holds `m` — a
@@ -96,10 +93,10 @@ pub fn check_shared(tmod: &TModule) -> Result<(), Vec<TypeError>> {
 /// through two maps is not seen here, and is what the allocator's report
 /// at exit is for.
 pub fn check_rings(tmod: &TModule) -> Result<(), Vec<TypeError>> {
-    walk_program(tmod, true)
+    Rings::check(tmod)
 }
 
-fn walk_program(tmod: &TModule, rings: bool) -> Result<(), Vec<TypeError>> {
+fn walk_program(tmod: &TModule) -> Result<(), Vec<TypeError>> {
     let n = tmod.fns.len();
     let mut pass = Pass {
         tmod,
@@ -108,7 +105,6 @@ fn walk_program(tmod: &TModule, rings: bool) -> Result<(), Vec<TypeError>> {
         rest: Vec::new(),
         errors: Vec::new(),
         report: false,
-        rings,
     };
     // The fixpoint: a function writes a parameter it hands to a function
     // that writes that position, and answers with one it hands to a
@@ -361,11 +357,8 @@ impl<'a> Pass<'a> {
     /// The walk that reports: every `spawn` and every `send`, against what
     /// the function around still uses afterwards.
     fn visit(&mut self, e: &TExpr, aliases: &mut Aliases) {
-        if self.rings {
-            self.ring_check(e, aliases);
-        }
         match &e.kind {
-            TK::Spawn { captures, body } if !self.rings => {
+            TK::Spawn { captures, body } => {
                 let written = self.writes_of(body, aliases);
                 let mut claimed = HashSet::new();
                 self.vouched(body, aliases, &mut claimed);
@@ -404,7 +397,7 @@ impl<'a> Pass<'a> {
                 self.visit(body, &mut inner);
                 return;
             }
-            TK::ChanSend { ch, val } if !self.rings => {
+            TK::ChanSend { ch, val } => {
                 self.visit(ch, aliases);
                 self.visit(val, aliases);
                 if self.share(&val.ty) != Share::No {
@@ -481,34 +474,327 @@ impl<'a> Pass<'a> {
     }
 }
 
-impl<'a> Pass<'a> {
+/// Where a value stands to the names around it, in three sets of names:
+/// `eq` — names whose value this may be; `holds` — names whose value this
+/// may be or reach; `inside` — names whose value this may be or be reached
+/// from. A projection (`r.f`, `m[k]`, a match binding) is strictly inside
+/// its base: it holds nothing the base does not, and it is not the base.
+/// The sharing check above needs none of this — a strand writing a field
+/// of `r` is writing `r` — but a ring does: `f.subs[k] = Sub(f.db)` puts
+/// one field of `f` into another and holds nothing that holds `f`.
+#[derive(Clone, Default, Debug)]
+struct Reach {
+    eq: HashSet<String>,
+    holds: HashSet<String>,
+    inside: HashSet<String>,
+}
+
+impl Reach {
+    fn union(&mut self, o: &Reach) {
+        self.eq.extend(o.eq.iter().cloned());
+        self.holds.extend(o.holds.iter().cloned());
+        self.inside.extend(o.inside.iter().cloned());
+    }
+
+    /// A value strictly inside this one.
+    fn part(&self) -> Reach {
+        let strict: HashSet<String> = self.holds.difference(&self.eq).cloned().collect();
+        Reach { eq: HashSet::new(), holds: strict.clone(), inside: self.inside.union(&strict).cloned().collect() }
+    }
+
+    /// A fresh value built holding this one.
+    fn held(&self) -> Reach {
+        Reach { eq: HashSet::new(), holds: self.holds.clone(), inside: HashSet::new() }
+    }
+}
+
+type Scope = HashMap<String, Reach>;
+
+/// Per parameter of a function: whether its answer may be the parameter,
+/// reach it, or be reached from it.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Answer {
+    eq: bool,
+    holds: bool,
+    inside: bool,
+}
+
+struct Rings<'a> {
+    tmod: &'a TModule,
+    answers: Vec<Vec<Answer>>,
+    errors: Vec<TypeError>,
+}
+
+impl<'a> Rings<'a> {
     /// `m[k] = v` with `v` holding `m`, or `send(ch, v)` with `v` holding
-    /// `ch`: a ring, refused.
-    fn ring_check(&mut self, e: &TExpr, aliases: &Aliases) {
-        let (holder, val, what) = match &e.kind {
-            TK::MapSet { map, val, .. } => (map, val, "map"),
-            TK::ChanSend { ch, val } => (ch, val, "channel"),
-            _ => return,
-        };
-        if self.share(&val.ty) == Share::No {
-            return;
+    /// `ch`: a ring, refused. `v` reaches `m` when some name's value is
+    /// reached from `v` and reaches `m`.
+    fn check(tmod: &TModule) -> Result<(), Vec<TypeError>> {
+        let n = tmod.fns.len();
+        let mut pass = Rings { tmod, answers: tmod.fns.iter().map(|f| vec![Answer::default(); f.params.len()]).collect(), errors: Vec::new() };
+        loop {
+            let mut changed = false;
+            for i in 0..n {
+                let f = &tmod.fns[i];
+                let r = pass.reach(&f.body, &pass.params_of(f));
+                for (k, (p, _)) in f.params.iter().enumerate() {
+                    let a = Answer { eq: r.eq.contains(p), holds: r.holds.contains(p), inside: r.inside.contains(p) };
+                    let cur = &mut pass.answers[i][k];
+                    let next = Answer { eq: cur.eq || a.eq, holds: cur.holds || a.holds, inside: cur.inside || a.inside };
+                    if next != *cur {
+                        *cur = next;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
         }
-        let into = self.roots(holder, aliases);
-        let held = self.roots(val, aliases);
-        if let Some(n) = into.iter().filter(|r| held.contains(*r)).min() {
-            let how = if what == "map" {
-                "putting into it a value that holds it — a closure over it, or a record with it in"
-            } else {
-                "sending down it a value that holds it"
-            };
-            self.errors.push(TypeError::new(
-                e.line,
-                format!(
-                    "`{n}` would hold itself: this is {how}, and a count never lets go of a ring, \
-                     so the {what} and what it holds would live until the program ends. Keep \
-                     `{n}` out of what goes into it — hand it in as an argument instead"
-                ),
-            ));
+        for f in &tmod.fns {
+            let scope = pass.params_of(f);
+            pass.visit(&f.body, &scope);
+        }
+        if pass.errors.is_empty() {
+            Ok(())
+        } else {
+            pass.errors.sort_by_key(|e| e.line);
+            pass.errors.dedup_by(|a, b| a.line == b.line && a.msg == b.msg);
+            Err(pass.errors)
+        }
+    }
+
+    fn params_of(&self, f: &TFn) -> Scope {
+        f.params.iter().map(|(p, _)| (p.clone(), Self::name(p, &Scope::new()))).collect()
+    }
+
+    fn name(n: &str, scope: &Scope) -> Reach {
+        let mut r = scope.get(n).cloned().unwrap_or_default();
+        r.eq.insert(n.to_string());
+        r.holds.insert(n.to_string());
+        r.inside.insert(n.to_string());
+        r
+    }
+
+    fn share(&self, ty: &Ty) -> Share {
+        share_of(ty, &self.tmod.adts, &mut Vec::new())
+    }
+
+    fn is_prelude(&self, fn_idx: usize, name: &str) -> bool {
+        fn_idx < self.tmod.prelude_fns && self.tmod.fns[fn_idx].name == name
+    }
+
+    /// `n`, `n.links`, `n.links.count`: a chain of fields read from a name,
+    /// spelled as the program spells it.
+    fn path_of(&self, e: &TExpr) -> Option<String> {
+        match &e.kind {
+            TK::Local(n) => Some(n.clone()),
+            TK::FieldGet { base, adt, ctor, index } => {
+                let field = self.tmod.adts[*adt].ctors[*ctor].names.get(*index).cloned().flatten()?;
+                self.path_of(base).map(|p| format!("{p}.{field}"))
+            }
+            _ => None,
+        }
+    }
+
+    /// The names an arm's pattern binds, each with what it stands to the
+    /// scrutinee: the whole of it for a bare name, a part of it otherwise.
+    fn bind_pattern(&self, p: &Pattern, s: &Reach, scope: &mut Scope) {
+        match p {
+            Pattern::Var(n) => {
+                scope.insert(n.clone(), s.clone());
+            }
+            Pattern::As(n, inner, _) => {
+                scope.insert(n.clone(), s.clone());
+                self.bind_pattern(inner, s, scope);
+            }
+            Pattern::Ctor { args, .. } => {
+                let part = s.part();
+                let mut names = Vec::new();
+                for a in args {
+                    pattern_names(a, &mut names);
+                }
+                for n in names {
+                    scope.insert(n, part.clone());
+                }
+            }
+            Pattern::Or(alts, _) => {
+                for a in alts {
+                    self.bind_pattern(a, s, scope);
+                }
+            }
+            Pattern::Wildcard | Pattern::Int(_) => {}
+        }
+    }
+
+    fn reach(&self, e: &TExpr, scope: &Scope) -> Reach {
+        let mut out = Reach::default();
+        self.reach_into(e, scope, &mut out);
+        out
+    }
+
+    fn reach_into(&self, e: &TExpr, scope: &Scope, out: &mut Reach) {
+        match &e.kind {
+            TK::Local(n) => out.union(&Self::name(n, scope)),
+            TK::FieldGet { base, .. } => {
+                // A field of a named value is a name of its own — `n.links`
+                // — so that `n.links[k] = Node(n.links)` is seen to be the
+                // one storage put into itself, though nothing else names it.
+                out.union(&self.reach(base, scope).part());
+                if let Some(path) = self.path_of(e) {
+                    out.union(&Self::name(&path, scope));
+                }
+            }
+            TK::BufGet { buf: base, .. }
+            | TK::MapFind { map: base, .. }
+            | TK::MapValAt { map: base, .. }
+            | TK::MapKeyAt { map: base, .. }
+            | TK::Slice { base, .. } => out.union(&self.reach(base, scope).part()),
+            TK::Unique { val } => self.reach_into(val, scope, out),
+            TK::CallFn { fn_idx, args, .. } => {
+                if self.is_prelude(*fn_idx, "apart") {
+                    if let Some(a) = args.first() {
+                        self.reach_into(a, scope, out);
+                    }
+                    return;
+                }
+                for (i, a) in args.iter().enumerate() {
+                    let Some(ans) = self.answers[*fn_idx].get(i).copied() else { continue };
+                    if !(ans.eq || ans.holds || ans.inside) {
+                        continue;
+                    }
+                    let r = self.reach(a, scope);
+                    if ans.eq {
+                        out.union(&r);
+                    }
+                    if ans.holds {
+                        out.union(&r.held());
+                    }
+                    if ans.inside && !ans.eq {
+                        out.union(&r.part());
+                    }
+                }
+            }
+            TK::CallClosure { callee, args } => {
+                // What a closure answers with is not in its type: anything
+                // it holds, or any argument, may come back.
+                out.union(&self.reach(callee, scope).held());
+                for a in args {
+                    if self.share(&a.ty) != Share::No {
+                        out.union(&self.reach(a, scope));
+                    }
+                }
+            }
+            TK::MethodCall { args, .. } | TK::CallExtern { args, .. } => {
+                for a in args {
+                    if self.share(&a.ty) != Share::No {
+                        out.union(&self.reach(a, scope));
+                    }
+                }
+            }
+            TK::CallCtor { args, .. } => {
+                for a in args {
+                    if self.share(&a.ty) != Share::No {
+                        out.union(&self.reach(a, scope).held());
+                    }
+                }
+            }
+            TK::Lambda { captures, .. } => {
+                for (n, _) in captures {
+                    out.union(&Self::name(n, scope).held());
+                }
+            }
+            TK::If { then, els, .. } => {
+                self.reach_into(then, scope, out);
+                self.reach_into(els, scope, out);
+            }
+            TK::Match { scrutinee, arms } => {
+                let sr = self.reach(scrutinee, scope);
+                for arm in arms {
+                    let mut inner = scope.clone();
+                    self.bind_pattern(&arm.pattern, &sr, &mut inner);
+                    self.reach_into(&arm.body, &inner, out);
+                }
+            }
+            TK::Block(stmts) => {
+                let mut inner = scope.clone();
+                let last = stmts.len().saturating_sub(1);
+                for (i, s) in stmts.iter().enumerate() {
+                    match s {
+                        TStmt::Bind { name, value } => {
+                            let r = self.reach(value, &inner);
+                            inner.insert(name.clone(), r);
+                        }
+                        TStmt::Expr(x) if i == last => self.reach_into(x, &inner, out),
+                        TStmt::Expr(_) => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn visit(&mut self, e: &TExpr, scope: &Scope) {
+        let (holder, val, what) = match &e.kind {
+            TK::MapSet { map, val, .. } => (Some(map), Some(val), "map"),
+            TK::ChanSend { ch, val } => (Some(ch), Some(val), "channel"),
+            _ => (None, None, ""),
+        };
+        if let (Some(holder), Some(val)) = (holder, val) {
+            if self.share(&val.ty) != Share::No {
+                let into = self.reach(holder, scope).inside;
+                let held = self.reach(val, scope).holds;
+                if let Some(n) = into.iter().filter(|r| held.contains(*r)).min() {
+                    let how = if what == "map" {
+                        "putting into it a value that holds it — a closure over it, or a record with it in"
+                    } else {
+                        "sending down it a value that holds it"
+                    };
+                    self.errors.push(TypeError::new(
+                        e.line,
+                        format!(
+                            "`{n}` would hold itself: this is {how}, and a count never lets go of a ring, \
+                             so the {what} and what it holds would live until the program ends. Keep \
+                             `{n}` out of what goes into it — hand it in as an argument instead"
+                        ),
+                    ));
+                }
+            }
+        }
+        match &e.kind {
+            TK::Match { scrutinee, arms } => {
+                self.visit(scrutinee, scope);
+                let sr = self.reach(scrutinee, scope);
+                for arm in arms {
+                    let mut inner = scope.clone();
+                    self.bind_pattern(&arm.pattern, &sr, &mut inner);
+                    if let Some(g) = &arm.guard {
+                        self.visit(g, &inner);
+                    }
+                    self.visit(&arm.body, &inner);
+                }
+            }
+            TK::Block(stmts) => {
+                let mut inner = scope.clone();
+                for s in stmts {
+                    match s {
+                        TStmt::Bind { name, value } => {
+                            self.visit(value, &inner);
+                            let r = self.reach(value, &inner);
+                            inner.insert(name.clone(), r);
+                        }
+                        TStmt::Expr(x) => self.visit(x, &inner),
+                    }
+                }
+            }
+            TK::Lambda { body, .. } | TK::Spawn { body, .. } => self.visit(body, &scope.clone()),
+            _ => {
+                let mut children: Vec<&TExpr> = Vec::new();
+                walk_texpr(e, &mut |c| children.push(c));
+                for c in children {
+                    self.visit(c, scope);
+                }
+            }
         }
     }
 }
