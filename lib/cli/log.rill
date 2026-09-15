@@ -1,0 +1,99 @@
+module log
+
+# A log: lines on standard error with the time, the level and where they
+# came from, and a level below which nothing is said.
+#
+#     import "cli/log" as log
+#     l = log.from_env("http")             # the level from RILL_LOG, or info
+#     log.info(l, "listening on " + int_to_str(port))
+#     log.warn(l, "slow request")
+#     log.debug(l, "headers: " + show(h))  # said only at debug or below
+#
+#     2026-09-15T21:04:05Z  INFO  http  listening on 8080
+#
+# A logger is a value with a name and a level; `at(l, log.debug_level())`
+# gives one that says more, `quiet(l)` one that says only errors. There
+# is no global switch, because there are no globals: a program makes one
+# logger in `main` and hands it to what needs it, which is also how it
+# gives a part of itself a name of its own with `named(l, "db")`. A line
+# is written whole with one call, so lines from strands do not interleave.
+import "time/date" as date
+import "cli/env" as env
+
+type Log
+  Log(name: Str, level: Int, to: Int)
+
+fn debug_level() = 0
+
+fn info_level() = 1
+
+fn warn_level() = 2
+
+fn error_level() = 3
+
+fn new(name) = Log(name, info_level(), 2)
+
+# The level from the `RILL_LOG` variable — `debug`, `info`, `warn`,
+# `error`, or `off` — and info when it is unset or says something else.
+fn from_env(name) = at(new(name), level_named(env.get_or("RILL_LOG", "")))
+
+fn level_named(word) =
+  if word == "debug" then debug_level() else if word == "warn" then warn_level() else if word == "error" then error_level() else if word == "off" then error_level() + 1 else info_level()
+
+fn level_name(level) =
+  if level <= 0 then "DEBUG" else if level == 1 then "INFO" else if level == 2 then "WARN" else "ERROR"
+
+fn at(l: Log, level) = { l | level = level }
+
+fn quiet(l: Log) = at(l, error_level())
+
+fn named(l: Log, name) = { l | name = name }
+
+# Writes to standard output instead — for a log that is the program's
+# output, as a server's access log is.
+fn to_stdout(l: Log) = { l | to = 1 }
+
+fn debug(l: Log, msg) = say(l, debug_level(), msg)
+
+fn info(l: Log, msg) = say(l, info_level(), msg)
+
+fn warn(l: Log, msg) = say(l, warn_level(), msg)
+
+fn error(l: Log, msg) = say(l, error_level(), msg)
+
+fn says(l: Log, level) = level >= l.level
+
+private fn say(l: Log, level, msg) =
+  if says(l, level) then
+    file_write(l.to, line(l, level, msg, date.iso_time(date.now())))
+    ()
+  else ()
+
+# The line as it is written: time, level padded to five, name, message.
+fn line(l: Log, level, msg, when) =
+  when + "  " + pad(level_name(level)) + "  " + (if #l.name > 0 then l.name + "  " else "") + msg + "\n"
+
+private fn pad(s) = s + repeat(" ", 5 - #s)
+
+# -- tests --------------------------------------------------------------------
+
+fn test_levels() =
+  l = new("t")
+  assert(!says(l, debug_level()))
+  assert(says(l, info_level()))
+  assert(says(at(l, debug_level()), debug_level()))
+  assert(!says(quiet(l), warn_level()))
+  assert(says(quiet(l), error_level()))
+  assert(!says(at(l, level_named("off")), error_level()))
+  assert_eq(level_named("warn"), 2)
+  assert_eq(level_named("nonsense"), 1)
+
+fn test_the_line() =
+  l = named(new("app"), "http")
+  assert_eq(line(l, info_level(), "listening", "2026-09-15T21:04:05Z"), "2026-09-15T21:04:05Z  INFO   http  listening\n")
+  assert_eq(line(new(""), error_level(), "boom", "T"), "T  ERROR  boom\n")
+  assert_eq(line(new("x"), debug_level(), "d", "T"), "T  DEBUG  x  d\n")
+
+fn test_it_writes() =
+  info(new("test"), "a line on standard error, seen by nobody in particular")
+  debug(new("test"), "not this one")

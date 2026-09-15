@@ -1,0 +1,97 @@
+module udp
+
+# UDP: datagrams sent and received, each one whole, with the sender's
+# address on the ones that arrive. A socket is a descriptor as a TCP one
+# is, and a receive parks the strand rather than the worker, so a server
+# with a datagram socket and ten connections serves all eleven.
+#
+#     import "net/udp" as udp
+#     sock = udp.open(9000)?               # or udp.open(0), and udp.port_of(sock)
+#     udp.send_to(sock, "127.0.0.1", 9001, "ping")
+#     p = udp.recv_from(sock)              # a Packet: p.from, p.port, p.data
+#     sock_close(sock)
+#
+# Addresses are dotted IPv4, as the TCP calls take them; `net/dns` turns
+# a name into one. A datagram is at most 65,507 bytes, and a longer one
+# is refused rather than cut.
+extern fn rill_udp_open(port: Int) -> Int
+
+extern fn rill_udp_port(fd: Int) -> Int
+
+extern fn rill_udp_send(fd: Int, host: Ptr, port: Int, data: Ptr, len: Int) -> Int
+
+extern fn rill_udp_recv(fd: Int, buf: Ptr, cap: Int) -> Int
+
+type Packet
+  Packet(from: Str, port: Int, data: Str)
+
+# A socket bound to `port` on every interface; 0 for one the system picks.
+fn open(port) =
+  fd = rill_udp_open(port)
+  if fd < 0 then Err("cannot open a UDP socket on port " + int_to_str(port)) else Ok(fd)
+
+fn port_of(fd) = rill_udp_port(fd)
+
+# Sends `data` as one datagram; the bytes sent, or -1.
+fn send_to(fd, host, port, data) =
+  if #data > 65507 then -1
+  else
+    h = to_cstr(host)
+    b = buf_u8(#data)
+    for i in 0..#data
+      b[i] = data[i]
+    n = rill_udp_send(fd, h, port, b, #data)
+    free_ptr(h)
+    n
+
+# The next datagram, whole, with where it came from.
+fn recv_from(fd) =
+  b = buf_u8(65536)
+  n = rill_udp_recv(fd, b, 65536)
+  if n < 6
+    then Packet("", -1, "")
+    else Packet(dotted(b), b[4] * 256 + b[5], str_from_ptr(ptr_offset(b, 6), n - 6))
+
+private fn dotted(b: Buf(U8)) =
+  int_to_str(b[0]) + "." + int_to_str(b[1]) + "." + int_to_str(b[2]) + "." + int_to_str(b[3])
+
+# -- tests --------------------------------------------------------------------
+
+fn test_a_datagram_goes_round() =
+  a = opened()
+  b = opened()
+  assert(a >= 0 && b >= 0)
+  assert(port_of(b) > 0)
+  assert_eq(send_to(a, "127.0.0.1", port_of(b), "ping" + chr(0) + "pong"), 9)
+  p = recv_from(b)
+  assert_eq(p.data, "ping" + chr(0) + "pong")
+  assert_eq(p.from, "127.0.0.1")
+  assert_eq(p.port, port_of(a))
+  assert_eq(send_to(b, p.from, p.port, "back"), 4)
+  assert_eq(recv_from(a).data, "back")
+  sock_close(a)
+  sock_close(b)
+
+fn test_too_long_and_bad_address() =
+  s = opened()
+  assert_eq(send_to(s, "127.0.0.1", 9, repeat("x", 70000)), -1)
+  assert_eq(send_to(s, "not.an.address", 9, "x"), -1)
+  sock_close(s)
+
+fn test_a_strand_waits_for_it() =
+  s = opened()
+  port = port_of(s)
+  ch = channel()
+  spawn waiter(s, ch)
+  sleep_ms(20)
+  t = opened()
+  send_to(t, "127.0.0.1", port, "late")
+  assert_eq(recv(ch), "late")
+  sock_close(s)
+  sock_close(t)
+
+private fn waiter(s, ch) = send(ch, recv_from(s).data)
+
+private fn opened() = match open(0)
+  Ok(fd) -> fd
+  Err(_) -> -1

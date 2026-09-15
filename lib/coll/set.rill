@@ -1,0 +1,91 @@
+module set
+
+# A set of values: a hash table with only keys, so membership is a lookup
+# rather than a walk. Like `Map`, a set is storage — `add` and `del` change
+# it in place — and anything a map can key, a set can hold: numbers,
+# strings, tuples, data types.
+#
+#     import "coll/set" as set
+#     seen = set.new()
+#     set.add(seen, "a")
+#     set.has(seen, "a")                 # true
+#     set.of(Cons(1, Cons(2, Cons(2, Nil))))         # {1, 2}
+#     set.union(a, b), set.inter(a, b), set.diff(a, b)   # new sets
+#     set.items(s)                       # a list, in no particular order
+type Set(a)
+  Set(m: Map(a, Bool))
+
+fn new() = Set(map_new())
+
+fn of(items) =
+  s = new()
+  each(items, \x -> add(s, x))
+  s
+
+fn add(s: Set(a), x) =
+  m = s.m
+  m[x] = true
+
+fn has(s: Set(a), x) = map_has(s.m, x)
+
+# Removes `x`, saying whether it was there.
+fn del(s: Set(a), x) = map_del(s.m, x)
+
+fn size(s: Set(a)) = #s.m
+
+fn is_empty(s: Set(a)) = #s.m == 0
+
+fn items(s: Set(a)) = map_keys(s.m)
+
+fn clear(s: Set(a)) = map_clear(s.m)
+
+# -- sets from sets -------------------------------------------------------------
+
+fn union(a, b) =
+  out = of(items(a))
+  each(items(b), \x -> add(out, x))
+  out
+
+fn inter(a, b) = of(filter(items(a), \x -> has(b, x)))
+
+# What is in `a` and not in `b`.
+fn diff(a, b) = of(filter(items(a), \x -> !has(b, x)))
+
+fn is_subset(a, b) = all(items(a), \x -> has(b, x))
+
+fn same(a, b) = size(a) == size(b) && is_subset(a, b)
+
+# -- tests --------------------------------------------------------------------
+
+fn test_membership() =
+  s = new()
+  assert(is_empty(s))
+  add(s, "a")
+  add(s, "b")
+  add(s, "a")
+  assert_eq(size(s), 2)
+  assert(has(s, "a"))
+  assert(!has(s, "c"))
+  assert(del(s, "a"))
+  assert(!del(s, "a"))
+  assert_eq(items(s), Cons("b", Nil))
+  clear(s)
+  assert(is_empty(s))
+
+fn test_any_value_is_a_member() =
+  s = of(Cons((1, "x"), Cons((2, "y"), Cons((1, "x"), Nil))))
+  assert_eq(size(s), 2)
+  assert(has(s, (2, "y")))
+  assert(!has(s, (2, "x")))
+
+fn test_algebra() =
+  a = of(Cons(1, Cons(2, Cons(3, Nil))))
+  b = of(Cons(3, Cons(4, Nil)))
+  assert_eq(sort(items(union(a, b))), Cons(1, Cons(2, Cons(3, Cons(4, Nil)))))
+  assert_eq(items(inter(a, b)), Cons(3, Nil))
+  assert_eq(sort(items(diff(a, b))), Cons(1, Cons(2, Nil)))
+  assert(is_subset(inter(a, b), a))
+  assert(!is_subset(a, b))
+  assert(same(union(a, b), of(Cons(4, Cons(3, Cons(2, Cons(1, Nil)))))))
+  assert(!same(a, b))
+  assert_eq(size(a), 3)

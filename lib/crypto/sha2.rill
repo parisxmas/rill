@@ -1,0 +1,397 @@
+module sha2
+
+# SHA-256 and SHA-512 (FIPS 180-4), and HMAC over each (RFC 2104), written
+# in Rill. A digest is returned as raw bytes in a `Str`; `hex` spells one
+# out. Keys and messages are bytes too: any `Str` will do.
+#
+#     import "crypto/sha2" as sha
+#     sha.hex(sha.sha256("abc"))         # "ba7816bf…f20015ad"
+#     tag = sha.hmac_sha256(secret, body)
+#     sha.same(tag, sent)                # compared in constant time
+#
+# SHA-256 is 32-bit arithmetic on 64-bit integers, masked after each step;
+# SHA-512 is the machine's own 64-bit arithmetic, which wraps as the
+# algorithm wants and shifts logically, so nothing has to be masked. The
+# schedule and the working state are buffers rather than lists, and a block
+# is read straight out of the message.
+import "text/str" as s
+
+# -- SHA-256 ------------------------------------------------------------------
+
+# The digest, as 32 raw bytes.
+fn sha256(msg) =
+  h = h256()
+  p = pad(msg, 64)
+  k = k256()
+  w = buf_int(64)
+  v = buf_int(8)
+  blocks = #p / 64
+  for blk in 0..blocks
+    base = blk * 64
+    for i in 0..16
+      w[i] = be32_at(p, base + i * 4)
+    for i in 16..64
+      w[i] = mask32(w[i - 16] + sig0(w[i - 15]) + w[i - 7] + sig1(w[i - 2]))
+    for i in 0..8
+      v[i] = h[i]
+    for i in 0..64
+      t1 = mask32(v[7] + big1(v[4]) + choose(v[4], v[5], v[6]) + k[i] + w[i])
+      t2 = mask32(big0(v[0]) + majority(v[0], v[1], v[2]))
+      v[7] = v[6]
+      v[6] = v[5]
+      v[5] = v[4]
+      v[4] = mask32(v[3] + t1)
+      v[3] = v[2]
+      v[2] = v[1]
+      v[1] = v[0]
+      v[0] = mask32(t1 + t2)
+    for i in 0..8
+      h[i] = mask32(h[i] + v[i])
+  words_be32(h)
+
+private fn mask32(x) = bit_and(x, 4294967295)
+
+private fn rotr32(x, n) = mask32(bit_or(shr(x, n), shl(x, 32 - n)))
+
+private fn sig0(x) = bit_xor(bit_xor(rotr32(x, 7), rotr32(x, 18)), shr(x, 3))
+
+private fn sig1(x) = bit_xor(bit_xor(rotr32(x, 17), rotr32(x, 19)), shr(x, 10))
+
+private fn big0(x) = bit_xor(bit_xor(rotr32(x, 2), rotr32(x, 13)), rotr32(x, 22))
+
+private fn big1(x) = bit_xor(bit_xor(rotr32(x, 6), rotr32(x, 11)), rotr32(x, 25))
+
+private fn choose(e, f, g) = bit_xor(bit_and(e, f), bit_and(bit_not(e), g))
+
+private fn majority(a, b, c) = bit_xor(bit_xor(bit_and(a, b), bit_and(a, c)), bit_and(b, c))
+
+private fn be32_at(p, i) =
+  bit_or(bit_or(shl(p[i], 24), shl(p[i + 1], 16)), bit_or(shl(p[i + 2], 8), p[i + 3]))
+
+private fn words_be32(h: Buf(Int)) =
+  out = buf_u8(#h * 4)
+  for i in 0..#h
+    out[i * 4] = bit_and(shr(h[i], 24), 255)
+    out[i * 4 + 1] = bit_and(shr(h[i], 16), 255)
+    out[i * 4 + 2] = bit_and(shr(h[i], 8), 255)
+    out[i * 4 + 3] = bit_and(h[i], 255)
+  str_from_buf(out)
+
+private fn h256() =
+  h = buf_int(8)
+  h[0] = 1779033703
+  h[1] = 3144134277
+  h[2] = 1013904242
+  h[3] = 2773480762
+  h[4] = 1359893119
+  h[5] = 2600822924
+  h[6] = 528734635
+  h[7] = 1541459225
+  h
+
+private fn k256() =
+  k = buf_int(64)
+  k[0] = 1116352408
+  k[1] = 1899447441
+  k[2] = 3049323471
+  k[3] = 3921009573
+  k[4] = 961987163
+  k[5] = 1508970993
+  k[6] = 2453635748
+  k[7] = 2870763221
+  k[8] = 3624381080
+  k[9] = 310598401
+  k[10] = 607225278
+  k[11] = 1426881987
+  k[12] = 1925078388
+  k[13] = 2162078206
+  k[14] = 2614888103
+  k[15] = 3248222580
+  k[16] = 3835390401
+  k[17] = 4022224774
+  k[18] = 264347078
+  k[19] = 604807628
+  k[20] = 770255983
+  k[21] = 1249150122
+  k[22] = 1555081692
+  k[23] = 1996064986
+  k[24] = 2554220882
+  k[25] = 2821834349
+  k[26] = 2952996808
+  k[27] = 3210313671
+  k[28] = 3336571891
+  k[29] = 3584528711
+  k[30] = 113926993
+  k[31] = 338241895
+  k[32] = 666307205
+  k[33] = 773529912
+  k[34] = 1294757372
+  k[35] = 1396182291
+  k[36] = 1695183700
+  k[37] = 1986661051
+  k[38] = 2177026350
+  k[39] = 2456956037
+  k[40] = 2730485921
+  k[41] = 2820302411
+  k[42] = 3259730800
+  k[43] = 3345764771
+  k[44] = 3516065817
+  k[45] = 3600352804
+  k[46] = 4094571909
+  k[47] = 275423344
+  k[48] = 430227734
+  k[49] = 506948616
+  k[50] = 659060556
+  k[51] = 883997877
+  k[52] = 958139571
+  k[53] = 1322822218
+  k[54] = 1537002063
+  k[55] = 1747873779
+  k[56] = 1955562222
+  k[57] = 2024104815
+  k[58] = 2227730452
+  k[59] = 2361852424
+  k[60] = 2428436474
+  k[61] = 2756734187
+  k[62] = 3204031479
+  k[63] = 3329325298
+  k
+
+# -- SHA-512 ------------------------------------------------------------------
+
+# The digest, as 64 raw bytes.
+fn sha512(msg) =
+  h = h512()
+  p = pad(msg, 128)
+  k = k512()
+  w = buf_int(80)
+  v = buf_int(8)
+  blocks = #p / 128
+  for blk in 0..blocks
+    base = blk * 128
+    for i in 0..16
+      w[i] = be64_at(p, base + i * 8)
+    for i in 16..80
+      w[i] = w[i - 16] + sig0_64(w[i - 15]) + w[i - 7] + sig1_64(w[i - 2])
+    for i in 0..8
+      v[i] = h[i]
+    for i in 0..80
+      t1 = v[7] + big1_64(v[4]) + choose(v[4], v[5], v[6]) + k[i] + w[i]
+      t2 = big0_64(v[0]) + majority(v[0], v[1], v[2])
+      v[7] = v[6]
+      v[6] = v[5]
+      v[5] = v[4]
+      v[4] = v[3] + t1
+      v[3] = v[2]
+      v[2] = v[1]
+      v[1] = v[0]
+      v[0] = t1 + t2
+    for i in 0..8
+      h[i] = h[i] + v[i]
+  words_be64(h)
+
+private fn rotr64(x, n) = bit_or(shr(x, n), shl(x, 64 - n))
+
+private fn sig0_64(x) = bit_xor(bit_xor(rotr64(x, 1), rotr64(x, 8)), shr(x, 7))
+
+private fn sig1_64(x) = bit_xor(bit_xor(rotr64(x, 19), rotr64(x, 61)), shr(x, 6))
+
+private fn big0_64(x) = bit_xor(bit_xor(rotr64(x, 28), rotr64(x, 34)), rotr64(x, 39))
+
+private fn big1_64(x) = bit_xor(bit_xor(rotr64(x, 14), rotr64(x, 18)), rotr64(x, 41))
+
+private fn be64_at(p, i) = bit_or(shl(be32_at(p, i), 32), be32_at(p, i + 4))
+
+private fn words_be64(h: Buf(Int)) =
+  out = buf_u8(#h * 8)
+  for i in 0..#h
+    for j in 0..8
+      out[i * 8 + j] = bit_and(shr(h[i], 56 - j * 8), 255)
+  str_from_buf(out)
+
+private fn h512() =
+  h = buf_int(8)
+  h[0] = 7640891576956012808
+  h[1] = -4942790177534073029
+  h[2] = 4354685564936845355
+  h[3] = -6534734903238641935
+  h[4] = 5840696475078001361
+  h[5] = -7276294671716946913
+  h[6] = 2270897969802886507
+  h[7] = 6620516959819538809
+  h
+
+private fn k512() =
+  k = buf_int(80)
+  k[0] = 4794697086780616226
+  k[1] = 8158064640168781261
+  k[2] = -5349999486874862801
+  k[3] = -1606136188198331460
+  k[4] = 4131703408338449720
+  k[5] = 6480981068601479193
+  k[6] = -7908458776815382629
+  k[7] = -6116909921290321640
+  k[8] = -2880145864133508542
+  k[9] = 1334009975649890238
+  k[10] = 2608012711638119052
+  k[11] = 6128411473006802146
+  k[12] = 8268148722764581231
+  k[13] = -9160688886553864527
+  k[14] = -7215885187991268811
+  k[15] = -4495734319001033068
+  k[16] = -1973867731355612462
+  k[17] = -1171420211273849373
+  k[18] = 1135362057144423861
+  k[19] = 2597628984639134821
+  k[20] = 3308224258029322869
+  k[21] = 5365058923640841347
+  k[22] = 6679025012923562964
+  k[23] = 8573033837759648693
+  k[24] = -7476448914759557205
+  k[25] = -6327057829258317296
+  k[26] = -5763719355590565569
+  k[27] = -4658551843659510044
+  k[28] = -4116276920077217854
+  k[29] = -3051310485924567259
+  k[30] = 489312712824947311
+  k[31] = 1452737877330783856
+  k[32] = 2861767655752347644
+  k[33] = 3322285676063803686
+  k[34] = 5560940570517711597
+  k[35] = 5996557281743188959
+  k[36] = 7280758554555802590
+  k[37] = 8532644243296465576
+  k[38] = -9096487096722542874
+  k[39] = -7894198246740708037
+  k[40] = -6719396339535248540
+  k[41] = -6333637450476146687
+  k[42] = -4446306890439682159
+  k[43] = -4076793802049405392
+  k[44] = -3345356375505022440
+  k[45] = -2983346525034927856
+  k[46] = -860691631967231958
+  k[47] = 1182934255886127544
+  k[48] = 1847814050463011016
+  k[49] = 2177327727835720531
+  k[50] = 2830643537854262169
+  k[51] = 3796741975233480872
+  k[52] = 4115178125766777443
+  k[53] = 5681478168544905931
+  k[54] = 6601373596472566643
+  k[55] = 7507060721942968483
+  k[56] = 8399075790359081724
+  k[57] = 8693463985226723168
+  k[58] = -8878714635349349518
+  k[59] = -8302665154208450068
+  k[60] = -8016688836872298968
+  k[61] = -6606660893046293015
+  k[62] = -4685533653050689259
+  k[63] = -4147400797238176981
+  k[64] = -3880063495543823972
+  k[65] = -3348786107499101689
+  k[66] = -1523767162380948706
+  k[67] = -757361751448694408
+  k[68] = 500013540394364858
+  k[69] = 748580250866718886
+  k[70] = 1242879168328830382
+  k[71] = 1977374033974150939
+  k[72] = 2944078676154940804
+  k[73] = 3659926193048069267
+  k[74] = 4368137639120453308
+  k[75] = 4836135668995329356
+  k[76] = 5532061633213252278
+  k[77] = 6448918945643986474
+  k[78] = 6902733635092675308
+  k[79] = 7801388544844847127
+  k
+
+# -- padding ------------------------------------------------------------------
+
+# A message is padded to a whole number of blocks: a 0x80 byte, zeros, and
+# the length in bits, big-endian, in the last 8 bytes (SHA-512 reserves 16,
+# and the top 8 are zero — a message of two exabytes is not this library's
+# concern).
+private fn pad(msg, block) =
+  n = #msg
+  tail = block / 8
+  rest = (n + 1) % block
+  zeros = if rest <= block - tail then block - tail - rest else 2 * block - tail - rest
+  out = buf_u8(n + 1 + zeros + tail)
+  for i in 0..n
+    out[i] = msg[i]
+  out[n] = 128
+  for i in 0..zeros + tail
+    out[n + 1 + i] = 0
+  bits = n * 8
+  for j in 0..8
+    out[n + 1 + zeros + tail - 8 + j] = bit_and(shr(bits, 56 - j * 8), 255)
+  str_from_buf(out)
+
+# -- HMAC ---------------------------------------------------------------------
+
+fn hmac_sha256(key, msg) = hmac(sha256, 64, key, msg)
+
+fn hmac_sha512(key, msg) = hmac(sha512, 128, key, msg)
+
+# A key longer than the block is hashed down to fit; a shorter one is padded
+# with zeros. Two hashes, and the key only ever meets the message through
+# the inner one.
+private fn hmac(hash, block, key, msg) =
+  k = if #key > block then hash(key) else key
+  padded = k + repeat(chr(0), block - #k)
+  hash(xor_byte(padded, 92) + hash(xor_byte(padded, 54) + msg))
+
+private fn xor_byte(bytes, b) =
+  out = buf_u8(#bytes)
+  for i in 0..#bytes
+    out[i] = bit_xor(bytes[i], b)
+  str_from_buf(out)
+
+# -- spelling and comparing ---------------------------------------------------
+
+# A digest as lowercase hex.
+fn hex(digest) = s.hex_encode(digest)
+
+# Whether two tags are the same, taking the same time whether they differ in
+# the first byte or the last — a comparison that stops early tells a caller
+# how much of a guess was right.
+fn same(a, b) =
+  if #a != #b then false
+  else
+    diff = for i in 0..#a with acc = 0
+      bit_or(acc, bit_xor(a[i], b[i]))
+    diff == 0
+
+# -- tests ------------------------------------------------------------------
+
+fn test_sha256_vectors() =
+  assert_eq(hex(sha256("")), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+  assert_eq(hex(sha256("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  assert_eq(hex(sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+  assert_eq(hex(sha256(repeat("a", 1000000))), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
+
+fn test_sha256_block_edges() =
+  assert_eq(hex(sha256(repeat("a", 55))), "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318")
+  assert_eq(hex(sha256(repeat("a", 56))), "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a")
+  assert_eq(hex(sha256(repeat("a", 64))), "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb")
+
+fn test_sha512_vectors() =
+  assert_eq(hex(sha512("")), "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e")
+  assert_eq(hex(sha512("abc")), "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
+  assert_eq(hex(sha512("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu")), "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909")
+
+# RFC 4231's cases 1, 2, 3 and 6 — a short key, a text key, a key of one byte
+# repeated, and one longer than the block.
+fn test_hmac_rfc4231() =
+  assert_eq(hex(hmac_sha256(repeat(chr(11), 20), "Hi There")), "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+  assert_eq(hex(hmac_sha256("Jefe", "what do ya want for nothing?")), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+  assert_eq(hex(hmac_sha256(repeat(chr(170), 20), repeat(chr(221), 50))), "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe")
+  assert_eq(hex(hmac_sha256(repeat(chr(170), 131), "Test Using Larger Than Block-Size Key - Hash Key First")), "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54")
+  assert_eq(hex(hmac_sha512("Jefe", "what do ya want for nothing?")), "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737")
+  assert_eq(hex(hmac_sha512(repeat(chr(170), 131), "Test Using Larger Than Block-Size Key - Hash Key First")), "80b24263c7c1a3ebb71493c1dd7be8b49b46d1f41b4aeec1121b013783f8f3526b56d037e05f2598bd0fd2215d6a1e5295e64f73f63f0aec8b915a985d786598")
+
+fn test_same_is_equality() =
+  a = sha256("one")
+  assert(same(a, sha256("one")))
+  assert(!same(a, sha256("two")))
+  assert(!same(a, "short"))

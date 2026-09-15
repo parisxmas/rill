@@ -1,0 +1,247 @@
+module url
+
+# URLs taken apart and put together (RFC 3986): the scheme, who, the
+# host, the port, the path, the query, the fragment; a query as pairs; a
+# relative reference resolved against a base; percent-encoding both ways.
+#
+#     import "web/url" as url
+#     match url.parse("https://user@example.com:8443/a/b?x=1&y=two#top")
+#       Some(u) -> u.host                  # "example.com"; u.port 8443; u.path "/a/b"
+#       None -> ...
+#     url.query_pairs("x=1&y=two%20words") # Cons(("x", "1"), Cons(("y", "two words"), Nil))
+#     url.resolve("https://example.com/a/b/c", "../d?q")   # "https://example.com/a/d?q"
+#     url.encode("a b&c")                  # "a%20b%26c"
+#
+# A `Url` is a record; `text` writes it back, and a part that was not
+# there is empty (`port` is -1). Nothing is decoded on the way in — the
+# path and query are as they were written — so `decode` what you look at.
+
+type Url
+  Url(scheme: Str, user: Str, host: Str, port: Int, path: Str, query: Str, fragment: Str)
+
+# -- taking apart -------------------------------------------------------------
+
+# A URL with a scheme and `//`, or `None`. A path-only reference is not a
+# URL; `resolve` it against one.
+fn parse(s) =
+  colon = str_find(s, ":")
+  if colon <= 0 || !scheme_ok(s[0:colon]) || str_find_from(s, "//", colon) != colon + 1 then None
+  else
+    scheme = lower(s[0:colon])
+    rest = s[colon + 3:]
+    hash = str_find(rest, "#")
+    (before_hash, fragment) = if hash < 0 then (rest, "") else (rest[0:hash], rest[hash + 1:])
+    q = str_find(before_hash, "?")
+    (before_q, query) = if q < 0 then (before_hash, "") else (before_hash[0:q], before_hash[q + 1:])
+    slash = str_find(before_q, "/")
+    (authority, path) = if slash < 0 then (before_q, "") else (before_q[0:slash], before_q[slash:])
+    at = last_index(authority, 64)
+    (user, hostport) = if at < 0 then ("", authority) else (authority[0:at], authority[at + 1:])
+    (host, port) = split_port(hostport)
+    if port == -2 then None else Some(Url(scheme, user, lower(host), port, path, query, fragment))
+
+private fn scheme_ok(s) =
+  for i in 0..#s with ok = #s > 0 && is_alpha(s[0])
+    ok && (is_alpha(s[i]) || is_digit(s[i]) || s[i] == 43 || s[i] == 45 || s[i] == 46)
+
+private fn is_alpha(c) = c >= 65 && c <= 90 || c >= 97 && c <= 122
+
+private fn is_digit(c) = c >= 48 && c <= 57
+
+# `host:port`, with `[::1]:80` for an IPv6 host; -1 for no port, -2 for a
+# port that is not a number.
+private fn split_port(hp) =
+  close = if #hp > 0 && hp[0] == 91 then str_find(hp, "]") else -1
+  colon = if close >= 0 then if close + 1 < #hp && hp[close + 1] == 58 then close + 1 else -1 else last_index(hp, 58)
+  if colon < 0 then (hp, -1)
+  else
+    digits = hp[colon + 1:]
+    if #digits == 0 then (hp[0:colon], -1) else if all_digits(digits) then (hp[0:colon], str_to_int(digits)) else (hp, -2)
+
+private fn all_digits(s) =
+  for i in 0..#s with ok = true
+    ok && is_digit(s[i])
+
+private fn last_index(s, c) =
+  for i in 0..#s with at = -1
+    if s[i] == c then i else at
+
+private fn lower(s) =
+  b = buf_u8(#s)
+  for i in 0..#s
+    b[i] = if s[i] >= 65 && s[i] <= 90 then s[i] + 32 else s[i]
+  str_from_buf(b)
+
+# -- putting together ---------------------------------------------------------
+
+fn text(u: Url) =
+  u.scheme + "://" + (if #u.user > 0 then u.user + "@" else "") + u.host + (if u.port >= 0 then ":" + int_to_str(u.port) else "") + u.path + (if #u.query > 0 then "?" + u.query else "") + (if #u.fragment > 0 then "#" + u.fragment else "")
+
+# The port, or the scheme's usual one: 80, 443, 21, 22, 25.
+fn port_of(u: Url) =
+  if u.port >= 0 then u.port else if u.scheme == "https" || u.scheme == "wss" then 443 else if u.scheme == "http" || u.scheme == "ws" then 80 else if u.scheme == "ftp" then 21 else if u.scheme == "ssh" then 22 else if u.scheme == "smtp" then 25 else -1
+
+# The scheme, host and port alone: `https://example.com:8443`.
+fn origin(u: Url) =
+  u.scheme + "://" + u.host + (if u.port >= 0 then ":" + int_to_str(u.port) else "")
+
+# -- the query ------------------------------------------------------------
+
+# `a=1&b=two%20words` as decoded pairs; a key without `=` has the value "".
+fn query_pairs(query) = if #query == 0 then Nil else map(split(query, "&"), pair_of)
+
+private fn pair_of(part) =
+  eq = str_find(part, "=")
+  if eq < 0 then (decode(part), "") else (decode(part[0:eq]), decode(part[eq + 1:]))
+
+# The pairs as a query, each side encoded.
+fn query_text(pairs) = join(map(pairs, \p -> encode(fst(p)) + "=" + encode(snd(p))), "&")
+
+# The first value under `name`, decoded.
+fn query_get(query, name) = opt_map(find(query_pairs(query), \p -> fst(p) == name), snd)
+
+# -- encoding -------------------------------------------------------------------
+
+# Percent-encoding of everything but the unreserved characters — letters,
+# digits, `-` `.` `_` `~` — so the result is safe anywhere in a URL.
+fn encode(s) =
+  b = strbuf()
+  for i in 0..#s
+    if unreserved(s[i]) then strbuf_byte(b, s[i]) else strbuf_add(b, "%" + hexpair(s[i]))
+  strbuf_str(b)
+
+private fn unreserved(c) = is_alpha(c) || is_digit(c) || c == 45 || c == 46 || c == 95 || c == 126
+
+private fn hexpair(c) = chr(hexdigit(c / 16)) + chr(hexdigit(c % 16))
+
+private fn hexdigit(d) = if d < 10 then 48 + d else 55 + d
+
+# `%xx` back to bytes and `+` to a space, as a form sends them; a `%` not
+# followed by two hex digits is kept as it is.
+fn decode(s) =
+  b = strbuf()
+  while i < #s with i = 0
+    c = s[i]
+    if c == 37 && i + 2 < #s && hexval(s[i + 1]) >= 0 && hexval(s[i + 2]) >= 0 then
+      strbuf_byte(b, hexval(s[i + 1]) * 16 + hexval(s[i + 2]))
+      i + 3
+    else
+      strbuf_byte(b, if c == 43 then 32 else c)
+      i + 1
+  strbuf_str(b)
+
+private fn hexval(c) =
+  if c >= 48 && c <= 57 then c - 48 else if c >= 97 && c <= 102 then c - 87 else if c >= 65 && c <= 70 then c - 55 else -1
+
+# -- resolving ------------------------------------------------------------------
+
+# `reference` seen from `base`, as a browser follows a link: absolute
+# references stand; `//host/x` keeps the scheme; `/x` keeps the host;
+# `x`, `./x` and `../x` are joined to the base's path with the dots
+# resolved; `?q` and `#f` alone replace only that part.
+fn resolve(base, reference) = match parse(base)
+  None -> reference
+  Some(b) -> match parse(reference)
+    Some(_) -> reference
+    None -> resolved(b, reference)
+
+private fn resolved(b: Url, r) =
+  if str_find(r, "//") == 0 then b.scheme + ":" + r
+  else if #r == 0 then text({ b | fragment = "" })
+  else if r[0] == 35 then text({ b | fragment = r[1:] })
+  else if r[0] == 63 then text({ b | query = query_of(r[1:]), fragment = fragment_of(r[1:]) })
+  else
+    hash = str_find(r, "#")
+    (no_hash, fragment) = if hash < 0 then (r, "") else (r[0:hash], r[hash + 1:])
+    q = str_find(no_hash, "?")
+    (path, query) = if q < 0 then (no_hash, "") else (no_hash[0:q], no_hash[q + 1:])
+    merged = if path[0] == 47 then path else merge_path(b.path, path)
+    text({ b | path = remove_dots(merged), query = query, fragment = fragment })
+
+private fn query_of(s) =
+  hash = str_find(s, "#")
+  if hash < 0 then s else s[0:hash]
+
+private fn fragment_of(s) =
+  hash = str_find(s, "#")
+  if hash < 0 then "" else s[hash + 1:]
+
+private fn merge_path(base_path, rel) =
+  slash = last_index(base_path, 47)
+  if slash < 0 then "/" + rel else base_path[0:slash + 1] + rel
+
+# `.` and `..` segments folded away, as RFC 3986 §5.2.4 does it.
+private fn remove_dots(path) =
+  out = fold(split(path, "/"), Nil, step_segment)
+  joined = join(reverse(out), "/")
+  ends_in_dot = #path >= 2 && (path[#path - 1] == 46 && (path[#path - 2] == 47 || path[#path - 2] == 46))
+  if ends_in_dot then joined + "/" else joined
+
+private fn step_segment(acc, seg) =
+  if seg == "." then acc else if seg == ".." then up_one(acc) else Cons(seg, acc)
+
+# `..` takes a segment back, but never the root.
+private fn up_one(acc) = match acc
+  Cons(_, Cons(x, rest)) -> Cons(x, rest)
+  other -> other
+
+# -- tests --------------------------------------------------------------------
+
+fn test_parse_the_parts() =
+  match parse("HTTPS://user:pw@Example.com:8443/a/b?x=1&y=two#top")
+    None -> assert(false)
+    Some(u) ->
+      assert_eq(u.scheme, "https")
+      assert_eq(u.user, "user:pw")
+      assert_eq(u.host, "example.com")
+      assert_eq(u.port, 8443)
+      assert_eq(u.path, "/a/b")
+      assert_eq(u.query, "x=1&y=two")
+      assert_eq(u.fragment, "top")
+      assert_eq(text(u), "https://user:pw@example.com:8443/a/b?x=1&y=two#top")
+      assert_eq(origin(u), "https://example.com:8443")
+  match parse("http://example.com")
+    None -> assert(false)
+    Some(u) ->
+      assert_eq(u.path, "")
+      assert_eq(u.port, -1)
+      assert_eq(port_of(u), 80)
+      assert_eq(text(u), "http://example.com")
+  match parse("http://[::1]:3000/x")
+    None -> assert(false)
+    Some(u) ->
+      assert_eq(u.host, "[::1]")
+      assert_eq(u.port, 3000)
+
+fn test_what_is_not_a_url() =
+  assert_eq(opt_map(parse("/just/a/path"), text), None)
+  assert_eq(opt_map(parse("example.com/x"), text), None)
+  assert_eq(opt_map(parse("http://host:port/"), text), None)
+  assert_eq(opt_map(parse("1http://x"), text), None)
+  assert_eq(opt_map(parse("mailto:someone@example.com"), text), None)
+
+fn test_query_and_encoding() =
+  assert_eq(query_pairs("x=1&y=two%20words&flag&z=a+b"), Cons(("x", "1"), Cons(("y", "two words"), Cons(("flag", ""), Cons(("z", "a b"), Nil)))))
+  assert_eq(query_pairs(""), Nil)
+  assert_eq(query_get("x=1&y=2", "y"), Some("2"))
+  assert_eq(query_get("x=1&y=2", "q"), None)
+  assert_eq(query_text(Cons(("q", "a b&c"), Cons(("n", "1"), Nil))), "q=a%20b%26c&n=1")
+  assert_eq(encode("a-b_c.d~e"), "a-b_c.d~e")
+  assert_eq(encode("é/?"), "%C3%A9%2F%3F")
+  assert_eq(decode("%C3%A9%2F%3F+%zz%4"), "é/? %zz%4")
+
+fn test_resolve_like_a_browser() =
+  base = "https://example.com/a/b/c?q=1#f"
+  assert_eq(resolve(base, "d"), "https://example.com/a/b/d")
+  assert_eq(resolve(base, "./d"), "https://example.com/a/b/d")
+  assert_eq(resolve(base, "../d"), "https://example.com/a/d")
+  assert_eq(resolve(base, "../../../d"), "https://example.com/d")
+  assert_eq(resolve(base, "/d/e"), "https://example.com/d/e")
+  assert_eq(resolve(base, "//other.org/p"), "https://other.org/p")
+  assert_eq(resolve(base, "?x=2"), "https://example.com/a/b/c?x=2")
+  assert_eq(resolve(base, "#g"), "https://example.com/a/b/c?q=1#g")
+  assert_eq(resolve(base, ""), "https://example.com/a/b/c?q=1")
+  assert_eq(resolve(base, "http://else.net/"), "http://else.net/")
+  assert_eq(resolve(base, "d/"), "https://example.com/a/b/d/")
+  assert_eq(resolve(base, ".."), "https://example.com/a/")
+  assert_eq(resolve("https://example.com", "x"), "https://example.com/x")

@@ -1,0 +1,154 @@
+module form
+
+# What a browser sends from a `<form>`: `application/x-www-form-urlencoded`
+# as pairs, and `multipart/form-data` (RFC 7578) as parts, each with its
+# field name, its file name if it was a file, its content type, and its
+# bytes as they were.
+#
+#     import "web/form" as form
+#     match form.parse(content_type, body)          # either kind, by the type
+#       Ok(parts) -> ...
+#       Err(why) -> ...
+#     form.value(parts, "email")                    # Some("a@b.c"), the first
+#     form.file(parts, "photo")                     # Some(part): p.filename, p.kind, p.data
+#
+# `content_type` is the request's `Content-Type` header as it came; the
+# boundary is read from it. A body that does not end in the closing
+# boundary, or a part without its blank line, is refused.
+import "web/url" as url
+
+type Part
+  Part(name: Str, filename: Str, kind: Str, data: Str)
+
+# The fields, by the content type: pairs become parts with no file name
+# and no type.
+fn parse(content_type, body) =
+  if starts_with(content_type, "multipart/form-data") then multipart(content_type, body) else if starts_with(content_type, "application/x-www-form-urlencoded")
+    then Ok(map(url.query_pairs(body), \p -> Part(fst(p), "", "", snd(p))))
+    else Err("not a form: " + content_type)
+
+# The first field of that name, as text.
+fn value(parts, name) = opt_map(find(parts, \p -> p.name == name), \p -> p.data)
+
+# The first field of that name that came as a file.
+fn file(parts, name) = find(parts, \p -> p.name == name && #p.filename > 0)
+
+# Every field of that name — a select with several chosen, or a set of
+# checkboxes.
+fn values(parts, name) = map(filter(parts, \p -> p.name == name), \p -> p.data)
+
+# -- multipart ------------------------------------------------------------------
+
+fn multipart(content_type, body) = match boundary_of(content_type)
+  None -> Err("multipart/form-data without a boundary")
+  Some(b) ->
+    sep = "--" + b
+    first = str_find(body, sep)
+    if first < 0 then Err("a body without its boundary") else parts_from(body, sep, first + #sep, Nil)
+
+# The boundary parameter, quoted or not.
+fn boundary_of(content_type) =
+  at = str_find(content_type, "boundary=")
+  if at < 0 then None
+  else
+    rest = content_type[at + 9:]
+    stop = str_find(rest, ";")
+    raw = trim(if stop < 0 then rest else rest[0:stop])
+    if #raw >= 2 && raw[0] == 34 && raw[#raw - 1] == 34 then Some(raw[1:#raw - 1]) else Some(raw)
+
+# `at` is just past a boundary: `--` closes, `\r\n` opens a part that runs
+# to the next boundary.
+private fn parts_from(body, sep, at, acc) =
+  if at + 2 <= #body && body[at:at + 2] == "--" then Ok(reverse(acc))
+  else
+    start = if at + 2 <= #body && body[at:at + 2] == "\r\n" then at + 2 else if at < #body && body[at] == 10 then at + 1 else -1
+    if start < 0 then Err("a boundary not followed by a line end")
+    else
+      next = str_find_from(body, sep, start)
+      if next < 0 then Err("a part without a closing boundary")
+      else
+        part = part_of(body[start:next])
+        match part
+          Err(e) -> Err(e)
+          Ok(p) -> parts_from(body, sep, next + #sep, Cons(p, acc))
+
+# A part is headers, a blank line, and the data up to the line end before
+# the next boundary.
+private fn part_of(text) =
+  blank = str_find(text, "\r\n\r\n")
+  (headers, data) = if blank >= 0 then (text[0:blank], text[blank + 4:]) else lf_split(text)
+  if blank < 0 && #headers == 0 && #data == 0 then Err("a part without its blank line")
+  else
+    disposition = header_of(headers, "content-disposition")
+    Ok(Part(param_of(disposition, "name"), param_of(disposition, "filename"), header_of(headers, "content-type"), without_line_end(data)))
+
+private fn lf_split(text) =
+  blank = str_find(text, "\n\n")
+  if blank < 0 then ("", "") else (text[0:blank], text[blank + 2:])
+
+private fn without_line_end(data) =
+  if #data >= 2 && data[#data - 2:] == "\r\n" then data[0:#data - 2] else if #data >= 1 && data[#data - 1] == 10 then data[0:#data - 1] else data
+
+private fn header_of(headers, name) =
+  found = find(lines(headers), \l -> starts_with(lower(l), name + ":"))
+  match found
+    None -> ""
+    Some(l) -> trim(l[#name + 1:])
+
+# `name="x"` out of a Content-Disposition, or the bare form.
+private fn param_of(header, name) =
+  at = str_find(header, name + "=")
+  if at < 0 || at > 0 && header[at - 1] != 32 && header[at - 1] != 59 then ""
+  else
+    rest = header[at + #name + 1:]
+    if #rest > 0 && rest[0] == 34 then
+      close = str_find_from(rest, "\"", 1)
+      if close < 0 then rest[1:] else rest[1:close]
+    else
+      stop = str_find(rest, ";")
+      trim(if stop < 0 then rest else rest[0:stop])
+
+private fn lower(s) =
+  b = buf_u8(#s)
+  for i in 0..#s
+    b[i] = if s[i] >= 65 && s[i] <= 90 then s[i] + 32 else s[i]
+  str_from_buf(b)
+
+# -- tests --------------------------------------------------------------------
+
+private fn sample() =
+  "--XbOuNd\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\na@b.c\r\n--XbOuNd\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"me.png\"\r\nContent-Type: image/png\r\n\r\nPNG" + chr(0) + chr(13) + chr(10) + "bytes\r\n--XbOuNd\r\nContent-Disposition: form-data; name=\"tag\"\r\n\r\none\r\n--XbOuNd\r\nContent-Disposition: form-data; name=\"tag\"\r\n\r\ntwo\r\n--XbOuNd--\r\n"
+
+fn test_multipart_parts() =
+  match parse("multipart/form-data; boundary=XbOuNd", sample())
+    Err(e) -> assert_eq(e, "")
+    Ok(parts) ->
+      assert_eq(len(parts), 4)
+      assert_eq(value(parts, "email"), Some("a@b.c"))
+      assert_eq(value(parts, "missing"), None)
+      assert_eq(values(parts, "tag"), Cons("one", Cons("two", Nil)))
+      match file(parts, "photo")
+        None -> assert(false)
+        Some(p) ->
+          assert_eq(p.filename, "me.png")
+          assert_eq(p.kind, "image/png")
+          assert_eq(p.data, "PNG" + chr(0) + chr(13) + chr(10) + "bytes")
+      assert_eq(file(parts, "email"), None)
+
+fn test_boundaries_and_refusals() =
+  assert_eq(boundary_of("multipart/form-data; boundary=\"a b\"; charset=utf-8"), Some("a b"))
+  assert_eq(boundary_of("multipart/form-data;boundary=abc"), Some("abc"))
+  assert_eq(boundary_of("multipart/form-data"), None)
+  assert_eq(res_map(parse("multipart/form-data", "x"), len), Err("multipart/form-data without a boundary"))
+  assert_eq(res_map(parse("multipart/form-data; boundary=B", "nothing here"), len), Err("a body without its boundary"))
+  assert_eq(res_map(parse("multipart/form-data; boundary=B", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n"), len), Err("a part without a closing boundary"))
+  assert_eq(res_map(parse("text/plain", "x"), len), Err("not a form: text/plain"))
+  assert_eq(res_map(parse("multipart/form-data; boundary=B", "--B--"), len), Ok(0))
+
+fn test_urlencoded() =
+  match parse("application/x-www-form-urlencoded", "email=a%40b.c&tag=one&tag=two+three")
+    Err(e) -> assert_eq(e, "")
+    Ok(parts) ->
+      assert_eq(value(parts, "email"), Some("a@b.c"))
+      assert_eq(values(parts, "tag"), Cons("one", Cons("two three", Nil)))
+      assert_eq(file(parts, "email"), None)

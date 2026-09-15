@@ -1,0 +1,454 @@
+module deflate
+
+# DEFLATE (RFC 1951) both ways, and the two envelopes it travels in: zlib
+# (RFC 1950) and gzip (RFC 1952). Written in Rill on buffers and a string
+# builder; the decoder takes any stream — stored, fixed and dynamic
+# Huffman blocks — and the encoder writes LZ77 matches over a 32 KB window
+# in fixed Huffman codes, which is most of what a compressor buys and a
+# fraction of its code.
+#
+#     import "data/deflate" as z
+#     packed = z.gzip(text)                    # bytes, as `gzip` would write them
+#     match z.gunzip(packed)
+#       Ok(text) -> ...
+#       Err(why) -> ...                        # "not gzip", "crc mismatch", ...
+#     z.zlib(text), z.unzlib(bytes)            # what HTTP calls "deflate"
+#     z.deflate(text), z.inflate(bytes)        # the bare stream
+#
+# Everything is bytes in a `Str`; the checksums come from `data/checksum`.
+import "data/checksum" as ck
+
+# -- reading bits -------------------------------------------------------------
+
+# `st` holds the position in the data, the bits read but not yet used,
+# how many of them there are, and whether the data ran out.
+type Bits
+  Bits(data: Str, st: Buf(Int))
+
+private fn reader(data, at) =
+  st = buf_int(4)
+  st[0] = at
+  Bits(data, st)
+
+private fn bits(s: Bits, need) =
+  st = s.st
+  (val, cnt) = while cnt < need with (val, cnt) = (st[1], st[2])
+    p = st[0]
+    byte = if p < #s.data then s.data[p] else 0
+    if p >= #s.data then buf_set(st, 3, 1) else ()
+    st[0] = p + 1
+    (bit_or(val, shl(byte, cnt)), cnt + 8)
+  st[1] = shr(val, need)
+  st[2] = cnt - need
+  bit_and(val, shl(1, need) - 1)
+
+private fn ran_out(s: Bits) = s.st[3] != 0
+
+# -- Huffman codes ------------------------------------------------------------
+
+# A canonical code as two tables: how many codes have each length, and the
+# symbols in code order — enough to decode a bit at a time.
+type Huff
+  Huff(count: Buf(Int), symbol: Buf(Int))
+
+private fn construct(lengths: Buf(Int), from, n) =
+  count = buf_int(16)
+  for i in 0..n
+    count[lengths[from + i]] = count[lengths[from + i]] + 1
+  offs = buf_int(16)
+  for len in 1..15
+    offs[len + 1] = offs[len] + count[len]
+  symbol = buf_int(n)
+  for i in 0..n
+    l = lengths[from + i]
+    if l != 0 then place(symbol, offs, l, i) else ()
+  Huff(count, symbol)
+
+private fn place(symbol: Buf(Int), offs: Buf(Int), l, i) =
+  symbol[offs[l]] = i
+  offs[l] = offs[l] + 1
+
+# The next symbol, or -1 for a code that is in no table.
+private fn decode(s: Bits, h: Huff) =
+  (sym, _, _, _, _) = while len <= 15 && sym < 0 with (sym, len, code, first, index) = (-1, 1, 0, 0, 0)
+    c = bit_or(code, bits(s, 1))
+    n = h.count[len]
+    if c - n < first then (h.symbol[index + c - first], len + 1, c, first, index) else (-1, len + 1, shl(c, 1), shl(first + n, 1), index + n)
+  sym
+
+# -- writing bytes ------------------------------------------------------------
+
+# The output as it grows, and the last 32 KB of it in a ring for the
+# copies to read back from.
+type Out
+  Out(b: StrBuf, win: Buf(U8), st: Buf(Int))
+
+private fn output() = Out(strbuf(), buf_u8(32768), buf_int(1))
+
+private fn put(o: Out, byte) =
+  w = o.st[0]
+  o.win[bit_and(w, 32767)] = byte
+  o.st[0] = w + 1
+  strbuf_byte(o.b, byte)
+
+# A copy of `len` bytes from `dist` back, which may overlap what it writes.
+private fn copy(o: Out, len, dist) =
+  if dist > o.st[0] || dist > 32768 then false
+  else
+    for i in 0..len
+      put(o, o.win[bit_and(o.st[0] - dist, 32767)])
+    true
+
+# -- the blocks ---------------------------------------------------------------
+
+private fn lbase() =
+  ints("3 4 5 6 7 8 9 10 11 13 15 17 19 23 27 31 35 43 51 59 67 83 99 115 131 163 195 227 258")
+
+private fn lext() = ints("0 0 0 0 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 0")
+
+private fn dbase() =
+  ints("1 2 3 4 5 7 9 13 17 25 33 49 65 97 129 193 257 385 513 769 1025 1537 2049 3073 4097 6145 8193 12289 16385 24577")
+
+private fn dext() = ints("0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13")
+
+private fn ints(text) =
+  words = split(text, " ")
+  b = buf_int(len(words))
+  fill_ints(b, words, 0)
+  b
+
+private fn fill_ints(b: Buf(Int), words, i) = match words
+  Nil -> ()
+  Cons(w, rest) ->
+    b[i] = str_to_int(w)
+    fill_ints(b, rest, i + 1)
+
+type Tables
+  Tables(lbase: Buf(Int), lext: Buf(Int), dbase: Buf(Int), dext: Buf(Int))
+
+# The symbols of one block until its end, decoded and written; 0 when the
+# block ended well, or a negative code.
+private fn codes(s: Bits, o: Out, lc, dc, t: Tables) =
+  sym = decode(s, lc)
+  if sym < 0 then -2
+  else if sym < 256 then
+    put(o, sym)
+    codes(s, o, lc, dc, t)
+  else if sym == 256 then 0
+  else if sym - 257 >= 29 then -2
+  else
+    len = t.lbase[sym - 257] + bits(s, t.lext[sym - 257])
+    dsym = decode(s, dc)
+    if dsym < 0 || dsym >= 30 then -3
+    else
+      dist = t.dbase[dsym] + bits(s, t.dext[dsym])
+      if copy(o, len, dist) then codes(s, o, lc, dc, t) else -4
+
+private fn stored(s: Bits, o: Out) =
+  st = s.st
+  st[1] = 0
+  st[2] = 0
+  len = bits(s, 16)
+  nlen = bits(s, 16)
+  if bit_xor(len, 65535) != nlen then -5
+  else if st[0] + len > #s.data then -1
+  else
+    for i in 0..len
+      put(o, s.data[st[0] + i])
+    st[0] = st[0] + len
+    0
+
+private fn fixed_tables() =
+  lengths = buf_int(320)
+  for i in 0..144
+    lengths[i] = 8
+  for i in 144..256
+    lengths[i] = 9
+  for i in 256..280
+    lengths[i] = 7
+  for i in 280..288
+    lengths[i] = 8
+  for i in 0..30
+    lengths[288 + i] = 5
+  (construct(lengths, 0, 288), construct(lengths, 288, 30))
+
+private fn fixed(s: Bits, o: Out, t: Tables) =
+  (lc, dc) = fixed_tables()
+  codes(s, o, lc, dc, t)
+
+private fn dynamic(s: Bits, o: Out, t: Tables) =
+  nlen = bits(s, 5) + 257
+  ndist = bits(s, 5) + 1
+  ncode = bits(s, 4) + 4
+  if nlen > 286 || ndist > 30 then -6
+  else
+    order = ints("16 17 18 0 8 7 9 6 10 5 11 4 12 3 13 2 14 1 15")
+    lengths = buf_int(320)
+    for i in 0..ncode
+      lengths[order[i]] = bits(s, 3)
+    lencode = construct(lengths, 0, 19)
+    if !read_lengths(s, lencode, lengths, 0, nlen + ndist) then -7 else if lengths[256] == 0
+      then -8
+      else codes(s, o, construct(lengths, 0, nlen), construct(lengths, nlen, ndist), t)
+
+# The code lengths themselves, coded: a length, or a repeat of the last
+# one (16), or a run of zeros (17, 18).
+private fn read_lengths(s: Bits, lencode, lengths: Buf(Int), i, n) =
+  if i >= n then true
+  else
+    sym = decode(s, lencode)
+    if sym < 0 then false
+    else if sym < 16 then
+      lengths[i] = sym
+      read_lengths(s, lencode, lengths, i + 1, n)
+    else
+      (value, count) = if sym == 16 then (if i == 0 then -1 else lengths[i - 1], 3 + bits(s, 2)) else if sym == 17 then (0, 3 + bits(s, 3)) else (0, 11 + bits(s, 7))
+      if value < 0 || i + count > n then false
+      else
+        for k in 0..count
+          lengths[i + k] = value
+        read_lengths(s, lencode, lengths, i + count, n)
+
+private fn blocks(s: Bits, o: Out, t: Tables) =
+  last = bits(s, 1)
+  kind = bits(s, 2)
+  r = if kind == 0 then stored(s, o) else if kind == 1 then fixed(s, o, t) else if kind == 2 then dynamic(s, o, t) else -9
+  if r < 0 then r else if ran_out(s) then -1 else if last == 1 then 0 else blocks(s, o, t)
+
+private fn reason(code) =
+  if code == -1 then "the data ends before the stream does" else if code == -2 then "a literal code that is in no table" else if code == -3 then "a distance code that is in no table" else if code == -4 then "a copy from before the start" else if code == -5 then "a stored block whose length does not check" else if code == -6 then "too many codes in a dynamic block" else if code == -7 then "bad code lengths in a dynamic block" else if code == -8 then "a dynamic block with no end-of-block code" else "a block of an unknown kind"
+
+# -- inflate ------------------------------------------------------------------
+
+# The bytes a DEFLATE stream encodes, or what was wrong with it.
+fn inflate(data) = res_map(inflate_from(data, 0), fst)
+
+# The same from byte `at`, and where the stream ended — for an envelope
+# with a trailer after it.
+fn inflate_from(data, at) =
+  s = reader(data, at)
+  o = output()
+  r = blocks(s, o, Tables(lbase(), lext(), dbase(), dext()))
+  if r < 0 then Err("not a deflate stream: " + reason(r)) else Ok((strbuf_str(o.b), s.st[0]))
+
+# -- deflate ------------------------------------------------------------------
+
+# Bits go out least significant first; `st` is the bits not yet written
+# and how many.
+type Wr
+  Wr(b: StrBuf, st: Buf(Int))
+
+private fn writer() = Wr(strbuf(), buf_int(2))
+
+private fn put_bits(w: Wr, value, n) =
+  st = w.st
+  st[0] = bit_or(st[0], shl(value, st[1]))
+  st[1] = st[1] + n
+  drain_bytes(w)
+
+private fn drain_bytes(w: Wr) =
+  st = w.st
+  if st[1] >= 8 then
+    strbuf_byte(w.b, bit_and(st[0], 255))
+    st[0] = shr(st[0], 8)
+    st[1] = st[1] - 8
+    drain_bytes(w)
+  else ()
+
+private fn finish_bits(w: Wr) =
+  st = w.st
+  if st[1] > 0 then strbuf_byte(w.b, bit_and(st[0], 255)) else ()
+  st[0] = 0
+  st[1] = 0
+
+# A Huffman code goes out most significant bit first, which in this
+# stream means reversed.
+private fn put_code(w: Wr, code, n) = put_bits(w, reversed(code, n), n)
+
+private fn reversed(code, n) =
+  for i in 0..n with r = 0
+    bit_or(shl(r, 1), bit_and(shr(code, i), 1))
+
+private fn put_literal(w: Wr, lit) =
+  if lit < 144 then put_code(w, 48 + lit, 8) else put_code(w, 400 + lit - 144, 9)
+
+private fn put_length_sym(w: Wr, sym) =
+  if sym < 280 then put_code(w, sym - 256, 7) else put_code(w, 192 + sym - 280, 8)
+
+# A match as a length code with its extra bits and a distance code with
+# its own.
+private fn put_match(w: Wr, t: Tables, len, dist) =
+  li = index_below(t.lbase, len, 28)
+  put_length_sym(w, 257 + li)
+  put_bits(w, len - t.lbase[li], t.lext[li])
+  di = index_below(t.dbase, dist, 29)
+  put_code(w, di, 5)
+  put_bits(w, dist - t.dbase[di], t.dext[di])
+
+# The last index whose base is not above `v`, searched from the top.
+private fn index_below(base: Buf(Int), v, i) =
+  if i == 0 || base[i] <= v then i else index_below(base, v, i - 1)
+
+# LZ77 over a 32 KB window: a hash of three bytes leads to the most recent
+# position with that hash, and a chain leads from there to older ones.
+fn deflate(data) =
+  w = writer()
+  put_bits(w, 1, 1)
+  put_bits(w, 1, 2)
+  t = Tables(lbase(), lext(), dbase(), dext())
+  head = buf_int(32768)
+  for i in 0..32768
+    head[i] = -1
+  prev = buf_int(#data)
+  pack(w, t, data, head, prev, 0)
+  put_length_sym(w, 256)
+  finish_bits(w)
+  strbuf_str(w.b)
+
+private fn hash3(data, i) =
+  bit_and(bit_xor(bit_xor(shl(data[i], 10), shl(data[i + 1], 5)), data[i + 2]) * 2654435761, 32767)
+
+private fn pack(w: Wr, t: Tables, data, head: Buf(Int), prev: Buf(Int), i) =
+  if i >= #data then ()
+  else if i + 2 >= #data then
+    put_literal(w, data[i])
+    pack(w, t, data, head, prev, i + 1)
+  else
+    h = hash3(data, i)
+    (len, dist) = longest(data, i, head[h], prev, 0, 0, 0)
+    prev[i] = head[h]
+    head[h] = i
+    if len >= 3 then
+      put_match(w, t, len, dist)
+      insert_run(data, head, prev, i + 1, i + len)
+      pack(w, t, data, head, prev, i + len)
+    else
+      put_literal(w, data[i])
+      pack(w, t, data, head, prev, i + 1)
+
+# The positions inside a match go into the table too, so a later match
+# can start on any of them.
+private fn insert_run(data, head: Buf(Int), prev: Buf(Int), i, stop) =
+  if i >= stop || i + 2 >= #data then ()
+  else
+    h = hash3(data, i)
+    prev[i] = head[h]
+    head[h] = i
+    insert_run(data, head, prev, i + 1, stop)
+
+# The longest match at `i` among up to 64 chain entries within the window.
+private fn longest(data, i, cand, prev: Buf(Int), tries, best_len, best_dist) =
+  if cand < 0 || i - cand > 32768 || tries >= 64 || best_len >= 258 then (best_len, best_dist)
+  else
+    l = match_len(data, i, cand, 0)
+    if l > best_len then longest(data, i, prev[cand], prev, tries + 1, l, i - cand) else longest(data, i, prev[cand], prev, tries + 1, best_len, best_dist)
+
+private fn match_len(data, i, j, l) =
+  if l >= 258 || i + l >= #data || data[i + l] != data[j + l] then l else match_len(data, i, j, l + 1)
+
+# -- the envelopes ------------------------------------------------------------
+
+# zlib: two header bytes, the stream, and the Adler-32 of the text.
+fn zlib(data) = chr(120) + chr(156) + deflate(data) + be32(ck.adler32(data))
+
+fn unzlib(data) =
+  if #data < 6 || bit_and(data[0], 15) != 8 || (data[0] * 256 + data[1]) % 31 != 0 then Err("not a zlib stream")
+  else if bit_and(data[1], 32) != 0 then Err("a zlib stream with a preset dictionary")
+  else
+    (text, end) = inflate_from(data, 2)?
+    if end + 4 > #data then Err("a zlib stream without its checksum") else if be32_at(data, end) != ck.adler32(text)
+      then Err("adler32 mismatch")
+      else Ok(text)
+
+# gzip: the ten-byte header `gzip` writes with no name and no time, the
+# stream, the CRC-32 and the length.
+fn gzip(data) =
+  chr(31) + chr(139) + chr(8) + chr(0) + repeat(chr(0), 4) + chr(0) + chr(255) + deflate(data) + le32(ck.crc32(data)) + le32(bit_and(#data, 4294967295))
+
+fn gunzip(data) =
+  if #data < 18 || data[0] != 31 || data[1] != 139 then Err("not gzip")
+  else if data[2] != 8 then Err("gzip with a method that is not deflate")
+  else
+    start = header_end(data, data[3])
+    if start < 0 then Err("a gzip header cut short")
+    else
+      (text, end) = inflate_from(data, start)?
+      if end + 8 > #data then Err("gzip without its trailer") else if le32_at(data, end) != ck.crc32(text) then Err("crc mismatch") else if le32_at(data, end + 4) != bit_and(#text, 4294967295)
+        then Err("length mismatch")
+        else Ok(text)
+
+# Past the fixed header and the optional fields its flags announce.
+private fn header_end(data, flags) =
+  at = 10
+  at2 = if bit_and(flags, 4) != 0 then skip_extra(data, at) else at
+  at3 = if at2 >= 0 && bit_and(flags, 8) != 0 then skip_zstr(data, at2) else at2
+  at4 = if at3 >= 0 && bit_and(flags, 16) != 0 then skip_zstr(data, at3) else at3
+  if at4 >= 0 && bit_and(flags, 2) != 0 then at4 + 2 else at4
+
+private fn skip_extra(data, at) =
+  if at + 2 > #data then -1 else at + 2 + data[at] + data[at + 1] * 256
+
+private fn skip_zstr(data, at) =
+  if at >= #data then -1 else if data[at] == 0 then at + 1 else skip_zstr(data, at + 1)
+
+private fn le32(v) =
+  chr(bit_and(v, 255)) + chr(bit_and(shr(v, 8), 255)) + chr(bit_and(shr(v, 16), 255)) + chr(bit_and(shr(v, 24), 255))
+
+private fn be32(v) =
+  chr(bit_and(shr(v, 24), 255)) + chr(bit_and(shr(v, 16), 255)) + chr(bit_and(shr(v, 8), 255)) + chr(bit_and(v, 255))
+
+private fn le32_at(d, i) =
+  bit_or(bit_or(d[i], shl(d[i + 1], 8)), bit_or(shl(d[i + 2], 16), shl(d[i + 3], 24)))
+
+private fn be32_at(d, i) =
+  bit_or(bit_or(shl(d[i], 24), shl(d[i + 1], 16)), bit_or(shl(d[i + 2], 8), d[i + 3]))
+
+# -- tests --------------------------------------------------------------------
+
+# Streams written by zlib: a fixed block, a stored block, a dynamic block.
+fn test_inflate_what_zlib_wrote() =
+  hello = "hello hello hello hello, hello!"
+  assert_eq(inflate(unhex("cb48cdc9c957c840277520428a00")), Ok(hello))
+  assert_eq(inflate(unhex("011f00e0ff68656c6c6f2068656c6c6f2068656c6c6f2068656c6c6f2c2068656c6c6f21")), Ok(hello))
+  assert_eq(inflate(unhex("2bc94855282ccd4cce56482aca2fcf5348cbaf50c82acd2d2856c82f4b2d5228014ae72456552aa4e4a7eb8179a38a47158f2a1e553caa7854f130520c00")), Ok(repeat("the quick brown fox jumps over the lazy dog. ", 40)))
+  assert_eq(unzlib(unhex("78dacb48cdc9c957c840277520942200b8270b32")), Ok(hello))
+  assert_eq(gunzip(unhex("1f8b08000000000002ffcb48cdc9c957c840277520942200fe596d561f000000")), Ok(hello))
+
+fn test_round_trips() =
+  each(Cons("", Cons("a", Cons("hello hello hello hello, hello!", Cons(repeat("abc", 5000), Cons(noise(20000), Nil))))), round_trip)
+
+private fn round_trip(text) =
+  assert_eq(inflate(deflate(text)), Ok(text))
+  assert_eq(unzlib(zlib(text)), Ok(text))
+  assert_eq(gunzip(gzip(text)), Ok(text))
+
+# Bytes with no pattern in them, from a small generator.
+private fn noise(n) =
+  b = buf_u8(n)
+  for i in 0..n with x = 12345
+    b[i] = bit_and(shr(x, 16), 255)
+    bit_and(x * 1103515245 + 12345, 2147483647)
+  str_from_buf(b)
+
+fn test_it_compresses() =
+  text = repeat("the quick brown fox jumps over the lazy dog. ", 400)
+  packed = deflate(text)
+  assert(#packed < #text / 20)
+  assert_eq(inflate(packed), Ok(text))
+
+fn test_refusals() =
+  assert_eq(gunzip("not gzip at all, not at all"), Err("not gzip"))
+  assert_eq(unzlib("xx"), Err("not a zlib stream"))
+  assert_eq(inflate(unhex("cb48cdc9c957c840")), Err("not a deflate stream: the data ends before the stream does"))
+  assert_eq(inflate(unhex("07")), Err("not a deflate stream: a block of an unknown kind"))
+  good = gzip("checked")
+  bad = good[0:#good - 6] + chr(bit_xor(good[#good - 6], 1)) + good[#good - 5:]
+  assert_eq(gunzip(bad), Err("crc mismatch"))
+
+private fn unhex(h) =
+  b = buf_u8(#h / 2)
+  for i in 0..#h / 2
+    b[i] = hexval(h[2 * i]) * 16 + hexval(h[2 * i + 1])
+  str_from_buf(b)
+
+private fn hexval(c) = if c >= 97 then c - 87 else c - 48

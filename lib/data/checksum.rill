@@ -1,0 +1,72 @@
+module checksum
+
+# The two checksums a file format is likely to ask for: CRC-32 (IEEE 802.3,
+# the one in zip, gzip and PNG) and Adler-32 (zlib's). Neither is a hash
+# for keeping anything secret — `crypto/sha2` is for that — but they catch
+# a flipped bit in a page or a frame, and a format that carries one has to
+# be written with the same one.
+#
+#     import "data/checksum" as ck
+#     ck.crc32("123456789")              # 3421780262, which is 0xcbf43926
+#     ck.adler32(page)
+#
+# Both take the bytes of a `Str` and return an `Int` in 0..2^32. `crc32_from`
+# and `adler32_from` continue a checksum across pieces, so a file can be
+# summed as it is read rather than held whole.
+
+# -- CRC-32 -------------------------------------------------------------------
+
+fn crc32(bytes) = crc32_from(0, bytes)
+
+# The CRC so far, extended by `bytes`. `crc32_from(0, a + b)` and
+# `crc32_from(crc32(a), b)` are the same number.
+fn crc32_from(sofar, bytes) =
+  t = crc_table()
+  c = for i in 0..#bytes with acc = bit_xor(sofar, 4294967295)
+    bit_xor(t[bit_and(bit_xor(acc, bytes[i]), 255)], shr(acc, 8))
+  bit_xor(c, 4294967295)
+
+# The reflected polynomial 0xedb88320, one byte at a time.
+private fn crc_table() =
+  t = buf_int(256)
+  for n in 0..256
+    t[n] = for k in 0..8 with c = n
+      if bit_and(c, 1) == 1 then bit_xor(3988292384, shr(c, 1)) else shr(c, 1)
+  t
+
+# -- Adler-32 -----------------------------------------------------------------
+
+fn adler32(bytes) = adler32_from(1, bytes)
+
+# The sum so far, extended by `bytes`; the two halves are reduced every
+# 5552 bytes, the most that fits before a 32-bit sum would overflow — here
+# the integer is wider, but the reduction is kept where zlib keeps it so the
+# arithmetic is the same arithmetic.
+fn adler32_from(sofar, bytes) =
+  (_, a, b) = while i < #bytes with (i, a, b) = (0, bit_and(sofar, 65535), shr(sofar, 16))
+    stop = if i + 5552 < #bytes then i + 5552 else #bytes
+    (a2, b2, _) = while j < stop with (x, y, j) = (a, b, i)
+      x2 = x + bytes[j]
+      (x2, y + x2, j + 1)
+    (stop, a2 % 65521, b2 % 65521)
+  bit_or(shl(b, 16), a)
+
+# -- tests --------------------------------------------------------------------
+
+fn test_crc32_check_value() =
+  assert_eq(crc32("123456789"), 3421780262)
+  assert_eq(crc32(""), 0)
+  assert_eq(crc32("a"), 3904355907)
+  assert_eq(crc32("The quick brown fox jumps over the lazy dog"), 1095738169)
+
+fn test_crc32_in_pieces() =
+  whole = "The quick brown fox jumps over the lazy dog"
+  assert_eq(crc32_from(crc32("The quick brown "), "fox jumps over the lazy dog"), crc32(whole))
+  assert_eq(crc32_from(crc32(""), whole), crc32(whole))
+
+fn test_adler32_values() =
+  assert_eq(adler32("Wikipedia"), 300286872)
+  assert_eq(adler32(""), 1)
+  assert_eq(adler32("a"), 6422626)
+  long = repeat("abcdefghij", 2000)
+  assert_eq(adler32(long), adler32_from(adler32(long[0:7777]), long[7777:]))

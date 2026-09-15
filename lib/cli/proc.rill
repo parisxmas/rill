@@ -1,0 +1,131 @@
+module proc
+
+# Running another program: a command line handed to the shell, its output
+# collected, its exit status read.
+#
+#     import "cli/proc" as proc
+#     match proc.run("git rev-parse HEAD")
+#       Ok(r) -> println(r.out)                 # r.status is the exit code
+#       Err(why) -> println(why)
+#     proc.output("date -u")?                   # the output, or an Err with the status
+#     proc.run(proc.command("grep", Cons("-n", Cons(pattern, Cons(file, Nil)))))
+#     proc.shell("make")                        # output to ours; the exit code
+#
+# `run` and `output` read the child's standard output; its standard error
+# goes where ours goes. `command` builds a line from a program and its
+# arguments with each one quoted for the shell, so a file name with a space
+# or a `$` in it arrives as one argument and nothing more. The calls that
+# wait are declared `blocking`, so other strands run while a child does.
+extern fn popen(cmd: Ptr, mode: Ptr) -> Ptr
+
+extern blocking fn pclose(f: Ptr) -> I32
+
+extern blocking fn fread(buf: Ptr, size: USize, n: USize, f: Ptr) -> USize
+
+extern blocking fn system(cmd: Ptr) -> I32
+
+type Result_
+  Done(status: Int, out: Str)
+
+# The exit code and what the command wrote. An `Err` is a command that
+# could not be started at all; a command that ran and failed is an `Ok`
+# with a status that is not zero — it is the caller's to decide what a
+# failure means, and the output is often the reason.
+fn run(cmd) =
+  c = to_cstr(cmd)
+  mode = to_cstr("r")
+  f = popen(c, mode)
+  free_ptr(c)
+  free_ptr(mode)
+  if is_null(f) then Err("cannot run `" + cmd + "`")
+  else
+    out = read_all(f, strbuf())
+    Ok(Done(exit_code(pclose(f)), out))
+
+# The output of a command that succeeded, or the status it failed with,
+# with what it wrote — a one-line answer for the common case.
+fn output(cmd) =
+  r = run(cmd)?
+  if r.status == 0 then Ok(r.out) else Err("`" + cmd + "` exited with " + int_to_str(r.status) + failed_output(r.out))
+
+private fn failed_output(out) = if #out == 0 then "" else ": " + trim(out)
+
+# Runs the command with our standard output and error, and gives its exit
+# code; -1 when the shell could not be run.
+fn shell(cmd) =
+  c = to_cstr(cmd)
+  st = system(c)
+  free_ptr(c)
+  if st == -1 then -1 else exit_code(st)
+
+private fn read_all(f, b: StrBuf) =
+  buf = alloc_bytes(65536)
+  fill(f, buf, b)
+  free_ptr(buf)
+  strbuf_str(b)
+
+private fn fill(f, buf, b: StrBuf) =
+  n = fread(buf, 1, 65536, f)
+  if n <= 0 then ()
+  else
+    b += str_from_ptr(buf, n)
+    fill(f, buf, b)
+
+# A wait status as an exit code: the code the child returned, or the
+# negative of the signal that ended it.
+private fn exit_code(status) =
+  sig = bit_and(status, 127)
+  if sig != 0 then 0 - sig else bit_and(shr(status, 8), 255)
+
+# -- building a line ----------------------------------------------------------
+
+# A program and its arguments as one shell line, each argument quoted.
+fn command(prog, args) = join(map(Cons(prog, args), quote), " ")
+
+# An argument the shell will pass through unchanged: in single quotes, with
+# a single quote inside written as `'\''`. A word of plain characters is
+# left as it is.
+fn quote(arg) =
+  if #arg > 0 && all_plain(arg) then arg
+  else
+    b = strbuf()
+    b += 39
+    for i in 0..#arg
+      if arg[i] == 39 then strbuf_add(b, "'\\''") else strbuf_byte(b, arg[i])
+    b += 39
+    strbuf_str(b)
+
+private fn all_plain(arg) =
+  for i in 0..#arg with ok = true
+    ok && is_plain(arg[i])
+
+private fn is_plain(c) =
+  c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 45 || c == 95 || c == 46 || c == 47 || c == 58 || c == 64 || c == 37 || c == 43 || c == 61 || c == 44
+
+# -- tests --------------------------------------------------------------------
+
+fn test_run_collects_output_and_status() =
+  assert_eq(run("echo hello"), Ok(Done(0, "hello\n")))
+  assert_eq(run("printf 'a\\nb'; exit 3"), Ok(Done(3, "a\nb")))
+  assert_eq(run("true"), Ok(Done(0, "")))
+  assert_eq(output("echo one; echo two"), Ok("one\ntwo\n"))
+  assert_eq(output("echo sorry; exit 2"), Err("`echo sorry; exit 2` exited with 2: sorry"))
+  assert_eq(output("exit 1"), Err("`exit 1` exited with 1"))
+  assert_eq(shell("exit 7"), 7)
+  assert_eq(shell("true"), 0)
+
+fn test_a_long_output_is_read_whole() =
+  match run("seq 1 40000")
+    Err(e) -> assert_eq(e, "")
+    Ok(r) ->
+      assert_eq(r.status, 0)
+      assert_eq(#r.out, 228894)
+      assert_eq(r.out[#r.out - 12:], "39999\n40000\n")
+
+fn test_quoting_keeps_an_argument_whole() =
+  assert_eq(quote("plain-word.txt"), "plain-word.txt")
+  assert_eq(quote("two words"), "'two words'")
+  assert_eq(quote("it's"), "'it'\\''s'")
+  assert_eq(quote(""), "''")
+  assert_eq(command("printf", Cons("%s|", Cons("a b", Cons("$HOME", Cons("it's", Nil))))), "printf '%s|' 'a b' '$HOME' 'it'\\''s'")
+  assert_eq(output(command("printf", Cons("%s|", Cons("a b", Cons("$HOME", Cons("it's", Nil)))))), Ok("a b|$HOME|it's|"))

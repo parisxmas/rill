@@ -1,0 +1,191 @@
+module csv
+
+# CSV, read and written, as RFC 4180 has it: a field is quoted when it
+# holds the separator, a quote, or a line break; a quote inside a quoted
+# field is doubled; a line ends in `\n` or `\r\n`. Reading is forgiving in
+# the ways the files people actually have require — a quote in the middle
+# of an unquoted field is a quote, a blank line is nothing, a short row is
+# a short row — and strict where forgiveness would hide an error: a quoted
+# field that never closes, or text after its closing quote, is refused, and
+# the refusal says which line.
+#
+#     import "data/csv" as csv
+#     rows = csv.parse(text)?               # List(List(Str)), one list a line
+#     people = csv.records(text)?           # the first line names the fields:
+#     match people                          #   List(Map(Str, Str))
+#       Cons(p, _) -> p["name"]
+#       Nil -> None
+#     csv.write(rows)                       # back to text, quoting what needs it
+#
+# The separator is a comma unless `parse_with` / `write_with` are told
+# otherwise — a semicolon or a tab, as a spreadsheet in another locale
+# writes. Fields are bytes; the file's encoding is the caller's business,
+# and UTF-8 passes through untouched.
+
+type Scan
+  Scan(at: Int, mode: Int, fields: List(Str), rows: List(List(Str)), line: Int, opened: Int, err: Str)
+
+# -- reading ------------------------------------------------------------------
+
+fn parse(text) = parse_with(text, 44)
+
+# The rows of `text`, each a list of its fields, or the first error.
+fn parse_with(text, sep) =
+  b = strbuf()
+  done = while s.at <= #text && #s.err == 0 with s = Scan(0, 0, Nil, Nil, 1, 0, "")
+    step(text, sep, b, s)
+  if #done.err == 0 then Ok(reverse(done.rows)) else Err(done.err)
+
+# The rows as records: the first line names the fields, and every line after
+# it is a map from those names to its values. A short row leaves its missing
+# fields out; a long one's extras are dropped.
+fn records(text) = records_with(text, 44)
+
+fn records_with(text, sep) =
+  rows = parse_with(text, sep)?
+  match rows
+    Nil -> Ok(Nil)
+    Cons(header, body) -> Ok(map(body, \r -> record(header, r)))
+
+private fn record(names, values) =
+  m = map_new()
+  fill(m, names, values)
+  m
+
+private fn fill(m: Map(Str, Str), names, values) = match names
+  Nil -> ()
+  Cons(n, ns) -> match values
+    Nil -> ()
+    Cons(v, vs) ->
+      m[n] = v
+      fill(m, ns, vs)
+
+# One byte of the scan. `mode` is where in a field the scan is: 0 at its
+# start, 1 inside an unquoted one, 2 inside quotes, 3 just past a closing
+# quote — where a second quote means a quote, and a separator or a line end
+# means the field is over.
+private fn step(text, sep, b: StrBuf, s) =
+  c = if s.at < #text then text[s.at] else -1
+  if s.mode == 2 then quoted(c, b, s) else if s.mode == 3 then after_quote(text, sep, c, b, s) else plain(text, sep, c, b, s)
+
+private fn quoted(c, b: StrBuf, s) =
+  if c == -1 then fail(s, "a quoted field opened on line " + int_to_str(s.opened) + " is not closed")
+  else if c == 34 then { s | at = s.at + 1, mode = 3 }
+  else
+    b += c
+    { s | at = s.at + 1, line = if c == 10 then s.line + 1 else s.line }
+
+private fn after_quote(text, sep, c, b: StrBuf, s) =
+  if c == 34 then doubled_quote(b, s) else if c == sep then end_field(b, s) else if c == 10 || c == 13 || c == -1
+    then end_row(text, b, s)
+    else fail(s, "line " + int_to_str(s.line) + ": text after a closing quote")
+
+private fn doubled_quote(b: StrBuf, s) =
+  b += 34
+  { s | at = s.at + 1, mode = 2 }
+
+private fn plain(text, sep, c, b: StrBuf, s) =
+  if c == 34 && s.mode == 0 then { s | at = s.at + 1, mode = 2, opened = s.line }
+  else if c == sep then end_field(b, s)
+  else if c == 10 || c == 13 || c == -1 then line_end(text, b, s)
+  else
+    b += c
+    { s | at = s.at + 1, mode = 1 }
+
+# A line with nothing on it is not a row of one empty field.
+private fn line_end(text, b: StrBuf, s) =
+  if s.mode == 0 && s.fields == Nil then { s | at = next_line(text, s.at), line = s.line + 1 } else end_row(text, b, s)
+
+private fn end_field(b: StrBuf, s) =
+  f = strbuf_str(b)
+  strbuf_clear(b)
+  { s | at = s.at + 1, mode = 0, fields = Cons(f, s.fields) }
+
+private fn end_row(text, b: StrBuf, s) =
+  f = strbuf_str(b)
+  strbuf_clear(b)
+  row = reverse(Cons(f, s.fields))
+  { s | at = next_line(text, s.at), mode = 0, fields = Nil, rows = Cons(row, s.rows), line = s.line + 1 }
+
+# Past a line end, where `\r\n` is one; past the end of the text, one more,
+# which is what stops the scan.
+private fn next_line(text, i) =
+  if i >= #text then i + 1 else if text[i] == 13 && i + 1 < #text && text[i + 1] == 10 then i + 2 else i + 1
+
+private fn fail(s, why) = { s | err = why }
+
+# -- writing ------------------------------------------------------------------
+
+fn write(rows) = write_with(rows, 44)
+
+# The rows as text, one a line, ending in `\n`; a field is quoted only when
+# it has to be.
+fn write_with(rows, sep) =
+  b = strbuf()
+  put_rows(b, rows, sep)
+  strbuf_str(b)
+
+private fn put_rows(b: StrBuf, rows, sep) = match rows
+  Nil -> ()
+  Cons(r, rest) ->
+    put_fields(b, r, sep, true)
+    b += 10
+    put_rows(b, rest, sep)
+
+private fn put_fields(b: StrBuf, fields, sep, first) = match fields
+  Nil -> ()
+  Cons(f, rest) ->
+    if first then () else strbuf_byte(b, sep)
+    put_field(b, f, sep)
+    put_fields(b, rest, sep, false)
+
+private fn put_field(b: StrBuf, f, sep) =
+  if needs_quotes(f, sep) then put_quoted(b, f) else strbuf_add(b, f)
+
+private fn put_quoted(b: StrBuf, f) =
+  b += 34
+  for i in 0..#f
+    if f[i] == 34 then strbuf_add(b, "\"\"") else strbuf_byte(b, f[i])
+  b += 34
+
+private fn needs_quotes(f, sep) =
+  for i in 0..#f with yes = false
+    yes || f[i] == sep || f[i] == 34 || f[i] == 10 || f[i] == 13
+
+# -- tests --------------------------------------------------------------------
+
+fn test_plain_rows() =
+  assert_eq(parse("a,b,c\n1,2,3\n"), Ok(Cons(Cons("a", Cons("b", Cons("c", Nil))), Cons(Cons("1", Cons("2", Cons("3", Nil))), Nil))))
+  assert_eq(parse("x,y\r\n1,2"), Ok(Cons(Cons("x", Cons("y", Nil)), Cons(Cons("1", Cons("2", Nil)), Nil))))
+  assert_eq(parse(""), Ok(Nil))
+  assert_eq(parse("a,,c\n"), Ok(Cons(Cons("a", Cons("", Cons("c", Nil))), Nil)))
+  assert_eq(parse("a,b,\n"), Ok(Cons(Cons("a", Cons("b", Cons("", Nil))), Nil)))
+
+fn test_quotes_and_line_breaks() =
+  assert_eq(parse("\"a, b\",\"say \"\"hi\"\"\",\"two\nlines\"\n"), Ok(Cons(Cons("a, b", Cons("say \"hi\"", Cons("two\nlines", Nil))), Nil)))
+  assert_eq(parse("\"\"\n"), Ok(Cons(Cons("", Nil), Nil)))
+  assert_eq(parse("it's,5'11\"\n"), Ok(Cons(Cons("it's", Cons("5'11\"", Nil)), Nil)))
+  assert_eq(parse("\n\na,b\n\n"), Ok(Cons(Cons("a", Cons("b", Nil)), Nil)))
+
+fn test_refusals_name_the_line() =
+  assert_eq(parse("a,b\n\"open\n"), Err("a quoted field opened on line 2 is not closed"))
+  assert_eq(parse("\"x\"y\n"), Err("line 1: text after a closing quote"))
+
+fn test_other_separators() =
+  assert_eq(parse_with("a;b\n\"c;d\";e\n", 59), Ok(Cons(Cons("a", Cons("b", Nil)), Cons(Cons("c;d", Cons("e", Nil)), Nil))))
+  assert_eq(parse_with("a\tb\n", 9), Ok(Cons(Cons("a", Cons("b", Nil)), Nil)))
+  assert_eq(write_with(Cons(Cons("a;b", Cons("c", Nil)), Nil), 59), "\"a;b\";c\n")
+
+fn test_records_by_name() =
+  match records("name,age\nAda,36\nAlan,41\nshort\n")
+    Err(e) -> assert_eq(e, "")
+    Ok(rs) ->
+      assert_eq(len(rs), 3)
+      assert_eq(map(rs, \r -> map_get(r, "name")), Cons(Some("Ada"), Cons(Some("Alan"), Cons(Some("short"), Nil))))
+      assert_eq(map(rs, \r -> map_get(r, "age")), Cons(Some("36"), Cons(Some("41"), Cons(None, Nil))))
+
+fn test_write_quotes_what_it_must() =
+  rows = Cons(Cons("plain", Cons("a,b", Cons("say \"hi\"", Cons("two\nlines", Cons("", Nil))))), Nil)
+  text = write(rows)
+  assert_eq(text, "plain,\"a,b\",\"say \"\"hi\"\"\",\"two\nlines\",\n")
+  assert_eq(parse(text), Ok(rows))

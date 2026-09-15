@@ -101,7 +101,7 @@ length operator instead.
 | `Float` | `3.14`, `2.0` | 64-bit; a decimal point is required |
 | `Bool` | `true`, `false` | |
 | `Str` | `"hi"`, `"a\nb"` | escapes: `\n` `\t` `\\` `\"` |
-| `Unit` | — | what `println` and `main` return |
+| `Unit` | `()` | what `println` and `main` return; `()` is its one value, for a branch with nothing to say |
 | `Chan(a)` | `channel()` | see [Concurrency](#7-concurrency) |
 | `Map(k, v)` | `map_new()` | a hash table; see [Maps](#maps) |
 | `StrBuf` | `strbuf()` | bytes on their way to a string |
@@ -1335,7 +1335,17 @@ replaces the prelude's.
 `List(a)` = `Nil | Cons(head, tail)`.
 
 **Lists**: `map` `filter` `fold` `len` `sum` `range` `reverse` `append` `take`
-`drop` `nth` `any` `all`
+`drop` `nth` `any` `all` `find` `index_of` `has` `count` `last` `each`
+`zip` `zip_with` `unzip` `fst` `snd` `enumerate` `take_while` `drop_while`
+`partition` `flatten` `flat_map` `chunks` `distinct` `group_by` `min_by`
+`max_by` `sort` `sort_by` `sort_with`
+
+`sort` is a stable merge sort by `<`; `sort_by(l, key)` orders by what `key`
+gives, and `sort_with(l, before)` by `before(a, b)`, whether `a` may come
+before `b` — `<=`, not `<`, or equal elements would swap. `group_by(l, key)`
+gives `(key, members)` pairs in the order the keys were first seen. Each of
+these stands on its own, so a program that defines a `find` of its own loses
+the prelude's `find` and nothing else.
 
 **Option/Result**: `unwrap_or` `opt_map` `res_map` `ok_or` `map_err`
 
@@ -1346,6 +1356,9 @@ replaces the prelude's.
 
 **Signals**: `sig_hup()` `sig_int()` `sig_term()` — the numbers `wait_signal`
 answers with
+
+**Standard error**: `eprintln(x)` `eprint(x)` — what `println` and `print`
+do, on standard error, unbuffered
 
 **Numbers**: `max` `min` `abs`
 
@@ -1374,17 +1387,34 @@ program in the project, imported by path and usually under a name:
 | `import "text/str" as s` | strings past the prelude: searches, transforms, parsers, every encoding, strands over a long text |
 | `import "data/json"`, `"yaml"` | the two formats, read and written |
 | `import "web/http" as h`, `"ws"` | an HTTP/1.1 server with middleware, and WebSocket over it |
+| `import "web/url" as url` | a URL taken apart and put together, a query as pairs, a reference resolved against a base |
+| `import "web/mime" as mime` | the media type a file is served as, from its name |
+| `import "web/form" as form` | what a `<form>` sends: urlencoded pairs, or multipart parts with their files |
+| `import "net/udp" as udp` | datagrams, sent and received whole, a receive parking the strand |
+| `import "net/dns" as dns` | a name to its addresses through the system's resolver, without holding a worker |
 | `import "num/grid" as g` | arrays of numbers with a shape, as NumPy has them |
 | `import "db/kv"` | a key–value store on disk: a B+ tree, a page cache, a log |
 | `import "crypto/sha1"`, `"passwd"` | SHA-1 and base64; storing a password so it cannot be read back |
+| `import "crypto/sha2" as sha` | SHA-256 and SHA-512, HMAC over each, a tag compared in constant time |
+| `import "data/checksum" as ck` | CRC-32 and Adler-32, whole or in pieces |
+| `import "data/csv" as csv` | CSV as RFC 4180 has it, read to rows or records and written back |
+| `import "data/deflate" as z` | DEFLATE both ways, and gzip and zlib around it |
 | `import "time/clock" as clock` | elapsed time, a timed call, a duration in words |
 | `import "time/date" as date` | civil dates and times in UTC: the counts, the calendar, ISO 8601 |
 | `import "text/regex" as re` | regular expressions: a backtracking matcher with groups |
 | `import "text/path" as path` | file paths as text: join, take apart, normalize |
+| `import "text/fmt" as fmt` | a template with slots, padding by width, a float to so many places, thousands, bytes, ordinals, a table |
 | `import "random/rnd" as rnd` | PCG32: a generator that is a value, and the draws made from it |
+| `import "random/uuid" as uuid` | UUIDs, random (v4) and time-ordered (v7), from the operating system's entropy |
 | `import "cli/args" as cli` | what a program takes on its command line, said once, parsed and explained |
+| `import "cli/env" as env` | environment variables, the working directory, the machine's name, the process id |
+| `import "cli/proc" as proc` | running a command: its output and exit code, a line built with each argument quoted |
+| `import "cli/log" as log` | a logger that is a value: the time, the level, the name, on standard error |
 | `import "num/decimal" as dec` | decimals with a fixed number of places, for money |
 | `import "num/bigint" as big` | integers of any size |
+| `import "coll/set" as set` | a set of any key-able value, as storage like `Map`; union, intersection, difference |
+| `import "coll/heap" as heap` | a priority queue that is a value: a leftist heap, by `<` or by an order given |
+| `import "coll/deque" as dq` | a queue open at both ends that is a value; constant time on average at either |
 | `import "db/oxidb"` and friends | clients for OxiDB's engines |
 
 Each module says at its head what it is for and how it is used, keeps its
@@ -1429,8 +1459,9 @@ fn serve(server) =
 | `sock_close(fd)` | |
 
 The prelude wraps the three that can fail: `listen_on`, `accept_on` and
-`connect_to` return `Result`. Addresses are dotted-quad IPv4 — resolving a name
-would block, and nothing in the runtime may block a worker.
+`connect_to` return `Result`. Addresses are dotted-quad IPv4; a name is
+resolved by `net/dns`, whose lookup is a `blocking` extern, so the strand
+parks for it and no worker is held.
 
 `sock_wait` is how a connection gets a deadline. A read has none — a peer that
 opens a socket and then says nothing holds a strand and a descriptor for as

@@ -1,0 +1,277 @@
+module fmt
+
+# Text laid out and numbers spelled: a template with slots, padding by
+# width, a float to so many places, thousands separated, a size in
+# bytes, an ordinal, a table with its columns lined up.
+#
+#     import "text/fmt" as fmt
+#     fmt.text("{} has {:>6} items", Cons(name, Cons(show(n), Nil)))
+#     fmt.fixed(3.14159, 2)              # "3.14"
+#     fmt.thousands(1234567)             # "1,234,567"
+#     fmt.bytes(1536)                    # "1.5 KB"
+#     fmt.ordinal(22)                    # "22nd"
+#     fmt.table(rows)                    # columns padded to their widest cell
+#
+# A template's slots take their values from a list of strings, in order —
+# `{}` the next one, `{2}` the third — and a slot may say how wide and
+# which way: `{:>8}` right in eight, `{:<8}` left, `{:^8}` centred,
+# `{:0>8}` padded with zeros, `{1:*^10}` the second value centred among
+# stars. Anything that is not a string is made one first — `show(x)`,
+# `fixed(x, 2)`, `thousands(n)` — so the template only ever places text,
+# and the number is spelled by the function that knows how. `{{` and `}}`
+# are a brace. Widths count characters, not bytes, so `héllo` is five.
+
+# -- the template -------------------------------------------------------------
+
+fn text(template, args) =
+  b = strbuf()
+  fill_in(template, args, b)
+  strbuf_str(b)
+
+private fn fill_in(t, args, b: StrBuf) =
+  (_, _) = while i < #t with (i, next) = (0, 0)
+    c = t[i]
+    if c == 123 && i + 1 < #t && t[i + 1] == 123 then brace(b, 123, i, next)
+    else if c == 125 && i + 1 < #t && t[i + 1] == 125 then brace(b, 125, i, next)
+    else if c == 123 then slot(t, args, b, i, next)
+    else
+      b += c
+      (i + 1, next)
+
+private fn brace(b: StrBuf, c: Int, i, next) =
+  b += c
+  (i + 2, next)
+
+# A slot from `{` to its `}`: `index?(:fill?align?width?)?`. One without a
+# `}` is written out as it stands.
+private fn slot(t, args, b: StrBuf, i, next) =
+  close = str_find_from(t, "}", i)
+  if close < 0 then
+    b += t[i:]
+    (#t, next)
+  else
+    spec = t[i + 1:close]
+    colon = str_find(spec, ":")
+    index_text = if colon < 0 then spec else spec[0:colon]
+    layout = if colon < 0 then "" else spec[colon + 1:]
+    index = if #index_text == 0 then next else str_to_int(index_text)
+    value = match nth(args, index)
+      Some(v) -> v
+      None -> "{" + spec + "}"
+    b += place(value, layout)
+    (close + 1, if #index_text == 0 then next + 1 else next)
+
+# `fill?align?width?`: the align character is one of `<`, `>`, `^`, and
+# anything before it is the fill.
+private fn place(value, layout) =
+  if #layout == 0 then value
+  else
+    at = align_at(layout)
+    fill = if at > 0 then layout[0:at] else " "
+    align = if at < 0 then 60 else layout[at]
+    width = str_to_int(layout[at + 1:])
+    if align == 62 then pad_left_with(value, width, fill) else if align == 94 then center_with(value, width, fill) else pad_right_with(value, width, fill)
+
+private fn align_at(layout) =
+  for i in 0..#layout with at = -1
+    if at < 0 && (layout[i] == 60 || layout[i] == 62 || layout[i] == 94) then i else at
+
+# -- padding --------------------------------------------------------------------
+
+fn pad_left(s, width) = pad_left_with(s, width, " ")
+
+fn pad_right(s, width) = pad_right_with(s, width, " ")
+
+fn center(s, width) = center_with(s, width, " ")
+
+fn pad_left_with(s, width, fill) = repeat(fill, width - char_count(s)) + s
+
+fn pad_right_with(s, width, fill) = s + repeat(fill, width - char_count(s))
+
+# The extra space goes to the right when it does not split evenly.
+fn center_with(s, width, fill) =
+  extra = width - char_count(s)
+  if extra <= 0 then s else repeat(fill, extra / 2) + s + repeat(fill, extra - extra / 2)
+
+# The first `width` characters, and an ellipsis in place of the rest.
+fn truncate(s, width) =
+  if char_count(s) <= width then s else char_take(s, if width > 1 then width - 1 else 0) + "…"
+
+# -- numbers --------------------------------------------------------------------
+
+# `x` to `places` decimal places, rounded half away from zero. Past what an
+# integer can count — around 9e15 — the float's own spelling is used.
+fn fixed(x, places) =
+  if x != x then "nan"
+  else if x > 9000000000000000.0 || x < -9000000000000000.0 then float_to_str(x)
+  else
+    scale = pow10(places)
+    n = to_int(abs_f(x) * to_float(scale) + 0.5)
+    sign = if x < 0.0 && n > 0 then "-" else ""
+    whole = int_to_str(n / scale)
+    if places <= 0 then sign + whole else sign + whole + "." + zero_pad(n % scale, places)
+
+private fn abs_f(x) = if x < 0.0 then 0.0 - x else x
+
+private fn pow10(n) = for i in 0..n with p = 1
+  p * 10
+
+# The number with a separator every three digits from the right.
+fn thousands(n) = thousands_with(n, ",")
+
+fn thousands_with(n, sep) =
+  digits = int_to_str(abs(n))
+  b = strbuf()
+  if n < 0 then strbuf_add(b, "-") else ()
+  for i in 0..#digits
+    if i > 0 && (#digits - i) % 3 == 0 then strbuf_add(b, sep) else ()
+    b += digits[i]
+  strbuf_str(b)
+
+# The number in `width` digits, zeros in front.
+fn zero_pad(n, width) =
+  if n < 0 then "-" + zero_pad(0 - n, width - 1) else pad_left_with(int_to_str(n), width, "0")
+
+# `+3`, `-3`, `0`.
+fn signed(n) = if n > 0 then "+" + int_to_str(n) else int_to_str(n)
+
+# `x` as a percentage: `percent(0.125, 1)` is `12.5%`.
+fn percent(x, places) = fixed(x * 100.0, places) + "%"
+
+# In base 2 to 36, lowercase.
+fn radix(n, base) =
+  if n < 0 then "-" + radix(0 - n, base) else if n < base then digit(n) else radix(n / base, base) + digit(n % base)
+
+private fn digit(d) = if d < 10 then chr(48 + d) else chr(87 + d)
+
+fn hex(n) = radix(n, 16)
+
+fn binary(n) = radix(n, 2)
+
+# `1.23e+05`: a mantissa to `places` places and an exponent of at least
+# two digits, as C prints one.
+fn sci(x, places) =
+  if x != x then "nan"
+  else if x == 0.0 then fixed(0.0, places) + "e+00"
+  else
+    (m, e) = normalize(abs_f(x), 0)
+    text = fixed(m, places)
+    (m2, e2) = if str_find(text, "10") == 0 then (1.0, e + 1) else (m, e)
+    sign = if x < 0.0 then "-" else ""
+    sign + fixed(m2, places) + "e" + (if e2 < 0 then "-" else "+") + zero_pad(abs(e2), 2)
+
+private fn normalize(m, e) =
+  if m >= 10.0 then normalize(m / 10.0, e + 1) else if m < 1.0 then normalize(m * 10.0, e - 1) else (m, e)
+
+# A count of bytes in the unit that fits, to one place: `1.5 KB`, `3.0 MB`.
+fn bytes(n) =
+  if n < 1024 then int_to_str(n) + " B" else bytes_in(to_float(n) / 1024.0, Cons("KB", Cons("MB", Cons("GB", Cons("TB", Cons("PB", Nil))))))
+
+private fn bytes_in(v, units) = match units
+  Cons(u, Nil) -> fixed(v, 1) + " " + u
+  Cons(u, rest) -> if v < 1024.0 then fixed(v, 1) + " " + u else bytes_in(v / 1024.0, rest)
+  Nil -> fixed(v, 1)
+
+# -- words ----------------------------------------------------------------------
+
+# `1st`, `2nd`, `3rd`, `4th`, and `11th` to `13th` as English has them.
+fn ordinal(n) =
+  last_two = abs(n) % 100
+  last_one = abs(n) % 10
+  suffix = if last_two >= 11 && last_two <= 13 then "th" else if last_one == 1 then "st" else if last_one == 2 then "nd" else if last_one == 3 then "rd" else "th"
+  int_to_str(n) + suffix
+
+# `1 file`, `2 files`; `plural_with` for a word that does not just take an `s`.
+fn plural(n, word) = plural_with(n, word, word + "s")
+
+fn plural_with(n, one, many) = int_to_str(n) + " " + (if n == 1 then one else many)
+
+# -- a table --------------------------------------------------------------------
+
+# Rows of cells, each column padded to its widest cell and two spaces
+# between columns; the last cell of a row is not padded.
+fn table(rows) = table_with(rows, "  ")
+
+fn table_with(rows, sep) =
+  widths = fold(rows, Nil, widen)
+  join(map(rows, \r -> row_text(r, widths, sep)), "\n")
+
+private fn widen(widths, row) = match row
+  Nil -> widths
+  Cons(cell, rest) -> match widths
+    Nil -> Cons(char_count(cell), widen(Nil, rest))
+    Cons(w, ws) -> Cons(max(w, char_count(cell)), widen(ws, rest))
+
+private fn row_text(row, widths, sep) = match row
+  Nil -> ""
+  Cons(cell, Nil) -> cell
+  Cons(cell, rest) -> match widths
+    Nil -> cell + sep + row_text(rest, Nil, sep)
+    Cons(w, ws) -> pad_right(cell, w) + sep + row_text(rest, ws, sep)
+
+# -- tests --------------------------------------------------------------------
+
+fn test_template_slots() =
+  assert_eq(text("{} and {}", Cons("a", Cons("b", Nil))), "a and b")
+  assert_eq(text("{1} before {0}", Cons("a", Cons("b", Nil))), "b before a")
+  assert_eq(text("[{:>5}] [{:<5}] [{:^5}]", Cons("ab", Cons("ab", Cons("ab", Nil)))), "[   ab] [ab   ] [ ab  ]")
+  assert_eq(text("{:0>6}|{0:*^7}", Cons("42", Nil)), "000042|**42***")
+  assert_eq(text("{{literal}} {}", Cons("x", Nil)), "{literal} x")
+  assert_eq(text("{} {} {}", Cons("only", Nil)), "only {} {}")
+  assert_eq(text("[{:>7}]", Cons("héllo", Nil)), "[  héllo]")
+  assert_eq(text("open {", Nil), "open {")
+
+fn test_padding_counts_characters() =
+  assert_eq(pad_left("ab", 5), "   ab")
+  assert_eq(pad_right("ab", 5), "ab   ")
+  assert_eq(center("ab", 5), " ab  ")
+  assert_eq(center("abc", 2), "abc")
+  assert_eq(pad_left_with("héllo", 7, "·"), "··héllo")
+  assert_eq(truncate("abcdefgh", 5), "abcd…")
+  assert_eq(truncate("abc", 5), "abc")
+
+fn test_fixed_and_friends() =
+  assert_eq(fixed(3.14159, 2), "3.14")
+  assert_eq(fixed(2.5, 0), "3")
+  assert_eq(fixed(-2.5, 0), "-3")
+  assert_eq(fixed(0.005, 2), "0.01")
+  assert_eq(fixed(-0.001, 2), "0.00")
+  assert_eq(fixed(1234.5, 3), "1234.500")
+  assert_eq(fixed(0.0 / 0.0, 2), "nan")
+  assert_eq(fixed(100000000000000000000.0, 2), "1e+20")
+  assert_eq(percent(0.125, 1), "12.5%")
+  assert_eq(sci(123456.789, 2), "1.23e+05")
+  assert_eq(sci(0.000123, 3), "1.230e-04")
+  assert_eq(sci(-9.999, 1), "-1.0e+01")
+  assert_eq(sci(0.0, 2), "0.00e+00")
+
+fn test_integers_spelled() =
+  assert_eq(thousands(1234567), "1,234,567")
+  assert_eq(thousands(-1000), "-1,000")
+  assert_eq(thousands(999), "999")
+  assert_eq(thousands_with(1234567, "."), "1.234.567")
+  assert_eq(zero_pad(42, 6), "000042")
+  assert_eq(zero_pad(-42, 6), "-00042")
+  assert_eq(signed(3), "+3")
+  assert_eq(signed(-3), "-3")
+  assert_eq(signed(0), "0")
+  assert_eq(hex(255), "ff")
+  assert_eq(hex(-255), "-ff")
+  assert_eq(binary(10), "1010")
+  assert_eq(radix(35, 36), "z")
+  assert_eq(bytes(512), "512 B")
+  assert_eq(bytes(1536), "1.5 KB")
+  assert_eq(bytes(3 * 1048576), "3.0 MB")
+  assert_eq(bytes(5497558138880), "5.0 TB")
+
+fn test_words() =
+  assert_eq(map(Cons(1, Cons(2, Cons(3, Cons(4, Cons(11, Cons(12, Cons(13, Cons(21, Cons(102, Cons(111, Nil)))))))))), ordinal), Cons("1st", Cons("2nd", Cons("3rd", Cons("4th", Cons("11th", Cons("12th", Cons("13th", Cons("21st", Cons("102nd", Cons("111th", Nil)))))))))))
+  assert_eq(plural(1, "file"), "1 file")
+  assert_eq(plural(2, "file"), "2 files")
+  assert_eq(plural_with(0, "child", "children"), "0 children")
+
+fn test_table_lines_up() =
+  rows = Cons(Cons("name", Cons("qty", Cons("note", Nil))), Cons(Cons("apple", Cons("12", Nil)), Cons(Cons("kiwi", Cons("3", Cons("ripe", Nil))), Nil)))
+  assert_eq(table(rows), "name   qty  note\napple  12\nkiwi   3    ripe")
+  assert_eq(table_with(Cons(Cons("a", Cons("b", Nil)), Nil), " | "), "a | b")
+  assert_eq(table(Nil), "")

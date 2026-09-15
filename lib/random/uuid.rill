@@ -1,0 +1,123 @@
+module uuid
+
+# UUIDs (RFC 9562): the random kind, version 4, and the time-ordered
+# kind, version 7, whose first 48 bits are the millisecond it was made,
+# so a column of them sorts by when. Both draw their random bits from the
+# operating system, not from `rnd`'s predictable stream.
+#
+#     import "random/uuid" as uuid
+#     id = uuid.v7()
+#     show(id)                             # "018f3a2c-9b1e-7c4d-8a2b-3f5e6d7c8b9a"
+#     uuid.parse("550e8400-e29b-41d4-a716-446655440000")    # Some(id), or None
+#     uuid.version(id)                     # 4 or 7
+#     uuid.time_of(id)                     # Some(millis since 1970) for a v7
+#
+# A `Uuid` is two 64-bit halves, so it compares, hashes as a map key and
+# prints like any value; `text` and `bytes` are its two spellings.
+
+type Uuid
+  Uuid(hi: Int, lo: Int)
+
+impl Show(Uuid)
+  fn show(u) = text(u)
+
+fn nil() = Uuid(0, 0)
+
+# Version 4: 122 random bits.
+fn v4() = stamp(random_i64(), random_i64(), 4)
+
+# Version 7: the time in milliseconds, then 74 random bits.
+fn v7() = v7_at(now_millis())
+
+fn v7_at(millis) =
+  stamp(bit_or(shl(bit_and(millis, 281474976710655), 16), bit_and(random_i64(), 65535)), random_i64(), 7)
+
+# The version in its nibble and the variant `10` in its two bits.
+private fn stamp(hi, lo, version) =
+  Uuid(bit_or(bit_and(hi, bit_not(61440)), shl(version, 12)), bit_or(bit_and(lo, bit_not(shl(3, 62))), shl(2, 62)))
+
+fn version(u: Uuid) = bit_and(shr(u.hi, 12), 15)
+
+# The millisecond a version-7 id was made.
+fn time_of(u: Uuid) = if version(u) == 7 then Some(shr(u.hi, 16)) else None
+
+# -- spellings ----------------------------------------------------------------
+
+# `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, lowercase.
+fn text(u: Uuid) =
+  h = hex16(u.hi) + hex16(u.lo)
+  h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+
+private fn hex16(v) =
+  b = buf_u8(16)
+  for i in 0..16
+    b[i] = hexdigit(bit_and(shr(v, 60 - i * 4), 15))
+  str_from_buf(b)
+
+private fn hexdigit(d) = if d < 10 then 48 + d else 87 + d
+
+# The sixteen bytes, big-endian.
+fn bytes(u: Uuid) =
+  b = buf_u8(16)
+  for i in 0..8
+    b[i] = bit_and(shr(u.hi, 56 - i * 8), 255)
+    b[8 + i] = bit_and(shr(u.lo, 56 - i * 8), 255)
+  str_from_buf(b)
+
+fn from_bytes(s) =
+  if #s != 16 then None else Some(Uuid(be64(s, 0), be64(s, 8)))
+
+private fn be64(s, at) =
+  for i in 0..8 with v = 0
+    bit_or(shl(v, 8), s[at + i])
+
+# The text form, hyphens where they belong, either case; `None` for
+# anything else.
+fn parse(s) =
+  if #s != 36 || s[8] != 45 || s[13] != 45 || s[18] != 45 || s[23] != 45 then None
+  else
+    digits = s[0:8] + s[9:13] + s[14:18] + s[19:23] + s[24:36]
+    if !all_hex(digits) then None else Some(Uuid(hexval16(digits, 0), hexval16(digits, 16)))
+
+private fn all_hex(s) =
+  for i in 0..#s with ok = true
+    ok && hexval(s[i]) >= 0
+
+private fn hexval16(s, at) =
+  for i in 0..16 with v = 0
+    bit_or(shl(v, 4), hexval(s[at + i]))
+
+private fn hexval(c) =
+  if c >= 48 && c <= 57 then c - 48 else if c >= 97 && c <= 102 then c - 87 else if c >= 65 && c <= 70 then c - 55 else -1
+
+# -- tests --------------------------------------------------------------------
+
+fn test_text_round_trip() =
+  assert_eq(parse("550e8400-e29b-41d4-a716-446655440000"), Some(Uuid(6128981282234515924, -6406858213580079104)))
+  assert_eq(opt_map(parse("550E8400-E29B-41D4-A716-446655440000"), text), Some("550e8400-e29b-41d4-a716-446655440000"))
+  assert_eq(parse("550e8400-e29b-41d4-a716-44665544000"), None)
+  assert_eq(parse("550e8400-e29b-41d4-a716-44665544000g"), None)
+  assert_eq(parse("550e8400e29b-41d4-a716-446655440000-"), None)
+  assert_eq(text(nil()), "00000000-0000-0000-0000-000000000000")
+  assert_eq(opt_map(from_bytes(bytes(v4())), version), Some(4))
+  assert_eq(from_bytes("short"), None)
+
+fn test_versions_and_variant() =
+  a = v4()
+  b = v4()
+  assert_eq(version(a), 4)
+  assert(a != b)
+  assert_eq(time_of(a), None)
+  assert_eq(text(a)[14:15], "4")
+  assert(has(Cons("8", Cons("9", Cons("a", Cons("b", Nil)))), text(a)[19:20]))
+  c = v7_at(1700000000123)
+  assert_eq(version(c), 7)
+  assert_eq(time_of(c), Some(1700000000123))
+  assert_eq(text(c)[0:13], "018bcfe5-687b")
+  assert_eq(bytes(c)[0:6], bytes(v7_at(1700000000123))[0:6])
+
+fn test_v7_sorts_by_time() =
+  earlier = v7_at(1000)
+  later = v7_at(1001)
+  assert(earlier.hi < later.hi)
+  assert(text(earlier) < text(later))

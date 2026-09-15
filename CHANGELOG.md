@@ -30,6 +30,119 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — forms, datagrams and names
+
+`web/form` reads what a `<form>` sends: urlencoded pairs, or
+`multipart/form-data` as parts, each with its field name, its file name
+and content type if it was a file, and its bytes as they were. `net/udp`
+sends and receives datagrams whole, with the sender's address on the ones
+that arrive; a receive parks the strand on the poller as a TCP read does.
+`net/dns` resolves a name through the system's resolver, IPv4 first; the
+lookup is the one wait the runtime never allowed a worker, and it is a
+`blocking` extern now, so the strand parks and the worker goes on. The
+runtime gained `rill_udp_open`, `rill_udp_port`, `rill_udp_send`,
+`rill_udp_recv` and `rill_dns_lookup`.
+
+## Unreleased — ids, URLs, media types, a log, and standard error
+
+`random/uuid` makes version-4 and version-7 UUIDs from the operating
+system's entropy, reads and writes the text and byte forms, and a v7's
+first 48 bits are the millisecond it was made. `web/url` takes a URL
+apart and puts it together, reads a query as pairs, encodes and decodes,
+and resolves a relative reference against a base as a browser follows a
+link. `web/mime` names the media type a file is served as. `cli/log` is a
+logger that is a value — a name, a level from `RILL_LOG`, a line with
+the time on standard error — because a program without globals hands its
+logger to what needs it. The prelude has `eprintln` and `eprint`.
+
+Two fixes on the way: the formatter wrote a `match` in a `then` branch
+without its parentheses, so the `else` after it became part of the last
+arm; and a field of a generic record handed straight to a tail call
+crashed codegen.
+
+## Unreleased — deflate, gzip and zlib
+
+`data/deflate` reads any DEFLATE stream — stored, fixed and dynamic
+Huffman blocks — and writes one as LZ77 matches over a 32 KB window in
+fixed Huffman codes; `gzip`/`gunzip` and `zlib`/`unzlib` are the two
+envelopes, checksummed with `data/checksum`. What it writes, `gzip` and
+Python's zlib read, and what they write, it reads. On the 100 KB language
+reference: 48 KB where `gzip -1` gives 45 and `-6` gives 39, in 14 ms;
+back in 3 ms. Dynamic Huffman on the way out is the next step, when a
+size matters more than a listing this short.
+
+## Unreleased — three collections, and a field the compiler dropped
+
+`coll/set` is a set over the hash table `Map` already is — storage, like a
+map, of anything a map can key, with union, intersection, difference and
+subset. `coll/heap` is a priority queue that is a value: a leftist heap
+ordered by `<` or by whatever `new_with(before)` was given, so a heap of
+`(priority, task)` pairs orders by the priority. `coll/deque` is a queue
+open at both ends that is a value, two lists turned round as one runs
+dry. Writing the set found a compiler crash: a field of a generic record
+handed straight to a tail call was asked about with no substitution for
+the record's type parameter. Fixed, with a test.
+
+## Unreleased — text laid out, numbers spelled
+
+`text/fmt` is the layout a report wants: `text("{} has {:>6}", args)`
+places strings in a template by order or index, padded to a width and
+aligned left, right or centred with any fill; `fixed(x, 2)`, `sci`,
+`percent`, `thousands`, `zero_pad`, `signed`, `hex`, `binary`, `radix`
+spell numbers; `bytes(n)` picks the unit; `ordinal` and `plural` say
+`22nd` and `2 files`; `table(rows)` pads each column to its widest cell.
+Widths count characters, not bytes. The template only ever places text,
+and a number is spelled first by the function that knows how — so there
+is one way to say `{:>8}` and none to guess what `%8.2f` meant.
+
+## Unreleased — the list words a program kept rewriting
+
+The prelude has the combinators programs had been writing for themselves:
+`find`, `index_of`, `has`, `count`, `last`, `each`, `zip`, `zip_with`,
+`unzip`, `fst`, `snd`, `enumerate`, `take_while`, `drop_while`,
+`partition`, `flatten`, `flat_map`, `chunks`, `distinct`, `group_by`,
+`min_by`, `max_by`, and a stable merge sort as `sort`, `sort_by` and
+`sort_with`. Each stands on its own helpers, so a program that defines a
+`find` of its own loses the prelude's `find` and nothing else.
+
+## Unreleased — the process and its surroundings
+
+`cli/env` is the environment: `get`, `get_or`, `set`, `unset`, `all` as
+pairs, the working directory read and moved, the host's name, the process
+id. `cli/proc` runs a command line through the shell — `run` for the exit
+code and the output together, `output` for the output or an `Err` naming
+the status, `shell` for a command that writes to our terminal — and
+`command` builds a line from a program and its arguments with each one
+quoted, so a name with a space in it stays one argument. The calls that
+wait are `blocking`, and other strands run meanwhile. The runtime gained
+`rill_env_at`, `environ` reached as a function because an `extern` names
+one.
+
+## Unreleased — `()`, and CSV
+
+There was no way to write the value of `Unit`: a walk over a list whose
+other arm only prints had nothing to put after `Nil ->`, and reached for
+`print("")`. `()` is that value now — typed `Unit`, formatted as itself,
+refused by `println` like any other non-value.
+
+`data/csv` reads and writes CSV as RFC 4180 has it — quoted fields, doubled
+quotes, line breaks inside quotes, `\r\n` or `\n` — and forgives what
+real files do (a quote mid-field, a blank line, a short row) while refusing
+what would hide an error (a quoted field that never closes, text after a
+closing quote), naming the line. `records` reads the first line as names
+and gives a `Map(Str, Str)` a row; `parse_with` and `write_with` take
+another separator.
+
+## Unreleased — a hash to sign with, and a sum to check with
+
+`crypto/sha2` is SHA-256 and SHA-512 with HMAC over each, checked against
+FIPS 180-4 and RFC 4231, and `same` for comparing a tag in constant time.
+SHA-256 is 32-bit arithmetic masked on the way, SHA-512 the machine's own
+64-bit wrapping arithmetic, and both keep the schedule in a buffer and read
+a block straight from the message: 16 MB in 75 ms and 33 ms. `data/checksum`
+is CRC-32 and Adler-32, whole or continued across pieces, for the formats
+that carry one.
+
 ## Unreleased — `lib/`, by kind
 
 The library folder was a flat list, and grew until a name said less

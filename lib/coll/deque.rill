@@ -1,0 +1,100 @@
+module deque
+
+# A queue with both ends open: push and pop at the front or the back, each
+# in constant time on average. A deque is a value — every operation gives
+# a new one and leaves the old as it was — so it is the queue to keep in a
+# loop's state or a strand's, where a list would cost a walk to reach its
+# far end.
+#
+#     import "coll/deque" as dq
+#     q = dq.push_back(dq.push_back(dq.new(), "first"), "second")
+#     match dq.pop_front(q)
+#       Some((x, rest)) -> ...             # "first", and the queue without it
+#       None -> ...
+#     dq.of(list), dq.items(q), dq.size(q)
+#
+# Two lists, one for each end, the front's in order and the back's
+# reversed; when one runs dry the other is turned round to feed it, which
+# is the walk a plain list would make on every pop, made once in a while.
+
+type Deque(a)
+  Deque(front: List(a), back: List(a), size: Int)
+
+fn new() = Deque(Nil, Nil, 0)
+
+fn of(items) = Deque(items, Nil, len(items))
+
+fn size(q: Deque(a)) = q.size
+
+fn is_empty(q: Deque(a)) = q.size == 0
+
+fn push_front(q: Deque(a), x) = Deque(Cons(x, q.front), q.back, q.size + 1)
+
+fn push_back(q: Deque(a), x) = Deque(q.front, Cons(x, q.back), q.size + 1)
+
+# The front element and the deque without it, or `None` when it is empty.
+fn pop_front(q: Deque(a)) = match q.front
+  Cons(x, rest) -> Some((x, Deque(rest, q.back, q.size - 1)))
+  Nil -> match reverse(q.back)
+    Nil -> None
+    Cons(x, rest) -> Some((x, Deque(rest, Nil, q.size - 1)))
+
+fn pop_back(q: Deque(a)) = match q.back
+  Cons(x, rest) -> Some((x, Deque(q.front, rest, q.size - 1)))
+  Nil -> match reverse(q.front)
+    Nil -> None
+    Cons(x, rest) -> Some((x, Deque(Nil, rest, q.size - 1)))
+
+fn peek_front(q: Deque(a)) = match q.front
+  Cons(x, _) -> Some(x)
+  Nil -> last(q.back)
+
+fn peek_back(q: Deque(a)) = match q.back
+  Cons(x, _) -> Some(x)
+  Nil -> last(q.front)
+
+# Everything, front to back.
+fn items(q: Deque(a)) = append(q.front, reverse(q.back))
+
+# -- tests --------------------------------------------------------------------
+
+fn test_a_queue() =
+  q = push_back(push_back(push_back(new(), 1), 2), 3)
+  assert_eq(size(q), 3)
+  assert_eq(items(q), Cons(1, Cons(2, Cons(3, Nil))))
+  assert_eq(peek_front(q), Some(1))
+  assert_eq(peek_back(q), Some(3))
+  match pop_front(q)
+    None -> assert(false)
+    Some((x, rest)) ->
+      assert_eq(x, 1)
+      assert_eq(items(rest), Cons(2, Cons(3, Nil)))
+      assert_eq(items(q), Cons(1, Cons(2, Cons(3, Nil))))
+
+fn test_both_ends() =
+  q = push_front(push_back(push_front(new(), "b"), "c"), "a")
+  assert_eq(items(q), Cons("a", Cons("b", Cons("c", Nil))))
+  match pop_back(q)
+    None -> assert(false)
+    Some((x, rest)) ->
+      assert_eq(x, "c")
+      assert_eq(items(rest), Cons("a", Cons("b", Nil)))
+      assert_eq(peek_back(rest), Some("b"))
+  match pop_back(of(Cons("only", Nil)))
+    None -> assert(false)
+    Some((x, rest)) ->
+      assert_eq(x, "only")
+      assert(is_empty(rest))
+      assert_eq(peek_front(rest), None)
+      assert_eq(peek_back(rest), None)
+
+fn test_drains_in_order() =
+  q = of(range(1, 10000))
+  assert_eq(size(q), 10000)
+  assert_eq(drained(q, Nil), range(1, 10000))
+  back = fold(range(1, 5000), new(), push_back)
+  assert_eq(drained(back, Nil), range(1, 5000))
+
+private fn drained(q, acc) = match pop_front(q)
+  None -> reverse(acc)
+  Some((x, rest)) -> drained(rest, Cons(x, acc))

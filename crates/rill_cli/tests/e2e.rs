@@ -1082,9 +1082,11 @@ fn repository_sources_are_formatted() {
         "benchmarks",
         "benchmarks/http",
         "lib/cli",
+        "lib/coll",
         "lib/crypto",
         "lib/data",
         "lib/db",
+        "lib/net",
         "lib/num",
         "lib/random",
         "lib/text",
@@ -2555,6 +2557,23 @@ fn the_libraries_pass_their_own_tests() {
         ("lib/cli/args.rill", 2),
         ("lib/num/decimal.rill", 3),
         ("lib/num/bigint.rill", 3),
+        ("lib/crypto/sha2.rill", 5),
+        ("lib/data/checksum.rill", 3),
+        ("lib/data/csv.rill", 6),
+        ("lib/cli/env.rill", 3),
+        ("lib/cli/proc.rill", 3),
+        ("lib/text/fmt.rill", 6),
+        ("lib/coll/set.rill", 3),
+        ("lib/coll/heap.rill", 4),
+        ("lib/coll/deque.rill", 3),
+        ("lib/data/deflate.rill", 4),
+        ("lib/random/uuid.rill", 3),
+        ("lib/web/url.rill", 4),
+        ("lib/web/mime.rill", 3),
+        ("lib/cli/log.rill", 3),
+        ("lib/web/form.rill", 3),
+        ("lib/net/udp.rill", 3),
+        ("lib/net/dns.rill", 2),
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("test").arg(root.join(module)).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
@@ -4854,4 +4873,128 @@ fn short_string_in_a_big_builder_is_copied_not_taken() {
     let run = Command::new(&exe).env("RILL_ALLOC_CHECK", "1").output().expect("failed to run produced executable");
     assert!(run.status.success(), "short_of_long died:\n{}", String::from_utf8_lossy(&run.stderr));
     assert_eq!(String::from_utf8_lossy(&run.stdout), "200000\n300000\n");
+}
+
+/// `()` is the one value of `Unit`: what a base case says when the other
+/// arm only has effects. It types as `Unit`, formats as itself, and is not
+/// something to print.
+#[test]
+fn unit_is_written_as_empty_parens() {
+    let src = "fn walk(l) = match l\n  \
+                 Nil -> ()\n  \
+                 Cons(x, rest) ->\n    \
+                   println(x)\n    \
+                   walk(rest)\n\n\
+               fn main() =\n  \
+                 walk(Cons(\"a\", Cons(\"b\", Nil)))\n  \
+                 if true then () else walk(Nil)\n  \
+                 println(\"done\")\n";
+    assert_eq!(run_source("unit_lit", src), "a\nb\ndone\n");
+    assert_eq!(fmt_source(src), src);
+    let err = compile_error("fn main() = println(())\n");
+    assert!(err.contains("found Unit"), "{err}");
+    let err = compile_error("fn f(l) = match l\n  Nil -> ()\n  Cons(x, _) -> x\n\nfn main() = println(f(Cons(1, Nil)))\n");
+    assert!(err.contains("Unit") && err.contains("Int"), "{err}");
+}
+
+/// The list combinators past `map` and `fold`: each one on a small list,
+/// with the answer written out.
+#[test]
+fn the_prelude_list_combinators() {
+    let src = "fn main() =\n  \
+        l = Cons(3, Cons(1, Cons(2, Cons(3, Cons(5, Nil)))))\n  \
+        words = Cons(\"bb\", Cons(\"a\", Cons(\"ccc\", Nil)))\n  \
+        println(sort(l))\n  \
+        println(sort_by(words, \\s -> #s))\n  \
+        println(sort_with(l, \\a, b -> a >= b))\n  \
+        println(find(l, \\x -> x > 2))\n  \
+        println(index_of(l, 2))\n  \
+        println(has(l, 5))\n  \
+        println(count(l, \\x -> x == 3))\n  \
+        println(last(l))\n  \
+        each(words, \\s -> println(s))\n  \
+        println(zip(l, words))\n  \
+        println(zip_with(l, l, \\a, b -> a * b))\n  \
+        println(unzip(Cons((1, \"a\"), Cons((2, \"b\"), Nil))))\n  \
+        println(enumerate(words))\n  \
+        println(take_while(l, \\x -> x != 2))\n  \
+        println(drop_while(l, \\x -> x != 2))\n  \
+        println(partition(l, \\x -> x % 2 == 1))\n  \
+        println(flatten(Cons(Cons(1, Cons(2, Nil)), Cons(Nil, Cons(Cons(3, Nil), Nil)))))\n  \
+        println(flat_map(Cons(1, Cons(2, Nil)), \\x -> Cons(x, Cons(x * 10, Nil))))\n  \
+        println(chunks(l, 2))\n  \
+        println(distinct(l))\n  \
+        println(group_by(Cons(\"apple\", Cons(\"avocado\", Cons(\"banana\", Cons(\"cherry\", Cons(\"blueberry\", Nil))))), \\w -> w[0:1]))\n  \
+        println(min_by(words, \\s -> #s))\n  \
+        println(max_by(words, \\s -> #s))\n  \
+        println(fst((1, \"one\")) + snd((\"x\", 2)))\n  \
+        println(sort(reverse(range(1, 100000))) == range(1, 100000))\n  \
+        println(sort_by(Cons((1, \"b\"), Cons((0, \"a\"), Cons((1, \"a\"), Nil))), fst))\n";
+    let want = "\
+Cons(1, Cons(2, Cons(3, Cons(3, Cons(5, Nil)))))
+Cons(a, Cons(bb, Cons(ccc, Nil)))
+Cons(5, Cons(3, Cons(3, Cons(2, Cons(1, Nil)))))
+Some(3)
+2
+true
+2
+Some(5)
+bb
+a
+ccc
+Cons((3, bb), Cons((1, a), Cons((2, ccc), Nil)))
+Cons(9, Cons(1, Cons(4, Cons(9, Cons(25, Nil)))))
+(Cons(1, Cons(2, Nil)), Cons(a, Cons(b, Nil)))
+Cons((0, bb), Cons((1, a), Cons((2, ccc), Nil)))
+Cons(3, Cons(1, Nil))
+Cons(2, Cons(3, Cons(5, Nil)))
+(Cons(3, Cons(1, Cons(3, Cons(5, Nil)))), Cons(2, Nil))
+Cons(1, Cons(2, Cons(3, Nil)))
+Cons(1, Cons(10, Cons(2, Cons(20, Nil))))
+Cons(Cons(3, Cons(1, Nil)), Cons(Cons(2, Cons(3, Nil)), Cons(Cons(5, Nil), Nil)))
+Cons(3, Cons(1, Cons(2, Cons(5, Nil))))
+Cons((a, Cons(apple, Cons(avocado, Nil))), Cons((b, Cons(banana, Cons(blueberry, Nil))), Cons((c, Cons(cherry, Nil)), Nil)))
+Some(a)
+Some(ccc)
+3
+true
+Cons((0, a), Cons((1, b), Cons((1, a), Nil)))
+";
+    assert_eq!(run_source("combinators", src), want);
+    // A program's own `find` replaces the prelude's, and takes nothing else with it.
+    let own = "fn find(s) = s + \"!\"\n\nfn main() =\n  println(find(\"mine\"))\n  println(sort(Cons(2, Cons(1, Nil))))\n";
+    assert_eq!(run_source("own_find", own), "mine!\nCons(1, Cons(2, Nil))\n");
+}
+
+/// A field of a generic record handed straight to a call in tail position:
+/// codegen asked whether the field was borrowed with no substitution for
+/// the record's type parameter, and indexed an empty list.
+#[test]
+fn a_generic_records_field_in_a_tail_call() {
+    let src = "type Box(a)\n  \
+                 Box(m: Map(a, Bool))\n\n\
+               fn has(s: Box(a), x) = map_has(s.m, x)\n\n\
+               fn main() =\n  \
+                 s = Box(map_new())\n  \
+                 m = s.m\n  \
+                 m[\"a\"] = true\n  \
+                 println(has(s, \"a\"))\n  \
+                 println(has(s, \"b\"))\n";
+    assert_eq!(run_source("generic_field_tail", src), "true\nfalse\n");
+}
+
+/// A `match` as the `then` branch of a one-line `if` was written back
+/// without its parentheses, and the `else` that followed became part of
+/// the last arm. The formatter's output has to parse, and to be its own
+/// fixed point.
+#[test]
+fn a_match_in_a_then_branch_keeps_its_parentheses() {
+    let src = "fn step(acc, seg) =\n  \
+                 if seg == \".\" then acc else if seg == \"..\" then (match acc\n    \
+                   Cons(_, Cons(x, rest)) -> Cons(x, rest)\n    \
+                   other -> other) else Cons(seg, acc)\n\n\
+               fn main() = println(step(Cons(\"a\", Cons(\"b\", Nil)), \"..\"))\n";
+    let once = fmt_source(src);
+    assert_eq!(once, src);
+    assert_eq!(run_source("match_then", &once), "Cons(b, Nil)\n");
 }
