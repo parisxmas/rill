@@ -7350,6 +7350,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
                 Ok(Some(out))
             }
+            TK::Builtin { rt, args } if *rt == "rill.f2i" || *rt == "rill.i2f" => {
+                let v = self.gen_expr(&args[0], scope, subst, func)?.expect("value");
+                let to: BasicTypeEnum = if *rt == "rill.f2i" { self.ctx.i64_type().into() } else { self.ctx.f64_type().into() };
+                Ok(Some(self.builder.build_bit_cast(v, to, "bits").expect("LLVM builder error")))
+            }
             TK::Builtin { rt, args } if *rt == "rill.sitofp" || *rt == "rill.fptosi" => {
                 let v = self.gen_expr(&args[0], scope, subst, func)?.expect("value");
                 let out = if *rt == "rill.sitofp" {

@@ -132,7 +132,10 @@ of Rust. The two cases the machine has no one answer for are decided: `/`
 and `%` by zero end the program, saying where — a number that is silently
 wrong is worse than a stop — and the smallest integer divided by `-1` wraps
 to itself, with a remainder of zero. `to_int` truncates toward zero, and past
-the ends of `Int` gives the nearest end; a NaN gives zero. A shift by 64 or
+the ends of `Int` gives the nearest end; a NaN gives zero. `float_bits(x)` is
+the 64 bits of a float as the `Int` they are and `bits_float(n)` the float
+those bits spell — no conversion, for a file format or a sort key that
+carries a float as bytes. A shift by 64 or
 more, or by less than nothing, is zero. There are no narrower numbers as
 values: a byte read from a string or a buffer is an `Int`, and the narrow
 names — `U8`, `I32`, `F32` and the rest — say how storage and C signatures

@@ -4062,6 +4062,10 @@ impl Checker {
             // them is written out. Both are single instructions.
             "to_float" => Some(("rill.sitofp", vec![Ty::Int], Ty::Float)),
             "to_int" => Some(("rill.fptosi", vec![Ty::Float], Ty::Int)),
+            // The bits of a float as the integer they are, and back: what a
+            // file format or a sort key needs, and no instruction at all.
+            "float_bits" => Some(("rill.f2i", vec![Ty::Float], Ty::Int)),
+            "bits_float" => Some(("rill.i2f", vec![Ty::Int], Ty::Float)),
             "arg_count" => Some(("rill_arg_count", vec![], Ty::Int)),
             "arg" => Some(("rill_arg", vec![Ty::Int], Ty::Str)),
             "read_file_raw" => Some(("rill_read_file", vec![Ty::Str], Ty::Str)),
@@ -5657,6 +5661,8 @@ fn is_builtin_fn(name: &str) -> bool {
             | "shr"
             | "to_float"
             | "to_int"
+            | "float_bits"
+            | "bits_float"
             | "arg_count"
             | "arg"
             | "read_file_raw"
