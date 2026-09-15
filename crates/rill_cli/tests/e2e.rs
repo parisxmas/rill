@@ -2574,6 +2574,7 @@ fn the_libraries_pass_their_own_tests() {
         ("lib/web/form.rill", 3),
         ("lib/net/udp.rill", 3),
         ("lib/net/dns.rill", 2),
+        ("lib/web/tls.rill", 2),
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("test").arg(root.join(module)).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
@@ -4997,4 +4998,27 @@ fn a_match_in_a_then_branch_keeps_its_parentheses() {
     let once = fmt_source(src);
     assert_eq!(once, src);
     assert_eq!(run_source("match_then", &once), "Cons(b, Nil)\n");
+}
+
+/// A blocking extern called from a spawned strand: its arguments and its
+/// answer went through a slot on the strand's frame, and a parked strand's
+/// frames are copied away — so the helper thread wrote the answer into
+/// whichever strand was running there, and the caller read a zero. Two
+/// strands each wait in `system` long enough to be parked, and each must
+/// get its own exit code back.
+#[test]
+fn a_blocking_externs_answer_reaches_the_strand_that_asked() {
+    let src = "extern blocking fn system(cmd: Ptr) -> I32\n\n\
+               fn run(code, ch) =\n  \
+                 c = to_cstr(\"sleep 0.05; exit \" + int_to_str(code))\n  \
+                 r = system(c)\n  \
+                 free_ptr(c)\n  \
+                 send(ch, shr(r, 8))\n\n\
+               fn main() =\n  \
+                 ch = channel()\n  \
+                 spawn run(3, ch)\n  \
+                 spawn run(5, ch)\n  \
+                 spawn run(7, ch)\n  \
+                 println(sort(Cons(recv(ch), Cons(recv(ch), Cons(recv(ch), Nil)))))\n";
+    assert_eq!(run_source("blocking_answer", src), "Cons(3, Cons(5, Cons(7, Nil)))\n");
 }

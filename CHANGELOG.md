@@ -30,6 +30,28 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — TLS, and a blocking call's answer that went astray
+
+`web/tls` is TLS over a socket through OpenSSL 3 — Homebrew's on macOS,
+`libssl` on Linux — with a socket's own shape: `connect` verifies the
+chain against the system's roots and the name against the host and says
+what did not check; `connect_insecure` is for a certificate you signed
+yourself; `read`, `read_all`, `write`, `disconnect`; `listen` with a
+certificate and key and `accept` for the other side; `get` and `ask`
+for the one request. Every wait is a `blocking` extern. Secure Transport
+was the plan for macOS and is not the choice: it wants read and write
+callbacks, and a call made off the worker cannot take one into Rill.
+
+Writing it found the bug: a `blocking` extern's arguments and answer went
+through a slot on the strand's frame, and a parked spawned strand's
+frames are copied away — so the helper thread's answer landed in whichever
+strand was running there, and the caller read a zero. The main strand's
+stack is never copied, which is why a client alone always worked and a
+server in the same program never did. The slot is copied to the heap for
+the helper now and back after, the rule the request itself already kept.
+Every `blocking` extern called from a spawned strand — `cli/proc`,
+`net/dns`, a `sleep` — had the same hole.
+
 ## Unreleased — forms, datagrams and names
 
 `web/form` reads what a `<form>` sends: urlencoded pairs, or

@@ -1387,6 +1387,7 @@ program in the project, imported by path and usually under a name:
 | `import "text/str" as s` | strings past the prelude: searches, transforms, parsers, every encoding, strands over a long text |
 | `import "data/json"`, `"yaml"` | the two formats, read and written |
 | `import "web/http" as h`, `"ws"` | an HTTP/1.1 server with middleware, and WebSocket over it |
+| `import "web/tls" as tls` | TLS over a socket through OpenSSL: `https://` as a client, verified, and served with a certificate |
 | `import "web/url" as url` | a URL taken apart and put together, a query as pairs, a reference resolved against a base |
 | `import "web/mime" as mime` | the media type a file is served as, from its name |
 | `import "web/form" as form` | what a `<form>` sends: urlencoded pairs, or multipart parts with their files |
@@ -1461,7 +1462,8 @@ fn serve(server) =
 The prelude wraps the three that can fail: `listen_on`, `accept_on` and
 `connect_to` return `Result`. Addresses are dotted-quad IPv4; a name is
 resolved by `net/dns`, whose lookup is a `blocking` extern, so the strand
-parks for it and no worker is held.
+parks for it and no worker is held. TLS is `web/tls`, over the same
+sockets through OpenSSL, with `read` and `write` of the same shape.
 
 `sock_wait` is how a connection gets a deadline. A read has none — a peer that
 opens a socket and then says nothing holds a strand and a descriptor for as

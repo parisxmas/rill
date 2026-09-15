@@ -2918,7 +2918,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.module.add_function("rill_yield", void.fn_type(&[], false), None);
         self.module.add_function(
             "rill_call_blocking",
-            void.fn_type(&[ptrt.into(), ptrt.into()], false),
+            void.fn_type(&[ptrt.into(), ptrt.into(), i64t.into()], false),
             None,
         );
         self.module.add_function("rill_assert_failed", void.fn_type(&[i64t.into()], false), None);
@@ -8127,10 +8127,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         }
                         let wrapper = self.blocking_wrapper(name, &sig, st);
                         let run = self.module.get_function("rill_call_blocking").unwrap();
+                        // The slot's size goes along: the runtime copies it
+                        // to the heap for the helper thread, since this
+                        // frame may be copied away while the strand waits.
+                        let size = st.size_of().expect("a sized struct");
                         self.builder
                             .build_call(
                                 run,
-                                &[wrapper.as_global_value().as_pointer_value().into(), slot.into()],
+                                &[wrapper.as_global_value().as_pointer_value().into(), slot.into(), size.into()],
                                 "",
                             )
                             .expect("LLVM builder error");

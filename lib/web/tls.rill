@@ -1,0 +1,297 @@
+module tls
+
+# TLS over a socket, through OpenSSL: `https://` as a client, and served.
+# A connection reads and writes as a socket does — `read` gives what has
+# arrived and `""` when the peer is done, `write` sends all of it — and the
+# waits are `blocking` externs, so a strand parks for a handshake or a read
+# and the worker goes on with the others.
+#
+#     import "web/tls" as tls
+#     c = tls.connect("example.com", 443)?           # verified against the system's roots
+#     tls.write(c, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+#     reply = tls.read_all(c)                        # everything, until the server closes
+#     tls.disconnect(c)
+#     tls.get("example.com", 443, "/")               # the three lines above
+#
+#     s = tls.listen(8443, "cert.pem", "key.pem")?   # a server with its certificate
+#     c = tls.accept(s)?                             # one connection, handshake done
+#
+# `connect` checks the certificate — the chain against the roots the
+# system keeps, and the name against the host asked for — and refuses one
+# that does not check, saying why. `connect_insecure` skips the check, for
+# a certificate you signed yourself; nothing else should use it.
+#
+# The library is OpenSSL 3 — Homebrew's `openssl@3` on macOS, `libssl` on
+# Linux — linked when this module is imported.
+import "net/dns" as dns
+
+extern "-L/opt/homebrew/opt/openssl@3/lib" fn TLS_client_method() -> Ptr
+
+extern "ssl" fn TLS_server_method() -> Ptr
+
+extern "ssl" fn SSL_CTX_new(method: Ptr) -> Ptr
+
+extern "ssl" fn SSL_CTX_free(ctx: Ptr)
+
+extern "ssl" fn SSL_CTX_set_default_verify_paths(ctx: Ptr) -> I32
+
+extern "ssl" fn SSL_CTX_set_verify(ctx: Ptr, mode: I32, callback: Ptr)
+
+extern "ssl" fn SSL_CTX_use_certificate_chain_file(ctx: Ptr, path: Ptr) -> I32
+
+extern "ssl" fn SSL_CTX_use_PrivateKey_file(ctx: Ptr, path: Ptr, kind: I32) -> I32
+
+extern "ssl" fn SSL_new(ctx: Ptr) -> Ptr
+
+extern "ssl" fn SSL_free(ssl: Ptr)
+
+extern "ssl" fn SSL_set_fd(ssl: Ptr, fd: I32) -> I32
+
+extern "ssl" fn SSL_ctrl(ssl: Ptr, cmd: I32, larg: Int, parg: Ptr) -> Int
+
+extern "ssl" fn SSL_set1_host(ssl: Ptr, name: Ptr) -> I32
+
+extern "ssl" blocking fn SSL_connect(ssl: Ptr) -> I32
+
+extern "ssl" blocking fn SSL_accept(ssl: Ptr) -> I32
+
+extern "ssl" blocking fn SSL_read(ssl: Ptr, buf: Ptr, n: I32) -> I32
+
+extern "ssl" blocking fn SSL_write(ssl: Ptr, buf: Ptr, n: I32) -> I32
+
+extern "ssl" blocking fn SSL_shutdown(ssl: Ptr) -> I32
+
+extern "ssl" fn SSL_get_error(ssl: Ptr, ret: I32) -> I32
+
+extern "ssl" fn SSL_get_verify_result(ssl: Ptr) -> Int
+
+extern "crypto" fn ERR_get_error() -> U64
+
+extern "crypto" fn ERR_error_string_n(e: U64, buf: Ptr, len: USize)
+
+extern "crypto" fn X509_verify_cert_error_string(n: Int) -> Ptr
+
+extern fn rill_set_blocking(fd: Int) -> Int
+
+# A connection: the OpenSSL object, its context, and the socket under it.
+type Conn
+  Conn(ssl: Ptr, ctx: Ptr, fd: Int)
+
+type Server
+  Server(ctx: Ptr, fd: Int)
+
+# -- a client -------------------------------------------------------------------
+
+# A verified connection to `host:port`, the name resolved on the way.
+fn connect(host, port) = connect_with(host, port, true)
+
+# The same without checking the certificate.
+fn connect_insecure(host, port) = connect_with(host, port, false)
+
+private fn connect_with(host, port, verify) = match dns.ipv4(host)
+  None -> Err("`" + host + "` is not a name the resolver knows")
+  Some(ip) ->
+    fd = connect_to(ip, port)?
+    ctx = SSL_CTX_new(TLS_client_method())
+    if verify then trust_the_system(ctx) else ()
+    ssl = SSL_new(ctx)
+    name = to_cstr(host)
+    SSL_ctrl(ssl, 55, 0, name)
+    if verify then SSL_set1_host(ssl, name) else 0
+    free_ptr(name)
+    SSL_set_fd(ssl, fd)
+    rill_set_blocking(fd)
+    r = SSL_connect(ssl)
+    if r == 1 then Ok(Conn(ssl, ctx, fd))
+    else
+      why = handshake_failure(ssl, r)
+      drop_conn(Conn(ssl, ctx, fd))
+      Err("cannot connect to " + host + ":" + int_to_str(port) + " over TLS: " + why)
+
+private fn trust_the_system(ctx) =
+  SSL_CTX_set_default_verify_paths(ctx)
+  SSL_CTX_set_verify(ctx, 1, null_ptr())
+
+# The certificate's problem when there was one, or OpenSSL's own words.
+private fn handshake_failure(ssl, r) =
+  verdict = SSL_get_verify_result(ssl)
+  if verdict != 0 then "the certificate does not check: " + from_cstr(X509_verify_cert_error_string(verdict)) else last_error(ssl, r)
+
+private fn last_error(ssl, r) =
+  e = ERR_get_error()
+  if e != 0 then
+    buf = alloc_bytes(256)
+    ERR_error_string_n(e, buf, 256)
+    text = from_cstr(buf)
+    free_ptr(buf)
+    text
+  else "SSL error " + int_to_str(SSL_get_error(ssl, r))
+
+# -- reading and writing --------------------------------------------------------
+
+# What has arrived, up to 64 KB; `""` when the peer has closed or the
+# connection failed.
+fn read(c: Conn) =
+  buf = alloc_bytes(65536)
+  n = SSL_read(c.ssl, buf, 65536)
+  text = if n > 0 then str_from_ptr(buf, n) else ""
+  free_ptr(buf)
+  text
+
+# Everything until the peer closes.
+fn read_all(c: Conn) =
+  b = strbuf()
+  read_into(c, b)
+  strbuf_str(b)
+
+private fn read_into(c, b: StrBuf) =
+  chunk = read(c)
+  if #chunk == 0 then ()
+  else
+    b += chunk
+    read_into(c, b)
+
+# Writes all of it; the bytes written, or -1.
+fn write(c: Conn, s) =
+  if #s == 0 then 0
+  else
+    buf = buf_u8(#s)
+    for i in 0..#s
+      buf[i] = s[i]
+    write_from(c, buf, 0, #s)
+
+private fn write_from(c: Conn, buf, at, n) =
+  if at >= n then n
+  else
+    w = SSL_write(c.ssl, ptr_offset(buf, at), n - at)
+    if w <= 0 then -1 else write_from(c, buf, at + w, n)
+
+# Ends the session and closes the socket.
+fn disconnect(c: Conn) =
+  SSL_shutdown(c.ssl)
+  drop_conn(c)
+
+private fn drop_conn(c: Conn) =
+  SSL_free(c.ssl)
+  SSL_CTX_free(c.ctx)
+  sock_close(c.fd)
+
+# -- a server -------------------------------------------------------------------
+
+# A listening socket with a certificate chain and its key, both PEM files.
+fn listen(port, cert_path, key_path) =
+  ctx = SSL_CTX_new(TLS_server_method())
+  cert = to_cstr(cert_path)
+  key = to_cstr(key_path)
+  ok_cert = SSL_CTX_use_certificate_chain_file(ctx, cert) == 1
+  ok_key = ok_cert && SSL_CTX_use_PrivateKey_file(ctx, key, 1) == 1
+  free_ptr(cert)
+  free_ptr(key)
+  if !ok_cert then
+    SSL_CTX_free(ctx)
+    Err("cannot read the certificate `" + cert_path + "`")
+  else if !ok_key then
+    SSL_CTX_free(ctx)
+    Err("cannot read the key `" + key_path + "`, or it is not the certificate's")
+  else match listen_on(port)
+    Err(e) ->
+      SSL_CTX_free(ctx)
+      Err(e)
+    Ok(fd) -> Ok(Server(ctx, fd))
+
+# The next connection, its handshake done. The context is the server's,
+# so a `Conn` from here is ended with `disconnect` and the context stays.
+fn accept(s: Server) =
+  fd = accept_on(s.fd)?
+  ssl = SSL_new(s.ctx)
+  SSL_set_fd(ssl, fd)
+  rill_set_blocking(fd)
+  r = SSL_accept(ssl)
+  if r == 1 then Ok(Conn(ssl, null_ptr(), fd))
+  else
+    why = last_error(ssl, r)
+    SSL_free(ssl)
+    sock_close(fd)
+    Err("a connection that did not complete its handshake: " + why)
+
+fn stop(s: Server) =
+  SSL_CTX_free(s.ctx)
+  sock_close(s.fd)
+
+# -- the one request -------------------------------------------------------------
+
+# `GET path` over a fresh connection, closed after; the raw reply, with
+# `http`'s `status_of` and `response_body` to take it apart, or the
+# error text.
+fn get(host, port, path) = ask(host, port, "GET", path, Nil, "")
+
+fn ask(host, port, method, path, headers, body) = match connect(host, port)
+  Err(e) -> e
+  Ok(c) ->
+    write(c, request(host, method, path, headers, body))
+    reply = read_all(c)
+    disconnect(c)
+    reply
+
+private fn request(host, method, path, headers, body) =
+  b = strbuf()
+  b += method + " " + path + " HTTP/1.1\r\nHost: " + host + "\r\n"
+  each(headers, \h -> strbuf_add(b, h + "\r\n"))
+  b += "Content-Length: " + int_to_str(#body) + "\r\nConnection: close\r\n\r\n" + body
+  strbuf_str(b)
+
+# -- tests --------------------------------------------------------------------
+
+# A server of our own, with a certificate signed by nobody, to talk to.
+private fn certs() =
+  dir = "/tmp/rill-tls-test-" + int_to_str(now_millis())
+  dir_make(dir)
+  made = shell_quiet("openssl req -x509 -newkey rsa:2048 -nodes -keyout " + dir + "/key.pem -out " + dir + "/cert.pem -days 2 -subj /CN=localhost 2>/dev/null")
+  if made then Some(dir) else None
+
+extern blocking fn system(cmd: Ptr) -> I32
+
+private fn shell_quiet(cmd) =
+  c = to_cstr(cmd)
+  r = system(c)
+  free_ptr(c)
+  r == 0
+
+private fn echo_once(s, ch) = match accept(s)
+  Err(e) -> send(ch, "server: " + e)
+  Ok(c) ->
+    got = read(c)
+    write(c, "echo: " + got)
+    disconnect(c)
+    send(ch, "served")
+
+fn test_a_self_signed_server_and_its_client() = match certs()
+  None -> println("  (skipped: no openssl command to make a certificate)")
+  Some(dir) -> match listen(0, dir + "/cert.pem", dir + "/key.pem")
+    Err(e) -> assert_eq(e, "")
+    Ok(s) ->
+      port = sock_port(s.fd)
+      ch = channel()
+      spawn echo_once(s, ch)
+      match connect_insecure("localhost", port)
+        Err(e) -> assert_eq(e, "")
+        Ok(c) ->
+          assert_eq(write(c, "hello over tls"), 14)
+          assert_eq(read(c), "echo: hello over tls")
+          assert_eq(read(c), "")
+          disconnect(c)
+      assert_eq(recv(ch), "served")
+      spawn echo_once(s, ch)
+      match connect("localhost", port)
+        Ok(c) ->
+          disconnect(c)
+          assert(false)
+        Err(e) ->
+          assert(starts_with(e, "cannot connect to localhost:" + int_to_str(port) + " over TLS: the certificate does not check: "))
+      recv(ch)
+      stop(s)
+
+fn test_refusals() =
+  assert_eq(res_map(listen(0, "/no/such/cert.pem", "/no/such/key.pem"), \s -> 0), Err("cannot read the certificate `/no/such/cert.pem`"))
+  assert_eq(res_map(connect("no-such-host.invalid", 443), \c -> 0), Err("`no-such-host.invalid` is not a name the resolver knows"))
+  assert_eq(res_map(connect("127.0.0.1", 1), \c -> 0), Err("cannot connect to 127.0.0.1:1"))

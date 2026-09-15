@@ -1894,20 +1894,44 @@ unsafe fn sync_off_worker(fd: i32, path: *mut u8) -> i32 {
 
 /// A `blocking` extern's call, made on a helper thread while this strand is
 /// parked: `run(arg)` is the wrapper the call site made, over the slot its
-/// arguments are in. The worker goes on with the other strands; without a
-/// scheduler there are none, and the call is simply made here.
+/// arguments are in, `size` bytes of this strand's frame. The worker goes
+/// on with the other strands; without a scheduler there are none, and the
+/// call is simply made here.
+///
+/// The slot is copied to the heap for the helper and back afterwards,
+/// because the rule above holds for it as for the request: a spawned
+/// strand's frames are copied away while it is parked, and the helper
+/// reading its arguments from — or writing its answer into — the address
+/// the slot had would be reading and writing whichever strand runs there
+/// meanwhile. The first TLS server written in Rill had its handshake's
+/// result land in another strand's frame, and read a zero from its own.
 ///
 /// # Safety
-/// `run` must be a C function taking one pointer, and `arg` what it takes.
+/// `run` must be a C function taking one pointer, `arg` what it takes,
+/// and `size` how many bytes of it the wrapper reads and writes.
 #[cfg(unix)]
 #[no_mangle]
-pub unsafe extern "C" fn rill_call_blocking(run: extern "C" fn(*mut u8), arg: *mut u8) {
-    off_worker(run as usize, arg, -1, core::ptr::null_mut());
+pub unsafe extern "C" fn rill_call_blocking(run: extern "C" fn(*mut u8), arg: *mut u8, size: i64) {
+    if MAIN_G.is_null() {
+        run(arg);
+        return;
+    }
+    let n = size as usize;
+    let copy = malloc(if n == 0 { 1 } else { n });
+    if copy.is_null() {
+        run(arg);
+        return;
+    }
+    core::ptr::copy_nonoverlapping(arg, copy, n);
+    off_worker(run as usize, copy, -1, core::ptr::null_mut());
+    core::ptr::copy_nonoverlapping(copy, arg, n);
+    free(copy);
 }
 
 #[cfg(not(unix))]
 #[no_mangle]
-pub unsafe extern "C" fn rill_call_blocking(run: extern "C" fn(*mut u8), arg: *mut u8) {
+pub unsafe extern "C" fn rill_call_blocking(run: extern "C" fn(*mut u8), arg: *mut u8, size: i64) {
+    let _ = size;
     run(arg);
 }
 
@@ -8386,6 +8410,24 @@ mod net {
 
     unsafe fn set_nonblocking(fd: i32) {
         fcntl(fd, F_SETFL, O_NONBLOCK);
+    }
+
+    /// Makes a socket block again, for a library that will wait on it from
+    /// a helper thread — TLS, whose reads and writes are `blocking` externs
+    /// — rather than park on the poller. Done here because `fcntl` is
+    /// variadic, and a Rill `extern` cannot call one of those on every
+    /// target.
+    ///
+    /// # Safety
+    /// `fd` must be an open descriptor.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_set_blocking(fd: i64) -> i64 {
+        const F_GETFL: i32 = 3;
+        let flags = fcntl(fd as i32, F_GETFL);
+        if flags < 0 {
+            return -1;
+        }
+        fcntl(fd as i32, F_SETFL, flags & !O_NONBLOCK) as i64
     }
 
     /// Parks the current strand until `fd` is readable or writable. The
