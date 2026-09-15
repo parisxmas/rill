@@ -2469,6 +2469,7 @@ impl Checker {
             Expr::Float(v) => Ok(TExpr { ty: Ty::Float, line: 0, kind: TK::Float(*v) }),
             Expr::Str(s) => Ok(TExpr { ty: Ty::Str, line: 0, kind: TK::Str(s.clone()) }),
             Expr::Bool(v) => Ok(TExpr { ty: Ty::Bool, line: 0, kind: TK::Bool(*v) }),
+            Expr::Unit => Ok(TExpr { ty: Ty::Unit, line: 0, kind: TK::Block(Vec::new()) }),
             Expr::Var(name, line) => self.infer_var(name, *line, env),
             Expr::Field { base, name, line } => {
                 let b = self.infer(base, env)?;
@@ -6072,7 +6073,7 @@ fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
                 }
             }
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => {}
     }
 }
 

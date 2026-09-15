@@ -752,7 +752,7 @@ fn hoist_indexes(
 /// included — unlike `each_child`, which stops at a block.
 fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
     match e {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(..) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(..) => {}
         Expr::Call { args, .. } => args.iter().for_each(f),
         Expr::Unary { expr, .. } | Expr::Len { expr, .. } | Expr::Try { expr, .. } => f(expr),
         Expr::Spawn { body, .. } | Expr::Lambda { body, .. } => f(body),
@@ -849,7 +849,7 @@ fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
 /// Rebuilds an expression with `f` applied to each immediate sub-expression.
 pub fn map_children(e: Expr, f: &mut impl FnMut(Expr) -> Expr) -> Expr {
     match e {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(..) => e,
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(..) => e,
         Expr::Call { name, args, line, piped, stacked } => {
             Expr::Call { name, args: args.into_iter().map(|a| f(a)).collect(), line, piped, stacked }
         }
@@ -1404,7 +1404,7 @@ fn no_stray_try(e: &Expr) -> Result<(), SyntaxError> {
 /// Applies `f` to every immediate sub-expression, whatever the shape.
 fn each_child<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
     match e {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(..) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(..) => {}
         Expr::Call { args, .. } => args.iter().for_each(f),
         Expr::Unary { expr, .. } | Expr::Len { expr, .. } | Expr::Try { expr, .. } => f(expr),
         Expr::Field { base, .. } => f(base),

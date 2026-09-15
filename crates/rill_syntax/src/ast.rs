@@ -199,6 +199,8 @@ pub enum Expr {
     Float(f64),
     Str(String),
     Bool(bool),
+    /// `()` — the one value of `Unit`, for a branch that has nothing to say.
+    Unit,
     Var(String, usize),
     /// `f(a, b)`. `piped` records that the source wrote `a |> f(b)`, which
     /// desugars to the same call; only the formatter cares.

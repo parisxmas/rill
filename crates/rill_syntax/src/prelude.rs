@@ -246,7 +246,7 @@ fn collect_expr_names(e: &Expr, out: &mut HashSet<String>) {
                 }
             }
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => {}
     }
 }
 

@@ -938,6 +938,44 @@ pub unsafe extern "C" fn rill_arg(i: i64) -> *mut u8 {
     p
 }
 
+#[cfg(not(windows))]
+extern "C" {
+    static environ: *const *const u8;
+}
+
+/// The `i`-th `NAME=value` of the process environment as a C string, or
+/// null past the end — the C library's `environ`, reached this way because
+/// a Rill `extern` names a function and this is a variable. Windows spells
+/// it differently and gets nothing here; `getenv` still answers there.
+///
+/// # Safety
+/// The pointer is the C library's own and stays valid until the next
+/// `setenv`; copy it out before that.
+#[no_mangle]
+pub unsafe extern "C" fn rill_env_at(i: i64) -> *const u8 {
+    #[cfg(windows)]
+    {
+        let _ = i;
+        core::ptr::null()
+    }
+    #[cfg(not(windows))]
+    {
+        if i < 0 || environ.is_null() {
+            return core::ptr::null();
+        }
+        let mut p = environ;
+        let mut k = 0;
+        while k < i {
+            if (*p).is_null() {
+                return core::ptr::null();
+            }
+            p = p.add(1);
+            k += 1;
+        }
+        *p
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn rill_io_ok() -> i8 {
     unsafe { IO_OK }
@@ -8769,6 +8807,226 @@ mod net {
             }
         }
         fd as i64
+    }
+
+    // ---- UDP ---------------------------------------------------------------
+
+    const SOCK_DGRAM: i32 = 2;
+
+    extern "C" {
+        fn sendto(fd: i32, buf: *const u8, len: usize, flags: i32, addr: *const SockAddrIn, alen: u32) -> isize;
+        fn recvfrom(fd: i32, buf: *mut u8, len: usize, flags: i32, addr: *mut SockAddrIn, alen: *mut u32) -> isize;
+    }
+
+    /// A UDP socket bound to `port` on every interface — 0 for one the
+    /// system picks, which `rill_udp_port` then names — or -1.
+    ///
+    /// # Safety
+    /// Called from strand context.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_udp_open(port: i64) -> i64 {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if fd < 0 {
+            return -1;
+        }
+        let one: i32 = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one as *const i32 as *const u8, 4);
+        let addr = sock_addr([0, 0, 0, 0], port);
+        if bind(fd, &addr, 16) < 0 {
+            close(fd);
+            return -1;
+        }
+        set_nonblocking(fd);
+        fd as i64
+    }
+
+    /// The port a UDP socket is bound to.
+    ///
+    /// # Safety
+    /// `fd` must come from `rill_udp_open`.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_udp_port(fd: i64) -> i64 {
+        let mut addr = sock_addr([0, 0, 0, 0], 0);
+        let mut len: u32 = 16;
+        if getsockname(fd as i32, &mut addr, &mut len) < 0 {
+            return -1;
+        }
+        u16::from_be(addr.port) as i64
+    }
+
+    /// One datagram of `len` bytes at `data` to `host` (a C string, dotted
+    /// IPv4) and `port`; the bytes sent, or -1.
+    ///
+    /// # Safety
+    /// `host` must be a NUL-terminated string and `data` readable for `len`.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_udp_send(fd: i64, host: *const u8, port: i64, data: *const u8, len: i64) -> i64 {
+        let mut n = 0;
+        while *host.add(n) != 0 {
+            n += 1;
+        }
+        let Some(ip) = parse_ipv4_bytes(core::slice::from_raw_parts(host, n)) else { return -1 };
+        let addr = sock_addr(ip, port);
+        let sent = sendto(fd as i32, data, len as usize, 0, &addr, 16);
+        if sent < 0 {
+            -1
+        } else {
+            sent as i64
+        }
+    }
+
+    /// Waits for a datagram, parking rather than blocking the worker, and
+    /// puts it in `buf`: the sender's four address bytes, its port in two
+    /// big-endian bytes, then the payload. The bytes written, header
+    /// included, or -1; a datagram wider than `cap - 6` is cut to fit.
+    ///
+    /// # Safety
+    /// `fd` must come from `rill_udp_open` and `buf` be writable for `cap`;
+    /// called from strand context.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_udp_recv(fd: i64, buf: *mut u8, cap: i64) -> i64 {
+        if cap < 6 {
+            return -1;
+        }
+        loop {
+            let mut from = sock_addr([0, 0, 0, 0], 0);
+            let mut flen: u32 = 16;
+            let n = recvfrom(fd as i32, buf.add(6), (cap - 6) as usize, 0, &mut from, &mut flen);
+            if n >= 0 {
+                core::ptr::copy_nonoverlapping(from.addr.as_ptr(), buf, 4);
+                let port = u16::from_be(from.port);
+                *buf.add(4) = (port >> 8) as u8;
+                *buf.add(5) = port as u8;
+                return n as i64 + 6;
+            }
+            let e = errno();
+            if e == EAGAIN {
+                park_on_fd(fd as i32, false);
+            } else if e != EINTR {
+                return -1;
+            }
+        }
+    }
+
+    unsafe fn parse_ipv4_bytes(bytes: &[u8]) -> Option<[u8; 4]> {
+        let mut out = [0u8; 4];
+        let mut part = 0usize;
+        let mut value: u32 = 0;
+        let mut digits = 0;
+        for &b in bytes {
+            if b == b'.' {
+                if digits == 0 || part >= 3 {
+                    return None;
+                }
+                out[part] = value as u8;
+                part += 1;
+                value = 0;
+                digits = 0;
+            } else if b.is_ascii_digit() {
+                value = value * 10 + (b - b'0') as u32;
+                digits += 1;
+                if value > 255 || digits > 3 {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
+        if part != 3 || digits == 0 {
+            return None;
+        }
+        out[3] = value as u8;
+        Some(out)
+    }
+
+    // ---- names -------------------------------------------------------------
+
+    #[cfg(not(target_os = "linux"))]
+    const AF_INET6: i32 = 30;
+    #[cfg(target_os = "linux")]
+    const AF_INET6: i32 = 10;
+
+    #[cfg(not(target_os = "linux"))]
+    #[repr(C)]
+    struct AddrInfo {
+        flags: i32,
+        family: i32,
+        socktype: i32,
+        protocol: i32,
+        addrlen: u32,
+        canonname: *mut u8,
+        addr: *mut u8,
+        next: *mut AddrInfo,
+    }
+
+    #[cfg(target_os = "linux")]
+    #[repr(C)]
+    struct AddrInfo {
+        flags: i32,
+        family: i32,
+        socktype: i32,
+        protocol: i32,
+        addrlen: u32,
+        addr: *mut u8,
+        canonname: *mut u8,
+        next: *mut AddrInfo,
+    }
+
+    extern "C" {
+        fn getaddrinfo(node: *const u8, service: *const u8, hints: *const AddrInfo, res: *mut *mut AddrInfo) -> i32;
+        fn freeaddrinfo(res: *mut AddrInfo);
+        fn inet_ntop(af: i32, src: *const u8, dst: *mut u8, size: u32) -> *const u8;
+    }
+
+    /// The addresses a name resolves to, one a line, IPv4 first and then
+    /// IPv6, as a C string the caller frees; null when the name is unknown.
+    /// This one blocks — it is the resolver's wait — and is declared
+    /// `blocking` on the Rill side so a strand parks for it.
+    ///
+    /// # Safety
+    /// `name` must be a NUL-terminated string.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_dns_lookup(name: *const u8) -> *mut u8 {
+        let hints = AddrInfo {
+            flags: 0,
+            family: 0,
+            socktype: SOCK_STREAM,
+            protocol: 0,
+            addrlen: 0,
+            canonname: core::ptr::null_mut(),
+            addr: core::ptr::null_mut(),
+            next: core::ptr::null_mut(),
+        };
+        let mut res: *mut AddrInfo = core::ptr::null_mut();
+        if getaddrinfo(name, core::ptr::null(), &hints, &mut res) != 0 || res.is_null() {
+            return core::ptr::null_mut();
+        }
+        let out = malloc(4096);
+        let mut len = 0usize;
+        let mut text = [0u8; 64];
+        for pass in 0..2 {
+            let mut p = res;
+            while !p.is_null() {
+                let (af, off) = if (*p).family == AF_INET { (AF_INET, 4) } else { (AF_INET6, 8) };
+                let wanted = if pass == 0 { AF_INET } else { AF_INET6 };
+                if (*p).family == wanted && !inet_ntop(af, (*p).addr.add(off), text.as_mut_ptr(), 64).is_null() {
+                    let mut n = 0;
+                    while text[n] != 0 {
+                        n += 1;
+                    }
+                    if len + n + 2 < 4096 {
+                        core::ptr::copy_nonoverlapping(text.as_ptr(), out.add(len), n);
+                        len += n;
+                        *out.add(len) = b'\n';
+                        len += 1;
+                    }
+                }
+                p = (*p).next;
+            }
+        }
+        freeaddrinfo(res);
+        *out.add(len) = 0;
+        out
     }
 
     /// Reads whatever has arrived, parking until something has. An empty string

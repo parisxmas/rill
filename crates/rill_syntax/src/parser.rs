@@ -1198,6 +1198,10 @@ impl Parser {
                 Ok(Expr::Update { base: Box::new(base), fields, line })
             }
             Tok::LParen => {
+                if matches!(self.peek(), Tok::RParen) {
+                    self.bump();
+                    return Ok(Expr::Unit);
+                }
                 let mut stacked = self.starts_line();
                 let first = self.expr()?;
                 if !matches!(self.peek(), Tok::Comma) {

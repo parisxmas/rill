@@ -5413,7 +5413,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let fits_tail = args
                     .iter()
                     .enumerate()
-                    .all(|(i, a)| borrowed.get(i) != Some(&true) || self.borrowed_here(a));
+                    .all(|(i, a)| borrowed.get(i) != Some(&true) || self.borrowed_here(a, subst));
                 if !fits_tail {
                     let ty = self.concrete(&e.ty, subst);
                     let out = self.gen_expr(e, scope, subst, func)?;
@@ -6163,12 +6163,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// Whether `e` names a borrowed parameter of the function being
     /// generated — a value an earlier frame holds, so one that outlives
     /// anything this frame does, including a tail call.
-    fn borrowed_here(&self, e: &TExpr) -> bool {
+    fn borrowed_here(&self, e: &TExpr, subst: &[Ty]) -> bool {
         match &e.kind {
             TK::Local(name) => self.name_held_above(name),
             // a field of a held box, read without a count of its own
             TK::FieldGet { base, .. } => {
-                !self.is_flat(&self.concrete(&base.ty, &[]))
+                !self.is_flat(&self.concrete(&base.ty, subst))
                     && root_local(e).is_some_and(|n| self.name_held_above(n))
             }
             _ => false,

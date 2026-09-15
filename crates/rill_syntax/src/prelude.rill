@@ -105,11 +105,234 @@ fn all(l, p) = match l
   Nil -> true
   Cons(x, rest) -> p(x) && all(rest, p)
 
+# -- more list combinators ----------------------------------------------------
+
+# Each of these stands on its own — its helpers are its own, named after it —
+# so a program that defines a `find` of its own loses the prelude's `find`
+# and nothing else.
+
+# The first element that satisfies `p`, if any.
+fn find(l, p) = match l
+  Nil -> None
+  Cons(x, rest) -> if p(x) then Some(x) else find(rest, p)
+
+# Where `x` first is, or -1.
+fn index_of(l, x) = index_of_from(l, x, 0)
+
+fn index_of_from(l, x, i) = match l
+  Nil -> -1
+  Cons(y, rest) -> if y == x then i else index_of_from(rest, x, i + 1)
+
+fn has(l, x) = match l
+  Nil -> false
+  Cons(y, rest) -> y == x || has(rest, x)
+
+fn count(l, p) = count_from(l, p, 0)
+
+fn count_from(l, p, n) = match l
+  Nil -> n
+  Cons(x, rest) -> count_from(rest, p, if p(x) then n + 1 else n)
+
+fn last(l) = match l
+  Nil -> None
+  Cons(x, Nil) -> Some(x)
+  Cons(_, rest) -> last(rest)
+
+# Calls `f` on each element, for what it does rather than what it gives.
+fn each(l, f) = match l
+  Nil -> ()
+  Cons(x, rest) ->
+    f(x)
+    each(rest, f)
+
+fn fst(p) = match p
+  (a, _) -> a
+
+fn snd(p) = match p
+  (_, b) -> b
+
+fn zip(a, b) = zip_onto(a, b, Nil)
+
+fn zip_onto(a, b, acc) = match a
+  Nil -> reverse(acc)
+  Cons(x, xs) -> match b
+    Nil -> reverse(acc)
+    Cons(y, ys) -> zip_onto(xs, ys, Cons((x, y), acc))
+
+fn zip_with(a, b, f) = zip_with_onto(a, b, f, Nil)
+
+fn zip_with_onto(a, b, f, acc) = match a
+  Nil -> reverse(acc)
+  Cons(x, xs) -> match b
+    Nil -> reverse(acc)
+    Cons(y, ys) -> zip_with_onto(xs, ys, f, Cons(f(x, y), acc))
+
+fn unzip(l) = unzip_onto(l, Nil, Nil)
+
+fn unzip_onto(l, xs, ys) = match l
+  Nil -> (reverse(xs), reverse(ys))
+  Cons((x, y), rest) -> unzip_onto(rest, Cons(x, xs), Cons(y, ys))
+
+# Each element with its position, from 0.
+fn enumerate(l) = enumerate_from(l, 0, Nil)
+
+fn enumerate_from(l, i, acc) = match l
+  Nil -> reverse(acc)
+  Cons(x, rest) -> enumerate_from(rest, i + 1, Cons((i, x), acc))
+
+fn take_while(l, p) = take_while_onto(l, p, Nil)
+
+fn take_while_onto(l, p, acc) = match l
+  Nil -> reverse(acc)
+  Cons(x, rest) -> if p(x) then take_while_onto(rest, p, Cons(x, acc)) else reverse(acc)
+
+fn drop_while(l, p) = match l
+  Nil -> Nil
+  Cons(x, rest) -> if p(x) then drop_while(rest, p) else l
+
+# The elements that satisfy `p`, and the ones that do not, in their order.
+fn partition(l, p) = partition_onto(l, p, Nil, Nil)
+
+fn partition_onto(l, p, yes, no) = match l
+  Nil -> (reverse(yes), reverse(no))
+  Cons(x, rest) -> if p(x) then partition_onto(rest, p, Cons(x, yes), no) else partition_onto(rest, p, yes, Cons(x, no))
+
+fn flatten(ll) = reverse(flatten_onto(ll, Nil))
+
+fn flatten_onto(ll, acc) = match ll
+  Nil -> acc
+  Cons(l, rest) -> flatten_onto(rest, flatten_rev(l, acc))
+
+fn flatten_rev(l, acc) = match l
+  Nil -> acc
+  Cons(x, rest) -> flatten_rev(rest, Cons(x, acc))
+
+fn flat_map(l, f) = reverse(flat_map_onto(l, f, Nil))
+
+fn flat_map_onto(l, f, acc) = match l
+  Nil -> acc
+  Cons(x, rest) -> flat_map_onto(rest, f, flat_map_rev(f(x), acc))
+
+fn flat_map_rev(l, acc) = match l
+  Nil -> acc
+  Cons(x, rest) -> flat_map_rev(rest, Cons(x, acc))
+
+# Pieces of `n`, the last one shorter if the length does not divide.
+fn chunks(l, n) = if n <= 0 then Nil else chunks_onto(l, n, Nil)
+
+fn chunks_onto(l, n, acc) = match l
+  Nil -> reverse(acc)
+  _ -> chunks_onto(chunks_rest(l, n), n, Cons(chunks_head(l, n, Nil), acc))
+
+fn chunks_head(l, n, acc) = if n <= 0 then reverse(acc) else match l
+  Nil -> reverse(acc)
+  Cons(x, rest) -> chunks_head(rest, n - 1, Cons(x, acc))
+
+fn chunks_rest(l, n) = if n <= 0 then l else match l
+  Nil -> Nil
+  Cons(_, rest) -> chunks_rest(rest, n - 1)
+
+# Each element once, the first time it appears.
+fn distinct(l) = reverse(unique_onto(l, Nil))
+
+fn unique_onto(l, acc) = match l
+  Nil -> acc
+  Cons(x, rest) -> unique_onto(rest, if unique_seen(acc, x) then acc else Cons(x, acc))
+
+fn unique_seen(l, x) = match l
+  Nil -> false
+  Cons(y, rest) -> y == x || unique_seen(rest, x)
+
+# The elements grouped by what `key` says of them, each group under its key
+# in the order the keys were first seen, its members in theirs.
+fn group_by(l, key) = reverse(group_by_fix(group_by_onto(l, key, Nil), Nil))
+
+fn group_by_onto(l, key, acc) = match l
+  Nil -> acc
+  Cons(x, rest) -> group_by_onto(rest, key, group_by_add(acc, key(x), x))
+
+fn group_by_add(groups, k, x) = match groups
+  Nil -> Cons((k, Cons(x, Nil)), Nil)
+  Cons((gk, xs), rest) -> if gk == k then Cons((k, Cons(x, xs)), rest) else Cons((gk, xs), group_by_add(rest, k, x))
+
+fn group_by_fix(groups, acc) = match groups
+  Nil -> acc
+  Cons((k, xs), rest) -> group_by_fix(rest, Cons((k, group_by_rev(xs, Nil)), acc))
+
+fn group_by_rev(l, acc) = match l
+  Nil -> acc
+  Cons(x, rest) -> group_by_rev(rest, Cons(x, acc))
+
+# The element whose key is least, or greatest; the first of equals.
+fn min_by(l, key) = match l
+  Nil -> None
+  Cons(x, rest) -> Some(min_by_from(rest, key, x, key(x)))
+
+fn min_by_from(l, key, best, bk) = match l
+  Nil -> best
+  Cons(x, rest) -> min_by_from(rest, key, if key(x) < bk then x else best, if key(x) < bk then key(x) else bk)
+
+fn max_by(l, key) = match l
+  Nil -> None
+  Cons(x, rest) -> Some(max_by_from(rest, key, x, key(x)))
+
+fn max_by_from(l, key, best, bk) = match l
+  Nil -> best
+  Cons(x, rest) -> max_by_from(rest, key, if key(x) > bk then x else best, if key(x) > bk then key(x) else bk)
+
+# -- sorting ------------------------------------------------------------------
+
+# A merge sort, stable: of two elements neither before the other, the one
+# that came first stays first. `sort` orders by `<`, `sort_by` by what `key`
+# gives, and `sort_with` by `before(a, b)` — whether `a` may come before `b`,
+# which is `<=` and not `<`, or equal elements would swap.
+fn sort(l) = sort_with(l, \a, b -> a <= b)
+
+fn sort_by(l, key) = sort_with(l, \a, b -> key(a) <= key(b))
+
+fn sort_with(l, before) = match l
+  Nil -> Nil
+  Cons(_, Nil) -> l
+  _ -> sort_split(l, sort_half(l, 0), before)
+
+fn sort_half(l, n) = match l
+  Nil -> n / 2
+  Cons(_, rest) -> sort_half(rest, n + 1)
+
+fn sort_split(l, n, before) =
+  sort_merge(sort_with(sort_front(l, n, Nil), before), sort_with(sort_back(l, n), before), before, Nil)
+
+fn sort_front(l, n, acc) = if n <= 0 then reverse(acc) else match l
+  Nil -> reverse(acc)
+  Cons(x, rest) -> sort_front(rest, n - 1, Cons(x, acc))
+
+fn sort_back(l, n) = if n <= 0 then l else match l
+  Nil -> Nil
+  Cons(_, rest) -> sort_back(rest, n - 1)
+
+fn sort_merge(a, b, before, acc) = match a
+  Nil -> rev_onto(acc, b)
+  Cons(x, xs) -> match b
+    Nil -> rev_onto(acc, a)
+    Cons(y, ys) -> if before(x, y) then sort_merge(xs, b, before, Cons(x, acc)) else sort_merge(a, ys, before, Cons(y, acc))
+
 # The program's claim, for a `--parallel` build: this value is shared between
 # strands on purpose, and the writes to it are kept apart. `apart(x)` is `x`;
 # what it does is let `spawn work(apart(out))` compile where `spawn work(out)`
 # is refused as a race. See "Running on several cores" in the reference.
 fn apart(x) = x
+
+# -- standard error -----------------------------------------------------------
+
+# What `println` and `print` do, on standard error: unbuffered, so it is
+# there when the program dies a line later.
+fn eprintln(x) =
+  file_write(2, show(x) + "\n")
+  ()
+
+fn eprint(x) =
+  file_write(2, show(x))
+  ()
 
 # -- options and results -----------------------------------------------------
 

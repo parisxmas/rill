@@ -603,7 +603,12 @@ impl Fmt {
                 }
                 let t = self.render(then, cont);
                 let e = self.render(els, cont);
-                if t.contains('\n') || e.contains('\n') {
+                if t.contains('\n') {
+                    // A `then` branch on several lines — a `match` — would
+                    // otherwise end in an arm with `else` at its tail, which
+                    // the parser reads as part of the arm.
+                    format!("if {} then ({t}) else {e}", inline(cond, 0, cont))
+                } else if e.contains('\n') {
                     format!("if {} then {t} else {e}", inline(cond, 0, cont))
                 } else {
                     inline(expr, 0, cont)
@@ -779,6 +784,7 @@ fn float_lit(v: f64) -> String {
 fn inline(e: &Expr, prec: u8, ind: usize) -> String {
     match e {
         Expr::Int(v) => v.to_string(),
+        Expr::Unit => "()".to_string(),
         Expr::Float(v) => float_lit(*v),
         Expr::Str(s) => format!("\"{}\"", escape(s)),
         Expr::Bool(b) => b.to_string(),

@@ -578,7 +578,7 @@ fn qualify_expr(e: &mut Expr, own: &HashSet<String>, alias: &str, scope: &mut Ve
             }
             scope.truncate(depth);
         }
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => {}
     }
 }
 
