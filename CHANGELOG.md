@@ -30,6 +30,30 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — the bits of a float
+
+`float_bits(x)` and `bits_float(n)` are a float's 64 bits as an `Int` and
+back: a bitcast, no instruction on the machine. A program that stored a
+float in a key or a page had been writing it into an eight-byte buffer
+and reading it back as the other type — an allocation and two stores for
+every real read off a page, which was a fifth of a sum over 800k keys.
+
+## Unreleased — a part of a value is not the value
+
+The ring check took one relation for two: the names a value *holds*
+and the names it is *inside*. So `f.subs[id] = Sub(f.db)` — one field of
+`f` into a map that is another field of `f` — was refused as `f` holding
+itself, and so was a group read out of a map with `map_or` and written
+back with its tally, both of which sqlbite does on every statement. The
+check keeps three sets now — what a value may be, what it may reach, and
+what it may be reached from — and a projection (`r.f`, `m[k]`, a match
+binding, a function's answer that is part of its argument) reaches
+nothing its base does not and is not its base. A ring is `m[k] = v` where
+something `v` reaches is something `m` is inside. A field read from a
+name is a name of its own to it, so `n.links[k] = Node(n.links)` is still
+seen, and named as `n.links`. The sharing check is as it was: a strand
+writing a field of `r` is writing `r`.
+
 ## Unreleased — TLS, and a blocking call's answer that went astray
 
 `web/tls` is TLS over a socket through OpenSSL 3 — Homebrew's on macOS,

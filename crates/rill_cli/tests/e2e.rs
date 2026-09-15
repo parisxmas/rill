@@ -2508,6 +2508,15 @@ fn a_function_named_like_libc_is_the_programs_own() {
     assert_eq!(run_source("libcnames", src), "hi 118\n");
 }
 
+/// A float's bits as an integer and back: no conversion, the same bits.
+#[test]
+fn float_bits_and_back() {
+    let src = "fn main() =\n  println(int_to_str(float_bits(1.0)))\n  println(float_to_str(bits_float(4607182418800017408)))\n  \
+               println(float_to_str(bits_float(float_bits(-2.5))))\n  println(int_to_str(float_bits(0.0 - 0.0)))\n";
+    assert_eq!(run_source("floatbits", src), "4607182418800017408\n1\n-2.5\n0\n");
+    assert!(compile_error("fn float_bits(x) = 1\n\nfn main() = println(\"x\")\n").contains("built-in"));
+}
+
 /// A ring — storage put into itself — is refused where it is written, and
 /// one made through two maps is named by function in the exit report.
 #[test]
@@ -2526,6 +2535,28 @@ fn a_ring_is_refused_or_reported() {
                 n = Node(\"n\" + int_to_str(i), m)\n  #n.name\n\n\
                 fn main() = println(int_to_str(make(7)))\n";
     assert_eq!(run_source("noring", fine), "2\n");
+    // A part of a value put into another part of it holds nothing that holds
+    // it: one field of `f` into a map that is another field of `f`, and a
+    // value read out of a map back into that map, are what a program does
+    // all day. A record made of the map read back through a field is a ring.
+    let parts = "type Sub\n  Sub(tag: Buf(Int), n: Int)\n\n\
+                 type Fb\n  Fb(tag: Buf(Int), subs: Map(Int, Sub))\n\n\
+                 type Group\n  Group(seq: Int, tally: Buf(Int))\n\n\
+                 fn head_of(l) = match l\n  Cons(x, _) -> x\n  Nil -> Fb(buf_int(1), map_new())\n\n\
+                 fn lift(fb, id) =\n  f = head_of(fb)\n  f.subs[id] = Sub(f.tag, id)\n  map_len(f.subs)\n\n\
+                 fn merge(all: Map(Int, Group), k, g: Group, none: Group) =\n  mine = map_or(all, k, none)\n  \
+                 all[k] = if mine.seq < 0 then g else Group(g.seq, mine.tally)\n  map_len(all)\n\n\
+                 fn main() =\n  all = map_new()\n  none = Group(-1, buf_int(1))\n  \
+                 merge(all, 1, Group(5, buf_int(2)), none)\n  merge(all, 1, Group(3, buf_int(2)), none)\n  \
+                 println(int_to_str(lift(Cons(Fb(buf_int(1), map_new()), Nil), 2) + map_len(all)))\n";
+    assert_eq!(run_source("parts", parts), "2\n");
+    let through = "type Node\n  Node(name: Str, links: Map(Str, Node))\n\n\
+                   fn main() =\n  n = Node(\"a\", map_new())\n  n.links[\"a\"] = Node(\"b\", n.links)\n  println(\"x\")\n";
+    assert!(compile_error(through).contains("`n.links` would hold itself"), "{}", compile_error(through));
+    let part_of = "type Node\n  Node(name: Str, links: Map(Str, Node))\n\n\
+                   fn first(l) = match l\n  Cons(x, _) -> x\n  Nil -> Node(\"none\", map_new())\n\n\
+                   fn main() =\n  m = map_new()\n  l = Cons(Node(\"a\", m), Nil)\n  m[\"a\"] = first(l)\n  println(\"x\")\n";
+    assert!(compile_error(part_of).contains("`m` would hold itself"), "{}", compile_error(part_of));
 
     let two = "fn make(i) =\n  a = map_new()\n  b = map_new()\n  a[i] = \\k -> map_len(b) + k\n  \
                b[i] = \\k -> map_len(a) + k\n  map_len(a)\n\n\
