@@ -333,5 +333,6 @@ scheduler.
 
 ---
 
-That is the runtime. `LANGUAGE.md` covers what remains — calling C, sockets,
-and the toolchain — and `examples/` has the programs that use them.
+That is the runtime. Chapter 17 builds the process SDL drew on top of it.
+`LANGUAGE.md` covers what remains — calling C, sockets, and the toolchain —
+and `examples/` has the programs that use them.

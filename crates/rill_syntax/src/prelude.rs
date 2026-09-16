@@ -116,7 +116,8 @@ fn merge(prelude: Module, user: Module) -> Module {
         asms: user.asms,
         functions,
         prelude_fns,
-        machines: Vec::new(),
+        machines: user.machines,
+        systems: user.systems,
     }
 }
 

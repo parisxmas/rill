@@ -2513,7 +2513,7 @@ fn a_function_named_like_libc_is_the_programs_own() {
 /// `rill fmt` as declared; a state left out named.
 #[test]
 fn a_machine_answers_its_signals() {
-    let src = "# A telephone line as the exchanges modelled it in SDL: a process with a\n# mailbox, a state, and the signals it answers in each — a `machine`. Two\n# lines, one calling the other; a `Report` signal answered to whoever sent\n# it; a wait that runs out while dialling; and a hang-up that stops the\n# strand. What arrives is a `Mail`, the signal with the mailbox it came\n# from, so an arm has `sender` and can `reply`; between machines\n# `output(to, sig)` says who is sending, and from outside `post(to, from,\n# sig)` names the mailbox the answer comes to. A `mailbox()` grows rather\n# than making a sender wait, so two lines calling each other never hold\n# each other up.\ntype Signal\n  OffHook\n  Digit(n: Int)\n  OnHook\n  Ring\n  Answer\n  Report\n  Status(text: Str)\n\ntype Line\n  Idle\n  Dialling(digits: List(Int))\n  Ringing(caller: Chan(Mail(Signal)))\n  Talking(peer: Chan(Mail(Signal)))\n\nmachine line(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Idle\n    OffHook -> Dialling(Nil)\n    Ring -> Ringing(sender)\n    Report ->\n      reply(Status(\"idle\"))\n      stay\n  state Dialling(digits)\n    Digit(n) if n >= 0 -> Dialling(Cons(n, digits))\n    OnHook -> Idle\n    Report ->\n      reply(Status(\"dialling \" + int_to_str(len(digits))))\n      stay\n    after 50 ->\n      send(log, \"gave up dialling after \" + int_to_str(len(digits)) + \" digits\")\n      Idle\n  state Ringing(caller)\n    Answer ->\n      output(caller, Answer)\n      Talking(caller)\n    OnHook -> Idle\n  state Talking(peer)\n    OnHook ->\n      output(peer, OnHook)\n      send(log, \"hung up\")\n      stop\n    _ -> stay\n\n# The environment asks a line where it is, on a mailbox of its own.\nfn ask(l, env) =\n  post(l, env, Report)\n  match recv(env).signal\n    Status(text) -> text\n    _ -> \"?\"\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  a = mailbox()\n  spawn line(a, log, Idle)\n  println(ask(a, env))\n  post(a, env, OffHook)\n  post(a, env, Digit(5))\n  post(a, env, Digit(-1))\n  post(a, env, Digit(3))\n  println(ask(a, env))\n  post(a, env, OnHook)\n  println(ask(a, env))\n  post(a, env, OffHook)\n  post(a, env, Digit(1))\n  println(recv(log))\n  println(ask(a, env))\n  b = mailbox()\n  c = mailbox()\n  spawn line(b, log, Idle)\n  post(b, c, Ring)\n  post(b, env, Answer)\n  match recv(c).signal\n    Answer -> println(\"the caller hears the answer\")\n    _ -> println(\"?\")\n  post(b, env, OnHook)\n  println(recv(log))\n  match recv(c).signal\n    OnHook -> println(\"the caller is told\")\n    _ -> println(\"?\")\n";
+    let src = "# A telephone line as the exchanges modelled it in SDL: a process with a\n# mailbox, a state, and the signals it answers in each — a `machine`. Two\n# lines, one calling the other; a `Report` signal answered to whoever sent\n# it; a wait that runs out while dialling; and a hang-up that stops the\n# strand. What arrives is a `Mail`, the signal with the mailbox it came\n# from, so an arm has `sender` and can `reply`; between machines\n# `output(to, sig)` says who is sending, and from outside `post(to, from,\n# sig)` names the mailbox the answer comes to. A `mailbox()` grows rather\n# than making a sender wait, so two lines calling each other never hold\n# each other up.\ntype Signal\n  OffHook\n  Digit(n: Int)\n  OnHook\n  Ring\n  Answer\n  Report\n  Status(text: Str)\n\n# The block diagram: who sends what to whom. Checked against the machines\n# — a signal sent that no route carries is refused — and drawn.\nsystem exchange\n  env -> line: OffHook, Digit, OnHook, Answer, Report\n  line -> env: Status\n  line <-> line: Ring, Answer, OnHook\n\ntype Line\n  Idle\n  Dialling(digits: List(Int))\n  Ringing(caller: Chan(Mail(Signal)))\n  Talking(peer: Chan(Mail(Signal)))\n\nmachine line(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Idle\n    OffHook -> Dialling(Nil)\n    Ring -> Ringing(sender)\n    Report ->\n      reply(Status(\"idle\"))\n      stay\n  state Dialling(digits)\n    Digit(n) if n >= 0 -> Dialling(Cons(n, digits))\n    OnHook -> Idle\n    Report ->\n      reply(Status(\"dialling \" + int_to_str(len(digits))))\n      stay\n    after 50 ->\n      send(log, \"gave up dialling after \" + int_to_str(len(digits)) + \" digits\")\n      Idle\n  state Ringing(caller)\n    Answer ->\n      output(caller, Answer)\n      Talking(caller)\n    OnHook -> Idle\n  state Talking(peer)\n    OnHook ->\n      output(peer, OnHook)\n      send(log, \"hung up\")\n      stop\n    _ -> stay\n\n# The environment asks a line where it is, on a mailbox of its own.\nfn ask(l, env) =\n  post(l, env, Report)\n  match recv(env).signal\n    Status(text) -> text\n    _ -> \"?\"\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  a = mailbox()\n  spawn line(a, log, Idle)\n  println(ask(a, env))\n  post(a, env, OffHook)\n  post(a, env, Digit(5))\n  post(a, env, Digit(-1))\n  post(a, env, Digit(3))\n  println(ask(a, env))\n  post(a, env, OnHook)\n  println(ask(a, env))\n  post(a, env, OffHook)\n  post(a, env, Digit(1))\n  println(recv(log))\n  println(ask(a, env))\n  b = mailbox()\n  c = mailbox()\n  spawn line(b, log, Idle)\n  post(b, c, Ring)\n  post(b, env, Answer)\n  match recv(c).signal\n    Answer -> println(\"the caller hears the answer\")\n    _ -> println(\"?\")\n  post(b, env, OnHook)\n  println(recv(log))\n  match recv(c).signal\n    OnHook -> println(\"the caller is told\")\n    _ -> println(\"?\")\n";
     assert_eq!(
         run_source("exchange", src),
         "idle\ndialling 2\nidle\ngave up dialling after 1 digits\nidle\nthe caller hears the answer\nhung up\nthe caller is told\n"
@@ -2536,7 +2536,8 @@ fn a_machine_is_drawn() {
     let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(&path).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.starts_with("stateDiagram-v2\n"), "{text}");
+    // the system first, then the machine
+    assert!(text.starts_with("flowchart LR\n") && text.contains("\nstateDiagram-v2\n"), "{text}");
     assert!(text.contains("  Idle --> Dialling: OffHook\n"), "{text}");
     assert!(text.contains("  Dialling --> Dialling: Digit(n) if n >= 0\n"), "{text}");
     assert!(text.contains("  Dialling --> Idle: after 50 ms / "), "{text}");
@@ -2547,7 +2548,7 @@ fn a_machine_is_drawn() {
     let svg = String::from_utf8(svg.stdout).unwrap();
     assert!(svg.starts_with("<svg ") && svg.contains("<title>machine line</title>") && svg.contains("<polygon"), "{svg}");
     let none = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(root.join("examples").join("hello.rill")).output().unwrap();
-    assert!(!none.status.success() && String::from_utf8_lossy(&none.stderr).contains("no `machine`"));
+    assert!(!none.status.success() && String::from_utf8_lossy(&none.stderr).contains("no `machine` or `system`"));
 }
 
 /// A float's bits as an integer and back: no conversion, the same bits.
@@ -5182,7 +5183,7 @@ fn check_reports_what_a_machine_drops() {
     let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("check").arg(&path).output().unwrap();
     assert!(out.status.success());
     let notes = String::from_utf8_lossy(&out.stderr).to_string();
-    assert!(notes.contains("note at line 27: `line` in state `Idle` drops `Digit`, `OnHook`, `Answer`: a signal no arm names is consumed"), "{notes}");
+    assert!(notes.contains("note at line 34: `line` in state `Idle` drops `Digit`, `OnHook`, `Answer`: a signal no arm names is consumed"), "{notes}");
     assert!(notes.contains("`line` in state `Ringing(caller)` drops `OffHook`, `Ring`, `Report`, `Digit`"), "{notes}");
     assert!(notes.contains("`line` answers `Status` in no state: not an input of this machine"), "{notes}");
     assert!(!notes.contains("`Talking"), "{notes}");
@@ -5368,4 +5369,61 @@ fn virtual_time_jumps_to_the_next_timer() {
     }
     assert!(traces[0] == traces[1] && traces[1] == traces[2]);
     assert!(traces[0].contains("after\tline#2\tDialling(digits)\t50\n"));
+}
+
+/// A `system`: the routes between the kinds of machine and the environment
+/// with the signals each carries — checked against the machines, so a
+/// signal sent that no route carries, a signal answered that none brings,
+/// a route to nothing, or a signal that does not exist is refused; drawn
+/// as the block diagram; written back by `rill fmt`.
+#[test]
+fn a_system_is_checked_against_its_machines_and_drawn() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("examples").join("exchange.rill");
+    let src = std::fs::read_to_string(&path).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(&path).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.starts_with("flowchart LR\n  %% system exchange\n  env([environment])\n  line[line]\n"), "{text}");
+    assert!(text.contains("  line <-->|Ring, Answer, OnHook| line\n"), "{text}");
+    let svg = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(&path).arg("--svg").output().unwrap();
+    assert!(String::from_utf8_lossy(&svg.stdout).contains("<title>system exchange</title>"));
+    let no_answer_out = src.replace("  line <-> line: Ring, Answer, OnHook\n", "  line <-> line: Ring, OnHook\n");
+    assert!(compile_error(&no_answer_out).contains("`line` sends `Answer`, which no route out of `line` carries"), "{}", compile_error(&no_answer_out));
+    let no_digit_in = src.replace("  env -> line: OffHook, Digit, OnHook, Answer, Report\n", "  env -> line: OffHook, OnHook, Answer, Report\n");
+    assert!(compile_error(&no_digit_in).contains("`line` answers `Digit`, which no route into `line` carries"), "{}", compile_error(&no_digit_in));
+    let misspelt = src.replace("  line -> env: Status\n", "  line -> env: Statue\n");
+    assert!(compile_error(&misspelt).contains("there is no signal `Statue`"));
+    let nobody = src.replace("  line -> env: Status\n", "  line -> operator: Status\n");
+    assert!(compile_error(&nobody).contains("`operator` is not a machine of this file, nor `env`"));
+    let one_way = src.replace("  line <-> line: Ring, Answer, OnHook\n", "  line -> line: Ring, Answer, OnHook\n");
+    assert_eq!(fmt_source(&one_way), one_way);
+}
+
+/// The alternating-bit protocol, the model that uses everything: three
+/// kinds of machine, a `system` the compiler checks, a retransmission
+/// timer, `save` and `priority`, mailboxes; run as a program, and its
+/// tests on the virtual clock.
+#[test]
+fn the_alternating_bit_protocol_runs_and_tests_on_virtual_time() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("examples").join("abp.rill");
+    let dir = std::env::temp_dir().join(format!("rill-e2e-abp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("-o").arg(dir.join("abp")).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(dir.join("abp")).env("RILL_VIRTUAL_TIME", "1").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "hello\nworld\nready, 2 sent\n");
+    let started = std::time::Instant::now();
+    let tests = Command::new(env!("CARGO_BIN_EXE_rill")).arg("test").arg(&path).env("RILL_VIRTUAL_TIME", "1").output().unwrap();
+    assert!(tests.status.success(), "{}", String::from_utf8_lossy(&tests.stdout));
+    assert!(String::from_utf8_lossy(&tests.stdout).contains("3 tests: 3 passed, 0 failed"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    let check = Command::new(env!("CARGO_BIN_EXE_rill")).arg("check").arg(&path).output().unwrap();
+    assert!(check.status.success());
+    let notes = String::from_utf8_lossy(&check.stderr).to_string();
+    assert!(notes.contains("`sender` in state `Ready(bit, sent)` drops `Ack`, `Retry`"), "{notes}");
+    let src = std::fs::read_to_string(&path).unwrap();
+    let no_ack = src.replace("  medium -> sender: Ack\n", "");
+    let said = compile_error(&no_ack);
+    assert!(said.contains("`Ack`, which no route") && said.contains("system `abp`"), "{said}");
 }

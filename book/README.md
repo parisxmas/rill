@@ -116,6 +116,11 @@ The compiler inserts the frees · what that buys · cycles, the one real cost ·
 Three primitives · pipelines · `select` · a hundred thousand strands in 56 MB
 and how · blocking on the world · deadlock · several cores on purpose
 
+**[Chapter 17. Machines](ch17-machines.md)**
+A process as SDL drew it · `sender`, `reply`, `output`, `post` · timers, `save`,
+`priority`, `when` · the `system` checked against the code · a run drawn as
+a sequence chart · the model's own clock
+
 ---
 
 ## Running the code

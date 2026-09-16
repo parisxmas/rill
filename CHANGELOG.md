@@ -61,6 +61,29 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — the alternating-bit protocol, and a chapter
+
+`examples/abp.rill` is the model that uses everything: a sender with a
+retransmission timer, a medium that loses what it is told to, a
+receiver that delivers once and acknowledges always, a `system` the
+compiler checks, `save` and `priority`, mailboxes, and three tests that
+run on the virtual clock. Its first version hung, and the chart said
+why at event 16. Chapter 17 of the book walks through it: the process
+as SDL drew it, and every tool around it. A timer's signal is now
+answered without a route, since it comes from the machine itself.
+
+## Unreleased — the block diagram
+
+`system name` declares the routes between the kinds of machine and the
+environment, with the signals each carries — `env -> line: OffHook,
+Digit`, `line <-> line: Ring` — and the compiler checks it against the
+machines: a signal sent that no route carries, a signal answered that
+none brings, a route to nothing, a signal that does not exist, each
+refused by name. `rill diagram` draws it as SDL's block diagram, in
+Mermaid or SVG, ahead of the machines; `rill fmt` writes it back. With
+it the SDL list is closed: structure, process, timers, save, priority,
+conditions, procedures, the trace, the charts, and a clock of its own.
+
 ## Unreleased — the clock a simulator keeps
 
 `RILL_VIRTUAL_TIME=1` runs a program on virtual time: it does not pass

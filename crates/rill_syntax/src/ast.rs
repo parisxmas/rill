@@ -22,6 +22,9 @@ pub struct Module {
     /// lowered by the parser into the tail-recursive function it is; they
     /// are kept here for the formatter, which writes the declaration back.
     pub machines: Vec<MachineDef>,
+    /// `system name` declarations: the routes between the kinds of machine
+    /// and the environment, with the signals each carries.
+    pub systems: Vec<SystemDef>,
 }
 
 /// `machine line(me: Chan(Signal), sw: Chan(Signal))` — a process in the
@@ -41,6 +44,30 @@ pub struct MachineDef {
     pub name: String,
     pub params: Vec<Param>,
     pub states: Vec<StateDef>,
+    pub line: usize,
+}
+
+/// `system exchange`, and under it the routes: `env -> line: OffHook,
+/// Digit`, `line <-> line: Ring, Answer`. SDL's block diagram, as the
+/// signal lists between kinds of process and the environment: what a
+/// machine may `output` is what some route from it carries, and what it
+/// answers is what some route into it does. Instances are not declared;
+/// they are made with `spawn` as before.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemDef {
+    pub name: String,
+    pub routes: Vec<Route>,
+    pub line: usize,
+}
+
+/// One line of a system: the two ends — machine names, or `env` — whether
+/// the route runs both ways, and the signals on it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Route {
+    pub from: String,
+    pub to: String,
+    pub both: bool,
+    pub signals: Vec<String>,
     pub line: usize,
 }
 

@@ -142,6 +142,7 @@ impl Parser {
         let mut asms = Vec::new();
         let mut functions = Vec::new();
         let mut machines = Vec::new();
+        let mut systems = Vec::new();
         let mut name = None;
         let mut name_line = 0;
         loop {
@@ -154,6 +155,10 @@ impl Parser {
                     let m = self.machinedef()?;
                     functions.extend(crate::machine::lower(&m)?);
                     machines.push(m);
+                }
+                // `system name`: the routes between machines, drawn and checked.
+                Tok::Ident(w) if w == "system" && matches!(self.peek2(), Tok::Ident(_)) => {
+                    systems.push(self.systemdef()?);
                 }
                 // `module name`: what the file is, said first. A name, not
                 // a keyword, meaning this only here.
@@ -236,7 +241,7 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, name, name_line, machines })
+        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, name, name_line, machines, systems })
     }
 
     /// `machine name(params)` and, indented under it, one `state` after
@@ -282,6 +287,73 @@ impl Parser {
             return Err(SyntaxError::new(line, col, "a machine needs at least one `state`".to_string()));
         }
         Ok(MachineDef { name, params, states, line })
+    }
+
+    /// `system name`, and indented under it one route a line: `a -> b: S1,
+    /// S2` or `a <-> b: S1`, the ends being machine names or `env`.
+    fn systemdef(&mut self) -> Result<SystemDef, SyntaxError> {
+        let (line, col) = self.here();
+        self.bump();
+        let name = self.ident("a system name after `system`")?;
+        if starts_upper(&name) {
+            return Err(SyntaxError::new(line, col, format!("system names are lowercase, like a machine's (found `{name}`)")));
+        }
+        self.expect(&Tok::Indent, "— a system's routes must be indented under `system`")?;
+        let mut routes = Vec::new();
+        loop {
+            self.skip_newlines_only();
+            let (rline, rcol) = self.here();
+            match self.peek() {
+                Tok::Dedent => {
+                    self.bump();
+                    break;
+                }
+                Tok::Eof => break,
+                Tok::Ident(_) => {
+                    let from = self.ident("a route's source")?;
+                    let both = match self.peek() {
+                        Tok::Arrow => {
+                            self.bump();
+                            false
+                        }
+                        Tok::Lt => {
+                            self.bump();
+                            self.expect(&Tok::Arrow, "— a route both ways is written `<->`")?;
+                            true
+                        }
+                        other => return Err(SyntaxError::new(rline, rcol, format!("expected `->` or `<->` after `{from}` in a route, found {other}"))),
+                    };
+                    let to = self.ident("a route's destination")?;
+                    self.expect(&Tok::Colon, "before the route's signals")?;
+                    let mut signals = Vec::new();
+                    loop {
+                        let sig = self.ident("a signal name")?;
+                        if !starts_upper(&sig) {
+                            return Err(SyntaxError::new(rline, rcol, format!("a route carries signals, which are constructors: `{sig}` is not one")));
+                        }
+                        signals.push(sig);
+                        if matches!(self.peek(), Tok::Comma) {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                    routes.push(Route { from, to, both, signals, line: rline });
+                    match self.peek() {
+                        Tok::Newline => {
+                            self.bump();
+                        }
+                        Tok::Dedent | Tok::Eof => {}
+                        other => return Err(SyntaxError::new(rline, rcol, format!("expected end of line after a route, found {other}"))),
+                    }
+                }
+                other => return Err(SyntaxError::new(rline, rcol, format!("expected a route in a system, found {other}"))),
+            }
+        }
+        if routes.is_empty() {
+            return Err(SyntaxError::new(line, col, "a system needs at least one route".to_string()));
+        }
+        Ok(SystemDef { name, routes, line })
     }
 
     /// Newlines between the states of a machine, which the layout gives as

@@ -718,3 +718,98 @@ pub fn msc_svg(trace: &str) -> String {
     out.push_str("</svg>\n");
     out
 }
+
+// ---- a system, as SDL's block diagram --------------------------------------
+
+/// The system as Mermaid's `flowchart`: a box per machine and one for the
+/// environment, an arrow per route with its signals.
+pub fn system_mermaid(sd: &SystemDef) -> String {
+    let mut out = String::from("flowchart LR\n");
+    out.push_str(&format!("  %% system {}\n", sd.name));
+    let mut ends: Vec<String> = Vec::new();
+    for r in &sd.routes {
+        for e in [&r.from, &r.to] {
+            if !ends.contains(e) {
+                ends.push(e.clone());
+            }
+        }
+    }
+    for e in &ends {
+        if e == "env" {
+            out.push_str("  env([environment])\n");
+        } else {
+            out.push_str(&format!("  {e}[{e}]\n"));
+        }
+    }
+    for r in &sd.routes {
+        let arrow = if r.both { "<-->" } else { "-->" };
+        out.push_str(&format!("  {} {arrow}|{}| {}\n", r.from, clean(&r.signals.join(", ")), r.to));
+    }
+    out
+}
+
+/// The system as SVG: the environment on the left, the machines in a row,
+/// each route an arc between its ends with the signals along it, a route
+/// from a machine to itself a loop above it.
+pub fn system_svg(sd: &SystemDef) -> String {
+    let mut ends: Vec<String> = Vec::new();
+    for r in &sd.routes {
+        for e in [&r.from, &r.to] {
+            if !ends.contains(e) {
+                ends.push(e.clone());
+            }
+        }
+    }
+    ends.sort_by_key(|e| if e == "env" { 0 } else { 1 });
+    const COL: f64 = 260.0;
+    const BOX_W: f64 = 150.0;
+    const BOX_H: f64 = 50.0;
+    const SIDE: f64 = 50.0;
+    let arcs = sd.routes.len() as f64;
+    let top = 40.0 + 34.0 * arcs;
+    let width = SIDE * 2.0 + COL * ends.len().max(1) as f64;
+    let height = top + BOX_H + 60.0 + 34.0 * arcs;
+    let x_of = |name: &str| -> f64 {
+        let i = ends.iter().position(|n| n == name).unwrap_or(0) as f64;
+        SIDE + COL / 2.0 + i * COL
+    };
+    let mut out = String::new();
+    out.push_str(&format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\" font-family=\"Menlo, Consolas, monospace\" font-size=\"12\">\n<title>system {}</title>\n<defs><marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"8\" refX=\"9\" refY=\"4\" orient=\"auto\"><path d=\"M0,0 L10,4 L0,8 z\" fill=\"black\"/></marker><marker id=\"arrow_back\" markerWidth=\"10\" markerHeight=\"8\" refX=\"1\" refY=\"4\" orient=\"auto\"><path d=\"M10,0 L0,4 L10,8 z\" fill=\"black\"/></marker></defs>\n<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n",
+        esc(&sd.name)
+    ));
+    for e in &ends {
+        let x = x_of(e);
+        if e == "env" {
+            out.push_str(&format!("<rect x=\"{}\" y=\"{top}\" width=\"{BOX_W}\" height=\"{BOX_H}\" rx=\"25\" fill=\"white\" stroke=\"black\" stroke-width=\"1.2\" stroke-dasharray=\"6,4\"/>\n", x - BOX_W / 2.0));
+            text(&mut out, x, top + BOX_H / 2.0 + 4.0, "environment", "middle");
+        } else {
+            out.push_str(&format!("<rect x=\"{}\" y=\"{top}\" width=\"{BOX_W}\" height=\"{BOX_H}\" fill=\"white\" stroke=\"black\" stroke-width=\"1.2\"/>\n", x - BOX_W / 2.0));
+            text(&mut out, x, top + BOX_H / 2.0 + 4.0, e, "middle");
+        }
+    }
+    // routes as arcs, each at its own height so labels do not collide:
+    // the first above, the next below, and so on outward
+    for (i, r) in sd.routes.iter().enumerate() {
+        let label = r.signals.join(", ");
+        let (x1, x2) = (x_of(&r.from), x_of(&r.to));
+        let above = i % 2 == 0;
+        let lift = 30.0 + 34.0 * ((i / 2) as f64);
+        let markers = if r.both { "marker-start=\"url(#arrow_back)\" marker-end=\"url(#arrow)\"" } else { "marker-end=\"url(#arrow)\"" };
+        if r.from == r.to {
+            let y = top;
+            out.push_str(&format!("<path d=\"M{},{y} C{},{} {},{} {},{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", x1 - 30.0, x1 - 60.0, y - lift - 20.0, x1 + 60.0, y - lift - 20.0, x1 + 30.0));
+            text(&mut out, x1, y - lift - 8.0, &label, "middle");
+        } else if above {
+            let y = top;
+            out.push_str(&format!("<path d=\"M{x1},{y} C{x1},{} {x2},{} {x2},{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", y - lift * 1.4, y - lift * 1.4));
+            text(&mut out, (x1 + x2) / 2.0, y - lift - 4.0, &label, "middle");
+        } else {
+            let y = top + BOX_H;
+            out.push_str(&format!("<path d=\"M{x1},{y} C{x1},{} {x2},{} {x2},{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", y + lift * 1.4, y + lift * 1.4));
+            text(&mut out, (x1 + x2) / 2.0, y + lift + 8.0, &label, "middle");
+        }
+    }
+    out.push_str("</svg>\n");
+    out
+}

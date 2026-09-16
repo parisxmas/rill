@@ -1,0 +1,158 @@
+# The alternating-bit protocol, as a model: a sender that numbers each
+# frame with one bit and keeps sending it until the acknowledgement with
+# that bit comes back, a medium that loses what it is told to lose, and a
+# receiver that delivers each text once and acknowledges every frame. The
+# shape SDL was made for — three kinds of process, a timer, a block
+# diagram — and everything the language has for it: a `system` checked
+# against the machines, `set` and `reset`, `save`, `priority`, `sender`
+# and `reply`, mailboxes that refuse nothing, a trace to draw, and tests
+# that run on virtual time, so a night of retransmissions takes no time.
+#
+#     rill run examples/abp.rill
+#     RILL_VIRTUAL_TIME=1 rill test examples/abp.rill
+#     RILL_TRACE=1 RILL_VIRTUAL_TIME=1 ./abp 2>&1 >/dev/null | rill msc --svg -o abp.svg
+type Signal
+  Send(text: Str)
+  Frame(bit: Int, text: Str, back: Chan(Mail(Signal)))
+  Ack(bit: Int, back: Chan(Mail(Signal)))
+  Deliver(text: Str)
+  Lose(count: Int)
+  Retry
+  Report
+  Status(text: Str)
+
+system abp
+  env -> sender: Send, Report
+  sender -> env: Status
+  sender -> medium: Frame
+  medium -> receiver: Frame
+  receiver -> medium: Ack
+  medium -> sender: Ack
+  receiver -> env: Deliver
+  env -> medium: Lose
+
+type SenderState
+  Ready(bit: Int, sent: Int)
+  Sending(bit: Int, text: Str, tries: Int, sent: Int)
+
+# The sender: one text at a time, resent every 100 ms until its bit is
+# acknowledged; a text that arrives while one is in flight waits.
+machine sender(me: Chan(Mail(Signal)), medium: Chan(Mail(Signal)), env: Chan(Mail(Signal)))
+  state Ready(bit, sent)
+    Send(text) ->
+      output(medium, Frame(bit, text, me))
+      set(Retry, 100)
+      Sending(bit, text, 1, sent)
+    Report ->
+      reply(Status("ready, " + int_to_str(sent) + " sent"))
+      stay
+  state Sending(bit, text, tries, sent)
+    save Send(_)
+    Ack(b, _) if b == bit ->
+      reset(Retry)
+      Ready(1 - bit, sent + 1)
+    Retry ->
+      output(medium, Frame(bit, text, me))
+      set(Retry, 100)
+      Sending(bit, text, tries + 1, sent)
+    Report ->
+      reply(Status("sending " + text + ", try " + int_to_str(tries)))
+      stay
+
+type MediumState
+  Passing(losing: Int, receiver: Chan(Mail(Signal)), lost: Int)
+
+# The medium passes frames on and acknowledgements back, and loses the
+# next `count` frames when told to — the fault a model exists to inject.
+machine medium(me: Chan(Mail(Signal)))
+  state Passing(losing, receiver, lost)
+    priority Lose(_)
+    Lose(count) -> Passing(losing + count, receiver, lost)
+    Frame(bit, text, back) if losing > 0 -> Passing(losing - 1, receiver, lost + 1)
+    Frame(bit, text, back) ->
+      output(receiver, Frame(bit, text, back))
+      stay
+    Ack(bit, back) ->
+      output(back, Ack(bit, me))
+      stay
+
+type ReceiverState
+  Expecting(bit: Int)
+
+# The receiver delivers a frame with the bit it expects and acknowledges
+# every frame with its bit and the return address it carried, so a resent
+# one is acknowledged again and not delivered again.
+machine receiver(me: Chan(Mail(Signal)), env: Chan(Mail(Signal)))
+  state Expecting(bit)
+    Frame(b, text, back) if b == bit ->
+      output(env, Deliver(text))
+      reply(Ack(b, back))
+      Expecting(1 - bit)
+    Frame(b, _, back) ->
+      reply(Ack(b, back))
+      stay
+
+# -- a run --------------------------------------------------------------------
+
+type Net
+  Net(env: Chan(Mail(Signal)), s: Chan(Mail(Signal)), m: Chan(Mail(Signal)))
+
+fn start() =
+  env = mailbox()
+  s = mailbox()
+  m = mailbox()
+  r = mailbox()
+  spawn medium(m, Passing(0, r, 0))
+  spawn receiver(r, env, Expecting(0))
+  spawn sender(s, m, env, Ready(0, 0))
+  Net(env, s, m)
+
+fn delivered(n: Net) = match recv(n.env).signal
+  Deliver(text) -> text
+  _ -> "?"
+
+# The sender's own account, once the acknowledgement in flight has landed:
+# on virtual time a millisecond passes only when nothing else can happen.
+fn status(n: Net) =
+  sleep_ms(1)
+  post(n.s, n.env, Report)
+  match recv(n.env).signal
+    Status(text) -> text
+    _ -> "?"
+
+fn main() =
+  n = start()
+  post(n.s, n.env, Send("hello"))
+  println(delivered(n))
+  post(n.m, n.env, Lose(2))
+  post(n.s, n.env, Send("world"))
+  println(delivered(n))
+  println(status(n))
+
+# -- tests, on virtual time ------------------------------------------------
+
+fn test_a_text_goes_through() =
+  n = start()
+  post(n.s, n.env, Send("one"))
+  assert_eq(delivered(n), "one")
+  assert_eq(status(n), "ready, 1 sent")
+
+fn test_a_lost_frame_is_resent_and_delivered_once() =
+  n = start()
+  post(n.m, n.env, Lose(3))
+  post(n.s, n.env, Send("two"))
+  assert_eq(delivered(n), "two")
+  assert_eq(status(n), "ready, 1 sent")
+  post(n.s, n.env, Send("three"))
+  assert_eq(delivered(n), "three")
+
+fn test_texts_wait_their_turn() =
+  n = start()
+  post(n.m, n.env, Lose(1))
+  post(n.s, n.env, Send("a"))
+  post(n.s, n.env, Send("b"))
+  post(n.s, n.env, Send("c"))
+  assert_eq(delivered(n), "a")
+  assert_eq(delivered(n), "b")
+  assert_eq(delivered(n), "c")
+  assert_eq(status(n), "ready, 3 sent")

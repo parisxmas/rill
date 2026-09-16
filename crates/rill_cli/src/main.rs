@@ -171,8 +171,8 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
     let path = file.ok_or(USAGE)?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    if own.machines.is_empty() {
-        return Err(format!("{}: no `machine` in this file to draw", path.display()));
+    if own.machines.is_empty() && own.systems.is_empty() {
+        return Err(format!("{}: no `machine` or `system` in this file to draw", path.display()));
     }
     let module = rill_syntax::load_program(&path)?;
     if let Err(errors) = rill_types::check_all(&module) {
@@ -182,6 +182,12 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::FAILURE);
     }
     let mut drawn = String::new();
+    for sd in &own.systems {
+        drawn.push_str(&if svg { diagram::system_svg(sd) } else { diagram::system_mermaid(sd) });
+        if !svg {
+            drawn.push('\n');
+        }
+    }
     for m in &own.machines {
         drawn.push_str(&if svg { diagram::svg(m) } else { diagram::mermaid(m) });
         if !svg {

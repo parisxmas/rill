@@ -191,6 +191,7 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 | `kv_store.rill` | a key–value store on disk from `lib/db/kv.rill`: a B+ tree of pages, a page cache and a write-ahead log; ahead of SQLite on reads, level on the durable commit |
 | `grid_tour.rill` | arrays with a shape from `lib/num/grid.rill`: views, masks, reductions, a matrix product — NumPy's shapes, and faster than NumPy where there is arithmetic to do |
 | `lanes.rill`, `holders.rill` | `Float2`, two floats in one register; `unique`, the question that lets an operation reuse a temporary's storage |
+| `exchange.rill`, `abp.rill` | machines, as SDL drew a process: a telephone exchange, and the alternating-bit protocol with its retransmission timer, lossy medium, block diagram, and tests on virtual time |
 
 The largest thing written in Rill is not in this table. Rill Valley — a
 walkable low-poly valley with terrain, physics and matrices in Rill, shadows,

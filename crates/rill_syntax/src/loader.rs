@@ -36,6 +36,8 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         visited: HashSet::new(),
         name: None,
         name_line: 0,
+        machines: Vec::new(),
+        systems: Vec::new(),
         stems: HashMap::new(),
         aliases: HashMap::new(),
         fn_origin: HashMap::new(),
@@ -59,7 +61,8 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         asms: loader.asms,
         functions: loader.functions,
         prelude_fns: 0,
-        machines: Vec::new(),
+        machines: loader.machines,
+        systems: loader.systems,
     })
     .map_err(|e| e.to_string())
 }
@@ -118,6 +121,11 @@ struct Loader {
     /// a library, and nothing expects a `main`.
     name: Option<String>,
     name_line: usize,
+    /// The entry file's machines and systems, kept for the diagrams and
+    /// the check of the routes; an import's machines are its functions
+    /// by then.
+    machines: Vec<crate::ast::MachineDef>,
+    systems: Vec<crate::ast::SystemDef>,
     /// How many files of each stem have been loaded, so that the private
     /// names of two `util.rill`s do not become one.
     stems: HashMap<String, usize>,
@@ -195,6 +203,8 @@ impl Loader {
         if imported_from.is_none() {
             self.name = module.name.clone();
             self.name_line = module.name_line;
+            self.machines = module.machines.clone();
+            self.systems = module.systems.clone();
         }
         let seen = self.stems.entry(stem.clone()).or_insert(0);
         *seen += 1;

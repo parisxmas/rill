@@ -1225,6 +1225,27 @@ first of them it does not save before it reads its mailbox — so a `Data`
 that arrives while `Connecting` is answered by `On` the moment the link is
 up. A `save` takes a pattern and a guard, like an arm, and no body.
 
+**A `system` is the block diagram.** It names the routes between the
+kinds of machine and the environment, with the signals each carries:
+
+```
+system exchange
+  env -> line: OffHook, Digit, OnHook, Answer, Report
+  line -> env: Status
+  line <-> line: Ring, Answer, OnHook
+```
+
+The compiler checks it against the machines, as SDL's tools checked a
+block diagram against its processes: a signal a machine sends with
+`output` or `reply` that no route out of it carries is refused, naming
+the machine and the signal; so is a signal a machine answers that no
+route into it brings, a route to something that is not a machine of the
+file or `env`, and a signal that does not exist. `rill diagram` draws it
+first, before the machines, as a flowchart or with `--svg` as boxes and
+arrows. Instances are not declared — they are made with `spawn`, as
+many as the program wants — so the diagram is of kinds, which is what a
+block diagram is.
+
 **A run can say what its machines did.** With `RILL_TRACE=1` in the
 environment, every machine writes one line an event on standard error —
 a signal received in a state and from whom, the next state, a signal
@@ -2263,7 +2284,7 @@ rill run main.rill              # compile and run
 rill check main.rill            # type-check only, saying everything it finds
 rill types main.rill            # the signature the checker worked out for each function
 rill explain main.rill          # the memory decisions the generator made, by line
-rill diagram exchange.rill      # the file's machines drawn: Mermaid, or SDL's own symbols (--svg)
+rill diagram exchange.rill      # the file's system and machines drawn: Mermaid, or SDL's own symbols (--svg)
 rill msc trace.txt              # a run's trace (RILL_TRACE=1) as a sequence chart (--svg for a picture)
 rill test tests.rill            # run every `test_...` function, each in its own process
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)

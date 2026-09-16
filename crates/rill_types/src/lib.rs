@@ -525,10 +525,145 @@ pub fn check_all(module: &Module) -> Result<TModule, Vec<TypeError>> {
         Ok(c) => {
             let t = c.run(module)?;
             check_rings(&t)?;
+            check_systems(module, &t)?;
             Ok(t)
         }
         Err(e) => Err(vec![e]),
     }
+}
+
+/// A `system` against its machines: every route names machines of the
+/// file or `env` and signals that exist; every signal a machine sends —
+/// `output`, `reply` — is on some route out of it; every signal a machine
+/// answers is on some route into it. A signal is named by its constructor,
+/// so this is a check of the block diagram against the code, as SDL's tools
+/// made it, and it says which signal and which machine.
+pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>> {
+    let mut errors = Vec::new();
+    for sd in &module.systems {
+        let machine_names: Vec<&str> = module.machines.iter().map(|m| m.name.as_str()).collect();
+        for r in &sd.routes {
+            for end in [&r.from, &r.to] {
+                if end != "env" && !machine_names.contains(&end.as_str()) {
+                    errors.push(TypeError::new(r.line, format!("system `{}`: `{end}` is not a machine of this file, nor `env`", sd.name)));
+                }
+            }
+            for s in &r.signals {
+                if !t.ctors.contains_key(s) {
+                    errors.push(TypeError::new(r.line, format!("system `{}`: there is no signal `{s}`", sd.name)));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        // what may leave and enter each machine, by the routes
+        let out_of = |m: &str| -> Vec<String> {
+            let mut v = Vec::new();
+            for r in &sd.routes {
+                if r.from == m || (r.both && r.to == m) {
+                    v.extend(r.signals.iter().cloned());
+                }
+            }
+            v
+        };
+        let into = |m: &str| -> Vec<String> {
+            let mut v = Vec::new();
+            for r in &sd.routes {
+                if r.to == m || (r.both && r.from == m) {
+                    v.extend(r.signals.iter().cloned());
+                }
+            }
+            v
+        };
+        for m in &module.machines {
+            if !sd.routes.iter().any(|r| r.from == m.name || r.to == m.name) {
+                continue;
+            }
+            let leaving = out_of(&m.name);
+            let mut entering = into(&m.name);
+            // a timer's signal comes from the machine itself, on no route
+            for st in &m.states {
+                for a in &st.arms {
+                    collect_timers(&a.body, &mut entering);
+                }
+                if let Some((_, body, _)) = &st.after {
+                    collect_timers(body, &mut entering);
+                }
+                for (_, body, _) in &st.whens {
+                    collect_timers(body, &mut entering);
+                }
+            }
+            for st in &m.states {
+                let mut sent: Vec<(String, usize)> = Vec::new();
+                for a in &st.arms {
+                    collect_sent(&a.body, a.line, &mut sent);
+                    let mut named = Vec::new();
+                    ctor_names(&a.pattern, &mut named);
+                    for n in named {
+                        if !entering.contains(&n) {
+                            errors.push(TypeError::new(a.line, format!("system `{}`: `{}` answers `{n}`, which no route into `{}` carries", sd.name, m.name, m.name)));
+                        }
+                    }
+                }
+                if let Some((_, body, l)) = &st.after {
+                    collect_sent(body, *l, &mut sent);
+                }
+                for (_, body, l) in &st.whens {
+                    collect_sent(body, *l, &mut sent);
+                }
+                for (sig, line) in sent {
+                    if !leaving.contains(&sig) {
+                        errors.push(TypeError::new(line, format!("system `{}`: `{}` sends `{sig}`, which no route out of `{}` carries", sd.name, m.name, m.name)));
+                    }
+                }
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// The signals a body sets as timers, by constructor.
+fn collect_timers(e: &Expr, out: &mut Vec<String>) {
+    if let Expr::Call { name, args, .. } = e {
+        if name == "set" && args.len() == 2 {
+            let ctor = match &args[0] {
+                Expr::Var(n, _) => Some(n.clone()),
+                Expr::Call { name, .. } => Some(name.clone()),
+                _ => None,
+            };
+            if let Some(c) = ctor {
+                if c.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()) && !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    rill_syntax::lift::each_child_all(e, &mut |c| collect_timers(c, out));
+}
+
+/// The signals a body sends with `output` or `reply`, by constructor.
+fn collect_sent(e: &Expr, line: usize, out: &mut Vec<(String, usize)>) {
+    if let Expr::Call { name, args, line: l, .. } = e {
+        let sig = if name == "output" && args.len() == 2 { Some(&args[1]) } else if name == "reply" && args.len() == 1 { Some(&args[0]) } else { None };
+        if let Some(sig) = sig {
+            let ctor = match sig {
+                Expr::Var(n, _) => Some(n.clone()),
+                Expr::Call { name, .. } => Some(name.clone()),
+                _ => None,
+            };
+            if let Some(c) = ctor {
+                if c.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()) {
+                    out.push((c, if *l == 0 { line } else { *l }));
+                }
+            }
+        }
+    }
+    rill_syntax::lift::each_child_all(e, &mut |c| collect_sent(c, line, out));
 }
 
 #[derive(Clone)]

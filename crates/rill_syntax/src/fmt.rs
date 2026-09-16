@@ -102,6 +102,7 @@ enum Decl<'a> {
     Asm(&'a AsmFn),
     Fn(&'a FnDef),
     Machine(&'a MachineDef),
+    System(&'a SystemDef),
 }
 
 impl Decl<'_> {
@@ -115,6 +116,7 @@ impl Decl<'_> {
             Decl::Asm(d) => d.line,
             Decl::Fn(d) => d.line,
             Decl::Machine(d) => d.line,
+            Decl::System(d) => d.line,
         }
     }
 
@@ -219,6 +221,7 @@ impl Fmt {
                 .map(Decl::Fn),
         );
         decls.extend(m.machines.iter().map(Decl::Machine));
+        decls.extend(m.systems.iter().map(Decl::System));
         decls.sort_by_key(|d| d.line());
 
         let mut prev_import = false;
@@ -299,6 +302,7 @@ impl Fmt {
                 }
                 Decl::Fn(f) => self.fndef(f, 0),
                 Decl::Machine(mc) => self.machinedef(mc),
+                Decl::System(sd) => self.systemdef(sd),
             }
             prev_import = d.is_import();
         }
@@ -467,6 +471,15 @@ impl Fmt {
             for (_, text) in arms {
                 self.out.push_str(&text);
             }
+        }
+    }
+
+    fn systemdef(&mut self, sd: &SystemDef) {
+        self.push_at(0, &format!("system {}", sd.name), sd.line);
+        for r in &sd.routes {
+            self.lead(r.line, 1);
+            let arrow = if r.both { "<->" } else { "->" };
+            self.push_at(1, &format!("{} {arrow} {}: {}", r.from, r.to, r.signals.join(", ")), r.line);
         }
     }
 

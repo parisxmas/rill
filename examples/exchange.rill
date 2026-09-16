@@ -17,6 +17,13 @@ type Signal
   Report
   Status(text: Str)
 
+# The block diagram: who sends what to whom. Checked against the machines
+# — a signal sent that no route carries is refused — and drawn.
+system exchange
+  env -> line: OffHook, Digit, OnHook, Answer, Report
+  line -> env: Status
+  line <-> line: Ring, Answer, OnHook
+
 type Line
   Idle
   Dialling(digits: List(Int))
