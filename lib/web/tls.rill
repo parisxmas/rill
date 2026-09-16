@@ -160,7 +160,7 @@ fn write(c: Conn, s) =
       buf[i] = s[i]
     write_from(c, buf, 0, #s)
 
-private fn write_from(c: Conn, buf, at, n) =
+private fn write_from(c: Conn, buf: Buf(U8), at, n) =
   if at >= n then n
   else
     w = SSL_write(c.ssl, ptr_offset(buf, at), n - at)
