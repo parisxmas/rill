@@ -1,4 +1,4 @@
-# The Rill Language Reference (0.2)
+# The Rill Language Reference (0.13)
 
 Rill is a strict, statically typed functional language that compiles to native
 executables. This document describes the whole language; every construct shown
@@ -2296,6 +2296,7 @@ rill build main.rill --unchecked  # no bounds test on buffers: run it checked fi
 rill build main.rill --shared   # a .dylib/.so whose `export fn`s a C or Python host calls
 rill build main.rill --emit-ir  # print LLVM IR
 rill run main.rill              # compile and run
+rill run main.rill --sandbox    # refuse what reaches past the process (--sandbox=files,net,ffi,os allows some)
 rill check main.rill            # type-check only, saying everything it finds
 rill types main.rill            # the signature the checker worked out for each function
 rill explain main.rill          # the memory decisions the generator made, by line
@@ -2404,6 +2405,45 @@ about being ordered.
 buffer as it stands, the type of the name under the cursor, go to definition,
 an outline, and formatting. `editors/README.md` has the three lines each that
 Neovim, Helix and Emacs need to start it.
+
+### A sandbox
+
+A program that runs for someone else — a model uploaded to an editor that
+is open to the world, a submission, a plugin — should not get to read the
+files of the machine it runs on, open its sockets, call into its C
+libraries, or write to whatever address it likes. Those are the four
+things a Rill program can do that the language cannot account for, and
+`--sandbox` on `build`, `run`, `test` and `check` refuses all of them;
+`--sandbox=files,net` allows the two named. The capabilities are `files`
+(reading, writing, listing, renaming), `net` (sockets), `ffi` (`extern
+fn`, `asm fn`, and raw memory through `Ptr`) and `os` (waiting on the
+process's signals). Everything else the runtime offers — the console, the
+clocks, strands and channels, random numbers, sleeping — stays open,
+since none of it reaches past the process.
+
+The question is answered before the program is built, over the checked
+code: every function reachable from where the run starts — `main` and the
+exports, or the tests under `rill test` — is searched for a runtime or
+foreign call that needs a capability the sandbox withholds. A library
+that would need one is fine to import and fine to leave uncalled; it is
+the call that is refused, and the error lands on the author's own line
+even when the call is a library's, since a line in a library is not one
+the author can go and fix:
+
+```
+$ rill check spy.rill --sandbox
+spy.rill: type error at line 12: `read_file` is not allowed here: it needs `files`,
+  and this sandbox allows nothing beyond the process, reached through `read_file`
+spy.rill: type error at line 20: `to_cstr` is not allowed here: it needs `ffi`,
+  and this sandbox allows nothing beyond the process, reached through `run`
+```
+
+This is a static answer, and it is complete for what the language can
+express: a Rill program has no other way to reach the machine than the
+runtime's functions and the foreign ones, and both are visible to the
+checker. What it does not bound is time and memory — a program allowed
+nothing can still loop and allocate — which is the host's to limit, as the
+editor's server does with a clock.
 
 ---
 

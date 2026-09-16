@@ -5520,6 +5520,113 @@ fn the_editor_server_answers_its_api() {
     if let Err(e) = result {
         std::panic::resume_unwind(e);
     }
+
+    // The same server sandboxed, as it is when opened to the network: a
+    // model that reads a file or runs a command is refused by the check
+    // and by the run, the file's place on the machine kept to itself.
+    let spy = root.join("editors/web/.e2e-spy.rill");
+    std::fs::write(&spy, "import \"cli/proc\"\n\ntype Signal\n  Go\n\ntype S\n  Quiet\n\nmachine spy(me: Chan(Mail(Signal)))\n  state Quiet\n    Go ->\n      println(read_file(\"/etc/hosts\"))\n      stay\n\nfn test_a_spy() =\n  env = mailbox()\n  a = mailbox()\n  spawn spy(a, Quiet)\n  post(a, env, Go)\n  println(run(\"ls\"))\n\nfn main() = println(\"fine\")\n").unwrap();
+    let mut server = Command::new(dir.join("server"))
+        .arg("--port").arg(port.to_string())
+        .arg("--root").arg(&root)
+        .arg("--rill").arg(env!("CARGO_BIN_EXE_rill"))
+        .arg("--sandbox")
+        .arg("--readonly")
+        .env("RILL_PATH", root.join("lib"))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let result = std::panic::catch_unwind(|| {
+        let get = |path: &str| ask(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
+        let post = |method: &str, path: &str, body: &str| ask(format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()));
+        // read-only: nothing is written, and the page is told so
+        let (st, list) = get("/api/files?all=1");
+        assert!(st == 200 && list.contains("\"readonly\":true"), "{st} {list}");
+        let (st, refused) = post("PUT", "/api/file?path=editors/web/.e2e-spy.rill", "fn main() = ()\n");
+        assert!(st == 403 && refused.contains("nothing is saved here"), "{st} {refused}");
+        // ... but what the page sends is checked, drawn, edited and run as it stands
+        let buffer = "type Signal\n  Go\n\ntype S\n  Quiet\n\nmachine calm(me: Chan(Mail(Signal)))\n  state Quiet\n    Go -> stay\n\nfn test_calm() =\n  env = mailbox()\n  a = mailbox()\n  spawn calm(a, Quiet)\n  post(a, env, Go)\n";
+        let (st, checked) = post("POST", "/api/check?path=editors/web/.e2e-spy.rill", buffer);
+        assert!(st == 200 && checked.contains("\"problems\":[") && !checked.contains("read_file"), "{st} {checked}");
+        let (st, drawn) = post("POST", "/api/model?path=editors/web/.e2e-spy.rill", buffer);
+        assert!(st == 200 && drawn.contains("\"name\":\"calm\""), "{st} {drawn}");
+        let (st, names) = post("POST", "/api/scenarios?path=editors/web/.e2e-spy.rill", buffer);
+        assert!(st == 200 && names.contains("test_calm") && !names.contains("test_a_spy"), "{st} {names}");
+        let (st, ran) = post("POST", "/api/run?path=editors/web/.e2e-spy.rill&scenario=test_calm&virtual=1", buffer);
+        assert!(st == 200 && ran.contains("\"status\":0") && ran.contains("ok    test_calm") && ran.contains("\"kind\":\"post\""), "{st} {ran}");
+        let edit = format!("{{\"edits\":[{{\"from\":9,\"to\":9,\"text\":\"    Go -> stop\"}}],\"text\":{}}}", serde_json_str(buffer));
+        let (st, edited) = post("POST", "/api/edit?path=editors/web/.e2e-spy.rill", &edit);
+        assert!(st == 200 && edited.contains("Go -> stop"), "{st} {edited}");
+        let kept = std::fs::read_to_string(&spy).unwrap();
+        assert!(kept.contains("read_file") && !kept.contains("calm"), "the file was written: {kept}");
+        // the sandbox, on the file itself
+        let (st, check) = get("/api/check?path=editors/web/.e2e-spy.rill");
+        assert!(st == 200 && check.contains("`read_file` is not allowed here: it needs `files`") && check.contains("\"line\":12"), "{st} {check}");
+        assert!(check.contains("`to_cstr` is not allowed here: it needs `ffi`") && check.contains("reached through `run`"), "{check}");
+        let (st, run) = get("/api/run?path=editors/web/.e2e-spy.rill&scenario=test_a_spy&virtual=1");
+        assert!(st == 200 && run.contains("\"status\":1") && run.contains("is not allowed here"), "{st} {run}");
+        assert!(!run.contains(&root.display().to_string()), "the root leaked: {run}");
+        let (st, main) = get("/api/run?path=editors/web/.e2e-spy.rill&scenario=main&virtual=1");
+        assert!(st == 200 && main.contains("\"status\":0") && main.contains("fine"), "{st} {main}");
+    });
+    let _ = std::fs::remove_file(&spy);
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// A string as JSON writes it — enough for a test's buffer.
+fn serde_json_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `--sandbox`: a program that would reach past the process — a file, a
+/// socket, foreign code, raw memory — is refused before it is built,
+/// each call named with what it needs, at the author's line even when
+/// the call is a library's; what is allowed by name goes through, and
+/// what a run does not reach — a test, when `main` runs — is left alone.
+#[test]
+fn a_sandbox_refuses_what_reaches_past_the_process() {
+    let root = workspace_root();
+    let dir = std::env::temp_dir().join(format!("rill-e2e-sandbox-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("reach.rill");
+    std::fs::write(&path, "import \"cli/proc\" as proc\n\nfn peek(p) = read_file(p)\n\nfn main() =\n  println(peek(\"/etc/hosts\"))\n  s = tcp_connect(\"example.com\", 80)\n  println(proc.run(\"ls\"))\n  p = alloc_bytes(8)\n  poke_i64(p, 0, 1)\n\nfn test_quiet() = println(\"quiet\")\n").unwrap();
+    let check = |flags: &[&str], cmd: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg(cmd).arg(&path).args(flags).env("RILL_PATH", root.join("lib")).output().unwrap();
+        (out.status.success(), String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout))
+    };
+    let (ok, said) = check(&["--sandbox"], "check");
+    assert!(!ok, "{said}");
+    assert!(said.contains("line 3: `read_file` is not allowed here: it needs `files`, and this sandbox allows nothing beyond the process, reached through `read_file`"), "{said}");
+    assert!(said.contains("line 7: `tcp_connect` is not allowed here: it needs `net`"), "{said}");
+    assert!(said.contains("line 8: `to_cstr` is not allowed here: it needs `ffi`, and this sandbox allows nothing beyond the process, reached through `proc.run`"), "{said}");
+    assert!(said.contains("line 9: `alloc_bytes` is not allowed here: it needs `ffi`"), "{said}");
+    assert!(said.contains("line 10: `poke_i64` is not allowed here"), "{said}");
+    let (ok, said) = check(&["--sandbox=files,net"], "check");
+    assert!(!ok && !said.contains("read_file") && !said.contains("tcp_connect") && said.contains("this sandbox allows files, net"), "{said}");
+    let (ok, said) = check(&["--sandbox=files,net,ffi"], "check");
+    assert!(ok, "{said}");
+    let (ok, said) = check(&["--sandbox=web"], "check");
+    assert!(!ok && said.contains("unknown capability `web`"), "{said}");
+    // the test does not reach any of it, and runs sandboxed; main does not
+    let (ok, said) = check(&["--sandbox"], "test");
+    assert!(ok && said.contains("ok    test_quiet"), "{said}");
+    let (ok, said) = check(&["--sandbox"], "run");
+    assert!(!ok && said.contains("`read_file` is not allowed"), "{said}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `rill doc`: a module's documentation read off the file — the comment

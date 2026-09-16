@@ -13,6 +13,10 @@ pub struct Module {
     /// program's own functions are the tail — which is what lets a diagnostic
     /// tell whether the line it found is one the author can go and look at.
     pub prelude_fns: usize,
+    /// The functions that came in through `import`, by their names after
+    /// the loader's renaming: what a diagnostic should not point the
+    /// author at, since the line is in someone else's file.
+    pub imported_fns: Vec<String>,
     /// `module name`, the first line of a file that is a library: it says
     /// what the file is, has to match the file's own name, and means no
     /// `main` is expected. A program says nothing and has a `main`.

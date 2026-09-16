@@ -241,7 +241,7 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, name, name_line, machines, systems })
+        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, imported_fns: Vec::new(), name, name_line, machines, systems })
     }
 
     /// `machine name(params)` and, indented under it, one `state` after

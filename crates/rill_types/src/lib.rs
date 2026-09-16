@@ -15,8 +15,10 @@
 //!   polymorphic recursion), like OCaml.
 //! - Unconstrained numeric/printable types default to Int.
 
+mod sandbox;
 mod shared;
 pub use shared::{check_rings, check_shared};
+pub use sandbox::{capability_of, check_sandbox, Entries, Sandbox};
 
 use std::collections::{HashMap, HashSet};
 
@@ -292,6 +294,9 @@ pub struct TModule {
     /// methods are appended after the module's own functions, so everything
     /// from here on is code the program's author wrote.
     pub prelude_fns: usize,
+    /// The functions that came in through `import`, by name — the other
+    /// part of what is not the author's.
+    pub imported_fns: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -1691,6 +1696,7 @@ impl Checker {
             naked_asms: self.naked_asms,
             libs: self.libs,
             prelude_fns: self.prelude_fns,
+            imported_fns: module.imported_fns.iter().cloned().collect(),
         })
     }
 

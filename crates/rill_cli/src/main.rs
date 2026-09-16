@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg | --json] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill doc <file.rill | dir>... [-o <dir>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>] [--sandbox[=caps]]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked] [--sandbox[=caps]]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel] [--sandbox[=caps]]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel] [--sandbox[=caps]]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg | --json] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill doc <file.rill | dir>... [-o <dir>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --sandbox  refuse what reaches past the process — files, sockets, foreign\n            code, signals — unless named: --sandbox=files,net,ffi,os\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -44,6 +44,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "check" => {
             let src = rest.iter().find(|a| !a.starts_with("--")).ok_or(USAGE)?;
             let parallel = rest.iter().any(|a| a == "--parallel");
+            let sandbox = sandbox_of(rest)?;
             let path = PathBuf::from(src);
             let module = rill_syntax::load_program(&path)?;
             // Everything one pass can find, rather than the first thing: a
@@ -51,10 +52,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             // about three mistakes.
             let shared = match rill_types::check_all(&module) {
                 // What strands share is a question only a `--parallel`
-                // build asks, and `check --parallel` asks it too.
+                // build asks, and `check --parallel` asks it too; what the
+                // program reaches, only a sandboxed one.
                 Ok(tmod) => {
                     warn(&path, &tmod);
-                    if parallel { rill_types::check_shared(&tmod) } else { Ok(()) }
+                    let shared = if parallel { rill_types::check_shared(&tmod) } else { Ok(()) };
+                    match (&shared, &sandbox) {
+                        (Ok(()), Some(sb)) => rill_types::check_sandbox(&tmod, sb, rill_types::Entries::All),
+                        _ => shared,
+                    }
                 }
                 Err(errors) => Err(errors),
             };
@@ -484,6 +490,8 @@ fn repl_compile(program: &str, tmp_src: &Path, tmp_exe: &Path) -> Result<(), Str
         shared: false,
         debug: true, // skip O3 for snappy iteration
         parallel: false,
+        sandbox: None,
+        entries: rill_types::Entries::Program,
     });
     let _ = std::fs::remove_file(tmp_src);
     // The scratch filename means nothing to the user; strip it from errors.
@@ -518,6 +526,32 @@ struct BuildOpts {
     /// written and the link is left alone: the linker and the runtime for
     /// that machine are not this machine's.
     target: Option<String>,
+    /// What the program may reach past the process, when it is to run for
+    /// someone else; `None` is no sandbox at all.
+    sandbox: Option<rill_types::Sandbox>,
+    /// Where the sandbox's search starts: the program's `main`, or the tests.
+    entries: rill_types::Entries,
+}
+
+/// `--sandbox` or `--sandbox=files,net`: the sandbox an argument names.
+fn sandbox_arg(a: &str) -> Result<Option<rill_types::Sandbox>, String> {
+    if a == "--sandbox" {
+        Ok(Some(rill_types::Sandbox::none()))
+    } else if let Some(caps) = a.strip_prefix("--sandbox=") {
+        rill_types::Sandbox::parse(caps).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// The sandbox among a command's flags, if one is asked for.
+fn sandbox_of(args: &[String]) -> Result<Option<rill_types::Sandbox>, String> {
+    for a in args {
+        if let Some(sb) = sandbox_arg(a)? {
+            return Ok(Some(sb));
+        }
+    }
+    Ok(None)
 }
 
 impl BuildOpts {
@@ -530,8 +564,13 @@ impl BuildOpts {
         let mut parallel = false;
         let mut shared = false;
         let mut target: Option<String> = None;
+        let mut sandbox = None;
         let mut it = args.iter();
         while let Some(a) = it.next() {
+            if let Some(sb) = sandbox_arg(a)? {
+                sandbox = Some(sb);
+                continue;
+            }
             match a.as_str() {
                 "-o" => {
                     output = Some(PathBuf::from(
@@ -566,7 +605,7 @@ impl BuildOpts {
         } else {
             output
         };
-        Ok(BuildOpts { source, output, emit_ir, debug, parallel, unchecked, shared, target })
+        Ok(BuildOpts { source, output, emit_ir, debug, parallel, unchecked, shared, target, sandbox, entries: rill_types::Entries::Program })
     }
 }
 
@@ -641,6 +680,8 @@ fn test_cmd(args: &[String]) -> Result<ExitCode, String> {
         unchecked: false,
         shared: false,
         target: None,
+        sandbox: sandbox_of(args)?,
+        entries: rill_types::Entries::Tests,
     };
     let exe = build_module(module, &opts)?;
     let mut failed = 0;
@@ -759,6 +800,14 @@ fn build_module(module: rill_syntax::ast::Module, opts: &BuildOpts) -> Result<Pa
     // what strands share is checked for the build that has several.
     if opts.parallel {
         if let Err(errors) = rill_types::check_shared(&tmod) {
+            let lines: Vec<String> =
+                errors.iter().map(|e| format!("{}: {e}", opts.source.display())).collect();
+            return Err(lines.join("\n"));
+        }
+    }
+    // A program that runs for someone else reaches only what it was allowed.
+    if let Some(sb) = &opts.sandbox {
+        if let Err(errors) = rill_types::check_sandbox(&tmod, sb, opts.entries) {
             let lines: Vec<String> =
                 errors.iter().map(|e| format!("{}: {e}", opts.source.display())).collect();
             return Err(lines.join("\n"));
@@ -909,7 +958,7 @@ fn link_windows(opts: &BuildOpts, obj: &Path, triple: &str) -> Result<PathBuf, S
         .arg("msvcrt.lib");
     let out = cmd
         .output()
-        .map_err(|e| format!("failed to invoke `lld-link`: {e}\ninstall it with `brew install lld`"))?;
+        .map_err(|e| format!("failed to invoke `lld-link`: {e}\ninstall it with `brew install lld` on a Mac, `apt install lld` on Debian or Ubuntu"))?;
     if !out.status.success() {
         return Err(format!(
             "linking for {triple} failed:\n{}",
@@ -1045,7 +1094,7 @@ fn link_wasm(
     }
     let link = cmd
         .output()
-        .map_err(|e| format!("failed to invoke `wasm-ld`: {e}\ninstall it with `brew install lld`"))?;
+        .map_err(|e| format!("failed to invoke `wasm-ld`: {e}\ninstall it with `brew install lld` on a Mac, `apt install lld` on Debian or Ubuntu"))?;
     if !link.status.success() {
         let said = String::from_utf8_lossy(&link.stderr);
         // Two of these read as toolchain trouble and are not. A symbol wasi-libc

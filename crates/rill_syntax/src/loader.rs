@@ -48,6 +48,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         externs: Vec::new(),
         asms: Vec::new(),
         functions: Vec::new(),
+        imported_fns: Vec::new(),
     };
     loader.visit(entry, None, None)?;
     with_prelude(Module {
@@ -61,6 +62,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         asms: loader.asms,
         functions: loader.functions,
         prelude_fns: 0,
+        imported_fns: loader.imported_fns,
         machines: loader.machines,
         systems: loader.systems,
     })
@@ -91,8 +93,10 @@ fn resolve(dir: &Path, name: &str) -> PathBuf {
 }
 
 /// `RILL_PATH` first — a colon-separated list, for a library that lives
-/// outside the project entirely — and then every `lib/` from the importing
-/// file's own directory upwards.
+/// outside the project entirely — then every `lib/` from the importing
+/// file's own directory upwards, and last the `lib/` beside the compiler's
+/// own `bin/`, which is where a packaged toolchain keeps the standard
+/// library.
 ///
 /// The walk stops at the directory holding `.git`, and stops before the home
 /// directory and the filesystem root in any case: a project with no `lib/` of
@@ -110,6 +114,14 @@ fn search_path(dir: &Path) -> Vec<PathBuf> {
         bases.push(ancestor.join("lib"));
         if ancestor.join(".git").exists() {
             break;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe.canonicalize().unwrap_or(exe);
+        if let Some(lib) = exe.parent().and_then(Path::parent).map(|d| d.join("lib")) {
+            if lib.join("cli").is_dir() || lib.join("data").is_dir() {
+                bases.push(lib);
+            }
         }
     }
     bases
@@ -143,6 +155,8 @@ struct Loader {
     externs: Vec<ExternFn>,
     asms: Vec<AsmFn>,
     functions: Vec<FnDef>,
+    /// The names of every function an imported file defined.
+    imported_fns: Vec<String>,
 }
 
 impl Loader {
@@ -261,6 +275,9 @@ impl Loader {
                 ));
             }
             self.fn_origin.insert(f.name.clone(), canon.clone());
+            if imported_from.is_some() {
+                self.imported_fns.push(f.name.clone());
+            }
             self.functions.push(f);
         }
         Ok(())

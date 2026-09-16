@@ -116,6 +116,7 @@ fn merge(prelude: Module, user: Module) -> Module {
         asms: user.asms,
         functions,
         prelude_fns,
+        imported_fns: user.imported_fns,
         machines: user.machines,
         systems: user.systems,
     }
