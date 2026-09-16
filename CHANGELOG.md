@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.11.0 — a standard library, and a machine
+
+The release where `lib/` became a standard library: twenty-one modules
+in a day, each a `module` with its use at its head, its helpers
+`private`, and its own tests against the published vectors where there
+are any. Hashes to sign with (`crypto/sha2`) and sums to check with
+(`data/checksum`); CSV; DEFLATE both ways with gzip and zlib around it;
+the environment, a command run, a log; text laid out and numbers
+spelled; a set, a heap and a deque; UUIDs; URLs, media types, forms;
+datagrams, names through the resolver, and TLS through OpenSSL. The
+prelude gained the list words programs kept rewriting — `find`, `zip`,
+`partition`, `group_by`, a stable `sort` — and `eprintln`; the language
+gained `()`, the value of `Unit`, and `float_bits` for the bits of a
+float.
+
+`machine` is the other half: a state machine with a mailbox written as
+one, its states the constructors of a type, each `state` answering its
+signals as the arms of a match, `after ms ->` for the silence — lowered
+to the tail-recursive loop over `recv` and `match` a strand doing this
+is anyway — and `rill diagram` draws one from its declaration, as
+Mermaid or as the SDL process diagram in its own symbols.
+
+Writing the libraries found four bugs the compiler and runtime had
+kept: a blocking extern called from a spawned strand got its answer
+written into another strand's frame, since the slot was on a stack
+that is copied away while parked; a field of a generic record handed to
+a tail call crashed codegen; the formatter dropped the parentheses
+around a `match` in a `then` branch; and the ring check refused a part
+of a value as the value. Each is fixed with a test. The sections below
+this one tell each of them properly.
+
 ## 0.10.0 — a library to reach for, and a compiler that says why
 
 The release where Rill got a standard library worth the name, and a
