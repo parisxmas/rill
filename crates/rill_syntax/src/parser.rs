@@ -311,9 +311,25 @@ impl Parser {
         let mut after = None;
         let mut saves = Vec::new();
         let mut whens = Vec::new();
+        let mut priorities = Vec::new();
         loop {
             let (aline, acol) = self.here();
             match self.peek() {
+                // `priority Sig`: answered before what came earlier.
+                Tok::Ident(w) if w == "priority" => {
+                    self.bump();
+                    let pattern = self.pattern()?;
+                    let guard = if matches!(self.peek(), Tok::If) {
+                        self.bump();
+                        Some(self.expr()?)
+                    } else {
+                        None
+                    };
+                    if matches!(self.peek(), Tok::Arrow) {
+                        return Err(SyntaxError::new(aline, acol, "`priority` says which signal goes first; the arm that answers it is written as any other".to_string()));
+                    }
+                    priorities.push((pattern, guard, aline));
+                }
                 // `when cond -> body`: taken with no signal, when nothing
                 // is waiting and the condition holds.
                 Tok::Ident(w) if w == "when" => {
@@ -372,7 +388,7 @@ impl Parser {
         if arms.is_empty() && after.is_none() && whens.is_empty() {
             return Err(SyntaxError::new(line, 0, "a state answers at least one signal, or an `after`".to_string()));
         }
-        Ok(StateDef { pattern, arms, after, saves, whens, line })
+        Ok(StateDef { pattern, arms, after, saves, whens, priorities, line })
     }
 
     /// The parameters of a function or a machine, between the parentheses.

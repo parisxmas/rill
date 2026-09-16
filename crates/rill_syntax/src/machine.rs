@@ -53,6 +53,11 @@
 //! so the state's own win; `stay` at an arm's tail is the state the
 //! machine is in, SDL's `nextstate -`.
 //!
+//! `done(v)` at an arm's tail ends the machine with a value, as `stop`
+//! ends it with none: a machine called from a transition of another, on
+//! the same mailbox, is a procedure with states, and `done` is its
+//! return.
+//!
 //! What arrives is a `Mail`: the signal and the mailbox it came from. An
 //! arm has `sender`, `reply(sig)` sends to it, `output(to, sig)` to any
 //! mailbox, both with this machine as the sender; a timer's signal comes
@@ -120,6 +125,7 @@ fn merged_state(st: &StateDef, shared: Option<&StateDef>) -> StateDef {
         }
         out.saves.extend(all.saves.iter().cloned());
         out.whens.extend(all.whens.iter().cloned());
+        out.priorities.extend(all.priorities.iter().cloned());
     }
     out
 }
@@ -391,9 +397,29 @@ fn state_body(m: &MachineDef, st: &StateDef, mailbox: &str, state: &str, plan: &
     let pred = Expr::Lambda { params: vec![x.clone()], body: Box::new(Expr::Match { scrutinee: Box::new(field(&x, "signal", line)), arms: save_arms, line }), line };
     let pending = "machine.pending".to_string();
     let rest = "machine.rest".to_string();
+    // With a `priority`: everything that has arrived joins the pending
+    // list first, and a signal the state gives priority to is taken from
+    // it before any other, whatever its place.
+    let (pending_now, first) = if st.priorities.is_empty() {
+        (var(&pending, line), None)
+    } else {
+        let mut prio_arms: Vec<Arm> = st
+            .priorities
+            .iter()
+            .map(|(p, g, l)| Arm { pattern: p.clone(), guard: g.clone(), body: Expr::Bool(true), line: *l })
+            .collect();
+        prio_arms.push(Arm { pattern: Pattern::Wildcard, guard: None, body: Expr::Bool(false), line });
+        let px = "machine.px".to_string();
+        let is_prio = Expr::Lambda { params: vec![px.clone()], body: Box::new(Expr::Match { scrutinee: Box::new(field(&px, "signal", line)), arms: prio_arms, line }), line };
+        (call("machine_drain", vec![var(mailbox, line), var(&pending, line)], line), Some(is_prio))
+    };
+    let take = match first {
+        None => call("machine_take", vec![pending_now.clone(), var(&saved, line)], line),
+        Some(is_prio) => call("machine_take_first", vec![pending_now.clone(), is_prio, var(&saved, line)], line),
+    };
     // (the signal if any, the pending list without it)
     let source = Expr::Match {
-        scrutinee: Box::new(call("machine_take", vec![var(&pending, line), var(&saved, line)], line)),
+        scrutinee: Box::new(take),
         arms: vec![
             Arm {
                 pattern: Pattern::Ctor { name: "Some".into(), args: vec![tuple_pat(vec![Pattern::Var(s.clone()), Pattern::Var(rest.clone())], line)], line },
@@ -401,7 +427,7 @@ fn state_body(m: &MachineDef, st: &StateDef, mailbox: &str, state: &str, plan: &
                 body: tuple(vec![call("Some", vec![var(&s, line)], line), var(&rest, line)], line),
                 line,
             },
-            Arm { pattern: Pattern::Ctor { name: "None".into(), args: Vec::new(), line }, guard: None, body: tuple(vec![wait, var(&pending, line)], line), line },
+            Arm { pattern: Pattern::Ctor { name: "None".into(), args: Vec::new(), line }, guard: None, body: tuple(vec![wait, pending_now], line), line },
         ],
         line,
     };
@@ -497,6 +523,12 @@ fn tuple_pat(items: Vec<Pattern>, line: usize) -> Pattern {
 fn next(m: &MachineDef, body: Expr, state: &str) -> Result<Expr, SyntaxError> {
     Ok(match body {
         Expr::Var(n, line) if n == "stop" => noted(note_of(m, &m.params[0].name, "stop", Expr::Str(String::new()), line), Expr::Int(0)),
+        // `done(v)`: the machine's answer, for one called as a procedure
+        Expr::Call { name, mut args, line, .. } if name == "done" && args.len() == 1 => {
+            let v = args.remove(0);
+            let text = crate::fmt::expr_text(&v);
+            noted(note_of(m, &m.params[0].name, "done", Expr::Str(format!("\t{text}")), line), v)
+        }
         // SDL's `nextstate -`: the state the machine is in
         Expr::Var(n, line) if n == "stay" => noted(note_of(m, &m.params[0].name, "next", Expr::Str("\t-".to_string()), line), again(m, var(state, line), line)),
         Expr::Block(mut stmts) => match stmts.pop() {
@@ -554,7 +586,7 @@ fn again(m: &MachineDef, state: Expr, line: usize) -> Expr {
 
 fn plan_of(m: &MachineDef) -> Plan {
     let timers = m.states.iter().any(|st| st.arms.iter().any(|a| uses_timers(&a.body)) || st.after.as_ref().is_some_and(|(_, b, _)| uses_timers(b)) || st.whens.iter().any(|(_, b, _)| uses_timers(b)));
-    let saves = m.states.iter().any(|st| !st.saves.is_empty() || !st.whens.is_empty());
+    let saves = m.states.iter().any(|st| !st.saves.is_empty() || !st.whens.is_empty() || !st.priorities.is_empty());
     Plan { timers, saves }
 }
 

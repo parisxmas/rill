@@ -404,6 +404,23 @@ fn machine_sooner(item, best) = match best
   Some((_, (bd, _))) -> match item
     (_, (d, _)) -> if d < bd then Some(item) else best
 
+# Everything the mailbox holds right now, after what was pending.
+fn machine_drain(me, pending) =
+  got = select
+    machine.s = recv(me) -> Some(machine.s)
+    default -> None
+  match got
+    None -> pending
+    Some(s) -> machine_drain(me, append(pending, Cons(s, Nil)))
+
+# The first pending signal with priority that the state does not save,
+# and failing that the first it does not save — `machine_take` with the
+# priority ones looked at first.
+fn machine_take_first(pending, first, saved) =
+  match machine_take_from(pending, \s -> !first(s) || saved(s), Nil)
+    Some(taken) -> Some(taken)
+    None -> machine_take(pending, saved)
+
 # Whether nothing pending can be answered in this state — when a `when`
 # may be taken.
 fn machine_idle(pending, saved) = match machine_take(pending, saved)

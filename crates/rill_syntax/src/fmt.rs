@@ -440,21 +440,28 @@ impl Fmt {
                 let head = format!("when {}", self.render(cond, 3));
                 arms.push((*wline, self.arm_body_text(&head, body, *wline, 2)));
             }
-            for (p, g, sline) in &st.saves {
+            let mut keyword_lines: Vec<(&str, &Pattern, &Option<Expr>, usize)> = Vec::new();
+            for (p, g, l) in &st.saves {
+                keyword_lines.push(("save", p, g, *l));
+            }
+            for (p, g, l) in &st.priorities {
+                keyword_lines.push(("priority", p, g, *l));
+            }
+            for (word, p, g, sline) in keyword_lines {
                 let head = match g {
-                    Some(g) => format!("save {} if {}", pattern(p), self.render(g, 3)),
-                    None => format!("save {}", pattern(p)),
+                    Some(g) => format!("{word} {} if {}", pattern(p), self.render(g, 3)),
+                    None => format!("{word} {}", pattern(p)),
                 };
                 let mut s = String::new();
-                for (cl, text) in self.comments.before(*sline) {
+                for (cl, text) in self.comments.before(sline) {
                     self.mark(cl);
                     s.push_str(&format!("{}{}\n", pad(2), text));
                 }
-                self.mark(*sline);
-                let text = self.with_trailing(&head, *sline);
+                self.mark(sline);
+                let text = self.with_trailing(&head, sline);
                 s.push_str(&format!("{}{text}\n", pad(2)));
-                self.last_line = self.last_line.max(*sline);
-                arms.push((*sline, s));
+                self.last_line = self.last_line.max(sline);
+                arms.push((sline, s));
             }
             arms.sort_by_key(|(l, _)| *l);
             for (_, text) in arms {

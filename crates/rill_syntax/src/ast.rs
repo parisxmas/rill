@@ -59,6 +59,9 @@ pub struct StateDef {
     /// condition holds and nothing is waiting to be answered — SDL's
     /// continuous signal. The condition, the body, and the line.
     pub whens: Vec<(Expr, Expr, usize)>,
+    /// `priority Sig`: a signal answered before any that came earlier —
+    /// SDL's priority input. The pattern, its guard, and the line.
+    pub priorities: Vec<(Pattern, Option<Expr>, usize)>,
     pub line: usize,
 }
 

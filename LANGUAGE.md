@@ -1233,9 +1233,21 @@ sent and to whom, a timer set or reset, a signal saved or dropped, an
 events happened across every strand, with each machine named by the
 number of its mailbox: `recv line#2 Idle OffHook 1`. **`rill msc`** draws
 those lines as the message sequence chart SDL's tools drew from a
-simulation, in Mermaid: a lifeline per machine and per mailbox of the
-environment, an arrow per signal, a note where a state changed. A run
-without the variable pays one load per event and says nothing.
+simulation, in Mermaid or, with `--svg`, as a picture: a lifeline per
+machine and per mailbox of the environment, an arrow per signal, a note
+where a state changed. A run without the variable pays one load per
+event and says nothing.
+
+**A model runs on a clock of its own.** With `RILL_VIRTUAL_TIME=1` in the
+environment, time does not pass while anything runs; when every strand is
+waiting and the soonest thing waited for is a timer, the clock jumps to
+it — the clock SDL's simulators kept. An `after 50` fires the moment
+nothing else can happen, an hour's sleep takes none, `now_millis` and
+`now_nanos` tell the virtual time, and the trace of a run is the same
+every run, which is what makes a model's behaviour something to test.
+Sockets and file syncs still wait in real time, with the virtual clock
+standing still meanwhile; one worker, since a jump made by two would be
+a race.
 
 **`rill check` says what a machine drops.** For each state, the signals
 some other state answers and this one neither answers nor saves — the
@@ -1246,6 +1258,20 @@ which are either not inputs of this machine (a reply it sends, like
 nothing. A build says nothing of this, since dropping is what an SDL
 process does by default; the notes are for reading a model, and the
 language server shows them as information.
+
+**`priority Sig`** in a state answers that signal before any that came
+earlier, whatever its place in the mailbox — SDL's priority input, for
+the abort that must not wait behind the work. It takes a pattern and a
+guard like `save`, and the arm that answers the signal is written as any
+other.
+
+**A machine can be a procedure.** Called inside another machine's
+transition, on the same mailbox — `if confirm(me, log, Asking(name))
+then …` — it runs in that strand with states of its own, reading the
+signals as they come, and `done(v)` at an arm's tail is its return, as
+`stop` ends a machine with nothing; the caller's transition goes on with
+the value. That is SDL's procedure with states. The caller's timers do
+not fire while it runs, and what the caller had saved stays saved.
 
 Two of SDL's conditions. **`save Sig if !ready`** before an arm for `Sig`
 is `input Sig provided ready`: a signal that arrives before its
@@ -2238,7 +2264,7 @@ rill check main.rill            # type-check only, saying everything it finds
 rill types main.rill            # the signature the checker worked out for each function
 rill explain main.rill          # the memory decisions the generator made, by line
 rill diagram exchange.rill      # the file's machines drawn: Mermaid, or SDL's own symbols (--svg)
-rill msc trace.txt              # a run's trace (RILL_TRACE=1) as a sequence chart
+rill msc trace.txt              # a run's trace (RILL_TRACE=1) as a sequence chart (--svg for a picture)
 rill test tests.rill            # run every `test_...` function, each in its own process
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist

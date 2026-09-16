@@ -22,7 +22,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg] [-o <out>]\n  rill msc [trace.txt] [-o <out>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -196,14 +196,16 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
 }
 
 /// `rill msc`: a trace written by a run under `RILL_TRACE=1`, drawn as a
-/// message sequence chart in Mermaid; the trace from a file, or from
-/// standard input when none is given.
+/// message sequence chart — Mermaid, or SVG on `--svg`; the trace from a
+/// file, or from standard input when none is given.
 fn msc_cmd(args: &[String]) -> Result<ExitCode, String> {
     let mut out: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
+    let mut svg = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--svg" => svg = true,
             "-o" => {
                 i += 1;
                 out = Some(PathBuf::from(args.get(i).ok_or("`-o` needs a file")?));
@@ -224,7 +226,7 @@ fn msc_cmd(args: &[String]) -> Result<ExitCode, String> {
     if !text.contains("rill trace ") {
         return Err("no trace here: run the program with RILL_TRACE=1 and give `rill msc` what it wrote on standard error".to_string());
     }
-    let drawn = diagram::msc(&text);
+    let drawn = if svg { diagram::msc_svg(&text) } else { diagram::msc(&text) };
     match out {
         Some(p) => std::fs::write(&p, drawn).map_err(|e| format!("cannot write {}: {e}", p.display()))?,
         None => print!("{drawn}"),

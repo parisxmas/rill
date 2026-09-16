@@ -2535,11 +2535,150 @@ extern "C" {
 #[cfg(unix)]
 #[no_mangle]
 pub unsafe extern "C" fn rill_now_nanos() -> i64 {
+    if virtual_time() {
+        return vt_now();
+    }
     let mut t = Timespec { secs: 0, nanos: 0 };
     if clock_gettime(CLOCK_MONOTONIC, &mut t) != 0 {
         return 0;
     }
     t.secs.wrapping_mul(1_000_000_000).wrapping_add(t.nanos)
+}
+
+// ---- virtual time ------------------------------------------------------------
+//
+// `RILL_VIRTUAL_TIME=1`: the clock a simulator keeps. Time does not pass
+// while anything runs; when every strand is waiting and the soonest thing
+// waited for is a timer, the clock jumps to it and the strand wakes. A
+// model's `after 50` fires the moment nothing else can happen, the same
+// way every run, and a night of modelled traffic takes a second. Sleeps
+// and `select` deadlines go into a table here instead of the poller;
+// sockets and syncs wait as they do — a model with a socket in it runs in
+// real time for that wait, and the virtual clock stands still meanwhile.
+// One worker: the table is a spin lock and the jump is made by whichever
+// worker is idle, which with several would be a race a model does not
+// want to be measured on.
+
+/// 0 before the variable has been looked at, then 1 or 2 for off and on.
+static VT_ON: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The clock, in nanoseconds since 1970, from the wall clock when first read.
+static VT_NOW: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+/// The strands waiting on the virtual clock: when, and which.
+static mut VT_TIMERS: [(i64, usize); 4096] = [(0, 0); 4096];
+static VT_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static VT_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+unsafe fn virtual_time() -> bool {
+    let v = VT_ON.load(core::sync::atomic::Ordering::Relaxed);
+    if v != 0 {
+        return v == 2;
+    }
+    let on = !getenv(b"RILL_VIRTUAL_TIME\0".as_ptr()).is_null();
+    VT_ON.store(if on { 2 } else { 1 }, core::sync::atomic::Ordering::Relaxed);
+    on
+}
+
+/// Where the virtual clock stands, in nanoseconds since 1970.
+unsafe fn vt_now() -> i64 {
+    let v = VT_NOW.load(core::sync::atomic::Ordering::Acquire);
+    if v != 0 {
+        return v;
+    }
+    let mut t = Timespec { secs: 0, nanos: 0 };
+    let start = if clock_gettime(0, &mut t) == 0 { t.secs.wrapping_mul(1_000_000_000).wrapping_add(t.nanos) } else { 1 };
+    let _ = VT_NOW.compare_exchange(0, start, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire);
+    VT_NOW.load(core::sync::atomic::Ordering::Acquire)
+}
+
+unsafe fn vt_lock() {
+    while VT_LOCK.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {}
+}
+
+unsafe fn vt_unlock() {
+    VT_LOCK.store(false, core::sync::atomic::Ordering::Release);
+}
+
+/// The strand waits on the virtual clock for `ms`; -1 when the table is full.
+unsafe fn vt_add(ms: i64, g: *mut G) -> i32 {
+    let when = vt_now().wrapping_add(ms.max(0).wrapping_mul(1_000_000));
+    vt_lock();
+    let n = VT_LEN.load(core::sync::atomic::Ordering::Relaxed);
+    let table = &mut *core::ptr::addr_of_mut!(VT_TIMERS);
+    if n >= table.len() {
+        vt_unlock();
+        return -1;
+    }
+    table[n] = (when, g as usize);
+    VT_LEN.store(n + 1, core::sync::atomic::Ordering::Relaxed);
+    vt_unlock();
+    0
+}
+
+/// A strand's wait on the clock taken back, because something else woke it.
+unsafe fn vt_forget(g: *mut G) {
+    vt_lock();
+    let table = &mut *core::ptr::addr_of_mut!(VT_TIMERS);
+    let mut n = VT_LEN.load(core::sync::atomic::Ordering::Relaxed);
+    let mut i = 0;
+    while i < n {
+        if table[i].1 == g as usize {
+            table[i] = table[n - 1];
+            n -= 1;
+        } else {
+            i += 1;
+        }
+    }
+    VT_LEN.store(n, core::sync::atomic::Ordering::Relaxed);
+    vt_unlock();
+}
+
+/// Nothing runnable and only the clock to wait on: the clock jumps to the
+/// soonest wait, and every strand waiting for that moment or earlier is
+/// woken. How many were.
+unsafe fn vt_jump() -> usize {
+    vt_lock();
+    let table = &mut *core::ptr::addr_of_mut!(VT_TIMERS);
+    let n = VT_LEN.load(core::sync::atomic::Ordering::Relaxed);
+    if n == 0 {
+        vt_unlock();
+        return 0;
+    }
+    let mut soonest = table[0].0;
+    for e in table.iter().take(n).skip(1) {
+        if e.0 < soonest {
+            soonest = e.0;
+        }
+    }
+    let now = vt_now();
+    if soonest > now {
+        VT_NOW.store(soonest, core::sync::atomic::Ordering::Release);
+    }
+    let now = vt_now();
+    let mut woken = 0;
+    let mut i = 0;
+    let mut len = n;
+    while i < len {
+        if table[i].0 <= now {
+            let g = table[i].1 as *mut G;
+            table[i] = table[len - 1];
+            len -= 1;
+            // the poller's own way of waking a strand that waited on it
+            let sel = core::sync::atomic::AtomicI64::from_ptr(&raw mut (*g).selected);
+            if (*g).on_io
+                && sel.compare_exchange(-1, WOKEN_BY_POLLER, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire).is_ok()
+            {
+                (*g).on_io = false;
+                IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+                make_ready(g);
+                woken += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    VT_LEN.store(len, core::sync::atomic::Ordering::Relaxed);
+    vt_unlock();
+    woken
 }
 
 #[cfg(windows)]
@@ -2577,6 +2716,9 @@ pub unsafe extern "C" fn rill_now_nanos() -> i64 {
 #[cfg(unix)]
 #[no_mangle]
 pub unsafe extern "C" fn rill_now_millis() -> i64 {
+    if virtual_time() {
+        return vt_now() / 1_000_000;
+    }
     let mut t = Timespec { secs: 0, nanos: 0 };
     if clock_gettime(0, &mut t) != 0 {
         return 0;
@@ -6674,6 +6816,15 @@ unsafe fn worker_loop(w: *mut Worker) {
             if !MAIN_G.is_null() && (*MAIN_G).dead {
                 return;
             }
+            // Nothing runnable: on the virtual clock, when the only waits
+            // are on it, time jumps to the soonest and that strand runs.
+            if virtual_time() {
+                let waiting = VT_LEN.load(core::sync::atomic::Ordering::Relaxed);
+                if waiting > 0 && IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) <= waiting && vt_jump() > 0 {
+                    idle_rounds = 0;
+                    continue;
+                }
+            }
             // Anything the network made ready becomes runnable here.
             if poll_network(w, true) > 0 {
                 idle_rounds = 0;
@@ -6963,6 +7114,9 @@ pub unsafe extern "C" fn rill_rt_run(code: extern "C" fn(*mut u8)) {
 /// arm below is never the one that runs.
 #[cfg(unix)]
 unsafe fn select_deadline(ms: i64) -> i32 {
+    if virtual_time() {
+        return vt_add(ms, (*me()).current);
+    }
     net::arm_select_deadline(ms)
 }
 
@@ -7751,6 +7905,9 @@ pub unsafe extern "C" fn rill_select(
     if deadline_case >= 0 && (*g).on_io {
         (*g).on_io = false;
         IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+        if virtual_time() {
+            vt_forget(g);
+        }
     }
     let won = ws.add(idx as usize);
     let item = (*won).item;
@@ -8638,6 +8795,17 @@ mod net {
         let g = (*w).current;
         (*g).selected = -1;
         (*g).wait_ident = 0;
+        if virtual_time() {
+            IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+            (*g).on_io = true;
+            if vt_add(ms, g) < 0 {
+                (*g).on_io = false;
+                IO_WAITERS.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+                return;
+            }
+            block_current();
+            return;
+        }
         let p = ensure_poller(w);
         IO_WAITERS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         (*g).on_io = true;

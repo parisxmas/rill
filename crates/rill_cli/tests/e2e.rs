@@ -5241,6 +5241,11 @@ fn a_trace_is_drawn_as_a_sequence_chart() {
     assert!(chart.contains("  Note over line_4: stop\n"), "{chart}");
     let none = Command::new(env!("CARGO_BIN_EXE_rill")).arg("msc").arg(&path).output().unwrap();
     assert!(!none.status.success() && String::from_utf8_lossy(&none.stderr).contains("no trace here"));
+    let svg = Command::new(env!("CARGO_BIN_EXE_rill")).arg("msc").arg("--svg").arg(&tfile).output().unwrap();
+    let svg = String::from_utf8_lossy(&svg.stdout).to_string();
+    assert!(svg.starts_with("<svg ") && svg.contains("<title>message sequence chart</title>"), "{svg}");
+    assert!(svg.contains(">env#1</text>") && svg.contains(">line#2</text>") && svg.contains("Idle → Dialling(Nil)"), "{svg}");
+    assert!(svg.contains("marker-end=\"url(#arrow)\""));
 }
 
 /// A `mailbox()` grows rather than making a sender wait, as SDL's input
@@ -5296,4 +5301,71 @@ fn a_save_with_a_guard_is_an_enabling_condition() {
     let src = "type Signal\n  Item(n: Int)\n  Open\n  Report\n  Status(text: Str)\n\ntype St\n  Gate(open: Bool)\n\nmachine gate(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Gate(open)\n    save Item(_) if !open\n    Item(n) ->\n      send(log, \"item \" + int_to_str(n))\n      stay\n    Open -> Gate(true)\n    Report ->\n      reply(Status(if open then \"open\" else \"closed\"))\n      stay\n\nfn ask(g, env) =\n  post(g, env, Report)\n  match recv(env).signal\n    Status(t) -> t\n    _ -> \"?\"\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  g = mailbox()\n  spawn gate(g, log, Gate(false))\n  post(g, env, Item(1))\n  post(g, env, Item(2))\n  println(ask(g, env))\n  post(g, env, Open)\n  println(recv(log))\n  println(recv(log))\n  println(ask(g, env))\n  post(g, env, Item(3))\n  println(recv(log))\n";
     assert_eq!(run_source("gate", src), "closed\nitem 1\nitem 2\nopen\nitem 3\n");
     assert_eq!(fmt_source(src), src);
+}
+
+/// `priority Sig`: answered before any signal that came earlier, SDL's
+/// priority input — an `Abort` behind three jobs goes first — and a
+/// saved signal still waits its turn behind it.
+#[test]
+fn a_priority_signal_goes_first() {
+    let src = "type Signal\n  Job(n: Int)\n  Abort\n  Pause\n\ntype St\n  Working\n  Paused\n\nmachine worker(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Working\n    priority Abort\n    Job(n) ->\n      send(log, \"job \" + int_to_str(n))\n      stay\n    Abort ->\n      send(log, \"aborted first\")\n      stay\n    Pause -> Paused\n  state Paused\n    save Job(_)\n    Abort ->\n      send(log, \"aborted while paused\")\n      Working\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  w = mailbox()\n  spawn worker(w, log, Working)\n  post(w, env, Job(1))\n  post(w, env, Job(2))\n  post(w, env, Abort)\n  post(w, env, Job(3))\n  for i in 0..4\n    println(recv(log))\n  post(w, env, Pause)\n  post(w, env, Job(4))\n  post(w, env, Abort)\n  println(recv(log))\n  println(recv(log))\n";
+    assert_eq!(run_source("prio", src), "aborted first\njob 1\njob 2\njob 3\naborted while paused\njob 4\n");
+    assert_eq!(fmt_source(src), src);
+    let dir = std::env::temp_dir().join(format!("rill-e2e-prio-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("prio.rill"), src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(dir.join("prio.rill")).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("  note right of Working: priority Abort\n"));
+    let with_body = src.replace("    priority Abort\n", "    priority Abort -> stay\n");
+    assert!(compile_error(&with_body).contains("`priority` says which signal goes first"));
+}
+
+/// A machine called inside another's transition, on the same mailbox,
+/// is SDL's procedure with states, and `done(v)` is its return: the
+/// question answered Yes, No, or not at all.
+#[test]
+fn a_machine_called_from_a_transition_is_a_procedure() {
+    let src = "type Signal\n  Delete(name: Str)\n  Yes\n  No\n  Report\n  Status(text: Str)\n\ntype Ask\n  Asking(what: Str)\n\ntype St\n  Ready(deleted: List(Str))\n\n# A question with states of its own, run inside another machine's\n# transition on the same mailbox: SDL's procedure.\nmachine confirm(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Asking(what)\n    Yes -> done(true)\n    No -> done(false)\n    after 30 ->\n      send(log, \"no answer about \" + what)\n      done(false)\n\nmachine files(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Ready(deleted)\n    Delete(name) ->\n      if confirm(me, log, Asking(name)) then\n        send(log, \"deleted \" + name)\n        Ready(Cons(name, deleted))\n      else\n        send(log, \"kept \" + name)\n        stay\n    Report ->\n      reply(Status(show(reverse(deleted))))\n      stay\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  f = mailbox()\n  spawn files(f, log, Ready(Nil))\n  post(f, env, Delete(\"a.txt\"))\n  post(f, env, Yes)\n  println(recv(log))\n  post(f, env, Delete(\"b.txt\"))\n  post(f, env, No)\n  println(recv(log))\n  post(f, env, Delete(\"c.txt\"))\n  println(recv(log))\n  println(recv(log))\n  post(f, env, Report)\n  match recv(env).signal\n    Status(t) -> println(t)\n    _ -> println(\"?\")\n";
+    assert_eq!(run_source("proc", src), "deleted a.txt\nkept b.txt\nno answer about c.txt\nkept c.txt\nCons(a.txt, Nil)\n");
+    assert_eq!(fmt_source(src), src);
+    let dir = std::env::temp_dir().join(format!("rill-e2e-proc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("proc.rill"), src).unwrap();
+    let types = Command::new(env!("CARGO_BIN_EXE_rill")).arg("types").arg(dir.join("proc.rill")).output().unwrap();
+    assert!(String::from_utf8_lossy(&types.stdout).contains("fn confirm(me: Chan(Mail(Signal)), log: Chan(Str), machine.state: Ask) -> Bool\n"));
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(dir.join("proc.rill")).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("  Asking --> [*]: Yes / done(true)\n"));
+}
+
+/// `RILL_VIRTUAL_TIME=1`: the clock a simulator keeps. When nothing can
+/// run and the only waits are on the clock, it jumps to the soonest, so
+/// an hour's sleep and a day's deadline take no time, the exchange's
+/// `after 50` fires the moment nothing else can happen, and the trace of
+/// a run is the same every time.
+#[test]
+fn virtual_time_jumps_to_the_next_timer() {
+    let src = "fn main() =\n  t0 = now_millis()\n  sleep_ms(3600000)\n  println(now_millis() - t0)\n  \
+               ch = channel()\n  r = select\n    x = recv(ch) -> \"got\"\n    timeout(86400000) -> \"a day passed\"\n  \
+               println(r)\n  println(now_millis() - t0)\n";
+    let dir = std::env::temp_dir().join(format!("rill-e2e-vt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("vt.rill"), src).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(dir.join("vt.rill")).arg("-o").arg(dir.join("vt")).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let started = std::time::Instant::now();
+    let run = Command::new(dir.join("vt")).env("RILL_VIRTUAL_TIME", "1").output().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "3600000\na day passed\n90000000\n");
+    // the exchange, traced, is the same run every time
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(root.join("examples").join("exchange.rill")).arg("-o").arg(dir.join("exchange")).output().unwrap();
+    assert!(build.status.success());
+    let mut traces = Vec::new();
+    for _ in 0..3 {
+        let run = Command::new(dir.join("exchange")).env("RILL_VIRTUAL_TIME", "1").env("RILL_TRACE", "1").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&run.stdout), "idle\ndialling 2\nidle\ngave up dialling after 1 digits\nidle\nthe caller hears the answer\nhung up\nthe caller is told\n");
+        traces.push(String::from_utf8_lossy(&run.stderr).to_string());
+    }
+    assert!(traces[0] == traces[1] && traces[1] == traces[2]);
+    assert!(traces[0].contains("after\tline#2\tDialling(digits)\t50\n"));
 }

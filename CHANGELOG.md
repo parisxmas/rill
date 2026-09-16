@@ -61,6 +61,35 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — the clock a simulator keeps
+
+`RILL_VIRTUAL_TIME=1` runs a program on virtual time: it does not pass
+while anything runs, and when every strand is waiting and the soonest
+wait is a timer, the clock jumps to it and the strand wakes. The
+exchange's `after 50` fires the moment nothing else can happen, an
+hour's sleep and a day's deadline take none, and the trace of a run is
+the same every time — the exchange in 5 ms instead of 58, identical
+three times over. Sleeps and `select` deadlines go into a table in the
+runtime instead of the poller; sockets and syncs wait as they did.
+
+## Unreleased — the sequence chart as a picture
+
+`rill msc --svg` draws a trace as SVG — a lifeline per machine and per
+mailbox of the environment, an arrow per signal with a timer's coming
+back to its own line, a note per state change, drop, timer, `when` and
+stop — for a page or a document that has no Mermaid. The Mermaid form
+and the picture are drawn from one list of arrows and notes.
+
+## Unreleased — a signal that goes first, and a machine that answers
+
+`priority Sig` in a state answers that signal before any that came
+earlier — SDL's priority input: what has arrived joins the pending list
+and the priority one is taken from it first. `done(v)` at an arm's tail
+ends a machine with a value, so a machine called inside another's
+transition on the same mailbox is SDL's procedure with states, and the
+caller goes on with what it answered; `rill types` shows the machine's
+type as `-> Bool`, and the diagram draws `done(v)` at the stop mark.
+
 ## Unreleased — a transition with no signal, and a signal that waits
 
 `when cond -> body` in a state is SDL's continuous signal: taken with

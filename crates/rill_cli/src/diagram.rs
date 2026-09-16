@@ -90,6 +90,7 @@ fn body_of(e: &Expr) -> (Vec<Step>, End) {
             (steps, End::Next("?".into()))
         }
         Expr::Var(n, _) if n == "stop" => (Vec::new(), End::Stop),
+        Expr::Call { name, args, .. } if name == "done" && args.len() == 1 => (Vec::new(), End::Next(format!("done({})", expr_text(&args[0])))),
         Expr::If { cond, then, els, .. } => {
             let (ts, te) = body_of(then);
             let (es, ee) = body_of(els);
@@ -120,6 +121,17 @@ fn body_of(e: &Expr) -> (Vec<Step>, End) {
         }
         other => (Vec::new(), End::Next(expr_text(other))),
     }
+}
+
+/// What a state answers first: `priority Sig`, with its guard.
+fn priorities_of(st: &StateDef) -> Vec<String> {
+    st.priorities
+        .iter()
+        .map(|(p, g, _)| match g {
+            Some(g) => format!("{} if {}", pattern_text(p), expr_text(g)),
+            None => pattern_text(p),
+        })
+        .collect()
 }
 
 /// What a state keeps for later: `save Sig`, with its guard.
@@ -192,6 +204,9 @@ pub fn mermaid(m: &MachineDef) -> String {
         for s in saves_of(st) {
             out.push_str(&format!("  {from} --> {from}: save {}\n", clean(&s)));
         }
+        for s in priorities_of(st) {
+            out.push_str(&format!("  note right of {from}: priority {}\n", clean(&s)));
+        }
     }
     out
 }
@@ -210,6 +225,7 @@ fn outputs_text(steps: &[Step]) -> String {
 fn mermaid_end(out: &mut String, from: &str, label: &str, end: &End) {
     match end {
         End::Next(n) if n == "stay" => out.push_str(&format!("  {from} --> {from}: {}\n", clean(label))),
+        End::Next(n) if n.starts_with("done(") => out.push_str(&format!("  {from} --> [*]: {} / {}\n", clean(label), clean(n))),
         End::Next(n) => out.push_str(&format!("  {from} --> {}: {}\n", ctor_of(n), clean(label))),
         End::Stop => out.push_str(&format!("  {from} --> [*]: {}\n", clean(label))),
         End::Decision(q, branches) => {
@@ -517,8 +533,16 @@ fn mermaid_id(name: &str) -> String {
     name.replace('#', "_")
 }
 
-/// The trace as Mermaid's `sequenceDiagram`.
-pub fn msc(text: &str) -> String {
+/// One thing drawn on the chart.
+enum Item {
+    /// A signal from one lifeline to another; the same for a timer's.
+    Arrow(String, String, String),
+    /// A note over a lifeline.
+    Note(String, String),
+}
+
+/// The lifelines in the order they first appear, and the items.
+fn chart(text: &str) -> (Vec<String>, Vec<Item>) {
     let events = parse_trace(text);
     // which mailbox numbers are machines, from the events they logged
     let mut machines: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -529,7 +553,6 @@ pub fn msc(text: &str) -> String {
             }
         }
     }
-    // lifelines in the order they first appear
     let mut order: Vec<String> = Vec::new();
     let mut seen = |name: String, order: &mut Vec<String>| {
         if !order.contains(&name) {
@@ -559,16 +582,13 @@ pub fn msc(text: &str) -> String {
             _ => seen(e.who.clone(), &mut order),
         }
     }
-    let mut out = String::from("sequenceDiagram\n");
-    for name in &order {
-        out.push_str(&format!("  participant {} as {}\n", mermaid_id(name), name));
-    }
     // A signal is drawn once: from the sender's `send` between machines,
     // and from the receiver's `recv` when it came from the environment,
     // which logs nothing of its own; a timer's signal is a self-arrow.
+    let mut items = Vec::new();
     let mut last_state: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for e in &events {
-        let me = mermaid_id(&e.who);
+        let me = e.who.clone();
         match e.kind.as_str() {
             "recv" | "drop" => {
                 let (state, sig, from) = match e.kind.as_str() {
@@ -578,52 +598,123 @@ pub fn msc(text: &str) -> String {
                 let from_id = from.cloned().unwrap_or_default();
                 let from_name = lifeline(&from_id, &machines);
                 let label = sig.cloned().unwrap_or_else(|| "a signal".to_string());
-                if from_name == e.who {
-                    out.push_str(&format!("  {me}->>{me}: {} (timer)\n", clean(&label)));
+                if from_name == me {
+                    items.push(Item::Arrow(me.clone(), me.clone(), format!("{label} (timer)")));
                 } else if !machines.contains_key(&from_id) {
-                    out.push_str(&format!("  {}->>{me}: {}\n", mermaid_id(&from_name), clean(&label)));
+                    items.push(Item::Arrow(from_name, me.clone(), label));
                 }
                 if e.kind == "drop" {
-                    out.push_str(&format!("  Note over {me}: dropped in {}\n", clean(state.map(String::as_str).unwrap_or("?"))));
+                    items.push(Item::Note(me.clone(), format!("dropped in {}", state.map(String::as_str).unwrap_or("?"))));
                 }
                 if let Some(s) = state {
-                    last_state.insert(e.who.clone(), s.clone());
+                    last_state.insert(me, s.clone());
                 }
             }
             "send" => {
                 let sig = e.fields.first().cloned().unwrap_or_default();
                 let to = lifeline(e.fields.get(1).map(String::as_str).unwrap_or(""), &machines);
-                out.push_str(&format!("  {me}->>{}: {}\n", mermaid_id(&to), clean(&sig)));
+                items.push(Item::Arrow(me, to, sig));
             }
             "next" => {
                 let next = e.fields.first().cloned().unwrap_or_default();
-                let from = last_state.get(&e.who).cloned().unwrap_or_default();
+                let from = last_state.get(&me).cloned().unwrap_or_default();
                 if next != "-" {
-                    out.push_str(&format!("  Note over {me}: {} → {}\n", clean(&from), clean(&next)));
+                    items.push(Item::Note(me, format!("{from} → {next}")));
                 }
             }
-            "stop" => out.push_str(&format!("  Note over {me}: stop\n")),
+            "stop" => items.push(Item::Note(me, "stop".to_string())),
+            "done" => items.push(Item::Note(me, format!("done {}", e.fields.first().cloned().unwrap_or_default()))),
             "after" => {
                 let state = e.fields.first().cloned().unwrap_or_default();
                 let ms = e.fields.get(1).cloned().unwrap_or_default();
-                out.push_str(&format!("  Note over {me}: after {ms} ms in {}\n", clean(&state)));
-                last_state.insert(e.who.clone(), state);
+                items.push(Item::Note(me.clone(), format!("after {ms} ms in {state}")));
+                last_state.insert(me, state);
+            }
+            "when" => {
+                let state = e.fields.first().cloned().unwrap_or_default();
+                let cond = e.fields.get(1).cloned().unwrap_or_default();
+                items.push(Item::Note(me.clone(), format!("when {cond}")));
+                last_state.insert(me, state);
             }
             "set" => {
                 let t = e.fields.first().cloned().unwrap_or_default();
                 let ms = e.fields.get(1).cloned().unwrap_or_default();
-                out.push_str(&format!("  Note over {me}: set {t} {ms} ms\n"));
+                items.push(Item::Note(me, format!("set {t} {ms} ms")));
             }
-            "reset" => {
-                let t = e.fields.first().cloned().unwrap_or_default();
-                out.push_str(&format!("  Note over {me}: reset {t}\n"));
-            }
-            "save" => {
-                let state = e.fields.first().cloned().unwrap_or_default();
-                out.push_str(&format!("  Note over {me}: saved in {}\n", clean(&state)));
-            }
+            "reset" => items.push(Item::Note(me, format!("reset {}", e.fields.first().cloned().unwrap_or_default()))),
+            "save" => items.push(Item::Note(me, format!("saved in {}", e.fields.first().cloned().unwrap_or_default()))),
             _ => {}
         }
     }
+    (order, items)
+}
+
+/// The trace as Mermaid's `sequenceDiagram`.
+pub fn msc(text: &str) -> String {
+    let (order, items) = chart(text);
+    let mut out = String::from("sequenceDiagram\n");
+    for name in &order {
+        out.push_str(&format!("  participant {} as {}\n", mermaid_id(name), name));
+    }
+    for item in &items {
+        match item {
+            Item::Arrow(from, to, label) => out.push_str(&format!("  {}->>{}: {}\n", mermaid_id(from), mermaid_id(to), clean(label))),
+            Item::Note(who, text) => out.push_str(&format!("  Note over {}: {}\n", mermaid_id(who), clean(text))),
+        }
+    }
+    out
+}
+
+/// The trace as SVG: a lifeline per participant, a row per item.
+pub fn msc_svg(trace: &str) -> String {
+    let (order, items) = chart(trace);
+    const COL: f64 = 200.0;
+    const ROW: f64 = 34.0;
+    const HEAD: f64 = 40.0;
+    const TOP: f64 = 30.0;
+    const SIDE: f64 = 40.0;
+    let x_of = |name: &str| -> f64 {
+        let i = order.iter().position(|n| n == name).unwrap_or(0) as f64;
+        SIDE + COL / 2.0 + i * COL
+    };
+    let width = SIDE * 2.0 + COL * order.len().max(1) as f64;
+    let height = TOP + HEAD + ROW * (items.len() as f64 + 1.0) + 20.0;
+    let mut out = String::new();
+    out.push_str(&format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\" font-family=\"Menlo, Consolas, monospace\" font-size=\"12\">\n<title>message sequence chart</title>\n<defs><marker id=\"arrow\" markerWidth=\"10\" markerHeight=\"8\" refX=\"9\" refY=\"4\" orient=\"auto\"><path d=\"M0,0 L10,4 L0,8 z\" fill=\"black\"/></marker></defs>\n<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n"
+    ));
+    let bottom = TOP + HEAD + ROW * (items.len() as f64 + 1.0);
+    for name in &order {
+        let x = x_of(name);
+        out.push_str(&format!("<rect x=\"{}\" y=\"{TOP}\" width=\"{}\" height=\"{HEAD}\" fill=\"white\" stroke=\"black\" stroke-width=\"1.2\"/>\n", x - COL / 2.0 + 10.0, COL - 20.0));
+        text(&mut out, x, TOP + HEAD / 2.0 + 4.0, name, "middle");
+        line(&mut out, x, TOP + HEAD, x, bottom);
+    }
+    let mut y = TOP + HEAD + ROW;
+    for item in &items {
+        match item {
+            Item::Arrow(from, to, label) => {
+                let (x1, x2) = (x_of(from), x_of(to));
+                if from == to {
+                    // a timer: out and back on the lifeline's right
+                    out.push_str(&format!("<path d=\"M{x1},{} h 30 v 14 h -30\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" marker-end=\"url(#arrow)\"/>\n", y - 7.0));
+                    text(&mut out, x1 + 36.0, y + 4.0, label, "start");
+                } else {
+                    out.push_str(&format!("<line x1=\"{x1}\" y1=\"{y}\" x2=\"{x2}\" y2=\"{y}\" stroke=\"black\" stroke-width=\"1.2\" marker-end=\"url(#arrow)\"/>\n"));
+                    text(&mut out, (x1 + x2) / 2.0, y - 5.0, label, "middle");
+                }
+            }
+            Item::Note(who, note) => {
+                let x = x_of(who);
+                // as wide as the text the helper will show, which it cuts
+                let shown = note.chars().count().min(((W_MOST - 40.0) / CHAR) as usize);
+                let w = (shown as f64 * 7.3 + 16.0).max(60.0);
+                out.push_str(&format!("<rect x=\"{}\" y=\"{}\" width=\"{w}\" height=\"22\" fill=\"#fff8dc\" stroke=\"black\" stroke-width=\"1\"/>\n", x - w / 2.0, y - 11.0));
+                text(&mut out, x, y + 4.0, note, "middle");
+            }
+        }
+        y += ROW;
+    }
+    out.push_str("</svg>\n");
     out
 }
