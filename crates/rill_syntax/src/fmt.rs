@@ -436,6 +436,10 @@ impl Fmt {
                 let head = format!("after {}", self.render(ms, 3));
                 arms.push((*aline, self.arm_body_text(&head, body, *aline, 2)));
             }
+            for (cond, body, wline) in &st.whens {
+                let head = format!("when {}", self.render(cond, 3));
+                arms.push((*wline, self.arm_body_text(&head, body, *wline, 2)));
+            }
             for (p, g, sline) in &st.saves {
                 let head = match g {
                     Some(g) => format!("save {} if {}", pattern(p), self.render(g, 3)),

@@ -346,7 +346,20 @@ fn eprint(x) =
 # A signal to a machine from outside one: `from` is the mailbox its reply
 # comes to. Inside a machine, `output(to, sig)` and `reply(sig)` say the
 # same with the machine's own mailbox as the sender.
-fn post(to, from, signal) = send(to, Mail(from, signal))
+fn post(to, from, signal) =
+  machine_trace("post\t" + int_to_str(chan_id(from)) + "\t" + int_to_str(chan_id(to)))
+  send(to, Mail(from, signal))
+
+# What a machine says of itself when `RILL_TRACE` is set: one event a
+# line on standard error, its fields tab-separated, numbered by the runtime
+# in the order they happened, a machine named with its mailbox's number —
+# what `rill msc` draws. Off, this is one load per event.
+fn machine_trace(text) = if tracing() == 1 then trace_line(text) else ()
+
+fn machine_note(kind, name, me, rest) =
+  machine_trace(kind + "\t" + name + "#" + int_to_str(chan_id(me)) + rest)
+
+fn machine_id(ch) = int_to_str(chan_id(ch))
 
 # What a `machine` with timers or saves is lowered onto; a program does not
 # call these. The timers are a table from a timer's name to the moment it is
@@ -390,6 +403,12 @@ fn machine_sooner(item, best) = match best
   None -> Some(item)
   Some((_, (bd, _))) -> match item
     (_, (d, _)) -> if d < bd then Some(item) else best
+
+# Whether nothing pending can be answered in this state — when a `when`
+# may be taken.
+fn machine_idle(pending, saved) = match machine_take(pending, saved)
+  None -> true
+  Some(_) -> false
 
 # The first saved signal this state does not keep, and the rest in their
 # order; `None` when it keeps them all.

@@ -310,9 +310,19 @@ impl Parser {
         let mut arms = Vec::new();
         let mut after = None;
         let mut saves = Vec::new();
+        let mut whens = Vec::new();
         loop {
             let (aline, acol) = self.here();
             match self.peek() {
+                // `when cond -> body`: taken with no signal, when nothing
+                // is waiting and the condition holds.
+                Tok::Ident(w) if w == "when" => {
+                    self.bump();
+                    let cond = self.expr()?;
+                    self.expect(&Tok::Arrow, "after the condition of a `when` arm")?;
+                    let body = self.body()?;
+                    whens.push((cond, body, aline));
+                }
                 // `save Sig`: kept in the mailbox for a later state.
                 Tok::Ident(w) if w == "save" => {
                     self.bump();
@@ -359,10 +369,10 @@ impl Parser {
                 }
             }
         }
-        if arms.is_empty() && after.is_none() {
+        if arms.is_empty() && after.is_none() && whens.is_empty() {
             return Err(SyntaxError::new(line, 0, "a state answers at least one signal, or an `after`".to_string()));
         }
-        Ok(StateDef { pattern, arms, after, saves, line })
+        Ok(StateDef { pattern, arms, after, saves, whens, line })
     }
 
     /// The parameters of a function or a machine, between the parentheses.

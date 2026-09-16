@@ -5,7 +5,9 @@
 # strand. What arrives is a `Mail`, the signal with the mailbox it came
 # from, so an arm has `sender` and can `reply`; between machines
 # `output(to, sig)` says who is sending, and from outside `post(to, from,
-# sig)` names the mailbox the answer comes to.
+# sig)` names the mailbox the answer comes to. A `mailbox()` grows rather
+# than making a sender wait, so two lines calling each other never hold
+# each other up.
 type Signal
   OffHook
   Digit(n: Int)
@@ -58,8 +60,8 @@ fn ask(l, env) =
 
 fn main() =
   log = channel(16)
-  env = channel(16)
-  a = channel(16)
+  env = mailbox()
+  a = mailbox()
   spawn line(a, log, Idle)
   println(ask(a, env))
   post(a, env, OffHook)
@@ -73,8 +75,8 @@ fn main() =
   post(a, env, Digit(1))
   println(recv(log))
   println(ask(a, env))
-  b = channel(16)
-  c = channel(16)
+  b = mailbox()
+  c = mailbox()
   spawn line(b, log, Idle)
   post(b, c, Ring)
   post(b, env, Answer)

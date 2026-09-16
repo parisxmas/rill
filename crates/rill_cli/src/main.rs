@@ -22,7 +22,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg] [-o <out>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg] [-o <out>]\n  rill msc [trace.txt] [-o <out>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -51,8 +51,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let shared = match rill_types::check_all(&module) {
                 // What strands share is a question only a `--parallel`
                 // build asks, and `check --parallel` asks it too.
-                Ok(tmod) if parallel => rill_types::check_shared(&tmod),
-                Ok(_) => Ok(()),
+                Ok(tmod) => {
+                    warn(&path, &tmod);
+                    if parallel { rill_types::check_shared(&tmod) } else { Ok(()) }
+                }
                 Err(errors) => Err(errors),
             };
             match shared {
@@ -69,6 +71,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "test" => test_cmd(rest),
         "explain" => explain_cmd(rest),
         "diagram" => diagram_cmd(rest),
+        "msc" => msc_cmd(rest),
         "lsp" => lsp::serve(),
         "repl" => {
             repl()?;
@@ -185,6 +188,43 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
             drawn.push('\n');
         }
     }
+    match out {
+        Some(p) => std::fs::write(&p, drawn).map_err(|e| format!("cannot write {}: {e}", p.display()))?,
+        None => print!("{drawn}"),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `rill msc`: a trace written by a run under `RILL_TRACE=1`, drawn as a
+/// message sequence chart in Mermaid; the trace from a file, or from
+/// standard input when none is given.
+fn msc_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let mut out: Option<PathBuf> = None;
+    let mut file: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" => {
+                i += 1;
+                out = Some(PathBuf::from(args.get(i).ok_or("`-o` needs a file")?));
+            }
+            a if a.starts_with('-') => return Err(format!("unknown option `{a}`\n{USAGE}")),
+            a => file = Some(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    let text = match &file {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?,
+        None => {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map_err(|e| format!("cannot read standard input: {e}"))?;
+            s
+        }
+    };
+    if !text.contains("rill trace ") {
+        return Err("no trace here: run the program with RILL_TRACE=1 and give `rill msc` what it wrote on standard error".to_string());
+    }
+    let drawn = diagram::msc(&text);
     match out {
         Some(p) => std::fs::write(&p, drawn).map_err(|e| format!("cannot write {}: {e}", p.display()))?,
         None => print!("{drawn}"),
@@ -603,6 +643,15 @@ fn test_main(tests: &[String]) -> rill_syntax::ast::FnDef {
         lifted_from: None,
         wheres: Vec::new(),
         private: false,
+    }
+}
+
+/// What the checker had to say short of refusing — what a machine's
+/// states drop — on standard error, from `rill check`; a build says
+/// nothing, since dropping is what SDL's processes do by default.
+fn warn(path: &std::path::Path, tmod: &rill_types::TModule) {
+    for (line, text) in &tmod.warnings {
+        eprintln!("{}: note at line {line}: {text}", path.display());
     }
 }
 

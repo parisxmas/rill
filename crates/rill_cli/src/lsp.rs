@@ -210,6 +210,14 @@ impl Server {
                     ("message", Json::str(msg.clone())),
                 ])
             })
+            .chain(a.notes.iter().map(|(line, msg)| {
+                Json::obj(vec![
+                    ("range", span(*line, None, text)),
+                    ("severity", Json::num(3)),
+                    ("source", Json::str("rill")),
+                    ("message", Json::str(msg.clone())),
+                ])
+            }))
             .collect();
         send(Json::obj(vec![
             ("jsonrpc", Json::str("2.0")),
@@ -371,6 +379,8 @@ struct Analysis {
     /// draws the position; the message it shows is the message, since it
     /// knows where it put it.
     diagnostics: Vec<(usize, Option<usize>, String)>,
+    /// What the checker noted short of refusing: shown as information.
+    notes: Vec<(usize, String)>,
     /// Everything a name can be, in the order a lookup tries them.
     sigs: HashMap<String, String>,
     locals: HashMap<String, String>,
@@ -454,6 +464,7 @@ fn analyze(uri: &str, text: &str) -> Analysis {
         }
     };
 
+    a.notes = tmod.warnings.clone();
     for (i, f) in tmod.fns.iter().enumerate() {
         let _ = i;
         a.sigs.insert(f.name.clone(), rill_types::show_signature(f, &tmod.adts, &tmod.traits));

@@ -981,6 +981,98 @@ pub extern "C" fn rill_io_ok() -> i8 {
     unsafe { IO_OK }
 }
 
+// ---- tracing ---------------------------------------------------------------
+//
+// `RILL_TRACE=1` makes every machine say what it does on standard error,
+// one event a line, numbered in the order they happened across all the
+// strands: what `rill msc` draws. Off, a machine pays one load per event.
+
+/// 0 before the variable has been looked at, then 1 or 2 for off and on.
+static TRACE_ON: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+static TRACE_SEQ: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+
+/// Whether `RILL_TRACE` is set, looked up once.
+#[no_mangle]
+pub unsafe extern "C" fn rill_tracing() -> i64 {
+    let v = TRACE_ON.load(core::sync::atomic::Ordering::Relaxed);
+    if v != 0 {
+        return v - 1;
+    }
+    let on = !getenv(b"RILL_TRACE\0".as_ptr()).is_null();
+    TRACE_ON.store(if on { 2 } else { 1 }, core::sync::atomic::Ordering::Relaxed);
+    on as i64
+}
+
+/// One trace event, numbered and written whole to standard error.
+///
+/// # Safety
+/// `s` must be a live string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_trace_line(s: *const u8) {
+    let n = TRACE_SEQ.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+    let text = core::slice::from_raw_parts(str_bytes(s), str_len_of(s));
+    let mut buf = [0u8; 1024];
+    let head = b"rill trace ";
+    let mut len = 0;
+    buf[..head.len()].copy_from_slice(head);
+    len += head.len();
+    let mut digits = [0u8; 20];
+    let mut d = 0;
+    let mut v = n;
+    if v == 0 {
+        digits[0] = b'0';
+        d = 1;
+    }
+    while v > 0 {
+        digits[d] = b'0' + (v % 10) as u8;
+        v /= 10;
+        d += 1;
+    }
+    while d > 0 {
+        d -= 1;
+        buf[len] = digits[d];
+        len += 1;
+    }
+    buf[len] = b' ';
+    len += 1;
+    let room = buf.len() - len - 1;
+    let take = if text.len() > room { room } else { text.len() };
+    buf[len..len + take].copy_from_slice(&text[..take]);
+    len += take;
+    buf[len] = b'\n';
+    len += 1;
+    write_all(2, &buf[..len]);
+}
+
+/// Channels seen by the trace, in the order they were first named, so an
+/// event can say `3` rather than an address.
+static mut TRACE_CHANS: [usize; 4096] = [0; 4096];
+static TRACE_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// A small number for a channel, the same one each time it is asked.
+///
+/// # Safety
+/// `p` must be a live channel.
+#[no_mangle]
+pub unsafe extern "C" fn rill_chan_id(p: *mut u8) -> i64 {
+    while TRACE_LOCK.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {}
+    let table = &mut *core::ptr::addr_of_mut!(TRACE_CHANS);
+    let mut id = 0;
+    for (i, slot) in table.iter_mut().enumerate() {
+        if *slot == p as usize {
+            id = i as i64 + 1;
+            break;
+        }
+        if *slot == 0 {
+            *slot = p as usize;
+            id = i as i64 + 1;
+            break;
+        }
+    }
+    TRACE_LOCK.store(false, core::sync::atomic::Ordering::Release);
+    id
+}
+
 /// Copies a Rill string into a NUL-terminated C buffer (caller frees).
 unsafe fn cstr(s: *const u8) -> *mut u8 {
     let n = str_len_of(s);
@@ -7037,10 +7129,54 @@ struct Chan {
     closed: usize,
     /// The channel's own lock; see `chan_lock`.
     lk: core::sync::atomic::AtomicI32,
+    /// The buffer: right after the struct for a channel made with a size,
+    /// or its own block for a mailbox, which grows rather than making a
+    /// sender wait.
+    slots: *mut u64,
+    /// The slots that came with the struct, for freeing it.
+    inline: usize,
+    /// Non-zero for a mailbox: a full buffer doubles instead of parking
+    /// the sender, as SDL's input port never refuses a signal.
+    grow: usize,
 }
 
 unsafe fn chan_slots(c: *mut Chan) -> *mut u64 {
-    (c as *mut u8).add(core::mem::size_of::<Chan>()) as *mut u64
+    (*c).slots
+}
+
+/// A mailbox's buffer doubled, the ring laid out flat again from its head.
+unsafe fn chan_grow(c: *mut Chan) {
+    let old = (*c).cap;
+    let cap = if old == 0 { 16 } else { old * 2 };
+    let fresh = malloc(cap * 16) as *mut u64;
+    if fresh.is_null() {
+        out(b"rill: out of memory growing a mailbox\n");
+        die();
+    }
+    for k in 0..(*c).len {
+        let i = ((*c).head + k) % old;
+        *fresh.add(k * 2) = *(*c).slots.add(i * 2);
+        *fresh.add(k * 2 + 1) = *(*c).slots.add(i * 2 + 1);
+    }
+    if old != 0 {
+        free((*c).slots as *mut u8);
+    }
+    (*c).slots = fresh;
+    (*c).cap = cap;
+    (*c).head = 0;
+}
+
+/// Whether a value can go into the buffer now: room in it, or a mailbox,
+/// which makes room.
+unsafe fn chan_has_room(c: *mut Chan) -> bool {
+    if (*c).len < (*c).cap {
+        return true;
+    }
+    if (*c).grow != 0 {
+        chan_grow(c);
+        return true;
+    }
+    false
 }
 
 unsafe fn chan_push(c: *mut Chan, a: u64, b: u64) {
@@ -7085,24 +7221,32 @@ pub struct TwoWords {
 
 /// # Safety
 /// Returns an owned channel (rc = 1). `cap` is the buffer size; zero makes it
-/// a rendezvous channel.
+/// a rendezvous channel, and a negative one a mailbox, whose buffer grows
+/// rather than making a sender wait.
 #[no_mangle]
 pub unsafe extern "C" fn rill_chan_new(cap: i64) -> *mut u8 {
-    let cap = cap.max(0) as usize;
-    let c = rill_alloc(chan_size(cap)) as *mut Chan;
+    let grow = (cap < 0) as usize;
+    let inline = cap.max(0) as usize;
+    let c = rill_alloc(chan_size(inline)) as *mut Chan;
     core::ptr::write(
         c,
         Chan {
             rc: 1,
-            cap,
+            cap: inline,
             len: 0,
             head: 0,
             sendq: WQueue::new(),
             recvq: WQueue::new(),
             closed: 0,
             lk: core::sync::atomic::AtomicI32::new(0),
+            slots: (c as *mut u8).add(core::mem::size_of::<Chan>()) as *mut u64,
+            inline,
+            grow,
         },
     );
+    if grow != 0 {
+        chan_grow(c);
+    }
     c as *mut u8
 }
 
@@ -7110,8 +7254,12 @@ pub unsafe extern "C" fn rill_chan_new(cap: i64) -> *mut u8 {
 /// `p` must be a live channel.
 #[no_mangle]
 pub unsafe extern "C" fn rill_chan_release(p: *mut u8) {
-    let size = chan_size((*(p as *mut Chan)).cap);
+    let c = p as *mut Chan;
+    let size = chan_size((*c).inline);
     if rc_dec(p as *mut i64) == 0 {
+        if (*c).grow != 0 {
+            free((*c).slots as *mut u8);
+        }
         rill_free_sized(p, size);
     }
 }
@@ -7208,7 +7356,7 @@ pub unsafe extern "C" fn rill_chan_send(p: *mut u8, a: u64, b: u64) {
         chan_unlock(c);
         return;
     }
-    if (*c).len < (*c).cap {
+    if chan_has_room(c) {
         chan_push(c, a, b);
         chan_unlock(c);
         return;
@@ -7509,7 +7657,7 @@ pub unsafe extern "C" fn rill_select(
                 unlock_chans(&chans, k);
                 return i;
             }
-            if (*ch).len < (*ch).cap {
+            if chan_has_room(ch) {
                 chan_push(ch, c.a, c.b);
                 unlock_chans(&chans, k);
                 return i;

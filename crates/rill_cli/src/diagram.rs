@@ -60,6 +60,10 @@ fn transitions(st: &StateDef) -> Vec<Transition> {
         let (steps, end) = body_of(body);
         items.push((*line, Transition { input: format!("after {} ms", expr_text(ms)), timer: true, steps, end }));
     }
+    for (cond, body, line) in &st.whens {
+        let (steps, end) = body_of(body);
+        items.push((*line, Transition { input: format!("when {}", expr_text(cond)), timer: false, steps, end }));
+    }
     items.sort_by_key(|(l, _)| *l);
     for (_, t) in items {
         out.push(t);
@@ -470,4 +474,156 @@ fn text(out: &mut String, x: f64, y: f64, t: &str, anchor: &str) {
 
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+// ---- a trace, as a message sequence chart -----------------------------------
+//
+// `RILL_TRACE=1` makes every machine say what it did, one event a line on
+// standard error, the fields tab-separated and the line numbered by the
+// runtime in the order events happened. `rill msc` reads those lines and
+// draws the MSC the SDL tools drew from a simulation: a lifeline per
+// machine and one per mailbox of the environment, an arrow per signal,
+// and a note where a state changed, a timer was set, or a signal was
+// dropped.
+
+/// One event of a trace.
+struct Event {
+    kind: String,
+    /// `line#2`, or for `post` the mailbox it came from.
+    who: String,
+    fields: Vec<String>,
+}
+
+fn parse_trace(text: &str) -> Vec<Event> {
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let Some(rest) = l.strip_prefix("rill trace ") else { continue };
+        let Some((_, body)) = rest.split_once(' ') else { continue };
+        let mut parts = body.split('\t').map(|s| s.to_string());
+        let Some(kind) = parts.next() else { continue };
+        let Some(who) = parts.next() else { continue };
+        out.push(Event { kind, who, fields: parts.collect() });
+    }
+    out
+}
+
+/// A mailbox number as the lifeline it stands for: a machine's name with
+/// its number where a machine has that mailbox, `env#n` otherwise.
+fn lifeline(id: &str, machines: &std::collections::HashMap<String, String>) -> String {
+    machines.get(id).cloned().unwrap_or_else(|| format!("env#{id}"))
+}
+
+fn mermaid_id(name: &str) -> String {
+    name.replace('#', "_")
+}
+
+/// The trace as Mermaid's `sequenceDiagram`.
+pub fn msc(text: &str) -> String {
+    let events = parse_trace(text);
+    // which mailbox numbers are machines, from the events they logged
+    let mut machines: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for e in &events {
+        if e.kind != "post" {
+            if let Some((_, id)) = e.who.rsplit_once('#') {
+                machines.insert(id.to_string(), e.who.clone());
+            }
+        }
+    }
+    // lifelines in the order they first appear
+    let mut order: Vec<String> = Vec::new();
+    let mut seen = |name: String, order: &mut Vec<String>| {
+        if !order.contains(&name) {
+            order.push(name);
+        }
+    };
+    for e in &events {
+        match e.kind.as_str() {
+            "post" => {
+                seen(lifeline(&e.who, &machines), &mut order);
+                if let Some(to) = e.fields.first() {
+                    seen(lifeline(to, &machines), &mut order);
+                }
+            }
+            "recv" | "drop" => {
+                if let Some(from) = e.fields.last() {
+                    seen(lifeline(from, &machines), &mut order);
+                }
+                seen(e.who.clone(), &mut order);
+            }
+            "send" => {
+                seen(e.who.clone(), &mut order);
+                if let Some(to) = e.fields.get(1) {
+                    seen(lifeline(to, &machines), &mut order);
+                }
+            }
+            _ => seen(e.who.clone(), &mut order),
+        }
+    }
+    let mut out = String::from("sequenceDiagram\n");
+    for name in &order {
+        out.push_str(&format!("  participant {} as {}\n", mermaid_id(name), name));
+    }
+    // A signal is drawn once: from the sender's `send` between machines,
+    // and from the receiver's `recv` when it came from the environment,
+    // which logs nothing of its own; a timer's signal is a self-arrow.
+    let mut last_state: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for e in &events {
+        let me = mermaid_id(&e.who);
+        match e.kind.as_str() {
+            "recv" | "drop" => {
+                let (state, sig, from) = match e.kind.as_str() {
+                    "recv" => (e.fields.first(), e.fields.get(1), e.fields.get(2)),
+                    _ => (e.fields.first(), None, e.fields.get(1)),
+                };
+                let from_id = from.cloned().unwrap_or_default();
+                let from_name = lifeline(&from_id, &machines);
+                let label = sig.cloned().unwrap_or_else(|| "a signal".to_string());
+                if from_name == e.who {
+                    out.push_str(&format!("  {me}->>{me}: {} (timer)\n", clean(&label)));
+                } else if !machines.contains_key(&from_id) {
+                    out.push_str(&format!("  {}->>{me}: {}\n", mermaid_id(&from_name), clean(&label)));
+                }
+                if e.kind == "drop" {
+                    out.push_str(&format!("  Note over {me}: dropped in {}\n", clean(state.map(String::as_str).unwrap_or("?"))));
+                }
+                if let Some(s) = state {
+                    last_state.insert(e.who.clone(), s.clone());
+                }
+            }
+            "send" => {
+                let sig = e.fields.first().cloned().unwrap_or_default();
+                let to = lifeline(e.fields.get(1).map(String::as_str).unwrap_or(""), &machines);
+                out.push_str(&format!("  {me}->>{}: {}\n", mermaid_id(&to), clean(&sig)));
+            }
+            "next" => {
+                let next = e.fields.first().cloned().unwrap_or_default();
+                let from = last_state.get(&e.who).cloned().unwrap_or_default();
+                if next != "-" {
+                    out.push_str(&format!("  Note over {me}: {} → {}\n", clean(&from), clean(&next)));
+                }
+            }
+            "stop" => out.push_str(&format!("  Note over {me}: stop\n")),
+            "after" => {
+                let state = e.fields.first().cloned().unwrap_or_default();
+                let ms = e.fields.get(1).cloned().unwrap_or_default();
+                out.push_str(&format!("  Note over {me}: after {ms} ms in {}\n", clean(&state)));
+                last_state.insert(e.who.clone(), state);
+            }
+            "set" => {
+                let t = e.fields.first().cloned().unwrap_or_default();
+                let ms = e.fields.get(1).cloned().unwrap_or_default();
+                out.push_str(&format!("  Note over {me}: set {t} {ms} ms\n"));
+            }
+            "reset" => {
+                let t = e.fields.first().cloned().unwrap_or_default();
+                out.push_str(&format!("  Note over {me}: reset {t}\n"));
+            }
+            "save" => {
+                let state = e.fields.first().cloned().unwrap_or_default();
+                out.push_str(&format!("  Note over {me}: saved in {}\n", clean(&state)));
+            }
+            _ => {}
+        }
+    }
+    out
 }

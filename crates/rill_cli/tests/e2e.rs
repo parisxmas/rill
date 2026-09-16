@@ -2513,7 +2513,7 @@ fn a_function_named_like_libc_is_the_programs_own() {
 /// `rill fmt` as declared; a state left out named.
 #[test]
 fn a_machine_answers_its_signals() {
-    let src = "# A telephone line as the exchanges modelled it in SDL: a process with a\n# mailbox, a state, and the signals it answers in each — a `machine`. Two\n# lines, one calling the other; a `Report` signal answered to whoever sent\n# it; a wait that runs out while dialling; and a hang-up that stops the\n# strand. What arrives is a `Mail`, the signal with the mailbox it came\n# from, so an arm has `sender` and can `reply`; between machines\n# `output(to, sig)` says who is sending, and from outside `post(to, from,\n# sig)` names the mailbox the answer comes to.\ntype Signal\n  OffHook\n  Digit(n: Int)\n  OnHook\n  Ring\n  Answer\n  Report\n  Status(text: Str)\n\ntype Line\n  Idle\n  Dialling(digits: List(Int))\n  Ringing(caller: Chan(Mail(Signal)))\n  Talking(peer: Chan(Mail(Signal)))\n\nmachine line(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Idle\n    OffHook -> Dialling(Nil)\n    Ring -> Ringing(sender)\n    Report ->\n      reply(Status(\"idle\"))\n      stay\n  state Dialling(digits)\n    Digit(n) if n >= 0 -> Dialling(Cons(n, digits))\n    OnHook -> Idle\n    Report ->\n      reply(Status(\"dialling \" + int_to_str(len(digits))))\n      stay\n    after 50 ->\n      send(log, \"gave up dialling after \" + int_to_str(len(digits)) + \" digits\")\n      Idle\n  state Ringing(caller)\n    Answer ->\n      output(caller, Answer)\n      Talking(caller)\n    OnHook -> Idle\n  state Talking(peer)\n    OnHook ->\n      output(peer, OnHook)\n      send(log, \"hung up\")\n      stop\n    _ -> stay\n\n# The environment asks a line where it is, on a mailbox of its own.\nfn ask(l, env) =\n  post(l, env, Report)\n  match recv(env).signal\n    Status(text) -> text\n    _ -> \"?\"\n\nfn main() =\n  log = channel(16)\n  env = channel(16)\n  a = channel(16)\n  spawn line(a, log, Idle)\n  println(ask(a, env))\n  post(a, env, OffHook)\n  post(a, env, Digit(5))\n  post(a, env, Digit(-1))\n  post(a, env, Digit(3))\n  println(ask(a, env))\n  post(a, env, OnHook)\n  println(ask(a, env))\n  post(a, env, OffHook)\n  post(a, env, Digit(1))\n  println(recv(log))\n  println(ask(a, env))\n  b = channel(16)\n  c = channel(16)\n  spawn line(b, log, Idle)\n  post(b, c, Ring)\n  post(b, env, Answer)\n  match recv(c).signal\n    Answer -> println(\"the caller hears the answer\")\n    _ -> println(\"?\")\n  post(b, env, OnHook)\n  println(recv(log))\n  match recv(c).signal\n    OnHook -> println(\"the caller is told\")\n    _ -> println(\"?\")\n";
+    let src = "# A telephone line as the exchanges modelled it in SDL: a process with a\n# mailbox, a state, and the signals it answers in each — a `machine`. Two\n# lines, one calling the other; a `Report` signal answered to whoever sent\n# it; a wait that runs out while dialling; and a hang-up that stops the\n# strand. What arrives is a `Mail`, the signal with the mailbox it came\n# from, so an arm has `sender` and can `reply`; between machines\n# `output(to, sig)` says who is sending, and from outside `post(to, from,\n# sig)` names the mailbox the answer comes to. A `mailbox()` grows rather\n# than making a sender wait, so two lines calling each other never hold\n# each other up.\ntype Signal\n  OffHook\n  Digit(n: Int)\n  OnHook\n  Ring\n  Answer\n  Report\n  Status(text: Str)\n\ntype Line\n  Idle\n  Dialling(digits: List(Int))\n  Ringing(caller: Chan(Mail(Signal)))\n  Talking(peer: Chan(Mail(Signal)))\n\nmachine line(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Idle\n    OffHook -> Dialling(Nil)\n    Ring -> Ringing(sender)\n    Report ->\n      reply(Status(\"idle\"))\n      stay\n  state Dialling(digits)\n    Digit(n) if n >= 0 -> Dialling(Cons(n, digits))\n    OnHook -> Idle\n    Report ->\n      reply(Status(\"dialling \" + int_to_str(len(digits))))\n      stay\n    after 50 ->\n      send(log, \"gave up dialling after \" + int_to_str(len(digits)) + \" digits\")\n      Idle\n  state Ringing(caller)\n    Answer ->\n      output(caller, Answer)\n      Talking(caller)\n    OnHook -> Idle\n  state Talking(peer)\n    OnHook ->\n      output(peer, OnHook)\n      send(log, \"hung up\")\n      stop\n    _ -> stay\n\n# The environment asks a line where it is, on a mailbox of its own.\nfn ask(l, env) =\n  post(l, env, Report)\n  match recv(env).signal\n    Status(text) -> text\n    _ -> \"?\"\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  a = mailbox()\n  spawn line(a, log, Idle)\n  println(ask(a, env))\n  post(a, env, OffHook)\n  post(a, env, Digit(5))\n  post(a, env, Digit(-1))\n  post(a, env, Digit(3))\n  println(ask(a, env))\n  post(a, env, OnHook)\n  println(ask(a, env))\n  post(a, env, OffHook)\n  post(a, env, Digit(1))\n  println(recv(log))\n  println(ask(a, env))\n  b = mailbox()\n  c = mailbox()\n  spawn line(b, log, Idle)\n  post(b, c, Ring)\n  post(b, env, Answer)\n  match recv(c).signal\n    Answer -> println(\"the caller hears the answer\")\n    _ -> println(\"?\")\n  post(b, env, OnHook)\n  println(recv(log))\n  match recv(c).signal\n    OnHook -> println(\"the caller is told\")\n    _ -> println(\"?\")\n";
     assert_eq!(
         run_source("exchange", src),
         "idle\ndialling 2\nidle\ngave up dialling after 1 digits\nidle\nthe caller hears the answer\nhung up\nthe caller is told\n"
@@ -5168,4 +5168,132 @@ fn a_machine_shares_arms_across_its_states() {
     assert!(compile_error(&twice).contains("one `state *`"), "{}", compile_error(&twice));
     let only = "type S\n  A\n\nmachine m(me: Chan(Int))\n  state *\n    1 -> stay\n\nfn main() = spawn m(channel(), A)\n";
     assert!(compile_error(only).contains("a `state` of its own"), "{}", compile_error(only));
+}
+
+/// `rill check` says what a machine's states drop: a signal some state
+/// answers and this one does not, per state, and one no state answers
+/// once per machine. A `_ -> stay` state drops nothing; a saved signal
+/// is answered; a build says nothing of it, since dropping is SDL's
+/// default.
+#[test]
+fn check_reports_what_a_machine_drops() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("examples").join("exchange.rill");
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("check").arg(&path).output().unwrap();
+    assert!(out.status.success());
+    let notes = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(notes.contains("note at line 27: `line` in state `Idle` drops `Digit`, `OnHook`, `Answer`: a signal no arm names is consumed"), "{notes}");
+    assert!(notes.contains("`line` in state `Ringing(caller)` drops `OffHook`, `Ring`, `Report`, `Digit`"), "{notes}");
+    assert!(notes.contains("`line` answers `Status` in no state: not an input of this machine"), "{notes}");
+    assert!(!notes.contains("`Talking"), "{notes}");
+    let built = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("-o").arg(std::env::temp_dir().join("rill-e2e-exchange-notes")).output().unwrap();
+    assert!(built.status.success());
+    assert!(!String::from_utf8_lossy(&built.stderr).contains("note at line"));
+    // a saved signal is answered, not dropped
+    let dir = std::env::temp_dir().join(format!("rill-e2e-notes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = "type Signal\n  Connect\n  Data(n: Int)\n  Close\n\ntype St\n  Off\n  On\n\n\
+               machine link(me: Chan(Mail(Signal)), log: Chan(Str))\n  \
+                 state Off\n    save Data(_)\n    Connect -> On\n  \
+                 state On\n    Data(n) ->\n      send(log, int_to_str(n))\n      stay\n    Close -> Off\n\n\
+               fn main() = spawn link(channel(16), channel(16), Off)\n";
+    std::fs::write(dir.join("notes.rill"), src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("check").arg(dir.join("notes.rill")).output().unwrap();
+    let notes = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(notes.contains("`link` in state `Off` drops `Close`"), "{notes}");
+    assert!(!notes.contains("drops `Data`") && !notes.contains("`Close`, `Data`"), "{notes}");
+    assert!(notes.contains("`link` in state `On` drops `Connect`"), "{notes}");
+}
+
+/// `RILL_TRACE=1` makes every machine say what it did, one numbered
+/// line an event, and `rill msc` draws those lines as a sequence chart:
+/// a lifeline per machine and per mailbox of the environment, an arrow
+/// per signal, a note per state change, drop, timer and stop. Without
+/// the variable a run says nothing.
+#[test]
+fn a_trace_is_drawn_as_a_sequence_chart() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("examples").join("exchange.rill");
+    let exe = std::env::temp_dir().join(format!("rill-e2e-trace-{}", std::process::id()));
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("-o").arg(&exe).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let quiet = Command::new(&exe).output().unwrap();
+    assert!(!String::from_utf8_lossy(&quiet.stderr).contains("rill trace"));
+    let run = Command::new(&exe).env("RILL_TRACE", "1").output().unwrap();
+    let trace = String::from_utf8_lossy(&run.stderr).to_string();
+    assert!(trace.contains("rill trace 1 post\t1\t2\n"), "{trace}");
+    assert!(trace.contains("recv\tline#2\tIdle\tOffHook\t1\n"), "{trace}");
+    assert!(trace.contains("next\tline#2\tDialling(Nil)\n"), "{trace}");
+    assert!(trace.contains("drop\tline#2\tDialling(digits)\t1\n"), "{trace}");
+    assert!(trace.contains("after\tline#2\tDialling(digits)\t50\n"), "{trace}");
+    assert!(trace.contains("send\tline#4\tAnswer\t3\n"), "{trace}");
+    assert!(trace.contains("stop\tline#4\n"), "{trace}");
+    let tfile = std::env::temp_dir().join(format!("rill-e2e-trace-{}.txt", std::process::id()));
+    std::fs::write(&tfile, &trace).unwrap();
+    let msc = Command::new(env!("CARGO_BIN_EXE_rill")).arg("msc").arg(&tfile).output().unwrap();
+    assert!(msc.status.success(), "{}", String::from_utf8_lossy(&msc.stderr));
+    let chart = String::from_utf8_lossy(&msc.stdout).to_string();
+    assert!(chart.starts_with("sequenceDiagram\n  participant env_1 as env#1\n  participant line_2 as line#2\n"), "{chart}");
+    assert!(chart.contains("  env_1->>line_2: OffHook\n  Note over line_2: Idle → Dialling(Nil)\n"), "{chart}");
+    assert!(chart.contains("  Note over line_2: dropped in Dialling(digits)\n"), "{chart}");
+    assert!(chart.contains("  Note over line_2: after 50 ms in Dialling(digits)\n"), "{chart}");
+    assert!(chart.contains("  line_4->>env_3: Answer\n"), "{chart}");
+    assert!(chart.contains("  Note over line_4: stop\n"), "{chart}");
+    let none = Command::new(env!("CARGO_BIN_EXE_rill")).arg("msc").arg(&path).output().unwrap();
+    assert!(!none.status.success() && String::from_utf8_lossy(&none.stderr).contains("no trace here"));
+}
+
+/// A `mailbox()` grows rather than making a sender wait, as SDL's input
+/// port never refuses a signal: two machines flooding each other with
+/// five hundred signals apiece in one transition both finish, where the
+/// same with `channel(16)` is a deadlock.
+#[test]
+fn a_mailbox_never_makes_a_sender_wait() {
+    let src = "type Signal\n  Start(peer: Chan(Mail(Signal)))\n  Ping\n  Report\n  Count(n: Int)\n\ntype St\n  Idle\n  Counting(n: Int)\n\nmachine node(me: Chan(Mail(Signal)))\n  state Idle\n    Start(peer) ->\n      for i in 0..500\n        output(peer, Ping)\n      Counting(0)\n  state Counting(n)\n    Ping -> Counting(n + 1)\n    Report ->\n      reply(Count(n))\n      stay\n\nfn main() =\n  env = mailbox()\n  a = mailbox()\n  b = mailbox()\n  spawn node(a, Idle)\n  spawn node(b, Idle)\n  post(a, env, Start(b))\n  post(b, env, Start(a))\n  sleep_ms(50)\n  post(a, env, Report)\n  post(b, env, Report)\n  match recv(env).signal\n    Count(n) -> println(n)\n    _ -> println(\"?\")\n  match recv(env).signal\n    Count(n) -> println(n)\n    _ -> println(\"?\")\n";
+    assert_eq!(run_source("flood", src), "500\n500\n");
+    let bounded = src.replace("mailbox()", "channel(16)");
+    let dir = std::env::temp_dir().join(format!("rill-e2e-flood-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("flood16.rill"), &bounded).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(dir.join("flood16.rill")).arg("-o").arg(dir.join("flood16")).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(dir.join("flood16")).output().unwrap();
+    assert!(!run.status.success());
+    let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+    assert!(said.contains("deadlock"), "{said}");
+    let many = "fn main() =\n  m = mailbox()\n  for i in 0..100000\n    send(m, i)\n  \
+                println(for i in 0..100000 with acc = 0\n    acc + recv(m))\n";
+    assert_eq!(run_source("mailbox_many", many), "4999950000\n");
+    assert!(compile_error("fn main() = println(closed(mailbox(4)))\n").contains("`mailbox` takes nothing"));
+}
+
+/// `when cond -> body`: a transition taken with no signal, once nothing
+/// pending can be answered and the condition holds — SDL's continuous
+/// signal. A signal already in the mailbox is answered first, as SDL has
+/// it, so the crate that ships at three ships four when the fourth was
+/// already there.
+#[test]
+fn a_machine_moves_on_its_own_when_a_condition_holds() {
+    let src = "type Signal\n  Item(n: Int)\n  Ship\n  Report\n  Status(text: Str)\n\ntype St\n  Filling(items: List(Int), open: Bool)\n  Shipping(items: List(Int))\n\n# A crate that fills with items and ships itself when full, or when told to\n# — the spontaneous transition SDL called a continuous signal — and an\n# item that arrives while shipping waits, as `provided` had it.\nmachine crate(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Filling(items, open)\n    Item(n) -> Filling(Cons(n, items), open)\n    Ship -> Filling(items, false)\n    when len(items) >= 3 -> Shipping(items)\n    when !open && len(items) > 0 -> Shipping(items)\n    Report ->\n      reply(Status(\"filling \" + int_to_str(len(items))))\n      stay\n  state Shipping(items)\n    save Item(_)\n    when true ->\n      send(log, \"shipped \" + show(reverse(items)))\n      Filling(Nil, true)\n\nfn ask(c, env) =\n  post(c, env, Report)\n  match recv(env).signal\n    Status(t) -> t\n    _ -> \"?\"\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  a = mailbox()\n  spawn crate(a, log, Filling(Nil, true))\n  post(a, env, Item(1))\n  post(a, env, Item(2))\n  println(ask(a, env))\n  post(a, env, Item(3))\n  post(a, env, Item(4))\n  println(recv(log))\n  println(ask(a, env))\n  post(a, env, Ship)\n  println(ask(a, env))\n  post(a, env, Item(5))\n  println(recv(log))\n  println(ask(a, env))\n";
+    assert_eq!(
+        run_source("when", src),
+        "filling 2\nshipped Cons(1, Cons(2, Cons(3, Cons(4, Nil))))\nfilling 0\nfilling 0\nshipped Cons(5, Nil)\nfilling 0\n"
+    );
+    assert_eq!(fmt_source(src), src);
+    let dir = std::env::temp_dir().join(format!("rill-e2e-when-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("when.rill"), src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(dir.join("when.rill")).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("  Filling --> Shipping: when len(items) >= 3\n"), "{text}");
+}
+
+/// `save Sig if !c` before an arm for `Sig` is SDL's `input Sig provided
+/// c`: the signal waits until the condition holds, then is answered in
+/// the order it came.
+#[test]
+fn a_save_with_a_guard_is_an_enabling_condition() {
+    let src = "type Signal\n  Item(n: Int)\n  Open\n  Report\n  Status(text: Str)\n\ntype St\n  Gate(open: Bool)\n\nmachine gate(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Gate(open)\n    save Item(_) if !open\n    Item(n) ->\n      send(log, \"item \" + int_to_str(n))\n      stay\n    Open -> Gate(true)\n    Report ->\n      reply(Status(if open then \"open\" else \"closed\"))\n      stay\n\nfn ask(g, env) =\n  post(g, env, Report)\n  match recv(env).signal\n    Status(t) -> t\n    _ -> \"?\"\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  g = mailbox()\n  spawn gate(g, log, Gate(false))\n  post(g, env, Item(1))\n  post(g, env, Item(2))\n  println(ask(g, env))\n  post(g, env, Open)\n  println(recv(log))\n  println(recv(log))\n  println(ask(g, env))\n  post(g, env, Item(3))\n  println(recv(log))\n";
+    assert_eq!(run_source("gate", src), "closed\nitem 1\nitem 2\nopen\nitem 3\n");
+    assert_eq!(fmt_source(src), src);
 }

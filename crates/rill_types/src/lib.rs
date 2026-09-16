@@ -267,6 +267,8 @@ pub enum ImplKey {
 
 #[derive(Debug)]
 pub struct TModule {
+    /// What the checker had to say short of refusing, by line.
+    pub warnings: Vec<(usize, String)>,
     pub adts: Vec<AdtDef>,
     /// Constructor name -> (ADT index, constructor index).
     pub ctors: HashMap<String, (usize, usize)>,
@@ -424,6 +426,8 @@ pub enum ChanOp {
     /// `chan_wait(ch)` — receive into the strand's slot, false once the
     /// channel is closed and drained.
     Wait,
+    /// `chan_id(ch)` — a small number naming the channel, for a trace.
+    Id,
 }
 
 #[derive(Debug)]
@@ -550,6 +554,17 @@ struct MethodInfo {
 struct Checker {
     adts: Vec<AdtDef>,
     ctors: HashMap<String, (usize, usize)>,
+    /// The state of a `machine` whose arms are being inferred — the
+    /// machine's name and the state's pattern — so the match on its
+    /// signal can say which state drops what.
+    machine_state: Option<(String, String)>,
+    /// What the compiler has to say short of refusing: a machine's state
+    /// that drops signals silently. Lines and text, for the CLI to print.
+    pub warnings: Vec<(usize, String)>,
+    /// Each state of each machine as its signal match was checked: the
+    /// machine, the line, the state, the signals its arms answer, and
+    /// every signal of the type — for the report made once all are in.
+    machine_states: Vec<(String, usize, String, Vec<String>, Vec<String>, bool)>,
     fn_index: HashMap<String, usize>,
     sigs: Vec<SigState>,
     subst: Vec<Option<Ty>>,
@@ -634,6 +649,9 @@ impl Checker {
         let mut c = Checker {
             adts: Vec::new(),
             ctors: HashMap::new(),
+            machine_state: None,
+            warnings: Vec::new(),
+            machine_states: Vec::new(),
             fn_index: HashMap::new(),
             updates: std::cell::Cell::new(0),
             field_obligations: Vec::new(),
@@ -1517,7 +1535,9 @@ impl Checker {
             }
         }
 
+        self.report_machines();
         Ok(TModule {
+            warnings: self.warnings,
             adts: self.adts,
             ctors: self.ctors,
             fns: tfns,
@@ -3644,6 +3664,17 @@ impl Checker {
             self.require(&a.ty, Constraint::Basic, line, "`println`")?;
             return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Println(Box::new(a)) });
         }
+        if name == "mailbox" {
+            // `mailbox()`: a channel whose buffer grows rather than making a
+            // sender wait — a machine's, so two machines sending each other
+            // signals at once never hold each other up.
+            if !args.is_empty() {
+                return Err(TypeError::new(line, "`mailbox` takes nothing: it grows as it must".to_string()));
+            }
+            let elem = self.fresh();
+            let cap = TExpr { ty: Ty::Int, line, kind: TK::Int(-1) };
+            return Ok(TExpr { ty: Ty::Chan(Box::new(elem)), line, kind: TK::ChanNew(Some(Box::new(cap))) });
+        }
         if name == "channel" {
             // `channel()` rendezvous; `channel(n)` buffers n values.
             let cap = match args.len() {
@@ -3913,7 +3944,7 @@ impl Checker {
             self.unify(&ch.ty, &Ty::Chan(Box::new(elem.clone())), line, "`recv`")?;
             return Ok(TExpr { ty: elem, line, kind: TK::ChanRecv { ch: Box::new(ch) } });
         }
-        if name == "close" || name == "closed" || name == "chan_wait" {
+        if name == "close" || name == "closed" || name == "chan_wait" || name == "chan_id" {
             if args.len() != 1 {
                 return Err(TypeError::new(
                     line,
@@ -3926,6 +3957,7 @@ impl Checker {
             let (op, ty) = match name {
                 "close" => (ChanOp::Close, Ty::Unit),
                 "closed" => (ChanOp::Closed, Ty::Bool),
+                "chan_id" => (ChanOp::Id, Ty::Int),
                 _ => (ChanOp::Wait, Ty::Bool),
             };
             return Ok(TExpr { ty, line, kind: TK::ChanOp { ch: Box::new(ch), op } });
@@ -4087,6 +4119,12 @@ impl Checker {
             // server that reports its own weight can be watched without
             // anything else being installed to watch it.
             "rss_bytes" => Some(("rill_rss_bytes", vec![], Ty::Int)),
+            // Whether `RILL_TRACE` is set: what a machine asks before it
+            // says what it did, and what a program may ask too.
+            "tracing" => Some(("rill_tracing", vec![], Ty::Int)),
+            // One line of the trace, numbered by the runtime in the order
+            // events happened across every strand.
+            "trace_line" => Some(("rill_trace_line", vec![Ty::Str], Ty::Unit)),
             // The workers this run has, for deciding how many strands a big
             // piece of work is worth. 1 unless `RILL_THREADS` said otherwise.
             "workers" => Some(("rill_workers", vec![], Ty::Int)),
@@ -4532,7 +4570,18 @@ impl Checker {
             } else {
                 &arm.body
             };
-            let body = self.infer(arm_body, &mut arm_env)?;
+            // A `machine`'s match on its state: the arms are its states,
+            // and the signal match inside each wants to know which.
+            let state_here = match scrutinee {
+                Expr::Var(n, _) if n == "machine.state" => Some((self.machine_name(), show_pattern(&arm.pattern))),
+                _ => None,
+            };
+            let outer_state = if state_here.is_some() { std::mem::replace(&mut self.machine_state, state_here) } else { None };
+            let body = self.infer(arm_body, &mut arm_env);
+            if outer_state.is_some() || matches!(scrutinee, Expr::Var(n, _) if n == "machine.state") {
+                self.machine_state = outer_state;
+            }
+            let body = body?;
             // The one `match` a program did not write is the one `?` becomes,
             // and its arms disagreeing means only one thing: the `?` was
             // written where the block's value is not the function's. Say that
@@ -4566,6 +4615,24 @@ impl Checker {
                 }
             })?;
             tarms.push(TArm { pattern: arm.pattern.clone(), guard, body, line: arm.line });
+        }
+
+        // A machine's match on its signal: what its arms do not name is
+        // dropped, and that is worth a word — the report SDL tools give of
+        // a state's implicit consumption.
+        if let (Expr::Var(n, _), Some((machine, state))) = (scrutinee, self.machine_state.clone()) {
+            if n == "machine.sig" {
+                // what the arms name, guarded or not — a `_ -> stay`
+                // answers everything and names nothing, and is said so
+                let all = self.ctor_names_of(&scrut.ty);
+                let mut v = Vec::new();
+                for a in arms.iter().filter(|a| !matches!(&a.pattern, Pattern::Var(n) if n == "machine.other")) {
+                    ctor_names(&a.pattern, &mut v);
+                }
+                let catch_all = arms.iter().any(|a| a.guard.is_none() && matches!(a.pattern, Pattern::Wildcard | Pattern::Var(_)) && !matches!(&a.pattern, Pattern::Var(n) if n == "machine.other"));
+                let named_ctors: Vec<String> = all.iter().filter(|c| v.contains(c)).cloned().collect();
+                self.machine_states.push((machine, line, state, named_ctors, all, catch_all));
+            }
         }
 
         if let Some(w) = self.witness(&matrix, &[scrut.ty.clone()]) {
@@ -4731,6 +4798,65 @@ impl Checker {
 
     /// Maranget's usefulness test: can any value match `q` without having
     /// matched an earlier row of `matrix`?
+    /// The name of the machine being inferred: the function's, without
+    /// the `.run` of a loop.
+    fn machine_name(&self) -> String {
+        self.cur_fn_name.trim_end_matches(".run").to_string()
+    }
+
+    /// The constructors of a type, by name.
+    fn ctor_names_of(&self, ty: &Ty) -> Vec<String> {
+        match self.resolve(ty) {
+            Ty::Adt(adt, _) => self.adts[adt].ctors.iter().map(|c| c.name.clone()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The report of what a machine's states drop, once every state has
+    /// been checked: a signal some state answers and this one does not is
+    /// said per state; one no state answers is said once, since it is
+    /// either not an input of this machine or a mistake in every state.
+    fn report_machines(&mut self) {
+        let mut machines: Vec<String> = Vec::new();
+        for (m, ..) in &self.machine_states {
+            if !machines.contains(m) {
+                machines.push(m.clone());
+            }
+        }
+        for m in machines {
+            let states: Vec<&(String, usize, String, Vec<String>, Vec<String>, bool)> =
+                self.machine_states.iter().filter(|s| s.0 == m).collect();
+            let all: Vec<String> = states.first().map(|s| s.4.clone()).unwrap_or_default();
+            let mut anywhere: Vec<String> = Vec::new();
+            for s in &states {
+                for c in &s.3 {
+                    if !anywhere.contains(c) {
+                        anywhere.push(c.clone());
+                    }
+                }
+            }
+            let mut notes = Vec::new();
+            for s in &states {
+                let dropped: Vec<String> = if s.5 { Vec::new() } else { anywhere.iter().filter(|c| !s.3.contains(c)).cloned().collect() };
+                if !dropped.is_empty() {
+                    notes.push((s.1, format!(
+                        "`{m}` in state `{}` drops {}: a signal no arm names is consumed and the state kept. Answer it, `save` it, or say so with `_ -> stay`",
+                        s.2, backticked(&dropped)
+                    )));
+                }
+            }
+            let never: Vec<String> = all.iter().filter(|c| !anywhere.contains(c)).cloned().collect();
+            if !never.is_empty() {
+                let first = states.iter().map(|s| s.1).min().unwrap_or(0);
+                notes.push((first, format!(
+                    "`{m}` answers {} in no state: not an input of this machine, or a signal it was meant to handle",
+                    backticked(&never)
+                )));
+            }
+            self.warnings.extend(notes);
+        }
+    }
+
     fn useful(&self, matrix: &[Vec<Pattern>], q: &[Pattern], tys: &[Ty]) -> bool {
         if tys.is_empty() {
             return matrix.is_empty();
@@ -4859,6 +4985,21 @@ fn peel(p: &Pattern) -> &Pattern {
         Pattern::As(_, inner, _) => peel(inner),
         other => other,
     }
+}
+
+/// The constructors a pattern names at its top: one, or the alternatives
+/// of an `|`.
+fn ctor_names(p: &Pattern, out: &mut Vec<String>) {
+    match p {
+        Pattern::Ctor { name, .. } => out.push(name.clone()),
+        Pattern::Or(alts, _) => alts.iter().for_each(|a| ctor_names(a, out)),
+        Pattern::As(_, inner, _) => ctor_names(inner, out),
+        _ => {}
+    }
+}
+
+fn backticked(names: &[String]) -> String {
+    names.iter().map(|d| format!("`{d}`")).collect::<Vec<_>>().join(", ")
 }
 
 fn show_pattern(p: &Pattern) -> String {
@@ -5630,6 +5771,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "yield"
             | "print"
             | "channel"
+            | "mailbox"
             | "send"
             | "recv"
             | "close"
@@ -5661,6 +5803,9 @@ fn is_builtin_fn(name: &str) -> bool {
             | "now_nanos"
             | "now_millis"
             | "rss_bytes"
+            | "tracing"
+            | "trace_line"
+            | "chan_id"
             | "workers"
             | "random_i64"
             | "sleep_ms"

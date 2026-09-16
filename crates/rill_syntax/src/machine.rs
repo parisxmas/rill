@@ -119,6 +119,7 @@ fn merged_state(st: &StateDef, shared: Option<&StateDef>) -> StateDef {
             out.after = all.after.clone();
         }
         out.saves.extend(all.saves.iter().cloned());
+        out.whens.extend(all.whens.iter().cloned());
     }
     out
 }
@@ -150,7 +151,9 @@ fn fndef(name: &str, params: Vec<Param>, body: Expr, line: usize) -> FnDef {
     }
 }
 
-/// What this machine carries besides its state.
+/// What this machine carries besides its state. A `when` needs the list
+/// of what is pending too, since a signal looked at and not yet answered
+/// waits there.
 struct Plan {
     timers: bool,
     saves: bool,
@@ -209,40 +212,77 @@ fn starts_upper(n: &str) -> bool {
 /// An arm's body with the machine's own words rewritten: `output(to, s)`
 /// is a send with this machine as the sender, `reply(s)` the same to the
 /// sender of the signal being answered, and the timer calls go onto the
-/// machine's table with the timer's signal wrapped as from itself.
-fn rewrite(e: Expr, me: &str) -> Expr {
+/// machine's table with the timer's signal wrapped as from itself. Each
+/// says what it did to the trace first.
+fn rewrite(e: Expr, m: &MachineDef, me: &str) -> Expr {
     let e = match e {
         Expr::Call { name, args, line, piped, stacked } => match timer_call(&name, &args) {
             Some(t) => {
-                let mut a = vec![var("machine.timers", line), Expr::Str(t)];
+                let mut a = vec![var("machine.timers", line), Expr::Str(t.clone())];
                 let mut rest = args.into_iter();
                 let signal = rest.next().expect("checked");
-                let fname = match name.as_str() {
+                let (fname, note) = match name.as_str() {
                     "set" => {
-                        a.push(rest.next().expect("checked"));
+                        let ms = rest.next().expect("checked");
+                        let note = concat(vec![Expr::Str(format!("\t{t}\t")), call("int_to_str", vec![ms.clone()], line)], line);
+                        a.push(ms);
                         a.push(mail(me, signal, line));
-                        "machine_set"
+                        ("machine_set", Some(("set", note)))
                     }
-                    "reset" => "machine_reset",
-                    _ => "machine_active",
+                    "reset" => ("machine_reset", Some(("reset", Expr::Str(format!("\t{t}"))))),
+                    _ => ("machine_active", None),
                 };
-                Expr::Call { name: fname.to_string(), args: a, line, piped, stacked }
+                let done = Expr::Call { name: fname.to_string(), args: a, line, piped, stacked };
+                match note {
+                    Some((kind, rest)) => Expr::Block(vec![Stmt::Expr(note_of(m, me, kind, rest, line)), Stmt::Expr(done)]),
+                    None => done,
+                }
             }
             None if name == "output" && args.len() == 2 => {
                 let mut it = args.into_iter();
                 let to = it.next().expect("two");
                 let sig = it.next().expect("two");
-                call("send", vec![to, mail(me, sig, line)], line)
+                let text = crate::fmt::expr_text(&sig);
+                let note = note_of(m, me, "send", concat(vec![Expr::Str(format!("\t{text}\t")), call("machine_id", vec![to.clone()], line)], line), line);
+                Expr::Block(vec![Stmt::Expr(note), Stmt::Expr(call("send", vec![to, mail(me, sig, line)], line))])
             }
             None if name == "reply" && args.len() == 1 => {
                 let sig = args.into_iter().next().expect("one");
-                call("send", vec![var("sender", line), mail(me, sig, line)], line)
+                let text = crate::fmt::expr_text(&sig);
+                let note = note_of(m, me, "send", concat(vec![Expr::Str(format!("\t{text}\t")), call("machine_id", vec![var("sender", line)], line)], line), line);
+                Expr::Block(vec![Stmt::Expr(note), Stmt::Expr(call("send", vec![var("sender", line), mail(me, sig, line)], line))])
             }
             None => Expr::Call { name, args, line, piped, stacked },
         },
         other => other,
     };
-    crate::lift::map_children(e, &mut |c| rewrite(c, me))
+    crate::lift::map_children(e, &mut |c| rewrite(c, m, me))
+}
+
+/// `machine_note(kind, name, me, rest)`: one event of the trace.
+fn note_of(m: &MachineDef, me: &str, kind: &str, rest: Expr, line: usize) -> Expr {
+    call("machine_note", vec![Expr::Str(kind.to_string()), Expr::Str(m.name.clone()), var(me, line), rest], line)
+}
+
+/// Strings joined with `+`.
+fn concat(parts: Vec<Expr>, line: usize) -> Expr {
+    let mut it = parts.into_iter();
+    let mut acc = it.next().expect("one part");
+    for p in it {
+        acc = Expr::Binary { op: BinOp::Add, lhs: Box::new(acc), rhs: Box::new(p), line, newline: false };
+    }
+    acc
+}
+
+/// A statement said before a body.
+fn noted(note: Expr, body: Expr) -> Expr {
+    match body {
+        Expr::Block(mut stmts) => {
+            stmts.insert(0, Stmt::Expr(note));
+            Expr::Block(stmts)
+        }
+        other => Expr::Block(vec![Stmt::Expr(note), Stmt::Expr(other)]),
+    }
 }
 
 /// `Mail(me, signal)`: a signal as this machine sends it.
@@ -258,19 +298,31 @@ fn field(base: &str, name: &str, line: usize) -> Expr {
 /// wait with a deadline; then answer the signal, or keep it.
 fn state_body(m: &MachineDef, st: &StateDef, mailbox: &str, state: &str, plan: &Plan) -> Result<Expr, SyntaxError> {
     let line = st.line;
+    let state_text = crate::fmt::pattern_text(&st.pattern);
     let sig = "machine.sig".to_string();
     let got = "machine.got".to_string();
     let mut sig_arms = Vec::new();
+    // What the state saves never reaches this match — it is kept before
+    // it — but the arms say so first, guarded so they take nothing and
+    // shadow nothing, for the report of what a state drops to read them
+    // as answered.
+    for (p, g, l) in &st.saves {
+        let guard = g.clone().unwrap_or(Expr::Bool(false));
+        sig_arms.push(Arm { pattern: p.clone(), guard: Some(guard), body: again(m, var(state, *l), *l), line: *l });
+    }
     let mut catches_all = false;
     for a in &st.arms {
         if a.guard.is_none() && matches!(a.pattern, Pattern::Wildcard | Pattern::Var(_)) {
             catches_all = true;
         }
-        sig_arms.push(Arm { pattern: a.pattern.clone(), guard: a.guard.clone(), body: next(m, rewrite(a.body.clone(), mailbox), state)?, line: a.line });
+        let pat = crate::fmt::pattern_text(&a.pattern);
+        let recv = note_of(m, mailbox, "recv", concat(vec![Expr::Str(format!("\t{state_text}\t{pat}\t")), call("machine_id", vec![var("sender", a.line)], a.line)], a.line), a.line);
+        sig_arms.push(Arm { pattern: a.pattern.clone(), guard: a.guard.clone(), body: next(m, noted(recv, rewrite(a.body.clone(), m, mailbox)), state)?, line: a.line });
     }
     if !catches_all {
         // a signal no arm names is consumed, and the state kept
-        sig_arms.push(Arm { pattern: Pattern::Var("machine.other".to_string()), guard: None, body: again(m, var(state, line), line), line });
+        let drop = note_of(m, mailbox, "drop", concat(vec![Expr::Str(format!("\t{state_text}\t")), call("machine_id", vec![var("sender", line)], line)], line), line);
+        sig_arms.push(Arm { pattern: Pattern::Var("machine.other".to_string()), guard: None, body: noted(drop, again(m, var(state, line), line)), line });
     }
     // The signal answered: its sender and itself, out of the mail.
     let mail_name = "machine.mail".to_string();
@@ -280,7 +332,10 @@ fn state_body(m: &MachineDef, st: &StateDef, mailbox: &str, state: &str, plan: &
         Stmt::Expr(Expr::Match { scrutinee: Box::new(var(&sig, line)), arms: sig_arms, line }),
     ]);
     let after_body = match &st.after {
-        Some((_, body, _)) => next(m, rewrite(body.clone(), mailbox), state)?,
+        Some((ms, body, l)) => {
+            let note = note_of(m, mailbox, "after", concat(vec![Expr::Str(format!("\t{state_text}\t")), call("int_to_str", vec![ms.clone()], *l)], *l), *l);
+            next(m, noted(note, rewrite(body.clone(), m, mailbox)), state)?
+        }
         None => again(m, var(state, line), line),
     };
     let after_ms = st.after.as_ref().map(|(ms, _, _)| ms.clone());
@@ -351,6 +406,7 @@ fn state_body(m: &MachineDef, st: &StateDef, mailbox: &str, state: &str, plan: &
         line,
     };
     let keep = Expr::Block(vec![
+        Stmt::Expr(note_of(m, mailbox, "save", Expr::Str(format!("\t{state_text}")), line)),
         Stmt::Bind { name: pending.clone(), value: call("append", vec![var(&pending, line), call("Cons", vec![var(&mail_name, line), var("Nil", line)], line)], line), line },
         Stmt::Expr(again(m, var(state, line), line)),
     ]);
@@ -368,10 +424,44 @@ fn state_body(m: &MachineDef, st: &StateDef, mailbox: &str, state: &str, plan: &
         ],
         line,
     };
-    Ok(Expr::Block(vec![
-        Stmt::Bind { name: saved, value: pred, line },
-        Stmt::PatBind { pattern: tuple_pat(vec![Pattern::Var(got), Pattern::Var(pending)], line), value: source, line },
+    let normal = Expr::Block(vec![
+        Stmt::PatBind { pattern: tuple_pat(vec![Pattern::Var(got), Pattern::Var(pending.clone())], line), value: source, line },
         Stmt::Expr(outcome),
+    ]);
+    if st.whens.is_empty() {
+        return Ok(Expr::Block(vec![Stmt::Bind { name: saved, value: pred, line }, Stmt::Expr(normal)]));
+    }
+    // A `when`: what has arrived is looked at without waiting and joins
+    // what is pending; if nothing pending can be answered, the first
+    // condition that holds is taken; otherwise the state goes on as it
+    // would.
+    let polled = Expr::Select {
+        arms: vec![SelectArm {
+            op: SelectOp::Recv { chan: var(mailbox, line), bind: Some(s.clone()) },
+            body: call("Cons", vec![var(&s, line), var("Nil", line)], line),
+            line,
+        }],
+        default: Some(Box::new(var("Nil", line))),
+        line,
+    };
+    let idle = "machine.idle".to_string();
+    let mut chain = normal;
+    for (cond, body, l) in st.whens.iter().rev() {
+        let note = note_of(m, mailbox, "when", Expr::Str(format!("\t{state_text}\t{}", crate::fmt::expr_text(cond))), *l);
+        let taken = next(m, noted(note, rewrite(body.clone(), m, mailbox)), state)?;
+        chain = Expr::If {
+            // `idle && cond`, as the parser writes `&&`
+            cond: Box::new(Expr::If { cond: Box::new(var(&idle, *l)), then: Box::new(cond.clone()), els: Box::new(Expr::Bool(false)), newline: false }),
+            then: Box::new(taken),
+            els: Box::new(chain),
+            newline: false,
+        };
+    }
+    Ok(Expr::Block(vec![
+        Stmt::Bind { name: saved.clone(), value: pred, line },
+        Stmt::Bind { name: pending.clone(), value: call("append", vec![var(&pending, line), polled], line), line },
+        Stmt::Bind { name: idle, value: call("machine_idle", vec![var(&pending, line), var(&saved, line)], line), line },
+        Stmt::Expr(chain),
     ]))
 }
 
@@ -406,9 +496,9 @@ fn tuple_pat(items: Vec<Pattern>, line: usize) -> Pattern {
 /// tail followed into its branches.
 fn next(m: &MachineDef, body: Expr, state: &str) -> Result<Expr, SyntaxError> {
     Ok(match body {
-        Expr::Var(n, _) if n == "stop" => Expr::Int(0),
+        Expr::Var(n, line) if n == "stop" => noted(note_of(m, &m.params[0].name, "stop", Expr::Str(String::new()), line), Expr::Int(0)),
         // SDL's `nextstate -`: the state the machine is in
-        Expr::Var(n, line) if n == "stay" => again(m, var(state, line), line),
+        Expr::Var(n, line) if n == "stay" => noted(note_of(m, &m.params[0].name, "next", Expr::Str("\t-".to_string()), line), again(m, var(state, line), line)),
         Expr::Block(mut stmts) => match stmts.pop() {
             Some(Stmt::Expr(last)) => {
                 stmts.push(Stmt::Expr(next(m, last, state)?));
@@ -439,7 +529,9 @@ fn next(m: &MachineDef, body: Expr, state: &str) -> Result<Expr, SyntaxError> {
         }
         other => {
             let line = crate::fmt::expr_line(&other);
-            again(m, other, if line == 0 { m.line } else { line })
+            let line = if line == 0 { m.line } else { line };
+            let text = crate::fmt::expr_text(&other);
+            noted(note_of(m, &m.params[0].name, "next", Expr::Str(format!("\t{text}")), line), again(m, other, line))
         }
     })
 }
@@ -461,8 +553,8 @@ fn again(m: &MachineDef, state: Expr, line: usize) -> Expr {
 }
 
 fn plan_of(m: &MachineDef) -> Plan {
-    let timers = m.states.iter().any(|st| st.arms.iter().any(|a| uses_timers(&a.body)) || st.after.as_ref().is_some_and(|(_, b, _)| uses_timers(b)));
-    let saves = m.states.iter().any(|st| !st.saves.is_empty());
+    let timers = m.states.iter().any(|st| st.arms.iter().any(|a| uses_timers(&a.body)) || st.after.as_ref().is_some_and(|(_, b, _)| uses_timers(b)) || st.whens.iter().any(|(_, b, _)| uses_timers(b)));
+    let saves = m.states.iter().any(|st| !st.saves.is_empty() || !st.whens.is_empty());
     Plan { timers, saves }
 }
 

@@ -61,6 +61,52 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — a transition with no signal, and a signal that waits
+
+`when cond -> body` in a state is SDL's continuous signal: taken with
+no signal at all, when the machine is in the state, nothing pending can
+be answered, and the condition holds; a signal already in the mailbox
+is answered first. `save Sig if !c` before an arm for `Sig` is SDL's
+`input Sig provided c`, and was already there: the signal waits until
+the condition holds. Both drawn by `rill diagram`, and the trace says
+`when` with the condition.
+
+## Unreleased — a mailbox that refuses nothing
+
+`mailbox()` is a channel whose buffer grows rather than making a sender
+wait — SDL's input port, which never refuses a signal. Two machines
+sending each other signals at once, each with the other's buffer full,
+held each other up for ever on `channel(16)`; on mailboxes both finish.
+The channel carries its buffer as a pointer now, inline for one made
+with a size and its own block for a mailbox, doubled when full. The
+exchange example makes its mailboxes this way.
+
+## Unreleased — a run's trace, drawn
+
+`RILL_TRACE=1` makes every machine say what it did: one line an event on
+standard error — received, in what state, from whom; the next state;
+sent, to whom; a timer set or reset; saved, dropped, an `after` run out,
+a stop — numbered by the runtime in the order events happened across
+every strand, each machine named by its mailbox's number. `rill msc`
+draws the lines as the message sequence chart SDL's tools drew from a
+simulation: a lifeline per machine and per mailbox of the environment,
+an arrow per signal, a note per state change. The state of every
+machine at every moment is in it, which is the read-out from outside a
+`Report` signal used to be for. Off, a machine pays one load per event.
+`tracing()`, `trace_line(s)` and `chan_id(ch)` are the builtins under
+it, and a program may use them for a trace of its own.
+
+## Unreleased — what a machine drops, said
+
+`rill check` reports a machine's implicit consumption, as SDL's tools
+did: for each state, the signals some other state answers and this one
+neither answers nor saves, with the line; and once per machine, the
+signals no state answers at all — not inputs of this machine, or a
+mistake in every state. A state with `_ -> stay` drops nothing. The
+notes come from `check` and the language server, not from a build,
+since dropping is what a process does by default. The checker carries
+`warnings` on the typed module for this, the first it has had.
+
 ## Unreleased — a machine knows who is asking
 
 What a machine receives is a `Mail` now: the signal, and the mailbox it

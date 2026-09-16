@@ -2977,6 +2977,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.module.add_function("rill_now_nanos", i64t.fn_type(&[], false), None);
         self.module.add_function("rill_now_millis", i64t.fn_type(&[], false), None);
         self.module.add_function("rill_rss_bytes", i64t.fn_type(&[], false), None);
+        self.module.add_function("rill_tracing", i64t.fn_type(&[], false), None);
+        self.module.add_function("rill_trace_line", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_chan_id", i64t.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_workers", i64t.fn_type(&[], false), None);
         let uninit = self.module.add_function(
             "rill_buf_new_uninit_f64",
@@ -8547,11 +8550,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     rill_types::ChanOp::Close => "rill_chan_close",
                     rill_types::ChanOp::Closed => "rill_chan_closed",
                     rill_types::ChanOp::Wait => "rill_chan_wait",
+                    rill_types::ChanOp::Id => "rill_chan_id",
                 };
                 let f = self.module.get_function(rt).unwrap();
                 let call =
                     self.builder.build_call(f, &[cv.into()], "chanop").expect("LLVM builder error");
                 self.emit_release(cv, &ch_ty);
+                if matches!(op, rill_types::ChanOp::Id) {
+                    return Ok(match call.try_as_basic_value() {
+                        inkwell::values::ValueKind::Basic(v) => Some(v),
+                        _ => None,
+                    });
+                }
                 Ok(match call.try_as_basic_value() {
                     // `closed` and `chan_wait` answer a byte at the ABI, as
                     // every bool-returning runtime call does.

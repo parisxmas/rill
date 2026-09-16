@@ -1053,6 +1053,11 @@ fn main() =
   sender blocks until a receiver arrives and vice versa.
 - `channel(n)` buffers `n` values, so a sender only blocks once the buffer is
   full and a receiver only blocks once it is empty.
+- `mailbox()` buffers without end: its buffer grows rather than making a
+  sender wait. It is what a `machine` reads from, since two machines sending
+  each other signals at once must never hold each other up — SDL's input
+  port refuses nothing — and the price is that nothing tells a sender to
+  slow down.
 - `select` waits on several channels at once and runs whichever arm becomes
   ready first; a `default` arm turns it into a non-blocking poll, and a
   `timeout(ms)` arm puts a deadline on the wait.
@@ -1161,8 +1166,8 @@ machine line(me: Chan(Mail(Signal)), log: Chan(Str))
       stop
 
 fn main() =
-  env = channel(16)
-  a = channel(16)
+  env = mailbox()
+  a = mailbox()
   spawn line(a, channel(16), Idle)
   post(a, env, OffHook)
 ```
@@ -1174,7 +1179,10 @@ the mailbox its signals arrive on, and whose last parameter, unwritten, is
 the state: it is started with its initial state as one more argument,
 `spawn line(a, log, Idle)`, or called in the strand at hand.
 
-What arrives on the mailbox is a **`Mail`**: the signal, and the mailbox it
+A mailbox is made with `mailbox()`, which grows rather than making a
+sender wait, so two machines sending each other signals at once never
+hold each other up; a `channel(n)` serves too, with that risk. What
+arrives on the mailbox is a **`Mail`**: the signal, and the mailbox it
 came from — so the mailbox is a `Chan(Mail(Signal))`, and in every arm
 **`sender`** is who sent the signal being answered, as SDL had it.
 `reply(sig)` sends to it, and `output(to, sig)` to any mailbox, both with
@@ -1216,6 +1224,40 @@ the saved signals wait in the order they came, and each state takes the
 first of them it does not save before it reads its mailbox — so a `Data`
 that arrives while `Connecting` is answered by `On` the moment the link is
 up. A `save` takes a pattern and a guard, like an arm, and no body.
+
+**A run can say what its machines did.** With `RILL_TRACE=1` in the
+environment, every machine writes one line an event on standard error —
+a signal received in a state and from whom, the next state, a signal
+sent and to whom, a timer set or reset, a signal saved or dropped, an
+`after` that ran out, a stop — numbered by the runtime in the order the
+events happened across every strand, with each machine named by the
+number of its mailbox: `recv line#2 Idle OffHook 1`. **`rill msc`** draws
+those lines as the message sequence chart SDL's tools drew from a
+simulation, in Mermaid: a lifeline per machine and per mailbox of the
+environment, an arrow per signal, a note where a state changed. A run
+without the variable pays one load per event and says nothing.
+
+**`rill check` says what a machine drops.** For each state, the signals
+some other state answers and this one neither answers nor saves — the
+ones SDL's tools list as a state's implicit consumption — as a note with
+the line; and once per machine, the signals no state answers at all,
+which are either not inputs of this machine (a reply it sends, like
+`Status`) or a mistake in every state. A state with `_ -> stay` drops
+nothing. A build says nothing of this, since dropping is what an SDL
+process does by default; the notes are for reading a model, and the
+language server shows them as information.
+
+Two of SDL's conditions. **`save Sig if !ready`** before an arm for `Sig`
+is `input Sig provided ready`: a signal that arrives before its
+condition holds waits, and is answered in the order it came once the
+condition does. **`when cond -> body`** is a transition taken with no
+signal at all — SDL's continuous signal: when the machine is in the
+state and nothing pending can be answered, the first `when` whose
+condition holds is taken, before the machine waits for anything. A
+signal already in the mailbox is answered first, as in SDL, so a crate
+that ships at three items ships four if the fourth had arrived. A `when`
+that leads back to the same state with its condition still true is a
+loop, in SDL as here.
 
 What the parser makes of it is the function you would have written: a
 `match` on the state, and in each state a `recv` — or a `select` with a
@@ -2196,6 +2238,7 @@ rill check main.rill            # type-check only, saying everything it finds
 rill types main.rill            # the signature the checker worked out for each function
 rill explain main.rill          # the memory decisions the generator made, by line
 rill diagram exchange.rill      # the file's machines drawn: Mermaid, or SDL's own symbols (--svg)
+rill msc trace.txt              # a run's trace (RILL_TRACE=1) as a sequence chart
 rill test tests.rill            # run every `test_...` function, each in its own process
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist
