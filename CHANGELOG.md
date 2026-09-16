@@ -30,6 +30,17 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — `rill diagram`
+
+A machine drawn from its declaration: `rill diagram file.rill` prints
+Mermaid's `stateDiagram-v2` — an arrow per transition, labelled with the
+signal, its guard and the signals sent on the way — and `--svg` the
+process diagram SDL drew, in its symbols: the state, the input with its
+notch, the output with its point, the task, the decision, the hourglass
+of a timer, the stop mark; a column per signal under each state, laid out
+top-down, since that shape is a tree and needs no arrows routed. The
+program is checked first, so what is drawn compiles.
+
 ## Unreleased — a machine: a state and a mailbox
 
 `machine` is a state machine with a mailbox, written as one: the states

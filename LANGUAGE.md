@@ -1185,6 +1185,17 @@ costs, which is nothing beyond the wait; `rill explain` shows the calls
 as the tail calls they are, and `rill fmt` writes the machine back as it
 was declared. `examples/exchange.rill` is a small exchange of them.
 
+A machine is a diagram before it is code, and **`rill diagram
+file.rill`** draws the file's machines from the declaration: as Mermaid
+(`stateDiagram-v2`, one arrow per transition labelled with the signal,
+its guard and what goes out on the way) to paste into a page, or with
+`--svg` as the process diagram SDL drew — the state at the top, under it
+a column per signal with the input symbol, the outputs and tasks in
+order, a decision where the arm branches on an `if` or a `match`, and at
+the bottom the next state or the stop mark. `-o` writes it to a file.
+The diagram is read off the code, never kept beside it, so it cannot
+fall behind.
+
 ### Stopping
 
 A strand parked on `recv` is parked until a value arrives. So tearing down
@@ -2139,6 +2150,7 @@ rill run main.rill              # compile and run
 rill check main.rill            # type-check only, saying everything it finds
 rill types main.rill            # the signature the checker worked out for each function
 rill explain main.rill          # the memory decisions the generator made, by line
+rill diagram exchange.rill      # the file's machines drawn: Mermaid, or SDL's own symbols (--svg)
 rill test tests.rill            # run every `test_...` function, each in its own process
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist

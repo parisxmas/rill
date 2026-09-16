@@ -2527,6 +2527,28 @@ fn a_machine_answers_its_signals() {
     assert!(compile_error(&upper).contains("lowercase"));
 }
 
+/// `rill diagram`: the exchange as Mermaid, transition by transition, and
+/// as SVG with SDL's symbols.
+#[test]
+fn a_machine_is_drawn() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("examples").join("exchange.rill");
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(&path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("stateDiagram-v2\n"), "{text}");
+    assert!(text.contains("  Idle --> Dialling: OffHook\n"), "{text}");
+    assert!(text.contains("  Dialling --> Dialling: Digit(n) if n >= 0\n"), "{text}");
+    assert!(text.contains("  Dialling --> Idle: after 50 ms / "), "{text}");
+    assert!(text.contains("  Ringing --> Talking: Answer / Answer to caller\n"), "{text}");
+    assert!(text.contains("  Talking --> [*]: OnHook / OnHook to peer, \"hung up\" to log\n"), "{text}");
+    let svg = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(&path).arg("--svg").output().unwrap();
+    let svg = String::from_utf8(svg.stdout).unwrap();
+    assert!(svg.starts_with("<svg ") && svg.contains("<title>machine line</title>") && svg.contains("<polygon"), "{svg}");
+    let none = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(root.join("examples").join("hello.rill")).output().unwrap();
+    assert!(!none.status.success() && String::from_utf8_lossy(&none.stderr).contains("no `machine`"));
+}
+
 /// A float's bits as an integer and back: no conversion, the same bits.
 #[test]
 fn float_bits_and_back() {

@@ -4,6 +4,7 @@
 //!   rill build <file.rill> [-o <out>] [--emit-ir]
 //!   rill run <file.rill>
 
+mod diagram;
 mod json;
 mod lsp;
 
@@ -21,7 +22,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg] [-o <out>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -67,6 +68,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "types" => types_cmd(rest),
         "test" => test_cmd(rest),
         "explain" => explain_cmd(rest),
+        "diagram" => diagram_cmd(rest),
         "lsp" => lsp::serve(),
         "repl" => {
             repl()?;
@@ -139,6 +141,53 @@ fn explain_cmd(args: &[String]) -> Result<ExitCode, String> {
     };
     let report = rill_codegen::explain(&tmod).map_err(|e| format!("{}: {e}", path.display()))?;
     print!("{report}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `rill diagram`: the file's machines drawn — Mermaid by default, SVG
+/// with SDL's symbols on `--svg`; to standard output, or `-o` a file. The
+/// program is checked first, so what is drawn is what compiles.
+fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let mut svg = false;
+    let mut out: Option<PathBuf> = None;
+    let mut file: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--svg" => svg = true,
+            "-o" => {
+                i += 1;
+                out = Some(PathBuf::from(args.get(i).ok_or("`-o` needs a file")?));
+            }
+            a if a.starts_with('-') => return Err(format!("unknown option `{a}`\n{USAGE}")),
+            a => file = Some(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    let path = file.ok_or(USAGE)?;
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    if own.machines.is_empty() {
+        return Err(format!("{}: no `machine` in this file to draw", path.display()));
+    }
+    let module = rill_syntax::load_program(&path)?;
+    if let Err(errors) = rill_types::check_all(&module) {
+        for e in &errors {
+            eprintln!("{}: {e}", path.display());
+        }
+        return Ok(ExitCode::FAILURE);
+    }
+    let mut drawn = String::new();
+    for m in &own.machines {
+        drawn.push_str(&if svg { diagram::svg(m) } else { diagram::mermaid(m) });
+        if !svg {
+            drawn.push('\n');
+        }
+    }
+    match out {
+        Some(p) => std::fs::write(&p, drawn).map_err(|e| format!("cannot write {}: {e}", p.display()))?,
+        None => print!("{drawn}"),
+    }
     Ok(ExitCode::SUCCESS)
 }
 

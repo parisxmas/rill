@@ -849,6 +849,17 @@ fn float_lit(v: f64) -> String {
     }
 }
 
+/// An expression on one line, as the formatter would write it inside
+/// parentheses: what a diagram or a message quotes.
+pub fn expr_text(e: &Expr) -> String {
+    inline(e, 0, 0)
+}
+
+/// A pattern as written.
+pub fn pattern_text(p: &Pattern) -> String {
+    pattern(p)
+}
+
 fn inline(e: &Expr, prec: u8, ind: usize) -> String {
     match e {
         Expr::Int(v) => v.to_string(),
