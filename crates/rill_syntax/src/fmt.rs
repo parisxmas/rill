@@ -424,7 +424,8 @@ impl Fmt {
         self.push_at(0, &format!("machine {}({})", m.name, params.join(", ")), m.line);
         for st in &m.states {
             self.lead(st.line, 1);
-            self.push_at(1, &format!("state {}", pattern(&st.pattern)), st.line);
+            let shown = if matches!(st.pattern, Pattern::Wildcard) { "*".to_string() } else { pattern(&st.pattern) };
+            self.push_at(1, &format!("state {shown}"), st.line);
             // the arms in the order written: the signals and the `after`
             // among them by line
             let mut arms: Vec<(usize, String)> = Vec::new();

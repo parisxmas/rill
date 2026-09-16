@@ -61,6 +61,29 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — a machine knows who is asking
+
+What a machine receives is a `Mail` now: the signal, and the mailbox it
+came from. So every arm has `sender`, `reply(sig)` answers it, and
+`output(to, sig)` sends to any mailbox with the machine as the sender —
+a signal that wants an answer no longer carries a channel, and `Ring`
+is `Ring`, with `Ringing(sender)` the state it leads to. From outside a
+machine, `post(to, from, sig)` names the mailbox the reply comes to,
+because in SDL the environment is a process too. A machine's mailbox is
+a `Chan(Mail(Signal))`; a timer's signal comes from the machine itself,
+and a saved signal keeps its sender. The exchange example is written the
+new way, and `rill diagram` draws a `reply` as an output to `sender`.
+
+## Unreleased — the arms every state answers
+
+`state *` in a machine holds the arms every state answers — the report
+of where it is, the signal that stops it, the `after` for a silence —
+put after each state's own so the state's own win, and `stay` at an
+arm's tail is the state the machine is in, SDL's `nextstate -`. A state
+whose arms then answer every signal has no "any other" arm, and the one
+the lowering writes is left out rather than refused as unreachable.
+Drawn as a state of its own, `* (every state)`.
+
 ## Unreleased — a machine's timers, and the signal it keeps for later
 
 Two of SDL's a `machine` did not have. Named timers: `set(Retry, 200)`

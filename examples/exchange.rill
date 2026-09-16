@@ -1,81 +1,88 @@
 # A telephone line as the exchanges modelled it in SDL: a process with a
 # mailbox, a state, and the signals it answers in each — a `machine`. Two
-# lines, one calling the other; a `Report` signal that asks a line what
-# state it is in, answered down the channel it carries; a wait that runs
-# out while dialling; and a hang-up that stops the strand.
+# lines, one calling the other; a `Report` signal answered to whoever sent
+# it; a wait that runs out while dialling; and a hang-up that stops the
+# strand. What arrives is a `Mail`, the signal with the mailbox it came
+# from, so an arm has `sender` and can `reply`; between machines
+# `output(to, sig)` says who is sending, and from outside `post(to, from,
+# sig)` names the mailbox the answer comes to.
 type Signal
   OffHook
   Digit(n: Int)
   OnHook
-  Ring(from: Chan(Signal))
+  Ring
   Answer
-  Report(to: Chan(Str))
+  Report
+  Status(text: Str)
 
 type Line
   Idle
   Dialling(digits: List(Int))
-  Ringing(caller: Chan(Signal))
-  Talking(peer: Chan(Signal))
+  Ringing(caller: Chan(Mail(Signal)))
+  Talking(peer: Chan(Mail(Signal)))
 
-machine line(me: Chan(Signal), log: Chan(Str))
+machine line(me: Chan(Mail(Signal)), log: Chan(Str))
   state Idle
     OffHook -> Dialling(Nil)
-    Ring(from) -> Ringing(from)
-    Report(to) ->
-      send(to, "idle")
-      Idle
+    Ring -> Ringing(sender)
+    Report ->
+      reply(Status("idle"))
+      stay
   state Dialling(digits)
     Digit(n) if n >= 0 -> Dialling(Cons(n, digits))
     OnHook -> Idle
-    Report(to) ->
-      send(to, "dialling " + int_to_str(len(digits)))
-      Dialling(digits)
+    Report ->
+      reply(Status("dialling " + int_to_str(len(digits))))
+      stay
     after 50 ->
       send(log, "gave up dialling after " + int_to_str(len(digits)) + " digits")
       Idle
   state Ringing(caller)
     Answer ->
-      send(caller, Answer)
+      output(caller, Answer)
       Talking(caller)
     OnHook -> Idle
   state Talking(peer)
     OnHook ->
-      send(peer, OnHook)
+      output(peer, OnHook)
       send(log, "hung up")
       stop
-    _ -> Talking(peer)
+    _ -> stay
 
-fn ask(l: Chan(Signal)) =
-  back = channel(1)
-  send(l, Report(back))
-  recv(back)
+# The environment asks a line where it is, on a mailbox of its own.
+fn ask(l, env) =
+  post(l, env, Report)
+  match recv(env).signal
+    Status(text) -> text
+    _ -> "?"
 
 fn main() =
   log = channel(16)
+  env = channel(16)
   a = channel(16)
   spawn line(a, log, Idle)
-  println(ask(a))
-  send(a, OffHook)
-  send(a, Digit(5))
-  send(a, Digit(-1))
-  send(a, Digit(3))
-  println(ask(a))
-  send(a, OnHook)
-  println(ask(a))
-  send(a, OffHook)
-  send(a, Digit(1))
+  println(ask(a, env))
+  post(a, env, OffHook)
+  post(a, env, Digit(5))
+  post(a, env, Digit(-1))
+  post(a, env, Digit(3))
+  println(ask(a, env))
+  post(a, env, OnHook)
+  println(ask(a, env))
+  post(a, env, OffHook)
+  post(a, env, Digit(1))
   println(recv(log))
-  println(ask(a))
+  println(ask(a, env))
   b = channel(16)
   c = channel(16)
   spawn line(b, log, Idle)
-  send(b, Ring(c))
-  send(b, Answer)
-  match recv(c)
+  post(b, c, Ring)
+  post(b, env, Answer)
+  match recv(c).signal
     Answer -> println("the caller hears the answer")
     _ -> println("?")
-  send(b, OnHook)
+  post(b, env, OnHook)
   println(recv(log))
-  match recv(c)
+  match recv(c).signal
     OnHook -> println("the caller is told")
     _ -> println("?")

@@ -14,6 +14,13 @@ type List(a)
   Nil
   Cons(head: a, tail: List(a))
 
+# What a `machine` receives: the signal, and the mailbox it came from —
+# a machine's `sender`, where its `reply` goes. A mailbox is a
+# `Chan(Mail(Signal))`, and anything that sends to a machine has one of
+# its own to be answered on, as every process does in SDL.
+type Mail(a)
+  Mail(from: Chan(Mail(a)), signal: a)
+
 # What `(a, b)` is written with. One constructor apiece, which is what lets a
 # tuple be taken apart by a binding rather than a branch.
 type Tuple2(a, b)
@@ -335,6 +342,11 @@ fn eprint(x) =
   ()
 
 # -- machines -----------------------------------------------------------------
+
+# A signal to a machine from outside one: `from` is the mailbox its reply
+# comes to. Inside a machine, `output(to, sig)` and `reply(sig)` say the
+# same with the machine's own mailbox as the sender.
+fn post(to, from, signal) = send(to, Mail(from, signal))
 
 # What a `machine` with timers or saves is lowered onto; a program does not
 # call these. The timers are a table from a timer's name to the moment it is

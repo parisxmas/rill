@@ -4488,6 +4488,12 @@ impl Checker {
             self.check_pattern(&arm.pattern, &scrut.ty, arm.line, &mut arm_env, &mut bound)?;
 
             if !self.useful(&matrix, &[arm.pattern.clone()], &[scrut.ty.clone()]) {
+                // A machine's "any other signal" arm is written for every
+                // state; a state whose arms answer every signal has no
+                // other, and the arm is simply left out.
+                if matches!(&arm.pattern, Pattern::Var(n) if n == "machine.other") {
+                    continue;
+                }
                 return Err(TypeError::new(
                     arm.line,
                     "unreachable match arm: earlier arms already cover this pattern".to_string(),

@@ -296,9 +296,15 @@ impl Parser {
     /// patterns like a match's, and `after ms -> body` at most once.
     fn statedef(&mut self, line: usize) -> Result<StateDef, SyntaxError> {
         let (pl, pc) = self.here();
-        let pattern = self.pattern()?;
-        if !matches!(pattern, Pattern::Ctor { .. }) {
-            return Err(SyntaxError::new(pl, pc, "a state is a constructor of the machine's state type, its fields named: `state Dialling(digits)`".to_string()));
+        // `state *`: the arms every state answers, after its own.
+        let pattern = if matches!(self.peek(), Tok::Star) {
+            self.bump();
+            Pattern::Wildcard
+        } else {
+            self.pattern()?
+        };
+        if !matches!(pattern, Pattern::Ctor { .. } | Pattern::Wildcard) {
+            return Err(SyntaxError::new(pl, pc, "a state is a constructor of the machine's state type, its fields named: `state Dialling(digits)` — or `*`, for every state".to_string()));
         }
         self.expect(&Tok::Indent, "— a state's arms must be indented under `state`")?;
         let mut arms = Vec::new();

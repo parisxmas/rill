@@ -1126,19 +1126,24 @@ type Signal
   OffHook
   Digit(n: Int)
   OnHook
-  Ring(from: Chan(Signal))
+  Ring
   Answer
+  Report
+  Status(text: Str)
 
 type Line
   Idle
   Dialling(digits: List(Int))
-  Ringing(caller: Chan(Signal))
-  Talking(peer: Chan(Signal))
+  Ringing(caller: Chan(Mail(Signal)))
+  Talking(peer: Chan(Mail(Signal)))
 
-machine line(me: Chan(Signal), log: Chan(Str))
+machine line(me: Chan(Mail(Signal)), log: Chan(Str))
   state Idle
     OffHook -> Dialling(Nil)
-    Ring(from) -> Ringing(from)
+    Ring -> Ringing(sender)
+    Report ->
+      reply(Status("idle"))
+      stay
   state Dialling(digits)
     Digit(n) if n >= 0 -> Dialling(Cons(n, digits))
     OnHook -> Idle
@@ -1147,18 +1152,19 @@ machine line(me: Chan(Signal), log: Chan(Str))
       Idle
   state Ringing(caller)
     Answer ->
-      send(caller, Answer)
+      output(caller, Answer)
       Talking(caller)
     OnHook -> Idle
   state Talking(peer)
     OnHook ->
-      send(peer, OnHook)
+      output(peer, OnHook)
       stop
 
 fn main() =
+  env = channel(16)
   a = channel(16)
   spawn line(a, channel(16), Idle)
-  send(a, OffHook)
+  post(a, env, OffHook)
 ```
 
 The states are the constructors of a type declared as any other, so their
@@ -1166,16 +1172,36 @@ fields say their types once. The machine is a function of that name — a
 machine name is lowercase, as a function's is — whose first parameter is
 the mailbox its signals arrive on, and whose last parameter, unwritten, is
 the state: it is started with its initial state as one more argument,
-`spawn line(a, log, Idle)`, or called in the strand at hand. Each `state`
+`spawn line(a, log, Idle)`, or called in the strand at hand.
+
+What arrives on the mailbox is a **`Mail`**: the signal, and the mailbox it
+came from — so the mailbox is a `Chan(Mail(Signal))`, and in every arm
+**`sender`** is who sent the signal being answered, as SDL had it.
+`reply(sig)` sends to it, and `output(to, sig)` to any mailbox, both with
+this machine as the sender; a signal that wants an answer no longer has to
+carry a channel. From outside a machine, `post(to, from, sig)` says which
+mailbox the answer comes to — `main` above makes `env` for the purpose,
+and reads `recv(env).signal` — because in SDL the environment is a process
+too, and nothing sends to one without being somewhere a reply can go. Two
+machines talk when they share a signal type; a timer's signal has the
+machine itself as its sender. Each `state`
 names its constructor with its fields, and under it the signals it
 answers, as the arms of a `match` on the signal: patterns, guards, and a
 body whose value is the next state. A body may be a block, its last line
-the next state; `stop` in that place ends the strand instead. `after ms
+the next state; `stop` in that place ends the strand instead, and `stay`
+is the state the machine is in. `after ms
 ->` is the arm taken when no signal has arrived for that long, and a state
 has at most one. A signal no arm names is consumed and the state kept —
 what SDL does with an unexpected signal — unless an arm `_ ->` says what
 to do with it. Every state of the type has to appear, or the machine is
 refused naming the one missing.
+
+**`state *`** is the arms every state answers — a `Report` that says where
+the machine is, a `Kill` that stops it, an `after` for a machine that has
+heard nothing — put after each state's own, so a state that answers the
+same signal itself wins, and a state with an `after` of its own keeps it.
+**`stay`** at the tail of an arm is the state the machine is in, SDL's
+`nextstate -`; in a shared arm it is the only way to say it.
 
 Two more things a state may do, as SDL's processes did. A **timer** is a
 signal the machine sends itself later: `set(Retry, 200)` in an arm's body

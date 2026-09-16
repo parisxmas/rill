@@ -131,8 +131,11 @@ fn saves_of(st: &StateDef) -> Vec<String> {
 
 fn step_of(s: &Stmt) -> Step {
     match s {
-        Stmt::Expr(Expr::Call { name, args, .. }) if name == "send" && args.len() == 2 => {
+        Stmt::Expr(Expr::Call { name, args, .. }) if (name == "send" || name == "output") && args.len() == 2 => {
             Step::Output(expr_text(&args[0]), expr_text(&args[1]))
+        }
+        Stmt::Expr(Expr::Call { name, args, .. }) if name == "reply" && args.len() == 1 => {
+            Step::Output("sender".to_string(), expr_text(&args[0]))
         }
         Stmt::Expr(Expr::Call { name, args, .. }) if name == "set" && args.len() == 2 => {
             Step::Timer(format!("set {} {} ms", expr_text(&args[0]), expr_text(&args[1])))
@@ -153,6 +156,7 @@ fn step_of(s: &Stmt) -> Step {
 fn state_name(p: &Pattern) -> String {
     match p {
         Pattern::Ctor { name, .. } => name.clone(),
+        Pattern::Wildcard => "any_state".to_string(),
         other => pattern_text(other),
     }
 }
@@ -167,6 +171,9 @@ fn ctor_of(next: &str) -> String {
 pub fn mermaid(m: &MachineDef) -> String {
     let mut out = String::from("stateDiagram-v2\n");
     out.push_str(&format!("  %% machine {}\n", m.name));
+    if m.states.iter().any(|st| matches!(st.pattern, Pattern::Wildcard)) {
+        out.push_str("  state \"* (every state)\" as any_state\n");
+    }
     for st in &m.states {
         let from = state_name(&st.pattern);
         for t in transitions(st) {
@@ -198,6 +205,7 @@ fn outputs_text(steps: &[Step]) -> String {
 
 fn mermaid_end(out: &mut String, from: &str, label: &str, end: &End) {
     match end {
+        End::Next(n) if n == "stay" => out.push_str(&format!("  {from} --> {from}: {}\n", clean(label))),
         End::Next(n) => out.push_str(&format!("  {from} --> {}: {}\n", ctor_of(n), clean(label))),
         End::Stop => out.push_str(&format!("  {from} --> [*]: {}\n", clean(label))),
         End::Decision(q, branches) => {
@@ -297,6 +305,7 @@ fn column_of(steps: &[Step], end: &End) -> Column {
         .collect();
     let mut forks = Vec::new();
     match end {
+        End::Next(n) if n == "stay" => syms.push(Sym::State("-".to_string())),
         End::Next(n) => syms.push(Sym::State(n.clone())),
         End::Stop => syms.push(Sym::Stop),
         End::Decision(q, branches) => {
@@ -324,7 +333,8 @@ pub fn svg(m: &MachineDef) -> String {
         for s in saves_of(st) {
             cols.push(Column { syms: vec![Sym::Save(s)], forks: Vec::new() });
         }
-        blocks.push((state_name(&st.pattern), cols));
+        let title = if matches!(st.pattern, Pattern::Wildcard) { "* (every state)".to_string() } else { state_name(&st.pattern) };
+        blocks.push((title, cols));
     }
     let mut body = String::new();
     let mut y = PAD;
