@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>num/bigint — The Rill Language Reference</title>
+<meta name="description" content="Integers of any size, written in Rill.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-num-bigint.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-num-bigint.html">
+<meta property="og:title" content="num/bigint — The Rill Language Reference">
+<meta property="og:description" content="Integers of any size, written in Rill.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="num/bigint — The Rill Language Reference">
+<meta name="twitter:description" content="Integers of any size, written in Rill.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li class="current"><a href="lib-num-bigint.html">num/bigint</a></li>
+        <li><a href="lib-num-col.html">num/col</a></li>
+        <li><a href="lib-num-decimal.html">num/decimal</a></li>
+        <li><a href="lib-num-grid.html">num/grid</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#implementations">Implementations</a></li>
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Numbers</p>
+      <h1>num/bigint</h1>
+<p class="import">Imported as <code>import "num/bigint" as bigint</code>, its names are then <code>bigint.…</code>. Every signature below is the one the checker infers.</p><p>Integers of any size, written in Rill.</p>
+<p>A <code>Big</code> is a sign and a buffer of limbs in base 1,000,000,000, least significant first — nine decimal digits a limb, so a product of two limbs fits an <code>Int</code> with room for the carry, and writing one out is writing its limbs. Every value is normalized: no leading zero limbs, and zero is never negative, so equal numbers are equal buffers.</p>
+<pre><span class="k">import</span> <span class="s">"num/bigint"</span> <span class="k">as</span> big
+n = big.pow(big.from_int(<span class="n">2</span>), <span class="n">100</span>)             <span class="c"># 1267650600228229401496703205376</span>
+f = big.factorial(<span class="n">30</span>)
+(q, r) = big.divmod(f, big.parse(<span class="s">"1000000007"</span>)?)
+<span class="f">println</span>(<span class="f">show</span>(big.add(q, r)))</pre>
+<p>Addition and subtraction are linear, multiplication is the schoolbook quadratic, and division finds each quotient limb by binary search over products — fine for hundreds of digits, slow for a hundred thousand.</p>
+<h2 id="types">Types</h2>
+<h3 id="big"><code>Big</code></h3>
+<ul>
+<li><code>Big(negative: Bool, limbs: Buf(Int))</code></li>
+</ul>
+<h2 id="implementations">Implementations</h2>
+<ul>
+<li><code>impl Show(Big)</code></li>
+<li><code>impl Ord(Big)</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-zero---big"><code>fn zero() -&gt; Big</code></h3>
+<h3 id="fn-is_zerob-big---bool"><code>fn is_zero(b: Big) -&gt; Bool</code></h3>
+<h3 id="fn-from_intn-int---big"><code>fn from_int(n: Int) -&gt; Big</code></h3>
+<h3 id="fn-as_intb-big---optionint"><code>fn as_int(b: Big) -&gt; Option(Int)</code></h3>
+<p>The <code>Int</code> this is, or <code>None</code> past its range.</p>
+<h3 id="fn-negb-big---big"><code>fn neg(b: Big) -&gt; Big</code></h3>
+<h3 id="fn-abs_ofb-big---big"><code>fn abs_of(b: Big) -&gt; Big</code></h3>
+<h3 id="fn-signb-big---int"><code>fn sign(b: Big) -&gt; Int</code></h3>
+<h3 id="fn-cmpa-big-b-big---int"><code>fn cmp(a: Big, b: Big) -&gt; Int</code></h3>
+<p>Negative, zero or positive as <code>a</code> is less than, equal to, or greater than <code>b</code>.</p>
+<h3 id="fn-eqa-big-b-big---bool"><code>fn eq(a: Big, b: Big) -&gt; Bool</code></h3>
+<h3 id="fn-adda-big-b-big---big"><code>fn add(a: Big, b: Big) -&gt; Big</code></h3>
+<h3 id="fn-suba-big-b-big---big"><code>fn sub(a: Big, b: Big) -&gt; Big</code></h3>
+<h3 id="fn-mula-big-b-big---big"><code>fn mul(a: Big, b: Big) -&gt; Big</code></h3>
+<h3 id="fn-powb-big-n-int---resultbig-str"><code>fn pow(b: Big, n: Int) -&gt; Result(Big, Str)</code></h3>
+<p><code>b</code> to the <code>n</code>th, by squaring; <code>n</code> below zero is an error, as an integer power is.</p>
+<h3 id="fn-factorialn-int---big"><code>fn factorial(n: Int) -&gt; Big</code></h3>
+<h3 id="fn-divmoda-big-b-big---resultbig-big-str"><code>fn divmod(a: Big, b: Big) -&gt; Result((Big, Big), Str)</code></h3>
+<p>The quotient rounded toward zero and the remainder with the sign of <code>a</code>, as <code>/</code> and <code>%</code> on <code>Int</code> have them; <code>Err</code> on a zero divisor.</p>
+<h3 id="fn-diva-big-b-big---resultbig-str"><code>fn div(a: Big, b: Big) -&gt; Result(Big, Str)</code></h3>
+<h3 id="fn-rema-big-b-big---resultbig-str"><code>fn rem(a: Big, b: Big) -&gt; Result(Big, Str)</code></h3>
+<h3 id="fn-textb-big---str"><code>fn text(b: Big) -&gt; Str</code></h3>
+<h3 id="fn-parses-str---resultbig-str"><code>fn parse(s: Str) -&gt; Result(Big, Str)</code></h3>
+<p>Digits, with a <code>-</code> or <code>+</code> in front if wanted.</p>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_text_and_ints</code></li>
+<li><code>test_arithmetic</code></li>
+<li><code>test_division</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-net-udp.html">← net/udp</a>
+        <a class="next" href="lib-num-col.html">num/col →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

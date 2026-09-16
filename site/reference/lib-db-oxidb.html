@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>db/oxidb — The Rill Language Reference</title>
+<meta name="description" content="A client for OxiDB&#x27;s document engine, written in Rill.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-oxidb.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-oxidb.html">
+<meta property="og:title" content="db/oxidb — The Rill Language Reference">
+<meta property="og:description" content="A client for OxiDB&#x27;s document engine, written in Rill.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="db/oxidb — The Rill Language Reference">
+<meta name="twitter:description" content="A client for OxiDB&#x27;s document engine, written in Rill.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-db-kv.html">db/kv</a></li>
+        <li class="current"><a href="lib-db-oxidb.html">db/oxidb</a></li>
+        <li><a href="lib-db-oxirec.html">db/oxirec</a></li>
+        <li><a href="lib-db-oxiresp.html">db/oxiresp</a></li>
+        <li><a href="lib-db-oxisql.html">db/oxisql</a></li>
+        <li><a href="lib-db-oxitsdb.html">db/oxitsdb</a></li>
+        <li><a href="lib-db-oxiwire.html">db/oxiwire</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Databases</p>
+      <h1>db/oxidb</h1>
+<p class="import">Imported as <code>import "db/oxidb" as oxidb</code>, its names are then <code>oxidb.…</code>. Every signature below is the one the checker infers.</p><p>A client for OxiDB's document engine, written in Rill.</p>
+<p>The wire is the server's native one and the payload is binary: <code>oxiwire.rill</code> does the framing and the tags, shared with the time-series client. What is here is the document surface — collections, queries, the shapes each command answers with.</p>
+<p>It spoke JSON until the two were measured against each other. Binary is not the smaller of the two — a reply of six hundred documents came to about a third more bytes, fixed-width numbers being what they are — but it is faster: roughly two and a half times, on a local socket, against the JSON parser as it then stood.</p>
+<p>That last clause matters. Most of the gap was the parser rather than the format, and the parser has since been fixed — it took strings a byte at a time, which cost a string the square of its length. Measured again afterwards the binary is about 1.4 times faster rather than 2.5. It is still the faster wire and there is no reason to go back, but the honest figure is the smaller one, and over a slow enough link the extra bytes would take even that back.</p>
+<p>Every call answers <code>Ok(data)</code> or <code>Err(message)</code>. On this wire the status byte carries which of the two it is, so there is no <code>{"ok":.., "data":..}</code> envelope to unwrap. The connection is a plain socket, so a strand waiting on a reply parks and costs nothing.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-dialhost-str-port-int---resultint-str"><code>fn dial(host: Str, port: Int) -&gt; Result(Int, Str)</code></h3>
+<h3 id="fn-hang_upfd-int---unit"><code>fn hang_up(fd: Int) -&gt; Unit</code></h3>
+<h3 id="fn-callfd-int-request-json---resultjson-str"><code>fn call(fd: Int, request: Json) -&gt; Result(Json, Str)</code></h3>
+<p>One request, one reply, unwrapped into a <code>Result</code>.</p>
+<h3 id="fn-commandname-str-fields-listfield---json"><code>fn command(name: Str, fields: List(Field)) -&gt; Json</code></h3>
+<p><code>command("find", Cons(field("collection", JStr(c)), Nil))</code> — the <code>cmd</code> field is added here so no caller has to remember its name.</p>
+<h3 id="fn-fieldkey-str-value-json---field"><code>fn field(key: Str, value: Json) -&gt; Field</code></h3>
+<h3 id="fn-texts-str---json"><code>fn text(s: Str) -&gt; Json</code></h3>
+<h3 id="fn-intn-int---json"><code>fn int(n: Int) -&gt; Json</code></h3>
+<h3 id="fn-oncollection-str-fields-listfield---listfield"><code>fn on(collection: Str, fields: List(Field)) -&gt; List(Field)</code></h3>
+<h3 id="fn-pingfd-int---resultjson-str"><code>fn ping(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-hellofd-int---resultjson-str"><code>fn hello(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<p>The handshake, and the one command whose reply is not on the wire the request was written in: the server answers <code>hello</code> before it has looked at the format, so what comes back is JSON whatever went out, and it is the server's own shape rather than the usual envelope — <code>{"ok":true, "server":{...}}</code>. So this reads either, and hands back what the reply says about the server.</p>
+<h3 id="fn-hello_replyframe-str---resultjson-str"><code>fn hello_reply(frame: Str) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-hello_jsonframe-str---resultjson-str"><code>fn hello_json(frame: Str) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-hello_serverv-json---resultjson-str"><code>fn hello_server(v: Json) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-server_nameinfo-json---str"><code>fn server_name(info: Json) -&gt; Str</code></h3>
+<p>What the handshake says, for a client that wants to know before it asks.</p>
+<h3 id="fn-server_versioninfo-json---str"><code>fn server_version(info: Json) -&gt; Str</code></h3>
+<h3 id="fn-wire_versioninfo-json---int"><code>fn wire_version(info: Json) -&gt; Int</code></h3>
+<h3 id="fn-server_featuresinfo-json---liststr"><code>fn server_features(info: Json) -&gt; List(Str)</code></h3>
+<h3 id="fn-list_collectionsfd-int---resultjson-str"><code>fn list_collections(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-insertfd-int-collection-str-doc-json---resultjson-str"><code>fn insert(fd: Int, collection: Str, doc: Json) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-insert_manyfd-int-collection-str-docs-listjson---resultjson-str"><code>fn insert_many(fd: Int, collection: Str, docs: List(Json)) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-findfd-int-collection-str-query-json---resultjson-str"><code>fn find(fd: Int, collection: Str, query: Json) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-find_sortedfd-int-collection-str-query-json-sort-json-limit-int---resultjson-str"><code>fn find_sorted(fd: Int, collection: Str, query: Json, sort: Json, limit: Int) -&gt; Result(Json, Str)</code></h3>
+<p><code>sort</code> is a document like <code>{"age": -1}</code>; a limit of 0 asks for no limit.</p>
+<h3 id="fn-limit_fieldlimit-int---listfield"><code>fn limit_field(limit: Int) -&gt; List(Field)</code></h3>
+<h3 id="fn-countfd-int-collection-str---resultjson-str"><code>fn count(fd: Int, collection: Str) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-count_wherefd-int-collection-str-query-json---resultjson-str"><code>fn count_where(fd: Int, collection: Str, query: Json) -&gt; Result(Json, Str)</code></h3>
+<p>How many match, which is what a pager needs before it can say "of 4200".</p>
+<h3 id="fn-find_pagefd-int-collection-str-query-json-sort-json-limit-int-skip-int---resultjson-str"><code>fn find_page(fd: Int, collection: Str, query: Json, sort: Json, limit: Int, skip: Int) -&gt; Result(Json, Str)</code></h3>
+<p>One page of a query: <code>limit</code> documents, the first <code>skip</code> of them passed over. The sort has to be given, because a page is only a page if the order is the same each time.</p>
+<h3 id="fn-updatefd-int-collection-str-query-json-changes-json---resultjson-str"><code>fn update(fd: Int, collection: Str, query: Json, changes: Json) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-deletefd-int-collection-str-query-json---resultjson-str"><code>fn delete(fd: Int, collection: Str, query: Json) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-aggregatefd-int-collection-str-pipeline-json---resultjson-str"><code>fn aggregate(fd: Int, collection: Str, pipeline: Json) -&gt; Result(Json, Str)</code></h3>
+<p>A pipeline — a list of stages, <code>$match</code>, <code>$group</code>, <code>$sort</code>, <code>$facet</code> and the rest, each a document like <code>{"$group": {"_id": "$role", "n": {"$sum": 1}}}</code> — and what comes out of the end of it.</p>
+<h3 id="fn-create_indexfd-int-collection-str-field_name-str---resultjson-str"><code>fn create_index(fd: Int, collection: Str, field_name: Str) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-proc_statusfd-int---resultjson-str"><code>fn proc_status(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<p>What the server process itself is doing: how much memory it is holding, how busy it is, how many threads it has, how long it has been up. Nothing about the data, so a page can show it to anyone who may see the page.</p>
+<h3 id="fn-rss_mbdata-json---float"><code>fn rss_mb(data: Json) -&gt; Float</code></h3>
+<h3 id="fn-cpu_percentdata-json---float"><code>fn cpu_percent(data: Json) -&gt; Float</code></h3>
+<h3 id="fn-uptime_sdata-json---int"><code>fn uptime_s(data: Json) -&gt; Int</code></h3>
+<h3 id="fn-setfields-listfield---json"><code>fn set(fields: List(Field)) -&gt; Json</code></h3>
+<p><code>$set</code> is the update operator the server expects for a partial change.</p>
+<h3 id="fn-docsdata-json---listjson"><code>fn docs(data: Json) -&gt; List(Json)</code></h3>
+<p><code>find</code> answers with an array; <code>insert</code> with <code>{"id": n}</code>; <code>count</code> with <code>{"count": n}</code>. These name those shapes so callers do not repeat them.</p>
+<h3 id="fn-inserted_iddata-json---int"><code>fn inserted_id(data: Json) -&gt; Int</code></h3>
+<h3 id="fn-inserted_idsdata-json---listint"><code>fn inserted_ids(data: Json) -&gt; List(Int)</code></h3>
+<h3 id="fn-counteddata-json---int"><code>fn counted(data: Json) -&gt; Int</code></h3>
+<h3 id="fn-modifieddata-json---int"><code>fn modified(data: Json) -&gt; Int</code></h3>
+<h3 id="fn-deleteddata-json---int"><code>fn deleted(data: Json) -&gt; Int</code></h3>
+<h3 id="fn-field_strdoc-json-key-str---str"><code>fn field_str(doc: Json, key: Str) -&gt; Str</code></h3>
+<p>A field of one document, as text — <code>field_str(doc, "name")</code>.</p>
+<h3 id="fn-field_intdoc-json-key-str---int"><code>fn field_int(doc: Json, key: Str) -&gt; Int</code></h3>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-db-kv.html">← db/kv</a>
+        <a class="next" href="lib-db-oxirec.html">db/oxirec →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

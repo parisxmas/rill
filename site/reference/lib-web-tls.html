@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>web/tls — The Rill Language Reference</title>
+<meta name="description" content="TLS over a socket, through OpenSSL: https:// as a client, and served.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-web-tls.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-web-tls.html">
+<meta property="og:title" content="web/tls — The Rill Language Reference">
+<meta property="og:description" content="TLS over a socket, through OpenSSL: https:// as a client, and served.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="web/tls — The Rill Language Reference">
+<meta name="twitter:description" content="TLS over a socket, through OpenSSL: https:// as a client, and served.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-web-form.html">web/form</a></li>
+        <li><a href="lib-web-http.html">web/http</a></li>
+        <li><a href="lib-web-mime.html">web/mime</a></li>
+        <li class="current"><a href="lib-web-tls.html">web/tls</a></li>
+        <li><a href="lib-web-tmpl.html">web/tmpl</a></li>
+        <li><a href="lib-web-url.html">web/url</a></li>
+        <li><a href="lib-web-ws.html">web/ws</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · The web</p>
+      <h1>web/tls</h1>
+<p class="import">Imported as <code>import "web/tls" as tls</code>, its names are then <code>tls.…</code>. Every signature below is the one the checker infers.</p><p>TLS over a socket, through OpenSSL: <code>https://</code> as a client, and served. A connection reads and writes as a socket does — <code>read</code> gives what has arrived and <code>""</code> when the peer is done, <code>write</code> sends all of it — and the waits are <code>blocking</code> externs, so a strand parks for a handshake or a read and the worker goes on with the others.</p>
+<pre><span class="k">import</span> <span class="s">"web/tls"</span> <span class="k">as</span> tls
+c = tls.connect(<span class="s">"example.com"</span>, <span class="n">443</span>)?           <span class="c"># verified against the system&#x27;s roots</span>
+tls.write(c, <span class="s">"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"</span>)
+<span class="m">reply</span> = tls.read_all(c)                        <span class="c"># everything, until the server closes</span>
+tls.disconnect(c)
+tls.get(<span class="s">"example.com"</span>, <span class="n">443</span>, <span class="s">"/"</span>)               <span class="c"># the three lines above</span>
+
+s = tls.listen(<span class="n">8443</span>, <span class="s">"cert.pem"</span>, <span class="s">"key.pem"</span>)?   <span class="c"># a server with its certificate</span>
+c = tls.accept(s)?                             <span class="c"># one connection, handshake done</span></pre>
+<p><code>connect</code> checks the certificate — the chain against the roots the system keeps, and the name against the host asked for — and refuses one that does not check, saying why. <code>connect_insecure</code> skips the check, for a certificate you signed yourself; nothing else should use it.</p>
+<p>The library is OpenSSL 3 — Homebrew's <code>openssl@3</code> on macOS, <code>libssl</code> on Linux — linked when this module is imported.</p>
+<h2 id="types">Types</h2>
+<h3 id="conn"><code>Conn</code></h3>
+<p>A connection: the OpenSSL object, its context, and the socket under it.</p>
+<ul>
+<li><code>Conn(ssl: Ptr, ctx: Ptr, fd: Int)</code></li>
+</ul>
+<h3 id="server"><code>Server</code></h3>
+<ul>
+<li><code>Server(ctx: Ptr, fd: Int)</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-connecthost-str-port-int---resultconn-str"><code>fn connect(host: Str, port: Int) -&gt; Result(Conn, Str)</code></h3>
+<p>A verified connection to <code>host:port</code>, the name resolved on the way.</p>
+<h3 id="fn-connect_insecurehost-str-port-int---resultconn-str"><code>fn connect_insecure(host: Str, port: Int) -&gt; Result(Conn, Str)</code></h3>
+<p>The same without checking the certificate.</p>
+<h3 id="fn-readc-conn---str"><code>fn read(c: Conn) -&gt; Str</code></h3>
+<p>What has arrived, up to 64 KB; <code>""</code> when the peer has closed or the connection failed.</p>
+<h3 id="fn-read_allc-conn---str"><code>fn read_all(c: Conn) -&gt; Str</code></h3>
+<p>Everything until the peer closes.</p>
+<h3 id="fn-writec-conn-s-str---int"><code>fn write(c: Conn, s: Str) -&gt; Int</code></h3>
+<p>Writes all of it; the bytes written, or -1.</p>
+<h3 id="fn-disconnectc-conn---unit"><code>fn disconnect(c: Conn) -&gt; Unit</code></h3>
+<p>Ends the session and closes the socket.</p>
+<h3 id="fn-listenport-int-cert_path-str-key_path-str---resultserver-str"><code>fn listen(port: Int, cert_path: Str, key_path: Str) -&gt; Result(Server, Str)</code></h3>
+<p>A listening socket with a certificate chain and its key, both PEM files.</p>
+<h3 id="fn-accepts-server---resultconn-str"><code>fn accept(s: Server) -&gt; Result(Conn, Str)</code></h3>
+<p>The next connection, its handshake done. The context is the server's, so a <code>Conn</code> from here is ended with <code>disconnect</code> and the context stays.</p>
+<h3 id="fn-stops-server---unit"><code>fn stop(s: Server) -&gt; Unit</code></h3>
+<h3 id="fn-gethost-str-port-int-path-str---str"><code>fn get(host: Str, port: Int, path: Str) -&gt; Str</code></h3>
+<p><code>GET path</code> over a fresh connection, closed after; the raw reply, with <code>http</code>'s <code>status_of</code> and <code>response_body</code> to take it apart, or the error text.</p>
+<h3 id="fn-askhost-str-port-int-method-str-path-str-headers-liststr-body-str---str"><code>fn ask(host: Str, port: Int, method: Str, path: Str, headers: List(Str), body: Str) -&gt; Str</code></h3>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_a_self_signed_server_and_its_client</code></li>
+<li><code>test_refusals</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-web-mime.html">← web/mime</a>
+        <a class="next" href="lib-web-tmpl.html">web/tmpl →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

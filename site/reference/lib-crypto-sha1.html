@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crypto/sha1 — The Rill Language Reference</title>
+<meta name="description" content="SHA-1 and base64, written in Rill.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-crypto-sha1.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-crypto-sha1.html">
+<meta property="og:title" content="crypto/sha1 — The Rill Language Reference">
+<meta property="og:description" content="SHA-1 and base64, written in Rill.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="crypto/sha1 — The Rill Language Reference">
+<meta name="twitter:description" content="SHA-1 and base64, written in Rill.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-crypto-passwd.html">crypto/passwd</a></li>
+        <li class="current"><a href="lib-crypto-sha1.html">crypto/sha1</a></li>
+        <li><a href="lib-crypto-sha2.html">crypto/sha2</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Cryptography</p>
+      <h1>crypto/sha1</h1>
+<p class="import">Imported as <code>import "crypto/sha1" as sha1</code>, its names are then <code>sha1.…</code>. Every signature below is the one the checker infers.</p><p>SHA-1 and base64, written in Rill. The WebSocket handshake needs both, and they are a fair test of the language's bit operations: everything here is 32-bit arithmetic emulated on 64-bit integers by masking after each step.</p>
+<h2 id="types">Types</h2>
+<h3 id="digest"><code>Digest</code></h3>
+<ul>
+<li><code>Digest(a: Int, b: Int, c: Int, d: Int, e: Int)</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-mask32x-int---int"><code>fn mask32(x: Int) -&gt; Int</code></h3>
+<h3 id="fn-add32a-int-b-int---int"><code>fn add32(a: Int, b: Int) -&gt; Int</code></h3>
+<h3 id="fn-rotl32x-int-n-int---int"><code>fn rotl32(x: Int, n: Int) -&gt; Int</code></h3>
+<h3 id="fn-padmsg-str---str"><code>fn pad(msg: Str) -&gt; Str</code></h3>
+<p>SHA-1 pads to a multiple of 64 bytes: a 0x80 byte, then zeros, then the length in bits as a 64-bit big-endian number.</p>
+<h3 id="fn-zero_countn-int---int"><code>fn zero_count(n: Int) -&gt; Int</code></h3>
+<h3 id="fn-be64v-int---str"><code>fn be64(v: Int) -&gt; Str</code></h3>
+<h3 id="fn-word_ats-str-i-int---int"><code>fn word_at(s: Str, i: Int) -&gt; Int</code></h3>
+<h3 id="fn-scheduleblock-str-base-int-i-int-acc-listint---listint"><code>fn schedule(block: Str, base: Int, i: Int, acc: List(Int)) -&gt; List(Int)</code></h3>
+<p>The 80-word schedule, built as a list so it can be indexed by round.</p>
+<h3 id="fn-next_wordblock-str-base-int-i-int-acc-listint---int"><code>fn next_word(block: Str, base: Int, i: Int, acc: List(Int)) -&gt; Int</code></h3>
+<h3 id="fn-atacc-listint-back-int---int"><code>fn at(acc: List(Int), back: Int) -&gt; Int</code></h3>
+<p><code>acc</code> holds the words in reverse, so index 0 is w[i-1].</p>
+<h3 id="fn-f_atround-int-b-int-c-int-d-int---int"><code>fn f_at(round: Int, b: Int, c: Int, d: Int) -&gt; Int</code></h3>
+<h3 id="fn-k_atround-int---int"><code>fn k_at(round: Int) -&gt; Int</code></h3>
+<h3 id="fn-round_stepst-digest-ws-listint-round-int---digest"><code>fn round_step(st: Digest, ws: List(Int), round: Int) -&gt; Digest</code></h3>
+<h3 id="fn-roundsst-digest-ws-listint-round-int---digest"><code>fn rounds(st: Digest, ws: List(Int), round: Int) -&gt; Digest</code></h3>
+<h3 id="fn-add_digestx-digest-y-digest---digest"><code>fn add_digest(x: Digest, y: Digest) -&gt; Digest</code></h3>
+<h3 id="fn-add_seconda-int-b-int-c-int-d-int-e-int-y-digest---digest"><code>fn add_second(a: Int, b: Int, c: Int, d: Int, e: Int, y: Digest) -&gt; Digest</code></h3>
+<h3 id="fn-blockspadded-str-base-int-st-digest---digest"><code>fn blocks(padded: Str, base: Int, st: Digest) -&gt; Digest</code></h3>
+<h3 id="fn-sha1msg-str---str"><code>fn sha1(msg: Str) -&gt; Str</code></h3>
+<p>The digest as 20 raw bytes.</p>
+<h3 id="fn-digest_bytesd-digest---str"><code>fn digest_bytes(d: Digest) -&gt; Str</code></h3>
+<h3 id="fn-be32v-int---str"><code>fn be32(v: Int) -&gt; Str</code></h3>
+<h3 id="fn-b64_alphabet---str"><code>fn b64_alphabet() -&gt; Str</code></h3>
+<h3 id="fn-b64_charv-int---str"><code>fn b64_char(v: Int) -&gt; Str</code></h3>
+<h3 id="fn-base64s-str---str"><code>fn base64(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-b64_froms-str-i-int-acc-str---str"><code>fn b64_from(s: Str, i: Int, acc: Str) -&gt; Str</code></h3>
+<h3 id="fn-b64_threex-int-y-int-z-int---str"><code>fn b64_three(x: Int, y: Int, z: Int) -&gt; Str</code></h3>
+<h3 id="fn-b64_twox-int-y-int---str"><code>fn b64_two(x: Int, y: Int) -&gt; Str</code></h3>
+<h3 id="fn-b64_onex-int---str"><code>fn b64_one(x: Int) -&gt; Str</code></h3>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-crypto-passwd.html">← crypto/passwd</a>
+        <a class="next" href="lib-crypto-sha2.html">crypto/sha2 →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

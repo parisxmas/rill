@@ -19,6 +19,8 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 SRC = ROOT / "LANGUAGE.md"
 OUT = ROOT / "site" / "reference"
+LIB = ROOT / "lib"
+RILL = ROOT / "target" / "release" / "rill"
 VERSION = re.search(r'^version = "([^"]+)"', (ROOT / "Cargo.toml").read_text(), re.M).group(1)
 SHORT = ".".join(VERSION.split(".")[:2])
 
@@ -198,9 +200,13 @@ PAGE = """<!doctype html>
       <ol class="chapters">
 {chapters}
       </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+{modules}
+      </ul>
       {own}
     </aside>
-    <main>
+    <main{mainclass}>
       <p class="chapter-no">{num}</p>
       <h1>{title}</h1>
 {body}
@@ -285,6 +291,72 @@ INDEX = """<!doctype html>
 """
 
 
+# ---- the standard library ----------------------------------------------------------
+
+FOLDERS = {"text": "Text", "data": "Data formats", "coll": "Collections", "num": "Numbers", "web": "The web",
+           "net": "The network", "db": "Databases", "cli": "The command line", "crypto": "Cryptography",
+           "random": "Randomness", "time": "Time"}
+
+
+def modules():
+    """Every module of lib/ with its documentation, as `rill doc` writes it."""
+    import tempfile
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="rilldoc-"))
+    subprocess.run([str(RILL), "doc", str(LIB), "-o", str(tmp)], check=True, capture_output=True)
+    out = []
+    for folder in sorted(LIB.iterdir()):
+        if not folder.is_dir() or folder.name not in FOLDERS:
+            continue
+        for f in sorted(folder.glob("*.rill")):
+            if f.stem.startswith(("bench", "wt_")):
+                continue
+            doc = tmp / f"{f.stem}.md"
+            if not doc.exists():
+                continue
+            md = doc.read_text()
+            md = re.sub(r"^# .*\n", "", md, count=1).strip()
+            out.append({"folder": folder.name, "name": f.stem, "path": f"{folder.name}/{f.stem}",
+                        "file": f"lib-{folder.name}-{f.stem}.html", "md": md, "blurb": first_sentence(md)})
+    return out
+
+
+def module_pages(mods, chs, side):
+    for m in mods:
+        frag = render_code(pandoc(m["md"]))
+        own = [(m2.group(1), m2.group(2)) for m2 in re.finditer(r'<h2 id="([^"]+)"[^>]*>(.*?)</h2>', frag)]
+        own_html = ""
+        if own:
+            own_html = '<p class="side-head">On this page</p>\n      <ul class="sections">\n' + "\n".join(
+                f'        <li><a href="#{sid}">{html.escape(t)}</a></li>' for sid, t in own) + "\n      </ul>"
+        modlist = "\n".join(
+            f'        <li{" class=\"current\"" if x is m else ""}><a href="{x["file"]}">{x["path"]}</a></li>' for x in mods if x["folder"] == m["folder"])
+        i = mods.index(m)
+        prev = f'<a class="prev" href="{mods[i-1]["file"]}">← {mods[i-1]["path"]}</a>' if i > 0 else '<a class="prev" href="lib.html">← The standard library</a>'
+        nxt = f'<a class="next" href="{mods[i+1]["file"]}">{mods[i+1]["path"]} →</a>' if i + 1 < len(mods) else '<a class="next" href="lib.html">The standard library →</a>'
+        head = f'<p class="import">Imported as <code>import "{m["path"]}" as {m["name"]}</code>, its names are then <code>{m["name"]}.…</code>. Every signature below is the one the checker infers.</p>'
+        page = PAGE.format(title=html.escape(m["path"]), description=html.escape(m["blurb"]), file=m["file"], short=SHORT,
+                           chapters=side, modules=modlist, own=own_html, num=f"Standard library · {FOLDERS[m['folder']]}",
+                           body=head + frag, prev=prev, next=nxt, mainclass=' class="module"')
+        (OUT / m["file"]).write_text(page)
+    # the library's own contents page
+    groups = []
+    for folder in FOLDERS:
+        mine = [m for m in mods if m["folder"] == folder]
+        if not mine:
+            continue
+        items = "\n".join(f'      <li><a href="{m["file"]}"><span class="no">{m["name"]}</span><b>{m["path"]}</b><span class="blurb">{html.escape(m["blurb"])}</span></a></li>' for m in mine)
+        groups.append(f'<h3 id="{folder}">{FOLDERS[folder]} <code class="folder">lib/{folder}</code></h3>\n<ol class="toc">\n{items}\n</ol>')
+    intro = (f"<p>{len(mods)} modules, all written in Rill, imported by their path under <code>lib/</code>: "
+             '<code>import "data/json" as json</code>. The compiler finds them beside its own <code>bin/</code> in a '
+             "packaged toolchain, or through <code>RILL_PATH</code>. These pages are what <code>rill doc lib</code> "
+             "writes: the comment above each declaration, and the signature the checker infers for it.</p>")
+    page = PAGE.format(title="The standard library", description=f"The {len(mods)} modules of Rill's standard library, documented from their own comments and the checker's signatures.",
+                       file="lib.html", short=SHORT, chapters=side, modules="\n".join(f'        <li><a href="#{f}">{FOLDERS[f]}</a></li>' for f in FOLDERS if any(m["folder"] == f for m in mods)),
+                       own="", num="Standard library", body=intro + "\n".join(groups), mainclass="",
+                       prev=f'<a class="prev" href="{chs[-1]["file"]}">← {label(chs[-1])}</a>', next='<a class="next" href="index.html">Contents →</a>')
+    (OUT / "lib.html").write_text(page)
+
+
 def first_sentence(md):
     for para in md.split("\n\n"):
         p = para.strip()
@@ -302,6 +374,8 @@ def build():
     for i, ch in enumerate(chs):
         ch["file"] = ch["slug"] + ".html"
         ch["blurb"] = first_sentence(ch["md"])
+    mods = modules()
+    folder_list = "\n".join(f'        <li><a href="lib.html#{f}">{FOLDERS[f]}</a></li>' for f in FOLDERS if any(m["folder"] == f for m in mods))
     for i, ch in enumerate(chs):
         fragment = render_code(pandoc(ch["md"]))
         # a link to another chapter's section, `#characters`, lives on that chapter's page
@@ -316,14 +390,19 @@ def build():
                 f'        <li><a href="#{sid}">{html.escape(stitle)}</a></li>' for sid, stitle in own) + "\n      </ul>"
         prev = f'<a class="prev" href="{chs[i-1]["file"]}">← {label(chs[i-1])}</a>' if i > 0 else '<a class="prev" href="index.html">← Contents</a>'
         nxt = f'<a class="next" href="{chs[i+1]["file"]}">{label(chs[i+1])} →</a>' if i + 1 < len(chs) else '<a class="next" href="index.html">Contents →</a>'
+        if i + 1 == len(chs):
+            nxt = '<a class="next" href="lib.html">The standard library →</a>'
         page = PAGE.format(title=html.escape(ch["title"]), description=html.escape(ch["blurb"]), file=ch["file"], short=SHORT,
-                           chapters=side, own=own_html, num=f"Chapter {ch['num']}" if ch["num"] else "Start here", body=fragment, prev=prev, next=nxt)
+                           chapters=side, modules=folder_list, own=own_html, num=f"Chapter {ch['num']}" if ch["num"] else "Start here", body=fragment, prev=prev, next=nxt, mainclass="")
         (OUT / ch["file"]).write_text(page)
+    side_plain = "\n".join(f'        <li><a href="{c["file"]}"><span class="no">{c["num"] or "→"}</span>{html.escape(c["title"])}</a></li>' for c in chs)
+    module_pages(mods, chs, side_plain)
     toc = "\n".join(
         f'      <li><a href="{c["file"]}"><span class="no">{c["num"] or "→"}</span><b>{html.escape(c["title"])}</b><span class="blurb">{html.escape(c["blurb"])}</span></a></li>'
         for c in chs)
+    toc += f'\n      <li><a href="lib.html"><span class="no">lib</span><b>The standard library</b><span class="blurb">{len(mods)} modules — text, data formats, collections, numbers, the web, the network, databases, the command line, cryptography, randomness, time — each documented from its own comments.</span></a></li>'
     (OUT / "index.html").write_text(INDEX.format(short=SHORT, intro=pandoc(intro), toc=toc))
-    print(f"{len(chs)} chapters written to {OUT.relative_to(ROOT)}/")
+    print(f"{len(chs)} chapters and {len(mods)} modules written to {OUT.relative_to(ROOT)}/")
 
 
 def label(c):

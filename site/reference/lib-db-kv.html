@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>db/kv — The Rill Language Reference</title>
+<meta name="description" content="A key–value store on disk: a B+ tree of 4 KB pages, a page cache, and a write-ahead log — the shape SQLite&#x27;s file layer has, in Rill, for one process at a time.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-kv.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-kv.html">
+<meta property="og:title" content="db/kv — The Rill Language Reference">
+<meta property="og:description" content="A key–value store on disk: a B+ tree of 4 KB pages, a page cache, and a write-ahead log — the shape SQLite&#x27;s file layer has, in Rill, for one process at a time.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="db/kv — The Rill Language Reference">
+<meta name="twitter:description" content="A key–value store on disk: a B+ tree of 4 KB pages, a page cache, and a write-ahead log — the shape SQLite&#x27;s file layer has, in Rill, for one process at a time.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li class="current"><a href="lib-db-kv.html">db/kv</a></li>
+        <li><a href="lib-db-oxidb.html">db/oxidb</a></li>
+        <li><a href="lib-db-oxirec.html">db/oxirec</a></li>
+        <li><a href="lib-db-oxiresp.html">db/oxiresp</a></li>
+        <li><a href="lib-db-oxisql.html">db/oxisql</a></li>
+        <li><a href="lib-db-oxitsdb.html">db/oxitsdb</a></li>
+        <li><a href="lib-db-oxiwire.html">db/oxiwire</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Databases</p>
+      <h1>db/kv</h1>
+<p class="import">Imported as <code>import "db/kv" as kv</code>, its names are then <code>kv.…</code>. Every signature below is the one the checker infers.</p><p>A key–value store on disk: a B+ tree of 4 KB pages, a page cache, and a write-ahead log — the shape SQLite's file layer has, in Rill, for one process at a time.</p>
+<pre><span class="k">import</span> <span class="s">"db/kv"</span>
+db = <span class="f">kv_open</span>(<span class="s">"/tmp/things.db"</span>)?      <span class="c"># Result(Db, Str)</span>
+<span class="f">kv_put</span>(db, <span class="s">"ada"</span>, <span class="s">"36"</span>)              <span class="c"># buffered until commit</span>
+<span class="f">kv_get</span>(db, <span class="s">"ada"</span>)                    <span class="c"># Some(&quot;36&quot;)</span>
+<span class="f">kv_commit</span>(db)                        <span class="c"># durable: in the log, synced</span>
+<span class="f">kv_range</span>(db, <span class="s">"a"</span>, <span class="s">"b"</span>)               <span class="c"># List((key, value)), in key order</span>
+<span class="f">kv_delete</span>(db, <span class="s">"ada"</span>)
+<span class="f">kv_close</span>(db)                         <span class="c"># commits, checkpoints, unlocks</span></pre>
+<p>Keys and values are byte strings; a key is at most 255 bytes and a value at most 1500, so that a page always holds three cells. Keys sort as bytes.</p>
+<p>What is where. <code>path</code> is the tree: page 0 is the header, every other page a node, leaves chained left to right for range scans. Nothing is written to it except at a checkpoint. <code>path.wal</code> is the log: every page a transaction changed, whole, with a checksum, and a marker after the last one. A commit is those frames and one sync of the log. A checkpoint copies the logged pages into the tree, syncs it, and empties the log — after so many frames, and when the store closes. Opening a store replays what the log holds up to its last marker, so a crash between any two writes loses at most the transaction that was not committed, and never a page.</p>
+<p>The cache is 2048 slots of one page (8 MB), found through a map from page number to slot and replaced by the clock rule: a slot is passed over once for every hit it has had since the hand last came by, so the root and the inner nodes, touched on every operation, are never the ones to go. A dirty page that is evicted is written to the log first (an uncommitted frame, which the marker at commit makes good, and which a crash before then leaves ignored). Two maps say where the latest copy of a page is — in the log since the last checkpoint, or in the log for the transaction under way — and a read goes there before it goes to the tree.</p>
+<p>What it does not do: merge nodes that empty on delete (a leaf may sit at one key, or none), reuse freed pages, or let two processes in. The exclusive lock at open is what says so.</p>
+<p>Every page lives in the cache buffer at <code>base = slot * 4096</code>, and every function below that reads or writes a node takes that base. A base is good until the next <code>page</code> call — which may evict what it points at — so a step that touches two pages reads what it needs of the first into a buffer of its own before it asks for the second.</p>
+<h2 id="types">Types</h2>
+<h3 id="db"><code>Db</code></h3>
+<ul>
+<li><code>Db(fd: Int, wal: Int, path: Str, cache: Buf(U8), slot_pg: Buf(Int), slot_dirty: Buf(Int), slot_ref: Buf(Int), slot_map: Map(Int, Int), meta: Buf(Int), committed: Map(Int, Int), pending: Map(Int, Int), frame: Buf(U8), path_buf: Buf(Int))</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-page_size---int"><code>fn page_size() -&gt; Int</code></h3>
+<h3 id="fn-slots---int"><code>fn slots() -&gt; Int</code></h3>
+<h3 id="fn-hdr---int"><code>fn hdr() -&gt; Int</code></h3>
+<h3 id="fn-max_key---int"><code>fn max_key() -&gt; Int</code></h3>
+<h3 id="fn-max_val---int"><code>fn max_val() -&gt; Int</code></h3>
+<h3 id="fn-frame_hdr---int"><code>fn frame_hdr() -&gt; Int</code></h3>
+<h3 id="fn-wal_hdr---int"><code>fn wal_hdr() -&gt; Int</code></h3>
+<h3 id="fn-checkpoint_after---int"><code>fn checkpoint_after() -&gt; Int</code></h3>
+<h3 id="fn-marker---int"><code>fn marker() -&gt; Int</code></h3>
+<h3 id="fn-u16_atb-bufu8-at-int---int"><code>fn u16_at(b: Buf(U8), at: Int) -&gt; Int</code></h3>
+<h3 id="fn-set_u16b-bufu8-at-int-v-int---unit"><code>fn set_u16(b: Buf(U8), at: Int, v: Int) -&gt; Unit</code></h3>
+<h3 id="fn-u32_atb-bufu8-at-int---int"><code>fn u32_at(b: Buf(U8), at: Int) -&gt; Int</code></h3>
+<h3 id="fn-set_u32b-bufu8-at-int-v-int---unit"><code>fn set_u32(b: Buf(U8), at: Int, v: Int) -&gt; Unit</code></h3>
+<h3 id="fn-copy_bytesdst-bufu8-to-int-src-bufu8-from-int-n-int---int"><code>fn copy_bytes(dst: Buf(U8), to: Int, src: Buf(U8), from: Int, n: Int) -&gt; Int</code></h3>
+<h3 id="fn-put_strdst-bufu8-to-int-s-str---int"><code>fn put_str(dst: Buf(U8), to: Int, s: Str) -&gt; Int</code></h3>
+<h3 id="fn-str_atb-bufu8-at-int-n-int---str"><code>fn str_at(b: Buf(U8), at: Int, n: Int) -&gt; Str</code></h3>
+<h3 id="fn-cmp_bytesb-bufu8-at-int-n-int-k-str---int"><code>fn cmp_bytes(b: Buf(U8), at: Int, n: Int, k: Str) -&gt; Int</code></h3>
+<p>The bytes at <code>at</code> against <code>k</code>: -1, 0 or 1.</p>
+<h3 id="fn-fold32c-int---int"><code>fn fold32(c: Int) -&gt; Int</code></h3>
+<p>The checksum SQLite's log uses: two 32-bit sums over the words of the page, each folded into the other, so that a word dropped, moved or changed shows. It reads a word at a time — <code>peek_u32</code> at a byte address is one load — where a CRC would read a byte at a time through a table, and a frame is written for every page a transaction touches, so this is where a store spends its time when it is writing. <code>n</code> is a multiple of 8. <code>peek_u32</code> counts in words, so the address is made first, in bytes.</p>
+<h3 id="fn-checksumb-bufu8-at-int-n-int-seed-int---int"><code>fn checksum(b: Buf(U8), at: Int, n: Int, seed: Int) -&gt; Int</code></h3>
+<h3 id="fn-is_leafc-bufu8-base-int---bool"><code>fn is_leaf(c: Buf(U8), base: Int) -&gt; Bool</code></h3>
+<h3 id="fn-nkeysc-bufu8-base-int---int"><code>fn nkeys(c: Buf(U8), base: Int) -&gt; Int</code></h3>
+<h3 id="fn-free_endc-bufu8-base-int---int"><code>fn free_end(c: Buf(U8), base: Int) -&gt; Int</code></h3>
+<h3 id="fn-next_ofc-bufu8-base-int---int"><code>fn next_of(c: Buf(U8), base: Int) -&gt; Int</code></h3>
+<h3 id="fn-slot_ofc-bufu8-base-int-i-int---int"><code>fn slot_of(c: Buf(U8), base: Int, i: Int) -&gt; Int</code></h3>
+<h3 id="fn-klen_atc-bufu8-base-int-i-int---int"><code>fn klen_at(c: Buf(U8), base: Int, i: Int) -&gt; Int</code></h3>
+<h3 id="fn-key_offc-bufu8-base-int-i-int---int"><code>fn key_off(c: Buf(U8), base: Int, i: Int) -&gt; Int</code></h3>
+<h3 id="fn-vlen_atc-bufu8-base-int-i-int---int"><code>fn vlen_at(c: Buf(U8), base: Int, i: Int) -&gt; Int</code></h3>
+<h3 id="fn-child_atc-bufu8-base-int-i-int---int"><code>fn child_at(c: Buf(U8), base: Int, i: Int) -&gt; Int</code></h3>
+<h3 id="fn-cell_sizec-bufu8-base-int-i-int---int"><code>fn cell_size(c: Buf(U8), base: Int, i: Int) -&gt; Int</code></h3>
+<h3 id="fn-free_spacec-bufu8-base-int---int"><code>fn free_space(c: Buf(U8), base: Int) -&gt; Int</code></h3>
+<h3 id="fn-init_nodec-bufu8-base-int-leaf-bool-next-int---unit"><code>fn init_node(c: Buf(U8), base: Int, leaf: Bool, next: Int) -&gt; Unit</code></h3>
+<h3 id="fn-lower_boundc-bufu8-base-int-k-str---int-bool"><code>fn lower_bound(c: Buf(U8), base: Int, k: Str) -&gt; (Int, Bool)</code></h3>
+<p>The first slot whose key is not below <code>k</code>, and whether it is <code>k</code> itself.</p>
+<h3 id="fn-open_slotc-bufu8-base-int-i-int-size-int---int"><code>fn open_slot(c: Buf(U8), base: Int, i: Int, size: Int) -&gt; Int</code></h3>
+<p>Make room and write a cell at slot <code>i</code>, shifting the slots above it up. The caller has checked there is room.</p>
+<h3 id="fn-put_leaf_cellc-bufu8-base-int-i-int-k-str-v-str---int"><code>fn put_leaf_cell(c: Buf(U8), base: Int, i: Int, k: Str, v: Str) -&gt; Int</code></h3>
+<h3 id="fn-put_inner_cellc-bufu8-base-int-i-int-k-str-child-int---int"><code>fn put_inner_cell(c: Buf(U8), base: Int, i: Int, k: Str, child: Int) -&gt; Int</code></h3>
+<h3 id="fn-remove_slotc-bufu8-base-int-i-int---int"><code>fn remove_slot(c: Buf(U8), base: Int, i: Int) -&gt; Int</code></h3>
+<p>Drop slot <code>i</code>; the cell's bytes stay until a compaction.</p>
+<h3 id="fn-compactc-bufu8-base-int-tmp-bufu8---int"><code>fn compact(c: Buf(U8), base: Int, tmp: Buf(U8)) -&gt; Int</code></h3>
+<p>Rebuild the node with its live cells only, through a copy.</p>
+<h3 id="fn-wal_pathpath-str---str"><code>fn wal_path(path: Str) -&gt; Str</code></h3>
+<h3 id="fn-pagedb-db-pg-int---int"><code>fn page(db: Db, pg: Int) -&gt; Int</code></h3>
+<p>The slot holding page <code>pg</code>, loading it if need be, as a base offset.</p>
+<h3 id="fn-victimdb-db---int"><code>fn victim(db: Db) -&gt; Int</code></h3>
+<p>The clock: the first slot the hand finds unreferenced, clearing the reference of each one it passes.</p>
+<h3 id="fn-loaddb-db-pg-int-base-int---int"><code>fn load(db: Db, pg: Int, base: Int) -&gt; Int</code></h3>
+<h3 id="fn-mark_dirtydb-db-pg-int---unit"><code>fn mark_dirty(db: Db, pg: Int) -&gt; Unit</code></h3>
+<h3 id="fn-spilldb-db-pg-int-base-int-commit-bool---int"><code>fn spill(db: Db, pg: Int, base: Int, commit: Bool) -&gt; Int</code></h3>
+<p>A page to the log, from the cache, as one frame: header and page in one write, through the frame buffer.</p>
+<h3 id="fn-write_markerdb-db---unit"><code>fn write_marker(db: Db) -&gt; Unit</code></h3>
+<h3 id="fn-recoverdb-db---int"><code>fn recover(db: Db) -&gt; Int</code></h3>
+<p>Replays the log into the maps: every frame up to the last good marker counts, anything after it is forgotten.</p>
+<h3 id="fn-promotedb-db---unit"><code>fn promote(db: Db) -&gt; Unit</code></h3>
+<p>The transaction's frames become the log's.</p>
+<h3 id="fn-promote_keysdb-db-keys-listint---int"><code>fn promote_keys(db: Db, keys: List(Int)) -&gt; Int</code></h3>
+<h3 id="fn-checkpointdb-db---int"><code>fn checkpoint(db: Db) -&gt; Int</code></h3>
+<p>Every logged page into the tree, the tree synced, the log emptied.</p>
+<h3 id="fn-copy_backdb-db-pages-listint---int"><code>fn copy_back(db: Db, pages: List(Int)) -&gt; Int</code></h3>
+<h3 id="fn-read_metadb-db---unit"><code>fn read_meta(db: Db) -&gt; Unit</code></h3>
+<h3 id="fn-write_metadb-db---unit"><code>fn write_meta(db: Db) -&gt; Unit</code></h3>
+<h3 id="fn-new_pagedb-db-leaf-bool-next-int---int"><code>fn new_page(db: Db, leaf: Bool, next: Int) -&gt; Int</code></h3>
+<h3 id="fn-kv_openpath-str---resultdb-str"><code>fn kv_open(path: Str) -&gt; Result(Db, Str)</code></h3>
+<h3 id="fn-open_freshdb-db---resultdb-a"><code>fn open_fresh(db: Db) -&gt; Result(Db, 'a)</code></h3>
+<p>An empty tree: a header page and one leaf, written and synced before the store is handed out.</p>
+<h3 id="fn-open_existingdb-db---resultdb-str"><code>fn open_existing(db: Db) -&gt; Result(Db, Str)</code></h3>
+<p>What the log holds goes into the tree first, so the header read below is the latest one.</p>
+<h3 id="fn-begindb-db---int"><code>fn begin(db: Db) -&gt; Int</code></h3>
+<h3 id="fn-commit_nowdb-db---unit"><code>fn commit_now(db: Db) -&gt; Unit</code></h3>
+<p>Dirty pages to the log, a marker, one sync. Nothing changed, nothing written.</p>
+<h3 id="fn-kv_commitdb-db---int"><code>fn kv_commit(db: Db) -&gt; Int</code></h3>
+<h3 id="fn-kv_rollbackdb-db---unit"><code>fn kv_rollback(db: Db) -&gt; Unit</code></h3>
+<p>Forget the transaction: dirty pages are dropped from the cache, and the log is cut back to where the transaction found it, so that the frames it spilled cannot ride in on the next marker.</p>
+<h3 id="fn-kv_closedb-db---unit"><code>fn kv_close(db: Db) -&gt; Unit</code></h3>
+<h3 id="fn-descenddb-db-k-str---int"><code>fn descend(db: Db, k: Str) -&gt; Int</code></h3>
+<p>From the root down to the leaf for <code>k</code>; <code>path_buf</code> gets page and child index per level, and the depth of the leaf comes back.</p>
+<h3 id="fn-kv_getdb-db-k-str---optionstr"><code>fn kv_get(db: Db, k: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-kv_deletedb-db-k-str---bool"><code>fn kv_delete(db: Db, k: Str) -&gt; Bool</code></h3>
+<h3 id="fn-kv_putdb-db-k-str-v-str---bool"><code>fn kv_put(db: Db, k: Str, v: Str) -&gt; Bool</code></h3>
+<h3 id="fn-split_leafdb-db-d-int-pg-int-k-str-v-str---unit"><code>fn split_leaf(db: Db, d: Int, pg: Int, k: Str, v: Str) -&gt; Unit</code></h3>
+<p>Half the cells to a new right neighbour, then the new key to whichever half it belongs in, then the separator — the left half's last key — up.</p>
+<h3 id="fn-insert_updb-db-d-int-sep-str-left-int-right-int---unit"><code>fn insert_up(db: Db, d: Int, sep: Str, left: Int, right: Int) -&gt; Unit</code></h3>
+<p>The parent of level <code>d</code> learns that <code>left</code> was split at <code>sep</code>, with <code>right</code> now holding what is above it. At the root, a new root.</p>
+<h3 id="fn-split_innerdb-db-d-int-pg-int-i-int-sep-str-left-int---unit"><code>fn split_inner(db: Db, d: Int, pg: Int, i: Int, sep: Str, left: Int) -&gt; Unit</code></h3>
+<p>An inner node in two around its middle key, which goes up; the new cell is added to the half it falls in first.</p>
+<h3 id="fn-kv_rangedb-db-lo-str-hi-str---liststr-str"><code>fn kv_range(db: Db, lo: Str, hi: Str) -&gt; List((Str, Str))</code></h3>
+<p>Every (key, value) with <code>lo &lt;= key &lt;= hi</code>, in key order; an empty <code>hi</code> means to the end.</p>
+<h3 id="fn-kv_folddb-db-lo-str-hi-str-acc-a-f-a-str-str---a---a"><code>fn kv_fold(db: Db, lo: Str, hi: Str, acc: 'a, f: ('a, Str, Str) -&gt; 'a) -&gt; 'a</code></h3>
+<h3 id="fn-kv_countdb-db---int"><code>fn kv_count(db: Db) -&gt; Int</code></h3>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-data-yaml.html">← data/yaml</a>
+        <a class="next" href="lib-db-oxidb.html">db/oxidb →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

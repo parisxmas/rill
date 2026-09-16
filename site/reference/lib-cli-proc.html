@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cli/proc — The Rill Language Reference</title>
+<meta name="description" content="Running another program: a command line handed to the shell, its output collected, its exit status read.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-cli-proc.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-cli-proc.html">
+<meta property="og:title" content="cli/proc — The Rill Language Reference">
+<meta property="og:description" content="Running another program: a command line handed to the shell, its output collected, its exit status read.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="cli/proc — The Rill Language Reference">
+<meta name="twitter:description" content="Running another program: a command line handed to the shell, its output collected, its exit status read.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-cli-args.html">cli/args</a></li>
+        <li><a href="lib-cli-env.html">cli/env</a></li>
+        <li><a href="lib-cli-log.html">cli/log</a></li>
+        <li class="current"><a href="lib-cli-proc.html">cli/proc</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · The command line</p>
+      <h1>cli/proc</h1>
+<p class="import">Imported as <code>import "cli/proc" as proc</code>, its names are then <code>proc.…</code>. Every signature below is the one the checker infers.</p><p>Running another program: a command line handed to the shell, its output collected, its exit status read.</p>
+<pre><span class="k">import</span> <span class="s">"cli/proc"</span> <span class="k">as</span> proc
+<span class="k">match</span> proc.run(<span class="s">"git rev-parse HEAD"</span>)
+  <span class="t">Ok</span>(r) <span class="o">-&gt;</span> <span class="f">println</span>(r.out)                 <span class="c"># r.status is the exit code</span>
+  <span class="t">Err</span>(why) <span class="o">-&gt;</span> <span class="f">println</span>(why)
+proc.<span class="m">output</span>(<span class="s">"date -u"</span>)?                   <span class="c"># the output, or an Err with the status</span>
+proc.run(proc.command(<span class="s">"grep"</span>, <span class="t">Cons</span>(<span class="s">"-n"</span>, <span class="t">Cons</span>(pattern, <span class="t">Cons</span>(file, <span class="t">Nil</span>)))))
+proc.shell(<span class="s">"make"</span>)                        <span class="c"># output to ours; the exit code</span></pre>
+<p><code>run</code> and <code>output</code> read the child's standard output; its standard error goes where ours goes. <code>command</code> builds a line from a program and its arguments with each one quoted for the shell, so a file name with a space or a <code>$</code> in it arrives as one argument and nothing more. The calls that wait are declared <code>blocking</code>, so other strands run while a child does.</p>
+<h2 id="types">Types</h2>
+<h3 id="result_"><code>Result_</code></h3>
+<ul>
+<li><code>Done(status: Int, out: Str)</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-runcmd-str---resultresult_-str"><code>fn run(cmd: Str) -&gt; Result(Result_, Str)</code></h3>
+<p>The exit code and what the command wrote. An <code>Err</code> is a command that could not be started at all; a command that ran and failed is an <code>Ok</code> with a status that is not zero — it is the caller's to decide what a failure means, and the output is often the reason.</p>
+<h3 id="fn-outputcmd-str---resultstr-str"><code>fn output(cmd: Str) -&gt; Result(Str, Str)</code></h3>
+<p>The output of a command that succeeded, or the status it failed with, with what it wrote — a one-line answer for the common case.</p>
+<h3 id="fn-shellcmd-str---int"><code>fn shell(cmd: Str) -&gt; Int</code></h3>
+<p>Runs the command with our standard output and error, and gives its exit code; -1 when the shell could not be run.</p>
+<h3 id="fn-commandprog-str-args-liststr---str"><code>fn command(prog: Str, args: List(Str)) -&gt; Str</code></h3>
+<p>A program and its arguments as one shell line, each argument quoted.</p>
+<h3 id="fn-quotearg-str---str"><code>fn quote(arg: Str) -&gt; Str</code></h3>
+<p>An argument the shell will pass through unchanged: in single quotes, with a single quote inside written as <code>'\''</code>. A word of plain characters is left as it is.</p>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_run_collects_output_and_status</code></li>
+<li><code>test_a_long_output_is_read_whole</code></li>
+<li><code>test_quoting_keeps_an_argument_whole</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-cli-log.html">← cli/log</a>
+        <a class="next" href="lib-coll-deque.html">coll/deque →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

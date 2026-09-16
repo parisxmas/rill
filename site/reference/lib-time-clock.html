@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>time/clock — The Rill Language Reference</title>
+<meta name="description" content="Clocks: the monotonic one for measuring, the wall one for dating.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-time-clock.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-time-clock.html">
+<meta property="og:title" content="time/clock — The Rill Language Reference">
+<meta property="og:description" content="Clocks: the monotonic one for measuring, the wall one for dating.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="time/clock — The Rill Language Reference">
+<meta name="twitter:description" content="Clocks: the monotonic one for measuring, the wall one for dating.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li class="current"><a href="lib-time-clock.html">time/clock</a></li>
+        <li><a href="lib-time-date.html">time/date</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Time</p>
+      <h1>time/clock</h1>
+<p class="import">Imported as <code>import "time/clock" as clock</code>, its names are then <code>clock.…</code>. Every signature below is the one the checker infers.</p><p>Clocks: the monotonic one for measuring, the wall one for dating.</p>
+<p><code>now_nanos()</code> only ever goes forward and means nothing but differences; <code>now_millis()</code> is the time of day in Unix milliseconds. This is the little that turns them into something a program says: an elapsed time, a timed call, a duration in words.</p>
+<pre><span class="k">import</span> <span class="s">"time/clock"</span> <span class="k">as</span> clock
+(answer, took) = clock.timed(\ <span class="o">-&gt;</span> <span class="f">work</span>())
+<span class="f">println</span>(<span class="s">"took "</span> + clock.duration(took))       <span class="c"># &quot;took 1.204 s&quot;</span>
+t = clock.start()
+...
+<span class="f">println</span>(clock.duration(clock.since(t)))</pre>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-start---int"><code>fn start() -&gt; Int</code></h3>
+<p>A point on the monotonic clock, to measure from.</p>
+<h3 id="fn-sincet-int---int"><code>fn since(t: Int) -&gt; Int</code></h3>
+<p>Nanoseconds since a point <code>start</code> gave.</p>
+<h3 id="fn-timedf---a---a-int"><code>fn timed(f: () -&gt; 'a) -&gt; ('a, Int)</code></h3>
+<p>A call and how long it took, in nanoseconds.</p>
+<h3 id="fn-nanos_to_msns-int---int"><code>fn nanos_to_ms(ns: Int) -&gt; Int</code></h3>
+<h3 id="fn-ms_to_nanosms-int---int"><code>fn ms_to_nanos(ms: Int) -&gt; Int</code></h3>
+<h3 id="fn-durationns-int---str"><code>fn duration(ns: Int) -&gt; Str</code></h3>
+<p>A duration in the unit that reads best: <code>250 ns</code>, <code>12.5 us</code>, <code>3.400 ms</code>, <code>1.204 s</code>, <code>2 m 03 s</code>, <code>1 h 02 m</code>.</p>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_duration_units</code></li>
+<li><code>test_timed_answers_and_measures</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-text-str.html">← text/str</a>
+        <a class="next" href="lib-time-date.html">time/date →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>text/str — The Rill Language Reference</title>
+<meta name="description" content="Strings, past what the prelude gives.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-text-str.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-text-str.html">
+<meta property="og:title" content="text/str — The Rill Language Reference">
+<meta property="og:description" content="Strings, past what the prelude gives.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="text/str — The Rill Language Reference">
+<meta name="twitter:description" content="Strings, past what the prelude gives.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-text-fmt.html">text/fmt</a></li>
+        <li><a href="lib-text-path.html">text/path</a></li>
+        <li><a href="lib-text-regex.html">text/regex</a></li>
+        <li class="current"><a href="lib-text-str.html">text/str</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Text</p>
+      <h1>text/str</h1>
+<p class="import">Imported as <code>import "text/str" as str</code>, its names are then <code>str.…</code>. Every signature below is the one the checker infers.</p><p>Strings, past what the prelude gives.</p>
+<p>The prelude has the pieces a program cannot do without — <code>contains</code>, <code>split</code>, <code>trim</code>, <code>join</code>, the character layer. This is the rest: the searches that answer a position rather than a yes, the transforms, the padding, the parsers that refuse instead of returning zero, a hash, an edit distance, every encoding a text arrives in, and at the bottom a handful of functions that hand a long text to several strands at once.</p>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> s
+s.count(text, <span class="s">"the"</span>)            <span class="c"># non-overlapping occurrences</span>
+s.replace(line, <span class="s">"\t"</span>, <span class="s">"    "</span>)
+s.pad_left(<span class="f">int_to_str</span>(n), <span class="n">8</span>, <span class="n">32</span>)
+s.parse_int(field)              <span class="c"># Some(42), or None for &quot;4x2&quot;</span>
+s.utf8_lossy(bytes_from_a_socket)
+s.par_count(big, <span class="s">"GET"</span>)         <span class="c"># the same count, one strand per worker</span></pre>
+<p>Everything here is bytes, the way <code>#s</code> and <code>s[i]</code> are bytes: a position is a byte offset, a "character" argument is a byte value such as <code>32</code> or <code>s[0]</code>, and <code>upper</code> folds ASCII letters and leaves every other byte alone. For text that needs its characters counted there is the prelude's <code>char_*</code> layer, and <code>rev_chars</code> here shows how the two combine.</p>
+<p>Every search rides on the runtime's <code>str_find_from</code> and <code>str_find_in</code>, which cross the text sixteen bytes at a time and look at a position only where the pattern's first and last bytes both sit, so <code>count</code>, <code>replace</code>, <code>last_index_of</code> and the strand functions all run at memory speed. The loops that must look at every byte — <code>upper</code>, <code>hash</code>, <code>edit_distance</code> — are written as plain <code>for</code>s so the compiler lays them out as the C loop would be; the scans that stop on the data rather than on a count are <code>while</code>s, whose state is written where the loop is.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-is_digitc-int---bool"><code>fn is_digit(c: Int) -&gt; Bool</code></h3>
+<h3 id="fn-is_upperc-int---bool"><code>fn is_upper(c: Int) -&gt; Bool</code></h3>
+<h3 id="fn-is_lowerc-int---bool"><code>fn is_lower(c: Int) -&gt; Bool</code></h3>
+<h3 id="fn-is_alphac-int---bool"><code>fn is_alpha(c: Int) -&gt; Bool</code></h3>
+<h3 id="fn-is_alnumc-int---bool"><code>fn is_alnum(c: Int) -&gt; Bool</code></h3>
+<h3 id="fn-upper_bytec-int---int"><code>fn upper_byte(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-lower_bytec-int---int"><code>fn lower_byte(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-has_byteset-str-c-int---bool"><code>fn has_byte(set: Str, c: Int) -&gt; Bool</code></h3>
+<p>Is byte <code>c</code> one of the bytes of <code>set</code>?</p>
+<h3 id="fn-all_bytess-str-p-int---bool---bool"><code>fn all_bytes(s: Str, p: (Int) -&gt; Bool) -&gt; Bool</code></h3>
+<p>Does <code>p</code> hold for every byte of <code>s</code>?</p>
+<h3 id="fn-index_ofs-str-p-str---int"><code>fn index_of(s: Str, p: Str) -&gt; Int</code></h3>
+<p>Where <code>p</code> first begins, or -1. <code>index_from</code> starts partway along and <code>index_in</code> also stops early: a match must end by <code>to</code>.</p>
+<h3 id="fn-index_froms-str-p-str-from-int---int"><code>fn index_from(s: Str, p: Str, from: Int) -&gt; Int</code></h3>
+<h3 id="fn-index_ins-str-p-str-from-int-to-int---int"><code>fn index_in(s: Str, p: Str, from: Int, to: Int) -&gt; Int</code></h3>
+<h3 id="fn-last_index_ofs-str-p-str---int"><code>fn last_index_of(s: Str, p: Str) -&gt; Int</code></h3>
+<p>Where <code>p</code> last begins, or -1. Found by running forward from match to match: each hop is one vectorized search, which beats walking backward a byte at a time even when the answer is near the end.</p>
+<h3 id="fn-byte_indexs-str-c-int---int"><code>fn byte_index(s: Str, c: Int) -&gt; Int</code></h3>
+<h3 id="fn-last_byte_indexs-str-c-int---int"><code>fn last_byte_index(s: Str, c: Int) -&gt; Int</code></h3>
+<h3 id="fn-matches_ats-str-i-int-p-str---bool"><code>fn matches_at(s: Str, i: Int, p: Str) -&gt; Bool</code></h3>
+<p>Does <code>p</code> sit at byte <code>i</code> of <code>s</code>?</p>
+<h3 id="fn-ends_withs-str-p-str---bool"><code>fn ends_with(s: Str, p: Str) -&gt; Bool</code></h3>
+<h3 id="fn-counts-str-p-str---int"><code>fn count(s: Str, p: Str) -&gt; Int</code></h3>
+<p>Occurrences of <code>p</code>: <code>count</code> skips past each match it finds, so "aa" occurs once in "aaa"; <code>count_all</code> steps one byte and finds it twice. Both are 0 for the empty pattern.</p>
+<h3 id="fn-count_alls-str-p-str---int"><code>fn count_all(s: Str, p: Str) -&gt; Int</code></h3>
+<h3 id="fn-count_bys-str-p-str-step-int---int"><code>fn count_by(s: Str, p: Str, step: Int) -&gt; Int</code></h3>
+<h3 id="fn-count_bytes-str-c-int---int"><code>fn count_byte(s: Str, c: Int) -&gt; Int</code></h3>
+<h3 id="fn-indicess-str-p-str---listint"><code>fn indices(s: Str, p: Str) -&gt; List(Int)</code></h3>
+<p>Every place a non-overlapping match begins, first to last.</p>
+<h3 id="fn-uppers-str---str"><code>fn upper(s: Str) -&gt; Str</code></h3>
+<p>The byte-for-byte transforms fill a buffer of the final size and hand it over as the string, not a builder: a builder is a length store per byte, and a loop that stores a length cannot be vectorized. Written like this the loop is the one C writes, sixteen bytes at a time, and <code>str_from_buf</code> on a buffer nothing names again is the block itself, uncopied.</p>
+<h3 id="fn-lowers-str---str"><code>fn lower(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-swap_cases-str---str"><code>fn swap_case(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-capitalizes-str---str"><code>fn capitalize(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-revs-str---str"><code>fn rev(s: Str) -&gt; Str</code></h3>
+<p>Bytes back to front. On multi-byte text use <code>rev_chars</code>, which turns the characters around and keeps each one whole.</p>
+<h3 id="fn-rev_charss-str---str"><code>fn rev_chars(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-replaces-str-old-str-new-str---str"><code>fn replace(s: Str, old: Str, new: Str) -&gt; Str</code></h3>
+<p>Every occurrence of <code>old</code> becomes <code>new</code>. A string that has no <code>old</code> in it is handed back as it is, not copied; an empty <code>old</code> matches nothing. Each piece between matches goes straight from <code>s</code> into the builder, which is sized for the whole text up front.</p>
+<h3 id="fn-replace_firsts-str-old-str-new-str---str"><code>fn replace_first(s: Str, old: Str, new: Str) -&gt; Str</code></h3>
+<h3 id="fn-pad_lefts-str-n-int-c-int---str"><code>fn pad_left(s: Str, n: Int, c: Int) -&gt; Str</code></h3>
+<p>Bring <code>s</code> up to <code>n</code> bytes with byte <code>c</code>; a string already that long is returned as it is.</p>
+<h3 id="fn-pad_rights-str-n-int-c-int---str"><code>fn pad_right(s: Str, n: Int, c: Int) -&gt; Str</code></h3>
+<h3 id="fn-centers-str-n-int-c-int---str"><code>fn center(s: Str, n: Int, c: Int) -&gt; Str</code></h3>
+<h3 id="fn-trim_lefts-str---str"><code>fn trim_left(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-trim_rights-str---str"><code>fn trim_right(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-trim_sets-str-set-str---str"><code>fn trim_set(s: Str, set: Str) -&gt; Str</code></h3>
+<p>Trim any of the bytes in <code>set</code> from both ends: <code>trim_set(path, "/")</code>.</p>
+<h3 id="fn-strip_prefixs-str-p-str---optionstr"><code>fn strip_prefix(s: Str, p: Str) -&gt; Option(Str)</code></h3>
+<p>The rest of <code>s</code> once <code>p</code> has been taken off its front (or its back), or <code>None</code> when <code>p</code> was not there — so a caller can tell "had no prefix" from "had the prefix and nothing else".</p>
+<h3 id="fn-strip_suffixs-str-p-str---optionstr"><code>fn strip_suffix(s: Str, p: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-wordss-str---liststr"><code>fn words(s: Str) -&gt; List(Str)</code></h3>
+<p>The runs of non-space bytes, in order; no empty strings, however many spaces there are.</p>
+<h3 id="fn-skip_wss-str-i-int---int"><code>fn skip_ws(s: Str, i: Int) -&gt; Int</code></h3>
+<h3 id="fn-split_onces-str-sep-str---optionstr-str"><code>fn split_once(s: Str, sep: Str) -&gt; Option((Str, Str))</code></h3>
+<p>The text before and after the first <code>sep</code>, or <code>None</code> when there is none: <code>split_once(header, ": ")</code>.</p>
+<h3 id="fn-split_ats-str-i-int---str-str"><code>fn split_at(s: Str, i: Int) -&gt; (Str, Str)</code></h3>
+<h3 id="fn-concatl-liststr---str"><code>fn concat(l: List(Str)) -&gt; Str</code></h3>
+<h3 id="fn-line_counts-str---int"><code>fn line_count(s: Str) -&gt; Int</code></h3>
+<p>What <code>lines</code> would return the length of, without building it.</p>
+<h3 id="fn-cmpa-str-b-str---int"><code>fn cmp(a: Str, b: Str) -&gt; Int</code></h3>
+<h3 id="fn-eq_ignore_casea-str-b-str---bool"><code>fn eq_ignore_case(a: Str, b: Str) -&gt; Bool</code></h3>
+<h3 id="fn-common_prefixa-str-b-str---int"><code>fn common_prefix(a: Str, b: Str) -&gt; Int</code></h3>
+<p>Length of the longest prefix the two share.</p>
+<h3 id="fn-hashs-str---int"><code>fn hash(s: Str) -&gt; Int</code></h3>
+<p>FNV-1a over the bytes, 64 bits wide. The multiply is meant to wrap.</p>
+<h3 id="fn-edit_distancea-str-b-str---int"><code>fn edit_distance(a: Str, b: Str) -&gt; Int</code></h3>
+<p>Levenshtein distance: the fewest single-byte edits (insert, delete, replace) that turn <code>a</code> into <code>b</code>. Two rows of the usual table, swapped rather than copied, so it is <code>#b + 1</code> words of memory however long <code>a</code> is.</p>
+<h3 id="fn-parse_ints-str---optionint"><code>fn parse_int(s: Str) -&gt; Option(Int)</code></h3>
+<p>A whole decimal integer, with an optional sign, or <code>None</code>. This is the strict reading <code>str_to_int</code> does not offer: "12ab" and "" are <code>None</code> here rather than 12 and 0.</p>
+<h3 id="fn-digitss-str-i-int---optionint"><code>fn digits(s: Str, i: Int) -&gt; Option(Int)</code></h3>
+<p>The digits from <code>i</code> to the end of <code>s</code>, as a number; <code>None</code> if anything else is there, or nothing is.</p>
+<h3 id="fn-is_ints-str---bool"><code>fn is_int(s: Str) -&gt; Bool</code></h3>
+<h3 id="fn-is_blanks-str---bool"><code>fn is_blank(s: Str) -&gt; Bool</code></h3>
+<h3 id="fn-is_alpha_strs-str---bool"><code>fn is_alpha_str(s: Str) -&gt; Bool</code></h3>
+<h3 id="fn-is_digit_strs-str---bool"><code>fn is_digit_str(s: Str) -&gt; Bool</code></h3>
+<h3 id="fn-bytess-str---bufu8"><code>fn bytes(s: Str) -&gt; Buf(U8)</code></h3>
+<p>The bytes as a buffer, and back.</p>
+<h3 id="fn-from_bytesv-bufu8---str"><code>fn from_bytes(v: Buf(U8)) -&gt; Str</code></h3>
+<h3 id="fn-utf8_seq_lens-str-i-int---int"><code>fn utf8_seq_len(s: Str, i: Int) -&gt; Int</code></h3>
+<p>Is the byte at <code>i</code> the start of a well-formed sequence, and how long is it? 1 to 4, or 0 for a stray continuation byte, an overlong form, a surrogate, a code point past U+10FFFF, or a sequence the string ends inside. Reads past the end are -1 and fail every test, so nothing here looks at <code>#s</code>.</p>
+<h3 id="fn-is_contb-int---bool"><code>fn is_cont(b: Int) -&gt; Bool</code></h3>
+<h3 id="fn-utf8_bad_ats-str---int"><code>fn utf8_bad_at(s: Str) -&gt; Int</code></h3>
+<p>The offset of the first byte that is not UTF-8, or -1 when all of it is.</p>
+<h3 id="fn-utf8_valids-str---bool"><code>fn utf8_valid(s: Str) -&gt; Bool</code></h3>
+<h3 id="fn-is_scalarc-int---bool"><code>fn is_scalar(c: Int) -&gt; Bool</code></h3>
+<p>A code point that UTF-8 may encode: not a surrogate, not past the last plane.</p>
+<h3 id="fn-decode_utf8s-str---optionlistint"><code>fn decode_utf8(s: Str) -&gt; Option(List(Int))</code></h3>
+<h3 id="fn-encode_utf8cps-listint---optionstr"><code>fn encode_utf8(cps: List(Int)) -&gt; Option(Str)</code></h3>
+<h3 id="fn-utf8_lossys-str---str"><code>fn utf8_lossy(s: Str) -&gt; Str</code></h3>
+<p>The text with every byte that is not part of a well-formed sequence replaced by U+FFFD, one replacement per bad byte. Valid text comes back as it is, uncopied.</p>
+<h3 id="fn-has_boms-str---bool"><code>fn has_bom(s: Str) -&gt; Bool</code></h3>
+<h3 id="fn-strip_boms-str---str"><code>fn strip_bom(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-is_asciis-str---bool"><code>fn is_ascii(s: Str) -&gt; Bool</code></h3>
+<h3 id="fn-each_chars-str-i-int-f-int-int---a---int"><code>fn each_char(s: Str, i: Int, f: (Int, Int) -&gt; 'a) -&gt; Int</code></h3>
+<p>Walk the characters of <code>s</code> from byte <code>i</code>, giving <code>f</code> each code point and where it starts.</p>
+<h3 id="fn-map_charss-str-f-int---int---str"><code>fn map_chars(s: Str, f: (Int) -&gt; Int) -&gt; Str</code></h3>
+<p>The text with <code>f</code> applied to every code point, built without a list.</p>
+<h3 id="fn-put_charb-strbuf-c-int---unit"><code>fn put_char(b: StrBuf, c: Int) -&gt; Unit</code></h3>
+<p><code>char_onto</code> from the prelude, but a statement: it answers nothing, so it can sit in a branch whose other arms are <code>b += x</code>.</p>
+<h3 id="fn-encode_utf16s-str-big-bool---str"><code>fn encode_utf16(s: Str, big: Bool) -&gt; Str</code></h3>
+<h3 id="fn-encode_utf16les-str---str"><code>fn encode_utf16le(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-encode_utf16bes-str---str"><code>fn encode_utf16be(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-unit16b-strbuf-u-int-big-bool---unit"><code>fn unit16(b: StrBuf, u: Int, big: Bool) -&gt; Unit</code></h3>
+<h3 id="fn-unit16_atv-str-i-int-big-bool---int"><code>fn unit16_at(v: Str, i: Int, big: Bool) -&gt; Int</code></h3>
+<h3 id="fn-decode_utf16v-str-big-bool---optionstr"><code>fn decode_utf16(v: Str, big: Bool) -&gt; Option(Str)</code></h3>
+<h3 id="fn-decode_utf16lev-str---optionstr"><code>fn decode_utf16le(v: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-decode_utf16bev-str---optionstr"><code>fn decode_utf16be(v: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-decode_utf16_bomv-str---optionstr"><code>fn decode_utf16_bom(v: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-encode_utf32s-str-big-bool---str"><code>fn encode_utf32(s: Str, big: Bool) -&gt; Str</code></h3>
+<h3 id="fn-decode_utf32v-str-big-bool---optionstr"><code>fn decode_utf32(v: Str, big: Bool) -&gt; Option(Str)</code></h3>
+<h3 id="fn-decode_bytesv-str-f-int---int---str"><code>fn decode_bytes(v: Str, f: (Int) -&gt; Int) -&gt; Str</code></h3>
+<h3 id="fn-encode_bytess-str-g-int---int---optionstr"><code>fn encode_bytes(s: Str, g: (Int) -&gt; Int) -&gt; Option(Str)</code></h3>
+<h3 id="fn-decode_latin1v-str---str"><code>fn decode_latin1(v: Str) -&gt; Str</code></h3>
+<h3 id="fn-encode_latin1s-str---optionstr"><code>fn encode_latin1(s: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-cp1252_charb-int---int"><code>fn cp1252_char(b: Int) -&gt; Int</code></h3>
+<p>Windows-1252: Latin-1 with the C1 controls replaced by punctuation and a few letters. The five bytes 1252 leaves undefined decode to themselves.</p>
+<h3 id="fn-cp1254_charb-int---int"><code>fn cp1254_char(b: Int) -&gt; Int</code></h3>
+<p>Windows-1254, the Turkish page: 1252 with Ğ İ Ş ğ ı ş where 1252 has Ð Ý Þ ð ý þ, and without Ž ž.</p>
+<h3 id="fn-byte_forc-int-f-int---int---int"><code>fn byte_for(c: Int, f: (Int) -&gt; Int) -&gt; Int</code></h3>
+<p>The byte whose character is <code>c</code> under <code>f</code>, searching the 128 high bytes.</p>
+<h3 id="fn-decode_cp1252v-str---str"><code>fn decode_cp1252(v: Str) -&gt; Str</code></h3>
+<h3 id="fn-encode_cp1252s-str---optionstr"><code>fn encode_cp1252(s: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-decode_cp1254v-str---str"><code>fn decode_cp1254(v: Str) -&gt; Str</code></h3>
+<h3 id="fn-encode_cp1254s-str---optionstr"><code>fn encode_cp1254(s: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-char_upperc-int---int"><code>fn char_upper(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-char_lowerc-int---int"><code>fn char_lower(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-char_upper_trc-int---int"><code>fn char_upper_tr(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-char_lower_trc-int---int"><code>fn char_lower_tr(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-upper_utf8s-str---str"><code>fn upper_utf8(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-lower_utf8s-str---str"><code>fn lower_utf8(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-upper_trs-str---str"><code>fn upper_tr(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-lower_trs-str---str"><code>fn lower_tr(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-ascii_folds-str---str"><code>fn ascii_fold(s: Str) -&gt; Str</code></h3>
+<p>The nearest ASCII letter for an accented Latin one — ç→c, ğ→g, ı→i, İ→I, ö→o, ş→s, ü→u, é→e and the rest of Latin-1 and Extended-A — with ß, æ and œ opening out to two letters. Everything else is kept. For slugs, file names and the search box that must find "Çağrı" when "cagri" is typed.</p>
+<h3 id="fn-fold_pieceb-strbuf-c-int---unit"><code>fn fold_piece(b: StrBuf, c: Int) -&gt; Unit</code></h3>
+<h3 id="fn-fold_charc-int---int"><code>fn fold_char(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-fold_extc-int---int"><code>fn fold_ext(c: Int) -&gt; Int</code></h3>
+<p>Latin Extended-A runs in pairs, upper then lower; the pairs for one letter are consecutive. Which letter a pair belongs to is a ladder of starts, and whether it is the upper one is the parity, which flips at ĸ and again at ŉ.</p>
+<h3 id="fn-base64_encodes-str---str"><code>fn base64_encode(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-base64url_encodes-str---str"><code>fn base64url_encode(s: Str) -&gt; Str</code></h3>
+<p>The URL-safe alphabet, without padding, as JWTs and the like carry it.</p>
+<h3 id="fn-base64_withs-str-abc-str-pad-bool---str"><code>fn base64_with(s: Str, abc: Str, pad: Bool) -&gt; Str</code></h3>
+<h3 id="fn-put_or_padb-strbuf-keep-bool-c-int-pad-bool---unit"><code>fn put_or_pad(b: StrBuf, keep: Bool, c: Int, pad: Bool) -&gt; Unit</code></h3>
+<h3 id="fn-base64_decodes-str---optionstr"><code>fn base64_decode(s: Str) -&gt; Option(Str)</code></h3>
+<p>Decodes either alphabet, with or without padding. Anything else in the input — a space, a newline, a third alphabet — is <code>None</code>.</p>
+<h3 id="fn-base64url_decodes-str---optionstr"><code>fn base64url_decode(s: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-b64_valc-int---int"><code>fn b64_val(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-hex_encodes-str---str"><code>fn hex_encode(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-hex_digitd-int---int"><code>fn hex_digit(d: Int) -&gt; Int</code></h3>
+<h3 id="fn-hex_valc-int---int"><code>fn hex_val(c: Int) -&gt; Int</code></h3>
+<h3 id="fn-hex_decodes-str---optionstr"><code>fn hex_decode(s: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-int_to_hexn-int---str"><code>fn int_to_hex(n: Int) -&gt; Str</code></h3>
+<h3 id="fn-hex_to_ints-str---optionint"><code>fn hex_to_int(s: Str) -&gt; Option(Int)</code></h3>
+<p>"ff", "0xFF" and "-0x1a" all read; anything else is <code>None</code>.</p>
+<h3 id="fn-hex_digitss-str-i-int---optionint"><code>fn hex_digits(s: Str, i: Int) -&gt; Option(Int)</code></h3>
+<p>The hex digits from <code>i</code> to the end of <code>s</code>, as a number; <code>None</code> if anything else is there.</p>
+<h3 id="fn-url_encodes-str---str"><code>fn url_encode(s: Str) -&gt; Str</code></h3>
+<p>Percent-encoding as RFC 3986 has it: letters, digits and <code>-_.~</code> stand, every other byte becomes <code>%XX</code>. <code>form_encode</code> is the variant HTML forms use, with a space as <code>+</code>.</p>
+<h3 id="fn-form_encodes-str---str"><code>fn form_encode(s: Str) -&gt; Str</code></h3>
+<h3 id="fn-percents-str-form-bool---str"><code>fn percent(s: Str, form: Bool) -&gt; Str</code></h3>
+<h3 id="fn-url_decodes-str---optionstr"><code>fn url_decode(s: Str) -&gt; Option(Str)</code></h3>
+<p>A <code>%</code> not followed by two hex digits is <code>None</code>.</p>
+<h3 id="fn-form_decodes-str---optionstr"><code>fn form_decode(s: Str) -&gt; Option(Str)</code></h3>
+<h3 id="fn-unpercents-str-form-bool---optionstr"><code>fn unpercent(s: Str, form: Bool) -&gt; Option(Str)</code></h3>
+<h3 id="fn-html_escapes-str---str"><code>fn html_escape(s: Str) -&gt; Str</code></h3>
+<p>The five characters HTML cannot show as they are. Safe for text and for attribute values in either kind of quote.</p>
+<h3 id="fn-html_unescapes-str---str"><code>fn html_unescape(s: Str) -&gt; Str</code></h3>
+<p>The five named entities and the numeric ones, decimal and hex. An <code>&amp;</code> that starts no entity is kept as it is, which is what browsers do.</p>
+<h3 id="fn-entityname-str---int"><code>fn entity(name: Str) -&gt; Int</code></h3>
+<h3 id="fn-escapes-str---str"><code>fn escape(s: Str) -&gt; Str</code></h3>
+<p>C-style escapes: <code>\n \r \t \\ \"</code> and <code>\xHH</code> for any other control byte, so that a string can be shown on one line and read back exactly.</p>
+<h3 id="fn-unescapes-str---optionstr"><code>fn unescape(s: Str) -&gt; Option(Str)</code></h3>
+<p>Reads <code>escape</code>'s output back, plus <code>\'</code>, <code>\0</code> and <code>\u{...}</code>. A backslash that starts no escape is <code>None</code>.</p>
+<h3 id="fn-par_rangess-str-k-int-f-int-int---a---lista"><code>fn par_ranges(s: Str, k: Int, f: (Int, Int) -&gt; 'a) -&gt; List('a)</code></h3>
+<h3 id="fn-run_rangech-chana-b-f-c-d---b-i-a-lo-c-hi-d---unit"><code>fn run_range(ch: Chan(('a, 'b)), f: ('c, 'd) -&gt; 'b, i: 'a, lo: 'c, hi: 'd) -&gt; Unit</code></h3>
+<h3 id="fn-pickrs-lista-b-i-a---b-where-a-is-a-value-type"><code>fn pick(rs: List(('a, 'b)), i: 'a) -&gt; 'b    # where 'a is a value type</code></h3>
+<h3 id="fn-par_threshold---int"><code>fn par_threshold() -&gt; Int</code></h3>
+<h3 id="fn-par_counts-str-p-str---int"><code>fn par_count(s: Str, p: Str) -&gt; Int</code></h3>
+<p><code>count_all</code> (every occurrence, overlapping ones included) over all the workers. The overlapping count is the one that splits: whether a non-overlapping scan takes a match depends on the matches before it, which another strand may hold. For a pattern that cannot overlap itself the two counts are the same number.</p>
+<h3 id="fn-par_count_ons-str-p-str-k-int---int"><code>fn par_count_on(s: Str, p: Str, k: Int) -&gt; Int</code></h3>
+<h3 id="fn-count_windows-str-p-str-from-int-to-int---int"><code>fn count_window(s: Str, p: Str, from: Int, to: Int) -&gt; Int</code></h3>
+<h3 id="fn-par_index_ofs-str-p-str---int"><code>fn par_index_of(s: Str, p: Str) -&gt; Int</code></h3>
+<p><code>index_of</code> over all the workers: each range reports the first match that begins in it, and the smallest wins.</p>
+<h3 id="fn-par_index_ons-str-p-str-k-int---int"><code>fn par_index_on(s: Str, p: Str, k: Int) -&gt; Int</code></h3>
+<h3 id="fn-first_foundl-listint---int"><code>fn first_found(l: List(Int)) -&gt; Int</code></h3>
+<h3 id="fn-par_liness-str-f-str---a---lista"><code>fn par_lines(s: Str, f: (Str) -&gt; 'a) -&gt; List('a)</code></h3>
+<p><code>map(lines(s), f)</code> over all the workers: the ranges are moved forward to the byte after a newline so that no line is cut, each strand maps its own lines, and the pieces are joined in order. The lines are exactly those of the prelude's <code>lines</code>, trailing empty one included.</p>
+<h3 id="fn-par_lines_ons-str-f-str---a-k-int---lista"><code>fn par_lines_on(s: Str, f: (Str) -&gt; 'a, k: Int) -&gt; List('a)</code></h3>
+<h3 id="fn-after_newlines-str-pos-int---int"><code>fn after_newline(s: Str, pos: Int) -&gt; Int</code></h3>
+<p>The range boundary at <code>pos</code>, moved to just past the next newline; the two ends of the text stay where they are.</p>
+<h3 id="fn-lines_ins-str-f-str---a-lo-int-hi-int---lista"><code>fn lines_in(s: Str, f: (Str) -&gt; 'a, lo: Int, hi: Int) -&gt; List('a)</code></h3>
+<p>A range's lines, last first — the order they are found in — so that the pieces can be stitched into one list in a single pass, without the copy an <code>append</code> per piece would make.</p>
+<h3 id="fn-stitchls-listlista-acc-lista---lista"><code>fn stitch(ls: List(List('a)), acc: List('a)) -&gt; List('a)</code></h3>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-text-regex.html">← text/regex</a>
+        <a class="next" href="lib-time-clock.html">time/clock →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

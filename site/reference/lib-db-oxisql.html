@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>db/oxisql — The Rill Language Reference</title>
+<meta name="description" content="A client for OxiDB&#x27;s SQL engine, written in Rill.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-oxisql.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-oxisql.html">
+<meta property="og:title" content="db/oxisql — The Rill Language Reference">
+<meta property="og:description" content="A client for OxiDB&#x27;s SQL engine, written in Rill.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="db/oxisql — The Rill Language Reference">
+<meta name="twitter:description" content="A client for OxiDB&#x27;s SQL engine, written in Rill.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-db-kv.html">db/kv</a></li>
+        <li><a href="lib-db-oxidb.html">db/oxidb</a></li>
+        <li><a href="lib-db-oxirec.html">db/oxirec</a></li>
+        <li><a href="lib-db-oxiresp.html">db/oxiresp</a></li>
+        <li class="current"><a href="lib-db-oxisql.html">db/oxisql</a></li>
+        <li><a href="lib-db-oxitsdb.html">db/oxitsdb</a></li>
+        <li><a href="lib-db-oxiwire.html">db/oxiwire</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Databases</p>
+      <h1>db/oxisql</h1>
+<p class="import">Imported as <code>import "db/oxisql" as oxisql</code>, its names are then <code>oxisql.…</code>. Every signature below is the one the checker infers.</p><p>A client for OxiDB's SQL engine, written in Rill.</p>
+<p>The wire is <code>oxiwire.rill</code>, the same binary one the document and time-series clients use — the engine is chosen by a field in the request rather than by a port, so one connection could speak to all three. This engine is off unless the server was started with OXIDB_SQL, and it is gated at the write role: there is no read-only SQL in this version.</p>
+<p>One request may carry more than one statement, so the answer is always a <em>list</em> of results, one per statement, and each is one of three shapes:</p>
+<p>{"ddl": true} CREATE, DROP, ALTER {"affected": 2} INSERT, UPDATE, DELETE {"columns": [..], "types": [..], "rows": [[..]]} SELECT</p>
+<p>A row is a list of values positionally matching <code>columns</code>, so reading one by name means finding the column first — <code>sql_at</code> below does that once per result rather than once per row.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-sql_connecthost-str-port-int---resultint-str"><code>fn sql_connect(host: Str, port: Int) -&gt; Result(Int, Str)</code></h3>
+<h3 id="fn-sql_hang_upfd-int---unit"><code>fn sql_hang_up(fd: Int) -&gt; Unit</code></h3>
+<h3 id="fn-sql_requestfields-listfield---json"><code>fn sql_request(fields: List(Field)) -&gt; Json</code></h3>
+<h3 id="fn-sql_cmdname-str-fields-listfield---json"><code>fn sql_cmd(name: Str, fields: List(Field)) -&gt; Json</code></h3>
+<h3 id="fn-sql_preparefd-int-text-str---resultint-str"><code>fn sql_prepare(fd: Int, text: Str) -&gt; Result(Int, Str)</code></h3>
+<h3 id="fn-sql_execfd-int-id-int-params-listjson---resultjson-str"><code>fn sql_exec(fd: Int, id: Int, params: List(Json)) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-sql_closefd-int-id-int---resultjson-str"><code>fn sql_close(fd: Int, id: Int) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-sql_runfd-int-text-str---resultjson-str"><code>fn sql_run(fd: Int, text: Str) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-sql_run_withfd-int-text-str-params-listjson---resultjson-str"><code>fn sql_run_with(fd: Int, text: Str, params: List(Json)) -&gt; Result(Json, Str)</code></h3>
+<p><code>?</code> in the text takes the next value from <code>params</code>, which is how a value reaches the engine without being written into the statement.</p>
+<h3 id="fn-sql_backupfd-int-path-str---resultjson-str"><code>fn sql_backup(fd: Int, path: Str) -&gt; Result(Json, Str)</code></h3>
+<p>Admin-only, and gated as such before the request reaches the engine.</p>
+<h3 id="fn-sql_restorefd-int-archive-str-target-str---resultjson-str"><code>fn sql_restore(fd: Int, archive: Str, target: Str) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-sql_resultsanswer-json---listjson"><code>fn sql_results(answer: Json) -&gt; List(Json)</code></h3>
+<p>One result per statement sent.</p>
+<h3 id="fn-sql_firstanswer-json---json"><code>fn sql_first(answer: Json) -&gt; Json</code></h3>
+<p>The common case is one statement, and a caller that sent one should not have to say so twice.</p>
+<h3 id="fn-sql_columnsresult-json---liststr"><code>fn sql_columns(result: Json) -&gt; List(Str)</code></h3>
+<h3 id="fn-sql_typesresult-json---liststr"><code>fn sql_types(result: Json) -&gt; List(Str)</code></h3>
+<p>A column's declared type — <code>INT</code>, <code>TEXT</code>, <code>DOUBLE</code> — or the empty string where the engine had none to give, as for a bare <code>NULL</code> in a select list.</p>
+<h3 id="fn-sql_rowsresult-json---listjson"><code>fn sql_rows(result: Json) -&gt; List(Json)</code></h3>
+<h3 id="fn-sql_affectedresult-json---int"><code>fn sql_affected(result: Json) -&gt; Int</code></h3>
+<h3 id="fn-sql_is_ddlresult-json---bool"><code>fn sql_is_ddl(result: Json) -&gt; Bool</code></h3>
+<h3 id="fn-sql_atresult-json-name-str---int"><code>fn sql_at(result: Json, name: Str) -&gt; Int</code></h3>
+<p>Where a named column sits in every row of this result, or -1. Worth holding on to across a loop rather than asking per row.</p>
+<h3 id="fn-column_indexnames-lista-name-a-i-int---int-where-a-is-a-value-type"><code>fn column_index(names: List('a), name: 'a, i: Int) -&gt; Int    # where 'a is a value type</code></h3>
+<h3 id="fn-sql_cellrow-json-i-int---json"><code>fn sql_cell(row: Json, i: Int) -&gt; Json</code></h3>
+<h3 id="fn-sql_valueresult-json-row-json-name-str---json"><code>fn sql_value(result: Json, row: Json, name: Str) -&gt; Json</code></h3>
+<p>The value of a named column in one row. Fine for a handful; for a table use <code>sql_at</code> once and <code>sql_cell</code> per row.</p>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-db-oxiresp.html">← db/oxiresp</a>
+        <a class="next" href="lib-db-oxitsdb.html">db/oxitsdb →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

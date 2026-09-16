@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>text/fmt — The Rill Language Reference</title>
+<meta name="description" content="Text laid out and numbers spelled: a template with slots, padding by width, a float to so many places, thousands separated, a size in bytes, an ordinal, a table with its columns lined up.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-text-fmt.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-text-fmt.html">
+<meta property="og:title" content="text/fmt — The Rill Language Reference">
+<meta property="og:description" content="Text laid out and numbers spelled: a template with slots, padding by width, a float to so many places, thousands separated, a size in bytes, an ordinal, a table with its columns lined up.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="text/fmt — The Rill Language Reference">
+<meta name="twitter:description" content="Text laid out and numbers spelled: a template with slots, padding by width, a float to so many places, thousands separated, a size in bytes, an ordinal, a table with its columns lined up.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li class="current"><a href="lib-text-fmt.html">text/fmt</a></li>
+        <li><a href="lib-text-path.html">text/path</a></li>
+        <li><a href="lib-text-regex.html">text/regex</a></li>
+        <li><a href="lib-text-str.html">text/str</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Text</p>
+      <h1>text/fmt</h1>
+<p class="import">Imported as <code>import "text/fmt" as fmt</code>, its names are then <code>fmt.…</code>. Every signature below is the one the checker infers.</p><p>Text laid out and numbers spelled: a template with slots, padding by width, a float to so many places, thousands separated, a size in bytes, an ordinal, a table with its columns lined up.</p>
+<pre><span class="k">import</span> <span class="s">"text/fmt"</span> <span class="k">as</span> fmt
+fmt.text(<span class="s">"{} has {:&gt;6} items"</span>, <span class="t">Cons</span>(name, <span class="t">Cons</span>(<span class="f">show</span>(n), <span class="t">Nil</span>)))
+fmt.fixed(<span class="n">3.14159</span>, <span class="n">2</span>)              <span class="c"># &quot;3.14&quot;</span>
+fmt.thousands(<span class="n">1234567</span>)             <span class="c"># &quot;1,234,567&quot;</span>
+fmt.bytes(<span class="n">1536</span>)                    <span class="c"># &quot;1.5 KB&quot;</span>
+fmt.ordinal(<span class="n">22</span>)                    <span class="c"># &quot;22nd&quot;</span>
+fmt.table(rows)                    <span class="c"># columns padded to their widest cell</span></pre>
+<p>A template's slots take their values from a list of strings, in order — <code>{}</code> the next one, <code>{2}</code> the third — and a slot may say how wide and which way: <code>{:&gt;8}</code> right in eight, <code>{:&lt;8}</code> left, <code>{:^8}</code> centred, <code>{:0&gt;8}</code> padded with zeros, <code>{1:*^10}</code> the second value centred among stars. Anything that is not a string is made one first — <code>show(x)</code>, <code>fixed(x, 2)</code>, <code>thousands(n)</code> — so the template only ever places text, and the number is spelled by the function that knows how. <code>{{</code> and <code>}}</code> are a brace. Widths count characters, not bytes, so <code>héllo</code> is five.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-texttemplate-str-args-liststr---str"><code>fn text(template: Str, args: List(Str)) -&gt; Str</code></h3>
+<h3 id="fn-pad_lefts-str-width-int---str"><code>fn pad_left(s: Str, width: Int) -&gt; Str</code></h3>
+<h3 id="fn-pad_rights-str-width-int---str"><code>fn pad_right(s: Str, width: Int) -&gt; Str</code></h3>
+<h3 id="fn-centers-str-width-int---str"><code>fn center(s: Str, width: Int) -&gt; Str</code></h3>
+<h3 id="fn-pad_left_withs-str-width-int-fill-str---str"><code>fn pad_left_with(s: Str, width: Int, fill: Str) -&gt; Str</code></h3>
+<h3 id="fn-pad_right_withs-str-width-int-fill-str---str"><code>fn pad_right_with(s: Str, width: Int, fill: Str) -&gt; Str</code></h3>
+<h3 id="fn-center_withs-str-width-int-fill-str---str"><code>fn center_with(s: Str, width: Int, fill: Str) -&gt; Str</code></h3>
+<p>The extra space goes to the right when it does not split evenly.</p>
+<h3 id="fn-truncates-str-width-int---str"><code>fn truncate(s: Str, width: Int) -&gt; Str</code></h3>
+<p>The first <code>width</code> characters, and an ellipsis in place of the rest.</p>
+<h3 id="fn-fixedx-float-places-int---str"><code>fn fixed(x: Float, places: Int) -&gt; Str</code></h3>
+<p><code>x</code> to <code>places</code> decimal places, rounded half away from zero. Past what an integer can count — around 9e15 — the float's own spelling is used.</p>
+<h3 id="fn-thousandsn-int---str"><code>fn thousands(n: Int) -&gt; Str</code></h3>
+<p>The number with a separator every three digits from the right.</p>
+<h3 id="fn-thousands_withn-int-sep-str---str"><code>fn thousands_with(n: Int, sep: Str) -&gt; Str</code></h3>
+<h3 id="fn-zero_padn-int-width-int---str"><code>fn zero_pad(n: Int, width: Int) -&gt; Str</code></h3>
+<p>The number in <code>width</code> digits, zeros in front.</p>
+<h3 id="fn-signedn-int---str"><code>fn signed(n: Int) -&gt; Str</code></h3>
+<p><code>+3</code>, <code>-3</code>, <code>0</code>.</p>
+<h3 id="fn-percentx-float-places-int---str"><code>fn percent(x: Float, places: Int) -&gt; Str</code></h3>
+<p><code>x</code> as a percentage: <code>percent(0.125, 1)</code> is <code>12.5%</code>.</p>
+<h3 id="fn-radixn-int-base-int---str"><code>fn radix(n: Int, base: Int) -&gt; Str</code></h3>
+<p>In base 2 to 36, lowercase.</p>
+<h3 id="fn-hexn-int---str"><code>fn hex(n: Int) -&gt; Str</code></h3>
+<h3 id="fn-binaryn-int---str"><code>fn binary(n: Int) -&gt; Str</code></h3>
+<h3 id="fn-scix-float-places-int---str"><code>fn sci(x: Float, places: Int) -&gt; Str</code></h3>
+<p><code>1.23e+05</code>: a mantissa to <code>places</code> places and an exponent of at least two digits, as C prints one.</p>
+<h3 id="fn-bytesn-int---str"><code>fn bytes(n: Int) -&gt; Str</code></h3>
+<p>A count of bytes in the unit that fits, to one place: <code>1.5 KB</code>, <code>3.0 MB</code>.</p>
+<h3 id="fn-ordinaln-int---str"><code>fn ordinal(n: Int) -&gt; Str</code></h3>
+<p><code>1st</code>, <code>2nd</code>, <code>3rd</code>, <code>4th</code>, and <code>11th</code> to <code>13th</code> as English has them.</p>
+<h3 id="fn-pluraln-int-word-str---str"><code>fn plural(n: Int, word: Str) -&gt; Str</code></h3>
+<p><code>1 file</code>, <code>2 files</code>; <code>plural_with</code> for a word that does not just take an <code>s</code>.</p>
+<h3 id="fn-plural_withn-int-one-str-many-str---str"><code>fn plural_with(n: Int, one: Str, many: Str) -&gt; Str</code></h3>
+<h3 id="fn-tablerows-listliststr---str"><code>fn table(rows: List(List(Str))) -&gt; Str</code></h3>
+<p>Rows of cells, each column padded to its widest cell and two spaces between columns; the last cell of a row is not padded.</p>
+<h3 id="fn-table_withrows-listliststr-sep-str---str"><code>fn table_with(rows: List(List(Str)), sep: Str) -&gt; Str</code></h3>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_template_slots</code></li>
+<li><code>test_padding_counts_characters</code></li>
+<li><code>test_fixed_and_friends</code></li>
+<li><code>test_integers_spelled</code></li>
+<li><code>test_words</code></li>
+<li><code>test_table_lines_up</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-random-uuid.html">← random/uuid</a>
+        <a class="next" href="lib-text-path.html">text/path →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

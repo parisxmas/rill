@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>random/rnd — The Rill Language Reference</title>
+<meta name="description" content="Random numbers, from a generator that is a value.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-random-rnd.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-random-rnd.html">
+<meta property="og:title" content="random/rnd — The Rill Language Reference">
+<meta property="og:description" content="Random numbers, from a generator that is a value.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="random/rnd — The Rill Language Reference">
+<meta name="twitter:description" content="Random numbers, from a generator that is a value.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li class="current"><a href="lib-random-rnd.html">random/rnd</a></li>
+        <li><a href="lib-random-uuid.html">random/uuid</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Randomness</p>
+      <h1>random/rnd</h1>
+<p class="import">Imported as <code>import "random/rnd" as rnd</code>, its names are then <code>rnd.…</code>. Every signature below is the one the checker infers.</p><p>Random numbers, from a generator that is a value.</p>
+<p>PCG32 (O'Neill): a 64-bit state, a 32-bit output that passes the statistical tests, and one multiply and a few shifts a number. The generator is a <code>Rng</code> value — there is no hidden state — so a function that draws hands back the next generator with the number, and the same seed gives the same sequence on every run and every machine.</p>
+<pre><span class="k">import</span> <span class="s">"random/rnd"</span> <span class="k">as</span> rnd
+r = rnd.seed(<span class="n">42</span>)                      <span class="c"># or rnd.seed_from_os()</span>
+(n, r) = rnd.int_in(r, <span class="n">1</span>, <span class="n">6</span>)          <span class="c"># a die</span>
+(x, r) = rnd.float(r)                 <span class="c"># in [0, 1)</span>
+(who, r) = rnd.pick(r, names)         <span class="c"># Some(one of them)</span>
+r = rnd.shuffle(r, deck)              <span class="c"># a Buf(Int), in place</span></pre>
+<p>Not for secrets: a PCG stream can be predicted from its output. Keys and tokens come from <code>random_i64()</code>, which asks the operating system.</p>
+<h2 id="types">Types</h2>
+<h3 id="rng"><code>Rng</code></h3>
+<ul>
+<li><code>Rng(state: Int, inc: Int)</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-seedn-int---rng"><code>fn seed(n: Int) -&gt; Rng</code></h3>
+<p>A generator from a seed; two seeds, two streams.</p>
+<h3 id="fn-seed2n-int-stream-int---rng"><code>fn seed2(n: Int, stream: Int) -&gt; Rng</code></h3>
+<h3 id="fn-seed_from_os---rng"><code>fn seed_from_os() -&gt; Rng</code></h3>
+<p>A generator seeded by the operating system: different every run.</p>
+<h3 id="fn-next_intr-rng---int-rng"><code>fn next_int(r: Rng) -&gt; (Int, Rng)</code></h3>
+<p>The next 32-bit number, 0 .. 2^32 - 1, and the generator after it.</p>
+<h3 id="fn-int_inr-rng-lo-int-hi-int---int-rng"><code>fn int_in(r: Rng, lo: Int, hi: Int) -&gt; (Int, Rng)</code></h3>
+<p>A number in <code>lo..hi</code>, <code>hi</code> excluded, without the bias a <code>%</code> would have: a draw that lands in the ragged end of the range is taken again.</p>
+<h3 id="fn-floatr-rng---float-rng"><code>fn float(r: Rng) -&gt; (Float, Rng)</code></h3>
+<p>A float in [0, 1), 53 random bits of it.</p>
+<h3 id="fn-boolr-rng---bool-rng"><code>fn bool(r: Rng) -&gt; (Bool, Rng)</code></h3>
+<h3 id="fn-pickr-rng-xs-lista---optiona-rng"><code>fn pick(r: Rng, xs: List('a)) -&gt; (Option('a), Rng)</code></h3>
+<p>One of a list, or <code>None</code> of an empty one.</p>
+<h3 id="fn-shuffler-rng-b-bufint---rng"><code>fn shuffle(r: Rng, b: Buf(Int)) -&gt; Rng</code></h3>
+<p>Fisher–Yates over a buffer, in place; the generator after it.</p>
+<h3 id="fn-bytesr-rng-n-int---str-rng"><code>fn bytes(r: Rng, n: Int) -&gt; (Str, Rng)</code></h3>
+<p><code>n</code> random bytes, as a string of them.</p>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_reference_stream</code></li>
+<li><code>test_ranges</code></li>
+<li><code>test_shuffle_keeps_everything</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-num-grid.html">← num/grid</a>
+        <a class="next" href="lib-random-uuid.html">random/uuid →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

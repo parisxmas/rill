@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>web/tmpl — The Rill Language Reference</title>
+<meta name="description" content="The runtime half of the template engine: what a generated template calls.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-web-tmpl.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-web-tmpl.html">
+<meta property="og:title" content="web/tmpl — The Rill Language Reference">
+<meta property="og:description" content="The runtime half of the template engine: what a generated template calls.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="web/tmpl — The Rill Language Reference">
+<meta name="twitter:description" content="The runtime half of the template engine: what a generated template calls.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-web-form.html">web/form</a></li>
+        <li><a href="lib-web-http.html">web/http</a></li>
+        <li><a href="lib-web-mime.html">web/mime</a></li>
+        <li><a href="lib-web-tls.html">web/tls</a></li>
+        <li class="current"><a href="lib-web-tmpl.html">web/tmpl</a></li>
+        <li><a href="lib-web-url.html">web/url</a></li>
+        <li><a href="lib-web-ws.html">web/ws</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#traits">Traits</a></li>
+        <li><a href="#implementations">Implementations</a></li>
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · The web</p>
+      <h1>web/tmpl</h1>
+<p class="import">Imported as <code>import "web/tmpl" as tmpl</code>, its names are then <code>tmpl.…</code>. Every signature below is the one the checker infers.</p><p>The runtime half of the template engine: what a generated template calls.</p>
+<p>A template is not read at run time. <code>tools/tmplgen.rill</code> turns it into Rill — one function per template, static text as string literals and everything else as the code it stands for — and the Rill compiler compiles that. So a render is a run of appends to a builder with nothing to parse, nothing to look up by name, and no branch that asks what kind of tag this was.</p>
+<p>What is left for run time is here: how a value becomes text, and how text becomes safe to put in a page.</p>
+<p>b = strbuf() greet(b, "Ada &amp; co") # the generated function println(strbuf_str(b))</p>
+<p><code>render</code> is a trait, so <code>&lt;%= x %&gt;</code> costs what the type of <code>x</code> costs and no more: an <code>Int</code> goes into the builder as digits with no escaping and no string in between, a <code>Str</code> is escaped, and a type of your own is whatever its <code>impl Render</code> says. The choice is made when the program is compiled, not when the page is rendered.</p>
+<h2 id="traits">Traits</h2>
+<h3 id="trait-rendera"><code>trait Render(a)</code></h3>
+<p>The value a render answers with means nothing and every caller drops it. A Rill <code>for</code> is worth zero, and these end in one.</p>
+<ul>
+<li><code>render(StrBuf, a) -&gt; Int</code></li>
+</ul>
+<h3 id="trait-rawa"><code>trait Raw(a)</code></h3>
+<p>What <code>&lt;%! x %&gt;</code> writes: the text as it stands, for a value that is already markup. Nothing checks that claim, which is why it has a mark of its own.</p>
+<ul>
+<li><code>raw(StrBuf, a) -&gt; Int</code></li>
+</ul>
+<h2 id="implementations">Implementations</h2>
+<ul>
+<li><code>impl Render(Str)</code></li>
+<li><code>impl Render(Int)</code></li>
+<li><code>impl Render(Float)</code></li>
+<li><code>impl Render(Bool)</code></li>
+<li><code>impl Raw(Str)</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-esc_intob-strbuf-s-str---int"><code>fn esc_into(b: StrBuf, s: Str) -&gt; Int</code></h3>
+<p>The five bytes that can change what a page means: <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code>, <code>"</code> and <code>'</code>. Almost no string holds one, so the string is looked over first and copied whole when it does not — one length and one copy, which is what a static piece of the template costs too. Only a string that does hold one is walked a byte at a time, and even then nothing is allocated: a byte goes into the builder as a byte.</p>
+<h3 id="fn-esc_tailb-strbuf-s-str-k-int-n-int---int"><code>fn esc_tail(b: StrBuf, s: Str, k: Int, n: Int) -&gt; Int</code></h3>
+<h3 id="fn-first_specials-str-i-int-n-int---int"><code>fn first_special(s: Str, i: Int, n: Int) -&gt; Int</code></h3>
+<h3 id="fn-is_specialc-int---bool"><code>fn is_special(c: Int) -&gt; Bool</code></h3>
+<h3 id="fn-escapedc-int---str"><code>fn escaped(c: Int) -&gt; Str</code></h3>
+<h3 id="fn-escs-str---str"><code>fn esc(s: Str) -&gt; Str</code></h3>
+<p>The same as a string, for a caller that wants one rather than a builder.</p>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-web-tls.html">← web/tls</a>
+        <a class="next" href="lib-web-url.html">web/url →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

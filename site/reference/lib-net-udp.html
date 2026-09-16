@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>net/udp — The Rill Language Reference</title>
+<meta name="description" content="UDP: datagrams sent and received, each one whole, with the sender&#x27;s address on the ones that arrive.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-net-udp.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-net-udp.html">
+<meta property="og:title" content="net/udp — The Rill Language Reference">
+<meta property="og:description" content="UDP: datagrams sent and received, each one whole, with the sender&#x27;s address on the ones that arrive.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="net/udp — The Rill Language Reference">
+<meta name="twitter:description" content="UDP: datagrams sent and received, each one whole, with the sender&#x27;s address on the ones that arrive.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-net-dns.html">net/dns</a></li>
+        <li class="current"><a href="lib-net-udp.html">net/udp</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · The network</p>
+      <h1>net/udp</h1>
+<p class="import">Imported as <code>import "net/udp" as udp</code>, its names are then <code>udp.…</code>. Every signature below is the one the checker infers.</p><p>UDP: datagrams sent and received, each one whole, with the sender's address on the ones that arrive. A socket is a descriptor as a TCP one is, and a receive parks the strand rather than the worker, so a server with a datagram socket and ten connections serves all eleven.</p>
+<pre><span class="k">import</span> <span class="s">"net/udp"</span> <span class="k">as</span> udp
+sock = udp.open(<span class="n">9000</span>)?               <span class="c"># or udp.open(0), and udp.port_of(sock)</span>
+udp.send_to(sock, <span class="s">"127.0.0.1"</span>, <span class="n">9001</span>, <span class="s">"ping"</span>)
+p = udp.recv_from(sock)              <span class="c"># a Packet: p.from, p.port, p.data</span>
+<span class="f">sock_close</span>(sock)</pre>
+<p>Addresses are dotted IPv4, as the TCP calls take them; <code>net/dns</code> turns a name into one. A datagram is at most 65,507 bytes, and a longer one is refused rather than cut.</p>
+<h2 id="types">Types</h2>
+<h3 id="packet"><code>Packet</code></h3>
+<ul>
+<li><code>Packet(from: Str, port: Int, data: Str)</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-openport-int---resultint-str"><code>fn open(port: Int) -&gt; Result(Int, Str)</code></h3>
+<p>A socket bound to <code>port</code> on every interface; 0 for one the system picks.</p>
+<h3 id="fn-port_offd-int---int"><code>fn port_of(fd: Int) -&gt; Int</code></h3>
+<h3 id="fn-send_tofd-int-host-str-port-int-data-str---int"><code>fn send_to(fd: Int, host: Str, port: Int, data: Str) -&gt; Int</code></h3>
+<p>Sends <code>data</code> as one datagram; the bytes sent, or -1.</p>
+<h3 id="fn-recv_fromfd-int---packet"><code>fn recv_from(fd: Int) -&gt; Packet</code></h3>
+<p>The next datagram, whole, with where it came from.</p>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_a_datagram_goes_round</code></li>
+<li><code>test_too_long_and_bad_address</code></li>
+<li><code>test_a_strand_waits_for_it</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-net-dns.html">← net/dns</a>
+        <a class="next" href="lib-num-bigint.html">num/bigint →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

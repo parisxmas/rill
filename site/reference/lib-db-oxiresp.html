@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>db/oxiresp — The Rill Language Reference</title>
+<meta name="description" content="A client for OxiDB&#x27;s in-memory key-value engine, written in Rill.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-oxiresp.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-oxiresp.html">
+<meta property="og:title" content="db/oxiresp — The Rill Language Reference">
+<meta property="og:description" content="A client for OxiDB&#x27;s in-memory key-value engine, written in Rill.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="db/oxiresp — The Rill Language Reference">
+<meta name="twitter:description" content="A client for OxiDB&#x27;s in-memory key-value engine, written in Rill.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-db-kv.html">db/kv</a></li>
+        <li><a href="lib-db-oxidb.html">db/oxidb</a></li>
+        <li><a href="lib-db-oxirec.html">db/oxirec</a></li>
+        <li class="current"><a href="lib-db-oxiresp.html">db/oxiresp</a></li>
+        <li><a href="lib-db-oxisql.html">db/oxisql</a></li>
+        <li><a href="lib-db-oxitsdb.html">db/oxitsdb</a></li>
+        <li><a href="lib-db-oxiwire.html">db/oxiwire</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Databases</p>
+      <h1>db/oxiresp</h1>
+<p class="import">Imported as <code>import "db/oxiresp" as oxiresp</code>, its names are then <code>oxiresp.…</code>. Every signature below is the one the checker infers.</p><p>A client for OxiDB's in-memory key-value engine, written in Rill.</p>
+<p>This engine is not on the wire the other two clients here use. It listens on a port of its own — the server is started with OXIDB_OXIMEM_PORT — and it speaks RESP, the protocol Redis speaks, so what is written here is what any Redis client writes and the engine cannot tell them apart.</p>
+<p>RESP2, and the whole of it:</p>
+<p>+OKa simple string -ERR no such keyan error :42an integer $3a bulk string: a length, then exactly that many bytes $-1no value <em>2<v><v> an array </em>-1no array — what EXEC answers when a transaction broke</p>
+<p>A command is an array of bulk strings and nothing else, which is why every argument below is a <code>Str</code>: numbers go out as their digits and come back as whatever the command decided to answer with.</p>
+<p>Unlike a length-prefixed wire, RESP gives no frame size up front — a reader has to parse to find out whether it has the whole reply. So decoding answers <code>RMore</code> for a reply that has not all arrived, and the socket is read again. One command, one reply, except while subscribed — see the bottom of this file, where the reply to a command and a message nobody asked for arrive through the same socket and have to be told apart.</p>
+<h2 id="types">Types</h2>
+<h3 id="resp"><code>Resp</code></h3>
+<ul>
+<li><code>RSimple(Str)</code></li>
+<li><code>RError(Str)</code></li>
+<li><code>RInt(Int)</code></li>
+<li><code>RBulk(Str)</code></li>
+<li><code>RNil</code></li>
+<li><code>RNilArray</code></li>
+<li><code>RArray(List(Resp))</code></li>
+</ul>
+<h3 id="respread"><code>RespRead</code></h3>
+<ul>
+<li><code>RGot(value: Resp, pos: Int)</code></li>
+<li><code>RMore</code></li>
+<li><code>RBad(why: Str, pos: Int)</code></li>
+</ul>
+<h3 id="sub"><code>Sub</code></h3>
+<p>A subscription is a socket and what has been read off it but not yet used. Every command until now has been one write and one reply, so whatever came after the reply could be thrown away; a subscriber cannot do that, because one read may carry two messages and the second is not going to be sent again. So the leftover is carried, and <code>kv_next</code> answers a new subscription along with the message — the bytes have to live somewhere, and a binding does not change.</p>
+<ul>
+<li><code>Sub(fd: Int, buf: Str)</code></li>
+</ul>
+<h3 id="delivery"><code>Delivery</code></h3>
+<ul>
+<li><code>Message(sub: Sub, channel: Str, payload: Str)</code></li>
+<li><code>PatternMessage(sub: Sub, pattern: Str, channel: Str, payload: Str)</code></li>
+<li><code>Note(sub: Sub, kind: Str, name: Str, count: Int)</code></li>
+<li><code>Ended(why: Str)</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-resp_commandargs-liststr---str"><code>fn resp_command(args: List(Str)) -&gt; Str</code></h3>
+<h3 id="fn-resp_put_argsb-strbuf-args-liststr---unit"><code>fn resp_put_args(b: StrBuf, args: List(Str)) -&gt; Unit</code></h3>
+<h3 id="fn-resp_decodes-str-i-int---respread"><code>fn resp_decode(s: Str, i: Int) -&gt; RespRead</code></h3>
+<p><code>RMore</code> and <code>RBad</code> are different answers and the difference is the whole reason this can be driven off a socket: a reply that has not finished arriving is not a reply that is wrong.</p>
+<h3 id="fn-resp_kinds-str-i-int-c-int-e-int---respread"><code>fn resp_kind(s: Str, i: Int, c: Int, e: Int) -&gt; RespRead</code></h3>
+<h3 id="fn-resp_heads-str-i-int-e-int---str"><code>fn resp_head(s: Str, i: Int, e: Int) -&gt; Str</code></h3>
+<p>The text between the type byte and the CRLF.</p>
+<h3 id="fn-resp_bulks-str-i-int-n-int---respread"><code>fn resp_bulk(s: Str, i: Int, n: Int) -&gt; RespRead</code></h3>
+<p>A bulk string is the one place a length is given, so it is the one place a byte may be anything at all — a NUL included.</p>
+<h3 id="fn-resp_arrays-str-i-int-n-int-acc-listresp---respread"><code>fn resp_array(s: Str, i: Int, n: Int, acc: List(Resp)) -&gt; RespRead</code></h3>
+<h3 id="fn-resp_items-str-i-int-n-int-acc-listresp---respread"><code>fn resp_item(s: Str, i: Int, n: Int, acc: List(Resp)) -&gt; RespRead</code></h3>
+<h3 id="fn-kv_connecthost-str-port-int---resultint-str"><code>fn kv_connect(host: Str, port: Int) -&gt; Result(Int, Str)</code></h3>
+<h3 id="fn-kv_hang_upfd-int---unit"><code>fn kv_hang_up(fd: Int) -&gt; Unit</code></h3>
+<h3 id="fn-kv_commandfd-int-args-liststr---resultresp-str"><code>fn kv_command(fd: Int, args: List(Str)) -&gt; Result(Resp, Str)</code></h3>
+<p>Every call answers <code>Ok(value)</code> or <code>Err(message)</code>. An error the server sent and a connection that broke are both failures, and both belong here.</p>
+<h3 id="fn-resp_awaitfd-int-buf-str---resultresp-str"><code>fn resp_await(fd: Int, buf: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-resp_fillfd-int-buf-str---resultresp-str"><code>fn resp_fill(fd: Int, buf: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-resp_answerv-resp---resultresp-str"><code>fn resp_answer(v: Resp) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_args1a-a---lista"><code>fn kv_args1(a: 'a) -&gt; List('a)</code></h3>
+<h3 id="fn-kv_args2a-a-b-a---lista"><code>fn kv_args2(a: 'a, b: 'a) -&gt; List('a)</code></h3>
+<h3 id="fn-kv_args3a-a-b-a-c-a---lista"><code>fn kv_args3(a: 'a, b: 'a, c: 'a) -&gt; List('a)</code></h3>
+<h3 id="fn-kv_args4a-a-b-a-c-a-d-a---lista"><code>fn kv_args4(a: 'a, b: 'a, c: 'a, d: 'a) -&gt; List('a)</code></h3>
+<h3 id="fn-kv_pingfd-int---resultresp-str"><code>fn kv_ping(fd: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_echofd-int-text-str---resultresp-str"><code>fn kv_echo(fd: Int, text: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_setfd-int-key-str-value-str---resultresp-str"><code>fn kv_set(fd: Int, key: Str, value: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_setexfd-int-key-str-seconds-int-value-str---resultresp-str"><code>fn kv_setex(fd: Int, key: Str, seconds: Int, value: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_getfd-int-key-str---resultresp-str"><code>fn kv_get(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_getsetfd-int-key-str-value-str---resultresp-str"><code>fn kv_getset(fd: Int, key: Str, value: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_appendfd-int-key-str-value-str---resultresp-str"><code>fn kv_append(fd: Int, key: Str, value: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_strlenfd-int-key-str---resultresp-str"><code>fn kv_strlen(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_incrfd-int-key-str---resultresp-str"><code>fn kv_incr(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_incrbyfd-int-key-str-by-int---resultresp-str"><code>fn kv_incrby(fd: Int, key: Str, by: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_msetfd-int-pairs-liststr---resultresp-str"><code>fn kv_mset(fd: Int, pairs: List(Str)) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_mgetfd-int-keys-liststr---resultresp-str"><code>fn kv_mget(fd: Int, keys: List(Str)) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_delfd-int-key-str---resultresp-str"><code>fn kv_del(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_existsfd-int-key-str---resultresp-str"><code>fn kv_exists(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_typefd-int-key-str---resultresp-str"><code>fn kv_type(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_renamefd-int-key-str-to-str---resultresp-str"><code>fn kv_rename(fd: Int, key: Str, to: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_expirefd-int-key-str-seconds-int---resultresp-str"><code>fn kv_expire(fd: Int, key: Str, seconds: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_ttlfd-int-key-str---resultresp-str"><code>fn kv_ttl(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_persistfd-int-key-str---resultresp-str"><code>fn kv_persist(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_keysfd-int-pattern-str---resultresp-str"><code>fn kv_keys(fd: Int, pattern: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_dbsizefd-int---resultresp-str"><code>fn kv_dbsize(fd: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_scanfd-int-cursor-str-pattern-str-count-int---resultresp-str"><code>fn kv_scan(fd: Int, cursor: Str, pattern: Str, count: Int) -&gt; Result(Resp, Str)</code></h3>
+<p>One page of the keyspace: the cursor to carry on from, and the keys on it.</p>
+<p><code>KEYS</code> builds the whole answer in one go and holds the engine while it does, which is fine for a handful of keys and wrong for a million. <code>SCAN</code> is the same question asked a page at a time, and the cursor is opaque — it is not a count and not an index, and the only thing to do with it is hand it back.</p>
+<p>A walk sees every key that was there for the whole of it. One that arrives during the walk may or may not turn up, and one that goes may still be listed; that is what a scan costs, and it is the trade every keyspace this size makes.</p>
+<h3 id="fn-kv_scan_argscursor-str-pattern-str-count-int---liststr"><code>fn kv_scan_args(cursor: Str, pattern: Str, count: Int) -&gt; List(Str)</code></h3>
+<h3 id="fn-kv_page_cursorv-resp---str"><code>fn kv_page_cursor(v: Resp) -&gt; Str</code></h3>
+<p>A page is a two-element array: the cursor, then the keys.</p>
+<h3 id="fn-kv_page_keysv-resp---liststr"><code>fn kv_page_keys(v: Resp) -&gt; List(Str)</code></h3>
+<h3 id="fn-kv_page_restrest-listresp---liststr"><code>fn kv_page_rest(rest: List(Resp)) -&gt; List(Str)</code></h3>
+<h3 id="fn-kv_scan_allfd-int-pattern-str---liststr"><code>fn kv_scan_all(fd: Int, pattern: Str) -&gt; List(Str)</code></h3>
+<p>Every key that matches, by walking the cursor to its end.</p>
+<p>The guard is not decoration: a cursor that never reaches "0" — an engine with a bug in it, or a page that answers with the cursor it was given — is an endless loop inside a caller that only asked for a list of keys.</p>
+<h3 id="fn-kv_scan_walkfd-int-pattern-str-cursor-str-acc-liststr-seen-int---liststr"><code>fn kv_scan_walk(fd: Int, pattern: Str, cursor: Str, acc: List(Str), seen: Int) -&gt; List(Str)</code></h3>
+<h3 id="fn-kv_scan_pagefd-int-pattern-str-cursor-str-acc-liststr-seen-int-answer-resultresp-str---liststr"><code>fn kv_scan_page(fd: Int, pattern: Str, cursor: Str, acc: List(Str), seen: Int, answer: Result(Resp, Str)) -&gt; List(Str)</code></h3>
+<h3 id="fn-kv_scan_morefd-int-pattern-str-was-str-acc-liststr-seen-int-cursor-str---liststr"><code>fn kv_scan_more(fd: Int, pattern: Str, was: Str, acc: List(Str), seen: Int, cursor: Str) -&gt; List(Str)</code></h3>
+<h3 id="fn-kv_flushdbfd-int---resultresp-str"><code>fn kv_flushdb(fd: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_selectfd-int-n-int---resultresp-str"><code>fn kv_select(fd: Int, n: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_hsetfd-int-key-str-field_name-str-value-str---resultresp-str"><code>fn kv_hset(fd: Int, key: Str, field_name: Str, value: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_hgetfd-int-key-str-field_name-str---resultresp-str"><code>fn kv_hget(fd: Int, key: Str, field_name: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_hdelfd-int-key-str-field_name-str---resultresp-str"><code>fn kv_hdel(fd: Int, key: Str, field_name: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_hgetallfd-int-key-str---resultresp-str"><code>fn kv_hgetall(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_hkeysfd-int-key-str---resultresp-str"><code>fn kv_hkeys(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_hvalsfd-int-key-str---resultresp-str"><code>fn kv_hvals(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_hlenfd-int-key-str---resultresp-str"><code>fn kv_hlen(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_lpushfd-int-key-str-value-str---resultresp-str"><code>fn kv_lpush(fd: Int, key: Str, value: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_rpushfd-int-key-str-value-str---resultresp-str"><code>fn kv_rpush(fd: Int, key: Str, value: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_lpopfd-int-key-str---resultresp-str"><code>fn kv_lpop(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_rpopfd-int-key-str---resultresp-str"><code>fn kv_rpop(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_llenfd-int-key-str---resultresp-str"><code>fn kv_llen(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_lrangefd-int-key-str-start-int-stop-int---resultresp-str"><code>fn kv_lrange(fd: Int, key: Str, start: Int, stop: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_saddfd-int-key-str-member-str---resultresp-str"><code>fn kv_sadd(fd: Int, key: Str, member: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_sremfd-int-key-str-member-str---resultresp-str"><code>fn kv_srem(fd: Int, key: Str, member: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_sismemberfd-int-key-str-member-str---resultresp-str"><code>fn kv_sismember(fd: Int, key: Str, member: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_smembersfd-int-key-str---resultresp-str"><code>fn kv_smembers(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_scardfd-int-key-str---resultresp-str"><code>fn kv_scard(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_zaddfd-int-key-str-score-float-member-str---resultresp-str"><code>fn kv_zadd(fd: Int, key: Str, score: Float, member: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_zscorefd-int-key-str-member-str---resultresp-str"><code>fn kv_zscore(fd: Int, key: Str, member: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_zremfd-int-key-str-member-str---resultresp-str"><code>fn kv_zrem(fd: Int, key: Str, member: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_zcardfd-int-key-str---resultresp-str"><code>fn kv_zcard(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_zrangefd-int-key-str-start-int-stop-int---resultresp-str"><code>fn kv_zrange(fd: Int, key: Str, start: Int, stop: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_multifd-int---resultresp-str"><code>fn kv_multi(fd: Int) -&gt; Result(Resp, Str)</code></h3>
+<p><code>MULTI</code> queues what follows and <code>EXEC</code> answers an array of every queued reply. A <code>WATCH</code>ed key that somebody else changed makes <code>EXEC</code> answer the null array, which is <code>kv_broke_off</code> below rather than an error.</p>
+<h3 id="fn-kv_execfd-int---resultresp-str"><code>fn kv_exec(fd: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_discardfd-int---resultresp-str"><code>fn kv_discard(fd: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_watchfd-int-key-str---resultresp-str"><code>fn kv_watch(fd: Int, key: Str) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_unwatchfd-int---resultresp-str"><code>fn kv_unwatch(fd: Int) -&gt; Result(Resp, Str)</code></h3>
+<h3 id="fn-kv_textv-resp---str"><code>fn kv_text(v: Resp) -&gt; Str</code></h3>
+<p>A simple string and a bulk string are different things on the wire and the same thing to a caller who wanted text.</p>
+<h3 id="fn-kv_intv-resp---int"><code>fn kv_int(v: Resp) -&gt; Int</code></h3>
+<h3 id="fn-kv_floatv-resp---float"><code>fn kv_float(v: Resp) -&gt; Float</code></h3>
+<h3 id="fn-kv_listv-resp---listresp"><code>fn kv_list(v: Resp) -&gt; List(Resp)</code></h3>
+<h3 id="fn-kv_textsv-resp---liststr"><code>fn kv_texts(v: Resp) -&gt; List(Str)</code></h3>
+<h3 id="fn-kv_failedv-resp---bool"><code>fn kv_failed(v: Resp) -&gt; Bool</code></h3>
+<p>A refusal that arrived <em>inside</em> a reply.</p>
+<p>A command that fails answers <code>Err</code> — <code>resp_answer</code> lifts the engine's <code>-ERR</code> out of the value and into the Result, so the ordinary caller never sees one. <code>EXEC</code> is where they survive: it answers one array holding the answer to every queued command, and any of those may have failed on its own while the transaction as a whole did not. Walking that array is the only place this is the question, and there it is the only way to ask it.</p>
+<p><code>kv_text</code> of one is the engine's own words: <code>WRONGTYPE Operation against a key holding the wrong kind of value</code>.</p>
+<h3 id="fn-kv_orr-resulta-b-fallback-a---a"><code>fn kv_or(r: Result('a, 'b), fallback: 'a) -&gt; 'a</code></h3>
+<p>The value, for a caller that has already decided a broken connection is not worth branching on — a counter it can live without, a line on a status page.</p>
+<h3 id="fn-kv_whyr-resulta-str---str"><code>fn kv_why(r: Result('a, Str)) -&gt; Str</code></h3>
+<p>Why it failed, or "" if it did not. The engine's message, or this file's when the socket was the thing that broke.</p>
+<h3 id="fn-kv_missingv-resp---bool"><code>fn kv_missing(v: Resp) -&gt; Bool</code></h3>
+<p>A key that is not there. Distinct from the empty string, which is a value.</p>
+<h3 id="fn-kv_broke_offv-resp---bool"><code>fn kv_broke_off(v: Resp) -&gt; Bool</code></h3>
+<p>What <code>EXEC</code> answers when a <code>WATCH</code>ed key moved under the transaction.</p>
+<h3 id="fn-kv_publishfd-int-channel-str-payload-str---resultresp-str"><code>fn kv_publish(fd: Int, channel: Str, payload: Str) -&gt; Result(Resp, Str)</code></h3>
+<p><code>PUBLISH</code> answers how many subscribers were handed the message, and it is an ordinary command on an ordinary connection.</p>
+<p><code>SUBSCRIBE</code> is not. The server hands that connection to a loop of its own and never gives it back, so a program that both publishes and subscribes needs two — which is why <code>kv_publish</code> takes a socket and everything below takes a <code>Sub</code>.</p>
+<h3 id="fn-kv_subscribefd-int-channels-liststr---resultsub-str"><code>fn kv_subscribe(fd: Int, channels: List(Str)) -&gt; Result(Sub, Str)</code></h3>
+<h3 id="fn-kv_psubscribefd-int-patterns-liststr---resultsub-str"><code>fn kv_psubscribe(fd: Int, patterns: List(Str)) -&gt; Result(Sub, Str)</code></h3>
+<p>Patterns are globs: <code>news.*</code> takes <code>news.home</code> and <code>news.sport</code>, and what arrives says which pattern caught it as well as which channel it came from.</p>
+<h3 id="fn-sub_startfd-int-args-liststr-wanted-int---resultsub-str"><code>fn sub_start(fd: Int, args: List(Str), wanted: Int) -&gt; Result(Sub, Str)</code></h3>
+<h3 id="fn-sub_confirmsub-sub-remaining-int---resultsub-str"><code>fn sub_confirm(sub: Sub, remaining: Int) -&gt; Result(Sub, Str)</code></h3>
+<p>One note comes back per channel. Reading them here is what leaves the subscription pointed at messages rather than at its own paperwork.</p>
+<h3 id="fn-sub_confirmedremaining-int-delivery-delivery---resultsub-str"><code>fn sub_confirmed(remaining: Int, delivery: Delivery) -&gt; Result(Sub, Str)</code></h3>
+<h3 id="fn-kv_subscribe_moresub-sub-channels-liststr---resultsub-str"><code>fn kv_subscribe_more(sub: Sub, channels: List(Str)) -&gt; Result(Sub, Str)</code></h3>
+<p>More channels on a subscription that already has some. Do this before anything is published to it: the notes are read back here, and a message that arrives in the middle of them is one this cannot put down again — it says so rather than dropping it.</p>
+<h3 id="fn-kv_psubscribe_moresub-sub-patterns-liststr---resultsub-str"><code>fn kv_psubscribe_more(sub: Sub, patterns: List(Str)) -&gt; Result(Sub, Str)</code></h3>
+<h3 id="fn-sub_moresub-sub-args-liststr-wanted-int---resultsub-str"><code>fn sub_more(sub: Sub, args: List(Str), wanted: Int) -&gt; Result(Sub, Str)</code></h3>
+<h3 id="fn-kv_unsubscribesub-sub-channels-liststr---resultsub-str"><code>fn kv_unsubscribe(sub: Sub, channels: List(Str)) -&gt; Result(Sub, Str)</code></h3>
+<h3 id="fn-kv_punsubscribesub-sub-patterns-liststr---resultsub-str"><code>fn kv_punsubscribe(sub: Sub, patterns: List(Str)) -&gt; Result(Sub, Str)</code></h3>
+<h3 id="fn-kv_sub_hang_upsub-sub---unit"><code>fn kv_sub_hang_up(sub: Sub) -&gt; Unit</code></h3>
+<h3 id="fn-kv_nextsub-sub---delivery"><code>fn kv_next(sub: Sub) -&gt; Delivery</code></h3>
+<p>Waits for whatever comes next, which may be a message or the server's word about a subscription. A strand blocked here parks, so a subscriber costs nothing between messages.</p>
+<h3 id="fn-sub_stepfd-int-buf-str-read-respread---delivery"><code>fn sub_step(fd: Int, buf: Str, read: RespRead) -&gt; Delivery</code></h3>
+<h3 id="fn-sub_fillfd-int-buf-str---delivery"><code>fn sub_fill(fd: Int, buf: Str) -&gt; Delivery</code></h3>
+<h3 id="fn-kv_next_messagesub-sub---delivery"><code>fn kv_next_message(sub: Sub) -&gt; Delivery</code></h3>
+<p>The same as <code>kv_next</code>, with the server's paperwork passed over — for a caller that subscribed once and only wants what was published.</p>
+<h3 id="fn-sub_past_notesdelivery-delivery---delivery"><code>fn sub_past_notes(delivery: Delivery) -&gt; Delivery</code></h3>
+<h3 id="fn-sub_deliveredsub-sub-v-resp---delivery"><code>fn sub_delivered(sub: Sub, v: Resp) -&gt; Delivery</code></h3>
+<p>Every push is an array whose first item says what it is.</p>
+<h3 id="fn-sub_partssub-sub-parts-listresp---delivery"><code>fn sub_parts(sub: Sub, parts: List(Resp)) -&gt; Delivery</code></h3>
+<h3 id="fn-sub_kindsub-sub-kind-str-rest-listresp---delivery"><code>fn sub_kind(sub: Sub, kind: Str, rest: List(Resp)) -&gt; Delivery</code></h3>
+<h3 id="fn-sub_messagesub-sub-rest-listresp---delivery"><code>fn sub_message(sub: Sub, rest: List(Resp)) -&gt; Delivery</code></h3>
+<h3 id="fn-sub_pattern_messagesub-sub-rest-listresp---delivery"><code>fn sub_pattern_message(sub: Sub, rest: List(Resp)) -&gt; Delivery</code></h3>
+<h3 id="fn-sub_notesub-sub-kind-str-rest-listresp---delivery"><code>fn sub_note(sub: Sub, kind: Str, rest: List(Resp)) -&gt; Delivery</code></h3>
+<h3 id="fn-kv_shownv-resp---str"><code>fn kv_shown(v: Resp) -&gt; Str</code></h3>
+<p>For printing a reply whatever shape it came in.</p>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-db-oxirec.html">← db/oxirec</a>
+        <a class="next" href="lib-db-oxisql.html">db/oxisql →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

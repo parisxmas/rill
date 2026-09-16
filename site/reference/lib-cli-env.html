@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cli/env — The Rill Language Reference</title>
+<meta name="description" content="The process and its surroundings: environment variables, the working directory, the machine&#x27;s name, the process id.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-cli-env.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-cli-env.html">
+<meta property="og:title" content="cli/env — The Rill Language Reference">
+<meta property="og:description" content="The process and its surroundings: environment variables, the working directory, the machine&#x27;s name, the process id.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="cli/env — The Rill Language Reference">
+<meta name="twitter:description" content="The process and its surroundings: environment variables, the working directory, the machine&#x27;s name, the process id.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-cli-args.html">cli/args</a></li>
+        <li class="current"><a href="lib-cli-env.html">cli/env</a></li>
+        <li><a href="lib-cli-log.html">cli/log</a></li>
+        <li><a href="lib-cli-proc.html">cli/proc</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · The command line</p>
+      <h1>cli/env</h1>
+<p class="import">Imported as <code>import "cli/env" as env</code>, its names are then <code>env.…</code>. Every signature below is the one the checker infers.</p><p>The process and its surroundings: environment variables, the working directory, the machine's name, the process id.</p>
+<pre><span class="k">import</span> <span class="s">"cli/env"</span> <span class="k">as</span> env
+port = env.get_or(<span class="s">"PORT"</span>, <span class="s">"8080"</span>)
+<span class="k">match</span> env.get(<span class="s">"HOME"</span>)
+  <span class="t">Some</span>(h) <span class="o">-&gt;</span> <span class="f">println</span>(h)
+  <span class="t">None</span> <span class="o">-&gt;</span> <span class="f">println</span>(<span class="s">"no home"</span>)
+env.<span class="m">set</span>(<span class="s">"TZ"</span>, <span class="s">"UTC"</span>)
+env.all()                       <span class="c"># List((Str, Str)), as the process has them</span>
+env.cwd()                       <span class="c"># &quot;/Users/me/src&quot;</span></pre>
+<p>All of it is the C library's: <code>getenv</code>, <code>setenv</code>, <code>getcwd</code>. A value is copied out on the way back, so what a program holds does not change when the environment does.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-getname-str---optionstr"><code>fn get(name: Str) -&gt; Option(Str)</code></h3>
+<p>The variable's value, or <code>None</code> when it is not set. An empty value is <code>Some("")</code>, which is a different thing from unset.</p>
+<h3 id="fn-get_orname-str-fallback-str---str"><code>fn get_or(name: Str, fallback: Str) -&gt; Str</code></h3>
+<h3 id="fn-setname-str-value-str---bool"><code>fn set(name: Str, value: Str) -&gt; Bool</code></h3>
+<p>Sets the variable, replacing what was there. <code>false</code> when the C library refused — a name with <code>=</code> in it, or an empty one.</p>
+<h3 id="fn-unsetname-str---bool"><code>fn unset(name: Str) -&gt; Bool</code></h3>
+<h3 id="fn-all---liststr-str"><code>fn all() -&gt; List((Str, Str))</code></h3>
+<p>Every variable as a <code>(name, value)</code> pair, in the order the process has them.</p>
+<h3 id="fn-cwd---str"><code>fn cwd() -&gt; Str</code></h3>
+<p>The working directory, or <code>""</code> if it has been removed under the process.</p>
+<h3 id="fn-set_cwdpath-str---bool"><code>fn set_cwd(path: Str) -&gt; Bool</code></h3>
+<p>Moves the working directory; <code>false</code> when there is no such directory or it cannot be entered.</p>
+<h3 id="fn-home---str"><code>fn home() -&gt; Str</code></h3>
+<h3 id="fn-hostname---str"><code>fn hostname() -&gt; Str</code></h3>
+<h3 id="fn-pid---int"><code>fn pid() -&gt; Int</code></h3>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_set_get_unset</code></li>
+<li><code>test_all_lists_what_is_set</code></li>
+<li><code>test_the_process</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-cli-args.html">← cli/args</a>
+        <a class="next" href="lib-cli-log.html">cli/log →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

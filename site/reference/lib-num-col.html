@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>num/col — The Rill Language Reference</title>
+<meta name="description" content="Column aggregates, vectorized by hand.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-num-col.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-num-col.html">
+<meta property="og:title" content="num/col — The Rill Language Reference">
+<meta property="og:description" content="Column aggregates, vectorized by hand.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="num/col — The Rill Language Reference">
+<meta name="twitter:description" content="Column aggregates, vectorized by hand.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-num-bigint.html">num/bigint</a></li>
+        <li class="current"><a href="lib-num-col.html">num/col</a></li>
+        <li><a href="lib-num-decimal.html">num/decimal</a></li>
+        <li><a href="lib-num-grid.html">num/grid</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Numbers</p>
+      <h1>num/col</h1>
+<p class="import">Imported as <code>import "num/col" as col</code>, its names are then <code>col.…</code>. Every signature below is the one the checker infers.</p><p>Column aggregates, vectorized by hand.</p>
+<p>A plain <code>for</code> over a buffer is vectorized by the compiler on its own, and for anything elementwise — a projection, a filter, a predicate count — that is the end of it: the generated code is what C's would be. Reductions over <code>Float</code> are the exception, and the reason is worth stating, because it is not a shortcoming of the loop.</p>
+<p>Floating-point addition is not associative: <code>(a + b) + c</code> and <code>a + (b + c)</code> round differently, so they are different numbers. Vectorizing a sum means splitting it into independent partial sums and adding those at the end, which is exactly that reassociation — so a compiler may only do it if it has been told the program will accept a different answer. Rill does not tell it that. <code>+</code> on floats is loosened for contraction and nothing else, and the whole language keeps that promise, so LLVM has to keep the additions in the order they were written: it loads a vector's worth, extracts each lane, and adds them one at a time into a single accumulator. Every add waits on the one before it, and a loop that should stream at memory speed runs at the latency of <code>fadd</code>.</p>
+<p>What that costs, on an M4, over a range that fits in L1: about six times. The answer is not to loosen the language but to write the accumulators out — several of them, so the adds are independent, in <code>Float2</code> so each one holds two lanes. That is the same trade <code>lib/num/grid.rill</code> makes for the matrix product, and it lands in the same place: the kernels below run at 100 GB/s and better, matching a C loop compiled with <code>-ffast-math</code>, while a program that wants the strictly ordered sum still has it by writing the loop.</p>
+<p>The order these add in is the order eight partial sums happen to reach the end, not the order the elements are in, so a sum here and a sum written as a loop may differ in the last bits. That is the whole of what is being traded, and it is traded per call rather than per build.</p>
+<pre><span class="k">import</span> <span class="s">"num/col"</span> <span class="k">as</span> c
+c.sum(prices, <span class="n">0</span>, <span class="c">#prices)</span>
+c.mean(prices, <span class="n">0</span>, <span class="c">#prices)         # None over an empty range</span></pre>
+<p>Every function takes a half-open range, <code>lo</code> up to but not <code>hi</code>, because a column arrives in chunks and a scan wants one chunk at a time without slicing a copy out of it. <code>#v</code> is the whole of it.</p>
+<p>Reductions over <code>Int</code> are not here: integer addition <em>is</em> associative, so the compiler vectorizes those loops itself and a plain <code>for</code> is already as fast as this. The same goes for counting a predicate, which compiles to a vector compare and a subtract with no help from anyone.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-sumv-buffloat-lo-int-hi-int---float"><code>fn sum(v: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
+<p>Eight lanes at a time in four independent <code>Float2</code> accumulators, then the elements past the last block of eight, added into the result the same way a scalar loop would.</p>
+<h3 id="fn-sum_sqv-buffloat-lo-int-hi-int---float"><code>fn sum_sq(v: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
+<p>The sum of squares, which is what a variance wants: one <code>fma2</code> per lane pair, so the multiply and the add are one instruction and round once.</p>
+<h3 id="fn-dotx-buffloat-y-buffloat-lo-int-hi-int---float"><code>fn dot(x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
+<p>The dot product of two columns over the same range — a weighted sum, and what a covariance is made of.</p>
+<h3 id="fn-meanv-buffloat-lo-int-hi-int---optionfloat"><code>fn mean(v: Buf(Float), lo: Int, hi: Int) -&gt; Option(Float)</code></h3>
+<p><code>None</code> over an empty range, because the mean of nothing is not a number and an <code>Option</code> says so where a <code>0.0</code> would lie.</p>
+<h3 id="fn-variancev-buffloat-lo-int-hi-int---optionfloat"><code>fn variance(v: Buf(Float), lo: Int, hi: Int) -&gt; Option(Float)</code></h3>
+<p>The population variance, in one pass: <code>E[x²] - E[x]²</code>. One pass is what a scan wants, and the price is the usual one — a column whose values are large and whose spread is small loses precision in the subtraction. <code>None</code> over an empty range.</p>
+<h3 id="fn-min_ofv-buffloat-lo-int-hi-int---optionfloat"><code>fn min_of(v: Buf(Float), lo: Int, hi: Int) -&gt; Option(Float)</code></h3>
+<h3 id="fn-max_ofv-buffloat-lo-int-hi-int---optionfloat"><code>fn max_of(v: Buf(Float), lo: Int, hi: Int) -&gt; Option(Float)</code></h3>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-num-bigint.html">← num/bigint</a>
+        <a class="next" href="lib-num-decimal.html">num/decimal →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

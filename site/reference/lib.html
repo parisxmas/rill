@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The standard library — The Rill Language Reference</title>
+<meta name="description" content="The 43 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib.html">
+<meta property="og:title" content="The standard library — The Rill Language Reference">
+<meta property="og:description" content="The 43 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The standard library — The Rill Language Reference">
+<meta name="twitter:description" content="The 43 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="#text">Text</a></li>
+        <li><a href="#data">Data formats</a></li>
+        <li><a href="#coll">Collections</a></li>
+        <li><a href="#num">Numbers</a></li>
+        <li><a href="#web">The web</a></li>
+        <li><a href="#net">The network</a></li>
+        <li><a href="#db">Databases</a></li>
+        <li><a href="#cli">The command line</a></li>
+        <li><a href="#crypto">Cryptography</a></li>
+        <li><a href="#random">Randomness</a></li>
+        <li><a href="#time">Time</a></li>
+      </ul>
+      
+    </aside>
+    <main>
+      <p class="chapter-no">Standard library</p>
+      <h1>The standard library</h1>
+<p>43 modules, all written in Rill, imported by their path under <code>lib/</code>: <code>import "data/json" as json</code>. The compiler finds them beside its own <code>bin/</code> in a packaged toolchain, or through <code>RILL_PATH</code>. These pages are what <code>rill doc lib</code> writes: the comment above each declaration, and the signature the checker infers for it.</p><h3 id="text">Text <code class="folder">lib/text</code></h3>
+<ol class="toc">
+      <li><a href="lib-text-fmt.html"><span class="no">fmt</span><b>text/fmt</b><span class="blurb">Text laid out and numbers spelled: a template with slots, padding by width, a float to so many places, thousands separated, a size in bytes, an ordinal, a table with its columns lined up.</span></a></li>
+      <li><a href="lib-text-path.html"><span class="no">path</span><b>text/path</b><span class="blurb">File paths as text: joining, taking apart, tidying.</span></a></li>
+      <li><a href="lib-text-regex.html"><span class="no">regex</span><b>text/regex</b><span class="blurb">Regular expressions: a small backtracking matcher, written in Rill.</span></a></li>
+      <li><a href="lib-text-str.html"><span class="no">str</span><b>text/str</b><span class="blurb">Strings, past what the prelude gives.</span></a></li>
+</ol>
+<h3 id="data">Data formats <code class="folder">lib/data</code></h3>
+<ol class="toc">
+      <li><a href="lib-data-checksum.html"><span class="no">checksum</span><b>data/checksum</b><span class="blurb">The two checksums a file format is likely to ask for: CRC-32 (IEEE 802.3, the one in zip, gzip and PNG) and Adler-32 (zlib&#x27;s).</span></a></li>
+      <li><a href="lib-data-csv.html"><span class="no">csv</span><b>data/csv</b><span class="blurb">CSV, read and written, as RFC 4180 has it: a field is quoted when it holds the separator, a quote, or a line break; a quote inside a quoted field is doubled; a line ends in \n or \r\n.</span></a></li>
+      <li><a href="lib-data-deflate.html"><span class="no">deflate</span><b>data/deflate</b><span class="blurb">DEFLATE (RFC 1951) both ways, and the two envelopes it travels in: zlib (RFC 1950) and gzip (RFC 1952).</span></a></li>
+      <li><a href="lib-data-json.html"><span class="no">json</span><b>data/json</b><span class="blurb">JSON, written in Rill: a recursive-descent parser and a printer.</span></a></li>
+      <li><a href="lib-data-yaml.html"><span class="no">yaml</span><b>data/yaml</b><span class="blurb">YAML, written in Rill — the part configuration files actually use: nested mappings by indentation, -  sequences, scalars, comments, and lists of mappings.</span></a></li>
+</ol>
+<h3 id="coll">Collections <code class="folder">lib/coll</code></h3>
+<ol class="toc">
+      <li><a href="lib-coll-deque.html"><span class="no">deque</span><b>coll/deque</b><span class="blurb">A queue with both ends open: push and pop at the front or the back, each in constant time on average.</span></a></li>
+      <li><a href="lib-coll-heap.html"><span class="no">heap</span><b>coll/heap</b><span class="blurb">A priority queue: the least element is always at the top, and taking it costs a logarithm.</span></a></li>
+      <li><a href="lib-coll-set.html"><span class="no">set</span><b>coll/set</b><span class="blurb">A set of values: a hash table with only keys, so membership is a lookup rather than a walk.</span></a></li>
+</ol>
+<h3 id="num">Numbers <code class="folder">lib/num</code></h3>
+<ol class="toc">
+      <li><a href="lib-num-bigint.html"><span class="no">bigint</span><b>num/bigint</b><span class="blurb">Integers of any size, written in Rill.</span></a></li>
+      <li><a href="lib-num-col.html"><span class="no">col</span><b>num/col</b><span class="blurb">Column aggregates, vectorized by hand.</span></a></li>
+      <li><a href="lib-num-decimal.html"><span class="no">decimal</span><b>num/decimal</b><span class="blurb">Decimal numbers with a fixed number of places: money, and anything else where 0.1 + 0.2 has to be 0.3.</span></a></li>
+      <li><a href="lib-num-grid.html"><span class="no">grid</span><b>num/grid</b><span class="blurb">grid — arrays of numbers with a shape, the way NumPy has them.</span></a></li>
+</ol>
+<h3 id="web">The web <code class="folder">lib/web</code></h3>
+<ol class="toc">
+      <li><a href="lib-web-form.html"><span class="no">form</span><b>web/form</b><span class="blurb">What a browser sends from a &lt;form&gt;: application/x-www-form-urlencoded as pairs, and multipart/form-data (RFC 7578) as parts, each with its field name, its file name if it was a file, its content type, and its bytes as th</span></a></li>
+      <li><a href="lib-web-http.html"><span class="no">http</span><b>web/http</b><span class="blurb">A small HTTP/1.1 server, written in Rill on top of the socket builtins.</span></a></li>
+      <li><a href="lib-web-mime.html"><span class="no">mime</span><b>web/mime</b><span class="blurb">The media type a file is served as, from its name: mime.of_path(&quot;a/b.png&quot;) is image/png.</span></a></li>
+      <li><a href="lib-web-tls.html"><span class="no">tls</span><b>web/tls</b><span class="blurb">TLS over a socket, through OpenSSL: https:// as a client, and served.</span></a></li>
+      <li><a href="lib-web-tmpl.html"><span class="no">tmpl</span><b>web/tmpl</b><span class="blurb">The runtime half of the template engine: what a generated template calls.</span></a></li>
+      <li><a href="lib-web-url.html"><span class="no">url</span><b>web/url</b><span class="blurb">URLs taken apart and put together (RFC 3986): the scheme, who, the host, the port, the path, the query, the fragment; a query as pairs; a relative reference resolved against a base; percent-encoding both ways.</span></a></li>
+      <li><a href="lib-web-ws.html"><span class="no">ws</span><b>web/ws</b><span class="blurb">WebSocket (RFC 6455) on top of the socket builtins: the handshake, and text or binary frames in both directions.</span></a></li>
+</ol>
+<h3 id="net">The network <code class="folder">lib/net</code></h3>
+<ol class="toc">
+      <li><a href="lib-net-dns.html"><span class="no">dns</span><b>net/dns</b><span class="blurb">A name to its addresses, through the system&#x27;s resolver — /etc/hosts, the nameservers it is configured with, whatever else it consults.</span></a></li>
+      <li><a href="lib-net-udp.html"><span class="no">udp</span><b>net/udp</b><span class="blurb">UDP: datagrams sent and received, each one whole, with the sender&#x27;s address on the ones that arrive.</span></a></li>
+</ol>
+<h3 id="db">Databases <code class="folder">lib/db</code></h3>
+<ol class="toc">
+      <li><a href="lib-db-kv.html"><span class="no">kv</span><b>db/kv</b><span class="blurb">A key–value store on disk: a B+ tree of 4 KB pages, a page cache, and a write-ahead log — the shape SQLite&#x27;s file layer has, in Rill, for one process at a time.</span></a></li>
+      <li><a href="lib-db-oxidb.html"><span class="no">oxidb</span><b>db/oxidb</b><span class="blurb">A client for OxiDB&#x27;s document engine, written in Rill.</span></a></li>
+      <li><a href="lib-db-oxirec.html"><span class="no">oxirec</span><b>db/oxirec</b><span class="blurb">A client for OxiDB&#x27;s recommendation engine, written in Rill.</span></a></li>
+      <li><a href="lib-db-oxiresp.html"><span class="no">oxiresp</span><b>db/oxiresp</b><span class="blurb">A client for OxiDB&#x27;s in-memory key-value engine, written in Rill.</span></a></li>
+      <li><a href="lib-db-oxisql.html"><span class="no">oxisql</span><b>db/oxisql</b><span class="blurb">A client for OxiDB&#x27;s SQL engine, written in Rill.</span></a></li>
+      <li><a href="lib-db-oxitsdb.html"><span class="no">oxitsdb</span><b>db/oxitsdb</b><span class="blurb">A client for OxiDB&#x27;s time-series engine, written in Rill, speaking the server&#x27;s binary wire rather than its JSON one.</span></a></li>
+      <li><a href="lib-db-oxiwire.html"><span class="no">oxiwire</span><b>db/oxiwire</b><span class="blurb">OxiWire — the binary format OxiDB&#x27;s native wire speaks, encoded and decoded in Rill.</span></a></li>
+</ol>
+<h3 id="cli">The command line <code class="folder">lib/cli</code></h3>
+<ol class="toc">
+      <li><a href="lib-cli-args.html"><span class="no">args</span><b>cli/args</b><span class="blurb">Command-line arguments: what a program takes, said once, and then parsed, checked and explained from that one saying.</span></a></li>
+      <li><a href="lib-cli-env.html"><span class="no">env</span><b>cli/env</b><span class="blurb">The process and its surroundings: environment variables, the working directory, the machine&#x27;s name, the process id.</span></a></li>
+      <li><a href="lib-cli-log.html"><span class="no">log</span><b>cli/log</b><span class="blurb">A log: lines on standard error with the time, the level and where they came from, and a level below which nothing is said.</span></a></li>
+      <li><a href="lib-cli-proc.html"><span class="no">proc</span><b>cli/proc</b><span class="blurb">Running another program: a command line handed to the shell, its output collected, its exit status read.</span></a></li>
+</ol>
+<h3 id="crypto">Cryptography <code class="folder">lib/crypto</code></h3>
+<ol class="toc">
+      <li><a href="lib-crypto-passwd.html"><span class="no">passwd</span><b>crypto/passwd</b><span class="blurb">Storing a password, which is storing something you must never be able to read back.</span></a></li>
+      <li><a href="lib-crypto-sha1.html"><span class="no">sha1</span><b>crypto/sha1</b><span class="blurb">SHA-1 and base64, written in Rill.</span></a></li>
+      <li><a href="lib-crypto-sha2.html"><span class="no">sha2</span><b>crypto/sha2</b><span class="blurb">SHA-256 and SHA-512 (FIPS 180-4), and HMAC over each (RFC 2104), written in Rill.</span></a></li>
+</ol>
+<h3 id="random">Randomness <code class="folder">lib/random</code></h3>
+<ol class="toc">
+      <li><a href="lib-random-rnd.html"><span class="no">rnd</span><b>random/rnd</b><span class="blurb">Random numbers, from a generator that is a value.</span></a></li>
+      <li><a href="lib-random-uuid.html"><span class="no">uuid</span><b>random/uuid</b><span class="blurb">UUIDs (RFC 9562): the random kind, version 4, and the time-ordered kind, version 7, whose first 48 bits are the millisecond it was made, so a column of them sorts by when.</span></a></li>
+</ol>
+<h3 id="time">Time <code class="folder">lib/time</code></h3>
+<ol class="toc">
+      <li><a href="lib-time-clock.html"><span class="no">clock</span><b>time/clock</b><span class="blurb">Clocks: the monotonic one for measuring, the wall one for dating.</span></a></li>
+      <li><a href="lib-time-date.html"><span class="no">date</span><b>time/date</b><span class="blurb">Civil dates and times, in UTC and nothing else.</span></a></li>
+</ol>
+      <div class="prevnext">
+        <a class="prev" href="14-what-rill-deliberately-does-not-have.html">← 14. What Rill deliberately does not have</a>
+        <a class="next" href="index.html">Contents →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

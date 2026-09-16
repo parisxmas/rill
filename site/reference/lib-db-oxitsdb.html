@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>db/oxitsdb — The Rill Language Reference</title>
+<meta name="description" content="A client for OxiDB&#x27;s time-series engine, written in Rill, speaking the server&#x27;s binary wire rather than its JSON one.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-oxitsdb.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-oxitsdb.html">
+<meta property="og:title" content="db/oxitsdb — The Rill Language Reference">
+<meta property="og:description" content="A client for OxiDB&#x27;s time-series engine, written in Rill, speaking the server&#x27;s binary wire rather than its JSON one.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="db/oxitsdb — The Rill Language Reference">
+<meta name="twitter:description" content="A client for OxiDB&#x27;s time-series engine, written in Rill, speaking the server&#x27;s binary wire rather than its JSON one.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-db-kv.html">db/kv</a></li>
+        <li><a href="lib-db-oxidb.html">db/oxidb</a></li>
+        <li><a href="lib-db-oxirec.html">db/oxirec</a></li>
+        <li><a href="lib-db-oxiresp.html">db/oxiresp</a></li>
+        <li><a href="lib-db-oxisql.html">db/oxisql</a></li>
+        <li class="current"><a href="lib-db-oxitsdb.html">db/oxitsdb</a></li>
+        <li><a href="lib-db-oxiwire.html">db/oxiwire</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Databases</p>
+      <h1>db/oxitsdb</h1>
+<p class="import">Imported as <code>import "db/oxitsdb" as oxitsdb</code>, its names are then <code>oxitsdb.…</code>. Every signature below is the one the checker infers.</p><p>A client for OxiDB's time-series engine, written in Rill, speaking the server's binary wire rather than its JSON one.</p>
+<p>The wire itself — the framing, the tags, the reply envelope — is <code>oxiwire.rill</code>, shared with the document client. What is here is the time-series surface written on top of it: what a point is, what a query may ask for, and how to read the series that come back.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-ts_connecthost-str-port-int---resultint-str"><code>fn ts_connect(host: Str, port: Int) -&gt; Result(Int, Str)</code></h3>
+<h3 id="fn-ts_hang_upfd-int---unit"><code>fn ts_hang_up(fd: Int) -&gt; Unit</code></h3>
+<h3 id="fn-ts_callfd-int-request-json---resultjson-str"><code>fn ts_call(fd: Int, request: Json) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-ts_requestop-str-fields-listfield---json"><code>fn ts_request(op: Str, fields: List(Field)) -&gt; Json</code></h3>
+<p>Every request names the engine as well as the command: the server mounts the time-series engine beside the document and SQL ones, and <code>engine</code> is what tells them apart. It is off unless the server was started with OXIDB_TSDB.</p>
+<h3 id="fn-ts_pointmeasurement-str-tags-listfield-fields-listfield-at-int---json"><code>fn ts_point(measurement: Str, tags: List(Field), fields: List(Field), at: Int) -&gt; Json</code></h3>
+<p>A point is a measurement, a moment, any number of string tags and one or more named fields. <code>at</code> is epoch milliseconds.</p>
+<h3 id="fn-ts_tagkey-str-value-str---field"><code>fn ts_tag(key: Str, value: Str) -&gt; Field</code></h3>
+<h3 id="fn-ts_fieldkey-str-value-float---field"><code>fn ts_field(key: Str, value: Float) -&gt; Field</code></h3>
+<h3 id="fn-ts_count_fieldkey-str-value-int---field"><code>fn ts_count_field(key: Str, value: Int) -&gt; Field</code></h3>
+<h3 id="fn-ts_writefd-int-points-listjson---resultjson-str"><code>fn ts_write(fd: Int, points: List(Json)) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-ts_write_linesfd-int-lines_text-str---resultjson-str"><code>fn ts_write_lines(fd: Int, lines_text: Str) -&gt; Result(Json, Str)</code></h3>
+<p>InfluxDB line protocol, for a feed that already speaks it. A line with no timestamp is stamped by the server as it arrives.</p>
+<h3 id="fn-ts_queryfd-int-measurement-str-field_name-str-spec-listfield---resultjson-str"><code>fn ts_query(fd: Int, measurement: Str, field_name: Str, spec: List(Field)) -&gt; Result(Json, Str)</code></h3>
+<p><code>agg</code> is mean, sum, min, max, count, distinct, first, last, rate, or a percentile written <code>p95</code>. An <code>interval</code> in milliseconds buckets the answer; without one the whole range collapses to a single point per series.</p>
+<h3 id="fn-ts_betweenstart-int-end-int---listfield"><code>fn ts_between(start: Int, end: Int) -&gt; List(Field)</code></h3>
+<h3 id="fn-ts_aggname-str-rest-listfield---listfield"><code>fn ts_agg(name: Str, rest: List(Field)) -&gt; List(Field)</code></h3>
+<h3 id="fn-ts_everyinterval-int-rest-listfield---listfield"><code>fn ts_every(interval: Int, rest: List(Field)) -&gt; List(Field)</code></h3>
+<h3 id="fn-ts_wheretags-listfield-rest-listfield---listfield"><code>fn ts_where(tags: List(Field), rest: List(Field)) -&gt; List(Field)</code></h3>
+<h3 id="fn-ts_group_bykeys-liststr-rest-listfield---listfield"><code>fn ts_group_by(keys: List(Str), rest: List(Field)) -&gt; List(Field)</code></h3>
+<h3 id="fn-ts_statsfd-int---resultjson-str"><code>fn ts_stats(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-ts_retentionfd-int-cutoff-int---resultjson-str"><code>fn ts_retention(fd: Int, cutoff: Int) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-ts_checkpointfd-int---resultjson-str"><code>fn ts_checkpoint(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-ts_rollup_addfd-int-measurement-str-interval-int-agg-str---resultjson-str"><code>fn ts_rollup_add(fd: Int, measurement: Str, interval: Int, agg: Str) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-ts_rollup_refreshfd-int---resultjson-str"><code>fn ts_rollup_refresh(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-ts_rollupsfd-int---resultjson-str"><code>fn ts_rollups(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<h3 id="fn-ts_seriesanswer-json---listjson"><code>fn ts_series(answer: Json) -&gt; List(Json)</code></h3>
+<p>A query answers an array of series, each <code>{tags, type, points:[{ts, value}]}</code>.</p>
+<h3 id="fn-ts_series_tagsseries-json---json"><code>fn ts_series_tags(series: Json) -&gt; Json</code></h3>
+<h3 id="fn-ts_series_pointsseries-json---listjson"><code>fn ts_series_points(series: Json) -&gt; List(Json)</code></h3>
+<h3 id="fn-ts_atpoint-json---int"><code>fn ts_at(point: Json) -&gt; Int</code></h3>
+<h3 id="fn-ts_valuepoint-json---float"><code>fn ts_value(point: Json) -&gt; Float</code></h3>
+<h3 id="fn-ts_writtenanswer-json---int"><code>fn ts_written(answer: Json) -&gt; Int</code></h3>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-db-oxisql.html">← db/oxisql</a>
+        <a class="next" href="lib-db-oxiwire.html">db/oxiwire →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

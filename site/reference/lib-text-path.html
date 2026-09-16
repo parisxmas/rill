@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>text/path — The Rill Language Reference</title>
+<meta name="description" content="File paths as text: joining, taking apart, tidying.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-text-path.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-text-path.html">
+<meta property="og:title" content="text/path — The Rill Language Reference">
+<meta property="og:description" content="File paths as text: joining, taking apart, tidying.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="text/path — The Rill Language Reference">
+<meta name="twitter:description" content="File paths as text: joining, taking apart, tidying.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-text-fmt.html">text/fmt</a></li>
+        <li class="current"><a href="lib-text-path.html">text/path</a></li>
+        <li><a href="lib-text-regex.html">text/regex</a></li>
+        <li><a href="lib-text-str.html">text/str</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Text</p>
+      <h1>text/path</h1>
+<p class="import">Imported as <code>import "text/path" as path</code>, its names are then <code>path.…</code>. Every signature below is the one the checker infers.</p><p>File paths as text: joining, taking apart, tidying. Bytes, <code>/</code> between the parts, no touching the file system — a path here is a string with a shape, and what is at it is the program's business.</p>
+<pre><span class="k">import</span> <span class="s">"text/path"</span> <span class="k">as</span> path
+path.join_path(<span class="s">"etc"</span>, <span class="s">"rill/conf.yaml"</span>)     <span class="c"># &quot;etc/rill/conf.yaml&quot;</span>
+path.dir_name(<span class="s">"/a/b/c.rill"</span>)                 <span class="c"># &quot;/a/b&quot;</span>
+path.base_name(<span class="s">"/a/b/c.rill"</span>)                <span class="c"># &quot;c.rill&quot;</span>
+path.extension(<span class="s">"archive.tar.gz"</span>)             <span class="c"># &quot;gz&quot;</span>
+path.stem(<span class="s">"archive.tar.gz"</span>)                  <span class="c"># &quot;archive.tar&quot;</span>
+path.normalize(<span class="s">"a/./b/../c//d/"</span>)             <span class="c"># &quot;a/c/d&quot;</span>
+path.with_extension(<span class="s">"notes.md"</span>, <span class="s">"html"</span>)      <span class="c"># &quot;notes.html&quot;</span></pre>
+<p>The prelude's <code>dir_of</code> reads a directory; this never does.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-is_absolutep-str---bool"><code>fn is_absolute(p: Str) -&gt; Bool</code></h3>
+<h3 id="fn-join_patha-str-b-str---str"><code>fn join_path(a: Str, b: Str) -&gt; Str</code></h3>
+<p><code>a/b</code>, with one separator between however the two were written; an absolute <code>b</code> is the answer on its own, as it would be at a shell.</p>
+<h3 id="fn-dir_namep-str---str"><code>fn dir_name(p: Str) -&gt; Str</code></h3>
+<p>Everything before the last <code>/</code>: <code>/a/b/c</code> -&gt; <code>/a/b</code>, <code>c</code> -&gt; <code>.</code>, <code>/c</code> -&gt; <code>/</code>.</p>
+<h3 id="fn-base_namep-str---str"><code>fn base_name(p: Str) -&gt; Str</code></h3>
+<p>Everything after the last <code>/</code>.</p>
+<h3 id="fn-extensionp-str---str"><code>fn extension(p: Str) -&gt; Str</code></h3>
+<p>What follows the last <code>.</code> of the base name, or <code>""</code>; a leading dot is a hidden file's name, not an extension.</p>
+<h3 id="fn-stemp-str---str"><code>fn stem(p: Str) -&gt; Str</code></h3>
+<p>The base name without its extension.</p>
+<h3 id="fn-with_extensionp-str-ext-str---str"><code>fn with_extension(p: Str, ext: Str) -&gt; Str</code></h3>
+<h3 id="fn-partsp-str---liststr"><code>fn parts(p: Str) -&gt; List(Str)</code></h3>
+<p>The parts between separators, empty ones left out: <code>/a//b/</code> -&gt; [a, b].</p>
+<h3 id="fn-normalizep-str---str"><code>fn normalize(p: Str) -&gt; Str</code></h3>
+<p><code>.</code> dropped, <code>..</code> folded into the part before it where there is one, repeated and trailing separators gone; an absolute path stays absolute. <code>..</code> at the start of a relative path is kept, since there is nothing here to fold it into.</p>
+<h3 id="fn-relative_tofrom-str-to-str---str"><code>fn relative_to(from: Str, to: Str) -&gt; Str</code></h3>
+<p><code>b</code> relative to <code>a</code>, both normalized first: <code>relative_to("/a/b", "/a/b/c/d")</code> is <code>c/d</code>, and <code>relative_to("/a/b", "/a/x")</code> is <code>../x</code>.</p>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_join_and_split</code></li>
+<li><code>test_extensions</code></li>
+<li><code>test_normalize_and_relative</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-text-fmt.html">← text/fmt</a>
+        <a class="next" href="lib-text-regex.html">text/regex →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>
