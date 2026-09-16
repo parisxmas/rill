@@ -27,9 +27,25 @@ button {
   background: white; cursor: pointer;
 }
 button:hover { border-color: var(--accent); color: var(--accent); }
-main { flex: 1; display: flex; min-height: 0; }
-.side { width: 240px; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
-.side-head { display: flex; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--soft); font-size: 12px; color: #777; }
+main { flex: 1; display: flex; min-height: 0; position: relative; }
+/* an ear on the edge, upright, that brings a shut pane back */
+.ear { position: absolute; top: 50%; z-index: 5; display: inline-flex; align-items: center; gap: 6px; padding: 8px 3px; font-size: 12px; letter-spacing: 0.04em; color: #555; background: var(--soft); border: 1px solid var(--line); box-shadow: 0 1px 3px rgba(0,0,0,0.12); writing-mode: vertical-rl; }
+.ear.left { left: 7px; transform: translateY(-50%) rotate(180deg); border-radius: 6px 0 0 6px; border-right: 0; }
+.ear.right { right: 7px; transform: translateY(-50%); border-radius: 6px 0 0 6px; border-right: 0; }
+.ear.left svg { transform: rotate(180deg); }
+.ear[hidden], .editbar[hidden] { display: none; }
+.ear:hover { color: var(--accent); border-color: var(--accent); }
+.ear svg { color: var(--accent); }
+.side { width: 240px; flex: none; display: flex; flex-direction: column; overflow: hidden; transition: width 0.2s ease; }
+.side > * { min-width: 240px; }
+.side.closed { width: 0 !important; }
+button.panel { padding: 1px 4px; margin-left: 8px; color: #999; border-color: transparent; background: transparent; line-height: 0; }
+button.panel:hover { color: var(--accent); }
+.side-head button.panel, .code-head button.panel { align-self: center; }
+.vhandle.shut { background: #e3ecf7; position: relative; }
+.vhandle.shut::after { content: "›"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 13px; color: var(--accent); pointer-events: none; }
+#code-handle.shut::after { content: "‹"; }
+.side-head { display: flex; align-items: center; padding: 4px 12px; border-bottom: 1px solid var(--line); background: var(--soft); font-size: 12px; color: #777; }
 .side-head button { font-size: 12px; padding: 1px 8px; }
 .side-head .all { margin-left: 10px; display: flex; align-items: center; gap: 3px; cursor: pointer; }
 .files { flex: 1; overflow: auto; padding: 8px 0; font-family: Menlo, Consolas, monospace; font-size: 12px; }
@@ -41,6 +57,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .files .file { padding: 3px 12px 3px 20px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .files .file:hover { background: var(--soft); }
 .files .file.current { background: #e3ecf7; color: var(--accent); }
+.files .file.example::after { content: "example"; float: right; font-size: 10px; color: #999; letter-spacing: 0.04em; }
 .middle { flex: 3; display: flex; flex-direction: column; min-width: 0; }
 .tabs { display: flex; gap: 2px; padding: 6px 12px 0; border-bottom: 1px solid var(--line); background: var(--soft); }
 .tab { border: 1px solid transparent; border-bottom: 0; background: transparent; border-radius: 4px 4px 0 0; color: #666; }
@@ -68,6 +85,14 @@ main { flex: 1; display: flex; min-height: 0; }
 .sim-diagrams h2 { font-size: 13px; font-weight: 600; margin: 8px 0; color: #444; }
 .sim-diagrams h2 .kind { color: #999; font-weight: 400; margin-right: 6px; }
 .sim-diagrams svg { display: block; }
+.sim-diagrams { padding: 0; }
+.sim-diagrams .machine-tabs { position: sticky; top: 0; left: 0; z-index: 1; align-items: center; }
+.sim-diagrams .machine-tabs .tab { display: inline-flex; gap: 6px; align-items: baseline; padding: 4px 10px; }
+.sim-diagrams .machine-tabs .tab .kind { font-size: 11px; color: #999; }
+.sim-diagrams .machine-tabs .tab .state { font: 11px Menlo, Consolas, monospace; color: var(--accent); }
+.sim-diagrams .machine-tabs .tab.moved .name { text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+.sim-diagrams .machine-tabs .follow { font-size: 12px; color: #666; padding: 0 12px 4px 0; white-space: nowrap; }
+.sim-diagrams .machine-pane { padding: 12px; }
 .sim-diagrams text { font-family: Menlo, Consolas, monospace; font-size: 12px; pointer-events: none; }
 .sim-diagrams .sym.lit .shape { fill: var(--mark); stroke: var(--accent); stroke-width: 2; }
 .sim-diagrams .transition.active .shape { fill: #e3ecf7; }
@@ -86,8 +111,10 @@ main { flex: 1; display: flex; min-height: 0; }
 .diagrams text { font-family: Menlo, Consolas, monospace; font-size: 12px; fill: var(--ink); pointer-events: none; }
 .diagrams .badge { fill: var(--note); }
 .diagrams .badge-text { fill: white; font-size: 10px; font-weight: 700; }
-.code { flex: 2; min-width: 240px; display: flex; flex-direction: column; background: white; }
-.code-head { display: flex; padding: 6px 12px; border-bottom: 1px solid var(--line); color: #777; font-size: 12px; background: var(--soft); }
+.code { flex: 2; min-width: 240px; display: flex; flex-direction: column; background: white; overflow: hidden; transition: width 0.2s ease, min-width 0.2s ease; }
+.code.closed { width: 0 !important; min-width: 0 !important; flex: none !important; }
+.code > * { min-width: 240px; }
+.code-head { display: flex; align-items: center; padding: 4px 12px; border-bottom: 1px solid var(--line); color: #777; font-size: 12px; background: var(--soft); }
 .dirty { color: var(--error); }
 .code-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 .gutter {
@@ -131,6 +158,8 @@ textarea#editor::selection { background: rgba(29, 95, 168, 0.22); }
 button.iconic { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 button.iconic svg { flex: none; }
 button.iconic.plus svg { color: #2a7a3b; }
+button.iconic.run svg { color: #2a7a3b; }
+button.iconic.run:hover svg { color: #1f6b30; }
 .editbar button.iconic svg, .side-head button.iconic svg { color: var(--accent); }
 .editbox {
   position: fixed; z-index: 10; width: 440px; background: white; border: 1px solid var(--line);

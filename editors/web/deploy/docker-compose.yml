@@ -1,0 +1,36 @@
+# rillsdl.baltavista.com: the editor behind nginx, on this port of the
+# box alone. `docker compose -f editors/web/deploy/docker-compose.yml up -d --build`
+# from the repository root.
+services:
+  rillsdl:
+    build:
+      context: ../../..
+      dockerfile: editors/web/deploy/Dockerfile
+    image: rillsdl
+    container_name: rillsdl
+    restart: unless-stopped
+    # The default bridge rather than a network of its own: a box with many
+    # compose projects runs out of subnets to give one.
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - rillsdl-models:/models
+    # Programs run sandboxed: nothing past the process. Name what they may
+    # reach here — `--allow files,net` — or `--allow all` to trust everyone.
+    command: ["--allow", ""]
+    # What the sandbox does not bound: time (the server gives a run thirty
+    # seconds) and memory, which the container does.
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
+    # The programs a scenario builds live and run in /tmp, so it has to
+    # be executable — Docker's tmpfs is not, by default.
+    tmpfs:
+      - /tmp:size=512m,exec
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  rillsdl-models:

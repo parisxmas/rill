@@ -1,0 +1,15 @@
+# What the editor's image is built from: the compiler's crates, the
+# standard library, the editor, the examples. Everything else stays out —
+# the build output above all, which is gigabytes.
+*
+!Cargo.toml
+!Cargo.lock
+!crates
+!lib
+!editors/web
+!examples
+!tools/dist.sh
+!LANGUAGE.md
+!README.md
+!CHANGELOG.md
+crates/**/target

@@ -9,6 +9,13 @@
   const problems = $("problems"), status = $("status"), fileName = $("file-name"), dirty = $("dirty");
 
   let current = null;       // the path of the file shown
+  let protectedFiles = new Set();   // the examples: edited and run as they stand, saved under another name
+  let readOnly = false;             // the site saves nothing: everything is edited and run as it stands
+  const isProtected = () => readOnly || protectedFiles.has(current);
+  // What the compiler works on: the file as saved, or — for an example —
+  // the buffer, sent along, so nothing of it is written back.
+  const subject = () => isProtected() ? editor.value : null;
+  const verb = () => isProtected() ? "POST" : "GET";
   let model = null;         // its model as last drawn
   let saved = "";           // its text as last saved
   let notesByLine = {};     // line -> [problem]
@@ -28,6 +35,10 @@
   async function loadFiles() {
     const all = $("all-files").checked ? "?all=1" : "";
     const { data } = await api("GET", "/api/files" + all);
+    protectedFiles = new Set(data.protected || []);
+    readOnly = !!data.readonly;
+    $("btn-save").hidden = readOnly;
+    $("btn-new").hidden = readOnly;
     const list = (data.files || []).sort();
     files.innerHTML = "";
     let lastDir = null;
@@ -43,7 +54,8 @@
       const item = document.createElement("div");
       item.className = "file";
       item.textContent = f.slice(f.lastIndexOf("/") + 1);
-      item.title = f;
+      item.title = protectedFiles.has(f) ? f + " — an example: edit and run it as you like, save it under another name" : f;
+      if (protectedFiles.has(f)) item.classList.add("example");
       item.dataset.path = f;
       item.onclick = () => open(f);
       files.appendChild(item);
@@ -58,7 +70,8 @@
     saved = data.text;
     editor.value = data.text;
     renderColors();
-    fileName.textContent = path;
+    fileName.textContent = path + (readOnly ? "" : protectedFiles.has(path) ? "  (example)" : "");
+    $("btn-save").textContent = protectedFiles.has(path) ? "Save as…" : "Save";
     for (const item of files.querySelectorAll(".file")) item.classList.toggle("current", item.dataset.path === path);
     history.replaceState(null, "", "#" + path);
     markDirty();
@@ -66,11 +79,11 @@
     await refresh();
   }
 
-  function markDirty() { dirty.textContent = editor.value === saved ? "" : "unsaved"; }
+  function markDirty() { dirty.textContent = editor.value === saved ? "" : readOnly ? "changed here only" : isProtected() ? "changed — Save as… keeps it" : "unsaved"; }
 
   // The file as the server wrote it after an edit made on a diagram.
   async function reloadFile(text) {
-    saved = text;
+    if (!isProtected()) saved = text;   // an example's edits live in the buffer
     editor.value = text;
     renderColors();
     markDirty();
@@ -80,6 +93,8 @@
 
   async function save() {
     if (!current) return;
+    if (readOnly) return;
+    if (isProtected()) return saveAs();
     const { ok, data } = await api("PUT", "/api/file?path=" + encodeURIComponent(current), editor.value);
     if (!ok) { say(data.error || "cannot save"); return; }
     saved = editor.value;
@@ -88,13 +103,29 @@
     await refresh();
   }
 
+  // An example kept: the buffer written under a name of the user's, and
+  // that file opened in its place.
+  async function saveAs() {
+    const name = prompt("Save this model as, under the root:", "models/" + current.slice(current.lastIndexOf("/") + 1).replace(/\.rill$/, "") + "_mine.rill");
+    if (!name) return;
+    const path = name.endsWith(".rill") ? name : name + ".rill";
+    if (protectedFiles.has(path)) { say(path + " is an example; pick another name"); return; }
+    const text = editor.value;
+    const { ok, data } = await api("PUT", "/api/file?path=" + encodeURIComponent(path), text);
+    if (!ok) { say(data.error || "cannot save " + path); return; }
+    saved = text;   // so the switch does not ask about leaving
+    await loadFiles();
+    await open(path);
+    say("saved " + path);
+  }
+
   // ---- the diagrams and the problems ----------------------------------------
 
   // The model and the check, both from the file as saved.
   async function refresh() {
     if (!current) return;
     notesByLine = {};
-    const check = await api("GET", "/api/check?path=" + encodeURIComponent(current));
+    const check = await api(verb(), "/api/check?path=" + encodeURIComponent(current), subject());
     const list = (check.data.problems || []);
     problems.innerHTML = "";
     for (const p of list) {
@@ -108,20 +139,20 @@
       problems.appendChild(li);
     }
     renderGutter();
-    const model = await api("GET", "/api/model?path=" + encodeURIComponent(current));
+    const model = await api(verb(), "/api/model?path=" + encodeURIComponent(current), subject());
     drawn.innerHTML = "";
     const empty = diagrams.querySelector(".empty");
     if (!model.ok) {
       empty.textContent = model.data.problems ? "The file does not parse; the problems are under the code." : (model.data.error || "nothing to draw");
       empty.hidden = false;
       $("editbar").hidden = true;
-      Simulate.load(current, null);
+      Simulate.load(current, null, subject());
       say(list.length ? list.length + " problem(s)" : "");
       return;
     }
     const m = model.data;
     window.__model = m;
-    Simulate.load(current, m);
+    Simulate.load(current, m, subject());
     const noteCount = {};
     for (const line in notesByLine) noteCount[line] = notesByLine[line].filter(p => p.kind === "note").length || undefined;
     for (const sd of m.systems || []) {
@@ -143,7 +174,7 @@
     for (const g of drawn.querySelectorAll(".sym[data-line]")) {
       g.addEventListener("click", () => goToLine(Number(g.dataset.line)));
     }
-    Edit.attach(drawn, m, saved, current, reloadFile);
+    Edit.attach(drawn, m, isProtected() ? editor.value : saved, current, reloadFile, isProtected());
     say(list.length ? list.filter(p => p.kind === "error").length + " error(s), " + list.filter(p => p.kind !== "error").length + " note(s)" : "compiles cleanly");
     lightLine(cursorLine());
   }
@@ -352,7 +383,7 @@
 
   // A pane beside a handle, resized sideways; `side` says which side of
   // the handle the pane is on.
-  function splitter(handleId, pane, within, key, side) {
+  function splitter(handleId, pane, within, key, side, onClick) {
     const handle = $(handleId);
     let start = null;
     try { const w = Number(localStorage.getItem(key)); if (w) { pane.style.flex = "none"; pane.style.width = w + "px"; } } catch (_) {}
@@ -364,6 +395,9 @@
     });
     document.addEventListener("mousemove", e => {
       if (!start) return;
+      if (Math.abs(e.clientX - start.x) < 6 && !start.moved) return;
+      start.moved = true;
+      if (pane.classList.contains("closed")) return;
       const most = within.getBoundingClientRect().width * 0.85;
       const delta = side === "left" ? e.clientX - start.x : start.x - e.clientX;
       const w = Math.max(120, Math.min(most, start.w + delta));
@@ -372,14 +406,42 @@
     });
     document.addEventListener("mouseup", () => {
       if (!start) return;
+      const clicked = !start.moved;
       start = null;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      if (clicked) { if (onClick) onClick(); return; }
       try { localStorage.setItem(key, String(Math.round(pane.getBoundingClientRect().width))); } catch (_) {}
     });
   }
   splitter("chart-handle", $("chart-pane"), document.querySelector(".sim-body"), "rill-chart-width", "left");
-  splitter("code-handle", document.querySelector(".code"), document.querySelector("main"), "rill-code-width", "right");
+
+  // A pane at an edge that slides shut and open: by its header button, or
+  // a click on its handle; the choice kept. The width is pinned in pixels
+  // before it closes, so both ways slide from one number to another.
+  function collapsible(pane, handleId, buttonId, earId, key) {
+    const handle = $(handleId), button = $(buttonId), ear = $(earId);
+    let open = true;
+    try { open = localStorage.getItem(key) !== "closed"; } catch (_) {}
+    const set = (o, quiet) => {
+      open = o;
+      if (!open && !pane.classList.contains("closed")) { pane.style.flex = "none"; pane.style.width = pane.getBoundingClientRect().width + "px"; }
+      if (quiet) pane.style.transition = "none";
+      pane.classList.toggle("closed", !open);
+      handle.classList.toggle("shut", !open);
+      ear.hidden = open;
+      if (quiet) { void pane.offsetWidth; pane.style.transition = ""; }
+      try { localStorage.setItem(key, open ? "open" : "closed"); } catch (_) {}
+    };
+    set(open, true);
+    button.onclick = () => set(false);
+    ear.onclick = () => set(true);
+    return () => set(!open);
+  }
+  const toggleSide = collapsible(document.querySelector(".side"), "side-handle", "toggle-side", "ear-side", "rill-side-open");
+  const toggleCode = collapsible(document.querySelector(".code"), "code-handle", "toggle-code", "ear-code", "rill-code-open");
+  splitter("side-handle", document.querySelector(".side"), document.querySelector("main"), "rill-side-width", "left", toggleSide);
+  splitter("code-handle", document.querySelector(".code"), document.querySelector("main"), "rill-code-width", "right", toggleCode);
 
   // ---- a new model, from a template ---------------------------------------------
 
@@ -457,11 +519,11 @@ fn test_pings_are_counted() =
   // ---- the toolbar ------------------------------------------------------------
 
   $("btn-save").onclick = save;
-  $("btn-check").onclick = async () => { if (editor.value !== saved) await save(); else await refresh(); };
+  $("btn-check").onclick = async () => { if (editor.value !== saved && !isProtected()) await save(); else await refresh(); };
   $("btn-fmt").onclick = async () => {
     if (!current) return;
-    if (editor.value !== saved) await save();
-    const res = await api("GET", "/api/fmt?path=" + encodeURIComponent(current));
+    if (editor.value !== saved && !isProtected()) await save();
+    const res = await api(verb(), "/api/fmt?path=" + encodeURIComponent(current), subject());
     if (!res.ok) { say(res.data.error || "cannot format"); return; }
     if (res.text !== editor.value) {
       editor.value = res.text;
@@ -474,9 +536,9 @@ fn test_pings_are_counted() =
   document.addEventListener("keydown", e => {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); save(); }
   });
-  for (const tab of document.querySelectorAll(".tab")) {
+  for (const tab of document.querySelectorAll(".tab[data-view]")) {
     tab.onclick = () => {
-      for (const t of document.querySelectorAll(".tab")) t.classList.toggle("current", t === tab);
+      for (const t of document.querySelectorAll(".tab[data-view]")) t.classList.toggle("current", t === tab);
       for (const v of document.querySelectorAll(".view")) v.classList.toggle("current", v.id === tab.dataset.view);
     };
   }

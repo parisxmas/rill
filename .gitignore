@@ -7,6 +7,8 @@
 !*/
 !*.*
 
+!Dockerfile
+
 # Directories were all taken back on the second line above, so the ones that
 # are build output or cache have to be named again — the last rule that
 # matches is the one that counts.

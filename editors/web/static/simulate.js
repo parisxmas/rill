@@ -7,17 +7,20 @@
 const Simulate = (() => {
   const $ = id => document.getElementById(id);
   let events = [], pos = 0, timer = null, model = null, file = null;
+  let buffer = null;   // the page's text, when the run is of it and not of the file
+  let shown = null, follow = true;   // the machine whose diagram is up; whether the run picks it
 
   const api = async path => {
-    const res = await fetch(path);
+    const res = await fetch(path, buffer != null ? { method: "POST", body: buffer } : {});
     const text = await res.text();
     try { return { ok: res.ok, data: JSON.parse(text) }; } catch (_) { return { ok: res.ok, data: { error: text } }; }
   };
 
   // The file changed: its scenarios, and its machines drawn again.
-  async function load(path, m) {
+  async function load(path, m, ownText) {
     file = path;
     model = m;
+    buffer = ownText == null ? null : ownText;
     stop();
     events = [];
     pos = 0;
@@ -37,15 +40,50 @@ const Simulate = (() => {
     show();
   }
 
+  // The machines, a tab each: the tab names the machine and, in a run, the
+  // state it is in; the run brings the machine that moved to the front
+  // unless a tab was picked by hand.
   function drawMachines() {
     const pane = $("sim-diagrams");
     pane.innerHTML = "";
-    for (const mc of (model && model.machines) || []) {
-      const h = document.createElement("h2");
-      h.innerHTML = `<span class="kind">machine</span>${mc.name}`;
-      pane.appendChild(h);
-      pane.appendChild(Diagram.process(mc, null));
+    const machines = (model && model.machines) || [];
+    if (!machines.some(mc => mc.name === shown)) shown = machines[0] ? machines[0].name : null;
+    const tabs = document.createElement("div");
+    tabs.className = "tabs machine-tabs";
+    for (const mc of machines) {
+      const b = document.createElement("button");
+      b.className = "tab";
+      b.dataset.machine = mc.name;
+      b.innerHTML = `<span class="kind">machine</span><span class="name">${mc.name}</span><span class="state"></span>`;
+      b.onclick = () => { shown = mc.name; follow = false; $("follow").checked = false; pick(); };
+      tabs.appendChild(b);
     }
+    if (machines.length) {
+      const grow = document.createElement("span");
+      grow.className = "grow";
+      tabs.appendChild(grow);
+      const f = document.createElement("label");
+      f.className = "follow";
+      f.innerHTML = '<input type="checkbox" id="follow"> follow the run';
+      f.title = "the tab of the machine that moved last comes to the front";
+      tabs.appendChild(f);
+      f.querySelector("input").checked = follow;
+      f.querySelector("input").onchange = e => { follow = e.target.checked; if (follow) show(); };
+      pane.appendChild(tabs);
+    }
+    for (const mc of machines) {
+      const d = document.createElement("div");
+      d.className = "machine-pane";
+      d.dataset.machine = mc.name;
+      d.appendChild(Diagram.process(mc, null));
+      pane.appendChild(d);
+    }
+    pick();
+  }
+
+  function pick() {
+    for (const t of $("sim-diagrams").querySelectorAll(".machine-tabs .tab")) t.classList.toggle("current", t.dataset.machine === shown);
+    for (const d of $("sim-diagrams").querySelectorAll(".machine-pane")) d.hidden = d.dataset.machine !== shown;
   }
 
   async function run() {
@@ -88,6 +126,14 @@ const Simulate = (() => {
     }
     const pane = $("sim-diagrams");
     for (const g of pane.querySelectorAll(".sym.lit, .transition.active")) g.classList.remove("lit", "active");
+    const last = events[pos - 1];
+    const mover = last ? (last.who.includes("#") ? last.who.slice(0, last.who.indexOf("#")) : last.who) : null;
+    for (const t of pane.querySelectorAll(".machine-tabs .tab")) {
+      const c = current[t.dataset.machine];
+      t.querySelector(".state").textContent = c ? (c.ended ? "ended" : (c.next || c.state.split("(")[0])) : "";
+      t.classList.toggle("moved", !!mover && t.dataset.machine === mover);
+    }
+    if (follow && mover && pane.querySelector(`.machine-pane[data-machine="${mover}"]`) && mover !== shown) { shown = mover; pick(); }
     for (const kind in current) {
       const c = current[kind];
       for (const g of pane.querySelectorAll(`.sym[data-machine="${kind}"]`)) {
@@ -99,7 +145,6 @@ const Simulate = (() => {
         if (t.dataset.state === c.state && t.dataset.kind === c.kind && t.dataset.input === c.input) t.classList.add("active");
       }
     }
-    const last = events[pos - 1];
     $("event").textContent = last ? `${last.seq}  ${last.kind}  ${last.who}  ${last.fields.join("  ")}` : "";
     const row = document.querySelector(`#chart-pane .row[data-at="${pos - 1}"]`);
     if (row) row.scrollIntoView({ block: "nearest" });

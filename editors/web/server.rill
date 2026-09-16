@@ -6,9 +6,15 @@
 #     rill run editors/web/server.rill                # http://localhost:8765
 #     rill run editors/web/server.rill -- --port 9000 --root ~/models --rill ./target/release/rill
 #
-# Every path a request names is kept inside the root, and the server is
-# for the machine it runs on: it runs programs, so it is not for the
-# network.
+# Every path a request names is kept inside the root. The server runs
+# programs, so opened to the network — `--host 0.0.0.0` — it runs them in
+# a sandbox: nothing past the process unless `--allow files,net,ffi,os`
+# names it, or `--allow all` trusts everyone who can reach it. On this
+# machine alone there is no sandbox unless `--sandbox` asks for one.
+# `--readonly` saves nothing — every file is edited and run as it stands
+# in the page, and stays as it was — which is the setting for a server
+# with no accounts; `--protect a.rill,b.rill` does that for the files
+# named, the examples, and lets a copy be saved under another name.
 import "web/http" as http
 import "web/mime" as mime
 import "web/url" as url
@@ -20,7 +26,7 @@ import "text/path" as path
 import "text/str" as str
 
 type Site
-  Site(root: Str, rill: Str, here: Str, lsp: Chan(Ask))
+  Site(root: Str, rill: Str, here: Str, lsp: Chan(Ask), sandbox: List(Str), protected: List(Str), readonly: Bool)
 
 # A question for the language server, and where its answer goes.
 type Ask
@@ -31,18 +37,37 @@ fn spec() =
     |> cli.valued("port", "p", "PORT", "8765", "the port to listen on")
     |> cli.valued("root", "r", "DIR", "", "the directory the files are under (the current one)")
     |> cli.valued("rill", "", "PATH", "rill", "the compiler to call")
+    |> cli.valued("static", "", "DIR", "", "the page's files (editors/web/static under the root)")
     |> cli.valued("host", "", "ADDRESS", "127.0.0.1", "the address to listen on: this machine alone unless said otherwise")
+    |> cli.switch("sandbox", "", "run the programs in a sandbox on this machine too (off the machine they always are)")
+    |> cli.valued("allow", "", "CAPS", "", "what a sandboxed program may reach: files, net, ffi, os, comma-separated; `all` for no sandbox")
+    |> cli.valued("protect", "", "FILES", "", "files under the root nobody saves over, comma-separated: edited and run as they stand, kept under another name")
+    |> cli.switch("readonly", "", "nothing is saved: every file is edited and run as it stands, and stays as it was")
 
 fn main() = match cli.parse(spec(), args())
   Err(why) -> println(why)
   Ok(got) ->
     root = path.normalize(if #cli.value(got, "root") == 0 then env.cwd() else cli.value(got, "root"))
-    here = path.join_path(root, "editors/web/static")
-    site = Site(root, cli.value(got, "rill"), here, language_server(cli.value(got, "rill")))
+    here = if #cli.value(got, "static") == 0 then path.join_path(root, "editors/web/static") else path.normalize(cli.value(got, "static"))
     port = str_to_int(cli.value(got, "port"))
     host = cli.value(got, "host")
-    println("rill editor on http://" + host + ":" + int_to_str(port) + " over " + root)
+    sandbox = sandbox_flags(host, cli.on(got, "sandbox"), cli.value(got, "allow"))
+    protected = filter(map(split(cli.value(got, "protect"), ","), trim), \f -> #f > 0)
+    site = Site(root, cli.value(got, "rill"), here, language_server(cli.value(got, "rill")), sandbox, protected, cli.on(got, "readonly"))
+    println("rill editor on http://" + host + ":" + int_to_str(port) + " over " + root + sandbox_note(sandbox))
     http.serve_at(host, port, \req -> route(site, req))
+
+# The `--sandbox[=caps]` the compiler is given for a run, a test and a
+# check: none on this machine alone unless asked, always off it unless
+# `--allow all` says everyone reaching it is trusted.
+fn sandbox_flags(host, asked, allow) =
+  local = host == "127.0.0.1" || host == "localhost" || host == "::1"
+  trusted = allow == "all" || local && !asked
+  if trusted then Nil else Cons(if #allow == 0 then "--sandbox" else "--sandbox=" + allow, Nil)
+
+fn sandbox_note(sandbox) = match sandbox
+  Nil -> ", programs unsandboxed"
+  Cons(flag, _) -> ", programs sandboxed (" + (if flag == "--sandbox" then "nothing past the process" else flag[10:]) + ")"
 
 # -- routes -------------------------------------------------------------------
 
@@ -78,11 +103,11 @@ fn route(site: Site, req: http.Request) =
     Files -> files(site, http.param(q, "all") == "1")
     Read -> fetch(site, file)
     Save -> save(site, file, req.body)
-    Model -> model(site, file)
-    Check -> check(site, file)
-    Fmt -> format(site, file)
-    Scenarios -> scenarios(site, file)
-    Run -> run(site, file, http.param(q, "scenario"), http.param(q, "virtual") != "0")
+    Model -> model(site, file, req.body)
+    Check -> check(site, file, req.body)
+    Fmt -> format(site, file, req.body)
+    Scenarios -> scenarios(site, file, req.body)
+    Run -> run(site, file, req.body, http.param(q, "scenario"), http.param(q, "virtual") != "0")
     Edit -> edit(site, file, req.body)
     Lsp -> lsp(site, file, http.param(q, "method"), http.param(q, "line"), http.param(q, "character"), req.body)
     Missing(p) -> http.json_response(404, fail("no such route: " + p))
@@ -108,7 +133,7 @@ fn inside(base, rel) =
 fn files(site: Site, all) =
   found = walk(site.root, "", Nil)
   shown = if all then found else filter(found, \f -> is_model(path.join_path(site.root, f)))
-  http.json_response(200, json.to_string(json.JObj(Cons(json.Field("files", json.JArr(map(shown, \f -> json.JStr(f)))), Nil))))
+  http.json_response(200, json.to_string(json.JObj(Cons(json.Field("files", json.JArr(map(shown, \f -> json.JStr(f)))), Cons(json.Field("protected", json.JArr(map(site.protected, \f -> json.JStr(f)))), Cons(json.Field("readonly", json.JBool(site.readonly)), Nil))))))
 
 fn is_model(full) = match read_file(full)
   Err(_) -> false
@@ -137,24 +162,57 @@ fn fetch(site: Site, rel) = match inside(site.root, rel)
 
 fn save(site: Site, rel, text) = match inside(site.root, rel)
   None -> http.json_response(403, fail("outside the root"))
+  Some(_) if site.readonly -> http.json_response(403, fail("nothing is saved here: the files are edited and run as they stand"))
+  Some(_) if protected(site, rel) -> http.json_response(403, fail(rel + " is an example everyone starts from: save it under another name"))
   Some(full) ->
     dir_make(path.dir_name(full))
     if write_file(full, text) then http.json_response(200, ok()) else http.json_response(500, fail("cannot write " + rel))
 
+fn protected(site: Site, rel) = site.readonly || any(site.protected, \p -> p == rel)
+
 # -- the compiler ---------------------------------------------------------------
+
+# The file the compiler is pointed at, handed to `f`: the one under the
+# root, or — when the request brought text of its own — a copy of that
+# text under the scratch directory, so a buffer not yet saved, or an
+# example nobody saves over, is checked, drawn and run as it stands.
+# The copy keeps the file's path under the root, so its imports resolve
+# the same, and is gone once `f` has answered.
+fn subject(site: Site, rel, body, f) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) ->
+    if #body == 0 then f(full)
+    else
+      # a copy of its own per request: two people editing one example at once do not run each other's text
+      own = scratch() + "/work/" + int_to_str(random_i64())
+      copy = path.join_path(own, rel)
+      make_dirs(path.dir_name(copy))
+      if !write_file(copy, body) then http.json_response(500, fail("cannot write a working copy"))
+      else
+        answer = f(copy)
+        proc.shell("rm -rf " + proc.quote(own))
+        answer
+
+fn make_dirs(dir) =
+  if #dir > 1 && !file_exists(dir) then
+    make_dirs(path.dir_name(dir))
+    dir_make(dir)
+  else true
 
 # The model of a file: what `rill diagram --json` says, or the errors that
 # stopped it, one a line.
-fn model(site: Site, rel) = match inside(site.root, rel)
-  None -> http.json_response(403, fail("outside the root"))
-  Some(full) -> match proc.run(proc.command(site.rill, Cons("diagram", Cons("--json", Cons(full, Nil)))) + " 2>&1")
+fn model(site: Site, rel, body) = subject(site, rel, body, \full -> model_of(site, full))
+
+fn model_of(site: Site, full) =
+  match proc.run(proc.command(site.rill, Cons("diagram", Cons("--json", Cons(full, Nil)))) + " 2>&1")
     Err(e) -> http.json_response(500, fail(e))
     Ok(r) -> if r.status == 0 then http.json_response(200, r.out) else http.json_response(422, json.to_string(problems(site, r.out)))
 
 # What `rill check` says: the errors and the notes, each with its line.
-fn check(site: Site, rel) = match inside(site.root, rel)
-  None -> http.json_response(403, fail("outside the root"))
-  Some(full) -> match proc.run(proc.command(site.rill, Cons("check", Cons(full, Nil))) + " 2>&1")
+fn check(site: Site, rel, body) = subject(site, rel, body, \full -> check_of(site, full))
+
+fn check_of(site: Site, full) =
+  match proc.run(proc.command(site.rill, Cons("check", Cons(full, site.sandbox))) + " 2>&1")
     Err(e) -> http.json_response(500, fail(e))
     Ok(r) -> http.json_response(200, json.to_string(problems(site, r.out)))
 
@@ -177,19 +235,21 @@ fn problem(site: Site, line) =
     json.JObj(Cons(json.Field("kind", json.JStr(kind)), Cons(json.Field("line", json.JInt(n)), Cons(json.Field("text", json.JStr(text)), Nil))))
 
 # The file formatted, as text.
-fn format(site: Site, rel) = match inside(site.root, rel)
-  None -> http.json_response(403, fail("outside the root"))
-  Some(full) -> match proc.run(proc.command(site.rill, Cons("fmt", Cons("--stdout", Cons(full, Nil)))) + " 2>&1")
+fn format(site: Site, rel, body) = subject(site, rel, body, \full -> format_of(site, rel, full))
+
+fn format_of(site: Site, rel, full) =
+  match proc.run(proc.command(site.rill, Cons("fmt", Cons("--stdout", Cons(full, Nil)))) + " 2>&1")
     Err(e) -> http.json_response(500, fail(e))
-    Ok(r) -> if r.status == 0 then http.text_response(200, r.out) else http.json_response(422, fail(trim(r.out)))
+    Ok(r) -> if r.status == 0 then http.text_response(200, r.out) else http.json_response(422, fail(trim(str.replace(r.out, full, rel))))
 
 # -- simulation -----------------------------------------------------------------
 
 # The scenarios a file has: `main`, if it has one, and every `test_`
 # function — what a run can be asked for.
-fn scenarios(site: Site, rel) = match inside(site.root, rel)
-  None -> http.json_response(403, fail("outside the root"))
-  Some(full) -> match read_file(full)
+fn scenarios(site: Site, rel, body) = subject(site, rel, body, scenarios_of)
+
+fn scenarios_of(full) =
+  match read_file(full)
     Err(e) -> http.json_response(404, fail(e))
     Ok(text) ->
       names = filter(map(lines(text), scenario_of), \n -> #n > 0)
@@ -204,19 +264,27 @@ fn name_of(line) =
   open = str_find(line, "(")
   if open < 0 then "" else line[3:open]
 
-# A scenario run with the trace on — `main` through `rill run`, a test
-# through `rill test` — on the virtual clock unless asked otherwise, and
-# given thirty seconds. What comes back: the program's own lines, and
-# the trace's events as data.
-fn run(site: Site, rel, scenario, virtual) = match inside(site.root, rel)
-  None -> http.json_response(403, fail("outside the root"))
-  Some(full) ->
-    tool = if scenario == "main" then Cons("run", Cons(full, Nil)) else Cons("test", Cons(full, Cons(scenario, Nil)))
-    clock = if virtual then "RILL_VIRTUAL_TIME=1 " else ""
-    cmd = "RILL_TRACE=1 " + clock + "perl -e 'alarm shift; exec @ARGV' 30 " + proc.command(site.rill, tool) + " 2>&1"
-    match proc.run(cmd)
-      Err(e) -> http.json_response(500, fail(e))
-      Ok(r) -> http.json_response(200, json.to_string(run_json(r.status, lines(r.out))))
+# A scenario run with the trace on — `main` built into the scratch
+# directory and run from there, a test through `rill test` — on the
+# virtual clock unless asked otherwise, and given thirty seconds. What
+# comes back: the program's own lines, and the trace's events as data.
+fn run(site: Site, rel, body, scenario, virtual) =
+  subject(site, rel, body, \full -> run_of(site, rel, full, scenario, virtual))
+
+fn run_of(site: Site, rel, full, scenario, virtual) =
+  clock = if virtual then "RILL_VIRTUAL_TIME=1 " else ""
+  timed = "RILL_TRACE=1 " + clock + "perl -e 'alarm shift; exec @ARGV' 30 "
+  # a binary of its own per run, gone after: two runs of one model at once do not share it
+  exe = scratch() + "/" + int_to_str(random_i64()) + "-" + path.stem(rel)
+  cmd = if scenario == "main"
+    then proc.command(site.rill, Cons("build", Cons(full, Cons("-o", Cons(exe, site.sandbox))))) + " 2>&1 && " + timed + proc.quote(exe) + " 2>&1"
+    else timed + proc.command(site.rill, Cons("test", Cons(full, Cons(scenario, site.sandbox)))) + " 2>&1"
+  answer = proc.run(cmd)
+  file_remove(exe)
+  match answer
+    Err(e) -> http.json_response(500, fail(e))
+    # the compiler names the file by its full path, which is the server's to keep
+    Ok(r) -> http.json_response(200, json.to_string(run_json(r.status, lines(str.replace(r.out, full, rel)))))
 
 fn run_json(status, all) =
   events = filter(map(all, event_of), \e -> e != json.JNull)
@@ -248,11 +316,16 @@ fn edit(site: Site, rel, body) = match inside(site.root, rel)
   None -> http.json_response(403, fail("outside the root"))
   Some(full) -> match json.parse(body)
     Err(e) -> http.json_response(400, fail("the edit is not JSON: " + e))
-    Ok(j) -> match read_file(full)
-      Err(e) -> http.json_response(404, fail(e))
-      Ok(text) -> apply(site, rel, full, text, json.items(unwrap_or(json.get(j, "edits"), json.JNull)))
+    Ok(j) ->
+      edits = json.items(unwrap_or(json.get(j, "edits"), json.JNull))
+      # text brought along is edited as it stands and handed back, not written
+      match json.get(j, "text")
+        Some(json.JStr(text)) -> apply(site, rel, full, text, edits, false)
+        _ -> match read_file(full)
+          Err(e) -> http.json_response(404, fail(e))
+          Ok(text) -> apply(site, rel, full, text, edits, !protected(site, rel))
 
-fn apply(site: Site, rel, full, text, edits) =
+fn apply(site: Site, rel, full, text, edits, keep) =
   ordered = sort_by(edits, \e -> 0 - number(e, "from"))
   changed = fold(ordered, lines(text), \ls, e -> splice(ls, number(e, "from"), number(e, "to"), json.as_str(unwrap_or(json.get(e, "text"), json.JNull))))
   draft = path.join_path(path.dir_name(full), ".rill-editor-draft.rill")
@@ -260,7 +333,7 @@ fn apply(site: Site, rel, full, text, edits) =
     Err(e) -> http.json_response(500, fail(e))
     Ok(r) ->
       file_remove(draft)
-      if r.status != 0 then http.json_response(422, fail(trim(str.replace(r.out, draft, rel)))) else if !write_file(full, r.out)
+      if r.status != 0 then http.json_response(422, fail(trim(str.replace(r.out, draft, rel)))) else if keep && !write_file(full, r.out)
         then http.json_response(500, fail("cannot write " + rel))
         else http.json_response(200, json.to_string(json.JObj(Cons(json.Field("path", json.JStr(rel)), Cons(json.Field("text", json.JStr(r.out)), Nil)))))
 
@@ -284,9 +357,13 @@ fn splice(ls, from, to, text) =
 # accord, the diagnostics.
 extern blocking fn read(fd: I32, buf: Ptr, n: USize) -> ISize
 
+# The server's own directory under /tmp: the language server's pipes,
+# and the programs a scenario builds.
+fn scratch() = "/tmp/rill-editor-" + int_to_str(env.pid())
+
 fn language_server(rill) =
   asks = mailbox()
-  dir = "/tmp/rill-editor-" + int_to_str(env.pid())
+  dir = scratch()
   dir_make(dir)
   proc.shell("mkfifo " + dir + "/in " + dir + "/out")
   proc.shell(proc.command(rill, Cons("lsp", Nil)) + " < " + dir + "/in > " + dir + "/out 2>/dev/null &")

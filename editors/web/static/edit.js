@@ -7,7 +7,7 @@
 
 const Edit = (() => {
   const $ = id => document.getElementById(id);
-  let text = "", model = null, file = null, reload = null;
+  let text = "", model = null, file = null, reload = null, unsaved = false;
 
   // ---- lines ---------------------------------------------------------------
 
@@ -42,8 +42,11 @@ const Edit = (() => {
     return 0;
   }
 
+  // An edit of an example carries the text it is made to: the server
+  // edits that and hands it back, and writes nothing.
   const send = async edits => {
-    const res = await fetch("/api/edit?path=" + encodeURIComponent(file), { method: "POST", body: JSON.stringify({ edits }) });
+    const body = unsaved ? { edits, text } : { edits };
+    const res = await fetch("/api/edit?path=" + encodeURIComponent(file), { method: "POST", body: JSON.stringify(body) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "the edit was refused");
     return data;
@@ -336,11 +339,12 @@ const Edit = (() => {
 
   // ---- attaching to a drawn model ------------------------------------------------
 
-  function attach(container, m, currentText, currentFile, reloader) {
+  function attach(container, m, currentText, currentFile, reloader, inBuffer) {
     text = currentText;
     model = m;
     file = currentFile;
     reload = reloader;
+    unsaved = !!inBuffer;
     const systems = m.systems || [];
     container.querySelectorAll("svg").forEach((svg, k) => {
       const sd = systems[k];
