@@ -144,6 +144,29 @@ button.iconic.plus svg { color: #2a7a3b; }
 .editbox button.primary { background: var(--accent); color: white; border-color: var(--accent); }
 .editbox button.danger { color: var(--error); }
 .editbox-status { font-size: 12px; color: var(--error); margin-left: 6px; }
+.editbox.form { width: 540px; }
+.form-body { display: flex; flex-direction: column; gap: 6px; }
+.form-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.form-row > label { flex: none; width: 84px; padding-top: 4px; color: #666; text-align: right; }
+.form-row select, .form-row input { font: 12px/1.4 Menlo, Consolas, monospace; padding: 3px 5px; border: 1px solid var(--line); border-radius: 4px; }
+.form-row input { flex: 1; }
+.choice { display: inline-flex; gap: 4px; align-items: center; flex: 1; }
+.choice input { flex: 1; min-width: 90px; }
+.choice input.args { flex: 2; }
+.form-actions { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.form-action { display: flex; gap: 4px; align-items: center; }
+.form-action .choice { flex: 1; }
+.form-action input.ms { width: 70px; flex: none; }
+.form-action input.wide { flex: 1; }
+button.tiny { font-size: 11px; padding: 1px 6px; }
+.form-ticks { display: flex; flex-wrap: wrap; gap: 4px 12px; flex: 1; align-items: center; }
+.form-ticks .tick { display: inline-flex; align-items: center; gap: 4px; font: 12px Menlo, Consolas, monospace; }
+.form-ticks input.wide { flex-basis: 100%; }
+.editbox.form.scenario { width: 720px; }
+.form-word { font: 12px Menlo, Consolas, monospace; color: #666; flex: none; }
+.form-action { flex-wrap: wrap; }
+.form-preview-title { font-size: 11px; color: #888; margin-top: 8px; }
+.form-preview { margin: 4px 0 0; padding: 6px 8px; background: var(--soft); border: 1px solid var(--line); border-radius: 4px; font: 12px/1.5 Menlo, Consolas, monospace; white-space: pre; overflow: auto; max-height: 160px; }
 .hovertip {
   position: fixed; z-index: 20; max-width: 480px; padding: 6px 10px; background: #fffbe6; border: 1px solid var(--line);
   border-radius: 4px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); font: 12px/1.5 Menlo, Consolas, monospace; white-space: pre; pointer-events: none;

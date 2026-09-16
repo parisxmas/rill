@@ -5550,3 +5550,22 @@ fn doc_reads_the_comments_off_the_file() {
     let heap = std::fs::read_to_string(dir.join("heap.md")).unwrap();
     assert!(heap.contains("### `Heap(a)`\n\n- `Heap(before: (a, a) -> Bool, root: Tree(a), size: Int)`"), "{heap}");
 }
+
+/// The editor's forms, checked without a browser: `form.js` loaded in
+/// Node, and every arm, `save`, `priority`, route and scenario of the
+/// examples read into a form and written back as it was. Skipped where
+/// there is no `node`.
+#[test]
+fn the_editor_forms_write_what_they_read() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = match Command::new("node").arg(root.join("editors/web/test/forms.js")).output() {
+        Ok(out) => out,
+        Err(_) => {
+            eprintln!("no node on this machine; the forms are not checked");
+            return;
+        }
+    };
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{said}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(said.contains(" checks, 0 failed"), "{said}");
+}

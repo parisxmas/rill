@@ -101,53 +101,82 @@ const Edit = (() => {
     await reload(data.text);
   }
 
-  function routeBox(at, sd, i) {
+  const machineNames = () => (model.machines || []).map(m => m.name);
+
+  function routeBox(at, sd, i, asCode) {
     const r = sd.routes[i];
     const ls = linesOf();
     const line = r.line;
-    open(at, `route of system ${sd.name}`, (ls[line - 1] || "").trim(),
+    const codeBox = () => open(at, `route of system ${sd.name}`, (ls[line - 1] || "").trim(),
       v => replaceLines(line, line, "  " + v.trim()),
       () => replaceLines(line, line, ""));
+    if (asCode) return codeBox();
+    Forms.route({
+      at, title: `route of system ${sd.name}, line ${line}`, text, machines: machineNames(),
+      route: { from: r.from, to: r.to, both: r.both, signals: [...r.signals] },
+      onSave: code => replaceLines(line, line, code),
+      onDelete: () => replaceLines(line, line, ""),
+      asCode: codeBox,
+    });
   }
 
   function addRouteBox(at, sd) {
     const last = Math.max(sd.line, ...sd.routes.map(r => r.line));
-    open(at, `new route of system ${sd.name}`, "env -> machine: Signal",
+    const codeBox = () => open(at, `new route of system ${sd.name}`, "env -> machine: Signal",
       v => replaceLines(last + 1, last, "  " + v.trim()));
+    Forms.route({
+      at, title: `new route of system ${sd.name}`, text, machines: machineNames(), route: null,
+      onSave: code => replaceLines(last + 1, last, code),
+      asCode: codeBox,
+    });
   }
 
-  // An arm — an input, `after`, or `when` — with its body.
-  function armBox(at, machine, line) {
+  // An arm — an input, `after`, or `when` — with its body: the form when
+  // it can say the arm, the lines when it cannot.
+  function armBox(at, machine, line, asCode) {
     const end = blockEnd(line);
     const ls = linesOf();
     const src = ls.slice(line - 1, end).join("\n");
-    open(at, `arm of ${machine}, lines ${line}–${end}`, src,
+    const where = end > line ? `lines ${line}–${end}` : `line ${line}`;
+    const codeBox = () => open(at, `arm of ${machine}, ${where}`, src,
       v => replaceLines(line, end, v.replace(/\n+$/, "")),
       () => replaceLines(line, end, ""), true);
+    const mc = (model.machines || []).find(m => m.name === machine);
+    const parsed = asCode ? null : Forms.parse(ls.slice(line - 1, end));
+    if (!parsed || !mc) return codeBox();
+    Forms.transition({
+      at, title: `${parsed.kind === "save" || parsed.kind === "priority" ? parsed.kind + " of" : "arm of"} ${machine}, ${where}`, text, machine: mc, arm: parsed,
+      onSave: code => replaceLines(line, end, code),
+      onDelete: () => replaceLines(line, end, ""),
+      asCode: codeBox,
+    });
   }
 
-  // A `save` or `priority` line.
+  // A `save` or `priority` line: the same form as an arm, with no body.
   function keywordBox(at, machine, line) {
-    const ls = linesOf();
-    open(at, `${machine}, line ${line}`, (ls[line - 1] || "").trim(),
-      v => replaceLines(line, line, "    " + v.trim()),
-      () => replaceLines(line, line, ""));
+    armBox(at, machine, line);
   }
 
   function addInputBox(at, machine, state, stateLine) {
     const end = blockEnd(stateLine);
-    open(at, `new arm of ${machine} in state ${state}`, "    Signal ->\n      stay",
+    const codeBox = () => open(at, `new arm of ${machine} in state ${state}`, "    Signal ->\n      stay",
       v => replaceLines(end + 1, end, v.replace(/\n+$/, "")), null, true);
+    const mc = (model.machines || []).find(m => m.name === machine);
+    if (!mc) return codeBox();
+    Forms.transition({
+      at, title: `new arm of ${machine} in state ${state}`, text, machine: mc, arm: null,
+      onSave: code => replaceLines(end + 1, end, code),
+      asCode: codeBox,
+    });
   }
 
   // A new state: its constructor into the state type, and a `state` with
   // one arm at the end of the machine.
+  // A new state: its constructor added to the state type, and the state
+  // to the machine, with an arm that keeps it.
   function addStateBox(at, m) {
     const first = m.states.find(s => s.name !== "*");
-    open(at, `new state of ${m.name} — the constructor, with its fields`, "Named(field: Int)", async v => {
-      const ctor = v.trim();
-      const name = ctor.split("(")[0];
-      const pattern = ctor.includes("(") ? name + "(" + ctor.slice(ctor.indexOf("(") + 1, -1).split(",").map(f => f.split(":")[0].trim()).join(", ") + ")" : name;
+    const add = async (ctor, pattern) => {
       const edits = [];
       const typeEnd = first ? stateTypeEnd(first.name) : 0;
       if (typeEnd) edits.push({ from: typeEnd + 1, to: typeEnd, text: "  " + ctor });
@@ -155,24 +184,43 @@ const Edit = (() => {
       edits.push({ from: mEnd + 1, to: mEnd, text: `  state ${pattern}\n    _ -> stay` });
       const data = await send(edits);
       await reload(data.text);
+    };
+    const codeBox = () => open(at, `new state of ${m.name} — the constructor, with its fields`, "Named(field: Int)", v => {
+      const c = Forms.parseCtor(v);
+      if (!c) throw new Error("a constructor: Named, or Named(field: Int)");
+      return add(v.trim(), c.fields.length ? `${c.name}(${c.fields.map(f => f.name).join(", ")})` : c.name);
     });
+    Forms.ctor({ at, title: `new state of ${m.name}`, text, what: "state", ctor: null, onSave: add, asCode: codeBox });
   }
 
-  // A state: its whole block, to change or delete — and with it the
-  // constructor in the state type, so the type does not keep a state the
-  // machine no longer has.
+  // A state: its name and fields in a form, which changes its constructor
+  // in the state type and its `state` line together; its whole block as
+  // code; deleted with its constructor, so the type does not keep a state
+  // the machine no longer has.
   function stateBox(at, m, st) {
     const end = blockEnd(st.line);
     const ls = linesOf();
-    open(at, `state ${st.pattern} of ${m.name}, lines ${st.line}–${end}`, ls.slice(st.line - 1, end).join("\n"),
-      v => replaceLines(st.line, end, v.replace(/\n+$/, "")),
-      async () => {
-        const edits = [{ from: st.line, to: end, text: "" }];
-        const ctorLine = stateCtorLine(st.name);
-        if (ctorLine && st.name !== "*") edits.push({ from: ctorLine, to: ctorLine, text: "" });
-        const data = await send(edits);
+    const remove = async () => {
+      const edits = [{ from: st.line, to: end, text: "" }];
+      const ctorLine = stateCtorLine(st.name);
+      if (ctorLine && st.name !== "*") edits.push({ from: ctorLine, to: ctorLine, text: "" });
+      const data = await send(edits);
+      await reload(data.text);
+    };
+    const codeBox = () => open(at, `state ${st.pattern} of ${m.name}, lines ${st.line}–${end}`, ls.slice(st.line - 1, end).join("\n"),
+      v => replaceLines(st.line, end, v.replace(/\n+$/, "")), remove, true);
+    const ctorLine = st.name !== "*" ? stateCtorLine(st.name) : 0;
+    const ctor = ctorLine ? Forms.parseCtor(ls[ctorLine - 1]) : null;
+    if (!ctor) return codeBox();
+    Forms.ctor({
+      at, title: `state ${st.pattern} of ${m.name}`, text, what: "state", ctor,
+      onSave: async (line, pattern) => {
+        const data = await send([{ from: ctorLine, to: ctorLine, text: "  " + line }, { from: st.line, to: st.line, text: "  state " + pattern }]);
         await reload(data.text);
-      }, true);
+      },
+      onDelete: remove,
+      asCode: codeBox,
+    });
   }
 
   // The line in a type declaration that is this state's constructor.
@@ -220,10 +268,9 @@ const Edit = (() => {
       open(at, "no signal type yet — this makes one, with a first signal", "type Signal\n  Start", v => replaceLines(n + 1, n, "\n" + v.replace(/\n+$/, "")), null, true);
       return;
     }
-    open(at, `new signal, a constructor of ${type}`, "Named(field: Int)", v => {
-      const end = typeEnd(type);
-      return replaceLines(end + 1, end, "  " + v.trim());
-    });
+    const add = v => { const end = typeEnd(type); return replaceLines(end + 1, end, "  " + v.trim()); };
+    const codeBox = () => open(at, `new signal, a constructor of ${type}`, "Named(field: Int)", add);
+    Forms.ctor({ at, title: `new signal, a constructor of ${type}`, text, what: "signal", ctor: null, onSave: add, asCode: codeBox });
   }
 
   function addMachine(at) {
@@ -243,10 +290,48 @@ const Edit = (() => {
     const first = (model && model.machines && model.machines[0]) ? model.machines[0].name : "worker";
     const sig = signalType() || "Signal";
     const firstSignal = (text.match(new RegExp("^type " + sig + "\\n  ([A-Z][A-Za-z0-9_]*)", "m")) || [])[1] || "Start";
-    open(at, "new system — its routes", `system model\n  env -> ${first}: ${firstSignal}`, v => {
-      const n = linesOf().length;
-      return replaceLines(n + 1, n, "\n" + v.replace(/\n+$/, ""));
-    }, null, true);
+    const append = v => { const n = linesOf().length; return replaceLines(n + 1, n, "\n" + v.replace(/\n+$/, "")); };
+    const codeBox = () => open(at, "new system — its routes", `system model\n  env -> ${first}: ${firstSignal}`, append, null, true);
+    Forms.route({
+      at, title: "new system — its name, and its first route", text, machines: machineNames(), route: null, system: "model",
+      onSave: append,
+      asCode: codeBox,
+    });
+  }
+
+  // ---- scenarios -------------------------------------------------------------------------
+
+  // The line of `fn <name>(` in the file, 0 when there is none.
+  function fnLine(name) {
+    const i = linesOf().findIndex(l => l.startsWith("fn " + name + "("));
+    return i < 0 ? 0 : i + 1;
+  }
+
+  // A scenario: the `test_` function opened in the scenario form when it
+  // says what the form can, as code otherwise; `main` always as code.
+  function scenarioBox(at, name) {
+    const line = fnLine(name);
+    if (!line) return;
+    const end = blockEnd(line);
+    const ls = linesOf();
+    const codeBox = () => open(at, `${name}, lines ${line}–${end}`, ls.slice(line - 1, end).join("\n"),
+      v => replaceLines(line, end, v.replace(/\n+$/, "")),
+      () => replaceLines(line, end, ""), true);
+    const parsed = name.startsWith("test_") ? Forms.parseScenario(ls.slice(line - 1, end)) : null;
+    if (!parsed) return codeBox();
+    Forms.scenario({
+      at, title: `scenario ${name}, lines ${line}–${end}`, text, model, scenario: parsed,
+      onSave: code => replaceLines(line, end, code),
+      onDelete: () => replaceLines(line, end, ""),
+      asCode: codeBox,
+    });
+  }
+
+  function addScenarioBox(at) {
+    const append = v => { const n = linesOf().length; return replaceLines(n + 1, n, "\n" + v.replace(/\n+$/, "")); };
+    const first = (model && model.machines && model.machines[0]) || null;
+    const codeBox = () => open(at, "new scenario — a test_ function", `fn test_scenario() =\n  env = mailbox()\n  a = mailbox()\n  spawn ${first ? first.name : "machine"}(a, ${first && first.states[0] ? first.states[0].name : "Start"})`, append, null, true);
+    Forms.scenario({ at, title: "new scenario", text, model, scenario: null, onSave: append, asCode: codeBox });
   }
 
   // ---- attaching to a drawn model ------------------------------------------------
@@ -308,5 +393,5 @@ const Edit = (() => {
   }
 
   document.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
-  return { attach, close, addSignal, addMachine, addSystem };
+  return { attach, close, addSignal, addMachine, addSystem, scenarioBox, addScenarioBox };
 })();

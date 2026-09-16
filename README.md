@@ -168,11 +168,14 @@ declaration is its documentation.
 `editors/web/` is the model editor: a page that shows a file's `system` as
 the block diagram and each `machine` as SDL drew a process, beside its
 code, every symbol a click from the line it came from, and edits them —
-a route, an arm, a new state or input opens in a box with its own lines,
-written back into the file through the formatter, and `New model` starts
-a file from a template; hover for a type and
+an input opens in a form that builds its arm from the file's signals,
+the machine's states and SDL's actions, a route in a form that picks its
+ends and ticks its signals, a state or a signal in a form that names its
+fields and picks their types, everything written back into the file through the formatter, and `New
+model` starts a file from a template; hover for a type and
 ⌘-click for a definition, from `rill lsp` kept alive beside the server;
-and a Simulate view that runs a scenario — `main`, or a `test_` function — traced on the
+and a Simulate view that builds a scenario from steps — spawn, post,
+expect, wait — as a `test_` function, and runs one — `main`, or a `test_` function — traced on the
 virtual clock and replays it, the sequence chart growing event by event
 while the diagrams light the state and transition each machine is at.
 Its server is written in Rill on the standard library and runs the

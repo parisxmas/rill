@@ -451,6 +451,8 @@ fn test_pings_are_counted() =
   $("btn-add-signal").onclick = e => Edit.addSignal({ x: e.clientX, y: e.clientY });
   $("btn-add-machine").onclick = e => Edit.addMachine({ x: e.clientX, y: e.clientY });
   $("btn-add-system").onclick = e => Edit.addSystem({ x: e.clientX, y: e.clientY });
+  $("btn-scenario-edit").onclick = e => { const n = $("scenario").value; if (n) Edit.scenarioBox({ x: e.clientX, y: e.clientY }, n); };
+  $("btn-scenario-add").onclick = e => Edit.addScenarioBox({ x: e.clientX, y: e.clientY });
 
   // ---- the toolbar ------------------------------------------------------------
 

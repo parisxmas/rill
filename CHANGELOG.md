@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased — the diagrams build without the code being written
+
+An input, `after` or `when` arm opens in a form now, and the dashed
+`+ input` symbol starts one: the signal picked from the file's, or `_`
+for any other, a guard typed if there is one; the actions added a row at
+a time from what SDL's symbols are — an output to a mailbox the machine
+holds or `sender`, a reply, a timer set or reset, a `send` on a channel,
+a task as a line of code — each signal picked by name, its arguments
+typed against the field names the type declares; then the next state
+picked from the machine's with its fields, or `stay`, `stop`, `done`.
+A `save` and a `priority` are the same form with no body: the kind
+picked, the signal's shape, a guard. The lines the arm will be written
+as show under the form as it is built, and Save hands them to the same
+edit the box of lines makes. An arm the form cannot say — an `if` or a
+`match` in the body, a binding — opens as code, and the "as code" button
+gets there from any form.
+
+A route of a system opens in a form too, and `+ route` and the new
+`system` button start one: from and to picked from `env` and the
+machines, one way or both, the signals ticked off the signal type. A
+signal and a state open in a constructor form: the name, and fields
+added a row at a time with their types picked from the language's, the
+file's and the shapes a model uses; a state's form changes its
+constructor in the state type and its `state` line together, and
+deletes both.
+
+And a scenario is built too: `+ scenario` on the Simulate bar makes a
+`test_` function from steps — an instance spawned, its machine picked,
+its channels and mailboxes named and its first state chosen; a signal
+posted to an instance; what the environment receives expected, as a
+`match` that fails on anything else; a wait; a line of code — and `edit`
+opens the selected scenario back in the form when it says what the form
+can, as code otherwise, `main` always as code. What is still typed is
+what is an expression — a guard, a condition, a constructor's
+arguments, a task — so a model is drawn, built, and run from the
+diagrams, the code read beside them. `editors/web/test/forms.js` checks
+the forms in Node, no browser: every arm, `save`, `priority`, route and
+scenario of the examples read into a form and written back as it was,
+and what each form writes from what it holds; the Rust suite runs it
+where there is a `node`.
+
 ## 0.13.0 — the model editor
 
 The release where the models got an editor in the browser, with its
