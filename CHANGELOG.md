@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — examples that are tests, on every function of the library
+
+A comment line indented four spaces past the `#` is an example, and
+after `# =>` it says what `show` prints of its value. `rill doc` shows
+it as code; `rill doctest` runs every one — as a program written beside
+the module that imports it by its name, so an example reads as a user
+would write it, with `?` allowed, an `import` line hoisted, and a `# not
+run` block shown and left alone — and holds it to its answer, naming
+the comment's line when it is wrong. Every public function of the
+standard library's forty-three modules now carries one, 1,122 of them
+checked by the test suite and shown on the reference pages, and the
+helpers that were never an interface are `private` now, so a page
+shows what a caller may call: 989 functions where there were 1,497.
+Two things were found on the way: `cli/args` aligned its `--help` line
+apart from the others, and `Ok(())` still stops codegen at "ADT fields
+are never Unit", which is a bug for another day.
+
+The reference has a chapter on the grid library — what a grid is, how
+one is made, read, reshaped, combined, masked, reduced, sorted and
+solved, what makes it fast, the twelve benchmarks against NumPy, and
+the Python binding — every example of which is run by `rill doctest`
+when the page is built.
+
 ## Unreleased — the editor moves out
 
 The model editor is a repository of its own now, `rillsdl`: its server,

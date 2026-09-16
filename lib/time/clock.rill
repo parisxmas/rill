@@ -7,31 +7,49 @@ module clock
 # that turns them into something a program says: an elapsed time, a timed
 # call, a duration in words.
 #
-#     import "time/clock" as clock
-#     (answer, took) = clock.timed(\ -> work())
-#     println("took " + clock.duration(took))       # "took 1.204 s"
+#     (answer, took) = clock.timed(\ -> 6 * 7)
+#     answer                                # => 42
+#     took >= 0                             # => true
 #     t = clock.start()
-#     ...
-#     println(clock.duration(clock.since(t)))
+#     clock.since(t) >= 0                   # => true
+#     clock.duration(1204000000)            # => 1.204 s
 
 # A point on the monotonic clock, to measure from.
+#
+#     t = clock.start()
+#     t > 0   # => true
 fn start() = now_nanos()
 
 # Nanoseconds since a point `start` gave.
+#
+#     t = clock.start()
+#     clock.since(t) < 1000000000   # => true
 fn since(t) = now_nanos() - t
 
 # A call and how long it took, in nanoseconds.
+#
+#     (v, ns) = clock.timed(\ -> "done")
+#     v   # => done
 fn timed(f) =
   t = now_nanos()
   v = f()
   (v, now_nanos() - t)
 
+#     clock.nanos_to_ms(2500000)   # => 2
 fn nanos_to_ms(ns) = ns / 1000000
 
+#     clock.ms_to_nanos(3)   # => 3000000
 fn ms_to_nanos(ms) = ms * 1000000
 
 # A duration in the unit that reads best: `250 ns`, `12.5 us`, `3.400 ms`,
 # `1.204 s`, `2 m 03 s`, `1 h 02 m`.
+#
+#     clock.duration(250)          # => 250 ns
+#     clock.duration(12500)        # => 12.5 us
+#     clock.duration(3400000)      # => 3.400 ms
+#     clock.duration(1204000000)   # => 1.204 s
+#     clock.duration(123000000000) # => 2 m 03 s
+#     clock.duration(3720000000000) # => 1 h 02 m
 fn duration(ns) =
   if ns < 1000 then int_to_str(ns) + " ns" else if ns < 1000000 then fixed(ns, 1000, 1) + " us" else if ns < 1000000000 then fixed(ns, 1000000, 3) + " ms" else if ns < 60000000000 then fixed(ns, 1000000000, 3) + " s" else if ns < 3600000000000
     then int_to_str(ns / 60000000000) + " m " + two(ns / 1000000000 % 60) + " s"

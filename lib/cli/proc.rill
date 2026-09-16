@@ -3,19 +3,19 @@ module proc
 # Running another program: a command line handed to the shell, its output
 # collected, its exit status read.
 #
-#     import "cli/proc" as proc
-#     match proc.run("git rev-parse HEAD")
-#       Ok(r) -> println(r.out)                 # r.status is the exit code
-#       Err(why) -> println(why)
-#     proc.output("date -u")?                   # the output, or an Err with the status
-#     proc.run(proc.command("grep", Cons("-n", Cons(pattern, Cons(file, Nil)))))
-#     proc.shell("make")                        # output to ours; the exit code
 #
 # `run` and `output` read the child's standard output; its standard error
 # goes where ours goes. `command` builds a line from a program and its
 # arguments with each one quoted for the shell, so a file name with a space
 # or a `$` in it arrives as one argument and nothing more. The calls that
 # wait are declared `blocking`, so other strands run while a child does.
+#
+#     match proc.run("echo hello")
+#       Ok(r) -> r.out
+#       Err(why) -> why
+#     proc.output("printf one")?                            # => one
+#     proc.run(proc.command("printf", Cons("%s", Cons("two words", Nil))))   # => Ok(proc.Done(0, two words))
+#     proc.shell("true")                                    # => 0
 extern fn popen(cmd: Ptr, mode: Ptr) -> Ptr
 
 extern blocking fn pclose(f: Ptr) -> I32
@@ -31,6 +31,9 @@ type Result_
 # could not be started at all; a command that ran and failed is an `Ok`
 # with a status that is not zero — it is the caller's to decide what a
 # failure means, and the output is often the reason.
+#
+#     proc.run("printf hi")   # => Ok(proc.Done(0, hi))
+#     proc.run("exit 3")      # => Ok(proc.Done(3, ))
 fn run(cmd) =
   c = to_cstr(cmd)
   mode = to_cstr("r")
@@ -44,6 +47,9 @@ fn run(cmd) =
 
 # The output of a command that succeeded, or the status it failed with,
 # with what it wrote — a one-line answer for the common case.
+#
+#     proc.output("printf hi")   # => Ok(hi)
+#     proc.output("exit 3")      # => Err(`exit 3` exited with 3)
 fn output(cmd) =
   r = run(cmd)?
   if r.status == 0 then Ok(r.out) else Err("`" + cmd + "` exited with " + int_to_str(r.status) + failed_output(r.out))
@@ -52,6 +58,8 @@ private fn failed_output(out) = if #out == 0 then "" else ": " + trim(out)
 
 # Runs the command with our standard output and error, and gives its exit
 # code; -1 when the shell could not be run.
+#
+#     proc.shell("exit 2")   # => 2
 fn shell(cmd) =
   c = to_cstr(cmd)
   st = system(c)
@@ -80,11 +88,16 @@ private fn exit_code(status) =
 # -- building a line ----------------------------------------------------------
 
 # A program and its arguments as one shell line, each argument quoted.
+#
+#     proc.command("grep", Cons("-n", Cons("a b", Nil)))   # => grep -n 'a b'
 fn command(prog, args) = join(map(Cons(prog, args), quote), " ")
 
 # An argument the shell will pass through unchanged: in single quotes, with
 # a single quote inside written as `'\''`. A word of plain characters is
 # left as it is.
+#
+#     proc.quote("plain")     # => plain
+#     proc.quote("it's")      # => 'it'\''s'
 fn quote(arg) =
   if #arg > 0 && all_plain(arg) then arg
   else

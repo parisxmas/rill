@@ -10,10 +10,23 @@ module ws
 # which — `ws_write` sends text, `ws_write_bin` binary — because the receiver
 # on the other side is usually a browser, and a browser hands the two to its
 # page as different things.
+#
+#     # not run
+#     # the server side, one connection: the upgrade, then frames
+#     raw = ws.fill(conn, "", 1)
+#     if ws.ws_accept(conn, raw) then
+#       (msg, rest) = ws.ws_take(conn, "")
+#       ws.ws_write(conn, "echo: " + msg)
+#       ws.ws_close(conn)
+#     else sock_close(conn)
+#     # the client side
+#     sock_write(client, ws.ws_handshake_request("127.0.0.1", "/live"))
+#     sock_write(client, ws.client_frame("hello"))
+#     (back, _) = ws.ws_take(client, "")          # "echo: hello"
 
 import "crypto/sha1"
 
-fn ws_guid() = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+private fn ws_guid() = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 # -- handshake ----------------------------------------------------------------
 
@@ -23,11 +36,13 @@ fn ws_guid() = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 # `sec-websocket-key:`. Finding the name case-blind cost a production valley
 # an evening of 502s; the *value* is read from the original bytes at the same
 # offset, because a base64 key is exactly the kind of value case matters to.
+#
+#     ws.header_value("GET / HTTP/1.1\r\nSec-WebSocket-Key: abc==\r\n\r\n", "sec-websocket-key: ")   # => abc==
 fn header_value(raw, name) =
   i = str_find(ascii_lower(raw), ascii_lower(name))
   if i < 0 then "" else header_tail(raw, i + str_len(name))
 
-fn ascii_lower(s) =
+private fn ascii_lower(s) =
   b = strbuf()
 
   for i in 0..str_len(s)
@@ -35,16 +50,17 @@ fn ascii_lower(s) =
 
   strbuf_str(b)
 
-fn lower_byte(c) = if c >= 65 && c <= 90 then c + 32 else c
+private fn lower_byte(c) = if c >= 65 && c <= 90 then c + 32 else c
 
-fn header_tail(raw, from) =
+private fn header_tail(raw, from) =
   rest = str_sub(raw, from, str_len(raw))
   j = str_find(rest, "\r\n")
   trim(if j < 0 then rest else str_sub(rest, 0, j))
 
+#     ws.accept_key("dGhlIHNhbXBsZSBub25jZQ==")   # => s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 fn accept_key(key) = base64(sha1(key + ws_guid()))
 
-fn handshake_reply(key) =
+private fn handshake_reply(key) =
   "HTTP/1.1 101 Switching Protocols\r\n" + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n" + "Sec-WebSocket-Accept: " + accept_key(key) + "\r\n\r\n"
 
 # Is this somebody opening a socket, or somebody asking a question?
@@ -54,14 +70,21 @@ fn handshake_reply(key) =
 # header names in lower case, while curl and the browsers send them capitalised.
 # A server that looks for one spelling turns half the world away, and does it
 # silently, which is how this was found.
+#
+#     ws.ws_wanted("GET /live HTTP/1.1\r\nUpgrade: websocket\r\nSec-WebSocket-Key: x\r\n\r\n")   # => true
+#     ws.ws_wanted("GET / HTTP/1.1\r\nHost: h\r\n\r\n")                                       # => false
 fn ws_wanted(request_raw) = str_len(header_value(request_raw, "Sec-WebSocket-Key: ")) > 0
 
 # Answers a client's upgrade request. Returns whether it was one.
+#
+#     # not run
+#     raw = ws.fill(conn, "", 1)
+#     if ws.ws_accept(conn, raw) then live(conn) else sock_close(conn)
 fn ws_accept(conn, request_raw) =
   key = header_value(request_raw, "Sec-WebSocket-Key: ")
   if str_len(key) == 0 then false else send_upgrade(conn, key)
 
-fn send_upgrade(conn, key) =
+private fn send_upgrade(conn, key) =
   sock_write(conn, handshake_reply(key))
   true
 
@@ -73,21 +96,24 @@ fn send_upgrade(conn, key) =
 # descriptor, and there is no shortage of people who will open several
 # thousand of them. `until` is a moment on the monotonic clock, so a client
 # that dribbles a byte at a time cannot keep extending it either.
-fn fill_until(conn, buf, want, until) =
+private fn fill_until(conn, buf, want, until) =
   if str_len(buf) >= want then buf else fill_left(conn, buf, want, until, (until - now_nanos()) / 1000000)
 
-fn fill_left(conn, buf, want, until, left) =
+private fn fill_left(conn, buf, want, until, left) =
   if left <= 0 then buf else if sock_wait(conn, left) then fill_step(conn, buf, want, until) else buf
 
-fn fill_step(conn, buf, want, until) =
+private fn fill_step(conn, buf, want, until) =
   chunk = sock_read(conn)
   if str_len(chunk) == 0 then buf else fill_until(conn, buf + chunk, want, until)
 
 # Reads until at least `want` bytes are buffered, or the peer stops talking.
+#
+#     # not run
+#     raw = ws.fill(conn, "", 1)     # at least one byte, or "" when the peer is gone
 fn fill(conn, buf, want) =
   if str_len(buf) >= want then buf else fill_more(conn, buf, want)
 
-fn fill_more(conn, buf, want) =
+private fn fill_more(conn, buf, want) =
   chunk = sock_read(conn)
   if str_len(chunk) == 0 then buf else fill(conn, buf + chunk, want)
 
@@ -103,11 +129,15 @@ fn fill_more(conn, buf, want) =
 #
 # So the leftovers are handed back with the message and passed in next time.
 # `("", rest)` means the peer has stopped talking.
+#
+#     # not run
+#     (msg, rest) = ws.ws_take(conn, "")        # one frame's payload, and the bytes after it
+#     (next, rest2) = ws.ws_take(conn, rest)     # the leftovers go back in
 fn ws_take(conn, acc) =
   head = fill(conn, acc, 2)
   if str_len(head) < 2 then ("", "") else framed(conn, head)
 
-fn framed(conn, head) =
+private fn framed(conn, head) =
   opcode = bit_and(str_get(head, 0), 15)
   len7 = bit_and(str_get(head, 1), 127)
   masked = bit_and(str_get(head, 1), 128) != 0
@@ -117,21 +147,21 @@ fn framed(conn, head) =
 # cannot be skipped over safely either — the length is exactly what is not
 # understood — so the connection ends.
 
-fn sized(conn, head, len7, masked) =
+private fn sized(conn, head, len7, masked) =
   ext = if len7 == 126 then 2 else 0
   short = fill(conn, head, 2 + ext)
   if str_len(short) < 2 + ext then ("", "") else whole(conn, short, ext, frame_len(short, len7, ext), masked)
 
-fn frame_len(b, len7, ext) =
+private fn frame_len(b, len7, ext) =
   if ext == 0 then len7 else bit_or(shl(str_get(b, 2), 8), str_get(b, 3))
 
-fn whole(conn, short, ext, n, masked) =
+private fn whole(conn, short, ext, n, masked) =
   start = 2 + ext + (if masked then 4 else 0)
   need = start + n
   b = fill(conn, short, need)
   if str_len(b) < need then ("", "") else cut(b, start, n, need, masked, ext)
 
-fn cut(b, start, n, need, masked, ext) =
+private fn cut(b, start, n, need, masked, ext) =
   body = str_sub(b, start, n)
   rest = str_sub(b, need, str_len(b) - need)
   (if masked then unmask(body, str_sub(b, 2 + ext, 4)) else body, rest)
@@ -139,6 +169,9 @@ fn cut(b, start, n, need, masked, ext) =
 # A text frame's payload, or "" once the connection is done. Keeps nothing
 # between calls, so it is only safe where one message arrives at a time —
 # `ws_take` is what a server should use.
+#
+#     # not run
+#     text = ws.ws_read(conn)   # one text frame, where one message arrives at a time
 fn ws_read(conn) =
   (msg, rest) = ws_take(conn, "")
   msg
@@ -147,7 +180,7 @@ fn ws_read(conn) =
 # copies everything accumulated so far every time round, which is quadratic:
 # a sixty-four kilobyte frame — the largest this reads — came to two gigabytes
 # of copying and about sixty-five milliseconds of one core, for one message.
-fn unmask(body, key) =
+private fn unmask(body, key) =
   b = strbuf()
 
   for i in 0..str_len(body)
@@ -157,18 +190,31 @@ fn unmask(body, key) =
 
 # A frame the *server* sends: final, unmasked. 129 is FIN+text, 130 FIN+binary;
 # the length walk is the same either way.
+#
+#     import "text/str" as str
+#     str.hex_encode(ws.ws_frame_op(130, "ab"))   # => 82026162
 fn ws_frame_op(op, body) =
   n = str_len(body)
   if n < 126 then chr(op) + chr(n) + body else chr(op) + chr(126) + chr(bit_and(shr(n, 8), 255)) + chr(bit_and(n, 255)) + body
 
+#     import "text/str" as str
+#     str.hex_encode(ws.ws_frame("hi"))   # => 81026869
 fn ws_frame(text) = ws_frame_op(129, text)
 
+#     import "text/str" as str
+#     str.hex_encode(ws.ws_frame_bin(chr(0) + chr(255)))   # => 820200ff
 fn ws_frame_bin(body) = ws_frame_op(130, body)
 
+#     # not run
+#     ws.ws_write(conn, "a text frame")
 fn ws_write(conn, text) = sock_write(conn, ws_frame(text))
 
+#     # not run
+#     ws.ws_write_bin(conn, bytes)
 fn ws_write_bin(conn, body) = sock_write(conn, ws_frame_bin(body))
 
+#     # not run
+#     ws.ws_close(conn)   # a close frame, then the socket
 fn ws_close(conn) =
   sock_write(conn, chr(136) + chr(0))
   sock_close(conn)
@@ -176,11 +222,18 @@ fn ws_close(conn) =
 # -- the client side ----------------------------------------------------------
 
 # Clients must mask; a fixed key is fine, the point is XOR not secrecy.
+#
+#     import "text/str" as str
+#     #ws.client_frame("hi")   # => 8
+#     str.hex_encode(ws.client_frame("hi"))[0:4]   # => 8182
 fn client_frame(text) =
   chr(129) + chr(bit_or(128, str_len(text))) + "abcd" + unmask(text, "abcd")
 
+#     import "text/str" as str
+#     str.hex_encode(ws.client_frame_bin("x"))[0:4]   # => 8281
 fn client_frame_bin(body) =
   chr(130) + chr(bit_or(128, str_len(body))) + "abcd" + unmask(body, "abcd")
 
+#     starts_with(ws.ws_handshake_request("h", "/p"), "GET /p HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\n")   # => true
 fn ws_handshake_request(host, path) =
   "GET " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n" + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" + "Sec-WebSocket-Version: 13\r\n\r\n"

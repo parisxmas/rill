@@ -4,13 +4,6 @@ module fmt
 # width, a float to so many places, thousands separated, a size in
 # bytes, an ordinal, a table with its columns lined up.
 #
-#     import "text/fmt" as fmt
-#     fmt.text("{} has {:>6} items", Cons(name, Cons(show(n), Nil)))
-#     fmt.fixed(3.14159, 2)              # "3.14"
-#     fmt.thousands(1234567)             # "1,234,567"
-#     fmt.bytes(1536)                    # "1.5 KB"
-#     fmt.ordinal(22)                    # "22nd"
-#     fmt.table(rows)                    # columns padded to their widest cell
 #
 # A template's slots take their values from a list of strings, in order —
 # `{}` the next one, `{2}` the third — and a slot may say how wide and
@@ -20,9 +13,21 @@ module fmt
 # `fixed(x, 2)`, `thousands(n)` — so the template only ever places text,
 # and the number is spelled by the function that knows how. `{{` and `}}`
 # are a brace. Widths count characters, not bytes, so `héllo` is five.
+#
+#     fmt.text("{} has {:>6} items", Cons("cart", Cons(show(12), Nil)))   # => cart has     12 items
+#     fmt.fixed(3.14159, 2)              # => 3.14
+#     fmt.thousands(1234567)             # => 1,234,567
+#     fmt.bytes(1536)                    # => 1.5 KB
+#     fmt.ordinal(22)                    # => 22nd
+#     fmt.table(Cons(Cons("a", Cons("bb", Nil)), Cons(Cons("ccc", Cons("d", Nil)), Nil)))   # => a    bb\nccc  d
 
 # -- the template -------------------------------------------------------------
 
+#     fmt.text("{} and {}", Cons("a", Cons("b", Nil)))       # => a and b
+#     fmt.text("{1} before {0}", Cons("a", Cons("b", Nil)))  # => b before a
+#     fmt.text("[{:^7}]", Cons("mid", Nil))                  # => [  mid  ]
+#     fmt.text("{:0>5}", Cons("42", Nil))                    # => 00042
+#     fmt.text("{{literal}}", Nil)                          # => {literal}
 fn text(template, args) =
   b = strbuf()
   fill_in(template, args, b)
@@ -78,22 +83,32 @@ private fn align_at(layout) =
 
 # -- padding --------------------------------------------------------------------
 
+#     fmt.pad_left("héllo", 7)   # =>   héllo
 fn pad_left(s, width) = pad_left_with(s, width, " ")
 
+#     fmt.pad_right("ab", 4) + "|"   # => ab  |
 fn pad_right(s, width) = pad_right_with(s, width, " ")
 
+#     fmt.center("ab", 5) + "|"   # =>  ab  |
 fn center(s, width) = center_with(s, width, " ")
 
+#     fmt.pad_left_with("7", 3, "0")   # => 007
 fn pad_left_with(s, width, fill) = repeat(fill, width - char_count(s)) + s
 
+#     fmt.pad_right_with("ab", 5, ".")   # => ab...
 fn pad_right_with(s, width, fill) = s + repeat(fill, width - char_count(s))
 
 # The extra space goes to the right when it does not split evenly.
+#
+#     fmt.center_with("ab", 7, "*")   # => **ab***
 fn center_with(s, width, fill) =
   extra = width - char_count(s)
   if extra <= 0 then s else repeat(fill, extra / 2) + s + repeat(fill, extra - extra / 2)
 
 # The first `width` characters, and an ellipsis in place of the rest.
+#
+#     fmt.truncate("a long sentence", 6)   # => a lon…
+#     fmt.truncate("short", 10)           # => short
 fn truncate(s, width) =
   if char_count(s) <= width then s else char_take(s, if width > 1 then width - 1 else 0) + "…"
 
@@ -101,6 +116,10 @@ fn truncate(s, width) =
 
 # `x` to `places` decimal places, rounded half away from zero. Past what an
 # integer can count — around 9e15 — the float's own spelling is used.
+#
+#     fmt.fixed(2.5, 0)       # => 3
+#     fmt.fixed(-2.5, 0)       # => -3
+#     fmt.fixed(3.0, 3)       # => 3.000
 fn fixed(x, places) =
   if x != x then "nan"
   else if x > 9000000000000000.0 || x < -9000000000000000.0 then float_to_str(x)
@@ -117,8 +136,12 @@ private fn pow10(n) = for i in 0..n with p = 1
   p * 10
 
 # The number with a separator every three digits from the right.
+#
+#     fmt.thousands(-1234567)   # => -1,234,567
+#     fmt.thousands(999)        # => 999
 fn thousands(n) = thousands_with(n, ",")
 
+#     fmt.thousands_with(1234567, ".")   # => 1.234.567
 fn thousands_with(n, sep) =
   digits = int_to_str(abs(n))
   b = strbuf()
@@ -129,27 +152,43 @@ fn thousands_with(n, sep) =
   strbuf_str(b)
 
 # The number in `width` digits, zeros in front.
+#
+#     fmt.zero_pad(42, 5)   # => 00042
 fn zero_pad(n, width) =
   if n < 0 then "-" + zero_pad(0 - n, width - 1) else pad_left_with(int_to_str(n), width, "0")
 
 # `+3`, `-3`, `0`.
+#
+#     fmt.signed(3)    # => +3
+#     fmt.signed(0)    # => 0
+#     fmt.signed(-3)   # => -3
 fn signed(n) = if n > 0 then "+" + int_to_str(n) else int_to_str(n)
 
 # `x` as a percentage: `percent(0.125, 1)` is `12.5%`.
+#
+#     fmt.percent(0.125, 1)   # => 12.5%
 fn percent(x, places) = fixed(x * 100.0, places) + "%"
 
 # In base 2 to 36, lowercase.
+#
+#     fmt.radix(255, 2)    # => 11111111
+#     fmt.radix(255, 36)   # => 73
 fn radix(n, base) =
   if n < 0 then "-" + radix(0 - n, base) else if n < base then digit(n) else radix(n / base, base) + digit(n % base)
 
 private fn digit(d) = if d < 10 then chr(48 + d) else chr(87 + d)
 
+#     fmt.hex(255)   # => ff
 fn hex(n) = radix(n, 16)
 
+#     fmt.binary(5)   # => 101
 fn binary(n) = radix(n, 2)
 
 # `1.23e+05`: a mantissa to `places` places and an exponent of at least
 # two digits, as C prints one.
+#
+#     fmt.sci(123456.0, 2)   # => 1.23e+05
+#     fmt.sci(0.00042, 1)    # => 4.2e-04
 fn sci(x, places) =
   if x != x then "nan"
   else if x == 0.0 then fixed(0.0, places) + "e+00"
@@ -164,6 +203,10 @@ private fn normalize(m, e) =
   if m >= 10.0 then normalize(m / 10.0, e + 1) else if m < 1.0 then normalize(m * 10.0, e - 1) else (m, e)
 
 # A count of bytes in the unit that fits, to one place: `1.5 KB`, `3.0 MB`.
+#
+#     fmt.bytes(512)        # => 512 B
+#     fmt.bytes(1536)       # => 1.5 KB
+#     fmt.bytes(3145728)    # => 3.0 MB
 fn bytes(n) =
   if n < 1024 then int_to_str(n) + " B" else bytes_in(to_float(n) / 1024.0, Cons("KB", Cons("MB", Cons("GB", Cons("TB", Cons("PB", Nil))))))
 
@@ -175,6 +218,10 @@ private fn bytes_in(v, units) = match units
 # -- words ----------------------------------------------------------------------
 
 # `1st`, `2nd`, `3rd`, `4th`, and `11th` to `13th` as English has them.
+#
+#     fmt.ordinal(1)    # => 1st
+#     fmt.ordinal(12)   # => 12th
+#     fmt.ordinal(23)   # => 23rd
 fn ordinal(n) =
   last_two = abs(n) % 100
   last_one = abs(n) % 10
@@ -182,16 +229,23 @@ fn ordinal(n) =
   int_to_str(n) + suffix
 
 # `1 file`, `2 files`; `plural_with` for a word that does not just take an `s`.
+#
+#     fmt.plural(1, "file")   # => 1 file
+#     fmt.plural(2, "file")   # => 2 files
 fn plural(n, word) = plural_with(n, word, word + "s")
 
+#     fmt.plural_with(3, "child", "children")   # => 3 children
 fn plural_with(n, one, many) = int_to_str(n) + " " + (if n == 1 then one else many)
 
 # -- a table --------------------------------------------------------------------
 
 # Rows of cells, each column padded to its widest cell and two spaces
 # between columns; the last cell of a row is not padded.
+#
+#     fmt.table(Cons(Cons("name", Cons("size", Nil)), Cons(Cons("a.rill", Cons("12", Nil)), Nil)))   # => name    size\na.rill  12
 fn table(rows) = table_with(rows, "  ")
 
+#     fmt.table_with(Cons(Cons("a", Cons("b", Nil)), Nil), " | ")   # => a | b
 fn table_with(rows, sep) =
   widths = fold(rows, Nil, widen)
   join(map(rows, \r -> row_text(r, widths, sep)), "\n")

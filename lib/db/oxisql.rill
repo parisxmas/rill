@@ -18,16 +18,35 @@ module oxisql
 # A row is a list of values positionally matching `columns`, so reading one by
 # name means finding the column first — `sql_at` below does that once per
 # result rather than once per row.
+#
+#     # not run
+#     import "db/oxisql"
+#     fd = sql_connect("127.0.0.1", 7411)?
+#     sql_run(fd, "CREATE TABLE people (name TEXT, age INT)")
+#     sql_affected(sql_first(sql_run(fd, "INSERT INTO people VALUES ('ada', 36)")?))   # 1
+#     r = sql_first(sql_run(fd, "SELECT name, age FROM people")?)
+#     map(sql_rows(r), \row -> sql_value(r, row, "name"))                                 # Cons(JStr("ada"), Nil)
+#     sql_hang_up(fd)
 import "db/oxiwire"
 
 # -- calling ------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxisql"
+#     fd = sql_connect("127.0.0.1", 7411)?
 fn sql_connect(host, port) = connect_to(host, port)
 
+#     # not run
+#     import "db/oxisql"
+#     sql_hang_up(fd)
 fn sql_hang_up(fd) = sock_close(fd)
 
+#     import "db/oxisql"
+#     sql_request(Cons(Field("sql", JStr("SELECT 1")), Nil))   # => JObj(Cons(Field(engine, JStr(sql)), Cons(Field(cmd, JStr(sql)), Cons(Field(sql, JStr(SELECT 1)), Nil))))
 fn sql_request(fields) = sql_cmd("sql", fields)
 
+#     import "db/oxisql"
+#     sql_cmd("backup", Nil)   # => JObj(Cons(Field(engine, JStr(sql)), Cons(Field(cmd, JStr(backup)), Nil)))
 fn sql_cmd(name, fields) =
   JObj(Cons(Field("engine", JStr("sql")), Cons(Field("cmd", JStr(name)), fields)))
 
@@ -39,61 +58,117 @@ fn sql_cmd(name, fields) =
 # text is neither sent nor hashed per call, which is what a loop of one
 # statement pays for otherwise; the round trip is the same.
 
+#     # not run
+#     import "db/oxisql"
+#     id = sql_prepare(fd, "SELECT * FROM people WHERE age > ?")?
+#     sql_exec(fd, id, Cons(JInt(30), Nil))
+#     sql_close(fd, id)
 fn sql_prepare(fd, text) = match ow_call(fd, sql_cmd("prepare", Cons(Field("sql", JStr(text)), Nil)))
   Err(e) -> Err(e)
   Ok(v) -> Ok(as_int(unwrap_or(get(v, "stmt"), JNull)))
 
+#     # not run
+#     import "db/oxisql"
+#     sql_exec(fd, id, Cons(JInt(30), Nil))   # the prepared statement, with its parameters
 fn sql_exec(fd, id, params) =
   ow_call(fd, sql_cmd("exec", Cons(Field("stmt", JInt(id)), Cons(Field("params", JArr(params)), Nil))))
 
+#     # not run
+#     import "db/oxisql"
+#     sql_close(fd, id)
 fn sql_close(fd, id) = ow_call(fd, sql_cmd("close_stmt", Cons(Field("stmt", JInt(id)), Nil)))
 
+#     # not run
+#     import "db/oxisql"
+#     sql_run(fd, "SELECT 1; SELECT 2")   # Ok(one result per statement)
 fn sql_run(fd, text) =
   ow_call(fd, sql_request(Cons(Field("sql", JStr(text)), Nil)))
 
 # `?` in the text takes the next value from `params`, which is how a value
 # reaches the engine without being written into the statement.
+#
+#     # not run
+#     import "db/oxisql"
+#     sql_run_with(fd, "SELECT * FROM people WHERE name = ?", Cons(JStr("ada"), Nil))
 fn sql_run_with(fd, text, params) =
   ow_call(fd, sql_request(Cons(Field("sql", JStr(text)), Cons(Field("params", JArr(params)), Nil))))
 
 # Admin-only, and gated as such before the request reaches the engine.
+#
+#     # not run
+#     import "db/oxisql"
+#     sql_backup(fd, "/backups/today.tar")
 fn sql_backup(fd, path) =
   ow_call(fd, JObj(Cons(Field("engine", JStr("sql")), Cons(Field("cmd", JStr("backup")), Cons(Field("path", JStr(path)), Nil)))))
 
+#     # not run
+#     import "db/oxisql"
+#     sql_restore(fd, "/backups/today.tar", "/data")
 fn sql_restore(fd, archive, target) =
   ow_call(fd, JObj(Cons(Field("engine", JStr("sql")), Cons(Field("cmd", JStr("restore")), Cons(Field("archive", JStr(archive)), Cons(Field("target", JStr(target)), Nil))))))
 
 # -- reading answers out ------------------------------------------------------
 
 # One result per statement sent.
+#
+#     import "db/oxisql"
+#     len(sql_results(JArr(Cons(JObj(Nil), Cons(JObj(Nil), Nil)))))   # => 2
 fn sql_results(answer) = items(answer)
 
 # The common case is one statement, and a caller that sent one should not have
 # to say so twice.
+#
+#     import "db/oxisql"
+#     sql_first(JArr(Cons(JObj(Cons(Field("affected", JInt(1)), Nil)), Nil)))   # => JObj(Cons(Field(affected, JInt(1)), Nil))
+#     sql_first(JArr(Nil))                                                        # => JNull
 fn sql_first(answer) = unwrap_or(nth(sql_results(answer), 0), JNull)
 
+#     import "db/oxisql"
+#     sql_columns(JObj(Cons(Field("columns", JArr(Cons(JStr("name"), Cons(JStr("age"), Nil)))), Nil)))   # => Cons(name, Cons(age, Nil))
 fn sql_columns(result) = map(items(unwrap_or(get(result, "columns"), JArr(Nil))), \c -> as_str(c))
 
 # A column's declared type — `INT`, `TEXT`, `DOUBLE` — or the empty string
 # where the engine had none to give, as for a bare `NULL` in a select list.
+#
+#     import "db/oxisql"
+#     sql_types(JObj(Cons(Field("types", JArr(Cons(JStr("TEXT"), Nil))), Nil)))   # => Cons(TEXT, Nil)
 fn sql_types(result) = map(items(unwrap_or(get(result, "types"), JArr(Nil))), \t -> as_str(t))
 
+#     import "db/oxisql"
+#     sql_rows(JObj(Cons(Field("rows", JArr(Cons(JArr(Cons(JInt(1), Nil)), Nil))), Nil)))   # => Cons(JArr(Cons(JInt(1), Nil)), Nil)
 fn sql_rows(result) = items(unwrap_or(get(result, "rows"), JArr(Nil)))
 
+#     import "db/oxisql"
+#     sql_affected(JObj(Cons(Field("affected", JInt(2)), Nil)))   # => 2
 fn sql_affected(result) = as_int(unwrap_or(get(result, "affected"), JNull))
 
+#     import "db/oxisql"
+#     sql_is_ddl(JObj(Cons(Field("ddl", JBool(true)), Nil)))   # => true
+#     sql_is_ddl(JObj(Nil))                                     # => false
 fn sql_is_ddl(result) = as_bool(unwrap_or(get(result, "ddl"), JBool(false)))
 
 # Where a named column sits in every row of this result, or -1. Worth holding
 # on to across a loop rather than asking per row.
+#
+#     import "db/oxisql"
+#     r = JObj(Cons(Field("columns", JArr(Cons(JStr("name"), Cons(JStr("age"), Nil)))), Nil))
+#     sql_at(r, "age")    # => 1
+#     sql_at(r, "nope")   # => -1
 fn sql_at(result, name) = column_index(sql_columns(result), name, 0)
 
-fn column_index(names, name, i) = match names
+private fn column_index(names, name, i) = match names
   Nil -> 0 - 1
   Cons(c, rest) -> if c == name then i else column_index(rest, name, i + 1)
 
+#     import "db/oxisql"
+#     sql_cell(JArr(Cons(JStr("ada"), Cons(JInt(36), Nil))), 1)   # => JInt(36)
+#     sql_cell(JArr(Nil), -1)                                   # => JNull
 fn sql_cell(row, i) = if i < 0 then JNull else unwrap_or(nth(items(row), i), JNull)
 
 # The value of a named column in one row. Fine for a handful; for a table use
 # `sql_at` once and `sql_cell` per row.
+#
+#     import "db/oxisql"
+#     r = JObj(Cons(Field("columns", JArr(Cons(JStr("name"), Cons(JStr("age"), Nil)))), Nil))
+#     sql_value(r, JArr(Cons(JStr("ada"), Cons(JInt(36), Nil))), "name")   # => JStr(ada)
 fn sql_value(result, row, name) = sql_cell(row, sql_at(result, name))

@@ -19,98 +19,104 @@ import "data/json"
 type YParsed
   YParsed(value: Json, rest: List(Str))
 
+#     import "data/json"
+#     yaml.parse_yaml("name: ada\nage: 36\n")   # => JObj(Cons(Field(name, JStr(ada)), Cons(Field(age, JInt(36)), Nil)))
+#     yaml.parse_yaml("- a\n- b\n")           # => JArr(Cons(JStr(a), Cons(JStr(b), Nil)))
+#     yaml.parse_yaml("on: true   # a comment\n")   # => JObj(Cons(Field(on, JBool(true)), Nil))
+#     doc = yaml.parse_yaml("server:\n  port: 8080\n  hosts:\n    - a\n    - b\n")
+#     path(doc, Cons("server", Cons("port", Nil)))   # => Some(JInt(8080))
 fn parse_yaml(text) = start(useful(lines(text)))
 
-fn start(ls) = match ls
+private fn start(ls) = match ls
   Nil -> JNull
   Cons(first, _) -> value_of(block_value(ls, indent_of(first)))
 
-fn value_of(p) = match p
+private fn value_of(p) = match p
   YParsed(v, _) -> v
 
 # Blank lines and whole-line comments never matter, so drop them once.
-fn useful(ls) = filter(ls, \l -> !is_ignorable(l))
+private fn useful(ls) = filter(ls, \l -> !is_ignorable(l))
 
-fn is_ignorable(l) =
+private fn is_ignorable(l) =
   t = trim(l)
   str_len(t) == 0 || str_get(t, 0) == 35
 
-fn indent_of(l) = count_spaces(l, 0)
+private fn indent_of(l) = count_spaces(l, 0)
 
-fn count_spaces(l, i) = if str_get(l, i) == 32 then count_spaces(l, i + 1) else i
+private fn count_spaces(l, i) = if str_get(l, i) == 32 then count_spaces(l, i + 1) else i
 
 # A `-` with nothing after it is an item too — the value is the block indented
 # under it. This looked for `"- "` in the trimmed line, and trimming is what
 # removes the space it was looking for, so a line holding only a dash read as
 # a mapping key named `-` and `nested_item` below was never reached at all.
-fn is_item(l) = dashed(trim(l))
+private fn is_item(l) = dashed(trim(l))
 
-fn dashed(t) = t == "-" || starts_with(t, "- ")
+private fn dashed(t) = t == "-" || starts_with(t, "- ")
 
 # -- blocks -------------------------------------------------------------------
 
-fn block_value(ls, ind) = match ls
+private fn block_value(ls, ind) = match ls
   Nil -> YParsed(JNull, Nil)
   Cons(l, _) -> if is_item(l) then sequence(ls, ind, Nil) else mapping(ls, ind, Nil)
 
 # A line that does not belong to this block is handed back unread, which is
 # what `ls` rather than `rest` means in every `YParsed` below.
-fn sequence(ls, ind, acc) = match ls
+private fn sequence(ls, ind, acc) = match ls
   Nil -> YParsed(JArr(reverse(acc)), Nil)
   Cons(l, rest) -> seq_line(ls, rest, ind, acc, l)
 
-fn seq_line(ls, rest, ind, acc, l) =
+private fn seq_line(ls, rest, ind, acc, l) =
   if indent_of(l) != ind || !is_item(l) then YParsed(JArr(reverse(acc)), ls) else seq_item(rest, ind, acc, trim(str_sub(l, indent_of(l) + 2, str_len(l))))
 
-fn seq_item(rest, ind, acc, item) =
+private fn seq_item(rest, ind, acc, item) =
   if str_len(item) == 0 then nested_item(rest, ind, acc) else if str_find(item, ": ") >= 0 || ends_with_colon(item) then inline_map_item(rest, ind, acc, item) else sequence(rest, ind, Cons(scalar(item), acc))
 
 # `- ` on its own: the value is the block indented under it, or nothing at all
 # when there is no such block.
-fn nested_item(rest, ind, acc) = match block_under(rest, ind)
+private fn nested_item(rest, ind, acc) = match block_under(rest, ind)
   None -> sequence(rest, ind, Cons(JNull, acc))
   Some(deep) -> nested_item_at(rest, deep, ind, acc)
 
-fn nested_item_at(rest, deep, ind, acc) = match block_value(rest, deep)
+private fn nested_item_at(rest, deep, ind, acc) = match block_value(rest, deep)
   YParsed(v, after) -> sequence(after, ind, Cons(v, acc))
 
 # `- key: value`: the item is a mapping whose first entry is on this line and
 # whose remaining entries are indented to where that key starts.
-fn inline_map_item(rest, ind, acc, item) = match entry_of(rest, item, ind + 2)
+private fn inline_map_item(rest, ind, acc, item) = match entry_of(rest, item, ind + 2)
   YParsed(first, after) -> continue_item(after, ind, acc, first)
 
-fn continue_item(after, ind, acc, first) = match mapping(after, ind + 2, fields_of(first))
+private fn continue_item(after, ind, acc, first) = match mapping(after, ind + 2, fields_of(first))
   YParsed(m, k) -> sequence(k, ind, Cons(m, acc))
 
-fn fields_of(j) = match j
+private fn fields_of(j) = match j
   JObj(fs) -> reverse(fs)
   _ -> Nil
 
-fn mapping(ls, ind, acc) = match ls
+private fn mapping(ls, ind, acc) = match ls
   Nil -> YParsed(JObj(reverse(acc)), Nil)
   Cons(l, rest) -> map_line(ls, rest, ind, acc, l)
 
-fn map_line(ls, rest, ind, acc, l) =
+private fn map_line(ls, rest, ind, acc, l) =
   if indent_of(l) != ind || is_item(l) then YParsed(JObj(reverse(acc)), ls) else map_entry(rest, ind, acc, trim(l))
 
-fn map_entry(rest, ind, acc, text) = match entry_of(rest, text, ind)
+private fn map_entry(rest, ind, acc, text) = match entry_of(rest, text, ind)
   YParsed(one, after) -> mapping(after, ind, append(fields_of(one), acc))
 
 # One `key: value` (or `key:` followed by an indented block), as a one-field
 # object so the caller can splice it in. `rest` is what follows the line this
 # text came off.
-fn entry_of(rest, text, ind) =
+private fn entry_of(rest, text, ind) =
   c = str_find(text, ":")
   if c < 0 then YParsed(JObj(Cons(Field(unquote(text), JNull), Nil)), rest) else entry_parts(rest, ind, unquote(trim(str_sub(text, 0, c))), trim(str_sub(text, c + 1, str_len(text))))
 
-fn entry_parts(rest, ind, key, value_text) =
+private fn entry_parts(rest, ind, key, value_text) =
   if str_len(value_text) == 0 then nested_entry(rest, ind, key) else YParsed(JObj(Cons(Field(key, scalar(value_text)), Nil)), rest)
 
-fn nested_entry(rest, ind, key) = match block_under(rest, ind)
+private fn nested_entry(rest, ind, key) = match block_under(rest, ind)
   None -> YParsed(JObj(Cons(Field(key, JNull), Nil)), rest)
   Some(deep) -> nested_entry_at(rest, deep, key)
 
-fn nested_entry_at(rest, deep, key) = match block_value(rest, deep)
+private fn nested_entry_at(rest, deep, key) = match block_value(rest, deep)
   YParsed(v, after) -> YParsed(JObj(Cons(Field(key, v), Nil)), after)
 
 # How far in the block below is indented, when there is one. A block belongs
@@ -118,33 +124,33 @@ fn nested_entry_at(rest, deep, key) = match block_value(rest, deep)
 # answer with the next line's indentation whatever it was, so a key with no
 # value swallowed whatever came next — including a key at its own level, which
 # belongs beside it rather than inside it.
-fn block_under(ls, ind) = match ls
+private fn block_under(ls, ind) = match ls
   Nil -> None
   Cons(l, _) -> if indent_of(l) > ind then Some(indent_of(l)) else None
 
-fn ends_with_colon(s) = str_len(s) > 0 && str_get(s, str_len(s) - 1) == 58
+private fn ends_with_colon(s) = str_len(s) > 0 && str_get(s, str_len(s) - 1) == 58
 
 # -- scalars ------------------------------------------------------------------
 
-fn scalar(raw) = classify(strip_comment(trim(raw)))
+private fn scalar(raw) = classify(strip_comment(trim(raw)))
 
-fn classify(s) =
+private fn classify(s) =
   if s == "true" then JBool(true) else if s == "false" then JBool(false) else if s == "null" || s == "~" then JNull else if is_quoted(s) then JStr(unquote(s)) else if looks_numeric(s) then number_of(s) else JStr(s)
 
-fn is_quoted(s) =
+private fn is_quoted(s) =
   str_len(s) >= 2 && (str_get(s, 0) == 34 || str_get(s, 0) == 39) && str_get(s, str_len(s) - 1) == str_get(s, 0)
 
-fn unquote(s) = if is_quoted(s) then str_sub(s, 1, str_len(s) - 2) else s
+private fn unquote(s) = if is_quoted(s) then str_sub(s, 1, str_len(s) - 2) else s
 
 # A trailing comment only counts when a space precedes the `#`.
-fn strip_comment(s) =
+private fn strip_comment(s) =
   i = str_find(s, " #")
   if is_quoted(s) || i < 0 then s else trim(str_sub(s, 0, i))
 
-fn looks_numeric(s) = str_len(s) > 0 && all_digits(s, 0) && has_digit(s, 0)
+private fn looks_numeric(s) = str_len(s) > 0 && all_digits(s, 0) && has_digit(s, 0)
 
-fn all_digits(s, i) =
+private fn all_digits(s, i) =
   i >= str_len(s) || is_number_char(str_get(s, i)) && all_digits(s, i + 1)
 
-fn has_digit(s, i) =
+private fn has_digit(s, i) =
   if i >= str_len(s) then false else str_get(s, i) >= 48 && str_get(s, i) <= 57 || has_digit(s, i + 1)

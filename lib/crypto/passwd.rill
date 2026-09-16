@@ -26,13 +26,20 @@ module passwd
 # TLS is what protects both. What it buys is that the work an attacker must
 # redo per guess is paid by the machine that has a person waiting on it, not
 # by the machine that owes a valley its next tick.
+#
+#     salt = "a salt of the account's own"
+#     stored = passwd.to_hex(passwd.pbkdf2_sha1("correct horse", salt, 1000))
+#     passwd.same_secret(passwd.from_hex(stored), passwd.pbkdf2_sha1("correct horse", salt, 1000))   # => 1
+#     passwd.same_secret(passwd.from_hex(stored), passwd.pbkdf2_sha1("wrong", salt, 1000))           # => 0
 import "crypto/sha1"
 
-fn hmac_block() = 64
+private fn hmac_block() = 64
 
 # HMAC-SHA-1. A key longer than the block is hashed down to fit; a shorter one
 # is padded with zeros, which is why a key of nulls and an empty key are the
 # same key — a property of the construction, not of this writing of it.
+#
+#     passwd.to_hex(passwd.hmac_sha1("key", "The quick brown fox jumps over the lazy dog"))   # => de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9
 fn hmac_sha1(key, msg) =
   k = if str_len(key) > hmac_block() then sha1(key) else key
   padded = k + repeat(chr(0), hmac_block() - str_len(k))
@@ -40,9 +47,11 @@ fn hmac_sha1(key, msg) =
 
 # Every byte of a string against one constant. The pads of HMAC are nothing
 # more than this.
+#
+#     passwd.xor_byte("AB", 32)   # => ab
 fn xor_byte(s, b) = xor_byte_from(s, b, 0, strbuf())
 
-fn xor_byte_from(s, b, i, out) =
+private fn xor_byte_from(s, b, i, out) =
   if i >= str_len(s) then strbuf_str(out)
   else
     strbuf_add(out, chr(bit_xor(str_get(s, i), b)))
@@ -50,9 +59,11 @@ fn xor_byte_from(s, b, i, out) =
 
 # Two strings of the same length, byte against byte. PBKDF2 folds its rounds
 # together this way.
+#
+#     passwd.to_hex(passwd.xor_str("AB", "  "))   # => 6162
 fn xor_str(a, b) = xor_str_from(a, b, 0, strbuf())
 
-fn xor_str_from(a, b, i, out) =
+private fn xor_str_from(a, b, i, out) =
   if i >= str_len(a) || i >= str_len(b) then strbuf_str(out)
   else
     strbuf_add(out, chr(bit_xor(str_get(a, i), str_get(b, i))))
@@ -65,11 +76,13 @@ fn xor_str_from(a, b, i, out) =
 # `rounds` is a count, not a duration. It is written down where the accounts
 # are made rather than here, so that raising it later is one number in one
 # place — and so that a stored password can say which count made it.
+#
+#     passwd.to_hex(passwd.pbkdf2_sha1("password", "salt", 2))   # => ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957
 fn pbkdf2_sha1(key, salt, rounds) =
   u = hmac_sha1(key, salt + chr(0) + chr(0) + chr(0) + chr(1))
   pbkdf2_fold(key, u, u, rounds - 1)
 
-fn pbkdf2_fold(key, u, acc, left) =
+private fn pbkdf2_fold(key, u, acc, left) =
   if left <= 0 then acc
   else
     nxt = hmac_sha1(key, u)
@@ -77,11 +90,12 @@ fn pbkdf2_fold(key, u, acc, left) =
 
 # -- writing bytes down -------------------------------------------------------
 
-fn hex_digits() = "0123456789abcdef"
+private fn hex_digits() = "0123456789abcdef"
 
+#     passwd.to_hex("AZ")   # => 415a
 fn to_hex(s) = to_hex_from(s, 0, strbuf())
 
-fn to_hex_from(s, i, out) =
+private fn to_hex_from(s, i, out) =
   if i >= str_len(s) then strbuf_str(out)
   else
     b = str_get(s, i)
@@ -89,15 +103,16 @@ fn to_hex_from(s, i, out) =
     strbuf_add(out, str_sub(hex_digits(), bit_and(b, 15), 1))
     to_hex_from(s, i + 1, out)
 
+#     passwd.from_hex("415a")   # => AZ
 fn from_hex(s) = from_hex_from(s, 0, strbuf())
 
-fn from_hex_from(s, i, out) =
+private fn from_hex_from(s, i, out) =
   if i + 1 >= str_len(s) then strbuf_str(out)
   else
     strbuf_add(out, chr(shl(hex_val(str_get(s, i)), 4) + hex_val(str_get(s, i + 1))))
     from_hex_from(s, i + 2, out)
 
-fn hex_val(c) =
+private fn hex_val(c) =
   if c >= 48 && c <= 57 then c - 48 else if c >= 97 && c <= 102 then c - 87 else if c >= 65 && c <= 70 then c - 55 else 0
 
 # -- comparing them -----------------------------------------------------------
@@ -110,8 +125,12 @@ fn hex_val(c) =
 # enough tries, that is the answer. This walks both in full and folds the
 # differences together. Unequal lengths are refused up front: that much is
 # public, since the length of a hash is a constant of the scheme.
+#
+#     passwd.same_secret("abc", "abc")    # => 1
+#     passwd.same_secret("abc", "abd")    # => 0
+#     passwd.same_secret("abc", "abcd")   # => 0
 fn same_secret(a, b) =
   if str_len(a) != str_len(b) then 0 else if secret_diff(a, b, 0, 0) == 0 then 1 else 0
 
-fn secret_diff(a, b, i, acc) =
+private fn secret_diff(a, b, i, acc) =
   if i >= str_len(a) then acc else secret_diff(a, b, i + 1, bit_or(acc, bit_xor(str_get(a, i), str_get(b, i))))

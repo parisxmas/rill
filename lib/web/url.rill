@@ -4,17 +4,18 @@ module url
 # host, the port, the path, the query, the fragment; a query as pairs; a
 # relative reference resolved against a base; percent-encoding both ways.
 #
-#     import "web/url" as url
-#     match url.parse("https://user@example.com:8443/a/b?x=1&y=two#top")
-#       Some(u) -> u.host                  # "example.com"; u.port 8443; u.path "/a/b"
-#       None -> ...
-#     url.query_pairs("x=1&y=two%20words") # Cons(("x", "1"), Cons(("y", "two words"), Nil))
-#     url.resolve("https://example.com/a/b/c", "../d?q")   # "https://example.com/a/d?q"
-#     url.encode("a b&c")                  # "a%20b%26c"
 #
 # A `Url` is a record; `text` writes it back, and a part that was not
 # there is empty (`port` is -1). Nothing is decoded on the way in — the
 # path and query are as they were written — so `decode` what you look at.
+#
+#     u = url.parse("https://user@example.com:8443/a/b?x=1&y=two#top") |> unwrap_or(url.Url("", "", "", -1, "", "", ""))
+#     u.host                                                  # => example.com
+#     u.port                                                  # => 8443
+#     u.path                                                  # => /a/b
+#     url.query_pairs("x=1&y=two%20words")                   # => Cons((x, 1), Cons((y, two words), Nil))
+#     url.resolve("https://example.com/a/b/c", "../d?q")      # => https://example.com/a/d?q
+#     url.encode("a b&c")                                     # => a%20b%26c
 
 type Url
   Url(scheme: Str, user: Str, host: Str, port: Int, path: Str, query: Str, fragment: Str)
@@ -23,6 +24,9 @@ type Url
 
 # A URL with a scheme and `//`, or `None`. A path-only reference is not a
 # URL; `resolve` it against one.
+#
+#     url.parse("http://h/p?q#f")   # => Some(url.Url(http, , h, -1, /p, q, f))
+#     url.parse("/just/a/path")     # => None
 fn parse(s) =
   colon = str_find(s, ":")
   if colon <= 0 || !scheme_ok(s[0:colon]) || str_find_from(s, "//", colon) != colon + 1 then None
@@ -74,20 +78,28 @@ private fn lower(s) =
 
 # -- putting together ---------------------------------------------------------
 
+#     url.text(url.Url("https", "me", "h.io", 8080, "/x", "a=1", "top"))   # => https://me@h.io:8080/x?a=1#top
 fn text(u: Url) =
   u.scheme + "://" + (if #u.user > 0 then u.user + "@" else "") + u.host + (if u.port >= 0 then ":" + int_to_str(u.port) else "") + u.path + (if #u.query > 0 then "?" + u.query else "") + (if #u.fragment > 0 then "#" + u.fragment else "")
 
 # The port, or the scheme's usual one: 80, 443, 21, 22, 25.
+#
+#     url.port_of(url.parse("https://h/") |> unwrap_or(url.Url("", "", "", -1, "", "", "")))        # => 443
+#     url.port_of(url.parse("http://h:81/") |> unwrap_or(url.Url("", "", "", -1, "", "", "")))     # => 81
 fn port_of(u: Url) =
   if u.port >= 0 then u.port else if u.scheme == "https" || u.scheme == "wss" then 443 else if u.scheme == "http" || u.scheme == "ws" then 80 else if u.scheme == "ftp" then 21 else if u.scheme == "ssh" then 22 else if u.scheme == "smtp" then 25 else -1
 
 # The scheme, host and port alone: `https://example.com:8443`.
+#
+#     url.origin(url.parse("https://example.com:8443/a?b") |> unwrap_or(url.Url("", "", "", -1, "", "", "")))   # => https://example.com:8443
 fn origin(u: Url) =
   u.scheme + "://" + u.host + (if u.port >= 0 then ":" + int_to_str(u.port) else "")
 
 # -- the query ------------------------------------------------------------
 
 # `a=1&b=two%20words` as decoded pairs; a key without `=` has the value "".
+#
+#     url.query_pairs("a=1&b=two%20words&flag")   # => Cons((a, 1), Cons((b, two words), Cons((flag, ), Nil)))
 fn query_pairs(query) = if #query == 0 then Nil else map(split(query, "&"), pair_of)
 
 private fn pair_of(part) =
@@ -95,15 +107,22 @@ private fn pair_of(part) =
   if eq < 0 then (decode(part), "") else (decode(part[0:eq]), decode(part[eq + 1:]))
 
 # The pairs as a query, each side encoded.
+#
+#     url.query_text(Cons(("q", "a b"), Cons(("n", "1"), Nil)))   # => q=a%20b&n=1
 fn query_text(pairs) = join(map(pairs, \p -> encode(fst(p)) + "=" + encode(snd(p))), "&")
 
 # The first value under `name`, decoded.
+#
+#     url.query_get("a=1&b=2&a=3", "a")   # => Some(1)
+#     url.query_get("a=1", "z")         # => None
 fn query_get(query, name) = opt_map(find(query_pairs(query), \p -> fst(p) == name), snd)
 
 # -- encoding -------------------------------------------------------------------
 
 # Percent-encoding of everything but the unreserved characters — letters,
 # digits, `-` `.` `_` `~` — so the result is safe anywhere in a URL.
+#
+#     url.encode("a b/c~d")   # => a%20b%2Fc~d
 fn encode(s) =
   b = strbuf()
   for i in 0..#s
@@ -118,6 +137,9 @@ private fn hexdigit(d) = if d < 10 then 48 + d else 55 + d
 
 # `%xx` back to bytes and `+` to a space, as a form sends them; a `%` not
 # followed by two hex digits is kept as it is.
+#
+#     url.decode("a%20b+c")   # => a b c
+#     url.decode("100%")      # => 100%
 fn decode(s) =
   b = strbuf()
   while i < #s with i = 0
@@ -139,6 +161,12 @@ private fn hexval(c) =
 # references stand; `//host/x` keeps the scheme; `/x` keeps the host;
 # `x`, `./x` and `../x` are joined to the base's path with the dots
 # resolved; `?q` and `#f` alone replace only that part.
+#
+#     url.resolve("https://example.com/a/b/c", "../d")          # => https://example.com/a/d
+#     url.resolve("https://example.com/a/b/c", "/x")            # => https://example.com/x
+#     url.resolve("https://example.com/a/b/c", "//other/y")     # => https://other/y
+#     url.resolve("https://example.com/a/b/c", "?q=1")          # => https://example.com/a/b/c?q=1
+#     url.resolve("https://example.com/a", "http://else/")      # => http://else/
 fn resolve(base, reference) = match parse(base)
   None -> reference
   Some(b) -> match parse(reference)

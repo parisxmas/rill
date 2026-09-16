@@ -5,16 +5,18 @@ module form
 # field name, its file name if it was a file, its content type, and its
 # bytes as they were.
 #
-#     import "web/form" as form
-#     match form.parse(content_type, body)          # either kind, by the type
-#       Ok(parts) -> ...
-#       Err(why) -> ...
-#     form.value(parts, "email")                    # Some("a@b.c"), the first
-#     form.file(parts, "photo")                     # Some(part): p.filename, p.kind, p.data
 #
 # `content_type` is the request's `Content-Type` header as it came; the
 # boundary is read from it. A body that does not end in the closing
 # boundary, or a part without its blank line, is refused.
+#
+#     parts = form.parse("application/x-www-form-urlencoded", "email=a%40b.c&name=Ada+L")?
+#     form.value(parts, "email")                    # => Some(a@b.c)
+#     form.value(parts, "name")                     # => Some(Ada L)
+#     body = "--XX\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"me.png\"\r\nContent-Type: image/png\r\n\r\nPNGDATA\r\n--XX--\r\n"
+#     files = form.parse("multipart/form-data; boundary=XX", body)?
+#     form.file(files, "photo") |> opt_map(\p -> p.filename)   # => Some(me.png)
+#     form.file(files, "photo") |> opt_map(\p -> p.data)       # => Some(PNGDATA)
 import "web/url" as url
 
 type Part
@@ -22,23 +24,39 @@ type Part
 
 # The fields, by the content type: pairs become parts with no file name
 # and no type.
+#
+#     form.parse("application/x-www-form-urlencoded", "a=1&b=2")   # => Ok(Cons(form.Part(a, , , 1), Cons(form.Part(b, , , 2), Nil)))
+#     form.parse("text/plain", "a=1")                             # => Err(not a form: text/plain)
 fn parse(content_type, body) =
   if starts_with(content_type, "multipart/form-data") then multipart(content_type, body) else if starts_with(content_type, "application/x-www-form-urlencoded")
     then Ok(map(url.query_pairs(body), \p -> Part(fst(p), "", "", snd(p))))
     else Err("not a form: " + content_type)
 
 # The first field of that name, as text.
+#
+#     parts = form.parse("application/x-www-form-urlencoded", "a=1&a=2")?
+#     form.value(parts, "a")   # => Some(1)
+#     form.value(parts, "z")   # => None
 fn value(parts, name) = opt_map(find(parts, \p -> p.name == name), \p -> p.data)
 
 # The first field of that name that came as a file.
+#
+#     parts = form.parse("application/x-www-form-urlencoded", "a=1")?
+#     form.file(parts, "a")   # => None
 fn file(parts, name) = find(parts, \p -> p.name == name && #p.filename > 0)
 
 # Every field of that name — a select with several chosen, or a set of
 # checkboxes.
+#
+#     parts = form.parse("application/x-www-form-urlencoded", "c=x&c=y&d=z")?
+#     form.values(parts, "c")   # => Cons(x, Cons(y, Nil))
 fn values(parts, name) = map(filter(parts, \p -> p.name == name), \p -> p.data)
 
 # -- multipart ------------------------------------------------------------------
 
+#     body = "--B\r\nContent-Disposition: form-data; name=\"k\"\r\n\r\nv\r\n--B--\r\n"
+#     form.multipart("multipart/form-data; boundary=B", body)   # => Ok(Cons(form.Part(k, , , v), Nil))
+#     form.multipart("multipart/form-data", body)              # => Err(multipart/form-data without a boundary)
 fn multipart(content_type, body) = match boundary_of(content_type)
   None -> Err("multipart/form-data without a boundary")
   Some(b) ->
@@ -47,6 +65,10 @@ fn multipart(content_type, body) = match boundary_of(content_type)
     if first < 0 then Err("a body without its boundary") else parts_from(body, sep, first + #sep, Nil)
 
 # The boundary parameter, quoted or not.
+#
+#     form.boundary_of("multipart/form-data; boundary=\"a b\"")   # => Some(a b)
+#     form.boundary_of("multipart/form-data; boundary=xyz")       # => Some(xyz)
+#     form.boundary_of("text/plain")                              # => None
 fn boundary_of(content_type) =
   at = str_find(content_type, "boundary=")
   if at < 0 then None

@@ -7,15 +7,12 @@ module deflate
 # in fixed Huffman codes, which is most of what a compressor buys and a
 # fraction of its code.
 #
-#     import "data/deflate" as z
-#     packed = z.gzip(text)                    # bytes, as `gzip` would write them
-#     match z.gunzip(packed)
-#       Ok(text) -> ...
-#       Err(why) -> ...                        # "not gzip", "crc mismatch", ...
-#     z.zlib(text), z.unzlib(bytes)            # what HTTP calls "deflate"
-#     z.deflate(text), z.inflate(bytes)        # the bare stream
 #
 # Everything is bytes in a `Str`; the checksums come from `data/checksum`.
+#
+#     packed = deflate.gzip("the text, as gzip would write it")
+#     deflate.gunzip(packed)                    # => Ok(the text, as gzip would write it)
+#     deflate.gunzip("not gzip")                # => Err(not gzip)
 import "data/checksum" as ck
 
 # -- reading bits -------------------------------------------------------------
@@ -221,10 +218,16 @@ private fn reason(code) =
 # -- inflate ------------------------------------------------------------------
 
 # The bytes a DEFLATE stream encodes, or what was wrong with it.
+#
+#     deflate.inflate(deflate.deflate("hello hello hello"))   # => Ok(hello hello hello)
+#     deflate.inflate("not a stream")   # => Err(not a deflate stream: a block of an unknown kind)
 fn inflate(data) = res_map(inflate_from(data, 0), fst)
 
 # The same from byte `at`, and where the stream ended — for an envelope
 # with a trailer after it.
+#
+#     packed = deflate.deflate("abc")
+#     deflate.inflate_from("xx" + packed + "trailer", 2)   # => Ok((abc, 7))
 fn inflate_from(data, at) =
   s = reader(data, at)
   o = output()
@@ -291,6 +294,8 @@ private fn index_below(base: Buf(Int), v, i) =
 
 # LZ77 over a 32 KB window: a hash of three bytes leads to the most recent
 # position with that hash, and a chain leads from there to older ones.
+#
+#     #deflate.deflate("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") < 32   # => true
 fn deflate(data) =
   w = writer()
   put_bits(w, 1, 1)
@@ -349,8 +354,12 @@ private fn match_len(data, i, j, l) =
 # -- the envelopes ------------------------------------------------------------
 
 # zlib: two header bytes, the stream, and the Adler-32 of the text.
+#
+#     import "text/str" as str
+#     str.hex_encode(deflate.zlib("a"))   # => 789c4b040000620062
 fn zlib(data) = chr(120) + chr(156) + deflate(data) + be32(ck.adler32(data))
 
+#     deflate.unzlib(deflate.zlib("round trip"))   # => Ok(round trip)
 fn unzlib(data) =
   if #data < 6 || bit_and(data[0], 15) != 8 || (data[0] * 256 + data[1]) % 31 != 0 then Err("not a zlib stream")
   else if bit_and(data[1], 32) != 0 then Err("a zlib stream with a preset dictionary")
@@ -362,9 +371,14 @@ fn unzlib(data) =
 
 # gzip: the ten-byte header `gzip` writes with no name and no time, the
 # stream, the CRC-32 and the length.
+#
+#     import "text/str" as str
+#     str.hex_encode(deflate.gzip(""))   # => 1f8b08000000000000ff03000000000000000000
 fn gzip(data) =
   chr(31) + chr(139) + chr(8) + chr(0) + repeat(chr(0), 4) + chr(0) + chr(255) + deflate(data) + le32(ck.crc32(data)) + le32(bit_and(#data, 4294967295))
 
+#     deflate.gunzip(deflate.gzip("round trip"))   # => Ok(round trip)
+#     deflate.gunzip("plain")                   # => Err(not gzip)
 fn gunzip(data) =
   if #data < 18 || data[0] != 31 || data[1] != 139 then Err("not gzip")
   else if data[2] != 8 then Err("gzip with a method that is not deflate")

@@ -6,15 +6,7 @@ module tls
 # waits are `blocking` externs, so a strand parks for a handshake or a read
 # and the worker goes on with the others.
 #
-#     import "web/tls" as tls
-#     c = tls.connect("example.com", 443)?           # verified against the system's roots
-#     tls.write(c, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
-#     reply = tls.read_all(c)                        # everything, until the server closes
-#     tls.disconnect(c)
-#     tls.get("example.com", 443, "/")               # the three lines above
 #
-#     s = tls.listen(8443, "cert.pem", "key.pem")?   # a server with its certificate
-#     c = tls.accept(s)?                             # one connection, handshake done
 #
 # `connect` checks the certificate — the chain against the roots the
 # system keeps, and the name against the host asked for — and refuses one
@@ -23,6 +15,15 @@ module tls
 #
 # The library is OpenSSL 3 — Homebrew's `openssl@3` on macOS, `libssl` on
 # Linux — linked when this module is imported.
+#
+#     # not run
+#     c = tls.connect("example.com", 443)?           # verified against the system's roots
+#     tls.write(c, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+#     reply = tls.read_all(c)                        # everything, until the server closes
+#     tls.disconnect(c)
+#     tls.get("example.com", 443, "/")               # the three lines above
+#     s = tls.listen(8443, "cert.pem", "key.pem")?   # a server with its certificate
+#     c = tls.accept(s)?                             # one connection, handshake done
 import "net/dns" as dns
 
 extern "-L/opt/homebrew/opt/openssl@3/lib" fn TLS_client_method() -> Ptr
@@ -83,9 +84,16 @@ type Server
 # -- a client -------------------------------------------------------------------
 
 # A verified connection to `host:port`, the name resolved on the way.
+#
+#     # not run
+#     c = tls.connect("example.com", 443)?
+#     tls.connect("expired.badssl.com", 443)   # Err: the certificate is refused
 fn connect(host, port) = connect_with(host, port, true)
 
 # The same without checking the certificate.
+#
+#     # not run
+#     c = tls.connect_insecure("self-signed.local", 8443)?   # no check of the certificate
 fn connect_insecure(host, port) = connect_with(host, port, false)
 
 private fn connect_with(host, port, verify) = match dns.ipv4(host)
@@ -131,6 +139,9 @@ private fn last_error(ssl, r) =
 
 # What has arrived, up to 64 KB; `""` when the peer has closed or the
 # connection failed.
+#
+#     # not run
+#     chunk = tls.read(c)   # up to 64 KB of what has arrived; "" once the peer is done
 fn read(c: Conn) =
   buf = alloc_bytes(65536)
   n = SSL_read(c.ssl, buf, 65536)
@@ -139,6 +150,9 @@ fn read(c: Conn) =
   text
 
 # Everything until the peer closes.
+#
+#     # not run
+#     reply = tls.read_all(c)   # until the peer closes
 fn read_all(c: Conn) =
   b = strbuf()
   read_into(c, b)
@@ -152,6 +166,9 @@ private fn read_into(c, b: StrBuf) =
     read_into(c, b)
 
 # Writes all of it; the bytes written, or -1.
+#
+#     # not run
+#     tls.write(c, "GET / HTTP/1.1\r\nHost: h\r\n\r\n")   # the bytes written, or -1
 fn write(c: Conn, s) =
   if #s == 0 then 0
   else
@@ -167,6 +184,9 @@ private fn write_from(c: Conn, buf: Buf(U8), at, n) =
     if w <= 0 then -1 else write_from(c, buf, at + w, n)
 
 # Ends the session and closes the socket.
+#
+#     # not run
+#     tls.disconnect(c)
 fn disconnect(c: Conn) =
   SSL_shutdown(c.ssl)
   drop_conn(c)
@@ -179,6 +199,9 @@ private fn drop_conn(c: Conn) =
 # -- a server -------------------------------------------------------------------
 
 # A listening socket with a certificate chain and its key, both PEM files.
+#
+#     # not run
+#     s = tls.listen(8443, "cert.pem", "key.pem")?
 fn listen(port, cert_path, key_path) =
   ctx = SSL_CTX_new(TLS_server_method())
   cert = to_cstr(cert_path)
@@ -201,6 +224,9 @@ fn listen(port, cert_path, key_path) =
 
 # The next connection, its handshake done. The context is the server's,
 # so a `Conn` from here is ended with `disconnect` and the context stays.
+#
+#     # not run
+#     c = tls.accept(s)?
 fn accept(s: Server) =
   fd = accept_on(s.fd)?
   ssl = SSL_new(s.ctx)
@@ -214,6 +240,8 @@ fn accept(s: Server) =
     sock_close(fd)
     Err("a connection that did not complete its handshake: " + why)
 
+#     # not run
+#     tls.stop(s)
 fn stop(s: Server) =
   SSL_CTX_free(s.ctx)
   sock_close(s.fd)
@@ -223,8 +251,15 @@ fn stop(s: Server) =
 # `GET path` over a fresh connection, closed after; the raw reply, with
 # `http`'s `status_of` and `response_body` to take it apart, or the
 # error text.
+#
+#     # not run
+#     import "web/http" as http
+#     raw = tls.get("example.com", 443, "/")
+#     http.status_of(raw)   # 200
 fn get(host, port, path) = ask(host, port, "GET", path, Nil, "")
 
+#     # not run
+#     raw = tls.ask("api.example.com", 443, "POST", "/v1", Cons("Content-Type: application/json", Nil), "{}")
 fn ask(host, port, method, path, headers, body) = match connect(host, port)
   Err(e) -> e
   Ok(c) ->

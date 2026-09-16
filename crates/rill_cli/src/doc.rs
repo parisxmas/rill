@@ -10,6 +10,15 @@
 //! their routes, and its functions with the signatures the checker
 //! inferred, private ones left out. Nothing is written twice: what the
 //! page says is what the file says.
+//!
+//! A comment line indented four spaces past the `#` is an example: code
+//! as the reader would write it, the module by its name — `json.parse`
+//! — and, after `# =>`, what `show` prints of its value (a string bare,
+//! as `show` prints it). The page shows
+//! the examples as code; `rill doctest` runs every one and holds it to
+//! its `=>`, so an example on the page is one that was true when the
+//! page was made. A block whose first example line is `# not run` is
+//! shown and left alone — for a server that would listen forever.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -45,7 +54,12 @@ fn doc_above(comments: &BTreeMap<usize, String>, line: usize, head_end: usize) -
         return String::new();
     }
     lines.reverse();
-    lines.join("\n").trim().to_string()
+    // blank lines at the ends go; the first line's own indent stays, since
+    // an example line is one that starts with four spaces
+    while lines.first().is_some_and(|l| l.trim().is_empty()) {
+        lines.remove(0);
+    }
+    lines.join("\n").trim_end().to_string()
 }
 
 /// The comment block after `line` — a blank line between allowed — up to
@@ -62,7 +76,92 @@ fn doc_below(comments: &BTreeMap<usize, String>, line: usize) -> (String, usize)
         end = l;
         l += 1;
     }
-    (lines.join("\n").trim().to_string(), end)
+    while lines.first().is_some_and(|l| l.trim().is_empty()) {
+        lines.remove(0);
+    }
+    (lines.join("\n").trim_end().to_string(), end)
+}
+
+/// A doc block as Markdown: the prose as written, the example lines
+/// fenced as code.
+fn render_doc(doc: &str) -> String {
+    let mut out = String::new();
+    let mut in_code = false;
+    for line in doc.lines() {
+        let example = line.starts_with("    ");
+        if example && !in_code {
+            out.push_str("```\n");
+            in_code = true;
+        } else if !example && in_code && !line.trim().is_empty() {
+            out.push_str("```\n");
+            in_code = false;
+        }
+        if in_code {
+            if !line.trim().is_empty() {
+                out.push_str(&line[4..]);
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if in_code {
+        out.push_str("```\n");
+    }
+    out.trim_end().to_string()
+}
+
+/// One example line from a doc block: the code, and what `show` of its
+/// value should print if the line says (`# => …`).
+#[derive(Debug, Clone)]
+pub struct Example {
+    pub line: usize,
+    pub code: String,
+    pub expect: Option<String>,
+}
+
+/// The example blocks of every doc comment in a file, each block the
+/// consecutive example lines of one comment — a block is one program's
+/// worth, its bindings its own — with `not run` blocks left out.
+pub fn examples_of(src: &str) -> Vec<Vec<Example>> {
+    let comments = comments_of(src);
+    let mut blocks: Vec<Vec<Example>> = Vec::new();
+    let mut current: Vec<Example> = Vec::new();
+    let mut skip = false;
+    let mut last_line = 0;
+    for (&line, text) in &comments {
+        let contiguous = line == last_line + 1;
+        last_line = line;
+        let is_example = text.starts_with("    ");
+        if !contiguous || !is_example {
+            if !current.is_empty() && !skip {
+                blocks.push(std::mem::take(&mut current));
+            }
+            current.clear();
+            skip = false;
+            if !is_example {
+                continue;
+            }
+        }
+        let code = text[4..].to_string();
+        if current.is_empty() && code.trim() == "# not run" {
+            skip = true;
+            continue;
+        }
+        if code.trim().is_empty() || code.trim_start().starts_with('#') {
+            continue;
+        }
+        let (code, expect) = match code.find("# =>") {
+            Some(i) => (code[..i].trim_end().to_string(), Some(code[i + 4..].trim().to_string())),
+            None => (code.trim_end().to_string(), None),
+        };
+        current.push(Example { line, code, expect });
+    }
+    if !current.is_empty() && !skip {
+        blocks.push(current);
+    }
+    blocks
 }
 
 fn ctor_text(c: &CtorDef) -> String {
@@ -115,8 +214,15 @@ pub fn markdown(path: &Path, src: &str, own: &Module, checked: Option<&rill_type
     let name = own.name.clone().unwrap_or(stem);
     out.push_str(&format!("# `{name}`\n\n"));
     let (head, head_end) = if own.name.is_some() { doc_below(&comments, own.name_line) } else { doc_below(&comments, 0) };
+    // in a module, a block with a declaration right under it is that
+    // declaration's, not the file's; a program's head is its first comment
+    let lines: Vec<&str> = src.lines().collect();
+    let (head, head_end) = match lines.get(head_end) {
+        Some(next) if own.name.is_some() && !next.trim().is_empty() && !next.trim_start().starts_with('#') => (String::new(), own.name_line),
+        _ => (head, head_end),
+    };
     if !head.is_empty() {
-        out.push_str(&head);
+        out.push_str(&render_doc(&head));
         out.push_str("\n\n");
     }
     let section = |out: &mut String, title: &str| out.push_str(&format!("## {title}\n\n"));
@@ -126,7 +232,7 @@ pub fn markdown(path: &Path, src: &str, own: &Module, checked: Option<&rill_type
         for t in &own.types {
             let params = if t.params.is_empty() { String::new() } else { format!("({})", t.params.join(", ")) };
             out.push_str(&format!("### `{}{params}`\n\n", t.name));
-            let doc = doc_above(&comments, t.line, head_end);
+            let doc = render_doc(&doc_above(&comments, t.line, head_end));
             if !doc.is_empty() {
                 out.push_str(&doc);
                 out.push_str("\n\n");
@@ -148,7 +254,7 @@ pub fn markdown(path: &Path, src: &str, own: &Module, checked: Option<&rill_type
         for tr in &own.traits {
             let supers = if tr.supers.is_empty() { String::new() } else { format!(": {}", tr.supers.join(", ")) };
             out.push_str(&format!("### `trait {}({}){supers}`\n\n", tr.name, tr.param));
-            let doc = doc_above(&comments, tr.line, head_end);
+            let doc = render_doc(&doc_above(&comments, tr.line, head_end));
             if !doc.is_empty() {
                 out.push_str(&doc);
                 out.push_str("\n\n");
@@ -173,7 +279,7 @@ pub fn markdown(path: &Path, src: &str, own: &Module, checked: Option<&rill_type
         section(&mut out, "Systems");
         for sd in &own.systems {
             out.push_str(&format!("### `system {}`\n\n", sd.name));
-            let doc = doc_above(&comments, sd.line, head_end);
+            let doc = render_doc(&doc_above(&comments, sd.line, head_end));
             if !doc.is_empty() {
                 out.push_str(&doc);
                 out.push_str("\n\n");
@@ -200,7 +306,7 @@ pub fn markdown(path: &Path, src: &str, own: &Module, checked: Option<&rill_type
                 })
                 .collect();
             out.push_str(&format!("### `machine {}({})`\n\n", m.name, params.join(", ")));
-            let doc = doc_above(&comments, m.line, head_end);
+            let doc = render_doc(&doc_above(&comments, m.line, head_end));
             if !doc.is_empty() {
                 out.push_str(&doc);
                 out.push_str("\n\n");
@@ -236,7 +342,7 @@ pub fn markdown(path: &Path, src: &str, own: &Module, checked: Option<&rill_type
                 .and_then(|t| t.fn_index.get(&f.name).map(|&i| rill_types::show_signature(&t.fns[i], &t.adts, &t.traits)))
                 .unwrap_or_else(|| written_signature(f));
             out.push_str(&format!("### `{sig}`\n\n"));
-            let doc = doc_above(&comments, f.line, head_end);
+            let doc = render_doc(&doc_above(&comments, f.line, head_end));
             if !doc.is_empty() {
                 out.push_str(&doc);
                 out.push_str("\n\n");

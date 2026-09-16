@@ -6,20 +6,24 @@ module checksum
 # a flipped bit in a page or a frame, and a format that carries one has to
 # be written with the same one.
 #
-#     import "data/checksum" as ck
-#     ck.crc32("123456789")              # 3421780262, which is 0xcbf43926
-#     ck.adler32(page)
 #
 # Both take the bytes of a `Str` and return an `Int` in 0..2^32. `crc32_from`
 # and `adler32_from` continue a checksum across pieces, so a file can be
 # summed as it is read rather than held whole.
+#
+#     checksum.crc32("123456789")              # => 3421780262
+#     checksum.adler32("Wikipedia")             # => 300286872
 
 # -- CRC-32 -------------------------------------------------------------------
 
+#     checksum.crc32("")            # => 0
+#     checksum.crc32("123456789")   # => 3421780262
 fn crc32(bytes) = crc32_from(0, bytes)
 
 # The CRC so far, extended by `bytes`. `crc32_from(0, a + b)` and
 # `crc32_from(crc32(a), b)` are the same number.
+#
+#     checksum.crc32_from(checksum.crc32("1234"), "56789")   # => 3421780262
 fn crc32_from(sofar, bytes) =
   t = crc_table()
   c = for i in 0..#bytes with acc = bit_xor(sofar, 4294967295)
@@ -36,12 +40,16 @@ private fn crc_table() =
 
 # -- Adler-32 -----------------------------------------------------------------
 
+#     checksum.adler32("")            # => 1
+#     checksum.adler32("Wikipedia")   # => 300286872
 fn adler32(bytes) = adler32_from(1, bytes)
 
 # The sum so far, extended by `bytes`; the two halves are reduced every
 # 5552 bytes, the most that fits before a 32-bit sum would overflow — here
 # the integer is wider, but the reduction is kept where zlib keeps it so the
 # arithmetic is the same arithmetic.
+#
+#     checksum.adler32_from(checksum.adler32("Wiki"), "pedia")   # => 300286872
 fn adler32_from(sofar, bytes) =
   (_, a, b) = while i < #bytes with (i, a, b) = (0, bit_and(sofar, 65535), shr(sofar, 16))
     stop = if i + 5552 < #bytes then i + 5552 else #bytes

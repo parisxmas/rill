@@ -164,7 +164,9 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 `rill doc lib -o docs/lib` writes a Markdown page per library module from
 the comments the modules already have, with the signatures the checker
 infers; there is no doc-comment syntax, because the comment above a
-declaration is its documentation.
+declaration is its documentation. A line in it indented four spaces is an
+example, and `rill doctest lib` runs every one and holds it to what it
+says after `# =>` — every function of the standard library carries one.
 
 The model editor — a page that shows a file's `system` as the block
 diagram and each `machine` as SDL drew a process, edits them as forms

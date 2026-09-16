@@ -27,6 +27,15 @@ module oxiresp
 # One command, one reply, except while subscribed — see the bottom of this
 # file, where the reply to a command and a message nobody asked for arrive
 # through the same socket and have to be told apart.
+#
+#     # not run
+#     import "db/oxiresp"
+#     fd = kv_connect("127.0.0.1", 6379)?              # the in-memory engine, or any Redis
+#     kv_set(fd, "greeting", "hello")
+#     kv_text(kv_get(fd, "greeting")?)                # "hello"
+#     kv_int(kv_incr(fd, "visits")?)                  # 1
+#     kv_texts(kv_keys(fd, "*")?)                     # every key
+#     kv_hang_up(fd)
 
 type Resp
   RSimple(Str)
@@ -60,6 +69,8 @@ type Delivery
 
 # -- writing a command --------------------------------------------------------
 
+#     import "db/oxiresp"
+#     resp_command(Cons("GET", Cons("k", Nil)))   # => *2\r\n$3\r\nGET\r\n$1\r\nk\r\n
 fn resp_command(args) =
   b = strbuf()
   b += "*"
@@ -68,7 +79,7 @@ fn resp_command(args) =
   resp_put_args(b, args)
   strbuf_str(b)
 
-fn resp_put_args(b: StrBuf, args) = match args
+private fn resp_put_args(b: StrBuf, args) = match args
   Nil -> strbuf_add(b, "")
   Cons(a, rest) ->
     b += "$"
@@ -83,110 +94,201 @@ fn resp_put_args(b: StrBuf, args) = match args
 # `RMore` and `RBad` are different answers and the difference is the whole
 # reason this can be driven off a socket: a reply that has not finished
 # arriving is not a reply that is wrong.
+#
+#     import "db/oxiresp"
+#     resp_decode("+OK\r\n", 0)                       # => RGot(RSimple(OK), 5)
+#     resp_decode(":42\r\n", 0)                       # => RGot(RInt(42), 5)
+#     resp_decode("$3\r\nada\r\n", 0)                 # => RGot(RBulk(ada), 9)
+#     resp_decode("$-1\r\n", 0)                       # => RGot(RNil, 5)
+#     resp_decode("*2\r\n:1\r\n:2\r\n", 0)             # => RGot(RArray(Cons(RInt(1), Cons(RInt(2), Nil))), 12)
+#     resp_decode("-ERR no such key\r\n", 0)          # => RGot(RError(ERR no such key), 18)
+#     resp_decode("$3\r\nad", 0)                      # => RMore
+#     resp_decode("?x\r\n", 0)                          # => RBad(no RESP value begins with `?`, 0)
 fn resp_decode(s, i) =
   c = str_get(s, i)
   if c < 0 then RMore else resp_kind(s, i, c, str_find_from(s, "\r\n", i))
 
-fn resp_kind(s, i, c, e) =
+private fn resp_kind(s, i, c, e) =
   if e < 0 then RMore else if c == 43 then RGot(RSimple(resp_head(s, i, e)), e + 2) else if c == 45 then RGot(RError(resp_head(s, i, e)), e + 2) else if c == 58 then RGot(RInt(str_to_int(resp_head(s, i, e))), e + 2) else if c == 36 then resp_bulk(s, e + 2, str_to_int(resp_head(s, i, e))) else if c == 42 then resp_array(s, e + 2, str_to_int(resp_head(s, i, e)), Nil) else RBad("no RESP value begins with `" + chr(c) + "`", i)
 
 # The text between the type byte and the CRLF.
-fn resp_head(s, i, e) = str_sub(s, i + 1, e - i - 1)
+private fn resp_head(s, i, e) = str_sub(s, i + 1, e - i - 1)
 
 # A bulk string is the one place a length is given, so it is the one place a
 # byte may be anything at all — a NUL included.
-fn resp_bulk(s, i, n) =
+private fn resp_bulk(s, i, n) =
   if n < 0 then RGot(RNil, i) else if str_len(s) < i + n + 2 then RMore else RGot(RBulk(str_sub(s, i, n)), i + n + 2)
 
-fn resp_array(s, i, n, acc) =
+private fn resp_array(s, i, n, acc) =
   if n < 0 then RGot(RNilArray, i) else if n == 0 then RGot(RArray(reverse(acc)), i) else resp_item(s, i, n, acc)
 
-fn resp_item(s, i, n, acc) = match resp_decode(s, i)
+private fn resp_item(s, i, n, acc) = match resp_decode(s, i)
   RMore -> RMore
   RBad(why, pos) -> RBad(why, pos)
   RGot(v, j) -> resp_array(s, j, n - 1, Cons(v, acc))
 
 # -- the connection -----------------------------------------------------------
 
+#     # not run
+#     import "db/oxiresp"
+#     fd = kv_connect("127.0.0.1", 6379)?
 fn kv_connect(host, port) = connect_to(host, port)
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_hang_up(fd)
 fn kv_hang_up(fd) = sock_close(fd)
 
 # Every call answers `Ok(value)` or `Err(message)`. An error the server sent
 # and a connection that broke are both failures, and both belong here.
+#
+#     # not run
+#     import "db/oxiresp"
+#     kv_command(fd, Cons("CONFIG", Cons("GET", Cons("maxmemory", Nil))))   # any command, as its words
 fn kv_command(fd, args) =
   sock_write(fd, resp_command(args))
   resp_await(fd, "")
 
-fn resp_await(fd, buf) = match resp_decode(buf, 0)
+private fn resp_await(fd, buf) = match resp_decode(buf, 0)
   RGot(v, _) -> resp_answer(v)
   RBad(why, pos) -> Err("oxidb: unreadable reply: " + why + ", at byte " + int_to_str(pos))
   RMore -> resp_fill(fd, buf)
 
-fn resp_fill(fd, buf) =
+private fn resp_fill(fd, buf) =
   chunk = sock_read(fd)
   if str_len(chunk) == 0 then Err("oxidb: the connection ended mid-reply") else resp_await(fd, buf + chunk)
 
-fn resp_answer(v) = match v
+private fn resp_answer(v) = match v
   RError(e) -> Err(e)
   _ -> Ok(v)
 
 # -- building argument lists --------------------------------------------------
 
+#     import "db/oxiresp"
+#     kv_args1("PING")   # => Cons(PING, Nil)
 fn kv_args1(a) = Cons(a, Nil)
 
+#     import "db/oxiresp"
+#     kv_args2("GET", "k")   # => Cons(GET, Cons(k, Nil))
 fn kv_args2(a, b) = Cons(a, Cons(b, Nil))
 
+#     import "db/oxiresp"
+#     kv_args3("SET", "k", "v")   # => Cons(SET, Cons(k, Cons(v, Nil)))
 fn kv_args3(a, b, c) = Cons(a, Cons(b, Cons(c, Nil)))
 
+#     import "db/oxiresp"
+#     kv_args4("HSET", "h", "f", "v")   # => Cons(HSET, Cons(h, Cons(f, Cons(v, Nil))))
 fn kv_args4(a, b, c, d) = Cons(a, Cons(b, Cons(c, Cons(d, Nil))))
 
 # -- strings ------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_ping(fd)   # Ok(RSimple("PONG"))
 fn kv_ping(fd) = kv_command(fd, kv_args1("PING"))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_echo(fd, "hi")   # Ok(RBulk("hi"))
 fn kv_echo(fd, text) = kv_command(fd, kv_args2("ECHO", text))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_set(fd, "k", "v")   # Ok(RSimple("OK"))
 fn kv_set(fd, key, value) = kv_command(fd, kv_args3("SET", key, value))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_setex(fd, "session", 3600, "token")   # the value, gone in an hour
 fn kv_setex(fd, key, seconds, value) =
   kv_command(fd, kv_args4("SETEX", key, int_to_str(seconds), value))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_text(kv_get(fd, "k")?)   # "v", or "" when there is no such key: kv_missing tells the two apart
 fn kv_get(fd, key) = kv_command(fd, kv_args2("GET", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_getset(fd, "k", "new")   # the old value
 fn kv_getset(fd, key, value) = kv_command(fd, kv_args3("GETSET", key, value))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_append(fd, "k", "more")?)   # the new length
 fn kv_append(fd, key, value) = kv_command(fd, kv_args3("APPEND", key, value))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_strlen(fd, "k")?)   # how long the value is
 fn kv_strlen(fd, key) = kv_command(fd, kv_args2("STRLEN", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_incr(fd, "visits")?)   # the count after
 fn kv_incr(fd, key) = kv_command(fd, kv_args2("INCR", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_incrby(fd, "visits", 10)?)   #
 fn kv_incrby(fd, key, by) = kv_command(fd, kv_args3("INCRBY", key, int_to_str(by)))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_mset(fd, Cons("a", Cons("1", Cons("b", Cons("2", Nil)))))   # key, value, key, value
 fn kv_mset(fd, pairs) = kv_command(fd, Cons("MSET", pairs))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_texts(kv_mget(fd, Cons("a", Cons("b", Nil)))?)   # Cons("1", Cons("2", Nil))
 fn kv_mget(fd, keys) = kv_command(fd, Cons("MGET", keys))
 
 # -- keys ---------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_del(fd, "k")?)   # 1 if it was there
 fn kv_del(fd, key) = kv_command(fd, kv_args2("DEL", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_exists(fd, "k")?)   # 1 or 0
 fn kv_exists(fd, key) = kv_command(fd, kv_args2("EXISTS", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_text(kv_type(fd, "k")?)   # "string", "list", "hash", "set", "zset" or "none"
 fn kv_type(fd, key) = kv_command(fd, kv_args2("TYPE", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_rename(fd, "old", "new")   #
 fn kv_rename(fd, key, to) = kv_command(fd, kv_args3("RENAME", key, to))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_expire(fd, "session", 60)   # a minute more
 fn kv_expire(fd, key, seconds) =
   kv_command(fd, kv_args3("EXPIRE", key, int_to_str(seconds)))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_ttl(fd, "session")?)   # seconds left; -1 with no expiry, -2 with no key
 fn kv_ttl(fd, key) = kv_command(fd, kv_args2("TTL", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_persist(fd, "session")   # the expiry taken off
 fn kv_persist(fd, key) = kv_command(fd, kv_args2("PERSIST", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_texts(kv_keys(fd, "user:*")?)   # every matching key, all at once — kv_scan_all for a big store
 fn kv_keys(fd, pattern) = kv_command(fd, kv_args2("KEYS", pattern))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_dbsize(fd)?)   # how many keys
 fn kv_dbsize(fd) = kv_command(fd, kv_args1("DBSIZE"))
 
 # One page of the keyspace: the cursor to carry on from, and the keys on it.
@@ -200,22 +302,34 @@ fn kv_dbsize(fd) = kv_command(fd, kv_args1("DBSIZE"))
 # during the walk may or may not turn up, and one that goes may still be
 # listed; that is what a scan costs, and it is the trade every keyspace this
 # size makes.
+#
+#     # not run
+#     import "db/oxiresp"
+#     page = kv_scan(fd, "0", "user:*", 100)?   # a cursor and a page of keys: kv_page_cursor, kv_page_keys
 fn kv_scan(fd, cursor, pattern, count) =
   kv_command(fd, kv_scan_args(cursor, pattern, count))
 
+#     import "db/oxiresp"
+#     kv_scan_args("0", "user:*", 100)   # => Cons(SCAN, Cons(0, Cons(MATCH, Cons(user:*, Cons(COUNT, Cons(100, Nil))))))
 fn kv_scan_args(cursor, pattern, count) =
   Cons("SCAN", Cons(cursor, Cons("MATCH", Cons(pattern, Cons("COUNT", Cons(int_to_str(count), Nil))))))
 
 # A page is a two-element array: the cursor, then the keys.
+#
+#     import "db/oxiresp"
+#     kv_page_cursor(RArray(Cons(RBulk("17"), Cons(RArray(Nil), Nil))))   # => 17
+#     kv_page_cursor(RNil)                                               # => 0
 fn kv_page_cursor(v) = match kv_list(v)
   Nil -> "0"
   Cons(c, _) -> kv_text(c)
 
+#     import "db/oxiresp"
+#     kv_page_keys(RArray(Cons(RBulk("0"), Cons(RArray(Cons(RBulk("a"), Cons(RBulk("b"), Nil))), Nil))))   # => Cons(a, Cons(b, Nil))
 fn kv_page_keys(v) = match kv_list(v)
   Nil -> Nil
   Cons(_, rest) -> kv_page_rest(rest)
 
-fn kv_page_rest(rest) = match rest
+private fn kv_page_rest(rest) = match rest
   Nil -> Nil
   Cons(page, _) -> kv_texts(page)
 
@@ -224,78 +338,157 @@ fn kv_page_rest(rest) = match rest
 # The guard is not decoration: a cursor that never reaches "0" — an engine
 # with a bug in it, or a page that answers with the cursor it was given — is
 # an endless loop inside a caller that only asked for a list of keys.
+#
+#     # not run
+#     import "db/oxiresp"
+#     kv_scan_all(fd, "user:*")   # every matching key, page by page
 fn kv_scan_all(fd, pattern) = kv_scan_walk(fd, pattern, "0", Nil, 0)
 
-fn kv_scan_walk(fd, pattern, cursor, acc, seen) =
+private fn kv_scan_walk(fd, pattern, cursor, acc, seen) =
   if seen > 10000 then acc else kv_scan_page(fd, pattern, cursor, acc, seen, kv_scan(fd, cursor, pattern, 200))
 
-fn kv_scan_page(fd, pattern, cursor, acc, seen, answer) = match answer
+private fn kv_scan_page(fd, pattern, cursor, acc, seen, answer) = match answer
   Err(_) -> acc
   Ok(v) -> kv_scan_more(fd, pattern, cursor, append(acc, kv_page_keys(v)), seen, kv_page_cursor(v))
 
-fn kv_scan_more(fd, pattern, was, acc, seen, cursor) =
+private fn kv_scan_more(fd, pattern, was, acc, seen, cursor) =
   if cursor == "0" || cursor == was then acc else kv_scan_walk(fd, pattern, cursor, acc, seen + 1)
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_flushdb(fd)   # everything gone
 fn kv_flushdb(fd) = kv_command(fd, kv_args1("FLUSHDB"))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_select(fd, 1)   # another database of the same server
 fn kv_select(fd, n) = kv_command(fd, kv_args2("SELECT", int_to_str(n)))
 
 # -- hashes -------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_hset(fd, "user:1", "name", "ada")   #
 fn kv_hset(fd, key, field_name, value) =
   kv_command(fd, kv_args4("HSET", key, field_name, value))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_text(kv_hget(fd, "user:1", "name")?)   # "ada"
 fn kv_hget(fd, key, field_name) = kv_command(fd, kv_args3("HGET", key, field_name))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_hdel(fd, "user:1", "name")   #
 fn kv_hdel(fd, key, field_name) = kv_command(fd, kv_args3("HDEL", key, field_name))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_texts(kv_hgetall(fd, "user:1")?)   # field, value, field, value
 fn kv_hgetall(fd, key) = kv_command(fd, kv_args2("HGETALL", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_texts(kv_hkeys(fd, "user:1")?)   #
 fn kv_hkeys(fd, key) = kv_command(fd, kv_args2("HKEYS", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_texts(kv_hvals(fd, "user:1")?)   #
 fn kv_hvals(fd, key) = kv_command(fd, kv_args2("HVALS", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_hlen(fd, "user:1")?)   #
 fn kv_hlen(fd, key) = kv_command(fd, kv_args2("HLEN", key))
 
 # -- lists --------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_lpush(fd, "queue", "job")   # onto the front
 fn kv_lpush(fd, key, value) = kv_command(fd, kv_args3("LPUSH", key, value))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_rpush(fd, "queue", "job")   # onto the back
 fn kv_rpush(fd, key, value) = kv_command(fd, kv_args3("RPUSH", key, value))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_text(kv_lpop(fd, "queue")?)   # the front one, or "" — kv_missing says which
 fn kv_lpop(fd, key) = kv_command(fd, kv_args2("LPOP", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_text(kv_rpop(fd, "queue")?)   #
 fn kv_rpop(fd, key) = kv_command(fd, kv_args2("RPOP", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_llen(fd, "queue")?)   #
 fn kv_llen(fd, key) = kv_command(fd, kv_args2("LLEN", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_texts(kv_lrange(fd, "queue", 0, -1)?)   # all of it
 fn kv_lrange(fd, key, start, stop) =
   kv_command(fd, kv_args4("LRANGE", key, int_to_str(start), int_to_str(stop)))
 
 # -- sets ---------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_sadd(fd, "tags", "rill")   #
 fn kv_sadd(fd, key, member) = kv_command(fd, kv_args3("SADD", key, member))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_srem(fd, "tags", "rill")   #
 fn kv_srem(fd, key, member) = kv_command(fd, kv_args3("SREM", key, member))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_sismember(fd, "tags", "rill")?)   # 1 or 0
 fn kv_sismember(fd, key, member) =
   kv_command(fd, kv_args3("SISMEMBER", key, member))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_texts(kv_smembers(fd, "tags")?)   #
 fn kv_smembers(fd, key) = kv_command(fd, kv_args2("SMEMBERS", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_scard(fd, "tags")?)   #
 fn kv_scard(fd, key) = kv_command(fd, kv_args2("SCARD", key))
 
 # -- sorted sets --------------------------------------------------------------
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_zadd(fd, "board", 1500.0, "ada")   # a member with a score
 fn kv_zadd(fd, key, score, member) =
   kv_command(fd, kv_args4("ZADD", key, float_to_str(score), member))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_float(kv_zscore(fd, "board", "ada")?)   # 1500
 fn kv_zscore(fd, key, member) = kv_command(fd, kv_args3("ZSCORE", key, member))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_zrem(fd, "board", "ada")   #
 fn kv_zrem(fd, key, member) = kv_command(fd, kv_args3("ZREM", key, member))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_zcard(fd, "board")?)   #
 fn kv_zcard(fd, key) = kv_command(fd, kv_args2("ZCARD", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_texts(kv_zrange(fd, "board", 0, 9)?)   # the ten lowest
 fn kv_zrange(fd, key, start, stop) =
   kv_command(fd, kv_args4("ZRANGE", key, int_to_str(start), int_to_str(stop)))
 
@@ -304,20 +497,45 @@ fn kv_zrange(fd, key, start, stop) =
 # `MULTI` queues what follows and `EXEC` answers an array of every queued
 # reply. A `WATCH`ed key that somebody else changed makes `EXEC` answer the
 # null array, which is `kv_broke_off` below rather than an error.
+#
+#     # not run
+#     import "db/oxiresp"
+#     kv_multi(fd)
+#     kv_incr(fd, "a")
+#     kv_incr(fd, "b")
+#     kv_list(kv_exec(fd)?)   # both answers, once, together
 fn kv_multi(fd) = kv_command(fd, kv_args1("MULTI"))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_exec(fd)   # the queued answers, or RNilArray when a watched key changed
 fn kv_exec(fd) = kv_command(fd, kv_args1("EXEC"))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_discard(fd)   # the queue dropped
 fn kv_discard(fd) = kv_command(fd, kv_args1("DISCARD"))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_watch(fd, "balance")   # the transaction breaks off if it changes first
 fn kv_watch(fd, key) = kv_command(fd, kv_args2("WATCH", key))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_unwatch(fd)   #
 fn kv_unwatch(fd) = kv_command(fd, kv_args1("UNWATCH"))
 
 # -- reading values out -------------------------------------------------------
 
 # A simple string and a bulk string are different things on the wire and the
 # same thing to a caller who wanted text.
+#
+#     import "db/oxiresp"
+#     kv_text(RBulk("ada"))     # => ada
+#     kv_text(RSimple("OK"))    # => OK
+#     kv_text(RInt(3))          # => 3
+#     kv_text(RNil)             # =>
 fn kv_text(v) = match v
   RSimple(s) -> s
   RBulk(s) -> s
@@ -325,22 +543,32 @@ fn kv_text(v) = match v
   RError(e) -> e
   _ -> ""
 
+#     import "db/oxiresp"
+#     kv_int(RInt(42))       # => 42
+#     kv_int(RBulk("42"))    # => 42
 fn kv_int(v) = match v
   RInt(n) -> n
   RBulk(s) -> str_to_int(s)
   RSimple(s) -> str_to_int(s)
   _ -> 0
 
+#     import "db/oxiresp"
+#     kv_float(RBulk("1500.5"))   # => 1500.5
 fn kv_float(v) = match v
   RBulk(s) -> str_to_float(s)
   RSimple(s) -> str_to_float(s)
   RInt(n) -> str_to_float(int_to_str(n))
   _ -> 0.0
 
+#     import "db/oxiresp"
+#     kv_list(RArray(Cons(RInt(1), Nil)))   # => Cons(RInt(1), Nil)
+#     kv_list(RNil)                        # => Nil
 fn kv_list(v) = match v
   RArray(xs) -> xs
   _ -> Nil
 
+#     import "db/oxiresp"
+#     kv_texts(RArray(Cons(RBulk("a"), Cons(RInt(2), Nil))))   # => Cons(a, Cons(2, Nil))
 fn kv_texts(v) = map(kv_list(v), \x -> kv_text(x))
 
 # A refusal that arrived *inside* a reply.
@@ -354,28 +582,47 @@ fn kv_texts(v) = map(kv_list(v), \x -> kv_text(x))
 #
 # `kv_text` of one is the engine's own words: `WRONGTYPE Operation against a
 # key holding the wrong kind of value`.
+#
+#     import "db/oxiresp"
+#     kv_failed(RError("ERR wrong type"))   # => true
+#     kv_failed(RSimple("OK"))             # => false
 fn kv_failed(v) = match v
   RError(_) -> true
   _ -> false
 
 # The value, for a caller that has already decided a broken connection is not
 # worth branching on — a counter it can live without, a line on a status page.
+#
+#     import "db/oxiresp"
+#     kv_or(Ok(RInt(1)), RNil)                 # => RInt(1)
+#     kv_or(Err("connection lost"), RNil)      # => RNil
 fn kv_or(r, fallback) = match r
   Ok(v) -> v
   Err(_) -> fallback
 
 # Why it failed, or "" if it did not. The engine's message, or this file's
 # when the socket was the thing that broke.
+#
+#     import "db/oxiresp"
+#     kv_why(Err("connection lost"))   # => connection lost
+#     kv_why(Ok(RNil))                 # =>
 fn kv_why(r) = match r
   Ok(_) -> ""
   Err(e) -> e
 
 # A key that is not there. Distinct from the empty string, which is a value.
+#
+#     import "db/oxiresp"
+#     kv_missing(RNil)         # => true
+#     kv_missing(RBulk(""))    # => false
 fn kv_missing(v) = match v
   RNil -> true
   _ -> false
 
 # What `EXEC` answers when a `WATCH`ed key moved under the transaction.
+#
+#     import "db/oxiresp"
+#     kv_broke_off(RNilArray)   # => true
 fn kv_broke_off(v) = match v
   RNilArray -> true
   _ -> false
@@ -389,27 +636,42 @@ fn kv_broke_off(v) = match v
 # and never gives it back, so a program that both publishes and subscribes
 # needs two — which is why `kv_publish` takes a socket and everything below
 # takes a `Sub`.
+#
+#     # not run
+#     import "db/oxiresp"
+#     kv_int(kv_publish(fd, "news", "hello")?)   # how many subscribers got it
 fn kv_publish(fd, channel, payload) =
   kv_command(fd, kv_args3("PUBLISH", channel, payload))
 
+#     # not run
+#     import "db/oxiresp"
+#     sub = kv_subscribe(fd, Cons("news", Nil))?
+#     match kv_next_message(sub)
+#       Message(sub2, channel, payload) -> payload
+#       Ended(why) -> why
+#       _ -> ""
 fn kv_subscribe(fd, channels) =
   sub_start(fd, Cons("SUBSCRIBE", channels), len(channels))
 
 # Patterns are globs: `news.*` takes `news.home` and `news.sport`, and what
 # arrives says which pattern caught it as well as which channel it came from.
+#
+#     # not run
+#     import "db/oxiresp"
+#     sub = kv_psubscribe(fd, Cons("news.*", Nil))?
 fn kv_psubscribe(fd, patterns) =
   sub_start(fd, Cons("PSUBSCRIBE", patterns), len(patterns))
 
-fn sub_start(fd, args, wanted) =
+private fn sub_start(fd, args, wanted) =
   sock_write(fd, resp_command(args))
   sub_confirm(Sub(fd, ""), wanted)
 
 # One note comes back per channel. Reading them here is what leaves the
 # subscription pointed at messages rather than at its own paperwork.
-fn sub_confirm(sub, remaining) =
+private fn sub_confirm(sub, remaining) =
   if remaining <= 0 then Ok(sub) else sub_confirmed(remaining, kv_next(sub))
 
-fn sub_confirmed(remaining, delivery) = match delivery
+private fn sub_confirmed(remaining, delivery) = match delivery
   Note(s, _, _, _) -> sub_confirm(s, remaining - 1)
   Ended(why) -> Err(why)
   Message(_, ch, _) -> Err("oxidb: a message on `" + ch + "` arrived before the subscription was confirmed")
@@ -419,27 +681,43 @@ fn sub_confirmed(remaining, delivery) = match delivery
 # anything is published to it: the notes are read back here, and a message
 # that arrives in the middle of them is one this cannot put down again — it
 # says so rather than dropping it.
+#
+#     # not run
+#     import "db/oxiresp"
+#     sub2 = kv_subscribe_more(sub, Cons("alerts", Nil))?
 fn kv_subscribe_more(sub, channels) =
   sub_more(sub, Cons("SUBSCRIBE", channels), len(channels))
 
+#     # not run
+#     import "db/oxiresp"
+#     sub2 = kv_psubscribe_more(sub, Cons("alerts.*", Nil))?
 fn kv_psubscribe_more(sub, patterns) =
   sub_more(sub, Cons("PSUBSCRIBE", patterns), len(patterns))
 
-fn sub_more(sub, args, wanted) =
+private fn sub_more(sub, args, wanted) =
   Sub(fd, _) = sub
   sock_write(fd, resp_command(args))
   sub_confirm(sub, wanted)
 
+#     # not run
+#     import "db/oxiresp"
+#     sub2 = kv_unsubscribe(sub, Cons("news", Nil))?
 fn kv_unsubscribe(sub, channels) =
   Sub(fd, _) = sub
   sock_write(fd, resp_command(Cons("UNSUBSCRIBE", channels)))
   sub_confirm(sub, len(channels))
 
+#     # not run
+#     import "db/oxiresp"
+#     sub2 = kv_punsubscribe(sub, Cons("news.*", Nil))?
 fn kv_punsubscribe(sub, patterns) =
   Sub(fd, _) = sub
   sock_write(fd, resp_command(Cons("PUNSUBSCRIBE", patterns)))
   sub_confirm(sub, len(patterns))
 
+#     # not run
+#     import "db/oxiresp"
+#     kv_sub_hang_up(sub)
 fn kv_sub_hang_up(sub) =
   Sub(fd, _) = sub
   sock_close(fd)
@@ -447,53 +725,73 @@ fn kv_sub_hang_up(sub) =
 # Waits for whatever comes next, which may be a message or the server's word
 # about a subscription. A strand blocked here parks, so a subscriber costs
 # nothing between messages.
+#
+#     # not run
+#     import "db/oxiresp"
+#     match kv_next(sub)
+#       Message(s, channel, payload) -> payload
+#       Note(s, kind, name, count) -> kind + " " + name    # "subscribe news", and the like
+#       Ended(why) -> why
+#       _ -> ""
 fn kv_next(sub) =
   Sub(fd, buf) = sub
   sub_step(fd, buf, resp_decode(buf, 0))
 
-fn sub_step(fd, buf, read) = match read
+private fn sub_step(fd, buf, read) = match read
   RGot(v, j) -> sub_delivered(Sub(fd, str_sub(buf, j, str_len(buf) - j)), v)
   RBad(why, pos) -> Ended("oxidb: unreadable message: " + why + ", at byte " + int_to_str(pos))
   RMore -> sub_fill(fd, buf)
 
-fn sub_fill(fd, buf) =
+private fn sub_fill(fd, buf) =
   chunk = sock_read(fd)
   if str_len(chunk) == 0 then Ended("oxidb: the subscription ended") else kv_next(Sub(fd, buf + chunk))
 
 # The same as `kv_next`, with the server's paperwork passed over — for a
 # caller that subscribed once and only wants what was published.
+#
+#     # not run
+#     import "db/oxiresp"
+#     match kv_next_message(sub)                              # notes are skipped
+#       Message(s, channel, payload) -> payload
+#       Ended(why) -> why
+#       _ -> ""
 fn kv_next_message(sub) = sub_past_notes(kv_next(sub))
 
-fn sub_past_notes(delivery) = match delivery
+private fn sub_past_notes(delivery) = match delivery
   Note(s, _, _, _) -> kv_next_message(s)
   _ -> delivery
 
 # Every push is an array whose first item says what it is.
-fn sub_delivered(sub, v) = match v
+private fn sub_delivered(sub, v) = match v
   RError(e) -> Ended(e)
   RArray(parts) -> sub_parts(sub, parts)
   _ -> Ended("oxidb: a subscription reply that is not an array")
 
-fn sub_parts(sub, parts) = match parts
+private fn sub_parts(sub, parts) = match parts
   Nil -> Ended("oxidb: an empty subscription reply")
   Cons(kind, rest) -> sub_kind(sub, kv_text(kind), rest)
 
-fn sub_kind(sub, kind, rest) =
+private fn sub_kind(sub, kind, rest) =
   if kind == "message" then sub_message(sub, rest) else if kind == "pmessage" then sub_pattern_message(sub, rest) else sub_note(sub, kind, rest)
 
-fn sub_message(sub, rest) = match rest
+private fn sub_message(sub, rest) = match rest
   Cons(channel, Cons(payload, _)) -> Message(sub, kv_text(channel), kv_text(payload))
   _ -> Ended("oxidb: a message with no channel")
 
-fn sub_pattern_message(sub, rest) = match rest
+private fn sub_pattern_message(sub, rest) = match rest
   Cons(pattern, Cons(channel, Cons(payload, _))) -> PatternMessage(sub, kv_text(pattern), kv_text(channel), kv_text(payload))
   _ -> Ended("oxidb: a pattern message missing its parts")
 
-fn sub_note(sub, kind, rest) = match rest
+private fn sub_note(sub, kind, rest) = match rest
   Cons(name, Cons(count, _)) -> Note(sub, kind, kv_text(name), kv_int(count))
   _ -> Ended("oxidb: a `" + kind + "` note missing its parts")
 
 # For printing a reply whatever shape it came in.
+#
+#     import "db/oxiresp"
+#     kv_shown(RBulk("ada"))                          # => "ada"
+#     kv_shown(RArray(Cons(RInt(1), Cons(RNil, Nil))))   # => [1, nil]
+#     kv_shown(RError("ERR x"))                       # => error: ERR x
 fn kv_shown(v) = match v
   RSimple(s) -> s
   RBulk(s) -> "\"" + s + "\""

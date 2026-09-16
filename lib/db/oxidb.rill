@@ -25,33 +25,68 @@ module oxidb
 # carries which of the two it is, so there is no `{"ok":.., "data":..}`
 # envelope to unwrap. The connection is a plain socket, so a strand waiting on
 # a reply parks and costs nothing.
+#
+#     # not run
+#     import "db/oxidb"
+#     fd = dial("127.0.0.1", 7411)?               # the document engine, on its native wire
+#     info = hello(fd)?
+#     server_name(info)                              # "oxidb"
+#     id = inserted_id(insert(fd, "people", JObj(Cons(field("name", text("ada")), Nil)))?)
+#     found = docs(find(fd, "people", JObj(Cons(field("name", text("ada")), Nil)))?)
+#     map(found, \d -> field_str(d, "name"))         # Cons("ada", Nil)
+#     modified(update(fd, "people", JObj(Cons(field("name", text("ada")), Nil)), set(Cons(field("age", int(36)), Nil)))?)   # 1
+#     hang_up(fd)
 import "db/oxiwire"
 
 # -- calling ------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxidb"
+#     fd = dial("127.0.0.1", 7411)?   # a socket, or Err(cannot connect to 127.0.0.1:7411)
 fn dial(host, port) = connect_to(host, port)
 
+#     # not run
+#     import "db/oxidb"
+#     hang_up(fd)
 fn hang_up(fd) = sock_close(fd)
 
 # One request, one reply, unwrapped into a `Result`.
+#
+#     # not run
+#     import "db/oxidb"
+#     reply = call(fd, command("ping", Nil))   # Ok(the value the server answered), or Err(its message)
 fn call(fd, request) = ow_call(fd, request)
 
 # -- building requests --------------------------------------------------------
 
 # `command("find", Cons(field("collection", JStr(c)), Nil))` — the `cmd` field
 # is added here so no caller has to remember its name.
+#
+#     import "db/oxidb"
+#     command("find", Cons(field("collection", text("people")), Nil))   # => JObj(Cons(Field(cmd, JStr(find)), Cons(Field(collection, JStr(people)), Nil)))
 fn command(name, fields) = JObj(Cons(Field("cmd", JStr(name)), fields))
 
+#     import "db/oxidb"
+#     field("age", int(36))   # => Field(age, JInt(36))
 fn field(key, value) = Field(key, value)
 
+#     import "db/oxidb"
+#     text("ada")   # => JStr(ada)
 fn text(s) = JStr(s)
 
+#     import "db/oxidb"
+#     int(36)   # => JInt(36)
 fn int(n) = JInt(n)
 
+#     import "db/oxidb"
+#     on("people", Cons(field("query", JObj(Nil)), Nil))   # => Cons(Field(collection, JStr(people)), Cons(Field(query, JObj(Nil)), Nil))
 fn on(collection, fields) = Cons(Field("collection", JStr(collection)), fields)
 
 # -- commands -----------------------------------------------------------------
 
+#     # not run
+#     import "db/oxidb"
+#     ping(fd)   # Ok(JStr("pong"))
 fn ping(fd) = call(fd, command("ping", Nil))
 
 # The handshake, and the one command whose reply is not on the wire the
@@ -60,105 +95,193 @@ fn ping(fd) = call(fd, command("ping", Nil))
 # server's own shape rather than the usual envelope — `{"ok":true,
 # "server":{...}}`. So this reads either, and hands back what the reply says
 # about the server.
+#
+#     # not run
+#     import "db/oxidb"
+#     info = hello(fd)?
+#     server_name(info)   # "oxidb"
 fn hello(fd) =
   ow_send(fd, command("hello", Cons(Field("wire_versions", JArr(Cons(JInt(1), Nil))), Nil)))
   hello_reply(ow_recv(fd))
 
-fn hello_reply(frame) =
+private fn hello_reply(frame) =
   if str_len(frame) == 0 then Err("oxidb: the server said nothing") else if str_get(frame, 0) == 219 then ow_reply(frame) else hello_json(frame)
 
-fn hello_json(frame) = match parse(frame)
+private fn hello_json(frame) = match parse(frame)
   Err(why) -> Err("oxidb: the reply is neither OxiWire nor JSON: " + why)
   Ok(v) -> hello_server(v)
 
-fn hello_server(v) = match get(v, "server")
+private fn hello_server(v) = match get(v, "server")
   Some(info) -> Ok(info)
   None -> Err("oxidb: the handshake answered without a `server`")
 
 # What the handshake says, for a client that wants to know before it asks.
+#
+#     import "db/oxidb"
+#     server_name(JObj(Cons(Field("name", JStr("oxidb")), Nil)))   # => oxidb
 fn server_name(info) = as_str(unwrap_or(get(info, "name"), JNull))
 
+#     import "db/oxidb"
+#     server_version(JObj(Cons(Field("version", JStr("0.9.0")), Nil)))   # => 0.9.0
 fn server_version(info) = as_str(unwrap_or(get(info, "version"), JNull))
 
+#     import "db/oxidb"
+#     wire_version(JObj(Cons(Field("wire_version", JInt(2)), Nil)))   # => 2
 fn wire_version(info) = as_int(unwrap_or(get(info, "wire_version"), JNull))
 
+#     import "db/oxidb"
+#     server_features(JObj(Cons(Field("features", JArr(Cons(JStr("tsdb"), Cons(JStr("sql"), Nil)))), Nil)))   # => Cons(tsdb, Cons(sql, Nil))
 fn server_features(info) = map(items(unwrap_or(get(info, "features"), JArr(Nil))), \f -> as_str(f))
 
+#     # not run
+#     import "db/oxidb"
+#     list_collections(fd)   # Ok(JArr(the names))
 fn list_collections(fd) = call(fd, command("list_collections", Nil))
 
+#     # not run
+#     import "db/oxidb"
+#     inserted_id(insert(fd, "people", JObj(Cons(field("name", text("ada")), Nil)))?)   # the new document's id
 fn insert(fd, collection, doc) =
   call(fd, command("insert", on(collection, Cons(Field("doc", doc), Nil))))
 
+#     # not run
+#     import "db/oxidb"
+#     inserted_ids(insert_many(fd, "people", Cons(doc1, Cons(doc2, Nil)))?)   # Cons(id1, Cons(id2, Nil))
 fn insert_many(fd, collection, docs) =
   call(fd, command("insert_many", on(collection, Cons(Field("docs", JArr(docs)), Nil))))
 
+#     # not run
+#     import "db/oxidb"
+#     docs(find(fd, "people", JObj(Cons(field("age", int(36)), Nil)))?)   # every document with age 36
 fn find(fd, collection, query) =
   call(fd, command("find", on(collection, Cons(Field("query", query), Nil))))
 
 # `sort` is a document like `{"age": -1}`; a limit of 0 asks for no limit.
+#
+#     # not run
+#     import "db/oxidb"
+#     docs(find_sorted(fd, "people", JObj(Nil), JObj(Cons(field("age", int(-1)), Nil)), 10)?)   # the ten oldest
 fn find_sorted(fd, collection, query, sort, limit) =
   call(fd, command("find", on(collection, Cons(Field("query", query), Cons(Field("sort", sort), limit_field(limit))))))
 
-fn limit_field(limit) = if limit <= 0 then Nil else Cons(Field("limit", JInt(limit)), Nil)
+private fn limit_field(limit) = if limit <= 0 then Nil else Cons(Field("limit", JInt(limit)), Nil)
 
+#     # not run
+#     import "db/oxidb"
+#     counted(count(fd, "people")?)   # how many documents
 fn count(fd, collection) = call(fd, command("count", on(collection, Nil)))
 
 # How many match, which is what a pager needs before it can say "of 4200".
+#
+#     # not run
+#     import "db/oxidb"
+#     counted(count_where(fd, "people", JObj(Cons(field("role", text("admin")), Nil)))?)
 fn count_where(fd, collection, query) =
   call(fd, command("count", on(collection, Cons(Field("query", query), Nil))))
 
 # One page of a query: `limit` documents, the first `skip` of them passed
 # over. The sort has to be given, because a page is only a page if the order
 # is the same each time.
+#
+#     # not run
+#     import "db/oxidb"
+#     docs(find_page(fd, "people", JObj(Nil), JObj(Cons(field("name", int(1)), Nil)), 20, 40)?)   # the third page of twenty, by name
 fn find_page(fd, collection, query, sort, limit, skip) =
   call(fd, command("find", on(collection, Cons(Field("query", query), Cons(Field("sort", sort), Cons(Field("skip", JInt(skip)), limit_field(limit)))))))
 
+#     # not run
+#     import "db/oxidb"
+#     modified(update(fd, "people", JObj(Cons(field("name", text("ada")), Nil)), set(Cons(field("age", int(37)), Nil)))?)   # how many changed
 fn update(fd, collection, query, changes) =
   call(fd, command("update", on(collection, Cons(Field("query", query), Cons(Field("update", changes), Nil)))))
 
+#     # not run
+#     import "db/oxidb"
+#     deleted(delete(fd, "people", JObj(Cons(field("name", text("ada")), Nil)))?)   # how many went
 fn delete(fd, collection, query) =
   call(fd, command("delete", on(collection, Cons(Field("query", query), Nil))))
 
 # A pipeline — a list of stages, `$match`, `$group`, `$sort`, `$facet` and the
 # rest, each a document like `{"$group": {"_id": "$role", "n": {"$sum": 1}}}` —
 # and what comes out of the end of it.
+#
+#     # not run
+#     import "db/oxidb"
+#     pipeline = JArr(Cons(JObj(Cons(field("$group", JObj(Cons(field("_id", text("$role")), Cons(field("n", JObj(Cons(field("$sum", int(1)), Nil))), Nil)))), Nil)), Nil))
+#     docs(aggregate(fd, "people", pipeline)?)   # one document per role, with its count
 fn aggregate(fd, collection, pipeline) =
   call(fd, command("aggregate", on(collection, Cons(Field("pipeline", pipeline), Nil))))
 
+#     # not run
+#     import "db/oxidb"
+#     create_index(fd, "people", "name")
 fn create_index(fd, collection, field_name) =
   call(fd, command("create_index", on(collection, Cons(Field("field", JStr(field_name)), Nil))))
 
 # What the server process itself is doing: how much memory it is holding, how
 # busy it is, how many threads it has, how long it has been up. Nothing about
 # the data, so a page can show it to anyone who may see the page.
+#
+#     # not run
+#     import "db/oxidb"
+#     st = proc_status(fd)?
+#     rss_mb(st)   # the server's resident memory, in MB
 fn proc_status(fd) = call(fd, command("proc_status", Nil))
 
+#     import "db/oxidb"
+#     rss_mb(JObj(Cons(Field("mem_rss_mb", JNum(12.5)), Nil)))   # => 12.5
 fn rss_mb(data) = as_float(unwrap_or(get(data, "mem_rss_mb"), JNull))
 
+#     import "db/oxidb"
+#     cpu_percent(JObj(Cons(Field("cpu_percent", JNum(3.0)), Nil)))   # => 3
 fn cpu_percent(data) = as_float(unwrap_or(get(data, "cpu_percent"), JNull))
 
+#     import "db/oxidb"
+#     uptime_s(JObj(Cons(Field("uptime_s", JInt(3600)), Nil)))   # => 3600
 fn uptime_s(data) = as_int(unwrap_or(get(data, "uptime_s"), JNull))
 
 # `$set` is the update operator the server expects for a partial change.
+#
+#     import "db/oxidb"
+#     set(Cons(field("age", int(37)), Nil))   # => JObj(Cons(Field($set, JObj(Cons(Field(age, JInt(37)), Nil))), Nil))
 fn set(fields) = JObj(Cons(Field("$set", JObj(fields)), Nil))
 
 # -- reading results ----------------------------------------------------------
 
 # `find` answers with an array; `insert` with `{"id": n}`; `count` with
 # `{"count": n}`. These name those shapes so callers do not repeat them.
+#
+#     import "db/oxidb"
+#     docs(JArr(Cons(JObj(Nil), Cons(JObj(Nil), Nil))))   # => Cons(JObj(Nil), Cons(JObj(Nil), Nil))
 fn docs(data) = items(data)
 
+#     import "db/oxidb"
+#     inserted_id(JObj(Cons(Field("id", JInt(42)), Nil)))   # => 42
 fn inserted_id(data) = as_int(unwrap_or(get(data, "id"), JNull))
 
+#     import "db/oxidb"
+#     inserted_ids(JArr(Cons(JInt(1), Cons(JInt(2), Nil))))   # => Cons(1, Cons(2, Nil))
 fn inserted_ids(data) = map(items(data), \d -> as_int(d))
 
+#     import "db/oxidb"
+#     counted(JObj(Cons(Field("count", JInt(7)), Nil)))   # => 7
 fn counted(data) = as_int(unwrap_or(get(data, "count"), JNull))
 
+#     import "db/oxidb"
+#     modified(JObj(Cons(Field("modified", JInt(1)), Nil)))   # => 1
 fn modified(data) = as_int(unwrap_or(get(data, "modified"), JNull))
 
+#     import "db/oxidb"
+#     deleted(JObj(Cons(Field("deleted", JInt(2)), Nil)))   # => 2
 fn deleted(data) = as_int(unwrap_or(get(data, "deleted"), JNull))
 
 # A field of one document, as text — `field_str(doc, "name")`.
+#
+#     import "db/oxidb"
+#     field_str(JObj(Cons(Field("name", JStr("ada")), Nil)), "name")   # => ada
+#     field_str(JObj(Nil), "name")                                    # =>
 fn field_str(doc, key) = as_str(unwrap_or(get(doc, key), JNull))
 
+#     import "db/oxidb"
+#     field_int(JObj(Cons(Field("age", JInt(36)), Nil)), "age")   # => 36
 fn field_int(doc, key) = as_int(unwrap_or(get(doc, key), JNull))

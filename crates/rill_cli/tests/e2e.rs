@@ -5493,3 +5493,27 @@ fn doc_reads_the_comments_off_the_file() {
     let heap = std::fs::read_to_string(dir.join("heap.md")).unwrap();
     assert!(heap.contains("### `Heap(a)`\n\n- `Heap(before: (a, a) -> Bool, root: Tree(a), size: Int)`"), "{heap}");
 }
+
+/// `rill doctest lib`: every example in the standard library's doc
+/// comments — a comment line indented four spaces past the `#`, with what
+/// `show` prints after `# =>` — is run and held to its answer, so an example
+/// on the reference pages is one that was true when they were built.
+#[test]
+fn the_standard_library_examples_are_true() {
+    let root = workspace_root();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("doctest").arg(root.join("lib")).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{said}{}", String::from_utf8_lossy(&out.stderr));
+    let last = said.lines().last().unwrap_or("");
+    assert!(last.contains(" passed, 0 failed") && !last.starts_with("0 examples"), "{last}");
+    // and a wrong one is caught, at the comment's line
+    let dir = std::env::temp_dir().join(format!("rill-e2e-doctest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("greet.rill");
+    std::fs::write(&path, "module greet\n\n# A greeting.\n#\n#     greet.hello(\"ada\")   # => hello, ada\n#     greet.hello(\"\")      # => hello, nobody\nfn hello(name) = if #name == 0 then \"hello, everyone\" else \"hello, \" + name\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("doctest").arg(&path).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(!out.status.success() && said.contains("greet.rill:6") && said.contains("expected: hello, nobody") && said.contains("got: hello, everyone"), "{said}");
+    assert!(said.ends_with("2 examples in 1 file: 1 passed, 1 failed\n"), "{said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

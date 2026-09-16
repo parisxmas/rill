@@ -8,25 +8,29 @@ module bigint
 # limbs. Every value is normalized: no leading zero limbs, and zero is
 # never negative, so equal numbers are equal buffers.
 #
-#     import "num/bigint" as big
-#     n = big.pow(big.from_int(2), 100)             # 1267650600228229401496703205376
-#     f = big.factorial(30)
-#     (q, r) = big.divmod(f, big.parse("1000000007")?)
-#     println(show(big.add(q, r)))
 #
 # Addition and subtraction are linear, multiplication is the schoolbook
 # quadratic, and division finds each quotient limb by binary search over
 # products — fine for hundreds of digits, slow for a hundred thousand.
+#
+#     n = bigint.pow(bigint.from_int(2), 100)?
+#     n                                                     # => 1267650600228229401496703205376
+#     f = bigint.factorial(30)
+#     (q, r) = bigint.divmod(f, bigint.parse("1000000007")?)?
+#     bigint.add(q, r)                                      # => 265252857955421162309834
 
 type Big
   Big(negative: Bool, limbs: Buf(Int))
 
 private fn base() = 1000000000
 
+#     bigint.zero()   # => 0
 fn zero() = Big(false, buf_int(0))
 
+#     bigint.is_zero(bigint.sub(bigint.from_int(3), bigint.from_int(3)))   # => true
 fn is_zero(b: Big) = #b.limbs == 0
 
+#     bigint.from_int(-42)   # => -42
 fn from_int(n) =
   if n == 0 then zero() else if n == -9223372036854775807 - 1
     then neg(add(from_int(9223372036854775807), from_int(1)))
@@ -42,6 +46,9 @@ private fn limbs_of(n) =
   b
 
 # The `Int` this is, or `None` past its range.
+#
+#     bigint.as_int(bigint.from_int(42))                        # => Some(42)
+#     bigint.as_int(bigint.pow(bigint.from_int(10), 30)?)           # => None
 fn as_int(b: Big) =
   if #b.limbs > 3 then None
   else
@@ -56,13 +63,19 @@ private fn pow_base(i) = for _ in 0..i with acc = 1
 
 # -- sign and comparison ------------------------------------------------------
 
+#     bigint.neg(bigint.from_int(5))   # => -5
 fn neg(b: Big) = if is_zero(b) then b else Big(!b.negative, b.limbs)
 
+#     bigint.abs_of(bigint.from_int(-5))   # => 5
 fn abs_of(b: Big) = Big(false, b.limbs)
 
+#     bigint.sign(bigint.from_int(-5))   # => -1
+#     bigint.sign(bigint.zero())         # => 0
 fn sign(b: Big) = if is_zero(b) then 0 else if b.negative then -1 else 1
 
 # Negative, zero or positive as `a` is less than, equal to, or greater than `b`.
+#
+#     bigint.cmp(bigint.from_int(2), bigint.from_int(3))   # => -1
 fn cmp(a: Big, b: Big) =
   if a.negative != b.negative then if a.negative then -1 else 1
   else
@@ -77,10 +90,12 @@ private fn cmp_mag(x: Buf(Int), y: Buf(Int)) =
       if r != 0 then r else if x[i] < y[i] then -1 else if x[i] > y[i] then 1 else 0
     r
 
+#     bigint.eq(bigint.parse("007")?, bigint.from_int(7))   # => true
 fn eq(a: Big, b: Big) = cmp(a, b) == 0
 
 # -- arithmetic ---------------------------------------------------------------
 
+#     bigint.add(bigint.parse("999999999999999999")?, bigint.from_int(1))   # => 1000000000000000000
 fn add(a: Big, b: Big) =
   if a.negative == b.negative then Big(a.negative, add_mag(a.limbs, b.limbs)) |> trim
   else
@@ -89,8 +104,10 @@ fn add(a: Big, b: Big) =
       then Big(a.negative, sub_mag(a.limbs, b.limbs)) |> trim
       else Big(b.negative, sub_mag(b.limbs, a.limbs)) |> trim
 
+#     bigint.sub(bigint.from_int(1), bigint.from_int(3))   # => -2
 fn sub(a: Big, b: Big) = add(a, neg(b))
 
+#     bigint.mul(bigint.parse("123456789012")?, bigint.parse("987654321098")?)   # => 121932631136585886175176
 fn mul(a: Big, b: Big) =
   if is_zero(a) || is_zero(b)
     then zero()
@@ -98,6 +115,9 @@ fn mul(a: Big, b: Big) =
 
 # `b` to the `n`th, by squaring; `n` below zero is an error, as an integer
 # power is.
+#
+#     bigint.pow(bigint.from_int(3), 40)   # => Ok(12157665459056928801)
+#     bigint.pow(bigint.from_int(3), -1)   # => Err(a negative power is not an integer)
 fn pow(b: Big, n) =
   if n < 0
     then Err("a negative power is not an integer")
@@ -108,21 +128,27 @@ private fn pow_on(b: Big, n, acc: Big) =
     then acc
     else pow_on(mul(b, b), n / 2, if n % 2 == 1 then mul(acc, b) else acc)
 
+#     bigint.factorial(25)   # => 15511210043330985984000000
 fn factorial(n) = for k in 1..n + 1 with acc = from_int(1)
   mul(acc, from_int(k))
 
 # The quotient rounded toward zero and the remainder with the sign of `a`,
 # as `/` and `%` on `Int` have them; `Err` on a zero divisor.
+#
+#     bigint.divmod(bigint.from_int(-7), bigint.from_int(2))   # => Ok((-3, -1))
+#     bigint.divmod(bigint.from_int(1), bigint.zero())        # => Err(division by zero)
 fn divmod(a: Big, b: Big) =
   if is_zero(b) then Err("division by zero")
   else
     (q, r) = divmod_mag(a.limbs, b.limbs)
     Ok((Big(a.negative != b.negative, q) |> trim, Big(a.negative, r) |> trim))
 
+#     bigint.div(bigint.parse("1000000000000000000000")?, bigint.from_int(7))   # => Ok(142857142857142857142)
 fn div(a: Big, b: Big) = match divmod(a, b)
   Ok((q, _)) -> Ok(q)
   Err(e) -> Err(e)
 
+#     bigint.rem(bigint.parse("1000000000000000000000")?, bigint.from_int(7))   # => Ok(6)
 fn rem(a: Big, b: Big) = match divmod(a, b)
   Ok((_, r)) -> Ok(r)
   Err(e) -> Err(e)
@@ -222,6 +248,7 @@ private fn trim_mag(b: Buf(Int)) =
 
 # -- text ---------------------------------------------------------------------
 
+#     bigint.text(bigint.from_int(-1234567890123))   # => -1234567890123
 fn text(b: Big) =
   if is_zero(b) then "0"
   else
@@ -236,6 +263,9 @@ fn text(b: Big) =
     strbuf_str(out)
 
 # Digits, with a `-` or `+` in front if wanted.
+#
+#     bigint.parse("-12345678901234567890")   # => Ok(-12345678901234567890)
+#     bigint.parse("12x")                     # => Err(`12x` is not an integer)
 fn parse(s) =
   negative = #s > 0 && s[0] == 45
   body = if #s > 0 && (s[0] == 45 || s[0] == 43) then s[1:] else s

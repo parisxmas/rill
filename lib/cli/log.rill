@@ -3,13 +3,7 @@ module log
 # A log: lines on standard error with the time, the level and where they
 # came from, and a level below which nothing is said.
 #
-#     import "cli/log" as log
-#     l = log.from_env("http")             # the level from RILL_LOG, or info
-#     log.info(l, "listening on " + int_to_str(port))
-#     log.warn(l, "slow request")
-#     log.debug(l, "headers: " + show(h))  # said only at debug or below
 #
-#     2026-09-15T21:04:05Z  INFO  http  listening on 8080
 #
 # A logger is a value with a name and a level; `at(l, log.debug_level())`
 # gives one that says more, `quiet(l)` one that says only errors. There
@@ -17,50 +11,88 @@ module log
 # logger in `main` and hands it to what needs it, which is also how it
 # gives a part of itself a name of its own with `named(l, "db")`. A line
 # is written whole with one call, so lines from strands do not interleave.
+#
+#     l = log.from_env("http")             # the level from RILL_LOG, or info
+#     log.info(l, "listening on 8080")     # on standard error: 2026-09-15T21:04:05Z  INFO  http  listening on 8080
+#     log.debug(l, "headers")              # said only at debug
+#     log.says(l, log.debug_level())       # => false
+#     log.says(log.at(l, log.debug_level()), log.debug_level())   # => true
 import "time/date" as date
 import "cli/env" as env
 
 type Log
   Log(name: Str, level: Int, to: Int)
 
+#     log.level_name(log.debug_level())   # => DEBUG
 fn debug_level() = 0
 
+#     log.level_name(log.info_level())   # => INFO
 fn info_level() = 1
 
+#     log.level_name(log.warn_level())   # => WARN
 fn warn_level() = 2
 
+#     log.level_name(log.error_level())   # => ERROR
 fn error_level() = 3
 
+#     l = log.new("db")
+#     l.name                             # => db
+#     log.says(l, log.info_level())      # => true
+#     log.says(l, log.debug_level())     # => false
 fn new(name) = Log(name, info_level(), 2)
 
 # The level from the `RILL_LOG` variable — `debug`, `info`, `warn`,
 # `error`, or `off` — and info when it is unset or says something else.
+#
+#     import "cli/env" as env
+#     env.set("RILL_LOG", "warn")
+#     log.says(log.from_env("x"), log.info_level())   # => false
+#     env.set("RILL_LOG", "nonsense")
+#     log.says(log.from_env("x"), log.info_level())   # => true
+#     env.unset("RILL_LOG")
 fn from_env(name) = at(new(name), level_named(env.get_or("RILL_LOG", "")))
 
+#     log.level_named("warn") == log.warn_level()   # => true
+#     log.level_named("loud") == log.info_level()   # => true
 fn level_named(word) =
   if word == "debug" then debug_level() else if word == "warn" then warn_level() else if word == "error" then error_level() else if word == "off" then error_level() + 1 else info_level()
 
+#     log.level_name(log.warn_level())   # => WARN
 fn level_name(level) =
   if level <= 0 then "DEBUG" else if level == 1 then "INFO" else if level == 2 then "WARN" else "ERROR"
 
+#     l = log.at(log.new("x"), log.error_level())
+#     log.says(l, log.warn_level())    # => false
+#     log.says(l, log.error_level())   # => true
 fn at(l: Log, level) = { l | level = level }
 
+#     log.says(log.quiet(log.new("x")), log.warn_level())   # => false
 fn quiet(l: Log) = at(l, error_level())
 
+#     log.named(log.new("app"), "db").name   # => db
 fn named(l: Log, name) = { l | name = name }
 
 # Writes to standard output instead — for a log that is the program's
 # output, as a server's access log is.
+#
+#     l = log.to_stdout(log.new("access"))
+#     l.to                          # => 1
 fn to_stdout(l: Log) = { l | to = 1 }
 
+#     l = log.at(log.new("x"), log.debug_level())
+#     log.debug(l, "a detail")     # written, since the level allows it
 fn debug(l: Log, msg) = say(l, debug_level(), msg)
 
+#     log.info(log.new("x"), "started")
 fn info(l: Log, msg) = say(l, info_level(), msg)
 
+#     log.warn(log.new("x"), "slow request")
 fn warn(l: Log, msg) = say(l, warn_level(), msg)
 
+#     log.error(log.new("x"), "cannot open the file")
 fn error(l: Log, msg) = say(l, error_level(), msg)
 
+#     log.says(log.new("x"), log.error_level())   # => true
 fn says(l: Log, level) = level >= l.level
 
 private fn say(l: Log, level, msg) =
@@ -70,6 +102,8 @@ private fn say(l: Log, level, msg) =
   else ()
 
 # The line as it is written: time, level padded to five, name, message.
+#
+#     log.line(log.new("http"), log.info_level(), "up", "2026-09-15T21:04:05Z")   # => 2026-09-15T21:04:05Z  INFO   http  up
 fn line(l: Log, level, msg, when) =
   when + "  " + pad(level_name(level)) + "  " + (if #l.name > 0 then l.name + "  " else "") + msg + "\n"
 

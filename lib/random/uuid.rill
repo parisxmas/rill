@@ -5,15 +5,15 @@ module uuid
 # so a column of them sorts by when. Both draw their random bits from the
 # operating system, not from `rnd`'s predictable stream.
 #
-#     import "random/uuid" as uuid
-#     id = uuid.v7()
-#     show(id)                             # "018f3a2c-9b1e-7c4d-8a2b-3f5e6d7c8b9a"
-#     uuid.parse("550e8400-e29b-41d4-a716-446655440000")    # Some(id), or None
-#     uuid.version(id)                     # 4 or 7
-#     uuid.time_of(id)                     # Some(millis since 1970) for a v7
 #
 # A `Uuid` is two 64-bit halves, so it compares, hashes as a map key and
 # prints like any value; `text` and `bytes` are its two spellings.
+#
+#     id = uuid.v7()
+#     uuid.version(id)                                       # => 7
+#     #uuid.text(id)                                         # => 36
+#     uuid.parse("550e8400-e29b-41d4-a716-446655440000")   # => Some(550e8400-e29b-41d4-a716-446655440000)
+#     uuid.time_of(uuid.v7_at(1700000000000))              # => Some(1700000000000)
 
 type Uuid
   Uuid(hi: Int, lo: Int)
@@ -21,14 +21,21 @@ type Uuid
 impl Show(Uuid)
   fn show(u) = text(u)
 
+#     uuid.nil()   # => 00000000-0000-0000-0000-000000000000
 fn nil() = Uuid(0, 0)
 
 # Version 4: 122 random bits.
+#
+#     uuid.version(uuid.v4())        # => 4
+#     uuid.v4() == uuid.v4()         # => false
 fn v4() = stamp(random_i64(), random_i64(), 4)
 
 # Version 7: the time in milliseconds, then 74 random bits.
+#
+#     uuid.version(uuid.v7())   # => 7
 fn v7() = v7_at(now_millis())
 
+#     uuid.time_of(uuid.v7_at(1700000000000))   # => Some(1700000000000)
 fn v7_at(millis) =
   stamp(bit_or(shl(bit_and(millis, 281474976710655), 16), bit_and(random_i64(), 65535)), random_i64(), 7)
 
@@ -36,14 +43,19 @@ fn v7_at(millis) =
 private fn stamp(hi, lo, version) =
   Uuid(bit_or(bit_and(hi, bit_not(61440)), shl(version, 12)), bit_or(bit_and(lo, bit_not(shl(3, 62))), shl(2, 62)))
 
+#     uuid.version(uuid.parse("550e8400-e29b-41d4-a716-446655440000") |> unwrap_or(uuid.nil()))   # => 4
 fn version(u: Uuid) = bit_and(shr(u.hi, 12), 15)
 
 # The millisecond a version-7 id was made.
+#
+#     uuid.time_of(uuid.v4())   # => None
 fn time_of(u: Uuid) = if version(u) == 7 then Some(shr(u.hi, 16)) else None
 
 # -- spellings ----------------------------------------------------------------
 
 # `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, lowercase.
+#
+#     uuid.text(uuid.nil())   # => 00000000-0000-0000-0000-000000000000
 fn text(u: Uuid) =
   h = hex16(u.hi) + hex16(u.lo)
   h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
@@ -57,6 +69,8 @@ private fn hex16(v) =
 private fn hexdigit(d) = if d < 10 then 48 + d else 87 + d
 
 # The sixteen bytes, big-endian.
+#
+#     #uuid.bytes(uuid.v4())   # => 16
 fn bytes(u: Uuid) =
   b = buf_u8(16)
   for i in 0..8
@@ -64,6 +78,9 @@ fn bytes(u: Uuid) =
     b[8 + i] = bit_and(shr(u.lo, 56 - i * 8), 255)
   str_from_buf(b)
 
+#     id = uuid.v4()
+#     uuid.from_bytes(uuid.bytes(id)) == Some(id)   # => true
+#     uuid.from_bytes("short")                      # => None
 fn from_bytes(s) =
   if #s != 16 then None else Some(Uuid(be64(s, 0), be64(s, 8)))
 
@@ -73,6 +90,9 @@ private fn be64(s, at) =
 
 # The text form, hyphens where they belong, either case; `None` for
 # anything else.
+#
+#     uuid.parse("550E8400-E29B-41D4-A716-446655440000")   # => Some(550e8400-e29b-41d4-a716-446655440000)
+#     uuid.parse("not an id")                              # => None
 fn parse(s) =
   if #s != 36 || s[8] != 45 || s[13] != 45 || s[18] != 45 || s[23] != 45 then None
   else

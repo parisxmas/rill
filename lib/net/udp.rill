@@ -5,15 +5,20 @@ module udp
 # is, and a receive parks the strand rather than the worker, so a server
 # with a datagram socket and ten connections serves all eleven.
 #
-#     import "net/udp" as udp
-#     sock = udp.open(9000)?               # or udp.open(0), and udp.port_of(sock)
-#     udp.send_to(sock, "127.0.0.1", 9001, "ping")
-#     p = udp.recv_from(sock)              # a Packet: p.from, p.port, p.data
-#     sock_close(sock)
 #
 # Addresses are dotted IPv4, as the TCP calls take them; `net/dns` turns
 # a name into one. A datagram is at most 65,507 bytes, and a longer one
 # is refused rather than cut.
+#
+#     a = udp.open(0)?                          # a port the system picks
+#     b = udp.open(0)?
+#     udp.send_to(a, "127.0.0.1", udp.port_of(b), "ping")   # => 4
+#     p = udp.recv_from(b)
+#     p.data                                    # => ping
+#     p.from                                    # => 127.0.0.1
+#     p.port == udp.port_of(a)                  # => true
+#     sock_close(a)
+#     sock_close(b)
 extern fn rill_udp_open(port: Int) -> Int
 
 extern fn rill_udp_port(fd: Int) -> Int
@@ -26,13 +31,26 @@ type Packet
   Packet(from: Str, port: Int, data: Str)
 
 # A socket bound to `port` on every interface; 0 for one the system picks.
+#
+#     s = udp.open(0)?
+#     udp.port_of(s) > 0   # => true
+#     sock_close(s)
 fn open(port) =
   fd = rill_udp_open(port)
   if fd < 0 then Err("cannot open a UDP socket on port " + int_to_str(port)) else Ok(fd)
 
+#     s = udp.open(18911)?
+#     udp.port_of(s)   # => 18911
+#     sock_close(s)
 fn port_of(fd) = rill_udp_port(fd)
 
 # Sends `data` as one datagram; the bytes sent, or -1.
+#
+#     a = udp.open(0)?
+#     b = udp.open(0)?
+#     udp.send_to(a, "127.0.0.1", udp.port_of(b), "hello")   # => 5
+#     sock_close(a)
+#     sock_close(b)
 fn send_to(fd, host, port, data) =
   if #data > 65507 then -1
   else
@@ -45,6 +63,13 @@ fn send_to(fd, host, port, data) =
     n
 
 # The next datagram, whole, with where it came from.
+#
+#     a = udp.open(0)?
+#     b = udp.open(0)?
+#     udp.send_to(a, "127.0.0.1", udp.port_of(b), "one")
+#     udp.recv_from(b).data   # => one
+#     sock_close(a)
+#     sock_close(b)
 fn recv_from(fd) =
   b = buf_u8(65536)
   n = rill_udp_recv(fd, b, 65536)

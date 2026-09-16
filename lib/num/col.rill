@@ -33,9 +33,6 @@ module col
 # loop may differ in the last bits. That is the whole of what is being traded,
 # and it is traded per call rather than per build.
 #
-#     import "num/col" as c
-#     c.sum(prices, 0, #prices)
-#     c.mean(prices, 0, #prices)         # None over an empty range
 #
 # Every function takes a half-open range, `lo` up to but not `hi`, because a
 # column arrives in chunks and a scan wants one chunk at a time without
@@ -45,12 +42,28 @@ module col
 # the compiler vectorizes those loops itself and a plain `for` is already as
 # fast as this. The same goes for counting a predicate, which compiles to a
 # vector compare and a subtract with no help from anyone.
+#
+#     prices = buf_float(4)
+#     prices[0] = 1.5
+#     prices[1] = 2.5
+#     prices[2] = 3.0
+#     prices[3] = 5.0
+#     col.sum(prices, 0, #prices)          # => 12
+#     col.mean(prices, 0, #prices)         # => Some(3)
+#     col.mean(prices, 0, 0)               # => None
 
 # -- sums ---------------------------------------------------------------------
 
 # Eight lanes at a time in four independent `Float2` accumulators, then the
 # elements past the last block of eight, added into the result the same way a
 # scalar loop would.
+#
+#     v = buf_float(3)
+#     v[0] = 0.5
+#     v[1] = 0.25
+#     v[2] = 0.25
+#     col.sum(v, 0, 3)   # => 1
+#     col.sum(v, 1, 3)   # => 0.5
 fn sum(v: Buf(Float), lo, hi) =
   blocks = if hi > lo then (hi - lo) / 8 else 0
   z = splat2(0.0)
@@ -64,6 +77,11 @@ fn sum(v: Buf(Float), lo, hi) =
 
 # The sum of squares, which is what a variance wants: one `fma2` per lane
 # pair, so the multiply and the add are one instruction and round once.
+#
+#     v = buf_float(2)
+#     v[0] = 3.0
+#     v[1] = 4.0
+#     col.sum_sq(v, 0, 2)   # => 25
 fn sum_sq(v: Buf(Float), lo, hi) =
   blocks = if hi > lo then (hi - lo) / 8 else 0
   z = splat2(0.0)
@@ -81,6 +99,14 @@ fn sum_sq(v: Buf(Float), lo, hi) =
 
 # The dot product of two columns over the same range — a weighted sum, and
 # what a covariance is made of.
+#
+#     x = buf_float(2)
+#     y = buf_float(2)
+#     x[0] = 1.0
+#     x[1] = 2.0
+#     y[0] = 3.0
+#     y[1] = 4.0
+#     col.dot(x, y, 0, 2)   # => 11
 fn dot(x: Buf(Float), y: Buf(Float), lo, hi) =
   blocks = if hi > lo then (hi - lo) / 8 else 0
   z = splat2(0.0)
@@ -96,6 +122,12 @@ fn dot(x: Buf(Float), y: Buf(Float), lo, hi) =
 
 # `None` over an empty range, because the mean of nothing is not a number and
 # an `Option` says so where a `0.0` would lie.
+#
+#     v = buf_float(2)
+#     v[0] = 1.0
+#     v[1] = 2.0
+#     col.mean(v, 0, 2)   # => Some(1.5)
+#     col.mean(v, 2, 2)   # => None
 fn mean(v: Buf(Float), lo, hi) =
   if hi <= lo then None else Some(sum(v, lo, hi) / to_float(hi - lo))
 
@@ -103,6 +135,13 @@ fn mean(v: Buf(Float), lo, hi) =
 # scan wants, and the price is the usual one — a column whose values are large
 # and whose spread is small loses precision in the subtraction. `None` over an
 # empty range.
+#
+#     v = buf_float(4)
+#     v[0] = 2.0
+#     v[1] = 4.0
+#     v[2] = 4.0
+#     v[3] = 6.0
+#     col.variance(v, 0, 4)   # => Some(2)
 fn variance(v: Buf(Float), lo, hi) =
   if hi <= lo then None
   else
@@ -120,6 +159,11 @@ fn variance(v: Buf(Float), lo, hi) =
 # Both answer `None` over an empty range. A NaN in the column loses to a
 # number under both `<` and `fmin2`, so it never becomes the answer.
 
+#     v = buf_float(3)
+#     v[0] = 2.0
+#     v[1] = -1.0
+#     v[2] = 5.0
+#     col.min_of(v, 0, 3)   # => Some(-1)
 fn min_of(v: Buf(Float), lo, hi) =
   if hi <= lo then None
   else
@@ -132,6 +176,12 @@ fn min_of(v: Buf(Float), lo, hi) =
     m = fmin2(fmin2(m0, m1), fmin2(m2, m3))
     Some(for i in lo + blocks * 8..hi with t = if lane0(m) < lane1(m) then lane0(m) else lane1(m) if v[i] < t then v[i] else t)
 
+#     v = buf_float(3)
+#     v[0] = 2.0
+#     v[1] = -1.0
+#     v[2] = 5.0
+#     col.max_of(v, 0, 3)   # => Some(5)
+#     col.max_of(v, 0, 0)   # => None
 fn max_of(v: Buf(Float), lo, hi) =
   if hi <= lo then None
   else

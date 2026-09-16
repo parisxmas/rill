@@ -3,24 +3,23 @@ module args
 # Command-line arguments: what a program takes, said once, and then parsed,
 # checked and explained from that one saying.
 #
-#     import "cli/args" as cli
 #
-#     fn spec() =
-#       cli.tool("serve", "serve a directory over HTTP")
-#         |> cli.switch("verbose", "v", "say what is served")
-#         |> cli.valued("port", "p", "PORT", "8080", "the port to listen on")
-#         |> cli.slot("dir", "the directory to serve", true)
 #
-#     fn main() = match cli.parse(spec(), args())
-#       Err(why) -> println(why)                  # what was wrong, then the usage
-#       Ok(got) ->
-#         port = str_to_int(cli.value(got, "port"))
-#         serve(cli.slots(got), port, cli.on(got, "verbose"))
 #
 # `--port 80`, `--port=80` and `-p 80` all set `port`; `--verbose` and `-v`
 # set a switch; `--` ends the options and everything after it is a slot.
 # `--help` and `-h` answer with the usage text as the error, so a program
 # that prints `why` has help for free.
+#
+#     spec = args.tool("serve", "serve a directory over HTTP")
+#       |> args.switch("verbose", "v", "say what is served")
+#       |> args.valued("port", "p", "PORT", "8080", "the port to listen on")
+#       |> args.slot("dir", "the directory to serve", true)
+#     got = args.parse(spec, Cons("serve", Cons("-v", Cons("--port=9000", Cons("www", Nil)))))?
+#     args.value(got, "port")      # => 9000
+#     args.on(got, "verbose")      # => true
+#     args.slots(got)              # => Cons(www, Nil)
+#     res_map(args.parse(spec, Cons("serve", Nil)), \g -> 0)   # => Err(missing <dir>\nusage: serve [options] <dir>\n  serve a directory over HTTP\n\n  -v, --verbose    say what is served\n  -p, --port PORT  the port to listen on (default 8080)\n  <dir>            the directory to serve\n  -h, --help       this)
 
 type Item
   Switch(long: Str, short: Str, help: Str)
@@ -35,29 +34,50 @@ type Spec
 type Got
   Got(switches: Map(Str, Int), values: Map(Str, Str), slots: List(Str))
 
+#     args.usage(args.tool("hello", "greet someone"))   # => usage: hello [options]\n  greet someone\n\n  -h, --help  this
 fn tool(name, about) = Spec(name, about, Nil)
 
+#     spec = args.tool("t", "") |> args.switch("quiet", "q", "say nothing")
+#     args.on(args.parse(spec, Cons("t", Cons("-q", Nil)))?, "quiet")   # => true
+#     args.on(args.parse(spec, Cons("t", Nil))?, "quiet")               # => false
 fn switch(s: Spec, long, short, help) =
   { s | items = append(s.items, Cons(Switch(long, short, help), Nil)) }
 
+#     spec = args.tool("t", "") |> args.valued("name", "n", "NAME", "world", "whom to greet")
+#     args.value(args.parse(spec, Cons("t", Nil))?, "name")                        # => world
+#     args.value(args.parse(spec, Cons("t", Cons("-n", Cons("ada", Nil))))?, "name")   # => ada
 fn valued(s: Spec, long, short, meta, default, help) =
   { s | items = append(s.items, Cons(Valued(long, short, meta, default, help), Nil)) }
 
+#     spec = args.tool("t", "") |> args.slot("file", "the input", false)
+#     args.slots(args.parse(spec, Cons("t", Cons("a.txt", Nil)))?)   # => Cons(a.txt, Nil)
+#     args.slots(args.parse(spec, Cons("t", Nil))?)                    # => Nil
 fn slot(s: Spec, name, help, required) =
   { s | items = append(s.items, Cons(Slot(name, help, required), Nil)) }
 
 # -- reading the answer -------------------------------------------------------
 
+#     spec = args.tool("t", "") |> args.switch("all", "a", "everything")
+#     args.on(args.parse(spec, Cons("t", Cons("--all", Nil)))?, "all")   # => true
 fn on(g: Got, long) = map_has(g.switches, long)
 
 # The value given for `long`, or its default.
+#
+#     spec = args.tool("t", "") |> args.valued("port", "p", "PORT", "80", "")
+#     args.value(args.parse(spec, Cons("t", Cons("--port", Cons("8080", Nil))))?, "port")   # => 8080
 fn value(g: Got, long) = map_or(g.values, long, "")
 
+#     spec = args.tool("t", "") |> args.slot("x", "", false) |> args.slot("y", "", false)
+#     args.slots(args.parse(spec, Cons("t", Cons("--", Cons("-not-a-flag", Cons("b", Nil)))))?)   # => Cons(-not-a-flag, Cons(b, Nil))
 fn slots(g: Got) = g.slots
 
 # -- parsing ------------------------------------------------------------------
 
 # The program name is `args()`'s first, and is skipped.
+#
+#     spec = args.tool("t", "") |> args.switch("v", "v", "")
+#     res_map(args.parse(spec, Cons("t", Cons("--nope", Nil))), \g -> 0)   # => Err(`--nope` is not an option of t\nusage: t [options]\n\n  -v, --v     \n  -h, --help  this)
+#     res_map(args.parse(spec, Cons("t", Cons("--help", Nil))), \g -> 0)   # => Err(usage: t [options]\n\n  -v, --v     \n  -h, --help  this)
 fn parse(s: Spec, argv) = match argv
   Nil -> finish(s, Got(map_new(), map_new(), Nil))
   Cons(_, rest) ->
@@ -127,13 +147,17 @@ private fn missing_name(items, have) = match items
 # -- usage --------------------------------------------------------------------
 
 # The tool's line, then one line per item, aligned.
+#
+#     spec = args.tool("cp", "copy a file") |> args.slot("from", "the source", true) |> args.slot("to", "the destination", true)
+#     args.usage(spec)   # => usage: cp [options] <from> <to>\n  copy a file\n\n  <from>      the source\n  <to>        the destination\n  -h, --help  this
 fn usage(s: Spec) =
   head = "usage: " + s.name + " [options]" + slot_line(s.items)
   about = if #s.about == 0 then "" else "\n  " + s.about
-  lefts = map(s.items, left_of)
+  # `--help` is one of the items for the alignment, so it sits in the column
+  lefts = Cons("-h, --help", map(s.items, left_of))
   width = fold(lefts, 0, \w, l -> max(w, #l))
   lines = map(s.items, \it -> "  " + pad(left_of(it), width) + "  " + help_of(it))
-  head + about + "\n\n" + join(lines, "\n") + "\n  " + pad("-h, --help", width) + "  this"
+  head + about + "\n\n" + join(append(lines, Cons("  " + pad("-h, --help", width) + "  this", Nil)), "\n")
 
 private fn slot_line(items) = match items
   Nil -> ""

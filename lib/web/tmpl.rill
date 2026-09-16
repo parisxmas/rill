@@ -65,6 +65,10 @@ impl Raw(Str)
 # static piece of the template costs too. Only a string that does hold one is
 # walked a byte at a time, and even then nothing is allocated: a byte goes
 # into the builder as a byte.
+#
+#     b = strbuf()
+#     tmpl.esc_into(b, "Ada & co")
+#     strbuf_str(b)   # => Ada &amp; co
 fn esc_into(b: StrBuf, s) =
   n = #s
   k = first_special(s, 0, n)
@@ -73,7 +77,7 @@ fn esc_into(b: StrBuf, s) =
     0
   else esc_tail(b, s, k, n)
 
-fn esc_tail(b: StrBuf, s, k, n) =
+private fn esc_tail(b: StrBuf, s, k, n) =
   b += s[0:k]
   for i in k..n
     c = str_get(s, i)
@@ -82,15 +86,18 @@ fn esc_tail(b: StrBuf, s, k, n) =
     else
       b += c
 
-fn first_special(s, i, n) =
+private fn first_special(s, i, n) =
   if i >= n then i else if is_special(str_get(s, i)) then i else first_special(s, i + 1, n)
 
-fn is_special(c) = c == 38 || c == 60 || c == 62 || c == 34 || c == 39
+private fn is_special(c) = c == 38 || c == 60 || c == 62 || c == 34 || c == 39
 
-fn escaped(c) =
+private fn escaped(c) =
   if c == 38 then "&amp;" else if c == 60 then "&lt;" else if c == 62 then "&gt;" else if c == 34 then "&quot;" else "&#39;"
 
 # The same as a string, for a caller that wants one rather than a builder.
+#
+#     tmpl.esc("<a href=\"x\">")   # => &lt;a href=&quot;x&quot;&gt;
+#     tmpl.esc("plain")             # => plain
 fn esc(s) =
   b = strbuf()
   esc_into(b, s)

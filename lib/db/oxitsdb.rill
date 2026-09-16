@@ -7,14 +7,32 @@ module oxitsdb
 # `oxiwire.rill`, shared with the document client. What is here is the
 # time-series surface written on top of it: what a point is, what a query may
 # ask for, and how to read the series that come back.
+#
+#     # not run
+#     import "db/oxitsdb"
+#     fd = ts_connect("127.0.0.1", 7411)?
+#     p = ts_point("temp", Cons(ts_tag("room", "lab"), Nil), Cons(ts_field("c", 21.5), Nil), 1700000000000)
+#     ts_written(ts_write(fd, Cons(p, Nil))?)                                     # 1
+#     answer = ts_query(fd, "temp", "c", ts_between(1700000000000, 1700003600000))?
+#     map(ts_series_points(nth(ts_series(answer), 0) |> unwrap_or(JNull)), ts_value)   # Cons(21.5, Nil)
+#     ts_hang_up(fd)
 import "db/oxiwire"
 
 # -- calling ------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxitsdb"
+#     fd = ts_connect("127.0.0.1", 7411)?
 fn ts_connect(host, port) = connect_to(host, port)
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_hang_up(fd)
 fn ts_hang_up(fd) = sock_close(fd)
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_call(fd, ts_request("stats", Nil))   # Ok(the answer), or Err(the server's message)
 fn ts_call(fd, request) = ow_call(fd, request)
 
 # -- the time-series surface --------------------------------------------------
@@ -22,70 +40,135 @@ fn ts_call(fd, request) = ow_call(fd, request)
 # Every request names the engine as well as the command: the server mounts the
 # time-series engine beside the document and SQL ones, and `engine` is what
 # tells them apart. It is off unless the server was started with OXIDB_TSDB.
+#
+#     import "db/oxitsdb"
+#     ts_request("stats", Nil)   # => JObj(Cons(Field(engine, JStr(tsdb)), Cons(Field(cmd, JStr(tsdb)), Cons(Field(op, JStr(stats)), Nil))))
 fn ts_request(op, fields) =
   JObj(Cons(Field("engine", JStr("tsdb")), Cons(Field("cmd", JStr("tsdb")), Cons(Field("op", JStr(op)), fields))))
 
 # A point is a measurement, a moment, any number of string tags and one or
 # more named fields. `at` is epoch milliseconds.
+#
+#     import "db/oxitsdb"
+#     ts_point("temp", Cons(ts_tag("room", "lab"), Nil), Cons(ts_field("c", 21.5), Nil), 1700000000000)   # => JObj(Cons(Field(measurement, JStr(temp)), Cons(Field(tags, JObj(Cons(Field(room, JStr(lab)), Nil))), Cons(Field(fields, JObj(Cons(Field(c, JNum(21.5)), Nil))), Cons(Field(ts, JInt(1700000000000)), Nil)))))
 fn ts_point(measurement, tags, fields, at) =
   JObj(Cons(Field("measurement", JStr(measurement)), Cons(Field("tags", JObj(tags)), Cons(Field("fields", JObj(fields)), Cons(Field("ts", JInt(at)), Nil)))))
 
+#     import "db/oxitsdb"
+#     ts_tag("room", "lab")   # => Field(room, JStr(lab))
 fn ts_tag(key, value) = Field(key, JStr(value))
 
+#     import "db/oxitsdb"
+#     ts_field("c", 21.5)   # => Field(c, JNum(21.5))
 fn ts_field(key, value) = Field(key, JNum(value))
 
+#     import "db/oxitsdb"
+#     ts_count_field("hits", 3)   # => Field(hits, JInt(3))
 fn ts_count_field(key, value) = Field(key, JInt(value))
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_written(ts_write(fd, Cons(p1, Cons(p2, Nil)))?)   # 2
 fn ts_write(fd, points) =
   ts_call(fd, ts_request("write", Cons(Field("points", JArr(points)), Nil)))
 
 # InfluxDB line protocol, for a feed that already speaks it. A line with no
 # timestamp is stamped by the server as it arrives.
+#
+#     # not run
+#     import "db/oxitsdb"
+#     ts_write_lines(fd, "temp,room=lab c=21.5 1700000000000\n")   # the line protocol, as written
 fn ts_write_lines(fd, lines_text) =
   ts_call(fd, ts_request("write_lp", Cons(Field("lp", JStr(lines_text)), Nil)))
 
 # `agg` is mean, sum, min, max, count, distinct, first, last, rate, or a
 # percentile written `p95`. An `interval` in milliseconds buckets the answer;
 # without one the whole range collapses to a single point per series.
+#
+#     # not run
+#     import "db/oxitsdb"
+#     ts_query(fd, "temp", "c", ts_between(t0, t1) |> ts_agg("mean") |> ts_every(60000))   # a mean a minute
 fn ts_query(fd, measurement, field_name, spec) =
   ts_call(fd, ts_request("query", Cons(Field("measurement", JStr(measurement)), Cons(Field("field", JStr(field_name)), spec))))
 
+#     import "db/oxitsdb"
+#     ts_between(1, 2)   # => Cons(Field(start, JInt(1)), Cons(Field(end, JInt(2)), Nil))
 fn ts_between(start, end) = Cons(Field("start", JInt(start)), Cons(Field("end", JInt(end)), Nil))
 
+#     import "db/oxitsdb"
+#     ts_agg("mean", Nil)   # => Cons(Field(agg, JStr(mean)), Nil)
 fn ts_agg(name, rest) = Cons(Field("agg", JStr(name)), rest)
 
+#     import "db/oxitsdb"
+#     ts_every(60000, Nil)   # => Cons(Field(interval, JInt(60000)), Nil)
 fn ts_every(interval, rest) = Cons(Field("interval", JInt(interval)), rest)
 
+#     import "db/oxitsdb"
+#     ts_where(Cons(ts_tag("room", "lab"), Nil), Nil)   # => Cons(Field(tags, JObj(Cons(Field(room, JStr(lab)), Nil))), Nil)
 fn ts_where(tags, rest) = Cons(Field("tags", JObj(tags)), rest)
 
+#     import "db/oxitsdb"
+#     ts_group_by(Cons("room", Nil), Nil)   # => Cons(Field(group_by, JArr(Cons(JStr(room), Nil))), Nil)
 fn ts_group_by(keys, rest) =
   Cons(Field("group_by", JArr(map(keys, \k -> JStr(k)))), rest)
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_stats(fd)   # what the engine holds
 fn ts_stats(fd) = ts_call(fd, ts_request("stats", Nil))
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_retention(fd, 1700000000000)   # drop what is older than the moment
 fn ts_retention(fd, cutoff) =
   ts_call(fd, ts_request("retention", Cons(Field("cutoff", JInt(cutoff)), Nil)))
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_checkpoint(fd)
 fn ts_checkpoint(fd) = ts_call(fd, ts_request("checkpoint", Nil))
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_rollup_add(fd, "temp", 3600000, "mean")   # an hourly mean, kept up by the engine
 fn ts_rollup_add(fd, measurement, interval, agg) =
   ts_call(fd, ts_request("rollup_add", Cons(Field("measurement", JStr(measurement)), Cons(Field("interval", JInt(interval)), Cons(Field("agg", JStr(agg)), Nil)))))
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_rollup_refresh(fd)
 fn ts_rollup_refresh(fd) = ts_call(fd, ts_request("rollup_refresh", Nil))
 
+#     # not run
+#     import "db/oxitsdb"
+#     ts_rollups(fd)
 fn ts_rollups(fd) = ts_call(fd, ts_request("rollups", Nil))
 
 # -- reading answers out ------------------------------------------------------
 
 # A query answers an array of series, each `{tags, type, points:[{ts, value}]}`.
+#
+#     import "db/oxitsdb"
+#     len(ts_series(JArr(Cons(JObj(Nil), Cons(JObj(Nil), Nil)))))   # => 2
 fn ts_series(answer) = items(answer)
 
+#     import "db/oxitsdb"
+#     ts_series_tags(JObj(Cons(Field("tags", JObj(Cons(Field("room", JStr("lab")), Nil))), Nil)))   # => JObj(Cons(Field(room, JStr(lab)), Nil))
 fn ts_series_tags(series) = unwrap_or(get(series, "tags"), JObj(Nil))
 
+#     import "db/oxitsdb"
+#     series = JObj(Cons(Field("points", JArr(Cons(JObj(Cons(Field("ts", JInt(1)), Cons(Field("value", JNum(2.5)), Nil))), Nil))), Nil))
+#     map(ts_series_points(series), ts_value)   # => Cons(2.5, Nil)
 fn ts_series_points(series) = items(unwrap_or(get(series, "points"), JArr(Nil)))
 
+#     import "db/oxitsdb"
+#     ts_at(JObj(Cons(Field("ts", JInt(1700000000000)), Nil)))   # => 1700000000000
 fn ts_at(point) = as_int(unwrap_or(get(point, "ts"), JNull))
 
+#     import "db/oxitsdb"
+#     ts_value(JObj(Cons(Field("value", JNum(21.5)), Nil)))   # => 21.5
 fn ts_value(point) = as_float(unwrap_or(get(point, "value"), JNull))
 
+#     import "db/oxitsdb"
+#     ts_written(JObj(Cons(Field("written", JInt(3)), Nil)))   # => 3
 fn ts_written(answer) = as_int(unwrap_or(get(answer, "written"), JNull))

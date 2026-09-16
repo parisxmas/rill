@@ -4,49 +4,67 @@ module path
 # the parts, no touching the file system — a path here is a string with a
 # shape, and what is at it is the program's business.
 #
-#     import "text/path" as path
-#     path.join_path("etc", "rill/conf.yaml")     # "etc/rill/conf.yaml"
-#     path.dir_name("/a/b/c.rill")                 # "/a/b"
-#     path.base_name("/a/b/c.rill")                # "c.rill"
-#     path.extension("archive.tar.gz")             # "gz"
-#     path.stem("archive.tar.gz")                  # "archive.tar"
-#     path.normalize("a/./b/../c//d/")             # "a/c/d"
-#     path.with_extension("notes.md", "html")      # "notes.html"
 #
 # The prelude's `dir_of` reads a directory; this never does.
+#
+#     path.join_path("etc", "rill/conf.yaml")     # => etc/rill/conf.yaml
+#     path.dir_name("/a/b/c.rill")                 # => /a/b
+#     path.base_name("/a/b/c.rill")                # => c.rill
+#     path.extension("archive.tar.gz")             # => gz
+#     path.stem("archive.tar.gz")                  # => archive.tar
+#     path.normalize("a/./b/../c//d/")             # => a/c/d
+#     path.with_extension("notes.md", "html")      # => notes.html
 
+#     path.is_absolute("/etc")   # => true
+#     path.is_absolute("etc")    # => false
 fn is_absolute(p) = #p > 0 && p[0] == 47
 
 # `a/b`, with one separator between however the two were written; an
 # absolute `b` is the answer on its own, as it would be at a shell.
+#
+#     path.join_path("a/", "/b")   # => /b
+#     path.join_path("a/", "b")    # => a/b
 fn join_path(a, b) =
   if #a == 0 then b else if #b == 0 then a else if is_absolute(b) then b else if a[#a - 1] == 47
     then a + b
     else a + "/" + b
 
 # Everything before the last `/`: `/a/b/c` -> `/a/b`, `c` -> `.`, `/c` -> `/`.
+#
+#     path.dir_name("/a/b/c")   # => /a/b
+#     path.dir_name("c")        # => .
+#     path.dir_name("/c")       # => /
 fn dir_name(p) =
   i = last_slash(p)
   if i < 0 then "." else if i == 0 then "/" else p[0:i]
 
 # Everything after the last `/`.
+#
+#     path.base_name("/a/b/c.rill")   # => c.rill
 fn base_name(p) =
   i = last_slash(p)
   if i < 0 then p else p[i + 1:]
 
 # What follows the last `.` of the base name, or `""`; a leading dot is a
 # hidden file's name, not an extension.
+#
+#     path.extension("main.rill")   # => rill
+#     path.extension(".bashrc")     # =>
 fn extension(p) =
   b = base_name(p)
   i = last_dot(b)
   if i <= 0 then "" else b[i + 1:]
 
 # The base name without its extension.
+#
+#     path.stem("/a/main.rill")   # => main
 fn stem(p) =
   b = base_name(p)
   i = last_dot(b)
   if i <= 0 then b else b[0:i]
 
+#     path.with_extension("main.rill", "o")   # => main.o
+#     path.with_extension("main", "o")        # => main.o
 fn with_extension(p, ext) =
   d = dir_name(p)
   s = stem(p)
@@ -54,12 +72,17 @@ fn with_extension(p, ext) =
   if last_slash(p) < 0 then named else join_path(d, named)
 
 # The parts between separators, empty ones left out: `/a//b/` -> [a, b].
+#
+#     path.parts("/a//b/")   # => Cons(a, Cons(b, Nil))
 fn parts(p) = filter(split(p, "/"), \s -> #s > 0)
 
 # `.` dropped, `..` folded into the part before it where there is one,
 # repeated and trailing separators gone; an absolute path stays absolute.
 # `..` at the start of a relative path is kept, since there is nothing
 # here to fold it into.
+#
+#     path.normalize("/a/b/../c/./d")   # => /a/c/d
+#     path.normalize("../x")           # => ../x
 fn normalize(p) =
   kept = reverse(fold(parts(p), Nil, \acc, part -> if part == "."
     then acc
@@ -71,6 +94,9 @@ fn normalize(p) =
 
 # `b` relative to `a`, both normalized first: `relative_to("/a/b", "/a/b/c/d")`
 # is `c/d`, and `relative_to("/a/b", "/a/x")` is `../x`.
+#
+#     path.relative_to("/a/b", "/a/b/c/d")   # => c/d
+#     path.relative_to("/a/b", "/a/x")       # => ../x
 fn relative_to(from, to) =
   f = parts(normalize(from))
   t = parts(normalize(to))

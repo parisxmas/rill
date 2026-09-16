@@ -5,12 +5,13 @@ module mime
 # anything else is `application/octet-stream`, which is what a browser
 # treats as "download it".
 #
-#     import "web/mime" as mime
-#     mime.of_path("site/index.html")      # "text/html"
-#     mime.of_ext("json")                  # "application/json"
-#     mime.is_text("application/json")     # true: served with a charset
-#     mime.ext_of("image/jpeg")            # Some("jpg")
+#     mime.of_path("site/index.html")      # => text/html
+#     mime.of_ext("json")                  # => application/json
+#     mime.is_text("application/json")     # => true
+#     mime.ext_of("image/jpeg")            # => Some(jpg)
 
+#     mime.of_path("a/b.png")      # => image/png
+#     mime.of_path("README")       # => application/octet-stream
 fn of_path(path) =
   dot = last_dot(path)
   if dot < 0 then fallback() else of_ext(path[dot + 1:])
@@ -19,16 +20,27 @@ private fn last_dot(path) =
   for i in 0..#path with at = -1
     if path[i] == 46 then i else if path[i] == 47 then -1 else at
 
+#     mime.fallback()   # => application/octet-stream
 fn fallback() = "application/octet-stream"
 
 # The type for an extension, without its dot, in any case.
+#
+#     mime.of_ext("JPG")    # => image/jpeg
+#     mime.of_ext("wasm")   # => application/wasm
 fn of_ext(ext) = map_or(table(), lower(ext), fallback())
 
 # An extension for a type — the usual one where several exist.
+#
+#     mime.ext_of("text/html")        # => Some(html)
+#     mime.ext_of("x-made-up/thing")   # => None
 fn ext_of(kind) = opt_map(find(pairs(), \p -> snd(p) == kind), fst)
 
 # Whether the type is text, and is served with a charset: the `text/`
 # types, and the structured ones that are text too.
+#
+#     mime.is_text("text/css")          # => true
+#     mime.is_text("image/png")         # => false
+#     mime.is_text("image/svg+xml")     # => true
 fn is_text(kind) =
   starts_with(kind, "text/") || kind == "application/json" || kind == "application/javascript" || kind == "application/xml" || kind == "image/svg+xml" || ends_with(kind, "+json") || ends_with(kind, "+xml")
 

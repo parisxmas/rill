@@ -5,16 +5,15 @@ module dns
 # lookup is a wait, so it is declared `blocking`: the strand parks while a
 # helper thread asks, and the worker goes on with the others.
 #
-#     import "net/dns" as dns
-#     match dns.lookup("example.com")
-#       Ok(addrs) -> ...                   # Cons("93.184.215.14", ...), IPv4 first
-#       Err(why) -> ...
-#     dns.ipv4("localhost")                # Some("127.0.0.1"): the first IPv4, for tcp_connect
-#     dns.is_ipv4("10.0.0.1")              # true — no lookup needed
+#     dns.ipv4("localhost")                  # => Some(127.0.0.1)
+#     res_map(dns.lookup("localhost"), \addrs -> any(addrs, \a -> a == "127.0.0.1"))   # => Ok(true)
 extern blocking fn rill_dns_lookup(name: Ptr) -> Ptr
 
 # Every address the name has, IPv4 addresses first and then IPv6, or why
 # there are none.
+#
+#     res_map(dns.lookup("localhost"), \addrs -> any(addrs, \a -> a == "127.0.0.1"))   # => Ok(true)
+#     res_map(dns.lookup("no.such.host.invalid"), \addrs -> len(addrs))            # => Err(`no.such.host.invalid` is not a name the resolver knows)
 fn lookup(name) =
   if #name == 0 then Err("an empty name")
   else if is_ipv4(name) then Ok(Cons(name, Nil))
@@ -29,11 +28,17 @@ fn lookup(name) =
       Ok(filter(lines(text), \l -> #l > 0))
 
 # The first IPv4 address, which is what `tcp_connect` and `udp.send_to` take.
+#
+#     dns.ipv4("localhost")   # => Some(127.0.0.1)
 fn ipv4(name) = match lookup(name)
   Err(_) -> None
   Ok(addrs) -> find(addrs, is_ipv4)
 
 # Four numbers of at most three digits, each below 256, with dots between.
+#
+#     dns.is_ipv4("192.168.0.1")   # => true
+#     dns.is_ipv4("256.1.1.1")     # => false
+#     dns.is_ipv4("::1")           # => false
 fn is_ipv4(s) =
   parts = split(s, ".")
   len(parts) == 4 && all(parts, \p -> #p > 0 && #p <= 3 && all_digits(p) && str_to_int(p) <= 255)

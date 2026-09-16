@@ -2303,6 +2303,7 @@ rill explain main.rill          # the memory decisions the generator made, by li
 rill diagram exchange.rill      # the file's system and machines drawn: Mermaid, or SDL's own symbols (--svg)
 rill msc trace.txt              # a run's trace (RILL_TRACE=1) as a sequence chart (--svg for a picture)
 rill doc lib/text/str.rill      # a module's documentation as Markdown; `rill doc lib -o docs/lib` for a folder
+rill doctest lib                # every example in the doc comments, run and held to its `# =>`
 rill test tests.rill            # run every `test_...` function, each in its own process
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist
@@ -2405,6 +2406,37 @@ about being ordered.
 buffer as it stands, the type of the name under the cursor, go to definition,
 an outline, and formatting. `editors/README.md` has the three lines each that
 Neovim, Helix and Emacs need to start it.
+
+### Examples that are tests
+
+A comment line indented four spaces past the `#` is an example, and
+`rill doc` shows it as code. After `# =>` it says what `show` prints of
+the expression's value, and `rill doctest` holds it to that: every
+example of a file becomes a line of a program written beside the module,
+which imports the module by its name — so an example reads as a user
+would write it, `json.parse(…)` — with a line that has no `=>` a
+statement the next lines may use, `?` allowed, an `import` line hoisted
+to the program's head, and a block whose first line is `# not run` shown
+but left alone, for a server that would listen forever.
+
+```
+# The rest of `s` once `p` has been taken off its front, or `None` when
+# `p` was not there.
+#
+#     str.strip_prefix("v0.13", "v")   # => Some(0.13)
+#     str.strip_prefix("0.13", "v")    # => None
+fn strip_prefix(s, p) = …
+```
+
+```
+$ rill doctest lib/text/str.rill
+ok    lib/text/str.rill  (167 examples)
+167 examples in 1 file: 167 passed, 0 failed
+```
+
+A failure names the comment's line and shows both answers. Every
+function of the standard library carries one, and the test suite runs
+them all, so what the reference pages show is what the code does.
 
 ### A sandbox
 

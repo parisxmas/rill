@@ -10,11 +10,11 @@ module decimal
 # `Int`, so eighteen digits in all is the limit, and a result past it is
 # the wrong number rather than an error — the same as `Int` itself.
 #
-#     import "num/decimal" as dec
-#     price = dec.parse("19.99")?               # Decimal(1999, 2)
-#     total = dec.mul(price, dec.from_int(3))   # 59.97
-#     vat = dec.round_to(dec.mul(total, dec.parse("0.20")?), 2, dec.HalfEven)
-#     println(show(dec.add(total, vat)))        # "71.96"
+#     price = decimal.parse("19.99")?
+#     total = decimal.mul(price, decimal.from_int(3))
+#     total                                                  # => 59.97
+#     vat = decimal.round_to(decimal.mul(total, decimal.parse("0.20")?), 2, decimal.HalfEven)
+#     decimal.add(total, vat)                                # => 71.96
 
 type Decimal
   Decimal(units: Int, scale: Int)
@@ -25,19 +25,31 @@ type Rounding
   Down
   Up
 
+#     decimal.from_int(12)   # => 12
 fn from_int(n) = Decimal(n, 0)
 
+#     decimal.zero()   # => 0
 fn zero() = Decimal(0, 0)
 
+#     decimal.is_zero(decimal.parse("0.00")?)   # => true
 fn is_zero(d: Decimal) = d.units == 0
 
+#     decimal.neg(decimal.parse("1.50")?)   # => -1.50
 fn neg(d: Decimal) = Decimal(0 - d.units, d.scale)
 
+#     decimal.abs_of(decimal.parse("-1.50")?)   # => 1.50
 fn abs_of(d: Decimal) = Decimal(abs(d.units), d.scale)
 
+#     decimal.sign(decimal.parse("-0.01")?)   # => -1
 fn sign(d: Decimal) = if d.units < 0 then -1 else if d.units > 0 then 1 else 0
 
 # The same number at `places` places — more, exactly; fewer, rounded.
+#
+#     decimal.round_to(decimal.parse("2.345")?, 2, decimal.HalfUp)     # => 2.35
+#     decimal.round_to(decimal.parse("2.345")?, 2, decimal.HalfEven)   # => 2.34
+#     decimal.round_to(decimal.parse("2.349")?, 2, decimal.Down)       # => 2.34
+#     decimal.round_to(decimal.parse("2.341")?, 2, decimal.Up)         # => 2.35
+#     decimal.round_to(decimal.parse("2.5")?, 3, decimal.HalfUp)       # => 2.500
 fn round_to(d: Decimal, places, how) =
   if places >= d.scale then Decimal(d.units * pow10(places - d.scale), places)
   else
@@ -62,19 +74,26 @@ private fn aligned(a: Decimal, b: Decimal) =
   s = max(a.scale, b.scale)
   (a.units * pow10(s - a.scale), b.units * pow10(s - b.scale), s)
 
+#     decimal.add(decimal.parse("0.1")?, decimal.parse("0.2")?)   # => 0.3
 fn add(a: Decimal, b: Decimal) =
   (x, y, s) = aligned(a, b)
   Decimal(x + y, s)
 
+#     decimal.sub(decimal.parse("1.00")?, decimal.parse("0.75")?)   # => 0.25
 fn sub(a: Decimal, b: Decimal) =
   (x, y, s) = aligned(a, b)
   Decimal(x - y, s)
 
 # Exact: the places add up. Round afterwards where a money amount wants
 # its two.
+#
+#     decimal.mul(decimal.parse("1.5")?, decimal.parse("1.5")?)   # => 2.25
 fn mul(a: Decimal, b: Decimal) = Decimal(a.units * b.units, a.scale + b.scale)
 
 # `a / b` to `places` places, rounded as asked; `Err` on a zero divisor.
+#
+#     decimal.div(decimal.from_int(1), decimal.from_int(3), 4, decimal.HalfUp)   # => Ok(0.3333)
+#     decimal.div(decimal.from_int(1), decimal.zero(), 2, decimal.HalfUp)         # => Err(division by zero)
 fn div(a: Decimal, b: Decimal, places, how) =
   if b.units == 0 then Err("division by zero")
   else
@@ -88,17 +107,23 @@ fn div(a: Decimal, b: Decimal, places, how) =
 private fn rounded_signed(n, d, how) =
   if d < 0 then rounded(0 - n, 0 - d, how) else rounded(n, d, how)
 
+#     decimal.cmp(decimal.parse("1.10")?, decimal.parse("1.1")?)   # => 0
 fn cmp(a: Decimal, b: Decimal) =
   (x, y, _) = aligned(a, b)
   if x < y then -1 else if x > y then 1 else 0
 
+#     decimal.eq(decimal.parse("1.10")?, decimal.parse("1.1")?)   # => true
 fn eq(a: Decimal, b: Decimal) = cmp(a, b) == 0
 
+#     decimal.as_float(decimal.parse("12.50")?)   # => 12.5
 fn as_float(d: Decimal) = to_float(d.units) / to_float(pow10(d.scale))
 
 # -- text ---------------------------------------------------------------------
 
 # `-12.50` for `Decimal(-1250, 2)`; a scale of zero prints no point.
+#
+#     decimal.text(decimal.Decimal(-1250, 2))   # => -12.50
+#     decimal.text(decimal.Decimal(7, 0))       # => 7
 fn text(d: Decimal) =
   digits = int_to_str(abs(d.units))
   padded = if #digits > d.scale then digits else repeat("0", d.scale - #digits + 1) + digits
@@ -107,6 +132,9 @@ fn text(d: Decimal) =
   if d.units < 0 then "-" + body else body
 
 # `12`, `12.5`, `-0.75`, `+3.00`: digits with at most one point.
+#
+#     decimal.parse("+3.00")   # => Ok(3.00)
+#     decimal.parse("1.2.3")   # => Err(`1.2.3` has two points)
 fn parse(s) =
   neg = #s > 0 && s[0] == 45
   body = if #s > 0 && (s[0] == 45 || s[0] == 43) then s[1:] else s

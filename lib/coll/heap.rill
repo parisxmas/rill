@@ -5,19 +5,17 @@ module heap
 # and leave the old one as it was — so one can be kept, passed along, or
 # sent down a channel, and two strands never contend for it.
 #
-#     import "coll/heap" as heap
-#     h = heap.of(Cons(5, Cons(1, Cons(3, Nil))))
-#     heap.peek(h)                         # Some(1)
-#     match heap.pop(h)
-#       Some((least, rest)) -> ...
-#       None -> ...
-#     heap.sorted(h)                       # Cons(1, Cons(3, Cons(5, Nil)))
 #
 # The order is `<` unless the heap was made with `new_with(before)`, where
 # `before(a, b)` says whether `a` comes out before `b` — so a heap of
 # `(priority, task)` pairs can order by the priority alone, and a max-heap
 # is `new_with(\a, b -> a > b)`. This is a leftist heap: merging two is a
 # walk down their right spines, which are short by construction.
+#
+#     h = heap.of(Cons(5, Cons(1, Cons(3, Nil))))
+#     heap.peek(h)                         # => Some(1)
+#     heap.pop(h) |> opt_map(\p -> fst(p))   # => Some(1)
+#     heap.sorted(h)                       # => Cons(1, Cons(3, Cons(5, Nil)))
 
 type Heap(a)
   Heap(before: (a, a) -> Bool, root: Tree(a), size: Int)
@@ -26,33 +24,52 @@ type Tree(a)
   Leaf
   Node(rank: Int, item: a, left: Tree(a), right: Tree(a))
 
+#     heap.size(heap.new())   # => 0
 fn new() = new_with(\a, b -> a < b)
 
+#     h = heap.push(heap.push(heap.new_with(\a, b -> a > b), 1), 9)
+#     heap.peek(h)   # => Some(9)
 fn new_with(before) = Heap(before, Leaf, 0)
 
+#     heap.sorted(heap.of(Cons("pear", Cons("apple", Nil))))   # => Cons(apple, Cons(pear, Nil))
 fn of(items) = of_with(items, \a, b -> a < b)
 
+#     h = heap.of_with(Cons((2, "b"), Cons((1, "a"), Nil)), \x, y -> fst(x) < fst(y))
+#     heap.peek(h)   # => Some((1, a))
 fn of_with(items, before) = fold(items, new_with(before), push)
 
+#     heap.sorted(heap.push(heap.of(Cons(2, Nil)), 1))   # => Cons(1, Cons(2, Nil))
 fn push(h: Heap(a), x) = Heap(h.before, meld(h.before, Node(1, x, Leaf, Leaf), h.root), h.size + 1)
 
+#     heap.peek(heap.of(Cons(3, Cons(2, Nil))))   # => Some(2)
+#     heap.peek(heap.new())                        # => None
 fn peek(h: Heap(a)) = match h.root
   Leaf -> None
   Node(_, x, _, _) -> Some(x)
 
 # The least element and the heap without it, or `None` when it is empty.
+#
+#     h = heap.of(Cons(3, Cons(2, Nil)))
+#     heap.pop(h) |> opt_map(\p -> fst(p))                # => Some(2)
+#     heap.pop(h) |> opt_map(\p -> heap.sorted(snd(p)))   # => Some(Cons(3, Nil))
 fn pop(h: Heap(a)) = match h.root
   Leaf -> None
   Node(_, x, l, r) -> Some((x, Heap(h.before, meld(h.before, l, r), h.size - 1)))
 
+#     heap.size(heap.of(Cons(3, Cons(2, Nil))))   # => 2
 fn size(h: Heap(a)) = h.size
 
+#     heap.is_empty(heap.new())   # => true
 fn is_empty(h: Heap(a)) = h.size == 0
 
 # Both heaps as one; they must have been made with the same order.
+#
+#     heap.sorted(heap.merge(heap.of(Cons(4, Cons(1, Nil))), heap.of(Cons(3, Nil))))   # => Cons(1, Cons(3, Cons(4, Nil)))
 fn merge(a: Heap(a), b: Heap(a)) = Heap(a.before, meld(a.before, a.root, b.root), a.size + b.size)
 
 # Everything, least first.
+#
+#     heap.sorted(heap.of(Cons(2, Cons(2, Cons(1, Nil)))))   # => Cons(1, Cons(2, Cons(2, Nil)))
 fn sorted(h: Heap(a)) = reverse(drain(h, Nil))
 
 private fn drain(h, acc) = match pop(h)

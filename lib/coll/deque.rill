@@ -6,54 +6,71 @@ module deque
 # loop's state or a strand's, where a list would cost a walk to reach its
 # far end.
 #
-#     import "coll/deque" as dq
-#     q = dq.push_back(dq.push_back(dq.new(), "first"), "second")
-#     match dq.pop_front(q)
-#       Some((x, rest)) -> ...             # "first", and the queue without it
-#       None -> ...
-#     dq.of(list), dq.items(q), dq.size(q)
 #
 # Two lists, one for each end, the front's in order and the back's
 # reversed; when one runs dry the other is turned round to feed it, which
 # is the walk a plain list would make on every pop, made once in a while.
+#
+#     q = deque.push_back(deque.push_back(deque.new(), "first"), "second")
+#     deque.pop_front(q) |> opt_map(\p -> fst(p))   # => Some(first)
+#     deque.items(q)                                # => Cons(first, Cons(second, Nil))
+#     deque.size(q)                                 # => 2
 
 type Deque(a)
   Deque(front: List(a), back: List(a), size: Int)
 
+#     deque.is_empty(deque.new())   # => true
 fn new() = Deque(Nil, Nil, 0)
 
+#     deque.items(deque.of(Cons(1, Cons(2, Nil))))   # => Cons(1, Cons(2, Nil))
 fn of(items) = Deque(items, Nil, len(items))
 
+#     deque.size(deque.of(Cons(1, Cons(2, Cons(3, Nil)))))   # => 3
 fn size(q: Deque(a)) = q.size
 
+#     deque.is_empty(deque.of(Cons(1, Nil)))   # => false
 fn is_empty(q: Deque(a)) = q.size == 0
 
+#     deque.items(deque.push_front(deque.of(Cons(2, Nil)), 1))   # => Cons(1, Cons(2, Nil))
 fn push_front(q: Deque(a), x) = Deque(Cons(x, q.front), q.back, q.size + 1)
 
+#     deque.items(deque.push_back(deque.of(Cons(1, Nil)), 2))   # => Cons(1, Cons(2, Nil))
 fn push_back(q: Deque(a), x) = Deque(q.front, Cons(x, q.back), q.size + 1)
 
 # The front element and the deque without it, or `None` when it is empty.
+#
+#     q = deque.of(Cons(1, Cons(2, Nil)))
+#     deque.pop_front(q) |> opt_map(\p -> fst(p))                   # => Some(1)
+#     deque.pop_front(q) |> opt_map(\p -> deque.items(snd(p)))     # => Some(Cons(2, Nil))
+#     deque.pop_front(deque.new())                                  # => None
 fn pop_front(q: Deque(a)) = match q.front
   Cons(x, rest) -> Some((x, Deque(rest, q.back, q.size - 1)))
   Nil -> match reverse(q.back)
     Nil -> None
     Cons(x, rest) -> Some((x, Deque(rest, Nil, q.size - 1)))
 
+#     q = deque.of(Cons(1, Cons(2, Nil)))
+#     deque.pop_back(q) |> opt_map(\p -> fst(p))   # => Some(2)
 fn pop_back(q: Deque(a)) = match q.back
   Cons(x, rest) -> Some((x, Deque(q.front, rest, q.size - 1)))
   Nil -> match reverse(q.front)
     Nil -> None
     Cons(x, rest) -> Some((x, Deque(Nil, rest, q.size - 1)))
 
+#     deque.peek_front(deque.of(Cons(1, Cons(2, Nil))))   # => Some(1)
 fn peek_front(q: Deque(a)) = match q.front
   Cons(x, _) -> Some(x)
   Nil -> last(q.back)
 
+#     deque.peek_back(deque.of(Cons(1, Cons(2, Nil))))   # => Some(2)
 fn peek_back(q: Deque(a)) = match q.back
   Cons(x, _) -> Some(x)
   Nil -> last(q.front)
 
 # Everything, front to back.
+#
+#     q = deque.push_front(deque.push_back(deque.new(), 2), 1)
+#     deque.items(q)   # => Cons(1, Cons(2, Nil))
 fn items(q: Deque(a)) = append(q.front, reverse(q.back))
 
 # -- tests --------------------------------------------------------------------

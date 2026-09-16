@@ -10,18 +10,19 @@ module regex
 # it. A match is the leftmost one, alternatives tried in the order written
 # and counts as many as they can — Perl's answer, not POSIX's longest.
 #
-#     import "text/regex" as re
-#     date = re.compile("(\\d{4})-(\\d{2})-(\\d{2})")?
-#     re.is_match(date, "on 2026-09-14 at")            # true
-#     re.find(date, "on 2026-09-14 at")                # Some((3, 13))
-#     re.captures(date, "on 2026-09-14 at")            # Some(["2026-09-14", "2026", "09", "14"])
-#     re.replace_all(re.compile("\\s+")?, "a  b   c", " ")   # "a b c"
-#     re.split(re.compile(",\\s*")?, "a, b,c")         # ["a", "b", "c"]
 #
 # Bytes, like every string here: `.` is one byte, and a class of `é` is a
 # class of its two bytes. Backtracking keeps the matcher small and the
 # patterns familiar, and can be slow on a pattern built to defeat it —
 # `(a*)*b` on a long run of `a`s — as it is everywhere else it is used.
+#
+#     date = regex.compile("(\\d{4})-(\\d{2})-(\\d{2})")?
+#     regex.is_match(date, "on 2026-09-14 at")            # => true
+#     regex.find(date, "on 2026-09-14 at")                # => Some((3, 13))
+#     regex.captures(date, "on 2026-09-14 at")            # => Some(Cons(2026-09-14, Cons(2026, Cons(09, Cons(14, Nil)))))
+#     spaces = regex.compile("\\s+")?
+#     regex.replace_all(spaces, "a  b   c", " ")           # => a b c
+#     regex.split(regex.compile(",\\s*")?, "a, b,c")   # => Cons(a, Cons(b, Cons(c, Nil)))
 
 type Node
   Lit(byte: Int)
@@ -40,13 +41,22 @@ type Re
 
 # -- matching -----------------------------------------------------------------
 
+#     r = regex.compile("^[a-z]+$")?
+#     regex.is_match(r, "hello")    # => true
+#     regex.is_match(r, "Hello")    # => false
 fn is_match(r: Re, s) = match find(r, s)
   Some(_) -> true
   None -> false
 
 # Where the first match is: `Some((start, end))`, the end excluded.
+#
+#     r = regex.compile("\\d+")?
+#     regex.find(r, "room 101")   # => Some((5, 8))
+#     regex.find(r, "no digits")  # => None
 fn find(r: Re, s) = find_from(r, s, 0)
 
+#     r = regex.compile("\\d+")?
+#     regex.find_from(r, "1 and 22", 1)   # => Some((6, 8))
 fn find_from(r: Re, s, from) =
   caps = fresh(r)
   found = search(r, s, from, caps)
@@ -54,6 +64,9 @@ fn find_from(r: Re, s, from) =
 
 # Every match, left to right, none overlapping; an empty match moves on
 # by one byte so that the search always ends.
+#
+#     r = regex.compile("\\d+")?
+#     regex.find_all(r, "1, 22, 333")   # => Cons((0, 1), Cons((3, 5), Cons((7, 10), Nil)))
 fn find_all(r: Re, s) = reverse(all_from(r, s, 0, Nil))
 
 private fn all_from(r: Re, s, from, acc) =
@@ -63,8 +76,13 @@ private fn all_from(r: Re, s, from, acc) =
 
 # The match and every group, group 0 the whole; a group that took no part
 # is `""`.
+#
+#     r = regex.compile("(\\w+)@(\\w+)")?
+#     regex.captures(r, "mail me@host now")   # => Some(Cons(me@host, Cons(me, Cons(host, Nil))))
 fn captures(r: Re, s) = captures_from(r, s, 0)
 
+#     r = regex.compile("(\\d)")?
+#     regex.captures_from(r, "1 2", 1)   # => Some(Cons(2, Cons(2, Nil)))
 fn captures_from(r: Re, s, from) =
   caps = fresh(r)
   found = search(r, s, from, caps)
@@ -77,8 +95,13 @@ fn captures_from(r: Re, s, from) =
     Some(reverse(pieces))
 
 # Every match replaced by what `f` makes of it.
+#
+#     r = regex.compile("[aeiou]")?
+#     regex.replace_all(r, "banana", "_")   # => b_n_n_
 fn replace_all(r: Re, s, with) = replace_by(r, s, \m -> with)
 
+#     r = regex.compile("\\d+")?
+#     regex.replace_by(r, "a1b22", \m -> "<" + m + ">")   # => a<1>b<22>
 fn replace_by(r: Re, s, f) =
   out = strbuf()
   put = \at, span ->
@@ -91,6 +114,9 @@ fn replace_by(r: Re, s, f) =
   strbuf_str(out)
 
 # The pieces between the matches.
+#
+#     r = regex.compile("\\s*;\\s*")?
+#     regex.split(r, "a ; b;c")   # => Cons(a, Cons(b, Cons(c, Nil)))
 fn split(r: Re, s) =
   cut = \st, span ->
     (acc, at) = st
@@ -195,6 +221,9 @@ private fn rep(n: Node, s, i, caps: Buf(Int), k, count) = match n
 # what it built and where it stopped; the group count is one number kept
 # in a buffer so that every piece sees the same one.
 
+#     res_map(regex.compile("a(b"), \r -> r.groups)   # => Err(`a(b`: `(` is never closed at byte 1)
+#     r = regex.compile("a+")?
+#     regex.is_match(r, "caab")   # => true
 fn compile(pattern) =
   groups = buf_int(1)
   (node, at) = parse_alt(pattern, 0, groups)?

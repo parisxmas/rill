@@ -16,6 +16,13 @@ module oxirec
 # so baskets tracked with old timestamps answer with nothing at all rather
 # than with an error. If `rec_related` comes back empty, check the two clocks
 # before checking the data.
+#
+#     # not run
+#     import "db/oxirec"
+#     fd = rec_connect("127.0.0.1", 7411)?
+#     rec_track_now(fd, "shop", 1, Cons("bread", Cons("butter", Nil)))
+#     rec_names(rec_related(fd, "shop", "bread", rec_limit(5, Nil))?)   # Cons("butter", ...)
+#     rec_hang_up(fd)
 import "db/oxiwire"
 
 # -- the clock ----------------------------------------------------------------
@@ -27,26 +34,46 @@ import "db/oxiwire"
 # the whole of what that takes.
 extern fn time(p: Ptr) -> Int
 
+#     import "db/oxirec"
+#     rec_now() > 1700000000   # => true
 fn rec_now() = time(null_ptr())
 
 # -- calling ------------------------------------------------------------------
 
+#     # not run
+#     import "db/oxirec"
+#     fd = rec_connect("127.0.0.1", 7411)?
 fn rec_connect(host, port) = connect_to(host, port)
 
+#     # not run
+#     import "db/oxirec"
+#     rec_hang_up(fd)
 fn rec_hang_up(fd) = sock_close(fd)
 
+#     import "db/oxirec"
+#     rec_request("stats", Nil)   # => JObj(Cons(Field(engine, JStr(rec)), Cons(Field(cmd, JStr(rec)), Cons(Field(op, JStr(stats)), Nil))))
 fn rec_request(op, fields) =
   JObj(Cons(Field("engine", JStr("rec")), Cons(Field("cmd", JStr("rec")), Cons(Field("op", JStr(op)), fields))))
 
+#     # not run
+#     import "db/oxirec"
+#     rec_call(fd, "stats", Nil)
 fn rec_call(fd, op, fields) = ow_call(fd, rec_request(op, fields))
 
 # -- putting baskets in -------------------------------------------------------
 
 # One basket: who it was, what was in it, and when. `at` is epoch seconds; the
 # server's own clock is used when it is left out, which `rec_track_now` does.
+#
+#     # not run
+#     import "db/oxirec"
+#     rec_track(fd, "shop", 42, Cons("bread", Cons("butter", Nil)), 1700000000)   # a basket, at a moment in seconds
 fn rec_track(fd, model, basket_id, item_names, at) =
   rec_call(fd, "track", Cons(Field("model", JStr(model)), Cons(Field("basket_id", JInt(basket_id)), Cons(Field("items", JArr(map(item_names, \i -> JStr(i)))), Cons(Field("ts", JInt(at)), Nil)))))
 
+#     # not run
+#     import "db/oxirec"
+#     rec_track_now(fd, "shop", 43, Cons("tea", Cons("milk", Nil)))
 fn rec_track_now(fd, model, basket_id, item_names) =
   rec_call(fd, "track", Cons(Field("model", JStr(model)), Cons(Field("basket_id", JInt(basket_id)), Cons(Field("items", JArr(map(item_names, \i -> JStr(i)))), Nil))))
 
@@ -54,55 +81,107 @@ fn rec_track_now(fd, model, basket_id, item_names) =
 
 # What turns up beside one item. `spec` is built with the options below, or
 # `Nil` for the engine's own defaults.
+#
+#     # not run
+#     import "db/oxirec"
+#     rec_names(rec_related(fd, "shop", "bread", rec_limit(3, rec_scoring("llr", Nil)))?)
 fn rec_related(fd, model, item_name, spec) =
   rec_call(fd, "related", Cons(Field("model", JStr(model)), Cons(Field("item", JStr(item_name)), spec)))
 
 # What to put beside a basket somebody already has. `rec_without` keeps what
 # is already in it out of the answer.
+#
+#     # not run
+#     import "db/oxirec"
+#     rec_names(rec_for_basket(fd, "shop", Cons("bread", Cons("tea", Nil)), rec_without(Cons("milk", Nil), Nil))?)
 fn rec_for_basket(fd, model, item_names, spec) =
   rec_call(fd, "for_basket", Cons(Field("model", JStr(model)), Cons(Field("items", JArr(map(item_names, \i -> JStr(i)))), spec)))
 
+#     # not run
+#     import "db/oxirec"
+#     st = rec_stats(fd)?
+#     rec_baskets(rec_model_stats(st, "shop"))
 fn rec_stats(fd) = rec_call(fd, "stats", Nil)
 
+#     # not run
+#     import "db/oxirec"
+#     rec_checkpoint(fd)
 fn rec_checkpoint(fd) = rec_call(fd, "checkpoint", Nil)
 
 # -- options -------------------------------------------------------------------
 
+#     import "db/oxirec"
+#     rec_limit(5, Nil)   # => Cons(Field(limit, JInt(5)), Nil)
 fn rec_limit(n, rest) = Cons(Field("limit", JInt(n)), rest)
 
 # `llr` — the log-likelihood ratio — asks whether two things turn up together
 # more than chance would have it, rather than merely often.
+#
+#     import "db/oxirec"
+#     rec_scoring("llr", Nil)   # => Cons(Field(scoring, JStr(llr)), Nil)
 fn rec_scoring(name, rest) = Cons(Field("scoring", JStr(name)), rest)
 
+#     import "db/oxirec"
+#     rec_half_life(30.0, Nil)   # => Cons(Field(half_life, JNum(30)), Nil)
 fn rec_half_life(days, rest) = Cons(Field("half_life", JNum(days)), rest)
 
+#     import "db/oxirec"
+#     rec_min_support(2.0, Nil)   # => Cons(Field(min_support, JNum(2)), Nil)
 fn rec_min_support(n, rest) = Cons(Field("min_support", JNum(n)), rest)
 
+#     import "db/oxirec"
+#     rec_without(Cons("milk", Nil), Nil)   # => Cons(Field(exclude, JArr(Cons(JStr(milk), Nil))), Nil)
 fn rec_without(item_names, rest) =
   Cons(Field("exclude", JArr(map(item_names, \i -> JStr(i)))), rest)
 
 # The moment to score against, in epoch seconds. Without it the server's clock
 # is used, which is what makes old test data answer with nothing.
+#
+#     import "db/oxirec"
+#     rec_at(1700000000, Nil)   # => Cons(Field(ts, JInt(1700000000)), Nil)
 fn rec_at(seconds, rest) = Cons(Field("ts", JInt(seconds)), rest)
 
 # -- reading answers out -------------------------------------------------------
 
+#     import "db/oxirec"
+#     answer = JObj(Cons(Field("recommendations", JArr(Cons(JObj(Cons(Field("item", JStr("butter")), Cons(Field("score", JNum(0.9)), Nil))), Nil))), Nil))
+#     len(rec_suggestions(answer))   # => 1
+#     rec_names(answer)              # => Cons(butter, Nil)
 fn rec_suggestions(answer) = items(unwrap_or(get(answer, "recommendations"), JArr(Nil)))
 
+#     import "db/oxirec"
+#     rec_item(JObj(Cons(Field("item", JStr("butter")), Nil)))   # => butter
 fn rec_item(suggestion) = as_str(unwrap_or(get(suggestion, "item"), JNull))
 
+#     import "db/oxirec"
+#     rec_score(JObj(Cons(Field("score", JNum(0.9)), Nil)))   # => 0.9
 fn rec_score(suggestion) = as_float(unwrap_or(get(suggestion, "score"), JNull))
 
+#     import "db/oxirec"
+#     rec_names(JObj(Cons(Field("recommendations", JArr(Nil)), Nil)))   # => Nil
 fn rec_names(answer) = map(rec_suggestions(answer), \s -> rec_item(s))
 
+#     import "db/oxirec"
+#     rec_counted(JObj(Cons(Field("counted", JBool(true)), Nil)))   # => true
 fn rec_counted(answer) = as_bool(unwrap_or(get(answer, "counted"), JBool(false)))
 
 # `stats` answers about the store as a whole and about each model in it.
+#
+#     import "db/oxirec"
+#     rec_catalogue(JObj(Cons(Field("catalogue_items", JInt(120)), Nil)))   # => 120
 fn rec_catalogue(answer) = as_int(unwrap_or(get(answer, "catalogue_items"), JNull))
 
+#     import "db/oxirec"
+#     st = JObj(Cons(Field("models", JObj(Cons(Field("shop", JObj(Cons(Field("baskets", JInt(10)), Cons(Field("pairs", JInt(40)), Nil)))), Nil))), Nil))
+#     rec_baskets(rec_model_stats(st, "shop"))   # => 10
+#     rec_pairs(rec_model_stats(st, "shop"))     # => 40
 fn rec_model_stats(answer, model) =
   unwrap_or(path(answer, Cons("models", Cons(model, Nil))), JNull)
 
+#     import "db/oxirec"
+#     rec_baskets(JObj(Cons(Field("baskets", JInt(10)), Nil)))   # => 10
 fn rec_baskets(model_stats) = as_int(unwrap_or(get(model_stats, "baskets"), JNull))
 
+#     import "db/oxirec"
+#     rec_pairs(JObj(Cons(Field("pairs", JInt(40)), Nil)))   # => 40
 fn rec_pairs(model_stats) = as_int(unwrap_or(get(model_stats, "pairs"), JNull))

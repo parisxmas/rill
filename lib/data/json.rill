@@ -8,6 +8,11 @@ module json
 # other and rides out through the same returns a value does; `parse` is the
 # only one that turns it into a `Result`, because the caller is the only one
 # with anywhere else to put it.
+#
+#     doc = json.parse("{\"user\": {\"name\": \"ada\", \"ids\": [1, 2]}}")?
+#     json.path(doc, Cons("user", Cons("name", Nil)))          # => Some(json.JStr(ada))
+#     json.as_str(json.path(doc, Cons("user", Cons("name", Nil))) |> unwrap_or(json.JNull))   # => ada
+#     json.to_string(json.JObj(Cons(json.Field("n", json.JInt(5)), Nil)))   # => {"n":5}
 
 type Json
   JNull
@@ -31,26 +36,31 @@ type Parsed
 # means the document was not what it claimed to be, and a parser that returns
 # the value anyway has answered a question nobody asked: `nonsense` is not the
 # JSON document `null` with a remark after it.
+#
+#     json.parse("[1, 2.5, \"x\", true, null]")   # => Ok(json.JArr(Cons(json.JInt(1), Cons(json.JNum(2.5), Cons(json.JStr(x), Cons(json.JBool(true), Cons(json.JNull, Nil)))))))
+#     json.parse("[1,]")                          # => Err(no value begins with `]`, at byte 3)
+#     json.parse("null nonsense")                # => Err(trailing text, at byte 5)
 fn parse(text) = match parse_value(text, skip_ws(text, 0))
   Failed(why, pos) -> Err(complain(why, pos))
   Parsed(v, j) -> finish(text, v, skip_ws(text, j))
 
-fn finish(text, v, end) =
+private fn finish(text, v, end) =
   if end >= str_len(text) then Ok(v) else Err(complain("trailing text", end))
 
-fn complain(why, pos) = why + ", at byte " + int_to_str(pos)
+private fn complain(why, pos) = why + ", at byte " + int_to_str(pos)
 
-fn skip_ws(s, i) = if i < str_len(s) && is_space(str_get(s, i)) then skip_ws(s, i + 1) else i
+private fn skip_ws(s, i) =
+  if i < str_len(s) && is_space(str_get(s, i)) then skip_ws(s, i + 1) else i
 
 # `str_get` answers -1 past the end, so every byte test here doubles as the
 # end-of-text test, and the text running out is never mistaken for a byte.
-fn parse_value(s, i) =
+private fn parse_value(s, i) =
   c = str_get(s, i)
   if c == 123 then parse_object(s, skip_ws(s, i + 1), Nil) else if c == 91 then parse_array(s, skip_ws(s, i + 1), Nil) else if c == 34 then parse_string(s, i + 1, "") else if c == 116 then keyword(s, i, "true", JBool(true)) else if c == 102 then keyword(s, i, "false", JBool(false)) else if c == 110 then keyword(s, i, "null", JNull) else if c < 0 then Failed("a value expected and the text ended", i) else if is_number_char(c) then parse_number(s, i) else Failed("no value begins with `" + chr(c) + "`", i)
 
 # The three literals used to be taken on their first byte and their length
 # alone, so `nul` and `true_enough` were read as `null` and `true`.
-fn keyword(s, i, word, value) =
+private fn keyword(s, i, word, value) =
   if str_sub(s, i, str_len(word)) == word then Parsed(value, i + str_len(word)) else Failed("`" + word + "` expected", i)
 
 # `"` is 34, `\` is 92.
@@ -59,24 +69,24 @@ fn keyword(s, i, word, value) =
 # string in a document holds no escape at all, and taking those a byte at a
 # time cost a string the square of its length — a fresh copy of everything
 # read so far, per byte read.
-fn parse_string(s, i, acc) =
+private fn parse_string(s, i, acc) =
   j = plain_end(s, i)
   parse_string_at(s, j, joined(acc, str_sub(s, i, j - i)))
 
 # A string with no escape in it is one run, and one run onto nothing is the
 # run itself — worth saying, because it is the case nearly every string is.
-fn joined(acc, run) = if str_len(acc) == 0 then run else acc + run
+private fn joined(acc, run) = if str_len(acc) == 0 then run else acc + run
 
 # Reached only on a `"`, a `\`, or the end: `plain_end` stops at nothing else.
-fn parse_string_at(s, i, acc) =
+private fn parse_string_at(s, i, acc) =
   c = str_get(s, i)
   if c < 0 then Failed("the text ended inside a string", i) else if c == 34 then Parsed(JStr(acc), i + 1) else parse_escape(s, i + 1, acc)
 
-fn plain_end(s, i) =
+private fn plain_end(s, i) =
   c = str_get(s, i)
   if c < 0 || c == 34 || c == 92 then i else plain_end(s, i + 1)
 
-fn parse_escape(s, i, acc) =
+private fn parse_escape(s, i, acc) =
   c = str_get(s, i)
   if c < 0 then Failed("the text ended inside an escape", i) else if c == 110 then parse_string(s, i + 1, acc + "\n") else if c == 116 then parse_string(s, i + 1, acc + "\t") else if c == 114 then parse_string(s, i + 1, acc + "\r") else if c == 117 then parse_unicode(s, i + 1, acc) else parse_string(s, i + 1, acc + chr(c))
 
@@ -85,7 +95,7 @@ fn parse_escape(s, i, acc) =
 # character. Either way it goes in as the bytes UTF-8 spells it with. A half
 # with no other half is U+FFFD, the replacement character, which is what text
 # that has lost a piece is.
-fn parse_unicode(s, i, acc) =
+private fn parse_unicode(s, i, acc) =
   if !is_hex4(s, i) then Failed("`\\u` needs four hex digits", i)
   else
     v = hex4(s, i)
@@ -93,28 +103,28 @@ fn parse_unicode(s, i, acc) =
       then parse_string(s, i + 4, acc + from_char(65533))
       else parse_string(s, i + 4, acc + from_char(v))
 
-fn parse_pair(s, i, acc, hi) =
+private fn parse_pair(s, i, acc, hi) =
   if str_get(s, i) == 92 && str_get(s, i + 1) == 117 && is_hex4(s, i + 2) && is_low(hex4(s, i + 2))
     then parse_string(s, i + 6, acc + from_char(65536 + (hi - 55296) * 1024 + hex4(s, i + 2) - 56320))
     else parse_string(s, i, acc + from_char(65533))
 
-fn is_low(v) = v >= 56320 && v < 57344
+private fn is_low(v) = v >= 56320 && v < 57344
 
-fn is_hex4(s, i) =
+private fn is_hex4(s, i) =
   is_hex(str_get(s, i)) && is_hex(str_get(s, i + 1)) && is_hex(str_get(s, i + 2)) && is_hex(str_get(s, i + 3))
 
-fn is_hex(c) = c >= 48 && c <= 57 || c >= 97 && c <= 102 || c >= 65 && c <= 70
+private fn is_hex(c) = c >= 48 && c <= 57 || c >= 97 && c <= 102 || c >= 65 && c <= 70
 
-fn hex4(s, i) =
+private fn hex4(s, i) =
   hex_digit(str_get(s, i)) * 4096 + hex_digit(str_get(s, i + 1)) * 256 + hex_digit(str_get(s, i + 2)) * 16 + hex_digit(str_get(s, i + 3))
 
-fn hex_digit(c) =
+private fn hex_digit(c) =
   if c >= 48 && c <= 57 then c - 48 else if c >= 97 && c <= 102 then c - 87 else if c >= 65 && c <= 70 then c - 55 else 0
 
 # `parse_value` only comes here on a byte a number may begin with, so there is
 # always at least one to take. What is taken is not checked past that: `1.2.3`
 # is handed to `str_to_float` and becomes whatever that makes of it.
-fn parse_number(s, i) =
+private fn parse_number(s, i) =
   j = number_end(s, i)
   Parsed(number_of(str_sub(s, i, j - i)), j)
 
@@ -122,56 +132,62 @@ fn parse_number(s, i) =
 # measurement is not. A literal that never showed a decimal point or an
 # exponent stays an integer, so it prints back exactly the way it arrived —
 # `%g` would turn an id of 1234567 into 1.23457e+06.
+#
+#     json.number_of("1234567")   # => json.JInt(1234567)
+#     json.number_of("1.5e3")     # => json.JNum(1500)
 fn number_of(text) =
   if is_integral(text) then JInt(str_to_int(text)) else JNum(str_to_float(text))
 
-fn is_integral(text) =
+private fn is_integral(text) =
   str_find(text, ".") < 0 && str_find(text, "e") < 0 && str_find(text, "E") < 0
 
-fn number_end(s, i) =
+private fn number_end(s, i) =
   c = str_get(s, i)
   if is_number_char(c) then number_end(s, i + 1) else i
 
+#     json.is_number_char("7"[0])   # => true
+#     json.is_number_char("e"[0])   # => true
+#     json.is_number_char(","[0])   # => false
 fn is_number_char(c) = c >= 48 && c <= 57 || c == 45 || c == 43 || c == 46 || c == 101 || c == 69
 
 # `]` is 93, `,` is 44. Only an empty array ends here; every other `]` is the
 # one `array_next` is looking for, which is what keeps `[1,]` from parsing.
-fn parse_array(s, i, acc) =
+private fn parse_array(s, i, acc) =
   c = str_get(s, i)
   if c == 93 then Parsed(JArr(reverse(acc)), i + 1) else if c < 0 then Failed("the text ended inside an array", i) else array_item(s, i, acc)
 
-fn array_item(s, i, acc) = match parse_value(s, i)
+private fn array_item(s, i, acc) = match parse_value(s, i)
   Failed(why, pos) -> Failed(why, pos)
   Parsed(v, j) -> array_next(s, skip_ws(s, j), Cons(v, acc))
 
-fn array_next(s, i, acc) =
+private fn array_next(s, i, acc) =
   c = str_get(s, i)
   if c == 44 then array_item(s, skip_ws(s, i + 1), acc) else if c == 93 then Parsed(JArr(reverse(acc)), i + 1) else if c < 0 then Failed("the text ended inside an array", i) else Failed("`,` or `]` expected", i)
 
 # `}` is 125, `:` is 58.
-fn parse_object(s, i, acc) =
+private fn parse_object(s, i, acc) =
   c = str_get(s, i)
   if c == 125 then Parsed(JObj(reverse(acc)), i + 1) else if c < 0 then Failed("the text ended inside an object", i) else object_key(s, i, acc)
 
-fn object_key(s, i, acc) =
+private fn object_key(s, i, acc) =
   if str_get(s, i) == 34 then object_string(s, i, acc) else Failed("a key expected", i)
 
-fn object_string(s, i, acc) = match parse_string(s, i + 1, "")
+private fn object_string(s, i, acc) = match parse_string(s, i + 1, "")
   Failed(why, pos) -> Failed(why, pos)
   Parsed(k, j) -> object_colon(s, skip_ws(s, j), key_text(k), acc)
 
-fn object_colon(s, i, key, acc) =
+private fn object_colon(s, i, key, acc) =
   if str_get(s, i) == 58 then object_pair(s, skip_ws(s, i + 1), key, acc) else Failed("`:` expected after a key", i)
 
-fn object_pair(s, i, key, acc) = match parse_value(s, i)
+private fn object_pair(s, i, key, acc) = match parse_value(s, i)
   Failed(why, pos) -> Failed(why, pos)
   Parsed(v, j) -> object_next(s, skip_ws(s, j), Cons(Field(key, v), acc))
 
-fn key_text(k) = match k
+private fn key_text(k) = match k
   JStr(t) -> t
   _ -> ""
 
-fn object_next(s, i, acc) =
+private fn object_next(s, i, acc) =
   c = str_get(s, i)
   if c == 44 then object_key(s, skip_ws(s, i + 1), acc) else if c == 125 then Parsed(JObj(reverse(acc)), i + 1) else if c < 0 then Failed("the text ended inside an object", i) else Failed("`,` or `}` expected", i)
 
@@ -181,12 +197,15 @@ fn object_next(s, i, acc) =
 # printer built a string per value and a list of them per array, then joined
 # those — so a document of six hundred records made thousands of strings on
 # the way to one. Nothing here makes a string but the builder.
+#
+#     json.to_string(json.JArr(Cons(json.JInt(1), Cons(json.JStr("a\"b"), Nil))))   # => [1,"a\"b"]
+#     json.to_string(json.JObj(Nil))   # => {}
 fn to_string(j) =
   b = strbuf()
   put_json(b, j)
   strbuf_str(b)
 
-fn put_json(b: StrBuf, j) = match j
+private fn put_json(b: StrBuf, j) = match j
   JNull -> strbuf_add(b, "null")
   JBool(x) -> strbuf_add(b, bool_to_str(x))
   JInt(n) -> strbuf_add(b, int_to_str(n))
@@ -203,39 +222,39 @@ fn put_json(b: StrBuf, j) = match j
 
 # The comma belongs before every item but the first, so the first is written
 # and the rest are written by somebody who knows they are not it.
-fn put_items(b: StrBuf, xs) = match xs
+private fn put_items(b: StrBuf, xs) = match xs
   Nil -> strbuf_add(b, "")
   Cons(x, rest) ->
     put_json(b, x)
     put_more_items(b, rest)
 
-fn put_more_items(b: StrBuf, xs) = match xs
+private fn put_more_items(b: StrBuf, xs) = match xs
   Nil -> strbuf_add(b, "")
   Cons(x, rest) ->
     b += ","
     put_json(b, x)
     put_more_items(b, rest)
 
-fn put_fields(b: StrBuf, fs) = match fs
+private fn put_fields(b: StrBuf, fs) = match fs
   Nil -> strbuf_add(b, "")
   Cons(f, rest) ->
     put_field(b, f)
     put_more_fields(b, rest)
 
-fn put_more_fields(b: StrBuf, fs) = match fs
+private fn put_more_fields(b: StrBuf, fs) = match fs
   Nil -> strbuf_add(b, "")
   Cons(f, rest) ->
     b += ","
     put_field(b, f)
     put_more_fields(b, rest)
 
-fn put_field(b: StrBuf, f) = match f
+private fn put_field(b: StrBuf, f) = match f
   Field(k, v) ->
     put_quoted(b, k)
     b += ":"
     put_json(b, v)
 
-fn put_quoted(b: StrBuf, t) =
+private fn put_quoted(b: StrBuf, t) =
   b += "\""
   put_escaped(b, t, 0)
   b += "\""
@@ -243,43 +262,52 @@ fn put_quoted(b: StrBuf, t) =
 # The same run-at-a-time reading as `parse_string`, for the same reason: a
 # byte needing an escape is the exception, so the stretches between them go in
 # whole.
-fn put_escaped(b: StrBuf, s, i) = put_escaped_run(b, s, i, clean_end(s, i))
+private fn put_escaped(b: StrBuf, s, i) = put_escaped_run(b, s, i, clean_end(s, i))
 
-fn put_escaped_run(b: StrBuf, s, i, j) =
+private fn put_escaped_run(b: StrBuf, s, i, j) =
   b += str_sub(s, i, j - i)
   if j >= str_len(s) then strbuf_add(b, "") else put_escaped_byte(b, s, j)
 
-fn put_escaped_byte(b: StrBuf, s, j) =
+private fn put_escaped_byte(b: StrBuf, s, j) =
   b += escape_byte(str_get(s, j))
   put_escaped(b, s, j + 1)
 
-fn clean_end(s, i) =
+private fn clean_end(s, i) =
   if i >= str_len(s) || needs_escaping(str_get(s, i)) then i else clean_end(s, i + 1)
 
-fn needs_escaping(c) = c == 34 || c == 92 || c == 10 || c == 9 || c == 13
+private fn needs_escaping(c) = c == 34 || c == 92 || c == 10 || c == 9 || c == 13
 
-fn escape_byte(c) =
+private fn escape_byte(c) =
   if c == 34 then "\\\"" else if c == 92 then "\\\\" else if c == 10 then "\\n" else if c == 9 then "\\t" else if c == 13 then "\\r" else chr(c)
 
 # -- reading values out -------------------------------------------------------
 
+#     doc = json.parse("{\"a\": 1}")?
+#     json.get(doc, "a")   # => Some(json.JInt(1))
+#     json.get(doc, "b")   # => None
 fn get(j, key) = match j
   JObj(fields) -> field_lookup(fields, key)
   _ -> None
 
-fn field_lookup(fields, key) = match fields
+private fn field_lookup(fields, key) = match fields
   Nil -> None
   Cons(f, rest) -> match f
     Field(k, v) -> if k == key then Some(v) else field_lookup(rest, key)
 
+#     json.items(json.parse("[1, 2]")?)   # => Cons(json.JInt(1), Cons(json.JInt(2), Nil))
+#     json.items(json.JNull)                # => Nil
 fn items(j) = match j
   JArr(xs) -> xs
   _ -> Nil
 
+#     json.as_str(json.JStr("x"))   # => x
+#     json.as_str(json.JInt(1))     # =>
 fn as_str(j) = match j
   JStr(t) -> t
   _ -> ""
 
+#     json.as_float(json.JNum(2.5))   # => 2.5
+#     json.as_float(json.JInt(2))     # => 2
 fn as_float(j) = match j
   JNum(n) -> n
   JInt(n) -> str_to_float(int_to_str(n))
@@ -287,15 +315,24 @@ fn as_float(j) = match j
 
 # For values that arrived as integers — ids, counts, versions. A `JNum` has no
 # exact integer to give back, so it answers 0 rather than rounding silently.
+#
+#     json.as_int(json.JInt(7))     # => 7
+#     json.as_int(json.JNum(7.9))   # => 0
 fn as_int(j) = match j
   JInt(n) -> n
   _ -> 0
 
+#     json.as_bool(json.JBool(true))   # => true
+#     json.as_bool(json.JNull)         # => false
 fn as_bool(j) = match j
   JBool(b) -> b
   _ -> false
 
 # Walks a path of object keys: `path(doc, Cons("user", Cons("name", Nil)))`.
+#
+#     doc = json.parse("{\"user\": {\"name\": \"ada\"}}")?
+#     json.path(doc, Cons("user", Cons("name", Nil)))   # => Some(json.JStr(ada))
+#     json.path(doc, Cons("user", Cons("age", Nil)))    # => None
 fn path(j, keys) = match keys
   Nil -> Some(j)
   Cons(k, rest) -> match get(j, k)
@@ -305,6 +342,9 @@ fn path(j, keys) = match keys
 # For a caller that has decided a bad document is simply an absent one — a
 # cache entry, an optional config. Anything that answers a user wants the
 # `Err` and the byte it names.
+#
+#     json.parsed_or("{\"a\": 1}", json.JNull)   # => json.JObj(Cons(json.Field(a, json.JInt(1)), Nil))
+#     json.parsed_or("not json", json.JNull)   # => json.JNull
 fn parsed_or(text, fallback) = match parse(text)
   Ok(v) -> v
   Err(_) -> fallback

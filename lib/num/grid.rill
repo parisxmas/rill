@@ -42,6 +42,15 @@ module grid
 #
 # From Python it is `import grid as g` — `bindings/python` builds this
 # library into a shared object and gives its handles NumPy's notation.
+#
+#     import "num/grid" as g
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     a                                  # => [[0, 1, 2], [3, 4, 5]]
+#     b = g.transpose(a)
+#     g.matmul(a, b)                     # => [[5, 14], [14, 50]]
+#     g.sum(a)                           # => 15
+#     g.gtk(a, 2.0)                      # => [[false, false, false], [true, true, true]]
+#     g.where(g.gtk(a, 2.0), a, g.zeros_like(a))   # => [[0, 0, 0], [3, 4, 5]]
 
 extern "m" fn sqrt(x: Float) -> Float
 
@@ -110,20 +119,30 @@ type Mask
 
 # -- shape ----------------------------------------------------------------------
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.ndim(a)              # => 2
+#     g.ndim(g.arange(3))    # => 1
 fn ndim(g: Grid) = #g.shape
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.size(a)   # => 6
 fn size(g: Grid) = count(g.shape)
 
+#     g.count(g.shape2(2, 3))   # => 6
 fn count(shape: Buf(Int)) =
   for d in 0..#shape with n = 1
     n * shape[d]
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.rows_of(a)   # => 2
 fn rows_of(g: Grid) = g.shape[0]
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.cols_of(a)   # => 3
 fn cols_of(g: Grid) = if ndim(g) == 1 then g.shape[0] else g.shape[1]
 
 # Row-major strides for a shape: the last axis steps by one.
-fn rowmajor(shape: Buf(Int)) =
+private fn rowmajor(shape: Buf(Int)) =
   s = buf_int(#shape)
   fn back(d, step) =
     if d < 0 then 0
@@ -133,43 +152,54 @@ fn rowmajor(shape: Buf(Int)) =
   back(#shape - 1, 1)
   s
 
+#     #g.shape1(4)      # => 1
+#     g.shape1(4)[0]    # => 4
 fn shape1(n) =
   s = buf_int(1)
   s[0] = n
   s
 
+#     s = g.shape2(2, 3)
+#     s[0]   # => 2
+#     s[1]   # => 3
 fn shape2(r, c) =
   s = buf_int(2)
   s[0] = r
   s[1] = c
   s
 
+#     g.same_shape(g.zeros2(2, 3), g.ones2(2, 3))   # => true
+#     g.same_shape(g.zeros2(2, 3), g.ones2(3, 2))   # => false
 fn same_shape(a: Grid, b: Grid) = #a.shape == #b.shape && same_dims(a, b)
 
-fn same_dims(a: Grid, b: Grid) =
+private fn same_dims(a: Grid, b: Grid) =
   for d in 0..#a.shape with ok = true
     ok && a.shape[d] == b.shape[d]
 
 # Whether the elements sit in the buffer in order, starting at its front.
+#
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.contiguous(a)                # => true
+#     g.contiguous(g.transpose(a))   # => false
 fn contiguous(g: Grid) = g.off == 0 && #g.data == size(g) && standard_strides(g)
 
-fn standard_strides(g: Grid) =
+private fn standard_strides(g: Grid) =
   std = rowmajor(g.shape)
   for d in 0..#std with ok = true
     ok && (g.strides[d] == std[d] || g.shape[d] == 1)
 
-fn fail(msg) =
+private fn fail(msg) =
   println("grid: " + msg)
   exit(1)
   0
 
-fn need_same(a: Grid, b: Grid, what) =
+private fn need_same(a: Grid, b: Grid, what) =
   if same_shape(a, b) then 0 else fail(what + ": shapes differ, " + show_shape(a.shape) + " and " + show_shape(b.shape))
 
-fn need_mask(m: Mask, a: Grid, what) =
+private fn need_mask(m: Mask, a: Grid, what) =
   if count(m.shape) == size(a) then 0 else fail(what + ": mask has " + int_to_str(count(m.shape)) + " elements, grid " + int_to_str(size(a)))
 
-fn show_shape(shape: Buf(Int)) =
+private fn show_shape(shape: Buf(Int)) =
   b = strbuf()
   b += "("
   for d in 0..#shape
@@ -184,15 +214,15 @@ fn show_shape(shape: Buf(Int)) =
 # wait for them are small against the work — a few million, a millisecond
 # or so of streaming — and more than one worker to split it over. On a
 # single-worker run nothing here ever spawns.
-fn par(n) = n > 4194304 && workers() > 1
+private fn par(n) = n > 4194304 && workers() > 1
 
 # The same question asked of arithmetic rather than elements: a matrix
 # multiplication moves far less memory per operation than a pass over an
 # array does, so it is worth splitting at a hundredth of the size.
-fn par_flops(f) = f > 1500000 && workers() > 1
+private fn par_flops(f) = f > 1500000 && workers() > 1
 
 # One strand per million operations, up to what the machine has.
-fn strands_for(flops) =
+private fn strands_for(flops) =
   want = flops / 1000000
   if want > workers() then workers() else want
 
@@ -200,23 +230,23 @@ fn strands_for(flops) =
 # against many right-hand sides walks the whole triangle once per strand,
 # so past a few strands it is the memory bus that answers and another
 # strand only makes it wait. One per thirty-two million operations.
-fn strands_streaming(flops) =
+private fn strands_streaming(flops) =
   want = flops / 32000000
   if want > workers() then workers() else want
 
-fn chunk_job(f, lo, hi, done) =
+private fn chunk_job(f, lo, hi, done) =
   f(lo, hi)
   send(done, 0)
 
 # `f(lo, hi)` over [0, n) split evenly across the workers, and waits.
-fn run(n, f) = run_split(workers(), n, f)
+private fn run(n, f) = run_split(workers(), n, f)
 
 # The same over a given number of pieces. Starting ten strands and waiting
 # for them costs thirty-five microseconds; four costs five. A piece of work
 # worth eighty microseconds is worth four strands and not ten, and a
 # factorisation makes dozens of such pieces — so the count follows the work
 # rather than the machine.
-fn run_split(chunks, n, f) =
+private fn run_split(chunks, n, f) =
   w = if chunks < 1 then 1 else if chunks > n then n else chunks
   if w < 2 then f(0, n)
   else
@@ -229,11 +259,11 @@ fn run_split(chunks, n, f) =
     for t in 0..w
       recv(done)
 
-fn part_job(f, t, lo, hi, out) = send(out, (t, f(lo, hi)))
+private fn part_job(f, t, lo, hi, out) = send(out, (t, f(lo, hi)))
 
 # Each worker's `f` over its share, combined in worker order — the same
 # order every run, so the answer is the same every run.
-fn reduce_f(n, f, combine) =
+private fn reduce_f(n, f, combine) =
   w = workers()
   out = channel()
   # `f` only reads its range; `apart` is the claim, as above.
@@ -246,12 +276,12 @@ fn reduce_f(n, f, combine) =
   for t in 1..w with acc = parts[0]
     combine(acc, parts[t])
 
-fn part_job2(f, t, lo, hi, out) =
+private fn part_job2(f, t, lo, hi, out) =
   (m, i) = f(lo, hi)
   send(out, (t, m, i))
 
 # The same for a (value, place) pair.
-fn reduce_fi(n, f, combine) =
+private fn reduce_fi(n, f, combine) =
   w = workers()
   out = channel()
   for t in 0..w
@@ -269,15 +299,19 @@ fn reduce_fi(n, f, combine) =
 
 # -- making grids ---------------------------------------------------------------
 
+#     g.zeros(g.shape2(2, 2))   # => [[0, 0], [0, 0]]
 fn zeros(shape: Buf(Int)) = Grid(shape, rowmajor(shape), 0, buf_float(count(shape)))
 
 # A grid about to have every element written: no clearing pass first.
-fn fresh(shape: Buf(Int)) = Grid(shape, rowmajor(shape), 0, buf_float_uninit(count(shape)))
+private fn fresh(shape: Buf(Int)) = Grid(shape, rowmajor(shape), 0, buf_float_uninit(count(shape)))
 
+#     g.zeros1(3)   # => [0, 0, 0]
 fn zeros1(n) = zeros(shape1(n))
 
+#     g.zeros2(1, 2)   # => [[0, 0]]
 fn zeros2(r, c) = zeros(shape2(r, c))
 
+#     g.full(g.shape1(3), 7.5)   # => [7.5, 7.5, 7.5]
 fn full(shape: Buf(Int), v) =
   g = fresh(shape)
   n = size(g)
@@ -285,21 +319,28 @@ fn full(shape: Buf(Int), v) =
     g.data[i] = v
   g
 
+#     g.ones(g.shape2(2, 2))   # => [[1, 1], [1, 1]]
 fn ones(shape: Buf(Int)) = full(shape, 1.0)
 
+#     g.ones1(2)   # => [1, 1]
 fn ones1(n) = ones(shape1(n))
 
+#     g.ones2(2, 1)   # => [[1], [1]]
 fn ones2(r, c) = ones(shape2(r, c))
 
+#     g.full2(2, 2, 3.0)   # => [[3, 3], [3, 3]]
 fn full2(r, c, v) = full(shape2(r, c), v)
 
 # 0, 1, …, n - 1
+#
+#     g.arange(5)   # => [0, 1, 2, 3, 4]
 fn arange(n) =
   g = fresh(shape1(n))
   for i in 0..n
     g.data[i] = to_float(i)
   g
 
+#     g.linspace(0.0, 1.0, 5)   # => [0, 0.25, 0.5, 0.75, 1]
 fn linspace(a, b, n) =
   g = fresh(shape1(n))
   step = if n > 1 then (b - a) / to_float(n - 1) else 0.0
@@ -308,6 +349,8 @@ fn linspace(a, b, n) =
   g
 
 # A 1-D grid from a list of floats.
+#
+#     g.of(Cons(1.5, Cons(2.5, Nil)))   # => [1.5, 2.5]
 fn of(xs) =
   g = zeros1(len(xs))
   fn fill(l, i) = match l
@@ -319,6 +362,8 @@ fn of(xs) =
   g
 
 # A grid whose element at (i, j) is `f(i, j)`.
+#
+#     g.from_fn2(2, 3, \i, j -> to_float(i * 10 + j))   # => [[0, 1, 2], [10, 11, 12]]
 fn from_fn2(r, c, f) =
   g = fresh(shape2(r, c))
   for i in 0..r
@@ -326,6 +371,7 @@ fn from_fn2(r, c, f) =
       g.data[i * c + j] = f(i, j)
   g
 
+#     g.from_fn1(4, \i -> to_float(i * i))   # => [0, 1, 4, 9]
 fn from_fn1(n, f) =
   g = fresh(shape1(n))
   for i in 0..n
@@ -334,18 +380,27 @@ fn from_fn1(n, f) =
 
 # -- elements -------------------------------------------------------------------
 
+#     g.at1(g.arange(5), 3)   # => 3
 fn at1(g: Grid, i) = g.data[g.off + i * g.strides[0]]
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.at2(a, 1, 2)   # => 5
 fn at2(g: Grid, i, j) = g.data[g.off + i * g.strides[0] + j * g.strides[1]]
 
+#     v = g.zeros1(3)
+#     g.put1(v, 1, 9.0)
+#     v   # => [0, 9, 0]
 fn put1(g: Grid, i, v) =
   g.data[g.off + i * g.strides[0]] = v
 
+#     m = g.zeros2(2, 2)
+#     g.put2(m, 1, 0, 9.0)
+#     m   # => [[0, 0], [9, 0]]
 fn put2(g: Grid, i, j, v) =
   g.data[g.off + i * g.strides[0] + j * g.strides[1]] = v
 
 # The buffer position of the k-th element in row-major order, for any shape.
-fn pos(g: Grid, k) =
+private fn pos(g: Grid, k) =
   fn walk(d, rest, acc) =
     if d < 0 then acc
     else
@@ -356,10 +411,17 @@ fn pos(g: Grid, k) =
 # -- views ----------------------------------------------------------------------
 
 # Two-dimensional transpose: the same buffer read the other way round.
+#
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.transpose(a)   # => [[0, 3], [1, 4], [2, 5]]
 fn transpose(g: Grid) =
   if ndim(g) != 2 then Grid(g.shape, g.strides, g.off, g.data) else Grid(shape2(g.shape[1], g.shape[0]), shape2(g.strides[1], g.strides[0]), g.off, g.data)
 
 # Rows lo up to hi of a 2-D grid, or elements lo up to hi of a 1-D one.
+#
+#     m = g.arange(6) |> g.reshape2(3, 2)
+#     g.rows(m, 1, 3)   # => [[2, 3], [4, 5]]
+#     g.rows(g.arange(5), 1, 3)   # => [1, 2]
 fn rows(g: Grid, lo, hi) =
   s = buf_int(#g.shape)
   for d in 0..#g.shape
@@ -367,15 +429,25 @@ fn rows(g: Grid, lo, hi) =
   s[0] = hi - lo
   Grid(s, g.strides, g.off + lo * g.strides[0], g.data)
 
+#     g.slice1(g.arange(5), 2, 4)   # => [2, 3]
 fn slice1(g: Grid, lo, hi) = rows(g, lo, hi)
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.row(a, 1)   # => [3, 4, 5]
 fn row(g: Grid, i) =
   Grid(shape1(g.shape[1]), shape1(g.strides[1]), g.off + i * g.strides[0], g.data)
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.col(a, 2)   # => [2, 5]
 fn col(g: Grid, j) =
   Grid(shape1(g.shape[0]), shape1(g.strides[0]), g.off + j * g.strides[1], g.data)
 
 # A contiguous grid with the same elements.
+#
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     t = g.transpose(a)
+#     g.contiguous(g.copy(t))   # => true
+#     g.copy(t)                 # => [[0, 3], [1, 4], [2, 5]]
 fn copy(g: Grid) =
   out = fresh(g.shape)
   n = size(g)
@@ -396,10 +468,11 @@ fn copy(g: Grid) =
       out.data[k] = g.data[pos(g, k)]
   out
 
-fn copy_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn copy_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k]
 
+#     g.reshape(g.arange(4), g.shape2(2, 2))   # => [[0, 1], [2, 3]]
 fn reshape(g: Grid, shape: Buf(Int)) =
   if count(shape) != size(g) then
     fail("reshape: " + show_shape(g.shape) + " has " + int_to_str(size(g)) + " elements, " + show_shape(shape) + " wants " + int_to_str(count(shape)))
@@ -408,21 +481,31 @@ fn reshape(g: Grid, shape: Buf(Int)) =
     src = if contiguous(g) then g else copy(g)
     Grid(shape, rowmajor(shape), 0, src.data)
 
+#     g.reshape2(g.arange(6), 3, 2)   # => [[0, 1], [2, 3], [4, 5]]
 fn reshape2(g: Grid, r, c) = reshape(g, shape2(r, c))
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.flatten(a)   # => [0, 1, 2, 3, 4, 5]
 fn flatten(g: Grid) = reshape(g, shape1(size(g)))
 
 # A grid of the same shape, filled with nothing in particular, with zeros,
 # with ones, or with one number.
+#
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.same_shape(g.empty_like(a), a)   # => true
 fn empty_like(g: Grid) = fresh(g.shape)
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.zeros_like(a)   # => [[0, 0, 0], [0, 0, 0]]
 fn zeros_like(g: Grid) = zeros(dup_shape(g.shape))
 
+#     g.ones_like(g.arange(3))   # => [1, 1, 1]
 fn ones_like(g: Grid) = full_like(g, 1.0)
 
+#     g.full_like(g.arange(2), 4.0)   # => [4, 4]
 fn full_like(g: Grid, v) = full(dup_shape(g.shape), v)
 
-fn dup_shape(shape: Buf(Int)) =
+private fn dup_shape(shape: Buf(Int)) =
   s = buf_int(#shape)
   for d in 0..#shape
     s[d] = shape[d]
@@ -430,22 +513,34 @@ fn dup_shape(shape: Buf(Int)) =
 
 # A 2-D grid with one row or one column becomes the 1-D grid of its
 # elements; anything else is unchanged.
+#
+#     g.squeeze(g.ones2(1, 3))   # => [1, 1, 1]
+#     g.squeeze(g.ones2(2, 2))   # => [[1, 1], [1, 1]]
 fn squeeze(g: Grid) =
   if ndim(g) == 2 && (g.shape[0] == 1 || g.shape[1] == 1) then reshape(g, shape1(size(g))) else g
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.ravel(g.transpose(a))   # => [0, 3, 1, 4, 2, 5]
 fn ravel(g: Grid) = flatten(g)
 
 # `n` numbers from `a` to `b`, evenly spaced in the exponent: `logspace`
 # takes the ends as powers of the base, `geomspace` as the values.
+#
+#     g.logspace(0.0, 2.0, 3, 10.0)   # => [1, 10, 100]
 fn logspace(a, b, n, base) =
   e = linspace(a, b, n)
   for k in 0..n
     e.data[k] = pow(base, e.data[k])
   e
 
+#     g.geomspace(1.0, 8.0, 4)   # => [1, 2, 4, 8]
 fn geomspace(a, b, n) = logspace(log10(a), log10(b), n, 10.0)
 
 # Joining: `axis` 0 adds rows, 1 adds columns. Two 1-D grids join end to end.
+#
+#     g.concat(g.ones2(1, 2), g.zeros2(1, 2), 0)   # => [[1, 1], [0, 0]]
+#     g.concat(g.ones2(1, 2), g.zeros2(1, 2), 1)   # => [[1, 1, 0, 0]]
+#     g.concat(g.arange(2), g.arange(2), 0)        # => [0, 1, 0, 1]
 fn concat(a: Grid, b: Grid, axis) =
   if ndim(a) == 1 && ndim(b) == 1 then
     n = size(a)
@@ -490,16 +585,23 @@ fn concat(a: Grid, b: Grid, axis) =
         out.data[i * (ca + cb) + ca + j] = y.data[i * cb + j]
     out
 
+#     g.as_rows(g.arange(3))   # => [[0, 1, 2]]
 fn as_rows(g: Grid) = if ndim(g) == 1 then reshape(g, shape2(1, size(g))) else g
 
+#     g.vstack(g.arange(2), g.ones1(2))   # => [[0, 1], [1, 1]]
 fn vstack(a: Grid, b: Grid) = concat(as_rows(a), as_rows(b), 0)
 
+#     g.hstack(g.ones2(2, 1), g.zeros2(2, 1))   # => [[1, 0], [1, 0]]
 fn hstack(a: Grid, b: Grid) = concat(a, b, 1)
 
 # Two 1-D grids as the two rows of a 2-D one.
+#
+#     g.stack(g.arange(2), g.ones1(2))   # => [[0, 1], [1, 1]]
 fn stack(a: Grid, b: Grid) = vstack(a, b)
 
 # The whole grid laid down `k` times, and each element `k` times over.
+#
+#     g.tile(g.arange(2), 2)   # => [0, 1, 0, 1]
 fn tile(g: Grid, k) =
   n = size(g)
   x = dense(g)
@@ -509,6 +611,7 @@ fn tile(g: Grid, k) =
       out.data[t * n + i] = x.data[i]
   out
 
+#     g.repeat(g.arange(2), 2)   # => [0, 0, 1, 1]
 fn repeat(g: Grid, k) =
   n = size(g)
   x = dense(g)
@@ -520,6 +623,9 @@ fn repeat(g: Grid, k) =
 
 # From a 1-D grid, the square matrix with it down the diagonal; from a 2-D
 # one, the diagonal itself.
+#
+#     g.diag(g.arange(2))                          # => [[0, 0], [0, 1]]
+#     g.diag(g.arange(4) |> g.reshape2(2, 2))      # => [0, 3]
 fn diag(g: Grid) =
   if ndim(g) == 1 then
     n = size(g)
@@ -535,10 +641,13 @@ fn diag(g: Grid) =
       out.data[i] = at2(g, i, i)
     out
 
+#     g.diagonal(g.arange(4) |> g.reshape2(2, 2))   # => [0, 3]
 fn diagonal(g: Grid) = diag(g)
 
 # The lower and upper triangles, keeping everything on or beyond the k-th
 # diagonal and zeroing the rest.
+#
+#     g.tril(g.ones2(2, 2), 0)   # => [[1, 0], [1, 1]]
 fn tril(g: Grid, k) =
   out = copy(g)
   r = rows_of(g)
@@ -548,6 +657,7 @@ fn tril(g: Grid, k) =
       out.data[i * c + j] = if j - i <= k then out.data[i * c + j] else 0.0
   out
 
+#     g.triu(g.ones2(2, 2), 0)   # => [[1, 1], [0, 1]]
 fn triu(g: Grid, k) =
   out = copy(g)
   r = rows_of(g)
@@ -559,6 +669,10 @@ fn triu(g: Grid, k) =
 
 # Every pair from `x` and `y`, as NumPy lays them out: rows of `x` repeated
 # down, columns of `y` repeated across.
+#
+#     (xs, ys) = g.meshgrid(g.arange(2), g.arange(3))
+#     xs   # => [[0, 1], [0, 1], [0, 1]]
+#     ys   # => [[0, 0], [1, 1], [2, 2]]
 fn meshgrid(x: Grid, y: Grid) =
   nx = size(x)
   ny = size(y)
@@ -573,6 +687,9 @@ fn meshgrid(x: Grid, y: Grid) =
   (gx, gy)
 
 # Reversed: along the last axis, or both axes of a 2-D grid.
+#
+#     g.fliplr(g.arange(3))                          # => [2, 1, 0]
+#     g.fliplr(g.arange(4) |> g.reshape2(2, 2))      # => [[1, 0], [3, 2]]
 fn fliplr(g: Grid) =
   x = dense(g)
   out = fresh(dup_shape(g.shape))
@@ -583,6 +700,7 @@ fn fliplr(g: Grid) =
       out.data[i * c + j] = x.data[i * c + (c - 1 - j)]
   out
 
+#     g.flipud(g.arange(4) |> g.reshape2(2, 2))   # => [[2, 3], [0, 1]]
 fn flipud(g: Grid) =
   if ndim(g) == 1 then fliplr(g)
   else
@@ -595,10 +713,14 @@ fn flipud(g: Grid) =
         out.data[i * c + j] = x.data[(r - 1 - i) * c + j]
     out
 
+#     g.flip(g.arange(4) |> g.reshape2(2, 2))   # => [[3, 2], [1, 0]]
 fn flip(g: Grid) = if ndim(g) == 1 then fliplr(g) else flipud(fliplr(g))
 
 # Everything moved along by `k`, what falls off one end coming back at the
 # other.
+#
+#     g.roll(g.arange(4), 1)    # => [3, 0, 1, 2]
+#     g.roll(g.arange(4), -1)   # => [1, 2, 3, 0]
 fn roll(g: Grid, k) =
   n = size(g)
   x = dense(g)
@@ -608,6 +730,8 @@ fn roll(g: Grid, k) =
   out
 
 # The elements at the given positions, which are a grid of numbers.
+#
+#     g.take(g.of(Cons(10.0, Cons(20.0, Cons(30.0, Nil)))), g.of(Cons(2.0, Cons(0.0, Nil))))   # => [30, 10]
 fn take(g: Grid, idx: Grid) =
   x = dense(g)
   ix = dense(idx)
@@ -620,6 +744,9 @@ fn take(g: Grid, idx: Grid) =
 # -- elementwise ------------------------------------------------------------
 
 # The contiguous copy every operation works from when a view is handed in.
+#
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.dense(g.transpose(a))   # => [[0, 3], [1, 4], [2, 5]]
 fn dense(g: Grid) = if contiguous(g) then g else copy(g)
 
 # Every operation below writes its result into an operand's own storage
@@ -630,6 +757,7 @@ fn dense(g: Grid) = if contiguous(g) then g else copy(g)
 # loop itself lives in a `_part` function over a range, which is what a
 # strand is handed when the grid is big enough to split.
 
+#     g.add(g.arange(3), g.ones1(3))   # => [1, 2, 3]
 fn add(a: Grid, b: Grid) =
   need_same(a, b, "add")
   n = size(a)
@@ -651,16 +779,21 @@ fn add(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> add_part(o, xd, yd, lo, hi)) else add_part(o, xd, yd, 0, n)
     out
 
-fn add_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn add_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] + y[k]
 
 # The same, written into the first operand's own storage: one buffer, so
 # the loop has no overlap to worry about and vectorizes as the fresh one.
+#
+#     v = g.arange(3)
+#     g.add_into(v.data, g.ones1(3).data, 0, 3)   # the buffers, over a range: what the Python binding calls
+#     v   # => [1, 2, 3]
 fn add_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = o[k] + y[k]
 
+#     g.sub(g.arange(3), g.ones1(3))   # => [-1, 0, 1]
 fn sub(a: Grid, b: Grid) =
   need_same(a, b, "sub")
   n = size(a)
@@ -682,20 +815,25 @@ fn sub(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> sub_part(o, xd, yd, lo, hi)) else sub_part(o, xd, yd, 0, n)
     out
 
-fn sub_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn sub_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] - y[k]
 
 # The same, written into the first operand's own storage: one buffer, so
 # the loop has no overlap to worry about and vectorizes as the fresh one.
+#
+#     v = g.arange(3)
+#     g.sub_into(v.data, g.ones1(3).data, 0, 3)
+#     v   # => [-1, 0, 1]
 fn sub_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = o[k] - y[k]
 
-fn sub_onto(x: Buf(Float), o: Buf(Float), lo, hi) =
+private fn sub_onto(x: Buf(Float), o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] - o[k]
 
+#     g.mul(g.arange(3), g.arange(3))   # => [0, 1, 4]
 fn mul(a: Grid, b: Grid) =
   need_same(a, b, "mul")
   n = size(a)
@@ -717,16 +855,21 @@ fn mul(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> mul_part(o, xd, yd, lo, hi)) else mul_part(o, xd, yd, 0, n)
     out
 
-fn mul_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn mul_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] * y[k]
 
 # The same, written into the first operand's own storage: one buffer, so
 # the loop has no overlap to worry about and vectorizes as the fresh one.
+#
+#     v = g.arange(3)
+#     g.mul_into(v.data, g.arange(3).data, 0, 3)
+#     v   # => [0, 1, 4]
 fn mul_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = o[k] * y[k]
 
+#     g.div(g.ones1(2), g.full(g.shape1(2), 4.0))   # => [0.25, 0.25]
 fn div(a: Grid, b: Grid) =
   need_same(a, b, "div")
   n = size(a)
@@ -748,20 +891,25 @@ fn div(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> div_part(o, xd, yd, lo, hi)) else div_part(o, xd, yd, 0, n)
     out
 
-fn div_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn div_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] / y[k]
 
 # The same, written into the first operand's own storage: one buffer, so
 # the loop has no overlap to worry about and vectorizes as the fresh one.
+#
+#     v = g.ones1(2)
+#     g.div_into(v.data, g.full(g.shape1(2), 4.0).data, 0, 2)
+#     v   # => [0.25, 0.25]
 fn div_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = o[k] / y[k]
 
-fn div_onto(x: Buf(Float), o: Buf(Float), lo, hi) =
+private fn div_onto(x: Buf(Float), o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] / o[k]
 
+#     g.maximum(g.arange(3), g.full(g.shape1(3), 1.0))   # => [1, 1, 2]
 fn maximum(a: Grid, b: Grid) =
   need_same(a, b, "maximum")
   n = size(a)
@@ -783,16 +931,21 @@ fn maximum(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> maximum_part(o, xd, yd, lo, hi)) else maximum_part(o, xd, yd, 0, n)
     out
 
-fn maximum_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn maximum_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if x[k] > y[k] then x[k] else y[k]
 
 # The same, written into the first operand's own storage: one buffer, so
 # the loop has no overlap to worry about and vectorizes as the fresh one.
+#
+#     v = g.arange(3)
+#     g.maximum_into(v.data, g.ones1(3).data, 0, 3)
+#     v   # => [1, 1, 2]
 fn maximum_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if o[k] > y[k] then o[k] else y[k]
 
+#     g.minimum(g.arange(3), g.full(g.shape1(3), 1.0))   # => [0, 1, 1]
 fn minimum(a: Grid, b: Grid) =
   need_same(a, b, "minimum")
   n = size(a)
@@ -814,17 +967,23 @@ fn minimum(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> minimum_part(o, xd, yd, lo, hi)) else minimum_part(o, xd, yd, 0, n)
     out
 
-fn minimum_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn minimum_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if x[k] < y[k] then x[k] else y[k]
 
 # The same, written into the first operand's own storage: one buffer, so
 # the loop has no overlap to worry about and vectorizes as the fresh one.
+#
+#     v = g.arange(3)
+#     g.minimum_into(v.data, g.ones1(3).data, 0, 3)
+#     v   # => [0, 1, 1]
 fn minimum_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if o[k] < y[k] then o[k] else y[k]
 
 # Every element times `v`, plus `v`, to the power `v`.
+#
+#     g.scale(g.arange(3), 2.0)   # => [0, 2, 4]
 fn scale(g: Grid, v) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -838,14 +997,18 @@ fn scale(g: Grid, v) =
     if par(n) then run(n, \lo, hi -> scale_part(o, xd, v, lo, hi)) else scale_part(o, xd, v, 0, n)
     out
 
-fn scale_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
+private fn scale_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = x[k] * v
 
+#     v = g.arange(3)
+#     g.scale_into(v.data, 2.0, 0, 3)
+#     v   # => [0, 2, 4]
 fn scale_into(o: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = o[k] * v
 
+#     g.shift(g.arange(3), 10.0)   # => [10, 11, 12]
 fn shift(g: Grid, v) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -859,14 +1022,18 @@ fn shift(g: Grid, v) =
     if par(n) then run(n, \lo, hi -> shift_part(o, xd, v, lo, hi)) else shift_part(o, xd, v, 0, n)
     out
 
-fn shift_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
+private fn shift_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = x[k] + v
 
+#     v = g.arange(3)
+#     g.shift_into(v.data, 10.0, 0, 3)
+#     v   # => [10, 11, 12]
 fn shift_into(o: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = o[k] + v
 
+#     g.power(g.arange(4), 2.0)   # => [0, 1, 4, 9]
 fn power(g: Grid, v) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -880,16 +1047,21 @@ fn power(g: Grid, v) =
     if par(n) then run(n, \lo, hi -> power_part(o, xd, v, lo, hi)) else power_part(o, xd, v, 0, n)
     out
 
-fn power_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
+private fn power_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = pow(x[k], v)
 
+#     v = g.arange(4)
+#     g.power_into(v.data, 2.0, 0, 4)
+#     v   # => [0, 1, 4, 9]
 fn power_into(o: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = pow(o[k], v)
 
+#     g.neg(g.arange(3))   # => [-0, -1, -2]
 fn neg(g: Grid) = scale(g, -1.0)
 
+#     g.gabs(g.of(Cons(-1.5, Cons(2.0, Nil))))   # => [1.5, 2]
 fn gabs(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -903,14 +1075,18 @@ fn gabs(g: Grid) =
     if par(n) then run(n, \lo, hi -> gabs_part(o, xd, lo, hi)) else gabs_part(o, xd, 0, n)
     out
 
-fn gabs_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gabs_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if x[k] < 0.0 then 0.0 - x[k] else x[k]
 
+#     v = g.of(Cons(-1.5, Nil))
+#     g.gabs_into(v.data, 0, 1)
+#     v   # => [1.5]
 fn gabs_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if o[k] < 0.0 then 0.0 - o[k] else o[k]
 
+#     g.gsqrt(g.of(Cons(4.0, Cons(9.0, Nil))))   # => [2, 3]
 fn gsqrt(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -924,14 +1100,18 @@ fn gsqrt(g: Grid) =
     if par(n) then run(n, \lo, hi -> gsqrt_part(o, xd, lo, hi)) else gsqrt_part(o, xd, 0, n)
     out
 
-fn gsqrt_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gsqrt_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = sqrt(x[k])
 
+#     v = g.of(Cons(4.0, Nil))
+#     g.gsqrt_into(v.data, 0, 1)
+#     v   # => [2]
 fn gsqrt_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = sqrt(o[k])
 
+#     g.gexp(g.zeros1(2))   # => [1, 1]
 fn gexp(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -945,14 +1125,18 @@ fn gexp(g: Grid) =
     if par(n) then run(n, \lo, hi -> gexp_part(o, xd, lo, hi)) else gexp_part(o, xd, 0, n)
     out
 
-fn gexp_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gexp_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = exp(x[k])
 
+#     v = g.zeros1(1)
+#     g.gexp_into(v.data, 0, 1)
+#     v   # => [1]
 fn gexp_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = exp(o[k])
 
+#     g.glog(g.of(Cons(1.0, Nil)))   # => [0]
 fn glog(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -966,10 +1150,13 @@ fn glog(g: Grid) =
     if par(n) then run(n, \lo, hi -> glog_part(o, xd, lo, hi)) else glog_part(o, xd, 0, n)
     out
 
-fn glog_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn glog_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = log(x[k])
 
+#     v = g.ones1(1)
+#     g.glog_into(v.data, 0, 1)
+#     v   # => [0]
 fn glog_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = log(o[k])
@@ -983,8 +1170,11 @@ fn glog_into(o: Buf(Float), lo, hi) =
 # calls.
 
 # pi, to the last bit a double holds.
+#
+#     g.pi() > 3.14159 && g.pi() < 3.1416   # => true
 fn pi() = 3.141592653589793
 
+#     g.gsin(g.zeros1(2))   # => [0, 0]
 fn gsin(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -998,14 +1188,15 @@ fn gsin(g: Grid) =
     if par(n) then run(n, \lo, hi -> gsin_part(o, xd, lo, hi)) else gsin_part(o, xd, 0, n)
     out
 
-fn gsin_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gsin_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = sin(x[k])
 
-fn gsin_into(o: Buf(Float), lo, hi) =
+private fn gsin_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = sin(o[k])
 
+#     g.gcos(g.zeros1(2))   # => [1, 1]
 fn gcos(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1019,14 +1210,15 @@ fn gcos(g: Grid) =
     if par(n) then run(n, \lo, hi -> gcos_part(o, xd, lo, hi)) else gcos_part(o, xd, 0, n)
     out
 
-fn gcos_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gcos_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = cos(x[k])
 
-fn gcos_into(o: Buf(Float), lo, hi) =
+private fn gcos_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = cos(o[k])
 
+#     g.gtan(g.zeros1(1))   # => [0]
 fn gtan(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1040,14 +1232,15 @@ fn gtan(g: Grid) =
     if par(n) then run(n, \lo, hi -> gtan_part(o, xd, lo, hi)) else gtan_part(o, xd, 0, n)
     out
 
-fn gtan_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gtan_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = tan(x[k])
 
-fn gtan_into(o: Buf(Float), lo, hi) =
+private fn gtan_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = tan(o[k])
 
+#     g.gasin(g.ones1(1)) |> g.scale(2.0) |> g.allclose(g.of(Cons(g.pi(), Nil)), 0.000001)   # => true
 fn gasin(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1061,14 +1254,15 @@ fn gasin(g: Grid) =
     if par(n) then run(n, \lo, hi -> gasin_part(o, xd, lo, hi)) else gasin_part(o, xd, 0, n)
     out
 
-fn gasin_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gasin_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = asin(x[k])
 
-fn gasin_into(o: Buf(Float), lo, hi) =
+private fn gasin_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = asin(o[k])
 
+#     g.gacos(g.ones1(2))   # => [0, 0]
 fn gacos(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1082,14 +1276,15 @@ fn gacos(g: Grid) =
     if par(n) then run(n, \lo, hi -> gacos_part(o, xd, lo, hi)) else gacos_part(o, xd, 0, n)
     out
 
-fn gacos_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gacos_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = acos(x[k])
 
-fn gacos_into(o: Buf(Float), lo, hi) =
+private fn gacos_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = acos(o[k])
 
+#     g.gatan(g.zeros1(1))   # => [0]
 fn gatan(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1103,14 +1298,15 @@ fn gatan(g: Grid) =
     if par(n) then run(n, \lo, hi -> gatan_part(o, xd, lo, hi)) else gatan_part(o, xd, 0, n)
     out
 
-fn gatan_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gatan_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = atan(x[k])
 
-fn gatan_into(o: Buf(Float), lo, hi) =
+private fn gatan_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = atan(o[k])
 
+#     g.gsinh(g.zeros1(1))   # => [0]
 fn gsinh(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1124,14 +1320,15 @@ fn gsinh(g: Grid) =
     if par(n) then run(n, \lo, hi -> gsinh_part(o, xd, lo, hi)) else gsinh_part(o, xd, 0, n)
     out
 
-fn gsinh_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gsinh_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = sinh(x[k])
 
-fn gsinh_into(o: Buf(Float), lo, hi) =
+private fn gsinh_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = sinh(o[k])
 
+#     g.gcosh(g.zeros1(1))   # => [1]
 fn gcosh(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1145,14 +1342,15 @@ fn gcosh(g: Grid) =
     if par(n) then run(n, \lo, hi -> gcosh_part(o, xd, lo, hi)) else gcosh_part(o, xd, 0, n)
     out
 
-fn gcosh_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gcosh_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = cosh(x[k])
 
-fn gcosh_into(o: Buf(Float), lo, hi) =
+private fn gcosh_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = cosh(o[k])
 
+#     g.gtanh(g.zeros1(1))   # => [0]
 fn gtanh(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1166,14 +1364,15 @@ fn gtanh(g: Grid) =
     if par(n) then run(n, \lo, hi -> gtanh_part(o, xd, lo, hi)) else gtanh_part(o, xd, 0, n)
     out
 
-fn gtanh_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gtanh_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = tanh(x[k])
 
-fn gtanh_into(o: Buf(Float), lo, hi) =
+private fn gtanh_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = tanh(o[k])
 
+#     g.gexp2(g.arange(4))   # => [1, 2, 4, 8]
 fn gexp2(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1187,14 +1386,15 @@ fn gexp2(g: Grid) =
     if par(n) then run(n, \lo, hi -> gexp2_part(o, xd, lo, hi)) else gexp2_part(o, xd, 0, n)
     out
 
-fn gexp2_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gexp2_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = exp2(x[k])
 
-fn gexp2_into(o: Buf(Float), lo, hi) =
+private fn gexp2_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = exp2(o[k])
 
+#     g.gexpm1(g.zeros1(1))   # => [0]
 fn gexpm1(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1208,14 +1408,15 @@ fn gexpm1(g: Grid) =
     if par(n) then run(n, \lo, hi -> gexpm1_part(o, xd, lo, hi)) else gexpm1_part(o, xd, 0, n)
     out
 
-fn gexpm1_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gexpm1_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = expm1(x[k])
 
-fn gexpm1_into(o: Buf(Float), lo, hi) =
+private fn gexpm1_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = expm1(o[k])
 
+#     g.glog2(g.of(Cons(8.0, Nil)))   # => [3]
 fn glog2(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1229,14 +1430,15 @@ fn glog2(g: Grid) =
     if par(n) then run(n, \lo, hi -> glog2_part(o, xd, lo, hi)) else glog2_part(o, xd, 0, n)
     out
 
-fn glog2_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn glog2_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = log2(x[k])
 
-fn glog2_into(o: Buf(Float), lo, hi) =
+private fn glog2_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = log2(o[k])
 
+#     g.glog10(g.of(Cons(1000.0, Nil)))   # => [3]
 fn glog10(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1250,14 +1452,15 @@ fn glog10(g: Grid) =
     if par(n) then run(n, \lo, hi -> glog10_part(o, xd, lo, hi)) else glog10_part(o, xd, 0, n)
     out
 
-fn glog10_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn glog10_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = log10(x[k])
 
-fn glog10_into(o: Buf(Float), lo, hi) =
+private fn glog10_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = log10(o[k])
 
+#     g.glog1p(g.zeros1(1))   # => [0]
 fn glog1p(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1271,14 +1474,15 @@ fn glog1p(g: Grid) =
     if par(n) then run(n, \lo, hi -> glog1p_part(o, xd, lo, hi)) else glog1p_part(o, xd, 0, n)
     out
 
-fn glog1p_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn glog1p_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = log1p(x[k])
 
-fn glog1p_into(o: Buf(Float), lo, hi) =
+private fn glog1p_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = log1p(o[k])
 
+#     g.gcbrt(g.of(Cons(27.0, Cons(-8.0, Nil))))   # => [3, -2]
 fn gcbrt(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1292,14 +1496,15 @@ fn gcbrt(g: Grid) =
     if par(n) then run(n, \lo, hi -> gcbrt_part(o, xd, lo, hi)) else gcbrt_part(o, xd, 0, n)
     out
 
-fn gcbrt_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gcbrt_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = cbrt(x[k])
 
-fn gcbrt_into(o: Buf(Float), lo, hi) =
+private fn gcbrt_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = cbrt(o[k])
 
+#     g.gfloor(g.of(Cons(1.7, Cons(-1.2, Nil))))   # => [1, -2]
 fn gfloor(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1313,14 +1518,15 @@ fn gfloor(g: Grid) =
     if par(n) then run(n, \lo, hi -> gfloor_part(o, xd, lo, hi)) else gfloor_part(o, xd, 0, n)
     out
 
-fn gfloor_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gfloor_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = floor(x[k])
 
-fn gfloor_into(o: Buf(Float), lo, hi) =
+private fn gfloor_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = floor(o[k])
 
+#     g.gceil(g.of(Cons(1.2, Cons(-1.7, Nil))))   # => [2, -1]
 fn gceil(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1334,14 +1540,15 @@ fn gceil(g: Grid) =
     if par(n) then run(n, \lo, hi -> gceil_part(o, xd, lo, hi)) else gceil_part(o, xd, 0, n)
     out
 
-fn gceil_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gceil_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = ceil(x[k])
 
-fn gceil_into(o: Buf(Float), lo, hi) =
+private fn gceil_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = ceil(o[k])
 
+#     g.gtrunc(g.of(Cons(1.7, Cons(-1.7, Nil))))   # => [1, -1]
 fn gtrunc(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1355,11 +1562,11 @@ fn gtrunc(g: Grid) =
     if par(n) then run(n, \lo, hi -> gtrunc_part(o, xd, lo, hi)) else gtrunc_part(o, xd, 0, n)
     out
 
-fn gtrunc_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gtrunc_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = trunc(x[k])
 
-fn gtrunc_into(o: Buf(Float), lo, hi) =
+private fn gtrunc_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = trunc(o[k])
 
@@ -1367,6 +1574,8 @@ fn gtrunc_into(o: Buf(Float), lo, hi) =
 # does and what NumPy's `round` and `rint` both do. C's `round` sends a half
 # away from zero instead, which would put `round(2.5)` at 3 and `round(-2.5)`
 # at -3; this puts both at 2 and -2.
+#
+#     g.ground(g.of(Cons(2.5, Cons(3.5, Cons(-2.5, Nil)))))   # => [2, 4, -2]
 fn ground(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1380,16 +1589,18 @@ fn ground(g: Grid) =
     if par(n) then run(n, \lo, hi -> ground_part(o, xd, lo, hi)) else ground_part(o, xd, 0, n)
     out
 
-fn ground_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn ground_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = rint(x[k])
 
-fn ground_into(o: Buf(Float), lo, hi) =
+private fn ground_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = rint(o[k])
 
+#     g.grint(g.of(Cons(0.5, Cons(1.5, Nil))))   # => [0, 2]
 fn grint(g: Grid) = ground(g)
 
+#     g.gsquare(g.arange(4))   # => [0, 1, 4, 9]
 fn gsquare(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1403,14 +1614,15 @@ fn gsquare(g: Grid) =
     if par(n) then run(n, \lo, hi -> gsquare_part(o, xd, lo, hi)) else gsquare_part(o, xd, 0, n)
     out
 
-fn gsquare_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gsquare_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] * x[k]
 
-fn gsquare_into(o: Buf(Float), lo, hi) =
+private fn gsquare_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = o[k] * o[k]
 
+#     g.greciprocal(g.of(Cons(2.0, Cons(4.0, Nil))))   # => [0.5, 0.25]
 fn greciprocal(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1424,15 +1636,17 @@ fn greciprocal(g: Grid) =
     if par(n) then run(n, \lo, hi -> greciprocal_part(o, xd, lo, hi)) else greciprocal_part(o, xd, 0, n)
     out
 
-fn greciprocal_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn greciprocal_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = 1.0 / x[k]
 
-fn greciprocal_into(o: Buf(Float), lo, hi) =
+private fn greciprocal_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = 1.0 / o[k]
 
 # 1 where positive, -1 where negative, and zero left as it is (sign included).
+#
+#     g.gsign(g.of(Cons(-3.0, Cons(0.0, Cons(2.0, Nil)))))   # => [-1, 0, 1]
 fn gsign(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1446,16 +1660,17 @@ fn gsign(g: Grid) =
     if par(n) then run(n, \lo, hi -> gsign_part(o, xd, lo, hi)) else gsign_part(o, xd, 0, n)
     out
 
-fn gsign_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gsign_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = sign_of(x[k])
 
-fn gsign_into(o: Buf(Float), lo, hi) =
+private fn gsign_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = sign_of(o[k])
 
-fn sign_of(v) = if v > 0.0 then 1.0 else if v < 0.0 then -1.0 else v
+private fn sign_of(v) = if v > 0.0 then 1.0 else if v < 0.0 then -1.0 else v
 
+#     g.gdegrees(g.of(Cons(g.pi(), Nil)))   # => [180]
 fn gdegrees(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1469,14 +1684,15 @@ fn gdegrees(g: Grid) =
     if par(n) then run(n, \lo, hi -> gdegrees_part(o, xd, lo, hi)) else gdegrees_part(o, xd, 0, n)
     out
 
-fn gdegrees_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gdegrees_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] * 57.29577951308232
 
-fn gdegrees_into(o: Buf(Float), lo, hi) =
+private fn gdegrees_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = o[k] * 57.29577951308232
 
+#     g.gradians(g.of(Cons(180.0, Nil))) |> g.allclose(g.of(Cons(g.pi(), Nil)), 0.000001)   # => true
 fn gradians(g: Grid) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1490,15 +1706,17 @@ fn gradians(g: Grid) =
     if par(n) then run(n, \lo, hi -> gradians_part(o, xd, lo, hi)) else gradians_part(o, xd, 0, n)
     out
 
-fn gradians_part(o: Buf(Float), x: Buf(Float), lo, hi) =
+private fn gradians_part(o: Buf(Float), x: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = x[k] * 0.017453292519943295
 
-fn gradians_into(o: Buf(Float), lo, hi) =
+private fn gradians_into(o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = o[k] * 0.017453292519943295
 
 # Held between `a` and `b`.
+#
+#     g.gclip(g.arange(5), 1.0, 3.0)   # => [1, 1, 2, 3, 3]
 fn gclip(g: Grid, a, b) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1512,15 +1730,17 @@ fn gclip(g: Grid, a, b) =
     if par(n) then run(n, \lo, hi -> gclip_part(o, xd, a, b, lo, hi)) else gclip_part(o, xd, a, b, 0, n)
     out
 
-fn gclip_part(o: Buf(Float), x: Buf(Float), a, b, lo, hi) =
+private fn gclip_part(o: Buf(Float), x: Buf(Float), a, b, lo, hi) =
   for k in lo..hi
     o[k] = if x[k] < a then a else if x[k] > b then b else x[k]
 
-fn gclip_into(o: Buf(Float), a, b, lo, hi) =
+private fn gclip_into(o: Buf(Float), a, b, lo, hi) =
   for k in lo..hi
     o[k] = if o[k] < a then a else if o[k] > b then b else o[k]
 
 # The larger, and the smaller, of each element and one number.
+#
+#     g.gmaxk(g.arange(3), 1.0)   # => [1, 1, 2]
 fn gmaxk(g: Grid, v) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1534,14 +1754,15 @@ fn gmaxk(g: Grid, v) =
     if par(n) then run(n, \lo, hi -> gmaxk_part(o, xd, v, lo, hi)) else gmaxk_part(o, xd, v, 0, n)
     out
 
-fn gmaxk_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
+private fn gmaxk_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = if x[k] > v then x[k] else v
 
-fn gmaxk_into(o: Buf(Float), v, lo, hi) =
+private fn gmaxk_into(o: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = if o[k] > v then o[k] else v
 
+#     g.gmink(g.arange(3), 1.0)   # => [0, 1, 1]
 fn gmink(g: Grid, v) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1555,14 +1776,15 @@ fn gmink(g: Grid, v) =
     if par(n) then run(n, \lo, hi -> gmink_part(o, xd, v, lo, hi)) else gmink_part(o, xd, v, 0, n)
     out
 
-fn gmink_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
+private fn gmink_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = if x[k] < v then x[k] else v
 
-fn gmink_into(o: Buf(Float), v, lo, hi) =
+private fn gmink_into(o: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = if o[k] < v then o[k] else v
 
+#     g.gfmodk(g.arange(5), 3.0)   # => [0, 1, 2, 0, 1]
 fn gfmodk(g: Grid, v) =
   n = size(g)
   if unique(g) && unique(g.data) && contiguous(g) then
@@ -1576,15 +1798,17 @@ fn gfmodk(g: Grid, v) =
     if par(n) then run(n, \lo, hi -> gfmodk_part(o, xd, v, lo, hi)) else gfmodk_part(o, xd, v, 0, n)
     out
 
-fn gfmodk_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
+private fn gfmodk_part(o: Buf(Float), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = fmod(x[k], v)
 
-fn gfmodk_into(o: Buf(Float), v, lo, hi) =
+private fn gfmodk_into(o: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = fmod(o[k], v)
 
 # The angle of (y, x) — `gatan2(y, x)`, as C and NumPy order it.
+#
+#     g.gatan2(g.ones1(1), g.zeros1(1)) |> g.allclose(g.of(Cons(g.pi() / 2.0, Nil)), 0.000001)   # => true
 fn gatan2(a: Grid, b: Grid) =
   need_same(a, b, "gatan2")
   n = size(a)
@@ -1601,14 +1825,15 @@ fn gatan2(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> gatan2_part(o, xd, yd, lo, hi)) else gatan2_part(o, xd, yd, 0, n)
     out
 
-fn gatan2_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gatan2_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = atan2(x[k], y[k])
 
-fn gatan2_into(o: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gatan2_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = atan2(o[k], y[k])
 
+#     g.ghypot(g.of(Cons(3.0, Nil)), g.of(Cons(4.0, Nil)))   # => [5]
 fn ghypot(a: Grid, b: Grid) =
   need_same(a, b, "ghypot")
   n = size(a)
@@ -1625,14 +1850,15 @@ fn ghypot(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> ghypot_part(o, xd, yd, lo, hi)) else ghypot_part(o, xd, yd, 0, n)
     out
 
-fn ghypot_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn ghypot_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = hypot(x[k], y[k])
 
-fn ghypot_into(o: Buf(Float), y: Buf(Float), lo, hi) =
+private fn ghypot_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = hypot(o[k], y[k])
 
+#     g.gfmod(g.of(Cons(7.0, Nil)), g.of(Cons(3.0, Nil)))   # => [1]
 fn gfmod(a: Grid, b: Grid) =
   need_same(a, b, "gfmod")
   n = size(a)
@@ -1649,14 +1875,15 @@ fn gfmod(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> gfmod_part(o, xd, yd, lo, hi)) else gfmod_part(o, xd, yd, 0, n)
     out
 
-fn gfmod_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gfmod_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = fmod(x[k], y[k])
 
-fn gfmod_into(o: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gfmod_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = fmod(o[k], y[k])
 
+#     g.gcopysign(g.of(Cons(3.0, Nil)), g.of(Cons(-1.0, Nil)))   # => [-3]
 fn gcopysign(a: Grid, b: Grid) =
   need_same(a, b, "gcopysign")
   n = size(a)
@@ -1673,15 +1900,17 @@ fn gcopysign(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> gcopysign_part(o, xd, yd, lo, hi)) else gcopysign_part(o, xd, yd, 0, n)
     out
 
-fn gcopysign_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gcopysign_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = copysign(x[k], y[k])
 
-fn gcopysign_into(o: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gcopysign_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = copysign(o[k], y[k])
 
 # Each element to the matching element's power.
+#
+#     g.gpowg(g.of(Cons(2.0, Cons(3.0, Nil))), g.of(Cons(3.0, Cons(2.0, Nil))))   # => [8, 9]
 fn gpowg(a: Grid, b: Grid) =
   need_same(a, b, "gpowg")
   n = size(a)
@@ -1698,17 +1927,19 @@ fn gpowg(a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> gpowg_part(o, xd, yd, lo, hi)) else gpowg_part(o, xd, yd, 0, n)
     out
 
-fn gpowg_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gpowg_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = pow(x[k], y[k])
 
-fn gpowg_into(o: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gpowg_into(o: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = pow(o[k], y[k])
 
 # `f` on every element; `zip` on every pair. For what the named operations
 # above do not cover — they are the fast ones: a lambda is a call per
 # element.
+#
+#     g.map(g.arange(3), \x -> x * x + 1.0)   # => [1, 2, 5]
 fn map(g: Grid, f) =
   out = if unique(g) && unique(g.data) && contiguous(g) then g else fresh(g.shape)
   x = dense(g)
@@ -1718,10 +1949,11 @@ fn map(g: Grid, f) =
   if par(n) then run(n, \lo, hi -> map_part(o, xd, f, lo, hi)) else map_part(o, xd, f, 0, n)
   out
 
-fn map_part(o: Buf(Float), x: Buf(Float), f, lo, hi) =
+private fn map_part(o: Buf(Float), x: Buf(Float), f, lo, hi) =
   for k in lo..hi
     o[k] = f(x[k])
 
+#     g.zip(g.arange(3), g.ones1(3), \x, y -> x - y)   # => [-1, 0, 1]
 fn zip(a: Grid, b: Grid, f) =
   need_same(a, b, "zip")
   out = if unique(a) && unique(a.data) && contiguous(a) then a else if unique(b) && unique(b.data) && contiguous(b) then b else fresh(a.shape)
@@ -1734,18 +1966,22 @@ fn zip(a: Grid, b: Grid, f) =
   if par(n) then run(n, \lo, hi -> zip_part(o, xd, yd, f, lo, hi)) else zip_part(o, xd, yd, f, 0, n)
   out
 
-fn zip_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), f, lo, hi) =
+private fn zip_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), f, lo, hi) =
   for k in lo..hi
     o[k] = f(x[k], y[k])
 
 # -- masks: a byte per element, 1 where a comparison held ---------------------
 
+#     g.mcount(g.mask_of(g.shape1(3)))   # => 0
+#     g.any(g.mask_of(g.shape1(3)))      # => false
 fn mask_of(shape: Buf(Int)) = Mask(shape, buf_u8(count(shape)))
 
-fn mask_size(m: Mask) = count(m.shape)
+private fn mask_size(m: Mask) = count(m.shape)
 
 # `gt(a, b)` is `a > b` element by element; `gtk(a, v)` compares with one
 # number. `lt`, `ge`, `le`, `eq`, `ne` and their `k` forms likewise.
+#
+#     g.gt(g.arange(3), g.ones1(3))   # => [false, false, true]
 fn gt(a: Grid, b: Grid) =
   need_same(a, b, "gt")
   x = dense(a)
@@ -1758,12 +1994,14 @@ fn gt(a: Grid, b: Grid) =
   if par(n) then run(n, \lo, hi -> gt_part(bits, xd, yd, lo, hi)) else gt_part(bits, xd, yd, 0, n)
   m
 
-fn gt_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn gt_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if x[k] > y[k] then 1 else 0
 
+#     g.lt(g.arange(3), g.ones1(3))   # => [true, false, false]
 fn lt(a: Grid, b: Grid) = gt(b, a)
 
+#     g.ge(g.arange(3), g.ones1(3))   # => [false, true, true]
 fn ge(a: Grid, b: Grid) =
   need_same(a, b, "ge")
   x = dense(a)
@@ -1776,12 +2014,14 @@ fn ge(a: Grid, b: Grid) =
   if par(n) then run(n, \lo, hi -> ge_part(bits, xd, yd, lo, hi)) else ge_part(bits, xd, yd, 0, n)
   m
 
-fn ge_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn ge_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if x[k] >= y[k] then 1 else 0
 
+#     g.le(g.arange(3), g.ones1(3))   # => [true, true, false]
 fn le(a: Grid, b: Grid) = ge(b, a)
 
+#     g.eq(g.arange(3), g.ones1(3))   # => [false, true, false]
 fn eq(a: Grid, b: Grid) =
   need_same(a, b, "eq")
   x = dense(a)
@@ -1794,12 +2034,14 @@ fn eq(a: Grid, b: Grid) =
   if par(n) then run(n, \lo, hi -> eq_part(bits, xd, yd, lo, hi)) else eq_part(bits, xd, yd, 0, n)
   m
 
-fn eq_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn eq_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if x[k] == y[k] then 1 else 0
 
+#     g.ne(g.arange(3), g.ones1(3))   # => [true, false, true]
 fn ne(a: Grid, b: Grid) = mask_not(eq(a, b))
 
+#     g.gtk(g.arange(3), 1.0)   # => [false, false, true]
 fn gtk(g: Grid, v) =
   x = dense(g)
   m = mask_of(g.shape)
@@ -1809,10 +2051,11 @@ fn gtk(g: Grid, v) =
   if par(n) then run(n, \lo, hi -> gtk_part(bits, xd, v, lo, hi)) else gtk_part(bits, xd, v, 0, n)
   m
 
-fn gtk_part(o: Buf(U8), x: Buf(Float), v, lo, hi) =
+private fn gtk_part(o: Buf(U8), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = if x[k] > v then 1 else 0
 
+#     g.ltk(g.arange(3), 1.0)   # => [true, false, false]
 fn ltk(g: Grid, v) =
   x = dense(g)
   m = mask_of(g.shape)
@@ -1822,14 +2065,17 @@ fn ltk(g: Grid, v) =
   if par(n) then run(n, \lo, hi -> ltk_part(bits, xd, v, lo, hi)) else ltk_part(bits, xd, v, 0, n)
   m
 
-fn ltk_part(o: Buf(U8), x: Buf(Float), v, lo, hi) =
+private fn ltk_part(o: Buf(U8), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = if x[k] < v then 1 else 0
 
+#     g.gek(g.arange(3), 1.0)   # => [false, true, true]
 fn gek(g: Grid, v) = mask_not(ltk(g, v))
 
+#     g.lek(g.arange(3), 1.0)   # => [true, true, false]
 fn lek(g: Grid, v) = mask_not(gtk(g, v))
 
+#     g.eqk(g.arange(3), 1.0)   # => [false, true, false]
 fn eqk(g: Grid, v) =
   x = dense(g)
   m = mask_of(g.shape)
@@ -1839,13 +2085,16 @@ fn eqk(g: Grid, v) =
   if par(n) then run(n, \lo, hi -> eqk_part(bits, xd, v, lo, hi)) else eqk_part(bits, xd, v, 0, n)
   m
 
-fn eqk_part(o: Buf(U8), x: Buf(Float), v, lo, hi) =
+private fn eqk_part(o: Buf(U8), x: Buf(Float), v, lo, hi) =
   for k in lo..hi
     o[k] = if x[k] == v then 1 else 0
 
+#     g.nek(g.arange(3), 1.0)   # => [true, false, true]
 fn nek(g: Grid, v) = mask_not(eqk(g, v))
 
 # `a` where the mask holds, `b` elsewhere.
+#
+#     g.where(g.gtk(g.arange(4), 1.0), g.arange(4), g.zeros1(4))   # => [0, 0, 2, 3]
 fn where(m: Mask, a: Grid, b: Grid) =
   need_mask(m, a, "where")
   need_same(a, b, "where")
@@ -1869,34 +2118,40 @@ fn where(m: Mask, a: Grid, b: Grid) =
     if par(n) then run(n, \lo, hi -> where_part(o, bits, xd, yd, lo, hi)) else where_part(o, bits, xd, yd, 0, n)
     out
 
-fn where_part(o: Buf(Float), m: Buf(U8), x: Buf(Float), y: Buf(Float), lo, hi) =
+private fn where_part(o: Buf(Float), m: Buf(U8), x: Buf(Float), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if m[k] != 0 then x[k] else y[k]
 
-fn where_into(o: Buf(Float), m: Buf(U8), y: Buf(Float), lo, hi) =
+private fn where_into(o: Buf(Float), m: Buf(U8), y: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if m[k] != 0 then o[k] else y[k]
 
-fn where_onto(x: Buf(Float), m: Buf(U8), o: Buf(Float), lo, hi) =
+private fn where_onto(x: Buf(Float), m: Buf(U8), o: Buf(Float), lo, hi) =
   for k in lo..hi
     o[k] = if m[k] != 0 then x[k] else o[k]
 
 # How many elements the mask holds for.
+#
+#     g.mcount(g.gtk(g.arange(5), 1.0))   # => 3
 fn mcount(m: Mask) =
   bits = m.bits
   n = mask_size(m)
   if par(n) then reduce_i(n, \lo, hi -> count_part(bits, lo, hi)) else count_part(bits, 0, n)
 
-fn count_part(m: Buf(U8), lo, hi) =
+private fn count_part(m: Buf(U8), lo, hi) =
   for k in lo..hi with acc = 0
     acc + m[k]
 
-fn reduce_i(n, f) = to_int(reduce_f(n, \lo, hi -> to_float(f(lo, hi)), \a, b -> a + b))
+private fn reduce_i(n, f) = to_int(reduce_f(n, \lo, hi -> to_float(f(lo, hi)), \a, b -> a + b))
 
+#     g.any(g.gtk(g.arange(3), 1.0))   # => true
+#     g.any(g.gtk(g.arange(3), 5.0))   # => false
 fn any(m: Mask) = mcount(m) > 0
 
+#     g.all(g.gek(g.arange(3), 0.0))   # => true
 fn all(m: Mask) = mcount(m) == mask_size(m)
 
+#     g.mask_not(g.gtk(g.arange(3), 1.0))   # => [true, true, false]
 fn mask_not(m: Mask) =
   out = if unique(m) && unique(m.bits) then m else mask_of(m.shape)
   o = out.bits
@@ -1905,10 +2160,11 @@ fn mask_not(m: Mask) =
   if par(n) then run(n, \lo, hi -> not_part(o, src, lo, hi)) else not_part(o, src, 0, n)
   out
 
-fn not_part(o: Buf(U8), m: Buf(U8), lo, hi) =
+private fn not_part(o: Buf(U8), m: Buf(U8), lo, hi) =
   for k in lo..hi
     o[k] = 1 - m[k]
 
+#     g.mask_and(g.gtk(g.arange(4), 0.0), g.ltk(g.arange(4), 3.0))   # => [false, true, true, false]
 fn mask_and(a: Mask, b: Mask) =
   out = if unique(a) && unique(a.bits) then a else if unique(b) && unique(b.bits) then b else mask_of(a.shape)
   o = out.bits
@@ -1918,10 +2174,11 @@ fn mask_and(a: Mask, b: Mask) =
   if par(n) then run(n, \lo, hi -> and_part(o, x, y, lo, hi)) else and_part(o, x, y, 0, n)
   out
 
-fn and_part(o: Buf(U8), x: Buf(U8), y: Buf(U8), lo, hi) =
+private fn and_part(o: Buf(U8), x: Buf(U8), y: Buf(U8), lo, hi) =
   for k in lo..hi
     o[k] = x[k] * y[k]
 
+#     g.mask_or(g.ltk(g.arange(4), 1.0), g.gtk(g.arange(4), 2.0))   # => [true, false, false, true]
 fn mask_or(a: Mask, b: Mask) =
   out = if unique(a) && unique(a.bits) then a else if unique(b) && unique(b.bits) then b else mask_of(a.shape)
   o = out.bits
@@ -1931,11 +2188,13 @@ fn mask_or(a: Mask, b: Mask) =
   if par(n) then run(n, \lo, hi -> or_part(o, x, y, lo, hi)) else or_part(o, x, y, 0, n)
   out
 
-fn or_part(o: Buf(U8), x: Buf(U8), y: Buf(U8), lo, hi) =
+private fn or_part(o: Buf(U8), x: Buf(U8), y: Buf(U8), lo, hi) =
   for k in lo..hi
     o[k] = if x[k] + y[k] > 0 then 1 else 0
 
 # The mask as a grid of 1.0 and 0.0.
+#
+#     g.to_grid(g.gtk(g.arange(3), 1.0))   # => [0, 0, 1]
 fn to_grid(m: Mask) =
   out = fresh(m.shape)
   o = out.data
@@ -1944,12 +2203,14 @@ fn to_grid(m: Mask) =
   if par(n) then run(n, \lo, hi -> to_grid_part(o, bits, lo, hi)) else to_grid_part(o, bits, 0, n)
   out
 
-fn to_grid_part(o: Buf(Float), m: Buf(U8), lo, hi) =
+private fn to_grid_part(o: Buf(Float), m: Buf(U8), lo, hi) =
   for k in lo..hi
     o[k] = to_float(m[k])
 
 # Not a number, endless, and neither: `v != v` is true of a NaN alone, and
 # `v - v` is zero for every ordinary number and a NaN for an infinity.
+#
+#     g.isnan(g.of(Cons(1.0, Cons(g.nan(), Nil))))   # => [false, true]
 fn isnan(g: Grid) =
   x = dense(g)
   m = mask_of(dup_shape(g.shape))
@@ -1957,6 +2218,7 @@ fn isnan(g: Grid) =
     m.bits[k] = if x.data[k] != x.data[k] then 1 else 0
   m
 
+#     g.isinf(g.of(Cons(1.0, Cons(g.inf(), Nil))))   # => [false, true]
 fn isinf(g: Grid) =
   x = dense(g)
   m = mask_of(dup_shape(g.shape))
@@ -1965,6 +2227,7 @@ fn isinf(g: Grid) =
     m.bits[k] = if v == v && v - v != 0.0 then 1 else 0
   m
 
+#     g.isfinite(g.of(Cons(1.0, Cons(g.inf(), Cons(g.nan(), Nil)))))   # => [true, false, false]
 fn isfinite(g: Grid) =
   x = dense(g)
   m = mask_of(dup_shape(g.shape))
@@ -1974,6 +2237,8 @@ fn isfinite(g: Grid) =
   m
 
 # Element by element, within `eps` of each other.
+#
+#     g.isclose(g.of(Cons(1.0, Cons(2.0, Nil))), g.of(Cons(1.0000001, Cons(2.5, Nil))), 0.001)   # => [true, false]
 fn isclose(a: Grid, b: Grid, eps) =
   need_same(a, b, "isclose")
   x = dense(a)
@@ -1984,9 +2249,10 @@ fn isclose(a: Grid, b: Grid, eps) =
     m.bits[k] = if d <= eps && d >= 0.0 - eps then 1 else 0
   m
 
+#     g.allclose(g.arange(3), g.arange(3), 0.0)   # => true
 fn allclose(a: Grid, b: Grid, eps) = same_shape(a, b) && close_elems(a, b, eps)
 
-fn close_elems(a: Grid, b: Grid, eps) =
+private fn close_elems(a: Grid, b: Grid, eps) =
   x = dense(a)
   y = dense(b)
   for k in 0..size(a) with ok = true
@@ -2001,14 +2267,16 @@ fn close_elems(a: Grid, b: Grid, eps) =
 # eight are enough chains to keep the memory bus busy rather than the adder.
 # (The order of additions differs from one running sum, as NumPy's pairwise
 # summation differs from both; the answers agree to the last few bits.)
+#
+#     g.sum(g.arange(5))   # => 10
 fn sum(g: Grid) =
   d = dense(g).data
   n = size(g)
   if par(n) then reduce_f(n, \lo, hi -> sum_range(d, lo, hi), fadd) else sum_range(d, 0, n)
 
-fn fadd(a, b) = a + b
+private fn fadd(a, b) = a + b
 
-fn sum_range(d: Buf(Float), lo, hi) =
+private fn sum_range(d: Buf(Float), lo, hi) =
   octs = (hi - lo) / 8
   (s0, s1, s2, s3, s4, s5, s6, s7) = for k in 0..octs with acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     (p0, p1, p2, p3, p4, p5, p6, p7) = acc
@@ -2018,13 +2286,16 @@ fn sum_range(d: Buf(Float), lo, hi) =
     acc + d[k]
   s0 + s1 + (s2 + s3) + (s4 + s5 + (s6 + s7)) + tail
 
+#     g.mean(g.arange(5))   # => 2
 fn mean(g: Grid) = sum(g) / to_float(size(g))
 
+#     g.prod(g.of(Cons(2.0, Cons(3.0, Cons(4.0, Nil)))))   # => 24
 fn prod(g: Grid) =
   x = dense(g)
   for k in 0..size(g) with acc = 1.0
     acc * x.data[k]
 
+#     g.dot(g.of(Cons(1.0, Cons(2.0, Nil))), g.of(Cons(3.0, Cons(4.0, Nil))))   # => 11
 fn dot(a: Grid, b: Grid) =
   if size(a) != size(b) then
     fail("dot: " + int_to_str(size(a)) + " against " + int_to_str(size(b)) + " elements")
@@ -2036,7 +2307,7 @@ fn dot(a: Grid, b: Grid) =
     if par(n) then reduce_f(n, \lo, hi -> dot_range(d, 0, e, 0, lo, hi), fadd) else dot_range(d, 0, e, 0, 0, n)
 
 # The sum of `d[doff + k] * e[eoff + k]` for k in lo up to hi.
-fn dot_range(d: Buf(Float), doff, e: Buf(Float), eoff, lo, hi) =
+private fn dot_range(d: Buf(Float), doff, e: Buf(Float), eoff, lo, hi) =
   octs = (hi - lo) / 8
   (s0, s1, s2, s3, s4, s5, s6, s7) = for k in 0..octs with acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     (p0, p1, p2, p3, p4, p5, p6, p7) = acc
@@ -2048,21 +2319,24 @@ fn dot_range(d: Buf(Float), doff, e: Buf(Float), eoff, lo, hi) =
     acc + d[doff + k] * e[eoff + k]
   s0 + s1 + (s2 + s3) + (s4 + s5 + (s6 + s7)) + tail
 
+#     g.norm(g.of(Cons(3.0, Cons(4.0, Nil))))   # => 5
 fn norm(g: Grid) = sqrt(dot(g, g))
 
-fn fmax(a, b) = if a > b then a else b
+private fn fmax(a, b) = if a > b then a else b
 
-fn fmin(a, b) = if a < b then a else b
+private fn fmin(a, b) = if a < b then a else b
 
 # The largest and smallest, eight lanes at a time for the same reason as
 # `sum`; a comparison is not an addition, so the eight agree exactly with
 # one.
+#
+#     g.gmax(g.of(Cons(2.0, Cons(9.0, Cons(4.0, Nil)))))   # => 9
 fn gmax(g: Grid) =
   d = dense(g).data
   n = size(g)
   if par(n) then reduce_f(n, \lo, hi -> max_range(d, lo, hi), fmax) else max_range(d, 0, n)
 
-fn max_range(d: Buf(Float), lo, hi) =
+private fn max_range(d: Buf(Float), lo, hi) =
   octs = (hi - lo) / 8
   first = d[lo]
   (m0, m1, m2, m3, m4, m5, m6, m7) = for k in 0..octs with acc = (first, first, first, first, first, first, first, first)
@@ -2072,12 +2346,13 @@ fn max_range(d: Buf(Float), lo, hi) =
   for k in lo + octs * 8..hi with m = fmax(fmax(fmax(m0, m1), fmax(m2, m3)), fmax(fmax(m4, m5), fmax(m6, m7)))
     fmax(m, d[k])
 
+#     g.gmin(g.of(Cons(2.0, Cons(9.0, Cons(4.0, Nil)))))   # => 2
 fn gmin(g: Grid) =
   d = dense(g).data
   n = size(g)
   if par(n) then reduce_f(n, \lo, hi -> min_range(d, lo, hi), fmin) else min_range(d, 0, n)
 
-fn min_range(d: Buf(Float), lo, hi) =
+private fn min_range(d: Buf(Float), lo, hi) =
   octs = (hi - lo) / 8
   first = d[lo]
   (m0, m1, m2, m3, m4, m5, m6, m7) = for k in 0..octs with acc = (first, first, first, first, first, first, first, first)
@@ -2090,13 +2365,15 @@ fn min_range(d: Buf(Float), lo, hi) =
 # Where the largest is, the first of them if there are several: four lanes,
 # each keeping the first place it saw its own largest, and the lanes settled
 # by value first and place second.
+#
+#     g.argmax(g.of(Cons(2.0, Cons(9.0, Cons(9.0, Nil)))))   # => 1
 fn argmax(g: Grid) =
   d = dense(g).data
   n = size(g)
   (m, i) = if par(n) then reduce_fi(n, \lo, hi -> argmax_range(d, lo, hi), later_wins_max) else argmax_range(d, 0, n)
   i
 
-fn argmax_range(d: Buf(Float), lo, hi) =
+private fn argmax_range(d: Buf(Float), lo, hi) =
   quads = (hi - lo) / 4
   first = d[lo]
   (m0, i0, m1, i1, m2, i2, m3, i3) = for k in 0..quads with acc = (first, lo, first, lo + 1, first, lo + 2, first, lo + 3)
@@ -2114,19 +2391,20 @@ fn argmax_range(d: Buf(Float), lo, hi) =
     (bm, bi) = best
     if d[k] > bm then (d[k], k) else best
 
-fn later_wins_max(m0, i0, m1, i1) =
+private fn later_wins_max(m0, i0, m1, i1) =
   if m1 > m0 || m1 == m0 && i1 < i0 then (m1, i1) else (m0, i0)
 
-fn later_wins_min(m0, i0, m1, i1) =
+private fn later_wins_min(m0, i0, m1, i1) =
   if m1 < m0 || m1 == m0 && i1 < i0 then (m1, i1) else (m0, i0)
 
+#     g.argmin(g.of(Cons(2.0, Cons(9.0, Cons(1.0, Nil)))))   # => 2
 fn argmin(g: Grid) =
   d = dense(g).data
   n = size(g)
   (m, i) = if par(n) then reduce_fi(n, \lo, hi -> argmin_range(d, lo, hi), later_wins_min) else argmin_range(d, 0, n)
   i
 
-fn argmin_range(d: Buf(Float), lo, hi) =
+private fn argmin_range(d: Buf(Float), lo, hi) =
   quads = (hi - lo) / 4
   first = d[lo]
   (m0, i0, m1, i1, m2, i2, m3, i3) = for k in 0..quads with acc = (first, lo, first, lo + 1, first, lo + 2, first, lo + 3)
@@ -2144,6 +2422,7 @@ fn argmin_range(d: Buf(Float), lo, hi) =
     (bm, bi) = best
     if d[k] < bm then (d[k], k) else best
 
+#     g.var(g.of(Cons(2.0, Cons(4.0, Cons(4.0, Cons(6.0, Nil))))))   # => 2
 fn var(g: Grid) =
   m = mean(g)
   d = dense(g).data
@@ -2152,7 +2431,7 @@ fn var(g: Grid) =
   total / to_float(n)
 
 # The sum of squared distances from `m`.
-fn sqdev_range(d: Buf(Float), m, lo, hi) =
+private fn sqdev_range(d: Buf(Float), m, lo, hi) =
   octs = (hi - lo) / 8
   (s0, s1, s2, s3, s4, s5, s6, s7) = for k in 0..octs with acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     (p0, p1, p2, p3, p4, p5, p6, p7) = acc
@@ -2171,8 +2450,10 @@ fn sqdev_range(d: Buf(Float), m, lo, hi) =
     acc + dd * dd
   s0 + s1 + (s2 + s3) + (s4 + s5 + (s6 + s7)) + tail
 
+#     g.std(g.of(Cons(2.0, Cons(4.0, Cons(4.0, Cons(6.0, Nil))))))   # => 1.41421
 fn std(g: Grid) = sqrt(var(g))
 
+#     g.cumsum(g.arange(4))   # => [0, 1, 3, 6]
 fn cumsum(g: Grid) =
   x = dense(g)
   out = fresh(g.shape)
@@ -2187,6 +2468,10 @@ fn cumsum(g: Grid) =
 # other axis does, the answers are accumulated a row at a time, which
 # vectorizes across them. Either way a transposed grid is summed as fast as
 # the grid it came from, and the answers are split across the workers.
+#
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.sum_axis(a, 0)   # => [3, 5, 7]
+#     g.sum_axis(a, 1)   # => [3, 12]
 fn sum_axis(g: Grid, axis) =
   n_out = if axis == 0 then g.shape[1] else g.shape[0]
   s_out = if axis == 0 then g.strides[1] else g.strides[0]
@@ -2199,7 +2484,7 @@ fn sum_axis(g: Grid, axis) =
   if par(n_out * n_in) then run(n_out, \lo, hi -> axis_part(o, d, off, s_out, s_in, n_in, lo, hi)) else axis_part(o, d, off, s_out, s_in, n_in, 0, n_out)
   out
 
-fn axis_part(o: Buf(Float), d: Buf(Float), off, s_out, s_in, n_in, lo, hi) =
+private fn axis_part(o: Buf(Float), d: Buf(Float), off, s_out, s_in, n_in, lo, hi) =
   if s_in == 1 then
     for t in lo..hi
       base = off + t * s_out
@@ -2226,6 +2511,8 @@ fn axis_part(o: Buf(Float), d: Buf(Float), off, s_out, s_in, n_in, lo, hi) =
       o[t] = for i in 0..n_in with acc = 0.0
         acc + d[base + i * s_in]
 
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.mean_axis(a, 1)   # => [1, 4]
 fn mean_axis(g: Grid, axis) =
   n = if axis == 0 then g.shape[0] else g.shape[1]
   scale(sum_axis(g, axis), 1.0 / to_float(n))
@@ -2235,6 +2522,8 @@ fn mean_axis(g: Grid, axis) =
 # Quicksort: a median-of-three pivot, insertion sort under sixteen, and the
 # larger half left to the tail call — so the stack is logarithmic however
 # the input is shaped.
+#
+#     g.sort(g.of(Cons(3.0, Cons(1.0, Cons(2.0, Nil)))))   # => [1, 2, 3]
 fn sort(g: Grid) =
   out = if unique(g) && unique(g.data) && contiguous(g) then g else copy(g)
   if ndim(out) == 1 then sort_range(out.data, 0, size(out))
@@ -2252,7 +2541,7 @@ fn sort(g: Grid) =
 # sort spends its time on; the price is two buffers the size of the input
 # and eight passes over them, so it is worth it above a few thousand
 # elements and not below.
-fn radix_sort(d: Buf(Float), lo, hi) =
+private fn radix_sort(d: Buf(Float), lo, hi) =
   n = hi - lo
   keys = buf_int(n)
   tmp = buf_int(n)
@@ -2270,14 +2559,14 @@ fn radix_sort(d: Buf(Float), lo, hi) =
     poke_i64(d, lo + i, decode_key(out[i]))
   0
 
-fn radix_passes(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n, p) =
+private fn radix_passes(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n, p) =
   if p >= 8 then src
   else if cnt[p * 256 + bit_and(shr(src[0], p * 8), 255)] == n then radix_passes(src, dst, cnt, n, p + 1)
   else
     radix_scatter(src, dst, cnt, n, p)
     radix_passes(dst, src, cnt, n, p + 1)
 
-fn radix_scatter(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n, p) =
+private fn radix_scatter(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n, p) =
   sh = p * 8
   base = p * 256
   off = buf_int(256)
@@ -2293,14 +2582,14 @@ fn radix_scatter(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n, p) =
 
 # The bits of a float, made to compare as unsigned integers do, and put
 # back again.
-fn encode_key(bits) = if bits < 0 then bit_not(bits) else bit_or(bits, shl(1, 63))
+private fn encode_key(bits) = if bits < 0 then bit_not(bits) else bit_or(bits, shl(1, 63))
 
-fn decode_key(k) = if k >= 0 then bit_not(k) else bit_xor(k, shl(1, 63))
+private fn decode_key(k) = if k >= 0 then bit_not(k) else bit_xor(k, shl(1, 63))
 
-fn sort_range(d: Buf(Float), lo, hi) =
+private fn sort_range(d: Buf(Float), lo, hi) =
   if hi - lo >= 4096 then radix_sort(d, lo, hi) else quick_range(d, lo, hi)
 
-fn quick_range(d: Buf(Float), lo, hi) =
+private fn quick_range(d: Buf(Float), lo, hi) =
   if hi - lo < 32 then insertion_sort(d, lo, hi)
   else
     j = hoare(d, lo, hi - 1)
@@ -2311,13 +2600,13 @@ fn quick_range(d: Buf(Float), lo, hi) =
       quick_range(d, j + 1, hi)
       quick_range(d, lo, j + 1)
 
-fn insertion_sort(d: Buf(Float), lo, hi) =
+private fn insertion_sort(d: Buf(Float), lo, hi) =
   for i in lo + 1..hi
     v = d[i]
     d[shift_up(d, lo, i - 1, v)] = v
   0
 
-fn shift_up(d: Buf(Float), lo, j, v) =
+private fn shift_up(d: Buf(Float), lo, j, v) =
   if j >= lo && d[j] > v then
     d[j + 1] = d[j]
     shift_up(d, lo, j - 1, v)
@@ -2325,7 +2614,7 @@ fn shift_up(d: Buf(Float), lo, j, v) =
 
 # Hoare's partition over the inclusive range: everything at or below what
 # comes back is no greater than everything above it.
-fn hoare(d: Buf(Float), lo, hi) =
+private fn hoare(d: Buf(Float), lo, hi) =
   mid = lo + (hi - lo) / 2
   eighth = (hi - lo) / 8
   pivot = if hi - lo > 512 then med3(med3(d[lo], d[lo + eighth], d[lo + 2 * eighth]), med3(d[mid - eighth], d[mid], d[mid + eighth]), med3(d[hi - 2 * eighth], d[hi - eighth], d[hi])) else med3(d[lo], d[mid], d[hi])
@@ -2340,18 +2629,20 @@ fn hoare(d: Buf(Float), lo, hi) =
       step(a, b)
   step(lo - 1, hi + 1)
 
-fn med3(a, b, c) =
+private fn med3(a, b, c) =
   if a < b then
     if b < c then b else if a < c then c else a
   else if a < c then a else if b < c then c else b
 
-fn swap(d: Buf(Float), i, j) =
+private fn swap(d: Buf(Float), i, j) =
   t = d[i]
   d[i] = d[j]
   d[j] = t
 
 # Where the elements would go if they were sorted, ties in the order they
 # were in: a merge sort over the positions, which is what keeps it stable.
+#
+#     g.argsort(g.of(Cons(3.0, Cons(1.0, Cons(2.0, Nil)))))   # => [1, 2, 0]
 fn argsort(g: Grid) =
   n = size(g)
   d = dense(g).data
@@ -2365,7 +2656,7 @@ fn argsort(g: Grid) =
     out.data[k] = to_float(idx[k])
   out
 
-fn merge_sort(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo, hi) =
+private fn merge_sort(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo, hi) =
   if hi - lo <= 1 then 0
   else
     mid = lo + (hi - lo) / 2
@@ -2373,7 +2664,7 @@ fn merge_sort(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo, hi) =
     merge_sort(d, idx, tmp, mid, hi)
     merge_halves(d, idx, tmp, lo, mid, hi)
 
-fn merge_halves(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo, mid, hi) =
+private fn merge_halves(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo, mid, hi) =
   for k in lo..hi
     tmp[k] = idx[k]
   fn walk(i, j, k) =
@@ -2393,6 +2684,8 @@ fn merge_halves(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo, mid, hi) =
   walk(lo, mid, lo)
 
 # The values that occur, each once, in order.
+#
+#     g.distinct(g.of(Cons(3.0, Cons(1.0, Cons(3.0, Nil)))))   # => [1, 3]
 fn distinct(g: Grid) =
   n = size(g)
   if n == 0 then copy(g)
@@ -2411,6 +2704,9 @@ fn distinct(g: Grid) =
     out
 
 # Where `v` would go in a sorted grid, before anything equal to it.
+#
+#     g.searchsorted(g.of(Cons(1.0, Cons(3.0, Cons(5.0, Nil)))), 3.0)   # => 1
+#     g.searchsorted(g.of(Cons(1.0, Cons(3.0, Cons(5.0, Nil)))), 4.0)   # => 2
 fn searchsorted(g: Grid, v) =
   d = dense(g).data
   fn find(lo, hi) =
@@ -2421,6 +2717,8 @@ fn searchsorted(g: Grid, v) =
   find(0, size(g))
 
 # The positions of the elements that are not zero.
+#
+#     g.nonzero(g.of(Cons(0.0, Cons(2.0, Cons(0.0, Cons(5.0, Nil))))))   # => [1, 3]
 fn nonzero(g: Grid) =
   x = dense(g)
   n = size(g)
@@ -2435,6 +2733,7 @@ fn nonzero(g: Grid) =
 
   out
 
+#     g.count_nonzero(g.of(Cons(0.0, Cons(2.0, Cons(5.0, Nil)))))   # => 2
 fn count_nonzero(g: Grid) =
   x = dense(g)
   for k in 0..size(g) with c = 0
@@ -2442,10 +2741,16 @@ fn count_nonzero(g: Grid) =
 
 # The middle value, and the value a fraction of the way along — both from a
 # sorted copy, and both interpolating between neighbours the way NumPy does.
+#
+#     g.median(g.of(Cons(3.0, Cons(1.0, Cons(2.0, Nil)))))              # => 2
+#     g.median(g.of(Cons(4.0, Cons(1.0, Cons(2.0, Cons(3.0, Nil))))))   # => 2.5
 fn median(g: Grid) = quantile(g, 0.5)
 
+#     g.percentile(g.arange(5), 50.0)   # => 2
+#     g.percentile(g.arange(5), 25.0)   # => 1
 fn percentile(g: Grid, q) = quantile(g, q / 100.0)
 
+#     g.quantile(g.arange(5), 0.75)   # => 3
 fn quantile(g: Grid, q) =
   n = size(g)
   c = copy(flatten(g))
@@ -2461,7 +2766,7 @@ fn quantile(g: Grid, q) =
 # whichever side holds it. Linear on average, where sorting the lot is not,
 # which is what NumPy's `median` and `percentile` do too. It reorders the
 # range it is given, so callers hand it a copy.
-fn select_nth(d: Buf(Float), lo, hi, k) =
+private fn select_nth(d: Buf(Float), lo, hi, k) =
   if hi - lo < 16 then
     insertion_sort(d, lo, hi)
     d[k]
@@ -2470,11 +2775,16 @@ fn select_nth(d: Buf(Float), lo, hi, k) =
     if k <= j then select_nth(d, lo, j + 1, k) else select_nth(d, j + 1, hi, k)
 
 # The distance from the smallest to the largest.
+#
+#     g.ptp(g.of(Cons(2.0, Cons(9.0, Cons(4.0, Nil)))))   # => 7
 fn ptp(g: Grid) = gmax(g) - gmin(g)
 
+#     g.average(g.arange(4))   # => 1.5
 fn average(g: Grid) = mean(g)
 
 # The difference between each element and the one before it.
+#
+#     g.diff(g.of(Cons(1.0, Cons(4.0, Cons(9.0, Nil)))))   # => [3, 5]
 fn diff(g: Grid) =
   n = size(g)
   x = dense(g)
@@ -2483,6 +2793,7 @@ fn diff(g: Grid) =
     out.data[k - 1] = x.data[k] - x.data[k - 1]
   out
 
+#     g.cumprod(g.of(Cons(1.0, Cons(2.0, Cons(3.0, Nil)))))   # => [1, 2, 6]
 fn cumprod(g: Grid) =
   x = dense(g)
   out = fresh(dup_shape(g.shape))
@@ -2491,35 +2802,42 @@ fn cumprod(g: Grid) =
   out
 
 # The same reductions with the NaNs left out, as NumPy's `nan*` do.
+#
+#     g.nansum(g.of(Cons(1.0, Cons(g.nan(), Cons(2.0, Nil)))))   # => 3
 fn nansum(g: Grid) =
   x = dense(g)
   for k in 0..size(g) with acc = 0.0
     if x.data[k] == x.data[k] then acc + x.data[k] else acc
 
+#     g.nanmean(g.of(Cons(1.0, Cons(g.nan(), Cons(3.0, Nil)))))   # => 2
 fn nanmean(g: Grid) =
   x = dense(g)
   c = for k in 0..size(g) with acc = 0
     if x.data[k] == x.data[k] then acc + 1 else acc
   nansum(g) / to_float(c)
 
+#     g.nanmax(g.of(Cons(1.0, Cons(g.nan(), Cons(3.0, Nil)))))   # => 3
 fn nanmax(g: Grid) =
   (m, i) = nanbest(g, true)
   m
 
+#     g.nanmin(g.of(Cons(1.0, Cons(g.nan(), Cons(3.0, Nil)))))   # => 1
 fn nanmin(g: Grid) =
   (m, i) = nanbest(g, false)
   m
 
+#     g.nanargmax(g.of(Cons(1.0, Cons(g.nan(), Cons(3.0, Nil)))))   # => 2
 fn nanargmax(g: Grid) =
   (m, i) = nanbest(g, true)
   i
 
+#     g.nanargmin(g.of(Cons(1.0, Cons(g.nan(), Cons(3.0, Nil)))))   # => 0
 fn nanargmin(g: Grid) =
   (m, i) = nanbest(g, false)
   i
 
 # The largest or smallest number that is one, and where it is.
-fn nanbest(g: Grid, want_max) =
+private fn nanbest(g: Grid, want_max) =
   x = dense(g)
   n = size(g)
   for k in 0..n with best = (nan(), 0)
@@ -2528,8 +2846,11 @@ fn nanbest(g: Grid, want_max) =
     if v != v then best else if m != m || (if want_max then v > m else v < m) then (v, k) else best
 
 # The two floats that are not numbers, for a program that needs to say so.
+#
+#     g.nan() == g.nan()   # => false
 fn nan() = 0.0 / 0.0
 
+#     g.inf() > 1e308   # => true
 fn inf() = 1.0 / 0.0
 
 # -- linear algebra -------------------------------------------------------------
@@ -2541,6 +2862,9 @@ fn inf() = 1.0 / 0.0
 # fused multiply-add each per step. Column blocks are handed to strands
 # when there are workers to take them. Rows and columns past the last
 # whole block are finished by the plain triple loop.
+#
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.matmul(a, g.transpose(a))   # => [[5, 14], [14, 50]]
 fn matmul(a: Grid, b: Grid) =
   if cols_of(a) != rows_of(b) then
     fail("matmul: " + show_shape(a.shape) + " times " + show_shape(b.shape))
@@ -2566,7 +2890,7 @@ type Acc
   Acc(c00: Float2, c01: Float2, c02: Float2, c03: Float2, c04: Float2, c10: Float2, c11: Float2, c12: Float2, c13: Float2, c14: Float2, c20: Float2, c21: Float2, c22: Float2, c23: Float2, c24: Float2, c30: Float2, c31: Float2, c32: Float2, c33: Float2, c34: Float2)
 
 # Column blocks lo up to hi, ten wide: pack the panel, then every four rows.
-fn mm_blocks(x: Buf(Float), y: Buf(Float), o: Buf(Float), r, kk, c, lo, hi) =
+private fn mm_blocks(x: Buf(Float), y: Buf(Float), o: Buf(Float), r, kk, c, lo, hi) =
   p = buf_float(kk * 10)
   for bj in lo..hi
     j0 = bj * 10
@@ -2601,7 +2925,7 @@ fn mm_blocks(x: Buf(Float), y: Buf(Float), o: Buf(Float), r, kk, c, lo, hi) =
       f2_store(o, row3 + 6, c33)
       f2_store(o, row3 + 8, c34)
 
-fn mm_kernel(x: Buf(Float), p: Buf(Float), kk, i0) =
+private fn mm_kernel(x: Buf(Float), p: Buf(Float), kk, i0) =
   ra = i0 * kk
   for k in 0..kk with acc = Acc(splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0), splat2(0.0))
     Acc(c00, c01, c02, c03, c04, c10, c11, c12, c13, c14, c20, c21, c22, c23, c24, c30, c31, c32, c33, c34) = acc
@@ -2619,7 +2943,7 @@ fn mm_kernel(x: Buf(Float), p: Buf(Float), kk, i0) =
 
 # The columns past the last block of ten, for every row; then the rows past
 # the last block of four, for the blocked columns.
-fn mm_edges(x: Buf(Float), y: Buf(Float), o: Buf(Float), r, kk, c, cb, rb) =
+private fn mm_edges(x: Buf(Float), y: Buf(Float), o: Buf(Float), r, kk, c, cb, rb) =
   for i in 0..if cb < c then r else 0
     for k in 0..kk
       aik = x[i * kk + k]
@@ -2632,6 +2956,9 @@ fn mm_edges(x: Buf(Float), y: Buf(Float), o: Buf(Float), r, kk, c, cb, rb) =
         o[i * c + j] += aik * y[k * c + j]
 
 # Matrix times vector, as a 1-D grid.
+#
+#     a = g.arange(6) |> g.reshape2(2, 3)
+#     g.matvec(a, g.ones1(3))   # => [3, 12]
 fn matvec(a: Grid, v: Grid) =
   x = dense(a)
   y = dense(v)
@@ -2644,10 +2971,11 @@ fn matvec(a: Grid, v: Grid) =
   if par(r * c) then run(r, \lo, hi -> matvec_part(o, xd, yd, c, lo, hi)) else matvec_part(o, xd, yd, c, 0, r)
   out
 
-fn matvec_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), c, lo, hi) =
+private fn matvec_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), c, lo, hi) =
   for i in lo..hi
     o[i] = dot_range(x, i * c, y, 0, 0, c)
 
+#     g.outer(g.arange(2), g.of(Cons(1.0, Cons(2.0, Nil))))   # => [[0, 0], [1, 2]]
 fn outer(a: Grid, b: Grid) =
   x = dense(a)
   y = dense(b)
@@ -2659,12 +2987,14 @@ fn outer(a: Grid, b: Grid) =
       out.data[i * m + j] = x.data[i] * y.data[j]
   out
 
+#     g.identity(2)   # => [[1, 0], [0, 1]]
 fn identity(n) =
   g = zeros2(n, n)
   for i in 0..n
     g.data[i * n + i] = 1.0
   g
 
+#     g.trace(g.arange(4) |> g.reshape2(2, 2))   # => 3
 fn trace(g: Grid) =
   n = if g.shape[0] < g.shape[1] then g.shape[0] else g.shape[1]
   for i in 0..n with acc = 0.0
@@ -2682,6 +3012,10 @@ fn trace(g: Grid) =
 type Lu
   Lu(a: Grid, piv: Buf(Int), sign: Float, ok: Bool)
 
+#     m = g.of(Cons(4.0, Cons(3.0, Cons(6.0, Cons(3.0, Nil))))) |> g.reshape2(2, 2)
+#     f = g.lu(m)
+#     f.ok     # => true
+#     f.sign   # => -1
 fn lu(a: Grid) =
   n = rows_of(a)
   m = copy(a)
@@ -2698,7 +3032,7 @@ fn lu(a: Grid) =
 # sixty-fourth of the reading and writing, and it is what a LAPACK does.
 # A matrix smaller than one block takes the first branch and is the
 # unblocked algorithm exactly.
-fn lu_walk(d: Buf(Float), n, piv: Buf(Int), nb, k, sign, ok) =
+private fn lu_walk(d: Buf(Float), n, piv: Buf(Int), nb, k, sign, ok) =
   if k >= n || !ok then (sign, ok)
   else
     w = if n - k < nb then n - k else nb
@@ -2720,7 +3054,7 @@ fn lu_walk(d: Buf(Float), n, piv: Buf(Int), nb, k, sign, ok) =
 #
 # A row exchange has to move the whole row, so the two parts outside the
 # panel are swapped where they are.
-fn panel_lu(d: Buf(Float), n, piv: Buf(Int), k, w, sign, ok) =
+private fn panel_lu(d: Buf(Float), n, piv: Buf(Int), k, w, sign, ok) =
   h = n - k
   t = buf_float_uninit(w * h)
   for c in 0..w
@@ -2736,7 +3070,7 @@ fn panel_lu(d: Buf(Float), n, piv: Buf(Int), k, w, sign, ok) =
       d[dst + r * n] = t[col + r]
   (sg, good)
 
-fn panel_core(t: Buf(Float), h, w, piv: Buf(Int), d: Buf(Float), n, k, sign, ok) =
+private fn panel_core(t: Buf(Float), h, w, piv: Buf(Int), d: Buf(Float), n, k, sign, ok) =
   for c in 0..w with acc = (sign, ok)
     (sg, good) = acc
     col = c * h
@@ -2770,7 +3104,7 @@ fn panel_core(t: Buf(Float), h, w, piv: Buf(Int), d: Buf(Float), n, k, sign, ok)
           t[base + r] = t[base + r] - f * t[col + r]
       (sg2, good)
 
-fn swap_row_span(d: Buf(Float), n, i, j, c0, c1) =
+private fn swap_row_span(d: Buf(Float), n, i, j, c0, c1) =
   ri = i * n
   rj = j * n
   for c in c0..c1
@@ -2781,7 +3115,7 @@ fn swap_row_span(d: Buf(Float), n, i, j, c0, c1) =
 
 # The rows of the block, worked forwards through the unit lower triangle,
 # which turns the columns to the right of the block into their part of U.
-fn trsm_panel(d: Buf(Float), n, k, w) =
+private fn trsm_panel(d: Buf(Float), n, k, w) =
   for i in k + 1..k + w
     for t in k..i
       f = d[i * n + t]
@@ -2803,7 +3137,7 @@ fn trsm_panel(d: Buf(Float), n, k, w) =
 type Blk
   Blk(c00: Float2, c01: Float2, c02: Float2, c03: Float2, c10: Float2, c11: Float2, c12: Float2, c13: Float2, c20: Float2, c21: Float2, c22: Float2, c23: Float2, c30: Float2, c31: Float2, c32: Float2, c33: Float2)
 
-fn gemm_sub(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, m, kk, nn) =
+private fn gemm_sub(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, m, kk, nn) =
   nr = m / 4
   nc = nn / 8
   # Each strand takes a stripe of four-row tiles: they write to rows of
@@ -2823,13 +3157,13 @@ fn gemm_sub(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), b
         c[coff + i * cld + j] = c[coff + i * cld + j] - f * b[boff + t * bld + j]
   0
 
-fn gemm_rows(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, kk, nc, lo, hi) =
+private fn gemm_rows(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, kk, nc, lo, hi) =
   for bi in lo..hi
     for bj in 0..nc
       gemm_block(c, coff, cld, a, aoff, ald, b, boff, bld, kk, bi * 4, bj * 8)
   0
 
-fn gemm_block(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, kk, i0, j0) =
+private fn gemm_block(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, kk, i0, j0) =
   ar0 = aoff + i0 * ald
   ar1 = ar0 + ald
   ar2 = ar1 + ald
@@ -2869,11 +3203,11 @@ fn gemm_block(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float),
   0
 
 # The row at or below `k` with the largest number in column `k`.
-fn pivot_row(d: Buf(Float), n, k) =
+private fn pivot_row(d: Buf(Float), n, k) =
   for i in k + 1..n with best = k
     if fabs(d[i * n + k]) > fabs(d[best * n + k]) then i else best
 
-fn swap_rows(d: Buf(Float), n, i, j) =
+private fn swap_rows(d: Buf(Float), n, i, j) =
   for c in 0..n
     t = d[i * n + c]
     d[i * n + c] = d[j * n + c]
@@ -2881,6 +3215,9 @@ fn swap_rows(d: Buf(Float), n, i, j) =
   0
 
 # `x` such that `a x = b`, for a vector `b` or a matrix of them.
+#
+#     m = g.of(Cons(2.0, Cons(1.0, Cons(1.0, Cons(3.0, Nil))))) |> g.reshape2(2, 2)
+#     g.solve(m, g.of(Cons(3.0, Cons(5.0, Nil))))   # => [0.8, 1.4]
 fn solve(a: Grid, b: Grid) =
   x = try_solve(a, b)
   if size(x) == 0 && size(b) != 0 then
@@ -2890,6 +3227,9 @@ fn solve(a: Grid, b: Grid) =
 
 # The same, saying so by handing back a grid of no elements rather than
 # stopping the program — what a host that has to answer for itself calls.
+#
+#     singular = g.ones2(2, 2)
+#     g.size(g.try_solve(singular, g.ones1(2)))   # => 0
 fn try_solve(a: Grid, b: Grid) =
   if rows_of(a) != cols_of(a) then
     fail("solve: " + show_shape(a.shape) + " is not square")
@@ -2901,7 +3241,7 @@ fn try_solve(a: Grid, b: Grid) =
     f = lu(a)
     if !f.ok then zeros1(0) else lu_solve(f, b)
 
-fn lu_solve(f: Lu, b: Grid) =
+private fn lu_solve(f: Lu, b: Grid) =
   n = rows_of(f.a)
   kc = if ndim(b) == 1 then 1 else cols_of(b)
   d = f.a.data
@@ -2918,7 +3258,7 @@ fn lu_solve(f: Lu, b: Grid) =
 
 # The columns `j0` up to `j1` of the answer: forwards through L, then
 # backwards through U.
-fn solve_cols(d: Buf(Float), o: Buf(Float), n, kc, j0, j1) =
+private fn solve_cols(d: Buf(Float), o: Buf(Float), n, kc, j0, j1) =
   nb = 16
   blocks = (n + nb - 1) / nb
   width = j1 - j0
@@ -2956,7 +3296,7 @@ fn solve_cols(d: Buf(Float), o: Buf(Float), n, kc, j0, j1) =
 # The columns `j0` up to `j1` of the inverse: forwards through L, then
 # backwards through U. `o` holds the identity on the way in and the answer
 # on the way out, before the columns are put back in order.
-fn inv_cols(d: Buf(Float), o: Buf(Float), n, j0, j1) =
+private fn inv_cols(d: Buf(Float), o: Buf(Float), n, j0, j1) =
   nb = 16
   blocks = (n + nb - 1) / nb
   width = j1 - j0
@@ -2994,6 +3334,9 @@ fn inv_cols(d: Buf(Float), o: Buf(Float), n, j0, j1) =
 
 # The determinant: the product down U's diagonal, with the sign the row
 # exchanges left. Zero when the matrix is singular.
+#
+#     g.det(g.of(Cons(1.0, Cons(2.0, Cons(3.0, Cons(4.0, Nil))))) |> g.reshape2(2, 2))   # => -2
+#     g.det(g.ones2(2, 2))                                                            # => 0
 fn det(a: Grid) =
   f = lu(a)
   if !f.ok then 0.0
@@ -3007,6 +3350,8 @@ fn det(a: Grid) =
 # triangle, so a block of rows only has to touch the columns it can have
 # reached. Doing it that way needs the answer's columns put back in the
 # order the row exchanges took them out of, which is the last pass here.
+#
+#     g.inv(g.of(Cons(4.0, Cons(7.0, Cons(2.0, Cons(6.0, Nil))))) |> g.reshape2(2, 2))   # => [[0.6, -0.7], [-0.2, 0.4]]
 fn inv(a: Grid) =
   x = try_inv(a)
   if size(x) == 0 && rows_of(a) != 0 then
@@ -3014,6 +3359,7 @@ fn inv(a: Grid) =
     a
   else x
 
+#     g.size(g.try_inv(g.ones2(2, 2)))   # => 0
 fn try_inv(a: Grid) =
   n = rows_of(a)
   if n != cols_of(a) then
@@ -3042,26 +3388,34 @@ fn try_inv(a: Grid) =
 
 # `a` multiplied by itself `k` times, by squaring: a hundredth power is
 # seven multiplications rather than ninety-nine.
+#
+#     g.matrix_power(g.of(Cons(1.0, Cons(1.0, Cons(1.0, Cons(0.0, Nil))))) |> g.reshape2(2, 2), 10)   # => [[89, 55], [55, 34]]
 fn matrix_power(a: Grid, k) =
   if k < 0 then matrix_power(inv(a), 0 - k) else if k == 0 then identity(rows_of(a)) else power_walk(a, k, identity(rows_of(a)))
 
-fn power_walk(a: Grid, k, acc: Grid) =
+private fn power_walk(a: Grid, k, acc: Grid) =
   if k == 0 then acc else power_walk(matmul(a, a), k / 2, if k % 2 == 1 then matmul(acc, a) else acc)
 
 # The least-squares solution of an overdetermined system, through the
 # normal equations: `x` least-squaring `a x - b`. Forming `aᵀa` squares the
 # conditioning, so a badly conditioned `a` wants a decomposition this
 # library does not have yet.
+#
+#     xs = g.of(Cons(1.0, Cons(1.0, Cons(1.0, Cons(2.0, Cons(1.0, Cons(3.0, Nil))))))) |> g.reshape2(3, 2)
+#     g.lstsq(xs, g.of(Cons(2.0, Cons(4.0, Cons(6.0, Nil))))) |> g.allclose(g.of(Cons(0.0, Cons(2.0, Nil))), 0.000001)   # => true
 fn lstsq(a: Grid, b: Grid) =
   at = transpose(a)
   solve(matmul(at, a), matvec(at, b))
 
+#     g.size(g.try_lstsq(g.zeros2(2, 2), g.ones1(2)))   # => 0
 fn try_lstsq(a: Grid, b: Grid) =
   at = transpose(a)
   try_solve(matmul(at, a), matvec(at, b))
 
 # The sizes of a matrix: the largest column sum, the largest row sum, and
 # the square root of the sum of the squares.
+#
+#     g.norm1(g.of(Cons(1.0, Cons(-2.0, Cons(3.0, Cons(4.0, Nil))))) |> g.reshape2(2, 2))   # => 6
 fn norm1(a: Grid) =
   r = rows_of(a)
   c = cols_of(a)
@@ -3070,6 +3424,7 @@ fn norm1(a: Grid) =
       acc + fabs(at2(a, i, j))
     if s > best then s else best
 
+#     g.norm_inf(g.of(Cons(1.0, Cons(-2.0, Cons(3.0, Cons(4.0, Nil))))) |> g.reshape2(2, 2))   # => 7
 fn norm_inf(a: Grid) =
   r = rows_of(a)
   c = cols_of(a)
@@ -3078,17 +3433,24 @@ fn norm_inf(a: Grid) =
       acc + fabs(at2(a, i, j))
     if s > best then s else best
 
+#     g.norm_fro(g.of(Cons(3.0, Cons(0.0, Cons(0.0, Cons(4.0, Nil))))) |> g.reshape2(2, 2))   # => 5
 fn norm_fro(a: Grid) = norm(flatten(copy(a)))
 
 # How far from singular, measured with the largest column sum.
+#
+#     g.cond(g.identity(3))   # => 1
 fn cond(a: Grid) = norm1(a) * norm1(inv(a))
 
 # The dot product under other names, the outer product of every pair, and
 # the cross product of two three-element vectors.
+#
+#     g.inner(g.of(Cons(1.0, Cons(2.0, Nil))), g.of(Cons(3.0, Cons(4.0, Nil))))   # => 11
 fn inner(a: Grid, b: Grid) = dot(a, b)
 
+#     g.vdot(g.of(Cons(1.0, Cons(2.0, Nil))), g.of(Cons(3.0, Cons(4.0, Nil))))   # => 11
 fn vdot(a: Grid, b: Grid) = dot(a, b)
 
+#     g.kron(g.of(Cons(1.0, Cons(2.0, Nil))) |> g.as_rows, g.of(Cons(1.0, Cons(10.0, Nil))) |> g.as_rows)   # => [[1, 10, 2, 20]]
 fn kron(a: Grid, b: Grid) =
   ra = rows_of(a)
   ca = cols_of(a)
@@ -3104,6 +3466,7 @@ fn kron(a: Grid, b: Grid) =
           out.data[(i * rb + p) * cols + j * cb + q] = v * at2(b, p, q)
   out
 
+#     g.cross(g.of(Cons(1.0, Cons(0.0, Cons(0.0, Nil)))), g.of(Cons(0.0, Cons(1.0, Cons(0.0, Nil)))))   # => [0, 0, 1]
 fn cross(a: Grid, b: Grid) =
   x = dense(a)
   y = dense(b)
@@ -3118,6 +3481,7 @@ fn cross(a: Grid, b: Grid) =
 impl Show(Grid)
   fn show(g) = render(g)
 
+#     g.render(g.arange(3))   # => [0, 1, 2]
 fn render(g: Grid) =
   b = strbuf()
   if ndim(g) == 1 then
@@ -3130,7 +3494,7 @@ fn render(g: Grid) =
     b += "]"
   strbuf_str(b)
 
-fn render_row(b: StrBuf, g: Grid, i) =
+private fn render_row(b: StrBuf, g: Grid, i) =
   b += "["
   n = if ndim(g) == 1 then g.shape[0] else g.shape[1]
   for j in 0..n
@@ -3141,6 +3505,7 @@ fn render_row(b: StrBuf, g: Grid, i) =
 impl Show(Mask)
   fn show(m) = render_mask(m)
 
+#     g.render_mask(g.gtk(g.arange(3), 1.0))   # => [false, false, true]
 fn render_mask(m: Mask) =
   b = strbuf()
   if #m.shape == 1 then
@@ -3154,7 +3519,7 @@ fn render_mask(m: Mask) =
     b += "]"
   strbuf_str(b)
 
-fn render_mask_row(b: StrBuf, m: Mask, start, n) =
+private fn render_mask_row(b: StrBuf, m: Mask, start, n) =
   b += "["
   for j in 0..n
     b += if j > 0 then ", " else ""

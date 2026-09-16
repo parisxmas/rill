@@ -9,16 +9,16 @@ module date
 # a day never lands on the 31st of February. ISO 8601 is the one text form:
 # `2026-09-14` and `2026-09-14T21:03:00Z`, read and written.
 #
-#     import "time/date" as date
-#     today = date.today()                    # from the wall clock
-#     due = date.add_days(today, 30)
-#     println(show(due))                      # "2026-10-14"
-#     date.parse("2026-02-29")                # Err: February 2026 has 28 days
-#     date.weekday(today)                     # 0 is Sunday, 6 is Saturday
 #
 # No time zones and no leap seconds: what a machine's clock says in UTC is
 # what this handles, and a local time is the program's to make by adding an
 # offset it knows.
+#
+#     today = date.today()
+#     due = date.add_days(date.make(2026, 9, 14)?, 30)
+#     due                                     # => 2026-10-14
+#     date.parse("2026-02-29")                # => Err(February 2026 has 28 days, not 29)
+#     date.weekday(date.make(2026, 9, 14)?)   # => 1
 
 type Date
   Date(year: Int, month: Int, day: Int)
@@ -29,28 +29,42 @@ type DateTime
 # -- making them --------------------------------------------------------------
 
 # A date that exists, or why not.
+#
+#     date.make(2024, 2, 29)   # => Ok(2024-02-29)
+#     date.make(2023, 2, 29)   # => Err(February 2023 has 28 days, not 29)
 fn make(y, m, d) =
   if m < 1 || m > 12 then Err("month " + int_to_str(m) + " is not one of 1..12") else if d < 1 || d > days_in_month(y, m)
     then Err(month_name(m) + " " + int_to_str(y) + " has " + int_to_str(days_in_month(y, m)) + " days, not " + int_to_str(d))
     else Ok(Date(y, m, d))
 
+#     date.make_time(date.make(2026, 9, 14)?, 21, 3, 0)    # => Ok(2026-09-14T21:03:00Z)
+#     date.make_time(date.make(2026, 9, 14)?, 24, 0, 0)    # => Err(hour 24 is not one of 0..23)
 fn make_time(dt: Date, h, mi, s) =
   if h < 0 || h > 23 then Err("hour " + int_to_str(h) + " is not one of 0..23") else if mi < 0 || mi > 59 then Err("minute " + int_to_str(mi) + " is not one of 0..59") else if s < 0 || s > 59
     then Err("second " + int_to_str(s) + " is not one of 0..59")
     else Ok(DateTime(dt, h, mi, s))
 
 # The date and time the wall clock says, in UTC.
+#
+#     date.to_seconds(date.now()) > 1700000000   # => true
 fn now() = from_seconds(now_millis() / 1000)
 
+#     date.today().year >= 2026   # => true
 fn today() = from_days(floor_div(now_millis() / 1000, 86400))
 
+#     date.is_leap(2024)   # => true
+#     date.is_leap(1900)   # => false
+#     date.is_leap(2000)   # => true
 fn is_leap(y) = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
 
+#     date.days_in_month(2024, 2)   # => 29
+#     date.days_in_month(2026, 4)   # => 30
 fn days_in_month(y, m) =
   if m == 2 then if is_leap(y) then 29 else 28 else if m == 4 || m == 6 || m == 9 || m == 11
     then 30
     else 31
 
+#     date.month_name(9)   # => September
 fn month_name(m) = match m
   1 -> "January"
   2 -> "February"
@@ -65,6 +79,7 @@ fn month_name(m) = match m
   11 -> "November"
   _ -> "December"
 
+#     date.weekday_name(0)   # => Sunday
 fn weekday_name(w) = match w
   0 -> "Sunday"
   1 -> "Monday"
@@ -80,6 +95,9 @@ fn weekday_name(w) = match w
 # to begin in March so that the leap day is the last day of it.
 
 # Days since 1970-01-01; negative before it.
+#
+#     date.to_days(date.make(1970, 1, 2)?)    # => 1
+#     date.to_days(date.make(1969, 12, 31)?)  # => -1
 fn to_days(d: Date) =
   y = if d.month <= 2 then d.year - 1 else d.year
   era = floor_div(y, 400)
@@ -89,6 +107,7 @@ fn to_days(d: Date) =
   doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
   era * 146097 + doe - 719468
 
+#     date.from_days(20000)   # => 2024-10-04
 fn from_days(days) =
   z = days + 719468
   era = floor_div(z, 146097)
@@ -102,32 +121,48 @@ fn from_days(days) =
   Date(year, month, day)
 
 # Seconds since 1970-01-01T00:00:00Z.
+#
+#     date.to_seconds(date.parse_time("1970-01-01T00:01:00Z")?)   # => 60
 fn to_seconds(t: DateTime) = to_days(t.date) * 86400 + t.hour * 3600 + t.minute * 60 + t.second
 
+#     date.from_seconds(1700000000)   # => 2023-11-14T22:13:20Z
 fn from_seconds(secs) =
   days = floor_div(secs, 86400)
   rest = secs - days * 86400
   DateTime(from_days(days), rest / 3600, rest / 60 % 60, rest % 60)
 
 # 0 is Sunday, 6 is Saturday. 1970-01-01 was a Thursday.
+#
+#     date.weekday(date.make(1970, 1, 1)?)   # => 4
 fn weekday(d: Date) = floor_mod(to_days(d) + 4, 7)
 
 # 1..366.
+#
+#     date.day_of_year(date.make(2026, 12, 31)?)   # => 365
 fn day_of_year(d: Date) = to_days(d) - to_days(Date(d.year, 1, 1)) + 1
 
 # -- arithmetic ---------------------------------------------------------------
 
+#     date.add_days(date.make(2026, 2, 27)?, 3)   # => 2026-03-02
 fn add_days(d: Date, n) = from_days(to_days(d) + n)
 
+#     date.add_seconds(date.parse_time("2026-12-31T23:59:59Z")?, 1)   # => 2027-01-01T00:00:00Z
 fn add_seconds(t: DateTime, n) = from_seconds(to_seconds(t) + n)
 
 # `b - a` in days; negative when `b` is earlier.
+#
+#     date.days_between(date.make(2026, 1, 1)?, date.make(2026, 3, 1)?)   # => 59
+#     date.days_between(date.make(2026, 3, 1)?, date.make(2026, 1, 1)?)   # => -59
 fn days_between(a: Date, b: Date) = to_days(b) - to_days(a)
 
+#     date.seconds_between(date.parse_time("2026-01-01T00:00:00Z")?, date.parse_time("2026-01-01T01:00:00Z")?)   # => 3600
 fn seconds_between(a: DateTime, b: DateTime) = to_seconds(b) - to_seconds(a)
 
 # The same day `n` months on, clamped to the month's length: January 31st
 # plus a month is February 28th (or 29th), as a calendar would have it.
+#
+#     date.add_months(date.make(2026, 1, 31)?, 1)   # => 2026-02-28
+#     date.add_months(date.make(2026, 1, 31)?, -2)  # => 2025-11-30
 fn add_months(d: Date, n) =
   total = d.year * 12 + (d.month - 1) + n
   y = floor_div(total, 12)
@@ -136,12 +171,17 @@ fn add_months(d: Date, n) =
 
 # -- text ---------------------------------------------------------------------
 
+#     date.iso(date.make(2026, 9, 4)?)   # => 2026-09-04
 fn iso(d: Date) = year_text(d.year) + "-" + two(d.month) + "-" + two(d.day)
 
+#     date.iso_time(date.make_time(date.make(2026, 9, 4)?, 7, 5, 9)?)   # => 2026-09-04T07:05:09Z
 fn iso_time(t: DateTime) =
   iso(t.date) + "T" + two(t.hour) + ":" + two(t.minute) + ":" + two(t.second) + "Z"
 
 # `2026-09-14`, and nothing else.
+#
+#     date.parse("2026-09-14")   # => Ok(2026-09-14)
+#     date.parse("14/09/2026")   # => Err(a date is written `YYYY-MM-DD`, not `14/09/2026`)
 fn parse(s) =
   if #s != 10 || s[4] != 45 || s[7] != 45 then Err("a date is written `YYYY-MM-DD`, not `" + s + "`")
   else
@@ -151,6 +191,9 @@ fn parse(s) =
     make(y, m, d)
 
 # `2026-09-14T21:03:00Z`; the `Z` may be left off, and means UTC either way.
+#
+#     date.parse_time("2026-09-14T21:03:00Z")   # => Ok(2026-09-14T21:03:00Z)
+#     date.parse_time("2026-09-14T21:03:00")    # => Ok(2026-09-14T21:03:00Z)
 fn parse_time(s) =
   n = if #s == 20 && s[19] == 90 then 19 else #s
   if n != 19 || s[10] != 84 || s[13] != 58 || s[16] != 58 then Err("a date and time is written `YYYY-MM-DDTHH:MM:SSZ`, not `" + s + "`")

@@ -4,21 +4,24 @@ module sha2
 # in Rill. A digest is returned as raw bytes in a `Str`; `hex` spells one
 # out. Keys and messages are bytes too: any `Str` will do.
 #
-#     import "crypto/sha2" as sha
-#     sha.hex(sha.sha256("abc"))         # "ba7816bf…f20015ad"
-#     tag = sha.hmac_sha256(secret, body)
-#     sha.same(tag, sent)                # compared in constant time
 #
 # SHA-256 is 32-bit arithmetic on 64-bit integers, masked after each step;
 # SHA-512 is the machine's own 64-bit arithmetic, which wraps as the
 # algorithm wants and shifts logically, so nothing has to be masked. The
 # schedule and the working state are buffers rather than lists, and a block
 # is read straight out of the message.
+#
+#     sha2.hex(sha2.sha256("abc"))                   # => ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+#     tag = sha2.hmac_sha256("secret", "the body")
+#     sha2.same(tag, sha2.hmac_sha256("secret", "the body"))   # => true
 import "text/str" as s
 
 # -- SHA-256 ------------------------------------------------------------------
 
 # The digest, as 32 raw bytes.
+#
+#     sha2.hex(sha2.sha256(""))   # => e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+#     #sha2.sha256("x")           # => 32
 fn sha256(msg) =
   h = h256()
   p = pad(msg, 64)
@@ -160,6 +163,9 @@ private fn k256() =
 # -- SHA-512 ------------------------------------------------------------------
 
 # The digest, as 64 raw bytes.
+#
+#     str_sub(sha2.hex(sha2.sha512("")), 0, 32)   # => cf83e1357eefb8bdf1542850d66d8007
+#     #sha2.sha512("x")                          # => 64
 fn sha512(msg) =
   h = h512()
   p = pad(msg, 128)
@@ -329,8 +335,10 @@ private fn pad(msg, block) =
 
 # -- HMAC ---------------------------------------------------------------------
 
+#     sha2.hex(sha2.hmac_sha256("key", "The quick brown fox jumps over the lazy dog"))   # => f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8
 fn hmac_sha256(key, msg) = hmac(sha256, 64, key, msg)
 
+#     str_sub(sha2.hex(sha2.hmac_sha512("key", "msg")), 0, 32)   # => 1e4b55b925ccc28ed90d9d18fc2393fc
 fn hmac_sha512(key, msg) = hmac(sha512, 128, key, msg)
 
 # A key longer than the block is hashed down to fit; a shorter one is padded
@@ -350,11 +358,17 @@ private fn xor_byte(bytes, b) =
 # -- spelling and comparing ---------------------------------------------------
 
 # A digest as lowercase hex.
+#
+#     sha2.hex("AZ")   # => 415a
 fn hex(digest) = s.hex_encode(digest)
 
 # Whether two tags are the same, taking the same time whether they differ in
 # the first byte or the last — a comparison that stops early tells a caller
 # how much of a guess was right.
+#
+#     sha2.same("abc", "abc")    # => true
+#     sha2.same("abc", "abd")    # => false
+#     sha2.same("abc", "abcd")   # => false
 fn same(a, b) =
   if #a != #b then false
   else

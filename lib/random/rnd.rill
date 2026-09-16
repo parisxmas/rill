@@ -8,22 +8,35 @@ module rnd
 # that draws hands back the next generator with the number, and the same
 # seed gives the same sequence on every run and every machine.
 #
-#     import "random/rnd" as rnd
-#     r = rnd.seed(42)                      # or rnd.seed_from_os()
-#     (n, r) = rnd.int_in(r, 1, 6)          # a die
-#     (x, r) = rnd.float(r)                 # in [0, 1)
-#     (who, r) = rnd.pick(r, names)         # Some(one of them)
-#     r = rnd.shuffle(r, deck)              # a Buf(Int), in place
 #
 # Not for secrets: a PCG stream can be predicted from its output. Keys and
 # tokens come from `random_i64()`, which asks the operating system.
+#
+#     r = rnd.seed(42)
+#     (n, r) = rnd.int_in(r, 1, 7)          # a die
+#     n >= 1 && n <= 6                      # => true
+#     (x, r) = rnd.float(r)
+#     x >= 0.0 && x < 1.0                   # => true
+#     (who, r) = rnd.pick(r, Cons("ada", Cons("bob", Nil)))
+#     who != None                           # => true
+#     deck = buf_int(3)
+#     r = rnd.shuffle(r, deck)              # in place; the generator comes back
 
 type Rng
   Rng(state: Int, inc: Int)
 
 # A generator from a seed; two seeds, two streams.
+#
+#     (a, _) = rnd.next_int(rnd.seed(1))
+#     (b, _) = rnd.next_int(rnd.seed(1))
+#     a == b   # => true
+#     (c, _) = rnd.next_int(rnd.seed(2))
+#     a == c   # => false
 fn seed(n) = seed2(n, 54)
 
+#     (a, _) = rnd.next_int(rnd.seed2(1, 1))
+#     (b, _) = rnd.next_int(rnd.seed2(1, 2))
+#     a == b   # => false
 fn seed2(n, stream) =
   inc = bit_or(shl(stream, 1), 1)
   r0 = Rng(0, inc)
@@ -32,9 +45,15 @@ fn seed2(n, stream) =
   r2
 
 # A generator seeded by the operating system: different every run.
+#
+#     (a, _) = rnd.next_int(rnd.seed_from_os())
+#     a >= 0   # => true
 fn seed_from_os() = seed(random_i64())
 
 # The next 32-bit number, 0 .. 2^32 - 1, and the generator after it.
+#
+#     (n, r2) = rnd.next_int(rnd.seed(7))
+#     n >= 0 && n < 4294967296   # => true
 fn next_int(r: Rng) =
   old = r.state
   next = Rng(old * 6364136223846793005 + r.inc, r.inc)
@@ -45,6 +64,9 @@ fn next_int(r: Rng) =
 
 # A number in `lo..hi`, `hi` excluded, without the bias a `%` would have:
 # a draw that lands in the ragged end of the range is taken again.
+#
+#     (n, _) = rnd.int_in(rnd.seed(7), 10, 20)
+#     n >= 10 && n < 20   # => true
 fn int_in(r: Rng, lo, hi) =
   span = hi - lo
   if span <= 0 then (lo, r)
@@ -54,17 +76,27 @@ fn int_in(r: Rng, lo, hi) =
     if v >= limit then int_in(r2, lo, hi) else (lo + v % span, r2)
 
 # A float in [0, 1), 53 random bits of it.
+#
+#     (x, _) = rnd.float(rnd.seed(7))
+#     x >= 0.0 && x < 1.0   # => true
 fn float(r: Rng) =
   (a, r1) = next_int(r)
   (b, r2) = next_int(r1)
   bits = bit_or(shl(bit_and(a, 2097151), 32), b)
   (to_float(bits) / 9007199254740992.0, r2)
 
+#     (b, _) = rnd.bool(rnd.seed(7))
+#     b == true || b == false   # => true
 fn bool(r: Rng) =
   (v, r2) = next_int(r)
   (bit_and(v, 1) == 1, r2)
 
 # One of a list, or `None` of an empty one.
+#
+#     (x, _) = rnd.pick(rnd.seed(7), Cons("only", Nil))
+#     x                                     # => Some(only)
+#     (y, _) = rnd.pick(rnd.seed(7), Nil)
+#     y == None                             # => true
 fn pick(r: Rng, xs) =
   n = len(xs)
   if n == 0 then (None, r)
@@ -73,6 +105,14 @@ fn pick(r: Rng, xs) =
     (nth(xs, i), r2)
 
 # Fisher–Yates over a buffer, in place; the generator after it.
+#
+#     b = buf_int(4)
+#     b[0] = 1
+#     b[1] = 2
+#     b[2] = 3
+#     b[3] = 4
+#     r = rnd.shuffle(rnd.seed(7), b)
+#     b[0] + b[1] + b[2] + b[3]   # => 10
 fn shuffle(r: Rng, b: Buf(Int)) = for i in 0..#b with rng = r
   j = #b - 1 - i
   if j > 0 then
@@ -84,6 +124,9 @@ fn shuffle(r: Rng, b: Buf(Int)) = for i in 0..#b with rng = r
   else rng
 
 # `n` random bytes, as a string of them.
+#
+#     (s, _) = rnd.bytes(rnd.seed(7), 16)
+#     #s   # => 16
 fn bytes(r: Rng, n) =
   sb = strbuf()
   rng = for _ in 0..n with rng = r

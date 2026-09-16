@@ -9,27 +9,32 @@ module csv
 # field that never closes, or text after its closing quote, is refused, and
 # the refusal says which line.
 #
-#     import "data/csv" as csv
-#     rows = csv.parse(text)?               # List(List(Str)), one list a line
-#     people = csv.records(text)?           # the first line names the fields:
-#     match people                          #   List(Map(Str, Str))
-#       Cons(p, _) -> p["name"]
-#       Nil -> None
-#     csv.write(rows)                       # back to text, quoting what needs it
 #
 # The separator is a comma unless `parse_with` / `write_with` are told
 # otherwise — a semicolon or a tab, as a spreadsheet in another locale
 # writes. Fields are bytes; the file's encoding is the caller's business,
 # and UTF-8 passes through untouched.
+#
+#     rows = csv.parse("name,age\nada,36\n")?
+#     rows                                      # => Cons(Cons(name, Cons(age, Nil)), Cons(Cons(ada, Cons(36, Nil)), Nil))
+#     people = csv.records("name,age\nada,36\n")?
+#     match people
+#       Cons(p, _) -> map_or(p, "name", "?")
+#       Nil -> "nobody"
+#     csv.write(rows)                           # => name,age\nada,36
 
 type Scan
   Scan(at: Int, mode: Int, fields: List(Str), rows: List(List(Str)), line: Int, opened: Int, err: Str)
 
 # -- reading ------------------------------------------------------------------
 
+#     csv.parse("a,b\n1,\"x,y\"\n")   # => Ok(Cons(Cons(a, Cons(b, Nil)), Cons(Cons(1, Cons(x,y, Nil)), Nil)))
+#     csv.parse("a,\"open")          # => Err(a quoted field opened on line 1 is not closed)
 fn parse(text) = parse_with(text, 44)
 
 # The rows of `text`, each a list of its fields, or the first error.
+#
+#     csv.parse_with("a;b\n", ";"[0])   # => Ok(Cons(Cons(a, Cons(b, Nil)), Nil))
 fn parse_with(text, sep) =
   b = strbuf()
   done = while s.at <= #text && #s.err == 0 with s = Scan(0, 0, Nil, Nil, 1, 0, "")
@@ -39,8 +44,14 @@ fn parse_with(text, sep) =
 # The rows as records: the first line names the fields, and every line after
 # it is a map from those names to its values. A short row leaves its missing
 # fields out; a long one's extras are dropped.
+#
+#     people = csv.records("name,age\nada,36\nbob\n")?
+#     map(people, \p -> map_or(p, "name", "?"))   # => Cons(ada, Cons(bob, Nil))
+#     map(people, \p -> map_or(p, "age", "?"))    # => Cons(36, Cons(?, Nil))
 fn records(text) = records_with(text, 44)
 
+#     people = csv.records_with("k\tv\na\t1\n", 9)?
+#     map(people, \p -> map_or(p, "v", "?"))   # => Cons(1, Nil)
 fn records_with(text, sep) =
   rows = parse_with(text, sep)?
   match rows
@@ -116,10 +127,14 @@ private fn fail(s, why) = { s | err = why }
 
 # -- writing ------------------------------------------------------------------
 
+#     csv.write(Cons(Cons("a", Cons("b,c", Nil)), Nil))   # => a,"b,c"
+#     csv.write(Cons(Cons("say \"hi\"", Nil), Nil))   # => "say ""hi"""
 fn write(rows) = write_with(rows, 44)
 
 # The rows as text, one a line, ending in `\n`; a field is quoted only when
 # it has to be.
+#
+#     csv.write_with(Cons(Cons("a", Cons("b", Nil)), Nil), ";"[0])   # => a;b
 fn write_with(rows, sep) =
   b = strbuf()
   put_rows(b, rows, sep)

@@ -5,54 +5,83 @@ module set
 # it in place — and anything a map can key, a set can hold: numbers,
 # strings, tuples, data types.
 #
-#     import "coll/set" as set
 #     seen = set.new()
 #     set.add(seen, "a")
-#     set.has(seen, "a")                 # true
-#     set.of(Cons(1, Cons(2, Cons(2, Nil))))         # {1, 2}
-#     set.union(a, b), set.inter(a, b), set.diff(a, b)   # new sets
-#     set.items(s)                       # a list, in no particular order
+#     set.has(seen, "a")                            # => true
+#     set.size(set.of(Cons(1, Cons(2, Cons(2, Nil)))))   # => 2
+#     a = set.of(Cons(1, Cons(2, Nil)))
+#     b = set.of(Cons(2, Cons(3, Nil)))
+#     sort(set.items(set.union(a, b)))              # => Cons(1, Cons(2, Cons(3, Nil)))
+#     set.items(set.inter(a, b))                    # => Cons(2, Nil)
+#     set.items(set.diff(a, b))                     # => Cons(1, Nil)
 type Set(a)
   Set(m: Map(a, Bool))
 
+#     seen = set.new()
+#     set.add(seen, "a")
+#     set.has(seen, "a")   # => true
+#     set.has(seen, "b")   # => false
 fn new() = Set(map_new())
 
+#     set.size(set.of(Cons(1, Cons(2, Cons(2, Nil)))))   # => 2
 fn of(items) =
   s = new()
   each(items, \x -> add(s, x))
   s
 
+#     s = set.new()
+#     set.add(s, 1)
+#     set.add(s, 1)
+#     set.size(s)   # => 1
 fn add(s: Set(a), x) =
   m = s.m
   m[x] = true
 
+#     set.has(set.of(Cons((1, 2), Nil)), (1, 2))   # => true
 fn has(s: Set(a), x) = map_has(s.m, x)
 
 # Removes `x`, saying whether it was there.
+#
+#     s = set.of(Cons(1, Cons(2, Nil)))
+#     set.del(s, 1)   # => true
+#     set.del(s, 1)   # => false
+#     set.size(s)     # => 1
 fn del(s: Set(a), x) = map_del(s.m, x)
 
+#     set.size(set.of(Cons("a", Cons("b", Nil))))   # => 2
 fn size(s: Set(a)) = #s.m
 
+#     set.is_empty(set.new())   # => true
 fn is_empty(s: Set(a)) = #s.m == 0
 
+#     sort(set.items(set.of(Cons(3, Cons(1, Nil)))))   # => Cons(1, Cons(3, Nil))
 fn items(s: Set(a)) = map_keys(s.m)
 
+#     s = set.of(Cons(1, Nil))
+#     set.clear(s)
+#     set.is_empty(s)   # => true
 fn clear(s: Set(a)) = map_clear(s.m)
 
 # -- sets from sets -------------------------------------------------------------
 
+#     sort(set.items(set.union(set.of(Cons(1, Nil)), set.of(Cons(2, Nil)))))   # => Cons(1, Cons(2, Nil))
 fn union(a, b) =
   out = of(items(a))
   each(items(b), \x -> add(out, x))
   out
 
+#     set.items(set.inter(set.of(Cons(1, Cons(2, Nil))), set.of(Cons(2, Cons(3, Nil)))))   # => Cons(2, Nil)
 fn inter(a, b) = of(filter(items(a), \x -> has(b, x)))
 
 # What is in `a` and not in `b`.
+#
+#     set.items(set.diff(set.of(Cons(1, Cons(2, Nil))), set.of(Cons(2, Nil))))   # => Cons(1, Nil)
 fn diff(a, b) = of(filter(items(a), \x -> !has(b, x)))
 
+#     set.is_subset(set.of(Cons(1, Nil)), set.of(Cons(1, Cons(2, Nil))))   # => true
 fn is_subset(a, b) = all(items(a), \x -> has(b, x))
 
+#     set.same(set.of(Cons(1, Cons(2, Nil))), set.of(Cons(2, Cons(1, Nil))))   # => true
 fn same(a, b) = size(a) == size(b) && is_subset(a, b)
 
 # -- tests --------------------------------------------------------------------

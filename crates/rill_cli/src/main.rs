@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>] [--sandbox[=caps]]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked] [--sandbox[=caps]]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel] [--sandbox[=caps]]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel] [--sandbox[=caps]]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg | --json] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill doc <file.rill | dir>... [-o <dir>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --sandbox  refuse what reaches past the process — files, sockets, foreign\n            code, signals — unless named: --sandbox=files,net,ffi,os\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>] [--sandbox[=caps]]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked] [--sandbox[=caps]]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel] [--sandbox[=caps]]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel] [--sandbox[=caps]]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg | --json] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill doc <file.rill | dir>... [-o <dir>]\n  rill doctest <file.rill | dir>...\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --sandbox  refuse what reaches past the process — files, sockets, foreign\n            code, signals — unless named: --sandbox=files,net,ffi,os\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -80,6 +80,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "diagram" => diagram_cmd(rest),
         "msc" => msc_cmd(rest),
         "doc" => doc_cmd(rest),
+        "doctest" => doctest_cmd(rest),
         "lsp" => lsp::serve(),
         "repl" => {
             repl()?;
@@ -272,6 +273,152 @@ fn doc_cmd(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `rill doctest`: every example in a file's doc comments — a comment
+/// line indented four spaces past the `#` — run, and held to what it
+/// says after `# =>`. A block of consecutive example lines is one
+/// function of a program written beside the module, which imports it by
+/// its name, so an example reads as a user would write it: `json.parse`.
+/// A line with a `=>` is printed through `show` and compared; a line
+/// without is a statement the next lines may use. One program a file,
+/// one process a file; a failure names the comment's line.
+fn doctest_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for a in args {
+        if a.starts_with('-') {
+            return Err(format!("unknown option `{a}`\n{USAGE}"));
+        }
+        let p = PathBuf::from(a);
+        if p.is_dir() {
+            walk_rill(&p, &mut files);
+        } else {
+            files.push(p);
+        }
+    }
+    if files.is_empty() {
+        return Err(USAGE.to_string());
+    }
+    files.sort();
+    let (mut ran, mut failed, mut modules) = (0usize, 0usize, 0usize);
+    for path in &files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let blocks = doc::examples_of(&text);
+        if blocks.is_empty() {
+            continue;
+        }
+        modules += 1;
+        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        // the program: one function a block, main calling each in turn
+        // an `import` line in an example is the program's: hoisted to the
+        // head, once, so an example may lean on another module by name
+        // the module itself is imported by its name unless an example imports it
+        // its own way — unqualified, as a module of `kv_` names is meant to be
+        let mut imports: Vec<String> = Vec::new();
+        for ex in blocks.iter().flatten() {
+            if ex.code.starts_with("import ") && !imports.contains(&ex.code) {
+                imports.push(ex.code.clone());
+            }
+        }
+        let self_import = imports.iter().any(|i| i.contains(&format!("/{stem}\"")) || i.contains(&format!("\"{stem}\"")));
+        if !self_import {
+            imports.insert(0, format!("import \"{stem}\" as {stem}"));
+        }
+        let mut src = imports.join("\n") + "\n\n";
+        let mut expected: Vec<(usize, String, String)> = Vec::new();   // (doc line, code, what show should print)
+        let mut origin: Vec<Option<usize>> = vec![None; imports.len() + 1];   // the doc line each program line came from
+        for (b, block) in blocks.iter().enumerate() {
+            src.push_str(&format!("fn doctest_{b}() =\n"));
+            origin.push(None);
+            for ex in block {
+                if ex.code.starts_with("import ") {
+                    continue;
+                }
+                match &ex.expect {
+                    Some(want) => {
+                        // a record separator after each answer, so an answer of several lines stays one
+                        src.push_str(&format!("  println(show({}))\n  println(chr(30))\n", ex.code));
+                        expected.push((ex.line, ex.code.clone(), want.clone()));
+                        origin.push(Some(ex.line));
+                    }
+                    None => src.push_str(&format!("  {}\n", ex.code)),
+                }
+                origin.push(Some(ex.line));
+            }
+            // a block answers `Ok`, so an example may use `?` as a program would
+            src.push_str("  Ok(0)\n\n");
+            origin.push(None);
+            origin.push(None);
+        }
+        src.push_str("fn main() =\n");
+        for b in 0..blocks.len() {
+            src.push_str(&format!("  match doctest_{b}()\n    Ok(_) -> ()\n    Err(e) -> println(\"error: \" + show(e))\n"));
+        }
+        let prog = dir.join(format!(".doctest-{stem}.rill"));
+        std::fs::write(&prog, &src).map_err(|e| format!("cannot write {}: {e}", prog.display()))?;
+        let out_dir = std::env::temp_dir().join(format!("rill-doctest-{}", std::process::id()));
+        std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
+        let exe = out_dir.join(&stem);
+        let opts = BuildOpts {
+            source: prog.clone(),
+            output: exe.clone(),
+            emit_ir: false,
+            debug: false,
+            parallel: false,
+            unchecked: false,
+            shared: false,
+            target: None,
+            sandbox: None,
+            entries: rill_types::Entries::Program,
+        };
+        let module = rill_syntax::load_program(&prog);
+        let built = module.and_then(|m| build_module(m, &opts));
+        let _ = std::fs::remove_file(&prog);
+        let shown = path.display();
+        let exe = match built {
+            Ok(exe) => exe,
+            Err(e) => {
+                // the error names the scratch program's line; say the comment's instead
+                let e = e.replace(&prog.display().to_string(), &shown.to_string());
+                let at = e.split("line ").nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse::<usize>().ok());
+                let doc_line = at.and_then(|l| origin.get(l - 1).copied().flatten());
+                let where_ = match doc_line { Some(l) => format!(" — the example at line {l}"), None => String::new() };
+                println!("FAIL  {shown}{where_}\n      {}", e.replace('\n', "\n      "));
+                failed += expected.len().max(1);
+                ran += expected.len().max(1);
+                continue;
+            }
+        };
+        let out = Command::new(&exe).output().map_err(|e| format!("failed to run `{}`: {e}", exe.display()))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let got: Vec<&str> = stdout.split("\n\u{1e}\n").map(|s| s.trim_end_matches('\n')).collect();
+        if !out.status.success() {
+            println!("FAIL  {shown}: the examples died\n      {}", String::from_utf8_lossy(&out.stderr).trim().replace('\n', "\n      "));
+            failed += expected.len();
+            ran += expected.len();
+            continue;
+        }
+        let mut bad = 0;
+        for (i, (line, code, want)) in expected.iter().enumerate() {
+            ran += 1;
+            let got_line = got.get(i).copied().unwrap_or("<nothing>");
+            // a `\n` in what the comment says is a line break in the answer; the
+            // space a comment cannot keep at its end is not a difference
+            let unescaped = want.replace("\\r", "\r").replace("\\n", "\n");
+            let same = |w: &str| got_line == w || got_line.trim() == w.trim();
+            if !same(want) && !same(&unescaped) {
+                bad += 1;
+                failed += 1;
+                println!("FAIL  {shown}:{line}\n      {code}\n        expected: {}\n             got: {}", want.replace('\n', "\\n"), got_line.replace('\n', "\\n"));
+            }
+        }
+        if bad == 0 {
+            println!("ok    {shown}  ({} example{})", expected.len(), if expected.len() == 1 { "" } else { "s" });
+        }
+    }
+    println!("{ran} example{} in {modules} file{}: {} passed, {failed} failed", if ran == 1 { "" } else { "s" }, if modules == 1 { "" } else { "s" }, ran - failed);
+    Ok(if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
 fn walk_rill(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
