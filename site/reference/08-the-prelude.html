@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The prelude — The Rill Language Reference</title>
+<meta name="description" content="Every program has these in scope; any definition of your own with the same name replaces the prelude&#x27;s.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/08-the-prelude.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/08-the-prelude.html">
+<meta property="og:title" content="The prelude — The Rill Language Reference">
+<meta property="og:description" content="Every program has these in scope; any definition of your own with the same name replaces the prelude&#x27;s.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The prelude — The Rill Language Reference">
+<meta name="twitter:description" content="Every program has these in scope; any definition of your own with the same name replaces the prelude&#x27;s.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li class="current"><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#the-libraries">The libraries</a></li>
+        <li><a href="#documentation">Documentation</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 8</p>
+      <h1>The prelude</h1>
+<p>Every program has these in scope; any definition of your own with the same name replaces the prelude's.</p>
+<p><strong>Types</strong>: <code>Option(a)</code> = <code>None | Some(a)</code>, <code>Result(a, e)</code> = <code>Ok(a) | Err(e)</code>, <code>List(a)</code> = <code>Nil | Cons(head, tail)</code>.</p>
+<p><strong>Lists</strong>: <code>map</code> <code>filter</code> <code>fold</code> <code>len</code> <code>sum</code> <code>range</code> <code>reverse</code> <code>append</code> <code>take</code> <code>drop</code> <code>nth</code> <code>any</code> <code>all</code> <code>find</code> <code>index_of</code> <code>has</code> <code>count</code> <code>last</code> <code>each</code> <code>zip</code> <code>zip_with</code> <code>unzip</code> <code>fst</code> <code>snd</code> <code>enumerate</code> <code>take_while</code> <code>drop_while</code> <code>partition</code> <code>flatten</code> <code>flat_map</code> <code>chunks</code> <code>distinct</code> <code>group_by</code> <code>min_by</code> <code>max_by</code> <code>sort</code> <code>sort_by</code> <code>sort_with</code></p>
+<p><code>sort</code> is a stable merge sort by <code>&lt;</code>; <code>sort_by(l, key)</code> orders by what <code>key</code> gives, and <code>sort_with(l, before)</code> by <code>before(a, b)</code>, whether <code>a</code> may come before <code>b</code> — <code>&lt;=</code>, not <code>&lt;</code>, or equal elements would swap. <code>group_by(l, key)</code> gives <code>(key, members)</code> pairs in the order the keys were first seen. Each of these stands on its own, so a program that defines a <code>find</code> of its own loses the prelude's <code>find</code> and nothing else.</p>
+<p><strong>Option/Result</strong>: <code>unwrap_or</code> <code>opt_map</code> <code>res_map</code> <code>ok_or</code> <code>map_err</code></p>
+<p><strong>Maps</strong>: <code>map_get</code> <code>map_or</code> <code>map_has</code> <code>map_keys</code> <code>map_values</code> <code>map_items</code> <code>map_of</code></p>
+<p><strong>Channels</strong>: <code>recv_opt(ch) -&gt; Option(a)</code></p>
+<p><strong>Signals</strong>: <code>sig_hup()</code> <code>sig_int()</code> <code>sig_term()</code> — the numbers <code>wait_signal</code> answers with</p>
+<p><strong>Standard error</strong>: <code>eprintln(x)</code> <code>eprint(x)</code> — what <code>println</code> and <code>print</code> do, on standard error, unbuffered</p>
+<p><strong>Numbers</strong>: <code>max</code> <code>min</code> <code>abs</code></p>
+<p><strong>Strings</strong>: <code>join</code> <code>repeat</code> <code>split</code> <code>lines</code> <code>trim</code> <code>contains</code> <code>starts_with</code></p>
+<p><strong>Strands</strong>: <code>apart(x)</code> — <code>x</code>, and the claim that strands share it on purpose; see <a href="07-concurrency.html#what-strands-may-share">What strands may share</a></p>
+<p><strong>Characters</strong>: <code>char_count</code> <code>char_at</code> <code>char_sub</code> <code>char_take</code> <code>char_drop</code> <code>chars</code> <code>from_char</code> <code>from_chars</code> <code>char_decode</code> <code>char_wide</code> — see <a href="03-expressions.html#characters">Characters</a>; <code>chr</code> is a byte</p>
+<p><strong>IO</strong>: <code>args()</code> (program name included), <code>read_file(path) -&gt; Result(Str, Str)</code>, <code>open_file(path, mode) -&gt; Result(Int, Str)</code>, <code>dir_names(path) -&gt; List(Str)</code>, <code>replace_file(path, text) -&gt; Result(Int, Str)</code></p>
+<hr />
+<h3 id="the-libraries">The libraries</h3>
+<p>What the prelude does not have is in <code>lib/</code>, on the search path of every program in the project, imported by path and usually under a name:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr>
+<td><code>import "text/str" as s</code></td>
+<td>strings past the prelude: searches, transforms, parsers, every encoding, strands over a long text</td>
+</tr>
+<tr>
+<td><code>import "data/json"</code>, <code>"yaml"</code></td>
+<td>the two formats, read and written</td>
+</tr>
+<tr>
+<td><code>import "web/http" as h</code>, <code>"ws"</code></td>
+<td>an HTTP/1.1 server with middleware, and WebSocket over it</td>
+</tr>
+<tr>
+<td><code>import "web/tls" as tls</code></td>
+<td>TLS over a socket through OpenSSL: <code>https://</code> as a client, verified, and served with a certificate</td>
+</tr>
+<tr>
+<td><code>import "web/url" as url</code></td>
+<td>a URL taken apart and put together, a query as pairs, a reference resolved against a base</td>
+</tr>
+<tr>
+<td><code>import "web/mime" as mime</code></td>
+<td>the media type a file is served as, from its name</td>
+</tr>
+<tr>
+<td><code>import "web/form" as form</code></td>
+<td>what a <code>&lt;form&gt;</code> sends: urlencoded pairs, or multipart parts with their files</td>
+</tr>
+<tr>
+<td><code>import "net/udp" as udp</code></td>
+<td>datagrams, sent and received whole, a receive parking the strand</td>
+</tr>
+<tr>
+<td><code>import "net/dns" as dns</code></td>
+<td>a name to its addresses through the system's resolver, without holding a worker</td>
+</tr>
+<tr>
+<td><code>import "num/grid" as g</code></td>
+<td>arrays of numbers with a shape, as NumPy has them</td>
+</tr>
+<tr>
+<td><code>import "db/kv"</code></td>
+<td>a key–value store on disk: a B+ tree, a page cache, a log</td>
+</tr>
+<tr>
+<td><code>import "crypto/sha1"</code>, <code>"passwd"</code></td>
+<td>SHA-1 and base64; storing a password so it cannot be read back</td>
+</tr>
+<tr>
+<td><code>import "crypto/sha2" as sha</code></td>
+<td>SHA-256 and SHA-512, HMAC over each, a tag compared in constant time</td>
+</tr>
+<tr>
+<td><code>import "data/checksum" as ck</code></td>
+<td>CRC-32 and Adler-32, whole or in pieces</td>
+</tr>
+<tr>
+<td><code>import "data/csv" as csv</code></td>
+<td>CSV as RFC 4180 has it, read to rows or records and written back</td>
+</tr>
+<tr>
+<td><code>import "data/deflate" as z</code></td>
+<td>DEFLATE both ways, and gzip and zlib around it</td>
+</tr>
+<tr>
+<td><code>import "time/clock" as clock</code></td>
+<td>elapsed time, a timed call, a duration in words</td>
+</tr>
+<tr>
+<td><code>import "time/date" as date</code></td>
+<td>civil dates and times in UTC: the counts, the calendar, ISO 8601</td>
+</tr>
+<tr>
+<td><code>import "text/regex" as re</code></td>
+<td>regular expressions: a backtracking matcher with groups</td>
+</tr>
+<tr>
+<td><code>import "text/path" as path</code></td>
+<td>file paths as text: join, take apart, normalize</td>
+</tr>
+<tr>
+<td><code>import "text/fmt" as fmt</code></td>
+<td>a template with slots, padding by width, a float to so many places, thousands, bytes, ordinals, a table</td>
+</tr>
+<tr>
+<td><code>import "random/rnd" as rnd</code></td>
+<td>PCG32: a generator that is a value, and the draws made from it</td>
+</tr>
+<tr>
+<td><code>import "random/uuid" as uuid</code></td>
+<td>UUIDs, random (v4) and time-ordered (v7), from the operating system's entropy</td>
+</tr>
+<tr>
+<td><code>import "cli/args" as cli</code></td>
+<td>what a program takes on its command line, said once, parsed and explained</td>
+</tr>
+<tr>
+<td><code>import "cli/env" as env</code></td>
+<td>environment variables, the working directory, the machine's name, the process id</td>
+</tr>
+<tr>
+<td><code>import "cli/proc" as proc</code></td>
+<td>running a command: its output and exit code, a line built with each argument quoted</td>
+</tr>
+<tr>
+<td><code>import "cli/log" as log</code></td>
+<td>a logger that is a value: the time, the level, the name, on standard error</td>
+</tr>
+<tr>
+<td><code>import "num/decimal" as dec</code></td>
+<td>decimals with a fixed number of places, for money</td>
+</tr>
+<tr>
+<td><code>import "num/bigint" as big</code></td>
+<td>integers of any size</td>
+</tr>
+<tr>
+<td><code>import "coll/set" as set</code></td>
+<td>a set of any key-able value, as storage like <code>Map</code>; union, intersection, difference</td>
+</tr>
+<tr>
+<td><code>import "coll/heap" as heap</code></td>
+<td>a priority queue that is a value: a leftist heap, by <code>&lt;</code> or by an order given</td>
+</tr>
+<tr>
+<td><code>import "coll/deque" as dq</code></td>
+<td>a queue open at both ends that is a value; constant time on average at either</td>
+</tr>
+<tr>
+<td><code>import "db/oxidb"</code> and friends</td>
+<td>clients for OxiDB's engines</td>
+</tr>
+</tbody>
+</table>
+<p>Each module says at its head what it is for and how it is used, keeps its helpers <code>private</code>, and carries its own tests: <code>rill test lib/text/regex.rill</code> runs them.</p>
+<h3 id="documentation">Documentation</h3>
+<p>There is no doc-comment syntax. The comment a declaration has above it — the <code>#</code> lines just before a <code>type</code>, <code>trait</code>, <code>fn</code>, <code>machine</code> or <code>system</code> — is its documentation, and the block after a <code>module</code> line is the module's own, which is how every module in <code>lib/</code> was written before there was anything to read them. <strong><code>rill doc file.rill</code></strong> turns a file into Markdown: the module's head, its types with their constructors, its traits with their methods, its systems and machines with their diagrams, and its functions with the signatures the checker inferred, private ones left out; <code>rill doc lib -o docs/lib</code> does a folder, one page a module. A program's head comment is the program's, not its first type's, and its <code>main</code> and tests are listed rather than documented.</p>
+
+      <div class="prevnext">
+        <a class="prev" href="07-concurrency.html">← 7. Concurrency</a>
+        <a class="next" href="09-sockets.html">9. Sockets →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

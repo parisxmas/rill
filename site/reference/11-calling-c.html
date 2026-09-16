@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calling C — The Rill Language Reference</title>
+<meta name="description" content="A Rill function may have any name, C&#x27;s own included: fn read, fn bind, fn connect are the program&#x27;s, since no Rill function is a symbol anything outside the object can see — only export fn and main are — and the runtime&#x27;">
+<link rel="canonical" href="https://rill.baltavista.com/reference/11-calling-c.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/11-calling-c.html">
+<meta property="og:title" content="Calling C — The Rill Language Reference">
+<meta property="og:description" content="A Rill function may have any name, C&#x27;s own included: fn read, fn bind, fn connect are the program&#x27;s, since no Rill function is a symbol anything outside the object can see — only export fn and main are — and the runtime&#x27;">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Calling C — The Rill Language Reference">
+<meta name="twitter:description" content="A Rill function may have any name, C&#x27;s own included: fn read, fn bind, fn connect are the program&#x27;s, since no Rill function is a symbol anything outside the object can see — only export fn and main are — and the runtime&#x27;">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li class="current"><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#buffers">Buffers</a></li>
+        <li><a href="#callbacks">Callbacks</a></li>
+        <li><a href="#being-called-export-webassembly-and-shared-libraries">Being called: export, WebAssembly and shared libraries</a></li>
+        <li><a href="#assembly">Assembly</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 11</p>
+      <h1>Calling C</h1>
+<p>A Rill function may have any name, C's own included: <code>fn read</code>, <code>fn bind</code>, <code>fn connect</code> are the program's, since no Rill function is a symbol anything outside the object can see — only <code>export fn</code> and <code>main</code> are — and the runtime's calls to C reach C. The one name a program cannot give a function is one it also declares <code>extern</code>, which the checker refuses.</p>
+<p>An <code>extern</code> declaration names a C symbol and its types. The optional string is a library to link with; leave it out for anything already in the C runtime. A string starting with <code>-</code> is passed to the linker as written, and <code>framework:Name</code> links a macOS framework:</p>
+<pre><span class="k">extern</span> <span class="s">"-L/opt/homebrew/lib"</span> <span class="k">fn</span> <span class="f">glfwInit</span>() <span class="o">-&gt;</span> <span class="t">I32</span>   <span class="c"># where to search</span>
+<span class="k">extern</span> <span class="s">"glfw"</span> <span class="k">fn</span> <span class="f">glfwPollEvents</span>()                   <span class="c"># -lglfw</span>
+<span class="k">extern</span> <span class="s">"framework:OpenGL"</span> <span class="k">fn</span> <span class="f">glClear</span>(mask: <span class="t">U32</span>)     <span class="c"># -framework OpenGL</span></pre>
+<pre><span class="k">extern</span> <span class="s">"m"</span> <span class="k">fn</span> <span class="f">sqrt</span>(x: <span class="t">Float</span>) <span class="o">-&gt;</span> <span class="t">Float</span>
+<span class="k">extern</span> <span class="k">fn</span> <span class="f">getpid</span>() <span class="o">-&gt;</span> <span class="t">Int</span>
+<span class="k">extern</span> <span class="k">fn</span> <span class="f">strlen</span>(s: <span class="t">Ptr</span>) <span class="o">-&gt;</span> <span class="t">Int</span></pre>
+<p>Only shapes the C ABI carries may appear: <code>Int</code>, <code>Float</code>, <code>Bool</code>, <code>Ptr</code> and <code>Unit</code>. <code>Ptr</code> is an opaque C pointer that reference counting leaves alone — whatever produced it owns it.</p>
+<p><code>Int</code> and <code>Float</code> mean C's 64-bit forms, and most C libraries are not written in those. A foreign signature can name the exact width the symbol was compiled with — <code>I8</code>, <code>U8</code>, <code>I16</code>, <code>U16</code>, <code>I32</code>, <code>U32</code>, <code>I64</code>, <code>U64</code>, <code>F32</code>, <code>F64</code> — and the call narrows arguments on the way in and widens results on the way back. The Rill side is unaffected: an <code>I32</code> parameter still takes an ordinary <code>Int</code>, and an <code>F32</code> result still comes back as a <code>Float</code>.</p>
+<pre><span class="k">extern</span> <span class="s">"m"</span> <span class="k">fn</span> <span class="f">sqrtf</span>(x: <span class="t">F32</span>) <span class="o">-&gt;</span> <span class="t">F32</span>      <span class="c"># C `float`, not `double`</span>
+<span class="k">extern</span> <span class="k">fn</span> <span class="f">abs</span>(n: <span class="t">I32</span>) <span class="o">-&gt;</span> <span class="t">I32</span>            <span class="c"># C `int`, not a 64-bit one</span></pre>
+<p>One width has no number to name it: C's <code>size_t</code> is as wide as a pointer, which is 64 bits everywhere Rill links natively and 32 on <code>wasm32</code>. <code>USize</code> and <code>ISize</code> are that width, filled in by whatever is being built for, so one declaration is right on both:</p>
+<pre><span class="k">extern</span> <span class="k">fn</span> <span class="f">strlen</span>(s: <span class="t">Ptr</span>) <span class="o">-&gt;</span> <span class="t">USize</span>
+<span class="k">extern</span> <span class="k">fn</span> <span class="f">qsort</span>(base: <span class="t">Ptr</span>, n: <span class="t">USize</span>, size: <span class="t">USize</span>, cmp: <span class="t">Fn</span>(<span class="t">Ptr</span>, <span class="t">Ptr</span>) <span class="o">-&gt;</span> <span class="t">I32</span>) <span class="o">-&gt;</span> <span class="t">Unit</span></pre>
+<p>They are for signatures, not storage: <code>Buf</code> refuses them, because a buffer's layout is the program's to decide and this width is the target's.</p>
+<p>Getting this wrong is not a compile error but a silently wrong answer, and the float case is the sharp one: a <code>float</code> parameter handed a double reads the wrong half of the register. Width names are only spellable inside an <code>extern</code>.</p>
+<p>Raw buffers cover the other half of a C API — the array a library wants to read or fill. They are plain C memory outside the reference counter, so they are released with <code>free_ptr</code>, and the index is in <em>elements</em>, not bytes.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr>
+<td><code>alloc_bytes(n) -&gt; Ptr</code></td>
+<td><code>n</code> zeroed bytes, or null if <code>n &lt;= 0</code></td>
+</tr>
+<tr>
+<td><code>ptr_offset(p, bytes) -&gt; Ptr</code></td>
+<td>byte-level addressing, when a layout needs it</td>
+</tr>
+<tr>
+<td><code>poke_i8/i16/i32/i64(p, i, v)</code></td>
+<td>store an <code>Int</code>, narrowed to that width</td>
+</tr>
+<tr>
+<td><code>poke_f32/f64(p, i, v)</code></td>
+<td>store a <code>Float</code></td>
+</tr>
+<tr>
+<td><code>poke_ptr(p, i, q)</code> / <code>peek_ptr(p, i) -&gt; Ptr</code></td>
+<td>a pointer slot: <code>char**</code> in, a handle written by an out-parameter back</td>
+</tr>
+<tr>
+<td><code>peek_i8/i16/i32/i64(p, i) -&gt; Int</code></td>
+<td>read back, sign-extended</td>
+</tr>
+<tr>
+<td><code>peek_u8/u16/u32(p, i) -&gt; Int</code></td>
+<td>read back, zero-extended</td>
+</tr>
+<tr>
+<td><code>peek_f32/f64(p, i) -&gt; Float</code></td>
+<td>read back a float</td>
+</tr>
+</tbody>
+</table>
+<pre>v = <span class="f">alloc_bytes</span>(<span class="n">3</span> * <span class="n">4</span>)      <span class="c"># three 32-bit floats</span>
+<span class="f">poke_f32</span>(v, <span class="n">0</span>, <span class="n">1.5</span>)
+<span class="f">poke_f32</span>(v, <span class="n">1</span>, <span class="n">2.5</span>)
+<span class="f">draw</span>(v, <span class="n">3</span>)                  <span class="c"># an extern taking (Ptr, I32)</span>
+<span class="f">free_ptr</span>(v)</pre>
+<p>Nothing checks the bounds — a buffer is a length you keep track of yourself, exactly as in C.</p>
+<h3 id="buffers">Buffers</h3>
+<p>Raw pointers are how C is reached, but inside Rill the same memory is better had as a <code>Buf(w)</code>: a counted block of elements of one C width.</p>
+<pre>v = <span class="f">buf_f32</span>(<span class="n">3</span> * <span class="n">5</span>)          <span class="c"># fifteen 32-bit floats, zeroed</span>
+v[<span class="n">0</span>] = <span class="n">1.5</span>
+<span class="f">println</span>(v[<span class="n">0</span>])
+<span class="f">println</span>(<span class="f">buf_len</span>(v))
+<span class="f">draw</span>(v, <span class="n">3</span>)                  <span class="c"># an extern taking (Ptr, I32)</span></pre>
+<p><code>#v</code> is how many elements it has, <code>v[i]</code> and <code>v[i] = x</code> are one of them; <code>buf_get(v, i)</code> and <code>buf_set(v, i, x)</code> are the same two operations spelled out, and either may be written. Indexing binds tighter than every operator, so <code>v[i + 1] * 2</code> reads the way it looks, and <code>v[i] = x</code> may only appear as a statement — it is the one assignment the language has, and only to a buffer element.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr>
+<td><code>buf_i8</code> <code>buf_u8</code> <code>buf_i16</code> <code>buf_u16</code> <code>buf_i32</code> <code>buf_u32</code> <code>buf_int</code> <code>buf_f32</code> <code>buf_float</code> <code>buf_ptr</code></td>
+<td>one constructor per element width; the argument is a length in elements</td>
+</tr>
+<tr>
+<td><code>b[i]</code> / <code>b[i] = v</code> — or <code>buf_get(b, i)</code> / <code>buf_set(b, i, v)</code></td>
+<td>one element, bounds-checked</td>
+</tr>
+<tr>
+<td><code>#b</code> (or <code>buf_len(b)</code>)</td>
+<td>how many elements</td>
+</tr>
+<tr>
+<td><code>buf_copy(dst, to, src, from, n)</code></td>
+<td><code>n</code> elements of <code>src</code> from <code>from</code> into <code>dst</code> at <code>to</code>, overlapping or not, both bounds-checked</td>
+</tr>
+<tr>
+<td><code>buf_cmp(a, at, b, bt, n)</code></td>
+<td><code>n</code> elements of each as bytes: -1, 0 or 1, both bounds-checked</td>
+</tr>
+</tbody>
+</table>
+<p><code>buf_copy</code> and <code>buf_cmp</code> are <code>memmove</code> and <code>memcmp</code> with the question asked first: a length that came from somewhere it should not have — a header on a page that is not a header — stops at the check, with a message, rather than in the memory past the buffer. They cost the check and nothing else, and the check is nothing beside the copy; a program that reaches for <code>ptr_offset</code> and an <code>extern</code> <code>memmove</code> to move bytes between buffers has no reason to.</p>
+<p>Where a <code>Ptr</code> is wanted — a foreign parameter, a <code>peek</code>/<code>poke</code>, a Rill parameter annotated <code>Ptr</code> — a buffer written there <strong>is</strong> its first element's address (which is also what the value is underneath: the count and the length live in the sixteen bytes before the elements). This is C's own rule for an array, and it is the only place in the language where a value is not the type it was written as. Nothing about the buffer changes: it stays counted, stays the caller's, and a buffer built in the argument itself is released after the call rather than before, so the address is good for as long as the call is.</p>
+<pre>b = <span class="f">buf_u8</span>(<span class="n">8</span>)
+<span class="f">strlen</span>(b)                   <span class="c"># extern fn strlen(s: Ptr) -&gt; USize</span>
+<span class="f">from_cstr</span>(b)                <span class="c"># a builtin taking a Ptr</span>
+<span class="f">peek_u8</span>(b, <span class="n">1</span>)               <span class="c"># so are peek and poke</span></pre>
+<p>Three things follow from the width living in the type. Reading gives back the Rill type that width stands for, so <code>Buf(U8)</code> yields 200 where <code>Buf(I8)</code> yields -56 for the same byte. An index outside the buffer ends the program with the index and the length, rather than reading whatever was next in memory. A <code>for</code> loop that indexes a buffer by its own variable — <code>v[i]</code> for <code>i</code> in <code>lo..hi</code> — is tested once, before the loop, for <code>lo &gt;= 0</code> and <code>hi &lt;= #v</code>, and not again at any element; an out-of-range loop stops before it starts, naming the index it would have reached. And a buffer is <strong>reference counted like a string</strong> — it is released when the last reference goes, so there is no <code>free</code> to forget.</p>
+<p>The width is never inferred, since it is not a type variable: a function that takes a buffer says which one, <code>fn fill(v: Buf(F32), i) = ...</code>. This is also why a buffer should be held by a Rill binding rather than stashed in a raw <code>Ptr</code> slot, which would lose the count.</p>
+<p><code>examples/buffers.rill</code> shows all of it, and <code>examples/gl/scene.rill</code> fills one with the vertex data a GPU is handed. For a buffer read as a column — scanned in ranges and reduced — <code>lib/num/col.rill</code> has the aggregates written with their accumulators in lanes: <code>import "num/col" as c</code>, then <code>c.sum(v, lo, hi)</code>, <code>c.mean</code>, <code>c.variance</code>, <code>c.min_of</code>, <code>c.max_of</code>, <code>c.dot</code>. For arrays with a shape — matrices, vectors, the things NumPy does — <code>lib/num/grid.rill</code> lays a shape and strides over one such buffer: <code>import "num/grid" as g</code>, then <code>g.matmul</code>, <code>g.sum_axis</code>, <code>g.transpose</code> (a view, no copy) and the rest; <code>benchmarks/numpy/README.md</code> lists what it has and how it measures.</p>
+<h3 id="callbacks">Callbacks</h3>
+<p><code>Fn(...)</code> in a foreign signature is a C function pointer, and what may be passed for one is a top-level function named directly:</p>
+<pre><span class="k">extern</span> <span class="k">fn</span> <span class="f">signal</span>(sig: <span class="t">I32</span>, handler: <span class="t">Fn</span>(<span class="t">I32</span>)) <span class="o">-&gt;</span> <span class="t">Ptr</span>
+
+<span class="k">fn</span> <span class="f">on_signal</span>(n) = <span class="f">println</span>(<span class="s">"signal "</span> + <span class="f">int_to_str</span>(n))
+
+<span class="k">fn</span> <span class="f">main</span>() = <span class="f">signal</span>(<span class="n">30</span>, on_signal)</pre>
+<p>A callback that answers writes its result after an arrow, and the same narrowing runs in reverse on the way back out:</p>
+<pre><span class="k">extern</span> <span class="k">fn</span> <span class="f">qsort</span>(base: <span class="t">Ptr</span>, n: <span class="t">U64</span>, size: <span class="t">U64</span>, cmp: <span class="t">Fn</span>(<span class="t">Ptr</span>, <span class="t">Ptr</span>) <span class="o">-&gt;</span> <span class="t">I32</span>) <span class="o">-&gt;</span> <span class="t">Unit</span>
+
+<span class="k">fn</span> <span class="f">by_size</span>(a, b) = <span class="f">peek_i32</span>(b, <span class="n">0</span>) - <span class="f">peek_i32</span>(a, <span class="n">0</span>)</pre>
+<p>Without the arrow the callback hands nothing back, which is the shape most notification callbacks want. The result may be any type C can carry — a number, a <code>Bool</code> or a <code>Ptr</code> — but not a <code>Str</code> or anything else on the heap, which C would discard with nothing left to release it, and not another <code>Fn</code>.</p>
+<p>The compiler wraps the function in a C-ABI trampoline that widens C's arguments to Rill's, so the callback is written in ordinary types.</p>
+<p>A callback may also travel as an ordinary parameter, so a helper can wrap the registration rather than every call site repeating it:</p>
+<pre><span class="k">fn</span> <span class="f">sort_by</span>(b: <span class="t">Buf</span>(<span class="t">I32</span>), cmp) =
+  <span class="f">qsort</span>(b, <span class="f">buf_len</span>(b), <span class="n">4</span>, cmp)
+  b
+
+<span class="k">fn</span> <span class="f">main</span>() = <span class="f">sort_by</span>(nums, ascending)</pre>
+<p>What crosses is still a bare code pointer, so the callback has to be settled while compiling: the caller names it, and <code>sort_by</code> is emitted once per comparator it is called with, each copy with its own trampoline built in. A helper like this cannot itself be used as a value, since it exists in as many copies as it has callers. A callback must not block on a channel, since it runs on C's call stack rather than on its own.</p>
+<p>A <strong>lambda or closure</strong> has an environment, and a bare code pointer has nowhere to keep it. Most APIs that take a callback also take a pointer they hand back to it unread — <code>qsort_r</code>'s <code>arg</code>, <code>pthread_create</code>'s, a library's "user data" — and that is where it goes. The signature says so with <code>Env</code>: the parameter the pointer goes out by, and the slot of the callback's <code>Fn(...)</code> it comes back into.</p>
+<pre><span class="k">extern</span> <span class="k">fn</span> <span class="f">rill_sum_by</span>(n: <span class="t">I64</span>, f: <span class="t">Fn</span>(<span class="t">I64</span>, <span class="t">Env</span>) <span class="o">-&gt;</span> <span class="t">I64</span>, arg: <span class="t">Env</span>) <span class="o">-&gt;</span> <span class="t">I64</span>
+
+<span class="k">fn</span> <span class="f">main</span>() =
+  k = <span class="n">10</span>
+  <span class="f">println</span>(<span class="f">int_to_str</span>(<span class="f">rill_sum_by</span>(<span class="n">4</span>, \i <span class="o">-&gt;</span> i * k)))    <span class="c"># 60</span></pre>
+<p>The Rill call leaves the <code>Env</code> out — it is the compiler's to fill — and the callback is written in the types that remain, <code>(Int) -&gt; Int</code> here. What goes out is the address of a box holding the closure, code and environment both; what C calls is a trampoline made for the C signature, which unpacks the box and calls the closure the way every closure is called. The box, and the frame's hold on the closure, last the call: this is for a callback C uses <strong>during</strong> the call, as a comparator or a visitor is. A callback C keeps after the call returns — a handler registered once and called later — is still a named function, since nothing here can know how long C keeps it. A named function or a value chosen at run time may be passed for an <code>Env</code> callback too. An <code>extern</code> has one <code>Env</code> parameter and one callback carrying it, or neither.</p>
+<p><code>examples/callbacks.rill</code> has C calling back during <code>main</code>, after it has returned, and into a comparator that reaches C through such a helper. <code>examples/ffi_buffers.rill</code> exercises all of it, and <code>examples/gl/</code> drives OpenGL through nothing else: a window, shaders, vertex data and a spinning triangle, with no C written anywhere.</p>
+<p>A Rill <code>Str</code> is a counted heap object rather than a <code>char*</code>, so strings cross the boundary explicitly:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr>
+<td><code>to_cstr(s) -&gt; Ptr</code></td>
+<td>NUL-terminated copy; free it with <code>free_ptr</code></td>
+</tr>
+<tr>
+<td><code>from_cstr(p) -&gt; Str</code></td>
+<td>copies a C string back into a Rill one</td>
+</tr>
+<tr>
+<td><code>str_from_ptr(p, n) -&gt; Str</code></td>
+<td>the same by length rather than by terminator, for bytes</td>
+</tr>
+<tr>
+<td><code>free_ptr(p)</code></td>
+<td>frees what <code>to_cstr</code> (or C <code>malloc</code>) returned</td>
+</tr>
+<tr>
+<td><code>null_ptr()</code> / <code>is_null(p)</code></td>
+<td>for APIs that use null</td>
+</tr>
+</tbody>
+</table>
+<p><code>from_cstr</code> stops at the first zero, which is right for a C string and wrong for everything a library hands back by filling a buffer and returning a count. <code>str_from_ptr(p, n)</code> takes exactly <code>n</code> bytes, zeros included, which is what a <code>read</code>, a decompression or an <code>SSL_read</code> gives:</p>
+<pre>b = <span class="f">buf_u8</span>(<span class="n">16384</span>)
+n = <span class="t">SSL_read</span>(ssl, b, <span class="n">16384</span>)
+<span class="k">if</span> n &gt; <span class="n">0</span> <span class="k">then</span> <span class="f">str_from_ptr</span>(b, n) <span class="k">else</span> <span class="s">""</span></pre>
+<pre><span class="k">fn</span> <span class="f">env</span>(name) =
+  p = <span class="f">to_cstr</span>(name)
+  v = <span class="f">getenv</span>(p)
+  <span class="f">free_ptr</span>(p)
+  <span class="k">if</span> <span class="f">is_null</span>(v) <span class="k">then</span> <span class="s">"&lt;unset&gt;"</span> <span class="k">else</span> <span class="f">from_cstr</span>(v)</pre>
+<p>Two things to keep in mind: a wrong signature is a crash, not a type error — the compiler believes what you declare; and a C call that blocks holds the worker thread running it, since the scheduler cannot preempt foreign code — every other strand on that worker waits with it. A call that may wait — a read, a sleep, a name lookup — is declared <strong><code>extern blocking fn</code></strong>, and is then made on a helper thread while the strand is parked, the worker going on with the others; the answer comes back as if the call had been made here. What it costs is a hand-over each way, a few microseconds, which is why it is said per declaration and not assumed. A blocking call cannot take a callback, since the callback would run on the helper thread, where Rill code cannot; a program without strands makes the call itself.</p>
+<pre><span class="k">extern</span> <span class="k">blocking</span> <span class="k">fn</span> <span class="f">usleep</span>(us: <span class="t">U32</span>) <span class="o">-&gt;</span> <span class="t">I32</span>   <span class="c"># the other strands run meanwhile</span></pre>
+<h3 id="being-called-export-webassembly-and-shared-libraries">Being called: <code>export</code>, WebAssembly and shared libraries</h3>
+<p><code>extern</code> is Rill calling out. <code>export</code> is the other direction — a function the embedding host may call in:</p>
+<pre><span class="k">export</span> <span class="k">fn</span> <span class="f">frame</span>(t: <span class="t">Float</span>) =
+  ...</pre>
+<p>It means something where there is a host: a wasm module (<code>--target wasm32-wasip1</code>), or a shared library (<code>--shared</code>) that a C or Python program loads. A native executable has neither and refuses the word. Either way the module links as a <em>reactor</em>: it has no entry point of its own, it stays loaded, and the host drives it. <code>main</code> still runs — as <code>rill_init</code>, which the host calls once before anything else — and each <code>export fn</code> is a symbol under its own name.</p>
+<p>On wasm the boundary takes what wasm can pass: parameters must be <code>Int</code>, <code>Float</code>, <code>Bool</code> or <code>Ptr</code>, the return those or <code>Unit</code>, and the function must be concrete — an export is one entry point, not a generic family. Data wider than a scalar crosses through a <code>Buf</code>: build one, hand it to an import — where a <code>Ptr</code> is wanted a buffer is its address — and the host reads it straight out of the module's linear memory.</p>
+<p>A shared library's boundary is wider: a counted value — a data value, a buffer, a string, a map — crosses as a handle. One the host passes in is lent for the call and is the host's still when the call returns; one an export returns is the host's to keep, and for every such type the library also exports <code>rill_drop_&lt;Type&gt;(handle)</code> — <code>rill_drop_g_Grid</code> for a <code>Grid</code> imported as <code>g</code>, the module's dot made an underscore — for the host to let it go by. A buffer's handle is the address of its elements, so the host may read them straight through it while it holds the grid. <code>bindings/python/gridlib.rill</code> is a library of this kind over <code>lib/num/grid.rill</code>, and <code>bindings/python/grid</code> the <code>ctypes</code> package that makes it <code>import grid as g</code> in Python, NumPy's notation on Rill's loops. Strands need the scheduler a program's <code>main</code> runs and a library's host does not, so a library runs on one worker.</p>
+<p>On wasm an <code>extern fn</code> that no library satisfies becomes an <em>import</em> — a hole the host fills at instantiation. That is the whole FFI story in a browser: declare <code>extern fn gpu_draw(v: Ptr, n: Int)</code>, supply <code>env.gpu_draw</code> from JavaScript. <code>examples/webgpu/</code> renders through WebGPU exactly this way — the host owns the asynchronous device setup that a wasm module cannot await, Rill owns the frame.</p>
+<p>What a wasm build will not do is link a library by name: a module imports from its host rather than loading a shared object, so <code>extern "glfw"</code> is refused where it would otherwise fail obscurely at run time. <code>"m"</code> and <code>"c"</code> are the exception, and not as a courtesy — wasi-libc is a single archive with the maths already in it, so a program written against <code>-lm</code> on a Mac needs no second spelling for the browser. A C name that wasi genuinely lacks — <code>getpid</code>, <code>signal</code>, anything about processes or users — is a link error naming it, and a declaration whose width disagrees with the C is one too rather than a stub that traps mid-run.</p>
+<h3 id="assembly">Assembly</h3>
+<p>Some of what a machine can do has no C name. An <code>asm fn</code> is a run of instructions given the shape of a function: the same widths cross as for a C call, because the question is the same one — what fits in a register the way the machine expects to find it.</p>
+<pre><span class="k">asm</span> <span class="k">fn</span> <span class="f">cli</span>()                  = <span class="s">"cli"</span>
+<span class="k">asm</span> <span class="k">fn</span> <span class="f">read_cr3</span>() <span class="o">-&gt;</span> <span class="t">U64</span>      = <span class="s">"mov %cr3, $0"</span>  : <span class="s">"=r"</span>
+<span class="k">asm</span> <span class="k">fn</span> <span class="f">outb</span>(port: <span class="t">U16</span>, v: <span class="t">U8</span>) = <span class="s">"outb $1, $0"</span>   : <span class="s">"{dx},{al}"</span>
+<span class="k">asm</span> <span class="k">fn</span> <span class="f">barrier</span>()              = <span class="s">"dmb sy"</span>        : <span class="s">"~{memory}"</span></pre>
+<p>The template and the constraint string go to LLVM as written, the way <code>extern</code>'s library string goes to the linker as written: what the machine accepts is the machine's business, and a declaration is true of one architecture rather than of the language.</p>
+<p>Leaving the constraints off asks for the ordinary shape — <code>=r</code> for a result and <code>r</code> for each parameter, in order — which is what most instructions want. Writing them out is for a register the instruction names itself: <code>outb</code> reads <code>dx</code> and <code>al</code> and nothing else will do. <code>=</code> and <code>+</code> open an output, <code>~</code> a clobber, and anything else is an input; a string that does not describe the signature is refused with the line it is on, because LLVM's own answer to one is to abort the compiler.</p>
+<p>Every <code>asm fn</code> is emitted with side effects assumed. Two calls that look alike stay two calls, and one whose result nothing reads still runs: a device register read twice was meant twice, and <code>cli</code> is not there for its value. There is no way to ask for the other behaviour yet.</p>
+<p>A function written <em>in</em> assembly says <code>naked</code>, and then the instructions are the whole of it: no prologue saving what a caller expected saved, no epilogue returning anywhere. This is what an interrupt handler, a reset vector and a context switch are.</p>
+<pre><span class="k">naked</span> <span class="k">asm</span> <span class="k">fn</span> <span class="f">isr_timer</span>() = <span class="s">"push %rax\n  ...\n  pop %rax\n  iretq"</span>
+<span class="k">naked</span> <span class="k">asm</span> <span class="k">fn</span> <span class="f">_kstart</span>()   = <span class="s">"mov $0x1000, %rsp\n  call kmain\n  hlt"</span></pre>
+<p>It takes nothing, answers nothing and has no constraints, because there is no calling convention left to carry any of them — what enters it is an interrupt or a jump somebody else wrote. Nothing in Rill may call one, and the error says so. What a program can use is the address, and that is an ordinary instruction:</p>
+<pre><span class="k">asm</span> <span class="k">fn</span> <span class="f">isr_addr</span>() <span class="o">-&gt;</span> <span class="t">Ptr</span> = <span class="s">"leaq isr_timer(%rip), $0"</span> : <span class="s">"=r"</span></pre>
+<p>Inside a naked function <code>$</code> is the literal the assembler wants rather than an operand reference, so an immediate is written <code>$0x1000</code>, the way the manual has it.</p>
+<p>On wasm there is no such thing: a module is verified before it runs and has no place for a machine's own encoding, so an <code>asm fn</code> is refused when building for one.</p>
+
+      <div class="prevnext">
+        <a class="prev" href="10-files.html">← 10. Files</a>
+        <a class="next" href="12-built-in-functions.html">12. Built-in functions →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

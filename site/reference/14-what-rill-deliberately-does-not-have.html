@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What Rill deliberately does not have — The Rill Language Reference</title>
+<meta name="description" content="">
+<link rel="canonical" href="https://rill.baltavista.com/reference/14-what-rill-deliberately-does-not-have.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/14-what-rill-deliberately-does-not-have.html">
+<meta property="og:title" content="What Rill deliberately does not have — The Rill Language Reference">
+<meta property="og:description" content="">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="What Rill deliberately does not have — The Rill Language Reference">
+<meta name="twitter:description" content="">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li class="current"><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 14</p>
+      <h1>What Rill deliberately does not have</h1>
+<ul>
+<li><strong>Mutation.</strong> No mutable bindings, no mutable fields. State is threaded through arguments or channels. The exceptions are the two kinds of storage: a buffer element, <code>b[i] = v</code> (and <code>+=</code>, <code>-=</code>, <code>*=</code>, <code>/=</code>), and a map entry, <code>m[k] = v</code>. Neither is a binding that changes — what changes is the storage the name has always pointed at.</li>
+<li><strong>Exceptions.</strong> Errors are <code>Result</code> values, and <code>?</code> carries one out without the carrying being written.</li>
+<li><strong>Null.</strong> Absence is <code>Option</code>.</li>
+<li><strong>Implicit conversions.</strong> Numeric types never mix silently.</li>
+<li><strong>Field assignment.</strong> A field is read with <code>p.x</code> and never written: a record is a value, and a changed one is a new one built from the old.</li>
+<li><strong>Inheritance or subtyping.</strong> Composition and traits instead.</li>
+<li><strong>A garbage collector.</strong> Reference counting, decided at compile time.</li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="13-the-toolchain.html">← 13. The toolchain</a>
+        <a class="next" href="index.html">Contents →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sockets — The Rill Language Reference</title>
+<meta name="description" content="TCP, with the scheduler doing the waiting.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/09-sockets.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/09-sockets.html">
+<meta property="og:title" content="Sockets — The Rill Language Reference">
+<meta property="og:description" content="TCP, with the scheduler doing the waiting.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Sockets — The Rill Language Reference">
+<meta name="twitter:description" content="TCP, with the scheduler doing the waiting.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li class="current"><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 9</p>
+      <h1>Sockets</h1>
+<p>TCP, with the scheduler doing the waiting. A strand blocked on a socket parks and its descriptor goes to the operating system's poller, so a worker is never held up by a connection that has nothing to say.</p>
+<pre><span class="k">fn</span> <span class="f">handle</span>(conn) =
+  msg = <span class="f">sock_read</span>(conn)
+  <span class="k">if</span> <span class="f">str_len</span>(msg) == <span class="n">0</span> <span class="k">then</span> <span class="f">sock_close</span>(conn) <span class="k">else</span> <span class="m">reply</span>(conn, msg)
+
+<span class="k">fn</span> <span class="m">reply</span>(conn, msg) =
+  <span class="f">sock_write</span>(conn, <span class="s">"echo: "</span> + msg)
+  <span class="f">handle</span>(conn)
+
+<span class="k">fn</span> <span class="f">serve</span>(server) =
+  conn = <span class="f">tcp_accept</span>(server)
+  <span class="k">spawn</span> <span class="f">handle</span>(conn)
+  <span class="f">serve</span>(server)</pre>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr>
+<td><code>tcp_listen(port) -&gt; Int</code></td>
+<td>listening socket, or -1</td>
+</tr>
+<tr>
+<td><code>tcp_accept(server) -&gt; Int</code></td>
+<td>next connection, parking until one arrives</td>
+</tr>
+<tr>
+<td><code>tcp_listen_at(ipv4, port) -&gt; Int</code></td>
+<td>the same on one address — <code>"127.0.0.1"</code> for this machine alone, which a tool that runs programs on request should be</td>
+</tr>
+<tr>
+<td><code>tcp_connect(ipv4, port) -&gt; Int</code></td>
+<td>client socket, or -1</td>
+</tr>
+<tr>
+<td><code>sock_read(fd) -&gt; Str</code></td>
+<td>whatever has arrived; <code>""</code> means the peer closed</td>
+</tr>
+<tr>
+<td><code>sock_wait(fd, ms) -&gt; Bool</code></td>
+<td>wait for something to read, or give up after <code>ms</code></td>
+</tr>
+<tr>
+<td><code>sock_write(fd, s) -&gt; Int</code></td>
+<td>writes all of it, parking as needed</td>
+</tr>
+<tr>
+<td><code>sock_peer(fd) -&gt; Int</code></td>
+<td>the address at the far end, packed into one number</td>
+</tr>
+<tr>
+<td><code>sock_port(fd) -&gt; Int</code></td>
+<td>the port this end is on, which is what a program asks after <code>listen_on(0)</code> — the kernel picks a free one and only it knows the number</td>
+</tr>
+<tr>
+<td><code>sock_nodelay(fd) -&gt; Int</code></td>
+<td>Nagle off; 1 if the kernel took it</td>
+</tr>
+<tr>
+<td><code>sock_buffered(fd)</code></td>
+<td>give the socket a 64 KB write buffer: <code>sock_write</code> queues, and the queue goes out when it fills, on <code>sock_flush</code>, when the strand waits, and on <code>sock_close</code></td>
+</tr>
+<tr>
+<td><code>sock_flush(fd) -&gt; Int</code></td>
+<td>write out what is queued; how many bytes went, or -1</td>
+</tr>
+<tr>
+<td><code>sock_shutdown(fd) -&gt; Int</code></td>
+<td>end the connection without closing the descriptor — the only way one strand gets another out of a read</td>
+</tr>
+<tr>
+<td><code>sock_close(fd)</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>The prelude wraps the four that can fail: <code>listen_on</code>, <code>listen_at</code>, <code>accept_on</code> and <code>connect_to</code> return <code>Result</code>. Addresses are dotted-quad IPv4; a name is resolved by <code>net/dns</code>, whose lookup is a <code>blocking</code> extern, so the strand parks for it and no worker is held. TLS is <code>web/tls</code>, over the same sockets through OpenSSL, with <code>read</code> and <code>write</code> of the same shape.</p>
+<p><code>sock_wait</code> is how a connection gets a deadline. A read has none — a peer that opens a socket and then says nothing holds a strand and a descriptor for as long as it likes, and there is no shortage of people who will open several thousand of those. Closing the socket from another strand is not the answer: the reader is parked on that descriptor inside the poller, closing it from elsewhere does not wake it, and the number can be handed to the next connection while the old registration is still armed.</p>
+<pre><span class="k">fn</span> <span class="f">greet</span>(conn) =
+  <span class="k">if</span> <span class="f">sock_wait</span>(conn, <span class="n">5000</span>) <span class="k">then</span> <span class="f">handshake</span>(conn, <span class="f">sock_read</span>(conn)) <span class="k">else</span> <span class="f">sock_close</span>(conn)</pre>
+<p>Underneath it the descriptor and a deadline are armed together and whichever arrives first wakes the strand; a peek at the socket then says which it was.</p>
+<p><code>sock_shutdown</code> is the other half of that, for the case a deadline cannot answer: one strand deciding that another strand's connection is over. Closing the descriptor is what does not work, for the reason above. Shutting down acts on the <em>connection</em> rather than on the descriptor, so the number stays this program's until it closes it, and the socket becomes readable-at-end-of-file at once — which is a readiness event, so the poller wakes the parked strand and its <code>sock_read</code> answers <code>""</code>. The reader closes the descriptor itself, on its own strand, where that has always been safe. A server dropping every connection on the way down now has something to call.</p>
+<p><code>sock_nodelay</code> is for a server that sends small messages on a clock. Nagle's algorithm holds a small segment until the previous one has been acknowledged, which is the right trade for a file being copied and the wrong one the moment the clock is faster than the round trip: every message then waits on the one before it, and the wait is the difference between the two. It is a call rather than a default because it is a real trade — a program that writes in small pieces and does not care when they land is better off leaving it on.</p>
+<pre><span class="k">fn</span> <span class="f">serve</span>(conn) =
+  <span class="f">sock_nodelay</span>(conn)
+  <span class="f">greet</span>(conn)</pre>
+<p><code>sock_buffered</code> is the other half of that trade, for a program that writes many small pieces before it waits for anything: a reply built from a dozen <code>sock_write</code>s is a dozen system calls, and with a buffer it is one. The buffer never holds anything back while the program is waiting — a read, a <code>recv</code>, a <code>sleep_ms</code>, any park writes every pending buffer first — so a request-and-reply loop behaves exactly as before, and gains nothing; the gain is on the side that streams. Buffering is per socket and opt-in (nothing changes for a socket that has not asked), and a <code>--parallel</code> build with several workers writes straight through, as the buffer is one worker's. <code>sock_flush</code> is for the moment a program wants the bytes gone without waiting for anything itself.</p>
+<p>Everything above TCP is ordinary Rill: <code>lib/web/http.rill</code> is an HTTP/1.1 server in about a hundred lines — request parsing, routing, responses, and keep-alive — and it answers <code>curl</code>. Open the listening socket before spawning the accept loop, or the first client can arrive before the socket exists.</p>
+<p>That server outruns Go's <code>net/http</code> on the same one-route service: 214k req/s against 198k with keep-alive, in a 52 KB binary and 7× less memory (<code>benchmarks/http/run.sh</code>).</p>
+
+      <div class="prevnext">
+        <a class="prev" href="08-the-prelude.html">← 8. The prelude</a>
+        <a class="next" href="10-files.html">10. Files →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

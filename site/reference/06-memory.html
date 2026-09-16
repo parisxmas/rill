@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory — The Rill Language Reference</title>
+<meta name="description" content="Rill has no garbage collector.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/06-memory.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/06-memory.html">
+<meta property="og:title" content="Memory — The Rill Language Reference">
+<meta property="og:description" content="Rill has no garbage collector.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Memory — The Rill Language Reference">
+<meta name="twitter:description" content="Rill has no garbage collector.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li class="current"><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#list-or-buf">List or Buf</a></li>
+        <li><a href="#maps">Maps</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 6</p>
+      <h1>Memory</h1>
+<p>Rill has no garbage collector. The compiler inserts reference-count operations following ownership rules (Perceus-style), so memory is freed the moment the last reference dies — deterministically, with no pauses. Nullary constructors (<code>Nil</code>, <code>None</code>) are static singletons and never allocate; small objects come from a pooled allocator.</p>
+<p>When a <code>match</code> takes a box apart and nothing left can reach it by name, the next constructor of exactly that shape is built <strong>in that box</strong> rather than in a fresh one — so <code>map</code>, <code>filter</code>, <code>reverse</code> and <code>split</code> walk a list without allocating anything, writing each link over the link they read it from.</p>
+<p>A type with one constructor and nothing but numbers and booleans in it — a pair, a point, a body with seven coordinates — is not a box at all: it lives in registers, passed and returned by value, with no count and no allocation. <code>(q, r) = divmod(a, b)</code> costs what returning two numbers costs in C. Such a value is boxed only when it is put into a map or sent down a channel, which store words, and read back out on the other side.</p>
+<p>A pipeline over a range — <code>range(1, n) |&gt; filter(p) |&gt; map(f) |&gt; sum</code>, and <code>len</code> and <code>fold</code> the same way — is generated as one loop with no list in it, when the functions are written in place as lambdas and the elements are numbers or booleans. The prelude's <code>map</code> and <code>filter</code> are what is recognized; a program that defines its own gets what it wrote.</p>
+<p>A binding whose last use is a call is handed to the call rather than copied into it — the reference goes with the argument, no count taken and none given back — when the call is on the statement's unconditional path and the name is not spoken again. And a function may ask what that leaves it holding: <code>unique(x)</code> is true when this frame holds the only reference to <code>x</code>. The two together are what lets an operation write its answer into an operand's own storage when the operand was a temporary: <code>lib/num/grid.rill</code> makes <code>a * 2.0 + 1.0</code> one grid and not two by asking <code>unique</code> of what it was given. A value that is asked about is passed owned, so a caller still using it keeps a reference of its own and the answer is <code>false</code>; a compile-time constant is never unique; a value with no count — a flat record, a number — cannot be asked.</p>
+<p>Reference counting cannot let go of a <strong>ring</strong> — a value that, through what it holds, holds itself — and a program of immutable values can make one in exactly one way: a value is built from what exists before it, so only storage can come to hold what holds it. <code>m[k] = v</code> where <code>v</code> holds <code>m</code> — a closure over <code>m</code>, a record with <code>m</code> in it — is refused where it is written, naming <code>m</code>; so is a channel sent a value that holds it. A ring made through two maps, each holding what holds the other, is not seen at compile time; it is what the report below is for.</p>
+<p>Run any program with <code>RILL_DEBUG_ALLOC=1</code> to have the runtime print the number of live allocations at exit. Built with <code>--parallel</code> and run with <code>RILL_ALLOC_CHECK=1</code> as well, it says which functions made the blocks that were never let go — <code>3000 block(s) made in make</code> — which is where a ring was closed.</p>
+<p>Which of these rules fired where is not visible in the source, and does not have to be guessed: <strong><code>rill explain file.rill</code></strong> is the code generator's own account, written down as it generates, for the file's own functions.</p>
+<pre><span class="k">fn</span> <span class="f">total</span>(xs, acc)   <span class="c"># line 6</span>
+  `xs` is borrowed: never kept or given away here, so the caller&#x27;s reference is enough
+
+<span class="k">fn</span> <span class="f">main</span>()   <span class="c"># line 15</span>
+  line <span class="n">16</span>: `<span class="t">Cons</span>(..)` allocates a box <span class="k">with</span> <span class="n">2</span> <span class="f">field</span>(s)
+  line <span class="n">17</span>: `xs` is retained <span class="k">for</span> the call: it is spoken again later, or this call is not on the statement&#x27;s own straight path
+  line <span class="n">19</span>: `<span class="t">P</span>(..)` is a flat value: <span class="k">in</span> registers, no box and no count
+  line <span class="n">22</span>: this pipeline is one loop: no list is built</pre>
+<p>It says which parameters are borrowed and which owned, which constructor calls reuse the box a match took apart and which allocate, which bindings are handed to a call and which retained, which pipelines became loops, and what each closure holds. A number that came out slower than expected is usually a retain where a hand-over was meant, and the report says which binding and why.</p>
+<h3 id="list-or-buf"><code>List</code> or <code>Buf</code></h3>
+<p><code>List(a)</code> is a cons list: <code>Cons</code> in front is free, and everything else is a walk. Building one in order means accumulating it backwards and turning it round, which the prelude does for you and which costs a second pass — the reuse above makes it allocate nothing, but it is still a pass.</p>
+<p><code>Buf(w)</code> is storage: a counted, mutable, bounds-checked array of a fixed width, indexed in constant time and appended to by keeping your own length.</p>
+<p>Reach for <code>Buf</code> when the program is really building an array — a growing sequence read by index, or anything a C version would <code>realloc</code>. Reach for <code>List</code> when the program is really consing: recursion over a structure, a stack, a queue of work. The JSON parser in <code>benchmarks/tokens/</code> is the honest example of the difference: it builds arrays as lists, and that one choice is half of what it still gives away to the C it is measured against.</p>
+<h3 id="maps">Maps</h3>
+<p><code>Map(k, v)</code> is a hash table, and the other thing in the language that is storage rather than a value. It is written like a buffer and read like an <code>Option</code>:</p>
+<pre>counts = <span class="f">map_new</span>()
+counts[<span class="s">"cat"</span>] = <span class="n">2</span>            <span class="c"># insert, or replace what was there</span>
+counts[<span class="s">"cat"</span>]                <span class="c"># Some(2)</span>
+counts[<span class="s">"dog"</span>]                <span class="c"># None — the key may not be there, and that is</span>
+                             <span class="c"># an Option here as it is everywhere else</span>
+<span class="c">#counts                      # 1 — entries, not slots</span></pre>
+<p>Both type arguments are inferred; unlike a buffer's width they are ordinary types, so nothing has to be annotated. Anything with structural equality may be a key — a number, a string, a tuple, a data type, nested as deep as you like — and the compiler works out how to hash it from the type, exactly as it works out how to print it. A function or a channel cannot be a key, and says so where the key is written.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr>
+<td><code>map_new()</code></td>
+<td>an empty table</td>
+</tr>
+<tr>
+<td><code>m[k] = v</code> (or <code>map_set(m, k, v)</code>)</td>
+<td>insert or replace</td>
+</tr>
+<tr>
+<td><code>m[k]</code> (or <code>map_get(m, k)</code>)</td>
+<td><code>Some(v)</code> or <code>None</code></td>
+</tr>
+<tr>
+<td><code>map_or(m, k, d)</code></td>
+<td>the value or a default, without the <code>Option</code></td>
+</tr>
+<tr>
+<td><code>map_has(m, k)</code></td>
+<td>whether the key is there</td>
+</tr>
+<tr>
+<td><code>map_del(m, k)</code></td>
+<td>remove it, saying whether there was anything to remove</td>
+</tr>
+<tr>
+<td><code>#m</code> (or <code>map_len(m)</code>)</td>
+<td>how many entries</td>
+</tr>
+<tr>
+<td><code>map_clear(m)</code></td>
+<td>empty it, keeping the room it has</td>
+</tr>
+<tr>
+<td><code>map_keys(m)</code> <code>map_values(m)</code> <code>map_items(m)</code></td>
+<td>everything in it, as a list</td>
+</tr>
+<tr>
+<td><code>map_of(items)</code></td>
+<td>a table from a list of <code>(key, value)</code> pairs</td>
+</tr>
+</tbody>
+</table>
+<p>A map is reference counted like a string, and what it holds is released with it: nothing frees a table, and nothing leaks when the last reference goes. A table crosses a channel like any other value, and — being storage, with nothing locking it — should be one strand's at a time on a <code>--parallel</code> build, exactly as a buffer should.</p>
+<p>Three things are worth knowing. <strong>Order is the table's</strong>: <code>map_keys</code> and its two siblings hand back entries in whatever order the hashes put them in, which is stable within a run and nothing to depend on across one — a program that needs an order asks for the keys it wants, in the order it wants them. <strong><code>map_or</code> allocates nothing</strong> where <code>unwrap_or(m[k], 0)</code> builds a <code>Some</code> to take apart again, which a loop doing it a million times can feel. And <strong>a table is storage</strong>, so <code>println(m)</code> and <code>m == n</code> are refused the way they are for a buffer; <code>map_items(m)</code> is the same table as a value, and prints and compares like one.</p>
+<p>The one place a type has to be said out loud is a read whose base is otherwise unknown: <code>fn get(m) = m[1]</code> settles <code>m</code> as a string, because that is what <code>[]</code> has always meant on an unannotated base. Write <code>fn get(m: Map(Int, Str)) = m[1]</code>, or use <code>map_get(m, 1)</code>, which needs nothing. A <em>write</em> has no such ambiguity — a buffer would have been annotated and a string is not storage — so <code>fn put(m, k, v) = m[k] = v</code> is a map function without being told.</p>
+<p>Reach for a <code>Map</code> when the program is really looking things up by name, and for a <code>List</code> or a <code>Buf</code> when it is walking or indexing. Lookup is one hash and a short probe: a million <code>Int</code> keys go in in about 26 ms and come back out in about 22 on an M4, against 61 and 23 for Go's own map, and peak at 73 MB against Go's 85.</p>
+<p>An entry costs seventeen bytes. One is a <strong>control byte</strong> — whether the slot holds anything, and if it does, seven bits of the key's hash; the other sixteen are the key and the value, side by side. A probe walks the control bytes, which for two million slots is two megabytes and stays in cache while the slots themselves cannot, and touches a slot once, for the one key it believes it has found. Keeping the whole hash beside the key would answer the same question and cost eight bytes an entry to do it; the price of not keeping it is that growing hashes every key again, which is about a tenth of the time it takes to fill a table. The table is kept under three quarters full, counting deleted slots, and grown by doubling.</p>
+<hr />
+
+      <div class="prevnext">
+        <a class="prev" href="05-traits.html">← 5. Traits</a>
+        <a class="next" href="07-concurrency.html">7. Concurrency →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

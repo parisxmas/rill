@@ -18,6 +18,14 @@ regression that is not there, or hide one that is.
 
 ## Time
 
+Rill 0.13.0, 2026-09-16, the release the downloads are: fib 15.0 ms
+(go 20.9, c# 21.3, ocaml 22.0), trees 16.3 (55.1, 46.5, 57.3), ring 12.7
+(94.4, 150.1, 64.8), lcg 121.0 (264.6, 175.8, 284.2); RSS the same as
+below except `ring`, 64.7 MB, up from 53.5, and binaries 66–83 KB, up
+from 32–34 — both since the crash reporter and its per-function table
+landed, neither yet looked into. The table below is the 2026-09-05 run,
+kept for the history.
+
 Re-measured 2026-09-05 evening, all four languages in the same run, after the
 day's compiler work (see *Against C* below). The machine was busier than on
 earlier passes — every language's absolute number is higher than the tables

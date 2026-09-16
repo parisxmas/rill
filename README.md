@@ -137,6 +137,7 @@ cargo test                    # 110 tests: unit, plus end-to-end compile-and-run
 ./target/release/rill fmt examples/*.rill      # --check for CI, --stdout to preview
 ./target/release/rill build main.rill --debug     # no optimization, DWARF line info for lldb
 ./target/release/rill build main.rill --parallel  # then RILL_THREADS=8 ./main
+./target/release/rill run untrusted.rill --sandbox  # refuses files, sockets, foreign code, raw memory
 ```
 
 ### In an editor
@@ -183,7 +184,14 @@ compiler for the page:
 
 ```sh
 rill run editors/web/server.rill        # http://127.0.0.1:8765, this machine alone, the current directory as root
+rill run editors/web/server.rill -- --host 0.0.0.0 --root ~/models   # for everyone: programs run sandboxed
+rill run editors/web/server.rill -- --host 0.0.0.0 --allow files,net  # ... allowed these two
 ```
+
+Opened to the network, the server runs every scenario in the compiler's
+sandbox — nothing past the process unless `--allow` names it — and the
+check shows the refusals on the page before a run; `--allow all` trusts
+whoever can reach it, and `--sandbox` puts the sandbox on at home too.
 
 ## Examples
 

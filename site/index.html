@@ -4,15 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rill — a functional language that compiles to small native binaries</title>
-<meta name="description" content="Rill is a strict, statically typed functional language with ML's types and Go's concurrency, compiled to native code with no garbage collector and no runtime. Hello world is 33 KB.">
+<meta name="description" content="Rill is a strict, statically typed functional language with ML's types and Go's concurrency, compiled to native code with no garbage collector and no runtime, and SDL's state machines drawn and run in a browser editor. Hello world is 51 KB.">
 <link rel="canonical" href="https://rill.baltavista.com/">
 
 <!-- Open Graph / Twitter: what a pasted link turns into -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/">
-<meta property="og:title" content="Rill — a functional language that ships 33 KB">
-<meta property="og:description" content="ML's types and Go's concurrency, compiled straight to native code. No virtual machine, no garbage collector, no runtime to install.">
+<meta property="og:title" content="Rill — a functional language that ships 51 KB">
+<meta property="og:description" content="ML's types, Go's concurrency and SDL's state machines, compiled straight to native code. No virtual machine, no garbage collector, no runtime to install.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
@@ -20,8 +20,8 @@
 <meta property="og:image:alt" content="Rill, beside an 1832 engraving of a common kingfisher">
 <meta property="og:locale" content="en_GB">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Rill — a functional language that ships 33 KB">
-<meta name="twitter:description" content="ML's types and Go's concurrency, compiled straight to native code. No VM, no garbage collector, no runtime.">
+<meta name="twitter:title" content="Rill — a functional language that ships 51 KB">
+<meta name="twitter:description" content="ML's types, Go's concurrency and SDL's state machines, compiled straight to native code. No VM, no garbage collector, no runtime.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <meta name="twitter:image:alt" content="Rill, beside an 1832 engraving of a common kingfisher">
 <meta name="theme-color" content="#0E7C86">
@@ -58,7 +58,8 @@ code{font-family:var(--mono);font-size:.92em}
 .bar{display:flex;align-items:baseline;gap:18px;padding:18px 0;font-family:var(--mono);font-size:13px}
 .bar .name{font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);border:0}
 .bar .ver{color:var(--muted)}
-.bar nav{margin-left:auto;display:flex;gap:20px}
+.bar nav{margin-left:auto;display:flex;gap:13px;flex-wrap:wrap;justify-content:flex-end;font-size:12.5px}
+.bar nav a{white-space:nowrap}
 .bar nav a{color:var(--muted);border:0}
 .bar nav a:hover{color:var(--teal)}
 
@@ -66,7 +67,7 @@ code{font-family:var(--mono);font-size:.92em}
 .hero{display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:center;padding:56px 0 40px}
 h1{
   font-family:var(--mono); font-weight:700; letter-spacing:-.035em;
-  font-size:clamp(38px,6.2vw,62px); line-height:1.04; margin:0 0 22px;
+  font-size:clamp(32px,4vw,42px); line-height:1.08; margin:0 0 22px;
 }
 h1 .dim{color:var(--muted);font-weight:400}
 h1 .nb{white-space:nowrap}
@@ -141,6 +142,10 @@ td,th{font-variant-numeric:tabular-nums}
 .no li b{font-family:var(--mono);font-size:14px;font-weight:700}
 .no li span{color:var(--muted);display:block;font-size:14px;line-height:1.5}
 
+/* ---------- what's changed ---------- */
+.since{margin:0 0 6px;padding-left:1.2em;font-size:15px}
+.since li{margin:3px 0;break-inside:avoid}
+
 /* ---------- book ---------- */
 .book{display:grid;grid-template-columns:auto 1fr;gap:30px;align-items:start}
 .chip{display:inline-block;font-family:var(--mono);font-size:12px;padding:8px 14px;
@@ -170,26 +175,35 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
 <div class="wrap">
   <div class="bar">
     <a href="/" class="name">Rill</a>
-    <span class="ver">v0.2</span>
+    <span class="ver">v0.13</span>
     <nav>
       <a href="#look">The language</a>
+      <a href="#models">Models</a>
       <a href="#numbers">Numbers</a>
       <a href="#missing">What it lacks</a>
       <a href="#book">The book</a>
-      <a href="/art-vandal.html">The game</a>
+      <a href="/reference/">Reference</a>
+      <a href="#changed">What's changed</a>
+      <a href="#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="#made">Made with Rill</a>
     </nav>
   </div>
 
   <!-- ================= hero ================= -->
   <div class="hero">
     <div>
-      <h1>A functional language<br><span class="dim">that ships</span>&nbsp;<span class="nb">33&nbsp;KB.</span></h1>
-      <p class="lede">Rill has ML's types and Go's concurrency, compiled straight to
-      native code. No virtual machine, no garbage collector, no runtime to install.</p>
+      <h1>A functional language<br><span class="nb"><span class="dim">that ships</span>&nbsp;51&nbsp;KB.</span></h1>
+      <p class="lede">Rill has ML's types, Go's concurrency and SDL's state machines,
+      compiled straight to native code. No virtual machine, no garbage collector, no
+      runtime to install.</p>
       <p class="sub">Type inference, algebraic data types, exhaustive pattern matching,
-      lightweight threads over typed channels — and the compiler decides where every
-      allocation is freed, so nothing pauses.</p>
+      lightweight threads over typed channels, processes with mailboxes drawn as the
+      telephone exchanges drew them — and the compiler decides where every allocation
+      is freed, so nothing pauses.</p>
       <a class="chip" href="#look">See the language</a>
+      <a class="chip" href="/reference/">The reference</a>
+      <a class="chip" href="https://rillsdl.baltavista.com/">Try the model editor</a>
       <a class="chip" href="#book">Read the book</a>
     </div>
     <div class="art">
@@ -202,10 +216,10 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
   <!-- ================= the signature: real-scale size ruler ================= -->
   <div class="ruler">
     <h2>Hello world, drawn to scale</h2>
-    <p class="note">The same program, compiled. Bars are the true ratio — not adjusted to fit.</p>
+    <p class="note">The same program, compiled. Bars are the true ratio — not adjusted to fit. The 51 KB includes the crash reporter: a fault names the function and the line.</p>
     <div class="rows" id="rows">
       <div class="row me"><span class="lang">Rill</span>
-        <span class="track"><span class="barfill tiny" data-w="1.6"></span><span class="val">33 KB</span></span></div>
+        <span class="track"><span class="barfill tiny" data-w="2.4"></span><span class="val">51 KB</span></span></div>
       <div class="row"><span class="lang">OCaml</span>
         <span class="track"><span class="barfill" data-w="48"></span><span class="val">~1 MB</span></span></div>
       <div class="row"><span class="lang">Go</span>
@@ -216,8 +230,10 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
   <!-- ================= the language ================= -->
   <section id="look">
     <h2 class="sec">The language</h2>
-    <p class="sec-lede">Nine constructs, and no others. Everything below is the whole
-    of the syntax.</p>
+    <p class="sec-lede">A small language, read in an afternoon. What follows is most of
+    the syntax; traits, records, machines and a few conveniences are the rest, and
+    <a href="/reference/">the reference</a> has all of it, chapter by chapter, with
+    the programs that show each construct.</p>
 
     <h3>Data, and taking it apart</h3>
     <p>A type is a list of the shapes a value can have. <code>match</code> tests the
@@ -244,8 +260,9 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
     <div class="two">
       <div>
         <h3>Loops are recursion</h3>
-        <p>There is no <code>for</code> and no <code>while</code>. A call in tail
-        position compiles to a jump, so this runs in constant stack at any size.</p>
+        <p>A call in tail position compiles to a jump, so this runs in constant stack
+        at any size. <code>for x in xs</code> and <code>while c with (acc) = init</code>
+        exist for the reader, and are this underneath.</p>
         <pre><span class="k">fn</span> sum_to(n) = go(n, 0)
 
 <span class="k">fn</span> go(i, acc) =
@@ -268,7 +285,9 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
     <h3>Concurrency: strands</h3>
     <p>Many lightweight threads over typed channels, taken from Go. One of them is a
     <b>strand</b> — a strand of a rope, of which a program is many. A hundred thousand
-    of them cost about 56 MB and start in microseconds.</p>
+    of them cost about 65 MB and start in microseconds; with <code>--parallel</code>
+    they spread across cores, and the compiler refuses a program in which two of them
+    could write the same storage.</p>
     <pre><span class="k">fn</span> worker(jobs, results) =
   n = recv(jobs)
   send(results, n * n)
@@ -285,11 +304,52 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
     <h3>No collector</h3>
     <p>The compiler works out where each value's last use is and inserts the release
     there, following ownership rules. Nothing runs periodically; a value is freed at
-    the instruction after it dies. Set one variable and the runtime tells you what was
-    still alive at exit:</p>
+    the instruction after it dies, and a box that dies where a new one is made is
+    reused in place. A reference ring — the one thing counting cannot free — is
+    refused at compile time, where it is written. Set one variable and the runtime
+    tells you what was still alive at exit:</p>
     <pre class="out">$ RILL_DEBUG_ALLOC=1 ./program
 100000
 live allocations: 0</pre>
+  </section>
+
+  <!-- ================= models ================= -->
+  <section id="models">
+    <h2 class="sec">Models</h2>
+    <p class="sec-lede">A <code>machine</code> is a process in the sense the telephone
+    exchanges gave the word — a state machine with a mailbox, one strand, one signal at
+    a time — and a <code>system</code> is the block diagram between the kinds of
+    machine and the environment, which the compiler checks against the code.</p>
+    <pre><span class="k">system</span> exchange
+  env -&gt; line: OffHook, Digit, OnHook, Answer, Report
+  line -&gt; env: Status
+  line &lt;-&gt; line: Ring, Answer, OnHook
+
+<span class="k">machine</span> line(me: <span class="t">Chan</span>(<span class="t">Mail</span>(<span class="t">Signal</span>)), log: <span class="t">Chan</span>(<span class="t">Str</span>))
+  <span class="k">state</span> <span class="t">Idle</span>
+    <span class="t">OffHook</span> -&gt; <span class="t">Dialling</span>(<span class="t">Nil</span>)
+    <span class="t">Ring</span> -&gt; <span class="t">Ringing</span>(sender)
+  <span class="k">state</span> <span class="t">Dialling</span>(digits)
+    <span class="t">Digit</span>(n) <span class="k">if</span> n &gt;= 0 -&gt; <span class="t">Dialling</span>(<span class="t">Cons</span>(n, digits))
+    <span class="k">after</span> 50 -&gt;
+      send(log, <span class="s">"gave up dialling"</span>)
+      <span class="t">Idle</span>
+  <span class="k">state</span> <span class="t">Ringing</span>(caller)
+    <span class="t">Answer</span> -&gt;
+      output(caller, <span class="t">Answer</span>)
+      <span class="t">Talking</span>(caller)</pre>
+    <p>Timers, <code>save</code>, <code>priority</code>, procedures with states of
+    their own, and a signal no arm names is consumed and the state kept — the rules
+    SDL had. A run traced with <code>RILL_TRACE=1</code> is a sequence chart
+    (<code>rill msc</code>); on the virtual clock a night of retransmissions takes no
+    time; <code>rill diagram</code> draws the system and each machine in SDL's own
+    symbols; and a signal a machine sends that no route carries is a compile error
+    naming both.</p>
+    <p>The editor at <a href="https://rillsdl.baltavista.com/">rillsdl.baltavista.com</a>
+    draws all of this in the browser: click a state or an input to build it in a form,
+    run a scenario and watch the chart grow while the machines light the state they are
+    in. The code stays the model — every edit is written back through the formatter —
+    and the programs run in the compiler's sandbox, so try anything.</p>
   </section>
 
   <!-- ================= features ================= -->
@@ -305,31 +365,45 @@ live allocations: 0</pre>
       <div class="cell"><h4>Monomorphized</h4>
         <p>One specialized copy per concrete type. Nothing is boxed and trait dispatch is resolved at compile time.</p></div>
       <div class="cell"><h4>Talks to C directly</h4>
-        <p><code>extern "m" fn sqrt(x: Float) -&gt; Float</code> and it links. Opaque pointers, explicit string bridging, exact C widths.</p></div>
+        <p><code>extern "m" fn sqrt(x: Float) -&gt; Float</code> and it links. Opaque pointers, explicit string bridging, exact C widths, inline <code>asm</code>.</p></div>
       <div class="cell"><h4>One canonical spelling</h4>
         <p><code>rill fmt</code> gives every program exactly one formatting, which is what makes it predictable to read and diff.</p></div>
+      <div class="cell"><h4>A standard library</h4>
+        <p>Forty-four modules in Rill: JSON, YAML, CSV, deflate, HTTP and TLS, WebSockets, a regex, a B+ tree store, SHA-2, big integers, decimals, UUIDs, a grid that keeps up with NumPy.</p></div>
+      <div class="cell"><h4>Tests, docs, a language server</h4>
+        <p><code>rill test</code> runs every <code>test_</code> function in a process of its own; <code>rill doc</code> reads the comments off the file; <code>rill lsp</code> answers any editor, with a VS Code extension.</p></div>
+      <div class="cell"><h4>Cores, wasm, a sandbox</h4>
+        <p><code>--parallel</code> spreads strands across cores and refuses shared writes; <code>--target wasm32-wasip1</code> runs in a browser; <code>--sandbox</code> refuses a program that would reach past the process.</p></div>
     </div>
   </section>
 
   <!-- ================= numbers ================= -->
   <section id="numbers">
     <h2 class="sec">Numbers</h2>
-    <p class="sec-lede">Apple M4, outputs verified identical across all three
-    languages. Reproduce with <code>python3 benchmarks/run.py</code>.</p>
+    <p class="sec-lede">Rill 0.13.0 on an Apple M4, 16 September 2026; Go 1.23, OCaml 5.5;
+    outputs verified identical across the languages, time the median of 25 runs.
+    Reproduce with <code>python3 benchmarks/run.py</code>.</p>
     <table>
       <thead><tr><th>Benchmark</th><th>Rill</th><th>Go</th><th>OCaml</th><th>Rill RSS</th><th>Go RSS</th><th>OCaml RSS</th></tr></thead>
       <tbody>
-        <tr><td>fib(35)</td><td class="win">17.2 ms</td><td>22.0 ms</td><td>23.7 ms</td><td class="win">1.3 M</td><td>3.6 M</td><td>2.1 M</td></tr>
-        <tr><td>binary trees</td><td class="win">33.0 ms</td><td>55.9 ms</td><td>60.0 ms</td><td class="win">13.3 M</td><td>16.6 M</td><td>18.3 M</td></tr>
-        <tr><td>100k-thread ring</td><td class="win">13.5 ms</td><td>96.2 ms</td><td>61.7 ms</td><td class="win">53.4 M</td><td>269.4 M</td><td>103.0 M</td></tr>
-        <tr><td>100M-iteration loop</td><td class="win">127.6 ms</td><td>271.6 ms</td><td>295.3 ms</td><td class="win">1.3 M</td><td>3.5 M</td><td>2.1 M</td></tr>
+        <tr><td>fib(35)</td><td class="win">15.0 ms</td><td>20.9 ms</td><td>22.0 ms</td><td class="win">1.3 M</td><td>3.6 M</td><td>2.1 M</td></tr>
+        <tr><td>binary trees</td><td class="win">16.3 ms</td><td>55.1 ms</td><td>57.3 ms</td><td class="win">13.3 M</td><td>14.6 M</td><td>18.3 M</td></tr>
+        <tr><td>100k-thread ring</td><td class="win">12.7 ms</td><td>94.4 ms</td><td>64.8 ms</td><td class="win">64.7 M</td><td>269.3 M</td><td>103.0 M</td></tr>
+        <tr><td>100M-iteration loop</td><td class="win">121.0 ms</td><td>264.6 ms</td><td>284.2 ms</td><td class="win">1.3 M</td><td>3.6 M</td><td>2.1 M</td></tr>
       </tbody>
     </table>
     <blockquote>Four microbenchmarks are not a workload. The first row is really
     “both of these are LLVM-quality code generation”; the rows that carry information
-    are the third, where the concurrency implementation differs by seven times, and
+    are the third, where the concurrency implementation differs by five times, and
     the second, where a compiler inserting frees beats two mature garbage collectors
-    on time <em>and</em> memory.</blockquote>
+    on time <em>and</em> memory. Against C (measured 13 September, before this
+    release) — twenty programs, each written once in Rill and once in C to the same
+    algorithm and layout — Rill wins eleven, is within run-to-run noise on nine, and
+    is behind on none; on disk and sockets it is ahead of
+    Go on the four stream programs and within a few percent on the round trips, which
+    are the kernel's. Eight independent computations on eight strands scale
+    <code>1.0× · 1.9× · 3.1×</code> on one, two and four workers. The reasons, step by
+    step, are in <code>benchmarks/</code>.</blockquote>
   </section>
 
   <!-- ================= honesty ================= -->
@@ -338,18 +412,52 @@ live allocations: 0</pre>
     <p class="sec-lede">Some of these are choices and some are a version number.
     Both are listed.</p>
     <ul class="no">
-      <li><b>Mutation</b><span>Chosen. No assignment, no mutable fields — except <code>Buf</code>, a counted array, for C and for hot tables.</span></li>
-      <li><b>A garbage collector</b><span>Chosen. Reference counting decided at compile time. The cost is that reference cycles leak.</span></li>
-      <li><b>Exceptions and null</b><span>Chosen. <code>Result</code> and <code>Option</code> instead.</span></li>
+      <li><b>Mutation</b><span>Chosen. No assignment, no mutable fields — a record is updated by making a new one, <code>{ p | x = 1 }</code>. The exceptions are storage: <code>Buf</code>, <code>Map</code> and a string builder, for C and for hot tables.</span></li>
+      <li><b>A garbage collector</b><span>Chosen. Reference counting decided at compile time; a ring of references is refused where it is written, since counting could not free it.</span></li>
+      <li><b>Exceptions and null</b><span>Chosen. <code>Result</code> and <code>Option</code> instead, with <code>?</code> to pass a failure up.</span></li>
       <li><b>Laziness</b><span>Chosen. Strict evaluation, so allocation appears where you wrote it.</span></li>
-      <li><b>A standard library worth the name</b><span>Version number. Lists, strings, options, results, sockets. No map, no sort, no formatted printing.</span></li>
-      <li><b>Unicode-aware strings</b><span>Version number. Strings are byte-indexed. ASCII is fine; anything else needs care.</span></li>
-      <li><b>Tuples, and blocks inside match arms</b><span>Version number. Both cost you an extra named type or an extra function.</span></li>
-      <li><b>An ecosystem</b><span>Version number. One implementation, no package manager, nobody else has hit your bug.</span></li>
+      <li><b>Higher-kinded types</b><span>Version number. A trait is over a type, not over a container of types; <code>map</code> is a function on lists, not a method of a functor.</span></li>
+      <li><b>Strings indexed by character</b><span>Chosen. A string is bytes and <code>#s</code> counts them; the <code>char_</code> functions and the text library walk it by code point when that is the question.</span></li>
+      <li><b>A second implementation</b><span>Version number. The compiler compiles itself, but there is one of it, no package manager, and nobody else has hit your bug.</span></li>
     </ul>
-    <blockquote>Rill is version 0.2. It is a good language to learn these ideas in and
-    a bad one to run a business on, and this page would rather say so than have you
-    find out.</blockquote>
+    <blockquote>Rill is version 0.13. It is a good language to learn these ideas in and
+    a good one to model a protocol in; whether it is one to run a business on is a
+    question this page would rather leave open than answer for you.</blockquote>
+  </section>
+
+  <!-- ================= what's changed (written by site/build-changelog.py) ================= -->
+  <section id="changed">
+    <h2 class="sec">What's changed</h2>
+    <p class="sec-lede"><b>0.13.0 — the model editor.</b> The release where the models got an editor in the browser, with its server written in Rill on the standard library. The page shows a file&#x27;s <code>system</code> as the block diagram, channels routed as SDL drew them, and each <code>machine</code> as a process in SDL&#x27;s symbols, beside its coloured code, every symbol a click from its line.</p>
+    <p>Since then:</p>
+    <ul class="since"><li><a href="/changelog.html#since-0-13-0-packaged">packaged</a></li><li><a href="/changelog.html#since-0-13-0-a-sandbox">a sandbox</a></li><li><a href="/changelog.html#since-0-13-0-the-diagrams-build-without-the-code-being-written">the diagrams build without the code being written</a></li></ul>
+    <a class="chip" href="/changelog.html">Every release, every change</a>
+  </section>
+
+  <!-- ================= made with rill ================= -->
+  <section id="made">
+    <h2 class="sec">Made with Rill</h2>
+    <p class="sec-lede">Programs that are not benchmarks, written in Rill and nothing
+    else.</p>
+    <div class="grid made">
+      <div class="cell"><h4><a href="/rillwebgpu/">Rill Valley</a></h4>
+        <p>A walkable low-poly valley at dusk, computed by Rill and rendered through WebGPU:
+        the terrain, every pine, crystal and grass tuft, the walking camera and the shadow
+        matrices are worked out in <code>world.rill</code> compiled to WebAssembly — the
+        whole valley rebuilt in about four milliseconds, denser or sparser until the
+        display's frame budget is spent. Runs in the browser; <code>?join</code> shares the
+        valley with whoever else is there, over a server that is Rill too.</p></div>
+      <div class="cell"><h4><a href="/art-vandal.html">Art Vandal</a></h4>
+        <p>A first-person maze lit by torches, native on Apple silicon, with no C written
+        anywhere — no shim library, no generated bindings, no build script: Metal, the
+        window and the sound reached through <code>extern</code> declarations alone. A 405 KB
+        binary and its assets, nothing to install.</p></div>
+      <div class="cell"><h4><a href="https://rillsdl.baltavista.com/">The model editor</a></h4>
+        <p>The SDL editor's server is a Rill program on the standard library — HTTP, JSON,
+        processes, paths — that runs the compiler for the page and sandboxes what it
+        runs. So is the server the valley's visitors share a world through, and the
+        packer that puts the valley's assets into one file.</p></div>
+    </div>
   </section>
 
   <!-- ================= book ================= -->
@@ -358,13 +466,15 @@ live allocations: 0</pre>
     <div class="book">
       <div>
         <p class="sec-lede" style="margin-bottom:14px"><b>Functional Programming with
-        Rill</b> — 78 pages, sixteen chapters.</p>
+        Rill</b> — 86 pages, seventeen chapters.</p>
         <p>It starts with what functional programming is, at length and before any Rill
         appears: expressions instead of commands, why assignment hides information,
         purity, higher-order functions, recursion and tail calls, and the types that
         make illegal states unrepresentable. Then the language, then algorithms —
         sorting, trees, a recursive-descent parser, graphs and flood fill, dynamic
-        programming — each one put beside the same algorithm in Python, Java or Go.</p>
+        programming — each one put beside the same algorithm in Python, Java or Go.
+        It ends underneath: memory without a collector, strands and channels, and
+        machines — a protocol modelled, traced and drawn.</p>
         <p>Every program in it was compiled and run by the compiler in the repository,
         and the output printed in the book is the output it produced. Where a listing
         shows a compiler error, that error came from running the broken program.</p>
@@ -374,21 +484,44 @@ live allocations: 0</pre>
     </div>
   </section>
 
-  <section style="border-bottom:0">
-    <h2 class="sec">Getting it</h2>
-    <pre>git clone …/funclang &amp;&amp; cd funclang
-cargo build --release          <span class="c"># builds ./target/release/rill</span>
+  <section id="download">
+    <h2 class="sec">Download</h2>
+    <p class="sec-lede">Rill 0.13.0, packaged: the compiler, the runtimes, the standard
+    library, the examples, the model editor and the reference, in one directory. Needs a
+    C linker on the PATH — the Xcode command-line tools on a Mac, <code>gcc</code> or
+    <code>clang</code> on Linux — and nothing else.</p>
+    <div class="grid downloads">
+      <div class="cell"><h4>macOS, Apple silicon</h4>
+        <p><a href="dl/rill-0.13.0-macos-arm64.tar.gz">rill-0.13.0-macos-arm64.tar.gz</a> · macOS 13 or later on M-series. Unsigned: a browser download is quarantined, so either <code>curl -O</code> it or <code>xattr -dr com.apple.quarantine rill</code> after unpacking.</p></div>
+      <div class="cell"><h4>Linux, x86-64</h4>
+        <p><a href="dl/rill-0.13.0-linux-x86_64.tar.gz">rill-0.13.0-linux-x86_64.tar.gz</a> · glibc 2.36 or later (Debian 12, Ubuntu 22.04 and newer). Needs <code>gcc</code> or <code>clang</code> for the link.</p></div>
+      <div class="cell"><h4>Not yet</h4>
+        <p>Intel Macs, Linux on ARM and Windows have no build: the compiler is built with a static LLVM, and only these two machines have been built on. Windows and wasm are <em>targets</em> — <code>--target</code> — from either.</p></div>
+    </div>
+    <pre>curl -O https://rill.baltavista.com/dl/rill-0.13.0-macos-arm64.tar.gz
+tar xzf rill-0.13.0-macos-arm64.tar.gz
+rill/bin/rill run rill/examples/hello.rill        <span class="c"># hello, world</span>
+rill/bin/rill run rill/editors/web/server.rill    <span class="c"># the model editor, at localhost:8765</span></pre>
+    <p class="note" style="color:var(--muted);font-size:14px">Checksums in <a href="dl/SHA256SUMS">SHA256SUMS</a>. The wasm target needs <code>wasm-ld</code>, which comes with LLVM.</p>
+  </section>
 
-rill run   program.rill        <span class="c"># compile to a temporary binary and run</span>
-rill build program.rill -o p   <span class="c"># keep the binary</span>
+  <section style="border-bottom:0">
+    <h2 class="sec">The commands</h2>
+    <pre>rill run   program.rill        <span class="c"># compile to a temporary binary and run</span>
+rill build program.rill -o p   <span class="c"># keep the binary; --parallel, --sandbox, --target wasm32-wasip1</span>
+rill test  program.rill        <span class="c"># every test_ function, each in its own process</span>
+rill check program.rill        <span class="c"># type-check only, saying everything it finds</span>
 rill fmt   program.rill        <span class="c"># canonical formatting</span>
+rill doc   lib -o docs         <span class="c"># Markdown from the comments the modules already have</span>
+rill diagram exchange.rill     <span class="c"># the system and the machines, drawn</span>
+rill run editors/web/server.rill  <span class="c"># the model editor, at localhost:8765</span>
 rill repl                      <span class="c"># definitions persist for the session</span></pre>
-    <p>Needs Rust and LLVM 21. The runtime is <code>no_std</code> and links as a static
-    library, which is most of why the binaries are the size they are.</p>
+    <p>The runtime is <code>no_std</code> and links as a static library, which is most
+    of why the binaries are the size they are.</p>
   </section>
 
   <footer>
-    <p class="mono">Rill v0.2 · a strict functional language compiling to native code</p>
+    <p class="mono">Rill v0.13 · a strict functional language compiling to native code</p>
     <p>The bird is a common kingfisher, from a copper plate by Heinrich von Kittlitz,
     1832 — public domain. It was chosen for the language before either the book or this
     page existed: one precise dive, straight to the water, and a rill is the stream it

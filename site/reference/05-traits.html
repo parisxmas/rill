@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traits — The Rill Language Reference</title>
+<meta name="description" content="A trait declares an interface; an impl provides it for one type.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/05-traits.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/05-traits.html">
+<meta property="og:title" content="Traits — The Rill Language Reference">
+<meta property="og:description" content="A trait declares an interface; an impl provides it for one type.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Traits — The Rill Language Reference">
+<meta name="twitter:description" content="A trait declares an interface; an impl provides it for one type.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li class="current"><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#objects">Objects</a></li>
+        <li><a href="#built-in-traits">Built-in traits</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 5</p>
+      <h1>Traits</h1>
+<p>A trait declares an interface; an <code>impl</code> provides it for one type. Both builtin types and user types can implement traits.</p>
+<pre><span class="k">trait</span> <span class="t">Describe</span>(a)
+  <span class="f">describe</span>(a) <span class="o">-&gt;</span> <span class="t">Str</span>
+  <span class="k">priority</span>(a) <span class="o">-&gt;</span> <span class="t">Int</span>
+
+<span class="k">impl</span> <span class="t">Describe</span>(<span class="t">Shape</span>)
+  <span class="k">fn</span> <span class="f">describe</span>(s) = <span class="s">"shape "</span> + <span class="f">show</span>(s)
+  <span class="k">fn</span> <span class="k">priority</span>(s) = <span class="n">2</span>
+
+<span class="k">impl</span> <span class="t">Describe</span>(<span class="t">Int</span>)
+  <span class="k">fn</span> <span class="f">describe</span>(n) = <span class="s">"int "</span> + <span class="f">int_to_str</span>(n)
+  <span class="k">fn</span> <span class="k">priority</span>(n) = <span class="n">1</span>
+
+<span class="k">fn</span> <span class="f">announce</span>(x) = <span class="f">println</span>(<span class="f">describe</span>(x))   <span class="c"># works for any implementing type</span></pre>
+<p>A method may come with a <strong>default</strong>, written after its signature with its parameters named, and an impl that leaves the method out gets it. The default is checked once per such impl, at that impl's type, so a default that calls another method of the trait calls that impl's:</p>
+<pre><span class="k">trait</span> <span class="t">Describe</span>(a)
+  <span class="f">describe</span>(a) <span class="o">-&gt;</span> <span class="t">Str</span>
+  <span class="k">priority</span>(x: a) <span class="o">-&gt;</span> <span class="t">Int</span> = <span class="n">1</span>
+  <span class="f">banner</span>(x: a) <span class="o">-&gt;</span> <span class="t">Str</span> = <span class="f">describe</span>(x) + <span class="s">" ("</span> + <span class="f">int_to_str</span>(<span class="k">priority</span>(x)) + <span class="s">")"</span></pre>
+<p>A trait may <strong>require others</strong>: <code>trait Pretty(a): Show, Describe</code> says a type implements <code>Pretty</code> only if it implements those too, and an impl of <code>Pretty</code> for a type that does not is refused, naming what is missing.</p>
+<p>A method's name belongs to its trait, and two traits may use the same one: <code>describe(x)</code> is settled by the type of <code>x</code>, whichever trait is implemented for it, and where that cannot tell — both are, or <code>x</code> is a parameter whose type is not known yet — the call says which, <code>Describe.describe(x)</code>, which is always allowed. Constructor names stay global. Dispatch is resolved statically during monomorphization: no dictionaries, no vtables, and a compile error if an implementation is missing.</p>
+<p>An impl may target a generic type by naming its parameters, in which case it covers every instantiation:</p>
+<pre><span class="k">impl</span> <span class="t">Show</span>(<span class="t">List</span>(a))
+  <span class="k">fn</span> <span class="f">show</span>(l) = <span class="s">"{"</span> + <span class="f">join</span>(<span class="f">map</span>(l, \x <span class="o">-&gt;</span> <span class="f">show</span>(x)), <span class="s">" "</span>) + <span class="s">"}"</span></pre>
+<p>The <code>show(x)</code> on elements resolves when the element type is known, so <code>List(Box(Int))</code> composes both impls without any <code>where</code> clause. An impl that quietly works for only one instantiation is rejected.</p>
+<h3 id="objects">Objects</h3>
+<p>Dispatch is static, so a <code>List(a)</code> holds one type. Where a list has to hold a dog and a robot because both can speak, a value is made an <strong>object</strong> of the trait: <code>Speak(rex)</code> is a record of the trait's methods, each a closure over <code>rex</code>, and its type is the trait's name.</p>
+<pre><span class="k">trait</span> <span class="t">Speak</span>(a)
+  <span class="f">speak</span>(a) <span class="o">-&gt;</span> <span class="t">Str</span>
+  <span class="f">greet</span>(a, <span class="t">Str</span>) <span class="o">-&gt;</span> <span class="t">Str</span>
+
+<span class="k">fn</span> <span class="f">main</span>() =
+  all = <span class="t">Cons</span>(<span class="t">Speak</span>(<span class="t">Dog</span>(<span class="s">"rex"</span>)), <span class="t">Cons</span>(<span class="t">Speak</span>(<span class="t">Robot</span>(<span class="n">7</span>)), <span class="t">Nil</span>))   <span class="c"># a List(Speak)</span>
+  <span class="f">say</span>(all)
+
+<span class="k">fn</span> <span class="f">say</span>(xs) = <span class="k">match</span> xs
+  <span class="t">Nil</span> <span class="o">-&gt;</span> <span class="n">0</span>
+  <span class="t">Cons</span>(s, rest) <span class="o">-&gt;</span>
+    <span class="f">println</span>(s.speak() + <span class="s">", "</span> + s.greet(<span class="s">"ada"</span>))
+    <span class="f">say</span>(rest)</pre>
+<p>Written out, <code>Speak(rex)</code> is <code>Speak.obj(\ -&gt; speak(rex), \o -&gt; greet(rex, o))</code>: an ordinary record whose fields hold functions, made by a constructor the trait declares and a program cannot name. A field that holds a function is called as <code>s.speak()</code>. Each call inside the closures dispatches on the type of <code>rex</code>, statically, as every method call does; what is paid is the closures — one allocation per method when the object is made — and the indirect call through each. Nothing else is boxed, and no dictionary travels with a value.</p>
+<p>A trait is the type of objects when every method takes the trait's type once, and first: <code>same(a, a)</code> cannot be, since an object does not know what the other one is, nor can a method that answers with the type. <code>Speak(x)</code> on such a trait says which method is in the way. A record of functions written by hand — <code>Shape(area: () -&gt; Float, name: Str)</code> — is the same thing with no trait at all, and a function's type is written the way a lambda reads: <code>(Int, Str) -&gt; Bool</code>, or <code>() -&gt; Str</code> for one that takes nothing, which is <code>\ -&gt; e</code>.</p>
+<h3 id="built-in-traits">Built-in traits</h3>
+<p>Two traits are built in and change how the language's own operators behave:</p>
+<pre><span class="k">impl</span> <span class="t">Show</span>(<span class="t">Money</span>)                 <span class="c"># replaces derived printing</span>
+  <span class="k">fn</span> <span class="f">show</span>(m) = ...
+
+<span class="k">impl</span> <span class="t">Ord</span>(<span class="t">Money</span>)                  <span class="c"># enables &lt;, &lt;=, &gt;, &gt;=</span>
+  <span class="k">fn</span> <span class="f">compare</span>(a, b) = ...         <span class="c"># negative, zero or positive</span></pre>
+<p>Without a <code>Show</code> impl, every data value already prints structurally (<code>Cons(1, Nil)</code>), and <code>==</code> already compares structurally.</p>
+<hr />
+
+      <div class="prevnext">
+        <a class="prev" href="04-functions.html">← 4. Functions</a>
+        <a class="next" href="06-memory.html">6. Memory →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

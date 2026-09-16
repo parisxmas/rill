@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started — The Rill Language Reference</title>
+<meta name="description" content="Rill comes as one directory: the compiler, the runtime it links into every program, the standard library, the examples, the model editor and this reference.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/00-getting-started.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/00-getting-started.html">
+<meta property="og:title" content="Getting started — The Rill Language Reference">
+<meta property="og:description" content="Rill comes as one directory: the compiler, the runtime it links into every program, the standard library, the examples, the model editor and this reference.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Getting started — The Rill Language Reference">
+<meta name="twitter:description" content="Rill comes as one directory: the compiler, the runtime it links into every program, the standard library, the examples, the model editor and this reference.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li class="current"><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#download">Download</a></li>
+        <li><a href="#hello-world">Hello, world</a></li>
+        <li><a href="#a-second-program">A second program</a></li>
+        <li><a href="#the-examples">The examples</a></li>
+        <li><a href="#the-model-editor">The model editor</a></li>
+        <li><a href="#other-targets">Other targets</a></li>
+        <li><a href="#where-next">Where next</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Start here</p>
+      <h1>Getting started</h1>
+<p>Rill comes as one directory: the compiler, the runtime it links into every program, the standard library, the examples, the model editor and this reference. It needs one thing from the machine: a C toolchain's linker — the Xcode command-line tools on a Mac (<code>xcode-select --install</code>), <code>gcc</code> or <code>clang</code> on Linux. The compiler produces an object file and hands the last step to <code>cc</code>, which joins it with Rill's runtime, the system's C library and its start-up code into an executable of the platform's own format — the same step Rust, Go with C, and every C compiler leave to the system, because the C library and the start-up objects are the platform's and come with it. Nothing else is needed: no Rust, no LLVM, no runtime to install.</p>
+<h3 id="download">Download</h3>
+<pre class="out">$ curl -O https://rill.baltavista.com/dl/rill-0.13.0-macos-arm64.tar.gz    # Apple silicon
+$ curl -O https://rill.baltavista.com/dl/rill-0.13.0-linux-x86_64.tar.gz   # Linux, x86-64
+$ tar xzf rill-0.13.0-*.tar.gz
+$ rill/bin/rill
+usage:
+  rill build &lt;file.rill&gt; [-o &lt;out&gt;] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target &lt;triple&gt;] [--sandbox[=caps]]
+  rill run &lt;file.rill&gt; [--debug] [--parallel] [--unchecked] [--sandbox[=caps]]
+  ...</pre>
+<p>On a Mac, a file downloaded through a browser rather than <code>curl</code> is quarantined and the compiler refuses to start; <code>xattr -dr com.apple.quarantine rill</code> after unpacking lifts it. Put <code>rill/bin</code> on the <code>PATH</code> or call the compiler by its path — the rest of this page assumes <code>rill</code> is on the <code>PATH</code>:</p>
+<pre class="out">$ export PATH=&quot;$PWD/rill/bin:$PATH&quot;</pre>
+<p>The Mac build wants macOS 11 or later; the Linux build wants glibc 2.36 or later, which is Debian 12, Ubuntu 22.04 and anything newer. Checksums are in <code>dl/SHA256SUMS</code>. There is no Windows or Intel Mac build yet; both are targets of the compiler, not hosts for it.</p>
+<h3 id="hello-world">Hello, world</h3>
+<p>A program is a file with a <code>main</code>:</p>
+<pre><span class="k">fn</span> <span class="f">main</span>() = <span class="f">println</span>(<span class="s">"hello, world"</span>)</pre>
+<p><code>rill run</code> compiles it to a binary and runs it in one step; <code>rill build</code> keeps the binary, which is a native executable of about 50 KB that needs nothing installed to run:</p>
+<pre class="out">$ rill run hello.rill
+hello, world
+$ rill build hello.rill -o hello
+$ ./hello
+hello, world
+$ ls -l hello
+-rwxr-xr-x  1 you  staff  50936 hello</pre>
+<h3 id="a-second-program">A second program</h3>
+<p>Types are lists of the shapes a value can have, <code>match</code> takes them apart, and the compiler checks that every case is covered. Everything is inferred; <code>area</code> says nothing about what it takes or returns.</p>
+<pre><span class="k">type</span> <span class="t">Shape</span>
+  <span class="t">Circle</span>(r: <span class="t">Float</span>)
+  <span class="t">Rect</span>(w: <span class="t">Float</span>, h: <span class="t">Float</span>)
+
+<span class="k">fn</span> <span class="f">area</span>(s) = <span class="k">match</span> s
+  <span class="t">Circle</span>(r) <span class="o">-&gt;</span> <span class="n">3.14159</span> * r * r
+  <span class="t">Rect</span>(w, h) <span class="o">-&gt;</span> w * h
+
+<span class="k">fn</span> <span class="f">main</span>() =
+  shapes = <span class="t">Cons</span>(<span class="t">Circle</span>(<span class="n">1.0</span>), <span class="t">Cons</span>(<span class="t">Rect</span>(<span class="n">2.0</span>, <span class="n">3.0</span>), <span class="t">Nil</span>))
+  <span class="f">each</span>(shapes, \s <span class="o">-&gt;</span> <span class="f">println</span>(<span class="f">area</span>(s)))
+  <span class="f">println</span>(<span class="f">fold</span>(shapes, <span class="n">0.0</span>, \total, s <span class="o">-&gt;</span> total + <span class="f">area</span>(s)))</pre>
+<pre class="out">$ rill run shapes.rill
+3.14159
+6
+9.14159</pre>
+<p>Leave out <code>Rect</code> in <code>area</code> and the program does not compile; the error names the case:</p>
+<pre class="out">shapes.rill: type error at line 5: match is not exhaustive; no arm matches `Rect(_, _)`</pre>
+<p><code>rill fmt shapes.rill</code> rewrites the file in the one spelling every Rill program has, and <code>rill check shapes.rill</code> type-checks without building, saying everything it finds rather than the first thing.</p>
+<h3 id="the-examples">The examples</h3>
+<p><code>rill/examples/</code> has one program per idea — <code>list.rill</code>, <code>maps.rill</code>, <code>records.rill</code>, <code>traits.rill</code>, <code>pingpong.rill</code> for strands and channels, <code>exchange.rill</code> and <code>abp.rill</code> for machines — each of them run by the test suite, so each of them works:</p>
+<pre class="out">$ rill run rill/examples/pingpong.rill
+$ rill test rill/examples/abp.rill
+ok    test_a_text_goes_through
+ok    test_a_lost_frame_is_resent_and_delivered_once
+ok    test_texts_wait_their_turn
+3 tests: 3 passed, 0 failed</pre>
+<p>A test is a function named <code>test_...</code> that takes nothing; <code>assert</code> and <code>assert_eq</code> end it where they fail, and each test runs in a process of its own.</p>
+<h3 id="the-model-editor">The model editor</h3>
+<p><code>exchange.rill</code> is a telephone exchange as SDL would draw it: a <code>system</code> of routes and a <code>machine</code> with states, signals and timers. The editor draws it, edits it as diagrams that are written back into the file, and runs a scenario with the machines lighting up as it plays:</p>
+<pre class="out">$ rill run rill/editors/web/server.rill      # then open http://127.0.0.1:8765</pre>
+<p>The same editor, with the examples, runs at <a href="https://rillsdl.baltavista.com/">rillsdl.baltavista.com</a> — nothing to install, nothing saved. <code>rill diagram rill/examples/exchange.rill</code> prints the diagrams as Mermaid, <code>--svg</code> as SDL's symbols; <code>RILL_TRACE=1 rill run rill/examples/exchange.rill 2&gt;trace.txt</code> records what the machines did, and <code>rill msc trace.txt</code> draws the run as a sequence chart.</p>
+<h3 id="other-targets">Other targets</h3>
+<pre class="out">$ rill build hello.rill --parallel                       # strands across cores: RILL_THREADS=8 ./hello
+$ rill build hello.rill --sandbox                        # refused if it would read files, open sockets, call C
+$ rill build hello.rill --target wasm32-wasip1 -o hello.wasm   # needs wasm-ld, from LLVM (`brew install lld`, `apt install lld`)</pre>
+<h3 id="where-next">Where next</h3>
+<p>The chapters that follow are the whole language: <a href="01-program-structure.html">Program structure</a> for files, imports and layout; <a href="02-types.html">Types</a> and <a href="03-expressions.html">Expressions</a> for the everyday; <a href="07-concurrency.html">Concurrency</a> for strands, channels and machines; <a href="13-the-toolchain.html">The toolchain</a> for every command. The book, <em>Functional Programming with Rill</em>, starts from what functional programming is and ends with a modelled protocol.</p>
+
+      <div class="prevnext">
+        <a class="prev" href="index.html">← Contents</a>
+        <a class="next" href="01-program-structure.html">1. Program structure →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

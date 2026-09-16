@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Expressions — The Rill Language Reference</title>
+<meta name="description" content="Everything is an expression; there are no statements that don&#x27;t produce a value (except bindings).">
+<link rel="canonical" href="https://rill.baltavista.com/reference/03-expressions.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/03-expressions.html">
+<meta property="og:title" content="Expressions — The Rill Language Reference">
+<meta property="og:description" content="Everything is an expression; there are no statements that don&#x27;t produce a value (except bindings).">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Expressions — The Rill Language Reference">
+<meta name="twitter:description" content="Everything is an expression; there are no statements that don&#x27;t produce a value (except bindings).">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li class="current"><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#tuples">Tuples</a></li>
+        <li><a href="#lanes-float2">Lanes: Float2</a></li>
+        <li><a href="#string-builders">String builders</a></li>
+        <li><a href="#slices">Slices</a></li>
+        <li><a href="#characters">Characters</a></li>
+        <li><a href="#blocks-and-bindings">Blocks and bindings</a></li>
+        <li><a href="#pattern-matching">Pattern matching</a></li>
+        <li><a href="#carrying-an-error-out">Carrying an error out: ?</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 3</p>
+      <h1>Expressions</h1>
+<p>Everything is an expression; there are no statements that don't produce a value (except bindings).</p>
+<pre><span class="n">1</span> + <span class="n">2</span> * <span class="n">3</span>            <span class="c"># arithmetic: + - * / %  (% is Int only)</span>
+a == b               <span class="c"># equality on any value type, structural for data</span>
+a &lt; b                <span class="c"># ordering: Int, Float, Str, or a type with Ord</span>
+x &amp;&amp; y || !z         <span class="c"># logical operators, short-circuiting</span>
+<span class="s">"a"</span> + <span class="s">"b"</span>            <span class="c"># string concatenation</span>
+<span class="f">f</span>(x, y)              <span class="c"># call</span>
+\x, y <span class="o">-&gt;</span> x + y       <span class="c"># lambda</span>
+xs <span class="o">|&gt;</span> <span class="f">map</span>(f) <span class="o">|&gt;</span> sum  <span class="c"># pipeline: x |&gt; f(a) means f(x, a)</span>
+<span class="k">if</span> c <span class="k">then</span> a <span class="k">else</span> b   <span class="c"># conditional (an expression, not a statement)</span>
+<span class="f">f</span>(x)?                <span class="c"># the value inside an `Ok`, or the function&#x27;s `Err`</span>
+p.x                  <span class="c"># one field of a one-constructor type</span></pre>
+<p>Bit operations are functions rather than operators: <code>bit_and</code>, <code>bit_or</code>, <code>bit_xor</code>, <code>bit_not</code>, <code>shl</code> and <code>shr</code> (<code>shr</code> is logical, since protocol code works with bit patterns).</p>
+<p>Precedence, loosest to tightest: <code>|&gt;</code>, <code>||</code>, <code>&amp;&amp;</code>, comparisons, <code>+ -</code>, <code>* / %</code>, unary <code>- !</code>, then the postfix <code>[]</code>, <code>?</code> and <code>.</code>, calls and literals.</p>
+<h3 id="tuples">Tuples</h3>
+<p><code>(a, b)</code> hands back more than one thing without declaring a type for it:</p>
+<pre><span class="k">fn</span> <span class="f">divmod</span>(a, b) = (a / b, a % b)
+
+<span class="k">fn</span> <span class="f">main</span>() =
+  (q, r) = <span class="f">divmod</span>(<span class="n">17</span>, <span class="n">5</span>)      <span class="c"># a binding that takes the value apart</span>
+  <span class="f">println</span>(q)</pre>
+<p>A tuple holds two to eight values, and <code>(A, B)</code> is its type. It is an ordinary data type underneath — <code>Tuple2</code> to <code>Tuple8</code> in the prelude — so it compares, shows and pattern-matches like any other, and <code>(n, s) -&gt; ...</code> is a pattern anywhere a pattern goes.</p>
+<p>A binding may take apart any type with exactly one constructor: <code>Parsed(v, rest) = parse(s)</code> reads as a binding because it cannot fail. On a type with more than one, the compiler says the match is not exhaustive, which is the truth: use <code>match</code>.</p>
+<p><code>==</code> and <code>!=</code> on floats follow IEEE 754, as C and Python do: a NaN is equal to nothing, itself included, so <code>x == x</code> is false for one and <code>x != x</code> is true — which is how a program asks whether a number is a number.</p>
+<h3 id="lanes-float2">Lanes: <code>Float2</code></h3>
+<p><code>Float2</code> is two <code>Float</code>s that travel together in one 128-bit register — what a kernel written with the machine's vector lanes in mind is written in:</p>
+<pre>p = <span class="f">float2</span>(<span class="n">1.5</span>, -<span class="n">2.0</span>)
+q = p * <span class="f">splat2</span>(<span class="n">4.0</span>) + <span class="f">float2</span>(<span class="n">0.25</span>, <span class="n">0.25</span>)   <span class="c"># both lanes at once: (6.25, -7.75)</span>
+<span class="f">lane0</span>(q) + <span class="f">lane1</span>(q)
+v = <span class="f">f2_load</span>(buf, i)                        <span class="c"># buf[i] and buf[i + 1], as one</span>
+<span class="f">f2_store</span>(buf, i, <span class="f">fma2</span>(a, b, v))            <span class="c"># a fused multiply-add on both lanes</span>
+<span class="f">fmin2</span>(a, b)                                <span class="c"># the smaller of each lane; fmax2 too</span></pre>
+<p><code>+ - * /</code> work lane by lane with the same one loosening as a <code>Float</code> (a multiply and the add that consumes it may fuse), <code>==</code> is of both lanes, <code>fmin2</code> and <code>fmax2</code> are the smaller and the larger of each lane, and a <code>Float2</code> prints as a pair, goes in a map or down a channel, and sits in a flat record like any number. It is not a general vector type — no <code>Float4</code>, no lane-wise <code>&lt;</code> — but it is what the matrix product in <code>lib/num/grid.rill</code> keeps its block of answers in, and it is why that product runs at the speed of a BLAS. The rest of a numeric loop needs none of this: a plain <code>for</code> over a buffer is vectorized by the compiler on its own.</p>
+<p>The one loop that is not is a <strong>reduction over <code>Float</code></strong>, and the reason is the language keeping its word rather than the loop being poor. Vectorizing a sum means splitting it into independent partial sums and adding those at the end — which is reassociation, and reassociation changes the answer, so a compiler may only do it once told the program will accept a different one. Rill never tells it that. So the additions stay in the order they were written, each one waiting on the last, and a sum that should stream at memory speed runs at the latency of <code>fadd</code> — about six times slower, measured over a range that fits in L1. Clang with strict floating point does exactly the same thing, for exactly the same reason.</p>
+<p>Writing the accumulators out is what recovers it: several of them so the adds are independent, in <code>Float2</code> so each holds two lanes. <code>lib/num/col.rill</code> has the column aggregates already written that way — <code>sum</code>, <code>sum_sq</code>, <code>dot</code>, <code>mean</code>, <code>variance</code>, <code>min_of</code>, <code>max_of</code> — and they run five to eight times faster than the plain loop, at better than 100 GB/s, matching a C loop built with <code>-ffast-math</code> while leaving <code>+</code> on a <code>Float</code> meaning what it says everywhere else. <code>fmin2</code> and <code>fmax2</code> need none of that trade, since a minimum does not care what order it sees its candidates in.</p>
+<h3 id="string-builders">String builders</h3>
+<p>A string is a value, so building one a piece at a time with <code>+</code> copies what is already there every time. A <code>StrBuf</code> is storage for the bytes on their way to becoming one — a <code>Buf</code> for text:</p>
+<pre>b = <span class="f">strbuf</span>()
+b += <span class="s">"hello, "</span>        <span class="c"># a string goes in as it is</span>
+b += <span class="s">"world"</span>
+b += <span class="n">33</span>               <span class="c"># a number goes in as one byte: `!`</span>
+<span class="f">println</span>(<span class="f">strbuf_str</span>(b))
+<span class="f">println</span>(<span class="c">#b)           # how many bytes it holds</span></pre>
+<p><code>b += s</code> is the one <code>op=</code> whose target is a name, and it changes no binding: what it adds to is the storage the name points at, exactly as <code>v[i] = x</code> writes a buffer. <code>strbuf_add(b, s)</code> and <code>strbuf_byte(b, n)</code> are the same two operations spelled out. A builder is not a value type — it does not show, compare or cross a channel; <code>strbuf_str</code> takes the string out of it, and the builder stays usable. <code>strbuf_clear(b)</code> empties one without giving back the room it took, which is what a page rendered over and over into the same builder wants.</p>
+<p>None of the three is a call. An append is written where it stands: the room is one compare against a capacity the compiler is holding in a register, a literal goes in as whole words because its length is known, and <code>b += int_to_str(n)</code> writes the digits themselves rather than a string that exists only to be copied. The runtime is asked for one thing only, a bigger block, and it is handed the block rather than the builder — so the length and the capacity survive the call in registers, and a loop of appends reads the header once rather than after every write. <code>benchmarks/template</code> is what that adds up to on a page.</p>
+<h3 id="slices">Slices</h3>
+<p><code>s[i:j]</code> is the bytes of a string from <code>i</code> up to but not <code>j</code> — the same half-open range <code>for</code> counts over. Either end may be left out for the string's own:</p>
+<pre>s[<span class="n">1</span>:<span class="c">#s - 1]      # everything but the first and last byte</span>
+s[<span class="n">3</span>:]            <span class="c"># from the fourth byte to the end</span>
+s[:<span class="n">3</span>]            <span class="c"># the first three</span></pre>
+<p>An end outside the string is clamped rather than an error, as <code>str_sub</code> has always been, and each part is evaluated once. Slicing is for strings; a <code>Buf</code> is storage and is not copied by notation this quiet.</p>
+<h3 id="characters">Characters</h3>
+<p><code>#s</code>, <code>s[i]</code> and <code>s[i:j]</code> are bytes, and stay bytes: a lexer wants bytes, a wire protocol wants bytes, and the compiler that compiles the prelude is one of them. What bytes are not is characters. <code>"günaydın"</code> is ten bytes and eight letters, and <code>s[0:2]</code> cuts the <code>ü</code> in half. The characters live on top, in the prelude, and say so in their names:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr>
+<td><code>char_count(s)</code></td>
+<td>how many characters</td>
+</tr>
+<tr>
+<td><code>char_at(s, i)</code></td>
+<td>the <code>i</code>th character, as a codepoint</td>
+</tr>
+<tr>
+<td><code>char_sub(s, i, n)</code></td>
+<td><code>n</code> characters from the <code>i</code>th</td>
+</tr>
+<tr>
+<td><code>char_take(s, n)</code> / <code>char_drop(s, n)</code></td>
+<td>the first <code>n</code>, or all but the first <code>n</code></td>
+</tr>
+<tr>
+<td><code>chars(s)</code></td>
+<td>every character, a <code>List(Int)</code> of codepoints</td>
+</tr>
+<tr>
+<td><code>from_char(c)</code> / <code>from_chars(cs)</code></td>
+<td>back to a string, one to four bytes each</td>
+</tr>
+<tr>
+<td><code>char_decode(s, at)</code> / <code>char_wide(b)</code></td>
+<td>the character at a byte offset, and how many bytes the one beginning with byte <code>b</code> takes — for walking a long string without counting from the start each time</td>
+</tr>
+</tbody>
+</table>
+<p>All of it walks, since UTF-8 gives no other way to the <code>n</code>th character. Malformed input never hangs it: a stray continuation byte counts as one character, and a character cut off by the end of the string comes back as its first byte.</p>
+<p><code>chr(n)</code> is <strong>a byte</strong>, not a character: it writes the low byte of <code>n</code> and nothing else, which is right for building a frame or a hash and wrong for every character above 127. A codepoint becomes text with <code>from_char</code>.</p>
+<h3 id="blocks-and-bindings">Blocks and bindings</h3>
+<p>An indented block runs its lines in order and evaluates to the last one:</p>
+<pre><span class="k">fn</span> <span class="f">area_of_two</span>() =
+  a = <span class="f">area</span>(<span class="t">Circle</span>(<span class="n">1.0</span>))     <span class="c"># binding, visible for the rest of the block</span>
+  b = <span class="f">area</span>(<span class="t">Rect</span>(<span class="n">2.0</span>, <span class="n">3.0</span>))
+  a + b                     <span class="c"># the block&#x27;s value</span></pre>
+<p>Bindings are immutable. There is no assignment operator — but a name may be bound again: <code>x = x + 1</code> reads the <code>x</code> there was to bind a new one, and from then on <code>x</code> means the new one, while anything that captured the old one keeps it. What a block binds is the block's: a name bound in one branch of an <code>if</code> is not there after it, and a rebinding inside a branch shadows only inside it.</p>
+<h3 id="pattern-matching">Pattern matching</h3>
+<pre><span class="k">fn</span> <span class="f">classify</span>(l) = <span class="k">match</span> l
+  <span class="t">Nil</span> <span class="o">-&gt;</span> <span class="s">"empty"</span>
+  <span class="t">Cons</span>(<span class="t">Some</span>(<span class="n">0</span>), _) <span class="o">-&gt;</span> <span class="s">"starts with zero"</span>
+  <span class="t">Cons</span>(<span class="t">Some</span>(n), <span class="t">Cons</span>(<span class="t">Some</span>(m), _)) <span class="o">-&gt;</span> <span class="s">"two: "</span> + <span class="f">int_to_str</span>(n + m)
+  <span class="t">Cons</span>(_, _) <span class="o">-&gt;</span> <span class="s">"something else"</span></pre>
+<p>Patterns nest freely and may be: <code>_</code> (wildcard), a name (binds the value), an integer literal, or a constructor with sub-patterns. The compiler checks that a match covers every case — if not, it names one that is missing — and rejects arms that earlier arms already cover.</p>
+<p>An arm may carry a <strong>guard</strong>: what a pattern cannot say, written after it.</p>
+<pre><span class="k">fn</span> <span class="f">size</span>(l) = <span class="k">match</span> l
+  <span class="t">Cons</span>(x, _) <span class="k">if</span> x &gt; <span class="n">100</span> <span class="o">-&gt;</span> <span class="s">"starts big"</span>
+  <span class="t">Cons</span>(x, _) <span class="k">if</span> x &gt; <span class="n">0</span> <span class="o">-&gt;</span> <span class="s">"starts small"</span>
+  <span class="t">Cons</span>(_, _) <span class="o">-&gt;</span> <span class="s">"starts at or below zero"</span>
+  <span class="t">Nil</span> <span class="o">-&gt;</span> <span class="s">"empty"</span></pre>
+<p>The arm is taken when the pattern matches <strong>and</strong> the condition holds; a false condition falls through to the arms below, which the value is then matched against as though the guarded arm were not there. So a guarded arm <strong>covers nothing</strong>: the first two arms above leave <code>Cons(_, _)</code> to be answered, and without the third the match is not exhaustive — the checker says so, naming <code>Cons(_, _)</code>. For the same reason a guarded arm makes nothing below it unreachable, while an unguarded one above it still does.</p>
+<p>A guard sees the pattern's bindings and everything else in scope, and is an ordinary expression of type <code>Bool</code>. It costs what it says: the arms below a guarded one are tested again when its condition fails, rather than every value being tested once as an unguarded match arranges.</p>
+<p>A <code>match</code> written across lines uses an indented block. Inside parentheses, where indentation carries no meaning, the arms simply follow one another on the line — nothing else in the grammar can continue an expression with <code>pattern -&gt;</code>, so the two forms are unambiguous:</p>
+<pre><span class="f">println</span>(<span class="k">match</span> o <span class="t">None</span> <span class="o">-&gt;</span> <span class="n">0</span> <span class="t">Some</span>(n) <span class="o">-&gt;</span> n * <span class="n">10</span>)</pre>
+<p><code>select</code> follows the same rule.</p>
+<p>An arm's body is an inline expression, or — like a function's body — an indented block of statements. The arrow ends its line and the block sits one level deeper:</p>
+<pre><span class="k">fn</span> <span class="f">area</span>(s) = <span class="k">match</span> s
+  <span class="t">Circle</span>(r) <span class="o">-&gt;</span>
+    pi = <span class="n">3.14159</span>
+    pi * r * r
+  <span class="t">Rect</span>(w, h) <span class="o">-&gt;</span> w * h</pre>
+<p><code>if</code> branches take the same block form, with <code>else</code> standing level with its <code>if</code>, and <code>else if</code> chains staying flat:</p>
+<pre><span class="k">fn</span> <span class="f">describe</span>(n) =
+  <span class="k">if</span> n &lt; <span class="n">0</span> <span class="k">then</span>
+    m = -n
+    <span class="s">"negative "</span> + <span class="f">int_to_str</span>(m)
+  <span class="k">else</span> <span class="k">if</span> n == <span class="n">0</span> <span class="k">then</span> <span class="s">"zero"</span>
+  <span class="k">else</span>
+    <span class="s">"positive "</span> + <span class="f">int_to_str</span>(n)</pre>
+<p>The value of a block is its last statement's value, exactly as in a function body; every arm and branch must still agree on one type.</p>
+<h3 id="carrying-an-error-out">Carrying an error out: <code>?</code></h3>
+<p>Errors are <code>Result</code> values, which is the honest way round — a function that can fail says so in its type and a caller cannot forget. What that used to cost was a <code>match</code> per call, two of whose three lines were the same two lines every time. <code>?</code> is those two lines: <strong>the value inside the <code>Ok</code>, or else the whole function's <code>Err</code>.</strong></p>
+<pre><span class="k">fn</span> <span class="f">parse</span>(text) =
+  host = <span class="f">field</span>(text, <span class="s">"host"</span>)?
+  port = <span class="f">number</span>(<span class="f">field</span>(text, <span class="s">"port"</span>)?)?
+  <span class="t">Ok</span>(<span class="t">Config</span>(host, port))</pre>
+<p>It is a <code>match</code> and nothing else. The rest of the block becomes the <code>Ok</code> arm, so the two lines above mean:</p>
+<pre><span class="k">match</span> <span class="f">field</span>(text, <span class="s">"host"</span>)
+  <span class="t">Ok</span>(host) <span class="o">-&gt;</span> ...the rest of the block...
+  <span class="t">Err</span>(e) <span class="o">-&gt;</span> <span class="t">Err</span>(e)</pre>
+<p>Which is where the one rule comes from: <strong>a <code>?</code> belongs where the block it is in is what the function returns</strong>, because that is the door its <code>Err</code> leaves by. A <code>?</code> in the middle of an expression is fine — <code>number(field(text, "port")?)?</code> names the inner result first, in the order the expression evaluates — and so is one inside an <code>if</code> branch or a <code>match</code> arm, as long as that branch is the function's answer. One written where the block is worth something else says so, and says what that something else is.</p>
+<p>Nothing is added at run time: the <code>match</code> is the one that would have been written, an error travels no further than it did, and a tail call after a <code>?</code> is still a tail call.</p>
+<p>Layers have their own kinds of error, and the function's error type says how the lower ones are carried: a sum type with a constructor per kind.</p>
+<pre><span class="k">type</span> <span class="t">AppErr</span>
+  <span class="t">Io</span>(<span class="t">IoErr</span>)
+  <span class="t">Parse</span>(<span class="t">ParseErr</span>)
+
+<span class="k">fn</span> <span class="f">load</span>(path) <span class="o">-&gt;</span> <span class="t">Result</span>(<span class="t">Config</span>, <span class="t">AppErr</span>) =
+  text = <span class="f">read</span>(path)?         <span class="c"># Err(e) -&gt; Err(Io(e))</span>
+  <span class="t">Ok</span>(<span class="f">parse</span>(text)?)           <span class="c"># Err(e) -&gt; Err(Parse(e))</span></pre>
+<p>Where the error a <code>?</code> meets is not the function's, it goes out inside the one constructor of the function's error type that takes it — still the <code>match</code> that would have been written, only with the wrapping in it. Nothing converts that the type did not declare: two constructors that take it, or none, and the <code>?</code> says so and asks for <code>map_err(r, f)?</code>, which rewrites the error before the <code>?</code> carries it. The function's error type has to be known for this: written as its return type, or settled already by the block. <code>ok_or(m[k], "no such key")?</code> gives an absence the error it should be.</p>
+<p><code>?</code> works on an <code>Option</code> the same way, in a function that answers one: the value inside the <code>Some</code>, or else <code>None</code>. It does not cross between the two — an <code>Option</code> in a function that answers a <code>Result</code> is <code>ok_or(o, e)?</code>, the error being something only the program can say, and the error says so.</p>
+<hr />
+
+      <div class="prevnext">
+        <a class="prev" href="02-types.html">← 2. Types</a>
+        <a class="next" href="04-functions.html">4. Functions →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Built-in functions — The Rill Language Reference</title>
+<meta name="description" content="">
+<link rel="canonical" href="https://rill.baltavista.com/reference/12-built-in-functions.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/12-built-in-functions.html">
+<meta property="og:title" content="Built-in functions — The Rill Language Reference">
+<meta property="og:description" content="">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Built-in functions — The Rill Language Reference">
+<meta name="twitter:description" content="">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li class="current"><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 12</p>
+      <h1>Built-in functions</h1>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<tbody>
+<tr>
+<td><code>println(x)</code> / <code>print(x)</code></td>
+<td>print any value type, with or without a newline; standard output is buffered like C's — a line at a time on a terminal, 64 KB otherwise — and written out before the program ends, before <code>exit</code>, before a read of standard input and before a strand waits</td>
+</tr>
+<tr>
+<td><code>show(x) -&gt; Str</code></td>
+<td>render any value as a string</td>
+</tr>
+<tr>
+<td><code>int_to_str</code> <code>float_to_str</code> <code>bool_to_str</code> <code>str_to_int</code></td>
+<td>conversions</td>
+</tr>
+<tr>
+<td><code>to_float(n)</code> <code>to_int(x)</code></td>
+<td>between <code>Int</code> and <code>Float</code>; <code>to_int</code> truncates toward zero</td>
+</tr>
+<tr>
+<td><code>#s</code> (or <code>str_len(s)</code>) <code>s[i]</code> (or <code>str_get(s, i)</code>) <code>s[i:j]</code> (or <code>str_sub(s, start, len)</code>) <code>str_find(s, needle)</code> <code>str_find_from(s, needle, from)</code> <code>str_cmp</code> <code>chr(byte)</code></td>
+<td>strings, byte-indexed; a string reads by index but never writes — it is a value, not storage. <code>str_find_from</code> starts partway along, so a long line can be walked field by field without slicing off the part already read; a start outside the string is clamped</td>
+</tr>
+<tr>
+<td><code>channel()</code> <code>send(ch, v)</code> <code>recv(ch)</code> <code>close(ch)</code> <code>closed(ch)</code></td>
+<td>channels; <code>close</code> wakes everything parked on one, and the prelude's <code>recv_opt</code> is written from <code>chan_wait</code> and <code>chan_taken</code> — see §7</td>
+</tr>
+<tr>
+<td><code>map_new()</code> <code>m[k] = v</code> (or <code>map_set</code>) <code>map_len</code> <code>map_del</code> <code>map_clear</code></td>
+<td>hash tables; <code>#m</code> is <code>map_len</code>, and the prelude's <code>map_get</code>, <code>map_or</code>, <code>map_has</code>, <code>map_keys</code>, <code>map_values</code> and <code>map_items</code> are written on top of these</td>
+</tr>
+<tr>
+<td><code>map_find(m, k)</code> <code>map_next(m, i)</code> <code>map_key_at(m, i)</code> <code>map_val_at(m, i)</code></td>
+<td>the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion</td>
+</tr>
+<tr>
+<td><code>arg_count()</code> <code>arg(i)</code></td>
+<td>raw command-line access (<code>args()</code> is friendlier)</td>
+</tr>
+<tr>
+<td><code>yield()</code></td>
+<td>this strand's turn given up, if another is waiting on the worker — for a long <code>for</code> loop with no call to be checked at (§7)</td>
+</tr>
+<tr>
+<td><code>assert(c)</code> <code>assert_eq(got, want)</code></td>
+<td>end the program where the condition is false, saying the line — and, for <code>assert_eq</code>, both values; what <code>rill test</code> is written with (§13)</td>
+</tr>
+<tr>
+<td><code>read_file_raw(path)</code> <code>write_file(path, text)</code> <code>read_line()</code> <code>scan_int()</code> <code>io_ok()</code></td>
+<td>file and stdin IO; standard input is read in blocks, and <code>scan_int</code> scans a number out of it without allocating</td>
+</tr>
+<tr>
+<td><code>file_open</code> <code>file_read</code> <code>file_pread</code> <code>file_pread_into</code> <code>file_write</code> <code>file_pwrite</code> <code>file_seek</code> <code>file_pos</code> <code>file_size</code> <code>file_truncate</code> <code>file_sync</code> <code>file_lock</code> <code>file_unlock</code> <code>file_close</code> <code>file_remove</code> <code>file_rename</code> <code>file_exists</code> <code>dir_make</code> <code>dir_list</code> <code>dir_sync</code></td>
+<td>a file as a descriptor, for one too big to hold or still being appended to; see §10</td>
+</tr>
+<tr>
+<td><code>strbuf()</code> <code>b += s</code> (or <code>strbuf_add</code>) <code>b += byte</code> (or <code>strbuf_byte</code>) <code>strbuf_str(b)</code> <code>strbuf_clear(b)</code> <code>#b</code></td>
+<td>building a string a piece at a time; <code>strbuf_clear</code> empties one and keeps its room</td>
+</tr>
+<tr>
+<td><code>to_cstr</code> <code>from_cstr</code> <code>str_from_ptr</code> <code>free_ptr</code> <code>null_ptr</code> <code>is_null</code></td>
+<td>the C string and pointer bridge</td>
+</tr>
+<tr>
+<td><code>alloc_bytes(n)</code> <code>ptr_offset(p, bytes)</code> <code>poke_*</code> <code>peek_*</code></td>
+<td>raw buffers for C</td>
+</tr>
+<tr>
+<td><code>now_nanos()</code> <code>sleep_ms(ms)</code></td>
+<td>a monotonic clock, and a wait that parks the strand</td>
+</tr>
+<tr>
+<td><code>wait_signal()</code></td>
+<td>parks until the program is told something, and says which; see §7</td>
+</tr>
+<tr>
+<td><code>workers()</code></td>
+<td>how many workers this run has — 1 unless <code>RILL_THREADS</code> said otherwise — for deciding how many strands a big piece of work is worth</td>
+</tr>
+<tr>
+<td><code>unique(x)</code></td>
+<td>whether this frame holds the only reference to a counted value; see §6</td>
+</tr>
+<tr>
+<td><code>float2(a, b)</code> <code>splat2(x)</code> <code>lane0(v)</code> <code>lane1(v)</code> <code>f2_load(buf, i)</code> <code>f2_store(buf, i, v)</code> <code>fma2(a, b, c)</code> <code>fmin2(a, b)</code> <code>fmax2(a, b)</code></td>
+<td>two lanes at once; see §3</td>
+</tr>
+<tr>
+<td><code>buf_float_uninit(n)</code></td>
+<td>a buffer of floats whose elements are whatever the memory held, for a caller about to write every one — no clearing pass</td>
+</tr>
+<tr>
+<td><code>exit(code)</code></td>
+<td>terminate</td>
+</tr>
+</tbody>
+</table>
+<hr />
+
+      <div class="prevnext">
+        <a class="prev" href="11-calling-c.html">← 11. Calling C</a>
+        <a class="next" href="13-the-toolchain.html">13. The toolchain →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concurrency — The Rill Language Reference</title>
+<meta name="description" content="Rill uses Go&#x27;s model: many lightweight threads over rendezvous channels.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/07-concurrency.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/07-concurrency.html">
+<meta property="og:title" content="Concurrency — The Rill Language Reference">
+<meta property="og:description" content="Rill uses Go&#x27;s model: many lightweight threads over rendezvous channels.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Concurrency — The Rill Language Reference">
+<meta name="twitter:description" content="Rill uses Go&#x27;s model: many lightweight threads over rendezvous channels.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li class="current"><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#a-deadline-on-a-wait">A deadline on a wait</a></li>
+        <li><a href="#a-machine-a-state-and-a-mailbox">A machine: a state and a mailbox</a></li>
+        <li><a href="#stopping">Stopping</a></li>
+        <li><a href="#being-told-to-stop">Being told to stop</a></li>
+        <li><a href="#waiting-on-the-clock">Waiting on the clock</a></li>
+        <li><a href="#running-on-several-cores">Running on several cores</a></li>
+        <li><a href="#what-strands-may-share">What strands may share</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 7</p>
+      <h1>Concurrency</h1>
+<p>Rill uses Go's model: many lightweight threads over rendezvous channels. Rill calls one of them a <strong>strand</strong> — a strand of a rope, of which a program is many, twisted together. (Go calls the same thing a goroutine, Erlang a process, Java a virtual thread. The concept is the same; the word here is Rill's own. Note for anyone coming from C++ networking: Boost.Asio's <code>strand</code> is a different idea — a serialised execution context — and the two are unrelated.)</p>
+<pre><span class="k">fn</span> <span class="f">worker</span>(jobs, results) =
+  n = <span class="f">recv</span>(jobs)
+  <span class="f">send</span>(results, n * n)
+  <span class="f">worker</span>(jobs, results)
+
+<span class="k">fn</span> <span class="f">main</span>() =
+  jobs = <span class="f">channel</span>()
+  results = <span class="f">channel</span>()
+  <span class="k">spawn</span> <span class="f">worker</span>(jobs, results)     <span class="c"># a new strand</span>
+  <span class="f">send</span>(jobs, <span class="n">7</span>)
+  <span class="f">println</span>(<span class="f">recv</span>(results))</pre>
+<ul>
+<li><code>spawn expr</code> runs the expression on a new strand — all of it, so <code>spawn handle(accept(s))</code> accepts on the <em>new</em> strand, and a loop written that way never waits: it spawns strand after strand, each parked on the accept, and spins. Bind first — <code>conn = accept(s)</code> — so the loop is the one that waits, and hand the connection to the strand.</li>
+<li><code>channel()</code> creates a <code>Chan(a)</code>; <code>send(ch, v)</code> and <code>recv(ch)</code> rendezvous — a sender blocks until a receiver arrives and vice versa.</li>
+<li><code>channel(n)</code> buffers <code>n</code> values, so a sender only blocks once the buffer is full and a receiver only blocks once it is empty.</li>
+<li><code>mailbox()</code> buffers without end: its buffer grows rather than making a sender wait. It is what a <code>machine</code> reads from, since two machines sending each other signals at once must never hold each other up — SDL's input port refuses nothing — and the price is that nothing tells a sender to slow down.</li>
+<li><code>select</code> waits on several channels at once and runs whichever arm becomes ready first; a <code>default</code> arm turns it into a non-blocking poll, and a <code>timeout(ms)</code> arm puts a deadline on the wait.</li>
+<li><code>close(ch)</code> says nothing more will be sent, and wakes everything parked on the channel at once; <code>closed(ch)</code> asks whether it has been.</li>
+<li>The program exits when <code>main</code> returns; strands still running are abandoned, as in Go.</li>
+<li>A program where every strand is blocked reports a deadlock and aborts.</li>
+</ul>
+<p>Strands are cheap: 100,000 of them cost about 45 MB and start in microseconds.</p>
+<pre><span class="k">fn</span> <span class="f">drain</span>(a, b) =
+  got = <span class="k">select</span>
+    x = <span class="f">recv</span>(a) <span class="o">-&gt;</span> x            <span class="c"># bind what arrives</span>
+    y = <span class="f">recv</span>(b) <span class="o">-&gt;</span> y
+    <span class="f">send</span>(<span class="k">done</span>, <span class="n">1</span>) <span class="o">-&gt;</span> <span class="n">0</span>          <span class="c"># a send arm is ready when it can proceed</span>
+  got
+
+<span class="k">fn</span> <span class="f">poll</span>(ch) =
+  v = <span class="k">select</span>
+    x = <span class="f">recv</span>(ch) <span class="o">-&gt;</span> x
+    <span class="k">default</span> <span class="o">-&gt;</span> -<span class="n">1</span>               <span class="c"># nothing was ready</span>
+  v</pre>
+<p>Arms are tried in order, so an earlier one wins a tie. Like <code>match</code>, <code>select</code> needs an indented block, so it goes in a body, a statement or a binding rather than inside parentheses.</p>
+<h3 id="a-deadline-on-a-wait">A deadline on a wait</h3>
+<p>A <code>timeout(ms)</code> arm becomes ready when nothing else has, for that long:</p>
+<pre><span class="k">fn</span> <span class="f">ask</span>(ch, ms) =
+  r = <span class="k">select</span>
+    v = <span class="f">recv</span>(ch) <span class="o">-&gt;</span> <span class="s">"answered "</span> + <span class="f">int_to_str</span>(v)
+    <span class="k">timeout</span>(ms) <span class="o">-&gt;</span> <span class="s">"gave up"</span>
+  r</pre>
+<p>Before this a <code>select</code> that had to give up needed a strand and a channel to be its clock, which is the right price for a <em>rate</em> and the wrong one for a deadline: a server putting a limit on every request in flight would pay a strand and a channel per request, for a clock each of them looks at once. The arm parks in the poller instead, beside the channels, and costs nothing while it waits.</p>
+<p>The shortest deadline is the one that answers, so a wait may carry both a warning and a limit. A deadline already past is ready at once, which makes <code>timeout(0)</code> a poll — <code>default</code> by another name, and the better spelling where the number is the point. Writing <code>default</code> and <code>timeout</code> in the same <code>select</code> is refused, because <code>default</code> means "do not wait" and the deadline could then never be reached. With no channel arm at all it is a sleep with a body, which falls out of the rule rather than being a special case.</p>
+<p><code>examples/timeouts.rill</code> is all five of those.</p>
+<h3 id="a-machine-a-state-and-a-mailbox">A machine: a state and a mailbox</h3>
+<p>A strand that waits for a signal, does what the signal asks in the state it is in, and waits again is what the telephone exchanges called a <em>process</em> and wrote in SDL: a state machine with a mailbox. In Rill it is a tail-recursive function over a channel and a state, and <code>machine</code> is that function written as the machine it is:</p>
+<pre><span class="k">type</span> <span class="t">Signal</span>
+  <span class="t">OffHook</span>
+  <span class="t">Digit</span>(n: <span class="t">Int</span>)
+  <span class="t">OnHook</span>
+  <span class="t">Ring</span>
+  <span class="t">Answer</span>
+  <span class="t">Report</span>
+  <span class="t">Status</span>(text: <span class="t">Str</span>)
+
+<span class="k">type</span> <span class="t">Line</span>
+  <span class="t">Idle</span>
+  <span class="t">Dialling</span>(digits: <span class="t">List</span>(<span class="t">Int</span>))
+  <span class="t">Ringing</span>(caller: <span class="t">Chan</span>(<span class="t">Mail</span>(<span class="t">Signal</span>)))
+  <span class="t">Talking</span>(peer: <span class="t">Chan</span>(<span class="t">Mail</span>(<span class="t">Signal</span>)))
+
+<span class="k">machine</span> <span class="f">line</span>(<span class="m">me</span>: <span class="t">Chan</span>(<span class="t">Mail</span>(<span class="t">Signal</span>)), log: <span class="t">Chan</span>(<span class="t">Str</span>))
+  <span class="k">state</span> <span class="t">Idle</span>
+    <span class="t">OffHook</span> <span class="o">-&gt;</span> <span class="t">Dialling</span>(<span class="t">Nil</span>)
+    <span class="t">Ring</span> <span class="o">-&gt;</span> <span class="t">Ringing</span>(<span class="m">sender</span>)
+    <span class="t">Report</span> <span class="o">-&gt;</span>
+      <span class="m">reply</span>(<span class="t">Status</span>(<span class="s">"idle"</span>))
+      <span class="k">stay</span>
+  <span class="k">state</span> <span class="t">Dialling</span>(digits)
+    <span class="t">Digit</span>(n) <span class="k">if</span> n &gt;= <span class="n">0</span> <span class="o">-&gt;</span> <span class="t">Dialling</span>(<span class="t">Cons</span>(n, digits))
+    <span class="t">OnHook</span> <span class="o">-&gt;</span> <span class="t">Idle</span>
+    <span class="k">after</span> <span class="n">10000</span> <span class="o">-&gt;</span>
+      <span class="f">send</span>(log, <span class="s">"gave up"</span>)
+      <span class="t">Idle</span>
+  <span class="k">state</span> <span class="t">Ringing</span>(caller)
+    <span class="t">Answer</span> <span class="o">-&gt;</span>
+      <span class="m">output</span>(caller, <span class="t">Answer</span>)
+      <span class="t">Talking</span>(caller)
+    <span class="t">OnHook</span> <span class="o">-&gt;</span> <span class="t">Idle</span>
+  <span class="k">state</span> <span class="t">Talking</span>(peer)
+    <span class="t">OnHook</span> <span class="o">-&gt;</span>
+      <span class="m">output</span>(peer, <span class="t">OnHook</span>)
+      <span class="k">stop</span>
+
+<span class="k">fn</span> <span class="f">main</span>() =
+  env = <span class="f">mailbox</span>()
+  a = <span class="f">mailbox</span>()
+  <span class="k">spawn</span> <span class="f">line</span>(a, <span class="f">channel</span>(<span class="n">16</span>), <span class="t">Idle</span>)
+  <span class="m">post</span>(a, env, <span class="t">OffHook</span>)</pre>
+<p>The states are the constructors of a type declared as any other, so their fields say their types once. The machine is a function of that name — a machine name is lowercase, as a function's is — whose first parameter is the mailbox its signals arrive on, and whose last parameter, unwritten, is the state: it is started with its initial state as one more argument, <code>spawn line(a, log, Idle)</code>, or called in the strand at hand.</p>
+<p>A mailbox is made with <code>mailbox()</code>, which grows rather than making a sender wait, so two machines sending each other signals at once never hold each other up; a <code>channel(n)</code> serves too, with that risk. What arrives on the mailbox is a <strong><code>Mail</code></strong>: the signal, and the mailbox it came from — so the mailbox is a <code>Chan(Mail(Signal))</code>, and in every arm <strong><code>sender</code></strong> is who sent the signal being answered, as SDL had it. <code>reply(sig)</code> sends to it, and <code>output(to, sig)</code> to any mailbox, both with this machine as the sender; a signal that wants an answer no longer has to carry a channel. From outside a machine, <code>post(to, from, sig)</code> says which mailbox the answer comes to — <code>main</code> above makes <code>env</code> for the purpose, and reads <code>recv(env).signal</code> — because in SDL the environment is a process too, and nothing sends to one without being somewhere a reply can go. Two machines talk when they share a signal type; a timer's signal has the machine itself as its sender. Each <code>state</code> names its constructor with its fields, and under it the signals it answers, as the arms of a <code>match</code> on the signal: patterns, guards, and a body whose value is the next state. A body may be a block, its last line the next state; <code>stop</code> in that place ends the strand instead, and <code>stay</code> is the state the machine is in. <code>after ms -&gt;</code> is the arm taken when no signal has arrived for that long, and a state has at most one. A signal no arm names is consumed and the state kept — what SDL does with an unexpected signal — unless an arm <code>_ -&gt;</code> says what to do with it. Every state of the type has to appear, or the machine is refused naming the one missing.</p>
+<p><strong><code>state *</code></strong> is the arms every state answers — a <code>Report</code> that says where the machine is, a <code>Kill</code> that stops it, an <code>after</code> for a machine that has heard nothing — put after each state's own, so a state that answers the same signal itself wins, and a state with an <code>after</code> of its own keeps it. <strong><code>stay</code></strong> at the tail of an arm is the state the machine is in, SDL's <code>nextstate -</code>; in a shared arm it is the only way to say it.</p>
+<p>Two more things a state may do, as SDL's processes did. A <strong>timer</strong> is a signal the machine sends itself later: <code>set(Retry, 200)</code> in an arm's body starts one that delivers <code>Retry</code> in 200 ms, <code>set(Tick(n), 10)</code> one that carries a value, <code>reset(Retry)</code> stops it, and <code>active(Retry)</code> asks whether it is running. A timer is named by its signal, setting it again moves it, and it keeps running across states — that is what <code>after</code> cannot do — until it runs out and its signal is answered by whatever state the machine is in then, like any other signal. <strong><code>save Digit(_)</code></strong> in a state keeps a signal that arrives there for a later state rather than answering or dropping it: the saved signals wait in the order they came, and each state takes the first of them it does not save before it reads its mailbox — so a <code>Data</code> that arrives while <code>Connecting</code> is answered by <code>On</code> the moment the link is up. A <code>save</code> takes a pattern and a guard, like an arm, and no body.</p>
+<p><strong>A <code>system</code> is the block diagram.</strong> It names the routes between the kinds of machine and the environment, with the signals each carries:</p>
+<pre><span class="k">system</span> exchange
+  env <span class="o">-&gt;</span> line: <span class="t">OffHook</span>, <span class="t">Digit</span>, <span class="t">OnHook</span>, <span class="t">Answer</span>, <span class="t">Report</span>
+  line <span class="o">-&gt;</span> env: <span class="t">Status</span>
+  line &lt;<span class="o">-&gt;</span> line: <span class="t">Ring</span>, <span class="t">Answer</span>, <span class="t">OnHook</span></pre>
+<p>The compiler checks it against the machines, as SDL's tools checked a block diagram against its processes: a signal a machine sends with <code>output</code> or <code>reply</code> that no route out of it carries is refused, naming the machine and the signal; so is a signal a machine answers that no route into it brings, a route to something that is not a machine of the file or <code>env</code>, and a signal that does not exist. <code>rill diagram</code> draws it first, before the machines, as a flowchart or with <code>--svg</code> as boxes and arrows. Instances are not declared — they are made with <code>spawn</code>, as many as the program wants — so the diagram is of kinds, which is what a block diagram is.</p>
+<p><strong>A run can say what its machines did.</strong> With <code>RILL_TRACE=1</code> in the environment, every machine writes one line an event on standard error — a signal received in a state and from whom, the next state, a signal sent and to whom, a timer set or reset, a signal saved or dropped, an <code>after</code> that ran out, a stop — numbered by the runtime in the order the events happened across every strand, with each machine named by the number of its mailbox: <code>recv line#2 Idle OffHook 1</code>. <strong><code>rill msc</code></strong> draws those lines as the message sequence chart SDL's tools drew from a simulation, in Mermaid or, with <code>--svg</code>, as a picture: a lifeline per machine and per mailbox of the environment, an arrow per signal, a note where a state changed. A run without the variable pays one load per event and says nothing.</p>
+<p><strong>A model runs on a clock of its own.</strong> With <code>RILL_VIRTUAL_TIME=1</code> in the environment, time does not pass while anything runs; when every strand is waiting and the soonest thing waited for is a timer, the clock jumps to it — the clock SDL's simulators kept. An <code>after 50</code> fires the moment nothing else can happen, an hour's sleep takes none, <code>now_millis</code> and <code>now_nanos</code> tell the virtual time, and the trace of a run is the same every run, which is what makes a model's behaviour something to test. Sockets and file syncs still wait in real time, with the virtual clock standing still meanwhile; one worker, since a jump made by two would be a race.</p>
+<p><strong><code>rill check</code> says what a machine drops.</strong> For each state, the signals some other state answers and this one neither answers nor saves — the ones SDL's tools list as a state's implicit consumption — as a note with the line; and once per machine, the signals no state answers at all, which are either not inputs of this machine (a reply it sends, like <code>Status</code>) or a mistake in every state. A state with <code>_ -&gt; stay</code> drops nothing. A build says nothing of this, since dropping is what an SDL process does by default; the notes are for reading a model, and the language server shows them as information.</p>
+<p><strong><code>priority Sig</code></strong> in a state answers that signal before any that came earlier, whatever its place in the mailbox — SDL's priority input, for the abort that must not wait behind the work. It takes a pattern and a guard like <code>save</code>, and the arm that answers the signal is written as any other.</p>
+<p><strong>A machine can be a procedure.</strong> Called inside another machine's transition, on the same mailbox — <code>if confirm(me, log, Asking(name)) then …</code> — it runs in that strand with states of its own, reading the signals as they come, and <code>done(v)</code> at an arm's tail is its return, as <code>stop</code> ends a machine with nothing; the caller's transition goes on with the value. That is SDL's procedure with states. The caller's timers do not fire while it runs, and what the caller had saved stays saved.</p>
+<p>Two of SDL's conditions. <strong><code>save Sig if !ready</code></strong> before an arm for <code>Sig</code> is <code>input Sig provided ready</code>: a signal that arrives before its condition holds waits, and is answered in the order it came once the condition does. <strong><code>when cond -&gt; body</code></strong> is a transition taken with no signal at all — SDL's continuous signal: when the machine is in the state and nothing pending can be answered, the first <code>when</code> whose condition holds is taken, before the machine waits for anything. A signal already in the mailbox is answered first, as in SDL, so a crate that ships at three items ships four if the fourth had arrived. A <code>when</code> that leads back to the same state with its condition still true is a loop, in SDL as here.</p>
+<p>What the parser makes of it is the function you would have written: a <code>match</code> on the state, and in each state a <code>recv</code> — or a <code>select</code> with a <code>timeout</code> where there is an <code>after</code> — followed by a <code>match</code> on the signal whose arms call the machine again with the next state. A machine with timers or saves carries them as two more parameters no program can name, a table of what is due and the list of what was kept, and its wait's deadline is the soonest of its timers and its <code>after</code>. It costs what that costs, which is nothing beyond the wait; <code>rill explain</code> shows the calls as the tail calls they are, and <code>rill fmt</code> writes the machine back as it was declared. <code>examples/exchange.rill</code> is a small exchange of them.</p>
+<p>A machine is a diagram before it is code, and <strong><code>rill diagram file.rill</code></strong> draws the file's machines from the declaration: as Mermaid (<code>stateDiagram-v2</code>, one arrow per transition labelled with the signal, its guard and what goes out on the way) to paste into a page, or with <code>--svg</code> as the process diagram SDL drew — the state at the top, under it a column per signal with the input symbol, the outputs and tasks in order, a decision where the arm branches on an <code>if</code> or a <code>match</code>, and at the bottom the next state or the stop mark — a timer set or reset as a task with the hourglass, a <code>save</code> as SDL's notched symbol. <code>-o</code> writes it to a file. The diagram is read off the code, never kept beside it, so it cannot fall behind.</p>
+<h3 id="stopping">Stopping</h3>
+<p>A strand parked on <code>recv</code> is parked until a value arrives. So tearing down whatever was going to send one leaves the strand exactly where it is, holding its stack, for as long as the program runs — and a server that has a strand per connection has as many of those as it has had connections. <code>close</code> is what there was no way to say.</p>
+<pre><span class="k">fn</span> <span class="f">produce</span>(ch, n) =
+  <span class="k">if</span> n &lt;= <span class="n">0</span> <span class="k">then</span> <span class="f">close</span>(ch)
+  <span class="k">else</span>
+    <span class="f">send</span>(ch, n)
+    <span class="f">produce</span>(ch, n - <span class="n">1</span>)
+
+<span class="k">fn</span> <span class="f">drain</span>(ch, acc) = <span class="k">match</span> <span class="f">recv_opt</span>(ch)
+  <span class="t">None</span> <span class="o">-&gt;</span> acc
+  <span class="t">Some</span>(v) <span class="o">-&gt;</span> <span class="f">drain</span>(ch, acc + v)</pre>
+<p>Closing is a <strong>broadcast</strong>, which is the thing sending a value cannot be: it reaches everyone parked on the channel at once, however many that is, and a program tearing down does not have to know the number. Closing twice is not an error, so a teardown that runs from two directions does not have to arrange which of them gets there first. What was already buffered survives, so a producer may close the moment it has nothing more to say and the consumer still sees everything in flight.</p>
+<p><code>recv_opt(ch)</code> is <code>recv</code> for a channel that ends: <code>Some(v)</code> while there is something, <code>None</code> once it is closed and empty. <code>recv</code> itself still answers the element type, and that is a decision rather than an oversight — most channels never end, and making every one of them answer an <code>Option</code> would put a <code>match</code> in front of every receive in the language to pay for the few that do. A <code>recv</code> on a closed channel ends the program and says to use <code>recv_opt</code>, which is the same answer an index outside a buffer gets and for the same reason: there is no value to hand back that would not be a lie.</p>
+<p>Sending into a closed channel ends the program too. The rule that avoids it is the one Go arrived at — <strong>whoever sends is whoever closes</strong> — and where a strand really is parked on a send that nobody will ever take, <code>select</code> is how it is told:</p>
+<pre><span class="k">fn</span> <span class="f">push</span>(out, <span class="k">stop</span>, n) =
+  r = <span class="k">select</span>
+    <span class="f">send</span>(out, n) <span class="o">-&gt;</span> <span class="f">push</span>(out, <span class="k">stop</span>, n + <span class="n">1</span>)
+    <span class="f">recv</span>(<span class="k">stop</span>) <span class="o">-&gt;</span> <span class="s">"gave up"</span>
+  r</pre>
+<p>A closed channel makes its receive arm ready, so <code>close(stop)</code> reaches that strand whatever the other arm is doing. The arm binds nothing, and that is what makes it work: there is no value for a closed channel to produce. An arm written <code>x = recv(stop) -&gt;</code> would have to produce one, and ends the program saying so.</p>
+<p><code>chan_wait</code> and <code>chan_taken</code> are the two builtins <code>recv_opt</code> is written from, in the way <code>map_get</code> is written from <code>map_find</code> and <code>map_val_at</code>. They are there for a receive of a shape the prelude did not think of; a program that wants <code>recv_opt</code> should write <code>recv_opt</code>.</p>
+<h3 id="being-told-to-stop">Being told to stop</h3>
+<p><code>wait_signal()</code> parks until the program is asked something, and answers which: <code>sig_hup()</code>, <code>sig_int()</code> or <code>sig_term()</code>, whose numbers are 1, 2 and 15 on every Unix. It is the other end of the same idea as <code>close</code>, and the two are written together:</p>
+<pre><span class="k">fn</span> <span class="f">shutdown</span>(<span class="k">done</span>) =
+  <span class="f">wait_signal</span>()
+  <span class="f">close</span>(<span class="k">done</span>)</pre>
+<p>One strand waits and tells the others, so the waiter does not have to know how many others there are. Waiting costs a worker nothing — the strand is parked in the same poller a socket would have parked it in — and a program whose only strand is waiting for a signal is not a deadlock, because it is waiting on something that answers.</p>
+<p>A signal arrives on whichever thread the operating system picked, between any two instructions, possibly while a strand holds a lock. Nothing a program has written may run there, and nothing does: the handler writes one byte to a pipe and everything else happens on the strand.</p>
+<p>Two things follow from how signals work rather than from anything Rill decided. The handlers are installed by the <strong>first</strong> <code>wait_signal</code>, so a signal sent before that does what it always did — and after it, a program that catches an interrupt and ignores it cannot be stopped with one. And <code>SIGUSR1</code> and <code>SIGUSR2</code> are not here: they are 30 and 31 on a Mac and 10 and 12 on Linux, and a number meaning one thing where it was written and another where it runs is worse than not having it. <code>SIGHUP</code> is the traditional "read your configuration again" and covers what a server would have wanted them for.</p>
+<p>Sixteen strands may wait at once, each on a pipe of its own; the seventeenth is told to have one wait and close a channel the others watch, which is what it should have been doing.</p>
+<h3 id="waiting-on-the-clock">Waiting on the clock</h3>
+<p><code>sleep_ms(ms)</code> parks the strand for that long and hands its worker to whoever else is runnable — the same manoeuvre a strand waiting on a socket makes, in the same poller. A thousand strands can be asleep at once and the program is using no processor at all; a program whose every strand is asleep is not a deadlock, because it is waiting on something that always answers.</p>
+<p>There is no <code>Ticker</code> type, because it is three lines and a channel:</p>
+<pre><span class="k">fn</span> <span class="f">ticker</span>(ch, ms) =
+  <span class="f">sleep_ms</span>(ms)
+  <span class="f">send</span>(ch, <span class="n">1</span>)
+  <span class="f">ticker</span>(ch, ms)</pre>
+<p>Give it a <code>channel(1)</code> and it composes with everything else through <code>select</code>, which is what a loop that has to answer a client <em>and</em> keep a rate needs.</p>
+<p>Ask for the time with <code>now_nanos()</code>, which is monotonic — only differences mean anything. A fixed-rate loop should sleep the distance to its next deadline rather than a constant, because the operating system's timers have slack in them and a constant accumulates it:</p>
+<pre><span class="k">fn</span> <span class="f">tick</span>(next, period) =
+  now = <span class="f">now_nanos</span>()
+  <span class="f">sleep_ms</span>(<span class="k">if</span> next &gt; now <span class="k">then</span> (next - now) / <span class="n">1000000</span> <span class="k">else</span> <span class="n">0</span>)
+  <span class="c"># ... a tick&#x27;s work here ...</span>
+  <span class="f">tick</span>(next + period, period)</pre>
+<h3 id="running-on-several-cores">Running on several cores</h3>
+<p>By default every strand runs on one OS thread, which is what lets reference counting be non-atomic and therefore fast. Programs that want real parallelism opt in twice — once at build time, once at run time:</p>
+<pre>rill build main.rill -o main --parallel   <span class="c"># refcounts become MT-safe</span>
+<span class="t">RILL_THREADS</span>=<span class="n">8</span> ./main                     <span class="c"># run on eight workers</span></pre>
+<p><code>--parallel</code> makes reference counting check a flag and use atomic updates when more than one worker is active; without it the runtime refuses <code>RILL_THREADS</code> and says so. Workers steal strands that have not started yet from each other; one that has already run stays on its worker, because its stack frames live at that worker's addresses.</p>
+<p>Parallelism helps when strands compute independently. Work that is a chain of rendezvous — one strand handing a value to the next — has nothing to overlap and runs fastest on a single worker. A library that wants to split a big piece of work asks <code>workers()</code> how many there are and spawns that many strands over ranges of it; <code>lib/num/grid.rill</code> does this for anything over a few million elements, and never spawns on a single-worker run.</p>
+<p>A program that spawns anything is compiled with a check at every recursive tail call, so a strand that loops forever hands the worker over now and then (§7 above). A <code>for</code> loop whose body calls nothing is bounded by its range and is left alone, which is what keeps a loop over ten million floats in vector instructions; a <code>while</code> is bounded by nothing but its condition and is checked whatever it calls, so a strand waiting in one for something another strand sets does not wait forever. A long <code>for</code> that should share its worker says so itself, between chunks of the work: <code>yield()</code> gives up the turn if another strand is waiting on the worker, and returns at once if none is.</p>
+<h3 id="what-strands-may-share">What strands may share</h3>
+<p>Storage — a <code>Buf</code>, a <code>Map</code>, a <code>StrBuf</code>, or anything holding one — is the one kind of value two strands can disagree about: a write from one under a read or a write from another is a race, and on several workers a race is what the machine makes of it. So a <code>--parallel</code> build checks what strands share, before the program runs, and <code>rill check --parallel</code> asks the same question of a file:</p>
+<ul>
+<li>A value handed to a strand — captured by a <code>spawn</code>, or sent down a channel — and <strong>not used afterwards</strong> by the side that gave it is the strand's alone. Anything goes.</li>
+<li>One that <strong>is</strong> used afterwards is shared. Sharing to read is fine: three strands summing thirds of one buffer while the fourth reads it too. Sharing and <strong>writing</strong> — the strand writes it, or the strand reads it while the side that kept it writes — is refused, naming the value and the line.</li>
+<li>A <strong>function value is opaque</strong>: what it holds and writes is not in its type, so a closure shared between strands is refused unless the program says what it knows about it.</li>
+</ul>
+<p>What the program knows is said with <code>apart(x)</code>, which is <code>x</code> and a claim: that this value is shared on purpose and the writes to it are kept apart — each strand its own range of a buffer, one writer and readers of a word, a closure that reads what it holds. The compiler cannot check the claim; it can make sure there is one to find. <code>spawn work(apart(f), lo, hi, done)</code> is how <code>lib/num/grid.rill</code> splits an operation across the workers, and how <code>lib/http</code> hands every connection's strand the one handler.</p>
+<pre><span class="k">fn</span> <span class="f">fill</span>(b: <span class="t">Buf</span>(<span class="t">Int</span>), v) = <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="c">#b</span>
+  b[i] = v
+
+<span class="k">fn</span> <span class="f">main</span>() =
+  b = <span class="f">buf_int</span>(<span class="n">8</span>)
+  <span class="k">spawn</span> <span class="f">fill</span>(b, <span class="n">1</span>)      <span class="c"># refused: `b` is written by this strand and still used here</span>
+  <span class="k">spawn</span> <span class="f">fill</span>(b, <span class="n">2</span>)
+  <span class="f">println</span>(<span class="f">int_to_str</span>(b[<span class="n">0</span>]))</pre>
+<p>The check follows a value through bindings, fields, matches and calls that answer with what they were given, and knows which of a function's parameters it writes, through every call. Where it cannot see — an extern, a method call, a closure, a runtime call handed storage — it assumes a write, so what it refuses may be safe, and what it accepts without a claim is: no strand writes storage another can still reach, unless <code>apart</code> says so somewhere in the program. A one-worker build interleaves strands only where they wait, so the same program is not checked there.</p>
+<hr />
+
+      <div class="prevnext">
+        <a class="prev" href="06-memory.html">← 6. Memory</a>
+        <a class="next" href="08-the-prelude.html">8. The prelude →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

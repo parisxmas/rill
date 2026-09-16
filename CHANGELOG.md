@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased — packaged
+
+`tools/dist.sh` packages a toolchain that needs nothing but a C linker:
+`bin/rill` with its runtime, the wasm runtime and libc under `lib/rill/`,
+the standard library under `lib/` — which the compiler now finds beside
+its own `bin/`, so a packaged toolchain needs no `RILL_PATH` — the
+examples, the model editor and the reference, as
+`rill-<version>-<os>-<arch>.tar.gz`. On a Mac the Homebrew `zstd` the
+compiler links travels with it and the binary is signed again.
+`tools/dist-linux.sh` builds the Linux x86-64 one in Docker, a `dist`
+stage of the editor's Dockerfile. Both are on rill.baltavista.com/dl.
+The wasm runtime had stopped compiling on two 64-bit-only spots — the
+virtual clock's start and the free-list mask — and does again.
+
+## Unreleased — a sandbox
+
+`--sandbox` on `rill build`, `run`, `test` and `check` refuses a program
+that would reach past the process: the four things a Rill program can do
+that the language cannot account for are now named capabilities — `files`
+(reading, writing, listing, renaming), `net` (sockets), `ffi` (`extern
+fn`, `asm fn`, raw memory through `Ptr`) and `os` (waiting on the
+process's signals) — and `--sandbox=files,net` allows the ones named. The
+question is answered before the build, over the checked program: every
+function reachable from where the run starts — `main` and the exports,
+or the tests under `rill test` — is searched for a runtime or foreign
+call that needs a withheld capability. A library that would need one is
+fine to import and fine to leave uncalled; the call is what is refused,
+and the error lands on the author's own line even when the call is the
+library's, saying what it was reached through. The console, the clocks,
+strands, channels, random numbers and sleeping stay open, since none of
+them reaches past the process; time and memory are the host's to bound.
+
+The model editor's server uses it: opened to the network with `--host`,
+it runs every scenario and check sandboxed, `--allow files,net` names
+what a program may reach, `--allow all` trusts whoever can reach the
+server, `--sandbox` puts the sandbox on at home too; what a run says
+names the file by its path under the root, not the machine's; and a
+`main` is built into the server's scratch directory rather than left as
+a binary beside the model. `editors/web/deploy/` publishes it: a
+two-stage Dockerfile that builds the compiler with LLVM 21 and keeps
+only what runs, a compose file that bounds memory, processes and the
+filesystem, the nginx site, and `--static` on the server so the page
+comes from the image and the models from a volume. It runs at
+rillsdl.baltavista.com.
+
+Every compiler-facing request — the model, the check, the format, the
+scenarios, a run, an edit — can bring the text it is about, and is
+then answered from a working copy of that text, one per request, gone
+after: what the page has is checked, drawn and run as it stands, and
+nothing is written. On that the server has `--protect a.rill,b.rill`,
+the examples everyone starts from — edited and run as they stand,
+never saved over, a copy kept under another name with "Save as…" — and
+`--readonly`, which saves nothing at all: the page hides Save and New
+model, every edit lives in the buffer, and that is how the public
+server runs until there are accounts.
+
 ## Unreleased — the diagrams build without the code being written
 
 An input, `after` or `when` arm opens in a form now, and the dashed
@@ -35,7 +91,15 @@ opens the selected scenario back in the form when it says what the form
 can, as code otherwise, `main` always as code. What is still typed is
 what is an expression — a guard, a condition, a constructor's
 arguments, a task — so a model is drawn, built, and run from the
-diagrams, the code read beside them. `editors/web/test/forms.js` checks
+diagrams, the code read beside them. The Simulate view shows the machines a tab each, the tab naming the
+state its machine is in as the run plays and underlined when the
+machine moved last; the run brings that machine's tab to the front
+unless a tab was picked by hand, and "follow the run" gives it back.
+The files on the left and the code on the right slide shut and open —
+a button at the right of each pane's own header shuts it, an upright
+ear on the edge brings it back, as does a click on the handle, which
+still drags to resize — and stay as they were left. Run has its green play.
+`editors/web/test/forms.js` checks
 the forms in Node, no browser: every arm, `save`, `priority`, route and
 scenario of the examples read into a form and written back as it was,
 and what each form writes from what it holds; the Rust suite runs it

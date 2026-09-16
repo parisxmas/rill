@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Types — The Rill Language Reference</title>
+<meta name="description" content="Types are inferred; annotations are optional and only ever needed to resolve an ambiguity or to document intent">
+<link rel="canonical" href="https://rill.baltavista.com/reference/02-types.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/02-types.html">
+<meta property="og:title" content="Types — The Rill Language Reference">
+<meta property="og:description" content="Types are inferred; annotations are optional and only ever needed to resolve an ambiguity or to document intent">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Types — The Rill Language Reference">
+<meta name="twitter:description" content="Types are inferred; annotations are optional and only ever needed to resolve an ambiguity or to document intent">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li class="current"><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#algebraic-data-types">Algebraic data types</a></li>
+        <li><a href="#fields">Fields</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 2</p>
+      <h1>Types</h1>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Type</th>
+<th>Values</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Int</code></td>
+<td><code>42</code>, <code>-7</code></td>
+<td>64-bit signed</td>
+</tr>
+<tr>
+<td><code>Float</code></td>
+<td><code>3.14</code>, <code>2.0</code></td>
+<td>64-bit; a decimal point is required</td>
+</tr>
+<tr>
+<td><code>Bool</code></td>
+<td><code>true</code>, <code>false</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>Str</code></td>
+<td><code>"hi"</code>, <code>"a\nb"</code></td>
+<td>escapes: <code>\n</code> <code>\t</code> <code>\\</code> <code>\"</code></td>
+</tr>
+<tr>
+<td><code>Unit</code></td>
+<td><code>()</code></td>
+<td>what <code>println</code> and <code>main</code> return; <code>()</code> is its one value, for a branch with nothing to say</td>
+</tr>
+<tr>
+<td><code>Chan(a)</code></td>
+<td><code>channel()</code></td>
+<td>see <a href="07-concurrency.html">Concurrency</a></td>
+</tr>
+<tr>
+<td><code>Map(k, v)</code></td>
+<td><code>map_new()</code></td>
+<td>a hash table; see <a href="06-memory.html#maps">Maps</a></td>
+</tr>
+<tr>
+<td><code>StrBuf</code></td>
+<td><code>strbuf()</code></td>
+<td>bytes on their way to a string</td>
+</tr>
+<tr>
+<td><code>(A, B) -&gt; C</code></td>
+<td><code>\x, y -&gt; ...</code></td>
+<td>function values; <code>() -&gt; C</code> and <code>\ -&gt; ...</code> take nothing</td>
+</tr>
+<tr>
+<td>user types</td>
+<td><code>Circle(1.0)</code></td>
+<td>declared with <code>type</code></td>
+</tr>
+</tbody>
+</table>
+<p>Types are inferred; annotations are optional and only ever needed to resolve an ambiguity or to document intent:</p>
+<pre><span class="k">fn</span> <span class="f">area</span>(r: <span class="t">Float</span>) <span class="o">-&gt;</span> <span class="t">Float</span> = <span class="n">3.14159</span> * r * r</pre>
+<p>There are no implicit conversions. <code>1 + 2.0</code> is a type error; <code>to_float</code> and <code>to_int</code> cross between them explicitly.</p>
+<p>A <strong>type alias</strong> is a name for a type: <code>type Meters = Float</code>, or with parameters, <code>type Pair(a) = (a, a)</code>. It is a name and nothing more — every mention is read as what it names before the checker sees the program, so a <code>Meters</code> and a <code>Float</code> are one type, an alias prints as what it names, and an alias that names itself is refused. A type to be kept apart from what it holds is a constructor instead: <code>type Meters</code> with <code>Meters(v: Float)</code> is a new type, and <code>m.v</code> is the number.</p>
+<p><code>Int</code> is 64-bit two's complement and its arithmetic is the machine's: <code>+</code>, <code>-</code> and <code>*</code> wrap round at the ends, as they do in C, Go and a release build of Rust. The two cases the machine has no one answer for are decided: <code>/</code> and <code>%</code> by zero end the program, saying where — a number that is silently wrong is worse than a stop — and the smallest integer divided by <code>-1</code> wraps to itself, with a remainder of zero. <code>to_int</code> truncates toward zero, and past the ends of <code>Int</code> gives the nearest end; a NaN gives zero. <code>float_bits(x)</code> is the 64 bits of a float as the <code>Int</code> they are and <code>bits_float(n)</code> the float those bits spell — no conversion, for a file format or a sort key that carries a float as bytes. A shift by 64 or more, or by less than nothing, is zero. There are no narrower numbers as values: a byte read from a string or a buffer is an <code>Int</code>, and the narrow names — <code>U8</code>, <code>I32</code>, <code>F32</code> and the rest — say how storage and C signatures are laid out; see <a href="11-calling-c.html#buffers">Buffers</a> and <a href="11-calling-c.html">Calling C</a>.</p>
+<p>A float literal may carry an exponent — <code>1.0e9</code>, <code>2.5e-3</code>, <code>1e6</code>, with or without a dot before the <code>e</code> — since a digit run can be followed by nothing else that means anything. The canonical spelling has no exponent, so <code>rill fmt</code> writes <code>1.0e9</code> back as <code>1000000000.0</code>.</p>
+<p>Float arithmetic may be <strong>contracted</strong>: a multiply and the add that consumes it can become one fused instruction, rounding once instead of twice. The answer is nearer the true one, not further, but it is not the answer two separate roundings give. C, C++ and Go do this by default and Rill follows them; Rust and Zig do not. Nothing else about float arithmetic is loosened — no reassociation, no assumptions about NaN or infinity, no reciprocals. On a Mandelbrot it is worth about six percent.</p>
+<h3 id="algebraic-data-types">Algebraic data types</h3>
+<pre><span class="k">type</span> <span class="t">Shape</span>
+  <span class="t">Circle</span>(r: <span class="t">Float</span>)
+  <span class="t">Rect</span>(w: <span class="t">Float</span>, h: <span class="t">Float</span>)
+
+<span class="k">type</span> <span class="t">List</span>(a)                    <span class="c"># generic, and recursive</span>
+  <span class="t">Nil</span>
+  <span class="t">Cons</span>(head: a, tail: <span class="t">List</span>(a))</pre>
+<p>Field names are optional (<code>Rect(Float, Float)</code> is equivalent), but a named field can be read by its name — see <a href="02-types.html#fields">Fields</a>. Constructor names are global and must start with an uppercase letter; a type and one of its constructors may share a name.</p>
+<h3 id="fields">Fields</h3>
+<p>A value whose type has <strong>one</strong> constructor is read with a dot:</p>
+<pre><span class="k">type</span> <span class="t">Point</span>
+  <span class="t">P</span>(x: <span class="t">Float</span>, y: <span class="t">Float</span>)
+
+<span class="k">fn</span> <span class="f">dist</span>(a: <span class="t">Point</span>, b: <span class="t">Point</span>) =
+  dx = a.x - b.x
+  dy = a.y - b.y
+  <span class="f">sqrt</span>(dx * dx + dy * dy)</pre>
+<p>One constructor is the whole condition, and it is the condition a binding already had: <code>P(x, y) = p</code> reads as a binding because it cannot fail, and <code>p.x</code> for the same reason. A type with several constructors reads the same way for a field <strong>every</strong> constructor has, of one type — <code>s.name</code> on a <code>Circle(r: Float, name: Str)</code> / <code>Rect(w: Float, h: Float, name: Str)</code> is certainly there whichever it is, and becomes the <code>match</code> a program would have written. A field some constructor lacks is not certainly there, so <code>match</code> is how those are read; the error names the constructor that lacks it. Updating works the same way: <code>{ s | name = "disc" }</code> rebuilds whichever constructor <code>s</code> is.</p>
+<p>The dot works on anything, not only a name: <code>mk(1).y</code>, <code>p.pos.x</code>. What it does not do is change anything. A record is a value; the way to a different one is to build it:</p>
+<pre>{ p | health = p.health - <span class="n">35</span> }</pre>
+<p>Everything <code>p</code> had, apart from these — read the <code>|</code> as "except". It is a call to the constructor, the named fields taking the new values and every other one read off <code>p</code>, which is evaluated once however many it fills in. Written out, <code>Player(p.name, p.pos, p.health - 35, p.kills)</code> builds the same value and says which fields it keeps as well; either way <code>p</code> is what it was. Writing <code>p.x = 3</code> is refused, and says this.</p>
+<p>A field read does not need the type in front of it known where the dot is written. It is answered once the whole function is inferred, so a parameter read by <code>.x</code> on one line and handed to something that says its type on the next needs no annotation, whichever order the lines are in. When nothing in the function says the type, the fields do: a value read by <code>.x</code> and <code>.y</code> is of the one single-constructor type that has an <code>x</code> and a <code>y</code>. Two types that both have them is the one case an annotation is still for, and the error names them; for a field no type has, it names the types that have the others. An update is answered the same way, by the fields it sets.</p>
+<p>A dot means one of two things and the compiler tells them apart by what the name in front of it is: a module alias (<code>geo.area</code>, from <code>import "geo" as geo</code>) or a value with fields. An alias wins where a program has both.</p>
+<hr />
+
+      <div class="prevnext">
+        <a class="prev" href="01-program-structure.html">← 1. Program structure</a>
+        <a class="next" href="03-expressions.html">3. Expressions →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

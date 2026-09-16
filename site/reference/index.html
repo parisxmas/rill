@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Rill Language Reference</title>
+<meta name="description" content="The whole of Rill, chapter by chapter, with the programs that show each construct: types, expressions, functions, traits, memory, concurrency and machines, the prelude, sockets, files, C, the toolchain.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/">
+<meta property="og:title" content="The Rill Language Reference">
+<meta property="og:description" content="The whole of Rill, chapter by chapter, with the programs that show each construct.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The Rill Language Reference">
+<meta name="twitter:description" content="The whole of Rill, chapter by chapter, with the programs that show each construct.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb">Reference</span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <main class="index">
+    <p class="chapter-no">Version 0.13</p>
+    <h1>The Rill Language Reference</h1>
+<p>Rill is a strict, statically typed functional language that compiles to native executables. This document describes the whole language; every construct shown here is exercised by the test suite.</p>
+
+    <ol class="toc">
+      <li><a href="00-getting-started.html"><span class="no">→</span><b>Getting started</b><span class="blurb">Rill comes as one directory: the compiler, the runtime it links into every program, the standard library, the examples, the model editor and this reference.</span></a></li>
+      <li><a href="01-program-structure.html"><span class="no">1</span><b>Program structure</b><span class="blurb">A program is one or more .rill files.</span></a></li>
+      <li><a href="02-types.html"><span class="no">2</span><b>Types</b><span class="blurb">Types are inferred; annotations are optional and only ever needed to resolve an ambiguity or to document intent</span></a></li>
+      <li><a href="03-expressions.html"><span class="no">3</span><b>Expressions</b><span class="blurb">Everything is an expression; there are no statements that don&#x27;t produce a value (except bindings).</span></a></li>
+      <li><a href="04-functions.html"><span class="no">4</span><b>Functions</b><span class="blurb">Functions are values: pass them by name (map(xs, double)) or as lambdas.</span></a></li>
+      <li><a href="05-traits.html"><span class="no">5</span><b>Traits</b><span class="blurb">A trait declares an interface; an impl provides it for one type.</span></a></li>
+      <li><a href="06-memory.html"><span class="no">6</span><b>Memory</b><span class="blurb">Rill has no garbage collector.</span></a></li>
+      <li><a href="07-concurrency.html"><span class="no">7</span><b>Concurrency</b><span class="blurb">Rill uses Go&#x27;s model: many lightweight threads over rendezvous channels.</span></a></li>
+      <li><a href="08-the-prelude.html"><span class="no">8</span><b>The prelude</b><span class="blurb">Every program has these in scope; any definition of your own with the same name replaces the prelude&#x27;s.</span></a></li>
+      <li><a href="09-sockets.html"><span class="no">9</span><b>Sockets</b><span class="blurb">TCP, with the scheduler doing the waiting.</span></a></li>
+      <li><a href="10-files.html"><span class="no">10</span><b>Files</b><span class="blurb">read_file and write_file are for a file a program wants all of at once.</span></a></li>
+      <li><a href="11-calling-c.html"><span class="no">11</span><b>Calling C</b><span class="blurb">A Rill function may have any name, C&#x27;s own included: fn read, fn bind, fn connect are the program&#x27;s, since no Rill function is a symbol anything outside the object can see — only export fn and main are — and the runtime&#x27;</span></a></li>
+      <li><a href="12-built-in-functions.html"><span class="no">12</span><b>Built-in functions</b><span class="blurb"></span></a></li>
+      <li><a href="13-the-toolchain.html"><span class="no">13</span><b>The toolchain</b><span class="blurb">A test is a function named test_...</span></a></li>
+      <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span><b>What Rill deliberately does not have</b><span class="blurb"></span></a></li>
+    </ol>
+  </main>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The toolchain — The Rill Language Reference</title>
+<meta name="description" content="A test is a function named test_...">
+<link rel="canonical" href="https://rill.baltavista.com/reference/13-the-toolchain.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/13-the-toolchain.html">
+<meta property="og:title" content="The toolchain — The Rill Language Reference">
+<meta property="og:description" content="A test is a function named test_...">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The toolchain — The Rill Language Reference">
+<meta name="twitter:description" content="A test is a function named test_...">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+    <nav>
+      <a href="/#look">The language</a>
+      <a href="/#models">Models</a>
+      <a href="/#numbers">Numbers</a>
+      <a href="/#missing">What it lacks</a>
+      <a href="/#book">The book</a>
+      <a href="/reference/" class="here">Reference</a>
+      <a href="/changelog.html">What's changed</a>
+      <a href="/#download">Download</a>
+      <a href="https://rillsdl.baltavista.com/">The editor</a>
+      <a href="/#made">Made with Rill</a>
+    </nav>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li class="current"><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+      </ol>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#tests">Tests</a></li>
+        <li><a href="#when-a-program-dies">When a program dies</a></li>
+        <li><a href="#a-sandbox">A sandbox</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 13</p>
+      <h1>The toolchain</h1>
+<pre>rill build main.rill -o main    <span class="c"># compile (LLVM -O3, stripped)</span>
+rill build main.rill --debug    <span class="c"># no optimization, DWARF line info for lldb</span>
+rill build main.rill --unchecked  <span class="c"># no bounds test on buffers: run it checked first</span>
+rill build main.rill --shared   <span class="c"># a .dylib/.so whose `export fn`s a C or Python host calls</span>
+rill build main.rill --emit-ir  <span class="c"># print LLVM IR</span>
+rill run main.rill              <span class="c"># compile and run</span>
+rill run main.rill --sandbox    <span class="c"># refuse what reaches past the process (--sandbox=files,net,ffi,os allows some)</span>
+rill check main.rill            <span class="c"># type-check only, saying everything it finds</span>
+rill types main.rill            <span class="c"># the signature the checker worked out for each function</span>
+rill explain main.rill          <span class="c"># the memory decisions the generator made, by line</span>
+rill diagram exchange.rill      <span class="c"># the file&#x27;s system and machines drawn: Mermaid, or SDL&#x27;s own symbols (--svg)</span>
+rill msc trace.txt              <span class="c"># a run&#x27;s trace (RILL_TRACE=1) as a sequence chart (--svg for a picture)</span>
+rill doc lib/text/str.rill      <span class="c"># a module&#x27;s documentation as Markdown; `rill doc lib -o docs/lib` for a folder</span>
+rill test tests.rill            <span class="c"># run every `test_...` function, each in its own process</span>
+rill fmt src/*.rill             <span class="c"># canonical formatting (--check, --stdout)</span>
+rill repl                       <span class="c"># interactive: definitions persist</span>
+rill lsp                        <span class="c"># a language server on stdin/stdout</span></pre>
+<h3 id="tests">Tests</h3>
+<p>A test is a function named <code>test_...</code> that takes nothing, written beside the code it tests or in a file that imports it. <code>rill test file.rill</code> builds the file once, with a <code>main</code> of its own that runs the test its first argument names — the file's <code>main</code>, if it has one, stands aside — and runs each test in a process of its own, so one that fails is one test failing and not the rest:</p>
+<pre><span class="k">fn</span> <span class="f">test_add</span>() = <span class="f">assert_eq</span>(<span class="f">add</span>(<span class="n">2</span>, <span class="n">2</span>), <span class="n">4</span>)
+
+<span class="k">fn</span> <span class="f">test_rev</span>() =
+  <span class="f">assert_eq</span>(<span class="f">reverse</span>(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))), <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Nil</span>)))
+  <span class="f">assert</span>(<span class="f">len</span>(<span class="f">reverse</span>(<span class="t">Nil</span>)) == <span class="n">0</span>)</pre>
+<pre class="out">$ rill test testing.rill
+ok    test_add
+FAIL  test_rev
+      rill: assertion failed at line 5
+        expected: Cons(2, Cons(1, Nil))
+             got: Cons(1, Cons(2, Nil))
+2 tests: 1 passed, 1 failed</pre>
+<p><code>assert(c)</code> ends the test where <code>c</code> is false, saying the line; <code>assert_eq(got, want)</code> says both values too, as <code>show</code> would. Nothing is caught, because nothing has to be: a test that failed is a program that ended, and a fault or a deadlock in one is reported the way any program's is, with the test named above it and whatever it printed below. <code>rill test file.rill test_rev</code> runs one; <code>--parallel</code> builds the tests as a <code>--parallel</code> program would be.</p>
+<h3 id="when-a-program-dies">When a program dies</h3>
+<p>A program that faults — an address that is nobody's through an <code>extern</code> or a <code>Ptr</code>, a strand that runs off the end of its stack, an instruction that is not one — still dies: nothing in it can be resumed from the middle of a write it did not finish, and the strand that faulted may hold a channel the others wait on. But it says what happened first, on standard error:</p>
+<pre class="out">rill: bus error at 0x104f27ff0 - a stack overflow: the strand ran off the end of its stack
+  in a strand started at lambda$0, worker 0
+  in dive +119
+  ... the same, 99999 more times</pre>
+<p>Which signal and where, whether the address is a stack's guard page, which strand and which worker, and the Rill functions on the stack innermost first — by name, in a release build as in a debug one, from a table of every function's start and name the compiler leaves in the binary (two pointers a function). A bounds check that fails, or a division by zero, says the same about where it was. Runtime frames are left out; a recursion that ran away is one line and a count. With <code>RILL_CRASH_WAIT=1</code> in the environment the program then waits, saying its pid, for a debugger to attach; otherwise the fault runs again under the system's default, so a core is written if one was asked for and the exit status is the one a faulting process has always had.</p>
+<p>A fault that is a <em>consequence</em> — a block freed under a holder, read later by whoever was handed it next — is found with the allocator's checks. <code>RILL_ALLOC_CHECK=1</code> at run time paints every freed block, keeps the frames of its last two frees, and reports a block handed out or freed twice, or one whose count was touched after its free, naming the freer. <code>RILL_ALLOC_CHECK=2</code> gives every small block a page of its own and makes it inaccessible at the free, so the stale holder faults on its own instruction — slow, a system call per allocation, for when the report above is not enough. <code>RILL_RC_CHECK=1</code> in the environment of <code>rill build</code> compiles a program whose every count update first asks the runtime whether the block is out at all, and a touch of a freed block is reported in the toucher's frames with the block's history: every retain, release, hand-out and free, by worker and by frame. The checks live in the runtime's allocator, and a <code>--parallel</code> build under them sends every block there; a plain build pops and pushes the pool's blocks inline, and is told the checks cover only what the runtime allocates.</p>
+<p>Where a program's memory <em>is</em>, as against where it went wrong: <code>extern fn rill_mem_report() -&gt; Int</code> writes one line to standard error — blocks out, the pool's chunks and how much of them sits on free lists, the big blocks kept for reuse, the strand records and the stacks they have saved — and the free lists by size where one holds a megabyte or more. A server's <code>/stat</code> route is the place for it: the catalogue example found 195 MB on one free list that way.</p>
+<p><code>rill types</code> is the answer to the question an inferring language raises: what did it decide? It prints every function in the file as the checker sees it, including the requirements a body imposed — <code>fn merge(a: List('a), b: List('a)) -&gt; List('a)    # where 'a is ordered</code> for a function whose source says nothing about being ordered.</p>
+<p><code>rill lsp</code> is the same knowledge, kept open for an editor: diagnostics on the buffer as it stands, the type of the name under the cursor, go to definition, an outline, and formatting. <code>editors/README.md</code> has the three lines each that Neovim, Helix and Emacs need to start it.</p>
+<h3 id="a-sandbox">A sandbox</h3>
+<p>A program that runs for someone else — a model uploaded to an editor that is open to the world, a submission, a plugin — should not get to read the files of the machine it runs on, open its sockets, call into its C libraries, or write to whatever address it likes. Those are the four things a Rill program can do that the language cannot account for, and <code>--sandbox</code> on <code>build</code>, <code>run</code>, <code>test</code> and <code>check</code> refuses all of them; <code>--sandbox=files,net</code> allows the two named. The capabilities are <code>files</code> (reading, writing, listing, renaming), <code>net</code> (sockets), <code>ffi</code> (<code>extern fn</code>, <code>asm fn</code>, and raw memory through <code>Ptr</code>) and <code>os</code> (waiting on the process's signals). Everything else the runtime offers — the console, the clocks, strands and channels, random numbers, sleeping — stays open, since none of it reaches past the process.</p>
+<p>The question is answered before the program is built, over the checked code: every function reachable from where the run starts — <code>main</code> and the exports, or the tests under <code>rill test</code> — is searched for a runtime or foreign call that needs a capability the sandbox withholds. A library that would need one is fine to import and fine to leave uncalled; it is the call that is refused, and the error lands on the author's own line even when the call is a library's, since a line in a library is not one the author can go and fix:</p>
+<pre class="out">$ rill check spy.rill --sandbox
+spy.rill: type error at line 12: `read_file` is not allowed here: it needs `files`,
+  and this sandbox allows nothing beyond the process, reached through `read_file`
+spy.rill: type error at line 20: `to_cstr` is not allowed here: it needs `ffi`,
+  and this sandbox allows nothing beyond the process, reached through `run`</pre>
+<p>This is a static answer, and it is complete for what the language can express: a Rill program has no other way to reach the machine than the runtime's functions and the foreign ones, and both are visible to the checker. What it does not bound is time and memory — a program allowed nothing can still loop and allocate — which is the host's to limit, as the editor's server does with a clock.</p>
+<hr />
+
+      <div class="prevnext">
+        <a class="prev" href="12-built-in-functions.html">← 12. Built-in functions</a>
+        <a class="next" href="14-what-rill-deliberately-does-not-have.html">14. What Rill deliberately does not have →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+  </footer>
+</div>
+</body>
+</html>
