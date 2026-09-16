@@ -38,6 +38,8 @@ main { flex: 1; display: flex; min-height: 0; position: relative; }
 .ear svg { color: var(--accent); }
 .side { width: 240px; flex: none; display: flex; flex-direction: column; overflow: hidden; transition: width 0.2s ease; }
 .side > * { min-width: 240px; }
+.side-foot { padding: 8px 12px 10px; border-top: 1px solid var(--line); font-size: 11px; line-height: 1.45; color: #888; }
+.side-foot a { color: #666; }
 .side.closed { width: 0 !important; }
 button.panel { padding: 1px 4px; margin-left: 8px; color: #999; border-color: transparent; background: transparent; line-height: 0; }
 button.panel:hover { color: var(--accent); }
