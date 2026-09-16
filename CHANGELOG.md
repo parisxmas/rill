@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — the editor moves out
+
+The model editor is a repository of its own now, `rillsdl`: its server,
+its page, its forms and their tests, with a Dockerfile that builds on
+the released toolchain rather than on the compiler's source. What stays
+here is what it needs of the compiler — `rill diagram --json`, the
+trace, `rill lsp`, the sandbox — and `tools/Dockerfile`, which builds
+the Linux toolchain the editor's image fetches.
+
 ## Unreleased — packaged
 
 `tools/dist.sh` packages a toolchain that needs nothing but a C linker:

@@ -7,7 +7,7 @@ previous/next at the foot.
     python3 site/reference/build.py        # writes site/reference/*.html
 
 Needs pandoc for the Markdown itself; the Rill colouring is done here,
-a port of editors/web/static/highlight.js, so a theme written for one
+a port of the model editor's highlight.js, so a theme written for one
 serves the other.
 """
 

@@ -84,7 +84,10 @@ h3.entry .tag{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-t
       <p>Every change, as it landed. A release names what it gathers; the entries
       under it are the steps, newest first, each written when it was made.</p>
 <h2 class="release" id="since-0-13-0"><span class="v">Since 0.13.0</span></h2>
-<p class="when">not yet released · 3 changes</p>
+<p class="when">not yet released · 4 changes</p>
+<h3 class="entry" id="since-0-13-0-the-editor-moves-out"><span class="tag">change</span>the editor moves out</h3>
+<p>The model editor is a repository of its own now, <code>rillsdl</code>: its server, its page, its forms and their tests, with a Dockerfile that builds on the released toolchain rather than on the compiler's source. What stays here is what it needs of the compiler — <code>rill diagram --json</code>, the trace, <code>rill lsp</code>, the sandbox — and <code>tools/Dockerfile</code>, which builds the Linux toolchain the editor's image fetches.</p>
+
 <h3 class="entry" id="since-0-13-0-packaged"><span class="tag">change</span>packaged</h3>
 <p><code>tools/dist.sh</code> packages a toolchain that needs nothing but a C linker: <code>bin/rill</code> with its runtime, the wasm runtime and libc under <code>lib/rill/</code>, the standard library under <code>lib/</code> — which the compiler now finds beside its own <code>bin/</code>, so a packaged toolchain needs no <code>RILL_PATH</code> — the examples and the reference, as <code>rill-&lt;version&gt;-&lt;os&gt;-&lt;arch&gt;.tar.gz</code> — the model editor stays out of it and runs at rillsdl.baltavista.com. On a Mac the Homebrew <code>zstd</code> the compiler links travels with it and the binary is signed again. <code>tools/dist-linux.sh</code> builds the Linux x86-64 one in Docker, a <code>dist</code> stage of the editor's Dockerfile. Both are on rill.baltavista.com/dl. The wasm runtime had stopped compiling on two 64-bit-only spots — the virtual clock's start and the free-list mask — and does again.</p>
 

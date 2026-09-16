@@ -166,32 +166,12 @@ the comments the modules already have, with the signatures the checker
 infers; there is no doc-comment syntax, because the comment above a
 declaration is its documentation.
 
-`editors/web/` is the model editor: a page that shows a file's `system` as
-the block diagram and each `machine` as SDL drew a process, beside its
-code, every symbol a click from the line it came from, and edits them —
-an input opens in a form that builds its arm from the file's signals,
-the machine's states and SDL's actions, a route in a form that picks its
-ends and ticks its signals, a state or a signal in a form that names its
-fields and picks their types, everything written back into the file through the formatter, and `New
-model` starts a file from a template; hover for a type and
-⌘-click for a definition, from `rill lsp` kept alive beside the server;
-and a Simulate view that builds a scenario from steps — spawn, post,
-expect, wait — as a `test_` function, and runs one — `main`, or a `test_` function — traced on the
-virtual clock and replays it, the sequence chart growing event by event
-while the diagrams light the state and transition each machine is at.
-Its server is written in Rill on the standard library and runs the
-compiler for the page:
-
-```sh
-rill run editors/web/server.rill        # http://127.0.0.1:8765, this machine alone, the current directory as root
-rill run editors/web/server.rill -- --host 0.0.0.0 --root ~/models   # for everyone: programs run sandboxed
-rill run editors/web/server.rill -- --host 0.0.0.0 --allow files,net  # ... allowed these two
-```
-
-Opened to the network, the server runs every scenario in the compiler's
-sandbox — nothing past the process unless `--allow` names it — and the
-check shows the refusals on the page before a run; `--allow all` trusts
-whoever can reach it, and `--sandbox` puts the sandbox on at home too.
+The model editor — a page that shows a file's `system` as the block
+diagram and each `machine` as SDL drew a process, edits them as forms
+written back through the formatter, and replays a scenario's run on
+them — is a repository of its own, `rillsdl`, and runs at
+<https://rillsdl.baltavista.com>. Its server is a Rill program on the
+standard library that runs this compiler for the page.
 
 ## Examples
 

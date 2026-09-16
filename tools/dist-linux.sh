@@ -7,7 +7,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-docker build --platform linux/amd64 --target dist -f editors/web/deploy/Dockerfile -t rill-dist .
+docker build --platform linux/amd64 --target dist -f tools/Dockerfile -t rill-dist .
 id=$(docker create --platform linux/amd64 rill-dist)
 mkdir -p dist
 docker cp "$id:/src/dist/." dist/linux-tmp
