@@ -1740,6 +1740,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
+    /// The type a field of this type is stored as. A `Unit` field — the
+    /// `()` in `Ok(())` — has no value, but a box has a slot for every
+    /// field, so it takes a byte that is never read.
+    fn slot_type(&self, ty: &Ty) -> BasicTypeEnum<'ctx> {
+        self.llvm_type(ty).unwrap_or_else(|| self.ctx.i8_type().into())
+    }
+
+    /// What is stored in a `Unit` field's slot.
+    fn unit_slot(&self) -> BasicValueEnum<'ctx> {
+        self.ctx.i8_type().const_zero().into()
+    }
+
     /// The integer C calls a word: `size_t` wide, which is pointer wide.
     fn word_type(&self) -> IntType<'ctx> {
         if self.wasm { self.ctx.i32_type() } else { self.ctx.i64_type() }
@@ -2431,7 +2443,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             vec![self.ctx.i64_type().into(), self.ctx.i64_type().into()];
         for f in &self.tmod.adts[adt].ctors[ctor].fields {
             let cf = subst_gen(f, targs);
-            members.push(self.llvm_type(&cf).expect("ADT fields are never Unit"));
+            members.push(self.slot_type(&cf));
         }
         self.ctx.struct_type(&members, false)
     }
@@ -3725,7 +3737,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         .expect("LLVM builder error");
                     let v = self
                         .builder
-                        .build_load(self.llvm_type(&fty).expect("a field is never Unit"), fp, "fv")
+                        .build_load(self.slot_type(&fty), fp, "fv")
                         .expect("LLVM builder error");
                     return Ok((v, false));
                 }
@@ -3744,7 +3756,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .expect("LLVM builder error");
                 let v = self
                     .builder
-                    .build_load(self.llvm_type(&fty).expect("a field is never Unit"), fp, "fv")
+                    .build_load(self.slot_type(&fty), fp, "fv")
                     .expect("LLVM builder error");
                 self.emit_retain(v, &fty);
                 self.emit_release(b, &bty);
@@ -4094,7 +4106,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         .expect("LLVM builder error");
                     let fv = self
                         .builder
-                        .build_load(self.llvm_type(&cf).unwrap(), fp, "fv")
+                        .build_load(self.slot_type(&cf), fp, "fv")
                         .expect("LLVM builder error");
                     heap.push((fv, cf));
                 }
@@ -4176,6 +4188,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         match ty {
             Ty::Str => Ok(v),
+            Ty::Unit => Ok(self.const_str("()").into()),
             // `(a, b)`, the way a pair shows.
             Ty::Float2 => {
                 let (x, y) = self.lanes(v);
@@ -4318,7 +4331,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .expect("LLVM builder error");
                 let fv = self
                     .builder
-                    .build_load(self.llvm_type(&cf).unwrap(), fp, "fv")
+                    .build_load(self.slot_type(&cf), fp, "fv")
                     .expect("LLVM builder error");
                 if self.is_heap(&cf) {
                     self.emit_retain(fv, &cf);
@@ -4352,6 +4365,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         line: usize,
     ) -> Result<IntValue<'ctx>, CodegenError> {
         match ty {
+            // Every `()` is the same one.
+            Ty::Unit => Ok(self.ctx.bool_type().const_int(1, false)),
             Ty::Int | Ty::Bool => Ok(self
                 .builder
                 .build_int_compare(IntPredicate::EQ, a.into_int_value(), b.into_int_value(), "eq")
@@ -4489,7 +4504,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         .builder
                         .build_struct_gep(struct_ty, pb, (fi + 2) as u32, "fb")
                         .expect("LLVM builder error");
-                    let ll = self.llvm_type(&cf).unwrap();
+                    let ll = self.slot_type(&cf);
                     let fa = self.builder.build_load(ll, fap, "fav").expect("builder");
                     let fb = self.builder.build_load(ll, fbp, "fbv").expect("builder");
                     let c_eq = self.gen_eq_of(fa, fb, &cf, line)?;
@@ -4568,6 +4583,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     ) -> Result<IntValue<'ctx>, CodegenError> {
         let i64t = self.ctx.i64_type();
         match ty {
+            Ty::Unit => Ok(i64t.const_zero()),
             Ty::Int => Ok(self.hash_int(v.into_int_value())),
             Ty::Bool => {
                 let w = self
@@ -4708,7 +4724,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .expect("LLVM builder error");
                 let fv = self
                     .builder
-                    .build_load(self.llvm_type(&cf).unwrap(), fp, "fv")
+                    .build_load(self.slot_type(&cf), fp, "fv")
                     .expect("LLVM builder error");
                 let fh = self.gen_hash_of(fv, &cf, line)?;
                 let x = self.builder.build_xor(acc, fh, "mixin").expect("LLVM builder error");
@@ -7860,13 +7876,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     .expect("LLVM builder error");
                 let v = self
                     .builder
-                    .build_load(self.llvm_type(&fty).expect("a field is never Unit"), fp, "fv")
+                    .build_load(self.slot_type(&fty), fp, "fv")
                     .expect("LLVM builder error");
                 self.emit_retain(v, &fty);
                 if owned {
                     self.emit_release(b, &bty);
                 }
-                Ok(Some(v))
+                // A `Unit` field is no value at all, whatever its slot holds.
+                Ok(if fty == Ty::Unit { None } else { Some(v) })
             }
             TK::MapNew => {
                 let (kty, vty) = {
@@ -9481,7 +9498,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error");
             let fv = self
                 .builder
-                .build_load(self.llvm_type(fty).expect("ADT fields are never Unit"), fp, "fv")
+                .build_load(self.slot_type(fty), fp, "fv")
                 .expect("LLVM builder error");
             loaded.push((fi as u32, fv, fty.clone()));
         }
@@ -9603,7 +9620,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error");
             let fv = self
                 .builder
-                .build_load(self.llvm_type(fty).expect("ADT fields are never Unit"), fp, "oldfv")
+                .build_load(self.slot_type(fty), fp, "oldfv")
                 .expect("LLVM builder error");
             self.emit_release(fv, fty);
         }
@@ -9674,9 +9691,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     let st = self.flat_struct(&whole);
                     let mut agg = st.get_undef();
                     for (i, a) in args.iter().enumerate() {
-                        let v = self
-                            .gen_expr(a, scope, subst, func)?
-                            .expect("ADT fields are never Unit");
+                        let v = self.gen_expr(a, scope, subst, func)?.unwrap_or(self.unit_slot());
                         agg = self
                             .builder
                             .build_insert_value(agg, v, i as u32, "f")
@@ -9756,7 +9771,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         .build_struct_gep(struct_ty, ptr, (i + 2) as u32, "field")
                         .expect("LLVM builder error");
                     self.builder
-                        .build_store(fp, v.expect("ADT fields are never Unit"))
+                        .build_store(fp, v.unwrap_or(self.unit_slot()))
                         .expect("LLVM builder error");
                 }
                 Ok(Some(ptr.into()))
@@ -9831,7 +9846,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             let mut members: Vec<BasicTypeEnum> = Vec::new();
             let mut vals = Vec::new();
             for a in parts {
-                let v = self.gen_expr(a, scope, subst, func)?.expect("ADT fields are never Unit");
+                let v = self.gen_expr(a, scope, subst, func)?.unwrap_or(self.unit_slot());
                 let ty = self.concrete(&a.ty, subst);
                 members.push(v.get_type());
                 vals.push(v);
@@ -9994,10 +10009,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     _ => None,
                 };
                 let v = match part {
-                    Some(v) => v,
-                    None => self.value_at(scrut.expect("value"), &scrut_ty, occ).0,
+                    Some(v) => Some(v),
+                    None => {
+                        let (v, fty) = self.value_at(scrut.expect("value"), &scrut_ty, occ);
+                        // A name for a `Unit` field names nothing.
+                        if fty == Ty::Unit { None } else { Some(v) }
+                    }
                 };
-                arm_scope.insert(name.clone(), Some(v));
+                arm_scope.insert(name.clone(), v);
                 self.bound_fns.remove(name);
             }
             match tail {
@@ -10211,7 +10230,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error");
             val = self
                 .builder
-                .build_load(self.llvm_type(&field_ty).expect("fields are never Unit"), fp, "fv")
+                .build_load(self.slot_type(&field_ty), fp, "fv")
                 .expect("LLVM builder error");
             ty = field_ty;
         }
@@ -10245,8 +10264,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let mut binds = Vec::new();
                 collect_bindings(&arms[*k].pattern, Vec::new(), &self.tmod.ctors, &mut binds);
                 for (name, occ) in &binds {
-                    let (v, _) = self.value_at(root.expect("value"), root_ty, occ);
-                    guard_scope.insert(name.clone(), Some(v));
+                    let (v, fty) = self.value_at(root.expect("value"), root_ty, occ);
+                    guard_scope.insert(name.clone(), if fty == Ty::Unit { None } else { Some(v) });
                 }
                 let cond = self
                     .gen_expr(guard, &mut guard_scope, subst, func)?

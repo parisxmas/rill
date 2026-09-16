@@ -347,7 +347,7 @@ fn doctest_cmd(args: &[String]) -> Result<ExitCode, String> {
                 origin.push(Some(ex.line));
             }
             // a block answers `Ok`, so an example may use `?` as a program would
-            src.push_str("  Ok(0)\n\n");
+            src.push_str("  Ok(())\n\n");
             origin.push(None);
             origin.push(None);
         }

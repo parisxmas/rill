@@ -5517,3 +5517,52 @@ fn the_standard_library_examples_are_true() {
     assert!(said.ends_with("2 examples in 1 file: 1 passed, 1 failed\n"), "{said}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `Ok(())`, `Some(())`, a `()` in a tuple: a `Unit` field is a slot that
+/// holds nothing, and a name for it names nothing. It shows as `()`,
+/// equals itself, and `?` goes through it.
+#[test]
+fn a_unit_field_is_a_slot_that_holds_nothing() {
+    let src = r#"
+type Box(a)
+  Box(v: a)
+
+fn f(n) =
+  if n < 0 then Err("negative") else
+    println(n)
+    Ok(())
+
+fn g(n) = if n > 0 then Some(()) else None
+
+fn main() =
+  match f(3)
+    Ok(_) -> println("ok")
+    Err(e) -> println(e)
+  match f(-1)
+    Ok(u) -> println("ok")
+    Err(e) -> println(e)
+  match g(1)
+    Some(u) -> u
+    None -> ()
+  println(show(f(3)))
+  println(show(g(0)))
+  b = Box(())
+  b.v
+  println(show(b))
+  println(show(Ok(()) == Ok(())))
+  println(show(Some(Ok(())) == Some(Ok(()))))
+  println(show(Cons((), Cons((), Nil))))
+  match (1, ())
+    (n, u) -> println(n)
+  k = map_new()
+  k[Ok(())] = 1
+  println(show(k[Ok(())]))
+  f(5)?
+  println("through")
+  Ok(())
+"#;
+    assert_eq!(
+        run_source("unitfield", src),
+        "3\nok\nnegative\n3\nOk(())\nNone\nBox(())\ntrue\ntrue\nCons((), Cons((), Nil))\n1\nSome(1)\n5\nthrough\n"
+    );
+}

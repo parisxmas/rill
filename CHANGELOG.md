@@ -14,8 +14,13 @@ checked by the test suite and shown on the reference pages, and the
 helpers that were never an interface are `private` now, so a page
 shows what a caller may call: 989 functions where there were 1,497.
 Two things were found on the way: `cli/args` aligned its `--help` line
-apart from the others, and `Ok(())` still stops codegen at "ADT fields
-are never Unit", which is a bug for another day.
+apart from the others, and `Ok(())` stopped codegen at "ADT fields are
+never Unit" — so a program could not answer `Ok(())` the way a test
+does. A `Unit` field is a slot that holds nothing now: `Ok(())`,
+`Some(())`, a `()` in a tuple or a list, are built, matched, shown as
+`()`, equal to themselves and hashed, and a name bound to one names
+nothing, as a `Unit` binding always has. The doctest runner's blocks
+answer `Ok(())` too.
 
 The reference has a chapter on the grid library — what a grid is, how
 one is made, read, reshaped, combined, masked, reduced, sorted and
