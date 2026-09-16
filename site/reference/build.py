@@ -212,6 +212,7 @@ PAGE = """<!doctype html>
   </div>
   <footer>
     <p class="mono">Rill v{short} · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <b>Barış Akın</b>.</p>
   </footer>
 </div>
 </body>
@@ -276,6 +277,7 @@ INDEX = """<!doctype html>
   </div>
   <footer>
     <p class="mono">Rill v{short} · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <b>Barış Akın</b>.</p>
   </footer>
 </div>
 </body>
