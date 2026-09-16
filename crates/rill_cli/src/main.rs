@@ -201,7 +201,7 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
     }
     let mut drawn = String::new();
     if json {
-        drawn = diagram::model_json(&own.systems, &own.machines).render();
+        drawn = diagram::model_json(&own.systems, &own.machines, &own.functions).render();
         drawn.push('\n');
     }
     for sd in own.systems.iter().filter(|_| !json) {
@@ -210,8 +210,9 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
             drawn.push('\n');
         }
     }
+    let procs: Vec<String> = own.functions.iter().map(|f| f.name.clone()).collect();
     for m in own.machines.iter().filter(|_| !json) {
-        drawn.push_str(&if svg { diagram::svg(m) } else { diagram::mermaid(m) });
+        drawn.push_str(&if svg { diagram::svg(m, &procs) } else { diagram::mermaid(m, &procs) });
         if !svg {
             drawn.push('\n');
         }

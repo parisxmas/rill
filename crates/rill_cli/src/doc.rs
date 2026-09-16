@@ -324,7 +324,7 @@ pub fn markdown(path: &Path, src: &str, own: &Module, checked: Option<&rill_type
                 out.push_str(&format!("- `{shown}` answers {}\n", if inputs.is_empty() { "nothing".to_string() } else { inputs.iter().map(|i| format!("`{i}`")).collect::<Vec<_>>().join(", ") }));
             }
             out.push_str("\n```mermaid\n");
-            out.push_str(&crate::diagram::mermaid(m));
+            out.push_str(&crate::diagram::mermaid(m, &[]));
             out.push_str("```\n\n");
         }
     }

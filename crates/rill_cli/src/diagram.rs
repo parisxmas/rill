@@ -19,9 +19,17 @@ enum Step {
     Output(String, String),
     /// `set(T, ms)` or `reset(T)`: a timer started or stopped.
     Timer(String),
+    /// A call of one of the file's own functions — SDL's procedure call —
+    /// as written, and the function's name, whose diagram is drawn too.
+    Call(String, String),
     /// Any other statement, as written.
     Task(String),
 }
+
+/// The names of the file's own functions: what a call is a procedure
+/// call of. Everything is `machine`s, `system`s and functions; a call of
+/// anything else is a task.
+pub type Procs = [String];
 
 /// A step with the line it was written on.
 struct Placed {
@@ -64,7 +72,7 @@ struct Transition {
     end: End,
 }
 
-fn transitions(st: &StateDef) -> Vec<Transition> {
+fn transitions(st: &StateDef, procs: &Procs) -> Vec<Transition> {
     let mut out = Vec::new();
     let mut items: Vec<(usize, Transition)> = Vec::new();
     for a in &st.arms {
@@ -72,15 +80,15 @@ fn transitions(st: &StateDef) -> Vec<Transition> {
             Some(g) => format!("{} if {}", pattern_text(&a.pattern), expr_text(g)),
             None => pattern_text(&a.pattern),
         };
-        let (steps, end) = body_of(&a.body);
+        let (steps, end) = body_of(&a.body, procs);
         items.push((a.line, Transition { input, timer: false, kind: "input", line: a.line, steps, end }));
     }
     if let Some((ms, body, line)) = &st.after {
-        let (steps, end) = body_of(body);
+        let (steps, end) = body_of(body, procs);
         items.push((*line, Transition { input: format!("after {} ms", expr_text(ms)), timer: true, kind: "after", line: *line, steps, end }));
     }
     for (cond, body, line) in &st.whens {
-        let (steps, end) = body_of(body);
+        let (steps, end) = body_of(body, procs);
         items.push((*line, Transition { input: format!("when {}", expr_text(cond)), timer: false, kind: "when", line: *line, steps, end }));
     }
     items.sort_by_key(|(l, _)| *l);
@@ -91,7 +99,7 @@ fn transitions(st: &StateDef) -> Vec<Transition> {
 }
 
 /// The steps a body takes and how it ends.
-fn body_of(e: &Expr) -> (Vec<Placed>, End) {
+fn body_of(e: &Expr, procs: &Procs) -> (Vec<Placed>, End) {
     match e {
         Expr::Block(stmts) => {
             let mut steps = Vec::new();
@@ -99,20 +107,20 @@ fn body_of(e: &Expr) -> (Vec<Placed>, End) {
             for (i, s) in stmts.iter().enumerate() {
                 if i + 1 == n {
                     if let Stmt::Expr(last) = s {
-                        let (more, end) = body_of(last);
+                        let (more, end) = body_of(last, procs);
                         steps.extend(more);
                         return (steps, end);
                     }
                 }
-                steps.push(Placed { step: step_of(s), line: step_line(s) });
+                steps.push(Placed { step: step_of(s, procs), line: step_line(s) });
             }
             (steps, End::Next("?".into()))
         }
         Expr::Var(n, _) if n == "stop" => (Vec::new(), End::Stop),
         Expr::Call { name, args, .. } if name == "done" && args.len() == 1 => (Vec::new(), End::Next(format!("done({})", expr_text(&args[0])))),
         Expr::If { cond, then, els, .. } => {
-            let (ts, te) = body_of(then);
-            let (es, ee) = body_of(els);
+            let (ts, te) = body_of(then, procs);
+            let (es, ee) = body_of(els, procs);
             (
                 Vec::new(),
                 End::Decision(
@@ -128,7 +136,7 @@ fn body_of(e: &Expr) -> (Vec<Placed>, End) {
             let branches = arms
                 .iter()
                 .map(|a| {
-                    let (steps, end) = body_of(&a.body);
+                    let (steps, end) = body_of(&a.body, procs);
                     let label = match &a.guard {
                         Some(g) => format!("{} if {}", pattern_text(&a.pattern), expr_text(g)),
                         None => pattern_text(&a.pattern),
@@ -164,7 +172,11 @@ fn saves_of(st: &StateDef) -> Vec<String> {
         .collect()
 }
 
-fn step_of(s: &Stmt) -> Step {
+fn step_of(s: &Stmt, procs: &Procs) -> Step {
+    let called = |e: &Expr| match e {
+        Expr::Call { name, .. } if procs.iter().any(|p| p == name) => Some(name.clone()),
+        _ => None,
+    };
     match s {
         Stmt::Expr(Expr::Call { name, args, .. }) if (name == "send" || name == "output") && args.len() == 2 => {
             Step::Output(expr_text(&args[0]), expr_text(&args[1]))
@@ -178,8 +190,14 @@ fn step_of(s: &Stmt) -> Step {
         Stmt::Expr(Expr::Call { name, args, .. }) if name == "reset" && args.len() == 1 => {
             Step::Timer(format!("reset {}", expr_text(&args[0])))
         }
-        Stmt::Expr(e) => Step::Task(expr_text(e)),
-        Stmt::Bind { name, value, .. } => Step::Task(format!("{name} = {}", expr_text(value))),
+        Stmt::Expr(e) => match called(e) {
+            Some(f) => Step::Call(expr_text(e), f),
+            None => Step::Task(expr_text(e)),
+        },
+        Stmt::Bind { name, value, .. } => match called(value) {
+            Some(f) => Step::Call(format!("{name} = {}", expr_text(value)), f),
+            None => Step::Task(format!("{name} = {}", expr_text(value))),
+        },
         Stmt::PatBind { pattern, value, .. } => {
             Step::Task(format!("{} = {}", pattern_text(pattern), expr_text(value)))
         }
@@ -203,7 +221,7 @@ fn ctor_of(next: &str) -> String {
 
 // ---- Mermaid ----------------------------------------------------------------
 
-pub fn mermaid(m: &MachineDef) -> String {
+pub fn mermaid(m: &MachineDef, procs: &Procs) -> String {
     let mut out = String::from("stateDiagram-v2\n");
     out.push_str(&format!("  %% machine {}\n", m.name));
     if m.states.iter().any(|st| matches!(st.pattern, Pattern::Wildcard)) {
@@ -211,7 +229,7 @@ pub fn mermaid(m: &MachineDef) -> String {
     }
     for st in &m.states {
         let from = state_name(&st.pattern);
-        for t in transitions(st) {
+        for t in transitions(st, procs) {
             let mut label = t.input.clone();
             let outs = outputs_text(&t.steps);
             if !outs.is_empty() {
@@ -235,7 +253,7 @@ fn outputs_text(steps: &[Placed]) -> String {
         .iter()
         .map(|p| match &p.step {
             Step::Output(to, sig) => format!("{sig} to {to}"),
-            Step::Timer(t) | Step::Task(t) => t.clone(),
+            Step::Timer(t) | Step::Task(t) | Step::Call(t, _) => t.clone(),
         })
         .collect();
     parts.join(", ")
@@ -290,6 +308,8 @@ enum Sym {
     TimerTask(String),
     /// A signal kept for a later state.
     Save(String),
+    /// A procedure called: the task symbol with a bar down each side.
+    Call(String),
     Decision(String),
     Stop,
 }
@@ -305,7 +325,7 @@ struct Column {
 /// and kept whole as the tooltip.
 fn sym_width(s: &Sym) -> f64 {
     let t = match s {
-        Sym::State(t) | Sym::Input(t) | Sym::Timer(t) | Sym::Output(t) | Sym::Task(t) | Sym::TimerTask(t) | Sym::Save(t) | Sym::Decision(t) => t.as_str(),
+        Sym::State(t) | Sym::Input(t) | Sym::Timer(t) | Sym::Output(t) | Sym::Task(t) | Sym::TimerTask(t) | Sym::Save(t) | Sym::Call(t) | Sym::Decision(t) => t.as_str(),
         Sym::Stop => "",
     };
     (t.chars().count() as f64 * CHAR + 40.0).clamp(W, W_MOST)
@@ -339,6 +359,7 @@ fn column_of(steps: &[Placed], end: &End) -> Column {
         .map(|p| match &p.step {
             Step::Output(to, sig) => Sym::Output(format!("{sig} → {to}")),
             Step::Timer(t) => Sym::TimerTask(t.clone()),
+            Step::Call(t, _) => Sym::Call(t.clone()),
             Step::Task(t) => Sym::Task(t.clone()),
         })
         .collect();
@@ -357,11 +378,11 @@ fn column_of(steps: &[Placed], end: &End) -> Column {
     Column { syms, forks }
 }
 
-pub fn svg(m: &MachineDef) -> String {
+pub fn svg(m: &MachineDef, procs: &Procs) -> String {
     // one block per state: the state symbol over its transitions' columns
     let mut blocks: Vec<(String, Vec<Column>)> = Vec::new();
     for st in &m.states {
-        let mut cols: Vec<Column> = transitions(st)
+        let mut cols: Vec<Column> = transitions(st, procs)
             .into_iter()
             .map(|t| {
                 let mut c = column_of(&t.steps, &t.end);
@@ -481,6 +502,13 @@ fn draw(out: &mut String, s: &Sym, x: f64, y: f64, w: f64) {
             // SDL's save: the rectangle with its right side notched inward
             out.push_str(&format!("<polygon points=\"{x},{y} {x2},{y} {},{ym} {x2},{y2} {x},{y2}\" {style}/>\n", x2 - 12.0));
             text(out, x + w / 2.0 - 6.0, ym + 4.0, &format!("save {t}"), "middle");
+        }
+        Sym::Call(t) => {
+            // SDL's procedure call: the task with a bar inside each side
+            out.push_str(&format!("<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{H}\" {style}/>\n"));
+            line(out, x + 6.0, y, x + 6.0, y2);
+            line(out, x2 - 6.0, y, x2 - 6.0, y2);
+            text(out, x + w / 2.0, ym + 4.0, t, "middle");
         }
         Sym::Decision(t) => {
             let cx = x + w / 2.0;
@@ -853,6 +881,7 @@ fn step_json(p: &Placed) -> Json {
     match &p.step {
         Step::Output(to, sig) => Json::obj(vec![("kind", Json::str("output")), ("to", Json::str(to.clone())), ("signal", Json::str(sig.clone())), line]),
         Step::Timer(t) => Json::obj(vec![("kind", Json::str("timer")), ("text", Json::str(t.clone())), line]),
+        Step::Call(t, f) => Json::obj(vec![("kind", Json::str("call")), ("text", Json::str(t.clone())), ("name", Json::str(f.clone())), line]),
         Step::Task(t) => Json::obj(vec![("kind", Json::str("task")), ("text", Json::str(t.clone())), line]),
     }
 }
@@ -885,8 +914,29 @@ fn end_json(e: &End) -> Json {
     }
 }
 
-/// Everything drawable in a file: its systems and its machines.
-pub fn model_json(systems: &[SystemDef], machines: &[MachineDef]) -> Json {
+/// The functions a body calls, by name, through the decisions.
+fn calls_in(steps: &[Placed], end: &End, out: &mut Vec<String>) {
+    for p in steps {
+        if let Step::Call(_, f) = &p.step {
+            if !out.contains(f) {
+                out.push(f.clone());
+            }
+        }
+    }
+    if let End::Decision(_, branches) = end {
+        for b in branches {
+            calls_in(&b.steps, &b.end, out);
+        }
+    }
+}
+
+/// Everything drawable in a file: its systems, its machines, and the
+/// procedures — the file's functions the machines call, and those they
+/// call in turn — each drawn as SDL drew a procedure: its body's steps
+/// and decisions, ending in what it returns.
+pub fn model_json(systems: &[SystemDef], machines: &[MachineDef], functions: &[FnDef]) -> Json {
+    let procs: Vec<String> = functions.iter().map(|f| f.name.clone()).collect();
+    let procs = procs.as_slice();
     let systems: Vec<Json> = systems
         .iter()
         .map(|sd| {
@@ -913,7 +963,7 @@ pub fn model_json(systems: &[SystemDef], machines: &[MachineDef]) -> Json {
             ])
         })
         .collect();
-    let machines: Vec<Json> = machines
+    let drawn_machines: Vec<Json> = machines
         .iter()
         .map(|m| {
             let states: Vec<Json> = m
@@ -940,7 +990,7 @@ pub fn model_json(systems: &[SystemDef], machines: &[MachineDef]) -> Json {
                         (
                             "transitions",
                             Json::Arr(
-                                transitions(st)
+                                transitions(st, procs)
                                     .iter()
                                     .map(|t| {
                                         Json::obj(vec![
@@ -967,5 +1017,36 @@ pub fn model_json(systems: &[SystemDef], machines: &[MachineDef]) -> Json {
             ])
         })
         .collect();
-    Json::obj(vec![("systems", Json::Arr(systems)), ("machines", Json::Arr(machines))])
+    // the procedures: what the machines call, and what those call, until nothing new is called
+    let mut wanted: Vec<String> = Vec::new();
+    for m in machines {
+        for st in &m.states {
+            for t in transitions(st, procs) {
+                calls_in(&t.steps, &t.end, &mut wanted);
+            }
+        }
+    }
+    let mut i = 0;
+    while i < wanted.len() {
+        if let Some(f) = functions.iter().find(|f| f.name == wanted[i]) {
+            let (steps, end) = body_of(&f.body, procs);
+            calls_in(&steps, &end, &mut wanted);
+        }
+        i += 1;
+    }
+    let procedures: Vec<Json> = functions
+        .iter()
+        .filter(|f| wanted.contains(&f.name))
+        .map(|f| {
+            let (steps, end) = body_of(&f.body, procs);
+            Json::obj(vec![
+                ("name", Json::str(f.name.clone())),
+                ("line", Json::Num(f.line as f64)),
+                ("params", Json::Arr(f.params.iter().map(|p| Json::str(p.name.clone())).collect())),
+                ("steps", Json::Arr(steps.iter().map(step_json).collect())),
+                ("end", end_json(&end)),
+            ])
+        })
+        .collect();
+    Json::obj(vec![("systems", Json::Arr(systems)), ("machines", Json::Arr(drawn_machines)), ("procedures", Json::Arr(procedures))])
 }
