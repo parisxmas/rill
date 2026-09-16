@@ -89,7 +89,32 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
-## Unreleased — the model editor keeps a language server, on this machine alone
+## Unreleased — `rill doc`
+
+A module's documentation, read off the file: the comment above a
+declaration is its documentation and the block after `module` the
+module's, as every module in `lib/` was written, so nothing had to be
+rewritten to be documented. `rill doc file.rill` gives Markdown — the
+head, the types with their constructors, the traits with their methods,
+the systems and machines with their routes, states and diagrams, the
+functions with the signatures the checker inferred, private ones left
+out — and `rill doc lib -o docs/lib` a page a module. Tuples are shown
+as `(a, b)` in every signature now, not as `Tuple2`.
+
+## Unreleased — the model editor starts a model, and says where its edits are
+
+`New model` above the file list makes a file from a template — a signal
+type, a state type, a machine, a `system`, a `main` and a test — and
+opens it. An edit bar above the diagrams says what a click does and
+adds what a click cannot: `+ signal` into the signal type, `+ machine`
+with a state type of its own at the end of the file, `+ system` with a
+first route. The problems list has a height of its own, dragged by a
+handle, and an icon per kind: error, warning, note. Everything on a
+diagram can be deleted: a state opens in its box with its whole block
+and Delete takes the constructor out of the state type with it; `edit`
+beside a machine's or a system's name opens the whole block, to change
+or delete. The file list shows the models — the files with a `machine`
+or a `system` in them — and every `.rill` file on request.
 
 The diagrams zoom: `−`, `100%`, `+` beside the tabs, ⌥ with `+`, `−`
 and `0`, and ⌘ with the wheel over a diagram; the size is kept between

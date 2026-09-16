@@ -158,6 +158,97 @@ const Edit = (() => {
     });
   }
 
+  // A state: its whole block, to change or delete — and with it the
+  // constructor in the state type, so the type does not keep a state the
+  // machine no longer has.
+  function stateBox(at, m, st) {
+    const end = blockEnd(st.line);
+    const ls = linesOf();
+    open(at, `state ${st.pattern} of ${m.name}, lines ${st.line}–${end}`, ls.slice(st.line - 1, end).join("\n"),
+      v => replaceLines(st.line, end, v.replace(/\n+$/, "")),
+      async () => {
+        const edits = [{ from: st.line, to: end, text: "" }];
+        const ctorLine = stateCtorLine(st.name);
+        if (ctorLine && st.name !== "*") edits.push({ from: ctorLine, to: ctorLine, text: "" });
+        const data = await send(edits);
+        await reload(data.text);
+      }, true);
+  }
+
+  // The line in a type declaration that is this state's constructor.
+  function stateCtorLine(state) {
+    const ls = linesOf();
+    for (let i = 0; i < ls.length; i++) {
+      if (!/^type /.test(ls[i])) continue;
+      const end = blockEnd(i + 1);
+      for (let j = i + 1; j < end; j++) {
+        if (new RegExp("^  " + state + "(\\(|$)").test(ls[j])) return j + 1;
+      }
+    }
+    return 0;
+  }
+
+  // A whole machine or system: its block, to change or delete.
+  function blockBox(at, what, name, line) {
+    const end = blockEnd(line);
+    const ls = linesOf();
+    open(at, `${what} ${name}, lines ${line}–${end}`, ls.slice(line - 1, end).join("\n"),
+      v => replaceLines(line, end, v.replace(/\n+$/, "")),
+      () => replaceLines(line, end, ""), true);
+  }
+
+  // ---- the file's own additions: a signal, a machine, a system ------------------
+
+  // The signal type: what a machine's mailbox carries, or the first type.
+  function signalType() {
+    const m = text.match(/Chan\(Mail\(([A-Z][A-Za-z0-9_]*)\)\)/);
+    if (m) return m[1];
+    const t = text.match(/^type ([A-Z][A-Za-z0-9_]*)/m);
+    return t ? t[1] : null;
+  }
+
+  function typeEnd(name) {
+    const ls = linesOf();
+    const i = ls.findIndex(l => l === "type " + name || l.startsWith("type " + name + "("));
+    return i < 0 ? 0 : blockEnd(i + 1);
+  }
+
+  function addSignal(at) {
+    const type = signalType();
+    if (!type) {
+      const n = linesOf().length;
+      open(at, "no signal type yet — this makes one, with a first signal", "type Signal\n  Start", v => replaceLines(n + 1, n, "\n" + v.replace(/\n+$/, "")), null, true);
+      return;
+    }
+    open(at, `new signal, a constructor of ${type}`, "Named(field: Int)", v => {
+      const end = typeEnd(type);
+      return replaceLines(end + 1, end, "  " + v.trim());
+    });
+  }
+
+  function addMachine(at) {
+    const sig = signalType() || "Signal";
+    open(at, "new machine — its name", "worker", v => {
+      const name = v.trim().replace(/[^a-z0-9_]/gi, "").toLowerCase() || "worker";
+      const cap = name[0].toUpperCase() + name.slice(1);
+      const n = linesOf().length;
+      // constructors are one namespace, so the first state carries the
+      // machine's name: `ClockStart`, never a second `Start`
+      const body = `\ntype ${cap}State\n  ${cap}Start\n\nmachine ${name}(me: Chan(Mail(${sig})))\n  state ${cap}Start\n    _ -> stay`;
+      return replaceLines(n + 1, n, body);
+    }, null, false);
+  }
+
+  function addSystem(at) {
+    const first = (model && model.machines && model.machines[0]) ? model.machines[0].name : "worker";
+    const sig = signalType() || "Signal";
+    const firstSignal = (text.match(new RegExp("^type " + sig + "\\n  ([A-Z][A-Za-z0-9_]*)", "m")) || [])[1] || "Start";
+    open(at, "new system — its routes", `system model\n  env -> ${first}: ${firstSignal}`, v => {
+      const n = linesOf().length;
+      return replaceLines(n + 1, n, "\n" + v.replace(/\n+$/, ""));
+    }, null, true);
+  }
+
   // ---- attaching to a drawn model ------------------------------------------------
 
   function attach(container, m, currentText, currentFile, reloader) {
@@ -173,18 +264,33 @@ const Edit = (() => {
         g.addEventListener("click", e => { e.stopPropagation(); routeBox({ x: e.clientX, y: e.clientY }, sd, Number(g.dataset.route)); });
       });
     });
-    for (const sd of systems) {
+    const ICONS = {
+      route: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="3" cy="8" r="1.8" fill="currentColor"/><path d="M5 8h7" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 5.5 13 8l-2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>',
+      edit: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 13l1-4 7-7 3 3-7 7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M10 3l3 3" stroke="currentColor" stroke-width="1.4"/></svg>',
+    };
+    const button = (h, label, title, fn) => {
       const b = document.createElement("button");
-      b.className = "adder-button";
-      b.textContent = "+ route";
-      b.onclick = e => addRouteBox({ x: e.clientX, y: e.clientY }, sd);
+      b.className = "adder-button iconic";
+      b.innerHTML = (ICONS[label.replace("+ ", "")] || "") + "<span>" + label + "</span>";
+      b.title = title;
+      b.onclick = e => fn({ x: e.clientX, y: e.clientY });
+      h.appendChild(b);
+    };
+    for (const sd of systems) {
       const h = [...container.querySelectorAll("h2")].find(h => h.textContent.endsWith(sd.name) && h.textContent.startsWith("system"));
-      if (h) h.appendChild(b);
+      if (!h) continue;
+      button(h, "+ route", "a route added to this system", at => addRouteBox(at, sd));
+      button(h, "edit", "the system's lines, to change or delete", at => blockBox(at, "system", sd.name, sd.line));
     }
     for (const mc of m.machines || []) {
       const h = [...container.querySelectorAll("h2")].find(h => h.textContent.startsWith("machine") && h.textContent.endsWith(mc.name));
       const svg = h && h.nextElementSibling;
       if (!svg) continue;
+      button(h, "edit", "the machine's lines, to change or delete", at => blockBox(at, "machine", mc.name, mc.line));
+      for (const st of mc.states) {
+        const g = svg.querySelector(`.sym[data-machine="${mc.name}"][data-state="${st.name}"]`);
+        if (g) g.addEventListener("click", e => { e.stopPropagation(); stateBox({ x: e.clientX, y: e.clientY }, mc, st); });
+      }
       svg.querySelectorAll(".transition").forEach(tg => {
         if (tg.dataset.addInput) {
           tg.addEventListener("click", e => { e.stopPropagation(); addInputBox({ x: e.clientX, y: e.clientY }, mc.name, tg.dataset.addInput, Number(tg.dataset.stateLine)); });
@@ -202,5 +308,5 @@ const Edit = (() => {
   }
 
   document.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
-  return { attach, close };
+  return { attach, close, addSignal, addMachine, addSystem };
 })();

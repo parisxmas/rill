@@ -5688,7 +5688,12 @@ pub fn show_type(ty: &Ty, adts: &[AdtDef]) -> String {
                 adts[*i].name.clone()
             } else {
                 let args: Vec<String> = args.iter().map(|a| show_type(a, adts)).collect();
-                format!("{}({})", adts[*i].name, args.join(", "))
+                // a tuple is written as one, `(a, b)`, never as `Tuple2`
+                if adts[*i].name.starts_with("Tuple") && adts[*i].name[5..].parse::<usize>().is_ok() {
+                    format!("({})", args.join(", "))
+                } else {
+                    format!("{}({})", adts[*i].name, args.join(", "))
+                }
             }
         }
         Ty::Fn(params, ret) => {

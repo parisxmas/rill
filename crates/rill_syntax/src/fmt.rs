@@ -1135,7 +1135,7 @@ fn wheres(f: &FnDef) -> String {
     format!(" where {}", bs.join(", "))
 }
 
-fn type_ref(t: &TypeRef) -> String {
+pub fn type_ref(t: &TypeRef) -> String {
     // `Fn` keeps its parentheses even when empty: `Fn()` is a callback taking
     // nothing, not a type named `Fn`.
     if t.name == "->" {

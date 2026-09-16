@@ -5,7 +5,7 @@
 
 (() => {
   const $ = id => document.getElementById(id);
-  const files = $("files"), diagrams = $("diagrams"), editor = $("editor"), gutter = $("gutter"), colors = $("colors");
+  const files = $("files"), diagrams = $("diagrams"), drawn = $("drawn"), editor = $("editor"), gutter = $("gutter"), colors = $("colors");
   const problems = $("problems"), status = $("status"), fileName = $("file-name"), dirty = $("dirty");
 
   let current = null;       // the path of the file shown
@@ -26,7 +26,8 @@
   // ---- files ---------------------------------------------------------------
 
   async function loadFiles() {
-    const { data } = await api("GET", "/api/files");
+    const all = $("all-files").checked ? "?all=1" : "";
+    const { data } = await api("GET", "/api/files" + all);
     const list = (data.files || []).sort();
     files.innerHTML = "";
     let lastDir = null;
@@ -100,19 +101,20 @@
       (notesByLine[p.line] ||= []).push(p);
       const li = document.createElement("li");
       li.className = p.kind;
-      li.innerHTML = `<span class="line">${p.line ? "line " + p.line : ""}</span>`;
+      const glyph = p.kind === "error" ? "✕" : p.kind === "warning" ? "!" : "i";
+      li.innerHTML = `<span class="icon ${p.kind}" title="${p.kind}">${glyph}</span><span class="line">${p.line ? "line " + p.line : ""}</span>`;
       li.appendChild(document.createTextNode(p.text));
       li.onclick = () => goToLine(p.line);
       problems.appendChild(li);
     }
     renderGutter();
     const model = await api("GET", "/api/model?path=" + encodeURIComponent(current));
-    diagrams.innerHTML = "";
+    drawn.innerHTML = "";
+    const empty = diagrams.querySelector(".empty");
     if (!model.ok) {
-      const d = document.createElement("div");
-      d.className = "empty";
-      d.textContent = model.data.problems ? "The file does not compile; the problems are under the code." : (model.data.error || "nothing to draw");
-      diagrams.appendChild(d);
+      empty.textContent = model.data.problems ? "The file does not parse; the problems are under the code." : (model.data.error || "nothing to draw");
+      empty.hidden = false;
+      $("editbar").hidden = true;
       Simulate.load(current, null);
       say(list.length ? list.length + " problem(s)" : "");
       return;
@@ -125,25 +127,23 @@
     for (const sd of m.systems || []) {
       const h = document.createElement("h2");
       h.innerHTML = `<span class="kind">system</span>${sd.name}`;
-      diagrams.appendChild(h);
-      diagrams.appendChild(Diagram.system(sd));
+      drawn.appendChild(h);
+      drawn.appendChild(Diagram.system(sd));
     }
     for (const mc of m.machines || []) {
       const h = document.createElement("h2");
       h.innerHTML = `<span class="kind">machine</span>${mc.name}`;
-      diagrams.appendChild(h);
-      diagrams.appendChild(Diagram.process(mc, noteCount, true));
+      drawn.appendChild(h);
+      drawn.appendChild(Diagram.process(mc, noteCount, true));
     }
-    if (!(m.systems || []).length && !(m.machines || []).length) {
-      const d = document.createElement("div");
-      d.className = "empty";
-      d.textContent = "No system or machine in this file; the code is on the right.";
-      diagrams.appendChild(d);
-    }
-    for (const g of diagrams.querySelectorAll(".sym[data-line]")) {
+    const nothing = !(m.systems || []).length && !(m.machines || []).length;
+    empty.textContent = "No system or machine in this file yet: add a machine above, or write one on the right.";
+    empty.hidden = !nothing;
+    $("editbar").hidden = false;
+    for (const g of drawn.querySelectorAll(".sym[data-line]")) {
       g.addEventListener("click", () => goToLine(Number(g.dataset.line)));
     }
-    Edit.attach(diagrams, m, saved, current, reloadFile);
+    Edit.attach(drawn, m, saved, current, reloadFile);
     say(list.length ? list.filter(p => p.kind === "error").length + " error(s), " + list.filter(p => p.kind !== "error").length + " note(s)" : "compiles cleanly");
     lightLine(cursorLine());
   }
@@ -319,6 +319,138 @@
   // new diagrams take the zoom they are drawn under
   new MutationObserver(() => applyZoom()).observe($("diagrams"), { childList: true });
   new MutationObserver(() => applyZoom()).observe($("sim-diagrams"), { childList: true });
+
+  // ---- panes under a handle: their height dragged, and kept -------------------
+
+  // A pane at the bottom of a column, resized by the handle above it.
+  function resizable(handleId, pane, within, key) {
+    const handle = $(handleId);
+    let start = null;
+    try { const h = Number(localStorage.getItem(key)); if (h) pane.style.height = h + "px"; } catch (_) {}
+    handle.addEventListener("mousedown", e => {
+      start = { y: e.clientY, h: pane.getBoundingClientRect().height };
+      document.body.style.cursor = "row-resize";
+      document.body.style.userSelect = "none";
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", e => {
+      if (!start) return;
+      const most = within.getBoundingClientRect().height * 0.8;
+      const h = Math.max(24, Math.min(most, start.h + (start.y - e.clientY)));
+      pane.style.height = h + "px";
+    });
+    document.addEventListener("mouseup", () => {
+      if (!start) return;
+      start = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try { localStorage.setItem(key, String(Math.round(pane.getBoundingClientRect().height))); } catch (_) {}
+    });
+  }
+  resizable("problems-handle", problems, document.querySelector(".code"), "rill-problems-height");
+  resizable("output-handle", $("sim-output"), $("simulate"), "rill-output-height");
+
+  // A pane beside a handle, resized sideways; `side` says which side of
+  // the handle the pane is on.
+  function splitter(handleId, pane, within, key, side) {
+    const handle = $(handleId);
+    let start = null;
+    try { const w = Number(localStorage.getItem(key)); if (w) { pane.style.flex = "none"; pane.style.width = w + "px"; } } catch (_) {}
+    handle.addEventListener("mousedown", e => {
+      start = { x: e.clientX, w: pane.getBoundingClientRect().width };
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", e => {
+      if (!start) return;
+      const most = within.getBoundingClientRect().width * 0.85;
+      const delta = side === "left" ? e.clientX - start.x : start.x - e.clientX;
+      const w = Math.max(120, Math.min(most, start.w + delta));
+      pane.style.flex = "none";
+      pane.style.width = w + "px";
+    });
+    document.addEventListener("mouseup", () => {
+      if (!start) return;
+      start = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try { localStorage.setItem(key, String(Math.round(pane.getBoundingClientRect().width))); } catch (_) {}
+    });
+  }
+  splitter("chart-handle", $("chart-pane"), document.querySelector(".sim-body"), "rill-chart-width", "left");
+  splitter("code-handle", document.querySelector(".code"), document.querySelector("main"), "rill-code-width", "right");
+
+  // ---- a new model, from a template ---------------------------------------------
+
+  const TEMPLATE = `# A model: the signals, the states, a machine that answers them, the
+# routes between it and the environment, and a scenario to run.
+type Signal
+  Start
+  Ping
+  Report
+  Status(text: Str)
+
+type State
+  Idle
+  Running(count: Int)
+
+system model
+  env -> worker: Start, Ping, Report
+  worker -> env: Status
+
+machine worker(me: Chan(Mail(Signal)))
+  state Idle
+    Start -> Running(0)
+    Report ->
+      reply(Status("idle"))
+      stay
+  state Running(count)
+    Ping -> Running(count + 1)
+    Report ->
+      reply(Status("running, " + int_to_str(count) + " pings"))
+      stay
+    after 100 -> Idle
+
+fn ask(w, env) =
+  post(w, env, Report)
+  match recv(env).signal
+    Status(text) -> text
+    _ -> "?"
+
+fn main() =
+  env = mailbox()
+  w = mailbox()
+  spawn worker(w, Idle)
+  post(w, env, Start)
+  post(w, env, Ping)
+  post(w, env, Ping)
+  println(ask(w, env))
+
+fn test_pings_are_counted() =
+  env = mailbox()
+  w = mailbox()
+  spawn worker(w, Idle)
+  post(w, env, Start)
+  post(w, env, Ping)
+  assert_eq(ask(w, env), "running, 1 pings")
+  sleep_ms(200)
+  assert_eq(ask(w, env), "idle")
+`;
+
+  $("btn-new").onclick = async () => {
+    const name = prompt("The new model's file, under the root:", "models/new_model.rill");
+    if (!name) return;
+    const path = name.endsWith(".rill") ? name : name + ".rill";
+    const { ok, data } = await api("PUT", "/api/file?path=" + encodeURIComponent(path), TEMPLATE);
+    if (!ok) { say(data.error || "cannot create " + path); return; }
+    await loadFiles();
+    await open(path);
+  };
+  $("all-files").onchange = loadFiles;
+  $("btn-add-signal").onclick = e => Edit.addSignal({ x: e.clientX, y: e.clientY });
+  $("btn-add-machine").onclick = e => Edit.addMachine({ x: e.clientX, y: e.clientY });
+  $("btn-add-system").onclick = e => Edit.addSystem({ x: e.clientX, y: e.clientY });
 
   // ---- the toolbar ------------------------------------------------------------
 

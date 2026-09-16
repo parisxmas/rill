@@ -75,7 +75,7 @@ fn route(site: Site, req: http.Request) =
   file = http.param(q, "path")
   match endpoint(http.path_of(req.path), req.method)
     Page(name) -> page(site, name)
-    Files -> files(site)
+    Files -> files(site, http.param(q, "all") == "1")
     Read -> fetch(site, file)
     Save -> save(site, file, req.body)
     Model -> model(site, file)
@@ -102,10 +102,17 @@ fn inside(base, rel) =
 
 # -- files ----------------------------------------------------------------------
 
-# Every `.rill` file under the root, as paths relative to it, skipping what
-# is not a model's business.
-fn files(site: Site) =
-  http.json_response(200, json.to_string(json.JObj(Cons(json.Field("files", json.JArr(map(walk(site.root, "", Nil), \f -> json.JStr(f)))), Nil))))
+# The models under the root — the `.rill` files with a `machine` or a
+# `system` in them — as paths relative to it; every `.rill` file with
+# `?all=1`.
+fn files(site: Site, all) =
+  found = walk(site.root, "", Nil)
+  shown = if all then found else filter(found, \f -> is_model(path.join_path(site.root, f)))
+  http.json_response(200, json.to_string(json.JObj(Cons(json.Field("files", json.JArr(map(shown, \f -> json.JStr(f)))), Nil))))
+
+fn is_model(full) = match read_file(full)
+  Err(_) -> false
+  Ok(text) -> any(lines(text), \l -> starts_with(l, "machine ") || starts_with(l, "system "))
 
 fn walk(root, rel, acc) =
   full = if #rel == 0 then root else path.join_path(root, rel)
@@ -130,7 +137,9 @@ fn fetch(site: Site, rel) = match inside(site.root, rel)
 
 fn save(site: Site, rel, text) = match inside(site.root, rel)
   None -> http.json_response(403, fail("outside the root"))
-  Some(full) -> if write_file(full, text) then http.json_response(200, ok()) else http.json_response(500, fail("cannot write " + rel))
+  Some(full) ->
+    dir_make(path.dir_name(full))
+    if write_file(full, text) then http.json_response(200, ok()) else http.json_response(500, fail("cannot write " + rel))
 
 # -- the compiler ---------------------------------------------------------------
 

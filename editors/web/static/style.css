@@ -28,10 +28,15 @@ button {
 }
 button:hover { border-color: var(--accent); color: var(--accent); }
 main { flex: 1; display: flex; min-height: 0; }
-.files {
-  width: 240px; overflow: auto; border-right: 1px solid var(--line); padding: 8px 0;
-  font-family: Menlo, Consolas, monospace; font-size: 12px;
-}
+.side { width: 240px; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+.side-head { display: flex; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--soft); font-size: 12px; color: #777; }
+.side-head button { font-size: 12px; padding: 1px 8px; }
+.side-head .all { margin-left: 10px; display: flex; align-items: center; gap: 3px; cursor: pointer; }
+.files { flex: 1; overflow: auto; padding: 8px 0; font-family: Menlo, Consolas, monospace; font-size: 12px; }
+.editbar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; margin: -8px -8px 12px; border-bottom: 1px solid var(--line); background: var(--soft); font-size: 12px; color: #666; }
+.editbar .hint code { font-family: Menlo, Consolas, monospace; }
+.editbar button { font-size: 12px; padding: 1px 8px; }
+#drawn > * { flex: none; }
 .files .dir { padding: 6px 12px 2px; color: #777; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 .files .file { padding: 3px 12px 3px 20px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .files .file:hover { background: var(--soft); }
@@ -53,7 +58,9 @@ main { flex: 1; display: flex; min-height: 0; }
 .counter { font-family: Menlo, Consolas, monospace; color: #555; min-width: 70px; }
 .event { padding: 4px 12px; font-family: Menlo, Consolas, monospace; font-size: 12px; color: #444; background: var(--mark); min-height: 22px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 .sim-body { flex: 1; display: flex; min-height: 0; }
-.chart-pane { flex: 1; overflow: auto; padding: 12px; border-right: 1px solid var(--line); }
+.vhandle { flex: none; width: 7px; cursor: col-resize; background: var(--soft); border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+.vhandle:hover { background: #e3ecf7; }
+.chart-pane { flex: 1; overflow: auto; padding: 12px; }
 .chart-pane .empty { color: #777; max-width: 36em; padding: 8px; }
 .chart-pane text { font-family: Menlo, Consolas, monospace; font-size: 12px; }
 .chart-pane .row.future { opacity: 0.12; }
@@ -64,7 +71,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .sim-diagrams text { font-family: Menlo, Consolas, monospace; font-size: 12px; pointer-events: none; }
 .sim-diagrams .sym.lit .shape { fill: var(--mark); stroke: var(--accent); stroke-width: 2; }
 .sim-diagrams .transition.active .shape { fill: #e3ecf7; }
-.sim-output { margin: 0; padding: 8px 12px; max-height: 20%; overflow: auto; border-top: 1px solid var(--line); background: var(--soft); font: 12px/1.5 Menlo, Consolas, monospace; white-space: pre-wrap; }
+.sim-output { margin: 0; padding: 8px 12px; flex: none; height: 110px; overflow: auto; background: var(--soft); font: 12px/1.5 Menlo, Consolas, monospace; white-space: pre-wrap; }
 .diagrams .empty { color: #777; max-width: 40em; }
 .diagrams h2 { font-size: 14px; font-weight: 600; margin: 24px 0 8px; color: #444; }
 .diagrams h2:first-child { margin-top: 0; }
@@ -79,7 +86,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .diagrams text { font-family: Menlo, Consolas, monospace; font-size: 12px; fill: var(--ink); pointer-events: none; }
 .diagrams .badge { fill: var(--note); }
 .diagrams .badge-text { fill: white; font-size: 10px; font-weight: 700; }
-.code { flex: 2; min-width: 320px; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: white; }
+.code { flex: 2; min-width: 240px; display: flex; flex-direction: column; background: white; }
 .code-head { display: flex; padding: 6px 12px; border-bottom: 1px solid var(--line); color: #777; font-size: 12px; background: var(--soft); }
 .dirty { color: var(--error); }
 .code-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
@@ -121,6 +128,10 @@ textarea#editor::selection { background: rgba(29, 95, 168, 0.22); }
 .diagrams .adder text { fill: #888; }
 .diagrams .adder:hover .shape { stroke: var(--accent); }
 .adder-button { margin-left: 12px; font-size: 12px; padding: 1px 8px; }
+button.iconic { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+button.iconic svg { flex: none; }
+button.iconic.plus svg { color: #2a7a3b; }
+.editbar button.iconic svg, .side-head button.iconic svg { color: var(--accent); }
 .editbox {
   position: fixed; z-index: 10; width: 440px; background: white; border: 1px solid var(--line);
   border-radius: 6px; box-shadow: 0 6px 24px rgba(0,0,0,0.15); padding: 10px;
@@ -137,9 +148,19 @@ textarea#editor::selection { background: rgba(29, 95, 168, 0.22); }
   position: fixed; z-index: 20; max-width: 480px; padding: 6px 10px; background: #fffbe6; border: 1px solid var(--line);
   border-radius: 4px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); font: 12px/1.5 Menlo, Consolas, monospace; white-space: pre; pointer-events: none;
 }
-.problems { list-style: none; margin: 0; padding: 0; max-height: 30%; overflow: auto; border-top: 1px solid var(--line); font-size: 12px; }
+.handle { flex: none; height: 7px; cursor: row-resize; background: var(--soft); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.handle:hover { background: #e3ecf7; }
+.problems { list-style: none; margin: 0; padding: 0; flex: none; height: 140px; overflow: auto; font-size: 12px; background: white; }
 .problems li { padding: 4px 12px; cursor: pointer; border-bottom: 1px solid #f0eee8; }
 .problems li:hover { background: var(--soft); }
-.problems .line { font-family: Menlo, Consolas, monospace; color: #777; margin-right: 8px; }
+.problems li { display: flex; align-items: baseline; gap: 8px; }
+.problems .icon {
+  flex: none; display: inline-block; width: 15px; height: 15px; line-height: 15px; text-align: center;
+  font-size: 10px; font-weight: 700; color: white; border-radius: 50%; position: relative; top: 2px;
+}
+.problems .icon.error { background: var(--error); }
+.problems .icon.note { background: #2f6fbf; font-family: Georgia, serif; font-style: italic; }
+.problems .icon.warning { background: var(--note); border-radius: 2px; clip-path: polygon(50% 0, 100% 100%, 0 100%); line-height: 19px; }
+.problems .line { flex: none; font-family: Menlo, Consolas, monospace; color: #777; min-width: 56px; }
 .problems .error .line { color: var(--error); }
 .problems .note .line { color: var(--note); }

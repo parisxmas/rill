@@ -17,7 +17,15 @@
   <span id="status" class="status"></span>
 </header>
 <main>
-  <nav id="files" class="files"></nav>
+  <nav class="side">
+    <div class="side-head">
+      <span>models</span>
+      <label class="all" title="every .rill file, not only the models"><input type="checkbox" id="all-files"> all</label>
+      <span class="grow"></span>
+      <button id="btn-new" class="iconic" title="a new model file from a template"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 1.5h5l4 4v9H4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M9 1.5v4h4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8.5 7.5v5M6 10h5" stroke="currentColor" stroke-width="1.4"/></svg><span>New model</span></button>
+    </div>
+    <div id="files" class="files"></div>
+  </nav>
   <section class="middle">
     <div class="tabs">
       <button class="tab current" data-view="diagrams">Model</button>
@@ -30,6 +38,14 @@
       </span>
     </div>
     <div id="diagrams" class="diagrams view current">
+      <div id="editbar" class="editbar" hidden>
+        <span class="hint">Click a state, a route, an input, a <code>save</code> or a <code>priority</code> to change or delete it; the dashed symbols add one; <code>edit</code> by a name opens the whole machine or system.</span>
+        <span class="grow"></span>
+        <button id="btn-add-signal" class="iconic" title="a constructor added to the signal type"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2 3h9l3 5-3 5H2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><span>signal</span></button>
+        <button id="btn-add-machine" class="iconic" title="a state type and a machine with one state, at the end of the file"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2" width="12" height="5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 7v3M4 10h8M4 10v4M12 10v4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span>machine</span></button>
+        <button id="btn-add-system" class="iconic" title="a system with its first route"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="1.5" y="5" width="5" height="6" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="9.5" y="5" width="5" height="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.5 8h3" stroke="currentColor" stroke-width="1.4"/><path d="M8.5 6.5 10 8l-1.5 1.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span>system</span></button>
+      </div>
+      <div id="drawn"></div>
       <div class="empty">Pick a file on the left. A file with a <code>system</code> or a <code>machine</code> is drawn here; any other shows its code.</div>
     </div>
     <div id="simulate" class="simulate view">
@@ -51,11 +67,14 @@
       <div id="event" class="event"></div>
       <div class="sim-body">
         <div id="chart-pane" class="chart-pane"></div>
+        <div id="chart-handle" class="vhandle" title="drag to resize"></div>
         <div id="sim-diagrams" class="sim-diagrams"></div>
       </div>
+      <div id="output-handle" class="handle" title="drag to resize"></div>
       <pre id="sim-output" class="sim-output"></pre>
     </div>
   </section>
+  <div id="code-handle" class="vhandle" title="drag to resize"></div>
   <section class="code">
     <div class="code-head">
       <span>code</span>
@@ -69,6 +88,7 @@
         <textarea id="editor" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
       </div>
     </div>
+    <div id="problems-handle" class="handle" title="drag to resize"></div>
     <ul id="problems" class="problems"></ul>
   </section>
 </main>

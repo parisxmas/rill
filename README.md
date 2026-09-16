@@ -160,11 +160,17 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 `extensions` directory. See `editors/vscode/README.md` for packaging it as a
 `.vsix` and for how the grammar is tested.
 
+`rill doc lib -o docs/lib` writes a Markdown page per library module from
+the comments the modules already have, with the signatures the checker
+infers; there is no doc-comment syntax, because the comment above a
+declaration is its documentation.
+
 `editors/web/` is the model editor: a page that shows a file's `system` as
 the block diagram and each `machine` as SDL drew a process, beside its
 code, every symbol a click from the line it came from, and edits them —
 a route, an arm, a new state or input opens in a box with its own lines,
-written back into the file through the formatter; hover for a type and
+written back into the file through the formatter, and `New model` starts
+a file from a template; hover for a type and
 ⌘-click for a definition, from `rill lsp` kept alive beside the server;
 and a Simulate view that runs a scenario — `main`, or a `test_` function — traced on the
 virtual clock and replays it, the sequence chart growing event by event

@@ -5466,7 +5466,9 @@ fn the_editor_server_answers_its_api() {
         let (st, page) = get("/");
         assert!(st == 200 && page.contains("<title>Rill — models</title>"), "{st} {page}");
         let (st, files) = get("/api/files");
-        assert!(st == 200 && files.contains("\"examples/abp.rill\"") && !files.contains("selfhost/"), "{files}");
+        assert!(st == 200 && files.contains("\"examples/abp.rill\"") && !files.contains("examples/hello.rill"), "{files}");
+        let (st, every) = get("/api/files?all=1");
+        assert!(st == 200 && every.contains("\"examples/hello.rill\"") && !every.contains("selfhost/"), "{every}");
         let (st, file) = get("/api/file?path=examples/hello.rill");
         assert!(st == 200 && file.contains("hello, world"), "{file}");
         let (st, outside) = get("/api/file?path=../outside");
@@ -5518,4 +5520,33 @@ fn the_editor_server_answers_its_api() {
     if let Err(e) = result {
         std::panic::resume_unwind(e);
     }
+}
+
+/// `rill doc`: a module's documentation read off the file — the comment
+/// above a declaration is its documentation, the block after `module`
+/// the module's, and the signatures are the checker's. A program's head
+/// belongs to the file, not to its first type.
+#[test]
+fn doc_reads_the_comments_off_the_file() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("doc").arg(root.join("lib/time/clock.rill")).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let md = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(md.starts_with("# `clock`\n\nClocks: the monotonic one for measuring, the wall one for dating.\n"), "{md}");
+    assert!(md.contains("### `fn timed(f: () -> 'a) -> ('a, Int)`\n\nA call and how long it took, in nanoseconds.\n"), "{md}");
+    assert!(md.contains("## Tests\n\n- `test_duration_units`"), "{md}");
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("doc").arg(root.join("examples/abp.rill")).output().unwrap();
+    let md = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(md.starts_with("# `abp`\n\nThe alternating-bit protocol, as a model:"), "{md}");
+    assert!(md.contains("### `Signal`\n\n- `Send(text: Str)`\n"), "{md}");
+    assert!(md.contains("### `system abp`\n\n- `env -> sender`: Send, Report\n"), "{md}");
+    assert!(md.contains("### `machine sender(me: Chan(Mail(Signal)), medium: Chan(Mail(Signal)), env: Chan(Mail(Signal)))`\n\nThe sender: one text at a time"), "{md}");
+    assert!(md.contains("```mermaid\nstateDiagram-v2\n  %% machine sender\n"), "{md}");
+    assert!(!md.contains("### `fn main"), "{md}");
+    let dir = std::env::temp_dir().join(format!("rill-e2e-doc-{}", std::process::id()));
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("doc").arg(root.join("lib/coll")).arg("-o").arg(&dir).output().unwrap();
+    assert!(out.status.success());
+    assert!(dir.join("heap.md").exists() && dir.join("set.md").exists() && dir.join("deque.md").exists());
+    let heap = std::fs::read_to_string(dir.join("heap.md")).unwrap();
+    assert!(heap.contains("### `Heap(a)`\n\n- `Heap(before: (a, a) -> Bool, root: Tree(a), size: Int)`"), "{heap}");
 }

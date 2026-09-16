@@ -1642,6 +1642,20 @@ Each module says at its head what it is for and how it is used, keeps its
 helpers `private`, and carries its own tests: `rill test lib/text/regex.rill`
 runs them.
 
+### Documentation
+
+There is no doc-comment syntax. The comment a declaration has above it —
+the `#` lines just before a `type`, `trait`, `fn`, `machine` or `system`
+— is its documentation, and the block after a `module` line is the
+module's own, which is how every module in `lib/` was written before
+there was anything to read them. **`rill doc file.rill`** turns a file
+into Markdown: the module's head, its types with their constructors, its
+traits with their methods, its systems and machines with their diagrams,
+and its functions with the signatures the checker inferred, private ones
+left out; `rill doc lib -o docs/lib` does a folder, one page a module. A
+program's head comment is the program's, not its first type's, and its
+`main` and tests are listed rather than documented.
+
 ## 9. Sockets
 
 TCP, with the scheduler doing the waiting. A strand blocked on a socket
@@ -2287,6 +2301,7 @@ rill types main.rill            # the signature the checker worked out for each 
 rill explain main.rill          # the memory decisions the generator made, by line
 rill diagram exchange.rill      # the file's system and machines drawn: Mermaid, or SDL's own symbols (--svg)
 rill msc trace.txt              # a run's trace (RILL_TRACE=1) as a sequence chart (--svg for a picture)
+rill doc lib/text/str.rill      # a module's documentation as Markdown; `rill doc lib -o docs/lib` for a folder
 rill test tests.rill            # run every `test_...` function, each in its own process
 rill fmt src/*.rill             # canonical formatting (--check, --stdout)
 rill repl                       # interactive: definitions persist

@@ -5,6 +5,7 @@
 //!   rill run <file.rill>
 
 mod diagram;
+mod doc;
 mod json;
 mod lsp;
 
@@ -22,7 +23,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg | --json] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg | --json] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill doc <file.rill | dir>... [-o <dir>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -72,6 +73,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "explain" => explain_cmd(rest),
         "diagram" => diagram_cmd(rest),
         "msc" => msc_cmd(rest),
+        "doc" => doc_cmd(rest),
         "lsp" => lsp::serve(),
         "repl" => {
             repl()?;
@@ -212,6 +214,71 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
         None => print!("{drawn}"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `rill doc`: a module's documentation as Markdown, read off the file —
+/// the comment above each declaration is its documentation. One file to
+/// standard output; several, or `-o <dir>`, to `<dir>/<stem>.md` each.
+fn doc_cmd(args: &[String]) -> Result<ExitCode, String> {
+    let mut out: Option<PathBuf> = None;
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" => {
+                i += 1;
+                out = Some(PathBuf::from(args.get(i).ok_or("`-o` needs a directory")?));
+            }
+            a if a.starts_with('-') => return Err(format!("unknown option `{a}`\n{USAGE}")),
+            a => files.push(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    if files.is_empty() {
+        return Err(USAGE.to_string());
+    }
+    // a directory is every .rill file under it
+    let mut expanded = Vec::new();
+    for f in files {
+        if f.is_dir() {
+            walk_rill(&f, &mut expanded);
+        } else {
+            expanded.push(f);
+        }
+    }
+    expanded.sort();
+    if let Some(dir) = &out {
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    }
+    for path in &expanded {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let checked = rill_syntax::load_program(path).ok().and_then(|m| rill_types::check_all(&m).ok());
+        let md = doc::markdown(path, &text, &own, checked.as_ref());
+        match &out {
+            Some(dir) => {
+                let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let target = dir.join(format!("{stem}.md"));
+                std::fs::write(&target, md).map_err(|e| format!("cannot write {}: {e}", target.display()))?;
+                println!("wrote {}", target.display());
+            }
+            None => print!("{md}"),
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn walk_rill(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk_rill(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rill") {
+                out.push(p);
+            }
+        }
+    }
 }
 
 /// `rill msc`: a trace written by a run under `RILL_TRACE=1`, drawn as a
