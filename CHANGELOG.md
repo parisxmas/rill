@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.0 — a modelling language
+
+The release where `machine` became what SDL was: a process with a
+mailbox, drawn as a diagram, checked as a model, and run as a
+simulation. Named timers that survive a state change, `save` for the
+signal a later state answers, `state *` for the arms every state has,
+`stay` and `done(v)`; a `Mail` that says who sent it, so every arm has
+`sender` and `reply`, and `output` and `post` say who is asking; a
+`mailbox()` that refuses nothing, as SDL's input port never did;
+`priority` for the signal that goes first, `when` for the transition
+taken with no signal, and `save … if` for the input with a condition;
+a machine called inside another's transition as a procedure with
+states.
+
+Around the machines, the tools that made SDL a modelling language.
+`system` declares the block diagram — the routes between the kinds of
+machine and the environment with the signals each carries — and the
+compiler refuses a signal sent or answered that no route explains.
+`rill check` reports what each state drops. `RILL_TRACE=1` makes a run
+say what every machine did, and `rill msc` draws it as the message
+sequence chart, in Mermaid or as a picture; `rill diagram` draws the
+system and each process in SDL's symbols. `RILL_VIRTUAL_TIME=1` runs a
+model on the clock a simulator keeps, so timers fire the moment nothing
+else can happen and a run is the same every run. `examples/abp.rill`,
+the alternating-bit protocol, uses all of it, with tests; Chapter 17 of
+the book walks through it. The sections below this one tell each of
+them properly.
+
 ## 0.11.0 — a standard library, and a machine
 
 The release where `lib/` became a standard library: twenty-one modules
