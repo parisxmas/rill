@@ -47,7 +47,7 @@ body{
   font-family:var(--sans); font-size:17px; line-height:1.65;
   -webkit-font-smoothing:antialiased;
 }
-.wrap{max-width:1000px;margin:0 auto;padding:0 28px}
+.wrap{max-width:1240px;margin:0 auto;padding:0 28px}
 a{color:var(--teal);text-decoration:none;border-bottom:1px solid rgba(14,124,134,.35)}
 a:hover{border-bottom-color:var(--teal)}
 :focus-visible{outline:2px solid var(--ember);outline-offset:3px;border-radius:2px}
@@ -58,10 +58,12 @@ code{font-family:var(--mono);font-size:.92em}
 .bar{display:flex;align-items:baseline;gap:18px;padding:18px 0;font-family:var(--mono);font-size:13px}
 .bar .name{font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);border:0}
 .bar .ver{color:var(--muted)}
-.bar nav{margin-left:auto;display:flex;gap:13px;flex-wrap:wrap;justify-content:flex-end;font-size:12.5px}
-.bar nav a{white-space:nowrap}
-.bar nav a{color:var(--muted);border:0}
-.bar nav a:hover{color:var(--teal)}
+.layout{display:grid;grid-template-columns:180px minmax(0,1000px);gap:48px;align-items:start}
+.sitenav{position:sticky;top:18px;padding-top:26px}
+.sitenav nav{display:flex;flex-direction:column;gap:2px;font-family:var(--mono);font-size:13px}
+.sitenav nav a{color:var(--muted);border:0;padding:5px 8px;border-radius:3px;white-space:nowrap}
+.sitenav nav a:hover{background:var(--code);color:var(--teal)}
+.content{min-width:0}
 
 /* ---------- hero ---------- */
 .hero{display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:center;padding:56px 0 40px}
@@ -164,7 +166,9 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
   .grid{grid-template-columns:1fr}
   .two{grid-template-columns:1fr}
   .no{grid-template-columns:1fr}
-  .bar nav{display:none}
+  .layout{grid-template-columns:1fr;gap:0}
+  .sitenav{position:static;padding:0 0 6px;border-bottom:1px solid var(--line)}
+  .sitenav nav{flex-direction:row;flex-wrap:wrap;gap:2px 4px}
   .row{grid-template-columns:70px 1fr}
 }
 </style>
@@ -176,7 +180,11 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
   <div class="bar">
     <a href="/" class="name">Rill</a>
     <span class="ver">v0.13</span>
-    <nav>
+  </div>
+
+  <div class="layout">
+    <aside class="sitenav">
+      <nav>
       <a href="#look">The language</a>
       <a href="#models">Models</a>
       <a href="#numbers">Numbers</a>
@@ -187,9 +195,9 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
       <a href="#download">Download</a>
       <a href="https://rillsdl.baltavista.com/">The editor</a>
       <a href="#made">Made with Rill</a>
-    </nav>
-  </div>
-
+      </nav>
+    </aside>
+    <main class="content">
   <!-- ================= hero ================= -->
   <div class="hero">
     <div>
@@ -519,6 +527,9 @@ rill repl                      <span class="c"># definitions persist for the ses
     <p>The runtime is <code>no_std</code> and links as a static library, which is most
     of why the binaries are the size they are.</p>
   </section>
+
+    </main>
+  </div>
 
   <footer>
     <p class="mono">Rill v0.13 · a strict functional language compiling to native code</p>

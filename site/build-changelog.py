@@ -21,16 +21,19 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "CHANGELOG.md"
 SITE = ROOT / "site"
 
-NAV = """      <a href="/#look">The language</a>
-      <a href="/#models">Models</a>
-      <a href="/#numbers">Numbers</a>
-      <a href="/#missing">What it lacks</a>
-      <a href="/#book">The book</a>
-      <a href="/reference/">Reference</a>
-      <a href="/changelog.html" class="here">What's changed</a>
-      <a href="/#download">Download</a>
-      <a href="https://rillsdl.baltavista.com/">The editor</a>
-      <a href="/#made">Made with Rill</a>"""
+NAV = """      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/">Reference</a>
+        <a href="/changelog.html" class="here">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>"""
 
 PAGE = """<!doctype html>
 <html lang="en">
@@ -71,12 +74,10 @@ h3.entry .tag{{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-
     <a href="/" class="name">Rill</a>
     <span class="ver">v{short}</span>
     <span class="crumb">What's changed</span>
-    <nav>
-{nav}
-    </nav>
   </div>
   <div class="page">
     <aside>
+{nav}
       <p class="side-head">Releases</p>
       <ul class="sections releases">
 {side}

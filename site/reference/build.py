@@ -178,21 +178,22 @@ PAGE = """<!doctype html>
     <a href="/" class="name">Rill</a>
     <span class="ver">v{short}</span>
     <span class="crumb"><a href="index.html">Reference</a></span>
-    <nav>
-      <a href="/#look">The language</a>
-      <a href="/#models">Models</a>
-      <a href="/#numbers">Numbers</a>
-      <a href="/#missing">What it lacks</a>
-      <a href="/#book">The book</a>
-      <a href="/reference/" class="here">Reference</a>
-      <a href="/changelog.html">What's changed</a>
-      <a href="/#download">Download</a>
-      <a href="https://rillsdl.baltavista.com/">The editor</a>
-      <a href="/#made">Made with Rill</a>
-    </nav>
   </div>
   <div class="page">
     <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
       <p class="side-head">Chapters</p>
       <ol class="chapters">
 {chapters}
@@ -247,19 +248,23 @@ INDEX = """<!doctype html>
     <a href="/" class="name">Rill</a>
     <span class="ver">v{short}</span>
     <span class="crumb">Reference</span>
-    <nav>
-      <a href="/#look">The language</a>
-      <a href="/#models">Models</a>
-      <a href="/#numbers">Numbers</a>
-      <a href="/#missing">What it lacks</a>
-      <a href="/#book">The book</a>
-      <a href="/reference/" class="here">Reference</a>
-      <a href="/changelog.html">What's changed</a>
-      <a href="/#download">Download</a>
-      <a href="https://rillsdl.baltavista.com/">The editor</a>
-      <a href="/#made">Made with Rill</a>
-    </nav>
   </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+    </aside>
   <main class="index">
     <p class="chapter-no">Version {short}</p>
     <h1>The Rill Language Reference</h1>
@@ -268,6 +273,7 @@ INDEX = """<!doctype html>
 {toc}
     </ol>
   </main>
+  </div>
   <footer>
     <p class="mono">Rill v{short} · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
   </footer>
