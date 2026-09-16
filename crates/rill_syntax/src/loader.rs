@@ -59,6 +59,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         asms: loader.asms,
         functions: loader.functions,
         prelude_fns: 0,
+        machines: Vec::new(),
     })
     .map_err(|e| e.to_string())
 }

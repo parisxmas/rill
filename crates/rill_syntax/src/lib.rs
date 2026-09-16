@@ -6,6 +6,7 @@ pub mod fmt;
 pub mod lexer;
 pub mod lift;
 pub mod loader;
+pub mod machine;
 pub mod parser;
 pub mod prelude;
 

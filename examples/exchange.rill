@@ -1,0 +1,81 @@
+# A telephone line as the exchanges modelled it in SDL: a process with a
+# mailbox, a state, and the signals it answers in each — a `machine`. Two
+# lines, one calling the other; a `Report` signal that asks a line what
+# state it is in, answered down the channel it carries; a wait that runs
+# out while dialling; and a hang-up that stops the strand.
+type Signal
+  OffHook
+  Digit(n: Int)
+  OnHook
+  Ring(from: Chan(Signal))
+  Answer
+  Report(to: Chan(Str))
+
+type Line
+  Idle
+  Dialling(digits: List(Int))
+  Ringing(caller: Chan(Signal))
+  Talking(peer: Chan(Signal))
+
+machine line(me: Chan(Signal), log: Chan(Str))
+  state Idle
+    OffHook -> Dialling(Nil)
+    Ring(from) -> Ringing(from)
+    Report(to) ->
+      send(to, "idle")
+      Idle
+  state Dialling(digits)
+    Digit(n) if n >= 0 -> Dialling(Cons(n, digits))
+    OnHook -> Idle
+    Report(to) ->
+      send(to, "dialling " + int_to_str(len(digits)))
+      Dialling(digits)
+    after 50 ->
+      send(log, "gave up dialling after " + int_to_str(len(digits)) + " digits")
+      Idle
+  state Ringing(caller)
+    Answer ->
+      send(caller, Answer)
+      Talking(caller)
+    OnHook -> Idle
+  state Talking(peer)
+    OnHook ->
+      send(peer, OnHook)
+      send(log, "hung up")
+      stop
+    _ -> Talking(peer)
+
+fn ask(l: Chan(Signal)) =
+  back = channel(1)
+  send(l, Report(back))
+  recv(back)
+
+fn main() =
+  log = channel(16)
+  a = channel(16)
+  spawn line(a, log, Idle)
+  println(ask(a))
+  send(a, OffHook)
+  send(a, Digit(5))
+  send(a, Digit(-1))
+  send(a, Digit(3))
+  println(ask(a))
+  send(a, OnHook)
+  println(ask(a))
+  send(a, OffHook)
+  send(a, Digit(1))
+  println(recv(log))
+  println(ask(a))
+  b = channel(16)
+  c = channel(16)
+  spawn line(b, log, Idle)
+  send(b, Ring(c))
+  send(b, Answer)
+  match recv(c)
+    Answer -> println("the caller hears the answer")
+    _ -> println("?")
+  send(b, OnHook)
+  println(recv(log))
+  match recv(c)
+    OnHook -> println("the caller is told")
+    _ -> println("?")

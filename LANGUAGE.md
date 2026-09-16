@@ -1113,6 +1113,78 @@ falls out of the rule rather than being a special case.
 
 `examples/timeouts.rill` is all five of those.
 
+### A machine: a state and a mailbox
+
+A strand that waits for a signal, does what the signal asks in the state it
+is in, and waits again is what the telephone exchanges called a *process*
+and wrote in SDL: a state machine with a mailbox. In Rill it is a
+tail-recursive function over a channel and a state, and `machine` is that
+function written as the machine it is:
+
+```
+type Signal
+  OffHook
+  Digit(n: Int)
+  OnHook
+  Ring(from: Chan(Signal))
+  Answer
+
+type Line
+  Idle
+  Dialling(digits: List(Int))
+  Ringing(caller: Chan(Signal))
+  Talking(peer: Chan(Signal))
+
+machine line(me: Chan(Signal), log: Chan(Str))
+  state Idle
+    OffHook -> Dialling(Nil)
+    Ring(from) -> Ringing(from)
+  state Dialling(digits)
+    Digit(n) if n >= 0 -> Dialling(Cons(n, digits))
+    OnHook -> Idle
+    after 10000 ->
+      send(log, "gave up")
+      Idle
+  state Ringing(caller)
+    Answer ->
+      send(caller, Answer)
+      Talking(caller)
+    OnHook -> Idle
+  state Talking(peer)
+    OnHook ->
+      send(peer, OnHook)
+      stop
+
+fn main() =
+  a = channel(16)
+  spawn line(a, channel(16), Idle)
+  send(a, OffHook)
+```
+
+The states are the constructors of a type declared as any other, so their
+fields say their types once. The machine is a function of that name — a
+machine name is lowercase, as a function's is — whose first parameter is
+the mailbox its signals arrive on, and whose last parameter, unwritten, is
+the state: it is started with its initial state as one more argument,
+`spawn line(a, log, Idle)`, or called in the strand at hand. Each `state`
+names its constructor with its fields, and under it the signals it
+answers, as the arms of a `match` on the signal: patterns, guards, and a
+body whose value is the next state. A body may be a block, its last line
+the next state; `stop` in that place ends the strand instead. `after ms
+->` is the arm taken when no signal has arrived for that long, and a state
+has at most one. A signal no arm names is consumed and the state kept —
+what SDL does with an unexpected signal — unless an arm `_ ->` says what
+to do with it. Every state of the type has to appear, or the machine is
+refused naming the one missing.
+
+What the parser makes of it is the function you would have written: a
+`match` on the state, and in each state a `recv` — or a `select` with a
+`timeout` where there is an `after` — followed by a `match` on the signal
+whose arms call the machine again with the next state. It costs what that
+costs, which is nothing beyond the wait; `rill explain` shows the calls
+as the tail calls they are, and `rill fmt` writes the machine back as it
+was declared. `examples/exchange.rill` is a small exchange of them.
+
 ### Stopping
 
 A strand parked on `recv` is parked until a value arrives. So tearing down

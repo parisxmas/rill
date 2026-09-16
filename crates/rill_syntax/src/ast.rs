@@ -18,6 +18,41 @@ pub struct Module {
     /// `main` is expected. A program says nothing and has a `main`.
     pub name: Option<String>,
     pub name_line: usize,
+    /// `machine` declarations as written. Each is also among `functions`,
+    /// lowered by the parser into the tail-recursive function it is; they
+    /// are kept here for the formatter, which writes the declaration back.
+    pub machines: Vec<MachineDef>,
+}
+
+/// `machine line(me: Chan(Signal), sw: Chan(Signal))` — a process in the
+/// sense the telephone exchanges gave the word: a state machine with a
+/// mailbox, one strand, one signal at a time. The first parameter is the
+/// mailbox the signals arrive on; the states are the constructors of a
+/// type declared as any other, and the machine is started with its
+/// initial state as one more argument: `spawn line(me, sw, Idle)`. Each
+/// `state` lists the signals it answers, an arm's value being the next
+/// state — or `stop`, which ends the strand — and `after ms ->` what to
+/// do when no signal has come for that long. A signal no arm names is
+/// consumed and the state kept, as SDL has it, unless an arm `_ ->` says
+/// otherwise. The parser lowers it to a function of the same name whose
+/// last parameter is the state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineDef {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub states: Vec<StateDef>,
+    pub line: usize,
+}
+
+/// One `state` of a machine: its pattern (the state constructor with its
+/// fields named), the signals it answers, and its timer arm if it has one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StateDef {
+    pub pattern: Pattern,
+    pub arms: Vec<Arm>,
+    /// `after ms -> body`: the wait, and what to do when it runs out.
+    pub after: Option<(Expr, Expr, usize)>,
+    pub line: usize,
 }
 
 /// `extern "m" fn pow(x: Float, y: Float) -> Float` — a function provided by a

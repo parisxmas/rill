@@ -30,6 +30,22 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — a machine: a state and a mailbox
+
+`machine` is a state machine with a mailbox, written as one: the states
+are the constructors of a type, each `state` lists the signals it
+answers as the arms of a match — patterns, guards, a body whose value is
+the next state or `stop` — and `after ms ->` is the arm taken when no
+signal has come for that long. A signal no arm names is consumed and the
+state kept, as the telephone exchanges' SDL had it, unless `_ ->` says
+otherwise; a state of the type left out is refused by name. The parser
+lowers it to the tail-recursive function over the mailbox and the state
+that a strand doing this is anyway — `recv`, or `select` with a `timeout`,
+then a `match` — so it costs what that costs, `rill explain` shows the
+tail calls, and `rill fmt` writes the declaration back. The machine is
+started with its initial state as its last argument: `spawn line(a, log,
+Idle)`. `examples/exchange.rill` is an exchange of lines.
+
 ## Unreleased — the bits of a float
 
 `float_bits(x)` and `bits_float(n)` are a float's 64 bits as an `Int` and

@@ -2508,6 +2508,25 @@ fn a_function_named_like_libc_is_the_programs_own() {
     assert_eq!(run_source("libcnames", src), "hi 118\n");
 }
 
+/// A `machine`: states answering signals, a guard, an `after` that runs
+/// out, `stop`, a signal no arm names kept in the state; written back by
+/// `rill fmt` as declared; a state left out named.
+#[test]
+fn a_machine_answers_its_signals() {
+    let src = "# A telephone line as the exchanges modelled it in SDL: a process with a\n# mailbox, a state, and the signals it answers in each — a `machine`. Two\n# lines, one calling the other; a `Report` signal that asks a line what\n# state it is in, answered down the channel it carries; a wait that runs\n# out while dialling; and a hang-up that stops the strand.\ntype Signal\n  OffHook\n  Digit(n: Int)\n  OnHook\n  Ring(from: Chan(Signal))\n  Answer\n  Report(to: Chan(Str))\n\ntype Line\n  Idle\n  Dialling(digits: List(Int))\n  Ringing(caller: Chan(Signal))\n  Talking(peer: Chan(Signal))\n\nmachine line(me: Chan(Signal), log: Chan(Str))\n  state Idle\n    OffHook -> Dialling(Nil)\n    Ring(from) -> Ringing(from)\n    Report(to) ->\n      send(to, \"idle\")\n      Idle\n  state Dialling(digits)\n    Digit(n) if n >= 0 -> Dialling(Cons(n, digits))\n    OnHook -> Idle\n    Report(to) ->\n      send(to, \"dialling \" + int_to_str(len(digits)))\n      Dialling(digits)\n    after 50 ->\n      send(log, \"gave up dialling after \" + int_to_str(len(digits)) + \" digits\")\n      Idle\n  state Ringing(caller)\n    Answer ->\n      send(caller, Answer)\n      Talking(caller)\n    OnHook -> Idle\n  state Talking(peer)\n    OnHook ->\n      send(peer, OnHook)\n      send(log, \"hung up\")\n      stop\n    _ -> Talking(peer)\n\nfn ask(l: Chan(Signal)) =\n  back = channel(1)\n  send(l, Report(back))\n  recv(back)\n\nfn main() =\n  log = channel(16)\n  a = channel(16)\n  spawn line(a, log, Idle)\n  println(ask(a))\n  send(a, OffHook)\n  send(a, Digit(5))\n  send(a, Digit(-1))\n  send(a, Digit(3))\n  println(ask(a))\n  send(a, OnHook)\n  println(ask(a))\n  send(a, OffHook)\n  send(a, Digit(1))\n  println(recv(log))\n  println(ask(a))\n  b = channel(16)\n  c = channel(16)\n  spawn line(b, log, Idle)\n  send(b, Ring(c))\n  send(b, Answer)\n  match recv(c)\n    Answer -> println(\"the caller hears the answer\")\n    _ -> println(\"?\")\n  send(b, OnHook)\n  println(recv(log))\n  match recv(c)\n    OnHook -> println(\"the caller is told\")\n    _ -> println(\"?\")\n";
+    assert_eq!(
+        run_source("exchange", src),
+        "idle\ndialling 2\nidle\ngave up dialling after 1 digits\nidle\nthe caller hears the answer\nhung up\nthe caller is told\n"
+    );
+    assert_eq!(fmt_source(src), src);
+    let missing = src.replace("  state Talking(peer)\n    OnHook ->\n      send(peer, OnHook)\n      send(log, \"hung up\")\n      stop\n    _ -> Talking(peer)\n", "");
+    assert!(compile_error(&missing).contains("the machine has no `state Talking(_)`"), "{}", compile_error(&missing));
+    let two = src.replace("    after 50 ->", "    after 60 -> Idle\n    after 50 ->");
+    assert!(compile_error(&two).contains("one `after` arm"));
+    let upper = src.replace("machine line(", "machine Line(");
+    assert!(compile_error(&upper).contains("lowercase"));
+}
+
 /// A float's bits as an integer and back: no conversion, the same bits.
 #[test]
 fn float_bits_and_back() {

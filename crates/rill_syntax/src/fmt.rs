@@ -101,6 +101,7 @@ enum Decl<'a> {
     Extern(&'a ExternFn),
     Asm(&'a AsmFn),
     Fn(&'a FnDef),
+    Machine(&'a MachineDef),
 }
 
 impl Decl<'_> {
@@ -113,6 +114,7 @@ impl Decl<'_> {
             Decl::Extern(d) => d.line,
             Decl::Asm(d) => d.line,
             Decl::Fn(d) => d.line,
+            Decl::Machine(d) => d.line,
         }
     }
 
@@ -208,7 +210,10 @@ impl Fmt {
         decls.extend(m.impls.iter().map(Decl::Impl));
         decls.extend(m.externs.iter().map(Decl::Extern));
         decls.extend(m.asms.iter().map(Decl::Asm));
-        decls.extend(m.functions.iter().map(Decl::Fn));
+        // a machine is among the functions too, lowered; it is written
+        // back as the declaration it was
+        decls.extend(m.functions.iter().filter(|f| !m.machines.iter().any(|mc| mc.name == f.name)).map(Decl::Fn));
+        decls.extend(m.machines.iter().map(Decl::Machine));
         decls.sort_by_key(|d| d.line());
 
         let mut prev_import = false;
@@ -288,6 +293,7 @@ impl Fmt {
                     );
                 }
                 Decl::Fn(f) => self.fndef(f, 0),
+                Decl::Machine(mc) => self.machinedef(mc),
             }
             prev_import = d.is_import();
         }
@@ -399,6 +405,68 @@ impl Fmt {
                 }
             }
         }
+    }
+
+    fn machinedef(&mut self, m: &MachineDef) {
+        let params: Vec<String> = m
+            .params
+            .iter()
+            .map(|p| match &p.ann {
+                Some(t) => format!("{}: {}", p.name, type_ref(t)),
+                None => p.name.clone(),
+            })
+            .collect();
+        self.push_at(0, &format!("machine {}({})", m.name, params.join(", ")), m.line);
+        for st in &m.states {
+            self.lead(st.line, 1);
+            self.push_at(1, &format!("state {}", pattern(&st.pattern)), st.line);
+            // the arms in the order written: the signals and the `after`
+            // among them by line
+            let mut arms: Vec<(usize, String)> = Vec::new();
+            for a in &st.arms {
+                arms.push((a.line, self.arm_text(a, 2)));
+            }
+            if let Some((ms, body, aline)) = &st.after {
+                let head = format!("after {}", self.render(ms, 3));
+                arms.push((*aline, self.arm_body_text(&head, body, *aline, 2)));
+            }
+            arms.sort_by_key(|(l, _)| *l);
+            for (_, text) in arms {
+                self.out.push_str(&text);
+            }
+        }
+    }
+
+    /// One arm of a state, with its comments, as the lines it takes.
+    fn arm_text(&mut self, arm: &Arm, ind: usize) -> String {
+        let head = match &arm.guard {
+            Some(g) => format!("{} if {}", pattern(&arm.pattern), self.render(g, ind + 1)),
+            None => pattern(&arm.pattern),
+        };
+        self.arm_body_text(&head, &arm.body, arm.line, ind)
+    }
+
+    fn arm_body_text(&mut self, head: &str, body: &Expr, line: usize, ind: usize) -> String {
+        let mut s = String::new();
+        for (cl, text) in self.comments.before(line) {
+            self.mark(cl);
+            s.push_str(&format!("{}{}\n", pad(ind), text));
+        }
+        self.mark(line);
+        if let Expr::Block(stmts) = body {
+            s.push_str(&format!("{}{head} ->", pad(ind)));
+            if let Some(c) = self.comments.on(line) {
+                s.push_str(&format!("  {c}"));
+            }
+            s.push_str(&self.block_lines(stmts, ind + 1));
+            s.push('\n');
+        } else {
+            let rendered = self.render(body, ind + 1);
+            let text = self.with_trailing(&format!("{head} -> {rendered}"), line);
+            s.push_str(&format!("{}{text}\n", pad(ind)));
+        }
+        self.last_line = self.last_line.max(line);
+        s
     }
 
     fn stmts(&mut self, stmts: &[Stmt], indent: usize) {
@@ -694,7 +762,7 @@ fn stmt_line(s: &Stmt) -> usize {
     }
 }
 
-fn expr_line(e: &Expr) -> usize {
+pub fn expr_line(e: &Expr) -> usize {
     match e {
         Expr::Var(_, l) => *l,
         Expr::Call { line, .. } => *line,

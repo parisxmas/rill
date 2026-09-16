@@ -141,12 +141,20 @@ impl Parser {
         let mut externs = Vec::new();
         let mut asms = Vec::new();
         let mut functions = Vec::new();
+        let mut machines = Vec::new();
         let mut name = None;
         let mut name_line = 0;
         loop {
             self.skip_newlines();
             match self.peek() {
                 Tok::Eof => break,
+                // `machine name(...)`: a state machine, a name rather than a
+                // keyword, meaning this only here before a name and `(`.
+                Tok::Ident(w) if w == "machine" && matches!(self.peek2(), Tok::Ident(_)) => {
+                    let m = self.machinedef()?;
+                    functions.push(crate::machine::lower(&m)?);
+                    machines.push(m);
+                }
                 // `module name`: what the file is, said first. A name, not
                 // a keyword, meaning this only here.
                 Tok::Ident(w) if w == "module" && matches!(self.peek2(), Tok::Ident(_)) => {
@@ -228,7 +236,134 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, name, name_line })
+        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, name, name_line, machines })
+    }
+
+    /// `machine name(params)` and, indented under it, one `state` after
+    /// another, each with its arms indented under it. See `MachineDef`.
+    fn machinedef(&mut self) -> Result<MachineDef, SyntaxError> {
+        let (line, col) = self.here();
+        self.bump();
+        let name = self.ident("a machine name after `machine`")?;
+        if starts_upper(&name) {
+            return Err(SyntaxError::new(
+                line,
+                col,
+                format!("machine names must start with a lowercase letter (found `{name}`): a machine is a function, and its states are the constructors of a type declared with `type`"),
+            ));
+        }
+        self.expect(&Tok::LParen, "after the machine name")?;
+        let params = self.params()?;
+        self.expect(&Tok::RParen, "to close the parameter list")?;
+        if params.is_empty() {
+            return Err(SyntaxError::new(line, col, "a machine takes at least one parameter: the channel its signals arrive on".to_string()));
+        }
+        self.expect(&Tok::Indent, "— a machine's states must be indented under `machine`")?;
+        let mut states = Vec::new();
+        loop {
+            self.skip_newlines_only();
+            let (sline, scol) = self.here();
+            match self.peek() {
+                Tok::Ident(w) if w == "state" => {
+                    self.bump();
+                    states.push(self.statedef(sline)?);
+                }
+                Tok::Dedent => {
+                    self.bump();
+                    break;
+                }
+                Tok::Eof => break,
+                other => {
+                    return Err(SyntaxError::new(sline, scol, format!("expected `state` in a machine, found {other}")));
+                }
+            }
+        }
+        if states.is_empty() {
+            return Err(SyntaxError::new(line, col, "a machine needs at least one `state`".to_string()));
+        }
+        Ok(MachineDef { name, params, states, line })
+    }
+
+    /// Newlines between the states of a machine, which the layout gives as
+    /// `Newline` tokens at the same depth.
+    fn skip_newlines_only(&mut self) {
+        while matches!(self.peek(), Tok::Newline) {
+            self.bump();
+        }
+    }
+
+    /// `state Ctor(fields)` and, indented under it, the arms: signal
+    /// patterns like a match's, and `after ms -> body` at most once.
+    fn statedef(&mut self, line: usize) -> Result<StateDef, SyntaxError> {
+        let (pl, pc) = self.here();
+        let pattern = self.pattern()?;
+        if !matches!(pattern, Pattern::Ctor { .. }) {
+            return Err(SyntaxError::new(pl, pc, "a state is a constructor of the machine's state type, its fields named: `state Dialling(digits)`".to_string()));
+        }
+        self.expect(&Tok::Indent, "— a state's arms must be indented under `state`")?;
+        let mut arms = Vec::new();
+        let mut after = None;
+        loop {
+            let (aline, acol) = self.here();
+            match self.peek() {
+                Tok::Ident(w) if w == "after" => {
+                    self.bump();
+                    let ms = self.expr()?;
+                    self.expect(&Tok::Arrow, "after the wait of an `after` arm")?;
+                    let body = self.body()?;
+                    if after.is_some() {
+                        return Err(SyntaxError::new(aline, acol, "a state has one `after` arm: the one wait it keeps".to_string()));
+                    }
+                    after = Some((ms, body, aline));
+                }
+                _ => arms.push(self.arm()?),
+            }
+            match self.peek() {
+                Tok::Newline => {
+                    self.bump();
+                    if matches!(self.peek(), Tok::Dedent) {
+                        self.bump();
+                        break;
+                    }
+                }
+                Tok::Dedent => {
+                    self.bump();
+                    break;
+                }
+                Tok::Eof => break,
+                other => {
+                    let (l, c) = self.here();
+                    return Err(SyntaxError::new(l, c, format!("expected end of line after a state's arm, found {other}")));
+                }
+            }
+        }
+        if arms.is_empty() && after.is_none() {
+            return Err(SyntaxError::new(line, 0, "a state answers at least one signal, or an `after`".to_string()));
+        }
+        Ok(StateDef { pattern, arms, after, line })
+    }
+
+    /// The parameters of a function or a machine, between the parentheses.
+    fn params(&mut self) -> Result<Vec<Param>, SyntaxError> {
+        let mut params = Vec::new();
+        if !matches!(self.peek(), Tok::RParen) {
+            loop {
+                let pname = self.ident("a parameter name")?;
+                let ann = if matches!(self.peek(), Tok::Colon) {
+                    self.bump();
+                    Some(self.type_ref("a parameter type after `:`")?)
+                } else {
+                    None
+                };
+                params.push(Param { name: pname, ann });
+                if matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(params)
     }
 
     /// `extern ["lib"] fn name(p: T, ...) [-> T]`.

@@ -4563,10 +4563,15 @@ impl Checker {
         }
 
         if let Some(w) = self.witness(&matrix, &[scrut.ty.clone()]) {
-            return Err(TypeError::new(
-                line,
-                format!("match is not exhaustive; no arm matches `{}`", show_pattern(&w[0])),
-            ));
+            // a `machine` is a match on its state, and a state it does not
+            // have is what the gap means
+            let msg = match scrutinee {
+                Expr::Var(n, _) if n == "machine.state" => {
+                    format!("the machine has no `state {}`: every state of its type answers something", show_pattern(&w[0]))
+                }
+                _ => format!("match is not exhaustive; no arm matches `{}`", show_pattern(&w[0])),
+            };
+            return Err(TypeError::new(line, msg));
         }
         Ok(TExpr {
             ty: result_ty,
