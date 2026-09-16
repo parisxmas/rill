@@ -1667,6 +1667,7 @@ fn serve(server) =
 |---|---|
 | `tcp_listen(port) -> Int` | listening socket, or -1 |
 | `tcp_accept(server) -> Int` | next connection, parking until one arrives |
+| `tcp_listen_at(ipv4, port) -> Int` | the same on one address — `"127.0.0.1"` for this machine alone, which a tool that runs programs on request should be |
 | `tcp_connect(ipv4, port) -> Int` | client socket, or -1 |
 | `sock_read(fd) -> Str` | whatever has arrived; `""` means the peer closed |
 | `sock_wait(fd, ms) -> Bool` | wait for something to read, or give up after `ms` |
@@ -1679,8 +1680,8 @@ fn serve(server) =
 | `sock_shutdown(fd) -> Int` | end the connection without closing the descriptor — the only way one strand gets another out of a read |
 | `sock_close(fd)` | |
 
-The prelude wraps the three that can fail: `listen_on`, `accept_on` and
-`connect_to` return `Result`. Addresses are dotted-quad IPv4; a name is
+The prelude wraps the four that can fail: `listen_on`, `listen_at`,
+`accept_on` and `connect_to` return `Result`. Addresses are dotted-quad IPv4; a name is
 resolved by `net/dns`, whose lookup is a `blocking` extern, so the strand
 parks for it and no worker is held. TLS is `web/tls`, over the same
 sockets through OpenSSL, with `read` and `write` of the same shape.

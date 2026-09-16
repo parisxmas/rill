@@ -160,6 +160,22 @@ Cursor, Windsurf and VSCodium read the same folder under their own
 `extensions` directory. See `editors/vscode/README.md` for packaging it as a
 `.vsix` and for how the grammar is tested.
 
+`editors/web/` is the model editor: a page that shows a file's `system` as
+the block diagram and each `machine` as SDL drew a process, beside its
+code, every symbol a click from the line it came from, and edits them —
+a route, an arm, a new state or input opens in a box with its own lines,
+written back into the file through the formatter; hover for a type and
+⌘-click for a definition, from `rill lsp` kept alive beside the server;
+and a Simulate view that runs a scenario — `main`, or a `test_` function — traced on the
+virtual clock and replays it, the sequence chart growing event by event
+while the diagrams light the state and transition each machine is at.
+Its server is written in Rill on the standard library and runs the
+compiler for the page:
+
+```sh
+rill run editors/web/server.rill        # http://127.0.0.1:8765, this machine alone, the current directory as root
+```
+
 ## Examples
 
 `examples/` is a tour, and every file is covered by the test suite:

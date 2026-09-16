@@ -9069,6 +9069,30 @@ mod net {
         fd as i64
     }
 
+    /// Opens a listening socket on `host:port` — `host` a dotted IPv4
+    /// address, `127.0.0.1` for this machine alone — or returns -1. What a
+    /// tool that runs programs on request should listen on.
+    ///
+    /// # Safety
+    /// `host` must be a live string object; called from strand context.
+    #[no_mangle]
+    pub unsafe extern "C" fn rill_tcp_listen_at(host: *const u8, port: i64) -> i64 {
+        let Some(ip) = parse_ipv4(host) else { return -1 };
+        let fd = socket(AF_INET, SOCK_STREAM, 0);
+        if fd < 0 {
+            return -1;
+        }
+        let one: i32 = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one as *const i32 as *const u8, 4);
+        let addr = sock_addr(ip, port);
+        if bind(fd, &addr, 16) < 0 || listen(fd, 128) < 0 {
+            close(fd);
+            return -1;
+        }
+        set_nonblocking(fd);
+        fd as i64
+    }
+
     /// Waits for the next connection, parking rather than blocking the worker.
     ///
     /// # Safety

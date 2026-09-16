@@ -758,6 +758,12 @@ fn listen_on(port) =
   fd = tcp_listen(port)
   if fd < 0 then Err("cannot listen on port " + int_to_str(port)) else Ok(fd)
 
+# The same on one address: `listen_at("127.0.0.1", 8765)` is this machine
+# alone, which a tool that runs programs on request should be.
+fn listen_at(host, port) =
+  fd = tcp_listen_at(host, port)
+  if fd < 0 then Err("cannot listen on " + host + ":" + int_to_str(port)) else Ok(fd)
+
 fn accept_on(server) =
   fd = tcp_accept(server)
   if fd < 0 then Err("accept failed") else Ok(fd)

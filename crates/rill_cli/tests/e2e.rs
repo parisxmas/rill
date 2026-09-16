@@ -5427,3 +5427,95 @@ fn the_alternating_bit_protocol_runs_and_tests_on_virtual_time() {
     let said = compile_error(&no_ack);
     assert!(said.contains("`Ack`, which no route") && said.contains("system `abp`"), "{said}");
 }
+
+/// The editor's server, written in Rill: started on a port of its own,
+/// asked for the files, a file, the model of one, its check, and the
+/// page; a path outside the root refused; a save that comes back.
+#[test]
+fn the_editor_server_answers_its_api() {
+    use std::io::{Read, Write};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    let dir = std::env::temp_dir().join(format!("rill-e2e-editor-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(root.join("editors/web/server.rill")).arg("-o").arg(dir.join("server")).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let port = 18000 + (std::process::id() % 2000) as u16;
+    let mut server = Command::new(dir.join("server"))
+        .arg("--port").arg(port.to_string())
+        .arg("--root").arg(&root)
+        .arg("--rill").arg(env!("CARGO_BIN_EXE_rill"))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let ask = |req: String| -> (u16, String) {
+        for _ in 0..50 {
+            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                s.write_all(req.as_bytes()).unwrap();
+                let mut out = String::new();
+                s.read_to_string(&mut out).unwrap();
+                let status: u16 = out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+                let body = out.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+                return (status, body);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("the editor server did not come up on {port}");
+    };
+    let get = |path: &str| ask(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
+    let result = std::panic::catch_unwind(|| {
+        let (st, page) = get("/");
+        assert!(st == 200 && page.contains("<title>Rill — models</title>"), "{st} {page}");
+        let (st, files) = get("/api/files");
+        assert!(st == 200 && files.contains("\"examples/abp.rill\"") && !files.contains("selfhost/"), "{files}");
+        let (st, file) = get("/api/file?path=examples/hello.rill");
+        assert!(st == 200 && file.contains("hello, world"), "{file}");
+        let (st, outside) = get("/api/file?path=../outside");
+        assert!(st == 403 && outside.contains("outside the root"), "{st} {outside}");
+        let (st, model) = get("/api/model?path=examples/abp.rill");
+        assert!(st == 200 && model.contains("\"systems\"") && model.contains("\"name\":\"sender\"") && model.contains("\"kind\":\"timer\""), "{model}");
+        let (st, check) = get("/api/check?path=examples/abp.rill");
+        assert!(st == 200 && check.contains("\"kind\":\"note\"") && check.contains("drops `Ack`, `Retry`"), "{check}");
+        let (st, fmt) = get("/api/fmt?path=examples/hello.rill");
+        assert!(st == 200 && fmt.starts_with("# The classic."), "{fmt}");
+        let body = "fn main() = println(\"from the editor\")\n";
+        let (st, saved) = ask(format!("PUT /api/file?path=editors/web/.e2e-probe.rill HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()));
+        assert!(st == 200 && saved.contains("\"ok\":true"), "{st} {saved}");
+        let (st, back) = get("/api/file?path=editors/web/.e2e-probe.rill");
+        assert!(st == 200 && back.contains("from the editor"), "{back}");
+        let (st, model) = get("/api/model?path=editors/web/.e2e-probe.rill");
+        assert!(st == 200 && model.contains("\"machines\":[]"), "{st} {model}");
+        let (st, nowhere) = get("/api/nothing");
+        assert!(st == 404, "{st} {nowhere}");
+        // a scenario run traced on the virtual clock: its output, and its events
+        let (st, scenarios) = get("/api/scenarios?path=examples/abp.rill");
+        assert!(st == 200 && scenarios.contains("\"main\"") && scenarios.contains("\"test_a_text_goes_through\""), "{scenarios}");
+        let (st, run) = get("/api/run?path=examples/abp.rill&scenario=test_a_text_goes_through");
+        assert!(st == 200 && run.contains("\"status\":0") && run.contains("ok    test_a_text_goes_through"), "{run}");
+        assert!(run.contains("\"kind\":\"recv\"") && run.contains("\"who\":\"sender#") && run.contains("\"kind\":\"set\""), "{run}");
+        // an edit made on a diagram: lines replaced, kept only if the result parses
+        let probe = "editors/web/.e2e-probe.rill";
+        let edit = |body: &str| ask(format!("POST /api/edit?path={probe} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()));
+        let (st, edited) = edit("{\"edits\":[{\"from\":1,\"to\":1,\"text\":\"fn main() =\\n  println(\\\"edited\\\")\\n  println(\\\"twice\\\")\"}]}");
+        assert!(st == 200 && edited.contains("println(\\\"twice\\\")"), "{st} {edited}");
+        let (st, refused) = edit("{\"edits\":[{\"from\":2,\"to\":1,\"text\":\"fn broken( =\"}]}");
+        assert!(st == 422 && refused.contains("syntax error at line 2"), "{st} {refused}");
+        let (_, kept) = get(&format!("/api/file?path={probe}"));
+        assert!(kept.contains("twice") && !kept.contains("broken"), "{kept}");
+        assert!(!root.join("editors/web/.rill-editor-draft.rill").exists());
+        // the language server behind the bridge: a hover and a definition on the text sent
+        let text = std::fs::read_to_string(root.join("examples/exchange.rill")).unwrap();
+        let idle = text.lines().position(|l| l == "  state Idle").unwrap();
+        let (st, hover) = ask(format!("POST /api/lsp?path=examples/exchange.rill&method=hover&line={idle}&character=9 HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()));
+        assert!(st == 200 && hover.contains("Idle -> Line"), "{st} {hover}");
+        let ring = text.lines().position(|l| l.contains("Ring -> Ringing(sender)")).unwrap();
+        let (st, def) = ask(format!("POST /api/lsp?path=examples/exchange.rill&method=definition&line={ring}&character=14 HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()));
+        let ringing_type = text.lines().position(|l| l.starts_with("  Ringing(caller")).unwrap();
+        assert!(st == 200 && def.contains(&format!("\"line\":{ringing_type}")), "{st} {def}");
+    });
+    let _ = std::fs::remove_file(root.join("editors/web/.e2e-probe.rill"));
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}

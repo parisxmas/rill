@@ -1,9 +1,18 @@
 # Editors
 
-Two things live here. `vscode/` is the extension that colours Rill and knows
-how it is indented. The other is not a file at all: `rill lsp` is a language
-server built into the compiler, and any editor that speaks the protocol can
-start it without an extension of its own.
+Three things live here. `vscode/` is the extension that colours Rill and
+knows how it is indented. `web/` is the model editor — a page drawing a
+file's `system` and `machine`s as SDL drew them, beside the code, editing
+them as code written back through the formatter, and replaying a
+scenario's run on them with the sequence chart beside, with a server in
+Rill that runs the compiler for it; `rill run
+editors/web/server.rill` starts it on <http://127.0.0.1:8765> — this
+machine alone, since it runs programs on request — the current directory
+as its root; `--port`, `--root`, `--rill` and `--host` say otherwise. It
+keeps a `rill lsp` alive beside it for hover and go-to-definition.
+The third is not a file at all: `rill lsp` is a language server built into
+the compiler, and any editor that speaks the protocol can start it without
+an extension of its own.
 
 ## What the server answers
 

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rill — models</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <span class="brand">rill</span>
+  <span id="file-name" class="file-name">no file</span>
+  <span class="grow"></span>
+  <button id="btn-check" title="rill check">Check</button>
+  <button id="btn-fmt" title="rill fmt">Format</button>
+  <button id="btn-save" title="save (⌘S)">Save</button>
+  <span id="status" class="status"></span>
+</header>
+<main>
+  <nav id="files" class="files"></nav>
+  <section class="middle">
+    <div class="tabs">
+      <button class="tab current" data-view="diagrams">Model</button>
+      <button class="tab" data-view="simulate">Simulate</button>
+      <span class="grow"></span>
+      <span class="zoom">
+        <button id="zoom-out" title="smaller (⌥−)">−</button>
+        <button id="zoom-reset" title="natural size">100%</button>
+        <button id="zoom-in" title="larger (⌥+)">+</button>
+      </span>
+    </div>
+    <div id="diagrams" class="diagrams view current">
+      <div class="empty">Pick a file on the left. A file with a <code>system</code> or a <code>machine</code> is drawn here; any other shows its code.</div>
+    </div>
+    <div id="simulate" class="simulate view">
+      <div class="sim-controls">
+        <label>scenario <select id="scenario"></select></label>
+        <label><input type="checkbox" id="virtual" checked> virtual time</label>
+        <button id="btn-run">Run</button>
+        <span class="sep"></span>
+        <button id="btn-start" title="to the start">⏮</button>
+        <button id="btn-back" title="a step back">◀</button>
+        <button id="btn-play" title="play / pause">▶</button>
+        <button id="btn-fwd" title="a step on">▶|</button>
+        <button id="btn-end" title="to the end">⏭</button>
+        <input type="range" id="position" min="0" max="0" value="0">
+        <span id="counter" class="counter"></span>
+        <span class="grow"></span>
+        <span id="sim-status" class="status"></span>
+      </div>
+      <div id="event" class="event"></div>
+      <div class="sim-body">
+        <div id="chart-pane" class="chart-pane"></div>
+        <div id="sim-diagrams" class="sim-diagrams"></div>
+      </div>
+      <pre id="sim-output" class="sim-output"></pre>
+    </div>
+  </section>
+  <section class="code">
+    <div class="code-head">
+      <span>code</span>
+      <span class="grow"></span>
+      <span id="dirty" class="dirty"></span>
+    </div>
+    <div class="code-body">
+      <pre id="gutter" class="gutter"></pre>
+      <div class="code-stack">
+        <pre id="colors" class="colors" aria-hidden="true"></pre>
+        <textarea id="editor" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
+      </div>
+    </div>
+    <ul id="problems" class="problems"></ul>
+  </section>
+</main>
+<script src="/static/highlight.js"></script>
+<script src="/static/diagram.js"></script>
+<script src="/static/chart.js"></script>
+<script src="/static/simulate.js"></script>
+<script src="/static/edit.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

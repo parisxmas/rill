@@ -89,6 +89,69 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — the model editor keeps a language server, on this machine alone
+
+The diagrams zoom: `−`, `100%`, `+` beside the tabs, ⌥ with `+`, `−`
+and `0`, and ⌘ with the wheel over a diagram; the size is kept between
+visits. Coming back to the Model tab from Simulate shows the model
+again, which it did not; the code view's selection is translucent, so a
+selected line still reads; and the Simulate view says what it is for
+before a run.
+
+The editor's server keeps `rill lsp` alive beside it, on two named
+pipes, and one strand asks it questions one at a time: hover on the
+code shows a name's type, ⌘-click goes to its definition, both on the
+text as the page has it, saved or not. And it listens on 127.0.0.1
+alone: `tcp_listen_at(host, port)` joins the runtime, `listen_at` the
+prelude and `serve_at` the HTTP library, for a tool that runs programs
+on request and is for the machine it runs on.
+
+## Unreleased — the model editor edits
+
+The diagrams are editable. A route on the block diagram, an arm, a
+`save` or a `priority` on a process diagram opens in a box with its own
+lines, to change or delete; a dashed `+ input` at the end of each state
+and `+ state` at the end of each machine add one — the new state's
+constructor going into the state type and its `state` with a first arm
+at the end of the machine. Every edit is a range of lines replaced,
+which the server keeps only if the result still parses and writes back
+formatted, or answers with the parser's reason, shown in the box. The
+code is the model, so what the box holds is code. `rill diagram --json`
+no longer needs the program to type-check, so a diagram stays drawn
+while a mistake on it is being put right; the check's errors are listed
+under the code meanwhile.
+
+## Unreleased — the model editor simulates, and colours its code
+
+The code view is coloured: comments, strings and their escapes, numbers,
+the keywords and the machine's own words, constructors and types by
+their capital, a call by its parenthesis — a small tokenizer of its
+own, with the same classes the VS Code grammar names, laid behind the
+text as it is typed.
+
+The editor's Simulate view runs a scenario of the file — `main`, or a
+`test_` function — on the server with the trace on and the virtual clock
+by default, and replays it: the sequence chart grows event by event,
+and on the process diagrams the state each machine is in and the
+transition it is taking light up, with play, pause, step and a slider to
+any moment. The program's own output sits below. `rill test` passes a
+scenario's trace through as it came, so a test is a scenario.
+
+## Unreleased — the model editor, first view
+
+`editors/web/` is a page that shows a file's `system` as the block
+diagram and each `machine` as SDL drew a process, beside the code:
+every symbol carries the line it was written on, so a click on it finds
+the code and the cursor's line lights the symbols written there. The
+notes of `rill check` sit on the states as badges and under the code as
+a list. Its server is written in Rill on the standard library — `web/http`
+serves, `cli/proc` runs the compiler, `web/mime`, `data/json`, `text/path`
+and `cli/args` do the rest — and keeps every path inside its root.
+Under it, `rill diagram --json` gives the model as data with the lines,
+and the block diagram's channels are routed as SDL drew them, up,
+across in a lane of their own, and down, in the page and on the command
+line alike.
+
 ## Unreleased — the alternating-bit protocol, and a chapter
 
 `examples/abp.rill` is the model that uses everything: a sender with a

@@ -22,7 +22,7 @@ fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
+const USAGE: &str = "usage:\n  rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>]\n  rill run <file.rill> [--debug] [--parallel] [--unchecked]\n  rill fmt <file.rill>... [--check | --stdout]\n  rill check <file.rill> [--parallel]\n  rill types <file.rill>\n  rill test <file.rill> [test names...] [--parallel]\n  rill explain <file.rill>\n  rill diagram <file.rill> [--svg | --json] [-o <out>]\n  rill msc [trace.txt] [--svg] [-o <out>]\n  rill lsp\n  rill repl\n\n  --debug   no optimization passes, DWARF line info and symbols (for lldb)\n  --parallel  allow RILL_THREADS>1 (reference counts become atomic)\n  --unchecked  no bounds test on buffer accesses (run it checked first)\n  --shared  a shared library (.dylib/.so) whose `export fn`s a C or Python\n            program calls; `main` runs once as `rill_init`\n  --target  compile for another machine; arm64, x86-64 and wasm32 triples\n            only. Windows and wasm targets are linked, anything else stops\n            at the object file\n  --check   exit 1 if any file is not already formatted\n  --stdout  print the formatted source instead of rewriting the file";
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
     let (cmd, rest) = args.split_first().ok_or(USAGE)?;
@@ -153,12 +153,14 @@ fn explain_cmd(args: &[String]) -> Result<ExitCode, String> {
 /// program is checked first, so what is drawn is what compiles.
 fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
     let mut svg = false;
+    let mut json = false;
     let mut out: Option<PathBuf> = None;
     let mut file: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--svg" => svg = true,
+            "--json" => json = true,
             "-o" => {
                 i += 1;
                 out = Some(PathBuf::from(args.get(i).ok_or("`-o` needs a file")?));
@@ -171,24 +173,35 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
     let path = file.ok_or(USAGE)?;
     let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    if own.machines.is_empty() && own.systems.is_empty() {
+    // Nothing to draw is an error to a person and an empty model to a
+    // program, which asks about every file.
+    if own.machines.is_empty() && own.systems.is_empty() && !json {
         return Err(format!("{}: no `machine` or `system` in this file to draw", path.display()));
     }
-    let module = rill_syntax::load_program(&path)?;
-    if let Err(errors) = rill_types::check_all(&module) {
-        for e in &errors {
-            eprintln!("{}: {e}", path.display());
+    // A picture is of a program that compiles; the model as data is for an
+    // editor, which wants it while the program is still being put right,
+    // and asks `rill check` separately.
+    if !json {
+        let module = rill_syntax::load_program(&path)?;
+        if let Err(errors) = rill_types::check_all(&module) {
+            for e in &errors {
+                eprintln!("{}: {e}", path.display());
+            }
+            return Ok(ExitCode::FAILURE);
         }
-        return Ok(ExitCode::FAILURE);
     }
     let mut drawn = String::new();
-    for sd in &own.systems {
+    if json {
+        drawn = diagram::model_json(&own.systems, &own.machines).render();
+        drawn.push('\n');
+    }
+    for sd in own.systems.iter().filter(|_| !json) {
         drawn.push_str(&if svg { diagram::system_svg(sd) } else { diagram::system_mermaid(sd) });
         if !svg {
             drawn.push('\n');
         }
     }
-    for m in &own.machines {
+    for m in own.machines.iter().filter(|_| !json) {
         drawn.push_str(&if svg { diagram::svg(m) } else { diagram::mermaid(m) });
         if !svg {
             drawn.push('\n');
@@ -574,12 +587,20 @@ fn test_cmd(args: &[String]) -> Result<ExitCode, String> {
             .arg(name)
             .output()
             .map_err(|e| format!("failed to run `{}`: {e}", exe.display()))?;
+        // A trace is the run's, not the runner's: passed through as it
+        // came, whether the test passed or not, so a traced scenario can be
+        // drawn.
+        for line in String::from_utf8_lossy(&out.stderr).lines() {
+            if line.starts_with("rill trace ") {
+                eprintln!("{line}");
+            }
+        }
         if out.status.success() {
             println!("ok    {name}");
         } else {
             failed += 1;
             println!("FAIL  {name}");
-            for line in String::from_utf8_lossy(&out.stderr).lines() {
+            for line in String::from_utf8_lossy(&out.stderr).lines().filter(|l| !l.starts_with("rill trace ")) {
                 println!("      {line}");
             }
             let printed = String::from_utf8_lossy(&out.stdout);

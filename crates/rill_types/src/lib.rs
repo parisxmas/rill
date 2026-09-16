@@ -4306,6 +4306,8 @@ impl Checker {
             // Sockets. A strand blocked on one parks rather than holding
             // up the worker running it.
             "tcp_listen" => Some(("rill_tcp_listen", vec![Ty::Int], Ty::Int)),
+            // The same on one address — `127.0.0.1` for this machine alone.
+            "tcp_listen_at" => Some(("rill_tcp_listen_at", vec![Ty::Str, Ty::Int], Ty::Int)),
             "tcp_accept" => Some(("rill_tcp_accept", vec![Ty::Int], Ty::Int)),
             "tcp_connect" => Some(("rill_tcp_connect", vec![Ty::Str, Ty::Int], Ty::Int)),
             "sock_read" => Some(("rill_sock_read", vec![Ty::Int], Ty::Str)),
@@ -6014,6 +6016,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "peek_f32"
             | "peek_f64"
             | "tcp_listen"
+            | "tcp_listen_at"
             | "tcp_accept"
             | "tcp_connect"
             | "sock_read"

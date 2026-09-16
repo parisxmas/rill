@@ -1,0 +1,342 @@
+# The SDL editor's server: the page is static files, and everything the
+# compiler does for it happens here, on the machine the files are on. The
+# browser edits diagrams; this turns them into `rill diagram --json`,
+# `rill check`, `rill fmt`, a run, and back.
+#
+#     rill run editors/web/server.rill                # http://localhost:8765
+#     rill run editors/web/server.rill -- --port 9000 --root ~/models --rill ./target/release/rill
+#
+# Every path a request names is kept inside the root, and the server is
+# for the machine it runs on: it runs programs, so it is not for the
+# network.
+import "web/http" as http
+import "web/mime" as mime
+import "web/url" as url
+import "data/json" as json
+import "cli/args" as cli
+import "cli/env" as env
+import "cli/proc" as proc
+import "text/path" as path
+import "text/str" as str
+
+type Site
+  Site(root: Str, rill: Str, here: Str, lsp: Chan(Ask))
+
+# A question for the language server, and where its answer goes.
+type Ask
+  Ask(opened: Str, request: Str, reply: Chan(Str))
+
+fn spec() =
+  cli.tool("rill-editor", "the SDL editor's server")
+    |> cli.valued("port", "p", "PORT", "8765", "the port to listen on")
+    |> cli.valued("root", "r", "DIR", "", "the directory the files are under (the current one)")
+    |> cli.valued("rill", "", "PATH", "rill", "the compiler to call")
+    |> cli.valued("host", "", "ADDRESS", "127.0.0.1", "the address to listen on: this machine alone unless said otherwise")
+
+fn main() = match cli.parse(spec(), args())
+  Err(why) -> println(why)
+  Ok(got) ->
+    root = path.normalize(if #cli.value(got, "root") == 0 then env.cwd() else cli.value(got, "root"))
+    here = path.join_path(root, "editors/web/static")
+    site = Site(root, cli.value(got, "rill"), here, language_server(cli.value(got, "rill")))
+    port = str_to_int(cli.value(got, "port"))
+    host = cli.value(got, "host")
+    println("rill editor on http://" + host + ":" + int_to_str(port) + " over " + root)
+    http.serve_at(host, port, \req -> route(site, req))
+
+# -- routes -------------------------------------------------------------------
+
+type Endpoint
+  Page(name: Str)
+  Files
+  Read
+  Save
+  Model
+  Check
+  Fmt
+  Scenarios
+  Run
+  Edit
+  Lsp
+  Missing(path: Str)
+
+# A request's path as the endpoint it names; the page's files by their
+# name, the API by a table.
+fn endpoint(p, method) =
+  if p == "/" then Page("index.html") else if starts_with(p, "/static/") then Page(p[8:]) else match find(api(), \r -> fst(r) == p)
+    None -> Missing(p)
+    Some((_, e)) -> if e == Read && method == "PUT" then Save else e
+
+fn api() =
+  Cons(("/api/files", Files), Cons(("/api/file", Read), Cons(("/api/model", Model), Cons(("/api/check", Check), Cons(("/api/fmt", Fmt), Cons(("/api/scenarios", Scenarios), Cons(("/api/run", Run), Cons(("/api/edit", Edit), Cons(("/api/lsp", Lsp), Nil)))))))))
+
+fn route(site: Site, req: http.Request) =
+  q = http.query_of(req.path)
+  file = http.param(q, "path")
+  match endpoint(http.path_of(req.path), req.method)
+    Page(name) -> page(site, name)
+    Files -> files(site)
+    Read -> fetch(site, file)
+    Save -> save(site, file, req.body)
+    Model -> model(site, file)
+    Check -> check(site, file)
+    Fmt -> format(site, file)
+    Scenarios -> scenarios(site, file)
+    Run -> run(site, file, http.param(q, "scenario"), http.param(q, "virtual") != "0")
+    Edit -> edit(site, file, req.body)
+    Lsp -> lsp(site, file, http.param(q, "method"), http.param(q, "line"), http.param(q, "character"), req.body)
+    Missing(p) -> http.json_response(404, fail("no such route: " + p))
+
+# A file of the page, by its name under `static/`.
+fn page(site: Site, name) = match inside(site.here, name)
+  None -> http.json_response(404, fail("not here"))
+  Some(full) -> match read_file(full)
+    Err(_) -> http.json_response(404, fail("no such page: " + name))
+    Ok(text) -> http.with_header(http.Response(200, mime.of_path(name), Nil, text), "Cache-Control", "no-cache")
+
+# A path a request named, made whole under `base`, or `None` when it
+# would reach outside.
+fn inside(base, rel) =
+  full = path.normalize(path.join_path(base, rel))
+  if starts_with(full, base + "/") || full == base then Some(full) else None
+
+# -- files ----------------------------------------------------------------------
+
+# Every `.rill` file under the root, as paths relative to it, skipping what
+# is not a model's business.
+fn files(site: Site) =
+  http.json_response(200, json.to_string(json.JObj(Cons(json.Field("files", json.JArr(map(walk(site.root, "", Nil), \f -> json.JStr(f)))), Nil))))
+
+fn walk(root, rel, acc) =
+  full = if #rel == 0 then root else path.join_path(root, rel)
+  fold(dir_names(full), acc, \found, name -> visit(root, rel, name, found))
+
+fn visit(root, rel, name, acc) =
+  child = if #rel == 0 then name else rel + "/" + name
+  if skipped(name) then acc else if ends_with(name, ".rill") then append(acc, Cons(child, Nil)) else if str_find(name, ".") < 0
+    then walk(root, child, acc)
+    else acc
+
+fn skipped(name) =
+  name == "target" || name == "selfhost" || name == "node_modules" || name == "build" || starts_with(name, ".")
+
+fn ends_with(s, p) = #p <= #s && s[#s - #p:] == p
+
+fn fetch(site: Site, rel) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) -> match read_file(full)
+    Err(e) -> http.json_response(404, fail(e))
+    Ok(text) -> http.json_response(200, json.to_string(json.JObj(Cons(json.Field("path", json.JStr(rel)), Cons(json.Field("text", json.JStr(text)), Nil)))))
+
+fn save(site: Site, rel, text) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) -> if write_file(full, text) then http.json_response(200, ok()) else http.json_response(500, fail("cannot write " + rel))
+
+# -- the compiler ---------------------------------------------------------------
+
+# The model of a file: what `rill diagram --json` says, or the errors that
+# stopped it, one a line.
+fn model(site: Site, rel) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) -> match proc.run(proc.command(site.rill, Cons("diagram", Cons("--json", Cons(full, Nil)))) + " 2>&1")
+    Err(e) -> http.json_response(500, fail(e))
+    Ok(r) -> if r.status == 0 then http.json_response(200, r.out) else http.json_response(422, json.to_string(problems(site, r.out)))
+
+# What `rill check` says: the errors and the notes, each with its line.
+fn check(site: Site, rel) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) -> match proc.run(proc.command(site.rill, Cons("check", Cons(full, Nil))) + " 2>&1")
+    Err(e) -> http.json_response(500, fail(e))
+    Ok(r) -> http.json_response(200, json.to_string(problems(site, r.out)))
+
+# `path: type error at line N: text` and `path: note at line N: text`, as
+# `{"kind", "line", "text"}` each.
+fn problems(site: Site, out) =
+  items = filter(map(lines(out), \l -> problem(site, l)), \p -> p != json.JNull)
+  json.JObj(Cons(json.Field("problems", json.JArr(items)), Nil))
+
+fn problem(site: Site, line) =
+  at = str_find(line, " at line ")
+  if at < 0 then if #trim(line) == 0 then json.JNull else json.JObj(Cons(json.Field("kind", json.JStr("error")), Cons(json.Field("line", json.JInt(0)), Cons(json.Field("text", json.JStr(line)), Nil))))
+  else
+    head = line[0:at]
+    kind = if ends_with(head, "note") then "note" else if ends_with(head, "warning") then "warning" else "error"
+    rest = line[at + 9:]
+    colon = str_find(rest, ":")
+    n = str_to_int(if colon < 0 then rest else rest[0:colon])
+    text = if colon < 0 then "" else trim(rest[colon + 1:])
+    json.JObj(Cons(json.Field("kind", json.JStr(kind)), Cons(json.Field("line", json.JInt(n)), Cons(json.Field("text", json.JStr(text)), Nil))))
+
+# The file formatted, as text.
+fn format(site: Site, rel) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) -> match proc.run(proc.command(site.rill, Cons("fmt", Cons("--stdout", Cons(full, Nil)))) + " 2>&1")
+    Err(e) -> http.json_response(500, fail(e))
+    Ok(r) -> if r.status == 0 then http.text_response(200, r.out) else http.json_response(422, fail(trim(r.out)))
+
+# -- simulation -----------------------------------------------------------------
+
+# The scenarios a file has: `main`, if it has one, and every `test_`
+# function — what a run can be asked for.
+fn scenarios(site: Site, rel) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) -> match read_file(full)
+    Err(e) -> http.json_response(404, fail(e))
+    Ok(text) ->
+      names = filter(map(lines(text), scenario_of), \n -> #n > 0)
+      http.json_response(200, json.to_string(json.JObj(Cons(json.Field("scenarios", json.JArr(map(names, \n -> json.JStr(n)))), Nil))))
+
+fn scenario_of(line) =
+  if starts_with(line, "fn main(") then "main" else if starts_with(line, "fn test_")
+    then name_of(line)
+    else ""
+
+fn name_of(line) =
+  open = str_find(line, "(")
+  if open < 0 then "" else line[3:open]
+
+# A scenario run with the trace on — `main` through `rill run`, a test
+# through `rill test` — on the virtual clock unless asked otherwise, and
+# given thirty seconds. What comes back: the program's own lines, and
+# the trace's events as data.
+fn run(site: Site, rel, scenario, virtual) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) ->
+    tool = if scenario == "main" then Cons("run", Cons(full, Nil)) else Cons("test", Cons(full, Cons(scenario, Nil)))
+    clock = if virtual then "RILL_VIRTUAL_TIME=1 " else ""
+    cmd = "RILL_TRACE=1 " + clock + "perl -e 'alarm shift; exec @ARGV' 30 " + proc.command(site.rill, tool) + " 2>&1"
+    match proc.run(cmd)
+      Err(e) -> http.json_response(500, fail(e))
+      Ok(r) -> http.json_response(200, json.to_string(run_json(r.status, lines(r.out))))
+
+fn run_json(status, all) =
+  events = filter(map(all, event_of), \e -> e != json.JNull)
+  said = filter(all, \l -> !starts_with(l, "rill trace ") && #l > 0)
+  json.JObj(Cons(json.Field("status", json.JInt(status)), Cons(json.Field("output", json.JArr(map(said, \l -> json.JStr(l)))), Cons(json.Field("events", json.JArr(events)), Nil))))
+
+# `rill trace N kind<TAB>who<TAB>field...` as `{"seq", "kind", "who", "fields"}`.
+fn event_of(line) =
+  if !starts_with(line, "rill trace ") then json.JNull
+  else
+    rest = line[11:]
+    sp = str_find(rest, " ")
+    if sp < 0 then json.JNull else event_parts(str_to_int(rest[0:sp]), split(rest[sp + 1:], "\t"))
+
+fn event_parts(seq, parts) = match parts
+  Cons(kind, Cons(who, fields)) -> json.JObj(Cons(json.Field("seq", json.JInt(seq)), Cons(json.Field("kind", json.JStr(kind)), Cons(json.Field("who", json.JStr(who)), Cons(json.Field("fields", json.JArr(map(fields, \f -> json.JStr(f)))), Nil)))))
+  _ -> json.JNull
+
+# -- editing --------------------------------------------------------------------
+
+# One edit the page asks for: the lines `from` to `to`, inclusive and
+# counted from 1, replaced by `text` — an empty range at `from` (to =
+# from - 1) is an insertion before it. Several come in one request, and
+# are applied from the bottom up so each keeps its numbering. The result
+# is kept only if `rill fmt` accepts it, and comes back formatted: what
+# the page did on a diagram is code in the file, as the formatter writes
+# it, or the reason it could not be.
+fn edit(site: Site, rel, body) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) -> match json.parse(body)
+    Err(e) -> http.json_response(400, fail("the edit is not JSON: " + e))
+    Ok(j) -> match read_file(full)
+      Err(e) -> http.json_response(404, fail(e))
+      Ok(text) -> apply(site, rel, full, text, json.items(unwrap_or(json.get(j, "edits"), json.JNull)))
+
+fn apply(site: Site, rel, full, text, edits) =
+  ordered = sort_by(edits, \e -> 0 - number(e, "from"))
+  changed = fold(ordered, lines(text), \ls, e -> splice(ls, number(e, "from"), number(e, "to"), json.as_str(unwrap_or(json.get(e, "text"), json.JNull))))
+  draft = path.join_path(path.dir_name(full), ".rill-editor-draft.rill")
+  if !write_file(draft, join(changed, "\n")) then http.json_response(500, fail("cannot write a draft")) else match proc.run(proc.command(site.rill, Cons("fmt", Cons("--stdout", Cons(draft, Nil)))) + " 2>&1")
+    Err(e) -> http.json_response(500, fail(e))
+    Ok(r) ->
+      file_remove(draft)
+      if r.status != 0 then http.json_response(422, fail(trim(str.replace(r.out, draft, rel)))) else if !write_file(full, r.out)
+        then http.json_response(500, fail("cannot write " + rel))
+        else http.json_response(200, json.to_string(json.JObj(Cons(json.Field("path", json.JStr(rel)), Cons(json.Field("text", json.JStr(r.out)), Nil)))))
+
+fn number(j, key) = json.as_int(unwrap_or(json.get(j, key), json.JNull))
+
+# Lines `from`..`to` (1-based, inclusive) replaced by the lines of `text`.
+fn splice(ls, from, to, text) =
+  before = take(ls, from - 1)
+  after = drop(ls, to)
+  middle = if #text == 0 then Nil else lines(text)
+  append(before, append(middle, after))
+
+# -- the language server -----------------------------------------------------------
+
+# `rill lsp` kept alive beside the server, on two named pipes, and one
+# strand asking it questions one at a time: the page's hover and
+# go-to-definition come through here, on the text as the page has it,
+# saved or not. Each question opens the document afresh — the server
+# keeps the last text it was given — then asks, and reads answers until
+# the one with its number, stepping over what the server says of its own
+# accord, the diagnostics.
+extern blocking fn read(fd: I32, buf: Ptr, n: USize) -> ISize
+
+fn language_server(rill) =
+  asks = mailbox()
+  dir = "/tmp/rill-editor-" + int_to_str(env.pid())
+  dir_make(dir)
+  proc.shell("mkfifo " + dir + "/in " + dir + "/out")
+  proc.shell(proc.command(rill, Cons("lsp", Nil)) + " < " + dir + "/in > " + dir + "/out 2>/dev/null &")
+  w = file_open(dir + "/in", "w")
+  r = file_open(dir + "/out", "r")
+  spawn lsp_loop(asks, w, r, 1, "")
+  asks
+
+fn lsp_loop(asks, w, r, next, pending) = match recv(asks)
+  Ask(opened, request, reply) ->
+    # the document as the page has it, then the request with its number
+    numbered = str.replace(request, "\"id\":0", "\"id\":" + int_to_str(next))
+    file_write(w, frame(opened) + frame(numbered))
+    (answer, rest) = answer_numbered(r, pending, next)
+    send(reply, answer)
+    lsp_loop(asks, w, r, next + 1, rest)
+
+fn frame(text) = "Content-Length: " + int_to_str(#text) + "\r\n\r\n" + text
+
+# Messages read until the one that answers request `id`; what was read
+# past it is kept for the next question.
+fn answer_numbered(r, pending, id) =
+  (message, rest) = next_message(r, pending)
+  if #message == 0 then ("", rest) else if str_find(message, "\"id\":" + int_to_str(id) + ",") >= 0 || str_find(message, "\"id\":" + int_to_str(id) + "}") >= 0
+    then (message, rest)
+    else answer_numbered(r, rest, id)
+
+# One framed message off the pipe: `Content-Length: n`, a blank line, and
+# n bytes; the pipe is read on a helper thread, so the server goes on.
+fn next_message(r, pending) =
+  head = str_find(pending, "\r\n\r\n")
+  if head < 0 then more(r, pending, \p -> next_message(r, p))
+  else
+    n = str_to_int(trim(str.replace(pending[0:head], "Content-Length:", "")))
+    start = head + 4
+    if #pending < start + n
+      then more(r, pending, \p -> next_message(r, p))
+      else (pending[start:start + n], pending[start + n:])
+
+fn more(r, pending, go) =
+  buf = alloc_bytes(65536)
+  n = read(r, buf, 65536)
+  got = if n > 0 then str_from_ptr(buf, n) else ""
+  free_ptr(buf)
+  if n <= 0 then ("", pending) else go(pending + got)
+
+# The page's question: `hover` or `definition` at a line and character
+# of the file, on the text it sends.
+fn lsp(site: Site, rel, method, line, character, text) = match inside(site.root, rel)
+  None -> http.json_response(403, fail("outside the root"))
+  Some(full) ->
+    uri = "file://" + full
+    opened = "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":" + json.to_string(json.JStr(uri)) + ",\"languageId\":\"rill\",\"version\":1,\"text\":" + json.to_string(json.JStr(text)) + "}}}"
+    question = "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"textDocument/" + method + "\",\"params\":{\"textDocument\":{\"uri\":" + json.to_string(json.JStr(uri)) + "},\"position\":{\"line\":" + int_to_str(str_to_int(line)) + ",\"character\":" + int_to_str(str_to_int(character)) + "}}}"
+    reply = mailbox()
+    send(site.lsp, Ask(opened, question, reply))
+    answer = recv(reply)
+    if #answer == 0 then http.json_response(502, fail("the language server did not answer")) else http.json_response(200, answer)
+
+fn ok() = "{\"ok\":true}"
+
+fn fail(why) = json.to_string(json.JObj(Cons(json.Field("error", json.JStr(why)), Nil)))

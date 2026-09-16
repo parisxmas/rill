@@ -10,7 +10,8 @@
 //! drawing it that way.
 
 use rill_syntax::ast::*;
-use rill_syntax::fmt::{expr_text, pattern_text};
+use rill_syntax::fmt::{expr_line, expr_text, pattern_text};
+use crate::json::Json;
 
 /// One thing that happens on the way from an input to the next state.
 enum Step {
@@ -20,6 +21,21 @@ enum Step {
     Timer(String),
     /// Any other statement, as written.
     Task(String),
+}
+
+/// A step with the line it was written on.
+struct Placed {
+    step: Step,
+    line: usize,
+}
+
+/// The line a step was written on, for the editor to point at.
+fn step_line(s: &Stmt) -> usize {
+    match s {
+        Stmt::Expr(e) => expr_line(e),
+        Stmt::Bind { line, .. } | Stmt::PatBind { line, .. } => *line,
+        Stmt::Fn(f) => f.line,
+    }
 }
 
 /// How an arm ends.
@@ -33,7 +49,7 @@ enum End {
 
 struct Branch {
     label: String,
-    steps: Vec<Step>,
+    steps: Vec<Placed>,
     end: End,
 }
 
@@ -41,7 +57,10 @@ struct Transition {
     /// The input: the signal pattern with its guard, or the timer.
     input: String,
     timer: bool,
-    steps: Vec<Step>,
+    /// `input`, `after` or `when`.
+    kind: &'static str,
+    line: usize,
+    steps: Vec<Placed>,
     end: End,
 }
 
@@ -54,15 +73,15 @@ fn transitions(st: &StateDef) -> Vec<Transition> {
             None => pattern_text(&a.pattern),
         };
         let (steps, end) = body_of(&a.body);
-        items.push((a.line, Transition { input, timer: false, steps, end }));
+        items.push((a.line, Transition { input, timer: false, kind: "input", line: a.line, steps, end }));
     }
     if let Some((ms, body, line)) = &st.after {
         let (steps, end) = body_of(body);
-        items.push((*line, Transition { input: format!("after {} ms", expr_text(ms)), timer: true, steps, end }));
+        items.push((*line, Transition { input: format!("after {} ms", expr_text(ms)), timer: true, kind: "after", line: *line, steps, end }));
     }
     for (cond, body, line) in &st.whens {
         let (steps, end) = body_of(body);
-        items.push((*line, Transition { input: format!("when {}", expr_text(cond)), timer: false, steps, end }));
+        items.push((*line, Transition { input: format!("when {}", expr_text(cond)), timer: false, kind: "when", line: *line, steps, end }));
     }
     items.sort_by_key(|(l, _)| *l);
     for (_, t) in items {
@@ -72,7 +91,7 @@ fn transitions(st: &StateDef) -> Vec<Transition> {
 }
 
 /// The steps a body takes and how it ends.
-fn body_of(e: &Expr) -> (Vec<Step>, End) {
+fn body_of(e: &Expr) -> (Vec<Placed>, End) {
     match e {
         Expr::Block(stmts) => {
             let mut steps = Vec::new();
@@ -85,7 +104,7 @@ fn body_of(e: &Expr) -> (Vec<Step>, End) {
                         return (steps, end);
                     }
                 }
-                steps.push(step_of(s));
+                steps.push(Placed { step: step_of(s), line: step_line(s) });
             }
             (steps, End::Next("?".into()))
         }
@@ -211,10 +230,10 @@ pub fn mermaid(m: &MachineDef) -> String {
     out
 }
 
-fn outputs_text(steps: &[Step]) -> String {
+fn outputs_text(steps: &[Placed]) -> String {
     let parts: Vec<String> = steps
         .iter()
-        .map(|s| match s {
+        .map(|p| match &p.step {
             Step::Output(to, sig) => format!("{sig} to {to}"),
             Step::Timer(t) | Step::Task(t) => t.clone(),
         })
@@ -314,10 +333,10 @@ impl Column {
     }
 }
 
-fn column_of(steps: &[Step], end: &End) -> Column {
+fn column_of(steps: &[Placed], end: &End) -> Column {
     let mut syms: Vec<Sym> = steps
         .iter()
-        .map(|s| match s {
+        .map(|p| match &p.step {
             Step::Output(to, sig) => Sym::Output(format!("{sig} → {to}")),
             Step::Timer(t) => Sym::TimerTask(t.clone()),
             Step::Task(t) => Sym::Task(t.clone()),
@@ -765,10 +784,10 @@ pub fn system_svg(sd: &SystemDef) -> String {
     const BOX_W: f64 = 150.0;
     const BOX_H: f64 = 50.0;
     const SIDE: f64 = 50.0;
-    let arcs = sd.routes.len() as f64;
-    let top = 40.0 + 34.0 * arcs;
+    let lanes = ((sd.routes.len() + 1) / 2) as f64;
+    let top = 40.0 + 34.0 * lanes;
     let width = SIDE * 2.0 + COL * ends.len().max(1) as f64;
-    let height = top + BOX_H + 60.0 + 34.0 * arcs;
+    let height = top + BOX_H + 60.0 + 34.0 * lanes;
     let x_of = |name: &str| -> f64 {
         let i = ends.iter().position(|n| n == name).unwrap_or(0) as f64;
         SIDE + COL / 2.0 + i * COL
@@ -788,28 +807,165 @@ pub fn system_svg(sd: &SystemDef) -> String {
             text(&mut out, x, top + BOX_H / 2.0 + 4.0, e, "middle");
         }
     }
-    // routes as arcs, each at its own height so labels do not collide:
-    // the first above, the next below, and so on outward
+    // Routes as SDL drew channels: up from one box, across in a lane of
+    // their own, down into the other; the first above, the next below,
+    // and so on outward, so no two labels share a line. Several routes at
+    // one box spread along its edge.
+    let mut slots: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, r) in sd.routes.iter().enumerate() {
         let label = r.signals.join(", ");
         let (x1, x2) = (x_of(&r.from), x_of(&r.to));
         let above = i % 2 == 0;
         let lift = 30.0 + 34.0 * ((i / 2) as f64);
+        let mut slot = |end: &str| -> f64 {
+            let k = format!("{end}{}", if above { "^" } else { "v" });
+            let n = slots.entry(k).or_insert(0);
+            *n += 1;
+            *n as f64
+        };
+        let dx1 = (slot(&r.from) - 1.0) * 14.0 - 21.0;
+        let dx2 = (slot(&r.to) - 1.0) * 14.0 + 21.0 - if x2 > x1 { 42.0 } else { 0.0 };
         let markers = if r.both { "marker-start=\"url(#arrow_back)\" marker-end=\"url(#arrow)\"" } else { "marker-end=\"url(#arrow)\"" };
+        let y = if above { top } else { top + BOX_H };
+        let ly = if above { y - lift } else { y + lift };
+        let label_y = if above { ly - 5.0 } else { ly + 14.0 };
         if r.from == r.to {
-            let y = top;
-            out.push_str(&format!("<path d=\"M{},{y} C{},{} {},{} {},{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", x1 - 30.0, x1 - 60.0, y - lift - 20.0, x1 + 60.0, y - lift - 20.0, x1 + 30.0));
-            text(&mut out, x1, y - lift - 8.0, &label, "middle");
-        } else if above {
-            let y = top;
-            out.push_str(&format!("<path d=\"M{x1},{y} C{x1},{} {x2},{} {x2},{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", y - lift * 1.4, y - lift * 1.4));
-            text(&mut out, (x1 + x2) / 2.0, y - lift - 4.0, &label, "middle");
+            out.push_str(&format!("<path d=\"M{},{y} V{ly} H{} V{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", x1 - 30.0, x1 + 30.0));
+            text(&mut out, x1, label_y, &label, "middle");
         } else {
-            let y = top + BOX_H;
-            out.push_str(&format!("<path d=\"M{x1},{y} C{x1},{} {x2},{} {x2},{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", y + lift * 1.4, y + lift * 1.4));
-            text(&mut out, (x1 + x2) / 2.0, y + lift + 8.0, &label, "middle");
+            out.push_str(&format!("<path d=\"M{},{y} V{ly} H{} V{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", x1 + dx1, x2 + dx2));
+            text(&mut out, (x1 + x2) / 2.0, label_y, &label, "middle");
         }
     }
     out.push_str("</svg>\n");
     out
+}
+
+// ---- the model, as data ---------------------------------------------------
+//
+// `rill diagram --json`: systems and machines as the editor wants them —
+// every symbol with the line it was written on, so a diagram drawn from
+// this can point back at the code, and an edit made on it knows where in
+// the file it belongs.
+
+fn step_json(p: &Placed) -> Json {
+    let line = ("line", Json::Num(p.line as f64));
+    match &p.step {
+        Step::Output(to, sig) => Json::obj(vec![("kind", Json::str("output")), ("to", Json::str(to.clone())), ("signal", Json::str(sig.clone())), line]),
+        Step::Timer(t) => Json::obj(vec![("kind", Json::str("timer")), ("text", Json::str(t.clone())), line]),
+        Step::Task(t) => Json::obj(vec![("kind", Json::str("task")), ("text", Json::str(t.clone())), line]),
+    }
+}
+
+fn end_json(e: &End) -> Json {
+    match e {
+        End::Next(n) if n == "stay" => Json::obj(vec![("kind", Json::str("stay"))]),
+        End::Next(n) if n.starts_with("done(") => Json::obj(vec![("kind", Json::str("done")), ("text", Json::str(n.clone()))]),
+        End::Next(n) => Json::obj(vec![("kind", Json::str("next")), ("text", Json::str(n.clone())), ("state", Json::str(ctor_of(n)))]),
+        End::Stop => Json::obj(vec![("kind", Json::str("stop"))]),
+        End::Decision(q, branches) => Json::obj(vec![
+            ("kind", Json::str("decision")),
+            ("question", Json::str(q.clone())),
+            (
+                "branches",
+                Json::Arr(
+                    branches
+                        .iter()
+                        .map(|b| {
+                            Json::obj(vec![
+                                ("label", Json::str(b.label.clone())),
+                                ("steps", Json::Arr(b.steps.iter().map(step_json).collect())),
+                                ("end", end_json(&b.end)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ]),
+    }
+}
+
+/// Everything drawable in a file: its systems and its machines.
+pub fn model_json(systems: &[SystemDef], machines: &[MachineDef]) -> Json {
+    let systems: Vec<Json> = systems
+        .iter()
+        .map(|sd| {
+            Json::obj(vec![
+                ("name", Json::str(sd.name.clone())),
+                ("line", Json::Num(sd.line as f64)),
+                (
+                    "routes",
+                    Json::Arr(
+                        sd.routes
+                            .iter()
+                            .map(|r| {
+                                Json::obj(vec![
+                                    ("from", Json::str(r.from.clone())),
+                                    ("to", Json::str(r.to.clone())),
+                                    ("both", Json::Bool(r.both)),
+                                    ("signals", Json::Arr(r.signals.iter().map(|s| Json::str(s.clone())).collect())),
+                                    ("line", Json::Num(r.line as f64)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ])
+        })
+        .collect();
+    let machines: Vec<Json> = machines
+        .iter()
+        .map(|m| {
+            let states: Vec<Json> = m
+                .states
+                .iter()
+                .map(|st| {
+                    let keyword = |word: &str, list: &[(Pattern, Option<Expr>, usize)]| -> Json {
+                        Json::Arr(
+                            list.iter()
+                                .map(|(p, g, l)| {
+                                    let text = match g {
+                                        Some(g) => format!("{} if {}", pattern_text(p), expr_text(g)),
+                                        None => pattern_text(p),
+                                    };
+                                    Json::obj(vec![("kind", Json::str(word)), ("text", Json::str(text)), ("line", Json::Num(*l as f64))])
+                                })
+                                .collect(),
+                        )
+                    };
+                    Json::obj(vec![
+                        ("name", Json::str(if matches!(st.pattern, Pattern::Wildcard) { "*".to_string() } else { state_name(&st.pattern) })),
+                        ("pattern", Json::str(if matches!(st.pattern, Pattern::Wildcard) { "*".to_string() } else { pattern_text(&st.pattern) })),
+                        ("line", Json::Num(st.line as f64)),
+                        (
+                            "transitions",
+                            Json::Arr(
+                                transitions(st)
+                                    .iter()
+                                    .map(|t| {
+                                        Json::obj(vec![
+                                            ("kind", Json::str(t.kind)),
+                                            ("input", Json::str(t.input.clone())),
+                                            ("line", Json::Num(t.line as f64)),
+                                            ("steps", Json::Arr(t.steps.iter().map(step_json).collect())),
+                                            ("end", end_json(&t.end)),
+                                        ])
+                                    })
+                                    .collect(),
+                            ),
+                        ),
+                        ("saves", keyword("save", &st.saves)),
+                        ("priorities", keyword("priority", &st.priorities)),
+                    ])
+                })
+                .collect();
+            Json::obj(vec![
+                ("name", Json::str(m.name.clone())),
+                ("line", Json::Num(m.line as f64)),
+                ("params", Json::Arr(m.params.iter().map(|p| Json::str(p.name.clone())).collect())),
+                ("states", Json::Arr(states)),
+            ])
+        })
+        .collect();
+    Json::obj(vec![("systems", Json::Arr(systems)), ("machines", Json::Arr(machines))])
 }

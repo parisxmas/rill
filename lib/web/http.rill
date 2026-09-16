@@ -496,6 +496,12 @@ fn serve(port, handler) = match listen_on(port)
   Err(e) -> println(e)
   Ok(server) -> accept_forever(server, handler)
 
+# The same on one address — `serve_at("127.0.0.1", port, handler)` for a
+# server that is for this machine alone.
+fn serve_at(host, port, handler) = match listen_at(host, port)
+  Err(e) -> println(e)
+  Ok(server) -> accept_forever(server, handler)
+
 fn accept_forever(server, handler) =
   conn = tcp_accept(server)
   spawn handle_conn(conn, apart(handler))  # the claim `serve_taking` explains
