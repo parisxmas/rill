@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The grid library — The Rill Language Reference</title>
+<meta name="description" content="num/grid is Rill&#x27;s array library: arrays of numbers with a shape, the way NumPy has them, written in Rill on one buffer — and, on one core, ahead of NumPy on eight of twelve benchmarks and level on the other four.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/15-the-grid-library.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/15-the-grid-library.html">
+<meta property="og:title" content="The grid library — The Rill Language Reference">
+<meta property="og:description" content="num/grid is Rill&#x27;s array library: arrays of numbers with a shape, the way NumPy has them, written in Rill on one buffer — and, on one core, ahead of NumPy on eight of twelve benchmarks and level on the other four.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The grid library — The Rill Language Reference">
+<meta name="twitter:description" content="num/grid is Rill&#x27;s array library: arrays of numbers with a shape, the way NumPy has them, written in Rill on one buffer — and, on one core, ahead of NumPy on eight of twelve benchmarks and level on the other four.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li class="current"><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib.html#text">Text</a></li>
+        <li><a href="lib.html#data">Data formats</a></li>
+        <li><a href="lib.html#coll">Collections</a></li>
+        <li><a href="lib.html#num">Numbers</a></li>
+        <li><a href="lib.html#web">The web</a></li>
+        <li><a href="lib.html#net">The network</a></li>
+        <li><a href="lib.html#db">Databases</a></li>
+        <li><a href="lib.html#cli">The command line</a></li>
+        <li><a href="lib.html#crypto">Cryptography</a></li>
+        <li><a href="lib.html#random">Randomness</a></li>
+        <li><a href="lib.html#time">Time</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#what-a-grid-is">What a grid is</a></li>
+        <li><a href="#making-one">Making one</a></li>
+        <li><a href="#reading-views-and-copies">Reading, views and copies</a></li>
+        <li><a href="#joining-and-rearranging">Joining and rearranging</a></li>
+        <li><a href="#arithmetic-and-the-maths">Arithmetic and the maths</a></li>
+        <li><a href="#masks-and-where">Masks and where</a></li>
+        <li><a href="#reductions-and-order-statistics">Reductions and order statistics</a></li>
+        <li><a href="#sorting-and-searching">Sorting and searching</a></li>
+        <li><a href="#linear-algebra">Linear algebra</a></li>
+        <li><a href="#several-cores">Several cores</a></li>
+        <li><a href="#what-it-measures-against">What it measures against</a></li>
+        <li><a href="#from-python">From Python</a></li>
+        <li><a href="#what-it-does-not-have">What it does not have</a></li>
+      </ul>
+    </aside>
+    <main>
+      <p class="chapter-no">Chapter 15</p>
+      <h1>The grid library</h1>
+<p><code>num/grid</code> is Rill's array library: arrays of numbers with a shape, the way NumPy has them, written in Rill on one buffer — and, on one core, ahead of NumPy on eight of twelve benchmarks and level on the other four. This page is the whole of it: what a grid is, how one is made, read, reshaped and combined, the masks a comparison gives, the reductions, sorting and searching, the linear algebra, what makes it fast, and how it is reached from Python. Every example here was run when the page was built, by <code>rill doctest</code>.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+
+a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+a                                   <span class="c"># =&gt; [[0, 1, 2], [3, 4, 5]]</span>
+b = g.transpose(a)                  <span class="c"># a view: the same buffer, read the other way</span>
+g.matmul(a, b)                      <span class="c"># =&gt; [[5, 14], [14, 50]]</span>
+g.sum(a)                            <span class="c"># =&gt; 15</span>
+g.mean_axis(a, <span class="n">1</span>)                   <span class="c"># =&gt; [1, 4]</span>
+big = g.gtk(a, <span class="n">2.0</span>)                 <span class="c"># a Mask: one byte an element</span>
+g.<span class="k">where</span>(big, a, g.zeros_like(a))    <span class="c"># =&gt; [[0, 0, 0], [3, 4, 5]]</span></pre>
+<h3 id="what-a-grid-is">What a grid is</h3>
+<p>A <code>Grid</code> is one flat <code>Buf(Float)</code> and the shape laid over it: <code>shape</code> says how many along each axis, <code>strides</code> how far to step in the buffer for one along each axis, and <code>off</code> where element zero sits. One or two axes; the element type is <code>Float</code> and nothing else. That is a smaller thing than a NumPy array — no dtypes, no broadcasting between different shapes, no third dimension — and the smallness is where the speed comes from: every operation is a loop the compiler can lay out and vectorize, with no dispatch on type or rank inside it.</p>
+<p>A grid is storage, as a <code>Buf</code> is: <code>put1</code> and <code>put2</code> write in place, and a view shares the buffer it was taken from.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+v = g.zeros1(<span class="n">3</span>)
+g.put1(v, <span class="n">1</span>, <span class="n">9.0</span>)
+v                    <span class="c"># =&gt; [0, 9, 0]</span>
+g.ndim(v)            <span class="c"># =&gt; 1</span>
+g.size(v)            <span class="c"># =&gt; 3</span>
+g.shape2(<span class="n">2</span>, <span class="n">3</span>)[<span class="n">1</span>]    <span class="c"># =&gt; 3</span></pre>
+<h3 id="making-one">Making one</h3>
+<p><code>zeros</code>, <code>ones</code>, <code>full</code> and their <code>1</code>/<code>2</code> forms take a shape or its dimensions; <code>arange</code>, <code>linspace</code>, <code>logspace</code> and <code>geomspace</code> make a sequence; <code>of</code> takes a list; <code>from_fn1</code> and <code>from_fn2</code> call a function for each element; <code>identity</code> is the unit matrix; the <code>_like</code> family takes the shape of a grid you have.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+g.zeros2(<span class="n">2</span>, <span class="n">2</span>)                                 <span class="c"># =&gt; [[0, 0], [0, 0]]</span>
+g.full2(<span class="n">1</span>, <span class="n">3</span>, <span class="n">7.5</span>)                             <span class="c"># =&gt; [[7.5, 7.5, 7.5]]</span>
+g.arange(<span class="n">5</span>)                                    <span class="c"># =&gt; [0, 1, 2, 3, 4]</span>
+g.linspace(<span class="n">0.0</span>, <span class="n">1.0</span>, <span class="n">5</span>)                        <span class="c"># =&gt; [0, 0.25, 0.5, 0.75, 1]</span>
+g.geomspace(<span class="n">1.0</span>, <span class="n">8.0</span>, <span class="n">4</span>)                       <span class="c"># =&gt; [1, 2, 4, 8]</span>
+g.of(<span class="t">Cons</span>(<span class="n">1.5</span>, <span class="t">Cons</span>(<span class="n">2.5</span>, <span class="t">Nil</span>)))                <span class="c"># =&gt; [1.5, 2.5]</span>
+g.from_fn2(<span class="n">2</span>, <span class="n">2</span>, \i, j <span class="o">-&gt;</span> <span class="f">to_float</span>(i * <span class="n">2</span> + j)) <span class="c"># =&gt; [[0, 1], [2, 3]]</span>
+g.identity(<span class="n">2</span>)                                  <span class="c"># =&gt; [[1, 0], [0, 1]]</span>
+g.ones_like(g.arange(<span class="n">3</span>))                       <span class="c"># =&gt; [1, 1, 1]</span></pre>
+<h3 id="reading-views-and-copies">Reading, views and copies</h3>
+<p><code>at1</code> and <code>at2</code> read one element. <code>transpose</code>, <code>rows</code>, <code>row</code>, <code>col</code> and <code>slice1</code> are views — no copying, the same storage — and <code>copy</code> or <code>dense</code> lays a view out contiguously, which is the shape every fast path recognises. <code>reshape</code>, <code>flatten</code>, <code>ravel</code> and <code>squeeze</code> change the shape over the same elements.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.at2(a, <span class="n">1</span>, <span class="n">2</span>)                 <span class="c"># =&gt; 5</span>
+g.row(a, <span class="n">1</span>)                    <span class="c"># =&gt; [3, 4, 5]</span>
+g.col(a, <span class="n">2</span>)                    <span class="c"># =&gt; [2, 5]</span>
+t = g.transpose(a)
+g.contiguous(t)                <span class="c"># =&gt; false</span>
+g.copy(t)                      <span class="c"># =&gt; [[0, 3], [1, 4], [2, 5]]</span>
+g.contiguous(g.copy(t))        <span class="c"># =&gt; true</span>
+g.flatten(a)                   <span class="c"># =&gt; [0, 1, 2, 3, 4, 5]</span>
+g.ravel(t)                     <span class="c"># =&gt; [0, 3, 1, 4, 2, 5]</span>
+g.squeeze(g.ones2(<span class="n">1</span>, <span class="n">3</span>))       <span class="c"># =&gt; [1, 1, 1]</span>
+g.rows(a, <span class="n">1</span>, <span class="n">2</span>)                <span class="c"># =&gt; [[3, 4, 5]]</span>
+g.slice1(g.arange(<span class="n">5</span>), <span class="n">2</span>, <span class="n">4</span>)    <span class="c"># =&gt; [2, 3]</span></pre>
+<h3 id="joining-and-rearranging">Joining and rearranging</h3>
+<p><code>concat</code> along an axis, <code>vstack</code>, <code>hstack</code> and <code>stack</code>; <code>tile</code> and <code>repeat</code>; <code>diag</code> both ways, <code>tril</code> and <code>triu</code>; <code>fliplr</code>, <code>flipud</code>, <code>flip</code> and <code>roll</code>; <code>take</code> by positions; <code>meshgrid</code> for every pair.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+g.concat(g.ones2(<span class="n">1</span>, <span class="n">2</span>), g.zeros2(<span class="n">1</span>, <span class="n">2</span>), <span class="n">0</span>)   <span class="c"># =&gt; [[1, 1], [0, 0]]</span>
+g.hstack(g.ones2(<span class="n">2</span>, <span class="n">1</span>), g.zeros2(<span class="n">2</span>, <span class="n">1</span>))      <span class="c"># =&gt; [[1, 0], [1, 0]]</span>
+g.stack(g.arange(<span class="n">2</span>), g.ones1(<span class="n">2</span>))             <span class="c"># =&gt; [[0, 1], [1, 1]]</span>
+g.tile(g.arange(<span class="n">2</span>), <span class="n">2</span>)                       <span class="c"># =&gt; [0, 1, 0, 1]</span>
+g.repeat(g.arange(<span class="n">2</span>), <span class="n">2</span>)                     <span class="c"># =&gt; [0, 0, 1, 1]</span>
+g.diag(g.arange(<span class="n">2</span>))                          <span class="c"># =&gt; [[0, 0], [0, 1]]</span>
+g.triu(g.ones2(<span class="n">2</span>, <span class="n">2</span>), <span class="n">0</span>)                     <span class="c"># =&gt; [[1, 1], [0, 1]]</span>
+g.roll(g.arange(<span class="n">4</span>), <span class="n">1</span>)                       <span class="c"># =&gt; [3, 0, 1, 2]</span>
+g.flip(g.arange(<span class="n">4</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))      <span class="c"># =&gt; [[3, 2], [1, 0]]</span>
+g.take(g.of(<span class="t">Cons</span>(<span class="n">10.0</span>, <span class="t">Cons</span>(<span class="n">20.0</span>, <span class="t">Cons</span>(<span class="n">30.0</span>, <span class="t">Nil</span>)))), g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [30, 10]</span>
+(xs, ys) = g.meshgrid(g.arange(<span class="n">2</span>), g.arange(<span class="n">2</span>))
+xs                                           <span class="c"># =&gt; [[0, 1], [0, 1]]</span>
+ys                                           <span class="c"># =&gt; [[0, 0], [1, 1]]</span></pre>
+<h3 id="arithmetic-and-the-maths">Arithmetic and the maths</h3>
+<p><code>add</code>, <code>sub</code>, <code>mul</code>, <code>div</code>, <code>maximum</code>, <code>minimum</code> take two grids of one shape; <code>scale</code>, <code>shift</code> and <code>power</code> take a grid and a number; then the elementwise functions, each named with a <code>g</code> in front so they do not shadow the prelude's — <code>gsqrt</code>, <code>gexp</code>, <code>glog</code>, the trigonometry, the roundings, <code>gclip</code>, <code>gsign</code> and the rest — and <code>gatan2</code>, <code>ghypot</code>, <code>gfmod</code>, <code>gpowg</code> over pairs. <code>map</code> and <code>zip</code> take a lambda for anything else; they cost a call an element, which the named ones do not.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+g.add(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))                     <span class="c"># =&gt; [1, 2, 3]</span>
+g.mul(g.arange(<span class="n">3</span>), g.arange(<span class="n">3</span>))                    <span class="c"># =&gt; [0, 1, 4]</span>
+g.scale(g.arange(<span class="n">3</span>), <span class="n">2.0</span>)                          <span class="c"># =&gt; [0, 2, 4]</span>
+g.shift(g.arange(<span class="n">3</span>), <span class="n">10.0</span>)                         <span class="c"># =&gt; [10, 11, 12]</span>
+g.power(g.arange(<span class="n">4</span>), <span class="n">2.0</span>)                          <span class="c"># =&gt; [0, 1, 4, 9]</span>
+g.gsqrt(g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Nil</span>))))           <span class="c"># =&gt; [2, 3]</span>
+g.gexp2(g.arange(<span class="n">4</span>))                               <span class="c"># =&gt; [1, 2, 4, 8]</span>
+g.ground(g.of(<span class="t">Cons</span>(<span class="n">2.5</span>, <span class="t">Cons</span>(<span class="n">3.5</span>, <span class="t">Nil</span>))))          <span class="c"># =&gt; [2, 4]</span>
+g.gclip(g.arange(<span class="n">5</span>), <span class="n">1.0</span>, <span class="n">3.0</span>)                     <span class="c"># =&gt; [1, 1, 2, 3, 3]</span>
+g.ghypot(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)), g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; [5]</span>
+g.map(g.arange(<span class="n">3</span>), \x <span class="o">-&gt;</span> x * x + <span class="n">1.0</span>)              <span class="c"># =&gt; [1, 2, 5]</span>
+g.zip(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>), \x, y <span class="o">-&gt;</span> x - y)     <span class="c"># =&gt; [-1, 0, 1]</span></pre>
+<p>An operation writes its result into an operand's own storage when that operand is a temporary nobody else can see, so <code>a |&gt; g.scale(2.0) |&gt; g.shift(1.0)</code> makes one grid and not two — the same trick NumPy cannot do, since Python holds every temporary until the statement ends.</p>
+<h3 id="masks-and-where">Masks and <code>where</code></h3>
+<p>A comparison gives a <code>Mask</code> — one byte an element, as NumPy's boolean arrays are — with <code>gt</code>, <code>lt</code>, <code>ge</code>, <code>le</code>, <code>eq</code>, <code>ne</code> between two grids and the <code>k</code> forms against one number. <code>where</code> picks from two grids by a mask; <code>mcount</code>, <code>any</code> and <code>all</code> read one; <code>mask_not</code>, <code>mask_and</code> and <code>mask_or</code> combine them; <code>to_grid</code> turns one into ones and zeros; <code>isnan</code>, <code>isinf</code>, <code>isfinite</code> and <code>isclose</code> make them.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+a = g.arange(<span class="n">5</span>)
+m = g.gtk(a, <span class="n">2.0</span>)
+m                                        <span class="c"># =&gt; [false, false, false, true, true]</span>
+g.mcount(m)                              <span class="c"># =&gt; 2</span>
+g.<span class="k">where</span>(m, a, g.zeros1(<span class="n">5</span>))               <span class="c"># =&gt; [0, 0, 0, 3, 4]</span>
+g.mask_and(m, g.ltk(a, <span class="n">4.0</span>))             <span class="c"># =&gt; [false, false, false, true, false]</span>
+g.to_grid(g.mask_not(m))                 <span class="c"># =&gt; [1, 1, 1, 0, 0]</span>
+g.isnan(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Nil</span>))))   <span class="c"># =&gt; [false, true]</span>
+g.allclose(g.arange(<span class="n">3</span>), g.arange(<span class="n">3</span>), <span class="n">0.0</span>)      <span class="c"># =&gt; true</span></pre>
+<h3 id="reductions-and-order-statistics">Reductions and order statistics</h3>
+<p><code>sum</code>, <code>mean</code>, <code>prod</code>, <code>dot</code>, <code>norm</code>, <code>gmax</code>, <code>gmin</code>, <code>argmax</code>, <code>argmin</code>, <code>var</code>, <code>std</code>, <code>ptp</code>, <code>average</code>; <code>cumsum</code>, <code>cumprod</code>, <code>diff</code>; <code>sum_axis</code> and <code>mean_axis</code> along an axis of a 2-D grid; the <code>nan</code> family that leaves NaNs out; <code>median</code>, <code>percentile</code> and <code>quantile</code>, which interpolate as NumPy does.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.sum(a)                          <span class="c"># =&gt; 15</span>
+g.mean(a)                         <span class="c"># =&gt; 2.5</span>
+g.sum_axis(a, <span class="n">0</span>)                  <span class="c"># =&gt; [3, 5, 7]</span>
+g.sum_axis(a, <span class="n">1</span>)                  <span class="c"># =&gt; [3, 12]</span>
+g.gmax(a)                         <span class="c"># =&gt; 5</span>
+g.argmax(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 1</span>
+g.var(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">6.0</span>, <span class="t">Nil</span>))))))   <span class="c"># =&gt; 2</span>
+g.cumsum(g.arange(<span class="n">4</span>))             <span class="c"># =&gt; [0, 1, 3, 6]</span>
+g.diff(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Nil</span>)))))     <span class="c"># =&gt; [3, 5]</span>
+g.median(g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>))))))   <span class="c"># =&gt; 2.5</span>
+g.percentile(g.arange(<span class="n">5</span>), <span class="n">25.0</span>)   <span class="c"># =&gt; 1</span>
+g.nansum(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 3</span></pre>
+<p>The reductions run eight partial sums in four vector lanes. Floating point addition is not associative, so a compiler may not do that on its own — Rill keeps <code>+</code> in the order it was written, as C does — and doing it by hand is what lets a sum stream at memory speed rather than at the latency of one add waiting on the last. The answers agree with a plain loop's to the last few bits, as NumPy's pairwise sums do.</p>
+<h3 id="sorting-and-searching">Sorting and searching</h3>
+<p><code>sort</code> is a quicksort for small grids and a radix sort — by the bits, eight passes, nothing to mispredict — above a few thousand elements; <code>argsort</code> is a stable merge sort over the positions; <code>distinct</code>, <code>searchsorted</code>, <code>nonzero</code> and <code>count_nonzero</code>.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+g.sort(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)))))       <span class="c"># =&gt; [1, 2, 3]</span>
+g.argsort(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)))))    <span class="c"># =&gt; [1, 2, 0]</span>
+g.distinct(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [1, 3]</span>
+g.searchsorted(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">5.0</span>, <span class="t">Nil</span>)))), <span class="n">4.0</span>)   <span class="c"># =&gt; 2</span>
+g.nonzero(g.of(<span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">5.0</span>, <span class="t">Nil</span>))))))  <span class="c"># =&gt; [1, 3]</span></pre>
+<h3 id="linear-algebra">Linear algebra</h3>
+<p><code>matmul</code> is a register-blocked kernel written in <code>Float2</code>, the way a BLAS does it: ten columns of the right operand packed into a panel that stays in cache, four rows of the left walked down it with the 4 × 10 block of answers in twenty vector registers. <code>matvec</code>, <code>outer</code>, <code>inner</code>, <code>vdot</code>, <code>kron</code>, <code>cross</code>, <code>trace</code>. <code>lu</code> is a blocked factorisation with partial pivoting, and on it <code>solve</code> (a vector or a matrix of right-hand sides), <code>inv</code>, <code>det</code>, <code>matrix_power</code>, <code>lstsq</code> through the normal equations, <code>cond</code> and the three norms. The <code>try_</code> forms answer a grid of no elements for a singular matrix instead of stopping the program, which is what a host that must answer for itself calls.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.matmul(a, g.transpose(a))                     <span class="c"># =&gt; [[5, 14], [14, 50]]</span>
+g.matvec(a, g.ones1(<span class="n">3</span>))                         <span class="c"># =&gt; [3, 12]</span>
+m = g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>)
+g.solve(m, g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">5.0</span>, <span class="t">Nil</span>))))     <span class="c"># =&gt; [0.8, 1.4]</span>
+g.det(m)                                        <span class="c"># =&gt; 5</span>
+g.inv(g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">7.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">6.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [[0.6, -0.7], [-0.2, 0.4]]</span>
+g.matrix_power(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>), <span class="n">10</span>)   <span class="c"># =&gt; [[89, 55], [55, 34]]</span>
+g.size(g.try_inv(g.ones2(<span class="n">2</span>, <span class="n">2</span>)))                <span class="c"># =&gt; 0</span>
+g.norm_fro(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; 5</span>
+g.cross(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Nil</span>)))), g.of(<span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [0, 0, 1]</span></pre>
+<h3 id="several-cores">Several cores</h3>
+<p>On a <code>--parallel</code> build with <code>RILL_THREADS</code> set, anything over a quarter of a million elements is split across the workers in strands — a reduction combines the workers' partial answers in worker order, so the answer is the same every run — and a matrix product hands column blocks out. A single-worker run never spawns, and work worth less than a few hundred microseconds is not split at all, since waking a thread costs about that.</p>
+<h3 id="what-it-measures-against">What it measures against</h3>
+<p><code>benchmarks/numpy/</code> puts the library beside NumPy 2.4 with OpenBLAS on twelve programs, one core against one thread and all cores against all threads, on an Apple M4. On one core Rill is ahead on eight of the twelve and level on four: two hundred thousand small operations 11×, sorting 2.3×, reductions and rearranging 1.9×, a mask and a <code>where</code> 1.8×, order statistics and an 800 × 800 matrix product 1.1×. Where both sides do nothing but stream memory — an elementwise expression, sums along an axis, a dot product — or call the same maths library, or solve a linear system, they are level: that is the memory bus, and C streams it identically. On all cores NumPy keeps two, its threaded matrix product and its threaded factorisation. On the whole process — Python's start and NumPy's import are 60 ms; a Rill program is a 50 KB binary that starts in a millisecond — Rill is 2–12× ahead on all twelve.</p>
+<table>
+<colgroup>
+<col style="width: 17%" />
+<col style="width: 17%" />
+<col style="width: 23%" />
+<col style="width: 23%" />
+<col style="width: 17%" />
+</colgroup>
+<thead>
+<tr>
+<th>benchmark</th>
+<th>what it does</th>
+<th style="text-align: right;">rill, 1 core</th>
+<th style="text-align: right;">numpy, 1 thread</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>small</td>
+<td><code>v = v*0.999 + 0.5</code> on 16 elements, 200k times</td>
+<td style="text-align: right;">9.3 ms</td>
+<td style="text-align: right;">102.7 ms</td>
+<td>rill 11×</td>
+</tr>
+<tr>
+<td>sort</td>
+<td>5 M sorted, 1 M ordered by position</td>
+<td style="text-align: right;">89.4</td>
+<td style="text-align: right;">209.9</td>
+<td>rill 2.3×</td>
+</tr>
+<tr>
+<td>reduce</td>
+<td>mean, std, max, argmax of 20 M</td>
+<td style="text-align: right;">14.1</td>
+<td style="text-align: right;">27.2</td>
+<td>rill 1.9×</td>
+</tr>
+<tr>
+<td>shape</td>
+<td>joining, tiling, reversing, rolling, gathering, 10 M</td>
+<td style="text-align: right;">40.2</td>
+<td style="text-align: right;">75.8</td>
+<td>rill 1.9×</td>
+</tr>
+<tr>
+<td>where</td>
+<td><code>where(a &gt; k, a, b)</code>, a sum and a count, 10 M</td>
+<td style="text-align: right;">6.5</td>
+<td style="text-align: right;">11.8</td>
+<td>rill 1.8×</td>
+</tr>
+<tr>
+<td>stats</td>
+<td>median, two percentiles, NaN-skipping sums of 5 M</td>
+<td style="text-align: right;">40.4</td>
+<td style="text-align: right;">44.4</td>
+<td>rill 1.1×</td>
+</tr>
+<tr>
+<td>matmul</td>
+<td>800 × 800 · 800 × 800</td>
+<td style="text-align: right;">17.3</td>
+<td style="text-align: right;">18.5</td>
+<td>rill 1.07×</td>
+</tr>
+<tr>
+<td>axis</td>
+<td>2000 × 2000 transposed, summed along both axes</td>
+<td style="text-align: right;">0.9</td>
+<td style="text-align: right;">1.0</td>
+<td>level</td>
+</tr>
+<tr>
+<td>dot</td>
+<td>two 20 M vectors</td>
+<td style="text-align: right;">4.3</td>
+<td style="text-align: right;">4.4</td>
+<td>level</td>
+</tr>
+<tr>
+<td>elementwise</td>
+<td><code>sqrt(a)*(2a+1) + a</code>, 10 M</td>
+<td style="text-align: right;">12.0</td>
+<td style="text-align: right;">12.1</td>
+<td>level</td>
+</tr>
+<tr>
+<td>trig</td>
+<td><code>sin</code>, <code>exp</code>, <code>log</code> over 10 M each</td>
+<td style="text-align: right;">61.7</td>
+<td style="text-align: right;">62.2</td>
+<td>level</td>
+</tr>
+<tr>
+<td>solve</td>
+<td>a 400 × 400 system, its determinant and inverse</td>
+<td style="text-align: right;">6.3</td>
+<td style="text-align: right;">6.4</td>
+<td>level</td>
+</tr>
+</tbody>
+</table>
+<p>The numbers, the four columns and what each step of the compiler work bought are in <code>benchmarks/numpy/README.md</code>.</p>
+<h3 id="from-python">From Python</h3>
+<p><code>bindings/python</code> builds the library into a shared object with <code>rill build --shared</code> and gives its handles NumPy's notation, so a Python program computes nothing in Python:</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> grid <span class="k">as</span> g
+
+a = g.arange(<span class="n">6</span>).reshape(<span class="n">2</span>, <span class="n">3</span>)
+b = a * <span class="n">2.0</span> + <span class="n">1.0</span>                 <span class="c"># one grid made, not two</span>
+<span class="f">print</span>(a @ b.<span class="t">T</span>)                    <span class="c"># grid([[8, 26], [26, 98]])</span>
+<span class="f">print</span>(b.mean(axis=<span class="n">0</span>), a[a &gt; <span class="n">2</span>])   <span class="c"># grid([5, 7, 9]) grid([3, 4, 5])</span></pre>
+<p>Operators, indexing, <code>.T</code>, <code>.sum(axis=...)</code>, masks as <code>a[a &gt; 2]</code>, <code>g.linalg.solve</code> and the rest, with shape checks that raise <code>ValueError</code> before the library is called; <code>np.asarray(grid)</code> and <code>g.array(ndarray)</code> cross over. <code>bindings/python/README.md</code> has the table of what there is.</p>
+<h3 id="what-it-does-not-have">What it does not have</h3>
+<p>Dtypes other than <code>Float</code>; more than two dimensions; broadcasting between different shapes — an operation takes two grids of one shape, or a grid and a number; and the decompositions beyond LU, so a badly conditioned least-squares problem wants a QR this library does not have yet. Each is a deliberate absence: the library is small enough to read, and what it has runs at the speed of the memory it touches.</p>
+
+      <div class="prevnext">
+        <a class="prev" href="14-what-rill-deliberately-does-not-have.html">← 14. What Rill deliberately does not have</a>
+        <a class="next" href="lib.html">The standard library →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>

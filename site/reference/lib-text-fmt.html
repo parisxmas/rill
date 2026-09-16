@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -79,52 +80,92 @@
       <p class="chapter-no">Standard library · Text</p>
       <h1>text/fmt</h1>
 <p class="import">Imported as <code>import "text/fmt" as fmt</code>, its names are then <code>fmt.…</code>. Every signature below is the one the checker infers.</p><p>Text laid out and numbers spelled: a template with slots, padding by width, a float to so many places, thousands separated, a size in bytes, an ordinal, a table with its columns lined up.</p>
-<pre><span class="k">import</span> <span class="s">"text/fmt"</span> <span class="k">as</span> fmt
-fmt.text(<span class="s">"{} has {:&gt;6} items"</span>, <span class="t">Cons</span>(name, <span class="t">Cons</span>(<span class="f">show</span>(n), <span class="t">Nil</span>)))
-fmt.fixed(<span class="n">3.14159</span>, <span class="n">2</span>)              <span class="c"># &quot;3.14&quot;</span>
-fmt.thousands(<span class="n">1234567</span>)             <span class="c"># &quot;1,234,567&quot;</span>
-fmt.bytes(<span class="n">1536</span>)                    <span class="c"># &quot;1.5 KB&quot;</span>
-fmt.ordinal(<span class="n">22</span>)                    <span class="c"># &quot;22nd&quot;</span>
-fmt.table(rows)                    <span class="c"># columns padded to their widest cell</span></pre>
 <p>A template's slots take their values from a list of strings, in order — <code>{}</code> the next one, <code>{2}</code> the third — and a slot may say how wide and which way: <code>{:&gt;8}</code> right in eight, <code>{:&lt;8}</code> left, <code>{:^8}</code> centred, <code>{:0&gt;8}</code> padded with zeros, <code>{1:*^10}</code> the second value centred among stars. Anything that is not a string is made one first — <code>show(x)</code>, <code>fixed(x, 2)</code>, <code>thousands(n)</code> — so the template only ever places text, and the number is spelled by the function that knows how. <code>{{</code> and <code>}}</code> are a brace. Widths count characters, not bytes, so <code>héllo</code> is five.</p>
+<pre>fmt.text(<span class="s">"{} has {:&gt;6} items"</span>, <span class="t">Cons</span>(<span class="s">"cart"</span>, <span class="t">Cons</span>(<span class="f">show</span>(<span class="n">12</span>), <span class="t">Nil</span>)))   <span class="c"># =&gt; cart has     12 items</span>
+fmt.fixed(<span class="n">3.14159</span>, <span class="n">2</span>)              <span class="c"># =&gt; 3.14</span>
+fmt.thousands(<span class="n">1234567</span>)             <span class="c"># =&gt; 1,234,567</span>
+fmt.bytes(<span class="n">1536</span>)                    <span class="c"># =&gt; 1.5 KB</span>
+fmt.ordinal(<span class="n">22</span>)                    <span class="c"># =&gt; 22nd</span>
+fmt.table(<span class="t">Cons</span>(<span class="t">Cons</span>(<span class="s">"a"</span>, <span class="t">Cons</span>(<span class="s">"bb"</span>, <span class="t">Nil</span>)), <span class="t">Cons</span>(<span class="t">Cons</span>(<span class="s">"ccc"</span>, <span class="t">Cons</span>(<span class="s">"d"</span>, <span class="t">Nil</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; a    bb\nccc  d</span></pre>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-texttemplate-str-args-liststr---str"><code>fn text(template: Str, args: List(Str)) -&gt; Str</code></h3>
+<pre>fmt.text(<span class="s">"{} and {}"</span>, <span class="t">Cons</span>(<span class="s">"a"</span>, <span class="t">Cons</span>(<span class="s">"b"</span>, <span class="t">Nil</span>)))       <span class="c"># =&gt; a and b</span>
+fmt.text(<span class="s">"{1} before {0}"</span>, <span class="t">Cons</span>(<span class="s">"a"</span>, <span class="t">Cons</span>(<span class="s">"b"</span>, <span class="t">Nil</span>)))  <span class="c"># =&gt; b before a</span>
+fmt.text(<span class="s">"[{:^7}]"</span>, <span class="t">Cons</span>(<span class="s">"mid"</span>, <span class="t">Nil</span>))                  <span class="c"># =&gt; [  mid  ]</span>
+fmt.text(<span class="s">"{:0&gt;5}"</span>, <span class="t">Cons</span>(<span class="s">"42"</span>, <span class="t">Nil</span>))                    <span class="c"># =&gt; 00042</span>
+fmt.text(<span class="s">"{{literal}}"</span>, <span class="t">Nil</span>)                          <span class="c"># =&gt; {literal}</span></pre>
 <h3 id="fn-pad_lefts-str-width-int---str"><code>fn pad_left(s: Str, width: Int) -&gt; Str</code></h3>
+<pre>fmt.pad_left(<span class="s">"héllo"</span>, <span class="n">7</span>)   <span class="c"># =&gt;   héllo</span></pre>
 <h3 id="fn-pad_rights-str-width-int---str"><code>fn pad_right(s: Str, width: Int) -&gt; Str</code></h3>
+<pre>fmt.pad_right(<span class="s">"ab"</span>, <span class="n">4</span>) + <span class="s">"|"</span>   <span class="c"># =&gt; ab  |</span></pre>
 <h3 id="fn-centers-str-width-int---str"><code>fn center(s: Str, width: Int) -&gt; Str</code></h3>
+<pre>fmt.center(<span class="s">"ab"</span>, <span class="n">5</span>) + <span class="s">"|"</span>   <span class="c"># =&gt;  ab  |</span></pre>
 <h3 id="fn-pad_left_withs-str-width-int-fill-str---str"><code>fn pad_left_with(s: Str, width: Int, fill: Str) -&gt; Str</code></h3>
+<pre>fmt.pad_left_with(<span class="s">"7"</span>, <span class="n">3</span>, <span class="s">"0"</span>)   <span class="c"># =&gt; 007</span></pre>
 <h3 id="fn-pad_right_withs-str-width-int-fill-str---str"><code>fn pad_right_with(s: Str, width: Int, fill: Str) -&gt; Str</code></h3>
+<pre>fmt.pad_right_with(<span class="s">"ab"</span>, <span class="n">5</span>, <span class="s">"."</span>)   <span class="c"># =&gt; ab...</span></pre>
 <h3 id="fn-center_withs-str-width-int-fill-str---str"><code>fn center_with(s: Str, width: Int, fill: Str) -&gt; Str</code></h3>
 <p>The extra space goes to the right when it does not split evenly.</p>
+<pre>fmt.center_with(<span class="s">"ab"</span>, <span class="n">7</span>, <span class="s">"*"</span>)   <span class="c"># =&gt; **ab***</span></pre>
 <h3 id="fn-truncates-str-width-int---str"><code>fn truncate(s: Str, width: Int) -&gt; Str</code></h3>
 <p>The first <code>width</code> characters, and an ellipsis in place of the rest.</p>
+<pre>fmt.truncate(<span class="s">"a long sentence"</span>, <span class="n">6</span>)   <span class="c"># =&gt; a lon…</span>
+fmt.truncate(<span class="s">"short"</span>, <span class="n">10</span>)           <span class="c"># =&gt; short</span></pre>
 <h3 id="fn-fixedx-float-places-int---str"><code>fn fixed(x: Float, places: Int) -&gt; Str</code></h3>
 <p><code>x</code> to <code>places</code> decimal places, rounded half away from zero. Past what an integer can count — around 9e15 — the float's own spelling is used.</p>
+<pre>fmt.fixed(<span class="n">2.5</span>, <span class="n">0</span>)       <span class="c"># =&gt; 3</span>
+fmt.fixed(-<span class="n">2.5</span>, <span class="n">0</span>)       <span class="c"># =&gt; -3</span>
+fmt.fixed(<span class="n">3.0</span>, <span class="n">3</span>)       <span class="c"># =&gt; 3.000</span></pre>
 <h3 id="fn-thousandsn-int---str"><code>fn thousands(n: Int) -&gt; Str</code></h3>
 <p>The number with a separator every three digits from the right.</p>
+<pre>fmt.thousands(-<span class="n">1234567</span>)   <span class="c"># =&gt; -1,234,567</span>
+fmt.thousands(<span class="n">999</span>)        <span class="c"># =&gt; 999</span></pre>
 <h3 id="fn-thousands_withn-int-sep-str---str"><code>fn thousands_with(n: Int, sep: Str) -&gt; Str</code></h3>
+<pre>fmt.thousands_with(<span class="n">1234567</span>, <span class="s">"."</span>)   <span class="c"># =&gt; 1.234.567</span></pre>
 <h3 id="fn-zero_padn-int-width-int---str"><code>fn zero_pad(n: Int, width: Int) -&gt; Str</code></h3>
 <p>The number in <code>width</code> digits, zeros in front.</p>
+<pre>fmt.zero_pad(<span class="n">42</span>, <span class="n">5</span>)   <span class="c"># =&gt; 00042</span></pre>
 <h3 id="fn-signedn-int---str"><code>fn signed(n: Int) -&gt; Str</code></h3>
 <p><code>+3</code>, <code>-3</code>, <code>0</code>.</p>
+<pre>fmt.signed(<span class="n">3</span>)    <span class="c"># =&gt; +3</span>
+fmt.signed(<span class="n">0</span>)    <span class="c"># =&gt; 0</span>
+fmt.signed(-<span class="n">3</span>)   <span class="c"># =&gt; -3</span></pre>
 <h3 id="fn-percentx-float-places-int---str"><code>fn percent(x: Float, places: Int) -&gt; Str</code></h3>
 <p><code>x</code> as a percentage: <code>percent(0.125, 1)</code> is <code>12.5%</code>.</p>
+<pre>fmt.percent(<span class="n">0.125</span>, <span class="n">1</span>)   <span class="c"># =&gt; 12.5%</span></pre>
 <h3 id="fn-radixn-int-base-int---str"><code>fn radix(n: Int, base: Int) -&gt; Str</code></h3>
 <p>In base 2 to 36, lowercase.</p>
+<pre>fmt.radix(<span class="n">255</span>, <span class="n">2</span>)    <span class="c"># =&gt; 11111111</span>
+fmt.radix(<span class="n">255</span>, <span class="n">36</span>)   <span class="c"># =&gt; 73</span></pre>
 <h3 id="fn-hexn-int---str"><code>fn hex(n: Int) -&gt; Str</code></h3>
+<pre>fmt.hex(<span class="n">255</span>)   <span class="c"># =&gt; ff</span></pre>
 <h3 id="fn-binaryn-int---str"><code>fn binary(n: Int) -&gt; Str</code></h3>
+<pre>fmt.binary(<span class="n">5</span>)   <span class="c"># =&gt; 101</span></pre>
 <h3 id="fn-scix-float-places-int---str"><code>fn sci(x: Float, places: Int) -&gt; Str</code></h3>
 <p><code>1.23e+05</code>: a mantissa to <code>places</code> places and an exponent of at least two digits, as C prints one.</p>
+<pre>fmt.sci(<span class="n">123456.0</span>, <span class="n">2</span>)   <span class="c"># =&gt; 1.23e+05</span>
+fmt.sci(<span class="n">0.00042</span>, <span class="n">1</span>)    <span class="c"># =&gt; 4.2e-04</span></pre>
 <h3 id="fn-bytesn-int---str"><code>fn bytes(n: Int) -&gt; Str</code></h3>
 <p>A count of bytes in the unit that fits, to one place: <code>1.5 KB</code>, <code>3.0 MB</code>.</p>
+<pre>fmt.bytes(<span class="n">512</span>)        <span class="c"># =&gt; 512 B</span>
+fmt.bytes(<span class="n">1536</span>)       <span class="c"># =&gt; 1.5 KB</span>
+fmt.bytes(<span class="n">3145728</span>)    <span class="c"># =&gt; 3.0 MB</span></pre>
 <h3 id="fn-ordinaln-int---str"><code>fn ordinal(n: Int) -&gt; Str</code></h3>
 <p><code>1st</code>, <code>2nd</code>, <code>3rd</code>, <code>4th</code>, and <code>11th</code> to <code>13th</code> as English has them.</p>
+<pre>fmt.ordinal(<span class="n">1</span>)    <span class="c"># =&gt; 1st</span>
+fmt.ordinal(<span class="n">12</span>)   <span class="c"># =&gt; 12th</span>
+fmt.ordinal(<span class="n">23</span>)   <span class="c"># =&gt; 23rd</span></pre>
 <h3 id="fn-pluraln-int-word-str---str"><code>fn plural(n: Int, word: Str) -&gt; Str</code></h3>
 <p><code>1 file</code>, <code>2 files</code>; <code>plural_with</code> for a word that does not just take an <code>s</code>.</p>
+<pre>fmt.plural(<span class="n">1</span>, <span class="s">"file"</span>)   <span class="c"># =&gt; 1 file</span>
+fmt.plural(<span class="n">2</span>, <span class="s">"file"</span>)   <span class="c"># =&gt; 2 files</span></pre>
 <h3 id="fn-plural_withn-int-one-str-many-str---str"><code>fn plural_with(n: Int, one: Str, many: Str) -&gt; Str</code></h3>
+<pre>fmt.plural_with(<span class="n">3</span>, <span class="s">"child"</span>, <span class="s">"children"</span>)   <span class="c"># =&gt; 3 children</span></pre>
 <h3 id="fn-tablerows-listliststr---str"><code>fn table(rows: List(List(Str))) -&gt; Str</code></h3>
 <p>Rows of cells, each column padded to its widest cell and two spaces between columns; the last cell of a row is not padded.</p>
+<pre>fmt.table(<span class="t">Cons</span>(<span class="t">Cons</span>(<span class="s">"name"</span>, <span class="t">Cons</span>(<span class="s">"size"</span>, <span class="t">Nil</span>)), <span class="t">Cons</span>(<span class="t">Cons</span>(<span class="s">"a.rill"</span>, <span class="t">Cons</span>(<span class="s">"12"</span>, <span class="t">Nil</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; name    size\na.rill  12</span></pre>
 <h3 id="fn-table_withrows-listliststr-sep-str---str"><code>fn table_with(rows: List(List(Str)), sep: Str) -&gt; Str</code></h3>
+<pre>fmt.table_with(<span class="t">Cons</span>(<span class="t">Cons</span>(<span class="s">"a"</span>, <span class="t">Cons</span>(<span class="s">"b"</span>, <span class="t">Nil</span>)), <span class="t">Nil</span>), <span class="s">" | "</span>)   <span class="c"># =&gt; a | b</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_template_slots</code></li>

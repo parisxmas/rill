@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -79,13 +80,11 @@
       <p class="chapter-no">Standard library · Collections</p>
       <h1>coll/deque</h1>
 <p class="import">Imported as <code>import "coll/deque" as deque</code>, its names are then <code>deque.…</code>. Every signature below is the one the checker infers.</p><p>A queue with both ends open: push and pop at the front or the back, each in constant time on average. A deque is a value — every operation gives a new one and leaves the old as it was — so it is the queue to keep in a loop's state or a strand's, where a list would cost a walk to reach its far end.</p>
-<pre><span class="k">import</span> <span class="s">"coll/deque"</span> <span class="k">as</span> dq
-q = dq.push_back(dq.push_back(dq.new(), <span class="s">"first"</span>), <span class="s">"second"</span>)
-<span class="k">match</span> dq.pop_front(q)
-  <span class="t">Some</span>((x, rest)) <span class="o">-&gt;</span> ...             <span class="c"># &quot;first&quot;, and the queue without it</span>
-  <span class="t">None</span> <span class="o">-&gt;</span> ...
-dq.of(list), dq.items(q), dq.size(q)</pre>
 <p>Two lists, one for each end, the front's in order and the back's reversed; when one runs dry the other is turned round to feed it, which is the walk a plain list would make on every pop, made once in a while.</p>
+<pre>q = deque.push_back(deque.push_back(deque.new(), <span class="s">"first"</span>), <span class="s">"second"</span>)
+deque.pop_front(q) <span class="o">|&gt;</span> <span class="f">opt_map</span>(\p <span class="o">-&gt;</span> <span class="f">fst</span>(p))   <span class="c"># =&gt; Some(first)</span>
+deque.items(q)                                <span class="c"># =&gt; Cons(first, Cons(second, Nil))</span>
+deque.size(q)                                 <span class="c"># =&gt; 2</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="dequea"><code>Deque(a)</code></h3>
 <ul>
@@ -93,18 +92,34 @@ dq.of(list), dq.items(q), dq.size(q)</pre>
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-new---dequea"><code>fn new() -&gt; Deque('a)</code></h3>
+<pre>deque.is_empty(deque.new())   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-ofitems-lista---dequea"><code>fn of(items: List('a)) -&gt; Deque('a)</code></h3>
+<pre>deque.items(deque.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; Cons(1, Cons(2, Nil))</span></pre>
 <h3 id="fn-sizeq-dequea---int"><code>fn size(q: Deque('a)) -&gt; Int</code></h3>
+<pre>deque.size(deque.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Cons</span>(<span class="n">3</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-is_emptyq-dequea---bool"><code>fn is_empty(q: Deque('a)) -&gt; Bool</code></h3>
+<pre>deque.is_empty(deque.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-push_frontq-dequea-x-a---dequea"><code>fn push_front(q: Deque('a), x: 'a) -&gt; Deque('a)</code></h3>
+<pre>deque.items(deque.push_front(deque.of(<span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>)), <span class="n">1</span>))   <span class="c"># =&gt; Cons(1, Cons(2, Nil))</span></pre>
 <h3 id="fn-push_backq-dequea-x-a---dequea"><code>fn push_back(q: Deque('a), x: 'a) -&gt; Deque('a)</code></h3>
+<pre>deque.items(deque.push_back(deque.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Nil</span>)), <span class="n">2</span>))   <span class="c"># =&gt; Cons(1, Cons(2, Nil))</span></pre>
 <h3 id="fn-pop_frontq-dequea---optiona-dequea"><code>fn pop_front(q: Deque('a)) -&gt; Option(('a, Deque('a)))</code></h3>
 <p>The front element and the deque without it, or <code>None</code> when it is empty.</p>
+<pre>q = deque.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>)))
+deque.pop_front(q) <span class="o">|&gt;</span> <span class="f">opt_map</span>(\p <span class="o">-&gt;</span> <span class="f">fst</span>(p))                   <span class="c"># =&gt; Some(1)</span>
+deque.pop_front(q) <span class="o">|&gt;</span> <span class="f">opt_map</span>(\p <span class="o">-&gt;</span> deque.items(<span class="f">snd</span>(p)))     <span class="c"># =&gt; Some(Cons(2, Nil))</span>
+deque.pop_front(deque.new())                                  <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-pop_backq-dequea---optiona-dequea"><code>fn pop_back(q: Deque('a)) -&gt; Option(('a, Deque('a)))</code></h3>
+<pre>q = deque.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>)))
+deque.pop_back(q) <span class="o">|&gt;</span> <span class="f">opt_map</span>(\p <span class="o">-&gt;</span> <span class="f">fst</span>(p))   <span class="c"># =&gt; Some(2)</span></pre>
 <h3 id="fn-peek_frontq-dequea---optiona"><code>fn peek_front(q: Deque('a)) -&gt; Option('a)</code></h3>
+<pre>deque.peek_front(deque.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; Some(1)</span></pre>
 <h3 id="fn-peek_backq-dequea---optiona"><code>fn peek_back(q: Deque('a)) -&gt; Option('a)</code></h3>
+<pre>deque.peek_back(deque.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; Some(2)</span></pre>
 <h3 id="fn-itemsq-dequea---lista"><code>fn items(q: Deque('a)) -&gt; List('a)</code></h3>
 <p>Everything, front to back.</p>
+<pre>q = deque.push_front(deque.push_back(deque.new(), <span class="n">2</span>), <span class="n">1</span>)
+deque.items(q)   <span class="c"># =&gt; Cons(1, Cons(2, Nil))</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_a_queue</code></li>

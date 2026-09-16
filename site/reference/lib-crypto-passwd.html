@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>crypto/passwd — The Rill Language Reference</title>
-<meta name="description" content="Storing a password, which is storing something you must never be able to read back.">
+<meta name="description" content="HMAC-SHA-1.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-crypto-passwd.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-crypto-passwd.html">
 <meta property="og:title" content="crypto/passwd — The Rill Language Reference">
-<meta property="og:description" content="Storing a password, which is storing something you must never be able to read back.">
+<meta property="og:description" content="HMAC-SHA-1.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="crypto/passwd — The Rill Language Reference">
-<meta name="twitter:description" content="Storing a password, which is storing something you must never be able to read back.">
+<meta name="twitter:description" content="HMAC-SHA-1.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -76,35 +77,30 @@
     <main class="module">
       <p class="chapter-no">Standard library · Cryptography</p>
       <h1>crypto/passwd</h1>
-<p class="import">Imported as <code>import "crypto/passwd" as passwd</code>, its names are then <code>passwd.…</code>. Every signature below is the one the checker infers.</p><p>Storing a password, which is storing something you must never be able to read back.</p>
-<p>Three standard pieces, no invented ones: HMAC-SHA-1 (RFC 2104), PBKDF2 (RFC 8018), and a salt. Everything here is checked against the published vectors in <code>wt_passwd.rill</code> — a key derivation that is only tested against itself is a key derivation that agrees with its own bugs.</p>
-<p>On how much work to do here, and why it is not much: this runs inside a game server that owes sixteen people a snapshot every fifty milliseconds. SHA-1 in Rill costs about thirty-five microseconds, so the hundreds of thousands of rounds a password wants would be a visible stall in the valley every time somebody signed in — a login would be a lag spike everyone else could see.</p>
-<p>So the expensive half is done in the browser before anything is sent: the page runs PBKDF2-HMAC-SHA-256 six hundred thousand times over the typed word and sends the result, and what arrives here is already a high-entropy key rather than a word somebody chose. This side then salts and stretches <em>that</em> — modestly, because the cost that matters to an attacker with a stolen store is the six hundred thousand they must repeat for every guess they make.</p>
-<p>What the split does not do is make the wire safer: the derived key is password-equivalent in flight, exactly as the password would have been, and TLS is what protects both. What it buys is that the work an attacker must redo per guess is paid by the machine that has a person waiting on it, not by the machine that owes a valley its next tick.</p>
-<h2 id="functions">Functions</h2>
-<h3 id="fn-hmac_block---int"><code>fn hmac_block() -&gt; Int</code></h3>
+<p class="import">Imported as <code>import "crypto/passwd" as passwd</code>, its names are then <code>passwd.…</code>. Every signature below is the one the checker infers.</p><h2 id="functions">Functions</h2>
 <h3 id="fn-hmac_sha1key-str-msg-str---str"><code>fn hmac_sha1(key: Str, msg: Str) -&gt; Str</code></h3>
 <p>HMAC-SHA-1. A key longer than the block is hashed down to fit; a shorter one is padded with zeros, which is why a key of nulls and an empty key are the same key — a property of the construction, not of this writing of it.</p>
+<pre>passwd.to_hex(passwd.hmac_sha1(<span class="s">"key"</span>, <span class="s">"The quick brown fox jumps over the lazy dog"</span>))   <span class="c"># =&gt; de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9</span></pre>
 <h3 id="fn-xor_bytes-str-b-int---str"><code>fn xor_byte(s: Str, b: Int) -&gt; Str</code></h3>
 <p>Every byte of a string against one constant. The pads of HMAC are nothing more than this.</p>
-<h3 id="fn-xor_byte_froms-str-b-int-i-int-out-strbuf---str"><code>fn xor_byte_from(s: Str, b: Int, i: Int, out: StrBuf) -&gt; Str</code></h3>
+<pre>passwd.xor_byte(<span class="s">"AB"</span>, <span class="n">32</span>)   <span class="c"># =&gt; ab</span></pre>
 <h3 id="fn-xor_stra-str-b-str---str"><code>fn xor_str(a: Str, b: Str) -&gt; Str</code></h3>
 <p>Two strings of the same length, byte against byte. PBKDF2 folds its rounds together this way.</p>
-<h3 id="fn-xor_str_froma-str-b-str-i-int-out-strbuf---str"><code>fn xor_str_from(a: Str, b: Str, i: Int, out: StrBuf) -&gt; Str</code></h3>
+<pre>passwd.to_hex(passwd.xor_str(<span class="s">"AB"</span>, <span class="s">"  "</span>))   <span class="c"># =&gt; 6162</span></pre>
 <h3 id="fn-pbkdf2_sha1key-str-salt-str-rounds-int---str"><code>fn pbkdf2_sha1(key: Str, salt: Str, rounds: Int) -&gt; Str</code></h3>
 <p>PBKDF2-HMAC-SHA-1, one block of it: twenty bytes, which is all this asks for and all a SHA-1 has to give. The block index the specification appends is therefore always one.</p>
 <p><code>rounds</code> is a count, not a duration. It is written down where the accounts are made rather than here, so that raising it later is one number in one place — and so that a stored password can say which count made it.</p>
-<h3 id="fn-pbkdf2_foldkey-str-u-str-acc-str-left-int---str"><code>fn pbkdf2_fold(key: Str, u: Str, acc: Str, left: Int) -&gt; Str</code></h3>
-<h3 id="fn-hex_digits---str"><code>fn hex_digits() -&gt; Str</code></h3>
+<pre>passwd.to_hex(passwd.pbkdf2_sha1(<span class="s">"password"</span>, <span class="s">"salt"</span>, <span class="n">2</span>))   <span class="c"># =&gt; ea6c014dc72d6f8ccd1ed92ace1d41f0d8de8957</span></pre>
 <h3 id="fn-to_hexs-str---str"><code>fn to_hex(s: Str) -&gt; Str</code></h3>
-<h3 id="fn-to_hex_froms-str-i-int-out-strbuf---str"><code>fn to_hex_from(s: Str, i: Int, out: StrBuf) -&gt; Str</code></h3>
+<pre>passwd.to_hex(<span class="s">"AZ"</span>)   <span class="c"># =&gt; 415a</span></pre>
 <h3 id="fn-from_hexs-str---str"><code>fn from_hex(s: Str) -&gt; Str</code></h3>
-<h3 id="fn-from_hex_froms-str-i-int-out-strbuf---str"><code>fn from_hex_from(s: Str, i: Int, out: StrBuf) -&gt; Str</code></h3>
-<h3 id="fn-hex_valc-int---int"><code>fn hex_val(c: Int) -&gt; Int</code></h3>
+<pre>passwd.from_hex(<span class="s">"415a"</span>)   <span class="c"># =&gt; AZ</span></pre>
 <h3 id="fn-same_secreta-str-b-str---int"><code>fn same_secret(a: Str, b: Str) -&gt; Int</code></h3>
 <p>Whether two secrets are the same, in a time that does not depend on how far along they first differ.</p>
 <p>The obvious <code>a == b</code> returns the moment it finds a mismatched byte, and how long it took is a measurement of how much of the answer was right — over enough tries, that is the answer. This walks both in full and folds the differences together. Unequal lengths are refused up front: that much is public, since the length of a hash is a constant of the scheme.</p>
-<h3 id="fn-secret_diffa-str-b-str-i-int-acc-int---int"><code>fn secret_diff(a: Str, b: Str, i: Int, acc: Int) -&gt; Int</code></h3>
+<pre>passwd.same_secret(<span class="s">"abc"</span>, <span class="s">"abc"</span>)    <span class="c"># =&gt; 1</span>
+passwd.same_secret(<span class="s">"abc"</span>, <span class="s">"abd"</span>)    <span class="c"># =&gt; 0</span>
+passwd.same_secret(<span class="s">"abc"</span>, <span class="s">"abcd"</span>)   <span class="c"># =&gt; 0</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-coll-set.html">← coll/set</a>

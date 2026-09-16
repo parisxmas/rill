@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>crypto/sha2 — The Rill Language Reference</title>
-<meta name="description" content="SHA-256 and SHA-512 (FIPS 180-4), and HMAC over each (RFC 2104), written in Rill.">
+<meta name="description" content="The digest, as 32 raw bytes.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-crypto-sha2.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-crypto-sha2.html">
 <meta property="og:title" content="crypto/sha2 — The Rill Language Reference">
-<meta property="og:description" content="SHA-256 and SHA-512 (FIPS 180-4), and HMAC over each (RFC 2104), written in Rill.">
+<meta property="og:description" content="The digest, as 32 raw bytes.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="crypto/sha2 — The Rill Language Reference">
-<meta name="twitter:description" content="SHA-256 and SHA-512 (FIPS 180-4), and HMAC over each (RFC 2104), written in Rill.">
+<meta name="twitter:description" content="The digest, as 32 raw bytes.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -77,23 +78,27 @@
     <main class="module">
       <p class="chapter-no">Standard library · Cryptography</p>
       <h1>crypto/sha2</h1>
-<p class="import">Imported as <code>import "crypto/sha2" as sha2</code>, its names are then <code>sha2.…</code>. Every signature below is the one the checker infers.</p><p>SHA-256 and SHA-512 (FIPS 180-4), and HMAC over each (RFC 2104), written in Rill. A digest is returned as raw bytes in a <code>Str</code>; <code>hex</code> spells one out. Keys and messages are bytes too: any <code>Str</code> will do.</p>
-<pre><span class="k">import</span> <span class="s">"crypto/sha2"</span> <span class="k">as</span> sha
-sha.hex(sha.sha256(<span class="s">"abc"</span>))         <span class="c"># &quot;ba7816bf…f20015ad&quot;</span>
-tag = sha.hmac_sha256(secret, body)
-sha.same(tag, sent)                <span class="c"># compared in constant time</span></pre>
-<p>SHA-256 is 32-bit arithmetic on 64-bit integers, masked after each step; SHA-512 is the machine's own 64-bit arithmetic, which wraps as the algorithm wants and shifts logically, so nothing has to be masked. The schedule and the working state are buffers rather than lists, and a block is read straight out of the message.</p>
-<h2 id="functions">Functions</h2>
+<p class="import">Imported as <code>import "crypto/sha2" as sha2</code>, its names are then <code>sha2.…</code>. Every signature below is the one the checker infers.</p><h2 id="functions">Functions</h2>
 <h3 id="fn-sha256msg-str---str"><code>fn sha256(msg: Str) -&gt; Str</code></h3>
 <p>The digest, as 32 raw bytes.</p>
+<pre>sha2.hex(sha2.sha256(<span class="s">""</span>))   <span class="c"># =&gt; e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</span>
+<span class="c">#sha2.sha256(&quot;x&quot;)           # =&gt; 32</span></pre>
 <h3 id="fn-sha512msg-str---str"><code>fn sha512(msg: Str) -&gt; Str</code></h3>
 <p>The digest, as 64 raw bytes.</p>
+<pre><span class="f">str_sub</span>(sha2.hex(sha2.sha512(<span class="s">""</span>)), <span class="n">0</span>, <span class="n">32</span>)   <span class="c"># =&gt; cf83e1357eefb8bdf1542850d66d8007</span>
+<span class="c">#sha2.sha512(&quot;x&quot;)                          # =&gt; 64</span></pre>
 <h3 id="fn-hmac_sha256key-str-msg-str---str"><code>fn hmac_sha256(key: Str, msg: Str) -&gt; Str</code></h3>
+<pre>sha2.hex(sha2.hmac_sha256(<span class="s">"key"</span>, <span class="s">"The quick brown fox jumps over the lazy dog"</span>))   <span class="c"># =&gt; f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8</span></pre>
 <h3 id="fn-hmac_sha512key-str-msg-str---str"><code>fn hmac_sha512(key: Str, msg: Str) -&gt; Str</code></h3>
+<pre><span class="f">str_sub</span>(sha2.hex(sha2.hmac_sha512(<span class="s">"key"</span>, <span class="s">"msg"</span>)), <span class="n">0</span>, <span class="n">32</span>)   <span class="c"># =&gt; 1e4b55b925ccc28ed90d9d18fc2393fc</span></pre>
 <h3 id="fn-hexdigest-str---str"><code>fn hex(digest: Str) -&gt; Str</code></h3>
 <p>A digest as lowercase hex.</p>
+<pre>sha2.hex(<span class="s">"AZ"</span>)   <span class="c"># =&gt; 415a</span></pre>
 <h3 id="fn-samea-str-b-str---bool"><code>fn same(a: Str, b: Str) -&gt; Bool</code></h3>
 <p>Whether two tags are the same, taking the same time whether they differ in the first byte or the last — a comparison that stops early tells a caller how much of a guess was right.</p>
+<pre>sha2.same(<span class="s">"abc"</span>, <span class="s">"abc"</span>)    <span class="c"># =&gt; true</span>
+sha2.same(<span class="s">"abc"</span>, <span class="s">"abd"</span>)    <span class="c"># =&gt; false</span>
+sha2.same(<span class="s">"abc"</span>, <span class="s">"abcd"</span>)   <span class="c"># =&gt; false</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_sha256_vectors</code></li>

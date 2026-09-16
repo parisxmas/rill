@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>db/oxiwire — The Rill Language Reference</title>
-<meta name="description" content="OxiWire — the binary format OxiDB&#x27;s native wire speaks, encoded and decoded in Rill.">
+<meta name="description" content="Answers a Parsed — the JSON module&#x27;s, so a frame that will not decode travels out the same way a document that will not parse does.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-oxiwire.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-oxiwire.html">
 <meta property="og:title" content="db/oxiwire — The Rill Language Reference">
-<meta property="og:description" content="OxiWire — the binary format OxiDB&#x27;s native wire speaks, encoded and decoded in Rill.">
+<meta property="og:description" content="Answers a Parsed — the JSON module&#x27;s, so a frame that will not decode travels out the same way a document that will not parse does.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="db/oxiwire — The Rill Language Reference">
-<meta name="twitter:description" content="OxiWire — the binary format OxiDB&#x27;s native wire speaks, encoded and decoded in Rill.">
+<meta name="twitter:description" content="Answers a Parsed — the JSON module&#x27;s, so a frame that will not decode travels out the same way a document that will not parse does.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -80,50 +81,46 @@
     <main class="module">
       <p class="chapter-no">Standard library · Databases</p>
       <h1>db/oxiwire</h1>
-<p class="import">Imported as <code>import "db/oxiwire" as oxiwire</code>, its names are then <code>oxiwire.…</code>. Every signature below is the one the checker infers.</p><p>OxiWire — the binary format OxiDB's native wire speaks, encoded and decoded in Rill.</p>
-<p>The server picks its format from the first byte of a frame: <code>{</code> is JSON, <code>0xDB</code> is this. There is no handshake and nothing to negotiate, so a client chooses per message simply by what it writes first.</p>
-<p>A tagged encoding of the same values JSON carries, with every length and every number a fixed width so a reader never decodes a varint:</p>
-<p>00 null 01 false 02 true 03 i64 04 u64 05 f64 — 8 bytes little-endian 06 string — 4-byte LE length, then the bytes 07 array — 4-byte LE count, then the values 08 map — 4-byte LE count, then (bare key, value) pairs</p>
-<p>A map key carries no tag of its own: a 4-byte length and the bytes, because a key is always a string. That one asymmetry is the whole difference between reading a map and reading an array.</p>
-<p>It is not smaller than JSON — fixed-width numbers see to that, and a reply of six hundred documents measured about a third larger. What it is is quicker to read: a length known in front means one <code>str_sub</code> where a parser has to look for where the value stops. About 1.4 times, end to end on a local socket, and it was 2.5 before <code>json.rill</code>'s parser was fixed — most of what looked like the format's advantage was that parser's fault.</p>
-<p>A request is <code>0xDB</code> and a value. A reply is <code>0xDB</code>, a status byte — 0 for an answer, 1 for a complaint — and a value. The reply is <em>not</em> wrapped in the <code>{"ok":.., "data":..}</code> envelope the JSON wire uses: the status byte is the envelope, which is one of the things the binary format buys.</p>
-<p>Values are <code>Json</code>, so a document decoded here is the same kind of thing one parsed from text is, and <code>to_string</code> prints either.</p>
-<h2 id="functions">Functions</h2>
-<h3 id="fn-ow_u32b-strbuf-n-int---unit"><code>fn ow_u32(b: StrBuf, n: Int) -&gt; Unit</code></h3>
-<h3 id="fn-ow_u64b-strbuf-n-int---unit"><code>fn ow_u64(b: StrBuf, n: Int) -&gt; Unit</code></h3>
-<h3 id="fn-ow_le32n-int---str"><code>fn ow_le32(n: Int) -&gt; Str</code></h3>
-<h3 id="fn-ow_bits_off-float---int"><code>fn ow_bits_of(f: Float) -&gt; Int</code></h3>
-<p>A float goes on the wire as its bits. Rill will not reinterpret one as an integer, so eight bytes of scratch memory do it: write a float, read an int.</p>
-<h3 id="fn-ow_float_ofn-int---float"><code>fn ow_float_of(n: Int) -&gt; Float</code></h3>
+<p class="import">Imported as <code>import "db/oxiwire" as oxiwire</code>, its names are then <code>oxiwire.…</code>. Every signature below is the one the checker infers.</p><h2 id="functions">Functions</h2>
 <h3 id="fn-ow_encodej-json---str"><code>fn ow_encode(j: Json) -&gt; Str</code></h3>
-<h3 id="fn-ow_putb-strbuf-j-json---unit"><code>fn ow_put(b: StrBuf, j: Json) -&gt; Unit</code></h3>
-<h3 id="fn-ow_put_itemsb-strbuf-xs-listjson---unit"><code>fn ow_put_items(b: StrBuf, xs: List(Json)) -&gt; Unit</code></h3>
-<p><code>strbuf_add(b, "")</code> is the end of a walk that is only ever run for its effect: the builder is what the recursion is threading, and adding nothing to it is how an empty list contributes nothing.</p>
-<h3 id="fn-ow_put_fieldsb-strbuf-fs-listfield---unit"><code>fn ow_put_fields(b: StrBuf, fs: List(Field)) -&gt; Unit</code></h3>
-<h3 id="fn-ow_put_fieldb-strbuf-f-field---unit"><code>fn ow_put_field(b: StrBuf, f: Field) -&gt; Unit</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxiwire"</span>
+<span class="k">import</span> <span class="s">"data/json"</span>
+<span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(<span class="f">ow_encode</span>(<span class="t">JNull</span>))                    <span class="c"># =&gt; 00</span>
+str.hex_encode(<span class="f">ow_encode</span>(<span class="t">JBool</span>(<span class="t">true</span>)))              <span class="c"># =&gt; 02</span>
+str.hex_encode(<span class="f">ow_encode</span>(<span class="t">JStr</span>(<span class="s">"hi"</span>)))              <span class="c"># =&gt; 06020000006869</span>
+str.hex_encode(<span class="f">ow_encode</span>(<span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JInt</span>(<span class="n">1</span>), <span class="t">Nil</span>))))   <span class="c"># =&gt; 0701000000030100000000000000</span></pre>
 <h3 id="fn-ow_decodes-str-i-int---parsed"><code>fn ow_decode(s: Str, i: Int) -&gt; Parsed</code></h3>
 <p>Answers a <code>Parsed</code> — the JSON module's, so a frame that will not decode travels out the same way a document that will not parse does.</p>
-<h3 id="fn-ow_int32_ats-str-i-int---int"><code>fn ow_int32_at(s: Str, i: Int) -&gt; Int</code></h3>
-<h3 id="fn-ow_int_ats-str-i-int---int"><code>fn ow_int_at(s: Str, i: Int) -&gt; Int</code></h3>
-<h3 id="fn-ow_str_ats-str-i-int---parsed"><code>fn ow_str_at(s: Str, i: Int) -&gt; Parsed</code></h3>
-<h3 id="fn-ow_str_ofs-str-i-int-n-int---parsed"><code>fn ow_str_of(s: Str, i: Int, n: Int) -&gt; Parsed</code></h3>
-<h3 id="fn-ow_arr_ats-str-i-int-n-int-acc-listjson---parsed"><code>fn ow_arr_at(s: Str, i: Int, n: Int, acc: List(Json)) -&gt; Parsed</code></h3>
-<h3 id="fn-ow_arr_items-str-i-int-n-int-acc-listjson---parsed"><code>fn ow_arr_item(s: Str, i: Int, n: Int, acc: List(Json)) -&gt; Parsed</code></h3>
-<h3 id="fn-ow_obj_ats-str-i-int-n-int-acc-listfield---parsed"><code>fn ow_obj_at(s: Str, i: Int, n: Int, acc: List(Field)) -&gt; Parsed</code></h3>
-<h3 id="fn-ow_obj_keys-str-i-int-n-int-acc-listfield---parsed"><code>fn ow_obj_key(s: Str, i: Int, n: Int, acc: List(Field)) -&gt; Parsed</code></h3>
-<p>The one place a key is not a tagged value: a length and the bytes.</p>
-<h3 id="fn-ow_obj_values-str-i-int-n-int-acc-listfield-key-str---parsed"><code>fn ow_obj_value(s: Str, i: Int, n: Int, acc: List(Field), key: Str) -&gt; Parsed</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxiwire"</span>
+<span class="k">import</span> <span class="s">"data/json"</span>
+<span class="f">ow_decode</span>(<span class="f">ow_encode</span>(<span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"a"</span>), <span class="t">Cons</span>(<span class="t">JNum</span>(<span class="n">1.5</span>), <span class="t">Nil</span>)))), <span class="n">0</span>)   <span class="c"># =&gt; Parsed(JArr(Cons(JStr(a), Cons(JNum(1.5), Nil))), 20)</span>
+<span class="f">ow_decode</span>(<span class="s">"not a frame"</span>, <span class="n">0</span>)                                            <span class="c"># =&gt; Failed(unknown OxiWire tag 110, 0)</span></pre>
 <h3 id="fn-ow_sendfd-int-value-json---int"><code>fn ow_send(fd: Int, value: Json) -&gt; Int</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxiwire"</span>
+<span class="f">ow_send</span>(fd, request)   <span class="c"># one frame down the socket; the bytes written</span></pre>
 <h3 id="fn-ow_frame_outfd-int-body-str---int"><code>fn ow_frame_out(fd: Int, body: Str) -&gt; Int</code></h3>
+<p>A body as one frame: its length first, then the bytes — what a server answers with, the status byte in front of the value.</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxiwire"</span>
+<span class="f">ow_frame_out</span>(conn, <span class="f">chr</span>(<span class="n">219</span>) + <span class="f">chr</span>(<span class="n">0</span>) + <span class="f">ow_encode</span>(data))   <span class="c"># a reply that succeeded</span></pre>
 <h3 id="fn-ow_recvfd-int---str"><code>fn ow_recv(fd: Int) -&gt; Str</code></h3>
 <p>The reply arrives in whatever pieces the network chose, so read until the length at the front says the frame is whole.</p>
-<h3 id="fn-ow_frame_infd-int-head-str---str"><code>fn ow_frame_in(fd: Int, head: Str) -&gt; Str</code></h3>
-<h3 id="fn-ow_body_infd-int-head-str-n-int---str"><code>fn ow_body_in(fd: Int, head: Str, n: Int) -&gt; Str</code></h3>
-<h3 id="fn-ow_fillfd-int-buf-str-want-int---str"><code>fn ow_fill(fd: Int, buf: Str, want: Int) -&gt; Str</code></h3>
-<h3 id="fn-ow_morefd-int-buf-str-want-int---str"><code>fn ow_more(fd: Int, buf: Str, want: Int) -&gt; Str</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxiwire"</span>
+frame = <span class="f">ow_recv</span>(fd)    <span class="c"># one whole frame, however the network cut it</span></pre>
 <h3 id="fn-ow_callfd-int-request-json---resultjson-str"><code>fn ow_call(fd: Int, request: Json) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxiwire"</span>
+<span class="k">import</span> <span class="s">"data/json"</span>
+<span class="m">reply</span> = <span class="f">ow_call</span>(fd, <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"cmd"</span>, <span class="t">JStr</span>(<span class="s">"ping"</span>)), <span class="t">Nil</span>)))   <span class="c"># Ok(the value), or Err(what the server said)</span></pre>
 <h3 id="fn-ow_replyframe-str---resultjson-str"><code>fn ow_reply(frame: Str) -&gt; Result(Json, Str)</code></h3>
-<h3 id="fn-ow_reply_offrame-str-status-int---resultjson-str"><code>fn ow_reply_of(frame: Str, status: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxiwire"</span>
+<span class="k">import</span> <span class="s">"data/json"</span>
+<span class="f">ow_reply</span>(<span class="f">chr</span>(<span class="n">219</span>) + <span class="f">chr</span>(<span class="n">0</span>) + <span class="f">ow_encode</span>(<span class="t">JStr</span>(<span class="s">"pong"</span>)))   <span class="c"># =&gt; Ok(JStr(pong))</span>
+<span class="f">ow_reply</span>(<span class="f">chr</span>(<span class="n">219</span>) + <span class="f">chr</span>(<span class="n">1</span>) + <span class="f">ow_encode</span>(<span class="t">JStr</span>(<span class="s">"no such collection"</span>)))   <span class="c"># =&gt; Err(no such collection)</span>
+<span class="f">ow_reply</span>(<span class="s">""</span>)                                                <span class="c"># =&gt; Err(oxidb: the server said nothing)</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-db-oxitsdb.html">← db/oxitsdb</a>

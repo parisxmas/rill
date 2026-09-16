@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>data/deflate — The Rill Language Reference</title>
-<meta name="description" content="DEFLATE (RFC 1951) both ways, and the two envelopes it travels in: zlib (RFC 1950) and gzip (RFC 1952).">
+<meta name="description" content="st holds the position in the data, the bits read but not yet used, how many of them there are, and whether the data ran out.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-data-deflate.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-data-deflate.html">
 <meta property="og:title" content="data/deflate — The Rill Language Reference">
-<meta property="og:description" content="DEFLATE (RFC 1951) both ways, and the two envelopes it travels in: zlib (RFC 1950) and gzip (RFC 1952).">
+<meta property="og:description" content="st holds the position in the data, the bits read but not yet used, how many of them there are, and whether the data ran out.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="data/deflate — The Rill Language Reference">
-<meta name="twitter:description" content="DEFLATE (RFC 1951) both ways, and the two envelopes it travels in: zlib (RFC 1950) and gzip (RFC 1952).">
+<meta name="twitter:description" content="st holds the position in the data, the bits read but not yet used, how many of them there are, and whether the data ran out.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -80,16 +81,7 @@
     <main class="module">
       <p class="chapter-no">Standard library · Data formats</p>
       <h1>data/deflate</h1>
-<p class="import">Imported as <code>import "data/deflate" as deflate</code>, its names are then <code>deflate.…</code>. Every signature below is the one the checker infers.</p><p>DEFLATE (RFC 1951) both ways, and the two envelopes it travels in: zlib (RFC 1950) and gzip (RFC 1952). Written in Rill on buffers and a string builder; the decoder takes any stream — stored, fixed and dynamic Huffman blocks — and the encoder writes LZ77 matches over a 32 KB window in fixed Huffman codes, which is most of what a compressor buys and a fraction of its code.</p>
-<pre><span class="k">import</span> <span class="s">"data/deflate"</span> <span class="k">as</span> z
-packed = z.gzip(text)                    <span class="c"># bytes, as `gzip` would write them</span>
-<span class="k">match</span> z.gunzip(packed)
-  <span class="t">Ok</span>(text) <span class="o">-&gt;</span> ...
-  <span class="t">Err</span>(why) <span class="o">-&gt;</span> ...                        <span class="c"># &quot;not gzip&quot;, &quot;crc mismatch&quot;, ...</span>
-z.zlib(text), z.unzlib(bytes)            <span class="c"># what HTTP calls &quot;deflate&quot;</span>
-z.deflate(text), z.inflate(bytes)        <span class="c"># the bare stream</span></pre>
-<p>Everything is bytes in a <code>Str</code>; the checksums come from <code>data/checksum</code>.</p>
-<h2 id="types">Types</h2>
+<p class="import">Imported as <code>import "data/deflate" as deflate</code>, its names are then <code>deflate.…</code>. Every signature below is the one the checker infers.</p><h2 id="types">Types</h2>
 <h3 id="bits"><code>Bits</code></h3>
 <p><code>st</code> holds the position in the data, the bits read but not yet used, how many of them there are, and whether the data ran out.</p>
 <ul>
@@ -117,16 +109,28 @@ z.deflate(text), z.inflate(bytes)        <span class="c"># the bare stream</span
 <h2 id="functions">Functions</h2>
 <h3 id="fn-inflatedata-str---resultstr-str"><code>fn inflate(data: Str) -&gt; Result(Str, Str)</code></h3>
 <p>The bytes a DEFLATE stream encodes, or what was wrong with it.</p>
+<pre>deflate.inflate(deflate.deflate(<span class="s">"hello hello hello"</span>))   <span class="c"># =&gt; Ok(hello hello hello)</span>
+deflate.inflate(<span class="s">"not a stream"</span>)   <span class="c"># =&gt; Err(not a deflate stream: a block of an unknown kind)</span></pre>
 <h3 id="fn-inflate_fromdata-str-at-int---resultstr-int-str"><code>fn inflate_from(data: Str, at: Int) -&gt; Result((Str, Int), Str)</code></h3>
 <p>The same from byte <code>at</code>, and where the stream ended — for an envelope with a trailer after it.</p>
+<pre>packed = deflate.deflate(<span class="s">"abc"</span>)
+deflate.inflate_from(<span class="s">"xx"</span> + packed + <span class="s">"trailer"</span>, <span class="n">2</span>)   <span class="c"># =&gt; Ok((abc, 7))</span></pre>
 <h3 id="fn-deflatedata-str---str"><code>fn deflate(data: Str) -&gt; Str</code></h3>
 <p>LZ77 over a 32 KB window: a hash of three bytes leads to the most recent position with that hash, and a chain leads from there to older ones.</p>
+<pre><span class="c">#deflate.deflate(&quot;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&quot;) &lt; 32   # =&gt; true</span></pre>
 <h3 id="fn-zlibdata-str---str"><code>fn zlib(data: Str) -&gt; Str</code></h3>
 <p>zlib: two header bytes, the stream, and the Adler-32 of the text.</p>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(deflate.zlib(<span class="s">"a"</span>))   <span class="c"># =&gt; 789c4b040000620062</span></pre>
 <h3 id="fn-unzlibdata-str---resultstr-str"><code>fn unzlib(data: Str) -&gt; Result(Str, Str)</code></h3>
+<pre>deflate.unzlib(deflate.zlib(<span class="s">"round trip"</span>))   <span class="c"># =&gt; Ok(round trip)</span></pre>
 <h3 id="fn-gzipdata-str---str"><code>fn gzip(data: Str) -&gt; Str</code></h3>
 <p>gzip: the ten-byte header <code>gzip</code> writes with no name and no time, the stream, the CRC-32 and the length.</p>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(deflate.gzip(<span class="s">""</span>))   <span class="c"># =&gt; 1f8b08000000000000ff03000000000000000000</span></pre>
 <h3 id="fn-gunzipdata-str---resultstr-str"><code>fn gunzip(data: Str) -&gt; Result(Str, Str)</code></h3>
+<pre>deflate.gunzip(deflate.gzip(<span class="s">"round trip"</span>))   <span class="c"># =&gt; Ok(round trip)</span>
+deflate.gunzip(<span class="s">"plain"</span>)                   <span class="c"># =&gt; Err(not gzip)</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_inflate_what_zlib_wrote</code> — Streams written by zlib: a fixed block, a stored block, a dynamic block.</li>

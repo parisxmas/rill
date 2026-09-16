@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -79,13 +80,16 @@
       <h1>random/rnd</h1>
 <p class="import">Imported as <code>import "random/rnd" as rnd</code>, its names are then <code>rnd.…</code>. Every signature below is the one the checker infers.</p><p>Random numbers, from a generator that is a value.</p>
 <p>PCG32 (O'Neill): a 64-bit state, a 32-bit output that passes the statistical tests, and one multiply and a few shifts a number. The generator is a <code>Rng</code> value — there is no hidden state — so a function that draws hands back the next generator with the number, and the same seed gives the same sequence on every run and every machine.</p>
-<pre><span class="k">import</span> <span class="s">"random/rnd"</span> <span class="k">as</span> rnd
-r = rnd.seed(<span class="n">42</span>)                      <span class="c"># or rnd.seed_from_os()</span>
-(n, r) = rnd.int_in(r, <span class="n">1</span>, <span class="n">6</span>)          <span class="c"># a die</span>
-(x, r) = rnd.float(r)                 <span class="c"># in [0, 1)</span>
-(who, r) = rnd.pick(r, names)         <span class="c"># Some(one of them)</span>
-r = rnd.shuffle(r, deck)              <span class="c"># a Buf(Int), in place</span></pre>
 <p>Not for secrets: a PCG stream can be predicted from its output. Keys and tokens come from <code>random_i64()</code>, which asks the operating system.</p>
+<pre>r = rnd.seed(<span class="n">42</span>)
+(n, r) = rnd.int_in(r, <span class="n">1</span>, <span class="n">7</span>)          <span class="c"># a die</span>
+n &gt;= <span class="n">1</span> &amp;&amp; n &lt;= <span class="n">6</span>                      <span class="c"># =&gt; true</span>
+(x, r) = rnd.float(r)
+x &gt;= <span class="n">0.0</span> &amp;&amp; x &lt; <span class="n">1.0</span>                   <span class="c"># =&gt; true</span>
+(who, r) = rnd.pick(r, <span class="t">Cons</span>(<span class="s">"ada"</span>, <span class="t">Cons</span>(<span class="s">"bob"</span>, <span class="t">Nil</span>)))
+who != <span class="t">None</span>                           <span class="c"># =&gt; true</span>
+deck = <span class="f">buf_int</span>(<span class="n">3</span>)
+r = rnd.shuffle(r, deck)              <span class="c"># in place; the generator comes back</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="rng"><code>Rng</code></h3>
 <ul>
@@ -94,22 +98,53 @@ r = rnd.shuffle(r, deck)              <span class="c"># a Buf(Int), in place</sp
 <h2 id="functions">Functions</h2>
 <h3 id="fn-seedn-int---rng"><code>fn seed(n: Int) -&gt; Rng</code></h3>
 <p>A generator from a seed; two seeds, two streams.</p>
+<pre>(a, _) = rnd.next_int(rnd.seed(<span class="n">1</span>))
+(b, _) = rnd.next_int(rnd.seed(<span class="n">1</span>))
+a == b   <span class="c"># =&gt; true</span>
+(c, _) = rnd.next_int(rnd.seed(<span class="n">2</span>))
+a == c   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-seed2n-int-stream-int---rng"><code>fn seed2(n: Int, stream: Int) -&gt; Rng</code></h3>
+<pre>(a, _) = rnd.next_int(rnd.seed2(<span class="n">1</span>, <span class="n">1</span>))
+(b, _) = rnd.next_int(rnd.seed2(<span class="n">1</span>, <span class="n">2</span>))
+a == b   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-seed_from_os---rng"><code>fn seed_from_os() -&gt; Rng</code></h3>
 <p>A generator seeded by the operating system: different every run.</p>
+<pre>(a, _) = rnd.next_int(rnd.seed_from_os())
+a &gt;= <span class="n">0</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-next_intr-rng---int-rng"><code>fn next_int(r: Rng) -&gt; (Int, Rng)</code></h3>
 <p>The next 32-bit number, 0 .. 2^32 - 1, and the generator after it.</p>
+<pre>(n, r2) = rnd.next_int(rnd.seed(<span class="n">7</span>))
+n &gt;= <span class="n">0</span> &amp;&amp; n &lt; <span class="n">4294967296</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-int_inr-rng-lo-int-hi-int---int-rng"><code>fn int_in(r: Rng, lo: Int, hi: Int) -&gt; (Int, Rng)</code></h3>
 <p>A number in <code>lo..hi</code>, <code>hi</code> excluded, without the bias a <code>%</code> would have: a draw that lands in the ragged end of the range is taken again.</p>
+<pre>(n, _) = rnd.int_in(rnd.seed(<span class="n">7</span>), <span class="n">10</span>, <span class="n">20</span>)
+n &gt;= <span class="n">10</span> &amp;&amp; n &lt; <span class="n">20</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-floatr-rng---float-rng"><code>fn float(r: Rng) -&gt; (Float, Rng)</code></h3>
 <p>A float in [0, 1), 53 random bits of it.</p>
+<pre>(x, _) = rnd.float(rnd.seed(<span class="n">7</span>))
+x &gt;= <span class="n">0.0</span> &amp;&amp; x &lt; <span class="n">1.0</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-boolr-rng---bool-rng"><code>fn bool(r: Rng) -&gt; (Bool, Rng)</code></h3>
+<pre>(b, _) = rnd.bool(rnd.seed(<span class="n">7</span>))
+b == <span class="t">true</span> || b == <span class="t">false</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-pickr-rng-xs-lista---optiona-rng"><code>fn pick(r: Rng, xs: List('a)) -&gt; (Option('a), Rng)</code></h3>
 <p>One of a list, or <code>None</code> of an empty one.</p>
+<pre>(x, _) = rnd.pick(rnd.seed(<span class="n">7</span>), <span class="t">Cons</span>(<span class="s">"only"</span>, <span class="t">Nil</span>))
+x                                     <span class="c"># =&gt; Some(only)</span>
+(y, _) = rnd.pick(rnd.seed(<span class="n">7</span>), <span class="t">Nil</span>)
+y == <span class="t">None</span>                             <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-shuffler-rng-b-bufint---rng"><code>fn shuffle(r: Rng, b: Buf(Int)) -&gt; Rng</code></h3>
 <p>Fisher–Yates over a buffer, in place; the generator after it.</p>
+<pre>b = <span class="f">buf_int</span>(<span class="n">4</span>)
+b[<span class="n">0</span>] = <span class="n">1</span>
+b[<span class="n">1</span>] = <span class="n">2</span>
+b[<span class="n">2</span>] = <span class="n">3</span>
+b[<span class="n">3</span>] = <span class="n">4</span>
+r = rnd.shuffle(rnd.seed(<span class="n">7</span>), b)
+b[<span class="n">0</span>] + b[<span class="n">1</span>] + b[<span class="n">2</span>] + b[<span class="n">3</span>]   <span class="c"># =&gt; 10</span></pre>
 <h3 id="fn-bytesr-rng-n-int---str-rng"><code>fn bytes(r: Rng, n: Int) -&gt; (Str, Rng)</code></h3>
 <p><code>n</code> random bytes, as a string of them.</p>
+<pre>(s, _) = rnd.bytes(rnd.seed(<span class="n">7</span>), <span class="n">16</span>)
+<span class="c">#s   # =&gt; 16</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_reference_stream</code></li>

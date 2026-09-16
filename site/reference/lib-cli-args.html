@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -80,20 +81,16 @@
       <p class="chapter-no">Standard library · The command line</p>
       <h1>cli/args</h1>
 <p class="import">Imported as <code>import "cli/args" as args</code>, its names are then <code>args.…</code>. Every signature below is the one the checker infers.</p><p>Command-line arguments: what a program takes, said once, and then parsed, checked and explained from that one saying.</p>
-<pre><span class="k">import</span> <span class="s">"cli/args"</span> <span class="k">as</span> cli
-
-<span class="k">fn</span> <span class="f">spec</span>() =
-  cli.tool(<span class="s">"serve"</span>, <span class="s">"serve a directory over HTTP"</span>)
-    <span class="o">|&gt;</span> cli.switch(<span class="s">"verbose"</span>, <span class="s">"v"</span>, <span class="s">"say what is served"</span>)
-    <span class="o">|&gt;</span> cli.valued(<span class="s">"port"</span>, <span class="s">"p"</span>, <span class="s">"PORT"</span>, <span class="s">"8080"</span>, <span class="s">"the port to listen on"</span>)
-    <span class="o">|&gt;</span> cli.slot(<span class="s">"dir"</span>, <span class="s">"the directory to serve"</span>, <span class="t">true</span>)
-
-<span class="k">fn</span> <span class="f">main</span>() = <span class="k">match</span> cli.parse(<span class="f">spec</span>(), <span class="f">args</span>())
-  <span class="t">Err</span>(why) <span class="o">-&gt;</span> <span class="f">println</span>(why)                  <span class="c"># what was wrong, then the usage</span>
-  <span class="t">Ok</span>(got) <span class="o">-&gt;</span>
-    port = <span class="f">str_to_int</span>(cli.value(got, <span class="s">"port"</span>))
-    <span class="f">serve</span>(cli.slots(got), port, cli.on(got, <span class="s">"verbose"</span>))</pre>
 <p><code>--port 80</code>, <code>--port=80</code> and <code>-p 80</code> all set <code>port</code>; <code>--verbose</code> and <code>-v</code> set a switch; <code>--</code> ends the options and everything after it is a slot. <code>--help</code> and <code>-h</code> answer with the usage text as the error, so a program that prints <code>why</code> has help for free.</p>
+<pre>spec = args.tool(<span class="s">"serve"</span>, <span class="s">"serve a directory over HTTP"</span>)
+  <span class="o">|&gt;</span> args.switch(<span class="s">"verbose"</span>, <span class="s">"v"</span>, <span class="s">"say what is served"</span>)
+  <span class="o">|&gt;</span> args.valued(<span class="s">"port"</span>, <span class="s">"p"</span>, <span class="s">"PORT"</span>, <span class="s">"8080"</span>, <span class="s">"the port to listen on"</span>)
+  <span class="o">|&gt;</span> args.slot(<span class="s">"dir"</span>, <span class="s">"the directory to serve"</span>, <span class="t">true</span>)
+got = args.parse(spec, <span class="t">Cons</span>(<span class="s">"serve"</span>, <span class="t">Cons</span>(<span class="s">"-v"</span>, <span class="t">Cons</span>(<span class="s">"--port=9000"</span>, <span class="t">Cons</span>(<span class="s">"www"</span>, <span class="t">Nil</span>)))))?
+args.value(got, <span class="s">"port"</span>)      <span class="c"># =&gt; 9000</span>
+args.on(got, <span class="s">"verbose"</span>)      <span class="c"># =&gt; true</span>
+args.slots(got)              <span class="c"># =&gt; Cons(www, Nil)</span>
+<span class="f">res_map</span>(args.parse(spec, <span class="t">Cons</span>(<span class="s">"serve"</span>, <span class="t">Nil</span>)), \g <span class="o">-&gt;</span> <span class="n">0</span>)   <span class="c"># =&gt; Err(missing &lt;dir&gt;\nusage: serve [options] &lt;dir&gt;\n  serve a directory over HTTP\n\n  -v, --verbose    say what is served\n  -p, --port PORT  the port to listen on (default 8080)\n  &lt;dir&gt;            the directory to serve\n  -h, --help       this)</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="item"><code>Item</code></h3>
 <ul>
@@ -112,17 +109,38 @@
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-toolname-str-about-str---spec"><code>fn tool(name: Str, about: Str) -&gt; Spec</code></h3>
+<pre>args.usage(args.tool(<span class="s">"hello"</span>, <span class="s">"greet someone"</span>))   <span class="c"># =&gt; usage: hello [options]\n  greet someone\n\n  -h, --help  this</span></pre>
 <h3 id="fn-switchs-spec-long-str-short-str-help-str---spec"><code>fn switch(s: Spec, long: Str, short: Str, help: Str) -&gt; Spec</code></h3>
+<pre>spec = args.tool(<span class="s">"t"</span>, <span class="s">""</span>) <span class="o">|&gt;</span> args.switch(<span class="s">"quiet"</span>, <span class="s">"q"</span>, <span class="s">"say nothing"</span>)
+args.on(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Cons</span>(<span class="s">"-q"</span>, <span class="t">Nil</span>)))?, <span class="s">"quiet"</span>)   <span class="c"># =&gt; true</span>
+args.on(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Nil</span>))?, <span class="s">"quiet"</span>)               <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-valueds-spec-long-str-short-str-meta-str-default-str-help-str---spec"><code>fn valued(s: Spec, long: Str, short: Str, meta: Str, default: Str, help: Str) -&gt; Spec</code></h3>
+<pre>spec = args.tool(<span class="s">"t"</span>, <span class="s">""</span>) <span class="o">|&gt;</span> args.valued(<span class="s">"name"</span>, <span class="s">"n"</span>, <span class="s">"NAME"</span>, <span class="s">"world"</span>, <span class="s">"whom to greet"</span>)
+args.value(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Nil</span>))?, <span class="s">"name"</span>)                        <span class="c"># =&gt; world</span>
+args.value(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Cons</span>(<span class="s">"-n"</span>, <span class="t">Cons</span>(<span class="s">"ada"</span>, <span class="t">Nil</span>))))?, <span class="s">"name"</span>)   <span class="c"># =&gt; ada</span></pre>
 <h3 id="fn-slots-spec-name-str-help-str-required-bool---spec"><code>fn slot(s: Spec, name: Str, help: Str, required: Bool) -&gt; Spec</code></h3>
+<pre>spec = args.tool(<span class="s">"t"</span>, <span class="s">""</span>) <span class="o">|&gt;</span> args.slot(<span class="s">"file"</span>, <span class="s">"the input"</span>, <span class="t">false</span>)
+args.slots(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Cons</span>(<span class="s">"a.txt"</span>, <span class="t">Nil</span>)))?)   <span class="c"># =&gt; Cons(a.txt, Nil)</span>
+args.slots(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Nil</span>))?)                    <span class="c"># =&gt; Nil</span></pre>
 <h3 id="fn-ong-got-long-str---bool"><code>fn on(g: Got, long: Str) -&gt; Bool</code></h3>
+<pre>spec = args.tool(<span class="s">"t"</span>, <span class="s">""</span>) <span class="o">|&gt;</span> args.switch(<span class="s">"all"</span>, <span class="s">"a"</span>, <span class="s">"everything"</span>)
+args.on(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Cons</span>(<span class="s">"--all"</span>, <span class="t">Nil</span>)))?, <span class="s">"all"</span>)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-valueg-got-long-str---str"><code>fn value(g: Got, long: Str) -&gt; Str</code></h3>
 <p>The value given for <code>long</code>, or its default.</p>
+<pre>spec = args.tool(<span class="s">"t"</span>, <span class="s">""</span>) <span class="o">|&gt;</span> args.valued(<span class="s">"port"</span>, <span class="s">"p"</span>, <span class="s">"PORT"</span>, <span class="s">"80"</span>, <span class="s">""</span>)
+args.value(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Cons</span>(<span class="s">"--port"</span>, <span class="t">Cons</span>(<span class="s">"8080"</span>, <span class="t">Nil</span>))))?, <span class="s">"port"</span>)   <span class="c"># =&gt; 8080</span></pre>
 <h3 id="fn-slotsg-got---liststr"><code>fn slots(g: Got) -&gt; List(Str)</code></h3>
+<pre>spec = args.tool(<span class="s">"t"</span>, <span class="s">""</span>) <span class="o">|&gt;</span> args.slot(<span class="s">"x"</span>, <span class="s">""</span>, <span class="t">false</span>) <span class="o">|&gt;</span> args.slot(<span class="s">"y"</span>, <span class="s">""</span>, <span class="t">false</span>)
+args.slots(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Cons</span>(<span class="s">"--"</span>, <span class="t">Cons</span>(<span class="s">"-not-a-flag"</span>, <span class="t">Cons</span>(<span class="s">"b"</span>, <span class="t">Nil</span>)))))?)   <span class="c"># =&gt; Cons(-not-a-flag, Cons(b, Nil))</span></pre>
 <h3 id="fn-parses-spec-argv-liststr---resultgot-str"><code>fn parse(s: Spec, argv: List(Str)) -&gt; Result(Got, Str)</code></h3>
 <p>The program name is <code>args()</code>'s first, and is skipped.</p>
+<pre>spec = args.tool(<span class="s">"t"</span>, <span class="s">""</span>) <span class="o">|&gt;</span> args.switch(<span class="s">"v"</span>, <span class="s">"v"</span>, <span class="s">""</span>)
+<span class="f">res_map</span>(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Cons</span>(<span class="s">"--nope"</span>, <span class="t">Nil</span>))), \g <span class="o">-&gt;</span> <span class="n">0</span>)   <span class="c"># =&gt; Err(`--nope` is not an option of t\nusage: t [options]\n\n  -v, --v     \n  -h, --help  this)</span>
+<span class="f">res_map</span>(args.parse(spec, <span class="t">Cons</span>(<span class="s">"t"</span>, <span class="t">Cons</span>(<span class="s">"--help"</span>, <span class="t">Nil</span>))), \g <span class="o">-&gt;</span> <span class="n">0</span>)   <span class="c"># =&gt; Err(usage: t [options]\n\n  -v, --v     \n  -h, --help  this)</span></pre>
 <h3 id="fn-usages-spec---str"><code>fn usage(s: Spec) -&gt; Str</code></h3>
 <p>The tool's line, then one line per item, aligned.</p>
+<pre>spec = args.tool(<span class="s">"cp"</span>, <span class="s">"copy a file"</span>) <span class="o">|&gt;</span> args.slot(<span class="s">"from"</span>, <span class="s">"the source"</span>, <span class="t">true</span>) <span class="o">|&gt;</span> args.slot(<span class="s">"to"</span>, <span class="s">"the destination"</span>, <span class="t">true</span>)
+args.usage(spec)   <span class="c"># =&gt; usage: cp [options] &lt;from&gt; &lt;to&gt;\n  copy a file\n\n  &lt;from&gt;      the source\n  &lt;to&gt;        the destination\n  -h, --help  this</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_options_and_slots</code></li>

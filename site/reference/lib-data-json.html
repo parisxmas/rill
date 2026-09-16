@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -81,6 +82,10 @@
       <h1>data/json</h1>
 <p class="import">Imported as <code>import "data/json" as json</code>, its names are then <code>json.…</code>. Every signature below is the one the checker infers.</p><p>JSON, written in Rill: a recursive-descent parser and a printer.</p>
 <p>Parsing functions return a <code>Parsed</code> — the value together with where it stopped, or why it stopped — because that is how a recursive-descent parser threads position through immutable data. A failure is a <code>Parsed</code> like any other and rides out through the same returns a value does; <code>parse</code> is the only one that turns it into a <code>Result</code>, because the caller is the only one with anywhere else to put it.</p>
+<pre>doc = json.parse(<span class="s">"{\&quot;user\&quot;: {\&quot;name\&quot;: \&quot;ada\&quot;, \&quot;ids\&quot;: [1, 2]}}"</span>)?
+json.path(doc, <span class="t">Cons</span>(<span class="s">"user"</span>, <span class="t">Cons</span>(<span class="s">"name"</span>, <span class="t">Nil</span>)))          <span class="c"># =&gt; Some(json.JStr(ada))</span>
+json.as_str(json.path(doc, <span class="t">Cons</span>(<span class="s">"user"</span>, <span class="t">Cons</span>(<span class="s">"name"</span>, <span class="t">Nil</span>))) <span class="o">|&gt;</span> <span class="f">unwrap_or</span>(json.<span class="t">JNull</span>))   <span class="c"># =&gt; ada</span>
+json.to_string(json.<span class="t">JObj</span>(<span class="t">Cons</span>(json.<span class="t">Field</span>(<span class="s">"n"</span>, json.<span class="t">JInt</span>(<span class="n">5</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; {&quot;n&quot;:5}</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="json"><code>Json</code></h3>
 <ul>
@@ -104,78 +109,50 @@
 <h2 id="functions">Functions</h2>
 <h3 id="fn-parsetext-str---resultjson-str"><code>fn parse(text: Str) -&gt; Result(Json, Str)</code></h3>
 <p>A document is one value and then nothing but space. Text after that value means the document was not what it claimed to be, and a parser that returns the value anyway has answered a question nobody asked: <code>nonsense</code> is not the JSON document <code>null</code> with a remark after it.</p>
-<h3 id="fn-finishtext-str-v-a-end-int---resulta-str"><code>fn finish(text: Str, v: 'a, end: Int) -&gt; Result('a, Str)</code></h3>
-<h3 id="fn-complainwhy-str-pos-int---str"><code>fn complain(why: Str, pos: Int) -&gt; Str</code></h3>
-<h3 id="fn-skip_wss-str-i-int---int"><code>fn skip_ws(s: Str, i: Int) -&gt; Int</code></h3>
-<h3 id="fn-parse_values-str-i-int---parsed"><code>fn parse_value(s: Str, i: Int) -&gt; Parsed</code></h3>
-<p><code>str_get</code> answers -1 past the end, so every byte test here doubles as the end-of-text test, and the text running out is never mistaken for a byte.</p>
-<h3 id="fn-keywords-str-i-int-word-str-value-json---parsed"><code>fn keyword(s: Str, i: Int, word: Str, value: Json) -&gt; Parsed</code></h3>
-<p>The three literals used to be taken on their first byte and their length alone, so <code>nul</code> and <code>true_enough</code> were read as <code>null</code> and <code>true</code>.</p>
-<h3 id="fn-parse_strings-str-i-int-acc-str---parsed"><code>fn parse_string(s: Str, i: Int, acc: Str) -&gt; Parsed</code></h3>
-<p><code>"</code> is 34, <code>\</code> is 92.</p>
-<p>The bytes up to the next <code>"</code> or <code>\</code> come off in one piece. Nearly every string in a document holds no escape at all, and taking those a byte at a time cost a string the square of its length — a fresh copy of everything read so far, per byte read.</p>
-<h3 id="fn-joinedacc-str-run-str---str"><code>fn joined(acc: Str, run: Str) -&gt; Str</code></h3>
-<p>A string with no escape in it is one run, and one run onto nothing is the run itself — worth saying, because it is the case nearly every string is.</p>
-<h3 id="fn-parse_string_ats-str-i-int-acc-str---parsed"><code>fn parse_string_at(s: Str, i: Int, acc: Str) -&gt; Parsed</code></h3>
-<p>Reached only on a <code>"</code>, a <code>\</code>, or the end: <code>plain_end</code> stops at nothing else.</p>
-<h3 id="fn-plain_ends-str-i-int---int"><code>fn plain_end(s: Str, i: Int) -&gt; Int</code></h3>
-<h3 id="fn-parse_escapes-str-i-int-acc-str---parsed"><code>fn parse_escape(s: Str, i: Int, acc: Str) -&gt; Parsed</code></h3>
-<h3 id="fn-parse_unicodes-str-i-int-acc-str---parsed"><code>fn parse_unicode(s: Str, i: Int, acc: Str) -&gt; Parsed</code></h3>
-<p><code>\uXXXX</code> is a UTF-16 unit: a character below 65536 outright, or one half of a surrogate pair spelling one above it — <code>\uD83D\uDE00</code> is a single character. Either way it goes in as the bytes UTF-8 spells it with. A half with no other half is U+FFFD, the replacement character, which is what text that has lost a piece is.</p>
-<h3 id="fn-parse_pairs-str-i-int-acc-str-hi-int---parsed"><code>fn parse_pair(s: Str, i: Int, acc: Str, hi: Int) -&gt; Parsed</code></h3>
-<h3 id="fn-is_lowv-int---bool"><code>fn is_low(v: Int) -&gt; Bool</code></h3>
-<h3 id="fn-is_hex4s-str-i-int---bool"><code>fn is_hex4(s: Str, i: Int) -&gt; Bool</code></h3>
-<h3 id="fn-is_hexc-int---bool"><code>fn is_hex(c: Int) -&gt; Bool</code></h3>
-<h3 id="fn-hex4s-str-i-int---int"><code>fn hex4(s: Str, i: Int) -&gt; Int</code></h3>
-<h3 id="fn-hex_digitc-int---int"><code>fn hex_digit(c: Int) -&gt; Int</code></h3>
-<h3 id="fn-parse_numbers-str-i-int---parsed"><code>fn parse_number(s: Str, i: Int) -&gt; Parsed</code></h3>
-<p><code>parse_value</code> only comes here on a byte a number may begin with, so there is always at least one to take. What is taken is not checked past that: <code>1.2.3</code> is handed to <code>str_to_float</code> and becomes whatever that makes of it.</p>
+<pre>json.parse(<span class="s">"[1, 2.5, \&quot;x\&quot;, true, null]"</span>)   <span class="c"># =&gt; Ok(json.JArr(Cons(json.JInt(1), Cons(json.JNum(2.5), Cons(json.JStr(x), Cons(json.JBool(true), Cons(json.JNull, Nil)))))))</span>
+json.parse(<span class="s">"[1,]"</span>)                          <span class="c"># =&gt; Err(no value begins with `]`, at byte 3)</span>
+json.parse(<span class="s">"null nonsense"</span>)                <span class="c"># =&gt; Err(trailing text, at byte 5)</span></pre>
 <h3 id="fn-number_oftext-str---json"><code>fn number_of(text: Str) -&gt; Json</code></h3>
 <p>JSON has a single number type, but a document id or a count is exact and a measurement is not. A literal that never showed a decimal point or an exponent stays an integer, so it prints back exactly the way it arrived — <code>%g</code> would turn an id of 1234567 into 1.23457e+06.</p>
-<h3 id="fn-is_integraltext-str---bool"><code>fn is_integral(text: Str) -&gt; Bool</code></h3>
-<h3 id="fn-number_ends-str-i-int---int"><code>fn number_end(s: Str, i: Int) -&gt; Int</code></h3>
+<pre>json.number_of(<span class="s">"1234567"</span>)   <span class="c"># =&gt; json.JInt(1234567)</span>
+json.number_of(<span class="s">"1.5e3"</span>)     <span class="c"># =&gt; json.JNum(1500)</span></pre>
 <h3 id="fn-is_number_charc-int---bool"><code>fn is_number_char(c: Int) -&gt; Bool</code></h3>
-<h3 id="fn-parse_arrays-str-i-int-acc-listjson---parsed"><code>fn parse_array(s: Str, i: Int, acc: List(Json)) -&gt; Parsed</code></h3>
-<p><code>]</code> is 93, <code>,</code> is 44. Only an empty array ends here; every other <code>]</code> is the one <code>array_next</code> is looking for, which is what keeps <code>[1,]</code> from parsing.</p>
-<h3 id="fn-array_items-str-i-int-acc-listjson---parsed"><code>fn array_item(s: Str, i: Int, acc: List(Json)) -&gt; Parsed</code></h3>
-<h3 id="fn-array_nexts-str-i-int-acc-listjson---parsed"><code>fn array_next(s: Str, i: Int, acc: List(Json)) -&gt; Parsed</code></h3>
-<h3 id="fn-parse_objects-str-i-int-acc-listfield---parsed"><code>fn parse_object(s: Str, i: Int, acc: List(Field)) -&gt; Parsed</code></h3>
-<p><code>}</code> is 125, <code>:</code> is 58.</p>
-<h3 id="fn-object_keys-str-i-int-acc-listfield---parsed"><code>fn object_key(s: Str, i: Int, acc: List(Field)) -&gt; Parsed</code></h3>
-<h3 id="fn-object_strings-str-i-int-acc-listfield---parsed"><code>fn object_string(s: Str, i: Int, acc: List(Field)) -&gt; Parsed</code></h3>
-<h3 id="fn-object_colons-str-i-int-key-str-acc-listfield---parsed"><code>fn object_colon(s: Str, i: Int, key: Str, acc: List(Field)) -&gt; Parsed</code></h3>
-<h3 id="fn-object_pairs-str-i-int-key-str-acc-listfield---parsed"><code>fn object_pair(s: Str, i: Int, key: Str, acc: List(Field)) -&gt; Parsed</code></h3>
-<h3 id="fn-key_textk-json---str"><code>fn key_text(k: Json) -&gt; Str</code></h3>
-<h3 id="fn-object_nexts-str-i-int-acc-listfield---parsed"><code>fn object_next(s: Str, i: Int, acc: List(Field)) -&gt; Parsed</code></h3>
+<pre>json.is_number_char(<span class="s">"7"</span>[<span class="n">0</span>])   <span class="c"># =&gt; true</span>
+json.is_number_char(<span class="s">"e"</span>[<span class="n">0</span>])   <span class="c"># =&gt; true</span>
+json.is_number_char(<span class="s">","</span>[<span class="n">0</span>])   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-to_stringj-json---str"><code>fn to_string(j: Json) -&gt; Str</code></h3>
 <p>Written into one builder rather than assembled out of pieces: the old printer built a string per value and a list of them per array, then joined those — so a document of six hundred records made thousands of strings on the way to one. Nothing here makes a string but the builder.</p>
-<h3 id="fn-put_jsonb-strbuf-j-json---unit"><code>fn put_json(b: StrBuf, j: Json) -&gt; Unit</code></h3>
-<h3 id="fn-put_itemsb-strbuf-xs-listjson---unit"><code>fn put_items(b: StrBuf, xs: List(Json)) -&gt; Unit</code></h3>
-<p>The comma belongs before every item but the first, so the first is written and the rest are written by somebody who knows they are not it.</p>
-<h3 id="fn-put_more_itemsb-strbuf-xs-listjson---unit"><code>fn put_more_items(b: StrBuf, xs: List(Json)) -&gt; Unit</code></h3>
-<h3 id="fn-put_fieldsb-strbuf-fs-listfield---unit"><code>fn put_fields(b: StrBuf, fs: List(Field)) -&gt; Unit</code></h3>
-<h3 id="fn-put_more_fieldsb-strbuf-fs-listfield---unit"><code>fn put_more_fields(b: StrBuf, fs: List(Field)) -&gt; Unit</code></h3>
-<h3 id="fn-put_fieldb-strbuf-f-field---unit"><code>fn put_field(b: StrBuf, f: Field) -&gt; Unit</code></h3>
-<h3 id="fn-put_quotedb-strbuf-t-str---unit"><code>fn put_quoted(b: StrBuf, t: Str) -&gt; Unit</code></h3>
-<h3 id="fn-put_escapedb-strbuf-s-str-i-int---unit"><code>fn put_escaped(b: StrBuf, s: Str, i: Int) -&gt; Unit</code></h3>
-<p>The same run-at-a-time reading as <code>parse_string</code>, for the same reason: a byte needing an escape is the exception, so the stretches between them go in whole.</p>
-<h3 id="fn-put_escaped_runb-strbuf-s-str-i-int-j-int---unit"><code>fn put_escaped_run(b: StrBuf, s: Str, i: Int, j: Int) -&gt; Unit</code></h3>
-<h3 id="fn-put_escaped_byteb-strbuf-s-str-j-int---unit"><code>fn put_escaped_byte(b: StrBuf, s: Str, j: Int) -&gt; Unit</code></h3>
-<h3 id="fn-clean_ends-str-i-int---int"><code>fn clean_end(s: Str, i: Int) -&gt; Int</code></h3>
-<h3 id="fn-needs_escapingc-int---bool"><code>fn needs_escaping(c: Int) -&gt; Bool</code></h3>
-<h3 id="fn-escape_bytec-int---str"><code>fn escape_byte(c: Int) -&gt; Str</code></h3>
+<pre>json.to_string(json.<span class="t">JArr</span>(<span class="t">Cons</span>(json.<span class="t">JInt</span>(<span class="n">1</span>), <span class="t">Cons</span>(json.<span class="t">JStr</span>(<span class="s">"a\&quot;b"</span>), <span class="t">Nil</span>))))   <span class="c"># =&gt; [1,&quot;a\&quot;b&quot;]</span>
+json.to_string(json.<span class="t">JObj</span>(<span class="t">Nil</span>))   <span class="c"># =&gt; {}</span></pre>
 <h3 id="fn-getj-json-key-str---optionjson"><code>fn get(j: Json, key: Str) -&gt; Option(Json)</code></h3>
-<h3 id="fn-field_lookupfields-listfield-key-str---optionjson"><code>fn field_lookup(fields: List(Field), key: Str) -&gt; Option(Json)</code></h3>
+<pre>doc = json.parse(<span class="s">"{\&quot;a\&quot;: 1}"</span>)?
+json.get(doc, <span class="s">"a"</span>)   <span class="c"># =&gt; Some(json.JInt(1))</span>
+json.get(doc, <span class="s">"b"</span>)   <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-itemsj-json---listjson"><code>fn items(j: Json) -&gt; List(Json)</code></h3>
+<pre>json.items(json.parse(<span class="s">"[1, 2]"</span>)?)   <span class="c"># =&gt; Cons(json.JInt(1), Cons(json.JInt(2), Nil))</span>
+json.items(json.<span class="t">JNull</span>)                <span class="c"># =&gt; Nil</span></pre>
 <h3 id="fn-as_strj-json---str"><code>fn as_str(j: Json) -&gt; Str</code></h3>
+<pre>json.as_str(json.<span class="t">JStr</span>(<span class="s">"x"</span>))   <span class="c"># =&gt; x</span>
+json.as_str(json.<span class="t">JInt</span>(<span class="n">1</span>))     <span class="c"># =&gt;</span></pre>
 <h3 id="fn-as_floatj-json---float"><code>fn as_float(j: Json) -&gt; Float</code></h3>
+<pre>json.as_float(json.<span class="t">JNum</span>(<span class="n">2.5</span>))   <span class="c"># =&gt; 2.5</span>
+json.as_float(json.<span class="t">JInt</span>(<span class="n">2</span>))     <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-as_intj-json---int"><code>fn as_int(j: Json) -&gt; Int</code></h3>
 <p>For values that arrived as integers — ids, counts, versions. A <code>JNum</code> has no exact integer to give back, so it answers 0 rather than rounding silently.</p>
+<pre>json.as_int(json.<span class="t">JInt</span>(<span class="n">7</span>))     <span class="c"># =&gt; 7</span>
+json.as_int(json.<span class="t">JNum</span>(<span class="n">7.9</span>))   <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-as_boolj-json---bool"><code>fn as_bool(j: Json) -&gt; Bool</code></h3>
+<pre>json.as_bool(json.<span class="t">JBool</span>(<span class="t">true</span>))   <span class="c"># =&gt; true</span>
+json.as_bool(json.<span class="t">JNull</span>)         <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-pathj-json-keys-liststr---optionjson"><code>fn path(j: Json, keys: List(Str)) -&gt; Option(Json)</code></h3>
 <p>Walks a path of object keys: <code>path(doc, Cons("user", Cons("name", Nil)))</code>.</p>
+<pre>doc = json.parse(<span class="s">"{\&quot;user\&quot;: {\&quot;name\&quot;: \&quot;ada\&quot;}}"</span>)?
+json.path(doc, <span class="t">Cons</span>(<span class="s">"user"</span>, <span class="t">Cons</span>(<span class="s">"name"</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; Some(json.JStr(ada))</span>
+json.path(doc, <span class="t">Cons</span>(<span class="s">"user"</span>, <span class="t">Cons</span>(<span class="s">"age"</span>, <span class="t">Nil</span>)))    <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-parsed_ortext-str-fallback-json---json"><code>fn parsed_or(text: Str, fallback: Json) -&gt; Json</code></h3>
 <p>For a caller that has decided a bad document is simply an absent one — a cache entry, an optional config. Anything that answers a user wants the <code>Err</code> and the byte it names.</p>
+<pre>json.parsed_or(<span class="s">"{\&quot;a\&quot;: 1}"</span>, json.<span class="t">JNull</span>)   <span class="c"># =&gt; json.JObj(Cons(json.Field(a, json.JInt(1)), Nil))</span>
+json.parsed_or(<span class="s">"not json"</span>, json.<span class="t">JNull</span>)   <span class="c"># =&gt; json.JNull</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-data-deflate.html">← data/deflate</a>

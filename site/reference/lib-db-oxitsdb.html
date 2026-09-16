@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>db/oxitsdb — The Rill Language Reference</title>
-<meta name="description" content="A client for OxiDB&#x27;s time-series engine, written in Rill, speaking the server&#x27;s binary wire rather than its JSON one.">
+<meta name="description" content="Every request names the engine as well as the command: the server mounts the time-series engine beside the document and SQL ones, and engine is what tells them apart.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-oxitsdb.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-oxitsdb.html">
 <meta property="og:title" content="db/oxitsdb — The Rill Language Reference">
-<meta property="og:description" content="A client for OxiDB&#x27;s time-series engine, written in Rill, speaking the server&#x27;s binary wire rather than its JSON one.">
+<meta property="og:description" content="Every request names the engine as well as the command: the server mounts the time-series engine beside the document and SQL ones, and engine is what tells them apart.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="db/oxitsdb — The Rill Language Reference">
-<meta name="twitter:description" content="A client for OxiDB&#x27;s time-series engine, written in Rill, speaking the server&#x27;s binary wire rather than its JSON one.">
+<meta name="twitter:description" content="Every request names the engine as well as the command: the server mounts the time-series engine beside the document and SQL ones, and engine is what tells them apart.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -80,42 +81,109 @@
     <main class="module">
       <p class="chapter-no">Standard library · Databases</p>
       <h1>db/oxitsdb</h1>
-<p class="import">Imported as <code>import "db/oxitsdb" as oxitsdb</code>, its names are then <code>oxitsdb.…</code>. Every signature below is the one the checker infers.</p><p>A client for OxiDB's time-series engine, written in Rill, speaking the server's binary wire rather than its JSON one.</p>
-<p>The wire itself — the framing, the tags, the reply envelope — is <code>oxiwire.rill</code>, shared with the document client. What is here is the time-series surface written on top of it: what a point is, what a query may ask for, and how to read the series that come back.</p>
-<h2 id="functions">Functions</h2>
+<p class="import">Imported as <code>import "db/oxitsdb" as oxitsdb</code>, its names are then <code>oxitsdb.…</code>. Every signature below is the one the checker infers.</p><h2 id="functions">Functions</h2>
 <h3 id="fn-ts_connecthost-str-port-int---resultint-str"><code>fn ts_connect(host: Str, port: Int) -&gt; Result(Int, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+fd = <span class="f">ts_connect</span>(<span class="s">"127.0.0.1"</span>, <span class="n">7411</span>)?</pre>
 <h3 id="fn-ts_hang_upfd-int---unit"><code>fn ts_hang_up(fd: Int) -&gt; Unit</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_hang_up</span>(fd)</pre>
 <h3 id="fn-ts_callfd-int-request-json---resultjson-str"><code>fn ts_call(fd: Int, request: Json) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_call</span>(fd, <span class="f">ts_request</span>(<span class="s">"stats"</span>, <span class="t">Nil</span>))   <span class="c"># Ok(the answer), or Err(the server&#x27;s message)</span></pre>
 <h3 id="fn-ts_requestop-str-fields-listfield---json"><code>fn ts_request(op: Str, fields: List(Field)) -&gt; Json</code></h3>
 <p>Every request names the engine as well as the command: the server mounts the time-series engine beside the document and SQL ones, and <code>engine</code> is what tells them apart. It is off unless the server was started with OXIDB_TSDB.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_request</span>(<span class="s">"stats"</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; JObj(Cons(Field(engine, JStr(tsdb)), Cons(Field(cmd, JStr(tsdb)), Cons(Field(op, JStr(stats)), Nil))))</span></pre>
 <h3 id="fn-ts_pointmeasurement-str-tags-listfield-fields-listfield-at-int---json"><code>fn ts_point(measurement: Str, tags: List(Field), fields: List(Field), at: Int) -&gt; Json</code></h3>
 <p>A point is a measurement, a moment, any number of string tags and one or more named fields. <code>at</code> is epoch milliseconds.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_point</span>(<span class="s">"temp"</span>, <span class="t">Cons</span>(<span class="f">ts_tag</span>(<span class="s">"room"</span>, <span class="s">"lab"</span>), <span class="t">Nil</span>), <span class="t">Cons</span>(<span class="f">ts_field</span>(<span class="s">"c"</span>, <span class="n">21.5</span>), <span class="t">Nil</span>), <span class="n">1700000000000</span>)   <span class="c"># =&gt; JObj(Cons(Field(measurement, JStr(temp)), Cons(Field(tags, JObj(Cons(Field(room, JStr(lab)), Nil))), Cons(Field(fields, JObj(Cons(Field(c, JNum(21.5)), Nil))), Cons(Field(ts, JInt(1700000000000)), Nil)))))</span></pre>
 <h3 id="fn-ts_tagkey-str-value-str---field"><code>fn ts_tag(key: Str, value: Str) -&gt; Field</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_tag</span>(<span class="s">"room"</span>, <span class="s">"lab"</span>)   <span class="c"># =&gt; Field(room, JStr(lab))</span></pre>
 <h3 id="fn-ts_fieldkey-str-value-float---field"><code>fn ts_field(key: Str, value: Float) -&gt; Field</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_field</span>(<span class="s">"c"</span>, <span class="n">21.5</span>)   <span class="c"># =&gt; Field(c, JNum(21.5))</span></pre>
 <h3 id="fn-ts_count_fieldkey-str-value-int---field"><code>fn ts_count_field(key: Str, value: Int) -&gt; Field</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_count_field</span>(<span class="s">"hits"</span>, <span class="n">3</span>)   <span class="c"># =&gt; Field(hits, JInt(3))</span></pre>
 <h3 id="fn-ts_writefd-int-points-listjson---resultjson-str"><code>fn ts_write(fd: Int, points: List(Json)) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_written</span>(<span class="f">ts_write</span>(fd, <span class="t">Cons</span>(p1, <span class="t">Cons</span>(p2, <span class="t">Nil</span>)))?)   <span class="c"># 2</span></pre>
 <h3 id="fn-ts_write_linesfd-int-lines_text-str---resultjson-str"><code>fn ts_write_lines(fd: Int, lines_text: Str) -&gt; Result(Json, Str)</code></h3>
 <p>InfluxDB line protocol, for a feed that already speaks it. A line with no timestamp is stamped by the server as it arrives.</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_write_lines</span>(fd, <span class="s">"temp,room=lab c=21.5 1700000000000\n"</span>)   <span class="c"># the line protocol, as written</span></pre>
 <h3 id="fn-ts_queryfd-int-measurement-str-field_name-str-spec-listfield---resultjson-str"><code>fn ts_query(fd: Int, measurement: Str, field_name: Str, spec: List(Field)) -&gt; Result(Json, Str)</code></h3>
 <p><code>agg</code> is mean, sum, min, max, count, distinct, first, last, rate, or a percentile written <code>p95</code>. An <code>interval</code> in milliseconds buckets the answer; without one the whole range collapses to a single point per series.</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_query</span>(fd, <span class="s">"temp"</span>, <span class="s">"c"</span>, <span class="f">ts_between</span>(t0, t1) <span class="o">|&gt;</span> <span class="f">ts_agg</span>(<span class="s">"mean"</span>) <span class="o">|&gt;</span> <span class="f">ts_every</span>(<span class="n">60000</span>))   <span class="c"># a mean a minute</span></pre>
 <h3 id="fn-ts_betweenstart-int-end-int---listfield"><code>fn ts_between(start: Int, end: Int) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_between</span>(<span class="n">1</span>, <span class="n">2</span>)   <span class="c"># =&gt; Cons(Field(start, JInt(1)), Cons(Field(end, JInt(2)), Nil))</span></pre>
 <h3 id="fn-ts_aggname-str-rest-listfield---listfield"><code>fn ts_agg(name: Str, rest: List(Field)) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_agg</span>(<span class="s">"mean"</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(agg, JStr(mean)), Nil)</span></pre>
 <h3 id="fn-ts_everyinterval-int-rest-listfield---listfield"><code>fn ts_every(interval: Int, rest: List(Field)) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_every</span>(<span class="n">60000</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(interval, JInt(60000)), Nil)</span></pre>
 <h3 id="fn-ts_wheretags-listfield-rest-listfield---listfield"><code>fn ts_where(tags: List(Field), rest: List(Field)) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_where</span>(<span class="t">Cons</span>(<span class="f">ts_tag</span>(<span class="s">"room"</span>, <span class="s">"lab"</span>), <span class="t">Nil</span>), <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(tags, JObj(Cons(Field(room, JStr(lab)), Nil))), Nil)</span></pre>
 <h3 id="fn-ts_group_bykeys-liststr-rest-listfield---listfield"><code>fn ts_group_by(keys: List(Str), rest: List(Field)) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_group_by</span>(<span class="t">Cons</span>(<span class="s">"room"</span>, <span class="t">Nil</span>), <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(group_by, JArr(Cons(JStr(room), Nil))), Nil)</span></pre>
 <h3 id="fn-ts_statsfd-int---resultjson-str"><code>fn ts_stats(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_stats</span>(fd)   <span class="c"># what the engine holds</span></pre>
 <h3 id="fn-ts_retentionfd-int-cutoff-int---resultjson-str"><code>fn ts_retention(fd: Int, cutoff: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_retention</span>(fd, <span class="n">1700000000000</span>)   <span class="c"># drop what is older than the moment</span></pre>
 <h3 id="fn-ts_checkpointfd-int---resultjson-str"><code>fn ts_checkpoint(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_checkpoint</span>(fd)</pre>
 <h3 id="fn-ts_rollup_addfd-int-measurement-str-interval-int-agg-str---resultjson-str"><code>fn ts_rollup_add(fd: Int, measurement: Str, interval: Int, agg: Str) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_rollup_add</span>(fd, <span class="s">"temp"</span>, <span class="n">3600000</span>, <span class="s">"mean"</span>)   <span class="c"># an hourly mean, kept up by the engine</span></pre>
 <h3 id="fn-ts_rollup_refreshfd-int---resultjson-str"><code>fn ts_rollup_refresh(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_rollup_refresh</span>(fd)</pre>
 <h3 id="fn-ts_rollupsfd-int---resultjson-str"><code>fn ts_rollups(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_rollups</span>(fd)</pre>
 <h3 id="fn-ts_seriesanswer-json---listjson"><code>fn ts_series(answer: Json) -&gt; List(Json)</code></h3>
 <p>A query answers an array of series, each <code>{tags, type, points:[{ts, value}]}</code>.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">len</span>(<span class="f">ts_series</span>(<span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JObj</span>(<span class="t">Nil</span>), <span class="t">Cons</span>(<span class="t">JObj</span>(<span class="t">Nil</span>), <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-ts_series_tagsseries-json---json"><code>fn ts_series_tags(series: Json) -&gt; Json</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_series_tags</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"tags"</span>, <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"room"</span>, <span class="t">JStr</span>(<span class="s">"lab"</span>)), <span class="t">Nil</span>))), <span class="t">Nil</span>)))   <span class="c"># =&gt; JObj(Cons(Field(room, JStr(lab)), Nil))</span></pre>
 <h3 id="fn-ts_series_pointsseries-json---listjson"><code>fn ts_series_points(series: Json) -&gt; List(Json)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+series = <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"points"</span>, <span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"ts"</span>, <span class="t">JInt</span>(<span class="n">1</span>)), <span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"value"</span>, <span class="t">JNum</span>(<span class="n">2.5</span>)), <span class="t">Nil</span>))), <span class="t">Nil</span>))), <span class="t">Nil</span>))
+<span class="f">map</span>(<span class="f">ts_series_points</span>(series), ts_value)   <span class="c"># =&gt; Cons(2.5, Nil)</span></pre>
 <h3 id="fn-ts_atpoint-json---int"><code>fn ts_at(point: Json) -&gt; Int</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_at</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"ts"</span>, <span class="t">JInt</span>(<span class="n">1700000000000</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; 1700000000000</span></pre>
 <h3 id="fn-ts_valuepoint-json---float"><code>fn ts_value(point: Json) -&gt; Float</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_value</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"value"</span>, <span class="t">JNum</span>(<span class="n">21.5</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; 21.5</span></pre>
 <h3 id="fn-ts_writtenanswer-json---int"><code>fn ts_written(answer: Json) -&gt; Int</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxitsdb"</span>
+<span class="f">ts_written</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"written"</span>, <span class="t">JInt</span>(<span class="n">3</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; 3</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-db-oxisql.html">← db/oxisql</a>

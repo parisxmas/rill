@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -82,12 +83,12 @@
       <h1>num/bigint</h1>
 <p class="import">Imported as <code>import "num/bigint" as bigint</code>, its names are then <code>bigint.…</code>. Every signature below is the one the checker infers.</p><p>Integers of any size, written in Rill.</p>
 <p>A <code>Big</code> is a sign and a buffer of limbs in base 1,000,000,000, least significant first — nine decimal digits a limb, so a product of two limbs fits an <code>Int</code> with room for the carry, and writing one out is writing its limbs. Every value is normalized: no leading zero limbs, and zero is never negative, so equal numbers are equal buffers.</p>
-<pre><span class="k">import</span> <span class="s">"num/bigint"</span> <span class="k">as</span> big
-n = big.pow(big.from_int(<span class="n">2</span>), <span class="n">100</span>)             <span class="c"># 1267650600228229401496703205376</span>
-f = big.factorial(<span class="n">30</span>)
-(q, r) = big.divmod(f, big.parse(<span class="s">"1000000007"</span>)?)
-<span class="f">println</span>(<span class="f">show</span>(big.add(q, r)))</pre>
 <p>Addition and subtraction are linear, multiplication is the schoolbook quadratic, and division finds each quotient limb by binary search over products — fine for hundreds of digits, slow for a hundred thousand.</p>
+<pre>n = bigint.pow(bigint.from_int(<span class="n">2</span>), <span class="n">100</span>)?
+n                                                     <span class="c"># =&gt; 1267650600228229401496703205376</span>
+f = bigint.factorial(<span class="n">30</span>)
+(q, r) = bigint.divmod(f, bigint.parse(<span class="s">"1000000007"</span>)?)?
+bigint.add(q, r)                                      <span class="c"># =&gt; 265252857955421162309834</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="big"><code>Big</code></h3>
 <ul>
@@ -100,29 +101,53 @@ f = big.factorial(<span class="n">30</span>)
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-zero---big"><code>fn zero() -&gt; Big</code></h3>
+<pre>bigint.zero()   <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-is_zerob-big---bool"><code>fn is_zero(b: Big) -&gt; Bool</code></h3>
+<pre>bigint.is_zero(bigint.sub(bigint.from_int(<span class="n">3</span>), bigint.from_int(<span class="n">3</span>)))   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-from_intn-int---big"><code>fn from_int(n: Int) -&gt; Big</code></h3>
+<pre>bigint.from_int(-<span class="n">42</span>)   <span class="c"># =&gt; -42</span></pre>
 <h3 id="fn-as_intb-big---optionint"><code>fn as_int(b: Big) -&gt; Option(Int)</code></h3>
 <p>The <code>Int</code> this is, or <code>None</code> past its range.</p>
+<pre>bigint.as_int(bigint.from_int(<span class="n">42</span>))                        <span class="c"># =&gt; Some(42)</span>
+bigint.as_int(bigint.pow(bigint.from_int(<span class="n">10</span>), <span class="n">30</span>)?)           <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-negb-big---big"><code>fn neg(b: Big) -&gt; Big</code></h3>
+<pre>bigint.neg(bigint.from_int(<span class="n">5</span>))   <span class="c"># =&gt; -5</span></pre>
 <h3 id="fn-abs_ofb-big---big"><code>fn abs_of(b: Big) -&gt; Big</code></h3>
+<pre>bigint.abs_of(bigint.from_int(-<span class="n">5</span>))   <span class="c"># =&gt; 5</span></pre>
 <h3 id="fn-signb-big---int"><code>fn sign(b: Big) -&gt; Int</code></h3>
+<pre>bigint.sign(bigint.from_int(-<span class="n">5</span>))   <span class="c"># =&gt; -1</span>
+bigint.sign(bigint.zero())         <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-cmpa-big-b-big---int"><code>fn cmp(a: Big, b: Big) -&gt; Int</code></h3>
 <p>Negative, zero or positive as <code>a</code> is less than, equal to, or greater than <code>b</code>.</p>
+<pre>bigint.cmp(bigint.from_int(<span class="n">2</span>), bigint.from_int(<span class="n">3</span>))   <span class="c"># =&gt; -1</span></pre>
 <h3 id="fn-eqa-big-b-big---bool"><code>fn eq(a: Big, b: Big) -&gt; Bool</code></h3>
+<pre>bigint.eq(bigint.parse(<span class="s">"007"</span>)?, bigint.from_int(<span class="n">7</span>))   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-adda-big-b-big---big"><code>fn add(a: Big, b: Big) -&gt; Big</code></h3>
+<pre>bigint.add(bigint.parse(<span class="s">"999999999999999999"</span>)?, bigint.from_int(<span class="n">1</span>))   <span class="c"># =&gt; 1000000000000000000</span></pre>
 <h3 id="fn-suba-big-b-big---big"><code>fn sub(a: Big, b: Big) -&gt; Big</code></h3>
+<pre>bigint.sub(bigint.from_int(<span class="n">1</span>), bigint.from_int(<span class="n">3</span>))   <span class="c"># =&gt; -2</span></pre>
 <h3 id="fn-mula-big-b-big---big"><code>fn mul(a: Big, b: Big) -&gt; Big</code></h3>
+<pre>bigint.mul(bigint.parse(<span class="s">"123456789012"</span>)?, bigint.parse(<span class="s">"987654321098"</span>)?)   <span class="c"># =&gt; 121932631136585886175176</span></pre>
 <h3 id="fn-powb-big-n-int---resultbig-str"><code>fn pow(b: Big, n: Int) -&gt; Result(Big, Str)</code></h3>
 <p><code>b</code> to the <code>n</code>th, by squaring; <code>n</code> below zero is an error, as an integer power is.</p>
+<pre>bigint.pow(bigint.from_int(<span class="n">3</span>), <span class="n">40</span>)   <span class="c"># =&gt; Ok(12157665459056928801)</span>
+bigint.pow(bigint.from_int(<span class="n">3</span>), -<span class="n">1</span>)   <span class="c"># =&gt; Err(a negative power is not an integer)</span></pre>
 <h3 id="fn-factorialn-int---big"><code>fn factorial(n: Int) -&gt; Big</code></h3>
+<pre>bigint.factorial(<span class="n">25</span>)   <span class="c"># =&gt; 15511210043330985984000000</span></pre>
 <h3 id="fn-divmoda-big-b-big---resultbig-big-str"><code>fn divmod(a: Big, b: Big) -&gt; Result((Big, Big), Str)</code></h3>
 <p>The quotient rounded toward zero and the remainder with the sign of <code>a</code>, as <code>/</code> and <code>%</code> on <code>Int</code> have them; <code>Err</code> on a zero divisor.</p>
+<pre>bigint.divmod(bigint.from_int(-<span class="n">7</span>), bigint.from_int(<span class="n">2</span>))   <span class="c"># =&gt; Ok((-3, -1))</span>
+bigint.divmod(bigint.from_int(<span class="n">1</span>), bigint.zero())        <span class="c"># =&gt; Err(division by zero)</span></pre>
 <h3 id="fn-diva-big-b-big---resultbig-str"><code>fn div(a: Big, b: Big) -&gt; Result(Big, Str)</code></h3>
+<pre>bigint.div(bigint.parse(<span class="s">"1000000000000000000000"</span>)?, bigint.from_int(<span class="n">7</span>))   <span class="c"># =&gt; Ok(142857142857142857142)</span></pre>
 <h3 id="fn-rema-big-b-big---resultbig-str"><code>fn rem(a: Big, b: Big) -&gt; Result(Big, Str)</code></h3>
+<pre>bigint.rem(bigint.parse(<span class="s">"1000000000000000000000"</span>)?, bigint.from_int(<span class="n">7</span>))   <span class="c"># =&gt; Ok(6)</span></pre>
 <h3 id="fn-textb-big---str"><code>fn text(b: Big) -&gt; Str</code></h3>
+<pre>bigint.text(bigint.from_int(-<span class="n">1234567890123</span>))   <span class="c"># =&gt; -1234567890123</span></pre>
 <h3 id="fn-parses-str---resultbig-str"><code>fn parse(s: Str) -&gt; Result(Big, Str)</code></h3>
 <p>Digits, with a <code>-</code> or <code>+</code> in front if wanted.</p>
+<pre>bigint.parse(<span class="s">"-12345678901234567890"</span>)   <span class="c"># =&gt; Ok(-12345678901234567890)</span>
+bigint.parse(<span class="s">"12x"</span>)                     <span class="c"># =&gt; Err(`12x` is not an integer)</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_text_and_ints</code></li>

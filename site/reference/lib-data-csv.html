@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -81,14 +82,14 @@
       <p class="chapter-no">Standard library · Data formats</p>
       <h1>data/csv</h1>
 <p class="import">Imported as <code>import "data/csv" as csv</code>, its names are then <code>csv.…</code>. Every signature below is the one the checker infers.</p><p>CSV, read and written, as RFC 4180 has it: a field is quoted when it holds the separator, a quote, or a line break; a quote inside a quoted field is doubled; a line ends in <code>\n</code> or <code>\r\n</code>. Reading is forgiving in the ways the files people actually have require — a quote in the middle of an unquoted field is a quote, a blank line is nothing, a short row is a short row — and strict where forgiveness would hide an error: a quoted field that never closes, or text after its closing quote, is refused, and the refusal says which line.</p>
-<pre><span class="k">import</span> <span class="s">"data/csv"</span> <span class="k">as</span> csv
-rows = csv.parse(text)?               <span class="c"># List(List(Str)), one list a line</span>
-people = csv.records(text)?           <span class="c"># the first line names the fields:</span>
-<span class="k">match</span> people                          <span class="c">#   List(Map(Str, Str))</span>
-  <span class="t">Cons</span>(p, _) <span class="o">-&gt;</span> p[<span class="s">"name"</span>]
-  <span class="t">Nil</span> <span class="o">-&gt;</span> <span class="t">None</span>
-csv.write(rows)                       <span class="c"># back to text, quoting what needs it</span></pre>
 <p>The separator is a comma unless <code>parse_with</code> / <code>write_with</code> are told otherwise — a semicolon or a tab, as a spreadsheet in another locale writes. Fields are bytes; the file's encoding is the caller's business, and UTF-8 passes through untouched.</p>
+<pre>rows = csv.parse(<span class="s">"name,age\nada,36\n"</span>)?
+rows                                      <span class="c"># =&gt; Cons(Cons(name, Cons(age, Nil)), Cons(Cons(ada, Cons(36, Nil)), Nil))</span>
+people = csv.records(<span class="s">"name,age\nada,36\n"</span>)?
+<span class="k">match</span> people
+  <span class="t">Cons</span>(p, _) <span class="o">-&gt;</span> <span class="f">map_or</span>(p, <span class="s">"name"</span>, <span class="s">"?"</span>)
+  <span class="t">Nil</span> <span class="o">-&gt;</span> <span class="s">"nobody"</span>
+csv.write(rows)                           <span class="c"># =&gt; name,age\nada,36</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="scan"><code>Scan</code></h3>
 <ul>
@@ -96,14 +97,25 @@ csv.write(rows)                       <span class="c"># back to text, quoting wh
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-parsetext-str---resultlistliststr-str"><code>fn parse(text: Str) -&gt; Result(List(List(Str)), Str)</code></h3>
+<pre>csv.parse(<span class="s">"a,b\n1,\&quot;x,y\&quot;\n"</span>)   <span class="c"># =&gt; Ok(Cons(Cons(a, Cons(b, Nil)), Cons(Cons(1, Cons(x,y, Nil)), Nil)))</span>
+csv.parse(<span class="s">"a,\&quot;open"</span>)          <span class="c"># =&gt; Err(a quoted field opened on line 1 is not closed)</span></pre>
 <h3 id="fn-parse_withtext-str-sep-int---resultlistliststr-str"><code>fn parse_with(text: Str, sep: Int) -&gt; Result(List(List(Str)), Str)</code></h3>
 <p>The rows of <code>text</code>, each a list of its fields, or the first error.</p>
+<pre>csv.parse_with(<span class="s">"a;b\n"</span>, <span class="s">";"</span>[<span class="n">0</span>])   <span class="c"># =&gt; Ok(Cons(Cons(a, Cons(b, Nil)), Nil))</span></pre>
 <h3 id="fn-recordstext-str---resultlistmapstr-str-str"><code>fn records(text: Str) -&gt; Result(List(Map(Str, Str)), Str)</code></h3>
 <p>The rows as records: the first line names the fields, and every line after it is a map from those names to its values. A short row leaves its missing fields out; a long one's extras are dropped.</p>
+<pre>people = csv.records(<span class="s">"name,age\nada,36\nbob\n"</span>)?
+<span class="f">map</span>(people, \p <span class="o">-&gt;</span> <span class="f">map_or</span>(p, <span class="s">"name"</span>, <span class="s">"?"</span>))   <span class="c"># =&gt; Cons(ada, Cons(bob, Nil))</span>
+<span class="f">map</span>(people, \p <span class="o">-&gt;</span> <span class="f">map_or</span>(p, <span class="s">"age"</span>, <span class="s">"?"</span>))    <span class="c"># =&gt; Cons(36, Cons(?, Nil))</span></pre>
 <h3 id="fn-records_withtext-str-sep-int---resultlistmapstr-str-str"><code>fn records_with(text: Str, sep: Int) -&gt; Result(List(Map(Str, Str)), Str)</code></h3>
+<pre>people = csv.records_with(<span class="s">"k\tv\na\t1\n"</span>, <span class="n">9</span>)?
+<span class="f">map</span>(people, \p <span class="o">-&gt;</span> <span class="f">map_or</span>(p, <span class="s">"v"</span>, <span class="s">"?"</span>))   <span class="c"># =&gt; Cons(1, Nil)</span></pre>
 <h3 id="fn-writerows-listliststr---str"><code>fn write(rows: List(List(Str))) -&gt; Str</code></h3>
+<pre>csv.write(<span class="t">Cons</span>(<span class="t">Cons</span>(<span class="s">"a"</span>, <span class="t">Cons</span>(<span class="s">"b,c"</span>, <span class="t">Nil</span>)), <span class="t">Nil</span>))   <span class="c"># =&gt; a,&quot;b,c&quot;</span>
+csv.write(<span class="t">Cons</span>(<span class="t">Cons</span>(<span class="s">"say \&quot;hi\&quot;"</span>, <span class="t">Nil</span>), <span class="t">Nil</span>))   <span class="c"># =&gt; &quot;say &quot;&quot;hi&quot;&quot;&quot;</span></pre>
 <h3 id="fn-write_withrows-listliststr-sep-int---str"><code>fn write_with(rows: List(List(Str)), sep: Int) -&gt; Str</code></h3>
 <p>The rows as text, one a line, ending in <code>\n</code>; a field is quoted only when it has to be.</p>
+<pre>csv.write_with(<span class="t">Cons</span>(<span class="t">Cons</span>(<span class="s">"a"</span>, <span class="t">Cons</span>(<span class="s">"b"</span>, <span class="t">Nil</span>)), <span class="t">Nil</span>), <span class="s">";"</span>[<span class="n">0</span>])   <span class="c"># =&gt; a;b</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_plain_rows</code></li>

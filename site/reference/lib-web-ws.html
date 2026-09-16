@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -82,53 +83,78 @@
       <h1>web/ws</h1>
 <p class="import">Imported as <code>import "web/ws" as ws</code>, its names are then <code>ws.…</code>. Every signature below is the one the checker infers.</p><p>WebSocket (RFC 6455) on top of the socket builtins: the handshake, and text or binary frames in both directions. Scope is deliberate — frames up to 64 KiB, no fragmentation, no extensions — but it is the real protocol, and browsers and <code>websocat</code> talk to it.</p>
 <p>Reading does not care which kind a frame is: <code>ws_take</code> hands back the payload bytes whatever the opcode, and a Rill string is a byte string. Writing says which — <code>ws_write</code> sends text, <code>ws_write_bin</code> binary — because the receiver on the other side is usually a browser, and a browser hands the two to its page as different things.</p>
+<pre><span class="c"># not run</span>
+<span class="c"># the server side, one connection: the upgrade, then frames</span>
+raw = ws.fill(conn, <span class="s">""</span>, <span class="n">1</span>)
+<span class="k">if</span> ws.ws_accept(conn, raw) <span class="k">then</span>
+  (msg, rest) = ws.ws_take(conn, <span class="s">""</span>)
+  ws.ws_write(conn, <span class="s">"echo: "</span> + msg)
+  ws.ws_close(conn)
+<span class="k">else</span> <span class="f">sock_close</span>(conn)
+<span class="c"># the client side</span>
+<span class="f">sock_write</span>(client, ws.ws_handshake_request(<span class="s">"127.0.0.1"</span>, <span class="s">"/live"</span>))
+<span class="f">sock_write</span>(client, ws.client_frame(<span class="s">"hello"</span>))
+(back, _) = ws.ws_take(client, <span class="s">""</span>)          <span class="c"># &quot;echo: hello&quot;</span></pre>
 <h2 id="functions">Functions</h2>
-<h3 id="fn-ws_guid---str"><code>fn ws_guid() -&gt; Str</code></h3>
 <h3 id="fn-header_valueraw-str-name-str---str"><code>fn header_value(raw: Str, name: Str) -&gt; Str</code></h3>
 <p>Header names are case-insensitive (RFC 7230), and that is not a courtesy: HTTP/2 sends every header lowercased, and anything that has been through a proxy speaking it — Cloudflare, nginx with an h2 front — arrives as <code>sec-websocket-key:</code>. Finding the name case-blind cost a production valley an evening of 502s; the <em>value</em> is read from the original bytes at the same offset, because a base64 key is exactly the kind of value case matters to.</p>
-<h3 id="fn-ascii_lowers-str---str"><code>fn ascii_lower(s: Str) -&gt; Str</code></h3>
-<h3 id="fn-lower_bytec-int---int"><code>fn lower_byte(c: Int) -&gt; Int</code></h3>
-<h3 id="fn-header_tailraw-str-from-int---str"><code>fn header_tail(raw: Str, from: Int) -&gt; Str</code></h3>
+<pre>ws.header_value(<span class="s">"GET / HTTP/1.1\r\nSec-WebSocket-Key: abc==\r\n\r\n"</span>, <span class="s">"sec-websocket-key: "</span>)   <span class="c"># =&gt; abc==</span></pre>
 <h3 id="fn-accept_keykey-str---str"><code>fn accept_key(key: Str) -&gt; Str</code></h3>
-<h3 id="fn-handshake_replykey-str---str"><code>fn handshake_reply(key: Str) -&gt; Str</code></h3>
+<pre>ws.accept_key(<span class="s">"dGhlIHNhbXBsZSBub25jZQ=="</span>)   <span class="c"># =&gt; s3pPLMBiTxaQ9kYGzzhZRbK+xOo=</span></pre>
 <h3 id="fn-ws_wantedrequest_raw-str---bool"><code>fn ws_wanted(request_raw: Str) -&gt; Bool</code></h3>
 <p>Is this somebody opening a socket, or somebody asking a question?</p>
 <p>The key is what says so, and the name has to be looked for without regard to case: HTTP/2 and every proxy in front of it — and Node's own client — carry header names in lower case, while curl and the browsers send them capitalised. A server that looks for one spelling turns half the world away, and does it silently, which is how this was found.</p>
+<pre>ws.ws_wanted(<span class="s">"GET /live HTTP/1.1\r\nUpgrade: websocket\r\nSec-WebSocket-Key: x\r\n\r\n"</span>)   <span class="c"># =&gt; true</span>
+ws.ws_wanted(<span class="s">"GET / HTTP/1.1\r\nHost: h\r\n\r\n"</span>)                                       <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-ws_acceptconn-int-request_raw-str---bool"><code>fn ws_accept(conn: Int, request_raw: Str) -&gt; Bool</code></h3>
 <p>Answers a client's upgrade request. Returns whether it was one.</p>
-<h3 id="fn-send_upgradeconn-int-key-str---bool"><code>fn send_upgrade(conn: Int, key: Str) -&gt; Bool</code></h3>
-<h3 id="fn-fill_untilconn-int-buf-str-want-int-until-int---str"><code>fn fill_until(conn: Int, buf: Str, want: Int, until: Int) -&gt; Str</code></h3>
-<p>The same, but it gives up at a deadline instead of waiting for ever.</p>
-<p>A connection that opens and then says nothing holds a strand and a descriptor, and there is no shortage of people who will open several thousand of them. <code>until</code> is a moment on the monotonic clock, so a client that dribbles a byte at a time cannot keep extending it either.</p>
-<h3 id="fn-fill_leftconn-int-buf-str-want-int-until-int-left-int---str"><code>fn fill_left(conn: Int, buf: Str, want: Int, until: Int, left: Int) -&gt; Str</code></h3>
-<h3 id="fn-fill_stepconn-int-buf-str-want-int-until-int---str"><code>fn fill_step(conn: Int, buf: Str, want: Int, until: Int) -&gt; Str</code></h3>
+<pre><span class="c"># not run</span>
+raw = ws.fill(conn, <span class="s">""</span>, <span class="n">1</span>)
+<span class="k">if</span> ws.ws_accept(conn, raw) <span class="k">then</span> <span class="f">live</span>(conn) <span class="k">else</span> <span class="f">sock_close</span>(conn)</pre>
 <h3 id="fn-fillconn-int-buf-str-want-int---str"><code>fn fill(conn: Int, buf: Str, want: Int) -&gt; Str</code></h3>
 <p>Reads until at least <code>want</code> bytes are buffered, or the peer stops talking.</p>
-<h3 id="fn-fill_moreconn-int-buf-str-want-int---str"><code>fn fill_more(conn: Int, buf: Str, want: Int) -&gt; Str</code></h3>
+<pre><span class="c"># not run</span>
+raw = ws.fill(conn, <span class="s">""</span>, <span class="n">1</span>)     <span class="c"># at least one byte, or &quot;&quot; when the peer is gone</span></pre>
 <h3 id="fn-ws_takeconn-int-acc-str---str-str"><code>fn ws_take(conn: Int, acc: Str) -&gt; (Str, Str)</code></h3>
 <p>One frame, and whatever arrived after it.</p>
 <p>A read is not a frame. TCP hands over bytes, so one read can carry half a frame, or three of them, and a reader that assumes otherwise works perfectly until a message is split across two segments — after which every following frame is read from the middle of the last one and the connection quietly turns to noise. It also silently dropped whatever came in the same read as the frame it returned, which is every message after the first when a client sends two of them quickly.</p>
 <p>So the leftovers are handed back with the message and passed in next time. <code>("", rest)</code> means the peer has stopped talking.</p>
-<h3 id="fn-framedconn-int-head-str---str-str"><code>fn framed(conn: Int, head: Str) -&gt; (Str, Str)</code></h3>
-<h3 id="fn-sizedconn-int-head-str-len7-int-masked-bool---str-str"><code>fn sized(conn: Int, head: Str, len7: Int, masked: Bool) -&gt; (Str, Str)</code></h3>
-<h3 id="fn-frame_lenb-str-len7-int-ext-int---int"><code>fn frame_len(b: Str, len7: Int, ext: Int) -&gt; Int</code></h3>
-<h3 id="fn-wholeconn-int-short-str-ext-int-n-int-masked-bool---str-str"><code>fn whole(conn: Int, short: Str, ext: Int, n: Int, masked: Bool) -&gt; (Str, Str)</code></h3>
-<h3 id="fn-cutb-str-start-int-n-int-need-int-masked-bool-ext-int---str-str"><code>fn cut(b: Str, start: Int, n: Int, need: Int, masked: Bool, ext: Int) -&gt; (Str, Str)</code></h3>
+<pre><span class="c"># not run</span>
+(msg, rest) = ws.ws_take(conn, <span class="s">""</span>)        <span class="c"># one frame&#x27;s payload, and the bytes after it</span>
+(next, rest2) = ws.ws_take(conn, rest)     <span class="c"># the leftovers go back in</span></pre>
 <h3 id="fn-ws_readconn-int---str"><code>fn ws_read(conn: Int) -&gt; Str</code></h3>
 <p>A text frame's payload, or "" once the connection is done. Keeps nothing between calls, so it is only safe where one message arrives at a time — <code>ws_take</code> is what a server should use.</p>
-<h3 id="fn-unmaskbody-str-key-str---str"><code>fn unmask(body: Str, key: Str) -&gt; Str</code></h3>
-<p>Byte by byte into a builder rather than by joining strings. <code>acc + chr(...)</code> copies everything accumulated so far every time round, which is quadratic: a sixty-four kilobyte frame — the largest this reads — came to two gigabytes of copying and about sixty-five milliseconds of one core, for one message.</p>
+<pre><span class="c"># not run</span>
+text = ws.ws_read(conn)   <span class="c"># one text frame, where one message arrives at a time</span></pre>
 <h3 id="fn-ws_frame_opop-int-body-str---str"><code>fn ws_frame_op(op: Int, body: Str) -&gt; Str</code></h3>
 <p>A frame the <em>server</em> sends: final, unmasked. 129 is FIN+text, 130 FIN+binary; the length walk is the same either way.</p>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(ws.ws_frame_op(<span class="n">130</span>, <span class="s">"ab"</span>))   <span class="c"># =&gt; 82026162</span></pre>
 <h3 id="fn-ws_frametext-str---str"><code>fn ws_frame(text: Str) -&gt; Str</code></h3>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(ws.ws_frame(<span class="s">"hi"</span>))   <span class="c"># =&gt; 81026869</span></pre>
 <h3 id="fn-ws_frame_binbody-str---str"><code>fn ws_frame_bin(body: Str) -&gt; Str</code></h3>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(ws.ws_frame_bin(<span class="f">chr</span>(<span class="n">0</span>) + <span class="f">chr</span>(<span class="n">255</span>)))   <span class="c"># =&gt; 820200ff</span></pre>
 <h3 id="fn-ws_writeconn-int-text-str---int"><code>fn ws_write(conn: Int, text: Str) -&gt; Int</code></h3>
+<pre><span class="c"># not run</span>
+ws.ws_write(conn, <span class="s">"a text frame"</span>)</pre>
 <h3 id="fn-ws_write_binconn-int-body-str---int"><code>fn ws_write_bin(conn: Int, body: Str) -&gt; Int</code></h3>
+<pre><span class="c"># not run</span>
+ws.ws_write_bin(conn, bytes)</pre>
 <h3 id="fn-ws_closeconn-int---unit"><code>fn ws_close(conn: Int) -&gt; Unit</code></h3>
+<pre><span class="c"># not run</span>
+ws.ws_close(conn)   <span class="c"># a close frame, then the socket</span></pre>
 <h3 id="fn-client_frametext-str---str"><code>fn client_frame(text: Str) -&gt; Str</code></h3>
 <p>Clients must mask; a fixed key is fine, the point is XOR not secrecy.</p>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+<span class="c">#ws.client_frame(&quot;hi&quot;)   # =&gt; 8</span>
+str.hex_encode(ws.client_frame(<span class="s">"hi"</span>))[<span class="n">0</span>:<span class="n">4</span>]   <span class="c"># =&gt; 8182</span></pre>
 <h3 id="fn-client_frame_binbody-str---str"><code>fn client_frame_bin(body: Str) -&gt; Str</code></h3>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(ws.client_frame_bin(<span class="s">"x"</span>))[<span class="n">0</span>:<span class="n">4</span>]   <span class="c"># =&gt; 8281</span></pre>
 <h3 id="fn-ws_handshake_requesthost-str-path-str---str"><code>fn ws_handshake_request(host: Str, path: Str) -&gt; Str</code></h3>
+<pre><span class="f">starts_with</span>(ws.ws_handshake_request(<span class="s">"h"</span>, <span class="s">"/p"</span>), <span class="s">"GET /p HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\n"</span>)   <span class="c"># =&gt; true</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-web-url.html">← web/url</a>

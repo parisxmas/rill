@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -80,13 +81,12 @@
       <h1>time/date</h1>
 <p class="import">Imported as <code>import "time/date" as date</code>, its names are then <code>date.…</code>. Every signature below is the one the checker infers.</p><p>Civil dates and times, in UTC and nothing else.</p>
 <p>A <code>Date</code> is a year, a month and a day on the proleptic Gregorian calendar; a <code>DateTime</code> is one with a time of day. Both convert to and from a count — days since 1970-01-01 for a date, seconds since 1970-01-01T00:00:00Z for a date and time — and it is on the counts that arithmetic is done, so adding a day never lands on the 31st of February. ISO 8601 is the one text form: <code>2026-09-14</code> and <code>2026-09-14T21:03:00Z</code>, read and written.</p>
-<pre><span class="k">import</span> <span class="s">"time/date"</span> <span class="k">as</span> date
-today = date.today()                    <span class="c"># from the wall clock</span>
-due = date.add_days(today, <span class="n">30</span>)
-<span class="f">println</span>(<span class="f">show</span>(due))                      <span class="c"># &quot;2026-10-14&quot;</span>
-date.parse(<span class="s">"2026-02-29"</span>)                <span class="c"># Err: February 2026 has 28 days</span>
-date.weekday(today)                     <span class="c"># 0 is Sunday, 6 is Saturday</span></pre>
 <p>No time zones and no leap seconds: what a machine's clock says in UTC is what this handles, and a local time is the program's to make by adding an offset it knows.</p>
+<pre>today = date.today()
+due = date.add_days(date.make(<span class="n">2026</span>, <span class="n">9</span>, <span class="n">14</span>)?, <span class="n">30</span>)
+due                                     <span class="c"># =&gt; 2026-10-14</span>
+date.parse(<span class="s">"2026-02-29"</span>)                <span class="c"># =&gt; Err(February 2026 has 28 days, not 29)</span>
+date.weekday(date.make(<span class="n">2026</span>, <span class="n">9</span>, <span class="n">14</span>)?)   <span class="c"># =&gt; 1</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="date"><code>Date</code></h3>
 <ul>
@@ -106,37 +106,70 @@ date.weekday(today)                     <span class="c"># 0 is Sunday, 6 is Satu
 <h2 id="functions">Functions</h2>
 <h3 id="fn-makey-int-m-int-d-int---resultdate-str"><code>fn make(y: Int, m: Int, d: Int) -&gt; Result(Date, Str)</code></h3>
 <p>A date that exists, or why not.</p>
+<pre>date.make(<span class="n">2024</span>, <span class="n">2</span>, <span class="n">29</span>)   <span class="c"># =&gt; Ok(2024-02-29)</span>
+date.make(<span class="n">2023</span>, <span class="n">2</span>, <span class="n">29</span>)   <span class="c"># =&gt; Err(February 2023 has 28 days, not 29)</span></pre>
 <h3 id="fn-make_timedt-date-h-int-mi-int-s-int---resultdatetime-str"><code>fn make_time(dt: Date, h: Int, mi: Int, s: Int) -&gt; Result(DateTime, Str)</code></h3>
+<pre>date.make_time(date.make(<span class="n">2026</span>, <span class="n">9</span>, <span class="n">14</span>)?, <span class="n">21</span>, <span class="n">3</span>, <span class="n">0</span>)    <span class="c"># =&gt; Ok(2026-09-14T21:03:00Z)</span>
+date.make_time(date.make(<span class="n">2026</span>, <span class="n">9</span>, <span class="n">14</span>)?, <span class="n">24</span>, <span class="n">0</span>, <span class="n">0</span>)    <span class="c"># =&gt; Err(hour 24 is not one of 0..23)</span></pre>
 <h3 id="fn-now---datetime"><code>fn now() -&gt; DateTime</code></h3>
 <p>The date and time the wall clock says, in UTC.</p>
+<pre>date.to_seconds(date.now()) &gt; <span class="n">1700000000</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-today---date"><code>fn today() -&gt; Date</code></h3>
+<pre>date.today().year &gt;= <span class="n">2026</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-is_leapy-int---bool"><code>fn is_leap(y: Int) -&gt; Bool</code></h3>
+<pre>date.is_leap(<span class="n">2024</span>)   <span class="c"># =&gt; true</span>
+date.is_leap(<span class="n">1900</span>)   <span class="c"># =&gt; false</span>
+date.is_leap(<span class="n">2000</span>)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-days_in_monthy-int-m-int---int"><code>fn days_in_month(y: Int, m: Int) -&gt; Int</code></h3>
+<pre>date.days_in_month(<span class="n">2024</span>, <span class="n">2</span>)   <span class="c"># =&gt; 29</span>
+date.days_in_month(<span class="n">2026</span>, <span class="n">4</span>)   <span class="c"># =&gt; 30</span></pre>
 <h3 id="fn-month_namem-int---str"><code>fn month_name(m: Int) -&gt; Str</code></h3>
+<pre>date.month_name(<span class="n">9</span>)   <span class="c"># =&gt; September</span></pre>
 <h3 id="fn-weekday_namew-int---str"><code>fn weekday_name(w: Int) -&gt; Str</code></h3>
+<pre>date.weekday_name(<span class="n">0</span>)   <span class="c"># =&gt; Sunday</span></pre>
 <h3 id="fn-to_daysd-date---int"><code>fn to_days(d: Date) -&gt; Int</code></h3>
 <p>Days since 1970-01-01; negative before it.</p>
+<pre>date.to_days(date.make(<span class="n">1970</span>, <span class="n">1</span>, <span class="n">2</span>)?)    <span class="c"># =&gt; 1</span>
+date.to_days(date.make(<span class="n">1969</span>, <span class="n">12</span>, <span class="n">31</span>)?)  <span class="c"># =&gt; -1</span></pre>
 <h3 id="fn-from_daysdays-int---date"><code>fn from_days(days: Int) -&gt; Date</code></h3>
+<pre>date.from_days(<span class="n">20000</span>)   <span class="c"># =&gt; 2024-10-04</span></pre>
 <h3 id="fn-to_secondst-datetime---int"><code>fn to_seconds(t: DateTime) -&gt; Int</code></h3>
 <p>Seconds since 1970-01-01T00:00:00Z.</p>
+<pre>date.to_seconds(date.parse_time(<span class="s">"1970-01-01T00:01:00Z"</span>)?)   <span class="c"># =&gt; 60</span></pre>
 <h3 id="fn-from_secondssecs-int---datetime"><code>fn from_seconds(secs: Int) -&gt; DateTime</code></h3>
+<pre>date.from_seconds(<span class="n">1700000000</span>)   <span class="c"># =&gt; 2023-11-14T22:13:20Z</span></pre>
 <h3 id="fn-weekdayd-date---int"><code>fn weekday(d: Date) -&gt; Int</code></h3>
 <p>0 is Sunday, 6 is Saturday. 1970-01-01 was a Thursday.</p>
+<pre>date.weekday(date.make(<span class="n">1970</span>, <span class="n">1</span>, <span class="n">1</span>)?)   <span class="c"># =&gt; 4</span></pre>
 <h3 id="fn-day_of_yeard-date---int"><code>fn day_of_year(d: Date) -&gt; Int</code></h3>
 <p>1..366.</p>
+<pre>date.day_of_year(date.make(<span class="n">2026</span>, <span class="n">12</span>, <span class="n">31</span>)?)   <span class="c"># =&gt; 365</span></pre>
 <h3 id="fn-add_daysd-date-n-int---date"><code>fn add_days(d: Date, n: Int) -&gt; Date</code></h3>
+<pre>date.add_days(date.make(<span class="n">2026</span>, <span class="n">2</span>, <span class="n">27</span>)?, <span class="n">3</span>)   <span class="c"># =&gt; 2026-03-02</span></pre>
 <h3 id="fn-add_secondst-datetime-n-int---datetime"><code>fn add_seconds(t: DateTime, n: Int) -&gt; DateTime</code></h3>
+<pre>date.add_seconds(date.parse_time(<span class="s">"2026-12-31T23:59:59Z"</span>)?, <span class="n">1</span>)   <span class="c"># =&gt; 2027-01-01T00:00:00Z</span></pre>
 <h3 id="fn-days_betweena-date-b-date---int"><code>fn days_between(a: Date, b: Date) -&gt; Int</code></h3>
 <p><code>b - a</code> in days; negative when <code>b</code> is earlier.</p>
+<pre>date.days_between(date.make(<span class="n">2026</span>, <span class="n">1</span>, <span class="n">1</span>)?, date.make(<span class="n">2026</span>, <span class="n">3</span>, <span class="n">1</span>)?)   <span class="c"># =&gt; 59</span>
+date.days_between(date.make(<span class="n">2026</span>, <span class="n">3</span>, <span class="n">1</span>)?, date.make(<span class="n">2026</span>, <span class="n">1</span>, <span class="n">1</span>)?)   <span class="c"># =&gt; -59</span></pre>
 <h3 id="fn-seconds_betweena-datetime-b-datetime---int"><code>fn seconds_between(a: DateTime, b: DateTime) -&gt; Int</code></h3>
+<pre>date.seconds_between(date.parse_time(<span class="s">"2026-01-01T00:00:00Z"</span>)?, date.parse_time(<span class="s">"2026-01-01T01:00:00Z"</span>)?)   <span class="c"># =&gt; 3600</span></pre>
 <h3 id="fn-add_monthsd-date-n-int---date"><code>fn add_months(d: Date, n: Int) -&gt; Date</code></h3>
 <p>The same day <code>n</code> months on, clamped to the month's length: January 31st plus a month is February 28th (or 29th), as a calendar would have it.</p>
+<pre>date.add_months(date.make(<span class="n">2026</span>, <span class="n">1</span>, <span class="n">31</span>)?, <span class="n">1</span>)   <span class="c"># =&gt; 2026-02-28</span>
+date.add_months(date.make(<span class="n">2026</span>, <span class="n">1</span>, <span class="n">31</span>)?, -<span class="n">2</span>)  <span class="c"># =&gt; 2025-11-30</span></pre>
 <h3 id="fn-isod-date---str"><code>fn iso(d: Date) -&gt; Str</code></h3>
+<pre>date.iso(date.make(<span class="n">2026</span>, <span class="n">9</span>, <span class="n">4</span>)?)   <span class="c"># =&gt; 2026-09-04</span></pre>
 <h3 id="fn-iso_timet-datetime---str"><code>fn iso_time(t: DateTime) -&gt; Str</code></h3>
+<pre>date.iso_time(date.make_time(date.make(<span class="n">2026</span>, <span class="n">9</span>, <span class="n">4</span>)?, <span class="n">7</span>, <span class="n">5</span>, <span class="n">9</span>)?)   <span class="c"># =&gt; 2026-09-04T07:05:09Z</span></pre>
 <h3 id="fn-parses-str---resultdate-str"><code>fn parse(s: Str) -&gt; Result(Date, Str)</code></h3>
 <p><code>2026-09-14</code>, and nothing else.</p>
+<pre>date.parse(<span class="s">"2026-09-14"</span>)   <span class="c"># =&gt; Ok(2026-09-14)</span>
+date.parse(<span class="s">"14/09/2026"</span>)   <span class="c"># =&gt; Err(a date is written `YYYY-MM-DD`, not `14/09/2026`)</span></pre>
 <h3 id="fn-parse_times-str---resultdatetime-str"><code>fn parse_time(s: Str) -&gt; Result(DateTime, Str)</code></h3>
 <p><code>2026-09-14T21:03:00Z</code>; the <code>Z</code> may be left off, and means UTC either way.</p>
+<pre>date.parse_time(<span class="s">"2026-09-14T21:03:00Z"</span>)   <span class="c"># =&gt; Ok(2026-09-14T21:03:00Z)</span>
+date.parse_time(<span class="s">"2026-09-14T21:03:00"</span>)    <span class="c"># =&gt; Ok(2026-09-14T21:03:00Z)</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_epoch_and_back</code></li>

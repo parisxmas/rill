@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -78,23 +79,37 @@
       <h1>time/clock</h1>
 <p class="import">Imported as <code>import "time/clock" as clock</code>, its names are then <code>clock.…</code>. Every signature below is the one the checker infers.</p><p>Clocks: the monotonic one for measuring, the wall one for dating.</p>
 <p><code>now_nanos()</code> only ever goes forward and means nothing but differences; <code>now_millis()</code> is the time of day in Unix milliseconds. This is the little that turns them into something a program says: an elapsed time, a timed call, a duration in words.</p>
-<pre><span class="k">import</span> <span class="s">"time/clock"</span> <span class="k">as</span> clock
-(answer, took) = clock.timed(\ <span class="o">-&gt;</span> <span class="f">work</span>())
-<span class="f">println</span>(<span class="s">"took "</span> + clock.duration(took))       <span class="c"># &quot;took 1.204 s&quot;</span>
+<pre>(answer, took) = clock.timed(\ <span class="o">-&gt;</span> <span class="n">6</span> * <span class="n">7</span>)
+answer                                <span class="c"># =&gt; 42</span>
+took &gt;= <span class="n">0</span>                             <span class="c"># =&gt; true</span>
 t = clock.start()
-...
-<span class="f">println</span>(clock.duration(clock.since(t)))</pre>
+clock.since(t) &gt;= <span class="n">0</span>                   <span class="c"># =&gt; true</span>
+clock.duration(<span class="n">1204000000</span>)            <span class="c"># =&gt; 1.204 s</span></pre>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-start---int"><code>fn start() -&gt; Int</code></h3>
 <p>A point on the monotonic clock, to measure from.</p>
+<pre>t = clock.start()
+t &gt; <span class="n">0</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-sincet-int---int"><code>fn since(t: Int) -&gt; Int</code></h3>
 <p>Nanoseconds since a point <code>start</code> gave.</p>
+<pre>t = clock.start()
+clock.since(t) &lt; <span class="n">1000000000</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-timedf---a---a-int"><code>fn timed(f: () -&gt; 'a) -&gt; ('a, Int)</code></h3>
 <p>A call and how long it took, in nanoseconds.</p>
+<pre>(v, ns) = clock.timed(\ <span class="o">-&gt;</span> <span class="s">"done"</span>)
+v   <span class="c"># =&gt; done</span></pre>
 <h3 id="fn-nanos_to_msns-int---int"><code>fn nanos_to_ms(ns: Int) -&gt; Int</code></h3>
+<pre>clock.nanos_to_ms(<span class="n">2500000</span>)   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-ms_to_nanosms-int---int"><code>fn ms_to_nanos(ms: Int) -&gt; Int</code></h3>
+<pre>clock.ms_to_nanos(<span class="n">3</span>)   <span class="c"># =&gt; 3000000</span></pre>
 <h3 id="fn-durationns-int---str"><code>fn duration(ns: Int) -&gt; Str</code></h3>
 <p>A duration in the unit that reads best: <code>250 ns</code>, <code>12.5 us</code>, <code>3.400 ms</code>, <code>1.204 s</code>, <code>2 m 03 s</code>, <code>1 h 02 m</code>.</p>
+<pre>clock.duration(<span class="n">250</span>)          <span class="c"># =&gt; 250 ns</span>
+clock.duration(<span class="n">12500</span>)        <span class="c"># =&gt; 12.5 us</span>
+clock.duration(<span class="n">3400000</span>)      <span class="c"># =&gt; 3.400 ms</span>
+clock.duration(<span class="n">1204000000</span>)   <span class="c"># =&gt; 1.204 s</span>
+clock.duration(<span class="n">123000000000</span>) <span class="c"># =&gt; 2 m 03 s</span>
+clock.duration(<span class="n">3720000000000</span>) <span class="c"># =&gt; 1 h 02 m</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_duration_units</code></li>

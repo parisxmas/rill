@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>net/dns — The Rill Language Reference</title>
-<meta name="description" content="A name to its addresses, through the system&#x27;s resolver — /etc/hosts, the nameservers it is configured with, whatever else it consults.">
+<meta name="description" content="Every address the name has, IPv4 addresses first and then IPv6, or why there are none.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-net-dns.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-net-dns.html">
 <meta property="og:title" content="net/dns — The Rill Language Reference">
-<meta property="og:description" content="A name to its addresses, through the system&#x27;s resolver — /etc/hosts, the nameservers it is configured with, whatever else it consults.">
+<meta property="og:description" content="Every address the name has, IPv4 addresses first and then IPv6, or why there are none.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="net/dns — The Rill Language Reference">
-<meta name="twitter:description" content="A name to its addresses, through the system&#x27;s resolver — /etc/hosts, the nameservers it is configured with, whatever else it consults.">
+<meta name="twitter:description" content="Every address the name has, IPv4 addresses first and then IPv6, or why there are none.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -76,20 +77,19 @@
     <main class="module">
       <p class="chapter-no">Standard library · The network</p>
       <h1>net/dns</h1>
-<p class="import">Imported as <code>import "net/dns" as dns</code>, its names are then <code>dns.…</code>. Every signature below is the one the checker infers.</p><p>A name to its addresses, through the system's resolver — <code>/etc/hosts</code>, the nameservers it is configured with, whatever else it consults. The lookup is a wait, so it is declared <code>blocking</code>: the strand parks while a helper thread asks, and the worker goes on with the others.</p>
-<pre><span class="k">import</span> <span class="s">"net/dns"</span> <span class="k">as</span> dns
-<span class="k">match</span> dns.lookup(<span class="s">"example.com"</span>)
-  <span class="t">Ok</span>(addrs) <span class="o">-&gt;</span> ...                   <span class="c"># Cons(&quot;93.184.215.14&quot;, ...), IPv4 first</span>
-  <span class="t">Err</span>(why) <span class="o">-&gt;</span> ...
-dns.ipv4(<span class="s">"localhost"</span>)                <span class="c"># Some(&quot;127.0.0.1&quot;): the first IPv4, for tcp_connect</span>
-dns.is_ipv4(<span class="s">"10.0.0.1"</span>)              <span class="c"># true — no lookup needed</span></pre>
-<h2 id="functions">Functions</h2>
+<p class="import">Imported as <code>import "net/dns" as dns</code>, its names are then <code>dns.…</code>. Every signature below is the one the checker infers.</p><h2 id="functions">Functions</h2>
 <h3 id="fn-lookupname-str---resultliststr-str"><code>fn lookup(name: Str) -&gt; Result(List(Str), Str)</code></h3>
 <p>Every address the name has, IPv4 addresses first and then IPv6, or why there are none.</p>
+<pre><span class="f">res_map</span>(dns.lookup(<span class="s">"localhost"</span>), \addrs <span class="o">-&gt;</span> <span class="f">any</span>(addrs, \a <span class="o">-&gt;</span> a == <span class="s">"127.0.0.1"</span>))   <span class="c"># =&gt; Ok(true)</span>
+<span class="f">res_map</span>(dns.lookup(<span class="s">"no.such.host.invalid"</span>), \addrs <span class="o">-&gt;</span> <span class="f">len</span>(addrs))            <span class="c"># =&gt; Err(`no.such.host.invalid` is not a name the resolver knows)</span></pre>
 <h3 id="fn-ipv4name-str---optionstr"><code>fn ipv4(name: Str) -&gt; Option(Str)</code></h3>
 <p>The first IPv4 address, which is what <code>tcp_connect</code> and <code>udp.send_to</code> take.</p>
+<pre>dns.ipv4(<span class="s">"localhost"</span>)   <span class="c"># =&gt; Some(127.0.0.1)</span></pre>
 <h3 id="fn-is_ipv4s-str---bool"><code>fn is_ipv4(s: Str) -&gt; Bool</code></h3>
 <p>Four numbers of at most three digits, each below 256, with dots between.</p>
+<pre>dns.is_ipv4(<span class="s">"192.168.0.1"</span>)   <span class="c"># =&gt; true</span>
+dns.is_ipv4(<span class="s">"256.1.1.1"</span>)     <span class="c"># =&gt; false</span>
+dns.is_ipv4(<span class="s">"::1"</span>)           <span class="c"># =&gt; false</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_localhost_and_literals</code></li>

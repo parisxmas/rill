@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>data/yaml — The Rill Language Reference</title>
-<meta name="description" content="YAML, written in Rill — the part configuration files actually use: nested mappings by indentation, -  sequences, scalars, comments, and lists of mappings.">
+<meta name="description" content="What is left to read, and the value read so far.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-data-yaml.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-data-yaml.html">
 <meta property="og:title" content="data/yaml — The Rill Language Reference">
-<meta property="og:description" content="YAML, written in Rill — the part configuration files actually use: nested mappings by indentation, -  sequences, scalars, comments, and lists of mappings.">
+<meta property="og:description" content="What is left to read, and the value read so far.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="data/yaml — The Rill Language Reference">
-<meta name="twitter:description" content="YAML, written in Rill — the part configuration files actually use: nested mappings by indentation, -  sequences, scalars, comments, and lists of mappings.">
+<meta name="twitter:description" content="What is left to read, and the value read so far.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -79,9 +80,7 @@
     <main class="module">
       <p class="chapter-no">Standard library · Data formats</p>
       <h1>data/yaml</h1>
-<p class="import">Imported as <code>import "data/yaml" as yaml</code>, its names are then <code>yaml.…</code>. Every signature below is the one the checker infers.</p><p>YAML, written in Rill — the part configuration files actually use: nested mappings by indentation, <code>-</code> sequences, scalars, comments, and lists of mappings. Not supported, and deliberately so: anchors and aliases, multiple documents, flow collections, block scalars, tags.</p>
-<p>Values land in the JSON module's <code>Json</code> type, so a parsed document can be printed as JSON without any conversion.</p>
-<h2 id="types">Types</h2>
+<p class="import">Imported as <code>import "data/yaml" as yaml</code>, its names are then <code>yaml.…</code>. Every signature below is the one the checker infers.</p><h2 id="types">Types</h2>
 <h3 id="yparsed"><code>YParsed</code></h3>
 <p>What is left to read, and the value read so far. It used to be a line <em>number</em> into the list of lines, and every step then cost a walk from the front to reach it — <code>nth</code> to read a line, <code>len</code> to ask whether there were any left. Both are linear in a list, both were called per line, and an eight-hundred-entry config took fifty-five milliseconds to read because of it. Carrying the rest of the lines instead makes each step O(1) and the whole parse linear.</p>
 <ul>
@@ -89,48 +88,12 @@
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-parse_yamltext-str---json"><code>fn parse_yaml(text: Str) -&gt; Json</code></h3>
-<h3 id="fn-startls-liststr---json"><code>fn start(ls: List(Str)) -&gt; Json</code></h3>
-<h3 id="fn-value_ofp-yparsed---json"><code>fn value_of(p: YParsed) -&gt; Json</code></h3>
-<h3 id="fn-usefulls-liststr---liststr"><code>fn useful(ls: List(Str)) -&gt; List(Str)</code></h3>
-<p>Blank lines and whole-line comments never matter, so drop them once.</p>
-<h3 id="fn-is_ignorablel-str---bool"><code>fn is_ignorable(l: Str) -&gt; Bool</code></h3>
-<h3 id="fn-indent_ofl-str---int"><code>fn indent_of(l: Str) -&gt; Int</code></h3>
-<h3 id="fn-count_spacesl-str-i-int---int"><code>fn count_spaces(l: Str, i: Int) -&gt; Int</code></h3>
-<h3 id="fn-is_iteml-str---bool"><code>fn is_item(l: Str) -&gt; Bool</code></h3>
-<p>A <code>-</code> with nothing after it is an item too — the value is the block indented under it. This looked for <code>"- "</code> in the trimmed line, and trimming is what removes the space it was looking for, so a line holding only a dash read as a mapping key named <code>-</code> and <code>nested_item</code> below was never reached at all.</p>
-<h3 id="fn-dashedt-str---bool"><code>fn dashed(t: Str) -&gt; Bool</code></h3>
-<h3 id="fn-block_valuels-liststr-ind-int---yparsed"><code>fn block_value(ls: List(Str), ind: Int) -&gt; YParsed</code></h3>
-<h3 id="fn-sequencels-liststr-ind-int-acc-listjson---yparsed"><code>fn sequence(ls: List(Str), ind: Int, acc: List(Json)) -&gt; YParsed</code></h3>
-<p>A line that does not belong to this block is handed back unread, which is what <code>ls</code> rather than <code>rest</code> means in every <code>YParsed</code> below.</p>
-<h3 id="fn-seq_linels-liststr-rest-liststr-ind-int-acc-listjson-l-str---yparsed"><code>fn seq_line(ls: List(Str), rest: List(Str), ind: Int, acc: List(Json), l: Str) -&gt; YParsed</code></h3>
-<h3 id="fn-seq_itemrest-liststr-ind-int-acc-listjson-item-str---yparsed"><code>fn seq_item(rest: List(Str), ind: Int, acc: List(Json), item: Str) -&gt; YParsed</code></h3>
-<h3 id="fn-nested_itemrest-liststr-ind-int-acc-listjson---yparsed"><code>fn nested_item(rest: List(Str), ind: Int, acc: List(Json)) -&gt; YParsed</code></h3>
-<p><code>-</code> on its own: the value is the block indented under it, or nothing at all when there is no such block.</p>
-<h3 id="fn-nested_item_atrest-liststr-deep-int-ind-int-acc-listjson---yparsed"><code>fn nested_item_at(rest: List(Str), deep: Int, ind: Int, acc: List(Json)) -&gt; YParsed</code></h3>
-<h3 id="fn-inline_map_itemrest-liststr-ind-int-acc-listjson-item-str---yparsed"><code>fn inline_map_item(rest: List(Str), ind: Int, acc: List(Json), item: Str) -&gt; YParsed</code></h3>
-<p><code>- key: value</code>: the item is a mapping whose first entry is on this line and whose remaining entries are indented to where that key starts.</p>
-<h3 id="fn-continue_itemafter-liststr-ind-int-acc-listjson-first-json---yparsed"><code>fn continue_item(after: List(Str), ind: Int, acc: List(Json), first: Json) -&gt; YParsed</code></h3>
-<h3 id="fn-fields_ofj-json---listfield"><code>fn fields_of(j: Json) -&gt; List(Field)</code></h3>
-<h3 id="fn-mappingls-liststr-ind-int-acc-listfield---yparsed"><code>fn mapping(ls: List(Str), ind: Int, acc: List(Field)) -&gt; YParsed</code></h3>
-<h3 id="fn-map_linels-liststr-rest-liststr-ind-int-acc-listfield-l-str---yparsed"><code>fn map_line(ls: List(Str), rest: List(Str), ind: Int, acc: List(Field), l: Str) -&gt; YParsed</code></h3>
-<h3 id="fn-map_entryrest-liststr-ind-int-acc-listfield-text-str---yparsed"><code>fn map_entry(rest: List(Str), ind: Int, acc: List(Field), text: Str) -&gt; YParsed</code></h3>
-<h3 id="fn-entry_ofrest-liststr-text-str-ind-int---yparsed"><code>fn entry_of(rest: List(Str), text: Str, ind: Int) -&gt; YParsed</code></h3>
-<p>One <code>key: value</code> (or <code>key:</code> followed by an indented block), as a one-field object so the caller can splice it in. <code>rest</code> is what follows the line this text came off.</p>
-<h3 id="fn-entry_partsrest-liststr-ind-int-key-str-value_text-str---yparsed"><code>fn entry_parts(rest: List(Str), ind: Int, key: Str, value_text: Str) -&gt; YParsed</code></h3>
-<h3 id="fn-nested_entryrest-liststr-ind-int-key-str---yparsed"><code>fn nested_entry(rest: List(Str), ind: Int, key: Str) -&gt; YParsed</code></h3>
-<h3 id="fn-nested_entry_atrest-liststr-deep-int-key-str---yparsed"><code>fn nested_entry_at(rest: List(Str), deep: Int, key: Str) -&gt; YParsed</code></h3>
-<h3 id="fn-block_underls-liststr-ind-int---optionint"><code>fn block_under(ls: List(Str), ind: Int) -&gt; Option(Int)</code></h3>
-<p>How far in the block below is indented, when there is one. A block belongs to the line above it only by being further in than that line: this used to answer with the next line's indentation whatever it was, so a key with no value swallowed whatever came next — including a key at its own level, which belongs beside it rather than inside it.</p>
-<h3 id="fn-ends_with_colons-str---bool"><code>fn ends_with_colon(s: Str) -&gt; Bool</code></h3>
-<h3 id="fn-scalarraw-str---json"><code>fn scalar(raw: Str) -&gt; Json</code></h3>
-<h3 id="fn-classifys-str---json"><code>fn classify(s: Str) -&gt; Json</code></h3>
-<h3 id="fn-is_quoteds-str---bool"><code>fn is_quoted(s: Str) -&gt; Bool</code></h3>
-<h3 id="fn-unquotes-str---str"><code>fn unquote(s: Str) -&gt; Str</code></h3>
-<h3 id="fn-strip_comments-str---str"><code>fn strip_comment(s: Str) -&gt; Str</code></h3>
-<p>A trailing comment only counts when a space precedes the <code>#</code>.</p>
-<h3 id="fn-looks_numerics-str---bool"><code>fn looks_numeric(s: Str) -&gt; Bool</code></h3>
-<h3 id="fn-all_digitss-str-i-int---bool"><code>fn all_digits(s: Str, i: Int) -&gt; Bool</code></h3>
-<h3 id="fn-has_digits-str-i-int---bool"><code>fn has_digit(s: Str, i: Int) -&gt; Bool</code></h3>
+<pre><span class="k">import</span> <span class="s">"data/json"</span>
+yaml.parse_yaml(<span class="s">"name: ada\nage: 36\n"</span>)   <span class="c"># =&gt; JObj(Cons(Field(name, JStr(ada)), Cons(Field(age, JInt(36)), Nil)))</span>
+yaml.parse_yaml(<span class="s">"- a\n- b\n"</span>)           <span class="c"># =&gt; JArr(Cons(JStr(a), Cons(JStr(b), Nil)))</span>
+yaml.parse_yaml(<span class="s">"on: true   # a comment\n"</span>)   <span class="c"># =&gt; JObj(Cons(Field(on, JBool(true)), Nil))</span>
+doc = yaml.parse_yaml(<span class="s">"server:\n  port: 8080\n  hosts:\n    - a\n    - b\n"</span>)
+<span class="f">path</span>(doc, <span class="t">Cons</span>(<span class="s">"server"</span>, <span class="t">Cons</span>(<span class="s">"port"</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; Some(JInt(8080))</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-data-json.html">← data/json</a>

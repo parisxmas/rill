@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -92,9 +93,9 @@
 <ol class="toc">
       <li><a href="lib-data-checksum.html"><span class="no">checksum</span><b>data/checksum</b><span class="blurb">The two checksums a file format is likely to ask for: CRC-32 (IEEE 802.3, the one in zip, gzip and PNG) and Adler-32 (zlib&#x27;s).</span></a></li>
       <li><a href="lib-data-csv.html"><span class="no">csv</span><b>data/csv</b><span class="blurb">CSV, read and written, as RFC 4180 has it: a field is quoted when it holds the separator, a quote, or a line break; a quote inside a quoted field is doubled; a line ends in \n or \r\n.</span></a></li>
-      <li><a href="lib-data-deflate.html"><span class="no">deflate</span><b>data/deflate</b><span class="blurb">DEFLATE (RFC 1951) both ways, and the two envelopes it travels in: zlib (RFC 1950) and gzip (RFC 1952).</span></a></li>
+      <li><a href="lib-data-deflate.html"><span class="no">deflate</span><b>data/deflate</b><span class="blurb">st holds the position in the data, the bits read but not yet used, how many of them there are, and whether the data ran out.</span></a></li>
       <li><a href="lib-data-json.html"><span class="no">json</span><b>data/json</b><span class="blurb">JSON, written in Rill: a recursive-descent parser and a printer.</span></a></li>
-      <li><a href="lib-data-yaml.html"><span class="no">yaml</span><b>data/yaml</b><span class="blurb">YAML, written in Rill — the part configuration files actually use: nested mappings by indentation, -  sequences, scalars, comments, and lists of mappings.</span></a></li>
+      <li><a href="lib-data-yaml.html"><span class="no">yaml</span><b>data/yaml</b><span class="blurb">What is left to read, and the value read so far.</span></a></li>
 </ol>
 <h3 id="coll">Collections <code class="folder">lib/coll</code></h3>
 <ol class="toc">
@@ -111,41 +112,41 @@
 </ol>
 <h3 id="web">The web <code class="folder">lib/web</code></h3>
 <ol class="toc">
-      <li><a href="lib-web-form.html"><span class="no">form</span><b>web/form</b><span class="blurb">What a browser sends from a &lt;form&gt;: application/x-www-form-urlencoded as pairs, and multipart/form-data (RFC 7578) as parts, each with its field name, its file name if it was a file, its content type, and its bytes as th</span></a></li>
+      <li><a href="lib-web-form.html"><span class="no">form</span><b>web/form</b><span class="blurb">The fields, by the content type: pairs become parts with no file name and no type.</span></a></li>
       <li><a href="lib-web-http.html"><span class="no">http</span><b>web/http</b><span class="blurb">A small HTTP/1.1 server, written in Rill on top of the socket builtins.</span></a></li>
       <li><a href="lib-web-mime.html"><span class="no">mime</span><b>web/mime</b><span class="blurb">The media type a file is served as, from its name: mime.of_path(&quot;a/b.png&quot;) is image/png.</span></a></li>
-      <li><a href="lib-web-tls.html"><span class="no">tls</span><b>web/tls</b><span class="blurb">TLS over a socket, through OpenSSL: https:// as a client, and served.</span></a></li>
+      <li><a href="lib-web-tls.html"><span class="no">tls</span><b>web/tls</b><span class="blurb">A connection: the OpenSSL object, its context, and the socket under it.</span></a></li>
       <li><a href="lib-web-tmpl.html"><span class="no">tmpl</span><b>web/tmpl</b><span class="blurb">The runtime half of the template engine: what a generated template calls.</span></a></li>
       <li><a href="lib-web-url.html"><span class="no">url</span><b>web/url</b><span class="blurb">URLs taken apart and put together (RFC 3986): the scheme, who, the host, the port, the path, the query, the fragment; a query as pairs; a relative reference resolved against a base; percent-encoding both ways.</span></a></li>
       <li><a href="lib-web-ws.html"><span class="no">ws</span><b>web/ws</b><span class="blurb">WebSocket (RFC 6455) on top of the socket builtins: the handshake, and text or binary frames in both directions.</span></a></li>
 </ol>
 <h3 id="net">The network <code class="folder">lib/net</code></h3>
 <ol class="toc">
-      <li><a href="lib-net-dns.html"><span class="no">dns</span><b>net/dns</b><span class="blurb">A name to its addresses, through the system&#x27;s resolver — /etc/hosts, the nameservers it is configured with, whatever else it consults.</span></a></li>
-      <li><a href="lib-net-udp.html"><span class="no">udp</span><b>net/udp</b><span class="blurb">UDP: datagrams sent and received, each one whole, with the sender&#x27;s address on the ones that arrive.</span></a></li>
+      <li><a href="lib-net-dns.html"><span class="no">dns</span><b>net/dns</b><span class="blurb">Every address the name has, IPv4 addresses first and then IPv6, or why there are none.</span></a></li>
+      <li><a href="lib-net-udp.html"><span class="no">udp</span><b>net/udp</b><span class="blurb">A socket bound to port on every interface; 0 for one the system picks.</span></a></li>
 </ol>
 <h3 id="db">Databases <code class="folder">lib/db</code></h3>
 <ol class="toc">
       <li><a href="lib-db-kv.html"><span class="no">kv</span><b>db/kv</b><span class="blurb">A key–value store on disk: a B+ tree of 4 KB pages, a page cache, and a write-ahead log — the shape SQLite&#x27;s file layer has, in Rill, for one process at a time.</span></a></li>
-      <li><a href="lib-db-oxidb.html"><span class="no">oxidb</span><b>db/oxidb</b><span class="blurb">A client for OxiDB&#x27;s document engine, written in Rill.</span></a></li>
-      <li><a href="lib-db-oxirec.html"><span class="no">oxirec</span><b>db/oxirec</b><span class="blurb">A client for OxiDB&#x27;s recommendation engine, written in Rill.</span></a></li>
+      <li><a href="lib-db-oxidb.html"><span class="no">oxidb</span><b>db/oxidb</b><span class="blurb">One request, one reply, unwrapped into a Result.</span></a></li>
+      <li><a href="lib-db-oxirec.html"><span class="no">oxirec</span><b>db/oxirec</b><span class="blurb">One basket: who it was, what was in it, and when.</span></a></li>
       <li><a href="lib-db-oxiresp.html"><span class="no">oxiresp</span><b>db/oxiresp</b><span class="blurb">A client for OxiDB&#x27;s in-memory key-value engine, written in Rill.</span></a></li>
-      <li><a href="lib-db-oxisql.html"><span class="no">oxisql</span><b>db/oxisql</b><span class="blurb">A client for OxiDB&#x27;s SQL engine, written in Rill.</span></a></li>
-      <li><a href="lib-db-oxitsdb.html"><span class="no">oxitsdb</span><b>db/oxitsdb</b><span class="blurb">A client for OxiDB&#x27;s time-series engine, written in Rill, speaking the server&#x27;s binary wire rather than its JSON one.</span></a></li>
-      <li><a href="lib-db-oxiwire.html"><span class="no">oxiwire</span><b>db/oxiwire</b><span class="blurb">OxiWire — the binary format OxiDB&#x27;s native wire speaks, encoded and decoded in Rill.</span></a></li>
+      <li><a href="lib-db-oxisql.html"><span class="no">oxisql</span><b>db/oxisql</b><span class="blurb">? in the text takes the next value from params, which is how a value reaches the engine without being written into the statement.</span></a></li>
+      <li><a href="lib-db-oxitsdb.html"><span class="no">oxitsdb</span><b>db/oxitsdb</b><span class="blurb">Every request names the engine as well as the command: the server mounts the time-series engine beside the document and SQL ones, and engine is what tells them apart.</span></a></li>
+      <li><a href="lib-db-oxiwire.html"><span class="no">oxiwire</span><b>db/oxiwire</b><span class="blurb">Answers a Parsed — the JSON module&#x27;s, so a frame that will not decode travels out the same way a document that will not parse does.</span></a></li>
 </ol>
 <h3 id="cli">The command line <code class="folder">lib/cli</code></h3>
 <ol class="toc">
       <li><a href="lib-cli-args.html"><span class="no">args</span><b>cli/args</b><span class="blurb">Command-line arguments: what a program takes, said once, and then parsed, checked and explained from that one saying.</span></a></li>
-      <li><a href="lib-cli-env.html"><span class="no">env</span><b>cli/env</b><span class="blurb">The process and its surroundings: environment variables, the working directory, the machine&#x27;s name, the process id.</span></a></li>
-      <li><a href="lib-cli-log.html"><span class="no">log</span><b>cli/log</b><span class="blurb">A log: lines on standard error with the time, the level and where they came from, and a level below which nothing is said.</span></a></li>
-      <li><a href="lib-cli-proc.html"><span class="no">proc</span><b>cli/proc</b><span class="blurb">Running another program: a command line handed to the shell, its output collected, its exit status read.</span></a></li>
+      <li><a href="lib-cli-env.html"><span class="no">env</span><b>cli/env</b><span class="blurb">The variable&#x27;s value, or None when it is not set.</span></a></li>
+      <li><a href="lib-cli-log.html"><span class="no">log</span><b>cli/log</b><span class="blurb">The level from the RILL_LOG variable — debug, info, warn, error, or off — and info when it is unset or says something else.</span></a></li>
+      <li><a href="lib-cli-proc.html"><span class="no">proc</span><b>cli/proc</b><span class="blurb">The exit code and what the command wrote.</span></a></li>
 </ol>
 <h3 id="crypto">Cryptography <code class="folder">lib/crypto</code></h3>
 <ol class="toc">
-      <li><a href="lib-crypto-passwd.html"><span class="no">passwd</span><b>crypto/passwd</b><span class="blurb">Storing a password, which is storing something you must never be able to read back.</span></a></li>
+      <li><a href="lib-crypto-passwd.html"><span class="no">passwd</span><b>crypto/passwd</b><span class="blurb">HMAC-SHA-1.</span></a></li>
       <li><a href="lib-crypto-sha1.html"><span class="no">sha1</span><b>crypto/sha1</b><span class="blurb">SHA-1 and base64, written in Rill.</span></a></li>
-      <li><a href="lib-crypto-sha2.html"><span class="no">sha2</span><b>crypto/sha2</b><span class="blurb">SHA-256 and SHA-512 (FIPS 180-4), and HMAC over each (RFC 2104), written in Rill.</span></a></li>
+      <li><a href="lib-crypto-sha2.html"><span class="no">sha2</span><b>crypto/sha2</b><span class="blurb">The digest, as 32 raw bytes.</span></a></li>
 </ol>
 <h3 id="random">Randomness <code class="folder">lib/random</code></h3>
 <ol class="toc">
@@ -158,7 +159,7 @@
       <li><a href="lib-time-date.html"><span class="no">date</span><b>time/date</b><span class="blurb">Civil dates and times, in UTC and nothing else.</span></a></li>
 </ol>
       <div class="prevnext">
-        <a class="prev" href="14-what-rill-deliberately-does-not-have.html">← 14. What Rill deliberately does not have</a>
+        <a class="prev" href="15-the-grid-library.html">← 15. The grid library</a>
         <a class="next" href="index.html">Contents →</a>
       </div>
     </main>

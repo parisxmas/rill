@@ -95,7 +95,11 @@ shapes.rill: type error at line 5: match is not exhaustive; no arm matches `Rect
 
 `rill fmt shapes.rill` rewrites the file in the one spelling every Rill
 program has, and `rill check shapes.rill` type-checks without building,
-saying everything it finds rather than the first thing.
+saying everything it finds rather than the first thing. A comment above
+a function is its documentation, and a line in it indented four spaces
+is an example that `rill doctest` runs and holds to what it says after
+`# =>` — which is where every example on the library pages of this
+reference comes from.
 
 ### The examples
 

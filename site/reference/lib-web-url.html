@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -83,14 +84,14 @@
       <p class="chapter-no">Standard library · The web</p>
       <h1>web/url</h1>
 <p class="import">Imported as <code>import "web/url" as url</code>, its names are then <code>url.…</code>. Every signature below is the one the checker infers.</p><p>URLs taken apart and put together (RFC 3986): the scheme, who, the host, the port, the path, the query, the fragment; a query as pairs; a relative reference resolved against a base; percent-encoding both ways.</p>
-<pre><span class="k">import</span> <span class="s">"web/url"</span> <span class="k">as</span> url
-<span class="k">match</span> url.parse(<span class="s">"https://user@example.com:8443/a/b?x=1&amp;y=two#top"</span>)
-  <span class="t">Some</span>(u) <span class="o">-&gt;</span> u.host                  <span class="c"># &quot;example.com&quot;; u.port 8443; u.path &quot;/a/b&quot;</span>
-  <span class="t">None</span> <span class="o">-&gt;</span> ...
-url.query_pairs(<span class="s">"x=1&amp;y=two%20words"</span>) <span class="c"># Cons((&quot;x&quot;, &quot;1&quot;), Cons((&quot;y&quot;, &quot;two words&quot;), Nil))</span>
-url.resolve(<span class="s">"https://example.com/a/b/c"</span>, <span class="s">"../d?q"</span>)   <span class="c"># &quot;https://example.com/a/d?q&quot;</span>
-url.encode(<span class="s">"a b&amp;c"</span>)                  <span class="c"># &quot;a%20b%26c&quot;</span></pre>
 <p>A <code>Url</code> is a record; <code>text</code> writes it back, and a part that was not there is empty (<code>port</code> is -1). Nothing is decoded on the way in — the path and query are as they were written — so <code>decode</code> what you look at.</p>
+<pre>u = url.parse(<span class="s">"https://user@example.com:8443/a/b?x=1&amp;y=two#top"</span>) <span class="o">|&gt;</span> <span class="f">unwrap_or</span>(url.<span class="t">Url</span>(<span class="s">""</span>, <span class="s">""</span>, <span class="s">""</span>, -<span class="n">1</span>, <span class="s">""</span>, <span class="s">""</span>, <span class="s">""</span>))
+u.host                                                  <span class="c"># =&gt; example.com</span>
+u.port                                                  <span class="c"># =&gt; 8443</span>
+u.path                                                  <span class="c"># =&gt; /a/b</span>
+url.query_pairs(<span class="s">"x=1&amp;y=two%20words"</span>)                   <span class="c"># =&gt; Cons((x, 1), Cons((y, two words), Nil))</span>
+url.resolve(<span class="s">"https://example.com/a/b/c"</span>, <span class="s">"../d?q"</span>)      <span class="c"># =&gt; https://example.com/a/d?q</span>
+url.encode(<span class="s">"a b&amp;c"</span>)                                     <span class="c"># =&gt; a%20b%26c</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="url"><code>Url</code></h3>
 <ul>
@@ -99,23 +100,41 @@ url.encode(<span class="s">"a b&amp;c"</span>)                  <span class="c">
 <h2 id="functions">Functions</h2>
 <h3 id="fn-parses-str---optionurl"><code>fn parse(s: Str) -&gt; Option(Url)</code></h3>
 <p>A URL with a scheme and <code>//</code>, or <code>None</code>. A path-only reference is not a URL; <code>resolve</code> it against one.</p>
+<pre>url.parse(<span class="s">"http://h/p?q#f"</span>)   <span class="c"># =&gt; Some(url.Url(http, , h, -1, /p, q, f))</span>
+url.parse(<span class="s">"/just/a/path"</span>)     <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-textu-url---str"><code>fn text(u: Url) -&gt; Str</code></h3>
+<pre>url.text(url.<span class="t">Url</span>(<span class="s">"https"</span>, <span class="s">"me"</span>, <span class="s">"h.io"</span>, <span class="n">8080</span>, <span class="s">"/x"</span>, <span class="s">"a=1"</span>, <span class="s">"top"</span>))   <span class="c"># =&gt; https://me@h.io:8080/x?a=1#top</span></pre>
 <h3 id="fn-port_ofu-url---int"><code>fn port_of(u: Url) -&gt; Int</code></h3>
 <p>The port, or the scheme's usual one: 80, 443, 21, 22, 25.</p>
+<pre>url.port_of(url.parse(<span class="s">"https://h/"</span>) <span class="o">|&gt;</span> <span class="f">unwrap_or</span>(url.<span class="t">Url</span>(<span class="s">""</span>, <span class="s">""</span>, <span class="s">""</span>, -<span class="n">1</span>, <span class="s">""</span>, <span class="s">""</span>, <span class="s">""</span>)))        <span class="c"># =&gt; 443</span>
+url.port_of(url.parse(<span class="s">"http://h:81/"</span>) <span class="o">|&gt;</span> <span class="f">unwrap_or</span>(url.<span class="t">Url</span>(<span class="s">""</span>, <span class="s">""</span>, <span class="s">""</span>, -<span class="n">1</span>, <span class="s">""</span>, <span class="s">""</span>, <span class="s">""</span>)))     <span class="c"># =&gt; 81</span></pre>
 <h3 id="fn-originu-url---str"><code>fn origin(u: Url) -&gt; Str</code></h3>
 <p>The scheme, host and port alone: <code>https://example.com:8443</code>.</p>
+<pre>url.origin(url.parse(<span class="s">"https://example.com:8443/a?b"</span>) <span class="o">|&gt;</span> <span class="f">unwrap_or</span>(url.<span class="t">Url</span>(<span class="s">""</span>, <span class="s">""</span>, <span class="s">""</span>, -<span class="n">1</span>, <span class="s">""</span>, <span class="s">""</span>, <span class="s">""</span>)))   <span class="c"># =&gt; https://example.com:8443</span></pre>
 <h3 id="fn-query_pairsquery-str---liststr-str"><code>fn query_pairs(query: Str) -&gt; List((Str, Str))</code></h3>
 <p><code>a=1&amp;b=two%20words</code> as decoded pairs; a key without <code>=</code> has the value "".</p>
+<pre>url.query_pairs(<span class="s">"a=1&amp;b=two%20words&amp;flag"</span>)   <span class="c"># =&gt; Cons((a, 1), Cons((b, two words), Cons((flag, ), Nil)))</span></pre>
 <h3 id="fn-query_textpairs-liststr-str---str"><code>fn query_text(pairs: List((Str, Str))) -&gt; Str</code></h3>
 <p>The pairs as a query, each side encoded.</p>
+<pre>url.query_text(<span class="t">Cons</span>((<span class="s">"q"</span>, <span class="s">"a b"</span>), <span class="t">Cons</span>((<span class="s">"n"</span>, <span class="s">"1"</span>), <span class="t">Nil</span>)))   <span class="c"># =&gt; q=a%20b&amp;n=1</span></pre>
 <h3 id="fn-query_getquery-str-name-str---optionstr"><code>fn query_get(query: Str, name: Str) -&gt; Option(Str)</code></h3>
 <p>The first value under <code>name</code>, decoded.</p>
+<pre>url.query_get(<span class="s">"a=1&amp;b=2&amp;a=3"</span>, <span class="s">"a"</span>)   <span class="c"># =&gt; Some(1)</span>
+url.query_get(<span class="s">"a=1"</span>, <span class="s">"z"</span>)         <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-encodes-str---str"><code>fn encode(s: Str) -&gt; Str</code></h3>
 <p>Percent-encoding of everything but the unreserved characters — letters, digits, <code>-</code> <code>.</code> <code>_</code> <code>~</code> — so the result is safe anywhere in a URL.</p>
+<pre>url.encode(<span class="s">"a b/c~d"</span>)   <span class="c"># =&gt; a%20b%2Fc~d</span></pre>
 <h3 id="fn-decodes-str---str"><code>fn decode(s: Str) -&gt; Str</code></h3>
 <p><code>%xx</code> back to bytes and <code>+</code> to a space, as a form sends them; a <code>%</code> not followed by two hex digits is kept as it is.</p>
+<pre>url.decode(<span class="s">"a%20b+c"</span>)   <span class="c"># =&gt; a b c</span>
+url.decode(<span class="s">"100%"</span>)      <span class="c"># =&gt; 100%</span></pre>
 <h3 id="fn-resolvebase-str-reference-str---str"><code>fn resolve(base: Str, reference: Str) -&gt; Str</code></h3>
 <p><code>reference</code> seen from <code>base</code>, as a browser follows a link: absolute references stand; <code>//host/x</code> keeps the scheme; <code>/x</code> keeps the host; <code>x</code>, <code>./x</code> and <code>../x</code> are joined to the base's path with the dots resolved; <code>?q</code> and <code>#f</code> alone replace only that part.</p>
+<pre>url.resolve(<span class="s">"https://example.com/a/b/c"</span>, <span class="s">"../d"</span>)          <span class="c"># =&gt; https://example.com/a/d</span>
+url.resolve(<span class="s">"https://example.com/a/b/c"</span>, <span class="s">"/x"</span>)            <span class="c"># =&gt; https://example.com/x</span>
+url.resolve(<span class="s">"https://example.com/a/b/c"</span>, <span class="s">"//other/y"</span>)     <span class="c"># =&gt; https://other/y</span>
+url.resolve(<span class="s">"https://example.com/a/b/c"</span>, <span class="s">"?q=1"</span>)          <span class="c"># =&gt; https://example.com/a/b/c?q=1</span>
+url.resolve(<span class="s">"https://example.com/a"</span>, <span class="s">"http://else/"</span>)      <span class="c"># =&gt; http://else/</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_parse_the_parts</code></li>

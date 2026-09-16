@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>db/oxisql — The Rill Language Reference</title>
-<meta name="description" content="A client for OxiDB&#x27;s SQL engine, written in Rill.">
+<meta name="description" content="? in the text takes the next value from params, which is how a value reaches the engine without being written into the statement.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-oxisql.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-oxisql.html">
 <meta property="og:title" content="db/oxisql — The Rill Language Reference">
-<meta property="og:description" content="A client for OxiDB&#x27;s SQL engine, written in Rill.">
+<meta property="og:description" content="? in the text takes the next value from params, which is how a value reaches the engine without being written into the statement.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="db/oxisql — The Rill Language Reference">
-<meta name="twitter:description" content="A client for OxiDB&#x27;s SQL engine, written in Rill.">
+<meta name="twitter:description" content="? in the text takes the next value from params, which is how a value reaches the engine without being written into the statement.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -80,41 +81,94 @@
     <main class="module">
       <p class="chapter-no">Standard library · Databases</p>
       <h1>db/oxisql</h1>
-<p class="import">Imported as <code>import "db/oxisql" as oxisql</code>, its names are then <code>oxisql.…</code>. Every signature below is the one the checker infers.</p><p>A client for OxiDB's SQL engine, written in Rill.</p>
-<p>The wire is <code>oxiwire.rill</code>, the same binary one the document and time-series clients use — the engine is chosen by a field in the request rather than by a port, so one connection could speak to all three. This engine is off unless the server was started with OXIDB_SQL, and it is gated at the write role: there is no read-only SQL in this version.</p>
-<p>One request may carry more than one statement, so the answer is always a <em>list</em> of results, one per statement, and each is one of three shapes:</p>
-<p>{"ddl": true} CREATE, DROP, ALTER {"affected": 2} INSERT, UPDATE, DELETE {"columns": [..], "types": [..], "rows": [[..]]} SELECT</p>
-<p>A row is a list of values positionally matching <code>columns</code>, so reading one by name means finding the column first — <code>sql_at</code> below does that once per result rather than once per row.</p>
-<h2 id="functions">Functions</h2>
+<p class="import">Imported as <code>import "db/oxisql" as oxisql</code>, its names are then <code>oxisql.…</code>. Every signature below is the one the checker infers.</p><h2 id="functions">Functions</h2>
 <h3 id="fn-sql_connecthost-str-port-int---resultint-str"><code>fn sql_connect(host: Str, port: Int) -&gt; Result(Int, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+fd = <span class="f">sql_connect</span>(<span class="s">"127.0.0.1"</span>, <span class="n">7411</span>)?</pre>
 <h3 id="fn-sql_hang_upfd-int---unit"><code>fn sql_hang_up(fd: Int) -&gt; Unit</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_hang_up</span>(fd)</pre>
 <h3 id="fn-sql_requestfields-listfield---json"><code>fn sql_request(fields: List(Field)) -&gt; Json</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_request</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"sql"</span>, <span class="t">JStr</span>(<span class="s">"SELECT 1"</span>)), <span class="t">Nil</span>))   <span class="c"># =&gt; JObj(Cons(Field(engine, JStr(sql)), Cons(Field(cmd, JStr(sql)), Cons(Field(sql, JStr(SELECT 1)), Nil))))</span></pre>
 <h3 id="fn-sql_cmdname-str-fields-listfield---json"><code>fn sql_cmd(name: Str, fields: List(Field)) -&gt; Json</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_cmd</span>(<span class="s">"backup"</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; JObj(Cons(Field(engine, JStr(sql)), Cons(Field(cmd, JStr(backup)), Nil)))</span></pre>
 <h3 id="fn-sql_preparefd-int-text-str---resultint-str"><code>fn sql_prepare(fd: Int, text: Str) -&gt; Result(Int, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+id = <span class="f">sql_prepare</span>(fd, <span class="s">"SELECT * FROM people WHERE age &gt; ?"</span>)?
+<span class="f">sql_exec</span>(fd, id, <span class="t">Cons</span>(<span class="t">JInt</span>(<span class="n">30</span>), <span class="t">Nil</span>))
+<span class="f">sql_close</span>(fd, id)</pre>
 <h3 id="fn-sql_execfd-int-id-int-params-listjson---resultjson-str"><code>fn sql_exec(fd: Int, id: Int, params: List(Json)) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_exec</span>(fd, id, <span class="t">Cons</span>(<span class="t">JInt</span>(<span class="n">30</span>), <span class="t">Nil</span>))   <span class="c"># the prepared statement, with its parameters</span></pre>
 <h3 id="fn-sql_closefd-int-id-int---resultjson-str"><code>fn sql_close(fd: Int, id: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_close</span>(fd, id)</pre>
 <h3 id="fn-sql_runfd-int-text-str---resultjson-str"><code>fn sql_run(fd: Int, text: Str) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_run</span>(fd, <span class="s">"SELECT 1; SELECT 2"</span>)   <span class="c"># Ok(one result per statement)</span></pre>
 <h3 id="fn-sql_run_withfd-int-text-str-params-listjson---resultjson-str"><code>fn sql_run_with(fd: Int, text: Str, params: List(Json)) -&gt; Result(Json, Str)</code></h3>
 <p><code>?</code> in the text takes the next value from <code>params</code>, which is how a value reaches the engine without being written into the statement.</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_run_with</span>(fd, <span class="s">"SELECT * FROM people WHERE name = ?"</span>, <span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"ada"</span>), <span class="t">Nil</span>))</pre>
 <h3 id="fn-sql_backupfd-int-path-str---resultjson-str"><code>fn sql_backup(fd: Int, path: Str) -&gt; Result(Json, Str)</code></h3>
 <p>Admin-only, and gated as such before the request reaches the engine.</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_backup</span>(fd, <span class="s">"/backups/today.tar"</span>)</pre>
 <h3 id="fn-sql_restorefd-int-archive-str-target-str---resultjson-str"><code>fn sql_restore(fd: Int, archive: Str, target: Str) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_restore</span>(fd, <span class="s">"/backups/today.tar"</span>, <span class="s">"/data"</span>)</pre>
 <h3 id="fn-sql_resultsanswer-json---listjson"><code>fn sql_results(answer: Json) -&gt; List(Json)</code></h3>
 <p>One result per statement sent.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">len</span>(<span class="f">sql_results</span>(<span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JObj</span>(<span class="t">Nil</span>), <span class="t">Cons</span>(<span class="t">JObj</span>(<span class="t">Nil</span>), <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-sql_firstanswer-json---json"><code>fn sql_first(answer: Json) -&gt; Json</code></h3>
 <p>The common case is one statement, and a caller that sent one should not have to say so twice.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_first</span>(<span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"affected"</span>, <span class="t">JInt</span>(<span class="n">1</span>)), <span class="t">Nil</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; JObj(Cons(Field(affected, JInt(1)), Nil))</span>
+<span class="f">sql_first</span>(<span class="t">JArr</span>(<span class="t">Nil</span>))                                                        <span class="c"># =&gt; JNull</span></pre>
 <h3 id="fn-sql_columnsresult-json---liststr"><code>fn sql_columns(result: Json) -&gt; List(Str)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_columns</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"columns"</span>, <span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"name"</span>), <span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"age"</span>), <span class="t">Nil</span>)))), <span class="t">Nil</span>)))   <span class="c"># =&gt; Cons(name, Cons(age, Nil))</span></pre>
 <h3 id="fn-sql_typesresult-json---liststr"><code>fn sql_types(result: Json) -&gt; List(Str)</code></h3>
 <p>A column's declared type — <code>INT</code>, <code>TEXT</code>, <code>DOUBLE</code> — or the empty string where the engine had none to give, as for a bare <code>NULL</code> in a select list.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_types</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"types"</span>, <span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"TEXT"</span>), <span class="t">Nil</span>))), <span class="t">Nil</span>)))   <span class="c"># =&gt; Cons(TEXT, Nil)</span></pre>
 <h3 id="fn-sql_rowsresult-json---listjson"><code>fn sql_rows(result: Json) -&gt; List(Json)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_rows</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"rows"</span>, <span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JInt</span>(<span class="n">1</span>), <span class="t">Nil</span>)), <span class="t">Nil</span>))), <span class="t">Nil</span>)))   <span class="c"># =&gt; Cons(JArr(Cons(JInt(1), Nil)), Nil)</span></pre>
 <h3 id="fn-sql_affectedresult-json---int"><code>fn sql_affected(result: Json) -&gt; Int</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_affected</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"affected"</span>, <span class="t">JInt</span>(<span class="n">2</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-sql_is_ddlresult-json---bool"><code>fn sql_is_ddl(result: Json) -&gt; Bool</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_is_ddl</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"ddl"</span>, <span class="t">JBool</span>(<span class="t">true</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; true</span>
+<span class="f">sql_is_ddl</span>(<span class="t">JObj</span>(<span class="t">Nil</span>))                                     <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-sql_atresult-json-name-str---int"><code>fn sql_at(result: Json, name: Str) -&gt; Int</code></h3>
 <p>Where a named column sits in every row of this result, or -1. Worth holding on to across a loop rather than asking per row.</p>
-<h3 id="fn-column_indexnames-lista-name-a-i-int---int-where-a-is-a-value-type"><code>fn column_index(names: List('a), name: 'a, i: Int) -&gt; Int    # where 'a is a value type</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+r = <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"columns"</span>, <span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"name"</span>), <span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"age"</span>), <span class="t">Nil</span>)))), <span class="t">Nil</span>))
+<span class="f">sql_at</span>(r, <span class="s">"age"</span>)    <span class="c"># =&gt; 1</span>
+<span class="f">sql_at</span>(r, <span class="s">"nope"</span>)   <span class="c"># =&gt; -1</span></pre>
 <h3 id="fn-sql_cellrow-json-i-int---json"><code>fn sql_cell(row: Json, i: Int) -&gt; Json</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+<span class="f">sql_cell</span>(<span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"ada"</span>), <span class="t">Cons</span>(<span class="t">JInt</span>(<span class="n">36</span>), <span class="t">Nil</span>))), <span class="n">1</span>)   <span class="c"># =&gt; JInt(36)</span>
+<span class="f">sql_cell</span>(<span class="t">JArr</span>(<span class="t">Nil</span>), -<span class="n">1</span>)                                   <span class="c"># =&gt; JNull</span></pre>
 <h3 id="fn-sql_valueresult-json-row-json-name-str---json"><code>fn sql_value(result: Json, row: Json, name: Str) -&gt; Json</code></h3>
 <p>The value of a named column in one row. Fine for a handful; for a table use <code>sql_at</code> once and <code>sql_cell</code> per row.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxisql"</span>
+r = <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"columns"</span>, <span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"name"</span>), <span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"age"</span>), <span class="t">Nil</span>)))), <span class="t">Nil</span>))
+<span class="f">sql_value</span>(r, <span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JStr</span>(<span class="s">"ada"</span>), <span class="t">Cons</span>(<span class="t">JInt</span>(<span class="n">36</span>), <span class="t">Nil</span>))), <span class="s">"name"</span>)   <span class="c"># =&gt; JStr(ada)</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-db-oxiresp.html">← db/oxiresp</a>

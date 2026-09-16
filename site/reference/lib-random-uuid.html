@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -79,13 +80,12 @@
       <p class="chapter-no">Standard library · Randomness</p>
       <h1>random/uuid</h1>
 <p class="import">Imported as <code>import "random/uuid" as uuid</code>, its names are then <code>uuid.…</code>. Every signature below is the one the checker infers.</p><p>UUIDs (RFC 9562): the random kind, version 4, and the time-ordered kind, version 7, whose first 48 bits are the millisecond it was made, so a column of them sorts by when. Both draw their random bits from the operating system, not from <code>rnd</code>'s predictable stream.</p>
-<pre><span class="k">import</span> <span class="s">"random/uuid"</span> <span class="k">as</span> uuid
-id = uuid.v7()
-<span class="f">show</span>(id)                             <span class="c"># &quot;018f3a2c-9b1e-7c4d-8a2b-3f5e6d7c8b9a&quot;</span>
-uuid.parse(<span class="s">"550e8400-e29b-41d4-a716-446655440000"</span>)    <span class="c"># Some(id), or None</span>
-uuid.version(id)                     <span class="c"># 4 or 7</span>
-uuid.time_of(id)                     <span class="c"># Some(millis since 1970) for a v7</span></pre>
 <p>A <code>Uuid</code> is two 64-bit halves, so it compares, hashes as a map key and prints like any value; <code>text</code> and <code>bytes</code> are its two spellings.</p>
+<pre>id = uuid.v7()
+uuid.version(id)                                       <span class="c"># =&gt; 7</span>
+<span class="c">#uuid.text(id)                                         # =&gt; 36</span>
+uuid.parse(<span class="s">"550e8400-e29b-41d4-a716-446655440000"</span>)   <span class="c"># =&gt; Some(550e8400-e29b-41d4-a716-446655440000)</span>
+uuid.time_of(uuid.v7_at(<span class="n">1700000000000</span>))              <span class="c"># =&gt; Some(1700000000000)</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="uuid"><code>Uuid</code></h3>
 <ul>
@@ -97,21 +97,35 @@ uuid.time_of(id)                     <span class="c"># Some(millis since 1970) f
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-nil---uuid"><code>fn nil() -&gt; Uuid</code></h3>
+<pre>uuid.nil()   <span class="c"># =&gt; 00000000-0000-0000-0000-000000000000</span></pre>
 <h3 id="fn-v4---uuid"><code>fn v4() -&gt; Uuid</code></h3>
 <p>Version 4: 122 random bits.</p>
+<pre>uuid.version(uuid.v4())        <span class="c"># =&gt; 4</span>
+uuid.v4() == uuid.v4()         <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-v7---uuid"><code>fn v7() -&gt; Uuid</code></h3>
 <p>Version 7: the time in milliseconds, then 74 random bits.</p>
+<pre>uuid.version(uuid.v7())   <span class="c"># =&gt; 7</span></pre>
 <h3 id="fn-v7_atmillis-int---uuid"><code>fn v7_at(millis: Int) -&gt; Uuid</code></h3>
+<pre>uuid.time_of(uuid.v7_at(<span class="n">1700000000000</span>))   <span class="c"># =&gt; Some(1700000000000)</span></pre>
 <h3 id="fn-versionu-uuid---int"><code>fn version(u: Uuid) -&gt; Int</code></h3>
+<pre>uuid.version(uuid.parse(<span class="s">"550e8400-e29b-41d4-a716-446655440000"</span>) <span class="o">|&gt;</span> <span class="f">unwrap_or</span>(uuid.nil()))   <span class="c"># =&gt; 4</span></pre>
 <h3 id="fn-time_ofu-uuid---optionint"><code>fn time_of(u: Uuid) -&gt; Option(Int)</code></h3>
 <p>The millisecond a version-7 id was made.</p>
+<pre>uuid.time_of(uuid.v4())   <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-textu-uuid---str"><code>fn text(u: Uuid) -&gt; Str</code></h3>
 <p><code>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</code>, lowercase.</p>
+<pre>uuid.text(uuid.nil())   <span class="c"># =&gt; 00000000-0000-0000-0000-000000000000</span></pre>
 <h3 id="fn-bytesu-uuid---str"><code>fn bytes(u: Uuid) -&gt; Str</code></h3>
 <p>The sixteen bytes, big-endian.</p>
+<pre><span class="c">#uuid.bytes(uuid.v4())   # =&gt; 16</span></pre>
 <h3 id="fn-from_bytess-str---optionuuid"><code>fn from_bytes(s: Str) -&gt; Option(Uuid)</code></h3>
+<pre>id = uuid.v4()
+uuid.from_bytes(uuid.bytes(id)) == <span class="t">Some</span>(id)   <span class="c"># =&gt; true</span>
+uuid.from_bytes(<span class="s">"short"</span>)                      <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-parses-str---optionuuid"><code>fn parse(s: Str) -&gt; Option(Uuid)</code></h3>
 <p>The text form, hyphens where they belong, either case; <code>None</code> for anything else.</p>
+<pre>uuid.parse(<span class="s">"550E8400-E29B-41D4-A716-446655440000"</span>)   <span class="c"># =&gt; Some(550e8400-e29b-41d4-a716-446655440000)</span>
+uuid.parse(<span class="s">"not an id"</span>)                              <span class="c"># =&gt; None</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_text_round_trip</code></li>

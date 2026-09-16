@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -82,24 +83,68 @@
 <p>Floating-point addition is not associative: <code>(a + b) + c</code> and <code>a + (b + c)</code> round differently, so they are different numbers. Vectorizing a sum means splitting it into independent partial sums and adding those at the end, which is exactly that reassociation — so a compiler may only do it if it has been told the program will accept a different answer. Rill does not tell it that. <code>+</code> on floats is loosened for contraction and nothing else, and the whole language keeps that promise, so LLVM has to keep the additions in the order they were written: it loads a vector's worth, extracts each lane, and adds them one at a time into a single accumulator. Every add waits on the one before it, and a loop that should stream at memory speed runs at the latency of <code>fadd</code>.</p>
 <p>What that costs, on an M4, over a range that fits in L1: about six times. The answer is not to loosen the language but to write the accumulators out — several of them, so the adds are independent, in <code>Float2</code> so each one holds two lanes. That is the same trade <code>lib/num/grid.rill</code> makes for the matrix product, and it lands in the same place: the kernels below run at 100 GB/s and better, matching a C loop compiled with <code>-ffast-math</code>, while a program that wants the strictly ordered sum still has it by writing the loop.</p>
 <p>The order these add in is the order eight partial sums happen to reach the end, not the order the elements are in, so a sum here and a sum written as a loop may differ in the last bits. That is the whole of what is being traded, and it is traded per call rather than per build.</p>
-<pre><span class="k">import</span> <span class="s">"num/col"</span> <span class="k">as</span> c
-c.sum(prices, <span class="n">0</span>, <span class="c">#prices)</span>
-c.mean(prices, <span class="n">0</span>, <span class="c">#prices)         # None over an empty range</span></pre>
 <p>Every function takes a half-open range, <code>lo</code> up to but not <code>hi</code>, because a column arrives in chunks and a scan wants one chunk at a time without slicing a copy out of it. <code>#v</code> is the whole of it.</p>
 <p>Reductions over <code>Int</code> are not here: integer addition <em>is</em> associative, so the compiler vectorizes those loops itself and a plain <code>for</code> is already as fast as this. The same goes for counting a predicate, which compiles to a vector compare and a subtract with no help from anyone.</p>
+<pre>prices = <span class="f">buf_float</span>(<span class="n">4</span>)
+prices[<span class="n">0</span>] = <span class="n">1.5</span>
+prices[<span class="n">1</span>] = <span class="n">2.5</span>
+prices[<span class="n">2</span>] = <span class="n">3.0</span>
+prices[<span class="n">3</span>] = <span class="n">5.0</span>
+col.sum(prices, <span class="n">0</span>, <span class="c">#prices)          # =&gt; 12</span>
+col.mean(prices, <span class="n">0</span>, <span class="c">#prices)         # =&gt; Some(3)</span>
+col.mean(prices, <span class="n">0</span>, <span class="n">0</span>)               <span class="c"># =&gt; None</span></pre>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-sumv-buffloat-lo-int-hi-int---float"><code>fn sum(v: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
 <p>Eight lanes at a time in four independent <code>Float2</code> accumulators, then the elements past the last block of eight, added into the result the same way a scalar loop would.</p>
+<pre>v = <span class="f">buf_float</span>(<span class="n">3</span>)
+v[<span class="n">0</span>] = <span class="n">0.5</span>
+v[<span class="n">1</span>] = <span class="n">0.25</span>
+v[<span class="n">2</span>] = <span class="n">0.25</span>
+col.sum(v, <span class="n">0</span>, <span class="n">3</span>)   <span class="c"># =&gt; 1</span>
+col.sum(v, <span class="n">1</span>, <span class="n">3</span>)   <span class="c"># =&gt; 0.5</span></pre>
 <h3 id="fn-sum_sqv-buffloat-lo-int-hi-int---float"><code>fn sum_sq(v: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
 <p>The sum of squares, which is what a variance wants: one <code>fma2</code> per lane pair, so the multiply and the add are one instruction and round once.</p>
+<pre>v = <span class="f">buf_float</span>(<span class="n">2</span>)
+v[<span class="n">0</span>] = <span class="n">3.0</span>
+v[<span class="n">1</span>] = <span class="n">4.0</span>
+col.sum_sq(v, <span class="n">0</span>, <span class="n">2</span>)   <span class="c"># =&gt; 25</span></pre>
 <h3 id="fn-dotx-buffloat-y-buffloat-lo-int-hi-int---float"><code>fn dot(x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
 <p>The dot product of two columns over the same range — a weighted sum, and what a covariance is made of.</p>
+<pre>x = <span class="f">buf_float</span>(<span class="n">2</span>)
+y = <span class="f">buf_float</span>(<span class="n">2</span>)
+x[<span class="n">0</span>] = <span class="n">1.0</span>
+x[<span class="n">1</span>] = <span class="n">2.0</span>
+y[<span class="n">0</span>] = <span class="n">3.0</span>
+y[<span class="n">1</span>] = <span class="n">4.0</span>
+col.dot(x, y, <span class="n">0</span>, <span class="n">2</span>)   <span class="c"># =&gt; 11</span></pre>
 <h3 id="fn-meanv-buffloat-lo-int-hi-int---optionfloat"><code>fn mean(v: Buf(Float), lo: Int, hi: Int) -&gt; Option(Float)</code></h3>
 <p><code>None</code> over an empty range, because the mean of nothing is not a number and an <code>Option</code> says so where a <code>0.0</code> would lie.</p>
+<pre>v = <span class="f">buf_float</span>(<span class="n">2</span>)
+v[<span class="n">0</span>] = <span class="n">1.0</span>
+v[<span class="n">1</span>] = <span class="n">2.0</span>
+col.mean(v, <span class="n">0</span>, <span class="n">2</span>)   <span class="c"># =&gt; Some(1.5)</span>
+col.mean(v, <span class="n">2</span>, <span class="n">2</span>)   <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-variancev-buffloat-lo-int-hi-int---optionfloat"><code>fn variance(v: Buf(Float), lo: Int, hi: Int) -&gt; Option(Float)</code></h3>
 <p>The population variance, in one pass: <code>E[x²] - E[x]²</code>. One pass is what a scan wants, and the price is the usual one — a column whose values are large and whose spread is small loses precision in the subtraction. <code>None</code> over an empty range.</p>
+<pre>v = <span class="f">buf_float</span>(<span class="n">4</span>)
+v[<span class="n">0</span>] = <span class="n">2.0</span>
+v[<span class="n">1</span>] = <span class="n">4.0</span>
+v[<span class="n">2</span>] = <span class="n">4.0</span>
+v[<span class="n">3</span>] = <span class="n">6.0</span>
+col.variance(v, <span class="n">0</span>, <span class="n">4</span>)   <span class="c"># =&gt; Some(2)</span></pre>
 <h3 id="fn-min_ofv-buffloat-lo-int-hi-int---optionfloat"><code>fn min_of(v: Buf(Float), lo: Int, hi: Int) -&gt; Option(Float)</code></h3>
+<pre>v = <span class="f">buf_float</span>(<span class="n">3</span>)
+v[<span class="n">0</span>] = <span class="n">2.0</span>
+v[<span class="n">1</span>] = -<span class="n">1.0</span>
+v[<span class="n">2</span>] = <span class="n">5.0</span>
+col.min_of(v, <span class="n">0</span>, <span class="n">3</span>)   <span class="c"># =&gt; Some(-1)</span></pre>
 <h3 id="fn-max_ofv-buffloat-lo-int-hi-int---optionfloat"><code>fn max_of(v: Buf(Float), lo: Int, hi: Int) -&gt; Option(Float)</code></h3>
+<pre>v = <span class="f">buf_float</span>(<span class="n">3</span>)
+v[<span class="n">0</span>] = <span class="n">2.0</span>
+v[<span class="n">1</span>] = -<span class="n">1.0</span>
+v[<span class="n">2</span>] = <span class="n">5.0</span>
+col.max_of(v, <span class="n">0</span>, <span class="n">3</span>)   <span class="c"># =&gt; Some(5)</span>
+col.max_of(v, <span class="n">0</span>, <span class="n">0</span>)   <span class="c"># =&gt; None</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-num-bigint.html">← num/bigint</a>

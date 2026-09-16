@@ -129,6 +129,9 @@ def chapters():
     # the page before the chapters: how to get it and run the first program
     start = (OUT / "getting-started.md").read_text()
     out.insert(0, {"num": 0, "title": "Getting started", "slug": "00-getting-started", "md": start.strip()})
+    # and the guide to the array library, after the chapters
+    guide = (OUT / "grid.md").read_text()
+    out.append({"num": len(out), "title": "The grid library", "slug": f"{len(out):02d}-the-grid-library", "md": guide.strip()})
     return intro, out
 
 

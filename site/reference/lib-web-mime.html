@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -82,20 +83,29 @@
       <p class="chapter-no">Standard library · The web</p>
       <h1>web/mime</h1>
 <p class="import">Imported as <code>import "web/mime" as mime</code>, its names are then <code>mime.…</code>. Every signature below is the one the checker infers.</p><p>The media type a file is served as, from its name: <code>mime.of_path("a/b.png")</code> is <code>image/png</code>. The table is the hundred-odd types a web server meets; anything else is <code>application/octet-stream</code>, which is what a browser treats as "download it".</p>
-<pre><span class="k">import</span> <span class="s">"web/mime"</span> <span class="k">as</span> mime
-mime.of_path(<span class="s">"site/index.html"</span>)      <span class="c"># &quot;text/html&quot;</span>
-mime.of_ext(<span class="s">"json"</span>)                  <span class="c"># &quot;application/json&quot;</span>
-mime.is_text(<span class="s">"application/json"</span>)     <span class="c"># true: served with a charset</span>
-mime.ext_of(<span class="s">"image/jpeg"</span>)            <span class="c"># Some(&quot;jpg&quot;)</span></pre>
+<pre>mime.of_path(<span class="s">"site/index.html"</span>)      <span class="c"># =&gt; text/html</span>
+mime.of_ext(<span class="s">"json"</span>)                  <span class="c"># =&gt; application/json</span>
+mime.is_text(<span class="s">"application/json"</span>)     <span class="c"># =&gt; true</span>
+mime.ext_of(<span class="s">"image/jpeg"</span>)            <span class="c"># =&gt; Some(jpg)</span></pre>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-of_pathpath-str---str"><code>fn of_path(path: Str) -&gt; Str</code></h3>
+<pre>mime.of_path(<span class="s">"a/b.png"</span>)      <span class="c"># =&gt; image/png</span>
+mime.of_path(<span class="s">"README"</span>)       <span class="c"># =&gt; application/octet-stream</span></pre>
 <h3 id="fn-fallback---str"><code>fn fallback() -&gt; Str</code></h3>
+<pre>mime.fallback()   <span class="c"># =&gt; application/octet-stream</span></pre>
 <h3 id="fn-of_extext-str---str"><code>fn of_ext(ext: Str) -&gt; Str</code></h3>
 <p>The type for an extension, without its dot, in any case.</p>
+<pre>mime.of_ext(<span class="s">"JPG"</span>)    <span class="c"># =&gt; image/jpeg</span>
+mime.of_ext(<span class="s">"wasm"</span>)   <span class="c"># =&gt; application/wasm</span></pre>
 <h3 id="fn-ext_ofkind-str---optionstr"><code>fn ext_of(kind: Str) -&gt; Option(Str)</code></h3>
 <p>An extension for a type — the usual one where several exist.</p>
+<pre>mime.ext_of(<span class="s">"text/html"</span>)        <span class="c"># =&gt; Some(html)</span>
+mime.ext_of(<span class="s">"x-made-up/thing"</span>)   <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-is_textkind-str---bool"><code>fn is_text(kind: Str) -&gt; Bool</code></h3>
 <p>Whether the type is text, and is served with a charset: the <code>text/</code> types, and the structured ones that are text too.</p>
+<pre>mime.is_text(<span class="s">"text/css"</span>)          <span class="c"># =&gt; true</span>
+mime.is_text(<span class="s">"image/png"</span>)         <span class="c"># =&gt; false</span>
+mime.is_text(<span class="s">"image/svg+xml"</span>)     <span class="c"># =&gt; true</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_by_path_and_extension</code></li>

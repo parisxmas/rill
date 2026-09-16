@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -82,6 +83,12 @@
       <p class="chapter-no">Standard library · The web</p>
       <h1>web/http</h1>
 <p class="import">Imported as <code>import "web/http" as http</code>, its names are then <code>http.…</code>. Every signature below is the one the checker infers.</p><p>A small HTTP/1.1 server, written in Rill on top of the socket builtins. One strand per connection: while a connection has nothing to say its strand is parked, so idle clients cost nothing.</p>
+<pre>port = <span class="n">18901</span>
+server = <span class="f">listen_at</span>(<span class="s">"127.0.0.1"</span>, port)?
+<span class="k">spawn</span> http.accept_n(server, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"hello "</span> + http.param(http.query_of(req.path), <span class="s">"name"</span>)), <span class="n">1</span>)
+raw = http.get(<span class="s">"127.0.0.1"</span>, port, <span class="s">"/greet?name=ada"</span>)
+http.status_of(raw)        <span class="c"># =&gt; 200</span>
+http.response_body(raw)    <span class="c"># =&gt; hello ada</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="request"><code>Request</code></h3>
 <ul>
@@ -99,138 +106,132 @@
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-text_responsestatus-int-body-str---response"><code>fn text_response(status: Int, body: Str) -&gt; Response</code></h3>
+<pre>r = http.text_response(<span class="n">200</span>, <span class="s">"ok"</span>)
+r.status         <span class="c"># =&gt; 200</span>
+r.content_type   <span class="c"># =&gt; text/plain</span></pre>
 <h3 id="fn-html_responsestatus-int-body-str---response"><code>fn html_response(status: Int, body: Str) -&gt; Response</code></h3>
+<pre>http.html_response(<span class="n">404</span>, <span class="s">"&lt;h1&gt;gone&lt;/h1&gt;"</span>).content_type   <span class="c"># =&gt; text/html; charset=utf-8</span></pre>
 <h3 id="fn-json_responsestatus-int-body-str---response"><code>fn json_response(status: Int, body: Str) -&gt; Response</code></h3>
+<pre>http.json_response(<span class="n">200</span>, <span class="s">"{}"</span>).content_type   <span class="c"># =&gt; application/json</span></pre>
 <h3 id="fn-with_headerres-response-name-str-value-str---response"><code>fn with_header(res: Response, name: Str, value: Str) -&gt; Response</code></h3>
 <p>One more line on the way out.</p>
+<pre>r = http.with_header(http.text_response(<span class="n">200</span>, <span class="s">""</span>), <span class="s">"Cache-Control"</span>, <span class="s">"no-store"</span>)
+r.headers   <span class="c"># =&gt; Cons(http.Header(Cache-Control, no-store), Nil)</span></pre>
 <h3 id="fn-headerreq-request-name-str---str"><code>fn header(req: Request, name: Str) -&gt; Str</code></h3>
 <p>What a request said under that name, or "" — the lookup a handler wants, since a header that is not there and one that is empty mean the same thing to almost every caller.</p>
+<pre>req = http.parse_request(<span class="s">"GET / HTTP/1.1\r\nHost: h\r\nX-Thing: yes\r\n\r\n"</span>)
+http.header(req, <span class="s">"x-thing"</span>)   <span class="c"># =&gt; yes</span>
+http.header(req, <span class="s">"X-Thing"</span>)   <span class="c"># =&gt; yes</span>
+http.header(req, <span class="s">"other"</span>)     <span class="c"># =&gt;</span></pre>
 <h3 id="fn-header_inheaders-listheader-name-str---str"><code>fn header_in(headers: List(Header), name: Str) -&gt; Str</code></h3>
+<pre>http.header_in(<span class="t">Cons</span>(http.<span class="t">Header</span>(<span class="s">"host"</span>, <span class="s">"h"</span>), <span class="t">Nil</span>), <span class="s">"host"</span>)   <span class="c"># =&gt; h</span></pre>
 <h3 id="fn-cookiereq-request-name-str---str"><code>fn cookie(req: Request, name: Str) -&gt; Str</code></h3>
 <p>What the browser sent under that name, or "". Cookies arrive as one header — <code>a=1; b=2</code> — so this is a walk over that line rather than another lookup.</p>
 <p>A browser's <code>localStorage</code> and <code>sessionStorage</code> are not here and cannot be: they never leave the page. What a server sees is what the browser sends, and that is a cookie (which it sends by itself) or whatever the page decides to put in a header or a body.</p>
+<pre>req = http.parse_request(<span class="s">"GET / HTTP/1.1\r\nCookie: a=1; who=ada\r\n\r\n"</span>)
+http.cookie(req, <span class="s">"who"</span>)   <span class="c"># =&gt; ada</span>
+http.cookie(req, <span class="s">"nope"</span>)  <span class="c"># =&gt;</span></pre>
 <h3 id="fn-cookie_inpairs-liststr-name-str---str"><code>fn cookie_in(pairs: List(Str), name: Str) -&gt; Str</code></h3>
+<pre>http.cookie_in(<span class="t">Cons</span>(<span class="s">"a=1"</span>, <span class="t">Cons</span>(<span class="s">" b=2"</span>, <span class="t">Nil</span>)), <span class="s">"b"</span>)   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-set_cookieres-response-name-str-value-str-rest-str---response"><code>fn set_cookie(res: Response, name: Str, value: Str, rest: Str) -&gt; Response</code></h3>
 <p>One <code>Set-Cookie</code> line; a response may carry several, since its headers are a list rather than a table. What goes in <code>rest</code> is the browser's own language:</p>
-<pre><span class="f">set_cookie</span>(res, <span class="s">"who"</span>, id, <span class="s">"; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400"</span>)</pre>
-<h3 id="fn-lowers-str---str"><code>fn lower(s: Str) -&gt; Str</code></h3>
-<h3 id="fn-read_headconn-int-acc-str---str"><code>fn read_head(conn: Int, acc: Str) -&gt; Str</code></h3>
-<p>Headers end at a blank line; keep reading until we have them (or the peer gives up).</p>
-<h3 id="fn-most_head---int"><code>fn most_head() -&gt; Int</code></h3>
-<p>A header block that never ends is a connection that never ends: a client sending one byte a second would otherwise hold a strand and a growing string for as long as it liked. Sixty-four kilobytes is more than any real request needs and less than any of them can hurt with.</p>
-<h3 id="fn-read_moreconn-int-acc-str---str"><code>fn read_more(conn: Int, acc: Str) -&gt; Str</code></h3>
-<h3 id="fn-quiet_ms---int"><code>fn quiet_ms() -&gt; Int</code></h3>
-<p>How long a connection may say nothing before it is let go, and how much a request may weigh. A server with neither is one that anybody can hold open with one byte and some patience: the strand waits, the string grows, and nothing about it looks like an attack.</p>
-<h3 id="fn-most_body---int"><code>fn most_body() -&gt; Int</code></h3>
-<h3 id="fn-first_lineraw-str---str"><code>fn first_line(raw: Str) -&gt; Str</code></h3>
-<h3 id="fn-body_ofraw-str---str"><code>fn body_of(raw: Str) -&gt; Str</code></h3>
-<p>The body is what <code>Content-Length</code> says it is, no more: what came after it on the same connection is the next request, not part of this one.</p>
-<h3 id="fn-chunkedraw-str---bool"><code>fn chunked(raw: Str) -&gt; Bool</code></h3>
-<p>A client that does not know how long its body will be says so and sends it in pieces, each with its length in front — <code>curl -T -</code> and most libraries streaming an upload. By the time a handler sees it the pieces are one body again and the framing is gone, so nothing above this line knows the difference.</p>
-<h3 id="fn-at_mostn-a-cap-a---a-where-a-is-ordered"><code>fn at_most(n: 'a, cap: 'a) -&gt; 'a    # where 'a is ordered</code></h3>
-<h3 id="fn-whole_lengthraw-str---int"><code>fn whole_length(raw: Str) -&gt; Int</code></h3>
-<p>How long this request is altogether: its head, and the body its headers promise. A request with no <code>Content-Length</code> and no body ends at the blank line.</p>
-<h3 id="fn-body_wantedraw-str---int"><code>fn body_wanted(raw: Str) -&gt; Int</code></h3>
+<pre><span class="c"># not run</span>
+<span class="f">set_cookie</span>(res, <span class="s">"who"</span>, id, <span class="s">"; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400"</span>)
+r = http.set_cookie(http.text_response(<span class="n">200</span>, <span class="s">""</span>), <span class="s">"who"</span>, <span class="s">"ada"</span>, <span class="s">"; Path=/; HttpOnly"</span>)
+r.headers   <span class="c"># =&gt; Cons(http.Header(Set-Cookie, who=ada; Path=/; HttpOnly), Nil)</span></pre>
 <h3 id="fn-parse_requestraw-str---request"><code>fn parse_request(raw: Str) -&gt; Request</code></h3>
-<h3 id="fn-headers_ofraw-str---listheader"><code>fn headers_of(raw: Str) -&gt; List(Header)</code></h3>
-<p>Every line after the first, up to the blank one. A line with no colon is not a header and is passed over rather than guessed at.</p>
-<h3 id="fn-namedlines-liststr-i-int-acc-listheader---listheader"><code>fn named(lines: List(Str), i: Int, acc: List(Header)) -&gt; List(Header)</code></h3>
+<pre>req = http.parse_request(<span class="s">"POST /a?b=1 HTTP/1.1\r\nHost: h\r\nContent-Length: 2\r\n\r\nhi"</span>)
+req.method   <span class="c"># =&gt; POST</span>
+req.path     <span class="c"># =&gt; /a?b=1</span>
+req.body     <span class="c"># =&gt; hi</span></pre>
 <h3 id="fn-path_oftarget-str---str"><code>fn path_of(target: Str) -&gt; Str</code></h3>
 <p>The path with the query taken off.</p>
+<pre>http.path_of(<span class="s">"/a/b?x=1"</span>)   <span class="c"># =&gt; /a/b</span>
+http.path_of(<span class="s">"/a/b"</span>)       <span class="c"># =&gt; /a/b</span></pre>
 <h3 id="fn-query_oftarget-str---str"><code>fn query_of(target: Str) -&gt; Str</code></h3>
 <p>The query string, without the <code>?</code>.</p>
+<pre>http.query_of(<span class="s">"/a/b?x=1&amp;y=2"</span>)   <span class="c"># =&gt; x=1&amp;y=2</span>
+http.query_of(<span class="s">"/a/b"</span>)           <span class="c"># =&gt;</span></pre>
 <h3 id="fn-paramqs-str-name-str---str"><code>fn param(qs: Str, name: Str) -&gt; Str</code></h3>
 <p>What the query said under that name, decoded, or "".</p>
-<h3 id="fn-param_inpairs-liststr-name-str---str"><code>fn param_in(pairs: List(Str), name: Str) -&gt; Str</code></h3>
+<pre>http.param(<span class="s">"q=two+words&amp;n=1"</span>, <span class="s">"q"</span>)   <span class="c"># =&gt; two words</span>
+http.param(<span class="s">"q=1"</span>, <span class="s">"z"</span>)               <span class="c"># =&gt;</span></pre>
 <h3 id="fn-paramsqs-str---listheader"><code>fn params(qs: Str) -&gt; List(Header)</code></h3>
 <p>Every parameter, in the order they were written, decoded.</p>
-<h3 id="fn-pairs_inpairs-liststr-acc-listheader---listheader"><code>fn pairs_in(pairs: List(Str), acc: List(Header)) -&gt; List(Header)</code></h3>
+<pre>http.params(<span class="s">"a=1&amp;b=%41"</span>)   <span class="c"># =&gt; Cons(http.Header(a, 1), Cons(http.Header(b, A), Nil))</span></pre>
 <h3 id="fn-decodeds-str---str"><code>fn decoded(s: Str) -&gt; Str</code></h3>
 <p><code>%41</code> is an A and <code>+</code> is a space — the second only inside a query, which is where this is used. A <code>%</code> that is not followed by two digits is a <code>%</code>: a decoder that refuses would turn a badly written link into a 400 rather than into what the reader meant.</p>
-<h3 id="fn-walk_decodedb-strbuf-s-str-i-int-n-int---int"><code>fn walk_decoded(b: StrBuf, s: Str, i: Int, n: Int) -&gt; Int</code></h3>
+<pre>http.decoded(<span class="s">"a%20b+c"</span>)   <span class="c"># =&gt; a b c</span>
+http.decoded(<span class="s">"50%"</span>)       <span class="c"># =&gt; 50%</span></pre>
 <h3 id="fn-encodeds-str---str"><code>fn encoded(s: Str) -&gt; Str</code></h3>
 <p>The other way, for a link a server writes itself: everything but the unreserved characters becomes <code>%XX</code>, so a value with a space or an ampersand in it survives being put in a query string.</p>
-<h3 id="fn-plain_bytec-int---bool"><code>fn plain_byte(c: Int) -&gt; Bool</code></h3>
-<h3 id="fn-hex_byten-int---str"><code>fn hex_byte(n: Int) -&gt; Str</code></h3>
-<h3 id="fn-hex_ofc-int---int"><code>fn hex_of(c: Int) -&gt; Int</code></h3>
+<pre>http.encoded(<span class="s">"a b&amp;c"</span>)   <span class="c"># =&gt; a%20b%26c</span></pre>
 <h3 id="fn-status_textcode-int---str"><code>fn status_text(code: Int) -&gt; Str</code></h3>
-<h3 id="fn-render_formethod-str-res-response-keep-bool---str"><code>fn render_for(method: Str, res: Response, keep: Bool) -&gt; Str</code></h3>
-<p><code>HEAD</code> asks what a <code>GET</code> would answer without the answer itself: the same status, the same headers, the same <code>Content-Length</code>, and no body. A server that sends the body anyway is one whose HEAD costs what its GET costs.</p>
+<pre>http.status_text(<span class="n">404</span>)   <span class="c"># =&gt; Not Found</span>
+http.status_text(<span class="n">503</span>)   <span class="c"># =&gt; Service Unavailable</span></pre>
 <h3 id="fn-response_bytesres-response-keep-bool---str"><code>fn response_bytes(res: Response, keep: Bool) -&gt; Str</code></h3>
 <p>Named for what it makes rather than for the act of making it: <code>render</code> is the trait method <code>lib/web/tmpl.rill</code> owns, and a program that serves pages built from templates wants both files at once.</p>
-<h3 id="fn-render_partsstatus-int-kind-str-extra-listheader-body-str-keep-bool---str"><code>fn render_parts(status: Int, kind: Str, extra: List(Header), body: Str, keep: Bool) -&gt; Str</code></h3>
+<pre><span class="f">starts_with</span>(http.response_bytes(http.text_response(<span class="n">204</span>, <span class="s">""</span>), <span class="t">false</span>), <span class="s">"HTTP/1.1 204 No Content\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\nDate: "</span>)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-http_datemillis-int---str"><code>fn http_date(millis: Int) -&gt; Str</code></h3>
 <p><code>Sun, 06 Nov 1994 08:49:37 GMT</code> — the one date format every HTTP client can read. The calendar is worked out rather than looked up: days since 1970 become a civil date by counting four-hundred-year eras, which repeat exactly, so there is no table to be wrong.</p>
-<h3 id="fn-floor_diva-int-b-int---int"><code>fn floor_div(a: Int, b: Int) -&gt; Int</code></h3>
-<h3 id="fn-twon-int---str"><code>fn two(n: Int) -&gt; Str</code></h3>
-<h3 id="fn-weekdaydays-int---str"><code>fn weekday(days: Int) -&gt; Str</code></h3>
-<p>1970-01-01 was a Thursday, the fifth day of a week that starts on Sunday.</p>
-<h3 id="fn-month_namem-int---str"><code>fn month_name(m: Int) -&gt; Str</code></h3>
-<h3 id="fn-nth_orl-lista-i-int-fallback-a---a"><code>fn nth_or(l: List('a), i: Int, fallback: 'a) -&gt; 'a</code></h3>
-<h3 id="fn-era_ofdays-int---int"><code>fn era_of(days: Int) -&gt; Int</code></h3>
-<p>Howard Hinnant's civil-from-days: shift the epoch to March so that a leap day falls at the end of a year rather than in the middle of one, then count eras of four hundred years, which are all the same length.</p>
-<h3 id="fn-doe_ofdays-int---int"><code>fn doe_of(days: Int) -&gt; Int</code></h3>
-<h3 id="fn-yoe_ofdays-int---int"><code>fn yoe_of(days: Int) -&gt; Int</code></h3>
-<h3 id="fn-doy_ofdays-int---int"><code>fn doy_of(days: Int) -&gt; Int</code></h3>
-<h3 id="fn-mp_ofdays-int---int"><code>fn mp_of(days: Int) -&gt; Int</code></h3>
-<h3 id="fn-day_ofdays-int---int"><code>fn day_of(days: Int) -&gt; Int</code></h3>
-<h3 id="fn-month_ofdays-int---int"><code>fn month_of(days: Int) -&gt; Int</code></h3>
-<h3 id="fn-year_ofdays-int---int"><code>fn year_of(days: Int) -&gt; Int</code></h3>
-<h3 id="fn-header_linesb-strbuf-headers-listheader---int"><code>fn header_lines(b: StrBuf, headers: List(Header)) -&gt; Int</code></h3>
+<pre>http.http_date(<span class="n">784111777000</span>)   <span class="c"># =&gt; Sun, 06 Nov 1994 08:49:37 GMT</span></pre>
 <h3 id="fn-handle_connconn-int-handler-request---response---int"><code>fn handle_conn(conn: Int, handler: (Request) -&gt; Response) -&gt; Int</code></h3>
 <p>A connection serves request after request until one side asks to stop, so a client that makes many requests pays for a single accept.</p>
+<pre><span class="c"># not run</span>
+conn = <span class="f">tcp_accept</span>(server)
+http.handle_conn(conn, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"hi"</span>))   <span class="c"># every request on it, until a side closes</span></pre>
 <h3 id="fn-serve_takingserver-int-handler-request---response-taken-int-str---bool---a"><code>fn serve_taking(server: Int, handler: (Request) -&gt; Response, taken: (Int, Str) -&gt; Bool) -&gt; 'a</code></h3>
 <p>The same loop with a way out of it: <code>taken</code> is shown every request before it is answered and says whether it has taken the connection for itself. That is what an upgrade is — a WebSocket, a stream, anything that stops being request-and-answer — and once it says yes this loop lets go: the socket belongs to whoever took it, closing included.</p>
-<pre>h.serve_taking(server, \req <span class="o">-&gt;</span> <span class="f">route</span>(req), \conn, raw <span class="o">-&gt;</span>
+<pre><span class="c"># not run</span>
+h.serve_taking(server, \req <span class="o">-&gt;</span> <span class="f">route</span>(req), \conn, raw <span class="o">-&gt;</span>
   <span class="k">if</span> ws.ws_wanted(raw) <span class="k">then</span> <span class="f">live</span>(conn, raw) <span class="k">else</span> <span class="t">false</span>)</pre>
 <p>Every connection's strand is handed the same <code>handler</code> and <code>taken</code>, and what a closure holds is not in its type, so a <code>--parallel</code> build asks for the claim <code>apart</code> makes: that what they hold is read, or written apart. A handler that writes storage it closed over from every connection — a counter, a table — is a race on several workers, and that is the program's to keep out of a handler or to keep on one worker.</p>
-<h3 id="fn-next_requestconn-int-handler-request---response-taken-int-str---bool-carried-str---int"><code>fn next_request(conn: Int, handler: (Request) -&gt; Response, taken: (Int, Str) -&gt; Bool, carried: Str) -&gt; Int</code></h3>
-<p><code>carried</code> is whatever the last read took past the end of the request before it: a client may send two requests in one packet, and those bytes are the beginning of the next one rather than something to throw away.</p>
-<h3 id="fn-smuggledhead-str---str"><code>fn smuggled(head: Str) -&gt; Str</code></h3>
-<p>Where a request ends has to be one answer, not two. A request carrying both a <code>Content-Length</code> and a <code>Transfer-Encoding</code> has told two different stories about its own length, and the danger is not that this server picks the wrong one — it is that the proxy in front picks the other, so that what this server reads as one request the proxy read as two, and the second one was written by whoever sent the first. That is request smuggling, and the only safe answer to a request that cannot say how long it is, is no answer.</p>
-<p>Two <code>Content-Length</code> lines are the same trick with one header, and a length that is not a plain number is the same trick with none.</p>
-<h3 id="fn-counted_headersheaders-listheader-name-str-acc-int---int"><code>fn counted_headers(headers: List(Header), name: Str, acc: Int) -&gt; Int</code></h3>
-<h3 id="fn-digits_only_strs-str---bool"><code>fn digits_only_str(s: Str) -&gt; Bool</code></h3>
-<h3 id="fn-refuseconn-int-status-int-why-str---int"><code>fn refuse(conn: Int, status: Int, why: Str) -&gt; Int</code></h3>
-<p>Answered without reading what was promised: a request this server will not carry is one it should not spend a megabyte finding out about.</p>
-<h3 id="fn-hang_upconn-int---int"><code>fn hang_up(conn: Int) -&gt; Int</code></h3>
-<p>The connection is done with; the number is only so that every arm of the loop above is worth the same thing.</p>
-<h3 id="fn-read_bodyconn-int-raw-str---str"><code>fn read_body(conn: Int, raw: Str) -&gt; Str</code></h3>
-<p>A client is free to send its headers and its body in separate packets, and many do — so the head arriving is not the request arriving. Reading stops at the length the headers promised, or when the peer stops talking.</p>
-<h3 id="fn-unchunkedconn-int-raw-str---str"><code>fn unchunked(conn: Int, raw: Str) -&gt; Str</code></h3>
-<p>The pieces, put back together. What comes out is the head as it arrived and the body as it was meant, so <code>body_of</code> above hands the handler one string.</p>
-<h3 id="fn-piecesconn-int-rest-str-acc-str---str"><code>fn pieces(conn: Int, rest: Str, acc: Str) -&gt; Str</code></h3>
-<h3 id="fn-more_piecesconn-int-rest-str-acc-str---str"><code>fn more_pieces(conn: Int, rest: Str, acc: Str) -&gt; Str</code></h3>
-<h3 id="fn-hex_intline-str---int"><code>fn hex_int(line: Str) -&gt; Int</code></h3>
-<p>A chunk's length is written in hexadecimal, and may carry an extension after a semicolon that nothing here needs.</p>
-<h3 id="fn-hex_walks-str-i-int-acc-int---int"><code>fn hex_walk(s: Str, i: Int, acc: Int) -&gt; Int</code></h3>
-<h3 id="fn-more_bodyconn-int-raw-str-want-int---str"><code>fn more_body(conn: Int, raw: Str, want: Int) -&gt; Str</code></h3>
-<h3 id="fn-answerconn-int-handler-request---response-taken-int-str---bool-raw-str---int"><code>fn answer(conn: Int, handler: (Request) -&gt; Response, taken: (Int, Str) -&gt; Bool, raw: Str) -&gt; Int</code></h3>
-<h3 id="fn-after_requestraw-str---str"><code>fn after_request(raw: Str) -&gt; Str</code></h3>
-<h3 id="fn-until_crlfrest-str---str"><code>fn until_crlf(rest: Str) -&gt; Str</code></h3>
-<p>HTTP/1.1 keeps the connection open by default and HTTP/1.0 does not; a <code>Connection:</code> header from the client overrides either default.</p>
-<p>It is read from the headers of THIS request rather than from the bytes in hand, which may hold the one after it as well: a pipelined pair whose second request said <code>close</code> used to close the connection before the first answer was out of the door, and the second was never answered at all.</p>
-<h3 id="fn-keeps_aliveline-str-req-request---bool"><code>fn keeps_alive(line: Str, req: Request) -&gt; Bool</code></h3>
+<pre><span class="c"># not run</span>
+server = <span class="f">listen</span>(<span class="n">8080</span>)?
+http.serve_taking(server, \req <span class="o">-&gt;</span> <span class="f">route</span>(req), \conn, raw <span class="o">-&gt;</span> <span class="k">if</span> ws.ws_wanted(raw) <span class="k">then</span> <span class="f">live</span>(conn, raw) <span class="k">else</span> <span class="t">false</span>)</pre>
 <h3 id="fn-serve_nport-int-handler-request---response-count-int---unit"><code>fn serve_n(port: Int, handler: (Request) -&gt; Response, count: Int) -&gt; Unit</code></h3>
 <p>Serves <code>count</code> requests and then stops, which is what makes a server testable. <code>serve</code> below never returns.</p>
+<pre>port = <span class="n">18902</span>
+<span class="k">spawn</span> http.serve_n(port, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, req.path), <span class="n">2</span>)
+<span class="f">sleep_ms</span>(<span class="n">50</span>)                    <span class="c"># the strand has to get to its listen</span>
+http.response_body(http.get(<span class="s">"127.0.0.1"</span>, port, <span class="s">"/one"</span>))   <span class="c"># =&gt; /one</span>
+http.response_body(http.get(<span class="s">"127.0.0.1"</span>, port, <span class="s">"/two"</span>))   <span class="c"># =&gt; /two</span></pre>
 <h3 id="fn-accept_nserver-int-handler-request---response-count-int---unit"><code>fn accept_n(server: Int, handler: (Request) -&gt; Response, count: Int) -&gt; Unit</code></h3>
+<pre>port = <span class="n">18903</span>
+server = <span class="f">listen_at</span>(<span class="s">"127.0.0.1"</span>, port)?
+<span class="k">spawn</span> http.accept_n(server, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"x"</span>), <span class="n">1</span>)
+http.status_of(http.get(<span class="s">"127.0.0.1"</span>, port, <span class="s">"/"</span>))   <span class="c"># =&gt; 200</span></pre>
 <h3 id="fn-serveport-int-handler-request---response---unit"><code>fn serve(port: Int, handler: (Request) -&gt; Response) -&gt; Unit</code></h3>
+<pre><span class="c"># not run</span>
+http.serve(<span class="n">8080</span>, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"hello"</span>))   <span class="c"># never returns</span></pre>
 <h3 id="fn-serve_athost-str-port-int-handler-request---response---unit"><code>fn serve_at(host: Str, port: Int, handler: (Request) -&gt; Response) -&gt; Unit</code></h3>
 <p>The same on one address — <code>serve_at("127.0.0.1", port, handler)</code> for a server that is for this machine alone.</p>
+<pre><span class="c"># not run</span>
+http.serve_at(<span class="s">"127.0.0.1"</span>, <span class="n">8080</span>, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"hello"</span>))   <span class="c"># this machine alone</span></pre>
 <h3 id="fn-accept_foreverserver-int-handler-request---response---a"><code>fn accept_forever(server: Int, handler: (Request) -&gt; Response) -&gt; 'a</code></h3>
+<pre><span class="c"># not run</span>
+server = <span class="f">listen</span>(<span class="n">8080</span>)?
+http.accept_forever(server, http.wrap(<span class="t">Cons</span>(http.rate_limit(<span class="n">20</span>), <span class="t">Nil</span>), \req <span class="o">-&gt;</span> <span class="f">route</span>(req)))</pre>
 <h3 id="fn-wraplayers-lista-a---b---b-handler-a---b---a---b"><code>fn wrap(layers: List(('a, ('a) -&gt; 'b) -&gt; 'b), handler: ('a) -&gt; 'b) -&gt; ('a) -&gt; 'b</code></h3>
 <p>-- middleware ----------------------------------------------------------------</p>
 <p>A handler answers a request: <code>Request -&gt; Response</code>. A middleware is one layer around that — it is handed the request and the handler underneath it, and decides what to do with both:</p>
-<pre><span class="k">fn</span> <span class="f">timed</span>(req, next) =
+<pre><span class="c"># not run</span>
+<span class="k">fn</span> <span class="f">timed</span>(req, next) =
   t0 = <span class="f">now_nanos</span>()
   res = <span class="f">next</span>(req)
   <span class="f">println</span>(req.path + <span class="s">" "</span> + <span class="f">int_to_str</span>((<span class="f">now_nanos</span>() - t0) / <span class="n">1000</span>) + <span class="s">" us"</span>)
   res</pre>
 <p>It may answer without calling <code>next</code> at all, which is what a rate limiter and an authenticator are for; it may change the request it passes down; and it may look at the answer on the way back out.</p>
 <p><code>wrap</code> stacks them. The first in the list is the outermost — it sees the request first and the answer last:</p>
-<pre>answer = <span class="f">wrap</span>(<span class="t">Cons</span>(<span class="f">rate_limit</span>(<span class="n">20</span>), <span class="t">Cons</span>(timed, <span class="t">Nil</span>)), \req <span class="o">-&gt;</span> <span class="f">route</span>(db, req))
+<pre><span class="c"># not run</span>
+answer = <span class="f">wrap</span>(<span class="t">Cons</span>(<span class="f">rate_limit</span>(<span class="n">20</span>), <span class="t">Cons</span>(timed, <span class="t">Nil</span>)), \req <span class="o">-&gt;</span> <span class="f">route</span>(db, req))
 <span class="f">accept_forever</span>(server, answer)</pre>
 <p>There is nothing else to it: what comes out of <code>wrap</code> is a handler like any other, so a middleware stack can be built once and handed to <code>serve</code>, <code>serve_n</code> or <code>accept_forever</code> unchanged.</p>
+<pre>timed = \req, next <span class="o">-&gt;</span> http.with_header(<span class="f">next</span>(req), <span class="s">"X-Timed"</span>, <span class="s">"yes"</span>)
+answer = http.wrap(<span class="t">Cons</span>(timed, <span class="t">Nil</span>), \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"inner"</span>))
+res = <span class="f">answer</span>(http.parse_request(<span class="s">"GET / HTTP/1.1\r\n\r\n"</span>))
+res.body      <span class="c"># =&gt; inner</span>
+res.headers   <span class="c"># =&gt; Cons(http.Header(X-Timed, yes), Nil)</span></pre>
 <h3 id="fn-rate_limitper_second-int---request-request---response---response"><code>fn rate_limit(per_second: Int) -&gt; (Request, (Request) -&gt; Response) -&gt; Response</code></h3>
 <p>How many requests a second one caller may have, and what the rest are told.</p>
 <p>Three things decide whether a limiter is worth having, and all three are easy to get wrong:</p>
@@ -239,43 +240,57 @@
 <p><strong>Reads as well as writes.</strong> A read that groups a million rows costs more than a write of one cell. Reads are counted too, in a bucket of their own so that browsing and editing do not crowd each other out, and usually at a looser rate — a page fetches a handful of things at once, which is one person behaving normally.</p>
 <p><code>rate_limit(n)</code> is writes only and trusts nothing, which is what a server reached directly should do. <code>rate_limits(writes, reads, hops)</code> is the whole of it.</p>
 <p>The window is a whole second that everyone shares rather than one per caller, so a burst that straddles the boundary can be twice the limit. It is a guard against a caller that will not stop, not a token bucket.</p>
+<pre>limited = http.wrap(<span class="t">Cons</span>(http.rate_limit(<span class="n">1</span>), <span class="t">Nil</span>), \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"ok"</span>))
+req = http.parse_request(<span class="s">"POST / HTTP/1.1\r\n\r\n"</span>)
+<span class="f">limited</span>(req).status   <span class="c"># =&gt; 200</span>
+<span class="f">limited</span>(req).status   <span class="c"># =&gt; 429</span></pre>
 <h3 id="fn-rate_limitswrites-int-reads-int-hops-int---request-request---response---response"><code>fn rate_limits(writes: Int, reads: Int, hops: Int) -&gt; (Request, (Request) -&gt; Response) -&gt; Response</code></h3>
-<h3 id="fn-under_limitseen-mapstr-int-int-writes-int-reads-int-hops-int-req-request-next-request---response---response"><code>fn under_limit(seen: Map(Str, (Int, Int)), writes: Int, reads: Int, hops: Int, req: Request, next: (Request) -&gt; Response) -&gt; Response</code></h3>
+<pre>limited = http.wrap(<span class="t">Cons</span>(http.rate_limits(<span class="n">1</span>, <span class="n">100</span>, <span class="n">0</span>), <span class="t">Nil</span>), \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"ok"</span>))
+<span class="f">limited</span>(http.parse_request(<span class="s">"GET / HTTP/1.1\r\n\r\n"</span>)).status    <span class="c"># =&gt; 200</span>
+<span class="f">limited</span>(http.parse_request(<span class="s">"POST / HTTP/1.1\r\n\r\n"</span>)).status   <span class="c"># =&gt; 200</span>
+<span class="f">limited</span>(http.parse_request(<span class="s">"POST / HTTP/1.1\r\n\r\n"</span>)).status   <span class="c"># =&gt; 429</span></pre>
 <h3 id="fn-client_ofreq-request-hops-int---str"><code>fn client_of(req: Request, hops: Int) -&gt; Str</code></h3>
 <p>Which name in <code>X-Forwarded-For</code> is the caller, given how many proxies stand in front of this server.</p>
 <p>Every hop appends the address it saw to the end of the header, so the entries at the end are the ones written by the proxies and the entries at the front are whatever the caller sent — which is anything it likes. With <code>hops</code> proxies in front, the caller is <code>hops</code> from the right: the last entry is what the nearest proxy saw, and the one before it is what the proxy before that saw.</p>
-<pre><span class="t">X</span>-<span class="t">Forwarded</span>-<span class="t">For</span>: <span class="n">9.9</span>.<span class="n">9.9</span>, <span class="n">203.0</span>.<span class="n">113.7</span>, <span class="n">172.68</span>.<span class="n">1.1</span>
+<pre><span class="c"># not run</span>
+<span class="t">X</span>-<span class="t">Forwarded</span>-<span class="t">For</span>: <span class="n">9.9</span>.<span class="n">9.9</span>, <span class="n">203.0</span>.<span class="n">113.7</span>, <span class="n">172.68</span>.<span class="n">1.1</span>
                  ^ sent    ^ the caller  ^ seen by the last proxy
                              (hops = <span class="n">2</span>)</pre>
 <p><code>hops</code> of 0 says there is no proxy, and then the header is not read at all: every caller counts as the same one, which is a limit on the server rather than on a client and is the honest thing to say about a server that can only see its own socket. A header with fewer entries than there are proxies has been stripped or the count is wrong — either way it cannot be read, and everyone shares a bucket again rather than being let through.</p>
 <p>A proxy that overwrites the header instead of appending — <code>proxy_set_header X-Forwarded-For $remote_addr</code> in nginx, where <code>$remote_addr</code> is already the real caller — leaves exactly one entry, and <code>hops</code> is 1. That is the arrangement to prefer: nothing the caller sends survives it.</p>
-<h3 id="fn-somebodywho-str---str"><code>fn somebody(who: Str) -&gt; Str</code></h3>
-<p>An empty entry is a header that says nothing, and nothing is not a caller: it shares the bucket with everyone else rather than having one of its own.</p>
-<h3 id="fn-forget_oldseen-mapa-b-c-now-b---int-where-a-is-a-value-type"><code>fn forget_old(seen: Map('a, ('b, 'c)), now: 'b) -&gt; Int    # where 'a is a value type</code></h3>
-<p>One second's worth of counting: a key holds the second it is counting and how many have arrived in it, and a new second starts the count again. A key is a client and whether it was reading, and clients keep arriving: a map that only grows is a leak with a slow fuse. Anything counted in an earlier second can never be counted again, so it goes.</p>
-<h3 id="fn-forget_eachitems-lista-b-c-seen-mapa-d-now-b---int-where-b-is-ordered-a-is-a-value-type"><code>fn forget_each(items: List(('a, ('b, 'c))), seen: Map('a, 'd), now: 'b) -&gt; Int    # where 'b is ordered, 'a is a value type</code></h3>
-<h3 id="fn-hits_this_secondseen-mapa-b-int-key-a-now-b---int-where-a-is-a-value-type-b-is-a-value-type"><code>fn hits_this_second(seen: Map('a, ('b, Int)), key: 'a, now: 'b) -&gt; Int    # where 'a is a value type, 'b is a value type</code></h3>
-<h3 id="fn-too_manyper_second-int---response"><code>fn too_many(per_second: Int) -&gt; Response</code></h3>
+<pre>req = http.parse_request(<span class="s">"GET / HTTP/1.1\r\nX-Forwarded-For: 9.9.9.9, 203.0.113.7, 172.68.1.1\r\n\r\n"</span>)
+http.client_of(req, <span class="n">2</span>)   <span class="c"># =&gt; 203.0.113.7</span>
+http.client_of(req, <span class="n">1</span>)   <span class="c"># =&gt; 172.68.1.1</span>
+http.client_of(req, <span class="n">0</span>)   <span class="c"># =&gt; anyone</span></pre>
 <h3 id="fn-askhost-str-port-int-method-str-path-str-headers-listheader-body-str---str"><code>fn ask(host: Str, port: Int, method: Str, path: Str, headers: List(Header), body: Str) -&gt; Str</code></h3>
 <p>One request, spelled out: a method, headers of your own, a body. <code>get</code> and <code>get_all</code> below are this with all three decided. The answer comes back raw, for <code>status_of</code> and <code>response_body</code> to take apart.</p>
-<h3 id="fn-ask_onfd-int-host-str-method-str-path-str-headers-listheader-body-str---str"><code>fn ask_on(fd: Int, host: Str, method: Str, path: Str, headers: List(Header), body: Str) -&gt; Str</code></h3>
-<h3 id="fn-askinghost-str-method-str-path-str-headers-listheader-body-str---str"><code>fn asking(host: Str, method: Str, path: Str, headers: List(Header), body: Str) -&gt; Str</code></h3>
-<h3 id="fn-request_texthost-str-path-str-keep-bool---str"><code>fn request_text(host: Str, path: Str, keep: Bool) -&gt; Str</code></h3>
+<pre>port = <span class="n">18904</span>
+server = <span class="f">listen_at</span>(<span class="s">"127.0.0.1"</span>, port)?
+<span class="k">spawn</span> http.accept_n(server, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, req.method + <span class="s">" "</span> + http.header(req, <span class="s">"x-k"</span>) + <span class="s">" "</span> + req.body), <span class="n">1</span>)
+raw = http.ask(<span class="s">"127.0.0.1"</span>, port, <span class="s">"PUT"</span>, <span class="s">"/x"</span>, <span class="t">Cons</span>(http.<span class="t">Header</span>(<span class="s">"X-K"</span>, <span class="s">"v"</span>), <span class="t">Nil</span>), <span class="s">"body"</span>)
+http.response_body(raw)   <span class="c"># =&gt; PUT v body</span></pre>
 <h3 id="fn-gethost-str-port-int-path-str---str"><code>fn get(host: Str, port: Int, path: Str) -&gt; Str</code></h3>
-<h3 id="fn-request_onfd-int-raw-str---str"><code>fn request_on(fd: Int, raw: Str) -&gt; Str</code></h3>
+<pre>port = <span class="n">18905</span>
+server = <span class="f">listen_at</span>(<span class="s">"127.0.0.1"</span>, port)?
+<span class="k">spawn</span> http.accept_n(server, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, <span class="s">"got "</span> + req.path), <span class="n">1</span>)
+http.response_body(http.get(<span class="s">"127.0.0.1"</span>, port, <span class="s">"/it"</span>))   <span class="c"># =&gt; got /it</span></pre>
 <h3 id="fn-get_allhost-str-port-int-paths-liststr---liststr"><code>fn get_all(host: Str, port: Int, paths: List(Str)) -&gt; List(Str)</code></h3>
 <p>Every path down one connection, which is what keep-alive buys: one accept, one handshake, one strand on the server.</p>
-<h3 id="fn-send_allfd-int-host-str-paths-liststr-acc-liststr---liststr"><code>fn send_all(fd: Int, host: Str, paths: List(Str), acc: List(Str)) -&gt; List(Str)</code></h3>
-<h3 id="fn-exchangefd-int-host-str-path-str-keep-bool---str"><code>fn exchange(fd: Int, host: Str, path: Str, keep: Bool) -&gt; Str</code></h3>
-<h3 id="fn-close_afterfd-int-acc-lista---lista"><code>fn close_after(fd: Int, acc: List('a)) -&gt; List('a)</code></h3>
+<pre>port = <span class="n">18906</span>
+server = <span class="f">listen_at</span>(<span class="s">"127.0.0.1"</span>, port)?
+<span class="k">spawn</span> http.accept_n(server, \req <span class="o">-&gt;</span> http.text_response(<span class="n">200</span>, req.path), <span class="n">1</span>)
+<span class="f">map</span>(http.get_all(<span class="s">"127.0.0.1"</span>, port, <span class="t">Cons</span>(<span class="s">"/a"</span>, <span class="t">Cons</span>(<span class="s">"/b"</span>, <span class="t">Nil</span>))), http.response_body)   <span class="c"># =&gt; Cons(/a, Cons(/b, Nil))</span></pre>
 <h3 id="fn-read_responsefd-int-acc-str---str"><code>fn read_response(fd: Int, acc: Str) -&gt; Str</code></h3>
 <p>A keep-alive server never closes, so the client stops at Content-Length rather than at end of stream.</p>
-<h3 id="fn-read_response_morefd-int-acc-str---str"><code>fn read_response_more(fd: Int, acc: Str) -&gt; Str</code></h3>
-<h3 id="fn-is_completeraw-str---bool"><code>fn is_complete(raw: Str) -&gt; Bool</code></h3>
+<pre><span class="c"># not run</span>
+raw = http.read_response(fd, <span class="s">""</span>)   <span class="c"># a whole answer off a socket the caller opened</span></pre>
 <h3 id="fn-content_lengthraw-str---int"><code>fn content_length(raw: Str) -&gt; Int</code></h3>
 <p>18 = the length of "-Length: ".</p>
+<pre>http.content_length(<span class="s">"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"</span>)   <span class="c"># =&gt; 5</span></pre>
 <h3 id="fn-response_bodyraw-str---str"><code>fn response_body(raw: Str) -&gt; Str</code></h3>
+<pre>http.response_body(<span class="s">"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"</span>)   <span class="c"># =&gt; hello</span></pre>
 <h3 id="fn-status_ofraw-str---int"><code>fn status_of(raw: Str) -&gt; Int</code></h3>
+<pre>http.status_of(<span class="s">"HTTP/1.1 404 Not Found\r\n\r\n"</span>)   <span class="c"># =&gt; 404</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-web-form.html">← web/form</a>

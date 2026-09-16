@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -78,36 +79,63 @@
     <main class="module">
       <p class="chapter-no">Standard library · Collections</p>
       <h1>coll/set</h1>
-<p class="import">Imported as <code>import "coll/set" as set</code>, its names are then <code>set.…</code>. Every signature below is the one the checker infers.</p><p>A set of values: a hash table with only keys, so membership is a lookup rather than a walk. Like <code>Map</code>, a set is storage — <code>add</code> and <code>del</code> change it in place — and anything a map can key, a set can hold: numbers, strings, tuples, data types.</p>
-<pre><span class="k">import</span> <span class="s">"coll/set"</span> <span class="k">as</span> <span class="m">set</span>
-seen = <span class="m">set</span>.new()
-<span class="m">set</span>.add(seen, <span class="s">"a"</span>)
-<span class="m">set</span>.has(seen, <span class="s">"a"</span>)                 <span class="c"># true</span>
-<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))))         <span class="c"># {1, 2}</span>
-<span class="m">set</span>.union(a, b), <span class="m">set</span>.inter(a, b), <span class="m">set</span>.diff(a, b)   <span class="c"># new sets</span>
-<span class="m">set</span>.items(s)                       <span class="c"># a list, in no particular order</span></pre>
-<h2 id="types">Types</h2>
+<p class="import">Imported as <code>import "coll/set" as set</code>, its names are then <code>set.…</code>. Every signature below is the one the checker infers.</p><h2 id="types">Types</h2>
 <h3 id="seta"><code>Set(a)</code></h3>
+<p>A set of values: a hash table with only keys, so membership is a lookup rather than a walk. Like <code>Map</code>, a set is storage — <code>add</code> and <code>del</code> change it in place — and anything a map can key, a set can hold: numbers, strings, tuples, data types.</p>
+<pre>seen = <span class="m">set</span>.new()
+<span class="m">set</span>.add(seen, <span class="s">"a"</span>)
+<span class="m">set</span>.has(seen, <span class="s">"a"</span>)                            <span class="c"># =&gt; true</span>
+<span class="m">set</span>.size(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span>
+a = <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>)))
+b = <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Cons</span>(<span class="n">3</span>, <span class="t">Nil</span>)))
+<span class="f">sort</span>(<span class="m">set</span>.items(<span class="m">set</span>.union(a, b)))              <span class="c"># =&gt; Cons(1, Cons(2, Cons(3, Nil)))</span>
+<span class="m">set</span>.items(<span class="m">set</span>.inter(a, b))                    <span class="c"># =&gt; Cons(2, Nil)</span>
+<span class="m">set</span>.items(<span class="m">set</span>.diff(a, b))                     <span class="c"># =&gt; Cons(1, Nil)</span></pre>
 <ul>
 <li><code>Set(m: Map(a, Bool))</code></li>
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-new---seta-where-a-is-a-value-type"><code>fn new() -&gt; Set('a)    # where 'a is a value type</code></h3>
+<pre>seen = <span class="m">set</span>.new()
+<span class="m">set</span>.add(seen, <span class="s">"a"</span>)
+<span class="m">set</span>.has(seen, <span class="s">"a"</span>)   <span class="c"># =&gt; true</span>
+<span class="m">set</span>.has(seen, <span class="s">"b"</span>)   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-ofitems-lista---seta"><code>fn of(items: List('a)) -&gt; Set('a)</code></h3>
+<pre><span class="m">set</span>.size(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-adds-seta-x-a---unit"><code>fn add(s: Set('a), x: 'a) -&gt; Unit</code></h3>
+<pre>s = <span class="m">set</span>.new()
+<span class="m">set</span>.add(s, <span class="n">1</span>)
+<span class="m">set</span>.add(s, <span class="n">1</span>)
+<span class="m">set</span>.size(s)   <span class="c"># =&gt; 1</span></pre>
 <h3 id="fn-hass-seta-x-a---bool"><code>fn has(s: Set('a), x: 'a) -&gt; Bool</code></h3>
+<pre><span class="m">set</span>.has(<span class="m">set</span>.of(<span class="t">Cons</span>((<span class="n">1</span>, <span class="n">2</span>), <span class="t">Nil</span>)), (<span class="n">1</span>, <span class="n">2</span>))   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-dels-seta-x-a---bool-where-a-is-a-value-type"><code>fn del(s: Set('a), x: 'a) -&gt; Bool    # where 'a is a value type</code></h3>
 <p>Removes <code>x</code>, saying whether it was there.</p>
+<pre>s = <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>)))
+<span class="m">set</span>.del(s, <span class="n">1</span>)   <span class="c"># =&gt; true</span>
+<span class="m">set</span>.del(s, <span class="n">1</span>)   <span class="c"># =&gt; false</span>
+<span class="m">set</span>.size(s)     <span class="c"># =&gt; 1</span></pre>
 <h3 id="fn-sizes-seta---int"><code>fn size(s: Set('a)) -&gt; Int</code></h3>
+<pre><span class="m">set</span>.size(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="s">"a"</span>, <span class="t">Cons</span>(<span class="s">"b"</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-is_emptys-seta---bool"><code>fn is_empty(s: Set('a)) -&gt; Bool</code></h3>
+<pre><span class="m">set</span>.is_empty(<span class="m">set</span>.new())   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-itemss-seta---lista"><code>fn items(s: Set('a)) -&gt; List('a)</code></h3>
+<pre><span class="f">sort</span>(<span class="m">set</span>.items(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">3</span>, <span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; Cons(1, Cons(3, Nil))</span></pre>
 <h3 id="fn-clears-seta---unit-where-a-is-a-value-type"><code>fn clear(s: Set('a)) -&gt; Unit    # where 'a is a value type</code></h3>
+<pre>s = <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Nil</span>))
+<span class="m">set</span>.clear(s)
+<span class="m">set</span>.is_empty(s)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-uniona-seta-b-seta---seta"><code>fn union(a: Set('a), b: Set('a)) -&gt; Set('a)</code></h3>
+<pre><span class="f">sort</span>(<span class="m">set</span>.items(<span class="m">set</span>.union(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Nil</span>)), <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; Cons(1, Cons(2, Nil))</span></pre>
 <h3 id="fn-intera-seta-b-seta---seta"><code>fn inter(a: Set('a), b: Set('a)) -&gt; Set('a)</code></h3>
+<pre><span class="m">set</span>.items(<span class="m">set</span>.inter(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))), <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Cons</span>(<span class="n">3</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; Cons(2, Nil)</span></pre>
 <h3 id="fn-diffa-seta-b-seta---seta"><code>fn diff(a: Set('a), b: Set('a)) -&gt; Set('a)</code></h3>
 <p>What is in <code>a</code> and not in <code>b</code>.</p>
+<pre><span class="m">set</span>.items(<span class="m">set</span>.diff(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))), <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; Cons(1, Nil)</span></pre>
 <h3 id="fn-is_subseta-seta-b-seta---bool"><code>fn is_subset(a: Set('a), b: Set('a)) -&gt; Bool</code></h3>
+<pre><span class="m">set</span>.is_subset(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Nil</span>)), <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-samea-seta-b-seta---bool"><code>fn same(a: Set('a), b: Set('a)) -&gt; Bool</code></h3>
+<pre><span class="m">set</span>.same(<span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Nil</span>))), <span class="m">set</span>.of(<span class="t">Cons</span>(<span class="n">2</span>, <span class="t">Cons</span>(<span class="n">1</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; true</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_membership</code></li>

@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li class="current"><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -80,6 +81,7 @@
       <ul class="sections">
         <li><a href="#tests">Tests</a></li>
         <li><a href="#when-a-program-dies">When a program dies</a></li>
+        <li><a href="#examples-that-are-tests">Examples that are tests</a></li>
         <li><a href="#a-sandbox">A sandbox</a></li>
       </ul>
     </aside>
@@ -99,6 +101,7 @@ rill explain main.rill          <span class="c"># the memory decisions the gener
 rill diagram exchange.rill      <span class="c"># the file&#x27;s system and machines drawn: Mermaid, or SDL&#x27;s own symbols (--svg)</span>
 rill msc trace.txt              <span class="c"># a run&#x27;s trace (RILL_TRACE=1) as a sequence chart (--svg for a picture)</span>
 rill doc lib/text/str.rill      <span class="c"># a module&#x27;s documentation as Markdown; `rill doc lib -o docs/lib` for a folder</span>
+rill doctest lib                <span class="c"># every example in the doc comments, run and held to its `# =&gt;`</span>
 rill test tests.rill            <span class="c"># run every `test_...` function, each in its own process</span>
 rill fmt src/*.rill             <span class="c"># canonical formatting (--check, --stdout)</span>
 rill repl                       <span class="c"># interactive: definitions persist</span>
@@ -129,6 +132,18 @@ FAIL  test_rev
 <p>Where a program's memory <em>is</em>, as against where it went wrong: <code>extern fn rill_mem_report() -&gt; Int</code> writes one line to standard error — blocks out, the pool's chunks and how much of them sits on free lists, the big blocks kept for reuse, the strand records and the stacks they have saved — and the free lists by size where one holds a megabyte or more. A server's <code>/stat</code> route is the place for it: the catalogue example found 195 MB on one free list that way.</p>
 <p><code>rill types</code> is the answer to the question an inferring language raises: what did it decide? It prints every function in the file as the checker sees it, including the requirements a body imposed — <code>fn merge(a: List('a), b: List('a)) -&gt; List('a)    # where 'a is ordered</code> for a function whose source says nothing about being ordered.</p>
 <p><code>rill lsp</code> is the same knowledge, kept open for an editor: diagnostics on the buffer as it stands, the type of the name under the cursor, go to definition, an outline, and formatting. <code>editors/README.md</code> has the three lines each that Neovim, Helix and Emacs need to start it.</p>
+<h3 id="examples-that-are-tests">Examples that are tests</h3>
+<p>A comment line indented four spaces past the <code>#</code> is an example, and <code>rill doc</code> shows it as code. After <code># =&gt;</code> it says what <code>show</code> prints of the expression's value, and <code>rill doctest</code> holds it to that: every example of a file becomes a line of a program written beside the module, which imports the module by its name — so an example reads as a user would write it, <code>json.parse(…)</code> — with a line that has no <code>=&gt;</code> a statement the next lines may use, <code>?</code> allowed, an <code>import</code> line hoisted to the program's head, and a block whose first line is <code># not run</code> shown but left alone, for a server that would listen forever.</p>
+<pre><span class="c"># The rest of `s` once `p` has been taken off its front, or `None` when</span>
+<span class="c"># `p` was not there.</span>
+<span class="c">#</span>
+<span class="c">#     str.strip_prefix(&quot;v0.13&quot;, &quot;v&quot;)   # =&gt; Some(0.13)</span>
+<span class="c">#     str.strip_prefix(&quot;0.13&quot;, &quot;v&quot;)    # =&gt; None</span>
+<span class="k">fn</span> <span class="f">strip_prefix</span>(s, p) = …</pre>
+<pre class="out">$ rill doctest lib/text/str.rill
+ok    lib/text/str.rill  (167 examples)
+167 examples in 1 file: 167 passed, 0 failed</pre>
+<p>A failure names the comment's line and shows both answers. Every function of the standard library carries one, and the test suite runs them all, so what the reference pages show is what the code does.</p>
 <h3 id="a-sandbox">A sandbox</h3>
 <p>A program that runs for someone else — a model uploaded to an editor that is open to the world, a submission, a plugin — should not get to read the files of the machine it runs on, open its sockets, call into its C libraries, or write to whatever address it likes. Those are the four things a Rill program can do that the language cannot account for, and <code>--sandbox</code> on <code>build</code>, <code>run</code>, <code>test</code> and <code>check</code> refuses all of them; <code>--sandbox=files,net</code> allows the two named. The capabilities are <code>files</code> (reading, writing, listing, renaming), <code>net</code> (sockets), <code>ffi</code> (<code>extern fn</code>, <code>asm fn</code>, and raw memory through <code>Ptr</code>) and <code>os</code> (waiting on the process's signals). Everything else the runtime offers — the console, the clocks, strands and channels, random numbers, sleeping — stays open, since none of it reaches past the process.</p>
 <p>The question is answered before the program is built, over the checked code: every function reachable from where the run starts — <code>main</code> and the exports, or the tests under <code>rill test</code> — is searched for a runtime or foreign call that needs a capability the sandbox withholds. A library that would need one is fine to import and fine to leave uncalled; it is the call that is refused, and the error lands on the author's own line even when the call is a library's, since a line in a library is not one the author can go and fix:</p>

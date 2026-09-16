@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -81,14 +82,14 @@
       <h1>text/regex</h1>
 <p class="import">Imported as <code>import "text/regex" as regex</code>, its names are then <code>regex.…</code>. Every signature below is the one the checker infers.</p><p>Regular expressions: a small backtracking matcher, written in Rill.</p>
 <p>What it knows: literals and the escapes <code>\. \\ \n \t</code>; <code>.</code> (anything but a newline); classes <code>[abc]</code>, <code>[a-z0-9]</code>, <code>[^...]</code>, and <code>\d \w \s</code> with their negations <code>\D \W \S</code>, alone or inside a class; the anchors <code>^</code> and <code>$</code>; groups <code>(...)</code>, which capture, and <code>(?:...)</code>, which do not; <code>|</code>; and the counts <code>* + ? {n} {n,} {n,m}</code>, each greedy, or lazy with a <code>?</code> after it. A match is the leftmost one, alternatives tried in the order written and counts as many as they can — Perl's answer, not POSIX's longest.</p>
-<pre><span class="k">import</span> <span class="s">"text/regex"</span> <span class="k">as</span> re
-date = re.compile(<span class="s">"(\\d{4})-(\\d{2})-(\\d{2})"</span>)?
-re.is_match(date, <span class="s">"on 2026-09-14 at"</span>)            <span class="c"># true</span>
-re.find(date, <span class="s">"on 2026-09-14 at"</span>)                <span class="c"># Some((3, 13))</span>
-re.captures(date, <span class="s">"on 2026-09-14 at"</span>)            <span class="c"># Some([&quot;2026-09-14&quot;, &quot;2026&quot;, &quot;09&quot;, &quot;14&quot;])</span>
-re.replace_all(re.compile(<span class="s">"\\s+"</span>)?, <span class="s">"a  b   c"</span>, <span class="s">" "</span>)   <span class="c"># &quot;a b c&quot;</span>
-re.split(re.compile(<span class="s">",\\s*"</span>)?, <span class="s">"a, b,c"</span>)         <span class="c"># [&quot;a&quot;, &quot;b&quot;, &quot;c&quot;]</span></pre>
 <p>Bytes, like every string here: <code>.</code> is one byte, and a class of <code>é</code> is a class of its two bytes. Backtracking keeps the matcher small and the patterns familiar, and can be slow on a pattern built to defeat it — <code>(a*)*b</code> on a long run of <code>a</code>s — as it is everywhere else it is used.</p>
+<pre>date = regex.compile(<span class="s">"(\\d{4})-(\\d{2})-(\\d{2})"</span>)?
+regex.is_match(date, <span class="s">"on 2026-09-14 at"</span>)            <span class="c"># =&gt; true</span>
+regex.find(date, <span class="s">"on 2026-09-14 at"</span>)                <span class="c"># =&gt; Some((3, 13))</span>
+regex.captures(date, <span class="s">"on 2026-09-14 at"</span>)            <span class="c"># =&gt; Some(Cons(2026-09-14, Cons(2026, Cons(09, Cons(14, Nil)))))</span>
+spaces = regex.compile(<span class="s">"\\s+"</span>)?
+regex.replace_all(spaces, <span class="s">"a  b   c"</span>, <span class="s">" "</span>)           <span class="c"># =&gt; a b c</span>
+regex.split(regex.compile(<span class="s">",\\s*"</span>)?, <span class="s">"a, b,c"</span>)   <span class="c"># =&gt; Cons(a, Cons(b, Cons(c, Nil)))</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="node"><code>Node</code></h3>
 <ul>
@@ -109,20 +110,43 @@ re.split(re.compile(<span class="s">",\\s*"</span>)?, <span class="s">"a, b,c"</
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-is_matchr-re-s-str---bool"><code>fn is_match(r: Re, s: Str) -&gt; Bool</code></h3>
+<pre>r = regex.compile(<span class="s">"^[a-z]+$"</span>)?
+regex.is_match(r, <span class="s">"hello"</span>)    <span class="c"># =&gt; true</span>
+regex.is_match(r, <span class="s">"Hello"</span>)    <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-findr-re-s-str---optionint-int"><code>fn find(r: Re, s: Str) -&gt; Option((Int, Int))</code></h3>
 <p>Where the first match is: <code>Some((start, end))</code>, the end excluded.</p>
+<pre>r = regex.compile(<span class="s">"\\d+"</span>)?
+regex.find(r, <span class="s">"room 101"</span>)   <span class="c"># =&gt; Some((5, 8))</span>
+regex.find(r, <span class="s">"no digits"</span>)  <span class="c"># =&gt; None</span></pre>
 <h3 id="fn-find_fromr-re-s-str-from-int---optionint-int"><code>fn find_from(r: Re, s: Str, from: Int) -&gt; Option((Int, Int))</code></h3>
+<pre>r = regex.compile(<span class="s">"\\d+"</span>)?
+regex.find_from(r, <span class="s">"1 and 22"</span>, <span class="n">1</span>)   <span class="c"># =&gt; Some((6, 8))</span></pre>
 <h3 id="fn-find_allr-re-s-str---listint-int"><code>fn find_all(r: Re, s: Str) -&gt; List((Int, Int))</code></h3>
 <p>Every match, left to right, none overlapping; an empty match moves on by one byte so that the search always ends.</p>
+<pre>r = regex.compile(<span class="s">"\\d+"</span>)?
+regex.find_all(r, <span class="s">"1, 22, 333"</span>)   <span class="c"># =&gt; Cons((0, 1), Cons((3, 5), Cons((7, 10), Nil)))</span></pre>
 <h3 id="fn-capturesr-re-s-str---optionliststr"><code>fn captures(r: Re, s: Str) -&gt; Option(List(Str))</code></h3>
 <p>The match and every group, group 0 the whole; a group that took no part is <code>""</code>.</p>
+<pre>r = regex.compile(<span class="s">"(\\w+)@(\\w+)"</span>)?
+regex.captures(r, <span class="s">"mail me@host now"</span>)   <span class="c"># =&gt; Some(Cons(me@host, Cons(me, Cons(host, Nil))))</span></pre>
 <h3 id="fn-captures_fromr-re-s-str-from-int---optionliststr"><code>fn captures_from(r: Re, s: Str, from: Int) -&gt; Option(List(Str))</code></h3>
+<pre>r = regex.compile(<span class="s">"(\\d)"</span>)?
+regex.captures_from(r, <span class="s">"1 2"</span>, <span class="n">1</span>)   <span class="c"># =&gt; Some(Cons(2, Cons(2, Nil)))</span></pre>
 <h3 id="fn-replace_allr-re-s-str-with-str---str"><code>fn replace_all(r: Re, s: Str, with: Str) -&gt; Str</code></h3>
 <p>Every match replaced by what <code>f</code> makes of it.</p>
+<pre>r = regex.compile(<span class="s">"[aeiou]"</span>)?
+regex.replace_all(r, <span class="s">"banana"</span>, <span class="s">"_"</span>)   <span class="c"># =&gt; b_n_n_</span></pre>
 <h3 id="fn-replace_byr-re-s-str-f-str---str---str"><code>fn replace_by(r: Re, s: Str, f: (Str) -&gt; Str) -&gt; Str</code></h3>
+<pre>r = regex.compile(<span class="s">"\\d+"</span>)?
+regex.replace_by(r, <span class="s">"a1b22"</span>, \m <span class="o">-&gt;</span> <span class="s">"&lt;"</span> + m + <span class="s">"&gt;"</span>)   <span class="c"># =&gt; a&lt;1&gt;b&lt;22&gt;</span></pre>
 <h3 id="fn-splitr-re-s-str---liststr"><code>fn split(r: Re, s: Str) -&gt; List(Str)</code></h3>
 <p>The pieces between the matches.</p>
+<pre>r = regex.compile(<span class="s">"\\s*;\\s*"</span>)?
+regex.split(r, <span class="s">"a ; b;c"</span>)   <span class="c"># =&gt; Cons(a, Cons(b, Cons(c, Nil)))</span></pre>
 <h3 id="fn-compilepattern-str---resultre-str"><code>fn compile(pattern: Str) -&gt; Result(Re, Str)</code></h3>
+<pre><span class="f">res_map</span>(regex.compile(<span class="s">"a(b"</span>), \r <span class="o">-&gt;</span> r.groups)   <span class="c"># =&gt; Err(`a(b`: `(` is never closed at byte 1)</span>
+r = regex.compile(<span class="s">"a+"</span>)?
+regex.is_match(r, <span class="s">"caab"</span>)   <span class="c"># =&gt; true</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_literals_classes_anchors</code></li>

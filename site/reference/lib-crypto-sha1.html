@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -78,43 +79,23 @@
       <p class="chapter-no">Standard library · Cryptography</p>
       <h1>crypto/sha1</h1>
 <p class="import">Imported as <code>import "crypto/sha1" as sha1</code>, its names are then <code>sha1.…</code>. Every signature below is the one the checker infers.</p><p>SHA-1 and base64, written in Rill. The WebSocket handshake needs both, and they are a fair test of the language's bit operations: everything here is 32-bit arithmetic emulated on 64-bit integers by masking after each step.</p>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(sha1.sha1(<span class="s">"abc"</span>))   <span class="c"># =&gt; a9993e364706816aba3e25717850c26c9cd0d89d</span>
+sha1.base64(sha1.sha1(<span class="s">"abc"</span>))     <span class="c"># =&gt; qZk+NkcGgWq6PiVxeFDCbJzQ2J0=</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="digest"><code>Digest</code></h3>
 <ul>
 <li><code>Digest(a: Int, b: Int, c: Int, d: Int, e: Int)</code></li>
 </ul>
 <h2 id="functions">Functions</h2>
-<h3 id="fn-mask32x-int---int"><code>fn mask32(x: Int) -&gt; Int</code></h3>
-<h3 id="fn-add32a-int-b-int---int"><code>fn add32(a: Int, b: Int) -&gt; Int</code></h3>
-<h3 id="fn-rotl32x-int-n-int---int"><code>fn rotl32(x: Int, n: Int) -&gt; Int</code></h3>
-<h3 id="fn-padmsg-str---str"><code>fn pad(msg: Str) -&gt; Str</code></h3>
-<p>SHA-1 pads to a multiple of 64 bytes: a 0x80 byte, then zeros, then the length in bits as a 64-bit big-endian number.</p>
-<h3 id="fn-zero_countn-int---int"><code>fn zero_count(n: Int) -&gt; Int</code></h3>
-<h3 id="fn-be64v-int---str"><code>fn be64(v: Int) -&gt; Str</code></h3>
-<h3 id="fn-word_ats-str-i-int---int"><code>fn word_at(s: Str, i: Int) -&gt; Int</code></h3>
-<h3 id="fn-scheduleblock-str-base-int-i-int-acc-listint---listint"><code>fn schedule(block: Str, base: Int, i: Int, acc: List(Int)) -&gt; List(Int)</code></h3>
-<p>The 80-word schedule, built as a list so it can be indexed by round.</p>
-<h3 id="fn-next_wordblock-str-base-int-i-int-acc-listint---int"><code>fn next_word(block: Str, base: Int, i: Int, acc: List(Int)) -&gt; Int</code></h3>
-<h3 id="fn-atacc-listint-back-int---int"><code>fn at(acc: List(Int), back: Int) -&gt; Int</code></h3>
-<p><code>acc</code> holds the words in reverse, so index 0 is w[i-1].</p>
-<h3 id="fn-f_atround-int-b-int-c-int-d-int---int"><code>fn f_at(round: Int, b: Int, c: Int, d: Int) -&gt; Int</code></h3>
-<h3 id="fn-k_atround-int---int"><code>fn k_at(round: Int) -&gt; Int</code></h3>
-<h3 id="fn-round_stepst-digest-ws-listint-round-int---digest"><code>fn round_step(st: Digest, ws: List(Int), round: Int) -&gt; Digest</code></h3>
-<h3 id="fn-roundsst-digest-ws-listint-round-int---digest"><code>fn rounds(st: Digest, ws: List(Int), round: Int) -&gt; Digest</code></h3>
-<h3 id="fn-add_digestx-digest-y-digest---digest"><code>fn add_digest(x: Digest, y: Digest) -&gt; Digest</code></h3>
-<h3 id="fn-add_seconda-int-b-int-c-int-d-int-e-int-y-digest---digest"><code>fn add_second(a: Int, b: Int, c: Int, d: Int, e: Int, y: Digest) -&gt; Digest</code></h3>
-<h3 id="fn-blockspadded-str-base-int-st-digest---digest"><code>fn blocks(padded: Str, base: Int, st: Digest) -&gt; Digest</code></h3>
 <h3 id="fn-sha1msg-str---str"><code>fn sha1(msg: Str) -&gt; Str</code></h3>
 <p>The digest as 20 raw bytes.</p>
-<h3 id="fn-digest_bytesd-digest---str"><code>fn digest_bytes(d: Digest) -&gt; Str</code></h3>
-<h3 id="fn-be32v-int---str"><code>fn be32(v: Int) -&gt; Str</code></h3>
-<h3 id="fn-b64_alphabet---str"><code>fn b64_alphabet() -&gt; Str</code></h3>
-<h3 id="fn-b64_charv-int---str"><code>fn b64_char(v: Int) -&gt; Str</code></h3>
+<pre><span class="k">import</span> <span class="s">"text/str"</span> <span class="k">as</span> str
+str.hex_encode(sha1.sha1(<span class="s">""</span>))      <span class="c"># =&gt; da39a3ee5e6b4b0d3255bfef95601890afd80709</span>
+<span class="c">#sha1.sha1(&quot;anything&quot;)           # =&gt; 20</span></pre>
 <h3 id="fn-base64s-str---str"><code>fn base64(s: Str) -&gt; Str</code></h3>
-<h3 id="fn-b64_froms-str-i-int-acc-str---str"><code>fn b64_from(s: Str, i: Int, acc: Str) -&gt; Str</code></h3>
-<h3 id="fn-b64_threex-int-y-int-z-int---str"><code>fn b64_three(x: Int, y: Int, z: Int) -&gt; Str</code></h3>
-<h3 id="fn-b64_twox-int-y-int---str"><code>fn b64_two(x: Int, y: Int) -&gt; Str</code></h3>
-<h3 id="fn-b64_onex-int---str"><code>fn b64_one(x: Int) -&gt; Str</code></h3>
+<pre>sha1.base64(<span class="s">"hello"</span>)   <span class="c"># =&gt; aGVsbG8=</span>
+sha1.base64(<span class="s">""</span>)        <span class="c"># =&gt;</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-crypto-passwd.html">← crypto/passwd</a>

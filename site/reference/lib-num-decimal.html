@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -82,11 +83,11 @@
       <h1>num/decimal</h1>
 <p class="import">Imported as <code>import "num/decimal" as decimal</code>, its names are then <code>decimal.…</code>. Every signature below is the one the checker infers.</p><p>Decimal numbers with a fixed number of places: money, and anything else where 0.1 + 0.2 has to be 0.3.</p>
 <p>A <code>Decimal</code> is an integer count of units and a scale, the number of places: <code>Decimal(1250, 2)</code> is 12.50. Adding and comparing align the scales; multiplying keeps every place and rounds only when asked; dividing takes the places to keep and how to round. The count is an <code>Int</code>, so eighteen digits in all is the limit, and a result past it is the wrong number rather than an error — the same as <code>Int</code> itself.</p>
-<pre><span class="k">import</span> <span class="s">"num/decimal"</span> <span class="k">as</span> dec
-price = dec.parse(<span class="s">"19.99"</span>)?               <span class="c"># Decimal(1999, 2)</span>
-total = dec.mul(price, dec.from_int(<span class="n">3</span>))   <span class="c"># 59.97</span>
-vat = dec.round_to(dec.mul(total, dec.parse(<span class="s">"0.20"</span>)?), <span class="n">2</span>, dec.<span class="t">HalfEven</span>)
-<span class="f">println</span>(<span class="f">show</span>(dec.add(total, vat)))        <span class="c"># &quot;71.96&quot;</span></pre>
+<pre>price = decimal.parse(<span class="s">"19.99"</span>)?
+total = decimal.mul(price, decimal.from_int(<span class="n">3</span>))
+total                                                  <span class="c"># =&gt; 59.97</span>
+vat = decimal.round_to(decimal.mul(total, decimal.parse(<span class="s">"0.20"</span>)?), <span class="n">2</span>, decimal.<span class="t">HalfEven</span>)
+decimal.add(total, vat)                                <span class="c"># =&gt; 71.96</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="decimal"><code>Decimal</code></h3>
 <ul>
@@ -106,26 +107,49 @@ vat = dec.round_to(dec.mul(total, dec.parse(<span class="s">"0.20"</span>)?), <s
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-from_intn-int---decimal"><code>fn from_int(n: Int) -&gt; Decimal</code></h3>
+<pre>decimal.from_int(<span class="n">12</span>)   <span class="c"># =&gt; 12</span></pre>
 <h3 id="fn-zero---decimal"><code>fn zero() -&gt; Decimal</code></h3>
+<pre>decimal.zero()   <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-is_zerod-decimal---bool"><code>fn is_zero(d: Decimal) -&gt; Bool</code></h3>
+<pre>decimal.is_zero(decimal.parse(<span class="s">"0.00"</span>)?)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-negd-decimal---decimal"><code>fn neg(d: Decimal) -&gt; Decimal</code></h3>
+<pre>decimal.neg(decimal.parse(<span class="s">"1.50"</span>)?)   <span class="c"># =&gt; -1.50</span></pre>
 <h3 id="fn-abs_ofd-decimal---decimal"><code>fn abs_of(d: Decimal) -&gt; Decimal</code></h3>
+<pre>decimal.abs_of(decimal.parse(<span class="s">"-1.50"</span>)?)   <span class="c"># =&gt; 1.50</span></pre>
 <h3 id="fn-signd-decimal---int"><code>fn sign(d: Decimal) -&gt; Int</code></h3>
+<pre>decimal.sign(decimal.parse(<span class="s">"-0.01"</span>)?)   <span class="c"># =&gt; -1</span></pre>
 <h3 id="fn-round_tod-decimal-places-int-how-rounding---decimal"><code>fn round_to(d: Decimal, places: Int, how: Rounding) -&gt; Decimal</code></h3>
 <p>The same number at <code>places</code> places — more, exactly; fewer, rounded.</p>
+<pre>decimal.round_to(decimal.parse(<span class="s">"2.345"</span>)?, <span class="n">2</span>, decimal.<span class="t">HalfUp</span>)     <span class="c"># =&gt; 2.35</span>
+decimal.round_to(decimal.parse(<span class="s">"2.345"</span>)?, <span class="n">2</span>, decimal.<span class="t">HalfEven</span>)   <span class="c"># =&gt; 2.34</span>
+decimal.round_to(decimal.parse(<span class="s">"2.349"</span>)?, <span class="n">2</span>, decimal.<span class="t">Down</span>)       <span class="c"># =&gt; 2.34</span>
+decimal.round_to(decimal.parse(<span class="s">"2.341"</span>)?, <span class="n">2</span>, decimal.<span class="t">Up</span>)         <span class="c"># =&gt; 2.35</span>
+decimal.round_to(decimal.parse(<span class="s">"2.5"</span>)?, <span class="n">3</span>, decimal.<span class="t">HalfUp</span>)       <span class="c"># =&gt; 2.500</span></pre>
 <h3 id="fn-adda-decimal-b-decimal---decimal"><code>fn add(a: Decimal, b: Decimal) -&gt; Decimal</code></h3>
+<pre>decimal.add(decimal.parse(<span class="s">"0.1"</span>)?, decimal.parse(<span class="s">"0.2"</span>)?)   <span class="c"># =&gt; 0.3</span></pre>
 <h3 id="fn-suba-decimal-b-decimal---decimal"><code>fn sub(a: Decimal, b: Decimal) -&gt; Decimal</code></h3>
+<pre>decimal.sub(decimal.parse(<span class="s">"1.00"</span>)?, decimal.parse(<span class="s">"0.75"</span>)?)   <span class="c"># =&gt; 0.25</span></pre>
 <h3 id="fn-mula-decimal-b-decimal---decimal"><code>fn mul(a: Decimal, b: Decimal) -&gt; Decimal</code></h3>
 <p>Exact: the places add up. Round afterwards where a money amount wants its two.</p>
+<pre>decimal.mul(decimal.parse(<span class="s">"1.5"</span>)?, decimal.parse(<span class="s">"1.5"</span>)?)   <span class="c"># =&gt; 2.25</span></pre>
 <h3 id="fn-diva-decimal-b-decimal-places-int-how-rounding---resultdecimal-str"><code>fn div(a: Decimal, b: Decimal, places: Int, how: Rounding) -&gt; Result(Decimal, Str)</code></h3>
 <p><code>a / b</code> to <code>places</code> places, rounded as asked; <code>Err</code> on a zero divisor.</p>
+<pre>decimal.div(decimal.from_int(<span class="n">1</span>), decimal.from_int(<span class="n">3</span>), <span class="n">4</span>, decimal.<span class="t">HalfUp</span>)   <span class="c"># =&gt; Ok(0.3333)</span>
+decimal.div(decimal.from_int(<span class="n">1</span>), decimal.zero(), <span class="n">2</span>, decimal.<span class="t">HalfUp</span>)         <span class="c"># =&gt; Err(division by zero)</span></pre>
 <h3 id="fn-cmpa-decimal-b-decimal---int"><code>fn cmp(a: Decimal, b: Decimal) -&gt; Int</code></h3>
+<pre>decimal.cmp(decimal.parse(<span class="s">"1.10"</span>)?, decimal.parse(<span class="s">"1.1"</span>)?)   <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-eqa-decimal-b-decimal---bool"><code>fn eq(a: Decimal, b: Decimal) -&gt; Bool</code></h3>
+<pre>decimal.eq(decimal.parse(<span class="s">"1.10"</span>)?, decimal.parse(<span class="s">"1.1"</span>)?)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-as_floatd-decimal---float"><code>fn as_float(d: Decimal) -&gt; Float</code></h3>
+<pre>decimal.as_float(decimal.parse(<span class="s">"12.50"</span>)?)   <span class="c"># =&gt; 12.5</span></pre>
 <h3 id="fn-textd-decimal---str"><code>fn text(d: Decimal) -&gt; Str</code></h3>
 <p><code>-12.50</code> for <code>Decimal(-1250, 2)</code>; a scale of zero prints no point.</p>
+<pre>decimal.text(decimal.<span class="t">Decimal</span>(-<span class="n">1250</span>, <span class="n">2</span>))   <span class="c"># =&gt; -12.50</span>
+decimal.text(decimal.<span class="t">Decimal</span>(<span class="n">7</span>, <span class="n">0</span>))       <span class="c"># =&gt; 7</span></pre>
 <h3 id="fn-parses-str---resultdecimal-str"><code>fn parse(s: Str) -&gt; Result(Decimal, Str)</code></h3>
 <p><code>12</code>, <code>12.5</code>, <code>-0.75</code>, <code>+3.00</code>: digits with at most one point.</p>
+<pre>decimal.parse(<span class="s">"+3.00"</span>)   <span class="c"># =&gt; Ok(3.00)</span>
+decimal.parse(<span class="s">"1.2.3"</span>)   <span class="c"># =&gt; Err(`1.2.3` has two points)</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_text_and_parse</code></li>

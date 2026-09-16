@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -87,6 +88,14 @@
 <p>Three things keep it fast. An operation writes its result into an operand's own storage when that operand is a temporary nobody else can see (<code>unique</code>), so <code>a * 2.0 + 1.0</code> makes one grid and not two. The reductions run eight partial sums in four vector lanes, and <code>matmul</code> is a register-blocked kernel written in <code>Float2</code>. And on a <code>--parallel</code> build with <code>RILL_THREADS</code> set, anything over a quarter of a million elements is split across the workers in strands; a single-worker run never spawns.</p>
 <p>import "num/grid" as g a = g.arange(6) |&gt; g.reshape2(2, 3) b = g.transpose(a) println(g.matmul(a, b)) # [[5, 14], [14, 50]]</p>
 <p>From Python it is <code>import grid as g</code> — <code>bindings/python</code> builds this library into a shared object and gives its handles NumPy's notation.</p>
+<pre><span class="k">import</span> <span class="s">"num/grid"</span> <span class="k">as</span> g
+a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+a                                  <span class="c"># =&gt; [[0, 1, 2], [3, 4, 5]]</span>
+b = g.transpose(a)
+g.matmul(a, b)                     <span class="c"># =&gt; [[5, 14], [14, 50]]</span>
+g.sum(a)                           <span class="c"># =&gt; 15</span>
+g.gtk(a, <span class="n">2.0</span>)                      <span class="c"># =&gt; [[false, false, false], [true, true, true]]</span>
+g.<span class="k">where</span>(g.gtk(a, <span class="n">2.0</span>), a, g.zeros_like(a))   <span class="c"># =&gt; [[0, 0, 0], [3, 4, 5]]</span></pre>
 <h2 id="types">Types</h2>
 <h3 id="grid"><code>Grid</code></h3>
 <ul>
@@ -119,480 +128,571 @@
 </ul>
 <h2 id="functions">Functions</h2>
 <h3 id="fn-ndimg-grid---int"><code>fn ndim(g: Grid) -&gt; Int</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.ndim(a)              <span class="c"># =&gt; 2</span>
+g.ndim(g.arange(<span class="n">3</span>))    <span class="c"># =&gt; 1</span></pre>
 <h3 id="fn-sizeg-grid---int"><code>fn size(g: Grid) -&gt; Int</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.size(a)   <span class="c"># =&gt; 6</span></pre>
 <h3 id="fn-countshape-bufint---int"><code>fn count(shape: Buf(Int)) -&gt; Int</code></h3>
+<pre>g.count(g.shape2(<span class="n">2</span>, <span class="n">3</span>))   <span class="c"># =&gt; 6</span></pre>
 <h3 id="fn-rows_ofg-grid---int"><code>fn rows_of(g: Grid) -&gt; Int</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.rows_of(a)   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-cols_ofg-grid---int"><code>fn cols_of(g: Grid) -&gt; Int</code></h3>
-<h3 id="fn-rowmajorshape-bufint---bufint"><code>fn rowmajor(shape: Buf(Int)) -&gt; Buf(Int)</code></h3>
-<p>Row-major strides for a shape: the last axis steps by one.</p>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.cols_of(a)   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-shape1n-int---bufint"><code>fn shape1(n: Int) -&gt; Buf(Int)</code></h3>
+<pre><span class="c">#g.shape1(4)      # =&gt; 1</span>
+g.shape1(<span class="n">4</span>)[<span class="n">0</span>]    <span class="c"># =&gt; 4</span></pre>
 <h3 id="fn-shape2r-int-c-int---bufint"><code>fn shape2(r: Int, c: Int) -&gt; Buf(Int)</code></h3>
+<pre>s = g.shape2(<span class="n">2</span>, <span class="n">3</span>)
+s[<span class="n">0</span>]   <span class="c"># =&gt; 2</span>
+s[<span class="n">1</span>]   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-same_shapea-grid-b-grid---bool"><code>fn same_shape(a: Grid, b: Grid) -&gt; Bool</code></h3>
-<h3 id="fn-same_dimsa-grid-b-grid---bool"><code>fn same_dims(a: Grid, b: Grid) -&gt; Bool</code></h3>
+<pre>g.same_shape(g.zeros2(<span class="n">2</span>, <span class="n">3</span>), g.ones2(<span class="n">2</span>, <span class="n">3</span>))   <span class="c"># =&gt; true</span>
+g.same_shape(g.zeros2(<span class="n">2</span>, <span class="n">3</span>), g.ones2(<span class="n">3</span>, <span class="n">2</span>))   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-contiguousg-grid---bool"><code>fn contiguous(g: Grid) -&gt; Bool</code></h3>
 <p>Whether the elements sit in the buffer in order, starting at its front.</p>
-<h3 id="fn-standard_stridesg-grid---bool"><code>fn standard_strides(g: Grid) -&gt; Bool</code></h3>
-<h3 id="fn-failmsg-str---int"><code>fn fail(msg: Str) -&gt; Int</code></h3>
-<h3 id="fn-need_samea-grid-b-grid-what-str---int"><code>fn need_same(a: Grid, b: Grid, what: Str) -&gt; Int</code></h3>
-<h3 id="fn-need_maskm-mask-a-grid-what-str---int"><code>fn need_mask(m: Mask, a: Grid, what: Str) -&gt; Int</code></h3>
-<h3 id="fn-show_shapeshape-bufint---str"><code>fn show_shape(shape: Buf(Int)) -&gt; Str</code></h3>
-<h3 id="fn-parn-int---bool"><code>fn par(n: Int) -&gt; Bool</code></h3>
-<p>Work worth splitting: enough elements that the strands' start and the wait for them are small against the work — a few million, a millisecond or so of streaming — and more than one worker to split it over. On a single-worker run nothing here ever spawns.</p>
-<h3 id="fn-par_flopsf-int---bool"><code>fn par_flops(f: Int) -&gt; Bool</code></h3>
-<p>The same question asked of arithmetic rather than elements: a matrix multiplication moves far less memory per operation than a pass over an array does, so it is worth splitting at a hundredth of the size.</p>
-<h3 id="fn-strands_forflops-int---int"><code>fn strands_for(flops: Int) -&gt; Int</code></h3>
-<p>One strand per million operations, up to what the machine has.</p>
-<h3 id="fn-strands_streamingflops-int---int"><code>fn strands_streaming(flops: Int) -&gt; Int</code></h3>
-<p>The same question for work that reads far more than it computes: solving against many right-hand sides walks the whole triangle once per strand, so past a few strands it is the memory bus that answers and another strand only makes it wait. One per thirty-two million operations.</p>
-<h3 id="fn-chunk_jobf-a-b---c-lo-a-hi-b-done-chanint---unit"><code>fn chunk_job(f: ('a, 'b) -&gt; 'c, lo: 'a, hi: 'b, done: Chan(Int)) -&gt; Unit</code></h3>
-<h3 id="fn-runn-int-f-int-int---int---int"><code>fn run(n: Int, f: (Int, Int) -&gt; Int) -&gt; Int</code></h3>
-<p><code>f(lo, hi)</code> over [0, n) split evenly across the workers, and waits.</p>
-<h3 id="fn-run_splitchunks-int-n-int-f-int-int---int---int"><code>fn run_split(chunks: Int, n: Int, f: (Int, Int) -&gt; Int) -&gt; Int</code></h3>
-<p>The same over a given number of pieces. Starting ten strands and waiting for them costs thirty-five microseconds; four costs five. A piece of work worth eighty microseconds is worth four strands and not ten, and a factorisation makes dozens of such pieces — so the count follows the work rather than the machine.</p>
-<h3 id="fn-part_jobf-a-b---c-t-d-lo-a-hi-b-out-chand-c---unit"><code>fn part_job(f: ('a, 'b) -&gt; 'c, t: 'd, lo: 'a, hi: 'b, out: Chan(('d, 'c))) -&gt; Unit</code></h3>
-<h3 id="fn-reduce_fn-int-f-int-int---float-combine-float-float---float---float"><code>fn reduce_f(n: Int, f: (Int, Int) -&gt; Float, combine: (Float, Float) -&gt; Float) -&gt; Float</code></h3>
-<p>Each worker's <code>f</code> over its share, combined in worker order — the same order every run, so the answer is the same every run.</p>
-<h3 id="fn-part_job2f-a-b---c-d-t-e-lo-a-hi-b-out-chane-c-d---unit"><code>fn part_job2(f: ('a, 'b) -&gt; ('c, 'd), t: 'e, lo: 'a, hi: 'b, out: Chan(('e, 'c, 'd))) -&gt; Unit</code></h3>
-<h3 id="fn-reduce_fin-int-f-int-int---float-int-combine-float-int-float-int---float-int---float-int"><code>fn reduce_fi(n: Int, f: (Int, Int) -&gt; (Float, Int), combine: (Float, Int, Float, Int) -&gt; (Float, Int)) -&gt; (Float, Int)</code></h3>
-<p>The same for a (value, place) pair.</p>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.contiguous(a)                <span class="c"># =&gt; true</span>
+g.contiguous(g.transpose(a))   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-zerosshape-bufint---grid"><code>fn zeros(shape: Buf(Int)) -&gt; Grid</code></h3>
-<h3 id="fn-freshshape-bufint---grid"><code>fn fresh(shape: Buf(Int)) -&gt; Grid</code></h3>
-<p>A grid about to have every element written: no clearing pass first.</p>
+<pre>g.zeros(g.shape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [[0, 0], [0, 0]]</span></pre>
 <h3 id="fn-zeros1n-int---grid"><code>fn zeros1(n: Int) -&gt; Grid</code></h3>
+<pre>g.zeros1(<span class="n">3</span>)   <span class="c"># =&gt; [0, 0, 0]</span></pre>
 <h3 id="fn-zeros2r-int-c-int---grid"><code>fn zeros2(r: Int, c: Int) -&gt; Grid</code></h3>
+<pre>g.zeros2(<span class="n">1</span>, <span class="n">2</span>)   <span class="c"># =&gt; [[0, 0]]</span></pre>
 <h3 id="fn-fullshape-bufint-v-float---grid"><code>fn full(shape: Buf(Int), v: Float) -&gt; Grid</code></h3>
+<pre>g.full(g.shape1(<span class="n">3</span>), <span class="n">7.5</span>)   <span class="c"># =&gt; [7.5, 7.5, 7.5]</span></pre>
 <h3 id="fn-onesshape-bufint---grid"><code>fn ones(shape: Buf(Int)) -&gt; Grid</code></h3>
+<pre>g.ones(g.shape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [[1, 1], [1, 1]]</span></pre>
 <h3 id="fn-ones1n-int---grid"><code>fn ones1(n: Int) -&gt; Grid</code></h3>
+<pre>g.ones1(<span class="n">2</span>)   <span class="c"># =&gt; [1, 1]</span></pre>
 <h3 id="fn-ones2r-int-c-int---grid"><code>fn ones2(r: Int, c: Int) -&gt; Grid</code></h3>
+<pre>g.ones2(<span class="n">2</span>, <span class="n">1</span>)   <span class="c"># =&gt; [[1], [1]]</span></pre>
 <h3 id="fn-full2r-int-c-int-v-float---grid"><code>fn full2(r: Int, c: Int, v: Float) -&gt; Grid</code></h3>
+<pre>g.full2(<span class="n">2</span>, <span class="n">2</span>, <span class="n">3.0</span>)   <span class="c"># =&gt; [[3, 3], [3, 3]]</span></pre>
 <h3 id="fn-arangen-int---grid"><code>fn arange(n: Int) -&gt; Grid</code></h3>
 <p>0, 1, …, n - 1</p>
+<pre>g.arange(<span class="n">5</span>)   <span class="c"># =&gt; [0, 1, 2, 3, 4]</span></pre>
 <h3 id="fn-linspacea-float-b-float-n-int---grid"><code>fn linspace(a: Float, b: Float, n: Int) -&gt; Grid</code></h3>
+<pre>g.linspace(<span class="n">0.0</span>, <span class="n">1.0</span>, <span class="n">5</span>)   <span class="c"># =&gt; [0, 0.25, 0.5, 0.75, 1]</span></pre>
 <h3 id="fn-ofxs-listfloat---grid"><code>fn of(xs: List(Float)) -&gt; Grid</code></h3>
 <p>A 1-D grid from a list of floats.</p>
+<pre>g.of(<span class="t">Cons</span>(<span class="n">1.5</span>, <span class="t">Cons</span>(<span class="n">2.5</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; [1.5, 2.5]</span></pre>
 <h3 id="fn-from_fn2r-int-c-int-f-int-int---float---grid"><code>fn from_fn2(r: Int, c: Int, f: (Int, Int) -&gt; Float) -&gt; Grid</code></h3>
 <p>A grid whose element at (i, j) is <code>f(i, j)</code>.</p>
+<pre>g.from_fn2(<span class="n">2</span>, <span class="n">3</span>, \i, j <span class="o">-&gt;</span> <span class="f">to_float</span>(i * <span class="n">10</span> + j))   <span class="c"># =&gt; [[0, 1, 2], [10, 11, 12]]</span></pre>
 <h3 id="fn-from_fn1n-int-f-int---float---grid"><code>fn from_fn1(n: Int, f: (Int) -&gt; Float) -&gt; Grid</code></h3>
+<pre>g.from_fn1(<span class="n">4</span>, \i <span class="o">-&gt;</span> <span class="f">to_float</span>(i * i))   <span class="c"># =&gt; [0, 1, 4, 9]</span></pre>
 <h3 id="fn-at1g-grid-i-int---float"><code>fn at1(g: Grid, i: Int) -&gt; Float</code></h3>
+<pre>g.at1(g.arange(<span class="n">5</span>), <span class="n">3</span>)   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-at2g-grid-i-int-j-int---float"><code>fn at2(g: Grid, i: Int, j: Int) -&gt; Float</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.at2(a, <span class="n">1</span>, <span class="n">2</span>)   <span class="c"># =&gt; 5</span></pre>
 <h3 id="fn-put1g-grid-i-int-v-float---unit"><code>fn put1(g: Grid, i: Int, v: Float) -&gt; Unit</code></h3>
+<pre>v = g.zeros1(<span class="n">3</span>)
+g.put1(v, <span class="n">1</span>, <span class="n">9.0</span>)
+v   <span class="c"># =&gt; [0, 9, 0]</span></pre>
 <h3 id="fn-put2g-grid-i-int-j-int-v-float---unit"><code>fn put2(g: Grid, i: Int, j: Int, v: Float) -&gt; Unit</code></h3>
-<h3 id="fn-posg-grid-k-int---int"><code>fn pos(g: Grid, k: Int) -&gt; Int</code></h3>
-<p>The buffer position of the k-th element in row-major order, for any shape.</p>
+<pre>m = g.zeros2(<span class="n">2</span>, <span class="n">2</span>)
+g.put2(m, <span class="n">1</span>, <span class="n">0</span>, <span class="n">9.0</span>)
+m   <span class="c"># =&gt; [[0, 0], [9, 0]]</span></pre>
 <h3 id="fn-transposeg-grid---grid"><code>fn transpose(g: Grid) -&gt; Grid</code></h3>
 <p>Two-dimensional transpose: the same buffer read the other way round.</p>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.transpose(a)   <span class="c"># =&gt; [[0, 3], [1, 4], [2, 5]]</span></pre>
 <h3 id="fn-rowsg-grid-lo-int-hi-int---grid"><code>fn rows(g: Grid, lo: Int, hi: Int) -&gt; Grid</code></h3>
 <p>Rows lo up to hi of a 2-D grid, or elements lo up to hi of a 1-D one.</p>
+<pre>m = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">3</span>, <span class="n">2</span>)
+g.rows(m, <span class="n">1</span>, <span class="n">3</span>)   <span class="c"># =&gt; [[2, 3], [4, 5]]</span>
+g.rows(g.arange(<span class="n">5</span>), <span class="n">1</span>, <span class="n">3</span>)   <span class="c"># =&gt; [1, 2]</span></pre>
 <h3 id="fn-slice1g-grid-lo-int-hi-int---grid"><code>fn slice1(g: Grid, lo: Int, hi: Int) -&gt; Grid</code></h3>
+<pre>g.slice1(g.arange(<span class="n">5</span>), <span class="n">2</span>, <span class="n">4</span>)   <span class="c"># =&gt; [2, 3]</span></pre>
 <h3 id="fn-rowg-grid-i-int---grid"><code>fn row(g: Grid, i: Int) -&gt; Grid</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.row(a, <span class="n">1</span>)   <span class="c"># =&gt; [3, 4, 5]</span></pre>
 <h3 id="fn-colg-grid-j-int---grid"><code>fn col(g: Grid, j: Int) -&gt; Grid</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.col(a, <span class="n">2</span>)   <span class="c"># =&gt; [2, 5]</span></pre>
 <h3 id="fn-copyg-grid---grid"><code>fn copy(g: Grid) -&gt; Grid</code></h3>
 <p>A contiguous grid with the same elements.</p>
-<h3 id="fn-copy_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn copy_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+t = g.transpose(a)
+g.contiguous(g.copy(t))   <span class="c"># =&gt; true</span>
+g.copy(t)                 <span class="c"># =&gt; [[0, 3], [1, 4], [2, 5]]</span></pre>
 <h3 id="fn-reshapeg-grid-shape-bufint---grid"><code>fn reshape(g: Grid, shape: Buf(Int)) -&gt; Grid</code></h3>
+<pre>g.reshape(g.arange(<span class="n">4</span>), g.shape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [[0, 1], [2, 3]]</span></pre>
 <h3 id="fn-reshape2g-grid-r-int-c-int---grid"><code>fn reshape2(g: Grid, r: Int, c: Int) -&gt; Grid</code></h3>
+<pre>g.reshape2(g.arange(<span class="n">6</span>), <span class="n">3</span>, <span class="n">2</span>)   <span class="c"># =&gt; [[0, 1], [2, 3], [4, 5]]</span></pre>
 <h3 id="fn-flatteng-grid---grid"><code>fn flatten(g: Grid) -&gt; Grid</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.flatten(a)   <span class="c"># =&gt; [0, 1, 2, 3, 4, 5]</span></pre>
 <h3 id="fn-empty_likeg-grid---grid"><code>fn empty_like(g: Grid) -&gt; Grid</code></h3>
 <p>A grid of the same shape, filled with nothing in particular, with zeros, with ones, or with one number.</p>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.same_shape(g.empty_like(a), a)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-zeros_likeg-grid---grid"><code>fn zeros_like(g: Grid) -&gt; Grid</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.zeros_like(a)   <span class="c"># =&gt; [[0, 0, 0], [0, 0, 0]]</span></pre>
 <h3 id="fn-ones_likeg-grid---grid"><code>fn ones_like(g: Grid) -&gt; Grid</code></h3>
+<pre>g.ones_like(g.arange(<span class="n">3</span>))   <span class="c"># =&gt; [1, 1, 1]</span></pre>
 <h3 id="fn-full_likeg-grid-v-float---grid"><code>fn full_like(g: Grid, v: Float) -&gt; Grid</code></h3>
-<h3 id="fn-dup_shapeshape-bufint---bufint"><code>fn dup_shape(shape: Buf(Int)) -&gt; Buf(Int)</code></h3>
+<pre>g.full_like(g.arange(<span class="n">2</span>), <span class="n">4.0</span>)   <span class="c"># =&gt; [4, 4]</span></pre>
 <h3 id="fn-squeezeg-grid---grid"><code>fn squeeze(g: Grid) -&gt; Grid</code></h3>
 <p>A 2-D grid with one row or one column becomes the 1-D grid of its elements; anything else is unchanged.</p>
+<pre>g.squeeze(g.ones2(<span class="n">1</span>, <span class="n">3</span>))   <span class="c"># =&gt; [1, 1, 1]</span>
+g.squeeze(g.ones2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [[1, 1], [1, 1]]</span></pre>
 <h3 id="fn-ravelg-grid---grid"><code>fn ravel(g: Grid) -&gt; Grid</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.ravel(g.transpose(a))   <span class="c"># =&gt; [0, 3, 1, 4, 2, 5]</span></pre>
 <h3 id="fn-logspacea-float-b-float-n-int-base-float---grid"><code>fn logspace(a: Float, b: Float, n: Int, base: Float) -&gt; Grid</code></h3>
 <p><code>n</code> numbers from <code>a</code> to <code>b</code>, evenly spaced in the exponent: <code>logspace</code> takes the ends as powers of the base, <code>geomspace</code> as the values.</p>
+<pre>g.logspace(<span class="n">0.0</span>, <span class="n">2.0</span>, <span class="n">3</span>, <span class="n">10.0</span>)   <span class="c"># =&gt; [1, 10, 100]</span></pre>
 <h3 id="fn-geomspacea-float-b-float-n-int---grid"><code>fn geomspace(a: Float, b: Float, n: Int) -&gt; Grid</code></h3>
+<pre>g.geomspace(<span class="n">1.0</span>, <span class="n">8.0</span>, <span class="n">4</span>)   <span class="c"># =&gt; [1, 2, 4, 8]</span></pre>
 <h3 id="fn-concata-grid-b-grid-axis-int---grid"><code>fn concat(a: Grid, b: Grid, axis: Int) -&gt; Grid</code></h3>
 <p>Joining: <code>axis</code> 0 adds rows, 1 adds columns. Two 1-D grids join end to end.</p>
+<pre>g.concat(g.ones2(<span class="n">1</span>, <span class="n">2</span>), g.zeros2(<span class="n">1</span>, <span class="n">2</span>), <span class="n">0</span>)   <span class="c"># =&gt; [[1, 1], [0, 0]]</span>
+g.concat(g.ones2(<span class="n">1</span>, <span class="n">2</span>), g.zeros2(<span class="n">1</span>, <span class="n">2</span>), <span class="n">1</span>)   <span class="c"># =&gt; [[1, 1, 0, 0]]</span>
+g.concat(g.arange(<span class="n">2</span>), g.arange(<span class="n">2</span>), <span class="n">0</span>)        <span class="c"># =&gt; [0, 1, 0, 1]</span></pre>
 <h3 id="fn-as_rowsg-grid---grid"><code>fn as_rows(g: Grid) -&gt; Grid</code></h3>
+<pre>g.as_rows(g.arange(<span class="n">3</span>))   <span class="c"># =&gt; [[0, 1, 2]]</span></pre>
 <h3 id="fn-vstacka-grid-b-grid---grid"><code>fn vstack(a: Grid, b: Grid) -&gt; Grid</code></h3>
+<pre>g.vstack(g.arange(<span class="n">2</span>), g.ones1(<span class="n">2</span>))   <span class="c"># =&gt; [[0, 1], [1, 1]]</span></pre>
 <h3 id="fn-hstacka-grid-b-grid---grid"><code>fn hstack(a: Grid, b: Grid) -&gt; Grid</code></h3>
+<pre>g.hstack(g.ones2(<span class="n">2</span>, <span class="n">1</span>), g.zeros2(<span class="n">2</span>, <span class="n">1</span>))   <span class="c"># =&gt; [[1, 0], [1, 0]]</span></pre>
 <h3 id="fn-stacka-grid-b-grid---grid"><code>fn stack(a: Grid, b: Grid) -&gt; Grid</code></h3>
 <p>Two 1-D grids as the two rows of a 2-D one.</p>
+<pre>g.stack(g.arange(<span class="n">2</span>), g.ones1(<span class="n">2</span>))   <span class="c"># =&gt; [[0, 1], [1, 1]]</span></pre>
 <h3 id="fn-tileg-grid-k-int---grid"><code>fn tile(g: Grid, k: Int) -&gt; Grid</code></h3>
 <p>The whole grid laid down <code>k</code> times, and each element <code>k</code> times over.</p>
+<pre>g.tile(g.arange(<span class="n">2</span>), <span class="n">2</span>)   <span class="c"># =&gt; [0, 1, 0, 1]</span></pre>
 <h3 id="fn-repeatg-grid-k-int---grid"><code>fn repeat(g: Grid, k: Int) -&gt; Grid</code></h3>
+<pre>g.repeat(g.arange(<span class="n">2</span>), <span class="n">2</span>)   <span class="c"># =&gt; [0, 0, 1, 1]</span></pre>
 <h3 id="fn-diagg-grid---grid"><code>fn diag(g: Grid) -&gt; Grid</code></h3>
 <p>From a 1-D grid, the square matrix with it down the diagonal; from a 2-D one, the diagonal itself.</p>
+<pre>g.diag(g.arange(<span class="n">2</span>))                          <span class="c"># =&gt; [[0, 0], [0, 1]]</span>
+g.diag(g.arange(<span class="n">4</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))      <span class="c"># =&gt; [0, 3]</span></pre>
 <h3 id="fn-diagonalg-grid---grid"><code>fn diagonal(g: Grid) -&gt; Grid</code></h3>
+<pre>g.diagonal(g.arange(<span class="n">4</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [0, 3]</span></pre>
 <h3 id="fn-trilg-grid-k-int---grid"><code>fn tril(g: Grid, k: Int) -&gt; Grid</code></h3>
 <p>The lower and upper triangles, keeping everything on or beyond the k-th diagonal and zeroing the rest.</p>
+<pre>g.tril(g.ones2(<span class="n">2</span>, <span class="n">2</span>), <span class="n">0</span>)   <span class="c"># =&gt; [[1, 0], [1, 1]]</span></pre>
 <h3 id="fn-triug-grid-k-int---grid"><code>fn triu(g: Grid, k: Int) -&gt; Grid</code></h3>
+<pre>g.triu(g.ones2(<span class="n">2</span>, <span class="n">2</span>), <span class="n">0</span>)   <span class="c"># =&gt; [[1, 1], [0, 1]]</span></pre>
 <h3 id="fn-meshgridx-grid-y-grid---grid-grid"><code>fn meshgrid(x: Grid, y: Grid) -&gt; (Grid, Grid)</code></h3>
 <p>Every pair from <code>x</code> and <code>y</code>, as NumPy lays them out: rows of <code>x</code> repeated down, columns of <code>y</code> repeated across.</p>
+<pre>(xs, ys) = g.meshgrid(g.arange(<span class="n">2</span>), g.arange(<span class="n">3</span>))
+xs   <span class="c"># =&gt; [[0, 1], [0, 1], [0, 1]]</span>
+ys   <span class="c"># =&gt; [[0, 0], [1, 1], [2, 2]]</span></pre>
 <h3 id="fn-fliplrg-grid---grid"><code>fn fliplr(g: Grid) -&gt; Grid</code></h3>
 <p>Reversed: along the last axis, or both axes of a 2-D grid.</p>
+<pre>g.fliplr(g.arange(<span class="n">3</span>))                          <span class="c"># =&gt; [2, 1, 0]</span>
+g.fliplr(g.arange(<span class="n">4</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))      <span class="c"># =&gt; [[1, 0], [3, 2]]</span></pre>
 <h3 id="fn-flipudg-grid---grid"><code>fn flipud(g: Grid) -&gt; Grid</code></h3>
+<pre>g.flipud(g.arange(<span class="n">4</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [[2, 3], [0, 1]]</span></pre>
 <h3 id="fn-flipg-grid---grid"><code>fn flip(g: Grid) -&gt; Grid</code></h3>
+<pre>g.flip(g.arange(<span class="n">4</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [[3, 2], [1, 0]]</span></pre>
 <h3 id="fn-rollg-grid-k-int---grid"><code>fn roll(g: Grid, k: Int) -&gt; Grid</code></h3>
 <p>Everything moved along by <code>k</code>, what falls off one end coming back at the other.</p>
+<pre>g.roll(g.arange(<span class="n">4</span>), <span class="n">1</span>)    <span class="c"># =&gt; [3, 0, 1, 2]</span>
+g.roll(g.arange(<span class="n">4</span>), -<span class="n">1</span>)   <span class="c"># =&gt; [1, 2, 3, 0]</span></pre>
 <h3 id="fn-takeg-grid-idx-grid---grid"><code>fn take(g: Grid, idx: Grid) -&gt; Grid</code></h3>
 <p>The elements at the given positions, which are a grid of numbers.</p>
+<pre>g.take(g.of(<span class="t">Cons</span>(<span class="n">10.0</span>, <span class="t">Cons</span>(<span class="n">20.0</span>, <span class="t">Cons</span>(<span class="n">30.0</span>, <span class="t">Nil</span>)))), g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [30, 10]</span></pre>
 <h3 id="fn-denseg-grid---grid"><code>fn dense(g: Grid) -&gt; Grid</code></h3>
 <p>The contiguous copy every operation works from when a view is handed in.</p>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.dense(g.transpose(a))   <span class="c"># =&gt; [[0, 3], [1, 4], [2, 5]]</span></pre>
 <h3 id="fn-adda-grid-b-grid---grid"><code>fn add(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-add_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn add_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.add(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [1, 2, 3]</span></pre>
 <h3 id="fn-add_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn add_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
 <p>The same, written into the first operand's own storage: one buffer, so the loop has no overlap to worry about and vectorizes as the fresh one.</p>
+<pre>v = g.arange(<span class="n">3</span>)
+g.add_into(v.data, g.ones1(<span class="n">3</span>).data, <span class="n">0</span>, <span class="n">3</span>)   <span class="c"># the buffers, over a range: what the Python binding calls</span>
+v   <span class="c"># =&gt; [1, 2, 3]</span></pre>
 <h3 id="fn-suba-grid-b-grid---grid"><code>fn sub(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-sub_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn sub_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.sub(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [-1, 0, 1]</span></pre>
 <h3 id="fn-sub_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn sub_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
 <p>The same, written into the first operand's own storage: one buffer, so the loop has no overlap to worry about and vectorizes as the fresh one.</p>
-<h3 id="fn-sub_ontox-buffloat-o-buffloat-lo-int-hi-int---int"><code>fn sub_onto(x: Buf(Float), o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.arange(<span class="n">3</span>)
+g.sub_into(v.data, g.ones1(<span class="n">3</span>).data, <span class="n">0</span>, <span class="n">3</span>)
+v   <span class="c"># =&gt; [-1, 0, 1]</span></pre>
 <h3 id="fn-mula-grid-b-grid---grid"><code>fn mul(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-mul_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn mul_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.mul(g.arange(<span class="n">3</span>), g.arange(<span class="n">3</span>))   <span class="c"># =&gt; [0, 1, 4]</span></pre>
 <h3 id="fn-mul_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn mul_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
 <p>The same, written into the first operand's own storage: one buffer, so the loop has no overlap to worry about and vectorizes as the fresh one.</p>
+<pre>v = g.arange(<span class="n">3</span>)
+g.mul_into(v.data, g.arange(<span class="n">3</span>).data, <span class="n">0</span>, <span class="n">3</span>)
+v   <span class="c"># =&gt; [0, 1, 4]</span></pre>
 <h3 id="fn-diva-grid-b-grid---grid"><code>fn div(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-div_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn div_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.div(g.ones1(<span class="n">2</span>), g.full(g.shape1(<span class="n">2</span>), <span class="n">4.0</span>))   <span class="c"># =&gt; [0.25, 0.25]</span></pre>
 <h3 id="fn-div_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn div_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
 <p>The same, written into the first operand's own storage: one buffer, so the loop has no overlap to worry about and vectorizes as the fresh one.</p>
-<h3 id="fn-div_ontox-buffloat-o-buffloat-lo-int-hi-int---int"><code>fn div_onto(x: Buf(Float), o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.ones1(<span class="n">2</span>)
+g.div_into(v.data, g.full(g.shape1(<span class="n">2</span>), <span class="n">4.0</span>).data, <span class="n">0</span>, <span class="n">2</span>)
+v   <span class="c"># =&gt; [0.25, 0.25]</span></pre>
 <h3 id="fn-maximuma-grid-b-grid---grid"><code>fn maximum(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-maximum_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn maximum_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.maximum(g.arange(<span class="n">3</span>), g.full(g.shape1(<span class="n">3</span>), <span class="n">1.0</span>))   <span class="c"># =&gt; [1, 1, 2]</span></pre>
 <h3 id="fn-maximum_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn maximum_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
 <p>The same, written into the first operand's own storage: one buffer, so the loop has no overlap to worry about and vectorizes as the fresh one.</p>
+<pre>v = g.arange(<span class="n">3</span>)
+g.maximum_into(v.data, g.ones1(<span class="n">3</span>).data, <span class="n">0</span>, <span class="n">3</span>)
+v   <span class="c"># =&gt; [1, 1, 2]</span></pre>
 <h3 id="fn-minimuma-grid-b-grid---grid"><code>fn minimum(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-minimum_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn minimum_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.minimum(g.arange(<span class="n">3</span>), g.full(g.shape1(<span class="n">3</span>), <span class="n">1.0</span>))   <span class="c"># =&gt; [0, 1, 1]</span></pre>
 <h3 id="fn-minimum_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn minimum_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
 <p>The same, written into the first operand's own storage: one buffer, so the loop has no overlap to worry about and vectorizes as the fresh one.</p>
+<pre>v = g.arange(<span class="n">3</span>)
+g.minimum_into(v.data, g.ones1(<span class="n">3</span>).data, <span class="n">0</span>, <span class="n">3</span>)
+v   <span class="c"># =&gt; [0, 1, 1]</span></pre>
 <h3 id="fn-scaleg-grid-v-float---grid"><code>fn scale(g: Grid, v: Float) -&gt; Grid</code></h3>
 <p>Every element times <code>v</code>, plus <code>v</code>, to the power <code>v</code>.</p>
-<h3 id="fn-scale_parto-buffloat-x-buffloat-v-float-lo-int-hi-int---int"><code>fn scale_part(o: Buf(Float), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.scale(g.arange(<span class="n">3</span>), <span class="n">2.0</span>)   <span class="c"># =&gt; [0, 2, 4]</span></pre>
 <h3 id="fn-scale_intoo-buffloat-v-float-lo-int-hi-int---int"><code>fn scale_into(o: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.arange(<span class="n">3</span>)
+g.scale_into(v.data, <span class="n">2.0</span>, <span class="n">0</span>, <span class="n">3</span>)
+v   <span class="c"># =&gt; [0, 2, 4]</span></pre>
 <h3 id="fn-shiftg-grid-v-float---grid"><code>fn shift(g: Grid, v: Float) -&gt; Grid</code></h3>
-<h3 id="fn-shift_parto-buffloat-x-buffloat-v-float-lo-int-hi-int---int"><code>fn shift_part(o: Buf(Float), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.shift(g.arange(<span class="n">3</span>), <span class="n">10.0</span>)   <span class="c"># =&gt; [10, 11, 12]</span></pre>
 <h3 id="fn-shift_intoo-buffloat-v-float-lo-int-hi-int---int"><code>fn shift_into(o: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.arange(<span class="n">3</span>)
+g.shift_into(v.data, <span class="n">10.0</span>, <span class="n">0</span>, <span class="n">3</span>)
+v   <span class="c"># =&gt; [10, 11, 12]</span></pre>
 <h3 id="fn-powerg-grid-v-float---grid"><code>fn power(g: Grid, v: Float) -&gt; Grid</code></h3>
-<h3 id="fn-power_parto-buffloat-x-buffloat-v-float-lo-int-hi-int---int"><code>fn power_part(o: Buf(Float), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.power(g.arange(<span class="n">4</span>), <span class="n">2.0</span>)   <span class="c"># =&gt; [0, 1, 4, 9]</span></pre>
 <h3 id="fn-power_intoo-buffloat-v-float-lo-int-hi-int---int"><code>fn power_into(o: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.arange(<span class="n">4</span>)
+g.power_into(v.data, <span class="n">2.0</span>, <span class="n">0</span>, <span class="n">4</span>)
+v   <span class="c"># =&gt; [0, 1, 4, 9]</span></pre>
 <h3 id="fn-negg-grid---grid"><code>fn neg(g: Grid) -&gt; Grid</code></h3>
+<pre>g.neg(g.arange(<span class="n">3</span>))   <span class="c"># =&gt; [-0, -1, -2]</span></pre>
 <h3 id="fn-gabsg-grid---grid"><code>fn gabs(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gabs_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gabs_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gabs(g.of(<span class="t">Cons</span>(-<span class="n">1.5</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [1.5, 2]</span></pre>
 <h3 id="fn-gabs_intoo-buffloat-lo-int-hi-int---int"><code>fn gabs_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.of(<span class="t">Cons</span>(-<span class="n">1.5</span>, <span class="t">Nil</span>))
+g.gabs_into(v.data, <span class="n">0</span>, <span class="n">1</span>)
+v   <span class="c"># =&gt; [1.5]</span></pre>
 <h3 id="fn-gsqrtg-grid---grid"><code>fn gsqrt(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gsqrt_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gsqrt_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gsqrt(g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [2, 3]</span></pre>
 <h3 id="fn-gsqrt_intoo-buffloat-lo-int-hi-int---int"><code>fn gsqrt_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))
+g.gsqrt_into(v.data, <span class="n">0</span>, <span class="n">1</span>)
+v   <span class="c"># =&gt; [2]</span></pre>
 <h3 id="fn-gexpg-grid---grid"><code>fn gexp(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gexp_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gexp_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gexp(g.zeros1(<span class="n">2</span>))   <span class="c"># =&gt; [1, 1]</span></pre>
 <h3 id="fn-gexp_intoo-buffloat-lo-int-hi-int---int"><code>fn gexp_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.zeros1(<span class="n">1</span>)
+g.gexp_into(v.data, <span class="n">0</span>, <span class="n">1</span>)
+v   <span class="c"># =&gt; [1]</span></pre>
 <h3 id="fn-glogg-grid---grid"><code>fn glog(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-glog_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn glog_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.glog(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; [0]</span></pre>
 <h3 id="fn-glog_intoo-buffloat-lo-int-hi-int---int"><code>fn glog_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>v = g.ones1(<span class="n">1</span>)
+g.glog_into(v.data, <span class="n">0</span>, <span class="n">1</span>)
+v   <span class="c"># =&gt; [0]</span></pre>
 <h3 id="fn-pi---float"><code>fn pi() -&gt; Float</code></h3>
 <p>pi, to the last bit a double holds.</p>
+<pre>g.pi() &gt; <span class="n">3.14159</span> &amp;&amp; g.pi() &lt; <span class="n">3.1416</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-gsing-grid---grid"><code>fn gsin(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gsin_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gsin_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gsin_intoo-buffloat-lo-int-hi-int---int"><code>fn gsin_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gsin(g.zeros1(<span class="n">2</span>))   <span class="c"># =&gt; [0, 0]</span></pre>
 <h3 id="fn-gcosg-grid---grid"><code>fn gcos(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gcos_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gcos_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gcos_intoo-buffloat-lo-int-hi-int---int"><code>fn gcos_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gcos(g.zeros1(<span class="n">2</span>))   <span class="c"># =&gt; [1, 1]</span></pre>
 <h3 id="fn-gtang-grid---grid"><code>fn gtan(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gtan_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gtan_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gtan_intoo-buffloat-lo-int-hi-int---int"><code>fn gtan_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gtan(g.zeros1(<span class="n">1</span>))   <span class="c"># =&gt; [0]</span></pre>
 <h3 id="fn-gasing-grid---grid"><code>fn gasin(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gasin_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gasin_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gasin_intoo-buffloat-lo-int-hi-int---int"><code>fn gasin_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gasin(g.ones1(<span class="n">1</span>)) <span class="o">|&gt;</span> g.scale(<span class="n">2.0</span>) <span class="o">|&gt;</span> g.allclose(g.of(<span class="t">Cons</span>(g.pi(), <span class="t">Nil</span>)), <span class="n">0.000001</span>)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-gacosg-grid---grid"><code>fn gacos(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gacos_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gacos_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gacos_intoo-buffloat-lo-int-hi-int---int"><code>fn gacos_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gacos(g.ones1(<span class="n">2</span>))   <span class="c"># =&gt; [0, 0]</span></pre>
 <h3 id="fn-gatang-grid---grid"><code>fn gatan(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gatan_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gatan_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gatan_intoo-buffloat-lo-int-hi-int---int"><code>fn gatan_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gatan(g.zeros1(<span class="n">1</span>))   <span class="c"># =&gt; [0]</span></pre>
 <h3 id="fn-gsinhg-grid---grid"><code>fn gsinh(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gsinh_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gsinh_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gsinh_intoo-buffloat-lo-int-hi-int---int"><code>fn gsinh_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gsinh(g.zeros1(<span class="n">1</span>))   <span class="c"># =&gt; [0]</span></pre>
 <h3 id="fn-gcoshg-grid---grid"><code>fn gcosh(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gcosh_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gcosh_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gcosh_intoo-buffloat-lo-int-hi-int---int"><code>fn gcosh_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gcosh(g.zeros1(<span class="n">1</span>))   <span class="c"># =&gt; [1]</span></pre>
 <h3 id="fn-gtanhg-grid---grid"><code>fn gtanh(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gtanh_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gtanh_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gtanh_intoo-buffloat-lo-int-hi-int---int"><code>fn gtanh_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gtanh(g.zeros1(<span class="n">1</span>))   <span class="c"># =&gt; [0]</span></pre>
 <h3 id="fn-gexp2g-grid---grid"><code>fn gexp2(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gexp2_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gexp2_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gexp2_intoo-buffloat-lo-int-hi-int---int"><code>fn gexp2_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gexp2(g.arange(<span class="n">4</span>))   <span class="c"># =&gt; [1, 2, 4, 8]</span></pre>
 <h3 id="fn-gexpm1g-grid---grid"><code>fn gexpm1(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gexpm1_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gexpm1_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gexpm1_intoo-buffloat-lo-int-hi-int---int"><code>fn gexpm1_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gexpm1(g.zeros1(<span class="n">1</span>))   <span class="c"># =&gt; [0]</span></pre>
 <h3 id="fn-glog2g-grid---grid"><code>fn glog2(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-glog2_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn glog2_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-glog2_intoo-buffloat-lo-int-hi-int---int"><code>fn glog2_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.glog2(g.of(<span class="t">Cons</span>(<span class="n">8.0</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; [3]</span></pre>
 <h3 id="fn-glog10g-grid---grid"><code>fn glog10(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-glog10_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn glog10_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-glog10_intoo-buffloat-lo-int-hi-int---int"><code>fn glog10_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.glog10(g.of(<span class="t">Cons</span>(<span class="n">1000.0</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; [3]</span></pre>
 <h3 id="fn-glog1pg-grid---grid"><code>fn glog1p(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-glog1p_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn glog1p_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-glog1p_intoo-buffloat-lo-int-hi-int---int"><code>fn glog1p_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.glog1p(g.zeros1(<span class="n">1</span>))   <span class="c"># =&gt; [0]</span></pre>
 <h3 id="fn-gcbrtg-grid---grid"><code>fn gcbrt(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gcbrt_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gcbrt_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gcbrt_intoo-buffloat-lo-int-hi-int---int"><code>fn gcbrt_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gcbrt(g.of(<span class="t">Cons</span>(<span class="n">27.0</span>, <span class="t">Cons</span>(-<span class="n">8.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [3, -2]</span></pre>
 <h3 id="fn-gfloorg-grid---grid"><code>fn gfloor(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gfloor_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gfloor_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gfloor_intoo-buffloat-lo-int-hi-int---int"><code>fn gfloor_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gfloor(g.of(<span class="t">Cons</span>(<span class="n">1.7</span>, <span class="t">Cons</span>(-<span class="n">1.2</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [1, -2]</span></pre>
 <h3 id="fn-gceilg-grid---grid"><code>fn gceil(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gceil_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gceil_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gceil_intoo-buffloat-lo-int-hi-int---int"><code>fn gceil_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gceil(g.of(<span class="t">Cons</span>(<span class="n">1.2</span>, <span class="t">Cons</span>(-<span class="n">1.7</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [2, -1]</span></pre>
 <h3 id="fn-gtruncg-grid---grid"><code>fn gtrunc(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gtrunc_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gtrunc_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gtrunc_intoo-buffloat-lo-int-hi-int---int"><code>fn gtrunc_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gtrunc(g.of(<span class="t">Cons</span>(<span class="n">1.7</span>, <span class="t">Cons</span>(-<span class="n">1.7</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [1, -1]</span></pre>
 <h3 id="fn-groundg-grid---grid"><code>fn ground(g: Grid) -&gt; Grid</code></h3>
 <p>To the nearest whole number, a half going to the even one — what <code>rint</code> does and what NumPy's <code>round</code> and <code>rint</code> both do. C's <code>round</code> sends a half away from zero instead, which would put <code>round(2.5)</code> at 3 and <code>round(-2.5)</code> at -3; this puts both at 2 and -2.</p>
-<h3 id="fn-ground_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn ground_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-ground_intoo-buffloat-lo-int-hi-int---int"><code>fn ground_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.ground(g.of(<span class="t">Cons</span>(<span class="n">2.5</span>, <span class="t">Cons</span>(<span class="n">3.5</span>, <span class="t">Cons</span>(-<span class="n">2.5</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [2, 4, -2]</span></pre>
 <h3 id="fn-grintg-grid---grid"><code>fn grint(g: Grid) -&gt; Grid</code></h3>
+<pre>g.grint(g.of(<span class="t">Cons</span>(<span class="n">0.5</span>, <span class="t">Cons</span>(<span class="n">1.5</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [0, 2]</span></pre>
 <h3 id="fn-gsquareg-grid---grid"><code>fn gsquare(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gsquare_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gsquare_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gsquare_intoo-buffloat-lo-int-hi-int---int"><code>fn gsquare_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gsquare(g.arange(<span class="n">4</span>))   <span class="c"># =&gt; [0, 1, 4, 9]</span></pre>
 <h3 id="fn-greciprocalg-grid---grid"><code>fn greciprocal(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-greciprocal_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn greciprocal_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-greciprocal_intoo-buffloat-lo-int-hi-int---int"><code>fn greciprocal_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.greciprocal(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [0.5, 0.25]</span></pre>
 <h3 id="fn-gsigng-grid---grid"><code>fn gsign(g: Grid) -&gt; Grid</code></h3>
 <p>1 where positive, -1 where negative, and zero left as it is (sign included).</p>
-<h3 id="fn-gsign_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gsign_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gsign_intoo-buffloat-lo-int-hi-int---int"><code>fn gsign_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-sign_ofv-float---float"><code>fn sign_of(v: Float) -&gt; Float</code></h3>
+<pre>g.gsign(g.of(<span class="t">Cons</span>(-<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [-1, 0, 1]</span></pre>
 <h3 id="fn-gdegreesg-grid---grid"><code>fn gdegrees(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gdegrees_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gdegrees_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gdegrees_intoo-buffloat-lo-int-hi-int---int"><code>fn gdegrees_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gdegrees(g.of(<span class="t">Cons</span>(g.pi(), <span class="t">Nil</span>)))   <span class="c"># =&gt; [180]</span></pre>
 <h3 id="fn-gradiansg-grid---grid"><code>fn gradians(g: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gradians_parto-buffloat-x-buffloat-lo-int-hi-int---int"><code>fn gradians_part(o: Buf(Float), x: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gradians_intoo-buffloat-lo-int-hi-int---int"><code>fn gradians_into(o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gradians(g.of(<span class="t">Cons</span>(<span class="n">180.0</span>, <span class="t">Nil</span>))) <span class="o">|&gt;</span> g.allclose(g.of(<span class="t">Cons</span>(g.pi(), <span class="t">Nil</span>)), <span class="n">0.000001</span>)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-gclipg-grid-a-float-b-float---grid"><code>fn gclip(g: Grid, a: Float, b: Float) -&gt; Grid</code></h3>
 <p>Held between <code>a</code> and <code>b</code>.</p>
-<h3 id="fn-gclip_parto-buffloat-x-buffloat-a-float-b-float-lo-int-hi-int---int"><code>fn gclip_part(o: Buf(Float), x: Buf(Float), a: Float, b: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gclip_intoo-buffloat-a-float-b-float-lo-int-hi-int---int"><code>fn gclip_into(o: Buf(Float), a: Float, b: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gclip(g.arange(<span class="n">5</span>), <span class="n">1.0</span>, <span class="n">3.0</span>)   <span class="c"># =&gt; [1, 1, 2, 3, 3]</span></pre>
 <h3 id="fn-gmaxkg-grid-v-float---grid"><code>fn gmaxk(g: Grid, v: Float) -&gt; Grid</code></h3>
 <p>The larger, and the smaller, of each element and one number.</p>
-<h3 id="fn-gmaxk_parto-buffloat-x-buffloat-v-float-lo-int-hi-int---int"><code>fn gmaxk_part(o: Buf(Float), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gmaxk_intoo-buffloat-v-float-lo-int-hi-int---int"><code>fn gmaxk_into(o: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gmaxk(g.arange(<span class="n">3</span>), <span class="n">1.0</span>)   <span class="c"># =&gt; [1, 1, 2]</span></pre>
 <h3 id="fn-gminkg-grid-v-float---grid"><code>fn gmink(g: Grid, v: Float) -&gt; Grid</code></h3>
-<h3 id="fn-gmink_parto-buffloat-x-buffloat-v-float-lo-int-hi-int---int"><code>fn gmink_part(o: Buf(Float), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gmink_intoo-buffloat-v-float-lo-int-hi-int---int"><code>fn gmink_into(o: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gmink(g.arange(<span class="n">3</span>), <span class="n">1.0</span>)   <span class="c"># =&gt; [0, 1, 1]</span></pre>
 <h3 id="fn-gfmodkg-grid-v-float---grid"><code>fn gfmodk(g: Grid, v: Float) -&gt; Grid</code></h3>
-<h3 id="fn-gfmodk_parto-buffloat-x-buffloat-v-float-lo-int-hi-int---int"><code>fn gfmodk_part(o: Buf(Float), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gfmodk_intoo-buffloat-v-float-lo-int-hi-int---int"><code>fn gfmodk_into(o: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gfmodk(g.arange(<span class="n">5</span>), <span class="n">3.0</span>)   <span class="c"># =&gt; [0, 1, 2, 0, 1]</span></pre>
 <h3 id="fn-gatan2a-grid-b-grid---grid"><code>fn gatan2(a: Grid, b: Grid) -&gt; Grid</code></h3>
 <p>The angle of (y, x) — <code>gatan2(y, x)</code>, as C and NumPy order it.</p>
-<h3 id="fn-gatan2_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gatan2_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gatan2_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gatan2_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gatan2(g.ones1(<span class="n">1</span>), g.zeros1(<span class="n">1</span>)) <span class="o">|&gt;</span> g.allclose(g.of(<span class="t">Cons</span>(g.pi() / <span class="n">2.0</span>, <span class="t">Nil</span>)), <span class="n">0.000001</span>)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-ghypota-grid-b-grid---grid"><code>fn ghypot(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-ghypot_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn ghypot_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-ghypot_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn ghypot_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.ghypot(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)), g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; [5]</span></pre>
 <h3 id="fn-gfmoda-grid-b-grid---grid"><code>fn gfmod(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gfmod_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gfmod_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gfmod_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gfmod_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gfmod(g.of(<span class="t">Cons</span>(<span class="n">7.0</span>, <span class="t">Nil</span>)), g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; [1]</span></pre>
 <h3 id="fn-gcopysigna-grid-b-grid---grid"><code>fn gcopysign(a: Grid, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-gcopysign_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gcopysign_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gcopysign_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gcopysign_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gcopysign(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)), g.of(<span class="t">Cons</span>(-<span class="n">1.0</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; [-3]</span></pre>
 <h3 id="fn-gpowga-grid-b-grid---grid"><code>fn gpowg(a: Grid, b: Grid) -&gt; Grid</code></h3>
 <p>Each element to the matching element's power.</p>
-<h3 id="fn-gpowg_parto-buffloat-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gpowg_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gpowg_intoo-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gpowg_into(o: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gpowg(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>))), g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [8, 9]</span></pre>
 <h3 id="fn-mapg-grid-f-float---float---grid"><code>fn map(g: Grid, f: (Float) -&gt; Float) -&gt; Grid</code></h3>
 <p><code>f</code> on every element; <code>zip</code> on every pair. For what the named operations above do not cover — they are the fast ones: a lambda is a call per element.</p>
-<h3 id="fn-map_parto-buffloat-x-buffloat-f-float---float-lo-int-hi-int---int"><code>fn map_part(o: Buf(Float), x: Buf(Float), f: (Float) -&gt; Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.map(g.arange(<span class="n">3</span>), \x <span class="o">-&gt;</span> x * x + <span class="n">1.0</span>)   <span class="c"># =&gt; [1, 2, 5]</span></pre>
 <h3 id="fn-zipa-grid-b-grid-f-float-float---float---grid"><code>fn zip(a: Grid, b: Grid, f: (Float, Float) -&gt; Float) -&gt; Grid</code></h3>
-<h3 id="fn-zip_parto-buffloat-x-buffloat-y-buffloat-f-float-float---float-lo-int-hi-int---int"><code>fn zip_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), f: (Float, Float) -&gt; Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.zip(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>), \x, y <span class="o">-&gt;</span> x - y)   <span class="c"># =&gt; [-1, 0, 1]</span></pre>
 <h3 id="fn-mask_ofshape-bufint---mask"><code>fn mask_of(shape: Buf(Int)) -&gt; Mask</code></h3>
-<h3 id="fn-mask_sizem-mask---int"><code>fn mask_size(m: Mask) -&gt; Int</code></h3>
+<pre>g.mcount(g.mask_of(g.shape1(<span class="n">3</span>)))   <span class="c"># =&gt; 0</span>
+g.any(g.mask_of(g.shape1(<span class="n">3</span>)))      <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-gta-grid-b-grid---mask"><code>fn gt(a: Grid, b: Grid) -&gt; Mask</code></h3>
 <p><code>gt(a, b)</code> is <code>a &gt; b</code> element by element; <code>gtk(a, v)</code> compares with one number. <code>lt</code>, <code>ge</code>, <code>le</code>, <code>eq</code>, <code>ne</code> and their <code>k</code> forms likewise.</p>
-<h3 id="fn-gt_parto-bufu8-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn gt_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gt(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [false, false, true]</span></pre>
 <h3 id="fn-lta-grid-b-grid---mask"><code>fn lt(a: Grid, b: Grid) -&gt; Mask</code></h3>
+<pre>g.lt(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [true, false, false]</span></pre>
 <h3 id="fn-gea-grid-b-grid---mask"><code>fn ge(a: Grid, b: Grid) -&gt; Mask</code></h3>
-<h3 id="fn-ge_parto-bufu8-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn ge_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.ge(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [false, true, true]</span></pre>
 <h3 id="fn-lea-grid-b-grid---mask"><code>fn le(a: Grid, b: Grid) -&gt; Mask</code></h3>
+<pre>g.le(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [true, true, false]</span></pre>
 <h3 id="fn-eqa-grid-b-grid---mask"><code>fn eq(a: Grid, b: Grid) -&gt; Mask</code></h3>
-<h3 id="fn-eq_parto-bufu8-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn eq_part(o: Buf(U8), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.eq(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [false, true, false]</span></pre>
 <h3 id="fn-nea-grid-b-grid---mask"><code>fn ne(a: Grid, b: Grid) -&gt; Mask</code></h3>
+<pre>g.ne(g.arange(<span class="n">3</span>), g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [true, false, true]</span></pre>
 <h3 id="fn-gtkg-grid-v-float---mask"><code>fn gtk(g: Grid, v: Float) -&gt; Mask</code></h3>
-<h3 id="fn-gtk_parto-bufu8-x-buffloat-v-float-lo-int-hi-int---int"><code>fn gtk_part(o: Buf(U8), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.gtk(g.arange(<span class="n">3</span>), <span class="n">1.0</span>)   <span class="c"># =&gt; [false, false, true]</span></pre>
 <h3 id="fn-ltkg-grid-v-float---mask"><code>fn ltk(g: Grid, v: Float) -&gt; Mask</code></h3>
-<h3 id="fn-ltk_parto-bufu8-x-buffloat-v-float-lo-int-hi-int---int"><code>fn ltk_part(o: Buf(U8), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.ltk(g.arange(<span class="n">3</span>), <span class="n">1.0</span>)   <span class="c"># =&gt; [true, false, false]</span></pre>
 <h3 id="fn-gekg-grid-v-float---mask"><code>fn gek(g: Grid, v: Float) -&gt; Mask</code></h3>
+<pre>g.gek(g.arange(<span class="n">3</span>), <span class="n">1.0</span>)   <span class="c"># =&gt; [false, true, true]</span></pre>
 <h3 id="fn-lekg-grid-v-float---mask"><code>fn lek(g: Grid, v: Float) -&gt; Mask</code></h3>
+<pre>g.lek(g.arange(<span class="n">3</span>), <span class="n">1.0</span>)   <span class="c"># =&gt; [true, true, false]</span></pre>
 <h3 id="fn-eqkg-grid-v-float---mask"><code>fn eqk(g: Grid, v: Float) -&gt; Mask</code></h3>
-<h3 id="fn-eqk_parto-bufu8-x-buffloat-v-float-lo-int-hi-int---int"><code>fn eqk_part(o: Buf(U8), x: Buf(Float), v: Float, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.eqk(g.arange(<span class="n">3</span>), <span class="n">1.0</span>)   <span class="c"># =&gt; [false, true, false]</span></pre>
 <h3 id="fn-nekg-grid-v-float---mask"><code>fn nek(g: Grid, v: Float) -&gt; Mask</code></h3>
+<pre>g.nek(g.arange(<span class="n">3</span>), <span class="n">1.0</span>)   <span class="c"># =&gt; [true, false, true]</span></pre>
 <h3 id="fn-wherem-mask-a-grid-b-grid---grid"><code>fn where(m: Mask, a: Grid, b: Grid) -&gt; Grid</code></h3>
 <p><code>a</code> where the mask holds, <code>b</code> elsewhere.</p>
-<h3 id="fn-where_parto-buffloat-m-bufu8-x-buffloat-y-buffloat-lo-int-hi-int---int"><code>fn where_part(o: Buf(Float), m: Buf(U8), x: Buf(Float), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-where_intoo-buffloat-m-bufu8-y-buffloat-lo-int-hi-int---int"><code>fn where_into(o: Buf(Float), m: Buf(U8), y: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-where_ontox-buffloat-m-bufu8-o-buffloat-lo-int-hi-int---int"><code>fn where_onto(x: Buf(Float), m: Buf(U8), o: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.<span class="k">where</span>(g.gtk(g.arange(<span class="n">4</span>), <span class="n">1.0</span>), g.arange(<span class="n">4</span>), g.zeros1(<span class="n">4</span>))   <span class="c"># =&gt; [0, 0, 2, 3]</span></pre>
 <h3 id="fn-mcountm-mask---int"><code>fn mcount(m: Mask) -&gt; Int</code></h3>
 <p>How many elements the mask holds for.</p>
-<h3 id="fn-count_partm-bufu8-lo-int-hi-int---int"><code>fn count_part(m: Buf(U8), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-reduce_in-int-f-int-int---int---int"><code>fn reduce_i(n: Int, f: (Int, Int) -&gt; Int) -&gt; Int</code></h3>
+<pre>g.mcount(g.gtk(g.arange(<span class="n">5</span>), <span class="n">1.0</span>))   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-anym-mask---bool"><code>fn any(m: Mask) -&gt; Bool</code></h3>
+<pre>g.any(g.gtk(g.arange(<span class="n">3</span>), <span class="n">1.0</span>))   <span class="c"># =&gt; true</span>
+g.any(g.gtk(g.arange(<span class="n">3</span>), <span class="n">5.0</span>))   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-allm-mask---bool"><code>fn all(m: Mask) -&gt; Bool</code></h3>
+<pre>g.all(g.gek(g.arange(<span class="n">3</span>), <span class="n">0.0</span>))   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-mask_notm-mask---mask"><code>fn mask_not(m: Mask) -&gt; Mask</code></h3>
-<h3 id="fn-not_parto-bufu8-m-bufu8-lo-int-hi-int---int"><code>fn not_part(o: Buf(U8), m: Buf(U8), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.mask_not(g.gtk(g.arange(<span class="n">3</span>), <span class="n">1.0</span>))   <span class="c"># =&gt; [true, true, false]</span></pre>
 <h3 id="fn-mask_anda-mask-b-mask---mask"><code>fn mask_and(a: Mask, b: Mask) -&gt; Mask</code></h3>
-<h3 id="fn-and_parto-bufu8-x-bufu8-y-bufu8-lo-int-hi-int---int"><code>fn and_part(o: Buf(U8), x: Buf(U8), y: Buf(U8), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.mask_and(g.gtk(g.arange(<span class="n">4</span>), <span class="n">0.0</span>), g.ltk(g.arange(<span class="n">4</span>), <span class="n">3.0</span>))   <span class="c"># =&gt; [false, true, true, false]</span></pre>
 <h3 id="fn-mask_ora-mask-b-mask---mask"><code>fn mask_or(a: Mask, b: Mask) -&gt; Mask</code></h3>
-<h3 id="fn-or_parto-bufu8-x-bufu8-y-bufu8-lo-int-hi-int---int"><code>fn or_part(o: Buf(U8), x: Buf(U8), y: Buf(U8), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.mask_or(g.ltk(g.arange(<span class="n">4</span>), <span class="n">1.0</span>), g.gtk(g.arange(<span class="n">4</span>), <span class="n">2.0</span>))   <span class="c"># =&gt; [true, false, false, true]</span></pre>
 <h3 id="fn-to_gridm-mask---grid"><code>fn to_grid(m: Mask) -&gt; Grid</code></h3>
 <p>The mask as a grid of 1.0 and 0.0.</p>
-<h3 id="fn-to_grid_parto-buffloat-m-bufu8-lo-int-hi-int---int"><code>fn to_grid_part(o: Buf(Float), m: Buf(U8), lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.to_grid(g.gtk(g.arange(<span class="n">3</span>), <span class="n">1.0</span>))   <span class="c"># =&gt; [0, 0, 1]</span></pre>
 <h3 id="fn-isnang-grid---mask"><code>fn isnan(g: Grid) -&gt; Mask</code></h3>
 <p>Not a number, endless, and neither: <code>v != v</code> is true of a NaN alone, and <code>v - v</code> is zero for every ordinary number and a NaN for an infinity.</p>
+<pre>g.isnan(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Nil</span>))))   <span class="c"># =&gt; [false, true]</span></pre>
 <h3 id="fn-isinfg-grid---mask"><code>fn isinf(g: Grid) -&gt; Mask</code></h3>
+<pre>g.isinf(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.inf(), <span class="t">Nil</span>))))   <span class="c"># =&gt; [false, true]</span></pre>
 <h3 id="fn-isfiniteg-grid---mask"><code>fn isfinite(g: Grid) -&gt; Mask</code></h3>
+<pre>g.isfinite(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.inf(), <span class="t">Cons</span>(g.nan(), <span class="t">Nil</span>)))))   <span class="c"># =&gt; [true, false, false]</span></pre>
 <h3 id="fn-isclosea-grid-b-grid-eps-float---mask"><code>fn isclose(a: Grid, b: Grid, eps: Float) -&gt; Mask</code></h3>
 <p>Element by element, within <code>eps</code> of each other.</p>
+<pre>g.isclose(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))), g.of(<span class="t">Cons</span>(<span class="n">1.0000001</span>, <span class="t">Cons</span>(<span class="n">2.5</span>, <span class="t">Nil</span>))), <span class="n">0.001</span>)   <span class="c"># =&gt; [true, false]</span></pre>
 <h3 id="fn-allclosea-grid-b-grid-eps-float---bool"><code>fn allclose(a: Grid, b: Grid, eps: Float) -&gt; Bool</code></h3>
-<h3 id="fn-close_elemsa-grid-b-grid-eps-float---bool"><code>fn close_elems(a: Grid, b: Grid, eps: Float) -&gt; Bool</code></h3>
+<pre>g.allclose(g.arange(<span class="n">3</span>), g.arange(<span class="n">3</span>), <span class="n">0.0</span>)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-sumg-grid---float"><code>fn sum(g: Grid) -&gt; Float</code></h3>
 <p>Reductions run eight partial sums side by side — a flat tuple, so eight registers, which the compiler pairs into four vector lanes — and add them at the end: one running sum is a chain of adds each waiting for the last, eight are enough chains to keep the memory bus busy rather than the adder. (The order of additions differs from one running sum, as NumPy's pairwise summation differs from both; the answers agree to the last few bits.)</p>
-<h3 id="fn-fadda-a-b-a---a-where-a-is-addable"><code>fn fadd(a: 'a, b: 'a) -&gt; 'a    # where 'a is addable</code></h3>
-<h3 id="fn-sum_ranged-buffloat-lo-int-hi-int---float"><code>fn sum_range(d: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
+<pre>g.sum(g.arange(<span class="n">5</span>))   <span class="c"># =&gt; 10</span></pre>
 <h3 id="fn-meang-grid---float"><code>fn mean(g: Grid) -&gt; Float</code></h3>
+<pre>g.mean(g.arange(<span class="n">5</span>))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-prodg-grid---float"><code>fn prod(g: Grid) -&gt; Float</code></h3>
+<pre>g.prod(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 24</span></pre>
 <h3 id="fn-dota-grid-b-grid---float"><code>fn dot(a: Grid, b: Grid) -&gt; Float</code></h3>
-<h3 id="fn-dot_ranged-buffloat-doff-int-e-buffloat-eoff-int-lo-int-hi-int---float"><code>fn dot_range(d: Buf(Float), doff: Int, e: Buf(Float), eoff: Int, lo: Int, hi: Int) -&gt; Float</code></h3>
-<p>The sum of <code>d[doff + k] * e[eoff + k]</code> for k in lo up to hi.</p>
+<pre>g.dot(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))), g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; 11</span></pre>
 <h3 id="fn-normg-grid---float"><code>fn norm(g: Grid) -&gt; Float</code></h3>
-<h3 id="fn-fmaxa-a-b-a---a-where-a-is-ordered"><code>fn fmax(a: 'a, b: 'a) -&gt; 'a    # where 'a is ordered</code></h3>
-<h3 id="fn-fmina-a-b-a---a-where-a-is-ordered"><code>fn fmin(a: 'a, b: 'a) -&gt; 'a    # where 'a is ordered</code></h3>
+<pre>g.norm(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; 5</span></pre>
 <h3 id="fn-gmaxg-grid---float"><code>fn gmax(g: Grid) -&gt; Float</code></h3>
 <p>The largest and smallest, eight lanes at a time for the same reason as <code>sum</code>; a comparison is not an addition, so the eight agree exactly with one.</p>
-<h3 id="fn-max_ranged-buffloat-lo-int-hi-int---float"><code>fn max_range(d: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
+<pre>g.gmax(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 9</span></pre>
 <h3 id="fn-gming-grid---float"><code>fn gmin(g: Grid) -&gt; Float</code></h3>
-<h3 id="fn-min_ranged-buffloat-lo-int-hi-int---float"><code>fn min_range(d: Buf(Float), lo: Int, hi: Int) -&gt; Float</code></h3>
+<pre>g.gmin(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-argmaxg-grid---int"><code>fn argmax(g: Grid) -&gt; Int</code></h3>
 <p>Where the largest is, the first of them if there are several: four lanes, each keeping the first place it saw its own largest, and the lanes settled by value first and place second.</p>
-<h3 id="fn-argmax_ranged-buffloat-lo-int-hi-int---float-int"><code>fn argmax_range(d: Buf(Float), lo: Int, hi: Int) -&gt; (Float, Int)</code></h3>
-<h3 id="fn-later_wins_maxm0-a-i0-b-m1-a-i1-b---a-b-where-a-is-ordered-a-is-a-value-type-b-is-ordered"><code>fn later_wins_max(m0: 'a, i0: 'b, m1: 'a, i1: 'b) -&gt; ('a, 'b)    # where 'a is ordered, 'a is a value type, 'b is ordered</code></h3>
-<h3 id="fn-later_wins_minm0-a-i0-b-m1-a-i1-b---a-b-where-a-is-ordered-a-is-a-value-type-b-is-ordered"><code>fn later_wins_min(m0: 'a, i0: 'b, m1: 'a, i1: 'b) -&gt; ('a, 'b)    # where 'a is ordered, 'a is a value type, 'b is ordered</code></h3>
+<pre>g.argmax(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 1</span></pre>
 <h3 id="fn-argming-grid---int"><code>fn argmin(g: Grid) -&gt; Int</code></h3>
-<h3 id="fn-argmin_ranged-buffloat-lo-int-hi-int---float-int"><code>fn argmin_range(d: Buf(Float), lo: Int, hi: Int) -&gt; (Float, Int)</code></h3>
+<pre>g.argmin(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-varg-grid---float"><code>fn var(g: Grid) -&gt; Float</code></h3>
-<h3 id="fn-sqdev_ranged-buffloat-m-float-lo-int-hi-int---float"><code>fn sqdev_range(d: Buf(Float), m: Float, lo: Int, hi: Int) -&gt; Float</code></h3>
-<p>The sum of squared distances from <code>m</code>.</p>
+<pre>g.var(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">6.0</span>, <span class="t">Nil</span>))))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-stdg-grid---float"><code>fn std(g: Grid) -&gt; Float</code></h3>
+<pre>g.std(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">6.0</span>, <span class="t">Nil</span>))))))   <span class="c"># =&gt; 1.41421</span></pre>
 <h3 id="fn-cumsumg-grid---grid"><code>fn cumsum(g: Grid) -&gt; Grid</code></h3>
+<pre>g.cumsum(g.arange(<span class="n">4</span>))   <span class="c"># =&gt; [0, 1, 3, 6]</span></pre>
 <h3 id="fn-sum_axisg-grid-axis-int---grid"><code>fn sum_axis(g: Grid, axis: Int) -&gt; Grid</code></h3>
 <p>Sums of a 2-D grid along an axis: 0 adds the rows together (one number per column), 1 adds each row up (one number per row). No copy for a view: the loops follow the strides. When the axis being summed steps by one, each answer is a contiguous eight-lane sum; when the other axis does, the answers are accumulated a row at a time, which vectorizes across them. Either way a transposed grid is summed as fast as the grid it came from, and the answers are split across the workers.</p>
-<h3 id="fn-axis_parto-buffloat-d-buffloat-off-int-s_out-int-s_in-int-n_in-int-lo-int-hi-int---int"><code>fn axis_part(o: Buf(Float), d: Buf(Float), off: Int, s_out: Int, s_in: Int, n_in: Int, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.sum_axis(a, <span class="n">0</span>)   <span class="c"># =&gt; [3, 5, 7]</span>
+g.sum_axis(a, <span class="n">1</span>)   <span class="c"># =&gt; [3, 12]</span></pre>
 <h3 id="fn-mean_axisg-grid-axis-int---grid"><code>fn mean_axis(g: Grid, axis: Int) -&gt; Grid</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.mean_axis(a, <span class="n">1</span>)   <span class="c"># =&gt; [1, 4]</span></pre>
 <h3 id="fn-sortg-grid---grid"><code>fn sort(g: Grid) -&gt; Grid</code></h3>
 <p>Quicksort: a median-of-three pivot, insertion sort under sixteen, and the larger half left to the tail call — so the stack is logarithmic however the input is shaped.</p>
-<h3 id="fn-radix_sortd-buffloat-lo-int-hi-int---int"><code>fn radix_sort(d: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<p>Sorting by the bits rather than by comparing. A float's order is its bit pattern's order once the sign is folded in — invert a negative number's bits, set a positive number's top bit — and then the numbers can be put in place one byte at a time, eight passes, each a counting sort. There is nothing to predict and nothing to mispredict, which is what a comparison sort spends its time on; the price is two buffers the size of the input and eight passes over them, so it is worth it above a few thousand elements and not below.</p>
-<h3 id="fn-radix_passessrc-bufint-dst-bufint-cnt-bufint-n-int-p-int---bufint"><code>fn radix_passes(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n: Int, p: Int) -&gt; Buf(Int)</code></h3>
-<h3 id="fn-radix_scattersrc-bufint-dst-bufint-cnt-bufint-n-int-p-int---int"><code>fn radix_scatter(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n: Int, p: Int) -&gt; Int</code></h3>
-<h3 id="fn-encode_keybits-int---int"><code>fn encode_key(bits: Int) -&gt; Int</code></h3>
-<p>The bits of a float, made to compare as unsigned integers do, and put back again.</p>
-<h3 id="fn-decode_keyk-int---int"><code>fn decode_key(k: Int) -&gt; Int</code></h3>
-<h3 id="fn-sort_ranged-buffloat-lo-int-hi-int---int"><code>fn sort_range(d: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-quick_ranged-buffloat-lo-int-hi-int---int"><code>fn quick_range(d: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-insertion_sortd-buffloat-lo-int-hi-int---int"><code>fn insertion_sort(d: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-shift_upd-buffloat-lo-int-j-int-v-float---int"><code>fn shift_up(d: Buf(Float), lo: Int, j: Int, v: Float) -&gt; Int</code></h3>
-<h3 id="fn-hoared-buffloat-lo-int-hi-int---int"><code>fn hoare(d: Buf(Float), lo: Int, hi: Int) -&gt; Int</code></h3>
-<p>Hoare's partition over the inclusive range: everything at or below what comes back is no greater than everything above it.</p>
-<h3 id="fn-med3a-a-b-a-c-a---a-where-a-is-ordered"><code>fn med3(a: 'a, b: 'a, c: 'a) -&gt; 'a    # where 'a is ordered</code></h3>
-<h3 id="fn-swapd-buffloat-i-int-j-int---unit"><code>fn swap(d: Buf(Float), i: Int, j: Int) -&gt; Unit</code></h3>
+<pre>g.sort(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [1, 2, 3]</span></pre>
 <h3 id="fn-argsortg-grid---grid"><code>fn argsort(g: Grid) -&gt; Grid</code></h3>
 <p>Where the elements would go if they were sorted, ties in the order they were in: a merge sort over the positions, which is what keeps it stable.</p>
-<h3 id="fn-merge_sortd-buffloat-idx-bufint-tmp-bufint-lo-int-hi-int---int"><code>fn merge_sort(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-merge_halvesd-buffloat-idx-bufint-tmp-bufint-lo-int-mid-int-hi-int---int"><code>fn merge_halves(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo: Int, mid: Int, hi: Int) -&gt; Int</code></h3>
+<pre>g.argsort(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [1, 2, 0]</span></pre>
 <h3 id="fn-distinctg-grid---grid"><code>fn distinct(g: Grid) -&gt; Grid</code></h3>
 <p>The values that occur, each once, in order.</p>
+<pre>g.distinct(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [1, 3]</span></pre>
 <h3 id="fn-searchsortedg-grid-v-float---int"><code>fn searchsorted(g: Grid, v: Float) -&gt; Int</code></h3>
 <p>Where <code>v</code> would go in a sorted grid, before anything equal to it.</p>
+<pre>g.searchsorted(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">5.0</span>, <span class="t">Nil</span>)))), <span class="n">3.0</span>)   <span class="c"># =&gt; 1</span>
+g.searchsorted(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">5.0</span>, <span class="t">Nil</span>)))), <span class="n">4.0</span>)   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-nonzerog-grid---grid"><code>fn nonzero(g: Grid) -&gt; Grid</code></h3>
 <p>The positions of the elements that are not zero.</p>
+<pre>g.nonzero(g.of(<span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">5.0</span>, <span class="t">Nil</span>))))))   <span class="c"># =&gt; [1, 3]</span></pre>
 <h3 id="fn-count_nonzerog-grid---int"><code>fn count_nonzero(g: Grid) -&gt; Int</code></h3>
+<pre>g.count_nonzero(g.of(<span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">5.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-mediang-grid---float"><code>fn median(g: Grid) -&gt; Float</code></h3>
 <p>The middle value, and the value a fraction of the way along — both from a sorted copy, and both interpolating between neighbours the way NumPy does.</p>
+<pre>g.median(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)))))              <span class="c"># =&gt; 2</span>
+g.median(g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>))))))   <span class="c"># =&gt; 2.5</span></pre>
 <h3 id="fn-percentileg-grid-q-float---float"><code>fn percentile(g: Grid, q: Float) -&gt; Float</code></h3>
+<pre>g.percentile(g.arange(<span class="n">5</span>), <span class="n">50.0</span>)   <span class="c"># =&gt; 2</span>
+g.percentile(g.arange(<span class="n">5</span>), <span class="n">25.0</span>)   <span class="c"># =&gt; 1</span></pre>
 <h3 id="fn-quantileg-grid-q-float---float"><code>fn quantile(g: Grid, q: Float) -&gt; Float</code></h3>
-<h3 id="fn-select_nthd-buffloat-lo-int-hi-int-k-int---float"><code>fn select_nth(d: Buf(Float), lo: Int, hi: Int, k: Int) -&gt; Float</code></h3>
-<p>The k-th smallest, by partitioning around a pivot and carrying on into whichever side holds it. Linear on average, where sorting the lot is not, which is what NumPy's <code>median</code> and <code>percentile</code> do too. It reorders the range it is given, so callers hand it a copy.</p>
+<pre>g.quantile(g.arange(<span class="n">5</span>), <span class="n">0.75</span>)   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-ptpg-grid---float"><code>fn ptp(g: Grid) -&gt; Float</code></h3>
 <p>The distance from the smallest to the largest.</p>
+<pre>g.ptp(g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 7</span></pre>
 <h3 id="fn-averageg-grid---float"><code>fn average(g: Grid) -&gt; Float</code></h3>
+<pre>g.average(g.arange(<span class="n">4</span>))   <span class="c"># =&gt; 1.5</span></pre>
 <h3 id="fn-diffg-grid---grid"><code>fn diff(g: Grid) -&gt; Grid</code></h3>
 <p>The difference between each element and the one before it.</p>
+<pre>g.diff(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">9.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [3, 5]</span></pre>
 <h3 id="fn-cumprodg-grid---grid"><code>fn cumprod(g: Grid) -&gt; Grid</code></h3>
+<pre>g.cumprod(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [1, 2, 6]</span></pre>
 <h3 id="fn-nansumg-grid---float"><code>fn nansum(g: Grid) -&gt; Float</code></h3>
 <p>The same reductions with the NaNs left out, as NumPy's <code>nan*</code> do.</p>
+<pre>g.nansum(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-nanmeang-grid---float"><code>fn nanmean(g: Grid) -&gt; Float</code></h3>
+<pre>g.nanmean(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-nanmaxg-grid---float"><code>fn nanmax(g: Grid) -&gt; Float</code></h3>
+<pre>g.nanmax(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-nanming-grid---float"><code>fn nanmin(g: Grid) -&gt; Float</code></h3>
+<pre>g.nanmin(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 1</span></pre>
 <h3 id="fn-nanargmaxg-grid---int"><code>fn nanargmax(g: Grid) -&gt; Int</code></h3>
+<pre>g.nanargmax(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-nanargming-grid---int"><code>fn nanargmin(g: Grid) -&gt; Int</code></h3>
-<h3 id="fn-nanbestg-grid-want_max-bool---float-int"><code>fn nanbest(g: Grid, want_max: Bool) -&gt; (Float, Int)</code></h3>
-<p>The largest or smallest number that is one, and where it is.</p>
+<pre>g.nanargmin(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(g.nan(), <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-nan---float"><code>fn nan() -&gt; Float</code></h3>
 <p>The two floats that are not numbers, for a program that needs to say so.</p>
+<pre>g.nan() == g.nan()   <span class="c"># =&gt; false</span></pre>
 <h3 id="fn-inf---float"><code>fn inf() -&gt; Float</code></h3>
+<pre>g.inf() &gt; <span class="n">1</span>e308   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-matmula-grid-b-grid---grid"><code>fn matmul(a: Grid, b: Grid) -&gt; Grid</code></h3>
 <p>(r × k) times (k × c), the way a BLAS does it: ten columns of the right operand are packed into a panel that stays in the nearest cache, and a kernel walks four rows of the left operand down that panel keeping the 4 × 10 block of answers in twenty vector registers — <code>Float2</code> pairs, one fused multiply-add each per step. Column blocks are handed to strands when there are workers to take them. Rows and columns past the last whole block are finished by the plain triple loop.</p>
-<h3 id="fn-mm_blocksx-buffloat-y-buffloat-o-buffloat-r-int-kk-int-c-int-lo-int-hi-int---int"><code>fn mm_blocks(x: Buf(Float), y: Buf(Float), o: Buf(Float), r: Int, kk: Int, c: Int, lo: Int, hi: Int) -&gt; Int</code></h3>
-<p>Column blocks lo up to hi, ten wide: pack the panel, then every four rows.</p>
-<h3 id="fn-mm_kernelx-buffloat-p-buffloat-kk-int-i0-int---acc"><code>fn mm_kernel(x: Buf(Float), p: Buf(Float), kk: Int, i0: Int) -&gt; Acc</code></h3>
-<h3 id="fn-mm_edgesx-buffloat-y-buffloat-o-buffloat-r-int-kk-int-c-int-cb-int-rb-int---int"><code>fn mm_edges(x: Buf(Float), y: Buf(Float), o: Buf(Float), r: Int, kk: Int, c: Int, cb: Int, rb: Int) -&gt; Int</code></h3>
-<p>The columns past the last block of ten, for every row; then the rows past the last block of four, for the blocked columns.</p>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.matmul(a, g.transpose(a))   <span class="c"># =&gt; [[5, 14], [14, 50]]</span></pre>
 <h3 id="fn-matveca-grid-v-grid---grid"><code>fn matvec(a: Grid, v: Grid) -&gt; Grid</code></h3>
 <p>Matrix times vector, as a 1-D grid.</p>
-<h3 id="fn-matvec_parto-buffloat-x-buffloat-y-buffloat-c-int-lo-int-hi-int---int"><code>fn matvec_part(o: Buf(Float), x: Buf(Float), y: Buf(Float), c: Int, lo: Int, hi: Int) -&gt; Int</code></h3>
+<pre>a = g.arange(<span class="n">6</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">3</span>)
+g.matvec(a, g.ones1(<span class="n">3</span>))   <span class="c"># =&gt; [3, 12]</span></pre>
 <h3 id="fn-outera-grid-b-grid---grid"><code>fn outer(a: Grid, b: Grid) -&gt; Grid</code></h3>
+<pre>g.outer(g.arange(<span class="n">2</span>), g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [[0, 0], [1, 2]]</span></pre>
 <h3 id="fn-identityn-int---grid"><code>fn identity(n: Int) -&gt; Grid</code></h3>
+<pre>g.identity(<span class="n">2</span>)   <span class="c"># =&gt; [[1, 0], [0, 1]]</span></pre>
 <h3 id="fn-traceg-grid---float"><code>fn trace(g: Grid) -&gt; Float</code></h3>
+<pre>g.trace(g.arange(<span class="n">4</span>) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; 3</span></pre>
 <h3 id="fn-lua-grid---lu"><code>fn lu(a: Grid) -&gt; Lu</code></h3>
-<h3 id="fn-lu_walkd-buffloat-n-int-piv-bufint-nb-int-k-int-sign-float-ok-bool---float-bool"><code>fn lu_walk(d: Buf(Float), n: Int, piv: Buf(Int), nb: Int, k: Int, sign: Float, ok: Bool) -&gt; (Float, Bool)</code></h3>
-<p>Sixty-four columns at a time. The unblocked way updates the whole trailing matrix once per column, which is n passes over n² numbers; this updates it once per block of columns, which is the same arithmetic with a sixty-fourth of the reading and writing, and it is what a LAPACK does. A matrix smaller than one block takes the first branch and is the unblocked algorithm exactly.</p>
-<h3 id="fn-panel_lud-buffloat-n-int-piv-bufint-k-int-w-int-sign-float-ok-bool---float-bool"><code>fn panel_lu(d: Buf(Float), n: Int, piv: Buf(Int), k: Int, w: Int, sign: Float, ok: Bool) -&gt; (Float, Bool)</code></h3>
-<p>The block of columns, factored in a copy of its own laid the other way round: column by column is how this has to go, and a column of a row-major matrix is one number per cache line, four hundred lines to read four hundred numbers. Copied out transposed — the panel is a few tens of kilobytes, so the copy is free beside what it saves — a column becomes a run of neighbours, the pivot search and the scaling read it at the speed of memory rather than of misses, and the rank-one update vectorizes.</p>
-<p>A row exchange has to move the whole row, so the two parts outside the panel are swapped where they are.</p>
-<h3 id="fn-panel_coret-buffloat-h-int-w-int-piv-bufint-d-buffloat-n-int-k-int-sign-float-ok-bool---float-bool"><code>fn panel_core(t: Buf(Float), h: Int, w: Int, piv: Buf(Int), d: Buf(Float), n: Int, k: Int, sign: Float, ok: Bool) -&gt; (Float, Bool)</code></h3>
-<h3 id="fn-swap_row_spand-buffloat-n-int-i-int-j-int-c0-int-c1-int---int"><code>fn swap_row_span(d: Buf(Float), n: Int, i: Int, j: Int, c0: Int, c1: Int) -&gt; Int</code></h3>
-<h3 id="fn-trsm_paneld-buffloat-n-int-k-int-w-int---int"><code>fn trsm_panel(d: Buf(Float), n: Int, k: Int, w: Int) -&gt; Int</code></h3>
-<p>The rows of the block, worked forwards through the unit lower triangle, which turns the columns to the right of the block into their part of U.</p>
-<h3 id="fn-gemm_subc-buffloat-coff-int-cld-int-a-buffloat-aoff-int-ald-int-b-buffloat-boff-int-bld-int-m-int-kk-int-nn-int---int"><code>fn gemm_sub(c: Buf(Float), coff: Int, cld: Int, a: Buf(Float), aoff: Int, ald: Int, b: Buf(Float), boff: Int, bld: Int, m: Int, kk: Int, nn: Int) -&gt; Int</code></h3>
-<h3 id="fn-gemm_rowsc-buffloat-coff-int-cld-int-a-buffloat-aoff-int-ald-int-b-buffloat-boff-int-bld-int-kk-int-nc-int-lo-int-hi-int---int"><code>fn gemm_rows(c: Buf(Float), coff: Int, cld: Int, a: Buf(Float), aoff: Int, ald: Int, b: Buf(Float), boff: Int, bld: Int, kk: Int, nc: Int, lo: Int, hi: Int) -&gt; Int</code></h3>
-<h3 id="fn-gemm_blockc-buffloat-coff-int-cld-int-a-buffloat-aoff-int-ald-int-b-buffloat-boff-int-bld-int-kk-int-i0-int-j0-int---int"><code>fn gemm_block(c: Buf(Float), coff: Int, cld: Int, a: Buf(Float), aoff: Int, ald: Int, b: Buf(Float), boff: Int, bld: Int, kk: Int, i0: Int, j0: Int) -&gt; Int</code></h3>
-<h3 id="fn-pivot_rowd-buffloat-n-int-k-int---int"><code>fn pivot_row(d: Buf(Float), n: Int, k: Int) -&gt; Int</code></h3>
-<p>The row at or below <code>k</code> with the largest number in column <code>k</code>.</p>
-<h3 id="fn-swap_rowsd-buffloat-n-int-i-int-j-int---int"><code>fn swap_rows(d: Buf(Float), n: Int, i: Int, j: Int) -&gt; Int</code></h3>
+<pre>m = g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">6.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>)
+f = g.lu(m)
+f.ok     <span class="c"># =&gt; true</span>
+f.sign   <span class="c"># =&gt; -1</span></pre>
 <h3 id="fn-solvea-grid-b-grid---grid"><code>fn solve(a: Grid, b: Grid) -&gt; Grid</code></h3>
 <p><code>x</code> such that <code>a x = b</code>, for a vector <code>b</code> or a matrix of them.</p>
+<pre>m = g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>)
+g.solve(m, g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">5.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; [0.8, 1.4]</span></pre>
 <h3 id="fn-try_solvea-grid-b-grid---grid"><code>fn try_solve(a: Grid, b: Grid) -&gt; Grid</code></h3>
 <p>The same, saying so by handing back a grid of no elements rather than stopping the program — what a host that has to answer for itself calls.</p>
-<h3 id="fn-lu_solvef-lu-b-grid---grid"><code>fn lu_solve(f: Lu, b: Grid) -&gt; Grid</code></h3>
-<h3 id="fn-solve_colsd-buffloat-o-buffloat-n-int-kc-int-j0-int-j1-int---int"><code>fn solve_cols(d: Buf(Float), o: Buf(Float), n: Int, kc: Int, j0: Int, j1: Int) -&gt; Int</code></h3>
-<p>The columns <code>j0</code> up to <code>j1</code> of the answer: forwards through L, then backwards through U.</p>
-<h3 id="fn-inv_colsd-buffloat-o-buffloat-n-int-j0-int-j1-int---int"><code>fn inv_cols(d: Buf(Float), o: Buf(Float), n: Int, j0: Int, j1: Int) -&gt; Int</code></h3>
-<p>The columns <code>j0</code> up to <code>j1</code> of the inverse: forwards through L, then backwards through U. <code>o</code> holds the identity on the way in and the answer on the way out, before the columns are put back in order.</p>
+<pre>singular = g.ones2(<span class="n">2</span>, <span class="n">2</span>)
+g.size(g.try_solve(singular, g.ones1(<span class="n">2</span>)))   <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-deta-grid---float"><code>fn det(a: Grid) -&gt; Float</code></h3>
 <p>The determinant: the product down U's diagonal, with the sign the row exchanges left. Zero when the matrix is singular.</p>
+<pre>g.det(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; -2</span>
+g.det(g.ones2(<span class="n">2</span>, <span class="n">2</span>))                                                            <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-inva-grid---grid"><code>fn inv(a: Grid) -&gt; Grid</code></h3>
 <p>The inverse. Solving against the identity would do it, but a third of that work is on zeros: the forward pass turns the identity into a lower triangle, so a block of rows only has to touch the columns it can have reached. Doing it that way needs the answer's columns put back in the order the row exchanges took them out of, which is the last pass here.</p>
+<pre>g.inv(g.of(<span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">7.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">6.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; [[0.6, -0.7], [-0.2, 0.4]]</span></pre>
 <h3 id="fn-try_inva-grid---grid"><code>fn try_inv(a: Grid) -&gt; Grid</code></h3>
+<pre>g.size(g.try_inv(g.ones2(<span class="n">2</span>, <span class="n">2</span>)))   <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-matrix_powera-grid-k-int---grid"><code>fn matrix_power(a: Grid, k: Int) -&gt; Grid</code></h3>
 <p><code>a</code> multiplied by itself <code>k</code> times, by squaring: a hundredth power is seven multiplications rather than ninety-nine.</p>
-<h3 id="fn-power_walka-grid-k-int-acc-grid---grid"><code>fn power_walk(a: Grid, k: Int, acc: Grid) -&gt; Grid</code></h3>
+<pre>g.matrix_power(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>), <span class="n">10</span>)   <span class="c"># =&gt; [[89, 55], [55, 34]]</span></pre>
 <h3 id="fn-lstsqa-grid-b-grid---grid"><code>fn lstsq(a: Grid, b: Grid) -&gt; Grid</code></h3>
 <p>The least-squares solution of an overdetermined system, through the normal equations: <code>x</code> least-squaring <code>a x - b</code>. Forming <code>aᵀa</code> squares the conditioning, so a badly conditioned <code>a</code> wants a decomposition this library does not have yet.</p>
+<pre>xs = g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Nil</span>))))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">3</span>, <span class="n">2</span>)
+g.lstsq(xs, g.of(<span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Cons</span>(<span class="n">6.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.allclose(g.of(<span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))), <span class="n">0.000001</span>)   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-try_lstsqa-grid-b-grid---grid"><code>fn try_lstsq(a: Grid, b: Grid) -&gt; Grid</code></h3>
+<pre>g.size(g.try_lstsq(g.zeros2(<span class="n">2</span>, <span class="n">2</span>), g.ones1(<span class="n">2</span>)))   <span class="c"># =&gt; 0</span></pre>
 <h3 id="fn-norm1a-grid---float"><code>fn norm1(a: Grid) -&gt; Float</code></h3>
 <p>The sizes of a matrix: the largest column sum, the largest row sum, and the square root of the sum of the squares.</p>
+<pre>g.norm1(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(-<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; 6</span></pre>
 <h3 id="fn-norm_infa-grid---float"><code>fn norm_inf(a: Grid) -&gt; Float</code></h3>
+<pre>g.norm_inf(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(-<span class="n">2.0</span>, <span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; 7</span></pre>
 <h3 id="fn-norm_froa-grid---float"><code>fn norm_fro(a: Grid) -&gt; Float</code></h3>
+<pre>g.norm_fro(g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))) <span class="o">|&gt;</span> g.reshape2(<span class="n">2</span>, <span class="n">2</span>))   <span class="c"># =&gt; 5</span></pre>
 <h3 id="fn-conda-grid---float"><code>fn cond(a: Grid) -&gt; Float</code></h3>
 <p>How far from singular, measured with the largest column sum.</p>
+<pre>g.cond(g.identity(<span class="n">3</span>))   <span class="c"># =&gt; 1</span></pre>
 <h3 id="fn-innera-grid-b-grid---float"><code>fn inner(a: Grid, b: Grid) -&gt; Float</code></h3>
 <p>The dot product under other names, the outer product of every pair, and the cross product of two three-element vectors.</p>
+<pre>g.inner(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))), g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; 11</span></pre>
 <h3 id="fn-vdota-grid-b-grid---float"><code>fn vdot(a: Grid, b: Grid) -&gt; Float</code></h3>
+<pre>g.vdot(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))), g.of(<span class="t">Cons</span>(<span class="n">3.0</span>, <span class="t">Cons</span>(<span class="n">4.0</span>, <span class="t">Nil</span>))))   <span class="c"># =&gt; 11</span></pre>
 <h3 id="fn-krona-grid-b-grid---grid"><code>fn kron(a: Grid, b: Grid) -&gt; Grid</code></h3>
+<pre>g.kron(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">2.0</span>, <span class="t">Nil</span>))) <span class="o">|&gt;</span> g.as_rows, g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">10.0</span>, <span class="t">Nil</span>))) <span class="o">|&gt;</span> g.as_rows)   <span class="c"># =&gt; [[1, 10, 2, 20]]</span></pre>
 <h3 id="fn-crossa-grid-b-grid---grid"><code>fn cross(a: Grid, b: Grid) -&gt; Grid</code></h3>
+<pre>g.cross(g.of(<span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Nil</span>)))), g.of(<span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Cons</span>(<span class="n">1.0</span>, <span class="t">Cons</span>(<span class="n">0.0</span>, <span class="t">Nil</span>)))))   <span class="c"># =&gt; [0, 0, 1]</span></pre>
 <h3 id="fn-renderg-grid---str"><code>fn render(g: Grid) -&gt; Str</code></h3>
-<h3 id="fn-render_rowb-strbuf-g-grid-i-int---unit"><code>fn render_row(b: StrBuf, g: Grid, i: Int) -&gt; Unit</code></h3>
+<pre>g.render(g.arange(<span class="n">3</span>))   <span class="c"># =&gt; [0, 1, 2]</span></pre>
 <h3 id="fn-render_maskm-mask---str"><code>fn render_mask(m: Mask) -&gt; Str</code></h3>
-<h3 id="fn-render_mask_rowb-strbuf-m-mask-start-int-n-int---unit"><code>fn render_mask_row(b: StrBuf, m: Mask, start: Int, n: Int) -&gt; Unit</code></h3>
+<pre>g.render_mask(g.gtk(g.arange(<span class="n">3</span>), <span class="n">1.0</span>))   <span class="c"># =&gt; [false, false, true]</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-num-decimal.html">← num/decimal</a>

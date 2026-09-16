@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>cli/proc — The Rill Language Reference</title>
-<meta name="description" content="Running another program: a command line handed to the shell, its output collected, its exit status read.">
+<meta name="description" content="The exit code and what the command wrote.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-cli-proc.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-cli-proc.html">
 <meta property="og:title" content="cli/proc — The Rill Language Reference">
-<meta property="og:description" content="Running another program: a command line handed to the shell, its output collected, its exit status read.">
+<meta property="og:description" content="The exit code and what the command wrote.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="cli/proc — The Rill Language Reference">
-<meta name="twitter:description" content="Running another program: a command line handed to the shell, its output collected, its exit status read.">
+<meta name="twitter:description" content="The exit code and what the command wrote.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -79,16 +80,7 @@
     <main class="module">
       <p class="chapter-no">Standard library · The command line</p>
       <h1>cli/proc</h1>
-<p class="import">Imported as <code>import "cli/proc" as proc</code>, its names are then <code>proc.…</code>. Every signature below is the one the checker infers.</p><p>Running another program: a command line handed to the shell, its output collected, its exit status read.</p>
-<pre><span class="k">import</span> <span class="s">"cli/proc"</span> <span class="k">as</span> proc
-<span class="k">match</span> proc.run(<span class="s">"git rev-parse HEAD"</span>)
-  <span class="t">Ok</span>(r) <span class="o">-&gt;</span> <span class="f">println</span>(r.out)                 <span class="c"># r.status is the exit code</span>
-  <span class="t">Err</span>(why) <span class="o">-&gt;</span> <span class="f">println</span>(why)
-proc.<span class="m">output</span>(<span class="s">"date -u"</span>)?                   <span class="c"># the output, or an Err with the status</span>
-proc.run(proc.command(<span class="s">"grep"</span>, <span class="t">Cons</span>(<span class="s">"-n"</span>, <span class="t">Cons</span>(pattern, <span class="t">Cons</span>(file, <span class="t">Nil</span>)))))
-proc.shell(<span class="s">"make"</span>)                        <span class="c"># output to ours; the exit code</span></pre>
-<p><code>run</code> and <code>output</code> read the child's standard output; its standard error goes where ours goes. <code>command</code> builds a line from a program and its arguments with each one quoted for the shell, so a file name with a space or a <code>$</code> in it arrives as one argument and nothing more. The calls that wait are declared <code>blocking</code>, so other strands run while a child does.</p>
-<h2 id="types">Types</h2>
+<p class="import">Imported as <code>import "cli/proc" as proc</code>, its names are then <code>proc.…</code>. Every signature below is the one the checker infers.</p><h2 id="types">Types</h2>
 <h3 id="result_"><code>Result_</code></h3>
 <ul>
 <li><code>Done(status: Int, out: Str)</code></li>
@@ -96,14 +88,22 @@ proc.shell(<span class="s">"make"</span>)                        <span class="c"
 <h2 id="functions">Functions</h2>
 <h3 id="fn-runcmd-str---resultresult_-str"><code>fn run(cmd: Str) -&gt; Result(Result_, Str)</code></h3>
 <p>The exit code and what the command wrote. An <code>Err</code> is a command that could not be started at all; a command that ran and failed is an <code>Ok</code> with a status that is not zero — it is the caller's to decide what a failure means, and the output is often the reason.</p>
+<pre>proc.run(<span class="s">"printf hi"</span>)   <span class="c"># =&gt; Ok(proc.Done(0, hi))</span>
+proc.run(<span class="s">"exit 3"</span>)      <span class="c"># =&gt; Ok(proc.Done(3, ))</span></pre>
 <h3 id="fn-outputcmd-str---resultstr-str"><code>fn output(cmd: Str) -&gt; Result(Str, Str)</code></h3>
 <p>The output of a command that succeeded, or the status it failed with, with what it wrote — a one-line answer for the common case.</p>
+<pre>proc.<span class="m">output</span>(<span class="s">"printf hi"</span>)   <span class="c"># =&gt; Ok(hi)</span>
+proc.<span class="m">output</span>(<span class="s">"exit 3"</span>)      <span class="c"># =&gt; Err(`exit 3` exited with 3)</span></pre>
 <h3 id="fn-shellcmd-str---int"><code>fn shell(cmd: Str) -&gt; Int</code></h3>
 <p>Runs the command with our standard output and error, and gives its exit code; -1 when the shell could not be run.</p>
+<pre>proc.shell(<span class="s">"exit 2"</span>)   <span class="c"># =&gt; 2</span></pre>
 <h3 id="fn-commandprog-str-args-liststr---str"><code>fn command(prog: Str, args: List(Str)) -&gt; Str</code></h3>
 <p>A program and its arguments as one shell line, each argument quoted.</p>
+<pre>proc.command(<span class="s">"grep"</span>, <span class="t">Cons</span>(<span class="s">"-n"</span>, <span class="t">Cons</span>(<span class="s">"a b"</span>, <span class="t">Nil</span>)))   <span class="c"># =&gt; grep -n &#x27;a b&#x27;</span></pre>
 <h3 id="fn-quotearg-str---str"><code>fn quote(arg: Str) -&gt; Str</code></h3>
 <p>An argument the shell will pass through unchanged: in single quotes, with a single quote inside written as <code>'\''</code>. A word of plain characters is left as it is.</p>
+<pre>proc.quote(<span class="s">"plain"</span>)     <span class="c"># =&gt; plain</span>
+proc.quote(<span class="s">"it&#x27;s"</span>)      <span class="c"># =&gt; &#x27;it&#x27;\&#x27;&#x27;s&#x27;</span></pre>
 <h2 id="tests">Tests</h2>
 <ul>
 <li><code>test_run_collects_output_and_status</code></li>

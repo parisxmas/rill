@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -109,12 +110,13 @@
 <h2 id="functions">Functions</h2>
 <h3 id="fn-esc_intob-strbuf-s-str---int"><code>fn esc_into(b: StrBuf, s: Str) -&gt; Int</code></h3>
 <p>The five bytes that can change what a page means: <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code>, <code>"</code> and <code>'</code>. Almost no string holds one, so the string is looked over first and copied whole when it does not — one length and one copy, which is what a static piece of the template costs too. Only a string that does hold one is walked a byte at a time, and even then nothing is allocated: a byte goes into the builder as a byte.</p>
-<h3 id="fn-esc_tailb-strbuf-s-str-k-int-n-int---int"><code>fn esc_tail(b: StrBuf, s: Str, k: Int, n: Int) -&gt; Int</code></h3>
-<h3 id="fn-first_specials-str-i-int-n-int---int"><code>fn first_special(s: Str, i: Int, n: Int) -&gt; Int</code></h3>
-<h3 id="fn-is_specialc-int---bool"><code>fn is_special(c: Int) -&gt; Bool</code></h3>
-<h3 id="fn-escapedc-int---str"><code>fn escaped(c: Int) -&gt; Str</code></h3>
+<pre>b = <span class="f">strbuf</span>()
+tmpl.esc_into(b, <span class="s">"Ada &amp; co"</span>)
+<span class="f">strbuf_str</span>(b)   <span class="c"># =&gt; Ada &amp;amp; co</span></pre>
 <h3 id="fn-escs-str---str"><code>fn esc(s: Str) -&gt; Str</code></h3>
 <p>The same as a string, for a caller that wants one rather than a builder.</p>
+<pre>tmpl.esc(<span class="s">"&lt;a href=\&quot;x\&quot;&gt;"</span>)   <span class="c"># =&gt; &amp;lt;a href=&amp;quot;x&amp;quot;&amp;gt;</span>
+tmpl.esc(<span class="s">"plain"</span>)             <span class="c"># =&gt; plain</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-web-tls.html">← web/tls</a>

@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>db/oxirec — The Rill Language Reference</title>
-<meta name="description" content="A client for OxiDB&#x27;s recommendation engine, written in Rill.">
+<meta name="description" content="One basket: who it was, what was in it, and when.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-oxirec.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-oxirec.html">
 <meta property="og:title" content="db/oxirec — The Rill Language Reference">
-<meta property="og:description" content="A client for OxiDB&#x27;s recommendation engine, written in Rill.">
+<meta property="og:description" content="One basket: who it was, what was in it, and when.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="db/oxirec — The Rill Language Reference">
-<meta name="twitter:description" content="A client for OxiDB&#x27;s recommendation engine, written in Rill.">
+<meta name="twitter:description" content="One basket: who it was, what was in it, and when.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -61,6 +61,7 @@
         <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
         <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
         <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
       </ol>
       <p class="side-head">Standard library</p>
       <ul class="sections modules">
@@ -80,43 +81,105 @@
     <main class="module">
       <p class="chapter-no">Standard library · Databases</p>
       <h1>db/oxirec</h1>
-<p class="import">Imported as <code>import "db/oxirec" as oxirec</code>, its names are then <code>oxirec.…</code>. Every signature below is the one the checker infers.</p><p>A client for OxiDB's recommendation engine, written in Rill.</p>
-<p>The wire is <code>oxiwire.rill</code>, the same binary one the document, time-series and SQL clients use. This engine is off unless the server was started with OXIDB_REC.</p>
-<p>What it holds is co-occurrence: baskets go in, and it answers what tends to turn up beside a thing. A basket is an id and a list of items at a moment; nothing else about them is kept.</p>
-<p><strong>Time is in seconds here</strong>, not the milliseconds the time-series engine takes — and it matters more than a unit usually does, because scores decay with age. A query is scored against <em>now</em> unless given a moment of its own, so baskets tracked with old timestamps answer with nothing at all rather than with an error. If <code>rec_related</code> comes back empty, check the two clocks before checking the data.</p>
-<h2 id="functions">Functions</h2>
+<p class="import">Imported as <code>import "db/oxirec" as oxirec</code>, its names are then <code>oxirec.…</code>. Every signature below is the one the checker infers.</p><h2 id="functions">Functions</h2>
 <h3 id="fn-rec_now---int"><code>fn rec_now() -&gt; Int</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_now</span>() &gt; <span class="n">1700000000</span>   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-rec_connecthost-str-port-int---resultint-str"><code>fn rec_connect(host: Str, port: Int) -&gt; Result(Int, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+fd = <span class="f">rec_connect</span>(<span class="s">"127.0.0.1"</span>, <span class="n">7411</span>)?</pre>
 <h3 id="fn-rec_hang_upfd-int---unit"><code>fn rec_hang_up(fd: Int) -&gt; Unit</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_hang_up</span>(fd)</pre>
 <h3 id="fn-rec_requestop-str-fields-listfield---json"><code>fn rec_request(op: Str, fields: List(Field)) -&gt; Json</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_request</span>(<span class="s">"stats"</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; JObj(Cons(Field(engine, JStr(rec)), Cons(Field(cmd, JStr(rec)), Cons(Field(op, JStr(stats)), Nil))))</span></pre>
 <h3 id="fn-rec_callfd-int-op-str-fields-listfield---resultjson-str"><code>fn rec_call(fd: Int, op: Str, fields: List(Field)) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_call</span>(fd, <span class="s">"stats"</span>, <span class="t">Nil</span>)</pre>
 <h3 id="fn-rec_trackfd-int-model-str-basket_id-int-item_names-liststr-at-int---resultjson-str"><code>fn rec_track(fd: Int, model: Str, basket_id: Int, item_names: List(Str), at: Int) -&gt; Result(Json, Str)</code></h3>
 <p>One basket: who it was, what was in it, and when. <code>at</code> is epoch seconds; the server's own clock is used when it is left out, which <code>rec_track_now</code> does.</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_track</span>(fd, <span class="s">"shop"</span>, <span class="n">42</span>, <span class="t">Cons</span>(<span class="s">"bread"</span>, <span class="t">Cons</span>(<span class="s">"butter"</span>, <span class="t">Nil</span>)), <span class="n">1700000000</span>)   <span class="c"># a basket, at a moment in seconds</span></pre>
 <h3 id="fn-rec_track_nowfd-int-model-str-basket_id-int-item_names-liststr---resultjson-str"><code>fn rec_track_now(fd: Int, model: Str, basket_id: Int, item_names: List(Str)) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_track_now</span>(fd, <span class="s">"shop"</span>, <span class="n">43</span>, <span class="t">Cons</span>(<span class="s">"tea"</span>, <span class="t">Cons</span>(<span class="s">"milk"</span>, <span class="t">Nil</span>)))</pre>
 <h3 id="fn-rec_relatedfd-int-model-str-item_name-str-spec-listfield---resultjson-str"><code>fn rec_related(fd: Int, model: Str, item_name: Str, spec: List(Field)) -&gt; Result(Json, Str)</code></h3>
 <p>What turns up beside one item. <code>spec</code> is built with the options below, or <code>Nil</code> for the engine's own defaults.</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_names</span>(<span class="f">rec_related</span>(fd, <span class="s">"shop"</span>, <span class="s">"bread"</span>, <span class="f">rec_limit</span>(<span class="n">3</span>, <span class="f">rec_scoring</span>(<span class="s">"llr"</span>, <span class="t">Nil</span>)))?)</pre>
 <h3 id="fn-rec_for_basketfd-int-model-str-item_names-liststr-spec-listfield---resultjson-str"><code>fn rec_for_basket(fd: Int, model: Str, item_names: List(Str), spec: List(Field)) -&gt; Result(Json, Str)</code></h3>
 <p>What to put beside a basket somebody already has. <code>rec_without</code> keeps what is already in it out of the answer.</p>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_names</span>(<span class="f">rec_for_basket</span>(fd, <span class="s">"shop"</span>, <span class="t">Cons</span>(<span class="s">"bread"</span>, <span class="t">Cons</span>(<span class="s">"tea"</span>, <span class="t">Nil</span>)), <span class="f">rec_without</span>(<span class="t">Cons</span>(<span class="s">"milk"</span>, <span class="t">Nil</span>), <span class="t">Nil</span>))?)</pre>
 <h3 id="fn-rec_statsfd-int---resultjson-str"><code>fn rec_stats(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+st = <span class="f">rec_stats</span>(fd)?
+<span class="f">rec_baskets</span>(<span class="f">rec_model_stats</span>(st, <span class="s">"shop"</span>))</pre>
 <h3 id="fn-rec_checkpointfd-int---resultjson-str"><code>fn rec_checkpoint(fd: Int) -&gt; Result(Json, Str)</code></h3>
+<pre><span class="c"># not run</span>
+<span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_checkpoint</span>(fd)</pre>
 <h3 id="fn-rec_limitn-int-rest-listfield---listfield"><code>fn rec_limit(n: Int, rest: List(Field)) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_limit</span>(<span class="n">5</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(limit, JInt(5)), Nil)</span></pre>
 <h3 id="fn-rec_scoringname-str-rest-listfield---listfield"><code>fn rec_scoring(name: Str, rest: List(Field)) -&gt; List(Field)</code></h3>
 <p><code>llr</code> — the log-likelihood ratio — asks whether two things turn up together more than chance would have it, rather than merely often.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_scoring</span>(<span class="s">"llr"</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(scoring, JStr(llr)), Nil)</span></pre>
 <h3 id="fn-rec_half_lifedays-float-rest-listfield---listfield"><code>fn rec_half_life(days: Float, rest: List(Field)) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_half_life</span>(<span class="n">30.0</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(half_life, JNum(30)), Nil)</span></pre>
 <h3 id="fn-rec_min_supportn-float-rest-listfield---listfield"><code>fn rec_min_support(n: Float, rest: List(Field)) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_min_support</span>(<span class="n">2.0</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(min_support, JNum(2)), Nil)</span></pre>
 <h3 id="fn-rec_withoutitem_names-liststr-rest-listfield---listfield"><code>fn rec_without(item_names: List(Str), rest: List(Field)) -&gt; List(Field)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_without</span>(<span class="t">Cons</span>(<span class="s">"milk"</span>, <span class="t">Nil</span>), <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(exclude, JArr(Cons(JStr(milk), Nil))), Nil)</span></pre>
 <h3 id="fn-rec_atseconds-int-rest-listfield---listfield"><code>fn rec_at(seconds: Int, rest: List(Field)) -&gt; List(Field)</code></h3>
 <p>The moment to score against, in epoch seconds. Without it the server's clock is used, which is what makes old test data answer with nothing.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_at</span>(<span class="n">1700000000</span>, <span class="t">Nil</span>)   <span class="c"># =&gt; Cons(Field(ts, JInt(1700000000)), Nil)</span></pre>
 <h3 id="fn-rec_suggestionsanswer-json---listjson"><code>fn rec_suggestions(answer: Json) -&gt; List(Json)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+answer = <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"recommendations"</span>, <span class="t">JArr</span>(<span class="t">Cons</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"item"</span>, <span class="t">JStr</span>(<span class="s">"butter"</span>)), <span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"score"</span>, <span class="t">JNum</span>(<span class="n">0.9</span>)), <span class="t">Nil</span>))), <span class="t">Nil</span>))), <span class="t">Nil</span>))
+<span class="f">len</span>(<span class="f">rec_suggestions</span>(answer))   <span class="c"># =&gt; 1</span>
+<span class="f">rec_names</span>(answer)              <span class="c"># =&gt; Cons(butter, Nil)</span></pre>
 <h3 id="fn-rec_itemsuggestion-json---str"><code>fn rec_item(suggestion: Json) -&gt; Str</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_item</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"item"</span>, <span class="t">JStr</span>(<span class="s">"butter"</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; butter</span></pre>
 <h3 id="fn-rec_scoresuggestion-json---float"><code>fn rec_score(suggestion: Json) -&gt; Float</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_score</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"score"</span>, <span class="t">JNum</span>(<span class="n">0.9</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; 0.9</span></pre>
 <h3 id="fn-rec_namesanswer-json---liststr"><code>fn rec_names(answer: Json) -&gt; List(Str)</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_names</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"recommendations"</span>, <span class="t">JArr</span>(<span class="t">Nil</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; Nil</span></pre>
 <h3 id="fn-rec_countedanswer-json---bool"><code>fn rec_counted(answer: Json) -&gt; Bool</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_counted</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"counted"</span>, <span class="t">JBool</span>(<span class="t">true</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; true</span></pre>
 <h3 id="fn-rec_catalogueanswer-json---int"><code>fn rec_catalogue(answer: Json) -&gt; Int</code></h3>
 <p><code>stats</code> answers about the store as a whole and about each model in it.</p>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_catalogue</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"catalogue_items"</span>, <span class="t">JInt</span>(<span class="n">120</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; 120</span></pre>
 <h3 id="fn-rec_model_statsanswer-json-model-str---json"><code>fn rec_model_stats(answer: Json, model: Str) -&gt; Json</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+st = <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"models"</span>, <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"shop"</span>, <span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"baskets"</span>, <span class="t">JInt</span>(<span class="n">10</span>)), <span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"pairs"</span>, <span class="t">JInt</span>(<span class="n">40</span>)), <span class="t">Nil</span>)))), <span class="t">Nil</span>))), <span class="t">Nil</span>))
+<span class="f">rec_baskets</span>(<span class="f">rec_model_stats</span>(st, <span class="s">"shop"</span>))   <span class="c"># =&gt; 10</span>
+<span class="f">rec_pairs</span>(<span class="f">rec_model_stats</span>(st, <span class="s">"shop"</span>))     <span class="c"># =&gt; 40</span></pre>
 <h3 id="fn-rec_basketsmodel_stats-json---int"><code>fn rec_baskets(model_stats: Json) -&gt; Int</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_baskets</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"baskets"</span>, <span class="t">JInt</span>(<span class="n">10</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; 10</span></pre>
 <h3 id="fn-rec_pairsmodel_stats-json---int"><code>fn rec_pairs(model_stats: Json) -&gt; Int</code></h3>
+<pre><span class="k">import</span> <span class="s">"db/oxirec"</span>
+<span class="f">rec_pairs</span>(<span class="t">JObj</span>(<span class="t">Cons</span>(<span class="t">Field</span>(<span class="s">"pairs"</span>, <span class="t">JInt</span>(<span class="n">40</span>)), <span class="t">Nil</span>)))   <span class="c"># =&gt; 40</span></pre>
 
       <div class="prevnext">
         <a class="prev" href="lib-db-oxidb.html">← db/oxidb</a>
