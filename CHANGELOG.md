@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.13.0 — the model editor
+
+The release where the models got an editor in the browser, with its
+server written in Rill on the standard library. The page shows a file's
+`system` as the block diagram, channels routed as SDL drew them, and
+each `machine` as a process in SDL's symbols, beside its coloured code,
+every symbol a click from its line. The diagrams edit: a route, an arm,
+a state, a `save` or a `priority` opens in a box with its own lines, the
+dashed symbols and the edit bar add a state, an input, a signal, a
+machine, a system, and everything can be deleted; every edit is lines
+replaced in the file, kept only if the result still parses and written
+back formatted, so the code stays the model. The Simulate view runs a
+scenario traced on the virtual clock and replays it, the sequence chart
+growing event by event while the diagrams light the state and
+transition each machine is at. Hover shows a type and ⌘-click a
+definition, from a `rill lsp` kept alive beside the server, which
+listens on this machine alone. Zoom, splitters, a new model from a
+template, the models alone in the list.
+
+And `rill doc`: a module's documentation read off the file, from the
+comments its declarations already carry and the signatures the checker
+infers, as Markdown, a page a module. Under both: `rill diagram --json`,
+`rill test` passing a scenario's trace through, `tcp_listen_at`,
+`listen_at` and `serve_at`. The sections below this one tell each of
+them properly.
+
 ## 0.12.0 — a modelling language
 
 The release where `machine` became what SDL was: a process with a
