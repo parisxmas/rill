@@ -6,8 +6,8 @@
 `bin/rill` with its runtime, the wasm runtime and libc under `lib/rill/`,
 the standard library under `lib/` — which the compiler now finds beside
 its own `bin/`, so a packaged toolchain needs no `RILL_PATH` — the
-examples, the model editor and the reference, as
-`rill-<version>-<os>-<arch>.tar.gz`. On a Mac the Homebrew `zstd` the
+examples and the reference, as `rill-<version>-<os>-<arch>.tar.gz` —
+the model editor stays out of it and runs at rillsdl.baltavista.com. On a Mac the Homebrew `zstd` the
 compiler links travels with it and the binary is signed again.
 `tools/dist-linux.sh` builds the Linux x86-64 one in Docker, a `dist`
 stage of the editor's Dockerfile. Both are on rill.baltavista.com/dl.

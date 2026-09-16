@@ -495,7 +495,7 @@ live allocations: 0</pre>
   <section id="download">
     <h2 class="sec">Download</h2>
     <p class="sec-lede">Rill 0.13.0, packaged: the compiler, the runtimes, the standard
-    library, the examples, the model editor and the reference, in one directory. Needs a
+    library, the examples and the reference, in one directory. Needs a
     C linker on the PATH — the Xcode command-line tools on a Mac, <code>gcc</code> or
     <code>clang</code> on Linux — and nothing else.</p>
     <div class="grid downloads">
@@ -508,8 +508,7 @@ live allocations: 0</pre>
     </div>
     <pre>curl -O https://rill.baltavista.com/dl/rill-0.13.0-macos-arm64.tar.gz
 tar xzf rill-0.13.0-macos-arm64.tar.gz
-rill/bin/rill run rill/examples/hello.rill        <span class="c"># hello, world</span>
-rill/bin/rill run rill/editors/web/server.rill    <span class="c"># the model editor, at localhost:8765</span></pre>
+rill/bin/rill run rill/examples/hello.rill        <span class="c"># hello, world</span></pre>
     <p class="note" style="color:var(--muted);font-size:14px">Checksums in <a href="dl/SHA256SUMS">SHA256SUMS</a>. The wasm target needs <code>wasm-ld</code>, which comes with LLVM.</p>
   </section>
 
@@ -522,7 +521,6 @@ rill check program.rill        <span class="c"># type-check only, saying everyth
 rill fmt   program.rill        <span class="c"># canonical formatting</span>
 rill doc   lib -o docs         <span class="c"># Markdown from the comments the modules already have</span>
 rill diagram exchange.rill     <span class="c"># the system and the machines, drawn</span>
-rill run editors/web/server.rill  <span class="c"># the model editor, at localhost:8765</span>
 rill repl                      <span class="c"># definitions persist for the session</span></pre>
     <p>The runtime is <code>no_std</code> and links as a static library, which is most
     of why the binaries are the size they are.</p>

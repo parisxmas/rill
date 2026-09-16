@@ -6,7 +6,8 @@
 # compiler is built with a C compiler. What comes out needs no cargo and no
 # rustup: `bin/rill` finds its runtimes and the wasi sysroot in `lib/rill/`,
 # the standard library in `lib/`, so a user builds native binaries and
-# browser demos with nothing but this directory — plus a C linker (`cc`:
+# browser demos with nothing but this directory (the model editor is not
+# in it; it runs at rillsdl.baltavista.com) — plus a C linker (`cc`:
 # the Xcode command-line tools on a Mac, `gcc` on Linux), and `wasm-ld`
 # for the wasm target, which comes with LLVM.
 #
@@ -46,10 +47,8 @@ for d in "$root"/lib/*/; do
   mkdir -p "$dist/lib/$name"
   cp "$d"/*.rill "$dist/lib/$name/"
 done
-mkdir -p "$dist/examples" "$dist/editors/web/static"
+mkdir -p "$dist/examples"
 cp "$root"/examples/*.rill "$dist/examples/"
-cp "$root"/editors/web/server.rill "$dist/editors/web/"
-cp "$root"/editors/web/static/* "$dist/editors/web/static/"
 cp "$root/LANGUAGE.md" "$root/README.md" "$root/CHANGELOG.md" "$dist/"
 cat > "$dist/INSTALL.md" <<'DOC'
 # Rill, packaged
@@ -59,7 +58,6 @@ cat > "$dist/INSTALL.md" <<'DOC'
     lib/                     the standard library, found by the compiler beside bin/
     lib/rill/wasm32-wasip1   the runtime and libc for `--target wasm32-wasip1`
     examples/                programs to start from; `bin/rill run examples/hello.rill`
-    editors/web/             the model editor: `bin/rill run editors/web/server.rill`
     LANGUAGE.md              the reference
 
 Needs a C linker on the PATH: the Xcode command-line tools on a Mac

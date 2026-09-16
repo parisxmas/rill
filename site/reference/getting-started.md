@@ -1,6 +1,5 @@
 Rill comes as one directory: the compiler, the runtime it links into every
-program, the standard library, the examples, the model editor and this
-reference. It needs one thing from the machine: a C toolchain's linker —
+program, the standard library, the examples and this reference. It needs one thing from the machine: a C toolchain's linker —
 the Xcode command-line tools on a Mac (`xcode-select --install`), `gcc` or
 `clang` on Linux. The compiler produces an object file and hands the last
 step to `cc`, which joins it with Rill's runtime, the system's C library
@@ -121,17 +120,10 @@ own.
 ### The model editor
 
 `exchange.rill` is a telephone exchange as SDL would draw it: a `system` of
-routes and a `machine` with states, signals and timers. The editor draws
-it, edits it as diagrams that are written back into the file, and runs a
-scenario with the machines lighting up as it plays:
-
-```
-$ rill run rill/editors/web/server.rill      # then open http://127.0.0.1:8765
-```
-
-The same editor, with the examples, runs at
-[rillsdl.baltavista.com](https://rillsdl.baltavista.com/) — nothing to
-install, nothing saved. `rill diagram rill/examples/exchange.rill` prints
+routes and a `machine` with states, signals and timers. The editor at
+[rillsdl.baltavista.com](https://rillsdl.baltavista.com/) draws it, edits
+it as diagrams, and runs a scenario with the machines lighting up as it
+plays — nothing to install, nothing saved. `rill diagram rill/examples/exchange.rill` prints
 the diagrams as Mermaid, `--svg` as SDL's symbols; `RILL_TRACE=1 rill run
 rill/examples/exchange.rill 2>trace.txt` records what the machines did,
 and `rill msc trace.txt` draws the run as a sequence chart.
