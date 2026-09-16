@@ -93,7 +93,7 @@ h3.entry .tag{{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-
   </div>
   <footer>
     <p class="mono">Rill v{short} · generated from CHANGELOG.md</p>
-    <p class="mono">Rill is designed and written by <b>Barış Akın</b>.</p>
+    <p class="mono">Rill is designed and written by <b>Barış Akın</b> with Anthropic's AI models.</p>
   </footer>
 </div>
 </body>
