@@ -2584,10 +2584,23 @@ unsafe fn vt_now() -> i64 {
     if v != 0 {
         return v;
     }
-    let mut t = Timespec { secs: 0, nanos: 0 };
-    let start = if clock_gettime(0, &mut t) == 0 { t.secs.wrapping_mul(1_000_000_000).wrapping_add(t.nanos) } else { 1 };
+    let start = vt_start();
     let _ = VT_NOW.compare_exchange(0, start, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire);
     VT_NOW.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Where the virtual clock starts: the wall clock's reading, where there
+/// is one; a host with no clock of its own starts at one nanosecond,
+/// since zero means "not started".
+#[cfg(unix)]
+unsafe fn vt_start() -> i64 {
+    let mut t = Timespec { secs: 0, nanos: 0 };
+    if clock_gettime(0, &mut t) == 0 { t.secs.wrapping_mul(1_000_000_000).wrapping_add(t.nanos) } else { 1 }
+}
+
+#[cfg(not(unix))]
+unsafe fn vt_start() -> i64 {
+    1
 }
 
 unsafe fn vt_lock() {
@@ -4627,6 +4640,10 @@ pub static mut rill_pools: [Pool; MAX_WORKERS] = [POOL_INIT; MAX_WORKERS];
 /// block was freed — and the program stops there, naming the frames,
 /// rather than wherever the bad pointer is next dereferenced.
 static mut ALLOC_CHECK: bool = false;
+/// The free-list link's twin is kept masked, so a count written over the
+/// link by a stale holder cannot also match its twin by accident; the
+/// mask is the word's width, whatever that is.
+const LINK_MASK: usize = 0x5EE7F5EE5EE7F5EEu64 as usize;
 /// `RILL_ALLOC_CHECK=2`: on top of the above, every small block (up to
 /// `QUAR_MAX` bytes) gets a page of its own, and the page is made
 /// inaccessible the moment the block is freed. A stale holder that then
@@ -5112,7 +5129,7 @@ unsafe fn rill_alloc_raw(size: u64) -> *mut u8 {
                 // in the word after it: a count let go of by a stale holder
                 // lands on the link and the two no longer agree
                 let link = *(head as *const usize);
-                let kept = *(head as *const usize).add(1) ^ 0x5EE7F5EE5EE7F5EE;
+                let kept = *(head as *const usize).add(1) ^ LINK_MASK;
                 if link != kept {
                     rill_flush_out();
                     err(b"rill: a freed block's count was touched after its free: block ");
@@ -5188,7 +5205,7 @@ pub unsafe extern "C" fn rill_free_sized(ptr: *mut u8, size: u64) {
             for k in 2..words {
                 *(ptr as *mut u64).add(k) = 0x5EE7F5EE00000000 | class as u64;
             }
-            *(ptr as *mut usize).add(1) = (*pool).free[class] as usize ^ 0x5EE7F5EE5EE7F5EE;
+            *(ptr as *mut usize).add(1) = (*pool).free[class] as usize ^ LINK_MASK;
             note_free(ptr as usize, (*pool).free[class] as usize);
         }
         *(ptr as *mut *mut u8) = (*pool).free[class];
