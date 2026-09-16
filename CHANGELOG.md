@@ -61,6 +61,23 @@ compiler builds on LLVM 21, releases what it drops in place, and reaches
 the instructions the machine has that C has no name for — it is level
 with or ahead of the C on every benchmark in `benchmarks/c/`.
 
+## Unreleased — a machine's timers, and the signal it keeps for later
+
+Two of SDL's a `machine` did not have. Named timers: `set(Retry, 200)`
+in an arm starts one that delivers `Retry` in 200 ms — a timer is named
+by its signal, may carry a value, is moved by setting it again, stopped
+by `reset`, asked after by `active`, and keeps running across states,
+which is what `after` could not do; when it runs out its signal is
+answered by whatever state the machine is in. `save Sig` in a state
+keeps a signal for a later state instead of answering or dropping it:
+the saved wait in the order they came, and each state takes the first
+it does not save before reading its mailbox. A machine with either
+carries a table and a list as parameters no program can name, and is
+two functions, the one declared and its loop; one with neither is
+lowered as before. `rill fmt` writes both back, `rill diagram` draws a
+set or reset as a task with the hourglass and a save as SDL's notched
+symbol, and `rill types` no longer lists the loop.
+
 ## Unreleased — `rill diagram`
 
 A machine drawn from its declaration: `rill diagram file.rill` prints

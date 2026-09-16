@@ -16,6 +16,8 @@ use rill_syntax::fmt::{expr_text, pattern_text};
 enum Step {
     /// `send(to, sig)`: a signal out, to whom.
     Output(String, String),
+    /// `set(T, ms)` or `reset(T)`: a timer started or stopped.
+    Timer(String),
     /// Any other statement, as written.
     Task(String),
 }
@@ -116,10 +118,27 @@ fn body_of(e: &Expr) -> (Vec<Step>, End) {
     }
 }
 
+/// What a state keeps for later: `save Sig`, with its guard.
+fn saves_of(st: &StateDef) -> Vec<String> {
+    st.saves
+        .iter()
+        .map(|(p, g, _)| match g {
+            Some(g) => format!("{} if {}", pattern_text(p), expr_text(g)),
+            None => pattern_text(p),
+        })
+        .collect()
+}
+
 fn step_of(s: &Stmt) -> Step {
     match s {
         Stmt::Expr(Expr::Call { name, args, .. }) if name == "send" && args.len() == 2 => {
             Step::Output(expr_text(&args[0]), expr_text(&args[1]))
+        }
+        Stmt::Expr(Expr::Call { name, args, .. }) if name == "set" && args.len() == 2 => {
+            Step::Timer(format!("set {} {} ms", expr_text(&args[0]), expr_text(&args[1])))
+        }
+        Stmt::Expr(Expr::Call { name, args, .. }) if name == "reset" && args.len() == 1 => {
+            Step::Timer(format!("reset {}", expr_text(&args[0])))
         }
         Stmt::Expr(e) => Step::Task(expr_text(e)),
         Stmt::Bind { name, value, .. } => Step::Task(format!("{name} = {}", expr_text(value))),
@@ -159,6 +178,9 @@ pub fn mermaid(m: &MachineDef) -> String {
             }
             mermaid_end(&mut out, &from, &label, &t.end);
         }
+        for s in saves_of(st) {
+            out.push_str(&format!("  {from} --> {from}: save {}\n", clean(&s)));
+        }
     }
     out
 }
@@ -168,7 +190,7 @@ fn outputs_text(steps: &[Step]) -> String {
         .iter()
         .map(|s| match s {
             Step::Output(to, sig) => format!("{sig} to {to}"),
-            Step::Task(t) => t.clone(),
+            Step::Timer(t) | Step::Task(t) => t.clone(),
         })
         .collect();
     parts.join(", ")
@@ -217,6 +239,10 @@ enum Sym {
     Timer(String),
     Output(String),
     Task(String),
+    /// A timer set or reset: the task symbol with the hourglass.
+    TimerTask(String),
+    /// A signal kept for a later state.
+    Save(String),
     Decision(String),
     Stop,
 }
@@ -232,7 +258,7 @@ struct Column {
 /// and kept whole as the tooltip.
 fn sym_width(s: &Sym) -> f64 {
     let t = match s {
-        Sym::State(t) | Sym::Input(t) | Sym::Timer(t) | Sym::Output(t) | Sym::Task(t) | Sym::Decision(t) => t.as_str(),
+        Sym::State(t) | Sym::Input(t) | Sym::Timer(t) | Sym::Output(t) | Sym::Task(t) | Sym::TimerTask(t) | Sym::Save(t) | Sym::Decision(t) => t.as_str(),
         Sym::Stop => "",
     };
     (t.chars().count() as f64 * CHAR + 40.0).clamp(W, W_MOST)
@@ -265,6 +291,7 @@ fn column_of(steps: &[Step], end: &End) -> Column {
         .iter()
         .map(|s| match s {
             Step::Output(to, sig) => Sym::Output(format!("{sig} → {to}")),
+            Step::Timer(t) => Sym::TimerTask(t.clone()),
             Step::Task(t) => Sym::Task(t.clone()),
         })
         .collect();
@@ -286,7 +313,7 @@ pub fn svg(m: &MachineDef) -> String {
     // one block per state: the state symbol over its transitions' columns
     let mut blocks: Vec<(String, Vec<Column>)> = Vec::new();
     for st in &m.states {
-        let cols = transitions(st)
+        let mut cols: Vec<Column> = transitions(st)
             .into_iter()
             .map(|t| {
                 let mut c = column_of(&t.steps, &t.end);
@@ -294,6 +321,9 @@ pub fn svg(m: &MachineDef) -> String {
                 c
             })
             .collect();
+        for s in saves_of(st) {
+            cols.push(Column { syms: vec![Sym::Save(s)], forks: Vec::new() });
+        }
         blocks.push((state_name(&st.pattern), cols));
     }
     let mut body = String::new();
@@ -391,6 +421,17 @@ fn draw(out: &mut String, s: &Sym, x: f64, y: f64, w: f64) {
         Sym::Task(t) => {
             out.push_str(&format!("<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{H}\" {style}/>\n"));
             text(out, x + w / 2.0, ym + 4.0, t, "middle");
+        }
+        Sym::TimerTask(t) => {
+            // a task with the hourglass: a timer set or reset
+            out.push_str(&format!("<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{H}\" {style}/>\n"));
+            out.push_str(&format!("<polygon points=\"{},{} {},{} {},{} {},{}\" fill=\"black\"/>\n", x + 8.0, y + 8.0, x + 18.0, y + 8.0, x + 8.0, y2 - 8.0, x + 18.0, y2 - 8.0));
+            text(out, x + w / 2.0 + 6.0, ym + 4.0, t, "middle");
+        }
+        Sym::Save(t) => {
+            // SDL's save: the rectangle with its right side notched inward
+            out.push_str(&format!("<polygon points=\"{x},{y} {x2},{y} {},{ym} {x2},{y2} {x},{y2}\" {style}/>\n", x2 - 12.0));
+            text(out, x + w / 2.0 - 6.0, ym + 4.0, &format!("save {t}"), "middle");
         }
         Sym::Decision(t) => {
             let cx = x + w / 2.0;

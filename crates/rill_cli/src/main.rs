@@ -92,7 +92,8 @@ fn types_cmd(args: &[String]) -> Result<ExitCode, String> {
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let own = rill_syntax::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mine: Vec<String> = own.functions.iter().map(|f| f.name.clone()).collect();
+    // A machine's loop, `name.run`, is the compiler's and not the file's.
+    let mine: Vec<String> = own.functions.iter().filter(|f| !f.name.contains('.')).map(|f| f.name.clone()).collect();
 
     let module = rill_syntax::load_program(&path)?;
     let tmod = match rill_types::check_all(&module) {

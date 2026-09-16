@@ -750,7 +750,7 @@ fn hoist_indexes(
 
 /// Visits every immediate sub-expression, blocks and local function bodies
 /// included — unlike `each_child`, which stops at a block.
-fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
+pub fn each_child_all<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
     match e {
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(..) => {}
         Expr::Call { args, .. } => args.iter().for_each(f),

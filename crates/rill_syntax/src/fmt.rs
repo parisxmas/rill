@@ -212,7 +212,12 @@ impl Fmt {
         decls.extend(m.asms.iter().map(Decl::Asm));
         // a machine is among the functions too, lowered; it is written
         // back as the declaration it was
-        decls.extend(m.functions.iter().filter(|f| !m.machines.iter().any(|mc| mc.name == f.name)).map(Decl::Fn));
+        decls.extend(
+            m.functions
+                .iter()
+                .filter(|f| !m.machines.iter().any(|mc| mc.name == f.name || f.name == format!("{}.run", mc.name)))
+                .map(Decl::Fn),
+        );
         decls.extend(m.machines.iter().map(Decl::Machine));
         decls.sort_by_key(|d| d.line());
 
@@ -429,6 +434,22 @@ impl Fmt {
             if let Some((ms, body, aline)) = &st.after {
                 let head = format!("after {}", self.render(ms, 3));
                 arms.push((*aline, self.arm_body_text(&head, body, *aline, 2)));
+            }
+            for (p, g, sline) in &st.saves {
+                let head = match g {
+                    Some(g) => format!("save {} if {}", pattern(p), self.render(g, 3)),
+                    None => format!("save {}", pattern(p)),
+                };
+                let mut s = String::new();
+                for (cl, text) in self.comments.before(*sline) {
+                    self.mark(cl);
+                    s.push_str(&format!("{}{}\n", pad(2), text));
+                }
+                self.mark(*sline);
+                let text = self.with_trailing(&head, *sline);
+                s.push_str(&format!("{}{text}\n", pad(2)));
+                self.last_line = self.last_line.max(*sline);
+                arms.push((*sline, s));
             }
             arms.sort_by_key(|(l, _)| *l);
             for (_, text) in arms {

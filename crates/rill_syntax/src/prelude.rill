@@ -334,6 +334,59 @@ fn eprint(x) =
   file_write(2, show(x))
   ()
 
+# -- machines -----------------------------------------------------------------
+
+# What a `machine` with timers or saves is lowered onto; a program does not
+# call these. The timers are a table from a timer's name to the moment it is
+# due and the signal it delivers; the saved signals are a list in the order
+# they came.
+
+fn machine_set(timers, name, ms, signal) = map_set(timers, name, (now_millis() + ms, signal))
+
+fn machine_reset(timers, name) =
+  map_del(timers, name)
+  ()
+
+fn machine_active(timers, name) = map_has(timers, name)
+
+# How long to wait: until the soonest timer, or `after` if that is sooner,
+# and a long while when there is neither. A millisecond is added so the
+# deadline has passed when the wait ends.
+fn machine_wait(timers, after) =
+  due = machine_due(map_items(timers), -1)
+  soon = if due < 0 then -1 else max(due - now_millis() + 1, 0)
+  if soon < 0 && after < 0 then 1073741824 else if soon < 0 then after else if after < 0 then soon else min(soon, after)
+
+fn machine_due(items, best) = match items
+  Nil -> best
+  Cons((_, (deadline, _)), rest) -> machine_due(rest, if best < 0 || deadline < best then deadline else best)
+
+# The soonest timer, if it has run out: taken off the table, its signal.
+fn machine_expired(timers) = match machine_soonest(map_items(timers), None)
+  None -> None
+  Some((name, (deadline, signal))) -> if deadline <= now_millis() then machine_fire(timers, name, signal) else None
+
+fn machine_fire(timers, name, signal) =
+  map_del(timers, name)
+  Some(signal)
+
+fn machine_soonest(items, best) = match items
+  Nil -> best
+  Cons(item, rest) -> machine_soonest(rest, machine_sooner(item, best))
+
+fn machine_sooner(item, best) = match best
+  None -> Some(item)
+  Some((_, (bd, _))) -> match item
+    (_, (d, _)) -> if d < bd then Some(item) else best
+
+# The first saved signal this state does not keep, and the rest in their
+# order; `None` when it keeps them all.
+fn machine_take(pending, saved) = machine_take_from(pending, saved, Nil)
+
+fn machine_take_from(pending, saved, skipped) = match pending
+  Nil -> None
+  Cons(s, rest) -> if saved(s) then machine_take_from(rest, saved, Cons(s, skipped)) else Some((s, rev_onto(skipped, rest)))
+
 # -- options and results -----------------------------------------------------
 
 fn unwrap_or(o, d) = match o

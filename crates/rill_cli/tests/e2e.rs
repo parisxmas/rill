@@ -5094,3 +5094,51 @@ fn a_blocking_externs_answer_reaches_the_strand_that_asked() {
                  println(sort(Cons(recv(ch), Cons(recv(ch), Cons(recv(ch), Nil)))))\n";
     assert_eq!(run_source("blocking_answer", src), "Cons(3, Cons(5, Cons(7, Nil)))\n");
 }
+
+/// Named timers in a machine, as SDL has them: `set(T, ms)` starts one
+/// that survives state changes, `reset(T)` stops it, `active(T)` asks;
+/// a timer that runs out arrives as the signal it is, and one with a
+/// field carries it. Written back by `rill fmt` as declared, and drawn.
+#[test]
+fn a_machine_keeps_named_timers() {
+    let src = "type Signal\n  Start\n  Ping\n  Retry\n  Tick(n: Int)\n  Stop\n  Report(to: Chan(Str))\n\ntype St\n  Idle\n  Waiting(tries: Int)\n\nmachine node(me: Chan(Signal), log: Chan(Str))\n  state Idle\n    Start ->\n      set(Retry, 45)\n      set(Tick(1), 10)\n      Waiting(0)\n    Report(to) ->\n      send(to, \"idle\")\n      Idle\n  state Waiting(tries)\n    Tick(n) ->\n      send(log, \"tick \" + int_to_str(n))\n      if n < 3 then set(Tick(n + 1), 10) else ()\n      Waiting(tries)\n    Retry ->\n      send(log, \"retry \" + int_to_str(tries) + \", tick \" + (if active(Tick) then \"running\" else \"done\"))\n      if tries < 1 then set(Retry, 45) else ()\n      Waiting(tries + 1)\n    Ping ->\n      reset(Retry)\n      send(log, \"pinged, retry \" + (if active(Retry) then \"still on\" else \"off\"))\n      Waiting(tries)\n    Stop -> stop\n    Report(to) ->\n      send(to, \"waiting \" + int_to_str(tries))\n      Waiting(tries)\n\nfn main() =\n  log = channel(64)\n  a = channel(16)\n  spawn node(a, log, Idle)\n  send(a, Start)\n  for i in 0..5\n    println(recv(log))\n  back = channel(1)\n  send(a, Report(back))\n  println(recv(back))\n  b = channel(16)\n  spawn node(b, log, Idle)\n  send(b, Start)\n  sleep_ms(5)\n  send(b, Ping)\n  println(recv(log))\n  sleep_ms(70)\n  send(b, Report(back))\n  println(recv(back))\n  send(b, Stop)\n";
+    assert_eq!(
+        run_source("timers", src),
+        "tick 1\ntick 2\ntick 3\nretry 0, tick done\nretry 1, tick done\nwaiting 2\npinged, retry off\nwaiting 0\n"
+    );
+    assert_eq!(fmt_source(src), src);
+    let dir = std::env::temp_dir().join(format!("rill-e2e-timers-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("timers.rill"), src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(dir.join("timers.rill")).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("  Idle --> Waiting: Start / set Retry 45 ms, set Tick(1) 10 ms\n"), "{text}");
+    let types = Command::new(env!("CARGO_BIN_EXE_rill")).arg("types").arg(dir.join("timers.rill")).output().unwrap();
+    let shown = String::from_utf8(types.stdout).unwrap();
+    assert!(shown.contains("fn node(") && !shown.contains("node.run"), "{shown}");
+}
+
+/// `save Sig` in a state keeps the signal for a later state: the ones
+/// saved come back in the order they came, ahead of what arrives after,
+/// and a state that does not save them answers them as it would — or
+/// drops them, as `Off` does. The pending signal is offered again in the
+/// state an `after` leads to.
+#[test]
+fn a_machine_saves_a_signal_for_later() {
+    let src = "type Signal\n  Connect\n  Connected\n  Data(n: Int)\n  Close\n  Report(to: Chan(Str))\n\ntype St\n  Off\n  Connecting\n  On(seen: List(Int))\n\nmachine link(me: Chan(Signal), log: Chan(Str))\n  state Off\n    Connect -> Connecting\n    Data(n) ->\n      send(log, \"dropped \" + int_to_str(n))\n      Off\n    Report(to) ->\n      send(to, \"off\")\n      Off\n  state Connecting\n    save Data(_)\n    Connected ->\n      send(log, \"up\")\n      On(Nil)\n    Report(to) ->\n      send(to, \"connecting\")\n      Connecting\n    after 20 ->\n      send(log, \"no answer\")\n      Off\n  state On(seen)\n    Data(n) ->\n      send(log, \"data \" + int_to_str(n))\n      On(Cons(n, seen))\n    Close ->\n      send(log, \"seen \" + show(reverse(seen)))\n      stop\n    Report(to) ->\n      send(to, \"on\")\n      On(seen)\n\nfn ask(l) =\n  back = channel(1)\n  send(l, Report(back))\n  recv(back)\n\nfn main() =\n  log = channel(64)\n  a = channel(16)\n  spawn link(a, log, Off)\n  send(a, Data(0))\n  println(recv(log))\n  send(a, Connect)\n  send(a, Data(1))\n  send(a, Data(2))\n  println(ask(a))\n  send(a, Connected)\n  send(a, Data(3))\n  println(recv(log))\n  println(recv(log))\n  println(recv(log))\n  println(recv(log))\n  send(a, Close)\n  println(recv(log))\n  b = channel(16)\n  spawn link(b, log, Off)\n  send(b, Connect)\n  send(b, Data(9))\n  println(recv(log))\n  println(ask(b))\n  send(b, Data(10))\n  println(recv(log))\n";
+    assert_eq!(
+        run_source("saves", src),
+        "dropped 0\nconnecting\nup\ndata 1\ndata 2\ndata 3\nseen Cons(1, Cons(2, Cons(3, Nil)))\nno answer\noff\ndropped 9\n"
+    );
+    assert_eq!(fmt_source(src), src);
+    let dir = std::env::temp_dir().join(format!("rill-e2e-saves-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("saves.rill"), src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(dir.join("saves.rill")).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("  Connecting --> Connecting: save Data(_)\n"), "{text}");
+    let svg = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(dir.join("saves.rill")).arg("--svg").output().unwrap();
+    assert!(String::from_utf8_lossy(&svg.stdout).contains("save Data(_)"));
+    let with_body = src.replace("    save Data(_)\n", "    save Data(_) -> Connecting\n");
+    assert!(compile_error(&with_body).contains("`save` keeps the signal for a later state"));
+}

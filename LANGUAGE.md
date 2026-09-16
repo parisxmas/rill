@@ -1177,10 +1177,27 @@ what SDL does with an unexpected signal — unless an arm `_ ->` says what
 to do with it. Every state of the type has to appear, or the machine is
 refused naming the one missing.
 
+Two more things a state may do, as SDL's processes did. A **timer** is a
+signal the machine sends itself later: `set(Retry, 200)` in an arm's body
+starts one that delivers `Retry` in 200 ms, `set(Tick(n), 10)` one that
+carries a value, `reset(Retry)` stops it, and `active(Retry)` asks whether
+it is running. A timer is named by its signal, setting it again moves it,
+and it keeps running across states — that is what `after` cannot do — until
+it runs out and its signal is answered by whatever state the machine is in
+then, like any other signal. **`save Digit(_)`** in a state keeps a signal
+that arrives there for a later state rather than answering or dropping it:
+the saved signals wait in the order they came, and each state takes the
+first of them it does not save before it reads its mailbox — so a `Data`
+that arrives while `Connecting` is answered by `On` the moment the link is
+up. A `save` takes a pattern and a guard, like an arm, and no body.
+
 What the parser makes of it is the function you would have written: a
 `match` on the state, and in each state a `recv` — or a `select` with a
 `timeout` where there is an `after` — followed by a `match` on the signal
-whose arms call the machine again with the next state. It costs what that
+whose arms call the machine again with the next state. A machine with
+timers or saves carries them as two more parameters no program can name,
+a table of what is due and the list of what was kept, and its wait's
+deadline is the soonest of its timers and its `after`. It costs what that
 costs, which is nothing beyond the wait; `rill explain` shows the calls
 as the tail calls they are, and `rill fmt` writes the machine back as it
 was declared. `examples/exchange.rill` is a small exchange of them.
@@ -1192,7 +1209,9 @@ its guard and what goes out on the way) to paste into a page, or with
 `--svg` as the process diagram SDL drew — the state at the top, under it
 a column per signal with the input symbol, the outputs and tasks in
 order, a decision where the arm branches on an `if` or a `match`, and at
-the bottom the next state or the stop mark. `-o` writes it to a file.
+the bottom the next state or the stop mark — a timer set or reset as a
+task with the hourglass, a `save` as SDL's notched symbol. `-o` writes it
+to a file.
 The diagram is read off the code, never kept beside it, so it cannot
 fall behind.
 

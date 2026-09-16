@@ -152,7 +152,7 @@ impl Parser {
                 // keyword, meaning this only here before a name and `(`.
                 Tok::Ident(w) if w == "machine" && matches!(self.peek2(), Tok::Ident(_)) => {
                     let m = self.machinedef()?;
-                    functions.push(crate::machine::lower(&m)?);
+                    functions.extend(crate::machine::lower(&m)?);
                     machines.push(m);
                 }
                 // `module name`: what the file is, said first. A name, not
@@ -303,9 +303,25 @@ impl Parser {
         self.expect(&Tok::Indent, "— a state's arms must be indented under `state`")?;
         let mut arms = Vec::new();
         let mut after = None;
+        let mut saves = Vec::new();
         loop {
             let (aline, acol) = self.here();
             match self.peek() {
+                // `save Sig`: kept in the mailbox for a later state.
+                Tok::Ident(w) if w == "save" => {
+                    self.bump();
+                    let pattern = self.pattern()?;
+                    let guard = if matches!(self.peek(), Tok::If) {
+                        self.bump();
+                        Some(self.expr()?)
+                    } else {
+                        None
+                    };
+                    if matches!(self.peek(), Tok::Arrow) {
+                        return Err(SyntaxError::new(aline, acol, "`save` keeps the signal for a later state and does nothing with it now, so it has no `->` and no body".to_string()));
+                    }
+                    saves.push((pattern, guard, aline));
+                }
                 Tok::Ident(w) if w == "after" => {
                     self.bump();
                     let ms = self.expr()?;
@@ -340,7 +356,7 @@ impl Parser {
         if arms.is_empty() && after.is_none() {
             return Err(SyntaxError::new(line, 0, "a state answers at least one signal, or an `after`".to_string()));
         }
-        Ok(StateDef { pattern, arms, after, line })
+        Ok(StateDef { pattern, arms, after, saves, line })
     }
 
     /// The parameters of a function or a machine, between the parentheses.

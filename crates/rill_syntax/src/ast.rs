@@ -52,6 +52,9 @@ pub struct StateDef {
     pub arms: Vec<Arm>,
     /// `after ms -> body`: the wait, and what to do when it runs out.
     pub after: Option<(Expr, Expr, usize)>,
+    /// `save Sig`: signals kept for a later state rather than answered
+    /// or dropped in this one — the pattern, its guard, and the line.
+    pub saves: Vec<(Pattern, Option<Expr>, usize)>,
     pub line: usize,
 }
 
