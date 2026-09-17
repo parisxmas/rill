@@ -546,13 +546,15 @@ pub fn check_all(module: &Module) -> Result<TModule, Vec<TypeError>> {
 pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>> {
     let mut errors = Vec::new();
     for sd in &module.systems {
-        let machine_names: Vec<&str> = module.machines.iter().map(|m| m.name.as_str()).collect();
+        // the file's machines, and the imports' — a machine of a library
+        // is routed to by name, or `alias.name` when the import has one
+        let machine_names: Vec<&str> = module.machines.iter().chain(module.imported_machines.iter()).map(|m| m.name.as_str()).collect();
         // a route is a route of the system wherever it is written
         let routes = sd.all_routes();
         for r in &routes {
             for end in [&r.from, &r.to] {
                 if end != "env" && !machine_names.contains(&end.as_str()) {
-                    errors.push(TypeError::new(r.line, format!("system `{}`: `{end}` is not a machine of this file, nor `env`", sd.name)));
+                    errors.push(TypeError::new(r.line, format!("system `{}`: `{end}` is not a machine of this file or its imports, nor `env`", sd.name)));
                 }
             }
             for s in &r.signals {

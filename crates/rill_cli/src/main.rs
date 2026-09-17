@@ -10,6 +10,8 @@ mod json;
 mod lsp;
 
 use std::path::{Path, PathBuf};
+
+use json::Json;
 use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
@@ -157,6 +159,35 @@ fn explain_cmd(args: &[String]) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// What the file imports, followed: each imported file that has a
+/// `machine` or a `system` of its own, as a model like the file's — a
+/// library of machines is part of the picture of the program that uses
+/// it — named by the import as written and by the file it resolved to;
+/// what those import too, each file once. A file that cannot be read or
+/// parsed is left out: the check says what is wrong with it.
+fn imported_models(path: &Path, module: &rill_syntax::Module, seen: &mut Vec<PathBuf>, out: &mut Vec<Json>) {
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    for imp in &module.imports {
+        let file = rill_syntax::loader::resolve(&dir, &imp.path);
+        let full = file.canonicalize().unwrap_or_else(|_| file.clone());
+        if seen.contains(&full) {
+            continue;
+        }
+        seen.push(full.clone());
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        let Ok(theirs) = rill_syntax::parse(&text) else { continue };
+        if !theirs.machines.is_empty() || !theirs.systems.is_empty() {
+            let mut model = diagram::model_json(&theirs.systems, &theirs.machines, &theirs.functions);
+            model.push("import", Json::str(imp.path.clone()));
+            model.push("alias", match &imp.alias { Some(a) => Json::str(a.clone()), None => Json::Null });
+            model.push("file", Json::str(full.display().to_string()));
+            model.push("line", Json::Num(imp.line as f64));
+            out.push(model);
+        }
+        imported_models(&file, &theirs, seen, out);
+    }
+}
+
 /// `rill diagram`: the file's machines drawn — Mermaid by default, SVG
 /// with SDL's symbols on `--svg`; to standard output, or `-o` a file. The
 /// program is checked first, so what is drawn is what compiles.
@@ -201,7 +232,12 @@ fn diagram_cmd(args: &[String]) -> Result<ExitCode, String> {
     }
     let mut drawn = String::new();
     if json {
-        drawn = diagram::model_json(&own.systems, &own.machines, &own.functions).render();
+        let mut model = diagram::model_json(&own.systems, &own.machines, &own.functions);
+        let mut seen = vec![path.canonicalize().unwrap_or_else(|_| path.clone())];
+        let mut imported = Vec::new();
+        imported_models(&path, &own, &mut seen, &mut imported);
+        model.push("imported", Json::Arr(imported));
+        drawn = model.render();
         drawn.push('\n');
     }
     for sd in own.systems.iter().filter(|_| !json) {

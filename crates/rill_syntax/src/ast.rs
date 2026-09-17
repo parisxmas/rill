@@ -29,6 +29,11 @@ pub struct Module {
     /// `system name` declarations: the routes between the kinds of machine
     /// and the environment, with the signals each carries.
     pub systems: Vec<SystemDef>,
+    /// The machines of the files this one imports, as written there, named
+    /// `alias.name` when the import has an alias: a system of this file may
+    /// route to them, since a library of machines is what an import can be.
+    /// Their lines are another file's, so nothing is reported at them.
+    pub imported_machines: Vec<MachineDef>,
 }
 
 /// `machine line(me: Chan(Signal), sw: Chan(Signal))` — a process in the

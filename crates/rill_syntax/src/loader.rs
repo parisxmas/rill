@@ -38,6 +38,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         name_line: 0,
         machines: Vec::new(),
         systems: Vec::new(),
+        imported_machines: Vec::new(),
         stems: HashMap::new(),
         aliases: HashMap::new(),
         fn_origin: HashMap::new(),
@@ -65,6 +66,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         imported_fns: loader.imported_fns,
         machines: loader.machines,
         systems: loader.systems,
+        imported_machines: loader.imported_machines,
     })
     .map_err(|e| e.to_string())
 }
@@ -78,7 +80,7 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
 ///
 /// Nothing found comes back as the path beside the importer, so the error
 /// names the import as it was written rather than the last place searched.
-fn resolve(dir: &Path, name: &str) -> PathBuf {
+pub fn resolve(dir: &Path, name: &str) -> PathBuf {
     let beside = dir.join(format!("{name}.rill"));
     if beside.is_file() {
         return beside;
@@ -138,6 +140,8 @@ struct Loader {
     /// by then.
     machines: Vec<crate::ast::MachineDef>,
     systems: Vec<crate::ast::SystemDef>,
+    /// The imports' machines, for the routes of the entry file's systems.
+    imported_machines: Vec<crate::ast::MachineDef>,
     /// How many files of each stem have been loaded, so that the private
     /// names of two `util.rill`s do not become one.
     stems: HashMap<String, usize>,
@@ -219,6 +223,14 @@ impl Loader {
             self.name_line = module.name_line;
             self.machines = module.machines.clone();
             self.systems = module.systems.clone();
+        } else {
+            for m in &module.machines {
+                let mut m = m.clone();
+                if let Some(a) = alias {
+                    m.name = format!("{a}.{}", m.name);
+                }
+                self.imported_machines.push(m);
+            }
         }
         let seen = self.stems.entry(stem.clone()).or_insert(0);
         *seen += 1;

@@ -241,7 +241,7 @@ impl Parser {
                 }
             }
         }
-        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, imported_fns: Vec::new(), name, name_line, machines, systems })
+        Ok(Module { imports, types, traits, impls, externs, asms, functions, prelude_fns: 0, imported_fns: Vec::new(), name, name_line, machines, systems, imported_machines: Vec::new() })
     }
 
     /// `machine name(params)` and, indented under it, one `state` after
@@ -359,7 +359,8 @@ impl Parser {
                     let mut signals = Vec::new();
                     loop {
                         let sig = self.ident("a signal name")?;
-                        if !starts_upper(&sig) {
+                        // `alias.Signal` is a constructor of an aliased import
+                        if !starts_upper(sig.rsplit('.').next().unwrap_or(&sig)) {
                             return Err(SyntaxError::new(rline, rcol, format!("a route carries signals, which are constructors: `{sig}` is not one")));
                         }
                         signals.push(sig);

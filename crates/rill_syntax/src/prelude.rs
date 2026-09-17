@@ -119,6 +119,7 @@ fn merge(prelude: Module, user: Module) -> Module {
         imported_fns: user.imported_fns,
         machines: user.machines,
         systems: user.systems,
+        imported_machines: user.imported_machines,
     }
 }
 

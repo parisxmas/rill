@@ -5395,7 +5395,7 @@ fn a_system_is_checked_against_its_machines_and_drawn() {
     let misspelt = src.replace("  line -> env: Status\n", "  line -> env: Statue\n");
     assert!(compile_error(&misspelt).contains("there is no signal `Statue`"));
     let nobody = src.replace("  line -> env: Status\n", "  line -> operator: Status\n");
-    assert!(compile_error(&nobody).contains("`operator` is not a machine of this file, nor `env`"));
+    assert!(compile_error(&nobody).contains("`operator` is not a machine of this file or its imports, nor `env`"));
     let one_way = src.replace("  line <-> line: Ring, Answer, OnHook\n", "  line -> line: Ring, Answer, OnHook\n");
     assert_eq!(fmt_source(&one_way), one_way);
 }
@@ -5616,4 +5616,30 @@ fn blocks_group_a_systems_routes() {
     // the picture on the command line draws every route, the blocks' too
     let svg = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg("--svg").arg(dir.join("blocks.rill")).output().unwrap();
     assert!(String::from_utf8_lossy(&svg.stdout).contains("Charge"));
+}
+
+/// A system may route to a machine of a file it imports — a library of
+/// machines — by its name, or `alias.name` when the import has an alias;
+/// and `rill diagram --json` follows the imports, so the picture of the
+/// program has the library's machines in it, each file named.
+#[test]
+fn a_system_routes_to_an_imported_machine() {
+    let dir = std::env::temp_dir().join(format!("rill-e2e-src-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("meter.rill"), "module meter\n\ntype Signal\n  Charge(secs: Int)\n  Report\n\ntype Meter\n  Counting(total: Int)\n\nmachine meter(me: Chan(Mail(Signal)))\n  state Counting(total)\n    Charge(secs) -> Counting(total + secs)\n    Report ->\n      println(\"charged \" + int_to_str(total))\n      stay\n").unwrap();
+    let src = "import \"meter\"\n\ntype Line\n  Idle\n  Busy\n\nsystem centre\n  env -> line: Charge, Report\n  line -> meter: Charge\n  env -> meter: Report\n\nmachine line(me: Chan(Mail(Signal)), m: Chan(Mail(Signal)))\n  state Idle\n    Charge(secs) ->\n      output(m, Charge(secs))\n      Busy\n  state Busy\n    Report -> Idle\n\nfn main() =\n  env = mailbox()\n  mm = mailbox()\n  l = mailbox()\n  spawn meter(mm, Counting(0))\n  spawn line(l, mm, Idle)\n  post(l, env, Charge(3))\n  post(l, env, Report)\n  sleep_ms(20)\n  post(mm, env, Report)\n  sleep_ms(20)\n";
+    assert_eq!(run_source("centre", src), "charged 3\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg("--json").arg(dir.join("centre.rill")).output().unwrap();
+    let json = String::from_utf8_lossy(&out.stdout);
+    assert!(json.contains("\"imported\":[{\"alias\":null,\"file\":\""), "{json}");
+    assert!(json.contains("meter.rill\",\"import\":\"meter\",\"line\":1,\"machines\":[{\"line\":10,\"name\":\"meter\""), "{json}");
+    // a machine of no file at all is still refused
+    std::fs::write(dir.join("centre_bad.rill"), src.replace("  line -> meter: Charge\n", "  line -> gauge: Charge\n")).unwrap();
+    let bad = Command::new(env!("CARGO_BIN_EXE_rill")).arg("check").arg(dir.join("centre_bad.rill")).output().unwrap();
+    let bad = String::from_utf8_lossy(&bad.stderr);
+    assert!(bad.contains("`gauge` is not a machine of this file or its imports, nor `env`"), "{bad}");
+    // with an alias the machine is `alias.name` on the routes, as its functions are
+    std::fs::write(dir.join("gauge.rill"), "module gauge\n\ntype Signal\n  Charge(secs: Int)\n\ntype Gauge\n  Counting(total: Int)\n\nmachine gauge(me: Chan(Mail(Signal)))\n  state Counting(total)\n    Charge(secs) -> Counting(total + secs)\n").unwrap();
+    let aliased = "import \"gauge\" as g\n\ntype Line\n  Idle\n\nsystem centre\n  env -> line: g.Charge\n  line -> g.gauge: g.Charge\n\nmachine line(me: Chan(Mail(g.Signal)), m: Chan(Mail(g.Signal)))\n  state Idle\n    g.Charge(secs) ->\n      output(m, g.Charge(secs))\n      stay\n\nfn main() =\n  env = mailbox()\n  mm = mailbox()\n  l = mailbox()\n  spawn g.gauge(mm, g.Counting(0))\n  spawn line(l, mm, Idle)\n  post(l, env, g.Charge(3))\n  sleep_ms(20)\n  println(\"sent\")\n";
+    assert_eq!(run_source("centre_aliased", aliased), "sent\n");
 }

@@ -56,6 +56,13 @@ impl Json {
         Json::Obj(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
     }
 
+    /// One more field on an object; nothing on anything else.
+    pub fn push(&mut self, key: &str, value: Json) {
+        if let Json::Obj(m) = self {
+            m.insert(key.to_string(), value);
+        }
+    }
+
     pub fn str(s: impl Into<String>) -> Json {
         Json::Str(s.into())
     }

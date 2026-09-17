@@ -1285,6 +1285,15 @@ system centre
     line -> meter: Charge
 ```
 
+A system may route to a machine of a file the program imports — a
+library of machines, `import "meter"` and `line -> meter: Charge` — by
+its name, or `alias.name` with the signals `alias.Signal` when the
+import has an alias. The library's machine is drawn with the program's
+and its name checked on the routes; what it sends and answers is not
+checked against them, its lines being another file's. `rill diagram
+--json` follows the imports, each file's machines and systems under
+`imported` with the file they came from.
+
 **A run can say what its machines did.** With `RILL_TRACE=1` in the
 environment, every machine writes one line an event on standard error —
 a signal received in a state and from whom, the next state, a signal
