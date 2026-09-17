@@ -1041,7 +1041,56 @@ pub unsafe extern "C" fn rill_trace_line(s: *const u8) {
     len += take;
     buf[len] = b'\n';
     len += 1;
+    while STEP_LOCK.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {}
     write_all(2, &buf[..len]);
+    step_wait();
+    STEP_LOCK.store(false, core::sync::atomic::Ordering::Release);
+}
+
+// ---- stepping --------------------------------------------------------------
+//
+// `RILL_STEP=<fifo>` with the trace on makes the program wait, after
+// every event it has written, for a line on that named pipe before it
+// goes on: a debugger's step, for whatever is on the other end — the
+// editor, walking a simulation an event at a time, is what this is for.
+// The pipe is opened when the first event comes, which waits for the
+// other end to open it too; a writer that closes it — each command is
+// its own open, write and close — is an end of file, and the pipe is
+// opened again for the next. Nothing is said about the line: any line
+// is "go on".
+
+/// -2 before `RILL_STEP` has been looked at, -1 for no stepping, else the pipe.
+static STEP_FD: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(-2);
+static STEP_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+unsafe fn step_wait() {
+    let mut fd = STEP_FD.load(core::sync::atomic::Ordering::Relaxed);
+    let path = getenv(b"RILL_STEP\0".as_ptr());
+    if fd == -2 {
+        fd = if path.is_null() { -1 } else { open(path, O_RDONLY) as i64 };
+        STEP_FD.store(fd, core::sync::atomic::Ordering::Relaxed);
+    }
+    if fd < 0 {
+        return;
+    }
+    let mut b = [0u8; 1];
+    loop {
+        let n = read(fd as i32, b.as_mut_ptr(), 1);
+        if n == 1 {
+            if b[0] == b'\n' {
+                return;
+            }
+        } else {
+            // the writer went away: the pipe again, for the next one
+            close(fd as i32);
+            fd = open(path, O_RDONLY) as i64;
+            if fd < 0 {
+                STEP_FD.store(-1, core::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+            STEP_FD.store(fd, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 /// Channels seen by the trace, in the order they were first named, so an

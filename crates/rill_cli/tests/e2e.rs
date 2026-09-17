@@ -5669,3 +5669,54 @@ fn signal_lists_and_routes_with_delay() {
     let bad = compile_error("type Signal\n  Go\n\nsystem s\n  env -> m: Go\n  env ~ m: Go\n\nfn main() = ()\n");
     assert!(bad.contains("a route with delay is written `~>`"), "{bad}");
 }
+
+/// `RILL_STEP=<fifo>` with the trace on: the program waits after every
+/// event for a line on the pipe — a debugger's step, each command its
+/// own open and close of the pipe.
+#[test]
+#[cfg(unix)]
+fn a_traced_run_steps_on_a_pipe() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = std::env::temp_dir().join(format!("rill-e2e-step-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = "type Signal\n  Tick\n\ntype S\n  On\n\nmachine m(me: Chan(Mail(Signal)))\n  state On\n    Tick -> stay\n\nfn main() =\n  env = mailbox()\n  a = mailbox()\n  spawn m(a, On)\n  post(a, env, Tick)\n  post(a, env, Tick)\n  sleep_ms(50)\n";
+    std::fs::write(dir.join("step.rill"), src).unwrap();
+    let exe = dir.join("step");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(dir.join("step.rill")).arg("-o").arg(&exe).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let fifo = dir.join("step.fifo");
+    let _ = std::fs::remove_file(&fifo);
+    assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let mut child = Command::new(&exe).env("RILL_TRACE", "1").env("RILL_STEP", &fifo).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    lines.read_line(&mut line).unwrap();
+    assert!(line.starts_with("rill trace 1 post"), "{line}");
+    // nothing more comes until the pipe says so
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        for l in lines.lines().map_while(Result::ok) {
+            tx.send(l).unwrap();
+            got.push(());
+        }
+    });
+    assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "the run went on without a step");
+    let step = |fifo: &std::path::Path| { let mut w = std::fs::OpenOptions::new().write(true).open(fifo).unwrap(); w.write_all(b"s\n").unwrap(); };
+    step(&fifo);
+    let second = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the second event after a step");
+    assert!(second.starts_with("rill trace 2 post"), "{second}");
+    assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "one step, one event");
+    // the rest, stepped through to the end
+    let mut n = 2;
+    loop {
+        step(&fifo);
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(l) => { n += 1; assert!(l.starts_with(&format!("rill trace {n} ")), "{l}"); }
+            Err(_) => break,
+        }
+    }
+    assert!(n >= 5, "the machine's own events were stepped through too: {n}");
+    assert!(child.wait().unwrap().success());
+    reader.join().unwrap();
+}

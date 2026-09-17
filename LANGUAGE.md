@@ -1309,7 +1309,11 @@ a signal received in a state and from whom, the next state, a signal
 sent and to whom, a timer set or reset, a signal saved or dropped, an
 `after` that ran out, a stop — numbered by the runtime in the order the
 events happened across every strand, with each machine named by the
-number of its mailbox: `recv line#2 Idle OffHook 1`. **`rill msc`** draws
+number of its mailbox: `recv line#2 Idle OffHook 1`. With `RILL_STEP=<fifo>` as
+well, the program waits after every event it has written for a line on
+that named pipe before it goes on — a debugger's step, for whatever
+holds the other end; each command is its own open and close of the pipe,
+and any line means "go on". **`rill msc`** draws
 those lines as the message sequence chart SDL's tools drew from a
 simulation, in Mermaid or, with `--svg`, as a picture: a lifeline per
 machine and per mailbox of the environment, an arrow per signal, a note
