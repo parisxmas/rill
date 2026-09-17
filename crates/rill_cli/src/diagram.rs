@@ -22,6 +22,8 @@ enum Step {
     /// A call of one of the file's own functions — SDL's procedure call —
     /// as written, and the function's name, whose diagram is drawn too.
     Call(String, String),
+    /// `spawn m(...)`: another strand started — SDL's create request.
+    Create(String),
     /// Any other statement, as written.
     Task(String),
 }
@@ -178,6 +180,8 @@ fn step_of(s: &Stmt, procs: &Procs) -> Step {
         _ => None,
     };
     match s {
+        Stmt::Expr(e @ Expr::Spawn { .. }) => Step::Create(expr_text(e)),
+        Stmt::Bind { name, value: v @ Expr::Spawn { .. }, .. } => Step::Create(format!("{name} = {}", expr_text(v))),
         Stmt::Expr(Expr::Call { name, args, .. }) if (name == "send" || name == "output") && args.len() == 2 => {
             Step::Output(expr_text(&args[0]), expr_text(&args[1]))
         }
@@ -254,7 +258,7 @@ fn outputs_text(steps: &[Placed]) -> String {
         .iter()
         .map(|p| match &p.step {
             Step::Output(to, sig) => format!("{sig} to {to}"),
-            Step::Timer(t) | Step::Task(t) | Step::Call(t, _) => t.clone(),
+            Step::Timer(t) | Step::Task(t) | Step::Call(t, _) | Step::Create(t) => t.clone(),
         })
         .collect();
     parts.join(", ")
@@ -311,6 +315,8 @@ enum Sym {
     Save(String),
     /// A procedure called: the task symbol with a bar down each side.
     Call(String),
+    /// A strand started: the task symbol with a bar along its top and bottom.
+    Create(String),
     Decision(String),
     Stop,
 }
@@ -326,7 +332,7 @@ struct Column {
 /// and kept whole as the tooltip.
 fn sym_width(s: &Sym) -> f64 {
     let t = match s {
-        Sym::State(t) | Sym::Input(t) | Sym::Timer(t) | Sym::Output(t) | Sym::Task(t) | Sym::TimerTask(t) | Sym::Save(t) | Sym::Call(t) | Sym::Decision(t) => t.as_str(),
+        Sym::State(t) | Sym::Input(t) | Sym::Timer(t) | Sym::Output(t) | Sym::Task(t) | Sym::TimerTask(t) | Sym::Save(t) | Sym::Call(t) | Sym::Create(t) | Sym::Decision(t) => t.as_str(),
         Sym::Stop => "",
     };
     (t.chars().count() as f64 * CHAR + 40.0).clamp(W, W_MOST)
@@ -361,6 +367,7 @@ fn column_of(steps: &[Placed], end: &End) -> Column {
             Step::Output(to, sig) => Sym::Output(format!("{sig} → {to}")),
             Step::Timer(t) => Sym::TimerTask(t.clone()),
             Step::Call(t, _) => Sym::Call(t.clone()),
+            Step::Create(t) => Sym::Create(t.clone()),
             Step::Task(t) => Sym::Task(t.clone()),
         })
         .collect();
@@ -509,6 +516,13 @@ fn draw(out: &mut String, s: &Sym, x: f64, y: f64, w: f64) {
             out.push_str(&format!("<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{H}\" {style}/>\n"));
             line(out, x + 6.0, y, x + 6.0, y2);
             line(out, x2 - 6.0, y, x2 - 6.0, y2);
+            text(out, x + w / 2.0, ym + 4.0, t, "middle");
+        }
+        Sym::Create(t) => {
+            // SDL's create request: the task with a bar inside its top and bottom
+            out.push_str(&format!("<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{H}\" {style}/>\n"));
+            line(out, x, y + 5.0, x2, y + 5.0);
+            line(out, x, y2 - 5.0, x2, y2 - 5.0);
             text(out, x + w / 2.0, ym + 4.0, t, "middle");
         }
         Sym::Decision(t) => {
@@ -885,6 +899,7 @@ fn step_json(p: &Placed) -> Json {
         Step::Output(to, sig) => Json::obj(vec![("kind", Json::str("output")), ("to", Json::str(to.clone())), ("signal", Json::str(sig.clone())), line]),
         Step::Timer(t) => Json::obj(vec![("kind", Json::str("timer")), ("text", Json::str(t.clone())), line]),
         Step::Call(t, f) => Json::obj(vec![("kind", Json::str("call")), ("text", Json::str(t.clone())), ("name", Json::str(f.clone())), line]),
+        Step::Create(t) => Json::obj(vec![("kind", Json::str("create")), ("text", Json::str(t.clone())), line]),
         Step::Task(t) => Json::obj(vec![("kind", Json::str("task")), ("text", Json::str(t.clone())), line]),
     }
 }
