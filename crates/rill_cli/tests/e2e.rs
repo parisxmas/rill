@@ -5607,7 +5607,7 @@ fn blocks_group_a_systems_routes() {
     std::fs::write(dir.join("blocks.rill"), src).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg("--json").arg(dir.join("blocks.rill")).output().unwrap();
     let json = String::from_utf8_lossy(&out.stdout);
-    assert!(json.contains("{\"block\":\"billing\",\"both\":false,\"from\":\"line\",\"line\":19,\"signals\":[\"Charge\"],\"to\":\"meter\"}"), "{json}");
+    assert!(json.contains("{\"block\":\"billing\",\"both\":false,\"delay\":false,\"from\":\"line\",\"line\":19,\"signals\":[\"Charge\"],\"to\":\"meter\"}"), "{json}");
     assert!(json.contains("\"line\":15,\"machines\":[\"line\"],\"name\":\"switching\""), "{json}");
     assert!(json.contains("\"line\":18,\"machines\":[\"meter\"],\"name\":\"billing\""), "{json}");
     // a signal on no route, in any block, is still refused
@@ -5642,4 +5642,30 @@ fn a_system_routes_to_an_imported_machine() {
     std::fs::write(dir.join("gauge.rill"), "module gauge\n\ntype Signal\n  Charge(secs: Int)\n\ntype Gauge\n  Counting(total: Int)\n\nmachine gauge(me: Chan(Mail(Signal)))\n  state Counting(total)\n    Charge(secs) -> Counting(total + secs)\n").unwrap();
     let aliased = "import \"gauge\" as g\n\ntype Line\n  Idle\n\nsystem centre\n  env -> line: g.Charge\n  line -> g.gauge: g.Charge\n\nmachine line(me: Chan(Mail(g.Signal)), m: Chan(Mail(g.Signal)))\n  state Idle\n    g.Charge(secs) ->\n      output(m, g.Charge(secs))\n      stay\n\nfn main() =\n  env = mailbox()\n  mm = mailbox()\n  l = mailbox()\n  spawn g.gauge(mm, g.Counting(0))\n  spawn line(l, mm, Idle)\n  post(l, env, g.Charge(3))\n  sleep_ms(20)\n  println(\"sent\")\n";
     assert_eq!(run_source("centre_aliased", aliased), "sent\n");
+}
+
+/// A signal list names several signals for a route to carry by one
+/// name; `~>` is a route with delay, SDL's channel, nothing to the
+/// compiler. Both format as written and come through `rill diagram`.
+#[test]
+fn signal_lists_and_routes_with_delay() {
+    let src = "type Signal\n  OffHook\n  Digit(n: Int)\n  OnHook\n  Status(text: Str)\n\ntype Line\n  Idle\n  Busy\n\nsystem exchange\n  signals Calls = OffHook, Digit, OnHook\n  env ~> line: Calls\n  line <~> line: Status\n  line -> env: Status\n\nmachine line(me: Chan(Mail(Signal)))\n  state Idle\n    OffHook ->\n      reply(Status(\"off\"))\n      Busy\n  state Busy\n    OnHook -> Idle\n    Digit(n) -> stay\n\nfn main() =\n  env = mailbox()\n  l = mailbox()\n  spawn line(l, Idle)\n  post(l, env, OffHook)\n  match recv(env).signal\n    Status(t) -> println(t)\n    _ -> println(\"?\")\n";
+    assert_eq!(run_source("lists", src), "off\n");
+    assert_eq!(fmt_source(src), src);
+    let dir = std::env::temp_dir().join(format!("rill-e2e-src-{}", std::process::id()));
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg("--json").arg(dir.join("lists.rill")).output().unwrap();
+    let json = String::from_utf8_lossy(&out.stdout);
+    assert!(json.contains("\"lists\":[{\"line\":12,\"name\":\"Calls\",\"signals\":[\"OffHook\",\"Digit\",\"OnHook\"]}]"), "{json}");
+    assert!(json.contains("\"delay\":true,\"from\":\"env\",\"line\":13,\"signals\":[\"Calls\"],\"to\":\"line\""), "{json}");
+    let mermaid = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg(dir.join("lists.rill")).output().unwrap();
+    assert!(String::from_utf8_lossy(&mermaid.stdout).contains("env -.->|Calls| line"));
+    // a list opens up for the check: a signal a machine answers has to reach it through some route
+    let bad = compile_error(&src.replace("  signals Calls = OffHook, Digit, OnHook\n", "  signals Calls = OffHook, OnHook\n"));
+    assert!(bad.contains("`line` answers `Digit`, which no route into `line` carries"), "{bad}");
+    let bad = compile_error(&src.replace("  signals Calls = OffHook, Digit, OnHook\n", "  signals Calls = OffHook, Digit, OnHook, Nope\n"));
+    assert!(bad.contains("there is no signal `Nope`"), "{bad}");
+    let bad = compile_error(&src.replace("  signals Calls = OffHook, Digit, OnHook\n", "  signals Calls = OffHook, Digit, OnHook\n  signals More = Calls\n"));
+    assert!(bad.contains("a signal list names signals, not lists: `Calls`"), "{bad}");
+    let bad = compile_error("type Signal\n  Go\n\nsystem s\n  env -> m: Go\n  env ~ m: Go\n\nfn main() = ()\n");
+    assert!(bad.contains("a route with delay is written `~>`"), "{bad}");
 }

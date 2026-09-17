@@ -805,7 +805,13 @@ pub fn system_mermaid(sd: &SystemDef) -> String {
         }
     }
     for r in &routes {
-        let arrow = if r.both { "<-->" } else { "-->" };
+        // a channel with delay is drawn dashed
+        let arrow = match (r.both, r.delay) {
+            (true, true) => "<-.->",
+            (true, false) => "<-->",
+            (false, true) => "-.->",
+            (false, false) => "-->",
+        };
         out.push_str(&format!("  {} {arrow}|{}| {}\n", r.from, clean(&r.signals.join(", ")), r.to));
     }
     out
@@ -880,6 +886,13 @@ pub fn system_svg(sd: &SystemDef) -> String {
         } else {
             out.push_str(&format!("<path d=\"M{},{y} V{ly} H{} V{y}\" fill=\"none\" stroke=\"black\" stroke-width=\"1.2\" {markers}/>\n", x1 + dx1, x2 + dx2));
             text(&mut out, (x1 + x2) / 2.0, label_y, &label, "middle");
+            // a channel with delay: the arrowhead midway too, as SDL told a
+            // channel from a signal route
+            if r.delay {
+                let mid = (x1 + dx1 + x2 + dx2) / 2.0;
+                let dir = if x2 > x1 { 1.0 } else { -1.0 };
+                out.push_str(&format!("<path d=\"M{},{} L{},{ly} L{},{} z\" fill=\"black\"/>\n", mid - 6.0 * dir, ly - 4.0, mid + 4.0 * dir, mid - 6.0 * dir, ly + 4.0));
+            }
         }
     }
     out.push_str("</svg>\n");
@@ -954,6 +967,7 @@ fn route_json(r: &Route, block: &str) -> Json {
         ("from", Json::str(r.from.clone())),
         ("to", Json::str(r.to.clone())),
         ("both", Json::Bool(r.both)),
+        ("delay", Json::Bool(r.delay)),
         ("signals", Json::Arr(r.signals.iter().map(|s| Json::str(s.clone())).collect())),
         ("line", Json::Num(r.line as f64)),
         ("block", Json::str(block.to_string())),
@@ -997,9 +1011,21 @@ fn system_json(sd: &SystemDef) -> Json {
     for b in &sd.blocks {
         walk(b, &mut routes);
     }
+    let lists: Vec<Json> = sd
+        .lists
+        .iter()
+        .map(|l| {
+            Json::obj(vec![
+                ("name", Json::str(l.name.clone())),
+                ("line", Json::Num(l.line as f64)),
+                ("signals", Json::Arr(l.signals.iter().map(|s| Json::str(s.clone())).collect())),
+            ])
+        })
+        .collect();
     Json::obj(vec![
         ("name", Json::str(sd.name.clone())),
         ("line", Json::Num(sd.line as f64)),
+        ("lists", Json::Arr(lists)),
         ("routes", Json::Arr(routes)),
         ("blocks", Json::Arr(sd.blocks.iter().map(|b| block_json(sd, b)).collect())),
     ])

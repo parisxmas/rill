@@ -1269,6 +1269,15 @@ arrows. Instances are not declared — they are made with `spawn`, as
 many as the program wants — so the diagram is of kinds, which is what a
 block diagram is.
 
+A **signal list** names several signals for a route to carry by one
+name — `signals Calls = OffHook, Digit, OnHook` under the `system`, and
+`env -> line: Calls` — and is opened up for the check; it names
+signals, not other lists. A route written `~>` (or `<~>`) is a channel
+that may delay what it carries, as SDL told its channels from its
+signal routes: nothing to the compiler, which delays nothing, and a
+mark in the picture — the arrowhead midway along the channel, and a
+dashed arrow in Mermaid.
+
 A system's routes may be grouped in **blocks**, SDL's own grouping, and
 blocks in blocks: `block switching` and, indented under it, its routes
 and its blocks. A machine belongs to the block whose routes name it — the

@@ -549,6 +549,19 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
         // the file's machines, and the imports' — a machine of a library
         // is routed to by name, or `alias.name` when the import has one
         let machine_names: Vec<&str> = module.machines.iter().chain(module.imported_machines.iter()).map(|m| m.name.as_str()).collect();
+        // a signal list names signals, each once, and no list
+        for l in &sd.lists {
+            if sd.lists.iter().filter(|o| o.name == l.name).count() > 1 {
+                errors.push(TypeError::new(l.line, format!("system `{}`: two signal lists named `{}`", sd.name, l.name)));
+            }
+            for s in &l.signals {
+                if sd.lists.iter().any(|o| o.name == *s) {
+                    errors.push(TypeError::new(l.line, format!("system `{}`: a signal list names signals, not lists: `{s}`", sd.name)));
+                } else if !t.ctors.contains_key(s) {
+                    errors.push(TypeError::new(l.line, format!("system `{}`: there is no signal `{s}`", sd.name)));
+                }
+            }
+        }
         // a route is a route of the system wherever it is written
         let routes = sd.all_routes();
         for r in &routes {
@@ -558,7 +571,7 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
                 }
             }
             for s in &r.signals {
-                if !t.ctors.contains_key(s) {
+                if !t.ctors.contains_key(s) && !sd.lists.iter().any(|l| l.name == *s) {
                     errors.push(TypeError::new(r.line, format!("system `{}`: there is no signal `{s}`", sd.name)));
                 }
             }
@@ -566,12 +579,12 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
         if !errors.is_empty() {
             return Err(errors);
         }
-        // what may leave and enter each machine, by the routes
+        // what may leave and enter each machine, by the routes, their lists opened up
         let out_of = |m: &str| -> Vec<String> {
             let mut v = Vec::new();
             for r in &routes {
                 if r.from == m || (r.both && r.to == m) {
-                    v.extend(r.signals.iter().cloned());
+                    v.extend(sd.carried(r));
                 }
             }
             v
@@ -580,7 +593,7 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
             let mut v = Vec::new();
             for r in &routes {
                 if r.to == m || (r.both && r.from == m) {
-                    v.extend(r.signals.iter().cloned());
+                    v.extend(sd.carried(r));
                 }
             }
             v

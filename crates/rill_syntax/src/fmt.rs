@@ -490,31 +490,48 @@ impl Fmt {
 
     fn systemdef(&mut self, sd: &SystemDef) {
         self.push_at(0, &format!("system {}", sd.name), sd.line);
-        self.routes_and_blocks(&sd.routes, &sd.blocks, 1);
+        self.routes_and_blocks(&sd.lists, &sd.routes, &sd.blocks, 1);
     }
 
-    /// The routes and blocks under a system or a block, in the order
-    /// written, at indentation `ind`.
-    fn routes_and_blocks(&mut self, routes: &[Route], blocks: &[BlockDef], ind: usize) {
-        let mut lines: Vec<(usize, bool, usize)> = Vec::new();
+    /// The signal lists, routes and blocks under a system or a block, in
+    /// the order written, at indentation `ind`.
+    fn routes_and_blocks(&mut self, lists: &[SignalList], routes: &[Route], blocks: &[BlockDef], ind: usize) {
+        // (line, what, index): 0 a list, 1 a route, 2 a block
+        let mut lines: Vec<(usize, u8, usize)> = Vec::new();
+        for (i, l) in lists.iter().enumerate() {
+            lines.push((l.line, 0, i));
+        }
         for (i, r) in routes.iter().enumerate() {
-            lines.push((r.line, false, i));
+            lines.push((r.line, 1, i));
         }
         for (i, b) in blocks.iter().enumerate() {
-            lines.push((b.line, true, i));
+            lines.push((b.line, 2, i));
         }
         lines.sort_by_key(|(l, _, _)| *l);
-        for (_, is_block, i) in lines {
-            if is_block {
-                let b = &blocks[i];
-                self.lead(b.line, ind);
-                self.push_at(ind, &format!("block {}", b.name), b.line);
-                self.routes_and_blocks(&b.routes, &b.blocks, ind + 1);
-            } else {
-                let r = &routes[i];
-                self.lead(r.line, ind);
-                let arrow = if r.both { "<->" } else { "->" };
-                self.push_at(ind, &format!("{} {arrow} {}: {}", r.from, r.to, r.signals.join(", ")), r.line);
+        for (_, what, i) in lines {
+            match what {
+                2 => {
+                    let b = &blocks[i];
+                    self.lead(b.line, ind);
+                    self.push_at(ind, &format!("block {}", b.name), b.line);
+                    self.routes_and_blocks(&[], &b.routes, &b.blocks, ind + 1);
+                }
+                1 => {
+                    let r = &routes[i];
+                    self.lead(r.line, ind);
+                    let arrow = match (r.both, r.delay) {
+                        (true, true) => "<~>",
+                        (true, false) => "<->",
+                        (false, true) => "~>",
+                        (false, false) => "->",
+                    };
+                    self.push_at(ind, &format!("{} {arrow} {}: {}", r.from, r.to, r.signals.join(", ")), r.line);
+                }
+                _ => {
+                    let l = &lists[i];
+                    self.lead(l.line, ind);
+                    self.push_at(ind, &format!("signals {} = {}", l.name, l.signals.join(", ")), l.line);
+                }
             }
         }
     }

@@ -300,11 +300,11 @@ impl Parser {
             return Err(SyntaxError::new(line, col, format!("system names are lowercase, like a machine's (found `{name}`)")));
         }
         self.expect(&Tok::Indent, "— a system's routes must be indented under `system`")?;
-        let (routes, blocks) = self.routes_and_blocks("a system")?;
+        let (routes, blocks, lists) = self.routes_and_blocks("a system", true)?;
         if routes.is_empty() && blocks.is_empty() {
             return Err(SyntaxError::new(line, col, "a system needs at least one route".to_string()));
         }
-        Ok(SystemDef { name, routes, blocks, line })
+        Ok(SystemDef { name, lists, routes, blocks, line })
     }
 
     /// `block name` and, indented under it, its routes and blocks.
@@ -316,7 +316,7 @@ impl Parser {
             return Err(SyntaxError::new(line, col, format!("block names are lowercase, like a system's (found `{name}`)")));
         }
         self.expect(&Tok::Indent, "— a block's routes must be indented under `block`")?;
-        let (routes, blocks) = self.routes_and_blocks("a block")?;
+        let (routes, blocks, _) = self.routes_and_blocks("a block", false)?;
         if routes.is_empty() && blocks.is_empty() {
             return Err(SyntaxError::new(line, col, "a block needs at least one route, or a block".to_string()));
         }
@@ -324,10 +324,12 @@ impl Parser {
     }
 
     /// The lines under a system or a block, to the dedent: routes and
-    /// blocks, each on lines of its own.
-    fn routes_and_blocks(&mut self, what: &str) -> Result<(Vec<Route>, Vec<BlockDef>), SyntaxError> {
+    /// blocks, each on lines of its own — and in a system, signal lists:
+    /// `signals Calls = OffHook, Digit`.
+    fn routes_and_blocks(&mut self, what: &str, in_system: bool) -> Result<(Vec<Route>, Vec<BlockDef>, Vec<SignalList>), SyntaxError> {
         let mut routes = Vec::new();
         let mut blocks = Vec::new();
+        let mut lists = Vec::new();
         loop {
             self.skip_newlines_only();
             let (rline, rcol) = self.here();
@@ -340,49 +342,88 @@ impl Parser {
                 Tok::Ident(w) if w == "block" && matches!(self.peek2(), Tok::Ident(_)) => {
                     blocks.push(self.blockdef()?);
                 }
+                Tok::Ident(w) if w == "signals" && matches!(self.peek2(), Tok::Ident(_)) => {
+                    if !in_system {
+                        return Err(SyntaxError::new(rline, rcol, "a signal list is the system's: write it under `system`, before the blocks".to_string()));
+                    }
+                    self.bump();
+                    let name = self.ident("a signal list's name")?;
+                    if !starts_upper(&name) {
+                        return Err(SyntaxError::new(rline, rcol, format!("a signal list is named like a signal, capitalised (found `{name}`)")));
+                    }
+                    self.expect(&Tok::Eq, "— a signal list is `signals Name = Signal, Signal`")?;
+                    let signals = self.signal_names(rline, rcol)?;
+                    lists.push(SignalList { name, signals, line: rline });
+                    self.end_of_route_line(rline, rcol, "a signal list")?;
+                }
                 Tok::Ident(_) => {
                     let from = self.ident("a route's source")?;
-                    let both = match self.peek() {
+                    let (both, delay) = match self.peek() {
                         Tok::Arrow => {
                             self.bump();
-                            false
+                            (false, false)
+                        }
+                        Tok::WaveArrow => {
+                            self.bump();
+                            (false, true)
                         }
                         Tok::Lt => {
                             self.bump();
-                            self.expect(&Tok::Arrow, "— a route both ways is written `<->`")?;
-                            true
+                            match self.peek() {
+                                Tok::Arrow => {
+                                    self.bump();
+                                    (true, false)
+                                }
+                                Tok::WaveArrow => {
+                                    self.bump();
+                                    (true, true)
+                                }
+                                other => return Err(SyntaxError::new(rline, rcol, format!("expected `->` or `~>` after `<` — a route both ways is written `<->`, with delay `<~>` (found {other})"))),
+                            }
                         }
-                        other => return Err(SyntaxError::new(rline, rcol, format!("expected `->` or `<->` after `{from}` in a route, found {other}"))),
+                        other => return Err(SyntaxError::new(rline, rcol, format!("expected `->`, `<->`, `~>` or `<~>` after `{from}` in a route, found {other}"))),
                     };
                     let to = self.ident("a route's destination")?;
                     self.expect(&Tok::Colon, "before the route's signals")?;
-                    let mut signals = Vec::new();
-                    loop {
-                        let sig = self.ident("a signal name")?;
-                        // `alias.Signal` is a constructor of an aliased import
-                        if !starts_upper(sig.rsplit('.').next().unwrap_or(&sig)) {
-                            return Err(SyntaxError::new(rline, rcol, format!("a route carries signals, which are constructors: `{sig}` is not one")));
-                        }
-                        signals.push(sig);
-                        if matches!(self.peek(), Tok::Comma) {
-                            self.bump();
-                        } else {
-                            break;
-                        }
-                    }
-                    routes.push(Route { from, to, both, signals, line: rline });
-                    match self.peek() {
-                        Tok::Newline => {
-                            self.bump();
-                        }
-                        Tok::Dedent | Tok::Eof => {}
-                        other => return Err(SyntaxError::new(rline, rcol, format!("expected end of line after a route, found {other}"))),
-                    }
+                    let signals = self.signal_names(rline, rcol)?;
+                    routes.push(Route { from, to, both, delay, signals, line: rline });
+                    self.end_of_route_line(rline, rcol, "a route")?;
                 }
                 other => return Err(SyntaxError::new(rline, rcol, format!("expected a route in {what}, found {other}"))),
             }
         }
-        Ok((routes, blocks))
+        Ok((routes, blocks, lists))
+    }
+
+    /// `Signal, Signal, ...`: constructors — or, on a route, the names of
+    /// the system's signal lists, which are capitalised the same way.
+    fn signal_names(&mut self, rline: usize, rcol: usize) -> Result<Vec<String>, SyntaxError> {
+        let mut signals = Vec::new();
+        loop {
+            let sig = self.ident("a signal name")?;
+            // `alias.Signal` is a constructor of an aliased import
+            if !starts_upper(sig.rsplit('.').next().unwrap_or(&sig)) {
+                return Err(SyntaxError::new(rline, rcol, format!("a route carries signals, which are constructors: `{sig}` is not one")));
+            }
+            signals.push(sig);
+            if matches!(self.peek(), Tok::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        Ok(signals)
+    }
+
+    fn end_of_route_line(&mut self, rline: usize, rcol: usize, what: &str) -> Result<(), SyntaxError> {
+        match self.peek() {
+            Tok::Newline => {
+                self.bump();
+                Ok(())
+            }
+            Tok::Dedent | Tok::Eof => Ok(()),
+            other => Err(SyntaxError::new(rline, rcol, format!("expected end of line after {what}, found {other}"))),
+        }
     }
 
     /// Newlines between the states of a machine, which the layout gives as

@@ -96,8 +96,18 @@ impl StateDef {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemDef {
     pub name: String,
+    /// `signals Calls = OffHook, Digit, OnHook`: a name for several
+    /// signals, to write on a route in their place — SDL's signal list.
+    pub lists: Vec<SignalList>,
     pub routes: Vec<Route>,
     pub blocks: Vec<BlockDef>,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignalList {
+    pub name: String,
+    pub signals: Vec<String>,
     pub line: usize,
 }
 
@@ -112,6 +122,18 @@ pub struct BlockDef {
 }
 
 impl SystemDef {
+    /// The signals a route carries, each signal list on it opened up.
+    pub fn carried(&self, r: &Route) -> Vec<String> {
+        let mut out = Vec::new();
+        for s in &r.signals {
+            match self.lists.iter().find(|l| l.name == *s) {
+                Some(l) => out.extend(l.signals.iter().cloned()),
+                None => out.push(s.clone()),
+            }
+        }
+        out
+    }
+
     /// Every route of the system, the blocks' included, in the order
     /// written.
     pub fn all_routes(&self) -> Vec<&Route> {
@@ -164,6 +186,11 @@ pub struct Route {
     pub from: String,
     pub to: String,
     pub both: bool,
+    /// `~>`: a channel that may delay what it carries, as SDL told its
+    /// channels from its signal routes. Nothing to the compiler; a mark
+    /// in the picture.
+    pub delay: bool,
+    /// As written: a signal, or the name of one of the system's lists.
     pub signals: Vec<String>,
     pub line: usize,
 }

@@ -53,6 +53,8 @@ pub enum Tok {
     RBrace,
     PipeGt,
     Arrow,
+    /// `~>`: a route with delay, SDL's channel as against its signal route.
+    WaveArrow,
     Colon,
     Backslash,
     AmpAmp,
@@ -117,6 +119,7 @@ impl std::fmt::Display for Tok {
             Tok::Pipe => write!(f, "`|`"),
             Tok::PipeGt => write!(f, "`|>`"),
             Tok::Arrow => write!(f, "`->`"),
+            Tok::WaveArrow => write!(f, "`~>`"),
             Tok::Colon => write!(f, "`:`"),
             Tok::Backslash => write!(f, "`\\`"),
             Tok::AmpAmp => write!(f, "`&&`"),
@@ -597,6 +600,14 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), Syntax
                                 col,
                                 "unexpected `&`; did you mean `&&`?".to_string(),
                             ));
+                        }
+                    }
+                    '~' => {
+                        if s.peek() == Some('>') {
+                            s.bump();
+                            Tok::WaveArrow
+                        } else {
+                            return Err(SyntaxError::new(line, col, "unexpected `~`; a route with delay is written `~>`".to_string()));
                         }
                     }
                     '<' => {
