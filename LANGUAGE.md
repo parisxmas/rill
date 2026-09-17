@@ -1313,7 +1313,8 @@ number of its mailbox: `recv line#2 Idle OffHook 1`. With `RILL_STEP=<fifo>` as
 well, the program waits after every event it has written for a line on
 that named pipe before it goes on — a debugger's step, for whatever
 holds the other end; each command is its own open and close of the pipe,
-and any line means "go on". **`rill msc`** draws
+a line beginning `q` ends the program with status 3, and any other
+line means "go on". **`rill msc`** draws
 those lines as the message sequence chart SDL's tools drew from a
 simulation, in Mermaid or, with `--svg`, as a picture: a lifeline per
 machine and per mailbox of the environment, an arrow per signal, a note

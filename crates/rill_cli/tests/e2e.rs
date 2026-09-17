@@ -5719,4 +5719,11 @@ fn a_traced_run_steps_on_a_pipe() {
     assert!(n >= 5, "the machine's own events were stepped through too: {n}");
     assert!(child.wait().unwrap().success());
     reader.join().unwrap();
+    // `q` on the pipe ends the program where it stands
+    let mut child = Command::new(&exe).env("RILL_TRACE", "1").env("RILL_STEP", &fifo).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let mut lines = BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    lines.read_line(&mut line).unwrap();
+    { let mut w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap(); w.write_all(b"q\n").unwrap(); }
+    assert_eq!(child.wait().unwrap().code(), Some(3));
 }

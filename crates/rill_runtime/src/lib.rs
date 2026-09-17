@@ -1056,8 +1056,8 @@ pub unsafe extern "C" fn rill_trace_line(s: *const u8) {
 // The pipe is opened when the first event comes, which waits for the
 // other end to open it too; a writer that closes it — each command is
 // its own open, write and close — is an end of file, and the pipe is
-// opened again for the next. Nothing is said about the line: any line
-// is "go on".
+// opened again for the next. A line beginning `q` ends the program
+// where it stands, with status 3; any other line is "go on".
 
 /// -2 before `RILL_STEP` has been looked at, -1 for no stepping, else the pipe.
 static STEP_FD: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(-2);
@@ -1074,10 +1074,17 @@ unsafe fn step_wait() {
         return;
     }
     let mut b = [0u8; 1];
+    let mut first = 0u8;
     loop {
         let n = read(fd as i32, b.as_mut_ptr(), 1);
         if n == 1 {
+            if first == 0 {
+                first = b[0];
+            }
             if b[0] == b'\n' {
+                if first == b'q' {
+                    exit(3);
+                }
                 return;
             }
         } else {
