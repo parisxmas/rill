@@ -290,7 +290,8 @@ impl Parser {
     }
 
     /// `system name`, and indented under it one route a line: `a -> b: S1,
-    /// S2` or `a <-> b: S1`, the ends being machine names or `env`.
+    /// S2` or `a <-> b: S1`, the ends being machine names or `env` — and
+    /// `block name`, with routes and blocks indented under it.
     fn systemdef(&mut self) -> Result<SystemDef, SyntaxError> {
         let (line, col) = self.here();
         self.bump();
@@ -299,7 +300,34 @@ impl Parser {
             return Err(SyntaxError::new(line, col, format!("system names are lowercase, like a machine's (found `{name}`)")));
         }
         self.expect(&Tok::Indent, "— a system's routes must be indented under `system`")?;
+        let (routes, blocks) = self.routes_and_blocks("a system")?;
+        if routes.is_empty() && blocks.is_empty() {
+            return Err(SyntaxError::new(line, col, "a system needs at least one route".to_string()));
+        }
+        Ok(SystemDef { name, routes, blocks, line })
+    }
+
+    /// `block name` and, indented under it, its routes and blocks.
+    fn blockdef(&mut self) -> Result<BlockDef, SyntaxError> {
+        let (line, col) = self.here();
+        self.bump();
+        let name = self.ident("a block name after `block`")?;
+        if starts_upper(&name) {
+            return Err(SyntaxError::new(line, col, format!("block names are lowercase, like a system's (found `{name}`)")));
+        }
+        self.expect(&Tok::Indent, "— a block's routes must be indented under `block`")?;
+        let (routes, blocks) = self.routes_and_blocks("a block")?;
+        if routes.is_empty() && blocks.is_empty() {
+            return Err(SyntaxError::new(line, col, "a block needs at least one route, or a block".to_string()));
+        }
+        Ok(BlockDef { name, routes, blocks, line })
+    }
+
+    /// The lines under a system or a block, to the dedent: routes and
+    /// blocks, each on lines of its own.
+    fn routes_and_blocks(&mut self, what: &str) -> Result<(Vec<Route>, Vec<BlockDef>), SyntaxError> {
         let mut routes = Vec::new();
+        let mut blocks = Vec::new();
         loop {
             self.skip_newlines_only();
             let (rline, rcol) = self.here();
@@ -309,6 +337,9 @@ impl Parser {
                     break;
                 }
                 Tok::Eof => break,
+                Tok::Ident(w) if w == "block" && matches!(self.peek2(), Tok::Ident(_)) => {
+                    blocks.push(self.blockdef()?);
+                }
                 Tok::Ident(_) => {
                     let from = self.ident("a route's source")?;
                     let both = match self.peek() {
@@ -347,13 +378,10 @@ impl Parser {
                         other => return Err(SyntaxError::new(rline, rcol, format!("expected end of line after a route, found {other}"))),
                     }
                 }
-                other => return Err(SyntaxError::new(rline, rcol, format!("expected a route in a system, found {other}"))),
+                other => return Err(SyntaxError::new(rline, rcol, format!("expected a route in {what}, found {other}"))),
             }
         }
-        if routes.is_empty() {
-            return Err(SyntaxError::new(line, col, "a system needs at least one route".to_string()));
-        }
-        Ok(SystemDef { name, routes, line })
+        Ok((routes, blocks))
     }
 
     /// Newlines between the states of a machine, which the layout gives as
@@ -365,7 +393,8 @@ impl Parser {
     }
 
     /// `state Ctor(fields)` and, indented under it, the arms: signal
-    /// patterns like a match's, and `after ms -> body` at most once.
+    /// patterns like a match's, and `after ms -> body` at most once — and
+    /// `state`s of its own, which make it a composite state.
     fn statedef(&mut self, line: usize) -> Result<StateDef, SyntaxError> {
         let (pl, pc) = self.here();
         // `state *`: the arms every state answers, after its own.
@@ -384,9 +413,33 @@ impl Parser {
         let mut saves = Vec::new();
         let mut whens = Vec::new();
         let mut priorities = Vec::new();
+        let mut substates = Vec::new();
         loop {
             let (aline, acol) = self.here();
             match self.peek() {
+                // a state within the state: this one is a composite
+                Tok::Ident(w) if w == "state" => {
+                    if matches!(pattern, Pattern::Wildcard) {
+                        return Err(SyntaxError::new(aline, acol, "`state *` is every state's arms; it has no states of its own".to_string()));
+                    }
+                    self.bump();
+                    substates.push(self.statedef(aline)?);
+                    // the substate took its own dedent; what follows is the next line at this depth, or the end
+                    match self.peek() {
+                        Tok::Newline => {
+                            self.bump();
+                        }
+                        _ => {}
+                    }
+                    if matches!(self.peek(), Tok::Dedent) {
+                        self.bump();
+                        break;
+                    }
+                    if matches!(self.peek(), Tok::Eof) {
+                        break;
+                    }
+                    continue;
+                }
                 // `priority Sig`: answered before what came earlier.
                 Tok::Ident(w) if w == "priority" => {
                     self.bump();
@@ -457,10 +510,13 @@ impl Parser {
                 }
             }
         }
-        if arms.is_empty() && after.is_none() && whens.is_empty() {
+        if arms.is_empty() && after.is_none() && whens.is_empty() && substates.is_empty() {
             return Err(SyntaxError::new(line, 0, "a state answers at least one signal, or an `after`".to_string()));
         }
-        Ok(StateDef { pattern, arms, after, saves, whens, priorities, line })
+        if let Some(sub) = substates.iter().find(|s| matches!(s.pattern, Pattern::Wildcard)) {
+            return Err(SyntaxError::new(sub.line, 0, "`state *` is the machine's, not a composite state's: its arms are every state's already".to_string()));
+        }
+        Ok(StateDef { pattern, arms, after, saves, whens, priorities, substates, line })
     }
 
     /// The parameters of a function or a machine, between the parentheses.

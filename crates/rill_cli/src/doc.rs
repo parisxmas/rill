@@ -312,7 +312,7 @@ pub fn markdown(path: &Path, src: &str, own: &Module, checked: Option<&rill_type
                 out.push_str("\n\n");
             }
             out.push_str("States:\n\n");
-            for st in &m.states {
+            for st in m.all_states() {
                 let inputs: Vec<String> = st
                     .arms
                     .iter()

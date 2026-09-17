@@ -547,7 +547,9 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
     let mut errors = Vec::new();
     for sd in &module.systems {
         let machine_names: Vec<&str> = module.machines.iter().map(|m| m.name.as_str()).collect();
-        for r in &sd.routes {
+        // a route is a route of the system wherever it is written
+        let routes = sd.all_routes();
+        for r in &routes {
             for end in [&r.from, &r.to] {
                 if end != "env" && !machine_names.contains(&end.as_str()) {
                     errors.push(TypeError::new(r.line, format!("system `{}`: `{end}` is not a machine of this file, nor `env`", sd.name)));
@@ -565,7 +567,7 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
         // what may leave and enter each machine, by the routes
         let out_of = |m: &str| -> Vec<String> {
             let mut v = Vec::new();
-            for r in &sd.routes {
+            for r in &routes {
                 if r.from == m || (r.both && r.to == m) {
                     v.extend(r.signals.iter().cloned());
                 }
@@ -574,7 +576,7 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
         };
         let into = |m: &str| -> Vec<String> {
             let mut v = Vec::new();
-            for r in &sd.routes {
+            for r in &routes {
                 if r.to == m || (r.both && r.from == m) {
                     v.extend(r.signals.iter().cloned());
                 }
@@ -582,13 +584,14 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
             v
         };
         for m in &module.machines {
-            if !sd.routes.iter().any(|r| r.from == m.name || r.to == m.name) {
+            if !routes.iter().any(|r| r.from == m.name || r.to == m.name) {
                 continue;
             }
             let leaving = out_of(&m.name);
             let mut entering = into(&m.name);
             // a timer's signal comes from the machine itself, on no route
-            for st in &m.states {
+            let states = m.all_states();
+            for st in &states {
                 for a in &st.arms {
                     collect_timers(&a.body, &mut entering);
                 }
@@ -599,7 +602,7 @@ pub fn check_systems(module: &Module, t: &TModule) -> Result<(), Vec<TypeError>>
                     collect_timers(body, &mut entering);
                 }
             }
-            for st in &m.states {
+            for st in &states {
                 let mut sent: Vec<(String, usize)> = Vec::new();
                 for a in &st.arms {
                     collect_sent(&a.body, a.line, &mut sent);

@@ -5566,3 +5566,53 @@ fn main() =
         "3\nok\nnegative\n3\nOk(())\nNone\nBox(())\ntrue\ntrue\nCons((), Cons((), Nil))\n1\nSome(1)\n5\nthrough\n"
     );
 }
+
+/// A composite state: `state`s under a `state`. Only the substates are
+/// states the machine is in; the composite's arms are answered in each
+/// after the substate's own, then `state *`'s. It formats as written,
+/// and `rill diagram --json` says which states are composite.
+#[test]
+fn a_composite_state_answers_for_its_substates() {
+    let src = "type Signal\n  Call\n  Answer\n  Hold\n  Resume\n  Hangup\n  Report\n\ntype Line\n  Idle\n  Ringing\n  Talking(secs: Int)\n  Held(secs: Int)\n\nmachine line(me: Chan(Mail(Signal)), log: Chan(Str))\n  state Idle\n    Call -> Ringing\n  state Ringing\n    Answer -> Talking(0)\n  state Connected(secs)\n    Hangup ->\n      send(log, \"hung up after \" + int_to_str(secs))\n      Idle\n    Report ->\n      send(log, \"connected\")\n      stay\n    state Talking(secs)\n      Hold -> Held(secs + 1)\n      Report ->\n        send(log, \"talking\")\n        stay\n    state Held(secs)\n      Resume -> Talking(secs + 1)\n  state *\n    _ -> stay\n\nfn main() =\n  log = channel(16)\n  env = mailbox()\n  l = mailbox()\n  spawn line(l, log, Idle)\n  post(l, env, Call)\n  post(l, env, Answer)\n  post(l, env, Report)\n  post(l, env, Hold)\n  post(l, env, Report)\n  post(l, env, Resume)\n  post(l, env, Hangup)\n  println(recv(log))\n  println(recv(log))\n  println(recv(log))\n";
+    // Talking's own `Report` wins over the composite's; Held has none, so the composite's answers; Hangup is the composite's in both
+    assert_eq!(run_source("composite", src), "talking\nconnected\nhung up after 2\n");
+    assert_eq!(fmt_source(src), src);
+    let dir = std::env::temp_dir().join(format!("rill-e2e-composite-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("composite.rill"), src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg("--json").arg(dir.join("composite.rill")).output().unwrap();
+    let json = String::from_utf8_lossy(&out.stdout);
+    assert!(json.contains("\"composite\":true,\"line\":20,\"name\":\"Connected\",\"pattern\":\"Connected(secs)\""), "{json}");
+    assert!(json.contains("\"substates\":[{\"composite\":false,\"line\":27,\"name\":\"Talking\""), "{json}");
+    assert!(json.contains("\"line\":32,\"name\":\"Held\""), "{json}");
+    // a composite's name is no state to go to: only its substates are
+    let bad = compile_error("type Signal\n  Go\n\ntype S\n  A\n  B\n\nmachine m(me: Chan(Mail(Signal)))\n  state A\n    Go -> Both\n  state Both\n    state B\n      Go -> A\n\nfn main() = ()\n");
+    assert!(bad.contains("Both"), "{bad}");
+    // `state *` belongs to the machine, not to a composite
+    let bad = compile_error("type Signal\n  Go\n\ntype S\n  A\n  B\n\nmachine m(me: Chan(Mail(Signal)))\n  state A\n    Go -> B\n  state Both\n    state B\n      Go -> A\n    state *\n      _ -> stay\n\nfn main() = ()\n");
+    assert!(bad.contains("`state *` is the machine's"), "{bad}");
+}
+
+/// Blocks in a system: routes grouped, and machines with them. To the
+/// checker every route is the system's; `rill fmt` keeps the grouping;
+/// `rill diagram --json` says which block each route and machine is in.
+#[test]
+fn blocks_group_a_systems_routes() {
+    let src = "type Signal\n  Call\n  Hangup\n  Charge(secs: Int)\n  Status(text: Str)\n\ntype Line\n  Idle\n  Busy\n\ntype Meter\n  Counting\n\nsystem centre\n  block switching\n    env -> line: Call, Hangup\n    line -> env: Status\n  block billing\n    line -> meter: Charge\n\nmachine line(me: Chan(Mail(Signal)), meter: Chan(Mail(Signal)))\n  state Idle\n    Call ->\n      reply(Status(\"busy\"))\n      Busy\n  state Busy\n    Hangup ->\n      output(meter, Charge(3))\n      Idle\n\nmachine meter(me: Chan(Mail(Signal)))\n  state Counting\n    Charge(secs) ->\n      println(\"charged \" + int_to_str(secs))\n      stay\n\nfn main() =\n  env = mailbox()\n  m = mailbox()\n  l = mailbox()\n  spawn meter(m, Counting)\n  spawn line(l, m, Idle)\n  post(l, env, Call)\n  match recv(env).signal\n    Status(t) -> println(t)\n    _ -> println(\"?\")\n  post(l, env, Hangup)\n  sleep_ms(20)\n";
+    assert_eq!(run_source("blocks", src), "busy\ncharged 3\n");
+    assert_eq!(fmt_source(src), src);
+    let dir = std::env::temp_dir().join(format!("rill-e2e-blocks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("blocks.rill"), src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg("--json").arg(dir.join("blocks.rill")).output().unwrap();
+    let json = String::from_utf8_lossy(&out.stdout);
+    assert!(json.contains("{\"block\":\"billing\",\"both\":false,\"from\":\"line\",\"line\":19,\"signals\":[\"Charge\"],\"to\":\"meter\"}"), "{json}");
+    assert!(json.contains("\"line\":15,\"machines\":[\"line\"],\"name\":\"switching\""), "{json}");
+    assert!(json.contains("\"line\":18,\"machines\":[\"meter\"],\"name\":\"billing\""), "{json}");
+    // a signal on no route, in any block, is still refused
+    let bad = compile_error(&src.replace("    line -> meter: Charge\n", "    line -> meter: Status\n"));
+    assert!(bad.contains("`line` sends `Charge`, which no route out of `line` carries"), "{bad}");
+    // the picture on the command line draws every route, the blocks' too
+    let svg = Command::new(env!("CARGO_BIN_EXE_rill")).arg("diagram").arg("--svg").arg(dir.join("blocks.rill")).output().unwrap();
+    assert!(String::from_utf8_lossy(&svg.stdout).contains("Charge"));
+}

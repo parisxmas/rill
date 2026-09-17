@@ -1211,6 +1211,29 @@ same signal itself wins, and a state with an `after` of its own keeps it.
 **`stay`** at the tail of an arm is the state the machine is in, SDL's
 `nextstate -`; in a shared arm it is the only way to say it.
 
+**A composite state** is `state *` for some of the states: a `state`
+with `state`s indented under it. Its name is no constructor of the state
+type — only the substates are states the machine is in, and a next state
+names one of them — and its arms are answered in every substate after
+the substate's own, then the composite's around it, then `state *`'s.
+`stay` in one of them is the substate the machine is in. SDL-2000 drew
+the substates in a frame with the shared arms on it; `rill diagram` does
+the same.
+
+```
+machine line(me: Chan(Mail(Signal)), log: Chan(Str))
+  state Idle
+    Call -> Talking(0)
+  state Connected(secs)
+    Hangup ->
+      send(log, "hung up after " + int_to_str(secs))
+      Idle
+    state Talking(secs)
+      Hold -> Held(secs)
+    state Held(secs)
+      Resume -> Talking(secs)
+```
+
 Two more things a state may do, as SDL's processes did. A **timer** is a
 signal the machine sends itself later: `set(Retry, 200)` in an arm's body
 starts one that delivers `Retry` in 200 ms, `set(Tick(n), 10)` one that
@@ -1245,6 +1268,22 @@ first, before the machines, as a flowchart or with `--svg` as boxes and
 arrows. Instances are not declared — they are made with `spawn`, as
 many as the program wants — so the diagram is of kinds, which is what a
 block diagram is.
+
+A system's routes may be grouped in **blocks**, SDL's own grouping, and
+blocks in blocks: `block switching` and, indented under it, its routes
+and its blocks. A machine belongs to the block whose routes name it — the
+innermost — and a route between machines of two blocks is a channel
+between the blocks in the picture. To the compiler a route is the
+system's wherever it is written; the check is the same.
+
+```
+system centre
+  block switching
+    env -> line: Call, Hangup
+    line -> env: Status
+  block billing
+    line -> meter: Charge
+```
 
 **A run can say what its machines did.** With `RILL_TRACE=1` in the
 environment, every machine writes one line an event on standard error —

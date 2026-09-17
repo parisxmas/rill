@@ -427,22 +427,36 @@ impl Fmt {
             .collect();
         self.push_at(0, &format!("machine {}({})", m.name, params.join(", ")), m.line);
         for st in &m.states {
-            self.lead(st.line, 1);
+            self.statedef(st, 1);
+        }
+    }
+
+    /// A state at indentation `ind`: its arms, its keywords and — for a
+    /// composite — its substates, in the order written.
+    fn statedef(&mut self, st: &StateDef, ind: usize) {
+        {
+            self.lead(st.line, ind);
             let shown = if matches!(st.pattern, Pattern::Wildcard) { "*".to_string() } else { pattern(&st.pattern) };
-            self.push_at(1, &format!("state {shown}"), st.line);
+            self.push_at(ind, &format!("state {shown}"), st.line);
             // the arms in the order written: the signals and the `after`
             // among them by line
             let mut arms: Vec<(usize, String)> = Vec::new();
             for a in &st.arms {
-                arms.push((a.line, self.arm_text(a, 2)));
+                arms.push((a.line, self.arm_text(a, ind + 1)));
             }
             if let Some((ms, body, aline)) = &st.after {
-                let head = format!("after {}", self.render(ms, 3));
-                arms.push((*aline, self.arm_body_text(&head, body, *aline, 2)));
+                let head = format!("after {}", self.render(ms, ind + 2));
+                arms.push((*aline, self.arm_body_text(&head, body, *aline, ind + 1)));
             }
             for (cond, body, wline) in &st.whens {
-                let head = format!("when {}", self.render(cond, 3));
-                arms.push((*wline, self.arm_body_text(&head, body, *wline, 2)));
+                let head = format!("when {}", self.render(cond, ind + 2));
+                arms.push((*wline, self.arm_body_text(&head, body, *wline, ind + 1)));
+            }
+            for sub in &st.substates {
+                let start = self.out.len();
+                self.statedef(sub, ind + 1);
+                let text = self.out.split_off(start);
+                arms.push((sub.line, text));
             }
             let mut keyword_lines: Vec<(&str, &Pattern, &Option<Expr>, usize)> = Vec::new();
             for (p, g, l) in &st.saves {
@@ -453,17 +467,17 @@ impl Fmt {
             }
             for (word, p, g, sline) in keyword_lines {
                 let head = match g {
-                    Some(g) => format!("{word} {} if {}", pattern(p), self.render(g, 3)),
+                    Some(g) => format!("{word} {} if {}", pattern(p), self.render(g, ind + 2)),
                     None => format!("{word} {}", pattern(p)),
                 };
                 let mut s = String::new();
                 for (cl, text) in self.comments.before(sline) {
                     self.mark(cl);
-                    s.push_str(&format!("{}{}\n", pad(2), text));
+                    s.push_str(&format!("{}{}\n", pad(ind + 1), text));
                 }
                 self.mark(sline);
                 let text = self.with_trailing(&head, sline);
-                s.push_str(&format!("{}{text}\n", pad(2)));
+                s.push_str(&format!("{}{text}\n", pad(ind + 1)));
                 self.last_line = self.last_line.max(sline);
                 arms.push((sline, s));
             }
@@ -476,10 +490,32 @@ impl Fmt {
 
     fn systemdef(&mut self, sd: &SystemDef) {
         self.push_at(0, &format!("system {}", sd.name), sd.line);
-        for r in &sd.routes {
-            self.lead(r.line, 1);
-            let arrow = if r.both { "<->" } else { "->" };
-            self.push_at(1, &format!("{} {arrow} {}: {}", r.from, r.to, r.signals.join(", ")), r.line);
+        self.routes_and_blocks(&sd.routes, &sd.blocks, 1);
+    }
+
+    /// The routes and blocks under a system or a block, in the order
+    /// written, at indentation `ind`.
+    fn routes_and_blocks(&mut self, routes: &[Route], blocks: &[BlockDef], ind: usize) {
+        let mut lines: Vec<(usize, bool, usize)> = Vec::new();
+        for (i, r) in routes.iter().enumerate() {
+            lines.push((r.line, false, i));
+        }
+        for (i, b) in blocks.iter().enumerate() {
+            lines.push((b.line, true, i));
+        }
+        lines.sort_by_key(|(l, _, _)| *l);
+        for (_, is_block, i) in lines {
+            if is_block {
+                let b = &blocks[i];
+                self.lead(b.line, ind);
+                self.push_at(ind, &format!("block {}", b.name), b.line);
+                self.routes_and_blocks(&b.routes, &b.blocks, ind + 1);
+            } else {
+                let r = &routes[i];
+                self.lead(r.line, ind);
+                let arrow = if r.both { "<->" } else { "->" };
+                self.push_at(ind, &format!("{} {arrow} {}: {}", r.from, r.to, r.signals.join(", ")), r.line);
+            }
         }
     }
 

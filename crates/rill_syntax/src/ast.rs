@@ -51,17 +51,105 @@ pub struct MachineDef {
     pub line: usize,
 }
 
+impl MachineDef {
+    /// Every `state` written, composites and their substates included,
+    /// in the order written — for whatever reads the arms as they stand.
+    pub fn all_states(&self) -> Vec<&StateDef> {
+        let mut out = Vec::new();
+        for st in &self.states {
+            st.walk(&mut out);
+        }
+        out
+    }
+}
+
+impl StateDef {
+    pub fn is_composite(&self) -> bool {
+        !self.substates.is_empty()
+    }
+
+    fn walk<'a>(&'a self, out: &mut Vec<&'a StateDef>) {
+        out.push(self);
+        for s in &self.substates {
+            s.walk(out);
+        }
+    }
+}
+
 /// `system exchange`, and under it the routes: `env -> line: OffHook,
 /// Digit`, `line <-> line: Ring, Answer`. SDL's block diagram, as the
 /// signal lists between kinds of process and the environment: what a
 /// machine may `output` is what some route from it carries, and what it
 /// answers is what some route into it does. Instances are not declared;
 /// they are made with `spawn` as before.
+///
+/// Routes may be grouped in `block`s, SDL's own grouping: a block holds
+/// routes (and blocks), and a machine belongs to the block whose routes
+/// name it first. A route between machines of two blocks is a channel
+/// between the blocks in the picture; to the checker every route is a
+/// route of the system, wherever it is written.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemDef {
     pub name: String,
     pub routes: Vec<Route>,
+    pub blocks: Vec<BlockDef>,
     pub line: usize,
+}
+
+/// `block switching`, indented under a system or another block: the
+/// routes written in it, and the blocks in it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockDef {
+    pub name: String,
+    pub routes: Vec<Route>,
+    pub blocks: Vec<BlockDef>,
+    pub line: usize,
+}
+
+impl SystemDef {
+    /// Every route of the system, the blocks' included, in the order
+    /// written.
+    pub fn all_routes(&self) -> Vec<&Route> {
+        let mut out: Vec<&Route> = self.routes.iter().collect();
+        for b in &self.blocks {
+            b.all_routes(&mut out);
+        }
+        out.sort_by_key(|r| r.line);
+        out
+    }
+
+    /// The block a machine belongs to — the first whose routes name it,
+    /// the innermost of nested ones — or none.
+    pub fn block_of(&self, machine: &str) -> Option<&BlockDef> {
+        for b in &self.blocks {
+            if let Some(found) = b.block_of(machine) {
+                return Some(found);
+            }
+        }
+        None
+    }
+}
+
+impl BlockDef {
+    pub fn all_routes<'a>(&'a self, out: &mut Vec<&'a Route>) {
+        out.extend(self.routes.iter());
+        for b in &self.blocks {
+            b.all_routes(out);
+        }
+    }
+
+    pub fn block_of(&self, machine: &str) -> Option<&BlockDef> {
+        for b in &self.blocks {
+            if let Some(found) = b.block_of(machine) {
+                return Some(found);
+            }
+        }
+        if self.routes.iter().any(|r| r.from == machine || r.to == machine) {
+            Some(self)
+        } else {
+            None
+        }
+    }
 }
 
 /// One line of a system: the two ends — machine names, or `env` — whether
@@ -77,10 +165,18 @@ pub struct Route {
 
 /// One `state` of a machine: its pattern (the state constructor with its
 /// fields named), the signals it answers, and its timer arm if it has one.
+///
+/// A state with `state`s indented under it is a composite state, SDL's
+/// grouping: its pattern names no constructor of the state type — only
+/// the substates are states the machine is in — and its arms are
+/// answered in every substate, after the substate's own, as `state *`'s
+/// are after every state's. Composites nest.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StateDef {
     pub pattern: Pattern,
     pub arms: Vec<Arm>,
+    /// The states under a composite state; none under a plain one.
+    pub substates: Vec<StateDef>,
     /// `after ms -> body`: the wait, and what to do when it runs out.
     pub after: Option<(Expr, Expr, usize)>,
     /// `save Sig`: signals kept for a later state rather than answered

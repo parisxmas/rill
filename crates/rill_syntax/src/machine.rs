@@ -51,7 +51,10 @@
 //!
 //! `state *` is the arms every state answers, put after each state's own
 //! so the state's own win; `stay` at an arm's tail is the state the
-//! machine is in, SDL's `nextstate -`.
+//! machine is in, SDL's `nextstate -`. A composite state — one with
+//! `state`s under it — is the same thing for its substates alone: its
+//! arms go after each substate's own, then a composite's around it, then
+//! `state *`'s, and only the substates are states the machine is in.
 //!
 //! `done(v)` at an arm's tail ends the machine with a value, as `stop`
 //! ends it with none: a machine called from a transition of another, on
@@ -75,8 +78,8 @@ pub fn lower(m: &MachineDef) -> Result<Vec<FnDef>, SyntaxError> {
         return Err(SyntaxError::new(shared[1].line, 0, "a machine has one `state *`: the arms every state answers".to_string()));
     }
     let mut arms = Vec::new();
-    for st in m.states.iter().filter(|st| !matches!(st.pattern, Pattern::Wildcard)) {
-        let merged = merged_state(st, shared.first().copied());
+    for st in leaf_states(&m.states, &[]) {
+        let merged = merged_state(&st, shared.first().copied());
         arms.push(Arm { pattern: st.pattern.clone(), guard: None, body: state_body(m, &merged, &mailbox, &state, &plan)?, line: st.line });
     }
     if arms.is_empty() {
@@ -116,16 +119,49 @@ pub fn lower(m: &MachineDef) -> Result<Vec<FnDef>, SyntaxError> {
 fn merged_state(st: &StateDef, shared: Option<&StateDef>) -> StateDef {
     let mut out = st.clone();
     if let Some(all) = shared {
-        // a shared arm the state's own already answer whole is left out,
-        // since an arm that can never be reached is refused
-        let covered = |p: &Pattern| st.arms.iter().any(|a| a.guard.is_none() && covers(&a.pattern, p));
-        out.arms.extend(all.arms.iter().filter(|a| !covered(&a.pattern)).cloned());
-        if out.after.is_none() {
-            out.after = all.after.clone();
+        merge_into(&mut out, all);
+    }
+    out
+}
+
+/// What `outer` gives `st`: its arms after `st`'s own — a shared arm the
+/// state's own already answer whole is left out, since an arm that can
+/// never be reached is refused — its `after` where `st` has none, and
+/// its saves, whens and priorities besides.
+fn merge_into(st: &mut StateDef, outer: &StateDef) {
+    let covered = |p: &Pattern| st.arms.iter().any(|a| a.guard.is_none() && covers(&a.pattern, p));
+    let more: Vec<Arm> = outer.arms.iter().filter(|a| !covered(&a.pattern)).cloned().collect();
+    st.arms.extend(more);
+    if st.after.is_none() {
+        st.after = outer.after.clone();
+    }
+    st.saves.extend(outer.saves.iter().cloned());
+    st.whens.extend(outer.whens.iter().cloned());
+    st.priorities.extend(outer.priorities.iter().cloned());
+}
+
+/// The states the machine is in — every plain state, and every substate
+/// of a composite, each carrying its composites' arms after its own,
+/// the innermost composite's first — `state *` left out, for the caller
+/// to merge last.
+pub fn leaf_states(states: &[StateDef], outers: &[&StateDef]) -> Vec<StateDef> {
+    let mut out = Vec::new();
+    for st in states {
+        if matches!(st.pattern, Pattern::Wildcard) {
+            continue;
         }
-        out.saves.extend(all.saves.iter().cloned());
-        out.whens.extend(all.whens.iter().cloned());
-        out.priorities.extend(all.priorities.iter().cloned());
+        if st.is_composite() {
+            let mut around: Vec<&StateDef> = vec![st];
+            around.extend(outers.iter().copied());
+            out.extend(leaf_states(&st.substates, &around));
+        } else {
+            let mut leaf = st.clone();
+            leaf.substates = Vec::new();
+            for outer in outers {
+                merge_into(&mut leaf, outer);
+            }
+            out.push(leaf);
+        }
     }
     out
 }

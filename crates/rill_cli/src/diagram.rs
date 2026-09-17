@@ -224,10 +224,11 @@ fn ctor_of(next: &str) -> String {
 pub fn mermaid(m: &MachineDef, procs: &Procs) -> String {
     let mut out = String::from("stateDiagram-v2\n");
     out.push_str(&format!("  %% machine {}\n", m.name));
-    if m.states.iter().any(|st| matches!(st.pattern, Pattern::Wildcard)) {
+    let states = m.all_states();
+    if states.iter().any(|st| matches!(st.pattern, Pattern::Wildcard)) {
         out.push_str("  state \"* (every state)\" as any_state\n");
     }
-    for st in &m.states {
+    for st in &states {
         let from = state_name(&st.pattern);
         for t in transitions(st, procs) {
             let mut label = t.input.clone();
@@ -381,7 +382,7 @@ fn column_of(steps: &[Placed], end: &End) -> Column {
 pub fn svg(m: &MachineDef, procs: &Procs) -> String {
     // one block per state: the state symbol over its transitions' columns
     let mut blocks: Vec<(String, Vec<Column>)> = Vec::new();
-    for st in &m.states {
+    for st in m.all_states() {
         let mut cols: Vec<Column> = transitions(st, procs)
             .into_iter()
             .map(|t| {
@@ -771,10 +772,11 @@ pub fn msc_svg(trace: &str) -> String {
 /// The system as Mermaid's `flowchart`: a box per machine and one for the
 /// environment, an arrow per route with its signals.
 pub fn system_mermaid(sd: &SystemDef) -> String {
+    let routes = sd.all_routes();
     let mut out = String::from("flowchart LR\n");
     out.push_str(&format!("  %% system {}\n", sd.name));
     let mut ends: Vec<String> = Vec::new();
-    for r in &sd.routes {
+    for r in &routes {
         for e in [&r.from, &r.to] {
             if !ends.contains(e) {
                 ends.push(e.clone());
@@ -788,7 +790,7 @@ pub fn system_mermaid(sd: &SystemDef) -> String {
             out.push_str(&format!("  {e}[{e}]\n"));
         }
     }
-    for r in &sd.routes {
+    for r in &routes {
         let arrow = if r.both { "<-->" } else { "-->" };
         out.push_str(&format!("  {} {arrow}|{}| {}\n", r.from, clean(&r.signals.join(", ")), r.to));
     }
@@ -799,8 +801,9 @@ pub fn system_mermaid(sd: &SystemDef) -> String {
 /// each route an arc between its ends with the signals along it, a route
 /// from a machine to itself a loop above it.
 pub fn system_svg(sd: &SystemDef) -> String {
+    let routes = sd.all_routes();
     let mut ends: Vec<String> = Vec::new();
-    for r in &sd.routes {
+    for r in &routes {
         for e in [&r.from, &r.to] {
             if !ends.contains(e) {
                 ends.push(e.clone());
@@ -812,7 +815,7 @@ pub fn system_svg(sd: &SystemDef) -> String {
     const BOX_W: f64 = 150.0;
     const BOX_H: f64 = 50.0;
     const SIDE: f64 = 50.0;
-    let lanes = ((sd.routes.len() + 1) / 2) as f64;
+    let lanes = ((routes.len() + 1) / 2) as f64;
     let top = 40.0 + 34.0 * lanes;
     let width = SIDE * 2.0 + COL * ends.len().max(1) as f64;
     let height = top + BOX_H + 60.0 + 34.0 * lanes;
@@ -840,7 +843,7 @@ pub fn system_svg(sd: &SystemDef) -> String {
     // and so on outward, so no two labels share a line. Several routes at
     // one box spread along its edge.
     let mut slots: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (i, r) in sd.routes.iter().enumerate() {
+    for (i, r) in routes.iter().enumerate() {
         let label = r.signals.join(", ");
         let (x1, x2) = (x_of(&r.from), x_of(&r.to));
         let above = i % 2 == 0;
@@ -930,6 +933,107 @@ fn calls_in(steps: &[Placed], end: &End, out: &mut Vec<String>) {
     }
 }
 
+/// A route, with the block it is written in (`""` at the top of the system).
+fn route_json(r: &Route, block: &str) -> Json {
+    Json::obj(vec![
+        ("from", Json::str(r.from.clone())),
+        ("to", Json::str(r.to.clone())),
+        ("both", Json::Bool(r.both)),
+        ("signals", Json::Arr(r.signals.iter().map(|s| Json::str(s.clone())).collect())),
+        ("line", Json::Num(r.line as f64)),
+        ("block", Json::str(block.to_string())),
+    ])
+}
+
+/// A block: its name, the machines that belong to it — named by its own
+/// routes and by no block within it — and the blocks within it.
+fn block_json(sd: &SystemDef, b: &BlockDef) -> Json {
+    let mut own: Vec<&Route> = Vec::new();
+    b.all_routes(&mut own);
+    let mut machines: Vec<String> = Vec::new();
+    for r in &own {
+        for end in [&r.from, &r.to] {
+            if end != "env" && !machines.contains(end) && sd.block_of(end).map(|found| std::ptr::eq(found, b)).unwrap_or(false) {
+                machines.push(end.clone());
+            }
+        }
+    }
+    Json::obj(vec![
+        ("name", Json::str(b.name.clone())),
+        ("line", Json::Num(b.line as f64)),
+        ("machines", Json::Arr(machines.into_iter().map(Json::str).collect())),
+        ("routes", Json::Arr(b.routes.iter().map(|r| route_json(r, &b.name)).collect())),
+        ("blocks", Json::Arr(b.blocks.iter().map(|inner| block_json(sd, inner)).collect())),
+    ])
+}
+
+/// A system: every route, the blocks' included, each saying which block
+/// it is written in; and the blocks as a tree.
+fn system_json(sd: &SystemDef) -> Json {
+    let mut routes: Vec<Json> = sd.routes.iter().map(|r| route_json(r, "")).collect();
+    fn walk(b: &BlockDef, out: &mut Vec<Json>) {
+        for r in &b.routes {
+            out.push(route_json(r, &b.name));
+        }
+        for inner in &b.blocks {
+            walk(inner, out);
+        }
+    }
+    for b in &sd.blocks {
+        walk(b, &mut routes);
+    }
+    Json::obj(vec![
+        ("name", Json::str(sd.name.clone())),
+        ("line", Json::Num(sd.line as f64)),
+        ("routes", Json::Arr(routes)),
+        ("blocks", Json::Arr(sd.blocks.iter().map(|b| block_json(sd, b)).collect())),
+    ])
+}
+
+/// A state: its transitions, saves and priorities — and, for a composite
+/// state, its substates, each the same.
+fn state_json(m: &MachineDef, st: &StateDef, procs: &Procs) -> Json {
+    let keyword = |word: &str, list: &[(Pattern, Option<Expr>, usize)]| -> Json {
+        Json::Arr(
+            list.iter()
+                .map(|(p, g, l)| {
+                    let text = match g {
+                        Some(g) => format!("{} if {}", pattern_text(p), expr_text(g)),
+                        None => pattern_text(p),
+                    };
+                    Json::obj(vec![("kind", Json::str(word)), ("text", Json::str(text)), ("line", Json::Num(*l as f64))])
+                })
+                .collect(),
+        )
+    };
+    Json::obj(vec![
+        ("name", Json::str(if matches!(st.pattern, Pattern::Wildcard) { "*".to_string() } else { state_name(&st.pattern) })),
+        ("pattern", Json::str(if matches!(st.pattern, Pattern::Wildcard) { "*".to_string() } else { pattern_text(&st.pattern) })),
+        ("line", Json::Num(st.line as f64)),
+        (
+            "transitions",
+            Json::Arr(
+                transitions(st, procs)
+                    .iter()
+                    .map(|t| {
+                        Json::obj(vec![
+                            ("kind", Json::str(t.kind)),
+                            ("input", Json::str(t.input.clone())),
+                            ("line", Json::Num(t.line as f64)),
+                            ("steps", Json::Arr(t.steps.iter().map(step_json).collect())),
+                            ("end", end_json(&t.end)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        ("saves", keyword("save", &st.saves)),
+        ("priorities", keyword("priority", &st.priorities)),
+        ("composite", Json::Bool(st.is_composite())),
+        ("substates", Json::Arr(st.substates.iter().map(|s| state_json(m, s, procs)).collect())),
+    ])
+}
+
 /// Everything drawable in a file: its systems, its machines, and the
 /// procedures — the file's functions the machines call, and those they
 /// call in turn — each drawn as SDL drew a procedure: its body's steps
@@ -937,78 +1041,11 @@ fn calls_in(steps: &[Placed], end: &End, out: &mut Vec<String>) {
 pub fn model_json(systems: &[SystemDef], machines: &[MachineDef], functions: &[FnDef]) -> Json {
     let procs: Vec<String> = functions.iter().map(|f| f.name.clone()).collect();
     let procs = procs.as_slice();
-    let systems: Vec<Json> = systems
-        .iter()
-        .map(|sd| {
-            Json::obj(vec![
-                ("name", Json::str(sd.name.clone())),
-                ("line", Json::Num(sd.line as f64)),
-                (
-                    "routes",
-                    Json::Arr(
-                        sd.routes
-                            .iter()
-                            .map(|r| {
-                                Json::obj(vec![
-                                    ("from", Json::str(r.from.clone())),
-                                    ("to", Json::str(r.to.clone())),
-                                    ("both", Json::Bool(r.both)),
-                                    ("signals", Json::Arr(r.signals.iter().map(|s| Json::str(s.clone())).collect())),
-                                    ("line", Json::Num(r.line as f64)),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                ),
-            ])
-        })
-        .collect();
+    let systems: Vec<Json> = systems.iter().map(system_json).collect();
     let drawn_machines: Vec<Json> = machines
         .iter()
         .map(|m| {
-            let states: Vec<Json> = m
-                .states
-                .iter()
-                .map(|st| {
-                    let keyword = |word: &str, list: &[(Pattern, Option<Expr>, usize)]| -> Json {
-                        Json::Arr(
-                            list.iter()
-                                .map(|(p, g, l)| {
-                                    let text = match g {
-                                        Some(g) => format!("{} if {}", pattern_text(p), expr_text(g)),
-                                        None => pattern_text(p),
-                                    };
-                                    Json::obj(vec![("kind", Json::str(word)), ("text", Json::str(text)), ("line", Json::Num(*l as f64))])
-                                })
-                                .collect(),
-                        )
-                    };
-                    Json::obj(vec![
-                        ("name", Json::str(if matches!(st.pattern, Pattern::Wildcard) { "*".to_string() } else { state_name(&st.pattern) })),
-                        ("pattern", Json::str(if matches!(st.pattern, Pattern::Wildcard) { "*".to_string() } else { pattern_text(&st.pattern) })),
-                        ("line", Json::Num(st.line as f64)),
-                        (
-                            "transitions",
-                            Json::Arr(
-                                transitions(st, procs)
-                                    .iter()
-                                    .map(|t| {
-                                        Json::obj(vec![
-                                            ("kind", Json::str(t.kind)),
-                                            ("input", Json::str(t.input.clone())),
-                                            ("line", Json::Num(t.line as f64)),
-                                            ("steps", Json::Arr(t.steps.iter().map(step_json).collect())),
-                                            ("end", end_json(&t.end)),
-                                        ])
-                                    })
-                                    .collect(),
-                            ),
-                        ),
-                        ("saves", keyword("save", &st.saves)),
-                        ("priorities", keyword("priority", &st.priorities)),
-                    ])
-                })
-                .collect();
+            let states: Vec<Json> = m.states.iter().map(|st| state_json(m, st, procs)).collect();
             Json::obj(vec![
                 ("name", Json::str(m.name.clone())),
                 ("line", Json::Num(m.line as f64)),
@@ -1020,7 +1057,7 @@ pub fn model_json(systems: &[SystemDef], machines: &[MachineDef], functions: &[F
     // the procedures: what the machines call, and what those call, until nothing new is called
     let mut wanted: Vec<String> = Vec::new();
     for m in machines {
-        for st in &m.states {
+        for st in m.all_states() {
             for t in transitions(st, procs) {
                 calls_in(&t.steps, &t.end, &mut wanted);
             }
