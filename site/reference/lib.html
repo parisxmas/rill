@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The standard library — The Rill Language Reference</title>
-<meta name="description" content="The 43 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<meta name="description" content="The 44 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib.html">
 <meta property="og:title" content="The standard library — The Rill Language Reference">
-<meta property="og:description" content="The 43 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<meta property="og:description" content="The 44 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="The standard library — The Rill Language Reference">
-<meta name="twitter:description" content="The 43 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<meta name="twitter:description" content="The 44 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -82,7 +82,7 @@
     <main>
       <p class="chapter-no">Standard library</p>
       <h1>The standard library</h1>
-<p>43 modules, all written in Rill, imported by their path under <code>lib/</code>: <code>import "data/json" as json</code>. The compiler finds them beside its own <code>bin/</code> in a packaged toolchain, or through <code>RILL_PATH</code>. These pages are what <code>rill doc lib</code> writes: the comment above each declaration, and the signature the checker infers for it.</p><h3 id="text">Text <code class="folder">lib/text</code></h3>
+<p>44 modules, all written in Rill, imported by their path under <code>lib/</code>: <code>import "data/json" as json</code>. The compiler finds them beside its own <code>bin/</code> in a packaged toolchain, or through <code>RILL_PATH</code>. These pages are what <code>rill doc lib</code> writes: the comment above each declaration, and the signature the checker infers for it.</p><h3 id="text">Text <code class="folder">lib/text</code></h3>
 <ol class="toc">
       <li><a href="lib-text-fmt.html"><span class="no">fmt</span><b>text/fmt</b><span class="blurb">Text laid out and numbers spelled: a template with slots, padding by width, a float to so many places, thousands separated, a size in bytes, an ordinal, a table with its columns lined up.</span></a></li>
       <li><a href="lib-text-path.html"><span class="no">path</span><b>text/path</b><span class="blurb">File paths as text: joining, taking apart, tidying.</span></a></li>
@@ -134,6 +134,7 @@
       <li><a href="lib-db-oxisql.html"><span class="no">oxisql</span><b>db/oxisql</b><span class="blurb">? in the text takes the next value from params, which is how a value reaches the engine without being written into the statement.</span></a></li>
       <li><a href="lib-db-oxitsdb.html"><span class="no">oxitsdb</span><b>db/oxitsdb</b><span class="blurb">Every request names the engine as well as the command: the server mounts the time-series engine beside the document and SQL ones, and engine is what tells them apart.</span></a></li>
       <li><a href="lib-db-oxiwire.html"><span class="no">oxiwire</span><b>db/oxiwire</b><span class="blurb">Answers a Parsed — the JSON module&#x27;s, so a frame that will not decode travels out the same way a document that will not parse does.</span></a></li>
+      <li><a href="lib-db-pg.html"><span class="no">pg</span><b>db/pg</b><span class="blurb">A connection: libpq&#x27;s object.</span></a></li>
 </ol>
 <h3 id="cli">The command line <code class="folder">lib/cli</code></h3>
 <ol class="toc">

@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — PostgreSQL, through libpq
+
+`db/pg` is a PostgreSQL client that does not speak the protocol itself:
+it links libpq, the client library PostgreSQL ships, and lets it do the
+wire, the authentication, the SSL and the connection string — Homebrew's
+`libpq` on macOS, `libpq-dev` on Linux — the way `web/tls` lets OpenSSL
+do TLS. What the module adds is the shape: `connect` takes a libpq
+connection string or URL; `query` sends SQL with its values as `$1`,
+`$2`, … beside the text, so nothing in a value can change what the query
+does, and `query_opt` sends a `None` as `NULL`; the answer is a `Table`
+copied out of libpq at once — column names, rows, the count a command
+touched — with a cell `Some(text)` or `None`, and `text`, `int`, `float`,
+`bool`, `null`, `field`, `at` and `column` to read one by name or
+position. `run` is a command for its count, `one` a query for its first
+row, `scalar` for its first cell, `exec` SQL as it stands. `prepare` and
+`exec_prepared` plan a statement once; `begin`, `commit`, `rollback` and
+`transaction(c, f)` — which rolls back on an `Err` from `f` — are the
+transactions; `escape` and `escape_name` quote for the places a `$1`
+cannot go. Every call that waits on the server is a `blocking` extern,
+so a strand parks for its query and the others run: two strands each
+sleeping a third of a second on the server are done in a third. The
+module's tests need a server — `RILL_PG_TEST` as a connection string,
+`dbname=postgres` by default — and say so and pass without one.
+
 ## Unreleased — examples that are tests, on every function of the library
 
 A comment line indented four spaces past the `#` is an example, and

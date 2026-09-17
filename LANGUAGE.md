@@ -1654,6 +1654,7 @@ program in the project, imported by path and usually under a name:
 | `import "net/dns" as dns` | a name to its addresses through the system's resolver, without holding a worker |
 | `import "num/grid" as g` | arrays of numbers with a shape, as NumPy has them |
 | `import "db/kv"` | a key–value store on disk: a B+ tree, a page cache, a log |
+| `import "db/pg" as pg` | PostgreSQL through libpq: a connection string, queries with `$1` parameters, a result as a table of rows, prepared statements, transactions |
 | `import "crypto/sha1"`, `"passwd"` | SHA-1 and base64; storing a password so it cannot be read back |
 | `import "crypto/sha2" as sha` | SHA-256 and SHA-512, HMAC over each, a tag compared in constant time |
 | `import "data/checksum" as ck` | CRC-32 and Adler-32, whole or in pieces |

@@ -2649,6 +2649,7 @@ fn the_libraries_pass_their_own_tests() {
         ("lib/net/udp.rill", 3),
         ("lib/net/dns.rill", 2),
         ("lib/web/tls.rill", 2),
+        ("lib/db/pg.rill", 4),
     ] {
         let out = Command::new(env!("CARGO_BIN_EXE_rill")).arg("test").arg(root.join(module)).output().unwrap();
         let text = String::from_utf8_lossy(&out.stdout);

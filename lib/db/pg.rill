@@ -1,0 +1,541 @@
+module pg
+
+# PostgreSQL, through libpq — the client library PostgreSQL ships. The wire
+# protocol, authentication, SSL, the connection string and its environment
+# variables are all libpq's; what is here is the surface a Rill program
+# talks to and the shape a result comes back in.
+#
+#
+# A connection is opened with a libpq connection string —
+# `host=localhost dbname=shop user=ada`, or a `postgresql://` URL — and
+# every call after that answers `Ok(value)` or `Err(message)`, the message
+# the server's own. A `Table` is a whole result copied out of libpq at
+# once: its column names, its rows, and for an `INSERT`, `UPDATE` or
+# `DELETE` the count of rows touched. A cell is `Some(text)` or `None` for
+# SQL `NULL`; every value arrives as text, the way `psql` shows it, and
+# `int`, `float` and `bool` read a cell as a number or a truth.
+#
+# Parameters go as `$1`, `$2`, … with the values beside the query — libpq
+# sends them apart from the text, so nothing in a value can change what the
+# query does. The calls that wait on the server are declared `blocking`,
+# so a strand parks for a query and the worker goes on with the others.
+#
+# The library is libpq — Homebrew's `libpq` on macOS, `libpq-dev` on Linux —
+# linked when this module is imported.
+#
+#     # not run
+#     c = pg.connect("dbname=shop")?
+#     pg.run(c, "create table if not exists people (name text, age int)", Nil)?
+#     pg.run(c, "insert into people values ($1, $2)", Cons("ada", Cons("36", Nil)))?   # 1
+#     t = pg.query(c, "select name, age from people where age > $1", Cons("30", Nil))?
+#     map(t.rows, \r -> pg.text(r, "name"))                 # Cons(ada, Nil)
+#     map(t.rows, \r -> pg.int(r, "age"))                   # Cons(36, Nil)
+#     pg.scalar(c, "select count(*) from people", Nil)      # Ok(Some(1))
+#     pg.disconnect(c)
+extern "-L/opt/homebrew/opt/libpq/lib" fn PQlibVersion() -> I32
+
+extern "pq" blocking fn PQconnectdb(conninfo: Ptr) -> Ptr
+
+extern "pq" fn PQstatus(conn: Ptr) -> I32
+
+extern "pq" fn PQerrorMessage(conn: Ptr) -> Ptr
+
+extern "pq" fn PQfinish(conn: Ptr)
+
+extern "pq" fn PQdb(conn: Ptr) -> Ptr
+
+extern "pq" fn PQserverVersion(conn: Ptr) -> I32
+
+extern "pq" fn PQtransactionStatus(conn: Ptr) -> I32
+
+extern "pq" blocking fn PQexec(conn: Ptr, query: Ptr) -> Ptr
+
+extern "pq" blocking fn PQexecParams(conn: Ptr, query: Ptr, n: I32, types: Ptr, values: Ptr, lengths: Ptr, formats: Ptr, result_format: I32) -> Ptr
+
+extern "pq" blocking fn PQprepare(conn: Ptr, name: Ptr, query: Ptr, n: I32, types: Ptr) -> Ptr
+
+extern "pq" blocking fn PQexecPrepared(conn: Ptr, name: Ptr, n: I32, values: Ptr, lengths: Ptr, formats: Ptr, result_format: I32) -> Ptr
+
+extern "pq" fn PQresultStatus(res: Ptr) -> I32
+
+extern "pq" fn PQresultErrorMessage(res: Ptr) -> Ptr
+
+extern "pq" fn PQntuples(res: Ptr) -> I32
+
+extern "pq" fn PQnfields(res: Ptr) -> I32
+
+extern "pq" fn PQfname(res: Ptr, col: I32) -> Ptr
+
+extern "pq" fn PQgetvalue(res: Ptr, row: I32, col: I32) -> Ptr
+
+extern "pq" fn PQgetisnull(res: Ptr, row: I32, col: I32) -> I32
+
+extern "pq" fn PQcmdTuples(res: Ptr) -> Ptr
+
+extern "pq" fn PQclear(res: Ptr)
+
+extern "pq" fn PQescapeLiteral(conn: Ptr, s: Ptr, len: USize) -> Ptr
+
+extern "pq" fn PQescapeIdentifier(conn: Ptr, s: Ptr, len: USize) -> Ptr
+
+extern "pq" fn PQfreemem(p: Ptr)
+
+# A connection: libpq's object.
+type Conn
+  Conn(pg: Ptr)
+
+# What a query answered: the column names, the rows, and how many rows the
+# statement touched — inserted, updated, deleted, or for a `SELECT` the
+# count returned.
+type Table
+  Table(columns: List(Str), rows: List(Row), affected: Int)
+
+# One row, with the column names beside it so a cell can be asked for by
+# name. A cell is `None` for SQL `NULL`.
+type Row
+  Row(columns: List(Str), cells: List(Option(Str)))
+
+# -- connecting -----------------------------------------------------------------
+
+# A connection from a libpq connection string: `key=value` pairs, or a
+# `postgresql://user@host/db` URL, or `""` for the defaults and the
+# `PGHOST`/`PGDATABASE`/… environment. The error is libpq's, naming what
+# it could not do.
+#
+#     # not run
+#     c = pg.connect("host=localhost dbname=shop user=ada password=secret")?
+#     pg.connect("postgresql://ada@db.example.com/shop")?
+#     pg.connect("host=nowhere.invalid")   # Err: could not translate host name "nowhere.invalid" ...
+fn connect(conninfo) =
+  s = to_cstr(conninfo)
+  conn = PQconnectdb(s)
+  free_ptr(s)
+  if is_null(conn) then Err("libpq could not allocate a connection")
+  else if PQstatus(conn) == 0 then Ok(Conn(conn))
+  else
+    why = conn_error(conn)
+    PQfinish(conn)
+    Err(why)
+
+# Closes the connection and frees it.
+#
+#     # not run
+#     pg.disconnect(c)
+fn disconnect(c: Conn) = PQfinish(c.pg)
+
+# The database the connection is to.
+#
+#     # not run
+#     pg.database(c)   # "shop"
+fn database(c: Conn) = from_cstr(PQdb(c.pg))
+
+# The server's version as one number: 180004 is 18.4.
+#
+#     # not run
+#     pg.server_version(c) / 10000   # 18
+fn server_version(c: Conn) = PQserverVersion(c.pg)
+
+# libpq's own version, the same way.
+#
+#     pg.library_version() >= 100000   # => true
+fn library_version() = PQlibVersion()
+
+# -- queries --------------------------------------------------------------------
+
+# A query with its parameters as `$1`, `$2`, …, each a string the server
+# reads as the column's type. The whole answer, or the server's error.
+#
+#     # not run
+#     t = pg.query(c, "select name, age from people where age > $1", Cons("30", Nil))?
+#     t.columns                                   # Cons(name, Cons(age, Nil))
+#     len(t.rows)                                 # 1
+#     pg.query(c, "select nope", Nil)             # Err(ERROR:  column "nope" does not exist ...)
+fn query(c: Conn, sql, params: List(Str)) = query_opt(c, sql, map(params, \p -> Some(p)))
+
+# The same with a `None` where a parameter is SQL `NULL`.
+#
+#     # not run
+#     pg.query_opt(c, "insert into people values ($1, $2)", Cons(Some("bob"), Cons(None, Nil)))?
+fn query_opt(c: Conn, sql, params: List(Option(Str))) =
+  s = to_cstr(sql)
+  vals = param_values(params)
+  res = PQexecParams(c.pg, s, len(params), null_ptr(), vals, null_ptr(), null_ptr(), 0)
+  free_params(vals)
+  free_ptr(s)
+  take(c, res)
+
+# SQL as it stands, no parameters — several statements separated by `;`
+# are allowed, and the answer is the last one's. For anything with a
+# value from outside in it, `query` is the one to use.
+#
+#     # not run
+#     pg.exec(c, "create table t (n int); insert into t values (1), (2)")?
+fn exec(c: Conn, sql) =
+  s = to_cstr(sql)
+  res = PQexec(c.pg, s)
+  free_ptr(s)
+  take(c, res)
+
+# A command for its count: rows inserted, updated or deleted.
+#
+#     # not run
+#     pg.run(c, "update people set age = age + 1 where name = $1", Cons("ada", Nil))   # Ok(1)
+#     pg.run(c, "delete from people", Nil)                                            # Ok(2)
+fn run(c: Conn, sql, params: List(Str)) = res_map(query(c, sql, params), \t -> t.affected)
+
+# The first row, if there is one.
+#
+#     # not run
+#     match pg.one(c, "select * from people where name = $1", Cons("ada", Nil))?
+#       Some(r) -> pg.int(r, "age")
+#       None -> -1
+fn one(c: Conn, sql, params: List(Str)) = res_map(query(c, sql, params), first)
+
+# The first cell of the first row: `Ok(None)` when there is no row or the
+# cell is `NULL`.
+#
+#     # not run
+#     pg.scalar(c, "select count(*) from people", Nil)   # Ok(Some(2))
+#     pg.scalar(c, "select now()", Nil)                  # Ok(Some(2026-09-17 01:30:00.123456+03))
+fn scalar(c: Conn, sql, params: List(Str)) = res_map(query(c, sql, params), first_cell)
+
+private fn first_cell(t: Table) = match first(t)
+  None -> None
+  Some(r) -> at(r, 0)
+
+# -- prepared statements --------------------------------------------------------
+
+# A statement parsed and planned once under a name, for running many times.
+# The name comes back, so `prepare(...)?` reads naturally.
+#
+#     # not run
+#     pg.prepare(c, "by_name", "select age from people where name = $1")?
+#     pg.exec_prepared(c, "by_name", Cons("ada", Nil))?
+fn prepare(c: Conn, name, sql) =
+  n = to_cstr(name)
+  s = to_cstr(sql)
+  res = PQprepare(c.pg, n, s, 0, null_ptr())
+  free_ptr(s)
+  free_ptr(n)
+  res_map(take(c, res), \t -> name)
+
+#     # not run
+#     t = pg.exec_prepared(c, "by_name", Cons("ada", Nil))?
+fn exec_prepared(c: Conn, name, params: List(Str)) =
+  n = to_cstr(name)
+  ps = map(params, \p -> Some(p))
+  vals = param_values(ps)
+  res = PQexecPrepared(c.pg, n, len(ps), vals, null_ptr(), null_ptr(), 0)
+  free_params(vals)
+  free_ptr(n)
+  take(c, res)
+
+# -- transactions ---------------------------------------------------------------
+
+#     # not run
+#     pg.begin(c)?
+#     pg.run(c, "update accounts set balance = balance - 10 where id = 1", Nil)?
+#     pg.run(c, "update accounts set balance = balance + 10 where id = 2", Nil)?
+#     pg.commit(c)?
+fn begin(c: Conn) = run(c, "BEGIN", Nil)
+
+fn commit(c: Conn) = run(c, "COMMIT", Nil)
+
+fn rollback(c: Conn) = run(c, "ROLLBACK", Nil)
+
+# `f(c)` between a `BEGIN` and a `COMMIT`; an `Err` from `f` — a failed
+# query, or one of its own — rolls back instead and is the answer.
+#
+#     # not run
+#     move = \c ->
+#       pg.run(c, "update accounts set balance = balance - 10 where id = 1", Nil)?
+#       pg.run(c, "update accounts set balance = balance + 10 where id = 2", Nil)
+#     pg.transaction(c, move)   # Ok(1), or the error, and nothing moved
+fn transaction(c: Conn, f) = match begin(c)
+  Err(e) -> Err(e)
+  Ok(_) -> match f(c)
+    Err(e) ->
+      rollback(c)
+      Err(e)
+    Ok(v) -> match commit(c)
+      Err(e) -> Err(e)
+      Ok(_) -> Ok(v)
+
+# Whether a transaction is open on the connection — `begin` was run and
+# neither `commit` nor `rollback` yet, including one the server has
+# marked failed.
+#
+#     # not run
+#     pg.in_transaction(c)   # false
+fn in_transaction(c: Conn) =
+  st = PQtransactionStatus(c.pg)
+  st == 2 || st == 3
+
+# -- escaping -------------------------------------------------------------------
+
+# A value quoted for pasting into SQL text, quotes and all — for the places
+# a `$1` cannot go, such as `COPY` options or a `SET`. Parameters are the
+# right way everywhere else.
+#
+#     # not run
+#     pg.escape(c, "O'Neil")   # 'O''Neil'
+fn escape(c: Conn, s) = escaped(c, s, true)
+
+# A name quoted as an identifier: `"table name"`.
+#
+#     # not run
+#     pg.escape_name(c, "my table")   # "my table"
+fn escape_name(c: Conn, s) = escaped(c, s, false)
+
+private fn escaped(c: Conn, s, literal) =
+  p = to_cstr(s)
+  q = if literal then PQescapeLiteral(c.pg, p, #s) else PQescapeIdentifier(c.pg, p, #s)
+  free_ptr(p)
+  if is_null(q) then s
+  else
+    text = from_cstr(q)
+    PQfreemem(q)
+    text
+
+# -- reading a table ------------------------------------------------------------
+
+# The first row.
+#
+#     pg.first(pg.Table(Cons("n", Nil), Nil, 0))   # => None
+fn first(t: Table) = match t.rows
+  Nil -> None
+  Cons(r, _) -> Some(r)
+
+# A column's position in a table, or -1.
+#
+#     pg.column_index(pg.Table(Cons("name", Cons("age", Nil)), Nil, 0), "age")   # => 1
+fn column_index(t: Table, name) = index_of(t.columns, name)
+
+# One column of the whole table, as the cells.
+#
+#     t = pg.Table(Cons("n", Nil), Cons(pg.Row(Cons("n", Nil), Cons(Some("1"), Nil)), Cons(pg.Row(Cons("n", Nil), Cons(None, Nil)), Nil)), 0)
+#     pg.column(t, "n")   # => Cons(Some(1), Cons(None, Nil))
+fn column(t: Table, name) = map(t.rows, \r -> field(r, name))
+
+# -- reading a row --------------------------------------------------------------
+
+# A cell by position: `None` for `NULL` and for a position the row does
+# not have.
+#
+#     r = pg.Row(Cons("name", Cons("age", Nil)), Cons(Some("ada"), Cons(None, Nil)))
+#     pg.at(r, 0)   # => Some(ada)
+#     pg.at(r, 1)   # => None
+#     pg.at(r, 5)   # => None
+fn at(r: Row, i) = match nth(r.cells, i)
+  None -> None
+  Some(cell) -> cell
+
+# A cell by column name; `None` for `NULL` and for a name the row does
+# not have.
+#
+#     r = pg.Row(Cons("name", Cons("age", Nil)), Cons(Some("ada"), Cons(Some("36"), Nil)))
+#     pg.field(r, "name")   # => Some(ada)
+#     pg.field(r, "nope")   # => None
+fn field(r: Row, name) = at(r, index_of(r.columns, name))
+
+# The cell as text, `""` for `NULL`.
+#
+#     r = pg.Row(Cons("name", Cons("age", Nil)), Cons(Some("ada"), Cons(None, Nil)))
+#     pg.text(r, "name")   # => ada
+#     pg.text(r, "age") + "|"   # => |
+fn text(r: Row, name) = unwrap_or(field(r, name), "")
+
+# The cell as an integer, `0` for `NULL` or for text that is not one.
+#
+#     r = pg.Row(Cons("age", Nil), Cons(Some("36"), Nil))
+#     pg.int(r, "age")   # => 36
+fn int(r: Row, name) = str_to_int(text(r, name))
+
+# The cell as a float, `0` for `NULL`.
+#
+#     r = pg.Row(Cons("price", Nil), Cons(Some("9.5"), Nil))
+#     pg.float(r, "price")   # => 9.5
+fn float(r: Row, name) = str_to_float(text(r, name))
+
+# The cell as a boolean: PostgreSQL sends `t` and `f`.
+#
+#     r = pg.Row(Cons("ok", Nil), Cons(Some("t"), Nil))
+#     pg.bool(r, "ok")   # => true
+fn bool(r: Row, name) = text(r, name) == "t"
+
+# Whether the cell is `NULL`.
+#
+#     r = pg.Row(Cons("age", Nil), Cons(None, Nil))
+#     pg.null(r, "age")   # => true
+fn null(r: Row, name) = match field(r, name)
+  None -> true
+  Some(_) -> false
+
+# -- libpq's result, copied out ---------------------------------------------------
+
+# The result as a `Table` and the handle freed, or the error and the handle
+# freed. `0`, `1`, `2` are `PGRES_EMPTY_QUERY`, `COMMAND_OK`, `TUPLES_OK`.
+private fn take(c: Conn, res) =
+  if is_null(res) then Err(conn_error(c.pg))
+  else
+    st = PQresultStatus(res)
+    if st <= 2 then
+      t = table_of(res)
+      PQclear(res)
+      Ok(t)
+    else
+      why = trim(from_cstr(PQresultErrorMessage(res)))
+      PQclear(res)
+      Err(if #why == 0 then "the query failed with status " + int_to_str(st) else why)
+
+private fn conn_error(conn) = trim(from_cstr(PQerrorMessage(conn)))
+
+private fn table_of(res) =
+  nf = PQnfields(res)
+  cols = column_names(res, nf - 1, Nil)
+  Table(cols, rows_of(res, cols, nf, PQntuples(res) - 1, Nil), affected_of(res))
+
+private fn column_names(res, i, acc) =
+  if i < 0 then acc else column_names(res, i - 1, Cons(from_cstr(PQfname(res, i)), acc))
+
+private fn rows_of(res, cols, nf, i, acc) =
+  if i < 0 then acc else rows_of(res, cols, nf, i - 1, Cons(Row(cols, cells_of(res, i, nf - 1, Nil)), acc))
+
+private fn cells_of(res, row, i, acc) =
+  if i < 0 then acc
+  else
+    cell = if PQgetisnull(res, row, i) != 0 then None else Some(from_cstr(PQgetvalue(res, row, i)))
+    cells_of(res, row, i - 1, Cons(cell, acc))
+
+private fn affected_of(res) =
+  s = from_cstr(PQcmdTuples(res))
+  if #s == 0 then 0 else str_to_int(s)
+
+# The `char *values[]` libpq wants: a C string per parameter, null for a
+# `NULL`. Freed by `free_params`.
+private fn param_values(params: List(Option(Str))) =
+  vals = buf_ptr(max(len(params), 1))
+  fill_params(vals, params, 0)
+  vals
+
+private fn fill_params(vals: Buf(Ptr), params, i) = match params
+  Nil -> ()
+  Cons(p, rest) ->
+    vals[i] = param_ptr(p)
+    fill_params(vals, rest, i + 1)
+
+private fn param_ptr(p) = match p
+  None -> null_ptr()
+  Some(s) -> to_cstr(s)
+
+private fn free_params(vals: Buf(Ptr)) =
+  for i in 0..#vals
+    if is_null(vals[i]) then () else free_ptr(vals[i])
+
+# -- tests --------------------------------------------------------------------
+
+# The server the tests talk to: `RILL_PG_TEST` as a connection string, or
+# the local default. Without one reachable the tests say so and pass.
+private fn a_server() = match connect(unwrap_or(env_of("RILL_PG_TEST"), "dbname=postgres connect_timeout=2"))
+  Ok(c) -> Some(c)
+  Err(e) ->
+    println("  (skipped: no PostgreSQL to talk to: " + e + ")")
+    None
+
+extern fn getenv(name: Ptr) -> Ptr
+
+private fn env_of(name) =
+  n = to_cstr(name)
+  v = getenv(n)
+  free_ptr(n)
+  if is_null(v) then None else Some(from_cstr(v))
+
+fn test_a_table_made_filled_and_read() = match a_server()
+  None -> ()
+  Some(c) ->
+    assert_eq(res_map(exec(c, "drop table if exists rill_pg_test; create table rill_pg_test (name text, age int, ok bool, price float8)"), \t -> t.affected), Ok(0))
+    assert_eq(run(c, "insert into rill_pg_test values ($1, $2, $3, $4)", Cons("ada", Cons("36", Cons("true", Cons("9.5", Nil))))), Ok(1))
+    assert_eq(res_map(query_opt(c, "insert into rill_pg_test (name) values ($1)", Cons(None, Nil)), \t -> t.affected), Ok(1))
+    match query(c, "select name, age, ok, price from rill_pg_test order by name nulls last", Nil)
+      Err(e) -> assert_eq(e, "")
+      Ok(t) ->
+        assert_eq(t.columns, Cons("name", Cons("age", Cons("ok", Cons("price", Nil)))))
+        assert_eq(len(t.rows), 2)
+        assert_eq(map(t.rows, \r -> text(r, "name")), Cons("ada", Cons("", Nil)))
+        assert_eq(map(t.rows, \r -> int(r, "age")), Cons(36, Cons(0, Nil)))
+        assert_eq(map(t.rows, \r -> bool(r, "ok")), Cons(true, Cons(false, Nil)))
+        assert_eq(map(t.rows, \r -> float(r, "price")), Cons(9.5, Cons(0.0, Nil)))
+        assert_eq(map(t.rows, \r -> null(r, "name")), Cons(false, Cons(true, Nil)))
+        assert_eq(column(t, "age"), Cons(Some("36"), Cons(None, Nil)))
+    assert_eq(scalar(c, "select count(*) from rill_pg_test", Nil), Ok(Some("2")))
+    assert_eq(res_map(one(c, "select age from rill_pg_test where name = $1", Cons("ada", Nil)), \r -> opt_map(r, \row -> int(row, "age"))), Ok(Some(36)))
+    assert_eq(run(c, "delete from rill_pg_test where name is null", Nil), Ok(1))
+    assert_eq(run(c, "drop table rill_pg_test", Nil), Ok(0))
+    disconnect(c)
+
+fn test_prepared_statements_and_transactions() = match a_server()
+  None -> ()
+  Some(c) ->
+    exec(c, "drop table if exists rill_pg_tx; create table rill_pg_tx (n int)")
+    assert_eq(prepare(c, "add", "insert into rill_pg_tx values ($1)"), Ok("add"))
+    assert_eq(res_map(exec_prepared(c, "add", Cons("1", Nil)), \t -> t.affected), Ok(1))
+    assert_eq(res_map(exec_prepared(c, "add", Cons("2", Nil)), \t -> t.affected), Ok(1))
+    assert_eq(in_transaction(c), false)
+    give_up = \c ->
+      run(c, "insert into rill_pg_tx values (3)", Nil)?
+      Err("changed my mind")
+    rolled = transaction(c, give_up)
+    assert_eq(rolled, Err("changed my mind"))
+    assert_eq(in_transaction(c), false)
+    assert_eq(scalar(c, "select count(*) from rill_pg_tx", Nil), Ok(Some("2")))
+    add = \c ->
+      assert_eq(in_transaction(c), true)
+      run(c, "insert into rill_pg_tx values (3)", Nil)
+    kept = transaction(c, add)
+    assert_eq(kept, Ok(1))
+    assert_eq(scalar(c, "select sum(n) from rill_pg_tx", Nil), Ok(Some("6")))
+    run(c, "drop table rill_pg_tx", Nil)
+    disconnect(c)
+
+fn test_errors_and_escaping() = match a_server()
+  None -> ()
+  Some(c) ->
+    match query(c, "select nope", Nil)
+      Ok(_) -> assert(false)
+      Err(e) -> assert(starts_with(e, "ERROR:  column \"nope\" does not exist"))
+    match query(c, "select $1::int", Cons("abc", Nil))
+      Ok(_) -> assert(false)
+      Err(e) -> assert(starts_with(e, "ERROR:  invalid input syntax for type integer"))
+    assert_eq(escape(c, "O'Neil"), "'O''Neil'")
+    assert_eq(escape_name(c, "my table"), "\"my table\"")
+    assert_eq(database(c) != "", true)
+    assert(server_version(c) >= 90000)
+    disconnect(c)
+    match connect("host=127.0.0.1 port=1 connect_timeout=2")
+      Ok(c2) ->
+        disconnect(c2)
+        assert(false)
+      Err(e) -> assert(contains(e, "connection") || contains(e, "refused"))
+
+# A query from a spawned strand parks that strand only: two strands each
+# waiting on the server for a third of a second are done in well under two
+# thirds.
+private fn sleeper(c, ch, tag) =
+  r = scalar(c, "select pg_sleep(0.3), $1::text", Cons(tag, Nil))
+  disconnect(c)
+  send(ch, r)
+
+fn test_strands_wait_side_by_side() = match a_server()
+  None -> ()
+  Some(c1) -> match a_server()
+    None -> disconnect(c1)
+    Some(c2) ->
+      ch = channel()
+      t0 = now_millis()
+      spawn sleeper(c1, ch, "one")
+      spawn sleeper(c2, ch, "two")
+      a = recv(ch)
+      b = recv(ch)
+      took = now_millis() - t0
+      assert(took < 550)
+      assert(a == Ok(Some("")) && b == Ok(Some("")))

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>db/pg — The Rill Language Reference</title>
+<meta name="description" content="A connection: libpq&#x27;s object.">
+<link rel="canonical" href="https://rill.baltavista.com/reference/lib-db-pg.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Rill">
+<meta property="og:url" content="https://rill.baltavista.com/reference/lib-db-pg.html">
+<meta property="og:title" content="db/pg — The Rill Language Reference">
+<meta property="og:description" content="A connection: libpq&#x27;s object.">
+<meta property="og:image" content="https://rill.baltavista.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="db/pg — The Rill Language Reference">
+<meta name="twitter:description" content="A connection: libpq&#x27;s object.">
+<meta name="twitter:image" content="https://rill.baltavista.com/og.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="top"></div>
+<div class="wrap">
+  <div class="bar">
+    <a href="/" class="name">Rill</a>
+    <span class="ver">v0.13</span>
+    <span class="crumb"><a href="index.html">Reference</a></span>
+  </div>
+  <div class="page">
+    <aside>
+      <p class="side-head">Site</p>
+      <nav class="site">
+        <a href="/#look">The language</a>
+        <a href="/#models">Models</a>
+        <a href="/#numbers">Numbers</a>
+        <a href="/#missing">What it lacks</a>
+        <a href="/#book">The book</a>
+        <a href="/reference/" class="here">Reference</a>
+        <a href="/changelog.html">What's changed</a>
+        <a href="/#download">Download</a>
+        <a href="https://rillsdl.baltavista.com/">The editor</a>
+        <a href="/#made">Made with Rill</a>
+      </nav>
+      <p class="side-head">Chapters</p>
+      <ol class="chapters">
+        <li><a href="00-getting-started.html"><span class="no">→</span>Getting started</a></li>
+        <li><a href="01-program-structure.html"><span class="no">1</span>Program structure</a></li>
+        <li><a href="02-types.html"><span class="no">2</span>Types</a></li>
+        <li><a href="03-expressions.html"><span class="no">3</span>Expressions</a></li>
+        <li><a href="04-functions.html"><span class="no">4</span>Functions</a></li>
+        <li><a href="05-traits.html"><span class="no">5</span>Traits</a></li>
+        <li><a href="06-memory.html"><span class="no">6</span>Memory</a></li>
+        <li><a href="07-concurrency.html"><span class="no">7</span>Concurrency</a></li>
+        <li><a href="08-the-prelude.html"><span class="no">8</span>The prelude</a></li>
+        <li><a href="09-sockets.html"><span class="no">9</span>Sockets</a></li>
+        <li><a href="10-files.html"><span class="no">10</span>Files</a></li>
+        <li><a href="11-calling-c.html"><span class="no">11</span>Calling C</a></li>
+        <li><a href="12-built-in-functions.html"><span class="no">12</span>Built-in functions</a></li>
+        <li><a href="13-the-toolchain.html"><span class="no">13</span>The toolchain</a></li>
+        <li><a href="14-what-rill-deliberately-does-not-have.html"><span class="no">14</span>What Rill deliberately does not have</a></li>
+        <li><a href="15-the-grid-library.html"><span class="no">15</span>The grid library</a></li>
+      </ol>
+      <p class="side-head">Standard library</p>
+      <ul class="sections modules">
+        <li><a href="lib-db-kv.html">db/kv</a></li>
+        <li><a href="lib-db-oxidb.html">db/oxidb</a></li>
+        <li><a href="lib-db-oxirec.html">db/oxirec</a></li>
+        <li><a href="lib-db-oxiresp.html">db/oxiresp</a></li>
+        <li><a href="lib-db-oxisql.html">db/oxisql</a></li>
+        <li><a href="lib-db-oxitsdb.html">db/oxitsdb</a></li>
+        <li><a href="lib-db-oxiwire.html">db/oxiwire</a></li>
+        <li class="current"><a href="lib-db-pg.html">db/pg</a></li>
+      </ul>
+      <p class="side-head">On this page</p>
+      <ul class="sections">
+        <li><a href="#types">Types</a></li>
+        <li><a href="#functions">Functions</a></li>
+        <li><a href="#tests">Tests</a></li>
+      </ul>
+    </aside>
+    <main class="module">
+      <p class="chapter-no">Standard library · Databases</p>
+      <h1>db/pg</h1>
+<p class="import">Imported as <code>import "db/pg" as pg</code>, its names are then <code>pg.…</code>. Every signature below is the one the checker infers.</p><h2 id="types">Types</h2>
+<h3 id="conn"><code>Conn</code></h3>
+<p>A connection: libpq's object.</p>
+<ul>
+<li><code>Conn(pg: Ptr)</code></li>
+</ul>
+<h3 id="table"><code>Table</code></h3>
+<p>What a query answered: the column names, the rows, and how many rows a command touched — <code>0</code> for a <code>SELECT</code>.</p>
+<ul>
+<li><code>Table(columns: List(Str), rows: List(Row), affected: Int)</code></li>
+</ul>
+<h3 id="row"><code>Row</code></h3>
+<p>One row, with the column names beside it so a cell can be asked for by name. A cell is <code>None</code> for SQL <code>NULL</code>.</p>
+<ul>
+<li><code>Row(columns: List(Str), cells: List(Option(Str)))</code></li>
+</ul>
+<h2 id="functions">Functions</h2>
+<h3 id="fn-connectconninfo-str---resultconn-str"><code>fn connect(conninfo: Str) -&gt; Result(Conn, Str)</code></h3>
+<p>A connection from a libpq connection string: <code>key=value</code> pairs, or a <code>postgresql://user@host/db</code> URL, or <code>""</code> for the defaults and the <code>PGHOST</code>/<code>PGDATABASE</code>/… environment. The error is libpq's, naming what it could not do.</p>
+<pre><span class="c"># not run</span>
+c = pg.connect(<span class="s">"host=localhost dbname=shop user=ada password=secret"</span>)?
+pg.connect(<span class="s">"postgresql://ada@db.example.com/shop"</span>)?
+pg.connect(<span class="s">"host=nowhere.invalid"</span>)   <span class="c"># Err: could not translate host name &quot;nowhere.invalid&quot; ...</span></pre>
+<h3 id="fn-disconnectc-conn---unit"><code>fn disconnect(c: Conn) -&gt; Unit</code></h3>
+<p>Closes the connection and frees it.</p>
+<pre><span class="c"># not run</span>
+pg.disconnect(c)</pre>
+<h3 id="fn-databasec-conn---str"><code>fn database(c: Conn) -&gt; Str</code></h3>
+<p>The database the connection is to.</p>
+<pre><span class="c"># not run</span>
+pg.database(c)   <span class="c"># &quot;shop&quot;</span></pre>
+<h3 id="fn-server_versionc-conn---int"><code>fn server_version(c: Conn) -&gt; Int</code></h3>
+<p>The server's version as one number: 180004 is 18.4.</p>
+<pre><span class="c"># not run</span>
+pg.server_version(c) / <span class="n">10000</span>   <span class="c"># 18</span></pre>
+<h3 id="fn-library_version---int"><code>fn library_version() -&gt; Int</code></h3>
+<p>libpq's own version, the same way.</p>
+<pre>pg.library_version() &gt;= <span class="n">100000</span>   <span class="c"># =&gt; true</span></pre>
+<h3 id="fn-queryc-conn-sql-str-params-liststr---resulttable-str"><code>fn query(c: Conn, sql: Str, params: List(Str)) -&gt; Result(Table, Str)</code></h3>
+<p>A query with its parameters as <code>$1</code>, <code>$2</code>, …, each a string the server reads as the column's type. The whole answer, or the server's error.</p>
+<pre><span class="c"># not run</span>
+t = pg.query(c, <span class="s">"select name, age from people where age &gt; $1"</span>, <span class="t">Cons</span>(<span class="s">"30"</span>, <span class="t">Nil</span>))?
+t.columns                                   <span class="c"># Cons(name, Cons(age, Nil))</span>
+<span class="f">len</span>(t.rows)                                 <span class="c"># 1</span>
+pg.query(c, <span class="s">"select nope"</span>, <span class="t">Nil</span>)             <span class="c"># Err(ERROR:  column &quot;nope&quot; does not exist ...)</span></pre>
+<h3 id="fn-query_optc-conn-sql-str-params-listoptionstr---resulttable-str"><code>fn query_opt(c: Conn, sql: Str, params: List(Option(Str))) -&gt; Result(Table, Str)</code></h3>
+<p>The same with a <code>None</code> where a parameter is SQL <code>NULL</code>.</p>
+<pre><span class="c"># not run</span>
+pg.query_opt(c, <span class="s">"insert into people values ($1, $2)"</span>, <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"bob"</span>), <span class="t">Cons</span>(<span class="t">None</span>, <span class="t">Nil</span>)))?</pre>
+<h3 id="fn-execc-conn-sql-str---resulttable-str"><code>fn exec(c: Conn, sql: Str) -&gt; Result(Table, Str)</code></h3>
+<p>SQL as it stands, no parameters — several statements separated by <code>;</code> are allowed, and the answer is the last one's. For anything with a value from outside in it, <code>query</code> is the one to use.</p>
+<pre><span class="c"># not run</span>
+pg.exec(c, <span class="s">"create table t (n int); insert into t values (1), (2)"</span>)?</pre>
+<h3 id="fn-runc-conn-sql-str-params-liststr---resultint-str"><code>fn run(c: Conn, sql: Str, params: List(Str)) -&gt; Result(Int, Str)</code></h3>
+<p>A command for its count: rows inserted, updated or deleted.</p>
+<pre><span class="c"># not run</span>
+pg.run(c, <span class="s">"update people set age = age + 1 where name = $1"</span>, <span class="t">Cons</span>(<span class="s">"ada"</span>, <span class="t">Nil</span>))   <span class="c"># Ok(1)</span>
+pg.run(c, <span class="s">"delete from people"</span>, <span class="t">Nil</span>)                                            <span class="c"># Ok(2)</span></pre>
+<h3 id="fn-onec-conn-sql-str-params-liststr---resultoptionrow-str"><code>fn one(c: Conn, sql: Str, params: List(Str)) -&gt; Result(Option(Row), Str)</code></h3>
+<p>The first row, if there is one.</p>
+<pre><span class="c"># not run</span>
+<span class="k">match</span> pg.one(c, <span class="s">"select * from people where name = $1"</span>, <span class="t">Cons</span>(<span class="s">"ada"</span>, <span class="t">Nil</span>))?
+  <span class="t">Some</span>(r) <span class="o">-&gt;</span> pg.int(r, <span class="s">"age"</span>)
+  <span class="t">None</span> <span class="o">-&gt;</span> -<span class="n">1</span></pre>
+<h3 id="fn-scalarc-conn-sql-str-params-liststr---resultoptionstr-str"><code>fn scalar(c: Conn, sql: Str, params: List(Str)) -&gt; Result(Option(Str), Str)</code></h3>
+<p>The first cell of the first row: <code>Ok(None)</code> when there is no row or the cell is <code>NULL</code>.</p>
+<pre><span class="c"># not run</span>
+pg.scalar(c, <span class="s">"select count(*) from people"</span>, <span class="t">Nil</span>)   <span class="c"># Ok(Some(2))</span>
+pg.scalar(c, <span class="s">"select now()"</span>, <span class="t">Nil</span>)                  <span class="c"># Ok(Some(2026-09-17 01:30:00.123456+03))</span></pre>
+<h3 id="fn-preparec-conn-name-str-sql-str---resultstr-str"><code>fn prepare(c: Conn, name: Str, sql: Str) -&gt; Result(Str, Str)</code></h3>
+<p>A statement parsed and planned once under a name, for running many times. The name comes back, so <code>prepare(...)?</code> reads naturally.</p>
+<pre><span class="c"># not run</span>
+pg.prepare(c, <span class="s">"by_name"</span>, <span class="s">"select age from people where name = $1"</span>)?
+pg.exec_prepared(c, <span class="s">"by_name"</span>, <span class="t">Cons</span>(<span class="s">"ada"</span>, <span class="t">Nil</span>))?</pre>
+<h3 id="fn-exec_preparedc-conn-name-str-params-liststr---resulttable-str"><code>fn exec_prepared(c: Conn, name: Str, params: List(Str)) -&gt; Result(Table, Str)</code></h3>
+<pre><span class="c"># not run</span>
+t = pg.exec_prepared(c, <span class="s">"by_name"</span>, <span class="t">Cons</span>(<span class="s">"ada"</span>, <span class="t">Nil</span>))?</pre>
+<h3 id="fn-beginc-conn---resultint-str"><code>fn begin(c: Conn) -&gt; Result(Int, Str)</code></h3>
+<pre><span class="c"># not run</span>
+pg.begin(c)?
+pg.run(c, <span class="s">"update accounts set balance = balance - 10 where id = 1"</span>, <span class="t">Nil</span>)?
+pg.run(c, <span class="s">"update accounts set balance = balance + 10 where id = 2"</span>, <span class="t">Nil</span>)?
+pg.commit(c)?</pre>
+<h3 id="fn-commitc-conn---resultint-str"><code>fn commit(c: Conn) -&gt; Result(Int, Str)</code></h3>
+<h3 id="fn-rollbackc-conn---resultint-str"><code>fn rollback(c: Conn) -&gt; Result(Int, Str)</code></h3>
+<h3 id="fn-transactionc-conn-f-conn---resulta-str---resulta-str"><code>fn transaction(c: Conn, f: (Conn) -&gt; Result('a, Str)) -&gt; Result('a, Str)</code></h3>
+<p><code>f(c)</code> between a <code>BEGIN</code> and a <code>COMMIT</code>; an <code>Err</code> from <code>f</code> — a failed query, or one of its own — rolls back instead and is the answer.</p>
+<pre><span class="c"># not run</span>
+move = \c <span class="o">-&gt;</span>
+  pg.run(c, <span class="s">"update accounts set balance = balance - 10 where id = 1"</span>, <span class="t">Nil</span>)?
+  pg.run(c, <span class="s">"update accounts set balance = balance + 10 where id = 2"</span>, <span class="t">Nil</span>)
+pg.transaction(c, move)   <span class="c"># Ok(1), or the error, and nothing moved</span></pre>
+<h3 id="fn-in_transactionc-conn---bool"><code>fn in_transaction(c: Conn) -&gt; Bool</code></h3>
+<p>Whether a transaction is open on the connection — <code>begin</code> was run and neither <code>commit</code> nor <code>rollback</code> yet, including one the server has marked failed.</p>
+<pre><span class="c"># not run</span>
+pg.in_transaction(c)   <span class="c"># false</span></pre>
+<h3 id="fn-escapec-conn-s-str---str"><code>fn escape(c: Conn, s: Str) -&gt; Str</code></h3>
+<p>A value quoted for pasting into SQL text, quotes and all — for the places a <code>$1</code> cannot go, such as <code>COPY</code> options or a <code>SET</code>. Parameters are the right way everywhere else.</p>
+<pre><span class="c"># not run</span>
+pg.escape(c, <span class="s">"O&#x27;Neil"</span>)   <span class="c"># &#x27;O&#x27;&#x27;Neil&#x27;</span></pre>
+<h3 id="fn-escape_namec-conn-s-str---str"><code>fn escape_name(c: Conn, s: Str) -&gt; Str</code></h3>
+<p>A name quoted as an identifier: <code>"table name"</code>.</p>
+<pre><span class="c"># not run</span>
+pg.escape_name(c, <span class="s">"my table"</span>)   <span class="c"># &quot;my table&quot;</span></pre>
+<h3 id="fn-firstt-table---optionrow"><code>fn first(t: Table) -&gt; Option(Row)</code></h3>
+<p>The first row.</p>
+<pre>pg.first(pg.<span class="t">Table</span>(<span class="t">Cons</span>(<span class="s">"n"</span>, <span class="t">Nil</span>), <span class="t">Nil</span>, <span class="n">0</span>))   <span class="c"># =&gt; None</span></pre>
+<h3 id="fn-column_indext-table-name-str---int"><code>fn column_index(t: Table, name: Str) -&gt; Int</code></h3>
+<p>A column's position in a table, or -1.</p>
+<pre>pg.column_index(pg.<span class="t">Table</span>(<span class="t">Cons</span>(<span class="s">"name"</span>, <span class="t">Cons</span>(<span class="s">"age"</span>, <span class="t">Nil</span>)), <span class="t">Nil</span>, <span class="n">0</span>), <span class="s">"age"</span>)   <span class="c"># =&gt; 1</span></pre>
+<h3 id="fn-columnt-table-name-str---listoptionstr"><code>fn column(t: Table, name: Str) -&gt; List(Option(Str))</code></h3>
+<p>One column of the whole table, as the cells.</p>
+<pre>t = pg.<span class="t">Table</span>(<span class="t">Cons</span>(<span class="s">"n"</span>, <span class="t">Nil</span>), <span class="t">Cons</span>(pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"n"</span>, <span class="t">Nil</span>), <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"1"</span>), <span class="t">Nil</span>)), <span class="t">Cons</span>(pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"n"</span>, <span class="t">Nil</span>), <span class="t">Cons</span>(<span class="t">None</span>, <span class="t">Nil</span>)), <span class="t">Nil</span>)), <span class="n">0</span>)
+pg.column(t, <span class="s">"n"</span>)   <span class="c"># =&gt; Cons(Some(1), Cons(None, Nil))</span></pre>
+<h3 id="fn-atr-row-i-int---optionstr"><code>fn at(r: Row, i: Int) -&gt; Option(Str)</code></h3>
+<p>A cell by position: <code>None</code> for <code>NULL</code> and for a position the row does not have.</p>
+<pre>r = pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"name"</span>, <span class="t">Cons</span>(<span class="s">"age"</span>, <span class="t">Nil</span>)), <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"ada"</span>), <span class="t">Cons</span>(<span class="t">None</span>, <span class="t">Nil</span>)))
+pg.at(r, <span class="n">0</span>)   <span class="c"># =&gt; Some(ada)</span>
+pg.at(r, <span class="n">1</span>)   <span class="c"># =&gt; None</span>
+pg.at(r, <span class="n">5</span>)   <span class="c"># =&gt; None</span></pre>
+<h3 id="fn-fieldr-row-name-str---optionstr"><code>fn field(r: Row, name: Str) -&gt; Option(Str)</code></h3>
+<p>A cell by column name; <code>None</code> for <code>NULL</code> and for a name the row does not have.</p>
+<pre>r = pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"name"</span>, <span class="t">Cons</span>(<span class="s">"age"</span>, <span class="t">Nil</span>)), <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"ada"</span>), <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"36"</span>), <span class="t">Nil</span>)))
+pg.field(r, <span class="s">"name"</span>)   <span class="c"># =&gt; Some(ada)</span>
+pg.field(r, <span class="s">"nope"</span>)   <span class="c"># =&gt; None</span></pre>
+<h3 id="fn-textr-row-name-str---str"><code>fn text(r: Row, name: Str) -&gt; Str</code></h3>
+<p>The cell as text, <code>""</code> for <code>NULL</code>.</p>
+<pre>r = pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"name"</span>, <span class="t">Cons</span>(<span class="s">"age"</span>, <span class="t">Nil</span>)), <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"ada"</span>), <span class="t">Cons</span>(<span class="t">None</span>, <span class="t">Nil</span>)))
+pg.text(r, <span class="s">"name"</span>)   <span class="c"># =&gt; ada</span>
+pg.text(r, <span class="s">"age"</span>) + <span class="s">"|"</span>   <span class="c"># =&gt; |</span></pre>
+<h3 id="fn-intr-row-name-str---int"><code>fn int(r: Row, name: Str) -&gt; Int</code></h3>
+<p>The cell as an integer, <code>0</code> for <code>NULL</code> or for text that is not one.</p>
+<pre>r = pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"age"</span>, <span class="t">Nil</span>), <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"36"</span>), <span class="t">Nil</span>))
+pg.int(r, <span class="s">"age"</span>)   <span class="c"># =&gt; 36</span></pre>
+<h3 id="fn-floatr-row-name-str---float"><code>fn float(r: Row, name: Str) -&gt; Float</code></h3>
+<p>The cell as a float, <code>0</code> for <code>NULL</code>.</p>
+<pre>r = pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"price"</span>, <span class="t">Nil</span>), <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"9.5"</span>), <span class="t">Nil</span>))
+pg.float(r, <span class="s">"price"</span>)   <span class="c"># =&gt; 9.5</span></pre>
+<h3 id="fn-boolr-row-name-str---bool"><code>fn bool(r: Row, name: Str) -&gt; Bool</code></h3>
+<p>The cell as a boolean: PostgreSQL sends <code>t</code> and <code>f</code>.</p>
+<pre>r = pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"ok"</span>, <span class="t">Nil</span>), <span class="t">Cons</span>(<span class="t">Some</span>(<span class="s">"t"</span>), <span class="t">Nil</span>))
+pg.bool(r, <span class="s">"ok"</span>)   <span class="c"># =&gt; true</span></pre>
+<h3 id="fn-nullr-row-name-str---bool"><code>fn null(r: Row, name: Str) -&gt; Bool</code></h3>
+<p>Whether the cell is <code>NULL</code>.</p>
+<pre>r = pg.<span class="t">Row</span>(<span class="t">Cons</span>(<span class="s">"age"</span>, <span class="t">Nil</span>), <span class="t">Cons</span>(<span class="t">None</span>, <span class="t">Nil</span>))
+pg.null(r, <span class="s">"age"</span>)   <span class="c"># =&gt; true</span></pre>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>test_a_table_made_filled_and_read</code></li>
+<li><code>test_prepared_statements_and_transactions</code></li>
+<li><code>test_errors_and_escaping</code></li>
+<li><code>test_strands_wait_side_by_side</code></li>
+</ul>
+
+      <div class="prevnext">
+        <a class="prev" href="lib-db-oxiwire.html">← db/oxiwire</a>
+        <a class="next" href="lib-net-dns.html">net/dns →</a>
+      </div>
+    </main>
+  </div>
+  <footer>
+    <p class="mono">Rill v0.13 · The Rill Language Reference · generated from LANGUAGE.md, which every construct's test keeps honest</p>
+    <p class="mono">Rill is designed and written by <a href="mailto:barisakin@gmail.com"><b>Barış Akın</b></a> with Anthropic's AI models.</p>
+  </footer>
+</div>
+</body>
+</html>
