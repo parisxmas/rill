@@ -1230,7 +1230,7 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(callee);
             args.iter().for_each(f);
         }
-        TK::Println(x) | TK::Print(x) | TK::Show(x) | TK::Neg(x) | TK::Spawn { body: x, .. } => f(x),
+        TK::Println(x) | TK::Print(x) | TK::Show(x) | TK::Inspect(x) | TK::Neg(x) | TK::Spawn { body: x, .. } => f(x),
         TK::ChanNew(x) => {
             if let Some(x) = x {
                 f(x)
@@ -1466,6 +1466,11 @@ struct Codegen<'ctx, 'a> {
     adt_drops: HashMap<Ty, FunctionValue<'ctx>>,
     /// Per concrete ADT type: its generated structural `show$T` function.
     adt_shows: HashMap<Ty, FunctionValue<'ctx>>,
+    /// The same renderers made lenient — a channel, a function, storage
+    /// said rather than refused — for `machine_show`; and whether the
+    /// rendering under way is that kind.
+    adt_inspects: HashMap<Ty, FunctionValue<'ctx>>,
+    lenient: bool,
     /// Per concrete ADT type: its generated structural `eq$T` function.
     adt_eqs: HashMap<Ty, FunctionValue<'ctx>>,
     /// Immortal singleton globals for nullary constructors — `Leaf`, `Nil`,
@@ -1601,6 +1606,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             queue: VecDeque::new(),
             adt_drops: HashMap::new(),
             adt_shows: HashMap::new(),
+            adt_inspects: HashMap::new(),
+            lenient: false,
             adt_eqs: HashMap::new(),
             nullary_singletons: HashMap::new(),
             cleanup: Vec::new(),
@@ -4246,6 +4253,35 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.emit_release(v, ty);
                 Ok(s)
             }
+            // what `show` refuses, said by `machine_show`: a channel by the
+            // number the trace names it with
+            Ty::Chan(_) if self.lenient => {
+                let f = self.module.get_function("rill_chan_id").unwrap();
+                let call = self.builder.build_call(f, &[v.into()], "chan.id").expect("builder");
+                let id = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(s) => s,
+                    _ => unreachable!(),
+                };
+                self.emit_release(v, ty);
+                let n = self.gen_show_of(id, &Ty::Int, line)?;
+                let hash: BasicValueEnum<'ctx> = self.const_str("#").into();
+                let out = self.call_concat(hash, n);
+                self.emit_release(n, &Ty::Str);
+                Ok(out)
+            }
+            Ty::Fn(..) if self.lenient => {
+                self.emit_release(v, ty);
+                Ok(self.const_str("<fn>").into())
+            }
+            Ty::Buf(_) if self.lenient => {
+                self.emit_release(v, ty);
+                Ok(self.const_str("<buf>").into())
+            }
+            Ty::Map(..) if self.lenient => {
+                self.emit_release(v, ty);
+                Ok(self.const_str("<map>").into())
+            }
+            Ty::Ptr if self.lenient => Ok(self.const_str("<ptr>").into()),
             other => Err(CodegenError::new(
                 line,
                 format!("cannot show a value of type {}", mangle_friendly(other, &self.tmod.adts)),
@@ -4256,7 +4292,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// The generated structural renderer for one concrete ADT type:
     /// borrows the box, returns an owned string like `Cons(1, Nil)`.
     fn adt_show(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
-        if let Some(&f) = self.adt_shows.get(ty) {
+        if let Some(&f) = if self.lenient { self.adt_inspects.get(ty) } else { self.adt_shows.get(ty) } {
             return Ok(f);
         }
         let (adt, targs) = match ty {
@@ -4265,10 +4301,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         };
         let ptrt = self.ctx.ptr_type(Default::default());
         let fn_ty = ptrt.fn_type(&[ptrt.into()], false);
-        let name = format!("show${}", mangle(ty, &self.tmod.adts));
+        let name = format!("{}${}", if self.lenient { "inspect" } else { "show" }, mangle(ty, &self.tmod.adts));
         let f = self.module.add_function(&name, fn_ty, None);
         f.set_linkage(inkwell::module::Linkage::Internal);
-        self.adt_shows.insert(ty.clone(), f);
+        if self.lenient {
+            self.adt_inspects.insert(ty.clone(), f);
+        } else {
+            self.adt_shows.insert(ty.clone(), f);
+        }
 
         let saved = self.builder.get_insert_block();
         let i64t = self.ctx.i64_type();
@@ -8364,6 +8404,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let v = self.gen_expr(arg, scope, subst, func)?;
                 let v = v.expect("show argument is never Unit");
                 Ok(Some(self.gen_show_of(v, &ty, e.line)?))
+            }
+            TK::Inspect(arg) => {
+                let ty = self.concrete(&arg.ty, subst);
+                let v = self.gen_expr(arg, scope, subst, func)?;
+                let was = self.lenient;
+                self.lenient = true;
+                let shown = match v {
+                    Some(v) => self.gen_show_of(v, &ty, e.line),
+                    None => Ok(self.const_str("()").into()),
+                };
+                self.lenient = was;
+                Ok(Some(shown?))
             }
             TK::Neg(inner) => {
                 let v = self.gen_expr(inner, scope, subst, func)?.expect("value");

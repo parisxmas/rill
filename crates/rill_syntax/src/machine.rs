@@ -566,7 +566,7 @@ fn next(m: &MachineDef, body: Expr, state: &str) -> Result<Expr, SyntaxError> {
             noted(note_of(m, &m.params[0].name, "done", Expr::Str(format!("\t{text}")), line), v)
         }
         // SDL's `nextstate -`: the state the machine is in
-        Expr::Var(n, line) if n == "stay" => noted(note_of(m, &m.params[0].name, "next", Expr::Str("\t-".to_string()), line), again(m, var(state, line), line)),
+        Expr::Var(n, line) if n == "stay" => noted(next_note(m, "-", state, line), again(m, var(state, line), line)),
         Expr::Block(mut stmts) => match stmts.pop() {
             Some(Stmt::Expr(last)) => {
                 stmts.push(Stmt::Expr(next(m, last, state)?));
@@ -599,9 +599,27 @@ fn next(m: &MachineDef, body: Expr, state: &str) -> Result<Expr, SyntaxError> {
             let line = crate::fmt::expr_line(&other);
             let line = if line == 0 { m.line } else { line };
             let text = crate::fmt::expr_text(&other);
-            noted(note_of(m, &m.params[0].name, "next", Expr::Str(format!("\t{text}")), line), again(m, other, line))
+            // the next state made first, so the trace can say its value
+            let next = "machine.next".to_string();
+            Expr::Block(vec![
+                Stmt::Bind { name: next.clone(), value: other, line },
+                Stmt::Expr(next_note(m, &text, &next, line)),
+                Stmt::Expr(again(m, var(&next, line), line)),
+            ])
         }
     })
+}
+
+/// The `next` event: the next state as written, and its value — shown
+/// only when the trace is on, since showing has a cost.
+fn next_note(m: &MachineDef, text: &str, value: &str, line: usize) -> Expr {
+    let rest = concat(vec![Expr::Str(format!("\t{text}\t")), call("machine_show", vec![var(value, line)], line)], line);
+    Expr::If {
+        cond: Box::new(Expr::Binary { op: BinOp::Eq, lhs: Box::new(call("tracing", vec![], line)), rhs: Box::new(Expr::Int(1)), line, newline: false }),
+        then: Box::new(note_of(m, &m.params[0].name, "next", rest, line)),
+        els: Box::new(Expr::Unit),
+        newline: false,
+    }
 }
 
 /// The machine called again, with its parameters, what it carries, and

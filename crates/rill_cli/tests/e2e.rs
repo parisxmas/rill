@@ -5225,7 +5225,11 @@ fn a_trace_is_drawn_as_a_sequence_chart() {
     let trace = String::from_utf8_lossy(&run.stderr).to_string();
     assert!(trace.contains("rill trace 1 post\t1\t2\n"), "{trace}");
     assert!(trace.contains("recv\tline#2\tIdle\tOffHook\t1\n"), "{trace}");
-    assert!(trace.contains("next\tline#2\tDialling(Nil)\n"), "{trace}");
+    // the next state as written, and its value — a channel by the number the trace names it with
+    assert!(trace.contains("next\tline#2\tDialling(Nil)\tDialling(Nil)\n"), "{trace}");
+    assert!(trace.contains("next\tline#2\tDialling(Cons(n, digits))\tDialling(Cons(5, Nil))\n"), "{trace}");
+    assert!(trace.contains("next\tline#4\tRinging(sender)\tRinging(#3)\n"), "{trace}");
+    assert!(trace.contains("next\tline#2\t-\tIdle\n"), "{trace}");
     assert!(trace.contains("drop\tline#2\tDialling(digits)\t1\n"), "{trace}");
     assert!(trace.contains("after\tline#2\tDialling(digits)\t50\n"), "{trace}");
     assert!(trace.contains("send\tline#4\tAnswer\t3\n"), "{trace}");

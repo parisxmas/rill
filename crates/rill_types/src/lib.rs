@@ -350,6 +350,11 @@ pub enum TK {
     /// `show(x)` — structural rendering of any value to Str (resolved per
     /// concrete type during monomorphization).
     Show(Box<TExpr>),
+    /// `machine_show(x)`: shown the way `show` shows, with what `show`
+    /// refuses said instead of refused — a channel as `#n`, the number
+    /// the trace gives it, a function as `<fn>`, storage as `<buf>` or
+    /// `<map>`. What the trace says of a state's value; not for programs.
+    Inspect(Box<TExpr>),
     /// `channel()` or `channel(capacity)` — a new channel of the
     /// expression's `Chan(elem)` type.
     ChanNew(Option<Box<TExpr>>),
@@ -2562,7 +2567,7 @@ impl Checker {
                     self.zonk_expr(a, genmap, defaults);
                 }
             }
-            TK::Println(a) | TK::Print(a) | TK::Show(a) | TK::Neg(a) => {
+            TK::Println(a) | TK::Print(a) | TK::Show(a) | TK::Inspect(a) | TK::Neg(a) => {
                 self.zonk_expr(a, genmap, defaults)
             }
             TK::ChanNew(cap) => {
@@ -4137,6 +4142,13 @@ impl Checker {
             let a = self.infer(&args[0], env)?;
             self.require(&a.ty, Constraint::Basic, line, "`show`")?;
             return Ok(TExpr { ty: Ty::Str, line, kind: TK::Show(Box::new(a)) });
+        }
+        if name == "machine_show" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`machine_show` takes exactly one argument"));
+            }
+            let a = self.infer(&args[0], env)?;
+            return Ok(TExpr { ty: Ty::Str, line, kind: TK::Inspect(Box::new(a)) });
         }
         if name == "print" {
             if args.len() != 1 {
@@ -5812,6 +5824,7 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         TK::Println(x)
         | TK::Print(x)
         | TK::Show(x)
+        | TK::Inspect(x)
         | TK::Neg(x)
         | TK::Spawn { body: x, .. }
         | TK::Lambda { body: x, .. } => f(x),
@@ -5957,6 +5970,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "float_to_str"
             | "bool_to_str"
             | "show"
+            | "machine_show"
             | "str_get"
             | "str_sub"
             | "str_find"

@@ -1309,7 +1309,9 @@ a signal received in a state and from whom, the next state, a signal
 sent and to whom, a timer set or reset, a signal saved or dropped, an
 `after` that ran out, a stop — numbered by the runtime in the order the
 events happened across every strand, with each machine named by the
-number of its mailbox: `recv line#2 Idle OffHook 1`. With `RILL_STEP=<fifo>` as
+number of its mailbox: `recv line#2 Idle OffHook 1`; a `next` says the next state as written and
+then its value, a channel in it named by the trace's number for it,
+`next line#4 Ringing(sender) Ringing(#3)`. With `RILL_STEP=<fifo>` as
 well, the program waits after every event it has written for a line on
 that named pipe before it goes on — a debugger's step, for whatever
 holds the other end; each command is its own open and close of the pipe,
