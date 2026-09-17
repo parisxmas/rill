@@ -180,7 +180,9 @@ fn imported_models(path: &Path, module: &rill_syntax::Module, seen: &mut Vec<Pat
             let mut model = diagram::model_json(&theirs.systems, &theirs.machines, &theirs.functions);
             model.push("import", Json::str(imp.path.clone()));
             model.push("alias", match &imp.alias { Some(a) => Json::str(a.clone()), None => Json::Null });
-            model.push("file", Json::str(full.display().to_string()));
+            // as resolved from the file named, not canonical: what named the
+            // file can tell where this one is by it
+            model.push("file", Json::str(file.display().to_string()));
             model.push("line", Json::Num(imp.line as f64));
             out.push(model);
         }
