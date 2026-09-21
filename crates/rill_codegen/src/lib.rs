@@ -821,6 +821,12 @@ fn constructs_adt(e: &TExpr, adt: usize) -> bool {
 }
 
 /// The variable a chain of field reads starts from, if it is one.
+/// The LLVM value a local names in the scope, when it names one.
+fn scope_value<'ctx>(e: &TExpr, scope: &Scope<'ctx>) -> Option<BasicValueEnum<'ctx>> {
+    let TK::Local(name) = &e.kind else { return None };
+    scope.get(name).copied().flatten()
+}
+
 fn root_local(e: &TExpr) -> Option<&str> {
     match &e.kind {
         TK::Local(n) => Some(n),
@@ -8525,7 +8531,25 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                             last = None;
                         }
                         TStmt::Expr(v) => {
-                            let out = self.gen_expr(v, scope, subst, func)?;
+                            // The block's value when it is one of the block's
+                            // own bindings leaves with the binding's reference:
+                            // taken out of the cleanup, no count made. Reading
+                            // it as an expression would retain it, and the
+                            // binding's release below is skipped for the
+                            // value — one reference too many, never let go.
+                            // An outer binding named here is read as usual:
+                            // its release stays with the frame.
+                            let own_tail = i + 1 == stmts.len()
+                                && matches!(v.kind, TK::Local(_))
+                                && scope_value(v, scope).is_some_and(|val| {
+                                    !outer_held.contains(&val)
+                                        && self.cleanup.iter().any(|(c, _)| *c == val)
+                                });
+                            let out = if own_tail {
+                                self.take_owned(v, scope)
+                            } else {
+                                self.gen_expr(v, scope, subst, func)?
+                            };
                             if i + 1 < stmts.len() {
                                 // Discarded statement value: release now.
                                 if let Some(out) = out {

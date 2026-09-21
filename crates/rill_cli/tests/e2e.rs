@@ -5731,3 +5731,9 @@ fn a_traced_run_steps_on_a_pipe() {
     { let mut w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap(); w.write_all(b"q\n").unwrap(); }
     assert_eq!(child.wait().unwrap().code(), Some(3));
 }
+
+#[test]
+fn a_block_whose_value_is_its_own_binding_hands_the_reference_on() {
+    // the live block count after each shape: nothing left behind
+    assert_eq!(compile_and_run("block_value_is_its_binding.rill"), "0\n0\n0\n0\n");
+}

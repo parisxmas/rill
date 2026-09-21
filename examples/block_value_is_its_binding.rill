@@ -1,0 +1,73 @@
+# A block whose value is one of its own bindings hands that binding's
+# reference out — it does not read the name (a retain) and then skip the
+# binding's release for being the value, which was one reference too
+# many, never let go. Found as `count(distinct name)` in sqlbite leaving
+# its whole set behind on every run (2026-09-21). Prints the live block
+# count after each shape: all zero.
+
+extern fn rill_mem_report() -> Int
+
+type Box
+  Box(seen: Map(Int, Map(Str, Int)))
+
+fn main() =
+  plain()
+  println(int_to_str(rill_mem_report()))
+  stored()
+  println(int_to_str(rill_mem_report()))
+  in_arm()
+  println(int_to_str(rill_mem_report()))
+  outer_named()
+  println(int_to_str(rill_mem_report()))
+  0
+
+# the else branch ends in what it bound
+fn plain() =
+  bx = Box(map_new())
+  seen = if map_has(bx.seen, 0) then map_new()
+  else
+    m = map_new()
+    m["k"] = 2
+    m
+  seen["x"] = 1
+  0
+
+# bound, stored in a map, and given back
+fn stored() =
+  bx = Box(map_new())
+  seen = if map_has(bx.seen, 0) then unwrap_or(map_get(bx.seen, 0), map_new())
+  else
+    m = map_new()
+    bx.seen[0] = m
+    m
+  seen["x"] = 1
+  map_len(unwrap_or(map_get(bx.seen, 0), map_new()))
+
+# the same shape as a match arm, run a thousand times over
+fn in_arm() =
+  bx = Box(map_new())
+  fill(bx, 0)
+  map_len(unwrap_or(map_get(bx.seen, 0), map_new()))
+
+fn fill(bx, i) = if i >= 1000 then 0
+else
+  seen = match map_get(bx.seen, 0)
+    Some(m) -> m
+    None ->
+      m = map_new()
+      bx.seen[0] = m
+      m
+  seen[int_to_str(i)] = 1
+  fill(bx, i + 1)
+
+# a block ending in an *outer* binding still reads it: the outer frame
+# keeps its release
+fn outer_named() =
+  m = map_new()
+  m["a"] = 1
+  seen = if map_len(m) > 5 then map_new()
+  else
+    n = 1
+    m
+  seen["b"] = 2
+  map_len(m)
