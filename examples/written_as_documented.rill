@@ -1,0 +1,53 @@
+# Programs the reference says are Rill, which the compiler refused
+# (2026-09-25):
+# - `?` in a branch or an arm written on one line, where the branch is the
+#   function's answer;
+# - a one-line body that is a write, `fn put(m, k, v) = m[k] = v`;
+# - calling what a call is worth, `add(1)(2)`;
+# - an `impl` of a trait whose every method has a default, with no body;
+# - `?` wrapping a met error in the one constructor of a generic error type
+#   that takes it, `W(Int)` taking an `Int` through `Wrap(e)`.
+
+trait Pretty(a)
+  pretty(x: a) -> Str = "<" + show(x) + ">"
+
+impl Pretty(Int)
+
+type W(e)
+  Wrap(e)
+  Msg(Str)
+
+fn chk(n) = if n == 0 then Err("zero!") else Ok(n)
+
+fn first(xs) = match xs
+  Nil -> Ok(0)
+  Cons(x, _) -> Ok(chk(x)?)
+
+fn pos(n) = if n > 0 then Ok(chk(n)?) else Ok(0)
+
+fn put(m, k, v) = m[k] = v
+
+fn add(a) = \b -> a + b
+
+fn num(n) = if n > 1 then Err(n) else Ok(n)
+
+fn plain(n) = if n > 1 then Err("too big") else Ok(n)
+
+fn go(n) -> Result(Int, W(Int)) =
+  a = num(n)?
+  b = plain(a)?
+  Ok(b)
+
+fn main() =
+  println(first(Nil))
+  println(first(Cons(0, Nil)))
+  println(pos(3))
+  m = map_new()
+  put(m, "a", 1)
+  println(m["a"])
+  println(add(1)(2))
+  println(add(add(1)(2))(3))
+  println(pretty(5))
+  println(go(5))
+  println(go(1))
+  0

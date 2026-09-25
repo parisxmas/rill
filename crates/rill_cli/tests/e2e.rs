@@ -5839,3 +5839,11 @@ fn deep_structures_need_no_stack_for_their_length() {
     assert_eq!(compile_and_run("deep_structures.rill"), want);
     assert_eq!(compile_and_run_with("deep_structures.rill", &["--debug"]), want);
 }
+
+#[test]
+fn what_the_reference_calls_rill_compiles() {
+    assert_eq!(
+        compile_and_run("written_as_documented.rill"),
+        "Ok(0)\nErr(zero!)\nOk(3)\nSome(1)\n3\n6\n<5>\nErr(Wrap(5))\nOk(1)\n"
+    );
+}

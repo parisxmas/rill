@@ -975,6 +975,10 @@ fn inline(e: &Expr, prec: u8, ind: usize) -> String {
                 .join(", ");
             format!("{{ {} | {set} }}", inline(base, 0, ind))
         }
+        Expr::Call { name, args, .. } if name == crate::parser::APPLY && !args.is_empty() => {
+            let a: Vec<String> = args[1..].iter().map(|a| inline(a, 0, ind)).collect();
+            format!("{}({})", inline(&args[0], P_INDEX, ind), a.join(", "))
+        }
         Expr::Call { name, args, piped, stacked, .. } => {
             if *piped && !args.is_empty() {
                 let head = inline(&args[0], P_PIPE, ind);

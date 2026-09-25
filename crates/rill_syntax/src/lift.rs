@@ -1057,6 +1057,21 @@ fn walk(
                 out,
             )?)
         }
+        // `f(1)(2)`: the value called is named, and the name is called.
+        Expr::Call { name, mut args, line, .. } if name == crate::parser::APPLY => {
+            let callee = args.remove(0);
+            let e = match callee {
+                Expr::Var(n, _) => Expr::Call { name: n, args, line, piped: false, stacked: false },
+                other => {
+                    let tmp = pick_name("apply", "f", used);
+                    Expr::Block(vec![
+                        Stmt::Bind { name: tmp.clone(), value: other, line },
+                        Stmt::Expr(Expr::Call { name: tmp, args, line, piped: false, stacked: false }),
+                    ])
+                }
+            };
+            walk(e, env, parent, used, out)?
+        }
         Expr::Call { name, args, line, piped, stacked } => {
             // `add(2, _)` is the function you get by leaving that argument to
             // be given later. It is written out as the lambda it means and
@@ -1245,6 +1260,13 @@ fn expand_try(stmts: Vec<Stmt>, n: &mut usize) -> Result<Vec<Stmt>, SyntaxError>
             Stmt::PatBind { pattern, value, line } => {
                 Stmt::PatBind { pattern, value: hoist(value, &mut pre, n, true)?, line }
             }
+            // The last statement is the block's value, and a branch or an arm
+            // of it is a block of its own written on one line:
+            // `Cons(x, _) -> Ok(chk(x)?)` is the arm with that line indented
+            // under it, where a `?` was always accepted, and was refused
+            // written inline (2026-09-25). Whether the block is the
+            // function's answer is the checker's to say, as it is for any.
+            Stmt::Expr(e) if it.len() == 0 => Stmt::Expr(hoist(branches_as_blocks(e), &mut pre, n, true)?),
             Stmt::Expr(e) => Stmt::Expr(hoist(e, &mut pre, n, true)?),
             // A local function is its own body, with its own blocks.
             other => {
@@ -1435,6 +1457,36 @@ fn hoist_ops(ops: Vec<Expr>, pre: &mut Vec<Stmt>, n: &mut usize) -> Result<Vec<E
         }
     }
     Ok(out)
+}
+
+fn as_block(e: Expr) -> Expr {
+    match e {
+        Expr::Block(b) => Expr::Block(b),
+        other => Expr::Block(vec![Stmt::Expr(other)]),
+    }
+}
+
+fn as_block_if_try(e: Expr) -> Expr {
+    if holds_try(&e) { as_block(e) } else { e }
+}
+
+/// An `if` or a `match` whose branches hold a `?`, with each such branch made
+/// a block.
+fn branches_as_blocks(e: Expr) -> Expr {
+    match e {
+        Expr::If { cond, then, els, newline } => Expr::If {
+            cond,
+            then: Box::new(as_block_if_try(*then)),
+            els: Box::new(as_block_if_try(*els)),
+            newline,
+        },
+        Expr::Match { scrutinee, arms, line } => Expr::Match {
+            scrutinee,
+            arms: arms.into_iter().map(|a| Arm { body: as_block_if_try(a.body), ..a }).collect(),
+            line,
+        },
+        other => other,
+    }
 }
 
 /// Whether a `?` somewhere in `e` would be named in front of its statement.

@@ -793,7 +793,13 @@ impl Parser {
         self.expect(&Tok::LParen, "after the trait name")?;
         let target = self.type_ref("the implementing type")?;
         self.expect(&Tok::RParen, "to close the impl target")?;
-        self.expect(&Tok::Indent, "— method definitions must be indented under `impl`")?;
+        // A trait whose every method has a default is implemented by saying
+        // so and nothing else (2026-09-25); the checker names any method
+        // that has no default and was left out.
+        if !matches!(self.peek(), Tok::Indent) {
+            return Ok(ImplDef { trait_name, target, fns: Vec::new(), line });
+        }
+        self.bump();
         let mut fns = vec![self.fndef(false)?];
         loop {
             match self.peek() {
@@ -1095,7 +1101,16 @@ impl Parser {
             }
             Ok(Expr::Block(stmts))
         } else {
-            self.expr()
+            // `fn put(m, k, v) = m[k] = v`: a write is a statement, and a
+            // body written on one line is a block of one (2026-09-25).
+            let e = self.expr()?;
+            if !matches!(self.peek(), Tok::Eq | Tok::OpEq(_)) {
+                return Ok(e);
+            }
+            match self.store_tail(e)? {
+                Stmt::Expr(x) => Ok(x),
+                _ => unreachable!("a write is an expression statement"),
+            }
         }
     }
 
@@ -1141,59 +1156,65 @@ impl Parser {
             // element — which was already mutable through `buf_set`. Nothing
             // else can appear to the left of `=`.
             let e = self.expr()?;
-            if let Tok::OpEq(c) = *self.peek() {
-                let (line, col) = self.here();
-                self.bump();
-                let value = self.expr()?;
-                let op = match c {
-                    '+' => BinOp::Add,
-                    '-' => BinOp::Sub,
-                    '*' => BinOp::Mul,
-                    _ => BinOp::Div,
-                };
-                return match e {
-                    Expr::Index { base, index, line } => Ok(Stmt::Expr(Expr::IndexOp {
-                        op,
-                        base,
-                        index,
-                        value: Box::new(value),
-                        line,
-                    })),
-                    // `b += s` on a name is an append, and only `+` is one.
-                    Expr::Var(n, line) if c == '+' => Ok(Stmt::Expr(Expr::Append {
-                        target: Box::new(Expr::Var(n, line)),
-                        value: Box::new(value),
-                        line,
-                    })),
-                    _ => Err(SyntaxError::new(
-                        line,
-                        col,
-                        format!(
-                            "`{c}=` writes a buffer element: write `b[i] {c}= v` \
-                             (or `b += s` to add to a string builder)"
-                        ),
-                    )),
-                };
-            }
-            if !matches!(self.peek(), Tok::Eq) {
-                return Ok(Stmt::Expr(e));
-            }
+            self.store_tail(e)
+        }
+    }
+
+    /// What follows an expression written as a statement: `= v` or `op= v`
+    /// after `b[i]`, which make it a write, or nothing.
+    fn store_tail(&mut self, e: Expr) -> Result<Stmt, SyntaxError> {
+        if let Tok::OpEq(c) = *self.peek() {
             let (line, col) = self.here();
             self.bump();
             let value = self.expr()?;
-            match e {
-                Expr::Index { base, index, line } => Ok(Stmt::Expr(Expr::IndexSet {
+            let op = match c {
+                '+' => BinOp::Add,
+                '-' => BinOp::Sub,
+                '*' => BinOp::Mul,
+                _ => BinOp::Div,
+            };
+            return match e {
+                Expr::Index { base, index, line } => Ok(Stmt::Expr(Expr::IndexOp {
+                    op,
                     base,
                     index,
+                    value: Box::new(value),
+                    line,
+                })),
+                // `b += s` on a name is an append, and only `+` is one.
+                Expr::Var(n, line) if c == '+' => Ok(Stmt::Expr(Expr::Append {
+                    target: Box::new(Expr::Var(n, line)),
                     value: Box::new(value),
                     line,
                 })),
                 _ => Err(SyntaxError::new(
                     line,
                     col,
-                    "only a buffer element can be assigned to: write `b[i] = v`".to_string(),
+                    format!(
+                        "`{c}=` writes a buffer element: write `b[i] {c}= v` \
+                         (or `b += s` to add to a string builder)"
+                    ),
                 )),
-            }
+            };
+        }
+        if !matches!(self.peek(), Tok::Eq) {
+            return Ok(Stmt::Expr(e));
+        }
+        let (line, col) = self.here();
+        self.bump();
+        let value = self.expr()?;
+        match e {
+            Expr::Index { base, index, line } => Ok(Stmt::Expr(Expr::IndexSet {
+                base,
+                index,
+                value: Box::new(value),
+                line,
+            })),
+            _ => Err(SyntaxError::new(
+                line,
+                col,
+                "only a buffer element can be assigned to: write `b[i] = v`".to_string(),
+            )),
         }
     }
 
@@ -1436,8 +1457,31 @@ impl Parser {
     /// way they look.
     fn postfix(&mut self) -> Result<Expr, SyntaxError> {
         let mut base = self.primary()?;
-        while matches!(self.peek(), Tok::LBracket | Tok::Question | Tok::Dot) {
+        while matches!(self.peek(), Tok::LBracket | Tok::Question | Tok::Dot)
+            || (matches!(self.peek(), Tok::LParen) && applicable(&base))
+        {
             let (line, _) = self.here();
+            // `add(1)(2)`, `fs[0](x)`: calling what an expression is worth.
+            // Kept as a call to `()` with the callee in front — the lifter
+            // names the callee and calls the name, which is all a call of a
+            // function value ever is (2026-09-25).
+            if matches!(self.peek(), Tok::LParen) {
+                self.bump();
+                let mut args = vec![base];
+                if !matches!(self.peek(), Tok::RParen) {
+                    loop {
+                        args.push(self.expr()?);
+                        if matches!(self.peek(), Tok::Comma) {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Tok::RParen, "to close the argument list")?;
+                base = Expr::Call { name: APPLY.to_string(), args, line, piped: false, stacked: false };
+                continue;
+            }
             if matches!(self.peek(), Tok::Question) {
                 self.bump();
                 base = Expr::Try { expr: Box::new(base), line };
@@ -1935,5 +1979,19 @@ pub fn tuple_name(n: usize, line: usize, col: usize) -> Result<String, SyntaxErr
         Ok(format!("Tuple{n}"))
     } else {
         Err(SyntaxError::new(line, col, format!("a tuple holds two to eight things, not {n}")))
+    }
+}
+
+/// The name a call of an expression's value goes by until the lifter names
+/// the value: `f(1)(2)` is `()(f(1), 2)`. Not a name anything can write.
+pub const APPLY: &str = "()";
+
+/// What a `(` straight after can call: the value of a call, an element, a
+/// field of something computed, or of one of those.
+fn applicable(e: &Expr) -> bool {
+    match e {
+        Expr::Call { name, .. } => !name.starts_with("Tuple"),
+        Expr::Index { .. } | Expr::Field { .. } | Expr::Try { .. } => true,
+        _ => false,
     }
 }

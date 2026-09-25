@@ -5228,10 +5228,14 @@ impl Checker {
         };
         let Some(met) = err_of(self, scrut_ty) else { return Ok(None) };
         let declared = self.expected_ret.last().cloned().and_then(|r| err_of(self, &r));
-        let target = match err_of(self, result_ty) {
-            Some(t @ Ty::Adt(..)) => t,
-            _ => match &declared {
-                Some(t @ Ty::Adt(..)) => t.clone(),
+        // What the function declared first: the match's own type can still
+        // be open inside — `W(_)` for a declared `W(Int)` — and a
+        // constructor of a generic error type then took nothing
+        // (2026-09-25).
+        let target = match &declared {
+            Some(t @ Ty::Adt(..)) => t.clone(),
+            _ => match err_of(self, result_ty) {
+                Some(t @ Ty::Adt(..)) => t,
                 _ => return Ok(None),
             },
         };
