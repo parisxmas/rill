@@ -101,7 +101,7 @@ length operator instead.
 | `Float` | `3.14`, `2.0` | 64-bit; a decimal point is required |
 | `Bool` | `true`, `false` | |
 | `Str` | `"hi"`, `"a\nb"` | escapes: `\n` `\t` `\\` `\"` |
-| `Unit` | `()` | what `println` and `main` return; `()` is its one value, for a branch with nothing to say |
+| `Unit` | `()` | what `println` and `main` return; `()` is its one value, for a branch with nothing to say; a parameter may be one (`\u -> 5` over an `Ok(())`), and a `Chan(Unit)` carries a signal and no value |
 | `Chan(a)` | `channel()` | see [Concurrency](#7-concurrency) |
 | `Map(k, v)` | `map_new()` | a hash table; see [Maps](#maps) |
 | `StrBuf` | `strbuf()` | bytes on their way to a string |
@@ -132,7 +132,8 @@ of Rust. The two cases the machine has no one answer for are decided: `/`
 and `%` by zero end the program, saying where — a number that is silently
 wrong is worse than a stop — and the smallest integer divided by `-1` wraps
 to itself, with a remainder of zero. `to_int` truncates toward zero, and past
-the ends of `Int` gives the nearest end; a NaN gives zero. `float_bits(x)` is
+the ends of `Int` gives the nearest end; a NaN gives zero. `str_to_int` stops
+at the ends the same way. `float_bits(x)` is
 the 64 bits of a float as the `Int` they are and `bits_float(n)` the float
 those bits spell — no conversion, for a file format or a sort key that
 carries a float as bytes. A shift by 64 or
@@ -145,6 +146,13 @@ A float literal may carry an exponent — `1.0e9`, `2.5e-3`, `1e6`, with or
 without a dot before the `e` — since a digit run can be followed by nothing
 else that means anything. The canonical spelling has no exponent, so `rill
 fmt` writes `1.0e9` back as `1000000000.0`.
+
+A float prints as the **fewest digits that read back as it**: `0.1 + 0.2`
+prints `0.30000000000000004`, because that is the number computed. The
+layout is C's `%g`'s — no exponent from `0.0001` up to where the digits end,
+`1e+06` past that, no point with nothing after it, `nan` and `inf` — so a
+number of six digits or fewer prints as it would in C; only what `%g` would
+have rounded away is kept.
 
 Float arithmetic may be **contracted**: a multiply and the add that consumes it
 can become one fused instruction, rounding once instead of twice. The answer is
@@ -370,7 +378,8 @@ s[:3]            # the first three
 ```
 
 An end outside the string is clamped rather than an error, as `str_sub` has
-always been, and each part is evaluated once. Slicing is for strings; a `Buf`
+always been — both ends before the length is taken, so `s[-3:2]` is `s[:2]`
+— and each part is evaluated once. Slicing is for strings; a `Buf`
 is storage and is not copied by notation this quiet.
 
 ### Characters
@@ -389,11 +398,12 @@ in the prelude, and say so in their names:
 | `char_take(s, n)` / `char_drop(s, n)` | the first `n`, or all but the first `n` |
 | `chars(s)` | every character, a `List(Int)` of codepoints |
 | `from_char(c)` / `from_chars(cs)` | back to a string, one to four bytes each |
-| `char_decode(s, at)` / `char_wide(b)` | the character at a byte offset, and how many bytes the one beginning with byte `b` takes — for walking a long string without counting from the start each time |
+| `char_decode(s, at)` / `char_len(s, at)` | the character at a byte offset, and how many bytes it takes — for walking a long string without counting from the start each time. `char_wide(b)` is what a first byte claims; `char_len` checks that the bytes after it are continuation bytes |
 
 All of it walks, since UTF-8 gives no other way to the `n`th character.
-Malformed input never hangs it: a stray continuation byte counts as one
-character, and a character cut off by the end of the string comes back as
+Malformed input never hangs it and never swallows what follows: a stray
+continuation byte counts as one character, and a character cut off by the
+end of the string, or whose continuation bytes are not there, comes back as
 its first byte.
 
 `chr(n)` is **a byte**, not a character: it writes the low byte of `n` and
@@ -581,6 +591,10 @@ nearer = \a, b ->
 Inside parentheses layout is off, so a lambda written as an argument stays on
 one line; bind the long one first.
 
+What a call, an element or a field is worth can be called in turn:
+`adder(1)(2)`, `o.handler(req)(ctx)`. It is the value named and the name
+called, which is all a call of a function value is.
+
 ### Generics
 
 A function used at more than one type is generic automatically:
@@ -685,8 +699,10 @@ fn go(i, acc) = if i == 0 then acc else go(i - 1, acc + i)   # a loop
 ```
 
 A loop written this way is usually about the values around it, so it can be
-written there: a `fn` inside a body sees the names in scope, and may call
-itself and the functions beside it.
+written there: a `fn` inside a body sees the names in scope — as they are
+where it is written, whatever the same name means where it is called (a
+lambda's parameter, a pattern, a later binding) — and may call itself and
+the functions beside it.
 
 ```
 fn sum_to(n) =
@@ -734,6 +750,33 @@ range(1, 10) |> filter(\x -> x % 2 == 0) |> map(\x -> x * x) |> sum
 
 See `examples/loops.rill`.
 
+A `for` loop over a buffer checks its range once, in front of the loop,
+for every access its body is sure to make at an index that is the loop's
+variable moved by an amount the loop leaves alone — `v[i]`, `v[i + 1]`, and
+`src[k - n]` where the body has bound `k = i * n + j` — and the accesses
+themselves go unchecked. An access the body guards (`if i < #v && v[i] > 0`,
+an arm, a lambda) is checked where it is, since the loop may never make it.
+
+### `fast fn`
+
+A sum over floats is added in the order written, each addition waiting on
+the one before: splitting it into lanes reorders the additions, which
+changes the answer in its last bits, and `+` means what it says. A function
+that accepts the reordering says so:
+
+```
+fast fn dot(x: Buf(Float), y: Buf(Float), n) =
+  for i in 0..n with acc = 0.0
+    acc + x[i] * y[i]
+```
+
+Its float `+`, `-` and `*` — and those of the loops and local functions
+written inside it — may be reassociated, and the sign of a zero may not
+matter, which is what the compiler asks before it splits a reduction into
+the machine's vector lanes: that dot product runs five times faster.
+NaN and infinity keep their meaning, and outside a `fast fn` nothing
+changes. `fast` means this only in front of a top-level `fn`.
+
 ---
 
 ## 5. Traits
@@ -768,6 +811,9 @@ trait Describe(a)
   priority(x: a) -> Int = 1
   banner(x: a) -> Str = describe(x) + " (" + int_to_str(priority(x)) + ")"
 ```
+
+An impl that takes every method's default is the trait and the type and
+nothing under it: `impl Describe(Int)`.
 
 A trait may **require others**: `trait Pretty(a): Show, Describe` says a
 type implements `Pretty` only if it implements those too, and an impl of
@@ -870,6 +916,13 @@ in registers, passed and returned by value, with no count and no allocation.
 `(q, r) = divmod(a, b)` costs what returning two numbers costs in C. Such a
 value is boxed only when it is put into a map or sent down a channel, which
 store words, and read back out on the other side.
+
+`map` of a lambda over a list of numbers or flat records, handed the list
+at its last use, writes each answer over the value in the cell it read;
+from the first cell something else holds, the rest is built anew. And
+`m[k] = map_or(m, k, d) + e` on a table of `Int`s is one probe of the
+table, not two — with `k` just cut out of a string, a probe with the bytes
+where they lie, the key made only if it goes in.
 
 A pipeline over a range — `range(1, n) |> filter(p) |> map(f) |> sum`, and
 `len` and `fold` the same way — is generated as one loop with no list in it,
@@ -1087,7 +1140,7 @@ fn poll(ch) =
 
 Arms are tried in order, so an earlier one wins a tie. Like `match`, `select`
 needs an indented block, so it goes in a body, a statement or a binding rather
-than inside parentheses.
+than inside parentheses. A `select` has at most 64 arms.
 
 ### A deadline on a wait
 
@@ -1624,9 +1677,13 @@ replaces the prelude's.
 `partition` `flatten` `flat_map` `chunks` `distinct` `group_by` `min_by`
 `max_by` `sort` `sort_by` `sort_with`
 
-`sort` is a stable merge sort by `<`; `sort_by(l, key)` orders by what `key`
+`sort` is a stable sort by `<`; `sort_by(l, key)` orders by what `key`
 gives, and `sort_with(l, before)` by `before(a, b)`, whether `a` may come
-before `b` — `<=`, not `<`, or equal elements would swap. `group_by(l, key)`
+before `b` — `<=`, not `<`, or equal elements would swap. The runtime does
+it: the elements into an array, a merge sort there, and the elements
+written back into the list's own cells — nothing allocated when nothing
+else holds the list, and `sort` of numbers or strings compares without a
+call. It is as fast as C's `qsort` over an array, and faster on `Int`s. `group_by(l, key)`
 gives `(key, members)` pairs in the order the keys were first seen. Each of
 these stands on its own, so a program that defines a `find` of its own loses
 the prelude's `find` and nothing else.
@@ -1647,12 +1704,14 @@ do, on standard error, unbuffered
 **Numbers**: `max` `min` `abs`
 
 **Strings**: `join` `repeat` `split` `lines` `trim` `contains` `starts_with`
+`fold_lines` — `fold(lines(s), acc, f)` is written as `fold_lines(s, acc, f)`,
+which cuts each line as it goes and keeps no list of them
 
 **Strands**: `apart(x)` — `x`, and the claim that strands share it on
 purpose; see [What strands may share](#what-strands-may-share)
 
 **Characters**: `char_count` `char_at` `char_sub` `char_take` `char_drop`
-`chars` `from_char` `from_chars` `char_decode` `char_wide` — see
+`chars` `from_char` `from_chars` `char_decode` `char_len` `char_wide` — see
 [Characters](#characters); `chr` is a byte
 
 **IO**: `args()` (program name included), `read_file(path) -> Result(Str, Str)`,
@@ -2030,6 +2089,8 @@ one assignment the language has, and only to a buffer element.
 | `#b` (or `buf_len(b)`) | how many elements |
 | `buf_copy(dst, to, src, from, n)` | `n` elements of `src` from `from` into `dst` at `to`, overlapping or not, both bounds-checked |
 | `buf_cmp(a, at, b, bt, n)` | `n` elements of each as bytes: -1, 0 or 1, both bounds-checked |
+| `buf_sort(b)` | the numbers in ascending order, in place; floats by their total order, a NaN at the end |
+| `buf_get_unchecked(b, i)` / `buf_set_unchecked(b, i, v)` | one element with no bounds test — for a loop whose indexes come from its data, an interpreter's registers, where no check in front of the loop can stand for them. `--unchecked` for one access; a sandbox counts it as `ffi` |
 
 `buf_copy` and `buf_cmp` are `memmove` and `memcmp` with the question asked
 first: a length that came from somewhere it should not have — a header on a
@@ -2428,7 +2489,8 @@ Which signal and where, whether the address is a stack's guard page, which
 strand and which worker, and the Rill functions on the stack innermost
 first — by name, in a release build as in a debug one, from a table of every
 function's start and name the compiler leaves in the binary (two pointers a
-function). A bounds check that fails, or a division by zero, says the same
+function). In a release build a small function the optimizer inlined into its
+caller is named as the caller, as in C; a `--debug` build inlines nothing. A bounds check that fails, or a division by zero, says the same
 about where it was. Runtime
 frames are left out; a recursion that ran away is one line and a count. With
 `RILL_CRASH_WAIT=1` in the environment the program then waits, saying its

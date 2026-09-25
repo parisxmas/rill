@@ -1,5 +1,51 @@
 # Changelog
 
+## Unreleased — a review: seven wrong answers, two panics, and where C still led
+
+A review of the compiler, the runtime and twenty-odd new workloads against
+C turned up, and this fixes:
+
+- **Wrong results and memory safety.** A branch that rebound an outer
+  value (`y = x`) released it twice — a crash on the other branch. A local
+  `fn` read its captured names where it was called, not where it was
+  written. A `for` loop's one check in front covered accesses the body
+  guarded, and died on an index the program never read. `?` inside an
+  expression ran what followed it before what preceded it. `buf_int(2^61)`
+  and `channel(2^60)` wrapped their sizes round into tiny blocks; a range
+  pipeline to the largest `Int` never ended; slices and `str_sub` at the
+  ends of `Int` came back wrong; an index moved by an offset past the
+  largest `Int` went unchecked.
+- **Runtime.** Short file reads leaked (338 MB for 20,000 small reads);
+  values left in a dropped channel leaked; a NUL in a path was cut short by
+  C and the write reported success; UTF-8 decoding swallowed the byte after
+  a broken character; `io_ok()` was one global for every strand; the signal
+  handler could clobber `errno`, block on a full pipe, and miss a signal.
+- **Panics and refusals.** A `Unit` parameter, and a call through a field
+  inside a lambda or a loop, killed the compiler. `?` in a one-line branch,
+  `fn put(m, k, v) = m[k] = v`, `add(1)(2)`, an `impl` of all defaults and
+  `?` into a generic error type were refused though the reference calls
+  them Rill.
+- **Deep data.** `show`, `==`, the map hash and (in `--debug`) the drop the
+  compiler writes for a type recursed once per box; they loop now, and
+  `show` no longer copies its text at every level.
+- **Output and messages.** Floats print as the fewest digits that read
+  back as them (`0.1 + 0.2` is `0.30000000000000004`); `str_to_int`
+  saturates; errors in generic code point at the caller; `!5`, clashes
+  across files, `private` functions and misplaced `?` say what and where.
+
+And made faster, each measured against C: `sort` is done by the runtime
+over an array and written back into the list's own cells (2 M `Int`s: 1.14
+s → 0.16, C 0.18); each branch of a tail `if` moves and reuses on its own
+(a persistent tree: 607 → 393 ms); counting into a map is one probe, with
+no key made for a slice the table already has (k-mer counting 289 → 138
+ms, C 177); an index the loop body derives from the loop variable is
+checked once in front (a stencil 65 → 21 ms, C 26); `map` writes over a
+list it is handed whole; `fold(lines(s))` keeps no list (249 → 57 MB); a
+function that calls nothing keeps no frame pointer (closures 1.5× faster);
+and the crash table no longer stops the optimizer (fannkuch 136 → 121 ms).
+New: `fast fn` for float sums that may be split into lanes, `buf_sort`,
+and `buf_get_unchecked` / `buf_set_unchecked`.
+
 ## Unreleased — PostgreSQL, through libpq
 
 `db/pg` is a PostgreSQL client that does not speak the protocol itself:
