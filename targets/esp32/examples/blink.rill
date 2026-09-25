@@ -1,0 +1,18 @@
+# Blink the LED on GPIO 8, half a second on, half a second off.
+extern fn gpio_reset_pin(pin: I32) -> I32
+
+extern fn gpio_set_direction(pin: I32, mode: U32) -> I32
+
+extern fn gpio_set_level(pin: I32, level: U32) -> I32
+
+extern fn vTaskDelay(ticks: U32)
+
+fn blink(pin, on) =
+  gpio_set_level(pin, if on then 1 else 0)
+  vTaskDelay(50)
+  blink(pin, !on)
+
+fn main() =
+  gpio_reset_pin(8)
+  gpio_set_direction(8, 2)
+  blink(8, true)

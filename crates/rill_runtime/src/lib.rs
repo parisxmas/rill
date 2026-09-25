@@ -6282,31 +6282,23 @@ pub unsafe extern "C" fn rill_alloc_report() {
     if getenv(b"RILL_DEBUG_ALLOC\0".as_ptr()).is_null() {
         return;
     }
+    // Said with the runtime's own number printing rather than `snprintf`,
+    // which drew C's whole `printf` into every program for a report almost
+    // none of them makes — nine kilobytes of an ESP32's flash (2026-09-26).
     let stray = STRAY_WAKES.load(core::sync::atomic::Ordering::Relaxed);
     if stray > 0 {
-        let mut b = [0u8; 96];
-        let n = snprintf(
-            b.as_mut_ptr(),
-            95,
-            b"poller events with no owner, dropped: %lld\n\0".as_ptr(),
-            stray as i64,
-        );
-        write(2, b.as_ptr(), n.clamp(0, 95) as usize);
+        err(b"poller events with no owner, dropped: ");
+        err_dec(stray as i64);
+        err(b"\n");
     }
-    let mut buf = [0u8; 128];
-    let n = if ABANDONED == 0 {
-        snprintf(buf.as_mut_ptr(), 127, b"live allocations: %lld\n\0".as_ptr(), live_total())
-    } else {
-        snprintf(
-            buf.as_mut_ptr(),
-            127,
-            b"live allocations: %lld (%lld strand(s) were still running at exit)\n\0".as_ptr(),
-            live_total(),
-            ABANDONED,
-        )
-    };
-    let n = n.clamp(0, 127) as usize;
-    write(2, buf.as_ptr(), n);
+    err(b"live allocations: ");
+    err_dec(live_total());
+    if ABANDONED != 0 {
+        err(b" (");
+        err_dec(ABANDONED as i64);
+        err(b" strand(s) were still running at exit)");
+    }
+    err(b"\n");
     // Under the allocator's checks the blocks are known by the function
     // that made them, which is what a leak needs to be found by: a count
     // that never reached zero is, most often, a ring — a map holding a

@@ -39,6 +39,18 @@ What it costs, measured on the C3 with the program in `hello.rill` style
 the program 5 KB, and what they draw from the C library (`strtod`, `%e`)
 the rest. RAM: 3 KB of runtime statics, and the heap as the program uses it.
 
+A blink — `examples/blink.rill`, ESP-IDF's GPIO calls declared `extern` —
+against the same blink in C and as an Arduino sketch, on the C3 with
+ESP-IDF's default settings (Arduino as ESP-IDF's component, which needs its
+1000 Hz tick and autostart):
+
+| | flash code | flash data | IRAM | DRAM (.data + .bss) | image |
+|---|---:|---:|---:|---:|---:|
+| empty ESP-IDF app | 91,120 | 35,468 | 46,804 | 8,588 | 178,248 |
+| ESP-IDF, C | 94,360 | 36,084 | 46,804 | 8,620 | 182,136 |
+| Rill | 97,174 | 36,616 | 46,804 | 10,508 | 185,490 |
+| Arduino | 150,056 | 50,372 | 56,830 | 11,396 | 263,354 |
+
 `../riscv32-virt` runs the same object on QEMU's generic `virt` machine with
 no ESP-IDF at all — a start, the system calls newlib wants, and a linker
 script — which is how the examples are checked on RV32.
