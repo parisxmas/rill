@@ -1542,6 +1542,14 @@ struct Codegen<'ctx, 'a> {
     /// can no longer name: a constructor of exactly its shape may be built in
     /// it instead of in a fresh one. See `take_reuse`.
     reuse: Vec<(PointerValue<'ctx>, Ty, usize)>,
+    /// A box a tail arm took apart and could not empty, because the arm
+    /// names it somewhere: the box, its type, the arm's pattern and
+    /// bindings, and its name. A branch of the arm that does not name it
+    /// empties it there (see the tail `if`).
+    pending_empty: Option<(BasicValueEnum<'ctx>, Ty, Pattern, Vec<(String, Occ)>, String)>,
+    /// Names a tail arm's branches may not move: the box the arm's bindings
+    /// borrow from and a binding that holds deeper ones.
+    tail_unmovable: Vec<String>,
     /// Boxes this frame has emptied: a `match` arm took the fields out of a
     /// box the frame owned and found, at run time, that nothing else held
     /// it. What is left is memory of a known shape — null where the box
@@ -1658,6 +1666,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             root_free: HashSet::new(),
             move_ok: false,
             reuse: Vec::new(),
+            pending_empty: None,
+            tail_unmovable: Vec::new(),
             shells: Vec::new(),
             unboxed_root: None,
             saw_musttail: false,
@@ -5910,15 +5920,32 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let saved_cleanup = self.cleanup.clone();
                 let saved_reuse = self.reuse.clone();
                 let saved_shells = self.shells.clone();
+                // Each branch is the rest of the function on its own path,
+                // so what it may hand on is decided by it alone: a name the
+                // other branch also speaks is still spoken once here. Decided
+                // for the whole `if`, `if i == 0 then t else f(insert(t, x))`
+                // retained `t` for the call and released it after, and
+                // `insert` saw a shared tree and copied its whole path
+                // (2026-09-25).
+                let outer_movable = self.movable.clone();
+                let outer_free = self.root_free.clone();
+                let outer_pending = self.pending_empty.clone();
                 self.builder.position_at_end(then_bb);
                 let mut then_scope = scope.clone();
+                self.enter_tail_branch(then, &mut then_scope, func);
                 self.gen_tail(then, &mut then_scope, subst, func, ret_ty)?;
                 self.cleanup = saved_cleanup;
                 self.reuse = saved_reuse;
                 self.shells = saved_shells;
+                self.pending_empty = outer_pending.clone();
                 self.builder.position_at_end(else_bb);
                 let mut else_scope = scope.clone();
-                self.gen_tail(els, &mut else_scope, subst, func, ret_ty)
+                self.enter_tail_branch(els, &mut else_scope, func);
+                let out = self.gen_tail(els, &mut else_scope, subst, func, ret_ty);
+                self.movable = outer_movable;
+                self.root_free = outer_free;
+                self.pending_empty = outer_pending;
+                out
             }
             TK::Match { scrutinee, arms } => {
                 // Arms end on their own paths, but the scrutinee is held for
@@ -7562,6 +7589,25 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             return out;
         }
         self.gen_expr_inner(e, scope, subst, func)
+    }
+
+    /// The start of one branch of an `if` in tail position: what it may move
+    /// is decided by it alone, and a box its arm could not empty for the
+    /// arm's sake is emptied here if this branch does not name it.
+    fn enter_tail_branch(&mut self, branch: &TExpr, scope: &mut Scope<'ctx>, func: FunctionValue<'ctx>) {
+        if !self.move_ok {
+            return;
+        }
+        if let Some((sv, ty, pat, binds, sname)) = self.pending_empty.clone() {
+            if !names_local(branch, &sname) && self.cleanup.iter().any(|(c, _)| *c == sv) {
+                self.empty_box(sv, &ty, &pat, Vec::new(), &binds, scope, func);
+                self.pending_empty = None;
+            }
+        }
+        self.begin_statement(branch, &[]);
+        for n in self.tail_unmovable.clone() {
+            self.movable.remove(&n);
+        }
     }
 
     /// The pool and the set for one top-level statement of a function body.
@@ -10619,15 +10665,38 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     // holder of bindings deeper down (`m @ Mul(y, z)`).
                     let saved_move_ok = std::mem::replace(&mut self.move_ok, true);
                     self.begin_statement(&arm.body, &[]);
+                    let mut unmovable: Vec<String> = Vec::new();
                     if let TK::Local(sname) = &scrutinee.kind {
-                        self.movable.remove(sname);
+                        unmovable.push(sname.clone());
                     }
                     for (name, occ) in &binds {
                         if binds.iter().any(|(_, o)| o.len() > occ.len() && o.starts_with(occ)) {
-                            self.movable.remove(name);
+                            unmovable.push(name.clone());
                         }
                     }
+                    for n in &unmovable {
+                        self.movable.remove(n);
+                    }
+                    // Not emptied only because some branch of the arm names
+                    // the box: each branch that does not can empty it itself.
+                    // `if k < x then Node(insert(l, k), x, r) else t` built a
+                    // new node and retained `l` on every insert, for the one
+                    // branch that answers with the box (2026-09-25).
+                    let pending = match (&scrut, &scrutinee.kind) {
+                        (Some(sv), TK::Local(sname))
+                            if !emptied
+                                && self.cleanup.iter().any(|(c, _)| c == sv)
+                                && names_local(&arm.body, sname) =>
+                        {
+                            Some((*sv, scrut_ty.clone(), arm.pattern.clone(), binds.clone(), sname.clone()))
+                        }
+                        _ => None,
+                    };
+                    let saved_pending = std::mem::replace(&mut self.pending_empty, pending);
+                    let saved_unmovable = std::mem::replace(&mut self.tail_unmovable, unmovable);
                     let out = self.gen_tail(&arm.body, &mut arm_scope, subst, func, ret_ty);
+                    self.pending_empty = saved_pending;
+                    self.tail_unmovable = saved_unmovable;
                     self.move_ok = saved_move_ok;
                     out?
                 }

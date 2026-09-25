@@ -1,0 +1,41 @@
+# A branch of an `if` in tail position decides on its own what it hands on:
+# `if k < x then Node(insert(l, k), x, r) else t` builds the node in the box
+# the match took apart and moves `l`, although the other branch answers
+# with the box itself. Decided for the whole arm, every insert copied the
+# path from the root (2026-09-25). A tree something else still holds is
+# never written over: `old` below is the same after as before. Prints the
+# trees and the live block count.
+
+extern fn rill_mem_report() -> Int
+
+type Tree
+  Leaf
+  Node(l: Tree, key: Int, r: Tree)
+
+fn insert(t, k) = match t
+  Leaf -> Node(Leaf, k, Leaf)
+  Node(l, x, r) ->
+    if k < x then Node(insert(l, k), x, r) else if x < k
+      then Node(l, x, insert(r, k))
+      else t
+
+fn build(i, t) = if i == 0 then t else build(i - 1, insert(t, i * 7 % 11))
+
+fn keys(t) = match t
+  Leaf -> Nil
+  Node(l, x, r) -> append(keys(l), Cons(x, keys(r)))
+
+fn run() =
+  old = build(5, Leaf)
+  grown = insert(insert(old, 100), 3)
+  println(keys(old))
+  println(keys(grown))
+  same = insert(old, 7)
+  println(keys(same))
+  big = build(10000, Leaf)
+  println(len(keys(big)))
+
+fn main() =
+  run()
+  println(int_to_str(rill_mem_report()))
+  0

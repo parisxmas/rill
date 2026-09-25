@@ -5907,3 +5907,14 @@ fn a_list_sorts_in_its_own_cells_and_stays_stable() {
          0\n"
     );
 }
+
+#[test]
+fn a_tail_branch_moves_and_rebuilds_on_its_own() {
+    assert_eq!(
+        compile_and_run("branch_moves.rill"),
+        "Cons(2, Cons(3, Cons(6, Cons(7, Cons(10, Nil)))))\n\
+         Cons(2, Cons(3, Cons(6, Cons(7, Cons(10, Cons(100, Nil))))))\n\
+         Cons(2, Cons(3, Cons(6, Cons(7, Cons(10, Nil)))))\n\
+         11\n0\n"
+    );
+}
