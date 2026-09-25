@@ -775,7 +775,8 @@ written inside it — may be reassociated, and the sign of a zero may not
 matter, which is what the compiler asks before it splits a reduction into
 the machine's vector lanes: that dot product runs five times faster.
 NaN and infinity keep their meaning, and outside a `fast fn` nothing
-changes. `fast` means this only in front of a top-level `fn`.
+changes. `fast` means this only in front of a top-level `fn` — `private
+fast fn` for one a file keeps to itself.
 
 ---
 
@@ -2089,7 +2090,9 @@ one assignment the language has, and only to a buffer element.
 | `#b` (or `buf_len(b)`) | how many elements |
 | `buf_copy(dst, to, src, from, n)` | `n` elements of `src` from `from` into `dst` at `to`, overlapping or not, both bounds-checked |
 | `buf_cmp(a, at, b, bt, n)` | `n` elements of each as bytes: -1, 0 or 1, both bounds-checked |
-| `buf_sort(b)` | the numbers in ascending order, in place; floats by their total order, a NaN at the end |
+| `buf_sort(b)` / `buf_sort_range(b, lo, hi)` | the numbers in ascending order, in place — all of them, or those from `lo` up to `hi`; floats by their total order, a NaN at the end |
+| `buf_argsort(src, dst)` | where each float of `src` would go if sorted, ties in the order they came and `-0.0` equal to `0.0`, into the `Buf(Int)` `dst` |
+| `buf_select_nth(b, lo, hi, k)` | the float that would be at `k` were the range sorted, with the range reordered around it — what is before it no greater, what is after no smaller |
 | `buf_get_unchecked(b, i)` / `buf_set_unchecked(b, i, v)` | one element with no bounds test — for a loop whose indexes come from its data, an interpreter's registers, where no check in front of the loop can stand for them. `--unchecked` for one access; a sandbox counts it as `ffi` |
 
 `buf_copy` and `buf_cmp` are `memmove` and `memcmp` with the question asked
