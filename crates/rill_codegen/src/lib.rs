@@ -1609,9 +1609,53 @@ struct Codegen<'ctx, 'a> {
     /// here rather than at object-writing time because the name has to be
     /// chosen while the function is being created.
     wasm: bool,
+    /// A target with 32-bit pointers — wasm32, and the chips: RISC-V (the
+    /// ESP32-C3, -C6, -H2, -P4) and Cortex-M. What is a word wide is four
+    /// bytes, and the pool's fast path, written for eight-byte words, is not
+    /// laid down.
+    ptr32: bool,
+    /// A target whose calls keep the C convention throughout: wasm, where a
+    /// guaranteed tail call needs a feature the module may not declare, and a
+    /// chip, whose backend is not asked for one. A function calling itself
+    /// is still a loop — LLVM's tail recursion pass sees to that.
+    c_calls: bool,
     /// A `--shared` build: a library a host loads, with `export fn`s as its
     /// entry points and `rill_init` in place of `main`.
     shared: bool,
+}
+
+/// What a `--target` name means to LLVM: its triple, the processor, and the
+/// features. LLVM spells a RISC-V chip `riscv32` with the extensions as
+/// features, where Rust and GCC fold them into the name — `riscv32imc` — and
+/// the ESP32s are named here for what they are: the C3 is RV32IMC, the C6,
+/// H2 and P4 RV32IMAC as far as Rill uses them. None has a double-precision
+/// unit, so a `Float` is soft-float, the `ilp32` convention ESP-IDF builds
+/// with. Anything else is taken as LLVM's own triple.
+pub fn llvm_target(name: &str) -> (String, String, String) {
+    let rv = |ext: &str| -> (String, String, String) {
+        let mut feats = Vec::new();
+        for (c, f) in [('m', "+m"), ('a', "+a"), ('c', "+c")] {
+            if ext.contains(c) {
+                feats.push(f);
+            }
+        }
+        ("riscv32-unknown-none-elf".to_string(), "generic-rv32".to_string(), feats.join(","))
+    };
+    match name {
+        "esp32c3" => rv("imc"),
+        "esp32c6" | "esp32h2" | "esp32p4" | "esp32c5" | "esp32c61" => rv("imac"),
+        n if n.starts_with("riscv32") => {
+            let arch = n.split('-').next().unwrap_or("riscv32");
+            rv(&arch["riscv32".len()..])
+        }
+        n => (n.to_string(), String::new(), String::new()),
+    }
+}
+
+/// Whether a `--target` has 32-bit pointers.
+fn is_ptr32(name: &str) -> bool {
+    let (triple, _, _) = llvm_target(name);
+    triple.starts_with("wasm32") || triple.starts_with("riscv32") || triple.starts_with("thumb") || triple.starts_with("arm-")
 }
 
 struct DebugCtx<'ctx> {
@@ -1692,6 +1736,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             preempt,
             host_strands: shared && library_uses_scheduler(tmod),
             wasm: target.is_some_and(|t| t.starts_with("wasm")),
+            ptr32: target.is_some_and(is_ptr32),
+            c_calls: target.is_some_and(|t| t.starts_with("wasm") || is_ptr32(t)),
             shared,
         };
         if let Some(src) = source {
@@ -1816,7 +1862,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     /// The integer C calls a word: `size_t` wide, which is pointer wide.
     fn word_type(&self) -> IntType<'ctx> {
-        if self.wasm { self.ctx.i32_type() } else { self.ctx.i64_type() }
+        if self.ptr32 { self.ctx.i32_type() } else { self.ctx.i64_type() }
     }
 
     /// LLVM type of a foreign signature position; `None` for Unit (a void
@@ -1854,7 +1900,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Unit | CTy::Fn(..) | CTy::Env => v,
             // A word is already 64 bits on a 64-bit target, and `trunc` to the
             // width a value already has is not an instruction.
-            CTy::USize | CTy::ISize if !self.wasm => v,
+            CTy::USize | CTy::ISize if !self.ptr32 => v,
             _ => {
                 let t = self.c_type(c).expect("not Unit").into_int_type();
                 b.build_int_truncate(v.into_int_value(), t, "ci")
@@ -1880,7 +1926,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .expect("LLVM builder error")
                 .into(),
             CTy::I64 | CTy::U64 | CTy::F64 | CTy::Ptr | CTy::Unit | CTy::Fn(..) | CTy::Env => v,
-            CTy::USize | CTy::ISize if !self.wasm => v,
+            CTy::USize | CTy::ISize if !self.ptr32 => v,
             _ if c.is_signed() => b
                 .build_int_s_extend(v.into_int_value(), i64t, "rs")
                 .expect("LLVM builder error")
@@ -2555,7 +2601,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 _ => unreachable!(),
             }
         };
-        if self.wasm {
+        if self.ptr32 {
             return slow_call(self);
         }
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
@@ -2603,7 +2649,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// `rill_free_sized(p, size)` with the same fast path: the block goes
     /// back on its class's free list in three instructions.
     fn emit_free(&mut self, p: PointerValue<'ctx>, size: IntValue<'ctx>) {
-        if self.wasm {
+        if self.ptr32 {
             self.call_rt("rill_free_sized", &[p.into(), size.into()]);
             return;
         }
@@ -3681,7 +3727,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let params = vec![elem.clone(), elem.clone()];
         let fn_ty = self.fn_llvm_type(&params, &Ty::Bool, true);
         let call = self.builder.build_indirect_call(fn_ty, code, &argv, "before").expect("LLVM builder error");
-        if !self.wasm {
+        if !self.c_calls {
             if let Some(cc) = self.cc_for(&params, 1) {
                 call.set_call_convention(cc);
             }
@@ -3817,7 +3863,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// than in a native one, and why a layout written in pointer slots has to
     /// pick a target.
     fn ptr_bytes(&self) -> u64 {
-        if self.wasm {
+        if self.ptr32 {
             4
         } else {
             8
@@ -5533,7 +5579,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // called by Rill, and Rill wants its tail calls to be jumps. On wasm
         // a tail call needs a feature the module may not be allowed to
         // declare, so there the C convention stays.
-        if !self.wasm && self.tmod.fns[fn_idx].name != "main" && !self.tmod.fns[fn_idx].exported {
+        if !self.c_calls && self.tmod.fns[fn_idx].name != "main" && !self.tmod.fns[fn_idx].exported {
             if let Some(cc) = self.cc_for(&params, 0) {
                 v.set_call_conventions(cc);
             }
@@ -6079,7 +6125,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 {
                     call.set_tail_call_kind(inkwell::values::LLVMTailCallKind::LLVMTailCallKindMustTail);
                     self.saw_musttail = true;
-                } else if !self.wasm
+                } else if !self.c_calls
                     && !(callee_tailcc && caller_tailcc)
                     && *fn_idx != self.cur_fn
                     && self.call_goes_round(*fn_idx)
@@ -7136,7 +7182,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // A shim is reached through a closure value, so it is called however
         // lambdas are called — one more integer argument than the type says,
         // for the environment pointer.
-        if !self.wasm {
+        if !self.c_calls {
             if let Some(cc) = self.cc_for(&params, 1) {
                 shim.set_call_conventions(cc);
             }
@@ -7269,7 +7315,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         let fn_ty = self.fn_llvm_type(&rparams, &rret, true);
         let call = self.builder.build_indirect_call(fn_ty, code, &args, "ccall").expect("builder");
-        if !self.wasm {
+        if !self.c_calls {
             if let Some(cc) = self.cc_for(&rparams, 1) {
                 call.set_call_convention(cc);
             }
@@ -9209,7 +9255,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // function — is made with the same rule over the same types,
                 // so an indirect call computing it again lands on the same
                 // convention.
-                if !self.wasm {
+                if !self.c_calls {
                     if let Some(cc) = self.cc_for(&params, 1) {
                         call.set_call_convention(cc);
                     }
@@ -9982,7 +10028,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         lifted.set_linkage(inkwell::module::Linkage::Internal);
         // A `spawn` body is started by the scheduler and keeps the C
         // convention; a lambda is called by Rill through a closure value.
-        if !self.wasm && !discard_result {
+        if !self.c_calls && !discard_result {
             if let Some(cc) = self.cc_for(&param_tys, 1) {
                 lifted.set_call_conventions(cc);
             }
@@ -11420,11 +11466,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Target::initialize_aarch64(&cfg);
                 Target::initialize_x86(&cfg);
                 Target::initialize_webassembly(&cfg);
+                Target::initialize_riscv(&cfg);
+                Target::initialize_arm(&cfg);
             }
         }
-        let triple = match want {
+        let resolved = want.map(llvm_target);
+        let triple = match &resolved {
             None => TargetMachine::get_default_triple(),
-            Some(name) => TargetTriple::create(name),
+            Some((t, _, _)) => TargetTriple::create(t),
         };
         let target = Target::from_triple(&triple)
             .map_err(|e| CodegenError::new(0, format!("bad target triple: {e}")))?;
@@ -11432,13 +11481,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         // what is being built for. Cross-compiling, take the generic model of
         // the architecture: the alternative is emitting instructions the other
         // machine may not have.
-        let (cpu, features) = match want {
+        let (cpu, features) = match &resolved {
             None => (
                 TargetMachine::get_host_cpu_name().to_string(),
                 TargetMachine::get_host_cpu_features().to_string(),
             ),
-            Some(_) => (String::new(), String::new()),
+            Some((_, cpu, features)) => (cpu.clone(), features.clone()),
         };
+        // A chip's image is linked at fixed addresses, as ESP-IDF links it;
+        // code for one is not position-independent.
+        let bare = triple.as_str().to_string_lossy().contains("-none");
         let opt_level =
             if optimize { OptimizationLevel::Aggressive } else { OptimizationLevel::None };
         let machine = target
@@ -11451,6 +11503,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // sense and the COFF writer rejects the request outright.
                 if triple.as_str().to_string_lossy().contains("windows") {
                     RelocMode::Default
+                } else if bare {
+                    RelocMode::Static
                 } else {
                     RelocMode::PIC
                 },

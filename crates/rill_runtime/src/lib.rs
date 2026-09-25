@@ -53,6 +53,134 @@ extern "C" {
     fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32;
 }
 
+/// The atomics the runtime uses, as the target has them. A chip without the
+/// instructions for one — RV32 has no 64-bit atomics, and the ESP32-C3's
+/// RV32IMC has no read-modify-write atomics at all — is one with a single
+/// worker, so what stands in for the missing ones is a plain load and store
+/// behind the same names and methods: nothing else could be touching it.
+mod atomics {
+    macro_rules! plain {
+        ($name:ident, $t:ty) => {
+            #[repr(transparent)]
+            pub struct $name(core::cell::UnsafeCell<$t>);
+            unsafe impl Sync for $name {}
+            #[allow(dead_code)]
+            impl $name {
+                pub const fn new(v: $t) -> Self {
+                    $name(core::cell::UnsafeCell::new(v))
+                }
+                /// # Safety
+                /// `p` is valid and aligned for as long as the answer is used.
+                pub unsafe fn from_ptr<'a>(p: *mut $t) -> &'a Self {
+                    &*(p as *const Self)
+                }
+                #[inline(always)]
+                pub fn load(&self, _: core::sync::atomic::Ordering) -> $t {
+                    unsafe { *self.0.get() }
+                }
+                #[inline(always)]
+                pub fn store(&self, v: $t, _: core::sync::atomic::Ordering) {
+                    unsafe { *self.0.get() = v }
+                }
+                #[inline(always)]
+                pub fn swap(&self, v: $t, _: core::sync::atomic::Ordering) -> $t {
+                    unsafe { core::mem::replace(&mut *self.0.get(), v) }
+                }
+                #[inline(always)]
+                pub fn compare_exchange(
+                    &self,
+                    current: $t,
+                    new: $t,
+                    _: core::sync::atomic::Ordering,
+                    _: core::sync::atomic::Ordering,
+                ) -> Result<$t, $t> {
+                    unsafe {
+                        let p = self.0.get();
+                        if *p == current {
+                            *p = new;
+                            Ok(current)
+                        } else {
+                            Err(*p)
+                        }
+                    }
+                }
+                #[inline(always)]
+                pub fn compare_exchange_weak(
+                    &self,
+                    current: $t,
+                    new: $t,
+                    a: core::sync::atomic::Ordering,
+                    b: core::sync::atomic::Ordering,
+                ) -> Result<$t, $t> {
+                    self.compare_exchange(current, new, a, b)
+                }
+            }
+        };
+    }
+    macro_rules! plain_int {
+        ($name:ident, $t:ty) => {
+            plain!($name, $t);
+            #[allow(dead_code)]
+            impl $name {
+                #[inline(always)]
+                pub fn fetch_add(&self, d: $t, _: core::sync::atomic::Ordering) -> $t {
+                    unsafe {
+                        let p = self.0.get();
+                        let old = *p;
+                        *p = old.wrapping_add(d);
+                        old
+                    }
+                }
+                #[inline(always)]
+                pub fn fetch_sub(&self, d: $t, _: core::sync::atomic::Ordering) -> $t {
+                    unsafe {
+                        let p = self.0.get();
+                        let old = *p;
+                        *p = old.wrapping_sub(d);
+                        old
+                    }
+                }
+                #[inline(always)]
+                pub fn fetch_and(&self, d: $t, _: core::sync::atomic::Ordering) -> $t {
+                    unsafe {
+                        let p = self.0.get();
+                        let old = *p;
+                        *p = old & d;
+                        old
+                    }
+                }
+                #[inline(always)]
+                pub fn fetch_or(&self, d: $t, _: core::sync::atomic::Ordering) -> $t {
+                    unsafe {
+                        let p = self.0.get();
+                        let old = *p;
+                        *p = old | d;
+                        old
+                    }
+                }
+            }
+        };
+    }
+    #[cfg(target_has_atomic = "64")]
+    pub use core::sync::atomic::{AtomicI64, AtomicU64};
+    #[cfg(not(target_has_atomic = "64"))]
+    plain_int!(AtomicI64, i64);
+    #[cfg(not(target_has_atomic = "64"))]
+    plain_int!(AtomicU64, u64);
+    #[cfg(target_has_atomic = "32")]
+    pub use core::sync::atomic::AtomicI32;
+    #[cfg(not(target_has_atomic = "32"))]
+    plain_int!(AtomicI32, i32);
+    #[cfg(target_has_atomic = "ptr")]
+    pub use core::sync::atomic::AtomicUsize;
+    #[cfg(not(target_has_atomic = "ptr"))]
+    plain_int!(AtomicUsize, usize);
+    #[cfg(target_has_atomic = "8")]
+    pub use core::sync::atomic::AtomicBool;
+    #[cfg(not(target_has_atomic = "8"))]
+    plain!(AtomicBool, bool);
+}
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     unsafe { die() }
@@ -72,7 +200,12 @@ pub extern "C" fn rust_eh_personality() {}
 // stands still. Two million `println`s were four million `write` calls and
 // fifteen times Go's buffered writer.
 
+#[cfg(not(target_os = "none"))]
 const OUT_CAP: usize = 64 * 1024;
+/// A chip has a few hundred kilobytes in all; what is printed goes out a
+/// line or so at a time rather than sixty-four kilobytes at a time.
+#[cfg(target_os = "none")]
+const OUT_CAP: usize = 256;
 static mut OUT_BUF: [u8; OUT_CAP] = [0; OUT_CAP];
 static mut OUT_LEN: usize = 0;
 /// -1 until asked; 1 when standard output is a terminal (line-buffered).
@@ -261,8 +394,18 @@ pub unsafe extern "C" fn rill_str_concat(a: *const u8, b: *const u8) -> *mut u8 
 // pointer rather than in the object, so growing them leaves the object where
 // it is and the name that holds it stays good.
 
+/// Where a builder keeps its text's address: the eight bytes after its
+/// count, as the compiler lays a builder out — `{i64, ptr, i64, i64}`, the
+/// pointer aligned to eight. Taken as the second pointer-sized word it was
+/// byte 4 on a 32-bit target, the high half of the count: a builder's first
+/// byte made its count an address, and the program stopped (2026-09-26).
+#[inline(always)]
+unsafe fn sb_data_slot(p: *const u8) -> *mut *mut u8 {
+    p.add(8) as *mut *mut u8
+}
+
 unsafe fn sb_data(p: *const u8) -> *mut u8 {
-    *(p as *const *mut u8).add(1)
+    *sb_data_slot(p)
 }
 
 unsafe fn sb_len(p: *const u8) -> usize {
@@ -275,7 +418,7 @@ unsafe fn sb_len(p: *const u8) -> usize {
 pub unsafe extern "C" fn rill_strbuf_new() -> *mut u8 {
     let p = rill_alloc(32);
     *(p as *mut i64) = 1;
-    *(p as *mut *mut u8).add(1) = core::ptr::null_mut();
+    *sb_data_slot(p) = core::ptr::null_mut();
     *(p as *mut i64).add(2) = 0;
     *(p as *mut i64).add(3) = 0;
     p
@@ -365,7 +508,7 @@ unsafe fn sb_grow(p: *mut u8, len: usize, cap: usize, want: usize) {
         live_add(1);
         rill_free_sized(old.sub(16), 16 + cap as u64);
     }
-    *(p as *mut *mut u8).add(1) = fresh;
+    *sb_data_slot(p) = fresh;
     *(p as *mut i64).add(3) = want as i64;
 }
 
@@ -522,7 +665,7 @@ pub unsafe extern "C" fn rill_strbuf_take(p: *mut u8) -> *mut u8 {
     *(block as *mut i64).add(1) = len as i64;
     // The block joins the ledger as a string; the builder's text is gone.
     live_add(1);
-    *(p as *mut *mut u8).add(1) = core::ptr::null_mut();
+    *sb_data_slot(p) = core::ptr::null_mut();
     *(p as *mut i64).add(2) = 0;
     *(p as *mut i64).add(3) = 0;
     block
@@ -1151,8 +1294,8 @@ pub extern "C" fn rill_io_ok() -> i8 {
 // strands: what `rill msc` draws. Off, a machine pays one load per event.
 
 /// 0 before the variable has been looked at, then 1 or 2 for off and on.
-static TRACE_ON: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
-static TRACE_SEQ: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+static TRACE_ON: atomics::AtomicI64 = atomics::AtomicI64::new(0);
+static TRACE_SEQ: atomics::AtomicI64 = atomics::AtomicI64::new(0);
 
 /// Whether `RILL_TRACE` is set, looked up once.
 #[no_mangle]
@@ -1223,8 +1366,8 @@ pub unsafe extern "C" fn rill_trace_line(s: *const u8) {
 // where it stands, with status 3; any other line is "go on".
 
 /// -2 before `RILL_STEP` has been looked at, -1 for no stepping, else the pipe.
-static STEP_FD: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(-2);
-static STEP_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static STEP_FD: atomics::AtomicI64 = atomics::AtomicI64::new(-2);
+static STEP_LOCK: atomics::AtomicBool = atomics::AtomicBool::new(false);
 
 unsafe fn step_wait() {
     let mut fd = STEP_FD.load(core::sync::atomic::Ordering::Relaxed);
@@ -1265,8 +1408,12 @@ unsafe fn step_wait() {
 
 /// Channels seen by the trace, in the order they were first named, so an
 /// event can say `3` rather than an address.
-static mut TRACE_CHANS: [usize; 4096] = [0; 4096];
-static TRACE_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+#[cfg(not(target_os = "none"))]
+const TRACE_CHANS_N: usize = 4096;
+#[cfg(target_os = "none")]
+const TRACE_CHANS_N: usize = 16;
+static mut TRACE_CHANS: [usize; TRACE_CHANS_N] = [0; TRACE_CHANS_N];
+static TRACE_LOCK: atomics::AtomicBool = atomics::AtomicBool::new(false);
 
 /// A small number for a channel, the same one each time it is asked.
 ///
@@ -2457,14 +2604,14 @@ extern "C" {
 /// wakeup that is not a new signal simply parks again, and no bookkeeping has
 /// to be right for that to be true.
 #[cfg(unix)]
-static SIG_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static SIG_COUNT: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 #[cfg(unix)]
-static SIG_LAST: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+static SIG_LAST: atomics::AtomicI32 = atomics::AtomicI32::new(0);
 
 /// The write end of each waiting strand's pipe, or -1 for a free slot.
 #[cfg(unix)]
-static SIG_SLOT: [core::sync::atomic::AtomicI32; SIG_SLOTS] =
-    [const { core::sync::atomic::AtomicI32::new(SLOT_FREE) }; SIG_SLOTS];
+static SIG_SLOT: [atomics::AtomicI32; SIG_SLOTS] =
+    [const { atomics::AtomicI32::new(SLOT_FREE) }; SIG_SLOTS];
 
 /// Both ends of each slot's pipe. Made once and never closed: a descriptor
 /// this handler might write to must not be a number the operating system can
@@ -2596,7 +2743,10 @@ pub unsafe extern "C" fn rill_wait_signal() -> i64 {
 // syscall per byte is what this used to be, and on a large input that was all
 // the program did; nothing else reads this descriptor, so holding what was
 // read ahead is safe.
+#[cfg(not(target_os = "none"))]
 const IN_CAP: usize = 1 << 18;
+#[cfg(target_os = "none")]
+const IN_CAP: usize = 256;
 static mut IN_BUF: *mut u8 = core::ptr::null_mut();
 static mut IN_POS: usize = 0;
 static mut IN_LEN: usize = 0;
@@ -2803,13 +2953,13 @@ pub unsafe extern "C" fn rill_now_nanos() -> i64 {
 // want to be measured on.
 
 /// 0 before the variable has been looked at, then 1 or 2 for off and on.
-static VT_ON: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+static VT_ON: atomics::AtomicI64 = atomics::AtomicI64::new(0);
 /// The clock, in nanoseconds since 1970, from the wall clock when first read.
-static VT_NOW: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+static VT_NOW: atomics::AtomicI64 = atomics::AtomicI64::new(0);
 /// The strands waiting on the virtual clock: when, and which.
 static mut VT_TIMERS: [(i64, usize); 4096] = [(0, 0); 4096];
-static VT_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-static VT_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static VT_LEN: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
+static VT_LOCK: atomics::AtomicBool = atomics::AtomicBool::new(false);
 
 unsafe fn virtual_time() -> bool {
     let v = VT_ON.load(core::sync::atomic::Ordering::Relaxed);
@@ -2919,7 +3069,7 @@ unsafe fn vt_jump() -> usize {
             table[i] = table[len - 1];
             len -= 1;
             // the poller's own way of waking a strand that waited on it
-            let sel = core::sync::atomic::AtomicI64::from_ptr(&raw mut (*g).selected);
+            let sel = atomics::AtomicI64::from_ptr(&raw mut (*g).selected);
             if (*g).on_io
                 && sel.compare_exchange(-1, WOKEN_BY_POLLER, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire).is_ok()
             {
@@ -3429,7 +3579,7 @@ const BIG_MIN: usize = 1 << 20;
 const BIG_SLOTS: usize = 8;
 static mut BIG_PTR: [*mut u8; BIG_SLOTS] = [core::ptr::null_mut(); BIG_SLOTS];
 static mut BIG_SIZE: [usize; BIG_SLOTS] = [0; BIG_SLOTS];
-static BIG_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static BIG_LOCK: atomics::AtomicBool = atomics::AtomicBool::new(false);
 
 unsafe fn big_lock() {
     while BIG_LOCK
@@ -4287,10 +4437,10 @@ unsafe fn crash_stack_here() {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 unsafe fn crash_stack_here() {}
 
-static CRASH_INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CRASH_INSTALLED: atomics::AtomicBool = atomics::AtomicBool::new(false);
 /// The first thread to fault reports; a second faulting while it does
 /// waits, so that the report is not cut off by the process ending.
-static CRASH_TAKEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CRASH_TAKEN: atomics::AtomicBool = atomics::AtomicBool::new(false);
 
 /// The handlers, once per process, and a stack for them on this thread.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -5307,7 +5457,13 @@ unsafe fn rc_dec(p: *mut i64) -> i64 {
 // release path passes the object size (`rill_free_sized`).
 const POOL_MAX: usize = 256;
 const POOL_CLASSES: usize = POOL_MAX / 16;
+#[cfg(not(target_os = "none"))]
 const POOL_CHUNK: usize = 16 * 1024 * 1024;
+/// On a chip the pool's chunks come from `malloc`, out of a heap of a few
+/// hundred kilobytes: sixteen megabytes at once was every program's first
+/// request, and every one failed.
+#[cfg(target_os = "none")]
+const POOL_CHUNK: usize = 8 * 1024;
 
 /// One worker's share of the pool. Per worker rather than global so that
 /// several workers can allocate at once without a lock — a block freed on a
@@ -5364,9 +5520,9 @@ static mut ALLOC_QUAR: bool = false;
 const QUAR_MAX: usize = 64;
 const QUAR_PAGE: usize = 16384;
 const QUAR_RING: usize = 8192;
-static QUAR_PAGES: [core::sync::atomic::AtomicUsize; QUAR_RING] =
-    [const { core::sync::atomic::AtomicUsize::new(0) }; QUAR_RING];
-static QUAR_NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static QUAR_PAGES: [atomics::AtomicUsize; QUAR_RING] =
+    [const { atomics::AtomicUsize::new(0) }; QUAR_RING];
+static QUAR_NEXT: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
 #[cfg(unix)]
 unsafe fn quar_alloc() -> *mut u8 {
@@ -5391,9 +5547,13 @@ unsafe fn quar_free(ptr: *mut u8) {
 /// block is out, cleared at its free. A block handed out while its bit is
 /// set has been handed out twice — two owners of one block — and a free of
 /// a block whose bit is clear is a free of something not out.
+#[cfg(not(target_os = "none"))]
 const LIVE_CHUNKS: usize = 64;
-static LIVE: [core::sync::atomic::AtomicU64; LIVE_CHUNKS * 16384] =
-    [const { core::sync::atomic::AtomicU64::new(0) }; LIVE_CHUNKS * 16384];
+#[cfg(target_os = "none")]
+const LIVE_CHUNKS: usize = 1;
+/// A bit per sixteen bytes of a chunk, sixty-four bits a word.
+const LIVE_WORDS: usize = LIVE_CHUNKS * (POOL_CHUNK / 1024);
+static LIVE: [atomics::AtomicU64; LIVE_WORDS] = [const { atomics::AtomicU64::new(0) }; LIVE_WORDS];
 
 unsafe fn live_bit(p: usize) -> Option<(usize, u64)> {
     let n = NCHUNKS.load(core::sync::atomic::Ordering::Acquire).min(LIVE_CHUNKS);
@@ -5434,11 +5594,22 @@ unsafe fn live_in(p: usize, class: usize) {
         }
     }
 }
+// The checks' tables, which a hosted build keeps in memory it never touches
+// until a check is asked for, and which a chip would have to find room for
+// before `main`: 64 MB of them. On a chip they are token-sized, enough for a
+// check to run and say little.
+#[cfg(not(target_os = "none"))]
 const MAX_CHUNKS: usize = 4096;
+#[cfg(target_os = "none")]
+const MAX_CHUNKS: usize = 64;
+#[cfg(not(target_os = "none"))]
+const FREE_SITES: usize = 65536;
+#[cfg(target_os = "none")]
+const FREE_SITES: usize = 16;
 static mut CHUNKS: [(usize, usize); MAX_CHUNKS] = [(0, 0); MAX_CHUNKS];
-static NCHUNKS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static NCHUNKS: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 /// Chunks mapped by every pool, checks or not: for `rill_mem_report`.
-static NCHUNKS_ALL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static NCHUNKS_ALL: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
 unsafe fn chunk_note(base: usize, len: usize) {
     let i = NCHUNKS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
@@ -5461,14 +5632,14 @@ unsafe fn in_chunks(p: usize) -> bool {
 /// Where each block was last freed, by the block's address: the frames
 /// of the free, for a reader of a freed block to be shown its freer.
 #[no_mangle]
-pub static mut rill_free_sites: [[usize; 10]; 65536] = [[0; 10]; 65536];
+pub static mut rill_free_sites: [[usize; 10]; FREE_SITES] = [[0; 10]; FREE_SITES];
 /// The free before that one, for a block that went round once between
 /// its wrongful free and the touch that showed it.
-static mut FREE_SITES_BEFORE: [[usize; 10]; 65536] = [[0; 10]; 65536];
+static mut FREE_SITES_BEFORE: [[usize; 10]; FREE_SITES] = [[0; 10]; FREE_SITES];
 
 unsafe fn note_free(ptr: usize, link: usize) {
     live_site_drop(ptr);
-    let slot = &mut rill_free_sites[(ptr >> 4) & 0xffff];
+    let slot = &mut rill_free_sites[(ptr >> 4) & (FREE_SITES - 1)];
     if slot[0] == ptr {
         // freed, and not handed out again since: freed twice
         rill_flush_out();
@@ -5482,7 +5653,7 @@ unsafe fn note_free(ptr: usize, link: usize) {
     }
     if slot[0] == ptr | 1 {
         // the same block, handed out again since: keep that free as the one before
-        FREE_SITES_BEFORE[(ptr >> 4) & 0xffff] = *slot;
+        FREE_SITES_BEFORE[(ptr >> 4) & (FREE_SITES - 1)] = *slot;
     }
     slot[0] = ptr;
     slot[9] = link;
@@ -5502,14 +5673,14 @@ unsafe fn note_free(ptr: usize, link: usize) {
 /// `RILL_FREE_OF=<hex address>`: at a crash, the frames of the last free
 /// of the block at that address, from the table above.
 unsafe fn free_site_of(ptr: usize) {
-    let slot = &rill_free_sites[(ptr >> 4) & 0xffff];
+    let slot = &rill_free_sites[(ptr >> 4) & (FREE_SITES - 1)];
     if slot[0] & !1 != ptr {
         err(b"  (no free of that block on record)\n");
         return;
     }
     err(if slot[0] & 1 != 0 { b"  last freed (and handed out again since) by:\n" } else { b"  last freed by:\n" });
     free_frames(slot);
-    let before = &FREE_SITES_BEFORE[(ptr >> 4) & 0xffff];
+    let before = &FREE_SITES_BEFORE[(ptr >> 4) & (FREE_SITES - 1)];
     if before[0] & !1 == ptr {
         err(b"  and freed before that by:\n");
         free_frames(before);
@@ -5536,9 +5707,12 @@ unsafe fn free_frames(slot: &[usize; 10]) {
 /// 2 release's last-owner test, 3 in-place reuse test, 4 reuse-keep test,
 /// 5 handed out, 6 freed), the worker, and four frames. At a report, the
 /// entries for the block in question are the block's history.
+#[cfg(not(target_os = "none"))]
 const RC_LOG: usize = 1 << 21;
+#[cfg(target_os = "none")]
+const RC_LOG: usize = 16;
 static mut RC_EVENTS: [[usize; 6]; RC_LOG] = [[0; 6]; RC_LOG];
-static RC_NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static RC_NEXT: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
 unsafe fn rc_log(p: usize, kind: usize) {
     let i = RC_NEXT.fetch_add(1, core::sync::atomic::Ordering::AcqRel) & (RC_LOG - 1);
@@ -5665,7 +5839,10 @@ unsafe fn pool_class(size: u64) -> Option<usize> {
 /// can say whose blocks were never let go. Open addressing over the block's
 /// address; a table that fills up stops recording rather than growing.
 static mut LIVE_SITES: *mut (usize, *const u8) = core::ptr::null_mut();
+#[cfg(not(target_os = "none"))]
 const LIVE_SITES_N: usize = 1 << 20;
+#[cfg(target_os = "none")]
+const LIVE_SITES_N: usize = 16;
 static mut LIVE_SITES_FULL: bool = false;
 
 unsafe fn site_name() -> *const u8 {
@@ -5851,7 +6028,7 @@ unsafe fn rill_alloc_raw(size: u64) -> *mut u8 {
                     free_site_of(head as usize);
                     alloc_complain(b"", 0, class);
                 }
-                let slot = &mut rill_free_sites[(head as usize >> 4) & 0xffff];
+                let slot = &mut rill_free_sites[(head as usize >> 4) & (FREE_SITES - 1)];
                 if slot[0] == head as usize {
                     // out again: marked, so the next free of it knows
                     slot[0] = head as usize | 1;
@@ -6132,10 +6309,23 @@ pub unsafe extern "C" fn rill_str_eq(a: *const u8, b: *const u8) -> i8 {
 // that has already run is pinned to its worker. Work stealing moves only
 // strands that have not started yet, which is where the imbalance is.
 
+#[cfg(not(target_os = "none"))]
 const EXEC_STACK_SIZE: usize = 8 * 1024 * 1024;
+#[cfg(not(target_os = "none"))]
 const MAIN_STACK_SIZE: usize = 32 * 1024 * 1024;
+#[cfg(not(target_os = "none"))]
 const PAGE: usize = 16 * 1024;
+#[cfg(not(target_os = "none"))]
 const MAX_WORKERS: usize = 32;
+/// A chip has one core to run Rill on and no pages to guard.
+#[cfg(target_os = "none")]
+const EXEC_STACK_SIZE: usize = 8 * 1024;
+#[cfg(target_os = "none")]
+const MAIN_STACK_SIZE: usize = 8 * 1024;
+#[cfg(target_os = "none")]
+const PAGE: usize = 256;
+#[cfg(target_os = "none")]
+const MAX_WORKERS: usize = 1;
 
 const PROT_NONE: i32 = 0;
 const PROT_RW: i32 = 3;
@@ -6546,14 +6736,14 @@ struct G {
 /// Head of that list. Strand records are recycled through their worker's free
 /// list and never handed back, so this only grows to the most strands that
 /// ever existed at once.
-static ALL_GS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static ALL_GS: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
 /// Strands that have been started and have not finished. Kept so that the
 /// shutdown sweep can tell, without looking, that there is nothing to look
 /// for — which is the usual answer, and worth having cheaply: walking the
 /// list is a cache miss per strand, and a program like `ring` makes a hundred
 /// thousand of them and leaves none of them running.
-static LIVE_STRANDS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static LIVE_STRANDS: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
 /// Puts a newly allocated strand record on the list of all of them.
 unsafe fn register_g(g: *mut G) {
@@ -6639,17 +6829,17 @@ struct Worker {
     /// This worker's netpoller. One per worker, because a strand that has
     /// run is tied to its worker's stack and only that worker can resume it:
     /// the readiness event has to arrive where the strand lives.
-    kq: core::sync::atomic::AtomicI32,
+    kq: atomics::AtomicI32,
     /// How to interrupt this worker's wait. kqueue can be poked directly with
     /// a user event, so on BSD this stays -1; epoll has no such thing and needs
     /// a real descriptor in the set to write to, which is what an eventfd is
     /// for. The difference is small enough to carry in one field rather than in
     /// two shapes of `Worker`.
-    wake_fd: core::sync::atomic::AtomicI32,
+    wake_fd: atomics::AtomicI32,
     /// Set while this worker is asleep inside the poller, so that another
     /// worker only pays for a wakeup syscall when there is really someone to
     /// wake.
-    asleep: core::sync::atomic::AtomicBool,
+    asleep: atomics::AtomicBool,
 }
 
 const WORKER_INIT: Worker = Worker {
@@ -6663,9 +6853,9 @@ const WORKER_INIT: Worker = Worker {
     free: core::ptr::null_mut(),
     exec_top: 0,
     index: 0,
-    kq: core::sync::atomic::AtomicI32::new(0),
-    wake_fd: core::sync::atomic::AtomicI32::new(0),
-    asleep: core::sync::atomic::AtomicBool::new(false),
+    kq: atomics::AtomicI32::new(0),
+    wake_fd: atomics::AtomicI32::new(0),
+    asleep: atomics::AtomicBool::new(false),
 };
 
 static mut WORKERS: [Worker; MAX_WORKERS] = [WORKER_INIT; MAX_WORKERS];
@@ -6685,17 +6875,17 @@ pub unsafe extern "C" fn rill_workers() -> i64 {
 /// some run queue. Both are maintained under the scheduler lock, so seeing
 /// them at zero together proves nothing can ever become runnable again —
 /// unlike "every worker is idle", which is only ever a stale snapshot.
-static RUNNING: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-static QUEUED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static RUNNING: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
+static QUEUED: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 /// Set when the main strand dies, and read by every worker at the top of its
 /// loop. Atomic because the shutdown sweep's safety rests on it: a worker that
 /// has seen this will take no further strand, which is what makes "every
 /// worker has left its loop" mean "nobody is looking at a strand any more".
-static STOP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static STOP: atomics::AtomicBool = atomics::AtomicBool::new(false);
 /// Workers 1..NWORKERS that have left `worker_loop` for good. Worker 0 is the
 /// thread doing the counting, so it is never included.
-static WORKERS_EXITED: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
+static WORKERS_EXITED: atomics::AtomicUsize =
+    atomics::AtomicUsize::new(0);
 static mut MAIN_G: *mut G = core::ptr::null_mut();
 /// Where the main strand's stack ends (its highest address), for telling a
 /// fault in its guard page from any other.
@@ -6739,7 +6929,7 @@ unsafe fn unlock_runq(w: *mut Worker) {
 }
 
 #[inline(always)]
-fn bump(counter: &core::sync::atomic::AtomicUsize, delta: isize) {
+fn bump(counter: &atomics::AtomicUsize, delta: isize) {
     if delta >= 0 {
         counter.fetch_add(delta as usize, core::sync::atomic::Ordering::AcqRel);
     } else {
@@ -7015,7 +7205,7 @@ unsafe fn make_ready(g: *mut G) {
     // A host strand is never queued: it is pumping the run queues from its
     // own stack, and looks for its flag between strands.
     if is_host(g) {
-        core::sync::atomic::AtomicI64::from_ptr(&raw mut (*g).host_woken)
+        atomics::AtomicI64::from_ptr(&raw mut (*g).host_woken)
             .store(HOST_WAKE, core::sync::atomic::Ordering::Release);
         return;
     }
@@ -7065,14 +7255,14 @@ static mut HOST_G: *mut G = core::ptr::null_mut();
 
 /// How many host threads have come in; the second and later take worker
 /// slots after the strand workers.
-static HOST_THREADS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static HOST_THREADS: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
 /// Export calls in flight, over every host thread; see `rill_host_enter`.
-static HOST_ACTIVE: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+static HOST_ACTIVE: atomics::AtomicI64 = atomics::AtomicI64::new(0);
 
 /// Whether a second host thread has ever called in. From then on counts
 /// stay atomic: `rill_mt_off` is a no-op.
-static HOST_MULTI: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static HOST_MULTI: atomics::AtomicBool = atomics::AtomicBool::new(false);
 
 /// Whether a strand is a host strand: never queued, never copied, woken
 /// through its own flag.
@@ -7299,14 +7489,14 @@ pub unsafe extern "C" fn rill_mt_off() -> i32 {
 /// `p` must point at an aligned 64-bit word that stays allocated.
 #[no_mangle]
 pub unsafe extern "C" fn rill_atomic_load(p: *mut u8) -> i64 {
-    core::sync::atomic::AtomicI64::from_ptr(p as *mut i64).load(core::sync::atomic::Ordering::SeqCst)
+    atomics::AtomicI64::from_ptr(p as *mut i64).load(core::sync::atomic::Ordering::SeqCst)
 }
 
 /// # Safety
 /// As `rill_atomic_load`.
 #[no_mangle]
 pub unsafe extern "C" fn rill_atomic_store(p: *mut u8, v: i64) -> i64 {
-    core::sync::atomic::AtomicI64::from_ptr(p as *mut i64).store(v, core::sync::atomic::Ordering::SeqCst);
+    atomics::AtomicI64::from_ptr(p as *mut i64).store(v, core::sync::atomic::Ordering::SeqCst);
     v
 }
 
@@ -7316,7 +7506,7 @@ pub unsafe extern "C" fn rill_atomic_store(p: *mut u8, v: i64) -> i64 {
 /// As `rill_atomic_load`.
 #[no_mangle]
 pub unsafe extern "C" fn rill_atomic_add(p: *mut u8, d: i64) -> i64 {
-    core::sync::atomic::AtomicI64::from_ptr(p as *mut i64).fetch_add(d, core::sync::atomic::Ordering::SeqCst) + d
+    atomics::AtomicI64::from_ptr(p as *mut i64).fetch_add(d, core::sync::atomic::Ordering::SeqCst) + d
 }
 
 /// `old` to `new` if the word holds `old`: 1 when it did.
@@ -7325,7 +7515,7 @@ pub unsafe extern "C" fn rill_atomic_add(p: *mut u8, d: i64) -> i64 {
 /// As `rill_atomic_load`.
 #[no_mangle]
 pub unsafe extern "C" fn rill_atomic_cas(p: *mut u8, old: i64, new: i64) -> i64 {
-    core::sync::atomic::AtomicI64::from_ptr(p as *mut i64)
+    atomics::AtomicI64::from_ptr(p as *mut i64)
         .compare_exchange(old, new, core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst)
         .is_ok() as i64
 }
@@ -7336,7 +7526,7 @@ pub unsafe extern "C" fn rill_atomic_cas(p: *mut u8, old: i64, new: i64) -> i64 
 unsafe fn host_pump(w: *mut Worker, host: *mut G) {
     let mut idle_rounds = 0u32;
     loop {
-        let flag = core::sync::atomic::AtomicI64::from_ptr(&raw mut (*host).host_woken);
+        let flag = atomics::AtomicI64::from_ptr(&raw mut (*host).host_woken);
         if flag.load(core::sync::atomic::Ordering::Acquire) == HOST_WAKE
             && (core::ptr::read_volatile(&(*host).selected) != -1 || (*host).on_io)
         {
@@ -7952,7 +8142,7 @@ impl WQueue {
 /// Claims the waiter's strand for the waiter's case: true when this call
 /// got there first, false when another channel or the poller did.
 unsafe fn try_claim(w: *mut Waiter) -> bool {
-    let sel = core::sync::atomic::AtomicI64::from_ptr(&raw mut (*(*w).g).selected);
+    let sel = atomics::AtomicI64::from_ptr(&raw mut (*(*w).g).selected);
     sel.compare_exchange(
         -1,
         (*w).case,
@@ -8014,7 +8204,7 @@ struct Chan {
     /// values; what is already buffered in it is still there to be read.
     closed: usize,
     /// The channel's own lock; see `chan_lock`.
-    lk: core::sync::atomic::AtomicI32,
+    lk: atomics::AtomicI32,
     /// The buffer: right after the struct for a channel made with a size,
     /// or its own block for a mailbox, which grows rather than making a
     /// sender wait.
@@ -8139,7 +8329,7 @@ pub unsafe extern "C" fn rill_chan_new(cap: i64) -> *mut u8 {
             sendq: WQueue::new(),
             recvq: WQueue::new(),
             closed: 0,
-            lk: core::sync::atomic::AtomicI32::new(0),
+            lk: atomics::AtomicI32::new(0),
             slots: (c as *mut u8).add(core::mem::size_of::<Chan>()) as *mut u64,
             inline,
             grow,
@@ -8789,9 +8979,9 @@ unsafe fn poll_network(_w: *mut Worker, _block: bool) -> i32 {
     0
 }
 #[cfg(windows)]
-static IO_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static IO_WAITERS: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 #[cfg(windows)]
-static STRAY_WAKES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static STRAY_WAKES: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
 /// The same silence on wasm, for a different reason: wasip1 has no sockets to
 /// offer and no worker to wake if it had.
@@ -8804,9 +8994,9 @@ unsafe fn poll_network(_w: *mut Worker, _block: bool) -> i32 {
     0
 }
 #[cfg(any(target_family = "wasm", target_os = "none"))]
-static IO_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static IO_WAITERS: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 #[cfg(any(target_family = "wasm", target_os = "none"))]
-static STRAY_WAKES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static STRAY_WAKES: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
 #[cfg(unix)]
 mod net {
@@ -8888,12 +9078,12 @@ mod net {
 
     /// Strands currently parked on a file descriptor. While this is non-zero
     /// an idle scheduler waits in kqueue instead of declaring a deadlock.
-    pub(super) static IO_WAITERS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    pub(super) static IO_WAITERS: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
     /// Events delivered for a strand that is no longer waiting on them. Kept
     /// as a number because it is a real thing that happens and not an error:
     /// what would be an error is acting on one.
-    pub(super) static STRAY_WAKES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    pub(super) static STRAY_WAKES: atomics::AtomicUsize = atomics::AtomicUsize::new(0);
 
     unsafe fn errno() -> i32 {
         *__error()
@@ -9798,7 +9988,7 @@ mod net {
             // wake to be retried but a value that was never sent. It reads as
             // a null string, and it took down the server perhaps one arrival
             // in ten.
-            let sel = core::sync::atomic::AtomicI64::from_ptr(&raw mut (*g).selected);
+            let sel = atomics::AtomicI64::from_ptr(&raw mut (*g).selected);
             if (*g).on_io
                 && sel
                     .compare_exchange(
@@ -10480,4 +10670,4 @@ impl RcAtomic {
 }
 
 #[cfg(not(target_os = "none"))]
-use core::sync::atomic::AtomicI64 as RcAtomic;
+use atomics::AtomicI64 as RcAtomic;
