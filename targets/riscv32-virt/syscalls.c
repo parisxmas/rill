@@ -22,6 +22,9 @@ int _write(int fd, const void *buf, size_t n) {
     return (int)n;
 }
 
+/* Where the Rill runtime sends standard output and error. */
+int rill_host_write(int fd, const void *buf, size_t n) { return _write(fd, buf, n); }
+
 int _read(int fd, void *buf, size_t n) { return 0; }
 int _close(int fd) { return -1; }
 int _open(const char *path, int flags, int mode) { errno = ENOENT; return -1; }

@@ -1,0 +1,5 @@
+# Rill's recursion and its runtime want more than the 3.5 KB a main task
+# gets by default.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+# A program that computes for a while is not a hung one.
+CONFIG_ESP_TASK_WDT_EN=n

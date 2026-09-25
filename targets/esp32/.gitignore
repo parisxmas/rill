@@ -1,0 +1,4 @@
+build/
+main/lib/
+sdkconfig
+sdkconfig.old

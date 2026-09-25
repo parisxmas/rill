@@ -237,10 +237,29 @@ fn out(bytes: &[u8]) {
     }
 }
 
+// On a chip, what descriptor 1 is is the platform's to say: ESP-IDF's
+// `stdout` is descriptor 5, and a `write(1, ..)` there answered 3 and put
+// nothing on the console (2026-09-26). Standard output and error go to
+// `rill_host_write`, which the platform supplies.
+#[cfg(target_os = "none")]
+extern "C" {
+    fn rill_host_write(fd: i32, buf: *const u8, count: usize) -> isize;
+}
+
+#[cfg(target_os = "none")]
+unsafe fn console_write(fd: i32, buf: *const u8, count: usize) -> isize {
+    if fd == 1 || fd == 2 { rill_host_write(fd, buf, count) } else { write(fd, buf, count) }
+}
+
+#[cfg(not(target_os = "none"))]
+unsafe fn console_write(fd: i32, buf: *const u8, count: usize) -> isize {
+    write(fd, buf, count)
+}
+
 unsafe fn write_all(fd: i32, bytes: &[u8]) {
     let mut done = 0usize;
     while done < bytes.len() {
-        let n = write(fd, bytes.as_ptr().add(done), bytes.len() - done);
+        let n = console_write(fd, bytes.as_ptr().add(done), bytes.len() - done);
         if n <= 0 {
             return;
         }
@@ -829,7 +848,9 @@ pub unsafe extern "C" fn rill_float_to_str(v: f64) -> *mut u8 {
 /// itself kept six digits, so `0.1 + 0.2` printed `0.3` and no printed
 /// float could be trusted to be the one computed (2026-09-25); a number of
 /// six digits or fewer prints as it always did.
-fn float_text(v: f64, out: &mut [u8; 48]) -> usize {
+/// `v`'s shortest round trip in scientific form, into `out`: core's `{:e}`.
+#[cfg(not(target_os = "none"))]
+fn shortest_sci(v: f64, out: &mut [u8; 48]) -> usize {
     struct W<'a> {
         b: &'a mut [u8; 48],
         n: usize,
@@ -845,6 +866,30 @@ fn float_text(v: f64, out: &mut [u8; 48]) -> usize {
             Ok(())
         }
     }
+    let mut w = W { b: out, n: 0 };
+    let _ = core::fmt::write(&mut w, format_args!("{:e}", v));
+    w.n
+}
+
+/// The same on a chip, by the C library's `%.*e` at one digit more at a time
+/// until `strtod` reads it back as `v`. Core's shortest-round-trip printer is
+/// fifteen kilobytes of a chip's flash, and ESP-IDF has `printf` in the
+/// image already; the digits are the same (2026-09-26).
+#[cfg(target_os = "none")]
+fn shortest_sci(v: f64, out: &mut [u8; 48]) -> usize {
+    for digits in 1..=17 {
+        let n = unsafe { snprintf(out.as_mut_ptr(), 47, b"%.*e\0".as_ptr(), digits - 1, v) };
+        let n = n.clamp(0, 47) as usize;
+        out[n] = 0;
+        if unsafe { strtod(out.as_ptr(), core::ptr::null_mut()) } == v {
+            return n;
+        }
+    }
+    let n = unsafe { snprintf(out.as_mut_ptr(), 47, b"%.16e\0".as_ptr(), v) };
+    n.clamp(0, 47) as usize
+}
+
+fn float_text(v: f64, out: &mut [u8; 48]) -> usize {
     let put = |out: &mut [u8; 48], n: &mut usize, c: u8| {
         if *n < out.len() {
             out[*n] = c;
@@ -864,13 +909,9 @@ fn float_text(v: f64, out: &mut [u8; 48]) -> usize {
         }
         return n;
     }
-    // `{:e}` is the shortest round trip in scientific form: `-1.25e-7`.
+    // The shortest round trip in scientific form: `-1.25e-7`.
     let mut sci = [0u8; 48];
-    let len = {
-        let mut w = W { b: &mut sci, n: 0 };
-        let _ = core::fmt::write(&mut w, format_args!("{:e}", v));
-        w.n
-    };
+    let len = shortest_sci(v, &mut sci);
     let t = &sci[..len];
     let (neg, t) = if t[0] == b'-' { (true, &t[1..]) } else { (false, t) };
     let epos = t.iter().position(|&c| c == b'e').unwrap_or(t.len());
@@ -887,7 +928,7 @@ fn float_text(v: f64, out: &mut [u8; 48]) -> usize {
     for &c in &t[(epos + 1).min(t.len())..] {
         if c == b'-' {
             xneg = true;
-        } else {
+        } else if c.is_ascii_digit() {
             x = x * 10 + (c - b'0') as i32;
         }
     }

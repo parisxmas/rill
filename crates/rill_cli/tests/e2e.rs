@@ -6008,3 +6008,28 @@ fn folding_over_lines_keeps_no_list_of_them() {
     let own = "fn lines(s) = Cons(s, Cons(s, Nil))\n\nfn main() = println(fold(lines(\"ab\"), 0, \\n, l -> n + #l))\n";
     assert_eq!(run_source("own_lines", own), "4\n");
 }
+
+#[test]
+fn an_esp32_target_is_a_32_bit_risc_v_object() {
+    // no ESP-IDF needed: the object itself says what it is for
+    let out_dir = std::env::temp_dir().join(bad_name("esp"));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    for chip in ["esp32c3", "esp32c6"] {
+        let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+            .args(["build", "--target", chip])
+            .arg(workspace_root().join("examples/float_printing.rill"))
+            .arg("-o")
+            .arg(out_dir.join(chip))
+            .output()
+            .expect("failed to spawn rill");
+        assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+        let obj = std::fs::read(out_dir.join(format!("{chip}.o"))).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+        assert_eq!(obj[4], 1, "ELFCLASS32");
+        assert_eq!(u16::from_le_bytes([obj[18], obj[19]]), 243, "EM_RISCV");
+        // e_flags: RVC, soft-float; `a` shows only as the instructions used
+        let flags = u32::from_le_bytes([obj[36], obj[37], obj[38], obj[39]]);
+        assert_eq!(flags & 0x1, 1, "{chip}: compressed instructions");
+        assert_eq!(flags & 0x6, 0, "{chip}: soft-float ABI");
+    }
+}
