@@ -3637,7 +3637,28 @@ pub unsafe extern "C" fn rill_list_sort(
 /// `p` must be a live buffer of that width.
 #[no_mangle]
 pub unsafe extern "C" fn rill_buf_sort(p: *mut u8, width: i64) {
-    let n = *(p.sub(16) as *const i64).add(1) as usize;
+    let n = *(p.sub(16) as *const i64).add(1);
+    rill_buf_sort_range(p, width, 0, n)
+}
+
+/// `buf_sort_range(b, lo, hi)`: the elements from `lo` up to `hi` in order,
+/// the rest left alone; the range is clamped to the buffer.
+///
+/// # Safety
+/// `p` must be a live buffer of that width.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_sort_range(p: *mut u8, width: i64, lo: i64, hi: i64) {
+    let len = *(p.sub(16) as *const i64).add(1);
+    let lo = lo.clamp(0, len);
+    let hi = hi.clamp(lo, len);
+    let n = (hi - lo) as usize;
+    let size = match width {
+        1 | 2 => 1,
+        3 | 4 => 2,
+        5 | 6 | 9 => 4,
+        _ => 8,
+    };
+    let p = p.add(lo as usize * size);
     macro_rules! ints {
         ($t:ty) => {
             core::slice::from_raw_parts_mut(p as *mut $t, n).sort_unstable()
@@ -3656,6 +3677,86 @@ pub unsafe extern "C" fn rill_buf_sort(p: *mut u8, width: i64) {
         10 => core::slice::from_raw_parts_mut(p as *mut f64, n).sort_unstable_by(|a, b| a.total_cmp(b)),
         _ => {}
     }
+}
+
+/// `buf_argsort(src, dst)`: where each element of the float buffer `src`
+/// would go if it were sorted, ties in the order they came, into the first
+/// `#src` elements of the `Int` buffer `dst`. Sorted as pairs of the key's
+/// bits and the position, which makes an unstable sort stable: two equal
+/// keys are told apart by where they were. `-0.0` and `0.0` are one key, as
+/// `<` has them; a NaN goes last.
+///
+/// # Safety
+/// `src` must be a live `Buf(Float)`, `dst` a live `Buf(Int)` at least as long.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_argsort(src: *const u8, dst: *mut u8) {
+    let n = *(src.sub(16) as *const i64).add(1) as usize;
+    let m = *(dst.sub(16) as *const i64).add(1) as usize;
+    let n = n.min(m);
+    if n == 0 {
+        return;
+    }
+    let pairs = malloc(n * 16) as *mut [u64; 2];
+    if pairs.is_null() {
+        out(b"rill: out of memory\n");
+        die();
+    }
+    let d = src as *const f64;
+    for i in 0..n {
+        let v = *d.add(i);
+        let v = if v == 0.0 { 0.0 } else { v };
+        let bits = v.to_bits();
+        let key = if bits >> 63 == 1 { !bits } else { bits | 1 << 63 };
+        *pairs.add(i) = [key, i as u64];
+    }
+    let out_idx = dst as *mut i64;
+    if n >= 1 << 16 {
+        // Past sixty-four thousand, a byte at a time from the lowest: a
+        // counting sort per byte is stable by construction, and a byte every
+        // key shares is skipped. 1 M numbers: 30 ms by the merge sort this
+        // replaced, 27 by sorting the pairs, 16 this way (2026-09-25).
+        let tmp = malloc(n * 16) as *mut [u64; 2];
+        if tmp.is_null() {
+            out(b"rill: out of memory\n");
+            die();
+        }
+        let mut counts = [[0usize; 256]; 8];
+        for i in 0..n {
+            let k = (*pairs.add(i))[0];
+            for (b, c) in counts.iter_mut().enumerate() {
+                c[((k >> (b * 8)) & 255) as usize] += 1;
+            }
+        }
+        let (mut src, mut dstp) = (pairs, tmp);
+        for (b, c) in counts.iter().enumerate() {
+            if c.iter().any(|&x| x == n) {
+                continue;
+            }
+            let mut off = [0usize; 256];
+            let mut at = 0;
+            for v in 0..256 {
+                off[v] = at;
+                at += c[v];
+            }
+            for i in 0..n {
+                let e = *src.add(i);
+                let v = ((e[0] >> (b * 8)) & 255) as usize;
+                *dstp.add(off[v]) = e;
+                off[v] += 1;
+            }
+            core::mem::swap(&mut src, &mut dstp);
+        }
+        for i in 0..n {
+            *out_idx.add(i) = (*src.add(i))[1] as i64;
+        }
+        free(tmp as *mut u8);
+    } else {
+        core::slice::from_raw_parts_mut(pairs, n).sort_unstable();
+        for i in 0..n {
+            *out_idx.add(i) = (*pairs.add(i))[1] as i64;
+        }
+    }
+    free(pairs as *mut u8);
 }
 
 type SortPair = [usize; 2];

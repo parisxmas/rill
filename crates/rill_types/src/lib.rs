@@ -3923,9 +3923,22 @@ impl Checker {
         // by the runtime's pattern-defeating quicksort — what a program that
         // keeps its data in a buffer sorts it with, where it used to have to
         // write the sort out. Floats in their total order: NaN at the ends.
-        if name == "buf_sort" {
-            if args.len() != 1 {
-                return Err(TypeError::new(line, format!("`buf_sort` takes one buffer, but {} given", args.len())));
+        // `buf_argsort(src, dst)`: the order of a float buffer's elements,
+        // stable, into an `Int` buffer.
+        if name == "buf_argsort" {
+            if args.len() != 2 {
+                return Err(TypeError::new(line, format!("`buf_argsort` takes two buffers, but {} given", args.len())));
+            }
+            let src = self.infer(&args[0], env)?;
+            let dst = self.infer(&args[1], env)?;
+            self.unify(&Ty::Buf(CTy::F64), &src.ty, line, "what `buf_argsort` orders")?;
+            self.unify(&Ty::Buf(CTy::I64), &dst.ty, line, "where `buf_argsort` writes the order")?;
+            return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Builtin { rt: "rill_buf_argsort", args: vec![src, dst] } });
+        }
+        if name == "buf_sort" || name == "buf_sort_range" {
+            let want = if name == "buf_sort" { 1 } else { 3 };
+            if args.len() != want {
+                return Err(TypeError::new(line, format!("`{name}` takes {want} argument(s), but {} given", args.len())));
             }
             let b = self.infer(&args[0], env)?;
             let code = match self.resolve(&b.ty) {
@@ -3955,7 +3968,14 @@ impl Checker {
                 }
             };
             let code = TExpr { ty: Ty::Int, line, kind: TK::Int(code) };
-            return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Builtin { rt: "rill_buf_sort", args: vec![b, code] } });
+            let mut all = vec![b, code];
+            for a in &args[1..] {
+                let x = self.infer(a, env)?;
+                self.unify(&Ty::Int, &x.ty, line, "a buffer range")?;
+                all.push(x);
+            }
+            let rt = if name == "buf_sort" { "rill_buf_sort" } else { "rill_buf_sort_range" };
+            return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Builtin { rt, args: all } });
         }
         // The prelude's `sort_with`: a stable sort of a list's own cells in
         // the runtime (`rill_list_sort`). `(List(a), (a, a) -> Bool) -> List(a)`.
@@ -6160,6 +6180,8 @@ fn is_builtin_fn(name: &str) -> bool {
             | "unique"
             | "list_sort"
             | "buf_sort"
+            | "buf_sort_range"
+            | "buf_argsort"
             | "map_new"
             | "map_set"
             | "map_find"

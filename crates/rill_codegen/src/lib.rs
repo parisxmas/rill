@@ -8031,20 +8031,35 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             TK::Builtin { rt, .. } if *rt == "rill_unchecked" => Ok(None),
             // A buffer is storage: sorted where it is, which every name for
             // it sees, as it sees `b[i] = v`.
-            TK::Builtin { rt, args } if *rt == "rill_buf_sort" => {
-                let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
-                let code = self.gen_expr(&args[1], scope, subst, func)?.expect("a width");
-                let f = match self.module.get_function("rill_buf_sort") {
+            TK::Builtin { rt, args } if matches!(*rt, "rill_buf_sort" | "rill_buf_sort_range" | "rill_buf_argsort") => {
+                let mut vals: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
+                let mut held_bufs = Vec::new();
+                for a in args {
+                    let ty = self.concrete(&a.ty, subst);
+                    if matches!(ty, Ty::Buf(_)) {
+                        let (b, held) = self.gen_borrowed(a, scope, subst, func)?;
+                        if held {
+                            held_bufs.push((b, ty));
+                        }
+                        vals.push(b.into());
+                    } else {
+                        vals.push(self.gen_expr(a, scope, subst, func)?.expect("a number").into());
+                    }
+                }
+                let f = match self.module.get_function(rt) {
                     Some(f) => f,
                     None => {
                         let ptrt = self.ctx.ptr_type(Default::default());
                         let i64t = self.ctx.i64_type();
-                        self.module.add_function("rill_buf_sort", self.ctx.void_type().fn_type(&[ptrt.into(), i64t.into()], false), None)
+                        let ps: Vec<BasicMetadataTypeEnum<'ctx>> = args
+                            .iter()
+                            .map(|a| if matches!(self.concrete(&a.ty, subst), Ty::Buf(_)) { ptrt.into() } else { i64t.into() })
+                            .collect();
+                        self.module.add_function(rt, self.ctx.void_type().fn_type(&ps, false), None)
                     }
                 };
-                self.builder.build_call(f, &[b.into(), code.into()], "").expect("LLVM builder error");
-                if held {
-                    let ty = self.concrete(&args[0].ty, subst);
+                self.builder.build_call(f, &vals, "").expect("LLVM builder error");
+                for (b, ty) in held_bufs {
                     self.emit_release(b, &ty);
                 }
                 Ok(None)

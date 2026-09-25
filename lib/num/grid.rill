@@ -2528,9 +2528,8 @@ fn mean_axis(g: Grid, axis) =
 
 # -- sorting and order --------------------------------------------------------
 
-# Quicksort: a median-of-three pivot, insertion sort under sixteen, and the
-# larger half left to the tail call — so the stack is logarithmic however
-# the input is shaped.
+# In place when this is the only holder of the grid and its storage, each
+# row on its own for a matrix.
 #
 #     g.sort(g.of(Cons(3.0, Cons(1.0, Cons(2.0, Nil)))))   # => [1, 2, 3]
 fn sort(g: Grid) =
@@ -2595,102 +2594,36 @@ private fn encode_key(bits) = if bits < 0 then bit_not(bits) else bit_or(bits, s
 
 private fn decode_key(k) = if k >= 0 then bit_not(k) else bit_xor(k, shl(1, 63))
 
+# Under two hundred thousand, the runtime's pattern-defeating quicksort over
+# the range, which beat the radix sort below that at every size measured
+# (5000 numbers: 36 us against 65); from there up the radix sort, whose eight
+# passes cost the same per number however many there are. Both put numbers
+# in the order of their bits, so a NaN and a -0.0 land where they would with
+# either.
 private fn sort_range(d: Buf(Float), lo, hi) =
-  if hi - lo >= 4096 then radix_sort(d, lo, hi) else quick_range(d, lo, hi)
-
-private fn quick_range(d: Buf(Float), lo, hi) =
-  if hi - lo < 32 then insertion_sort(d, lo, hi)
+  if hi - lo >= 200000 then radix_sort(d, lo, hi)
   else
-    j = hoare(d, lo, hi - 1)
-    if j + 1 - lo < hi - j - 1 then
-      quick_range(d, lo, j + 1)
-      quick_range(d, j + 1, hi)
-    else
-      quick_range(d, j + 1, hi)
-      quick_range(d, lo, j + 1)
-
-private fn insertion_sort(d: Buf(Float), lo, hi) =
-  for i in lo + 1..hi
-    v = d[i]
-    d[shift_up(d, lo, i - 1, v)] = v
-  0
-
-private fn shift_up(d: Buf(Float), lo, j, v) =
-  if j >= lo && d[j] > v then
-    d[j + 1] = d[j]
-    shift_up(d, lo, j - 1, v)
-  else j + 1
-
-# Hoare's partition over the inclusive range: everything at or below what
-# comes back is no greater than everything above it.
-private fn hoare(d: Buf(Float), lo, hi) =
-  mid = lo + (hi - lo) / 2
-  eighth = (hi - lo) / 8
-  pivot = if hi - lo > 512 then med3(med3(d[lo], d[lo + eighth], d[lo + 2 * eighth]), med3(d[mid - eighth], d[mid], d[mid + eighth]), med3(d[hi - 2 * eighth], d[hi - eighth], d[hi])) else med3(d[lo], d[mid], d[hi])
-  fn up(i) = if d[i] < pivot then up(i + 1) else i
-  fn down(j) = if d[j] > pivot then down(j - 1) else j
-  fn step(i, j) =
-    a = up(i + 1)
-    b = down(j - 1)
-    if a >= b then b
-    else
-      swap(d, a, b)
-      step(a, b)
-  step(lo - 1, hi + 1)
-
-private fn med3(a, b, c) =
-  if a < b then
-    if b < c then b else if a < c then c else a
-  else if a < c then a else if b < c then c else b
-
-private fn swap(d: Buf(Float), i, j) =
-  t = d[i]
-  d[i] = d[j]
-  d[j] = t
+    buf_sort_range(d, lo, hi)
+    0
 
 # Where the elements would go if they were sorted, ties in the order they
-# were in: a merge sort over the positions, which is what keeps it stable.
+# were in. The runtime orders each number's bits beside its position — a
+# byte at a time from the lowest for a big grid, which is stable by
+# construction, and a quick sort of the pairs for a small one, which the
+# position makes stable — in half the time of the merge sort over positions
+# written here (a million: 30 ms, now 16). `-0.0` and `0.0` are equal, as `<`
+# has them.
 #
 #     g.argsort(g.of(Cons(3.0, Cons(1.0, Cons(2.0, Nil)))))   # => [1, 2, 0]
 fn argsort(g: Grid) =
   n = size(g)
   d = dense(g).data
   idx = buf_int(n)
-  tmp = buf_int(n)
-  for k in 0..n
-    idx[k] = k
-  merge_sort(d, idx, tmp, 0, n)
+  buf_argsort(d, idx)
   out = fresh(shape1(n))
   for k in 0..n
     out.data[k] = to_float(idx[k])
   out
-
-private fn merge_sort(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo, hi) =
-  if hi - lo <= 1 then 0
-  else
-    mid = lo + (hi - lo) / 2
-    merge_sort(d, idx, tmp, lo, mid)
-    merge_sort(d, idx, tmp, mid, hi)
-    merge_halves(d, idx, tmp, lo, mid, hi)
-
-private fn merge_halves(d: Buf(Float), idx: Buf(Int), tmp: Buf(Int), lo, mid, hi) =
-  for k in lo..hi
-    tmp[k] = idx[k]
-  fn walk(i, j, k) =
-    if k >= hi then 0
-    else if i >= mid then
-      idx[k] = tmp[j]
-      walk(i, j + 1, k + 1)
-    else if j >= hi then
-      idx[k] = tmp[i]
-      walk(i + 1, j, k + 1)
-    else if d[tmp[j]] < d[tmp[i]] then
-      idx[k] = tmp[j]
-      walk(i, j + 1, k + 1)
-    else
-      idx[k] = tmp[i]
-      walk(i + 1, j, k + 1)
-  walk(lo, mid, lo)
 
 # The values that occur, each once, in order.
 #
@@ -2770,6 +2703,46 @@ fn quantile(g: Grid, q) =
   a = select_nth(d, 0, n, lo)
   b = if lo + 1 < n then select_nth(d, lo + 1, n, lo + 1) else a
   a + frac * (b - a)
+
+# The partition `select_nth` carries on into.
+private fn insertion_sort(d: Buf(Float), lo, hi) =
+  for i in lo + 1..hi
+    v = d[i]
+    d[shift_up(d, lo, i - 1, v)] = v
+  0
+
+private fn shift_up(d: Buf(Float), lo, j, v) =
+  if j >= lo && d[j] > v then
+    d[j + 1] = d[j]
+    shift_up(d, lo, j - 1, v)
+  else j + 1
+
+# Hoare's partition over the inclusive range: everything at or below what
+# comes back is no greater than everything above it.
+private fn hoare(d: Buf(Float), lo, hi) =
+  mid = lo + (hi - lo) / 2
+  eighth = (hi - lo) / 8
+  pivot = if hi - lo > 512 then med3(med3(d[lo], d[lo + eighth], d[lo + 2 * eighth]), med3(d[mid - eighth], d[mid], d[mid + eighth]), med3(d[hi - 2 * eighth], d[hi - eighth], d[hi])) else med3(d[lo], d[mid], d[hi])
+  fn up(i) = if d[i] < pivot then up(i + 1) else i
+  fn down(j) = if d[j] > pivot then down(j - 1) else j
+  fn step(i, j) =
+    a = up(i + 1)
+    b = down(j - 1)
+    if a >= b then b
+    else
+      swap(d, a, b)
+      step(a, b)
+  step(lo - 1, hi + 1)
+
+private fn med3(a, b, c) =
+  if a < b then
+    if b < c then b else if a < c then c else a
+  else if a < c then a else if b < c then c else b
+
+private fn swap(d: Buf(Float), i, j) =
+  t = d[i]
+  d[i] = d[j]
+  d[j] = t
 
 # The k-th smallest, by partitioning around a pivot and carrying on into
 # whichever side holds it. Linear on average, where sorting the lot is not,
