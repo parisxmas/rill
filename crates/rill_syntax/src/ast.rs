@@ -368,6 +368,10 @@ pub struct FnDef {
     /// `where Describe(a)`: what the signature's type variables are required
     /// to implement, said rather than left for the body to imply.
     pub wheres: Vec<Bound>,
+    /// `fast fn`: float arithmetic in it — and in the loops and local
+    /// functions lifted out of it — may be reassociated, which is what lets
+    /// a sum be split into lanes. Nothing else about floats is loosened.
+    pub fast: bool,
     /// `private fn`: the file's own. The loader renames it to a name no
     /// program can write, and the file's references with it, so it neither
     /// reaches an importer nor collides with an importer's.

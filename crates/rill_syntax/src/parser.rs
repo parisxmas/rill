@@ -193,6 +193,14 @@ impl Parser {
                     f.private = true;
                     functions.push(f);
                 }
+                // `fast fn`: its float arithmetic may be reassociated. A name
+                // rather than a keyword, like `private`, and only here.
+                Tok::Ident(w) if w == "fast" && matches!(self.peek2(), Tok::Fn) => {
+                    self.bump();
+                    let mut f = self.fndef(false)?;
+                    f.fast = true;
+                    functions.push(f);
+                }
                 Tok::Export => {
                     self.bump();
                     functions.push(self.fndef(true)?);
@@ -1067,7 +1075,7 @@ impl Parser {
         }
         self.expect(&Tok::Eq, "before the function body")?;
         let body = self.body()?;
-        Ok(FnDef { name, exported, params, ret_ann, body, line, lifted_from: None, wheres, private: false })
+        Ok(FnDef { name, exported, params, ret_ann, body, line, lifted_from: None, wheres, private: false, fast: false })
     }
 
     /// Function body: inline expression, or an indented block of statements.

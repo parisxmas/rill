@@ -389,6 +389,8 @@ impl Fmt {
             "export fn"
         } else if f.private {
             "private fn"
+        } else if f.fast {
+            "fast fn"
         } else {
             "fn"
         };

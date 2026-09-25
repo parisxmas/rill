@@ -190,6 +190,7 @@ fn fndef(name: &str, params: Vec<Param>, body: Expr, line: usize) -> FnDef {
         lifted_from: None,
         wheres: Vec::new(),
         private: false,
+        fast: false,
     }
 }
 

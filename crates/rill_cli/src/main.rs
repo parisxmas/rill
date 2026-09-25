@@ -976,6 +976,7 @@ fn test_main(tests: &[String]) -> rill_syntax::ast::FnDef {
         lifted_from: None,
         wheres: Vec::new(),
         private: false,
+        fast: false,
     }
 }
 

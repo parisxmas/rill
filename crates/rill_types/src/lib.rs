@@ -314,6 +314,8 @@ pub struct TFn {
     pub constraints: Vec<(u32, Constraint, usize)>,
     pub body: TExpr,
     pub line: usize,
+    /// `fast fn`: see `FnDef::fast`.
+    pub fast: bool,
 }
 
 #[derive(Debug)]
@@ -1134,6 +1136,7 @@ impl Checker {
                             lifted_from: None,
                             wheres: Vec::new(),
                             private: false,
+                            fast: false,
                         });
                     }
                 }
@@ -2354,7 +2357,7 @@ impl Checker {
         };
 
         // The body is zonked in phase 2, once every signature is generalized.
-        Ok(TFn { name: f.name.clone(), exported: f.exported, params, ret, ngen, constraints, body, line: f.line })
+        Ok(TFn { name: f.name.clone(), exported: f.exported, params, ret, ngen, constraints, body, line: f.line, fast: f.fast })
     }
 
     /// Resolves a type; unresolved vars get fresh `Gen` indices.

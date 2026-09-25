@@ -233,6 +233,7 @@ fn expand_for(
         lifted_from: None,
         wheres: Vec::new(),
         private: false,
+        fast: false,
     };
     let mut stmts = pre;
     stmts.push(Stmt::Bind { name: lo.clone(), value: from, line });
@@ -342,6 +343,7 @@ fn expand_while(
                 lifted_from: None,
                 wheres: Vec::new(),
                 private: false,
+                fast: false,
             },
             call(&go, vec![]),
         ),
@@ -361,6 +363,7 @@ fn expand_while(
                 lifted_from: None,
                 wheres: Vec::new(),
                 private: false,
+                fast: false,
             },
             call(&go, vec![*init]),
         ),
@@ -395,6 +398,7 @@ fn expand_while(
                         lifted_from: None,
                         wheres: Vec::new(),
                         private: false,
+                        fast: false,
                     },
                     first,
                 )
@@ -419,6 +423,7 @@ fn expand_while(
                         lifted_from: None,
                         wheres: Vec::new(),
                         private: false,
+                        fast: false,
                     },
                     call(&go, vec![*init]),
                 )
@@ -465,6 +470,7 @@ fn expand_while(
         lifted_from: None,
         wheres: Vec::new(),
         private: false,
+        fast: false,
     })));
     stmts.push(Stmt::Expr(call(&vouch, vouched)));
     stmts.push(Stmt::Expr(Expr::Var(res, line)));
@@ -1955,6 +1961,7 @@ fn walk_block(
             lifted_from: (!l.caps.is_empty()).then(|| parent.to_string()),
             wheres: Vec::new(),
             private: false,
+            fast: false,
         });
     }
     Ok(kept)

@@ -1,0 +1,25 @@
+# `fast fn`: float arithmetic in it, and in the loops and local functions
+# written inside it, may be reassociated — a sum split into several running
+# sums, added together at the end — which is what lets a reduction use the
+# machine's vector lanes. Outside one, `+` on floats means what it says, in
+# the order written (2026-09-25). On this dot product the difference is
+# about five times; the sums here are exact, so both agree.
+
+fn dot(x: Buf(Float), y: Buf(Float), n) =
+  for i in 0..n with acc = 0.0
+    acc + x[i] * y[i]
+
+fast fn fdot(x: Buf(Float), y: Buf(Float), n) =
+  for i in 0..n with acc = 0.0
+    acc + x[i] * y[i]
+
+fn main() =
+  n = 4096
+  x = buf_float(n)
+  y = buf_float(n)
+  for i in 0..n
+    x[i] = to_float(i % 13) * 0.5
+    y[i] = to_float(i % 7) * 0.25
+  println(dot(x, y, n))
+  println(fdot(x, y, n))
+  0

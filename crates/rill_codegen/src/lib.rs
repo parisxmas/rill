@@ -1472,6 +1472,9 @@ struct Codegen<'ctx, 'a> {
     asked_by: HashMap<InstanceKey, (Option<InstanceKey>, usize)>,
     /// The instance being generated.
     cur_key: Option<InstanceKey>,
+    /// Whether the function being generated is a `fast fn`'s, or was lifted
+    /// out of one: its float arithmetic may be reassociated.
+    fast_fp: bool,
 
     shims: HashMap<FnVal, FunctionValue<'ctx>>,
     /// Which parameters of each function have to be a compile-time function,
@@ -1643,6 +1646,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             instances: HashMap::new(),
             asked_by: HashMap::new(),
             cur_key: None,
+            fast_fp: false,
             shims: HashMap::new(),
             static_params: static_params(tmod),
             closure_tramps: HashMap::new(),
@@ -3829,12 +3833,24 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
-    /// Marks a float instruction as fusable. See the note at its use.
-    fn contract(v: inkwell::values::FloatValue<'ctx>) -> inkwell::values::FloatValue<'ctx> {
+    /// Marks a float instruction as fusable — and, in a `fast fn`, as free
+    /// to be reassociated, with the sign of a zero not mattering, which is
+    /// what the vectorizer asks before it splits a sum into lanes. NaN and
+    /// infinity keep their meaning either way. See the note at its use.
+    fn contract(&self, v: inkwell::values::FloatValue<'ctx>) -> inkwell::values::FloatValue<'ctx> {
         if let Some(i) = v.as_instruction() {
-            let _ = i.set_fast_math_flags(inkwell::values::FastMathFlags::AllowContract);
+            let _ = i.set_fast_math_flags(self.fp_flags());
         }
         v
+    }
+
+    fn fp_flags(&self) -> inkwell::values::FastMathFlags {
+        use inkwell::values::FastMathFlags as F;
+        if self.fast_fp {
+            F::AllowContract | F::AllowReassoc | F::NoSignedZeros
+        } else {
+            F::AllowContract
+        }
     }
 
     /// Lets go of one reference to a box that was found shared a moment
@@ -5708,6 +5724,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.check_constraints(key)?;
         self.cur_key = Some(key.clone());
         let (fn_idx, subst, bound) = key;
+        // A loop or a local function is lifted under the name of the one it
+        // was written in — `dot.for.go` — so it is fast when any function
+        // its name begins with is.
+        self.fast_fp = {
+            let name = &self.tmod.fns[*fn_idx].name;
+            let fast_named = |n: &str| self.tmod.fns.iter().any(|f| f.fast && f.name == n);
+            fast_named(name) || name.char_indices().any(|(i, c)| c == '.' && fast_named(&name[..i]))
+        };
         self.cur_fn = *fn_idx;
         if self.explain {
             let (fline, params) = {
@@ -9730,9 +9754,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     // and Go do this by default; Rust and Zig do not. Nothing
                     // else is loosened: no reassociation, no assumptions about
                     // NaN or infinity, no reciprocals.
-                    BinOp::Add => Self::contract(b.build_float_add(l, r, "add").unwrap()).into(),
-                    BinOp::Sub => Self::contract(b.build_float_sub(l, r, "sub").unwrap()).into(),
-                    BinOp::Mul => Self::contract(b.build_float_mul(l, r, "mul").unwrap()).into(),
+                    BinOp::Add => self.contract(b.build_float_add(l, r, "add").unwrap()).into(),
+                    BinOp::Sub => self.contract(b.build_float_sub(l, r, "sub").unwrap()).into(),
+                    BinOp::Mul => self.contract(b.build_float_mul(l, r, "mul").unwrap()).into(),
                     BinOp::Div => b.build_float_div(l, r, "div").unwrap().into(),
                     cmp => {
                         let pred = match cmp {
@@ -9756,9 +9780,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // loosening as a single `Float`. Equality is of both lanes.
             Ty::Float2 => {
                 let (l, r) = (l.into_vector_value(), r.into_vector_value());
+                let flags = self.fp_flags();
                 let contract = |v: inkwell::values::VectorValue<'ctx>| {
                     if let Some(i) = v.as_instruction() {
-                        let _ = i.set_fast_math_flags(inkwell::values::FastMathFlags::AllowContract);
+                        let _ = i.set_fast_math_flags(flags);
                     }
                     v
                 };

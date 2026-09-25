@@ -5966,3 +5966,25 @@ fn map_writes_over_the_cells_nothing_else_holds() {
          100000\n0\n"
     );
 }
+
+#[test]
+fn a_fast_fn_may_reassociate_its_floats() {
+    assert_eq!(compile_and_run("fast_fn.rill"), "9213.75\n9213.75\n");
+    let ir = {
+        let out_dir = std::env::temp_dir().join(bad_name("fast"));
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+            .arg("build")
+            .arg(workspace_root().join("examples/fast_fn.rill"))
+            .arg("--emit-ir")
+            .arg("-o")
+            .arg(out_dir.join("fast"))
+            .output()
+            .expect("failed to spawn rill");
+        assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+        String::from_utf8_lossy(&build.stdout).into_owned()
+    };
+    // the fast one's adds may be reassociated; the plain one's only contracted
+    assert!(ir.contains("fadd reassoc nsz contract"), "no reassociated add");
+    assert!(ir.contains("fadd contract"), "no plain add");
+}
