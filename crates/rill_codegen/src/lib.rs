@@ -7250,13 +7250,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.build_unreachable().expect("LLVM builder error");
         let fns: Vec<FunctionValue<'ctx>> =
             self.module.get_functions().filter(|f| f.count_basic_blocks() > 0).collect();
-        // And a frame pointer in every one of them, so that the runtime can
-        // walk the stack at a crash by the chain of saved frame pointers,
-        // through its own frames and a signal's: one register on x86-64,
-        // what the ABI keeps anyway on arm64.
+        // And a frame pointer in every one that calls anything, so that the
+        // runtime can walk the stack at a crash by the chain of saved frame
+        // pointers, through its own frames and a signal's. Not in a leaf: a
+        // lambda that only computes paid a save and a restore of two
+        // registers per call for it, a third of `compose`'s time
+        // (2026-09-25), and the crash report finds a leaf's caller in the
+        // link register instead.
         let mut entries = Vec::with_capacity(fns.len());
         for (i, f) in fns.iter().enumerate() {
-            f.add_attribute(AttributeLoc::Function, self.ctx.create_string_attribute("frame-pointer", "all"));
+            f.add_attribute(AttributeLoc::Function, self.ctx.create_string_attribute("frame-pointer", "non-leaf"));
             let name = if *f == end { &b""[..] } else { f.get_name().to_bytes() };
             let text = self.ctx.const_string(name, true);
             let g = self.module.add_global(text.get_type(), None, &format!("rill_sym.{i}"));

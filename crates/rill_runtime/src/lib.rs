@@ -3804,15 +3804,34 @@ unsafe fn frame_here() -> usize {
 /// of its own functions it was in. The walk stops at a frame pointer that
 /// is not above the last, or too far above it, before it can read
 /// anything that is not a frame.
-unsafe fn crash_where_from(pc: usize, mut fp: usize) {
+unsafe fn crash_where_from(pc: usize, fp: usize) {
+    crash_where_from_lr(pc, fp, 0)
+}
+
+/// The same, with the link register at the fault. A leaf function keeps no
+/// frame record, so the chain from `fp` starts at its caller's caller; the
+/// caller is the one `lr` returns into — when that is neither the faulting
+/// function itself (a function with a frame, whose `lr` is stale) nor what
+/// the chain says next (one that saved it already).
+unsafe fn crash_where_from_lr(pc: usize, mut fp: usize, lr: usize) {
     // a run of the same frame — a recursion that ran away — is said once,
     // with its length
     let mut shown = 0;
     let mut last: (*const u8, usize) = (core::ptr::null(), 0);
     let mut repeats = 0i64;
+    let mut here: *const u8 = core::ptr::null();
     if pc != 0 {
         if let Some((name, off)) = sym_for(pc) {
+            here = name;
             crash_frame(name, off, &mut last, &mut repeats, &mut shown);
+        }
+    }
+    let chained = if fp != 0 && fp & 7 == 0 { *((fp + 8) as *const usize) } else { 0 };
+    if lr != 0 && lr != chained {
+        if let Some((name, off)) = sym_for(lr - 1) {
+            if name != here {
+                crash_frame(name, off, &mut last, &mut repeats, &mut shown);
+            }
         }
     }
     let mut steps = 0;
@@ -4014,6 +4033,26 @@ unsafe fn fault_site(_ctx: *const u8) -> (usize, usize) {
     (0, 0)
 }
 
+/// The link register at the fault: a function that calls nothing keeps no
+/// frame of its own (`frame-pointer` is `non-leaf`), and its caller is found
+/// here rather than on the chain.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+unsafe fn fault_lr(ctx: *const u8) -> usize {
+    let mc = *(ctx.add(48) as *const *const u8);
+    *(mc.add(16 + 30 * 8) as *const usize)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+unsafe fn fault_lr(ctx: *const u8) -> usize {
+    let mc = ctx.add(176);
+    *(mc.add(8 + 30 * 8) as *const usize)
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "linux"), not(target_arch = "aarch64")))]
+unsafe fn fault_lr(_ctx: *const u8) -> usize {
+    0
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 extern "C" fn crash_landed(sig: i32, info: *const u8, ctx: *const u8) {
     unsafe {
@@ -4079,7 +4118,7 @@ extern "C" fn crash_landed(sig: i32, info: *const u8, ctx: *const u8) {
                 err(b"\n");
             }
         }
-        crash_where_from(pc, fp);
+        crash_where_from_lr(pc, fp, fault_lr(ctx));
         let wait = getenv(b"RILL_CRASH_WAIT\0".as_ptr());
         if !wait.is_null() && *wait != 0 {
             err(b"rill: waiting for a debugger, pid ");
