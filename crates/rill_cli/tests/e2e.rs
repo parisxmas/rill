@@ -84,6 +84,32 @@ fn compile_and_run(example: &str) -> String {
     String::from_utf8(run.stdout).expect("program output was not UTF-8")
 }
 
+/// `compile_and_run` with flags for `rill build` — `--debug`, say.
+fn compile_and_run_with(example: &str, flags: &[&str]) -> String {
+    require_fresh_runtime();
+    let root = workspace_root();
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let stem = Path::new(example).file_stem().unwrap().to_string_lossy().into_owned();
+    let exe = out_dir.join(format!("{stem}{}", flags.concat()));
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .args(flags)
+        .arg(root.join("examples").join(example))
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("failed to spawn rill");
+    assert!(
+        build.status.success(),
+        "rill build {flags:?} {example} failed:\n{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&exe).output().expect("failed to run produced executable");
+    assert!(run.status.success(), "{example} {flags:?} exited with {:?}", run.status.code());
+    String::from_utf8(run.stdout).expect("program output was not UTF-8")
+}
+
 /// Builds an example without running it, for the ones that open a window.
 fn compile_only(example: &str) {
     require_fresh_runtime();
@@ -5805,4 +5831,11 @@ fn unit_is_a_parameter_and_goes_down_a_channel() {
 #[test]
 fn a_call_through_a_field_captures_the_value_it_is_made_on() {
     assert_eq!(compile_and_run("field_call_captured.rill"), "42\n10\n6\n16\n12\nrex woofsrex woofs\n");
+}
+
+#[test]
+fn deep_structures_need_no_stack_for_their_length() {
+    let want = "2688898\n1\n0\ntrue\nfalse\nN(N(N(L, 3), 2), 1)\n1000000\n100000\n";
+    assert_eq!(compile_and_run("deep_structures.rill"), want);
+    assert_eq!(compile_and_run_with("deep_structures.rill", &["--debug"]), want);
 }

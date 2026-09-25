@@ -1,0 +1,35 @@
+# What the compiler writes for a type — `show`, `==`, the hash a map key
+# takes, the drop — walks into the field of the type's own type instead of
+# calling itself on it, so a list of a million, or a tree built leftwards,
+# needs no stack for its length. Each recursed once per box: `println` of
+# 200,000 elements, a million-element key, `==` on five million boxes and,
+# in a `--debug` build, dropping a million-element list all overflowed the
+# stack; `show` also joined its text a level at a time, which was quadratic
+# (2026-09-25). And a function calling itself runs in constant stack in a
+# `--debug` build too, whatever its arguments.
+
+type T
+  L
+  N(l: T, v: Int)
+
+type B
+  B(a: Float, b: Float, c: Float, d: Float, e: Float, f: Float, g: Float, h: Float, i: Float, j: Float)
+
+fn left(n, acc) = if n == 0 then acc else left(n - 1, N(acc, n))
+
+fn stepb(x: B, n: Int) -> B =
+  if n == 0 then x else stepb(B(x.b, x.c, x.d, x.e, x.f, x.g, x.h, x.i, x.j, x.a + 1.0), n - 1)
+
+fn main() =
+  println(#show(range(1, 200000)))
+  m = map_new()
+  m[range(1, 1000000)] = 1
+  println(map_or(m, range(1, 1000000), 0))
+  println(map_or(m, range(1, 999999), 0))
+  println(left(2000000, L) == left(2000000, L))
+  println(left(3, L) == left(4, L))
+  println(show(left(3, L)))
+  xs = range(1, 1000000)
+  println(len(xs))
+  println(stepb(B(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0), 1000000).a)
+  0

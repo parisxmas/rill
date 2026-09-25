@@ -4122,13 +4122,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
         let saved = self.builder.get_insert_block();
         let i64t = self.ctx.i64_type();
-        let ptr = f.get_nth_param(0).unwrap().into_pointer_value();
-
         let entry = self.ctx.append_basic_block(f, "entry");
+        let head_bb = self.ctx.append_basic_block(f, "head");
         let free_bb = self.ctx.append_basic_block(f, "free");
         let done_bb = self.ctx.append_basic_block(f, "done");
 
         self.builder.position_at_end(entry);
+        self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+        self.builder.position_at_end(head_bb);
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let p_phi = self.builder.build_phi(ptrt, "p").expect("LLVM builder error");
+        p_phi.add_incoming(&[(&f.get_nth_param(0).unwrap(), entry)]);
+        let ptr = p_phi.as_basic_value().into_pointer_value();
         let hdr = self.header_struct();
         let rc_ptr =
             self.builder.build_struct_gep(hdr, ptr, 0, "rc.ptr").expect("LLVM builder error");
@@ -4190,13 +4195,31 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     heap.push((fv, cf));
                 }
             }
-            let last = heap.pop();
+            // A field of the type's own type has the last word if there is
+            // one — a chain through an earlier field, a tree built leftwards,
+            // is let go of from one frame too — and in a `--debug` build,
+            // where no tail call is made into a jump, it is walked into by
+            // an explicit loop: dropping a million-element list overflowed
+            // the stack there (2026-09-25).
+            let own = heap.iter().rposition(|(_, cf)| cf == ty);
+            let last = match own {
+                Some(k) => Some(heap.remove(k)),
+                None => heap.pop(),
+            };
             for (fv, cf) in heap {
                 self.emit_release(fv, &cf);
             }
             let size = struct_ty.size_of().expect("sized struct");
             self.emit_free(ptr, size);
             match last {
+                // The loop is written out for a `--debug` build only: under the
+                // optimizer the tail call below becomes the same loop, a few
+                // percent tighter than this one (nbody_rec 31.5 against 32.6).
+                Some((fv, cf)) if cf == *ty && self.debug.is_some() => {
+                    let here = self.builder.get_insert_block().unwrap();
+                    p_phi.add_incoming(&[(&fv, here)]);
+                    self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+                }
                 Some((fv, cf)) => {
                     self.emit_release_tail(fv, &cf);
                     self.builder.build_return(None).expect("LLVM builder error");
@@ -4362,15 +4385,15 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     /// The generated structural renderer for one concrete ADT type:
-    /// borrows the box, returns an owned string like `Cons(1, Nil)`.
+    /// borrows the box, returns an owned string like `Cons(1, Nil)`. The
+    /// text goes into one builder (`showto$T`) rather than being joined a
+    /// level at a time, which copied everything below each level again —
+    /// quadratic in a list's length — and recursed once per element, so
+    /// `println(range(1, 200000))` overflowed the stack (2026-09-25).
     fn adt_show(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
         if let Some(&f) = if self.lenient { self.adt_inspects.get(ty) } else { self.adt_shows.get(ty) } {
             return Ok(f);
         }
-        let (adt, targs) = match ty {
-            Ty::Adt(i, targs) => (*i, targs.clone()),
-            _ => unreachable!("adt_show on non-ADT"),
-        };
         let ptrt = self.ctx.ptr_type(Default::default());
         let fn_ty = ptrt.fn_type(&[ptrt.into()], false);
         let name = format!("{}${}", if self.lenient { "inspect" } else { "show" }, mangle(ty, &self.tmod.adts));
@@ -4381,12 +4404,61 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         } else {
             self.adt_shows.insert(ty.clone(), f);
         }
-
+        let to = self.adt_show_to(ty, line)?;
         let saved = self.builder.get_insert_block();
-        let i64t = self.ctx.i64_type();
-        let ptr = f.get_nth_param(0).unwrap().into_pointer_value();
         let entry = self.ctx.append_basic_block(f, "entry");
         self.builder.position_at_end(entry);
+        let sb = match self.call_rt("rill_strbuf_new", &[]).try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => v,
+            _ => unreachable!("a builder"),
+        };
+        self.builder
+            .build_call(to, &[f.get_nth_param(0).unwrap().into(), sb.into()], "")
+            .expect("LLVM builder error");
+        let out = match self.call_rt("rill_strbuf_take", &[sb.into()]).try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => v,
+            _ => unreachable!("a string"),
+        };
+        self.call_rt("rill_strbuf_release", &[sb.into()]);
+        self.builder.build_return(Some(&out)).expect("LLVM builder error");
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(f)
+    }
+
+    /// `showto$T(box, builder)`: appends the rendering. The last field, when
+    /// it is of the type's own type, is walked into rather than called, with
+    /// its closing parenthesis counted and written once the walk ends.
+    fn adt_show_to(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!("{}to${}", if self.lenient { "inspect" } else { "show" }, mangle(ty, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let (adt, targs) = match ty {
+            Ty::Adt(i, targs) => (*i, targs.clone()),
+            _ => unreachable!("adt_show on non-ADT"),
+        };
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let i64t = self.ctx.i64_type();
+        let fn_ty = self.ctx.void_type().fn_type(&[ptrt.into(), ptrt.into()], false);
+        let f = self.module.add_function(&name, fn_ty, None);
+        f.set_linkage(inkwell::module::Linkage::Internal);
+
+        let saved = self.builder.get_insert_block();
+        let sb = f.get_nth_param(1).unwrap();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        let head_bb = self.ctx.append_basic_block(f, "head");
+        let done_bb = self.ctx.append_basic_block(f, "done");
+        self.builder.position_at_end(entry);
+        self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+        self.builder.position_at_end(head_bb);
+        let p_phi = self.builder.build_phi(ptrt, "p").expect("LLVM builder error");
+        let open_phi = self.builder.build_phi(i64t, "open").expect("LLVM builder error");
+        p_phi.add_incoming(&[(&f.get_nth_param(0).unwrap(), entry)]);
+        open_phi.add_incoming(&[(&i64t.const_zero(), entry)]);
+        let ptr = p_phi.as_basic_value().into_pointer_value();
+        let open = open_phi.as_basic_value().into_int_value();
         let tag_ptr = self
             .builder
             .build_struct_gep(self.header_struct(), ptr, 1, "tag.ptr")
@@ -4410,12 +4482,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.position_at_end(default_bb);
         self.builder.build_unreachable().expect("LLVM builder error");
 
+        let add = |this: &mut Self, text: &str| {
+            let s = this.const_str(text);
+            this.call_rt("rill_strbuf_add", &[sb.into(), s.into()]);
+        };
+        let mut finished: Vec<BasicBlock<'ctx>> = Vec::new();
         for (_, bb, ci) in cases {
             self.builder.position_at_end(bb);
             let c = &ctors[ci];
             if c.fields.is_empty() {
-                let s = self.const_str(&c.name);
-                self.builder.build_return(Some(&s)).expect("LLVM builder error");
+                add(self, &c.name);
+                finished.push(self.builder.get_insert_block().unwrap());
+                self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
                 continue;
             }
             let struct_ty = self.ctor_struct(adt, ci, &targs);
@@ -4426,40 +4504,77 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             } else {
                 format!("{}(", c.name)
             };
-            let mut acc: BasicValueEnum<'ctx> = self.const_str(&head).into();
-            let fields = c.fields.clone();
-            for (fi, fty) in fields.iter().enumerate() {
+            add(self, &head);
+            let fields: Vec<Ty> = c.fields.iter().map(|t| subst_gen(t, &targs)).collect();
+            let last = fields.len() - 1;
+            for (fi, cf) in fields.iter().enumerate() {
                 if fi > 0 {
-                    let sep: BasicValueEnum<'ctx> = self.const_str(", ").into();
-                    let next = self.call_concat(acc, sep);
-                    self.emit_release(acc, &Ty::Str);
-                    self.emit_release(sep, &Ty::Str);
-                    acc = next;
+                    add(self, ", ");
                 }
-                let cf = subst_gen(fty, &targs);
                 let fp = self
                     .builder
                     .build_struct_gep(struct_ty, ptr, (fi + 2) as u32, "f")
                     .expect("LLVM builder error");
                 let fv = self
                     .builder
-                    .build_load(self.slot_type(&cf), fp, "fv")
+                    .build_load(self.slot_type(cf), fp, "fv")
                     .expect("LLVM builder error");
-                if self.is_heap(&cf) {
-                    self.emit_retain(fv, &cf);
+                if cf == ty && self.user_impl(rill_types::SHOW_TRAIT, 0, cf).is_none() {
+                    if fi == last {
+                        // walked into; its `)` is one more to write at the end
+                        let here = self.builder.get_insert_block().unwrap();
+                        let more = self
+                            .builder
+                            .build_int_add(open, i64t.const_int(1, false), "open1")
+                            .expect("LLVM builder error");
+                        p_phi.add_incoming(&[(&fv, here)]);
+                        open_phi.add_incoming(&[(&more, here)]);
+                        self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+                        break;
+                    }
+                    self.builder.build_call(f, &[fv.into(), sb.into()], "").expect("LLVM builder error");
+                    continue;
                 }
-                let fs = self.gen_show_of(fv, &cf, line)?;
-                let next = self.call_concat(acc, fs);
-                self.emit_release(acc, &Ty::Str);
+                if self.is_heap(cf) {
+                    self.emit_retain(fv, cf);
+                }
+                let fs = self.gen_show_of(fv, cf, line)?;
+                self.call_rt("rill_strbuf_add", &[sb.into(), fs.into()]);
                 self.emit_release(fs, &Ty::Str);
-                acc = next;
+                if fi == last {
+                    add(self, ")");
+                    finished.push(self.builder.get_insert_block().unwrap());
+                    self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+                }
             }
-            let close: BasicValueEnum<'ctx> = self.const_str(")").into();
-            let out = self.call_concat(acc, close);
-            self.emit_release(acc, &Ty::Str);
-            self.emit_release(close, &Ty::Str);
-            self.builder.build_return(Some(&out)).expect("LLVM builder error");
         }
+
+        // The parentheses of every box walked into, closed together.
+        self.builder.position_at_end(done_bb);
+        let _ = finished;
+        let close_bb = self.ctx.append_basic_block(f, "close");
+        let ret_bb = self.ctx.append_basic_block(f, "ret");
+        let any = self
+            .builder
+            .build_int_compare(IntPredicate::SGT, open, i64t.const_zero(), "any")
+            .expect("LLVM builder error");
+        self.builder.build_conditional_branch(any, close_bb, ret_bb).expect("LLVM builder error");
+        self.builder.position_at_end(close_bb);
+        let k_phi = self.builder.build_phi(i64t, "k").expect("LLVM builder error");
+        k_phi.add_incoming(&[(&open, done_bb)]);
+        self.call_rt("rill_strbuf_byte", &[sb.into(), i64t.const_int(41, false).into()]);
+        let k1 = self
+            .builder
+            .build_int_sub(k_phi.as_basic_value().into_int_value(), i64t.const_int(1, false), "k1")
+            .expect("LLVM builder error");
+        k_phi.add_incoming(&[(&k1, close_bb)]);
+        let more = self
+            .builder
+            .build_int_compare(IntPredicate::SGT, k1, i64t.const_zero(), "more")
+            .expect("LLVM builder error");
+        self.builder.build_conditional_branch(more, close_bb, ret_bb).expect("LLVM builder error");
+        self.builder.position_at_end(ret_bb);
+        self.builder.build_return(None).expect("LLVM builder error");
 
         if let Some(bb) = saved {
             self.builder.position_at_end(bb);
@@ -4547,7 +4662,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
     }
 
-    /// The generated structural equality for one concrete ADT type.
+    /// The generated structural equality for one concrete ADT type. A loop,
+    /// not a recursion, over the last field of the type's own type — the
+    /// tail of a list, the left spine of a tree built leftwards — so a list
+    /// of a million is compared in constant stack; the other fields are
+    /// compared first, and the first that differs answers (2026-09-25:
+    /// `==` on five million nested boxes overflowed the stack).
     fn adt_eq(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
         if let Some(&f) = self.adt_eqs.get(ty) {
             return Ok(f);
@@ -4565,13 +4685,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
         let saved = self.builder.get_insert_block();
         let i64t = self.ctx.i64_type();
-        let pa = f.get_nth_param(0).unwrap().into_pointer_value();
-        let pb = f.get_nth_param(1).unwrap().into_pointer_value();
         let entry = self.ctx.append_basic_block(f, "entry");
+        let head_bb = self.ctx.append_basic_block(f, "head");
         let neq_bb = self.ctx.append_basic_block(f, "neq");
         let same_tag_bb = self.ctx.append_basic_block(f, "same.tag");
 
         self.builder.position_at_end(entry);
+        self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+        self.builder.position_at_end(head_bb);
+        let pa_phi = self.builder.build_phi(ptrt, "pa").expect("LLVM builder error");
+        let pb_phi = self.builder.build_phi(ptrt, "pb").expect("LLVM builder error");
+        pa_phi.add_incoming(&[(&f.get_nth_param(0).unwrap(), entry)]);
+        pb_phi.add_incoming(&[(&f.get_nth_param(1).unwrap(), entry)]);
+        let pa = pa_phi.as_basic_value().into_pointer_value();
+        let pb = pb_phi.as_basic_value().into_pointer_value();
         let hdr = self.header_struct();
         let ta_ptr =
             self.builder.build_struct_gep(hdr, pa, 1, "ta.ptr").expect("LLVM builder error");
@@ -4599,31 +4726,44 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .build_switch(ta, neq_bb, &cases.iter().map(|(v, b, _)| (*v, *b)).collect::<Vec<_>>())
             .expect("LLVM builder error");
 
+        let yes = self.ctx.bool_type().const_int(1, false);
         for (_, bb, ci) in cases {
             self.builder.position_at_end(bb);
             let c = &ctors[ci];
-            let mut acc = self.ctx.bool_type().const_int(1, false);
-            if !c.fields.is_empty() {
-                let struct_ty = self.ctor_struct(adt, ci, &targs);
-                let fields = c.fields.clone();
-                for (fi, fty) in fields.iter().enumerate() {
-                    let cf = subst_gen(fty, &targs);
-                    let fap = self
-                        .builder
-                        .build_struct_gep(struct_ty, pa, (fi + 2) as u32, "fa")
-                        .expect("LLVM builder error");
-                    let fbp = self
-                        .builder
-                        .build_struct_gep(struct_ty, pb, (fi + 2) as u32, "fb")
-                        .expect("LLVM builder error");
-                    let ll = self.slot_type(&cf);
-                    let fa = self.builder.build_load(ll, fap, "fav").expect("builder");
-                    let fb = self.builder.build_load(ll, fbp, "fbv").expect("builder");
-                    let c_eq = self.gen_eq_of(fa, fb, &cf, line)?;
-                    acc = self.builder.build_and(acc, c_eq, "and").expect("LLVM builder error");
+            let fields: Vec<Ty> = c.fields.iter().map(|t| subst_gen(t, &targs)).collect();
+            let tail = fields.iter().rposition(|t| t == ty);
+            let struct_ty = if fields.is_empty() { None } else { Some(self.ctor_struct(adt, ci, &targs)) };
+            let load = |this: &mut Self, fi: usize| {
+                let st = struct_ty.unwrap();
+                let ll = this.slot_type(&fields[fi]);
+                let fap = this.builder.build_struct_gep(st, pa, (fi + 2) as u32, "fa").expect("LLVM builder error");
+                let fbp = this.builder.build_struct_gep(st, pb, (fi + 2) as u32, "fb").expect("LLVM builder error");
+                let fa = this.builder.build_load(ll, fap, "fav").expect("builder");
+                let fb = this.builder.build_load(ll, fbp, "fbv").expect("builder");
+                (fa, fb)
+            };
+            for fi in 0..fields.len() {
+                if Some(fi) == tail {
+                    continue;
+                }
+                let (fa, fb) = load(self, fi);
+                let c_eq = self.gen_eq_of(fa, fb, &fields[fi], line)?;
+                let next = self.ctx.append_basic_block(f, "eq.next");
+                self.builder.build_conditional_branch(c_eq, next, neq_bb).expect("LLVM builder error");
+                self.builder.position_at_end(next);
+            }
+            match tail {
+                Some(ti) => {
+                    let (fa, fb) = load(self, ti);
+                    let here = self.builder.get_insert_block().unwrap();
+                    pa_phi.add_incoming(&[(&fa, here)]);
+                    pb_phi.add_incoming(&[(&fb, here)]);
+                    self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+                }
+                None => {
+                    self.builder.build_return(Some(&yes)).expect("LLVM builder error");
                 }
             }
-            self.builder.build_return(Some(&acc)).expect("LLVM builder error");
         }
 
         if let Some(bb) = saved {
@@ -4774,8 +4914,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     }
 
     /// The generated structural hash for one concrete ADT type: borrows the
-    /// box and mixes its tag with each field's hash, in the order `eq$T`
-    /// compares them.
+    /// box and mixes its tag with each field's hash. The last field of the
+    /// type's own type is not hashed and mixed in but walked into, carrying
+    /// what has been mixed so far — a loop, so a million-element list as a
+    /// key hashes in constant stack (2026-09-25). Values `eq$T` calls equal
+    /// are walked alike, so they hash alike.
     fn adt_hash(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
         let name = format!("hash${}", mangle(ty, &self.tmod.adts));
         if let Some(f) = self.module.get_function(&name) {
@@ -4793,10 +4936,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         f.set_linkage(inkwell::module::Linkage::Private);
 
         let saved = self.builder.get_insert_block();
-        let ptr = f.get_nth_param(0).unwrap().into_pointer_value();
         let entry = self.ctx.append_basic_block(f, "entry");
+        let head_bb = self.ctx.append_basic_block(f, "head");
         let plain_bb = self.ctx.append_basic_block(f, "hash.tag");
         self.builder.position_at_end(entry);
+        self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+        self.builder.position_at_end(head_bb);
+        let p_phi = self.builder.build_phi(ptrt, "p").expect("LLVM builder error");
+        let seed_phi = self.builder.build_phi(i64t, "seed").expect("LLVM builder error");
+        p_phi.add_incoming(&[(&f.get_nth_param(0).unwrap(), entry)]);
+        seed_phi.add_incoming(&[(&i64t.const_zero(), entry)]);
+        let ptr = p_phi.as_basic_value().into_pointer_value();
+        let seed = seed_phi.as_basic_value().into_int_value();
         let tag_ptr = self
             .builder
             .build_struct_gep(self.header_struct(), ptr, 1, "tag.ptr")
@@ -4806,6 +4957,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .build_load(i64t, tag_ptr, "tag")
             .expect("LLVM builder error")
             .into_int_value();
+        let seeded = self.builder.build_xor(seed, self.mix64(tag), "seeded").expect("LLVM builder error");
+        let start = self.mix64(seeded);
         let ctors = self.tmod.adts[adt].ctors.clone();
         let mut cases = Vec::new();
         for (ci, c) in ctors.iter().enumerate() {
@@ -4821,28 +4974,46 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
         // A constructor with no fields is its tag and nothing else.
         self.builder.position_at_end(plain_bb);
-        let h = self.mix64(tag);
-        self.builder.build_return(Some(&h)).expect("LLVM builder error");
+        self.builder.build_return(Some(&start)).expect("LLVM builder error");
 
         for (_, bb, ci) in cases {
             self.builder.position_at_end(bb);
             let struct_ty = self.ctor_struct(adt, ci, &targs);
-            let mut acc = self.mix64(tag);
-            for (fi, fty) in ctors[ci].fields.clone().iter().enumerate() {
-                let cf = subst_gen(fty, &targs);
+            let fields: Vec<Ty> = ctors[ci].fields.iter().map(|t| subst_gen(t, &targs)).collect();
+            let tail = fields.iter().rposition(|t| t == ty);
+            let mut acc = start;
+            for (fi, cf) in fields.iter().enumerate() {
+                if Some(fi) == tail {
+                    continue;
+                }
                 let fp = self
                     .builder
                     .build_struct_gep(struct_ty, ptr, (fi + 2) as u32, "f")
                     .expect("LLVM builder error");
                 let fv = self
                     .builder
-                    .build_load(self.slot_type(&cf), fp, "fv")
+                    .build_load(self.slot_type(cf), fp, "fv")
                     .expect("LLVM builder error");
-                let fh = self.gen_hash_of(fv, &cf, line)?;
+                let fh = self.gen_hash_of(fv, cf, line)?;
                 let x = self.builder.build_xor(acc, fh, "mixin").expect("LLVM builder error");
                 acc = self.mix64(x);
             }
-            self.builder.build_return(Some(&acc)).expect("LLVM builder error");
+            match tail {
+                Some(ti) => {
+                    let fp = self
+                        .builder
+                        .build_struct_gep(struct_ty, ptr, (ti + 2) as u32, "tail")
+                        .expect("LLVM builder error");
+                    let next = self.builder.build_load(ptrt, fp, "next").expect("LLVM builder error");
+                    let here = self.builder.get_insert_block().unwrap();
+                    p_phi.add_incoming(&[(&next, here)]);
+                    seed_phi.add_incoming(&[(&acc, here)]);
+                    self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+                }
+                None => {
+                    self.builder.build_return(Some(&acc)).expect("LLVM builder error");
+                }
+            }
         }
 
         if let Some(bb) = saved {
@@ -10615,6 +10786,18 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .run_passes("default<O3>", &machine, PassBuilderOptions::create())
                 .map_err(|e| {
                     CodegenError::new(0, format!("optimization pipeline failed: {e}"))
+                })?;
+        } else {
+            // A function calling itself runs in constant stack: that is a
+            // promise of the language, and a `--debug` build keeps it too.
+            // Where the arguments do not fit the registers the call is not
+            // `musttail`, and without the optimizer nothing made it a jump —
+            // a loop over a ten-float record overflowed at 40,000 turns
+            // (2026-09-25). This one pass does only that.
+            self.module
+                .run_passes("function(tailcallelim)", &machine, PassBuilderOptions::create())
+                .map_err(|e| {
+                    CodegenError::new(0, format!("tail-call pass failed: {e}"))
                 })?;
         }
         machine
