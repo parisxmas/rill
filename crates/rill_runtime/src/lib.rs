@@ -673,12 +673,126 @@ pub unsafe extern "C" fn rill_int_to_str(v: i64) -> *mut u8 {
 /// Returns a new owned string.
 #[no_mangle]
 pub unsafe extern "C" fn rill_float_to_str(v: f64) -> *mut u8 {
-    let mut buf = [0u8; 40];
-    let n = snprintf(buf.as_mut_ptr(), 39, b"%g\0".as_ptr(), v);
-    let n = n.clamp(0, 39) as usize;
+    let mut buf = [0u8; 48];
+    let n = float_text(v, &mut buf);
     let p = str_new(n);
     copy_small(buf.as_ptr(), p.add(16), n);
     p
+}
+
+/// The fewest digits that read back as `v`, laid out as `%g` lays them out:
+/// no exponent from 1e-4 up to where the digits end, `e+NN` past that, no
+/// point when nothing follows it, `nan` and `inf` as C spells them. `%g`
+/// itself kept six digits, so `0.1 + 0.2` printed `0.3` and no printed
+/// float could be trusted to be the one computed (2026-09-25); a number of
+/// six digits or fewer prints as it always did.
+fn float_text(v: f64, out: &mut [u8; 48]) -> usize {
+    struct W<'a> {
+        b: &'a mut [u8; 48],
+        n: usize,
+    }
+    impl core::fmt::Write for W<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            for &c in s.as_bytes() {
+                if self.n < self.b.len() {
+                    self.b[self.n] = c;
+                    self.n += 1;
+                }
+            }
+            Ok(())
+        }
+    }
+    let put = |out: &mut [u8; 48], n: &mut usize, c: u8| {
+        if *n < out.len() {
+            out[*n] = c;
+            *n += 1;
+        }
+    };
+    let mut n = 0usize;
+    if v.is_nan() {
+        for &c in b"nan" {
+            put(out, &mut n, c);
+        }
+        return n;
+    }
+    if v.is_infinite() {
+        for &c in if v < 0.0 { &b"-inf"[..] } else { &b"inf"[..] } {
+            put(out, &mut n, c);
+        }
+        return n;
+    }
+    // `{:e}` is the shortest round trip in scientific form: `-1.25e-7`.
+    let mut sci = [0u8; 48];
+    let len = {
+        let mut w = W { b: &mut sci, n: 0 };
+        let _ = core::fmt::write(&mut w, format_args!("{:e}", v));
+        w.n
+    };
+    let t = &sci[..len];
+    let (neg, t) = if t[0] == b'-' { (true, &t[1..]) } else { (false, t) };
+    let epos = t.iter().position(|&c| c == b'e').unwrap_or(t.len());
+    let mut digits = [0u8; 24];
+    let mut nd = 0usize;
+    for &c in &t[..epos] {
+        if c != b'.' && nd < digits.len() {
+            digits[nd] = c;
+            nd += 1;
+        }
+    }
+    let mut x: i32 = 0;
+    let mut xneg = false;
+    for &c in &t[(epos + 1).min(t.len())..] {
+        if c == b'-' {
+            xneg = true;
+        } else {
+            x = x * 10 + (c - b'0') as i32;
+        }
+    }
+    if xneg {
+        x = -x;
+    }
+    if neg {
+        put(out, &mut n, b'-');
+    }
+    let p = (nd as i32).max(6);
+    if x < -4 || x >= p {
+        put(out, &mut n, digits[0]);
+        if nd > 1 {
+            put(out, &mut n, b'.');
+            for &d in &digits[1..nd] {
+                put(out, &mut n, d);
+            }
+        }
+        put(out, &mut n, b'e');
+        put(out, &mut n, if x < 0 { b'-' } else { b'+' });
+        let ax = x.unsigned_abs();
+        if ax >= 100 {
+            put(out, &mut n, b'0' + (ax / 100) as u8);
+        }
+        put(out, &mut n, b'0' + (ax / 10 % 10) as u8);
+        put(out, &mut n, b'0' + (ax % 10) as u8);
+    } else if x >= 0 {
+        let whole = x as usize + 1;
+        for i in 0..whole {
+            put(out, &mut n, if i < nd { digits[i] } else { b'0' });
+        }
+        if nd > whole {
+            put(out, &mut n, b'.');
+            for &d in &digits[whole..nd] {
+                put(out, &mut n, d);
+            }
+        }
+    } else {
+        put(out, &mut n, b'0');
+        put(out, &mut n, b'.');
+        for _ in 0..(-x - 1) {
+            put(out, &mut n, b'0');
+        }
+        for &d in &digits[..nd] {
+            put(out, &mut n, d);
+        }
+    }
+    n
 }
 
 #[repr(C)]
@@ -886,15 +1000,19 @@ pub unsafe extern "C" fn rill_str_to_int(s: *const u8) -> i64 {
     } else {
         false
     };
+    // Counted downward, where `Int` reaches one further, and held at the
+    // end it runs into: `"99999999999999999999"` wrapped round to
+    // 7766279631452241919 (2026-09-25), where `to_int` on a float that big
+    // gives the nearest end, and now this does too.
     let mut v: i64 = 0;
     while i < bytes.len() && bytes[i].is_ascii_digit() {
-        v = v.wrapping_mul(10).wrapping_add((bytes[i] - b'0') as i64);
+        v = v.saturating_mul(10).saturating_sub((bytes[i] - b'0') as i64);
         i += 1;
     }
     if neg {
-        -v
-    } else {
         v
+    } else {
+        v.checked_neg().unwrap_or(i64::MAX)
     }
 }
 
@@ -4593,9 +4711,8 @@ pub extern "C" fn rill_print_int(v: i64) {
 
 #[no_mangle]
 pub extern "C" fn rill_print_float(v: f64) {
-    let mut buf = [0u8; 40];
-    let n = unsafe { snprintf(buf.as_mut_ptr(), 39, b"%g\0".as_ptr(), v) };
-    let n = n.clamp(0, 39) as usize;
+    let mut buf = [0u8; 48];
+    let n = float_text(v, &mut buf);
     out(&buf[..n]);
 }
 
@@ -4629,9 +4746,8 @@ pub extern "C" fn rill_println_int(v: i64) {
 
 #[no_mangle]
 pub extern "C" fn rill_println_float(v: f64) {
-    let mut buf = [0u8; 40];
-    let n = unsafe { snprintf(buf.as_mut_ptr(), 39, b"%g\0".as_ptr(), v) };
-    let n = n.clamp(0, 38) as usize;
+    let mut buf = [0u8; 48];
+    let n = float_text(v, &mut buf).min(47);
     buf[n] = b'\n';
     out(&buf[..n + 1]);
 }

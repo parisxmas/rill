@@ -534,7 +534,16 @@ fn logspace(a, b, n, base) =
   e
 
 #     g.geomspace(1.0, 8.0, 4)   # => [1, 2, 4, 8]
-fn geomspace(a, b, n) = logspace(log10(a), log10(b), n, 10.0)
+#
+# The ends are the ends given, as NumPy has them: through `log10` and back,
+# 8 came out 7.999999999999999.
+fn geomspace(a, b, n) =
+  e = logspace(log10(a), log10(b), n, 10.0)
+  if n > 0 then
+    e.data[0] = a
+    e.data[n - 1] = b
+  else ()
+  e
 
 # Joining: `axis` 0 adds rows, 1 adds columns. Two 1-D grids join end to end.
 #
@@ -2450,7 +2459,7 @@ private fn sqdev_range(d: Buf(Float), m, lo, hi) =
     acc + dd * dd
   s0 + s1 + (s2 + s3) + (s4 + s5 + (s6 + s7)) + tail
 
-#     g.std(g.of(Cons(2.0, Cons(4.0, Cons(4.0, Cons(6.0, Nil))))))   # => 1.41421
+#     g.std(g.of(Cons(2.0, Cons(4.0, Cons(4.0, Cons(6.0, Nil))))))   # => 1.4142135623730951
 fn std(g: Grid) = sqrt(var(g))
 
 #     g.cumsum(g.arange(4))   # => [0, 1, 3, 6]
@@ -3217,7 +3226,7 @@ private fn swap_rows(d: Buf(Float), n, i, j) =
 # `x` such that `a x = b`, for a vector `b` or a matrix of them.
 #
 #     m = g.of(Cons(2.0, Cons(1.0, Cons(1.0, Cons(3.0, Nil))))) |> g.reshape2(2, 2)
-#     g.solve(m, g.of(Cons(3.0, Cons(5.0, Nil))))   # => [0.8, 1.4]
+#     g.solve(m, g.of(Cons(3.0, Cons(5.0, Nil))))   # => [0.7999999999999999, 1.4000000000000001]
 fn solve(a: Grid, b: Grid) =
   x = try_solve(a, b)
   if size(x) == 0 && size(b) != 0 then
@@ -3351,7 +3360,7 @@ fn det(a: Grid) =
 # reached. Doing it that way needs the answer's columns put back in the
 # order the row exchanges took them out of, which is the last pass here.
 #
-#     g.inv(g.of(Cons(4.0, Cons(7.0, Cons(2.0, Cons(6.0, Nil))))) |> g.reshape2(2, 2))   # => [[0.6, -0.7], [-0.2, 0.4]]
+#     g.inv(g.of(Cons(4.0, Cons(7.0, Cons(2.0, Cons(6.0, Nil))))) |> g.reshape2(2, 2))   # => [[0.6, -0.7000000000000001], [-0.2, 0.4]]
 fn inv(a: Grid) =
   x = try_inv(a)
   if size(x) == 0 && rows_of(a) != 0 then

@@ -16,12 +16,22 @@ use std::process::{Command, ExitCode};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(code) => code,
-        Err(msg) => {
+    // The parser, the checker and the code generator recurse on the shape of
+    // the program, and a generated source — fifty thousand terms added up,
+    // twenty thousand parentheses deep — ran the main thread's 8 MB out
+    // (2026-09-25). A gigabyte is reserved, not touched: the pages a
+    // program of ordinary depth never reaches cost nothing.
+    let worker = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || run(&args))
+        .expect("could not start the compiler's thread");
+    match worker.join() {
+        Ok(Ok(code)) => code,
+        Ok(Err(msg)) => {
             eprintln!("{msg}");
             ExitCode::FAILURE
         }
+        Err(_) => ExitCode::FAILURE,
     }
 }
 

@@ -19,19 +19,30 @@ pub use prelude::{parse_program, PRELUDE};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyntaxError {
     pub line: usize,
+    /// `NO_COL` when only the line is known: the lifter works on the tree,
+    /// where a column is not kept.
     pub col: usize,
     pub msg: String,
+    /// The function the error is in, when it was found after parsing — so
+    /// that a program of several files can say which file.
+    pub func: Option<String>,
 }
+
+pub const NO_COL: usize = usize::MAX;
 
 impl SyntaxError {
     pub fn new(line: usize, col: usize, msg: String) -> Self {
-        SyntaxError { line, col, msg }
+        SyntaxError { line, col, msg, func: None }
     }
 }
 
 impl std::fmt::Display for SyntaxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "syntax error at line {}, column {}: {}", self.line, self.col + 1, self.msg)
+        if self.col == NO_COL {
+            write!(f, "syntax error at line {}: {}", self.line, self.msg)
+        } else {
+            write!(f, "syntax error at line {}, column {}: {}", self.line, self.col + 1, self.msg)
+        }
     }
 }
 

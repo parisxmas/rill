@@ -26,10 +26,21 @@ use crate::SyntaxError;
 pub fn lift(module: &mut Module) -> Result<(), SyntaxError> {
     let mut used: HashSet<String> = module.functions.iter().map(|f| f.name.clone()).collect();
     let mut lifted: Vec<FnDef> = Vec::new();
+    // Each error says which function it is in, for the loader to say which
+    // file: a `?` in the wrong place in an imported file named no file.
+    let within = |name: &str| {
+        let name = name.to_string();
+        move |mut e: SyntaxError| {
+            e.func.get_or_insert(name);
+            e
+        }
+    };
     for f in &mut module.functions {
         let mut env: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
         let body = std::mem::replace(&mut f.body, Expr::Bool(false));
-        f.body = walk(expand_body(body)?, &mut env, &f.name, &mut used, &mut lifted)?;
+        f.body = expand_body(body)
+            .and_then(|b| walk(b, &mut env, &f.name, &mut used, &mut lifted))
+            .map_err(within(&f.name))?;
     }
     // An impl's methods are functions too, and so is a trait method's
     // default body: a loop or a `?` in either has to be spelled out here
@@ -1530,9 +1541,7 @@ fn take3(v: Vec<Expr>) -> [Expr; 3] {
 /// where a `?` belongs.
 fn no_stray_try(e: &Expr) -> Result<(), SyntaxError> {
     if let Expr::Try { line, .. } = e {
-        return Err(SyntaxError::new(
-            *line,
-            1,
+        return Err(SyntaxError::new(*line, crate::NO_COL,
             "`?` cannot be written here: it hands the function's caller an \
              `Err`, so it belongs where the block it is in is what the \
              function returns. Bind the call to a name first."
@@ -1912,9 +1921,7 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
     Ok(match e {
         Expr::Var(n, line) => {
             if locals.contains_key(&n) {
-                return Err(SyntaxError::new(
-                    line,
-                    0,
+                return Err(SyntaxError::new(line, crate::NO_COL,
                     format!(
                         "`{n}` is a local function, and a local function can only be \
                          called — it takes the names around it as arguments, so there \
@@ -2296,7 +2303,7 @@ fn alternatives(p: Pattern, line: usize) -> Result<Vec<Pattern>, SyntaxError> {
         if got != want {
             return Err(SyntaxError::new(
                 if oline > 0 { oline } else { line },
-                1,
+                crate::NO_COL,
                 format!(
                     "every alternative of an `|` pattern must bind the same names: one binds {}, another binds {}",
                     shown_names(&want),

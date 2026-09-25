@@ -1,0 +1,20 @@
+# `str_to_int` past the ends of `Int` gives the nearest end, as `to_int` on a
+# float does — it wrapped round (2026-09-25). And the new values of a record
+# update run in the order they are written, not the order of the fields.
+
+type R
+  R(x: Int, y: Int)
+
+fn g(tag, v) =
+  println(tag)
+  v
+
+fn main() =
+  println(str_to_int("99999999999999999999"))
+  println(str_to_int("-99999999999999999999"))
+  println(str_to_int("-9223372036854775808"))
+  println(str_to_int("42abc"))
+  r = R(1, 2)
+  s = { r | y = g("y", 20), x = g("x", 10) }
+  println(s.x + s.y)
+  0

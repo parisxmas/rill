@@ -1394,8 +1394,8 @@ fn oxidb_rec_client() {
          track: {\"counted\":true}\n\
          track: {\"counted\":true}\n\
          track: {\"counted\":true}\n\
-         related: ekmek 2.23144, sut 2.23144, poset 0.505343, peynir 0.505343\n\
-         for basket: ekmek 2.23144, sut 2.23144, peynir 0.505343\n\
+         related: ekmek 2.231435513142097, sut 2.231435513142097, poset 0.5053430784314124, peynir 0.5053430784314124\n\
+         for basket: ekmek 2.231435513142097, sut 2.231435513142097, peynir 0.5053430784314124\n\
          as of long ago: nothing\n\
          stats: 5 baskets, 14 pairs\n\
          checkpoint: {\"ok\":true}\n\
@@ -1706,7 +1706,7 @@ fn a_select_loop_runs_in_constant_stack() {
 fn foreign_functions() {
     assert_eq!(
         compile_and_run("ffi.rill"),
-        "1.41421\n1024\n7\ntrue\n7\n<unset>\n"
+        "1.4142135623730951\n1024\n7\ntrue\n7\n<unset>\n"
     );
 }
 
@@ -2875,7 +2875,7 @@ fn a_callback_chosen_at_run_time_is_rejected() {
 fn foreign_widths_and_buffers() {
     assert_eq!(
         compile_and_run("ffi_buffers.rill"),
-        "1.41421\n1024\n7\n7\n109\n200\n-56\n7.5\n1\n"
+        "1.4142135381698608\n1024\n7\n7\n109\n200\n-56\n7.5\n1\n"
     );
 }
 
@@ -3118,9 +3118,9 @@ fn multi_file_program_with_imports() {
         compile_and_run("multi/main.rill"),
         "Circle(1) -> 3.14159\n\
          Rect(2, 3) -> 6\n\
-         Circle(0.5) -> 0.785397\n\
+         Circle(0.5) -> 0.7853975\n\
          --------------------\n\
-         total: 9.92699\n"
+         total: 9.926987500000001\n"
     );
 }
 
@@ -3826,14 +3826,14 @@ fn grid_tour_agrees_with_numpy() {
         out,
         "[[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]]\n\
          [[1, 3, 5, 7], [9, 11, 13, 15], [17, 19, 21, 23]]\n\
-         450.095\n\
+         450.09526970189086\n\
          [6, 22, 38]\n\
          [12, 15, 18, 21]\n\
          [[14, 38, 62], [38, 126, 214], [62, 214, 366]]\n\
          506\n\
          5\n\
          [0, 10, 20, 30, 40, 50, 6, 7, 8, 9, 10, 11]\n\
-         11.9167\n\
+         11.916666666666666\n\
          [0, 1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 66]\n\
          [6, 22, 38]\n\
          [false, false, false, false, false, false, true, true, true, true, true, true]\n\
@@ -5846,4 +5846,48 @@ fn what_the_reference_calls_rill_compiles() {
         compile_and_run("written_as_documented.rill"),
         "Ok(0)\nErr(zero!)\nOk(3)\nSome(1)\n3\n6\n<5>\nErr(Wrap(5))\nOk(1)\n"
     );
+}
+
+#[test]
+fn a_float_prints_as_the_fewest_digits_that_read_back_as_it() {
+    assert_eq!(
+        compile_and_run("float_printing.rill"),
+        "0.30000000000000004\n3\n-0\n2.5\n100001\n1e+06\n1234567\n1.2345678901234568e+17\n\
+         9007199254740992\n0.0001\n1e-05\n1e+300\n1e-300\nnan\ninf\n-inf\n3.14159\n\
+         12.566370614359172\n(1.5, 0.30000000000000004)\n"
+    );
+}
+
+#[test]
+fn str_to_int_stops_at_the_ends_and_updates_run_in_written_order() {
+    assert_eq!(
+        compile_and_run("conversions_and_order.rill"),
+        "9223372036854775807\n-9223372036854775808\n-9223372036854775808\n42\ny\nx\n30\n"
+    );
+}
+
+#[test]
+fn errors_say_where_the_program_went_wrong() {
+    // an instantiation's requirement is said at the program's own call
+    let e = compile_error("fn main() =\n  xs = sort(Cons(\\x -> x, Nil))\n  println(0)\n");
+    assert!(e.contains("error at line 2: `sort` cannot be used at a function"), "{e}");
+    // `!` is not an `if`, and expected comes before found
+    let e = compile_error("fn main() = println(!5)\n");
+    assert!(e.contains("`!` takes a Bool: expected Bool, found Int"), "{e}");
+    let e = compile_error("fn main() = println(if 5 then 1 else 2)\n");
+    assert!(e.contains("`if` condition: expected Bool, found Int"), "{e}");
+    // a `?` in the wrong place names its file and no made-up column
+    let e = compile_error("fn f(x) =\n  y = if x > 0 then g(x)? else 0\n  Ok(y)\nfn g(x) = Ok(x)\nfn main() = println(f(1))\n");
+    assert!(e.contains("bad.rill: syntax error at line 2: `?` cannot be written here"), "{e}");
+    // a clash in one file says twice, with both lines
+    let e = compile_error("trait T(a)\n  t(a) -> Int\n\nimpl T(Int)\n  fn t(x) = 1\n\nimpl T(Int)\n  fn t(x) = 2\n\nfn main() = println(t(1))\n");
+    assert!(e.contains("impl `T(Int)` is defined twice, at lines 4 and 7"), "{e}");
+}
+
+#[test]
+fn the_compiler_does_not_run_out_of_stack_on_a_deep_source() {
+    let sum = format!("fn main() = println({})\n", vec!["1"; 20000].join("+"));
+    assert_eq!(run_source("deep_sum", &sum), "20000\n");
+    let nest = format!("fn main() = println({}1{})\n", "(".repeat(10000), ")".repeat(10000));
+    assert_eq!(run_source("deep_parens", &nest), "1\n");
 }

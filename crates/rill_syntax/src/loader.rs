@@ -68,7 +68,16 @@ fn load_program_with(entry: &Path, text: Option<&str>) -> Result<Module, String>
         systems: loader.systems,
         imported_machines: loader.imported_machines,
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| {
+        // Found after the files were joined: the function it is in says
+        // which file, and the entry file where nothing does.
+        let file = e
+            .func
+            .as_ref()
+            .and_then(|f| loader.fn_origin.get(f).cloned())
+            .unwrap_or_else(|| entry.to_path_buf());
+        format!("{}: {e}", file.display())
+    })
 }
 
 /// Where `import "name"` looks. A file beside the importer wins, because a
@@ -148,7 +157,7 @@ struct Loader {
     /// Function name -> defining file.
     fn_origin: HashMap<String, PathBuf>,
     /// Type, constructor, trait, method or impl key -> defining file.
-    name_origin: HashMap<String, PathBuf>,
+    name_origin: HashMap<String, (PathBuf, usize)>,
     /// Canonical path -> the alias it was imported under, if any.
     aliases: HashMap<PathBuf, Option<String>>,
     /// One file whose text is given rather than read, for an editor.
@@ -243,24 +252,24 @@ impl Loader {
         }
 
         for t in module.types {
-            self.claim_name(&t.name, "type", &canon)?;
+            self.claim_name(&t.name, "type", &canon, t.line)?;
             for c in &t.ctors {
-                self.claim_name(&c.name, "constructor", &canon)?;
+                self.claim_name(&c.name, "constructor", &canon, c.line)?;
             }
             self.types.push(t);
         }
         for t in module.traits {
-            self.claim_name(&t.name, "trait", &canon)?;
+            self.claim_name(&t.name, "trait", &canon, t.line)?;
             // A method's name is its trait's: two traits may share one, so
             // what a file claims is the qualified name.
             for m in &t.methods {
-                self.claim_name(&format!("{}.{}", t.name, m.name), "method", &canon)?;
+                self.claim_name(&format!("{}.{}", t.name, m.name), "method", &canon, m.line)?;
             }
             self.traits.push(t);
         }
         for i in module.impls {
             let key = format!("{}({})", i.trait_name, i.target.name);
-            self.claim_name(&key, "impl", &canon)?;
+            self.claim_name(&key, "impl", &canon, i.line)?;
             self.impls.push(i);
         }
         for e in module.externs {
@@ -279,12 +288,17 @@ impl Loader {
         }
         for f in module.functions {
             if let Some(prev) = self.fn_origin.get(&f.name) {
-                return Err(format!(
-                    "function `{}` is defined in both `{}` and `{}`",
-                    f.name,
-                    prev.display(),
-                    canon.display()
-                ));
+                return Err(if *prev == canon {
+                    format!("{}: function `{}` is defined twice (the second at line {})", canon.display(), f.name, f.line)
+                } else {
+                    format!(
+                        "function `{}` is defined in both `{}` and `{}` (line {})",
+                        f.name,
+                        prev.display(),
+                        canon.display(),
+                        f.line
+                    )
+                });
             }
             self.fn_origin.insert(f.name.clone(), canon.clone());
             if imported_from.is_some() {
@@ -298,16 +312,25 @@ impl Loader {
     /// Types, constructors, traits and methods live in separate namespaces —
     /// `type Pair` with a `Pair` constructor is perfectly normal — so the key
     /// carries the kind.
-    fn claim_name(&mut self, name: &str, what: &str, file: &Path) -> Result<(), String> {
+    /// A clash names both places, each with its line — and says "twice"
+    /// rather than naming one file as both (2026-09-25).
+    fn claim_name(&mut self, name: &str, what: &str, file: &Path, line: usize) -> Result<(), String> {
         let key = format!("{what}:{name}");
-        if let Some(prev) = self.name_origin.get(&key) {
-            return Err(format!(
-                "{what} `{name}` is defined in both `{}` and `{}`",
-                prev.display(),
-                file.display()
-            ));
+        if let Some((prev, pline)) = self.name_origin.get(&key) {
+            return Err(if prev == file {
+                format!(
+                    "{}: {what} `{name}` is defined twice, at lines {pline} and {line}",
+                    file.display()
+                )
+            } else {
+                format!(
+                    "{what} `{name}` is defined in both `{}` (line {pline}) and `{}` (line {line})",
+                    prev.display(),
+                    file.display()
+                )
+            });
         }
-        self.name_origin.insert(key, file.to_path_buf());
+        self.name_origin.insert(key, (file.to_path_buf(), line));
         Ok(())
     }
 }

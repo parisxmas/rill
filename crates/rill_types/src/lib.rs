@@ -1862,6 +1862,7 @@ impl Checker {
             let hint = match ty {
                 Ty::Map(..) => " — `map_items(m)` is a map as a value",
                 Ty::Buf(_) => " — a buffer is storage; measure it or read an element",
+                Ty::Unit => " — `()` is nothing, and there is nothing of it to use",
                 _ => "",
             };
             Err(TypeError::new(
@@ -2052,13 +2053,15 @@ impl Checker {
     /// "unknown function" — unless a file has it as a `private fn`, which
     /// is worth saying, since the name is right and the file is keeping it.
     fn unknown_name(&self, name: &str, what: &str) -> String {
-        let suffix = format!("..{name}");
+        // `m.helper` is `helper` asked of the file imported as `m`.
+        let base = name.rsplit('.').next().unwrap_or(name);
+        let suffix = format!("..{base}");
         match self.fn_index.keys().find(|k| k.ends_with(&suffix)) {
             Some(k) => {
                 let file = &k[..k.len() - suffix.len()];
                 let file = file.rsplit('.').next().unwrap_or(file);
                 format!(
-                    "`{name}` is private to `{file}.rill`: a function that file keeps to itself. \
+                    "`{base}` is private to `{file}.rill`: a function that file keeps to itself. \
                      Call one the file offers, or drop the `private`"
                 )
             }
@@ -2729,7 +2732,15 @@ impl Checker {
             }
             Expr::If { cond, then, els, .. } => {
                 let c = self.infer(cond, env)?;
-                self.unify(&c.ty, &Ty::Bool, c.line, "`if` condition")?;
+                // Expected first: the message had the two the wrong way
+                // round, and `!5` — which is this `if` — blamed an `if` the
+                // program never wrote (2026-09-25).
+                let ctx = if matches!((then.as_ref(), els.as_ref()), (Expr::Bool(false), Expr::Bool(true))) {
+                    "`!` takes a Bool"
+                } else {
+                    "`if` condition"
+                };
+                self.unify(&Ty::Bool, &c.ty, c.line, ctx)?;
                 let t = self.infer(then, env)?;
                 let e = self.infer(els, env)?;
                 self.unify(&t.ty, &e.ty, e.line, "`if` branches")?;
@@ -3487,8 +3498,20 @@ impl Checker {
 
         if def.ctors.len() == 1 {
             let mut slot: Vec<Option<TExpr>> = (0..def.ctors[0].fields.len()).map(|_| None).collect();
-            for (per, v) in sets {
-                slot[per[0]] = Some(v);
+            // The new values run in the order they are written. Put straight
+            // into the constructor's arguments they ran in the fields' order:
+            // `{ r | y = g(), x = h() }` called `h` first (2026-09-25). Where
+            // the two orders differ they are named first, in the written one.
+            let in_order = sets.windows(2).all(|w| w[0].0[0] < w[1].0[0]);
+            for (j, (per, v)) in sets.into_iter().enumerate() {
+                if in_order {
+                    slot[per[0]] = Some(v);
+                } else {
+                    let name = format!("{held}.{j}");
+                    let vty = v.ty.clone();
+                    stmts.push(TStmt::Bind { name: name.clone(), value: v });
+                    slot[per[0]] = Some(local(name, vty));
+                }
             }
             let args = (0..slot.len())
                 .map(|i| match slot[i].take() {

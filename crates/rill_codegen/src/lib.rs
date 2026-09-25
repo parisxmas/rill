@@ -1462,6 +1462,13 @@ struct Codegen<'ctx, 'a> {
     builder: Builder<'ctx>,
     tmod: &'a TModule,
     instances: HashMap<InstanceKey, FunctionValue<'ctx>>,
+    /// Who asked for each instance: the instance being generated then, and
+    /// the line of the call. A requirement an instantiation fails is the
+    /// caller's mistake, and is said at the program's own line rather than
+    /// inside the prelude function it reached.
+    asked_by: HashMap<InstanceKey, (Option<InstanceKey>, usize)>,
+    /// The instance being generated.
+    cur_key: Option<InstanceKey>,
 
     shims: HashMap<FnVal, FunctionValue<'ctx>>,
     /// Which parameters of each function have to be a compile-time function,
@@ -1623,6 +1630,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             builder,
             tmod,
             instances: HashMap::new(),
+            asked_by: HashMap::new(),
+            cur_key: None,
             shims: HashMap::new(),
             static_params: static_params(tmod),
             closure_tramps: HashMap::new(),
@@ -5289,6 +5298,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         if let Some(&v) = self.instances.get(&key) {
             return v;
         }
+        self.asked_by.insert(key.clone(), (self.cur_key.clone(), self.note_line));
         let params: Vec<Ty> = f.params.iter().map(|(_, t)| subst_gen(t, &key.1)).collect();
         let ret = subst_gen(&f.ret, &key.1);
         let fn_type = self.instance_llvm_type(&params, &ret);
@@ -5437,11 +5447,27 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     Constraint::Numeric => "be Int or Float".to_string(),
                     Constraint::Addable => "support `+`".to_string(),
                     Constraint::Ordered => "be ordered (Int, Float, Str or an `Ord` impl)".to_string(),
-                    Constraint::Basic => "be printable".to_string(),
+                    Constraint::Basic => "be a value (not a function, channel or storage)".to_string(),
                     Constraint::Impl(t) => format!("implement `{}`", self.tmod.traits[*t].name),
                 };
+                // The line of the first call on the way here that the program
+                // wrote itself; the requirement's own line where the function
+                // is the program's.
+                let mut at = *line;
+                if key.0 < self.tmod.prelude_fns {
+                    let mut k = Some(key.clone());
+                    while let Some((parent, call_line)) = k.as_ref().and_then(|k| self.asked_by.get(k)) {
+                        match parent {
+                            Some(p) if p.0 < self.tmod.prelude_fns => k = Some(p.clone()),
+                            _ => {
+                                at = *call_line;
+                                break;
+                            }
+                        }
+                    }
+                }
                 return Err(CodegenError::new(
-                    *line,
+                    at,
                     format!(
                         "`{}` cannot be used at {}: this type parameter must {what}",
                         f.name,
@@ -5463,6 +5489,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     fn gen_instance(&mut self, key: &InstanceKey) -> Result<(), CodegenError> {
         self.check_constraints(key)?;
+        self.cur_key = Some(key.clone());
         let (fn_idx, subst, bound) = key;
         self.cur_fn = *fn_idx;
         if self.explain {
