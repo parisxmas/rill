@@ -5952,3 +5952,17 @@ fn an_index_moved_from_the_loop_variable_is_checked_in_front_and_cannot_wrap() {
     let (_, err) = compile_and_crash("affine_index.rill", &[]);
     assert!(err.contains("buffer index 9223372036854775807 out of range, length 25"), "{err}");
 }
+
+#[test]
+fn map_writes_over_the_cells_nothing_else_holds() {
+    assert_eq!(
+        compile_and_run("map_in_place.rill"),
+        "Cons(2, Cons(4, Cons(20, Cons(40, Nil))))\n\
+         Cons(10, Cons(20, Nil))\n\
+         Cons(5, Cons(6, Nil))\n\
+         Cons(6, Cons(7, Nil))\n\
+         Cons(0.5, Cons(1, Cons(1.5, Cons(2, Nil))))\n\
+         Cons(P(3, 8), Cons(P(4, 8), Nil))\n\
+         100000\n0\n"
+    );
+}

@@ -6519,7 +6519,23 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let nil_tag = self.tmod.adts[adt].ctors[nil_ci].tag;
         let cons_tag = self.tmod.adts[adt].ctors[cons_ci].tag;
 
-        let (xs, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+        // A list handed over at its last use, whose cells hold values of
+        // the same width as the answer's, is written over where it lies:
+        // each cell nothing else holds gets its new value in place, and
+        // from the first one something else holds, the rest is built anew
+        // as before. `run(map(ps, f), k)` allocated a whole list per step
+        // and let the old one go after it (2026-09-25).
+        let same_width = in_targs[0] == out_targs[0]
+            || (matches!(in_targs[0], Ty::Int | Ty::Float) && matches!(out_targs[0], Ty::Int | Ty::Float));
+        let taken = match &args[0].kind {
+            TK::Local(n) if same_width && self.movable.contains(n) => self.take_owned(&args[0], scope),
+            _ => None,
+        };
+        let (xs, held) = match taken {
+            Some(v) => (v, true),
+            None => self.gen_borrowed(&args[0], scope, subst, func)?,
+        };
+        let in_place = taken.is_some();
         let xs = xs.into_pointer_value();
         let i64t = self.ctx.i64_type();
         let ptrt = self.ctx.ptr_type(Default::default());
@@ -6540,19 +6556,82 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         }
         let head_slot = self.builder.build_alloca(ptrt, "map.head").expect("LLVM builder error");
         self.builder.position_at_end(here);
-        self.builder.build_store(head_slot, nil).expect("LLVM builder error");
+        self.builder.build_store(head_slot, if in_place { xs } else { nil }).expect("LLVM builder error");
 
         let loop_bb = self.ctx.append_basic_block(func, "map.loop");
         let body_bb = self.ctx.append_basic_block(func, "map.body");
         let exit_bb = self.ctx.append_basic_block(func, "map.exit");
-        let pre = self.builder.get_insert_block().unwrap();
+        let mut pre = self.builder.get_insert_block().unwrap();
+        // In place first: over the cells this frame is the only holder of.
+        let mut shared_at: Option<(PointerValue<'ctx>, PointerValue<'ctx>, BasicBlock<'ctx>)> = None;
+        if in_place {
+            let ip_loop = self.ctx.append_basic_block(func, "map.ip");
+            let ip_look = self.ctx.append_basic_block(func, "map.ip.look");
+            let ip_body = self.ctx.append_basic_block(func, "map.ip.body");
+            let ip_shared = self.ctx.append_basic_block(func, "map.ip.shared");
+            self.builder.build_unconditional_branch(ip_loop).expect("LLVM builder error");
+            self.builder.position_at_end(ip_loop);
+            let icur = self.builder.build_phi(ptrt, "ip.cur").expect("LLVM builder error");
+            let islot = self.builder.build_phi(ptrt, "ip.slot").expect("LLVM builder error");
+            icur.add_incoming(&[(&xs, pre)]);
+            islot.add_incoming(&[(&head_slot, pre)]);
+            let c = icur.as_basic_value().into_pointer_value();
+            let tp = self.builder.build_struct_gep(self.header_struct(), c, 1, "ip.tag.p").expect("LLVM builder error");
+            let tag = self.builder.build_load(i64t, tp, "ip.tag").expect("LLVM builder error").into_int_value();
+            let fin = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, tag, i64t.const_int(nil_tag, false), "ip.done")
+                .expect("LLVM builder error");
+            self.builder.build_conditional_branch(fin, exit_bb, ip_look).expect("LLVM builder error");
+            self.builder.position_at_end(ip_look);
+            let rc = self.builder.build_load(i64t, c, "ip.rc").expect("LLVM builder error").into_int_value();
+            let alone = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, rc, i64t.const_int(1, false), "ip.alone")
+                .expect("LLVM builder error");
+            self.builder.build_conditional_branch(alone, ip_body, ip_shared).expect("LLVM builder error");
+            self.builder.position_at_end(ip_body);
+            let xp = self.builder.build_struct_gep(in_st, c, 2, "ip.x.p").expect("LLVM builder error");
+            let x = self
+                .builder
+                .build_load(self.llvm_type(&in_targs[0]).expect("an element"), xp, "ip.x")
+                .expect("LLVM builder error");
+            let np = self.builder.build_struct_gep(in_st, c, 3, "ip.next.p").expect("LLVM builder error");
+            let next = self.builder.build_load(ptrt, np, "ip.next").expect("LLVM builder error");
+            let y = self.gen_inline_lambda(&args[1], &[x], scope, subst, func)?;
+            let yp = self.builder.build_struct_gep(out_st, c, 2, "ip.y.p").expect("LLVM builder error");
+            self.builder.build_store(yp, y).expect("LLVM builder error");
+            if self.preempt {
+                self.emit_preempt_check(func);
+            }
+            let ip_end = self.builder.get_insert_block().unwrap();
+            self.builder.build_unconditional_branch(ip_loop).expect("LLVM builder error");
+            icur.add_incoming(&[(&next, ip_end)]);
+            islot.add_incoming(&[(&np, ip_end)]);
+            // A cell something else holds: everything from it on is built
+            // anew into the slot that pointed at it, and this frame's hold
+            // on it let go of after.
+            self.builder.position_at_end(ip_shared);
+            shared_at = Some((c, islot.as_basic_value().into_pointer_value(), ip_shared));
+            pre = ip_shared;
+        }
+        let (start, start_slot) = match shared_at {
+            Some((c, sl, _)) => (c, sl),
+            None => (xs, head_slot),
+        };
+        // Where the rebuilding loop ends: straight out, or — after the
+        // in-place one met a shared cell — through letting go of it.
+        let rebuilt_bb = match shared_at {
+            Some(_) => self.ctx.append_basic_block(func, "map.rebuilt"),
+            None => exit_bb,
+        };
         self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
 
         self.builder.position_at_end(loop_bb);
         let cur = self.builder.build_phi(ptrt, "map.cur").expect("LLVM builder error");
         let slot = self.builder.build_phi(ptrt, "map.slot").expect("LLVM builder error");
-        cur.add_incoming(&[(&xs, pre)]);
-        slot.add_incoming(&[(&head_slot, pre)]);
+        cur.add_incoming(&[(&start, pre)]);
+        slot.add_incoming(&[(&start_slot, pre)]);
         let curp = cur.as_basic_value().into_pointer_value();
         let tag_ptr = self
             .builder
@@ -6563,7 +6642,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .builder
             .build_int_compare(IntPredicate::EQ, tag, i64t.const_int(nil_tag, false), "done")
             .expect("LLVM builder error");
-        self.builder.build_conditional_branch(done, exit_bb, body_bb).expect("LLVM builder error");
+        self.builder.build_conditional_branch(done, rebuilt_bb, body_bb).expect("LLVM builder error");
 
         self.builder.position_at_end(body_bb);
         let xp = self.builder.build_struct_gep(in_st, curp, 2, "x.p").expect("LLVM builder error");
@@ -6592,9 +6671,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         cur.add_incoming(&[(&next, body_end)]);
         slot.add_incoming(&[(&ctail, body_end)]);
 
+        // Built anew from a shared cell on: this frame's hold on that cell,
+        // which the slot no longer points at, goes.
+        if let Some((c, _, _)) = shared_at {
+            self.builder.position_at_end(rebuilt_bb);
+            self.emit_release(c.into(), &in_ty);
+            self.builder.build_unconditional_branch(exit_bb).expect("LLVM builder error");
+        }
         self.builder.position_at_end(exit_bb);
         let out = self.builder.build_load(ptrt, head_slot, "map.out").expect("LLVM builder error");
-        if held {
+        if !in_place && held {
             self.emit_release(xs.into(), &in_ty);
         }
         Ok(Some(out))
