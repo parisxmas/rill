@@ -2481,15 +2481,22 @@ static mut SIG_INSTALLED: i8 = 0;
 #[cfg(unix)]
 extern "C" fn signal_landed(sig: i32) {
     unsafe {
+        // The code this interrupted may be between a call and its reading
+        // of `errno`, which the `write` below would change under it.
+        let e = net::errno_slot();
+        let saved = *e;
         SIG_LAST.store(sig, core::sync::atomic::Ordering::Release);
         SIG_COUNT.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         let byte = [1u8];
         for slot in SIG_SLOT.iter() {
             let fd = slot.load(core::sync::atomic::Ordering::Acquire);
             if fd >= 0 {
+                // non-blocking: a pipe nobody has emptied is full, and a
+                // handler that waited on it would wait for ever
                 write(fd, byte.as_ptr(), 1);
             }
         }
+        *e = saved;
     }
 }
 
@@ -2515,6 +2522,7 @@ unsafe fn signals_ready() -> bool {
             SIG_INSTALLED = -1;
             return false;
         }
+        net::set_nonblocking(fds[1]);
         SIG_PIPE[i] = fds;
     }
     for sig in SIGNALS_HANDLED {
@@ -2534,6 +2542,9 @@ unsafe fn signals_ready() -> bool {
 pub unsafe extern "C" fn rill_wait_signal() -> i64 {
     pthread_mutex_lock(&raw mut SYNC_LOCK);
     let up = signals_ready();
+    // The count as of before the slot is taken: read after, a signal landing
+    // in between was counted as already seen and waited past (2026-09-25).
+    let seen = SIG_COUNT.load(core::sync::atomic::Ordering::Acquire);
     let mut mine = usize::MAX;
     if up {
         for (i, slot) in SIG_SLOT.iter().enumerate() {
@@ -2554,7 +2565,6 @@ pub unsafe extern "C" fn rill_wait_signal() -> i64 {
         die();
     }
     let read_end = SIG_PIPE[mine][0];
-    let seen = SIG_COUNT.load(core::sync::atomic::Ordering::Acquire);
     let mut byte = [0u8; 1];
     loop {
         if SIG_COUNT.load(core::sync::atomic::Ordering::Acquire) != seen {
@@ -9016,8 +9026,13 @@ mod net {
         }
     }
 
-    unsafe fn set_nonblocking(fd: i32) {
+    pub(super) unsafe fn set_nonblocking(fd: i32) {
         fcntl(fd, F_SETFL, O_NONBLOCK);
+    }
+
+    /// This thread's `errno`, for a signal handler to put back what it found.
+    pub(super) unsafe fn errno_slot() -> *mut i32 {
+        __error()
     }
 
     /// Makes a socket block again, for a library that will wait on it from

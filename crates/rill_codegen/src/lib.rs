@@ -9593,6 +9593,14 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let ptrt = self.ctx.ptr_type(Default::default());
         let case_ty = self.ctx.struct_type(&[i64t.into(), ptrt.into(), i64t.into(), i64t.into()], false);
         let n = arms.len();
+        // The runtime locks a select's channels from a table of 64; past
+        // that it looked at the rest without their locks.
+        if n > 64 {
+            return Err(CodegenError::new(
+                whole.line,
+                format!("a `select` waits on at most 64 arms, and this one has {n}: wait on a few channels that others feed"),
+            ));
+        }
         // Both of these are a fixed size — the arms are known here — so they
         // belong in the entry block, and a `select` inside a loop then costs
         // the frame nothing and leaves the loop a loop. Written as array
