@@ -1,0 +1,14 @@
+# Both ends of a slice are clamped before its length is taken, and a length
+# at the far end of `Int` is no overflow: `"hello"[-3:2]` was all five bytes
+# and `str_sub(s, 2, <largest Int>)` was empty (2026-09-25).
+
+fn main() =
+  s = "hello"
+  mx = 9223372036854775807
+  println(s[-3:2])
+  println(s[1:mx])
+  println(s[-2:mx])
+  println("[" + s[4:1] + "]")
+  println(str_sub(s, 2, mx))
+  println(str_sub(s, -5, 3))
+  0

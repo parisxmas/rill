@@ -5748,3 +5748,31 @@ fn a_branch_that_rebinds_an_outer_value_releases_it_on_that_branch_only() {
 fn a_local_function_sees_names_as_they_were_where_it_was_written() {
     assert_eq!(compile_and_run("local_fn_sees_its_own_names.rill"), "11\n10\n30\n33\n11\n");
 }
+
+#[test]
+fn a_for_loop_checks_in_front_only_what_every_trip_reads() {
+    assert_eq!(compile_and_run("for_guarded_index.rill"), "1\n5\n8\n5\n");
+}
+
+#[test]
+fn what_is_written_before_a_question_mark_runs_before_it() {
+    assert_eq!(compile_and_run("try_keeps_order.rill"), "a\nb\nc\nok 6\na\nb\nerr bail\n");
+}
+
+#[test]
+fn a_range_pipeline_ends_at_the_largest_int() {
+    assert_eq!(compile_and_run("range_to_int_max.rill"), "3\n2\n0\n3\n");
+}
+
+#[test]
+fn a_slice_clamps_both_ends_before_taking_its_length() {
+    assert_eq!(compile_and_run("slice_clamps.rill"), "he\nello\nhello\n[]\nllo\nhel\n");
+}
+
+#[test]
+fn a_buffer_or_channel_too_big_for_any_machine_ends_the_program() {
+    let (_, err) = compile_and_crash("buf_too_big.rill", &[]);
+    assert!(err.contains("a buffer of 2305843009213693951 elements is larger than any machine"), "{err}");
+    let (_, err) = compile_and_crash("buf_too_big.rill", &["x"]);
+    assert!(err.contains("a channel buffer of 1152921504606846976 values"), "{err}");
+}

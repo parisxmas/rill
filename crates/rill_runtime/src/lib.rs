@@ -423,7 +423,7 @@ pub unsafe extern "C" fn rill_strbuf_reserve(p: *mut u8, n: i64) {
 pub unsafe extern "C" fn rill_strbuf_add_sub(p: *mut u8, s: *const u8, start: i64, len: i64) {
     let n = str_len_of(s) as i64;
     let a = start.clamp(0, n);
-    let b = (a + len.max(0)).clamp(a, n);
+    let b = a.saturating_add(len.max(0)).clamp(a, n);
     let m = (b - a) as usize;
     if m == 0 {
         return;
@@ -705,7 +705,7 @@ pub unsafe extern "C" fn rill_str_get(s: *const u8, i: i64) -> i64 {
 pub unsafe extern "C" fn rill_str_sub(s: *const u8, start: i64, len: i64) -> *mut u8 {
     let n = str_len_of(s) as i64;
     let a = start.clamp(0, n);
-    let b = (a + len.max(0)).clamp(a, n);
+    let b = a.saturating_add(len.max(0)).clamp(a, n);
     let out = str_new((b - a) as usize);
     copy_small(str_bytes(s).add(a as usize), out.add(16), (b - a) as usize);
     out
@@ -3135,6 +3135,24 @@ pub unsafe extern "C" fn rill_buf_check(p: *const u8, lo: i64, hi: i64) {
     }
 }
 
+/// The bytes `n` elements of `size` take, or the end of the program when no
+/// machine could hold them. A saturated product used to wrap round once the
+/// header was added — `buf_int(2^61 - 1)` was an eight-byte block that said
+/// it was 2^61 long, and every bounds check against that length passed while
+/// the writes landed in whatever came next (2026-09-25).
+fn buf_bytes(n: i64, size: i64) -> u64 {
+    match (n as u64).checked_mul(size as u64) {
+        Some(b) if b <= isize::MAX as u64 - 16 => b,
+        _ => unsafe {
+            rill_flush_out();
+            err(b"rill: out of memory: a buffer of ");
+            err_dec(n);
+            err(b" elements is larger than any machine\n");
+            die()
+        },
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rill_buf_new(n: i64, size: i64) -> *mut u8 {
     if n < 0 {
@@ -3143,7 +3161,7 @@ pub unsafe extern "C" fn rill_buf_new(n: i64, size: i64) -> *mut u8 {
     // A buffer value is the address of its first element; the count and
     // the length sit in the sixteen bytes before it, so that an element is
     // one register-indexed load with nothing added.
-    let bytes = (n as u64).saturating_mul(size as u64);
+    let bytes = buf_bytes(n, size);
     // A big buffer comes from `calloc`, whose pages the kernel hands over
     // already zero and only when touched; a small one from the pool, cleared
     // with `memset`. Both replace a byte-at-a-time loop that took as long
@@ -3185,7 +3203,7 @@ pub unsafe extern "C" fn rill_buf_new_uninit(n: i64, size: i64) -> *mut u8 {
     if n < 0 {
         rill_buf_oob(n, 0);
     }
-    let bytes = (n as u64).saturating_mul(size as u64);
+    let bytes = buf_bytes(n, size);
     let block = if 16 + bytes > POOL_MAX as u64 {
         live_add(1);
         let b = match big_take((16 + bytes) as usize) {
@@ -7424,7 +7442,18 @@ unsafe fn chan_pop(c: *mut Chan) -> TwoWords {
 }
 
 unsafe fn chan_size(cap: usize) -> u64 {
-    (core::mem::size_of::<Chan>() + cap * 16) as u64
+    // `channel(2^60)` wrapped round to a block that held the header alone,
+    // and the sends went into whatever came next (2026-09-25).
+    match cap.checked_mul(16).and_then(|b| b.checked_add(core::mem::size_of::<Chan>())) {
+        Some(b) if b <= isize::MAX as usize => b as u64,
+        _ => {
+            rill_flush_out();
+            err(b"rill: out of memory: a channel buffer of ");
+            err_dec(cap as i64);
+            err(b" values is larger than any machine\n");
+            die()
+        }
+    }
 }
 
 /// Takes a buffered value and lets a sender that was blocked on a full buffer

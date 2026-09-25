@@ -5803,13 +5803,22 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             .builder
             .build_int_add(i_phi.as_basic_value().into_int_value(), i64t.const_int(1, false), "fuse.i.next")
             .expect("LLVM builder error");
+        // The last element leaves from here, before `i + 1` is asked about:
+        // with `b` the largest `Int`, `i <= b` holds for every `i` there is
+        // and the head's test alone never ended the loop (2026-09-25).
+        let last = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, i_phi.as_basic_value().into_int_value(), hi_v, "fuse.last")
+            .expect("LLVM builder error");
         let latch_end = self.builder.get_insert_block().unwrap();
-        self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+        self.builder.build_conditional_branch(last, exit_bb, head_bb).expect("LLVM builder error");
         i_phi.add_incoming(&[(&i_next, latch_end)]);
         acc_phi.add_incoming(&[(&acc_next.as_basic_value(), latch_end)]);
 
         self.builder.position_at_end(exit_bb);
-        Ok(Some(acc_cur))
+        let out = self.builder.build_phi(init_v.get_type(), "fuse.out").expect("LLVM builder error");
+        out.add_incoming(&[(&acc_cur, head_bb), (&acc_next.as_basic_value(), latch_end)]);
+        Ok(Some(out.as_basic_value()))
     }
 
     /// The prelude's `map_or(m, k, d)` on a table of scalar values, as the
@@ -7153,7 +7162,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         }
                     }
                 };
-                let len = self.builder.build_int_sub(end, f, "slicelen").expect("builder");
+                // Both ends clamped before the length is taken: `s[-3:2]` is
+                // `s[0:2]`, and an end before the start or at either end of
+                // `Int` is no overflow — `end - from` was taken first, so
+                // `"hello"[-3:2]` was all five bytes (2026-09-25).
+                let bld = &self.builder;
+                let zero = self.ctx.i64_type().const_zero();
+                let neg = bld.build_int_compare(IntPredicate::SLT, f, zero, "slneg").expect("builder");
+                let f = bld.build_select(neg, zero, f, "slfrom").expect("builder").into_int_value();
+                let back = bld.build_int_compare(IntPredicate::SLT, end, f, "slback").expect("builder");
+                let end = bld.build_select(back, f, end, "slend").expect("builder").into_int_value();
+                let len = bld.build_int_sub(end, f, "slicelen").expect("builder");
                 let call = self.call_rt("rill_str_sub", &[b.into(), f.into(), len.into()]);
                 let out = match call.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => v,

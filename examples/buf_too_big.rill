@@ -1,0 +1,13 @@
+# A buffer whose bytes no machine could hold ends the program, saying so. The
+# size used to wrap round once the header was added: an eight-byte block
+# that said it was 2^61 long, whose every bounds check passed while the
+# writes landed in the next buffer (2026-09-25).
+
+fn main() =
+  n = if len(args()) > 1 then 1152921504606846976 else 2305843009213693951
+  b = if len(args()) > 1 then buf_int(4) else buf_int(n)
+  c = if len(args()) > 1 then channel(n) else channel(1)
+  b[3] = 66
+  println(b[3])
+  send(c, 1)
+  0

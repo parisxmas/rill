@@ -1,0 +1,11 @@
+# A pipeline over a range is one loop, and its last element leaves before
+# `i + 1` is asked about: `range(b - 2, b)` with `b` the largest `Int` never
+# ended, since every `i` there is is `<= b` (2026-09-25).
+
+fn main() =
+  mx = 9223372036854775807
+  println(sum(map(range(mx - 2, mx), \x -> 1)))
+  println(len(filter(range(mx - 4, mx), \x -> x % 2 == 0)))
+  println(sum(map(range(5, 3), \x -> x)))
+  println(sum(map(range(3, 3), \x -> x)))
+  0
