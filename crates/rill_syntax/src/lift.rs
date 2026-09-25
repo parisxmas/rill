@@ -2050,6 +2050,16 @@ fn free_of(e: &Expr, bound: &mut Vec<String>, out: &mut Vec<String>) {
         Expr::Call { name, args, .. } => {
             if !bound.contains(name) {
                 out.push(name.clone());
+                // `s.speak()` through a trait object or a field needs `s`,
+                // or a `for` body or a local function calling it captured
+                // nothing and the call was an unknown function (2026-09-25).
+                // A lifted function's own name (`main.go`) adds a head no
+                // scope has, which whoever asked filters out.
+                if let Some((head, _)) = name.split_once('.') {
+                    if !bound.iter().any(|b| b == head) {
+                        out.push(head.to_string());
+                    }
+                }
             }
             for a in args {
                 free_of(a, bound, out);

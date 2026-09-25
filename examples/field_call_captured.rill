@@ -1,0 +1,38 @@
+# A call through a field — a trait object's `s.speak()`, a record's `o.g(x)`
+# — made from a lambda, a strand, a `for` or `while` body or a local
+# function. What each of those captures left out the `o` in front of the
+# call: the lambda and the strand killed the compiler, and the loops said
+# `o.g` was an unknown function (2026-09-25).
+
+trait Speak(a)
+  speak(a) -> Str
+
+type Dog
+  Dog(name: Str)
+
+impl Speak(Dog)
+  fn speak(d) = d.name + " woofs"
+
+type Obj
+  Obj(g: (Int) -> Int, name: Str)
+
+fn chorus(s: Speak, n) = for i in 0..n with acc = ""
+  acc + s.speak()
+
+fn main() =
+  o = Obj(\x -> x * 2, "o")
+  f = \ -> o.g(21)
+  println(f())
+  ch = channel(1)
+  spawn send(ch, o.g(5))
+  println(recv(ch))
+  t = for i in 0..3 with a = 0
+    a + o.g(i)
+  println(t)
+  w = while k < 10 with k = 1
+    o.g(k)
+  println(w)
+  fn twice(x) = o.g(o.g(x))
+  println(twice(3))
+  println(chorus(Speak(Dog("rex")), 2))
+  0

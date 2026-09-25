@@ -1,0 +1,38 @@
+# `Unit` as a parameter and down a channel: `res_map(Ok(()), \u -> 5)`, a
+# function called with `()`, `send(c, ())`. Each was a compiler panic —
+# "parameters are never Unit" — although `Result((), e)` is everywhere
+# (2026-09-25). A `Unit` parameter is a byte nobody reads, as a `Unit`
+# field is, and a `Chan(Unit)` carries a signal and no value.
+
+fn check(n) = if n > 0 then Ok(()) else Err("neg")
+
+fn f(u) = 7
+
+fn g(u: Unit) = u
+
+fn done_all(c, n) = if n == 0 then 0
+else
+  recv(c)
+  done_all(c, n - 1)
+
+fn main() =
+  println(res_map(check(1), \u -> 5))
+  println(f(()))
+  g(())
+  c = channel(1)
+  send(c, ())
+  recv(c)
+  d = channel()
+  spawn send(d, ())
+  spawn send(d, ())
+  println(done_all(d, 2))
+  e = channel(2)
+  send(e, ())
+  r = select
+    x = recv(e) -> 1
+    timeout(10) -> 2
+  println(r)
+  close(e)
+  println(recv_opt(e))
+  xs = map(Cons(1, Nil), \x -> ())
+  println(len(xs))

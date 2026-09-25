@@ -5796,3 +5796,13 @@ fn malformed_utf8_swallows_nothing() {
         "3\nCons(195, Cons(65, Cons(44, Nil)))\n8\n252\nCons(248, Cons(120, Cons(121, Nil)))\nCons(226, Cons(130, Cons(90, Nil)))\nCons(8364, Nil)\n"
     );
 }
+
+#[test]
+fn unit_is_a_parameter_and_goes_down_a_channel() {
+    assert_eq!(compile_and_run("unit_params.rill"), "Ok(5)\n7\n0\n1\nNone\n1\n");
+}
+
+#[test]
+fn a_call_through_a_field_captures_the_value_it_is_made_on() {
+    assert_eq!(compile_and_run("field_call_captured.rill"), "42\n10\n6\n16\n12\nrex woofsrex woofs\n");
+}

@@ -1499,17 +1499,12 @@ impl Checker {
                 vars.iter().enumerate().map(|(i, n)| (n.as_str(), i as u32)).collect();
             let mut params = Vec::new();
             let mut whole = f.ret_ann.is_some();
-            for Param { name, ann } in &f.params {
+            for Param { ann, .. } in &f.params {
                 let ty = match ann {
                     Some(tr) => {
-                        let ty = resolve_type_ref(tr, &adt_index, &c.adts, Some(&names))?;
-                        if ty == Ty::Unit {
-                            return Err(TypeError::new(
-                                tr.line,
-                                format!("parameter `{name}` cannot be Unit"),
-                            ));
-                        }
-                        ty
+                        // A `Unit` parameter is a byte nobody reads, as an
+                        // inferred one always was.
+                        resolve_type_ref(tr, &adt_index, &c.adts, Some(&names))?
                     }
                     None => {
                         whole = false;
@@ -2755,6 +2750,7 @@ impl Checker {
                 let mut free = Vec::new();
                 let mut seen = HashSet::new();
                 free_vars(body, &mut free, &mut seen);
+                call_heads(body, &mut free, &mut seen);
                 let captures: Vec<(String, Ty)> = free
                     .into_iter()
                     .filter_map(|n| env.get(&n).map(|t| (n, t.clone())))
@@ -2858,6 +2854,7 @@ impl Checker {
                 let mut free = Vec::new();
                 let mut seen = HashSet::new();
                 free_vars(body, &mut free, &mut seen);
+                call_heads(body, &mut free, &mut seen);
                 let captures: Vec<(String, Ty)> = free
                     .into_iter()
                     .filter(|n| !params.contains(n))
@@ -6173,11 +6170,7 @@ fn resolve_type_ref(
     if tr.name == "->" {
         let mut ps = Vec::new();
         for a in &tr.args {
-            let p = resolve_type_ref(a, adt_index, adts, params)?;
-            if p == Ty::Unit {
-                return Err(TypeError::new(a.line, "a function's parameter cannot be Unit"));
-            }
-            ps.push(p);
+            ps.push(resolve_type_ref(a, adt_index, adts, params)?);
         }
         let r = tr.ret.as_ref().expect("an arrow has a result");
         let ret = resolve_type_ref(r, adt_index, adts, params)?;
@@ -6274,6 +6267,24 @@ fn resolve_type_ref(
 }
 
 /// Collects free variable names of an expression in first-use order.
+/// The `o` of every `o.g()` in `e`: a call through a field of a value is a
+/// use of the value, which `free_vars` leaves out so that a lifted
+/// function's name (`main.go`) does not make its parent a dependency. What
+/// a lambda or a strand captures has to have it, or `\ -> o.g()` closed over
+/// nothing and the compiler died looking `o` up (2026-09-25). The list is
+/// filtered against the enclosing scope, so a function's name that comes
+/// out of here is dropped there.
+fn call_heads(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
+    if let Expr::Call { name, .. } = e {
+        if let Some((head, _)) = name.split_once('.') {
+            if seen.insert(head.to_string()) {
+                out.push(head.to_string());
+            }
+        }
+    }
+    rill_syntax::lift::each_child_all(e, &mut |c| call_heads(c, out, seen));
+}
+
 fn free_vars(e: &Expr, out: &mut Vec<String>, seen: &mut HashSet<String>) {
     let mut name_of = |n: &String, out: &mut Vec<String>| {
         if seen.insert(n.clone()) {

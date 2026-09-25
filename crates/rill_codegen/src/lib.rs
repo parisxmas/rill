@@ -2658,7 +2658,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             ps.push(self.ctx.ptr_type(Default::default()).into());
         }
         for p in params {
-            ps.push(self.llvm_type(p).expect("parameters are never Unit").into());
+            // A `Unit` parameter — `\u -> 5` over an `Ok(())` — is a byte
+            // that is never read, as a `Unit` field is.
+            ps.push(self.slot_type(p).into());
         }
         match self.llvm_type(ret) {
             None => self.ctx.void_type().fn_type(&ps, false),
@@ -2683,7 +2685,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         ps.push(self.llvm_type(f).expect("a scalar").into());
                     }
                 }
-                None => ps.push(self.llvm_type(p).expect("parameters are never Unit").into()),
+                None => ps.push(self.slot_type(p).into()),
             }
         }
         match self.llvm_type(ret) {
@@ -3367,7 +3369,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let w1 = b.build_ptr_to_int(f1.into_pointer_value(), i64t, "w1i").unwrap();
                 (w0, w1)
             }
-            Ty::Unit | Ty::Var(_) | Ty::Gen(_) => unreachable!("not sendable"),
+            Ty::Unit => (zero, zero),
+            Ty::Var(_) | Ty::Gen(_) => unreachable!("not sendable"),
         }
     }
 
@@ -3440,7 +3443,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let s1 = b.build_insert_value(s0, p1, 1, "c").unwrap();
                 s1.into_struct_value().into()
             }
-            Ty::Unit | Ty::Var(_) | Ty::Gen(_) => unreachable!("not receivable"),
+            // a `Chan(Unit)` carries nothing; the byte stands in for it
+            Ty::Unit => self.unit_slot(),
+            Ty::Var(_) | Ty::Gen(_) => unreachable!("not receivable"),
         }
     }
 
@@ -5358,7 +5363,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     raw
                 }
             };
-            scope.insert(pname.clone(), Some(raw));
+            // A `Unit` parameter's byte is only there to be passed; the
+            // name has no value, as a `Unit` binding has none.
+            scope.insert(pname.clone(), if cty == Ty::Unit { None } else { Some(raw) });
             // A value the host lends an export is the host's: this frame
             // takes a reference of its own for the call and lets that one
             // go, and the host's is as it was.
@@ -5585,7 +5592,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                                 .expect("a constructor is never Unit"),
                             _ => self
                                 .gen_expr(a, scope, subst, func)?
-                                .expect("arguments are never Unit"),
+                                .unwrap_or_else(|| self.unit_slot()),
                         },
                     };
                     argv.push(v.into());
@@ -7859,7 +7866,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         }
                         let v = self.gen_expr(a, scope, subst, func)?;
                         self.borrow_captures = false;
-                        argv.push(v.expect("arguments are never Unit").into());
+                        argv.push(v.unwrap_or_else(|| self.unit_slot()).into());
                     }
                 }
                 let argv = self.explode_args(argv, &self.instance_params(*fn_idx, &inner));
@@ -8345,7 +8352,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                         continue;
                     }
                     let v = self.gen_expr(a, scope, subst, func)?;
-                    argv.push(v.expect("arguments are never Unit").into());
+                    argv.push(v.unwrap_or_else(|| self.unit_slot()).into());
                 }
                 let call = self.call_impl(fn_idx, &recv_ty, &argv, "mcall");
                 for (v, ty) in held {
@@ -8382,7 +8389,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let mut argv: Vec<BasicMetadataValueEnum> = vec![env.into()];
                 for a in args {
                     let v = self.gen_expr(a, scope, subst, func)?;
-                    argv.push(v.expect("arguments are never Unit").into());
+                    argv.push(v.unwrap_or_else(|| self.unit_slot()).into());
                 }
                 let fn_ty = self.fn_llvm_type(&params, &ret, true);
                 let call = self
@@ -8691,7 +8698,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let ch_ty = self.concrete(&ch.ty, subst);
                 let val_ty = self.concrete(&val.ty, subst);
                 let cv = self.gen_expr(ch, scope, subst, func)?.expect("value");
-                let vv = self.gen_expr(val, scope, subst, func)?.expect("value");
+                let vv = self.gen_expr(val, scope, subst, func)?.unwrap_or_else(|| self.unit_slot());
                 let (a, b) = self.pack_words(vv, &val_ty);
                 let f = self.module.get_function("rill_chan_send").unwrap();
                 self.builder
@@ -8727,7 +8734,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     self.release_flat_box(a, &elem_ty);
                 }
                 self.emit_release(cv, &ch_ty);
-                Ok(Some(out))
+                // a `Chan(Unit)` hands over a signal and no value
+                Ok((elem_ty != Ty::Unit).then_some(out))
             }
             TK::ChanOp { ch, op } => {
                 let ch_ty = self.concrete(&ch.ty, subst);
@@ -8789,7 +8797,8 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     self.release_flat_box(a, &elem_ty);
                 }
                 self.emit_release(cv, &ch_ty);
-                Ok(Some(out))
+                // a `Chan(Unit)` hands over a signal and no value
+                Ok((elem_ty != Ty::Unit).then_some(out))
             }
             TK::Select { arms, default } => {
                 self.gen_select(e, arms, default.as_deref(), scope, subst, func)
@@ -9426,7 +9435,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             let (wa, wb, sent) = match val {
                 Some(v) => {
                     let vty = self.concrete(&v.ty, subst);
-                    let vv = self.gen_expr(v, scope, subst, func)?.expect("value");
+                    let vv = self.gen_expr(v, scope, subst, func)?.unwrap_or_else(|| self.unit_slot());
                     let (a, b) = self.pack_words(vv, &vty);
                     (a, b, Some((vv, vty)))
                 }
@@ -9556,7 +9565,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 if self.is_flat(&ty) {
                     self.release_flat_box(got_a, &ty);
                 }
-                arm_scope.insert(name.clone(), Some(v));
+                arm_scope.insert(name.clone(), (ty != Ty::Unit).then_some(v));
                 self.bound_fns.remove(name);
                 // The value comes out of the channel owned — the channel has
                 // given up its reference — and an arm that only reads it hands
