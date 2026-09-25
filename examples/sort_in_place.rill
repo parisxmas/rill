@@ -1,0 +1,37 @@
+# `sort`, `sort_by` and `sort_with` sort in the runtime: the elements beside
+# their cells in an array, a stable merge sort of that, and the elements
+# written back into the list's own cells in order — nothing allocated when
+# nothing else holds the list, a copy sorted when something does. `sort` of
+# numbers or strings compares without calling anything. The merge sort the
+# prelude had was 7.7 times C on two million `Int`s (2026-09-25); this one
+# is faster than C's. Prints each result and, last, the live block count.
+
+extern fn rill_mem_report() -> Int
+
+type P
+  P(k: Int, name: Str)
+
+type Q
+  Q(x: Float, y: Float, tag: Int)
+
+fn main() =
+  run()
+  println(int_to_str(rill_mem_report()))
+  0
+
+fn run() =
+  println(sort(Cons(3, Cons(1, Cons(2, Nil)))))
+  xs = Cons("pear", Cons("apple", Cons("fig", Nil)))
+  ys = sort(xs)
+  println(xs)
+  println(ys)
+  # stable: equal keys keep their order
+  ps = Cons(P(2, "b"), Cons(P(1, "x"), Cons(P(2, "a"), Cons(P(1, "y"), Nil))))
+  println(sort_by(ps, \p -> p.k))
+  qs = Cons(Q(3.0, 1.0, 1), Cons(Q(1.0, 2.0, 2), Cons(Q(2.0, 3.0, 3), Cons(Q(1.0, 4.0, 4), Nil))))
+  println(sort_by(qs, \q -> q.x))
+  println(sort_with(range(1, 8), \a, b -> a >= b))
+  println(sort(Cons(2.5, Cons(-1.0, Cons(1.0, Nil)))))
+  big = range(1, 100000) |> map(\x -> x * 7919 % 100003)
+  s = sort(big)
+  println(take(s, 3))

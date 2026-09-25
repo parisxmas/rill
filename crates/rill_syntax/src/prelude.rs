@@ -71,6 +71,11 @@ fn merge(prelude: Module, user: Module) -> Module {
         .map(|f| {
             let mut names = HashSet::new();
             collect_expr_names(&f.body, &mut names);
+            // `list_sort` is the runtime's sort of the prelude's `List`, and
+            // goes with it when a program has a `List` of its own.
+            if names.contains("list_sort") {
+                names.insert("List".to_string());
+            }
             for p in &f.params {
                 if let Some(ann) = &p.ann {
                     collect_type_names(ann, &mut names);

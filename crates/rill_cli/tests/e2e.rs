@@ -5891,3 +5891,19 @@ fn the_compiler_does_not_run_out_of_stack_on_a_deep_source() {
     let nest = format!("fn main() = println({}1{})\n", "(".repeat(10000), ")".repeat(10000));
     assert_eq!(run_source("deep_parens", &nest), "1\n");
 }
+
+#[test]
+fn a_list_sorts_in_its_own_cells_and_stays_stable() {
+    assert_eq!(
+        compile_and_run("sort_in_place.rill"),
+        "Cons(1, Cons(2, Cons(3, Nil)))\n\
+         Cons(pear, Cons(apple, Cons(fig, Nil)))\n\
+         Cons(apple, Cons(fig, Cons(pear, Nil)))\n\
+         Cons(P(1, x), Cons(P(1, y), Cons(P(2, b), Cons(P(2, a), Nil))))\n\
+         Cons(Q(1, 2, 2), Cons(Q(1, 4, 4), Cons(Q(2, 3, 3), Cons(Q(3, 1, 1), Nil))))\n\
+         Cons(8, Cons(7, Cons(6, Cons(5, Cons(4, Cons(3, Cons(2, Cons(1, Nil))))))))\n\
+         Cons(-1, Cons(1, Cons(2.5, Nil)))\n\
+         Cons(1, Cons(2, Cons(3, Nil)))\n\
+         0\n"
+    );
+}

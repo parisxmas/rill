@@ -3906,6 +3906,26 @@ impl Checker {
                 kind: TK::BufNew { width, count: Box::new(n) },
             });
         }
+        // The prelude's `sort_with`: a stable sort of a list's own cells in
+        // the runtime (`rill_list_sort`). `(List(a), (a, a) -> Bool) -> List(a)`.
+        if name == "list_sort" {
+            if args.len() != 2 {
+                return Err(TypeError::new(
+                    line,
+                    format!("`list_sort` takes a list and an ordering, but {} given", args.len()),
+                ));
+            }
+            let Some(list) = self.adts.iter().position(|a| a.name == "List") else {
+                return Err(TypeError::new(line, "`list_sort` needs the prelude's `List`"));
+            };
+            let a = self.fresh();
+            let l = self.infer(&args[0], env)?;
+            let lt = Ty::Adt(list, vec![a.clone()]);
+            self.unify(&lt, &l.ty, line, "the list `list_sort` sorts")?;
+            let f = self.infer(&args[1], env)?;
+            self.unify(&Ty::Fn(vec![a.clone(), a], Box::new(Ty::Bool)), &f.ty, line, "the ordering `list_sort` sorts by")?;
+            return Ok(TExpr { ty: lt, line, kind: TK::Builtin { rt: "rill_list_sort", args: vec![l, f] } });
+        }
         if name == "unique" {
             if args.len() != 1 {
                 return Err(TypeError::new(
@@ -6064,6 +6084,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "buf_cmp"
             | "buf_float_uninit"
             | "unique"
+            | "list_sort"
             | "map_new"
             | "map_set"
             | "map_find"

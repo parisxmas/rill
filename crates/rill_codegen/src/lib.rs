@@ -871,6 +871,9 @@ fn borrows_only(e: &TExpr, name: &str, borrowed: &[Vec<bool>], nonesc: &[Vec<boo
     };
     match &e.kind {
         TK::Local(n) => n != name,
+        // The list is sorted in its own cells when nothing else holds them:
+        // it is taken, not lent.
+        TK::Builtin { rt, args } if *rt == "rill_list_sort" => operand(&args[0], false) && operand(&args[1], true),
         TK::Builtin { args, .. } => args.iter().all(|a| operand(a, true)),
         TK::BufGet { buf, idx, .. } => operand(buf, true) && operand(idx, false),
         TK::BufSet { buf, idx, val, .. } => {
@@ -3520,6 +3523,211 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     /// Lets go of the box a flat value travelled in through a table or a
     /// channel: one fewer holder, and freed when that was the last.
+    /// `list_sort(l, before)`: `rill_list_sort` over the list's cells, with
+    /// the comparison and the cell copy written for the element type. The
+    /// list is taken — handed over at its last use — so a list nothing else
+    /// holds is sorted where it lies; the ordering is lent for the call.
+    fn gen_list_sort(
+        &mut self,
+        e: &TExpr,
+        args: &[TExpr],
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, CodegenError> {
+        let list_ty = self.concrete(&e.ty, subst);
+        let Ty::Adt(adt, targs) = &list_ty else { unreachable!("list_sort answers a List") };
+        let (adt, targs) = (*adt, targs.clone());
+        let elem = targs[0].clone();
+        let cons = self.tmod.adts[adt].ctors.iter().position(|c| c.fields.len() == 2).expect("a Cons");
+        let cons_tag = self.tmod.adts[adt].ctors[cons].tag;
+        let st = self.ctor_struct(adt, cons, &targs);
+        // the byte offset of the tail, the cell's second field
+        let td = inkwell::targets::TargetData::create(self.module.get_data_layout().as_str().to_str().unwrap_or(""));
+        let tail_off = td.offset_of_element(&st, 3).expect("a tail field");
+
+        // `sort` of numbers or strings — the prelude's `\\a, b -> a <= b` —
+        // is an order the runtime knows, and compares without a call.
+        let natural = match &args[1].kind {
+            TK::Lambda { params, body, .. } if params.len() == 2 => match &body.kind {
+                TK::Binary { op: BinOp::Le, lhs, rhs } => {
+                    matches!((&lhs.kind, &rhs.kind), (TK::Local(a), TK::Local(b)) if *a == params[0].0 && *b == params[1].0)
+                }
+                _ => false,
+            },
+            _ => false,
+        };
+        let kind: u64 = match (&elem, natural) {
+            (Ty::Int, true) => 1,
+            (Ty::Float, true) => 2,
+            (Ty::Str, true) if self.user_impl(rill_types::ORD_TRAIT, 0, &Ty::Str).is_none() => 3,
+            _ => 0,
+        };
+        let l = &args[0];
+        let lv = match &l.kind {
+            TK::Local(n) if self.movable.contains(n) => match self.take_owned(l, scope) {
+                Some(v) => v,
+                None => self.gen_expr(l, scope, subst, func)?.expect("a list"),
+            },
+            _ => self.gen_expr(l, scope, subst, func)?.expect("a list"),
+        };
+        let (fv, held) = self.gen_borrowed(&args[1], scope, subst, func)?;
+        let fty = self.concrete(&args[1].ty, subst);
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let i64t = self.ctx.i64_type();
+        // the ordering, where the comparison can reach it
+        let pair = self.ctx.struct_type(&[ptrt.into(), ptrt.into()], false);
+        let slot = self.builder.build_alloca(pair, "sort.by").expect("LLVM builder error");
+        let cv = fv.into_struct_value();
+        let code = self.builder.build_extract_value(cv, 0, "code").expect("LLVM builder error");
+        let env = self.builder.build_extract_value(cv, 1, "env").expect("LLVM builder error");
+        let p0 = self.builder.build_struct_gep(pair, slot, 0, "by.code").expect("LLVM builder error");
+        self.builder.build_store(p0, code).expect("LLVM builder error");
+        let p1 = self.builder.build_struct_gep(pair, slot, 1, "by.env").expect("LLVM builder error");
+        self.builder.build_store(p1, env).expect("LLVM builder error");
+
+        let cmp = self.sort_cmp_fn(adt, cons, &targs, &elem);
+        let copy = self.sort_copy_fn(adt, cons, &targs, &elem);
+        let drop = self.adt_drop(&list_ty);
+        let rt = match self.module.get_function("rill_list_sort") {
+            Some(f) => f,
+            None => self.module.add_function(
+                "rill_list_sort",
+                ptrt.fn_type(
+                    &[ptrt.into(), i64t.into(), i64t.into(), i64t.into(), ptrt.into(), ptrt.into(), ptrt.into(), ptrt.into()],
+                    false,
+                ),
+                None,
+            ),
+        };
+        let call = self
+            .builder
+            .build_call(
+                rt,
+                &[
+                    lv.into(),
+                    i64t.const_int(cons_tag, false).into(),
+                    i64t.const_int(tail_off, false).into(),
+                    i64t.const_int(kind, false).into(),
+                    cmp.as_global_value().as_pointer_value().into(),
+                    slot.into(),
+                    copy.as_global_value().as_pointer_value().into(),
+                    drop.as_global_value().as_pointer_value().into(),
+                ],
+                "sorted",
+            )
+            .expect("LLVM builder error");
+        if held {
+            self.emit_release(fv, &fty);
+        }
+        Ok(match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => Some(v),
+            _ => unreachable!("a list"),
+        })
+    }
+
+    /// `sortcmp$T(by, a, b)`: whether cell `a`'s element may go before cell
+    /// `b`'s, by the ordering at `by`. The ordering takes what it is given,
+    /// so each element is retained for it.
+    fn sort_cmp_fn(&mut self, adt: usize, cons: usize, targs: &[Ty], elem: &Ty) -> FunctionValue<'ctx> {
+        let name = format!("sortcmp${}", mangle(elem, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return f;
+        }
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let f = self.module.add_function(
+            &name,
+            self.ctx.i8_type().fn_type(&[ptrt.into(), ptrt.into(), ptrt.into()], false),
+            None,
+        );
+        f.set_linkage(inkwell::module::Linkage::Internal);
+        let saved = self.builder.get_insert_block();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        let st = self.ctor_struct(adt, cons, targs);
+        let pair = self.ctx.struct_type(&[ptrt.into(), ptrt.into()], false);
+        let by = f.get_nth_param(0).unwrap().into_pointer_value();
+        let code_p = self.builder.build_struct_gep(pair, by, 0, "code.p").expect("LLVM builder error");
+        let code = self.builder.build_load(ptrt, code_p, "code").expect("LLVM builder error").into_pointer_value();
+        let env_p = self.builder.build_struct_gep(pair, by, 1, "env.p").expect("LLVM builder error");
+        let env = self.builder.build_load(ptrt, env_p, "env").expect("LLVM builder error");
+        let mut argv: Vec<BasicMetadataValueEnum<'ctx>> = vec![env.into()];
+        // Each argument is a pair: the element's first word, then its cell.
+        // An element of one word is read from the pair; a wider one from the
+        // cell.
+        let word = self.ctx.i64_type();
+        let pair_ty = self.ctx.struct_type(&[word.into(), ptrt.into()], false);
+        let slot_size = self.slot_type(elem).size_of().and_then(|s| s.get_zero_extended_constant());
+        let in_pair = slot_size.is_some_and(|s| s <= 8);
+        for k in 1..3 {
+            let pp = f.get_nth_param(k).unwrap().into_pointer_value();
+            let hp = if in_pair {
+                pp
+            } else {
+                let cp = self.builder.build_struct_gep(pair_ty, pp, 1, "cell.p").expect("LLVM builder error");
+                let cell = self.builder.build_load(ptrt, cp, "cell").expect("LLVM builder error").into_pointer_value();
+                self.builder.build_struct_gep(st, cell, 2, "head.p").expect("LLVM builder error")
+            };
+            let h = self.builder.build_load(self.slot_type(elem), hp, "head").expect("LLVM builder error");
+            if self.is_heap(elem) {
+                self.emit_retain(h, elem);
+            }
+            argv.push(if *elem == Ty::Unit { self.unit_slot().into() } else { h.into() });
+        }
+        let params = vec![elem.clone(), elem.clone()];
+        let fn_ty = self.fn_llvm_type(&params, &Ty::Bool, true);
+        let call = self.builder.build_indirect_call(fn_ty, code, &argv, "before").expect("LLVM builder error");
+        if !self.wasm {
+            if let Some(cc) = self.cc_for(&params, 1) {
+                call.set_call_convention(cc);
+            }
+        }
+        let b = match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+            _ => unreachable!("an ordering answers a Bool"),
+        };
+        let byte = self.builder.build_int_z_extend(b, self.ctx.i8_type(), "b").expect("LLVM builder error");
+        self.builder.build_return(Some(&byte)).expect("LLVM builder error");
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        f
+    }
+
+    /// `sortcopy$T(cell)`: a new cell holding what `cell` holds; its tail is
+    /// the sort's to set.
+    fn sort_copy_fn(&mut self, adt: usize, cons: usize, targs: &[Ty], elem: &Ty) -> FunctionValue<'ctx> {
+        let name = format!("sortcopy${}", mangle(elem, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return f;
+        }
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let f = self.module.add_function(&name, ptrt.fn_type(&[ptrt.into()], false), None);
+        f.set_linkage(inkwell::module::Linkage::Internal);
+        let saved = self.builder.get_insert_block();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        let st = self.ctor_struct(adt, cons, targs);
+        let old = f.get_nth_param(0).unwrap().into_pointer_value();
+        let new = self.alloc_object(st, "cell");
+        let i64t = self.ctx.i64_type();
+        let tag = self.tmod.adts[adt].ctors[cons].tag;
+        let tp = self.builder.build_struct_gep(st, new, 1, "tag").expect("LLVM builder error");
+        self.builder.build_store(tp, i64t.const_int(tag, false)).expect("LLVM builder error");
+        let hp = self.builder.build_struct_gep(st, old, 2, "head.p").expect("LLVM builder error");
+        let h = self.builder.build_load(self.slot_type(elem), hp, "head").expect("LLVM builder error");
+        if self.is_heap(elem) {
+            self.emit_retain(h, elem);
+        }
+        let np = self.builder.build_struct_gep(st, new, 2, "nhead.p").expect("LLVM builder error");
+        self.builder.build_store(np, h).expect("LLVM builder error");
+        self.builder.build_return(Some(&new)).expect("LLVM builder error");
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        f
+    }
+
     /// `chandrop$T(a, b)`: lets go of one value of `T` as a channel holds
     /// it, two words. None for a type with nothing to let go of.
     fn chan_drop(&mut self, ty: &Ty) -> Option<FunctionValue<'ctx>> {
@@ -7557,6 +7765,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // stores rather than a call into the runtime with a width it has
             // to load and branch on. A page built out of static runs is
             // mostly this.
+            TK::Builtin { rt, args } if *rt == "rill_list_sort" => self.gen_list_sort(e, args, scope, subst, func),
             TK::Builtin { rt, args } if *rt == "rill_strbuf_add" => {
                 let fixed = match &args[1].kind {
                     TK::Str(lit) => Some(lit.len()),

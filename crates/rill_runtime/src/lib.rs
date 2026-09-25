@@ -3513,6 +3513,179 @@ pub unsafe extern "C" fn rill_buf_release(p: *mut u8, size: i64) {
     }
 }
 
+/// `sort_with` on a list: a stable merge sort of its elements, done in an
+/// array, and the elements written back into the list's cells in order. A
+/// list this call holds the only reference to, cell by cell, is sorted where
+/// it is: nothing allocated, nothing freed. A list anything else can still
+/// see is copied first (`copy` makes a cell holding what another holds) and
+/// let go of (`drop`).
+///
+/// What is sorted is pairs — the first word of each element beside its cell
+/// — so that an element of one word is compared where it lies in the array,
+/// in order in memory, not out of a cell somewhere in the heap: chasing the
+/// cells cost a cache miss per comparison. And the cells stay where they are
+/// and the elements move between them, rather than the cells being linked
+/// again in sorted order: a list is usually laid out in memory in its own
+/// order, and one relinked in a random one missed the cache at every step
+/// of every walk after — reading the sorted list back took as long as the
+/// sort. The order is `cmp(ctx, a, b)` — "`a` may go before `b`", handed
+/// two pairs — or, for `sort` of numbers or strings (`kind` 1, 2, 3: `Int`,
+/// `Float`, `Str` by `<=`), compared here with no call at all.
+///
+/// The prelude's merge sort walked the list six times a level, called the
+/// comparison through a closure and allocated a cell per merge step: two
+/// million `Int`s took 1.46 s against C's 0.19 (2026-09-25).
+///
+/// # Safety
+/// `list` is an owned `List`; its cells keep their element at 16, in the
+/// bytes up to their tail at `tail_off`, and carry `cons_tag`; the three
+/// functions are the compiler's for its type.
+#[no_mangle]
+pub unsafe extern "C" fn rill_list_sort(
+    list: *mut u8,
+    cons_tag: i64,
+    tail_off: i64,
+    kind: i64,
+    cmp: Option<extern "C" fn(*mut u8, *const [usize; 2], *const [usize; 2]) -> u8>,
+    ctx: *mut u8,
+    copy: extern "C" fn(*mut u8) -> *mut u8,
+    drop: extern "C" fn(*mut u8),
+) -> *mut u8 {
+    let tail_of = |c: *mut u8| c.add(tail_off as usize) as *mut *mut u8;
+    let is_cons = |c: *mut u8| *(c as *const i64).add(1) == cons_tag;
+    let mut n = 0usize;
+    let mut alone = true;
+    let mut c = list;
+    while is_cons(c) {
+        alone = alone && *(c as *const i64) == 1;
+        n += 1;
+        c = *tail_of(c);
+    }
+    let end = c;
+    if n < 2 {
+        return list;
+    }
+    // One the call may write: the list itself, or a copy of it in order.
+    let head = if alone {
+        list
+    } else {
+        let first = copy(list);
+        let mut prev = first;
+        let mut c = *tail_of(list);
+        while is_cons(c) {
+            let cell = copy(c);
+            *tail_of(prev) = cell;
+            prev = cell;
+            c = *tail_of(c);
+        }
+        *tail_of(prev) = end;
+        drop(list);
+        first
+    };
+    let pairs = malloc(n * 2 * core::mem::size_of::<SortPair>()) as *mut SortPair;
+    if pairs.is_null() {
+        out(b"rill: out of memory\n");
+        die();
+    }
+    let mut c = head;
+    for i in 0..n {
+        *pairs.add(i) = [*(c.add(16) as *const usize), c as usize];
+        c = *tail_of(c);
+    }
+    let sorted = match (kind, cmp) {
+        (1, _) => sort_pairs(pairs, n, |a, b| (a[0] as i64) <= (b[0] as i64)),
+        (2, _) => sort_pairs(pairs, n, |a, b| f64::from_bits(a[0] as u64) <= f64::from_bits(b[0] as u64)),
+        (3, _) => sort_pairs(pairs, n, |a, b| rill_str_cmp(a[0] as *const u8, b[0] as *const u8) <= 0),
+        (_, Some(f)) => sort_pairs(pairs, n, |a, b| f(ctx, a, b) != 0),
+        _ => pairs,
+    };
+    // The elements back into the cells, in the cells' own order. One of a
+    // word is in its pair already; a wider one is gathered first, since the
+    // cell it comes from may be one written before it is read.
+    let width = tail_off as usize - 16;
+    if width <= 8 {
+        let mut c = head;
+        for i in 0..n {
+            *(c.add(16) as *mut usize) = (*sorted.add(i))[0];
+            c = *tail_of(c);
+        }
+    } else {
+        let room = malloc(n * width);
+        if room.is_null() {
+            out(b"rill: out of memory\n");
+            die();
+        }
+        for i in 0..n {
+            core::ptr::copy_nonoverlapping(((*sorted.add(i))[1] as *const u8).add(16), room.add(i * width), width);
+        }
+        let mut c = head;
+        for i in 0..n {
+            core::ptr::copy_nonoverlapping(room.add(i * width), c.add(16), width);
+            c = *tail_of(c);
+        }
+        free(room);
+    }
+    free(pairs as *mut u8);
+    head
+}
+
+type SortPair = [usize; 2];
+
+/// A stable merge sort of `n` pairs at `pairs`, using the `n` after them as
+/// room; answers which half holds the result. Runs of 16 by insertion, then
+/// merges of doubling width, skipping a merge whose two runs are already in
+/// order across the seam.
+#[inline(always)]
+unsafe fn sort_pairs(pairs: *mut SortPair, n: usize, before: impl Fn(&SortPair, &SortPair) -> bool) -> *mut SortPair {
+    const RUN: usize = 16;
+    let mut lo = 0;
+    while lo < n {
+        let hi = (lo + RUN).min(n);
+        for i in lo + 1..hi {
+            let x = *pairs.add(i);
+            let mut j = i;
+            while j > lo && !before(&*pairs.add(j - 1), &x) {
+                *pairs.add(j) = *pairs.add(j - 1);
+                j -= 1;
+            }
+            *pairs.add(j) = x;
+        }
+        lo = hi;
+    }
+    let (mut src, mut dst) = (pairs, pairs.add(n));
+    let mut width = RUN;
+    while width < n {
+        let mut lo = 0;
+        while lo < n {
+            let mid = (lo + width).min(n);
+            let hi = (lo + 2 * width).min(n);
+            if mid >= hi || before(&*src.add(mid - 1), &*src.add(mid)) {
+                core::ptr::copy_nonoverlapping(src.add(lo), dst.add(lo), hi - lo);
+                lo = hi;
+                continue;
+            }
+            let (mut i, mut j, mut k) = (lo, mid, lo);
+            while i < mid && j < hi {
+                if before(&*src.add(i), &*src.add(j)) {
+                    *dst.add(k) = *src.add(i);
+                    i += 1;
+                } else {
+                    *dst.add(k) = *src.add(j);
+                    j += 1;
+                }
+                k += 1;
+            }
+            core::ptr::copy_nonoverlapping(src.add(i), dst.add(k), mid - i);
+            k += mid - i;
+            core::ptr::copy_nonoverlapping(src.add(j), dst.add(k), hi - j);
+            lo = hi;
+        }
+        core::mem::swap(&mut src, &mut dst);
+        width *= 2;
+    }
+    src
+}
+
 /// Nothing sensible follows an index off the end, so this ends the program
 /// the way an array bound violation should — saying where, since the index
 /// alone rarely says why.

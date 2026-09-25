@@ -293,35 +293,15 @@ fn max_by_from(l, key, best, bk) = match l
 # that came first stays first. `sort` orders by `<`, `sort_by` by what `key`
 # gives, and `sort_with` by `before(a, b)` — whether `a` may come before `b`,
 # which is `<=` and not `<`, or equal elements would swap.
-fn sort(l) = sort_with(l, \a, b -> a <= b)
+fn sort(l) = list_sort(l, \a, b -> a <= b)
 
 fn sort_by(l, key) = sort_with(l, \a, b -> key(a) <= key(b))
 
-fn sort_with(l, before) = match l
-  Nil -> Nil
-  Cons(_, Nil) -> l
-  _ -> sort_split(l, sort_half(l, 0), before)
-
-fn sort_half(l, n) = match l
-  Nil -> n / 2
-  Cons(_, rest) -> sort_half(rest, n + 1)
-
-fn sort_split(l, n, before) =
-  sort_merge(sort_with(sort_front(l, n, Nil), before), sort_with(sort_back(l, n), before), before, Nil)
-
-fn sort_front(l, n, acc) = if n <= 0 then reverse(acc) else match l
-  Nil -> reverse(acc)
-  Cons(x, rest) -> sort_front(rest, n - 1, Cons(x, acc))
-
-fn sort_back(l, n) = if n <= 0 then l else match l
-  Nil -> Nil
-  Cons(_, rest) -> sort_back(rest, n - 1)
-
-fn sort_merge(a, b, before, acc) = match a
-  Nil -> rev_onto(acc, b)
-  Cons(x, xs) -> match b
-    Nil -> rev_onto(acc, a)
-    Cons(y, ys) -> if before(x, y) then sort_merge(xs, b, before, Cons(x, acc)) else sort_merge(a, ys, before, Cons(y, acc))
+# A stable sort of the list's own cells, done by the runtime: an array of the
+# cells, a merge sort of it, and the cells linked again in order — in place
+# when nothing else holds them. The merge sort written here walked the list
+# six times a level and allocated a cell a step, and was 7.7 times C.
+fn sort_with(l, before) = list_sort(l, before)
 
 # The program's claim, for a `--parallel` build: this value is shared between
 # strands on purpose, and the writes to it are kept apart. `apart(x)` is `x`;
