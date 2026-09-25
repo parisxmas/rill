@@ -2524,19 +2524,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         ptr
     }
 
-    /// The pool's free lists and the live-allocation counter, as the
-    /// runtime exports them, declared on first use.
-    fn pool_globals(&mut self) -> (PointerValue<'ctx>, PointerValue<'ctx>) {
+    /// The pool's free lists, as the runtime exports them, declared on first
+    /// use. Nothing here counts what is handed out: the runtime works that
+    /// out from what it has cut and what is on the lists.
+    fn pool_globals(&mut self) -> PointerValue<'ctx> {
         let ptrt = self.ctx.ptr_type(Default::default());
         let pools = match self.module.get_global("rill_pools") {
             Some(g) => g,
             None => self.module.add_global(ptrt.array_type(16), None, "rill_pools"),
         };
-        let live = match self.module.get_global("rill_live_allocs") {
-            Some(g) => g,
-            None => self.module.add_global(self.ctx.i64_type(), None, "rill_live_allocs"),
-        };
-        (pools.as_pointer_value(), live.as_pointer_value())
+        pools.as_pointer_value()
     }
 
     /// `rill_alloc(size)`, with the pool's fast path laid down here: a block
@@ -2564,7 +2561,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
         let i64t = self.ctx.i64_type();
         let ptrt = self.ctx.ptr_type(Default::default());
-        let (pools, live) = self.pool_globals();
+        let pools = self.pool_globals();
         let fast_bb = self.ctx.append_basic_block(func, "alloc.fast");
         let take_bb = self.ctx.append_basic_block(func, "alloc.take");
         let slow_bb = self.ctx.append_basic_block(func, "alloc.slow");
@@ -2590,9 +2587,6 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.position_at_end(take_bb);
         let next = self.builder.build_load(ptrt, head, "next").expect("LLVM builder error");
         self.builder.build_store(slot, next).expect("LLVM builder error");
-        let n = self.builder.build_load(i64t, live, "live").expect("LLVM builder error").into_int_value();
-        let n1 = self.builder.build_int_add(n, i64t.const_int(1, false), "live.inc").expect("LLVM builder error");
-        self.builder.build_store(live, n1).expect("LLVM builder error");
         self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
 
         self.builder.position_at_end(slow_bb);
@@ -2616,7 +2610,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
         let i64t = self.ctx.i64_type();
         let ptrt = self.ctx.ptr_type(Default::default());
-        let (pools, live) = self.pool_globals();
+        let pools = self.pool_globals();
         let fast_bb = self.ctx.append_basic_block(func, "free.fast");
         let slow_bb = self.ctx.append_basic_block(func, "free.slow");
         let done_bb = self.ctx.append_basic_block(func, "free.done");
@@ -2637,9 +2631,6 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         let head = self.builder.build_load(ptrt, slot, "head").expect("LLVM builder error");
         self.builder.build_store(p, head).expect("LLVM builder error");
         self.builder.build_store(slot, p).expect("LLVM builder error");
-        let n = self.builder.build_load(i64t, live, "live").expect("LLVM builder error").into_int_value();
-        let n1 = self.builder.build_int_sub(n, i64t.const_int(1, false), "live.dec").expect("LLVM builder error");
-        self.builder.build_store(live, n1).expect("LLVM builder error");
         self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
 
         self.builder.position_at_end(slow_bb);

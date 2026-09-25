@@ -5148,7 +5148,16 @@ unsafe fn live_add(delta: i64) {
 unsafe fn live_total() -> i64 {
     let mut n = rill_live_allocs;
     for i in 0..MAX_WORKERS {
-        n += (*(&raw const rill_pools[i])).live;
+        let pool = &raw const rill_pools[i];
+        n += (*pool).live + (*pool).carved;
+        // what is on a free list is not out
+        for class in 0..POOL_CLASSES {
+            let mut p = (*pool).free[class];
+            while !p.is_null() {
+                n -= 1;
+                p = *(p as *const *mut u8);
+            }
+        }
     }
     n
 }
@@ -5191,6 +5200,13 @@ pub struct Pool {
     next: usize,
     end: usize,
     live: i64,
+    /// Blocks cut fresh from this pool's chunks. A pool block is not
+    /// counted as it is handed out or given back — the compiler's fast path
+    /// did that on every allocation and every free, a read, an add and a
+    /// write to one global, four percent of a program that is mostly
+    /// building and dropping (2026-09-25) — so the blocks out are the ones
+    /// cut less the ones on free lists, worked out when they are asked for.
+    carved: i64,
 }
 
 const POOL_INIT: Pool = Pool {
@@ -5198,6 +5214,7 @@ const POOL_INIT: Pool = Pool {
     next: 0,
     end: 0,
     live: 0,
+    carved: 0,
 };
 
 #[no_mangle]
@@ -5652,10 +5669,10 @@ pub unsafe extern "C" fn rill_alloc(size: u64) -> *mut u8 {
 }
 
 unsafe fn rill_alloc_raw(size: u64) -> *mut u8 {
-    live_add(1);
     if let Some(class) = pool_class(size) {
         #[cfg(unix)]
         if ALLOC_QUAR && size as usize <= QUAR_MAX {
+            live_add(1);
             return quar_alloc();
         }
         let pool = my_pool();
@@ -5739,12 +5756,14 @@ unsafe fn rill_alloc_raw(size: u64) -> *mut u8 {
         }
         let p = (*pool).next as *mut u8;
         (*pool).next += bytes;
+        (*pool).carved += 1;
         if ALLOC_CHECK {
             live_out(p as usize, class);
             rc_log(p as usize, 5);
         }
         return p;
     }
+    live_add(1);
     let p = malloc(size as usize);
     if p.is_null() {
         out(b"rill: out of memory\n");
@@ -5757,10 +5776,10 @@ unsafe fn rill_alloc_raw(size: u64) -> *mut u8 {
 /// `ptr` must come from `rill_alloc` with this exact `size`, freed once.
 #[no_mangle]
 pub unsafe extern "C" fn rill_free_sized(ptr: *mut u8, size: u64) {
-    live_add(-1);
     if let Some(class) = pool_class(size) {
         #[cfg(unix)]
         if ALLOC_QUAR && size as usize <= QUAR_MAX && !in_chunks(ptr as usize) {
+            live_add(-1);
             quar_free(ptr);
             return;
         }
@@ -5782,6 +5801,7 @@ pub unsafe extern "C" fn rill_free_sized(ptr: *mut u8, size: u64) {
         (*pool).free[class] = ptr;
         return;
     }
+    live_add(-1);
     if big_keep(ptr, size as usize) {
         return;
     }
