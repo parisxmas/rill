@@ -1,0 +1,28 @@
+# A local function sees the names as they are where it is written. It is
+# lifted to the top level and every call hands it what it captured — by
+# name, as the name stood where the call was made, so a lambda's parameter,
+# a pattern or a later binding of the same name handed it another value
+# (2026-09-25). Every line prints what the function saw where it was written.
+
+fn main() =
+  n = 10
+  fn addn(x) = x + n
+  f = \n -> addn(n)
+  println(f(1))
+  r = match Some(5)
+    Some(n) -> addn(0)
+    None -> 0
+  println(r)
+  t = for n in 0..3 with acc = 0
+    acc + addn(0)
+  println(t)
+  # a body that binds the name again hands the captured one on
+  fn go(i, acc) =
+    if i == 0 then acc
+    else
+      n = 1
+      go(i - 1, acc + n + addn(0))
+  println(go(3, 0))
+  n = 20
+  println(addn(1))
+  0

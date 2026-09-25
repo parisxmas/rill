@@ -5743,3 +5743,8 @@ fn a_branch_that_rebinds_an_outer_value_releases_it_on_that_branch_only() {
     // each answer, then the live block count: no crash, nothing left behind
     assert_eq!(compile_and_run("branch_rebinds_outer.rill"), "8\n0\n4\n0\n8\n0\n4\n0\n");
 }
+
+#[test]
+fn a_local_function_sees_names_as_they_were_where_it_was_written() {
+    assert_eq!(compile_and_run("local_fn_sees_its_own_names.rill"), "11\n10\n30\n33\n11\n");
+}

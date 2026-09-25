@@ -59,6 +59,10 @@ struct Local {
     name: String,
     lifted: String,
     caps: Vec<String>,
+    /// What a call hands over for each of `caps`, in order: the name
+    /// itself, or the name of a copy taken where the function was written
+    /// when the name is bound again before some call (`cap.f.n`).
+    pass: Vec<String>,
 }
 
 /// A value that can be written twice for nothing: a name or a literal. Naming
@@ -1536,6 +1540,8 @@ fn walk_block(
     let depth = env.len();
     let mut defs: Vec<(FnDef, String, Vec<String>)> = Vec::new();
     let mut rest: Vec<Stmt> = Vec::new();
+    // where each one was written, as a position in `rest`
+    let mut at: Vec<usize> = Vec::new();
     for s in stmts {
         match s {
             Stmt::Fn(f) => {
@@ -1543,6 +1549,7 @@ fn walk_block(
                 let lifted = pick_name(parent, &f.name, used);
                 let visible = env.clone();
                 defs.push((f, lifted, visible));
+                at.push(rest.len());
             }
             Stmt::Bind { name, value, line } => {
                 env.push(name.clone());
@@ -1571,7 +1578,7 @@ fn walk_block(
             visible.iter().filter(|n| seen.contains(n) && !sibling_names.contains(*n)).cloned()
                 .collect();
         refs.push(named.iter().filter(|n| sibling_names.contains(*n)).cloned().collect());
-        locals.push(Local { name: f.name.clone(), lifted: lifted.clone(), caps: dedup(caps) });
+        locals.push(Local { name: f.name.clone(), lifted: lifted.clone(), caps: dedup(caps), pass: Vec::new() });
     }
     loop {
         let mut changed = false;
@@ -1595,6 +1602,49 @@ fn walk_block(
         if !changed {
             break;
         }
+    }
+
+    // A local function sees the names as they were where it is written, but
+    // a call hands them over by name, as they are where it is made — the
+    // same name, once something after the function binds it again (a
+    // lambda's parameter, a pattern, a later `n = ...`), is another value.
+    // Such a name is copied where the function is written and the copy is
+    // what every call in this block hands over (2026-09-25).
+    let mut snaps: Vec<(usize, String, String)> = Vec::new();
+    for (i, l) in locals.iter_mut().enumerate() {
+        let visible = &defs[i].2;
+        let mut later: HashSet<String> = HashSet::new();
+        for st in &rest[at[i]..] {
+            match st {
+                Stmt::Bind { name, value, .. } => {
+                    later.insert(name.clone());
+                    collect_bound_names(value, &mut later);
+                }
+                Stmt::Expr(e) => collect_bound_names(e, &mut later),
+                _ => {}
+            }
+        }
+        l.pass = l
+            .caps
+            .iter()
+            .map(|c| {
+                if later.contains(c) && visible.contains(c) {
+                    let copy = format!("cap.{}.{c}", l.name);
+                    snaps.push((at[i], copy.clone(), c.clone()));
+                    copy
+                } else {
+                    c.clone()
+                }
+            })
+            .collect();
+    }
+    let line_of = |st: &Stmt| match st {
+        Stmt::Bind { line, .. } => *line,
+        _ => 0,
+    };
+    for (pos, copy, c) in snaps.into_iter().rev() {
+        let line = rest.get(pos).map(line_of).unwrap_or(0);
+        rest.insert(pos, Stmt::Bind { name: copy, value: Expr::Var(c, line), line });
     }
 
     // Pass three: rewrite every call to a lifted name, then lift what is
@@ -1624,10 +1674,53 @@ fn walk_block(
         let mut params: Vec<Param> =
             l.caps.iter().map(|c| Param { name: c.clone(), ann: None }).collect();
         params.extend(f.params);
+        // Inside a lifted body a capture is a parameter, handed on by name
+        // to itself and its siblings — unless the body binds that name
+        // again, when it is copied at the top of the body first.
+        let mut rebound: HashSet<String> = HashSet::new();
+        collect_bound_names(&f.body, &mut rebound);
+        let mut copies: Vec<(String, String)> = Vec::new();
+        let inner_locals: Vec<Local> = locals
+            .iter()
+            .map(|o| Local {
+                name: o.name.clone(),
+                lifted: o.lifted.clone(),
+                caps: o.caps.clone(),
+                pass: o
+                    .caps
+                    .iter()
+                    .map(|c| {
+                        if rebound.contains(c) && l.caps.contains(c) {
+                            let copy = format!("cap.{}.{c}", l.name);
+                            if !copies.iter().any(|(k, _)| *k == copy) {
+                                copies.push((copy.clone(), c.clone()));
+                            }
+                            copy
+                        } else {
+                            c.clone()
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        let inner_by_name: HashMap<String, &Local> =
+            inner_locals.iter().map(|l| (l.name.clone(), l)).collect();
+        let mut body = rewrite(f.body, &inner_by_name)?;
+        if !copies.is_empty() {
+            let line = f.line;
+            let mut stmts: Vec<Stmt> = copies
+                .into_iter()
+                .map(|(copy, c)| Stmt::Bind { name: copy, value: Expr::Var(c, line), line })
+                .collect();
+            match body {
+                Expr::Block(b) => stmts.extend(b),
+                other => stmts.push(Stmt::Expr(other)),
+            }
+            body = Expr::Block(stmts);
+        }
         // The lifted function's own scope is exactly its parameter list.
         let mut inner: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-        let body =
-            walk(expand_body(rewrite(f.body, &by_name)?)?, &mut inner, &l.lifted, used, out)?;
+        let body = walk(expand_body(body)?, &mut inner, &l.lifted, used, out)?;
         out.push(FnDef {
             name: l.lifted.clone(),
             exported: false,
@@ -1691,7 +1784,7 @@ fn rewrite(e: Expr, locals: &HashMap<String, &Local>) -> Result<Expr, SyntaxErro
             match locals.get(&name) {
                 Some(l) => {
                     let mut all: Vec<Expr> =
-                        l.caps.iter().map(|c| Expr::Var(c.clone(), line)).collect();
+                        l.pass.iter().map(|c| Expr::Var(c.clone(), line)).collect();
                     all.append(&mut args);
                     Expr::Call { name: l.lifted.clone(), args: all, line, piped: false, stacked: false }
                 }
