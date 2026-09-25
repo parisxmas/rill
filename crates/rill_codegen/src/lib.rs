@@ -1758,7 +1758,6 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             cg.gen_instance(&key)?;
         }
         cg.gen_main_wrapper();
-        cg.gen_sym_table();
 
         if let Err(msg) = cg.module.verify() {
             return Err(CodegenError::new(
@@ -7477,7 +7476,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
     /// its frames as a debug one would. Two pointers a function — a few
     /// tens of kilobytes in a big program — and the names are the ones
     /// `--debug` would give lldb.
-    fn gen_sym_table(&mut self) {
+    ///
+    /// Built after the optimizer has run, over the functions it kept. Built
+    /// before, the table took every function's address, and LLVM will not
+    /// specialize, drop an argument of, or delete a function whose address
+    /// has been taken: fannkuch went from 114 to 136 ms (2026-09-25).
+    fn gen_sym_table(&self) {
         let ptrt = self.ctx.ptr_type(Default::default());
         let i64t = self.ctx.i64_type();
         let entry_ty = self.ctx.struct_type(&[ptrt.into(), ptrt.into()], false);
@@ -11308,6 +11312,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                     CodegenError::new(0, format!("tail-call pass failed: {e}"))
                 })?;
         }
+        self.gen_sym_table();
         machine
             .write_to_file(&self.module, FileType::Object, out_path)
             .map_err(|e| CodegenError::new(0, format!("failed to write object file: {e}")))

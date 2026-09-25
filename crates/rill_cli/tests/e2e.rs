@@ -35,14 +35,21 @@ fn require_fresh_runtime() {
 /// A program expected to die: its exit status and what it said on standard
 /// error, given the arguments.
 fn compile_and_crash(example: &str, args: &[&str]) -> (Option<i32>, String) {
+    compile_and_crash_with(example, &[], args)
+}
+
+/// The same, built with flags for `rill build`.
+fn compile_and_crash_with(example: &str, flags: &[&str], args: &[&str]) -> (Option<i32>, String) {
     require_fresh_runtime();
     let root = workspace_root();
     let source = root.join("examples").join(example);
     let out_dir = std::env::temp_dir().join(format!("rill-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&out_dir).unwrap();
-    let exe = out_dir.join(Path::new(example).file_stem().unwrap());
+    let stem = Path::new(example).file_stem().unwrap().to_string_lossy().into_owned();
+    let exe = out_dir.join(format!("{stem}{}", flags.concat()));
     let build = Command::new(env!("CARGO_BIN_EXE_rill"))
         .arg("build")
+        .args(flags)
         .arg(&source)
         .arg("-o")
         .arg(&exe)
@@ -2636,7 +2643,9 @@ fn a_ring_is_refused_or_reported() {
     let path = out_dir.join("two.rill");
     std::fs::write(&path, two).unwrap();
     let exe = out_dir.join("two");
-    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("--parallel").arg("-o").arg(&exe).output().unwrap();
+    // `--debug`, so that `make` is not inlined into its caller and the
+    // report can name it; a release build names the function it ended in.
+    let build = Command::new(env!("CARGO_BIN_EXE_rill")).arg("build").arg(&path).arg("--parallel").arg("--debug").arg("-o").arg(&exe).output().unwrap();
     assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
     let run = Command::new(&exe).env("RILL_ALLOC_CHECK", "1").env("RILL_DEBUG_ALLOC", "1").output().unwrap();
     let report = String::from_utf8_lossy(&run.stderr);
@@ -3094,18 +3103,32 @@ fn qualified_module_names() {
 /// too — and what kind of crash it was.
 #[test]
 fn crash_reports_name_the_frames() {
-    let (_, said) = compile_and_crash("crashes.rill", &["copy"]);
-    assert!(said.contains("rill: buffer copy of 4096 at 0 from 0 out of range, lengths 16 and 4096\n"), "{said}");
-    assert!(said.contains("  in bad_copy +"), "{said}");
+    // A release build names the function the code ended up in — a small
+    // one inlined into its caller is named as the caller, as in C — and a
+    // `--debug` build, where nothing is inlined, names each one.
+    let frame = |said: &str, name: &str, debug: bool| {
+        if debug {
+            said.contains(&format!("  in {name} +"))
+        } else {
+            said.contains(&format!("  in {name} +")) || said.contains("  in rill_main +")
+        }
+    };
+    for debug in [false, true] {
+        let flags: &[&str] = if debug { &["--debug"] } else { &[] };
+        let (_, said) = compile_and_crash_with("crashes.rill", flags, &["copy"]);
+        assert!(said.contains("rill: buffer copy of 4096 at 0 from 0 out of range, lengths 16 and 4096\n"), "{said}");
+        assert!(frame(&said, "bad_copy", debug), "{said}");
+        let (_, said) = compile_and_crash_with("crashes.rill", flags, &["oob"]);
+        assert!(said.contains("rill: buffer index 20 out of range, length 16\n"), "{said}");
+        assert!(frame(&said, "bad_index", debug), "{said}");
+        let (_, said) = compile_and_crash_with("crashes.rill", flags, &["ptr"]);
+        assert!(frame(&said, "bad_ptr", debug), "{said}");
+    }
     let (_, said) = compile_and_crash("crashes.rill", &["cmp"]);
     assert!(said.contains("rill: buffer compare of 16 at 8 and 0 out of range, lengths 16 and 16\n"), "{said}");
-    let (_, said) = compile_and_crash("crashes.rill", &["oob"]);
-    assert!(said.contains("rill: buffer index 20 out of range, length 16\n"), "{said}");
-    assert!(said.contains("  in bad_index +"), "{said}");
     let (_, said) = compile_and_crash("crashes.rill", &["ptr"]);
     assert!(said.contains("rill: segmentation fault at 0x"), "{said}");
     assert!(said.contains("  in the main strand\n"), "{said}");
-    assert!(said.contains("  in bad_ptr +"), "{said}");
     let (_, said) = compile_and_crash("crashes.rill", &["deep"]);
     assert!(said.contains("a stack overflow: the strand ran off the end of its stack\n"), "{said}");
     assert!(said.contains("  in dive +"), "{said}");
