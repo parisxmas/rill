@@ -1,0 +1,12 @@
+# `fold(lines(s), acc, f)` hands each line to `f` as it is cut, and keeps no
+# list of them — the prelude's `fold_lines`, which the compiler writes it
+# as. The lines are the ones `lines` gives, a last empty one after a final
+# newline included. A list of every line of a big input was ten times the
+# memory of reading it (2026-09-25).
+
+fn main() =
+  s = "12\n-5\n\n30\n"
+  println(fold(lines(s), 0, \acc, l -> if #l == 0 then acc else acc + str_to_int(l)))
+  println(lines(s) |> fold(0, \n, l -> n + 1))
+  println(fold(lines("one"), "", \a, l -> a + l + "!"))
+  0

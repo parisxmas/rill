@@ -6000,3 +6000,11 @@ fn buffers_sort_in_place_and_an_access_may_go_unchecked() {
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && said.contains("needs `ffi`"), "{said}");
 }
+
+#[test]
+fn folding_over_lines_keeps_no_list_of_them() {
+    assert_eq!(compile_and_run("fold_lines.rill"), "37\n5\none!\n");
+    // a program with a `lines` of its own gets its own
+    let own = "fn lines(s) = Cons(s, Cons(s, Nil))\n\nfn main() = println(fold(lines(\"ab\"), 0, \\n, l -> n + #l))\n";
+    assert_eq!(run_source("own_lines", own), "4\n");
+}

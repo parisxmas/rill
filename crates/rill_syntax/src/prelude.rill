@@ -536,6 +536,16 @@ fn split_on(s, sep, from, acc) =
 
 fn lines(s) = split(s, "\n")
 
+# `fold(lines(s), acc, f)` without the list: each line, the ones `lines`
+# gives, handed to `f` as it is cut, and nothing kept. `fold(lines(s), ..)`
+# is written as this by the compiler, since a list of every line of a big
+# input was ten times the memory of reading it (2026-09-25).
+fn fold_lines(s, acc, f) = fold_lines_from(s, 0, acc, f)
+
+fn fold_lines_from(s, from, acc, f) =
+  i = str_find_from(s, "\n", from)
+  if i < 0 then f(acc, str_sub(s, from, str_len(s) - from)) else fold_lines_from(s, i + 1, f(acc, str_sub(s, from, i - from)), f)
+
 fn is_space(c) = c == 32 || c == 9 || c == 10 || c == 13
 
 fn trim_from(s, i) = if i < str_len(s) && is_space(str_get(s, i)) then trim_from(s, i + 1) else i

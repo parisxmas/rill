@@ -23,7 +23,17 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::*;
 use crate::SyntaxError;
 
+thread_local! {
+    /// Whether this module's `fold(lines(..))` is the prelude's, for `walk`.
+    static LINES_FOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn lift(module: &mut Module) -> Result<(), SyntaxError> {
+    // `fold(lines(s), ..)` is the prelude's `fold_lines`, unless the program
+    // has a `fold` or a `lines` of its own.
+    let own = |n: &str| module.functions[module.prelude_fns.min(module.functions.len())..].iter().any(|f| f.name == n);
+    let lines_fold = !own("fold") && !own("lines") && module.functions.iter().any(|f| f.name == "fold_lines");
+    LINES_FOLD.with(|c| c.set(lines_fold));
     let mut used: HashSet<String> = module.functions.iter().map(|f| f.name.clone()).collect();
     let mut lifted: Vec<FnDef> = Vec::new();
     // Each error says which function it is in, for the loader to say which
@@ -1140,6 +1150,19 @@ fn walk(
                 used,
                 out,
             )?)
+        }
+        // `fold(lines(s), acc, f)`: every line handed on as it is cut, with
+        // no list of them made first.
+        Expr::Call { name, mut args, line, .. }
+            if name == "fold"
+                && args.len() == 3
+                && matches!(&args[0], Expr::Call { name: l, args: a, .. } if l == "lines" && a.len() == 1)
+                && LINES_FOLD.with(|c| c.get()) =>
+        {
+            let Expr::Call { args: mut inner, .. } = args.remove(0) else { unreachable!("matched above") };
+            let mut all = vec![inner.remove(0)];
+            all.append(&mut args);
+            walk(Expr::Call { name: "fold_lines".to_string(), args: all, line, piped: false, stacked: false }, env, parent, used, out)?
         }
         // `f(1)(2)`: the value called is named, and the name is called.
         Expr::Call { name, mut args, line, .. } if name == crate::parser::APPLY => {
