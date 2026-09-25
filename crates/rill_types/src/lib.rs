@@ -3919,6 +3919,44 @@ impl Checker {
                 kind: TK::BufNew { width, count: Box::new(n) },
             });
         }
+        // `buf_sort(b)`: the buffer's numbers into ascending order, in place,
+        // by the runtime's pattern-defeating quicksort — what a program that
+        // keeps its data in a buffer sorts it with, where it used to have to
+        // write the sort out. Floats in their total order: NaN at the ends.
+        if name == "buf_sort" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, format!("`buf_sort` takes one buffer, but {} given", args.len())));
+            }
+            let b = self.infer(&args[0], env)?;
+            let code = match self.resolve(&b.ty) {
+                Ty::Buf(w) => match w {
+                    CTy::I8 => 1,
+                    CTy::U8 => 2,
+                    CTy::I16 => 3,
+                    CTy::U16 => 4,
+                    CTy::I32 => 5,
+                    CTy::U32 => 6,
+                    CTy::I64 | CTy::ISize => 7,
+                    CTy::U64 | CTy::USize => 8,
+                    CTy::F32 => 9,
+                    CTy::F64 => 10,
+                    _ => {
+                        return Err(TypeError::new(line, "`buf_sort` sorts a buffer of numbers"));
+                    }
+                },
+                other => {
+                    return Err(TypeError::new(
+                        line,
+                        format!(
+                            "`buf_sort` needs a buffer, but this is `{}` — a `Buf` width is never inferred, so annotate the parameter",
+                            self.type_name(&other)
+                        ),
+                    ))
+                }
+            };
+            let code = TExpr { ty: Ty::Int, line, kind: TK::Int(code) };
+            return Ok(TExpr { ty: Ty::Unit, line, kind: TK::Builtin { rt: "rill_buf_sort", args: vec![b, code] } });
+        }
         // The prelude's `sort_with`: a stable sort of a list's own cells in
         // the runtime (`rill_list_sort`). `(List(a), (a, a) -> Bool) -> List(a)`.
         if name == "list_sort" {
@@ -4024,6 +4062,17 @@ impl Checker {
                 kind: TK::Builtin { rt: rt.into(), args: vec![a, at, b, bt, n, size] },
             });
         }
+        // `buf_get_unchecked` / `buf_set_unchecked`: one access with no bounds
+        // test, for a loop whose indexes come from its data — an interpreter's
+        // registers — where no check in front can stand for them. What
+        // `--unchecked` does to a whole program, said at the one place that
+        // was measured to need it; a sandbox counts it with the pointers.
+        let unchecked = name == "buf_get_unchecked" || name == "buf_set_unchecked";
+        let name = match name {
+            "buf_get_unchecked" => "buf_get",
+            "buf_set_unchecked" => "buf_set",
+            other => other,
+        };
         if name == "buf_get" || name == "buf_set" || name == "buf_len" {
             let want = if name == "buf_set" { 3 } else if name == "buf_len" { 1 } else { 2 };
             if args.len() != want {
@@ -4051,25 +4100,35 @@ impl Checker {
             }
             let idx = self.infer(&args[1], env)?;
             self.unify(&Ty::Int, &idx.ty, line, "buffer index")?;
+            // An access asked to go unchecked carries a mark a sandbox can
+            // see; one a loop's check in front stands for does not.
+            let marked = |e: TExpr| -> TExpr {
+                if !unchecked {
+                    return e;
+                }
+                let ty = e.ty.clone();
+                let mark = TExpr { ty: Ty::Unit, line, kind: TK::Builtin { rt: "rill_unchecked", args: Vec::new() } };
+                TExpr { ty, line, kind: TK::Block(vec![TStmt::Expr(mark), TStmt::Expr(e)]) }
+            };
             if name == "buf_get" {
-                return Ok(TExpr {
+                return Ok(marked(TExpr {
                     ty: width.rill_ty(),
                     line,
-                    kind: TK::BufGet { buf: Box::new(b), idx: Box::new(idx), unchecked: false },
-                });
+                    kind: TK::BufGet { buf: Box::new(b), idx: Box::new(idx), unchecked },
+                }));
             }
             let val = self.infer(&args[2], env)?;
             self.unify(&width.rill_ty(), &val.ty, line, "buffer element")?;
-            return Ok(TExpr {
+            return Ok(marked(TExpr {
                 ty: Ty::Unit,
                 line,
                 kind: TK::BufSet {
                     buf: Box::new(b),
                     idx: Box::new(idx),
                     val: Box::new(val),
-                    unchecked: false,
+                    unchecked,
                 },
-            });
+            }));
         }
         // A map's two type arguments are ordinary types, so — unlike a
         // buffer's width — they unify like anything else and these all work
@@ -6091,6 +6150,8 @@ fn is_builtin_fn(name: &str) -> bool {
             | "buf_float"
             | "buf_ptr"
             | "buf_get"
+            | "buf_get_unchecked"
+            | "buf_set_unchecked"
             | "buf_set"
             | "buf_len"
             | "buf_copy"
@@ -6098,6 +6159,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "buf_float_uninit"
             | "unique"
             | "list_sort"
+            | "buf_sort"
             | "map_new"
             | "map_set"
             | "map_find"

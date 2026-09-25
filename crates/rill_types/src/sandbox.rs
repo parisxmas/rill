@@ -110,7 +110,15 @@ pub fn capability_of(rt: &str) -> Option<&'static str> {
         || name.starts_with("poke_")
         || matches!(
             name,
-            "to_cstr" | "from_cstr" | "str_from_ptr" | "free_ptr" | "alloc_bytes" | "ptr_offset"
+            "to_cstr"
+                | "from_cstr"
+                | "str_from_ptr"
+                | "free_ptr"
+                | "alloc_bytes"
+                | "ptr_offset"
+                // `buf_get_unchecked`, `buf_set_unchecked`: no bounds test, as
+                // able to reach past the buffer as a pointer is
+                | "unchecked"
         )
     {
         return Some("ffi");

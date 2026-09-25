@@ -3629,6 +3629,35 @@ pub unsafe extern "C" fn rill_list_sort(
     head
 }
 
+/// `buf_sort(b)`: the elements in ascending order, in place, by core's
+/// unstable sort (a pattern-defeating quicksort). `width` names the
+/// element type as the checker numbered it; floats go by their total order.
+///
+/// # Safety
+/// `p` must be a live buffer of that width.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_sort(p: *mut u8, width: i64) {
+    let n = *(p.sub(16) as *const i64).add(1) as usize;
+    macro_rules! ints {
+        ($t:ty) => {
+            core::slice::from_raw_parts_mut(p as *mut $t, n).sort_unstable()
+        };
+    }
+    match width {
+        1 => ints!(i8),
+        2 => ints!(u8),
+        3 => ints!(i16),
+        4 => ints!(u16),
+        5 => ints!(i32),
+        6 => ints!(u32),
+        7 => ints!(i64),
+        8 => ints!(u64),
+        9 => core::slice::from_raw_parts_mut(p as *mut f32, n).sort_unstable_by(|a, b| a.total_cmp(b)),
+        10 => core::slice::from_raw_parts_mut(p as *mut f64, n).sort_unstable_by(|a, b| a.total_cmp(b)),
+        _ => {}
+    }
+}
+
 type SortPair = [usize; 2];
 
 /// A stable merge sort of `n` pairs at `pairs`, using the `n` after them as

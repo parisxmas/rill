@@ -8036,6 +8036,28 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // to load and branch on. A page built out of static runs is
             // mostly this.
             TK::Builtin { rt, args } if *rt == "rill_list_sort" => self.gen_list_sort(e, args, scope, subst, func),
+            // the mark an explicitly unchecked access carries for a sandbox
+            TK::Builtin { rt, .. } if *rt == "rill_unchecked" => Ok(None),
+            // A buffer is storage: sorted where it is, which every name for
+            // it sees, as it sees `b[i] = v`.
+            TK::Builtin { rt, args } if *rt == "rill_buf_sort" => {
+                let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let code = self.gen_expr(&args[1], scope, subst, func)?.expect("a width");
+                let f = match self.module.get_function("rill_buf_sort") {
+                    Some(f) => f,
+                    None => {
+                        let ptrt = self.ctx.ptr_type(Default::default());
+                        let i64t = self.ctx.i64_type();
+                        self.module.add_function("rill_buf_sort", self.ctx.void_type().fn_type(&[ptrt.into(), i64t.into()], false), None)
+                    }
+                };
+                self.builder.build_call(f, &[b.into(), code.into()], "").expect("LLVM builder error");
+                if held {
+                    let ty = self.concrete(&args[0].ty, subst);
+                    self.emit_release(b, &ty);
+                }
+                Ok(None)
+            }
             TK::Builtin { rt, args } if *rt == "rill_strbuf_add" => {
                 let fixed = match &args[1].kind {
                     TK::Str(lit) => Some(lit.len()),

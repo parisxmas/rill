@@ -1,0 +1,26 @@
+# Two things a program that keeps its data in buffers asked for
+# (2026-09-25): `buf_sort(b)`, the numbers in ascending order in place — by
+# the runtime's quicksort, floats by their total order, so a NaN goes to the
+# end — and `buf_get_unchecked` / `buf_set_unchecked`, one access with no
+# bounds test, for a loop whose indexes come from its data (an
+# interpreter's registers) where no check in front can stand for them. A
+# sandbox counts an unchecked access with the pointers: it needs `ffi`.
+
+fn main() =
+  b = buf_int(6)
+  for i in 0..6
+    b[i] = i * 7 % 5 - 2
+  buf_sort(b)
+  println(for i in 0..6 with s = "" s + int_to_str(b[i]) + " ")
+  f = buf_float(4)
+  f[0] = 2.5
+  f[1] = -1.0
+  f[2] = 0.0 / 0.0
+  f[3] = 0.5
+  buf_sort(f)
+  println(f[0])
+  println(f[3])
+  regs = buf_int(4)
+  buf_set_unchecked(regs, 2, 42)
+  println(buf_get_unchecked(regs, 2))
+  0

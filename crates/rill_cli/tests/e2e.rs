@@ -5988,3 +5988,15 @@ fn a_fast_fn_may_reassociate_its_floats() {
     assert!(ir.contains("fadd reassoc nsz contract"), "no reassociated add");
     assert!(ir.contains("fadd contract"), "no plain add");
 }
+
+#[test]
+fn buffers_sort_in_place_and_an_access_may_go_unchecked() {
+    assert_eq!(compile_and_run("buffer_tools.rill"), "-2 -2 -1 0 1 2 \n-1\nnan\n42\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .args(["check", "--sandbox"])
+        .arg(workspace_root().join("examples/buffer_tools.rill"))
+        .output()
+        .expect("failed to spawn rill");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && said.contains("needs `ffi`"), "{said}");
+}
