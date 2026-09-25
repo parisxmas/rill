@@ -1,0 +1,15 @@
+# A character is as long as its first byte says only when the bytes after it
+# are continuation bytes. The first byte alone swallowed what followed it:
+# `chr(195) + "A,"` was two characters, U+0081 and a comma, and the `A` was
+# gone; a byte above 0xF4 claimed four (2026-09-25).
+
+fn main() =
+  s = chr(195) + "A,"
+  println(char_count(s))
+  println(chars(s))
+  println(char_count("günaydın"))
+  println(char_at("günaydın", 1))
+  println(chars(chr(248) + "xy"))
+  println(chars(chr(226) + chr(130) + "Z"))
+  println(chars("€"))
+  0

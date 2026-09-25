@@ -173,6 +173,25 @@ unsafe fn str_new(len: usize) -> *mut u8 {
     p
 }
 
+/// A string made for `cap` bytes of which `got` arrived. A string is freed
+/// by its length, so one whose length lands in another allocator size than
+/// its block is copied into a block of its own and the big one let go —
+/// writing the shorter length into the header alone put a `malloc` block
+/// on a pool free list, or a pool block on the wrong one: 20,000 reads of
+/// a five-byte file a hundred thousand bytes at a time were 338 MB
+/// (2026-09-25). A block beyond the pool may keep a shorter length; it is
+/// handed back to the system whatever it says.
+unsafe fn str_fit(p: *mut u8, cap: usize, got: usize) -> *mut u8 {
+    if got == cap || pool_class((16 + cap) as u64) == pool_class((16 + got) as u64) {
+        *(p as *mut i64).add(1) = got as i64;
+        return p;
+    }
+    let q = str_new(got);
+    copy_small(p.add(16), q.add(16), got);
+    rill_free_sized(p, (16 + cap) as u64);
+    q
+}
+
 /// A string with the bytes of a `Buf(U8)`, copied.
 ///
 /// # Safety
@@ -905,8 +924,31 @@ pub extern "C" fn rill_chr(c: i64) -> *mut u8 {
 
 static mut ARGC: i64 = 0;
 static mut ARGV: *const *const u8 = core::ptr::null();
-/// errno-style status of the most recent IO operation (single-threaded).
+/// errno-style status of the most recent IO operation, for code that runs
+/// before there is a strand; once there is one, each strand has its own.
 static mut IO_OK: i8 = 1;
+
+/// Records how the calling strand's last IO operation went. One global was
+/// every strand's: an operation that parks — `file_sync` — let another
+/// strand's failure land in it, so `ok` was true and `io_ok()` false, and
+/// under `--parallel` it was a race between workers (2026-09-25).
+#[inline(always)]
+unsafe fn io_set(ok: i8) {
+    let g = io_strand();
+    if g.is_null() {
+        IO_OK = ok;
+    } else {
+        (*g).io_ok = ok;
+    }
+}
+
+/// The strand running here, or null on a thread that is not a worker (a
+/// sync helper) or before the scheduler has started one.
+#[inline(always)]
+unsafe fn io_strand() -> *mut G {
+    let w = me();
+    if w.is_null() { core::ptr::null_mut() } else { (*w).current }
+}
 
 /// # Safety
 /// Called once from the generated `main` with the C argc/argv.
@@ -978,7 +1020,10 @@ pub unsafe extern "C" fn rill_env_at(i: i64) -> *const u8 {
 
 #[no_mangle]
 pub extern "C" fn rill_io_ok() -> i8 {
-    unsafe { IO_OK }
+    unsafe {
+        let g = io_strand();
+        if g.is_null() { IO_OK } else { (*g).io_ok }
+    }
 }
 
 // ---- tracing ---------------------------------------------------------------
@@ -1129,6 +1174,25 @@ pub unsafe extern "C" fn rill_chan_id(p: *mut u8) -> i64 {
     id
 }
 
+/// A path for the system: `cstr`, except that a path with a NUL byte in it
+/// is the empty path, which every call refuses — C would stop reading at
+/// the NUL, so `write_file("a" + chr(0) + ".safe", ...)` wrote `a` and said
+/// it had succeeded (2026-09-25).
+unsafe fn cpath(s: *const u8) -> *mut u8 {
+    let n = str_len_of(s);
+    let b = str_bytes(s);
+    if (0..n).any(|i| *b.add(i) == 0) {
+        let p = malloc(1);
+        if p.is_null() {
+            out(b"rill: out of memory\n");
+            die();
+        }
+        *p = 0;
+        return p;
+    }
+    cstr(s)
+}
+
 /// Copies a Rill string into a NUL-terminated C buffer (caller frees).
 unsafe fn cstr(s: *const u8) -> *mut u8 {
     let n = str_len_of(s);
@@ -1148,19 +1212,19 @@ unsafe fn cstr(s: *const u8) -> *mut u8 {
 /// `path` must be a live string object; returns a new owned string.
 #[no_mangle]
 pub unsafe extern "C" fn rill_read_file(path: *const u8) -> *mut u8 {
-    IO_OK = 1;
-    let c = cstr(path);
+    io_set(1);
+    let c = cpath(path);
     let fd = open(c, O_RDONLY);
     free(c);
     if fd < 0 {
-        IO_OK = 0;
+        io_set(0);
         return str_new(0);
     }
     let size = lseek(fd, 0, 2); // SEEK_END
     lseek(fd, 0, 0); // SEEK_SET
     if size < 0 {
         close(fd);
-        IO_OK = 0;
+        io_set(0);
         return str_new(0);
     }
     let p = str_new(size as usize);
@@ -1174,10 +1238,9 @@ pub unsafe extern "C" fn rill_read_file(path: *const u8) -> *mut u8 {
     }
     close(fd);
     if got != size as usize {
-        IO_OK = 0;
+        io_set(0);
     }
-    *(p as *mut i64).add(1) = got as i64;
-    p
+    str_fit(p, size as usize, got)
 }
 
 // The flags a file open needs, which are not the same everywhere. `O_CREAT`
@@ -1227,12 +1290,12 @@ const O_TRUNC: i32 = 0x8 << 12;
 /// Both must be live string objects.
 #[no_mangle]
 pub unsafe extern "C" fn rill_write_file(path: *const u8, content: *const u8) -> i8 {
-    IO_OK = 1;
-    let c = cstr(path);
+    io_set(1);
+    let c = cpath(path);
     let fd = open(c, O_WRONLY | O_CREAT | O_TRUNC, 0o644 as i32);
     free(c);
     if fd < 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     let n = str_len_of(content);
@@ -1246,7 +1309,7 @@ pub unsafe extern "C" fn rill_write_file(path: *const u8, content: *const u8) ->
     }
     close(fd);
     if sent != n {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -1442,17 +1505,17 @@ unsafe fn open_flags(mode: *const u8) -> i32 {
 /// Both must be live string objects.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_open(path: *const u8, mode: *const u8) -> i64 {
-    IO_OK = 1;
+    io_set(1);
     let flags = open_flags(mode);
     if flags < 0 {
-        IO_OK = 0;
+        io_set(0);
         return -1;
     }
-    let c = cstr(path);
+    let c = cpath(path);
     let fd = open(c, flags, 0o644 as i32);
     free(c);
     if fd < 0 {
-        IO_OK = 0;
+        io_set(0);
         return -1;
     }
     fd as i64
@@ -1464,19 +1527,17 @@ pub unsafe extern "C" fn rill_file_open(path: *const u8, mode: *const u8) -> i64
 /// Returns a new owned string.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_read(fd: i64, n: i64) -> *mut u8 {
-    IO_OK = 1;
+    io_set(1);
     if n <= 0 {
         return str_new(0);
     }
     let p = str_new(n as usize);
     let got = read(fd as i32, p.add(16), n as usize);
     if got < 0 {
-        IO_OK = 0;
-        *(p as *mut i64).add(1) = 0;
-        return p;
+        io_set(0);
+        return str_fit(p, n as usize, 0);
     }
-    *(p as *mut i64).add(1) = got as i64;
-    p
+    str_fit(p, n as usize, got as usize)
 }
 
 /// Reads up to `n` bytes from `off`, without moving the descriptor.
@@ -1490,19 +1551,17 @@ pub unsafe extern "C" fn rill_file_read(fd: i64, n: i64) -> *mut u8 {
 /// Returns a new owned string.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_pread(fd: i64, off: i64, n: i64) -> *mut u8 {
-    IO_OK = 1;
+    io_set(1);
     if n <= 0 || off < 0 {
         return str_new(0);
     }
     let p = str_new(n as usize);
     let got = pread(fd as i32, p.add(16), n as usize, off);
     if got < 0 {
-        IO_OK = 0;
-        *(p as *mut i64).add(1) = 0;
-        return p;
+        io_set(0);
+        return str_fit(p, n as usize, 0);
     }
-    *(p as *mut i64).add(1) = got as i64;
-    p
+    str_fit(p, n as usize, got as usize)
 }
 
 /// Reads at an offset into `n` bytes of a byte buffer the caller owns,
@@ -1515,20 +1574,20 @@ pub unsafe extern "C" fn rill_file_pread(fd: i64, off: i64, n: i64) -> *mut u8 {
 /// `buf` must be a live byte buffer; the range is clamped to its length.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_pread_into(fd: i64, off: i64, buf: *mut u8, at: i64, n: i64) -> i64 {
-    IO_OK = 1;
+    io_set(1);
     let cap = *(buf.sub(16) as *const i64).add(1);
     let at = at.clamp(0, cap);
     let n = n.clamp(0, cap - at);
     let buf = buf.add(at as usize);
     if off < 0 {
-        IO_OK = 0;
+        io_set(0);
         return -1;
     }
     let mut got = 0usize;
     while (got as i64) < n {
         let r = pread(fd as i32, buf.add(got), (n as usize) - got, off + got as i64);
         if r < 0 {
-            IO_OK = 0;
+            io_set(0);
             return -1;
         }
         if r == 0 {
@@ -1547,20 +1606,20 @@ pub unsafe extern "C" fn rill_file_pread_into(fd: i64, off: i64, buf: *mut u8, a
 /// `buf` must be a live byte buffer; the range is clamped to its length.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_pwrite(fd: i64, off: i64, buf: *const u8, at: i64, n: i64) -> i64 {
-    IO_OK = 1;
+    io_set(1);
     let cap = *(buf.sub(16) as *const i64).add(1);
     let at = at.clamp(0, cap);
     let n = n.clamp(0, cap - at) as usize;
     let buf = buf.add(at as usize);
     if off < 0 {
-        IO_OK = 0;
+        io_set(0);
         return -1;
     }
     let mut sent = 0usize;
     while sent < n {
         let w = pwrite(fd as i32, buf.add(sent), n - sent, off + sent as i64);
         if w <= 0 {
-            IO_OK = 0;
+            io_set(0);
             return -1;
         }
         sent += w as usize;
@@ -1577,10 +1636,10 @@ pub unsafe extern "C" fn rill_file_pwrite(fd: i64, off: i64, buf: *const u8, at:
 /// other programs that ask, not ones that do not.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_lock(fd: i64, exclusive: i8) -> i8 {
-    IO_OK = 1;
+    io_set(1);
     let op = if exclusive != 0 { LOCK_EX } else { LOCK_SH } | LOCK_NB;
     if flock(fd as i32, op) != 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -1589,9 +1648,9 @@ pub unsafe extern "C" fn rill_file_lock(fd: i64, exclusive: i8) -> i8 {
 /// Lets the lock go before the file is closed.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_unlock(fd: i64) -> i8 {
-    IO_OK = 1;
+    io_set(1);
     if flock(fd as i32, LOCK_UN) != 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -1617,13 +1676,13 @@ unsafe fn flock(_fd: i32, _op: i32) -> i32 {
 /// `s` must be a live string object.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_write(fd: i64, s: *const u8) -> i64 {
-    IO_OK = 1;
+    io_set(1);
     let n = str_len_of(s);
     let mut sent = 0usize;
     while sent < n {
         let w = write(fd as i32, str_bytes(s).add(sent), n - sent);
         if w <= 0 {
-            IO_OK = 0;
+            io_set(0);
             return if sent == 0 { -1 } else { sent as i64 };
         }
         sent += w as usize;
@@ -1634,10 +1693,10 @@ pub unsafe extern "C" fn rill_file_write(fd: i64, s: *const u8) -> i64 {
 /// Moves the descriptor to an absolute offset; the new offset, or -1.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_seek(fd: i64, off: i64) -> i64 {
-    IO_OK = 1;
+    io_set(1);
     let r = lseek(fd as i32, off, 0); // SEEK_SET
     if r < 0 {
-        IO_OK = 0;
+        io_set(0);
         return -1;
     }
     r
@@ -1646,10 +1705,10 @@ pub unsafe extern "C" fn rill_file_seek(fd: i64, off: i64) -> i64 {
 /// Where the descriptor is now, or -1.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_pos(fd: i64) -> i64 {
-    IO_OK = 1;
+    io_set(1);
     let r = lseek(fd as i32, 0, 1); // SEEK_CUR
     if r < 0 {
-        IO_OK = 0;
+        io_set(0);
         return -1;
     }
     r
@@ -1658,14 +1717,14 @@ pub unsafe extern "C" fn rill_file_pos(fd: i64) -> i64 {
 /// How many bytes the file holds, or -1. The descriptor is left where it was.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_size(fd: i64) -> i64 {
-    IO_OK = 1;
+    io_set(1);
     let was = lseek(fd as i32, 0, 1); // SEEK_CUR
     let end = lseek(fd as i32, 0, 2); // SEEK_END
     if was >= 0 {
         lseek(fd as i32, was, 0);
     }
     if end < 0 {
-        IO_OK = 0;
+        io_set(0);
         return -1;
     }
     end
@@ -1674,9 +1733,9 @@ pub unsafe extern "C" fn rill_file_size(fd: i64) -> i64 {
 /// Cuts the file to `n` bytes, or grows it with zeros.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_truncate(fd: i64, n: i64) -> i8 {
-    IO_OK = 1;
+    io_set(1);
     if n < 0 || ftruncate(fd as i32, n) != 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -1694,12 +1753,12 @@ pub unsafe extern "C" fn rill_file_close(fd: i64) {
 /// `path` must be a live string object.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_remove(path: *const u8) -> i8 {
-    IO_OK = 1;
-    let c = cstr(path);
+    io_set(1);
+    let c = cpath(path);
     let r = unlink(c);
     free(c);
     if r != 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -1716,14 +1775,14 @@ pub unsafe extern "C" fn rill_file_remove(path: *const u8) -> i8 {
 /// Both must be live string objects.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_rename(from: *const u8, to: *const u8) -> i8 {
-    IO_OK = 1;
-    let a = cstr(from);
-    let b = cstr(to);
+    io_set(1);
+    let a = cpath(from);
+    let b = cpath(to);
     let r = rename(a, b);
     free(a);
     free(b);
     if r != 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -1735,7 +1794,7 @@ pub unsafe extern "C" fn rill_file_rename(from: *const u8, to: *const u8) -> i8 
 /// `path` must be a live string object.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_exists(path: *const u8) -> i8 {
-    let c = cstr(path);
+    let c = cpath(path);
     let r = access(c, 0); // F_OK
     free(c);
     (r == 0) as i8
@@ -1747,12 +1806,12 @@ pub unsafe extern "C" fn rill_file_exists(path: *const u8) -> i8 {
 /// `path` must be a live string object.
 #[no_mangle]
 pub unsafe extern "C" fn rill_dir_make(path: *const u8) -> i8 {
-    IO_OK = 1;
-    let c = cstr(path);
+    io_set(1);
+    let c = cpath(path);
     let r = mkdir(c, 0o755);
     free(c);
     if r != 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -1770,14 +1829,14 @@ pub unsafe extern "C" fn rill_dir_make(path: *const u8) -> i8 {
 /// `path` must be a live string object; returns a new owned string.
 #[no_mangle]
 pub unsafe extern "C" fn rill_dir_list(path: *const u8) -> *mut u8 {
-    IO_OK = 1;
+    io_set(1);
     #[cfg(unix)]
     {
-        let c = cstr(path);
+        let c = cpath(path);
         let d = opendir(c);
         free(c);
         if d.is_null() {
-            IO_OK = 0;
+            io_set(0);
             return str_new(0);
         }
         // Two passes over the directory would mean reading it twice and
@@ -1788,7 +1847,7 @@ pub unsafe extern "C" fn rill_dir_list(path: *const u8) -> *mut u8 {
         let mut buf = malloc(cap);
         if buf.is_null() {
             closedir(d);
-            IO_OK = 0;
+            io_set(0);
             return str_new(0);
         }
         loop {
@@ -1814,7 +1873,7 @@ pub unsafe extern "C" fn rill_dir_list(path: *const u8) -> *mut u8 {
                 if bigger.is_null() {
                     free(buf);
                     closedir(d);
-                    IO_OK = 0;
+                    io_set(0);
                     return str_new(0);
                 }
                 core::ptr::copy_nonoverlapping(buf, bigger, len);
@@ -1835,7 +1894,7 @@ pub unsafe extern "C" fn rill_dir_list(path: *const u8) -> *mut u8 {
     #[cfg(not(unix))]
     {
         let _ = path;
-        IO_OK = 0;
+        io_set(0);
         str_new(0)
     }
 }
@@ -2194,9 +2253,9 @@ unsafe fn sync_off_worker(fd: i32, path: *mut u8) -> i32 {
 /// Waits until everything written to the descriptor is on the disk.
 #[no_mangle]
 pub unsafe extern "C" fn rill_file_sync(fd: i64) -> i8 {
-    IO_OK = 1;
+    io_set(1);
     if sync_off_worker(fd as i32, core::ptr::null_mut()) != 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -2217,12 +2276,12 @@ pub unsafe extern "C" fn rill_file_sync(fd: i64) -> i8 {
 /// `path` must be a live string object.
 #[no_mangle]
 pub unsafe extern "C" fn rill_dir_sync(path: *const u8) -> i8 {
-    IO_OK = 1;
-    let c = cstr(path);
+    io_set(1);
+    let c = cpath(path);
     let r = sync_off_worker(-1, c);
     free(c);
     if r != 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     1
@@ -2447,13 +2506,13 @@ unsafe fn in_unread() {
 /// end of the input or on anything that is not a number.
 #[no_mangle]
 pub unsafe extern "C" fn rill_scan_int() -> i64 {
-    IO_OK = 1;
+    io_set(1);
     let mut c = in_byte();
     while c == 32 || c == 10 || c == 9 || c == 13 {
         c = in_byte();
     }
     if c < 0 {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     let neg = c == b'-' as i32;
@@ -2461,7 +2520,7 @@ pub unsafe extern "C" fn rill_scan_int() -> i64 {
         c = in_byte();
     }
     if !(48..=57).contains(&c) {
-        IO_OK = 0;
+        io_set(0);
         return 0;
     }
     let mut v: i64 = 0;
@@ -2486,7 +2545,7 @@ pub unsafe extern "C" fn rill_scan_int() -> i64 {
 /// Returns a new owned string.
 #[no_mangle]
 pub unsafe extern "C" fn rill_read_line() -> *mut u8 {
-    IO_OK = 1;
+    io_set(1);
     // The line is usually already in the block read last time, whole: then
     // it is one `memchr` and one copy, straight into the string.
     if IN_POS < IN_LEN {
@@ -2513,7 +2572,7 @@ pub unsafe extern "C" fn rill_read_line() -> *mut u8 {
         let got = read(0, IN_BUF, IN_CAP);
             if got <= 0 {
                 if n == 0 {
-                    IO_OK = 0;
+                    io_set(0);
                 }
                 break;
             }
@@ -5901,6 +5960,8 @@ struct G {
     /// is in a channel's wait queue, a fresh one in a run queue, and neither
     /// is reachable from the other. See `sweep_abandoned`.
     all_next: *mut G,
+    /// How this strand's last IO operation went; see `io_set`.
+    io_ok: i8,
 }
 
 /// Head of that list. Strand records are recycled through their worker's free
@@ -6278,6 +6339,7 @@ unsafe fn stack_start(top: usize) -> u64 {
 /// Resets a strand record for (re)use.
 unsafe fn init_g(g: *mut G, code: extern "C" fn(*mut u8), env: *mut u8) {
     (*g).ctx = Ctx { regs: [0; 21] };
+    (*g).io_ok = 1;
     (*g).saved_len = 0;
     (*g).code = code;
     (*g).env = env;
@@ -7383,6 +7445,10 @@ struct Chan {
     /// Non-zero for a mailbox: a full buffer doubles instead of parking
     /// the sender, as SDL's input port never refuses a signal.
     grow: usize,
+    /// Lets go of one value's two words, for what is still buffered when
+    /// the channel goes; set by the compiler for a counted element type
+    /// (`rill_chan_set_drop`), none for numbers.
+    drop: Option<unsafe extern "C" fn(u64, u64)>,
 }
 
 unsafe fn chan_slots(c: *mut Chan) -> *mut u64 {
@@ -7498,6 +7564,7 @@ pub unsafe extern "C" fn rill_chan_new(cap: i64) -> *mut u8 {
             slots: (c as *mut u8).add(core::mem::size_of::<Chan>()) as *mut u64,
             inline,
             grow,
+            drop: None,
         },
     );
     if grow != 0 {
@@ -7513,11 +7580,29 @@ pub unsafe extern "C" fn rill_chan_release(p: *mut u8) {
     let c = p as *mut Chan;
     let size = chan_size((*c).inline);
     if rc_dec(p as *mut i64) == 0 {
+        // What was sent and never received is owned by the channel: a
+        // channel dropped with values in it leaked every one (2026-09-25).
+        if let Some(d) = (*c).drop {
+            while (*c).len > 0 {
+                let w = chan_pop(c);
+                d(w.a, w.b);
+            }
+        }
         if (*c).grow != 0 {
             free((*c).slots as *mut u8);
         }
         rill_free_sized(p, size);
     }
+}
+
+/// The function that lets go of one buffered value, for a channel whose
+/// element type is counted.
+///
+/// # Safety
+/// `p` must be a live channel no value has been sent on yet.
+#[no_mangle]
+pub unsafe extern "C" fn rill_chan_set_drop(p: *mut u8, d: unsafe extern "C" fn(u64, u64)) {
+    (*(p as *mut Chan)).drop = Some(d);
 }
 
 /// Closes a channel: nothing more may be sent, and everything parked on it

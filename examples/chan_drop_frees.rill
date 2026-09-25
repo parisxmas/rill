@@ -1,0 +1,30 @@
+# A channel owns what was sent on it and not yet received, and lets go of
+# it when it goes: a channel dropped with values in it leaked every one
+# (2026-09-25). Prints the live block count: nothing left behind.
+
+extern fn rill_mem_report() -> Int
+
+type P
+  P(x: Float, y: Float)
+
+fn lists(i) =
+  if i == 0 then 0
+  else
+    c = channel(4)
+    send(c, Cons(int_to_str(i), Nil))
+    send(c, Cons("two", Nil))
+    lists(i - 1)
+
+fn flats(i) =
+  if i == 0 then 0
+  else
+    c = channel(2)
+    send(c, P(1.0, 2.0))
+    flats(i - 1)
+
+fn main() =
+  lists(1000)
+  println(int_to_str(rill_mem_report()))
+  flats(1000)
+  println(int_to_str(rill_mem_report()))
+  0

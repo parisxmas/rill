@@ -3247,6 +3247,11 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         );
         self.module.add_function("rill_chan_new", ptrt.fn_type(&[i64t.into()], false), None);
         self.module.add_function("rill_chan_release", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_chan_set_drop",
+            void.fn_type(&[ptrt.into(), ptrt.into()], false),
+            None,
+        );
         // Closing, and the two halves the prelude's `recv_opt` is written
         // from. `rill_chan_taken` answers two words like `rill_chan_recv`,
         // because it hands back the same kind of thing.
@@ -3501,6 +3506,38 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
 
     /// Lets go of the box a flat value travelled in through a table or a
     /// channel: one fewer holder, and freed when that was the last.
+    /// `chandrop$T(a, b)`: lets go of one value of `T` as a channel holds
+    /// it, two words. None for a type with nothing to let go of.
+    fn chan_drop(&mut self, ty: &Ty) -> Option<FunctionValue<'ctx>> {
+        let flat = self.is_flat(ty);
+        if !flat && !self.is_heap(ty) {
+            return None;
+        }
+        let name = format!("chandrop${}", mangle(ty, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return Some(f);
+        }
+        let i64t = self.ctx.i64_type();
+        let f = self.module.add_function(&name, self.ctx.void_type().fn_type(&[i64t.into(), i64t.into()], false), None);
+        f.set_linkage(inkwell::module::Linkage::Internal);
+        let saved = self.builder.get_insert_block();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        let a = f.get_nth_param(0).unwrap().into_int_value();
+        let b = f.get_nth_param(1).unwrap().into_int_value();
+        if flat {
+            self.release_flat_box(a, ty);
+        } else {
+            let v = self.unpack_words(a, b, ty);
+            self.emit_release(v, ty);
+        }
+        self.builder.build_return(None).expect("LLVM builder error");
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Some(f)
+    }
+
     fn release_flat_box(&mut self, word: IntValue<'ctx>, ty: &Ty) {
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent()).expect("in a function");
         let ptrt = self.ctx.ptr_type(Default::default());
@@ -8635,10 +8672,20 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let f = self.module.get_function("rill_chan_new").unwrap();
                 let call =
                     self.builder.build_call(f, &[n.into()], "chan").expect("LLVM builder error");
-                Ok(match call.try_as_basic_value() {
-                    inkwell::values::ValueKind::Basic(v) => Some(v),
+                let ch = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
                     _ => unreachable!(),
-                })
+                };
+                // A counted element type: the channel is told how to let go
+                // of what is still in it when it goes.
+                if let Ty::Chan(elem) = self.concrete(&e.ty, subst) {
+                    if let Some(d) = self.chan_drop(&elem) {
+                        let set = self.module.get_function("rill_chan_set_drop").unwrap();
+                        let dp = d.as_global_value().as_pointer_value();
+                        self.builder.build_call(set, &[ch.into(), dp.into()], "").expect("LLVM builder error");
+                    }
+                }
+                Ok(Some(ch))
             }
             TK::ChanSend { ch, val } => {
                 let ch_ty = self.concrete(&ch.ty, subst);

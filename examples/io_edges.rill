@@ -1,0 +1,37 @@
+# Three ways the file calls went wrong at their edges (2026-09-25):
+# - a short read wrote the shorter length into a string made for more, and a
+#   string is freed by its length: 20,000 reads of a five-byte file, a
+#   hundred thousand bytes at a time, kept 338 MB;
+# - a path with a NUL byte in it was cut short at the NUL by C, so writing
+#   `short.txt\0.safe` wrote `short.txt` and said it had;
+# - `io_ok()` was one answer for every strand, so a failure in one strand
+#   landed in another that had parked in the middle of its own operation.
+
+fn reads(fd, i) =
+  if i == 0 then 0
+  else
+    s = file_pread(fd, 0, 100000)
+    if #s != 5 then println("short read came back wrong") else ()
+    reads(fd, i - 1)
+
+fn other() =
+  file_open("no/such/dir/file.txt", "r")
+  ()
+
+fn main() =
+  path = "rill_io_edges.txt"
+  write_file(path, "hello")
+  fd = file_open(path, "r")
+  before = rss_bytes()
+  reads(fd, 20000)
+  # a leak here is a malloc block on a pool free list, which no count sees
+  println(rss_bytes() - before < 50000000)
+  println(write_file("rill_io_edges_nul.txt" + chr(0) + ".safe", "x"))
+  println(read_file("rill_io_edges_nul.txt"))
+  spawn other()
+  ok = file_sync(fd)
+  println(ok)
+  println(io_ok())
+  file_close(fd)
+  file_remove(path)
+  0

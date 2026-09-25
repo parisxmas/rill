@@ -541,7 +541,7 @@ fn is_ascii(s) = for i in 0..#s with ok = true
 fn each_char(s, i, f) =
   while j < #s with j = i
     f(char_decode(s, j), j)
-    j + char_wide(s[j])
+    j + char_len(s, j)
 
 # The text with `f` applied to every code point, built without a list.
 #
@@ -550,7 +550,7 @@ fn map_chars(s, f) =
   b = strbuf()
   while i < #s with i = 0
     put_char(b, f(char_decode(s, i)))
-    i + char_wide(s[i])
+    i + char_len(s, i)
   strbuf_str(b)
 
 # `char_onto` from the prelude, but a statement: it answers nothing, so it
@@ -590,7 +590,7 @@ fn encode_utf16(s, big) =
       d = c - 65536
       unit16(b, 55296 + d / 1024, big)
       unit16(b, 56320 + d % 1024, big)
-    i + char_wide(s[i])
+    i + char_len(s, i)
   strbuf_str(b)
 
 #     str.hex_encode(str.encode_utf16le("A"))   # => 4100
@@ -650,7 +650,7 @@ fn encode_utf32(s, big) =
       b += c / 256 % 256
       b += c / 65536 % 256
       b += c / 16777216
-    i + char_wide(s[i])
+    i + char_len(s, i)
   strbuf_str(b)
 
 #     str.decode_utf32((chr(0) + chr(0) + chr(0) + "A"), true)   # => Some(A)
@@ -686,7 +686,7 @@ fn encode_bytes(s, g) =
     if x < 0 then (#s, false)
     else
       b += x
-      (i + char_wide(s[i]), true)
+      (i + char_len(s, i), true)
   if ok then Some(strbuf_str(b)) else None
 
 #     str.decode_latin1(("caf" + chr(233)))   # => café
@@ -774,7 +774,7 @@ fn ascii_fold(s) =
   b = strbuf()
   while i < #s with i = 0
     fold_piece(b, char_decode(s, i))
-    i + char_wide(s[i])
+    i + char_len(s, i)
   strbuf_str(b)
 
 private fn fold_piece(b: StrBuf, c) =

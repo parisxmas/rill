@@ -5776,3 +5776,23 @@ fn a_buffer_or_channel_too_big_for_any_machine_ends_the_program() {
     let (_, err) = compile_and_crash("buf_too_big.rill", &["x"]);
     assert!(err.contains("a channel buffer of 1152921504606846976 values"), "{err}");
 }
+
+#[test]
+fn file_calls_hold_at_their_edges() {
+    // short reads keep no memory, a NUL in a path is refused, and each
+    // strand has its own io_ok
+    assert_eq!(compile_and_run("io_edges.rill"), "true\nfalse\nErr(cannot read rill_io_edges_nul.txt)\ntrue\ntrue\n");
+}
+
+#[test]
+fn a_channel_lets_go_of_what_is_still_in_it() {
+    assert_eq!(compile_and_run("chan_drop_frees.rill"), "0\n0\n");
+}
+
+#[test]
+fn malformed_utf8_swallows_nothing() {
+    assert_eq!(
+        compile_and_run("utf8_malformed.rill"),
+        "3\nCons(195, Cons(65, Cons(44, Nil)))\n8\n252\nCons(248, Cons(120, Cons(121, Nil)))\nCons(226, Cons(130, Cons(90, Nil)))\nCons(8364, Nil)\n"
+    );
+}
