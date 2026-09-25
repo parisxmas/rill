@@ -1,0 +1,28 @@
+# In a `for` loop, `v[k - n]` with `k = i * n + j` is the loop variable
+# moved by an amount the loop leaves alone, and is checked once in front of
+# the loop like `v[j]` (2026-09-25): a stencil over a flat grid went from
+# 2.5 times C to ahead of it. The check adds the offset to the ends where
+# nothing can wrap round — added as `Int`s, a last index past the largest
+# one came out below the first, the range read as empty, and nothing was
+# checked. The first two lines are sums; the third dies, at the index it
+# would have read.
+
+fn main() =
+  n = 5
+  a = buf_int(n * n)
+  for i in 0..n * n
+    a[i] = i
+  s = for i in 1..n - 1 with acc = 0
+    t = for j in 1..n - 1 with row = 0
+      k = i * n + j
+      row + a[k - n] + a[k + n] + a[k - 1] + a[k + 1]
+    acc + t
+  println(s)
+  u = for j in 0..3 with acc = 0
+    k2 = j + 2
+    acc + a[k2 * 1 + 3]
+  println(u)
+  big = 9223372036854775807
+  w = for j in 0..3 with acc = 0
+    acc + a[j + big]
+  println(w)

@@ -78,7 +78,7 @@ struct Pass<'a> {
 }
 
 /// Runtime calls that only read the storage they are handed.
-const READS: &[&str] = &["rill_strbuf_len", "rill_buf_cmp", "rill_map_len", "rill_buf_check"];
+const READS: &[&str] = &["rill_strbuf_len", "rill_buf_cmp", "rill_map_len", "rill_buf_check", "rill_buf_check_off"];
 
 pub fn check_shared(tmod: &TModule) -> Result<(), Vec<TypeError>> {
     walk_program(tmod)

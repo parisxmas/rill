@@ -171,12 +171,14 @@ fn expand_for(
         pre.push(Stmt::Bind { name: tmp.clone(), value: Expr::Var(fb.clone(), line), line });
         temps.insert(fb.clone(), tmp);
     }
-    let (hoisted, affine) = hoistable_indexes(&body, &var);
+    let (hoisted, affine, aliases) = hoistable_indexes(&body, &var);
     let (from_shape, to_shape) = (from.clone(), to.clone());
     let body = if hoisted.is_empty() && affine.is_empty() {
         body
     } else {
-        hoist_indexes(body, &var, &hoisted, &affine, &go, &temps)
+        let mut bound = HashSet::new();
+        collect_bound_names(&body, &mut bound);
+        hoist_indexes(body, &var, &hoisted, &affine, &go, &temps, &bound, &aliases)
     };
     let base_of = |b: &str, line: usize| Expr::Var(temps.get(b).cloned().unwrap_or_else(|| b.to_string()), line);
     let next = Expr::Binary {
@@ -238,16 +240,18 @@ fn expand_for(
     // `v[e + i]` for a loop-invariant `e`: the range of the index is the
     // range of `i` moved by `e`, so the one check in front is over that.
     for (b, e) in &affine {
-        let shifted = |end: &str| Expr::Binary {
-            op: BinOp::Add,
-            lhs: Box::new(Expr::Var(end.to_string(), line)),
-            rhs: Box::new(e.clone()),
-            line,
-            newline: false,
-        };
+        // the range and the offset apart: the check adds them where no sum
+        // can wrap round
         stmts.push(Stmt::Expr(Expr::Call {
             name: "for.check".to_string(),
-            args: vec![base_of(b, line), shifted(&lo), shifted(&hi), Expr::Str(go.clone()), Expr::Bool(false)],
+            args: vec![
+                base_of(b, line),
+                Expr::Var(lo.clone(), line),
+                Expr::Var(hi.clone(), line),
+                Expr::Str(go.clone()),
+                Expr::Bool(false),
+                e.clone(),
+            ],
             line,
             piped: false,
             stacked: false,
@@ -512,15 +516,16 @@ fn splice_tuple_tail(e: Expr, go: &str, arity: usize, line: usize) -> Expr {
 /// — and, separately, the `(v, e)` pairs indexed by `e + i` or `i + e` for
 /// an `e` the loop leaves alone; in both, neither `v` nor `i` nor anything
 /// `e` names is bound again anywhere in the body.
-fn hoistable_indexes(body: &Expr, var: &str) -> (Vec<String>, Vec<(String, Expr)>) {
+fn hoistable_indexes(body: &Expr, var: &str) -> (Vec<String>, Vec<(String, Expr)>, HashMap<String, Expr>) {
     let mut bound = HashSet::new();
     collect_bound_names(body, &mut bound);
     if bound.contains(var) {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), HashMap::new());
     }
+    let aliases = affine_aliases(body, var, &bound);
     let mut plain = Vec::new();
     let mut affine: Vec<(String, Expr)> = Vec::new();
-    collect_indexes(body, var, &bound, &mut plain, &mut affine);
+    collect_indexes(body, var, &bound, &aliases, &mut plain, &mut affine);
     let plain: Vec<String> =
         dedup(plain).into_iter().filter(|b| b != var && !bound.contains(b)).collect();
     let mut seen: HashSet<String> = HashSet::new();
@@ -528,20 +533,81 @@ fn hoistable_indexes(body: &Expr, var: &str) -> (Vec<String>, Vec<(String, Expr)
         .into_iter()
         .filter(|(b, e)| b != var && !bound.contains(b) && seen.insert(format!("{b}[{e:?}]")))
         .collect();
-    (plain, affine)
+    (plain, affine, aliases)
 }
 
-/// `e + i`, `i + e` — the offset, if this index is the loop variable moved
-/// by an amount the loop does not change.
-fn affine_offset(index: &Expr, var: &str, bound: &HashSet<String>) -> Option<Expr> {
-    let Expr::Binary { op: BinOp::Add, lhs, rhs, .. } = index else { return None };
-    let (v, e) = match (lhs.as_ref(), rhs.as_ref()) {
-        (Expr::Var(i, _), e) if i == var => (i, e),
-        (e, Expr::Var(i, _)) if i == var => (i, e),
-        _ => return None,
-    };
-    let _ = v;
-    if invariant(e, var, bound) { Some(e.clone()) } else { None }
+/// The body's own names for the loop variable moved by an amount the loop
+/// does not change: `k = i * n + j` in a loop over `j` is `j` moved by
+/// `i * n`, so `v[k - n]` is too. Only a binding at the top of the body,
+/// made once and never made again, in the order written — so one may be
+/// written in terms of another.
+fn affine_aliases(body: &Expr, var: &str, bound: &HashSet<String>) -> HashMap<String, Expr> {
+    let mut aliases: HashMap<String, Expr> = HashMap::new();
+    let Expr::Block(stmts) = body else { return aliases };
+    for st in stmts {
+        if let Stmt::Bind { name, value, .. } = st {
+            if binds_of(body, name) == 1 {
+                if let Some(off) = index_offset(value, var, bound, &aliases) {
+                    aliases.insert(name.clone(), off);
+                }
+            }
+        }
+    }
+    aliases
+}
+
+/// How many times `e` binds `name`, anywhere in it.
+fn binds_of(e: &Expr, name: &str) -> usize {
+    let mut n = 0;
+    if let Expr::Block(stmts) = e {
+        for st in stmts {
+            match st {
+                Stmt::Bind { name: b, .. } if b == name => n += 1,
+                Stmt::PatBind { pattern, .. } => {
+                    let mut names = Vec::new();
+                    pattern_names(pattern, &mut names);
+                    n += names.iter().filter(|x| *x == name).count();
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut inner = HashSet::new();
+    match e {
+        Expr::Block(_) => {}
+        other => collect_bound_names(other, &mut inner),
+    }
+    if !matches!(e, Expr::Block(_)) && inner.contains(name) {
+        n += 1;
+    }
+    each_child_all(e, &mut |c| n += binds_of(c, name));
+    n
+}
+
+/// `e` such that `index` is the loop variable plus `e`, for an `e` the loop
+/// leaves alone: `i`, `i + e`, `e + i`, one of the body's aliases, and any of
+/// those plus or minus an amount the loop leaves alone.
+fn index_offset(index: &Expr, var: &str, bound: &HashSet<String>, aliases: &HashMap<String, Expr>) -> Option<Expr> {
+    let line = 0;
+    let add = |a: Expr, b: Expr, op: BinOp| Expr::Binary { op, lhs: Box::new(a), rhs: Box::new(b), line, newline: false };
+    match index {
+        Expr::Var(i, _) if i == var => Some(Expr::Int(0)),
+        Expr::Var(k, _) => aliases.get(k).cloned(),
+        Expr::Binary { op: op @ (BinOp::Add | BinOp::Sub), lhs, rhs, .. } => {
+            if let Some(o) = index_offset(lhs, var, bound, aliases) {
+                if invariant(rhs, var, bound) {
+                    return Some(add(o, (**rhs).clone(), *op));
+                }
+            }
+            if *op == BinOp::Add && invariant(lhs, var, bound) {
+                if let Some(o) = index_offset(rhs, var, bound, aliases) {
+                    return Some(add(o, (**lhs).clone(), BinOp::Add));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Whether an expression is the same on every trip round the loop: names
@@ -565,6 +631,7 @@ fn collect_indexes(
     e: &Expr,
     var: &str,
     bound: &HashSet<String>,
+    aliases: &HashMap<String, Expr>,
     plain: &mut Vec<String>,
     affine: &mut Vec<(String, Expr)>,
 ) {
@@ -575,7 +642,7 @@ fn collect_indexes(
             if let Expr::Var(b, _) = base.as_ref() {
                 if matches!(index.as_ref(), Expr::Var(i, _) if i == var) {
                     plain.push(b.clone());
-                } else if let Some(off) = affine_offset(index, var, bound) {
+                } else if let Some(off) = index_offset(index, var, bound, aliases) {
                     affine.push((b.clone(), off));
                 }
             }
@@ -588,19 +655,19 @@ fn collect_indexes(
     // times, anything after a `?` — would die in front on an index the
     // program never reads (2026-09-25).
     match e {
-        Expr::If { cond, .. } => collect_indexes(cond, var, bound, plain, affine),
-        Expr::Match { scrutinee, .. } => collect_indexes(scrutinee, var, bound, plain, affine),
+        Expr::If { cond, .. } => collect_indexes(cond, var, bound, aliases, plain, affine),
+        Expr::Match { scrutinee, .. } => collect_indexes(scrutinee, var, bound, aliases, plain, affine),
         Expr::Lambda { .. } | Expr::Spawn { .. } | Expr::Select { .. } => {}
         Expr::For { from, to, acc, .. } => {
-            collect_indexes(from, var, bound, plain, affine);
-            collect_indexes(to, var, bound, plain, affine);
+            collect_indexes(from, var, bound, aliases, plain, affine);
+            collect_indexes(to, var, bound, aliases, plain, affine);
             if let Some((_, init)) = acc {
-                collect_indexes(init, var, bound, plain, affine);
+                collect_indexes(init, var, bound, aliases, plain, affine);
             }
         }
         Expr::While { acc, .. } => {
             if let Some((_, init)) = acc {
-                collect_indexes(init, var, bound, plain, affine);
+                collect_indexes(init, var, bound, aliases, plain, affine);
             }
         }
         Expr::Block(stmts) => {
@@ -610,13 +677,13 @@ fn collect_indexes(
                     Stmt::Expr(x) => x,
                     Stmt::Fn(_) => continue,
                 };
-                collect_indexes(value, var, bound, plain, affine);
+                collect_indexes(value, var, bound, aliases, plain, affine);
                 if has_try(value) {
                     break;
                 }
             }
         }
-        _ => each_child_all(e, &mut |c| collect_indexes(c, var, bound, plain, affine)),
+        _ => each_child_all(e, &mut |c| collect_indexes(c, var, bound, aliases, plain, affine)),
     }
 }
 
@@ -709,6 +776,7 @@ fn collect_bound_names(e: &Expr, out: &mut HashSet<String>) {
 /// for a checked `(v, e)` — into `for.at`/`for.set` calls, everywhere in
 /// the body. The index expression travels as written; the check in front
 /// has already covered its range.
+#[allow(clippy::too_many_arguments)]
 fn hoist_indexes(
     e: Expr,
     var: &str,
@@ -716,26 +784,25 @@ fn hoist_indexes(
     affine: &[(String, Expr)],
     go: &str,
     temps: &HashMap<String, String>,
+    bound: &HashSet<String>,
+    aliases: &HashMap<String, Expr>,
 ) -> Expr {
     let covered = |base: &Expr, index: &Expr| -> Option<String> {
         let Expr::Var(b, _) = base else { return None };
         if matches!(index, Expr::Var(i, _) if i == var) && bases.iter().any(|x| x == b) {
             return Some(b.clone());
         }
-        if let Expr::Binary { op: BinOp::Add, lhs, rhs, .. } = index {
-            let off = match (lhs.as_ref(), rhs.as_ref()) {
-                (Expr::Var(i, _), off) if i == var => off,
-                (off, Expr::Var(i, _)) if i == var => off,
-                _ => return None,
-            };
-            let key = format!("{b}[{off:?}]");
-            if affine.iter().any(|(ab, ae)| format!("{ab}[{ae:?}]") == key) {
-                return Some(b.clone());
-            }
+        if matches!(index, Expr::Var(i, _) if i == var) {
+            return None;
+        }
+        let off = index_offset(index, var, bound, aliases)?;
+        let key = format!("{b}[{off:?}]");
+        if affine.iter().any(|(ab, ae)| format!("{ab}[{ae:?}]") == key) {
+            return Some(b.clone());
         }
         None
     };
-    let rec = |x: Expr| hoist_indexes(x, var, bases, affine, go, temps);
+    let rec = |x: Expr| hoist_indexes(x, var, bases, affine, go, temps, bound, aliases);
     // The base the access names: the temp when the field has one, and then
     // the field's own name rides along for the checker's fallback.
     let base_of = |b: &str, line: usize| -> Expr {
@@ -807,7 +874,7 @@ fn hoist_indexes(
                 line,
             },
         },
-        other => map_children(other, &mut |c| hoist_indexes(c, var, bases, affine, go, temps)),
+        other => map_children(other, &mut |c| hoist_indexes(c, var, bases, affine, go, temps, bound, aliases)),
     }
 }
 

@@ -7972,6 +7972,61 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // it is about to walk is inside. The length never changes after
             // the buffer is made, so the load hoists; the call is left for
             // the case that ends the program, and is laid down out of the way.
+            // `v[i + e]` over `lo..hi`: the first and last index, taken in 128
+            // bits where no offset can wrap them round. Added to the ends
+            // as `Int`s, a last index past the largest one wrapped below the
+            // first, the range read as empty, and nothing was checked.
+            TK::Builtin { rt, args } if *rt == "rill_buf_check_off" => {
+                let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let lo = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_int_value();
+                let hi = self.gen_expr(&args[2], scope, subst, func)?.expect("value").into_int_value();
+                let off = self.gen_expr(&args[3], scope, subst, func)?.expect("value").into_int_value();
+                let bp = b.into_pointer_value();
+                let i64t = self.ctx.i64_type();
+                let i128t = self.ctx.i128_type();
+                let empty = self
+                    .builder
+                    .build_int_compare(IntPredicate::SGE, lo, hi, "check.empty")
+                    .expect("LLVM builder error");
+                let look_bb = self.ctx.append_basic_block(func, "check.look");
+                let bad_bb = self.ctx.append_basic_block(func, "check.bad");
+                let done_bb = self.ctx.append_basic_block(func, "check.ok");
+                self.builder.build_conditional_branch(empty, done_bb, look_bb).expect("LLVM builder error");
+                self.builder.position_at_end(look_bb);
+                let bld = &self.builder;
+                let w = |v: IntValue<'ctx>, n: &str| bld.build_int_s_extend(v, i128t, n).expect("LLVM builder error");
+                let (lo2, hi2, off2) = (w(lo, "lo2"), w(hi, "hi2"), w(off, "off2"));
+                let first = bld.build_int_add(lo2, off2, "first").expect("LLVM builder error");
+                let past = bld.build_int_add(hi2, off2, "past").expect("LLVM builder error");
+                let len = self.buf_len(bp);
+                let bld = &self.builder;
+                let len2 = bld.build_int_s_extend(len, i128t, "len2").expect("LLVM builder error");
+                let under = bld
+                    .build_int_compare(IntPredicate::SLT, first, i128t.const_zero(), "check.lo")
+                    .expect("LLVM builder error");
+                let over = bld.build_int_compare(IntPredicate::SGT, past, len2, "check.hi").expect("LLVM builder error");
+                let bad = bld.build_or(under, over, "check.bad?").expect("LLVM builder error");
+                bld.build_conditional_branch(bad, bad_bb, done_bb).expect("LLVM builder error");
+                self.builder.position_at_end(bad_bb);
+                // the first index the loop would read that is not there: its
+                // first, or the length when the first is inside
+                let first64 = self.builder.build_int_truncate(first, i64t, "first64").expect("LLVM builder error");
+                let inside = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, first, len2, "first.in")
+                    .expect("LLVM builder error");
+                let beyond = self.builder.build_select(inside, len, first64, "beyond").expect("LLVM builder error");
+                let which = self.builder.build_select(under, first64.into(), beyond, "which").expect("LLVM builder error");
+                let oob = self.module.get_function("rill_buf_oob").unwrap();
+                self.builder.build_call(oob, &[which.into(), len.into()], "").expect("LLVM builder error");
+                self.builder.build_unreachable().expect("LLVM builder error");
+                self.builder.position_at_end(done_bb);
+                if held {
+                    let ty = self.concrete(&args[0].ty, subst);
+                    self.emit_release(b, &ty);
+                }
+                Ok(None)
+            }
             TK::Builtin { rt, args } if *rt == "rill_buf_check" => {
                 let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
                 let lo = self.gen_expr(&args[1], scope, subst, func)?.expect("value").into_int_value();

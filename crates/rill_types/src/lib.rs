@@ -2143,14 +2143,24 @@ impl Checker {
             let hi = self.infer(&args[2], env)?;
             self.unify(&Ty::Int, &lo.ty, line, "a loop bound")?;
             self.unify(&Ty::Int, &hi.ty, line, "a loop bound")?;
+            // `v[i + e]`: the loop's own range and the offset apart, so the
+            // check can add them where nothing wraps.
+            let off = match args.get(5) {
+                Some(o) => {
+                    let o = self.infer(o, env)?;
+                    self.unify(&Ty::Int, &o.ty, line, "an index offset")?;
+                    Some(o)
+                }
+                None => None,
+            };
             match self.resolve(&b.ty) {
                 Ty::Buf(_) => {
                     self.hoisted.insert((go, base_name));
-                    return Ok(TExpr {
-                        ty: Ty::Unit,
-                        line,
-                        kind: TK::Builtin { rt: "rill_buf_check", args: vec![b, lo, hi] },
-                    });
+                    let kind = match off {
+                        Some(o) => TK::Builtin { rt: "rill_buf_check_off", args: vec![b, lo, hi, o] },
+                        None => TK::Builtin { rt: "rill_buf_check", args: vec![b, lo, hi] },
+                    };
+                    return Ok(TExpr { ty: Ty::Unit, line, kind });
                 }
                 // A string index past the end is `-1` by contract, and a loop
                 // may lean on that, so a string is only vouched for when the
