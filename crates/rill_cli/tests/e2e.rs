@@ -5918,3 +5918,8 @@ fn a_tail_branch_moves_and_rebuilds_on_its_own() {
          11\n0\n"
     );
 }
+
+#[test]
+fn counting_into_a_map_is_one_probe() {
+    assert_eq!(compile_and_run("map_bump.rill"), "3\n2\n1\n3\n140\n1.5\nabc\nbca\ncab\nabc\n2\n0\n");
+}

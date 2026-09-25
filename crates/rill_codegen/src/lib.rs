@@ -5859,9 +5859,17 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let outer_free = std::mem::take(&mut self.root_free);
                 let saved_held_tail = self.held_above.clone();
                 let saved_scope = scope.clone();
+                let mut skip = false;
                 for (si, stmt) in init.iter().enumerate() {
+                    if std::mem::take(&mut skip) {
+                        continue;
+                    }
                     let rest = &stmts[si + 1..];
                     self.begin_statement(stmt_value(stmt), rest);
+                    if si + 1 < init.len() && self.try_bump_slice(stmt, init.get(si + 1), &stmts[si + 2..], scope, subst, func)? {
+                        skip = true;
+                        continue;
+                    }
                     match stmt {
                         TStmt::Bind { name, value } if self.try_bind_borrowed(name, value, rest, scope, subst, func)? => {}
                         TStmt::Bind { name, value } => {
@@ -7591,6 +7599,108 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.gen_expr_inner(e, scope, subst, func)
     }
 
+    /// `m[k] = map_or(m, k, d) + e` — or `e + map_or(..)` — on a table of
+    /// `Int` values, with the same map and key named both times: the
+    /// default and the increment.
+    fn bump_of<'e>(&self, e: &'e TExpr, subst: &[Ty]) -> Option<(&'e TExpr, &'e TExpr)> {
+        let TK::MapSet { map, key, val } = &e.kind else { return None };
+        let (TK::Local(mn), TK::Local(kn)) = (&map.kind, &key.kind) else { return None };
+        let Ty::Map(_, v) = self.concrete(&map.ty, subst) else { return None };
+        if *v != Ty::Int {
+            return None;
+        }
+        let TK::Binary { op: BinOp::Add, lhs, rhs } = &val.kind else { return None };
+        let reads = |x: &'e TExpr| -> Option<&'e TExpr> { match &x.kind {
+            TK::CallFn { fn_idx, args, .. } if self.is_prelude(*fn_idx, "map_or") && args.len() == 3 => {
+                matches!((&args[0].kind, &args[1].kind), (TK::Local(a), TK::Local(b)) if a == mn && b == kn)
+                    .then_some(&args[2])
+            }
+            _ => None,
+        } };
+        let (d, delta) = match (reads(lhs), reads(rhs)) {
+            (Some(d), _) if !names_local(rhs, kn) && !names_local(rhs, mn) => (d, &**rhs),
+            (_, Some(d)) if !names_local(lhs, kn) && !names_local(lhs, mn) => (d, &**lhs),
+            _ => return None,
+        };
+        if names_local(d, kn) || names_local(d, mn) {
+            return None;
+        }
+        Some((d, delta))
+    }
+
+    /// `w = s[a:b]` then `m[w] = map_or(m, w, d) + e`, with `w` said nowhere
+    /// after: the table is probed with the bytes of `s` where they lie, and a
+    /// string is made only for a key that goes in. Answers whether the two
+    /// statements were written that way.
+    fn try_bump_slice(
+        &mut self,
+        bind: &TStmt,
+        next: Option<&TStmt>,
+        after: &[TStmt],
+        scope: &mut Scope<'ctx>,
+        subst: &[Ty],
+        func: FunctionValue<'ctx>,
+    ) -> Result<bool, CodegenError> {
+        let TStmt::Bind { name, value } = bind else { return Ok(false) };
+        let TK::Slice { base, from, to } = &value.kind else { return Ok(false) };
+        let Some(TStmt::Expr(set)) = next else { return Ok(false) };
+        let Some((d, delta)) = self.bump_of(set, subst) else { return Ok(false) };
+        let TK::MapSet { map, key, .. } = &set.kind else { return Ok(false) };
+        if !matches!(&key.kind, TK::Local(k) if k == name)
+            || after.iter().any(|st| names_local(stmt_value(st), name))
+            || names_local(d, name)
+            || names_local(delta, name)
+        {
+            return Ok(false);
+        }
+        let mty = self.concrete(&map.ty, subst);
+        let (m, mowned) = self.gen_borrowed(map, scope, subst, func)?;
+        let (sv, sowned) = self.gen_borrowed(base, scope, subst, func)?;
+        let fv = self.gen_expr(from, scope, subst, func)?.expect("value").into_int_value();
+        let end = match to {
+            Some(t) => self.gen_expr(t, scope, subst, func)?.expect("value").into_int_value(),
+            None => match self.call_rt("rill_str_len", &[sv.into()]).try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(v) => v.into_int_value(),
+                _ => unreachable!("a length"),
+            },
+        };
+        // clamped as a slice is, before the length is taken
+        let bld = &self.builder;
+        let zero = self.ctx.i64_type().const_zero();
+        let neg = bld.build_int_compare(IntPredicate::SLT, fv, zero, "bneg").expect("builder");
+        let fv = bld.build_select(neg, zero, fv, "bfrom").expect("builder").into_int_value();
+        let back = bld.build_int_compare(IntPredicate::SLT, end, fv, "bback").expect("builder");
+        let end = bld.build_select(back, fv, end, "bend").expect("builder").into_int_value();
+        let len = bld.build_int_sub(end, fv, "blen").expect("builder");
+        let dv = self.gen_expr(d, scope, subst, func)?.expect("value");
+        let ev = self.gen_expr(delta, scope, subst, func)?.expect("value");
+        self.note(format!("`{name}` is looked up where it lies in the string: a key is made only when it goes in"));
+        let f = self.rt_fn("rill_map_bump_sub", 6);
+        self.builder
+            .build_call(f, &[m.into(), sv.into(), fv.into(), len.into(), dv.into(), ev.into()], "")
+            .expect("LLVM builder error");
+        if sowned {
+            self.emit_release(sv, &Ty::Str);
+        }
+        if mowned {
+            self.emit_release(m, &mty);
+        }
+        Ok(true)
+    }
+
+    /// A runtime function of `n` word-sized arguments and no answer,
+    /// declared on first use.
+    fn rt_fn(&self, name: &str, n: usize) -> FunctionValue<'ctx> {
+        self.module.get_function(name).unwrap_or_else(|| {
+            let ptrt = self.ctx.ptr_type(Default::default());
+            let i64t = self.ctx.i64_type();
+            let ps: Vec<BasicMetadataTypeEnum<'ctx>> = (0..n)
+                .map(|i| if i == 0 || (name == "rill_map_bump_sub" && i == 1) { ptrt.into() } else { i64t.into() })
+                .collect();
+            self.module.add_function(name, self.ctx.void_type().fn_type(&ps, false), None)
+        })
+    }
+
     /// The start of one branch of an `if` in tail position: what it may move
     /// is decided by it alone, and a box its arm could not empty for the
     /// arm's sake is emptied here if this branch does not name it.
@@ -8490,6 +8600,24 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             // The key and the value are moved into the table, exactly as a
             // value sent down a channel is: what the frame owned, the table
             // owns now.
+            TK::MapSet { map, key, val } if self.bump_of(e, subst).is_some() => {
+                let (d, delta) = self.bump_of(e, subst).expect("checked");
+                let mty = self.concrete(&map.ty, subst);
+                let (kty, _) = self.map_kv(&mty, e.line)?;
+                let (m, owned) = self.gen_borrowed(map, scope, subst, func)?;
+                let kv = self.gen_expr(key, scope, subst, func)?.expect("value");
+                let dv = self.gen_expr(d, scope, subst, func)?.expect("value");
+                let ev = self.gen_expr(delta, scope, subst, func)?.expect("value");
+                let (k0, _) = self.pack_words(kv, &kty);
+                self.note("`m[k] = map_or(m, k, d) + e` is one probe of the table".to_string());
+                let f = self.rt_fn("rill_map_bump", 4);
+                self.builder.build_call(f, &[m.into(), k0.into(), dv.into(), ev.into()], "").expect("LLVM builder error");
+                if owned {
+                    self.emit_release(m, &mty);
+                }
+                let _ = val;
+                Ok(None)
+            }
             TK::MapSet { map, key, val } => {
                 let mty = self.concrete(&map.ty, subst);
                 let (kty, vty) = self.map_kv(&mty, e.line)?;
@@ -9034,7 +9162,16 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let outer_held: Vec<BasicValueEnum<'ctx>> =
                     self.cleanup.iter().map(|(v, _)| *v).collect();
                 let outer_movable = std::mem::take(&mut self.movable);
+                let mut skip = false;
                 for (i, stmt) in stmts.iter().enumerate() {
+                    if std::mem::take(&mut skip) {
+                        continue;
+                    }
+                    if self.try_bump_slice(stmt, stmts.get(i + 1), stmts.get(i + 2..).unwrap_or(&[]), scope, subst, func)? {
+                        skip = true;
+                        last = None;
+                        continue;
+                    }
                     // A block nested in a statement draws on the statement's
                     // pool: a name spoken once in the whole statement, on
                     // this block's own unconditional path, and not again in

@@ -1,0 +1,45 @@
+# `m[k] = map_or(m, k, d) + e` on a table of `Int` values is one probe: the
+# value goes up by `e`, or the key goes in with `d + e`. When `k` was just
+# cut out of a string and is said nowhere after, the table is probed with
+# the bytes where they lie and a key is made only when it goes in
+# (2026-09-25). Shapes that are not this — a `Float` table, a key used
+# again — are left as written. Prints counts and the live block count.
+
+extern fn rill_mem_report() -> Int
+
+fn words(s, m) =
+  fn scan(i, start) =
+    if i == #s then 0
+    else if s[i] == 32 then
+      w = s[start:i]
+      m[w] = map_or(m, w, 0) + 1
+      scan(i + 1, i + 1)
+    else scan(i + 1, start)
+  scan(0, 0)
+
+fn run() =
+  m = map_new()
+  words("a bb a ccc bb a ", m)
+  println(map_or(m, "a", 0))
+  println(map_or(m, "bb", 0))
+  println(map_or(m, "ccc", 0))
+  println(#m)
+  n = map_new()
+  for i in 0..10
+    n[i % 3] = 10 + map_or(n, i % 3, 100)
+  println(map_or(n, 0, 0))
+  f = map_new()
+  f["x"] = map_or(f, "x", 0.5) + 1.0
+  println(map_or(f, "x", 0.0))
+  k = map_new()
+  s = "abcabc"
+  for i in 0..4
+    w = s[i:i + 3]
+    k[w] = map_or(k, w, 0) + 1
+    println(w)
+  println(map_or(k, "abc", 0))
+
+fn main() =
+  run()
+  println(int_to_str(rill_mem_report()))
+  0

@@ -4653,6 +4653,76 @@ pub unsafe extern "C" fn rill_map_set(p: *mut u8, k: i64, v0: i64, v1: i64) {
     (*m).len += 1;
 }
 
+/// `m[k] = map_or(m, k, d) + e` on a table of `Int` values, as one probe:
+/// the value under `k` goes up by `e`, or `k` goes in with `d + e`. The key
+/// is the table's when it goes in and released when it was there already,
+/// as `rill_map_set` has it. Written out it was a hash and a probe to read
+/// and a hash and a probe to write, for what a counting loop does once per
+/// element (2026-09-25).
+///
+/// # Safety
+/// `p` must be a live map whose values are `Int`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_bump(p: *mut u8, k: i64, d: i64, e: i64) {
+    let m = p as *mut Map;
+    let h = map_hash(m, k);
+    let at = map_lookup(m, h, k);
+    if at >= 0 {
+        let slot = map_key(m, at as usize);
+        *slot.add(1) = (*slot.add(1)).wrapping_add(e);
+        map_krelease(m, k);
+        return;
+    }
+    rill_map_set(p, k, d.wrapping_add(e), 0);
+}
+
+/// The same, for a key that is `len` bytes of `s` from `start`: probed with
+/// the bytes where they lie, and made into a string of its own only when it
+/// goes in. `w = s[i:i + k]` then `m[w] = map_or(m, w, 0) + 1` made and
+/// freed a string per position for keys the table mostly had already.
+///
+/// # Safety
+/// `p` must be a live map of `Str` keys and `Int` values; `s` a live string;
+/// the range is clamped to it.
+#[no_mangle]
+pub unsafe extern "C" fn rill_map_bump_sub(p: *mut u8, s: *const u8, start: i64, len: i64, d: i64, e: i64) {
+    let m = p as *mut Map;
+    let n = str_len_of(s) as i64;
+    let a = start.clamp(0, n);
+    let b = a.saturating_add(len.max(0)).clamp(a, n);
+    let bytes = str_bytes(s).add(a as usize);
+    let blen = (b - a) as usize;
+    // `rill_str_hash`, over the bytes in place
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for i in 0..blen {
+        h ^= *bytes.add(i) as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    if (*m).cap != 0 {
+        let mask = (*m).cap - 1;
+        let want = ctrl_of(h);
+        let mut i = (h as usize) & mask;
+        loop {
+            let c = *(*m).ctrl.add(i);
+            if c == CTRL_EMPTY {
+                break;
+            }
+            if c == want {
+                let slot = map_key(m, i);
+                let key = *slot as *const u8;
+                if str_len_of(key) == blen && memcmp(str_bytes(key), bytes, blen) == 0 {
+                    *slot.add(1) = (*slot.add(1)).wrapping_add(e);
+                    return;
+                }
+            }
+            i = (i + 1) & mask;
+        }
+    }
+    let key = str_new(blen);
+    copy_small(bytes, key.add(16), blen);
+    rill_map_set(p, key as i64, d.wrapping_add(e), 0);
+}
+
 /// The value under `k`, or `d`: `map_find` and `map_val_at` in one call, for
 /// the one-word values the prelude's `map_or` is asked about most.
 ///
