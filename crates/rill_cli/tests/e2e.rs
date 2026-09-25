@@ -5737,3 +5737,9 @@ fn a_block_whose_value_is_its_own_binding_hands_the_reference_on() {
     // the live block count after each shape: nothing left behind
     assert_eq!(compile_and_run("block_value_is_its_binding.rill"), "0\n0\n0\n0\n");
 }
+
+#[test]
+fn a_branch_that_rebinds_an_outer_value_releases_it_on_that_branch_only() {
+    // each answer, then the live block count: no crash, nothing left behind
+    assert_eq!(compile_and_run("branch_rebinds_outer.rill"), "8\n0\n4\n0\n8\n0\n4\n0\n");
+}

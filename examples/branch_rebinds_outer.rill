@@ -1,0 +1,40 @@
+# A branch that binds a new name to an outer value — `y = x` — retains `x`
+# on that path alone. The block's cleanup told its own entries from the
+# frame's by LLVM value, and `y` is the same value as `x`, so `y`'s release
+# went to the function's exit and ran on every path: a double release, a
+# crash on the branch that never retained (2026-09-25). Prints each answer
+# and the live block count after it.
+
+extern fn rill_mem_report() -> Int
+
+fn mk(n) = if n == 0 then Nil else Cons(n, mk(n - 1))
+
+fn len(l) = match l
+  Nil -> 0
+  Cons(_, t) -> 1 + len(t)
+
+fn f(x, c) =
+  n = if c then
+    y = x
+    len(y)
+  else 0
+  n + len(x)
+
+# the branch's value is the rebinding itself
+fn g(x, c) =
+  z = if c then
+    y = x
+    y
+  else Nil
+  len(z) + len(x)
+
+fn main() =
+  println(int_to_str(f(mk(4), true)))
+  println(int_to_str(rill_mem_report()))
+  println(int_to_str(f(mk(4), false)))
+  println(int_to_str(rill_mem_report()))
+  println(int_to_str(g(mk(4), true)))
+  println(int_to_str(rill_mem_report()))
+  println(int_to_str(g(mk(4), false)))
+  println(int_to_str(rill_mem_report()))
+  0

@@ -822,6 +822,30 @@ fn constructs_adt(e: &TExpr, adt: usize) -> bool {
 
 /// The variable a chain of field reads starts from, if it is one.
 /// The LLVM value a local names in the scope, when it names one.
+/// A block's cleanup list at its end, split into what the frame held when
+/// the block began and what the block itself took on. By identity, but
+/// counted: `y = x` inside a branch retains `x` and binds the same LLVM
+/// value, so the block owns a second entry for it — deciding by value alone
+/// sent that entry to the function's exit, where it was released on every
+/// path although the retain was made on one (a double release, 2026-09-25).
+fn split_cleanup<'ctx, T>(
+    cleanup: Vec<(BasicValueEnum<'ctx>, T)>,
+    outer_held: &[BasicValueEnum<'ctx>],
+) -> (Vec<(BasicValueEnum<'ctx>, T)>, Vec<(BasicValueEnum<'ctx>, T)>) {
+    let mut unmatched: Vec<Option<BasicValueEnum<'ctx>>> = outer_held.iter().map(|v| Some(*v)).collect();
+    let (mut kept, mut own) = (Vec::new(), Vec::new());
+    for (v, ty) in cleanup {
+        match unmatched.iter_mut().find(|o| **o == Some(v)) {
+            Some(slot) => {
+                *slot = None;
+                kept.push((v, ty));
+            }
+            None => own.push((v, ty)),
+        }
+    }
+    (kept, own)
+}
+
 fn scope_value<'ctx>(e: &TExpr, scope: &Scope<'ctx>) -> Option<BasicValueEnum<'ctx>> {
     let TK::Local(name) = &e.kind else { return None };
     scope.get(name).copied().flatten()
@@ -8542,8 +8566,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                             let own_tail = i + 1 == stmts.len()
                                 && matches!(v.kind, TK::Local(_))
                                 && scope_value(v, scope).is_some_and(|val| {
-                                    !outer_held.contains(&val)
-                                        && self.cleanup.iter().any(|(c, _)| *c == val)
+                                    // more entries for it now than the frame
+                                    // had: `y = x` in the block owns one
+                                    self.cleanup.iter().filter(|(c, _)| *c == val).count()
+                                        > outer_held.iter().filter(|c| **c == val).count()
                                 });
                             let out = if own_tail {
                                 self.take_owned(v, scope)
@@ -8569,9 +8595,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.held_above = saved_held_block;
                 *scope = saved_scope;
                 self.movable = outer_movable;
-                let (kept, own): (Vec<_>, Vec<_>) = std::mem::take(&mut self.cleanup)
-                    .into_iter()
-                    .partition(|(v, _)| outer_held.contains(v));
+                let (kept, own) = split_cleanup(std::mem::take(&mut self.cleanup), &outer_held);
                 self.cleanup = kept;
                 for (v, ty) in own.into_iter().rev() {
                     if last == Some(v) {
@@ -9481,9 +9505,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 }
             }
             let v = self.gen_expr(&arm.body, &mut arm_scope, subst, func)?;
-            let (kept, own): (Vec<_>, Vec<_>) = std::mem::take(&mut self.cleanup)
-                .into_iter()
-                .partition(|(c, _)| outer_held.contains(c));
+            let (kept, own) = split_cleanup(std::mem::take(&mut self.cleanup), &outer_held);
             self.cleanup = kept;
             for (c, ty) in own.into_iter().rev() {
                 // Except the arm's own answer, which leaves with the `select`.
