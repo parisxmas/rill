@@ -3923,6 +3923,22 @@ impl Checker {
         // by the runtime's pattern-defeating quicksort — what a program that
         // keeps its data in a buffer sorts it with, where it used to have to
         // write the sort out. Floats in their total order: NaN at the ends.
+        // `buf_select_nth(b, lo, hi, k)`: the float that would be at `k` were
+        // the range sorted, the range reordered around it.
+        if name == "buf_select_nth" {
+            if args.len() != 4 {
+                return Err(TypeError::new(line, format!("`buf_select_nth` takes a buffer, a range and a place, but {} given", args.len())));
+            }
+            let b = self.infer(&args[0], env)?;
+            self.unify(&Ty::Buf(CTy::F64), &b.ty, line, "what `buf_select_nth` looks in")?;
+            let mut all = vec![b];
+            for a in &args[1..] {
+                let x = self.infer(a, env)?;
+                self.unify(&Ty::Int, &x.ty, line, "a place in the buffer")?;
+                all.push(x);
+            }
+            return Ok(TExpr { ty: Ty::Float, line, kind: TK::Builtin { rt: "rill_buf_select_nth", args: all } });
+        }
         // `buf_argsort(src, dst)`: the order of a float buffer's elements,
         // stable, into an `Int` buffer.
         if name == "buf_argsort" {
@@ -6182,6 +6198,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "buf_sort"
             | "buf_sort_range"
             | "buf_argsort"
+            | "buf_select_nth"
             | "map_new"
             | "map_set"
             | "map_find"

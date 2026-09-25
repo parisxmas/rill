@@ -387,6 +387,8 @@ impl Fmt {
         };
         let kw = if f.exported {
             "export fn"
+        } else if f.private && f.fast {
+            "private fast fn"
         } else if f.private {
             "private fn"
         } else if f.fast {

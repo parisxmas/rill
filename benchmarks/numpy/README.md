@@ -23,37 +23,40 @@ agree to six digits. Reproduce with `python3 benchmarks/numpy/run.py`.
 
 ## The array work alone (ms)
 
+Measured 2026-09-25, after the sort, the sums and the median were moved
+onto the runtime and `fast fn` (see the end of this page).
+
 | benchmark | what it does | rill, 1 core | rill, 10 cores | numpy, 1 thread | numpy, all threads | |
 |---|---|---:|---:|---:|---:|---|
-| small | `v = v*0.999 + 0.5` on 16 elements, 200k times | 9.3 | 15.0 | 102.7 | 102.4 | **rill 11×** |
-| sort | 5 M sorted, and 1 M put in order by position | 89.4 | 98.2 | 209.9 | 207.5 | **rill 2.3×** |
-| reduce | mean, std, max, argmax of 20 M | 14.1 | 7.7 | 27.2 | 27.3 | **rill 1.9×**, 3.5× on all cores |
-| shape | joining, tiling, reversing, rolling, gathering, 10 M | 40.2 | 44.3 | 75.8 | 64.1 | **rill 1.9×** |
-| where | `where(a > k, a, b)`, a sum and a count, 10 M | 6.5 | 4.7 | 11.8 | 12.0 | **rill 1.8×**, 2.6× on all cores |
-| stats | median, two percentiles, and NaN-skipping sums of 5 M | 40.4 | 43.1 | 44.4 | 44.6 | rill 1.1× |
-| matmul | 800 × 800 · 800 × 800 | 17.3 | 4.5 | 18.5 | 5.7 | rill 1.07×, 1.3× on all cores |
-| axis | 2000 × 2000 transposed, summed along both axes | 0.9 | 1.0 | 1.0 | 1.0 | level |
-| dot | dot of two 20 M vectors | 4.3 | 3.0 | 4.4 | 2.9 | level |
-| elementwise | `sqrt(a)*(2a+1) + a`, 10 M | 12.0 | 11.4 | 12.1 | 12.1 | level |
-| trig | `sin`, `exp` and `log` over 10 M each | 61.7 | 18.2 | 62.2 | 62.1 | level; **3.4× on all cores** |
-| solve | a 400 × 400 system, its determinant and its inverse | 6.3 | 6.2 | 6.4 | 5.3 | level on one core; numpy 1.2× on all |
+| small | `v = v*0.999 + 0.5` on 16 elements, 200k times | 4.4 | 5.4 | 104.3 | 106.9 | **rill 24×** |
+| sort | 5 M sorted, and 1 M put in order by position | 78.4 | 83.0 | 218.5 | 219.0 | **rill 2.8×** |
+| reduce | mean, std, max, argmax of 20 M | 12.3 | 8.1 | 28.7 | 28.6 | **rill 2.3×**, 3.5× on all cores |
+| where | `where(a > k, a, b)`, a sum and a count, 10 M | 6.2 | 4.6 | 12.1 | 12.2 | **rill 2.0×**, 2.7× on all cores |
+| shape | joining, tiling, reversing, rolling, gathering, 10 M | 35.7 | 34.6 | 66.9 | 64.0 | **rill 1.9×** |
+| stats | median, two percentiles, and NaN-skipping sums of 5 M | 30.7 | 33.0 | 46.9 | 45.4 | **rill 1.5×** |
+| matmul | 800 × 800 · 800 × 800 | 17.6 | 4.3 | 19.1 | 6.0 | rill 1.09×, 1.4× on all cores |
+| solve | a 400 × 400 system, its determinant and its inverse | 5.6 | 6.3 | 6.4 | 5.5 | rill 1.1× on one core; level on all |
+| axis | 2000 × 2000 transposed, summed along both axes | 1.0 | 1.0 | 1.0 | 1.0 | level |
+| dot | dot of two 20 M vectors | 4.3 | 3.1 | 4.4 | 3.0 | level |
+| elementwise | `sqrt(a)*(2a+1) + a`, 10 M | 12.2 | 11.5 | 12.6 | 12.7 | level |
+| trig | `sin`, `exp` and `log` over 10 M each | 61.9 | 16.8 | 62.4 | 62.3 | level; **3.7× on all cores** |
 
 ## The whole process (ms)
 
 | benchmark | rill, 1 core | rill, 10 cores | numpy, 1 thread | numpy, all threads |
 |---|---:|---:|---:|---:|
-| elementwise | 42 | 49 | 91 | 89 |
-| reduce | 48 | 36 | 152 | 152 |
-| matmul | 38 | 13 | 89 | 64 |
-| axis | 7 | 8 | 63 | 62 |
-| small | 21 | 32 | 256 | 255 |
-| dot | 60 | 58 | 144 | 137 |
-| where | 44 | 42 | 114 | 116 |
-| trig | 155 | 65 | 209 | 207 |
-| sort | 203 | 224 | 494 | 490 |
-| solve | 15 | 16 | 64 | 62 |
-| stats | 101 | 110 | 177 | 174 |
-| shape | 120 | 120 | 259 | 244 |
+| elementwise | 42 | 43 | 97 | 96 |
+| reduce | 43 | 35 | 162 | 161 |
+| matmul | 39 | 13 | 93 | 66 |
+| axis | 7 | 8 | 65 | 64 |
+| small | 11 | 13 | 261 | 271 |
+| dot | 42 | 40 | 142 | 140 |
+| where | 36 | 33 | 118 | 120 |
+| trig | 154 | 63 | 217 | 208 |
+| sort | 175 | 189 | 514 | 512 |
+| solve | 14 | 15 | 66 | 64 |
+| stats | 75 | 83 | 181 | 177 |
+| shape | 111 | 111 | 239 | 240 |
 
 Python's start and NumPy's import are about 60 ms; a Rill program is a 40 KB
 binary that starts in a millisecond. On the whole process Rill is ahead on
@@ -61,9 +64,9 @@ all twelve.
 
 ## What the numbers say
 
-**Where there is arithmetic to do, Rill is ahead.** `reduce` runs eight
-partial sums in four vector lanes and reads its twenty million numbers at
-the memory's pace; NumPy's `std` makes a temporary the size of the input on
+**Where there is arithmetic to do, Rill is ahead.** `reduce`'s sums are
+`fast fn`s, which the compiler splits into running sums in the vector lanes,
+and read their twenty million numbers at the memory's pace; NumPy's `std` makes a temporary the size of the input on
 the way to its answer. `where` writes and reads a mask one byte wide, as
 NumPy does, and its `where` is an in-place kernel on the temporary it was
 handed. `matmul` is a 4 × 10 register-blocked kernel written in `Float2`
@@ -77,11 +80,17 @@ NumPy a trip through the interpreter, argument parsing, dtype dispatch and
 **`sort` is ahead because it does not compare.** A comparison sort spends
 its time on branches it cannot predict; sorting by the bits does not
 branch at all. A float's order is its bit pattern's order once the sign is
-folded in, so above a few thousand elements `sort` puts the numbers in
-place a byte at a time, eight counting passes, one histogram pass for all
+folded in, so above two hundred thousand elements `sort` puts the numbers
+in place a byte at a time, eight counting passes, one histogram pass for all
 eight. The price is two buffers the size of the input, which is why below
-that it is still a quicksort. `argsort` is a stable merge sort over the
-positions and is 2.4× ahead of NumPy's stable argsort on its own.
+that it is the runtime's pattern-defeating quicksort (`buf_sort_range`),
+measured faster up to there. `argsort` sorts each number's bits beside its
+position in the runtime — a byte at a time for a big grid, stable by
+construction — in half the time of the merge sort over positions it was.
+
+**`stats` selects, it does not sort.** A median is the runtime's
+introselect in a copy, and the value above it the least of what the
+selection left after it — a scan, where it was a second selection.
 
 **Where both sides stream memory, they are level, and that is the wall.** An
 `elementwise` pass over eighty megabytes, an `axis` sum, a `dot` of two
@@ -133,7 +142,8 @@ way was a compiler improvement rather than a library trick — the list is in
 - flat values now cross a call as their fields, one parameter each: a loop
   carrying a tuple of sums is a function tail-calling itself with one, and
   LLVM's aggregate `phi` for it hid the sums from the vectorizer;
-- tuples hold up to eight values, so a reduction carries eight partial sums;
+- tuples hold up to eight values, so a reduction carried eight partial sums —
+  since replaced by `fast fn`, which lets the compiler do the same;
 - `unique(x)` and last-use moves, which is how a temporary's storage is
   reused (`elementwise` 29 → 12 ms);
 - `Float2`, so a kernel can say its vectors instead of hoping the vectorizer

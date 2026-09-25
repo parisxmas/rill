@@ -193,6 +193,19 @@ impl Parser {
                     f.private = true;
                     functions.push(f);
                 }
+                // `private fast fn`: both.
+                Tok::Ident(w)
+                    if w == "private"
+                        && matches!(self.peek2(), Tok::Ident(x) if x == "fast")
+                        && matches!(self.toks.get(self.pos + 2).map(|t| &t.tok), Some(Tok::Fn)) =>
+                {
+                    self.bump();
+                    self.bump();
+                    let mut f = self.fndef(false)?;
+                    f.private = true;
+                    f.fast = true;
+                    functions.push(f);
+                }
                 // `fast fn`: its float arithmetic may be reassociated. A name
                 // rather than a keyword, like `private`, and only here.
                 Tok::Ident(w) if w == "fast" && matches!(self.peek2(), Tok::Fn) => {

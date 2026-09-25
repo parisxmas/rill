@@ -8031,6 +8031,34 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             TK::Builtin { rt, .. } if *rt == "rill_unchecked" => Ok(None),
             // A buffer is storage: sorted where it is, which every name for
             // it sees, as it sees `b[i] = v`.
+            TK::Builtin { rt, args } if *rt == "rill_buf_select_nth" => {
+                let (b, held) = self.gen_borrowed(&args[0], scope, subst, func)?;
+                let mut vals: Vec<BasicMetadataValueEnum<'ctx>> = vec![b.into()];
+                for a in &args[1..] {
+                    vals.push(self.gen_expr(a, scope, subst, func)?.expect("a number").into());
+                }
+                let f = match self.module.get_function(rt) {
+                    Some(f) => f,
+                    None => {
+                        let ptrt = self.ctx.ptr_type(Default::default());
+                        let i64t = self.ctx.i64_type();
+                        self.module.add_function(
+                            rt,
+                            self.ctx.f64_type().fn_type(&[ptrt.into(), i64t.into(), i64t.into(), i64t.into()], false),
+                            None,
+                        )
+                    }
+                };
+                let call = self.builder.build_call(f, &vals, "nth").expect("LLVM builder error");
+                if held {
+                    let ty = self.concrete(&args[0].ty, subst);
+                    self.emit_release(b, &ty);
+                }
+                Ok(match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Some(v),
+                    _ => unreachable!("a float"),
+                })
+            }
             TK::Builtin { rt, args } if matches!(*rt, "rill_buf_sort" | "rill_buf_sort_range" | "rill_buf_argsort") => {
                 let mut vals: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
                 let mut held_bufs = Vec::new();

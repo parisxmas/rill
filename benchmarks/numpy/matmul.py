@@ -7,5 +7,5 @@ warm = a @ b
 t0 = time.perf_counter()
 c = a @ b
 t1 = time.perf_counter()
-print("%g" % np.trace(c)); print("%g" % c.sum()); print("%g" % np.trace(warm))
+print(repr(float(np.trace(c)))); print(repr(float(c.sum()))); print(repr(float(np.trace(warm))))
 print("ms=%.1f" % ((t1 - t0) * 1000))

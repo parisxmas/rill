@@ -3759,6 +3759,27 @@ pub unsafe extern "C" fn rill_buf_argsort(src: *const u8, dst: *mut u8) {
     free(pairs as *mut u8);
 }
 
+/// `buf_select_nth(b, lo, hi, k)`: the float that would be at `k` if the
+/// range from `lo` up to `hi` were sorted, with the range reordered around
+/// it — what is before it no greater, what is after no smaller — by core's
+/// introselect. Floats by their total order. The range and `k` are clamped.
+///
+/// # Safety
+/// `p` must be a live `Buf(Float)`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_select_nth(p: *mut u8, lo: i64, hi: i64, k: i64) -> f64 {
+    let len = *(p.sub(16) as *const i64).add(1);
+    let lo = lo.clamp(0, len);
+    let hi = hi.clamp(lo, len);
+    if lo == hi {
+        return f64::NAN;
+    }
+    let k = k.clamp(lo, hi - 1);
+    let s = core::slice::from_raw_parts_mut((p as *mut f64).add(lo as usize), (hi - lo) as usize);
+    let (_, v, _) = s.select_nth_unstable_by((k - lo) as usize, |a, b| a.total_cmp(b));
+    *v
+}
+
 type SortPair = [usize; 2];
 
 /// A stable merge sort of `n` pairs at `pairs`, using the `n` after them as

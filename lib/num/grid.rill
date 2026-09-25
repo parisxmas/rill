@@ -2270,12 +2270,13 @@ private fn close_elems(a: Grid, b: Grid, eps) =
 
 # -- reductions -------------------------------------------------------------
 
-# Reductions run eight partial sums side by side — a flat tuple, so eight
-# registers, which the compiler pairs into four vector lanes — and add them
-# at the end: one running sum is a chain of adds each waiting for the last,
-# eight are enough chains to keep the memory bus busy rather than the adder.
-# (The order of additions differs from one running sum, as NumPy's pairwise
-# summation differs from both; the answers agree to the last few bits.)
+# The sums are `fast fn`s: the compiler may split each into running sums
+# side by side, in the machine's vector lanes, and add them at the end — one
+# running sum is a chain of adds each waiting for the last. The eight partial
+# sums this used to write out by hand did the same, and were as fast or a
+# little slower (a thousand numbers: 101 ns, 68 now). The order of additions
+# differs from one running sum, as NumPy's pairwise summation differs from
+# both; the answers agree to the last few bits.
 #
 #     g.sum(g.arange(5))   # => 10
 fn sum(g: Grid) =
@@ -2285,15 +2286,9 @@ fn sum(g: Grid) =
 
 private fn fadd(a, b) = a + b
 
-private fn sum_range(d: Buf(Float), lo, hi) =
-  octs = (hi - lo) / 8
-  (s0, s1, s2, s3, s4, s5, s6, s7) = for k in 0..octs with acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    (p0, p1, p2, p3, p4, p5, p6, p7) = acc
-    o = lo + 8 * k
-    (p0 + d[o], p1 + d[o + 1], p2 + d[o + 2], p3 + d[o + 3], p4 + d[o + 4], p5 + d[o + 5], p6 + d[o + 6], p7 + d[o + 7])
-  tail = for k in lo + octs * 8..hi with acc = 0.0
+private fast fn sum_range(d: Buf(Float), lo, hi) =
+  for k in lo..hi with acc = 0.0
     acc + d[k]
-  s0 + s1 + (s2 + s3) + (s4 + s5 + (s6 + s7)) + tail
 
 #     g.mean(g.arange(5))   # => 2
 fn mean(g: Grid) = sum(g) / to_float(size(g))
@@ -2316,17 +2311,9 @@ fn dot(a: Grid, b: Grid) =
     if par(n) then reduce_f(n, \lo, hi -> dot_range(d, 0, e, 0, lo, hi), fadd) else dot_range(d, 0, e, 0, 0, n)
 
 # The sum of `d[doff + k] * e[eoff + k]` for k in lo up to hi.
-private fn dot_range(d: Buf(Float), doff, e: Buf(Float), eoff, lo, hi) =
-  octs = (hi - lo) / 8
-  (s0, s1, s2, s3, s4, s5, s6, s7) = for k in 0..octs with acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    (p0, p1, p2, p3, p4, p5, p6, p7) = acc
-    o = lo + 8 * k
-    a = doff + o
-    b = eoff + o
-    (p0 + d[a] * e[b], p1 + d[a + 1] * e[b + 1], p2 + d[a + 2] * e[b + 2], p3 + d[a + 3] * e[b + 3], p4 + d[a + 4] * e[b + 4], p5 + d[a + 5] * e[b + 5], p6 + d[a + 6] * e[b + 6], p7 + d[a + 7] * e[b + 7])
-  tail = for k in lo + octs * 8..hi with acc = 0.0
+private fast fn dot_range(d: Buf(Float), doff, e: Buf(Float), eoff, lo, hi) =
+  for k in lo..hi with acc = 0.0
     acc + d[doff + k] * e[eoff + k]
-  s0 + s1 + (s2 + s3) + (s4 + s5 + (s6 + s7)) + tail
 
 #     g.norm(g.of(Cons(3.0, Cons(4.0, Nil))))   # => 5
 fn norm(g: Grid) = sqrt(dot(g, g))
@@ -2335,9 +2322,10 @@ private fn fmax(a, b) = if a > b then a else b
 
 private fn fmin(a, b) = if a < b then a else b
 
-# The largest and smallest, eight lanes at a time for the same reason as
-# `sum`; a comparison is not an addition, so the eight agree exactly with
-# one.
+# The largest and smallest, eight lanes at a time, written out: eight chains
+# of comparisons instead of one keep the loop from waiting on itself, and a
+# `fast fn` would not do it here — what it loosens is addition, and a
+# comparison is not one. The eight agree exactly with one.
 #
 #     g.gmax(g.of(Cons(2.0, Cons(9.0, Cons(4.0, Nil)))))   # => 9
 fn gmax(g: Grid) =
@@ -2440,24 +2428,10 @@ fn var(g: Grid) =
   total / to_float(n)
 
 # The sum of squared distances from `m`.
-private fn sqdev_range(d: Buf(Float), m, lo, hi) =
-  octs = (hi - lo) / 8
-  (s0, s1, s2, s3, s4, s5, s6, s7) = for k in 0..octs with acc = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    (p0, p1, p2, p3, p4, p5, p6, p7) = acc
-    o = lo + 8 * k
-    d0 = d[o] - m
-    d1 = d[o + 1] - m
-    d2 = d[o + 2] - m
-    d3 = d[o + 3] - m
-    d4 = d[o + 4] - m
-    d5 = d[o + 5] - m
-    d6 = d[o + 6] - m
-    d7 = d[o + 7] - m
-    (p0 + d0 * d0, p1 + d1 * d1, p2 + d2 * d2, p3 + d3 * d3, p4 + d4 * d4, p5 + d5 * d5, p6 + d6 * d6, p7 + d7 * d7)
-  tail = for k in lo + octs * 8..hi with acc = 0.0
+private fast fn sqdev_range(d: Buf(Float), m, lo, hi) =
+  for k in lo..hi with acc = 0.0
     dd = d[k] - m
     acc + dd * dd
-  s0 + s1 + (s2 + s3) + (s4 + s5 + (s6 + s7)) + tail
 
 #     g.std(g.of(Cons(2.0, Cons(4.0, Cons(4.0, Cons(6.0, Nil))))))   # => 1.4142135623730951
 fn std(g: Grid) = sqrt(var(g))
@@ -2681,8 +2655,12 @@ fn count_nonzero(g: Grid) =
   for k in 0..size(g) with c = 0
     if x.data[k] != 0.0 then c + 1 else c
 
-# The middle value, and the value a fraction of the way along — both from a
-# sorted copy, and both interpolating between neighbours the way NumPy does.
+# The middle value, and the value a fraction of the way along, interpolating
+# between neighbours the way NumPy does. Neither sorts: the runtime selects
+# the one below in a copy (core's introselect, linear on average, which is
+# what NumPy's `median` does too), and the one above is the least of what
+# the selection left after it. Five million numbers: 12 ms by two
+# quickselects written here, 7 now, NumPy 8.
 #
 #     g.median(g.of(Cons(3.0, Cons(1.0, Cons(2.0, Nil)))))              # => 2
 #     g.median(g.of(Cons(4.0, Cons(1.0, Cons(2.0, Cons(3.0, Nil))))))   # => 2.5
@@ -2700,61 +2678,11 @@ fn quantile(g: Grid, q) =
   pos = q * to_float(n - 1)
   lo = to_int(floor(pos))
   frac = pos - to_float(lo)
-  a = select_nth(d, 0, n, lo)
-  b = if lo + 1 < n then select_nth(d, lo + 1, n, lo + 1) else a
+  a = buf_select_nth(d, 0, n, lo)
+  # everything after `lo` is no smaller now, so the next one up is the
+  # least of them: a scan, not a second selection
+  b = if lo + 1 < n then min_range(d, lo + 1, n) else a
   a + frac * (b - a)
-
-# The partition `select_nth` carries on into.
-private fn insertion_sort(d: Buf(Float), lo, hi) =
-  for i in lo + 1..hi
-    v = d[i]
-    d[shift_up(d, lo, i - 1, v)] = v
-  0
-
-private fn shift_up(d: Buf(Float), lo, j, v) =
-  if j >= lo && d[j] > v then
-    d[j + 1] = d[j]
-    shift_up(d, lo, j - 1, v)
-  else j + 1
-
-# Hoare's partition over the inclusive range: everything at or below what
-# comes back is no greater than everything above it.
-private fn hoare(d: Buf(Float), lo, hi) =
-  mid = lo + (hi - lo) / 2
-  eighth = (hi - lo) / 8
-  pivot = if hi - lo > 512 then med3(med3(d[lo], d[lo + eighth], d[lo + 2 * eighth]), med3(d[mid - eighth], d[mid], d[mid + eighth]), med3(d[hi - 2 * eighth], d[hi - eighth], d[hi])) else med3(d[lo], d[mid], d[hi])
-  fn up(i) = if d[i] < pivot then up(i + 1) else i
-  fn down(j) = if d[j] > pivot then down(j - 1) else j
-  fn step(i, j) =
-    a = up(i + 1)
-    b = down(j - 1)
-    if a >= b then b
-    else
-      swap(d, a, b)
-      step(a, b)
-  step(lo - 1, hi + 1)
-
-private fn med3(a, b, c) =
-  if a < b then
-    if b < c then b else if a < c then c else a
-  else if a < c then a else if b < c then c else b
-
-private fn swap(d: Buf(Float), i, j) =
-  t = d[i]
-  d[i] = d[j]
-  d[j] = t
-
-# The k-th smallest, by partitioning around a pivot and carrying on into
-# whichever side holds it. Linear on average, where sorting the lot is not,
-# which is what NumPy's `median` and `percentile` do too. It reorders the
-# range it is given, so callers hand it a copy.
-private fn select_nth(d: Buf(Float), lo, hi, k) =
-  if hi - lo < 16 then
-    insertion_sort(d, lo, hi)
-    d[k]
-  else
-    j = hoare(d, lo, hi - 1)
-    if k <= j then select_nth(d, lo, j + 1, k) else select_nth(d, j + 1, hi, k)
 
 # The distance from the smallest to the largest.
 #
