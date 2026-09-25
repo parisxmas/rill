@@ -1,0 +1,24 @@
+# A `for` loop checks `v[i]` once, in front, for the whole range — but only
+# an access every trip is sure to make. One the body guards (`i < #v &&
+# v[i] > 0`, a branch, an arm) used to be checked in front too, and the
+# program died on an index it never read (2026-09-25).
+
+fn main() =
+  v = buf_int(3)
+  v[2] = 5
+  a = for i in 0..10 with acc = 0
+    if i < #v && v[i] > 0 then acc + 1 else acc
+  println(a)
+  b = for i in 0..10 with acc = 0
+    if i >= 3 then acc else acc + v[i]
+  println(b)
+  c = for i in 0..10 with acc = 0
+    match i
+      _ if i < #v -> acc + v[i] + 1
+      _ -> acc
+  println(c)
+  # an access on every trip is still checked in front, and still dies
+  d = for i in 0..3 with acc = 0
+    acc + v[i]
+  println(d)
+  0

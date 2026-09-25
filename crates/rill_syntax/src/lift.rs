@@ -571,7 +571,55 @@ fn collect_indexes(
         }
         _ => {}
     }
-    each_child_all(e, &mut |c| collect_indexes(c, var, bound, plain, affine));
+    // Only what every trip round the loop is sure to reach: the check in
+    // front stands in for all of them, so an access the body guards —
+    // `if i < #v && v[i] > 0`, an arm, a lambda, a loop that may run no
+    // times, anything after a `?` — would die in front on an index the
+    // program never reads (2026-09-25).
+    match e {
+        Expr::If { cond, .. } => collect_indexes(cond, var, bound, plain, affine),
+        Expr::Match { scrutinee, .. } => collect_indexes(scrutinee, var, bound, plain, affine),
+        Expr::Lambda { .. } | Expr::Spawn { .. } | Expr::Select { .. } => {}
+        Expr::For { from, to, acc, .. } => {
+            collect_indexes(from, var, bound, plain, affine);
+            collect_indexes(to, var, bound, plain, affine);
+            if let Some((_, init)) = acc {
+                collect_indexes(init, var, bound, plain, affine);
+            }
+        }
+        Expr::While { acc, .. } => {
+            if let Some((_, init)) = acc {
+                collect_indexes(init, var, bound, plain, affine);
+            }
+        }
+        Expr::Block(stmts) => {
+            for st in stmts {
+                let value = match st {
+                    Stmt::Bind { value, .. } | Stmt::PatBind { value, .. } => value,
+                    Stmt::Expr(x) => x,
+                    Stmt::Fn(_) => continue,
+                };
+                collect_indexes(value, var, bound, plain, affine);
+                if has_try(value) {
+                    break;
+                }
+            }
+        }
+        _ => each_child_all(e, &mut |c| collect_indexes(c, var, bound, plain, affine)),
+    }
+}
+
+/// Whether a `?` in `e` can leave before what follows it runs.
+fn has_try(e: &Expr) -> bool {
+    if matches!(e, Expr::Try { .. }) {
+        return true;
+    }
+    if matches!(e, Expr::Lambda { .. } | Expr::Spawn { .. }) {
+        return false;
+    }
+    let mut found = false;
+    each_child_all(e, &mut |c| found = found || has_try(c));
+    found
 }
 
 /// Dotted names — `g.data` — used as the base of an index anywhere in the
@@ -1291,59 +1339,46 @@ fn hoist(e: Expr, pre: &mut Vec<Stmt>, n: &mut usize, top: bool) -> Result<Expr,
             });
             Expr::Var(name, line)
         }
-        Expr::Call { name, args, line, piped, stacked } => Expr::Call {
-            name,
-            args: args
-                .into_iter()
-                .map(|a| hoist(a, pre, n, false))
-                .collect::<Result<Vec<_>, _>>()?,
-            line,
-            piped,
-            stacked,
-        },
+        Expr::Call { name, args, line, piped, stacked } => {
+            Expr::Call { name, args: hoist_ops(args, pre, n)?, line, piped, stacked }
+        }
         Expr::Unary { op, expr } => {
             Expr::Unary { op, expr: Box::new(hoist(*expr, pre, n, false)?) }
         }
         // Every binary operator runs both sides: `&&` and `||` are not among
         // them, having been an `if` since the parser.
         Expr::Binary { op, lhs, rhs, line, newline } => {
-            Expr::Binary {
-                op,
-                lhs: Box::new(hoist(*lhs, pre, n, false)?),
-                rhs: Box::new(hoist(*rhs, pre, n, false)?),
-                line,
-                newline,
-            }
+            let [lhs, rhs] = take2(hoist_ops(vec![*lhs, *rhs], pre, n)?);
+            Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs), line, newline }
         }
         Expr::Len { expr, line } => {
             Expr::Len { expr: Box::new(hoist(*expr, pre, n, false)?), line }
         }
-        Expr::Index { base, index, line } => Expr::Index {
-            base: Box::new(hoist(*base, pre, n, false)?),
-            index: Box::new(hoist(*index, pre, n, false)?),
-            line,
-        },
+        Expr::Index { base, index, line } => {
+            let [base, index] = take2(hoist_ops(vec![*base, *index], pre, n)?);
+            Expr::Index { base: Box::new(base), index: Box::new(index), line }
+        }
         Expr::Field { base, name, line } => {
             Expr::Field { base: Box::new(hoist(*base, pre, n, false)?), name, line }
         }
-        Expr::IndexSet { base, index, value, line } => Expr::IndexSet {
-            base: Box::new(hoist(*base, pre, n, false)?),
-            index: Box::new(hoist(*index, pre, n, false)?),
-            value: Box::new(hoist(*value, pre, n, false)?),
-            line,
-        },
-        Expr::IndexOp { op, base, index, value, line } => Expr::IndexOp {
-            op,
-            base: Box::new(hoist(*base, pre, n, false)?),
-            index: Box::new(hoist(*index, pre, n, false)?),
-            value: Box::new(hoist(*value, pre, n, false)?),
-            line,
-        },
-        Expr::Append { target, value, line } => Expr::Append {
-            target: Box::new(hoist(*target, pre, n, false)?),
-            value: Box::new(hoist(*value, pre, n, false)?),
-            line,
-        },
+        Expr::IndexSet { base, index, value, line } => {
+            let [base, index, value] = take3(hoist_ops(vec![*base, *index, *value], pre, n)?);
+            Expr::IndexSet { base: Box::new(base), index: Box::new(index), value: Box::new(value), line }
+        }
+        Expr::IndexOp { op, base, index, value, line } => {
+            let [base, index, value] = take3(hoist_ops(vec![*base, *index, *value], pre, n)?);
+            Expr::IndexOp {
+                op,
+                base: Box::new(base),
+                index: Box::new(index),
+                value: Box::new(value),
+                line,
+            }
+        }
+        Expr::Append { target, value, line } => {
+            let [target, value] = take2(hoist_ops(vec![*target, *value], pre, n)?);
+            Expr::Append { target: Box::new(target), value: Box::new(value), line }
+        }
         Expr::Slice { base, from, to, line } => Expr::Slice {
             base: Box::new(hoist(*base, pre, n, false)?),
             from: match from {
@@ -1377,6 +1412,65 @@ fn hoist(e: Expr, pre: &mut Vec<Stmt>, n: &mut usize, top: bool) -> Result<Expr,
             other
         }
     })
+}
+
+/// Operands evaluated left to right, one of which holds a `?`: the `?` is
+/// named in front of the statement, so everything written before it is
+/// named in front of it first — or `f(a(), g()?)` would run `g` before `a`,
+/// and not run `a` at all when `g` fails (2026-09-25). A name or a literal
+/// reads the same either way and stays where it is.
+fn hoist_ops(ops: Vec<Expr>, pre: &mut Vec<Stmt>, n: &mut usize) -> Result<Vec<Expr>, SyntaxError> {
+    let last_try = ops.iter().rposition(holds_try);
+    let mut out = Vec::with_capacity(ops.len());
+    for (i, e) in ops.into_iter().enumerate() {
+        let e = hoist(e, pre, n, false)?;
+        if last_try.is_some_and(|t| i < t) && !is_simple(&e) {
+            let name = format!("try.{n}");
+            *n += 1;
+            let line = expr_line(&e);
+            pre.push(Stmt::Bind { name: name.clone(), value: e, line });
+            out.push(Expr::Var(name, line));
+        } else {
+            out.push(e);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a `?` somewhere in `e` would be named in front of its statement.
+fn holds_try(e: &Expr) -> bool {
+    if matches!(e, Expr::Try { .. }) {
+        return true;
+    }
+    if matches!(e, Expr::Block(_) | Expr::Lambda { .. } | Expr::Spawn { .. }) {
+        return false;
+    }
+    let mut found = false;
+    each_child(e, &mut |c| found = found || holds_try(c));
+    found
+}
+
+fn expr_line(e: &Expr) -> usize {
+    match e {
+        Expr::Var(_, l) => *l,
+        Expr::Call { line, .. }
+        | Expr::Binary { line, .. }
+        | Expr::Match { line, .. }
+        | Expr::Index { line, .. }
+        | Expr::Field { line, .. }
+        | Expr::Try { line, .. }
+        | Expr::Slice { line, .. }
+        | Expr::Len { line, .. } => *line,
+        _ => 0,
+    }
+}
+
+fn take2(v: Vec<Expr>) -> [Expr; 2] {
+    v.try_into().unwrap_or_else(|_| unreachable!("two operands"))
+}
+
+fn take3(v: Vec<Expr>) -> [Expr; 3] {
+    v.try_into().unwrap_or_else(|_| unreachable!("three operands"))
 }
 
 /// A `?` left where nothing can be done with it. Blocks are not walked into:

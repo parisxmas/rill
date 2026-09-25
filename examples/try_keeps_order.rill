@@ -1,0 +1,23 @@
+# `?` inside an expression is named in front of its statement, and what is
+# written before it in the same expression is named in front of it first:
+# `add3(a(), g()?, c())` ran `g` before `a`, and skipped `a` altogether
+# when `g` failed (2026-09-25). Every call prints its tag as it runs.
+
+fn noisy(tag, r) =
+  println(tag)
+  r
+
+fn add3(a, b, c) = a + b + c
+
+fn t1() = Ok(add3(noisy("a", 1), noisy("b", Ok(2))?, noisy("c", 3)))
+
+fn t2() -> Result(Int, Str) = Ok(noisy("a", 1) + noisy("b", Err("bail"))?)
+
+fn show_it(r) = match r
+  Ok(v) -> println("ok " + int_to_str(v))
+  Err(e) -> println("err " + e)
+
+fn main() =
+  show_it(t1())
+  show_it(t2())
+  0
