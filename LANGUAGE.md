@@ -1746,6 +1746,7 @@ program in the project, imported by path and usually under a name:
 | `import "db/pg" as pg` | PostgreSQL through libpq: a connection string, queries with `$1` parameters, a result as a table of rows, prepared statements, transactions |
 | `import "crypto/sha1"`, `"passwd"` | SHA-1 and base64; storing a password so it cannot be read back |
 | `import "crypto/sha2" as sha` | SHA-256 and SHA-512, HMAC over each, a tag compared in constant time |
+| `import "crypto/ed25519" as ed` | Ed25519 signature verification (RFC 8032): `ed.verify(pk, msg, sig)` |
 | `import "data/checksum" as ck` | CRC-32 and Adler-32, whole or in pieces |
 | `import "data/csv" as csv` | CSV as RFC 4180 has it, read to rows or records and written back |
 | `import "data/deflate" as z` | DEFLATE both ways, and gzip and zlib around it |

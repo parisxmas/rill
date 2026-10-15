@@ -1,0 +1,372 @@
+module ed25519
+
+# Ed25519 signature verification (RFC 8032), written in Rill: a signer holds
+# a 32-byte secret and publishes a 32-byte public key; anyone with the key can
+# check a 64-byte signature over a message, and nobody without the secret can
+# make one. Keys, messages and signatures are raw bytes in a `Str`.
+#
+# The arithmetic follows TweetNaCl: a field element mod 2^255 - 19 is sixteen
+# 16-bit limbs in a `Buf(Int)`, products are schoolbook with the high half
+# folded back times 38, and carries are propagated twice. Rill's `shr` is
+# logical, so the carries that can be negative go through `asr`.
+#
+#     # not run
+#     ed25519.verify(pk, msg, sig)   # true when sig is pk's signature over msg
+import "crypto/sha2" as sha
+
+# -- field elements -----------------------------------------------------------
+
+private fn gf() = buf_int(16)
+
+private fn gf_of(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15) =
+  o = gf()
+  o[0] = a0
+  o[1] = a1
+  o[2] = a2
+  o[3] = a3
+  o[4] = a4
+  o[5] = a5
+  o[6] = a6
+  o[7] = a7
+  o[8] = a8
+  o[9] = a9
+  o[10] = a10
+  o[11] = a11
+  o[12] = a12
+  o[13] = a13
+  o[14] = a14
+  o[15] = a15
+  o
+
+private fn gf0() = gf()
+
+private fn gf1() = gf_of(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+private fn cd() =
+  gf_of(30883, 4953, 19914, 30187, 55467, 16705, 2637, 112, 59544, 30585, 16505, 36039, 65139, 11119, 27886, 20995)
+
+private fn cd2() =
+  gf_of(61785, 9906, 39828, 60374, 45398, 33411, 5274, 224, 53552, 61171, 33010, 6542, 64743, 22239, 55772, 9222)
+
+private fn cx() =
+  gf_of(54554, 36645, 11616, 51542, 42930, 38181, 51040, 26924, 56412, 64982, 57905, 49316, 21502, 52590, 14035, 8553)
+
+private fn cy() =
+  gf_of(26200, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214, 26214)
+
+private fn ci() =
+  gf_of(41136, 18958, 6951, 50414, 58488, 44335, 6150, 12099, 55207, 15867, 153, 11085, 57099, 20417, 9344, 11139)
+
+# arithmetic shift right (floor division by 2^n), for values that may be negative
+private fn asr(x, n) = if x >= 0 then shr(x, n) else bit_not(shr(bit_not(x), n))
+
+private fn set(o: Buf(Int), a: Buf(Int)) = for i in 0..16
+  o[i] = a[i]
+
+private fn car(o: Buf(Int)) = for i in 0..16
+  o[i] += 65536
+  c = asr(o[i], 16)
+  o[if i < 15 then i + 1 else 0] += (c - 1) * (if i < 15 then 1 else 38)  # the top carry wraps round times 38
+  o[i] -= shl(c, 16)
+
+# swaps p and q when b is 1, in the same time either way
+private fn sel(p: Buf(Int), q: Buf(Int), b) =
+  c = bit_not(b - 1)
+  for i in 0..16
+    t = bit_and(c, bit_xor(p[i], q[i]))
+    p[i] = bit_xor(p[i], t)
+    q[i] = bit_xor(q[i], t)
+
+private fn pack25519(n: Buf(Int)) =
+  t = gf()
+  m = gf()
+  set(t, n)
+  car(t)
+  car(t)
+  car(t)
+  for j in 0..2
+    m[0] = t[0] - 65517
+    for i in 1..15
+      m[i] = t[i] - 65535 - bit_and(asr(m[i - 1], 16), 1)
+      m[i - 1] = bit_and(m[i - 1], 65535)
+    m[15] = t[15] - 32767 - bit_and(asr(m[14], 16), 1)
+    b = bit_and(asr(m[15], 16), 1)
+    m[14] = bit_and(m[14], 65535)
+    sel(t, m, 1 - b)
+  out = buf_u8(32)
+  for i in 0..16
+    out[2 * i] = bit_and(t[i], 255)
+    out[2 * i + 1] = bit_and(shr(t[i], 8), 255)
+  str_from_buf(out)
+
+private fn neq(a: Buf(Int), b: Buf(Int)) = !sha.same(pack25519(a), pack25519(b))
+
+private fn par(a: Buf(Int)) = bit_and(pack25519(a)[0], 1)
+
+private fn unpack25519(o: Buf(Int), n) =
+  for i in 0..16
+    o[i] = n[2 * i] + shl(n[2 * i + 1], 8)
+  o[15] = bit_and(o[15], 32767)
+
+private fn fadd(o: Buf(Int), a: Buf(Int), b: Buf(Int)) = for i in 0..16
+  o[i] = a[i] + b[i]
+
+private fn fsub(o: Buf(Int), a: Buf(Int), b: Buf(Int)) = for i in 0..16
+  o[i] = a[i] - b[i]
+
+private fn fmul(o: Buf(Int), a: Buf(Int), b: Buf(Int)) =
+  t = buf_int(31)
+  for i in 0..31
+    t[i] = 0
+  for i in 0..16
+    for j in 0..16
+      t[i + j] += a[i] * b[j]
+  for i in 0..15
+    t[i] += 38 * t[i + 16]
+  for i in 0..16
+    o[i] = t[i]
+  car(o)
+  car(o)
+
+private fn fsq(o: Buf(Int), a: Buf(Int)) = fmul(o, a, a)
+
+private fn inv25519(o: Buf(Int), x: Buf(Int)) =
+  c = gf()
+  set(c, x)
+  for k in 0..254
+    a = 253 - k
+    fsq(c, c)
+    if a != 2 && a != 4 then fmul(c, c, x) else ()
+  set(o, c)
+
+private fn pow2523(o: Buf(Int), x: Buf(Int)) =
+  c = gf()
+  set(c, x)
+  for k in 0..251
+    a = 250 - k
+    fsq(c, c)
+    if a != 1 then fmul(c, c, x) else ()
+  set(o, c)
+
+# -- points (extended coordinates X, Y, Z, T) ----------------------------------
+
+type Pt
+  Pt(px: Buf(Int), py: Buf(Int), pz: Buf(Int), pt: Buf(Int))  # (named apart from other libraries' x, y, z records)
+
+private fn point() = Pt(gf(), gf(), gf(), gf())
+
+private fn padd(p, q) =
+  a = gf()
+  b = gf()
+  c = gf()
+  d = gf()
+  t = gf()
+  e = gf()
+  f = gf()
+  g = gf()
+  h = gf()
+  fsub(a, p.py, p.px)
+  fsub(t, q.py, q.px)
+  fmul(a, a, t)
+  fadd(b, p.px, p.py)
+  fadd(t, q.px, q.py)
+  fmul(b, b, t)
+  fmul(c, p.pt, q.pt)
+  fmul(c, c, cd2())
+  fmul(d, p.pz, q.pz)
+  fadd(d, d, d)
+  fsub(e, b, a)
+  fsub(f, d, c)
+  fadd(g, d, c)
+  fadd(h, b, a)
+  fmul(p.px, e, f)
+  fmul(p.py, h, g)
+  fmul(p.pz, g, f)
+  fmul(p.pt, e, h)
+
+private fn cswap(p: Pt, q: Pt, b) =
+  sel(p.px, q.px, b)
+  sel(p.py, q.py, b)
+  sel(p.pz, q.pz, b)
+  sel(p.pt, q.pt, b)
+
+private fn pack(p) =
+  tx = gf()
+  ty = gf()
+  zi = gf()
+  inv25519(zi, p.pz)
+  fmul(tx, p.px, zi)
+  fmul(ty, p.py, zi)
+  r = pack25519(ty)
+  out = buf_u8(32)
+  for i in 0..32
+    out[i] = r[i]
+  out[31] = bit_xor(out[31], shl(par(tx), 7))
+  str_from_buf(out)
+
+# p = s * q; s is 32 little-endian bytes
+private fn scalarmult(p, q, s) =
+  set(p.px, gf0())
+  set(p.py, gf1())
+  set(p.pz, gf1())
+  set(p.pt, gf0())
+  for k in 0..256
+    i = 255 - k
+    b = bit_and(shr(s[i / 8], bit_and(i, 7)), 1)
+    cswap(p, q, b)
+    padd(q, p)
+    padd(p, p)
+    cswap(p, q, b)
+
+private fn scalarbase(p, s) =
+  q = point()
+  set(q.px, cx())
+  set(q.py, cy())
+  set(q.pz, gf1())
+  fmul(q.pt, cx(), cy())
+  scalarmult(p, q, s)
+
+# the point a public key encodes, negated; None when the bytes are not a point
+private fn unpackneg(r, pk) =
+  t = gf()
+  chk = gf()
+  num = gf()
+  den = gf()
+  den2 = gf()
+  den4 = gf()
+  den6 = gf()
+  set(r.pz, gf1())
+  unpack25519(r.py, pk)
+  fsq(num, r.py)
+  fmul(den, num, cd())
+  fsub(num, num, r.pz)
+  fadd(den, r.pz, den)
+  fsq(den2, den)
+  fsq(den4, den2)
+  fmul(den6, den4, den2)
+  fmul(t, den6, num)
+  fmul(t, t, den)
+  pow2523(t, t)
+  fmul(t, t, num)
+  fmul(t, t, den)
+  fmul(t, t, den)
+  fmul(r.px, t, den)
+  fsq(chk, r.px)
+  fmul(chk, chk, den)
+  if neq(chk, num) then fmul(r.px, r.px, ci()) else ()
+  fsq(chk, r.px)
+  fmul(chk, chk, den)
+  if neq(chk, num) then false
+  else
+    if par(r.px) == shr(pk[31], 7) then fsub(r.px, gf0(), r.px) else ()
+    fmul(r.pt, r.px, r.py)
+    true
+
+# -- scalars mod L = 2^252 + 27742317777372353535851937790883648493 -------------
+
+private fn ll() =
+  l = buf_int(32)
+  for i in 0..32
+    l[i] = 0
+  l[0] = 237
+  l[1] = 211
+  l[2] = 245
+  l[3] = 92
+  l[4] = 26
+  l[5] = 99
+  l[6] = 18
+  l[7] = 88
+  l[8] = 214
+  l[9] = 156
+  l[10] = 247
+  l[11] = 162
+  l[12] = 222
+  l[13] = 249
+  l[14] = 222
+  l[15] = 20
+  l[31] = 16
+  l
+
+# a 64-byte hash reduced mod L, as 32 little-endian bytes
+private fn reduce(h) =
+  l = ll()
+  x = buf_int(64)
+  for i in 0..64
+    x[i] = h[i]
+  for k in 0..32
+    i = 63 - k
+    carry = for j in i - 32..i - 12 with carry = 0
+      x[j] += carry - 16 * x[i] * l[j - (i - 32)]
+      c = asr(x[j] + 128, 8)
+      x[j] -= shl(c, 8)
+      c
+    x[i - 12] += carry
+    x[i] = 0
+  carry = for j in 0..32 with carry = 0
+    x[j] += carry - asr(x[31], 4) * l[j]
+    c = asr(x[j], 8)
+    x[j] = bit_and(x[j], 255)
+    c
+  for j in 0..32
+    x[j] -= carry * l[j]
+  out = buf_u8(32)
+  for i in 0..32
+    x[i + 1] += asr(x[i], 8)
+    out[i] = bit_and(x[i], 255)
+  str_from_buf(out)
+
+# -- verifying ------------------------------------------------------------------
+
+# Whether sig (64 bytes) is the signature of msg under the public key pk
+# (32 bytes). A key that is not a point, or a signature of the wrong length,
+# is simply not valid.
+fn verify(pk, msg, sig) =
+  if #pk != 32 || #sig != 64 then false
+  else
+    q = point()
+    if !unpackneg(q, pk) then false
+    else
+      rr = str_sub(sig, 0, 32)
+      h = reduce(sha.sha512(rr + pk + msg))
+      p = point()
+      scalarmult(p, q, h)
+      scalarbase(q, str_sub(sig, 32, 32))
+      padd(p, q)
+      sha.same(pack(p), rr)
+
+# -- tests (RFC 8032, section 7.1) ------------------------------------------------
+
+import "text/str" as s
+
+private fn unhex(h) = match s.hex_decode(h)
+  Some(b) -> b
+  None -> ""
+
+fn test_rfc8032_empty_message() =
+  pk = unhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+  sig = unhex("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+  assert(verify(pk, "", sig))
+
+fn test_rfc8032_one_byte() =
+  pk = unhex("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
+  sig = unhex("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")
+  assert(verify(pk, unhex("72"), sig))
+
+fn test_rfc8032_two_bytes() =
+  pk = unhex("fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025")
+  sig = unhex("6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a")
+  assert(verify(pk, unhex("af82"), sig))
+
+fn test_rejects_a_changed_message() =
+  pk = unhex("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
+  sig = unhex("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")
+  assert(!verify(pk, unhex("73"), sig))
+
+fn test_rejects_a_changed_signature() =
+  pk = unhex("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c")
+  sig = unhex("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c01")
+  assert(!verify(pk, unhex("72"), sig))
+
+fn test_rejects_wrong_lengths() =
+  assert(!verify("short", "", repeat(chr(0), 64)))
+  assert(!verify(repeat(chr(0), 32), "", "short"))
