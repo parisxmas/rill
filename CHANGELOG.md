@@ -5,6 +5,14 @@
 A review of the compiler, the runtime and twenty-odd new workloads against
 C turned up, and this fixes:
 
+- **A loop that carries nothing is worth `()`.** A `for` or `while`
+  without `with` was worth `0`, so a block or a branch ending in one was an
+  `Int`, and `if c then for … else ()` was refused — the libraries had
+  grown a `0` after their loops and an `else 0` beside them to agree. It is
+  `Unit` now, as a statement is. **Breaking:** code that leaned on the `0`
+  — an `else 0` beside a loop, a `Render` impl answering `0` — writes `()`;
+  `web/tmpl`'s `Render` and `Raw` answer `Unit`, `tools/tmplgen.rill`
+  emits `()`, and `db/kv`, `num/grid` and `text/regex` are changed to match.
 - **Wrong results and memory safety.** A branch that rebound an outer
   value (`y = x`) released it twice — a crash on the other branch. A local
   `fn` read its captured names where it was called, not where it was

@@ -13,13 +13,13 @@ fn catalogue_form(b: StrBuf, v: View) =
   render(b, v.sku)
   b += "\" placeholder=\"a number\"></label>\n      <label>sort by<select name=\"by\">\n        "
   fn each0(l0, i0) = match l0
-    Nil -> 0
+    Nil -> ()
     Cons(o, rest0) ->
       b += "<option"
       if o.on then
         b += " selected"
-        0
-      else 0
+        ()
+      else ()
       b += ">"
       render(b, o.name)
       b += "</option>"
@@ -27,13 +27,13 @@ fn catalogue_form(b: StrBuf, v: View) =
   each0(v.bys, 0)
   b += "\n      </select></label>\n      <label>order<select name=\"dir\">\n        "
   fn each1(l1, i1) = match l1
-    Nil -> 0
+    Nil -> ()
     Cons(o, rest1) ->
       b += "<option"
       if o.on then
         b += " selected"
-        0
-      else 0
+        ()
+      else ()
       b += ">"
       render(b, o.name)
       b += "</option>"
@@ -42,4 +42,4 @@ fn catalogue_form(b: StrBuf, v: View) =
   b += "\n      </select></label>\n      <label>limit<input name=\"limit\" value=\""
   render(b, v.limit)
   b += "\" placeholder=\"per page\"></label>\n      <button type=\"submit\">search</button>\n    </form>\n"
-  0
+  ()

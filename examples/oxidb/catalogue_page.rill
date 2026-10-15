@@ -19,10 +19,10 @@ fn catalogue_page(b: StrBuf, v: View) =
     b += "\n    <p class=\"bad\">"
     render(b, v.trouble)
     b += "</p>\n    "
-    0
+    ()
   else if v.total == 0 then
     b += "\n    <p>nothing matches</p>\n    "
-    0
+    ()
   else
     b += "\n    <p><b>"
     render(b, grouped(v.total))
@@ -35,17 +35,17 @@ fn catalogue_page(b: StrBuf, v: View) =
     b += " of "
     render(b, grouped(v.pages))
     b += "</p>\n    "
-    0
+    ()
   b += "\n    "
   if len(v.rows) > 0 then
     b += "\n"
     catalogue_table(b, v.rows)
     b += "    "
-    0
-  else 0
+    ()
+  else ()
   b += "\n"
   catalogue_nav(b, v.steps)
   b += "    </div>\n    <p class=\"note\">The same server answers <code>/count</code>, <code>/doc/&lt;sku&gt;</code>, <code>/find</code> and <code>/top</code> as JSON.</p>\n    <script type=\"application/json\" id=\"seed\">"
   raw(b, v.seed)
   b += "</script>\n    <script type=\"module\" src=\"/static/catalogue.js\"></script>\n  </body>\n</html>\n"
-  0
+  ()

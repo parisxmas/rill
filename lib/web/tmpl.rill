@@ -21,10 +21,9 @@ module tmpl
 # its `impl Render` says. The choice is made when the program is compiled,
 # not when the page is rendered.
 
-# The value a render answers with means nothing and every caller drops it.
-# A Rill `for` is worth zero, and these end in one.
+# A render answers with nothing: what it does is write into the builder.
 trait Render(a)
-  render(StrBuf, a) -> Int
+  render(StrBuf, a) -> Unit
 
 impl Render(Str)
   fn render(b, s) = esc_into(b, s)
@@ -35,27 +34,22 @@ impl Render(Str)
 impl Render(Int)
   fn render(b, n) =
     b += int_to_str(n)
-    0
 
 impl Render(Float)
   fn render(b, x) =
     b += float_to_str(x)
-    0
 
 impl Render(Bool)
   fn render(b, x) =
     b += bool_to_str(x)
-    0
 
 # What `<%! x %>` writes: the text as it stands, for a value that is already
 # markup. Nothing checks that claim, which is why it has a mark of its own.
 trait Raw(a)
-  raw(StrBuf, a) -> Int
+  raw(StrBuf, a) -> Unit
 
 impl Raw(Str)
-  fn raw(b, s) =
-    b += s
-    0
+  fn raw(b, s) = b += s
 
 # -- escaping ------------------------------------------------------------------
 
@@ -72,10 +66,9 @@ impl Raw(Str)
 fn esc_into(b: StrBuf, s) =
   n = #s
   k = first_special(s, 0, n)
-  if k >= n then
-    b += s
-    0
-  else esc_tail(b, s, k, n)
+  if k >= n
+    then b += s
+    else esc_tail(b, s, k, n)
 
 private fn esc_tail(b: StrBuf, s, k, n) =
   b += s[0:k]

@@ -13,4 +13,4 @@ fn big_table(b: StrBuf, table: Buf(Int), rows, cols) =
       b += "</td>\n        "
     b += "\n    </tr>\n    "
   b += "\n</table>\n"
-  0
+  ()

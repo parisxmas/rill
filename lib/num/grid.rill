@@ -2539,7 +2539,7 @@ private fn radix_sort(d: Buf(Float), lo, hi) =
   out = radix_passes(keys, tmp, cnt, n, 0)
   for i in 0..n
     poke_i64(d, lo + i, decode_key(out[i]))
-  0
+  ()
 
 private fn radix_passes(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n, p) =
   if p >= 8 then src
@@ -2560,7 +2560,7 @@ private fn radix_scatter(src: Buf(Int), dst: Buf(Int), cnt: Buf(Int), n, p) =
     b = bit_and(shr(v, sh), 255)
     dst[off[b]] = v
     off[b] = off[b] + 1
-  0
+  ()
 
 # The bits of a float, made to compare as unsigned integers do, and put
 # back again.
@@ -2578,7 +2578,7 @@ private fn sort_range(d: Buf(Float), lo, hi) =
   if hi - lo >= 200000 then radix_sort(d, lo, hi)
   else
     buf_sort_range(d, lo, hi)
-    0
+    ()
 
 # Where the elements would go if they were sorted, ties in the order they
 # were in. The runtime orders each number's bits beside its position — a
@@ -3021,7 +3021,7 @@ private fn swap_row_span(d: Buf(Float), n, i, j, c0, c1) =
     x = d[ri + c]
     d[ri + c] = d[rj + c]
     d[rj + c] = x
-  0
+  ()
 
 # The rows of the block, worked forwards through the unit lower triangle,
 # which turns the columns to the right of the block into their part of U.
@@ -3031,7 +3031,7 @@ private fn trsm_panel(d: Buf(Float), n, k, w) =
       f = d[i * n + t]
       for c in k + w..n
         d[i * n + c] = d[i * n + c] - f * d[t * n + c]
-  0
+  ()
 
 # `c -= a * b`, where all three sit inside bigger buffers: `coff`, `aoff`
 # and `boff` say where each starts and `cld`, `ald` and `bld` how wide the
@@ -3065,13 +3065,13 @@ private fn gemm_sub(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(F
       f = a[aoff + i * ald + t]
       for j in nc * 8..nn
         c[coff + i * cld + j] = c[coff + i * cld + j] - f * b[boff + t * bld + j]
-  0
+  ()
 
 private fn gemm_rows(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, kk, nc, lo, hi) =
   for bi in lo..hi
     for bj in 0..nc
       gemm_block(c, coff, cld, a, aoff, ald, b, boff, bld, kk, bi * 4, bj * 8)
-  0
+  ()
 
 private fn gemm_block(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf(Float), boff, bld, kk, i0, j0) =
   ar0 = aoff + i0 * ald
@@ -3110,7 +3110,7 @@ private fn gemm_block(c: Buf(Float), coff, cld, a: Buf(Float), aoff, ald, b: Buf
   f2_store(c, cr3 + 2, f2_load(c, cr3 + 2) - c31)
   f2_store(c, cr3 + 4, f2_load(c, cr3 + 4) - c32)
   f2_store(c, cr3 + 6, f2_load(c, cr3 + 6) - c33)
-  0
+  ()
 
 # The row at or below `k` with the largest number in column `k`.
 private fn pivot_row(d: Buf(Float), n, k) =
@@ -3122,7 +3122,7 @@ private fn swap_rows(d: Buf(Float), n, i, j) =
     t = d[i * n + c]
     d[i * n + c] = d[j * n + c]
     d[j * n + c] = t
-  0
+  ()
 
 # `x` such that `a x = b`, for a vector `b` or a matrix of them.
 #
@@ -3201,7 +3201,7 @@ private fn solve_cols(d: Buf(Float), o: Buf(Float), n, kc, j0, j1) =
         for j in j0..j1
           o[i * kc + j] = o[i * kc + j] - fct * o[t * kc + j]
     gemm_sub(o, j0, kc, d, k, n, o, k * kc + j0, kc, k, w, width)
-  0
+  ()
 
 # The columns `j0` up to `j1` of the inverse: forwards through L, then
 # backwards through U. `o` holds the identity on the way in and the answer
@@ -3224,7 +3224,7 @@ private fn inv_cols(d: Buf(Float), o: Buf(Float), n, j0, j1) =
           for j in j0..hi
             o[i * n + j] = o[i * n + j] - fct * o[t * n + j]
       gemm_sub(o, (k + w) * n + j0, n, d, (k + w) * n + k, n, o, k * n + j0, n, n - k - w, w, hi - j0)
-    else 0
+    else ()
 
   # Backwards through U, all the way across.
   for kb in 0..blocks
@@ -3240,7 +3240,7 @@ private fn inv_cols(d: Buf(Float), o: Buf(Float), n, j0, j1) =
         for j in j0..j1
           o[i * n + j] = o[i * n + j] - fct * o[t * n + j]
     gemm_sub(o, j0, n, d, k, n, o, k * n + j0, n, k, w, width)
-  0
+  ()
 
 # The determinant: the product down U's diagonal, with the sign the row
 # exchanges left. Zero when the matrix is singular.

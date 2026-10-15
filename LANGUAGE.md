@@ -660,6 +660,10 @@ total = for i in 0..#v with acc = 0
   acc + v[i]                   # the body's value is the next `acc`
 ```
 
+One that carries nothing is worth `()`, as any statement is, so a function
+or a branch that ends in a loop is a `Unit` one — `if found then for … else
+()` agrees with itself, with nothing put after the loop to make it.
+
 Writing the accumulation in the body instead — `acc = acc + v[i]`, with the
 `with` left off — is refused, and named as what it is. A binding is not a
 value, so a block ending in one has nothing to answer with and the name it

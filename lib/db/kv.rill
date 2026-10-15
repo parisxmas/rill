@@ -205,7 +205,7 @@ private fn remove_slot(c: Buf(U8), base, i) =
     at = base + hdr() + 2 * j
     set_u16(c, at, u16_at(c, at + 2))
   set_u16(c, base + 2, n - 1)
-  0
+  ()
 
 # Rebuild the node with its live cells only, through a copy.
 private fn compact(c: Buf(U8), base, tmp: Buf(U8)) =
@@ -232,10 +232,10 @@ private fn page(db: Db, pg) = match map_get(db.slot_map, pg)
     base = s * page_size()
     old = db.slot_pg[s]
     if old >= 0 then
-      if db.slot_dirty[s] == 1 then spill(db, old, base, false) else 0
+      if db.slot_dirty[s] == 1 then spill(db, old, base, false) else ()
       map_del(db.slot_map, old)
-      0
-    else 0
+      ()
+    else ()
     load(db, pg, base)
     db.slot_pg[s] = pg
     db.slot_dirty[s] = 0
@@ -280,7 +280,7 @@ private fn spill(db: Db, pg, base, commit) =
   db.pending[pg] = at + frame_hdr()
   db.meta[2] = at + frame_hdr() + page_size()
   db.meta[3] += 1
-  0
+  ()
 
 private fn write_marker(db: Db) =
   f = db.frame
@@ -335,7 +335,7 @@ private fn checkpoint(db: Db) =
   file_truncate(db.wal, wal_hdr())
   db.meta[2] = wal_hdr()
   db.meta[3] = 0
-  0
+  ()
 
 private fn copy_back(db: Db, pages) = match pages
   Nil -> 0
@@ -436,8 +436,8 @@ private fn begin(db: Db) =
   if db.meta[4] == 0 then
     db.meta[6] = db.meta[2]
     db.meta[4] = 1
-    0
-  else 0
+    ()
+  else ()
 
 # Dirty pages to the log, a marker, one sync. Nothing changed, nothing
 # written.
@@ -452,8 +452,8 @@ private fn commit_now(db: Db) =
     write_marker(db)
     file_sync(db.wal)
     promote(db)
-    0
-  else 0
+    ()
+  else ()
   db.meta[4] = 0
 
 #     import "db/kv"
@@ -468,7 +468,7 @@ private fn commit_now(db: Db) =
 #     kv_close(again)
 fn kv_commit(db: Db) =
   commit_now(db)
-  if db.meta[3] >= checkpoint_after() then checkpoint(db) else 0
+  if db.meta[3] >= checkpoint_after() then checkpoint(db) else ()
 
 # Forget the transaction: dirty pages are dropped from the cache, and the
 # log is cut back to where the transaction found it, so that the frames it
@@ -492,14 +492,14 @@ fn kv_rollback(db: Db) =
       db.slot_pg[s] = -1
       db.slot_dirty[s] = 0
       db.slot_ref[s] = 0
-      0
-    else 0
+      ()
+    else ()
   map_clear(db.pending)
   if db.meta[4] == 1 then
     file_truncate(db.wal, db.meta[6])
     db.meta[2] = db.meta[6]
-    0
-  else 0
+    ()
+  else ()
   db.meta[4] = 0
   read_meta(db)
 
@@ -587,11 +587,11 @@ fn kv_put(db: Db, k, v) =
     base = page(db, pg)
     c = db.cache
     (i, found) = lower_bound(c, base, k)
-    if found then remove_slot(c, base, i) else 0
+    if found then remove_slot(c, base, i) else ()
     need = 6 + #k + #v
     if free_space(c, base) < need then
       compact(c, base, db.frame)
-    else 0
+    else ()
     if free_space(c, base) >= need then
       put_leaf_cell(c, base, i, k, v)
       mark_dirty(db, pg)
@@ -650,7 +650,7 @@ private fn insert_up(db: Db, d, sep, left, right) =
     need = 8 + #sep
     if free_space(c, base) < need then
       compact(c, base, db.frame)
-    else 0
+    else ()
     if free_space(c, base) >= need then
       put_inner_cell(c, base, i, sep, left)
       mark_dirty(db, pg)

@@ -9,4 +9,4 @@ fn banner(b: StrBuf, title, line) =
   b += "</h1>\n  <p>"
   render(b, line)
   b += "</p>\n</header>\n"
-  0
+  ()

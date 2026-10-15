@@ -11,13 +11,13 @@ fn teams(b: StrBuf, year, teams: List(Team)) =
   render(b, year)
   b += "</h1>\n    <ul>\n    "
   fn each0(l0, idx) = match l0
-    Nil -> 0
+    Nil -> ()
     Cons(team, rest0) ->
       b += "\n      <li class=\""
       if idx == 0 then
         b += "champion"
-        0
-      else 0
+        ()
+      else ()
       b += "\">\n      <b>"
       render(b, team.name)
       b += "</b>: "
@@ -26,4 +26,4 @@ fn teams(b: StrBuf, year, teams: List(Team)) =
       each0(rest0, idx + 1)
   each0(teams, 0)
   b += "\n    </ul>\n  </body>\n</html>\n"
-  0
+  ()

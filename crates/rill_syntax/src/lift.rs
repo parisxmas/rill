@@ -208,7 +208,10 @@ fn expand_for(
         ),
         None => (
             vec![Param { name: var.clone(), ann: None }],
-            Expr::Int(0),
+            // A loop that carries nothing is worth nothing: `()`, so that a
+            // block or a branch ending in one is a `Unit` like any other
+            // statement-shaped block, and `if c then for … else ()` agrees.
+            Expr::Unit,
             Expr::Block(vec![
                 Stmt::Expr(body),
                 Stmt::Expr(Expr::Call {
@@ -346,7 +349,7 @@ fn expand_while(
                 body: Expr::If {
                     cond: Box::new(cond),
                     then: Box::new(Expr::Block(vec![Stmt::Expr(body), Stmt::Expr(call(&go, vec![]))])),
-                    els: Box::new(Expr::Int(0)),
+                    els: Box::new(Expr::Unit),
                     newline: false,
                 },
                 line,

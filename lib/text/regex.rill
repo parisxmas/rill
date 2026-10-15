@@ -294,7 +294,7 @@ private fn parse_class(p, i) =
   negate = i < #p && p[i] == 94
   start = if negate then i + 1 else i
   end = class_members(p, start, set, true)?
-  if negate then flip(set) else 0
+  if negate then flip(set) else ()
   Ok((Class(set), end))
 
 private fn flip(set: Buf(U8)) = for b in 0..256

@@ -109,7 +109,7 @@ fn generate(text, src, name) =
   o += "fn " + fn_name(sig) + "(b: StrBuf" + fn_rest(sig) + ") =\n"
   walk(o, text, body_at, str_len(text), 1, 0, Nil)
   pad(o, 1)
-  o += "0\n"
+  o += "()\n"
   strbuf_str(o)
 
 # The `%%` and `%=` lines at the top, in order.
@@ -215,11 +215,11 @@ fn tag(o: StrBuf, t, ind, k, open) =
     line(o, ind, "if " + trim(str_sub(t, 3, str_len(t) - 3)) + " then")
     (ind + 1, k, Cons(IfOpen, open))
   else if starts_with(t, "elif ") then
-    line(o, ind, "0")
+    line(o, ind, "()")
     line(o, ind - 1, "else if " + trim(str_sub(t, 5, str_len(t) - 5)) + " then")
     (ind, k, open)
   else if t == "else" then
-    line(o, ind, "0")
+    line(o, ind, "()")
     line(o, ind - 1, "else")
     (ind, k, seen_else(open))
   else if t == "end" then close_tag(o, ind, k, open)
@@ -267,7 +267,7 @@ fn each_tag(o: StrBuf, t, ind, k, open) =
     idx = if comma < 0 then "i" + int_to_str(k) else trim(str_sub(names, comma + 1, str_len(names) - comma - 1))
     tag_k = int_to_str(k)
     line(o, ind, "fn each" + tag_k + "(l" + tag_k + ", " + idx + ") = match l" + tag_k)
-    line(o, ind + 1, "Nil -> 0")
+    line(o, ind + 1, "Nil -> ()")
     line(o, ind + 1, "Cons(" + item + ", rest" + tag_k + ") ->")
     (ind + 2, k + 1, Cons(EachOpen(tag_k, idx, list), open))
 
@@ -278,11 +278,11 @@ fn close_tag(o: StrBuf, ind, k, open) = match open
   Cons(what, rest) -> match what
     ForOpen -> (ind - 1, k, rest)
     IfOpen ->
-      line(o, ind, "0")
-      line(o, ind - 1, "else 0")
+      line(o, ind, "()")
+      line(o, ind - 1, "else ()")
       (ind - 1, k, rest)
     ElseOpen ->
-      line(o, ind, "0")
+      line(o, ind, "()")
       (ind - 1, k, rest)
     EachOpen(tag_k, idx, list) ->
       line(o, ind, "each" + tag_k + "(rest" + tag_k + ", " + idx + " + 1)")
