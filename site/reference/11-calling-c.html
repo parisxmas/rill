@@ -186,6 +186,22 @@ v[<span class="n">0</span>] = <span class="n">1.5</span>
 <td><code>buf_cmp(a, at, b, bt, n)</code></td>
 <td><code>n</code> elements of each as bytes: -1, 0 or 1, both bounds-checked</td>
 </tr>
+<tr>
+<td><code>buf_sort(b)</code> / <code>buf_sort_range(b, lo, hi)</code></td>
+<td>the numbers in ascending order, in place — all of them, or those from <code>lo</code> up to <code>hi</code>; floats by their total order, a NaN at the end</td>
+</tr>
+<tr>
+<td><code>buf_argsort(src, dst)</code></td>
+<td>where each float of <code>src</code> would go if sorted, ties in the order they came and <code>-0.0</code> equal to <code>0.0</code>, into the <code>Buf(Int)</code> <code>dst</code></td>
+</tr>
+<tr>
+<td><code>buf_select_nth(b, lo, hi, k)</code></td>
+<td>the float that would be at <code>k</code> were the range sorted, with the range reordered around it — what is before it no greater, what is after no smaller</td>
+</tr>
+<tr>
+<td><code>buf_get_unchecked(b, i)</code> / <code>buf_set_unchecked(b, i, v)</code></td>
+<td>one element with no bounds test — for a loop whose indexes come from its data, an interpreter's registers, where no check in front of the loop can stand for them. <code>--unchecked</code> for one access; a sandbox counts it as <code>ffi</code></td>
+</tr>
 </tbody>
 </table>
 <p><code>buf_copy</code> and <code>buf_cmp</code> are <code>memmove</code> and <code>memcmp</code> with the question asked first: a length that came from somewhere it should not have — a header on a page that is not a header — stops at the check, with a message, rather than in the memory past the buffer. They cost the check and nothing else, and the check is nothing beside the copy; a program that reaches for <code>ptr_offset</code> and an <code>extern</code> <code>memmove</code> to move bytes between buffers has no reason to.</p>

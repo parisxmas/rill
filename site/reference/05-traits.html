@@ -105,6 +105,7 @@
   <span class="f">describe</span>(a) <span class="o">-&gt;</span> <span class="t">Str</span>
   <span class="k">priority</span>(x: a) <span class="o">-&gt;</span> <span class="t">Int</span> = <span class="n">1</span>
   <span class="f">banner</span>(x: a) <span class="o">-&gt;</span> <span class="t">Str</span> = <span class="f">describe</span>(x) + <span class="s">" ("</span> + <span class="f">int_to_str</span>(<span class="k">priority</span>(x)) + <span class="s">")"</span></pre>
+<p>An impl that takes every method's default is the trait and the type and nothing under it: <code>impl Describe(Int)</code>.</p>
 <p>A trait may <strong>require others</strong>: <code>trait Pretty(a): Show, Describe</code> says a type implements <code>Pretty</code> only if it implements those too, and an impl of <code>Pretty</code> for a type that does not is refused, naming what is missing.</p>
 <p>A method's name belongs to its trait, and two traits may use the same one: <code>describe(x)</code> is settled by the type of <code>x</code>, whichever trait is implemented for it, and where that cannot tell — both are, or <code>x</code> is a parameter whose type is not known yet — the call says which, <code>Describe.describe(x)</code>, which is always allowed. Constructor names stay global. Dispatch is resolved statically during monomorphization: no dictionaries, no vtables, and a compile error if an implementation is missing.</p>
 <p>An impl may target a generic type by naming its parameters, in which case it covers every instantiation:</p>

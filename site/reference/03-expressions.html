@@ -142,7 +142,7 @@ b += <span class="n">33</span>               <span class="c"># a number goes in 
 <pre>s[<span class="n">1</span>:<span class="c">#s - 1]      # everything but the first and last byte</span>
 s[<span class="n">3</span>:]            <span class="c"># from the fourth byte to the end</span>
 s[:<span class="n">3</span>]            <span class="c"># the first three</span></pre>
-<p>An end outside the string is clamped rather than an error, as <code>str_sub</code> has always been, and each part is evaluated once. Slicing is for strings; a <code>Buf</code> is storage and is not copied by notation this quiet.</p>
+<p>An end outside the string is clamped rather than an error, as <code>str_sub</code> has always been — both ends before the length is taken, so <code>s[-3:2]</code> is <code>s[:2]</code> — and each part is evaluated once. Slicing is for strings; a <code>Buf</code> is storage and is not copied by notation this quiet.</p>
 <h3 id="characters">Characters</h3>
 <p><code>#s</code>, <code>s[i]</code> and <code>s[i:j]</code> are bytes, and stay bytes: a lexer wants bytes, a wire protocol wants bytes, and the compiler that compiles the prelude is one of them. What bytes are not is characters. <code>"günaydın"</code> is ten bytes and eight letters, and <code>s[0:2]</code> cuts the <code>ü</code> in half. The characters live on top, in the prelude, and say so in their names:</p>
 <table>
@@ -176,12 +176,12 @@ s[:<span class="n">3</span>]            <span class="c"># the first three</span>
 <td>back to a string, one to four bytes each</td>
 </tr>
 <tr>
-<td><code>char_decode(s, at)</code> / <code>char_wide(b)</code></td>
-<td>the character at a byte offset, and how many bytes the one beginning with byte <code>b</code> takes — for walking a long string without counting from the start each time</td>
+<td><code>char_decode(s, at)</code> / <code>char_len(s, at)</code></td>
+<td>the character at a byte offset, and how many bytes it takes — for walking a long string without counting from the start each time. <code>char_wide(b)</code> is what a first byte claims; <code>char_len</code> checks that the bytes after it are continuation bytes</td>
 </tr>
 </tbody>
 </table>
-<p>All of it walks, since UTF-8 gives no other way to the <code>n</code>th character. Malformed input never hangs it: a stray continuation byte counts as one character, and a character cut off by the end of the string comes back as its first byte.</p>
+<p>All of it walks, since UTF-8 gives no other way to the <code>n</code>th character. Malformed input never hangs it and never swallows what follows: a stray continuation byte counts as one character, and a character cut off by the end of the string, or whose continuation bytes are not there, comes back as its first byte.</p>
 <p><code>chr(n)</code> is <strong>a byte</strong>, not a character: it writes the low byte of <code>n</code> and nothing else, which is right for building a frame or a hash and wrong for every character above 127. A codepoint becomes text with <code>from_char</code>.</p>
 <h3 id="blocks-and-bindings">Blocks and bindings</h3>
 <p>An indented block runs its lines in order and evaluates to the last one:</p>

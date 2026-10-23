@@ -90,14 +90,14 @@
 <p><code>render</code> is a trait, so <code>&lt;%= x %&gt;</code> costs what the type of <code>x</code> costs and no more: an <code>Int</code> goes into the builder as digits with no escaping and no string in between, a <code>Str</code> is escaped, and a type of your own is whatever its <code>impl Render</code> says. The choice is made when the program is compiled, not when the page is rendered.</p>
 <h2 id="traits">Traits</h2>
 <h3 id="trait-rendera"><code>trait Render(a)</code></h3>
-<p>The value a render answers with means nothing and every caller drops it. A Rill <code>for</code> is worth zero, and these end in one.</p>
+<p>A render answers with nothing: what it does is write into the builder.</p>
 <ul>
-<li><code>render(StrBuf, a) -&gt; Int</code></li>
+<li><code>render(StrBuf, a) -&gt; Unit</code></li>
 </ul>
 <h3 id="trait-rawa"><code>trait Raw(a)</code></h3>
 <p>What <code>&lt;%! x %&gt;</code> writes: the text as it stands, for a value that is already markup. Nothing checks that claim, which is why it has a mark of its own.</p>
 <ul>
-<li><code>raw(StrBuf, a) -&gt; Int</code></li>
+<li><code>raw(StrBuf, a) -&gt; Unit</code></li>
 </ul>
 <h2 id="implementations">Implementations</h2>
 <ul>
@@ -108,7 +108,7 @@
 <li><code>impl Raw(Str)</code></li>
 </ul>
 <h2 id="functions">Functions</h2>
-<h3 id="fn-esc_intob-strbuf-s-str---int"><code>fn esc_into(b: StrBuf, s: Str) -&gt; Int</code></h3>
+<h3 id="fn-esc_intob-strbuf-s-str---unit"><code>fn esc_into(b: StrBuf, s: Str) -&gt; Unit</code></h3>
 <p>The five bytes that can change what a page means: <code>&amp;</code>, <code>&lt;</code>, <code>&gt;</code>, <code>"</code> and <code>'</code>. Almost no string holds one, so the string is looked over first and copied whole when it does not — one length and one copy, which is what a static piece of the template costs too. Only a string that does hold one is walked a byte at a time, and even then nothing is allocated: a byte goes into the builder as a byte.</p>
 <pre>b = <span class="f">strbuf</span>()
 tmpl.esc_into(b, <span class="s">"Ada &amp; co"</span>)

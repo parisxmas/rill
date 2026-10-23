@@ -91,7 +91,7 @@
 <li><code>Conn(pg: Ptr)</code></li>
 </ul>
 <h3 id="table"><code>Table</code></h3>
-<p>What a query answered: the column names, the rows, and how many rows a command touched — <code>0</code> for a <code>SELECT</code>.</p>
+<p>What a query answered: the column names, the rows, and how many rows the statement touched — inserted, updated, deleted, or for a <code>SELECT</code> the count returned.</p>
 <ul>
 <li><code>Table(columns: List(Str), rows: List(Row), affected: Int)</code></li>
 </ul>

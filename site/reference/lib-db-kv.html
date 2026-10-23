@@ -116,7 +116,7 @@ db = <span class="f">kv_open</span>(<span class="s">"/tmp/rill-doc-open.db"</spa
 <span class="f">kv_count</span>(db)   <span class="c"># =&gt; 0</span>
 <span class="f">kv_close</span>(db)
 <span class="f">res_map</span>(<span class="f">kv_open</span>(<span class="s">"/no/such/dir/x.db"</span>), \d <span class="o">-&gt;</span> <span class="n">0</span>)   <span class="c"># =&gt; Err(cannot open /no/such/dir/x.db)</span></pre>
-<h3 id="fn-kv_commitdb-db---int"><code>fn kv_commit(db: Db) -&gt; Int</code></h3>
+<h3 id="fn-kv_commitdb-db---unit"><code>fn kv_commit(db: Db) -&gt; Unit</code></h3>
 <pre><span class="k">import</span> <span class="s">"db/kv"</span>
 <span class="f">file_remove</span>(<span class="s">"/tmp/rill-doc-commit.db"</span>)
 <span class="f">file_remove</span>(<span class="s">"/tmp/rill-doc-commit.db.wal"</span>)

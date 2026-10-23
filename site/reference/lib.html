@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The standard library — The Rill Language Reference</title>
-<meta name="description" content="The 44 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<meta name="description" content="The 45 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
 <link rel="canonical" href="https://rill.baltavista.com/reference/lib.html">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Rill">
 <meta property="og:url" content="https://rill.baltavista.com/reference/lib.html">
 <meta property="og:title" content="The standard library — The Rill Language Reference">
-<meta property="og:description" content="The 44 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<meta property="og:description" content="The 45 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
 <meta property="og:image" content="https://rill.baltavista.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="The standard library — The Rill Language Reference">
-<meta name="twitter:description" content="The 44 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
+<meta name="twitter:description" content="The 45 modules of Rill's standard library, documented from their own comments and the checker's signatures.">
 <meta name="twitter:image" content="https://rill.baltavista.com/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🐦</text></svg>">
 <link rel="stylesheet" href="reference.css">
@@ -82,7 +82,7 @@
     <main>
       <p class="chapter-no">Standard library</p>
       <h1>The standard library</h1>
-<p>44 modules, all written in Rill, imported by their path under <code>lib/</code>: <code>import "data/json" as json</code>. The compiler finds them beside its own <code>bin/</code> in a packaged toolchain, or through <code>RILL_PATH</code>. These pages are what <code>rill doc lib</code> writes: the comment above each declaration, and the signature the checker infers for it.</p><h3 id="text">Text <code class="folder">lib/text</code></h3>
+<p>45 modules, all written in Rill, imported by their path under <code>lib/</code>: <code>import "data/json" as json</code>. The compiler finds them beside its own <code>bin/</code> in a packaged toolchain, or through <code>RILL_PATH</code>. These pages are what <code>rill doc lib</code> writes: the comment above each declaration, and the signature the checker infers for it.</p><h3 id="text">Text <code class="folder">lib/text</code></h3>
 <ol class="toc">
       <li><a href="lib-text-fmt.html"><span class="no">fmt</span><b>text/fmt</b><span class="blurb">Text laid out and numbers spelled: a template with slots, padding by width, a float to so many places, thousands separated, a size in bytes, an ordinal, a table with its columns lined up.</span></a></li>
       <li><a href="lib-text-path.html"><span class="no">path</span><b>text/path</b><span class="blurb">File paths as text: joining, taking apart, tidying.</span></a></li>
@@ -145,6 +145,7 @@
 </ol>
 <h3 id="crypto">Cryptography <code class="folder">lib/crypto</code></h3>
 <ol class="toc">
+      <li><a href="lib-crypto-ed25519.html"><span class="no">ed25519</span><b>crypto/ed25519</b><span class="blurb">Whether sig (64 bytes) is the signature of msg under the public key pk (32 bytes).</span></a></li>
       <li><a href="lib-crypto-passwd.html"><span class="no">passwd</span><b>crypto/passwd</b><span class="blurb">HMAC-SHA-1.</span></a></li>
       <li><a href="lib-crypto-sha1.html"><span class="no">sha1</span><b>crypto/sha1</b><span class="blurb">SHA-1 and base64, written in Rill.</span></a></li>
       <li><a href="lib-crypto-sha2.html"><span class="no">sha2</span><b>crypto/sha2</b><span class="blurb">The digest, as 32 raw bytes.</span></a></li>

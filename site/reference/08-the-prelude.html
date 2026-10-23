@@ -89,16 +89,16 @@
 <p>Every program has these in scope; any definition of your own with the same name replaces the prelude's.</p>
 <p><strong>Types</strong>: <code>Option(a)</code> = <code>None | Some(a)</code>, <code>Result(a, e)</code> = <code>Ok(a) | Err(e)</code>, <code>List(a)</code> = <code>Nil | Cons(head, tail)</code>.</p>
 <p><strong>Lists</strong>: <code>map</code> <code>filter</code> <code>fold</code> <code>len</code> <code>sum</code> <code>range</code> <code>reverse</code> <code>append</code> <code>take</code> <code>drop</code> <code>nth</code> <code>any</code> <code>all</code> <code>find</code> <code>index_of</code> <code>has</code> <code>count</code> <code>last</code> <code>each</code> <code>zip</code> <code>zip_with</code> <code>unzip</code> <code>fst</code> <code>snd</code> <code>enumerate</code> <code>take_while</code> <code>drop_while</code> <code>partition</code> <code>flatten</code> <code>flat_map</code> <code>chunks</code> <code>distinct</code> <code>group_by</code> <code>min_by</code> <code>max_by</code> <code>sort</code> <code>sort_by</code> <code>sort_with</code></p>
-<p><code>sort</code> is a stable merge sort by <code>&lt;</code>; <code>sort_by(l, key)</code> orders by what <code>key</code> gives, and <code>sort_with(l, before)</code> by <code>before(a, b)</code>, whether <code>a</code> may come before <code>b</code> — <code>&lt;=</code>, not <code>&lt;</code>, or equal elements would swap. <code>group_by(l, key)</code> gives <code>(key, members)</code> pairs in the order the keys were first seen. Each of these stands on its own, so a program that defines a <code>find</code> of its own loses the prelude's <code>find</code> and nothing else.</p>
+<p><code>sort</code> is a stable sort by <code>&lt;</code>; <code>sort_by(l, key)</code> orders by what <code>key</code> gives, and <code>sort_with(l, before)</code> by <code>before(a, b)</code>, whether <code>a</code> may come before <code>b</code> — <code>&lt;=</code>, not <code>&lt;</code>, or equal elements would swap. The runtime does it: the elements into an array, a merge sort there, and the elements written back into the list's own cells — nothing allocated when nothing else holds the list, and <code>sort</code> of numbers or strings compares without a call. It is as fast as C's <code>qsort</code> over an array, and faster on <code>Int</code>s. <code>group_by(l, key)</code> gives <code>(key, members)</code> pairs in the order the keys were first seen. Each of these stands on its own, so a program that defines a <code>find</code> of its own loses the prelude's <code>find</code> and nothing else.</p>
 <p><strong>Option/Result</strong>: <code>unwrap_or</code> <code>opt_map</code> <code>res_map</code> <code>ok_or</code> <code>map_err</code></p>
 <p><strong>Maps</strong>: <code>map_get</code> <code>map_or</code> <code>map_has</code> <code>map_keys</code> <code>map_values</code> <code>map_items</code> <code>map_of</code></p>
 <p><strong>Channels</strong>: <code>recv_opt(ch) -&gt; Option(a)</code></p>
 <p><strong>Signals</strong>: <code>sig_hup()</code> <code>sig_int()</code> <code>sig_term()</code> — the numbers <code>wait_signal</code> answers with</p>
 <p><strong>Standard error</strong>: <code>eprintln(x)</code> <code>eprint(x)</code> — what <code>println</code> and <code>print</code> do, on standard error, unbuffered</p>
 <p><strong>Numbers</strong>: <code>max</code> <code>min</code> <code>abs</code></p>
-<p><strong>Strings</strong>: <code>join</code> <code>repeat</code> <code>split</code> <code>lines</code> <code>trim</code> <code>contains</code> <code>starts_with</code></p>
+<p><strong>Strings</strong>: <code>join</code> <code>repeat</code> <code>split</code> <code>lines</code> <code>trim</code> <code>contains</code> <code>starts_with</code> <code>fold_lines</code> — <code>fold(lines(s), acc, f)</code> is written as <code>fold_lines(s, acc, f)</code>, which cuts each line as it goes and keeps no list of them</p>
 <p><strong>Strands</strong>: <code>apart(x)</code> — <code>x</code>, and the claim that strands share it on purpose; see <a href="07-concurrency.html#what-strands-may-share">What strands may share</a></p>
-<p><strong>Characters</strong>: <code>char_count</code> <code>char_at</code> <code>char_sub</code> <code>char_take</code> <code>char_drop</code> <code>chars</code> <code>from_char</code> <code>from_chars</code> <code>char_decode</code> <code>char_wide</code> — see <a href="03-expressions.html#characters">Characters</a>; <code>chr</code> is a byte</p>
+<p><strong>Characters</strong>: <code>char_count</code> <code>char_at</code> <code>char_sub</code> <code>char_take</code> <code>char_drop</code> <code>chars</code> <code>from_char</code> <code>from_chars</code> <code>char_decode</code> <code>char_len</code> <code>char_wide</code> — see <a href="03-expressions.html#characters">Characters</a>; <code>chr</code> is a byte</p>
 <p><strong>IO</strong>: <code>args()</code> (program name included), <code>read_file(path) -&gt; Result(Str, Str)</code>, <code>open_file(path, mode) -&gt; Result(Int, Str)</code>, <code>dir_names(path) -&gt; List(Str)</code>, <code>replace_file(path, text) -&gt; Result(Int, Str)</code></p>
 <hr />
 <h3 id="the-libraries">The libraries</h3>
@@ -164,6 +164,10 @@
 <tr>
 <td><code>import "crypto/sha2" as sha</code></td>
 <td>SHA-256 and SHA-512, HMAC over each, a tag compared in constant time</td>
+</tr>
+<tr>
+<td><code>import "crypto/ed25519" as ed</code></td>
+<td>Ed25519 signature verification (RFC 8032): <code>ed.verify(pk, msg, sig)</code></td>
 </tr>
 <tr>
 <td><code>import "data/checksum" as ck</code></td>

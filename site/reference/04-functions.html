@@ -81,6 +81,7 @@
       <ul class="sections">
         <li><a href="#generics">Generics</a></li>
         <li><a href="#loops">Loops</a></li>
+        <li><a href="#fast-fn">fast fn</a></li>
       </ul>
     </aside>
     <main>
@@ -95,6 +96,7 @@
   db = <span class="f">dist</span>(b, origin)
   da &lt; db</pre>
 <p>Inside parentheses layout is off, so a lambda written as an argument stays on one line; bind the long one first.</p>
+<p>What a call, an element or a field is worth can be called in turn: <code>adder(1)(2)</code>, <code>o.handler(req)(ctx)</code>. It is the value named and the name called, which is all a call of a function value is.</p>
 <h3 id="generics">Generics</h3>
 <p>A function used at more than one type is generic automatically:</p>
 <pre><span class="k">fn</span> <span class="f">id</span>(x) = x                <span class="c"># forall a. a -&gt; a</span>
@@ -115,13 +117,14 @@
 <p>A loop that carries something says so, and is worth what it carried:</p>
 <pre>total = <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="c">#v with acc = 0</span>
   acc + v[i]                   <span class="c"># the body&#x27;s value is the next `acc`</span></pre>
+<p>One that carries nothing is worth <code>()</code>, as any statement is, so a function or a branch that ends in a loop is a <code>Unit</code> one — <code>if found then for … else ()</code> agrees with itself, with nothing put after the loop to make it.</p>
 <p>Writing the accumulation in the body instead — <code>acc = acc + v[i]</code>, with the <code>with</code> left off — is refused, and named as what it is. A binding is not a value, so a block ending in one has nothing to answer with and the name it bound can never be read: the loop would have run and thrown every iteration away. The error says so wherever it happens, and says <code>with</code> when the binding's value reads the name it is binding.</p>
 <p>Both forms are spelled out as the tail-recursive function below before anything else looks at them — the end of the range is evaluated once, and what the loop carries is a parameter, which is to say a register. Carrying it in a one-element buffer instead, which is what a program without this had to do, puts it in memory and reaches through a pointer for every touch. <code>+=</code>, <code>-=</code>, <code>*=</code> and <code>/=</code> write a buffer element in terms of what it held: <code>v[i] += 1</code>. The index is evaluated once, so <code>off[eu[i]] += 1</code> reads <code>eu[i]</code> one time.</p>
 <p>Everything else is tail recursion: a call in tail position compiles to a jump, so it runs in constant stack, exactly like a loop. That holds for a loop written as several functions calling each other as much as for one calling itself, and it holds whatever the loop's value is — Rill's functions use LLVM's guaranteed-tail-call convention and mark the call <code>musttail</code>, so it is a promise the optimizer cannot take back rather than a hint it usually honours.</p>
 <p>One limit on the promise: it is made through the machine's registers, and a signature with more than six integer or pointer parameters, or more than eight floats, takes the C convention instead (a flat record counts by its fields, a closure's environment as one more). A function calling itself still runs in constant stack; several such functions calling each <em>other</em> in tail position do not, and the compiler warns, naming the two and the count. Pack the extras into one tuple — a tuple is one pointer — and the promise is back.</p>
 <pre><span class="k">fn</span> <span class="f">sum_to</span>(n) = <span class="f">go</span>(n, <span class="n">0</span>)
 <span class="k">fn</span> <span class="f">go</span>(i, acc) = <span class="k">if</span> i == <span class="n">0</span> <span class="k">then</span> acc <span class="k">else</span> <span class="f">go</span>(i - <span class="n">1</span>, acc + i)   <span class="c"># a loop</span></pre>
-<p>A loop written this way is usually about the values around it, so it can be written there: a <code>fn</code> inside a body sees the names in scope, and may call itself and the functions beside it.</p>
+<p>A loop written this way is usually about the values around it, so it can be written there: a <code>fn</code> inside a body sees the names in scope — as they are where it is written, whatever the same name means where it is called (a lambda's parameter, a pattern, a later binding) — and may call itself and the functions beside it.</p>
 <pre><span class="k">fn</span> <span class="f">sum_to</span>(n) =
   <span class="k">fn</span> <span class="f">go</span>(i, acc) = <span class="k">if</span> i &gt; n <span class="k">then</span> acc <span class="k">else</span> <span class="f">go</span>(i + <span class="n">1</span>, acc + i)
   <span class="f">go</span>(<span class="n">1</span>, <span class="n">0</span>)                     <span class="c"># `n` comes from the enclosing function</span></pre>
@@ -140,6 +143,13 @@
 <p>Most everyday loops are written with the prelude instead — <code>range</code>, <code>map</code>, <code>filter</code>, <code>fold</code> — which are themselves tail recursive:</p>
 <pre><span class="f">range</span>(<span class="n">1</span>, <span class="n">10</span>) <span class="o">|&gt;</span> <span class="f">filter</span>(\x <span class="o">-&gt;</span> x % <span class="n">2</span> == <span class="n">0</span>) <span class="o">|&gt;</span> <span class="f">map</span>(\x <span class="o">-&gt;</span> x * x) <span class="o">|&gt;</span> sum</pre>
 <p>See <code>examples/loops.rill</code>.</p>
+<p>A <code>for</code> loop over a buffer checks its range once, in front of the loop, for every access its body is sure to make at an index that is the loop's variable moved by an amount the loop leaves alone — <code>v[i]</code>, <code>v[i + 1]</code>, and <code>src[k - n]</code> where the body has bound <code>k = i * n + j</code> — and the accesses themselves go unchecked. An access the body guards (<code>if i &lt; #v &amp;&amp; v[i] &gt; 0</code>, an arm, a lambda) is checked where it is, since the loop may never make it.</p>
+<h3 id="fast-fn"><code>fast fn</code></h3>
+<p>A sum over floats is added in the order written, each addition waiting on the one before: splitting it into lanes reorders the additions, which changes the answer in its last bits, and <code>+</code> means what it says. A function that accepts the reordering says so:</p>
+<pre>fast <span class="k">fn</span> <span class="f">dot</span>(x: <span class="t">Buf</span>(<span class="t">Float</span>), y: <span class="t">Buf</span>(<span class="t">Float</span>), n) =
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..n <span class="k">with</span> acc = <span class="n">0.0</span>
+    acc + x[i] * y[i]</pre>
+<p>Its float <code>+</code>, <code>-</code> and <code>*</code> — and those of the loops and local functions written inside it — may be reassociated, and the sign of a zero may not matter, which is what the compiler asks before it splits a reduction into the machine's vector lanes: that dot product runs five times faster. NaN and infinity keep their meaning, and outside a <code>fast fn</code> nothing changes. <code>fast</code> means this only in front of a top-level <code>fn</code> — <code>private fast fn</code> for one a file keeps to itself.</p>
 <hr />
 
       <div class="prevnext">
