@@ -179,7 +179,7 @@ footer .mono{font-family:var(--mono);font-size:12.5px}
 <div class="wrap">
   <div class="bar">
     <a href="/" class="name">Rill</a>
-    <span class="ver">v0.13</span>
+    <span class="ver">v0.14</span>
   </div>
 
   <div class="layout">
@@ -428,7 +428,7 @@ live allocations: 0</pre>
       <li><b>Strings indexed by character</b><span>Chosen. A string is bytes and <code>#s</code> counts them; the <code>char_</code> functions and the text library walk it by code point when that is the question.</span></li>
       <li><b>A second implementation</b><span>Version number. The compiler compiles itself, but there is one of it, no package manager, and nobody else has hit your bug.</span></li>
     </ul>
-    <blockquote>Rill is version 0.13. It is a good language to learn these ideas in and
+    <blockquote>Rill is version 0.14. It is a good language to learn these ideas in and
     a good one to model a protocol in; whether it is one to run a business on is a
     question this page would rather leave open than answer for you.</blockquote>
   </section>
@@ -436,9 +436,7 @@ live allocations: 0</pre>
   <!-- ================= what's changed (written by site/build-changelog.py) ================= -->
   <section id="changed">
     <h2 class="sec">What's changed</h2>
-    <p class="sec-lede"><b>0.13.0 — the model editor.</b> The release where the models got an editor in the browser, with its server written in Rill on the standard library. The page shows a file&#x27;s <code>system</code> as the block diagram, channels routed as SDL drew them, and each <code>machine</code> as a process in SDL&#x27;s symbols, beside its coloured code, every symbol a click from its line.</p>
-    <p>Since then:</p>
-    <ul class="since"><li><a href="/changelog.html#since-0-13-0-a-review-seven-wrong-answers-two-panics-and-where-c-still-le">a review: seven wrong answers, two panics, and where C still led</a></li><li><a href="/changelog.html#since-0-13-0-postgresql-through-libpq">PostgreSQL, through libpq</a></li><li><a href="/changelog.html#since-0-13-0-examples-that-are-tests-on-every-function-of-the-library">examples that are tests, on every function of the library</a></li><li><a href="/changelog.html#since-0-13-0-the-editor-moves-out">the editor moves out</a></li><li><a href="/changelog.html#since-0-13-0-packaged">packaged</a></li><li><a href="/changelog.html#since-0-13-0-a-sandbox">a sandbox</a></li><li><a href="/changelog.html#since-0-13-0-the-diagrams-build-without-the-code-being-written">the diagrams build without the code being written</a></li></ul>
+    <p class="sec-lede"><b>0.14.0 — a review, and a chip to run on.</b> The release where a review of the compiler and the runtime against C found seven wrong answers and two panics, and fixed them, and the places C still led got faster: a sort, a persistent tree, map counting and a stencil now match C or beat it. A loop that carries nothing is worth <code>()</code>, not <code>0</code>, a breaking change the libraries have already made.</p>
     <a class="chip" href="/changelog.html">Every release, every change</a>
   </section>
 
@@ -494,20 +492,20 @@ live allocations: 0</pre>
 
   <section id="download">
     <h2 class="sec">Download</h2>
-    <p class="sec-lede">Rill 0.13.0, packaged: the compiler, the runtimes, the standard
+    <p class="sec-lede">Rill 0.14.0, packaged: the compiler, the runtimes, the standard
     library, the examples and the reference, in one directory. Needs a
     C linker on the PATH — the Xcode command-line tools on a Mac, <code>gcc</code> or
     <code>clang</code> on Linux — and nothing else.</p>
     <div class="grid downloads">
       <div class="cell"><h4>macOS, Apple silicon</h4>
-        <p><a href="dl/rill-0.13.0-macos-arm64.tar.gz">rill-0.13.0-macos-arm64.tar.gz</a> · macOS 13 or later on M-series. Unsigned: a browser download is quarantined, so either <code>curl -O</code> it or <code>xattr -dr com.apple.quarantine rill</code> after unpacking.</p></div>
+        <p><a href="dl/rill-0.14.0-macos-arm64.tar.gz">rill-0.14.0-macos-arm64.tar.gz</a> · macOS 13 or later on M-series. Unsigned: a browser download is quarantined, so either <code>curl -O</code> it or <code>xattr -dr com.apple.quarantine rill</code> after unpacking.</p></div>
       <div class="cell"><h4>Linux, x86-64</h4>
-        <p><a href="dl/rill-0.13.0-linux-x86_64.tar.gz">rill-0.13.0-linux-x86_64.tar.gz</a> · glibc 2.36 or later (Debian 12, Ubuntu 22.04 and newer). Needs <code>gcc</code> or <code>clang</code> for the link.</p></div>
+        <p><a href="dl/rill-0.14.0-linux-x86_64.tar.gz">rill-0.14.0-linux-x86_64.tar.gz</a> · glibc 2.36 or later (Debian 12, Ubuntu 22.04 and newer). Needs <code>gcc</code> or <code>clang</code> for the link.</p></div>
       <div class="cell"><h4>Not yet</h4>
         <p>Intel Macs, Linux on ARM and Windows have no build: the compiler is built with a static LLVM, and only these two machines have been built on. Windows and wasm are <em>targets</em> — <code>--target</code> — from either.</p></div>
     </div>
-    <pre>curl -O https://rill.baltavista.com/dl/rill-0.13.0-macos-arm64.tar.gz
-tar xzf rill-0.13.0-macos-arm64.tar.gz
+    <pre>curl -O https://rill.baltavista.com/dl/rill-0.14.0-macos-arm64.tar.gz
+tar xzf rill-0.14.0-macos-arm64.tar.gz
 rill/bin/rill run rill/examples/hello.rill        <span class="c"># hello, world</span></pre>
     <p class="note" style="color:var(--muted);font-size:14px">Checksums in <a href="dl/SHA256SUMS">SHA256SUMS</a>. The wasm target needs <code>wasm-ld</code>, which comes with LLVM.</p>
   </section>
@@ -530,7 +528,7 @@ rill repl                      <span class="c"># definitions persist for the ses
   </div>
 
   <footer>
-    <p class="mono">Rill v0.13 · a strict functional language compiling to native code</p>
+    <p class="mono">Rill v0.14 · a strict functional language compiling to native code</p>
     <p>The bird is a common kingfisher, from a copper plate by Heinrich von Kittlitz,
     1832 — public domain. It was chosen for the language before either the book or this
     page existed: one precise dive, straight to the water, and a rill is the stream it

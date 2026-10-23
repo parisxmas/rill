@@ -26,7 +26,7 @@ pandoc book/build/book.md -o book/build/rill.pdf \
   -V fontsize=10pt -V linkcolor=black -V urlcolor=black -V toccolor=black \
   -V title="Functional Programming with Rill" \
   -V author="Writing programs out of values instead of commands" \
-  -V date="Version 0.13 · every example compiled and run" \
+  -V date="Version 0.14 · every example compiled and run" \
   -H book/build/head.tex
 
 echo "book/build/rill.pdf"

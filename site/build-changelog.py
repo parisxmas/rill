@@ -174,13 +174,13 @@ def build():
     # the release's first two sentences; the page has the rest
     first_para = "".join(re.findall(r".+?[.!?](?:\s|$)", first_para)[:2]).strip()
     first_para = re.sub(r"`([^`]*)`", r"<code>\1</code>", html.escape(first_para))
-    since = "".join(f'<li><a href="/changelog.html#since-{slug(latest["version"])}-{slug(e["title"])[:60]}">{html.escape(e["title"])}</a></li>' for e in pending)
+    items = "".join(f'<li><a href="/changelog.html#since-{slug(latest["version"])}-{slug(e["title"])[:60]}">{html.escape(e["title"])}</a></li>' for e in pending)
+    # straight after a release nothing has landed since, and the list is left out
+    since = f'\n    <p>Since then:</p>\n    <ul class="since">{items}</ul>' if pending else ""
     section = f'''  <!-- ================= what's changed (written by site/build-changelog.py) ================= -->
   <section id="changed">
     <h2 class="sec">What's changed</h2>
-    <p class="sec-lede"><b>{html.escape(latest["version"])} — {html.escape(latest["title"])}.</b> {first_para}</p>
-    <p>Since then:</p>
-    <ul class="since">{since}</ul>
+    <p class="sec-lede"><b>{html.escape(latest["version"])} — {html.escape(latest["title"])}.</b> {first_para}</p>{since}
     <a class="chip" href="/changelog.html">Every release, every change</a>
   </section>
 '''

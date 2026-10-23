@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.14.0 — a review, and a chip to run on
+
+The release where a review of the compiler and the runtime against C
+found seven wrong answers and two panics, and fixed them, and the
+places C still led got faster: a sort, a persistent tree, map counting
+and a stencil now match C or beat it. A loop that carries nothing is
+worth `()`, not `0`, a breaking change the libraries have already
+made. Rill builds for RISC-V microcontrollers: a program runs on an
+ESP32-C3 or -C6 as an ESP-IDF application, and a blink is 185 KB where
+the same one in C is 182. New libraries: `db/pg`, a PostgreSQL client
+over libpq, and `crypto/ed25519`. Every public function of the
+standard library carries an example that `rill doctest` runs. A
+`--sandbox` refuses a program that reaches past the process, the
+toolchain is packaged into a tarball that needs only a C linker, and
+the model editor has moved to a repository of its own. The sections
+below this one tell each of them properly.
+
+## Unreleased — Ed25519
+
+`crypto/ed25519` verifies an Ed25519 signature (RFC 8032):
+`ed.verify(pk, msg, sig)` checks a 64-byte signature over a message
+against a 32-byte public key. The arithmetic is TweetNaCl's: a field
+element mod 2^255 − 19 is sixteen 16-bit limbs in a `Buf(Int)`, products
+are schoolbook with the high half folded back times 38, and SHA-512
+comes from `crypto/sha2`.
+
+## Unreleased — RISC-V, and a Rill program on an ESP32
+
+`rill build --target esp32c3` (RV32IMC) or `esp32c6` (RV32IMAC; also
+`esp32h2`, `esp32p4`, and any `riscv32…-unknown-none-elf`) writes an
+ELF32 RISC-V object: soft-float `ilp32`, as ESP-IDF builds, with the C
+calling convention throughout (a function calling itself is still a
+loop). The runtime builds for the chip with its sizes cut to fit — a
+256-byte output buffer, 8 KB pool chunks, one worker, 3 KB of `.bss` —
+and plain loads and stores behind the atomics' names where RV32 has
+none. A string builder that kept its text's address at byte 4 on a
+32-bit target, where the compiler reads byte 8, stopped every program at
+its first byte; wasm32 had it wrong too.
+
+`targets/riscv32-virt/` is enough of a machine to run on under
+`qemu-system-riscv32 -M virt`: 32 of the 34 examples that need no
+sockets, files or strands print what they print natively, on both chips.
+`targets/esp32/` is an ESP-IDF project whose program is Rill; booted in
+Espressif's QEMU, the hello program prints what it prints on a Mac, in a
+214 KB image where an empty ESP-IDF app is 174. The leak report no
+longer pulls in `snprintf`, and the shortest float is found with the C
+library ESP-IDF links anyway, which saves 24 KB of flash between them.
+A blink is 185 KB in Rill, 182 KB in C and 263 KB as an Arduino sketch;
+`targets/esp32/examples/blink.rill` is the Rill one.
+
 ## Unreleased — a review: seven wrong answers, two panics, and where C still led
 
 A review of the compiler, the runtime and twenty-odd new workloads against

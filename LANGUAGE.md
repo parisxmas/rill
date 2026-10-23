@@ -1,4 +1,4 @@
-# The Rill Language Reference (0.13)
+# The Rill Language Reference (0.14)
 
 Rill is a strict, statically typed functional language that compiles to native
 executables. This document describes the whole language; every construct shown

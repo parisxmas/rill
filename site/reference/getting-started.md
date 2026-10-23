@@ -11,9 +11,9 @@ with it. Nothing else is needed: no Rust, no LLVM, no runtime to install.
 ### Download
 
 ```
-$ curl -O https://rill.baltavista.com/dl/rill-0.13.0-macos-arm64.tar.gz    # Apple silicon
-$ curl -O https://rill.baltavista.com/dl/rill-0.13.0-linux-x86_64.tar.gz   # Linux, x86-64
-$ tar xzf rill-0.13.0-*.tar.gz
+$ curl -O https://rill.baltavista.com/dl/rill-0.14.0-macos-arm64.tar.gz    # Apple silicon
+$ curl -O https://rill.baltavista.com/dl/rill-0.14.0-linux-x86_64.tar.gz   # Linux, x86-64
+$ tar xzf rill-0.14.0-*.tar.gz
 $ rill/bin/rill
 usage:
   rill build <file.rill> [-o <out>] [--debug] [--parallel] [--unchecked] [--shared] [--emit-ir] [--target <triple>] [--sandbox[=caps]]
