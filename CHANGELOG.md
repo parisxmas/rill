@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.15.0 — the array that holds anything
+
+The release a parcel service asked for. A web server over OxiDB wanted a
+sequence it could index and sort, a reply it could read without decoding,
+JSON it did not have to write by hand, and a counter strands could share:
+`Vec(a)`, `db/oxiview`, `to_json` and the atomics are those four, each
+with an example that the test suite runs.
+
+- **`Vec(a)`**, the array that holds anything: a growable, counted block
+  of values of one type, indexed in constant time, retaining and releasing
+  what it holds the way a map does its values. `v[i]` answers an `Option`,
+  `v[i] = x` replaces, `#v` counts; seven primitives in the compiler
+  (`vec_new`, `vec_push`, `vec_at`, `vec_set`, `vec_len`, `vec_take_last`,
+  `vec_clear`) and the rest — `vec_pop`, `vec_of`, `vec_list`, the walks,
+  the slices, the sorts — in the prelude. Storage, so refused across
+  strands like a map, and not showable: `vec_list(v)` is the value.
+  `examples/vectors.rill`.
+- **Atomics on a `Buf(Int)`**: `atomic_load`, `atomic_store`,
+  `atomic_add` and `atomic_cas`, one word as a single step, sequentially
+  consistent and bounds-checked. The sharing check of a `--parallel` build
+  knows them as the one write two strands may make to the same storage
+  without an `apart`. `examples/atomics.rill`.
+- **`to_json(x)`**, JSON derived from the type the way `show` is: named
+  fields are an object, lists and tuples arrays, `None` is `null`, several
+  constructors are `{"Ctor": {...}}`, strings are escaped, and a third
+  built-in trait, `Json`, lets an `impl Json(T)` with `to_json(x) -> Str`
+  say otherwise for `T` wherever it appears. `examples/json_derive.rill`.
+- **`db/oxiview`**: an OxiDB reply read in place rather than decoded. A
+  `View` is the frame and an offset; a field is found by skipping the
+  values before it, which the wire's lengths make cheap, and only what is
+  asked for is made. Ranking six hundred documents by two fields costs
+  about a tenth of decoding them.
+
 ## 0.14.0 — a review, and a chip to run on
 
 The release where a review of the compiler and the runtime against C

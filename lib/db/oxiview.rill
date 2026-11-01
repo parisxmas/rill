@@ -1,0 +1,284 @@
+module oxiview
+
+# A reply read in place: a view onto an OxiWire frame instead of a `Json`
+# value built from it.
+#
+# `ow_call` decodes the whole reply — every string copied, every array a
+# list, every document a list of fields — before the caller has said which
+# of it it wants. A page that asks for six hundred documents to rank them by
+# distance reads two numbers from each and keeps eight; the other five
+# hundred and ninety-two were decoded for nothing. A `View` is the frame and
+# an offset into it, and nothing else: reading a field skips over the values
+# before it, which the wire makes cheap because every length is written in
+# front of what it measures. Only what is asked for is made — a string is
+# copied out when `vw_str` is called, a document is built when `vw_json` is.
+#
+#     # not run
+#     import "db/oxiview"
+#     v = ow_call_view(fd, command("find", on("streets", Cons(Field("query", JObj(Nil)), Nil))))?
+#     best = vw_fold(v, Nil, \acc, d -> keep_near(acc, vw_float(vw_at(d, "lat")), vw_float(vw_at(d, "lon")), d))
+#     map(best, \d -> vw_json(d))   # decode the handful that were kept
+#
+# On a frame of six hundred documents of nine fields, ranking by two of them
+# this way costs about a tenth of decoding the frame (`vw_bench` below).
+import "db/oxiwire"
+
+# The frame and where in it this value begins.
+type View
+  View(s: Str, at: Int)
+
+# -- getting one ------------------------------------------------------------------
+
+# One request, one reply, as a view onto the frame — the counterpart of
+# `ow_call`. The status byte is read here; an error still arrives as text.
+#
+#     # not run
+#     import "db/oxiview"
+#     v = ow_call_view(fd, request)?   # a View of the answer, or Err(the server's message)
+fn ow_call_view(fd, request) =
+  ow_send(fd, request)
+  vw_reply(ow_recv(fd))
+
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_int(vw_reply(chr(219) + chr(0) + ow_encode(JInt(7)))?)            # => 7
+#     vw_reply(chr(219) + chr(1) + ow_encode(JStr("no such collection")))   # => Err(no such collection)
+#     vw_reply("")                                                           # => Err(oxidb: the server said nothing)
+fn vw_reply(frame) =
+  if str_len(frame) < 2 then Err("oxidb: the server said nothing") else if str_get(frame, 0) != 219 then Err("oxidb: the reply is not OxiWire") else if str_get(frame, 1) == 0 then Ok(View(frame, 2)) else Err(vw_str(View(frame, 2)))
+
+# A view of a value encoded on its own, for a frame already in hand.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_tag(vw_of(ow_encode(JArr(Nil))))   # => 7
+fn vw_of(encoded) = View(encoded, 0)
+
+# -- what a value is ------------------------------------------------------------------
+
+# The wire's tag: 0 null, 1 false, 2 true, 3 int, 4 unsigned, 5 float,
+# 6 string, 7 array, 8 map; -1 past the end of the frame.
+fn vw_tag(v: View) = if v.at >= str_len(v.s) then 0 - 1 else str_get(v.s, v.at)
+
+fn vw_is_null(v) = vw_tag(v) == 0
+
+fn vw_is_str(v) = vw_tag(v) == 6
+
+fn vw_is_arr(v) = vw_tag(v) == 7
+
+fn vw_is_obj(v) = vw_tag(v) == 8
+
+# -- reading scalars ----------------------------------------------------------------------
+
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_int(vw_of(ow_encode(JInt(42))))      # => 42
+#     vw_int(vw_of(ow_encode(JNum(2.0))))     # => 2
+#     vw_int(vw_of(ow_encode(JStr("no"))))    # => 0
+fn vw_int(v: View) =
+  t = vw_tag(v)
+  if t == 3 || t == 4 then int_at(v.s, v.at + 1) else if t == 5 then to_int(bits_float(int_at(v.s, v.at + 1))) else if t == 2 then 1 else 0
+
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_float(vw_of(ow_encode(JNum(51.5))))   # => 51.5
+#     vw_float(vw_of(ow_encode(JInt(3))))      # => 3
+fn vw_float(v: View) =
+  t = vw_tag(v)
+  if t == 5 then bits_float(int_at(v.s, v.at + 1)) else if t == 3 || t == 4 then to_float(int_at(v.s, v.at + 1)) else 0.0
+
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_bool(vw_of(ow_encode(JBool(true))))   # => true
+#     vw_bool(vw_of(ow_encode(JInt(0))))       # => false
+fn vw_bool(v: View) =
+  t = vw_tag(v)
+  t == 2 || (t == 3 || t == 4) && int_at(v.s, v.at + 1) != 0
+
+# The one copy a string costs, made when it is asked for and not before.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_str(vw_of(ow_encode(JStr("ada"))))   # => ada
+#     vw_str(vw_of(ow_encode(JInt(1))))       # =>
+fn vw_str(v: View) = if vw_tag(v) == 6 then str_sub(v.s, v.at + 5, u32_at(v.s, v.at + 1)) else ""
+
+# -- documents ----------------------------------------------------------------------------------
+
+# How many fields a map has, or elements an array.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_len(vw_of(ow_encode(JArr(Cons(JInt(1), Cons(JInt(2), Nil))))))   # => 2
+#     vw_len(vw_of(ow_encode(JNull)))                                      # => 0
+fn vw_len(v: View) = if vw_is_arr(v) || vw_is_obj(v) then u32_at(v.s, v.at + 1) else 0
+
+# The field under `key`, found by walking the pairs and comparing the key's
+# bytes where they lie — no string is made for a key that is not the one
+# asked for. `None` when the value is not a map or has no such field.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     doc = vw_of(ow_encode(JObj(Cons(Field("name", JStr("ada")), Cons(Field("age", JInt(36)), Nil)))))
+#     vw_int(vw_at(doc, "age"))            # => 36
+#     opt_map(vw_get(doc, "nope"), vw_tag)   # => None
+fn vw_get(v: View, key) =
+  if vw_is_obj(v) then field_from(v.s, v.at + 5, u32_at(v.s, v.at + 1), key) else None
+
+private fn field_from(s, i, n, key) =
+  if n <= 0 then None
+  else
+    k = u32_at(s, i)
+    if k == str_len(key) && bytes_match(s, i + 4, key) then Some(View(s, i + 4 + k)) else field_from(s, skip(s, i + 4 + k), n - 1, key)
+
+private fn bytes_match(s, i, key) =
+  for j in 0..str_len(key) with ok = true
+    ok && str_get(s, i + j) == str_get(key, j)
+
+# `vw_get`, with a view of null standing in for a field that is not there,
+# so that `vw_int(vw_at(d, "n"))` reads as a lookup with a default of zero.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_tag(vw_at(vw_of(ow_encode(JObj(Nil))), "x"))   # => 0
+fn vw_at(v: View, key) = match vw_get(v, key)
+  Some(f) -> f
+  None -> View(chr(0), 0)
+
+# A nested field: `vw_path(d, Cons("price", Cons("pence", Nil)))`.
+fn vw_path(v: View, keys) = match keys
+  Nil -> v
+  Cons(k, rest) -> vw_path(vw_at(v, k), rest)
+
+# Element `i` of an array, by skipping the `i` before it.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     arr = vw_of(ow_encode(JArr(Cons(JStr("a"), Cons(JStr("b"), Nil)))))
+#     opt_map(vw_item(arr, 1), vw_str)   # => Some(b)
+#     opt_map(vw_item(arr, 2), vw_str)   # => None
+fn vw_item(v: View, i) =
+  if !vw_is_arr(v) || i < 0 || i >= vw_len(v) then None else Some(View(v.s, skip_n(v.s, v.at + 5, i)))
+
+private fn skip_n(s, i, n) = if n <= 0 then i else skip_n(s, skip(s, i), n - 1)
+
+# Every element of an array, each a view and none of them decoded.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     map(vw_items(vw_of(ow_encode(JArr(Cons(JInt(1), Cons(JInt(2), Nil)))))), vw_int)   # => Cons(1, Cons(2, Nil))
+fn vw_items(v: View) =
+  if vw_is_arr(v) then reverse(items_from(v.s, v.at + 5, vw_len(v), Nil)) else Nil
+
+private fn items_from(s, i, n, acc) =
+  if n <= 0 then acc else items_from(s, skip(s, i), n - 1, Cons(View(s, i), acc))
+
+# A walk over an array that builds no list: `f(acc, element)` for each, in
+# order. This is what a ranking over many documents wants.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_fold(vw_of(ow_encode(JArr(Cons(JInt(1), Cons(JInt(2), Nil))))), 0, \acc, e -> acc + vw_int(e))   # => 3
+fn vw_fold(v: View, init, f) =
+  if vw_is_arr(v) then fold_from(v.s, v.at + 5, vw_len(v), init, f) else init
+
+private fn fold_from(s, i, n, acc, f) =
+  if n <= 0 then acc else fold_from(s, skip(s, i), n - 1, f(acc, View(s, i)), f)
+
+# The keys of a map, in the order they were written.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_keys(vw_of(ow_encode(JObj(Cons(Field("a", JInt(1)), Cons(Field("b", JInt(2)), Nil))))))   # => Cons(a, Cons(b, Nil))
+fn vw_keys(v: View) =
+  if vw_is_obj(v) then reverse(keys_from(v.s, v.at + 5, vw_len(v), Nil)) else Nil
+
+private fn keys_from(s, i, n, acc) =
+  if n <= 0 then acc
+  else
+    k = u32_at(s, i)
+    keys_from(s, skip(s, i + 4 + k), n - 1, Cons(str_sub(s, i + 4, k), acc))
+
+# The value, decoded after all — for the few that are kept.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_json(vw_of(ow_encode(JObj(Cons(Field("n", JInt(5)), Nil)))))   # => JObj(Cons(Field(n, JInt(5)), Nil))
+fn vw_json(v: View) = match ow_decode(v.s, v.at)
+  Parsed(j, _) -> j
+  Failed(_, _) -> JNull
+
+# Where the next value begins: the whole point of the format. Scalars are
+# one tag and a fixed width; a string is its length; an array or map is a
+# count and the values after it, each skipped the same way.
+fn skip(s, i) =
+  t = str_get(s, i)
+  if t <= 2 then i + 1 else if t <= 5 then i + 9 else if t == 6 then i + 5 + u32_at(s, i + 1) else if t == 7 then skip_n(s, i + 5, u32_at(s, i + 1)) else if t == 8 then skip_pairs(s, i + 5, u32_at(s, i + 1)) else str_len(s)
+
+private fn skip_pairs(s, i, n) =
+  if n <= 0 then i else skip_pairs(s, skip(s, i + 4 + u32_at(s, i)), n - 1)
+
+# The byte count of this value on the wire, for a reader that wants to know
+# what it is holding — a document's size, say, without making it.
+#
+#     import "db/oxiview"
+#     import "data/json"
+#     vw_bytes(vw_of(ow_encode(JStr("abc"))))   # => 8
+fn vw_bytes(v: View) = skip(v.s, v.at) - v.at
+
+# -- little-endian words, as `oxiwire.rill` reads them ----------------------------------
+
+private fn u32_at(s, i) =
+  str_get(s, i) + shl(str_get(s, i + 1), 8) + shl(str_get(s, i + 2), 16) + shl(str_get(s, i + 3), 24)
+
+private fn int_at(s, i) =
+  u32_at(s, i) + shl(str_get(s, i + 4), 32) + shl(str_get(s, i + 5), 40) + shl(str_get(s, i + 6), 48) + shl(str_get(s, i + 7), 56)
+
+# -- tests --------------------------------------------------------------------------------------
+
+private fn doc(i) =
+  JObj(Cons(Field("sku", JInt(i)), Cons(Field("name", JStr("item-" + int_to_str(i))), Cons(Field("tags", JArr(Cons(JStr("a"), Cons(JStr("b"), Nil)))), Cons(Field("lat", JNum(51.5 + to_float(i % 100) / 1000.0)), Cons(Field("lon", JNum(0.0 - to_float(i % 70) / 1000.0)), Cons(Field("nested", JObj(Cons(Field("deep", JObj(Cons(Field("n", JInt(i * 2)), Nil))), Nil))), Nil)))))))
+
+private fn frame(n) = ow_encode(JArr(map(range(1, n), doc)))
+
+fn test_fields_and_nesting() =
+  v = vw_of(frame(3))
+  assert_eq(vw_len(v), 3)
+  second = unwrap_or(vw_item(v, 1), View("", 0))
+  assert_eq(vw_int(vw_at(second, "sku")), 2)
+  assert_eq(vw_str(vw_at(second, "name")), "item-2")
+  assert_eq(vw_int(vw_path(second, Cons("nested", Cons("deep", Cons("n", Nil))))), 4)
+  assert_eq(vw_keys(second), Cons("sku", Cons("name", Cons("tags", Cons("lat", Cons("lon", Cons("nested", Nil)))))))
+  assert_eq(vw_json(second), doc(2))
+
+fn test_fold_matches_decode() =
+  v = vw_of(frame(50))
+  total = vw_fold(v, 0, \acc, d -> acc + vw_int(vw_at(d, "sku")))
+  assert_eq(total, sum(range(1, 50)))
+  assert_eq(len(vw_items(v)), 50)
+  assert_eq(vw_bytes(v), str_len(frame(50)))
+
+fn test_absent_and_wrong_kinds() =
+  v = vw_of(frame(1))
+  first = unwrap_or(vw_item(v, 0), View("", 0))
+  assert_eq(vw_tag(vw_at(first, "missing")), 0)
+  assert_eq(vw_int(vw_at(first, "missing")), 0)
+  assert_eq(vw_str(vw_at(first, "sku")), "")
+  assert_eq(vw_get(vw_at(first, "sku"), "x"), None)
+  assert_eq(vw_item(vw_at(first, "name"), 0), None)
+
+# How much a ranking costs through a view against decoding the frame: the
+# two numbers are printed by `rill test lib/db/oxiview.rill test_bench` and
+# the test only asks that the view be the cheaper of the two.
+fn test_bench() =
+  f = frame(600)
+  t0 = now_nanos()
+  through_view = for k in 0..20 with acc = 0.0
+    acc + vw_fold(vw_of(f), 0.0, \a, d -> a + vw_float(vw_at(d, "lat")) * vw_float(vw_at(d, "lon")))
+  t1 = now_nanos()
+  decoded = for k in 0..20 with acc = 0.0
+    acc + (match ow_decode(f, 0) Parsed(j, _) -> fold(items(j), 0.0, \a, d -> a + as_float(unwrap_or(get(d, "lat"), JNull)) * as_float(unwrap_or(get(d, "lon"), JNull))) Failed(_, _) -> 0.0)
+  t2 = now_nanos()
+  println("view " + int_to_str((t1 - t0) / 20000) + " us per frame, decode " + int_to_str((t2 - t1) / 20000) + " us per frame")
+  assert(through_view == decoded)
+  assert(t1 - t0 < t2 - t1)

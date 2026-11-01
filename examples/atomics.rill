@@ -1,0 +1,27 @@
+# Eight strands counting into one word, on as many workers as the run has.
+#
+# A `Buf(Int)` is storage, and a `--parallel` build refuses two strands that
+# write it. `atomic_add` is the exception the check knows: one word, read and
+# written as a single step, sequentially consistent, so eight strands adding
+# a thousand each come to exactly eight thousand on one worker or on eight —
+# and no `apart` is needed, because nothing here is being claimed.
+#
+#     rill build examples/atomics.rill --parallel -o atomics && RILL_THREADS=4 ./atomics
+fn main() =
+  counter = buf_int(2)
+  done = channel()
+  for k in 0..8
+    spawn count(counter, done)
+  for k in 0..8
+    recv(done)
+  println(atomic_load(counter, 0))
+  # The compare-and-swap: a word claimed once, by whoever gets there first.
+  println(atomic_cas(counter, 1, 0, 7))
+  println(atomic_cas(counter, 1, 0, 9))
+  println(atomic_load(counter, 1))
+  println(atomic_store(counter, 1, 3))
+
+fn count(counter, done) =
+  for i in 0..1000
+    atomic_add(counter, 0, 1)
+  send(done, 1)

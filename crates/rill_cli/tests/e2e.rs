@@ -2786,6 +2786,70 @@ fn hash_tables() {
     );
 }
 
+/// The vector: any value, indexed in constant time, retained and released
+/// by the vector; strings, flat records, closures and vectors of vectors go
+/// in and come out, and nothing is left allocated at the end.
+#[test]
+fn vectors() {
+    assert_eq!(
+        compile_and_run("vectors.rill"),
+        concat!(
+            "10\nSome(9)\nNone\n100\n376\nSome(81)\n9\n",
+            "Cons(0, Cons(1, Cons(4, Nil)))\n",
+            "Cons(1, Cons(2, Cons(5, Cons(101, Cons(17, Cons(26, Cons(37, Cons(50, Cons(65, Nil)))))))))\n",
+            "Cons(0, Cons(4, Cons(100, Cons(16, Cons(36, Cons(64, Nil))))))\n",
+            "Cons(apple, Cons(fig, Cons(pear, Nil)))\n",
+            "Cons(fig, Cons(pear, Cons(apple, Nil)))\n",
+            "1\nCons(plums, Cons(fig, Cons(apple, Nil)))\n7\n12\n",
+            "Cons(3, Cons(12, Cons(21, Nil)))\n",
+            "Cons(64, Cons(49, Cons(36, Cons(25, Cons(16, Cons(100, Cons(4, Cons(1, Cons(0, Nil)))))))))\n",
+            "0\nNone\n"
+        )
+    );
+}
+
+/// `to_json`, derived from the type: objects for named fields, arrays for
+/// lists and tuples, `null` for `None`, tagged objects for several
+/// constructors, strings escaped, an `impl Json` honoured wherever its type
+/// appears, and a twenty-thousand-element list written as a loop.
+#[test]
+fn json_is_derived_from_the_type() {
+    assert_eq!(
+        compile_and_run("json_derive.rill"),
+        concat!(
+            "42\n2.5\ntrue\n\"say \\\"hi\\\"\\n\\ttab \\\\ slash\"\n[1,2,3]\n[]\n\"x\"\nnull\n",
+            "[1,\"a\",2]\n{\"x\":3,\"y\":4}\n{\"Circle\":{\"r\":1.5}}\n\"Dot\"\n",
+            "{\"code\":\"LB-7K3M9Q2A\",\"items\":[\"books\",\"tea\"],\"weight\":4.5,\"fragile\":false,",
+            "\"note\":null,\"at\":{\"x\":51,\"y\":-1},\"shape\":{\"Rect\":{\"w\":2,\"h\":3}},\"pair\":[7,\"seven\"]}\n",
+            "{\"total\":29.05,\"lines\":[1.00,28.05]}\n[{\"x\":1,\"y\":2},null]\n108895\n"
+        )
+    );
+}
+
+/// Eight strands adding to one word through `atomic_add` come to exactly
+/// eight thousand, on one worker and on four, and the parallel build is
+/// accepted without an `apart` — the atomics are the sanctioned shared write.
+#[test]
+fn atomics_count_exactly() {
+    assert_eq!(compile_and_run("atomics.rill"), "8000\ntrue\nfalse\n7\n3\n");
+    let root = workspace_root();
+    let out_dir = std::env::temp_dir().join(format!("rill-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let exe = out_dir.join("atomics_par");
+    let build = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("build")
+        .arg("--parallel")
+        .arg(root.join("examples/atomics.rill"))
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&exe).env("RILL_THREADS", "4").output().unwrap();
+    assert!(run.status.success(), "atomics exited with {:?}", run.status.code());
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "8000\ntrue\nfalse\n7\n3\n");
+}
+
 /// The typed buffer: a width in the type, a length it checks against, and a
 /// count that frees it — with C reading the same bytes through `buf_data`.
 #[test]

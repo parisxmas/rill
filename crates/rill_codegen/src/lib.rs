@@ -145,7 +145,10 @@ fn check_exports(tmod: &TModule, target: Option<&str>, shared: bool) -> Result<(
     let scalar = |t: &Ty| {
         matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Ptr)
             || (!wasm
-                && matches!(t, Ty::Adt(..) | Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..)))
+                && matches!(
+                    t,
+                    Ty::Adt(..) | Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..) | Ty::Vec(..)
+                ))
     };
     let allowed = if wasm {
         "only Int, Float, Bool and Ptr cross the wasm boundary"
@@ -405,6 +408,7 @@ fn subst_gen(ty: &Ty, args: &[Ty]) -> Ty {
         ),
         Ty::Chan(e) => Ty::Chan(Box::new(subst_gen(e, args))),
         Ty::Map(k, v) => Ty::Map(Box::new(subst_gen(k, args)), Box::new(subst_gen(v, args))),
+        Ty::Vec(e) => Ty::Vec(Box::new(subst_gen(e, args))),
         other => other.clone(),
     }
 }
@@ -441,6 +445,7 @@ fn mangle(ty: &Ty, adts: &[rill_types::AdtDef]) -> String {
         }
         Ty::Chan(e) => format!("Chan_{}", mangle(e, adts)),
         Ty::Map(k, v) => format!("Map_{}_{}", mangle(k, adts), mangle(v, adts)),
+        Ty::Vec(e) => format!("Vec_{}", mangle(e, adts)),
         Ty::Buf(w) => format!("Buf_{}", w.name()),
         Ty::Ptr => "Ptr".into(),
         Ty::Var(_) | Ty::Gen(_) => unreachable!("mangling requires concrete types"),
@@ -543,7 +548,7 @@ fn borrowed_params(tmod: &TModule) -> Vec<Vec<bool>> {
                     // `map_onto` keeps its list; `kick` walking the bodies
                     // does not.
                     let candidate = match t {
-                        Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..) => true,
+                        Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..) | Ty::Vec(..) => true,
                         Ty::Adt(adt, _) => !constructs_adt(&f.body, *adt),
                         _ => false,
                     };
@@ -1263,7 +1268,7 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(callee);
             args.iter().for_each(f);
         }
-        TK::Println(x) | TK::Print(x) | TK::Show(x) | TK::Inspect(x) | TK::Neg(x) | TK::Spawn { body: x, .. } => f(x),
+        TK::Println(x) | TK::Print(x) | TK::Show(x) | TK::Json(x) | TK::Inspect(x) | TK::Neg(x) | TK::Spawn { body: x, .. } => f(x),
         TK::ChanNew(x) => {
             if let Some(x) = x {
                 f(x)
@@ -1282,8 +1287,18 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         TK::FieldGet { base, .. } => f(base),
         TK::FieldNamed { .. } => unreachable!("`zonk` names every deferred field"),
         TK::UpdateNamed { .. } => unreachable!("`zonk` builds every deferred update"),
-        TK::MapNew => {}
+        TK::MapNew | TK::VecNew => {}
         TK::MapLen { map } | TK::MapClear { map } => f(map),
+        TK::VecLen { vec } | TK::VecClear { vec } | TK::VecTake { vec } => f(vec),
+        TK::VecAt { vec, idx: other } | TK::VecPush { vec, val: other } => {
+            f(vec);
+            f(other);
+        }
+        TK::VecSet { vec, idx, val } => {
+            f(vec);
+            f(idx);
+            f(val);
+        }
         TK::MapFind { map, key: other }
         | TK::MapDel { map, key: other }
         | TK::MapNext { map, from: other }
@@ -1841,7 +1856,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             Ty::Bool => Some(self.ctx.bool_type().into()),
             Ty::Adt(..) if self.is_flat(ty) => Some(self.flat_struct(ty).into()),
             Ty::Str | Ty::StrBuf | Ty::Adt(..) | Ty::Chan(..) | Ty::Ptr | Ty::Buf(_)
-            | Ty::Map(..) => Some(self.ctx.ptr_type(Default::default()).into()),
+            | Ty::Map(..) | Ty::Vec(..) => Some(self.ctx.ptr_type(Default::default()).into()),
             Ty::Fn(..) => Some(self.closure_type().into()),
             Ty::Unit => None,
             Ty::Var(_) | Ty::Gen(_) => unreachable!("codegen requires concrete types"),
@@ -2960,6 +2975,27 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             void.fn_type(&[ptrt.into(), i64t.into()], false),
             None,
         );
+        // Atomics on one word of an Int buffer, bounds-checked in the runtime.
+        self.module.add_function(
+            "rill_buf_atomic_load",
+            i64t.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_buf_atomic_store",
+            i64t.fn_type(&[ptrt.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_buf_atomic_add",
+            i64t.fn_type(&[ptrt.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_buf_atomic_cas",
+            i8t.fn_type(&[ptrt.into(), i64t.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
         // Cold: the call is what a loop makes when its range is *not* inside
         // the buffer, and reaching it ends the program.
         let check = self.module.add_function(
@@ -3021,6 +3057,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             grow.add_attribute(AttributeLoc::Function, self.ctx.create_enum_attribute(cold, 0));
         }
         self.module.add_function("rill_strbuf_take", ptrt.fn_type(&[ptrt.into()], false), None);
+        // A string into a builder as a JSON string literal, quoted and escaped.
+        self.module.add_function(
+            "rill_json_quote",
+            void.fn_type(&[ptrt.into(), ptrt.into()], false),
+            None,
+        );
         self.module.add_function("rill_strbuf_len", i64t.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_strbuf_release", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function(
@@ -3236,6 +3278,30 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             None,
         );
         self.module.add_function("rill_map_release", void.fn_type(&[ptrt.into()], false), None);
+
+        // Vectors: one piece of runtime code for every element type, told
+        // how to retain and release an element by the same vtable a map's
+        // values use (the key half is unused).
+        self.module.add_function("rill_vec_new", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_vec_push",
+            void.fn_type(&[ptrt.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_vec_at",
+            words.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_vec_set",
+            void.fn_type(&[ptrt.into(), i64t.into(), i64t.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_vec_len", i64t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_vec_take", words.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_vec_clear", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_vec_release", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_str_hash", i64t.fn_type(&[ptrt.into()], false), None);
 
         // Foreign functions, declared at the widths the C symbol was compiled
@@ -3417,7 +3483,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 (w0, w1)
             }
             Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_)
-            | Ty::Map(..) => (
+            | Ty::Map(..) | Ty::Vec(..) => (
                 b.build_ptr_to_int(v.into_pointer_value(), i64t, "w").unwrap(),
                 zero,
             ),
@@ -3492,7 +3558,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 b.build_bit_cast(v1, self.ctx.f64_type().vec_type(2), "f2").unwrap()
             }
             Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Ptr | Ty::Buf(_)
-            | Ty::Map(..) => {
+            | Ty::Map(..) | Ty::Vec(..) => {
                 let _ = bw;
                 b.build_int_to_ptr(a, ptrt, "p").unwrap().into()
             }
@@ -3526,6 +3592,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 | Ty::StrBuf
                 | Ty::Buf(_)
                 | Ty::Map(..)
+                | Ty::Vec(..)
         )
     }
 
@@ -4044,7 +4111,9 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let rc = self.buf_rc_ptr(v.into_pointer_value());
                 self.emit_rc_inc(rc.into())
             }
-            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Map(..) => self.emit_rc_inc(v),
+            Ty::Adt(..) | Ty::Chan(..) | Ty::Str | Ty::StrBuf | Ty::Map(..) | Ty::Vec(..) => {
+                self.emit_rc_inc(v)
+            }
             Ty::Fn(..) => {
                 let env = self
                     .builder
@@ -4246,6 +4315,7 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             }
             Ty::Chan(..) => Some(self.call_rt("rill_chan_release", &[v.into()])),
             Ty::Map(..) => Some(self.call_rt("rill_map_release", &[v.into()])),
+            Ty::Vec(..) => Some(self.call_rt("rill_vec_release", &[v.into()])),
             Ty::Buf(w) => {
                 let size = self.ctx.i64_type().const_int(w.size_bytes(), false);
                 Some(self.call_rt("rill_buf_release", &[v.into(), size.into()]))
@@ -4655,6 +4725,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 self.emit_release(v, ty);
                 Ok(self.const_str("<map>").into())
             }
+            Ty::Vec(..) if self.lenient => {
+                self.emit_release(v, ty);
+                Ok(self.const_str("<vec>").into())
+            }
             Ty::Ptr if self.lenient => Ok(self.const_str("<ptr>").into()),
             other => Err(CodegenError::new(
                 line,
@@ -4855,6 +4929,273 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
         self.builder.position_at_end(ret_bb);
         self.builder.build_return(None).expect("LLVM builder error");
 
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(f)
+    }
+
+    // ---- derived JSON ---------------------------------------------------
+    //
+    // `to_json(x)` is written from the type the way `show` is, into one
+    // builder: a number as its digits, a string quoted and escaped, a list as
+    // an array, an `Option` as its value or `null`, a tuple as an array, a
+    // record with named fields as an object, a type with several
+    // constructors as `{"Ctor": {...}}` (or the bare name, quoted, for one
+    // with no fields). An `impl Json(T)` replaces the derived text for `T`
+    // wherever a `T` appears.
+
+    /// The JSON text of an owned value, as an owned string.
+    fn gen_json_of(
+        &mut self,
+        v: BasicValueEnum<'ctx>,
+        ty: &Ty,
+        line: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let sb = match self.call_rt("rill_strbuf_new", &[]).try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(b) => b,
+            _ => unreachable!("a builder"),
+        };
+        self.gen_json_into(sb, v, ty, line)?;
+        if self.is_heap(ty) {
+            self.emit_release(v, ty);
+        }
+        let out = match self.call_rt("rill_strbuf_take", &[sb.into()]).try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(s) => s,
+            _ => unreachable!("a string"),
+        };
+        self.call_rt("rill_strbuf_release", &[sb.into()]);
+        Ok(out)
+    }
+
+    /// Appends the JSON text of a borrowed value to a builder.
+    fn gen_json_into(
+        &mut self,
+        sb: BasicValueEnum<'ctx>,
+        v: BasicValueEnum<'ctx>,
+        ty: &Ty,
+        line: usize,
+    ) -> Result<(), CodegenError> {
+        // A user `impl Json(T)` says what the text is. The impl takes its
+        // argument owned, and this function only borrows `v`.
+        if let Some(fn_idx) = self.user_impl(rill_types::JSON_TRAIT, 0, ty) {
+            if self.is_heap(ty) {
+                self.emit_retain(v, ty);
+            }
+            let call = self.call_impl(fn_idx, ty, &[v.into()], "json");
+            let s = match call.try_as_basic_value() {
+                inkwell::values::ValueKind::Basic(s) => s,
+                _ => unreachable!("`to_json` returns a string"),
+            };
+            self.call_rt("rill_strbuf_add", &[sb.into(), s.into()]);
+            self.emit_release(s, &Ty::Str);
+            return Ok(());
+        }
+        match ty {
+            Ty::Int | Ty::Float | Ty::Bool => {
+                let s = self.gen_show_of(v, ty, line)?;
+                self.call_rt("rill_strbuf_add", &[sb.into(), s.into()]);
+                self.emit_release(s, &Ty::Str);
+                Ok(())
+            }
+            Ty::Str => {
+                self.call_rt("rill_json_quote", &[sb.into(), v.into()]);
+                Ok(())
+            }
+            Ty::Unit => {
+                let s = self.const_str("null");
+                self.call_rt("rill_strbuf_add", &[sb.into(), s.into()]);
+                Ok(())
+            }
+            Ty::Float2 => {
+                let (x, y) = self.lanes(v);
+                self.json_text(sb, "[");
+                self.gen_json_into(sb, x.into(), &Ty::Float, line)?;
+                self.json_text(sb, ",");
+                self.gen_json_into(sb, y.into(), &Ty::Float, line)?;
+                self.json_text(sb, "]");
+                Ok(())
+            }
+            Ty::Adt(adt, _) if self.is_flat(ty) => {
+                let fields = self.flat_fields(ty).expect("flat");
+                let c = self.tmod.adts[*adt].ctors[0].clone();
+                let values: Vec<BasicValueEnum<'ctx>> =
+                    (0..fields.len()).map(|fi| self.extract_field(v, fi as u32)).collect();
+                self.json_fields(sb, &c.name, &c.names, &values, &fields, line)
+            }
+            Ty::Adt(..) => {
+                let f = self.adt_json_to(ty, line)?;
+                self.builder.build_call(f, &[v.into(), sb.into()], "").expect("LLVM builder error");
+                Ok(())
+            }
+            other => Err(CodegenError::new(
+                line,
+                format!("cannot write a value of type {} as JSON", mangle_friendly(other, &self.tmod.adts)),
+            )),
+        }
+    }
+
+    fn json_text(&mut self, sb: BasicValueEnum<'ctx>, text: &str) {
+        let s = self.const_str(text);
+        self.call_rt("rill_strbuf_add", &[sb.into(), s.into()]);
+    }
+
+    /// The fields of one constructor: an object when every field has a name,
+    /// an array otherwise — a tuple being the usual case of the second.
+    fn json_fields(
+        &mut self,
+        sb: BasicValueEnum<'ctx>,
+        ctor: &str,
+        names: &[Option<String>],
+        values: &[BasicValueEnum<'ctx>],
+        types: &[Ty],
+        line: usize,
+    ) -> Result<(), CodegenError> {
+        let named = !values.is_empty()
+            && !is_tuple_ctor(ctor, values.len())
+            && names.iter().all(|n| n.is_some());
+        self.json_text(sb, if named { "{" } else { "[" });
+        for (fi, (fv, ft)) in values.iter().zip(types).enumerate() {
+            if fi > 0 {
+                self.json_text(sb, ",");
+            }
+            if named {
+                let key = format!("{:?}:", names[fi].as_deref().unwrap_or(""));
+                self.json_text(sb, &key);
+            }
+            self.gen_json_into(sb, *fv, ft, line)?;
+        }
+        self.json_text(sb, if named { "}" } else { "]" });
+        Ok(())
+    }
+
+    /// `jsonto$T(box, builder)`: appends the JSON of a boxed value. A list is
+    /// walked rather than recursed down, so a long one costs no stack.
+    fn adt_json_to(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!("jsonto${}", mangle(ty, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let (adt, targs) = match ty {
+            Ty::Adt(i, targs) => (*i, targs.clone()),
+            _ => unreachable!("adt_json_to on non-ADT"),
+        };
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let i64t = self.ctx.i64_type();
+        let fn_ty = self.ctx.void_type().fn_type(&[ptrt.into(), ptrt.into()], false);
+        let f = self.module.add_function(&name, fn_ty, None);
+        f.set_linkage(inkwell::module::Linkage::Internal);
+        let saved = self.builder.get_insert_block();
+        let sb = f.get_nth_param(1).unwrap();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        let adt_name = self.tmod.adts[adt].name.clone();
+        let ctors = self.tmod.adts[adt].ctors.clone();
+        let tag_of = |this: &mut Self, p: PointerValue<'ctx>| -> IntValue<'ctx> {
+            let tag_ptr = this
+                .builder
+                .build_struct_gep(this.header_struct(), p, 1, "tag.ptr")
+                .expect("LLVM builder error");
+            this.builder.build_load(i64t, tag_ptr, "tag").expect("LLVM builder error").into_int_value()
+        };
+        let field_of = |this: &mut Self, p: PointerValue<'ctx>, ci: usize, fi: usize, ft: &Ty| {
+            let st = this.ctor_struct(adt, ci, &targs);
+            let fp = this
+                .builder
+                .build_struct_gep(st, p, (fi + 2) as u32, "f")
+                .expect("LLVM builder error");
+            this.builder.build_load(this.slot_type(ft), fp, "fv").expect("LLVM builder error")
+        };
+
+        // A list: `[` the elements `]`, in a loop over the cells.
+        let is_list = adt_name == "List" && ctors.len() == 2 && ctors.iter().any(|c| c.name == "Cons" && c.fields.len() == 2);
+        if is_list {
+            let (cons_ci, cons) = ctors.iter().enumerate().find(|(_, c)| c.name == "Cons").unwrap();
+            let elem_ty = subst_gen(&cons.fields[0], &targs);
+            let head_bb = self.ctx.append_basic_block(f, "cell");
+            let body_bb = self.ctx.append_basic_block(f, "elem");
+            let more_bb = self.ctx.append_basic_block(f, "more");
+            let end_bb = self.ctx.append_basic_block(f, "end");
+            self.json_text(sb.into(), "[");
+            let start = f.get_nth_param(0).unwrap().into_pointer_value();
+            self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+            self.builder.position_at_end(head_bb);
+            let p_phi = self.builder.build_phi(ptrt, "p").expect("LLVM builder error");
+            p_phi.add_incoming(&[(&start, entry)]);
+            let p = p_phi.as_basic_value().into_pointer_value();
+            let tag = tag_of(self, p);
+            let is_cons = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, tag, i64t.const_int(cons.tag, false), "cons")
+                .expect("LLVM builder error");
+            self.builder.build_conditional_branch(is_cons, body_bb, end_bb).expect("LLVM builder error");
+            self.builder.position_at_end(body_bb);
+            let hv = field_of(self, p, cons_ci, 0, &elem_ty);
+            self.gen_json_into(sb.into(), hv, &elem_ty, line)?;
+            let tl = field_of(self, p, cons_ci, 1, ty).into_pointer_value();
+            let ttag = tag_of(self, tl);
+            let tail_cons = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, ttag, i64t.const_int(cons.tag, false), "tcons")
+                .expect("LLVM builder error");
+            let after_elem = self.builder.get_insert_block().unwrap();
+            self.builder.build_conditional_branch(tail_cons, more_bb, end_bb).expect("LLVM builder error");
+            self.builder.position_at_end(more_bb);
+            self.json_text(sb.into(), ",");
+            p_phi.add_incoming(&[(&tl, more_bb)]);
+            self.builder.build_unconditional_branch(head_bb).expect("LLVM builder error");
+            let _ = after_elem;
+            self.builder.position_at_end(end_bb);
+            self.json_text(sb.into(), "]");
+            self.builder.build_return(None).expect("LLVM builder error");
+            if let Some(bb) = saved {
+                self.builder.position_at_end(bb);
+            }
+            return Ok(f);
+        }
+
+        let p = f.get_nth_param(0).unwrap().into_pointer_value();
+        let tag = tag_of(self, p);
+        let default_bb = self.ctx.append_basic_block(f, "bad");
+        let done_bb = self.ctx.append_basic_block(f, "done");
+        let mut cases = Vec::new();
+        for (ci, c) in ctors.iter().enumerate() {
+            let bb = self.ctx.append_basic_block(f, &format!("json.{}", c.name));
+            cases.push((i64t.const_int(c.tag, false), bb, ci));
+        }
+        self.builder
+            .build_switch(tag, default_bb, &cases.iter().map(|(v, b, _)| (*v, *b)).collect::<Vec<_>>())
+            .expect("LLVM builder error");
+        self.builder.position_at_end(default_bb);
+        self.builder.build_unreachable().expect("LLVM builder error");
+        let is_option = adt_name == "Option" && ctors.len() == 2;
+        for (_, bb, ci) in cases {
+            self.builder.position_at_end(bb);
+            let c = &ctors[ci];
+            let types: Vec<Ty> = c.fields.iter().map(|t| subst_gen(t, &targs)).collect();
+            let values: Vec<BasicValueEnum<'ctx>> =
+                (0..types.len()).map(|fi| field_of(self, p, ci, fi, &types[fi])).collect();
+            if is_option {
+                // `None` is null and `Some(x)` is `x`: an absent field, not a tag.
+                if values.is_empty() {
+                    self.json_text(sb.into(), "null");
+                } else {
+                    self.gen_json_into(sb.into(), values[0], &types[0], line)?;
+                }
+            } else if ctors.len() == 1 {
+                self.json_fields(sb.into(), &c.name, &c.names, &values, &types, line)?;
+            } else if values.is_empty() {
+                // A constructor with nothing in it is its name, as a string.
+                self.json_text(sb.into(), &format!("{:?}", c.name));
+            } else {
+                self.json_text(sb.into(), &format!("{{{:?}:", c.name));
+                self.json_fields(sb.into(), &c.name, &c.names, &values, &types, line)?;
+                self.json_text(sb.into(), "}");
+            }
+            self.builder.build_unconditional_branch(done_bb).expect("LLVM builder error");
+        }
+        self.builder.position_at_end(done_bb);
+        self.builder.build_return(None).expect("LLVM builder error");
         if let Some(bb) = saved {
             self.builder.position_at_end(bb);
         }
@@ -5068,6 +5409,21 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 Ok(((**k).clone(), (**v).clone()))
             }
             other => unreachable!("map operation on {other:?}"),
+        }
+    }
+
+    fn vec_el(&self, ty: &Ty, line: usize) -> Result<Ty, CodegenError> {
+        match ty {
+            Ty::Vec(e) => {
+                if **e == Ty::Unit {
+                    return Err(CodegenError::new(
+                        line,
+                        "a vector cannot hold `Unit` — there would be nothing in it".to_string(),
+                    ));
+                }
+                Ok((**e).clone())
+            }
+            other => unreachable!("vector operation on {other:?}"),
         }
     }
 
@@ -8855,6 +9211,96 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 // A `Unit` field is no value at all, whatever its slot holds.
                 Ok(if fty == Ty::Unit { None } else { Some(v) })
             }
+            TK::VecNew => {
+                let ety = {
+                    let vty = self.concrete(&e.ty, subst);
+                    self.vec_el(&vty, e.line)?
+                };
+                let vt = self.map_vtable(&Ty::Int, &ety, e.line)?;
+                let call = self.call_rt("rill_vec_new", &[vt.into()]);
+                Ok(match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Some(v),
+                    _ => unreachable!("rill_vec_new returns a pointer"),
+                })
+            }
+            // The value is moved into the vector, as into a table.
+            TK::VecPush { vec, val } => {
+                let vty = self.concrete(&vec.ty, subst);
+                let ety = self.vec_el(&vty, e.line)?;
+                let (m, owned) = self.gen_borrowed(vec, scope, subst, func)?;
+                let vv = self.gen_expr(val, scope, subst, func)?.expect("value");
+                let (v0, v1) = self.pack_words(vv, &ety);
+                self.call_rt("rill_vec_push", &[m.into(), v0.into(), v1.into()]);
+                if owned {
+                    self.emit_release(m, &vty);
+                }
+                Ok(None)
+            }
+            TK::VecSet { vec, idx, val } => {
+                let vty = self.concrete(&vec.ty, subst);
+                let ety = self.vec_el(&vty, e.line)?;
+                let (m, owned) = self.gen_borrowed(vec, scope, subst, func)?;
+                let i = self.gen_expr(idx, scope, subst, func)?.expect("value");
+                let vv = self.gen_expr(val, scope, subst, func)?.expect("value");
+                let (v0, v1) = self.pack_words(vv, &ety);
+                self.call_rt("rill_vec_set", &[m.into(), i.into(), v0.into(), v1.into()]);
+                if owned {
+                    self.emit_release(m, &vty);
+                }
+                Ok(None)
+            }
+            TK::VecLen { vec } | TK::VecClear { vec } => {
+                let clearing = matches!(&e.kind, TK::VecClear { .. });
+                let vty = self.concrete(&vec.ty, subst);
+                let (m, owned) = self.gen_borrowed(vec, scope, subst, func)?;
+                let call = self
+                    .call_rt(if clearing { "rill_vec_clear" } else { "rill_vec_len" }, &[m.into()]);
+                let out = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Some(v),
+                    _ => None,
+                };
+                if owned {
+                    self.emit_release(m, &vty);
+                }
+                Ok(out)
+            }
+            // An element comes back in the two words everything travels in,
+            // and comes back owned: `vec_at` retained it before letting go,
+            // `vec_take_last` hands over the vector's own reference.
+            TK::VecAt { vec, .. } | TK::VecTake { vec } => {
+                let vty = self.concrete(&vec.ty, subst);
+                let ety = self.vec_el(&vty, e.line)?;
+                let (m, owned) = self.gen_borrowed(vec, scope, subst, func)?;
+                let call = if let TK::VecAt { idx, .. } = &e.kind {
+                    let i = self.gen_expr(idx, scope, subst, func)?.expect("value");
+                    self.call_rt("rill_vec_at", &[m.into(), i.into()])
+                } else {
+                    self.call_rt("rill_vec_take", &[m.into()])
+                };
+                let got = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => unreachable!("both answer with two words"),
+                };
+                let words = got.into_struct_value();
+                let w0 = self
+                    .builder
+                    .build_extract_value(words, 0, "w0")
+                    .expect("LLVM builder error")
+                    .into_int_value();
+                let w1 = self
+                    .builder
+                    .build_extract_value(words, 1, "w1")
+                    .expect("LLVM builder error")
+                    .into_int_value();
+                let v = self.unpack_words(w0, w1, &ety);
+                if self.is_flat(&ety) {
+                    self.release_flat_box(w0, &ety);
+                }
+                if owned {
+                    self.emit_release(m, &vty);
+                }
+                Ok(Some(v))
+            }
             TK::MapNew => {
                 let (kty, vty) = {
                     let mty = self.concrete(&e.ty, subst);
@@ -9352,6 +9798,12 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let v = self.gen_expr(arg, scope, subst, func)?;
                 let v = v.expect("show argument is never Unit");
                 Ok(Some(self.gen_show_of(v, &ty, e.line)?))
+            }
+            TK::Json(arg) => {
+                let ty = self.concrete(&arg.ty, subst);
+                let v = self.gen_expr(arg, scope, subst, func)?;
+                let v = v.expect("to_json argument is never Unit");
+                Ok(Some(self.gen_json_of(v, &ty, e.line)?))
             }
             TK::Inspect(arg) => {
                 let ty = self.concrete(&arg.ty, subst);

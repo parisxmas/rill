@@ -1,0 +1,52 @@
+# `Vec(a)`: a growable array of any value, indexed in constant time.
+#
+# A list is a chain of cells and everything but its front is a walk; a buffer
+# is an array but holds only numbers. A vector is the array that holds
+# anything — strings, records, closures, other vectors — retaining and
+# releasing what it holds the way a map does its values.
+type Pt
+  Pt(x: Int, y: Int)
+
+fn main() =
+  v = vec_new()
+  for i in 0..10
+    vec_push(v, i * i)
+  println(#v)  # 10
+  println(v[3])  # Some(9) — an index may be past the end
+  println(v[10])  # None
+  v[3] = 100  # replaces, releasing what was there
+  println(vec_at(v, 3))  # 100
+  println(vec_sum(v))
+  println(vec_pop(v))  # Some(81)
+  println(#v)
+  println(vec_list(vec_take(v, 3)))
+  println(vec_list(vec_map(v, \x -> x + 1)))
+  println(vec_list(vec_filter(v, \x -> x % 2 == 0)))
+  # strings: counted values, pushed, read back and let go without a leak
+  words = vec_of(Cons("pear", Cons("fig", Cons("apple", Nil))))
+  println(vec_list(vec_sort(words)))
+  println(vec_list(vec_sort_by(words, \w -> #w)))
+  println(vec_index_of(words, "fig"))
+  vec_set(words, 0, "plum" + "s")
+  println(vec_list(words))
+  # a flat record is boxed on the way in and unboxed on the way out
+  pts = vec_new()
+  vec_push(pts, Pt(1, 2))
+  vec_push(pts, Pt(3, 4))
+  println(unwrap_or(opt_map(pts[1], \p -> p.x + p.y), 0))
+  # closures take two words a slot
+  fs = vec_of(Cons(\n -> n + 1, Cons(\n -> n * 2, Nil)))
+  println(vec_fold(fs, 5, \acc, f -> f(acc)))
+  # a vector of vectors
+  grid = vec_new()
+  for r in 0..3
+    row = vec_new()
+    for c in 0..3
+      vec_push(row, r * 3 + c)
+    vec_push(grid, row)
+  println(vec_list(vec_map(grid, vec_sum)))
+  vec_reverse(v)
+  println(vec_list(v))
+  vec_clear(v)
+  println(#v)
+  println(vec_pop(v))

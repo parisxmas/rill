@@ -56,6 +56,11 @@ pub enum Ty {
     /// changes without the name changing — but its two type arguments are
     /// ordinary types rather than a C width, so they are inferred as usual.
     Map(Box<Ty>, Box<Ty>),
+    /// A growable array of values of one type. Storage like a `Map` — what
+    /// it holds changes without the name changing — indexed in constant
+    /// time and appended to at the end, holding any value and retaining and
+    /// releasing it as a table does. Its element type is inferred as usual.
+    Vec(Box<Ty>),
     /// Bytes on their way to becoming a string. Storage like a `Buf`, and for
     /// the same reason: a string is a value, so building one by `+` copies
     /// what is already there every time.
@@ -256,6 +261,9 @@ pub struct TraitInfo {
 pub const SHOW_TRAIT: usize = 0;
 /// Index of the built-in `Ord` trait, which powers `<`, `<=`, `>` and `>=`.
 pub const ORD_TRAIT: usize = 1;
+/// `Json`: an `impl Json(T)` with `to_json(x) -> Str` replaces the derived
+/// JSON rendering of `to_json`, as `Show` replaces the derived printing.
+pub const JSON_TRAIT: usize = 2;
 
 /// What a trait is implemented for (v1: builtins and non-generic ADTs).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -352,6 +360,8 @@ pub enum TK {
     /// `show(x)` — structural rendering of any value to Str (resolved per
     /// concrete type during monomorphization).
     Show(Box<TExpr>),
+    /// `to_json(x)` — the value as JSON text, derived from its type.
+    Json(Box<TExpr>),
     /// `machine_show(x)`: shown the way `show` shows, with what `show`
     /// refuses said instead of refused — a channel as `#n`, the number
     /// the trace gives it, a function as `<fn>`, storage as `<buf>` or
@@ -403,6 +413,20 @@ pub enum TK {
     /// The key or the value in a slot, owned.
     MapKeyAt { map: Box<TExpr>, idx: Box<TExpr> },
     MapValAt { map: Box<TExpr>, idx: Box<TExpr> },
+    /// `vec_new()` — an empty vector of the expression's `Vec(a)` type.
+    VecNew,
+    /// `vec_push(v, x)` — the value is moved to the end of the vector.
+    VecPush { vec: Box<TExpr>, val: Box<TExpr> },
+    /// `vec_at(v, i)` — element `i`, owned: the vector retained it before
+    /// letting go. Past the end ends the program, as a buffer does; the
+    /// prelude's `vec_get` is the `Option` over it.
+    VecAt { vec: Box<TExpr>, idx: Box<TExpr> },
+    /// `v[i] = x` — replaces element `i`, releasing what was there.
+    VecSet { vec: Box<TExpr>, idx: Box<TExpr>, val: Box<TExpr> },
+    VecLen { vec: Box<TExpr> },
+    /// `vec_take_last(v)` — the last element, removed and handed over owned.
+    VecTake { vec: Box<TExpr> },
+    VecClear { vec: Box<TExpr> },
     /// `p.x` — one field of a box, read by the position its name has. The
     /// value comes back owned, as everything a program holds does.
     FieldGet { base: Box<TExpr>, adt: usize, ctor: usize, index: usize },
@@ -953,8 +977,18 @@ impl Checker {
                 default: None,
             }],
         ));
-        // `compare` is callable directly; `show` stays the built-in function
-        // and consults the impl table when the concrete type is known.
+        c.traits.push((
+            "Json".to_string(),
+            vec![MethodInfo {
+                name: "to_json".to_string(),
+                params: vec![Ty::Gen(0)],
+                ret: Ty::Str,
+                default: None,
+            }],
+        ));
+        // `compare` is callable directly; `show` and `to_json` stay the
+        // built-in functions and consult the impl table when the concrete
+        // type is known.
         c.method_index.insert("compare".to_string(), (ORD_TRAIT, 0));
 
         // Traits: method signatures with Gen(0) as the trait parameter.
@@ -1215,7 +1249,9 @@ impl Checker {
             for &s in &c.trait_supers[tid] {
                 let met = match s {
                     ORD_TRAIT => c.check_need(&target_ty, Constraint::Ordered, line, "").is_ok(),
-                    SHOW_TRAIT => c.check_need(&target_ty, Constraint::Basic, line, "").is_ok(),
+                    SHOW_TRAIT | JSON_TRAIT => {
+                        c.check_need(&target_ty, Constraint::Basic, line, "").is_ok()
+                    }
                     s => c.has_impl(s, &target_ty),
                 };
                 if !met {
@@ -1550,7 +1586,7 @@ impl Checker {
                 // `Str` meet without an impl.
                 let need = match tid {
                     ORD_TRAIT => Constraint::Ordered,
-                    SHOW_TRAIT => Constraint::Basic,
+                    SHOW_TRAIT | JSON_TRAIT => Constraint::Basic,
                     t => Constraint::Impl(t),
                 };
                 required.push((inst[i as usize].clone(), need, b.line));
@@ -1750,6 +1786,7 @@ impl Checker {
             }
             Ty::Chan(e) => self.occurs(v, &e),
             Ty::Map(k, val) => self.occurs(v, &k) || self.occurs(v, &val),
+            Ty::Vec(e) => self.occurs(v, &e),
             Ty::Buf(_) => false,
             _ => false,
         }
@@ -1789,6 +1826,10 @@ impl Checker {
                 self.unify(&xk, &yk, line, ctx)?;
                 self.unify(&xv, &yv, line, ctx)
             }
+            (Ty::Vec(x), Ty::Vec(y)) => {
+                let (x, y) = (x.clone(), y.clone());
+                self.unify(&x, &y, line, ctx)
+            }
             _ if ra == rb => Ok(()),
             _ => Err(TypeError::new(
                 line,
@@ -1827,6 +1868,7 @@ impl Checker {
             }
             Ty::Chan(e) => format!("Chan({})", self.type_name(&e)),
             Ty::Map(k, v) => format!("Map({}, {})", self.type_name(&k), self.type_name(&v)),
+            Ty::Vec(e) => format!("Vec({})", self.type_name(&e)),
             Ty::StrBuf => "StrBuf".into(),
             Ty::Buf(w) => format!("Buf({})", w.name()),
             Ty::Var(_) => "_".into(),
@@ -1864,6 +1906,7 @@ impl Checker {
             // one, and the answer says how.
             let hint = match ty {
                 Ty::Map(..) => " — `map_items(m)` is a map as a value",
+                Ty::Vec(..) => " — `vec_list(v)` is a vector as a value",
                 Ty::Buf(_) => " — a buffer is storage; measure it or read an element",
                 Ty::Unit => " — `()` is nothing, and there is nothing of it to use",
                 _ => "",
@@ -2384,6 +2427,7 @@ impl Checker {
                 Box::new(self.generalize(&k, genmap, order)),
                 Box::new(self.generalize(&v, genmap, order)),
             ),
+            Ty::Vec(e) => Ty::Vec(Box::new(self.generalize(&e, genmap, order))),
             Ty::Buf(w) => Ty::Buf(w.clone()),
             other => other,
         }
@@ -2418,6 +2462,7 @@ impl Checker {
                 Box::new(self.zonk(&k, genmap, defaults)),
                 Box::new(self.zonk(&v, genmap, defaults)),
             ),
+            Ty::Vec(e) => Ty::Vec(Box::new(self.zonk(&e, genmap, defaults))),
             Ty::Buf(w) => Ty::Buf(w.clone()),
             other => other,
         }
@@ -2543,8 +2588,20 @@ impl Checker {
                 let sets = wheres.into_iter().zip(std::mem::take(fields)).map(|(per, (_, v, _))| (per, v)).collect();
                 e.kind = self.lower_update(adt, targs, *base, sets, e.line).kind;
             }
-            TK::MapNew => {}
+            TK::MapNew | TK::VecNew => {}
             TK::MapLen { map } | TK::MapClear { map } => self.zonk_expr(map, genmap, defaults),
+            TK::VecLen { vec } | TK::VecClear { vec } | TK::VecTake { vec } => {
+                self.zonk_expr(vec, genmap, defaults)
+            }
+            TK::VecAt { vec, idx: other } | TK::VecPush { vec, val: other } => {
+                self.zonk_expr(vec, genmap, defaults);
+                self.zonk_expr(other, genmap, defaults);
+            }
+            TK::VecSet { vec, idx, val } => {
+                self.zonk_expr(vec, genmap, defaults);
+                self.zonk_expr(idx, genmap, defaults);
+                self.zonk_expr(val, genmap, defaults);
+            }
             TK::MapFind { map, key: other }
             | TK::MapDel { map, key: other }
             | TK::MapNext { map, from: other }
@@ -2578,7 +2635,7 @@ impl Checker {
                     self.zonk_expr(a, genmap, defaults);
                 }
             }
-            TK::Println(a) | TK::Print(a) | TK::Show(a) | TK::Inspect(a) | TK::Neg(a) => {
+            TK::Println(a) | TK::Print(a) | TK::Show(a) | TK::Json(a) | TK::Inspect(a) | TK::Neg(a) => {
                 self.zonk_expr(a, genmap, defaults)
             }
             TK::ChanNew(cap) => {
@@ -2918,6 +2975,11 @@ impl Checker {
                         line: *line,
                         kind: TK::MapLen { map: Box::new(b) },
                     }),
+                    Ty::Vec(..) => Ok(TExpr {
+                        ty: Ty::Int,
+                        line: *line,
+                        kind: TK::VecLen { vec: Box::new(b) },
+                    }),
                     Ty::Str | Ty::Var(_) => {
                         self.unify(&Ty::Str, &b.ty, *line, "the operand of `#`")?;
                         Ok(TExpr {
@@ -2946,9 +3008,12 @@ impl Checker {
                 // absence is an `Option` everywhere else in the language. The
                 // base is inferred a second time by the call, which costs a
                 // few type variables and no code.
-                if matches!(self.resolve(&b.ty), Ty::Map(..)) {
+                // A vector reads the same way, through `vec_get`: an index
+                // may be past the end, and that too is an `Option`.
+                if matches!(self.resolve(&b.ty), Ty::Map(..) | Ty::Vec(..)) {
+                    let getter = if matches!(self.resolve(&b.ty), Ty::Vec(..)) { "vec_get" } else { "map_get" };
                     let call = Expr::Call {
-                        name: "map_get".to_string(),
+                        name: getter.to_string(),
                         args: vec![(**base).clone(), (**index).clone()],
                         line: *line,
                         piped: false,
@@ -3017,6 +3082,21 @@ impl Checker {
                         kind: TK::MapSet {
                             map: Box::new(b),
                             key: Box::new(key),
+                            val: Box::new(val),
+                        },
+                    });
+                }
+                if let Ty::Vec(el) = self.resolve(&b.ty) {
+                    let idx = self.infer(index, env)?;
+                    self.unify(&Ty::Int, &idx.ty, *line, "index")?;
+                    let val = self.infer(value, env)?;
+                    self.unify(&el, &val.ty, *line, "a vector element")?;
+                    return Ok(TExpr {
+                        ty: Ty::Unit,
+                        line: *line,
+                        kind: TK::VecSet {
+                            vec: Box::new(b),
+                            idx: Box::new(idx),
                             val: Box::new(val),
                         },
                     });
@@ -4022,7 +4102,7 @@ impl Checker {
             }
             let v = self.infer(&args[0], env)?;
             match self.resolve(&v.ty) {
-                Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..) | Ty::Chan(..) => {}
+                Ty::Buf(_) | Ty::Str | Ty::StrBuf | Ty::Map(..) | Ty::Vec(..) | Ty::Chan(..) => {}
                 Ty::Adt(..) => {}
                 other => {
                     return Err(TypeError::new(
@@ -4169,6 +4249,48 @@ impl Checker {
         // A map's two type arguments are ordinary types, so — unlike a
         // buffer's width — they unify like anything else and these all work
         // inside a generic function without an annotation.
+        if let Some(arity) = vec_builtin_arity(name) {
+            if args.len() != arity {
+                return Err(TypeError::new(
+                    line,
+                    format!("`{name}` takes {arity} argument(s), but {} given", args.len()),
+                ));
+            }
+            if name == "vec_new" {
+                let el = self.fresh();
+                return Ok(TExpr { ty: Ty::Vec(Box::new(el)), line, kind: TK::VecNew });
+            }
+            let v = self.infer(&args[0], env)?;
+            let el = self.fresh();
+            self.unify(&v.ty, &Ty::Vec(Box::new(el.clone())), line, &format!("`{name}`"))?;
+            let vec = Box::new(v);
+            return Ok(match name {
+                "vec_len" => TExpr { ty: Ty::Int, line, kind: TK::VecLen { vec } },
+                "vec_clear" => TExpr { ty: Ty::Unit, line, kind: TK::VecClear { vec } },
+                "vec_take_last" => TExpr { ty: el, line, kind: TK::VecTake { vec } },
+                "vec_push" => {
+                    let val = self.infer(&args[1], env)?;
+                    self.unify(&el, &val.ty, line, "a vector element")?;
+                    TExpr { ty: Ty::Unit, line, kind: TK::VecPush { vec, val: Box::new(val) } }
+                }
+                "vec_at" => {
+                    let idx = self.infer(&args[1], env)?;
+                    self.unify(&Ty::Int, &idx.ty, line, "a vector index")?;
+                    TExpr { ty: el, line, kind: TK::VecAt { vec, idx: Box::new(idx) } }
+                }
+                _ => {
+                    let idx = self.infer(&args[1], env)?;
+                    self.unify(&Ty::Int, &idx.ty, line, "a vector index")?;
+                    let val = self.infer(&args[2], env)?;
+                    self.unify(&el, &val.ty, line, "a vector element")?;
+                    TExpr {
+                        ty: Ty::Unit,
+                        line,
+                        kind: TK::VecSet { vec, idx: Box::new(idx), val: Box::new(val) },
+                    }
+                }
+            });
+        }
         if let Some(arity) = map_builtin_arity(name) {
             if args.len() != arity {
                 return Err(TypeError::new(
@@ -4290,6 +4412,17 @@ impl Checker {
             let a = self.infer(&args[0], env)?;
             self.require(&a.ty, Constraint::Basic, line, "`show`")?;
             return Ok(TExpr { ty: Ty::Str, line, kind: TK::Show(Box::new(a)) });
+        }
+        // `to_json(x)`: the value as JSON text, derived from its type the way
+        // `show` is — a record is an object, a list an array, a `Some` its
+        // value and a `None` null — unless an `impl Json(T)` says otherwise.
+        if name == "to_json" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`to_json` takes exactly one argument"));
+            }
+            let a = self.infer(&args[0], env)?;
+            self.require(&a.ty, Constraint::Basic, line, "`to_json`")?;
+            return Ok(TExpr { ty: Ty::Str, line, kind: TK::Json(Box::new(a)) });
         }
         if name == "machine_show" {
             if args.len() != 1 {
@@ -4515,6 +4648,23 @@ impl Checker {
             // held, for a caller about to write every one: `zeros` costs a
             // clearing pass an array operation does not need.
             "buf_float_uninit" => Some(("rill_buf_new_uninit_f64", vec![Ty::Int], Ty::Buf(CTy::F64))),
+            // One word of a `Buf(Int)` read or written atomically, sequentially
+            // consistent, bounds-checked: what strands on several workers may
+            // share without a channel. `atomic_add` answers the new value,
+            // `atomic_cas` whether the swap happened. The sharing check lets
+            // these through where it refuses `v[i] = x`.
+            "atomic_load" => Some(("rill_buf_atomic_load", vec![Ty::Buf(CTy::I64), Ty::Int], Ty::Int)),
+            "atomic_store" => {
+                Some(("rill_buf_atomic_store", vec![Ty::Buf(CTy::I64), Ty::Int, Ty::Int], Ty::Int))
+            }
+            "atomic_add" => {
+                Some(("rill_buf_atomic_add", vec![Ty::Buf(CTy::I64), Ty::Int, Ty::Int], Ty::Int))
+            }
+            "atomic_cas" => Some((
+                "rill_buf_atomic_cas",
+                vec![Ty::Buf(CTy::I64), Ty::Int, Ty::Int, Ty::Int],
+                Ty::Bool,
+            )),
             // Two lanes at once. `f2_load(b, i)` is `(b[i], b[i + 1])` as one
             // register and `f2_store` puts one back; `fma2` is a fused
             // multiply-add on both lanes.
@@ -5465,6 +5615,7 @@ impl Checker {
             }
             (Ty::Chan(a), Ty::Chan(b)) => self.same_type(&a, &b),
             (Ty::Map(k, v), Ty::Map(l, w)) => self.same_type(&k, &l) && self.same_type(&v, &w),
+            (Ty::Vec(x), Ty::Vec(y)) => self.same_type(&x, &y),
             (a, b) => a == b,
         }
     }
@@ -5502,6 +5653,7 @@ fn mentions_gen(t: &Ty) -> bool {
         Ty::Fn(ps, r) => ps.iter().any(mentions_gen) || mentions_gen(r),
         Ty::Chan(e) => mentions_gen(e),
         Ty::Map(k, v) => mentions_gen(k) || mentions_gen(v),
+        Ty::Vec(e) => mentions_gen(e),
         _ => false,
     }
 }
@@ -5530,6 +5682,7 @@ fn subst_gen(ty: &Ty, args: &[Ty]) -> Ty {
         ),
         Ty::Chan(e) => Ty::Chan(Box::new(subst_gen(e, args))),
         Ty::Map(k, v) => Ty::Map(Box::new(subst_gen(k, args)), Box::new(subst_gen(v, args))),
+        Ty::Vec(e) => Ty::Vec(Box::new(subst_gen(e, args))),
         Ty::Buf(w) => Ty::Buf(w.clone()),
         other => other.clone(),
     }
@@ -5890,6 +6043,7 @@ pub fn show_type(ty: &Ty, adts: &[AdtDef]) -> String {
         }
         Ty::Chan(e) => format!("Chan({})", show_type(e, adts)),
         Ty::Map(k, v) => format!("Map({}, {})", show_type(k, adts), show_type(v, adts)),
+        Ty::Vec(e) => format!("Vec({})", show_type(e, adts)),
         Ty::Var(_) => "_".into(),
         Ty::Gen(i) => format!("'{}", (b'a' + (*i % 26) as u8) as char),
     }
@@ -5963,7 +6117,7 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             }
         }
         TK::Int(_) | TK::Float(_) | TK::Str(_) | TK::Bool(_) | TK::Local(_) | TK::FnRef { .. } => {}
-        TK::MapNew => {}
+        TK::MapNew | TK::VecNew => {}
         TK::Builtin { args, .. }
         | TK::CallFn { args, .. }
         | TK::MethodCall { args, .. }
@@ -5976,6 +6130,7 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         TK::Println(x)
         | TK::Print(x)
         | TK::Show(x)
+        | TK::Json(x)
         | TK::Inspect(x)
         | TK::Neg(x)
         | TK::Spawn { body: x, .. }
@@ -5997,6 +6152,9 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         | TK::BufPtr { buf: ch }
         | TK::MapLen { map: ch }
         | TK::MapClear { map: ch }
+        | TK::VecLen { vec: ch }
+        | TK::VecClear { vec: ch }
+        | TK::VecTake { vec: ch }
         | TK::FieldGet { base: ch, .. } => f(ch),
         TK::BufNew { count, .. } => f(count),
         TK::BufGet { buf: a, idx: b, .. }
@@ -6005,11 +6163,15 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         | TK::MapNext { map: a, from: b }
         | TK::MapKeyAt { map: a, idx: b }
         | TK::MapValAt { map: a, idx: b }
+        | TK::VecAt { vec: a, idx: b }
+        | TK::VecPush { vec: a, val: b }
         | TK::Binary { lhs: a, rhs: b, .. } => {
             f(a);
             f(b);
         }
-        TK::BufSet { buf: a, idx: b, val: c, .. } | TK::MapSet { map: a, key: b, val: c } => {
+        TK::BufSet { buf: a, idx: b, val: c, .. }
+        | TK::MapSet { map: a, key: b, val: c }
+        | TK::VecSet { vec: a, idx: b, val: c } => {
             f(a);
             f(b);
             f(c);
@@ -6081,6 +6243,19 @@ fn is_builtin_type(name: &str) -> bool {
     matches!(name, "Int" | "Float" | "Float2" | "Bool" | "Str" | "StrBuf" | "Unit" | "Ptr")
 }
 
+/// The vector primitives, and how many arguments each takes. Everything
+/// else a program asks a vector — `vec_get`, `vec_pop`, `vec_of`, the sort
+/// — is in the prelude, written on these.
+fn vec_builtin_arity(name: &str) -> Option<usize> {
+    match name {
+        "vec_new" => Some(0),
+        "vec_len" | "vec_clear" | "vec_take_last" => Some(1),
+        "vec_push" | "vec_at" => Some(2),
+        "vec_set" => Some(3),
+        _ => None,
+    }
+}
+
 /// How many arguments each map builtin takes, and by being `Some` at all,
 /// that the name is one.
 fn map_builtin_arity(name: &str) -> Option<usize> {
@@ -6122,6 +6297,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "float_to_str"
             | "bool_to_str"
             | "show"
+            | "to_json"
             | "machine_show"
             | "str_get"
             | "str_sub"
@@ -6193,6 +6369,17 @@ fn is_builtin_fn(name: &str) -> bool {
             | "buf_copy"
             | "buf_cmp"
             | "buf_float_uninit"
+            | "vec_new"
+            | "vec_len"
+            | "vec_clear"
+            | "vec_take_last"
+            | "vec_push"
+            | "vec_at"
+            | "vec_set"
+            | "atomic_load"
+            | "atomic_store"
+            | "atomic_add"
+            | "atomic_cas"
             | "unique"
             | "list_sort"
             | "buf_sort"
@@ -6275,6 +6462,7 @@ fn adts_in(t: &Ty, out: &mut Vec<Ty>) {
             adts_in(k, out);
             adts_in(v, out);
         }
+        Ty::Vec(e) => adts_in(e, out),
         _ => {}
     }
 }
@@ -6286,6 +6474,7 @@ pub fn ty_size(t: &Ty) -> usize {
         Ty::Fn(params, ret) => params.iter().map(ty_size).sum::<usize>() + ty_size(ret),
         Ty::Chan(e) => ty_size(e),
         Ty::Map(k, v) => ty_size(k) + ty_size(v),
+        Ty::Vec(e) => ty_size(e),
         _ => 0,
     }
 }
@@ -6377,6 +6566,18 @@ fn resolve_type_ref(
         }
         let elem = resolve_type_ref(&tr.args[0], adt_index, adts, params)?;
         return Ok(Ty::Chan(Box::new(elem)));
+    }
+    // A program that declared a `Vec` of its own before there was a built-in
+    // one keeps it: the name is the program's where the program defines it.
+    if tr.name == "Vec" && !adt_index.contains_key("Vec") {
+        if tr.args.len() != 1 {
+            return Err(TypeError::new(
+                tr.line,
+                "`Vec` takes exactly one type argument".to_string(),
+            ));
+        }
+        let elem = resolve_type_ref(&tr.args[0], adt_index, adts, params)?;
+        return Ok(Ty::Vec(Box::new(elem)));
     }
     if tr.name == "Map" {
         if tr.args.len() != 2 {

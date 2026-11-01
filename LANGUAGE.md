@@ -1,4 +1,4 @@
-# The Rill Language Reference (0.14)
+# The Rill Language Reference (0.15)
 
 Rill is a strict, statically typed functional language that compiles to native
 executables. This document describes the whole language; every construct shown
@@ -900,6 +900,41 @@ impl Ord(Money)                  # enables <, <=, >, >=
 Without a `Show` impl, every data value already prints structurally
 (`Cons(1, Nil)`), and `==` already compares structurally.
 
+A third built-in trait, `Json`, does for `to_json(x)` what `Show` does for
+`show`: the function is written from the type, and an `impl Json(T)` with a
+`to_json(x) -> Str` replaces what it writes for `T` wherever a `T` appears.
+
+```
+impl Json(Money)                 # pounds with two places, not a record
+  fn to_json(m) = int_to_str(m.pence / 100) + "." + two(m.pence % 100)
+```
+
+### JSON from a type
+
+`to_json(x)` is the value as JSON text, and nothing has to be said about
+how: a number is its digits, a string is quoted and escaped, a list is an
+array, a tuple is an array, a `Some(x)` is `x` and a `None` is `null`, a
+type with one constructor and named fields is an object with those names,
+and a type with several constructors is `{"Ctor": {...}}` — or the bare
+name, quoted, for a constructor with nothing in it.
+
+```
+type Order
+  Order(code: Str, items: List(Str), weight: Float, note: Option(Str))
+
+to_json(Order("LB-7K3M9Q2A", Cons("tea", Nil), 4.5, None))
+# {"code":"LB-7K3M9Q2A","items":["tea"],"weight":4.5,"note":null}
+```
+
+It is derived the way `show` is: one function per concrete type, generated
+when the program is compiled, writing into one builder — a list is walked
+in a loop rather than recursed down, so a long one costs no stack. What
+`show` refuses `to_json` refuses too: a buffer, a map, a vector, a channel
+or a function has no JSON. A map that should be an object is a list of
+pairs first, and a vector is `vec_list(v)`. `examples/json_derive.rill`
+has every case; reading JSON back into a type is `data/json`'s `parse` and
+a function of your own, as before.
+
 ---
 
 ## 6. Memory
@@ -1001,6 +1036,63 @@ sequence read by index, or anything a C version would `realloc`. Reach for
 a queue of work. The JSON parser in `benchmarks/tokens/` is the honest example
 of the difference: it builds arrays as lists, and that one choice is half of
 what it still gives away to the C it is measured against.
+
+### Vectors
+
+`Vec(a)` is the array that holds anything. A `Buf` is an array of numbers
+of one C width; a `List` holds any value but is a chain of cells, so
+`nth` and `len` are walks. A vector is storage like a map — a counted block
+that grows by doubling, holding strings, records, closures, other vectors —
+indexed in constant time, and its element type is an ordinary type, inferred
+as usual:
+
+```
+v = vec_new()
+vec_push(v, "pear")          # at the end
+vec_push(v, "fig")
+v[0]                         # Some("pear") — an index may be past the end
+v[7]                         # None
+v[1] = "plum"                # replaces, releasing what was there
+#v                           # 2
+vec_pop(v)                   # Some("plum"), and the vector is shorter
+```
+
+| | |
+|---|---|
+| `vec_new()` | an empty vector |
+| `vec_push(v, x)` | `x` at the end; the vector keeps it |
+| `v[i]` (or `vec_get(v, i)`) | `Some(x)` or `None` |
+| `vec_at(v, i)` | the element, or the end of the program past the end — for an index already checked |
+| `v[i] = x` (or `vec_set(v, i, x)`) | replace |
+| `#v` (or `vec_len(v)`) | how many |
+| `vec_pop(v)` | the last one, taken out, or `None` |
+| `vec_first` `vec_last` `vec_is_empty` | |
+| `vec_of(list)` `vec_list(v)` | from a list, and back: `vec_list(v)` is the vector as a value, which prints and compares |
+| `vec_each(v, f)` `vec_fold(v, acc, f)` `vec_map(v, f)` `vec_filter(v, p)` `vec_any` `vec_all` `vec_sum` | the walks; `vec_map` and `vec_filter` answer new vectors |
+| `vec_slice(v, i, j)` `vec_take(v, n)` `vec_drop(v, n)` | a window, as a new vector |
+| `vec_sort(v)` `vec_sort_by(v, key)` `vec_sort_with(v, before)` | sorted, as a new vector, by the runtime's merge sort |
+| `vec_swap(v, i, j)` `vec_reverse(v)` `vec_index_of(v, x)` `vec_has(v, x)` `vec_clear(v)` | in place |
+
+What a vector holds it owns: an element pushed in is retained by the vector,
+one read out comes back owned like everything else, and one replaced or
+popped is released. A vector is released with its last reference and takes
+its elements with it. Like a map it is storage, so `println(v)` and `v == w`
+are refused — `vec_list(v)` is the vector as a value — and on a `--parallel`
+build it should be one strand's at a time. The compiler knows seven
+operations (`vec_new`, `vec_push`, `vec_at`, `vec_set`, `vec_len`,
+`vec_take_last`, `vec_clear`); every other function above is written in the
+prelude on those, so there is nothing a program could not have written
+itself.
+
+A program that declares a `type Vec` of its own keeps it — the built-in
+name steps aside wherever the program defines one — so nothing written
+before there was a built-in vector reads differently now.
+
+Reach for `Vec` when the program builds a sequence it will index, sort or
+keep around — the documents a query answered with, the rows of a table —
+and for `List` when it is consing and walking. A thousand strings pushed
+into a vector are one block of a thousand words; the same list is a
+thousand cells.
 
 ### Maps
 
@@ -1657,6 +1749,23 @@ fn main() =
   println(int_to_str(b[0]))
 ```
 
+One write needs no claim. `atomic_add(b, i, n)` adds to one word of a
+`Buf(Int)` as a single step, sequentially consistent, so eight strands on
+eight workers adding to the same word come to the same total as one strand
+would; `atomic_load`, `atomic_store` and `atomic_cas(b, i, old, new)` — the
+swap, if the word still holds `old` — are the rest of it. The check knows
+the four as the sanctioned way two strands share a word, and lets a buffer
+reached only through them pass where `b[i] = x` would be refused. They are
+for a counter, a flag, a mark a writer must see before a reader starts a
+log over: for anything larger a channel is still the thing.
+
+```
+fn count(counter, done) =
+  for i in 0..1000
+    atomic_add(counter, 0, 1)
+  send(done, 1)
+```
+
 The check follows a value through bindings, fields, matches and calls that
 answer with what they were given, and knows which of a function's
 parameters it writes, through every call. Where it cannot see — an extern,
@@ -1697,6 +1806,11 @@ the prelude's `find` and nothing else.
 
 **Maps**: `map_get` `map_or` `map_has` `map_keys` `map_values` `map_items`
 `map_of`
+
+**Vectors**: `vec_get` `vec_pop` `vec_first` `vec_last` `vec_is_empty` `vec_of`
+`vec_list` `vec_push_all` `vec_each` `vec_fold` `vec_map` `vec_filter` `vec_any`
+`vec_all` `vec_sum` `vec_slice` `vec_take` `vec_drop` `vec_swap` `vec_reverse`
+`vec_index_of` `vec_has` `vec_sort` `vec_sort_by` `vec_sort_with`
 
 **Channels**: `recv_opt(ch) -> Option(a)`
 
@@ -1767,6 +1881,7 @@ program in the project, imported by path and usually under a name:
 | `import "coll/heap" as heap` | a priority queue that is a value: a leftist heap, by `<` or by an order given |
 | `import "coll/deque" as dq` | a queue open at both ends that is a value; constant time on average at either |
 | `import "db/oxidb"` and friends | clients for OxiDB's engines |
+| `import "db/oxiview"` | an OxiDB reply read in place: a view onto the frame, a field found by skipping the ones before it, and only what is asked for decoded |
 
 Each module says at its head what it is for and how it is used, keeps its
 helpers `private`, and carries its own tests: `rill test lib/text/regex.rill`
@@ -2397,12 +2512,15 @@ one.
 |---|---|
 | `println(x)` / `print(x)` | print any value type, with or without a newline; standard output is buffered like C's — a line at a time on a terminal, 64 KB otherwise — and written out before the program ends, before `exit`, before a read of standard input and before a strand waits |
 | `show(x) -> Str` | render any value as a string |
+| `to_json(x) -> Str` | the value as JSON text, derived from its type; an `impl Json(T)` replaces the text for `T` — see [JSON from a type](#json-from-a-type) |
 | `int_to_str` `float_to_str` `bool_to_str` `str_to_int` | conversions |
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
 | `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_find_from(s, needle, from)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage. `str_find_from` starts partway along, so a long line can be walked field by field without slicing off the part already read; a start outside the string is clamped |
 | `channel()` `send(ch, v)` `recv(ch)` `close(ch)` `closed(ch)` | channels; `close` wakes everything parked on one, and the prelude's `recv_opt` is written from `chan_wait` and `chan_taken` — see §7 |
 | `map_new()` `m[k] = v` (or `map_set`) `map_len` `map_del` `map_clear` | hash tables; `#m` is `map_len`, and the prelude's `map_get`, `map_or`, `map_has`, `map_keys`, `map_values` and `map_items` are written on top of these |
 | `map_find(m, k)` `map_next(m, i)` `map_key_at(m, i)` `map_val_at(m, i)` | the slot a key is in, the next slot with anything in it, and what is in one — what the prelude's map functions are made of, and what to write a walk of your own with. A slot number means nothing after the next insertion |
+| `vec_new()` `vec_push(v, x)` `vec_at(v, i)` `vec_set(v, i, x)` `vec_len(v)` `vec_take_last(v)` `vec_clear(v)` | vectors; `#v` is `vec_len`, `v[i]` is the prelude's `vec_get`, and `vec_pop`, `vec_of`, `vec_list`, the walks and the sorts are written in the prelude on these — see [Vectors](#vectors) |
+| `atomic_load(b, i)` `atomic_store(b, i, v)` `atomic_add(b, i, n)` `atomic_cas(b, i, old, new)` | one word of a `Buf(Int)`, read or written as a single step, sequentially consistent and bounds-checked; `atomic_add` answers the new value and `atomic_cas` whether the swap happened. The one write to storage two strands may share without a claim — see [What strands may share](#what-strands-may-share) |
 | `arg_count()` `arg(i)` | raw command-line access (`args()` is friendlier) |
 | `yield()` | this strand's turn given up, if another is waiting on the worker — for a long `for` loop with no call to be checked at (§7) |
 | `assert(c)` `assert_eq(got, want)` | end the program where the condition is false, saying the line — and, for `assert_eq`, both values; what `rill test` is written with (§13) |

@@ -1,0 +1,50 @@
+# `to_json(x)`: a value as JSON text, derived from its type.
+#
+# A record with named fields is an object, a list an array, a `Some` is its
+# value and a `None` is `null`, a tuple is an array, a type with several
+# constructors is `{"Ctor": {...}}` — or the bare name, quoted, when the
+# constructor has no fields. Strings are quoted and escaped. An
+# `impl Json(T)` replaces the derived text wherever a `T` appears, as `Show`
+# does for printing.
+type Pt
+  Pt(x: Int, y: Int)
+
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+  Dot
+
+type Order
+  Order(code: Str, items: List(Str), weight: Float, fragile: Bool, note: Option(Str), at: Pt, shape: Shape, pair: (Int, Str))
+
+type Money
+  Money(pence: Int)
+
+# Money is written as pounds with two places, not as a record.
+impl Json(Money)
+  fn to_json(m) = int_to_str(m.pence / 100) + "." + two(m.pence % 100)
+
+fn two(n) = if n < 10 then "0" + int_to_str(n) else int_to_str(n)
+
+type Invoice
+  Invoice(total: Money, lines: List(Money))
+
+fn main() =
+  println(to_json(42))
+  println(to_json(2.5))
+  println(to_json(true))
+  println(to_json("say \"hi\"\n\ttab \\ slash"))
+  println(to_json(Cons(1, Cons(2, Cons(3, Nil)))))
+  println(to_json(Nil))
+  println(to_json(Some("x")))
+  println(to_json(None))
+  println(to_json((1, "a", 2.0)))
+  println(to_json(Pt(3, 4)))
+  println(to_json(Circle(1.5)))
+  println(to_json(Dot))
+  o = Order("LB-7K3M9Q2A", Cons("books", Cons("tea", Nil)), 4.5, false, None, Pt(51, -1), Rect(2.0, 3.0), (7, "seven"))
+  println(to_json(o))
+  println(to_json(Invoice(Money(2905), Cons(Money(100), Cons(Money(2805), Nil)))))
+  println(to_json(Cons(Some(Pt(1, 2)), Cons(None, Nil))))
+  # a long list is a loop, not a recursion
+  println(#to_json(range(1, 20000)))

@@ -42,7 +42,7 @@ enum Share {
 /// value, whose holdings are not in its type.
 fn share_of(ty: &Ty, adts: &[AdtDef], seen: &mut Vec<usize>) -> Share {
     match ty {
-        Ty::Buf(_) | Ty::Map(..) | Ty::StrBuf => Share::Storage,
+        Ty::Buf(_) | Ty::Map(..) | Ty::Vec(..) | Ty::StrBuf => Share::Storage,
         Ty::Fn(..) => Share::Opaque,
         Ty::Adt(i, args) => {
             if seen.contains(i) {
@@ -78,7 +78,19 @@ struct Pass<'a> {
 }
 
 /// Runtime calls that only read the storage they are handed.
-const READS: &[&str] = &["rill_strbuf_len", "rill_buf_cmp", "rill_map_len", "rill_buf_check", "rill_buf_check_off"];
+/// Runtime calls that are not a write the check has to refuse: reads, and
+/// the atomics, which are how two strands share a word on purpose.
+const READS: &[&str] = &[
+    "rill_strbuf_len",
+    "rill_buf_cmp",
+    "rill_map_len",
+    "rill_buf_check",
+    "rill_buf_check_off",
+    "rill_buf_atomic_load",
+    "rill_buf_atomic_store",
+    "rill_buf_atomic_add",
+    "rill_buf_atomic_cas",
+];
 
 pub fn check_shared(tmod: &TModule) -> Result<(), Vec<TypeError>> {
     walk_program(tmod)
@@ -280,6 +292,10 @@ impl<'a> Pass<'a> {
             TK::MapSet { map, .. } | TK::MapDel { map, .. } | TK::MapClear { map } => {
                 self.roots_into(map, aliases, out)
             }
+            TK::VecPush { vec, .. }
+            | TK::VecSet { vec, .. }
+            | TK::VecTake { vec }
+            | TK::VecClear { vec } => self.roots_into(vec, aliases, out),
             TK::Builtin { rt, args } => {
                 if rt.starts_with("rill_") && !READS.contains(rt) {
                     storage_args(args, out);

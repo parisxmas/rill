@@ -562,6 +562,52 @@ pub unsafe extern "C" fn rill_strbuf_add(p: *mut u8, s: *const u8) {
     *(p as *mut i64).add(2) = (len + n) as i64;
 }
 
+/// A string into a builder as a JSON string literal: quoted, with the quote,
+/// the backslash and the control characters escaped. Everything else goes in
+/// as it is, UTF-8 included, which JSON allows.
+///
+/// # Safety
+/// `p` must be a live builder and `s` a live string.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_quote(p: *mut u8, s: *const u8) {
+    let n = str_len_of(s);
+    let b = str_bytes(s);
+    rill_strbuf_byte(p, b'"' as i64);
+    let mut i = 0;
+    while i < n {
+        let c = *b.add(i);
+        match c {
+            b'"' | b'\\' => {
+                rill_strbuf_byte(p, b'\\' as i64);
+                rill_strbuf_byte(p, c as i64);
+            }
+            b'\n' => {
+                rill_strbuf_byte(p, b'\\' as i64);
+                rill_strbuf_byte(p, b'n' as i64);
+            }
+            b'\r' => {
+                rill_strbuf_byte(p, b'\\' as i64);
+                rill_strbuf_byte(p, b'r' as i64);
+            }
+            b'\t' => {
+                rill_strbuf_byte(p, b'\\' as i64);
+                rill_strbuf_byte(p, b't' as i64);
+            }
+            c if c < 0x20 => {
+                for d in b"\\u00" {
+                    rill_strbuf_byte(p, *d as i64);
+                }
+                let hex = b"0123456789abcdef";
+                rill_strbuf_byte(p, hex[(c >> 4) as usize] as i64);
+                rill_strbuf_byte(p, hex[(c & 15) as usize] as i64);
+            }
+            c => rill_strbuf_byte(p, c as i64),
+        }
+        i += 1;
+    }
+    rill_strbuf_byte(p, b'"' as i64);
+}
+
 /// # Safety
 /// `p` must be a live builder. Adds one byte, which is what reading a string
 /// a character at a time produces — `chr` would allocate a string for each.
@@ -5236,6 +5282,193 @@ pub unsafe extern "C" fn rill_str_hash(s: *const u8) -> i64 {
     h as i64
 }
 
+// ---- vectors --------------------------------------------------------------
+//
+// The typed `Vec(a)` of the language: a counted block of slots, `vwords`
+// words each, grown by doubling. Elements are retained and released through
+// the value half of a map's vtable, so one piece of code here serves every
+// element type, and a scalar element is never called back for at all.
+
+#[repr(C)]
+struct RillVec {
+    rc: i64,
+    vt: *const MapVt,
+    data: *mut i64,
+    len: usize,
+    cap: usize,
+    /// Words an element takes: one, or two for a closure.
+    stride: usize,
+}
+
+#[inline]
+unsafe fn vec_vretain(v: *const RillVec, w0: i64, w1: i64) {
+    let vt = (*v).vt;
+    if (*vt).kind & KIND_SCALAR_VAL == 0 {
+        ((*vt).vretain)(w0, w1);
+    }
+}
+
+#[inline]
+unsafe fn vec_vrelease(v: *const RillVec, w0: i64, w1: i64) {
+    let vt = (*v).vt;
+    if (*vt).kind & KIND_SCALAR_VAL == 0 {
+        ((*vt).vrelease)(w0, w1);
+    }
+}
+
+#[inline]
+fn vec_block_bytes(cap: usize, stride: usize) -> u64 {
+    (cap * stride * 8) as u64
+}
+
+/// # Safety
+/// `vt` must be a vtable the compiler emitted, which lives for the program.
+#[no_mangle]
+pub unsafe extern "C" fn rill_vec_new(vt: *const MapVt) -> *mut u8 {
+    let v = rill_alloc(core::mem::size_of::<RillVec>() as u64) as *mut RillVec;
+    core::ptr::write(
+        v,
+        RillVec {
+            rc: 1,
+            vt,
+            data: core::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+            stride: (*vt).vwords as usize,
+        },
+    );
+    v as *mut u8
+}
+
+unsafe fn vec_grow(v: *mut RillVec) {
+    let cap = if (*v).cap == 0 { 8 } else { (*v).cap * 2 };
+    let p = rill_alloc(vec_block_bytes(cap, (*v).stride)) as *mut i64;
+    if (*v).len > 0 {
+        core::ptr::copy_nonoverlapping((*v).data, p, (*v).len * (*v).stride);
+    }
+    if (*v).cap != 0 {
+        rill_free_sized((*v).data as *mut u8, vec_block_bytes((*v).cap, (*v).stride));
+    }
+    (*v).data = p;
+    (*v).cap = cap;
+}
+
+#[inline]
+unsafe fn vec_slot(v: *const RillVec, i: i64) -> *mut i64 {
+    if i < 0 || i as usize >= (*v).len {
+        rill_buf_oob(i, (*v).len as i64);
+    }
+    (*v).data.add(i as usize * (*v).stride)
+}
+
+/// The value arrives owned and the vector keeps it.
+///
+/// # Safety
+/// `p` must be a live vector holding this element type.
+#[no_mangle]
+pub unsafe extern "C" fn rill_vec_push(p: *mut u8, w0: i64, w1: i64) {
+    let v = p as *mut RillVec;
+    if (*v).len == (*v).cap {
+        vec_grow(v);
+    }
+    let slot = (*v).data.add((*v).len * (*v).stride);
+    *slot = w0;
+    if (*v).stride > 1 {
+        *slot.add(1) = w1;
+    }
+    (*v).len += 1;
+}
+
+/// # Safety
+/// `p` must be a live vector.
+#[no_mangle]
+pub unsafe extern "C" fn rill_vec_len(p: *mut u8) -> i64 {
+    (*(p as *const RillVec)).len as i64
+}
+
+/// Element `i`, retained for the caller. Out of range ends the program.
+///
+/// # Safety
+/// `p` must be a live vector.
+#[no_mangle]
+pub unsafe extern "C" fn rill_vec_at(p: *mut u8, i: i64) -> TwoWords {
+    let v = p as *const RillVec;
+    let slot = vec_slot(v, i);
+    let (w0, w1) = (*slot, if (*v).stride > 1 { *slot.add(1) } else { 0 });
+    vec_vretain(v, w0, w1);
+    TwoWords { a: w0 as u64, b: w1 as u64 }
+}
+
+/// Replaces element `i`: the new value arrives owned, the old one is
+/// released after it is stored, so putting a value back where it was is safe.
+///
+/// # Safety
+/// `p` must be a live vector holding this element type.
+#[no_mangle]
+pub unsafe extern "C" fn rill_vec_set(p: *mut u8, i: i64, w0: i64, w1: i64) {
+    let v = p as *mut RillVec;
+    let slot = vec_slot(v, i);
+    let (o0, o1) = (*slot, if (*v).stride > 1 { *slot.add(1) } else { 0 });
+    *slot = w0;
+    if (*v).stride > 1 {
+        *slot.add(1) = w1;
+    }
+    vec_vrelease(v, o0, o1);
+}
+
+/// The last element, removed; the vector's own reference goes to the caller.
+///
+/// # Safety
+/// `p` must be a live vector.
+#[no_mangle]
+pub unsafe extern "C" fn rill_vec_take(p: *mut u8) -> TwoWords {
+    let v = p as *mut RillVec;
+    if (*v).len == 0 {
+        rill_flush_out();
+        err(b"rill: vec_take_last on an empty vector\n");
+        crash_where();
+        die();
+    }
+    (*v).len -= 1;
+    let slot = (*v).data.add((*v).len * (*v).stride);
+    TwoWords { a: *slot as u64, b: if (*v).stride > 1 { *slot.add(1) as u64 } else { 0 } }
+}
+
+unsafe fn vec_drop_entries(v: *mut RillVec) {
+    let mut i = 0;
+    while i < (*v).len {
+        let slot = (*v).data.add(i * (*v).stride);
+        vec_vrelease(v, *slot, if (*v).stride > 1 { *slot.add(1) } else { 0 });
+        i += 1;
+    }
+    (*v).len = 0;
+}
+
+/// Releases every element and keeps the room, for a vector reused round a loop.
+///
+/// # Safety
+/// `p` must be a live vector.
+#[no_mangle]
+pub unsafe extern "C" fn rill_vec_clear(p: *mut u8) {
+    vec_drop_entries(p as *mut RillVec);
+}
+
+/// # Safety
+/// `p` must be a live vector.
+#[no_mangle]
+pub unsafe extern "C" fn rill_vec_release(p: *mut u8) {
+    let v = p as *mut RillVec;
+    if rc_dec(p as *mut i64) != 0 {
+        return;
+    }
+    let (cap, stride) = ((*v).cap, (*v).stride);
+    vec_drop_entries(v);
+    if cap != 0 {
+        rill_free_sized((*v).data as *mut u8, vec_block_bytes(cap, stride));
+    }
+    rill_free_sized(p, core::mem::size_of::<RillVec>() as u64);
+}
+
 // ---- raw buffers ----------------------------------------------------------
 //
 // A C library that wants an array — vertex data, a pixel buffer, a matrix —
@@ -7551,6 +7784,49 @@ pub unsafe extern "C" fn rill_atomic_cas(p: *mut u8, old: i64, new: i64) -> i64 
     atomics::AtomicI64::from_ptr(p as *mut i64)
         .compare_exchange(old, new, core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst)
         .is_ok() as i64
+}
+
+// ---- the same, on an element of a `Buf(Int)` -------------------------------
+//
+// What the language offers: `atomic_add(v, i, n)` and its three siblings
+// take the buffer and an index, check the index, and work on that word.
+// A program never has to make a pointer to use them, and the sharing check
+// knows them as the one write two strands may make to the same storage.
+
+unsafe fn buf_word(p: *mut u8, i: i64) -> *mut u8 {
+    let len = *(p as *const i64).sub(1);
+    if i < 0 || i >= len {
+        rill_buf_oob(i, len);
+    }
+    p.add((i as usize) * 8)
+}
+
+/// # Safety
+/// `p` must be a live `Buf(Int)`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_atomic_load(p: *mut u8, i: i64) -> i64 {
+    rill_atomic_load(buf_word(p, i))
+}
+
+/// # Safety
+/// As `rill_buf_atomic_load`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_atomic_store(p: *mut u8, i: i64, v: i64) -> i64 {
+    rill_atomic_store(buf_word(p, i), v)
+}
+
+/// # Safety
+/// As `rill_buf_atomic_load`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_atomic_add(p: *mut u8, i: i64, d: i64) -> i64 {
+    rill_atomic_add(buf_word(p, i), d)
+}
+
+/// # Safety
+/// As `rill_buf_atomic_load`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_buf_atomic_cas(p: *mut u8, i: i64, old: i64, new: i64) -> i8 {
+    rill_atomic_cas(buf_word(p, i), old, new) as i8
 }
 
 /// The host strand's wait: strands are run on worker 0's execution stack,
