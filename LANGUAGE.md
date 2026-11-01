@@ -932,8 +932,30 @@ in a loop rather than recursed down, so a long one costs no stack. What
 `show` refuses `to_json` refuses too: a buffer, a map, a vector, a channel
 or a function has no JSON. A map that should be an object is a list of
 pairs first, and a vector is `vec_list(v)`. `examples/json_derive.rill`
-has every case; reading JSON back into a type is `data/json`'s `parse` and
-a function of your own, as before.
+has every case.
+
+The other way is `from_json(text)`: the text read into a type, as
+`Result(T, Str)`. Which type is the context's to say — a function's
+return type, a field the value is put into, a match on the `Ok` — and the
+parser is derived from it the way `to_json` was:
+
+```
+fn read_order(text) -> Result(Order, Str) = from_json(text)
+
+read_order("{\"code\": \"c\", \"items\": [], \"weight\": 1, \"note\": null}")
+# Ok(Order(c, Nil, 1, None))
+read_order("{\"code\": 5}")
+# Err(from_json: expected a string at byte 9)
+```
+
+An object's keys may come in any order; a key the type has no field for is
+skipped; a field that never comes is `None` when its type is an `Option`
+and a refusal otherwise. A number read as an `Int` must be whole. Strings
+are unescaped, `\u` pairs included. A refusal says what was expected and
+at which byte, and leaves nothing allocated. What `to_json` wrote,
+`from_json` reads back equal, for every type either accepts; an
+`impl Json` is not consulted on the way in, since the text it writes is
+its own. `examples/json_read.rill` has the cases and the refusals.
 
 ---
 
@@ -2513,6 +2535,7 @@ one.
 | `println(x)` / `print(x)` | print any value type, with or without a newline; standard output is buffered like C's — a line at a time on a terminal, 64 KB otherwise — and written out before the program ends, before `exit`, before a read of standard input and before a strand waits |
 | `show(x) -> Str` | render any value as a string |
 | `to_json(x) -> Str` | the value as JSON text, derived from its type; an `impl Json(T)` replaces the text for `T` — see [JSON from a type](#json-from-a-type) |
+| `from_json(text) -> Result(T, Str)` | the text read into the type the context asks for, the parser derived from `T`; a refusal names what was expected and the byte — see [JSON from a type](#json-from-a-type) |
 | `int_to_str` `float_to_str` `bool_to_str` `str_to_int` | conversions |
 | `to_float(n)` `to_int(x)` | between `Int` and `Float`; `to_int` truncates toward zero |
 | `#s` (or `str_len(s)`) `s[i]` (or `str_get(s, i)`) `s[i:j]` (or `str_sub(s, start, len)`) `str_find(s, needle)` `str_find_from(s, needle, from)` `str_cmp` `chr(byte)` | strings, byte-indexed; a string reads by index but never writes — it is a value, not storage. `str_find_from` starts partway along, so a long line can be walked field by field without slicing off the part already read; a start outside the string is clamped |

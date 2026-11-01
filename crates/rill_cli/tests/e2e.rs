@@ -2826,6 +2826,33 @@ fn json_is_derived_from_the_type() {
     );
 }
 
+/// `from_json`, derived from the type the context asks for: what `to_json`
+/// wrote reads back equal, keys come in any order with unknown ones skipped
+/// and an absent `Option` as `None`, and every refusal names the byte.
+#[test]
+fn json_reads_back_into_the_type() {
+    assert_eq!(
+        compile_and_run("json_read.rill"),
+        concat!(
+            "ok Order(LB-7K3M9Q2A, Cons(books, Cons(tea, Nil)), 4.5, false, None, Pt(51, -1), Rect(2, 3), (7, seven))\n",
+            "true\nok Order(c, Nil, 10, true, None, Pt(1, 2), Dot, (1, one))\n",
+            "ok Cons(1, Cons(2, Cons(3, Nil)))\nok Nil\nok Circle(2.5)\nok Pt(1, 2)\nok café 😀 tab\tend\n",
+            "err from_json: expected an integer at byte 7\n",
+            "err from_json: expected an integer at byte 1\n",
+            "err from_json: expected the end of the text at byte 7\n",
+            "err from_json: expected every field of the record at byte 8\n",
+            "err from_json: expected a constructor name at byte 12\n",
+            "err from_json: expected a constructor name at byte 6\n",
+            "err from_json: expected a string at byte 29\n",
+            "err from_json: expected a string at byte 0\n",
+            "err from_json: expected a string at byte 0\n",
+            "err from_json: expected a string at byte 9\n",
+            "err from_json: expected a comma or the end of the list at byte 5\n",
+            "err from_json: expected an object at byte 0\n50000\n"
+        )
+    );
+}
+
 /// Eight strands adding to one word through `atomic_add` come to exactly
 /// eight thousand, on one worker and on four, and the parallel build is
 /// accepted without an `apart` — the atomics are the sanctioned shared write.

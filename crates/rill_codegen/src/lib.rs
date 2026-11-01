@@ -1268,7 +1268,7 @@ fn walk_children<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
             f(callee);
             args.iter().for_each(f);
         }
-        TK::Println(x) | TK::Print(x) | TK::Show(x) | TK::Json(x) | TK::Inspect(x) | TK::Neg(x) | TK::Spawn { body: x, .. } => f(x),
+        TK::Println(x) | TK::Print(x) | TK::Show(x) | TK::Json(x) | TK::FromJson(x) | TK::Inspect(x) | TK::Neg(x) | TK::Spawn { body: x, .. } => f(x),
         TK::ChanNew(x) => {
             if let Some(x) = x {
                 f(x)
@@ -3063,6 +3063,36 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             void.fn_type(&[ptrt.into(), ptrt.into()], false),
             None,
         );
+        // The cursor `from_json` is generated over.
+        let f64t = self.ctx.f64_type();
+        self.module.add_function("rill_json_open", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_close", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_failed", i8t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_json_fail",
+            void.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_json_error", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_peek", i64t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_int", i64t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_float", f64t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_bool", i8t.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_null", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_str", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function(
+            "rill_json_enter",
+            void.fn_type(&[ptrt.into(), i64t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "rill_json_next",
+            i8t.fn_type(&[ptrt.into(), i64t.into(), i8t.into()], false),
+            None,
+        );
+        self.module.add_function("rill_json_key", ptrt.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_skip", void.fn_type(&[ptrt.into()], false), None);
+        self.module.add_function("rill_json_end", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_strbuf_len", i64t.fn_type(&[ptrt.into()], false), None);
         self.module.add_function("rill_strbuf_release", void.fn_type(&[ptrt.into()], false), None);
         self.module.add_function(
@@ -5200,6 +5230,559 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
             self.builder.position_at_end(bb);
         }
         Ok(f)
+    }
+
+    // ---- derived JSON, the other way ---------------------------------------
+    //
+    // `from_json(text)` is generated per type over the runtime's cursor: the
+    // text is read in order, each reader records the first mismatch, and
+    // the generated code looks at the flag after each value it took and
+    // lets go of whatever it had built when the answer is no. A value that
+    // comes back while the flag is up is a dummy and is never released.
+
+    fn rt_value(&self, name: &str, args: &[BasicMetadataValueEnum<'ctx>]) -> BasicValueEnum<'ctx> {
+        match self.call_rt(name, args).try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => v,
+            _ => unreachable!("{name} answers with a value"),
+        }
+    }
+
+    fn ctor_index(&self, adt: usize, name: &str) -> usize {
+        self.tmod.adts[adt].ctors.iter().position(|c| c.name == name).unwrap_or_else(|| {
+            unreachable!("{} has no constructor {name}", self.tmod.adts[adt].name)
+        })
+    }
+
+    /// Whether the cursor has recorded a failure, as an `i1`.
+    fn json_failed(&mut self, cur: BasicValueEnum<'ctx>) -> IntValue<'ctx> {
+        let f = self.rt_value("rill_json_failed", &[cur.into()]).into_int_value();
+        self.builder
+            .build_int_compare(IntPredicate::NE, f, self.ctx.i8_type().const_zero(), "failed")
+            .expect("LLVM builder error")
+    }
+
+    /// Branches to `fail_bb` when the cursor has failed, and continues here
+    /// otherwise.
+    fn json_check(&mut self, cur: BasicValueEnum<'ctx>, f: FunctionValue<'ctx>, fail_bb: BasicBlock<'ctx>) {
+        let failed = self.json_failed(cur);
+        let cont = self.ctx.append_basic_block(f, "json.cont");
+        self.builder.build_conditional_branch(failed, fail_bb, cont).expect("LLVM builder error");
+        self.builder.position_at_end(cont);
+    }
+
+    /// The immortal singleton a constructor with no fields is.
+    fn nullary_ptr(&mut self, adt: usize, ctor: usize, targs: &[Ty]) -> PointerValue<'ctx> {
+        let key = (Ty::Adt(adt, targs.to_vec()), ctor);
+        if let Some(&p) = self.nullary_singletons.get(&key) {
+            return p;
+        }
+        let i64t = self.ctx.i64_type();
+        let ty = self.ctx.struct_type(&[i64t.into(), i64t.into()], false);
+        let sig = &self.tmod.adts[adt].ctors[ctor];
+        let init = ty.const_named_struct(&[
+            i64t.const_int(Self::IMMORTAL, false).into(),
+            i64t.const_int(sig.tag, false).into(),
+        ]);
+        let name = format!("nul${}${}", mangle(&key.0, &self.tmod.adts), sig.name);
+        let g = self.module.add_global(ty, None, &name);
+        g.set_initializer(&init);
+        g.set_linkage(inkwell::module::Linkage::Private);
+        g.set_constant(true);
+        let p = g.as_pointer_value();
+        self.nullary_singletons.insert(key, p);
+        p
+    }
+
+    /// A box of one constructor around owned field values.
+    fn build_box(&mut self, adt: usize, ci: usize, targs: &[Ty], vals: &[BasicValueEnum<'ctx>]) -> PointerValue<'ctx> {
+        let st = self.ctor_struct(adt, ci, targs);
+        let tag = self.tmod.adts[adt].ctors[ci].tag;
+        let p = self.alloc_object(st, "json.box");
+        let tag_ptr = self.builder.build_struct_gep(st, p, 1, "tag").expect("LLVM builder error");
+        self.builder.build_store(tag_ptr, self.ctx.i64_type().const_int(tag, false)).expect("LLVM builder error");
+        for (i, v) in vals.iter().enumerate() {
+            let fp = self.builder.build_struct_gep(st, p, (i + 2) as u32, "field").expect("LLVM builder error");
+            self.builder.build_store(fp, *v).expect("LLVM builder error");
+        }
+        p
+    }
+
+    /// A value of one constructor from owned field values: the singleton,
+    /// the flat struct, or a box.
+    fn make_value(&mut self, adt: usize, ci: usize, targs: &[Ty], vals: &[BasicValueEnum<'ctx>]) -> BasicValueEnum<'ctx> {
+        if vals.is_empty() {
+            return self.nullary_ptr(adt, ci, targs).into();
+        }
+        let whole = Ty::Adt(adt, targs.to_vec());
+        if self.is_flat(&whole) {
+            let st = self.flat_struct(&whole);
+            let mut agg = st.get_undef();
+            for (i, v) in vals.iter().enumerate() {
+                agg = self.builder.build_insert_value(agg, *v, i as u32, "f").expect("LLVM builder error").into_struct_value();
+            }
+            return agg.into();
+        }
+        self.build_box(adt, ci, targs, vals).into()
+    }
+
+    /// What a function answers with when the cursor has failed: never used.
+    fn json_dummy(&self, ty: &Ty) -> BasicValueEnum<'ctx> {
+        match self.llvm_type(ty) {
+            Some(t) => t.const_zero(),
+            None => self.unit_slot(),
+        }
+    }
+
+    /// One value of `ty` read at the cursor, in the current block. Scalars
+    /// are read inline; a data type through its own `jsonfrom$T`.
+    fn gen_json_from(
+        &mut self,
+        cur: BasicValueEnum<'ctx>,
+        ty: &Ty,
+        f: FunctionValue<'ctx>,
+        line: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let i64t = self.ctx.i64_type();
+        match ty {
+            Ty::Int => Ok(self.rt_value("rill_json_int", &[cur.into()])),
+            Ty::Float => Ok(self.rt_value("rill_json_float", &[cur.into()])),
+            Ty::Bool => {
+                let b = self.rt_value("rill_json_bool", &[cur.into()]).into_int_value();
+                Ok(self.builder.build_int_truncate(b, self.ctx.bool_type(), "b").expect("LLVM builder error").into())
+            }
+            Ty::Str => Ok(self.rt_value("rill_json_str", &[cur.into()])),
+            Ty::Unit => {
+                self.call_rt("rill_json_null", &[cur.into()]);
+                Ok(self.unit_slot())
+            }
+            Ty::Float2 => {
+                self.call_rt("rill_json_enter", &[cur.into(), i64t.const_int(91, false).into()]);
+                self.call_rt("rill_json_next", &[cur.into(), i64t.const_int(93, false).into(), self.ctx.i8_type().const_int(1, false).into()]);
+                let x = self.rt_value("rill_json_float", &[cur.into()]);
+                self.call_rt("rill_json_next", &[cur.into(), i64t.const_int(93, false).into(), self.ctx.i8_type().const_zero().into()]);
+                let y = self.rt_value("rill_json_float", &[cur.into()]);
+                let more = self.rt_value("rill_json_next", &[cur.into(), i64t.const_int(93, false).into(), self.ctx.i8_type().const_zero().into()]).into_int_value();
+                let extra = self.builder.build_int_compare(IntPredicate::NE, more, self.ctx.i8_type().const_zero(), "extra").expect("LLVM builder error");
+                let code = self.builder.build_select(extra, i64t.const_int(8, false), i64t.const_zero(), "code").expect("LLVM builder error").into_int_value();
+                // `fail` with code 0 records nothing
+                self.call_rt("rill_json_fail", &[cur.into(), code.into()]);
+                let v0 = self.builder.build_insert_element(self.ctx.f64_type().vec_type(2).get_undef(), x.into_float_value(), i64t.const_zero(), "l0").expect("LLVM builder error");
+                let v1 = self.builder.build_insert_element(v0, y.into_float_value(), i64t.const_int(1, false), "l1").expect("LLVM builder error");
+                Ok(v1.into())
+            }
+            Ty::Adt(..) => {
+                let reader = self.adt_json_from(ty, line)?;
+                let call = self.builder.build_call(reader, &[cur.into()], "read").expect("LLVM builder error");
+                let _ = f;
+                Ok(match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => v,
+                    _ => unreachable!("a reader answers with a value"),
+                })
+            }
+            other => Err(CodegenError::new(
+                line,
+                format!("cannot read a value of type {} from JSON", mangle_friendly(other, &self.tmod.adts)),
+            )),
+        }
+    }
+
+    /// `jsonfrom$T(cursor)`: one value of a data type. A list is a loop, an
+    /// `Option` is `null` or its value, a record is an object read in any
+    /// order of keys (a missing `Option` field is `None`, any other missing
+    /// field a failure, an unknown key skipped), a tuple or an unnamed
+    /// constructor an array, and a type with several constructors a
+    /// `{"Ctor": ...}` or, for one with no fields, its name as a string.
+    fn adt_json_from(&mut self, ty: &Ty, line: usize) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!("jsonfrom${}", mangle(ty, &self.tmod.adts));
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let (adt, targs) = match ty {
+            Ty::Adt(i, targs) => (*i, targs.clone()),
+            _ => unreachable!("adt_json_from on non-ADT"),
+        };
+        let ptrt = self.ctx.ptr_type(Default::default());
+        let i64t = self.ctx.i64_type();
+        let i8t = self.ctx.i8_type();
+        let ret_ty = self.llvm_type(ty).expect("a data type has a shape");
+        let f = self.module.add_function(&name, ret_ty.fn_type(&[ptrt.into()], false), None);
+        f.set_linkage(inkwell::module::Linkage::Internal);
+        let saved = self.builder.get_insert_block();
+        let cur: BasicValueEnum<'ctx> = f.get_nth_param(0).unwrap();
+        let entry = self.ctx.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        let dummy = self.json_dummy(ty);
+        let adt_name = self.tmod.adts[adt].name.clone();
+        let ctors = self.tmod.adts[adt].ctors.clone();
+        let fail_bb = self.ctx.append_basic_block(f, "fail");
+        {
+            let here = self.builder.get_insert_block().unwrap();
+            self.builder.position_at_end(fail_bb);
+            self.builder.build_return(Some(&dummy)).expect("LLVM builder error");
+            self.builder.position_at_end(here);
+        }
+
+        let is_list = adt_name == "List" && ctors.len() == 2 && ctors.iter().any(|c| c.name == "Cons" && c.fields.len() == 2);
+        if is_list {
+            let cons_ci = self.ctor_index(adt, "Cons");
+            let nil_ci = self.ctor_index(adt, "Nil");
+            let elem_ty = subst_gen(&ctors[cons_ci].fields[0], &targs);
+            let nil = self.nullary_ptr(adt, nil_ci, &targs);
+            let acc = self.builder.build_alloca(ptrt, "acc").expect("LLVM builder error");
+            let first = self.builder.build_alloca(i8t, "first").expect("LLVM builder error");
+            self.builder.build_store(acc, nil).expect("LLVM builder error");
+            self.builder.build_store(first, i8t.const_int(1, false)).expect("LLVM builder error");
+            self.call_rt("rill_json_enter", &[cur.into(), i64t.const_int(91, false).into()]);
+            let loop_bb = self.ctx.append_basic_block(f, "elem");
+            let body_bb = self.ctx.append_basic_block(f, "read");
+            let rev_bb = self.ctx.append_basic_block(f, "reverse");
+            let drop_bb = self.ctx.append_basic_block(f, "drop");
+            self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+            // on failure the cells built so far go
+            self.builder.position_at_end(drop_bb);
+            let built = self.builder.build_load(ptrt, acc, "acc").expect("LLVM builder error");
+            self.emit_release(built, ty);
+            self.builder.build_unconditional_branch(fail_bb).expect("LLVM builder error");
+            self.builder.position_at_end(loop_bb);
+            let fst = self.builder.build_load(i8t, first, "first").expect("LLVM builder error");
+            let more = self.rt_value("rill_json_next", &[cur.into(), i64t.const_int(93, false).into(), fst.into()]).into_int_value();
+            self.json_check(cur, f, drop_bb);
+            let goes_on = self.builder.build_int_compare(IntPredicate::NE, more, i8t.const_zero(), "more").expect("LLVM builder error");
+            self.builder.build_conditional_branch(goes_on, body_bb, rev_bb).expect("LLVM builder error");
+            self.builder.position_at_end(body_bb);
+            self.builder.build_store(first, i8t.const_zero()).expect("LLVM builder error");
+            let x = self.gen_json_from(cur, &elem_ty, f, line)?;
+            self.json_check(cur, f, drop_bb);
+            let tail = self.builder.build_load(ptrt, acc, "acc").expect("LLVM builder error");
+            let cell = self.build_box(adt, cons_ci, &targs, &[x, tail]);
+            self.builder.build_store(acc, cell).expect("LLVM builder error");
+            self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+            // the cells were consed in reverse; turn them round in place
+            self.builder.position_at_end(rev_bb);
+            let st = self.ctor_struct(adt, cons_ci, &targs);
+            let prev = self.builder.build_alloca(ptrt, "prev").expect("LLVM builder error");
+            let node = self.builder.build_alloca(ptrt, "node").expect("LLVM builder error");
+            self.builder.build_store(prev, nil).expect("LLVM builder error");
+            let start = self.builder.build_load(ptrt, acc, "acc").expect("LLVM builder error");
+            self.builder.build_store(node, start).expect("LLVM builder error");
+            let step_bb = self.ctx.append_basic_block(f, "step");
+            let flip_bb = self.ctx.append_basic_block(f, "flip");
+            let done_bb = self.ctx.append_basic_block(f, "done");
+            self.builder.build_unconditional_branch(step_bb).expect("LLVM builder error");
+            self.builder.position_at_end(step_bb);
+            let n = self.builder.build_load(ptrt, node, "n").expect("LLVM builder error").into_pointer_value();
+            let tag_ptr = self.builder.build_struct_gep(self.header_struct(), n, 1, "tag.ptr").expect("LLVM builder error");
+            let tag = self.builder.build_load(i64t, tag_ptr, "tag").expect("LLVM builder error").into_int_value();
+            let is_cons = self.builder.build_int_compare(IntPredicate::EQ, tag, i64t.const_int(ctors[cons_ci].tag, false), "cons").expect("LLVM builder error");
+            self.builder.build_conditional_branch(is_cons, flip_bb, done_bb).expect("LLVM builder error");
+            self.builder.position_at_end(flip_bb);
+            let tail_ptr = self.builder.build_struct_gep(st, n, 3, "tail.ptr").expect("LLVM builder error");
+            let next = self.builder.build_load(ptrt, tail_ptr, "next").expect("LLVM builder error");
+            let p = self.builder.build_load(ptrt, prev, "prev").expect("LLVM builder error");
+            self.builder.build_store(tail_ptr, p).expect("LLVM builder error");
+            self.builder.build_store(prev, n).expect("LLVM builder error");
+            self.builder.build_store(node, next).expect("LLVM builder error");
+            self.builder.build_unconditional_branch(step_bb).expect("LLVM builder error");
+            self.builder.position_at_end(done_bb);
+            let out = self.builder.build_load(ptrt, prev, "list").expect("LLVM builder error");
+            self.builder.build_return(Some(&out)).expect("LLVM builder error");
+            if let Some(bb) = saved {
+                self.builder.position_at_end(bb);
+            }
+            return Ok(f);
+        }
+
+        let is_option = adt_name == "Option" && ctors.len() == 2 && ctors.iter().any(|c| c.name == "Some" && c.fields.len() == 1);
+        if is_option {
+            let some_ci = self.ctor_index(adt, "Some");
+            let none_ci = self.ctor_index(adt, "None");
+            let inner_ty = subst_gen(&ctors[some_ci].fields[0], &targs);
+            let kind = self.rt_value("rill_json_peek", &[cur.into()]).into_int_value();
+            let is_null = self.builder.build_int_compare(IntPredicate::EQ, kind, i64t.const_zero(), "null").expect("LLVM builder error");
+            let none_bb = self.ctx.append_basic_block(f, "none");
+            let some_bb = self.ctx.append_basic_block(f, "some");
+            self.builder.build_conditional_branch(is_null, none_bb, some_bb).expect("LLVM builder error");
+            self.builder.position_at_end(none_bb);
+            self.call_rt("rill_json_null", &[cur.into()]);
+            let none: BasicValueEnum<'ctx> = self.nullary_ptr(adt, none_ci, &targs).into();
+            self.builder.build_return(Some(&none)).expect("LLVM builder error");
+            self.builder.position_at_end(some_bb);
+            let v = self.gen_json_from(cur, &inner_ty, f, line)?;
+            self.json_check(cur, f, fail_bb);
+            let some: BasicValueEnum<'ctx> = self.build_box(adt, some_ci, &targs, &[v]).into();
+            self.builder.build_return(Some(&some)).expect("LLVM builder error");
+            if let Some(bb) = saved {
+                self.builder.position_at_end(bb);
+            }
+            return Ok(f);
+        }
+
+        if ctors.len() == 1 {
+            let v = self.json_ctor_fields(cur, f, fail_bb, adt, 0, &targs, line)?;
+            self.builder.build_return(Some(&v)).expect("LLVM builder error");
+            if let Some(bb) = saved {
+                self.builder.position_at_end(bb);
+            }
+            return Ok(f);
+        }
+
+        // Several constructors: a string names one with no fields, an
+        // object with one key names one with fields.
+        let kind = self.rt_value("rill_json_peek", &[cur.into()]).into_int_value();
+        let as_str_bb = self.ctx.append_basic_block(f, "name");
+        let as_obj_bb = self.ctx.append_basic_block(f, "tagged");
+        let neither_bb = self.ctx.append_basic_block(f, "neither");
+        let is_str = self.builder.build_int_compare(IntPredicate::EQ, kind, i64t.const_int(4, false), "str").expect("LLVM builder error");
+        let is_obj = self.builder.build_int_compare(IntPredicate::EQ, kind, i64t.const_int(6, false), "obj").expect("LLVM builder error");
+        let pick_bb = self.ctx.append_basic_block(f, "pick");
+        self.builder.build_conditional_branch(is_str, as_str_bb, pick_bb).expect("LLVM builder error");
+        self.builder.position_at_end(pick_bb);
+        self.builder.build_conditional_branch(is_obj, as_obj_bb, neither_bb).expect("LLVM builder error");
+        self.builder.position_at_end(neither_bb);
+        self.call_rt("rill_json_fail", &[cur.into(), i64t.const_int(9, false).into()]);
+        self.builder.build_unconditional_branch(fail_bb).expect("LLVM builder error");
+
+        // `"Dot"`
+        self.builder.position_at_end(as_str_bb);
+        let s = self.rt_value("rill_json_str", &[cur.into()]);
+        self.json_check(cur, f, fail_bb);
+        let unknown_bb = self.ctx.append_basic_block(f, "unknown");
+        for (ci, c) in ctors.iter().enumerate() {
+            if !c.fields.is_empty() {
+                continue;
+            }
+            let want = self.const_str(&c.name);
+            let eq = self.rt_value("rill_str_eq", &[s.into(), want.into()]).into_int_value();
+            let hit = self.builder.build_int_compare(IntPredicate::NE, eq, i8t.const_zero(), "hit").expect("LLVM builder error");
+            let yes_bb = self.ctx.append_basic_block(f, &format!("is.{}", c.name));
+            let no_bb = self.ctx.append_basic_block(f, "not");
+            self.builder.build_conditional_branch(hit, yes_bb, no_bb).expect("LLVM builder error");
+            self.builder.position_at_end(yes_bb);
+            self.emit_release(s, &Ty::Str);
+            let v: BasicValueEnum<'ctx> = self.nullary_ptr(adt, ci, &targs).into();
+            self.builder.build_return(Some(&v)).expect("LLVM builder error");
+            self.builder.position_at_end(no_bb);
+        }
+        self.builder.build_unconditional_branch(unknown_bb).expect("LLVM builder error");
+        self.builder.position_at_end(unknown_bb);
+        self.emit_release(s, &Ty::Str);
+        self.call_rt("rill_json_fail", &[cur.into(), i64t.const_int(9, false).into()]);
+        self.builder.build_unconditional_branch(fail_bb).expect("LLVM builder error");
+
+        // `{"Circle": {"r": 1.5}}`
+        self.builder.position_at_end(as_obj_bb);
+        self.call_rt("rill_json_enter", &[cur.into(), i64t.const_int(123, false).into()]);
+        let k = self.rt_value("rill_json_key", &[cur.into()]);
+        self.json_check(cur, f, fail_bb);
+        let unknown_key_bb = self.ctx.append_basic_block(f, "unknown.key");
+        for (ci, c) in ctors.iter().enumerate() {
+            if c.fields.is_empty() {
+                continue;
+            }
+            let want = self.const_str(&c.name);
+            let eq = self.rt_value("rill_str_eq", &[k.into(), want.into()]).into_int_value();
+            let hit = self.builder.build_int_compare(IntPredicate::NE, eq, i8t.const_zero(), "hit").expect("LLVM builder error");
+            let yes_bb = self.ctx.append_basic_block(f, &format!("is.{}", c.name));
+            let no_bb = self.ctx.append_basic_block(f, "not");
+            self.builder.build_conditional_branch(hit, yes_bb, no_bb).expect("LLVM builder error");
+            self.builder.position_at_end(yes_bb);
+            self.emit_release(k, &Ty::Str);
+            let v = self.json_ctor_fields(cur, f, fail_bb, adt, ci, &targs, line)?;
+            // the one key, and then the end of the object
+            let more = self.rt_value("rill_json_next", &[cur.into(), i64t.const_int(125, false).into(), i8t.const_zero().into()]).into_int_value();
+            let extra = self.builder.build_int_compare(IntPredicate::NE, more, i8t.const_zero(), "extra").expect("LLVM builder error");
+            let code = self.builder.build_select(extra, i64t.const_int(8, false), i64t.const_zero(), "code").expect("LLVM builder error").into_int_value();
+            self.call_rt("rill_json_fail", &[cur.into(), code.into()]);
+            let drop_bb = self.ctx.append_basic_block(f, "drop.whole");
+            let failed = self.json_failed(cur);
+            let ok_bb = self.ctx.append_basic_block(f, "whole");
+            self.builder.build_conditional_branch(failed, drop_bb, ok_bb).expect("LLVM builder error");
+            self.builder.position_at_end(drop_bb);
+            if self.is_heap(ty) {
+                self.emit_release(v, ty);
+            }
+            self.builder.build_unconditional_branch(fail_bb).expect("LLVM builder error");
+            self.builder.position_at_end(ok_bb);
+            self.builder.build_return(Some(&v)).expect("LLVM builder error");
+            self.builder.position_at_end(no_bb);
+        }
+        self.builder.build_unconditional_branch(unknown_key_bb).expect("LLVM builder error");
+        self.builder.position_at_end(unknown_key_bb);
+        self.emit_release(k, &Ty::Str);
+        self.call_rt("rill_json_fail", &[cur.into(), i64t.const_int(9, false).into()]);
+        self.builder.build_unconditional_branch(fail_bb).expect("LLVM builder error");
+
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        Ok(f)
+    }
+
+    /// The fields of one constructor read at the cursor — an object by name
+    /// when every field has one, an array otherwise — and the value built
+    /// from them. Emitted in the current block of `f`; on failure the fields
+    /// read so far are released and `f` returns through `fail_bb`.
+    #[allow(clippy::too_many_arguments)]
+    fn json_ctor_fields(
+        &mut self,
+        cur: BasicValueEnum<'ctx>,
+        f: FunctionValue<'ctx>,
+        fail_bb: BasicBlock<'ctx>,
+        adt: usize,
+        ci: usize,
+        targs: &[Ty],
+        line: usize,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let i64t = self.ctx.i64_type();
+        let i8t = self.ctx.i8_type();
+        let bool_t = self.ctx.bool_type();
+        let c = self.tmod.adts[adt].ctors[ci].clone();
+        let types: Vec<Ty> = c.fields.iter().map(|t| subst_gen(t, targs)).collect();
+        if types.is_empty() {
+            // the one constructor, with nothing in it, is its name
+            let s = self.rt_value("rill_json_str", &[cur.into()]);
+            self.json_check(cur, f, fail_bb);
+            let want = self.const_str(&c.name);
+            let eq = self.rt_value("rill_str_eq", &[s.into(), want.into()]).into_int_value();
+            self.emit_release(s, &Ty::Str);
+            let miss = self.builder.build_int_compare(IntPredicate::EQ, eq, i8t.const_zero(), "miss").expect("LLVM builder error");
+            let code = self.builder.build_select(miss, i64t.const_int(9, false), i64t.const_zero(), "code").expect("LLVM builder error").into_int_value();
+            self.call_rt("rill_json_fail", &[cur.into(), code.into()]);
+            self.json_check(cur, f, fail_bb);
+            return Ok(self.nullary_ptr(adt, ci, targs).into());
+        }
+        let named = !is_tuple_ctor(&c.name, types.len()) && c.names.iter().all(|n| n.is_some());
+        // a slot and a flag per field; the failure path releases what was read
+        let slots: Vec<PointerValue<'ctx>> = types.iter().enumerate().map(|(i, t)| {
+            self.builder.build_alloca(self.slot_type(t), &format!("f{i}")).expect("LLVM builder error")
+        }).collect();
+        let seen: Vec<PointerValue<'ctx>> = (0..types.len()).map(|i| {
+            let p = self.builder.build_alloca(bool_t, &format!("seen{i}")).expect("LLVM builder error");
+            self.builder.build_store(p, bool_t.const_zero()).expect("LLVM builder error");
+            p
+        }).collect();
+        let drop_bb = self.ctx.append_basic_block(f, "drop.fields");
+        {
+            let here = self.builder.get_insert_block().unwrap();
+            self.builder.position_at_end(drop_bb);
+            for (i, t) in types.iter().enumerate() {
+                if !self.is_heap(t) {
+                    continue;
+                }
+                let was = self.builder.build_load(bool_t, seen[i], "seen").expect("LLVM builder error").into_int_value();
+                let rel_bb = self.ctx.append_basic_block(f, "rel");
+                let next_bb = self.ctx.append_basic_block(f, "next");
+                self.builder.build_conditional_branch(was, rel_bb, next_bb).expect("LLVM builder error");
+                self.builder.position_at_end(rel_bb);
+                let v = self.builder.build_load(self.slot_type(t), slots[i], "v").expect("LLVM builder error");
+                self.emit_release(v, t);
+                self.builder.build_unconditional_branch(next_bb).expect("LLVM builder error");
+                self.builder.position_at_end(next_bb);
+            }
+            self.builder.build_unconditional_branch(fail_bb).expect("LLVM builder error");
+            self.builder.position_at_end(here);
+        }
+        if named {
+            self.call_rt("rill_json_enter", &[cur.into(), i64t.const_int(123, false).into()]);
+            let first = self.builder.build_alloca(i8t, "first").expect("LLVM builder error");
+            self.builder.build_store(first, i8t.const_int(1, false)).expect("LLVM builder error");
+            let loop_bb = self.ctx.append_basic_block(f, "key");
+            let body_bb = self.ctx.append_basic_block(f, "field");
+            let done_bb = self.ctx.append_basic_block(f, "closed");
+            self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+            self.builder.position_at_end(loop_bb);
+            let fst = self.builder.build_load(i8t, first, "first").expect("LLVM builder error");
+            let more = self.rt_value("rill_json_next", &[cur.into(), i64t.const_int(125, false).into(), fst.into()]).into_int_value();
+            self.json_check(cur, f, drop_bb);
+            let goes_on = self.builder.build_int_compare(IntPredicate::NE, more, i8t.const_zero(), "more").expect("LLVM builder error");
+            self.builder.build_conditional_branch(goes_on, body_bb, done_bb).expect("LLVM builder error");
+            self.builder.position_at_end(body_bb);
+            self.builder.build_store(first, i8t.const_zero()).expect("LLVM builder error");
+            let key = self.rt_value("rill_json_key", &[cur.into()]);
+            self.json_check(cur, f, drop_bb);
+            let skip_bb = self.ctx.append_basic_block(f, "skip");
+            for (i, t) in types.iter().enumerate() {
+                let want = self.const_str(c.names[i].as_deref().unwrap_or(""));
+                let eq = self.rt_value("rill_str_eq", &[key.into(), want.into()]).into_int_value();
+                let hit = self.builder.build_int_compare(IntPredicate::NE, eq, i8t.const_zero(), "hit").expect("LLVM builder error");
+                let yes_bb = self.ctx.append_basic_block(f, "take");
+                let no_bb = self.ctx.append_basic_block(f, "other");
+                self.builder.build_conditional_branch(hit, yes_bb, no_bb).expect("LLVM builder error");
+                self.builder.position_at_end(yes_bb);
+                self.emit_release(key, &Ty::Str);
+                if self.is_heap(t) {
+                    // a key given twice: the first value goes
+                    let was = self.builder.build_load(bool_t, seen[i], "seen").expect("LLVM builder error").into_int_value();
+                    let rel_bb = self.ctx.append_basic_block(f, "rel.old");
+                    let fresh_bb = self.ctx.append_basic_block(f, "fresh");
+                    self.builder.build_conditional_branch(was, rel_bb, fresh_bb).expect("LLVM builder error");
+                    self.builder.position_at_end(rel_bb);
+                    let old = self.builder.build_load(self.slot_type(t), slots[i], "old").expect("LLVM builder error");
+                    self.emit_release(old, t);
+                    self.builder.build_store(seen[i], bool_t.const_zero()).expect("LLVM builder error");
+                    self.builder.build_unconditional_branch(fresh_bb).expect("LLVM builder error");
+                    self.builder.position_at_end(fresh_bb);
+                }
+                let v = self.gen_json_from(cur, t, f, line)?;
+                self.json_check(cur, f, drop_bb);
+                self.builder.build_store(slots[i], v).expect("LLVM builder error");
+                self.builder.build_store(seen[i], bool_t.const_int(1, false)).expect("LLVM builder error");
+                self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+                self.builder.position_at_end(no_bb);
+            }
+            self.builder.build_unconditional_branch(skip_bb).expect("LLVM builder error");
+            self.builder.position_at_end(skip_bb);
+            self.emit_release(key, &Ty::Str);
+            self.call_rt("rill_json_skip", &[cur.into()]);
+            self.json_check(cur, f, drop_bb);
+            self.builder.build_unconditional_branch(loop_bb).expect("LLVM builder error");
+            // every field, or a `None` for an `Option` that never came
+            self.builder.position_at_end(done_bb);
+            for (i, t) in types.iter().enumerate() {
+                let was = self.builder.build_load(bool_t, seen[i], "seen").expect("LLVM builder error").into_int_value();
+                let missing_bb = self.ctx.append_basic_block(f, "missing");
+                let have_bb = self.ctx.append_basic_block(f, "have");
+                self.builder.build_conditional_branch(was, have_bb, missing_bb).expect("LLVM builder error");
+                self.builder.position_at_end(missing_bb);
+                let optional = match t {
+                    Ty::Adt(a, targs2) if self.tmod.adts[*a].name == "Option" => Some((*a, targs2.clone())),
+                    _ => None,
+                };
+                if let Some((oa, otargs)) = optional {
+                    let none_ci = self.ctor_index(oa, "None");
+                    let none = self.nullary_ptr(oa, none_ci, &otargs);
+                    self.builder.build_store(slots[i], none).expect("LLVM builder error");
+                    self.builder.build_unconditional_branch(have_bb).expect("LLVM builder error");
+                } else {
+                    self.call_rt("rill_json_fail", &[cur.into(), i64t.const_int(11, false).into()]);
+                    self.builder.build_unconditional_branch(drop_bb).expect("LLVM builder error");
+                }
+                self.builder.position_at_end(have_bb);
+            }
+        } else {
+            self.call_rt("rill_json_enter", &[cur.into(), i64t.const_int(91, false).into()]);
+            for (i, t) in types.iter().enumerate() {
+                let fst = i8t.const_int(if i == 0 { 1 } else { 0 }, false);
+                let more = self.rt_value("rill_json_next", &[cur.into(), i64t.const_int(93, false).into(), fst.into()]).into_int_value();
+                let short = self.builder.build_int_compare(IntPredicate::EQ, more, i8t.const_zero(), "short").expect("LLVM builder error");
+                let code = self.builder.build_select(short, i64t.const_int(13, false), i64t.const_zero(), "code").expect("LLVM builder error").into_int_value();
+                self.call_rt("rill_json_fail", &[cur.into(), code.into()]);
+                self.json_check(cur, f, drop_bb);
+                let v = self.gen_json_from(cur, t, f, line)?;
+                self.json_check(cur, f, drop_bb);
+                self.builder.build_store(slots[i], v).expect("LLVM builder error");
+                self.builder.build_store(seen[i], bool_t.const_int(1, false)).expect("LLVM builder error");
+            }
+            let more = self.rt_value("rill_json_next", &[cur.into(), i64t.const_int(93, false).into(), i8t.const_zero().into()]).into_int_value();
+            let extra = self.builder.build_int_compare(IntPredicate::NE, more, i8t.const_zero(), "extra").expect("LLVM builder error");
+            let code = self.builder.build_select(extra, i64t.const_int(8, false), i64t.const_zero(), "code").expect("LLVM builder error").into_int_value();
+            self.call_rt("rill_json_fail", &[cur.into(), code.into()]);
+            self.json_check(cur, f, drop_bb);
+        }
+        let vals: Vec<BasicValueEnum<'ctx>> = types.iter().enumerate().map(|(i, t)| {
+            self.builder.build_load(self.slot_type(t), slots[i], "v").expect("LLVM builder error")
+        }).collect();
+        Ok(self.make_value(adt, ci, targs, &vals))
     }
 
     /// Structural equality for values of one concrete type; both operands
@@ -9804,6 +10387,55 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 let v = self.gen_expr(arg, scope, subst, func)?;
                 let v = v.expect("to_json argument is never Unit");
                 Ok(Some(self.gen_json_of(v, &ty, e.line)?))
+            }
+            TK::FromJson(arg) => {
+                let rty = self.concrete(&e.ty, subst);
+                let (result_adt, targs) = match &rty {
+                    Ty::Adt(a, t) => (*a, t.clone()),
+                    _ => unreachable!("from_json answers a Result"),
+                };
+                let target = targs[0].clone();
+                let (text, owned) = self.gen_borrowed(arg, scope, subst, func)?;
+                let cur = self.rt_value("rill_json_open", &[text.into()]);
+                let v = self.gen_json_from(cur, &target, func, e.line)?;
+                let ptrt = self.ctx.ptr_type(Default::default());
+                let bad_bb = self.ctx.append_basic_block(func, "json.bad");
+                let whole_bb = self.ctx.append_basic_block(func, "json.whole");
+                let spare_bb = self.ctx.append_basic_block(func, "json.spare");
+                let ok_bb = self.ctx.append_basic_block(func, "json.ok");
+                let join_bb = self.ctx.append_basic_block(func, "json.join");
+                // A failure inside the value left nothing to release; one
+                // after it — text past the end — leaves a whole value.
+                let failed = self.json_failed(cur);
+                self.builder.build_conditional_branch(failed, bad_bb, whole_bb).expect("LLVM builder error");
+                self.builder.position_at_end(whole_bb);
+                self.call_rt("rill_json_end", &[cur.into()]);
+                let spare = self.json_failed(cur);
+                self.builder.build_conditional_branch(spare, spare_bb, ok_bb).expect("LLVM builder error");
+                self.builder.position_at_end(spare_bb);
+                if self.is_heap(&target) {
+                    self.emit_release(v, &target);
+                }
+                self.builder.build_unconditional_branch(bad_bb).expect("LLVM builder error");
+                self.builder.position_at_end(bad_bb);
+                let msg = self.rt_value("rill_json_error", &[cur.into()]);
+                let err_ci = self.ctor_index(result_adt, "Err");
+                let err_box = self.build_box(result_adt, err_ci, &targs, &[msg]);
+                let bad_end = self.builder.get_insert_block().unwrap();
+                self.builder.build_unconditional_branch(join_bb).expect("LLVM builder error");
+                self.builder.position_at_end(ok_bb);
+                let ok_ci = self.ctor_index(result_adt, "Ok");
+                let ok_box = self.build_box(result_adt, ok_ci, &targs, &[v]);
+                let ok_end = self.builder.get_insert_block().unwrap();
+                self.builder.build_unconditional_branch(join_bb).expect("LLVM builder error");
+                self.builder.position_at_end(join_bb);
+                let phi = self.builder.build_phi(ptrt, "result").expect("LLVM builder error");
+                phi.add_incoming(&[(&err_box, bad_end), (&ok_box, ok_end)]);
+                self.call_rt("rill_json_close", &[cur.into()]);
+                if owned {
+                    self.emit_release(text, &Ty::Str);
+                }
+                Ok(Some(phi.as_basic_value()))
             }
             TK::Inspect(arg) => {
                 let ty = self.concrete(&arg.ty, subst);

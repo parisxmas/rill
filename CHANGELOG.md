@@ -5,8 +5,8 @@
 The release a parcel service asked for. A web server over OxiDB wanted a
 sequence it could index and sort, a reply it could read without decoding,
 JSON it did not have to write by hand, and a counter strands could share:
-`Vec(a)`, `db/oxiview`, `to_json` and the atomics are those four, each
-with an example that the test suite runs.
+`Vec(a)`, `db/oxiview`, `to_json` with `from_json`, and the atomics are
+those four, each with an example that the test suite runs.
 
 - **`Vec(a)`**, the array that holds anything: a growable, counted block
   of values of one type, indexed in constant time, retaining and releasing
@@ -22,6 +22,11 @@ with an example that the test suite runs.
   consistent and bounds-checked. The sharing check of a `--parallel` build
   knows them as the one write two strands may make to the same storage
   without an `apart`. `examples/atomics.rill`.
+- **`from_json(text)`**, the other way: the text read into the type the
+  context asks for, as `Result(T, Str)`, the parser derived from `T`. Keys
+  in any order, unknown keys skipped, an absent `Option` field `None`, a
+  refusal naming what was expected and at which byte, and nothing left
+  allocated on either path. `examples/json_read.rill`.
 - **`to_json(x)`**, JSON derived from the type the way `show` is: named
   fields are an object, lists and tuples arrays, `None` is `null`, several
   constructors are `{"Ctor": {...}}`, strings are escaped, and a third

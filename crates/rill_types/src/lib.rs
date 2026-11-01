@@ -362,6 +362,9 @@ pub enum TK {
     Show(Box<TExpr>),
     /// `to_json(x)` — the value as JSON text, derived from its type.
     Json(Box<TExpr>),
+    /// `from_json(text)` — the text read into the type the expression has,
+    /// `Result(T, Str)`; the parser is derived from `T`.
+    FromJson(Box<TExpr>),
     /// `machine_show(x)`: shown the way `show` shows, with what `show`
     /// refuses said instead of refused — a channel as `#n`, the number
     /// the trace gives it, a function as `<fn>`, storage as `<buf>` or
@@ -2635,7 +2638,13 @@ impl Checker {
                     self.zonk_expr(a, genmap, defaults);
                 }
             }
-            TK::Println(a) | TK::Print(a) | TK::Show(a) | TK::Json(a) | TK::Inspect(a) | TK::Neg(a) => {
+            TK::Println(a)
+            | TK::Print(a)
+            | TK::Show(a)
+            | TK::Json(a)
+            | TK::FromJson(a)
+            | TK::Inspect(a)
+            | TK::Neg(a) => {
                 self.zonk_expr(a, genmap, defaults)
             }
             TK::ChanNew(cap) => {
@@ -4424,6 +4433,28 @@ impl Checker {
             self.require(&a.ty, Constraint::Basic, line, "`to_json`")?;
             return Ok(TExpr { ty: Ty::Str, line, kind: TK::Json(Box::new(a)) });
         }
+        // `from_json(text)`: the text read into the type the context asks
+        // for, as `Result(T, Str)` — the parser is derived from `T` the way
+        // `to_json` is, so a `T` that cannot be written cannot be read.
+        if name == "from_json" {
+            if args.len() != 1 {
+                return Err(TypeError::new(line, "`from_json` takes exactly one argument"));
+            }
+            let a = self.infer(&args[0], env)?;
+            self.unify(&Ty::Str, &a.ty, line, "`from_json`")?;
+            let target = self.fresh();
+            self.require(&target, Constraint::Basic, line, "`from_json`")?;
+            let result = self
+                .adts
+                .iter()
+                .position(|d| d.name == "Result")
+                .expect("the prelude declares Result");
+            return Ok(TExpr {
+                ty: Ty::Adt(result, vec![target, Ty::Str]),
+                line,
+                kind: TK::FromJson(Box::new(a)),
+            });
+        }
         if name == "machine_show" {
             if args.len() != 1 {
                 return Err(TypeError::new(line, "`machine_show` takes exactly one argument"));
@@ -6131,6 +6162,7 @@ pub fn walk_texpr<'a>(e: &'a TExpr, f: &mut impl FnMut(&'a TExpr)) {
         | TK::Print(x)
         | TK::Show(x)
         | TK::Json(x)
+        | TK::FromJson(x)
         | TK::Inspect(x)
         | TK::Neg(x)
         | TK::Spawn { body: x, .. }
@@ -6298,6 +6330,7 @@ fn is_builtin_fn(name: &str) -> bool {
             | "bool_to_str"
             | "show"
             | "to_json"
+            | "from_json"
             | "machine_show"
             | "str_get"
             | "str_sub"

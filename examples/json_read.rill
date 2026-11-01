@@ -1,0 +1,59 @@
+# `from_json(text)`: JSON text read into a type, the parser derived from
+# the type the context asks for. It answers `Result(T, Str)`: the value, or
+# where the text stopped being one — so a record from the outside world is
+# checked field by field before the program sees it, with nothing written
+# by hand.
+type Pt
+  Pt(x: Int, y: Int)
+
+type Shape
+  Circle(r: Float)
+  Rect(w: Float, h: Float)
+  Dot
+
+type Order
+  Order(code: Str, items: List(Str), weight: Float, fragile: Bool, note: Option(Str), at: Pt, shape: Shape, pair: (Int, Str))
+
+# The type comes from the signature; nothing else names it.
+fn read_order(text) -> Result(Order, Str) = from_json(text)
+
+fn read_ints(text) -> Result(List(Int), Str) = from_json(text)
+
+fn read_shape(text) -> Result(Shape, Str) = from_json(text)
+
+fn read_pt(text) -> Result(Pt, Str) = from_json(text)
+
+fn read_text(text) -> Result(Str, Str) = from_json(text)
+
+fn shown(r) = match r
+  Ok(v) -> "ok " + show(v)
+  Err(e) -> "err " + e
+
+fn main() =
+  o = Order("LB-7K3M9Q2A", Cons("books", Cons("tea", Nil)), 4.5, false, None, Pt(51, -1), Rect(2.0, 3.0), (7, "seven"))
+  # what `to_json` wrote, `from_json` reads back
+  println(shown(read_order(to_json(o))))
+  println(shown(read_order(to_json(o))) == "ok " + show(o))
+  # keys in any order, an unknown key skipped, an Option left out, spaces anywhere
+  println(shown(read_order("{ \"shape\": \"Dot\", \"pair\": [1, \"one\"], \"extra\": {\"deep\": [1, 2, {\"x\": null}]}, \"at\": {\"y\": 2, \"x\": 1}, \"fragile\": true, \"weight\": 1e1, \"items\": [], \"code\": \"c\" }")))
+  println(shown(read_ints("[1, 2, 3]")))
+  println(shown(read_ints(" [ ] ")))
+  println(shown(read_shape("{\"Circle\": {\"r\": 2.5}}")))
+  println(shown(read_pt("{\"x\": 1, \"y\": 2}")))
+  println(shown(read_text("\"caf\\u00e9 \\ud83d\\ude00 tab\\tend\"")))
+  # and what it refuses, saying where
+  println(shown(read_ints("[1, 2, x]")))
+  println(shown(read_ints("[1.5]")))
+  println(shown(read_ints("[1, 2] trailing")))
+  println(shown(read_pt("{\"x\": 1}")))
+  println(shown(read_shape("{\"Triangle\": {}}")))
+  println(shown(read_shape("\"Blob\"")))
+  println(shown(read_order("{\"code\": \"c\", \"items\": [\"a\", 3]}")))
+  println(shown(read_text("not json")))
+  println(shown(read_text("")))
+  # a field of the wrong kind, a list that never closes, an object where an array was promised
+  println(shown(read_order("{\"code\": 5}")))
+  println(shown(read_ints("[1, 2")))
+  println(shown(read_pt("[1, 2]")))
+  # a long list reads without recursion
+  println(match read_ints(to_json(range(1, 50000))) Ok(l) -> len(l) Err(_) -> -1)

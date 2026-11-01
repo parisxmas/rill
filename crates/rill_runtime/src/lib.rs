@@ -608,6 +608,549 @@ pub unsafe extern "C" fn rill_json_quote(p: *mut u8, s: *const u8) {
     rill_strbuf_byte(p, b'"' as i64);
 }
 
+// ---- reading JSON into a type -----------------------------------------------
+//
+// `from_json(text)` is generated per type by the compiler; what it is
+// generated from is this cursor over the text. Every reader skips the
+// whitespace in front of it, says what it found, and on a mismatch records
+// the first failure — what was wanted and where — after which every call
+// answers neutrally and does nothing, so the generated code need only look
+// once in a while and never reads past a mistake.
+
+#[repr(C)]
+struct JsonCur {
+    text: *const u8,
+    pos: usize,
+    len: usize,
+    /// 0 while all is well; otherwise an index into `JSON_WANTS`.
+    err: i64,
+    at: usize,
+}
+
+const JSON_WANTS: [&[u8]; 14] = [
+    b"",
+    b"a number",
+    b"an integer",
+    b"a string",
+    b"true or false",
+    b"null",
+    b"an array",
+    b"an object",
+    b"a comma or the end of the list",
+    b"a constructor name",
+    b"a key",
+    b"every field of the record",
+    b"the end of the text",
+    b"a value",
+];
+
+/// # Safety
+/// `text` must be a live string that outlives the cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_open(text: *const u8) -> *mut u8 {
+    let c = rill_alloc(core::mem::size_of::<JsonCur>() as u64) as *mut JsonCur;
+    core::ptr::write(c, JsonCur { text: str_bytes(text), pos: 0, len: str_len_of(text), err: 0, at: 0 });
+    c as *mut u8
+}
+
+/// # Safety
+/// `p` must be a cursor from `rill_json_open`.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_close(p: *mut u8) {
+    rill_free_sized(p, core::mem::size_of::<JsonCur>() as u64);
+}
+
+#[inline]
+unsafe fn jc_fail(c: *mut JsonCur, code: i64) {
+    if (*c).err == 0 {
+        (*c).err = code;
+        (*c).at = (*c).pos;
+    }
+}
+
+#[inline]
+unsafe fn jc_ws(c: *mut JsonCur) {
+    while (*c).pos < (*c).len {
+        let b = *(*c).text.add((*c).pos);
+        if b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' {
+            (*c).pos += 1;
+        } else {
+            break;
+        }
+    }
+}
+
+#[inline]
+unsafe fn jc_byte(c: *const JsonCur) -> i64 {
+    if (*c).pos < (*c).len {
+        *(*c).text.add((*c).pos) as i64
+    } else {
+        -1
+    }
+}
+
+unsafe fn jc_lit(c: *mut JsonCur, word: &[u8]) -> bool {
+    if (*c).pos + word.len() > (*c).len {
+        return false;
+    }
+    let mut i = 0;
+    while i < word.len() {
+        if *(*c).text.add((*c).pos + i) != word[i] {
+            return false;
+        }
+        i += 1;
+    }
+    (*c).pos += word.len();
+    true
+}
+
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_failed(p: *mut u8) -> i8 {
+    ((*(p as *const JsonCur)).err != 0) as i8
+}
+
+/// The generated code's own refusals: a constructor it does not know, a
+/// field that never came.
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_fail(p: *mut u8, code: i64) {
+    jc_fail(p as *mut JsonCur, code);
+}
+
+/// `from_json: expected a string at byte 12`, as an owned string.
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_error(p: *mut u8) -> *mut u8 {
+    let c = p as *const JsonCur;
+    let sb = rill_strbuf_new();
+    for b in b"from_json: expected " {
+        rill_strbuf_byte(sb, *b as i64);
+    }
+    let code = (*c).err as usize;
+    let want = JSON_WANTS[if code < JSON_WANTS.len() { code } else { 13 }];
+    for b in want {
+        rill_strbuf_byte(sb, *b as i64);
+    }
+    for b in b" at byte " {
+        rill_strbuf_byte(sb, *b as i64);
+    }
+    let digits = rill_int_to_str((*c).at as i64);
+    rill_strbuf_add(sb, digits);
+    rill_str_release(digits);
+    let out = rill_strbuf_take(sb);
+    rill_strbuf_release(sb);
+    out
+}
+
+/// What comes next: 0 null, 1 false, 2 true, 3 a number, 4 a string, 5 an
+/// array, 6 an object, 7 the end of the text, -1 anything else. Nothing is
+/// consumed and nothing fails.
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_peek(p: *mut u8) -> i64 {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return -1;
+    }
+    jc_ws(c);
+    match jc_byte(c) {
+        -1 => 7,
+        110 => 0,
+        102 => 1,
+        116 => 2,
+        45 | 48..=57 => 3,
+        34 => 4,
+        91 => 5,
+        123 => 6,
+        _ => -1,
+    }
+}
+
+/// The bytes of the number in front, or none.
+unsafe fn jc_number(c: *mut JsonCur) -> (usize, usize, bool) {
+    let start = (*c).pos;
+    let mut i = start;
+    let mut fraction = false;
+    if i < (*c).len && *(*c).text.add(i) == b'-' {
+        i += 1;
+    }
+    let digits_from = i;
+    while i < (*c).len && (*(*c).text.add(i) as char).is_ascii_digit() {
+        i += 1;
+    }
+    if i == digits_from {
+        return (start, start, false);
+    }
+    if i < (*c).len && *(*c).text.add(i) == b'.' {
+        fraction = true;
+        i += 1;
+        while i < (*c).len && (*(*c).text.add(i) as char).is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if i < (*c).len && (*(*c).text.add(i) == b'e' || *(*c).text.add(i) == b'E') {
+        fraction = true;
+        i += 1;
+        if i < (*c).len && (*(*c).text.add(i) == b'+' || *(*c).text.add(i) == b'-') {
+            i += 1;
+        }
+        while i < (*c).len && (*(*c).text.add(i) as char).is_ascii_digit() {
+            i += 1;
+        }
+    }
+    (start, i, fraction)
+}
+
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_int(p: *mut u8) -> i64 {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return 0;
+    }
+    jc_ws(c);
+    let (a, b, fraction) = jc_number(c);
+    if a == b || fraction {
+        jc_fail(c, 2);
+        return 0;
+    }
+    let s = core::str::from_utf8_unchecked(core::slice::from_raw_parts((*c).text.add(a), b - a));
+    match s.parse::<i64>() {
+        Ok(n) => {
+            (*c).pos = b;
+            n
+        }
+        Err(_) => {
+            jc_fail(c, 2);
+            0
+        }
+    }
+}
+
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_float(p: *mut u8) -> f64 {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return 0.0;
+    }
+    jc_ws(c);
+    let (a, b, _) = jc_number(c);
+    if a == b {
+        jc_fail(c, 1);
+        return 0.0;
+    }
+    let s = core::str::from_utf8_unchecked(core::slice::from_raw_parts((*c).text.add(a), b - a));
+    match s.parse::<f64>() {
+        Ok(x) => {
+            (*c).pos = b;
+            x
+        }
+        Err(_) => {
+            jc_fail(c, 1);
+            0.0
+        }
+    }
+}
+
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_bool(p: *mut u8) -> i8 {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return 0;
+    }
+    jc_ws(c);
+    if jc_lit(c, b"true") {
+        1
+    } else if jc_lit(c, b"false") {
+        0
+    } else {
+        jc_fail(c, 4);
+        0
+    }
+}
+
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_null(p: *mut u8) {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return;
+    }
+    jc_ws(c);
+    if !jc_lit(c, b"null") {
+        jc_fail(c, 5);
+    }
+}
+
+unsafe fn jc_hex4(c: *mut JsonCur) -> Option<u32> {
+    if (*c).pos + 4 > (*c).len {
+        return None;
+    }
+    let mut v: u32 = 0;
+    let mut i = 0;
+    while i < 4 {
+        let b = *(*c).text.add((*c).pos + i);
+        let d = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return None,
+        } as u32;
+        v = v * 16 + d;
+        i += 1;
+    }
+    (*c).pos += 4;
+    Some(v)
+}
+
+unsafe fn sb_put_char(sb: *mut u8, cp: u32) {
+    if cp < 0x80 {
+        rill_strbuf_byte(sb, cp as i64);
+    } else if cp < 0x800 {
+        rill_strbuf_byte(sb, (0xC0 | (cp >> 6)) as i64);
+        rill_strbuf_byte(sb, (0x80 | (cp & 0x3F)) as i64);
+    } else if cp < 0x10000 {
+        rill_strbuf_byte(sb, (0xE0 | (cp >> 12)) as i64);
+        rill_strbuf_byte(sb, (0x80 | ((cp >> 6) & 0x3F)) as i64);
+        rill_strbuf_byte(sb, (0x80 | (cp & 0x3F)) as i64);
+    } else {
+        rill_strbuf_byte(sb, (0xF0 | (cp >> 18)) as i64);
+        rill_strbuf_byte(sb, (0x80 | ((cp >> 12) & 0x3F)) as i64);
+        rill_strbuf_byte(sb, (0x80 | ((cp >> 6) & 0x3F)) as i64);
+        rill_strbuf_byte(sb, (0x80 | (cp & 0x3F)) as i64);
+    }
+}
+
+/// A string literal, unescaped, as an owned string — or null when what is
+/// in front is not one (and the failure is recorded).
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_str(p: *mut u8) -> *mut u8 {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return core::ptr::null_mut();
+    }
+    jc_ws(c);
+    if jc_byte(c) != 34 {
+        jc_fail(c, 3);
+        return core::ptr::null_mut();
+    }
+    (*c).pos += 1;
+    let sb = rill_strbuf_new();
+    loop {
+        if (*c).pos >= (*c).len {
+            rill_strbuf_release(sb);
+            jc_fail(c, 3);
+            return core::ptr::null_mut();
+        }
+        let b = *(*c).text.add((*c).pos);
+        (*c).pos += 1;
+        match b {
+            b'"' => break,
+            b'\\' => {
+                if (*c).pos >= (*c).len {
+                    rill_strbuf_release(sb);
+                    jc_fail(c, 3);
+                    return core::ptr::null_mut();
+                }
+                let e = *(*c).text.add((*c).pos);
+                (*c).pos += 1;
+                match e {
+                    b'n' => rill_strbuf_byte(sb, 10),
+                    b't' => rill_strbuf_byte(sb, 9),
+                    b'r' => rill_strbuf_byte(sb, 13),
+                    b'b' => rill_strbuf_byte(sb, 8),
+                    b'f' => rill_strbuf_byte(sb, 12),
+                    b'u' => {
+                        let mut cp = match jc_hex4(c) {
+                            Some(v) => v,
+                            None => {
+                                rill_strbuf_release(sb);
+                                jc_fail(c, 3);
+                                return core::ptr::null_mut();
+                            }
+                        };
+                        // a surrogate pair is one character written as two
+                        if (0xD800..0xDC00).contains(&cp) && jc_lit(c, b"\\u") {
+                            match jc_hex4(c) {
+                                Some(lo) if (0xDC00..0xE000).contains(&lo) => {
+                                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                                }
+                                _ => cp = 0xFFFD,
+                            }
+                        } else if (0xD800..0xE000).contains(&cp) {
+                            cp = 0xFFFD;
+                        }
+                        sb_put_char(sb, cp);
+                    }
+                    other => rill_strbuf_byte(sb, other as i64),
+                }
+            }
+            other => rill_strbuf_byte(sb, other as i64),
+        }
+    }
+    let out = rill_strbuf_take(sb);
+    rill_strbuf_release(sb);
+    out
+}
+
+/// Consumes the `[` or `{` in front.
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_enter(p: *mut u8, open: i64) {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return;
+    }
+    jc_ws(c);
+    if jc_byte(c) == open {
+        (*c).pos += 1;
+    } else {
+        jc_fail(c, if open == 91 { 6 } else { 7 });
+    }
+}
+
+/// Between elements: 1 when another follows (the comma, if any, consumed),
+/// 0 when the closing bracket was reached and consumed.
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_next(p: *mut u8, close: i64, first: i8) -> i8 {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return 0;
+    }
+    jc_ws(c);
+    if jc_byte(c) == close {
+        (*c).pos += 1;
+        return 0;
+    }
+    if first != 0 {
+        return 1;
+    }
+    if jc_byte(c) == 44 {
+        (*c).pos += 1;
+        jc_ws(c);
+        return 1;
+    }
+    jc_fail(c, 8);
+    0
+}
+
+/// An object's key and its colon, as an owned string; null on failure.
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_key(p: *mut u8) -> *mut u8 {
+    let c = p as *mut JsonCur;
+    let k = rill_json_str(p);
+    if k.is_null() {
+        if (*c).err == 3 {
+            (*c).err = 10;
+        }
+        return k;
+    }
+    jc_ws(c);
+    if jc_byte(c) == 58 {
+        (*c).pos += 1;
+        k
+    } else {
+        rill_str_release(k);
+        jc_fail(c, 10);
+        core::ptr::null_mut()
+    }
+}
+
+/// Past one whole value, whatever it is — a field the type does not have.
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_skip(p: *mut u8) {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return;
+    }
+    jc_ws(c);
+    match jc_byte(c) {
+        34 => {
+            let s = rill_json_str(p);
+            if !s.is_null() {
+                rill_str_release(s);
+            }
+        }
+        91 | 123 => {
+            let open = jc_byte(c);
+            let close = if open == 91 { 93 } else { 125 };
+            (*c).pos += 1;
+            let mut first = 1i8;
+            while rill_json_next(p, close, first) != 0 {
+                first = 0;
+                if close == 125 {
+                    let k = rill_json_key(p);
+                    if k.is_null() {
+                        return;
+                    }
+                    rill_str_release(k);
+                }
+                rill_json_skip(p);
+                if (*c).err != 0 {
+                    return;
+                }
+            }
+        }
+        45 | 48..=57 => {
+            let (a, b, _) = jc_number(c);
+            if a == b {
+                jc_fail(c, 13);
+            } else {
+                (*c).pos = b;
+            }
+        }
+        _ => {
+            if !(jc_lit(c, b"null") || jc_lit(c, b"true") || jc_lit(c, b"false")) {
+                jc_fail(c, 13);
+            }
+        }
+    }
+}
+
+/// After the value: nothing but whitespace may remain.
+///
+/// # Safety
+/// `p` must be a live cursor.
+#[no_mangle]
+pub unsafe extern "C" fn rill_json_end(p: *mut u8) {
+    let c = p as *mut JsonCur;
+    if (*c).err != 0 {
+        return;
+    }
+    jc_ws(c);
+    if (*c).pos < (*c).len {
+        jc_fail(c, 12);
+    }
+}
+
 /// # Safety
 /// `p` must be a live builder. Adds one byte, which is what reading a string
 /// a character at a time produces — `chr` would allocate a string for each.
