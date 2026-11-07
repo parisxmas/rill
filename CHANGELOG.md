@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — a select arm that answered with what it took
+
+`m = recv(ch) -> m` left every value it received with one reference more than
+it had owners. A select arm releases what it bound unless that value is its
+answer, on the reasoning that the answer leaves with the `select`; but reading
+a name takes a reference of its own, so it was the arm's reference that was
+excused and the read's that left, and nothing ever gave the first one back. The
+rule is now the plain one: anything still listed at the end of an arm was read
+rather than moved, and is released.
+
+An arm that only reads what it took was fixed earlier, and that fix is where the
+exception came from. This one is the spelling a loop reaches for when it merges
+two channels, and a message broker written that way was losing about seventy
+bytes on every frame it read, heartbeats included.
+
 ## Unreleased — bytes back from C, and a name two libraries wanted
 
 `str_from_ptr(p, n)` copies `n` bytes out of C memory into a Rill string.

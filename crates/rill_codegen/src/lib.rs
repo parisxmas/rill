@@ -8093,11 +8093,10 @@ impl<'ctx, 'a> Codegen<'ctx, 'a> {
                 .into_iter()
                 .partition(|(c, _)| outer_held.contains(c));
             self.cleanup = kept;
+            // That includes an arm answering with what it took: anything still
+            // listed here was read rather than moved, the read took a reference
+            // of its own, and that one is what leaves with the `select`.
             for (c, ty) in own.into_iter().rev() {
-                // Except the arm's own answer, which leaves with the `select`.
-                if v == Some(c) {
-                    continue;
-                }
                 self.emit_release(c, &ty);
             }
             self.bound_fns = saved_bound;
