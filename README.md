@@ -258,7 +258,7 @@ A Rust workspace; source flows through it in one direction.
 
 ## Where it stands
 
-Rill 0.16.1 is a complete, working language: you can write real programs in it, and
+Rill 0.16.2 is a complete, working language: you can write real programs in it, and
 the compiler is honest about what it cannot do. Known limits, all deliberate:
 
 - Multi-core execution is opt-in (`rill build --parallel`, then

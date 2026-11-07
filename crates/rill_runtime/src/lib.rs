@@ -8569,6 +8569,8 @@ unsafe fn worker_loop(w: *mut Worker) {
     // reporting the same thing, whereas a momentary gap between one worker
     // queueing work and another looking for it does not.
     let mut idle_rounds = 0u32;
+    let mut polled_after = 0u32;
+    const POLL_EVERY: u32 = 512;
     loop {
         // Asked before taking work, not only when there is none left. A single
         // worker already behaved this way — the one running `main` returns the
@@ -8582,9 +8584,14 @@ unsafe fn worker_loop(w: *mut Worker) {
         // poll, and the poll used to run only when nothing was runnable: a
         // strand that never blocked kept the worker from ever looking, and
         // a writer parked on its commit's fsync starved behind a reader
-        // that loops. So the poll is made, without waiting, before every
-        // strand is taken while anything is parked that way.
-        if IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
+        // that loops. So while anything is parked that way the poll is also
+        // made, without waiting, between strands. Not before every one: a
+        // `select` with a `timeout` arm counts as parked, a program looping
+        // on one paid a system call per switch, and a message broker built
+        // that way ran at a twenty-fifth of its speed.
+        polled_after += 1;
+        if polled_after >= POLL_EVERY && IO_WAITERS.load(core::sync::atomic::Ordering::Acquire) > 0 {
+            polled_after = 0;
             poll_network(w, false);
         }
         lock_runq(w);

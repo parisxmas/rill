@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.2 — a poll that was made too often
+
+A worker polled for parked strands before every strand it took, so that a strand
+that never blocks could not starve one waiting on a descriptor. A `select` with a
+`timeout` arm counts as parked, so a program looping on one paid a system call
+per switch, and a message broker built that way ran at a twenty-fifth of its
+speed. The poll is now made every 512 strands, which still reaches a strand
+behind one that never blocks.
+
 ## 0.16.1 — a write that took a read's place
 
 On Linux a strand waiting to write on a socket replaced the wait of a strand
